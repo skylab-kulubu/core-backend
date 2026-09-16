@@ -9,6 +9,7 @@ const (
 	Delete   Action = "DELETE"
 	Validate Action = "VALIDATE"
 	ReadMe   Action = "READ_ME"
+	Upload   Action = "UPLOAD"
 )
 
 type Type string
@@ -23,6 +24,7 @@ const (
 	TypeEventDay   Type = "EVENT_DAY"
 	TypeSession    Type = "SESSION"
 	TypeCompetitor Type = "COMPETITOR"
+	TypeMedia      Type = "MEDIA"
 )
 
 type Level string

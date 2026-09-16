@@ -259,6 +259,39 @@ func TestAuthorizer_Allow(t *testing.T) {
 			a:    Update,
 			want: true,
 		},
+		{
+			name: "public can read media",
+			r:    Resource{Type: TypeMedia},
+			a:    Read,
+			want: true,
+		},
+		{
+			name: "authenticated can upload media",
+			p:    Principal{ID: "u1"},
+			r:    Resource{Type: TypeMedia},
+			a:    Upload,
+			want: true,
+		},
+		{
+			name: "anonymous cannot upload media",
+			r:    Resource{Type: TypeMedia},
+			a:    Upload,
+			want: false,
+		},
+		{
+			name: "privileged can delete media",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/YK"}},
+			r:    Resource{Type: TypeMedia},
+			a:    Delete,
+			want: true,
+		},
+		{
+			name: "member cannot delete media",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}},
+			r:    Resource{Type: TypeMedia},
+			a:    Delete,
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
