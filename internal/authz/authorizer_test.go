@@ -123,6 +123,40 @@ func TestAuthorizer_Allow(t *testing.T) {
 			a:    Update,
 			want: false,
 		},
+		{
+			name: "authenticated can apply for a ticket",
+			p:    Principal{ID: "u1"},
+			r:    Resource{Type: TypeTicket},
+			a:    Create,
+			want: true,
+		},
+		{
+			name: "anonymous cannot apply for a ticket",
+			r:    Resource{Type: TypeTicket},
+			a:    Create,
+			want: false,
+		},
+		{
+			name: "owner team leader can check in",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}},
+			r:    Resource{Type: TypeTicket, OwnerTeam: "WEBLAB"},
+			a:    Validate,
+			want: true,
+		},
+		{
+			name: "owner team member cannot check in",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}},
+			r:    Resource{Type: TypeTicket, OwnerTeam: "WEBLAB"},
+			a:    Validate,
+			want: false,
+		},
+		{
+			name: "privileged can check in",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/YK"}},
+			r:    Resource{Type: TypeTicket, OwnerTeam: "WEBLAB"},
+			a:    Validate,
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {

@@ -21,6 +21,8 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 	switch r.Type {
 	case TypeEvent:
 		return a.allowEvent(p, r, action)
+	case TypeTicket:
+		return a.allowTicket(p, r, action)
 	case TypeTeam:
 		return action == Read
 	case TypeGroup, TypeUser:
@@ -54,6 +56,21 @@ func (a *authorizer) allowEvent(p Principal, r Resource, action Action) bool {
 		}
 	}
 	return false
+}
+
+func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
+	authenticated := p.ID != ""
+	switch action {
+	case Create, ReadMe:
+		return authenticated
+	case Validate:
+		if a.isPrivileged(p) {
+			return true
+		}
+		return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
+	default:
+		return false
+	}
 }
 
 func (a *authorizer) isPrivileged(p Principal) bool {

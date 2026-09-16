@@ -11,10 +11,11 @@ import (
 type MemoryStore struct {
 	mu   sync.Mutex
 	byID map[uuid.UUID]Event
+	days map[uuid.UUID]Day
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{byID: make(map[uuid.UUID]Event)}
+	return &MemoryStore{byID: make(map[uuid.UUID]Event), days: make(map[uuid.UUID]Day)}
 }
 
 func (s *MemoryStore) List(_ context.Context, ownerTeam string) ([]Event, error) {
@@ -74,4 +75,24 @@ func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) error {
 	}
 	delete(s.byID, id)
 	return nil
+}
+
+func (s *MemoryStore) GetDay(_ context.Context, id uuid.UUID) (Day, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.days[id]
+	if !ok {
+		return Day{}, ErrNotFound
+	}
+	return d, nil
+}
+
+func (s *MemoryStore) CreateDay(_ context.Context, d Day) (Day, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d.ID == uuid.Nil {
+		d.ID = uuid.New()
+	}
+	s.days[d.ID] = d
+	return d, nil
 }

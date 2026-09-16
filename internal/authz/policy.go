@@ -3,19 +3,22 @@ package authz
 type Action string
 
 const (
-	Read   Action = "READ"
-	Create Action = "CREATE"
-	Update Action = "UPDATE"
-	Delete Action = "DELETE"
+	Read     Action = "READ"
+	Create   Action = "CREATE"
+	Update   Action = "UPDATE"
+	Delete   Action = "DELETE"
+	Validate Action = "VALIDATE"
+	ReadMe   Action = "READ_ME"
 )
 
 type Type string
 
 const (
-	TypeEvent Type = "EVENT"
-	TypeGroup Type = "GROUP"
-	TypeUser  Type = "USER"
-	TypeTeam  Type = "TEAM"
+	TypeEvent  Type = "EVENT"
+	TypeGroup  Type = "GROUP"
+	TypeUser   Type = "USER"
+	TypeTeam   Type = "TEAM"
+	TypeTicket Type = "TICKET"
 )
 
 type Level string
