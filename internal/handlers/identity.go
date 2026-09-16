@@ -63,6 +63,36 @@ func (h *IdentityHandler) ListGroups(c fiber.Ctx) error {
 	return c.JSON(groups)
 }
 
+func (h *IdentityHandler) GetGroup(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	g, err := h.svc.GetGroup(c.Context(), p, c.Params("groupId"))
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(g)
+}
+
+func (h *IdentityHandler) UpdateGroup(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	var body struct {
+		Attributes map[string]string `json:"attributes"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	updated, err := h.svc.UpdateGroup(c.Context(), p, c.Params("groupId"), body.Attributes)
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(updated)
+}
+
 func (h *IdentityHandler) Members(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
@@ -103,6 +133,96 @@ func (h *IdentityHandler) RemoveMember(c fiber.Ctx) error {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	if err := h.svc.RemoveMember(c.Context(), p, c.Params("groupId"), userID); err != nil {
+		return identityError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (h *IdentityHandler) ListUsers(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	users, err := h.svc.ListUsers(c.Context(), p)
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(users)
+}
+
+func (h *IdentityHandler) GetUser(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	card, err := h.svc.GetUser(c.Context(), p, id)
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(card)
+}
+
+func (h *IdentityHandler) GroupClientRoles(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	roles, err := h.svc.GroupClientRoles(c.Context(), p, c.Params("groupId"))
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(roles)
+}
+
+func (h *IdentityHandler) SetGroupClientRoles(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	var roles []identity.ClientRole
+	if err := c.Bind().Body(&roles); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if err := h.svc.SetGroupClientRoles(c.Context(), p, c.Params("groupId"), roles); err != nil {
+		return identityError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (h *IdentityHandler) AddUserExtraRole(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var role identity.ClientRole
+	if err := c.Bind().Body(&role); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if err := h.svc.AddUserExtraRole(c.Context(), p, id, role); err != nil {
+		return identityError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (h *IdentityHandler) RemoveUserExtraRole(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	role := identity.ClientRole{ClientID: c.Query("clientId"), Role: c.Query("role")}
+	if err := h.svc.RemoveUserExtraRole(c.Context(), p, id, role); err != nil {
 		return identityError(c, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)

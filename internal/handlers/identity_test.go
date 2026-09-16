@@ -27,11 +27,19 @@ func identityApp(t *testing.T, ident authn.Identity, dir *identity.Memory, store
 		return c.Next()
 	})
 	app.Get("/v1/groups", h.ListGroups)
+	app.Get("/v1/groups/:groupId", h.GetGroup)
+	app.Patch("/v1/groups/:groupId", h.UpdateGroup)
 	app.Get("/v1/groups/:groupId/members", h.Members)
 	app.Post("/v1/groups/:groupId/members", h.AddMember)
 	app.Delete("/v1/groups/:groupId/members/:userId", h.RemoveMember)
+	app.Get("/v1/groups/:groupId/client-roles", h.GroupClientRoles)
+	app.Put("/v1/groups/:groupId/client-roles", h.SetGroupClientRoles)
+	app.Get("/v1/users", h.ListUsers)
+	app.Get("/v1/users/:id", h.GetUser)
 	app.Post("/v1/users", h.CreateUser)
 	app.Delete("/v1/users/:id", h.DeleteUser)
+	app.Post("/v1/users/:id/client-roles", h.AddUserExtraRole)
+	app.Delete("/v1/users/:id/client-roles", h.RemoveUserExtraRole)
 	return app
 }
 
@@ -138,5 +146,65 @@ func TestCreateAndDeleteUserHTTP(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusNoContent {
 		t.Fatalf("delete status %d", resp.StatusCode)
+	}
+}
+
+func TestUserCardAndGroupRolesHTTP(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	dir.PutGroup(identity.Group{ID: "g-weblab", Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"})
+	id := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: id, Email: "ada@example.com", FirstName: "Ada"})
+	if err := dir.AddMember(t.Context(), "g-weblab", id); err != nil {
+		t.Fatal(err)
+	}
+	app := identityApp(t, ykIdent(), dir, store)
+
+	body := `[{"clientId":"skyforms","role":"skyforms:access"}]`
+	req := httptest.NewRequest(fiber.MethodPut, "/v1/groups/g-weblab/client-roles", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNoContent {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("map status %d body %s", resp.StatusCode, b)
+	}
+
+	extra := `{"clientId":"skyforms","role":"skyforms:form:manage"}`
+	req = httptest.NewRequest(fiber.MethodPost, "/v1/users/"+id.String()+"/client-roles", strings.NewReader(extra))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNoContent {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("extra status %d body %s", resp.StatusCode, b)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users/"+id.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("get status %d", resp.StatusCode)
+	}
+	var card identity.UserCard
+	if err := json.NewDecoder(resp.Body).Decode(&card); err != nil {
+		t.Fatal(err)
+	}
+	if len(card.InheritedRoles) != 1 || len(card.ExtraRoles) != 1 {
+		t.Fatalf("card %+v", card)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/groups/g-weblab", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("group status %d", resp.StatusCode)
 	}
 }
