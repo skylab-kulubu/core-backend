@@ -18,9 +18,17 @@ func NewAuthorizer(policy Policy) Authorizer {
 }
 
 func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
-	if r.Type != TypeEvent {
+	switch r.Type {
+	case TypeEvent:
+		return a.allowEvent(p, r, action)
+	case TypeGroup, TypeUser:
+		return a.isPrivileged(p)
+	default:
 		return false
 	}
+}
+
+func (a *authorizer) allowEvent(p Principal, r Resource, action Action) bool {
 	if action == Read {
 		return true
 	}
