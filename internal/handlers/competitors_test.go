@@ -73,6 +73,9 @@ func TestCompetitorSelfRegisterAndPublicReadHTTP(t *testing.T) {
 	if created.Score != nil {
 		t.Fatalf("self register kept score %+v", created)
 	}
+	if created.Event == nil || created.Event.Name != "Hack" || created.EventID != ev.ID {
+		t.Fatalf("embedded event %+v", created.Event)
+	}
 
 	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/me", nil))
 	if err != nil {

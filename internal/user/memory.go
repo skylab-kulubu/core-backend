@@ -28,18 +28,44 @@ func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (User, error) {
 	return u, nil
 }
 
+func keepProfile(existing, u User) User {
+	if u.SchoolEmail == "" {
+		u.SchoolEmail = existing.SchoolEmail
+	}
+	if u.SkyNumber == "" {
+		u.SkyNumber = existing.SkyNumber
+	}
+	if u.Username == "" {
+		u.Username = existing.Username
+	}
+	if u.Linkedin == "" {
+		u.Linkedin = existing.Linkedin
+	}
+	if u.University == "" {
+		u.University = existing.University
+	}
+	if u.Faculty == "" {
+		u.Faculty = existing.Faculty
+	}
+	if u.Department == "" {
+		u.Department = existing.Department
+	}
+	if u.ProfilePictureID == nil {
+		u.ProfilePictureID = existing.ProfilePictureID
+	}
+	if u.ProfilePictureURL == "" {
+		u.ProfilePictureURL = existing.ProfilePictureURL
+	}
+	return u
+}
+
 func (s *MemoryStore) Upsert(_ context.Context, u User) (User, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
 	existing, existed := s.byID[u.ID]
 	if existed {
-		if u.SchoolEmail == "" {
-			u.SchoolEmail = existing.SchoolEmail
-		}
-		if u.SkyNumber == "" {
-			u.SkyNumber = existing.SkyNumber
-		}
+		u = keepProfile(existing, u)
 		u.CreatedAt = existing.CreatedAt
 		u.UpdatedAt = now
 	} else {
@@ -57,6 +83,26 @@ func (s *MemoryStore) Upsert(_ context.Context, u User) (User, bool, error) {
 	return u, !existed, nil
 }
 
+func (s *MemoryStore) UpdateProfile(_ context.Context, u User) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.byID[u.ID]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	existing.FirstName = u.FirstName
+	existing.LastName = u.LastName
+	existing.Linkedin = u.Linkedin
+	existing.University = u.University
+	existing.Faculty = u.Faculty
+	existing.Department = u.Department
+	existing.ProfilePictureID = u.ProfilePictureID
+	existing.ProfilePictureURL = u.ProfilePictureURL
+	existing.UpdatedAt = time.Now().UTC()
+	s.byID[u.ID] = existing
+	return existing, nil
+}
+
 func (s *MemoryStore) Search(_ context.Context, q string) ([]User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -64,6 +110,22 @@ func (s *MemoryStore) Search(_ context.Context, q string) ([]User, error) {
 	out := make([]User, 0)
 	for _, u := range s.byID {
 		if userMatches(u, needle) {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) FindByEmail(_ context.Context, email string) ([]User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	want := strings.ToLower(strings.TrimSpace(email))
+	out := make([]User, 0)
+	if want == "" {
+		return out, nil
+	}
+	for _, u := range s.byID {
+		if strings.ToLower(u.Email) == want {
 			out = append(out, u)
 		}
 	}
@@ -100,6 +162,7 @@ func userMatches(u User, needle string) bool {
 		u.Email,
 		u.SchoolEmail,
 		u.SkyNumber,
+		u.Username,
 		u.FirstName,
 		u.LastName,
 		strings.TrimSpace(u.FirstName + " " + u.LastName),

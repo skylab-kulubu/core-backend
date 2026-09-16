@@ -3,10 +3,12 @@ package ticket
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 type Service interface {
@@ -14,17 +16,54 @@ type Service interface {
 	ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo) (Ticket, error)
 	Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 	ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Ticket, error)
+	Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
+	GetByUserEvent(ctx context.Context, p authz.Principal, userID, eventID uuid.UUID) (Ticket, error)
+	ListQuery(ctx context.Context, p authz.Principal, email string, userID *uuid.UUID) ([]Ticket, error)
 	CheckIn(ctx context.Context, p authz.Principal, ticketID, eventDayID uuid.UUID) (CheckIn, error)
 }
 
 type service struct {
 	tickets Store
 	events  event.Store
+	users   user.Store
 	authz   authz.Authorizer
 }
 
-func NewService(tickets Store, events event.Store, az authz.Authorizer) Service {
-	return &service{tickets: tickets, events: events, authz: az}
+func NewService(tickets Store, events event.Store, az authz.Authorizer, users ...user.Store) Service {
+	s := &service{tickets: tickets, events: events, authz: az}
+	if len(users) > 0 {
+		s.users = users[0]
+	}
+	return s
+}
+
+func (s *service) withEvent(ctx context.Context, t Ticket) Ticket {
+	ev, err := s.events.Get(ctx, t.EventID)
+	if err != nil {
+		return t
+	}
+	res := ev.Resource()
+	t.Event = &res
+	return t
+}
+
+func (s *service) withEvents(ctx context.Context, tickets []Ticket) []Ticket {
+	out := make([]Ticket, len(tickets))
+	for i, t := range tickets {
+		out[i] = s.withEvent(ctx, t)
+	}
+	return out
+}
+
+func (s *service) canRead(ctx context.Context, p authz.Principal, t Ticket) bool {
+	if t.OwnerID != nil && p.ID == t.OwnerID.String() {
+		return true
+	}
+	ev, err := s.events.Get(ctx, t.EventID)
+	if err != nil {
+		return false
+	}
+	return s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam, EventType: ev.OwnerTeam}, authz.Read)
 }
 
 func (s *service) Apply(ctx context.Context, p authz.Principal, eventID uuid.UUID) (Ticket, error) {
@@ -48,11 +87,15 @@ func (s *service) Apply(ctx context.Context, p authz.Principal, eventID uuid.UUI
 	if exists {
 		return Ticket{}, ErrConflict
 	}
-	return s.tickets.Create(ctx, Ticket{
+	created, err := s.tickets.Create(ctx, Ticket{
 		EventID:    eventID,
 		TicketType: Registered,
 		OwnerID:    &ownerID,
 	})
+	if err != nil {
+		return Ticket{}, err
+	}
+	return s.withEvent(ctx, created), nil
 }
 
 func (s *service) ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo) (Ticket, error) {
@@ -72,7 +115,7 @@ func (s *service) ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 	if exists {
 		return Ticket{}, ErrConflict
 	}
-	return s.tickets.Create(ctx, Ticket{
+	created, err := s.tickets.Create(ctx, Ticket{
 		EventID:          eventID,
 		TicketType:       Guest,
 		GuestFirstName:   g.FirstName,
@@ -80,6 +123,10 @@ func (s *service) ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 		GuestEmail:       g.Email,
 		GuestPhoneNumber: g.PhoneNumber,
 	})
+	if err != nil {
+		return Ticket{}, err
+	}
+	return s.withEvent(ctx, created), nil
 }
 
 func (s *service) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error) {
@@ -90,7 +137,11 @@ func (s *service) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 	if err != nil {
 		return nil, ErrInvalid
 	}
-	return s.tickets.ListByOwner(ctx, ownerID)
+	tickets, err := s.tickets.ListByOwner(ctx, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	return s.withEvents(ctx, tickets), nil
 }
 
 func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Ticket, error) {
@@ -104,7 +155,117 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam, EventType: ev.OwnerTeam}, authz.Read) {
 		return nil, ErrForbidden
 	}
-	return s.tickets.ListByEvent(ctx, eventID)
+	tickets, err := s.tickets.ListByEvent(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	return s.withEvents(ctx, tickets), nil
+}
+
+func (s *service) Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error) {
+	t, err := s.tickets.Get(ctx, id)
+	if err != nil {
+		return Ticket{}, err
+	}
+	if !s.canRead(ctx, p, t) {
+		return Ticket{}, ErrForbidden
+	}
+	return s.withEvent(ctx, t), nil
+}
+
+func (s *service) GetByUserEvent(ctx context.Context, p authz.Principal, userID, eventID uuid.UUID) (Ticket, error) {
+	t, err := s.tickets.GetByOwnerEvent(ctx, userID, eventID)
+	if err != nil {
+		return Ticket{}, err
+	}
+	if !s.canRead(ctx, p, t) {
+		return Ticket{}, ErrForbidden
+	}
+	return s.withEvent(ctx, t), nil
+}
+
+func (s *service) ListQuery(ctx context.Context, p authz.Principal, email string, userID *uuid.UUID) ([]Ticket, error) {
+	email = strings.TrimSpace(email)
+	if email == "" && userID == nil {
+		return nil, ErrInvalid
+	}
+	own := false
+	if userID != nil && p.ID == userID.String() {
+		own = true
+	}
+	var tickets []Ticket
+	if userID != nil {
+		listed, err := s.tickets.ListByOwner(ctx, *userID)
+		if err != nil {
+			return nil, err
+		}
+		tickets = append(tickets, listed...)
+	}
+	if email != "" {
+		if s.users != nil {
+			found, err := s.users.FindByEmail(ctx, email)
+			if err != nil {
+				return nil, err
+			}
+			for _, u := range found {
+				if p.ID == u.ID.String() {
+					own = true
+				}
+				listed, err := s.tickets.ListByOwner(ctx, u.ID)
+				if err != nil {
+					return nil, err
+				}
+				tickets = append(tickets, listed...)
+			}
+		}
+		guests, err := s.tickets.ListByGuestEmail(ctx, email)
+		if err != nil {
+			return nil, err
+		}
+		tickets = append(tickets, guests...)
+	}
+
+	seen := map[uuid.UUID]struct{}{}
+	uniq := make([]Ticket, 0, len(tickets))
+	for _, t := range tickets {
+		if _, ok := seen[t.ID]; ok {
+			continue
+		}
+		seen[t.ID] = struct{}{}
+		uniq = append(uniq, t)
+	}
+
+	if own {
+		return s.withEvents(ctx, uniq), nil
+	}
+	visible := make([]Ticket, 0, len(uniq))
+	for _, t := range uniq {
+		if s.canRead(ctx, p, t) {
+			visible = append(visible, t)
+		}
+	}
+	if len(visible) == 0 && !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket}, authz.Read) && !hasLeaderGroup(p) {
+		return nil, ErrForbidden
+	}
+	return s.withEvents(ctx, visible), nil
+}
+
+func hasLeaderGroup(p authz.Principal) bool {
+	for _, g := range p.Groups {
+		if strings.Contains(g, "/LIDERLER") || strings.Contains(g, "/KOORDINATORLER") {
+			return true
+		}
+		if strings.HasSuffix(g, "/YK") || strings.Contains(g, "/YK/") {
+			return true
+		}
+		if strings.HasSuffix(g, "/DK") || strings.Contains(g, "/DK/") {
+			return true
+		}
+		if strings.HasSuffix(g, "/ADMIN") || strings.Contains(g, "/ADMIN/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, eventDayID uuid.UUID) (CheckIn, error) {

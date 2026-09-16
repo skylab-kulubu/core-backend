@@ -14,11 +14,13 @@ var (
 )
 
 type Store interface {
-	List(ctx context.Context, ownerTeam string) ([]Event, error)
+	List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error)
 	Get(ctx context.Context, id uuid.UUID) (Event, error)
 	Create(ctx context.Context, e Event) (Event, error)
 	Update(ctx context.Context, e Event) (Event, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+	AddImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
+	RemoveImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
 	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
 	CreateDay(ctx context.Context, d Day) (Day, error)
 	ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error)

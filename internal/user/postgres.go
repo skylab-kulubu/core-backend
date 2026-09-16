@@ -19,12 +19,20 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (User, error) {
+const userCols = `id, email, first_name, last_name, username, school_email, sky_number, linkedin, university, faculty, department, profile_picture_id, profile_picture_url, created_at, updated_at`
+
+func scanUser(row interface{ Scan(dest ...any) error }) (User, error) {
 	var u User
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, email, first_name, last_name, school_email, sky_number, created_at, updated_at
-		FROM users WHERE id = $1
-	`, id).Scan(&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.SchoolEmail, &u.SkyNumber, &u.CreatedAt, &u.UpdatedAt)
+	err := row.Scan(
+		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Username, &u.SchoolEmail, &u.SkyNumber,
+		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.ProfilePictureID, &u.ProfilePictureURL,
+		&u.CreatedAt, &u.UpdatedAt,
+	)
+	return u, err
+}
+
+func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (User, error) {
+	u, err := scanUser(s.pool.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -37,12 +45,16 @@ func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (User, error) {
 func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) {
 	var created bool
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO users (id, email, first_name, last_name, school_email, sky_number)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO users (id, email, first_name, last_name, username, school_email, sky_number)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (id) DO UPDATE SET
 			email = excluded.email,
 			first_name = excluded.first_name,
 			last_name = excluded.last_name,
+			username = CASE
+				WHEN excluded.username <> '' THEN excluded.username
+				ELSE users.username
+			END,
 			school_email = CASE
 				WHEN excluded.school_email <> '' THEN excluded.school_email
 				ELSE users.school_email
@@ -52,9 +64,11 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 				ELSE users.sky_number
 			END,
 			updated_at = now()
-		RETURNING id, email, first_name, last_name, school_email, sky_number, created_at, updated_at, (xmax = 0)
-	`, u.ID, u.Email, u.FirstName, u.LastName, u.SchoolEmail, u.SkyNumber).Scan(
-		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.SchoolEmail, &u.SkyNumber, &u.CreatedAt, &u.UpdatedAt, &created,
+		RETURNING `+userCols+`, (xmax = 0)
+	`, u.ID, u.Email, u.FirstName, u.LastName, u.Username, u.SchoolEmail, u.SkyNumber).Scan(
+		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Username, &u.SchoolEmail, &u.SkyNumber,
+		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.ProfilePictureID, &u.ProfilePictureURL,
+		&u.CreatedAt, &u.UpdatedAt, &created,
 	)
 	if isUnique(err) {
 		return User{}, false, ErrConflict
@@ -65,14 +79,38 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 	return u, created, nil
 }
 
+func (s *PostgresStore) UpdateProfile(ctx context.Context, u User) (User, error) {
+	got, err := scanUser(s.pool.QueryRow(ctx, `
+		UPDATE users SET
+			first_name = $2,
+			last_name = $3,
+			linkedin = $4,
+			university = $5,
+			faculty = $6,
+			department = $7,
+			profile_picture_id = $8,
+			profile_picture_url = $9,
+			updated_at = now()
+		WHERE id = $1
+		RETURNING `+userCols,
+		u.ID, u.FirstName, u.LastName, u.Linkedin, u.University, u.Faculty, u.Department,
+		u.ProfilePictureID, u.ProfilePictureURL,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	return got, err
+}
+
 func (s *PostgresStore) Search(ctx context.Context, q string) ([]User, error) {
 	needle := strings.TrimSpace(q)
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, email, first_name, last_name, school_email, sky_number, created_at, updated_at
+		SELECT `+userCols+`
 		FROM users
 		WHERE lower(email) LIKE '%' || lower($1) || '%'
 		   OR lower(school_email) LIKE '%' || lower($1) || '%'
 		   OR lower(sky_number) LIKE '%' || lower($1) || '%'
+		   OR lower(username) LIKE '%' || lower($1) || '%'
 		   OR lower(first_name) LIKE '%' || lower($1) || '%'
 		   OR lower(last_name) LIKE '%' || lower($1) || '%'
 		   OR lower(first_name || ' ' || last_name) LIKE '%' || lower($1) || '%'
@@ -84,8 +122,30 @@ func (s *PostgresStore) Search(ctx context.Context, q string) ([]User, error) {
 	defer rows.Close()
 	out := make([]User, 0)
 	for rows.Next() {
-		var u User
-		if err := rows.Scan(&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.SchoolEmail, &u.SkyNumber, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) FindByEmail(ctx context.Context, email string) ([]User, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+userCols+`
+		FROM users
+		WHERE lower(email) = lower($1)
+		ORDER BY created_at
+	`, strings.TrimSpace(email))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]User, 0)
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, u)

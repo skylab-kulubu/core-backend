@@ -53,7 +53,14 @@ func (h *URLHandler) QR(c fiber.Ctx) error {
 	if err != nil {
 		return urlError(c, err)
 	}
-	png, err := qr.PNG(qr.ShortURL(u.Alias), qr.SizeFromQuery(c.Query("size")))
+	size := qr.SizeFromQuery(c.Query("size"))
+	content := qr.ShortURL(u.Alias)
+	var png []byte
+	if qr.LogoFromQuery(c.Query("logo")) {
+		png, err = qr.PNGWithLogo(content, size)
+	} else {
+		png, err = qr.PNG(content, size)
+	}
 	if err != nil {
 		return err
 	}

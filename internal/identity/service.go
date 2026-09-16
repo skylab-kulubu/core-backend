@@ -309,7 +309,7 @@ func (s *service) PublicMembers(ctx context.Context, team string) (Roster, error
 	if err != nil {
 		return Roster{}, err
 	}
-	return buildRoster(g, people, leaders), nil
+	return s.buildRoster(ctx, g, people, leaders), nil
 }
 
 func (s *service) PublicLeaders(ctx context.Context, team string) (Roster, error) {
@@ -329,7 +329,7 @@ func (s *service) PublicLeaders(ctx context.Context, team string) (Roster, error
 		}
 		people = append(people, p)
 	}
-	return buildRoster(g, people, leaders), nil
+	return s.buildRoster(ctx, g, people, leaders), nil
 }
 
 func (s *service) publicGroup(ctx context.Context, team string, leaders bool) (Group, error) {
@@ -458,15 +458,23 @@ func description(g Group) *LocalizedText {
 	return &LocalizedText{TR: tr, EN: en}
 }
 
-func buildRoster(g Group, people []Person, leaders map[uuid.UUID]struct{}) Roster {
+func (s *service) buildRoster(ctx context.Context, g Group, people []Person, leaders map[uuid.UUID]struct{}) Roster {
 	members := make([]PublicMember, 0, len(people))
 	for _, p := range people {
 		_, leader := leaders[p.ID]
-		members = append(members, PublicMember{
+		m := PublicMember{
 			FirstName: p.FirstName,
 			LastName:  p.LastName,
 			Leader:    leader,
-		})
+		}
+		if shadow, err := s.users.Get(ctx, p.ID); err == nil {
+			m.Linkedin = shadow.Linkedin
+			m.University = shadow.University
+			m.Faculty = shadow.Faculty
+			m.Department = shadow.Department
+			m.ProfilePictureURL = shadow.ProfilePictureURL
+		}
+		members = append(members, m)
 	}
 	return Roster{
 		Team:        g.Name,
@@ -483,6 +491,7 @@ func personFromUser(u user.User) Person {
 		Email:       u.Email,
 		FirstName:   u.FirstName,
 		LastName:    u.LastName,
+		Username:    u.Username,
 		SchoolEmail: u.SchoolEmail,
 		SkyNumber:   u.SkyNumber,
 	}

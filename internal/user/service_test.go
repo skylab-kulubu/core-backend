@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -188,3 +189,111 @@ func TestService_EnsureReusesDirectorySkyNumber(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestService_ReplaceAndPatchKeepSkyNumber(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	id := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
+	ctx := context.Background()
+	if _, _, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com", FirstName: "Ada", LastName: "Lovelace", SchoolEmail: "a@std.yildiz.edu.tr"}); err != nil {
+		t.Fatal(err)
+	}
+
+	replaced, err := svc.Replace(ctx, id, ProfileUpdate{
+		FirstName:  "Ada",
+		LastName:   "Byron",
+		Linkedin:   "https://linkedin.com/in/ada",
+		University: "YTÜ",
+		Faculty:    "EE",
+		Department: "CE",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.SkyNumber != "SKY-0000001" || replaced.SchoolEmail != "a@std.yildiz.edu.tr" {
+		t.Fatalf("wiped identity %+v", replaced)
+	}
+	if replaced.LastName != "Byron" || replaced.Linkedin != "https://linkedin.com/in/ada" || replaced.Department != "CE" {
+		t.Fatalf("replace %+v", replaced)
+	}
+
+	empty := ""
+	patched, err := svc.Patch(ctx, id, ProfilePatch{Linkedin: &empty, University: ptr("İTÜ")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if patched.Linkedin != "" || patched.University != "İTÜ" || patched.Faculty != "EE" || patched.SkyNumber != "SKY-0000001" {
+		t.Fatalf("patch %+v", patched)
+	}
+
+	again, _, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com", FirstName: "Ada", LastName: "Byron"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.University != "İTÜ" || again.Faculty != "EE" || again.Department != "CE" || again.SkyNumber != "SKY-0000001" {
+		t.Fatalf("ensure wiped profile %+v", again)
+	}
+}
+
+func TestService_ReplaceRequiresNames(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	id := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+	if _, _, err := svc.Ensure(context.Background(), id, Profile{Email: "a@example.com", FirstName: "Ada", LastName: "Lovelace"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Replace(context.Background(), id, ProfileUpdate{FirstName: "Ada"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestService_SetProfilePicture(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	id := uuid.MustParse("ffffffff-ffff-ffff-ffff-ffffffffffff")
+	if _, _, err := svc.Ensure(context.Background(), id, Profile{Email: "a@example.com", FirstName: "Ada", LastName: "Lovelace"}); err != nil {
+		t.Fatal(err)
+	}
+	mediaID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	got, err := svc.SetProfilePicture(context.Background(), id, mediaID, "https://cdn.example.test/pic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProfilePictureID == nil || *got.ProfilePictureID != mediaID || got.ProfilePictureURL != "https://cdn.example.test/pic" {
+		t.Fatalf("picture %+v", got)
+	}
+	again, _, err := svc.Ensure(context.Background(), id, Profile{Email: "a@example.com", FirstName: "Ada", LastName: "Lovelace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ProfilePictureURL != "https://cdn.example.test/pic" {
+		t.Fatalf("ensure wiped picture %+v", again)
+	}
+}
+
+func TestService_EnsureKeepsUsername(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	id := uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	ctx := context.Background()
+	first, _, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com", Username: "ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Username != "ada" {
+		t.Fatalf("first %+v", first)
+	}
+	second, _, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Username != "ada" {
+		t.Fatalf("wiped username %+v", second)
+	}
+}
+
+func ptr(s string) *string { return &s }

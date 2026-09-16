@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -21,12 +22,19 @@ const eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form
 
 const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id`
 
-func (s *PostgresStore) List(ctx context.Context, ownerTeam string) ([]Event, error) {
+func (s *PostgresStore) List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
 	q := `SELECT ` + eventCols + ` FROM ` + eventFrom
 	args := []any{}
+	where := make([]string, 0, 2)
 	if ownerTeam != "" {
-		q += ` WHERE e.owner_team = $1`
+		where = append(where, `e.owner_team = $1`)
 		args = append(args, ownerTeam)
+	}
+	if activeOnly {
+		where = append(where, `e.active = true`)
+	}
+	if len(where) > 0 {
+		q += ` WHERE ` + strings.Join(where, ` AND `)
 	}
 	q += ` ORDER BY e.start_date NULLS LAST, e.created_at`
 	rows, err := s.pool.Query(ctx, q, args...)
@@ -40,7 +48,10 @@ func (s *PostgresStore) List(ctx context.Context, ownerTeam string) ([]Event, er
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, e)
+		if err := s.loadImages(ctx, &e); err != nil {
+			return nil, err
+		}
+		out = append(out, emptyGallery(e))
 	}
 	return out, rows.Err()
 }
@@ -50,7 +61,13 @@ func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Event, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
-	return e, err
+	if err != nil {
+		return e, err
+	}
+	if err := s.loadImages(ctx, &e); err != nil {
+		return Event{}, err
+	}
+	return emptyGallery(e), nil
 }
 
 func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
@@ -96,6 +113,72 @@ func (s *PostgresStore) Delete(ctx context.Context, id uuid.UUID) error {
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
+	return nil
+}
+
+func (s *PostgresStore) AddImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error) {
+	if _, err := s.Get(ctx, eventID); err != nil {
+		return Event{}, err
+	}
+	for _, id := range ids {
+		if id == uuid.Nil {
+			continue
+		}
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO event_images (event_id, media_id) VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+		`, eventID, id); err != nil {
+			return Event{}, err
+		}
+	}
+	return s.Get(ctx, eventID)
+}
+
+func (s *PostgresStore) RemoveImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error) {
+	if _, err := s.Get(ctx, eventID); err != nil {
+		return Event{}, err
+	}
+	for _, id := range ids {
+		tag, err := s.pool.Exec(ctx, `DELETE FROM event_images WHERE event_id = $1 AND media_id = $2`, eventID, id)
+		if err != nil {
+			return Event{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			return Event{}, ErrNotFound
+		}
+	}
+	return s.Get(ctx, eventID)
+}
+
+func (s *PostgresStore) loadImages(ctx context.Context, e *Event) error {
+	rows, err := s.pool.Query(ctx, `
+		SELECT m.id, m.file_url
+		FROM event_images ei
+		JOIN media m ON m.id = ei.media_id
+		WHERE ei.event_id = $1
+		ORDER BY m.created_at
+	`, e.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	images := make([]GalleryImage, 0)
+	urls := make([]string, 0)
+	for rows.Next() {
+		var im GalleryImage
+		if err := rows.Scan(&im.ID, &im.URL); err != nil {
+			return err
+		}
+		images = append(images, im)
+		if im.URL != "" {
+			urls = append(urls, im.URL)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	e.Images = images
+	e.ImageURLs = urls
 	return nil
 }
 
@@ -177,6 +260,10 @@ func (s *PostgresStore) ListBySeason(ctx context.Context, seasonID uuid.UUID) ([
 			return nil, err
 		}
 		out = append(out, e)
+		if err := s.loadImages(ctx, &out[len(out)-1]); err != nil {
+			return nil, err
+		}
+		out[len(out)-1] = emptyGallery(out[len(out)-1])
 	}
 	return out, rows.Err()
 }

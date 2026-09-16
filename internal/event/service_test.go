@@ -40,7 +40,7 @@ func TestService_CreateThenPublicGet(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 
-	listed, err := svc.List(ctx, "")
+	listed, err := svc.List(ctx, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

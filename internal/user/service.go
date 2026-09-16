@@ -9,6 +9,9 @@ import (
 
 type Service interface {
 	Ensure(ctx context.Context, id uuid.UUID, profile Profile) (User, bool, error)
+	Replace(ctx context.Context, id uuid.UUID, in ProfileUpdate) (User, error)
+	Patch(ctx context.Context, id uuid.UUID, in ProfilePatch) (User, error)
+	SetProfilePicture(ctx context.Context, id uuid.UUID, mediaID uuid.UUID, url string) (User, error)
 }
 
 type service struct {
@@ -35,6 +38,7 @@ func (s *service) Ensure(ctx context.Context, id uuid.UUID, profile Profile) (Us
 		Email:       profile.Email,
 		FirstName:   profile.FirstName,
 		LastName:    profile.LastName,
+		Username:    profile.Username,
 		SchoolEmail: profile.SchoolEmail,
 		SkyNumber:   profile.SkyNumber,
 	})
@@ -63,4 +67,57 @@ func (s *service) Ensure(ctx context.Context, id uuid.UUID, profile Profile) (Us
 		}
 	}
 	return User{}, false, ErrConflict
+}
+
+func (s *service) Replace(ctx context.Context, id uuid.UUID, in ProfileUpdate) (User, error) {
+	if in.FirstName == "" || in.LastName == "" {
+		return User{}, ErrInvalid
+	}
+	existing, err := s.store.Get(ctx, id)
+	if err != nil {
+		return User{}, err
+	}
+	existing.FirstName = in.FirstName
+	existing.LastName = in.LastName
+	existing.Linkedin = in.Linkedin
+	existing.University = in.University
+	existing.Faculty = in.Faculty
+	existing.Department = in.Department
+	return s.store.UpdateProfile(ctx, existing)
+}
+
+func (s *service) Patch(ctx context.Context, id uuid.UUID, in ProfilePatch) (User, error) {
+	existing, err := s.store.Get(ctx, id)
+	if err != nil {
+		return User{}, err
+	}
+	if in.FirstName != nil && *in.FirstName != "" {
+		existing.FirstName = *in.FirstName
+	}
+	if in.LastName != nil && *in.LastName != "" {
+		existing.LastName = *in.LastName
+	}
+	if in.Linkedin != nil {
+		existing.Linkedin = *in.Linkedin
+	}
+	if in.University != nil {
+		existing.University = *in.University
+	}
+	if in.Faculty != nil {
+		existing.Faculty = *in.Faculty
+	}
+	if in.Department != nil {
+		existing.Department = *in.Department
+	}
+	return s.store.UpdateProfile(ctx, existing)
+}
+
+func (s *service) SetProfilePicture(ctx context.Context, id uuid.UUID, mediaID uuid.UUID, url string) (User, error) {
+	existing, err := s.store.Get(ctx, id)
+	if err != nil {
+		return User{}, err
+	}
+	existing.ProfilePictureID = &mediaID
+	existing.ProfilePictureURL = url
+	return s.store.UpdateProfile(ctx, existing)
 }

@@ -34,18 +34,44 @@ func NewService(competitors Store, events event.Store, az authz.Authorizer) Serv
 	return &service{competitors: competitors, events: events, authz: az}
 }
 
+func (s *service) withEvent(ctx context.Context, c Competitor) Competitor {
+	ev, err := s.events.Get(ctx, c.EventID)
+	if err != nil {
+		return c
+	}
+	res := ev.Resource()
+	c.Event = &res
+	return c
+}
+
+func (s *service) withEvents(ctx context.Context, comps []Competitor) []Competitor {
+	out := make([]Competitor, len(comps))
+	for i, c := range comps {
+		out[i] = s.withEvent(ctx, c)
+	}
+	return out
+}
+
 func (s *service) List(ctx context.Context) ([]Competitor, error) {
 	if !s.authz.Allow(authz.Principal{}, authz.Resource{Type: authz.TypeCompetitor}, authz.Read) {
 		return nil, ErrForbidden
 	}
-	return s.competitors.List(ctx)
+	comps, err := s.competitors.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.withEvents(ctx, comps), nil
 }
 
 func (s *service) Get(ctx context.Context, id uuid.UUID) (Competitor, error) {
 	if !s.authz.Allow(authz.Principal{}, authz.Resource{Type: authz.TypeCompetitor}, authz.Read) {
 		return Competitor{}, ErrForbidden
 	}
-	return s.competitors.Get(ctx, id)
+	got, err := s.competitors.Get(ctx, id)
+	if err != nil {
+		return Competitor{}, err
+	}
+	return s.withEvent(ctx, got), nil
 }
 
 func (s *service) Create(ctx context.Context, p authz.Principal, in CreateInput) (Competitor, error) {
@@ -77,12 +103,16 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in CreateInput)
 	if p.ID == in.UserID.String() {
 		score = nil
 	}
-	return s.competitors.Create(ctx, Competitor{
+	created, err := s.competitors.Create(ctx, Competitor{
 		UserID:   in.UserID,
 		EventID:  in.EventID,
 		Score:    score,
 		IsWinner: in.IsWinner,
 	})
+	if err != nil {
+		return Competitor{}, err
+	}
+	return s.withEvent(ctx, created), nil
 }
 
 func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, in UpdateInput) (Competitor, error) {
@@ -120,7 +150,11 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	existing.EventID = in.EventID
 	existing.Score = in.Score
 	existing.IsWinner = in.IsWinner
-	return s.competitors.Update(ctx, existing)
+	updated, err := s.competitors.Update(ctx, existing)
+	if err != nil {
+		return Competitor{}, err
+	}
+	return s.withEvent(ctx, updated), nil
 }
 
 func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error {
@@ -150,7 +184,11 @@ func (s *service) Mine(ctx context.Context, p authz.Principal) ([]Competitor, er
 	if err != nil {
 		return nil, ErrInvalid
 	}
-	return s.competitors.ListByUser(ctx, userID)
+	comps, err := s.competitors.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return s.withEvents(ctx, comps), nil
 }
 
 func (s *service) ListByEvent(ctx context.Context, eventID uuid.UUID) ([]Competitor, error) {
@@ -163,14 +201,22 @@ func (s *service) ListByEvent(ctx context.Context, eventID uuid.UUID) ([]Competi
 		}
 		return nil, err
 	}
-	return s.competitors.ListByEvent(ctx, eventID)
+	comps, err := s.competitors.ListByEvent(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	return s.withEvents(ctx, comps), nil
 }
 
 func (s *service) ListByUser(ctx context.Context, userID uuid.UUID) ([]Competitor, error) {
 	if !s.authz.Allow(authz.Principal{}, authz.Resource{Type: authz.TypeCompetitor}, authz.Read) {
 		return nil, ErrForbidden
 	}
-	return s.competitors.ListByUser(ctx, userID)
+	comps, err := s.competitors.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return s.withEvents(ctx, comps), nil
 }
 
 func (s *service) ListByOwnerTeam(ctx context.Context, ownerTeam string) ([]Competitor, error) {
@@ -180,7 +226,11 @@ func (s *service) ListByOwnerTeam(ctx context.Context, ownerTeam string) ([]Comp
 	if ownerTeam == "" {
 		return nil, ErrInvalid
 	}
-	return s.competitors.ListByOwnerTeam(ctx, ownerTeam)
+	comps, err := s.competitors.ListByOwnerTeam(ctx, ownerTeam)
+	if err != nil {
+		return nil, err
+	}
+	return s.withEvents(ctx, comps), nil
 }
 
 func (s *service) Winner(ctx context.Context, eventID uuid.UUID) (Competitor, error) {
@@ -193,7 +243,11 @@ func (s *service) Winner(ctx context.Context, eventID uuid.UUID) (Competitor, er
 		}
 		return Competitor{}, err
 	}
-	return s.competitors.Winner(ctx, eventID)
+	got, err := s.competitors.Winner(ctx, eventID)
+	if err != nil {
+		return Competitor{}, err
+	}
+	return s.withEvent(ctx, got), nil
 }
 
 func (s *service) Leaderboard(ctx context.Context, eventType string, seasonID *uuid.UUID) ([]LeaderboardEntry, error) {
