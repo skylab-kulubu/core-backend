@@ -27,6 +27,7 @@ type Person struct {
 	LastName    string    `json:"lastName"`
 	Username    string    `json:"username,omitempty"`
 	SchoolEmail string    `json:"schoolEmail,omitempty"`
+	SkyNumber   string    `json:"skyNumber,omitempty"`
 }
 
 type ClientRole struct {
@@ -61,4 +62,6 @@ type Directory interface {
 	AddUserExtraRole(ctx context.Context, userID uuid.UUID, role ClientRole) error
 	RemoveUserExtraRole(ctx context.Context, userID uuid.UUID, role ClientRole) error
 	LogoutAllSessions(ctx context.Context, userID uuid.UUID) error
+	ReadSkyNumber(ctx context.Context, userID uuid.UUID) (string, error)
+	WriteSkyNumber(ctx context.Context, userID uuid.UUID, skyNumber string) error
 }

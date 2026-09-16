@@ -633,3 +633,31 @@ func (k *Keycloak) clientUUID(ctx context.Context, token, clientID string) (stri
 	}
 	return "", ErrNotFound
 }
+
+func (k *Keycloak) ReadSkyNumber(ctx context.Context, userID uuid.UUID) (string, error) {
+	p, err := k.GetUser(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	return p.SkyNumber, nil
+}
+
+func (k *Keycloak) WriteSkyNumber(ctx context.Context, userID uuid.UUID, skyNumber string) error {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	u, err := k.gc.GetUserByID(ctx, token, k.realm, userID.String())
+	if err != nil {
+		return mapKCErr(err)
+	}
+	attrs := map[string][]string{}
+	if u.Attributes != nil {
+		for key, vals := range *u.Attributes {
+			attrs[key] = vals
+		}
+	}
+	attrs["skyNumber"] = []string{skyNumber}
+	u.Attributes = &attrs
+	return mapKCErr(k.gc.UpdateUser(ctx, token, k.realm, *u))
+}

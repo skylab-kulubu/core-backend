@@ -12,6 +12,7 @@ type User struct {
 	FirstName   string    `json:"firstName"`
 	LastName    string    `json:"lastName"`
 	SchoolEmail string    `json:"schoolEmail,omitempty"`
+	SkyNumber   string    `json:"skyNumber,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
@@ -21,4 +22,5 @@ type Profile struct {
 	FirstName   string
 	LastName    string
 	SchoolEmail string
+	SkyNumber   string
 }

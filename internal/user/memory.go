@@ -37,11 +37,21 @@ func (s *MemoryStore) Upsert(_ context.Context, u User) (User, bool, error) {
 		if u.SchoolEmail == "" {
 			u.SchoolEmail = existing.SchoolEmail
 		}
+		if u.SkyNumber == "" {
+			u.SkyNumber = existing.SkyNumber
+		}
 		u.CreatedAt = existing.CreatedAt
 		u.UpdatedAt = now
 	} else {
 		u.CreatedAt = now
 		u.UpdatedAt = now
+	}
+	if u.SkyNumber != "" {
+		for id, other := range s.byID {
+			if id != u.ID && other.SkyNumber == u.SkyNumber {
+				return User{}, false, ErrConflict
+			}
+		}
 	}
 	s.byID[u.ID] = u
 	return u, !existed, nil
@@ -58,6 +68,18 @@ func (s *MemoryStore) Search(_ context.Context, q string) ([]User, error) {
 		}
 	}
 	return out, nil
+}
+
+func (s *MemoryStore) NextSkyNumber(_ context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	max := 0
+	for _, u := range s.byID {
+		if n, ok := parseSkyNumber(u.SkyNumber); ok && n > max {
+			max = n
+		}
+	}
+	return FormatSkyNumber(max + 1)
 }
 
 func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) error {
@@ -77,6 +99,7 @@ func userMatches(u User, needle string) bool {
 	hay := []string{
 		u.Email,
 		u.SchoolEmail,
+		u.SkyNumber,
 		u.FirstName,
 		u.LastName,
 		strings.TrimSpace(u.FirstName + " " + u.LastName),

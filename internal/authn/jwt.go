@@ -45,6 +45,7 @@ func ParseAccessToken(token string) (Identity, error) {
 	given, _ := claims["given_name"].(string)
 	family, _ := claims["family_name"].(string)
 	school, _ := claims["school_email"].(string)
+	sky := claimString(claims, "sky_number", "skyNumber")
 	return Identity{
 		ID: id,
 		Profile: user.Profile{
@@ -52,6 +53,7 @@ func ParseAccessToken(token string) (Identity, error) {
 			FirstName:   given,
 			LastName:    family,
 			SchoolEmail: school,
+			SkyNumber:   sky,
 		},
 		Groups: groupsFromClaims(claims),
 		Roles:  rolesFromClaims(claims),
@@ -112,4 +114,14 @@ func rolesFromClaims(claims map[string]any) []string {
 		}
 	}
 	return out
+}
+
+func claimString(claims map[string]any, keys ...string) string {
+	for _, k := range keys {
+		s, ok := claims[k].(string)
+		if ok && strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
 }

@@ -44,6 +44,13 @@ func personFrom(u *gocloak.User) (Person, error) {
 	if u.Username != nil {
 		p.Username = *u.Username
 	}
+	attrs := firstAttrs(u.Attributes)
+	if attrs != nil {
+		p.SkyNumber = attrs["skyNumber"]
+		if p.SkyNumber == "" {
+			p.SkyNumber = attrs["sky_number"]
+		}
+	}
 	return p, nil
 }
 
