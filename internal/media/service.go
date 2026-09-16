@@ -98,7 +98,7 @@ func (s *service) Get(ctx context.Context, id uuid.UUID) (Media, error) {
 }
 
 func (s *service) List(ctx context.Context, p authz.Principal) ([]Media, error) {
-	if p.ID == "" {
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.List) {
 		return nil, ErrForbidden
 	}
 	items, err := s.media.List(ctx)

@@ -124,7 +124,12 @@ func TestService_ListRequiresAuthAndDeleteIsPrivileged(t *testing.T) {
 	if !errors.Is(err, media.ErrForbidden) {
 		t.Fatalf("anon list %v", err)
 	}
-	listed, err := svc.List(context.Background(), member)
+	_, err = svc.List(context.Background(), member)
+	if !errors.Is(err, media.ErrForbidden) {
+		t.Fatalf("member list %v", err)
+	}
+	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+	listed, err := svc.List(context.Background(), yk)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +140,6 @@ func TestService_ListRequiresAuthAndDeleteIsPrivileged(t *testing.T) {
 	if !errors.Is(err, media.ErrForbidden) {
 		t.Fatalf("member delete %v", err)
 	}
-	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
 	if err := svc.Delete(context.Background(), yk, created.ID); err != nil {
 		t.Fatal(err)
 	}

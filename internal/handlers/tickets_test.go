@@ -342,3 +342,72 @@ func TestListTicketsQueryHTTP(t *testing.T) {
 		t.Fatalf("empty query %d", resp.StatusCode)
 	}
 }
+
+func TestListTicketsQuerySelfUserAndVictimEmailIsIntersection(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	users := user.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	self := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	victim := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	if _, _, err := user.NewService(users).Ensure(t.Context(), self, user.Profile{Email: "self@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := user.NewService(users).Ensure(t.Context(), victim, user.Profile{Email: "victim@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	ownTk, err := tickets.Create(t.Context(), ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &self})
+	if err != nil {
+		t.Fatal(err)
+	}
+	victimTk, err := tickets.Create(t.Context(), ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &victim})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	member := ticketApp(t, authn.Identity{
+		ID:      self,
+		Profile: user.Profile{Email: "self@example.com"},
+		Groups:  []string{"/UYELER/ARGE/WEBLAB"},
+	}, events, tickets, users)
+	path := "/v1/tickets?userId=" + self.String() + "&email=victim@example.com"
+	resp, err := member.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var listed []ticket.Ticket
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range listed {
+		if tk.ID == victimTk.ID || (tk.OwnerID != nil && *tk.OwnerID == victim) {
+			t.Fatalf("leaked victim ticket %+v", listed)
+		}
+	}
+	if len(listed) != 0 {
+		t.Fatalf("expected empty intersection, got %+v", listed)
+	}
+
+	bothOwn := "/v1/tickets?userId=" + self.String() + "&email=self@example.com"
+	resp, err = member.Test(httptest.NewRequest(fiber.MethodGet, bothOwn, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("own both %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != ownTk.ID {
+		t.Fatalf("own intersection %+v", listed)
+	}
+}

@@ -81,9 +81,11 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/teams/:team/leaders", teams.Leaders)
 
 	app.Get("/v1/events", events.List)
+	app.Get("/v1/events/active", events.ListActive)
 	app.Post("/v1/events", events.Create)
 	app.Get("/v1/events/:id", events.Get)
 	app.Put("/v1/events/:id", events.Update)
+	app.Patch("/v1/events/:id", events.Update)
 	app.Delete("/v1/events/:id", events.Delete)
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)

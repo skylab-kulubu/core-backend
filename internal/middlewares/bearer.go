@@ -8,15 +8,12 @@ import (
 )
 
 func Bearer(parse func(string) (authn.Identity, error)) fiber.Handler {
-	if parse == nil {
-		parse = authn.ParseAccessToken
-	}
 	return func(c fiber.Ctx) error {
 		header := c.Get(fiber.HeaderAuthorization)
 		if header == "" {
 			return c.Next()
 		}
-		if !strings.HasPrefix(header, "Bearer ") {
+		if parse == nil || !strings.HasPrefix(header, "Bearer ") {
 			return fiber.ErrUnauthorized
 		}
 		ident, err := parse(strings.TrimPrefix(header, "Bearer "))

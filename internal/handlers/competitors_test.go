@@ -85,13 +85,12 @@ func TestCompetitorSelfRegisterAndPublicReadHTTP(t *testing.T) {
 		t.Fatalf("me status %d", resp.StatusCode)
 	}
 
-	public := competitorApp(t, authn.Identity{}, events, comps)
-	resp, err = public.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/"+ev.ID.String()+"/competitors", nil))
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/"+ev.ID.String()+"/competitors", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != fiber.StatusOK {
-		t.Fatalf("list status %d", resp.StatusCode)
+		t.Fatalf("own list status %d", resp.StatusCode)
 	}
 	var listed []competitor.Competitor
 	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
@@ -99,6 +98,15 @@ func TestCompetitorSelfRegisterAndPublicReadHTTP(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].ID != created.ID {
 		t.Fatalf("listed %+v", listed)
+	}
+
+	public := competitorApp(t, authn.Identity{}, events, comps)
+	resp, err = public.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/"+ev.ID.String()+"/competitors", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("anon list %d", resp.StatusCode)
 	}
 }
 
@@ -151,12 +159,28 @@ func TestCompetitorStaffScoreAndForbiddenHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("anon winner %d", resp.StatusCode)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/"+ev.ID.String()+"/competitors/winner", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != fiber.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("winner status %d body %s", resp.StatusCode, body)
 	}
 
 	resp, err = public.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/leaderboard/type/WEBLAB", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("anon leaderboard %d", resp.StatusCode)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/leaderboard/type/WEBLAB", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,5 +193,102 @@ func TestCompetitorStaffScoreAndForbiddenHTTP(t *testing.T) {
 	}
 	if len(board) != 1 || board[0].UserID != userID || board[0].TotalScore != 9 || board[0].Rank != 1 {
 		t.Fatalf("board %+v", board)
+	}
+}
+
+func TestCompetitorDumpAndUserRoutesRequireAuthz(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	comps := competitor.NewMemoryStore(events)
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", Active: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	other := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	created, err := comps.Create(t.Context(), competitor.Competitor{UserID: owner, EventID: ev.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := comps.Create(t.Context(), competitor.Competitor{UserID: other, EventID: ev.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	anon := competitorApp(t, authn.Identity{}, events, comps)
+	resp, err := anon.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("anon dump %d", resp.StatusCode)
+	}
+	resp, err = anon.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/"+created.ID.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("anon get %d", resp.StatusCode)
+	}
+	resp, err = anon.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/user/"+owner.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("anon user %d", resp.StatusCode)
+	}
+
+	member := competitorApp(t, authn.Identity{
+		ID:     uuid.MustParse("33333333-3333-3333-3333-333333333333"),
+		Groups: []string{"/UYELER/ARGE/SKYSEC"},
+	}, events, comps)
+	resp, err = member.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("member dump %d", resp.StatusCode)
+	}
+	resp, err = member.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/user/"+owner.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("member other user %d", resp.StatusCode)
+	}
+
+	self := competitorApp(t, authn.Identity{ID: owner}, events, comps)
+	resp, err = self.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/user/"+owner.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("self user %d", resp.StatusCode)
+	}
+	var mine []competitor.Competitor
+	if err := json.NewDecoder(resp.Body).Decode(&mine); err != nil {
+		t.Fatal(err)
+	}
+	if len(mine) != 1 || mine[0].UserID != owner {
+		t.Fatalf("mine %+v", mine)
+	}
+
+	yk := competitorApp(t, authn.Identity{
+		ID:     uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+		Groups: []string{"/UYELER/YK"},
+	}, events, comps)
+	resp, err = yk.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("yk dump %d %s", resp.StatusCode, body)
+	}
+	var all []competitor.Competitor
+	if err := json.NewDecoder(resp.Body).Decode(&all); err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all %+v", all)
 	}
 }

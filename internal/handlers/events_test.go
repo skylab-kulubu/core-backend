@@ -27,9 +27,11 @@ func eventApp(t *testing.T, ident authn.Identity, store event.Store) *fiber.App 
 		return c.Next()
 	})
 	app.Get("/v1/events", h.List)
+	app.Get("/v1/events/active", h.ListActive)
 	app.Get("/v1/events/:id", h.Get)
 	app.Post("/v1/events", h.Create)
 	app.Put("/v1/events/:id", h.Update)
+	app.Patch("/v1/events/:id", h.Update)
 	app.Delete("/v1/events/:id", h.Delete)
 	app.Post("/v1/events/:id/images", h.AddImages)
 	app.Delete("/v1/events/:id/images", h.RemoveImages)
@@ -239,12 +241,19 @@ func TestEventWrongTeamProblemJSON(t *testing.T) {
 	if !strings.Contains(ct, "application/problem+json") {
 		t.Fatalf("content-type %s", ct)
 	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
+	var problem map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), `"status":403`) {
-		t.Fatalf("body %s", body)
+	if problem["type"] != "about:blank" || problem["title"] != "Forbidden" || problem["detail"] != "Forbidden" {
+		t.Fatalf("problem %+v", problem)
+	}
+	if status, ok := problem["status"].(float64); !ok || int(status) != 403 {
+		t.Fatalf("status %+v", problem["status"])
+	}
+	instance, _ := problem["instance"].(string)
+	if instance != "/v1/events" {
+		t.Fatalf("instance %q", instance)
 	}
 }
 
@@ -327,6 +336,135 @@ func TestEventCreateEmptyOwnerPrivileged(t *testing.T) {
 	}
 	if created.OwnerTeam != "" {
 		t.Fatalf("owner %q", created.OwnerTeam)
+	}
+}
+
+func TestEventAnonymousListHidesInactive(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	app := eventApp(t, weblabLeader(), store)
+	for _, body := range []string{
+		`{"name":"Live","location":"YTÜ","ownerTeam":"WEBLAB","active":true}`,
+		`{"name":"Old","location":"YTÜ","ownerTeam":"WEBLAB","active":false}`,
+	} {
+		req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if resp, err := app.Test(req); err != nil || resp.StatusCode != fiber.StatusCreated {
+			t.Fatalf("create %v", err)
+		}
+	}
+
+	public := eventApp(t, authn.Identity{}, store)
+	resp, err := public.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("anon list %d", resp.StatusCode)
+	}
+	var listed []event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Name != "Live" || !listed[0].Active {
+		t.Fatalf("anon listed %+v", listed)
+	}
+
+	resp, err = public.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/active", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("active route %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Name != "Live" {
+		t.Fatalf("active listed %+v", listed)
+	}
+
+	staff := eventApp(t, weblabLeader(), store)
+	resp, err = staff.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("staff listed %+v", listed)
+	}
+}
+
+func TestEventPatchSameAuthzAndBodyAsPut(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	app := eventApp(t, weblabLeader(), store)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB","active":true}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create %d %s", resp.StatusCode, body)
+	}
+	var created event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	patch := httptest.NewRequest(fiber.MethodPatch, "/v1/events/"+created.ID.String(), strings.NewReader(
+		`{"name":"Hack 2","location":"Davutpaşa","ownerTeam":"WEBLAB","active":true}`,
+	))
+	patch.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("leader patch %d %s", resp.StatusCode, body)
+	}
+	var updated event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "Hack 2" || updated.Location != "Davutpaşa" {
+		t.Fatalf("patched %+v", updated)
+	}
+
+	member := eventApp(t, authn.Identity{
+		ID:     uuid.MustParse("33333333-3333-3333-3333-333333333333"),
+		Groups: []string{"/UYELER/ARGE/WEBLAB"},
+	}, store)
+	memberPatch := httptest.NewRequest(fiber.MethodPatch, "/v1/events/"+created.ID.String(), strings.NewReader(
+		`{"name":"Nope","location":"YTÜ","ownerTeam":"WEBLAB"}`,
+	))
+	memberPatch.Header.Set("Content-Type", "application/json")
+	resp, err = member.Test(memberPatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("member patch %d", resp.StatusCode)
+	}
+
+	public := eventApp(t, authn.Identity{}, store)
+	anon := httptest.NewRequest(fiber.MethodPatch, "/v1/events/"+created.ID.String(), strings.NewReader(
+		`{"name":"Nope","location":"YTÜ","ownerTeam":"WEBLAB"}`,
+	))
+	anon.Header.Set("Content-Type", "application/json")
+	resp, err = public.Test(anon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("anon patch %d", resp.StatusCode)
 	}
 }
 
