@@ -13,7 +13,8 @@ import (
 type Service interface {
 	ListGroups(ctx context.Context, p authz.Principal) ([]Group, error)
 	GetGroup(ctx context.Context, p authz.Principal, groupRef string) (Group, error)
-	UpdateGroup(ctx context.Context, p authz.Principal, groupRef string, attrs map[string]string) (Group, error)
+	CreateGroup(ctx context.Context, p authz.Principal, parentRef, name string) (Group, error)
+	UpdateGroup(ctx context.Context, p authz.Principal, groupRef, name string, attrs map[string]string) (Group, error)
 	Members(ctx context.Context, p authz.Principal, groupRef string) ([]Person, error)
 	AddMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
 	RemoveMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
@@ -25,6 +26,7 @@ type Service interface {
 	SetGroupClientRoles(ctx context.Context, p authz.Principal, groupRef string, roles []ClientRole) error
 	AddUserExtraRole(ctx context.Context, p authz.Principal, id uuid.UUID, role ClientRole) error
 	RemoveUserExtraRole(ctx context.Context, p authz.Principal, id uuid.UUID, role ClientRole) error
+	LogoutAllSessions(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	ListPublicTeams(ctx context.Context) ([]PublicTeam, error)
 	PublicMembers(ctx context.Context, team string) (Roster, error)
 	PublicLeaders(ctx context.Context, team string) (Roster, error)
@@ -61,7 +63,18 @@ func (s *service) GetGroup(ctx context.Context, p authz.Principal, groupRef stri
 	return s.dir.GetGroup(ctx, groupRef)
 }
 
-func (s *service) UpdateGroup(ctx context.Context, p authz.Principal, groupRef string, attrs map[string]string) (Group, error) {
+func (s *service) CreateGroup(ctx context.Context, p authz.Principal, parentRef, name string) (Group, error) {
+	if err := s.allow(p, authz.TypeGroup, authz.Create); err != nil {
+		return Group{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Group{}, ErrInvalid
+	}
+	return s.dir.CreateGroup(ctx, parentRef, name)
+}
+
+func (s *service) UpdateGroup(ctx context.Context, p authz.Principal, groupRef, name string, attrs map[string]string) (Group, error) {
 	if err := s.allow(p, authz.TypeGroup, authz.Update); err != nil {
 		return Group{}, err
 	}
@@ -69,7 +82,12 @@ func (s *service) UpdateGroup(ctx context.Context, p authz.Principal, groupRef s
 	if err != nil {
 		return Group{}, err
 	}
-	g.Attributes = attrs
+	if name != "" {
+		g.Name = name
+	}
+	if attrs != nil {
+		g.Attributes = attrs
+	}
 	return s.dir.UpdateGroup(ctx, g)
 }
 
@@ -200,6 +218,16 @@ func (s *service) CreateUser(ctx context.Context, p authz.Principal, in Person) 
 		return Person{}, err
 	}
 	return created, nil
+}
+
+func (s *service) LogoutAllSessions(ctx context.Context, p authz.Principal, id uuid.UUID) error {
+	if err := s.allow(p, authz.TypeUser, authz.Update); err != nil {
+		return err
+	}
+	if _, err := s.dir.GetUser(ctx, id); err != nil {
+		return err
+	}
+	return s.dir.LogoutAllSessions(ctx, id)
 }
 
 func (s *service) DeleteUser(ctx context.Context, p authz.Principal, id uuid.UUID) error {

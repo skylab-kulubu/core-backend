@@ -123,7 +123,7 @@ func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
 	switch action {
 	case Create, ReadMe:
 		return authenticated
-	case Validate:
+	case Read, Validate:
 		if a.isPrivileged(p) {
 			return true
 		}

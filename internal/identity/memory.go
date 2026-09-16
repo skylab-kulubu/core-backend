@@ -102,6 +102,23 @@ func (m *Memory) UpdateGroup(_ context.Context, g Group) (Group, error) {
 	return existing, nil
 }
 
+func (m *Memory) CreateGroup(_ context.Context, parentRef, name string) (Group, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("CreateGroup")
+	path := "/" + name
+	if parentRef != "" {
+		parent, ok := m.resolveLocked(parentRef)
+		if !ok {
+			return Group{}, ErrNotFound
+		}
+		path = parent.Path + "/" + name
+	}
+	g := Group{ID: uuid.New().String(), Name: name, Path: path}
+	m.groups[g.ID] = g
+	return g, nil
+}
+
 func (m *Memory) Subgroups(_ context.Context, groupID string) ([]Group, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -305,5 +322,15 @@ func (m *Memory) RemoveUserExtraRole(_ context.Context, userID uuid.UUID, role C
 		kept = append(kept, existing)
 	}
 	m.userRoles[userID] = kept
+	return nil
+}
+
+func (m *Memory) LogoutAllSessions(_ context.Context, userID uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("LogoutAllSessions")
+	if _, ok := m.people[userID]; !ok {
+		return ErrNotFound
+	}
 	return nil
 }

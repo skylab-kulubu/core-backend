@@ -240,7 +240,7 @@ func TestService_GetGroupAndUpdateAttributes(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 
-	updated, err := svc.UpdateGroup(ctx, privileged(), "g-weblab", map[string]string{"public_listing": "true"})
+	updated, err := svc.UpdateGroup(ctx, privileged(), "g-weblab", "", map[string]string{"public_listing": "true"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,6 +249,51 @@ func TestService_GetGroupAndUpdateAttributes(t *testing.T) {
 	}
 	if updated.Attributes["public_listing"] != "true" {
 		t.Fatalf("attrs %+v", updated.Attributes)
+	}
+}
+
+func TestService_CreateGroupAndRename(t *testing.T) {
+	t.Parallel()
+	dir, _, svc := setup(t)
+	ctx := context.Background()
+	dir.PutGroup(identity.Group{ID: "g-arge", Name: "ARGE", Path: "/UYELER/ARGE"})
+
+	created, err := svc.CreateGroup(ctx, privileged(), "g-arge", "WEBLAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Name != "WEBLAB" || created.Path != "/UYELER/ARGE/WEBLAB" {
+		t.Fatalf("created %+v", created)
+	}
+
+	renamed, err := svc.UpdateGroup(ctx, privileged(), created.ID, "WEBLAB-X", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Name != "WEBLAB-X" {
+		t.Fatalf("renamed %+v", renamed)
+	}
+
+	if _, err := svc.CreateGroup(ctx, member(), "", "X"); !errors.Is(err, identity.ErrForbidden) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestService_LogoutAllSessions(t *testing.T) {
+	t.Parallel()
+	dir, _, svc := setup(t)
+	ctx := context.Background()
+	id := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: id, Email: "ada@example.com"})
+	dir.Ops = nil
+	if err := svc.LogoutAllSessions(ctx, privileged(), id); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(dir.Ops, "LogoutAllSessions") {
+		t.Fatalf("ops %+v", dir.Ops)
+	}
+	if err := svc.LogoutAllSessions(ctx, member(), id); !errors.Is(err, identity.ErrForbidden) {
+		t.Fatalf("got %v", err)
 	}
 }
 

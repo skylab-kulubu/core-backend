@@ -27,6 +27,7 @@ func identityApp(t *testing.T, ident authn.Identity, dir *identity.Memory, store
 		return c.Next()
 	})
 	app.Get("/v1/groups", h.ListGroups)
+	app.Post("/v1/groups", h.CreateGroup)
 	app.Get("/v1/groups/:groupId", h.GetGroup)
 	app.Patch("/v1/groups/:groupId", h.UpdateGroup)
 	app.Get("/v1/groups/:groupId/members", h.Members)
@@ -38,6 +39,7 @@ func identityApp(t *testing.T, ident authn.Identity, dir *identity.Memory, store
 	app.Get("/v1/users/:id", h.GetUser)
 	app.Post("/v1/users", h.CreateUser)
 	app.Delete("/v1/users/:id", h.DeleteUser)
+	app.Post("/v1/users/:id/logout", h.LogoutAllSessions)
 	app.Post("/v1/users/:id/client-roles", h.AddUserExtraRole)
 	app.Delete("/v1/users/:id/client-roles", h.RemoveUserExtraRole)
 	return app
@@ -206,5 +208,53 @@ func TestUserCardAndGroupRolesHTTP(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("group status %d", resp.StatusCode)
+	}
+}
+
+func TestCreateGroupAndLogout(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	dir.PutGroup(identity.Group{ID: "g-arge", Name: "ARGE", Path: "/UYELER/ARGE"})
+	id := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: id, Email: "ada@example.com"})
+	app := identityApp(t, ykIdent(), dir, user.NewMemoryStore())
+
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/groups", strings.NewReader(`{"name":"WEBLAB","parentId":"g-arge"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var created identity.Group
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Path != "/UYELER/ARGE/WEBLAB" {
+		t.Fatalf("created %+v", created)
+	}
+
+	req = httptest.NewRequest(fiber.MethodPatch, "/v1/groups/"+created.ID, strings.NewReader(`{"name":"WEBLAB-X"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("rename status %d body %s", resp.StatusCode, body)
+	}
+
+	req = httptest.NewRequest(fiber.MethodPost, "/v1/users/"+id.String()+"/logout", nil)
+	resp, err = app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("logout status %d body %s", resp.StatusCode, body)
 	}
 }

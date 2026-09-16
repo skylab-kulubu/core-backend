@@ -29,6 +29,7 @@ func ticketApp(t *testing.T, ident authn.Identity, events event.Store, tickets t
 	})
 	app.Post("/v1/events/:eventId/applications/me", h.Apply)
 	app.Post("/v1/events/:eventId/applications/guest", h.ApplyGuest)
+	app.Get("/v1/events/:eventId/tickets", h.ListByEvent)
 	app.Get("/v1/tickets/me", h.Mine)
 	app.Post("/v1/tickets/:ticketId/event-days/:eventDayId/check-in", h.CheckIn)
 	return app
@@ -135,5 +136,56 @@ func TestCheckInHTTPForbiddenAndOK(t *testing.T) {
 	if resp.StatusCode != fiber.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("leader status %d body %s", resp.StatusCode, body)
+	}
+}
+
+func TestListEventTicketsHTTP(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applicant := authn.Identity{ID: uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")}
+	app := ticketApp(t, applicant, events, tickets)
+	applyReq := httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/applications/me", nil)
+	resp, err := app.Test(applyReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("apply status %d body %s", resp.StatusCode, body)
+	}
+
+	member := authn.Identity{ID: uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	app = ticketApp(t, member, events, tickets)
+	listPath := "/v1/events/" + ev.ID.String() + "/tickets"
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, listPath, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("member status %d body %s", resp.StatusCode, body)
+	}
+
+	leader := authn.Identity{ID: uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc"), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	app = ticketApp(t, leader, events, tickets)
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, listPath, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("leader status %d body %s", resp.StatusCode, body)
+	}
+	var listed []ticket.Ticket
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].EventID != ev.ID {
+		t.Fatalf("listed %+v", listed)
 	}
 }

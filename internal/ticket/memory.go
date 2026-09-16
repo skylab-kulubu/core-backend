@@ -70,6 +70,18 @@ func (s *MemoryStore) ListByOwner(_ context.Context, ownerID uuid.UUID) ([]Ticke
 	return out, nil
 }
 
+func (s *MemoryStore) ListByEvent(_ context.Context, eventID uuid.UUID) ([]Ticket, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Ticket, 0)
+	for _, t := range s.byID {
+		if t.EventID == eventID {
+			out = append(out, s.withCheckInsLocked(t))
+		}
+	}
+	return out, nil
+}
+
 func (s *MemoryStore) ExistsOwnerEvent(_ context.Context, ownerID, eventID uuid.UUID) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

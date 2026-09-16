@@ -36,6 +36,37 @@ services:
       timeout: 3s
       retries: 10
 
+  core:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    hostname: core
+    profiles: ["core"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://super_skylab:${SUPER_SKYLAB_DB_PASSWORD:-postgres}@postgres:5432/super_skylab?sslmode=disable
+      PORT: "8080"
+      KEYCLOAK_URL: ${KEYCLOAK_URL:-}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-e-skylab}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
+      KEYCLOAK_JWKS_URL: ${KEYCLOAK_JWKS_URL:-}
+      CDN_BASE: ${CDN_BASE:-}
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      R2_ACCESS_KEY: ${R2_ACCESS_KEY:-}
+      R2_SECRET_KEY: ${R2_SECRET_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/v1/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
 volumes:
   postgres_data:
   redis_data:

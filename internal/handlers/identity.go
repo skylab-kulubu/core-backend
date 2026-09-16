@@ -75,18 +75,38 @@ func (h *IdentityHandler) GetGroup(c fiber.Ctx) error {
 	return c.JSON(g)
 }
 
+func (h *IdentityHandler) CreateGroup(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	var body struct {
+		Name     string `json:"name"`
+		ParentID string `json:"parentId"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	created, err := h.svc.CreateGroup(c.Context(), p, body.ParentID, body.Name)
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(created)
+}
+
 func (h *IdentityHandler) UpdateGroup(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
 		return identityError(c, err)
 	}
 	var body struct {
+		Name       string            `json:"name"`
 		Attributes map[string]string `json:"attributes"`
 	}
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	updated, err := h.svc.UpdateGroup(c.Context(), p, c.Params("groupId"), body.Attributes)
+	updated, err := h.svc.UpdateGroup(c.Context(), p, c.Params("groupId"), body.Name, body.Attributes)
 	if err != nil {
 		return identityError(c, err)
 	}
@@ -258,6 +278,21 @@ func (h *IdentityHandler) DeleteUser(c fiber.Ctx) error {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	if err := h.svc.DeleteUser(c.Context(), p, id); err != nil {
+		return identityError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (h *IdentityHandler) LogoutAllSessions(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if err := h.svc.LogoutAllSessions(c.Context(), p, id); err != nil {
 		return identityError(c, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)

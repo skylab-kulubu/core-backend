@@ -78,6 +78,28 @@ func (s *PostgresStore) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]T
 	return out, rows.Err()
 }
 
+func (s *PostgresStore) ListByEvent(ctx context.Context, eventID uuid.UUID) ([]Ticket, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+ticketCols+` FROM tickets WHERE event_id = $1 ORDER BY created_at`, eventID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Ticket, 0)
+	for rows.Next() {
+		t, err := scanTicket(rows)
+		if err != nil {
+			return nil, err
+		}
+		checkIns, err := s.checkInsFor(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		t.CheckIns = checkIns
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) ExistsOwnerEvent(ctx context.Context, ownerID, eventID uuid.UUID) (bool, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `

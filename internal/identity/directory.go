@@ -43,6 +43,7 @@ type UserCard struct {
 type Directory interface {
 	ListGroups(ctx context.Context) ([]Group, error)
 	GetGroup(ctx context.Context, idOrPath string) (Group, error)
+	CreateGroup(ctx context.Context, parentRef, name string) (Group, error)
 	UpdateGroup(ctx context.Context, g Group) (Group, error)
 	Subgroups(ctx context.Context, groupID string) ([]Group, error)
 	Members(ctx context.Context, groupID string) ([]Person, error)
@@ -58,4 +59,5 @@ type Directory interface {
 	UserExtraRoles(ctx context.Context, userID uuid.UUID) ([]ClientRole, error)
 	AddUserExtraRole(ctx context.Context, userID uuid.UUID, role ClientRole) error
 	RemoveUserExtraRole(ctx context.Context, userID uuid.UUID, role ClientRole) error
+	LogoutAllSessions(ctx context.Context, userID uuid.UUID) error
 }

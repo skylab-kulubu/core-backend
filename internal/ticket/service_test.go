@@ -141,6 +141,31 @@ func TestService_CheckInForbiddenForMember(t *testing.T) {
 	}
 }
 
+func TestService_ListByEventLeaderAndMember(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+	userID := uuid.MustParse("55555555-5555-5555-5555-555555555555")
+	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	got, err := svc.ListByEvent(ctx, leader, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != tk.ID {
+		t.Fatalf("leader list %+v", got)
+	}
+	member := authz.Principal{ID: "mem", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	_, err = svc.ListByEvent(ctx, member, ev.ID)
+	if !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("member got %v", err)
+	}
+}
+
 func TestService_CheckInWrongEventDay(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)

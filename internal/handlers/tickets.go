@@ -86,6 +86,22 @@ func (h *TicketHandler) Mine(c fiber.Ctx) error {
 	return c.JSON(tickets)
 }
 
+func (h *TicketHandler) ListByEvent(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	eventID, err := uuid.Parse(c.Params("eventId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	tickets, err := h.svc.ListByEvent(c.Context(), p, eventID)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.JSON(tickets)
+}
+
 func (h *TicketHandler) CheckIn(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {

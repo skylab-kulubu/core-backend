@@ -13,6 +13,7 @@ type Service interface {
 	Apply(ctx context.Context, p authz.Principal, eventID uuid.UUID) (Ticket, error)
 	ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo) (Ticket, error)
 	Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
+	ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Ticket, error)
 	CheckIn(ctx context.Context, p authz.Principal, ticketID, eventDayID uuid.UUID) (CheckIn, error)
 }
 
@@ -90,6 +91,20 @@ func (s *service) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 		return nil, ErrInvalid
 	}
 	return s.tickets.ListByOwner(ctx, ownerID)
+}
+
+func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Ticket, error) {
+	ev, err := s.events.Get(ctx, eventID)
+	if err != nil {
+		if errors.Is(err, event.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam, EventType: ev.OwnerTeam}, authz.Read) {
+		return nil, ErrForbidden
+	}
+	return s.tickets.ListByEvent(ctx, eventID)
 }
 
 func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, eventDayID uuid.UUID) (CheckIn, error) {

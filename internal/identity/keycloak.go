@@ -230,6 +230,32 @@ func (k *Keycloak) searchGroup(ctx context.Context, token, nameOrPath string) (*
 	return nil, ErrNotFound
 }
 
+func (k *Keycloak) CreateGroup(ctx context.Context, parentRef, name string) (Group, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return Group{}, err
+	}
+	payload := gocloak.Group{Name: &name}
+	var id string
+	if parentRef == "" {
+		id, err = k.gc.CreateGroup(ctx, token, k.realm, payload)
+	} else {
+		parent, ferr := k.fetchGroup(ctx, token, parentRef)
+		if ferr != nil {
+			return Group{}, mapKCErr(ferr)
+		}
+		id, err = k.gc.CreateChildGroup(ctx, token, k.realm, *parent.ID, payload)
+	}
+	if err != nil {
+		return Group{}, mapKCErr(err)
+	}
+	fresh, err := k.gc.GetGroup(ctx, token, k.realm, id)
+	if err != nil {
+		return Group{}, mapKCErr(err)
+	}
+	return groupFrom(fresh), nil
+}
+
 func (k *Keycloak) UpdateGroup(ctx context.Context, g Group) (Group, error) {
 	token, err := k.accessToken(ctx)
 	if err != nil {
@@ -558,6 +584,14 @@ func (k *Keycloak) RemoveUserExtraRole(ctx context.Context, userID uuid.UUID, ro
 		return err
 	}
 	return mapKCErr(k.gc.DeleteClientRoleFromUser(ctx, token, k.realm, clientUUID, userID.String(), []gocloak.Role{resolved}))
+}
+
+func (k *Keycloak) LogoutAllSessions(ctx context.Context, userID uuid.UUID) error {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	return mapKCErr(k.gc.LogoutAllSessions(ctx, token, k.realm, userID.String()))
 }
 
 func (k *Keycloak) lookupRole(ctx context.Context, token, clientID, name string) (gocloak.Role, error) {
