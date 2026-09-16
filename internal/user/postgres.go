@@ -32,7 +32,8 @@ func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (User, error) {
 	return u, nil
 }
 
-func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, error) {
+func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) {
+	var created bool
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO users (id, email, first_name, last_name)
 		VALUES ($1, $2, $3, $4)
@@ -41,14 +42,14 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, error) {
 			first_name = excluded.first_name,
 			last_name = excluded.last_name,
 			updated_at = now()
-		RETURNING id, email, first_name, last_name, created_at, updated_at
+		RETURNING id, email, first_name, last_name, created_at, updated_at, (xmax = 0)
 	`, u.ID, u.Email, u.FirstName, u.LastName).Scan(
-		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.CreatedAt, &u.UpdatedAt,
+		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.CreatedAt, &u.UpdatedAt, &created,
 	)
 	if err != nil {
-		return User{}, err
+		return User{}, false, err
 	}
-	return u, nil
+	return u, created, nil
 }
 
 func (s *PostgresStore) Delete(ctx context.Context, id uuid.UUID) error {

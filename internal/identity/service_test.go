@@ -152,6 +152,35 @@ func TestService_CreateUserDualWrites(t *testing.T) {
 	}
 }
 
+type recMail struct {
+	n    int
+	last user.User
+}
+
+func (r *recMail) Welcome(_ context.Context, u user.User) {
+	r.n++
+	r.last = u
+}
+
+func TestService_CreateUserSendsWelcome(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	rec := &recMail{}
+	svc := identity.NewService(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()), rec)
+	created, err := svc.CreateUser(context.Background(), privileged(), identity.Person{
+		Email:     "ada@example.com",
+		FirstName: "Ada",
+		LastName:  "Lovelace",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.n != 1 || rec.last.ID != created.ID || rec.last.Email != "ada@example.com" {
+		t.Fatalf("welcome %+v n=%d", rec.last, rec.n)
+	}
+}
+
 func TestService_DeleteUserRemovesBoth(t *testing.T) {
 	t.Parallel()
 	dir, store, svc := setup(t)

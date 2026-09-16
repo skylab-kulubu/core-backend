@@ -3,15 +3,21 @@ package middlewares
 import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 type JIT struct {
 	users user.Service
+	mail  mail.Mailer
 }
 
-func NewJIT(users user.Service) *JIT {
-	return &JIT{users: users}
+func NewJIT(users user.Service, mailers ...mail.Mailer) *JIT {
+	j := &JIT{users: users}
+	if len(mailers) > 0 {
+		j.mail = mailers[0]
+	}
+	return j
 }
 
 func (j *JIT) Handle(c fiber.Ctx) error {
@@ -19,9 +25,12 @@ func (j *JIT) Handle(c fiber.Ctx) error {
 	if !ok {
 		return c.Next()
 	}
-	u, err := j.users.Ensure(c.Context(), ident.ID, ident.Profile)
+	u, created, err := j.users.Ensure(c.Context(), ident.ID, ident.Profile)
 	if err != nil {
 		return err
+	}
+	if created && j.mail != nil {
+		j.mail.Welcome(c.Context(), u)
 	}
 	c.Locals(authn.LocalsUser, u)
 	return c.Next()

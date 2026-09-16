@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -36,10 +37,15 @@ type service struct {
 	dir   Directory
 	users user.Store
 	authz authz.Authorizer
+	mail  mail.Mailer
 }
 
-func NewService(dir Directory, users user.Store, az authz.Authorizer) Service {
-	return &service{dir: dir, users: users, authz: az}
+func NewService(dir Directory, users user.Store, az authz.Authorizer, mailers ...mail.Mailer) Service {
+	s := &service{dir: dir, users: users, authz: az}
+	if len(mailers) > 0 {
+		s.mail = mailers[0]
+	}
+	return s
 }
 
 func (s *service) allow(p authz.Principal, t authz.Type, a authz.Action) error {
@@ -207,7 +213,7 @@ func (s *service) CreateUser(ctx context.Context, p authz.Principal, in Person) 
 	if err != nil {
 		return Person{}, err
 	}
-	_, err = s.users.Upsert(ctx, user.User{
+	shadow, _, err := s.users.Upsert(ctx, user.User{
 		ID:        created.ID,
 		Email:     created.Email,
 		FirstName: created.FirstName,
@@ -216,6 +222,9 @@ func (s *service) CreateUser(ctx context.Context, p authz.Principal, in Person) 
 	if err != nil {
 		_ = s.dir.DeleteUser(ctx, created.ID)
 		return Person{}, err
+	}
+	if s.mail != nil {
+		s.mail.Welcome(ctx, shadow)
 	}
 	return created, nil
 }

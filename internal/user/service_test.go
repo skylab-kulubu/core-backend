@@ -16,17 +16,23 @@ func TestService_EnsureCreatesThenUpdates(t *testing.T) {
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	ctx := context.Background()
 
-	first, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com", FirstName: "Ada", LastName: "Lovelace"})
+	first, created, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com", FirstName: "Ada", LastName: "Lovelace"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("first ensure should create")
 	}
 	if first.Email != "a@example.com" || first.FirstName != "Ada" || first.ID != id {
 		t.Fatalf("unexpected first upsert: %+v", first)
 	}
 
-	second, err := svc.Ensure(ctx, id, Profile{Email: "b@example.com", FirstName: "Ada", LastName: "Byron"})
+	second, created, err := svc.Ensure(ctx, id, Profile{Email: "b@example.com", FirstName: "Ada", LastName: "Byron"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if created {
+		t.Fatal("second ensure should update")
 	}
 	if second.Email != "b@example.com" || second.LastName != "Byron" {
 		t.Fatalf("unexpected second upsert: %+v", second)
@@ -54,7 +60,7 @@ func TestService_EnsureConcurrentSameID(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := svc.Ensure(ctx, id, Profile{Email: "c@example.com", FirstName: "Grace", LastName: "Hopper"})
+			_, _, err := svc.Ensure(ctx, id, Profile{Email: "c@example.com", FirstName: "Grace", LastName: "Hopper"})
 			if err != nil {
 				t.Errorf("Ensure: %v", err)
 			}
