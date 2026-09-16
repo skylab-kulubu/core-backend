@@ -49,7 +49,7 @@ func (s *service) Get(ctx context.Context, id uuid.UUID) (Event, error) {
 }
 
 func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Event, error) {
-	if in.Name == "" || in.Location == "" || in.OwnerTeam == "" {
+	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
 	}
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Create) {
@@ -66,7 +66,7 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
 		return Event{}, ErrForbidden
 	}
-	if in.Name == "" || in.Location == "" || in.OwnerTeam == "" {
+	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
 	}
 	in.ID = existing.ID

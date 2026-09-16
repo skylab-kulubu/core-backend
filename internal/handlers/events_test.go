@@ -42,6 +42,14 @@ func weblabLeader() authn.Identity {
 	}
 }
 
+func yk() authn.Identity {
+	return authn.Identity{
+		ID:      uuid.MustParse("22222222-2222-2222-2222-222222222222"),
+		Profile: user.Profile{Email: "yk@example.com"},
+		Groups:  []string{"/UYELER/YK"},
+	}
+}
+
 func TestEventCreateReadablePublic(t *testing.T) {
 	t.Parallel()
 	store := event.NewMemoryStore()
@@ -172,5 +180,46 @@ func TestEventCreateCoverImage(t *testing.T) {
 	}
 	if got.CoverImageID == nil || *got.CoverImageID != cover {
 		t.Fatalf("public cover %+v", got.CoverImageID)
+	}
+}
+
+func TestEventCreateEmptyOwnerPrivileged(t *testing.T) {
+	t.Parallel()
+	app := eventApp(t, yk(), event.NewMemoryStore())
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+		`{"name":"Seminer","location":"YTÜ"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var created event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.OwnerTeam != "" {
+		t.Fatalf("owner %q", created.OwnerTeam)
+	}
+}
+
+func TestEventCreateEmptyOwnerLeaderForbidden(t *testing.T) {
+	t.Parallel()
+	app := eventApp(t, weblabLeader(), event.NewMemoryStore())
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+		`{"name":"Seminer","location":"YTÜ"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
 	}
 }

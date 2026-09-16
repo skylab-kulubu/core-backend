@@ -84,6 +84,20 @@ func TestAuthorizer_Allow(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "empty owner event is privileged-only",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}},
+			r:    Resource{Type: TypeEvent},
+			a:    Create,
+			want: false,
+		},
+		{
+			name: "privileged can create event with no owner team",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/YK"}},
+			r:    Resource{Type: TypeEvent},
+			a:    Create,
+			want: true,
+		},
+		{
 			name: "privileged can list groups",
 			p:    Principal{ID: "u1", Groups: []string{"/UYELER/YK"}},
 			r:    Resource{Type: TypeGroup},
