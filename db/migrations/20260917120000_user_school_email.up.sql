@@ -1,0 +1,2 @@
+ALTER TABLE users
+    ADD COLUMN school_email TEXT NOT NULL DEFAULT '';

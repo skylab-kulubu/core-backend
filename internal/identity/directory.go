@@ -21,11 +21,12 @@ type Group struct {
 }
 
 type Person struct {
-	ID        uuid.UUID `json:"id"`
-	Email     string    `json:"email"`
-	FirstName string    `json:"firstName"`
-	LastName  string    `json:"lastName"`
-	Username  string    `json:"username,omitempty"`
+	ID          uuid.UUID `json:"id"`
+	Email       string    `json:"email"`
+	FirstName   string    `json:"firstName"`
+	LastName    string    `json:"lastName"`
+	Username    string    `json:"username,omitempty"`
+	SchoolEmail string    `json:"schoolEmail,omitempty"`
 }
 
 type ClientRole struct {

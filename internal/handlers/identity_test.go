@@ -258,3 +258,32 @@ func TestCreateGroupAndLogout(t *testing.T) {
 		t.Fatalf("logout status %d body %s", resp.StatusCode, body)
 	}
 }
+
+func TestListUsersSearchHTTP(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	ada := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: ada, Email: "ada@example.com", FirstName: "Ada"})
+	if _, _, err := store.Upsert(t.Context(), user.User{
+		ID: ada, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace", SchoolEmail: "ada@std.yildiz.edu.tr",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := identityApp(t, ykIdent(), dir, store)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users?q=std.yildiz", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var found []identity.Person
+	if err := json.NewDecoder(resp.Body).Decode(&found); err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].SchoolEmail != "ada@std.yildiz.edu.tr" {
+		t.Fatalf("found %+v", found)
+	}
+}

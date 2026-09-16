@@ -19,7 +19,7 @@ type Service interface {
 	Members(ctx context.Context, p authz.Principal, groupRef string) ([]Person, error)
 	AddMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
 	RemoveMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
-	ListUsers(ctx context.Context, p authz.Principal) ([]Person, error)
+	ListUsers(ctx context.Context, p authz.Principal, q string) ([]Person, error)
 	GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error)
 	CreateUser(ctx context.Context, p authz.Principal, in Person) (Person, error)
 	DeleteUser(ctx context.Context, p authz.Principal, id uuid.UUID) error
@@ -118,11 +118,23 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 	return s.dir.RemoveMember(ctx, groupRef, userID)
 }
 
-func (s *service) ListUsers(ctx context.Context, p authz.Principal) ([]Person, error) {
+func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string) ([]Person, error) {
 	if err := s.allow(p, authz.TypeUser, authz.Read); err != nil {
 		return nil, err
 	}
-	return s.dir.ListUsers(ctx)
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return s.dir.ListUsers(ctx)
+	}
+	found, err := s.users.Search(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Person, 0, len(found))
+	for _, u := range found {
+		out = append(out, personFromUser(u))
+	}
+	return out, nil
 }
 
 func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error) {
@@ -132,6 +144,9 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	person, err := s.dir.GetUser(ctx, id)
 	if err != nil {
 		return UserCard{}, err
+	}
+	if shadow, err := s.users.Get(ctx, id); err == nil {
+		person.SchoolEmail = shadow.SchoolEmail
 	}
 	groups, err := s.dir.GroupsForUser(ctx, id)
 	if err != nil {
@@ -214,10 +229,11 @@ func (s *service) CreateUser(ctx context.Context, p authz.Principal, in Person) 
 		return Person{}, err
 	}
 	shadow, _, err := s.users.Upsert(ctx, user.User{
-		ID:        created.ID,
-		Email:     created.Email,
-		FirstName: created.FirstName,
-		LastName:  created.LastName,
+		ID:          created.ID,
+		Email:       created.Email,
+		FirstName:   created.FirstName,
+		LastName:    created.LastName,
+		SchoolEmail: created.SchoolEmail,
 	})
 	if err != nil {
 		_ = s.dir.DeleteUser(ctx, created.ID)
@@ -453,5 +469,15 @@ func buildRoster(g Group, people []Person, leaders map[uuid.UUID]struct{}) Roste
 		Description: description(g),
 		Count:       len(members),
 		Members:     members,
+	}
+}
+
+func personFromUser(u user.User) Person {
+	return Person{
+		ID:          u.ID,
+		Email:       u.Email,
+		FirstName:   u.FirstName,
+		LastName:    u.LastName,
+		SchoolEmail: u.SchoolEmail,
 	}
 }

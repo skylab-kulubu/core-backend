@@ -101,6 +101,46 @@ func TestGetMeUpsertsIdentity(t *testing.T) {
 	}
 }
 
+func TestGetMeReturnsSchoolEmail(t *testing.T) {
+	t.Parallel()
+	store := user.NewMemoryStore()
+	svc := user.NewService(store)
+	jit := middlewares.NewJIT(svc)
+	me := NewMeHandler()
+	id := uuid.MustParse("66666666-6666-6666-6666-666666666666")
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(authn.LocalsIdentity, authn.Identity{
+			ID: id,
+			Profile: user.Profile{
+				Email:       "ada@example.com",
+				FirstName:   "Ada",
+				LastName:    "Lovelace",
+				SchoolEmail: "ada@std.yildiz.edu.tr",
+			},
+		})
+		return c.Next()
+	})
+	app.Get("/v1/users/me", jit.Handle, me.GetMe)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	got, err := store.Get(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SchoolEmail != "ada@std.yildiz.edu.tr" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
 type recMail struct {
 	n int
 }

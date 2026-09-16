@@ -163,7 +163,7 @@ func (h *IdentityHandler) ListUsers(c fiber.Ctx) error {
 	if err != nil {
 		return identityError(c, err)
 	}
-	users, err := h.svc.ListUsers(c.Context(), p)
+	users, err := h.svc.ListUsers(c.Context(), p, c.Query("q"))
 	if err != nil {
 		return identityError(c, err)
 	}

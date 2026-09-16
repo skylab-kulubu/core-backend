@@ -44,12 +44,14 @@ func ParseAccessToken(token string) (Identity, error) {
 	email, _ := claims["email"].(string)
 	given, _ := claims["given_name"].(string)
 	family, _ := claims["family_name"].(string)
+	school, _ := claims["school_email"].(string)
 	return Identity{
 		ID: id,
 		Profile: user.Profile{
-			Email:     email,
-			FirstName: given,
-			LastName:  family,
+			Email:       email,
+			FirstName:   given,
+			LastName:    family,
+			SchoolEmail: school,
 		},
 		Groups: groupsFromClaims(claims),
 		Roles:  rolesFromClaims(claims),
