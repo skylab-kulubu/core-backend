@@ -157,6 +157,40 @@ func TestAuthorizer_Allow(t *testing.T) {
 			a:    Validate,
 			want: true,
 		},
+		{
+			name: "public can read seasons",
+			r:    Resource{Type: TypeSeason},
+			a:    Read,
+			want: true,
+		},
+		{
+			name: "member cannot create seasons",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}},
+			r:    Resource{Type: TypeSeason},
+			a:    Create,
+			want: false,
+		},
+		{
+			name: "privileged can create seasons",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/YK"}},
+			r:    Resource{Type: TypeSeason},
+			a:    Create,
+			want: true,
+		},
+		{
+			name: "owner team leader can create event day",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}},
+			r:    Resource{Type: TypeEventDay, OwnerTeam: "WEBLAB", EventType: "WEBLAB"},
+			a:    Create,
+			want: true,
+		},
+		{
+			name: "stranger cannot create session",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}},
+			r:    Resource{Type: TypeSession, OwnerTeam: "SKYSEC", EventType: "SKYSEC"},
+			a:    Create,
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
