@@ -4,8 +4,10 @@ import (
 	"context"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/event"
@@ -45,14 +47,50 @@ func main() {
 		})
 	}
 
+	dir := identity.Directory(identity.NewMemory())
+	if os.Getenv("KEYCLOAK_URL") != "" {
+		if os.Getenv("KEYCLOAK_REALM") == "" || os.Getenv("KEYCLOAK_CLIENT_ID") == "" || os.Getenv("KEYCLOAK_CLIENT_SECRET") == "" {
+			log.Fatal("KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET are required with KEYCLOAK_URL")
+		}
+		dir = identity.NewKeycloak(identity.KeycloakConfig{
+			URL:          os.Getenv("KEYCLOAK_URL"),
+			Realm:        os.Getenv("KEYCLOAK_REALM"),
+			ClientID:     os.Getenv("KEYCLOAK_CLIENT_ID"),
+			ClientSecret: os.Getenv("KEYCLOAK_CLIENT_SECRET"),
+		})
+	}
+
+	parse := authn.ParseAccessToken
+	jwksURL := os.Getenv("KEYCLOAK_JWKS_URL")
+	if jwksURL == "" {
+		base := strings.TrimRight(os.Getenv("KEYCLOAK_URL"), "/")
+		realm := os.Getenv("KEYCLOAK_REALM")
+		if parts := strings.SplitN(base, "/realms/", 2); len(parts) == 2 {
+			base = parts[0]
+			if realm == "" {
+				realm = parts[1]
+			}
+		}
+		if base != "" && realm != "" {
+			jwksURL = base + "/realms/" + realm + "/protocol/openid-connect/certs"
+		}
+	}
+	if jwksURL != "" {
+		v := authn.NewJWKS(jwksURL)
+		parse = func(token string) (authn.Identity, error) {
+			return authn.ParseAndVerify(token, v.Verify)
+		}
+	}
+
 	app := httpx.New(httpx.Deps{
 		Users:       user.NewService(users),
-		Identity:    identity.NewService(identity.NewMemory(), users, az),
+		Identity:    identity.NewService(dir, users, az),
 		Events:      event.NewService(events, az),
 		Seasons:     season.NewService(seasons, az),
 		Tickets:     ticket.NewService(tickets, events, az),
 		Competitors: competitor.NewService(competitors, events, az),
 		Media:       media.NewService(mediaStore, blobs, az, os.Getenv("CDN_BASE")),
+		ParseToken:  parse,
 	})
 
 	addr := os.Getenv("PORT")
