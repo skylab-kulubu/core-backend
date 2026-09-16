@@ -34,6 +34,21 @@ func urlApp(t *testing.T, ident authn.Identity) *fiber.App {
 	return app
 }
 
+func TestURLSkylappRoleDoesNotCreate(t *testing.T) {
+	t.Parallel()
+	uid := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	app := urlApp(t, authn.Identity{ID: uid, Roles: []string{"skylapp:access", "skylapp:url:create"}})
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/urls", strings.NewReader(`{"url":"https://skylab.com","alias":"club"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
 func TestURLCreateRedirectAndListHTTP(t *testing.T) {
 	t.Parallel()
 	uid := uuid.MustParse("11111111-1111-1111-1111-111111111111")

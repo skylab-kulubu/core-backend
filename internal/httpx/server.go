@@ -31,6 +31,11 @@ type Deps struct {
 }
 
 func New(deps Deps) *fiber.App {
+	if deps.ParseToken == nil {
+		deps.ParseToken = func(string) (authn.Identity, error) {
+			return authn.Identity{}, authn.ErrInvalidToken
+		}
+	}
 	app := fiber.New(fiber.Config{ErrorHandler: handlers.ErrorHandler})
 	app.Use(recover.New())
 

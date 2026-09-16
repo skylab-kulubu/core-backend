@@ -138,4 +138,21 @@ func TestParseAndVerifyRequiresAudienceAndIssuer(t *testing.T) {
 	if _, err := authn.ParseAndVerify(ok, nil, keys.Issuer, testauth.Audience); err == nil {
 		t.Fatal("nil verify accepted")
 	}
+	if _, err := authn.ParseAndVerify(ok, keys.Verify, "", testauth.Audience); err == nil {
+		t.Fatal("empty issuer accepted")
+	}
+	if _, err := authn.ParseAndVerify(ok, keys.Verify, keys.Issuer, ""); err == nil {
+		t.Fatal("empty audience accepted")
+	}
+
+	hs := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": id.String(), "iss": keys.Issuer, "aud": testauth.Audience, "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	hsTok, err := hs.SignedString([]byte("not-an-rsa-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authn.ParseAndVerify(hsTok, keys.Verify, keys.Issuer, testauth.Audience); err == nil {
+		t.Fatal("HS256 accepted")
+	}
 }

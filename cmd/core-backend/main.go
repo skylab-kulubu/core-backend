@@ -89,6 +89,9 @@ func main() {
 			issuer = host + "/realms/" + realmPart
 		}
 	}
+	if jwksURL != "" && issuer == "" {
+		log.Fatal("cannot derive JWT issuer; set KEYCLOAK_URL and KEYCLOAK_REALM")
+	}
 	if jwksURL != "" && issuer != "" {
 		v := authn.NewJWKS(jwksURL)
 		parse = func(token string) (authn.Identity, error) {

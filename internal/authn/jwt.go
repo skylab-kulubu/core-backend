@@ -101,6 +101,12 @@ func audienceIncludes(raw any, want string) bool {
 				return true
 			}
 		}
+	case []string:
+		for _, s := range v {
+			if s == want {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -135,7 +141,7 @@ func rolesFromClaims(claims map[string]any) []string {
 	if !ok {
 		return nil
 	}
-	ca, ok := ra["core"].(map[string]any)
+	ca, ok := ra[ResourceAudience].(map[string]any)
 	if !ok {
 		return nil
 	}

@@ -175,6 +175,24 @@ func TestVerifiedBearerRejectsWrongAudience(t *testing.T) {
 	}
 }
 
+func TestVerifiedBearerRejectsWrongIssuer(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	app := memoryApp(keys.Parse())
+	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	req := httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{
+		"sub": id.String(), "iss": "https://other.example/realms/e-skylab",
+	}))
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
 func TestVerifiedBearerRejectsMissingAudience(t *testing.T) {
 	t.Parallel()
 	keys := testauth.New(t)
