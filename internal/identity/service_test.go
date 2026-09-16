@@ -326,6 +326,58 @@ func TestService_LogoutAllSessions(t *testing.T) {
 	}
 }
 
+func TestService_SearchUsersUsesShadowNotDirectory(t *testing.T) {
+	t.Parallel()
+	dir, store, svc := setup(t)
+	ctx := context.Background()
+	ghost := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	ada := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: ghost, Email: "ghost@example.com", FirstName: "Ghost"})
+	if _, _, err := store.Upsert(ctx, user.User{
+		ID: ada, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace", SchoolEmail: "ada@std.yildiz.edu.tr",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := svc.ListUsers(ctx, privileged(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].ID != ghost {
+		t.Fatalf("directory list %+v", all)
+	}
+
+	found, err := svc.ListUsers(ctx, privileged(), "std.yildiz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].ID != ada || found[0].SchoolEmail != "ada@std.yildiz.edu.tr" {
+		t.Fatalf("search %+v", found)
+	}
+
+	if _, err := svc.ListUsers(ctx, member(), "ada"); !errors.Is(err, identity.ErrForbidden) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestService_GetUserMergesSchoolEmail(t *testing.T) {
+	t.Parallel()
+	dir, store, svc := setup(t)
+	ctx := context.Background()
+	id := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: id, Email: "ada@example.com", FirstName: "Ada"})
+	if _, _, err := store.Upsert(ctx, user.User{ID: id, Email: "ada@example.com", SchoolEmail: "ada@std.yildiz.edu.tr"}); err != nil {
+		t.Fatal(err)
+	}
+	card, err := svc.GetUser(ctx, privileged(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.SchoolEmail != "ada@std.yildiz.edu.tr" {
+		t.Fatalf("card %+v", card)
+	}
+}
+
 func TestService_SetGroupClientRolesForbiddenForMember(t *testing.T) {
 	t.Parallel()
 	dir, _, svc := setup(t)

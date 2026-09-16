@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,9 +32,12 @@ func (s *MemoryStore) Upsert(_ context.Context, u User) (User, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
-	_, existed := s.byID[u.ID]
+	existing, existed := s.byID[u.ID]
 	if existed {
-		u.CreatedAt = s.byID[u.ID].CreatedAt
+		if u.SchoolEmail == "" {
+			u.SchoolEmail = existing.SchoolEmail
+		}
+		u.CreatedAt = existing.CreatedAt
 		u.UpdatedAt = now
 	} else {
 		u.CreatedAt = now
@@ -41,6 +45,19 @@ func (s *MemoryStore) Upsert(_ context.Context, u User) (User, bool, error) {
 	}
 	s.byID[u.ID] = u
 	return u, !existed, nil
+}
+
+func (s *MemoryStore) Search(_ context.Context, q string) ([]User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	needle := strings.ToLower(strings.TrimSpace(q))
+	out := make([]User, 0)
+	for _, u := range s.byID {
+		if userMatches(u, needle) {
+			out = append(out, u)
+		}
+	}
+	return out, nil
 }
 
 func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) error {
@@ -51,4 +68,23 @@ func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) error {
 	}
 	delete(s.byID, id)
 	return nil
+}
+
+func userMatches(u User, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	hay := []string{
+		u.Email,
+		u.SchoolEmail,
+		u.FirstName,
+		u.LastName,
+		strings.TrimSpace(u.FirstName + " " + u.LastName),
+	}
+	for _, h := range hay {
+		if strings.Contains(strings.ToLower(h), needle) {
+			return true
+		}
+	}
+	return false
 }

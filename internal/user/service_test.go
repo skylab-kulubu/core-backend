@@ -47,6 +47,33 @@ func TestService_EnsureCreatesThenUpdates(t *testing.T) {
 	}
 }
 
+func TestService_EnsureKeepsSchoolEmailWhenClaimEmpty(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	id := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	ctx := context.Background()
+
+	if _, _, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com", SchoolEmail: "a@std.yildiz.edu.tr"}); err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.SchoolEmail != "a@std.yildiz.edu.tr" {
+		t.Fatalf("wiped school email: %+v", second)
+	}
+
+	hit, err := store.Search(ctx, "std.yildiz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hit) != 1 || hit[0].ID != id {
+		t.Fatalf("search %+v", hit)
+	}
+}
+
 func TestService_EnsureConcurrentSameID(t *testing.T) {
 	t.Parallel()
 

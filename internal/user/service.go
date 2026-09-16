@@ -20,9 +20,10 @@ func NewService(store Store) Service {
 
 func (s *service) Ensure(ctx context.Context, id uuid.UUID, profile Profile) (User, bool, error) {
 	return s.store.Upsert(ctx, User{
-		ID:        id,
-		Email:     profile.Email,
-		FirstName: profile.FirstName,
-		LastName:  profile.LastName,
+		ID:          id,
+		Email:       profile.Email,
+		FirstName:   profile.FirstName,
+		LastName:    profile.LastName,
+		SchoolEmail: profile.SchoolEmail,
 	})
 }
