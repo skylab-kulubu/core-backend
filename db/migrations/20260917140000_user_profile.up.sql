@@ -1,0 +1,8 @@
+ALTER TABLE users
+    ADD COLUMN username TEXT NOT NULL DEFAULT '',
+    ADD COLUMN linkedin TEXT NOT NULL DEFAULT '',
+    ADD COLUMN university TEXT NOT NULL DEFAULT '',
+    ADD COLUMN faculty TEXT NOT NULL DEFAULT '',
+    ADD COLUMN department TEXT NOT NULL DEFAULT '',
+    ADD COLUMN profile_picture_id UUID REFERENCES media (id) ON DELETE SET NULL,
+    ADD COLUMN profile_picture_url TEXT NOT NULL DEFAULT '';

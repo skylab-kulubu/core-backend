@@ -43,6 +43,19 @@ func TestParseAccessTokenReadsSkyNumber(t *testing.T) {
 	}
 }
 
+func TestParseAccessTokenReadsPreferredUsername(t *testing.T) {
+	t.Parallel()
+	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	tok := unsignedJWT(`{"sub":"` + id.String() + `","preferred_username":"ada"}`)
+	got, err := authn.ParseAccessToken(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Profile.Username != "ada" {
+		t.Fatalf("profile %+v", got.Profile)
+	}
+}
+
 func TestParseAccessTokenReadsSchoolEmail(t *testing.T) {
 	t.Parallel()
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")

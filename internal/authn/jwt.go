@@ -46,12 +46,14 @@ func ParseAccessToken(token string) (Identity, error) {
 	family, _ := claims["family_name"].(string)
 	school, _ := claims["school_email"].(string)
 	sky := claimString(claims, "sky_number", "skyNumber")
+	username := claimString(claims, "preferred_username")
 	return Identity{
 		ID: id,
 		Profile: user.Profile{
 			Email:       email,
 			FirstName:   given,
 			LastName:    family,
+			Username:    username,
 			SchoolEmail: school,
 			SkyNumber:   sky,
 		},

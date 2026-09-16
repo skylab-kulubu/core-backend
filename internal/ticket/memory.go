@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,6 +103,30 @@ func (s *MemoryStore) ExistsGuestEvent(_ context.Context, email string, eventID 
 		}
 	}
 	return false, nil
+}
+
+func (s *MemoryStore) GetByOwnerEvent(_ context.Context, ownerID, eventID uuid.UUID) (Ticket, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.byID {
+		if t.OwnerID != nil && *t.OwnerID == ownerID && t.EventID == eventID {
+			return s.withCheckInsLocked(t), nil
+		}
+	}
+	return Ticket{}, ErrNotFound
+}
+
+func (s *MemoryStore) ListByGuestEmail(_ context.Context, email string) ([]Ticket, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	want := strings.ToLower(strings.TrimSpace(email))
+	out := make([]Ticket, 0)
+	for _, t := range s.byID {
+		if t.TicketType == Guest && strings.ToLower(t.GuestEmail) == want {
+			out = append(out, s.withCheckInsLocked(t))
+		}
+	}
+	return out, nil
 }
 
 func (s *MemoryStore) AddCheckIn(_ context.Context, c CheckIn) (CheckIn, error) {

@@ -7,24 +7,67 @@ import (
 )
 
 type Event struct {
+	ID            uuid.UUID      `json:"id"`
+	Name          string         `json:"name"`
+	Description   string         `json:"description"`
+	Location      string         `json:"location"`
+	OwnerTeam     string         `json:"ownerTeam"`
+	FormURL       string         `json:"formUrl,omitempty"`
+	Capacity      int            `json:"capacity"`
+	StartDate     *time.Time     `json:"startDate,omitempty"`
+	EndDate       *time.Time     `json:"endDate,omitempty"`
+	Linkedin      string         `json:"linkedin,omitempty"`
+	Active        bool           `json:"active"`
+	Ranked        bool           `json:"ranked"`
+	PrizeInfo     string         `json:"prizeInfo,omitempty"`
+	SeasonID      *uuid.UUID     `json:"seasonId,omitempty"`
+	CoverImageID  *uuid.UUID     `json:"coverImageId,omitempty"`
+	CoverImageURL string         `json:"coverImageUrl,omitempty"`
+	Images        []GalleryImage `json:"images"`
+	ImageURLs     []string       `json:"imageUrls"`
+	CreatedAt     time.Time      `json:"createdAt"`
+	UpdatedAt     time.Time      `json:"updatedAt"`
+}
+
+type GalleryImage struct {
+	ID  uuid.UUID `json:"id"`
+	URL string    `json:"url,omitempty"`
+}
+
+type Resource struct {
 	ID            uuid.UUID  `json:"id"`
 	Name          string     `json:"name"`
-	Description   string     `json:"description"`
-	Location      string     `json:"location"`
-	OwnerTeam     string     `json:"ownerTeam"`
-	FormURL       string     `json:"formUrl,omitempty"`
-	Capacity      int        `json:"capacity"`
 	StartDate     *time.Time `json:"startDate,omitempty"`
 	EndDate       *time.Time `json:"endDate,omitempty"`
-	Linkedin      string     `json:"linkedin,omitempty"`
+	Location      string     `json:"location"`
+	OwnerTeam     string     `json:"ownerTeam"`
+	CoverImageURL string     `json:"coverImageUrl,omitempty"`
 	Active        bool       `json:"active"`
 	Ranked        bool       `json:"ranked"`
-	PrizeInfo     string     `json:"prizeInfo,omitempty"`
-	SeasonID      *uuid.UUID `json:"seasonId,omitempty"`
-	CoverImageID  *uuid.UUID `json:"coverImageId,omitempty"`
-	CoverImageURL string     `json:"coverImageUrl,omitempty"`
-	CreatedAt     time.Time  `json:"createdAt"`
-	UpdatedAt     time.Time  `json:"updatedAt"`
+}
+
+func (e Event) Resource() Resource {
+	return Resource{
+		ID:            e.ID,
+		Name:          e.Name,
+		StartDate:     e.StartDate,
+		EndDate:       e.EndDate,
+		Location:      e.Location,
+		OwnerTeam:     e.OwnerTeam,
+		CoverImageURL: e.CoverImageURL,
+		Active:        e.Active,
+		Ranked:        e.Ranked,
+	}
+}
+
+func emptyGallery(e Event) Event {
+	if e.Images == nil {
+		e.Images = []GalleryImage{}
+	}
+	if e.ImageURLs == nil {
+		e.ImageURLs = []string{}
+	}
+	return e
 }
 
 type Session struct {

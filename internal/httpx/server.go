@@ -34,7 +34,7 @@ func New(deps Deps) *fiber.App {
 	app := fiber.New(fiber.Config{ErrorHandler: handlers.ErrorHandler})
 	app.Use(recover.New())
 
-	me := handlers.NewMeHandler()
+	me := handlers.NewMeHandler(deps.Users, deps.Media)
 	ident := handlers.NewIdentityHandler(deps.Identity)
 	teams := handlers.NewTeamHandler(deps.Identity)
 	events := handlers.NewEventHandler(deps.Events)
@@ -55,6 +55,9 @@ func New(deps Deps) *fiber.App {
 	app.Use(jit.Handle)
 
 	app.Get("/v1/users/me", me.GetMe)
+	app.Put("/v1/users/me", me.PutMe)
+	app.Patch("/v1/users/me", me.PatchMe)
+	app.Post("/v1/users/me/profile-picture", me.ProfilePicture)
 	app.Get("/v1/users", ident.ListUsers)
 	app.Post("/v1/users", ident.CreateUser)
 	app.Get("/v1/users/:id", ident.GetUser)
@@ -82,6 +85,8 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/events/:id", events.Get)
 	app.Put("/v1/events/:id", events.Update)
 	app.Delete("/v1/events/:id", events.Delete)
+	app.Post("/v1/events/:id/images", events.AddImages)
+	app.Delete("/v1/events/:id/images", events.RemoveImages)
 	app.Get("/v1/events/:eventId/days", schedule.ListDays)
 	app.Post("/v1/events/:eventId/applications/me", tickets.Apply)
 	app.Post("/v1/events/:eventId/applications/guest", tickets.ApplyGuest)
@@ -110,6 +115,9 @@ func New(deps Deps) *fiber.App {
 	app.Delete("/v1/sessions/:id", schedule.DeleteSession)
 
 	app.Get("/v1/tickets/me", tickets.Mine)
+	app.Get("/v1/tickets/user/:userId/event/:eventId", tickets.ByUserEvent)
+	app.Get("/v1/tickets/:id", tickets.Get)
+	app.Get("/v1/tickets", tickets.List)
 	app.Post("/v1/tickets/:ticketId/event-days/:eventDayId/check-in", tickets.CheckIn)
 
 	app.Get("/v1/competitors", competitors.List)

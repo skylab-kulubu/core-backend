@@ -71,7 +71,8 @@ func (h *EventHandler) List(c fiber.Ctx) error {
 	if owner == "" {
 		owner = c.Query("typeName")
 	}
-	events, err := h.svc.List(c.Context(), owner)
+	activeOnly := c.Query("active") == "true"
+	events, err := h.svc.List(c.Context(), owner, activeOnly)
 	if err != nil {
 		return eventError(c, err)
 	}
@@ -139,4 +140,44 @@ func (h *EventHandler) Delete(c fiber.Ctx) error {
 		return eventError(c, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (h *EventHandler) AddImages(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var ids []uuid.UUID
+	if err := c.Bind().Body(&ids); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	updated, err := h.svc.AddImages(c.Context(), p, id, ids)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(updated)
+}
+
+func (h *EventHandler) RemoveImages(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var ids []uuid.UUID
+	if err := c.Bind().Body(&ids); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	updated, err := h.svc.RemoveImages(c.Context(), p, id, ids)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(updated)
 }

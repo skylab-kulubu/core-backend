@@ -121,3 +121,60 @@ func (h *TicketHandler) CheckIn(c fiber.Ctx) error {
 	}
 	return c.Status(fiber.StatusCreated).JSON(ci)
 }
+
+func (h *TicketHandler) Get(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	got, err := h.svc.Get(c.Context(), p, id)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.JSON(got)
+}
+
+func (h *TicketHandler) ByUserEvent(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	userID, err := uuid.Parse(c.Params("userId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	eventID, err := uuid.Parse(c.Params("eventId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	got, err := h.svc.GetByUserEvent(c.Context(), p, userID, eventID)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.JSON(got)
+}
+
+func (h *TicketHandler) List(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	email := c.Query("email")
+	var userID *uuid.UUID
+	if raw := c.Query("userId"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+		userID = &id
+	}
+	tickets, err := h.svc.ListQuery(c.Context(), p, email, userID)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.JSON(tickets)
+}

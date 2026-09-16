@@ -31,6 +31,8 @@ func eventApp(t *testing.T, ident authn.Identity, store event.Store) *fiber.App 
 	app.Post("/v1/events", h.Create)
 	app.Put("/v1/events/:id", h.Update)
 	app.Delete("/v1/events/:id", h.Delete)
+	app.Post("/v1/events/:id/images", h.AddImages)
+	app.Delete("/v1/events/:id/images", h.RemoveImages)
 	return app
 }
 
@@ -94,6 +96,127 @@ func TestEventCreateReadablePublic(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("list status %d", resp.StatusCode)
+	}
+}
+
+func TestEventListActiveOnly(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	app := eventApp(t, weblabLeader(), store)
+	activeReq := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+		`{"name":"Live","location":"YTÜ","ownerTeam":"WEBLAB","active":true}`,
+	))
+	activeReq.Header.Set("Content-Type", "application/json")
+	if resp, err := app.Test(activeReq); err != nil || resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("active create %v", err)
+	}
+	inactiveReq := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+		`{"name":"Old","location":"YTÜ","ownerTeam":"WEBLAB","active":false}`,
+	))
+	inactiveReq.Header.Set("Content-Type", "application/json")
+	if resp, err := app.Test(inactiveReq); err != nil || resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("inactive create %v", err)
+	}
+
+	public := eventApp(t, authn.Identity{}, store)
+	resp, err := public.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events?active=true", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var listed []event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Name != "Live" || !listed[0].Active {
+		t.Fatalf("listed %+v", listed)
+	}
+}
+
+func TestEventGalleryAttachHTTP(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	app := eventApp(t, weblabLeader(), store)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create %d %s", resp.StatusCode, body)
+	}
+	var created event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	img := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	attach := httptest.NewRequest(fiber.MethodPost, "/v1/events/"+created.ID.String()+"/images", strings.NewReader(`["`+img.String()+`"]`))
+	attach.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(attach)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("attach %d %s", resp.StatusCode, body)
+	}
+	var attached event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&attached); err != nil {
+		t.Fatal(err)
+	}
+	if len(attached.Images) != 1 || attached.Images[0].ID != img {
+		t.Fatalf("images %+v", attached.Images)
+	}
+
+	public := eventApp(t, authn.Identity{}, store)
+	resp, err = public.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/"+created.ID.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Images) != 1 || got.Images[0].ID != img {
+		t.Fatalf("public images %+v", got.Images)
+	}
+
+	member := eventApp(t, authn.Identity{
+		ID:     uuid.MustParse("33333333-3333-3333-3333-333333333333"),
+		Groups: []string{"/UYELER/ARGE/WEBLAB"},
+	}, store)
+	detach := httptest.NewRequest(fiber.MethodDelete, "/v1/events/"+created.ID.String()+"/images", strings.NewReader(`["`+img.String()+`"]`))
+	detach.Header.Set("Content-Type", "application/json")
+	resp, err = member.Test(detach)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("member detach %d", resp.StatusCode)
+	}
+
+	detach = httptest.NewRequest(fiber.MethodDelete, "/v1/events/"+created.ID.String()+"/images", strings.NewReader(`["`+img.String()+`"]`))
+	detach.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(detach)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("detach %d %s", resp.StatusCode, body)
+	}
+	var after event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&after); err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Images) != 0 {
+		t.Fatalf("after %+v", after.Images)
 	}
 }
 

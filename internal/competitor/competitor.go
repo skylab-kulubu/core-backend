@@ -4,16 +4,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 )
 
 type Competitor struct {
-	ID        uuid.UUID `json:"id"`
-	UserID    uuid.UUID `json:"userId"`
-	EventID   uuid.UUID `json:"eventId"`
-	Score     *float64  `json:"score,omitempty"`
-	IsWinner  bool      `json:"isWinner"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID        uuid.UUID       `json:"id"`
+	UserID    uuid.UUID       `json:"userId"`
+	EventID   uuid.UUID       `json:"eventId"`
+	Event     *event.Resource `json:"event,omitempty"`
+	Score     *float64        `json:"score,omitempty"`
+	IsWinner  bool            `json:"isWinner"`
+	CreatedAt time.Time       `json:"createdAt"`
+	UpdatedAt time.Time       `json:"updatedAt"`
 }
 
 type CreateInput struct {

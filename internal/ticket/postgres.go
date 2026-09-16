@@ -116,6 +116,44 @@ func (s *PostgresStore) ExistsGuestEvent(ctx context.Context, email string, even
 	return n > 0, err
 }
 
+func (s *PostgresStore) GetByOwnerEvent(ctx context.Context, ownerID, eventID uuid.UUID) (Ticket, error) {
+	t, err := scanTicket(s.pool.QueryRow(ctx, `SELECT `+ticketCols+` FROM tickets WHERE owner_id = $1 AND event_id = $2`, ownerID, eventID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Ticket{}, ErrNotFound
+	}
+	if err != nil {
+		return Ticket{}, err
+	}
+	checkIns, err := s.checkInsFor(ctx, t.ID)
+	if err != nil {
+		return Ticket{}, err
+	}
+	t.CheckIns = checkIns
+	return t, nil
+}
+
+func (s *PostgresStore) ListByGuestEmail(ctx context.Context, email string) ([]Ticket, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+ticketCols+` FROM tickets WHERE lower(guest_email) = lower($1) ORDER BY created_at`, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Ticket, 0)
+	for rows.Next() {
+		t, err := scanTicket(rows)
+		if err != nil {
+			return nil, err
+		}
+		checkIns, err := s.checkInsFor(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		t.CheckIns = checkIns
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) AddCheckIn(ctx context.Context, c CheckIn) (CheckIn, error) {
 	if c.ID == uuid.Nil {
 		c.ID = uuid.New()

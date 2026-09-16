@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 func seedTeam(t *testing.T, dir *identity.Memory) (memberID, leaderID uuid.UUID) {
@@ -110,6 +111,47 @@ func TestService_ListPublicTeamsOmitsStructural(t *testing.T) {
 		t.Fatalf("teams %+v", teams)
 	}
 }
+
+func TestService_PublicMembersFillsShadowProfile(t *testing.T) {
+	t.Parallel()
+	dir, store, svc := setup(t)
+	memberID, _ := seedTeam(t, dir)
+	_, _, err := user.NewService(store).Ensure(context.Background(), memberID, user.Profile{
+		Email: "member@example.com", FirstName: "Ada", LastName: "Member",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pic := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	if _, err := user.NewService(store).SetProfilePicture(context.Background(), memberID, pic, "https://cdn.example.test/ada"); err != nil {
+		t.Fatal(err)
+	}
+	linkedin := "https://linkedin.com/in/ada"
+	if _, err := user.NewService(store).Patch(context.Background(), memberID, user.ProfilePatch{
+		Linkedin: &linkedin, University: ptrStr("YTÜ"), Faculty: ptrStr("EE"), Department: ptrStr("CE"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	roster, err := svc.PublicMembers(context.Background(), "WEBLAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ada identity.PublicMember
+	for _, m := range roster.Members {
+		if m.FirstName == "Ada" {
+			ada = m
+		}
+	}
+	if ada.Linkedin != linkedin || ada.University != "YTÜ" || ada.Faculty != "EE" || ada.Department != "CE" || ada.ProfilePictureURL != "https://cdn.example.test/ada" {
+		t.Fatalf("ada %+v", ada)
+	}
+	if ada.LastName != "Member" {
+		t.Fatalf("name %+v", ada)
+	}
+}
+
+func ptrStr(s string) *string { return &s }
 
 func TestService_PublicLeadersOnlyLeaderSubgroups(t *testing.T) {
 	t.Parallel()

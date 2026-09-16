@@ -23,7 +23,7 @@ func NewMemoryStore() *MemoryStore {
 	}
 }
 
-func (s *MemoryStore) List(_ context.Context, ownerTeam string) ([]Event, error) {
+func (s *MemoryStore) List(_ context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Event, 0, len(s.byID))
@@ -31,7 +31,10 @@ func (s *MemoryStore) List(_ context.Context, ownerTeam string) ([]Event, error)
 		if ownerTeam != "" && e.OwnerTeam != ownerTeam {
 			continue
 		}
-		out = append(out, e)
+		if activeOnly && !e.Active {
+			continue
+		}
+		out = append(out, emptyGallery(e))
 	}
 	return out, nil
 }
@@ -43,7 +46,7 @@ func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (Event, error) {
 	if !ok {
 		return Event{}, ErrNotFound
 	}
-	return e, nil
+	return emptyGallery(e), nil
 }
 
 func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
@@ -55,6 +58,7 @@ func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
 	now := time.Now().UTC()
 	e.CreatedAt = now
 	e.UpdatedAt = now
+	e = emptyGallery(e)
 	s.byID[e.ID] = e
 	return e, nil
 }
@@ -68,6 +72,9 @@ func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
 	}
 	e.CreatedAt = existing.CreatedAt
 	e.UpdatedAt = time.Now().UTC()
+	e.Images = existing.Images
+	e.ImageURLs = existing.ImageURLs
+	e = emptyGallery(e)
 	s.byID[e.ID] = e
 	return e, nil
 }
@@ -80,6 +87,77 @@ func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) error {
 	}
 	delete(s.byID, id)
 	return nil
+}
+
+func (s *MemoryStore) AddImages(_ context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[eventID]
+	if !ok {
+		return Event{}, ErrNotFound
+	}
+	seen := map[uuid.UUID]struct{}{}
+	for _, im := range e.Images {
+		seen[im.ID] = struct{}{}
+	}
+	for _, id := range ids {
+		if id == uuid.Nil {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		e.Images = append(e.Images, GalleryImage{ID: id})
+	}
+	e.ImageURLs = urlsOf(e.Images)
+	e.UpdatedAt = time.Now().UTC()
+	s.byID[eventID] = e
+	return emptyGallery(e), nil
+}
+
+func (s *MemoryStore) RemoveImages(_ context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[eventID]
+	if !ok {
+		return Event{}, ErrNotFound
+	}
+	have := map[uuid.UUID]GalleryImage{}
+	for _, im := range e.Images {
+		have[im.ID] = im
+	}
+	for _, id := range ids {
+		if _, ok := have[id]; !ok {
+			return Event{}, ErrNotFound
+		}
+	}
+	drop := map[uuid.UUID]struct{}{}
+	for _, id := range ids {
+		drop[id] = struct{}{}
+	}
+	kept := make([]GalleryImage, 0, len(e.Images))
+	for _, im := range e.Images {
+		if _, skip := drop[im.ID]; skip {
+			continue
+		}
+		kept = append(kept, im)
+	}
+	e.Images = kept
+	e.ImageURLs = urlsOf(e.Images)
+	e.UpdatedAt = time.Now().UTC()
+	s.byID[eventID] = e
+	return emptyGallery(e), nil
+}
+
+func urlsOf(images []GalleryImage) []string {
+	out := make([]string, 0, len(images))
+	for _, im := range images {
+		if im.URL != "" {
+			out = append(out, im.URL)
+		}
+	}
+	return out
 }
 
 func (s *MemoryStore) GetDay(_ context.Context, id uuid.UUID) (Day, error) {
@@ -140,7 +218,7 @@ func (s *MemoryStore) ListBySeason(_ context.Context, seasonID uuid.UUID) ([]Eve
 	out := make([]Event, 0)
 	for _, e := range s.byID {
 		if e.SeasonID != nil && *e.SeasonID == seasonID {
-			out = append(out, e)
+			out = append(out, emptyGallery(e))
 		}
 	}
 	return out, nil
@@ -156,7 +234,7 @@ func (s *MemoryStore) SetSeason(_ context.Context, eventID uuid.UUID, seasonID *
 	e.SeasonID = seasonID
 	e.UpdatedAt = time.Now().UTC()
 	s.byID[eventID] = e
-	return e, nil
+	return emptyGallery(e), nil
 }
 
 func (s *MemoryStore) GetSession(_ context.Context, id uuid.UUID) (Session, error) {

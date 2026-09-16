@@ -8,11 +8,13 @@ import (
 )
 
 type Service interface {
-	List(ctx context.Context, ownerTeam string) ([]Event, error)
+	List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error)
 	Get(ctx context.Context, id uuid.UUID) (Event, error)
 	Create(ctx context.Context, p authz.Principal, in Event) (Event, error)
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Event) (Event, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
+	AddImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error)
+	RemoveImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error)
 	ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error)
 	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
 	CreateDay(ctx context.Context, p authz.Principal, d Day) (Day, error)
@@ -40,8 +42,8 @@ func resource(ownerTeam string) authz.Resource {
 	return authz.Resource{Type: authz.TypeEvent, OwnerTeam: ownerTeam, EventType: ownerTeam}
 }
 
-func (s *service) List(ctx context.Context, ownerTeam string) ([]Event, error) {
-	return s.store.List(ctx, ownerTeam)
+func (s *service) List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
+	return s.store.List(ctx, ownerTeam, activeOnly)
 }
 
 func (s *service) Get(ctx context.Context, id uuid.UUID) (Event, error) {
@@ -85,6 +87,28 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 		return ErrForbidden
 	}
 	return s.store.Delete(ctx, id)
+}
+
+func (s *service) AddImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error) {
+	existing, err := s.store.Get(ctx, id)
+	if err != nil {
+		return Event{}, err
+	}
+	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
+		return Event{}, ErrForbidden
+	}
+	return s.store.AddImages(ctx, id, ids)
+}
+
+func (s *service) RemoveImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error) {
+	existing, err := s.store.Get(ctx, id)
+	if err != nil {
+		return Event{}, err
+	}
+	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
+		return Event{}, ErrForbidden
+	}
+	return s.store.RemoveImages(ctx, id, ids)
 }
 
 func (s *service) ownerResource(owner string, t authz.Type) authz.Resource {
