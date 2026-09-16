@@ -21,6 +21,8 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 	switch r.Type {
 	case TypeEvent:
 		return a.allowEvent(p, r, action)
+	case TypeTeam:
+		return action == Read
 	case TypeGroup, TypeUser:
 		return a.isPrivileged(p)
 	default:

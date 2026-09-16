@@ -31,6 +31,7 @@ type Person struct {
 type Directory interface {
 	ListGroups(ctx context.Context) ([]Group, error)
 	GetGroup(ctx context.Context, idOrPath string) (Group, error)
+	Subgroups(ctx context.Context, groupID string) ([]Group, error)
 	Members(ctx context.Context, groupID string) ([]Person, error)
 	AddMember(ctx context.Context, groupID string, userID uuid.UUID) error
 	RemoveMember(ctx context.Context, groupID string, userID uuid.UUID) error
