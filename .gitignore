@@ -1,0 +1,9 @@
+# Binaries
+/core-backend
+*.exe
+*.test
+*.out
+notes/
+.env
+.idea
+.DS_Store
