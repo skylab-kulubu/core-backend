@@ -19,8 +19,13 @@ func NewAuthorizer(policy Policy) Authorizer {
 
 func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 	switch r.Type {
-	case TypeEvent:
+	case TypeEvent, TypeEventDay, TypeSession:
 		return a.allowEvent(p, r, action)
+	case TypeSeason:
+		if action == Read {
+			return true
+		}
+		return a.isPrivileged(p)
 	case TypeTicket:
 		return a.allowTicket(p, r, action)
 	case TypeTeam:

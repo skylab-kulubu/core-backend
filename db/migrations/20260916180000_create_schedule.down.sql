@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS sessions;
+DROP INDEX IF EXISTS events_season_id_idx;
+ALTER TABLE events DROP COLUMN IF EXISTS season_id;
+DROP TABLE IF EXISTS seasons;
