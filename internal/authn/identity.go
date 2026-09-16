@@ -12,4 +12,5 @@ type Identity struct {
 	ID      uuid.UUID
 	Profile user.Profile
 	Groups  []string
+	Roles   []string
 }

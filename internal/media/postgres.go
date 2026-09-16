@@ -38,6 +38,31 @@ func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Media, error) {
 	return m, err
 }
 
+func (s *PostgresStore) List(ctx context.Context) ([]Media, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+mediaCols+` FROM media ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Media, 0)
+	for rows.Next() {
+		m, err := scanMedia(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) Delete(ctx context.Context, id uuid.UUID) (Media, error) {
+	m, err := scanMedia(s.pool.QueryRow(ctx, `DELETE FROM media WHERE id = $1 RETURNING `+mediaCols, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Media{}, ErrNotFound
+	}
+	return m, err
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }

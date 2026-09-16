@@ -110,3 +110,40 @@ func TestService_DropsJPEGMetadataOnUpload(t *testing.T) {
 		t.Fatalf("exif remained %x", stored)
 	}
 }
+
+func TestService_ListRequiresAuthAndDeleteIsPrivileged(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	userID := uuid.MustParse("55555555-5555-5555-5555-555555555555")
+	member := authz.Principal{ID: userID.String(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	created, err := svc.Upload(context.Background(), member, "dot.png", "image/png", pngDot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.List(context.Background(), authz.Principal{})
+	if !errors.Is(err, media.ErrForbidden) {
+		t.Fatalf("anon list %v", err)
+	}
+	listed, err := svc.List(context.Background(), member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != created.ID {
+		t.Fatalf("listed %+v", listed)
+	}
+	err = svc.Delete(context.Background(), member, created.ID)
+	if !errors.Is(err, media.ErrForbidden) {
+		t.Fatalf("member delete %v", err)
+	}
+	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+	if err := svc.Delete(context.Background(), yk, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := blobs.Get(created.Key); ok {
+		t.Fatal("blob remained")
+	}
+	_, err = svc.Get(context.Background(), created.ID)
+	if !errors.Is(err, media.ErrNotFound) {
+		t.Fatalf("get after delete %v", err)
+	}
+}

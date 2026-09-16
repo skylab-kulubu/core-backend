@@ -15,6 +15,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/season"
+	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -90,6 +91,7 @@ func main() {
 		Tickets:     ticket.NewService(tickets, events, az),
 		Competitors: competitor.NewService(competitors, events, az),
 		Media:       media.NewService(mediaStore, blobs, az, os.Getenv("CDN_BASE")),
+		URLs:        shorturl.NewService(shorturl.NewPostgresStore(pool), az),
 		ParseToken:  parse,
 	})
 

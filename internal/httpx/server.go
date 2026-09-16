@@ -11,6 +11,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
 	"github.com/skylab-kulubu/core-backend/internal/season"
+	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -23,6 +24,7 @@ type Deps struct {
 	Tickets     ticket.Service
 	Competitors competitor.Service
 	Media       media.Service
+	URLs        shorturl.Service
 	ParseToken  func(string) (authn.Identity, error)
 }
 
@@ -39,11 +41,13 @@ func New(deps Deps) *fiber.App {
 	tickets := handlers.NewTicketHandler(deps.Tickets)
 	competitors := handlers.NewCompetitorHandler(deps.Competitors)
 	mediaH := handlers.NewMediaHandler(deps.Media)
+	urls := handlers.NewURLHandler(deps.URLs)
 	jit := middlewares.NewJIT(deps.Users)
 
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
+	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Use(middlewares.Bearer(deps.ParseToken))
 	app.Use(jit.Handle)
 
@@ -117,7 +121,15 @@ func New(deps Deps) *fiber.App {
 	app.Delete("/v1/competitors/:id", competitors.Delete)
 
 	app.Post("/v1/media", mediaH.Upload)
+	app.Get("/v1/media", mediaH.List)
 	app.Get("/v1/media/:id", mediaH.Get)
+	app.Delete("/v1/media/:id", mediaH.Delete)
+
+	app.Post("/v1/urls", urls.Create)
+	app.Get("/v1/urls", urls.ListMine)
+	app.Get("/v1/urls/all", urls.ListAll)
+	app.Patch("/v1/urls/:id", urls.Update)
+	app.Delete("/v1/urls/:id", urls.Delete)
 
 	return app
 }

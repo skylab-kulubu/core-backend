@@ -306,6 +306,27 @@ func TestAuthorizer_Allow(t *testing.T) {
 			a:    Delete,
 			want: false,
 		},
+		{
+			name: "url create with skylapp access",
+			p:    Principal{ID: "u1", Roles: []string{"skylapp:access"}},
+			r:    Resource{Type: TypeURL},
+			a:    Create,
+			want: true,
+		},
+		{
+			name: "url list all needs moderator",
+			p:    Principal{ID: "u1", Roles: []string{"url:create"}},
+			r:    Resource{Type: TypeURL},
+			a:    Read,
+			want: false,
+		},
+		{
+			name: "url owner can update",
+			p:    Principal{ID: "u1", Roles: []string{"url:update"}},
+			r:    Resource{Type: TypeURL, OwnerID: "u1"},
+			a:    Update,
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {

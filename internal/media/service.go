@@ -11,6 +11,8 @@ import (
 type Service interface {
 	Upload(ctx context.Context, p authz.Principal, name, contentType string, data []byte) (Media, error)
 	Get(ctx context.Context, id uuid.UUID) (Media, error)
+	List(ctx context.Context, p authz.Principal) ([]Media, error)
+	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
 }
 
 type service struct {
@@ -93,6 +95,32 @@ func (s *service) Get(ctx context.Context, id uuid.UUID) (Media, error) {
 		return Media{}, err
 	}
 	return s.withURL(m), nil
+}
+
+func (s *service) List(ctx context.Context, p authz.Principal) ([]Media, error) {
+	if p.ID == "" {
+		return nil, ErrForbidden
+	}
+	items, err := s.media.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Media, 0, len(items))
+	for _, m := range items {
+		out = append(out, s.withURL(m))
+	}
+	return out, nil
+}
+
+func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error {
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.Delete) {
+		return ErrForbidden
+	}
+	m, err := s.media.Delete(ctx, id)
+	if err != nil {
+		return err
+	}
+	return s.blobs.Delete(ctx, m.Key)
 }
 
 func (s *service) withURL(m Media) Media {

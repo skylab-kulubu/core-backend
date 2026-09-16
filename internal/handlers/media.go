@@ -68,3 +68,30 @@ func (h *MediaHandler) Get(c fiber.Ctx) error {
 	}
 	return c.JSON(got)
 }
+
+func (h *MediaHandler) List(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return mediaError(c, err)
+	}
+	items, err := h.svc.List(c.Context(), p)
+	if err != nil {
+		return mediaError(c, err)
+	}
+	return c.JSON(items)
+}
+
+func (h *MediaHandler) Delete(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return mediaError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if err := h.svc.Delete(c.Context(), p, id); err != nil {
+		return mediaError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}

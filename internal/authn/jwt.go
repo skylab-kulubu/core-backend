@@ -52,6 +52,7 @@ func ParseAccessToken(token string) (Identity, error) {
 			LastName:  family,
 		},
 		Groups: groupsFromClaims(claims),
+		Roles:  rolesFromClaims(claims),
 	}, nil
 }
 
@@ -78,4 +79,35 @@ func groupsFromClaims(claims map[string]any) []string {
 	default:
 		return nil
 	}
+}
+
+func rolesFromClaims(claims map[string]any) []string {
+	ra, ok := claims["resource_access"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, client := range []string{"core", "skylapp"} {
+		ca, ok := ra[client].(map[string]any)
+		if !ok {
+			continue
+		}
+		raw, ok := ca["roles"].([]any)
+		if !ok {
+			continue
+		}
+		for _, item := range raw {
+			s, ok := item.(string)
+			if !ok || s == "" {
+				continue
+			}
+			if _, dup := seen[s]; dup {
+				continue
+			}
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	return out
 }
