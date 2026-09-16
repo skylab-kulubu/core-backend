@@ -21,14 +21,4 @@ type Store interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
 	CreateDay(ctx context.Context, d Day) (Day, error)
-	ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error)
-	UpdateDay(ctx context.Context, d Day) (Day, error)
-	DeleteDay(ctx context.Context, id uuid.UUID) error
-	ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error)
-	SetSeason(ctx context.Context, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
-	GetSession(ctx context.Context, id uuid.UUID) (Session, error)
-	ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Session, error)
-	CreateSession(ctx context.Context, s Session) (Session, error)
-	UpdateSession(ctx context.Context, s Session) (Session, error)
-	DeleteSession(ctx context.Context, id uuid.UUID) error
 }

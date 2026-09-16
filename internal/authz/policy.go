@@ -14,14 +14,11 @@ const (
 type Type string
 
 const (
-	TypeEvent    Type = "EVENT"
-	TypeGroup    Type = "GROUP"
-	TypeUser     Type = "USER"
-	TypeTeam     Type = "TEAM"
-	TypeTicket   Type = "TICKET"
-	TypeSeason   Type = "SEASON"
-	TypeEventDay Type = "EVENT_DAY"
-	TypeSession  Type = "SESSION"
+	TypeEvent  Type = "EVENT"
+	TypeGroup  Type = "GROUP"
+	TypeUser   Type = "USER"
+	TypeTeam   Type = "TEAM"
+	TypeTicket Type = "TICKET"
 )
 
 type Level string

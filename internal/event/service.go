@@ -13,18 +13,6 @@ type Service interface {
 	Create(ctx context.Context, p authz.Principal, in Event) (Event, error)
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Event) (Event, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
-	ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error)
-	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
-	CreateDay(ctx context.Context, p authz.Principal, d Day) (Day, error)
-	UpdateDay(ctx context.Context, p authz.Principal, id uuid.UUID, d Day) (Day, error)
-	DeleteDay(ctx context.Context, p authz.Principal, id uuid.UUID) error
-	ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Session, error)
-	GetSession(ctx context.Context, id uuid.UUID) (Session, error)
-	CreateSession(ctx context.Context, p authz.Principal, sess Session) (Session, error)
-	UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session) (Session, error)
-	DeleteSession(ctx context.Context, p authz.Principal, id uuid.UUID) error
-	ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error)
-	AssignSeason(ctx context.Context, p authz.Principal, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
 }
 
 type service struct {
@@ -70,9 +58,6 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 		return Event{}, ErrInvalid
 	}
 	in.ID = existing.ID
-	if in.SeasonID == nil {
-		in.SeasonID = existing.SeasonID
-	}
 	return s.store.Update(ctx, in)
 }
 
@@ -85,156 +70,4 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 		return ErrForbidden
 	}
 	return s.store.Delete(ctx, id)
-}
-
-func (s *service) ownerResource(owner string, t authz.Type) authz.Resource {
-	return authz.Resource{Type: t, OwnerTeam: owner, EventType: owner}
-}
-
-func (s *service) eventOwner(ctx context.Context, eventID uuid.UUID) (string, error) {
-	ev, err := s.store.Get(ctx, eventID)
-	if err != nil {
-		return "", err
-	}
-	return ev.OwnerTeam, nil
-}
-
-func (s *service) ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error) {
-	if _, err := s.store.Get(ctx, eventID); err != nil {
-		return nil, err
-	}
-	return s.store.ListDays(ctx, eventID)
-}
-
-func (s *service) GetDay(ctx context.Context, id uuid.UUID) (Day, error) {
-	return s.store.GetDay(ctx, id)
-}
-
-func (s *service) CreateDay(ctx context.Context, p authz.Principal, d Day) (Day, error) {
-	if d.EventID == uuid.Nil {
-		return Day{}, ErrInvalid
-	}
-	owner, err := s.eventOwner(ctx, d.EventID)
-	if err != nil {
-		return Day{}, err
-	}
-	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeEventDay), authz.Create) {
-		return Day{}, ErrForbidden
-	}
-	return s.store.CreateDay(ctx, d)
-}
-
-func (s *service) UpdateDay(ctx context.Context, p authz.Principal, id uuid.UUID, d Day) (Day, error) {
-	existing, err := s.store.GetDay(ctx, id)
-	if err != nil {
-		return Day{}, err
-	}
-	owner, err := s.eventOwner(ctx, existing.EventID)
-	if err != nil {
-		return Day{}, err
-	}
-	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeEventDay), authz.Update) {
-		return Day{}, ErrForbidden
-	}
-	d.ID = existing.ID
-	d.EventID = existing.EventID
-	return s.store.UpdateDay(ctx, d)
-}
-
-func (s *service) DeleteDay(ctx context.Context, p authz.Principal, id uuid.UUID) error {
-	existing, err := s.store.GetDay(ctx, id)
-	if err != nil {
-		return err
-	}
-	owner, err := s.eventOwner(ctx, existing.EventID)
-	if err != nil {
-		return err
-	}
-	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeEventDay), authz.Delete) {
-		return ErrForbidden
-	}
-	return s.store.DeleteDay(ctx, id)
-}
-
-func (s *service) ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Session, error) {
-	if _, err := s.store.GetDay(ctx, eventDayID); err != nil {
-		return nil, err
-	}
-	return s.store.ListSessions(ctx, eventDayID)
-}
-
-func (s *service) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
-	return s.store.GetSession(ctx, id)
-}
-
-func (s *service) sessionOwner(ctx context.Context, eventDayID uuid.UUID) (string, error) {
-	day, err := s.store.GetDay(ctx, eventDayID)
-	if err != nil {
-		return "", err
-	}
-	return s.eventOwner(ctx, day.EventID)
-}
-
-func (s *service) CreateSession(ctx context.Context, p authz.Principal, sess Session) (Session, error) {
-	if sess.EventDayID == uuid.Nil || sess.Title == "" || sess.SpeakerName == "" || sess.SessionType == "" {
-		return Session{}, ErrInvalid
-	}
-	owner, err := s.sessionOwner(ctx, sess.EventDayID)
-	if err != nil {
-		return Session{}, err
-	}
-	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeSession), authz.Create) {
-		return Session{}, ErrForbidden
-	}
-	return s.store.CreateSession(ctx, sess)
-}
-
-func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session) (Session, error) {
-	existing, err := s.store.GetSession(ctx, id)
-	if err != nil {
-		return Session{}, err
-	}
-	owner, err := s.sessionOwner(ctx, existing.EventDayID)
-	if err != nil {
-		return Session{}, err
-	}
-	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeSession), authz.Update) {
-		return Session{}, ErrForbidden
-	}
-	if sess.Title == "" || sess.SpeakerName == "" || sess.SessionType == "" {
-		return Session{}, ErrInvalid
-	}
-	sess.ID = existing.ID
-	sess.EventDayID = existing.EventDayID
-	return s.store.UpdateSession(ctx, sess)
-}
-
-func (s *service) DeleteSession(ctx context.Context, p authz.Principal, id uuid.UUID) error {
-	existing, err := s.store.GetSession(ctx, id)
-	if err != nil {
-		return err
-	}
-	owner, err := s.sessionOwner(ctx, existing.EventDayID)
-	if err != nil {
-		return err
-	}
-	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeSession), authz.Delete) {
-		return ErrForbidden
-	}
-	return s.store.DeleteSession(ctx, id)
-}
-
-func (s *service) ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error) {
-	return s.store.ListBySeason(ctx, seasonID)
-}
-
-func (s *service) AssignSeason(ctx context.Context, p authz.Principal, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error) {
-	existing, err := s.store.Get(ctx, eventID)
-	if err != nil {
-		return Event{}, err
-	}
-	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
-		return Event{}, ErrForbidden
-	}
-	return s.store.SetSeason(ctx, eventID, seasonID)
 }
