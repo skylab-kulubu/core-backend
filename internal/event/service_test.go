@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 )
@@ -130,5 +131,25 @@ func TestService_CreateRequiresFields(t *testing.T) {
 	_, err := svc.Create(context.Background(), yk, event.Event{Name: "X"})
 	if !errors.Is(err, event.ErrInvalid) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestService_CreateStoresCoverImageID(t *testing.T) {
+	t.Parallel()
+	_, svc := setup(t)
+	ctx := context.Background()
+	leader := authz.Principal{ID: "l", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	cover := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	created, err := svc.Create(ctx, leader, event.Event{
+		Name:         "Hack",
+		Location:     "YTÜ",
+		OwnerTeam:    "WEBLAB",
+		CoverImageID: &cover,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.CoverImageID == nil || *created.CoverImageID != cover {
+		t.Fatalf("cover %+v", created.CoverImageID)
 	}
 }

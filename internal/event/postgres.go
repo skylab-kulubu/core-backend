@@ -17,16 +17,18 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const eventCols = `id, name, description, location, owner_team, form_url, capacity, start_date, end_date, linkedin, active, ranked, prize_info, season_id, created_at, updated_at`
+const eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, m.file_url, e.created_at, e.updated_at`
+
+const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id`
 
 func (s *PostgresStore) List(ctx context.Context, ownerTeam string) ([]Event, error) {
-	q := `SELECT ` + eventCols + ` FROM events`
+	q := `SELECT ` + eventCols + ` FROM ` + eventFrom
 	args := []any{}
 	if ownerTeam != "" {
-		q += ` WHERE owner_team = $1`
+		q += ` WHERE e.owner_team = $1`
 		args = append(args, ownerTeam)
 	}
-	q += ` ORDER BY start_date NULLS LAST, created_at`
+	q += ` ORDER BY e.start_date NULLS LAST, e.created_at`
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -44,7 +46,7 @@ func (s *PostgresStore) List(ctx context.Context, ownerTeam string) ([]Event, er
 }
 
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Event, error) {
-	e, err := scanEvent(s.pool.QueryRow(ctx, `SELECT `+eventCols+` FROM events WHERE id = $1`, id))
+	e, err := scanEvent(s.pool.QueryRow(ctx, `SELECT `+eventCols+` FROM `+eventFrom+` WHERE e.id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
@@ -55,28 +57,35 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 	if e.ID == uuid.Nil {
 		e.ID = uuid.New()
 	}
-	return scanEvent(s.pool.QueryRow(ctx, `
+	_, err := s.pool.Exec(ctx, `
 		INSERT INTO events (
 			id, name, description, location, owner_team, form_url, capacity,
-			start_date, end_date, linkedin, active, ranked, prize_info, season_id
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-		RETURNING `+eventCols, e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
-		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID))
+			start_date, end_date, linkedin, active, ranked, prize_info, season_id, cover_image_id
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
+		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID)
+	if err != nil {
+		return Event{}, err
+	}
+	return s.Get(ctx, e.ID)
 }
 
 func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
-	ev, err := scanEvent(s.pool.QueryRow(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE events SET
 			name = $2, description = $3, location = $4, owner_team = $5, form_url = $6,
 			capacity = $7, start_date = $8, end_date = $9, linkedin = $10, active = $11,
-			ranked = $12, prize_info = $13, season_id = $14, updated_at = now()
-		WHERE id = $1
-		RETURNING `+eventCols, e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
-		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID))
-	if errors.Is(err, pgx.ErrNoRows) {
+			ranked = $12, prize_info = $13, season_id = $14, cover_image_id = $15, updated_at = now()
+		WHERE id = $1`,
+		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
+		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID)
+	if err != nil {
+		return Event{}, err
+	}
+	if tag.RowsAffected() == 0 {
 		return Event{}, ErrNotFound
 	}
-	return ev, err
+	return s.Get(ctx, e.ID)
 }
 
 func (s *PostgresStore) Delete(ctx context.Context, id uuid.UUID) error {
@@ -156,7 +165,7 @@ func (s *PostgresStore) DeleteDay(ctx context.Context, id uuid.UUID) error {
 }
 
 func (s *PostgresStore) ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+eventCols+` FROM events WHERE season_id = $1 ORDER BY start_date NULLS LAST, created_at`, seasonID)
+	rows, err := s.pool.Query(ctx, `SELECT `+eventCols+` FROM `+eventFrom+` WHERE e.season_id = $1 ORDER BY e.start_date NULLS LAST, e.created_at`, seasonID)
 	if err != nil {
 		return nil, err
 	}
@@ -173,12 +182,14 @@ func (s *PostgresStore) ListBySeason(ctx context.Context, seasonID uuid.UUID) ([
 }
 
 func (s *PostgresStore) SetSeason(ctx context.Context, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error) {
-	e, err := scanEvent(s.pool.QueryRow(ctx, `
-		UPDATE events SET season_id = $2, updated_at = now() WHERE id = $1 RETURNING `+eventCols, eventID, seasonID))
-	if errors.Is(err, pgx.ErrNoRows) {
+	tag, err := s.pool.Exec(ctx, `UPDATE events SET season_id = $2, updated_at = now() WHERE id = $1`, eventID, seasonID)
+	if err != nil {
+		return Event{}, err
+	}
+	if tag.RowsAffected() == 0 {
 		return Event{}, ErrNotFound
 	}
-	return e, err
+	return s.Get(ctx, eventID)
 }
 
 const sessionCols = `id, event_day_id, title, speaker_name, speaker_linkedin, description, start_time, end_time, order_index, session_type`
@@ -252,10 +263,15 @@ type rowScanner interface {
 
 func scanEvent(row rowScanner) (Event, error) {
 	var e Event
+	var coverURL *string
 	err := row.Scan(
 		&e.ID, &e.Name, &e.Description, &e.Location, &e.OwnerTeam, &e.FormURL, &e.Capacity,
-		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Ranked, &e.PrizeInfo, &e.SeasonID, &e.CreatedAt, &e.UpdatedAt,
+		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Ranked, &e.PrizeInfo, &e.SeasonID,
+		&e.CoverImageID, &coverURL, &e.CreatedAt, &e.UpdatedAt,
 	)
+	if coverURL != nil {
+		e.CoverImageURL = *coverURL
+	}
 	return e, err
 }
 
