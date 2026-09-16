@@ -30,6 +30,8 @@ type Media struct {
 type Store interface {
 	Create(ctx context.Context, m Media) (Media, error)
 	Get(ctx context.Context, id uuid.UUID) (Media, error)
+	List(ctx context.Context) ([]Media, error)
+	Delete(ctx context.Context, id uuid.UUID) (Media, error)
 }
 
 type BlobStore interface {

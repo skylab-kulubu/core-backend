@@ -40,6 +40,27 @@ func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (Media, error) {
 	return m, nil
 }
 
+func (s *MemoryStore) List(_ context.Context) ([]Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Media, 0, len(s.byID))
+	for _, m := range s.byID {
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) (Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok {
+		return Media{}, ErrNotFound
+	}
+	delete(s.byID, id)
+	return m, nil
+}
+
 type MemoryBlob struct {
 	mu      sync.Mutex
 	objects map[string][]byte

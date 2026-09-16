@@ -34,7 +34,9 @@ func mediaApp(t *testing.T, ident authn.Identity, store media.Store, blobs media
 		return c.Next()
 	})
 	app.Post("/v1/media", h.Upload)
+	app.Get("/v1/media", h.List)
 	app.Get("/v1/media/:id", h.Get)
+	app.Delete("/v1/media/:id", h.Delete)
 	return app
 }
 
@@ -96,6 +98,67 @@ func TestMediaUploadAndPublicGetHTTP(t *testing.T) {
 	}
 	if got.ID != created.ID || got.URL != created.URL {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestMediaListAndPrivilegedDeleteHTTP(t *testing.T) {
+	t.Parallel()
+	store := media.NewMemoryStore()
+	blobs := media.NewMemoryBlob()
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	member := authn.Identity{ID: userID, Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	app := mediaApp(t, member, store, blobs)
+
+	body, ctype := multipartPNG(t, "file", "dot.png", pngDotHTTP())
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/media", body)
+	req.Header.Set("Content-Type", ctype)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("upload status %d body %s", resp.StatusCode, b)
+	}
+	var created media.Media
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/media", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("list status %d", resp.StatusCode)
+	}
+	var listed []media.Media
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != created.ID {
+		t.Fatalf("listed %+v", listed)
+	}
+
+	delPath := "/v1/media/" + created.ID.String()
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodDelete, delPath, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("member delete %d body %s", resp.StatusCode, b)
+	}
+
+	yk := authn.Identity{ID: uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), Groups: []string{"/UYELER/YK"}}
+	app = mediaApp(t, yk, store, blobs)
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodDelete, delPath, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNoContent {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("yk delete %d body %s", resp.StatusCode, b)
 	}
 }
 

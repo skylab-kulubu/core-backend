@@ -32,6 +32,8 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		return a.allowCompetitor(p, r, action)
 	case TypeMedia:
 		return a.allowMedia(p, r, action)
+	case TypeURL:
+		return a.allowURL(p, r, action)
 	case TypeTeam:
 		return action == Read
 	case TypeGroup, TypeUser:
@@ -131,6 +133,49 @@ func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
 	default:
 		return false
 	}
+}
+
+func (a *authorizer) allowURL(p Principal, r Resource, action Action) bool {
+	if a.isPrivileged(p) {
+		return true
+	}
+	switch action {
+	case Create:
+		return p.ID != "" && (hasRole(p, "url:create", "url:access", "skylapp:url:create", "skylapp:access"))
+	case ReadMe:
+		return p.ID != "" && (hasRole(p, "url:get", "url:access", "skylapp:url:get", "skylapp:access") || hasRole(p, "url:moderator", "skylapp:moderator"))
+	case Read:
+		return hasRole(p, "url:moderator", "skylapp:moderator")
+	case Update:
+		if hasRole(p, "url:moderator", "skylapp:moderator") {
+			return true
+		}
+		if r.OwnerID == "" || r.OwnerID != p.ID {
+			return false
+		}
+		return hasRole(p, "url:update", "url:access", "skylapp:url:update", "skylapp:access")
+	case Delete:
+		if hasRole(p, "url:moderator", "skylapp:moderator") {
+			return true
+		}
+		if r.OwnerID == "" || r.OwnerID != p.ID {
+			return false
+		}
+		return hasRole(p, "url:delete", "url:access", "skylapp:url:delete", "skylapp:access")
+	default:
+		return false
+	}
+}
+
+func hasRole(p Principal, names ...string) bool {
+	for _, want := range names {
+		for _, r := range p.Roles {
+			if r == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (a *authorizer) isPrivileged(p Principal) bool {

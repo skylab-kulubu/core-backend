@@ -25,6 +25,7 @@ const (
 	TypeSession    Type = "SESSION"
 	TypeCompetitor Type = "COMPETITOR"
 	TypeMedia      Type = "MEDIA"
+	TypeURL        Type = "URL"
 )
 
 type Level string
@@ -37,6 +38,7 @@ const (
 type Principal struct {
 	ID     string
 	Groups []string
+	Roles  []string
 }
 
 type Resource struct {

@@ -23,6 +23,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/season"
+	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -39,6 +40,7 @@ func memoryApp(parse ...func(string) (authn.Identity, error)) *fiber.App {
 		Tickets:     ticket.NewService(ticket.NewMemoryStore(), events, az),
 		Competitors: competitor.NewService(competitor.NewMemoryStore(events), events, az),
 		Media:       media.NewService(media.NewMemoryStore(), media.NewMemoryBlob(), az, ""),
+		URLs:        shorturl.NewService(shorturl.NewMemoryStore(), az),
 	}
 	if len(parse) > 0 {
 		deps.ParseToken = parse[0]

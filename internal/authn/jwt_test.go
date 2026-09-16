@@ -30,6 +30,19 @@ func TestParseAccessTokenReadsGroups(t *testing.T) {
 	}
 }
 
+func TestParseAccessTokenReadsClientRoles(t *testing.T) {
+	t.Parallel()
+	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	tok := unsignedJWT(`{"sub":"` + id.String() + `","resource_access":{"core":{"roles":["url:create"]},"skylapp":{"roles":["skylapp:access","url:create"]}}}`)
+	got, err := authn.ParseAccessToken(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Roles) != 2 {
+		t.Fatalf("roles %+v", got.Roles)
+	}
+}
+
 func TestParseAccessTokenRejectsBadSub(t *testing.T) {
 	t.Parallel()
 	_, err := authn.ParseAccessToken(unsignedJWT(`{"sub":"not-a-uuid"}`))
