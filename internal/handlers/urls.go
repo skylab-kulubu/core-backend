@@ -5,6 +5,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 )
 
@@ -45,6 +46,19 @@ func (h *URLHandler) Redirect(c fiber.Ctx) error {
 	}
 	c.Set(fiber.HeaderLocation, u.URL)
 	return c.SendStatus(fiber.StatusMovedPermanently)
+}
+
+func (h *URLHandler) QR(c fiber.Ctx) error {
+	u, err := h.svc.Lookup(c.Context(), c.Params("alias"))
+	if err != nil {
+		return urlError(c, err)
+	}
+	png, err := qr.PNG(qr.ShortURL(u.Alias), qr.SizeFromQuery(c.Query("size")))
+	if err != nil {
+		return err
+	}
+	c.Set(fiber.HeaderContentType, "image/png")
+	return c.Send(png)
 }
 
 func (h *URLHandler) Create(c fiber.Ctx) error {
