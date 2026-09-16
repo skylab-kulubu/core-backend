@@ -111,6 +111,18 @@ func TestAuthorizer_Allow(t *testing.T) {
 			a:    Delete,
 			want: false,
 		},
+		{
+			name: "anonymous can read public teams",
+			r:    Resource{Type: TypeTeam},
+			a:    Read,
+			want: true,
+		},
+		{
+			name: "anonymous cannot mutate teams",
+			r:    Resource{Type: TypeTeam},
+			a:    Update,
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {

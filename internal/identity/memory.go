@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -47,7 +48,7 @@ func (m *Memory) resolveLocked(idOrPath string) (Group, bool) {
 		return g, true
 	}
 	for _, g := range m.groups {
-		if g.Path == idOrPath {
+		if g.Path == idOrPath || g.Name == idOrPath {
 			return g, true
 		}
 	}
@@ -74,6 +75,28 @@ func (m *Memory) GetGroup(_ context.Context, idOrPath string) (Group, error) {
 		return Group{}, ErrNotFound
 	}
 	return g, nil
+}
+
+func (m *Memory) Subgroups(_ context.Context, groupID string) ([]Group, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("Subgroups")
+	g, ok := m.resolveLocked(groupID)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	prefix := g.Path + "/"
+	out := make([]Group, 0)
+	for _, child := range m.groups {
+		if !strings.HasPrefix(child.Path, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(child.Path, prefix)
+		if rest != "" && !strings.Contains(rest, "/") {
+			out = append(out, child)
+		}
+	}
+	return out, nil
 }
 
 func (m *Memory) Members(_ context.Context, groupID string) ([]Person, error) {
