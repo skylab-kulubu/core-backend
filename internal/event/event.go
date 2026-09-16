@@ -20,8 +20,22 @@ type Event struct {
 	Active      bool       `json:"active"`
 	Ranked      bool       `json:"ranked"`
 	PrizeInfo   string     `json:"prizeInfo,omitempty"`
+	SeasonID    *uuid.UUID `json:"seasonId,omitempty"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
+}
+
+type Session struct {
+	ID              uuid.UUID  `json:"id"`
+	EventDayID      uuid.UUID  `json:"eventDayId"`
+	Title           string     `json:"title"`
+	SpeakerName     string     `json:"speakerName"`
+	SpeakerLinkedin string     `json:"speakerLinkedin,omitempty"`
+	Description     string     `json:"description,omitempty"`
+	StartTime       *time.Time `json:"startTime,omitempty"`
+	EndTime         *time.Time `json:"endTime,omitempty"`
+	OrderIndex      int        `json:"orderIndex"`
+	SessionType     string     `json:"sessionType"`
 }
 
 type Day struct {
