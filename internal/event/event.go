@@ -23,3 +23,11 @@ type Event struct {
 	CreatedAt   time.Time  `json:"createdAt"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
 }
+
+type Day struct {
+	ID        uuid.UUID  `json:"id"`
+	EventID   uuid.UUID  `json:"eventId"`
+	Name      string     `json:"name"`
+	StartDate *time.Time `json:"startDate,omitempty"`
+	EndDate   *time.Time `json:"endDate,omitempty"`
+}

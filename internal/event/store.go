@@ -19,4 +19,6 @@ type Store interface {
 	Create(ctx context.Context, e Event) (Event, error)
 	Update(ctx context.Context, e Event) (Event, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
+	CreateDay(ctx context.Context, d Day) (Day, error)
 }
