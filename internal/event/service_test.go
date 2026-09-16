@@ -134,6 +134,29 @@ func TestService_CreateRequiresFields(t *testing.T) {
 	}
 }
 
+func TestService_PrivilegedCreatesEventWithoutOwnerTeam(t *testing.T) {
+	t.Parallel()
+	_, svc := setup(t)
+	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+	created, err := svc.Create(context.Background(), yk, event.Event{Name: "Seminer", Location: "YTÜ"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.OwnerTeam != "" {
+		t.Fatalf("owner %q", created.OwnerTeam)
+	}
+}
+
+func TestService_LeaderCannotCreateEventWithoutOwnerTeam(t *testing.T) {
+	t.Parallel()
+	_, svc := setup(t)
+	leader := authz.Principal{ID: "l", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	_, err := svc.Create(context.Background(), leader, event.Event{Name: "Seminer", Location: "YTÜ"})
+	if !errors.Is(err, event.ErrForbidden) {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestService_CreateStoresCoverImageID(t *testing.T) {
 	t.Parallel()
 	_, svc := setup(t)
