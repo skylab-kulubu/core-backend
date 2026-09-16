@@ -34,14 +34,15 @@ type Service interface {
 }
 
 type service struct {
-	dir   Directory
-	users user.Store
-	authz authz.Authorizer
-	mail  mail.Mailer
+	dir    Directory
+	users  user.Store
+	assign user.Service
+	authz  authz.Authorizer
+	mail   mail.Mailer
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer, mailers ...mail.Mailer) Service {
-	s := &service{dir: dir, users: users, authz: az}
+	s := &service{dir: dir, users: users, assign: user.NewService(users, dir), authz: az}
 	if len(mailers) > 0 {
 		s.mail = mailers[0]
 	}
@@ -147,6 +148,9 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	}
 	if shadow, err := s.users.Get(ctx, id); err == nil {
 		person.SchoolEmail = shadow.SchoolEmail
+		if shadow.SkyNumber != "" {
+			person.SkyNumber = shadow.SkyNumber
+		}
 	}
 	groups, err := s.dir.GroupsForUser(ctx, id)
 	if err != nil {
@@ -228,17 +232,18 @@ func (s *service) CreateUser(ctx context.Context, p authz.Principal, in Person) 
 	if err != nil {
 		return Person{}, err
 	}
-	shadow, _, err := s.users.Upsert(ctx, user.User{
-		ID:          created.ID,
+	shadow, _, err := s.assign.Ensure(ctx, created.ID, user.Profile{
 		Email:       created.Email,
 		FirstName:   created.FirstName,
 		LastName:    created.LastName,
 		SchoolEmail: created.SchoolEmail,
+		SkyNumber:   created.SkyNumber,
 	})
 	if err != nil {
 		_ = s.dir.DeleteUser(ctx, created.ID)
 		return Person{}, err
 	}
+	created.SkyNumber = shadow.SkyNumber
 	if s.mail != nil {
 		s.mail.Welcome(ctx, shadow)
 	}
@@ -479,5 +484,6 @@ func personFromUser(u user.User) Person {
 		FirstName:   u.FirstName,
 		LastName:    u.LastName,
 		SchoolEmail: u.SchoolEmail,
+		SkyNumber:   u.SkyNumber,
 	}
 }

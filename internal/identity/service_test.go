@@ -150,6 +150,12 @@ func TestService_CreateUserDualWrites(t *testing.T) {
 	if shadow.Email != "ada@example.com" || shadow.FirstName != "Ada" {
 		t.Fatalf("shadow %+v", shadow)
 	}
+	if shadow.SkyNumber != "SKY-0000001" {
+		t.Fatalf("sky number %+v", shadow)
+	}
+	if created.SkyNumber != "SKY-0000001" {
+		t.Fatalf("created %+v", created)
+	}
 }
 
 type recMail struct {
@@ -178,6 +184,9 @@ func TestService_CreateUserSendsWelcome(t *testing.T) {
 	}
 	if rec.n != 1 || rec.last.ID != created.ID || rec.last.Email != "ada@example.com" {
 		t.Fatalf("welcome %+v n=%d", rec.last, rec.n)
+	}
+	if rec.last.SkyNumber != "SKY-0000001" {
+		t.Fatalf("welcome sky %+v", rec.last)
 	}
 }
 

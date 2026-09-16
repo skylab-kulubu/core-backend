@@ -334,3 +334,26 @@ func (m *Memory) LogoutAllSessions(_ context.Context, userID uuid.UUID) error {
 	}
 	return nil
 }
+
+func (m *Memory) WriteSkyNumber(_ context.Context, userID uuid.UUID, skyNumber string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("WriteSkyNumber")
+	p, ok := m.people[userID]
+	if !ok {
+		return ErrNotFound
+	}
+	p.SkyNumber = skyNumber
+	m.people[userID] = p
+	return nil
+}
+
+func (m *Memory) ReadSkyNumber(_ context.Context, userID uuid.UUID) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.people[userID]
+	if !ok {
+		return "", ErrNotFound
+	}
+	return p.SkyNumber, nil
+}

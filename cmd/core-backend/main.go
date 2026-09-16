@@ -114,7 +114,7 @@ func main() {
 	}
 
 	app := httpx.New(httpx.Deps{
-		Users:       user.NewService(users),
+		Users:       user.NewService(users, dir),
 		Identity:    identity.NewService(dir, users, az, mailer),
 		Events:      event.NewService(events, az),
 		Seasons:     season.NewService(seasons, az),

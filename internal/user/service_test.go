@@ -103,3 +103,88 @@ func TestService_EnsureConcurrentSameID(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestService_EnsureAssignsSkyNumberOnce(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	id := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	ctx := context.Background()
+
+	first, created, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com", FirstName: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created || first.SkyNumber != "SKY-0000001" {
+		t.Fatalf("first %+v created=%v", first, created)
+	}
+
+	second, created, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com", FirstName: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created || second.SkyNumber != "SKY-0000001" {
+		t.Fatalf("second %+v created=%v", second, created)
+	}
+}
+
+func TestService_EnsureKeepsClaimedSkyNumber(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	id := uuid.MustParse("55555555-5555-5555-5555-555555555555")
+	got, _, err := svc.Ensure(context.Background(), id, Profile{Email: "a@example.com", SkyNumber: "SKY-0000042"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SkyNumber != "SKY-0000042" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestService_EnsureDistinctSkyNumbers(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	a := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	b := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	first, _, err := svc.Ensure(context.Background(), a, Profile{Email: "a@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := svc.Ensure(context.Background(), b, Profile{Email: "b@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SkyNumber == second.SkyNumber || first.SkyNumber == "" || second.SkyNumber == "" {
+		t.Fatalf("%q %q", first.SkyNumber, second.SkyNumber)
+	}
+}
+
+type recSky struct {
+	n string
+}
+
+func (r *recSky) ReadSkyNumber(context.Context, uuid.UUID) (string, error) {
+	return r.n, nil
+}
+
+func (r *recSky) WriteSkyNumber(_ context.Context, _ uuid.UUID, n string) error {
+	r.n = n
+	return nil
+}
+
+func TestService_EnsureReusesDirectorySkyNumber(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	sync := &recSky{n: "SKY-0000099"}
+	svc := NewService(store, sync)
+	id := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+	got, _, err := svc.Ensure(context.Background(), id, Profile{Email: "c@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SkyNumber != "SKY-0000099" {
+		t.Fatalf("got %+v", got)
+	}
+}

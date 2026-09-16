@@ -96,7 +96,7 @@ func TestGetMeUpsertsIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Email != "ada@example.com" {
+	if got.Email != "ada@example.com" || got.SkyNumber != "SKY-0000001" {
 		t.Fatalf("got %+v", got)
 	}
 }

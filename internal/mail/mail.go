@@ -53,6 +53,7 @@ func (s *SkyMail) Welcome(ctx context.Context, u user.User) {
 			"FirstName": u.FirstName,
 			"LastName":  u.LastName,
 			"Email":     u.Email,
+			"SkyNumber": u.SkyNumber,
 			"CreatedAt": u.CreatedAt.UTC().Format(time.RFC3339),
 		},
 	})
