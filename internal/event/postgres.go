@@ -90,6 +90,29 @@ func (s *PostgresStore) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (s *PostgresStore) GetDay(ctx context.Context, id uuid.UUID) (Day, error) {
+	var d Day
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, event_id, name, start_date, end_date FROM event_days WHERE id = $1
+	`, id).Scan(&d.ID, &d.EventID, &d.Name, &d.StartDate, &d.EndDate)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Day{}, ErrNotFound
+	}
+	return d, err
+}
+
+func (s *PostgresStore) CreateDay(ctx context.Context, d Day) (Day, error) {
+	if d.ID == uuid.Nil {
+		d.ID = uuid.New()
+	}
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO event_days (id, event_id, name, start_date, end_date)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, event_id, name, start_date, end_date
+	`, d.ID, d.EventID, d.Name, d.StartDate, d.EndDate).Scan(&d.ID, &d.EventID, &d.Name, &d.StartDate, &d.EndDate)
+	return d, err
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }

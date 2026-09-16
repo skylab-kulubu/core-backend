@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS ticket_checkins;
+DROP TABLE IF EXISTS tickets;
+DROP TABLE IF EXISTS event_days;
