@@ -83,6 +83,46 @@ func TestAuthorizer_Allow(t *testing.T) {
 			a:    Delete,
 			want: true,
 		},
+		{
+			name: "privileged can list groups",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/YK"}},
+			r:    Resource{Type: TypeGroup},
+			a:    Read,
+			want: true,
+		},
+		{
+			name: "member cannot list groups",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}},
+			r:    Resource{Type: TypeGroup},
+			a:    Read,
+			want: false,
+		},
+		{
+			name: "privileged can create users",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ADMIN"}},
+			r:    Resource{Type: TypeUser},
+			a:    Create,
+			want: true,
+		},
+		{
+			name: "stranger cannot delete users",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}},
+			r:    Resource{Type: TypeUser},
+			a:    Delete,
+			want: false,
+		},
+		{
+			name: "anonymous can read public teams",
+			r:    Resource{Type: TypeTeam},
+			a:    Read,
+			want: true,
+		},
+		{
+			name: "anonymous cannot mutate teams",
+			r:    Resource{Type: TypeTeam},
+			a:    Update,
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {

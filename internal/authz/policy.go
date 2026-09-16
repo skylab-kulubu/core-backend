@@ -11,7 +11,12 @@ const (
 
 type Type string
 
-const TypeEvent Type = "EVENT"
+const (
+	TypeEvent Type = "EVENT"
+	TypeGroup Type = "GROUP"
+	TypeUser  Type = "USER"
+	TypeTeam  Type = "TEAM"
+)
 
 type Level string
 
