@@ -128,12 +128,3 @@ func rsaPublic(nB64, eB64 string) (*rsa.PublicKey, error) {
 	}
 	return &rsa.PublicKey{N: n, E: e}, nil
 }
-
-func ParseAndVerify(token string, verify func(string) error) (Identity, error) {
-	if verify != nil {
-		if err := verify(token); err != nil {
-			return Identity{}, ErrInvalidToken
-		}
-	}
-	return ParseAccessToken(token)
-}

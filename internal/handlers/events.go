@@ -72,7 +72,18 @@ func (h *EventHandler) List(c fiber.Ctx) error {
 		owner = c.Query("typeName")
 	}
 	activeOnly := c.Query("active") == "true"
+	if _, err := caller(c); err != nil {
+		activeOnly = true
+	}
 	events, err := h.svc.List(c.Context(), owner, activeOnly)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(events)
+}
+
+func (h *EventHandler) ListActive(c fiber.Ctx) error {
+	events, err := h.svc.List(c.Context(), "", true)
 	if err != nil {
 		return eventError(c, err)
 	}

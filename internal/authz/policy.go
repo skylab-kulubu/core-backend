@@ -10,6 +10,7 @@ const (
 	Validate Action = "VALIDATE"
 	ReadMe   Action = "READ_ME"
 	Upload   Action = "UPLOAD"
+	List     Action = "LIST"
 )
 
 type Type string

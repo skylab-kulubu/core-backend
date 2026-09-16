@@ -129,8 +129,18 @@ func TestMediaListAndPrivilegedDeleteHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("member list %d", resp.StatusCode)
+	}
+
+	ykList := authn.Identity{ID: uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), Groups: []string{"/UYELER/YK"}}
+	listApp := mediaApp(t, ykList, store, blobs)
+	resp, err = listApp.Test(httptest.NewRequest(fiber.MethodGet, "/v1/media", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != fiber.StatusOK {
-		t.Fatalf("list status %d", resp.StatusCode)
+		t.Fatalf("privileged list status %d", resp.StatusCode)
 	}
 	var listed []media.Media
 	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {

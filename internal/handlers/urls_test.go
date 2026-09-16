@@ -37,7 +37,7 @@ func urlApp(t *testing.T, ident authn.Identity) *fiber.App {
 func TestURLCreateRedirectAndListHTTP(t *testing.T) {
 	t.Parallel()
 	uid := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	app := urlApp(t, authn.Identity{ID: uid, Roles: []string{"skylapp:access"}})
+	app := urlApp(t, authn.Identity{ID: uid, Roles: []string{"url:access"}})
 	req := httptest.NewRequest(fiber.MethodPost, "/v1/urls", strings.NewReader(`{"url":"https://skylab.com","alias":"club"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
@@ -77,7 +77,7 @@ func TestURLCreateRedirectAndListHTTP(t *testing.T) {
 func TestURLQRDoesNotIncrementClicks(t *testing.T) {
 	t.Parallel()
 	uid := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	app := urlApp(t, authn.Identity{ID: uid, Roles: []string{"skylapp:access"}})
+	app := urlApp(t, authn.Identity{ID: uid, Roles: []string{"url:access"}})
 	req := httptest.NewRequest(fiber.MethodPost, "/v1/urls", strings.NewReader(`{"url":"https://skylab.com","alias":"club"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
@@ -132,7 +132,7 @@ func TestURLQRDoesNotIncrementClicks(t *testing.T) {
 func TestURLQRWithLogoDoesNotIncrementClicks(t *testing.T) {
 	t.Parallel()
 	uid := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	app := urlApp(t, authn.Identity{ID: uid, Roles: []string{"skylapp:access"}})
+	app := urlApp(t, authn.Identity{ID: uid, Roles: []string{"url:access"}})
 	req := httptest.NewRequest(fiber.MethodPost, "/v1/urls", strings.NewReader(`{"url":"https://skylab.com","alias":"club"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)

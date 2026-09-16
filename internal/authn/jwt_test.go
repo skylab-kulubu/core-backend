@@ -3,9 +3,12 @@ package authn_test
 import (
 	"encoding/base64"
 	"testing"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/testauth"
 )
 
 func unsignedJWT(payload string) string {
@@ -69,7 +72,7 @@ func TestParseAccessTokenReadsSchoolEmail(t *testing.T) {
 	}
 }
 
-func TestParseAccessTokenReadsClientRoles(t *testing.T) {
+func TestParseAccessTokenReadsCoreRolesOnly(t *testing.T) {
 	t.Parallel()
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	tok := unsignedJWT(`{"sub":"` + id.String() + `","resource_access":{"core":{"roles":["url:create"]},"skylapp":{"roles":["skylapp:access","url:create"]}}}`)
@@ -77,7 +80,7 @@ func TestParseAccessTokenReadsClientRoles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Roles) != 2 {
+	if len(got.Roles) != 1 || got.Roles[0] != "url:create" {
 		t.Fatalf("roles %+v", got.Roles)
 	}
 }
@@ -87,5 +90,52 @@ func TestParseAccessTokenRejectsBadSub(t *testing.T) {
 	_, err := authn.ParseAccessToken(unsignedJWT(`{"sub":"not-a-uuid"}`))
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestParseAndVerifyRequiresAudienceAndIssuer(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	ok := keys.Token(t, jwt.MapClaims{"sub": id.String(), "email": "yk@example.com"})
+	got, err := authn.ParseAndVerify(ok, keys.Verify, keys.Issuer, testauth.Audience)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != id {
+		t.Fatalf("got %+v", got)
+	}
+
+	arrayAud := keys.Token(t, jwt.MapClaims{"sub": id.String(), "aud": []string{"account", "core"}})
+	if _, err := authn.ParseAndVerify(arrayAud, keys.Verify, keys.Issuer, testauth.Audience); err != nil {
+		t.Fatal(err)
+	}
+
+	unsigned := unsignedJWT(`{"sub":"` + id.String() + `","iss":"` + keys.Issuer + `","aud":"core"}`)
+	if _, err := authn.ParseAndVerify(unsigned, keys.Verify, keys.Issuer, testauth.Audience); err == nil {
+		t.Fatal("unsigned accepted")
+	}
+
+	wrongAud := keys.Token(t, jwt.MapClaims{"sub": id.String(), "aud": "account"})
+	if _, err := authn.ParseAndVerify(wrongAud, keys.Verify, keys.Issuer, testauth.Audience); err == nil {
+		t.Fatal("wrong aud accepted")
+	}
+
+	missingAud := keys.Sign(t, jwt.MapClaims{
+		"sub": id.String(),
+		"iss": keys.Issuer,
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	if _, err := authn.ParseAndVerify(missingAud, keys.Verify, keys.Issuer, testauth.Audience); err == nil {
+		t.Fatal("missing aud accepted")
+	}
+
+	wrongIss := keys.Token(t, jwt.MapClaims{"sub": id.String(), "iss": "https://other.example/realms/e-skylab"})
+	if _, err := authn.ParseAndVerify(wrongIss, keys.Verify, keys.Issuer, testauth.Audience); err == nil {
+		t.Fatal("wrong iss accepted")
+	}
+
+	if _, err := authn.ParseAndVerify(ok, nil, keys.Issuer, testauth.Audience); err == nil {
+		t.Fatal("nil verify accepted")
 	}
 }

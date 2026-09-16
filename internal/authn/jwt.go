@@ -12,11 +12,39 @@ import (
 
 var ErrInvalidToken = errors.New("authn: invalid token")
 
+const ResourceAudience = "core"
+
 func ParseAccessToken(token string) (Identity, error) {
+	ident, _, err := decodeAccessToken(token)
+	return ident, err
+}
+
+func ParseAndVerify(token string, verify func(string) error, issuer, audience string) (Identity, error) {
+	if verify == nil || strings.TrimSpace(issuer) == "" || strings.TrimSpace(audience) == "" {
+		return Identity{}, ErrInvalidToken
+	}
+	if err := verify(token); err != nil {
+		return Identity{}, ErrInvalidToken
+	}
+	ident, claims, err := decodeAccessToken(token)
+	if err != nil {
+		return Identity{}, err
+	}
+	iss, _ := claims["iss"].(string)
+	if iss != issuer {
+		return Identity{}, ErrInvalidToken
+	}
+	if !audienceIncludes(claims["aud"], audience) {
+		return Identity{}, ErrInvalidToken
+	}
+	return ident, nil
+}
+
+func decodeAccessToken(token string) (Identity, map[string]any, error) {
 	token = strings.TrimSpace(token)
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
-		return Identity{}, ErrInvalidToken
+		return Identity{}, nil, ErrInvalidToken
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
@@ -29,17 +57,17 @@ func ParseAccessToken(token string) (Identity, error) {
 		}
 		payload, err = base64.URLEncoding.DecodeString(padded)
 		if err != nil {
-			return Identity{}, ErrInvalidToken
+			return Identity{}, nil, ErrInvalidToken
 		}
 	}
 	var claims map[string]any
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return Identity{}, ErrInvalidToken
+		return Identity{}, nil, ErrInvalidToken
 	}
 	sub, _ := claims["sub"].(string)
 	id, err := uuid.Parse(sub)
 	if err != nil {
-		return Identity{}, ErrInvalidToken
+		return Identity{}, nil, ErrInvalidToken
 	}
 	email, _ := claims["email"].(string)
 	given, _ := claims["given_name"].(string)
@@ -59,7 +87,22 @@ func ParseAccessToken(token string) (Identity, error) {
 		},
 		Groups: groupsFromClaims(claims),
 		Roles:  rolesFromClaims(claims),
-	}, nil
+	}, claims, nil
+}
+
+func audienceIncludes(raw any, want string) bool {
+	switch v := raw.(type) {
+	case string:
+		return v == want
+	case []any:
+		for _, item := range v {
+			s, ok := item.(string)
+			if ok && s == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func groupsFromClaims(claims map[string]any) []string {
@@ -92,28 +135,26 @@ func rolesFromClaims(claims map[string]any) []string {
 	if !ok {
 		return nil
 	}
-	out := make([]string, 0)
+	ca, ok := ra["core"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, ok := ca["roles"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
 	seen := map[string]struct{}{}
-	for _, client := range []string{"core", "skylapp"} {
-		ca, ok := ra[client].(map[string]any)
-		if !ok {
+	for _, item := range raw {
+		s, ok := item.(string)
+		if !ok || s == "" {
 			continue
 		}
-		raw, ok := ca["roles"].([]any)
-		if !ok {
+		if _, dup := seen[s]; dup {
 			continue
 		}
-		for _, item := range raw {
-			s, ok := item.(string)
-			if !ok || s == "" {
-				continue
-			}
-			if _, dup := seen[s]; dup {
-				continue
-			}
-			seen[s] = struct{}{}
-			out = append(out, s)
-		}
+		seen[s] = struct{}{}
+		out = append(out, s)
 	}
 	return out
 }

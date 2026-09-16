@@ -41,7 +41,11 @@ func competitorError(c fiber.Ctx, err error) error {
 }
 
 func (h *CompetitorHandler) List(c fiber.Ctx) error {
-	comps, err := h.svc.List(c.Context())
+	p, err := caller(c)
+	if err != nil {
+		return competitorError(c, err)
+	}
+	comps, err := h.svc.List(c.Context(), p)
 	if err != nil {
 		return competitorError(c, err)
 	}
@@ -49,11 +53,15 @@ func (h *CompetitorHandler) List(c fiber.Ctx) error {
 }
 
 func (h *CompetitorHandler) Get(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return competitorError(c, err)
+	}
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	got, err := h.svc.Get(c.Context(), id)
+	got, err := h.svc.Get(c.Context(), p, id)
 	if err != nil {
 		return competitorError(c, err)
 	}
@@ -128,11 +136,15 @@ func (h *CompetitorHandler) Mine(c fiber.Ctx) error {
 }
 
 func (h *CompetitorHandler) ListByEvent(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return competitorError(c, err)
+	}
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	comps, err := h.svc.ListByEvent(c.Context(), eventID)
+	comps, err := h.svc.ListByEvent(c.Context(), p, eventID)
 	if err != nil {
 		return competitorError(c, err)
 	}
@@ -140,11 +152,15 @@ func (h *CompetitorHandler) ListByEvent(c fiber.Ctx) error {
 }
 
 func (h *CompetitorHandler) Winner(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return competitorError(c, err)
+	}
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	got, err := h.svc.Winner(c.Context(), eventID)
+	got, err := h.svc.Winner(c.Context(), p, eventID)
 	if err != nil {
 		return competitorError(c, err)
 	}
@@ -152,11 +168,15 @@ func (h *CompetitorHandler) Winner(c fiber.Ctx) error {
 }
 
 func (h *CompetitorHandler) ListByUser(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return competitorError(c, err)
+	}
 	userID, err := uuid.Parse(c.Params("userId"))
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	comps, err := h.svc.ListByUser(c.Context(), userID)
+	comps, err := h.svc.ListByUser(c.Context(), p, userID)
 	if err != nil {
 		return competitorError(c, err)
 	}
@@ -164,7 +184,11 @@ func (h *CompetitorHandler) ListByUser(c fiber.Ctx) error {
 }
 
 func (h *CompetitorHandler) ListByOwnerTeam(c fiber.Ctx) error {
-	comps, err := h.svc.ListByOwnerTeam(c.Context(), c.Params("ownerTeam"))
+	p, err := caller(c)
+	if err != nil {
+		return competitorError(c, err)
+	}
+	comps, err := h.svc.ListByOwnerTeam(c.Context(), p, c.Params("ownerTeam"))
 	if err != nil {
 		return competitorError(c, err)
 	}
@@ -172,7 +196,11 @@ func (h *CompetitorHandler) ListByOwnerTeam(c fiber.Ctx) error {
 }
 
 func (h *CompetitorHandler) LeaderboardByType(c fiber.Ctx) error {
-	board, err := h.svc.Leaderboard(c.Context(), c.Params("eventType"), nil)
+	p, err := caller(c)
+	if err != nil {
+		return competitorError(c, err)
+	}
+	board, err := h.svc.Leaderboard(c.Context(), p, c.Params("eventType"), nil)
 	if err != nil {
 		return competitorError(c, err)
 	}
@@ -180,11 +208,15 @@ func (h *CompetitorHandler) LeaderboardByType(c fiber.Ctx) error {
 }
 
 func (h *CompetitorHandler) LeaderboardBySeason(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return competitorError(c, err)
+	}
 	seasonID, err := uuid.Parse(c.Params("seasonId"))
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	board, err := h.svc.Leaderboard(c.Context(), c.Params("eventType"), &seasonID)
+	board, err := h.svc.Leaderboard(c.Context(), p, c.Params("eventType"), &seasonID)
 	if err != nil {
 		return competitorError(c, err)
 	}

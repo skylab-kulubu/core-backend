@@ -79,7 +79,16 @@ func (a *authorizer) allowCompetitor(p Principal, r Resource, action Action) boo
 	authenticated := p.ID != ""
 	switch action {
 	case Read:
-		return true
+		if !authenticated {
+			return false
+		}
+		if r.OwnerID != "" && r.OwnerID == p.ID {
+			return true
+		}
+		if r.OwnerTeam != "" || r.EventType != "" {
+			return a.isOwnerMember(p, r)
+		}
+		return false
 	case ReadMe:
 		return authenticated
 	case Create:
@@ -111,6 +120,8 @@ func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
 	switch action {
 	case Read:
 		return true
+	case List:
+		return a.isPrivileged(p)
 	case Upload:
 		return p.ID != ""
 	case Delete:
@@ -141,27 +152,27 @@ func (a *authorizer) allowURL(p Principal, r Resource, action Action) bool {
 	}
 	switch action {
 	case Create:
-		return p.ID != "" && (hasRole(p, "url:create", "url:access", "skylapp:url:create", "skylapp:access"))
+		return p.ID != "" && hasRole(p, "url:create", "url:access")
 	case ReadMe:
-		return p.ID != "" && (hasRole(p, "url:get", "url:access", "skylapp:url:get", "skylapp:access") || hasRole(p, "url:moderator", "skylapp:moderator"))
+		return p.ID != "" && (hasRole(p, "url:get", "url:access") || hasRole(p, "url:moderator"))
 	case Read:
-		return hasRole(p, "url:moderator", "skylapp:moderator")
+		return hasRole(p, "url:moderator")
 	case Update:
-		if hasRole(p, "url:moderator", "skylapp:moderator") {
+		if hasRole(p, "url:moderator") {
 			return true
 		}
 		if r.OwnerID == "" || r.OwnerID != p.ID {
 			return false
 		}
-		return hasRole(p, "url:update", "url:access", "skylapp:url:update", "skylapp:access")
+		return hasRole(p, "url:update", "url:access")
 	case Delete:
-		if hasRole(p, "url:moderator", "skylapp:moderator") {
+		if hasRole(p, "url:moderator") {
 			return true
 		}
 		if r.OwnerID == "" || r.OwnerID != p.ID {
 			return false
 		}
-		return hasRole(p, "url:delete", "url:access", "skylapp:url:delete", "skylapp:access")
+		return hasRole(p, "url:delete", "url:access")
 	default:
 		return false
 	}

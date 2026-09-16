@@ -12,7 +12,7 @@ func TestService_CreateRedirectAndOwnList(t *testing.T) {
 	t.Parallel()
 	svc := NewService(NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()))
 	uid := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	p := authz.Principal{ID: uid.String(), Roles: []string{"skylapp:access"}}
+	p := authz.Principal{ID: uid.String(), Roles: []string{"url:access"}}
 	created, err := svc.Create(context.Background(), p, "example.com/x", "weblab")
 	if err != nil {
 		t.Fatal(err)

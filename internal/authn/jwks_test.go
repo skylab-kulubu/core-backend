@@ -55,6 +55,8 @@ func TestJWKSAcceptsSigned(t *testing.T) {
 		"sub":    id.String(),
 		"email":  "yk@example.com",
 		"groups": []string{"/UYELER/YK"},
+		"iss":    "https://auth.example.test/realms/e-skylab",
+		"aud":    "core",
 		"exp":    time.Now().Add(time.Hour).Unix(),
 	})
 	tok.Header["kid"] = "k1"
@@ -66,7 +68,7 @@ func TestJWKSAcceptsSigned(t *testing.T) {
 	if err := v.Verify(signed); err != nil {
 		t.Fatal(err)
 	}
-	got, err := authn.ParseAndVerify(signed, v.Verify)
+	got, err := authn.ParseAndVerify(signed, v.Verify, "https://auth.example.test/realms/e-skylab", "core")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,14 +1,10 @@
 package httpx_test
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"encoding/base64"
 	"encoding/json"
 	"io"
-	"math/big"
-	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +20,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+	"github.com/skylab-kulubu/core-backend/internal/testauth"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -48,12 +45,6 @@ func memoryApp(parse ...func(string) (authn.Identity, error)) *fiber.App {
 	return httpx.New(deps)
 }
 
-func unsignedJWT(payload string) string {
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
-	body := base64.RawURLEncoding.EncodeToString([]byte(payload))
-	return header + "." + body + ".x"
-}
-
 func TestHealthAnonymous(t *testing.T) {
 	t.Parallel()
 	app := memoryApp()
@@ -68,12 +59,13 @@ func TestHealthAnonymous(t *testing.T) {
 
 func TestBearerGroupsReachMe(t *testing.T) {
 	t.Parallel()
-	app := memoryApp()
+	keys := testauth.New(t)
+	app := memoryApp(keys.Parse())
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	req := httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil)
-	req.Header.Set("Authorization", "Bearer "+unsignedJWT(
-		`{"sub":"`+id.String()+`","email":"yk@example.com","given_name":"Y","family_name":"K","groups":["/UYELER/YK"]}`,
-	))
+	req.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{
+		"sub": id.String(), "email": "yk@example.com", "given_name": "Y", "family_name": "K", "groups": []string{"/UYELER/YK"},
+	}))
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatal(err)
@@ -103,53 +95,34 @@ func TestInvalidBearerIs401Problem(t *testing.T) {
 	if resp.StatusCode != fiber.StatusUnauthorized {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/problem+json") {
+		t.Fatalf("content-type %s", ct)
+	}
 }
 
-func signedJWT(t *testing.T) (token string, jwksURL string) {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := base64.RawURLEncoding.EncodeToString(key.N.Bytes())
-	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes())
-	body, err := json.Marshal(map[string]any{
-		"keys": []map[string]string{{
-			"kty": "RSA", "kid": "k1", "alg": "RS256", "use": "sig", "n": n, "e": e,
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body)
-	}))
-	t.Cleanup(srv.Close)
+func TestUnsetJWKSRejectsAnyBearer(t *testing.T) {
+	t.Parallel()
+	app := memoryApp()
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"sub":    id.String(),
-		"email":  "yk@example.com",
-		"groups": []string{"/UYELER/YK"},
-		"exp":    time.Now().Add(time.Hour).Unix(),
-	})
-	tok.Header["kid"] = "k1"
-	signed, err := tok.SignedString(key)
+	keys := testauth.New(t)
+	req := httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{"sub": id.String(), "email": "yk@example.com"}))
+	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return signed, srv.URL
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
 }
 
 func TestVerifiedBearerAcceptsSignedJWT(t *testing.T) {
 	t.Parallel()
-	signed, jwksURL := signedJWT(t)
-	v := authn.NewJWKS(jwksURL)
-	app := memoryApp(func(token string) (authn.Identity, error) {
-		return authn.ParseAndVerify(token, v.Verify)
-	})
+	keys := testauth.New(t)
+	app := memoryApp(keys.Parse())
+	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	req := httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil)
-	req.Header.Set("Authorization", "Bearer "+signed)
+	req.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{"sub": id.String(), "email": "yk@example.com"}))
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatal(err)
@@ -162,16 +135,58 @@ func TestVerifiedBearerAcceptsSignedJWT(t *testing.T) {
 
 func TestVerifiedBearerRejectsUnsigned(t *testing.T) {
 	t.Parallel()
-	_, jwksURL := signedJWT(t)
-	v := authn.NewJWKS(jwksURL)
-	app := memoryApp(func(token string) (authn.Identity, error) {
-		return authn.ParseAndVerify(token, v.Verify)
-	})
+	keys := testauth.New(t)
+	app := memoryApp(keys.Parse())
+	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	header := "eyJhbGciOiJub25lIn0"
+	body := "eyJzdWIiOiIxMTExMTExMS0xMTExLTExMTEtMTExMS0xMTExMTExMTExMTEiLCJhdWQiOiJjb3JlIn0"
+	_ = id
+	req := httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+header+"."+body+".x")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestVerifiedBearerRejectsWrongAudience(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	app := memoryApp(keys.Parse())
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	req := httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil)
-	req.Header.Set("Authorization", "Bearer "+unsignedJWT(
-		`{"sub":"`+id.String()+`","email":"yk@example.com","groups":["/UYELER/YK"]}`,
-	))
+	req.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{"sub": id.String(), "aud": "account"}))
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var problem map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatal(err)
+	}
+	if problem["title"] == nil || problem["status"] == nil || problem["type"] == nil || problem["detail"] == nil || problem["instance"] == nil {
+		t.Fatalf("problem %+v", problem)
+	}
+}
+
+func TestVerifiedBearerRejectsMissingAudience(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	app := memoryApp(keys.Parse())
+	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	tok := keys.Sign(t, jwt.MapClaims{
+		"sub": id.String(),
+		"iss": keys.Issuer,
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	req := httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatal(err)

@@ -63,25 +63,36 @@ func main() {
 		})
 	}
 
-	parse := authn.ParseAccessToken
+	parse := func(string) (authn.Identity, error) {
+		return authn.Identity{}, authn.ErrInvalidToken
+	}
 	jwksURL := os.Getenv("KEYCLOAK_JWKS_URL")
-	if jwksURL == "" {
-		base := strings.TrimRight(os.Getenv("KEYCLOAK_URL"), "/")
-		realm := os.Getenv("KEYCLOAK_REALM")
-		if parts := strings.SplitN(base, "/realms/", 2); len(parts) == 2 {
-			base = parts[0]
-			if realm == "" {
-				realm = parts[1]
-			}
-		}
-		if base != "" && realm != "" {
-			jwksURL = base + "/realms/" + realm + "/protocol/openid-connect/certs"
+	base := strings.TrimRight(os.Getenv("KEYCLOAK_URL"), "/")
+	realm := os.Getenv("KEYCLOAK_REALM")
+	if parts := strings.SplitN(base, "/realms/", 2); len(parts) == 2 {
+		base = parts[0]
+		if realm == "" {
+			realm = parts[1]
 		}
 	}
-	if jwksURL != "" {
+	if jwksURL == "" && base != "" && realm != "" {
+		jwksURL = base + "/realms/" + realm + "/protocol/openid-connect/certs"
+	}
+	issuer := ""
+	if base != "" && realm != "" {
+		issuer = base + "/realms/" + realm
+	} else if i := strings.Index(jwksURL, "/realms/"); i >= 0 {
+		host := jwksURL[:i]
+		rest := jwksURL[i+len("/realms/"):]
+		realmPart, _, _ := strings.Cut(rest, "/")
+		if host != "" && realmPart != "" {
+			issuer = host + "/realms/" + realmPart
+		}
+	}
+	if jwksURL != "" && issuer != "" {
 		v := authn.NewJWKS(jwksURL)
 		parse = func(token string) (authn.Identity, error) {
-			return authn.ParseAndVerify(token, v.Verify)
+			return authn.ParseAndVerify(token, v.Verify, issuer, authn.ResourceAudience)
 		}
 	}
 

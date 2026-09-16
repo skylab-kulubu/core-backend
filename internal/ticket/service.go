@@ -189,18 +189,18 @@ func (s *service) ListQuery(ctx context.Context, p authz.Principal, email string
 	if email == "" && userID == nil {
 		return nil, ErrInvalid
 	}
-	own := false
-	if userID != nil && p.ID == userID.String() {
-		own = true
-	}
-	var tickets []Ticket
+
+	var byUser []Ticket
 	if userID != nil {
 		listed, err := s.tickets.ListByOwner(ctx, *userID)
 		if err != nil {
 			return nil, err
 		}
-		tickets = append(tickets, listed...)
+		byUser = listed
 	}
+
+	ownEmail := false
+	var byEmail []Ticket
 	if email != "" {
 		if s.users != nil {
 			found, err := s.users.FindByEmail(ctx, email)
@@ -209,20 +209,30 @@ func (s *service) ListQuery(ctx context.Context, p authz.Principal, email string
 			}
 			for _, u := range found {
 				if p.ID == u.ID.String() {
-					own = true
+					ownEmail = true
 				}
 				listed, err := s.tickets.ListByOwner(ctx, u.ID)
 				if err != nil {
 					return nil, err
 				}
-				tickets = append(tickets, listed...)
+				byEmail = append(byEmail, listed...)
 			}
 		}
 		guests, err := s.tickets.ListByGuestEmail(ctx, email)
 		if err != nil {
 			return nil, err
 		}
-		tickets = append(tickets, guests...)
+		byEmail = append(byEmail, guests...)
+	}
+
+	var tickets []Ticket
+	switch {
+	case userID != nil && email != "":
+		tickets = intersectTickets(byUser, byEmail)
+	case userID != nil:
+		tickets = byUser
+	default:
+		tickets = byEmail
 	}
 
 	seen := map[uuid.UUID]struct{}{}
@@ -233,6 +243,12 @@ func (s *service) ListQuery(ctx context.Context, p authz.Principal, email string
 		}
 		seen[t.ID] = struct{}{}
 		uniq = append(uniq, t)
+	}
+
+	ownUser := userID != nil && p.ID == userID.String()
+	own := ownUser
+	if userID == nil && ownEmail {
+		own = true
 	}
 
 	if own {
@@ -248,6 +264,20 @@ func (s *service) ListQuery(ctx context.Context, p authz.Principal, email string
 		return nil, ErrForbidden
 	}
 	return s.withEvents(ctx, visible), nil
+}
+
+func intersectTickets(a, b []Ticket) []Ticket {
+	inB := map[uuid.UUID]struct{}{}
+	for _, t := range b {
+		inB[t.ID] = struct{}{}
+	}
+	out := make([]Ticket, 0)
+	for _, t := range a {
+		if _, ok := inB[t.ID]; ok {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func hasLeaderGroup(p authz.Principal) bool {

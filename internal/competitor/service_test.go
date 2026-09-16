@@ -138,7 +138,7 @@ func TestService_SelfCanDelete(t *testing.T) {
 	if err := svc.Delete(ctx, p, created.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = svc.Get(ctx, created.ID)
+	_, err = svc.Get(ctx, p, created.ID)
 	if !errors.Is(err, competitor.ErrNotFound) {
 		t.Fatalf("got %v", err)
 	}
@@ -177,7 +177,7 @@ func TestService_LeaderboardByTypeAndSeason(t *testing.T) {
 	mustCreate(bob, web.ID, 10)
 	mustCreate(ada, sky.ID, 100)
 
-	board, err := svc.Leaderboard(ctx, "WEBLAB", nil)
+	board, err := svc.Leaderboard(ctx, staff, "WEBLAB", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestService_LeaderboardByTypeAndSeason(t *testing.T) {
 		t.Fatalf("bob %+v", board[1])
 	}
 
-	seasonBoard, err := svc.Leaderboard(ctx, "WEBLAB", &seasonA)
+	seasonBoard, err := svc.Leaderboard(ctx, staff, "WEBLAB", &seasonA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,18 +202,18 @@ func TestService_LeaderboardByTypeAndSeason(t *testing.T) {
 		t.Fatalf("tied ranks %+v", seasonBoard)
 	}
 
-	winner, err := svc.Winner(ctx, web.ID)
+	winner, err := svc.Winner(ctx, staff, web.ID)
 	if !errors.Is(err, competitor.ErrNotFound) {
 		t.Fatalf("no winner yet: %+v %v", winner, err)
 	}
-	comps, err := svc.ListByEvent(ctx, web.ID)
+	comps, err := svc.ListByEvent(ctx, staff, web.ID)
 	if err != nil || len(comps) != 2 {
 		t.Fatalf("event comps %+v %v", comps, err)
 	}
 	if _, err := svc.Update(ctx, staff, comps[0].ID, competitor.UpdateInput{UserID: comps[0].UserID, EventID: web.ID, Score: comps[0].Score, IsWinner: true}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := svc.Winner(ctx, web.ID)
+	got, err := svc.Winner(ctx, staff, web.ID)
 	if err != nil || got.ID != comps[0].ID {
 		t.Fatalf("winner %+v %v", got, err)
 	}
