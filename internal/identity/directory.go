@@ -28,14 +28,34 @@ type Person struct {
 	Username  string    `json:"username,omitempty"`
 }
 
+type ClientRole struct {
+	ClientID string `json:"clientId"`
+	Role     string `json:"role"`
+}
+
+type UserCard struct {
+	Person
+	Groups         []Group      `json:"groups"`
+	InheritedRoles []ClientRole `json:"inheritedRoles"`
+	ExtraRoles     []ClientRole `json:"extraRoles"`
+}
+
 type Directory interface {
 	ListGroups(ctx context.Context) ([]Group, error)
 	GetGroup(ctx context.Context, idOrPath string) (Group, error)
+	UpdateGroup(ctx context.Context, g Group) (Group, error)
 	Subgroups(ctx context.Context, groupID string) ([]Group, error)
 	Members(ctx context.Context, groupID string) ([]Person, error)
 	AddMember(ctx context.Context, groupID string, userID uuid.UUID) error
 	RemoveMember(ctx context.Context, groupID string, userID uuid.UUID) error
+	ListUsers(ctx context.Context) ([]Person, error)
 	CreateUser(ctx context.Context, p Person) (Person, error)
 	GetUser(ctx context.Context, id uuid.UUID) (Person, error)
 	DeleteUser(ctx context.Context, id uuid.UUID) error
+	GroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group, error)
+	GroupClientRoles(ctx context.Context, groupID string) ([]ClientRole, error)
+	SetGroupClientRoles(ctx context.Context, groupID string, roles []ClientRole) error
+	UserExtraRoles(ctx context.Context, userID uuid.UUID) ([]ClientRole, error)
+	AddUserExtraRole(ctx context.Context, userID uuid.UUID, role ClientRole) error
+	RemoveUserExtraRole(ctx context.Context, userID uuid.UUID, role ClientRole) error
 }

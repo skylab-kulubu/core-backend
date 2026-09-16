@@ -190,3 +190,76 @@ func TestService_MemberCannotPromote(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestService_UserCardInheritedVsExtraRoles(t *testing.T) {
+	t.Parallel()
+	dir, _, svc := setup(t)
+	ctx := context.Background()
+	dir.PutGroup(identity.Group{ID: "g-weblab", Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"})
+	id := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: id, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"})
+	if err := dir.AddMember(ctx, "g-weblab", id); err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.SetGroupClientRoles(ctx, "g-weblab", []identity.ClientRole{
+		{ClientID: "skyforms", Role: "skyforms:access"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.AddUserExtraRole(ctx, privileged(), id, identity.ClientRole{ClientID: "skyforms", Role: "skyforms:form:manage"}); err != nil {
+		t.Fatal(err)
+	}
+
+	card, err := svc.GetUser(ctx, privileged(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(card.InheritedRoles) != 1 || card.InheritedRoles[0].Role != "skyforms:access" {
+		t.Fatalf("inherited %+v", card.InheritedRoles)
+	}
+	if len(card.ExtraRoles) != 1 || card.ExtraRoles[0].Role != "skyforms:form:manage" {
+		t.Fatalf("extra %+v", card.ExtraRoles)
+	}
+	if len(card.Groups) != 1 || card.Groups[0].Name != "WEBLAB" {
+		t.Fatalf("groups %+v", card.Groups)
+	}
+}
+
+func TestService_GetGroupAndUpdateAttributes(t *testing.T) {
+	t.Parallel()
+	dir, _, svc := setup(t)
+	ctx := context.Background()
+	dir.PutGroup(identity.Group{ID: "g-weblab", Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"})
+
+	got, err := svc.GetGroup(ctx, privileged(), "g-weblab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "WEBLAB" {
+		t.Fatalf("got %+v", got)
+	}
+
+	updated, err := svc.UpdateGroup(ctx, privileged(), "g-weblab", map[string]string{"public_listing": "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "WEBLAB" {
+		t.Fatalf("name blanked: %+v", updated)
+	}
+	if updated.Attributes["public_listing"] != "true" {
+		t.Fatalf("attrs %+v", updated.Attributes)
+	}
+}
+
+func TestService_SetGroupClientRolesForbiddenForMember(t *testing.T) {
+	t.Parallel()
+	dir, _, svc := setup(t)
+	dir.PutGroup(identity.Group{ID: "g-weblab", Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"})
+	err := svc.SetGroupClientRoles(context.Background(), member(), "g-weblab", []identity.ClientRole{
+		{ClientID: "skyforms", Role: "skyforms:access"},
+	})
+	if !errors.Is(err, identity.ErrForbidden) {
+		t.Fatalf("got %v", err)
+	}
+}

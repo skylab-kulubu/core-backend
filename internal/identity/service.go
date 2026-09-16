@@ -12,11 +12,19 @@ import (
 
 type Service interface {
 	ListGroups(ctx context.Context, p authz.Principal) ([]Group, error)
+	GetGroup(ctx context.Context, p authz.Principal, groupRef string) (Group, error)
+	UpdateGroup(ctx context.Context, p authz.Principal, groupRef string, attrs map[string]string) (Group, error)
 	Members(ctx context.Context, p authz.Principal, groupRef string) ([]Person, error)
 	AddMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
 	RemoveMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
+	ListUsers(ctx context.Context, p authz.Principal) ([]Person, error)
+	GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error)
 	CreateUser(ctx context.Context, p authz.Principal, in Person) (Person, error)
 	DeleteUser(ctx context.Context, p authz.Principal, id uuid.UUID) error
+	GroupClientRoles(ctx context.Context, p authz.Principal, groupRef string) ([]ClientRole, error)
+	SetGroupClientRoles(ctx context.Context, p authz.Principal, groupRef string, roles []ClientRole) error
+	AddUserExtraRole(ctx context.Context, p authz.Principal, id uuid.UUID, role ClientRole) error
+	RemoveUserExtraRole(ctx context.Context, p authz.Principal, id uuid.UUID, role ClientRole) error
 	ListPublicTeams(ctx context.Context) ([]PublicTeam, error)
 	PublicMembers(ctx context.Context, team string) (Roster, error)
 	PublicLeaders(ctx context.Context, team string) (Roster, error)
@@ -46,6 +54,25 @@ func (s *service) ListGroups(ctx context.Context, p authz.Principal) ([]Group, e
 	return s.dir.ListGroups(ctx)
 }
 
+func (s *service) GetGroup(ctx context.Context, p authz.Principal, groupRef string) (Group, error) {
+	if err := s.allow(p, authz.TypeGroup, authz.Read); err != nil {
+		return Group{}, err
+	}
+	return s.dir.GetGroup(ctx, groupRef)
+}
+
+func (s *service) UpdateGroup(ctx context.Context, p authz.Principal, groupRef string, attrs map[string]string) (Group, error) {
+	if err := s.allow(p, authz.TypeGroup, authz.Update); err != nil {
+		return Group{}, err
+	}
+	g, err := s.dir.GetGroup(ctx, groupRef)
+	if err != nil {
+		return Group{}, err
+	}
+	g.Attributes = attrs
+	return s.dir.UpdateGroup(ctx, g)
+}
+
 func (s *service) Members(ctx context.Context, p authz.Principal, groupRef string) ([]Person, error) {
 	if err := s.allow(p, authz.TypeGroup, authz.Read); err != nil {
 		return nil, err
@@ -65,6 +92,90 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 		return err
 	}
 	return s.dir.RemoveMember(ctx, groupRef, userID)
+}
+
+func (s *service) ListUsers(ctx context.Context, p authz.Principal) ([]Person, error) {
+	if err := s.allow(p, authz.TypeUser, authz.Read); err != nil {
+		return nil, err
+	}
+	return s.dir.ListUsers(ctx)
+}
+
+func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error) {
+	if err := s.allow(p, authz.TypeUser, authz.Read); err != nil {
+		return UserCard{}, err
+	}
+	person, err := s.dir.GetUser(ctx, id)
+	if err != nil {
+		return UserCard{}, err
+	}
+	groups, err := s.dir.GroupsForUser(ctx, id)
+	if err != nil {
+		return UserCard{}, err
+	}
+	inherited := make([]ClientRole, 0)
+	seen := map[string]struct{}{}
+	for _, g := range groups {
+		roles, err := s.dir.GroupClientRoles(ctx, g.ID)
+		if err != nil {
+			return UserCard{}, err
+		}
+		for _, r := range roles {
+			key := r.ClientID + ":" + r.Role
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			inherited = append(inherited, r)
+		}
+	}
+	extra, err := s.dir.UserExtraRoles(ctx, id)
+	if err != nil {
+		return UserCard{}, err
+	}
+	return UserCard{Person: person, Groups: groups, InheritedRoles: inherited, ExtraRoles: extra}, nil
+}
+
+func (s *service) GroupClientRoles(ctx context.Context, p authz.Principal, groupRef string) ([]ClientRole, error) {
+	if err := s.allow(p, authz.TypeGroup, authz.Read); err != nil {
+		return nil, err
+	}
+	g, err := s.dir.GetGroup(ctx, groupRef)
+	if err != nil {
+		return nil, err
+	}
+	return s.dir.GroupClientRoles(ctx, g.ID)
+}
+
+func (s *service) SetGroupClientRoles(ctx context.Context, p authz.Principal, groupRef string, roles []ClientRole) error {
+	if err := s.allow(p, authz.TypeGroup, authz.Update); err != nil {
+		return err
+	}
+	g, err := s.dir.GetGroup(ctx, groupRef)
+	if err != nil {
+		return err
+	}
+	return s.dir.SetGroupClientRoles(ctx, g.ID, roles)
+}
+
+func (s *service) AddUserExtraRole(ctx context.Context, p authz.Principal, id uuid.UUID, role ClientRole) error {
+	if err := s.allow(p, authz.TypeUser, authz.Update); err != nil {
+		return err
+	}
+	if role.ClientID == "" || role.Role == "" {
+		return ErrInvalid
+	}
+	if _, err := s.dir.GetUser(ctx, id); err != nil {
+		return err
+	}
+	return s.dir.AddUserExtraRole(ctx, id, role)
+}
+
+func (s *service) RemoveUserExtraRole(ctx context.Context, p authz.Principal, id uuid.UUID, role ClientRole) error {
+	if err := s.allow(p, authz.TypeUser, authz.Update); err != nil {
+		return err
+	}
+	return s.dir.RemoveUserExtraRole(ctx, id, role)
 }
 
 func (s *service) CreateUser(ctx context.Context, p authz.Principal, in Person) (Person, error) {
