@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -13,6 +14,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
@@ -83,15 +85,44 @@ func main() {
 		}
 	}
 
+	var mailer mail.Mailer
+	if os.Getenv("SKYMAIL_URL") != "" && os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID") != "" {
+		tid, err := uuid.Parse(os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"))
+		if err != nil {
+			log.Fatal("SKYMAIL_WELCOME_TEMPLATE_ID must be a UUID")
+		}
+		kc := strings.TrimRight(os.Getenv("KEYCLOAK_URL"), "/")
+		realm := os.Getenv("KEYCLOAK_REALM")
+		if parts := strings.SplitN(kc, "/realms/", 2); len(parts) == 2 {
+			kc = parts[0]
+			if realm == "" {
+				realm = parts[1]
+			}
+		}
+		if kc == "" || realm == "" || os.Getenv("KEYCLOAK_CLIENT_ID") == "" || os.Getenv("KEYCLOAK_CLIENT_SECRET") == "" {
+			log.Fatal("KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET are required with SKYMAIL_URL")
+		}
+		mailer = &mail.SkyMail{
+			BaseURL:    os.Getenv("SKYMAIL_URL"),
+			TemplateID: tid,
+			Tokens: mail.ClientCredentials{
+				TokenURL:     kc + "/realms/" + realm + "/protocol/openid-connect/token",
+				ClientID:     os.Getenv("KEYCLOAK_CLIENT_ID"),
+				ClientSecret: os.Getenv("KEYCLOAK_CLIENT_SECRET"),
+			},
+		}
+	}
+
 	app := httpx.New(httpx.Deps{
 		Users:       user.NewService(users),
-		Identity:    identity.NewService(dir, users, az),
+		Identity:    identity.NewService(dir, users, az, mailer),
 		Events:      event.NewService(events, az),
 		Seasons:     season.NewService(seasons, az),
 		Tickets:     ticket.NewService(tickets, events, az),
 		Competitors: competitor.NewService(competitors, events, az),
 		Media:       media.NewService(mediaStore, blobs, az, os.Getenv("CDN_BASE")),
 		URLs:        shorturl.NewService(shorturl.NewPostgresStore(pool), az),
+		Mail:        mailer,
 		ParseToken:  parse,
 	})
 

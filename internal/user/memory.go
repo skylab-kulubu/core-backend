@@ -27,19 +27,20 @@ func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (User, error) {
 	return u, nil
 }
 
-func (s *MemoryStore) Upsert(_ context.Context, u User) (User, error) {
+func (s *MemoryStore) Upsert(_ context.Context, u User) (User, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
-	if existing, ok := s.byID[u.ID]; ok {
-		u.CreatedAt = existing.CreatedAt
+	_, existed := s.byID[u.ID]
+	if existed {
+		u.CreatedAt = s.byID[u.ID].CreatedAt
 		u.UpdatedAt = now
 	} else {
 		u.CreatedAt = now
 		u.UpdatedAt = now
 	}
 	s.byID[u.ID] = u
-	return u, nil
+	return u, !existed, nil
 }
 
 func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) error {

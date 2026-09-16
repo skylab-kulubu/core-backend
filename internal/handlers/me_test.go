@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"io"
 	"net/http/httptest"
 	"testing"
@@ -97,5 +98,46 @@ func TestGetMeUpsertsIdentity(t *testing.T) {
 	}
 	if got.Email != "ada@example.com" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+type recMail struct {
+	n int
+}
+
+func (r *recMail) Welcome(_ context.Context, _ user.User) {
+	r.n++
+}
+
+func TestGetMeWelcomeOnlyOnCreate(t *testing.T) {
+	t.Parallel()
+	store := user.NewMemoryStore()
+	svc := user.NewService(store)
+	rec := &recMail{}
+	jit := middlewares.NewJIT(svc, rec)
+	me := NewMeHandler()
+	id := uuid.MustParse("55555555-5555-5555-5555-555555555555")
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(authn.LocalsIdentity, authn.Identity{
+			ID:      id,
+			Profile: user.Profile{Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"},
+		})
+		return c.Next()
+	})
+	app.Get("/v1/users/me", jit.Handle, me.GetMe)
+
+	for i := 0; i < 2; i++ {
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != fiber.StatusOK {
+			t.Fatalf("status %d", resp.StatusCode)
+		}
+	}
+	if rec.n != 1 {
+		t.Fatalf("welcome count %d", rec.n)
 	}
 }
