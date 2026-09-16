@@ -28,6 +28,8 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		return a.isPrivileged(p)
 	case TypeTicket:
 		return a.allowTicket(p, r, action)
+	case TypeCompetitor:
+		return a.allowCompetitor(p, r, action)
 	case TypeTeam:
 		return action == Read
 	case TypeGroup, TypeUser:
@@ -61,6 +63,44 @@ func (a *authorizer) allowEvent(p Principal, r Resource, action Action) bool {
 		}
 	}
 	return false
+}
+
+func (a *authorizer) allowCompetitor(p Principal, r Resource, action Action) bool {
+	if a.isPrivileged(p) {
+		switch action {
+		case Read, ReadMe, Create, Update, Delete:
+			return true
+		}
+	}
+	authenticated := p.ID != ""
+	switch action {
+	case Read:
+		return true
+	case ReadMe:
+		return authenticated
+	case Create:
+		if authenticated && r.OwnerID != "" && r.OwnerID == p.ID {
+			return true
+		}
+		return a.isOwnerMember(p, r)
+	case Update:
+		return a.isOwnerMember(p, r)
+	case Delete:
+		if authenticated && r.OwnerID != "" && r.OwnerID == p.ID {
+			return true
+		}
+		return a.isOwnerMember(p, r)
+	default:
+		return false
+	}
+}
+
+func (a *authorizer) isOwnerMember(p Principal, r Resource) bool {
+	owner := r.OwnerTeam
+	if owner == "" {
+		owner = r.EventType
+	}
+	return len(a.ownerLevels(p, owner)) > 0
 }
 
 func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
