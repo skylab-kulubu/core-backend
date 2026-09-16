@@ -13,6 +13,7 @@ import (
 
 type Service interface {
 	Redirect(ctx context.Context, alias string) (URL, error)
+	Lookup(ctx context.Context, alias string) (URL, error)
 	Create(ctx context.Context, p authz.Principal, target, alias string) (URL, error)
 	ListMine(ctx context.Context, p authz.Principal) ([]URL, error)
 	ListAll(ctx context.Context, p authz.Principal) ([]URL, error)
@@ -30,6 +31,10 @@ func NewService(store Store, az authz.Authorizer) Service {
 }
 
 var aliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+
+func (s *service) Lookup(ctx context.Context, alias string) (URL, error) {
+	return s.store.GetByAlias(ctx, alias)
+}
 
 func (s *service) Redirect(ctx context.Context, alias string) (URL, error) {
 	u, err := s.store.GetByAlias(ctx, alias)

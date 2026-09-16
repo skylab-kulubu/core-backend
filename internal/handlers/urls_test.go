@@ -24,6 +24,7 @@ func urlApp(t *testing.T, ident authn.Identity) *fiber.App {
 		}
 		return c.Next()
 	})
+	app.Get("/v1/go/:alias/qr", h.QR)
 	app.Get("/v1/go/:alias", h.Redirect)
 	app.Post("/v1/urls", h.Create)
 	app.Get("/v1/urls", h.ListMine)
@@ -70,6 +71,61 @@ func TestURLCreateRedirectAndListHTTP(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].ClickCount != 1 {
 		t.Fatalf("items %+v", items)
+	}
+}
+
+func TestURLQRDoesNotIncrementClicks(t *testing.T) {
+	t.Parallel()
+	uid := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	app := urlApp(t, authn.Identity{ID: uid, Roles: []string{"skylapp:access"}})
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/urls", strings.NewReader(`{"url":"https://skylab.com","alias":"club"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, b)
+	}
+
+	qrResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qrResp.StatusCode != fiber.StatusOK {
+		b, _ := io.ReadAll(qrResp.Body)
+		t.Fatalf("qr status %d body %s", qrResp.StatusCode, b)
+	}
+	if ct := qrResp.Header.Get("Content-Type"); !strings.Contains(ct, "image/png") {
+		t.Fatalf("content-type %s", ct)
+	}
+	body, err := io.ReadAll(qrResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) < 8 || string(body[:4]) != "\x89PNG" {
+		t.Fatalf("not png len=%d", len(body))
+	}
+
+	missing, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/nope/qr", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("missing %d", missing.StatusCode)
+	}
+
+	list, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/urls", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var items []shorturl.URL
+	if err := json.NewDecoder(list.Body).Decode(&items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ClickCount != 0 {
+		t.Fatalf("clicks %+v", items)
 	}
 }
 

@@ -49,6 +49,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
+	app.Get("/v1/go/:alias/qr", urls.QR)
 	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Use(middlewares.Bearer(deps.ParseToken))
 	app.Use(jit.Handle)
