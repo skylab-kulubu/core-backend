@@ -3,6 +3,7 @@ package httpx
 import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/recover"
+	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
@@ -22,6 +23,7 @@ type Deps struct {
 	Tickets     ticket.Service
 	Competitors competitor.Service
 	Media       media.Service
+	ParseToken  func(string) (authn.Identity, error)
 }
 
 func New(deps Deps) *fiber.App {
@@ -42,7 +44,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	app.Use(middlewares.Bearer)
+	app.Use(middlewares.Bearer(deps.ParseToken))
 	app.Use(jit.Handle)
 
 	app.Get("/v1/users/me", me.GetMe)
