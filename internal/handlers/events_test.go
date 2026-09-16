@@ -132,3 +132,45 @@ func TestEventCreateUnauthorized(t *testing.T) {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 }
+
+func TestEventCreateCoverImage(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	app := eventApp(t, weblabLeader(), store)
+	cover := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB","coverImageId":"`+cover.String()+`"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var created event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.CoverImageID == nil || *created.CoverImageID != cover {
+		t.Fatalf("cover %+v", created.CoverImageID)
+	}
+
+	public := eventApp(t, authn.Identity{}, store)
+	resp, err = public.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/"+created.ID.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("get status %d", resp.StatusCode)
+	}
+	var got event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CoverImageID == nil || *got.CoverImageID != cover {
+		t.Fatalf("public cover %+v", got.CoverImageID)
+	}
+}
