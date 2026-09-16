@@ -30,6 +30,8 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		return a.allowTicket(p, r, action)
 	case TypeCompetitor:
 		return a.allowCompetitor(p, r, action)
+	case TypeMedia:
+		return a.allowMedia(p, r, action)
 	case TypeTeam:
 		return action == Read
 	case TypeGroup, TypeUser:
@@ -101,6 +103,19 @@ func (a *authorizer) isOwnerMember(p Principal, r Resource) bool {
 		owner = r.EventType
 	}
 	return len(a.ownerLevels(p, owner)) > 0
+}
+
+func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
+	switch action {
+	case Read:
+		return true
+	case Upload:
+		return p.ID != ""
+	case Delete:
+		return a.isPrivileged(p)
+	default:
+		return false
+	}
 }
 
 func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
