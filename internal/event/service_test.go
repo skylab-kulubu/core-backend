@@ -81,6 +81,29 @@ func TestService_WrongTeamForbidden(t *testing.T) {
 	}
 }
 
+func TestService_RatioRequiresDecimal(t *testing.T) {
+	t.Parallel()
+	_, svc := setup(t)
+	ctx := context.Background()
+	leader := authz.Principal{ID: "l", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	_, err := svc.Create(ctx, leader, event.Event{
+		Name: "ARTLAB", Location: "YTÜ", OwnerTeam: "WEBLAB", AttendanceRule: "ratio",
+	})
+	if !errors.Is(err, event.ErrInvalid) {
+		t.Fatalf("got %v", err)
+	}
+	r := 0.75
+	created, err := svc.Create(ctx, leader, event.Event{
+		Name: "ARTLAB", Location: "YTÜ", OwnerTeam: "WEBLAB", AttendanceRule: "ratio", AttendanceRatio: &r,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.AttendanceRule != "ratio" || created.AttendanceRatio == nil || *created.AttendanceRatio != 0.75 {
+		t.Fatalf("created %+v", created)
+	}
+}
+
 func TestService_PrivilegedCanDeleteAny(t *testing.T) {
 	t.Parallel()
 	_, svc := setup(t)

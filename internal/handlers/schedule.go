@@ -34,6 +34,7 @@ type sessionBody struct {
 	EndTime         *time.Time `json:"endTime"`
 	OrderIndex      int        `json:"orderIndex"`
 	SessionType     string     `json:"sessionType"`
+	Cancelled       bool       `json:"cancelled"`
 }
 
 func (h *ScheduleHandler) ListDays(c fiber.Ctx) error {
@@ -188,6 +189,7 @@ func (h *ScheduleHandler) CreateSession(c fiber.Ctx) error {
 		EventDayID: body.EventDayID, Title: body.Title, SpeakerName: body.SpeakerName,
 		SpeakerLinkedin: body.SpeakerLinkedin, Description: body.Description,
 		StartTime: body.StartTime, EndTime: body.EndTime, OrderIndex: body.OrderIndex, SessionType: body.SessionType,
+		Cancelled: body.Cancelled,
 	})
 	if err != nil {
 		return eventError(c, err)
@@ -211,7 +213,7 @@ func (h *ScheduleHandler) UpdateSession(c fiber.Ctx) error {
 	updated, err := h.svc.UpdateSession(c.Context(), p, id, event.Session{
 		Title: body.Title, SpeakerName: body.SpeakerName, SpeakerLinkedin: body.SpeakerLinkedin,
 		Description: body.Description, StartTime: body.StartTime, EndTime: body.EndTime,
-		OrderIndex: body.OrderIndex, SessionType: body.SessionType,
+		OrderIndex: body.OrderIndex, SessionType: body.SessionType, Cancelled: body.Cancelled,
 	})
 	if err != nil {
 		return eventError(c, err)

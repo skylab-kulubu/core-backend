@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
@@ -39,6 +40,7 @@ func main() {
 	seasons := season.NewPostgresStore(pool)
 	tickets := ticket.NewPostgresStore(pool)
 	competitors := competitor.NewPostgresStore(pool)
+	certs := certificate.NewPostgresStore(pool)
 	mediaStore := media.NewPostgresStore(pool)
 	var blobs media.BlobStore = media.NewMemoryBlob()
 	if os.Getenv("R2_ENDPOINT") != "" {
@@ -100,11 +102,8 @@ func main() {
 	}
 
 	var mailer mail.Mailer
-	if os.Getenv("SKYMAIL_URL") != "" && os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID") != "" {
-		tid, err := uuid.Parse(os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"))
-		if err != nil {
-			log.Fatal("SKYMAIL_WELCOME_TEMPLATE_ID must be a UUID")
-		}
+	var sky *mail.SkyMail
+	if os.Getenv("SKYMAIL_URL") != "" && (os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID") != "" || os.Getenv("SKYMAIL_CERTIFICATE_TEMPLATE_ID") != "") {
 		kc := strings.TrimRight(os.Getenv("KEYCLOAK_URL"), "/")
 		realm := os.Getenv("KEYCLOAK_REALM")
 		if parts := strings.SplitN(kc, "/realms/", 2); len(parts) == 2 {
@@ -116,28 +115,54 @@ func main() {
 		if kc == "" || realm == "" || os.Getenv("KEYCLOAK_CLIENT_ID") == "" || os.Getenv("KEYCLOAK_CLIENT_SECRET") == "" {
 			log.Fatal("KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET are required with SKYMAIL_URL")
 		}
-		mailer = &mail.SkyMail{
-			BaseURL:    os.Getenv("SKYMAIL_URL"),
-			TemplateID: tid,
+		sky = &mail.SkyMail{
+			BaseURL: os.Getenv("SKYMAIL_URL"),
 			Tokens: mail.ClientCredentials{
 				TokenURL:     kc + "/realms/" + realm + "/protocol/openid-connect/token",
 				ClientID:     os.Getenv("KEYCLOAK_CLIENT_ID"),
 				ClientSecret: os.Getenv("KEYCLOAK_CLIENT_SECRET"),
 			},
 		}
+		if raw := os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"); raw != "" {
+			tid, err := uuid.Parse(raw)
+			if err != nil {
+				log.Fatal("SKYMAIL_WELCOME_TEMPLATE_ID must be a UUID")
+			}
+			sky.TemplateID = tid
+		}
+		if raw := os.Getenv("SKYMAIL_CERTIFICATE_TEMPLATE_ID"); raw != "" {
+			tid, err := uuid.Parse(raw)
+			if err != nil {
+				log.Fatal("SKYMAIL_CERTIFICATE_TEMPLATE_ID must be a UUID")
+			}
+			sky.CertificateTemplateID = tid
+		}
+		mailer = sky
 	}
 
+	var render certificate.Renderer
+	if os.Getenv("GOTENBERG_URL") != "" {
+		render = &certificate.Gotenberg{BaseURL: os.Getenv("GOTENBERG_URL")}
+	}
+
+	ticketSvc := ticket.NewService(tickets, events, az, users)
+	certSvc := certificate.NewService(certs, tickets, events, users, az, render, sky, os.Getenv("PUBLIC_API_ORIGIN"))
+	ticketSvc = ticket.WithSettledCheckIn(ticketSvc, func(ctx context.Context, ticketID uuid.UUID) {
+		_, _ = certSvc.RecomputeTicket(ctx, ticketID)
+	})
+
 	app := httpx.New(httpx.Deps{
-		Users:       user.NewService(users, dir),
-		Identity:    identity.NewService(dir, users, az, mailer),
-		Events:      event.NewService(events, az),
-		Seasons:     season.NewService(seasons, az),
-		Tickets:     ticket.NewService(tickets, events, az, users),
-		Competitors: competitor.NewService(competitors, events, az),
-		Media:       media.NewService(mediaStore, blobs, az, os.Getenv("CDN_BASE")),
-		URLs:        shorturl.NewService(shorturl.NewPostgresStore(pool), az),
-		Mail:        mailer,
-		ParseToken:  parse,
+		Users:        user.NewService(users, dir),
+		Identity:     identity.NewService(dir, users, az, mailer),
+		Events:       event.NewService(events, az),
+		Seasons:      season.NewService(seasons, az),
+		Tickets:      ticketSvc,
+		Competitors:  competitor.NewService(competitors, events, az),
+		Media:        media.NewService(mediaStore, blobs, az, os.Getenv("CDN_BASE")),
+		URLs:         shorturl.NewService(shorturl.NewPostgresStore(pool), az),
+		Certificates: certSvc,
+		Mail:         mailer,
+		ParseToken:   parse,
 	})
 
 	addr := os.Getenv("PORT")

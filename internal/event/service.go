@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -52,9 +53,33 @@ func (s *service) Get(ctx context.Context, id uuid.UUID) (Event, error) {
 	return s.store.Get(ctx, id)
 }
 
+func normalizeAttendance(in Event) (Event, error) {
+	rule := strings.TrimSpace(strings.ToLower(in.AttendanceRule))
+	if rule == "" {
+		rule = "none"
+	}
+	switch rule {
+	case "none", "once":
+		in.AttendanceRule = rule
+		return in, nil
+	case "ratio":
+		if in.AttendanceRatio == nil || *in.AttendanceRatio <= 0 || *in.AttendanceRatio > 1 {
+			return Event{}, ErrInvalid
+		}
+		in.AttendanceRule = rule
+		return in, nil
+	default:
+		return Event{}, ErrInvalid
+	}
+}
+
 func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Event, error) {
 	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
+	}
+	in, err := normalizeAttendance(in)
+	if err != nil {
+		return Event{}, err
 	}
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Create) {
 		return Event{}, ErrForbidden
@@ -72,6 +97,10 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	}
 	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
+	}
+	in, err = normalizeAttendance(in)
+	if err != nil {
+		return Event{}, err
 	}
 	in.ID = existing.ID
 	if in.SeasonID == nil {
