@@ -2,7 +2,11 @@ package identity
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -369,26 +373,163 @@ func (k *Keycloak) ListUsers(ctx context.Context) ([]Person, error) {
 	}
 	out := make([]Person, 0)
 	first := 0
-	const pageSize = 100
+	const pageSize = 20
+	client := &http.Client{Timeout: 60 * time.Second}
 	for {
-		users, err := k.gc.GetUsers(ctx, token, k.realm, gocloak.GetUsersParams{
-			First: gocloak.IntP(first),
-			Max:   gocloak.IntP(pageSize),
-		})
+		u := k.base + "/admin/realms/" + k.realm + "/users?first=" + strconv.Itoa(first) + "&max=" + strconv.Itoa(pageSize) + "&briefRepresentation=true"
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
 		if err != nil {
-			return nil, mapKCErr(err)
+			return nil, err
 		}
-		for _, u := range users {
-			p, err := personFrom(u)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 400 {
+			return nil, mapKCErr(&gocloak.APIError{Code: resp.StatusCode, Message: string(body)})
+		}
+		var chunks []json.RawMessage
+		if err := json.Unmarshal(body, &chunks); err != nil {
+			return nil, err
+		}
+		for _, chunk := range chunks {
+			var row struct {
+				ID        string `json:"id"`
+				Email     string `json:"email"`
+				FirstName string `json:"firstName"`
+				LastName  string `json:"lastName"`
+				Username  string `json:"username"`
+			}
+			if err := json.Unmarshal(chunk, &row); err != nil {
+				continue
+			}
+			id, err := uuid.Parse(row.ID)
 			if err != nil {
 				continue
 			}
-			out = append(out, p)
+			out = append(out, Person{
+				ID: id, Email: row.Email, FirstName: row.FirstName,
+				LastName: row.LastName, Username: row.Username,
+			})
 		}
-		if len(users) < pageSize {
+		if len(chunks) < pageSize {
 			return out, nil
 		}
-		first += len(users)
+		first += len(chunks)
+	}
+}
+
+func (k *Keycloak) UsersWithClientRole(ctx context.Context, clientID, role string) ([]Person, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	clientUUID, err := k.clientUUID(ctx, token, clientID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return []Person{}, nil
+		}
+		return nil, err
+	}
+	roles := []string{role}
+	if strings.HasPrefix(role, "skyforms:") && role != "skyforms:*" {
+		roles = append(roles, "skyforms:*")
+	}
+	seen := map[uuid.UUID]struct{}{}
+	out := make([]Person, 0)
+	add := func(p Person) {
+		if p.ID == uuid.Nil {
+			return
+		}
+		if _, ok := seen[p.ID]; ok {
+			return
+		}
+		seen[p.ID] = struct{}{}
+		out = append(out, p)
+	}
+	for _, name := range roles {
+		groups, users, err := k.clientRoleHolders(ctx, token, clientUUID, name)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		for _, g := range groups {
+			members, err := k.Members(ctx, g.ID)
+			if err != nil {
+				if errors.Is(err, ErrNotFound) {
+					continue
+				}
+				return nil, err
+			}
+			for _, person := range members {
+				add(person)
+			}
+		}
+		for _, person := range users {
+			add(person)
+		}
+	}
+	return out, nil
+}
+
+func (k *Keycloak) clientRoleHolders(ctx context.Context, token, clientUUID, role string) ([]Group, []Person, error) {
+	base := k.base + "/admin/realms/" + k.realm + "/clients/" + clientUUID + "/roles/" + url.PathEscape(role)
+	groups := make([]Group, 0)
+	first := 0
+	const pageSize = 100
+	for {
+		var page []*gocloak.Group
+		resp, err := k.gc.GetRequestWithBearerAuth(ctx, token).SetResult(&page).SetQueryParams(map[string]string{"first": strconv.Itoa(first), "max": strconv.Itoa(pageSize), "briefRepresentation": "true"}).Get(base + "/groups")
+		if err != nil {
+			return nil, nil, err
+		}
+		if resp.IsError() {
+			if resp.StatusCode() == 404 {
+				return nil, nil, ErrNotFound
+			}
+			return nil, nil, errors.New("identity: keycloak role groups failed")
+		}
+		for _, g := range page {
+			groups = append(groups, groupFrom(g))
+		}
+		if len(page) < pageSize {
+			break
+		}
+		first += len(page)
+	}
+	users := make([]Person, 0)
+	first = 0
+	for {
+		var page []*gocloak.User
+		resp, err := k.gc.GetRequestWithBearerAuth(ctx, token).SetResult(&page).SetQueryParams(map[string]string{"first": strconv.Itoa(first), "max": strconv.Itoa(pageSize), "briefRepresentation": "true"}).Get(base + "/users")
+		if err != nil {
+			return nil, nil, err
+		}
+		if resp.IsError() {
+			if resp.StatusCode() == 404 {
+				return groups, users, nil
+			}
+			return nil, nil, errors.New("identity: keycloak role users failed")
+		}
+		for _, u := range page {
+			person, err := personFrom(u)
+			if err != nil {
+				continue
+			}
+			users = append(users, person)
+		}
+		if len(page) < pageSize {
+			return groups, users, nil
+		}
+		first += len(page)
 	}
 }
 

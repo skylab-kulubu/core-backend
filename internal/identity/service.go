@@ -19,7 +19,7 @@ type Service interface {
 	Members(ctx context.Context, p authz.Principal, groupRef string) ([]Person, error)
 	AddMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
 	RemoveMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
-	ListUsers(ctx context.Context, p authz.Principal, q string) ([]Person, error)
+	ListUsers(ctx context.Context, p authz.Principal, q string, seat ...ClientRole) ([]Person, error)
 	GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error)
 	CreateUser(ctx context.Context, p authz.Principal, in Person) (Person, error)
 	DeleteUser(ctx context.Context, p authz.Principal, id uuid.UUID) error
@@ -54,6 +54,18 @@ func (s *service) allow(p authz.Principal, t authz.Type, a authz.Action) error {
 		return ErrForbidden
 	}
 	return nil
+}
+
+func (s *service) allowUserRead(p authz.Principal) error {
+	if s.allow(p, authz.TypeUser, authz.Read) == nil {
+		return nil
+	}
+	for _, role := range p.Roles {
+		if role == "users:read" {
+			return nil
+		}
+	}
+	return ErrForbidden
 }
 
 func (s *service) ListGroups(ctx context.Context, p authz.Principal) ([]Group, error) {
@@ -119,27 +131,71 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 	return s.dir.RemoveMember(ctx, groupRef, userID)
 }
 
-func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string) ([]Person, error) {
+func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, seat ...ClientRole) ([]Person, error) {
 	if err := s.allow(p, authz.TypeUser, authz.Read); err != nil {
 		return nil, err
 	}
 	q = strings.TrimSpace(q)
-	if q == "" {
-		return s.dir.ListUsers(ctx)
+	if len(seat) > 0 && strings.TrimSpace(seat[0].Role) != "" {
+		clientID := strings.TrimSpace(seat[0].ClientID)
+		if clientID == "" {
+			clientID = "dotnet"
+		}
+		people, err := s.dir.UsersWithClientRole(ctx, clientID, strings.TrimSpace(seat[0].Role))
+		if err != nil {
+			return nil, err
+		}
+		if q != "" {
+			matched := make([]Person, 0, len(people))
+			for _, person := range people {
+				if personMatches(person, q) {
+					matched = append(matched, person)
+				}
+			}
+			people = matched
+		}
+		return s.overlayShadow(ctx, people)
 	}
-	found, err := s.users.Search(ctx, q)
+	people, err := s.dir.ListUsers(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Person, 0, len(found))
-	for _, u := range found {
-		out = append(out, personFromUser(u))
+	if q != "" {
+		return s.mergeUserSearch(ctx, people, q)
+	}
+	out := make([]Person, 0, len(people))
+	for _, person := range people {
+		shadow, _, err := s.assign.Ensure(ctx, person.ID, user.Profile{
+			Email:       person.Email,
+			FirstName:   person.FirstName,
+			LastName:    person.LastName,
+			Username:    person.Username,
+			SchoolEmail: person.SchoolEmail,
+			SkyNumber:   person.SkyNumber,
+		})
+		if err != nil {
+			if errors.Is(err, user.ErrConflict) {
+				out = append(out, person)
+				continue
+			}
+			return nil, err
+		}
+		if shadow.ID == person.ID {
+			if shadow.SchoolEmail != "" {
+				person.SchoolEmail = shadow.SchoolEmail
+			}
+			if shadow.SkyNumber != "" {
+				person.SkyNumber = shadow.SkyNumber
+			}
+		}
+		out = append(out, person)
 	}
 	return out, nil
 }
 
+
 func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error) {
-	if err := s.allow(p, authz.TypeUser, authz.Read); err != nil {
+	if err := s.allowUserRead(p); err != nil {
 		return UserCard{}, err
 	}
 	person, err := s.dir.GetUser(ctx, id)
@@ -175,6 +231,12 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	extra, err := s.dir.UserExtraRoles(ctx, id)
 	if err != nil {
 		return UserCard{}, err
+	}
+	if groups == nil {
+		groups = []Group{}
+	}
+	if extra == nil {
+		extra = []ClientRole{}
 	}
 	return UserCard{Person: person, Groups: groups, InheritedRoles: inherited, ExtraRoles: extra}, nil
 }
@@ -483,6 +545,67 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 		Count:       len(members),
 		Members:     members,
 	}
+}
+
+
+func (s *service) overlayShadow(ctx context.Context, people []Person) ([]Person, error) {
+	for i, person := range people {
+		shadow, err := s.users.Get(ctx, person.ID)
+		if err != nil {
+			continue
+		}
+		if shadow.SchoolEmail != "" {
+			people[i].SchoolEmail = shadow.SchoolEmail
+		}
+		if shadow.SkyNumber != "" {
+			people[i].SkyNumber = shadow.SkyNumber
+		}
+	}
+	return people, nil
+}
+
+func (s *service) mergeUserSearch(ctx context.Context, people []Person, q string) ([]Person, error) {
+	out := make([]Person, 0)
+	seen := map[uuid.UUID]int{}
+	for _, person := range people {
+		if !personMatches(person, q) {
+			continue
+		}
+		seen[person.ID] = len(out)
+		out = append(out, person)
+	}
+	found, err := s.users.Search(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range found {
+		person := personFromUser(u)
+		if i, ok := seen[u.ID]; ok {
+			if person.SchoolEmail != "" {
+				out[i].SchoolEmail = person.SchoolEmail
+			}
+			if person.SkyNumber != "" {
+				out[i].SkyNumber = person.SkyNumber
+			}
+			continue
+		}
+		seen[u.ID] = len(out)
+		out = append(out, person)
+	}
+	return out, nil
+}
+
+func personMatches(p Person, q string) bool {
+	n := strings.ToLower(q)
+	for _, f := range []string{
+		p.Email, p.FirstName, p.LastName, p.Username, p.SchoolEmail, p.SkyNumber,
+		strings.TrimSpace(p.FirstName + " " + p.LastName),
+	} {
+		if strings.Contains(strings.ToLower(f), n) {
+			return true
+		}
+	}
+	return false
 }
 
 func personFromUser(u user.User) Person {

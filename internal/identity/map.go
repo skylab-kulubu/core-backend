@@ -103,7 +103,7 @@ func flattenGroups(gs []*gocloak.Group) []Group {
 
 func clientRolesFromMappings(m *gocloak.MappingsRepresentation) []ClientRole {
 	if m == nil || m.ClientMappings == nil {
-		return nil
+		return []ClientRole{}
 	}
 	out := make([]ClientRole, 0)
 	for _, cm := range m.ClientMappings {
