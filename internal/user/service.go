@@ -33,15 +33,26 @@ func (s *service) Ensure(ctx context.Context, id uuid.UUID, profile Profile) (Us
 			profile.SkyNumber = n
 		}
 	}
-	first, created, err := s.store.Upsert(ctx, User{
-		ID:          id,
-		Email:       profile.Email,
-		FirstName:   profile.FirstName,
-		LastName:    profile.LastName,
-		Username:    profile.Username,
-		SchoolEmail: profile.SchoolEmail,
-		SkyNumber:   profile.SkyNumber,
-	})
+	put := func(sky string) (User, bool, error) {
+		return s.store.Upsert(ctx, User{
+			ID: id, Email: profile.Email, FirstName: profile.FirstName, LastName: profile.LastName,
+			Username: profile.Username, SchoolEmail: profile.SchoolEmail, SkyNumber: sky,
+		})
+	}
+	first, created, err := put(profile.SkyNumber)
+	if errors.Is(err, ErrConflict) {
+		first, created, err = put("")
+	}
+	if errors.Is(err, ErrConflict) && profile.Email != "" {
+		found, e2 := s.store.FindByEmail(ctx, profile.Email)
+		if e2 == nil {
+			for _, existing := range found {
+				if existing.ID != id {
+					return existing, false, nil
+				}
+			}
+		}
+	}
 	if err != nil {
 		return User{}, false, err
 	}

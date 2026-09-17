@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -122,6 +123,9 @@ func (h *IdentityHandler) Members(c fiber.Ctx) error {
 	if err != nil {
 		return identityError(c, err)
 	}
+	if members == nil {
+		members = []identity.Person{}
+	}
 	return c.JSON(members)
 }
 
@@ -163,7 +167,14 @@ func (h *IdentityHandler) ListUsers(c fiber.Ctx) error {
 	if err != nil {
 		return identityError(c, err)
 	}
-	users, err := h.svc.ListUsers(c.Context(), p, c.Query("q"))
+	var seat []identity.ClientRole
+	if role := strings.TrimSpace(c.Query("role")); role != "" {
+		if !strings.HasPrefix(role, "skyforms:") {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+		seat = []identity.ClientRole{{ClientID: "dotnet", Role: role}}
+	}
+	users, err := h.svc.ListUsers(c.Context(), p, c.Query("q"), seat...)
 	if err != nil {
 		return identityError(c, err)
 	}
@@ -194,6 +205,9 @@ func (h *IdentityHandler) GroupClientRoles(c fiber.Ctx) error {
 	roles, err := h.svc.GroupClientRoles(c.Context(), p, c.Params("groupId"))
 	if err != nil {
 		return identityError(c, err)
+	}
+	if roles == nil {
+		roles = []identity.ClientRole{}
 	}
 	return c.JSON(roles)
 }

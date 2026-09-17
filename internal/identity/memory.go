@@ -200,6 +200,59 @@ func (m *Memory) ListUsers(_ context.Context) ([]Person, error) {
 	return out, nil
 }
 
+func holdsClientRole(have ClientRole, clientID, role string) bool {
+	if have.ClientID != clientID && !(clientID == "dotnet" && have.ClientID == "skyforms") {
+		return false
+	}
+	if have.Role == role {
+		return true
+	}
+	return strings.HasPrefix(role, "skyforms:") && have.Role == "skyforms:*"
+}
+
+func (m *Memory) UsersWithClientRole(_ context.Context, clientID, role string) ([]Person, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("UsersWithClientRole")
+	seen := map[uuid.UUID]struct{}{}
+	out := make([]Person, 0)
+	add := func(id uuid.UUID) {
+		if _, ok := seen[id]; ok {
+			return
+		}
+		p, ok := m.people[id]
+		if !ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, p)
+	}
+	for gid, roles := range m.groupRoles {
+		ok := false
+		for _, r := range roles {
+			if holdsClientRole(r, clientID, role) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+		for id := range m.members[gid] {
+			add(id)
+		}
+	}
+	for id, roles := range m.userRoles {
+		for _, r := range roles {
+			if holdsClientRole(r, clientID, role) {
+				add(id)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
 func (m *Memory) CreateUser(_ context.Context, p Person) (Person, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

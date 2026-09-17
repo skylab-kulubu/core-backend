@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"log"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -33,6 +34,7 @@ func problem(c fiber.Ctx, status int, title string) error {
 }
 
 func ErrorHandler(c fiber.Ctx, err error) error {
+	log.Printf("http error: %v", err)
 	var fe *fiber.Error
 	if errors.As(err, &fe) {
 		return problem(c, fe.Code, fe.Message)

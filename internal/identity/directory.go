@@ -52,6 +52,7 @@ type Directory interface {
 	AddMember(ctx context.Context, groupID string, userID uuid.UUID) error
 	RemoveMember(ctx context.Context, groupID string, userID uuid.UUID) error
 	ListUsers(ctx context.Context) ([]Person, error)
+	UsersWithClientRole(ctx context.Context, clientID, role string) ([]Person, error)
 	CreateUser(ctx context.Context, p Person) (Person, error)
 	GetUser(ctx context.Context, id uuid.UUID) (Person, error)
 	DeleteUser(ctx context.Context, id uuid.UUID) error
