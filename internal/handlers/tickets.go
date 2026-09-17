@@ -111,11 +111,47 @@ func (h *TicketHandler) CheckIn(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	dayID, err := uuid.Parse(c.Params("eventDayId"))
+	sessionID, err := uuid.Parse(c.Params("sessionId"))
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	ci, err := h.svc.CheckIn(c.Context(), p, ticketID, dayID)
+	ci, err := h.svc.CheckIn(c.Context(), p, ticketID, sessionID)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(ci)
+}
+
+type guestCheckInBody struct {
+	Email string `json:"email"`
+}
+
+func (h *TicketHandler) CheckInMe(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	sessionID, err := uuid.Parse(c.Params("sessionId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	ci, err := h.svc.CheckInMe(c.Context(), p, sessionID)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(ci)
+}
+
+func (h *TicketHandler) CheckInGuest(c fiber.Ctx) error {
+	sessionID, err := uuid.Parse(c.Params("sessionId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body guestCheckInBody
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	ci, err := h.svc.CheckInGuest(c.Context(), sessionID, body.Email)
 	if err != nil {
 		return ticketError(c, err)
 	}

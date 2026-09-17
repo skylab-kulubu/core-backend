@@ -6,6 +6,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/qr"
 )
 
 type ScheduleHandler struct {
@@ -33,6 +34,7 @@ type sessionBody struct {
 	EndTime         *time.Time `json:"endTime"`
 	OrderIndex      int        `json:"orderIndex"`
 	SessionType     string     `json:"sessionType"`
+	Cancelled       bool       `json:"cancelled"`
 }
 
 func (h *ScheduleHandler) ListDays(c fiber.Ctx) error {
@@ -126,6 +128,26 @@ func (h *ScheduleHandler) ListSessions(c fiber.Ctx) error {
 	return c.JSON(sessions)
 }
 
+func (h *ScheduleHandler) CurrentSession(c fiber.Ctx) error {
+	dayID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	at := time.Now().UTC()
+	if raw := c.Query("at"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+		at = parsed
+	}
+	cur, err := h.svc.CurrentSession(c.Context(), dayID, at)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(cur)
+}
+
 func (h *ScheduleHandler) GetSession(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -136,6 +158,22 @@ func (h *ScheduleHandler) GetSession(c fiber.Ctx) error {
 		return eventError(c, err)
 	}
 	return c.JSON(sess)
+}
+
+func (h *ScheduleHandler) SessionQR(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if _, err := h.svc.GetSession(c.Context(), id); err != nil {
+		return eventError(c, err)
+	}
+	png, err := qr.PNG(qr.SessionURL(id.String()), qr.SizeFromQuery(c.Query("size")))
+	if err != nil {
+		return err
+	}
+	c.Set(fiber.HeaderContentType, "image/png")
+	return c.Send(png)
 }
 
 func (h *ScheduleHandler) CreateSession(c fiber.Ctx) error {
@@ -151,6 +189,7 @@ func (h *ScheduleHandler) CreateSession(c fiber.Ctx) error {
 		EventDayID: body.EventDayID, Title: body.Title, SpeakerName: body.SpeakerName,
 		SpeakerLinkedin: body.SpeakerLinkedin, Description: body.Description,
 		StartTime: body.StartTime, EndTime: body.EndTime, OrderIndex: body.OrderIndex, SessionType: body.SessionType,
+		Cancelled: body.Cancelled,
 	})
 	if err != nil {
 		return eventError(c, err)
@@ -174,7 +213,7 @@ func (h *ScheduleHandler) UpdateSession(c fiber.Ctx) error {
 	updated, err := h.svc.UpdateSession(c.Context(), p, id, event.Session{
 		Title: body.Title, SpeakerName: body.SpeakerName, SpeakerLinkedin: body.SpeakerLinkedin,
 		Description: body.Description, StartTime: body.StartTime, EndTime: body.EndTime,
-		OrderIndex: body.OrderIndex, SessionType: body.SessionType,
+		OrderIndex: body.OrderIndex, SessionType: body.SessionType, Cancelled: body.Cancelled,
 	})
 	if err != nil {
 		return eventError(c, err)

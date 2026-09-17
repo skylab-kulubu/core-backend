@@ -467,6 +467,48 @@ func TestAuthorizer_Allow(t *testing.T) {
 			a:    Update,
 			want: true,
 		},
+		{
+			name: "owner team leader can issue certificate",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/ARTLAB/LIDERLER"}},
+			r:    Resource{Type: TypeCertificate, OwnerTeam: "ARTLAB"},
+			a:    Issue,
+			want: true,
+		},
+		{
+			name: "owner team member cannot issue certificate",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/ARTLAB"}},
+			r:    Resource{Type: TypeCertificate, OwnerTeam: "ARTLAB"},
+			a:    Issue,
+			want: false,
+		},
+		{
+			name: "gecekodu member cannot issue certificate",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}},
+			r:    Resource{Type: TypeCertificate, OwnerTeam: "GECEKODU"},
+			a:    Issue,
+			want: false,
+		},
+		{
+			name: "empty owner certificate is privileged-only",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/ARTLAB/LIDERLER"}},
+			r:    Resource{Type: TypeCertificate},
+			a:    Issue,
+			want: false,
+		},
+		{
+			name: "privileged can issue empty owner certificate",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/YK"}},
+			r:    Resource{Type: TypeCertificate},
+			a:    Issue,
+			want: true,
+		},
+		{
+			name: "privileged can revoke certificate",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/YK"}},
+			r:    Resource{Type: TypeCertificate, OwnerTeam: "ARTLAB"},
+			a:    Revoke,
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {

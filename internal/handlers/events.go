@@ -18,20 +18,22 @@ func NewEventHandler(svc event.Service) *EventHandler {
 }
 
 type eventBody struct {
-	Name         string       `json:"name"`
-	Description  string       `json:"description"`
-	Location     string       `json:"location"`
-	OwnerTeam    string       `json:"ownerTeam"`
-	FormURL      string       `json:"formUrl"`
-	Capacity     int          `json:"capacity"`
-	StartDate    *time.Time   `json:"startDate"`
-	EndDate      *time.Time   `json:"endDate"`
-	Linkedin     string       `json:"linkedin"`
-	Active       bool         `json:"active"`
-	Ranked       bool         `json:"ranked"`
-	PrizeInfo    string       `json:"prizeInfo"`
-	CoverImageID *uuid.UUID   `json:"coverImageId"`
-	DoorStaffIDs *[]uuid.UUID `json:"doorStaffIds"`
+	Name            string       `json:"name"`
+	Description     string       `json:"description"`
+	Location        string       `json:"location"`
+	OwnerTeam       string       `json:"ownerTeam"`
+	FormURL         string       `json:"formUrl"`
+	Capacity        int          `json:"capacity"`
+	StartDate       *time.Time   `json:"startDate"`
+	EndDate         *time.Time   `json:"endDate"`
+	Linkedin        string       `json:"linkedin"`
+	Active          bool         `json:"active"`
+	Ranked          bool         `json:"ranked"`
+	PrizeInfo       string       `json:"prizeInfo"`
+	CoverImageID    *uuid.UUID   `json:"coverImageId"`
+	AttendanceRule  string       `json:"attendanceRule"`
+	AttendanceRatio *float64     `json:"attendanceRatio"`
+	DoorStaffIDs    *[]uuid.UUID `json:"doorStaffIds"`
 }
 
 func eventError(c fiber.Ctx, err error) error {
@@ -51,19 +53,21 @@ func eventError(c fiber.Ctx, err error) error {
 
 func (b eventBody) asEvent() event.Event {
 	e := event.Event{
-		Name:         b.Name,
-		Description:  b.Description,
-		Location:     b.Location,
-		OwnerTeam:    b.OwnerTeam,
-		FormURL:      b.FormURL,
-		Capacity:     b.Capacity,
-		StartDate:    b.StartDate,
-		EndDate:      b.EndDate,
-		Linkedin:     b.Linkedin,
-		Active:       b.Active,
-		Ranked:       b.Ranked,
-		PrizeInfo:    b.PrizeInfo,
-		CoverImageID: b.CoverImageID,
+		Name:            b.Name,
+		Description:     b.Description,
+		Location:        b.Location,
+		OwnerTeam:       b.OwnerTeam,
+		FormURL:         b.FormURL,
+		Capacity:        b.Capacity,
+		StartDate:       b.StartDate,
+		EndDate:         b.EndDate,
+		Linkedin:        b.Linkedin,
+		Active:          b.Active,
+		Ranked:          b.Ranked,
+		PrizeInfo:       b.PrizeInfo,
+		CoverImageID:    b.CoverImageID,
+		AttendanceRule:  b.AttendanceRule,
+		AttendanceRatio: b.AttendanceRatio,
 	}
 	if b.DoorStaffIDs != nil {
 		e.DoorStaffIDs = *b.DoorStaffIDs

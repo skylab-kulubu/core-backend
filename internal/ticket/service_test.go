@@ -28,6 +28,26 @@ func seedEvent(t *testing.T, events event.Store, owner string) event.Event {
 	return ev
 }
 
+func seedDay(t *testing.T, events event.Store, eventID uuid.UUID, name string) event.Day {
+	t.Helper()
+	day, err := events.CreateDay(context.Background(), event.Day{EventID: eventID, Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return day
+}
+
+func seedSession(t *testing.T, events event.Store, dayID uuid.UUID, title string) event.Session {
+	t.Helper()
+	sess, err := events.CreateSession(context.Background(), event.Session{
+		EventDayID: dayID, Title: title, SpeakerName: "Ada", SessionType: "PRESENTATION",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sess
+}
+
 func TestService_ApplyThenListMine(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)
@@ -97,10 +117,8 @@ func TestService_CheckInLeaderAndDuplicate(t *testing.T) {
 	events, svc := setup(t)
 	ctx := context.Background()
 	ev := seedEvent(t, events, "WEBLAB")
-	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	day := seedDay(t, events, ev.ID, "Day 1")
+	sess := seedSession(t, events, day.ID, "Opening")
 	userID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
 	if err != nil {
@@ -108,16 +126,46 @@ func TestService_CheckInLeaderAndDuplicate(t *testing.T) {
 	}
 	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
 
-	ci, err := svc.CheckIn(ctx, leader, tk.ID, day.ID)
+	ci, err := svc.CheckIn(ctx, leader, tk.ID, sess.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ci.EventDayID != day.ID {
+	if ci.SessionID != sess.ID || ci.EventDayID != day.ID {
 		t.Fatalf("checkin %+v", ci)
 	}
-	_, err = svc.CheckIn(ctx, leader, tk.ID, day.ID)
+	_, err = svc.CheckIn(ctx, leader, tk.ID, sess.ID)
 	if !errors.Is(err, ticket.ErrConflict) {
 		t.Fatalf("dup checkin: %v", err)
+	}
+}
+
+func TestService_CheckInTwoSessionsOnSameDay(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+	day := seedDay(t, events, ev.ID, "Day 1")
+	first := seedSession(t, events, day.ID, "Talk 1")
+	second := seedSession(t, events, day.ID, "Talk 2")
+	userID := uuid.MustParse("66666666-6666-6666-6666-666666666666")
+	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	a, err := svc.CheckIn(ctx, leader, tk.ID, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := svc.CheckIn(ctx, leader, tk.ID, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.SessionID != first.ID || b.SessionID != second.ID {
+		t.Fatalf("sessions %v %v", a, b)
+	}
+	if a.EventDayID != day.ID || b.EventDayID != day.ID {
+		t.Fatalf("days %v %v", a, b)
 	}
 }
 
@@ -126,17 +174,15 @@ func TestService_CheckInForbiddenForMember(t *testing.T) {
 	events, svc := setup(t)
 	ctx := context.Background()
 	ev := seedEvent(t, events, "WEBLAB")
-	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	day := seedDay(t, events, ev.ID, "Day 1")
+	sess := seedSession(t, events, day.ID, "Opening")
 	userID := uuid.MustParse("33333333-3333-3333-3333-333333333333")
 	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	member := authz.Principal{ID: "mem", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
-	_, err = svc.CheckIn(ctx, member, tk.ID, day.ID)
+	_, err = svc.CheckIn(ctx, member, tk.ID, sess.ID)
 	if !errors.Is(err, ticket.ErrForbidden) {
 		t.Fatalf("got %v", err)
 	}
@@ -167,25 +213,165 @@ func TestService_ListByEventLeaderAndMember(t *testing.T) {
 	}
 }
 
-func TestService_CheckInWrongEventDay(t *testing.T) {
+func TestService_CheckInWrongSession(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)
 	ctx := context.Background()
 	ev := seedEvent(t, events, "WEBLAB")
 	other := seedEvent(t, events, "SKYSEC")
-	day, err := events.CreateDay(ctx, event.Day{EventID: other.ID, Name: "Other"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	day := seedDay(t, events, other.ID, "Other")
+	sess := seedSession(t, events, day.ID, "Other talk")
 	userID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
 	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
-	_, err = svc.CheckIn(ctx, leader, tk.ID, day.ID)
+	_, err = svc.CheckIn(ctx, leader, tk.ID, sess.ID)
 	if !errors.Is(err, ticket.ErrInvalid) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestService_CheckInMeOwnerAndDuplicate(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := seedSession(t, events, day.ID, "Opening")
+	userID := uuid.MustParse("77777777-7777-7777-7777-777777777777")
+	owner := authz.Principal{ID: userID.String()}
+	tk, err := svc.Apply(ctx, owner, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci, err := svc.CheckInMe(ctx, owner, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ci.TicketID != tk.ID || ci.SessionID != sess.ID {
+		t.Fatalf("me %+v", ci)
+	}
+	_, err = svc.CheckInMe(ctx, owner, sess.ID)
+	if !errors.Is(err, ticket.ErrConflict) {
+		t.Fatalf("dup me: %v", err)
+	}
+	stranger := authz.Principal{ID: uuid.MustParse("88888888-8888-8888-8888-888888888888").String()}
+	_, err = svc.CheckInMe(ctx, stranger, sess.ID)
+	if !errors.Is(err, ticket.ErrNotFound) {
+		t.Fatalf("stranger: %v", err)
+	}
+}
+
+func TestService_CheckInGuestByEmail(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := seedSession(t, events, day.ID, "Opening")
+	created, err := svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{
+		FirstName: "Ada", LastName: "Lovelace", Email: "ada@example.com", PhoneNumber: "555",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci, err := svc.CheckInGuest(ctx, sess.ID, "ada@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ci.TicketID != created.ID || ci.SessionID != sess.ID {
+		t.Fatalf("guest %+v", ci)
+	}
+	_, err = svc.CheckInGuest(ctx, sess.ID, "ada@example.com")
+	if !errors.Is(err, ticket.ErrConflict) {
+		t.Fatalf("dup guest: %v", err)
+	}
+	_, err = svc.CheckInGuest(ctx, sess.ID, "nobody@example.com")
+	if !errors.Is(err, ticket.ErrNotFound) {
+		t.Fatalf("missing guest: %v", err)
+	}
+}
+
+func TestService_CheckInPrivilegedAndEmptyOwnerTeam(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+	day := seedDay(t, events, ev.ID, "Day 1")
+	sess := seedSession(t, events, day.ID, "Opening")
+	userID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1")
+	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+	ci, err := svc.CheckIn(ctx, yk, tk.ID, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ci.SessionID != sess.ID {
+		t.Fatalf("yk %+v", ci)
+	}
+
+	open := seedEvent(t, events, "")
+	openDay := seedDay(t, events, open.ID, "Day 1")
+	openSess := seedSession(t, events, openDay.ID, "Talk")
+	openUser := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2")
+	openTk, err := svc.Apply(ctx, authz.Principal{ID: openUser.String()}, open.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	_, err = svc.CheckIn(ctx, leader, openTk.ID, openSess.ID)
+	if !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("leader empty owner: %v", err)
+	}
+	ci, err = svc.CheckIn(ctx, yk, openTk.ID, openSess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ci.SessionID != openSess.ID {
+		t.Fatalf("yk empty owner %+v", ci)
+	}
+}
+
+func TestService_CheckInMissingSessionAndStaffGuest(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+	day := seedDay(t, events, ev.ID, "Day 1")
+	sess := seedSession(t, events, day.ID, "Opening")
+	userID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1")
+	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	_, err = svc.CheckIn(ctx, leader, tk.ID, uuid.MustParse("99999999-9999-9999-9999-999999999999"))
+	if !errors.Is(err, ticket.ErrNotFound) {
+		t.Fatalf("missing session: %v", err)
+	}
+	guest, err := svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{
+		FirstName: "Ada", LastName: "Lovelace", Email: "guest@example.com", PhoneNumber: "555",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci, err := svc.CheckIn(ctx, leader, guest.ID, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ci.TicketID != guest.ID || ci.SessionID != sess.ID {
+		t.Fatalf("staff guest %+v", ci)
 	}
 }
 
@@ -200,48 +386,16 @@ func TestService_CheckInAssignedDoorStaff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	day := seedDay(t, events, ev.ID, "Day 1")
+	sess := seedSession(t, events, day.ID, "Opening")
 	userID := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
 	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = svc.CheckIn(ctx, authz.Principal{ID: staff.String()}, tk.ID, day.ID)
+	_, err = svc.CheckIn(ctx, authz.Principal{ID: staff.String()}, tk.ID, sess.ID)
 	if err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestService_CheckInEmptyOwnerTeam(t *testing.T) {
-	t.Parallel()
-	events, svc := setup(t)
-	ctx := context.Background()
-	staff := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-	ev, err := events.Create(ctx, event.Event{
-		Name: "Seminer", Location: "YTÜ", DoorStaffIDs: []uuid.UUID{staff},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	userID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
-	if _, err := svc.CheckIn(ctx, leader, tk.ID, day.ID); !errors.Is(err, ticket.ErrForbidden) {
-		t.Fatalf("leader empty owner: %v", err)
-	}
-	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
-	if _, err := svc.CheckIn(ctx, yk, tk.ID, day.ID); err != nil {
-		t.Fatalf("privileged empty owner: %v", err)
 	}
 }
 
@@ -256,16 +410,14 @@ func TestService_CheckInDoorStaffEmptyOwnerTeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	day := seedDay(t, events, ev.ID, "Day 1")
+	sess := seedSession(t, events, day.ID, "Talk")
 	userID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.CheckIn(ctx, authz.Principal{ID: staff.String()}, tk.ID, day.ID); err != nil {
+	if _, err := svc.CheckIn(ctx, authz.Principal{ID: staff.String()}, tk.ID, sess.ID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -283,17 +435,15 @@ func TestService_CheckInOwnerMemberWithTeamDoorScan(t *testing.T) {
 	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), dir)
 	ctx := context.Background()
 	ev := seedEvent(t, events, "WEBLAB")
-	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	day := seedDay(t, events, ev.ID, "Day 1")
+	sess := seedSession(t, events, day.ID, "Opening")
 	userID := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
 	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	member := authz.Principal{ID: "mem", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
-	if _, err := svc.CheckIn(ctx, member, tk.ID, day.ID); err != nil {
+	if _, err := svc.CheckIn(ctx, member, tk.ID, sess.ID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -306,17 +456,15 @@ func TestService_CheckInOwnerMemberWithoutTeamDoorScan(t *testing.T) {
 	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), dir)
 	ctx := context.Background()
 	ev := seedEvent(t, events, "WEBLAB")
-	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	day := seedDay(t, events, ev.ID, "Day 1")
+	sess := seedSession(t, events, day.ID, "Opening")
 	userID := uuid.MustParse("ffffffff-ffff-ffff-ffff-ffffffffffff")
 	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	member := authz.Principal{ID: "mem", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
-	if _, err := svc.CheckIn(ctx, member, tk.ID, day.ID); !errors.Is(err, ticket.ErrForbidden) {
+	if _, err := svc.CheckIn(ctx, member, tk.ID, sess.ID); !errors.Is(err, ticket.ErrForbidden) {
 		t.Fatalf("got %v", err)
 	}
 }

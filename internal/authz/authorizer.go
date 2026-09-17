@@ -34,6 +34,8 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		return a.allowMedia(p, r, action)
 	case TypeURL:
 		return a.allowURL(p, r, action)
+	case TypeCertificate:
+		return a.allowCertificate(p, r, action)
 	case TypeTeam:
 		return action == Read
 	case TypeGroup, TypeUser:
@@ -141,6 +143,28 @@ func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
 	default:
 		return false
 	}
+}
+
+func (a *authorizer) allowCertificate(p Principal, r Resource, action Action) bool {
+	if action != Issue && action != Revoke && action != Read {
+		return false
+	}
+	if action == Read {
+		if a.isPrivileged(p) {
+			return true
+		}
+		if r.OwnerID != "" && r.OwnerID == p.ID {
+			return true
+		}
+		return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
+	}
+	if a.isPrivileged(p) {
+		return true
+	}
+	if r.OwnerTeam == "" {
+		return false
+	}
+	return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
 }
 
 func (a *authorizer) allowDoorCheckIn(p Principal, r Resource) bool {

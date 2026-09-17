@@ -4,6 +4,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
@@ -18,16 +19,17 @@ import (
 )
 
 type Deps struct {
-	Users       user.Service
-	Identity    identity.Service
-	Events      event.Service
-	Seasons     season.Service
-	Tickets     ticket.Service
-	Competitors competitor.Service
-	Media       media.Service
-	URLs        shorturl.Service
-	Mail        mail.Mailer
-	ParseToken  func(string) (authn.Identity, error)
+	Users        user.Service
+	Identity     identity.Service
+	Events       event.Service
+	Seasons      season.Service
+	Tickets      ticket.Service
+	Competitors  competitor.Service
+	Media        media.Service
+	URLs         shorturl.Service
+	Certificates certificate.Service
+	Mail         mail.Mailer
+	ParseToken   func(string) (authn.Identity, error)
 }
 
 func New(deps Deps) *fiber.App {
@@ -50,12 +52,21 @@ func New(deps Deps) *fiber.App {
 	mediaH := handlers.NewMediaHandler(deps.Media)
 	urls := handlers.NewURLHandler(deps.URLs)
 	jit := middlewares.NewJIT(deps.Users, deps.Mail)
+	var certs *handlers.CertificateHandler
+	if deps.Certificates != nil {
+		certs = handlers.NewCertificateHandler(deps.Certificates)
+	}
 
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 	app.Get("/v1/go/:alias/qr", urls.QR)
 	app.Get("/v1/go/:alias", urls.Redirect)
+	if certs != nil {
+		app.Get("/v1/certificates/verify/:serial/pdf", certs.Download)
+		app.Get("/v1/certificates/verify/:serial/qr", certs.QR)
+		app.Get("/v1/certificates/verify/:serial", certs.Verify)
+	}
 	app.Use(middlewares.Bearer(deps.ParseToken))
 	app.Use(jit.Handle)
 
@@ -98,6 +109,13 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/events/:eventId/applications/me", tickets.Apply)
 	app.Post("/v1/events/:eventId/applications/guest", tickets.ApplyGuest)
 	app.Get("/v1/events/:eventId/tickets", tickets.ListByEvent)
+	if certs != nil {
+		app.Get("/v1/events/:eventId/certificates", certs.ListByEvent)
+		app.Post("/v1/events/:eventId/certificates/issue", certs.Issue)
+		app.Post("/v1/events/:eventId/certificates/recompute", certs.Recompute)
+		app.Get("/v1/certificates/me", certs.Mine)
+		app.Post("/v1/certificates/:serial/revoke", certs.Revoke)
+	}
 	app.Get("/v1/events/:eventId/competitors", competitors.ListByEvent)
 	app.Get("/v1/events/:eventId/competitors/winner", competitors.Winner)
 	app.Delete("/v1/events/:eventId/season", seasons.UnassignEvent)
@@ -115,8 +133,10 @@ func New(deps Deps) *fiber.App {
 	app.Put("/v1/event-days/:id", schedule.UpdateDay)
 	app.Delete("/v1/event-days/:id", schedule.DeleteDay)
 	app.Get("/v1/event-days/:id/sessions", schedule.ListSessions)
+	app.Get("/v1/event-days/:id/current-session", schedule.CurrentSession)
 
 	app.Post("/v1/sessions", schedule.CreateSession)
+	app.Get("/v1/sessions/:id/qr", schedule.SessionQR)
 	app.Get("/v1/sessions/:id", schedule.GetSession)
 	app.Put("/v1/sessions/:id", schedule.UpdateSession)
 	app.Delete("/v1/sessions/:id", schedule.DeleteSession)
@@ -125,7 +145,9 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/tickets/user/:userId/event/:eventId", tickets.ByUserEvent)
 	app.Get("/v1/tickets/:id", tickets.Get)
 	app.Get("/v1/tickets", tickets.List)
-	app.Post("/v1/tickets/:ticketId/event-days/:eventDayId/check-in", tickets.CheckIn)
+	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
+	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
+	app.Post("/v1/sessions/:sessionId/check-in/guest", tickets.CheckInGuest)
 
 	app.Get("/v1/competitors", competitors.List)
 	app.Get("/v1/competitors/me", competitors.Mine)

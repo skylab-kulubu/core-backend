@@ -240,3 +240,39 @@ func TestLeaderboardUsesTeamPathNotType(t *testing.T) {
 		t.Fatalf("old season type path %d", resp.StatusCode)
 	}
 }
+
+func TestCheckInUsesSessionPathNotEventDay(t *testing.T) {
+	t.Parallel()
+	app := memoryApp()
+	id := uuid.New()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/tickets/"+id.String()+"/event-days/"+id.String()+"/check-in", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("old event-day path %d", resp.StatusCode)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/tickets/"+id.String()+"/sessions/"+id.String()+"/check-in", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("session path %d", resp.StatusCode)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/sessions/"+id.String()+"/check-in/me", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("me path %d", resp.StatusCode)
+	}
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/sessions/"+id.String()+"/check-in/guest", strings.NewReader(`{"email":"ada@example.com"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("guest path %d", resp.StatusCode)
+	}
+}
