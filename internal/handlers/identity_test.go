@@ -287,3 +287,37 @@ func TestListUsersSearchHTTP(t *testing.T) {
 		t.Fatalf("found %+v", found)
 	}
 }
+
+func TestListUsersSeatPinsFormsIgnoringClientIdQuery(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	dir.PutGroup(identity.Group{ID: "g-weblab", Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"})
+	seated := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	other := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	dir.PutUser(identity.Person{ID: seated, Email: "ada@example.com", FirstName: "Ada"})
+	dir.PutUser(identity.Person{ID: other, Email: "other@example.com", FirstName: "Other"})
+	if err := dir.AddMember(t.Context(), "g-weblab", seated); err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.SetGroupClientRoles(t.Context(), "g-weblab", []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}}); err != nil {
+		t.Fatal(err)
+	}
+	app := identityApp(t, ykIdent(), dir, store)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users?role=skyforms:access&clientId=core", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var found []identity.Person
+	if err := json.NewDecoder(resp.Body).Decode(&found); err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].ID != seated {
+		t.Fatalf("found %+v", found)
+	}
+}
