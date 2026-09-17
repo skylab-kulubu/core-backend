@@ -75,3 +75,11 @@ func (a *afterCheckIn) CheckInGuest(ctx context.Context, sessionID uuid.UUID, em
 	}
 	return ci, err
 }
+
+func (a *afterCheckIn) CheckInUser(ctx context.Context, p authz.Principal, sessionID, userID uuid.UUID) (CheckIn, error) {
+	ci, err := a.inner.CheckInUser(ctx, p, sessionID, userID)
+	if err == nil {
+		a.fire(ctx, ci.TicketID)
+	}
+	return ci, err
+}

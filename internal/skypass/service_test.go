@@ -323,3 +323,33 @@ func TestService_JWKSHasRSAPublicKey(t *testing.T) {
 		t.Fatalf("jwks %+v", doc)
 	}
 }
+
+func TestService_HolderFromTokenOrUIDWithoutStaffGate(t *testing.T) {
+	t.Parallel()
+	store := user.NewMemoryStore()
+	svc := newSvc(t, store, time.Minute)
+	id := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa01")
+	seedUser(t, store, id, "ada@example.com", "Ada", "Lovelace")
+	if _, err := svc.BindCard(context.Background(), authz.Principal{ID: id.String()}, "04AABBCCDD", nil); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := svc.Mint(context.Background(), authz.Principal{ID: id.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromToken, err := svc.HolderFrom(context.Background(), tok.Value, "")
+	if err != nil || fromToken.ID != id {
+		t.Fatalf("token %v %+v", err, fromToken)
+	}
+	fromUID, err := svc.HolderFrom(context.Background(), "", "04aa:bb:cc:dd")
+	if err != nil || fromUID.ID != id {
+		t.Fatalf("uid %v %+v", err, fromUID)
+	}
+	if _, err := svc.HolderFrom(context.Background(), "", ""); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty %v", err)
+	}
+	plain := "SKYPASS:SKY-1:Ada Lovelace"
+	if _, err := svc.HolderFrom(context.Background(), plain, ""); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("plaintext %v", err)
+	}
+}

@@ -6,14 +6,16 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
+	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
 type SkyPassHandler struct {
-	svc skypass.Service
+	svc     skypass.Service
+	tickets ticket.Service
 }
 
-func NewSkyPassHandler(svc skypass.Service) *SkyPassHandler {
-	return &SkyPassHandler{svc: svc}
+func NewSkyPassHandler(svc skypass.Service, tickets ticket.Service) *SkyPassHandler {
+	return &SkyPassHandler{svc: svc, tickets: tickets}
 }
 
 type cardBindBody struct {
@@ -23,6 +25,11 @@ type cardBindBody struct {
 
 type verifyBody struct {
 	Token string `json:"token"`
+}
+
+type settleBody struct {
+	Token string `json:"token"`
+	UID   string `json:"uid"`
 }
 
 func skypassError(c fiber.Ctx, err error) error {
@@ -102,4 +109,31 @@ func (h *SkyPassHandler) Verify(c fiber.Ctx) error {
 		return skypassError(c, err)
 	}
 	return c.JSON(got)
+}
+
+func (h *SkyPassHandler) CheckInSession(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return skypassError(c, err)
+	}
+	sessionID, err := uuid.Parse(c.Params("sessionId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body settleBody
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	got, err := h.svc.HolderFrom(c.Context(), body.Token, body.UID)
+	if err != nil {
+		return skypassError(c, err)
+	}
+	if h.tickets == nil {
+		return problem(c, fiber.StatusInternalServerError, "Internal Server Error")
+	}
+	ci, err := h.tickets.CheckInUser(c.Context(), p, sessionID, got.ID)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(ci)
 }

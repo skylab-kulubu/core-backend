@@ -468,3 +468,41 @@ func TestService_CheckInOwnerMemberWithoutTeamDoorScan(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestService_CheckInUserFindsTicketAndUsesDoorStaff(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	staff := uuid.MustParse("12121212-1212-1212-1212-121212121212")
+	ev, err := events.Create(ctx, event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{staff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := seedDay(t, events, ev.ID, "Day 1")
+	sess := seedSession(t, events, day.ID, "Opening")
+	userID := uuid.MustParse("13131313-1313-1313-1313-131313131313")
+	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := authz.Principal{ID: "mem", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	if _, err := svc.CheckInUser(ctx, member, sess.ID, userID); !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("member %v", err)
+	}
+	ci, err := svc.CheckInUser(ctx, authz.Principal{ID: staff.String()}, sess.ID, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ci.TicketID != tk.ID || ci.SessionID != sess.ID {
+		t.Fatalf("check-in %+v", ci)
+	}
+	if _, err := svc.CheckInUser(ctx, authz.Principal{ID: staff.String()}, sess.ID, userID); !errors.Is(err, ticket.ErrConflict) {
+		t.Fatalf("dup %v", err)
+	}
+	missing := uuid.MustParse("14141414-1414-1414-1414-141414141414")
+	if _, err := svc.CheckInUser(ctx, authz.Principal{ID: staff.String()}, sess.ID, missing); !errors.Is(err, ticket.ErrNotFound) {
+		t.Fatalf("missing ticket %v", err)
+	}
+}

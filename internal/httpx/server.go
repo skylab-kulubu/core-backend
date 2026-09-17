@@ -60,7 +60,7 @@ func New(deps Deps) *fiber.App {
 	}
 	var pass *handlers.SkyPassHandler
 	if deps.SkyPass != nil {
-		pass = handlers.NewSkyPassHandler(deps.SkyPass)
+		pass = handlers.NewSkyPassHandler(deps.SkyPass, deps.Tickets)
 	}
 
 	app.Get("/v1/health", func(c fiber.Ctx) error {
@@ -164,6 +164,9 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
 	app.Post("/v1/sessions/:sessionId/check-in/guest", tickets.CheckInGuest)
+	if pass != nil {
+		app.Post("/v1/sessions/:sessionId/check-in/skypass", pass.CheckInSession)
+	}
 
 	app.Get("/v1/competitors", competitors.List)
 	app.Get("/v1/competitors/me", competitors.Mine)

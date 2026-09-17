@@ -3,6 +3,7 @@ package skypass
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -14,6 +15,7 @@ type Service interface {
 	Lookup(ctx context.Context, p authz.Principal, uid string) (Holder, error)
 	Mint(ctx context.Context, p authz.Principal) (Token, error)
 	Verify(ctx context.Context, p authz.Principal, token string) (Holder, error)
+	HolderFrom(ctx context.Context, token, uid string) (Holder, error)
 	JWKS() JWKS
 }
 
@@ -111,6 +113,44 @@ func (s *service) Verify(ctx context.Context, p authz.Principal, token string) (
 		return Holder{}, ErrInvalid
 	}
 	u, err := s.users.Get(ctx, id)
+	if errors.Is(err, user.ErrNotFound) {
+		return Holder{}, ErrNotFound
+	}
+	if err != nil {
+		return Holder{}, err
+	}
+	return holder(u), nil
+}
+
+func (s *service) HolderFrom(ctx context.Context, token, uid string) (Holder, error) {
+	token = strings.TrimSpace(token)
+	uid = strings.TrimSpace(uid)
+	if token != "" {
+		claims, err := s.signer.Verify(token)
+		if err != nil {
+			return Holder{}, err
+		}
+		id, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			return Holder{}, ErrInvalid
+		}
+		u, err := s.users.Get(ctx, id)
+		if errors.Is(err, user.ErrNotFound) {
+			return Holder{}, ErrNotFound
+		}
+		if err != nil {
+			return Holder{}, err
+		}
+		return holder(u), nil
+	}
+	normalized, err := NormalizeUID(uid)
+	if err != nil {
+		return Holder{}, err
+	}
+	if normalized == "" {
+		return Holder{}, ErrInvalid
+	}
+	u, err := s.users.FindByStudentCardUID(ctx, normalized)
 	if errors.Is(err, user.ErrNotFound) {
 		return Holder{}, ErrNotFound
 	}

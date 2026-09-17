@@ -15,8 +15,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
+	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -34,7 +36,7 @@ func skypassApp(t *testing.T, ident authn.Identity, store user.Store, signer *sk
 	}
 	svc := user.NewService(store)
 	jit := middlewares.NewJIT(svc)
-	h := NewSkyPassHandler(skypass.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()), signer))
+	h := NewSkyPassHandler(skypass.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()), signer), nil)
 	app := fiber.New(fiber.Config{ErrorHandler: ErrorHandler})
 	app.Get("/v1/skypass/jwks", h.JWKS)
 	app.Use(func(c fiber.Ctx) error {
@@ -335,4 +337,126 @@ func TestSkyPassPrivilegedUnbindHTTP(t *testing.T) {
 func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+func TestSkyPassCheckInSessionHTTP(t *testing.T) {
+	t.Parallel()
+	users := user.NewMemoryStore()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := skypass.NewSigner(key, time.Minute)
+	az := authz.NewAuthorizer(authz.DefaultPolicy())
+	ticketSvc := ticket.NewService(tickets, events, az, users)
+	holderID := uuid.MustParse("15151515-1515-1515-1515-151515151515")
+	staffID := uuid.MustParse("16161616-1616-1616-1616-161616161616")
+	if _, _, err := user.NewService(users).Ensure(t.Context(), holderID, user.Profile{Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"}); err != nil {
+		t.Fatal(err)
+	}
+	pass := skypass.NewService(users, az, signer)
+	if _, err := pass.BindCard(t.Context(), authz.Principal{ID: holderID.String()}, "04FEEDFACE", nil); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := events.Create(t.Context(), event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{staffID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(t.Context(), event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := events.CreateSession(t.Context(), event.Session{
+		EventDayID: day.ID, Title: "Opening", SpeakerName: "Ada", SessionType: "PRESENTATION",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ticketSvc.Apply(t.Context(), authz.Principal{ID: holderID.String()}, ev.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := events.CreateSession(t.Context(), event.Session{
+		EventDayID: day.ID, Title: "Closing", SpeakerName: "Ada", SessionType: "PRESENTATION",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := pass.Mint(t.Context(), authz.Principal{ID: holderID.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	staff := authn.Identity{ID: staffID, Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	h := NewSkyPassHandler(pass, ticketSvc)
+	app := fiber.New(fiber.Config{ErrorHandler: ErrorHandler})
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(authn.LocalsIdentity, staff)
+		return c.Next()
+	})
+	app.Post("/v1/sessions/:sessionId/check-in/skypass", h.CheckInSession)
+	path := "/v1/sessions/" + sess.ID.String() + "/check-in/skypass"
+
+	req := httptest.NewRequest(fiber.MethodPost, path, strings.NewReader(`{"token":`+jsonString(tok.Value)+`}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("token settle %d %s", resp.StatusCode, body)
+	}
+	var created ticket.CheckIn
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.SessionID != sess.ID {
+		t.Fatalf("created %+v", created)
+	}
+
+	uidPath := "/v1/sessions/" + second.ID.String() + "/check-in/skypass"
+	uidReq := httptest.NewRequest(fiber.MethodPost, uidPath, strings.NewReader(`{"uid":"04FEEDFACE"}`))
+	uidReq.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(uidReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("uid settle %d %s", resp.StatusCode, body)
+	}
+
+	dup := httptest.NewRequest(fiber.MethodPost, path, strings.NewReader(`{"uid":"04FEEDFACE"}`))
+	dup.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(dup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusConflict {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("dup %d %s", resp.StatusCode, body)
+	}
+
+	memberApp := fiber.New(fiber.Config{ErrorHandler: ErrorHandler})
+	memberApp.Use(func(c fiber.Ctx) error {
+		c.Locals(authn.LocalsIdentity, authn.Identity{
+			ID: uuid.MustParse("17171717-1717-1717-1717-171717171717"), Groups: []string{"/UYELER/ARGE/WEBLAB"},
+		})
+		return c.Next()
+	})
+	memberApp.Post("/v1/sessions/:sessionId/check-in/skypass", h.CheckInSession)
+	memberReq := httptest.NewRequest(fiber.MethodPost, path, strings.NewReader(`{"uid":"04FEEDFACE"}`))
+	memberReq.Header.Set("Content-Type", "application/json")
+	resp, err = memberApp.Test(memberReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("member %d %s", resp.StatusCode, body)
+	}
 }

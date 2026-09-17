@@ -296,6 +296,13 @@ func TestCheckInUsesSessionPathNotEventDay(t *testing.T) {
 	if resp.StatusCode != fiber.StatusNotFound {
 		t.Fatalf("guest path %d", resp.StatusCode)
 	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/sessions/"+id.String()+"/check-in/skypass", strings.NewReader(`{"uid":"04AABBCCDD"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("skypass path %d", resp.StatusCode)
+	}
 }
 
 func TestSkyPassJWKSAnonymous(t *testing.T) {
