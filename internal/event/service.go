@@ -57,6 +57,9 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Create) {
 		return Event{}, ErrForbidden
 	}
+	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Assign) {
+		in.DoorStaffIDs = nil
+	}
 	return s.store.Create(ctx, in)
 }
 
@@ -74,6 +77,9 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	in.ID = existing.ID
 	if in.SeasonID == nil {
 		in.SeasonID = existing.SeasonID
+	}
+	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Assign) || in.DoorStaffIDs == nil {
+		in.DoorStaffIDs = existing.DoorStaffIDs
 	}
 	return s.store.Update(ctx, in)
 }

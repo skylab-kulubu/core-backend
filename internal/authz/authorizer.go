@@ -47,6 +47,9 @@ func (a *authorizer) allowEvent(p Principal, r Resource, action Action) bool {
 	if action == Read {
 		return true
 	}
+	if action == Assign {
+		return a.isPrivileged(p)
+	}
 	if action != Create && action != Update && action != Delete {
 		return false
 	}
@@ -128,14 +131,30 @@ func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
 	switch action {
 	case Create, ReadMe:
 		return authenticated
-	case Read, Validate:
+	case Read:
 		if a.isPrivileged(p) {
 			return true
 		}
 		return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
+	case Validate:
+		return a.allowDoorCheckIn(p, r)
 	default:
 		return false
 	}
+}
+
+func (a *authorizer) allowDoorCheckIn(p Principal, r Resource) bool {
+	if a.isPrivileged(p) {
+		return true
+	}
+	if p.ID != "" && slices.Contains(r.DoorStaffIDs, p.ID) {
+		return true
+	}
+	levels := a.ownerLevels(p, r.OwnerTeam)
+	if slices.Contains(levels, LevelLeader) {
+		return true
+	}
+	return r.TeamDoorScan && slices.Contains(levels, LevelMember)
 }
 
 func (a *authorizer) allowURL(p Principal, r Resource, action Action) bool {

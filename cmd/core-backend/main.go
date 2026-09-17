@@ -132,7 +132,7 @@ func main() {
 		Identity:    identity.NewService(dir, users, az, mailer),
 		Events:      event.NewService(events, az),
 		Seasons:     season.NewService(seasons, az),
-		Tickets:     ticket.NewService(tickets, events, az, users),
+		Tickets:     ticket.NewService(tickets, events, az, users, dir),
 		Competitors: competitor.NewService(competitors, events, az),
 		Media:       media.NewService(mediaStore, blobs, az, os.Getenv("CDN_BASE")),
 		URLs:        shorturl.NewService(shorturl.NewPostgresStore(pool), az),

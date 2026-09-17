@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
@@ -184,6 +185,138 @@ func TestService_CheckInWrongEventDay(t *testing.T) {
 	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
 	_, err = svc.CheckIn(ctx, leader, tk.ID, day.ID)
 	if !errors.Is(err, ticket.ErrInvalid) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestService_CheckInAssignedDoorStaff(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	staff := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
+	ev, err := events.Create(ctx, event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{staff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.CheckIn(ctx, authz.Principal{ID: staff.String()}, tk.ID, day.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestService_CheckInEmptyOwnerTeam(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	staff := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	ev, err := events.Create(ctx, event.Event{
+		Name: "Seminer", Location: "YTÜ", DoorStaffIDs: []uuid.UUID{staff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	if _, err := svc.CheckIn(ctx, leader, tk.ID, day.ID); !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("leader empty owner: %v", err)
+	}
+	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+	if _, err := svc.CheckIn(ctx, yk, tk.ID, day.ID); err != nil {
+		t.Fatalf("privileged empty owner: %v", err)
+	}
+}
+
+func TestService_CheckInDoorStaffEmptyOwnerTeam(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	staff := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	ev, err := events.Create(ctx, event.Event{
+		Name: "Seminer", Location: "YTÜ", DoorStaffIDs: []uuid.UUID{staff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CheckIn(ctx, authz.Principal{ID: staff.String()}, tk.ID, day.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestService_CheckInOwnerMemberWithTeamDoorScan(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	dir := identity.NewMemory()
+	dir.PutGroup(identity.Group{
+		ID:         "g-weblab",
+		Name:       "WEBLAB",
+		Path:       "/UYELER/ARGE/WEBLAB",
+		Attributes: map[string]string{"team_door_scan": "true"},
+	})
+	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), dir)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := authz.Principal{ID: "mem", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	if _, err := svc.CheckIn(ctx, member, tk.ID, day.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestService_CheckInOwnerMemberWithoutTeamDoorScan(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	dir := identity.NewMemory()
+	dir.PutGroup(identity.Group{ID: "g-weblab", Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"})
+	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), dir)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := uuid.MustParse("ffffffff-ffff-ffff-ffff-ffffffffffff")
+	tk, err := svc.Apply(ctx, authz.Principal{ID: userID.String()}, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := authz.Principal{ID: "mem", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	if _, err := svc.CheckIn(ctx, member, tk.ID, day.ID); !errors.Is(err, ticket.ErrForbidden) {
 		t.Fatalf("got %v", err)
 	}
 }
