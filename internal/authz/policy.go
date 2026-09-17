@@ -13,6 +13,7 @@ const (
 	List     Action = "LIST"
 	Issue    Action = "ISSUE"
 	Revoke   Action = "REVOKE"
+	Assign   Action = "ASSIGN"
 )
 
 type Type string
@@ -46,9 +47,11 @@ type Principal struct {
 }
 
 type Resource struct {
-	Type      Type
-	OwnerTeam string
-	OwnerID   string
+	Type         Type
+	OwnerTeam    string
+	OwnerID      string
+	DoorStaffIDs []string
+	TeamDoorScan bool
 }
 
 type Policy struct {

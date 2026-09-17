@@ -526,3 +526,90 @@ func TestEventListFiltersByOwnerTeamNotTypeName(t *testing.T) {
 		t.Fatalf("typeName must not filter %+v", listed)
 	}
 }
+
+func TestEventDoorStaffAssignHTTP(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	staff := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	app := eventApp(t, yk(), store)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB","doorStaffIds":["`+staff+`"]}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create status %d body %s", resp.StatusCode, body)
+	}
+	var created event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if len(created.DoorStaffIDs) != 1 || created.DoorStaffIDs[0].String() != staff {
+		t.Fatalf("created %+v", created.DoorStaffIDs)
+	}
+
+	req = httptest.NewRequest(fiber.MethodPut, "/v1/events/"+created.ID.String(), strings.NewReader(
+		`{"name":"Hack","location":"Davutpaşa","ownerTeam":"WEBLAB"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("omit put %d body %s", resp.StatusCode, body)
+	}
+	var omitted event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&omitted); err != nil {
+		t.Fatal(err)
+	}
+	if omitted.Location != "Davutpaşa" || len(omitted.DoorStaffIDs) != 1 || omitted.DoorStaffIDs[0].String() != staff {
+		t.Fatalf("omitted field wiped %+v", omitted)
+	}
+
+	leaderApp := eventApp(t, weblabLeader(), store)
+	req = httptest.NewRequest(fiber.MethodPut, "/v1/events/"+created.ID.String(), strings.NewReader(
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB","doorStaffIds":["bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"]}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = leaderApp.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("leader put %d body %s", resp.StatusCode, body)
+	}
+	var afterLeader event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&afterLeader); err != nil {
+		t.Fatal(err)
+	}
+	if len(afterLeader.DoorStaffIDs) != 1 || afterLeader.DoorStaffIDs[0].String() != staff {
+		t.Fatalf("leader overwrote %+v", afterLeader.DoorStaffIDs)
+	}
+
+	req = httptest.NewRequest(fiber.MethodPut, "/v1/events/"+created.ID.String(), strings.NewReader(
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB","doorStaffIds":[]}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("clear put %d body %s", resp.StatusCode, body)
+	}
+	var cleared event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&cleared); err != nil {
+		t.Fatal(err)
+	}
+	if len(cleared.DoorStaffIDs) != 0 {
+		t.Fatalf("cleared %+v", cleared.DoorStaffIDs)
+	}
+}

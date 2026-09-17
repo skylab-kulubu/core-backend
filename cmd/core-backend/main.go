@@ -145,7 +145,7 @@ func main() {
 		render = &certificate.Gotenberg{BaseURL: os.Getenv("GOTENBERG_URL")}
 	}
 
-	ticketSvc := ticket.NewService(tickets, events, az, users)
+	ticketSvc := ticket.NewService(tickets, events, az, users, dir)
 	certSvc := certificate.NewService(certs, tickets, events, users, az, render, sky, os.Getenv("PUBLIC_API_ORIGIN"))
 	ticketSvc = ticket.WithSettledCheckIn(ticketSvc, func(ctx context.Context, ticketID uuid.UUID) {
 		_, _ = certSvc.RecomputeTicket(ctx, ticketID)

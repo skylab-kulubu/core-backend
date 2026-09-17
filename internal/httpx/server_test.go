@@ -29,12 +29,13 @@ func memoryApp(parse ...func(string) (authn.Identity, error)) *fiber.App {
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
 	users := user.NewMemoryStore()
 	events := event.NewMemoryStore()
+	dir := identity.NewMemory()
 	deps := httpx.Deps{
 		Users:       user.NewService(users),
-		Identity:    identity.NewService(identity.NewMemory(), users, az),
+		Identity:    identity.NewService(dir, users, az),
 		Events:      event.NewService(events, az),
 		Seasons:     season.NewService(season.NewMemoryStore(), az),
-		Tickets:     ticket.NewService(ticket.NewMemoryStore(), events, az),
+		Tickets:     ticket.NewService(ticket.NewMemoryStore(), events, az, users, dir),
 		Competitors: competitor.NewService(competitor.NewMemoryStore(events), events, az),
 		Media:       media.NewService(media.NewMemoryStore(), media.NewMemoryBlob(), az, ""),
 		URLs:        shorturl.NewService(shorturl.NewMemoryStore(), az),

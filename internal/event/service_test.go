@@ -199,3 +199,97 @@ func TestService_CreateStoresCoverImageID(t *testing.T) {
 		t.Fatalf("cover %+v", created.CoverImageID)
 	}
 }
+
+func TestService_PrivilegedAssignsDoorStaff(t *testing.T) {
+	t.Parallel()
+	_, svc := setup(t)
+	ctx := context.Background()
+	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+	staff := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	created, err := svc.Create(ctx, yk, event.Event{
+		Name:         "Hack",
+		Location:     "YTÜ",
+		OwnerTeam:    "WEBLAB",
+		DoorStaffIDs: []uuid.UUID{staff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created.DoorStaffIDs) != 1 || created.DoorStaffIDs[0] != staff {
+		t.Fatalf("created staff %+v", created.DoorStaffIDs)
+	}
+
+	other := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	updated, err := svc.Update(ctx, yk, created.ID, event.Event{
+		Name:         "Hack",
+		Location:     "YTÜ",
+		OwnerTeam:    "WEBLAB",
+		DoorStaffIDs: []uuid.UUID{other},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.DoorStaffIDs) != 1 || updated.DoorStaffIDs[0] != other {
+		t.Fatalf("updated staff %+v", updated.DoorStaffIDs)
+	}
+
+	cleared, err := svc.Update(ctx, yk, created.ID, event.Event{
+		Name:         "Hack",
+		Location:     "YTÜ",
+		OwnerTeam:    "WEBLAB",
+		DoorStaffIDs: []uuid.UUID{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleared.DoorStaffIDs) != 0 {
+		t.Fatalf("cleared staff %+v", cleared.DoorStaffIDs)
+	}
+}
+
+func TestService_LeaderCannotAssignDoorStaff(t *testing.T) {
+	t.Parallel()
+	_, svc := setup(t)
+	ctx := context.Background()
+	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+	leader := authz.Principal{ID: "l", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	staff := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	created, err := svc.Create(ctx, yk, event.Event{
+		Name:         "Hack",
+		Location:     "YTÜ",
+		OwnerTeam:    "WEBLAB",
+		DoorStaffIDs: []uuid.UUID{staff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := svc.Update(ctx, leader, created.ID, event.Event{
+		Name:         "Hack 2",
+		Location:     "Davutpaşa",
+		OwnerTeam:    "WEBLAB",
+		DoorStaffIDs: []uuid.UUID{uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "Hack 2" {
+		t.Fatalf("name %+v", updated)
+	}
+	if len(updated.DoorStaffIDs) != 1 || updated.DoorStaffIDs[0] != staff {
+		t.Fatalf("leader overwrote staff %+v", updated.DoorStaffIDs)
+	}
+
+	fromLeader, err := svc.Create(ctx, leader, event.Event{
+		Name:         "Mini",
+		Location:     "YTÜ",
+		OwnerTeam:    "WEBLAB",
+		DoorStaffIDs: []uuid.UUID{staff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fromLeader.DoorStaffIDs) != 0 {
+		t.Fatalf("leader created staff %+v", fromLeader.DoorStaffIDs)
+	}
+}
