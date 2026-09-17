@@ -14,6 +14,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -28,6 +29,7 @@ type Deps struct {
 	Media        media.Service
 	URLs         shorturl.Service
 	Certificates certificate.Service
+	SkyPass      skypass.Service
 	Mail         mail.Mailer
 	ParseToken   func(string) (authn.Identity, error)
 }
@@ -56,6 +58,10 @@ func New(deps Deps) *fiber.App {
 	if deps.Certificates != nil {
 		certs = handlers.NewCertificateHandler(deps.Certificates)
 	}
+	var pass *handlers.SkyPassHandler
+	if deps.SkyPass != nil {
+		pass = handlers.NewSkyPassHandler(deps.SkyPass, deps.Tickets)
+	}
 
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
@@ -67,8 +73,18 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/certificates/verify/:serial/qr", certs.QR)
 		app.Get("/v1/certificates/verify/:serial", certs.Verify)
 	}
+	if pass != nil {
+		app.Get("/v1/skypass/jwks", pass.JWKS)
+	}
 	app.Use(middlewares.Bearer(deps.ParseToken))
 	app.Use(jit.Handle)
+
+	if pass != nil {
+		app.Post("/v1/skypass/card-bind", pass.BindCard)
+		app.Get("/v1/skypass/card", pass.LookupCard)
+		app.Post("/v1/skypass/qr", pass.Mint)
+		app.Post("/v1/skypass/verify", pass.Verify)
+	}
 
 	app.Get("/v1/users/me", me.GetMe)
 	app.Put("/v1/users/me", me.PutMe)
@@ -148,6 +164,9 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
 	app.Post("/v1/sessions/:sessionId/check-in/guest", tickets.CheckInGuest)
+	if pass != nil {
+		app.Post("/v1/sessions/:sessionId/check-in/skypass", pass.CheckInSession)
+	}
 
 	app.Get("/v1/competitors", competitors.List)
 	app.Get("/v1/competitors/me", competitors.Mine)

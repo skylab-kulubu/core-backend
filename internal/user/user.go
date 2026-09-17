@@ -14,6 +14,7 @@ type User struct {
 	Username          string     `json:"username,omitempty"`
 	SchoolEmail       string     `json:"schoolEmail,omitempty"`
 	SkyNumber         string     `json:"skyNumber,omitempty"`
+	StudentCardUID    string     `json:"studentCardUid,omitempty"`
 	Linkedin          string     `json:"linkedin,omitempty"`
 	University        string     `json:"university,omitempty"`
 	Faculty           string     `json:"faculty,omitempty"`

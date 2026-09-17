@@ -20,6 +20,8 @@ type Store interface {
 	UpdateProfile(ctx context.Context, u User) (User, error)
 	Search(ctx context.Context, q string) ([]User, error)
 	FindByEmail(ctx context.Context, email string) ([]User, error)
+	FindByStudentCardUID(ctx context.Context, uid string) (User, error)
+	SetStudentCardUID(ctx context.Context, id uuid.UUID, uid string) (User, error)
 	NextSkyNumber(ctx context.Context) (string, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 }

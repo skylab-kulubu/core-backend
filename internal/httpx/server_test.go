@@ -1,10 +1,13 @@
 package httpx_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"io"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,10 +23,27 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/testauth"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
+
+var (
+	testPassKey     *rsa.PrivateKey
+	testPassKeyOnce sync.Once
+)
+
+func testPassSigner() *skypass.Signer {
+	testPassKeyOnce.Do(func() {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			panic(err)
+		}
+		testPassKey = key
+	})
+	return skypass.NewSigner(testPassKey, skypass.DefaultTTL)
+}
 
 func memoryApp(parse ...func(string) (authn.Identity, error)) *fiber.App {
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
@@ -39,6 +59,7 @@ func memoryApp(parse ...func(string) (authn.Identity, error)) *fiber.App {
 		Competitors: competitor.NewService(competitor.NewMemoryStore(events), events, az),
 		Media:       media.NewService(media.NewMemoryStore(), media.NewMemoryBlob(), az, ""),
 		URLs:        shorturl.NewService(shorturl.NewMemoryStore(), az),
+		SkyPass:     skypass.NewService(users, az, testPassSigner()),
 	}
 	if len(parse) > 0 {
 		deps.ParseToken = parse[0]
@@ -274,5 +295,31 @@ func TestCheckInUsesSessionPathNotEventDay(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusNotFound {
 		t.Fatalf("guest path %d", resp.StatusCode)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/sessions/"+id.String()+"/check-in/skypass", strings.NewReader(`{"uid":"04AABBCCDD"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("skypass path %d", resp.StatusCode)
+	}
+}
+
+func TestSkyPassJWKSAnonymous(t *testing.T) {
+	t.Parallel()
+	app := memoryApp()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/skypass/jwks", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("jwks %d", resp.StatusCode)
+	}
+	var doc skypass.JWKS
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Keys) != 1 || doc.Keys[0].Kty != "RSA" || doc.Keys[0].N == "" {
+		t.Fatalf("jwks %+v", doc)
 	}
 }

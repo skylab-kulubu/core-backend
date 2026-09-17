@@ -23,6 +23,7 @@ type Service interface {
 	CheckIn(ctx context.Context, p authz.Principal, ticketID, sessionID uuid.UUID) (CheckIn, error)
 	CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (CheckIn, error)
 	CheckInGuest(ctx context.Context, sessionID uuid.UUID, email string) (CheckIn, error)
+	CheckInUser(ctx context.Context, p authz.Principal, sessionID, userID uuid.UUID) (CheckIn, error)
 }
 
 type TeamReader interface {
@@ -410,6 +411,18 @@ func (s *service) CheckInGuest(ctx context.Context, sessionID uuid.UUID, email s
 		}
 	}
 	return CheckIn{}, ErrNotFound
+}
+
+func (s *service) CheckInUser(ctx context.Context, p authz.Principal, sessionID, userID uuid.UUID) (CheckIn, error) {
+	eventID, err := s.ticketEventID(ctx, sessionID)
+	if err != nil {
+		return CheckIn{}, err
+	}
+	t, err := s.tickets.GetByOwnerEvent(ctx, userID, eventID)
+	if err != nil {
+		return CheckIn{}, err
+	}
+	return s.CheckIn(ctx, p, t.ID, sessionID)
 }
 
 func (s *service) doorResource(ctx context.Context, ev event.Event) authz.Resource {

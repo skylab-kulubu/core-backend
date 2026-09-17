@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"log"
 	"os"
 	"strings"
@@ -19,6 +21,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -145,6 +148,11 @@ func main() {
 		render = &certificate.Gotenberg{BaseURL: os.Getenv("GOTENBERG_URL")}
 	}
 
+	passKey, err := loadSkyPassKey()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	ticketSvc := ticket.NewService(tickets, events, az, users, dir)
 	certSvc := certificate.NewService(certs, tickets, events, users, az, render, sky, os.Getenv("PUBLIC_API_ORIGIN"))
 	ticketSvc = ticket.WithSettledCheckIn(ticketSvc, func(ctx context.Context, ticketID uuid.UUID) {
@@ -161,6 +169,7 @@ func main() {
 		Media:        media.NewService(mediaStore, blobs, az, os.Getenv("CDN_BASE")),
 		URLs:         shorturl.NewService(shorturl.NewPostgresStore(pool), az),
 		Certificates: certSvc,
+		SkyPass:      skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
 		Mail:         mailer,
 		ParseToken:   parse,
 	})
@@ -172,4 +181,11 @@ func main() {
 	if err := app.Listen(":" + addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func loadSkyPassKey() (*rsa.PrivateKey, error) {
+	if raw := os.Getenv("SKYPASS_RSA_PRIVATE_KEY"); raw != "" {
+		return skypass.ParseRSAPrivateKey([]byte(raw))
+	}
+	return rsa.GenerateKey(rand.Reader, 2048)
 }
