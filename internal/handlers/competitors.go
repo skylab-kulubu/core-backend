@@ -195,12 +195,12 @@ func (h *CompetitorHandler) ListByOwnerTeam(c fiber.Ctx) error {
 	return c.JSON(comps)
 }
 
-func (h *CompetitorHandler) LeaderboardByType(c fiber.Ctx) error {
+func (h *CompetitorHandler) LeaderboardByTeam(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
 		return competitorError(c, err)
 	}
-	board, err := h.svc.Leaderboard(c.Context(), p, c.Params("eventType"), nil)
+	board, err := h.svc.Leaderboard(c.Context(), p, c.Params("ownerTeam"), nil)
 	if err != nil {
 		return competitorError(c, err)
 	}
@@ -216,7 +216,7 @@ func (h *CompetitorHandler) LeaderboardBySeason(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	board, err := h.svc.Leaderboard(c.Context(), p, c.Params("eventType"), &seasonID)
+	board, err := h.svc.Leaderboard(c.Context(), p, c.Params("ownerTeam"), &seasonID)
 	if err != nil {
 		return competitorError(c, err)
 	}

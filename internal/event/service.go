@@ -39,7 +39,7 @@ func NewService(store Store, az authz.Authorizer) Service {
 }
 
 func resource(ownerTeam string) authz.Resource {
-	return authz.Resource{Type: authz.TypeEvent, OwnerTeam: ownerTeam, EventType: ownerTeam}
+	return authz.Resource{Type: authz.TypeEvent, OwnerTeam: ownerTeam}
 }
 
 func (s *service) List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
@@ -112,7 +112,7 @@ func (s *service) RemoveImages(ctx context.Context, p authz.Principal, id uuid.U
 }
 
 func (s *service) ownerResource(owner string, t authz.Type) authz.Resource {
-	return authz.Resource{Type: t, OwnerTeam: owner, EventType: owner}
+	return authz.Resource{Type: t, OwnerTeam: owner}
 }
 
 func (s *service) eventOwner(ctx context.Context, eventID uuid.UUID) (string, error) {

@@ -129,8 +129,8 @@ func New(deps Deps) *fiber.App {
 
 	app.Get("/v1/competitors", competitors.List)
 	app.Get("/v1/competitors/me", competitors.Mine)
-	app.Get("/v1/competitors/leaderboard/type/:eventType", competitors.LeaderboardByType)
-	app.Get("/v1/competitors/leaderboard/season/:seasonId/type/:eventType", competitors.LeaderboardBySeason)
+	app.Get("/v1/competitors/leaderboard/team/:ownerTeam", competitors.LeaderboardByTeam)
+	app.Get("/v1/competitors/leaderboard/season/:seasonId/team/:ownerTeam", competitors.LeaderboardBySeason)
 	app.Get("/v1/competitors/user/:userId", competitors.ListByUser)
 	app.Get("/v1/competitors/team/:ownerTeam", competitors.ListByOwnerTeam)
 	app.Post("/v1/competitors", competitors.Create)

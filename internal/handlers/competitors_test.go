@@ -29,8 +29,8 @@ func competitorApp(t *testing.T, ident authn.Identity, events event.Store, comps
 	})
 	app.Get("/v1/competitors", h.List)
 	app.Get("/v1/competitors/me", h.Mine)
-	app.Get("/v1/competitors/leaderboard/type/:eventType", h.LeaderboardByType)
-	app.Get("/v1/competitors/leaderboard/season/:seasonId/type/:eventType", h.LeaderboardBySeason)
+	app.Get("/v1/competitors/leaderboard/team/:ownerTeam", h.LeaderboardByTeam)
+	app.Get("/v1/competitors/leaderboard/season/:seasonId/team/:ownerTeam", h.LeaderboardBySeason)
 	app.Get("/v1/competitors/user/:userId", h.ListByUser)
 	app.Get("/v1/competitors/team/:ownerTeam", h.ListByOwnerTeam)
 	app.Get("/v1/competitors/:id", h.Get)
@@ -172,7 +172,7 @@ func TestCompetitorStaffScoreAndForbiddenHTTP(t *testing.T) {
 		t.Fatalf("winner status %d body %s", resp.StatusCode, body)
 	}
 
-	resp, err = public.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/leaderboard/type/WEBLAB", nil))
+	resp, err = public.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/leaderboard/team/WEBLAB", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestCompetitorStaffScoreAndForbiddenHTTP(t *testing.T) {
 		t.Fatalf("anon leaderboard %d", resp.StatusCode)
 	}
 
-	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/leaderboard/type/WEBLAB", nil))
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/leaderboard/team/WEBLAB", nil))
 	if err != nil {
 		t.Fatal(err)
 	}

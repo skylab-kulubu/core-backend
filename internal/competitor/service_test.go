@@ -144,7 +144,7 @@ func TestService_SelfCanDelete(t *testing.T) {
 	}
 }
 
-func TestService_LeaderboardByTypeAndSeason(t *testing.T) {
+func TestService_LeaderboardByOwnerTeamAndSeason(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)
 	ctx := context.Background()
@@ -182,7 +182,7 @@ func TestService_LeaderboardByTypeAndSeason(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(board) != 2 {
-		t.Fatalf("type board %+v", board)
+		t.Fatalf("team board %+v", board)
 	}
 	if board[0].TotalScore != 15 || board[0].UserID != ada || board[0].Rank != 1 || board[0].EventCount != 2 {
 		t.Fatalf("ada %+v", board[0])

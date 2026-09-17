@@ -484,3 +484,45 @@ func TestEventCreateEmptyOwnerLeaderForbidden(t *testing.T) {
 		t.Fatalf("status %d body %s", resp.StatusCode, body)
 	}
 }
+
+func TestEventListFiltersByOwnerTeamNotTypeName(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	app := eventApp(t, yk(), store)
+	for _, body := range []string{
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB","active":true}`,
+		`{"name":"CTF","location":"YTÜ","ownerTeam":"SKYSEC","active":true}`,
+	} {
+		req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if resp, err := app.Test(req); err != nil || resp.StatusCode != fiber.StatusCreated {
+			t.Fatalf("create %v", err)
+		}
+	}
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events?ownerTeam=WEBLAB", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("ownerTeam list %d", resp.StatusCode)
+	}
+	var listed []event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Name != "Hack" || listed[0].OwnerTeam != "WEBLAB" {
+		t.Fatalf("ownerTeam listed %+v", listed)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events?typeName=WEBLAB", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("typeName must not filter %+v", listed)
+	}
+}
