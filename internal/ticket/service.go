@@ -63,7 +63,7 @@ func (s *service) canRead(ctx context.Context, p authz.Principal, t Ticket) bool
 	if err != nil {
 		return false
 	}
-	return s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam, EventType: ev.OwnerTeam}, authz.Read)
+	return s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read)
 }
 
 func (s *service) Apply(ctx context.Context, p authz.Principal, eventID uuid.UUID) (Ticket, error) {
@@ -152,7 +152,7 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 		}
 		return nil, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam, EventType: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
 		return nil, ErrForbidden
 	}
 	tickets, err := s.tickets.ListByEvent(ctx, eventID)
@@ -310,7 +310,7 @@ func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, even
 		}
 		return CheckIn{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam, EventType: ev.OwnerTeam}, authz.Validate) {
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Validate) {
 		return CheckIn{}, ErrForbidden
 	}
 	day, err := s.events.GetDay(ctx, eventDayID)

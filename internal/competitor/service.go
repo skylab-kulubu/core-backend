@@ -21,7 +21,7 @@ type Service interface {
 	ListByUser(ctx context.Context, p authz.Principal, userID uuid.UUID) ([]Competitor, error)
 	ListByOwnerTeam(ctx context.Context, p authz.Principal, ownerTeam string) ([]Competitor, error)
 	Winner(ctx context.Context, p authz.Principal, eventID uuid.UUID) (Competitor, error)
-	Leaderboard(ctx context.Context, p authz.Principal, eventType string, seasonID *uuid.UUID) ([]LeaderboardEntry, error)
+	Leaderboard(ctx context.Context, p authz.Principal, ownerTeam string, seasonID *uuid.UUID) ([]LeaderboardEntry, error)
 }
 
 type service struct {
@@ -75,7 +75,7 @@ func (s *service) Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Com
 		}
 		return Competitor{}, err
 	}
-	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, EventType: ev.OwnerTeam, OwnerID: got.UserID.String()}
+	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: got.UserID.String()}
 	if !s.authz.Allow(p, res, authz.Read) {
 		return Competitor{}, ErrForbidden
 	}
@@ -96,7 +96,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in CreateInput)
 	if !ev.Active {
 		return Competitor{}, ErrInvalid
 	}
-	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, EventType: ev.OwnerTeam, OwnerID: in.UserID.String()}
+	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: in.UserID.String()}
 	if !s.authz.Allow(p, res, authz.Create) {
 		return Competitor{}, ErrForbidden
 	}
@@ -141,7 +141,7 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 		}
 		return Competitor{}, err
 	}
-	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, EventType: ev.OwnerTeam, OwnerID: existing.UserID.String()}
+	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: existing.UserID.String()}
 	if !s.authz.Allow(p, res, authz.Update) {
 		return Competitor{}, ErrForbidden
 	}
@@ -177,7 +177,7 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 		}
 		return err
 	}
-	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, EventType: ev.OwnerTeam, OwnerID: existing.UserID.String()}
+	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: existing.UserID.String()}
 	if !s.authz.Allow(p, res, authz.Delete) {
 		return ErrForbidden
 	}
@@ -211,7 +211,7 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 	if err != nil {
 		return nil, err
 	}
-	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, EventType: ev.OwnerTeam}
+	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam}
 	if s.authz.Allow(p, res, authz.Read) {
 		return s.withEvents(ctx, comps), nil
 	}
@@ -242,7 +242,7 @@ func (s *service) ListByOwnerTeam(ctx context.Context, p authz.Principal, ownerT
 	if ownerTeam == "" {
 		return nil, ErrInvalid
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ownerTeam, EventType: ownerTeam}, authz.Read) {
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ownerTeam}, authz.Read) {
 		return nil, ErrForbidden
 	}
 	comps, err := s.competitors.ListByOwnerTeam(ctx, ownerTeam)
@@ -260,7 +260,7 @@ func (s *service) Winner(ctx context.Context, p authz.Principal, eventID uuid.UU
 		}
 		return Competitor{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, EventType: ev.OwnerTeam}, authz.Read) {
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam}, authz.Read) {
 		return Competitor{}, ErrForbidden
 	}
 	got, err := s.competitors.Winner(ctx, eventID)
@@ -270,14 +270,14 @@ func (s *service) Winner(ctx context.Context, p authz.Principal, eventID uuid.UU
 	return s.withEvent(ctx, got), nil
 }
 
-func (s *service) Leaderboard(ctx context.Context, p authz.Principal, eventType string, seasonID *uuid.UUID) ([]LeaderboardEntry, error) {
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: eventType, EventType: eventType}, authz.Read) {
+func (s *service) Leaderboard(ctx context.Context, p authz.Principal, ownerTeam string, seasonID *uuid.UUID) ([]LeaderboardEntry, error) {
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ownerTeam}, authz.Read) {
 		return nil, ErrForbidden
 	}
-	if eventType == "" {
+	if ownerTeam == "" {
 		return nil, ErrInvalid
 	}
-	comps, err := s.competitors.ListByOwnerTeam(ctx, eventType)
+	comps, err := s.competitors.ListByOwnerTeam(ctx, ownerTeam)
 	if err != nil {
 		return nil, err
 	}

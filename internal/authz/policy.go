@@ -45,7 +45,6 @@ type Principal struct {
 type Resource struct {
 	Type      Type
 	OwnerTeam string
-	EventType string
 	OwnerID   string
 }
 

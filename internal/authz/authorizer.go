@@ -55,12 +55,8 @@ func (a *authorizer) allowEvent(p Principal, r Resource, action Action) bool {
 	}
 
 	owner := r.OwnerTeam
-	if owner == "" {
-		owner = r.EventType
-	}
-
 	levels := a.ownerLevels(p, owner)
-	needed := a.requiredLevels(r.EventType, action)
+	needed := a.requiredLevels(owner, action)
 	for _, level := range levels {
 		if slices.Contains(needed, level) {
 			return true
@@ -85,7 +81,7 @@ func (a *authorizer) allowCompetitor(p Principal, r Resource, action Action) boo
 		if r.OwnerID != "" && r.OwnerID == p.ID {
 			return true
 		}
-		if r.OwnerTeam != "" || r.EventType != "" {
+		if r.OwnerTeam != "" {
 			return a.isOwnerMember(p, r)
 		}
 		return false
@@ -109,11 +105,7 @@ func (a *authorizer) allowCompetitor(p Principal, r Resource, action Action) boo
 }
 
 func (a *authorizer) isOwnerMember(p Principal, r Resource) bool {
-	owner := r.OwnerTeam
-	if owner == "" {
-		owner = r.EventType
-	}
-	return len(a.ownerLevels(p, owner)) > 0
+	return len(a.ownerLevels(p, r.OwnerTeam)) > 0
 }
 
 func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
@@ -227,8 +219,8 @@ func (a *authorizer) ownerLevels(p Principal, owner string) []Level {
 	return out
 }
 
-func (a *authorizer) requiredLevels(eventType string, action Action) []Level {
-	table, ok := a.policy.EventPermissions[eventType]
+func (a *authorizer) requiredLevels(ownerTeam string, action Action) []Level {
+	table, ok := a.policy.EventPermissions[ownerTeam]
 	if !ok {
 		table = a.policy.EventPermissions["_default"]
 	}

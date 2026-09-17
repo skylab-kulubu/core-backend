@@ -213,3 +213,29 @@ func TestVerifiedBearerRejectsMissingAudience(t *testing.T) {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 }
+
+func TestLeaderboardUsesTeamPathNotType(t *testing.T) {
+	t.Parallel()
+	app := memoryApp()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/leaderboard/type/WEBLAB", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("old type path %d", resp.StatusCode)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/leaderboard/team/WEBLAB", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("team path %d", resp.StatusCode)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/competitors/leaderboard/season/"+uuid.NewString()+"/type/WEBLAB", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("old season type path %d", resp.StatusCode)
+	}
+}
