@@ -49,12 +49,13 @@ func memoryApp(parse ...func(string) (authn.Identity, error)) *fiber.App {
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
 	users := user.NewMemoryStore()
 	events := event.NewMemoryStore()
+	dir := identity.NewMemory()
 	deps := httpx.Deps{
 		Users:       user.NewService(users),
-		Identity:    identity.NewService(identity.NewMemory(), users, az),
+		Identity:    identity.NewService(dir, users, az),
 		Events:      event.NewService(events, az),
 		Seasons:     season.NewService(season.NewMemoryStore(), az),
-		Tickets:     ticket.NewService(ticket.NewMemoryStore(), events, az),
+		Tickets:     ticket.NewService(ticket.NewMemoryStore(), events, az, users, dir),
 		Competitors: competitor.NewService(competitor.NewMemoryStore(events), events, az),
 		Media:       media.NewService(media.NewMemoryStore(), media.NewMemoryBlob(), az, ""),
 		URLs:        shorturl.NewService(shorturl.NewMemoryStore(), az),
@@ -258,6 +259,42 @@ func TestLeaderboardUsesTeamPathNotType(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusNotFound {
 		t.Fatalf("old season type path %d", resp.StatusCode)
+	}
+}
+
+func TestCheckInUsesSessionPathNotEventDay(t *testing.T) {
+	t.Parallel()
+	app := memoryApp()
+	id := uuid.New()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/tickets/"+id.String()+"/event-days/"+id.String()+"/check-in", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("old event-day path %d", resp.StatusCode)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/tickets/"+id.String()+"/sessions/"+id.String()+"/check-in", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("session path %d", resp.StatusCode)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/sessions/"+id.String()+"/check-in/me", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("me path %d", resp.StatusCode)
+	}
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/sessions/"+id.String()+"/check-in/guest", strings.NewReader(`{"email":"ada@example.com"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("guest path %d", resp.StatusCode)
 	}
 }
 

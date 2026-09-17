@@ -2,6 +2,8 @@ package event
 
 import (
 	"context"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -22,6 +24,7 @@ type Service interface {
 	DeleteDay(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Session, error)
 	GetSession(ctx context.Context, id uuid.UUID) (Session, error)
+	CurrentSession(ctx context.Context, eventDayID uuid.UUID, at time.Time) (Current, error)
 	CreateSession(ctx context.Context, p authz.Principal, sess Session) (Session, error)
 	UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session) (Session, error)
 	DeleteSession(ctx context.Context, p authz.Principal, id uuid.UUID) error
@@ -50,12 +53,39 @@ func (s *service) Get(ctx context.Context, id uuid.UUID) (Event, error) {
 	return s.store.Get(ctx, id)
 }
 
+func normalizeAttendance(in Event) (Event, error) {
+	rule := strings.TrimSpace(strings.ToLower(in.AttendanceRule))
+	if rule == "" {
+		rule = "none"
+	}
+	switch rule {
+	case "none", "once":
+		in.AttendanceRule = rule
+		return in, nil
+	case "ratio":
+		if in.AttendanceRatio == nil || *in.AttendanceRatio <= 0 || *in.AttendanceRatio > 1 {
+			return Event{}, ErrInvalid
+		}
+		in.AttendanceRule = rule
+		return in, nil
+	default:
+		return Event{}, ErrInvalid
+	}
+}
+
 func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Event, error) {
 	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
 	}
+	in, err := normalizeAttendance(in)
+	if err != nil {
+		return Event{}, err
+	}
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Create) {
 		return Event{}, ErrForbidden
+	}
+	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Assign) {
+		in.DoorStaffIDs = nil
 	}
 	return s.store.Create(ctx, in)
 }
@@ -71,9 +101,16 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
 	}
+	in, err = normalizeAttendance(in)
+	if err != nil {
+		return Event{}, err
+	}
 	in.ID = existing.ID
 	if in.SeasonID == nil {
 		in.SeasonID = existing.SeasonID
+	}
+	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Assign) || in.DoorStaffIDs == nil {
+		in.DoorStaffIDs = existing.DoorStaffIDs
 	}
 	return s.store.Update(ctx, in)
 }
@@ -189,6 +226,17 @@ func (s *service) ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Ses
 
 func (s *service) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
 	return s.store.GetSession(ctx, id)
+}
+
+func (s *service) CurrentSession(ctx context.Context, eventDayID uuid.UUID, at time.Time) (Current, error) {
+	if _, err := s.store.GetDay(ctx, eventDayID); err != nil {
+		return Current{}, err
+	}
+	sessions, err := s.store.ListSessions(ctx, eventDayID)
+	if err != nil {
+		return Current{}, err
+	}
+	return ResolveCurrent(sessions, at), nil
 }
 
 func (s *service) sessionOwner(ctx context.Context, eventDayID uuid.UUID) (string, error) {

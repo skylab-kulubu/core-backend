@@ -2,6 +2,7 @@ package qr
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -54,5 +55,14 @@ func TestLogoFromQuery(t *testing.T) {
 	}
 	if !LogoFromQuery("1") || !LogoFromQuery("true") {
 		t.Fatal("true")
+	}
+}
+
+func TestSessionURL(t *testing.T) {
+	t.Parallel()
+	id := "11111111-1111-1111-1111-111111111111"
+	got := SessionURL(id)
+	if !strings.HasSuffix(got, "/v1/sessions/"+id) {
+		t.Fatalf("got %s", got)
 	}
 }

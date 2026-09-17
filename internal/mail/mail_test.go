@@ -72,3 +72,46 @@ func TestSkyMailWelcomeNoopsWithoutTemplate(t *testing.T) {
 		t.Fatal("should not post")
 	}
 }
+
+func TestSkyMailCertificatePostsSingleTask(t *testing.T) {
+	t.Parallel()
+	templateID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	var gotPath string
+	var payload map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(srv.Close)
+	mailer := &SkyMail{
+		BaseURL:               srv.URL,
+		CertificateTemplateID: templateID,
+		Tokens:                StaticToken("tok"),
+		HTTP:                  srv.Client(),
+	}
+	mailer.Certificate(t.Context(), "ada@example.com", "Ada Lovelace", map[string]string{"EventName": "ARTLAB"})
+	if gotPath != "/v1/mail_tasks/single" {
+		t.Fatalf("path %q", gotPath)
+	}
+	if payload["template_id"] != templateID.String() {
+		t.Fatalf("template %v", payload["template_id"])
+	}
+	if payload["recipient_email"] != "ada@example.com" {
+		t.Fatalf("email %v", payload["recipient_email"])
+	}
+}
+
+func TestSkyMailCertificateNoopsWithoutTemplate(t *testing.T) {
+	t.Parallel()
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	t.Cleanup(srv.Close)
+	mailer := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}
+	mailer.Certificate(t.Context(), "ada@example.com", "Ada", nil)
+	if called {
+		t.Fatal("should not post")
+	}
+}
