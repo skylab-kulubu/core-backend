@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -159,24 +160,32 @@ func (s *PostgresStore) AddCheckIn(ctx context.Context, c CheckIn) (CheckIn, err
 		c.ID = uuid.New()
 	}
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO ticket_checkins (id, ticket_id, event_day_id)
-		VALUES ($1, $2, $3)
-		RETURNING id, ticket_id, event_day_id, created_at
-	`, c.ID, c.TicketID, c.EventDayID).Scan(&c.ID, &c.TicketID, &c.EventDayID, &c.CreatedAt)
+		INSERT INTO ticket_checkins (id, ticket_id, event_day_id, session_id)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, ticket_id, event_day_id, session_id, created_at
+	`, c.ID, c.TicketID, c.EventDayID, c.SessionID).Scan(&c.ID, &c.TicketID, &c.EventDayID, &c.SessionID, &c.CreatedAt)
+	if isUnique(err) {
+		return CheckIn{}, ErrConflict
+	}
 	return c, err
 }
 
-func (s *PostgresStore) HasCheckIn(ctx context.Context, ticketID, eventDayID uuid.UUID) (bool, error) {
+func isUnique(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "23505"
+}
+
+func (s *PostgresStore) HasCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID) (bool, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `
-		SELECT COUNT(1) FROM ticket_checkins WHERE ticket_id = $1 AND event_day_id = $2
-	`, ticketID, eventDayID).Scan(&n)
+		SELECT COUNT(1) FROM ticket_checkins WHERE ticket_id = $1 AND session_id = $2
+	`, ticketID, sessionID).Scan(&n)
 	return n > 0, err
 }
 
 func (s *PostgresStore) checkInsFor(ctx context.Context, ticketID uuid.UUID) ([]CheckIn, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, ticket_id, event_day_id, created_at
+		SELECT id, ticket_id, event_day_id, session_id, created_at
 		FROM ticket_checkins WHERE ticket_id = $1 ORDER BY created_at
 	`, ticketID)
 	if err != nil {
@@ -186,7 +195,7 @@ func (s *PostgresStore) checkInsFor(ctx context.Context, ticketID uuid.UUID) ([]
 	out := make([]CheckIn, 0)
 	for rows.Next() {
 		var c CheckIn
-		if err := rows.Scan(&c.ID, &c.TicketID, &c.EventDayID, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.TicketID, &c.EventDayID, &c.SessionID, &c.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

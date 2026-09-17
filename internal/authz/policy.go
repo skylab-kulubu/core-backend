@@ -11,22 +11,26 @@ const (
 	ReadMe   Action = "READ_ME"
 	Upload   Action = "UPLOAD"
 	List     Action = "LIST"
+	Issue    Action = "ISSUE"
+	Revoke   Action = "REVOKE"
+	Assign   Action = "ASSIGN"
 )
 
 type Type string
 
 const (
-	TypeEvent      Type = "EVENT"
-	TypeGroup      Type = "GROUP"
-	TypeUser       Type = "USER"
-	TypeTeam       Type = "TEAM"
-	TypeTicket     Type = "TICKET"
-	TypeSeason     Type = "SEASON"
-	TypeEventDay   Type = "EVENT_DAY"
-	TypeSession    Type = "SESSION"
-	TypeCompetitor Type = "COMPETITOR"
-	TypeMedia      Type = "MEDIA"
-	TypeURL        Type = "URL"
+	TypeEvent       Type = "EVENT"
+	TypeGroup       Type = "GROUP"
+	TypeUser        Type = "USER"
+	TypeTeam        Type = "TEAM"
+	TypeTicket      Type = "TICKET"
+	TypeSeason      Type = "SEASON"
+	TypeEventDay    Type = "EVENT_DAY"
+	TypeSession     Type = "SESSION"
+	TypeCompetitor  Type = "COMPETITOR"
+	TypeMedia       Type = "MEDIA"
+	TypeURL         Type = "URL"
+	TypeCertificate Type = "CERTIFICATE"
 )
 
 type Level string
@@ -43,9 +47,11 @@ type Principal struct {
 }
 
 type Resource struct {
-	Type      Type
-	OwnerTeam string
-	OwnerID   string
+	Type         Type
+	OwnerTeam    string
+	OwnerID      string
+	DoorStaffIDs []string
+	TeamDoorScan bool
 }
 
 type Policy struct {

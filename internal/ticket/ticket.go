@@ -15,6 +15,7 @@ const (
 type CheckIn struct {
 	ID         uuid.UUID `json:"id"`
 	TicketID   uuid.UUID `json:"ticketId"`
+	SessionID  uuid.UUID `json:"sessionId"`
 	EventDayID uuid.UUID `json:"eventDayId"`
 	CreatedAt  time.Time `json:"createdAt"`
 }

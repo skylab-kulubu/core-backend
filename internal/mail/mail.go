@@ -30,10 +30,11 @@ func (s StaticToken) Token(context.Context) (string, error) {
 }
 
 type SkyMail struct {
-	BaseURL    string
-	TemplateID uuid.UUID
-	Tokens     TokenSource
-	HTTP       *http.Client
+	BaseURL               string
+	TemplateID            uuid.UUID
+	CertificateTemplateID uuid.UUID
+	Tokens                TokenSource
+	HTTP                  *http.Client
 }
 
 func (s *SkyMail) Welcome(ctx context.Context, u user.User) {

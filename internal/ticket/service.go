@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -19,20 +20,32 @@ type Service interface {
 	Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	GetByUserEvent(ctx context.Context, p authz.Principal, userID, eventID uuid.UUID) (Ticket, error)
 	ListQuery(ctx context.Context, p authz.Principal, email string, userID *uuid.UUID) ([]Ticket, error)
-	CheckIn(ctx context.Context, p authz.Principal, ticketID, eventDayID uuid.UUID) (CheckIn, error)
+	CheckIn(ctx context.Context, p authz.Principal, ticketID, sessionID uuid.UUID) (CheckIn, error)
+	CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (CheckIn, error)
+	CheckInGuest(ctx context.Context, sessionID uuid.UUID, email string) (CheckIn, error)
+}
+
+type TeamReader interface {
+	GetGroup(ctx context.Context, idOrPath string) (identity.Group, error)
 }
 
 type service struct {
 	tickets Store
 	events  event.Store
 	users   user.Store
+	teams   TeamReader
 	authz   authz.Authorizer
 }
 
-func NewService(tickets Store, events event.Store, az authz.Authorizer, users ...user.Store) Service {
+func NewService(tickets Store, events event.Store, az authz.Authorizer, extras ...any) Service {
 	s := &service{tickets: tickets, events: events, authz: az}
-	if len(users) > 0 {
-		s.users = users[0]
+	for _, extra := range extras {
+		switch v := extra.(type) {
+		case user.Store:
+			s.users = v
+		case TeamReader:
+			s.teams = v
+		}
 	}
 	return s
 }
@@ -298,7 +311,7 @@ func hasLeaderGroup(p authz.Principal) bool {
 	return false
 }
 
-func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, eventDayID uuid.UUID) (CheckIn, error) {
+func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, sessionID uuid.UUID) (CheckIn, error) {
 	t, err := s.tickets.Get(ctx, ticketID)
 	if err != nil {
 		return CheckIn{}, err
@@ -310,10 +323,21 @@ func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, even
 		}
 		return CheckIn{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Validate) {
+	if !s.authz.Allow(p, s.doorResource(ctx, ev), authz.Validate) {
 		return CheckIn{}, ErrForbidden
 	}
-	day, err := s.events.GetDay(ctx, eventDayID)
+	return s.addSessionCheckIn(ctx, t, sessionID)
+}
+
+func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uuid.UUID) (CheckIn, error) {
+	sess, err := s.events.GetSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, event.ErrNotFound) {
+			return CheckIn{}, ErrNotFound
+		}
+		return CheckIn{}, err
+	}
+	day, err := s.events.GetDay(ctx, sess.EventDayID)
 	if err != nil {
 		if errors.Is(err, event.ErrNotFound) {
 			return CheckIn{}, ErrNotFound
@@ -323,12 +347,91 @@ func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, even
 	if day.EventID != t.EventID {
 		return CheckIn{}, ErrInvalid
 	}
-	dup, err := s.tickets.HasCheckIn(ctx, ticketID, eventDayID)
+	dup, err := s.tickets.HasCheckIn(ctx, t.ID, sessionID)
 	if err != nil {
 		return CheckIn{}, err
 	}
 	if dup {
 		return CheckIn{}, ErrConflict
 	}
-	return s.tickets.AddCheckIn(ctx, CheckIn{TicketID: ticketID, EventDayID: eventDayID})
+	return s.tickets.AddCheckIn(ctx, CheckIn{TicketID: t.ID, SessionID: sessionID, EventDayID: sess.EventDayID})
+}
+
+func (s *service) ticketEventID(ctx context.Context, sessionID uuid.UUID) (uuid.UUID, error) {
+	sess, err := s.events.GetSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, event.ErrNotFound) {
+			return uuid.Nil, ErrNotFound
+		}
+		return uuid.Nil, err
+	}
+	day, err := s.events.GetDay(ctx, sess.EventDayID)
+	if err != nil {
+		if errors.Is(err, event.ErrNotFound) {
+			return uuid.Nil, ErrNotFound
+		}
+		return uuid.Nil, err
+	}
+	return day.EventID, nil
+}
+
+func (s *service) CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (CheckIn, error) {
+	ownerID, err := uuid.Parse(p.ID)
+	if err != nil {
+		return CheckIn{}, ErrInvalid
+	}
+	eventID, err := s.ticketEventID(ctx, sessionID)
+	if err != nil {
+		return CheckIn{}, err
+	}
+	t, err := s.tickets.GetByOwnerEvent(ctx, ownerID, eventID)
+	if err != nil {
+		return CheckIn{}, err
+	}
+	return s.addSessionCheckIn(ctx, t, sessionID)
+}
+
+func (s *service) CheckInGuest(ctx context.Context, sessionID uuid.UUID, email string) (CheckIn, error) {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return CheckIn{}, ErrInvalid
+	}
+	eventID, err := s.ticketEventID(ctx, sessionID)
+	if err != nil {
+		return CheckIn{}, err
+	}
+	listed, err := s.tickets.ListByGuestEmail(ctx, email)
+	if err != nil {
+		return CheckIn{}, err
+	}
+	for _, t := range listed {
+		if t.EventID == eventID {
+			return s.addSessionCheckIn(ctx, t, sessionID)
+		}
+	}
+	return CheckIn{}, ErrNotFound
+}
+
+func (s *service) doorResource(ctx context.Context, ev event.Event) authz.Resource {
+	ids := make([]string, 0, len(ev.DoorStaffIDs))
+	for _, id := range ev.DoorStaffIDs {
+		ids = append(ids, id.String())
+	}
+	return authz.Resource{
+		Type:         authz.TypeTicket,
+		OwnerTeam:    ev.OwnerTeam,
+		DoorStaffIDs: ids,
+		TeamDoorScan: s.teamDoorScan(ctx, ev.OwnerTeam),
+	}
+}
+
+func (s *service) teamDoorScan(ctx context.Context, ownerTeam string) bool {
+	if s.teams == nil || ownerTeam == "" {
+		return false
+	}
+	g, err := s.teams.GetGroup(ctx, ownerTeam)
+	if err != nil || g.Attributes == nil {
+		return false
+	}
+	return strings.EqualFold(g.Attributes["team_door_scan"], "true")
 }

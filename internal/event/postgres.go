@@ -18,7 +18,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, m.file_url, e.created_at, e.updated_at`
+const eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, m.file_url, e.attendance_rule, e.attendance_ratio, e.created_at, e.updated_at`
 
 const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id`
 
@@ -51,6 +51,9 @@ func (s *PostgresStore) List(ctx context.Context, ownerTeam string, activeOnly b
 		if err := s.loadImages(ctx, &e); err != nil {
 			return nil, err
 		}
+		if err := s.loadDoorStaff(ctx, &e); err != nil {
+			return nil, err
+		}
 		out = append(out, emptyGallery(e))
 	}
 	return out, rows.Err()
@@ -67,6 +70,9 @@ func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Event, error) {
 	if err := s.loadImages(ctx, &e); err != nil {
 		return Event{}, err
 	}
+	if err := s.loadDoorStaff(ctx, &e); err != nil {
+		return Event{}, err
+	}
 	return emptyGallery(e), nil
 }
 
@@ -77,11 +83,16 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO events (
 			id, name, description, location, owner_team, form_url, capacity,
-			start_date, end_date, linkedin, active, ranked, prize_info, season_id, cover_image_id
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+			start_date, end_date, linkedin, active, ranked, prize_info, season_id, cover_image_id,
+			attendance_rule, attendance_ratio
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
-		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID)
+		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
+		attendanceRule(e.AttendanceRule), e.AttendanceRatio)
 	if err != nil {
+		return Event{}, err
+	}
+	if err := s.replaceDoorStaff(ctx, e.ID, e.DoorStaffIDs); err != nil {
 		return Event{}, err
 	}
 	return s.Get(ctx, e.ID)
@@ -92,15 +103,20 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 		UPDATE events SET
 			name = $2, description = $3, location = $4, owner_team = $5, form_url = $6,
 			capacity = $7, start_date = $8, end_date = $9, linkedin = $10, active = $11,
-			ranked = $12, prize_info = $13, season_id = $14, cover_image_id = $15, updated_at = now()
+			ranked = $12, prize_info = $13, season_id = $14, cover_image_id = $15,
+			attendance_rule = $16, attendance_ratio = $17, updated_at = now()
 		WHERE id = $1`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
-		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID)
+		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
+		attendanceRule(e.AttendanceRule), e.AttendanceRatio)
 	if err != nil {
 		return Event{}, err
 	}
 	if tag.RowsAffected() == 0 {
 		return Event{}, ErrNotFound
+	}
+	if err := s.replaceDoorStaff(ctx, e.ID, e.DoorStaffIDs); err != nil {
+		return Event{}, err
 	}
 	return s.Get(ctx, e.ID)
 }
@@ -179,6 +195,51 @@ func (s *PostgresStore) loadImages(ctx context.Context, e *Event) error {
 	}
 	e.Images = images
 	e.ImageURLs = urls
+	return nil
+}
+
+func (s *PostgresStore) loadDoorStaff(ctx context.Context, e *Event) error {
+	rows, err := s.pool.Query(ctx, `
+		SELECT user_id FROM event_door_staff WHERE event_id = $1 ORDER BY user_id
+	`, e.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	ids := make([]uuid.UUID, 0)
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	e.DoorStaffIDs = ids
+	return nil
+}
+
+func (s *PostgresStore) replaceDoorStaff(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM event_door_staff WHERE event_id = $1`, eventID); err != nil {
+		return err
+	}
+	seen := map[uuid.UUID]struct{}{}
+	for _, id := range ids {
+		if id == uuid.Nil {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO event_door_staff (event_id, user_id) VALUES ($1, $2)
+		`, eventID, id); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -263,6 +324,9 @@ func (s *PostgresStore) ListBySeason(ctx context.Context, seasonID uuid.UUID) ([
 		if err := s.loadImages(ctx, &out[len(out)-1]); err != nil {
 			return nil, err
 		}
+		if err := s.loadDoorStaff(ctx, &out[len(out)-1]); err != nil {
+			return nil, err
+		}
 		out[len(out)-1] = emptyGallery(out[len(out)-1])
 	}
 	return out, rows.Err()
@@ -279,7 +343,7 @@ func (s *PostgresStore) SetSeason(ctx context.Context, eventID uuid.UUID, season
 	return s.Get(ctx, eventID)
 }
 
-const sessionCols = `id, event_day_id, title, speaker_name, speaker_linkedin, description, start_time, end_time, order_index, session_type`
+const sessionCols = `id, event_day_id, title, speaker_name, speaker_linkedin, description, start_time, end_time, order_index, session_type, cancelled`
 
 func (s *PostgresStore) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
 	sess, err := scanSession(s.pool.QueryRow(ctx, `SELECT `+sessionCols+` FROM sessions WHERE id = $1`, id))
@@ -313,20 +377,20 @@ func (s *PostgresStore) CreateSession(ctx context.Context, sess Session) (Sessio
 	return scanSession(s.pool.QueryRow(ctx, `
 		INSERT INTO sessions (
 			id, event_day_id, title, speaker_name, speaker_linkedin, description,
-			start_time, end_time, order_index, session_type
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			start_time, end_time, order_index, session_type, cancelled
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		RETURNING `+sessionCols, sess.ID, sess.EventDayID, sess.Title, sess.SpeakerName, sess.SpeakerLinkedin, sess.Description,
-		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType))
+		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType, sess.Cancelled))
 }
 
 func (s *PostgresStore) UpdateSession(ctx context.Context, sess Session) (Session, error) {
 	got, err := scanSession(s.pool.QueryRow(ctx, `
 		UPDATE sessions SET
 			title = $2, speaker_name = $3, speaker_linkedin = $4, description = $5,
-			start_time = $6, end_time = $7, order_index = $8, session_type = $9
+			start_time = $6, end_time = $7, order_index = $8, session_type = $9, cancelled = $10
 		WHERE id = $1
 		RETURNING `+sessionCols, sess.ID, sess.Title, sess.SpeakerName, sess.SpeakerLinkedin, sess.Description,
-		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType))
+		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType, sess.Cancelled))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -354,7 +418,7 @@ func scanEvent(row rowScanner) (Event, error) {
 	err := row.Scan(
 		&e.ID, &e.Name, &e.Description, &e.Location, &e.OwnerTeam, &e.FormURL, &e.Capacity,
 		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Ranked, &e.PrizeInfo, &e.SeasonID,
-		&e.CoverImageID, &coverURL, &e.CreatedAt, &e.UpdatedAt,
+		&e.CoverImageID, &coverURL, &e.AttendanceRule, &e.AttendanceRatio, &e.CreatedAt, &e.UpdatedAt,
 	)
 	if coverURL != nil {
 		e.CoverImageURL = *coverURL
@@ -366,7 +430,14 @@ func scanSession(row rowScanner) (Session, error) {
 	var sess Session
 	err := row.Scan(
 		&sess.ID, &sess.EventDayID, &sess.Title, &sess.SpeakerName, &sess.SpeakerLinkedin, &sess.Description,
-		&sess.StartTime, &sess.EndTime, &sess.OrderIndex, &sess.SessionType,
+		&sess.StartTime, &sess.EndTime, &sess.OrderIndex, &sess.SessionType, &sess.Cancelled,
 	)
 	return sess, err
+}
+
+func attendanceRule(rule string) string {
+	if strings.TrimSpace(rule) == "" {
+		return "none"
+	}
+	return rule
 }

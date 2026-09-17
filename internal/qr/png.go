@@ -99,6 +99,14 @@ func ShortURL(alias string) string {
 	return origin + "/" + alias
 }
 
+func SessionURL(id string) string {
+	origin := strings.TrimRight(os.Getenv("PUBLIC_API_ORIGIN"), "/")
+	if origin == "" {
+		origin = "https://api.yildizskylab.com"
+	}
+	return origin + "/v1/sessions/" + id
+}
+
 func LogoFromQuery(raw string) bool {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "1", "true", "yes":

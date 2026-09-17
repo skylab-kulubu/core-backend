@@ -12,13 +12,14 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-func ticketApp(t *testing.T, ident authn.Identity, events event.Store, tickets ticket.Store, users ...user.Store) *fiber.App {
+func ticketApp(t *testing.T, ident authn.Identity, events event.Store, tickets ticket.Store, extras ...any) *fiber.App {
 	t.Helper()
-	svc := ticket.NewService(tickets, events, authz.NewAuthorizer(authz.DefaultPolicy()), users...)
+	svc := ticket.NewService(tickets, events, authz.NewAuthorizer(authz.DefaultPolicy()), extras...)
 	h := NewTicketHandler(svc)
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
@@ -34,7 +35,9 @@ func ticketApp(t *testing.T, ident authn.Identity, events event.Store, tickets t
 	app.Get("/v1/tickets/user/:userId/event/:eventId", h.ByUserEvent)
 	app.Get("/v1/tickets/:id", h.Get)
 	app.Get("/v1/tickets", h.List)
-	app.Post("/v1/tickets/:ticketId/event-days/:eventDayId/check-in", h.CheckIn)
+	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", h.CheckIn)
+	app.Post("/v1/sessions/:sessionId/check-in/me", h.CheckInMe)
+	app.Post("/v1/sessions/:sessionId/check-in/guest", h.CheckInGuest)
 	return app
 }
 
@@ -115,6 +118,12 @@ func TestCheckInHTTPForbiddenAndOK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sess, err := events.CreateSession(t.Context(), event.Session{
+		EventDayID: day.ID, Title: "Opening", SpeakerName: "Ada", SessionType: "PRESENTATION",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	owner := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	tk, err := tickets.Create(t.Context(), ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &owner})
 	if err != nil {
@@ -123,7 +132,7 @@ func TestCheckInHTTPForbiddenAndOK(t *testing.T) {
 
 	member := authn.Identity{ID: uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), Groups: []string{"/UYELER/ARGE/WEBLAB"}}
 	app := ticketApp(t, member, events, tickets)
-	path := "/v1/tickets/" + tk.ID.String() + "/event-days/" + day.ID.String() + "/check-in"
+	path := "/v1/tickets/" + tk.ID.String() + "/sessions/" + sess.ID.String() + "/check-in"
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
 	if err != nil {
 		t.Fatal(err)
@@ -142,6 +151,159 @@ func TestCheckInHTTPForbiddenAndOK(t *testing.T) {
 	if resp.StatusCode != fiber.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("leader status %d body %s", resp.StatusCode, body)
+	}
+	var created ticket.CheckIn
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.SessionID != sess.ID || created.TicketID != tk.ID {
+		t.Fatalf("created %+v", created)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusConflict {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("dup status %d body %s", resp.StatusCode, body)
+	}
+}
+
+func TestCheckInMeAndGuestHTTP(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(t.Context(), event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := events.CreateSession(t.Context(), event.Session{
+		EventDayID: day.ID, Title: "Opening", SpeakerName: "Ada", SessionType: "PRESENTATION",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	if _, err := tickets.Create(t.Context(), ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &owner}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tickets.Create(t.Context(), ticket.Ticket{
+		EventID: ev.ID, TicketType: ticket.Guest, GuestEmail: "ada@example.com", GuestFirstName: "Ada", GuestLastName: "Lovelace",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ownerApp := ticketApp(t, authn.Identity{ID: owner}, events, tickets)
+	mePath := "/v1/sessions/" + sess.ID.String() + "/check-in/me"
+	resp, err := ownerApp.Test(httptest.NewRequest(fiber.MethodPost, mePath, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("me status %d body %s", resp.StatusCode, body)
+	}
+
+	guestApp := ticketApp(t, authn.Identity{}, events, tickets)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/sessions/"+sess.ID.String()+"/check-in/guest", strings.NewReader(`{"email":"ada@example.com"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = guestApp.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("guest status %d body %s", resp.StatusCode, body)
+	}
+	dup := httptest.NewRequest(fiber.MethodPost, "/v1/sessions/"+sess.ID.String()+"/check-in/guest", strings.NewReader(`{"email":"ada@example.com"}`))
+	dup.Header.Set("Content-Type", "application/json")
+	resp, err = guestApp.Test(dup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusConflict {
+		t.Fatalf("dup guest %d", resp.StatusCode)
+	}
+}
+
+func TestCheckInHTTPDoorStaffAndTeamDoorScan(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	staffID := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
+	ev, err := events.Create(t.Context(), event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{staffID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(t.Context(), event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := events.CreateSession(t.Context(), event.Session{
+		EventDayID: day.ID, Title: "Opening", SpeakerName: "Ada", SessionType: "PRESENTATION",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	tk, err := tickets.Create(t.Context(), ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/tickets/" + tk.ID.String() + "/sessions/" + sess.ID.String() + "/check-in"
+	staff := authn.Identity{ID: staffID, Groups: []string{"/UYELER"}}
+	app := ticketApp(t, staff, events, tickets)
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("staff status %d body %s", resp.StatusCode, body)
+	}
+
+	events2 := event.NewMemoryStore()
+	tickets2 := ticket.NewMemoryStore()
+	ev2, err := events2.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day2, err := events2.CreateDay(t.Context(), event.Day{EventID: ev2.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess2, err := events2.CreateSession(t.Context(), event.Session{
+		EventDayID: day2.ID, Title: "Opening", SpeakerName: "Ada", SessionType: "PRESENTATION",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk2, err := tickets2.Create(t.Context(), ticket.Ticket{EventID: ev2.ID, TicketType: ticket.Registered, OwnerID: &owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := identity.NewMemory()
+	dir.PutGroup(identity.Group{
+		ID: "g-weblab", Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB",
+		Attributes: map[string]string{"team_door_scan": "true"},
+	})
+	member := authn.Identity{ID: uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	app = ticketApp(t, member, events2, tickets2, dir)
+	path2 := "/v1/tickets/" + tk2.ID.String() + "/sessions/" + sess2.ID.String() + "/check-in"
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodPost, path2, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("member scan status %d body %s", resp.StatusCode, body)
 	}
 }
 

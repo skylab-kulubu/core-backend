@@ -55,6 +55,9 @@ func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
 	if e.ID == uuid.Nil {
 		e.ID = uuid.New()
 	}
+	if e.AttendanceRule == "" {
+		e.AttendanceRule = "none"
+	}
 	now := time.Now().UTC()
 	e.CreatedAt = now
 	e.UpdatedAt = now
