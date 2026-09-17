@@ -51,6 +51,9 @@ func (s *PostgresStore) List(ctx context.Context, ownerTeam string, activeOnly b
 		if err := s.loadImages(ctx, &e); err != nil {
 			return nil, err
 		}
+		if err := s.loadDoorStaff(ctx, &e); err != nil {
+			return nil, err
+		}
 		out = append(out, emptyGallery(e))
 	}
 	return out, rows.Err()
@@ -65,6 +68,9 @@ func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Event, error) {
 		return e, err
 	}
 	if err := s.loadImages(ctx, &e); err != nil {
+		return Event{}, err
+	}
+	if err := s.loadDoorStaff(ctx, &e); err != nil {
 		return Event{}, err
 	}
 	return emptyGallery(e), nil
@@ -84,6 +90,9 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 	if err != nil {
 		return Event{}, err
 	}
+	if err := s.replaceDoorStaff(ctx, e.ID, e.DoorStaffIDs); err != nil {
+		return Event{}, err
+	}
 	return s.Get(ctx, e.ID)
 }
 
@@ -101,6 +110,9 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 	}
 	if tag.RowsAffected() == 0 {
 		return Event{}, ErrNotFound
+	}
+	if err := s.replaceDoorStaff(ctx, e.ID, e.DoorStaffIDs); err != nil {
+		return Event{}, err
 	}
 	return s.Get(ctx, e.ID)
 }
@@ -179,6 +191,51 @@ func (s *PostgresStore) loadImages(ctx context.Context, e *Event) error {
 	}
 	e.Images = images
 	e.ImageURLs = urls
+	return nil
+}
+
+func (s *PostgresStore) loadDoorStaff(ctx context.Context, e *Event) error {
+	rows, err := s.pool.Query(ctx, `
+		SELECT user_id FROM event_door_staff WHERE event_id = $1 ORDER BY user_id
+	`, e.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	ids := make([]uuid.UUID, 0)
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	e.DoorStaffIDs = ids
+	return nil
+}
+
+func (s *PostgresStore) replaceDoorStaff(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM event_door_staff WHERE event_id = $1`, eventID); err != nil {
+		return err
+	}
+	seen := map[uuid.UUID]struct{}{}
+	for _, id := range ids {
+		if id == uuid.Nil {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO event_door_staff (event_id, user_id) VALUES ($1, $2)
+		`, eventID, id); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -261,6 +318,9 @@ func (s *PostgresStore) ListBySeason(ctx context.Context, seasonID uuid.UUID) ([
 		}
 		out = append(out, e)
 		if err := s.loadImages(ctx, &out[len(out)-1]); err != nil {
+			return nil, err
+		}
+		if err := s.loadDoorStaff(ctx, &out[len(out)-1]); err != nil {
 			return nil, err
 		}
 		out[len(out)-1] = emptyGallery(out[len(out)-1])

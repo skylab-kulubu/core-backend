@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -22,17 +23,27 @@ type Service interface {
 	CheckIn(ctx context.Context, p authz.Principal, ticketID, eventDayID uuid.UUID) (CheckIn, error)
 }
 
+type TeamReader interface {
+	GetGroup(ctx context.Context, idOrPath string) (identity.Group, error)
+}
+
 type service struct {
 	tickets Store
 	events  event.Store
 	users   user.Store
+	teams   TeamReader
 	authz   authz.Authorizer
 }
 
-func NewService(tickets Store, events event.Store, az authz.Authorizer, users ...user.Store) Service {
+func NewService(tickets Store, events event.Store, az authz.Authorizer, extras ...any) Service {
 	s := &service{tickets: tickets, events: events, authz: az}
-	if len(users) > 0 {
-		s.users = users[0]
+	for _, extra := range extras {
+		switch v := extra.(type) {
+		case user.Store:
+			s.users = v
+		case TeamReader:
+			s.teams = v
+		}
 	}
 	return s
 }
@@ -310,7 +321,7 @@ func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, even
 		}
 		return CheckIn{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Validate) {
+	if !s.authz.Allow(p, s.doorResource(ctx, ev), authz.Validate) {
 		return CheckIn{}, ErrForbidden
 	}
 	day, err := s.events.GetDay(ctx, eventDayID)
@@ -331,4 +342,28 @@ func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, even
 		return CheckIn{}, ErrConflict
 	}
 	return s.tickets.AddCheckIn(ctx, CheckIn{TicketID: ticketID, EventDayID: eventDayID})
+}
+
+func (s *service) doorResource(ctx context.Context, ev event.Event) authz.Resource {
+	ids := make([]string, 0, len(ev.DoorStaffIDs))
+	for _, id := range ev.DoorStaffIDs {
+		ids = append(ids, id.String())
+	}
+	return authz.Resource{
+		Type:         authz.TypeTicket,
+		OwnerTeam:    ev.OwnerTeam,
+		DoorStaffIDs: ids,
+		TeamDoorScan: s.teamDoorScan(ctx, ev.OwnerTeam),
+	}
+}
+
+func (s *service) teamDoorScan(ctx context.Context, ownerTeam string) bool {
+	if s.teams == nil || ownerTeam == "" {
+		return false
+	}
+	g, err := s.teams.GetGroup(ctx, ownerTeam)
+	if err != nil || g.Attributes == nil {
+		return false
+	}
+	return strings.EqualFold(g.Attributes["team_door_scan"], "true")
 }

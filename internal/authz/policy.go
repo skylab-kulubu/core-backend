@@ -11,6 +11,7 @@ const (
 	ReadMe   Action = "READ_ME"
 	Upload   Action = "UPLOAD"
 	List     Action = "LIST"
+	Assign   Action = "ASSIGN"
 )
 
 type Type string
@@ -43,9 +44,11 @@ type Principal struct {
 }
 
 type Resource struct {
-	Type      Type
-	OwnerTeam string
-	OwnerID   string
+	Type         Type
+	OwnerTeam    string
+	OwnerID      string
+	DoorStaffIDs []string
+	TeamDoorScan bool
 }
 
 type Policy struct {

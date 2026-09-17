@@ -25,6 +25,7 @@ type Event struct {
 	CoverImageURL string         `json:"coverImageUrl,omitempty"`
 	Images        []GalleryImage `json:"images"`
 	ImageURLs     []string       `json:"imageUrls"`
+	DoorStaffIDs  []uuid.UUID    `json:"doorStaffIds"`
 	CreatedAt     time.Time      `json:"createdAt"`
 	UpdatedAt     time.Time      `json:"updatedAt"`
 }
@@ -66,6 +67,9 @@ func emptyGallery(e Event) Event {
 	}
 	if e.ImageURLs == nil {
 		e.ImageURLs = []string{}
+	}
+	if e.DoorStaffIDs == nil {
+		e.DoorStaffIDs = []uuid.UUID{}
 	}
 	return e
 }
