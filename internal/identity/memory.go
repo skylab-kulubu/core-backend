@@ -201,7 +201,7 @@ func (m *Memory) ListUsers(_ context.Context) ([]Person, error) {
 }
 
 func holdsClientRole(have ClientRole, clientID, role string) bool {
-	if have.ClientID != clientID && !(clientID == "dotnet" && have.ClientID == "skyforms") {
+	if have.ClientID != clientID && !((clientID == "forms" || clientID == "dotnet") && have.ClientID == "skyforms") {
 		return false
 	}
 	if have.Role == role {

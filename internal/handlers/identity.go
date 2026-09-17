@@ -172,7 +172,7 @@ func (h *IdentityHandler) ListUsers(c fiber.Ctx) error {
 		if !strings.HasPrefix(role, "skyforms:") {
 			return problem(c, fiber.StatusBadRequest, "Bad Request")
 		}
-		seat = []identity.ClientRole{{ClientID: "dotnet", Role: role}}
+		seat = []identity.ClientRole{{ClientID: "forms", Role: role}}
 	}
 	users, err := h.svc.ListUsers(c.Context(), p, c.Query("q"), seat...)
 	if err != nil {

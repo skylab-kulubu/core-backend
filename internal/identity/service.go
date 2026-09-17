@@ -139,7 +139,7 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 	if len(seat) > 0 && strings.TrimSpace(seat[0].Role) != "" {
 		clientID := strings.TrimSpace(seat[0].ClientID)
 		if clientID == "" {
-			clientID = "dotnet"
+			clientID = "forms"
 		}
 		people, err := s.dir.UsersWithClientRole(ctx, clientID, strings.TrimSpace(seat[0].Role))
 		if err != nil {
