@@ -50,6 +50,9 @@ func keepProfile(existing, u User) User {
 	if u.Department == "" {
 		u.Department = existing.Department
 	}
+	if u.StudentCardUID == "" {
+		u.StudentCardUID = existing.StudentCardUID
+	}
 	if u.ProfilePictureID == nil {
 		u.ProfilePictureID = existing.ProfilePictureID
 	}
@@ -130,6 +133,40 @@ func (s *MemoryStore) FindByEmail(_ context.Context, email string) ([]User, erro
 		}
 	}
 	return out, nil
+}
+
+func (s *MemoryStore) FindByStudentCardUID(_ context.Context, uid string) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if uid == "" {
+		return User{}, ErrNotFound
+	}
+	for _, u := range s.byID {
+		if u.StudentCardUID == uid {
+			return u, nil
+		}
+	}
+	return User{}, ErrNotFound
+}
+
+func (s *MemoryStore) SetStudentCardUID(_ context.Context, id uuid.UUID, uid string) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.byID[id]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	if uid != "" {
+		for otherID, other := range s.byID {
+			if otherID != id && other.StudentCardUID == uid {
+				return User{}, ErrConflict
+			}
+		}
+	}
+	u.StudentCardUID = uid
+	u.UpdatedAt = time.Now().UTC()
+	s.byID[id] = u
+	return u, nil
 }
 
 func (s *MemoryStore) NextSkyNumber(_ context.Context) (string, error) {

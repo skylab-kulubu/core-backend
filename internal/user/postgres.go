@@ -19,12 +19,12 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const userCols = `id, email, first_name, last_name, username, school_email, sky_number, linkedin, university, faculty, department, profile_picture_id, profile_picture_url, created_at, updated_at`
+const userCols = `id, email, first_name, last_name, username, school_email, sky_number, COALESCE(student_card_uid, ''), linkedin, university, faculty, department, profile_picture_id, profile_picture_url, created_at, updated_at`
 
 func scanUser(row interface{ Scan(dest ...any) error }) (User, error) {
 	var u User
 	err := row.Scan(
-		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Username, &u.SchoolEmail, &u.SkyNumber,
+		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Username, &u.SchoolEmail, &u.SkyNumber, &u.StudentCardUID,
 		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.ProfilePictureID, &u.ProfilePictureURL,
 		&u.CreatedAt, &u.UpdatedAt,
 	)
@@ -66,7 +66,7 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 			updated_at = now()
 		RETURNING `+userCols+`, (xmax = 0)
 	`, u.ID, u.Email, u.FirstName, u.LastName, u.Username, u.SchoolEmail, u.SkyNumber).Scan(
-		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Username, &u.SchoolEmail, &u.SkyNumber,
+		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Username, &u.SchoolEmail, &u.SkyNumber, &u.StudentCardUID,
 		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.ProfilePictureID, &u.ProfilePictureURL,
 		&u.CreatedAt, &u.UpdatedAt, &created,
 	)
@@ -151,6 +151,40 @@ func (s *PostgresStore) FindByEmail(ctx context.Context, email string) ([]User, 
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+func (s *PostgresStore) FindByStudentCardUID(ctx context.Context, uid string) (User, error) {
+	if uid == "" {
+		return User{}, ErrNotFound
+	}
+	u, err := scanUser(s.pool.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE student_card_uid = $1`, uid))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	if err != nil {
+		return User{}, err
+	}
+	return u, nil
+}
+
+func (s *PostgresStore) SetStudentCardUID(ctx context.Context, id uuid.UUID, uid string) (User, error) {
+	var uidArg any
+	if uid == "" {
+		uidArg = nil
+	} else {
+		uidArg = uid
+	}
+	got, err := scanUser(s.pool.QueryRow(ctx, `
+		UPDATE users SET student_card_uid = $2, updated_at = now()
+		WHERE id = $1
+		RETURNING `+userCols, id, uidArg))
+	if isUnique(err) {
+		return User{}, ErrConflict
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	return got, err
 }
 
 func (s *PostgresStore) NextSkyNumber(ctx context.Context) (string, error) {

@@ -13,6 +13,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -26,6 +27,7 @@ type Deps struct {
 	Competitors competitor.Service
 	Media       media.Service
 	URLs        shorturl.Service
+	SkyPass     skypass.Service
 	Mail        mail.Mailer
 	ParseToken  func(string) (authn.Identity, error)
 }
@@ -50,14 +52,28 @@ func New(deps Deps) *fiber.App {
 	mediaH := handlers.NewMediaHandler(deps.Media)
 	urls := handlers.NewURLHandler(deps.URLs)
 	jit := middlewares.NewJIT(deps.Users, deps.Mail)
+	var pass *handlers.SkyPassHandler
+	if deps.SkyPass != nil {
+		pass = handlers.NewSkyPassHandler(deps.SkyPass)
+	}
 
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 	app.Get("/v1/go/:alias/qr", urls.QR)
 	app.Get("/v1/go/:alias", urls.Redirect)
+	if pass != nil {
+		app.Get("/v1/skypass/jwks", pass.JWKS)
+	}
 	app.Use(middlewares.Bearer(deps.ParseToken))
 	app.Use(jit.Handle)
+
+	if pass != nil {
+		app.Post("/v1/skypass/card-bind", pass.BindCard)
+		app.Get("/v1/skypass/card", pass.LookupCard)
+		app.Post("/v1/skypass/qr", pass.Mint)
+		app.Post("/v1/skypass/verify", pass.Verify)
+	}
 
 	app.Get("/v1/users/me", me.GetMe)
 	app.Put("/v1/users/me", me.PutMe)

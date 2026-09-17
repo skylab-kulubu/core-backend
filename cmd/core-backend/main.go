@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"log"
 	"os"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -127,6 +130,11 @@ func main() {
 		}
 	}
 
+	passKey, err := loadSkyPassKey()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	app := httpx.New(httpx.Deps{
 		Users:       user.NewService(users, dir),
 		Identity:    identity.NewService(dir, users, az, mailer),
@@ -136,6 +144,7 @@ func main() {
 		Competitors: competitor.NewService(competitors, events, az),
 		Media:       media.NewService(mediaStore, blobs, az, os.Getenv("CDN_BASE")),
 		URLs:        shorturl.NewService(shorturl.NewPostgresStore(pool), az),
+		SkyPass:     skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
 		Mail:        mailer,
 		ParseToken:  parse,
 	})
@@ -147,4 +156,11 @@ func main() {
 	if err := app.Listen(":" + addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func loadSkyPassKey() (*rsa.PrivateKey, error) {
+	if raw := os.Getenv("SKYPASS_RSA_PRIVATE_KEY"); raw != "" {
+		return skypass.ParseRSAPrivateKey([]byte(raw))
+	}
+	return rsa.GenerateKey(rand.Reader, 2048)
 }
