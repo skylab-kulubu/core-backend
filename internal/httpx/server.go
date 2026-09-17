@@ -115,8 +115,10 @@ func New(deps Deps) *fiber.App {
 	app.Put("/v1/event-days/:id", schedule.UpdateDay)
 	app.Delete("/v1/event-days/:id", schedule.DeleteDay)
 	app.Get("/v1/event-days/:id/sessions", schedule.ListSessions)
+	app.Get("/v1/event-days/:id/current-session", schedule.CurrentSession)
 
 	app.Post("/v1/sessions", schedule.CreateSession)
+	app.Get("/v1/sessions/:id/qr", schedule.SessionQR)
 	app.Get("/v1/sessions/:id", schedule.GetSession)
 	app.Put("/v1/sessions/:id", schedule.UpdateSession)
 	app.Delete("/v1/sessions/:id", schedule.DeleteSession)
@@ -125,7 +127,9 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/tickets/user/:userId/event/:eventId", tickets.ByUserEvent)
 	app.Get("/v1/tickets/:id", tickets.Get)
 	app.Get("/v1/tickets", tickets.List)
-	app.Post("/v1/tickets/:ticketId/event-days/:eventDayId/check-in", tickets.CheckIn)
+	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
+	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
+	app.Post("/v1/sessions/:sessionId/check-in/guest", tickets.CheckInGuest)
 
 	app.Get("/v1/competitors", competitors.List)
 	app.Get("/v1/competitors/me", competitors.Mine)

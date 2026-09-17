@@ -24,5 +24,5 @@ type Store interface {
 	GetByOwnerEvent(ctx context.Context, ownerID, eventID uuid.UUID) (Ticket, error)
 	ListByGuestEmail(ctx context.Context, email string) ([]Ticket, error)
 	AddCheckIn(ctx context.Context, c CheckIn) (CheckIn, error)
-	HasCheckIn(ctx context.Context, ticketID, eventDayID uuid.UUID) (bool, error)
+	HasCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID) (bool, error)
 }

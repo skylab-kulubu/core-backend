@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -22,6 +23,7 @@ type Service interface {
 	DeleteDay(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Session, error)
 	GetSession(ctx context.Context, id uuid.UUID) (Session, error)
+	CurrentSession(ctx context.Context, eventDayID uuid.UUID, at time.Time) (Current, error)
 	CreateSession(ctx context.Context, p authz.Principal, sess Session) (Session, error)
 	UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session) (Session, error)
 	DeleteSession(ctx context.Context, p authz.Principal, id uuid.UUID) error
@@ -189,6 +191,17 @@ func (s *service) ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Ses
 
 func (s *service) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
 	return s.store.GetSession(ctx, id)
+}
+
+func (s *service) CurrentSession(ctx context.Context, eventDayID uuid.UUID, at time.Time) (Current, error) {
+	if _, err := s.store.GetDay(ctx, eventDayID); err != nil {
+		return Current{}, err
+	}
+	sessions, err := s.store.ListSessions(ctx, eventDayID)
+	if err != nil {
+		return Current{}, err
+	}
+	return ResolveCurrent(sessions, at), nil
 }
 
 func (s *service) sessionOwner(ctx context.Context, eventDayID uuid.UUID) (string, error) {

@@ -6,6 +6,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/qr"
 )
 
 type ScheduleHandler struct {
@@ -126,6 +127,26 @@ func (h *ScheduleHandler) ListSessions(c fiber.Ctx) error {
 	return c.JSON(sessions)
 }
 
+func (h *ScheduleHandler) CurrentSession(c fiber.Ctx) error {
+	dayID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	at := time.Now().UTC()
+	if raw := c.Query("at"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+		at = parsed
+	}
+	cur, err := h.svc.CurrentSession(c.Context(), dayID, at)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(cur)
+}
+
 func (h *ScheduleHandler) GetSession(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -136,6 +157,22 @@ func (h *ScheduleHandler) GetSession(c fiber.Ctx) error {
 		return eventError(c, err)
 	}
 	return c.JSON(sess)
+}
+
+func (h *ScheduleHandler) SessionQR(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if _, err := h.svc.GetSession(c.Context(), id); err != nil {
+		return eventError(c, err)
+	}
+	png, err := qr.PNG(qr.SessionURL(id.String()), qr.SizeFromQuery(c.Query("size")))
+	if err != nil {
+		return err
+	}
+	c.Set(fiber.HeaderContentType, "image/png")
+	return c.Send(png)
 }
 
 func (h *ScheduleHandler) CreateSession(c fiber.Ctx) error {
