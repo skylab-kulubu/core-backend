@@ -15,6 +15,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/eventmail"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
@@ -105,7 +106,7 @@ func main() {
 
 	var mailer mail.Mailer
 	var sky *mail.SkyMail
-	if os.Getenv("SKYMAIL_URL") != "" && (os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID") != "" || os.Getenv("SKYMAIL_CERTIFICATE_TEMPLATE_ID") != "") {
+	if os.Getenv("SKYMAIL_URL") != "" {
 		kc := strings.TrimRight(os.Getenv("KEYCLOAK_URL"), "/")
 		realm := os.Getenv("KEYCLOAK_REALM")
 		if parts := strings.SplitN(kc, "/realms/", 2); len(parts) == 2 {
@@ -139,7 +140,9 @@ func main() {
 			}
 			sky.CertificateTemplateID = tid
 		}
-		mailer = sky
+		if sky.TemplateID != uuid.Nil || sky.CertificateTemplateID != uuid.Nil {
+			mailer = sky
+		}
 	}
 
 	var render certificate.Renderer
@@ -157,6 +160,10 @@ func main() {
 	ticketSvc = ticket.WithSettledCheckIn(ticketSvc, func(ctx context.Context, ticketID uuid.UUID) {
 		_, _ = certSvc.RecomputeTicket(ctx, ticketID)
 	})
+	var lists mail.Lists
+	if sky != nil {
+		lists = sky
+	}
 
 	app := httpx.New(httpx.Deps{
 		Users:        user.NewService(users, dir),
@@ -170,6 +177,7 @@ func main() {
 		Certificates: certSvc,
 		SkyPass:      skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
 		Mail:         mailer,
+		EventMail:    eventmail.New(events, tickets, users, lists, az),
 		ParseToken:   parse,
 	})
 

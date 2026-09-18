@@ -31,6 +31,7 @@ type Event struct {
 	Images          []GalleryImage  `json:"images"`
 	ImageURLs       []string        `json:"imageUrls"`
 	DoorStaffIDs    []uuid.UUID     `json:"doorStaffIds"`
+	MailListID      *uuid.UUID      `json:"mailListId,omitempty"`
 	CreatedAt       time.Time       `json:"createdAt"`
 	UpdatedAt       time.Time       `json:"updatedAt"`
 }
