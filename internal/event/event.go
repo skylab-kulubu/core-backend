@@ -7,29 +7,31 @@ import (
 )
 
 type Event struct {
-	ID              uuid.UUID      `json:"id"`
-	Name            string         `json:"name"`
-	Description     string         `json:"description"`
-	Location        string         `json:"location"`
-	OwnerTeam       string         `json:"ownerTeam"`
-	FormURL         string         `json:"formUrl,omitempty"`
-	Capacity        int            `json:"capacity"`
-	StartDate       *time.Time     `json:"startDate,omitempty"`
-	EndDate         *time.Time     `json:"endDate,omitempty"`
-	Linkedin        string         `json:"linkedin,omitempty"`
-	Active          bool           `json:"active"`
-	Ranked          bool           `json:"ranked"`
-	PrizeInfo       string         `json:"prizeInfo,omitempty"`
-	SeasonID        *uuid.UUID     `json:"seasonId,omitempty"`
-	CoverImageID    *uuid.UUID     `json:"coverImageId,omitempty"`
-	CoverImageURL   string         `json:"coverImageUrl,omitempty"`
-	AttendanceRule  string         `json:"attendanceRule"`
-	AttendanceRatio *float64       `json:"attendanceRatio,omitempty"`
-	Images          []GalleryImage `json:"images"`
-	ImageURLs       []string       `json:"imageUrls"`
-	DoorStaffIDs    []uuid.UUID    `json:"doorStaffIds"`
-	CreatedAt       time.Time      `json:"createdAt"`
-	UpdatedAt       time.Time      `json:"updatedAt"`
+	ID              uuid.UUID       `json:"id"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description"`
+	Location        string          `json:"location"`
+	OwnerTeam       string          `json:"ownerTeam"`
+	FormURL         string          `json:"formUrl,omitempty"`
+	FormAlias       string          `json:"formAlias,omitempty"`
+	ExtraFormURLs   []EventFormLink `json:"extraFormUrls"`
+	Capacity        int             `json:"capacity"`
+	StartDate       *time.Time      `json:"startDate,omitempty"`
+	EndDate         *time.Time      `json:"endDate,omitempty"`
+	Linkedin        string          `json:"linkedin,omitempty"`
+	Active          bool            `json:"active"`
+	Ranked          bool            `json:"ranked"`
+	PrizeInfo       string          `json:"prizeInfo,omitempty"`
+	SeasonID        *uuid.UUID      `json:"seasonId,omitempty"`
+	CoverImageID    *uuid.UUID      `json:"coverImageId,omitempty"`
+	CoverImageURL   string          `json:"coverImageUrl,omitempty"`
+	AttendanceRule  string          `json:"attendanceRule"`
+	AttendanceRatio *float64        `json:"attendanceRatio,omitempty"`
+	Images          []GalleryImage  `json:"images"`
+	ImageURLs       []string        `json:"imageUrls"`
+	DoorStaffIDs    []uuid.UUID     `json:"doorStaffIds"`
+	CreatedAt       time.Time       `json:"createdAt"`
+	UpdatedAt       time.Time       `json:"updatedAt"`
 }
 
 type GalleryImage struct {
@@ -72,6 +74,9 @@ func emptyGallery(e Event) Event {
 	}
 	if e.DoorStaffIDs == nil {
 		e.DoorStaffIDs = []uuid.UUID{}
+	}
+	if e.ExtraFormURLs == nil {
+		e.ExtraFormURLs = []EventFormLink{}
 	}
 	return e
 }

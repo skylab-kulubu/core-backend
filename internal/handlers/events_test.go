@@ -613,3 +613,51 @@ func TestEventDoorStaffAssignHTTP(t *testing.T) {
 		t.Fatalf("cleared %+v", cleared.DoorStaffIDs)
 	}
 }
+
+func TestEventExtraFormURLsRoundTrip(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	app := eventApp(t, yk(), store)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+		`{"name":"Skydays","location":"YTÜ","ownerTeam":"WEBLAB","formUrl":"https://apply.example.test","formAlias":"skydays2026","extraFormUrls":[{"label":"CTF","url":"https://ctf.example.test","alias":"skydays-ctf2026"}]}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var created event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.FormURL != "https://apply.example.test" || created.FormAlias != "skydays2026" {
+		t.Fatalf("apply %+v", created)
+	}
+	if len(created.ExtraFormURLs) != 1 || created.ExtraFormURLs[0].Label != "CTF" || created.ExtraFormURLs[0].URL != "https://ctf.example.test" {
+		t.Fatalf("extra %+v", created.ExtraFormURLs)
+	}
+
+	req = httptest.NewRequest(fiber.MethodPut, "/v1/events/"+created.ID.String(), strings.NewReader(
+		`{"name":"Skydays","location":"YTÜ","ownerTeam":"WEBLAB","formUrl":"https://apply.example.test"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("put %d body %s", resp.StatusCode, body)
+	}
+	var kept event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if kept.FormAlias != "skydays2026" || len(kept.ExtraFormURLs) != 1 || kept.ExtraFormURLs[0].Label != "CTF" {
+		t.Fatalf("kept %+v", kept)
+	}
+}

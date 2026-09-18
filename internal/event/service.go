@@ -112,6 +112,12 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Assign) || in.DoorStaffIDs == nil {
 		in.DoorStaffIDs = existing.DoorStaffIDs
 	}
+	if in.ExtraFormURLs == nil {
+		in.ExtraFormURLs = existing.ExtraFormURLs
+		if in.FormAlias == "" {
+			in.FormAlias = existing.FormAlias
+		}
+	}
 	return s.store.Update(ctx, in)
 }
 
