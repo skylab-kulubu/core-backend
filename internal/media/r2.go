@@ -22,12 +22,18 @@ type R2 struct {
 	bucket string
 }
 
+func (r *R2) Bucket() string {
+	return r.bucket
+}
+
 func NewR2(cfg R2Config) *R2 {
 	client := s3.New(s3.Options{
-		BaseEndpoint: aws.String(cfg.Endpoint),
-		Region:       "auto",
-		Credentials:  credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
-		UsePathStyle: true,
+		BaseEndpoint:               aws.String(cfg.Endpoint),
+		Region:                     "auto",
+		Credentials:                credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
+		UsePathStyle:               true,
+		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
+		ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired,
 	})
 	return &R2{client: client, bucket: cfg.Bucket}
 }
@@ -39,6 +45,13 @@ func (r *R2) Put(ctx context.Context, key string, data []byte, contentType strin
 		Body:          bytes.NewReader(data),
 		ContentType:   aws.String(contentType),
 		ContentLength: aws.Int64(int64(len(data))),
+	})
+	if err != nil {
+		return err
+	}
+	_, err = r.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(r.bucket),
+		Key:    aws.String(key),
 	})
 	return err
 }
@@ -52,9 +65,10 @@ func (r *R2) Delete(ctx context.Context, key string) error {
 }
 
 func publicURL(base, key string) string {
+	key = strings.TrimLeft(key, "/")
 	base = strings.TrimRight(base, "/")
 	if base == "" {
-		base = "https://cdn.yildizskylab.com"
+		return key
 	}
-	return base + "/" + strings.TrimLeft(key, "/")
+	return base + "/" + key
 }

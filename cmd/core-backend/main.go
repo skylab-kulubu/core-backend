@@ -19,6 +19,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
@@ -36,6 +37,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer pool.Close()
+	if err := migrate.Apply(context.Background(), pool); err != nil {
+		log.Fatal(err)
+	}
 
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
 	users := user.NewPostgresStore(pool)
@@ -45,14 +49,9 @@ func main() {
 	competitors := competitor.NewPostgresStore(pool)
 	certs := certificate.NewPostgresStore(pool)
 	mediaStore := media.NewPostgresStore(pool)
-	var blobs media.BlobStore = media.NewMemoryBlob()
-	if os.Getenv("R2_ENDPOINT") != "" {
-		blobs = media.NewR2(media.R2Config{
-			Endpoint:  os.Getenv("R2_ENDPOINT"),
-			AccessKey: os.Getenv("R2_ACCESS_KEY"),
-			SecretKey: os.Getenv("R2_SECRET_KEY"),
-			Bucket:    os.Getenv("R2_BUCKET"),
-		})
+	blobs, cdnBase, err := media.BlobAndCDN(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	dir := identity.Directory(identity.NewMemory())
@@ -166,7 +165,7 @@ func main() {
 		Seasons:      season.NewService(seasons, az),
 		Tickets:      ticketSvc,
 		Competitors:  competitor.NewService(competitors, events, az),
-		Media:        media.NewService(mediaStore, blobs, az, os.Getenv("CDN_BASE")),
+		Media:        media.NewService(mediaStore, blobs, az, cdnBase),
 		URLs:         shorturl.NewService(shorturl.NewPostgresStore(pool), az),
 		Certificates: certSvc,
 		SkyPass:      skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
