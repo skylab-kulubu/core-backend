@@ -119,6 +119,20 @@ func TestAuthorizer_Allow(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "users:read can look up a user card",
+			p:    Principal{ID: "svc", Roles: []string{"users:read"}},
+			r:    Resource{Type: TypeUser},
+			a:    Read,
+			want: true,
+		},
+		{
+			name: "users:read cannot create users",
+			p:    Principal{ID: "svc", Roles: []string{"users:read"}},
+			r:    Resource{Type: TypeUser},
+			a:    Create,
+			want: false,
+		},
+		{
 			name: "stranger cannot delete users",
 			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}},
 			r:    Resource{Type: TypeUser},
