@@ -18,22 +18,24 @@ func NewEventHandler(svc event.Service) *EventHandler {
 }
 
 type eventBody struct {
-	Name            string       `json:"name"`
-	Description     string       `json:"description"`
-	Location        string       `json:"location"`
-	OwnerTeam       string       `json:"ownerTeam"`
-	FormURL         string       `json:"formUrl"`
-	Capacity        int          `json:"capacity"`
-	StartDate       *time.Time   `json:"startDate"`
-	EndDate         *time.Time   `json:"endDate"`
-	Linkedin        string       `json:"linkedin"`
-	Active          bool         `json:"active"`
-	Ranked          bool         `json:"ranked"`
-	PrizeInfo       string       `json:"prizeInfo"`
-	CoverImageID    *uuid.UUID   `json:"coverImageId"`
-	AttendanceRule  string       `json:"attendanceRule"`
-	AttendanceRatio *float64     `json:"attendanceRatio"`
-	DoorStaffIDs    *[]uuid.UUID `json:"doorStaffIds"`
+	Name            string                 `json:"name"`
+	Description     string                 `json:"description"`
+	Location        string                 `json:"location"`
+	OwnerTeam       string                 `json:"ownerTeam"`
+	FormURL         string                 `json:"formUrl"`
+	FormAlias       *string                `json:"formAlias"`
+	ExtraFormURLs   *[]event.EventFormLink `json:"extraFormUrls"`
+	Capacity        int                    `json:"capacity"`
+	StartDate       *time.Time             `json:"startDate"`
+	EndDate         *time.Time             `json:"endDate"`
+	Linkedin        string                 `json:"linkedin"`
+	Active          bool                   `json:"active"`
+	Ranked          bool                   `json:"ranked"`
+	PrizeInfo       string                 `json:"prizeInfo"`
+	CoverImageID    *uuid.UUID             `json:"coverImageId"`
+	AttendanceRule  string                 `json:"attendanceRule"`
+	AttendanceRatio *float64               `json:"attendanceRatio"`
+	DoorStaffIDs    *[]uuid.UUID           `json:"doorStaffIds"`
 }
 
 func eventError(c fiber.Ctx, err error) error {
@@ -68,6 +70,12 @@ func (b eventBody) asEvent() event.Event {
 		CoverImageID:    b.CoverImageID,
 		AttendanceRule:  b.AttendanceRule,
 		AttendanceRatio: b.AttendanceRatio,
+	}
+	if b.FormAlias != nil {
+		e.FormAlias = *b.FormAlias
+	}
+	if b.ExtraFormURLs != nil {
+		e.ExtraFormURLs = *b.ExtraFormURLs
 	}
 	if b.DoorStaffIDs != nil {
 		e.DoorStaffIDs = *b.DoorStaffIDs

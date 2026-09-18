@@ -18,7 +18,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, m.file_url, e.attendance_rule, e.attendance_ratio, e.created_at, e.updated_at`
+const eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, m.file_url, e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.created_at, e.updated_at`
 
 const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id`
 
@@ -84,11 +84,11 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 		INSERT INTO events (
 			id, name, description, location, owner_team, form_url, capacity,
 			start_date, end_date, linkedin, active, ranked, prize_info, season_id, cover_image_id,
-			attendance_rule, attendance_ratio
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+			attendance_rule, attendance_ratio, extra_form_urls
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
-		attendanceRule(e.AttendanceRule), e.AttendanceRatio)
+		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e))
 	if err != nil {
 		return Event{}, err
 	}
@@ -104,11 +104,11 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 			name = $2, description = $3, location = $4, owner_team = $5, form_url = $6,
 			capacity = $7, start_date = $8, end_date = $9, linkedin = $10, active = $11,
 			ranked = $12, prize_info = $13, season_id = $14, cover_image_id = $15,
-			attendance_rule = $16, attendance_ratio = $17, updated_at = now()
+			attendance_rule = $16, attendance_ratio = $17, extra_form_urls = $18, updated_at = now()
 		WHERE id = $1`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
-		attendanceRule(e.AttendanceRule), e.AttendanceRatio)
+		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e))
 	if err != nil {
 		return Event{}, err
 	}
@@ -412,18 +412,36 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+func extraFormBytes(e Event) []byte {
+	raw, err := EncodeExtraForm(e.FormAlias, e.ExtraFormURLs)
+	if err != nil {
+		return []byte(`[]`)
+	}
+	return raw
+}
+
 func scanEvent(row rowScanner) (Event, error) {
 	var e Event
 	var coverURL *string
+	var extraRaw []byte
 	err := row.Scan(
 		&e.ID, &e.Name, &e.Description, &e.Location, &e.OwnerTeam, &e.FormURL, &e.Capacity,
 		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Ranked, &e.PrizeInfo, &e.SeasonID,
-		&e.CoverImageID, &coverURL, &e.AttendanceRule, &e.AttendanceRatio, &e.CreatedAt, &e.UpdatedAt,
+		&e.CoverImageID, &coverURL, &e.AttendanceRule, &e.AttendanceRatio, &extraRaw, &e.CreatedAt, &e.UpdatedAt,
 	)
 	if coverURL != nil {
 		e.CoverImageURL = *coverURL
 	}
-	return e, err
+	if err != nil {
+		return e, err
+	}
+	alias, extra, decErr := DecodeExtraForm(extraRaw)
+	if decErr != nil {
+		return e, decErr
+	}
+	e.FormAlias = alias
+	e.ExtraFormURLs = extra
+	return e, nil
 }
 
 func scanSession(row rowScanner) (Session, error) {
