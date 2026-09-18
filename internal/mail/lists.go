@@ -13,7 +13,33 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrListNotFound = errors.New("mail: list not found")
+var (
+	ErrListNotFound = errors.New("mail: list not found")
+	ErrForbidden    = errors.New("mail: lists forbidden — grant skymail:lists:write on core SA")
+)
+
+type StatusError struct {
+	Method string
+	Path   string
+	Status int
+}
+
+func (e *StatusError) Error() string {
+	if e == nil {
+		return "mail: empty status"
+	}
+	if e.Status == http.StatusForbidden {
+		return fmt.Sprintf("%s: %s %s status %d", ErrForbidden.Error(), e.Method, e.Path, e.Status)
+	}
+	return fmt.Sprintf("mail: %s %s status %d", e.Method, e.Path, e.Status)
+}
+
+func (e *StatusError) Unwrap() error {
+	if e != nil && e.Status == http.StatusForbidden {
+		return ErrForbidden
+	}
+	return nil
+}
 
 type ListRecipient struct {
 	ID       uuid.UUID `json:"id"`
@@ -113,7 +139,7 @@ func (s *SkyMail) doJSON(ctx context.Context, method, path string, body any, wan
 		return ErrListNotFound
 	}
 	if resp.StatusCode != want {
-		return fmt.Errorf("mail: %s %s status %d", method, path, resp.StatusCode)
+		return &StatusError{Method: method, Path: path, Status: resp.StatusCode}
 	}
 	if dest == nil || len(raw) == 0 {
 		return nil

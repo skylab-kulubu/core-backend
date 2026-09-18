@@ -2,6 +2,7 @@ package mail
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -75,5 +76,20 @@ func TestSkyMailAddRecipientPostsEmail(t *testing.T) {
 	}
 	if payload["email"] != "ada@example.com" || payload["full_name"] != "Ada Lovelace" {
 		t.Fatalf("payload %v", payload)
+	}
+}
+
+func TestSkyMailCreateListForbidden(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/mailing_lists" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+	_, err := (&SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}).CreateList(t.Context(), "WEBLAB SkyDays")
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("err %v", err)
 	}
 }
