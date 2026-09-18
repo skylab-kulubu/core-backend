@@ -117,7 +117,11 @@ func (s *service) Members(ctx context.Context, p authz.Principal, groupRef strin
 	if err := s.allow(p, authz.TypeGroup, authz.Read); err != nil {
 		return nil, err
 	}
-	return s.dir.Members(ctx, groupRef)
+	g, err := s.dir.GetGroup(ctx, groupRef)
+	if err != nil {
+		return nil, err
+	}
+	return s.collectMembers(ctx, g, true)
 }
 
 func (s *service) AddMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error {

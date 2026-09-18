@@ -119,6 +119,33 @@ func TestPromoteAndRosterHTTP(t *testing.T) {
 	}
 }
 
+func TestGroupMembersHTTPIncludesSubgroups(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	dir.PutGroup(identity.Group{ID: "g-yk", Name: "YK", Path: "/UYELER/YK"})
+	dir.PutGroup(identity.Group{ID: "g-baskan", Name: "BASKAN", Path: "/UYELER/YK/BASKAN"})
+	id := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa21")
+	dir.PutUser(identity.Person{ID: id, Email: "yk@example.com", FirstName: "Yk"})
+	if err := dir.AddMember(t.Context(), "g-baskan", id); err != nil {
+		t.Fatal(err)
+	}
+	app := identityApp(t, ykIdent(), dir, user.NewMemoryStore())
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/groups/g-yk/members", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("roster status %d", resp.StatusCode)
+	}
+	var members []identity.Person
+	if err := json.NewDecoder(resp.Body).Decode(&members); err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 1 || members[0].ID != id {
+		t.Fatalf("members %+v", members)
+	}
+}
+
 func TestCreateAndDeleteUserHTTP(t *testing.T) {
 	t.Parallel()
 	dir := identity.NewMemory()
