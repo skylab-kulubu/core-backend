@@ -38,7 +38,12 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		return a.allowCertificate(p, r, action)
 	case TypeTeam:
 		return action == Read
-	case TypeGroup, TypeUser:
+	case TypeGroup:
+		return a.isPrivileged(p)
+	case TypeUser:
+		if action == Read && hasRole(p, "users:read") {
+			return true
+		}
 		return a.isPrivileged(p)
 	default:
 		return false
