@@ -118,10 +118,10 @@ func TestSkyMailCertificateNoopsWithoutTemplate(t *testing.T) {
 
 func TestAPIOriginDefaultsToPublicSkymailAPI(t *testing.T) {
 	t.Parallel()
-	if got := APIOrigin(""); got != "https://skymail-api.yildizskylab.com" {
+	if got := APIOrigin(""); got != "https://api.yildizskylab.com/api/skymail" {
 		t.Fatalf("empty %q", got)
 	}
-	if got := APIOrigin("  "); got != "https://skymail-api.yildizskylab.com" {
+	if got := APIOrigin("  "); got != "https://api.yildizskylab.com/api/skymail" {
 		t.Fatalf("blank %q", got)
 	}
 	if got := APIOrigin("https://mail.example.test/"); got != "https://mail.example.test" {

@@ -15,7 +15,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-const DefaultAPIOrigin = "https://skymail-api.yildizskylab.com"
+const DefaultAPIOrigin = "https://api.yildizskylab.com/api/skymail"
 
 type Mailer interface {
 	Welcome(ctx context.Context, u user.User)
