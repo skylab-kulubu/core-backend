@@ -305,6 +305,66 @@ func TestCheckInUsesSessionPathNotEventDay(t *testing.T) {
 	}
 }
 
+func TestGuestApplyWithInvalidBearerStillCreatesTicket(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	app := memoryApp(keys.Parse())
+	admin := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+		`{"name":"GECEKODU","location":"YTÜ","ownerTeam":"GECEKODU"}`,
+	))
+	admin.Header.Set("Content-Type", "application/json")
+	admin.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{
+		"sub": "11111111-1111-1111-1111-111111111111", "email": "yk@example.com",
+		"groups": []string{"/UYELER/YK"},
+	}))
+	created, err := app.Test(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(created.Body)
+		t.Fatalf("create event %d body %s", created.StatusCode, body)
+	}
+	var ev event.Event
+	if err := json.NewDecoder(created.Body).Decode(&ev); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/applications/guest", strings.NewReader(
+		`{"firstName":"Yusuf","lastName":"Acmaci","email":"yusuf@example.com"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer not-a-jwt")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("guest apply with bad bearer %d body %s", resp.StatusCode, body)
+	}
+
+	list := httptest.NewRequest(fiber.MethodGet, "/v1/events/"+ev.ID.String()+"/tickets", nil)
+	list.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{
+		"sub": "11111111-1111-1111-1111-111111111111", "email": "yk@example.com",
+		"groups": []string{"/UYELER/YK"},
+	}))
+	listed, err := app.Test(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed.StatusCode != fiber.StatusOK {
+		t.Fatalf("list tickets %d", listed.StatusCode)
+	}
+	var tickets []ticket.Ticket
+	if err := json.NewDecoder(listed.Body).Decode(&tickets); err != nil {
+		t.Fatal(err)
+	}
+	if len(tickets) != 1 || tickets[0].TicketType != ticket.Guest || tickets[0].GuestEmail != "yusuf@example.com" {
+		t.Fatalf("roster %+v", tickets)
+	}
+}
+
 func TestSkyPassJWKSAnonymous(t *testing.T) {
 	t.Parallel()
 	app := memoryApp()
