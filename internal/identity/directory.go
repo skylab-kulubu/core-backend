@@ -30,6 +30,12 @@ type Person struct {
 	SkyNumber   string    `json:"skyNumber,omitempty"`
 }
 
+type GroupMember struct {
+	Person
+	SourceGroupID   string `json:"sourceGroupId,omitempty"`
+	SourceGroupPath string `json:"sourceGroupPath,omitempty"`
+}
+
 type ClientRole struct {
 	ClientID string `json:"clientId"`
 	Role     string `json:"role"`

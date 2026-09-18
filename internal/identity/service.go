@@ -18,7 +18,7 @@ type Service interface {
 	GetGroup(ctx context.Context, p authz.Principal, groupRef string) (Group, error)
 	CreateGroup(ctx context.Context, p authz.Principal, parentRef, name string) (Group, error)
 	UpdateGroup(ctx context.Context, p authz.Principal, groupRef, name string, attrs map[string]string) (Group, error)
-	Members(ctx context.Context, p authz.Principal, groupRef string) ([]Person, error)
+	Members(ctx context.Context, p authz.Principal, groupRef string) ([]GroupMember, error)
 	AddMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
 	RemoveMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
 	ListUsers(ctx context.Context, p authz.Principal, q string, seat ...ClientRole) ([]Person, error)
@@ -113,7 +113,7 @@ func (s *service) UpdateGroup(ctx context.Context, p authz.Principal, groupRef, 
 	return s.dir.UpdateGroup(ctx, g)
 }
 
-func (s *service) Members(ctx context.Context, p authz.Principal, groupRef string) ([]Person, error) {
+func (s *service) Members(ctx context.Context, p authz.Principal, groupRef string) ([]GroupMember, error) {
 	if err := s.allow(p, authz.TypeGroup, authz.Read); err != nil {
 		return nil, err
 	}
@@ -121,7 +121,11 @@ func (s *service) Members(ctx context.Context, p authz.Principal, groupRef strin
 	if err != nil {
 		return nil, err
 	}
-	return s.collectMembers(ctx, g, true)
+	hits, err := s.memberHits(ctx, g)
+	if err != nil {
+		return nil, err
+	}
+	return rosterMembers(g, hits), nil
 }
 
 func (s *service) AddMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error {
@@ -135,7 +139,20 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 	if err := s.allow(p, authz.TypeGroup, authz.Update); err != nil {
 		return err
 	}
-	return s.dir.RemoveMember(ctx, groupRef, userID)
+	g, err := s.dir.GetGroup(ctx, groupRef)
+	if err != nil {
+		return err
+	}
+	hits, err := s.memberHits(ctx, g)
+	if err != nil {
+		return err
+	}
+	for _, h := range hits {
+		if h.person.ID == userID {
+			return s.dir.RemoveMember(ctx, h.source.ID, userID)
+		}
+	}
+	return s.dir.RemoveMember(ctx, g.ID, userID)
 }
 
 func (s *service) ListClientRoles(ctx context.Context, p authz.Principal) ([]ClientRole, error) {
@@ -437,29 +454,71 @@ func (s *service) publicGroup(ctx context.Context, team string, leaders bool) (G
 	return g, nil
 }
 
-func (s *service) collectMembers(ctx context.Context, root Group, recursive bool) ([]Person, error) {
-	seen := make(map[uuid.UUID]struct{})
-	var out []Person
+type memberHit struct {
+	person Person
+	source Group
+}
+
+func (s *service) memberHits(ctx context.Context, root Group) ([]memberHit, error) {
 	groups := []Group{root}
-	if recursive {
-		desc, err := s.descendants(ctx, root)
-		if err != nil {
-			return nil, err
-		}
-		groups = append(groups, desc...)
+	desc, err := s.descendants(ctx, root)
+	if err != nil {
+		return nil, err
 	}
+	groups = append(groups, desc...)
+	slices.SortFunc(groups, func(a, b Group) int {
+		da, db := strings.Count(a.Path, "/"), strings.Count(b.Path, "/")
+		if da != db {
+			return da - db
+		}
+		return strings.Compare(a.Path, b.Path)
+	})
+	best := make(map[uuid.UUID]memberHit)
+	order := make([]uuid.UUID, 0)
 	for _, g := range groups {
 		members, err := s.dir.Members(ctx, g.ID)
 		if err != nil {
 			return nil, err
 		}
 		for _, p := range members {
-			if _, ok := seen[p.ID]; ok {
+			if _, ok := best[p.ID]; ok {
 				continue
 			}
-			seen[p.ID] = struct{}{}
-			out = append(out, p)
+			best[p.ID] = memberHit{person: p, source: g}
+			order = append(order, p.ID)
 		}
+	}
+	out := make([]memberHit, 0, len(order))
+	for _, id := range order {
+		out = append(out, best[id])
+	}
+	return out, nil
+}
+
+func rosterMembers(root Group, hits []memberHit) []GroupMember {
+	out := make([]GroupMember, 0, len(hits))
+	for _, h := range hits {
+		m := GroupMember{Person: h.person}
+		if h.source.ID != root.ID {
+			m.SourceGroupID = h.source.ID
+			m.SourceGroupPath = h.source.Path
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func (s *service) collectMembers(ctx context.Context, root Group, recursive bool) ([]Person, error) {
+	if !recursive {
+		return s.dir.Members(ctx, root.ID)
+	}
+	hits, err := s.memberHits(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Person, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, h.person)
 	}
 	return out, nil
 }
