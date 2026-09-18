@@ -9,6 +9,10 @@ import (
 )
 
 func problem(c fiber.Ctx, status int, title string) error {
+	return problemDetail(c, status, title, title)
+}
+
+func problemDetail(c fiber.Ctx, status int, title, detail string) error {
 	instance := c.Path()
 	if u := c.Request().URI(); u != nil {
 		path := string(u.Path())
@@ -23,7 +27,7 @@ func problem(c fiber.Ctx, status int, title string) error {
 		"type":     "about:blank",
 		"title":    title,
 		"status":   status,
-		"detail":   title,
+		"detail":   detail,
 		"instance": instance,
 	})
 	if err != nil {
