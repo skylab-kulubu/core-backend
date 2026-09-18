@@ -112,8 +112,17 @@ func (s *service) Apply(ctx context.Context, p authz.Principal, eventID uuid.UUI
 	return s.withEvent(ctx, created), nil
 }
 
+func normalizeGuest(g GuestInfo) GuestInfo {
+	g.FirstName = strings.TrimSpace(g.FirstName)
+	g.LastName = strings.TrimSpace(g.LastName)
+	g.Email = strings.ToLower(strings.TrimSpace(g.Email))
+	g.PhoneNumber = strings.TrimSpace(g.PhoneNumber)
+	return g
+}
+
 func (s *service) ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo) (Ticket, error) {
-	if g.FirstName == "" || g.LastName == "" || g.Email == "" || g.PhoneNumber == "" {
+	g = normalizeGuest(g)
+	if g.FirstName == "" || g.LastName == "" || g.Email == "" {
 		return Ticket{}, ErrInvalid
 	}
 	if _, err := s.events.Get(ctx, eventID); err != nil {
@@ -122,12 +131,22 @@ func (s *service) ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 		}
 		return Ticket{}, err
 	}
-	exists, err := s.tickets.ExistsGuestEvent(ctx, g.Email, eventID)
-	if err != nil {
-		return Ticket{}, err
+	existing, err := s.tickets.GetByGuestEvent(ctx, g.Email, eventID)
+	if err == nil {
+		existing.GuestFirstName = g.FirstName
+		existing.GuestLastName = g.LastName
+		existing.GuestEmail = g.Email
+		if g.PhoneNumber != "" {
+			existing.GuestPhoneNumber = g.PhoneNumber
+		}
+		updated, err := s.tickets.Update(ctx, existing)
+		if err != nil {
+			return Ticket{}, err
+		}
+		return s.withEvent(ctx, updated), nil
 	}
-	if exists {
-		return Ticket{}, ErrConflict
+	if !errors.Is(err, ErrNotFound) {
+		return Ticket{}, err
 	}
 	created, err := s.tickets.Create(ctx, Ticket{
 		EventID:          eventID,
