@@ -146,6 +146,9 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 			in.FormAlias = existing.FormAlias
 		}
 	}
+	if in.MailListID == nil {
+		in.MailListID = existing.MailListID
+	}
 	return s.published(s.store.Update(ctx, in))
 }
 

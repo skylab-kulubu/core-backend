@@ -28,6 +28,7 @@ type Store interface {
 	DeleteDay(ctx context.Context, id uuid.UUID) error
 	ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error)
 	SetSeason(ctx context.Context, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
+	SetMailListID(ctx context.Context, eventID, listID uuid.UUID) (Event, error)
 	GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 	ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Session, error)
 	CreateSession(ctx context.Context, s Session) (Session, error)
