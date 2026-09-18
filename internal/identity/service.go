@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -20,6 +21,7 @@ type Service interface {
 	AddMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
 	RemoveMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
 	ListUsers(ctx context.Context, p authz.Principal, q string, seat ...ClientRole) ([]Person, error)
+	ListClientRoles(ctx context.Context, p authz.Principal) ([]ClientRole, error)
 	GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error)
 	CreateUser(ctx context.Context, p authz.Principal, in Person) (Person, error)
 	DeleteUser(ctx context.Context, p authz.Principal, id uuid.UUID) error
@@ -131,6 +133,23 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 	return s.dir.RemoveMember(ctx, groupRef, userID)
 }
 
+func (s *service) ListClientRoles(ctx context.Context, p authz.Principal) ([]ClientRole, error) {
+	if err := s.allow(p, authz.TypeUser, authz.Read); err != nil {
+		return nil, err
+	}
+	roles, err := s.dir.ListClientRoles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	slices.SortFunc(roles, func(a, b ClientRole) int {
+		if a.ClientID != b.ClientID {
+			return strings.Compare(a.ClientID, b.ClientID)
+		}
+		return strings.Compare(a.Role, b.Role)
+	})
+	return roles, nil
+}
+
 func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, seat ...ClientRole) ([]Person, error) {
 	if err := s.allow(p, authz.TypeUser, authz.Read); err != nil {
 		return nil, err
@@ -192,7 +211,6 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 	}
 	return out, nil
 }
-
 
 func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error) {
 	if err := s.allowUserRead(p); err != nil {
@@ -546,7 +564,6 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 		Members:     members,
 	}
 }
-
 
 func (s *service) overlayShadow(ctx context.Context, people []Person) ([]Person, error) {
 	for i, person := range people {

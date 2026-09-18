@@ -15,6 +15,7 @@ type Memory struct {
 	members    map[string]map[uuid.UUID]struct{}
 	groupRoles map[string][]ClientRole
 	userRoles  map[uuid.UUID][]ClientRole
+	catalog    []ClientRole
 	Ops        []string
 }
 
@@ -26,6 +27,12 @@ func NewMemory() *Memory {
 		groupRoles: make(map[string][]ClientRole),
 		userRoles:  make(map[uuid.UUID][]ClientRole),
 	}
+}
+
+func (m *Memory) PutClientRole(role ClientRole) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.catalog = append(m.catalog, role)
 }
 
 func (m *Memory) PutGroup(g Group) {
@@ -187,6 +194,36 @@ func (m *Memory) RemoveMember(_ context.Context, groupID string, userID uuid.UUI
 	}
 	delete(m.members[g.ID], userID)
 	return nil
+}
+
+func (m *Memory) ListClientRoles(_ context.Context) ([]ClientRole, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("ListClientRoles")
+	seen := map[string]struct{}{}
+	out := make([]ClientRole, 0, len(m.catalog))
+	add := func(role ClientRole) {
+		key := role.ClientID + "\x00" + role.Role
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, role)
+	}
+	for _, role := range m.catalog {
+		add(role)
+	}
+	for _, roles := range m.groupRoles {
+		for _, role := range roles {
+			add(role)
+		}
+	}
+	for _, roles := range m.userRoles {
+		for _, role := range roles {
+			add(role)
+		}
+	}
+	return out, nil
 }
 
 func (m *Memory) ListUsers(_ context.Context) ([]Person, error) {

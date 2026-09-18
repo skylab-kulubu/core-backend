@@ -162,6 +162,18 @@ func (h *IdentityHandler) RemoveMember(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+func (h *IdentityHandler) ListClientRoles(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	roles, err := h.svc.ListClientRoles(c.Context(), p)
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(roles)
+}
+
 func (h *IdentityHandler) ListUsers(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {

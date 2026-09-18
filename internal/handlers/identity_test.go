@@ -42,6 +42,7 @@ func identityApp(t *testing.T, ident authn.Identity, dir *identity.Memory, store
 	app.Post("/v1/users/:id/logout", h.LogoutAllSessions)
 	app.Post("/v1/users/:id/client-roles", h.AddUserExtraRole)
 	app.Delete("/v1/users/:id/client-roles", h.RemoveUserExtraRole)
+	app.Get("/v1/client-roles", h.ListClientRoles)
 	return app
 }
 
@@ -319,5 +320,27 @@ func TestListUsersSeatPinsFormsIgnoringClientIdQuery(t *testing.T) {
 	}
 	if len(found) != 1 || found[0].ID != seated {
 		t.Fatalf("found %+v", found)
+	}
+}
+
+func TestListClientRolesHTTP(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	dir.PutClientRole(identity.ClientRole{ClientID: "skyforms", Role: "skyforms:access"})
+	app := identityApp(t, ykIdent(), dir, user.NewMemoryStore())
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/client-roles", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var roles []identity.ClientRole
+	if err := json.NewDecoder(resp.Body).Decode(&roles); err != nil {
+		t.Fatal(err)
+	}
+	if len(roles) != 1 || roles[0].Role != "skyforms:access" {
+		t.Fatalf("roles %+v", roles)
 	}
 }
