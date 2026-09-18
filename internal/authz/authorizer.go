@@ -142,7 +142,16 @@ func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
 		if a.isPrivileged(p) {
 			return true
 		}
-		return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
+		if slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader) {
+			return true
+		}
+		needed := a.requiredLevels(r.OwnerTeam, Update)
+		for _, level := range a.ownerLevels(p, r.OwnerTeam) {
+			if slices.Contains(needed, level) {
+				return true
+			}
+		}
+		return false
 	case Validate:
 		return a.allowDoorCheckIn(p, r)
 	default:

@@ -104,6 +104,19 @@ func TestGuestApplyHTTP(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status %d body %s", resp.StatusCode, body)
 	}
+
+	req = httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/applications/guest", strings.NewReader(
+		`{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("upsert status %d body %s", resp.StatusCode, body)
+	}
 }
 
 func TestCheckInHTTPForbiddenAndOK(t *testing.T) {
