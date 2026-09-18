@@ -106,22 +106,11 @@ func main() {
 
 	var mailer mail.Mailer
 	var sky *mail.SkyMail
-	if os.Getenv("SKYMAIL_URL") != "" {
-		kc := strings.TrimRight(os.Getenv("KEYCLOAK_URL"), "/")
-		realm := os.Getenv("KEYCLOAK_REALM")
-		if parts := strings.SplitN(kc, "/realms/", 2); len(parts) == 2 {
-			kc = parts[0]
-			if realm == "" {
-				realm = parts[1]
-			}
-		}
-		if kc == "" || realm == "" || os.Getenv("KEYCLOAK_CLIENT_ID") == "" || os.Getenv("KEYCLOAK_CLIENT_SECRET") == "" {
-			log.Fatal("KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET are required with SKYMAIL_URL")
-		}
+	if base != "" && realm != "" && os.Getenv("KEYCLOAK_CLIENT_ID") != "" && os.Getenv("KEYCLOAK_CLIENT_SECRET") != "" {
 		sky = &mail.SkyMail{
-			BaseURL: os.Getenv("SKYMAIL_URL"),
+			BaseURL: mail.APIOrigin(os.Getenv("SKYMAIL_URL")),
 			Tokens: mail.ClientCredentials{
-				TokenURL:     kc + "/realms/" + realm + "/protocol/openid-connect/token",
+				TokenURL:     base + "/realms/" + realm + "/protocol/openid-connect/token",
 				ClientID:     os.Getenv("KEYCLOAK_CLIENT_ID"),
 				ClientSecret: os.Getenv("KEYCLOAK_CLIENT_SECRET"),
 			},
