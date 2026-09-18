@@ -137,12 +137,34 @@ func TestGroupMembersHTTPIncludesSubgroups(t *testing.T) {
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("roster status %d", resp.StatusCode)
 	}
-	var members []identity.Person
+	var members []identity.GroupMember
 	if err := json.NewDecoder(resp.Body).Decode(&members); err != nil {
 		t.Fatal(err)
 	}
 	if len(members) != 1 || members[0].ID != id {
 		t.Fatalf("members %+v", members)
+	}
+	if members[0].SourceGroupPath != "/UYELER/YK/BASKAN" || members[0].SourceGroupID != "g-baskan" {
+		t.Fatalf("source %+v", members[0])
+	}
+
+	del := httptest.NewRequest(fiber.MethodDelete, "/v1/groups/g-yk/members/"+id.String(), nil)
+	resp, err = app.Test(del)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("remove status %d", resp.StatusCode)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/groups/g-yk/members", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&members); err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 0 {
+		t.Fatalf("nested member still on parent after remove %+v", members)
 	}
 }
 

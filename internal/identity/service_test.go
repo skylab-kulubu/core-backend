@@ -148,17 +148,68 @@ func TestService_MembersIncludesSubgroupTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[uuid.UUID]struct{}{}
+	got := map[uuid.UUID]identity.GroupMember{}
 	for _, person := range members {
-		got[person.ID] = struct{}{}
+		got[person.ID] = person
 	}
 	if len(members) != 3 {
 		t.Fatalf("parent YK should list the tree, got %+v", members)
 	}
-	for _, id := range []uuid.UUID{nested, deep, both} {
-		if _, ok := got[id]; !ok {
-			t.Fatalf("missing %s in %+v", id, members)
-		}
+	if got[nested].SourceGroupPath != "/UYELER/YK/BASKAN" || got[nested].SourceGroupID != "g-baskan" {
+		t.Fatalf("nested source %+v", got[nested])
+	}
+	if got[deep].SourceGroupPath != "/UYELER/YK/BASKAN/YARDIMCI" {
+		t.Fatalf("deep source %+v", got[deep])
+	}
+	if got[both].SourceGroupPath != "" || got[both].SourceGroupID != "" {
+		t.Fatalf("direct parent member must not carry a subgroup source %+v", got[both])
+	}
+}
+
+func TestService_RemoveMemberDropsSourceSubgroup(t *testing.T) {
+	t.Parallel()
+	dir, _, svc := setup(t)
+	ctx := context.Background()
+	dir.PutGroup(identity.Group{ID: "g-yk", Name: "YK", Path: "/UYELER/YK"})
+	dir.PutGroup(identity.Group{ID: "g-baskan", Name: "BASKAN", Path: "/UYELER/YK/BASKAN"})
+	nested := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa31")
+	direct := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa32")
+	dir.PutUser(identity.Person{ID: nested, Email: "nested@example.com"})
+	dir.PutUser(identity.Person{ID: direct, Email: "direct@example.com"})
+	if err := dir.AddMember(ctx, "g-baskan", nested); err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.AddMember(ctx, "g-yk", direct); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.RemoveMember(ctx, privileged(), "g-yk", nested); err != nil {
+		t.Fatal(err)
+	}
+	members, err := svc.Members(ctx, privileged(), "g-yk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 1 || members[0].ID != direct {
+		t.Fatalf("nested member should leave the parent roster, got %+v", members)
+	}
+	still, err := dir.Members(ctx, "g-baskan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(still) != 0 {
+		t.Fatalf("source subgroup should be empty, got %+v", still)
+	}
+
+	if err := svc.RemoveMember(ctx, privileged(), "g-yk", direct); err != nil {
+		t.Fatal(err)
+	}
+	members, err = svc.Members(ctx, privileged(), "g-yk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 0 {
+		t.Fatalf("direct member should leave the parent, got %+v", members)
 	}
 }
 

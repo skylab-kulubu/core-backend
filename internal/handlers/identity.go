@@ -124,7 +124,7 @@ func (h *IdentityHandler) Members(c fiber.Ctx) error {
 		return identityError(c, err)
 	}
 	if members == nil {
-		members = []identity.Person{}
+		members = []identity.GroupMember{}
 	}
 	return c.JSON(members)
 }
