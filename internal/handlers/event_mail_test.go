@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -71,7 +72,7 @@ func (m *handlerLists) RemoveRecipient(_ context.Context, listID, recipientID uu
 func mailApp(t *testing.T, ident authn.Identity, events event.Store, tickets ticket.Store, users user.Store, lists mail.Lists) *fiber.App {
 	t.Helper()
 	h := NewEventMailHandler(eventmail.New(events, tickets, users, lists, authz.NewAuthorizer(authz.DefaultPolicy())))
-	app := fiber.New()
+	app := fiber.New(fiber.Config{ErrorHandler: ErrorHandler})
 	app.Use(func(c fiber.Ctx) error {
 		if ident.ID != uuid.Nil || len(ident.Groups) > 0 {
 			c.Locals(authn.LocalsIdentity, ident)
@@ -150,5 +151,78 @@ func TestEventMailListForbiddenForMember(t *testing.T) {
 	if resp.StatusCode != fiber.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+}
+
+func TestEventMailListSkymailForbiddenIs403(t *testing.T) {
+	t.Parallel()
+	sky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/mailing_lists" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(sky.Close)
+
+	events := event.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "SkyDays", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lists := &mail.SkyMail{BaseURL: sky.URL, Tokens: mail.StaticToken("tok"), HTTP: sky.Client()}
+	app := mailApp(t, weblabLeader(), events, ticket.NewMemoryStore(), user.NewMemoryStore(), lists)
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/mail-list", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("content-type %q", ct)
+	}
+	var problem map[string]any
+	if err := json.Unmarshal(body, &problem); err != nil {
+		t.Fatal(err)
+	}
+	if problem["status"] != float64(fiber.StatusForbidden) {
+		t.Fatalf("problem %+v", problem)
+	}
+	detail, _ := problem["detail"].(string)
+	if !strings.Contains(detail, "skymail:lists:write") {
+		t.Fatalf("detail %q", detail)
+	}
+}
+
+func TestEventMailListSkymailOtherStatusIs502(t *testing.T) {
+	t.Parallel()
+	sky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(sky.Close)
+
+	events := event.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "SkyDays", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lists := &mail.SkyMail{BaseURL: sky.URL, Tokens: mail.StaticToken("tok"), HTTP: sky.Client()}
+	app := mailApp(t, weblabLeader(), events, ticket.NewMemoryStore(), user.NewMemoryStore(), lists)
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/mail-list", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != fiber.StatusBadGateway {
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var problem map[string]any
+	if err := json.Unmarshal(body, &problem); err != nil {
+		t.Fatal(err)
+	}
+	detail, _ := problem["detail"].(string)
+	if !strings.Contains(detail, "status 503") {
+		t.Fatalf("detail %q", detail)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/mail"
 )
 
 type EventMailHandler struct {
@@ -42,7 +43,13 @@ func eventMailError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusNotFound, "Not Found")
 	case errors.Is(err, eventmail.ErrUnavailable):
 		return problem(c, fiber.StatusServiceUnavailable, "Skymail is not configured")
+	case errors.Is(err, mail.ErrForbidden):
+		return problemDetail(c, fiber.StatusForbidden, "Forbidden", mail.ErrForbidden.Error()+" / Skymail listesi yasak — core servis hesabına skymail:lists:write ver")
 	default:
+		var status *mail.StatusError
+		if errors.As(err, &status) {
+			return problemDetail(c, fiber.StatusBadGateway, "Bad Gateway", status.Error())
+		}
 		return err
 	}
 }
