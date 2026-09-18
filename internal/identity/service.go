@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -552,7 +553,7 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 			m.University = shadow.University
 			m.Faculty = shadow.Faculty
 			m.Department = shadow.Department
-			m.ProfilePictureURL = shadow.ProfilePictureURL
+			m.ProfilePictureURL = media.PublicURL("", shadow.ProfilePictureURL)
 		}
 		members = append(members, m)
 	}

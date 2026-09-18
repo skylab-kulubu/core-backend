@@ -33,24 +33,52 @@ type Service interface {
 }
 
 type service struct {
-	store Store
-	authz authz.Authorizer
+	store      Store
+	authz      authz.Authorizer
+	publicBase string
 }
 
-func NewService(store Store, az authz.Authorizer) Service {
-	return &service{store: store, authz: az}
+func NewService(store Store, az authz.Authorizer, publicBase ...string) Service {
+	base := ""
+	if len(publicBase) > 0 {
+		base = publicBase[0]
+	}
+	return &service{store: store, authz: az, publicBase: base}
+}
+
+func (s *service) publish(e Event) Event {
+	return withPublicMedia(e, s.publicBase)
+}
+
+func (s *service) publishAll(events []Event) []Event {
+	return withPublicMediaAll(events, s.publicBase)
 }
 
 func resource(ownerTeam string) authz.Resource {
 	return authz.Resource{Type: authz.TypeEvent, OwnerTeam: ownerTeam}
 }
 
+func (s *service) published(e Event, err error) (Event, error) {
+	if err != nil {
+		return Event{}, err
+	}
+	return s.publish(e), nil
+}
+
 func (s *service) List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
-	return s.store.List(ctx, ownerTeam, activeOnly)
+	events, err := s.store.List(ctx, ownerTeam, activeOnly)
+	if err != nil {
+		return nil, err
+	}
+	return s.publishAll(events), nil
 }
 
 func (s *service) Get(ctx context.Context, id uuid.UUID) (Event, error) {
-	return s.store.Get(ctx, id)
+	e, err := s.store.Get(ctx, id)
+	if err != nil {
+		return Event{}, err
+	}
+	return s.publish(e), nil
 }
 
 func normalizeAttendance(in Event) (Event, error) {
@@ -87,7 +115,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Assign) {
 		in.DoorStaffIDs = nil
 	}
-	return s.store.Create(ctx, in)
+	return s.published(s.store.Create(ctx, in))
 }
 
 func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Event) (Event, error) {
@@ -118,7 +146,7 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 			in.FormAlias = existing.FormAlias
 		}
 	}
-	return s.store.Update(ctx, in)
+	return s.published(s.store.Update(ctx, in))
 }
 
 func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error {
@@ -140,7 +168,7 @@ func (s *service) AddImages(ctx context.Context, p authz.Principal, id uuid.UUID
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
 		return Event{}, ErrForbidden
 	}
-	return s.store.AddImages(ctx, id, ids)
+	return s.published(s.store.AddImages(ctx, id, ids))
 }
 
 func (s *service) RemoveImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error) {
@@ -151,7 +179,7 @@ func (s *service) RemoveImages(ctx context.Context, p authz.Principal, id uuid.U
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
 		return Event{}, ErrForbidden
 	}
-	return s.store.RemoveImages(ctx, id, ids)
+	return s.published(s.store.RemoveImages(ctx, id, ids))
 }
 
 func (s *service) ownerResource(owner string, t authz.Type) authz.Resource {
@@ -303,7 +331,11 @@ func (s *service) DeleteSession(ctx context.Context, p authz.Principal, id uuid.
 }
 
 func (s *service) ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error) {
-	return s.store.ListBySeason(ctx, seasonID)
+	events, err := s.store.ListBySeason(ctx, seasonID)
+	if err != nil {
+		return nil, err
+	}
+	return s.publishAll(events), nil
 }
 
 func (s *service) AssignSeason(ctx context.Context, p authz.Principal, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error) {
@@ -314,5 +346,5 @@ func (s *service) AssignSeason(ctx context.Context, p authz.Principal, eventID u
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
 		return Event{}, ErrForbidden
 	}
-	return s.store.SetSeason(ctx, eventID, seasonID)
+	return s.published(s.store.SetSeason(ctx, eventID, seasonID))
 }

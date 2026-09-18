@@ -161,7 +161,7 @@ func main() {
 	app := httpx.New(httpx.Deps{
 		Users:        user.NewService(users, dir),
 		Identity:     identity.NewService(dir, users, az, mailer),
-		Events:       event.NewService(events, az),
+		Events:       event.NewService(events, az, cdnBase),
 		Seasons:      season.NewService(seasons, az),
 		Tickets:      ticketSvc,
 		Competitors:  competitor.NewService(competitors, events, az),

@@ -3,7 +3,6 @@ package media
 import (
 	"bytes"
 	"context"
-	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -62,13 +61,4 @@ func (r *R2) Delete(ctx context.Context, key string) error {
 		Key:    aws.String(key),
 	})
 	return err
-}
-
-func publicURL(base, key string) string {
-	key = strings.TrimLeft(key, "/")
-	base = strings.TrimRight(base, "/")
-	if base == "" {
-		return key
-	}
-	return base + "/" + key
 }

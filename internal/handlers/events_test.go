@@ -661,3 +661,52 @@ func TestEventExtraFormURLsRoundTrip(t *testing.T) {
 		t.Fatalf("kept %+v", kept)
 	}
 }
+
+func TestEventGetJSONPrefixesCDN(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	cover := "images/b0db8eb9-5914-4db7-a39a-cabd6bf47faa"
+	gallery := "/images/7f863471-c2b6-45f4-912d-80f97daf25f4"
+	created, err := store.Create(t.Context(), event.Event{
+		Name:          "Hack",
+		Location:      "YTÜ",
+		OwnerTeam:     "WEBLAB",
+		Active:        true,
+		CoverImageURL: cover,
+		Images:        []event.GalleryImage{{ID: uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), URL: gallery}},
+		ImageURLs:     []string{gallery},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	public := eventApp(t, authn.Identity{}, store)
+	resp, err := public.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/"+created.ID.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var got event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CoverImageURL != "https://cdn.yildizskylab.com/images/b0db8eb9-5914-4db7-a39a-cabd6bf47faa" {
+		t.Fatalf("cover %s", got.CoverImageURL)
+	}
+	if len(got.Images) != 1 || got.Images[0].URL != "https://cdn.yildizskylab.com/images/7f863471-c2b6-45f4-912d-80f97daf25f4" {
+		t.Fatalf("images %+v", got.Images)
+	}
+	if len(got.ImageURLs) != 1 || got.ImageURLs[0] != got.Images[0].URL {
+		t.Fatalf("imageUrls %+v", got.ImageURLs)
+	}
+
+	stored, err := store.Get(t.Context(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CoverImageURL != cover || stored.Images[0].URL != gallery {
+		t.Fatalf("store mutated %+v", stored)
+	}
+}

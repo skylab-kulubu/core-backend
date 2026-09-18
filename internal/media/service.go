@@ -124,6 +124,10 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 }
 
 func (s *service) withURL(m Media) Media {
-	m.URL = publicURL(s.publicBase, m.Key)
+	if strings.TrimSpace(s.publicBase) == "" {
+		m.URL = m.Key
+		return m
+	}
+	m.URL = PublicURL(s.publicBase, m.Key)
 	return m
 }
