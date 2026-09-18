@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 type Event struct {
@@ -59,7 +60,7 @@ func (e Event) Resource() Resource {
 		EndDate:       e.EndDate,
 		Location:      e.Location,
 		OwnerTeam:     e.OwnerTeam,
-		CoverImageURL: e.CoverImageURL,
+		CoverImageURL: media.PublicURL("", e.CoverImageURL),
 		Active:        e.Active,
 		Ranked:        e.Ranked,
 	}

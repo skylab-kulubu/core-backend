@@ -57,7 +57,7 @@ func (h *MeHandler) GetMe(c fiber.Ctx) error {
 	if !ok {
 		return fiber.ErrUnauthorized
 	}
-	return c.JSON(u)
+	return c.JSON(publicUser(u))
 }
 
 func (h *MeHandler) identityID(c fiber.Ctx) (user.User, error) {
@@ -88,7 +88,7 @@ func (h *MeHandler) PutMe(c fiber.Ctx) error {
 	if err != nil {
 		return meError(c, err)
 	}
-	return c.JSON(updated)
+	return c.JSON(publicUser(updated))
 }
 
 func (h *MeHandler) PatchMe(c fiber.Ctx) error {
@@ -111,7 +111,7 @@ func (h *MeHandler) PatchMe(c fiber.Ctx) error {
 	if err != nil {
 		return meError(c, err)
 	}
-	return c.JSON(updated)
+	return c.JSON(publicUser(updated))
 }
 
 func (h *MeHandler) ProfilePicture(c fiber.Ctx) error {
@@ -147,5 +147,10 @@ func (h *MeHandler) ProfilePicture(c fiber.Ctx) error {
 	if err != nil {
 		return meError(c, err)
 	}
-	return c.JSON(updated)
+	return c.JSON(publicUser(updated))
+}
+
+func publicUser(u user.User) user.User {
+	u.ProfilePictureURL = media.PublicURL("", u.ProfilePictureURL)
+	return u
 }
