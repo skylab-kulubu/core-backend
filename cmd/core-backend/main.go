@@ -19,6 +19,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
@@ -36,6 +37,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer pool.Close()
+	if err := migrate.Apply(context.Background(), pool); err != nil {
+		log.Fatal(err)
+	}
 
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
 	users := user.NewPostgresStore(pool)
