@@ -118,6 +118,50 @@ func TestService_RemoveMember(t *testing.T) {
 	}
 }
 
+func TestService_MembersIncludesSubgroupTree(t *testing.T) {
+	t.Parallel()
+	dir, _, svc := setup(t)
+	ctx := context.Background()
+	dir.PutGroup(identity.Group{ID: "g-yk", Name: "YK", Path: "/UYELER/YK"})
+	dir.PutGroup(identity.Group{ID: "g-baskan", Name: "BASKAN", Path: "/UYELER/YK/BASKAN"})
+	dir.PutGroup(identity.Group{ID: "g-yardimci", Name: "YARDIMCI", Path: "/UYELER/YK/BASKAN/YARDIMCI"})
+	nested := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa11")
+	deep := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa12")
+	both := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa13")
+	dir.PutUser(identity.Person{ID: nested, Email: "nested@example.com", FirstName: "Yk", LastName: "Member"})
+	dir.PutUser(identity.Person{ID: deep, Email: "deep@example.com", FirstName: "Deep", LastName: "Nested"})
+	dir.PutUser(identity.Person{ID: both, Email: "both@example.com", FirstName: "Both", LastName: "Places"})
+	if err := dir.AddMember(ctx, "g-baskan", nested); err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.AddMember(ctx, "g-yardimci", deep); err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.AddMember(ctx, "g-yk", both); err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.AddMember(ctx, "g-baskan", both); err != nil {
+		t.Fatal(err)
+	}
+
+	members, err := svc.Members(ctx, privileged(), "g-yk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[uuid.UUID]struct{}{}
+	for _, person := range members {
+		got[person.ID] = struct{}{}
+	}
+	if len(members) != 3 {
+		t.Fatalf("parent YK should list the tree, got %+v", members)
+	}
+	for _, id := range []uuid.UUID{nested, deep, both} {
+		if _, ok := got[id]; !ok {
+			t.Fatalf("missing %s in %+v", id, members)
+		}
+	}
+}
+
 func TestService_CreateUserDualWrites(t *testing.T) {
 	t.Parallel()
 	dir, store, svc := setup(t)
