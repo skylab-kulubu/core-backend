@@ -293,3 +293,64 @@ func TestService_LeaderCannotAssignDoorStaff(t *testing.T) {
 		t.Fatalf("leader created staff %+v", fromLeader.DoorStaffIDs)
 	}
 }
+
+func TestService_PublicMediaURLsDoNotRewriteStore(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test")
+	ctx := context.Background()
+	cover := "images/b0db8eb9-5914-4db7-a39a-cabd6bf47faa"
+	gallery := "images/7f863471-c2b6-45f4-912d-80f97daf25f4"
+	href := "https://cdn.yildizskylab.com/images/abc"
+	imgID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	absID := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+	slashID := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
+	created, err := store.Create(ctx, event.Event{
+		Name:          "Hack",
+		Location:      "YTÜ",
+		OwnerTeam:     "WEBLAB",
+		CoverImageURL: cover,
+		Images: []event.GalleryImage{
+			{ID: imgID, URL: gallery},
+			{ID: absID, URL: href},
+			{ID: slashID, URL: "/images/slash"},
+		},
+		ImageURLs: []string{gallery, href, "/images/slash"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CoverImageURL != "https://cdn.example.test/images/b0db8eb9-5914-4db7-a39a-cabd6bf47faa" {
+		t.Fatalf("cover %s", got.CoverImageURL)
+	}
+	if len(got.Images) != 3 || got.Images[0].URL != "https://cdn.example.test/images/7f863471-c2b6-45f4-912d-80f97daf25f4" {
+		t.Fatalf("gallery %+v", got.Images)
+	}
+	if got.Images[1].URL != href {
+		t.Fatalf("absolute %s", got.Images[1].URL)
+	}
+	if got.Images[2].URL != "https://cdn.example.test/images/slash" {
+		t.Fatalf("slash %s", got.Images[2].URL)
+	}
+	if len(got.ImageURLs) != 3 || got.ImageURLs[0] != got.Images[0].URL || got.ImageURLs[1] != href || got.ImageURLs[2] != got.Images[2].URL {
+		t.Fatalf("imageUrls %+v", got.ImageURLs)
+	}
+
+	stored, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CoverImageURL != cover || stored.Images[0].URL != gallery || stored.ImageURLs[0] != gallery {
+		t.Fatalf("store mutated %+v", stored)
+	}
+
+	res := stored.Resource()
+	if res.CoverImageURL != "https://cdn.yildizskylab.com/images/b0db8eb9-5914-4db7-a39a-cabd6bf47faa" {
+		t.Fatalf("resource %s", res.CoverImageURL)
+	}
+}

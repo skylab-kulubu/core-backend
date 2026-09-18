@@ -5,6 +5,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -36,6 +37,7 @@ func (j *JIT) Handle(c fiber.Ctx) error {
 	if created && j.mail != nil {
 		j.mail.Welcome(c.Context(), u)
 	}
+	u.ProfilePictureURL = media.PublicURL("", u.ProfilePictureURL)
 	c.Locals(authn.LocalsUser, u)
 	return c.Next()
 }
