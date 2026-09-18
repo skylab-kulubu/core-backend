@@ -94,15 +94,46 @@ func (s *MemoryStore) ExistsOwnerEvent(_ context.Context, ownerID, eventID uuid.
 	return false, nil
 }
 
+func guestEmailMatch(stored, want string) bool {
+	return strings.ToLower(strings.TrimSpace(stored)) == strings.ToLower(strings.TrimSpace(want))
+}
+
 func (s *MemoryStore) ExistsGuestEvent(_ context.Context, email string, eventID uuid.UUID) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.byID {
-		if t.TicketType == Guest && t.GuestEmail == email && t.EventID == eventID {
+		if t.TicketType == Guest && guestEmailMatch(t.GuestEmail, email) && t.EventID == eventID {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func (s *MemoryStore) GetByGuestEvent(_ context.Context, email string, eventID uuid.UUID) (Ticket, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.byID {
+		if t.TicketType == Guest && guestEmailMatch(t.GuestEmail, email) && t.EventID == eventID {
+			return s.withCheckInsLocked(t), nil
+		}
+	}
+	return Ticket{}, ErrNotFound
+}
+
+func (s *MemoryStore) Update(_ context.Context, t Ticket) (Ticket, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.byID[t.ID]
+	if !ok {
+		return Ticket{}, ErrNotFound
+	}
+	t.CreatedAt = existing.CreatedAt
+	t.UpdatedAt = time.Now().UTC()
+	if t.CheckIns == nil {
+		t.CheckIns = existing.CheckIns
+	}
+	s.byID[t.ID] = t
+	return s.withCheckInsLocked(t), nil
 }
 
 func (s *MemoryStore) GetByOwnerEvent(_ context.Context, ownerID, eventID uuid.UUID) (Ticket, error) {

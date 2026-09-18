@@ -85,7 +85,7 @@ func TestService_ApplyGuest(t *testing.T) {
 	ev := seedEvent(t, events, "WEBLAB")
 
 	created, err := svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{
-		FirstName: "Ada", LastName: "Lovelace", Email: "ada@example.com", PhoneNumber: "555",
+		FirstName: "Ada", LastName: "Lovelace", Email: "Ada@Example.com",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,11 +94,30 @@ func TestService_ApplyGuest(t *testing.T) {
 		t.Fatalf("created %+v", created)
 	}
 
-	_, err = svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{
-		FirstName: "Ada", LastName: "Lovelace", Email: "ada@example.com", PhoneNumber: "555",
+	updated, err := svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{
+		FirstName: "Augusta", LastName: "Byron", Email: "ADA@example.com", PhoneNumber: "555",
 	})
-	if !errors.Is(err, ticket.ErrConflict) {
-		t.Fatalf("dup guest: %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ID != created.ID {
+		t.Fatalf("upsert id %s want %s", updated.ID, created.ID)
+	}
+	if updated.GuestFirstName != "Augusta" || updated.GuestLastName != "Byron" || updated.GuestPhoneNumber != "555" {
+		t.Fatalf("updated %+v", updated)
+	}
+
+	listed, err := svc.ListByEvent(ctx, authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].GuestEmail != "ada@example.com" {
+		t.Fatalf("roster %+v", listed)
+	}
+
+	_, err = svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{FirstName: "Ada", Email: "ada@example.com"})
+	if !errors.Is(err, ticket.ErrInvalid) {
+		t.Fatalf("missing last name: %v", err)
 	}
 }
 
