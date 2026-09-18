@@ -77,6 +77,9 @@ func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
 	e.UpdatedAt = time.Now().UTC()
 	e.Images = existing.Images
 	e.ImageURLs = existing.ImageURLs
+	if e.MailListID == nil {
+		e.MailListID = existing.MailListID
+	}
 	e = emptyGallery(e)
 	s.byID[e.ID] = e
 	return e, nil
@@ -235,6 +238,20 @@ func (s *MemoryStore) SetSeason(_ context.Context, eventID uuid.UUID, seasonID *
 		return Event{}, ErrNotFound
 	}
 	e.SeasonID = seasonID
+	e.UpdatedAt = time.Now().UTC()
+	s.byID[eventID] = e
+	return emptyGallery(e), nil
+}
+
+func (s *MemoryStore) SetMailListID(_ context.Context, eventID, listID uuid.UUID) (Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[eventID]
+	if !ok {
+		return Event{}, ErrNotFound
+	}
+	id := listID
+	e.MailListID = &id
 	e.UpdatedAt = time.Now().UTC()
 	s.byID[eventID] = e
 	return emptyGallery(e), nil

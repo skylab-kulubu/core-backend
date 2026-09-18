@@ -7,6 +7,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/eventmail"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
@@ -31,6 +32,7 @@ type Deps struct {
 	Certificates certificate.Service
 	SkyPass      skypass.Service
 	Mail         mail.Mailer
+	EventMail    eventmail.Service
 	ParseToken   func(string) (authn.Identity, error)
 }
 
@@ -126,6 +128,10 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/events/:eventId/days", schedule.ListDays)
 	app.Post("/v1/events/:eventId/applications/me", tickets.Apply)
 	app.Get("/v1/events/:eventId/tickets", tickets.ListByEvent)
+	if deps.EventMail != nil {
+		mailList := handlers.NewEventMailHandler(deps.EventMail)
+		app.Post("/v1/events/:eventId/mail-list", mailList.Sync)
+	}
 	if certs != nil {
 		app.Get("/v1/events/:eventId/certificates", certs.ListByEvent)
 		app.Post("/v1/events/:eventId/certificates/issue", certs.Issue)
