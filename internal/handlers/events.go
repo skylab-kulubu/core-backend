@@ -18,6 +18,7 @@ func NewEventHandler(svc event.Service) *EventHandler {
 }
 
 type eventBody struct {
+	ID              *uuid.UUID             `json:"id"`
 	Name            string                 `json:"name"`
 	Description     string                 `json:"description"`
 	Location        string                 `json:"location"`
@@ -76,6 +77,9 @@ func (b eventBody) asEvent() event.Event {
 	}
 	if b.ExtraFormURLs != nil {
 		e.ExtraFormURLs = *b.ExtraFormURLs
+	}
+	if b.ID != nil {
+		e.ID = *b.ID
 	}
 	if b.DoorStaffIDs != nil {
 		e.DoorStaffIDs = *b.DoorStaffIDs
