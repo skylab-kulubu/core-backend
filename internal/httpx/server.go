@@ -76,6 +76,7 @@ func New(deps Deps) *fiber.App {
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
 	}
+	app.Post("/v1/events/:eventId/applications/guest", tickets.ApplyGuest)
 	app.Use(middlewares.Bearer(deps.ParseToken))
 	app.Use(jit.Handle)
 
@@ -124,7 +125,6 @@ func New(deps Deps) *fiber.App {
 	app.Delete("/v1/events/:id/images", events.RemoveImages)
 	app.Get("/v1/events/:eventId/days", schedule.ListDays)
 	app.Post("/v1/events/:eventId/applications/me", tickets.Apply)
-	app.Post("/v1/events/:eventId/applications/guest", tickets.ApplyGuest)
 	app.Get("/v1/events/:eventId/tickets", tickets.ListByEvent)
 	if certs != nil {
 		app.Get("/v1/events/:eventId/certificates", certs.ListByEvent)
