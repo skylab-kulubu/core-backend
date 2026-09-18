@@ -398,3 +398,25 @@ func TestService_SetGroupClientRolesForbiddenForMember(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestService_ListClientRolesPrivilegedSeesCatalog(t *testing.T) {
+	t.Parallel()
+	dir, _, svc := setup(t)
+	dir.PutClientRole(identity.ClientRole{ClientID: "skycms", Role: "cms:access"})
+	dir.PutClientRole(identity.ClientRole{ClientID: "skyforms", Role: "skyforms:access"})
+	roles, err := svc.ListClientRoles(context.Background(), privileged())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roles) != 2 || roles[0].ClientID != "skycms" || roles[1].Role != "skyforms:access" {
+		t.Fatalf("roles %+v", roles)
+	}
+}
+
+func TestService_ListClientRolesForbiddenForMember(t *testing.T) {
+	t.Parallel()
+	_, _, svc := setup(t)
+	if _, err := svc.ListClientRoles(context.Background(), member()); !errors.Is(err, identity.ErrForbidden) {
+		t.Fatalf("got %v", err)
+	}
+}

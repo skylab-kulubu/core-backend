@@ -735,6 +735,46 @@ func (k *Keycloak) LogoutAllSessions(ctx context.Context, userID uuid.UUID) erro
 	return mapKCErr(k.gc.LogoutAllSessions(ctx, token, k.realm, userID.String()))
 }
 
+func skipKeycloakClient(id string) bool {
+	switch id {
+	case "account", "account-console", "admin-cli", "broker", "realm-management", "security-admin-console":
+		return true
+	default:
+		return false
+	}
+}
+
+func (k *Keycloak) ListClientRoles(ctx context.Context) ([]ClientRole, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	clients, err := k.gc.GetClients(ctx, token, k.realm, gocloak.GetClientsParams{Max: gocloak.IntP(200)})
+	if err != nil {
+		return nil, mapKCErr(err)
+	}
+	out := make([]ClientRole, 0)
+	for _, client := range clients {
+		if client == nil || client.ID == nil || client.ClientID == nil {
+			continue
+		}
+		if skipKeycloakClient(*client.ClientID) {
+			continue
+		}
+		roles, err := k.gc.GetClientRoles(ctx, token, k.realm, *client.ID, gocloak.GetRoleParams{Max: gocloak.IntP(500)})
+		if err != nil {
+			return nil, mapKCErr(err)
+		}
+		for _, role := range roles {
+			if role == nil || role.Name == nil || *role.Name == "" || *role.Name == "uma_protection" {
+				continue
+			}
+			out = append(out, ClientRole{ClientID: *client.ClientID, Role: *role.Name})
+		}
+	}
+	return out, nil
+}
+
 func (k *Keycloak) lookupRole(ctx context.Context, token, clientID, name string) (gocloak.Role, error) {
 	clientUUID, err := k.clientUUID(ctx, token, clientID)
 	if err != nil {
