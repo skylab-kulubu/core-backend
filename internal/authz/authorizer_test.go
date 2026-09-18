@@ -284,6 +284,13 @@ func TestAuthorizer_Allow(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "GECEKODU member can read event tickets",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}},
+			r:    Resource{Type: TypeTicket, OwnerTeam: "GECEKODU"},
+			a:    Read,
+			want: true,
+		},
+		{
 			name: "public can read seasons",
 			r:    Resource{Type: TypeSeason},
 			a:    Read,

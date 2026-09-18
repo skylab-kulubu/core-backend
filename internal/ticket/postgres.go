@@ -112,9 +112,54 @@ func (s *PostgresStore) ExistsOwnerEvent(ctx context.Context, ownerID, eventID u
 func (s *PostgresStore) ExistsGuestEvent(ctx context.Context, email string, eventID uuid.UUID) (bool, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `
-		SELECT COUNT(1) FROM tickets WHERE guest_email = $1 AND event_id = $2
+		SELECT COUNT(1) FROM tickets WHERE lower(guest_email) = lower($1) AND event_id = $2
 	`, email, eventID).Scan(&n)
 	return n > 0, err
+}
+
+func (s *PostgresStore) GetByGuestEvent(ctx context.Context, email string, eventID uuid.UUID) (Ticket, error) {
+	t, err := scanTicket(s.pool.QueryRow(ctx, `
+		SELECT `+ticketCols+` FROM tickets
+		WHERE ticket_type = 'GUEST' AND lower(guest_email) = lower($1) AND event_id = $2
+	`, email, eventID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Ticket{}, ErrNotFound
+	}
+	if err != nil {
+		return Ticket{}, err
+	}
+	checkIns, err := s.checkInsFor(ctx, t.ID)
+	if err != nil {
+		return Ticket{}, err
+	}
+	t.CheckIns = checkIns
+	return t, nil
+}
+
+func (s *PostgresStore) Update(ctx context.Context, t Ticket) (Ticket, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE tickets SET
+			guest_first_name = $1,
+			guest_last_name = $2,
+			guest_email = $3,
+			guest_phone_number = $4,
+			updated_at = now()
+		WHERE id = $5
+		RETURNING `+ticketCols,
+		t.GuestFirstName, t.GuestLastName, t.GuestEmail, t.GuestPhoneNumber, t.ID)
+	got, err := scanTicket(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Ticket{}, ErrNotFound
+	}
+	if err != nil {
+		return Ticket{}, err
+	}
+	checkIns, err := s.checkInsFor(ctx, got.ID)
+	if err != nil {
+		return Ticket{}, err
+	}
+	got.CheckIns = checkIns
+	return got, nil
 }
 
 func (s *PostgresStore) GetByOwnerEvent(ctx context.Context, ownerID, eventID uuid.UUID) (Ticket, error) {
