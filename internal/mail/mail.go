@@ -15,8 +15,17 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
+const DefaultAPIOrigin = "https://skymail-api.yildizskylab.com"
+
 type Mailer interface {
 	Welcome(ctx context.Context, u user.User)
+}
+
+func APIOrigin(raw string) string {
+	if u := strings.TrimSpace(raw); u != "" {
+		return strings.TrimRight(u, "/")
+	}
+	return DefaultAPIOrigin
 }
 
 type TokenSource interface {
