@@ -101,6 +101,41 @@ func TestEventCreateReadablePublic(t *testing.T) {
 	}
 }
 
+func TestEventCreateKeepsClientID(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	app := eventApp(t, weblabLeader(), store)
+	reserved := "11111111-1111-4111-8111-111111111111"
+
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+		`{"id":"`+reserved+`","name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB","active":true}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var created event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID.String() != reserved {
+		t.Fatalf("created id %s want %s", created.ID, reserved)
+	}
+
+	got, err := store.Get(t.Context(), uuid.MustParse(reserved))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Hack" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
 func TestEventListActiveOnly(t *testing.T) {
 	t.Parallel()
 	store := event.NewMemoryStore()
