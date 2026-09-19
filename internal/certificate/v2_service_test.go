@@ -162,3 +162,51 @@ func TestLayoutValidationRejectsUnknownOrMissingRequiredElements(t *testing.T) {
 		t.Fatal("verification QR must be required")
 	}
 }
+
+func TestPrivilegedUserCanEditSystemDefaultTemplate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := certificate.NewMemoryStore()
+	service := certificate.NewServiceWithOptions(
+		store,
+		ticket.NewMemoryStore(),
+		event.NewMemoryStore(),
+		user.NewMemoryStore(),
+		authz.NewAuthorizer(authz.DefaultPolicy()),
+		nil,
+		nil,
+		certificate.Options{Templates: store},
+	)
+
+	systemTemplate, err := store.CreateTemplate(ctx, certificate.Template{
+		ID:          uuid.New(),
+		Name:        "SKY LAB Varsayılan Sertifika",
+		SourceKind:  "sky",
+		SourceRef:   "system-default",
+		DraftLayout: versionedLayout("DEFAULT"),
+		System:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := certificate.TemplateDraft{
+		Name:       "SKY LAB Güncel Sertifika",
+		SourceKind: "sky",
+		SourceRef:  "system-default",
+		Layout:     versionedLayout("UPDATED DEFAULT"),
+	}
+	admin := authz.Principal{ID: uuid.NewString(), Groups: []string{"/ADMIN"}}
+
+	updated, err := service.UpdateTemplate(ctx, admin, systemTemplate.ID, draft)
+	if err != nil {
+		t.Fatalf("privileged system template update: %v", err)
+	}
+	if updated.Name != draft.Name || !updated.System {
+		t.Fatalf("updated template %+v", updated)
+	}
+
+	member := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	if _, err := service.UpdateTemplate(ctx, member, systemTemplate.ID, draft); !errors.Is(err, certificate.ErrForbidden) {
+		t.Fatalf("member system template update: %v", err)
+	}
+}

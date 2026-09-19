@@ -49,3 +49,15 @@ func TestLoadSkyPassKeyDerivesES256FromLegacyRSAEnvironment(t *testing.T) {
 		t.Fatalf("curve = %v", key.Curve)
 	}
 }
+
+func TestGotenbergURLDefaultsToComposeService(t *testing.T) {
+	t.Setenv("GOTENBERG_URL", "")
+	if got := gotenbergURL(); got != "http://gotenberg:3000" {
+		t.Fatalf("gotenberg URL = %q", got)
+	}
+
+	t.Setenv("GOTENBERG_URL", " http://pdf.internal:3010/ ")
+	if got := gotenbergURL(); got != "http://pdf.internal:3010/" {
+		t.Fatalf("explicit gotenberg URL = %q", got)
+	}
+}

@@ -2,6 +2,7 @@ package migrate_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -140,12 +142,20 @@ func TestApplyFreshThenIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	var templateName, scope, scopeKey string
+	var rawLayout []byte
 	var system bool
-	if err := pool.QueryRow(ctx, `SELECT name,system FROM certificate_templates WHERE source_ref='system-default'`).Scan(&templateName, &system); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT name,system,draft_layout FROM certificate_templates WHERE source_ref='system-default'`).Scan(&templateName, &system, &rawLayout); err != nil {
 		t.Fatal(err)
 	}
 	if templateName != "SKY LAB Varsayılan Sertifika" || !system {
 		t.Fatalf("certificate default = %q system=%v", templateName, system)
+	}
+	var layout certificate.Layout
+	if err := json.Unmarshal(rawLayout, &layout); err != nil {
+		t.Fatal(err)
+	}
+	if err := certificate.ValidateLayout(layout); err != nil {
+		t.Fatalf("certificate default layout: %v", err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT scope,scope_key FROM certificate_template_bindings WHERE scope='club'`).Scan(&scope, &scopeKey); err != nil {
 		t.Fatal(err)
