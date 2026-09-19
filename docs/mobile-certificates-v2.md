@@ -60,6 +60,7 @@ Mobile receives no template, layout, Canva/Figma source, recipient email, Ticket
 - A `401` follows the app's existing refresh/sign-out flow.
 - A `403` is not an empty state; show the normal API error.
 - Canonical share target: `https://skyl.app/c/{128-bit-opaque-serial}`.
+- That URL redirects to the human verification page on `https://yildizskylab.com/sertifika/{serial}`. Mobile must open the API-provided `verifyUrl` and follow the redirect normally; it must not construct the destination URL itself.
 
 ## Acceptance checks
 

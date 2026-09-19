@@ -1,7 +1,9 @@
 package handlers
 
 import (
-	"html"
+	"net/url"
+	"os"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -10,28 +12,12 @@ import (
 )
 
 func (h *CertificateHandler) PublicPage(c fiber.Ctx) error {
-	item, err := h.svc.Verify(c.Context(), c.Params("serial"))
-	if err != nil {
-		return certError(c, err)
+	origin := strings.TrimRight(os.Getenv("CERTIFICATE_PUBLIC_PAGE_ORIGIN"), "/")
+	if origin == "" {
+		origin = "https://yildizskylab.com/sertifika"
 	}
-	valid := item.Status == "valid"
-	statusTitle, statusText, statusClass := "Geçerli sertifika", "Bu sertifika SKY LAB kayıtlarında geçerlidir.", "valid"
-	if !valid {
-		statusTitle, statusText, statusClass = "İptal edilmiş sertifika", "Bu sertifika artık geçerli değildir.", "revoked"
-	}
-	team := item.OwnerTeam
-	if team == "YK" || team == "DK" || team == "" {
-		team = "SKY LAB"
-	}
-	page := `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sertifika doğrulama · SKY LAB</title><style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at top,#312e81 0,#111827 40%,#09090b 100%);font-family:Inter,ui-sans-serif,system-ui;color:#f8fafc}.card{width:min(680px,100%);padding:36px;border:1px solid rgba(255,255,255,.14);border-radius:28px;background:rgba(17,24,39,.82);box-shadow:0 30px 80px rgba(0,0,0,.4);backdrop-filter:blur(16px)}.brand{font-weight:800;letter-spacing:.18em;font-size:13px;color:#c4b5fd}.badge{display:inline-flex;margin-top:28px;padding:8px 12px;border-radius:999px;font-weight:700;font-size:14px}.valid{background:#064e3b;color:#a7f3d0}.revoked{background:#7f1d1d;color:#fecaca}h1{font-size:clamp(30px,6vw,52px);line-height:1.05;margin:24px 0 12px}h2{font-size:20px;color:#cbd5e1;font-weight:500;margin:0}.meta{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:32px;padding-top:24px;border-top:1px solid rgba(255,255,255,.12)}.label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8}.value{margin-top:6px;font-weight:650;overflow-wrap:anywhere}.actions{margin-top:28px}.button{display:inline-flex;padding:12px 18px;border-radius:12px;background:#fff;color:#111827;text-decoration:none;font-weight:750}@media(max-width:520px){.card{padding:24px}.meta{grid-template-columns:1fr}}
-</style></head><body><main class="card"><div class="brand">SKY LAB</div><div class="badge ` + statusClass + `">` + html.EscapeString(statusTitle) + `</div><h1>` + html.EscapeString(item.RecipientName) + `</h1><h2>` + html.EscapeString(item.EventName) + `</h2><p>` + html.EscapeString(statusText) + `</p><section class="meta"><div><div class="label">Düzenleyen</div><div class="value">` + html.EscapeString(team) + `</div></div><div><div class="label">Verilme tarihi</div><div class="value">` + item.IssuedAt.Format("02.01.2006") + `</div></div><div><div class="label">Sertifika kodu</div><div class="value">` + html.EscapeString(item.Serial) + `</div></div><div><div class="label">Durum</div><div class="value">` + html.EscapeString(statusTitle) + `</div></div></section>`
-	if valid {
-		page += `<div class="actions"><a class="button" href="` + html.EscapeString(item.PDFURL) + `">PDF sertifikayı indir</a></div>`
-	}
-	page += `</main></body></html>`
-	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
-	return c.SendString(page)
+	c.Set(fiber.HeaderLocation, origin+"/"+url.PathEscape(c.Params("serial")))
+	return c.SendStatus(fiber.StatusFound)
 }
 
 func (h *CertificateHandler) Summary(c fiber.Ctx) error {
