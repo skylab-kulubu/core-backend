@@ -50,6 +50,9 @@ func keepProfile(existing, u User) User {
 	if u.Department == "" {
 		u.Department = existing.Department
 	}
+	if u.Phone == "" {
+		u.Phone = existing.Phone
+	}
 	if u.StudentCardUID == "" {
 		u.StudentCardUID = existing.StudentCardUID
 	}
@@ -75,9 +78,24 @@ func (s *MemoryStore) Upsert(_ context.Context, u User) (User, bool, error) {
 		u.CreatedAt = now
 		u.UpdatedAt = now
 	}
+	if u.Email != "" {
+		want := strings.ToLower(u.Email)
+		for id, other := range s.byID {
+			if id != u.ID && strings.ToLower(other.Email) == want {
+				return User{}, false, ErrConflict
+			}
+		}
+	}
 	if u.SkyNumber != "" {
 		for id, other := range s.byID {
 			if id != u.ID && other.SkyNumber == u.SkyNumber {
+				return User{}, false, ErrConflict
+			}
+		}
+	}
+	if u.StudentCardUID != "" {
+		for id, other := range s.byID {
+			if id != u.ID && other.StudentCardUID == u.StudentCardUID {
 				return User{}, false, ErrConflict
 			}
 		}
@@ -99,6 +117,8 @@ func (s *MemoryStore) UpdateProfile(_ context.Context, u User) (User, error) {
 	existing.University = u.University
 	existing.Faculty = u.Faculty
 	existing.Department = u.Department
+	existing.Phone = u.Phone
+	existing.StudentCardUID = u.StudentCardUID
 	existing.ProfilePictureID = u.ProfilePictureID
 	existing.ProfilePictureURL = u.ProfilePictureURL
 	existing.UpdatedAt = time.Now().UTC()

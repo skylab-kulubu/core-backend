@@ -459,8 +459,103 @@ func TestService_SearchUsersUsesShadowNotDirectory(t *testing.T) {
 		t.Fatalf("search %+v", found)
 	}
 
+	named, err := svc.ListUsers(ctx, privileged(), "ghost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(named) != 1 || named[0].ID != ghost {
+		t.Fatalf("directory search %+v", named)
+	}
+
 	if _, err := svc.ListUsers(ctx, member(), "ada"); !errors.Is(err, identity.ErrForbidden) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestService_ListUsersSeatKeepsRoleHolders(t *testing.T) {
+	t.Parallel()
+	dir, _, svc := setup(t)
+	ctx := context.Background()
+	ghost := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	ada := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutGroup(identity.Group{ID: "g-yk", Name: "YK", Path: "/UYELER/YK"})
+	dir.PutUser(identity.Person{ID: ghost, Email: "ghost@example.com", FirstName: "Ghost"})
+	dir.PutUser(identity.Person{ID: ada, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"})
+	if err := dir.AddMember(ctx, "g-yk", ada); err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.SetGroupClientRoles(ctx, "g-yk", []identity.ClientRole{{ClientID: "dotnet", Role: "skyforms:access"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	seat := identity.ClientRole{ClientID: "dotnet", Role: "skyforms:access"}
+	found, err := svc.ListUsers(ctx, privileged(), "ada", seat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].ID != ada {
+		t.Fatalf("seat search %+v", found)
+	}
+	hidden, err := svc.ListUsers(ctx, privileged(), "ghost", seat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hidden) != 0 {
+		t.Fatalf("unseated %+v", hidden)
+	}
+}
+
+func TestService_ListUsersKeepsDirectoryRowOnEmailConflict(t *testing.T) {
+	t.Parallel()
+	dir, store, svc := setup(t)
+	ctx := context.Background()
+	owner := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	other := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	dir.PutUser(identity.Person{ID: owner, Email: "ada@example.com", FirstName: "Ada"})
+	dir.PutUser(identity.Person{ID: other, Email: "ada@example.com", FirstName: "Ada"})
+	if _, _, err := store.Upsert(ctx, user.User{ID: owner, Email: "ada@example.com", FirstName: "Ada"}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := svc.ListUsers(ctx, privileged(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("directory list %+v", all)
+	}
+}
+
+func TestService_GetUserOmitsPhoneForUsersRead(t *testing.T) {
+	t.Parallel()
+	dir, store, svc := setup(t)
+	ctx := context.Background()
+	id := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: id, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"})
+	phone := "+905559876543"
+	if _, _, err := store.Upsert(ctx, user.User{
+		ID: id, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace", Phone: phone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := authz.Principal{ID: "forms", Roles: []string{"users:read"}}
+	card, err := svc.GetUser(ctx, reader, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Phone != "" {
+		t.Fatalf("phone leaked %+v", card)
+	}
+	if card.ID != id || card.FirstName != "Ada" || card.LastName != "Lovelace" || card.Email != "ada@example.com" {
+		t.Fatalf("name card %+v", card)
+	}
+
+	admin, err := svc.GetUser(ctx, privileged(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admin.Phone != phone {
+		t.Fatalf("privileged lost phone %+v", admin)
 	}
 }
 

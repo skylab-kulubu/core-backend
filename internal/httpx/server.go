@@ -96,6 +96,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/users", ident.ListUsers)
 	app.Post("/v1/users", ident.CreateUser)
 	app.Get("/v1/users/:id", ident.GetUser)
+	app.Patch("/v1/users/:id", ident.PatchUser)
 	app.Delete("/v1/users/:id", ident.DeleteUser)
 	app.Post("/v1/users/:id/logout", ident.LogoutAllSessions)
 	app.Post("/v1/users/:id/client-roles", ident.AddUserExtraRole)

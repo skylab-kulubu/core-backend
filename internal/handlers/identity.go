@@ -9,6 +9,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 type IdentityHandler struct {
@@ -45,8 +46,12 @@ func identityError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, identity.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
-	case errors.Is(err, identity.ErrInvalid):
+	case errors.Is(err, identity.ErrInvalid), errors.Is(err, user.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	case errors.Is(err, user.ErrConflict):
+		return problem(c, fiber.StatusConflict, "Conflict")
+	case errors.Is(err, user.ErrNotFound):
+		return problem(c, fiber.StatusNotFound, "Not Found")
 	default:
 		return err
 	}
@@ -203,6 +208,42 @@ func (h *IdentityHandler) GetUser(c fiber.Ctx) error {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	card, err := h.svc.GetUser(c.Context(), p, id)
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(card)
+}
+
+func (h *IdentityHandler) PatchUser(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body struct {
+		FirstName  *string `json:"firstName"`
+		LastName   *string `json:"lastName"`
+		Linkedin   *string `json:"linkedin"`
+		University *string `json:"university"`
+		Faculty    *string `json:"faculty"`
+		Department *string `json:"department"`
+		Phone      *string `json:"phone"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	card, err := h.svc.PatchUser(c.Context(), p, id, user.ProfilePatch{
+		FirstName:  body.FirstName,
+		LastName:   body.LastName,
+		Linkedin:   body.Linkedin,
+		University: body.University,
+		Faculty:    body.Faculty,
+		Department: body.Department,
+		Phone:      body.Phone,
+	})
 	if err != nil {
 		return identityError(c, err)
 	}

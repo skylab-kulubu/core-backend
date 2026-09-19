@@ -14,11 +14,12 @@ type User struct {
 	Username          string     `json:"username,omitempty"`
 	SchoolEmail       string     `json:"schoolEmail,omitempty"`
 	SkyNumber         string     `json:"skyNumber,omitempty"`
-	StudentCardUID    string     `json:"studentCardUid,omitempty"`
+	StudentCardUID    string     `json:"-"`
 	Linkedin          string     `json:"linkedin,omitempty"`
 	University        string     `json:"university,omitempty"`
 	Faculty           string     `json:"faculty,omitempty"`
 	Department        string     `json:"department,omitempty"`
+	Phone             string     `json:"-"`
 	ProfilePictureID  *uuid.UUID `json:"profilePictureId,omitempty"`
 	ProfilePictureURL string     `json:"profilePictureUrl,omitempty"`
 	CreatedAt         time.Time  `json:"createdAt"`
@@ -50,4 +51,5 @@ type ProfilePatch struct {
 	University *string
 	Faculty    *string
 	Department *string
+	Phone      *string
 }

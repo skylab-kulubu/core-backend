@@ -19,13 +19,13 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const userCols = `id, email, first_name, last_name, username, school_email, sky_number, COALESCE(student_card_uid, ''), linkedin, university, faculty, department, profile_picture_id, profile_picture_url, created_at, updated_at`
+const userCols = `id, email, first_name, last_name, username, school_email, sky_number, COALESCE(student_card_uid, ''), linkedin, university, faculty, department, phone, profile_picture_id, profile_picture_url, created_at, updated_at`
 
 func scanUser(row interface{ Scan(dest ...any) error }) (User, error) {
 	var u User
 	err := row.Scan(
 		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Username, &u.SchoolEmail, &u.SkyNumber, &u.StudentCardUID,
-		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.ProfilePictureID, &u.ProfilePictureURL,
+		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.Phone, &u.ProfilePictureID, &u.ProfilePictureURL,
 		&u.CreatedAt, &u.UpdatedAt,
 	)
 	return u, err
@@ -67,7 +67,7 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 		RETURNING `+userCols+`, (xmax = 0)
 	`, u.ID, u.Email, u.FirstName, u.LastName, u.Username, u.SchoolEmail, u.SkyNumber).Scan(
 		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Username, &u.SchoolEmail, &u.SkyNumber, &u.StudentCardUID,
-		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.ProfilePictureID, &u.ProfilePictureURL,
+		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.Phone, &u.ProfilePictureID, &u.ProfilePictureURL,
 		&u.CreatedAt, &u.UpdatedAt, &created,
 	)
 	if isUnique(err) {
@@ -88,12 +88,14 @@ func (s *PostgresStore) UpdateProfile(ctx context.Context, u User) (User, error)
 			university = $5,
 			faculty = $6,
 			department = $7,
-			profile_picture_id = $8,
-			profile_picture_url = $9,
+			phone = $8,
+			student_card_uid = $9,
+			profile_picture_id = $10,
+			profile_picture_url = $11,
 			updated_at = now()
 		WHERE id = $1
 		RETURNING `+userCols,
-		u.ID, u.FirstName, u.LastName, u.Linkedin, u.University, u.Faculty, u.Department,
+		u.ID, u.FirstName, u.LastName, u.Linkedin, u.University, u.Faculty, u.Department, u.Phone, u.StudentCardUID,
 		u.ProfilePictureID, u.ProfilePictureURL,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
