@@ -2,6 +2,7 @@ package qr
 
 import (
 	"bytes"
+	"encoding/base64"
 	"image"
 	"image/color"
 	"image/draw"
@@ -9,8 +10,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	qrcode "github.com/skip2/go-qrcode"
+	xdraw "golang.org/x/image/draw"
 )
 
 const DefaultSize = 256
@@ -66,17 +69,29 @@ func overlayLogo(qrPNG []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func clubLogo(size int) *image.RGBA {
-	img := image.NewRGBA(image.Rect(0, 0, size, size))
-	black := color.RGBA{A: 255}
-	white := color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	draw.Draw(img, img.Bounds(), &image.Uniform{C: black}, image.Point{}, draw.Src)
-	inset := size / 6
-	inner := image.Rect(inset, inset, size-inset, size-inset)
-	draw.Draw(img, inner, &image.Uniform{C: white}, image.Point{}, draw.Src)
-	core := size / 3
-	mid := image.Rect(core, core, size-core, size-core)
-	draw.Draw(img, mid, &image.Uniform{C: black}, image.Point{}, draw.Src)
+var (
+	logoOnce   sync.Once
+	logoSource image.Image
+)
+
+func clubLogo(size int) *image.NRGBA {
+	logoOnce.Do(func() {
+		raw, err := base64.StdEncoding.DecodeString(logoAssetBase64)
+		if err != nil {
+			panic(err)
+		}
+		logoSource, err = png.Decode(bytes.NewReader(raw))
+		if err != nil {
+			panic(err)
+		}
+	})
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	xdraw.CatmullRom.Scale(img, img.Bounds(), logoSource, logoSource.Bounds(), xdraw.Src, nil)
+	for i := 0; i < len(img.Pix); i += 4 {
+		img.Pix[i] = 0
+		img.Pix[i+1] = 0
+		img.Pix[i+2] = 0
+	}
 	return img
 }
 
