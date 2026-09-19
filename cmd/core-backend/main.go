@@ -153,8 +153,8 @@ func main() {
 	}
 
 	var render certificate.Renderer
-	if os.Getenv("GOTENBERG_URL") != "" {
-		render = &certificate.Gotenberg{BaseURL: os.Getenv("GOTENBERG_URL")}
+	if baseURL := gotenbergURL(); baseURL != "" {
+		render = &certificate.Gotenberg{BaseURL: baseURL}
 	}
 
 	passKey, err := loadSkyPassKey()
@@ -211,6 +211,13 @@ func main() {
 	if err := app.Listen(":" + addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func gotenbergURL() string {
+	if explicit := strings.TrimSpace(os.Getenv("GOTENBERG_URL")); explicit != "" {
+		return explicit
+	}
+	return "http://gotenberg:3000"
 }
 
 func loadSkyPassKey() (*ecdsa.PrivateKey, error) {
