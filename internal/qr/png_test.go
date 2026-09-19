@@ -2,6 +2,10 @@ package qr
 
 import (
 	"bytes"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"strings"
 	"testing"
 )
@@ -56,8 +60,30 @@ func TestClubLogoUsesTransparentBrandMark(t *testing.T) {
 	if cornerAlpha != 0 {
 		t.Fatalf("brand mark corner alpha = %d", cornerAlpha)
 	}
-	if centerAlpha == 0 || centerRed != 0 || centerGreen != 0 || centerBlue != 0 {
+	if centerAlpha == 0 || centerRed == centerGreen || centerGreen == centerBlue {
 		t.Fatalf("brand mark center rgba = %d,%d,%d,%d", centerRed, centerGreen, centerBlue, centerAlpha)
+	}
+}
+
+func TestOverlayLogoDoesNotPaintBackgroundPanel(t *testing.T) {
+	t.Parallel()
+	src := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	draw.Draw(src, src.Bounds(), &image.Uniform{C: color.RGBA{A: 255}}, image.Point{}, draw.Src)
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, src); err != nil {
+		t.Fatal(err)
+	}
+	overlaid, err := overlayLogo(encoded.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := png.Decode(bytes.NewReader(overlaid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := color.RGBA{A: 255}
+	if pixel := color.RGBAModel.Convert(got.At(39, 50)).(color.RGBA); pixel != want {
+		t.Fatalf("pixel outside logo = %#v want %#v", pixel, want)
 	}
 }
 

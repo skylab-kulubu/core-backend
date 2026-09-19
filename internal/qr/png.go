@@ -57,9 +57,6 @@ func overlayLogo(qrPNG []byte) ([]byte, error) {
 	logo := clubLogo(logoSize)
 	x := bounds.Min.X + (bounds.Dx()-logoSize)/2
 	y := bounds.Min.Y + (bounds.Dy()-logoSize)/2
-	pad := logoSize / 10
-	bg := image.Rect(x-pad, y-pad, x+logoSize+pad, y+logoSize+pad)
-	draw.Draw(dst, bg, &image.Uniform{C: color.White}, image.Point{}, draw.Src)
 	draw.Draw(dst, image.Rect(x, y, x+logoSize, y+logoSize), logo, image.Point{}, draw.Over)
 
 	var buf bytes.Buffer
@@ -87,12 +84,43 @@ func clubLogo(size int) *image.NRGBA {
 	})
 	img := image.NewNRGBA(image.Rect(0, 0, size, size))
 	xdraw.CatmullRom.Scale(img, img.Bounds(), logoSource, logoSource.Bounds(), xdraw.Src, nil)
-	for i := 0; i < len(img.Pix); i += 4 {
-		img.Pix[i] = 0
-		img.Pix[i+1] = 0
-		img.Pix[i+2] = 0
+	for y := 0; y < size; y++ {
+		brand := logoGradient(y, size)
+		for x := 0; x < size; x++ {
+			i := y*img.Stride + x*4
+			img.Pix[i] = brand.R
+			img.Pix[i+1] = brand.G
+			img.Pix[i+2] = brand.B
+		}
 	}
 	return img
+}
+
+func logoGradient(y, size int) color.NRGBA {
+	position := 0.5
+	if size > 1 {
+		position = float64(y) / float64(size-1)
+	}
+	blue := color.NRGBA{R: 0x06, G: 0x99, B: 0xda, A: 0xff}
+	purple := color.NRGBA{R: 0x7b, G: 0x4c, B: 0x84, A: 0xff}
+	red := color.NRGBA{R: 0xe1, G: 0x06, B: 0x35, A: 0xff}
+	switch {
+	case position <= 0.25:
+		return blue
+	case position < 0.5:
+		return mixLogoColor(blue, purple, (position-0.25)/0.25)
+	case position < 0.75:
+		return mixLogoColor(purple, red, (position-0.5)/0.25)
+	default:
+		return red
+	}
+}
+
+func mixLogoColor(a, b color.NRGBA, amount float64) color.NRGBA {
+	mix := func(left, right uint8) uint8 {
+		return uint8(float64(left) + (float64(right)-float64(left))*amount + 0.5)
+	}
+	return color.NRGBA{R: mix(a.R, b.R), G: mix(a.G, b.G), B: mix(a.B, b.B), A: 0xff}
 }
 
 func SizeFromQuery(raw string) int {
