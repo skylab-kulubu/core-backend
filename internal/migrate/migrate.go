@@ -83,6 +83,34 @@ var fingerprints = map[int64]string{
 			  ON actual.schemaname = 'public'
 			 AND actual.indexname = expected.index_name
 		) = 8`,
+	20260919211000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*)
+			FROM (VALUES
+				('blob_purge_started_at'),
+				('blob_purged_at'),
+				('blob_purge_checked_at')
+			) AS expected(column_name)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'media'
+			 AND actual.column_name = expected.column_name
+		) = 3
+		AND to_regclass('public.media_blob_purge_candidates_idx') IS NOT NULL
+		AND (
+			SELECT count(DISTINCT actual.trigger_name)
+			FROM (VALUES
+				('events_require_current_cover_media'),
+				('event_images_require_current_media'),
+				('users_require_current_profile_media'),
+				('certificate_templates_require_current_media'),
+				('certificate_template_versions_require_current_media')
+			) AS expected(trigger_name)
+			JOIN information_schema.triggers actual
+			  ON actual.trigger_schema = 'public'
+			 AND actual.trigger_name = expected.trigger_name
+		) = 5`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

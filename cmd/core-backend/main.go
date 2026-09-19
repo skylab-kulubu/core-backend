@@ -57,6 +57,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	mediaPurgeConfig, err := media.BlobPurgeConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	mediaPurgeContext, stopMediaPurge := context.WithCancel(context.Background())
+	defer stopMediaPurge()
+	media.MaintainBlobPurge(mediaPurgeContext, mediaStore, blobs, mediaPurgeConfig, func(err error) {
+		log.Printf("media blob purge: %v", err)
+	})
 	media.MaintainCoverColorBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
 		log.Printf("media cover color backfill: %v", err)
 	})

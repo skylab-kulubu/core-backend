@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -37,6 +39,7 @@ func mediaApp(t *testing.T, ident authn.Identity, store media.Store, blobs media
 	app.Get("/v1/media", h.List)
 	app.Get("/v1/media/:id", h.Get)
 	app.Delete("/v1/media/:id", h.Delete)
+	app.Post("/v1/media/:id/restore", h.Restore)
 	return app
 }
 
@@ -186,4 +189,88 @@ func TestMediaAnonymousUploadForbiddenHTTP(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status %d body %s", resp.StatusCode, b)
 	}
+}
+
+func TestMediaLifecycleHTTP(t *testing.T) {
+	t.Parallel()
+	store := media.NewMemoryStore()
+	blobs := media.NewMemoryBlob()
+	uploaderID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	created, err := store.Create(t.Context(), media.Media{
+		Name: "guide.pdf", Type: "application/pdf", Size: 42, UploadedBy: uploaderID,
+		Kind: media.KindFile, Key: "files/guide",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	managerID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	manager := mediaApp(t, authn.Identity{ID: managerID, Groups: []string{"/UYELER/YK"}}, store, blobs)
+	path := "/v1/media/" + created.ID.String()
+
+	requireStatus(t, manager, fiber.MethodDelete, path, fiber.StatusNoContent)
+	requireStatus(t, manager, fiber.MethodDelete, path, fiber.StatusNoContent)
+	requireStatus(t, mediaApp(t, authn.Identity{}, store, blobs), fiber.MethodGet, path, fiber.StatusNotFound)
+	requireStatus(t, manager, fiber.MethodGet, "/v1/media?lifecycle=invalid", fiber.StatusBadRequest)
+
+	resp, err := manager.Test(httptest.NewRequest(fiber.MethodGet, "/v1/media", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current []media.Media
+	if err := json.NewDecoder(resp.Body).Decode(&current); err != nil {
+		t.Fatal(err)
+	}
+	if len(current) != 0 {
+		t.Fatalf("current media = %+v", current)
+	}
+
+	resp, err = manager.Test(httptest.NewRequest(fiber.MethodGet, "/v1/media?lifecycle=inactive", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archived []media.Media
+	if err := json.NewDecoder(resp.Body).Decode(&archived); err != nil {
+		t.Fatal(err)
+	}
+	if len(archived) != 1 || archived[0].ID != created.ID || archived[0].DeletedAt == nil || archived[0].DeletedBy == nil || *archived[0].DeletedBy != managerID {
+		t.Fatalf("archived media = %+v", archived)
+	}
+	requireStatus(t, manager, fiber.MethodGet, "/v1/media?lifecycle=all", fiber.StatusOK)
+	member := mediaApp(t, authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}, store, blobs)
+	requireStatus(t, member, fiber.MethodGet, "/v1/media?lifecycle=inactive", fiber.StatusForbidden)
+
+	restorePath := path + "/restore"
+	requireStatus(t, manager, fiber.MethodPost, restorePath, fiber.StatusOK)
+	requireStatus(t, manager, fiber.MethodPost, restorePath, fiber.StatusOK)
+	requireStatus(t, manager, fiber.MethodGet, path, fiber.StatusOK)
+
+	requireStatus(t, manager, fiber.MethodDelete, path, fiber.StatusNoContent)
+	wantPurgeErr := errors.New("storage unavailable")
+	if _, err := store.PurgeBlobIfUnreferenced(t.Context(), created.ID, time.Now().UTC(), func(string) error { return wantPurgeErr }); !errors.Is(err, wantPurgeErr) {
+		t.Fatalf("purge error = %v", err)
+	}
+	requireStatus(t, manager, fiber.MethodPost, restorePath, fiber.StatusConflict)
+	purged, err := store.PurgeBlobIfUnreferenced(t.Context(), created.ID, time.Now().UTC(), func(string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !purged {
+		t.Fatal("expected archived blob to be purged")
+	}
+	requireStatus(t, manager, fiber.MethodPost, restorePath, fiber.StatusGone)
+
+	pending, err := store.Create(t.Context(), media.Media{
+		Name: "pending.pdf", Type: "application/pdf", Size: 24, UploadedBy: uploaderID,
+		Kind: media.KindFile, Key: "files/pending",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingPath := "/v1/media/" + pending.ID.String()
+	requireStatus(t, manager, fiber.MethodDelete, pendingPath, fiber.StatusNoContent)
+	claimErr := errors.New("storage temporarily unavailable")
+	if _, err := store.PurgeBlobIfUnreferenced(t.Context(), pending.ID, time.Now().UTC(), func(string) error { return claimErr }); !errors.Is(err, claimErr) {
+		t.Fatalf("purge claim error = %v", err)
+	}
+	requireStatus(t, manager, fiber.MethodPost, pendingPath+"/restore", fiber.StatusConflict)
 }

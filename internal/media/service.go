@@ -6,13 +6,16 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type Service interface {
 	Upload(ctx context.Context, p authz.Principal, name, contentType string, data []byte) (Media, error)
 	Get(ctx context.Context, id uuid.UUID) (Media, error)
 	List(ctx context.Context, p authz.Principal) ([]Media, error)
+	ListLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]Media, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
+	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Media, error)
 }
 
 type service struct {
@@ -117,10 +120,14 @@ func (s *service) Get(ctx context.Context, id uuid.UUID) (Media, error) {
 }
 
 func (s *service) List(ctx context.Context, p authz.Principal) ([]Media, error) {
+	return s.ListLifecycle(ctx, p, lifecycle.CurrentOnly)
+}
+
+func (s *service) ListLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]Media, error) {
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.List) {
 		return nil, ErrForbidden
 	}
-	items, err := s.media.List(ctx)
+	items, err := s.media.ListLifecycle(ctx, visibility)
 	if err != nil {
 		return nil, err
 	}
@@ -135,14 +142,30 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.Delete) {
 		return ErrForbidden
 	}
-	m, err := s.media.Delete(ctx, id)
-	if err != nil {
+	if _, err := s.media.GetIncludingDeleted(ctx, id); err != nil {
 		return err
 	}
-	return s.blobs.Delete(ctx, m.Key)
+	return s.media.Archive(ctx, id, lifecycle.ActorID(p.ID))
+}
+
+func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Media, error) {
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.Delete) {
+		return Media{}, ErrForbidden
+	}
+	if _, err := s.media.GetIncludingDeleted(ctx, id); err != nil {
+		return Media{}, err
+	}
+	if err := s.media.Restore(ctx, id); err != nil {
+		return Media{}, err
+	}
+	return s.Get(ctx, id)
 }
 
 func (s *service) withURL(m Media) Media {
+	if m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil {
+		m.URL = ""
+		return m
+	}
 	if strings.TrimSpace(s.publicBase) == "" {
 		m.URL = m.Key
 		return m

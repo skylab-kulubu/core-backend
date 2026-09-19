@@ -10,9 +10,11 @@ import (
 )
 
 var (
-	ErrNotFound  = errors.New("media: not found")
-	ErrForbidden = errors.New("media: forbidden")
-	ErrInvalid   = errors.New("media: invalid")
+	ErrNotFound        = errors.New("media: not found")
+	ErrForbidden       = errors.New("media: forbidden")
+	ErrInvalid         = errors.New("media: invalid")
+	ErrPurged          = errors.New("media: blob purged")
+	ErrPurgeInProgress = errors.New("media: blob purge in progress")
 )
 
 type Media struct {
@@ -28,6 +30,9 @@ type Media struct {
 	CoverColorsComputed bool       `json:"-"`
 	DeletedAt           *time.Time `json:"deletedAt,omitempty"`
 	DeletedBy           *uuid.UUID `json:"deletedBy,omitempty"`
+	BlobPurgeStartedAt  *time.Time `json:"blobPurgeStartedAt,omitempty"`
+	BlobPurgedAt        *time.Time `json:"blobPurgedAt,omitempty"`
+	BlobPurgeCheckedAt  *time.Time `json:"-"`
 	CreatedAt           time.Time  `json:"createdAt"`
 	UpdatedAt           time.Time  `json:"updatedAt"`
 }
@@ -40,7 +45,10 @@ type Store interface {
 	ListLifecycle(ctx context.Context, visibility lifecycle.Visibility) ([]Media, error)
 	ListPendingCoverColors(ctx context.Context, limit int) ([]Media, error)
 	SetCoverColors(ctx context.Context, id uuid.UUID, colors []string) error
-	Delete(ctx context.Context, id uuid.UUID) (Media, error)
+	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
+	Restore(ctx context.Context, id uuid.UUID) error
+	ListPurgeCandidates(ctx context.Context, deletedBefore time.Time, limit int) ([]Media, error)
+	PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(key string) error) (bool, error)
 }
 
 type BlobStore interface {

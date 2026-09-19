@@ -8,14 +8,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type Service interface {
 	List(ctx context.Context, p authz.Principal) ([]Competitor, error)
+	ListLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]Competitor, error)
 	Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Competitor, error)
 	Create(ctx context.Context, p authz.Principal, in CreateInput) (Competitor, error)
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, in UpdateInput) (Competitor, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
+	Reinstate(ctx context.Context, p authz.Principal, id uuid.UUID) (Competitor, error)
 	Mine(ctx context.Context, p authz.Principal) ([]Competitor, error)
 	ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Competitor, error)
 	ListByUser(ctx context.Context, p authz.Principal, userID uuid.UUID) ([]Competitor, error)
@@ -45,9 +48,15 @@ func (s *service) withEvent(ctx context.Context, c Competitor) Competitor {
 }
 
 func (s *service) withEvents(ctx context.Context, comps []Competitor) []Competitor {
-	out := make([]Competitor, len(comps))
-	for i, c := range comps {
-		out[i] = s.withEvent(ctx, c)
+	out := make([]Competitor, 0, len(comps))
+	for _, c := range comps {
+		ev, err := s.events.Get(ctx, c.EventID)
+		if err != nil {
+			continue
+		}
+		res := ev.Resource()
+		c.Event = &res
+		out = append(out, c)
 	}
 	return out
 }
@@ -61,6 +70,27 @@ func (s *service) List(ctx context.Context, p authz.Principal) ([]Competitor, er
 		return nil, err
 	}
 	return s.withEvents(ctx, comps), nil
+}
+
+func (s *service) ListLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]Competitor, error) {
+	items, err := s.competitors.ListLifecycle(ctx, visibility)
+	if err != nil {
+		return nil, err
+	}
+	visible := make([]Competitor, 0, len(items))
+	for _, item := range items {
+		ev, err := s.events.GetIncludingArchived(ctx, item.EventID)
+		if err != nil {
+			continue
+		}
+		res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: item.UserID.String()}
+		if s.authz.Allow(p, res, authz.Delete) {
+			eventResource := ev.Resource()
+			item.Event = &eventResource
+			visible = append(visible, item)
+		}
+	}
+	return visible, nil
 }
 
 func (s *service) Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Competitor, error) {
@@ -166,11 +196,11 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 }
 
 func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error {
-	existing, err := s.competitors.Get(ctx, id)
+	existing, err := s.competitors.GetIncludingWithdrawn(ctx, id)
 	if err != nil {
 		return err
 	}
-	ev, err := s.events.Get(ctx, existing.EventID)
+	ev, err := s.events.GetIncludingArchived(ctx, existing.EventID)
 	if err != nil {
 		if errors.Is(err, event.ErrNotFound) {
 			return ErrNotFound
@@ -181,7 +211,36 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	if !s.authz.Allow(p, res, authz.Delete) {
 		return ErrForbidden
 	}
-	return s.competitors.Delete(ctx, id)
+	return s.competitors.Withdraw(ctx, id, lifecycle.ActorID(p.ID))
+}
+
+func (s *service) Reinstate(ctx context.Context, p authz.Principal, id uuid.UUID) (Competitor, error) {
+	existing, err := s.competitors.GetIncludingWithdrawn(ctx, id)
+	if err != nil {
+		return Competitor{}, err
+	}
+	ev, err := s.events.GetIncludingArchived(ctx, existing.EventID)
+	if err != nil {
+		if errors.Is(err, event.ErrNotFound) {
+			return Competitor{}, ErrNotFound
+		}
+		return Competitor{}, err
+	}
+	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: existing.UserID.String()}
+	if !s.authz.Allow(p, res, authz.Delete) {
+		return Competitor{}, ErrForbidden
+	}
+	if ev.ArchivedAt != nil || !ev.Active {
+		return Competitor{}, ErrConflict
+	}
+	if err := s.competitors.Reinstate(ctx, id); err != nil {
+		return Competitor{}, err
+	}
+	got, err := s.competitors.Get(ctx, id)
+	if err != nil {
+		return Competitor{}, err
+	}
+	return s.withEvent(ctx, got), nil
 }
 
 func (s *service) Mine(ctx context.Context, p authz.Principal) ([]Competitor, error) {

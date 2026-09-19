@@ -64,12 +64,16 @@ func (s *MemoryStore) GetByAlias(_ context.Context, alias string) (URL, error) {
 	return s.findAliasLocked(alias, uuid.Nil, false)
 }
 
-func (s *MemoryStore) ListByCreator(_ context.Context, userID uuid.UUID) ([]URL, error) {
+func (s *MemoryStore) ListByCreator(ctx context.Context, userID uuid.UUID) ([]URL, error) {
+	return s.ListByCreatorLifecycle(ctx, userID, lifecycle.CurrentOnly)
+}
+
+func (s *MemoryStore) ListByCreatorLifecycle(_ context.Context, userID uuid.UUID, visibility lifecycle.Visibility) ([]URL, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]URL, 0)
 	for _, u := range s.byID {
-		if u.DisabledAt == nil && u.CreatedBy != nil && *u.CreatedBy == userID {
+		if visibility.Matches(u.DisabledAt != nil) && u.CreatedBy != nil && *u.CreatedBy == userID {
 			out = append(out, u)
 		}
 	}
@@ -116,20 +120,36 @@ func (s *MemoryStore) Update(_ context.Context, u URL) (URL, error) {
 	return u, nil
 }
 
-func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) error {
+func (s *MemoryStore) Disable(_ context.Context, id uuid.UUID, actorID *uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.byID[id]; !ok {
+	u, ok := s.byID[id]
+	if !ok {
 		return ErrNotFound
 	}
-	delete(s.byID, id)
-	kept := s.hits[:0]
-	for _, h := range s.hits {
-		if h.URLID != id {
-			kept = append(kept, h)
-		}
+	if u.DisabledAt == nil {
+		now := time.Now().UTC()
+		u.DisabledAt = &now
+		u.DisabledBy = actorID
+		u.UpdatedAt = now
+		s.byID[id] = u
 	}
-	s.hits = kept
+	return nil
+}
+
+func (s *MemoryStore) Restore(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if u.DisabledAt != nil {
+		u.DisabledAt = nil
+		u.DisabledBy = nil
+		u.UpdatedAt = time.Now().UTC()
+		s.byID[id] = u
+	}
 	return nil
 }
 

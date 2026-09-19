@@ -131,6 +131,7 @@ func New(deps Deps) *fiber.App {
 	app.Put("/v1/events/:id", events.Update)
 	app.Patch("/v1/events/:id", events.Update)
 	app.Delete("/v1/events/:id", events.Delete)
+	app.Post("/v1/events/:id/restore", events.Restore)
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)
 	app.Get("/v1/events/:eventId/days", schedule.ListDays)
@@ -177,6 +178,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/seasons/:id", seasons.Get)
 	app.Put("/v1/seasons/:id", seasons.Update)
 	app.Delete("/v1/seasons/:id", seasons.Delete)
+	app.Post("/v1/seasons/:id/restore", seasons.Restore)
 	app.Get("/v1/seasons/:id/events", seasons.ListEvents)
 	app.Post("/v1/seasons/:id/events/:eventId", seasons.AssignEvent)
 
@@ -184,6 +186,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/event-days/:id", schedule.GetDay)
 	app.Put("/v1/event-days/:id", schedule.UpdateDay)
 	app.Delete("/v1/event-days/:id", schedule.DeleteDay)
+	app.Post("/v1/event-days/:id/restore", schedule.RestoreDay)
 	app.Get("/v1/event-days/:id/sessions", schedule.ListSessions)
 	app.Get("/v1/event-days/:id/current-session", schedule.CurrentSession)
 
@@ -192,6 +195,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/sessions/:id", schedule.GetSession)
 	app.Put("/v1/sessions/:id", schedule.UpdateSession)
 	app.Delete("/v1/sessions/:id", schedule.DeleteSession)
+	app.Post("/v1/sessions/:id/restore", schedule.RestoreSession)
 
 	app.Get("/v1/tickets/me", tickets.Mine)
 	app.Get("/v1/tickets/user/:userId/event/:eventId", tickets.ByUserEvent)
@@ -216,11 +220,13 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/competitors/:id", competitors.Get)
 	app.Put("/v1/competitors/:id", competitors.Update)
 	app.Delete("/v1/competitors/:id", competitors.Delete)
+	app.Post("/v1/competitors/:id/reinstate", competitors.Reinstate)
 
 	app.Post("/v1/media", mediaH.Upload)
 	app.Get("/v1/media", mediaH.List)
 	app.Get("/v1/media/:id", mediaH.Get)
 	app.Delete("/v1/media/:id", mediaH.Delete)
+	app.Post("/v1/media/:id/restore", mediaH.Restore)
 
 	app.Post("/v1/urls", urls.Create)
 	app.Get("/v1/urls", urls.ListMine)
@@ -228,6 +234,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/urls/:id/hits", urls.ListHits)
 	app.Patch("/v1/urls/:id", urls.Update)
 	app.Delete("/v1/urls/:id", urls.Delete)
+	app.Post("/v1/urls/:id/restore", urls.Restore)
 
 	return app
 }

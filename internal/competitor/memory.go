@@ -90,13 +90,36 @@ func (s *MemoryStore) Update(_ context.Context, c Competitor) (Competitor, error
 	return c, nil
 }
 
-func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) error {
+func (s *MemoryStore) Withdraw(_ context.Context, id uuid.UUID, actorID *uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.byID[id]; !ok {
+	c, ok := s.byID[id]
+	if !ok {
 		return ErrNotFound
 	}
-	delete(s.byID, id)
+	if c.WithdrawnAt == nil {
+		now := time.Now().UTC()
+		c.WithdrawnAt = &now
+		c.WithdrawnBy = actorID
+		c.UpdatedAt = now
+		s.byID[id] = c
+	}
+	return nil
+}
+
+func (s *MemoryStore) Reinstate(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if c.WithdrawnAt != nil {
+		c.WithdrawnAt = nil
+		c.WithdrawnBy = nil
+		c.UpdatedAt = time.Now().UTC()
+		s.byID[id] = c
+	}
 	return nil
 }
 

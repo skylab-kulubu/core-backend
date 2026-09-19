@@ -22,7 +22,8 @@ type Store interface {
 	GetIncludingWithdrawn(ctx context.Context, id uuid.UUID) (Competitor, error)
 	Create(ctx context.Context, c Competitor) (Competitor, error)
 	Update(ctx context.Context, c Competitor) (Competitor, error)
-	Delete(ctx context.Context, id uuid.UUID) error
+	Withdraw(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
+	Reinstate(ctx context.Context, id uuid.UUID) error
 	ListByEvent(ctx context.Context, eventID uuid.UUID) ([]Competitor, error)
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]Competitor, error)
 	ListByOwnerTeam(ctx context.Context, ownerTeam string) ([]Competitor, error)

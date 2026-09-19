@@ -48,3 +48,27 @@ func TestVisibilitySQLCondition(t *testing.T) {
 		}
 	}
 }
+
+func TestParseVisibility(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		raw  string
+		want lifecycle.Visibility
+		err  bool
+	}{
+		{raw: "", want: lifecycle.CurrentOnly},
+		{raw: "current", want: lifecycle.CurrentOnly},
+		{raw: "inactive", want: lifecycle.InactiveOnly},
+		{raw: "all", want: lifecycle.All},
+		{raw: "archived", err: true},
+	}
+	for _, tt := range tests {
+		got, err := lifecycle.ParseVisibility(tt.raw)
+		if (err != nil) != tt.err {
+			t.Fatalf("ParseVisibility(%q) error = %v", tt.raw, err)
+		}
+		if !tt.err && got != tt.want {
+			t.Fatalf("ParseVisibility(%q) = %v, want %v", tt.raw, got, tt.want)
+		}
+	}
+}

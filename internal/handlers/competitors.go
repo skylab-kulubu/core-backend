@@ -6,6 +6,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type CompetitorHandler struct {
@@ -45,11 +46,36 @@ func (h *CompetitorHandler) List(c fiber.Ctx) error {
 	if err != nil {
 		return competitorError(c, err)
 	}
-	comps, err := h.svc.List(c.Context(), p)
+	visibility, err := lifecycleVisibility(c)
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var comps []competitor.Competitor
+	if visibility == lifecycle.CurrentOnly {
+		comps, err = h.svc.List(c.Context(), p)
+	} else {
+		comps, err = h.svc.ListLifecycle(c.Context(), p, visibility)
+	}
 	if err != nil {
 		return competitorError(c, err)
 	}
 	return c.JSON(comps)
+}
+
+func (h *CompetitorHandler) Reinstate(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return competitorError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	reinstated, err := h.svc.Reinstate(c.Context(), p, id)
+	if err != nil {
+		return competitorError(c, err)
+	}
+	return c.JSON(reinstated)
 }
 
 func (h *CompetitorHandler) Get(c fiber.Ctx) error {

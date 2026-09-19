@@ -9,6 +9,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 func setup(t *testing.T) (event.Store, competitor.Service) {
@@ -141,6 +142,92 @@ func TestService_SelfCanDelete(t *testing.T) {
 	_, err = svc.Get(ctx, p, created.ID)
 	if !errors.Is(err, competitor.ErrNotFound) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestService_WithdrawAndReinstateAreIdempotent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	competitors := competitor.NewMemoryStore(events)
+	svc := competitor.NewService(competitors, events, authz.NewAuthorizer(authz.DefaultPolicy()))
+	ev := seedEvent(t, events, "WEBLAB", true)
+	userID := uuid.MustParse("99999999-9999-9999-9999-999999999999")
+	p := authz.Principal{ID: userID.String()}
+	created, err := svc.Create(ctx, p, competitor.CreateInput{UserID: userID, EventID: ev.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.Delete(ctx, p, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Delete(ctx, p, created.ID); err != nil {
+		t.Fatalf("second withdraw: %v", err)
+	}
+	withdrawn, err := svc.ListLifecycle(ctx, p, lifecycle.InactiveOnly)
+	if err != nil || len(withdrawn) != 1 || withdrawn[0].WithdrawnBy == nil || *withdrawn[0].WithdrawnBy != userID {
+		t.Fatalf("withdrawn list = %+v, err = %v", withdrawn, err)
+	}
+
+	reinstated, err := svc.Reinstate(ctx, p, created.ID)
+	if err != nil || reinstated.WithdrawnAt != nil {
+		t.Fatalf("reinstate = %+v, err = %v", reinstated, err)
+	}
+	if _, err := svc.Reinstate(ctx, p, created.ID); err != nil {
+		t.Fatalf("second reinstate: %v", err)
+	}
+
+	if err := svc.Delete(ctx, p, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := events.Archive(ctx, ev.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Reinstate(ctx, p, created.ID); !errors.Is(err, competitor.ErrConflict) {
+		t.Fatalf("reinstate under archived event = %v", err)
+	}
+}
+
+func TestService_DefaultListsHideCompetitorsUnderArchivedEvents(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	competitors := competitor.NewMemoryStore(events)
+	svc := competitor.NewService(competitors, events, authz.NewAuthorizer(authz.DefaultPolicy()))
+	ev := seedEvent(t, events, "WEBLAB", true)
+	userID := uuid.MustParse("99999999-9999-9999-9999-999999999999")
+	user := authz.Principal{ID: userID.String()}
+	created, err := svc.Create(ctx, user, competitor.CreateInput{UserID: userID, EventID: ev.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := events.Archive(ctx, ev.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}}
+	listed, err := svc.List(ctx, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("default list exposed archived parent: %+v", listed)
+	}
+	mine, err := svc.Mine(ctx, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mine) != 0 {
+		t.Fatalf("mine exposed archived parent: %+v", mine)
+	}
+
+	archivedParent, err := svc.ListLifecycle(ctx, manager, lifecycle.All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archivedParent) != 1 || archivedParent[0].ID != created.ID || archivedParent[0].Event == nil || archivedParent[0].Event.ID != ev.ID {
+		t.Fatalf("lifecycle list lost archived parent context: %+v", archivedParent)
 	}
 }
 
