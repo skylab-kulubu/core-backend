@@ -36,6 +36,8 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		return a.allowURL(p, r, action)
 	case TypeCertificate:
 		return a.allowCertificate(p, r, action)
+	case TypeCertificateTemplate:
+		return a.allowCertificateTemplate(p, r, action)
 	case TypeTeam:
 		return action == Read
 	case TypeGroup:
@@ -142,6 +144,9 @@ func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
 		if a.isPrivileged(p) {
 			return true
 		}
+		if len(a.ownerLevels(p, r.OwnerTeam)) > 0 && hasRole(p, "certificate:issue") {
+			return true
+		}
 		if slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader) {
 			return true
 		}
@@ -175,7 +180,11 @@ func (a *authorizer) allowCertificate(p Principal, r Resource, action Action) bo
 		if r.OwnerID != "" && r.OwnerID == p.ID {
 			return true
 		}
-		return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
+		levels := a.ownerLevels(p, r.OwnerTeam)
+		if slices.Contains(levels, LevelLeader) {
+			return true
+		}
+		return len(levels) > 0 && hasRole(p, "certificate:issue", "certificate:revoke")
 	}
 	if a.isPrivileged(p) {
 		return true
@@ -183,7 +192,62 @@ func (a *authorizer) allowCertificate(p Principal, r Resource, action Action) bo
 	if r.OwnerTeam == "" {
 		return false
 	}
-	return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
+	levels := a.ownerLevels(p, r.OwnerTeam)
+	if slices.Contains(levels, LevelLeader) {
+		return true
+	}
+	if len(levels) == 0 {
+		return false
+	}
+	if action == Issue {
+		return hasRole(p, "certificate:issue")
+	}
+	return hasRole(p, "certificate:revoke")
+}
+
+func (a *authorizer) allowCertificateTemplate(p Principal, r Resource, action Action) bool {
+	if a.isPrivileged(p) {
+		return true
+	}
+	if r.OwnerTeam == "" {
+		return action == Read && (isAnyLeader(p) || (isAnyTeamMember(p) && hasRole(p, "certificate:template:manage", "certificate:binding:manage")))
+	}
+	levels := a.ownerLevels(p, r.OwnerTeam)
+	if len(levels) == 0 {
+		return false
+	}
+	if slices.Contains(levels, LevelLeader) {
+		return action == Read || action == Create || action == Update || action == Assign
+	}
+	switch action {
+	case Read:
+		return hasRole(p, "certificate:template:manage", "certificate:binding:manage")
+	case Create, Update:
+		return hasRole(p, "certificate:template:manage")
+	case Assign:
+		return hasRole(p, "certificate:binding:manage")
+	default:
+		return false
+	}
+}
+
+func isAnyLeader(p Principal) bool {
+	for _, group := range p.Groups {
+		upper := strings.ToUpper(group)
+		if strings.Contains(upper, "/LIDERLER") || strings.Contains(upper, "/KOORDINATORLER") {
+			return true
+		}
+	}
+	return false
+}
+
+func isAnyTeamMember(p Principal) bool {
+	for _, group := range p.Groups {
+		if strings.Contains(strings.ToUpper(group), "/UYELER/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *authorizer) allowDoorCheckIn(p Principal, r Resource) bool {

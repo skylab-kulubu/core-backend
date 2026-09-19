@@ -572,6 +572,48 @@ func TestAuthorizer_Allow(t *testing.T) {
 			a:    Revoke,
 			want: true,
 		},
+		{
+			name: "team member with issue role can issue certificate",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/ARTLAB"}, Roles: []string{"certificate:issue"}},
+			r:    Resource{Type: TypeCertificate, OwnerTeam: "ARTLAB"},
+			a:    Issue,
+			want: true,
+		},
+		{
+			name: "issue role cannot cross team boundary",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}, Roles: []string{"certificate:issue"}},
+			r:    Resource{Type: TypeCertificate, OwnerTeam: "ARTLAB"},
+			a:    Issue,
+			want: false,
+		},
+		{
+			name: "team member with template role can update team template",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/ARTLAB"}, Roles: []string{"certificate:template:manage"}},
+			r:    Resource{Type: TypeCertificateTemplate, OwnerTeam: "ARTLAB"},
+			a:    Update,
+			want: true,
+		},
+		{
+			name: "template role does not grant binding permission",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/ARTLAB"}, Roles: []string{"certificate:template:manage"}},
+			r:    Resource{Type: TypeCertificateTemplate, OwnerTeam: "ARTLAB"},
+			a:    Assign,
+			want: false,
+		},
+		{
+			name: "team leader can read club default template",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/ARTLAB/LIDERLER"}},
+			r:    Resource{Type: TypeCertificateTemplate},
+			a:    Read,
+			want: true,
+		},
+		{
+			name: "issue-only member cannot read template source",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/ARTLAB"}, Roles: []string{"certificate:issue"}},
+			r:    Resource{Type: TypeCertificateTemplate, OwnerTeam: "ARTLAB"},
+			a:    Read,
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {

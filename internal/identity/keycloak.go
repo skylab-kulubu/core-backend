@@ -833,6 +833,42 @@ func (k *Keycloak) ListClientRoles(ctx context.Context) ([]ClientRole, error) {
 	return out, nil
 }
 
+// EnsureClientRoles creates missing roles without changing existing role mappings.
+func (k *Keycloak) EnsureClientRoles(ctx context.Context, clientID string, names []string) error {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	clientUUID, err := k.clientUUID(ctx, token, clientID)
+	if err != nil {
+		return err
+	}
+	roles, err := k.gc.GetClientRoles(ctx, token, k.realm, clientUUID, gocloak.GetRoleParams{Max: gocloak.IntP(500)})
+	if err != nil {
+		return mapKCErr(err)
+	}
+	existing := make(map[string]struct{}, len(roles))
+	for _, role := range roles {
+		if role != nil && role.Name != nil {
+			existing[*role.Name] = struct{}{}
+		}
+	}
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		if _, ok := existing[name]; ok {
+			continue
+		}
+		if _, err := k.gc.CreateClientRole(ctx, token, k.realm, clientUUID, gocloak.Role{Name: &name}); err != nil {
+			return mapKCErr(err)
+		}
+		existing[name] = struct{}{}
+	}
+	return nil
+}
+
 func (k *Keycloak) lookupRole(ctx context.Context, token, clientID, name string) (gocloak.Role, error) {
 	clientUUID, err := k.clientUUID(ctx, token, clientID)
 	if err != nil {

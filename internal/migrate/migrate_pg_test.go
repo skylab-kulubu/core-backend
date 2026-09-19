@@ -139,6 +139,23 @@ func TestApplyFreshThenIdempotent(t *testing.T) {
 	if _, err := pool.Exec(ctx, `SELECT extra_form_urls FROM events`); err != nil {
 		t.Fatal(err)
 	}
+	var templateName, scope, scopeKey string
+	var system bool
+	if err := pool.QueryRow(ctx, `SELECT name,system FROM certificate_templates WHERE source_ref='system-default'`).Scan(&templateName, &system); err != nil {
+		t.Fatal(err)
+	}
+	if templateName != "SKY LAB Varsayılan Sertifika" || !system {
+		t.Fatalf("certificate default = %q system=%v", templateName, system)
+	}
+	if err := pool.QueryRow(ctx, `SELECT scope,scope_key FROM certificate_template_bindings WHERE scope='club'`).Scan(&scope, &scopeKey); err != nil {
+		t.Fatal(err)
+	}
+	if scope != "club" || scopeKey != "SKY_LAB" {
+		t.Fatalf("certificate binding = %q %q", scope, scopeKey)
+	}
+	if _, err := pool.Exec(ctx, `SELECT asset_manifest FROM certificate_template_versions`); err != nil {
+		t.Fatal(err)
+	}
 	assertDoorStoreQueries(t, pool)
 }
 

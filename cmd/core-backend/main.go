@@ -66,12 +66,23 @@ func main() {
 		if os.Getenv("KEYCLOAK_REALM") == "" || os.Getenv("KEYCLOAK_CLIENT_ID") == "" || os.Getenv("KEYCLOAK_CLIENT_SECRET") == "" {
 			log.Fatal("KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET are required with KEYCLOAK_URL")
 		}
-		dir = identity.NewKeycloak(identity.KeycloakConfig{
+		keycloakDirectory := identity.NewKeycloak(identity.KeycloakConfig{
 			URL:          os.Getenv("KEYCLOAK_URL"),
 			Realm:        os.Getenv("KEYCLOAK_REALM"),
 			ClientID:     os.Getenv("KEYCLOAK_CLIENT_ID"),
 			ClientSecret: os.Getenv("KEYCLOAK_CLIENT_SECRET"),
 		})
+		roleContext, cancelRoleSetup := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := keycloakDirectory.EnsureClientRoles(roleContext, os.Getenv("KEYCLOAK_CLIENT_ID"), []string{
+			"certificate:template:manage",
+			"certificate:binding:manage",
+			"certificate:issue",
+			"certificate:revoke",
+		}); err != nil {
+			log.Printf("certificate client roles could not be ensured: %v", err)
+		}
+		cancelRoleSetup()
+		dir = keycloakDirectory
 	}
 
 	parse := func(string) (authn.Identity, error) {
@@ -152,9 +163,16 @@ func main() {
 	}
 
 	ticketSvc := ticket.NewService(tickets, events, az, users, dir)
-	certSvc := certificate.NewService(certs, tickets, events, users, az, render, sky, os.Getenv("PUBLIC_API_ORIGIN"))
-	ticketSvc = ticket.WithSettledCheckIn(ticketSvc, func(ctx context.Context, ticketID uuid.UUID) {
-		_, _ = certSvc.RecomputeTicket(ctx, ticketID)
+	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
+		PublicAPIOrigin: os.Getenv("PUBLIC_API_ORIGIN"),
+		VerifyOrigin:    os.Getenv("PUBLIC_VERIFY_ORIGIN"),
+		Templates:       certs,
+		Jobs:            certs,
+		Artifacts:       blobs,
+		Assets:          certificate.MediaAssets{Media: mediaStore, Blobs: blobs},
+	})
+	certificate.MaintainIssuance(context.Background(), certSvc, 2*time.Second, 10, func(err error) {
+		log.Printf("certificate issuance worker: %v", err)
 	})
 	var lists mail.Lists
 	mailSnapshots := eventmail.NewPostgresSnapshotStore(pool)

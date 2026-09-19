@@ -19,18 +19,19 @@ const (
 type Type string
 
 const (
-	TypeEvent       Type = "EVENT"
-	TypeGroup       Type = "GROUP"
-	TypeUser        Type = "USER"
-	TypeTeam        Type = "TEAM"
-	TypeTicket      Type = "TICKET"
-	TypeSeason      Type = "SEASON"
-	TypeEventDay    Type = "EVENT_DAY"
-	TypeSession     Type = "SESSION"
-	TypeCompetitor  Type = "COMPETITOR"
-	TypeMedia       Type = "MEDIA"
-	TypeURL         Type = "URL"
-	TypeCertificate Type = "CERTIFICATE"
+	TypeEvent               Type = "EVENT"
+	TypeGroup               Type = "GROUP"
+	TypeUser                Type = "USER"
+	TypeTeam                Type = "TEAM"
+	TypeTicket              Type = "TICKET"
+	TypeSeason              Type = "SEASON"
+	TypeEventDay            Type = "EVENT_DAY"
+	TypeSession             Type = "SESSION"
+	TypeCompetitor          Type = "COMPETITOR"
+	TypeMedia               Type = "MEDIA"
+	TypeURL                 Type = "URL"
+	TypeCertificate         Type = "CERTIFICATE"
+	TypeCertificateTemplate Type = "CERTIFICATE_TEMPLATE"
 )
 
 type Level string
