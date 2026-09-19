@@ -1,8 +1,9 @@
 package httpx_test
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -31,13 +32,13 @@ import (
 )
 
 var (
-	testPassKey     *rsa.PrivateKey
+	testPassKey     *ecdsa.PrivateKey
 	testPassKeyOnce sync.Once
 )
 
 func testPassSigner() *skypass.Signer {
 	testPassKeyOnce.Do(func() {
-		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			panic(err)
 		}
@@ -380,7 +381,7 @@ func TestSkyPassJWKSAnonymous(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
 		t.Fatal(err)
 	}
-	if len(doc.Keys) != 1 || doc.Keys[0].Kty != "RSA" || doc.Keys[0].N == "" {
+	if len(doc.Keys) != 1 || doc.Keys[0].Kty != "EC" || doc.Keys[0].Alg != "ES256" || doc.Keys[0].X == "" || doc.Keys[0].Y == "" {
 		t.Fatalf("jwks %+v", doc)
 	}
 }

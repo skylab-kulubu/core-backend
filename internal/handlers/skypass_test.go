@@ -1,8 +1,9 @@
 package handlers
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"encoding/json"
 	"io"
 	"net/http/httptest"
@@ -28,7 +29,7 @@ func skypassApp(t *testing.T, ident authn.Identity, store user.Store, signer *sk
 		store = user.NewMemoryStore()
 	}
 	if signer == nil {
-		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -145,7 +146,7 @@ func TestSkyPassEmptyUIDWipeDoesNotStealHTTP(t *testing.T) {
 func TestSkyPassVerifyRejectsExpiredAndUnsignedHTTP(t *testing.T) {
 	t.Parallel()
 	store := user.NewMemoryStore()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,8 +209,7 @@ func TestSkyPassVerifyRejectsExpiredAndUnsignedHTTP(t *testing.T) {
 	}
 
 	unsigned := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims{
-		"sub": id.String(), "iss": skypass.Issuer, "aud": skypass.Audience,
-		"exp": frozen.Add(time.Hour).Unix(),
+		"sub": id.String(), "exp": frozen.Add(time.Hour).Unix(),
 	})
 	raw, err := unsigned.SignedString(jwt.UnsafeAllowNoneSignatureType)
 	if err != nil {
@@ -239,7 +239,7 @@ func TestSkyPassJWKSAnonymousHTTP(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
 		t.Fatal(err)
 	}
-	if len(doc.Keys) != 1 || doc.Keys[0].Kty != "RSA" {
+	if len(doc.Keys) != 1 || doc.Keys[0].Kty != "EC" || doc.Keys[0].Alg != "ES256" || doc.Keys[0].Crv != "P-256" {
 		t.Fatalf("jwks %+v", doc)
 	}
 }
@@ -344,7 +344,7 @@ func TestSkyPassCheckInSessionHTTP(t *testing.T) {
 	users := user.NewMemoryStore()
 	events := event.NewMemoryStore()
 	tickets := ticket.NewMemoryStore()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
