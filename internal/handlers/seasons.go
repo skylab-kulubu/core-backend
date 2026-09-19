@@ -129,7 +129,11 @@ func (h *SeasonHandler) ListEvents(c fiber.Ctx) error {
 	if err != nil {
 		return seasonError(c, err)
 	}
-	return c.JSON(events)
+	p, callerErr := caller(c)
+	if callerErr != nil {
+		return c.JSON(h.events.ProjectAllFor(nil, events))
+	}
+	return c.JSON(h.events.ProjectAllFor(&p, events))
 }
 
 func (h *SeasonHandler) AssignEvent(c fiber.Ctx) error {
@@ -152,7 +156,7 @@ func (h *SeasonHandler) AssignEvent(c fiber.Ctx) error {
 	if err != nil {
 		return seasonError(c, err)
 	}
-	return c.JSON(updated)
+	return c.JSON(h.events.ProjectFor(&p, updated))
 }
 
 func (h *SeasonHandler) UnassignEvent(c fiber.Ctx) error {
@@ -168,5 +172,5 @@ func (h *SeasonHandler) UnassignEvent(c fiber.Ctx) error {
 	if err != nil {
 		return seasonError(c, err)
 	}
-	return c.JSON(updated)
+	return c.JSON(h.events.ProjectFor(&p, updated))
 }

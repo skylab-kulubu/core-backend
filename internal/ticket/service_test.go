@@ -3,6 +3,8 @@ package ticket_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/google/uuid"
@@ -66,6 +68,56 @@ func seedSession(t *testing.T, events event.Store, dayID uuid.UUID, title string
 	return sess
 }
 
+type unavailablePersonReader struct{}
+
+func (unavailablePersonReader) GetUser(context.Context, uuid.UUID) (identity.Person, error) {
+	return identity.Person{}, errors.New("directory unavailable")
+}
+
+type optimizedDoorStore struct {
+	*ticket.MemoryStore
+	identity         ticket.DoorTicketIdentity
+	activity         ticket.DoorActivity
+	listCalls        int
+	searchCalls      int
+	ownerLookupCalls int
+	activityCalls    int
+}
+
+func (s *optimizedDoorStore) ListByEvent(ctx context.Context, eventID uuid.UUID) ([]ticket.Ticket, error) {
+	s.listCalls++
+	return s.MemoryStore.ListByEvent(ctx, eventID)
+}
+
+func (s *optimizedDoorStore) SearchDoorTickets(
+	context.Context,
+	uuid.UUID,
+	string,
+	bool,
+	int,
+) ([]ticket.DoorTicketIdentity, error) {
+	s.searchCalls++
+	return []ticket.DoorTicketIdentity{s.identity}, nil
+}
+
+func (s *optimizedDoorStore) DoorTicketsByOwners(
+	context.Context,
+	uuid.UUID,
+	[]uuid.UUID,
+) ([]ticket.DoorTicketIdentity, error) {
+	s.ownerLookupCalls++
+	return []ticket.DoorTicketIdentity{s.identity}, nil
+}
+
+func (s *optimizedDoorStore) DoorSessionActivity(
+	context.Context,
+	uuid.UUID,
+	int,
+) (ticket.DoorActivity, error) {
+	s.activityCalls++
+	return s.activity, nil
+}
+
 func TestService_ApplyThenListMine(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)
@@ -122,6 +174,121 @@ func TestService_ApplyForOtherLeaderCreatesRegistered(t *testing.T) {
 	}
 	if got.ID != created.ID {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestService_ListByEventIncludesRegisteredOwnerSummary(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	users := user.NewMemoryStore()
+	dir := identity.NewMemory()
+	tickets := ticket.NewMemoryStore()
+	svc := ticket.NewService(tickets, events, authz.NewAuthorizer(authz.DefaultPolicy()), users, dir)
+	ev := seedEvent(t, events, "WEBLAB")
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: target, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace", SchoolEmail: "private@std.yildiz.edu.tr"})
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	if _, err := svc.ApplyForOther(ctx, leader, ev.ID, target); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := svc.ListByEvent(ctx, leader, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Owner == nil {
+		t.Fatalf("rows %+v", rows)
+	}
+	if rows[0].Owner.ID != target || rows[0].Owner.Email != "ada@example.com" || rows[0].Owner.FirstName != "Ada" {
+		t.Fatalf("owner %+v", rows[0].Owner)
+	}
+}
+
+func TestService_ListByEventUsesShadowOwnerWhenDirectoryIsUnavailable(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	users := user.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	svc := ticket.NewService(tickets, events, authz.NewAuthorizer(authz.DefaultPolicy()), users, unavailablePersonReader{})
+	ev := seedEvent(t, events, "WEBLAB")
+	ownerID := uuid.New()
+	seedUser(t, users, ownerID)
+	if _, err := tickets.Create(ctx, ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &ownerID}); err != nil {
+		t.Fatal(err)
+	}
+
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	rows, err := svc.ListByEvent(ctx, leader, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Owner == nil || rows[0].Owner.FirstName != "Ada" || rows[0].Owner.LastName != "Lovelace" {
+		t.Fatalf("owner summary missing during directory outage: %+v", rows)
+	}
+}
+
+func TestService_ListAssignableUsersCapsDirectoryResults(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	dir := identity.NewMemory()
+	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), dir)
+	ev := seedEvent(t, events, "WEBLAB")
+	for i := range 25 {
+		dir.PutUser(identity.Person{
+			ID:        uuid.New(),
+			Email:     fmt.Sprintf("member%02d@example.com", i),
+			FirstName: "Member",
+			LastName:  fmt.Sprintf("%02d", i),
+		})
+	}
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	people, err := svc.ListAssignableUsers(ctx, leader, ev.ID, "member")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(people) != 20 {
+		t.Fatalf("got %d assignable users, want 20", len(people))
+	}
+	if slices.Contains(dir.Ops, "ListUsers") || !slices.Contains(dir.Ops, "SearchUsers") {
+		t.Fatalf("directory operations = %v, want bounded SearchUsers only", dir.Ops)
+	}
+}
+
+func TestService_ListAssignableUsersDoesNotMatchStaleDirectoryNames(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	dir := identity.NewMemory()
+	users := user.NewMemoryStore()
+	target := uuid.New()
+	dir.PutUser(identity.Person{
+		ID: target, Email: "ada@example.com", FirstName: "Legacy", LastName: "Name",
+	})
+	if _, _, err := user.NewService(users).Ensure(ctx, target, user.Profile{
+		Email: "ada@example.com", FirstName: "Grace", LastName: "Hopper",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), users, dir)
+	ev := seedEvent(t, events, "WEBLAB")
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+
+	stale, err := svc.ListAssignableUsers(ctx, leader, ev.ID, "Legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("stale directory name matched shadow profile: %+v", stale)
+	}
+	current, err := svc.ListAssignableUsers(ctx, leader, ev.ID, "Grace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current) != 1 || current[0].ID != target || current[0].FirstName != "Grace" {
+		t.Fatalf("current shadow name missing: %+v", current)
 	}
 }
 
@@ -730,5 +897,180 @@ func TestService_CheckInUserFindsTicketAndUsesDoorStaff(t *testing.T) {
 	missing := uuid.MustParse("14141414-1414-1414-1414-141414141414")
 	if _, err := svc.CheckInUser(ctx, authz.Principal{ID: staff.String()}, sess.ID, missing); !errors.Is(err, ticket.ErrNotFound) {
 		t.Fatalf("missing ticket %v", err)
+	}
+}
+
+func TestService_ResolveAndCheckInUsesValidateScopeAndExactUniqueMatch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	users := user.NewMemoryStore()
+	staff := uuid.MustParse("15151515-1515-1515-1515-151515151515")
+	ev, err := events.Create(ctx, event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{staff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := seedDay(t, events, ev.ID, "Day 1")
+	sess := seedSession(t, events, day.ID, "Opening")
+	owner := uuid.MustParse("16161616-1616-1616-1616-161616161616")
+	seedUser(t, users, owner)
+	registered, err := tickets.Create(ctx, ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tickets.Create(ctx, ticket.Ticket{
+		EventID: ev.ID, TicketType: ticket.Guest, GuestFirstName: "Ada", GuestLastName: "Lovelace", GuestEmail: "guest@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := ticket.NewService(tickets, events, authz.NewAuthorizer(authz.DefaultPolicy()), users)
+	principal := authz.Principal{ID: staff.String()}
+
+	attendees, err := svc.SearchDoorAttendees(ctx, principal, ev.ID, "ada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attendees) != 2 || attendees[0].Name == "" || attendees[1].Name == "" {
+		t.Fatalf("attendees %+v", attendees)
+	}
+	if _, err := svc.SearchDoorAttendees(ctx, authz.Principal{ID: "unassigned"}, ev.ID, "ada"); !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("unassigned attendee search got %v", err)
+	}
+	if _, err := svc.ResolveAndCheckIn(ctx, authz.Principal{ID: "unassigned"}, sess.ID, ticket.DoorCheckInTarget{Query: "ada@example.com"}); !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("unassigned got %v", err)
+	}
+	if _, err := svc.ResolveAndCheckIn(ctx, principal, sess.ID, ticket.DoorCheckInTarget{Query: "Ada Lovelace"}); !errors.Is(err, ticket.ErrAmbiguous) {
+		t.Fatalf("ambiguous got %v", err)
+	}
+	resolved, err := svc.ResolveAndCheckIn(ctx, principal, sess.ID, ticket.DoorCheckInTarget{Query: " ADA@EXAMPLE.COM "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.TicketID != registered.ID || resolved.PersonName != "Ada Lovelace" || resolved.SessionID != sess.ID {
+		t.Fatalf("resolved %+v", resolved)
+	}
+	activity, err := svc.DoorActivity(ctx, principal, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activity.Total != 1 || len(activity.Items) != 1 || activity.Items[0].PersonName != "Ada Lovelace" {
+		t.Fatalf("activity %+v", activity)
+	}
+	if _, err := svc.DoorActivity(ctx, authz.Principal{ID: "unassigned"}, sess.ID); !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("unassigned activity got %v", err)
+	}
+}
+
+func TestService_ListDoorEventsUsesExplicitAssignmentBeforeTeamLookup(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	dir := identity.NewMemory()
+	staff := uuid.New()
+	ev, err := events.Create(ctx, event.Event{
+		Name: "Assigned", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{staff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), dir)
+	listed, err := svc.ListDoorEvents(ctx, authz.Principal{ID: staff.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != ev.ID {
+		t.Fatalf("listed %+v", listed)
+	}
+	if slices.Contains(dir.Ops, "GetGroup") {
+		t.Fatalf("explicit assignment performed remote team lookup: %v", dir.Ops)
+	}
+}
+
+func TestService_ListDoorEventsIncludesTeamDoorScanMembers(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	dir := identity.NewMemory()
+	dir.PutGroup(identity.Group{
+		ID: "g-weblab", Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB",
+		Attributes: map[string]string{"team_door_scan": "true"},
+	})
+	ev := seedEvent(t, events, "WEBLAB")
+	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), dir)
+	listed, err := svc.ListDoorEvents(ctx, authz.Principal{
+		ID: "member", Groups: []string{"/UYELER/ARGE/WEBLAB"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != ev.ID {
+		t.Fatalf("listed %+v", listed)
+	}
+	if !slices.Contains(dir.Ops, "GetGroup") {
+		t.Fatalf("team door grant was not checked: %v", dir.Ops)
+	}
+}
+
+func TestService_DoorOperationsUseBoundedStoreQueries(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	staff := uuid.New()
+	ev, err := events.Create(ctx, event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{staff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := seedDay(t, events, ev.ID, "Day 1")
+	session := seedSession(t, events, day.ID, "Opening")
+	ownerID := uuid.New()
+	store := &optimizedDoorStore{MemoryStore: ticket.NewMemoryStore()}
+	created, err := store.Create(ctx, ticket.Ticket{
+		EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &ownerID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.identity = ticket.DoorTicketIdentity{
+		Ticket: created, Name: "Ada Lovelace", Email: "ada@example.com", Found: true,
+	}
+	store.activity = ticket.DoorActivity{
+		Total: 1,
+		Items: []ticket.DoorCheckIn{{
+			ID: uuid.New(), SessionID: session.ID, EventDayID: day.ID,
+			PersonName: "Ada Lovelace",
+		}},
+	}
+	svc := ticket.NewService(store, events, authz.NewAuthorizer(authz.DefaultPolicy()))
+	principal := authz.Principal{ID: staff.String()}
+
+	attendees, err := svc.SearchDoorAttendees(ctx, principal, ev.ID, "ada")
+	if err != nil || len(attendees) != 1 || attendees[0].Name != "Ada Lovelace" {
+		t.Fatalf("attendees=%+v err=%v", attendees, err)
+	}
+	if _, err := svc.ResolveAndCheckIn(
+		ctx,
+		principal,
+		session.ID,
+		ticket.DoorCheckInTarget{Query: "ada@example.com"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	activity, err := svc.DoorActivity(ctx, principal, session.ID)
+	if err != nil || activity.Total != 1 {
+		t.Fatalf("activity=%+v err=%v", activity, err)
+	}
+	if store.listCalls != 0 || store.searchCalls != 2 || store.activityCalls != 1 {
+		t.Fatalf(
+			"list=%d search=%d owner=%d activity=%d",
+			store.listCalls,
+			store.searchCalls,
+			store.ownerLookupCalls,
+			store.activityCalls,
+		)
 	}
 }

@@ -624,8 +624,19 @@ func TestEventDoorStaffAssignHTTP(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&afterLeader); err != nil {
 		t.Fatal(err)
 	}
-	if len(afterLeader.DoorStaffIDs) != 1 || afterLeader.DoorStaffIDs[0].String() != staff {
-		t.Fatalf("leader overwrote %+v", afterLeader.DoorStaffIDs)
+	if len(afterLeader.DoorStaffIDs) != 0 {
+		t.Fatalf("leader response leaked door staff %+v", afterLeader.DoorStaffIDs)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/"+created.ID.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var preserved event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&preserved); err != nil {
+		t.Fatal(err)
+	}
+	if len(preserved.DoorStaffIDs) != 1 || preserved.DoorStaffIDs[0].String() != staff {
+		t.Fatalf("leader overwrote stored assignment %+v", preserved.DoorStaffIDs)
 	}
 
 	req = httptest.NewRequest(fiber.MethodPut, "/v1/events/"+created.ID.String(), strings.NewReader(
@@ -646,6 +657,51 @@ func TestEventDoorStaffAssignHTTP(t *testing.T) {
 	}
 	if len(cleared.DoorStaffIDs) != 0 {
 		t.Fatalf("cleared %+v", cleared.DoorStaffIDs)
+	}
+}
+
+func TestEventReadsHideDoorStaffExceptFromAssigners(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	staff := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	ev, err := store.Create(t.Context(), event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", Active: true, DoorStaffIDs: []uuid.UUID{staff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, app := range map[string]*fiber.App{
+		"anonymous": eventApp(t, authn.Identity{}, store),
+		"member":    eventApp(t, authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}, store),
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, path := range []string{"/v1/events", "/v1/events/" + ev.ID.String()} {
+				resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+				if err != nil {
+					t.Fatal(err)
+				}
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(body), staff.String()) || strings.Contains(string(body), "doorStaffIds") {
+					t.Fatalf("%s leaked door staff: %s", path, body)
+				}
+			}
+		})
+	}
+
+	resp, err := eventApp(t, yk(), store).Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/"+ev.ID.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), staff.String()) {
+		t.Fatalf("assigner missing door staff: %s", body)
 	}
 }
 

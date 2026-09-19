@@ -30,7 +30,7 @@ type Event struct {
 	AttendanceRatio *float64        `json:"attendanceRatio,omitempty"`
 	Images          []GalleryImage  `json:"images"`
 	ImageURLs       []string        `json:"imageUrls"`
-	DoorStaffIDs    []uuid.UUID     `json:"doorStaffIds"`
+	DoorStaffIDs    []uuid.UUID     `json:"doorStaffIds,omitempty"`
 	MailListID      *uuid.UUID      `json:"mailListId,omitempty"`
 	CreatedAt       time.Time       `json:"createdAt"`
 	UpdatedAt       time.Time       `json:"updatedAt"`

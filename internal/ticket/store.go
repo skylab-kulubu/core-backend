@@ -12,6 +12,7 @@ var (
 	ErrForbidden = errors.New("ticket: forbidden")
 	ErrInvalid   = errors.New("ticket: invalid")
 	ErrConflict  = errors.New("ticket: conflict")
+	ErrAmbiguous = errors.New("ticket: ambiguous match")
 )
 
 type Store interface {
@@ -27,4 +28,10 @@ type Store interface {
 	Update(ctx context.Context, t Ticket) (Ticket, error)
 	AddCheckIn(ctx context.Context, c CheckIn) (CheckIn, error)
 	HasCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID) (bool, error)
+}
+
+type DoorStore interface {
+	SearchDoorTickets(ctx context.Context, eventID uuid.UUID, query string, exact bool, limit int) ([]DoorTicketIdentity, error)
+	DoorTicketsByOwners(ctx context.Context, eventID uuid.UUID, ownerIDs []uuid.UUID) ([]DoorTicketIdentity, error)
+	DoorSessionActivity(ctx context.Context, sessionID uuid.UUID, limit int) (DoorActivity, error)
 }

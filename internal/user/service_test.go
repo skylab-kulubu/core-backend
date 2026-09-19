@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestService_EnsureCreatesThenUpdates(t *testing.T) {
+func TestService_EnsureCreatesThenRefreshesIdentity(t *testing.T) {
 	t.Parallel()
 
 	store := NewMemoryStore()
@@ -35,7 +35,7 @@ func TestService_EnsureCreatesThenUpdates(t *testing.T) {
 	if created {
 		t.Fatal("second ensure should update")
 	}
-	if second.Email != "b@example.com" || second.LastName != "Byron" {
+	if second.Email != "b@example.com" || second.LastName != "Lovelace" {
 		t.Fatalf("unexpected second upsert: %+v", second)
 	}
 
@@ -45,6 +45,52 @@ func TestService_EnsureCreatesThenUpdates(t *testing.T) {
 	}
 	if got.Email != "b@example.com" {
 		t.Fatalf("store has %q", got.Email)
+	}
+}
+
+func TestService_EnsureDoesNotOverwriteAdminPatchedName(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	id := uuid.MustParse("11111111-2222-3333-4444-555555555555")
+	ctx := context.Background()
+
+	if _, _, err := svc.Ensure(ctx, id, Profile{Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Patch(ctx, id, ProfilePatch{FirstName: ptr("Augusta"), LastName: ptr("King")}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _, err := svc.Ensure(ctx, id, Profile{Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FirstName != "Augusta" || got.LastName != "King" {
+		t.Fatalf("JIT reverted the patched name: %+v", got)
+	}
+}
+
+func TestService_EnsureDoesNotRepopulateAdminClearedName(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	id := uuid.MustParse("22222222-3333-4444-5555-666666666666")
+	ctx := context.Background()
+
+	if _, _, err := svc.Ensure(ctx, id, Profile{Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Patch(ctx, id, ProfilePatch{FirstName: ptr("")}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _, err := svc.Ensure(ctx, id, Profile{Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FirstName != "" || got.LastName != "Lovelace" {
+		t.Fatalf("JIT repopulated the cleared name: %+v", got)
 	}
 }
 

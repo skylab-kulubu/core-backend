@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 
@@ -233,6 +234,27 @@ func (m *Memory) ListUsers(_ context.Context) ([]Person, error) {
 	out := make([]Person, 0, len(m.people))
 	for _, p := range m.people {
 		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (m *Memory) SearchUsers(_ context.Context, query string, limit int) ([]Person, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("SearchUsers")
+	out := make([]Person, 0)
+	for _, person := range m.people {
+		if personMatches(person, strings.TrimSpace(query)) {
+			out = append(out, person)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left := strings.ToLower(out[i].LastName + "\x00" + out[i].FirstName + "\x00" + out[i].Email)
+		right := strings.ToLower(out[j].LastName + "\x00" + out[j].FirstName + "\x00" + out[j].Email)
+		return left < right
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }

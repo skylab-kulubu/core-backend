@@ -29,6 +29,8 @@ func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (User, error) {
 }
 
 func keepProfile(existing, u User) User {
+	u.FirstName = existing.FirstName
+	u.LastName = existing.LastName
 	if u.SchoolEmail == "" {
 		u.SchoolEmail = existing.SchoolEmail
 	}
@@ -127,6 +129,14 @@ func (s *MemoryStore) UpdateProfile(_ context.Context, u User) (User, error) {
 }
 
 func (s *MemoryStore) Search(_ context.Context, q string) ([]User, error) {
+	return s.search(q, 0), nil
+}
+
+func (s *MemoryStore) SearchLimit(_ context.Context, q string, limit int) ([]User, error) {
+	return s.search(q, limit), nil
+}
+
+func (s *MemoryStore) search(q string, limit int) []User {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	needle := strings.ToLower(strings.TrimSpace(q))
@@ -134,9 +144,12 @@ func (s *MemoryStore) Search(_ context.Context, q string) ([]User, error) {
 	for _, u := range s.byID {
 		if userMatches(u, needle) {
 			out = append(out, u)
+			if limit > 0 && len(out) == limit {
+				break
+			}
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (s *MemoryStore) FindByEmail(_ context.Context, email string) ([]User, error) {

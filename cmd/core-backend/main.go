@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"log"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -109,6 +111,7 @@ func main() {
 	if base != "" && realm != "" && os.Getenv("KEYCLOAK_CLIENT_ID") != "" && os.Getenv("KEYCLOAK_CLIENT_SECRET") != "" {
 		sky = &mail.SkyMail{
 			BaseURL: mail.APIOrigin(os.Getenv("SKYMAIL_URL")),
+			HTTP:    &http.Client{Timeout: 15 * time.Second},
 			Tokens: mail.ClientCredentials{
 				TokenURL:     base + "/realms/" + realm + "/protocol/openid-connect/token",
 				ClientID:     os.Getenv("KEYCLOAK_CLIENT_ID"),
@@ -150,9 +153,18 @@ func main() {
 		_, _ = certSvc.RecomputeTicket(ctx, ticketID)
 	})
 	var lists mail.Lists
+	mailSnapshots := eventmail.NewPostgresSnapshotStore(pool)
 	if sky != nil {
 		lists = sky
+		eventmail.MaintainSnapshotRetention(context.Background(), mailSnapshots, sky, time.Hour, func(err error) {
+			log.Printf("event mail snapshot retention: %v", err)
+		})
 	}
+
+	urlStore := shorturl.NewPostgresStore(pool)
+	shorturl.MaintainHitRetention(context.Background(), urlStore, time.Hour, func(err error) {
+		log.Printf("short-link hit retention: %v", err)
+	})
 
 	app := httpx.New(httpx.Deps{
 		Users:        user.NewService(users, dir),
@@ -162,11 +174,11 @@ func main() {
 		Tickets:      ticketSvc,
 		Competitors:  competitor.NewService(competitors, events, az),
 		Media:        media.NewService(mediaStore, blobs, az, cdnBase),
-		URLs:         shorturl.NewService(shorturl.NewPostgresStore(pool), az),
+		URLs:         shorturl.NewService(urlStore, az),
 		Certificates: certSvc,
 		SkyPass:      skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
 		Mail:         mailer,
-		EventMail:    eventmail.New(events, tickets, users, lists, az),
+		EventMail:    eventmail.New(events, tickets, users, lists, az, mailSnapshots),
 		ParseToken:   parse,
 	})
 

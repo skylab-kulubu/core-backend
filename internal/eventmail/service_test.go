@@ -53,6 +53,18 @@ func (m *memoryLists) GetList(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (m *memoryLists) DeleteList(_ context.Context, id uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.names[id]; !ok {
+		return mail.ErrListNotFound
+	}
+	m.gone[id] = true
+	delete(m.names, id)
+	delete(m.recs, id)
+	return nil
+}
+
 func (m *memoryLists) Recipients(_ context.Context, id uuid.UUID) ([]mail.ListRecipient, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -113,14 +125,14 @@ func TestSyncCreatesEventListOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := New(events, tickets, users, lists, authz.NewAuthorizer(authz.DefaultPolicy()))
-	first, err := svc.Sync(ctx, mailLeader(), ev.ID)
+	first, err := svc.Sync(ctx, mailLeader(), ev.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.MailListID == uuid.Nil || first.RecipientCount != 2 || first.Name != "WEBLAB SkyDays" {
 		t.Fatalf("first %+v", first)
 	}
-	second, err := svc.Sync(ctx, mailLeader(), ev.ID)
+	second, err := svc.Sync(ctx, mailLeader(), ev.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,14 +163,14 @@ func TestSyncRecreatesMissingList(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := New(events, tickets, users, lists, authz.NewAuthorizer(authz.DefaultPolicy()))
-	first, err := svc.Sync(ctx, mailLeader(), ev.ID)
+	first, err := svc.Sync(ctx, mailLeader(), ev.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	lists.mu.Lock()
 	lists.gone[first.MailListID] = true
 	lists.mu.Unlock()
-	second, err := svc.Sync(ctx, mailLeader(), ev.ID)
+	second, err := svc.Sync(ctx, mailLeader(), ev.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +191,7 @@ func TestSyncForbiddenForMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := New(events, ticket.NewMemoryStore(), user.NewMemoryStore(), newMemoryLists(), authz.NewAuthorizer(authz.DefaultPolicy()))
-	_, err = svc.Sync(ctx, authz.Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}}, ev.ID)
+	_, err = svc.Sync(ctx, authz.Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}}, ev.ID, nil)
 	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("err %v", err)
 	}

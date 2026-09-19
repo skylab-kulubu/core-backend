@@ -1,4 +1,4 @@
-CREATE TABLE url_hits (
+CREATE TABLE IF NOT EXISTS url_hits (
     id UUID PRIMARY KEY,
     url_id UUID NOT NULL REFERENCES urls (id) ON DELETE CASCADE,
     alias TEXT NOT NULL,
@@ -9,4 +9,4 @@ CREATE TABLE url_hits (
     user_id UUID
 );
 
-CREATE INDEX url_hits_url_id_at_idx ON url_hits (url_id, at DESC);
+CREATE INDEX IF NOT EXISTS url_hits_url_id_at_idx ON url_hits (url_id, at DESC);

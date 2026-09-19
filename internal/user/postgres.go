@@ -49,8 +49,8 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (id) DO UPDATE SET
 			email = excluded.email,
-			first_name = excluded.first_name,
-			last_name = excluded.last_name,
+			first_name = users.first_name,
+			last_name = users.last_name,
 			username = CASE
 				WHEN excluded.username <> '' THEN excluded.username
 				ELSE users.username
@@ -105,6 +105,14 @@ func (s *PostgresStore) UpdateProfile(ctx context.Context, u User) (User, error)
 }
 
 func (s *PostgresStore) Search(ctx context.Context, q string) ([]User, error) {
+	return s.search(ctx, q, 0)
+}
+
+func (s *PostgresStore) SearchLimit(ctx context.Context, q string, limit int) ([]User, error) {
+	return s.search(ctx, q, limit)
+}
+
+func (s *PostgresStore) search(ctx context.Context, q string, limit int) ([]User, error) {
 	needle := strings.TrimSpace(q)
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+userCols+`
@@ -117,7 +125,8 @@ func (s *PostgresStore) Search(ctx context.Context, q string) ([]User, error) {
 		   OR lower(last_name) LIKE '%' || lower($1) || '%'
 		   OR lower(first_name || ' ' || last_name) LIKE '%' || lower($1) || '%'
 		ORDER BY last_name, first_name, email
-	`, needle)
+		LIMIT CASE WHEN $2 > 0 THEN $2 ELSE NULL END
+	`, needle, limit)
 	if err != nil {
 		return nil, err
 	}

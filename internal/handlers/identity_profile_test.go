@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -105,7 +106,7 @@ func TestPatchOtherUserOmitLeavesEmptyClearsHTTP(t *testing.T) {
 		t.Fatalf("omit %+v", omitted)
 	}
 
-	resp = patchUserJSON(t, app, id, `{"phone":"","linkedin":""}`)
+	resp = patchUserJSON(t, app, id, `{"firstName":"","phone":"","linkedin":""}`)
 	if resp.StatusCode != fiber.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("clear status %d body %s", resp.StatusCode, b)
@@ -119,6 +120,9 @@ func TestPatchOtherUserOmitLeavesEmptyClearsHTTP(t *testing.T) {
 	}
 	if cleared["linkedin"] != "" && cleared["linkedin"] != nil {
 		t.Fatalf("linkedin not cleared %+v", cleared)
+	}
+	if cleared["firstName"] != "" {
+		t.Fatalf("first name not cleared %+v", cleared)
 	}
 	if cleared["department"] != "CS" || cleared["university"] != "YTÜ" {
 		t.Fatalf("cleared wiped neighbors %+v", cleared)
@@ -238,6 +242,70 @@ func usersReadIdent() authn.Identity {
 	return authn.Identity{
 		ID:    uuid.MustParse("33333333-3333-3333-3333-333333333333"),
 		Roles: []string{"users:read"},
+	}
+}
+
+func TestUsersReadListUsersOmitsPrivateDirectoryFieldsHTTP(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	id := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+	dir.PutUser(identity.Person{
+		ID: id, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace",
+		Username: "private-user", SchoolEmail: "ada@std.yildiz.edu.tr", SkyNumber: "SKY-0000001",
+	})
+	dir.PutGroup(identity.Group{ID: "g-forms", Name: "FORMS", Path: "/SERVICES/FORMS"})
+	if err := dir.AddMember(t.Context(), "g-forms", id); err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.SetGroupClientRoles(t.Context(), "g-forms", []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}}); err != nil {
+		t.Fatal(err)
+	}
+	app := identityApp(t, usersReadIdent(), dir, store)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{"username", "schoolEmail", "skyNumber", "private-user", "std.yildiz", "SKY-0000001"} {
+		if strings.Contains(string(raw), private) {
+			t.Fatalf("private directory field leaked in list: %s", raw)
+		}
+	}
+	if _, err := store.Get(t.Context(), id); !errors.Is(err, user.ErrNotFound) {
+		t.Fatalf("users:read list mutated the shadow store: %v", err)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users?q=std.yildiz", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var privateMatches []identity.Person
+	if err := json.NewDecoder(resp.Body).Decode(&privateMatches); err != nil {
+		t.Fatal(err)
+	}
+	if len(privateMatches) != 0 {
+		t.Fatalf("users:read could search a private field: %+v", privateMatches)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users?role=skyforms:access&q=std.yildiz", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateMatches = nil
+	if err := json.NewDecoder(resp.Body).Decode(&privateMatches); err != nil {
+		t.Fatal(err)
+	}
+	if len(privateMatches) != 0 {
+		t.Fatalf("users:read seat search exposed a private-field match: %+v", privateMatches)
 	}
 }
 
