@@ -54,7 +54,7 @@ func New(deps Deps) *fiber.App {
 	tickets := handlers.NewTicketHandler(deps.Tickets)
 	competitors := handlers.NewCompetitorHandler(deps.Competitors)
 	mediaH := handlers.NewMediaHandler(deps.Media)
-	urls := handlers.NewURLHandler(deps.URLs)
+	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken)
 	jit := middlewares.NewJIT(deps.Users, deps.Mail)
 	var certs *handlers.CertificateHandler
 	if deps.Certificates != nil {
@@ -196,6 +196,7 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/urls", urls.Create)
 	app.Get("/v1/urls", urls.ListMine)
 	app.Get("/v1/urls/all", urls.ListAll)
+	app.Get("/v1/urls/:id/hits", urls.ListHits)
 	app.Patch("/v1/urls/:id", urls.Update)
 	app.Delete("/v1/urls/:id", urls.Delete)
 

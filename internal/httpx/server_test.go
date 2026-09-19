@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -381,5 +382,177 @@ func TestSkyPassJWKSAnonymous(t *testing.T) {
 	}
 	if len(doc.Keys) != 1 || doc.Keys[0].Kty != "RSA" || doc.Keys[0].N == "" {
 		t.Fatalf("jwks %+v", doc)
+	}
+}
+
+func TestGoRedirectRecordsHitsWithoutRequiringLogin(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	app := memoryApp(keys.Parse())
+	admin := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	clicker := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	create := httptest.NewRequest(fiber.MethodPost, "/v1/urls", strings.NewReader(`{"url":"https://skylab.com","alias":"club"}`))
+	create.Header.Set("Content-Type", "application/json")
+	create.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{
+		"sub": admin.String(), "email": "yk@example.com", "groups": []string{"/UYELER/YK"},
+	}))
+	resp, err := app.Test(create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create %d %s", resp.StatusCode, body)
+	}
+	var created shorturl.URL
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	anon := httptest.NewRequest(fiber.MethodGet, "/v1/go/club", nil)
+	anon.Header.Set("User-Agent", "WhatsApp/2.0")
+	anon.Header.Set("X-Forwarded-For", "203.0.113.9")
+	redir, err := app.Test(anon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redir.StatusCode != fiber.StatusMovedPermanently {
+		t.Fatalf("anon %d", redir.StatusCode)
+	}
+
+	bad := httptest.NewRequest(fiber.MethodGet, "/v1/go/club", nil)
+	bad.Header.Set("Authorization", "Bearer not-a-jwt")
+	badResp, err := app.Test(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if badResp.StatusCode != fiber.StatusMovedPermanently {
+		t.Fatalf("invalid bearer hop %d", badResp.StatusCode)
+	}
+
+	authed := httptest.NewRequest(fiber.MethodGet, "/v1/go/club", nil)
+	authed.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{"sub": clicker.String()}))
+	if _, err := app.Test(authed); err != nil {
+		t.Fatal(err)
+	}
+
+	cookie := httptest.NewRequest(fiber.MethodGet, "/v1/go/club", nil)
+	cookie.AddCookie(&http.Cookie{Name: "access_token", Value: keys.Token(t, jwt.MapClaims{"sub": clicker.String()})})
+	if _, err := app.Test(cookie); err != nil {
+		t.Fatal(err)
+	}
+
+	qrResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?logo=1", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qrResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("qr %d", qrResp.StatusCode)
+	}
+
+	list := httptest.NewRequest(fiber.MethodGet, "/v1/urls/"+created.ID.String()+"/hits", nil)
+	list.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{
+		"sub": admin.String(), "groups": []string{"/UYELER/YK"},
+	}))
+	hitsResp, err := app.Test(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hitsResp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(hitsResp.Body)
+		t.Fatalf("hits %d %s", hitsResp.StatusCode, body)
+	}
+	var hits []shorturl.Hit
+	if err := json.NewDecoder(hitsResp.Body).Decode(&hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 4 {
+		t.Fatalf("hits %+v", hits)
+	}
+	if hits[0].UserID != nil {
+		t.Fatalf("cookie hop should stay anonymous %+v", hits[0])
+	}
+	if hits[1].UserID == nil || *hits[1].UserID != clicker {
+		t.Fatalf("bearer %+v", hits[1])
+	}
+	if hits[2].UserID != nil || hits[3].UserID != nil {
+		t.Fatalf("public hops should be anonymous %+v", hits)
+	}
+	if hits[3].IP != "203.0.113.9" || hits[3].UserAgent != "WhatsApp/2.0" {
+		t.Fatalf("anon meta %+v", hits[3])
+	}
+}
+
+func TestHitsListAuthThroughJWT(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	app := memoryApp(keys.Parse())
+	owner := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	mod := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	create := httptest.NewRequest(fiber.MethodPost, "/v1/urls", strings.NewReader(`{"url":"https://skylab.com","alias":"club"}`))
+	create.Header.Set("Content-Type", "application/json")
+	create.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{
+		"sub": owner.String(),
+		"resource_access": map[string]any{
+			"core": map[string]any{"roles": []any{"url:create", "url:access"}},
+		},
+	}))
+	resp, err := app.Test(create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create %d %s", resp.StatusCode, body)
+	}
+	var created shorturl.URL
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/urls/" + created.ID.String() + "/hits"
+
+	member := httptest.NewRequest(fiber.MethodGet, path, nil)
+	member.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{
+		"sub": owner.String(),
+		"resource_access": map[string]any{
+			"core": map[string]any{"roles": []any{"url:access"}},
+		},
+	}))
+	memberResp, err := app.Test(member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if memberResp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("member %d", memberResp.StatusCode)
+	}
+
+	modReq := httptest.NewRequest(fiber.MethodGet, path, nil)
+	modReq.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{
+		"sub": mod.String(),
+		"resource_access": map[string]any{
+			"core": map[string]any{"roles": []any{"url:moderator"}},
+		},
+	}))
+	modResp, err := app.Test(modReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modResp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(modResp.Body)
+		t.Fatalf("moderator %d %s", modResp.StatusCode, body)
+	}
+
+	ykReq := httptest.NewRequest(fiber.MethodGet, path, nil)
+	ykReq.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{
+		"sub":    uuid.MustParse("22222222-2222-2222-2222-222222222222").String(),
+		"groups": []string{"/UYELER/YK"},
+	}))
+	ykResp, err := app.Test(ykReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ykResp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(ykResp.Body)
+		t.Fatalf("privileged %d %s", ykResp.StatusCode, body)
 	}
 }

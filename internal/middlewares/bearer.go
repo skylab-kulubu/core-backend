@@ -13,14 +13,22 @@ func Bearer(parse func(string) (authn.Identity, error)) fiber.Handler {
 		if header == "" {
 			return c.Next()
 		}
-		if parse == nil || !strings.HasPrefix(header, "Bearer ") {
-			return fiber.ErrUnauthorized
-		}
-		ident, err := parse(strings.TrimPrefix(header, "Bearer "))
+		ident, err := IdentityFromBearer(header, parse)
 		if err != nil {
 			return fiber.ErrUnauthorized
 		}
 		c.Locals(authn.LocalsIdentity, ident)
 		return c.Next()
 	}
+}
+
+func IdentityFromBearer(header string, parse func(string) (authn.Identity, error)) (authn.Identity, error) {
+	if parse == nil || !strings.HasPrefix(header, "Bearer ") {
+		return authn.Identity{}, fiber.ErrUnauthorized
+	}
+	ident, err := parse(strings.TrimPrefix(header, "Bearer "))
+	if err != nil {
+		return authn.Identity{}, err
+	}
+	return ident, nil
 }

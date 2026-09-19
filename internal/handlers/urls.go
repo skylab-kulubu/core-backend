@@ -2,19 +2,23 @@ package handlers
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/middlewares"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 )
 
 type URLHandler struct {
-	svc shorturl.Service
+	svc   shorturl.Service
+	parse func(string) (authn.Identity, error)
 }
 
-func NewURLHandler(svc shorturl.Service) *URLHandler {
-	return &URLHandler{svc: svc}
+func NewURLHandler(svc shorturl.Service, parse func(string) (authn.Identity, error)) *URLHandler {
+	return &URLHandler{svc: svc, parse: parse}
 }
 
 type urlBody struct {
@@ -40,7 +44,12 @@ func urlError(c fiber.Ctx, err error) error {
 }
 
 func (h *URLHandler) Redirect(c fiber.Ctx) error {
-	u, err := h.svc.Redirect(c.Context(), c.Params("alias"))
+	u, err := h.svc.Redirect(c.Context(), c.Params("alias"), shorturl.Hit{
+		IP:        hopIP(c),
+		UserAgent: strings.Clone(c.Get(fiber.HeaderUserAgent)),
+		Referer:   strings.Clone(c.Get(fiber.HeaderReferer)),
+		UserID:    h.hopUserID(c),
+	})
 	if err != nil {
 		return urlError(c, err)
 	}
@@ -108,6 +117,22 @@ func (h *URLHandler) ListAll(c fiber.Ctx) error {
 	return c.JSON(items)
 }
 
+func (h *URLHandler) ListHits(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	hits, err := h.svc.ListHits(c.Context(), p, id)
+	if err != nil {
+		return urlError(c, err)
+	}
+	return c.JSON(hits)
+}
+
 func (h *URLHandler) Update(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
@@ -141,4 +166,24 @@ func (h *URLHandler) Delete(c fiber.Ctx) error {
 		return urlError(c, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (h *URLHandler) hopUserID(c fiber.Ctx) *uuid.UUID {
+	if ident, ok := c.Locals(authn.LocalsIdentity).(authn.Identity); ok && ident.ID != uuid.Nil {
+		id := ident.ID
+		return &id
+	}
+	ident, err := middlewares.IdentityFromBearer(c.Get(fiber.HeaderAuthorization), h.parse)
+	if err != nil || ident.ID == uuid.Nil {
+		return nil
+	}
+	id := ident.ID
+	return &id
+}
+
+func hopIP(c fiber.Ctx) string {
+	if xff := c.Get(fiber.HeaderXForwardedFor); xff != "" {
+		return strings.Clone(strings.TrimSpace(strings.Split(xff, ",")[0]))
+	}
+	return strings.Clone(c.IP())
 }
