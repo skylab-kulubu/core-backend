@@ -109,11 +109,11 @@ func (h *CertificateHandler) Issue(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil || body.TicketID == uuid.Nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	created, err := h.svc.Issue(c.Context(), p, eventID, body.TicketID)
+	created, err := h.svc.QueueManual(c.Context(), p, eventID, body.TicketID)
 	if err != nil {
 		return certError(c, err)
 	}
-	return c.Status(fiber.StatusCreated).JSON(created)
+	return c.Status(fiber.StatusAccepted).JSON(created)
 }
 
 func (h *CertificateHandler) Recompute(c fiber.Ctx) error {
@@ -125,11 +125,11 @@ func (h *CertificateHandler) Recompute(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	issued, err := h.svc.RecomputeEvent(c.Context(), p, eventID)
+	issued, err := h.svc.Finalize(c.Context(), p, eventID)
 	if err != nil {
 		return certError(c, err)
 	}
-	return c.JSON(issued)
+	return c.Status(fiber.StatusAccepted).JSON(issued)
 }
 
 func (h *CertificateHandler) Revoke(c fiber.Ctx) error {
