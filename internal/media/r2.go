@@ -3,6 +3,7 @@ package media
 import (
 	"bytes"
 	"context"
+	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -14,6 +15,18 @@ type R2Config struct {
 	AccessKey string
 	SecretKey string
 	Bucket    string
+}
+
+func (r *R2) Read(ctx context.Context, key string) ([]byte, error) {
+	got, err := r.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(r.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer got.Body.Close()
+	return io.ReadAll(got.Body)
 }
 
 type R2 struct {

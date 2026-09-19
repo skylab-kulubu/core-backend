@@ -25,7 +25,7 @@ func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (User, error) {
 	if !ok {
 		return User{}, ErrNotFound
 	}
-	return u, nil
+	return withStudentCardStatus(u), nil
 }
 
 func keepProfile(existing, u User) User {
@@ -103,7 +103,7 @@ func (s *MemoryStore) Upsert(_ context.Context, u User) (User, bool, error) {
 		}
 	}
 	s.byID[u.ID] = u
-	return u, !existed, nil
+	return withStudentCardStatus(u), !existed, nil
 }
 
 func (s *MemoryStore) UpdateProfile(_ context.Context, u User) (User, error) {
@@ -125,7 +125,7 @@ func (s *MemoryStore) UpdateProfile(_ context.Context, u User) (User, error) {
 	existing.ProfilePictureURL = u.ProfilePictureURL
 	existing.UpdatedAt = time.Now().UTC()
 	s.byID[u.ID] = existing
-	return existing, nil
+	return withStudentCardStatus(existing), nil
 }
 
 func (s *MemoryStore) Search(_ context.Context, q string) ([]User, error) {
@@ -143,7 +143,7 @@ func (s *MemoryStore) search(q string, limit int) []User {
 	out := make([]User, 0)
 	for _, u := range s.byID {
 		if userMatches(u, needle) {
-			out = append(out, u)
+			out = append(out, withStudentCardStatus(u))
 			if limit > 0 && len(out) == limit {
 				break
 			}
@@ -162,7 +162,7 @@ func (s *MemoryStore) FindByEmail(_ context.Context, email string) ([]User, erro
 	}
 	for _, u := range s.byID {
 		if strings.ToLower(u.Email) == want {
-			out = append(out, u)
+			out = append(out, withStudentCardStatus(u))
 		}
 	}
 	return out, nil
@@ -176,7 +176,7 @@ func (s *MemoryStore) FindByStudentCardUID(_ context.Context, uid string) (User,
 	}
 	for _, u := range s.byID {
 		if u.StudentCardUID == uid {
-			return u, nil
+			return withStudentCardStatus(u), nil
 		}
 	}
 	return User{}, ErrNotFound
@@ -199,7 +199,7 @@ func (s *MemoryStore) SetStudentCardUID(_ context.Context, id uuid.UUID, uid str
 	u.StudentCardUID = uid
 	u.UpdatedAt = time.Now().UTC()
 	s.byID[id] = u
-	return u, nil
+	return withStudentCardStatus(u), nil
 }
 
 func (s *MemoryStore) NextSkyNumber(_ context.Context) (string, error) {

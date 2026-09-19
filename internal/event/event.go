@@ -26,6 +26,7 @@ type Event struct {
 	SeasonID        *uuid.UUID      `json:"seasonId,omitempty"`
 	CoverImageID    *uuid.UUID      `json:"coverImageId,omitempty"`
 	CoverImageURL   string          `json:"coverImageUrl,omitempty"`
+	CoverColors     []string        `json:"coverColors"`
 	AttendanceRule  string          `json:"attendanceRule"`
 	AttendanceRatio *float64        `json:"attendanceRatio,omitempty"`
 	Images          []GalleryImage  `json:"images"`
@@ -49,6 +50,7 @@ type Resource struct {
 	Location      string     `json:"location"`
 	OwnerTeam     string     `json:"ownerTeam"`
 	CoverImageURL string     `json:"coverImageUrl,omitempty"`
+	CoverColors   []string   `json:"coverColors"`
 	Active        bool       `json:"active"`
 	Ranked        bool       `json:"ranked"`
 }
@@ -62,6 +64,7 @@ func (e Event) Resource() Resource {
 		Location:      e.Location,
 		OwnerTeam:     e.OwnerTeam,
 		CoverImageURL: media.PublicURL("", e.CoverImageURL),
+		CoverColors:   append([]string{}, e.CoverColors...),
 		Active:        e.Active,
 		Ranked:        e.Ranked,
 	}
@@ -79,6 +82,9 @@ func emptyGallery(e Event) Event {
 	}
 	if e.ExtraFormURLs == nil {
 		e.ExtraFormURLs = []EventFormLink{}
+	}
+	if e.CoverColors == nil {
+		e.CoverColors = []string{}
 	}
 	return e
 }
