@@ -3,8 +3,6 @@ package migrate_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +15,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -34,11 +33,21 @@ func TestApplyRepairsBrownfieldSchema(t *testing.T) {
 	if _, err := pool.Exec(ctx, `SELECT cover_colors, cover_colors_computed FROM media`); err != nil {
 		t.Fatal(err)
 	}
+	assertLifecycleSchema(t, pool)
 
 	if _, err := pool.Exec(ctx, `ALTER TABLE events DROP COLUMN extra_form_urls`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `DROP INDEX url_hits_url_id_at_idx`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE urls DROP COLUMN disabled_at`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE media DROP COLUMN deleted_by`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DROP INDEX events_current_owner_team_idx`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `DROP TABLE schema_migrations`); err != nil {
@@ -67,59 +76,68 @@ func TestApplyRepairsBrownfieldSchema(t *testing.T) {
 	if indexCount != 1 {
 		t.Fatalf("url_hits index count = %d", indexCount)
 	}
+	assertLifecycleSchema(t, pool)
 	if err := migrate.Apply(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func postgresPool(t *testing.T) *pgxpool.Pool {
+func assertLifecycleSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not available")
+	var count int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*)
+		FROM (VALUES
+			('events', 'archived_at'),
+			('events', 'archived_by'),
+			('event_days', 'archived_at'),
+			('event_days', 'archived_by'),
+			('sessions', 'archived_at'),
+			('sessions', 'archived_by'),
+			('seasons', 'archived_at'),
+			('seasons', 'archived_by'),
+			('competitors', 'withdrawn_at'),
+			('competitors', 'withdrawn_by'),
+			('media', 'deleted_at'),
+			('media', 'deleted_by'),
+			('urls', 'disabled_at'),
+			('urls', 'disabled_by')
+		) AS expected(table_name, column_name)
+		JOIN information_schema.columns actual
+		  ON actual.table_schema = 'public'
+		 AND actual.table_name = expected.table_name
+		 AND actual.column_name = expected.column_name
+	`).Scan(&count); err != nil {
+		t.Fatal(err)
 	}
-	name := fmt.Sprintf("core-migrate-%d", time.Now().UnixNano())
-	run := exec.Command("docker", "run", "-d", "--rm", "--name", name,
-		"-e", "POSTGRES_PASSWORD=postgres",
-		"-e", "POSTGRES_DB=coretest",
-		"-p", "127.0.0.1::5432",
-		"postgres:17-alpine",
-	)
-	out, err := run.CombinedOutput()
-	if err != nil {
-		t.Skipf("docker run postgres: %v %s", err, out)
+	if count != 14 {
+		t.Fatalf("lifecycle column count = %d, want 14", count)
 	}
-	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", name).Run()
-	})
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*)
+		FROM (VALUES
+			('events_current_owner_team_idx'),
+			('event_days_current_event_idx'),
+			('sessions_current_event_day_idx'),
+			('seasons_current_start_date_idx'),
+			('competitors_current_event_idx'),
+			('competitors_current_user_idx'),
+			('media_current_created_at_idx'),
+			('urls_current_created_by_idx')
+		) AS expected(index_name)
+		JOIN pg_indexes actual
+		  ON actual.schemaname = 'public'
+		 AND actual.indexname = expected.index_name
+	`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 8 {
+		t.Fatalf("lifecycle index count = %d, want 8", count)
+	}
+}
 
-	portOut, err := exec.Command("docker", "port", name, "5432/tcp").CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker port: %v %s", err, portOut)
-	}
-	addr := strings.TrimSpace(string(portOut))
-	parts := strings.Split(addr, "\n")[0]
-	hostport := parts
-	if i := strings.LastIndex(parts, "://"); i >= 0 {
-		hostport = parts[i+3:]
-	}
-
-	url := fmt.Sprintf("postgres://postgres:postgres@%s/coretest?sslmode=disable", hostport)
-	deadline := time.Now().Add(30 * time.Second)
-	var pool *pgxpool.Pool
-	for {
-		pool, err = pgxpool.New(context.Background(), url)
-		if err == nil {
-			err = pool.Ping(context.Background())
-		}
-		if err == nil {
-			t.Cleanup(pool.Close)
-			return pool
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("postgres never became ready: %v", err)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+func postgresPool(t *testing.T) *pgxpool.Pool {
+	return testpostgres.Start(t)
 }
 
 func TestApplyFreshThenIdempotent(t *testing.T) {

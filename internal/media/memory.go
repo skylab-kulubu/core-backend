@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type MemoryStore struct {
@@ -38,7 +39,7 @@ func (s *MemoryStore) ListPendingCoverColors(_ context.Context, limit int) ([]Me
 	defer s.mu.Unlock()
 	out := make([]Media, 0)
 	for _, m := range s.byID {
-		if m.Kind != KindImage || m.CoverColorsComputed {
+		if m.DeletedAt != nil || m.Kind != KindImage || m.CoverColorsComputed {
 			continue
 		}
 		out = append(out, m)
@@ -53,7 +54,7 @@ func (s *MemoryStore) SetCoverColors(_ context.Context, id uuid.UUID, colors []s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, ok := s.byID[id]
-	if !ok {
+	if !ok || m.DeletedAt != nil {
 		return ErrNotFound
 	}
 	m.CoverColors = append([]string{}, colors...)
@@ -67,20 +68,41 @@ func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (Media, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, ok := s.byID[id]
-	if !ok {
+	if !ok || m.DeletedAt != nil {
 		return Media{}, ErrNotFound
 	}
 	return m, nil
 }
 
 func (s *MemoryStore) List(_ context.Context) ([]Media, error) {
+	return s.list(lifecycle.CurrentOnly), nil
+}
+
+func (s *MemoryStore) ListLifecycle(_ context.Context, visibility lifecycle.Visibility) ([]Media, error) {
+	return s.list(visibility), nil
+}
+
+func (s *MemoryStore) list(visibility lifecycle.Visibility) []Media {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Media, 0, len(s.byID))
 	for _, m := range s.byID {
+		if !visibility.Matches(m.DeletedAt != nil) {
+			continue
+		}
 		out = append(out, m)
 	}
-	return out, nil
+	return out
+}
+
+func (s *MemoryStore) GetIncludingDeleted(_ context.Context, id uuid.UUID) (Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok {
+		return Media{}, ErrNotFound
+	}
+	return m, nil
 }
 
 func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) (Media, error) {

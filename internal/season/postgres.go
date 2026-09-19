@@ -3,10 +3,12 @@ package season
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type PostgresStore struct {
@@ -17,12 +19,27 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const seasonCols = `id, name, start_date, end_date, active, created_at, updated_at`
+const seasonCols = `id, name, start_date, end_date, active, archived_at, archived_by, created_at, updated_at`
 
 func (s *PostgresStore) List(ctx context.Context, activeOnly bool) ([]Season, error) {
+	return s.list(ctx, activeOnly, lifecycle.CurrentOnly)
+}
+
+func (s *PostgresStore) ListLifecycle(ctx context.Context, visibility lifecycle.Visibility) ([]Season, error) {
+	return s.list(ctx, false, visibility)
+}
+
+func (s *PostgresStore) list(ctx context.Context, activeOnly bool, visibility lifecycle.Visibility) ([]Season, error) {
 	q := `SELECT ` + seasonCols + ` FROM seasons`
+	where := make([]string, 0, 2)
+	if condition := visibility.SQLCondition("archived_at"); condition != "" {
+		where = append(where, condition)
+	}
 	if activeOnly {
-		q += ` WHERE active = true`
+		where = append(where, `active = true`)
+	}
+	if len(where) > 0 {
+		q += ` WHERE ` + strings.Join(where, ` AND `)
 	}
 	q += ` ORDER BY start_date NULLS LAST, name`
 	rows, err := s.pool.Query(ctx, q)
@@ -42,7 +59,19 @@ func (s *PostgresStore) List(ctx context.Context, activeOnly bool) ([]Season, er
 }
 
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Season, error) {
-	item, err := scanSeason(s.pool.QueryRow(ctx, `SELECT `+seasonCols+` FROM seasons WHERE id = $1`, id))
+	return s.get(ctx, id, false)
+}
+
+func (s *PostgresStore) GetIncludingArchived(ctx context.Context, id uuid.UUID) (Season, error) {
+	return s.get(ctx, id, true)
+}
+
+func (s *PostgresStore) get(ctx context.Context, id uuid.UUID, includeArchived bool) (Season, error) {
+	q := `SELECT ` + seasonCols + ` FROM seasons WHERE id = $1`
+	if !includeArchived {
+		q += ` AND archived_at IS NULL`
+	}
+	item, err := scanSeason(s.pool.QueryRow(ctx, q, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Season{}, ErrNotFound
 	}
@@ -62,7 +91,7 @@ func (s *PostgresStore) Create(ctx context.Context, in Season) (Season, error) {
 func (s *PostgresStore) Update(ctx context.Context, in Season) (Season, error) {
 	item, err := scanSeason(s.pool.QueryRow(ctx, `
 		UPDATE seasons SET name = $2, start_date = $3, end_date = $4, active = $5, updated_at = now()
-		WHERE id = $1
+		WHERE id = $1 AND archived_at IS NULL
 		RETURNING `+seasonCols, in.ID, in.Name, in.StartDate, in.EndDate, in.Active))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Season{}, ErrNotFound
@@ -87,6 +116,6 @@ type rowScanner interface {
 
 func scanSeason(row rowScanner) (Season, error) {
 	var item Season
-	err := row.Scan(&item.ID, &item.Name, &item.StartDate, &item.EndDate, &item.Active, &item.CreatedAt, &item.UpdatedAt)
+	err := row.Scan(&item.ID, &item.Name, &item.StartDate, &item.EndDate, &item.Active, &item.ArchivedAt, &item.ArchivedBy, &item.CreatedAt, &item.UpdatedAt)
 	return item, err
 }
