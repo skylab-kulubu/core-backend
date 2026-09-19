@@ -1,7 +1,10 @@
 package httpx
 
 import (
+	"time"
+
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/limiter"
 	"github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
@@ -71,9 +74,12 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/go/:alias/qr", urls.QR)
 	app.Get("/v1/go/:alias", urls.Redirect)
 	if certs != nil {
-		app.Get("/v1/certificates/verify/:serial/pdf", certs.Download)
-		app.Get("/v1/certificates/verify/:serial/qr", certs.QR)
-		app.Get("/v1/certificates/verify/:serial", certs.Verify)
+		publicCertificateLimit := limiter.New(limiter.Config{Max: 120, Expiration: time.Minute})
+		app.Get("/c/:serial", publicCertificateLimit, certs.PublicPage)
+		app.Get("/v1/public/certificates/:serial", publicCertificateLimit, certs.Verify)
+		app.Get("/v1/certificates/verify/:serial/pdf", publicCertificateLimit, certs.Download)
+		app.Get("/v1/certificates/verify/:serial/qr", publicCertificateLimit, certs.QR)
+		app.Get("/v1/certificates/verify/:serial", publicCertificateLimit, certs.Verify)
 	}
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
@@ -139,10 +145,27 @@ func New(deps Deps) *fiber.App {
 	}
 	if certs != nil {
 		app.Get("/v1/events/:eventId/certificates", certs.ListByEvent)
+		app.Get("/v1/events/:eventId/certificates/summary", certs.Summary)
+		app.Get("/v1/events/:eventId/certificates/template", certs.Resolve)
+		app.Post("/v1/events/:eventId/certificates/preview", certs.PreviewEvent)
+		app.Get("/v1/events/:eventId/certificate-batches", certs.ListBatches)
 		app.Post("/v1/events/:eventId/certificates/issue", certs.Issue)
+		app.Post("/v1/events/:eventId/certificates/finalize", certs.Finalize)
 		app.Post("/v1/events/:eventId/certificates/recompute", certs.Recompute)
 		app.Get("/v1/certificates/me", certs.Mine)
+		app.Get("/v1/certificate-templates", certs.ListTemplates)
+		app.Post("/v1/certificate-templates", certs.CreateTemplate)
+		app.Get("/v1/certificate-templates/:id", certs.GetTemplate)
+		app.Put("/v1/certificate-templates/:id", certs.UpdateTemplate)
+		app.Post("/v1/certificate-templates/:id/publish", certs.PublishTemplate)
+		app.Post("/v1/certificate-templates/:id/preview", certs.PreviewTemplate)
+		app.Get("/v1/certificate-template-bindings", certs.ListBindings)
+		app.Put("/v1/certificate-template-bindings", certs.SetBinding)
+		app.Delete("/v1/certificate-template-bindings/:scope/:scopeKey", certs.ClearBinding)
+		app.Get("/v1/certificate-batches/:id", certs.GetBatch)
+		app.Post("/v1/certificate-batches/:id/retry", certs.RetryBatch)
 		app.Post("/v1/certificates/:serial/revoke", certs.Revoke)
+		app.Post("/v1/certificates/:serial/reissue", certs.Reissue)
 	}
 	app.Get("/v1/events/:eventId/competitors", competitors.ListByEvent)
 	app.Get("/v1/events/:eventId/competitors/winner", competitors.Winner)
