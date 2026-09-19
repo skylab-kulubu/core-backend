@@ -2,11 +2,16 @@ package skypass
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -17,9 +22,18 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-func testKey(t *testing.T) *rsa.PrivateKey {
+func testLegacyRSAKey(t *testing.T) *rsa.PrivateKey {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+func testECKey(t *testing.T) *ecdsa.PrivateKey {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +53,7 @@ func seedUser(t *testing.T, store user.Store, id uuid.UUID, email, first, last s
 
 func newSvc(t *testing.T, store user.Store, ttl time.Duration) Service {
 	t.Helper()
-	return NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()), NewSigner(testKey(t), ttl))
+	return NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()), NewSigner(testECKey(t), ttl))
 }
 
 func TestService_BindUniqueConflict(t *testing.T) {
@@ -234,24 +248,78 @@ func TestService_MintIsSignedNotForgeablePlaintext(t *testing.T) {
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		t.Fatal(err)
 	}
-	if claims["skyNumber"] != u.SkyNumber {
+	if claims["sub"] != u.ID.String() {
 		t.Fatalf("claims %+v", claims)
 	}
 	if _, ok := claims["profilePictureUrl"]; ok {
 		t.Fatalf("photo on pass %+v", claims)
 	}
-	if claims["name"] != "Ada Lovelace" {
-		t.Fatalf("name %+v", claims)
+	if _, ok := claims["name"]; ok {
+		t.Fatalf("name on pass %+v", claims)
+	}
+	if _, ok := claims["skyNumber"]; ok {
+		t.Fatalf("sky number on pass %+v", claims)
 	}
 	if strings.Contains(string(payload), "SKYPASS:") {
 		t.Fatalf("payload %s", payload)
 	}
 }
 
+func TestService_MintUsesCompactES256Claims(t *testing.T) {
+	t.Parallel()
+	store := user.NewMemoryStore()
+	signer := NewSigner(testECKey(t), time.Minute)
+	svc := NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()), signer)
+	id := uuid.MustParse("77777777-7777-7777-7777-777777777778")
+	seedUser(t, store, id, "grace@example.com", "Grace", "Hopper")
+
+	tok, err := svc.Mint(context.Background(), authz.Principal{ID: id.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tok.Value) > 260 {
+		t.Fatalf("token length = %d, want at most 260", len(tok.Value))
+	}
+	parsed, _, err := jwt.NewParser().ParseUnverified(tok.Value, jwt.MapClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Method.Alg() != "ES256" || parsed.Header["kid"] != "sp-e1" {
+		t.Fatalf("header = %+v", parsed.Header)
+	}
+	claims := parsed.Claims.(jwt.MapClaims)
+	if claims["sub"] != id.String() || claims["exp"] == nil {
+		t.Fatalf("claims = %+v", claims)
+	}
+	for _, redundant := range []string{"name", "skyNumber", "iss", "aud", "iat"} {
+		if _, ok := claims[redundant]; ok {
+			t.Fatalf("redundant claim %q in %+v", redundant, claims)
+		}
+	}
+}
+
+func TestParseSigningKeyDerivesStableP256KeyFromLegacyRSA(t *testing.T) {
+	t.Parallel()
+	legacy := testLegacyRSAKey(t)
+	raw := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(legacy)})
+
+	first, err := ParseSigningKey(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ParseSigningKey(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Curve != elliptic.P256() || first.D.Cmp(second.D) != 0 {
+		t.Fatalf("derived keys differ or use the wrong curve")
+	}
+}
+
 func TestService_VerifyRejectsExpiredAndUnsigned(t *testing.T) {
 	t.Parallel()
 	store := user.NewMemoryStore()
-	key := testKey(t)
+	key := testECKey(t)
 	signer := NewSigner(key, time.Minute)
 	frozen := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
 	signer.Now = func() time.Time { return frozen }
@@ -282,8 +350,7 @@ func TestService_VerifyRejectsExpiredAndUnsigned(t *testing.T) {
 	}
 
 	unsigned := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims{
-		"sub": id.String(), "iss": Issuer, "aud": Audience, "skyNumber": u.SkyNumber,
-		"exp": frozen.Add(time.Hour).Unix(),
+		"sub": id.String(), "exp": frozen.Add(time.Hour).Unix(),
 	})
 	raw, err := unsigned.SignedString(jwt.UnsafeAllowNoneSignatureType)
 	if err != nil {
@@ -314,13 +381,33 @@ func TestService_LookupForbiddenForMember(t *testing.T) {
 	}
 }
 
-func TestService_JWKSHasRSAPublicKey(t *testing.T) {
+func TestService_JWKSHasES256PublicKey(t *testing.T) {
 	t.Parallel()
 	store := user.NewMemoryStore()
-	svc := newSvc(t, store, time.Minute)
+	signer := NewSigner(testECKey(t), time.Minute)
+	svc := NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()), signer)
 	doc := svc.JWKS()
-	if len(doc.Keys) != 1 || doc.Keys[0].Kty != "RSA" || doc.Keys[0].N == "" || doc.Keys[0].E == "" {
+	if len(doc.Keys) != 1 || doc.Keys[0].Kty != "EC" || doc.Keys[0].Alg != "ES256" || doc.Keys[0].Crv != "P-256" || doc.Keys[0].X == "" || doc.Keys[0].Y == "" {
 		t.Fatalf("jwks %+v", doc)
+	}
+	xBytes, err := base64.RawURLEncoding.DecodeString(doc.Keys[0].X)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yBytes, err := base64.RawURLEncoding.DecodeString(doc.Keys[0].Y)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(xBytes), Y: new(big.Int).SetBytes(yBytes)}
+	if !public.Curve.IsOnCurve(public.X, public.Y) {
+		t.Fatal("JWKS coordinates are not on P-256")
+	}
+	tok, err := signer.Mint(user.User{ID: uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa02")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jwt.Parse(tok.Value, func(*jwt.Token) (any, error) { return public, nil }, jwt.WithValidMethods([]string{"ES256"})); err != nil {
+		t.Fatalf("published key did not verify minted token: %v", err)
 	}
 }
 
