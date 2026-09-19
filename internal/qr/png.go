@@ -38,10 +38,10 @@ func PNGWithLogo(content string, size int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return overlayLogo(qrPNG)
+	return overlayLogo(qrPNG, len(code.Bitmap()))
 }
 
-func overlayLogo(qrPNG []byte) ([]byte, error) {
+func overlayLogo(qrPNG []byte, moduleCount int) ([]byte, error) {
 	src, err := png.Decode(bytes.NewReader(qrPNG))
 	if err != nil {
 		return nil, err
@@ -50,14 +50,26 @@ func overlayLogo(qrPNG []byte) ([]byte, error) {
 	dst := image.NewRGBA(bounds)
 	draw.Draw(dst, bounds, src, bounds.Min, draw.Src)
 
-	logoSize := bounds.Dx() / 5
-	if logoSize < 16 {
-		logoSize = 16
+	badgeModules := 9
+	if moduleCount < badgeModules+2 {
+		badgeModules = moduleCount - 2
+		if badgeModules%2 == 0 {
+			badgeModules--
+		}
 	}
-	logo := clubLogo(logoSize)
-	x := bounds.Min.X + (bounds.Dx()-logoSize)/2
-	y := bounds.Min.Y + (bounds.Dy()-logoSize)/2
-	draw.Draw(dst, image.Rect(x, y, x+logoSize, y+logoSize), logo, image.Point{}, draw.Over)
+	startModule := (moduleCount - badgeModules) / 2
+	endModule := startModule + badgeModules
+	badge := image.Rect(
+		bounds.Min.X+moduleBoundary(startModule, bounds.Dx(), moduleCount),
+		bounds.Min.Y+moduleBoundary(startModule, bounds.Dy(), moduleCount),
+		bounds.Min.X+moduleBoundary(endModule, bounds.Dx(), moduleCount),
+		bounds.Min.Y+moduleBoundary(endModule, bounds.Dy(), moduleCount),
+	)
+	draw.Draw(dst, badge, &image.Uniform{C: color.White}, image.Point{}, draw.Src)
+
+	logoRect := badge
+	logo := clubLogo(logoRect.Dx())
+	draw.Draw(dst, logoRect, logo, image.Point{}, draw.Over)
 
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, dst); err != nil {
@@ -77,50 +89,48 @@ func clubLogo(size int) *image.NRGBA {
 		if err != nil {
 			panic(err)
 		}
-		logoSource, err = png.Decode(bytes.NewReader(raw))
+		decoded, err := png.Decode(bytes.NewReader(raw))
 		if err != nil {
 			panic(err)
 		}
+		logoSource = cropTransparent(decoded)
 	})
 	img := image.NewNRGBA(image.Rect(0, 0, size, size))
 	xdraw.CatmullRom.Scale(img, img.Bounds(), logoSource, logoSource.Bounds(), xdraw.Src, nil)
-	for y := 0; y < size; y++ {
-		brand := logoGradient(y, size)
-		for x := 0; x < size; x++ {
-			i := y*img.Stride + x*4
-			img.Pix[i] = brand.R
-			img.Pix[i+1] = brand.G
-			img.Pix[i+2] = brand.B
-		}
+	for i := 0; i < len(img.Pix); i += 4 {
+		img.Pix[i] = 0
+		img.Pix[i+1] = 0
+		img.Pix[i+2] = 0
 	}
 	return img
 }
 
-func logoGradient(y, size int) color.NRGBA {
-	position := 0.5
-	if size > 1 {
-		position = float64(y) / float64(size-1)
+func cropTransparent(src image.Image) image.Image {
+	bounds := src.Bounds()
+	minX, minY := bounds.Max.X, bounds.Max.Y
+	maxX, maxY := bounds.Min.X-1, bounds.Min.Y-1
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			_, _, _, alpha := src.At(x, y).RGBA()
+			if alpha <= 0x0808 {
+				continue
+			}
+			minX = min(minX, x)
+			minY = min(minY, y)
+			maxX = max(maxX, x)
+			maxY = max(maxY, y)
+		}
 	}
-	blue := color.NRGBA{R: 0x06, G: 0x99, B: 0xda, A: 0xff}
-	purple := color.NRGBA{R: 0x7b, G: 0x4c, B: 0x84, A: 0xff}
-	red := color.NRGBA{R: 0xe1, G: 0x06, B: 0x35, A: 0xff}
-	switch {
-	case position <= 0.25:
-		return blue
-	case position < 0.5:
-		return mixLogoColor(blue, purple, (position-0.25)/0.25)
-	case position < 0.75:
-		return mixLogoColor(purple, red, (position-0.5)/0.25)
-	default:
-		return red
+	if maxX < minX || maxY < minY {
+		return src
 	}
+	return src.(interface {
+		SubImage(image.Rectangle) image.Image
+	}).SubImage(image.Rect(minX, minY, maxX+1, maxY+1))
 }
 
-func mixLogoColor(a, b color.NRGBA, amount float64) color.NRGBA {
-	mix := func(left, right uint8) uint8 {
-		return uint8(float64(left) + (float64(right)-float64(left))*amount + 0.5)
-	}
-	return color.NRGBA{R: mix(a.R, b.R), G: mix(a.G, b.G), B: mix(a.B, b.B), A: 0xff}
+func moduleBoundary(module, pixels, moduleCount int) int {
+	return (module*pixels + moduleCount - 1) / moduleCount
 }
 
 func SizeFromQuery(raw string) int {

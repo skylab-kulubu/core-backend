@@ -60,12 +60,24 @@ func TestClubLogoUsesTransparentBrandMark(t *testing.T) {
 	if cornerAlpha != 0 {
 		t.Fatalf("brand mark corner alpha = %d", cornerAlpha)
 	}
-	if centerAlpha == 0 || centerRed == centerGreen || centerGreen == centerBlue {
+	if centerAlpha == 0 || centerRed != 0 || centerGreen != 0 || centerBlue != 0 {
 		t.Fatalf("brand mark center rgba = %d,%d,%d,%d", centerRed, centerGreen, centerBlue, centerAlpha)
 	}
 }
 
-func TestOverlayLogoDoesNotPaintBackgroundPanel(t *testing.T) {
+func TestCropTransparentRemovesEmptyOuterRows(t *testing.T) {
+	t.Parallel()
+	src := image.NewNRGBA(image.Rect(0, 0, 10, 10))
+	src.Set(2, 3, color.Black)
+	src.Set(7, 8, color.Black)
+
+	got := cropTransparent(src)
+	if got.Bounds() != image.Rect(2, 3, 8, 9) {
+		t.Fatalf("cropped bounds = %v", got.Bounds())
+	}
+}
+
+func TestOverlayLogoAlignsBackgroundToModuleGrid(t *testing.T) {
 	t.Parallel()
 	src := image.NewRGBA(image.Rect(0, 0, 100, 100))
 	draw.Draw(src, src.Bounds(), &image.Uniform{C: color.RGBA{A: 255}}, image.Point{}, draw.Src)
@@ -73,7 +85,7 @@ func TestOverlayLogoDoesNotPaintBackgroundPanel(t *testing.T) {
 	if err := png.Encode(&encoded, src); err != nil {
 		t.Fatal(err)
 	}
-	overlaid, err := overlayLogo(encoded.Bytes())
+	overlaid, err := overlayLogo(encoded.Bytes(), 25)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,9 +93,16 @@ func TestOverlayLogoDoesNotPaintBackgroundPanel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := color.RGBA{A: 255}
-	if pixel := color.RGBAModel.Convert(got.At(39, 50)).(color.RGBA); pixel != want {
-		t.Fatalf("pixel outside logo = %#v want %#v", pixel, want)
+	black := color.RGBA{A: 255}
+	white := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	if pixel := color.RGBAModel.Convert(got.At(31, 50)).(color.RGBA); pixel != black {
+		t.Fatalf("pixel before aligned panel = %#v want %#v", pixel, black)
+	}
+	if pixel := color.RGBAModel.Convert(got.At(32, 32)).(color.RGBA); pixel != white {
+		t.Fatalf("aligned panel corner = %#v want %#v", pixel, white)
+	}
+	if pixel := color.RGBAModel.Convert(got.At(68, 50)).(color.RGBA); pixel != black {
+		t.Fatalf("pixel after aligned panel = %#v want %#v", pixel, black)
 	}
 }
 
