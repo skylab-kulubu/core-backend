@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 var (
@@ -16,7 +17,9 @@ var (
 
 type Store interface {
 	List(ctx context.Context) ([]Competitor, error)
+	ListLifecycle(ctx context.Context, visibility lifecycle.Visibility) ([]Competitor, error)
 	Get(ctx context.Context, id uuid.UUID) (Competitor, error)
+	GetIncludingWithdrawn(ctx context.Context, id uuid.UUID) (Competitor, error)
 	Create(ctx context.Context, c Competitor) (Competitor, error)
 	Update(ctx context.Context, c Competitor) (Competitor, error)
 	Delete(ctx context.Context, id uuid.UUID) error

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type MemoryStore struct {
@@ -18,19 +19,40 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (s *MemoryStore) List(_ context.Context, activeOnly bool) ([]Season, error) {
+	return s.list(activeOnly, lifecycle.CurrentOnly), nil
+}
+
+func (s *MemoryStore) ListLifecycle(_ context.Context, visibility lifecycle.Visibility) ([]Season, error) {
+	return s.list(false, visibility), nil
+}
+
+func (s *MemoryStore) list(activeOnly bool, visibility lifecycle.Visibility) []Season {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Season, 0, len(s.byID))
 	for _, item := range s.byID {
+		if !visibility.Matches(item.ArchivedAt != nil) {
+			continue
+		}
 		if activeOnly && !item.Active {
 			continue
 		}
 		out = append(out, item)
 	}
-	return out, nil
+	return out
 }
 
 func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (Season, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, ok := s.byID[id]
+	if !ok || item.ArchivedAt != nil {
+		return Season{}, ErrNotFound
+	}
+	return item, nil
+}
+
+func (s *MemoryStore) GetIncludingArchived(_ context.Context, id uuid.UUID) (Season, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	item, ok := s.byID[id]
@@ -57,7 +79,7 @@ func (s *MemoryStore) Update(_ context.Context, in Season) (Season, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, ok := s.byID[in.ID]
-	if !ok {
+	if !ok || existing.ArchivedAt != nil {
 		return Season{}, ErrNotFound
 	}
 	in.CreatedAt = existing.CreatedAt

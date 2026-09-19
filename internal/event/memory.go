@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type MemoryStore struct {
@@ -24,10 +25,21 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (s *MemoryStore) List(_ context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
+	return s.list(ownerTeam, activeOnly, lifecycle.CurrentOnly), nil
+}
+
+func (s *MemoryStore) ListLifecycle(_ context.Context, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error) {
+	return s.list(ownerTeam, false, visibility), nil
+}
+
+func (s *MemoryStore) list(ownerTeam string, activeOnly bool, visibility lifecycle.Visibility) []Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Event, 0, len(s.byID))
 	for _, e := range s.byID {
+		if !visibility.Matches(e.ArchivedAt != nil) {
+			continue
+		}
 		if ownerTeam != "" && e.OwnerTeam != ownerTeam {
 			continue
 		}
@@ -36,10 +48,20 @@ func (s *MemoryStore) List(_ context.Context, ownerTeam string, activeOnly bool)
 		}
 		out = append(out, emptyGallery(e))
 	}
-	return out, nil
+	return out
 }
 
 func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[id]
+	if !ok || e.ArchivedAt != nil {
+		return Event{}, ErrNotFound
+	}
+	return emptyGallery(e), nil
+}
+
+func (s *MemoryStore) GetIncludingArchived(_ context.Context, id uuid.UUID) (Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.byID[id]
@@ -70,7 +92,7 @@ func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, ok := s.byID[e.ID]
-	if !ok {
+	if !ok || existing.ArchivedAt != nil {
 		return Event{}, ErrNotFound
 	}
 	e.CreatedAt = existing.CreatedAt
@@ -170,6 +192,20 @@ func (s *MemoryStore) GetDay(_ context.Context, id uuid.UUID) (Day, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d, ok := s.days[id]
+	if !ok || d.ArchivedAt != nil {
+		return Day{}, ErrNotFound
+	}
+	e, ok := s.byID[d.EventID]
+	if !ok || e.ArchivedAt != nil {
+		return Day{}, ErrNotFound
+	}
+	return d, nil
+}
+
+func (s *MemoryStore) GetDayIncludingArchived(_ context.Context, id uuid.UUID) (Day, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.days[id]
 	if !ok {
 		return Day{}, ErrNotFound
 	}
@@ -187,21 +223,39 @@ func (s *MemoryStore) CreateDay(_ context.Context, d Day) (Day, error) {
 }
 
 func (s *MemoryStore) ListDays(_ context.Context, eventID uuid.UUID) ([]Day, error) {
+	return s.listDays(eventID, lifecycle.CurrentOnly, true), nil
+}
+
+func (s *MemoryStore) ListDaysLifecycle(_ context.Context, eventID uuid.UUID, visibility lifecycle.Visibility) ([]Day, error) {
+	return s.listDays(eventID, visibility, false), nil
+}
+
+func (s *MemoryStore) listDays(eventID uuid.UUID, visibility lifecycle.Visibility, requireCurrentParent bool) []Day {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Day, 0)
+	if requireCurrentParent {
+		e, ok := s.byID[eventID]
+		if !ok || e.ArchivedAt != nil {
+			return out
+		}
+	}
 	for _, d := range s.days {
+		if !visibility.Matches(d.ArchivedAt != nil) {
+			continue
+		}
 		if d.EventID == eventID {
 			out = append(out, d)
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (s *MemoryStore) UpdateDay(_ context.Context, d Day) (Day, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.days[d.ID]; !ok {
+	existing, ok := s.days[d.ID]
+	if !ok || existing.ArchivedAt != nil {
 		return Day{}, ErrNotFound
 	}
 	s.days[d.ID] = d
@@ -223,7 +277,7 @@ func (s *MemoryStore) ListBySeason(_ context.Context, seasonID uuid.UUID) ([]Eve
 	defer s.mu.Unlock()
 	out := make([]Event, 0)
 	for _, e := range s.byID {
-		if e.SeasonID != nil && *e.SeasonID == seasonID {
+		if e.ArchivedAt == nil && e.SeasonID != nil && *e.SeasonID == seasonID {
 			out = append(out, emptyGallery(e))
 		}
 	}
@@ -261,6 +315,24 @@ func (s *MemoryStore) GetSession(_ context.Context, id uuid.UUID) (Session, erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.sessions[id]
+	if !ok || sess.ArchivedAt != nil {
+		return Session{}, ErrNotFound
+	}
+	d, ok := s.days[sess.EventDayID]
+	if !ok || d.ArchivedAt != nil {
+		return Session{}, ErrNotFound
+	}
+	e, ok := s.byID[d.EventID]
+	if !ok || e.ArchivedAt != nil {
+		return Session{}, ErrNotFound
+	}
+	return sess, nil
+}
+
+func (s *MemoryStore) GetSessionIncludingArchived(_ context.Context, id uuid.UUID) (Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
 	if !ok {
 		return Session{}, ErrNotFound
 	}
@@ -268,15 +340,36 @@ func (s *MemoryStore) GetSession(_ context.Context, id uuid.UUID) (Session, erro
 }
 
 func (s *MemoryStore) ListSessions(_ context.Context, eventDayID uuid.UUID) ([]Session, error) {
+	return s.listSessions(eventDayID, lifecycle.CurrentOnly, true), nil
+}
+
+func (s *MemoryStore) ListSessionsLifecycle(_ context.Context, eventDayID uuid.UUID, visibility lifecycle.Visibility) ([]Session, error) {
+	return s.listSessions(eventDayID, visibility, false), nil
+}
+
+func (s *MemoryStore) listSessions(eventDayID uuid.UUID, visibility lifecycle.Visibility, requireCurrentParents bool) []Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Session, 0)
+	if requireCurrentParents {
+		d, ok := s.days[eventDayID]
+		if !ok || d.ArchivedAt != nil {
+			return out
+		}
+		e, ok := s.byID[d.EventID]
+		if !ok || e.ArchivedAt != nil {
+			return out
+		}
+	}
 	for _, sess := range s.sessions {
+		if !visibility.Matches(sess.ArchivedAt != nil) {
+			continue
+		}
 		if sess.EventDayID == eventDayID {
 			out = append(out, sess)
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (s *MemoryStore) CreateSession(_ context.Context, sess Session) (Session, error) {
@@ -292,7 +385,8 @@ func (s *MemoryStore) CreateSession(_ context.Context, sess Session) (Session, e
 func (s *MemoryStore) UpdateSession(_ context.Context, sess Session) (Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.sessions[sess.ID]; !ok {
+	existing, ok := s.sessions[sess.ID]
+	if !ok || existing.ArchivedAt != nil {
 		return Session{}, ErrNotFound
 	}
 	s.sessions[sess.ID] = sess

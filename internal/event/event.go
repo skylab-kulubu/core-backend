@@ -33,6 +33,8 @@ type Event struct {
 	ImageURLs       []string        `json:"imageUrls"`
 	DoorStaffIDs    []uuid.UUID     `json:"doorStaffIds,omitempty"`
 	MailListID      *uuid.UUID      `json:"mailListId,omitempty"`
+	ArchivedAt      *time.Time      `json:"archivedAt,omitempty"`
+	ArchivedBy      *uuid.UUID      `json:"archivedBy,omitempty"`
 	CreatedAt       time.Time       `json:"createdAt"`
 	UpdatedAt       time.Time       `json:"updatedAt"`
 }
@@ -101,12 +103,16 @@ type Session struct {
 	OrderIndex      int        `json:"orderIndex"`
 	SessionType     string     `json:"sessionType"`
 	Cancelled       bool       `json:"cancelled"`
+	ArchivedAt      *time.Time `json:"archivedAt,omitempty"`
+	ArchivedBy      *uuid.UUID `json:"archivedBy,omitempty"`
 }
 
 type Day struct {
-	ID        uuid.UUID  `json:"id"`
-	EventID   uuid.UUID  `json:"eventId"`
-	Name      string     `json:"name"`
-	StartDate *time.Time `json:"startDate,omitempty"`
-	EndDate   *time.Time `json:"endDate,omitempty"`
+	ID         uuid.UUID  `json:"id"`
+	EventID    uuid.UUID  `json:"eventId"`
+	Name       string     `json:"name"`
+	StartDate  *time.Time `json:"startDate,omitempty"`
+	EndDate    *time.Time `json:"endDate,omitempty"`
+	ArchivedAt *time.Time `json:"archivedAt,omitempty"`
+	ArchivedBy *uuid.UUID `json:"archivedBy,omitempty"`
 }

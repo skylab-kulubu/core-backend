@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type PostgresStore struct {
@@ -18,14 +19,25 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, m.file_url, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.created_at, e.updated_at`
+const eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, m.file_url, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at`
 
-const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id`
+const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id AND m.deleted_at IS NULL`
 
 func (s *PostgresStore) List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
+	return s.list(ctx, ownerTeam, activeOnly, lifecycle.CurrentOnly)
+}
+
+func (s *PostgresStore) ListLifecycle(ctx context.Context, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error) {
+	return s.list(ctx, ownerTeam, false, visibility)
+}
+
+func (s *PostgresStore) list(ctx context.Context, ownerTeam string, activeOnly bool, visibility lifecycle.Visibility) ([]Event, error) {
 	q := `SELECT ` + eventCols + ` FROM ` + eventFrom
 	args := []any{}
-	where := make([]string, 0, 2)
+	where := make([]string, 0, 3)
+	if condition := visibility.SQLCondition("e.archived_at"); condition != "" {
+		where = append(where, condition)
+	}
 	if ownerTeam != "" {
 		where = append(where, `e.owner_team = $1`)
 		args = append(args, ownerTeam)
@@ -60,7 +72,19 @@ func (s *PostgresStore) List(ctx context.Context, ownerTeam string, activeOnly b
 }
 
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Event, error) {
-	e, err := scanEvent(s.pool.QueryRow(ctx, `SELECT `+eventCols+` FROM `+eventFrom+` WHERE e.id = $1`, id))
+	return s.get(ctx, id, false)
+}
+
+func (s *PostgresStore) GetIncludingArchived(ctx context.Context, id uuid.UUID) (Event, error) {
+	return s.get(ctx, id, true)
+}
+
+func (s *PostgresStore) get(ctx context.Context, id uuid.UUID, includeArchived bool) (Event, error) {
+	q := `SELECT ` + eventCols + ` FROM ` + eventFrom + ` WHERE e.id = $1`
+	if !includeArchived {
+		q += ` AND e.archived_at IS NULL`
+	}
+	e, err := scanEvent(s.pool.QueryRow(ctx, q, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
@@ -105,7 +129,7 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 			capacity = $7, start_date = $8, end_date = $9, linkedin = $10, active = $11,
 			ranked = $12, prize_info = $13, season_id = $14, cover_image_id = $15,
 			attendance_rule = $16, attendance_ratio = $17, extra_form_urls = $18, updated_at = now()
-		WHERE id = $1`,
+		WHERE id = $1 AND archived_at IS NULL`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
 		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e))
@@ -170,7 +194,7 @@ func (s *PostgresStore) loadImages(ctx context.Context, e *Event) error {
 	rows, err := s.pool.Query(ctx, `
 		SELECT m.id, m.file_url
 		FROM event_images ei
-		JOIN media m ON m.id = ei.media_id
+		JOIN media m ON m.id = ei.media_id AND m.deleted_at IS NULL
 		WHERE ei.event_id = $1
 		ORDER BY m.created_at
 	`, e.ID)
@@ -244,10 +268,26 @@ func (s *PostgresStore) replaceDoorStaff(ctx context.Context, eventID uuid.UUID,
 }
 
 func (s *PostgresStore) GetDay(ctx context.Context, id uuid.UUID) (Day, error) {
+	return s.getDay(ctx, id, false)
+}
+
+func (s *PostgresStore) GetDayIncludingArchived(ctx context.Context, id uuid.UUID) (Day, error) {
+	return s.getDay(ctx, id, true)
+}
+
+const dayCols = `id, event_id, name, start_date, end_date, archived_at, archived_by`
+
+func (s *PostgresStore) getDay(ctx context.Context, id uuid.UUID, includeArchived bool) (Day, error) {
 	var d Day
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, event_id, name, start_date, end_date FROM event_days WHERE id = $1
-	`, id).Scan(&d.ID, &d.EventID, &d.Name, &d.StartDate, &d.EndDate)
+	q := `SELECT ` + dayCols + ` FROM event_days WHERE id = $1`
+	if !includeArchived {
+		q += ` AND archived_at IS NULL
+			AND EXISTS (
+				SELECT 1 FROM events
+				WHERE events.id = event_days.event_id AND events.archived_at IS NULL
+			)`
+	}
+	err := s.pool.QueryRow(ctx, q, id).Scan(&d.ID, &d.EventID, &d.Name, &d.StartDate, &d.EndDate, &d.ArchivedAt, &d.ArchivedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Day{}, ErrNotFound
 	}
@@ -261,15 +301,32 @@ func (s *PostgresStore) CreateDay(ctx context.Context, d Day) (Day, error) {
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO event_days (id, event_id, name, start_date, end_date)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, event_id, name, start_date, end_date
-	`, d.ID, d.EventID, d.Name, d.StartDate, d.EndDate).Scan(&d.ID, &d.EventID, &d.Name, &d.StartDate, &d.EndDate)
+		RETURNING `+dayCols+`
+	`, d.ID, d.EventID, d.Name, d.StartDate, d.EndDate).Scan(&d.ID, &d.EventID, &d.Name, &d.StartDate, &d.EndDate, &d.ArchivedAt, &d.ArchivedBy)
 	return d, err
 }
 
 func (s *PostgresStore) ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, event_id, name, start_date, end_date FROM event_days WHERE event_id = $1 ORDER BY start_date NULLS LAST
-	`, eventID)
+	return s.listDays(ctx, eventID, lifecycle.CurrentOnly, true)
+}
+
+func (s *PostgresStore) ListDaysLifecycle(ctx context.Context, eventID uuid.UUID, visibility lifecycle.Visibility) ([]Day, error) {
+	return s.listDays(ctx, eventID, visibility, false)
+}
+
+func (s *PostgresStore) listDays(ctx context.Context, eventID uuid.UUID, visibility lifecycle.Visibility, requireCurrentParent bool) ([]Day, error) {
+	q := `SELECT ` + dayCols + ` FROM event_days WHERE event_id = $1`
+	if condition := visibility.SQLCondition("archived_at"); condition != "" {
+		q += ` AND ` + condition
+	}
+	if requireCurrentParent {
+		q += ` AND EXISTS (
+			SELECT 1 FROM events
+			WHERE events.id = event_days.event_id AND events.archived_at IS NULL
+		)`
+	}
+	q += ` ORDER BY start_date NULLS LAST`
+	rows, err := s.pool.Query(ctx, q, eventID)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +334,7 @@ func (s *PostgresStore) ListDays(ctx context.Context, eventID uuid.UUID) ([]Day,
 	out := make([]Day, 0)
 	for rows.Next() {
 		var d Day
-		if err := rows.Scan(&d.ID, &d.EventID, &d.Name, &d.StartDate, &d.EndDate); err != nil {
+		if err := rows.Scan(&d.ID, &d.EventID, &d.Name, &d.StartDate, &d.EndDate, &d.ArchivedAt, &d.ArchivedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -288,9 +345,9 @@ func (s *PostgresStore) ListDays(ctx context.Context, eventID uuid.UUID) ([]Day,
 func (s *PostgresStore) UpdateDay(ctx context.Context, d Day) (Day, error) {
 	err := s.pool.QueryRow(ctx, `
 		UPDATE event_days SET name = $2, start_date = $3, end_date = $4, updated_at = now()
-		WHERE id = $1
-		RETURNING id, event_id, name, start_date, end_date
-	`, d.ID, d.Name, d.StartDate, d.EndDate).Scan(&d.ID, &d.EventID, &d.Name, &d.StartDate, &d.EndDate)
+		WHERE id = $1 AND archived_at IS NULL
+		RETURNING `+dayCols+`
+	`, d.ID, d.Name, d.StartDate, d.EndDate).Scan(&d.ID, &d.EventID, &d.Name, &d.StartDate, &d.EndDate, &d.ArchivedAt, &d.ArchivedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Day{}, ErrNotFound
 	}
@@ -309,7 +366,7 @@ func (s *PostgresStore) DeleteDay(ctx context.Context, id uuid.UUID) error {
 }
 
 func (s *PostgresStore) ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+eventCols+` FROM `+eventFrom+` WHERE e.season_id = $1 ORDER BY e.start_date NULLS LAST, e.created_at`, seasonID)
+	rows, err := s.pool.Query(ctx, `SELECT `+eventCols+` FROM `+eventFrom+` WHERE e.season_id = $1 AND e.archived_at IS NULL ORDER BY e.start_date NULLS LAST, e.created_at`, seasonID)
 	if err != nil {
 		return nil, err
 	}
@@ -333,7 +390,7 @@ func (s *PostgresStore) ListBySeason(ctx context.Context, seasonID uuid.UUID) ([
 }
 
 func (s *PostgresStore) SetSeason(ctx context.Context, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE events SET season_id = $2, updated_at = now() WHERE id = $1`, eventID, seasonID)
+	tag, err := s.pool.Exec(ctx, `UPDATE events SET season_id = $2, updated_at = now() WHERE id = $1 AND archived_at IS NULL`, eventID, seasonID)
 	if err != nil {
 		return Event{}, err
 	}
@@ -344,7 +401,7 @@ func (s *PostgresStore) SetSeason(ctx context.Context, eventID uuid.UUID, season
 }
 
 func (s *PostgresStore) SetMailListID(ctx context.Context, eventID, listID uuid.UUID) (Event, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE events SET mail_list_id = $2, updated_at = now() WHERE id = $1`, eventID, listID)
+	tag, err := s.pool.Exec(ctx, `UPDATE events SET mail_list_id = $2, updated_at = now() WHERE id = $1 AND archived_at IS NULL`, eventID, listID)
 	if err != nil {
 		return Event{}, err
 	}
@@ -354,10 +411,30 @@ func (s *PostgresStore) SetMailListID(ctx context.Context, eventID, listID uuid.
 	return s.Get(ctx, eventID)
 }
 
-const sessionCols = `id, event_day_id, title, speaker_name, speaker_linkedin, description, start_time, end_time, order_index, session_type, cancelled`
+const sessionCols = `id, event_day_id, title, speaker_name, speaker_linkedin, description, start_time, end_time, order_index, session_type, cancelled, archived_at, archived_by`
 
 func (s *PostgresStore) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
-	sess, err := scanSession(s.pool.QueryRow(ctx, `SELECT `+sessionCols+` FROM sessions WHERE id = $1`, id))
+	return s.getSession(ctx, id, false)
+}
+
+func (s *PostgresStore) GetSessionIncludingArchived(ctx context.Context, id uuid.UUID) (Session, error) {
+	return s.getSession(ctx, id, true)
+}
+
+func (s *PostgresStore) getSession(ctx context.Context, id uuid.UUID, includeArchived bool) (Session, error) {
+	q := `SELECT ` + sessionCols + ` FROM sessions WHERE id = $1`
+	if !includeArchived {
+		q += ` AND archived_at IS NULL
+			AND EXISTS (
+				SELECT 1
+				FROM event_days
+				JOIN events ON events.id = event_days.event_id
+				WHERE event_days.id = sessions.event_day_id
+				  AND event_days.archived_at IS NULL
+				  AND events.archived_at IS NULL
+			)`
+	}
+	sess, err := scanSession(s.pool.QueryRow(ctx, q, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -365,7 +442,30 @@ func (s *PostgresStore) GetSession(ctx context.Context, id uuid.UUID) (Session, 
 }
 
 func (s *PostgresStore) ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Session, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+sessionCols+` FROM sessions WHERE event_day_id = $1 ORDER BY order_index, start_time NULLS LAST`, eventDayID)
+	return s.listSessions(ctx, eventDayID, lifecycle.CurrentOnly, true)
+}
+
+func (s *PostgresStore) ListSessionsLifecycle(ctx context.Context, eventDayID uuid.UUID, visibility lifecycle.Visibility) ([]Session, error) {
+	return s.listSessions(ctx, eventDayID, visibility, false)
+}
+
+func (s *PostgresStore) listSessions(ctx context.Context, eventDayID uuid.UUID, visibility lifecycle.Visibility, requireCurrentParents bool) ([]Session, error) {
+	q := `SELECT ` + sessionCols + ` FROM sessions WHERE event_day_id = $1`
+	if condition := visibility.SQLCondition("archived_at"); condition != "" {
+		q += ` AND ` + condition
+	}
+	if requireCurrentParents {
+		q += ` AND EXISTS (
+			SELECT 1
+			FROM event_days
+			JOIN events ON events.id = event_days.event_id
+			WHERE event_days.id = sessions.event_day_id
+			  AND event_days.archived_at IS NULL
+			  AND events.archived_at IS NULL
+		)`
+	}
+	q += ` ORDER BY order_index, start_time NULLS LAST`
+	rows, err := s.pool.Query(ctx, q, eventDayID)
 	if err != nil {
 		return nil, err
 	}
@@ -399,7 +499,7 @@ func (s *PostgresStore) UpdateSession(ctx context.Context, sess Session) (Sessio
 		UPDATE sessions SET
 			title = $2, speaker_name = $3, speaker_linkedin = $4, description = $5,
 			start_time = $6, end_time = $7, order_index = $8, session_type = $9, cancelled = $10
-		WHERE id = $1
+		WHERE id = $1 AND archived_at IS NULL
 		RETURNING `+sessionCols, sess.ID, sess.Title, sess.SpeakerName, sess.SpeakerLinkedin, sess.Description,
 		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType, sess.Cancelled))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -438,7 +538,7 @@ func scanEvent(row rowScanner) (Event, error) {
 	err := row.Scan(
 		&e.ID, &e.Name, &e.Description, &e.Location, &e.OwnerTeam, &e.FormURL, &e.Capacity,
 		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Ranked, &e.PrizeInfo, &e.SeasonID,
-		&e.CoverImageID, &coverURL, &e.CoverColors, &e.AttendanceRule, &e.AttendanceRatio, &extraRaw, &e.MailListID, &e.CreatedAt, &e.UpdatedAt,
+		&e.CoverImageID, &coverURL, &e.CoverColors, &e.AttendanceRule, &e.AttendanceRatio, &extraRaw, &e.MailListID, &e.ArchivedAt, &e.ArchivedBy, &e.CreatedAt, &e.UpdatedAt,
 	)
 	if coverURL != nil {
 		e.CoverImageURL = *coverURL
@@ -462,7 +562,7 @@ func scanSession(row rowScanner) (Session, error) {
 	var sess Session
 	err := row.Scan(
 		&sess.ID, &sess.EventDayID, &sess.Title, &sess.SpeakerName, &sess.SpeakerLinkedin, &sess.Description,
-		&sess.StartTime, &sess.EndTime, &sess.OrderIndex, &sess.SessionType, &sess.Cancelled,
+		&sess.StartTime, &sess.EndTime, &sess.OrderIndex, &sess.SessionType, &sess.Cancelled, &sess.ArchivedAt, &sess.ArchivedBy,
 	)
 	return sess, err
 }

@@ -42,6 +42,47 @@ var fingerprints = map[int64]string{
 	20260919120000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'phone'`,
 	20260919130000: `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'url_hits' AND to_regclass('public.url_hits_url_id_at_idx') IS NOT NULL`,
 	20260919200000: `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'certificate_templates'`,
+	20260919210000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*)
+			FROM (VALUES
+				('events', 'archived_at'),
+				('events', 'archived_by'),
+				('event_days', 'archived_at'),
+				('event_days', 'archived_by'),
+				('sessions', 'archived_at'),
+				('sessions', 'archived_by'),
+				('seasons', 'archived_at'),
+				('seasons', 'archived_by'),
+				('competitors', 'withdrawn_at'),
+				('competitors', 'withdrawn_by'),
+				('media', 'deleted_at'),
+				('media', 'deleted_by'),
+				('urls', 'disabled_at'),
+				('urls', 'disabled_by')
+			) AS expected(table_name, column_name)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = expected.table_name
+			 AND actual.column_name = expected.column_name
+		) = 14
+		AND (
+			SELECT count(*)
+			FROM (VALUES
+				('events_current_owner_team_idx'),
+				('event_days_current_event_idx'),
+				('sessions_current_event_day_idx'),
+				('seasons_current_start_date_idx'),
+				('competitors_current_event_idx'),
+				('competitors_current_user_idx'),
+				('media_current_created_at_idx'),
+				('urls_current_created_by_idx')
+			) AS expected(index_name)
+			JOIN pg_indexes actual
+			  ON actual.schemaname = 'public'
+			 AND actual.indexname = expected.index_name
+		) = 8`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

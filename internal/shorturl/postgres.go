@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type PostgresStore struct {
@@ -19,7 +20,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const urlCols = `id, alias, url, click_count, created_by, created_at, updated_at`
+const urlCols = `id, alias, url, click_count, created_by, disabled_at, disabled_by, created_at, updated_at`
 
 func (s *PostgresStore) Create(ctx context.Context, u URL) (URL, error) {
 	if u.ID == uuid.Nil {
@@ -33,27 +34,47 @@ func (s *PostgresStore) Create(ctx context.Context, u URL) (URL, error) {
 }
 
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (URL, error) {
-	u, err := scanURL(s.pool.QueryRow(ctx, `SELECT `+urlCols+` FROM urls WHERE id = $1`, id))
+	return s.get(ctx, id, false)
+}
+
+func (s *PostgresStore) GetIncludingDisabled(ctx context.Context, id uuid.UUID) (URL, error) {
+	return s.get(ctx, id, true)
+}
+
+func (s *PostgresStore) get(ctx context.Context, id uuid.UUID, includeDisabled bool) (URL, error) {
+	q := `SELECT ` + urlCols + ` FROM urls WHERE id = $1`
+	if !includeDisabled {
+		q += ` AND disabled_at IS NULL`
+	}
+	u, err := scanURL(s.pool.QueryRow(ctx, q, id))
 	return u, mapURLErr(err)
 }
 
 func (s *PostgresStore) GetByAlias(ctx context.Context, alias string) (URL, error) {
-	u, err := scanURL(s.pool.QueryRow(ctx, `SELECT `+urlCols+` FROM urls WHERE alias = $1`, alias))
+	u, err := scanURL(s.pool.QueryRow(ctx, `SELECT `+urlCols+` FROM urls WHERE alias = $1 AND disabled_at IS NULL`, alias))
 	return u, mapURLErr(err)
 }
 
 func (s *PostgresStore) ListByCreator(ctx context.Context, userID uuid.UUID) ([]URL, error) {
-	return s.list(ctx, `SELECT `+urlCols+` FROM urls WHERE created_by = $1 ORDER BY created_at DESC`, userID)
+	return s.list(ctx, `SELECT `+urlCols+` FROM urls WHERE created_by = $1 AND disabled_at IS NULL ORDER BY created_at DESC`, userID)
 }
 
 func (s *PostgresStore) ListAll(ctx context.Context) ([]URL, error) {
-	return s.list(ctx, `SELECT `+urlCols+` FROM urls ORDER BY created_at DESC`)
+	return s.list(ctx, `SELECT `+urlCols+` FROM urls WHERE disabled_at IS NULL ORDER BY created_at DESC`)
+}
+
+func (s *PostgresStore) ListLifecycle(ctx context.Context, visibility lifecycle.Visibility) ([]URL, error) {
+	q := `SELECT ` + urlCols + ` FROM urls`
+	if condition := visibility.SQLCondition("disabled_at"); condition != "" {
+		q += ` WHERE ` + condition
+	}
+	return s.list(ctx, q+` ORDER BY created_at DESC`)
 }
 
 func (s *PostgresStore) Update(ctx context.Context, u URL) (URL, error) {
 	got, err := scanURL(s.pool.QueryRow(ctx, `
 		UPDATE urls SET alias = $2, url = $3, updated_at = now()
-		WHERE id = $1
+		WHERE id = $1 AND disabled_at IS NULL
 		RETURNING `+urlCols, u.ID, u.Alias, u.URL))
 	return got, mapURLErr(err)
 }
@@ -82,7 +103,7 @@ func (s *PostgresStore) RecordHit(ctx context.Context, id uuid.UUID, hit Hit) (U
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var alias string
-	if err := tx.QueryRow(ctx, `SELECT alias FROM urls WHERE id = $1`, id).Scan(&alias); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT alias FROM urls WHERE id = $1 AND disabled_at IS NULL`, id).Scan(&alias); err != nil {
 		return URL{}, mapURLErr(err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -93,7 +114,7 @@ func (s *PostgresStore) RecordHit(ctx context.Context, id uuid.UUID, hit Hit) (U
 	}
 	u, err := scanURL(tx.QueryRow(ctx, `
 		UPDATE urls SET click_count = click_count + 1, updated_at = now()
-		WHERE id = $1
+		WHERE id = $1 AND disabled_at IS NULL
 		RETURNING `+urlCols, id))
 	if err != nil {
 		return URL{}, mapURLErr(err)
@@ -170,7 +191,7 @@ type urlRow interface {
 func scanURL(row urlRow) (URL, error) {
 	var u URL
 	var created, updated time.Time
-	err := row.Scan(&u.ID, &u.Alias, &u.URL, &u.ClickCount, &u.CreatedBy, &created, &updated)
+	err := row.Scan(&u.ID, &u.Alias, &u.URL, &u.ClickCount, &u.CreatedBy, &u.DisabledAt, &u.DisabledBy, &created, &updated)
 	u.CreatedAt = created
 	u.UpdatedAt = updated
 	return u, err

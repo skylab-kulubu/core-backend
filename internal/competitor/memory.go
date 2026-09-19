@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type MemoryStore struct {
@@ -23,16 +24,37 @@ func NewMemoryStore(events event.Store) *MemoryStore {
 }
 
 func (s *MemoryStore) List(_ context.Context) ([]Competitor, error) {
+	return s.list(lifecycle.CurrentOnly), nil
+}
+
+func (s *MemoryStore) ListLifecycle(_ context.Context, visibility lifecycle.Visibility) ([]Competitor, error) {
+	return s.list(visibility), nil
+}
+
+func (s *MemoryStore) list(visibility lifecycle.Visibility) []Competitor {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Competitor, 0, len(s.byID))
 	for _, c := range s.byID {
+		if !visibility.Matches(c.WithdrawnAt != nil) {
+			continue
+		}
 		out = append(out, c)
 	}
-	return out, nil
+	return out
 }
 
 func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (Competitor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.byID[id]
+	if !ok || c.WithdrawnAt != nil {
+		return Competitor{}, ErrNotFound
+	}
+	return c, nil
+}
+
+func (s *MemoryStore) GetIncludingWithdrawn(_ context.Context, id uuid.UUID) (Competitor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.byID[id]
@@ -59,7 +81,7 @@ func (s *MemoryStore) Update(_ context.Context, c Competitor) (Competitor, error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, ok := s.byID[c.ID]
-	if !ok {
+	if !ok || existing.WithdrawnAt != nil {
 		return Competitor{}, ErrNotFound
 	}
 	c.CreatedAt = existing.CreatedAt
@@ -83,7 +105,7 @@ func (s *MemoryStore) ListByEvent(_ context.Context, eventID uuid.UUID) ([]Compe
 	defer s.mu.Unlock()
 	out := make([]Competitor, 0)
 	for _, c := range s.byID {
-		if c.EventID == eventID {
+		if c.WithdrawnAt == nil && c.EventID == eventID {
 			out = append(out, c)
 		}
 	}
@@ -95,7 +117,7 @@ func (s *MemoryStore) ListByUser(_ context.Context, userID uuid.UUID) ([]Competi
 	defer s.mu.Unlock()
 	out := make([]Competitor, 0)
 	for _, c := range s.byID {
-		if c.UserID == userID {
+		if c.WithdrawnAt == nil && c.UserID == userID {
 			out = append(out, c)
 		}
 	}
@@ -106,7 +128,9 @@ func (s *MemoryStore) ListByOwnerTeam(ctx context.Context, ownerTeam string) ([]
 	s.mu.Lock()
 	snapshot := make([]Competitor, 0, len(s.byID))
 	for _, c := range s.byID {
-		snapshot = append(snapshot, c)
+		if c.WithdrawnAt == nil {
+			snapshot = append(snapshot, c)
+		}
 	}
 	s.mu.Unlock()
 
@@ -138,7 +162,7 @@ func (s *MemoryStore) Winner(_ context.Context, eventID uuid.UUID) (Competitor, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, c := range s.byID {
-		if c.EventID == eventID && c.IsWinner {
+		if c.WithdrawnAt == nil && c.EventID == eventID && c.IsWinner {
 			return c, nil
 		}
 	}
