@@ -101,20 +101,25 @@ func (s *PostgresStore) RecordHit(ctx context.Context, id uuid.UUID, hit Hit) (U
 	if err := tx.Commit(ctx); err != nil {
 		return URL{}, err
 	}
-	_ = s.pruneHits(ctx, id)
 	return u, nil
 }
 
-func (s *PostgresStore) pruneHits(ctx context.Context, id uuid.UUID) error {
-	if _, err := s.pool.Exec(ctx, `DELETE FROM url_hits WHERE url_id = $1 AND at < now() - interval '90 days'`, id); err != nil {
-		return err
-	}
-	if _, err := s.pool.Exec(ctx, `
-		UPDATE urls SET click_count = (SELECT COUNT(*) FROM url_hits WHERE url_id = $1), updated_at = now()
-		WHERE id = $1`, id); err != nil {
-		return err
-	}
-	return nil
+func (s *PostgresStore) PruneHits(ctx context.Context, before time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		WITH deleted AS (
+			DELETE FROM url_hits
+			WHERE at < $1
+			RETURNING url_id
+		), affected AS (
+			SELECT url_id, COUNT(*) AS deleted_count
+			FROM deleted
+			GROUP BY url_id
+		)
+		UPDATE urls
+		SET click_count = GREATEST(urls.click_count - affected.deleted_count, 0), updated_at = now()
+		FROM affected
+		WHERE urls.id = affected.url_id`, before)
+	return err
 }
 
 func (s *PostgresStore) ListHits(ctx context.Context, id uuid.UUID, since time.Time) ([]Hit, error) {

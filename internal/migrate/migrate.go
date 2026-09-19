@@ -39,6 +39,8 @@ var fingerprints = map[int64]string{
 	20260917171000: `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'event_door_staff'`,
 	20260917180000: `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'certificates'`,
 	20260918180000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'extra_form_urls'`,
+	20260919120000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'phone'`,
+	20260919130000: `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'url_hits' AND to_regclass('public.url_hits_url_id_at_idx') IS NOT NULL`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

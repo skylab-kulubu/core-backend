@@ -106,10 +106,10 @@ func (s *service) Patch(ctx context.Context, id uuid.UUID, in ProfilePatch) (Use
 	if err != nil {
 		return User{}, err
 	}
-	if in.FirstName != nil && *in.FirstName != "" {
+	if in.FirstName != nil {
 		existing.FirstName = *in.FirstName
 	}
-	if in.LastName != nil && *in.LastName != "" {
+	if in.LastName != nil {
 		existing.LastName = *in.LastName
 	}
 	if in.Linkedin != nil {

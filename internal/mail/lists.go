@@ -49,10 +49,15 @@ type ListRecipient struct {
 
 type Lists interface {
 	CreateList(ctx context.Context, name string) (uuid.UUID, error)
+	DeleteList(ctx context.Context, id uuid.UUID) error
 	GetList(ctx context.Context, id uuid.UUID) error
 	Recipients(ctx context.Context, id uuid.UUID) ([]ListRecipient, error)
 	AddRecipient(ctx context.Context, id uuid.UUID, r ListRecipient) error
 	RemoveRecipient(ctx context.Context, listID, recipientID uuid.UUID) error
+}
+
+func (s *SkyMail) DeleteList(ctx context.Context, id uuid.UUID) error {
+	return s.doJSON(ctx, http.MethodDelete, "/v1/mailing_lists/"+id.String(), nil, http.StatusNoContent, nil)
 }
 
 func (s *SkyMail) CreateList(ctx context.Context, name string) (uuid.UUID, error) {

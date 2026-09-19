@@ -30,8 +30,11 @@ func ticketApp(t *testing.T, ident authn.Identity, events event.Store, tickets t
 	})
 	app.Post("/v1/events/:eventId/applications/me", h.Apply)
 	app.Post("/v1/events/:eventId/applications/users/:userId", h.ApplyForOther)
+	app.Get("/v1/events/:eventId/assignable-users", h.ListAssignableUsers)
 	app.Post("/v1/events/:eventId/applications/guest", h.ApplyGuest)
 	app.Get("/v1/events/:eventId/tickets", h.ListByEvent)
+	app.Get("/v1/door/events", h.ListDoorEvents)
+	app.Get("/v1/events/:eventId/door-attendees", h.SearchDoorAttendees)
 	app.Get("/v1/tickets/me", h.Mine)
 	app.Get("/v1/tickets/user/:userId/event/:eventId", h.ByUserEvent)
 	app.Get("/v1/tickets/:id", h.Get)
@@ -39,7 +42,46 @@ func ticketApp(t *testing.T, ident authn.Identity, events event.Store, tickets t
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", h.CheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", h.CheckInMe)
 	app.Post("/v1/sessions/:sessionId/check-in/guest", h.CheckInGuest)
+	app.Post("/v1/sessions/:sessionId/check-in/resolve", h.ResolveAndCheckIn)
+	app.Get("/v1/sessions/:sessionId/check-ins", h.DoorActivity)
 	return app
+}
+
+func TestListAssignableUsersHTTPLeaderSearchesEventDirectory(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	dir := identity.NewMemory()
+	users := user.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: target, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace", SchoolEmail: "private@std.yildiz.edu.tr", SkyNumber: "SKY-0000042"})
+	leader := authn.Identity{
+		ID:     uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+		Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"},
+	}
+	app := ticketApp(t, leader, events, ticket.NewMemoryStore(), users, dir)
+	path := "/v1/events/" + ev.ID.String() + "/assignable-users?q=ada"
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var got []identity.Person
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != target || got[0].Email != "ada@example.com" || got[0].FirstName != "Ada" {
+		t.Fatalf("people %+v", got)
+	}
+	if got[0].SchoolEmail != "" || got[0].SkyNumber != "" || got[0].Username != "" {
+		t.Fatalf("event picker leaked extra identity fields: %+v", got[0])
+	}
 }
 
 func seedTicketUser(t *testing.T, users user.Store, id uuid.UUID) {
@@ -677,6 +719,94 @@ func TestCheckInHTTPDoorStaffAndTeamDoorScan(t *testing.T) {
 	if resp.StatusCode != fiber.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("member scan status %d body %s", resp.StatusCode, body)
+	}
+}
+
+func TestResolveAndCheckInHTTPKeepsTicketPrivateFromDoorStaff(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	users := user.NewMemoryStore()
+	staffID := uuid.MustParse("17171717-1717-1717-1717-171717171717")
+	ev, err := events.Create(t.Context(), event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{staffID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(t.Context(), event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := events.CreateSession(t.Context(), event.Session{
+		EventDayID: day.ID, Title: "Opening", SpeakerName: "Ada", SessionType: "PRESENTATION",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := uuid.MustParse("18181818-1818-1818-1818-181818181818")
+	seedTicketUser(t, users, owner)
+	if _, err := tickets.Create(t.Context(), ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &owner}); err != nil {
+		t.Fatal(err)
+	}
+	app := ticketApp(t, authn.Identity{ID: staffID}, events, tickets, users)
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/door/events", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("door events status %d body %s", resp.StatusCode, body)
+	}
+	var doorEvents []event.Resource
+	if err := json.NewDecoder(resp.Body).Decode(&doorEvents); err != nil {
+		t.Fatal(err)
+	}
+	if len(doorEvents) != 1 || doorEvents[0].ID != ev.ID || doorEvents[0].Name != "Hack" {
+		t.Fatalf("door events %+v", doorEvents)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/"+ev.ID.String()+"/door-attendees?q=ada", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attendeeBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK || strings.Contains(string(attendeeBody), "ticketId") || !strings.Contains(string(attendeeBody), `"name":"Ada Lovelace"`) {
+		t.Fatalf("attendees status %d body %s", resp.StatusCode, attendeeBody)
+	}
+	req := httptest.NewRequest(
+		fiber.MethodPost,
+		"/v1/sessions/"+sess.ID.String()+"/check-in/resolve",
+		strings.NewReader(`{"query":"ada@example.com"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "ticketId") || !strings.Contains(string(body), `"personName":"Ada Lovelace"`) {
+		t.Fatalf("response leaked or omitted fields: %s", body)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/sessions/"+sess.ID.String()+"/check-ins", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK || !strings.Contains(string(body), `"total":1`) || strings.Contains(string(body), "ticketId") {
+		t.Fatalf("activity status %d body %s", resp.StatusCode, body)
 	}
 }
 

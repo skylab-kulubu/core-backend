@@ -33,6 +33,8 @@ func ticketError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusNotFound, "Not Found")
 	case errors.Is(err, ticket.ErrConflict):
 		return problem(c, fiber.StatusConflict, "Conflict")
+	case errors.Is(err, ticket.ErrAmbiguous):
+		return problem(c, fiber.StatusConflict, "Ambiguous Match")
 	case errors.Is(err, ticket.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	default:
@@ -74,6 +76,50 @@ func (h *TicketHandler) ApplyForOther(c fiber.Ctx) error {
 		return ticketError(c, err)
 	}
 	return c.Status(fiber.StatusCreated).JSON(created)
+}
+
+func (h *TicketHandler) ListAssignableUsers(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	eventID, err := uuid.Parse(c.Params("eventId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	people, err := h.svc.ListAssignableUsers(c.Context(), p, eventID, c.Query("q"))
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.JSON(people)
+}
+
+func (h *TicketHandler) ListDoorEvents(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	events, err := h.svc.ListDoorEvents(c.Context(), p)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.JSON(events)
+}
+
+func (h *TicketHandler) SearchDoorAttendees(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	eventID, err := uuid.Parse(c.Params("eventId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	attendees, err := h.svc.SearchDoorAttendees(c.Context(), p, eventID, c.Query("q"))
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.JSON(attendees)
 }
 
 func (h *TicketHandler) ApplyGuest(c fiber.Ctx) error {
@@ -146,6 +192,11 @@ type guestCheckInBody struct {
 	Email string `json:"email"`
 }
 
+type resolveCheckInBody struct {
+	PersonID string `json:"personId"`
+	Query    string `json:"query"`
+}
+
 func (h *TicketHandler) CheckInMe(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
@@ -176,6 +227,50 @@ func (h *TicketHandler) CheckInGuest(c fiber.Ctx) error {
 		return ticketError(c, err)
 	}
 	return c.Status(fiber.StatusCreated).JSON(ci)
+}
+
+func (h *TicketHandler) ResolveAndCheckIn(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	sessionID, err := uuid.Parse(c.Params("sessionId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body resolveCheckInBody
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	target := ticket.DoorCheckInTarget{Query: body.Query}
+	if body.PersonID != "" {
+		personID, err := uuid.Parse(body.PersonID)
+		if err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+		target.PersonID = &personID
+	}
+	created, err := h.svc.ResolveAndCheckIn(c.Context(), p, sessionID, target)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(created)
+}
+
+func (h *TicketHandler) DoorActivity(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	sessionID, err := uuid.Parse(c.Params("sessionId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	activity, err := h.svc.DoorActivity(c.Context(), p, sessionID)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.JSON(activity)
 }
 
 func (h *TicketHandler) Get(c fiber.Ctx) error {

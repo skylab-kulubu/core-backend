@@ -51,6 +51,17 @@ func (m *handlerLists) GetList(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (m *handlerLists) DeleteList(_ context.Context, id uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.names[id]; !ok {
+		return mail.ErrListNotFound
+	}
+	delete(m.names, id)
+	delete(m.recs, id)
+	return nil
+}
+
 func (m *handlerLists) Recipients(_ context.Context, id uuid.UUID) ([]mail.ListRecipient, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -71,7 +82,7 @@ func (m *handlerLists) RemoveRecipient(_ context.Context, listID, recipientID uu
 
 func mailApp(t *testing.T, ident authn.Identity, events event.Store, tickets ticket.Store, users user.Store, lists mail.Lists) *fiber.App {
 	t.Helper()
-	h := NewEventMailHandler(eventmail.New(events, tickets, users, lists, authz.NewAuthorizer(authz.DefaultPolicy())))
+	h := NewEventMailHandler(eventmail.New(events, tickets, users, lists, authz.NewAuthorizer(authz.DefaultPolicy()), eventmail.NewMemorySnapshotStore()))
 	app := fiber.New(fiber.Config{ErrorHandler: ErrorHandler})
 	app.Use(func(c fiber.Ctx) error {
 		if ident.ID != uuid.Nil || len(ident.Groups) > 0 {
@@ -132,6 +143,78 @@ func TestEventMailListCreatesOnceForApplicants(t *testing.T) {
 	}
 	if lists.creates != 1 {
 		t.Fatalf("creates %d", lists.creates)
+	}
+}
+
+func TestEventMailListCanSyncOnlySelectedApplicants(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	users := user.NewMemoryStore()
+	lists := newHandlerLists()
+	ev, err := events.Create(t.Context(), event.Event{Name: "SkyDays", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := tickets.Create(t.Context(), ticket.Ticket{
+		EventID: ev.ID, TicketType: ticket.Guest, GuestFirstName: "Ada", GuestEmail: "ada@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tickets.Create(t.Context(), ticket.Ticket{
+		EventID: ev.ID, TicketType: ticket.Guest, GuestFirstName: "Grace", GuestEmail: "grace@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := mailApp(t, weblabLeader(), events, tickets, users, lists)
+	path := "/v1/events/" + ev.ID.String() + "/mail-list"
+	allResponse, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allResponse.StatusCode != fiber.StatusOK {
+		raw, _ := io.ReadAll(allResponse.Body)
+		t.Fatalf("all status %d body %s", allResponse.StatusCode, raw)
+	}
+	var all eventmail.Result
+	if err := json.NewDecoder(allResponse.Body).Decode(&all); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.NewReader(`{"ticketIds":["` + selected.ID.String() + `"]}`)
+	req := httptest.NewRequest(fiber.MethodPost, path, body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, raw)
+	}
+	var result eventmail.Result
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.RecipientCount != 1 {
+		t.Fatalf("recipients %d", result.RecipientCount)
+	}
+	if result.MailListID == all.MailListID {
+		t.Fatal("selected recipients reused the mutable event list")
+	}
+	if len(lists.recs[all.MailListID]) != 2 {
+		t.Fatalf("event recipients %+v", lists.recs[all.MailListID])
+	}
+	recipients := lists.recs[result.MailListID]
+	if len(recipients) != 1 || recipients[0].Email != "ada@example.com" {
+		t.Fatalf("recipients %+v", recipients)
+	}
+	stored, err := events.Get(t.Context(), ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.MailListID == nil || *stored.MailListID != all.MailListID {
+		t.Fatalf("stored mail list %v, want %v", stored.MailListID, all.MailListID)
 	}
 }
 

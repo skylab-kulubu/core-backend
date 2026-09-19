@@ -425,6 +425,64 @@ func (k *Keycloak) ListUsers(ctx context.Context) ([]Person, error) {
 	}
 }
 
+func (k *Keycloak) SearchUsers(ctx context.Context, query string, limit int) ([]Person, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	params := url.Values{}
+	params.Set("first", "0")
+	params.Set("max", strconv.Itoa(limit))
+	params.Set("briefRepresentation", "true")
+	params.Set("search", strings.TrimSpace(query))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.base+"/admin/realms/"+k.realm+"/users?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, mapKCErr(&gocloak.APIError{Code: resp.StatusCode, Message: string(body)})
+	}
+	var chunks []json.RawMessage
+	if err := json.Unmarshal(body, &chunks); err != nil {
+		return nil, err
+	}
+	out := make([]Person, 0, len(chunks))
+	for _, chunk := range chunks {
+		var row struct {
+			ID        string `json:"id"`
+			Email     string `json:"email"`
+			FirstName string `json:"firstName"`
+			LastName  string `json:"lastName"`
+			Username  string `json:"username"`
+		}
+		if err := json.Unmarshal(chunk, &row); err != nil {
+			continue
+		}
+		id, err := uuid.Parse(row.ID)
+		if err != nil {
+			continue
+		}
+		out = append(out, Person{
+			ID: id, Email: row.Email, FirstName: row.FirstName,
+			LastName: row.LastName, Username: row.Username,
+		})
+	}
+	return out, nil
+}
+
 func (k *Keycloak) UsersWithClientRole(ctx context.Context, clientID, role string) ([]Person, error) {
 	token, err := k.accessToken(ctx)
 	if err != nil {

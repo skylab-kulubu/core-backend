@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 )
 
 type afterCheckIn struct {
@@ -25,6 +26,18 @@ func (a *afterCheckIn) Apply(ctx context.Context, p authz.Principal, eventID uui
 
 func (a *afterCheckIn) ApplyForOther(ctx context.Context, p authz.Principal, eventID, userID uuid.UUID) (Ticket, error) {
 	return a.inner.ApplyForOther(ctx, p, eventID, userID)
+}
+
+func (a *afterCheckIn) ListAssignableUsers(ctx context.Context, p authz.Principal, eventID uuid.UUID, query string) ([]PersonSummary, error) {
+	return a.inner.ListAssignableUsers(ctx, p, eventID, query)
+}
+
+func (a *afterCheckIn) ListDoorEvents(ctx context.Context, p authz.Principal) ([]event.Resource, error) {
+	return a.inner.ListDoorEvents(ctx, p)
+}
+
+func (a *afterCheckIn) SearchDoorAttendees(ctx context.Context, p authz.Principal, eventID uuid.UUID, query string) ([]DoorAttendee, error) {
+	return a.inner.SearchDoorAttendees(ctx, p, eventID, query)
 }
 
 func (a *afterCheckIn) ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo) (Ticket, error) {
@@ -86,4 +99,16 @@ func (a *afterCheckIn) CheckInUser(ctx context.Context, p authz.Principal, sessi
 		a.fire(ctx, ci.TicketID)
 	}
 	return ci, err
+}
+
+func (a *afterCheckIn) ResolveAndCheckIn(ctx context.Context, p authz.Principal, sessionID uuid.UUID, target DoorCheckInTarget) (DoorCheckIn, error) {
+	ci, err := a.inner.ResolveAndCheckIn(ctx, p, sessionID, target)
+	if err == nil {
+		a.fire(ctx, ci.TicketID)
+	}
+	return ci, err
+}
+
+func (a *afterCheckIn) DoorActivity(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorActivity, error) {
+	return a.inner.DoorActivity(ctx, p, sessionID)
 }

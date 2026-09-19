@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http/httptest"
@@ -142,6 +143,60 @@ func TestPublicSeasonListAndLeaderDaySession(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("public days %d", resp.StatusCode)
+	}
+}
+
+func TestSeasonEventsHideDoorStaffExceptFromAssigners(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	seasons := season.NewMemoryStore()
+	createdSeason, err := seasons.Create(ctx, season.Season{Name: "2026", Active: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staffID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	if _, err := events.Create(ctx, event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", SeasonID: &createdSeason.ID,
+		DoorStaffIDs: []uuid.UUID{staffID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/seasons/" + createdSeason.ID.String() + "/events"
+
+	for name, ident := range map[string]authn.Identity{
+		"anonymous": {},
+		"member":    {ID: uuid.New(), Groups: []string{"/UYELER/ARGE/WEBLAB"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, err := scheduleApp(t, ident, events, seasons).Test(
+				httptest.NewRequest(fiber.MethodGet, path, nil),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(body), staffID.String()) || strings.Contains(string(body), "doorStaffIds") {
+				t.Fatalf("leaked door staff: %s", body)
+			}
+		})
+	}
+
+	resp, err := scheduleApp(t, yk(), events, seasons).Test(
+		httptest.NewRequest(fiber.MethodGet, path, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), staffID.String()) {
+		t.Fatalf("assigner missing door staff: %s", body)
 	}
 }
 

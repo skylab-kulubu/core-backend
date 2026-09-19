@@ -129,7 +129,10 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/events/:eventId/days", schedule.ListDays)
 	app.Post("/v1/events/:eventId/applications/me", tickets.Apply)
 	app.Post("/v1/events/:eventId/applications/users/:userId", tickets.ApplyForOther)
+	app.Get("/v1/events/:eventId/assignable-users", tickets.ListAssignableUsers)
 	app.Get("/v1/events/:eventId/tickets", tickets.ListByEvent)
+	app.Get("/v1/door/events", tickets.ListDoorEvents)
+	app.Get("/v1/events/:eventId/door-attendees", tickets.SearchDoorAttendees)
 	if deps.EventMail != nil {
 		mailList := handlers.NewEventMailHandler(deps.EventMail)
 		app.Post("/v1/events/:eventId/mail-list", mailList.Sync)
@@ -173,6 +176,8 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
 	app.Post("/v1/sessions/:sessionId/check-in/guest", tickets.CheckInGuest)
+	app.Post("/v1/sessions/:sessionId/check-in/resolve", tickets.ResolveAndCheckIn)
+	app.Get("/v1/sessions/:sessionId/check-ins", tickets.DoorActivity)
 	if pass != nil {
 		app.Post("/v1/sessions/:sessionId/check-in/skypass", pass.CheckInSession)
 	}
