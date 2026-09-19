@@ -90,14 +90,18 @@ func (b eventBody) asEvent() event.Event {
 func (h *EventHandler) List(c fiber.Ctx) error {
 	owner := c.Query("ownerTeam")
 	activeOnly := c.Query("active") == "true"
-	if _, err := caller(c); err != nil {
+	p, callerErr := caller(c)
+	if callerErr != nil {
 		activeOnly = true
 	}
 	events, err := h.svc.List(c.Context(), owner, activeOnly)
 	if err != nil {
 		return eventError(c, err)
 	}
-	return c.JSON(events)
+	if callerErr != nil {
+		return c.JSON(h.svc.ProjectAllFor(nil, events))
+	}
+	return c.JSON(h.svc.ProjectAllFor(&p, events))
 }
 
 func (h *EventHandler) ListActive(c fiber.Ctx) error {
@@ -105,7 +109,7 @@ func (h *EventHandler) ListActive(c fiber.Ctx) error {
 	if err != nil {
 		return eventError(c, err)
 	}
-	return c.JSON(events)
+	return c.JSON(h.svc.ProjectAllFor(nil, events))
 }
 
 func (h *EventHandler) Get(c fiber.Ctx) error {
@@ -117,7 +121,11 @@ func (h *EventHandler) Get(c fiber.Ctx) error {
 	if err != nil {
 		return eventError(c, err)
 	}
-	return c.JSON(ev)
+	p, callerErr := caller(c)
+	if callerErr != nil {
+		return c.JSON(h.svc.ProjectFor(nil, ev))
+	}
+	return c.JSON(h.svc.ProjectFor(&p, ev))
 }
 
 func (h *EventHandler) Create(c fiber.Ctx) error {
@@ -133,7 +141,7 @@ func (h *EventHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return eventError(c, err)
 	}
-	return c.Status(fiber.StatusCreated).JSON(created)
+	return c.Status(fiber.StatusCreated).JSON(h.svc.ProjectFor(&p, created))
 }
 
 func (h *EventHandler) Update(c fiber.Ctx) error {
@@ -153,7 +161,7 @@ func (h *EventHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return eventError(c, err)
 	}
-	return c.JSON(updated)
+	return c.JSON(h.svc.ProjectFor(&p, updated))
 }
 
 func (h *EventHandler) Delete(c fiber.Ctx) error {
@@ -188,7 +196,7 @@ func (h *EventHandler) AddImages(c fiber.Ctx) error {
 	if err != nil {
 		return eventError(c, err)
 	}
-	return c.JSON(updated)
+	return c.JSON(h.svc.ProjectFor(&p, updated))
 }
 
 func (h *EventHandler) RemoveImages(c fiber.Ctx) error {
@@ -208,5 +216,5 @@ func (h *EventHandler) RemoveImages(c fiber.Ctx) error {
 	if err != nil {
 		return eventError(c, err)
 	}
-	return c.JSON(updated)
+	return c.JSON(h.svc.ProjectFor(&p, updated))
 }

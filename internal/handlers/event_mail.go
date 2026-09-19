@@ -26,7 +26,15 @@ func (h *EventMailHandler) Sync(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	result, err := h.svc.Sync(c.Context(), p, eventID)
+	var body struct {
+		TicketIDs []uuid.UUID `json:"ticketIds"`
+	}
+	if len(c.Body()) > 0 {
+		if err := c.Bind().Body(&body); err != nil || body.TicketIDs == nil || len(body.TicketIDs) == 0 || len(body.TicketIDs) > 1000 {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+	}
+	result, err := h.svc.Sync(c.Context(), p, eventID, body.TicketIDs)
 	if err != nil {
 		return eventMailError(c, err)
 	}
@@ -41,6 +49,8 @@ func eventMailError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, eventmail.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
+	case errors.Is(err, eventmail.ErrNoRecipients):
+		return problem(c, fiber.StatusUnprocessableEntity, "No mail recipients")
 	case errors.Is(err, eventmail.ErrUnavailable):
 		return problem(c, fiber.StatusServiceUnavailable, "Skymail is not configured")
 	case errors.Is(err, mail.ErrForbidden):

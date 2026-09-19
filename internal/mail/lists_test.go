@@ -56,6 +56,24 @@ func TestSkyMailGetListNotFound(t *testing.T) {
 	}
 }
 
+func TestSkyMailDeleteList(t *testing.T) {
+	t.Parallel()
+	listID := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	if err := (&SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), HTTP: srv.Client()}).DeleteList(t.Context(), listID); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodDelete || gotPath != "/v1/mailing_lists/"+listID.String() {
+		t.Fatalf("method %q path %q", gotMethod, gotPath)
+	}
+}
+
 func TestSkyMailAddRecipientPostsEmail(t *testing.T) {
 	t.Parallel()
 	listID := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")

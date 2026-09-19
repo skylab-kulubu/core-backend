@@ -8,11 +8,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/eventmail"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
+	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-func TestApplyAddsMissingExtraFormURLsOnBrownfield(t *testing.T) {
+func TestApplyRepairsBrownfieldSchema(t *testing.T) {
 	pool := postgresPool(t)
 	ctx := context.Background()
 
@@ -24,6 +30,9 @@ func TestApplyAddsMissingExtraFormURLsOnBrownfield(t *testing.T) {
 	}
 
 	if _, err := pool.Exec(ctx, `ALTER TABLE events DROP COLUMN extra_form_urls`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DROP INDEX url_hits_url_id_at_idx`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `DROP TABLE schema_migrations`); err != nil {
@@ -44,6 +53,13 @@ func TestApplyAddsMissingExtraFormURLsOnBrownfield(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `SELECT extra_form_urls FROM events`); err != nil {
 		t.Fatal(err)
+	}
+	var indexCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'url_hits_url_id_at_idx'`).Scan(&indexCount); err != nil {
+		t.Fatal(err)
+	}
+	if indexCount != 1 {
+		t.Fatalf("url_hits index count = %d", indexCount)
 	}
 	if err := migrate.Apply(ctx, pool); err != nil {
 		t.Fatal(err)
@@ -118,5 +134,139 @@ func TestApplyFreshThenIdempotent(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `SELECT extra_form_urls FROM events`); err != nil {
 		t.Fatal(err)
+	}
+	assertDoorStoreQueries(t, pool)
+}
+
+func assertDoorStoreQueries(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	ownerID := uuid.New()
+	if _, _, err := user.NewService(user.NewPostgresStore(pool)).Ensure(ctx, ownerID, user.Profile{
+		Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace", Username: "ada",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventStore := event.NewPostgresStore(pool)
+	ev, err := eventStore.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := eventStore.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Gün 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := eventStore.CreateSession(ctx, event.Session{
+		EventDayID: day.ID, Title: "Açılış", SessionType: "PRESENTATION",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticketStore := ticket.NewPostgresStore(pool)
+	created, err := ticketStore.Create(ctx, ticket.Ticket{
+		EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &ownerID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ticketStore.AddCheckIn(ctx, ticket.CheckIn{
+		TicketID: created.ID, EventDayID: day.ID, SessionID: session.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	search, err := ticketStore.SearchDoorTickets(ctx, ev.ID, "ada", false, 20)
+	if err != nil || len(search) != 1 || search[0].Name != "Ada Lovelace" {
+		t.Fatalf("search=%+v err=%v", search, err)
+	}
+	exact, err := ticketStore.SearchDoorTickets(ctx, ev.ID, "ADA@EXAMPLE.COM", true, 2)
+	if err != nil || len(exact) != 1 || exact[0].Ticket.ID != created.ID {
+		t.Fatalf("exact=%+v err=%v", exact, err)
+	}
+	owners, err := ticketStore.DoorTicketsByOwners(ctx, ev.ID, []uuid.UUID{ownerID})
+	if err != nil || len(owners) != 1 || owners[0].Email != "ada@example.com" {
+		t.Fatalf("owners=%+v err=%v", owners, err)
+	}
+	activity, err := ticketStore.DoorSessionActivity(ctx, session.ID, 20)
+	if err != nil || activity.Total != 1 || len(activity.Items) != 1 || activity.Items[0].PersonName != "Ada Lovelace" {
+		t.Fatalf("activity=%+v err=%v", activity, err)
+	}
+	listed, err := ticketStore.ListByEvent(ctx, ev.ID)
+	if err != nil || len(listed) != 1 || len(listed[0].CheckIns) != 1 {
+		t.Fatalf("listed=%+v err=%v", listed, err)
+	}
+}
+
+func TestHitRetentionPhysicallyDeletesExpiredPII(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	store := shorturl.NewPostgresStore(pool)
+	created, err := store.Create(ctx, shorturl.URL{ID: uuid.New(), Alias: "retention-test", URL: "https://example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.RecordHit(ctx, created.ID, shorturl.Hit{IP: "192.0.2.1", UserAgent: "old-agent", Referer: "https://old.example", CreatedAt: now.Add(-91 * 24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordHit(ctx, created.ID, shorturl.Hit{IP: "192.0.2.2", UserAgent: "new-agent", Referer: "https://new.example", CreatedAt: now.Add(-89 * 24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.PruneHits(ctx, now.Add(-shorturl.HitRetention)); err != nil {
+		t.Fatal(err)
+	}
+	var oldRows, newRows, clicks int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM url_hits WHERE ip = '192.0.2.1' OR user_agent = 'old-agent' OR referer = 'https://old.example'`).Scan(&oldRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM url_hits WHERE ip = '192.0.2.2'`).Scan(&newRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT click_count FROM urls WHERE id = $1`, created.ID).Scan(&clicks); err != nil {
+		t.Fatal(err)
+	}
+	if oldRows != 0 || newRows != 1 || clicks != 1 {
+		t.Fatalf("old=%d new=%d clicks=%d", oldRows, newRows, clicks)
+	}
+}
+
+func TestEventMailSnapshotRetentionStorePersistsExpiry(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	store := eventmail.NewPostgresSnapshotStore(pool)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	expired := eventmail.Snapshot{MailListID: uuid.New(), EventID: uuid.New(), ExpiresAt: now.Add(-time.Minute)}
+	fresh := eventmail.Snapshot{MailListID: uuid.New(), EventID: uuid.New(), ExpiresAt: now.Add(time.Minute)}
+	if err := store.Track(ctx, expired); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Track(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := store.Expired(ctx, now, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].MailListID != expired.MailListID || rows[0].EventID != expired.EventID {
+		t.Fatalf("expired %+v", rows)
+	}
+	if err := store.Forget(ctx, expired.MailListID); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = store.Expired(ctx, now.Add(2*time.Minute), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].MailListID != fresh.MailListID {
+		t.Fatalf("remaining %+v", rows)
 	}
 }

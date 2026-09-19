@@ -472,6 +472,34 @@ func TestService_SearchUsersUsesShadowNotDirectory(t *testing.T) {
 	}
 }
 
+func TestService_SearchUsersDoesNotMatchStaleDirectoryName(t *testing.T) {
+	t.Parallel()
+	dir, store, svc := setup(t)
+	ctx := context.Background()
+	id := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+	dir.PutUser(identity.Person{ID: id, Email: "member@example.com", FirstName: "LegacyName", LastName: "Lovelace"})
+	if _, _, err := store.Upsert(ctx, user.User{
+		ID: id, Email: "member@example.com", FirstName: "Grace", LastName: "Hopper",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stale, err := svc.ListUsers(ctx, privileged(), "LegacyName")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("stale directory name matched: %+v", stale)
+	}
+	current, err := svc.ListUsers(ctx, privileged(), "Grace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current) != 1 || current[0].FirstName != "Grace" || current[0].LastName != "Hopper" {
+		t.Fatalf("current shadow name missing: %+v", current)
+	}
+}
+
 func TestService_ListUsersSeatKeepsRoleHolders(t *testing.T) {
 	t.Parallel()
 	dir, _, svc := setup(t)

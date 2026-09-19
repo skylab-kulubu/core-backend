@@ -177,6 +177,7 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 	if err := s.allow(p, authz.TypeUser, authz.Read); err != nil {
 		return nil, err
 	}
+	full := s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Update)
 	q = strings.TrimSpace(q)
 	if len(seat) > 0 && strings.TrimSpace(seat[0].Role) != "" {
 		clientID := strings.TrimSpace(seat[0].ClientID)
@@ -187,23 +188,43 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 		if err != nil {
 			return nil, err
 		}
+		people, err = s.overlayShadow(ctx, people)
+		if err != nil {
+			return nil, err
+		}
 		if q != "" {
+			matches := personMatches
+			if !full {
+				matches = safePersonMatches
+			}
 			matched := make([]Person, 0, len(people))
 			for _, person := range people {
-				if personMatches(person, q) {
+				if matches(person, q) {
 					matched = append(matched, person)
 				}
 			}
 			people = matched
 		}
-		return s.overlayShadow(ctx, people)
+		return projectPeople(people, full), nil
 	}
 	people, err := s.dir.ListUsers(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if q != "" {
-		return s.mergeUserSearch(ctx, people, q)
+		if full {
+			people, err = s.mergeUserSearch(ctx, people, q)
+		} else {
+			people, err = s.overlayShadow(ctx, people)
+			if err == nil {
+				people = safePeopleSearch(people, q)
+			}
+		}
+		return projectPeople(people, full), err
+	}
+	if !full {
+		people, err = s.overlayShadow(ctx, people)
+		return projectPeople(people, false), err
 	}
 	out := make([]Person, 0, len(people))
 	for _, person := range people {
@@ -223,6 +244,8 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 			return nil, err
 		}
 		if shadow.ID == person.ID {
+			person.FirstName = shadow.FirstName
+			person.LastName = shadow.LastName
 			if shadow.SchoolEmail != "" {
 				person.SchoolEmail = shadow.SchoolEmail
 			}
@@ -232,7 +255,40 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 		}
 		out = append(out, person)
 	}
-	return out, nil
+	return projectPeople(out, full), nil
+}
+
+func projectPeople(people []Person, full bool) []Person {
+	if full {
+		return people
+	}
+	out := make([]Person, 0, len(people))
+	for _, person := range people {
+		out = append(out, Person{
+			ID: person.ID, Email: person.Email, FirstName: person.FirstName, LastName: person.LastName,
+		})
+	}
+	return out
+}
+
+func safePeopleSearch(people []Person, query string) []Person {
+	out := make([]Person, 0, len(people))
+	for _, person := range people {
+		if safePersonMatches(person, query) {
+			out = append(out, person)
+		}
+	}
+	return out
+}
+
+func safePersonMatches(person Person, query string) bool {
+	needle := strings.ToLower(strings.TrimSpace(query))
+	for _, field := range []string{person.Email, person.FirstName, person.LastName, strings.TrimSpace(person.FirstName + " " + person.LastName)} {
+		if strings.Contains(strings.ToLower(field), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error) {
@@ -245,12 +301,8 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Update) {
 		if got, err := s.users.Get(ctx, id); err == nil {
-			if got.FirstName != "" {
-				person.FirstName = got.FirstName
-			}
-			if got.LastName != "" {
-				person.LastName = got.LastName
-			}
+			person.FirstName = got.FirstName
+			person.LastName = got.LastName
 		}
 		return nameOnlyCard(UserCard{Person: Person{
 			ID:        person.ID,
@@ -315,12 +367,8 @@ func overlayPerson(person Person, shadow user.User) Person {
 	if shadow.SkyNumber != "" {
 		person.SkyNumber = shadow.SkyNumber
 	}
-	if shadow.FirstName != "" {
-		person.FirstName = shadow.FirstName
-	}
-	if shadow.LastName != "" {
-		person.LastName = shadow.LastName
-	}
+	person.FirstName = shadow.FirstName
+	person.LastName = shadow.LastName
 	return person
 }
 
@@ -698,6 +746,8 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 			Leader:    leader,
 		}
 		if shadow, err := s.users.Get(ctx, p.ID); err == nil {
+			m.FirstName = shadow.FirstName
+			m.LastName = shadow.LastName
 			m.Linkedin = shadow.Linkedin
 			m.University = shadow.University
 			m.Faculty = shadow.Faculty
@@ -721,6 +771,8 @@ func (s *service) overlayShadow(ctx context.Context, people []Person) ([]Person,
 		if err != nil {
 			continue
 		}
+		people[i].FirstName = shadow.FirstName
+		people[i].LastName = shadow.LastName
 		if shadow.SchoolEmail != "" {
 			people[i].SchoolEmail = shadow.SchoolEmail
 		}
@@ -732,6 +784,10 @@ func (s *service) overlayShadow(ctx context.Context, people []Person) ([]Person,
 }
 
 func (s *service) mergeUserSearch(ctx context.Context, people []Person, q string) ([]Person, error) {
+	people, err := s.overlayShadow(ctx, people)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]Person, 0)
 	seen := map[uuid.UUID]int{}
 	for _, person := range people {
@@ -748,6 +804,8 @@ func (s *service) mergeUserSearch(ctx context.Context, people []Person, q string
 	for _, u := range found {
 		person := personFromUser(u)
 		if i, ok := seen[u.ID]; ok {
+			out[i].FirstName = person.FirstName
+			out[i].LastName = person.LastName
 			if person.SchoolEmail != "" {
 				out[i].SchoolEmail = person.SchoolEmail
 			}

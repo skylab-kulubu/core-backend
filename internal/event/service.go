@@ -10,6 +10,9 @@ import (
 )
 
 type Service interface {
+	CanAssign(p authz.Principal, ownerTeam string) bool
+	ProjectFor(p *authz.Principal, in Event) Event
+	ProjectAllFor(p *authz.Principal, in []Event) []Event
 	List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error)
 	Get(ctx context.Context, id uuid.UUID) (Event, error)
 	Create(ctx context.Context, p authz.Principal, in Event) (Event, error)
@@ -56,6 +59,24 @@ func (s *service) publishAll(events []Event) []Event {
 
 func resource(ownerTeam string) authz.Resource {
 	return authz.Resource{Type: authz.TypeEvent, OwnerTeam: ownerTeam}
+}
+
+func (s *service) CanAssign(p authz.Principal, ownerTeam string) bool {
+	return s.authz.Allow(p, resource(ownerTeam), authz.Assign)
+}
+
+func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
+	if p == nil || !s.CanAssign(*p, in.OwnerTeam) {
+		in.DoorStaffIDs = nil
+	}
+	return in
+}
+
+func (s *service) ProjectAllFor(p *authz.Principal, in []Event) []Event {
+	for i := range in {
+		in[i] = s.ProjectFor(p, in[i])
+	}
+	return in
 }
 
 func (s *service) published(e Event, err error) (Event, error) {
