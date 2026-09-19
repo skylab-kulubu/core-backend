@@ -48,6 +48,19 @@ func TestPNGWithLogoEncodesContent(t *testing.T) {
 	}
 }
 
+func TestClubLogoUsesTransparentBrandMark(t *testing.T) {
+	t.Parallel()
+	logo := clubLogo(128)
+	_, _, _, cornerAlpha := logo.At(0, 0).RGBA()
+	centerRed, centerGreen, centerBlue, centerAlpha := logo.At(64, 64).RGBA()
+	if cornerAlpha != 0 {
+		t.Fatalf("brand mark corner alpha = %d", cornerAlpha)
+	}
+	if centerAlpha == 0 || centerRed != 0 || centerGreen != 0 || centerBlue != 0 {
+		t.Fatalf("brand mark center rgba = %d,%d,%d,%d", centerRed, centerGreen, centerBlue, centerAlpha)
+	}
+}
+
 func TestLogoFromQuery(t *testing.T) {
 	t.Parallel()
 	if LogoFromQuery("") || LogoFromQuery("0") {
