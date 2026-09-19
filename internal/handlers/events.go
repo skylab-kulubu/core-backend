@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type EventHandler struct {
@@ -47,6 +48,8 @@ func eventError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, event.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
+	case errors.Is(err, event.ErrConflict):
+		return problem(c, fiber.StatusConflict, "Conflict")
 	case errors.Is(err, event.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	default:
@@ -88,9 +91,23 @@ func (b eventBody) asEvent() event.Event {
 }
 
 func (h *EventHandler) List(c fiber.Ctx) error {
+	visibility, err := lifecycleVisibility(c)
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
 	owner := c.Query("ownerTeam")
 	activeOnly := c.Query("active") == "true"
 	p, callerErr := caller(c)
+	if visibility != lifecycle.CurrentOnly {
+		if callerErr != nil {
+			return eventError(c, callerErr)
+		}
+		events, err := h.svc.ListLifecycle(c.Context(), p, owner, visibility)
+		if err != nil {
+			return eventError(c, err)
+		}
+		return c.JSON(h.svc.ProjectAllFor(&p, events))
+	}
 	if callerErr != nil {
 		activeOnly = true
 	}
@@ -102,6 +119,22 @@ func (h *EventHandler) List(c fiber.Ctx) error {
 		return c.JSON(h.svc.ProjectAllFor(nil, events))
 	}
 	return c.JSON(h.svc.ProjectAllFor(&p, events))
+}
+
+func (h *EventHandler) Restore(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	restored, err := h.svc.Restore(c.Context(), p, id)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(h.svc.ProjectFor(&p, restored))
 }
 
 func (h *EventHandler) ListActive(c fiber.Ctx) error {

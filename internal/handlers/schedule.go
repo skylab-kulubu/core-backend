@@ -6,6 +6,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 )
 
@@ -42,11 +43,40 @@ func (h *ScheduleHandler) ListDays(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	days, err := h.svc.ListDays(c.Context(), eventID)
+	visibility, err := lifecycleVisibility(c)
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var days []event.Day
+	if visibility == lifecycle.CurrentOnly {
+		days, err = h.svc.ListDays(c.Context(), eventID)
+	} else {
+		p, callerErr := caller(c)
+		if callerErr != nil {
+			return eventError(c, callerErr)
+		}
+		days, err = h.svc.ListDaysLifecycle(c.Context(), p, eventID, visibility)
+	}
 	if err != nil {
 		return eventError(c, err)
 	}
 	return c.JSON(days)
+}
+
+func (h *ScheduleHandler) RestoreDay(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	restored, err := h.svc.RestoreDay(c.Context(), p, id)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(restored)
 }
 
 func (h *ScheduleHandler) GetDay(c fiber.Ctx) error {
@@ -121,11 +151,40 @@ func (h *ScheduleHandler) ListSessions(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	sessions, err := h.svc.ListSessions(c.Context(), dayID)
+	visibility, err := lifecycleVisibility(c)
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var sessions []event.Session
+	if visibility == lifecycle.CurrentOnly {
+		sessions, err = h.svc.ListSessions(c.Context(), dayID)
+	} else {
+		p, callerErr := caller(c)
+		if callerErr != nil {
+			return eventError(c, callerErr)
+		}
+		sessions, err = h.svc.ListSessionsLifecycle(c.Context(), p, dayID, visibility)
+	}
 	if err != nil {
 		return eventError(c, err)
 	}
 	return c.JSON(sessions)
+}
+
+func (h *ScheduleHandler) RestoreSession(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	restored, err := h.svc.RestoreSession(c.Context(), p, id)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(restored)
 }
 
 func (h *ScheduleHandler) CurrentSession(c fiber.Ctx) error {

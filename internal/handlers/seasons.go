@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 )
 
@@ -42,12 +43,41 @@ func seasonError(c fiber.Ctx, err error) error {
 }
 
 func (h *SeasonHandler) List(c fiber.Ctx) error {
+	visibility, err := lifecycleVisibility(c)
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
 	activeOnly := c.Query("active") == "true"
-	items, err := h.seasons.List(c.Context(), activeOnly)
+	var items []season.Season
+	if visibility == lifecycle.CurrentOnly {
+		items, err = h.seasons.List(c.Context(), activeOnly)
+	} else {
+		p, callerErr := caller(c)
+		if callerErr != nil {
+			return seasonError(c, callerErr)
+		}
+		items, err = h.seasons.ListLifecycle(c.Context(), p, visibility)
+	}
 	if err != nil {
 		return seasonError(c, err)
 	}
 	return c.JSON(items)
+}
+
+func (h *SeasonHandler) Restore(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return seasonError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	restored, err := h.seasons.Restore(c.Context(), p, id)
+	if err != nil {
+		return seasonError(c, err)
+	}
+	return c.JSON(restored)
 }
 
 func (h *SeasonHandler) Get(c fiber.Ctx) error {

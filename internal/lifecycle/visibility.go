@@ -1,5 +1,9 @@
 package lifecycle
 
+import "errors"
+
+var ErrInvalidVisibility = errors.New("lifecycle: invalid visibility")
+
 // Visibility controls whether repository queries return current or inactive
 // durable records. Normal product reads must use CurrentOnly.
 type Visibility uint8
@@ -9,6 +13,21 @@ const (
 	InactiveOnly
 	All
 )
+
+// ParseVisibility converts the public lifecycle query value into a repository
+// visibility. An empty value preserves the normal current-record view.
+func ParseVisibility(raw string) (Visibility, error) {
+	switch raw {
+	case "", "current":
+		return CurrentOnly, nil
+	case "inactive":
+		return InactiveOnly, nil
+	case "all":
+		return All, nil
+	default:
+		return CurrentOnly, ErrInvalidVisibility
+	}
+}
 
 // Matches reports whether a record with the supplied lifecycle state belongs
 // in this view. Unknown values deliberately fail closed to the normal current

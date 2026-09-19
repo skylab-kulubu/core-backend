@@ -99,8 +99,29 @@ func (s *PostgresStore) Update(ctx context.Context, in Season) (Season, error) {
 	return item, err
 }
 
-func (s *PostgresStore) Delete(ctx context.Context, id uuid.UUID) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM seasons WHERE id = $1`, id)
+func (s *PostgresStore) Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE seasons
+		SET archived_at = COALESCE(archived_at, now()),
+			archived_by = CASE WHEN archived_at IS NULL THEN $2 ELSE archived_by END,
+			updated_at = CASE WHEN archived_at IS NULL THEN now() ELSE updated_at END
+		WHERE id = $1`, id, actorID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE seasons
+		SET archived_at = NULL,
+			archived_by = NULL,
+			updated_at = CASE WHEN archived_at IS NOT NULL THEN now() ELSE updated_at END
+		WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}

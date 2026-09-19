@@ -107,13 +107,36 @@ func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
 	return e, nil
 }
 
-func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) error {
+func (s *MemoryStore) Archive(_ context.Context, id uuid.UUID, actorID *uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.byID[id]; !ok {
+	e, ok := s.byID[id]
+	if !ok {
 		return ErrNotFound
 	}
-	delete(s.byID, id)
+	if e.ArchivedAt == nil {
+		now := time.Now().UTC()
+		e.ArchivedAt = &now
+		e.ArchivedBy = actorID
+		e.UpdatedAt = now
+		s.byID[id] = e
+	}
+	return nil
+}
+
+func (s *MemoryStore) Restore(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if e.ArchivedAt != nil {
+		e.ArchivedAt = nil
+		e.ArchivedBy = nil
+		e.UpdatedAt = time.Now().UTC()
+		s.byID[id] = e
+	}
 	return nil
 }
 
@@ -262,13 +285,34 @@ func (s *MemoryStore) UpdateDay(_ context.Context, d Day) (Day, error) {
 	return d, nil
 }
 
-func (s *MemoryStore) DeleteDay(_ context.Context, id uuid.UUID) error {
+func (s *MemoryStore) ArchiveDay(_ context.Context, id uuid.UUID, actorID *uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.days[id]; !ok {
+	d, ok := s.days[id]
+	if !ok {
 		return ErrNotFound
 	}
-	delete(s.days, id)
+	if d.ArchivedAt == nil {
+		now := time.Now().UTC()
+		d.ArchivedAt = &now
+		d.ArchivedBy = actorID
+		s.days[id] = d
+	}
+	return nil
+}
+
+func (s *MemoryStore) RestoreDay(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.days[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if d.ArchivedAt != nil {
+		d.ArchivedAt = nil
+		d.ArchivedBy = nil
+		s.days[id] = d
+	}
 	return nil
 }
 
@@ -393,12 +437,33 @@ func (s *MemoryStore) UpdateSession(_ context.Context, sess Session) (Session, e
 	return sess, nil
 }
 
-func (s *MemoryStore) DeleteSession(_ context.Context, id uuid.UUID) error {
+func (s *MemoryStore) ArchiveSession(_ context.Context, id uuid.UUID, actorID *uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.sessions[id]; !ok {
+	sess, ok := s.sessions[id]
+	if !ok {
 		return ErrNotFound
 	}
-	delete(s.sessions, id)
+	if sess.ArchivedAt == nil {
+		now := time.Now().UTC()
+		sess.ArchivedAt = &now
+		sess.ArchivedBy = actorID
+		s.sessions[id] = sess
+	}
+	return nil
+}
+
+func (s *MemoryStore) RestoreSession(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if sess.ArchivedAt != nil {
+		sess.ArchivedAt = nil
+		sess.ArchivedBy = nil
+		s.sessions[id] = sess
+	}
 	return nil
 }

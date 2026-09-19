@@ -58,6 +58,7 @@ func urlAppOn(t *testing.T, store shorturl.Store, ident authn.Identity, parse fu
 	app.Get("/v1/urls/:id/hits", h.ListHits)
 	app.Patch("/v1/urls/:id", h.Update)
 	app.Delete("/v1/urls/:id", h.Delete)
+	app.Post("/v1/urls/:id/restore", h.Restore)
 	return app
 }
 
