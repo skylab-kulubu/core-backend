@@ -29,6 +29,7 @@ func ticketApp(t *testing.T, ident authn.Identity, events event.Store, tickets t
 		return c.Next()
 	})
 	app.Post("/v1/events/:eventId/applications/me", h.Apply)
+	app.Post("/v1/events/:eventId/applications/users/:userId", h.ApplyForOther)
 	app.Post("/v1/events/:eventId/applications/guest", h.ApplyGuest)
 	app.Get("/v1/events/:eventId/tickets", h.ListByEvent)
 	app.Get("/v1/tickets/me", h.Mine)
@@ -39,6 +40,15 @@ func ticketApp(t *testing.T, ident authn.Identity, events event.Store, tickets t
 	app.Post("/v1/sessions/:sessionId/check-in/me", h.CheckInMe)
 	app.Post("/v1/sessions/:sessionId/check-in/guest", h.CheckInGuest)
 	return app
+}
+
+func seedTicketUser(t *testing.T, users user.Store, id uuid.UUID) {
+	t.Helper()
+	if _, _, err := user.NewService(users).Ensure(t.Context(), id, user.Profile{
+		Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace",
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestApplyAndListMineHTTP(t *testing.T) {
@@ -79,8 +89,358 @@ func TestApplyAndListMineHTTP(t *testing.T) {
 	if len(mine) != 1 || mine[0].EventID != ev.ID {
 		t.Fatalf("mine %+v", mine)
 	}
+	if mine[0].TicketType != ticket.Registered {
+		t.Fatalf("member self apply type %+v", mine[0])
+	}
 	if mine[0].Event == nil || mine[0].Event.Name != "Hack" || mine[0].Event.Location != "YTÜ" {
 		t.Fatalf("embedded event %+v", mine[0].Event)
+	}
+	if mine[0].GuestEmail != "" || mine[0].GuestFirstName != "" {
+		t.Fatalf("member dumped onto guest apply %+v", mine[0])
+	}
+}
+
+func TestApplyForOtherHTTPLeaderCreatesRegistered(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	users := user.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	seedTicketUser(t, users, target)
+	leader := authn.Identity{
+		ID:     uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+		Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"},
+	}
+	app := ticketApp(t, leader, events, tickets, users)
+	path := "/v1/events/" + ev.ID.String() + "/applications/users/" + target.String()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var created ticket.Ticket
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.TicketType != ticket.Registered || created.OwnerID == nil || *created.OwnerID != target {
+		t.Fatalf("created %+v", created)
+	}
+	if created.OwnerID != nil && *created.OwnerID == leader.ID {
+		t.Fatalf("wrote leader ticket %+v", created)
+	}
+	if created.GuestEmail != "" || created.GuestFirstName != "" {
+		t.Fatalf("dumped onto guest apply %+v", created)
+	}
+
+	gotPath := "/v1/tickets/user/" + target.String() + "/event/" + ev.ID.String()
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, gotPath, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("get status %d body %s", resp.StatusCode, body)
+	}
+}
+
+func TestApplyForOtherHTTPPrivilegedCreatesRegistered(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	users := user.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	seedTicketUser(t, users, target)
+	privileged := authn.Identity{
+		ID:     uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+		Groups: []string{"/UYELER/YK"},
+	}
+	app := ticketApp(t, privileged, events, tickets, users)
+	path := "/v1/events/" + ev.ID.String() + "/applications/users/" + target.String()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var created ticket.Ticket
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.TicketType != ticket.Registered || created.OwnerID == nil || *created.OwnerID != target {
+		t.Fatalf("created %+v", created)
+	}
+}
+
+func TestApplyForOtherHTTPDuplicateConflict(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	users := user.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	seedTicketUser(t, users, target)
+	leader := authn.Identity{
+		ID:     uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+		Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"},
+	}
+	app := ticketApp(t, leader, events, tickets, users)
+	path := "/v1/events/" + ev.ID.String() + "/applications/users/" + target.String()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("first status %d body %s", resp.StatusCode, body)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusConflict {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("dup status %d body %s", resp.StatusCode, body)
+	}
+}
+
+func TestApplyForOtherHTTPMemberForbidden(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	member := authn.Identity{
+		ID:     uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+		Groups: []string{"/UYELER/ARGE/WEBLAB"},
+	}
+	app := ticketApp(t, member, events, tickets)
+	path := "/v1/events/" + ev.ID.String() + "/applications/users/" + target.String()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+}
+
+func TestApplyForOtherHTTPUnknownUser(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	users := user.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	leader := authn.Identity{
+		ID:     uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+		Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"},
+	}
+	app := ticketApp(t, leader, events, ticket.NewMemoryStore(), users)
+	path := "/v1/events/" + ev.ID.String() + "/applications/users/" + missing.String()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+}
+
+func TestApplyForOtherHTTPDirectoryOnlyCreatesRegistered(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	users := user.NewMemoryStore()
+	dir := identity.NewMemory()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: target, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"})
+	leader := authn.Identity{
+		ID:     uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+		Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"},
+	}
+	app := ticketApp(t, leader, events, ticket.NewMemoryStore(), users, dir)
+	path := "/v1/events/" + ev.ID.String() + "/applications/users/" + target.String()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var created ticket.Ticket
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.TicketType != ticket.Registered || created.OwnerID == nil || *created.OwnerID != target {
+		t.Fatalf("created %+v", created)
+	}
+}
+
+func TestApplyForOtherHTTPDoorStaffForbidden(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	users := user.NewMemoryStore()
+	staffID := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
+	ev, err := events.Create(t.Context(), event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{staffID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	seedTicketUser(t, users, target)
+	staff := authn.Identity{ID: staffID, Groups: []string{"/UYELER"}}
+	app := ticketApp(t, staff, events, ticket.NewMemoryStore(), users)
+	path := "/v1/events/" + ev.ID.String() + "/applications/users/" + target.String()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+}
+
+func TestApplyForOtherHTTPGecekoduMemberForbidden(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	users := user.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "GECEKODU"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	seedTicketUser(t, users, target)
+	member := authn.Identity{
+		ID:     uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+		Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"},
+	}
+	app := ticketApp(t, member, events, ticket.NewMemoryStore(), users)
+	path := "/v1/events/" + ev.ID.String() + "/applications/users/" + target.String()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+}
+
+func TestApplyForOtherHTTPEmptyOwnerTeam(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	users := user.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Seminer", Location: "YTÜ"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	seedTicketUser(t, users, target)
+	path := "/v1/events/" + ev.ID.String() + "/applications/users/" + target.String()
+
+	leader := authn.Identity{
+		ID:     uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+		Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"},
+	}
+	app := ticketApp(t, leader, events, tickets, users)
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("leader status %d body %s", resp.StatusCode, body)
+	}
+
+	privileged := authn.Identity{
+		ID:     uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+		Groups: []string{"/UYELER/YK"},
+	}
+	app = ticketApp(t, privileged, events, tickets, users)
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("privileged status %d body %s", resp.StatusCode, body)
+	}
+	var created ticket.Ticket
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.TicketType != ticket.Registered || created.OwnerID == nil || *created.OwnerID != target {
+		t.Fatalf("created %+v", created)
+	}
+}
+
+func TestGuestApplyFromAdminHTTP(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := authn.Identity{
+		ID:     uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+		Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"},
+	}
+	app := ticketApp(t, admin, events, tickets)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/applications/guest", strings.NewReader(
+		`{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com","phoneNumber":"555"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	var created ticket.Ticket
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.TicketType != ticket.Guest {
+		t.Fatalf("type %+v", created)
+	}
+	if created.GuestFirstName != "Ada" || created.GuestLastName != "Lovelace" || created.GuestEmail != "ada@example.com" || created.GuestPhoneNumber != "555" {
+		t.Fatalf("guest fields %+v", created)
+	}
+	if created.OwnerID != nil {
+		t.Fatalf("admin became guest owner %+v", created)
 	}
 }
 

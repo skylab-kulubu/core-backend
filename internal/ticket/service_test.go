@@ -10,6 +10,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 func setup(t *testing.T) (event.Store, ticket.Service) {
@@ -17,6 +18,23 @@ func setup(t *testing.T) (event.Store, ticket.Service) {
 	events := event.NewMemoryStore()
 	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()))
 	return events, svc
+}
+
+func setupApplyForOther(t *testing.T) (event.Store, user.Store, ticket.Service) {
+	t.Helper()
+	events := event.NewMemoryStore()
+	users := user.NewMemoryStore()
+	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), users)
+	return events, users, svc
+}
+
+func seedUser(t *testing.T, users user.Store, id uuid.UUID) {
+	t.Helper()
+	if _, _, err := user.NewService(users).Ensure(context.Background(), id, user.Profile{
+		Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace",
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func seedEvent(t *testing.T, events event.Store, owner string) event.Event {
@@ -75,6 +93,195 @@ func TestService_ApplyThenListMine(t *testing.T) {
 	_, err = svc.Apply(ctx, p, ev.ID)
 	if !errors.Is(err, ticket.ErrConflict) {
 		t.Fatalf("dup apply: %v", err)
+	}
+}
+
+func TestService_ApplyForOtherLeaderCreatesRegistered(t *testing.T) {
+	t.Parallel()
+	events, users, svc := setupApplyForOther(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	seedUser(t, users, target)
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+
+	created, err := svc.ApplyForOther(ctx, leader, ev.ID, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.TicketType != ticket.Registered || created.OwnerID == nil || *created.OwnerID != target {
+		t.Fatalf("created %+v", created)
+	}
+	if created.GuestEmail != "" {
+		t.Fatalf("dumped onto guest apply %+v", created)
+	}
+
+	got, err := svc.GetByUserEvent(ctx, leader, target, ev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != created.ID {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestService_ApplyForOtherPrivilegedCreatesRegistered(t *testing.T) {
+	t.Parallel()
+	events, users, svc := setupApplyForOther(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+	target := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	seedUser(t, users, target)
+	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+
+	created, err := svc.ApplyForOther(ctx, yk, ev.ID, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.TicketType != ticket.Registered || created.OwnerID == nil || *created.OwnerID != target {
+		t.Fatalf("created %+v", created)
+	}
+}
+
+func TestService_ApplyForOtherDuplicateConflict(t *testing.T) {
+	t.Parallel()
+	events, users, svc := setupApplyForOther(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	seedUser(t, users, target)
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+
+	if _, err := svc.ApplyForOther(ctx, leader, ev.ID, target); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.ApplyForOther(ctx, leader, ev.ID, target)
+	if !errors.Is(err, ticket.ErrConflict) {
+		t.Fatalf("dup: %v", err)
+	}
+}
+
+func TestService_ApplyForOtherMemberForbidden(t *testing.T) {
+	t.Parallel()
+	events, users, svc := setupApplyForOther(t)
+	ev := seedEvent(t, events, "WEBLAB")
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	seedUser(t, users, target)
+	member := authz.Principal{ID: "mem", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	_, err := svc.ApplyForOther(context.Background(), member, ev.ID, target)
+	if !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestService_ApplyForOtherUnknownUser(t *testing.T) {
+	t.Parallel()
+	events, _, svc := setupApplyForOther(t)
+	ev := seedEvent(t, events, "WEBLAB")
+	missing := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	_, err := svc.ApplyForOther(context.Background(), leader, ev.ID, missing)
+	if !errors.Is(err, ticket.ErrNotFound) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestService_ApplyForOtherDirectoryOnlyCreatesRegistered(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	users := user.NewMemoryStore()
+	dir := identity.NewMemory()
+	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), users, dir)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: target, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"})
+	if _, err := users.Get(ctx, target); !errors.Is(err, user.ErrNotFound) {
+		t.Fatalf("shadow should be missing: %v", err)
+	}
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	created, err := svc.ApplyForOther(ctx, leader, ev.ID, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.TicketType != ticket.Registered || created.OwnerID == nil || *created.OwnerID != target {
+		t.Fatalf("created %+v", created)
+	}
+}
+
+func TestService_ApplyForOtherDoorStaffForbidden(t *testing.T) {
+	t.Parallel()
+	events, users, svc := setupApplyForOther(t)
+	ctx := context.Background()
+	staff := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
+	ev, err := events.Create(ctx, event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{staff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	seedUser(t, users, target)
+	_, err = svc.ApplyForOther(ctx, authz.Principal{ID: staff.String(), Groups: []string{"/UYELER"}}, ev.ID, target)
+	if !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestService_ApplyForOtherGecekoduMemberForbidden(t *testing.T) {
+	t.Parallel()
+	events, users, svc := setupApplyForOther(t)
+	ev := seedEvent(t, events, "GECEKODU")
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	seedUser(t, users, target)
+	member := authz.Principal{ID: "mem", Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}}
+	_, err := svc.ApplyForOther(context.Background(), member, ev.ID, target)
+	if !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestService_ApplyForOtherEmptyOwnerTeam(t *testing.T) {
+	t.Parallel()
+	events, users, svc := setupApplyForOther(t)
+	ctx := context.Background()
+	ev, err := events.Create(ctx, event.Event{Name: "Seminer", Location: "YTÜ"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	seedUser(t, users, target)
+	leader := authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	if _, err := svc.ApplyForOther(ctx, leader, ev.ID, target); !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("leader empty owner: %v", err)
+	}
+	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+	created, err := svc.ApplyForOther(ctx, yk, ev.ID, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.TicketType != ticket.Registered || created.OwnerID == nil || *created.OwnerID != target {
+		t.Fatalf("created %+v", created)
+	}
+}
+
+func TestService_ApplyGuestFromAdminDoesNotOwnTicket(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB")
+
+	created, err := svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{
+		FirstName: "Ada", LastName: "Lovelace", Email: "ada@example.com", PhoneNumber: "555",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.TicketType != ticket.Guest || created.GuestEmail != "ada@example.com" {
+		t.Fatalf("created %+v", created)
+	}
+	if created.OwnerID != nil {
+		t.Fatalf("admin became guest owner %+v", created)
 	}
 }
 

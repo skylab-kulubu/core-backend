@@ -128,6 +128,7 @@ func New(deps Deps) *fiber.App {
 	app.Delete("/v1/events/:id/images", events.RemoveImages)
 	app.Get("/v1/events/:eventId/days", schedule.ListDays)
 	app.Post("/v1/events/:eventId/applications/me", tickets.Apply)
+	app.Post("/v1/events/:eventId/applications/users/:userId", tickets.ApplyForOther)
 	app.Get("/v1/events/:eventId/tickets", tickets.ListByEvent)
 	if deps.EventMail != nil {
 		mailList := handlers.NewEventMailHandler(deps.EventMail)

@@ -23,6 +23,10 @@ func (a *afterCheckIn) Apply(ctx context.Context, p authz.Principal, eventID uui
 	return a.inner.Apply(ctx, p, eventID)
 }
 
+func (a *afterCheckIn) ApplyForOther(ctx context.Context, p authz.Principal, eventID, userID uuid.UUID) (Ticket, error) {
+	return a.inner.ApplyForOther(ctx, p, eventID, userID)
+}
+
 func (a *afterCheckIn) ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo) (Ticket, error) {
 	return a.inner.ApplyGuest(ctx, eventID, g)
 }
