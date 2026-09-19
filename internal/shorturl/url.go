@@ -14,6 +14,8 @@ type URL struct {
 	URL        string     `json:"url"`
 	ClickCount int        `json:"clickCount"`
 	CreatedBy  *uuid.UUID `json:"createdBy,omitempty"`
+	DisabledAt *time.Time `json:"disabledAt,omitempty"`
+	DisabledBy *uuid.UUID `json:"disabledBy,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	UpdatedAt  time.Time  `json:"updatedAt"`
 }

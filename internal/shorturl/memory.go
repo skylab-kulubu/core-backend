@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type MemoryStore struct {
@@ -30,7 +31,7 @@ func (s *MemoryStore) Create(_ context.Context, u URL) (URL, error) {
 		u.CreatedAt = now
 	}
 	u.UpdatedAt = now
-	if _, err := s.findAliasLocked(u.Alias, uuid.Nil); err == nil {
+	if _, err := s.findAliasLocked(u.Alias, uuid.Nil, true); err == nil {
 		return URL{}, ErrConflict
 	}
 	s.byID[u.ID] = u
@@ -38,6 +39,16 @@ func (s *MemoryStore) Create(_ context.Context, u URL) (URL, error) {
 }
 
 func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (URL, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.byID[id]
+	if !ok || u.DisabledAt != nil {
+		return URL{}, ErrNotFound
+	}
+	return u, nil
+}
+
+func (s *MemoryStore) GetIncludingDisabled(_ context.Context, id uuid.UUID) (URL, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, ok := s.byID[id]
@@ -50,7 +61,7 @@ func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (URL, error) {
 func (s *MemoryStore) GetByAlias(_ context.Context, alias string) (URL, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.findAliasLocked(alias, uuid.Nil)
+	return s.findAliasLocked(alias, uuid.Nil, false)
 }
 
 func (s *MemoryStore) ListByCreator(_ context.Context, userID uuid.UUID) ([]URL, error) {
@@ -58,7 +69,7 @@ func (s *MemoryStore) ListByCreator(_ context.Context, userID uuid.UUID) ([]URL,
 	defer s.mu.Unlock()
 	out := make([]URL, 0)
 	for _, u := range s.byID {
-		if u.CreatedBy != nil && *u.CreatedBy == userID {
+		if u.DisabledAt == nil && u.CreatedBy != nil && *u.CreatedBy == userID {
 			out = append(out, u)
 		}
 	}
@@ -70,6 +81,21 @@ func (s *MemoryStore) ListAll(_ context.Context) ([]URL, error) {
 	defer s.mu.Unlock()
 	out := make([]URL, 0, len(s.byID))
 	for _, u := range s.byID {
+		if u.DisabledAt == nil {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) ListLifecycle(_ context.Context, visibility lifecycle.Visibility) ([]URL, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]URL, 0, len(s.byID))
+	for _, u := range s.byID {
+		if !visibility.Matches(u.DisabledAt != nil) {
+			continue
+		}
 		out = append(out, u)
 	}
 	return out, nil
@@ -78,10 +104,11 @@ func (s *MemoryStore) ListAll(_ context.Context) ([]URL, error) {
 func (s *MemoryStore) Update(_ context.Context, u URL) (URL, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.byID[u.ID]; !ok {
+	existing, ok := s.byID[u.ID]
+	if !ok || existing.DisabledAt != nil {
 		return URL{}, ErrNotFound
 	}
-	if _, err := s.findAliasLocked(u.Alias, u.ID); err == nil {
+	if _, err := s.findAliasLocked(u.Alias, u.ID, true); err == nil {
 		return URL{}, ErrConflict
 	}
 	u.UpdatedAt = time.Now().UTC()
@@ -110,7 +137,7 @@ func (s *MemoryStore) RecordHit(_ context.Context, id uuid.UUID, hit Hit) (URL, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, ok := s.byID[id]
-	if !ok {
+	if !ok || u.DisabledAt != nil {
 		return URL{}, ErrNotFound
 	}
 	if hit.ID == uuid.Nil {
@@ -131,7 +158,8 @@ func (s *MemoryStore) RecordHit(_ context.Context, id uuid.UUID, hit Hit) (URL, 
 func (s *MemoryStore) ListHits(_ context.Context, id uuid.UUID, since time.Time) ([]Hit, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.byID[id]; !ok {
+	u, ok := s.byID[id]
+	if !ok || u.DisabledAt != nil {
 		return nil, ErrNotFound
 	}
 	out := make([]Hit, 0)
@@ -164,9 +192,9 @@ func (s *MemoryStore) pruneLocked(id uuid.UUID) int {
 	return n
 }
 
-func (s *MemoryStore) findAliasLocked(alias string, except uuid.UUID) (URL, error) {
+func (s *MemoryStore) findAliasLocked(alias string, except uuid.UUID, includeDisabled bool) (URL, error) {
 	for _, u := range s.byID {
-		if u.Alias == alias && u.ID != except {
+		if u.Alias == alias && u.ID != except && (includeDisabled || u.DisabledAt == nil) {
 			return u, nil
 		}
 	}

@@ -8,14 +8,16 @@ import (
 )
 
 type Competitor struct {
-	ID        uuid.UUID       `json:"id"`
-	UserID    uuid.UUID       `json:"userId"`
-	EventID   uuid.UUID       `json:"eventId"`
-	Event     *event.Resource `json:"event,omitempty"`
-	Score     *float64        `json:"score,omitempty"`
-	IsWinner  bool            `json:"isWinner"`
-	CreatedAt time.Time       `json:"createdAt"`
-	UpdatedAt time.Time       `json:"updatedAt"`
+	ID          uuid.UUID       `json:"id"`
+	UserID      uuid.UUID       `json:"userId"`
+	EventID     uuid.UUID       `json:"eventId"`
+	Event       *event.Resource `json:"event,omitempty"`
+	Score       *float64        `json:"score,omitempty"`
+	IsWinner    bool            `json:"isWinner"`
+	WithdrawnAt *time.Time      `json:"withdrawnAt,omitempty"`
+	WithdrawnBy *uuid.UUID      `json:"withdrawnBy,omitempty"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	UpdatedAt   time.Time       `json:"updatedAt"`
 }
 
 type CreateInput struct {

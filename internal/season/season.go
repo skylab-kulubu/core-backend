@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 var (
@@ -16,18 +17,22 @@ var (
 )
 
 type Season struct {
-	ID        uuid.UUID  `json:"id"`
-	Name      string     `json:"name"`
-	StartDate *time.Time `json:"startDate,omitempty"`
-	EndDate   *time.Time `json:"endDate,omitempty"`
-	Active    bool       `json:"active"`
-	CreatedAt time.Time  `json:"createdAt"`
-	UpdatedAt time.Time  `json:"updatedAt"`
+	ID         uuid.UUID  `json:"id"`
+	Name       string     `json:"name"`
+	StartDate  *time.Time `json:"startDate,omitempty"`
+	EndDate    *time.Time `json:"endDate,omitempty"`
+	Active     bool       `json:"active"`
+	ArchivedAt *time.Time `json:"archivedAt,omitempty"`
+	ArchivedBy *uuid.UUID `json:"archivedBy,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
 }
 
 type Store interface {
 	List(ctx context.Context, activeOnly bool) ([]Season, error)
+	ListLifecycle(ctx context.Context, visibility lifecycle.Visibility) ([]Season, error)
 	Get(ctx context.Context, id uuid.UUID) (Season, error)
+	GetIncludingArchived(ctx context.Context, id uuid.UUID) (Season, error)
 	Create(ctx context.Context, s Season) (Season, error)
 	Update(ctx context.Context, s Season) (Season, error)
 	Delete(ctx context.Context, id uuid.UUID) error
