@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
@@ -51,22 +52,44 @@ func memoryApp(parse ...func(string) (authn.Identity, error)) *fiber.App {
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
 	users := user.NewMemoryStore()
 	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
 	dir := identity.NewMemory()
 	deps := httpx.Deps{
 		Users:       user.NewService(users),
 		Identity:    identity.NewService(dir, users, az),
 		Events:      event.NewService(events, az),
 		Seasons:     season.NewService(season.NewMemoryStore(), az),
-		Tickets:     ticket.NewService(ticket.NewMemoryStore(), events, az, users, dir),
+		Tickets:     ticket.NewService(tickets, events, az, users, dir),
 		Competitors: competitor.NewService(competitor.NewMemoryStore(events), events, az),
 		Media:       media.NewService(media.NewMemoryStore(), media.NewMemoryBlob(), az, ""),
 		URLs:        shorturl.NewService(shorturl.NewMemoryStore(), az),
-		SkyPass:     skypass.NewService(users, az, testPassSigner()),
+		Certificates: certificate.NewService(
+			certificate.NewMemoryStore(), tickets, events, users, az, nil, nil, "https://api.example.test",
+		),
+		SkyPass: skypass.NewService(users, az, testPassSigner()),
 	}
 	if len(parse) > 0 {
 		deps.ParseToken = parse[0]
 	}
 	return httpx.New(deps)
+}
+
+func TestCertificateShortLinkProxyRoute(t *testing.T) {
+	t.Setenv("CERTIFICATE_PUBLIC_PAGE_ORIGIN", "https://yildizskylab.com/sertifika")
+	app := memoryApp()
+	const serial = "75E614C7A33C08CB5C04804D6C24F9E7"
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/c/"+serial, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("redirect %d body %s", resp.StatusCode, body)
+	}
+	if got, want := resp.Header.Get(fiber.HeaderLocation), "https://yildizskylab.com/sertifika/"+serial; got != want {
+		t.Fatalf("location %q want %q", got, want)
+	}
 }
 
 func TestHealthAnonymous(t *testing.T) {

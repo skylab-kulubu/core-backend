@@ -72,15 +72,16 @@ func New(deps Deps) *fiber.App {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 	app.Get("/v1/go/:alias/qr", urls.QR)
-	app.Get("/v1/go/:alias", urls.Redirect)
 	if certs != nil {
 		publicCertificateLimit := limiter.New(limiter.Config{Max: 120, Expiration: time.Minute})
+		app.Get("/v1/go/c/:serial", publicCertificateLimit, certs.PublicPage)
 		app.Get("/c/:serial", publicCertificateLimit, certs.PublicPage)
 		app.Get("/v1/public/certificates/:serial", publicCertificateLimit, certs.Verify)
 		app.Get("/v1/certificates/verify/:serial/pdf", publicCertificateLimit, certs.Download)
 		app.Get("/v1/certificates/verify/:serial/qr", publicCertificateLimit, certs.QR)
 		app.Get("/v1/certificates/verify/:serial", publicCertificateLimit, certs.Verify)
 	}
+	app.Get("/v1/go/:alias", urls.Redirect)
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
 	}
