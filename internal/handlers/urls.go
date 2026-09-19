@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
@@ -98,7 +99,16 @@ func (h *URLHandler) ListMine(c fiber.Ctx) error {
 	if err != nil {
 		return urlError(c, err)
 	}
-	items, err := h.svc.ListMine(c.Context(), p)
+	visibility, err := lifecycleVisibility(c)
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var items []shorturl.URL
+	if visibility == lifecycle.CurrentOnly {
+		items, err = h.svc.ListMine(c.Context(), p)
+	} else {
+		items, err = h.svc.ListMineLifecycle(c.Context(), p, visibility)
+	}
 	if err != nil {
 		return urlError(c, err)
 	}
@@ -110,11 +120,36 @@ func (h *URLHandler) ListAll(c fiber.Ctx) error {
 	if err != nil {
 		return urlError(c, err)
 	}
-	items, err := h.svc.ListAll(c.Context(), p)
+	visibility, err := lifecycleVisibility(c)
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var items []shorturl.URL
+	if visibility == lifecycle.CurrentOnly {
+		items, err = h.svc.ListAll(c.Context(), p)
+	} else {
+		items, err = h.svc.ListAllLifecycle(c.Context(), p, visibility)
+	}
 	if err != nil {
 		return urlError(c, err)
 	}
 	return c.JSON(items)
+}
+
+func (h *URLHandler) Restore(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	restored, err := h.svc.Restore(c.Context(), p, id)
+	if err != nil {
+		return urlError(c, err)
+	}
+	return c.JSON(restored)
 }
 
 func (h *URLHandler) ListHits(c fiber.Ctx) error {

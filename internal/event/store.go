@@ -12,6 +12,7 @@ var (
 	ErrNotFound  = errors.New("event: not found")
 	ErrForbidden = errors.New("event: forbidden")
 	ErrInvalid   = errors.New("event: invalid")
+	ErrConflict  = errors.New("event: conflict")
 )
 
 type Store interface {
@@ -21,7 +22,8 @@ type Store interface {
 	GetIncludingArchived(ctx context.Context, id uuid.UUID) (Event, error)
 	Create(ctx context.Context, e Event) (Event, error)
 	Update(ctx context.Context, e Event) (Event, error)
-	Delete(ctx context.Context, id uuid.UUID) error
+	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
+	Restore(ctx context.Context, id uuid.UUID) error
 	AddImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
 	RemoveImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
 	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
@@ -30,7 +32,8 @@ type Store interface {
 	ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error)
 	ListDaysLifecycle(ctx context.Context, eventID uuid.UUID, visibility lifecycle.Visibility) ([]Day, error)
 	UpdateDay(ctx context.Context, d Day) (Day, error)
-	DeleteDay(ctx context.Context, id uuid.UUID) error
+	ArchiveDay(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
+	RestoreDay(ctx context.Context, id uuid.UUID) error
 	ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error)
 	SetSeason(ctx context.Context, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
 	SetMailListID(ctx context.Context, eventID, listID uuid.UUID) (Event, error)
@@ -40,5 +43,6 @@ type Store interface {
 	ListSessionsLifecycle(ctx context.Context, eventDayID uuid.UUID, visibility lifecycle.Visibility) ([]Session, error)
 	CreateSession(ctx context.Context, s Session) (Session, error)
 	UpdateSession(ctx context.Context, s Session) (Session, error)
-	DeleteSession(ctx context.Context, id uuid.UUID) error
+	ArchiveSession(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
+	RestoreSession(ctx context.Context, id uuid.UUID) error
 }

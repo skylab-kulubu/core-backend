@@ -6,8 +6,13 @@ import (
 	"log"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
+
+func lifecycleVisibility(c fiber.Ctx) (lifecycle.Visibility, error) {
+	return lifecycle.ParseVisibility(c.Query("lifecycle"))
+}
 
 func problem(c fiber.Ctx, status int, title string) error {
 	return problemDetail(c, status, title, title)

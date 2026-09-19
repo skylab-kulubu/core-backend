@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type Service interface {
@@ -17,10 +18,13 @@ type Service interface {
 	Lookup(ctx context.Context, alias string) (URL, error)
 	Create(ctx context.Context, p authz.Principal, target, alias string) (URL, error)
 	ListMine(ctx context.Context, p authz.Principal) ([]URL, error)
+	ListMineLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]URL, error)
 	ListAll(ctx context.Context, p authz.Principal) ([]URL, error)
+	ListAllLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]URL, error)
 	ListHits(ctx context.Context, p authz.Principal, id uuid.UUID) ([]Hit, error)
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, target, alias string) (URL, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
+	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (URL, error)
 }
 
 type service struct {
@@ -86,6 +90,10 @@ func (s *service) Create(ctx context.Context, p authz.Principal, target, alias s
 }
 
 func (s *service) ListMine(ctx context.Context, p authz.Principal) ([]URL, error) {
+	return s.ListMineLifecycle(ctx, p, lifecycle.CurrentOnly)
+}
+
+func (s *service) ListMineLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]URL, error) {
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL}, authz.ReadMe) {
 		return nil, ErrForbidden
 	}
@@ -93,14 +101,18 @@ func (s *service) ListMine(ctx context.Context, p authz.Principal) ([]URL, error
 	if err != nil {
 		return nil, ErrInvalid
 	}
-	return s.store.ListByCreator(ctx, uid)
+	return s.store.ListByCreatorLifecycle(ctx, uid, visibility)
 }
 
 func (s *service) ListAll(ctx context.Context, p authz.Principal) ([]URL, error) {
+	return s.ListAllLifecycle(ctx, p, lifecycle.CurrentOnly)
+}
+
+func (s *service) ListAllLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]URL, error) {
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL}, authz.Read) {
 		return nil, ErrForbidden
 	}
-	return s.store.ListAll(ctx)
+	return s.store.ListLifecycle(ctx, visibility)
 }
 
 func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, target, alias string) (URL, error) {
@@ -132,7 +144,7 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, t
 }
 
 func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error {
-	existing, err := s.store.Get(ctx, id)
+	existing, err := s.store.GetIncludingDisabled(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -143,7 +155,25 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL, OwnerID: owner}, authz.Delete) {
 		return ErrForbidden
 	}
-	return s.store.Delete(ctx, id)
+	return s.store.Disable(ctx, id, lifecycle.ActorID(p.ID))
+}
+
+func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (URL, error) {
+	existing, err := s.store.GetIncludingDisabled(ctx, id)
+	if err != nil {
+		return URL{}, err
+	}
+	owner := ""
+	if existing.CreatedBy != nil {
+		owner = existing.CreatedBy.String()
+	}
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL, OwnerID: owner}, authz.Delete) {
+		return URL{}, ErrForbidden
+	}
+	if err := s.store.Restore(ctx, id); err != nil {
+		return URL{}, err
+	}
+	return s.store.Get(ctx, id)
 }
 
 func (s *service) ensureAlias(ctx context.Context, alias string) (string, error) {

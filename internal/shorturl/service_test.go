@@ -2,12 +2,71 @@ package shorturl
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
+
+func TestServiceDisablesAndRestoresURLWithoutLosingHits(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	owner := authz.Principal{
+		ID:    "11111111-1111-1111-1111-111111111111",
+		Roles: []string{"url:access"},
+	}
+	created, err := svc.Create(context.Background(), owner, "https://skylab.com", "club")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Redirect(context.Background(), "club", Hit{IP: "203.0.113.9"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.Delete(context.Background(), owner, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Delete(context.Background(), owner, created.ID); err != nil {
+		t.Fatalf("second disable: %v", err)
+	}
+	if _, err := svc.Lookup(context.Background(), "club"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("disabled lookup: %v", err)
+	}
+
+	disabled, err := svc.ListMineLifecycle(context.Background(), owner, lifecycle.InactiveOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disabled) != 1 || disabled[0].DisabledAt == nil || disabled[0].DisabledBy == nil || *disabled[0].DisabledBy != uuid.MustParse(owner.ID) {
+		t.Fatalf("disabled URL: %+v", disabled)
+	}
+
+	restored, err := svc.Restore(context.Background(), owner, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.DisabledAt != nil || restored.DisabledBy != nil {
+		t.Fatalf("restored URL: %+v", restored)
+	}
+	if _, err := svc.Restore(context.Background(), owner, created.ID); err != nil {
+		t.Fatalf("second restore: %v", err)
+	}
+	if _, err := svc.Lookup(context.Background(), "club"); err != nil {
+		t.Fatal(err)
+	}
+	moderator := authz.Principal{ID: uuid.NewString(), Roles: []string{"url:moderator"}}
+	hits, err := svc.ListHits(context.Background(), moderator, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].IP != "203.0.113.9" {
+		t.Fatalf("preserved hits: %+v", hits)
+	}
+}
 
 func TestService_CreateRedirectAndOwnList(t *testing.T) {
 	t.Parallel()

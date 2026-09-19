@@ -14,10 +14,12 @@ type Store interface {
 	GetIncludingDisabled(ctx context.Context, id uuid.UUID) (URL, error)
 	GetByAlias(ctx context.Context, alias string) (URL, error)
 	ListByCreator(ctx context.Context, userID uuid.UUID) ([]URL, error)
+	ListByCreatorLifecycle(ctx context.Context, userID uuid.UUID, visibility lifecycle.Visibility) ([]URL, error)
 	ListAll(ctx context.Context) ([]URL, error)
 	ListLifecycle(ctx context.Context, visibility lifecycle.Visibility) ([]URL, error)
 	Update(ctx context.Context, u URL) (URL, error)
-	Delete(ctx context.Context, id uuid.UUID) error
+	Disable(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
+	Restore(ctx context.Context, id uuid.UUID) error
 	RecordHit(ctx context.Context, id uuid.UUID, hit Hit) (URL, error)
 	ListHits(ctx context.Context, id uuid.UUID, since time.Time) ([]Hit, error)
 }

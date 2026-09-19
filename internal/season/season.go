@@ -35,15 +35,18 @@ type Store interface {
 	GetIncludingArchived(ctx context.Context, id uuid.UUID) (Season, error)
 	Create(ctx context.Context, s Season) (Season, error)
 	Update(ctx context.Context, s Season) (Season, error)
-	Delete(ctx context.Context, id uuid.UUID) error
+	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
+	Restore(ctx context.Context, id uuid.UUID) error
 }
 
 type Service interface {
 	List(ctx context.Context, activeOnly bool) ([]Season, error)
+	ListLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]Season, error)
 	Get(ctx context.Context, id uuid.UUID) (Season, error)
 	Create(ctx context.Context, p authz.Principal, in Season) (Season, error)
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Season) (Season, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
+	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Season, error)
 }
 
 type service struct {
@@ -57,6 +60,13 @@ func NewService(store Store, az authz.Authorizer) Service {
 
 func (s *service) List(ctx context.Context, activeOnly bool) ([]Season, error) {
 	return s.store.List(ctx, activeOnly)
+}
+
+func (s *service) ListLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]Season, error) {
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeSeason}, authz.Delete) {
+		return nil, ErrForbidden
+	}
+	return s.store.ListLifecycle(ctx, visibility)
 }
 
 func (s *service) Get(ctx context.Context, id uuid.UUID) (Season, error) {
@@ -88,11 +98,24 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 }
 
 func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error {
-	if _, err := s.store.Get(ctx, id); err != nil {
+	if _, err := s.store.GetIncludingArchived(ctx, id); err != nil {
 		return err
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeSeason}, authz.Delete) {
 		return ErrForbidden
 	}
-	return s.store.Delete(ctx, id)
+	return s.store.Archive(ctx, id, lifecycle.ActorID(p.ID))
+}
+
+func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Season, error) {
+	if _, err := s.store.GetIncludingArchived(ctx, id); err != nil {
+		return Season{}, err
+	}
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeSeason}, authz.Delete) {
+		return Season{}, ErrForbidden
+	}
+	if err := s.store.Restore(ctx, id); err != nil {
+		return Season{}, err
+	}
+	return s.store.Get(ctx, id)
 }

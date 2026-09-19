@@ -88,12 +88,35 @@ func (s *MemoryStore) Update(_ context.Context, in Season) (Season, error) {
 	return in, nil
 }
 
-func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) error {
+func (s *MemoryStore) Archive(_ context.Context, id uuid.UUID, actorID *uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.byID[id]; !ok {
+	item, ok := s.byID[id]
+	if !ok {
 		return ErrNotFound
 	}
-	delete(s.byID, id)
+	if item.ArchivedAt == nil {
+		now := time.Now().UTC()
+		item.ArchivedAt = &now
+		item.ArchivedBy = actorID
+		item.UpdatedAt = now
+		s.byID[id] = item
+	}
+	return nil
+}
+
+func (s *MemoryStore) Restore(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, ok := s.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if item.ArchivedAt != nil {
+		item.ArchivedAt = nil
+		item.ArchivedBy = nil
+		item.UpdatedAt = time.Now().UTC()
+		s.byID[id] = item
+	}
 	return nil
 }

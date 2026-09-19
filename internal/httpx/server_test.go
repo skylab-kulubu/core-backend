@@ -104,6 +104,30 @@ func TestHealthAnonymous(t *testing.T) {
 	}
 }
 
+func TestLifecycleRestoreRoutesAreRegistered(t *testing.T) {
+	t.Parallel()
+	app := memoryApp()
+	id := uuid.NewString()
+	paths := []string{
+		"/v1/events/" + id + "/restore",
+		"/v1/event-days/" + id + "/restore",
+		"/v1/sessions/" + id + "/restore",
+		"/v1/seasons/" + id + "/restore",
+		"/v1/competitors/" + id + "/reinstate",
+		"/v1/media/" + id + "/restore",
+		"/v1/urls/" + id + "/restore",
+	}
+	for _, path := range paths {
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, path, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != fiber.StatusUnauthorized {
+			t.Fatalf("POST %s status = %d, want %d", path, resp.StatusCode, fiber.StatusUnauthorized)
+		}
+	}
+}
+
 func TestBearerGroupsReachMe(t *testing.T) {
 	t.Parallel()
 	keys := testauth.New(t)

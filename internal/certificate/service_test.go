@@ -271,7 +271,7 @@ func TestRecompute_CancelledAndDeletedExcluded(t *testing.T) {
 	if _, err := events.UpdateSession(ctx, sessions[0]); err != nil {
 		t.Fatal(err)
 	}
-	if err := events.DeleteSession(ctx, sessions[7].ID); err != nil {
+	if err := events.ArchiveSession(ctx, sessions[7].ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	issued, err := certs.RecomputeTicket(ctx, tk.ID)

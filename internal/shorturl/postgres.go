@@ -56,7 +56,15 @@ func (s *PostgresStore) GetByAlias(ctx context.Context, alias string) (URL, erro
 }
 
 func (s *PostgresStore) ListByCreator(ctx context.Context, userID uuid.UUID) ([]URL, error) {
-	return s.list(ctx, `SELECT `+urlCols+` FROM urls WHERE created_by = $1 AND disabled_at IS NULL ORDER BY created_at DESC`, userID)
+	return s.ListByCreatorLifecycle(ctx, userID, lifecycle.CurrentOnly)
+}
+
+func (s *PostgresStore) ListByCreatorLifecycle(ctx context.Context, userID uuid.UUID, visibility lifecycle.Visibility) ([]URL, error) {
+	q := `SELECT ` + urlCols + ` FROM urls WHERE created_by = $1`
+	if condition := visibility.SQLCondition("disabled_at"); condition != "" {
+		q += ` AND ` + condition
+	}
+	return s.list(ctx, q+` ORDER BY created_at DESC`, userID)
 }
 
 func (s *PostgresStore) ListAll(ctx context.Context) ([]URL, error) {
@@ -79,8 +87,29 @@ func (s *PostgresStore) Update(ctx context.Context, u URL) (URL, error) {
 	return got, mapURLErr(err)
 }
 
-func (s *PostgresStore) Delete(ctx context.Context, id uuid.UUID) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM urls WHERE id = $1`, id)
+func (s *PostgresStore) Disable(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE urls
+		SET disabled_at = COALESCE(disabled_at, now()),
+			disabled_by = CASE WHEN disabled_at IS NULL THEN $2 ELSE disabled_by END,
+			updated_at = CASE WHEN disabled_at IS NULL THEN now() ELSE updated_at END
+		WHERE id = $1`, id, actorID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE urls
+		SET disabled_at = NULL,
+			disabled_by = NULL,
+			updated_at = CASE WHEN disabled_at IS NOT NULL THEN now() ELSE updated_at END
+		WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}

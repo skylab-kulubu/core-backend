@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
@@ -148,7 +149,9 @@ func TestService_DropsJPEGMetadataOnUpload(t *testing.T) {
 
 func TestService_ListRequiresAuthAndDeleteIsPrivileged(t *testing.T) {
 	t.Parallel()
-	svc, blobs := setup(t)
+	store := media.NewMemoryStore()
+	blobs := media.NewMemoryBlob()
+	svc := media.NewService(store, blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test")
 	userID := uuid.MustParse("55555555-5555-5555-5555-555555555555")
 	member := authz.Principal{ID: userID.String(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}
 	created, err := svc.Upload(context.Background(), member, "dot.png", "image/png", pngDot())
@@ -163,7 +166,8 @@ func TestService_ListRequiresAuthAndDeleteIsPrivileged(t *testing.T) {
 	if !errors.Is(err, media.ErrForbidden) {
 		t.Fatalf("member list %v", err)
 	}
-	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+	operatorID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	yk := authz.Principal{ID: operatorID.String(), Groups: []string{"/UYELER/YK"}}
 	listed, err := svc.List(context.Background(), yk)
 	if err != nil {
 		t.Fatal(err)
@@ -178,11 +182,38 @@ func TestService_ListRequiresAuthAndDeleteIsPrivileged(t *testing.T) {
 	if err := svc.Delete(context.Background(), yk, created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := blobs.Get(created.Key); ok {
-		t.Fatal("blob remained")
+	if err := svc.Delete(context.Background(), yk, created.ID); err != nil {
+		t.Fatalf("repeated delete: %v", err)
+	}
+	if _, ok := blobs.Get(created.Key); !ok {
+		t.Fatal("archive removed blob before recovery window")
 	}
 	_, err = svc.Get(context.Background(), created.ID)
 	if !errors.Is(err, media.ErrNotFound) {
 		t.Fatalf("get after delete %v", err)
+	}
+	archived, err := svc.ListLifecycle(context.Background(), yk, lifecycle.InactiveOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archived) != 1 || archived[0].ID != created.ID || archived[0].DeletedAt == nil || archived[0].DeletedBy == nil || *archived[0].DeletedBy != operatorID {
+		t.Fatalf("archived %+v", archived)
+	}
+	if _, err := svc.ListLifecycle(context.Background(), member, lifecycle.InactiveOnly); !errors.Is(err, media.ErrForbidden) {
+		t.Fatalf("member lifecycle list %v", err)
+	}
+
+	restored, err := svc.Restore(context.Background(), yk, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Restore(context.Background(), yk, created.ID); err != nil {
+		t.Fatalf("repeated restore: %v", err)
+	}
+	if restored.DeletedAt != nil || restored.DeletedBy != nil || restored.ID != created.ID {
+		t.Fatalf("restored %+v", restored)
+	}
+	if _, err := svc.Get(context.Background(), created.ID); err != nil {
+		t.Fatalf("get restored: %v", err)
 	}
 }

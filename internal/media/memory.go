@@ -10,12 +10,13 @@ import (
 )
 
 type MemoryStore struct {
-	mu   sync.Mutex
-	byID map[uuid.UUID]Media
+	mu         sync.Mutex
+	byID       map[uuid.UUID]Media
+	referenced map[uuid.UUID]bool
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{byID: make(map[uuid.UUID]Media)}
+	return &MemoryStore{byID: make(map[uuid.UUID]Media), referenced: make(map[uuid.UUID]bool)}
 }
 
 func (s *MemoryStore) Create(_ context.Context, m Media) (Media, error) {
@@ -105,15 +106,97 @@ func (s *MemoryStore) GetIncludingDeleted(_ context.Context, id uuid.UUID) (Medi
 	return m, nil
 }
 
-func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) (Media, error) {
+func (s *MemoryStore) Archive(_ context.Context, id uuid.UUID, actorID *uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, ok := s.byID[id]
 	if !ok {
-		return Media{}, ErrNotFound
+		return ErrNotFound
 	}
-	delete(s.byID, id)
-	return m, nil
+	if m.DeletedAt == nil {
+		now := time.Now().UTC()
+		m.DeletedAt = &now
+		m.DeletedBy = actorID
+		m.UpdatedAt = now
+		s.byID[id] = m
+	}
+	return nil
+}
+
+func (s *MemoryStore) Restore(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if m.BlobPurgedAt != nil {
+		return ErrPurged
+	}
+	if m.BlobPurgeStartedAt != nil {
+		return ErrPurgeInProgress
+	}
+	if m.DeletedAt != nil {
+		m.DeletedAt = nil
+		m.DeletedBy = nil
+		m.UpdatedAt = time.Now().UTC()
+		s.byID[id] = m
+	}
+	return nil
+}
+
+func (s *MemoryStore) ListPurgeCandidates(_ context.Context, deletedBefore time.Time, limit int) ([]Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Media, 0)
+	for _, m := range s.byID {
+		if m.DeletedAt == nil || m.DeletedAt.After(deletedBefore) || m.BlobPurgedAt != nil {
+			continue
+		}
+		out = append(out, m)
+		if limit > 0 && len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) PurgeBlobIfUnreferenced(_ context.Context, id uuid.UUID, purgedAt time.Time, purge func(string) error) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if m.DeletedAt == nil || m.BlobPurgedAt != nil {
+		return false, nil
+	}
+	if s.referenced[id] {
+		m.BlobPurgeStartedAt = nil
+		m.BlobPurgeCheckedAt = &purgedAt
+		s.byID[id] = m
+		return false, nil
+	}
+	if m.BlobPurgeStartedAt == nil {
+		m.BlobPurgeStartedAt = &purgedAt
+		m.BlobPurgeCheckedAt = &purgedAt
+		s.byID[id] = m
+	}
+	if err := purge(m.Key); err != nil {
+		return false, err
+	}
+	m.BlobPurgedAt = &purgedAt
+	m.BlobPurgeCheckedAt = &purgedAt
+	m.UpdatedAt = purgedAt
+	s.byID[id] = m
+	return true, nil
+}
+
+// SetReferenced models a durable domain reference in in-memory service tests.
+func (s *MemoryStore) SetReferenced(id uuid.UUID, referenced bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.referenced[id] = referenced
 }
 
 type MemoryBlob struct {

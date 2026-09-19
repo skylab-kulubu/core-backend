@@ -37,6 +37,7 @@ func competitorApp(t *testing.T, ident authn.Identity, events event.Store, comps
 	app.Post("/v1/competitors", h.Create)
 	app.Put("/v1/competitors/:id", h.Update)
 	app.Delete("/v1/competitors/:id", h.Delete)
+	app.Post("/v1/competitors/:id/reinstate", h.Reinstate)
 	app.Get("/v1/events/:eventId/competitors", h.ListByEvent)
 	app.Get("/v1/events/:eventId/competitors/winner", h.Winner)
 	return app

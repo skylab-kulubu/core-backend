@@ -33,6 +33,7 @@ func eventApp(t *testing.T, ident authn.Identity, store event.Store) *fiber.App 
 	app.Put("/v1/events/:id", h.Update)
 	app.Patch("/v1/events/:id", h.Update)
 	app.Delete("/v1/events/:id", h.Delete)
+	app.Post("/v1/events/:id/restore", h.Restore)
 	app.Post("/v1/events/:id/images", h.AddImages)
 	app.Delete("/v1/events/:id/images", h.RemoveImages)
 	return app

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
 type Service interface {
@@ -14,23 +15,29 @@ type Service interface {
 	ProjectFor(p *authz.Principal, in Event) Event
 	ProjectAllFor(p *authz.Principal, in []Event) []Event
 	List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error)
+	ListLifecycle(ctx context.Context, p authz.Principal, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error)
 	Get(ctx context.Context, id uuid.UUID) (Event, error)
 	Create(ctx context.Context, p authz.Principal, in Event) (Event, error)
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Event) (Event, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
+	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
 	AddImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error)
 	RemoveImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error)
 	ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error)
+	ListDaysLifecycle(ctx context.Context, p authz.Principal, eventID uuid.UUID, visibility lifecycle.Visibility) ([]Day, error)
 	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
 	CreateDay(ctx context.Context, p authz.Principal, d Day) (Day, error)
 	UpdateDay(ctx context.Context, p authz.Principal, id uuid.UUID, d Day) (Day, error)
 	DeleteDay(ctx context.Context, p authz.Principal, id uuid.UUID) error
+	RestoreDay(ctx context.Context, p authz.Principal, id uuid.UUID) (Day, error)
 	ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Session, error)
+	ListSessionsLifecycle(ctx context.Context, p authz.Principal, eventDayID uuid.UUID, visibility lifecycle.Visibility) ([]Session, error)
 	GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 	CurrentSession(ctx context.Context, eventDayID uuid.UUID, at time.Time) (Current, error)
 	CreateSession(ctx context.Context, p authz.Principal, sess Session) (Session, error)
 	UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session) (Session, error)
 	DeleteSession(ctx context.Context, p authz.Principal, id uuid.UUID) error
+	RestoreSession(ctx context.Context, p authz.Principal, id uuid.UUID) (Session, error)
 	ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error)
 	AssignSeason(ctx context.Context, p authz.Principal, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
 }
@@ -92,6 +99,23 @@ func (s *service) List(ctx context.Context, ownerTeam string, activeOnly bool) (
 		return nil, err
 	}
 	return s.publishAll(events), nil
+}
+
+func (s *service) ListLifecycle(ctx context.Context, p authz.Principal, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error) {
+	if ownerTeam != "" && !s.authz.Allow(p, resource(ownerTeam), authz.Delete) {
+		return nil, ErrForbidden
+	}
+	events, err := s.store.ListLifecycle(ctx, ownerTeam, visibility)
+	if err != nil {
+		return nil, err
+	}
+	visible := make([]Event, 0, len(events))
+	for _, item := range events {
+		if s.authz.Allow(p, resource(item.OwnerTeam), authz.Delete) {
+			visible = append(visible, item)
+		}
+	}
+	return s.publishAll(visible), nil
 }
 
 func (s *service) Get(ctx context.Context, id uuid.UUID) (Event, error) {
@@ -177,14 +201,28 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 }
 
 func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error {
-	existing, err := s.store.Get(ctx, id)
+	existing, err := s.store.GetIncludingArchived(ctx, id)
 	if err != nil {
 		return err
 	}
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Delete) {
 		return ErrForbidden
 	}
-	return s.store.Delete(ctx, id)
+	return s.store.Archive(ctx, id, lifecycle.ActorID(p.ID))
+}
+
+func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error) {
+	existing, err := s.store.GetIncludingArchived(ctx, id)
+	if err != nil {
+		return Event{}, err
+	}
+	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Delete) {
+		return Event{}, ErrForbidden
+	}
+	if err := s.store.Restore(ctx, id); err != nil {
+		return Event{}, err
+	}
+	return s.Get(ctx, id)
 }
 
 func (s *service) AddImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error) {
@@ -228,6 +266,17 @@ func (s *service) ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error
 	return s.store.ListDays(ctx, eventID)
 }
 
+func (s *service) ListDaysLifecycle(ctx context.Context, p authz.Principal, eventID uuid.UUID, visibility lifecycle.Visibility) ([]Day, error) {
+	ev, err := s.store.GetIncludingArchived(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeEventDay), authz.Delete) {
+		return nil, ErrForbidden
+	}
+	return s.store.ListDaysLifecycle(ctx, eventID, visibility)
+}
+
 func (s *service) GetDay(ctx context.Context, id uuid.UUID) (Day, error) {
 	return s.store.GetDay(ctx, id)
 }
@@ -264,18 +313,39 @@ func (s *service) UpdateDay(ctx context.Context, p authz.Principal, id uuid.UUID
 }
 
 func (s *service) DeleteDay(ctx context.Context, p authz.Principal, id uuid.UUID) error {
-	existing, err := s.store.GetDay(ctx, id)
+	existing, err := s.store.GetDayIncludingArchived(ctx, id)
 	if err != nil {
 		return err
 	}
-	owner, err := s.eventOwner(ctx, existing.EventID)
+	ev, err := s.store.GetIncludingArchived(ctx, existing.EventID)
 	if err != nil {
 		return err
 	}
-	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeEventDay), authz.Delete) {
+	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeEventDay), authz.Delete) {
 		return ErrForbidden
 	}
-	return s.store.DeleteDay(ctx, id)
+	return s.store.ArchiveDay(ctx, id, lifecycle.ActorID(p.ID))
+}
+
+func (s *service) RestoreDay(ctx context.Context, p authz.Principal, id uuid.UUID) (Day, error) {
+	existing, err := s.store.GetDayIncludingArchived(ctx, id)
+	if err != nil {
+		return Day{}, err
+	}
+	ev, err := s.store.GetIncludingArchived(ctx, existing.EventID)
+	if err != nil {
+		return Day{}, err
+	}
+	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeEventDay), authz.Delete) {
+		return Day{}, ErrForbidden
+	}
+	if ev.ArchivedAt != nil {
+		return Day{}, ErrConflict
+	}
+	if err := s.store.RestoreDay(ctx, id); err != nil {
+		return Day{}, err
+	}
+	return s.store.GetDay(ctx, id)
 }
 
 func (s *service) ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Session, error) {
@@ -283,6 +353,21 @@ func (s *service) ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Ses
 		return nil, err
 	}
 	return s.store.ListSessions(ctx, eventDayID)
+}
+
+func (s *service) ListSessionsLifecycle(ctx context.Context, p authz.Principal, eventDayID uuid.UUID, visibility lifecycle.Visibility) ([]Session, error) {
+	day, err := s.store.GetDayIncludingArchived(ctx, eventDayID)
+	if err != nil {
+		return nil, err
+	}
+	ev, err := s.store.GetIncludingArchived(ctx, day.EventID)
+	if err != nil {
+		return nil, err
+	}
+	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeSession), authz.Delete) {
+		return nil, ErrForbidden
+	}
+	return s.store.ListSessionsLifecycle(ctx, eventDayID, visibility)
 }
 
 func (s *service) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
@@ -309,7 +394,7 @@ func (s *service) sessionOwner(ctx context.Context, eventDayID uuid.UUID) (strin
 }
 
 func (s *service) CreateSession(ctx context.Context, p authz.Principal, sess Session) (Session, error) {
-	if sess.EventDayID == uuid.Nil || sess.Title == "" || sess.SpeakerName == "" || sess.SessionType == "" {
+	if err := validateSession(sess); err != nil {
 		return Session{}, ErrInvalid
 	}
 	owner, err := s.sessionOwner(ctx, sess.EventDayID)
@@ -334,27 +419,69 @@ func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.
 	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeSession), authz.Update) {
 		return Session{}, ErrForbidden
 	}
-	if sess.Title == "" || sess.SpeakerName == "" || sess.SessionType == "" {
-		return Session{}, ErrInvalid
-	}
 	sess.ID = existing.ID
 	sess.EventDayID = existing.EventDayID
+	if err := validateSession(sess); err != nil {
+		return Session{}, ErrInvalid
+	}
 	return s.store.UpdateSession(ctx, sess)
 }
 
 func (s *service) DeleteSession(ctx context.Context, p authz.Principal, id uuid.UUID) error {
-	existing, err := s.store.GetSession(ctx, id)
+	existing, err := s.store.GetSessionIncludingArchived(ctx, id)
 	if err != nil {
 		return err
 	}
-	owner, err := s.sessionOwner(ctx, existing.EventDayID)
+	day, err := s.store.GetDayIncludingArchived(ctx, existing.EventDayID)
 	if err != nil {
 		return err
 	}
-	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeSession), authz.Delete) {
+	ev, err := s.store.GetIncludingArchived(ctx, day.EventID)
+	if err != nil {
+		return err
+	}
+	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeSession), authz.Delete) {
 		return ErrForbidden
 	}
-	return s.store.DeleteSession(ctx, id)
+	return s.store.ArchiveSession(ctx, id, lifecycle.ActorID(p.ID))
+}
+
+func (s *service) RestoreSession(ctx context.Context, p authz.Principal, id uuid.UUID) (Session, error) {
+	existing, err := s.store.GetSessionIncludingArchived(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	day, err := s.store.GetDayIncludingArchived(ctx, existing.EventDayID)
+	if err != nil {
+		return Session{}, err
+	}
+	ev, err := s.store.GetIncludingArchived(ctx, day.EventID)
+	if err != nil {
+		return Session{}, err
+	}
+	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeSession), authz.Delete) {
+		return Session{}, ErrForbidden
+	}
+	if ev.ArchivedAt != nil || day.ArchivedAt != nil {
+		return Session{}, ErrConflict
+	}
+	if err := validateSession(existing); err != nil {
+		return Session{}, err
+	}
+	if err := s.store.RestoreSession(ctx, id); err != nil {
+		return Session{}, err
+	}
+	return s.store.GetSession(ctx, id)
+}
+
+func validateSession(sess Session) error {
+	if sess.EventDayID == uuid.Nil || sess.Title == "" || sess.SpeakerName == "" || sess.SessionType == "" {
+		return ErrInvalid
+	}
+	if sess.StartTime != nil && sess.EndTime != nil && !sess.EndTime.After(*sess.StartTime) {
+		return ErrInvalid
+	}
+	return nil
 }
 
 func (s *service) ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error) {
