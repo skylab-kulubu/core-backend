@@ -75,6 +75,9 @@ func ValidateLayout(layout Layout) error {
 		if len(el.Text) > 4000 {
 			return ErrInvalid
 		}
+		if len(el.FontFamily) > 80 {
+			return ErrInvalid
+		}
 	}
 	for _, present := range required {
 		if !present {
@@ -224,14 +227,46 @@ func elementStyle(el Element) string {
 
 func safeFont(font string) string {
 	switch strings.ToLower(strings.TrimSpace(font)) {
+	case "arial":
+		return `'Liberation Sans',Arial,sans-serif`
+	case "helvetica":
+		return `'Liberation Sans',Helvetica,sans-serif`
+	case "carlito":
+		return `Carlito,'Liberation Sans',sans-serif`
+	case "noto sans":
+		return `'Noto Sans','DejaVu Sans',sans-serif`
+	case "noto sans display":
+		return `'Noto Sans Display','Noto Sans',sans-serif`
+	case "dejavu sans":
+		return `'DejaVu Sans','Liberation Sans',sans-serif`
+	case "dejavu sans condensed":
+		return `'DejaVu Sans Condensed','DejaVu Sans',sans-serif`
+	case "liberation sans":
+		return `'Liberation Sans',Arial,sans-serif`
 	case "georgia":
-		return "Georgia,serif"
+		return `'Liberation Serif',Georgia,serif`
 	case "times new roman":
-		return `'Times New Roman',serif`
+		return `'Liberation Serif','Times New Roman',serif`
+	case "caladea":
+		return `Caladea,'Liberation Serif',serif`
+	case "noto serif":
+		return `'Noto Serif','DejaVu Serif',serif`
+	case "noto serif display":
+		return `'Noto Serif Display','Noto Serif',serif`
+	case "dejavu serif":
+		return `'DejaVu Serif','Liberation Serif',serif`
+	case "dejavu serif condensed":
+		return `'DejaVu Serif Condensed','DejaVu Serif',serif`
+	case "liberation serif":
+		return `'Liberation Serif','Times New Roman',serif`
 	case "courier new":
-		return `'Courier New',monospace`
+		return `'Liberation Mono','Courier New',monospace`
+	case "dejavu sans mono":
+		return `'DejaVu Sans Mono','Liberation Mono',monospace`
+	case "liberation mono":
+		return `'Liberation Mono','Courier New',monospace`
 	default:
-		return "Arial,sans-serif"
+		return `'Liberation Sans',Arial,sans-serif`
 	}
 }
 

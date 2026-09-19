@@ -282,11 +282,7 @@ func (s *service) materializeVersion(ctx context.Context, ev event.Event, item t
 	}
 	verifyURL := s.verifyURL(serial)
 	data := PreviewData{RecipientName: name, EventName: ev.Name, OwnerTeam: ev.OwnerTeam, Serial: serial, IssueDate: time.Now().Format("02.01.2006"), EventDates: eventDates(ev)}
-	html, err := LayoutHTML(ctx, version.Layout, data, verifyURL, s.assetsForVersion(version))
-	if err != nil {
-		return Certificate{}, err
-	}
-	pdf, err := s.render.PDF(ctx, html)
+	pdf, err := s.renderLayoutPDF(ctx, version.Layout, data, verifyURL, s.assetsForVersion(version))
 	if err != nil {
 		return Certificate{}, err
 	}
