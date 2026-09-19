@@ -16,9 +16,7 @@ var (
 )
 
 const (
-	Issuer     = "skypass"
-	Audience   = "door"
-	Kid        = "skypass-1"
+	Kid        = "sp-e1"
 	DefaultTTL = 60 * time.Second
 )
 
@@ -39,8 +37,9 @@ type JWK struct {
 	Kid string `json:"kid"`
 	Alg string `json:"alg"`
 	Use string `json:"use"`
-	N   string `json:"n"`
-	E   string `json:"e"`
+	Crv string `json:"crv,omitempty"`
+	X   string `json:"x,omitempty"`
+	Y   string `json:"y,omitempty"`
 }
 
 type JWKS struct {

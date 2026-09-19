@@ -1,7 +1,10 @@
 package skypass
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -16,18 +19,16 @@ import (
 )
 
 type passClaims struct {
-	SkyNumber string `json:"skyNumber"`
-	Name      string `json:"name"`
 	jwt.RegisteredClaims
 }
 
 type Signer struct {
-	key *rsa.PrivateKey
+	key *ecdsa.PrivateKey
 	ttl time.Duration
 	Now func() time.Time
 }
 
-func NewSigner(key *rsa.PrivateKey, ttl time.Duration) *Signer {
+func NewSigner(key *ecdsa.PrivateKey, ttl time.Duration) *Signer {
 	if ttl <= 0 {
 		ttl = DefaultTTL
 	}
@@ -41,23 +42,47 @@ func (s *Signer) clock() time.Time {
 	return time.Now()
 }
 
-func ParseRSAPrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
+func ParseSigningKey(pemBytes []byte) (*ecdsa.PrivateKey, error) {
 	block, _ := pem.Decode(pemBytes)
 	if block == nil {
 		return nil, ErrInvalid
 	}
-	if k, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
-		return k, nil
+	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
+		if key.Curve != elliptic.P256() {
+			return nil, ErrInvalid
+		}
+		return key, nil
 	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, ErrInvalid
+	if parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		switch key := parsed.(type) {
+		case *ecdsa.PrivateKey:
+			if key.Curve != elliptic.P256() {
+				return nil, ErrInvalid
+			}
+			return key, nil
+		case *rsa.PrivateKey:
+			return deriveP256Key(key), nil
+		}
 	}
-	k, ok := parsed.(*rsa.PrivateKey)
-	if !ok {
-		return nil, ErrInvalid
+	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return deriveP256Key(key), nil
 	}
-	return k, nil
+	return nil, ErrInvalid
+}
+
+func deriveP256Key(legacy *rsa.PrivateKey) *ecdsa.PrivateKey {
+	material := append([]byte("skypass-es256-v1\x00"), x509.MarshalPKCS1PrivateKey(legacy)...)
+	digest := sha256.Sum256(material)
+	curve := elliptic.P256()
+	maxScalar := new(big.Int).Sub(curve.Params().N, big.NewInt(1))
+	d := new(big.Int).SetBytes(digest[:])
+	d.Mod(d, maxScalar)
+	d.Add(d, big.NewInt(1))
+	x, y := curve.ScalarBaseMult(d.Bytes())
+	return &ecdsa.PrivateKey{
+		PublicKey: ecdsa.PublicKey{Curve: curve, X: x, Y: y},
+		D:         d,
+	}
 }
 
 func NormalizeUID(raw string) (string, error) {
@@ -91,14 +116,9 @@ func (s *Signer) Mint(u user.User) (Token, error) {
 	}
 	now := s.clock().UTC()
 	exp := now.Add(s.ttl)
-	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, passClaims{
-		SkyNumber: u.SkyNumber,
-		Name:      strings.TrimSpace(u.FirstName + " " + u.LastName),
+	tok := jwt.NewWithClaims(jwt.SigningMethodES256, passClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    Issuer,
 			Subject:   u.ID.String(),
-			Audience:  jwt.ClaimStrings{Audience},
-			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(exp),
 		},
 	})
@@ -119,11 +139,9 @@ func (s *Signer) Verify(raw string) (passClaims, error) {
 		return passClaims{}, ErrInvalid
 	}
 	parser := jwt.NewParser(
-		jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
+		jwt.WithValidMethods([]string{jwt.SigningMethodES256.Alg()}),
 		jwt.WithTimeFunc(s.clock),
 		jwt.WithExpirationRequired(),
-		jwt.WithIssuer(Issuer),
-		jwt.WithAudience(Audience),
 	)
 	var claims passClaims
 	_, err := parser.ParseWithClaims(raw, &claims, func(t *jwt.Token) (any, error) {
@@ -145,14 +163,16 @@ func (s *Signer) JWKS() JWKS {
 	if s == nil || s.key == nil {
 		return JWKS{Keys: []JWK{}}
 	}
-	n := base64.RawURLEncoding.EncodeToString(s.key.N.Bytes())
-	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(s.key.E)).Bytes())
+	if s.key.Curve != elliptic.P256() {
+		return JWKS{Keys: []JWK{}}
+	}
 	return JWKS{Keys: []JWK{{
-		Kty: "RSA",
+		Kty: "EC",
 		Kid: Kid,
-		Alg: "RS256",
+		Alg: "ES256",
 		Use: "sig",
-		N:   n,
-		E:   e,
+		Crv: "P-256",
+		X:   base64.RawURLEncoding.EncodeToString(s.key.X.FillBytes(make([]byte, 32))),
+		Y:   base64.RawURLEncoding.EncodeToString(s.key.Y.FillBytes(make([]byte, 32))),
 	}}}
 }

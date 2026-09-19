@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"log"
 	"net/http"
 	"os"
@@ -194,9 +195,12 @@ func main() {
 	}
 }
 
-func loadSkyPassKey() (*rsa.PrivateKey, error) {
-	if raw := os.Getenv("SKYPASS_RSA_PRIVATE_KEY"); raw != "" {
-		return skypass.ParseRSAPrivateKey([]byte(raw))
+func loadSkyPassKey() (*ecdsa.PrivateKey, error) {
+	if raw := os.Getenv("SKYPASS_EC_PRIVATE_KEY"); raw != "" {
+		return skypass.ParseSigningKey([]byte(raw))
 	}
-	return rsa.GenerateKey(rand.Reader, 2048)
+	if raw := os.Getenv("SKYPASS_RSA_PRIVATE_KEY"); raw != "" {
+		return skypass.ParseSigningKey([]byte(raw))
+	}
+	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 }
