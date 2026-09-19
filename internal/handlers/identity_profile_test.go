@@ -437,4 +437,7 @@ func TestPrivilegedGetUserIncludesStudentCardUidHTTP(t *testing.T) {
 	if _, ok := me["studentCardUid"]; ok {
 		t.Fatalf("studentCardUid key on /me: %s", meRaw)
 	}
+	if me["studentCardLinked"] != true {
+		t.Fatalf("studentCardLinked missing on /me: %s", meRaw)
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
@@ -26,6 +27,9 @@ func TestApplyRepairsBrownfieldSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `SELECT extra_form_urls FROM events`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `SELECT cover_colors, cover_colors_computed FROM media`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -148,9 +152,24 @@ func assertDoorStoreQueries(t *testing.T, pool *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	eventStore := event.NewPostgresStore(pool)
-	ev, err := eventStore.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	cover, err := media.NewPostgresStore(pool).Create(ctx, media.Media{
+		Name:                "cover.png",
+		Type:                "image/png",
+		Key:                 "images/cover",
+		Kind:                media.KindImage,
+		UploadedBy:          ownerID,
+		CoverColors:         []string{"#3c82be", "#8a642f"},
+		CoverColorsComputed: true,
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	ev, err := eventStore.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", CoverImageID: &cover.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ev.CoverColors) != 2 || ev.CoverColors[0] != "#3c82be" {
+		t.Fatalf("event cover colors %#v", ev.CoverColors)
 	}
 	day, err := eventStore.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Gün 1"})
 	if err != nil {

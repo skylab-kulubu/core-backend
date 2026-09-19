@@ -18,16 +18,19 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, created_at, updated_at`
+const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, created_at, updated_at`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 	if m.ID == uuid.Nil {
 		m.ID = uuid.New()
 	}
+	if m.CoverColors == nil {
+		m.CoverColors = []string{}
+	}
 	return scanMedia(s.pool.QueryRow(ctx, `
-		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind))
+		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed))
 }
 
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Media, error) {
@@ -55,6 +58,37 @@ func (s *PostgresStore) List(ctx context.Context) ([]Media, error) {
 	return out, rows.Err()
 }
 
+func (s *PostgresStore) ListPendingCoverColors(ctx context.Context, limit int) ([]Media, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+mediaCols+` FROM media WHERE kind = $1 AND cover_colors_computed = false ORDER BY created_at LIMIT $2`, KindImage, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Media, 0)
+	for rows.Next() {
+		m, err := scanMedia(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) SetCoverColors(ctx context.Context, id uuid.UUID, colors []string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE media SET cover_colors = $2, cover_colors_computed = true, updated_at = now() WHERE id = $1`, id, colors)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *PostgresStore) Delete(ctx context.Context, id uuid.UUID) (Media, error) {
 	m, err := scanMedia(s.pool.QueryRow(ctx, `DELETE FROM media WHERE id = $1 RETURNING `+mediaCols, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -70,7 +104,10 @@ type rowScanner interface {
 func scanMedia(row rowScanner) (Media, error) {
 	var m Media
 	var created, updated time.Time
-	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &created, &updated)
+	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &created, &updated)
+	if m.CoverColors == nil {
+		m.CoverColors = []string{}
+	}
 	m.CreatedAt = created
 	m.UpdatedAt = updated
 	return m, err

@@ -26,8 +26,41 @@ func (s *MemoryStore) Create(_ context.Context, m Media) (Media, error) {
 	now := time.Now().UTC()
 	m.CreatedAt = now
 	m.UpdatedAt = now
+	if m.CoverColors == nil {
+		m.CoverColors = []string{}
+	}
 	s.byID[m.ID] = m
 	return m, nil
+}
+
+func (s *MemoryStore) ListPendingCoverColors(_ context.Context, limit int) ([]Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Media, 0)
+	for _, m := range s.byID {
+		if m.Kind != KindImage || m.CoverColorsComputed {
+			continue
+		}
+		out = append(out, m)
+		if limit > 0 && len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) SetCoverColors(_ context.Context, id uuid.UUID, colors []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	m.CoverColors = append([]string{}, colors...)
+	m.CoverColorsComputed = true
+	m.UpdatedAt = time.Now().UTC()
+	s.byID[id] = m
+	return nil
 }
 
 func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (Media, error) {
@@ -86,6 +119,16 @@ func (s *MemoryBlob) Delete(_ context.Context, key string) error {
 	delete(s.objects, key)
 	delete(s.types, key)
 	return nil
+}
+
+func (s *MemoryBlob) Read(_ context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, ok := s.objects[key]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return append([]byte{}, data...), nil
 }
 
 func (s *MemoryBlob) Get(key string) ([]byte, bool) {

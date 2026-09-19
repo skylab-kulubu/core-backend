@@ -28,7 +28,7 @@ func scanUser(row interface{ Scan(dest ...any) error }) (User, error) {
 		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.Phone, &u.ProfilePictureID, &u.ProfilePictureURL,
 		&u.CreatedAt, &u.UpdatedAt,
 	)
-	return u, err
+	return withStudentCardStatus(u), err
 }
 
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (User, error) {
@@ -76,7 +76,7 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 	if err != nil {
 		return User{}, false, err
 	}
-	return u, created, nil
+	return withStudentCardStatus(u), created, nil
 }
 
 func (s *PostgresStore) UpdateProfile(ctx context.Context, u User) (User, error) {
