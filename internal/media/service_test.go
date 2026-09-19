@@ -118,6 +118,16 @@ func TestService_FileNeedsExtension(t *testing.T) {
 	}
 }
 
+func TestService_RejectsSpoofedPDF(t *testing.T) {
+	t.Parallel()
+	svc, _ := setup(t)
+	p := authz.Principal{ID: uuid.MustParse("34343434-3434-3434-3434-343434343434").String()}
+	_, err := svc.Upload(context.Background(), p, "certificate.pdf", "application/pdf", []byte("not a pdf"))
+	if !errors.Is(err, media.ErrInvalid) {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestService_DropsJPEGMetadataOnUpload(t *testing.T) {
 	t.Parallel()
 	svc, blobs := setup(t)

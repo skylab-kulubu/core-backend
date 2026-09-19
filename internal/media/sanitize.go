@@ -76,6 +76,11 @@ func isSVG(b []byte) bool {
 	return strings.Contains(strings.ToLower(string(b[:n])), "<svg")
 }
 
+func isPDF(b []byte) bool {
+	n := min(len(b), 1024)
+	return bytes.Contains(b[:n], []byte("%PDF-"))
+}
+
 func stripJPEG(b []byte) []byte {
 	if len(b) < 2 || b[0] != 0xFF || b[1] != 0xD8 {
 		return b

@@ -56,6 +56,17 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 		ctype = detected
 		kind = KindImage
 		key = "images/" + uuid.NewString()
+	} else if strings.EqualFold(strings.TrimSpace(contentType), "application/pdf") || isPDF(data) {
+		if len(data) > maxFileBytes || !isPDF(data) {
+			return Media{}, ErrInvalid
+		}
+		if ext, err := fileExtension(name); err != nil || ext != "pdf" {
+			return Media{}, ErrInvalid
+		}
+		body = data
+		ctype = "application/pdf"
+		kind = KindFile
+		key = "files/" + uuid.NewString()
 	} else {
 		if len(data) > maxFileBytes {
 			return Media{}, ErrInvalid

@@ -76,7 +76,7 @@ services:
       retries: 12
 
   gotenberg:
-    image: gotenberg/gotenberg:8
+    image: gotenberg/gotenberg:8.37.0
     profiles: ["certs"]
     restart: unless-stopped
     ports:

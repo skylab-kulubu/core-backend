@@ -108,11 +108,7 @@ func (s *service) PublishTemplate(ctx context.Context, p authz.Principal, id uui
 		return TemplateVersion{}, err
 	}
 	version := TemplateVersion{ID: versionID, TemplateID: item.ID, Layout: item.DraftLayout, AssetManifest: manifest}
-	html, err := LayoutHTML(ctx, item.DraftLayout, sample, s.verifyURL(sample.Serial), s.assetsForVersion(version))
-	if err != nil {
-		return TemplateVersion{}, err
-	}
-	if preview, err := s.render.PDF(ctx, html); err != nil || len(preview) == 0 {
+	if preview, err := s.renderLayoutPDF(ctx, item.DraftLayout, sample, s.verifyURL(sample.Serial), s.assetsForVersion(version)); err != nil || len(preview) == 0 {
 		if err != nil {
 			return TemplateVersion{}, err
 		}
@@ -150,11 +146,7 @@ func (s *service) PreviewTemplate(ctx context.Context, p authz.Principal, id uui
 	if sample.IssueDate == "" {
 		sample.IssueDate = time.Now().Format("02.01.2006")
 	}
-	html, err := LayoutHTML(ctx, item.DraftLayout, sample, s.verifyURL(sample.Serial), s.assets)
-	if err != nil {
-		return nil, err
-	}
-	return s.render.PDF(ctx, html)
+	return s.renderLayoutPDF(ctx, item.DraftLayout, sample, s.verifyURL(sample.Serial), s.assets)
 }
 
 func (s *service) PreviewEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]byte, error) {
@@ -180,11 +172,7 @@ func (s *service) PreviewEvent(ctx context.Context, p authz.Principal, eventID u
 		OwnerTeam:     ev.OwnerTeam,
 		Serial:        "ÖRNEK-2026",
 	}
-	html, err := LayoutHTML(ctx, resolved.Version.Layout, sample, s.verifyURL(sample.Serial), s.assetsForVersion(resolved.Version))
-	if err != nil {
-		return nil, err
-	}
-	return s.render.PDF(ctx, html)
+	return s.renderLayoutPDF(ctx, resolved.Version.Layout, sample, s.verifyURL(sample.Serial), s.assetsForVersion(resolved.Version))
 }
 
 func (s *service) ResolveTemplate(ctx context.Context, p authz.Principal, eventID uuid.UUID) (ResolvedTemplate, error) {

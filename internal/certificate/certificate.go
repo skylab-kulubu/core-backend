@@ -41,6 +41,12 @@ type Renderer interface {
 	PDF(ctx context.Context, html string) ([]byte, error)
 }
 
+// PDFBackgroundRenderer preserves a one-page PDF as the vector background and
+// renders the editable SKY LAB layout as an overlay on top of it.
+type PDFBackgroundRenderer interface {
+	PDFWithBackground(ctx context.Context, html string, background []byte) ([]byte, error)
+}
+
 type Mailer interface {
 	Certificate(ctx context.Context, recipientEmail, fullName string, vars map[string]string)
 }
