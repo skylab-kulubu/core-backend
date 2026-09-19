@@ -68,7 +68,7 @@ func (s *service) UpdateTemplate(ctx context.Context, p authz.Principal, id uuid
 	}
 	oldResource := authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: existing.OwnerTeam}
 	newResource := authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: in.OwnerTeam}
-	if existing.System || !s.authz.Allow(p, oldResource, authz.Update) || !s.authz.Allow(p, newResource, authz.Update) {
+	if !s.authz.Allow(p, oldResource, authz.Update) || !s.authz.Allow(p, newResource, authz.Update) {
 		return Template{}, ErrForbidden
 	}
 	existing.Name = strings.TrimSpace(in.Name)
