@@ -147,6 +147,9 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
 		return Event{}, ErrForbidden
 	}
+	if in.OwnerTeam != existing.OwnerTeam && !s.authz.Allow(p, resource(in.OwnerTeam), authz.Update) {
+		return Event{}, ErrForbidden
+	}
 	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
 	}

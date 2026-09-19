@@ -18,7 +18,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, m.file_url, e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.created_at, e.updated_at`
+const eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, m.file_url, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.created_at, e.updated_at`
 
 const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id`
 
@@ -438,10 +438,13 @@ func scanEvent(row rowScanner) (Event, error) {
 	err := row.Scan(
 		&e.ID, &e.Name, &e.Description, &e.Location, &e.OwnerTeam, &e.FormURL, &e.Capacity,
 		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Ranked, &e.PrizeInfo, &e.SeasonID,
-		&e.CoverImageID, &coverURL, &e.AttendanceRule, &e.AttendanceRatio, &extraRaw, &e.MailListID, &e.CreatedAt, &e.UpdatedAt,
+		&e.CoverImageID, &coverURL, &e.CoverColors, &e.AttendanceRule, &e.AttendanceRatio, &extraRaw, &e.MailListID, &e.CreatedAt, &e.UpdatedAt,
 	)
 	if coverURL != nil {
 		e.CoverImageURL = *coverURL
+	}
+	if e.CoverColors == nil {
+		e.CoverColors = []string{}
 	}
 	if err != nil {
 		return e, err

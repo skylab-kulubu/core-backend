@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -54,6 +55,30 @@ func TestService_UploadImageThenGet(t *testing.T) {
 	}
 	if got.ID != created.ID || got.URL != created.URL {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestService_UploadComputesAndStoresCoverColors(t *testing.T) {
+	t.Parallel()
+	store := media.NewMemoryStore()
+	blobs := media.NewMemoryBlob()
+	svc := media.NewService(store, blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test")
+	p := authz.Principal{ID: uuid.MustParse("12121212-1212-1212-1212-121212121212").String()}
+
+	created, err := svc.Upload(context.Background(), p, "cover.png", "image/png", twoTonePNG(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"#3c82be", "#8a642f"}
+	if !reflect.DeepEqual(created.CoverColors, want) || !created.CoverColorsComputed {
+		t.Fatalf("created colors %#v computed %v", created.CoverColors, created.CoverColorsComputed)
+	}
+	stored, err := store.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stored.CoverColors, want) || !stored.CoverColorsComputed {
+		t.Fatalf("stored colors %#v computed %v", stored.CoverColors, stored.CoverColorsComputed)
 	}
 }
 

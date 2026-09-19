@@ -72,13 +72,21 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 	if err := s.blobs.Put(ctx, key, body, ctype); err != nil {
 		return Media{}, err
 	}
+	colors := []string{}
+	colorsComputed := false
+	if kind == KindImage {
+		colors = ExtractCoverColors(body)
+		colorsComputed = true
+	}
 	created, err := s.media.Create(ctx, Media{
-		Name:       name,
-		Type:       ctype,
-		Size:       int64(len(body)),
-		UploadedBy: uploadedBy,
-		Kind:       kind,
-		Key:        key,
+		Name:                name,
+		Type:                ctype,
+		Size:                int64(len(body)),
+		UploadedBy:          uploadedBy,
+		Kind:                kind,
+		Key:                 key,
+		CoverColors:         colors,
+		CoverColorsComputed: colorsComputed,
 	})
 	if err != nil {
 		return Media{}, err

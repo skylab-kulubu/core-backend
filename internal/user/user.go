@@ -15,6 +15,7 @@ type User struct {
 	SchoolEmail       string     `json:"schoolEmail,omitempty"`
 	SkyNumber         string     `json:"skyNumber,omitempty"`
 	StudentCardUID    string     `json:"-"`
+	StudentCardLinked bool       `json:"studentCardLinked"`
 	Linkedin          string     `json:"linkedin,omitempty"`
 	University        string     `json:"university,omitempty"`
 	Faculty           string     `json:"faculty,omitempty"`
@@ -24,6 +25,11 @@ type User struct {
 	ProfilePictureURL string     `json:"profilePictureUrl,omitempty"`
 	CreatedAt         time.Time  `json:"createdAt"`
 	UpdatedAt         time.Time  `json:"updatedAt"`
+}
+
+func withStudentCardStatus(u User) User {
+	u.StudentCardLinked = u.StudentCardUID != ""
+	return u
 }
 
 type Profile struct {

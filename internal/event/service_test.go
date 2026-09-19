@@ -147,6 +147,56 @@ func TestService_UpdateOwnerTeamLeader(t *testing.T) {
 	}
 }
 
+func TestService_LeaderCannotTransferEventToOtherTeam(t *testing.T) {
+	t.Parallel()
+	_, svc := setup(t)
+	ctx := context.Background()
+	leader := authz.Principal{ID: "l", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+
+	created, err := svc.Create(ctx, leader, event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.Update(ctx, leader, created.ID, event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "SKYSEC",
+	})
+	if !errors.Is(err, event.ErrForbidden) {
+		t.Fatalf("transfer: %v", err)
+	}
+	stored, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.OwnerTeam != "WEBLAB" {
+		t.Fatalf("owner %q", stored.OwnerTeam)
+	}
+}
+
+func TestService_PrivilegedCanTransferEventToOtherTeam(t *testing.T) {
+	t.Parallel()
+	_, svc := setup(t)
+	ctx := context.Background()
+	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+
+	created, err := svc.Create(ctx, yk, event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := svc.Update(ctx, yk, created.ID, event.Event{
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "SKYSEC",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.OwnerTeam != "SKYSEC" {
+		t.Fatalf("owner %q", updated.OwnerTeam)
+	}
+}
+
 func TestService_CreateRequiresFields(t *testing.T) {
 	t.Parallel()
 	_, svc := setup(t)
@@ -310,6 +360,7 @@ func TestService_PublicMediaURLsDoNotRewriteStore(t *testing.T) {
 		Location:      "YTÜ",
 		OwnerTeam:     "WEBLAB",
 		CoverImageURL: cover,
+		CoverColors:   []string{"#3c82be", "#8a642f"},
 		Images: []event.GalleryImage{
 			{ID: imgID, URL: gallery},
 			{ID: absID, URL: href},
@@ -352,5 +403,8 @@ func TestService_PublicMediaURLsDoNotRewriteStore(t *testing.T) {
 	res := stored.Resource()
 	if res.CoverImageURL != "https://cdn.yildizskylab.com/images/b0db8eb9-5914-4db7-a39a-cabd6bf47faa" {
 		t.Fatalf("resource %s", res.CoverImageURL)
+	}
+	if len(res.CoverColors) != 2 || res.CoverColors[0] != "#3c82be" {
+		t.Fatalf("resource colors %#v", res.CoverColors)
 	}
 }

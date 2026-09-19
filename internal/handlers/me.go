@@ -152,5 +152,6 @@ func (h *MeHandler) ProfilePicture(c fiber.Ctx) error {
 
 func publicUser(u user.User) user.User {
 	u.ProfilePictureURL = media.PublicURL("", u.ProfilePictureURL)
+	u.StudentCardLinked = u.StudentCardUID != ""
 	return u
 }
