@@ -168,7 +168,14 @@ func (h *ScheduleHandler) SessionQR(c fiber.Ctx) error {
 	if _, err := h.svc.GetSession(c.Context(), id); err != nil {
 		return eventError(c, err)
 	}
-	png, err := qr.PNG(qr.SessionURL(id.String()), qr.SizeFromQuery(c.Query("size")))
+	size := qr.SizeFromQuery(c.Query("size"))
+	content := qr.SessionURL(id.String())
+	var png []byte
+	if qr.LogoFromQuery(c.Query("logo")) {
+		png, err = qr.PNGWithLogo(content, size)
+	} else {
+		png, err = qr.PNG(content, size)
+	}
 	if err != nil {
 		return err
 	}

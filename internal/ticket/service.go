@@ -14,6 +14,7 @@ import (
 
 type Service interface {
 	Apply(ctx context.Context, p authz.Principal, eventID uuid.UUID) (Ticket, error)
+	ApplyForOther(ctx context.Context, p authz.Principal, eventID, userID uuid.UUID) (Ticket, error)
 	ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo) (Ticket, error)
 	Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 	ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Ticket, error)
@@ -30,10 +31,15 @@ type TeamReader interface {
 	GetGroup(ctx context.Context, idOrPath string) (identity.Group, error)
 }
 
+type PersonReader interface {
+	GetUser(ctx context.Context, id uuid.UUID) (identity.Person, error)
+}
+
 type service struct {
 	tickets Store
 	events  event.Store
 	users   user.Store
+	people  PersonReader
 	teams   TeamReader
 	authz   authz.Authorizer
 }
@@ -41,11 +47,18 @@ type service struct {
 func NewService(tickets Store, events event.Store, az authz.Authorizer, extras ...any) Service {
 	s := &service{tickets: tickets, events: events, authz: az}
 	for _, extra := range extras {
-		switch v := extra.(type) {
-		case user.Store:
+		if d, ok := extra.(identity.Directory); ok {
+			s.people = d
+			s.teams = d
+		}
+		if v, ok := extra.(user.Store); ok {
 			s.users = v
-		case TeamReader:
+		}
+		if v, ok := extra.(TeamReader); ok && s.teams == nil {
 			s.teams = v
+		}
+		if v, ok := extra.(PersonReader); ok && s.people == nil {
+			s.people = v
 		}
 	}
 	return s
@@ -94,6 +107,68 @@ func (s *service) Apply(ctx context.Context, p authz.Principal, eventID uuid.UUI
 	if err != nil {
 		return Ticket{}, ErrInvalid
 	}
+	return s.applyRegistered(ctx, eventID, ownerID)
+}
+
+func (s *service) ApplyForOther(ctx context.Context, p authz.Principal, eventID, userID uuid.UUID) (Ticket, error) {
+	ev, err := s.events.Get(ctx, eventID)
+	if err != nil {
+		if errors.Is(err, event.ErrNotFound) {
+			return Ticket{}, ErrNotFound
+		}
+		return Ticket{}, err
+	}
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign) {
+		return Ticket{}, ErrForbidden
+	}
+	if userID == uuid.Nil {
+		return Ticket{}, ErrInvalid
+	}
+	if err := s.resolveApplyTarget(ctx, userID); err != nil {
+		return Ticket{}, err
+	}
+	return s.applyRegistered(ctx, eventID, userID)
+}
+
+func (s *service) resolveApplyTarget(ctx context.Context, userID uuid.UUID) error {
+	if s.users != nil {
+		if _, err := s.users.Get(ctx, userID); err == nil {
+			return nil
+		} else if !errors.Is(err, user.ErrNotFound) {
+			return err
+		}
+	}
+	people := s.people
+	if people == nil {
+		if p, ok := any(s.teams).(PersonReader); ok {
+			people = p
+		}
+	}
+	if people == nil {
+		return ErrNotFound
+	}
+	person, err := people.GetUser(ctx, userID)
+	if err != nil {
+		if errors.Is(err, identity.ErrNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if s.users == nil {
+		return nil
+	}
+	_, _, err = user.NewService(s.users).Ensure(ctx, userID, user.Profile{
+		Email:       person.Email,
+		FirstName:   person.FirstName,
+		LastName:    person.LastName,
+		Username:    person.Username,
+		SchoolEmail: person.SchoolEmail,
+		SkyNumber:   person.SkyNumber,
+	})
+	return err
+}
+
+func (s *service) applyRegistered(ctx context.Context, eventID, ownerID uuid.UUID) (Ticket, error) {
 	exists, err := s.tickets.ExistsOwnerEvent(ctx, ownerID, eventID)
 	if err != nil {
 		return Ticket{}, err

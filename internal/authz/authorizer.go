@@ -152,6 +152,11 @@ func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
 			}
 		}
 		return false
+	case Assign:
+		if a.isPrivileged(p) {
+			return true
+		}
+		return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
 	case Validate:
 		return a.allowDoorCheckIn(p, r)
 	default:

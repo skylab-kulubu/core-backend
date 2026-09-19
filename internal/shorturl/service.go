@@ -6,17 +6,19 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
 type Service interface {
-	Redirect(ctx context.Context, alias string) (URL, error)
+	Redirect(ctx context.Context, alias string, hit Hit) (URL, error)
 	Lookup(ctx context.Context, alias string) (URL, error)
 	Create(ctx context.Context, p authz.Principal, target, alias string) (URL, error)
 	ListMine(ctx context.Context, p authz.Principal) ([]URL, error)
 	ListAll(ctx context.Context, p authz.Principal) ([]URL, error)
+	ListHits(ctx context.Context, p authz.Principal, id uuid.UUID) ([]Hit, error)
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, target, alias string) (URL, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
 }
@@ -36,12 +38,31 @@ func (s *service) Lookup(ctx context.Context, alias string) (URL, error) {
 	return s.store.GetByAlias(ctx, alias)
 }
 
-func (s *service) Redirect(ctx context.Context, alias string) (URL, error) {
+func (s *service) Redirect(ctx context.Context, alias string, hit Hit) (URL, error) {
 	u, err := s.store.GetByAlias(ctx, alias)
 	if err != nil {
 		return URL{}, err
 	}
-	return s.store.IncrementClicks(ctx, u.ID)
+	if hit.CreatedAt.IsZero() {
+		hit.CreatedAt = time.Now().UTC()
+	}
+	hit.URLID = u.ID
+	hit.Alias = u.Alias
+	recorded, err := s.store.RecordHit(ctx, u.ID, hit)
+	if err != nil {
+		return u, nil
+	}
+	return recorded, nil
+}
+
+func (s *service) ListHits(ctx context.Context, p authz.Principal, id uuid.UUID) ([]Hit, error) {
+	if _, err := s.store.Get(ctx, id); err != nil {
+		return nil, err
+	}
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL}, authz.Read) {
+		return nil, ErrForbidden
+	}
+	return s.store.ListHits(ctx, id, time.Now().UTC().Add(-HitRetention))
 }
 
 func (s *service) Create(ctx context.Context, p authz.Principal, target, alias string) (URL, error) {

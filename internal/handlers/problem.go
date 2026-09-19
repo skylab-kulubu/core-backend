@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 func problem(c fiber.Ctx, status int, title string) error {
@@ -42,6 +43,9 @@ func ErrorHandler(c fiber.Ctx, err error) error {
 	var fe *fiber.Error
 	if errors.As(err, &fe) {
 		return problem(c, fe.Code, fe.Message)
+	}
+	if errors.Is(err, user.ErrConflict) {
+		return problem(c, fiber.StatusConflict, "Conflict")
 	}
 	return problem(c, fiber.StatusInternalServerError, "Internal Server Error")
 }

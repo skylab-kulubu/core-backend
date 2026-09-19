@@ -274,6 +274,47 @@ func TestService_SetProfilePicture(t *testing.T) {
 	}
 }
 
+func TestService_EnsureSkyNumberOwnedByOther(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	owner := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	other := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	first, _, err := svc.Ensure(context.Background(), owner, Profile{Email: "a@example.com", SkyNumber: "SKY-0000042"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SkyNumber != "SKY-0000042" {
+		t.Fatalf("first %+v", first)
+	}
+	second, _, err := svc.Ensure(context.Background(), other, Profile{Email: "b@example.com", SkyNumber: "SKY-0000042"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != other || second.SkyNumber == "" || second.SkyNumber == "SKY-0000042" {
+		t.Fatalf("second %+v", second)
+	}
+}
+
+func TestService_EnsureEmailOwnedByOther(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	owner := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	other := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	first, _, err := svc.Ensure(context.Background(), owner, Profile{Email: "ada@example.com", FirstName: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, created, err := svc.Ensure(context.Background(), other, Profile{Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created || got.ID != first.ID || got.Email != "ada@example.com" {
+		t.Fatalf("adopt %+v created=%v", got, created)
+	}
+}
+
 func TestService_EnsureKeepsUsername(t *testing.T) {
 	t.Parallel()
 	store := NewMemoryStore()

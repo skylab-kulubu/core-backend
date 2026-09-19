@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http/httptest"
@@ -222,5 +223,83 @@ func TestCurrentSessionAndQRHTTP(t *testing.T) {
 	}
 	if ct := qrResp.Header.Get("Content-Type"); !strings.Contains(ct, "image/png") {
 		t.Fatalf("content-type %s", ct)
+	}
+}
+
+func TestSessionQRLogoOverlaysClubMark(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	leader := authn.Identity{ID: uuid.MustParse("22222222-2222-2222-2222-222222222222"), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	app := scheduleApp(t, leader, events, season.NewMemoryStore())
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("event %d %s", resp.StatusCode, body)
+	}
+	var ev event.Event
+	if err := json.NewDecoder(resp.Body).Decode(&ev); err != nil {
+		t.Fatal(err)
+	}
+	dayReq := httptest.NewRequest(fiber.MethodPost, "/v1/event-days", strings.NewReader(
+		`{"eventId":"`+ev.ID.String()+`","name":"Day 1"}`,
+	))
+	dayReq.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(dayReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var day event.Day
+	if err := json.NewDecoder(resp.Body).Decode(&day); err != nil {
+		t.Fatal(err)
+	}
+	sessReq := httptest.NewRequest(fiber.MethodPost, "/v1/sessions", strings.NewReader(
+		`{"eventDayId":"`+day.ID.String()+`","title":"Talk","speakerName":"Ada","sessionType":"PRESENTATION"}`,
+	))
+	sessReq.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(sessReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sess event.Session
+	if err := json.NewDecoder(resp.Body).Decode(&sess); err != nil {
+		t.Fatal(err)
+	}
+
+	path := "/v1/sessions/" + sess.ID.String() + "/qr"
+	plainResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := io.ReadAll(plainResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logoResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path+"?logo=1&size=256", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logoResp.StatusCode != fiber.StatusOK {
+		raw, _ := io.ReadAll(logoResp.Body)
+		t.Fatalf("logo qr %d %s", logoResp.StatusCode, raw)
+	}
+	if ct := logoResp.Header.Get("Content-Type"); !strings.Contains(ct, "image/png") {
+		t.Fatalf("content-type %s", ct)
+	}
+	withLogo, err := io.ReadAll(logoResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withLogo) < 8 || string(withLogo[:4]) != "\x89PNG" {
+		t.Fatalf("not png len=%d", len(withLogo))
+	}
+	if bytes.Equal(plain, withLogo) {
+		t.Fatal("logo overlay should change the png")
 	}
 }

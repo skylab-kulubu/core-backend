@@ -2,6 +2,7 @@ package shorturl
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 type MemoryStore struct {
 	mu   sync.Mutex
 	byID map[uuid.UUID]URL
+	hits []Hit
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -94,20 +96,72 @@ func (s *MemoryStore) Delete(_ context.Context, id uuid.UUID) error {
 		return ErrNotFound
 	}
 	delete(s.byID, id)
+	kept := s.hits[:0]
+	for _, h := range s.hits {
+		if h.URLID != id {
+			kept = append(kept, h)
+		}
+	}
+	s.hits = kept
 	return nil
 }
 
-func (s *MemoryStore) IncrementClicks(_ context.Context, id uuid.UUID) (URL, error) {
+func (s *MemoryStore) RecordHit(_ context.Context, id uuid.UUID, hit Hit) (URL, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, ok := s.byID[id]
 	if !ok {
 		return URL{}, ErrNotFound
 	}
-	u.ClickCount++
+	if hit.ID == uuid.Nil {
+		hit.ID = uuid.New()
+	}
+	if hit.CreatedAt.IsZero() {
+		hit.CreatedAt = time.Now().UTC()
+	}
+	hit.URLID = u.ID
+	hit.Alias = u.Alias
+	s.hits = append(s.hits, hit)
+	u.ClickCount = s.pruneLocked(id)
 	u.UpdatedAt = time.Now().UTC()
 	s.byID[id] = u
 	return u, nil
+}
+
+func (s *MemoryStore) ListHits(_ context.Context, id uuid.UUID, since time.Time) ([]Hit, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID[id]; !ok {
+		return nil, ErrNotFound
+	}
+	out := make([]Hit, 0)
+	for i := len(s.hits) - 1; i >= 0; i-- {
+		h := s.hits[i]
+		if h.URLID == id && !h.CreatedAt.Before(since) {
+			out = append(out, h)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+func (s *MemoryStore) pruneLocked(id uuid.UUID) int {
+	cutoff := time.Now().UTC().Add(-HitRetention)
+	next := make([]Hit, 0, len(s.hits))
+	n := 0
+	for _, h := range s.hits {
+		if h.URLID == id && h.CreatedAt.Before(cutoff) {
+			continue
+		}
+		next = append(next, h)
+		if h.URLID == id {
+			n++
+		}
+	}
+	s.hits = next
+	return n
 }
 
 func (s *MemoryStore) findAliasLocked(alias string, except uuid.UUID) (URL, error) {
