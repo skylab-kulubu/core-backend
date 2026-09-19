@@ -37,6 +37,7 @@ func identityApp(t *testing.T, ident authn.Identity, dir *identity.Memory, store
 	app.Put("/v1/groups/:groupId/client-roles", h.SetGroupClientRoles)
 	app.Get("/v1/users", h.ListUsers)
 	app.Get("/v1/users/:id", h.GetUser)
+	app.Patch("/v1/users/:id", h.PatchUser)
 	app.Post("/v1/users", h.CreateUser)
 	app.Delete("/v1/users/:id", h.DeleteUser)
 	app.Post("/v1/users/:id/logout", h.LogoutAllSessions)
@@ -335,6 +336,78 @@ func TestListUsersSearchHTTP(t *testing.T) {
 	}
 	if len(found) != 1 || found[0].SchoolEmail != "ada@std.yildiz.edu.tr" {
 		t.Fatalf("found %+v", found)
+	}
+}
+
+func TestPatchOtherUserHTTP(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	id := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: id, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"})
+	if _, _, err := store.Upsert(t.Context(), user.User{
+		ID: id, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace", SkyNumber: "SKY-0000001",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := identityApp(t, ykIdent(), dir, store)
+
+	req := httptest.NewRequest(fiber.MethodPatch, "/v1/users/"+id.String(), strings.NewReader(
+		`{"firstName":"Ada","lastName":"Byron","linkedin":"https://linkedin.com/in/ada","university":"YTÜ","faculty":"EE","department":"CE","phone":"+905551112233"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("patch status %d body %s", resp.StatusCode, b)
+	}
+	var patched map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&patched); err != nil {
+		t.Fatal(err)
+	}
+	if patched["lastName"] != "Byron" || patched["phone"] != "+905551112233" || patched["university"] != "YTÜ" || patched["skyNumber"] != "SKY-0000001" {
+		t.Fatalf("patched %+v", patched)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users/"+id.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("get status %d", resp.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got["phone"] != "+905551112233" || got["department"] != "CE" || got["linkedin"] != "https://linkedin.com/in/ada" {
+		t.Fatalf("get %+v", got)
+	}
+}
+
+func TestPatchOtherUserForbiddenHTTP(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	id := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: id, Email: "ada@example.com", FirstName: "Ada"})
+	ident := authn.Identity{
+		ID:     uuid.MustParse("22222222-2222-2222-2222-222222222222"),
+		Groups: []string{"/UYELER/ARGE/WEBLAB"},
+	}
+	app := identityApp(t, ident, dir, store)
+	req := httptest.NewRequest(fiber.MethodPatch, "/v1/users/"+id.String(), strings.NewReader(`{"phone":"+905551112233"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body %s", resp.StatusCode, b)
 	}
 }
 

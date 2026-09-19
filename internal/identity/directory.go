@@ -43,9 +43,16 @@ type ClientRole struct {
 
 type UserCard struct {
 	Person
-	Groups         []Group      `json:"groups"`
-	InheritedRoles []ClientRole `json:"inheritedRoles"`
-	ExtraRoles     []ClientRole `json:"extraRoles"`
+	Linkedin          string       `json:"linkedin,omitempty"`
+	University        string       `json:"university,omitempty"`
+	Faculty           string       `json:"faculty,omitempty"`
+	Department        string       `json:"department,omitempty"`
+	Phone             string       `json:"phone,omitempty"`
+	StudentCardUid    string       `json:"studentCardUid,omitempty"`
+	ProfilePictureURL string       `json:"profilePictureUrl,omitempty"`
+	Groups            []Group      `json:"groups,omitempty"`
+	InheritedRoles    []ClientRole `json:"inheritedRoles,omitempty"`
+	ExtraRoles        []ClientRole `json:"extraRoles,omitempty"`
 }
 
 type Directory interface {

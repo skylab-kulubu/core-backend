@@ -56,6 +56,26 @@ func (h *TicketHandler) Apply(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(created)
 }
 
+func (h *TicketHandler) ApplyForOther(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	eventID, err := uuid.Parse(c.Params("eventId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	userID, err := uuid.Parse(c.Params("userId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	created, err := h.svc.ApplyForOther(c.Context(), p, eventID, userID)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(created)
+}
+
 func (h *TicketHandler) ApplyGuest(c fiber.Ctx) error {
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {

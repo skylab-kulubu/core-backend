@@ -69,12 +69,76 @@ func (s *PostgresStore) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *PostgresStore) IncrementClicks(ctx context.Context, id uuid.UUID) (URL, error) {
-	u, err := scanURL(s.pool.QueryRow(ctx, `
+func (s *PostgresStore) RecordHit(ctx context.Context, id uuid.UUID, hit Hit) (URL, error) {
+	if hit.ID == uuid.Nil {
+		hit.ID = uuid.New()
+	}
+	if hit.CreatedAt.IsZero() {
+		hit.CreatedAt = time.Now().UTC()
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return URL{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var alias string
+	if err := tx.QueryRow(ctx, `SELECT alias FROM urls WHERE id = $1`, id).Scan(&alias); err != nil {
+		return URL{}, mapURLErr(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO url_hits (id, url_id, alias, at, ip, user_agent, referer, user_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		hit.ID, id, alias, hit.CreatedAt, hit.IP, hit.UserAgent, hit.Referer, hit.UserID); err != nil {
+		return URL{}, mapURLErr(err)
+	}
+	u, err := scanURL(tx.QueryRow(ctx, `
 		UPDATE urls SET click_count = click_count + 1, updated_at = now()
 		WHERE id = $1
 		RETURNING `+urlCols, id))
-	return u, mapURLErr(err)
+	if err != nil {
+		return URL{}, mapURLErr(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return URL{}, err
+	}
+	_ = s.pruneHits(ctx, id)
+	return u, nil
+}
+
+func (s *PostgresStore) pruneHits(ctx context.Context, id uuid.UUID) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM url_hits WHERE url_id = $1 AND at < now() - interval '90 days'`, id); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE urls SET click_count = (SELECT COUNT(*) FROM url_hits WHERE url_id = $1), updated_at = now()
+		WHERE id = $1`, id); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresStore) ListHits(ctx context.Context, id uuid.UUID, since time.Time) ([]Hit, error) {
+	if _, err := s.Get(ctx, id); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, url_id, alias, at, ip, user_agent, referer, user_id
+		FROM url_hits
+		WHERE url_id = $1 AND at >= $2
+		ORDER BY at DESC, id DESC`, id, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Hit, 0)
+	for rows.Next() {
+		var h Hit
+		if err := rows.Scan(&h.ID, &h.URLID, &h.Alias, &h.CreatedAt, &h.IP, &h.UserAgent, &h.Referer, &h.UserID); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
 }
 
 func (s *PostgresStore) list(ctx context.Context, q string, args ...any) ([]URL, error) {

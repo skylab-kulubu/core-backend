@@ -24,6 +24,7 @@ type Service interface {
 	ListUsers(ctx context.Context, p authz.Principal, q string, seat ...ClientRole) ([]Person, error)
 	ListClientRoles(ctx context.Context, p authz.Principal) ([]ClientRole, error)
 	GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error)
+	PatchUser(ctx context.Context, p authz.Principal, id uuid.UUID, in user.ProfilePatch) (UserCard, error)
 	CreateUser(ctx context.Context, p authz.Principal, in Person) (Person, error)
 	DeleteUser(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	GroupClientRoles(ctx context.Context, p authz.Principal, groupRef string) ([]ClientRole, error)
@@ -242,11 +243,26 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if err != nil {
 		return UserCard{}, err
 	}
-	if shadow, err := s.users.Get(ctx, id); err == nil {
-		person.SchoolEmail = shadow.SchoolEmail
-		if shadow.SkyNumber != "" {
-			person.SkyNumber = shadow.SkyNumber
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Update) {
+		if got, err := s.users.Get(ctx, id); err == nil {
+			if got.FirstName != "" {
+				person.FirstName = got.FirstName
+			}
+			if got.LastName != "" {
+				person.LastName = got.LastName
+			}
 		}
+		return nameOnlyCard(UserCard{Person: Person{
+			ID:        person.ID,
+			Email:     person.Email,
+			FirstName: person.FirstName,
+			LastName:  person.LastName,
+		}}), nil
+	}
+	var shadow user.User
+	if got, err := s.users.Get(ctx, id); err == nil {
+		person = overlayPerson(person, got)
+		shadow = got
 	}
 	groups, err := s.dir.GroupsForUser(ctx, id)
 	if err != nil {
@@ -278,7 +294,77 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if extra == nil {
 		extra = []ClientRole{}
 	}
-	return UserCard{Person: person, Groups: groups, InheritedRoles: inherited, ExtraRoles: extra}, nil
+	return userCard(person, groups, inherited, extra, shadow), nil
+}
+
+func nameOnlyCard(card UserCard) UserCard {
+	return UserCard{
+		Person: Person{
+			ID:        card.ID,
+			Email:     card.Email,
+			FirstName: card.FirstName,
+			LastName:  card.LastName,
+		},
+	}
+}
+
+func overlayPerson(person Person, shadow user.User) Person {
+	if shadow.SchoolEmail != "" {
+		person.SchoolEmail = shadow.SchoolEmail
+	}
+	if shadow.SkyNumber != "" {
+		person.SkyNumber = shadow.SkyNumber
+	}
+	if shadow.FirstName != "" {
+		person.FirstName = shadow.FirstName
+	}
+	if shadow.LastName != "" {
+		person.LastName = shadow.LastName
+	}
+	return person
+}
+
+func userCard(person Person, groups []Group, inherited, extra []ClientRole, shadow user.User) UserCard {
+	return UserCard{
+		Person:         person,
+		Linkedin:       shadow.Linkedin,
+		University:     shadow.University,
+		Faculty:        shadow.Faculty,
+		Department:     shadow.Department,
+		Phone:          shadow.Phone,
+		StudentCardUid: shadow.StudentCardUID,
+		Groups:         groups,
+		InheritedRoles: inherited,
+		ExtraRoles:     extra,
+	}
+}
+
+func (s *service) PatchUser(ctx context.Context, p authz.Principal, id uuid.UUID, in user.ProfilePatch) (UserCard, error) {
+	if err := s.allow(p, authz.TypeUser, authz.Update); err != nil {
+		return UserCard{}, err
+	}
+	person, err := s.dir.GetUser(ctx, id)
+	if err != nil {
+		return UserCard{}, err
+	}
+	if _, err := s.users.Get(ctx, id); errors.Is(err, user.ErrNotFound) {
+		if _, _, err := s.assign.Ensure(ctx, id, user.Profile{
+			Email:       person.Email,
+			FirstName:   person.FirstName,
+			LastName:    person.LastName,
+			Username:    person.Username,
+			SchoolEmail: person.SchoolEmail,
+			SkyNumber:   person.SkyNumber,
+		}); err != nil {
+			return UserCard{}, err
+		}
+	} else if err != nil {
+		return UserCard{}, err
+	}
+	if _, err := s.assign.Patch(ctx, id, in); err != nil {
+		return UserCard{}, err
+	}
+	return s.GetUser(ctx, p, id)
 }
 
 func (s *service) GroupClientRoles(ctx context.Context, p authz.Principal, groupRef string) ([]ClientRole, error) {

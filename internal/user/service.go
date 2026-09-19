@@ -56,6 +56,10 @@ func (s *service) Ensure(ctx context.Context, id uuid.UUID, profile Profile) (Us
 	if err != nil {
 		return User{}, false, err
 	}
+	return s.assignSky(ctx, first, created)
+}
+
+func (s *service) assignSky(ctx context.Context, first User, created bool) (User, bool, error) {
 	if first.SkyNumber != "" {
 		return first, created, nil
 	}
@@ -119,6 +123,9 @@ func (s *service) Patch(ctx context.Context, id uuid.UUID, in ProfilePatch) (Use
 	}
 	if in.Department != nil {
 		existing.Department = *in.Department
+	}
+	if in.Phone != nil {
+		existing.Phone = *in.Phone
 	}
 	return s.store.UpdateProfile(ctx, existing)
 }
