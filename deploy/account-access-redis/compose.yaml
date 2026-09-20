@@ -1,0 +1,12 @@
+services:
+  account-access-redis:
+    image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+    restart: unless-stopped
+    command: ["redis-server", "/etc/redis/account-access.conf"]
+    volumes:
+      - account_access_redis_data:/data
+      - ./redis.conf:/etc/redis/account-access.conf:ro
+      - ${ACCOUNT_ACCESS_REDIS_SECRETS_DIR:?set ACCOUNT_ACCESS_REDIS_SECRETS_DIR}:/run/secrets:ro
+
+volumes:
+  account_access_redis_data:

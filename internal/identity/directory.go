@@ -8,9 +8,11 @@ import (
 )
 
 var (
-	ErrNotFound  = errors.New("identity: not found")
-	ErrForbidden = errors.New("identity: forbidden")
-	ErrInvalid   = errors.New("identity: invalid")
+	ErrNotFound                 = errors.New("identity: not found")
+	ErrForbidden                = errors.New("identity: forbidden")
+	ErrInvalid                  = errors.New("identity: invalid")
+	ErrAccountErasureDisabled   = errors.New("identity: account erasure disabled")
+	ErrAccountAccessUnavailable = errors.New("identity: account access projection unavailable")
 )
 
 type Group struct {
@@ -70,6 +72,7 @@ type Directory interface {
 	UsersWithClientRole(ctx context.Context, clientID, role string) ([]Person, error)
 	CreateUser(ctx context.Context, p Person) (Person, error)
 	GetUser(ctx context.Context, id uuid.UUID) (Person, error)
+	DisableUser(ctx context.Context, id uuid.UUID) error
 	DeleteUser(ctx context.Context, id uuid.UUID) error
 	GroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group, error)
 	GroupClientRoles(ctx context.Context, groupID string) ([]ClientRole, error)

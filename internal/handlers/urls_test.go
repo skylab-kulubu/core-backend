@@ -15,6 +15,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 type pruneErrStore struct {
@@ -41,8 +42,14 @@ func urlAppWith(t *testing.T, ident authn.Identity, store shorturl.Store) *fiber
 }
 
 func urlAppOn(t *testing.T, store shorturl.Store, ident authn.Identity, parse func(string) (authn.Identity, error)) *fiber.App {
+	return urlAppOnGuard(t, store, ident, parse, func(context.Context, uuid.UUID) (user.AttributionState, error) {
+		return user.AttributionAllowed, nil
+	})
+}
+
+func urlAppOnGuard(t *testing.T, store shorturl.Store, ident authn.Identity, parse func(string) (authn.Identity, error), guard URLAttributionGuard) *fiber.App {
 	t.Helper()
-	h := NewURLHandler(shorturl.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy())), parse)
+	h := NewURLHandler(shorturl.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy())), parse, guard)
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
 		if ident.ID != uuid.Nil || len(ident.Roles) > 0 || len(ident.Groups) > 0 {
@@ -60,6 +67,58 @@ func urlAppOn(t *testing.T, store shorturl.Store, ident authn.Identity, parse fu
 	app.Delete("/v1/urls/:id", h.Delete)
 	app.Post("/v1/urls/:id/restore", h.Restore)
 	return app
+}
+
+func TestURLRedirectRejectsBlockedBearerSubjectWithoutRecordingAHit(t *testing.T) {
+	t.Parallel()
+	store := shorturl.NewMemoryStore()
+	owner := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	blocked := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	parse := func(string) (authn.Identity, error) { return authn.Identity{ID: blocked}, nil }
+
+	createApp := urlAppOn(t, store, authn.Identity{ID: owner, Roles: []string{"url:access"}}, parse)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/urls", strings.NewReader(`{"url":"https://skylab.com","alias":"blocked-hit"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := createApp.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created shorturl.URL
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	hop := urlAppOnGuard(t, store, authn.Identity{}, parse, func(_ context.Context, id uuid.UUID) (user.AttributionState, error) {
+		if id == blocked {
+			return user.AttributionBlocked, nil
+		}
+		return user.AttributionAllowed, nil
+	})
+	redirect := httptest.NewRequest(fiber.MethodGet, "/v1/go/blocked-hit", nil)
+	redirect.Header.Set("Authorization", "Bearer stale-token")
+	got, err := hop.Test(redirect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.StatusCode != fiber.StatusUnauthorized || got.Header.Get(fiber.HeaderLocation) != "" {
+		t.Fatalf("redirect status=%d location=%q", got.StatusCode, got.Header.Get(fiber.HeaderLocation))
+	}
+	if got.Header.Get(fiber.HeaderCacheControl) != "no-store" {
+		t.Fatalf("cache-control = %q", got.Header.Get(fiber.HeaderCacheControl))
+	}
+
+	moderator := urlAppOn(t, store, authn.Identity{Groups: []string{"/UYELER/YK"}}, nil)
+	hitsResp, err := moderator.Test(httptest.NewRequest(fiber.MethodGet, "/v1/urls/"+created.ID.String()+"/hits", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits []shorturl.Hit
+	if err := json.NewDecoder(hitsResp.Body).Decode(&hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("blocked bearer recorded hits = %+v", hits)
+	}
 }
 
 func TestURLSkylappRoleDoesNotCreate(t *testing.T) {

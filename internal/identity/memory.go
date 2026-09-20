@@ -260,7 +260,7 @@ func (m *Memory) SearchUsers(_ context.Context, query string, limit int) ([]Pers
 }
 
 func holdsClientRole(have ClientRole, clientID, role string) bool {
-	if have.ClientID != clientID && !((clientID == "forms" || clientID == "dotnet") && have.ClientID == "skyforms") {
+	if have.ClientID != clientID && !(clientID == "forms" && have.ClientID == "skyforms") {
 		return false
 	}
 	if have.Role == role {
@@ -348,6 +348,16 @@ func (m *Memory) DeleteUser(_ context.Context, id uuid.UUID) error {
 	delete(m.userRoles, id)
 	for _, members := range m.members {
 		delete(members, id)
+	}
+	return nil
+}
+
+func (m *Memory) DisableUser(_ context.Context, id uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("DisableUser")
+	if _, ok := m.people[id]; !ok {
+		return ErrNotFound
 	}
 	return nil
 }

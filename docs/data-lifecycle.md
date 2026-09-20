@@ -34,3 +34,5 @@ Archived Media metadata is hidden immediately, while its R2 object remains recov
 Production defaults are `MEDIA_BLOB_RECOVERY_DAYS=30`, `MEDIA_BLOB_PURGE_INTERVAL=1h` and `MEDIA_BLOB_PURGE_BATCH_SIZE=25`. An invalid or non-positive override prevents startup instead of silently disabling retention.
 
 Certificates are revoked or reissued through their existing commands and are never deleted. Event gallery membership, team/group membership and role assignment are relationship operations rather than durable aggregate deletion, so their existing removal routes remain physical relationship changes.
+
+User identities follow the separate irreversible account lifecycle described in [account-lifecycle.md](account-lifecycle.md). The privileged user DELETE route queues that lifecycle and never physically deletes operational history.

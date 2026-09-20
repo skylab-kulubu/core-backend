@@ -2,7 +2,10 @@ package media
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -19,14 +22,27 @@ type Service interface {
 }
 
 type service struct {
-	media      Store
-	blobs      BlobStore
-	authz      authz.Authorizer
-	publicBase string
+	media              Store
+	blobs              BlobStore
+	authz              authz.Authorizer
+	publicBase         string
+	uploadStagingGrace time.Duration
 }
 
 func NewService(media Store, blobs BlobStore, az authz.Authorizer, publicBase string) Service {
-	return &service{media: media, blobs: blobs, authz: az, publicBase: publicBase}
+	return NewServiceWithOptions(media, blobs, az, publicBase, ServiceOptions{})
+}
+
+type ServiceOptions struct {
+	UploadStagingGrace time.Duration
+}
+
+func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, publicBase string, options ServiceOptions) Service {
+	grace := options.UploadStagingGrace
+	if grace <= 0 {
+		grace = DefaultUploadStagingGrace
+	}
+	return &service{media: media, blobs: blobs, authz: az, publicBase: publicBase, uploadStagingGrace: grace}
 }
 
 func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentType string, data []byte) (Media, error) {
@@ -83,8 +99,20 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 		key = "files/" + uuid.NewString()
 	}
 
-	if err := s.blobs.Put(ctx, key, body, ctype); err != nil {
-		return Media{}, err
+	staging, durableStaging := s.media.(UploadStagingStore)
+	if durableStaging {
+		if err := staging.StageUpload(ctx, key, uploadedBy, time.Now().UTC().Add(s.uploadStagingGrace)); err != nil {
+			return Media{}, err
+		}
+	}
+	operationTimeout := s.uploadStagingGrace / 2
+	if operationTimeout > 10*time.Minute {
+		operationTimeout = 10 * time.Minute
+	}
+	operationCtx, cancelOperation := context.WithTimeout(ctx, operationTimeout)
+	defer cancelOperation()
+	if err := s.blobs.Put(operationCtx, key, body, ctype); err != nil {
+		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
 	}
 	colors := []string{}
 	colorsComputed := false
@@ -92,7 +120,7 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 		colors = ExtractCoverColors(body)
 		colorsComputed = true
 	}
-	created, err := s.media.Create(ctx, Media{
+	item := Media{
 		Name:                name,
 		Type:                ctype,
 		Size:                int64(len(body)),
@@ -101,11 +129,45 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 		Key:                 key,
 		CoverColors:         colors,
 		CoverColorsComputed: colorsComputed,
-	})
+	}
+	var created Media
+	if durableStaging {
+		created, err = staging.CreateStaged(operationCtx, item)
+	} else {
+		created, err = s.media.Create(operationCtx, item)
+	}
 	if err != nil {
-		return Media{}, err
+		if errors.Is(err, ErrPublicationUncertain) {
+			// The metadata commit may have succeeded. Never delete an object that
+			// may already be referenced; an uncommitted attempt retains its
+			// durable staging row for the sweeper.
+			return Media{}, err
+		}
+		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
 	}
 	return s.withURL(created), nil
+}
+
+func (s *service) cleanupRejectedUpload(ctx context.Context, staging UploadStagingStore, durableStaging bool, key string, cause error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if durableStaging {
+		if err := staging.ReadyStagedUploadForCleanup(cleanupCtx, key, time.Now().UTC()); err != nil {
+			cause = errors.Join(cause, fmt.Errorf("schedule rejected upload cleanup: %w", err))
+		}
+	}
+	if err := s.blobs.Delete(cleanupCtx, key); err != nil {
+		// A durable staging row is deliberately retained for the sweeper.
+		return errors.Join(cause, fmt.Errorf("cleanup rejected upload blob: %w", err))
+	}
+	if durableStaging {
+		if err := staging.CancelStagedUpload(cleanupCtx, key); err != nil {
+			// The object is already absent; retaining the intent is safe and the
+			// idempotent sweeper will remove it later.
+			return errors.Join(cause, fmt.Errorf("complete rejected upload cleanup: %w", err))
+		}
+	}
+	return cause
 }
 
 func (s *service) Get(ctx context.Context, id uuid.UUID) (Media, error) {

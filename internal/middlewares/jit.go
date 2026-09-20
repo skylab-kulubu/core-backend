@@ -29,6 +29,9 @@ func (j *JIT) Handle(c fiber.Ctx) error {
 	}
 	u, created, err := j.users.Ensure(c.Context(), ident.ID, ident.Profile)
 	if err != nil {
+		if errors.Is(err, user.ErrAccountBlocked) {
+			return fiber.ErrUnauthorized
+		}
 		if errors.Is(err, user.ErrConflict) {
 			return c.Next()
 		}

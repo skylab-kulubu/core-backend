@@ -6,8 +6,11 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"testing"
+
+	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 )
 
 func TestLoadSkyPassKeyPrefersExplicitP256Environment(t *testing.T) {
@@ -29,6 +32,20 @@ func TestLoadSkyPassKeyPrefersExplicitP256Environment(t *testing.T) {
 	}
 	if got.Curve != elliptic.P256() || got.D.Cmp(want.D) != 0 {
 		t.Fatal("loaded key does not match explicit P-256 key")
+	}
+}
+
+func TestAccountErasureCannotStartWithoutEnforcedAccessGate(t *testing.T) {
+	t.Parallel()
+
+	if err := validateAccountErasureGate(false, accessgate.ModeOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateAccountErasureGate(true, accessgate.ModeOff); err == nil {
+		t.Fatal("erasure worker started while the shared access gate was off")
+	}
+	if err := validateAccountErasureGate(true, accessgate.ModeEnforce); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -59,5 +76,55 @@ func TestGotenbergURLDefaultsToComposeService(t *testing.T) {
 	t.Setenv("GOTENBERG_URL", " http://pdf.internal:3010/ ")
 	if got := gotenbergURL(); got != "http://pdf.internal:3010/" {
 		t.Fatalf("explicit gotenberg URL = %q", got)
+	}
+}
+
+func TestAccountErasureWorkerIsDefaultOffAndRequiresFullKeycloakConfig(t *testing.T) {
+	values := map[string]string{}
+	getenv := func(key string) string { return values[key] }
+
+	enabled, err := accountErasureWorkerEnabled(getenv)
+	if err != nil || enabled {
+		t.Fatalf("default enabled=%v err=%v", enabled, err)
+	}
+	values["KEYCLOAK_URL"] = "https://identity.example.test"
+	enabled, err = accountErasureWorkerEnabled(getenv)
+	if err != nil || enabled {
+		t.Fatalf("Keycloak alone enabled=%v err=%v", enabled, err)
+	}
+
+	values["ACCOUNT_ERASURE_WORKER_ENABLED"] = "true"
+	if enabled, err = accountErasureWorkerEnabled(getenv); err == nil || enabled {
+		t.Fatalf("incomplete config enabled=%v err=%v", enabled, err)
+	}
+	values["KEYCLOAK_REALM"] = "e-skylab"
+	values["KEYCLOAK_CLIENT_ID"] = "core"
+	values["KEYCLOAK_CLIENT_SECRET"] = "secret"
+	if enabled, err = accountErasureWorkerEnabled(getenv); err != nil || !enabled {
+		t.Fatalf("full config enabled=%v err=%v", enabled, err)
+	}
+
+	values["ACCOUNT_ERASURE_WORKER_ENABLED"] = "yes"
+	if enabled, err = accountErasureWorkerEnabled(getenv); err == nil || enabled {
+		t.Fatalf("invalid flag enabled=%v err=%v", enabled, err)
+	}
+}
+
+func TestAccountSelfDeletionReceiptKeyIsRequiredOnlyWhenFeatureEnabled(t *testing.T) {
+	t.Parallel()
+	values := map[string]string{}
+	getenv := func(key string) string { return values[key] }
+
+	disabled, err := accountSelfDeletionConfig(getenv, false)
+	if err != nil || disabled.Enabled || len(disabled.ReceiptKey) != 0 {
+		t.Fatalf("disabled config=%+v err=%v", disabled, err)
+	}
+	if _, err := accountSelfDeletionConfig(getenv, true); err == nil {
+		t.Fatal("enabled self deletion accepted a missing receipt key")
+	}
+	values["ACCOUNT_DELETION_RECEIPT_KEY"] = base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	enabled, err := accountSelfDeletionConfig(getenv, true)
+	if err != nil || !enabled.Enabled || len(enabled.ReceiptKey) != 32 {
+		t.Fatalf("enabled config=%+v err=%v", enabled, err)
 	}
 }

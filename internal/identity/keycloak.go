@@ -630,6 +630,20 @@ func (k *Keycloak) GetUser(ctx context.Context, id uuid.UUID) (Person, error) {
 	return personFrom(u)
 }
 
+func (k *Keycloak) DisableUser(ctx context.Context, id uuid.UUID) error {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	account, err := k.gc.GetUserByID(ctx, token, k.realm, id.String())
+	if err != nil {
+		return mapKCErr(err)
+	}
+	disabled := false
+	account.Enabled = &disabled
+	return mapKCErr(k.gc.UpdateUser(ctx, token, k.realm, *account))
+}
+
 func (k *Keycloak) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	token, err := k.accessToken(ctx)
 	if err != nil {

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http/httptest"
@@ -15,9 +16,21 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
+type handlerDeletionProjector struct{}
+
+func (handlerDeletionProjector) Project(context.Context, user.DeletionRequest) error { return nil }
+
 func identityApp(t *testing.T, ident authn.Identity, dir *identity.Memory, store *user.MemoryStore) *fiber.App {
 	t.Helper()
-	svc := identity.NewService(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	return identityAppWithErasure(t, ident, dir, store, true)
+}
+
+func identityAppWithErasure(t *testing.T, ident authn.Identity, dir *identity.Memory, store *user.MemoryStore, enabled bool) *fiber.App {
+	t.Helper()
+	svc := identity.NewServiceWithOptions(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{
+		AccountErasureEnabled: enabled,
+		AccessProjector:       handlerDeletionProjector{},
+	})
 	h := NewIdentityHandler(svc)
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
@@ -173,6 +186,9 @@ func TestCreateAndDeleteUserHTTP(t *testing.T) {
 	t.Parallel()
 	dir := identity.NewMemory()
 	store := user.NewMemoryStore()
+	if _, _, err := user.NewService(store).Ensure(t.Context(), ykIdent().ID, user.Profile{Email: "yk-operator@example.test"}); err != nil {
+		t.Fatal(err)
+	}
 	app := identityApp(t, ykIdent(), dir, store)
 
 	req := httptest.NewRequest(fiber.MethodPost, "/v1/users", strings.NewReader(
@@ -199,6 +215,31 @@ func TestCreateAndDeleteUserHTTP(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusNoContent {
 		t.Fatalf("delete status %d", resp.StatusCode)
+	}
+}
+
+func TestDeleteUserHTTPIsUnavailableWhileErasureReleaseGateIsOff(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	targetID := uuid.New()
+	if _, _, err := user.NewService(store).Ensure(t.Context(), targetID, user.Profile{Email: "held@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	dir.PutUser(identity.Person{ID: targetID, Email: "held@example.test"})
+	app := identityAppWithErasure(t, ykIdent(), dir, store, false)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodDelete, "/v1/users/"+targetID.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusServiceUnavailable {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	got, err := store.Get(t.Context(), targetID)
+	if err != nil || got.AccountState != user.AccountActive {
+		t.Fatalf("account state=%q err=%v", got.AccountState, err)
 	}
 }
 

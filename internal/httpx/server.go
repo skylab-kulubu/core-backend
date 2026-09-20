@@ -6,6 +6,8 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/limiter"
 	"github.com/gofiber/fiber/v3/middleware/recover"
+	"github.com/gofiber/fiber/v3/middleware/requestid"
+	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
@@ -24,19 +26,24 @@ import (
 )
 
 type Deps struct {
-	Users        user.Service
-	Identity     identity.Service
-	Events       event.Service
-	Seasons      season.Service
-	Tickets      ticket.Service
-	Competitors  competitor.Service
-	Media        media.Service
-	URLs         shorturl.Service
-	Certificates certificate.Service
-	SkyPass      skypass.Service
-	Mail         mail.Mailer
-	EventMail    eventmail.Service
-	ParseToken   func(string) (authn.Identity, error)
+	Users                  user.Service
+	Identity               identity.Service
+	Events                 event.Service
+	Seasons                season.Service
+	Tickets                ticket.Service
+	Competitors            competitor.Service
+	Media                  media.Service
+	URLs                   shorturl.Service
+	Certificates           certificate.Service
+	SkyPass                skypass.Service
+	Mail                   mail.Mailer
+	EventMail              eventmail.Service
+	ParseToken             func(string) (authn.Identity, error)
+	URLAttributionGuard    handlers.URLAttributionGuard
+	AccountAccessGate      accessgate.Reader
+	AccountAccessMetrics   *accessgate.Metrics
+	SelfDeletion           handlers.AccountDeletionService
+	ParseSelfDeleteContext func(string, string) (authn.Identity, error)
 }
 
 func New(deps Deps) *fiber.App {
@@ -47,6 +54,7 @@ func New(deps Deps) *fiber.App {
 	}
 	app := fiber.New(fiber.Config{ErrorHandler: handlers.ErrorHandler})
 	app.Use(recover.New())
+	app.Use(requestid.New())
 
 	me := handlers.NewMeHandler(deps.Users, deps.Media)
 	ident := handlers.NewIdentityHandler(deps.Identity)
@@ -57,7 +65,7 @@ func New(deps Deps) *fiber.App {
 	tickets := handlers.NewTicketHandler(deps.Tickets)
 	competitors := handlers.NewCompetitorHandler(deps.Competitors)
 	mediaH := handlers.NewMediaHandler(deps.Media)
-	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken)
+	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken, deps.URLAttributionGuard)
 	jit := middlewares.NewJIT(deps.Users, deps.Mail)
 	var certs *handlers.CertificateHandler
 	if deps.Certificates != nil {
@@ -71,6 +79,24 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
+	if deps.AccountAccessMetrics != nil {
+		app.Get("/v1/metrics", func(c fiber.Ctx) error {
+			c.Set(fiber.HeaderCacheControl, "no-store")
+			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
+			return c.SendString(deps.AccountAccessMetrics.Prometheus())
+		})
+	}
+	app.Get("/v1/ready", func(c fiber.Ctx) error {
+		if deps.AccountAccessGate != nil {
+			if err := deps.AccountAccessGate.Ready(c.Context()); err != nil {
+				deps.AccountAccessMetrics.RecordReadinessFailure()
+				c.Set(fiber.HeaderCacheControl, "no-store")
+				c.Set(fiber.HeaderRetryAfter, "1")
+				return fiber.ErrServiceUnavailable
+			}
+		}
+		return c.SendStatus(fiber.StatusNoContent)
+	})
 	app.Get("/v1/go/:alias/qr", urls.QR)
 	if certs != nil {
 		publicCertificateLimit := limiter.New(limiter.Config{Max: 120, Expiration: time.Minute})
@@ -81,12 +107,19 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/certificates/verify/:serial/qr", publicCertificateLimit, certs.QR)
 		app.Get("/v1/certificates/verify/:serial", publicCertificateLimit, certs.Verify)
 	}
-	app.Get("/v1/go/:alias", urls.Redirect)
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
 	}
+	if deps.SelfDeletion != nil {
+		selfDeletion := handlers.NewAccountDeletionHandler(deps.SelfDeletion, deps.ParseSelfDeleteContext)
+		app.Post("/v1/account-deletion-requests/self", selfDeletion.Begin)
+		app.Get("/v1/account-deletion-requests/status", selfDeletion.Status)
+		app.Post("/v1/account-deletion-requests/status/retry", selfDeletion.Retry)
+	}
 	app.Post("/v1/events/:eventId/applications/guest", tickets.ApplyGuest)
 	app.Use(middlewares.Bearer(deps.ParseToken))
+	app.Use(middlewares.AccountAccessGate(deps.AccountAccessGate, deps.AccountAccessMetrics))
+	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Use(jit.Handle)
 
 	if pass != nil {

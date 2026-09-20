@@ -93,6 +93,14 @@ func TestParseAccessTokenRejectsBadSub(t *testing.T) {
 	}
 }
 
+func TestParseAccessTokenRejectsNonCanonicalSub(t *testing.T) {
+	t.Parallel()
+	_, err := authn.ParseAccessToken(unsignedJWT(`{"sub":"11111111-1111-1111-1111-AAAAAAAAAAAA"}`))
+	if err == nil {
+		t.Fatal("non-canonical subject was normalized instead of rejected")
+	}
+}
+
 func TestParseAndVerifyRequiresAudienceAndIssuer(t *testing.T) {
 	t.Parallel()
 	keys := testauth.New(t)
@@ -154,5 +162,70 @@ func TestParseAndVerifyRequiresAudienceAndIssuer(t *testing.T) {
 	}
 	if _, err := authn.ParseAndVerify(hsTok, keys.Verify, keys.Issuer, testauth.Audience); err == nil {
 		t.Fatal("HS256 accepted")
+	}
+}
+
+func TestParseSelfDeleteContextRequiresMatchingAccountTokenAndFreshIDToken(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	now := time.Date(2026, 9, 20, 8, 0, 0, 0, time.UTC)
+	subject := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	validAccessClaims := jwt.MapClaims{
+		"sub": subject.String(), "iss": keys.Issuer, "aud": "account",
+		"azp": "account-center", "scope": "openid", "exp": now.Add(time.Hour).Unix(),
+	}
+	validIDClaims := jwt.MapClaims{
+		"sub": subject.String(), "iss": keys.Issuer, "aud": "account-center",
+		"sid": "browser-session", "auth_time": now.Add(-2 * time.Minute).Unix(), "exp": now.Add(time.Hour).Unix(),
+	}
+	validAccess := keys.Sign(t, validAccessClaims)
+	validID := keys.Sign(t, validIDClaims)
+	got, err := authn.ParseSelfDeleteContext(validAccess, validID, keys.Verify, keys.Issuer, "account-center", now, 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != subject {
+		t.Fatalf("identity = %+v", got)
+	}
+
+	for name, mutate := range map[string]func(jwt.MapClaims){
+		"wrong audience":    func(c jwt.MapClaims) { c["aud"] = "core" },
+		"multiple audience": func(c jwt.MapClaims) { c["aud"] = []string{"account", "core"} },
+		"wrong azp":         func(c jwt.MapClaims) { c["azp"] = "service-account" },
+		"broad scope":       func(c jwt.MapClaims) { c["scope"] = "openid profile" },
+	} {
+		t.Run("access token "+name, func(t *testing.T) {
+			claims := jwt.MapClaims{}
+			for key, value := range validAccessClaims {
+				claims[key] = value
+			}
+			mutate(claims)
+			accessToken := keys.Sign(t, claims)
+			if _, err := authn.ParseSelfDeleteContext(accessToken, validID, keys.Verify, keys.Issuer, "account-center", now, 5*time.Minute); err == nil {
+				t.Fatal("invalid account access token accepted")
+			}
+		})
+	}
+
+	for name, mutate := range map[string]func(jwt.MapClaims){
+		"wrong audience":     func(c jwt.MapClaims) { c["aud"] = "account" },
+		"multiple audience":  func(c jwt.MapClaims) { c["aud"] = []string{"account-center", "core"} },
+		"missing sid":        func(c jwt.MapClaims) { delete(c, "sid") },
+		"missing auth time":  func(c jwt.MapClaims) { delete(c, "auth_time") },
+		"stale auth time":    func(c jwt.MapClaims) { c["auth_time"] = now.Add(-6 * time.Minute).Unix() },
+		"future auth time":   func(c jwt.MapClaims) { c["auth_time"] = now.Add(6 * time.Second).Unix() },
+		"mismatched subject": func(c jwt.MapClaims) { c["sub"] = uuid.NewString() },
+	} {
+		t.Run("id token "+name, func(t *testing.T) {
+			claims := jwt.MapClaims{}
+			for key, value := range validIDClaims {
+				claims[key] = value
+			}
+			mutate(claims)
+			idToken := keys.Sign(t, claims)
+			if _, err := authn.ParseSelfDeleteContext(validAccess, idToken, keys.Verify, keys.Issuer, "account-center", now, 5*time.Minute); err == nil {
+				t.Fatal("invalid reauthentication ID token accepted")
+			}
+		})
 	}
 }

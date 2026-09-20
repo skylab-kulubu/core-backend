@@ -3,15 +3,19 @@ package user
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 var (
-	ErrNotFound = errors.New("user not found")
-	ErrConflict = errors.New("user conflict")
-	ErrSkyLimit = errors.New("sky number limit")
-	ErrInvalid  = errors.New("user invalid")
+	ErrNotFound                        = errors.New("user not found")
+	ErrConflict                        = errors.New("user conflict")
+	ErrSkyLimit                        = errors.New("sky number limit")
+	ErrInvalid                         = errors.New("user invalid")
+	ErrAccountBlocked                  = errors.New("user account blocked")
+	ErrLeaseLost                       = errors.New("account deletion lease lost")
+	ErrSelfDeletionIdempotencyConflict = errors.New("self deletion idempotency conflict")
 )
 
 type Store interface {
@@ -23,7 +27,8 @@ type Store interface {
 	FindByStudentCardUID(ctx context.Context, uid string) (User, error)
 	SetStudentCardUID(ctx context.Context, id uuid.UUID, uid string) (User, error)
 	NextSkyNumber(ctx context.Context) (string, error)
-	Delete(ctx context.Context, id uuid.UUID) error
+	RequestDeletion(ctx context.Context, id uuid.UUID, requestedBy *uuid.UUID) (DeletionRequest, error)
+	AnonymizeAccount(ctx context.Context, id uuid.UUID, at time.Time) error
 }
 
 type SkySync interface {

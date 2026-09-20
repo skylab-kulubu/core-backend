@@ -12,6 +12,16 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
+type deletionProjector struct {
+	err      error
+	requests []user.DeletionRequest
+}
+
+func (p *deletionProjector) Project(_ context.Context, request user.DeletionRequest) error {
+	p.requests = append(p.requests, request)
+	return p.err
+}
+
 func privileged() authz.Principal {
 	return authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
 }
@@ -24,8 +34,45 @@ func setup(t *testing.T) (*identity.Memory, *user.MemoryStore, identity.Service)
 	t.Helper()
 	dir := identity.NewMemory()
 	store := user.NewMemoryStore()
-	svc := identity.NewService(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	svc := identity.NewServiceWithOptions(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{
+		AccountErasureEnabled: true,
+		AccessProjector:       &deletionProjector{},
+	})
 	return dir, store, svc
+}
+
+func TestServiceDeleteUserReturnsUnavailableUntilDurableMarkerIsProjected(t *testing.T) {
+	t.Parallel()
+
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	projector := &deletionProjector{err: errors.New("redis unavailable")}
+	svc := identity.NewServiceWithOptions(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{
+		AccountErasureEnabled: true,
+		AccessProjector:       projector,
+	})
+	ctx := context.Background()
+	targetID := uuid.New()
+	dir.PutUser(identity.Person{ID: targetID, Email: "projection@example.test"})
+	if _, _, err := user.NewService(store).Ensure(ctx, targetID, user.Profile{Email: "projection@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.DeleteUser(ctx, privileged(), targetID); !errors.Is(err, identity.ErrAccountAccessUnavailable) {
+		t.Fatalf("first delete error = %v", err)
+	}
+	request, err := store.DeletionRequest(ctx, targetID)
+	if err != nil || request.PlatformBlockedAt != nil || len(projector.requests) != 1 {
+		t.Fatalf("request=%+v projections=%d err=%v", request, len(projector.requests), err)
+	}
+
+	projector.err = nil
+	if err := svc.DeleteUser(ctx, privileged(), targetID); err != nil {
+		t.Fatal(err)
+	}
+	if len(projector.requests) != 2 || projector.requests[0].ID != projector.requests[1].ID {
+		t.Fatalf("idempotent projection requests = %+v", projector.requests)
+	}
 }
 
 func TestService_ListGroupsPrivilegedSeesDirectoryNotLocalTable(t *testing.T) {
@@ -285,7 +332,7 @@ func TestService_CreateUserSendsWelcome(t *testing.T) {
 	}
 }
 
-func TestService_DeleteUserRemovesBoth(t *testing.T) {
+func TestService_DeleteUserQueuesLifecycleWithoutPhysicalDelete(t *testing.T) {
 	t.Parallel()
 	dir, store, svc := setup(t)
 	ctx := context.Background()
@@ -302,11 +349,72 @@ func TestService_DeleteUserRemovesBoth(t *testing.T) {
 	if err := svc.DeleteUser(ctx, privileged(), created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dir.GetUser(ctx, created.ID); !errors.Is(err, identity.ErrNotFound) {
-		t.Fatalf("directory still has user: %v", err)
+	if _, err := dir.GetUser(ctx, created.ID); err != nil {
+		t.Fatalf("directory identity was physically deleted before worker: %v", err)
 	}
-	if _, err := store.Get(ctx, created.ID); !errors.Is(err, user.ErrNotFound) {
-		t.Fatalf("shadow still has user: %v", err)
+	shadow, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shadow.AccountState != user.AccountDeletionPending {
+		t.Fatalf("shadow state = %q", shadow.AccountState)
+	}
+	request, err := store.DeletionRequest(ctx, created.ID)
+	if err != nil || request.SubjectID != created.ID || request.Status != user.DeletionRequestPending {
+		t.Fatalf("request=%+v err=%v", request, err)
+	}
+}
+
+func TestService_DeleteUserFailsClosedWhenAccountErasureDisabled(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	svc := identity.NewService(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	ctx := context.Background()
+
+	created, err := identity.NewServiceWithOptions(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{
+		AccountErasureEnabled: true,
+		AccessProjector:       &deletionProjector{},
+	}).CreateUser(ctx, privileged(), identity.Person{
+		Email: "disabled@example.com", FirstName: "Release", LastName: "Gate",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeleteUser(ctx, privileged(), created.ID); !errors.Is(err, identity.ErrAccountErasureDisabled) {
+		t.Fatalf("delete error = %v", err)
+	}
+	shadow, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shadow.AccountState != user.AccountActive {
+		t.Fatalf("disabled delete changed account state to %q", shadow.AccountState)
+	}
+	if _, err := store.DeletionRequest(ctx, created.ID); !errors.Is(err, user.ErrNotFound) {
+		t.Fatalf("disabled delete created request: %v", err)
+	}
+}
+
+func TestService_DeleteUserQueuesDirectoryOnlyIdentity(t *testing.T) {
+	t.Parallel()
+	dir, store, svc := setup(t)
+	ctx := context.Background()
+	id := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+	dir.PutUser(identity.Person{ID: id, Email: "directory@example.com", FirstName: "Directory", LastName: "Only"})
+
+	if err := svc.DeleteUser(ctx, privileged(), id); err != nil {
+		t.Fatal(err)
+	}
+	shadow, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shadow.AccountState != user.AccountDeletionPending {
+		t.Fatalf("shadow state = %q", shadow.AccountState)
+	}
+	if _, err := dir.GetUser(ctx, id); err != nil {
+		t.Fatalf("directory identity deleted synchronously: %v", err)
 	}
 }
 
@@ -512,11 +620,11 @@ func TestService_ListUsersSeatKeepsRoleHolders(t *testing.T) {
 	if err := dir.AddMember(ctx, "g-yk", ada); err != nil {
 		t.Fatal(err)
 	}
-	if err := dir.SetGroupClientRoles(ctx, "g-yk", []identity.ClientRole{{ClientID: "dotnet", Role: "skyforms:access"}}); err != nil {
+	if err := dir.SetGroupClientRoles(ctx, "g-yk", []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}}); err != nil {
 		t.Fatal(err)
 	}
 
-	seat := identity.ClientRole{ClientID: "dotnet", Role: "skyforms:access"}
+	seat := identity.ClientRole{ClientID: "forms", Role: "skyforms:access"}
 	found, err := svc.ListUsers(ctx, privileged(), "ada", seat)
 	if err != nil {
 		t.Fatal(err)
