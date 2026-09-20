@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -44,6 +45,7 @@ type service struct {
 	authz                 authz.Authorizer
 	mail                  mail.Mailer
 	accountErasureEnabled bool
+	accessProjector       DeletionProjector
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer, mailers ...mail.Mailer) Service {
@@ -52,12 +54,18 @@ func NewService(dir Directory, users user.Store, az authz.Authorizer, mailers ..
 
 type Options struct {
 	AccountErasureEnabled bool
+	AccessProjector       DeletionProjector
+}
+
+type DeletionProjector interface {
+	Project(context.Context, user.DeletionRequest) error
 }
 
 func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer, options Options, mailers ...mail.Mailer) Service {
 	s := &service{
 		dir: dir, users: users, assign: user.NewService(users, dir), authz: az,
 		accountErasureEnabled: options.AccountErasureEnabled,
+		accessProjector:       options.AccessProjector,
 	}
 	if len(mailers) > 0 {
 		s.mail = mailers[0]
@@ -522,7 +530,7 @@ func (s *service) DeleteUser(ctx context.Context, p authz.Principal, id uuid.UUI
 	if actorID, err := uuid.Parse(p.ID); err == nil {
 		requestedBy = &actorID
 	}
-	_, err := s.users.RequestDeletion(ctx, id, requestedBy)
+	request, err := s.users.RequestDeletion(ctx, id, requestedBy)
 	if errors.Is(err, user.ErrNotFound) {
 		person, directoryErr := s.dir.GetUser(ctx, id)
 		if directoryErr != nil {
@@ -534,9 +542,18 @@ func (s *service) DeleteUser(ctx context.Context, p authz.Principal, id uuid.UUI
 		}); ensureErr != nil {
 			return ensureErr
 		}
-		_, err = s.users.RequestDeletion(ctx, id, requestedBy)
+		request, err = s.users.RequestDeletion(ctx, id, requestedBy)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if s.accessProjector == nil {
+		return ErrAccountAccessUnavailable
+	}
+	if err := s.accessProjector.Project(ctx, request); err != nil {
+		return fmt.Errorf("%w: %v", ErrAccountAccessUnavailable, err)
+	}
+	return nil
 }
 
 func (s *service) ListPublicTeams(ctx context.Context) ([]PublicTeam, error) {

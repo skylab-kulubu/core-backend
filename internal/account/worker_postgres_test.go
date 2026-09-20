@@ -29,8 +29,12 @@ func TestPostgresWorkerPersistsProgressAcrossRestart(t *testing.T) {
 	}
 
 	now := time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
+	confirmDeletionProjection(t, store, request, now)
 	identity := &uncertainIdentity{}
-	config := account.WorkerConfig{Now: func() time.Time { return now }, Lease: time.Minute, MaxAttempts: 3}
+	config := account.WorkerConfig{
+		Now: func() time.Time { return now }, Lease: time.Minute, MaxAttempts: 3,
+		AccessBlocker: &accountBlockWriter{},
+	}
 	if worked, err := account.NewWorker(store, identity, config, noAccountMedia{}).RunOnce(ctx); !worked || err == nil {
 		t.Fatalf("first worker worked=%v err=%v", worked, err)
 	}

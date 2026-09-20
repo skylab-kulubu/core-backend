@@ -67,11 +67,8 @@ func TestGoHopUsesExistingJWTWithoutKeycloak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if badResp.StatusCode != fiber.StatusMovedPermanently {
+	if badResp.StatusCode != fiber.StatusUnauthorized {
 		t.Fatalf("invalid jwt %d", badResp.StatusCode)
-	}
-	if loc := badResp.Header.Get("Location"); loc != "https://skylab.com" {
-		t.Fatalf("invalid jwt location %s", loc)
 	}
 
 	clickTok := keys.Token(t, jwt.MapClaims{
@@ -104,17 +101,17 @@ func TestGoHopUsesExistingJWTWithoutKeycloak(t *testing.T) {
 	if err := json.NewDecoder(hitsResp.Body).Decode(&hits); err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) != 3 {
+	if len(hits) != 2 {
 		t.Fatalf("hits %+v", hits)
 	}
 	if hits[0].UserID == nil || *hits[0].UserID != clicker {
 		t.Fatalf("jwt hop %+v", hits[0])
 	}
-	if hits[1].UserID != nil || hits[2].UserID != nil {
+	if hits[1].UserID != nil {
 		t.Fatalf("public hops should stay anonymous %+v", hits)
 	}
-	if hits[2].IP != "198.51.100.20" || hits[2].UserAgent != "Safari/18" || hits[2].Referer != "https://instagram.com/" {
-		t.Fatalf("anon hit %+v", hits[2])
+	if hits[1].IP != "198.51.100.20" || hits[1].UserAgent != "Safari/18" || hits[1].Referer != "https://instagram.com/" {
+		t.Fatalf("anon hit %+v", hits[1])
 	}
 }
 

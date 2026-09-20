@@ -15,12 +15,12 @@ func scanDeletionRequest(row interface{ Scan(...any) error }) (DeletionRequest, 
 		&request.ID, &request.SubjectID, &request.RequestedBy, &request.Status, &request.AttemptCount,
 		&request.NextAttemptAt, &request.LeaseUntil, &request.LeaseToken, &request.ProfileMediaID,
 		&request.LastErrorCode, &request.CreatedAt,
-		&request.UpdatedAt, &request.CompletedAt,
+		&request.UpdatedAt, &request.CompletedAt, &request.PlatformBlockedAt,
 	)
 	return request, err
 }
 
-const deletionRequestCols = `id, subject_id, requested_by, status, attempt_count, next_attempt_at, lease_until, lease_token, profile_media_id, last_error_code, created_at, updated_at, completed_at`
+const deletionRequestCols = `id, subject_id, requested_by, status, attempt_count, next_attempt_at, lease_until, lease_token, profile_media_id, last_error_code, created_at, updated_at, completed_at, platform_blocked_at`
 
 func (s *PostgresStore) DeletionRequest(ctx context.Context, subjectID uuid.UUID) (DeletionRequest, error) {
 	request, err := scanDeletionRequest(s.pool.QueryRow(ctx, `SELECT `+deletionRequestCols+` FROM account_deletion_requests WHERE subject_id = $1`, subjectID))
@@ -37,6 +37,7 @@ func (s *PostgresStore) ClaimDeletionRequest(ctx context.Context, now time.Time,
 			SELECT id
 			FROM account_deletion_requests
 			WHERE next_attempt_at <= $1
+			  AND platform_blocked_at IS NOT NULL
 			  AND (
 				status = 'pending'
 				OR (status = 'processing' AND lease_until IS NOT NULL AND lease_until <= $1)
@@ -53,12 +54,108 @@ func (s *PostgresStore) ClaimDeletionRequest(ctx context.Context, now time.Time,
 		RETURNING request.id, request.subject_id, request.requested_by, request.status,
 			request.attempt_count, request.next_attempt_at, request.lease_until,
 			request.lease_token, request.profile_media_id, request.last_error_code,
-			request.created_at, request.updated_at, request.completed_at
+			request.created_at, request.updated_at, request.completed_at, request.platform_blocked_at
 	`, now, lease.String(), leaseToken))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return DeletionRequest{}, false, nil
 	}
 	return request, err == nil, err
+}
+
+func (s *PostgresStore) MarkDeletionPlatformBlocked(ctx context.Context, requestID uuid.UUID, at time.Time) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var platformBlockedAt *time.Time
+	if err := tx.QueryRow(ctx, `
+		SELECT platform_blocked_at
+		FROM account_deletion_requests
+		WHERE id = $1
+		FOR UPDATE
+	`, requestID).Scan(&platformBlockedAt); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	var outboxID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		SELECT id
+		FROM account_deletion_outbox
+		WHERE request_id = $1
+		FOR UPDATE
+	`, requestID).Scan(&outboxID); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if platformBlockedAt == nil {
+		if _, err := tx.Exec(ctx, `
+			UPDATE account_deletion_requests
+			SET platform_blocked_at = $2, updated_at = $2
+			WHERE id = $1
+		`, requestID, at); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE account_deletion_outbox
+		SET available_at = LEAST(available_at, now())
+		WHERE id = $1
+	`, outboxID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *PostgresStore) UnprojectedDeletionRequests(ctx context.Context, limit int) ([]DeletionRequest, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+deletionRequestCols+`
+		FROM account_deletion_requests
+		WHERE platform_blocked_at IS NULL
+		ORDER BY created_at, id
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanDeletionRequests(rows)
+}
+
+func (s *PostgresStore) DeletionRequestsPage(ctx context.Context, after uuid.UUID, limit int) ([]DeletionRequest, error) {
+	if limit <= 0 {
+		limit = 250
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+deletionRequestCols+`
+		FROM account_deletion_requests
+		WHERE $1 = '00000000-0000-0000-0000-000000000000'::uuid OR id > $1
+		ORDER BY id
+		LIMIT $2
+	`, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanDeletionRequests(rows)
+}
+
+func scanDeletionRequests(rows pgx.Rows) ([]DeletionRequest, error) {
+	requests := make([]DeletionRequest, 0)
+	for rows.Next() {
+		request, err := scanDeletionRequest(rows)
+		if err != nil {
+			return nil, err
+		}
+		requests = append(requests, request)
+	}
+	return requests, rows.Err()
 }
 
 func (s *PostgresStore) CompletedDeletionSteps(ctx context.Context, requestID, leaseToken uuid.UUID) (map[DeletionStep]bool, error) {

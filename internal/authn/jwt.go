@@ -66,7 +66,7 @@ func decodeAccessToken(token string) (Identity, map[string]any, error) {
 	}
 	sub, _ := claims["sub"].(string)
 	id, err := uuid.Parse(sub)
-	if err != nil {
+	if err != nil || id.String() != sub {
 		return Identity{}, nil, ErrInvalidToken
 	}
 	email, _ := claims["email"].(string)

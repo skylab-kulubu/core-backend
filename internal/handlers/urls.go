@@ -12,7 +12,10 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
+
+var errURLAttributionUnavailable = errors.New("url attribution unavailable")
 
 type URLHandler struct {
 	svc              shorturl.Service
@@ -20,7 +23,7 @@ type URLHandler struct {
 	attributionGuard URLAttributionGuard
 }
 
-type URLAttributionGuard func(context.Context, uuid.UUID) bool
+type URLAttributionGuard func(context.Context, uuid.UUID) (user.AttributionState, error)
 
 func NewURLHandler(svc shorturl.Service, parse func(string) (authn.Identity, error), guards ...URLAttributionGuard) *URLHandler {
 	h := &URLHandler{svc: svc, parse: parse}
@@ -47,17 +50,29 @@ func urlError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusConflict, "Conflict")
 	case errors.Is(err, shorturl.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	case errors.Is(err, user.ErrAccountBlocked):
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		c.Set(fiber.HeaderWWWAuthenticate, `Bearer error="invalid_token"`)
+		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
+	case errors.Is(err, errURLAttributionUnavailable):
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		c.Set(fiber.HeaderRetryAfter, "1")
+		return problem(c, fiber.StatusServiceUnavailable, "Service Unavailable")
 	default:
 		return err
 	}
 }
 
 func (h *URLHandler) Redirect(c fiber.Ctx) error {
+	userID, err := h.hopUserID(c)
+	if err != nil {
+		return urlError(c, err)
+	}
 	u, err := h.svc.Redirect(c.Context(), c.Params("alias"), shorturl.Hit{
 		IP:        hopIP(c),
 		UserAgent: strings.Clone(c.Get(fiber.HeaderUserAgent)),
 		Referer:   strings.Clone(c.Get(fiber.HeaderReferer)),
-		UserID:    h.hopUserID(c),
+		UserID:    userID,
 	})
 	if err != nil {
 		return urlError(c, err)
@@ -211,26 +226,46 @@ func (h *URLHandler) Delete(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *URLHandler) hopUserID(c fiber.Ctx) *uuid.UUID {
+func (h *URLHandler) hopUserID(c fiber.Ctx) (*uuid.UUID, error) {
 	if h.attributionGuard == nil {
-		return nil
+		return nil, nil
 	}
 	if ident, ok := c.Locals(authn.LocalsIdentity).(authn.Identity); ok && ident.ID != uuid.Nil {
-		if h.attributionGuard(c.Context(), ident.ID) {
-			id := ident.ID
-			return &id
+		state, err := h.attributionGuard(c.Context(), ident.ID)
+		if err != nil {
+			return nil, errURLAttributionUnavailable
 		}
-		return nil
+		switch state {
+		case user.AttributionAllowed:
+			id := ident.ID
+			return &id, nil
+		case user.AttributionAnonymous:
+			return nil, nil
+		case user.AttributionBlocked:
+			return nil, user.ErrAccountBlocked
+		default:
+			return nil, errURLAttributionUnavailable
+		}
 	}
 	ident, err := middlewares.IdentityFromBearer(c.Get(fiber.HeaderAuthorization), h.parse)
 	if err != nil || ident.ID == uuid.Nil {
-		return nil
+		return nil, nil
 	}
-	if !h.attributionGuard(c.Context(), ident.ID) {
-		return nil
+	state, err := h.attributionGuard(c.Context(), ident.ID)
+	if err != nil {
+		return nil, errURLAttributionUnavailable
 	}
-	id := ident.ID
-	return &id
+	switch state {
+	case user.AttributionAllowed:
+		id := ident.ID
+		return &id, nil
+	case user.AttributionAnonymous:
+		return nil, nil
+	case user.AttributionBlocked:
+		return nil, user.ErrAccountBlocked
+	default:
+		return nil, errURLAttributionUnavailable
+	}
 }
 
 func hopIP(c fiber.Ctx) string {

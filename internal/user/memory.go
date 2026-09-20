@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -34,14 +35,28 @@ func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (User, error) {
 	return withStudentCardStatus(u), nil
 }
 
-func (s *MemoryStore) CanAttribute(_ context.Context, id uuid.UUID) (bool, error) {
+func (s *MemoryStore) CanAttribute(ctx context.Context, id uuid.UUID) (bool, error) {
+	state, err := s.AttributionState(ctx, id)
+	return state == AttributionAllowed, err
+}
+
+func (s *MemoryStore) AttributionState(_ context.Context, id uuid.UUID) (AttributionState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, blocked := s.deletionRequests[id]; blocked {
-		return false, nil
+		return AttributionBlocked, nil
 	}
 	u, exists := s.byID[id]
-	return !exists || u.AccountState == AccountActive, nil
+	if exists && u.AccountState != AccountActive {
+		return AttributionBlocked, nil
+	}
+	if exists {
+		return AttributionAllowed, nil
+	}
+	// The in-memory store has no external directory to distinguish a first
+	// authenticated visit from a nonexistent identity. Preserve its established
+	// behavior and allow attribution unless a durable block is known.
+	return AttributionAllowed, nil
 }
 
 func keepProfile(existing, u User) User {
@@ -344,6 +359,9 @@ func (s *MemoryStore) ClaimDeletionRequest(_ context.Context, now time.Time, lea
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for subjectID, request := range s.deletionRequests {
+		if request.PlatformBlockedAt == nil {
+			continue
+		}
 		claimable := request.Status == DeletionRequestPending ||
 			(request.Status == DeletionRequestProcessing && request.LeaseUntil != nil && !request.LeaseUntil.After(now))
 		if !claimable || request.NextAttemptAt.After(now) {
@@ -360,6 +378,62 @@ func (s *MemoryStore) ClaimDeletionRequest(_ context.Context, now time.Time, lea
 		return request, true, nil
 	}
 	return DeletionRequest{}, false, nil
+}
+
+func (s *MemoryStore) MarkDeletionPlatformBlocked(_ context.Context, requestID uuid.UUID, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for subjectID, request := range s.deletionRequests {
+		if request.ID != requestID {
+			continue
+		}
+		if request.PlatformBlockedAt == nil {
+			blockedAt := at
+			request.PlatformBlockedAt = &blockedAt
+			request.UpdatedAt = at
+			s.deletionRequests[subjectID] = request
+		}
+		return nil
+	}
+	return ErrNotFound
+}
+
+func (s *MemoryStore) UnprojectedDeletionRequests(_ context.Context, limit int) ([]DeletionRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]DeletionRequest, 0)
+	for _, request := range s.deletionRequests {
+		if request.PlatformBlockedAt != nil {
+			continue
+		}
+		out = append(out, request)
+		if limit > 0 && len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) DeletionRequestsPage(_ context.Context, after uuid.UUID, limit int) ([]DeletionRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 {
+		limit = 250
+	}
+	out := make([]DeletionRequest, 0, len(s.deletionRequests))
+	for _, request := range s.deletionRequests {
+		if after != uuid.Nil && strings.Compare(request.ID.String(), after.String()) <= 0 {
+			continue
+		}
+		out = append(out, request)
+	}
+	slices.SortFunc(out, func(a, b DeletionRequest) int {
+		return strings.Compare(a.ID.String(), b.ID.String())
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (s *MemoryStore) CompletedDeletionSteps(_ context.Context, requestID, leaseToken uuid.UUID) (map[DeletionStep]bool, error) {

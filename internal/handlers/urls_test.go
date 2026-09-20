@@ -15,6 +15,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 type pruneErrStore struct {
@@ -41,7 +42,9 @@ func urlAppWith(t *testing.T, ident authn.Identity, store shorturl.Store) *fiber
 }
 
 func urlAppOn(t *testing.T, store shorturl.Store, ident authn.Identity, parse func(string) (authn.Identity, error)) *fiber.App {
-	return urlAppOnGuard(t, store, ident, parse, func(context.Context, uuid.UUID) bool { return true })
+	return urlAppOnGuard(t, store, ident, parse, func(context.Context, uuid.UUID) (user.AttributionState, error) {
+		return user.AttributionAllowed, nil
+	})
 }
 
 func urlAppOnGuard(t *testing.T, store shorturl.Store, ident authn.Identity, parse func(string) (authn.Identity, error), guard URLAttributionGuard) *fiber.App {
@@ -66,7 +69,7 @@ func urlAppOnGuard(t *testing.T, store shorturl.Store, ident authn.Identity, par
 	return app
 }
 
-func TestURLRedirectDropsAttributionForBlockedBearerSubject(t *testing.T) {
+func TestURLRedirectRejectsBlockedBearerSubjectWithoutRecordingAHit(t *testing.T) {
 	t.Parallel()
 	store := shorturl.NewMemoryStore()
 	owner := uuid.MustParse("11111111-1111-1111-1111-111111111111")
@@ -85,13 +88,23 @@ func TestURLRedirectDropsAttributionForBlockedBearerSubject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hop := urlAppOnGuard(t, store, authn.Identity{}, parse, func(_ context.Context, id uuid.UUID) bool {
-		return id != blocked
+	hop := urlAppOnGuard(t, store, authn.Identity{}, parse, func(_ context.Context, id uuid.UUID) (user.AttributionState, error) {
+		if id == blocked {
+			return user.AttributionBlocked, nil
+		}
+		return user.AttributionAllowed, nil
 	})
 	redirect := httptest.NewRequest(fiber.MethodGet, "/v1/go/blocked-hit", nil)
 	redirect.Header.Set("Authorization", "Bearer stale-token")
-	if got, err := hop.Test(redirect); err != nil || got.StatusCode != fiber.StatusMovedPermanently {
-		t.Fatalf("redirect status=%v err=%v", got, err)
+	got, err := hop.Test(redirect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.StatusCode != fiber.StatusUnauthorized || got.Header.Get(fiber.HeaderLocation) != "" {
+		t.Fatalf("redirect status=%d location=%q", got.StatusCode, got.Header.Get(fiber.HeaderLocation))
+	}
+	if got.Header.Get(fiber.HeaderCacheControl) != "no-store" {
+		t.Fatalf("cache-control = %q", got.Header.Get(fiber.HeaderCacheControl))
 	}
 
 	moderator := urlAppOn(t, store, authn.Identity{Groups: []string{"/UYELER/YK"}}, nil)
@@ -103,8 +116,8 @@ func TestURLRedirectDropsAttributionForBlockedBearerSubject(t *testing.T) {
 	if err := json.NewDecoder(hitsResp.Body).Decode(&hits); err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) != 1 || hits[0].UserID != nil {
-		t.Fatalf("blocked bearer attribution = %+v", hits)
+	if len(hits) != 0 {
+		t.Fatalf("blocked bearer recorded hits = %+v", hits)
 	}
 }
 

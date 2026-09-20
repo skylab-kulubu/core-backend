@@ -31,6 +31,8 @@ Core anonymization clears the user profile, student-card UID, contact fields and
 
 The physical purge primitive is intentionally absent from the HTTP and service interfaces. Its concrete PostgreSQL method only removes an already-anonymized row whose deletion request is completed. The durable request remains as the anti-resurrection marker.
 
+Before any erasure or cross-service outbox work can advance, the shared account-access marker must be durably projected to the dedicated Redis and `platform_blocked_at` must be recorded. New outbox rows remain at `available_at = infinity` until that confirmation. The worker claims only confirmed requests and re-asserts the permanent marker before its first side effect. See `docs/account-access-gate.md` for the exact contract and recovery order.
+
 ## Keycloak and federated users
 
 Disable reads the complete Keycloak user representation, changes only `enabled`, and writes the representation back. This preserves `federationLink` and federated attributes before logout and deletion. Adapter integration tests cover that HTTP contract and idempotent delete retry. Core accepts deletion requests and starts the erasure worker only when `ACCOUNT_ERASURE_WORKER_ENABLED=true`; while it is off the privileged DELETE route returns `503` before changing Core state. The flag is default-off and startup then requires non-empty `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID` and `KEYCLOAK_CLIENT_SECRET`. Merely configuring Keycloak for normal identity operations never enables destructive account erasure, and the in-memory development directory can never acknowledge identity-erasure steps.

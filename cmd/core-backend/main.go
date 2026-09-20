@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 	"github.com/skylab-kulubu/core-backend/internal/account"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -103,27 +105,6 @@ func main() {
 		cancelRoleSetup()
 		dir = keycloakDirectory
 	}
-	workerEnabled, err := accountErasureWorkerEnabled(os.Getenv)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if workerEnabled {
-		account.Maintain(
-			context.Background(),
-			account.NewWorker(users, identity.NewAccountIdentity(dir), account.WorkerConfig{
-				Lease:                5 * time.Minute,
-				RetryDelay:           30 * time.Second,
-				MaxAttempts:          8,
-				StepTimeout:          20 * time.Second,
-				DeferredRetryHorizon: uploadStagingConfig.Grace + 24*time.Hour,
-			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
-			2*time.Second,
-			func(err error) { log.Printf("account erasure worker: %v", err) },
-		)
-	} else {
-		log.Print("account erasure worker disabled: ACCOUNT_ERASURE_WORKER_ENABLED is not true")
-	}
-
 	parse := func(string) (authn.Identity, error) {
 		return authn.Identity{}, authn.ErrInvalidToken
 	}
@@ -158,6 +139,62 @@ func main() {
 		parse = func(token string) (authn.Identity, error) {
 			return authn.ParseAndVerify(token, v.Verify, issuer, authn.ResourceAudience)
 		}
+	}
+
+	gateConfig, err := accessgate.ConfigFromEnv(os.Getenv, issuer)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var gate *accessgate.RedisGate
+	var accessProjector *account.AccessProjector
+	accessMetrics := accessgate.NewMetrics()
+	if gateConfig.Mode == accessgate.ModeEnforce {
+		redisClient, err := accessgate.NewRedisClient(gateConfig)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer redisClient.Close()
+		gate = accessgate.NewRedisGate(
+			redisClient, gateConfig.OperationTimeout, gateConfig.RequiredReplicas, gateConfig.WaitTimeout, accessMetrics,
+		)
+		accessProjector = account.NewAccessProjector(users, gate, nil)
+		reconciler := account.NewAccessReconciler(users, gate, nil)
+		bootstrapContext, cancelBootstrap := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := reconciler.RunOnce(bootstrapContext); err != nil {
+			cancelBootstrap()
+			log.Fatal(err)
+		}
+		cancelBootstrap()
+		projectionContext, stopProjection := context.WithCancel(context.Background())
+		defer stopProjection()
+		account.MaintainAccessProjection(projectionContext, accessProjector, reconciler, time.Minute, func(err error) {
+			log.Printf("account access projection: %v", err)
+		})
+	}
+
+	workerEnabled, err := accountErasureWorkerEnabled(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := validateAccountErasureGate(workerEnabled, gateConfig.Mode); err != nil {
+		log.Fatal(err)
+	}
+	if workerEnabled {
+		account.Maintain(
+			context.Background(),
+			account.NewWorker(users, identity.NewAccountIdentity(dir), account.WorkerConfig{
+				Lease:                5 * time.Minute,
+				RetryDelay:           30 * time.Second,
+				MaxAttempts:          8,
+				StepTimeout:          20 * time.Second,
+				DeferredRetryHorizon: uploadStagingConfig.Grace + 24*time.Hour,
+				AccessBlocker:        gate,
+			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
+			2*time.Second,
+			func(err error) { log.Printf("account erasure worker: %v", err) },
+		)
+	} else {
+		log.Print("account erasure worker disabled: ACCOUNT_ERASURE_WORKER_ENABLED is not true")
 	}
 
 	var mailer mail.Mailer
@@ -231,6 +268,7 @@ func main() {
 		Users: user.NewService(users, dir),
 		Identity: identity.NewServiceWithOptions(dir, users, az, identity.Options{
 			AccountErasureEnabled: workerEnabled,
+			AccessProjector:       accessProjector,
 		}, mailer),
 		Events:      event.NewService(events, az, cdnBase),
 		Seasons:     season.NewService(seasons, az),
@@ -239,15 +277,16 @@ func main() {
 		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
 			UploadStagingGrace: uploadStagingConfig.Grace,
 		}),
-		URLs:         shorturl.NewService(urlStore, az),
-		Certificates: certSvc,
-		SkyPass:      skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
-		Mail:         mailer,
-		EventMail:    eventmail.New(events, tickets, users, lists, az, mailSnapshots),
-		ParseToken:   parse,
-		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) bool {
-			allowed, err := users.CanAttribute(ctx, id)
-			return err == nil && allowed
+		URLs:                 shorturl.NewService(urlStore, az),
+		Certificates:         certSvc,
+		SkyPass:              skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
+		Mail:                 mailer,
+		EventMail:            eventmail.New(events, tickets, users, lists, az, mailSnapshots),
+		ParseToken:           parse,
+		AccountAccessGate:    gate,
+		AccountAccessMetrics: accessMetrics,
+		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
+			return users.AttributionState(ctx, id)
 		},
 	})
 
@@ -258,6 +297,13 @@ func main() {
 	if err := app.Listen(":" + addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func validateAccountErasureGate(workerEnabled bool, mode accessgate.Mode) error {
+	if workerEnabled && mode != accessgate.ModeEnforce {
+		return errors.New("ACCOUNT_ACCESS_GATE_MODE=enforce is required when account erasure is enabled")
+	}
+	return nil
 }
 
 func accountErasureWorkerEnabled(getenv func(string) string) (bool, error) {

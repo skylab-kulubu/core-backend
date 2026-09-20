@@ -49,12 +49,26 @@ func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (User, error) {
 // this subject. Only a current active Core identity is attributable; a deletion
 // marker keeps the answer false even after the user tombstone is hard-purged.
 func (s *PostgresStore) CanAttribute(ctx context.Context, id uuid.UUID) (bool, error) {
-	var allowed bool
+	state, err := s.AttributionState(ctx, id)
+	return state == AttributionAllowed, err
+}
+
+func (s *PostgresStore) AttributionState(ctx context.Context, id uuid.UUID) (AttributionState, error) {
+	var active, blocked bool
 	err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND account_state = 'active')
-		   AND NOT EXISTS (SELECT 1 FROM account_deletion_requests WHERE subject_id = $1)
-	`, id).Scan(&allowed)
-	return allowed, err
+		SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND account_state = 'active'),
+		       EXISTS (SELECT 1 FROM account_deletion_requests WHERE subject_id = $1)
+	`, id).Scan(&active, &blocked)
+	if err != nil {
+		return "", err
+	}
+	if blocked {
+		return AttributionBlocked, nil
+	}
+	if active {
+		return AttributionAllowed, nil
+	}
+	return AttributionAnonymous, nil
 }
 
 func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) {
@@ -297,7 +311,7 @@ func (s *PostgresStore) RequestDeletion(ctx context.Context, id uuid.UUID, reque
 	`, requestID, id, requestedBy).Scan(
 		&request.ID, &request.SubjectID, &request.RequestedBy, &request.Status, &request.AttemptCount,
 		&request.NextAttemptAt, &request.LeaseUntil, &request.LeaseToken, &request.ProfileMediaID,
-		&request.LastErrorCode, &request.CreatedAt, &request.UpdatedAt, &request.CompletedAt,
+		&request.LastErrorCode, &request.CreatedAt, &request.UpdatedAt, &request.CompletedAt, &request.PlatformBlockedAt,
 	)
 	if subjectlock.IsInactiveAccountReference(err) {
 		return DeletionRequest{}, ErrAccountBlocked
@@ -306,8 +320,8 @@ func (s *PostgresStore) RequestDeletion(ctx context.Context, id uuid.UUID, reque
 		return DeletionRequest{}, err
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO account_deletion_outbox (id, request_id, subject_id)
-		VALUES ($1, $2, $3)
+		INSERT INTO account_deletion_outbox (id, request_id, subject_id, available_at)
+		VALUES ($1, $2, $3, 'infinity'::timestamptz)
 		ON CONFLICT (request_id) DO NOTHING
 	`, uuid.New(), request.ID, request.SubjectID); err != nil {
 		return DeletionRequest{}, err

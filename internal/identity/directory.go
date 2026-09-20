@@ -8,10 +8,11 @@ import (
 )
 
 var (
-	ErrNotFound               = errors.New("identity: not found")
-	ErrForbidden              = errors.New("identity: forbidden")
-	ErrInvalid                = errors.New("identity: invalid")
-	ErrAccountErasureDisabled = errors.New("identity: account erasure disabled")
+	ErrNotFound                 = errors.New("identity: not found")
+	ErrForbidden                = errors.New("identity: forbidden")
+	ErrInvalid                  = errors.New("identity: invalid")
+	ErrAccountErasureDisabled   = errors.New("identity: account erasure disabled")
+	ErrAccountAccessUnavailable = errors.New("identity: account access projection unavailable")
 )
 
 type Group struct {

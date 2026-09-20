@@ -17,6 +17,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
@@ -50,6 +51,14 @@ func testPassSigner() *skypass.Signer {
 }
 
 func memoryApp(parse ...func(string) (authn.Identity, error)) *fiber.App {
+	return memoryAppWithAccessGate(nil, parse...)
+}
+
+func memoryAppWithAccessGate(gate accessgate.Reader, parse ...func(string) (authn.Identity, error)) *fiber.App {
+	return memoryAppWithAccessGateMetrics(gate, nil, parse...)
+}
+
+func memoryAppWithAccessGateMetrics(gate accessgate.Reader, metrics *accessgate.Metrics, parse ...func(string) (authn.Identity, error)) *fiber.App {
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
 	users := user.NewMemoryStore()
 	events := event.NewMemoryStore()
@@ -68,10 +77,11 @@ func memoryApp(parse ...func(string) (authn.Identity, error)) *fiber.App {
 			certificate.NewMemoryStore(), tickets, events, users, az, nil, nil, "https://api.example.test",
 		),
 		SkyPass: skypass.NewService(users, az, testPassSigner()),
-		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) bool {
-			allowed, err := users.CanAttribute(ctx, id)
-			return err == nil && allowed
+		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
+			return users.AttributionState(ctx, id)
 		},
+		AccountAccessGate:    gate,
+		AccountAccessMetrics: metrics,
 	}
 	if len(parse) > 0 {
 		deps.ParseToken = parse[0]
@@ -479,7 +489,7 @@ func TestGoRedirectRecordsHitsWithoutRequiringLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if badResp.StatusCode != fiber.StatusMovedPermanently {
+	if badResp.StatusCode != fiber.StatusUnauthorized {
 		t.Fatalf("invalid bearer hop %d", badResp.StatusCode)
 	}
 
@@ -519,7 +529,7 @@ func TestGoRedirectRecordsHitsWithoutRequiringLogin(t *testing.T) {
 	if err := json.NewDecoder(hitsResp.Body).Decode(&hits); err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) != 4 {
+	if len(hits) != 3 {
 		t.Fatalf("hits %+v", hits)
 	}
 	if hits[0].UserID != nil {
@@ -528,11 +538,11 @@ func TestGoRedirectRecordsHitsWithoutRequiringLogin(t *testing.T) {
 	if hits[1].UserID == nil || *hits[1].UserID != clicker {
 		t.Fatalf("bearer %+v", hits[1])
 	}
-	if hits[2].UserID != nil || hits[3].UserID != nil {
+	if hits[2].UserID != nil {
 		t.Fatalf("public hops should be anonymous %+v", hits)
 	}
-	if hits[3].IP != "203.0.113.9" || hits[3].UserAgent != "WhatsApp/2.0" {
-		t.Fatalf("anon meta %+v", hits[3])
+	if hits[2].IP != "203.0.113.9" || hits[2].UserAgent != "WhatsApp/2.0" {
+		t.Fatalf("anon meta %+v", hits[2])
 	}
 }
 

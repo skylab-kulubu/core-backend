@@ -12,6 +12,16 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
+type deletionProjector struct {
+	err      error
+	requests []user.DeletionRequest
+}
+
+func (p *deletionProjector) Project(_ context.Context, request user.DeletionRequest) error {
+	p.requests = append(p.requests, request)
+	return p.err
+}
+
 func privileged() authz.Principal {
 	return authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
 }
@@ -26,8 +36,43 @@ func setup(t *testing.T) (*identity.Memory, *user.MemoryStore, identity.Service)
 	store := user.NewMemoryStore()
 	svc := identity.NewServiceWithOptions(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{
 		AccountErasureEnabled: true,
+		AccessProjector:       &deletionProjector{},
 	})
 	return dir, store, svc
+}
+
+func TestServiceDeleteUserReturnsUnavailableUntilDurableMarkerIsProjected(t *testing.T) {
+	t.Parallel()
+
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	projector := &deletionProjector{err: errors.New("redis unavailable")}
+	svc := identity.NewServiceWithOptions(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{
+		AccountErasureEnabled: true,
+		AccessProjector:       projector,
+	})
+	ctx := context.Background()
+	targetID := uuid.New()
+	dir.PutUser(identity.Person{ID: targetID, Email: "projection@example.test"})
+	if _, _, err := user.NewService(store).Ensure(ctx, targetID, user.Profile{Email: "projection@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.DeleteUser(ctx, privileged(), targetID); !errors.Is(err, identity.ErrAccountAccessUnavailable) {
+		t.Fatalf("first delete error = %v", err)
+	}
+	request, err := store.DeletionRequest(ctx, targetID)
+	if err != nil || request.PlatformBlockedAt != nil || len(projector.requests) != 1 {
+		t.Fatalf("request=%+v projections=%d err=%v", request, len(projector.requests), err)
+	}
+
+	projector.err = nil
+	if err := svc.DeleteUser(ctx, privileged(), targetID); err != nil {
+		t.Fatal(err)
+	}
+	if len(projector.requests) != 2 || projector.requests[0].ID != projector.requests[1].ID {
+		t.Fatalf("idempotent projection requests = %+v", projector.requests)
+	}
 }
 
 func TestService_ListGroupsPrivilegedSeesDirectoryNotLocalTable(t *testing.T) {
@@ -329,6 +374,7 @@ func TestService_DeleteUserFailsClosedWhenAccountErasureDisabled(t *testing.T) {
 
 	created, err := identity.NewServiceWithOptions(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{
 		AccountErasureEnabled: true,
+		AccessProjector:       &deletionProjector{},
 	}).CreateUser(ctx, privileged(), identity.Person{
 		Email: "disabled@example.com", FirstName: "Release", LastName: "Gate",
 	})
