@@ -25,6 +25,48 @@ type deleteFailingIdentity struct {
 
 type noAccountMedia struct{}
 
+type accountBlockWriter struct {
+	err   error
+	calls int
+}
+
+type deletionProjectionMarker interface {
+	MarkDeletionPlatformBlocked(context.Context, uuid.UUID, time.Time) error
+}
+
+func confirmDeletionProjection(t *testing.T, store deletionProjectionMarker, request user.DeletionRequest, at time.Time) {
+	t.Helper()
+	if err := store.MarkDeletionPlatformBlocked(context.Background(), request.ID, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type countingIdentity struct {
+	disableCalls int
+	logoutCalls  int
+	deleteCalls  int
+}
+
+func (i *countingIdentity) EnsureDisabled(context.Context, uuid.UUID) error {
+	i.disableCalls++
+	return nil
+}
+
+func (i *countingIdentity) EnsureLoggedOut(context.Context, uuid.UUID) error {
+	i.logoutCalls++
+	return nil
+}
+
+func (i *countingIdentity) EnsureDeleted(context.Context, uuid.UUID) error {
+	i.deleteCalls++
+	return nil
+}
+
+func (w *accountBlockWriter) EnsureBlocked(context.Context, string) error {
+	w.calls++
+	return w.err
+}
+
 type retryAtError struct {
 	at time.Time
 }
@@ -83,6 +125,44 @@ func (i *uncertainIdentity) EnsureDeleted(context.Context, uuid.UUID) error {
 	return nil
 }
 
+func TestWorkerReassertsPlatformMarkerBeforeFirstErasureSideEffect(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := user.NewMemoryStore()
+	subjectID := uuid.New()
+	if _, _, err := user.NewService(store).Ensure(ctx, subjectID, user.Profile{Email: "worker-gate@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	request, err := store.RequestDeletion(ctx, subjectID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 20, 20, 0, 0, 0, time.UTC)
+	if err := store.MarkDeletionPlatformBlocked(ctx, request.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	blocker := &accountBlockWriter{err: errors.New("redis unavailable")}
+	identity := &countingIdentity{}
+	worker := account.NewWorker(store, identity, account.WorkerConfig{
+		Now: func() time.Time { return now }, AccessBlocker: blocker,
+	}, noAccountMedia{})
+
+	if worked, err := worker.RunOnce(ctx); !worked || err == nil {
+		t.Fatalf("failed reassert worked=%v err=%v", worked, err)
+	}
+	if identity.disableCalls != 0 || identity.logoutCalls != 0 || identity.deleteCalls != 0 {
+		t.Fatalf("identity side effect ran: %+v", identity)
+	}
+	blocker.err = nil
+	if worked, err := worker.RunOnce(ctx); !worked || err != nil {
+		t.Fatalf("retry worked=%v err=%v", worked, err)
+	}
+	if blocker.calls != 2 || identity.disableCalls != 1 {
+		t.Fatalf("block calls=%d identity=%+v", blocker.calls, identity)
+	}
+}
+
 func TestWorkerRetriesUncertainExternalEffectWithoutRepeatingCompletedSteps(t *testing.T) {
 	t.Parallel()
 
@@ -93,14 +173,17 @@ func TestWorkerRetriesUncertainExternalEffectWithoutRepeatingCompletedSteps(t *t
 	if _, _, err := users.Ensure(ctx, subjectID, user.Profile{Email: "ada@example.com", FirstName: "Ada"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RequestDeletion(ctx, subjectID, nil); err != nil {
+	request, err := store.RequestDeletion(ctx, subjectID, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	now := time.Date(2026, 9, 20, 2, 0, 0, 0, time.UTC)
+	confirmDeletionProjection(t, store, request, now)
 	identity := &uncertainIdentity{}
 	worker := account.NewWorker(store, identity, account.WorkerConfig{
 		Now: func() time.Time { return now }, Lease: time.Minute, RetryDelay: 0, MaxAttempts: 3,
+		AccessBlocker: &accountBlockWriter{},
 	}, noAccountMedia{})
 
 	worked, err := worker.RunOnce(ctx)
@@ -152,17 +235,19 @@ func TestWorkerSurfacesManualInterventionAfterRetryBudget(t *testing.T) {
 	if _, _, err := user.NewService(store).Ensure(ctx, subjectID, user.Profile{Email: "blocked@example.com"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RequestDeletion(ctx, subjectID, nil); err != nil {
+	request, err := store.RequestDeletion(ctx, subjectID, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 20, 4, 0, 0, 0, time.UTC)
+	confirmDeletionProjection(t, store, request, now)
 	worker := account.NewWorker(store, failingIdentity{}, account.WorkerConfig{
-		Now: func() time.Time { return now }, MaxAttempts: 1,
+		Now: func() time.Time { return now }, MaxAttempts: 1, AccessBlocker: &accountBlockWriter{},
 	}, noAccountMedia{})
 	if worked, err := worker.RunOnce(ctx); !worked || err == nil {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
-	request, err := store.DeletionRequest(ctx, subjectID)
+	request, err = store.DeletionRequest(ctx, subjectID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,12 +273,13 @@ func TestWorkerDefersStagedCleanupWithoutExhaustingAttemptBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := request.CreatedAt
+	confirmDeletionProjection(t, store, request, now)
 	firstRetry := now.Add(24 * time.Hour)
 	secondRetry := now.Add(25 * time.Hour)
 	media := &deferredAccountMedia{retryAt: []time.Time{firstRetry, secondRetry}}
 	worker := account.NewWorker(store, successfulIdentity{}, account.WorkerConfig{
 		Now: func() time.Time { return now }, RetryDelay: 30 * time.Second,
-		MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
+		MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour, AccessBlocker: &accountBlockWriter{},
 	}, media)
 
 	if worked, err := worker.RunOnce(ctx); !worked || err == nil {
@@ -251,6 +337,7 @@ func TestWorkerPreservesFullFailureBudgetAfterManyDeferrals(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := request.CreatedAt
+	confirmDeletionProjection(t, store, request, now)
 	retries := make([]time.Time, 6)
 	for i := range retries {
 		retries[i] = now.Add(time.Duration(i+1) * time.Hour)
@@ -259,6 +346,7 @@ func TestWorkerPreservesFullFailureBudgetAfterManyDeferrals(t *testing.T) {
 	identity := &deleteFailingIdentity{}
 	worker := account.NewWorker(store, identity, account.WorkerConfig{
 		Now: func() time.Time { return now }, MaxAttempts: 2, DeferredRetryHorizon: 12 * time.Hour,
+		AccessBlocker: &accountBlockWriter{},
 	}, media)
 	for i, retryAt := range retries {
 		if worked, err := worker.RunOnce(ctx); !worked || err == nil {
@@ -310,10 +398,12 @@ func TestWorkerClampsDeferredRetryToPolicyHorizon(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := request.CreatedAt
+	confirmDeletionProjection(t, store, request, now)
 	horizon := now.Add(48 * time.Hour)
 	media := &deferredAccountMedia{retryAt: []time.Time{now.Add(7 * 24 * time.Hour)}}
 	worker := account.NewWorker(store, successfulIdentity{}, account.WorkerConfig{
 		Now: func() time.Time { return now }, MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
+		AccessBlocker: &accountBlockWriter{},
 	}, media)
 	if worked, err := worker.RunOnce(ctx); !worked || err == nil {
 		t.Fatalf("clamped deferred run worked=%v err=%v", worked, err)
@@ -341,9 +431,11 @@ func TestWorkerAllowsDeferredCleanupToBecomeManualAfterPolicyHorizon(t *testing.
 		t.Fatal(err)
 	}
 	now := request.CreatedAt.Add(49 * time.Hour)
+	confirmDeletionProjection(t, store, request, now)
 	media := &deferredAccountMedia{retryAt: []time.Time{now.Add(time.Hour)}}
 	worker := account.NewWorker(store, successfulIdentity{}, account.WorkerConfig{
 		Now: func() time.Time { return now }, MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
+		AccessBlocker: &accountBlockWriter{},
 	}, media)
 
 	if worked, err := worker.RunOnce(ctx); !worked || err == nil {

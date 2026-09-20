@@ -16,6 +16,14 @@ const (
 
 type DeletionRequestStatus string
 
+type AttributionState string
+
+const (
+	AttributionAnonymous AttributionState = "anonymous"
+	AttributionAllowed   AttributionState = "allowed"
+	AttributionBlocked   AttributionState = "blocked"
+)
+
 type DeletionStep string
 
 const (
@@ -33,19 +41,20 @@ const (
 )
 
 type DeletionRequest struct {
-	ID             uuid.UUID
-	SubjectID      uuid.UUID
-	RequestedBy    *uuid.UUID
-	Status         DeletionRequestStatus
-	AttemptCount   int
-	NextAttemptAt  time.Time
-	LeaseUntil     *time.Time
-	LeaseToken     *uuid.UUID
-	ProfileMediaID *uuid.UUID
-	LastErrorCode  string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	CompletedAt    *time.Time
+	ID                uuid.UUID
+	SubjectID         uuid.UUID
+	RequestedBy       *uuid.UUID
+	Status            DeletionRequestStatus
+	AttemptCount      int
+	NextAttemptAt     time.Time
+	LeaseUntil        *time.Time
+	LeaseToken        *uuid.UUID
+	ProfileMediaID    *uuid.UUID
+	LastErrorCode     string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	CompletedAt       *time.Time
+	PlatformBlockedAt *time.Time
 }
 
 type User struct {

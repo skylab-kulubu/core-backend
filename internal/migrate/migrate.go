@@ -311,6 +311,31 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 				  AND tgname='competitors_require_active_withdrawer'
 				  AND NOT tgisinternal
 			)`,
+	20260920120000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema='public' AND table_name='account_deletion_requests'
+			  AND column_name='platform_blocked_at' AND udt_name='timestamptz' AND is_nullable='YES'
+		)
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema='public' AND table_name='account_deletion_outbox'
+			  AND column_name='available_at' AND column_default='''infinity''::timestamp with time zone'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname='public' AND indexname='account_deletion_requests_claim_idx'
+			  AND indexdef LIKE '%(next_attempt_at, created_at)%'
+			  AND indexdef LIKE '%platform_blocked_at IS NOT NULL%'
+			  AND indexdef LIKE '%status = ANY%pending%processing%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname='public' AND indexname='account_deletion_requests_projection_idx'
+			  AND indexdef LIKE '%(created_at, id)%'
+			  AND indexdef LIKE '%platform_blocked_at IS NULL%'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

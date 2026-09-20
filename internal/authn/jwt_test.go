@@ -93,6 +93,14 @@ func TestParseAccessTokenRejectsBadSub(t *testing.T) {
 	}
 }
 
+func TestParseAccessTokenRejectsNonCanonicalSub(t *testing.T) {
+	t.Parallel()
+	_, err := authn.ParseAccessToken(unsignedJWT(`{"sub":"11111111-1111-1111-1111-AAAAAAAAAAAA"}`))
+	if err == nil {
+		t.Fatal("non-canonical subject was normalized instead of rejected")
+	}
+}
+
 func TestParseAndVerifyRequiresAudienceAndIssuer(t *testing.T) {
 	t.Parallel()
 	keys := testauth.New(t)

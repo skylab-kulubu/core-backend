@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -38,6 +39,7 @@ type WorkerConfig struct {
 	MaxAttempts          int
 	StepTimeout          time.Duration
 	DeferredRetryHorizon time.Duration
+	AccessBlocker        accessgate.BlockWriter
 }
 
 type Worker struct {
@@ -83,6 +85,12 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		return true, fmt.Errorf("account erasure claim missing lease token")
 	}
 	leaseToken := *request.LeaseToken
+	if w.config.AccessBlocker == nil {
+		return true, w.retry(ctx, request, now, "platform_block_failed", errors.New("account access marker writer unavailable"))
+	}
+	if err := w.config.AccessBlocker.EnsureBlocked(ctx, request.SubjectID.String()); err != nil {
+		return true, w.retry(ctx, request, now, "platform_block_failed", err)
+	}
 	completed, err := w.store.CompletedDeletionSteps(ctx, request.ID, leaseToken)
 	if err != nil {
 		return true, w.retry(ctx, request, now, "read_steps_failed", err)

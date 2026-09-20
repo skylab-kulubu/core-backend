@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http/httptest"
@@ -15,6 +16,10 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
+type handlerDeletionProjector struct{}
+
+func (handlerDeletionProjector) Project(context.Context, user.DeletionRequest) error { return nil }
+
 func identityApp(t *testing.T, ident authn.Identity, dir *identity.Memory, store *user.MemoryStore) *fiber.App {
 	t.Helper()
 	return identityAppWithErasure(t, ident, dir, store, true)
@@ -24,6 +29,7 @@ func identityAppWithErasure(t *testing.T, ident authn.Identity, dir *identity.Me
 	t.Helper()
 	svc := identity.NewServiceWithOptions(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{
 		AccountErasureEnabled: enabled,
+		AccessProjector:       handlerDeletionProjector{},
 	})
 	h := NewIdentityHandler(svc)
 	app := fiber.New()

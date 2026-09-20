@@ -68,6 +68,38 @@ func TestAccountLifecycleDownRefusesToDropAntiResurrectionState(t *testing.T) {
 	}
 }
 
+func TestAccountAccessProjectionDownRefusesAnyDurableDeletionRequest(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	store := user.NewPostgresStore(pool)
+	subjectID := uuid.New()
+	if _, _, err := user.NewService(store).Ensure(ctx, subjectID, user.Profile{Email: "gate-rollback@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RequestDeletion(ctx, subjectID, nil); err != nil {
+		t.Fatal(err)
+	}
+	down, err := fs.ReadFile(db.DownSQL, "migrations/20260920120000_account_access_projection.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(down)); err == nil || !strings.Contains(err.Error(), "durable deletion request") {
+		t.Fatalf("down migration error = %v", err)
+	}
+	var columnExists bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema='public' AND table_name='account_deletion_requests' AND column_name='platform_blocked_at'
+		)
+	`).Scan(&columnExists); err != nil || !columnExists {
+		t.Fatalf("projection column exists=%v err=%v", columnExists, err)
+	}
+}
+
 func TestApplyRepairsBrownfieldSchema(t *testing.T) {
 	pool := postgresPool(t)
 	ctx := context.Background()

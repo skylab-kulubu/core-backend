@@ -46,7 +46,9 @@ func identityError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, identity.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
-	case errors.Is(err, identity.ErrAccountErasureDisabled):
+	case errors.Is(err, identity.ErrAccountErasureDisabled), errors.Is(err, identity.ErrAccountAccessUnavailable):
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		c.Set(fiber.HeaderRetryAfter, "1")
 		return problem(c, fiber.StatusServiceUnavailable, "Service Unavailable")
 	case errors.Is(err, identity.ErrInvalid), errors.Is(err, user.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")

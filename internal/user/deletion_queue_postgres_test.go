@@ -27,6 +27,9 @@ func TestDeletionLeaseTokenFencesExpiredWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.MarkDeletionPlatformBlocked(ctx, request.ID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
 	profileMediaID := uuid.New()
 	if _, err := pool.Exec(ctx, `UPDATE account_deletion_requests SET profile_media_id=$2 WHERE id=$1`, request.ID, profileMediaID); err != nil {
 		t.Fatal(err)
@@ -109,6 +112,9 @@ func TestDeletionStepCheckpointCannotCommitAfterConcurrentLeaseReplacement(t *te
 	}
 	request, err := store.RequestDeletion(ctx, subjectID, nil)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkDeletionPlatformBlocked(ctx, request.ID, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	profileMediaID := uuid.New()

@@ -8,6 +8,8 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"testing"
+
+	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 )
 
 func TestLoadSkyPassKeyPrefersExplicitP256Environment(t *testing.T) {
@@ -29,6 +31,20 @@ func TestLoadSkyPassKeyPrefersExplicitP256Environment(t *testing.T) {
 	}
 	if got.Curve != elliptic.P256() || got.D.Cmp(want.D) != 0 {
 		t.Fatal("loaded key does not match explicit P-256 key")
+	}
+}
+
+func TestAccountErasureCannotStartWithoutEnforcedAccessGate(t *testing.T) {
+	t.Parallel()
+
+	if err := validateAccountErasureGate(false, accessgate.ModeOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateAccountErasureGate(true, accessgate.ModeOff); err == nil {
+		t.Fatal("erasure worker started while the shared access gate was off")
+	}
+	if err := validateAccountErasureGate(true, accessgate.ModeEnforce); err != nil {
+		t.Fatal(err)
 	}
 }
 
