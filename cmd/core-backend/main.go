@@ -298,7 +298,7 @@ func main() {
 		Mail:                   mailer,
 		EventMail:              eventmail.New(events, tickets, users, lists, az, mailSnapshots),
 		ParseToken:             parse,
-		AccountAccessGate:      gate,
+		AccountAccessGate:      optionalAccountAccessGate(gate),
 		AccountAccessMetrics:   accessMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
@@ -314,6 +314,13 @@ func main() {
 	if err := app.Listen(":" + addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func optionalAccountAccessGate(gate *accessgate.RedisGate) accessgate.Reader {
+	if gate == nil {
+		return nil
+	}
+	return gate
 }
 
 func accountSelfDeletionConfig(getenv func(string) string, enabled bool) (account.SelfDeletionConfig, error) {
