@@ -260,7 +260,7 @@ func (m *Memory) SearchUsers(_ context.Context, query string, limit int) ([]Pers
 }
 
 func holdsClientRole(have ClientRole, clientID, role string) bool {
-	if have.ClientID != clientID && !((clientID == "forms" || clientID == "dotnet") && have.ClientID == "skyforms") {
+	if have.ClientID != clientID && !(clientID == "forms" && have.ClientID == "skyforms") {
 		return false
 	}
 	if have.Role == role {

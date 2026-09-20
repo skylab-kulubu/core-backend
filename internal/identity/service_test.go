@@ -620,11 +620,11 @@ func TestService_ListUsersSeatKeepsRoleHolders(t *testing.T) {
 	if err := dir.AddMember(ctx, "g-yk", ada); err != nil {
 		t.Fatal(err)
 	}
-	if err := dir.SetGroupClientRoles(ctx, "g-yk", []identity.ClientRole{{ClientID: "dotnet", Role: "skyforms:access"}}); err != nil {
+	if err := dir.SetGroupClientRoles(ctx, "g-yk", []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}}); err != nil {
 		t.Fatal(err)
 	}
 
-	seat := identity.ClientRole{ClientID: "dotnet", Role: "skyforms:access"}
+	seat := identity.ClientRole{ClientID: "forms", Role: "skyforms:access"}
 	found, err := svc.ListUsers(ctx, privileged(), "ada", seat)
 	if err != nil {
 		t.Fatal(err)
