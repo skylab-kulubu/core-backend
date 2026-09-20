@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
+	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
 type PostgresStore struct {
@@ -57,10 +58,14 @@ func (s *PostgresStore) Create(ctx context.Context, c Competitor) (Competitor, e
 	if c.ID == uuid.Nil {
 		c.ID = uuid.New()
 	}
-	return scanCompetitor(s.pool.QueryRow(ctx, `
-		INSERT INTO competitors (id, user_id, event_id, score, is_winner)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING `+competitorCols, c.ID, c.UserID, c.EventID, c.Score, c.IsWinner))
+	got, err := scanCompetitor(s.pool.QueryRow(ctx, `
+			INSERT INTO competitors (id, user_id, event_id, score, is_winner)
+			VALUES ($1, $2, $3, $4, $5)
+			RETURNING `+competitorCols, c.ID, c.UserID, c.EventID, c.Score, c.IsWinner))
+	if subjectlock.IsInactiveAccountReference(err) {
+		return Competitor{}, ErrConflict
+	}
+	return got, err
 }
 
 func (s *PostgresStore) Update(ctx context.Context, c Competitor) (Competitor, error) {
@@ -71,6 +76,9 @@ func (s *PostgresStore) Update(ctx context.Context, c Competitor) (Competitor, e
 		RETURNING `+competitorCols, c.ID, c.UserID, c.EventID, c.Score, c.IsWinner))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Competitor{}, ErrNotFound
+	}
+	if subjectlock.IsInactiveAccountReference(err) {
+		return Competitor{}, ErrConflict
 	}
 	return got, err
 }
@@ -83,6 +91,9 @@ func (s *PostgresStore) Withdraw(ctx context.Context, id uuid.UUID, actorID *uui
 			updated_at = CASE WHEN withdrawn_at IS NULL THEN now() ELSE updated_at END
 		WHERE id = $1`, id, actorID)
 	if err != nil {
+		if subjectlock.IsInactiveAccountReference(err) {
+			return ErrForbidden
+		}
 		return err
 	}
 	if tag.RowsAffected() == 0 {
@@ -93,15 +104,25 @@ func (s *PostgresStore) Withdraw(ctx context.Context, id uuid.UUID, actorID *uui
 
 func (s *PostgresStore) Reinstate(ctx context.Context, id uuid.UUID) error {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE competitors
-		SET withdrawn_at = NULL,
-			withdrawn_by = NULL,
-			updated_at = CASE WHEN withdrawn_at IS NOT NULL THEN now() ELSE updated_at END
-		WHERE id = $1`, id)
+			UPDATE competitors
+			SET withdrawn_at = NULL,
+				withdrawn_by = NULL,
+				updated_at = CASE WHEN withdrawn_at IS NOT NULL THEN now() ELSE updated_at END
+			WHERE id = $1 AND user_id IS NOT NULL`, id)
+	if subjectlock.IsInactiveAccountReference(err) {
+		return ErrConflict
+	}
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
+		var exists bool
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM competitors WHERE id = $1)`, id).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return ErrConflict
+		}
 		return ErrNotFound
 	}
 	return nil

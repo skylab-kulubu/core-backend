@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
 const templateCols = `id, name, owner_team, source_kind, source_ref, source_edit_url, draft_layout, system, archived_at, created_by, created_at, updated_at`
@@ -64,10 +65,14 @@ func (s *PostgresStore) CreateTemplate(ctx context.Context, t Template) (Templat
 	if err != nil {
 		return Template{}, err
 	}
-	return scanTemplate(s.pool.QueryRow(ctx, `
+	created, err := scanTemplate(s.pool.QueryRow(ctx, `
 		INSERT INTO certificate_templates (id,name,owner_team,source_kind,source_ref,source_edit_url,draft_layout,system,created_by)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING `+templateCols,
 		t.ID, t.Name, t.OwnerTeam, t.SourceKind, t.SourceRef, t.SourceEditURL, raw, t.System, t.CreatedBy))
+	if subjectlock.IsInactiveAccountReference(err) {
+		return Template{}, ErrForbidden
+	}
+	return created, err
 }
 
 func (s *PostgresStore) UpdateTemplate(ctx context.Context, t Template) (Template, error) {
@@ -105,6 +110,9 @@ func (s *PostgresStore) CreateVersion(ctx context.Context, v TemplateVersion) (T
 	)
 	if isUnique(err) {
 		return TemplateVersion{}, ErrConflict
+	}
+	if subjectlock.IsInactiveAccountReference(err) {
+		return TemplateVersion{}, ErrForbidden
 	}
 	if err == nil {
 		err = json.Unmarshal(raw, &v.Layout)
@@ -159,6 +167,9 @@ func (s *PostgresStore) SetBinding(ctx context.Context, b Binding) (Binding, err
 		ON CONFLICT (scope,scope_key) DO UPDATE SET template_id=EXCLUDED.template_id,updated_by=EXCLUDED.updated_by,updated_at=now()
 		RETURNING id,scope,scope_key,template_id,updated_by,updated_at`,
 		b.ID, b.Scope, b.ScopeKey, b.TemplateID, b.UpdatedBy).Scan(&b.ID, &b.Scope, &b.ScopeKey, &b.TemplateID, &b.UpdatedBy, &b.UpdatedAt)
+	if subjectlock.IsInactiveAccountReference(err) {
+		return Binding{}, ErrForbidden
+	}
 	return b, err
 }
 

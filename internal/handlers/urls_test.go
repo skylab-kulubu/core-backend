@@ -41,8 +41,12 @@ func urlAppWith(t *testing.T, ident authn.Identity, store shorturl.Store) *fiber
 }
 
 func urlAppOn(t *testing.T, store shorturl.Store, ident authn.Identity, parse func(string) (authn.Identity, error)) *fiber.App {
+	return urlAppOnGuard(t, store, ident, parse, func(context.Context, uuid.UUID) bool { return true })
+}
+
+func urlAppOnGuard(t *testing.T, store shorturl.Store, ident authn.Identity, parse func(string) (authn.Identity, error), guard URLAttributionGuard) *fiber.App {
 	t.Helper()
-	h := NewURLHandler(shorturl.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy())), parse)
+	h := NewURLHandler(shorturl.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy())), parse, guard)
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
 		if ident.ID != uuid.Nil || len(ident.Roles) > 0 || len(ident.Groups) > 0 {
@@ -60,6 +64,48 @@ func urlAppOn(t *testing.T, store shorturl.Store, ident authn.Identity, parse fu
 	app.Delete("/v1/urls/:id", h.Delete)
 	app.Post("/v1/urls/:id/restore", h.Restore)
 	return app
+}
+
+func TestURLRedirectDropsAttributionForBlockedBearerSubject(t *testing.T) {
+	t.Parallel()
+	store := shorturl.NewMemoryStore()
+	owner := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	blocked := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	parse := func(string) (authn.Identity, error) { return authn.Identity{ID: blocked}, nil }
+
+	createApp := urlAppOn(t, store, authn.Identity{ID: owner, Roles: []string{"url:access"}}, parse)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/urls", strings.NewReader(`{"url":"https://skylab.com","alias":"blocked-hit"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := createApp.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created shorturl.URL
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	hop := urlAppOnGuard(t, store, authn.Identity{}, parse, func(_ context.Context, id uuid.UUID) bool {
+		return id != blocked
+	})
+	redirect := httptest.NewRequest(fiber.MethodGet, "/v1/go/blocked-hit", nil)
+	redirect.Header.Set("Authorization", "Bearer stale-token")
+	if got, err := hop.Test(redirect); err != nil || got.StatusCode != fiber.StatusMovedPermanently {
+		t.Fatalf("redirect status=%v err=%v", got, err)
+	}
+
+	moderator := urlAppOn(t, store, authn.Identity{Groups: []string{"/UYELER/YK"}}, nil)
+	hitsResp, err := moderator.Test(httptest.NewRequest(fiber.MethodGet, "/v1/urls/"+created.ID.String()+"/hits", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits []shorturl.Hit
+	if err := json.NewDecoder(hitsResp.Body).Decode(&hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].UserID != nil {
+		t.Fatalf("blocked bearer attribution = %+v", hits)
+	}
 }
 
 func TestURLSkylappRoleDoesNotCreate(t *testing.T) {

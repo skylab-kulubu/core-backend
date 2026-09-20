@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
+	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
 type PostgresStore struct {
@@ -29,10 +30,14 @@ func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 	if m.CoverColors == nil {
 		m.CoverColors = []string{}
 	}
-	return scanMedia(s.pool.QueryRow(ctx, `
-		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed))
+	created, err := scanMedia(s.pool.QueryRow(ctx, `
+			INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed))
+	if subjectlock.IsInactiveAccountReference(err) {
+		return Media{}, ErrForbidden
+	}
+	return created, err
 }
 
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Media, error) {
@@ -123,6 +128,9 @@ func (s *PostgresStore) Archive(ctx context.Context, id uuid.UUID, actorID *uuid
 			updated_at = CASE WHEN deleted_at IS NULL THEN now() ELSE updated_at END
 		WHERE id = $1`, id, actorID)
 	if err != nil {
+		if subjectlock.IsInactiveAccountReference(err) {
+			return ErrForbidden
+		}
 		return err
 	}
 	if tag.RowsAffected() == 0 {

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
+	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
 type PostgresStore struct {
@@ -88,19 +89,50 @@ func (s *PostgresStore) Update(ctx context.Context, u URL) (URL, error) {
 }
 
 func (s *PostgresStore) Disable(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE urls
-		SET disabled_at = COALESCE(disabled_at, now()),
-			disabled_by = CASE WHEN disabled_at IS NULL THEN $2 ELSE disabled_by END,
-			updated_at = CASE WHEN disabled_at IS NULL THEN now() ELSE updated_at END
-		WHERE id = $1`, id, actorID)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+	defer tx.Rollback(ctx)
+	if actorID != nil {
+		// RecordHit acquires the subject advisory lock before it mutates the URL
+		// row. Do the same here before the disabled_by trigger can take the lock
+		// after locking that row; inverse URL->subject ordering deadlocks with a
+		// concurrent attributed hit.
+		if err := subjectlock.Lock(ctx, tx, *actorID); err != nil {
+			return err
+		}
+		var allowed bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM users WHERE id=$1 AND account_state='active')
+			   AND NOT EXISTS (SELECT 1 FROM account_deletion_requests WHERE subject_id=$1)
+		`, *actorID).Scan(&allowed); err != nil {
+			return err
+		}
+		if !allowed {
+			return ErrForbidden
+		}
 	}
-	return nil
+	tag, err := tx.Exec(ctx, `
+		UPDATE urls
+		SET disabled_at = now(), disabled_by = $2, updated_at = now()
+		WHERE id = $1 AND disabled_at IS NULL`, id, actorID)
+	if err != nil {
+		if subjectlock.IsInactiveAccountReference(err) {
+			return ErrForbidden
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM urls WHERE id=$1)`, id).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrNotFound
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
@@ -131,6 +163,22 @@ func (s *PostgresStore) RecordHit(ctx context.Context, id uuid.UUID, hit Hit) (U
 		return URL{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	attributedUserID := hit.UserID
+	if attributedUserID != nil {
+		if err := subjectlock.Lock(ctx, tx, *attributedUserID); err != nil {
+			return URL{}, err
+		}
+		var allowed bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND account_state = 'active')
+			   AND NOT EXISTS (SELECT 1 FROM account_deletion_requests WHERE subject_id = $1)
+		`, *attributedUserID).Scan(&allowed); err != nil {
+			return URL{}, err
+		}
+		if !allowed {
+			attributedUserID = nil
+		}
+	}
 	var alias string
 	if err := tx.QueryRow(ctx, `SELECT alias FROM urls WHERE id = $1 AND disabled_at IS NULL`, id).Scan(&alias); err != nil {
 		return URL{}, mapURLErr(err)
@@ -138,7 +186,7 @@ func (s *PostgresStore) RecordHit(ctx context.Context, id uuid.UUID, hit Hit) (U
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO url_hits (id, url_id, alias, at, ip, user_agent, referer, user_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		hit.ID, id, alias, hit.CreatedAt, hit.IP, hit.UserAgent, hit.Referer, hit.UserID); err != nil {
+		hit.ID, id, alias, hit.CreatedAt, hit.IP, hit.UserAgent, hit.Referer, attributedUserID); err != nil {
 		return URL{}, mapURLErr(err)
 	}
 	u, err := scanURL(tx.QueryRow(ctx, `
@@ -229,6 +277,9 @@ func scanURL(row urlRow) (URL, error) {
 func mapURLErr(err error) error {
 	if err == nil {
 		return nil
+	}
+	if subjectlock.IsInactiveAccountReference(err) {
+		return ErrForbidden
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound

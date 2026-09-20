@@ -34,14 +34,13 @@ func Start(t testing.TB) *pgxpool.Pool {
 		_ = exec.Command("docker", "rm", "-f", name).Run()
 	})
 
-	portOut, err := exec.Command("docker", "port", name, "5432/tcp").CombinedOutput()
+	portCtx, cancelPort := context.WithTimeout(context.Background(), 30*time.Second)
+	hostport, err := waitForPublishedPort(portCtx, 100*time.Millisecond, func() ([]byte, error) {
+		return exec.Command("docker", "port", name, "5432/tcp").CombinedOutput()
+	})
+	cancelPort()
 	if err != nil {
-		t.Fatalf("docker port: %v %s", err, portOut)
-	}
-	parts := strings.Split(strings.TrimSpace(string(portOut)), "\n")[0]
-	hostport := parts
-	if i := strings.LastIndex(parts, "://"); i >= 0 {
-		hostport = parts[i+3:]
+		t.Fatal(err)
 	}
 
 	url := fmt.Sprintf("postgres://postgres:postgres@%s/coretest?sslmode=disable", hostport)
@@ -63,4 +62,79 @@ func Start(t testing.TB) *pgxpool.Pool {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// WaitForBlockedQuery waits until another connection is blocked on a lock
+// while executing SQL containing fragment. It makes database race tests
+// deterministic without sleeps tied to machine speed.
+func WaitForBlockedQuery(t testing.TB, pool *pgxpool.Pool, fragment string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var blocked bool
+		err := pool.QueryRow(context.Background(), `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_stat_activity
+				WHERE datname = current_database()
+				  AND pid <> pg_backend_pid()
+				  AND wait_event_type = 'Lock'
+				  AND query LIKE '%' || $1 || '%'
+			)
+		`, fragment).Scan(&blocked)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if blocked {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("query containing %q did not block before timeout", fragment)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForPublishedPort(ctx context.Context, retryInterval time.Duration, lookup func() ([]byte, error)) (string, error) {
+	var lastErr error
+	for {
+		out, err := lookup()
+		if err == nil {
+			if hostport := parsePublishedPort(out); hostport != "" {
+				return hostport, nil
+			}
+			lastErr = fmt.Errorf("docker port returned empty output")
+		} else {
+			detail := strings.TrimSpace(string(out))
+			if detail == "" {
+				lastErr = fmt.Errorf("docker port: %w", err)
+			} else {
+				lastErr = fmt.Errorf("docker port: %w: %s", err, detail)
+			}
+		}
+
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", fmt.Errorf("docker port was not published before timeout: %v: %w", lastErr, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func parsePublishedPort(out []byte) string {
+	for _, line := range strings.Split(string(out), "\n") {
+		hostport := strings.TrimSpace(line)
+		if hostport == "" {
+			continue
+		}
+		if i := strings.LastIndex(hostport, "://"); i >= 0 {
+			hostport = hostport[i+3:]
+		}
+		if hostport != "" {
+			return hostport
+		}
+	}
+	return ""
 }

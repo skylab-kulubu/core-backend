@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
 type PostgresStore struct {
@@ -47,6 +48,9 @@ func (s *PostgresStore) Create(ctx context.Context, c Certificate, pdf []byte) (
 	)
 	if isUnique(err) {
 		return Certificate{}, ErrConflict
+	}
+	if subjectlock.IsInactiveAccountReference(err) {
+		return Certificate{}, ErrInvalid
 	}
 	return c, err
 }
@@ -93,6 +97,9 @@ func (s *PostgresStore) Replace(ctx context.Context, previousSerial string, c Ce
 	)
 	if isUnique(err) {
 		return Certificate{}, ErrConflict
+	}
+	if subjectlock.IsInactiveAccountReference(err) {
+		return Certificate{}, ErrInvalid
 	}
 	if err != nil {
 		return Certificate{}, err

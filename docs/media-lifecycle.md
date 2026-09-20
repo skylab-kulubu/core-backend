@@ -25,8 +25,27 @@ After `blob_purged_at` is set, the metadata remains available to authorized
 lifecycle views for audit, but restore returns `410 Gone`. There is no public
 force-purge endpoint.
 
+New uploads use a separate subject-bound durable staging intent. Its insert and
+metadata publication both acquire the same subject lock and active/deletion-
+marker guard as every other current-identity link. Core inserts the object key
+and uploader subject in PostgreSQL before writing R2, then inserts media
+metadata and removes that intent in one row-locked transaction. If the request
+crashes, the object write is rejected, or immediate compensation cannot reach
+R2, the intent survives and a bounded sweeper retries idempotent deletion. The
+sweeper takes the same row lock as metadata publication and rechecks
+`media.file_url`, so it cannot delete a published object. An ambiguous metadata
+commit is reconciled by media ID and never triggers eager deletion while the
+publication outcome is unknown. Account erasure also waits for active intents
+and checkpoints subject-specific blob cleanup before deleting the identity or
+completing its request.
+
 Configuration:
 
 - `MEDIA_BLOB_RECOVERY_DAYS` — recovery window in whole days; default `30`.
 - `MEDIA_BLOB_PURGE_INTERVAL` — Go duration between bounded runs; default `1h`.
 - `MEDIA_BLOB_PURGE_BATCH_SIZE` — maximum records per run; default `25`.
+- `MEDIA_UPLOAD_STAGING_GRACE` — delay before abandoned uploads are eligible;
+  minimum `2m`, default `24h`.
+- `MEDIA_UPLOAD_STAGING_SWEEP_INTERVAL` — retry sweep interval; default `15m`.
+- `MEDIA_UPLOAD_STAGING_BATCH_SIZE` — maximum staging intents per run; default
+  `25`.

@@ -3,12 +3,14 @@ package migrate_test
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/db"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
@@ -19,6 +21,52 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
+
+func TestAccountLifecycleDownRefusesToDropAntiResurrectionState(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	store := user.NewPostgresStore(pool)
+	subjectID := uuid.New()
+	if _, _, err := user.NewService(store).Ensure(ctx, subjectID, user.Profile{Email: "rollback@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE users SET account_state='deletion_pending' WHERE id=$1`, subjectID); err != nil {
+		t.Fatal(err)
+	}
+	down, err := fs.ReadFile(db.DownSQL, "migrations/20260920010000_account_lifecycle.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(down)); err == nil || !strings.Contains(err.Error(), "anti-resurrection") {
+		t.Fatalf("down migration with non-active identity error = %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE users SET account_state='active', deletion_requested_at=NULL WHERE id=$1`, subjectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RequestDeletion(ctx, subjectID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AnonymizeAccount(ctx, subjectID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE account_deletion_requests SET status='completed', completed_at=now() WHERE subject_id=$1`, subjectID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.HardPurgeAccount(ctx, subjectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(down)); err == nil || !strings.Contains(err.Error(), "anti-resurrection") {
+		t.Fatalf("down migration with hard-purge marker error = %v", err)
+	}
+	var markers int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM account_deletion_requests WHERE subject_id=$1`, subjectID).Scan(&markers); err != nil || markers != 1 {
+		t.Fatalf("anti-resurrection markers=%d err=%v", markers, err)
+	}
+}
 
 func TestApplyRepairsBrownfieldSchema(t *testing.T) {
 	pool := postgresPool(t)
@@ -44,7 +92,7 @@ func TestApplyRepairsBrownfieldSchema(t *testing.T) {
 	if _, err := pool.Exec(ctx, `ALTER TABLE urls DROP COLUMN disabled_at`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `ALTER TABLE media DROP COLUMN deleted_by`); err != nil {
+	if _, err := pool.Exec(ctx, `ALTER TABLE media DROP COLUMN deleted_by CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `DROP INDEX events_current_owner_team_idx`); err != nil {
@@ -185,6 +233,495 @@ func TestApplyFreshThenIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertDoorStoreQueries(t, pool)
+}
+
+func TestApplyCreatesAccountLifecycleSchemaWithoutCascadeDelete(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	var lifecycleColumns int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM (VALUES
+			('account_state'),
+			('deletion_requested_at'),
+			('anonymized_at')
+		) AS expected(column_name)
+		JOIN information_schema.columns actual
+		  ON actual.table_schema = 'public'
+		 AND actual.table_name = 'users'
+		 AND actual.column_name = expected.column_name
+	`).Scan(&lifecycleColumns); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycleColumns != 3 {
+		t.Fatalf("user lifecycle column count = %d, want 3", lifecycleColumns)
+	}
+
+	for _, table := range []string{"account_deletion_requests", "account_deletion_steps", "account_deletion_outbox"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `SELECT to_regclass('public.' || $1) IS NOT NULL`, table).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			t.Fatalf("missing table %s", table)
+		}
+	}
+
+	for _, fk := range []struct {
+		table  string
+		column string
+	}{
+		{table: "competitors", column: "user_id"},
+		{table: "media", column: "uploaded_by"},
+	} {
+		var nullable, deleteAction string
+		if err := pool.QueryRow(ctx, `
+			SELECT c.is_nullable, CASE con.confdeltype WHEN 'n' THEN 'SET NULL' ELSE con.confdeltype::text END
+			FROM information_schema.columns c
+			JOIN pg_attribute a
+			  ON a.attrelid = to_regclass('public.' || $1::text) AND a.attname = c.column_name
+		JOIN pg_constraint con
+		  ON con.conrelid = a.attrelid AND a.attnum = ANY(con.conkey) AND con.contype = 'f'
+			WHERE c.table_schema = 'public' AND c.table_name = $1::text AND c.column_name = $2
+		`, fk.table, fk.column).Scan(&nullable, &deleteAction); err != nil {
+			t.Fatal(err)
+		}
+		if nullable != "YES" || deleteAction != "SET NULL" {
+			t.Fatalf("%s.%s nullable=%s on delete=%s", fk.table, fk.column, nullable, deleteAction)
+		}
+	}
+}
+
+func TestApplyRepairsPartialAccountLifecycleFingerprintDrift(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM schema_migrations WHERE version = 20260920010000;
+		ALTER TABLE competitors
+			DROP CONSTRAINT competitors_user_id_fkey,
+			ALTER COLUMN user_id SET NOT NULL,
+			ADD CONSTRAINT competitors_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+		ALTER TABLE media
+			DROP CONSTRAINT media_uploaded_by_fkey,
+			ALTER COLUMN uploaded_by SET NOT NULL,
+			ADD CONSTRAINT media_uploaded_by_fkey FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE CASCADE;
+		ALTER TABLE account_deletion_requests
+			DROP COLUMN lease_token,
+			DROP COLUMN profile_media_id,
+			DROP CONSTRAINT account_deletion_requests_status_check,
+			ADD CONSTRAINT account_deletion_requests_status_check CHECK (status <> '');
+		DROP INDEX account_deletion_requests_claim_idx;
+		CREATE INDEX account_deletion_requests_claim_idx ON account_deletion_requests (id);
+		DROP TRIGGER events_require_active_archiver ON events;
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	var repairedReferences int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM (VALUES ('competitors', 'user_id'), ('media', 'uploaded_by')) expected(table_name, column_name)
+		JOIN pg_attribute attribute
+		  ON attribute.attrelid = to_regclass('public.' || expected.table_name)
+		 AND attribute.attname = expected.column_name
+		 AND NOT attribute.attnotnull
+		JOIN pg_constraint foreign_key
+		  ON foreign_key.conrelid = attribute.attrelid
+		 AND foreign_key.contype = 'f'
+		 AND attribute.attnum = ANY(foreign_key.conkey)
+		 AND foreign_key.confdeltype = 'n'
+	`).Scan(&repairedReferences); err != nil {
+		t.Fatal(err)
+	}
+	if repairedReferences != 2 {
+		t.Fatalf("repaired nullable SET NULL references = %d", repairedReferences)
+	}
+	var repairedObjects int
+	if err := pool.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM information_schema.columns
+			 WHERE table_schema='public' AND table_name='account_deletion_requests'
+			   AND column_name IN ('lease_token','profile_media_id'))
+			+ (SELECT count(*) FROM pg_constraint
+			   WHERE conrelid='account_deletion_requests'::regclass
+			     AND conname='account_deletion_requests_status_check')
+			+ CASE WHEN to_regclass('public.account_deletion_requests_claim_idx') IS NULL THEN 0 ELSE 1 END
+			+ (SELECT count(DISTINCT trigger_name) FROM information_schema.triggers
+			   WHERE trigger_schema='public' AND trigger_name='events_require_active_archiver')
+	`).Scan(&repairedObjects); err != nil {
+		t.Fatal(err)
+	}
+	if repairedObjects != 5 {
+		t.Fatalf("repaired lifecycle objects = %d, want 5", repairedObjects)
+	}
+	var statusConstraint string
+	if err := pool.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE conrelid='account_deletion_requests'::regclass
+		  AND conname='account_deletion_requests_status_check'
+	`).Scan(&statusConstraint); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(statusConstraint, "manual_intervention") {
+		t.Fatalf("status constraint was not repaired: %s", statusConstraint)
+	}
+	var claimIndex string
+	if err := pool.QueryRow(ctx, `SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND indexname='account_deletion_requests_claim_idx'`).Scan(&claimIndex); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(claimIndex, "next_attempt_at, created_at") || !strings.Contains(claimIndex, "processing") {
+		t.Fatalf("claim index was not repaired: %s", claimIndex)
+	}
+	var recorded bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=20260920010000)`).Scan(&recorded); err != nil || !recorded {
+		t.Fatalf("migration recorded=%v err=%v", recorded, err)
+	}
+	var beforeFingerprintOID, afterFingerprintOID uint32
+	if err := pool.QueryRow(ctx, `SELECT 'users_account_state_idx'::regclass::oid`).Scan(&beforeFingerprintOID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version=20260920010000`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT 'users_account_state_idx'::regclass::oid`).Scan(&afterFingerprintOID); err != nil {
+		t.Fatal(err)
+	}
+	if afterFingerprintOID != beforeFingerprintOID {
+		t.Fatalf("repaired schema did not satisfy fingerprint; index recreated: %d -> %d", beforeFingerprintOID, afterFingerprintOID)
+	}
+}
+
+func TestApplyRepairsPermissiveLifecycleCheckBeforeRecording(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM schema_migrations WHERE version = 20260920010000;
+		ALTER TABLE account_deletion_requests
+			DROP CONSTRAINT account_deletion_requests_status_check,
+			ADD CONSTRAINT account_deletion_requests_status_check
+			CHECK (status IN ('pending', 'processing', 'completed', 'manual_intervention') OR TRUE);
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	var definition string
+	if err := pool.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(oid)
+		FROM pg_constraint
+		WHERE conrelid='account_deletion_requests'::regclass
+		  AND conname='account_deletion_requests_status_check'
+	`).Scan(&definition); err != nil {
+		t.Fatal(err)
+	}
+	const expected = "CHECK ((status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'manual_intervention'::text])))"
+	if definition != expected {
+		t.Fatalf("permissive status constraint survived migration: %s", definition)
+	}
+	var recorded bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=20260920010000)`).Scan(&recorded); err != nil || !recorded {
+		t.Fatalf("migration recorded=%v err=%v", recorded, err)
+	}
+}
+
+func TestApplyDoesNotRecordUnrepairablePartialAccountLifecycleSchema(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM schema_migrations WHERE version=20260920010000;
+		ALTER TABLE account_deletion_requests DROP COLUMN status CASCADE;
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	err := migrate.Apply(ctx, pool)
+	if err == nil || !strings.Contains(err.Error(), "migration 20260920010000") || !strings.Contains(err.Error(), "status") {
+		t.Fatalf("partial lifecycle error = %v", err)
+	}
+	var recorded bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=20260920010000)`).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded {
+		t.Fatal("unrepairable partial lifecycle schema was recorded as applied")
+	}
+}
+
+func TestApplyRepairsNoopAccountReferenceGuardBeforeRecording(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM schema_migrations WHERE version=20260920010000;
+		CREATE OR REPLACE FUNCTION public.require_active_account_reference()
+		RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			-- TG_ARGV array_agg(DISTINCT value ORDER BY value)
+			-- pg_advisory_xact_lock account_state = 'active'
+			-- account_deletion_requests ERRCODE = '23514'
+			RETURN NEW;
+		END
+		$$;
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	var source string
+	var recorded bool
+	if err := pool.QueryRow(ctx, `
+		SELECT prosrc FROM pg_proc
+		WHERE oid=to_regprocedure('public.require_active_account_reference()')
+	`).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=20260920010000)`).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if !recorded || !strings.Contains(source, "pg_advisory_xact_lock") || !strings.Contains(source, "account_state = 'active'") {
+		t.Fatalf("guard recorded=%v source=%s", recorded, source)
+	}
+}
+
+func TestApplyRepairsTriggerArgumentSubstringBypassBeforeRecording(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM schema_migrations WHERE version=20260920010000;
+		DROP TRIGGER tickets_require_active_owner ON tickets;
+		CREATE TRIGGER tickets_require_active_owner
+		BEFORE INSERT OR UPDATE OF owner_id ON tickets
+		FOR EACH ROW EXECUTE FUNCTION public.require_active_account_reference('not_owner_id');
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	var argsHex string
+	if err := pool.QueryRow(ctx, `
+		SELECT encode(tgargs, 'hex')
+		FROM pg_trigger
+		WHERE tgrelid='tickets'::regclass
+		  AND tgname='tickets_require_active_owner'
+		  AND NOT tgisinternal
+	`).Scan(&argsHex); err != nil {
+		t.Fatal(err)
+	}
+	if argsHex != "6f776e65725f696400" {
+		t.Fatalf("ticket trigger tgargs hex = %q", argsHex)
+	}
+}
+
+func TestApplyRepairsMalformedAccountReferenceTriggerBeforeRecording(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM schema_migrations WHERE version=20260920010000;
+		CREATE FUNCTION public.noop_account_reference_guard() RETURNS trigger
+		LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+		DROP TRIGGER tickets_require_active_owner ON tickets;
+		CREATE TRIGGER tickets_require_active_owner
+		BEFORE INSERT OR UPDATE OF owner_id ON tickets
+		FOR EACH ROW EXECUTE FUNCTION public.noop_account_reference_guard();
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	var functionName string
+	if err := pool.QueryRow(ctx, `
+		SELECT function.proname
+		FROM pg_trigger trigger
+		JOIN pg_proc function ON function.oid=trigger.tgfoid
+		WHERE trigger.tgrelid='tickets'::regclass
+		  AND trigger.tgname='tickets_require_active_owner'
+		  AND NOT trigger.tgisinternal
+	`).Scan(&functionName); err != nil {
+		t.Fatal(err)
+	}
+	if functionName != "require_active_account_reference" {
+		t.Fatalf("ticket trigger function = %q", functionName)
+	}
+}
+
+func TestApplyDoesNotRecordMalformedLifecycleStructuralContract(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM schema_migrations WHERE version=20260920010000;
+		ALTER TABLE account_deletion_steps
+			DROP CONSTRAINT account_deletion_steps_request_id_fkey;
+		ALTER TABLE account_deletion_outbox
+			DROP CONSTRAINT account_deletion_outbox_request_id_fkey,
+			DROP CONSTRAINT account_deletion_outbox_request_id_key;
+		ALTER TABLE account_deletion_requests
+			DROP CONSTRAINT account_deletion_requests_pkey;
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	err := migrate.Apply(ctx, pool)
+	if err == nil || !strings.Contains(err.Error(), "migration 20260920010000 postcondition") {
+		t.Fatalf("malformed structural contract error = %v", err)
+	}
+	var recorded bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=20260920010000)`).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded {
+		t.Fatal("migration version recorded despite missing primary/foreign/unique contract")
+	}
+}
+
+func TestAccountLifecycleDownSerializesWithDeletionRequest(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	users := user.NewPostgresStore(pool)
+	subjectID := uuid.New()
+	if _, _, err := user.NewService(users).Ensure(ctx, subjectID, user.Profile{Email: "down-race@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	down, err := fs.ReadFile(db.DownSQL, "migrations/20260920010000_account_lifecycle.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocker, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback(ctx)
+	if _, err := blocker.Exec(ctx, `LOCK TABLE account_deletion_requests IN ACCESS SHARE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	downDone := make(chan error, 1)
+	go func() {
+		_, err := pool.Exec(ctx, string(down))
+		downDone <- err
+	}()
+	testpostgres.WaitForBlockedQuery(t, pool, "LOCK TABLE tickets, competitors")
+
+	deletionDone := make(chan error, 1)
+	go func() {
+		_, err := users.RequestDeletion(ctx, subjectID, nil)
+		deletionDone <- err
+	}()
+	testpostgres.WaitForBlockedQuery(t, pool, "SELECT id, subject_id, requested_by")
+
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-downDone; err != nil {
+		t.Fatalf("down migration: %v", err)
+	}
+	if err := <-deletionDone; err == nil {
+		t.Fatal("deletion request committed after lifecycle schema was removed")
+	}
+	var lifecycleTablePresent bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.account_deletion_requests') IS NOT NULL`).Scan(&lifecycleTablePresent); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycleTablePresent {
+		t.Fatal("account lifecycle table remained after successful down migration")
+	}
+}
+
+func TestAccountLifecycleDownLocksGuardedLeafBeforeDeletionMarker(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	users := user.NewPostgresStore(pool)
+	ownerID := uuid.New()
+	if _, _, err := user.NewService(users).Ensure(ctx, ownerID, user.Profile{Email: "down-writer@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	eventRow, err := event.NewPostgresStore(pool).Create(ctx, event.Event{Name: "Down writer", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	down, err := fs.ReadFile(db.DownSQL, "migrations/20260920010000_account_lifecycle.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocker, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback(ctx)
+	if _, err := blocker.Exec(ctx, `LOCK TABLE events IN ACCESS SHARE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	downDone := make(chan error, 1)
+	go func() {
+		_, err := pool.Exec(ctx, string(down))
+		downDone <- err
+	}()
+	testpostgres.WaitForBlockedQuery(t, pool, "LOCK TABLE tickets, competitors")
+
+	writerDone := make(chan error, 1)
+	go func() {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO tickets (id,event_id,ticket_type,owner_id)
+			VALUES ($1,$2,'REGISTERED',$3)
+		`, uuid.New(), eventRow.ID, ownerID)
+		writerDone <- err
+	}()
+	testpostgres.WaitForBlockedQuery(t, pool, "INSERT INTO tickets")
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-downDone; err != nil {
+		t.Fatalf("down migration: %v", err)
+	}
+	if err := <-writerDone; err != nil {
+		t.Fatalf("guarded writer after down: %v", err)
+	}
 }
 
 func assertDoorStoreQueries(t *testing.T, pool *pgxpool.Pool) {

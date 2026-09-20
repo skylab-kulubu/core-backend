@@ -10,11 +10,12 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("media: not found")
-	ErrForbidden       = errors.New("media: forbidden")
-	ErrInvalid         = errors.New("media: invalid")
-	ErrPurged          = errors.New("media: blob purged")
-	ErrPurgeInProgress = errors.New("media: blob purge in progress")
+	ErrNotFound             = errors.New("media: not found")
+	ErrForbidden            = errors.New("media: forbidden")
+	ErrInvalid              = errors.New("media: invalid")
+	ErrPurged               = errors.New("media: blob purged")
+	ErrPurgeInProgress      = errors.New("media: blob purge in progress")
+	ErrPublicationUncertain = errors.New("media: publication outcome uncertain")
 )
 
 type Media struct {

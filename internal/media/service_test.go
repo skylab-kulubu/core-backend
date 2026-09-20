@@ -8,12 +8,72 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
+
+type rejectingCreateStore struct {
+	*media.MemoryStore
+}
+
+type uncertainStagingStore struct {
+	*media.MemoryStore
+	readyCalls int
+}
+
+func (*uncertainStagingStore) StageUpload(context.Context, string, uuid.UUID, time.Time) error {
+	return nil
+}
+func (*uncertainStagingStore) CreateStaged(context.Context, media.Media) (media.Media, error) {
+	return media.Media{}, media.ErrPublicationUncertain
+}
+func (s *uncertainStagingStore) ReadyStagedUploadForCleanup(context.Context, string, time.Time) error {
+	s.readyCalls++
+	return nil
+}
+func (*uncertainStagingStore) CancelStagedUpload(context.Context, string) error { return nil }
+func (*uncertainStagingStore) PurgeNextStagedUpload(context.Context, time.Time, func(string) error) (bool, error) {
+	return false, nil
+}
+
+func (rejectingCreateStore) Create(context.Context, media.Media) (media.Media, error) {
+	return media.Media{}, media.ErrForbidden
+}
+
+type recordingBlobStore struct {
+	objects   map[string][]byte
+	deleted   []string
+	deleteErr error
+}
+
+func (b *recordingBlobStore) Put(_ context.Context, key string, data []byte, _ string) error {
+	if b.objects == nil {
+		b.objects = make(map[string][]byte)
+	}
+	b.objects[key] = append([]byte(nil), data...)
+	return nil
+}
+
+func (b *recordingBlobStore) Read(_ context.Context, key string) ([]byte, error) {
+	data, ok := b.objects[key]
+	if !ok {
+		return nil, media.ErrNotFound
+	}
+	return append([]byte(nil), data...), nil
+}
+
+func (b *recordingBlobStore) Delete(_ context.Context, key string) error {
+	if b.deleteErr != nil {
+		return b.deleteErr
+	}
+	delete(b.objects, key)
+	b.deleted = append(b.deleted, key)
+	return nil
+}
 
 func pngDot() []byte {
 	b, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
@@ -56,6 +116,45 @@ func TestService_UploadImageThenGet(t *testing.T) {
 	}
 	if got.ID != created.ID || got.URL != created.URL {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestService_UploadDeletesBlobWhenMetadataCreateIsRejected(t *testing.T) {
+	t.Parallel()
+	blobs := &recordingBlobStore{}
+	svc := media.NewService(
+		rejectingCreateStore{MemoryStore: media.NewMemoryStore()},
+		blobs,
+		authz.NewAuthorizer(authz.DefaultPolicy()),
+		"https://cdn.example.test",
+	)
+	p := authz.Principal{ID: uuid.MustParse("13131313-1313-1313-1313-131313131313").String()}
+
+	_, err := svc.Upload(context.Background(), p, "rejected.png", "image/png", pngDot())
+	if !errors.Is(err, media.ErrForbidden) {
+		t.Fatalf("upload error = %v", err)
+	}
+	if len(blobs.deleted) != 1 {
+		t.Fatalf("deleted keys = %v", blobs.deleted)
+	}
+	if len(blobs.objects) != 0 {
+		t.Fatalf("metadata rejection left %d orphan blobs", len(blobs.objects))
+	}
+}
+
+func TestService_DoesNotDeleteBlobWhenMetadataCommitOutcomeIsUncertain(t *testing.T) {
+	t.Parallel()
+	store := &uncertainStagingStore{MemoryStore: media.NewMemoryStore()}
+	blobs := &recordingBlobStore{}
+	svc := media.NewService(store, blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "")
+	p := authz.Principal{ID: uuid.MustParse("14141414-1414-1414-1414-141414141414").String()}
+
+	_, err := svc.Upload(context.Background(), p, "uncertain.png", "image/png", pngDot())
+	if !errors.Is(err, media.ErrPublicationUncertain) {
+		t.Fatalf("upload error = %v", err)
+	}
+	if len(blobs.objects) != 1 || len(blobs.deleted) != 0 || store.readyCalls != 0 {
+		t.Fatalf("uncertain publication cleanup objects=%d deleted=%v ready=%d", len(blobs.objects), blobs.deleted, store.readyCalls)
 	}
 }
 

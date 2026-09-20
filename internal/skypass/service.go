@@ -55,7 +55,7 @@ func (s *service) BindCard(ctx context.Context, p authz.Principal, uid string, t
 	if errors.Is(err, user.ErrConflict) {
 		return user.User{}, ErrConflict
 	}
-	if errors.Is(err, user.ErrNotFound) {
+	if errors.Is(err, user.ErrNotFound) || errors.Is(err, user.ErrAccountBlocked) {
 		return user.User{}, ErrNotFound
 	}
 	return got, err
@@ -91,9 +91,7 @@ func (s *service) Mint(ctx context.Context, p authz.Principal) (Token, error) {
 		return Token{}, ErrInvalid
 	}
 	u, err := s.users.Get(ctx, id)
-	if errors.Is(err, user.ErrNotFound) {
-		return Token{}, ErrNotFound
-	}
+	u, err = activeUser(u, err)
 	if err != nil {
 		return Token{}, err
 	}
@@ -113,9 +111,7 @@ func (s *service) Verify(ctx context.Context, p authz.Principal, token string) (
 		return Holder{}, ErrInvalid
 	}
 	u, err := s.users.Get(ctx, id)
-	if errors.Is(err, user.ErrNotFound) {
-		return Holder{}, ErrNotFound
-	}
+	u, err = activeUser(u, err)
 	if err != nil {
 		return Holder{}, err
 	}
@@ -135,9 +131,7 @@ func (s *service) HolderFrom(ctx context.Context, token, uid string) (Holder, er
 			return Holder{}, ErrInvalid
 		}
 		u, err := s.users.Get(ctx, id)
-		if errors.Is(err, user.ErrNotFound) {
-			return Holder{}, ErrNotFound
-		}
+		u, err = activeUser(u, err)
 		if err != nil {
 			return Holder{}, err
 		}
@@ -171,4 +165,17 @@ func holder(u user.User) Holder {
 		FirstName: u.FirstName,
 		LastName:  u.LastName,
 	}
+}
+
+func activeUser(u user.User, err error) (user.User, error) {
+	if errors.Is(err, user.ErrNotFound) || errors.Is(err, user.ErrAccountBlocked) {
+		return user.User{}, ErrNotFound
+	}
+	if err != nil {
+		return user.User{}, err
+	}
+	if u.AccountState != "" && u.AccountState != user.AccountActive {
+		return user.User{}, ErrNotFound
+	}
+	return u, nil
 }
