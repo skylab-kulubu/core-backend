@@ -49,6 +49,15 @@ func TestAccountErasureCannotStartWithoutEnforcedAccessGate(t *testing.T) {
 	}
 }
 
+func TestDisabledAccountAccessGateRemainsNilAtHTTPBoundary(t *testing.T) {
+	t.Parallel()
+
+	var gate *accessgate.RedisGate
+	if reader := optionalAccountAccessGate(gate); reader != nil {
+		t.Fatal("disabled account access gate became a non-nil HTTP dependency")
+	}
+}
+
 func TestLoadSkyPassKeyDerivesES256FromLegacyRSAEnvironment(t *testing.T) {
 	legacy, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
