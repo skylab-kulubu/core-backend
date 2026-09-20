@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"testing"
 
@@ -106,5 +107,24 @@ func TestAccountErasureWorkerIsDefaultOffAndRequiresFullKeycloakConfig(t *testin
 	values["ACCOUNT_ERASURE_WORKER_ENABLED"] = "yes"
 	if enabled, err = accountErasureWorkerEnabled(getenv); err == nil || enabled {
 		t.Fatalf("invalid flag enabled=%v err=%v", enabled, err)
+	}
+}
+
+func TestAccountSelfDeletionReceiptKeyIsRequiredOnlyWhenFeatureEnabled(t *testing.T) {
+	t.Parallel()
+	values := map[string]string{}
+	getenv := func(key string) string { return values[key] }
+
+	disabled, err := accountSelfDeletionConfig(getenv, false)
+	if err != nil || disabled.Enabled || len(disabled.ReceiptKey) != 0 {
+		t.Fatalf("disabled config=%+v err=%v", disabled, err)
+	}
+	if _, err := accountSelfDeletionConfig(getenv, true); err == nil {
+		t.Fatal("enabled self deletion accepted a missing receipt key")
+	}
+	values["ACCOUNT_DELETION_RECEIPT_KEY"] = base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	enabled, err := accountSelfDeletionConfig(getenv, true)
+	if err != nil || !enabled.Enabled || len(enabled.ReceiptKey) != 32 {
+		t.Fatalf("enabled config=%+v err=%v", enabled, err)
 	}
 }

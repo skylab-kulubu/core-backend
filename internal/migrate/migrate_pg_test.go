@@ -1,6 +1,7 @@
 package migrate_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io/fs"
@@ -328,6 +329,151 @@ func TestApplyCreatesAccountLifecycleSchemaWithoutCascadeDelete(t *testing.T) {
 	}
 }
 
+func TestApplyRepairsSelfDeleteCapabilityFingerprintBeforeRecording(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM schema_migrations WHERE version=20260920130000;
+		ALTER TABLE account_deletion_self_intakes
+			DROP CONSTRAINT account_deletion_self_intakes_receipt_hash_check,
+			ADD CONSTRAINT account_deletion_self_intakes_receipt_hash_check
+			CHECK (octet_length(receipt_hash) > 0),
+			DROP CONSTRAINT account_deletion_self_intakes_receipt_lookup_hash_key,
+			ALTER COLUMN created_at DROP DEFAULT;
+		DROP INDEX account_deletion_self_intakes_expiry_idx;
+		CREATE INDEX account_deletion_self_intakes_expiry_idx
+			ON account_deletion_self_intakes (request_id);
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	var receiptConstraint, expiryIndex, createdAtDefault string
+	if err := pool.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(oid)
+		FROM pg_constraint
+		WHERE conrelid='account_deletion_self_intakes'::regclass
+		  AND conname='account_deletion_self_intakes_receipt_hash_check'
+	`).Scan(&receiptConstraint); err != nil {
+		t.Fatal(err)
+	}
+	if receiptConstraint != "CHECK ((octet_length(receipt_hash) = 32))" {
+		t.Fatalf("receipt constraint = %q", receiptConstraint)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT indexdef FROM pg_indexes
+		WHERE schemaname='public' AND indexname='account_deletion_self_intakes_expiry_idx'
+	`).Scan(&expiryIndex); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(expiryIndex, "receipt_expires_at, request_id") || !strings.Contains(expiryIndex, "receipt_revoked_at IS NULL") {
+		t.Fatalf("expiry index = %q", expiryIndex)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT column_default
+		FROM information_schema.columns
+		WHERE table_schema='public'
+		  AND table_name='account_deletion_self_intakes'
+		  AND column_name='created_at'
+	`).Scan(&createdAtDefault); err != nil {
+		t.Fatal(err)
+	}
+	if createdAtDefault != "now()" {
+		t.Fatalf("created_at default = %q", createdAtDefault)
+	}
+	var recorded bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=20260920130000)`).Scan(&recorded); err != nil || !recorded {
+		t.Fatalf("migration recorded=%v err=%v", recorded, err)
+	}
+}
+
+func TestApplyRejectsUnexpectedRawSelfDeleteCapabilityColumn(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM schema_migrations WHERE version=20260920130000;
+		ALTER TABLE account_deletion_self_intakes ADD COLUMN raw_receipt TEXT;
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	err := migrate.Apply(ctx, pool)
+	if err == nil || !strings.Contains(err.Error(), "migration 20260920130000 postcondition") {
+		t.Fatalf("unexpected raw capability column error = %v", err)
+	}
+	var recorded bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=20260920130000)`).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded {
+		t.Fatal("self-delete migration recorded despite unexpected raw capability column")
+	}
+}
+
+func TestSelfDeleteIntakeDownSerializesWithCapabilityWriter(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	users := user.NewPostgresStore(pool)
+	subjectID := uuid.New()
+	if _, _, err := user.NewService(users).Ensure(ctx, subjectID, user.Profile{Email: "self-down-race@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	request, err := users.RequestDeletion(ctx, subjectID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writer, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback(ctx)
+	createdAt := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := writer.Exec(ctx, `
+		INSERT INTO account_deletion_self_intakes (
+			request_id, idempotency_key_hash, receipt_lookup_hash, receipt_hash,
+			receipt_expires_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6)
+	`, request.ID, make([]byte, 32), bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32), createdAt.Add(time.Hour), createdAt); err != nil {
+		t.Fatal(err)
+	}
+	down, err := fs.ReadFile(db.DownSQL, "migrations/20260920130000_account_self_delete_intake.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	downDone := make(chan error, 1)
+	go func() {
+		_, err := pool.Exec(ctx, string(down))
+		downDone <- err
+	}()
+	testpostgres.WaitForBlockedQuery(t, pool, "LOCK TABLE account_deletion_requests, account_deletion_self_intakes")
+
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-downDone; err == nil || !strings.Contains(err.Error(), "cannot remove self-delete intake") {
+		t.Fatalf("down migration error = %v", err)
+	}
+	var tablePresent bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.account_deletion_self_intakes') IS NOT NULL`).Scan(&tablePresent); err != nil {
+		t.Fatal(err)
+	}
+	if !tablePresent {
+		t.Fatal("down migration removed a concurrently committed capability")
+	}
+}
+
 func TestApplyRepairsPartialAccountLifecycleFingerprintDrift(t *testing.T) {
 	pool := postgresPool(t)
 	ctx := context.Background()
@@ -619,6 +765,13 @@ func TestApplyDoesNotRecordMalformedLifecycleStructuralContract(t *testing.T) {
 	if err := migrate.Apply(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
+	selfDeleteDown, err := fs.ReadFile(db.DownSQL, "migrations/20260920130000_account_self_delete_intake.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(selfDeleteDown)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `
 		DELETE FROM schema_migrations WHERE version=20260920010000;
 		ALTER TABLE account_deletion_steps
@@ -632,7 +785,7 @@ func TestApplyDoesNotRecordMalformedLifecycleStructuralContract(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := migrate.Apply(ctx, pool)
+	err = migrate.Apply(ctx, pool)
 	if err == nil || !strings.Contains(err.Error(), "migration 20260920010000 postcondition") {
 		t.Fatalf("malformed structural contract error = %v", err)
 	}
@@ -654,6 +807,13 @@ func TestAccountLifecycleDownSerializesWithDeletionRequest(t *testing.T) {
 	users := user.NewPostgresStore(pool)
 	subjectID := uuid.New()
 	if _, _, err := user.NewService(users).Ensure(ctx, subjectID, user.Profile{Email: "down-race@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	selfDeleteDown, err := fs.ReadFile(db.DownSQL, "migrations/20260920130000_account_self_delete_intake.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(selfDeleteDown)); err != nil {
 		t.Fatal(err)
 	}
 	down, err := fs.ReadFile(db.DownSQL, "migrations/20260920010000_account_lifecycle.down.sql")
@@ -714,6 +874,13 @@ func TestAccountLifecycleDownLocksGuardedLeafBeforeDeletionMarker(t *testing.T) 
 	}
 	eventRow, err := event.NewPostgresStore(pool).Create(ctx, event.Event{Name: "Down writer", Location: "YTÜ", OwnerTeam: "WEBLAB"})
 	if err != nil {
+		t.Fatal(err)
+	}
+	selfDeleteDown, err := fs.ReadFile(db.DownSQL, "migrations/20260920130000_account_self_delete_intake.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(selfDeleteDown)); err != nil {
 		t.Fatal(err)
 	}
 	down, err := fs.ReadFile(db.DownSQL, "migrations/20260920010000_account_lifecycle.down.sql")

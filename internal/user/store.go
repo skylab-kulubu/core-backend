@@ -9,12 +9,13 @@ import (
 )
 
 var (
-	ErrNotFound       = errors.New("user not found")
-	ErrConflict       = errors.New("user conflict")
-	ErrSkyLimit       = errors.New("sky number limit")
-	ErrInvalid        = errors.New("user invalid")
-	ErrAccountBlocked = errors.New("user account blocked")
-	ErrLeaseLost      = errors.New("account deletion lease lost")
+	ErrNotFound                        = errors.New("user not found")
+	ErrConflict                        = errors.New("user conflict")
+	ErrSkyLimit                        = errors.New("sky number limit")
+	ErrInvalid                         = errors.New("user invalid")
+	ErrAccountBlocked                  = errors.New("user account blocked")
+	ErrLeaseLost                       = errors.New("account deletion lease lost")
+	ErrSelfDeletionIdempotencyConflict = errors.New("self deletion idempotency conflict")
 )
 
 type Store interface {

@@ -178,7 +178,7 @@ func TestWorkerRetriesUncertainExternalEffectWithoutRepeatingCompletedSteps(t *t
 		t.Fatal(err)
 	}
 
-	now := time.Date(2026, 9, 20, 2, 0, 0, 0, time.UTC)
+	now := request.NextAttemptAt.Add(time.Minute)
 	confirmDeletionProjection(t, store, request, now)
 	identity := &uncertainIdentity{}
 	worker := account.NewWorker(store, identity, account.WorkerConfig{

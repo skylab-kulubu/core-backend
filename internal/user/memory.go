@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"crypto/subtle"
 	"slices"
 	"strings"
 	"sync"
@@ -11,17 +12,19 @@ import (
 )
 
 type MemoryStore struct {
-	mu               sync.Mutex
-	byID             map[uuid.UUID]User
-	deletionRequests map[uuid.UUID]DeletionRequest
-	deletionSteps    map[uuid.UUID]map[DeletionStep]time.Time
+	mu                  sync.Mutex
+	byID                map[uuid.UUID]User
+	deletionRequests    map[uuid.UUID]DeletionRequest
+	deletionSteps       map[uuid.UUID]map[DeletionStep]time.Time
+	selfDeletionIntakes map[uuid.UUID]SelfDeletionRecord
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		byID:             make(map[uuid.UUID]User),
-		deletionRequests: make(map[uuid.UUID]DeletionRequest),
-		deletionSteps:    make(map[uuid.UUID]map[DeletionStep]time.Time),
+		byID:                make(map[uuid.UUID]User),
+		deletionRequests:    make(map[uuid.UUID]DeletionRequest),
+		deletionSteps:       make(map[uuid.UUID]map[DeletionStep]time.Time),
+		selfDeletionIntakes: make(map[uuid.UUID]SelfDeletionRecord),
 	}
 }
 
@@ -294,6 +297,119 @@ func (s *MemoryStore) RequestDeletion(_ context.Context, id uuid.UUID, requested
 	}
 	s.deletionRequests[id] = request
 	return request, nil
+}
+
+func (s *MemoryStore) RequestSelfDeletion(
+	_ context.Context,
+	id uuid.UUID,
+	intake SelfDeletionIntake,
+) (SelfDeletionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.deletionRequests[id]; ok {
+		if record, exists := s.selfDeletionIntakes[existing.ID]; exists {
+			if subtle.ConstantTimeCompare(record.IdempotencyHash[:], intake.IdempotencyHash[:]) != 1 {
+				return SelfDeletionRecord{}, ErrSelfDeletionIdempotencyConflict
+			}
+			record.Request = existing
+			record.HasCompletedStep = len(s.deletionSteps[existing.ID]) > 0
+			return record, nil
+		}
+		record := SelfDeletionRecord{
+			Request: existing, SelfDeletionIntake: intake,
+			HasCompletedStep: len(s.deletionSteps[existing.ID]) > 0,
+		}
+		s.selfDeletionIntakes[existing.ID] = record
+		return record, nil
+	}
+
+	now := intake.CreatedAt.UTC()
+	u, ok := s.byID[id]
+	if !ok {
+		u = User{ID: id, AccountState: AccountActive, CreatedAt: now, UpdatedAt: now}
+	}
+	if u.AccountState != AccountActive {
+		return SelfDeletionRecord{}, ErrAccountBlocked
+	}
+	u.AccountState = AccountDeletionPending
+	u.DeletionRequestedAt = &now
+	u.UpdatedAt = now
+	s.byID[id] = u
+	request := DeletionRequest{
+		ID: uuid.New(), SubjectID: id, Status: DeletionRequestPending,
+		NextAttemptAt: now, CreatedAt: now, UpdatedAt: now,
+	}
+	s.deletionRequests[id] = request
+	record := SelfDeletionRecord{
+		Request: request, SelfDeletionIntake: intake,
+	}
+	s.selfDeletionIntakes[request.ID] = record
+	return record, nil
+}
+
+func (s *MemoryStore) SelfDeletionByReceiptLookup(_ context.Context, receiptLookupHash [32]byte) (SelfDeletionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for requestID, intake := range s.selfDeletionIntakes {
+		if subtle.ConstantTimeCompare(intake.ReceiptLookupHash[:], receiptLookupHash[:]) != 1 {
+			continue
+		}
+		for _, request := range s.deletionRequests {
+			if request.ID != requestID {
+				continue
+			}
+			intake.Request = request
+			intake.HasCompletedStep = len(s.deletionSteps[requestID]) > 0
+			return intake, nil
+		}
+	}
+	return SelfDeletionRecord{}, ErrNotFound
+}
+
+func (s *MemoryStore) RetrySelfDeletion(_ context.Context, receiptLookupHash [32]byte, now time.Time) (SelfDeletionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for requestID, intake := range s.selfDeletionIntakes {
+		if subtle.ConstantTimeCompare(intake.ReceiptLookupHash[:], receiptLookupHash[:]) != 1 {
+			continue
+		}
+		if intake.ReceiptRevokedAt != nil || !now.Before(intake.ReceiptExpiresAt) {
+			return SelfDeletionRecord{}, ErrNotFound
+		}
+		for subjectID, request := range s.deletionRequests {
+			if request.ID != requestID {
+				continue
+			}
+			if request.Status == DeletionRequestManualIntervention {
+				request.Status = DeletionRequestPending
+				request.AttemptCount = 0
+				request.NextAttemptAt = now
+				request.LeaseUntil = nil
+				request.LeaseToken = nil
+				request.LastErrorCode = ""
+				request.UpdatedAt = now
+				s.deletionRequests[subjectID] = request
+			}
+			intake.Request = request
+			intake.HasCompletedStep = len(s.deletionSteps[requestID]) > 0
+			return intake, nil
+		}
+	}
+	return SelfDeletionRecord{}, ErrNotFound
+}
+
+func (s *MemoryStore) RevokeSelfDeletionReceipt(_ context.Context, requestID uuid.UUID, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	intake, ok := s.selfDeletionIntakes[requestID]
+	if !ok {
+		return ErrNotFound
+	}
+	if intake.ReceiptRevokedAt == nil {
+		intake.ReceiptRevokedAt = &at
+		s.selfDeletionIntakes[requestID] = intake
+	}
+	return nil
 }
 
 func (s *MemoryStore) AnonymizeAccount(_ context.Context, id uuid.UUID, at time.Time) error {

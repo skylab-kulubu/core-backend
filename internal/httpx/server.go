@@ -26,22 +26,24 @@ import (
 )
 
 type Deps struct {
-	Users                user.Service
-	Identity             identity.Service
-	Events               event.Service
-	Seasons              season.Service
-	Tickets              ticket.Service
-	Competitors          competitor.Service
-	Media                media.Service
-	URLs                 shorturl.Service
-	Certificates         certificate.Service
-	SkyPass              skypass.Service
-	Mail                 mail.Mailer
-	EventMail            eventmail.Service
-	ParseToken           func(string) (authn.Identity, error)
-	URLAttributionGuard  handlers.URLAttributionGuard
-	AccountAccessGate    accessgate.Reader
-	AccountAccessMetrics *accessgate.Metrics
+	Users                  user.Service
+	Identity               identity.Service
+	Events                 event.Service
+	Seasons                season.Service
+	Tickets                ticket.Service
+	Competitors            competitor.Service
+	Media                  media.Service
+	URLs                   shorturl.Service
+	Certificates           certificate.Service
+	SkyPass                skypass.Service
+	Mail                   mail.Mailer
+	EventMail              eventmail.Service
+	ParseToken             func(string) (authn.Identity, error)
+	URLAttributionGuard    handlers.URLAttributionGuard
+	AccountAccessGate      accessgate.Reader
+	AccountAccessMetrics   *accessgate.Metrics
+	SelfDeletion           handlers.AccountDeletionService
+	ParseSelfDeleteContext func(string, string) (authn.Identity, error)
 }
 
 func New(deps Deps) *fiber.App {
@@ -107,6 +109,12 @@ func New(deps Deps) *fiber.App {
 	}
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
+	}
+	if deps.SelfDeletion != nil {
+		selfDeletion := handlers.NewAccountDeletionHandler(deps.SelfDeletion, deps.ParseSelfDeleteContext)
+		app.Post("/v1/account-deletion-requests/self", selfDeletion.Begin)
+		app.Get("/v1/account-deletion-requests/status", selfDeletion.Status)
+		app.Post("/v1/account-deletion-requests/status/retry", selfDeletion.Retry)
 	}
 	app.Post("/v1/events/:eventId/applications/guest", tickets.ApplyGuest)
 	app.Use(middlewares.Bearer(deps.ParseToken))

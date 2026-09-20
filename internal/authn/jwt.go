@@ -4,7 +4,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/user"
@@ -35,6 +37,68 @@ func ParseAndVerify(token string, verify func(string) error, issuer, audience st
 		return Identity{}, ErrInvalidToken
 	}
 	if !audienceIncludes(claims["aud"], audience) {
+		return Identity{}, ErrInvalidToken
+	}
+	return ident, nil
+}
+
+// ParseSelfDeleteContext verifies the narrow two-token end-user contract used
+// only by the Account Center self-deletion intake. The Account REST access
+// token proves the caller is a user of the confidential Account Center client;
+// the separately signature-verified ID token proves recent authentication.
+func ParseSelfDeleteContext(accessToken, idToken string, verify func(string) error, issuer, clientID string, now time.Time, maxAuthenticationAge time.Duration) (Identity, error) {
+	if verify == nil || strings.TrimSpace(issuer) == "" || strings.TrimSpace(clientID) == "" || maxAuthenticationAge <= 0 {
+		return Identity{}, ErrInvalidToken
+	}
+	if err := verify(accessToken); err != nil {
+		return Identity{}, ErrInvalidToken
+	}
+	header, err := decodeJWTObject(strings.Split(strings.TrimSpace(accessToken), "."), 0)
+	if err != nil || header["alg"] != "RS256" || header["typ"] != "JWT" {
+		return Identity{}, ErrInvalidToken
+	}
+	ident, claims, err := decodeAccessToken(accessToken)
+	if err != nil {
+		return Identity{}, err
+	}
+	audience, ok := claims["aud"].(string)
+	if !ok || audience != "account" || claims["iss"] != issuer || claims["azp"] != clientID || claims["scope"] != "openid" {
+		return Identity{}, ErrInvalidToken
+	}
+	now = now.UTC()
+	expiresAt, ok := integerTimeClaim(claims["exp"])
+	if !ok || !expiresAt.After(now) {
+		return Identity{}, ErrInvalidToken
+	}
+
+	if err := verify(idToken); err != nil {
+		return Identity{}, ErrInvalidToken
+	}
+	idHeader, err := decodeJWTObject(strings.Split(strings.TrimSpace(idToken), "."), 0)
+	if err != nil || idHeader["alg"] != "RS256" || idHeader["typ"] != "JWT" {
+		return Identity{}, ErrInvalidToken
+	}
+	reauthenticated, idClaims, err := decodeAccessToken(idToken)
+	if err != nil || reauthenticated.ID != ident.ID {
+		return Identity{}, ErrInvalidToken
+	}
+	idAudience, ok := idClaims["aud"].(string)
+	if !ok || idAudience != clientID || idClaims["iss"] != issuer {
+		return Identity{}, ErrInvalidToken
+	}
+	sid, ok := idClaims["sid"].(string)
+	if !ok || strings.TrimSpace(sid) == "" {
+		return Identity{}, ErrInvalidToken
+	}
+	authenticatedAt, ok := integerTimeClaim(idClaims["auth_time"])
+	if !ok {
+		return Identity{}, ErrInvalidToken
+	}
+	if authenticatedAt.After(now.Add(5*time.Second)) || authenticatedAt.Before(now.Add(-maxAuthenticationAge)) {
+		return Identity{}, ErrInvalidToken
+	}
+	idExpiresAt, ok := integerTimeClaim(idClaims["exp"])
+	if !ok || !idExpiresAt.After(now) {
 		return Identity{}, ErrInvalidToken
 	}
 	return ident, nil
@@ -88,6 +152,29 @@ func decodeAccessToken(token string) (Identity, map[string]any, error) {
 		Groups: groupsFromClaims(claims),
 		Roles:  rolesFromClaims(claims),
 	}, claims, nil
+}
+
+func decodeJWTObject(parts []string, index int) (map[string]any, error) {
+	if len(parts) != 3 || index < 0 || index >= len(parts) {
+		return nil, ErrInvalidToken
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[index])
+	if err != nil {
+		return nil, ErrInvalidToken
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, ErrInvalidToken
+	}
+	return object, nil
+}
+
+func integerTimeClaim(raw any) (time.Time, bool) {
+	number, ok := raw.(float64)
+	if !ok || math.Trunc(number) != number || number < 0 || number > math.MaxInt64 {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(number), 0).UTC(), true
 }
 
 func audienceIncludes(raw any, want string) bool {

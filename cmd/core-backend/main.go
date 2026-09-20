@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -108,6 +109,9 @@ func main() {
 	parse := func(string) (authn.Identity, error) {
 		return authn.Identity{}, authn.ErrInvalidToken
 	}
+	parseSelfDelete := func(string, string) (authn.Identity, error) {
+		return authn.Identity{}, authn.ErrInvalidToken
+	}
 	jwksURL := os.Getenv("KEYCLOAK_JWKS_URL")
 	base := strings.TrimRight(os.Getenv("KEYCLOAK_URL"), "/")
 	realm := os.Getenv("KEYCLOAK_REALM")
@@ -138,6 +142,9 @@ func main() {
 		v := authn.NewJWKS(jwksURL)
 		parse = func(token string) (authn.Identity, error) {
 			return authn.ParseAndVerify(token, v.Verify, issuer, authn.ResourceAudience)
+		}
+		parseSelfDelete = func(accessToken, idToken string) (authn.Identity, error) {
+			return authn.ParseSelfDeleteContext(accessToken, idToken, v.Verify, issuer, "account-center", time.Now().UTC(), 5*time.Minute)
 		}
 	}
 
@@ -177,6 +184,14 @@ func main() {
 		log.Fatal(err)
 	}
 	if err := validateAccountErasureGate(workerEnabled, gateConfig.Mode); err != nil {
+		log.Fatal(err)
+	}
+	selfDeletionConfig, err := accountSelfDeletionConfig(os.Getenv, workerEnabled)
+	if err != nil {
+		log.Fatal(err)
+	}
+	selfDeletion, err := account.NewSelfDeletion(users, accessProjector, selfDeletionConfig)
+	if err != nil {
 		log.Fatal(err)
 	}
 	if workerEnabled {
@@ -277,14 +292,16 @@ func main() {
 		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
 			UploadStagingGrace: uploadStagingConfig.Grace,
 		}),
-		URLs:                 shorturl.NewService(urlStore, az),
-		Certificates:         certSvc,
-		SkyPass:              skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
-		Mail:                 mailer,
-		EventMail:            eventmail.New(events, tickets, users, lists, az, mailSnapshots),
-		ParseToken:           parse,
-		AccountAccessGate:    gate,
-		AccountAccessMetrics: accessMetrics,
+		URLs:                   shorturl.NewService(urlStore, az),
+		Certificates:           certSvc,
+		SkyPass:                skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
+		Mail:                   mailer,
+		EventMail:              eventmail.New(events, tickets, users, lists, az, mailSnapshots),
+		ParseToken:             parse,
+		AccountAccessGate:      gate,
+		AccountAccessMetrics:   accessMetrics,
+		SelfDeletion:           selfDeletion,
+		ParseSelfDeleteContext: parseSelfDelete,
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},
@@ -297,6 +314,20 @@ func main() {
 	if err := app.Listen(":" + addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func accountSelfDeletionConfig(getenv func(string) string, enabled bool) (account.SelfDeletionConfig, error) {
+	config := account.SelfDeletionConfig{Enabled: enabled, ReceiptTTL: 90 * 24 * time.Hour}
+	if !enabled {
+		return config, nil
+	}
+	raw := strings.TrimSpace(getenv("ACCOUNT_DELETION_RECEIPT_KEY"))
+	key, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil || len(key) != 32 {
+		return account.SelfDeletionConfig{}, errors.New("ACCOUNT_DELETION_RECEIPT_KEY must be an unpadded base64url-encoded 32-byte key when account erasure is enabled")
+	}
+	config.ReceiptKey = key
+	return config, nil
 }
 
 func validateAccountErasureGate(workerEnabled bool, mode accessgate.Mode) error {
