@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/account"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
@@ -61,17 +63,25 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	uploadStagingConfig, err := media.UploadStagingConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	mediaPurgeContext, stopMediaPurge := context.WithCancel(context.Background())
 	defer stopMediaPurge()
 	media.MaintainBlobPurge(mediaPurgeContext, mediaStore, blobs, mediaPurgeConfig, func(err error) {
 		log.Printf("media blob purge: %v", err)
+	})
+	media.MaintainUploadStaging(mediaPurgeContext, mediaStore, blobs, uploadStagingConfig, func(err error) {
+		log.Printf("media upload staging cleanup: %v", err)
 	})
 	media.MaintainCoverColorBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
 		log.Printf("media cover color backfill: %v", err)
 	})
 
 	dir := identity.Directory(identity.NewMemory())
-	if os.Getenv("KEYCLOAK_URL") != "" {
+	keycloakConfigured := strings.TrimSpace(os.Getenv("KEYCLOAK_URL")) != ""
+	if keycloakConfigured {
 		if os.Getenv("KEYCLOAK_REALM") == "" || os.Getenv("KEYCLOAK_CLIENT_ID") == "" || os.Getenv("KEYCLOAK_CLIENT_SECRET") == "" {
 			log.Fatal("KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET are required with KEYCLOAK_URL")
 		}
@@ -92,6 +102,26 @@ func main() {
 		}
 		cancelRoleSetup()
 		dir = keycloakDirectory
+	}
+	workerEnabled, err := accountErasureWorkerEnabled(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if workerEnabled {
+		account.Maintain(
+			context.Background(),
+			account.NewWorker(users, identity.NewAccountIdentity(dir), account.WorkerConfig{
+				Lease:                5 * time.Minute,
+				RetryDelay:           30 * time.Second,
+				MaxAttempts:          8,
+				StepTimeout:          20 * time.Second,
+				DeferredRetryHorizon: uploadStagingConfig.Grace + 24*time.Hour,
+			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
+			2*time.Second,
+			func(err error) { log.Printf("account erasure worker: %v", err) },
+		)
+	} else {
+		log.Print("account erasure worker disabled: ACCOUNT_ERASURE_WORKER_ENABLED is not true")
 	}
 
 	parse := func(string) (authn.Identity, error) {
@@ -198,19 +228,27 @@ func main() {
 	})
 
 	app := httpx.New(httpx.Deps{
-		Users:        user.NewService(users, dir),
-		Identity:     identity.NewService(dir, users, az, mailer),
-		Events:       event.NewService(events, az, cdnBase),
-		Seasons:      season.NewService(seasons, az),
-		Tickets:      ticketSvc,
-		Competitors:  competitor.NewService(competitors, events, az),
-		Media:        media.NewService(mediaStore, blobs, az, cdnBase),
+		Users: user.NewService(users, dir),
+		Identity: identity.NewServiceWithOptions(dir, users, az, identity.Options{
+			AccountErasureEnabled: workerEnabled,
+		}, mailer),
+		Events:      event.NewService(events, az, cdnBase),
+		Seasons:     season.NewService(seasons, az),
+		Tickets:     ticketSvc,
+		Competitors: competitor.NewService(competitors, events, az),
+		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
+			UploadStagingGrace: uploadStagingConfig.Grace,
+		}),
 		URLs:         shorturl.NewService(urlStore, az),
 		Certificates: certSvc,
 		SkyPass:      skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
 		Mail:         mailer,
 		EventMail:    eventmail.New(events, tickets, users, lists, az, mailSnapshots),
 		ParseToken:   parse,
+		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) bool {
+			allowed, err := users.CanAttribute(ctx, id)
+			return err == nil && allowed
+		},
 	})
 
 	addr := os.Getenv("PORT")
@@ -219,6 +257,23 @@ func main() {
 	}
 	if err := app.Listen(":" + addr); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func accountErasureWorkerEnabled(getenv func(string) string) (bool, error) {
+	raw := strings.TrimSpace(getenv("ACCOUNT_ERASURE_WORKER_ENABLED"))
+	switch raw {
+	case "", "false":
+		return false, nil
+	case "true":
+		for _, key := range []string{"KEYCLOAK_URL", "KEYCLOAK_REALM", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"} {
+			if strings.TrimSpace(getenv(key)) == "" {
+				return false, fmt.Errorf("%s is required when ACCOUNT_ERASURE_WORKER_ENABLED=true", key)
+			}
+		}
+		return true, nil
+	default:
+		return false, fmt.Errorf("ACCOUNT_ERASURE_WORKER_ENABLED must be true or false")
 	}
 }
 

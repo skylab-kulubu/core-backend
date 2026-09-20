@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
+	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
 type PostgresStore struct {
@@ -104,7 +105,12 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 	if e.ID == uuid.Nil {
 		e.ID = uuid.New()
 	}
-	_, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Event{}, err
+	}
+	defer tx.Rollback(ctx)
+	_, err = tx.Exec(ctx, `
 		INSERT INTO events (
 			id, name, description, location, owner_team, form_url, capacity,
 			start_date, end_date, linkedin, active, ranked, prize_info, season_id, cover_image_id,
@@ -116,14 +122,25 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 	if err != nil {
 		return Event{}, err
 	}
-	if err := s.replaceDoorStaff(ctx, e.ID, e.DoorStaffIDs); err != nil {
+	if err := s.replaceDoorStaff(ctx, tx, e.ID, e.DoorStaffIDs); err != nil {
+		if subjectlock.IsInactiveAccountReference(err) {
+			return Event{}, ErrForbidden
+		}
+		return Event{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return Event{}, err
 	}
 	return s.Get(ctx, e.ID)
 }
 
 func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
-	tag, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Event{}, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
 		UPDATE events SET
 			name = $2, description = $3, location = $4, owner_team = $5, form_url = $6,
 			capacity = $7, start_date = $8, end_date = $9, linkedin = $10, active = $11,
@@ -139,7 +156,13 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 	if tag.RowsAffected() == 0 {
 		return Event{}, ErrNotFound
 	}
-	if err := s.replaceDoorStaff(ctx, e.ID, e.DoorStaffIDs); err != nil {
+	if err := s.replaceDoorStaff(ctx, tx, e.ID, e.DoorStaffIDs); err != nil {
+		if subjectlock.IsInactiveAccountReference(err) {
+			return Event{}, ErrForbidden
+		}
+		return Event{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return Event{}, err
 	}
 	return s.Get(ctx, e.ID)
@@ -153,6 +176,9 @@ func (s *PostgresStore) Archive(ctx context.Context, id uuid.UUID, actorID *uuid
 			updated_at = CASE WHEN archived_at IS NULL THEN now() ELSE updated_at END
 		WHERE id = $1`, id, actorID)
 	if err != nil {
+		if subjectlock.IsInactiveAccountReference(err) {
+			return ErrForbidden
+		}
 		return err
 	}
 	if tag.RowsAffected() == 0 {
@@ -266,8 +292,8 @@ func (s *PostgresStore) loadDoorStaff(ctx context.Context, e *Event) error {
 	return nil
 }
 
-func (s *PostgresStore) replaceDoorStaff(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) error {
-	if _, err := s.pool.Exec(ctx, `DELETE FROM event_door_staff WHERE event_id = $1`, eventID); err != nil {
+func (s *PostgresStore) replaceDoorStaff(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, ids []uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM event_door_staff WHERE event_id = $1`, eventID); err != nil {
 		return err
 	}
 	seen := map[uuid.UUID]struct{}{}
@@ -279,7 +305,7 @@ func (s *PostgresStore) replaceDoorStaff(ctx context.Context, eventID uuid.UUID,
 			continue
 		}
 		seen[id] = struct{}{}
-		if _, err := s.pool.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO event_door_staff (event_id, user_id) VALUES ($1, $2)
 		`, eventID, id); err != nil {
 			return err
@@ -383,6 +409,9 @@ func (s *PostgresStore) ArchiveDay(ctx context.Context, id uuid.UUID, actorID *u
 			updated_at = CASE WHEN archived_at IS NULL THEN now() ELSE updated_at END
 		WHERE id = $1`, id, actorID)
 	if err != nil {
+		if subjectlock.IsInactiveAccountReference(err) {
+			return ErrForbidden
+		}
 		return err
 	}
 	if tag.RowsAffected() == 0 {
@@ -557,6 +586,9 @@ func (s *PostgresStore) ArchiveSession(ctx context.Context, id uuid.UUID, actorI
 			archived_by = CASE WHEN archived_at IS NULL THEN $2 ELSE archived_by END
 		WHERE id = $1`, id, actorID)
 	if err != nil {
+		if subjectlock.IsInactiveAccountReference(err) {
+			return ErrForbidden
+		}
 		return err
 	}
 	if tag.RowsAffected() == 0 {

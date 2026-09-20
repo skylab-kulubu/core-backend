@@ -185,6 +185,25 @@ func TestBlobPurgeConfigFromEnv(t *testing.T) {
 	}
 }
 
+func TestUploadStagingConfigFromEnv(t *testing.T) {
+	values := map[string]string{
+		"MEDIA_UPLOAD_STAGING_GRACE":          "3h",
+		"MEDIA_UPLOAD_STAGING_SWEEP_INTERVAL": "5m",
+		"MEDIA_UPLOAD_STAGING_BATCH_SIZE":     "12",
+	}
+	config, err := media.UploadStagingConfigFromEnv(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Grace != 3*time.Hour || config.Interval != 5*time.Minute || config.BatchSize != 12 {
+		t.Fatalf("config=%+v", config)
+	}
+	values["MEDIA_UPLOAD_STAGING_GRACE"] = "1m"
+	if _, err := media.UploadStagingConfigFromEnv(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("expected too-short staging grace to fail closed")
+	}
+}
+
 type notifyingBlob struct {
 	*media.MemoryBlob
 	once    sync.Once

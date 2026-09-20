@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
 const batchCols = `id,event_id,template_version_id,template_source,reason,status,requested_by,total_count,queued_count,issued_count,failed_count,created_at,started_at,completed_at`
@@ -27,6 +28,9 @@ func (s *PostgresStore) CreateBatch(ctx context.Context, b Batch, ticketIDs []uu
 			if isUnique(err) {
 				return Batch{}, ErrConflict
 			}
+			if subjectlock.IsInactiveAccountReference(err) {
+				return Batch{}, ErrForbidden
+			}
 			return Batch{}, err
 		}
 	}
@@ -41,6 +45,9 @@ func (s *PostgresStore) CreateBatch(ctx context.Context, b Batch, ticketIDs []uu
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,CASE WHEN $8=0 THEN now() END) RETURNING `+batchCols,
 		b.ID, b.EventID, b.TemplateVersionID, b.TemplateSource, b.Reason, status, b.RequestedBy, len(ticketIDs)).Scan(batchScan(&b)...)
 	if err != nil {
+		if subjectlock.IsInactiveAccountReference(err) {
+			return Batch{}, ErrForbidden
+		}
 		return Batch{}, err
 	}
 	for _, ticketID := range ticketIDs {
@@ -181,6 +188,9 @@ func (s *PostgresStore) FinalizeAttendance(ctx context.Context, eventID, by uuid
 		VALUES ($1,now(),$2)
 		ON CONFLICT (event_id) DO UPDATE SET attendance_finalized_at=EXCLUDED.attendance_finalized_at,attendance_finalized_by=EXCLUDED.attendance_finalized_by,updated_at=now()
 		RETURNING attendance_finalized_at`, eventID, nullableUUID(by)).Scan(&finalized)
+	if subjectlock.IsInactiveAccountReference(err) {
+		return time.Time{}, ErrForbidden
+	}
 	return finalized, err
 }
 

@@ -24,19 +24,20 @@ import (
 )
 
 type Deps struct {
-	Users        user.Service
-	Identity     identity.Service
-	Events       event.Service
-	Seasons      season.Service
-	Tickets      ticket.Service
-	Competitors  competitor.Service
-	Media        media.Service
-	URLs         shorturl.Service
-	Certificates certificate.Service
-	SkyPass      skypass.Service
-	Mail         mail.Mailer
-	EventMail    eventmail.Service
-	ParseToken   func(string) (authn.Identity, error)
+	Users               user.Service
+	Identity            identity.Service
+	Events              event.Service
+	Seasons             season.Service
+	Tickets             ticket.Service
+	Competitors         competitor.Service
+	Media               media.Service
+	URLs                shorturl.Service
+	Certificates        certificate.Service
+	SkyPass             skypass.Service
+	Mail                mail.Mailer
+	EventMail           eventmail.Service
+	ParseToken          func(string) (authn.Identity, error)
+	URLAttributionGuard handlers.URLAttributionGuard
 }
 
 func New(deps Deps) *fiber.App {
@@ -57,7 +58,7 @@ func New(deps Deps) *fiber.App {
 	tickets := handlers.NewTicketHandler(deps.Tickets)
 	competitors := handlers.NewCompetitorHandler(deps.Competitors)
 	mediaH := handlers.NewMediaHandler(deps.Media)
-	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken)
+	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken, deps.URLAttributionGuard)
 	jit := middlewares.NewJIT(deps.Users, deps.Mail)
 	var certs *handlers.CertificateHandler
 	if deps.Certificates != nil {

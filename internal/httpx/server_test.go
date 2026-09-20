@@ -1,6 +1,7 @@
 package httpx_test
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -67,6 +68,10 @@ func memoryApp(parse ...func(string) (authn.Identity, error)) *fiber.App {
 			certificate.NewMemoryStore(), tickets, events, users, az, nil, nil, "https://api.example.test",
 		),
 		SkyPass: skypass.NewService(users, az, testPassSigner()),
+		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) bool {
+			allowed, err := users.CanAttribute(ctx, id)
+			return err == nil && allowed
+		},
 	}
 	if len(parse) > 0 {
 		deps.ParseToken = parse[0]

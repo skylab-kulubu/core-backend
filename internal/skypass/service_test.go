@@ -89,6 +89,27 @@ func TestService_BindUniqueConflict(t *testing.T) {
 	}
 }
 
+func TestService_RejectsPreviouslyMintedPassAfterDeletionRequest(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := user.NewMemoryStore()
+	svc := newSvc(t, store, time.Minute)
+	id := uuid.MustParse("12121212-3434-5656-7878-909090909090")
+	seedUser(t, store, id, "pass@example.com", "Sky", "Pass")
+	token, err := svc.Mint(ctx, authz.Principal{ID: id.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RequestDeletion(ctx, id, nil); err != nil {
+		t.Fatal(err)
+	}
+	staff := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}}
+	if _, err := svc.Verify(ctx, staff, token.Value); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old pass verification error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestService_RebindReplacesOldUID(t *testing.T) {
 	t.Parallel()
 	store := user.NewMemoryStore()

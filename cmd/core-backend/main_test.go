@@ -61,3 +61,34 @@ func TestGotenbergURLDefaultsToComposeService(t *testing.T) {
 		t.Fatalf("explicit gotenberg URL = %q", got)
 	}
 }
+
+func TestAccountErasureWorkerIsDefaultOffAndRequiresFullKeycloakConfig(t *testing.T) {
+	values := map[string]string{}
+	getenv := func(key string) string { return values[key] }
+
+	enabled, err := accountErasureWorkerEnabled(getenv)
+	if err != nil || enabled {
+		t.Fatalf("default enabled=%v err=%v", enabled, err)
+	}
+	values["KEYCLOAK_URL"] = "https://identity.example.test"
+	enabled, err = accountErasureWorkerEnabled(getenv)
+	if err != nil || enabled {
+		t.Fatalf("Keycloak alone enabled=%v err=%v", enabled, err)
+	}
+
+	values["ACCOUNT_ERASURE_WORKER_ENABLED"] = "true"
+	if enabled, err = accountErasureWorkerEnabled(getenv); err == nil || enabled {
+		t.Fatalf("incomplete config enabled=%v err=%v", enabled, err)
+	}
+	values["KEYCLOAK_REALM"] = "e-skylab"
+	values["KEYCLOAK_CLIENT_ID"] = "core"
+	values["KEYCLOAK_CLIENT_SECRET"] = "secret"
+	if enabled, err = accountErasureWorkerEnabled(getenv); err != nil || !enabled {
+		t.Fatalf("full config enabled=%v err=%v", enabled, err)
+	}
+
+	values["ACCOUNT_ERASURE_WORKER_ENABLED"] = "yes"
+	if enabled, err = accountErasureWorkerEnabled(getenv); err == nil || enabled {
+		t.Fatalf("invalid flag enabled=%v err=%v", enabled, err)
+	}
+}

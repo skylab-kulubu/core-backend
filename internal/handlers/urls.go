@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -14,12 +15,19 @@ import (
 )
 
 type URLHandler struct {
-	svc   shorturl.Service
-	parse func(string) (authn.Identity, error)
+	svc              shorturl.Service
+	parse            func(string) (authn.Identity, error)
+	attributionGuard URLAttributionGuard
 }
 
-func NewURLHandler(svc shorturl.Service, parse func(string) (authn.Identity, error)) *URLHandler {
-	return &URLHandler{svc: svc, parse: parse}
+type URLAttributionGuard func(context.Context, uuid.UUID) bool
+
+func NewURLHandler(svc shorturl.Service, parse func(string) (authn.Identity, error), guards ...URLAttributionGuard) *URLHandler {
+	h := &URLHandler{svc: svc, parse: parse}
+	if len(guards) > 0 {
+		h.attributionGuard = guards[0]
+	}
+	return h
 }
 
 type urlBody struct {
@@ -204,12 +212,21 @@ func (h *URLHandler) Delete(c fiber.Ctx) error {
 }
 
 func (h *URLHandler) hopUserID(c fiber.Ctx) *uuid.UUID {
+	if h.attributionGuard == nil {
+		return nil
+	}
 	if ident, ok := c.Locals(authn.LocalsIdentity).(authn.Identity); ok && ident.ID != uuid.Nil {
-		id := ident.ID
-		return &id
+		if h.attributionGuard(c.Context(), ident.ID) {
+			id := ident.ID
+			return &id
+		}
+		return nil
 	}
 	ident, err := middlewares.IdentityFromBearer(c.Get(fiber.HeaderAuthorization), h.parse)
 	if err != nil || ident.ID == uuid.Nil {
+		return nil
+	}
+	if !h.attributionGuard(c.Context(), ident.ID) {
 		return nil
 	}
 	id := ident.ID

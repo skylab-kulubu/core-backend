@@ -352,6 +352,16 @@ func (m *Memory) DeleteUser(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (m *Memory) DisableUser(_ context.Context, id uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("DisableUser")
+	if _, ok := m.people[id]; !ok {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (m *Memory) GroupsForUser(_ context.Context, userID uuid.UUID) ([]Group, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

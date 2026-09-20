@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
+	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
 type PostgresStore struct {
@@ -107,6 +108,9 @@ func (s *PostgresStore) Archive(ctx context.Context, id uuid.UUID, actorID *uuid
 			updated_at = CASE WHEN archived_at IS NULL THEN now() ELSE updated_at END
 		WHERE id = $1`, id, actorID)
 	if err != nil {
+		if subjectlock.IsInactiveAccountReference(err) {
+			return ErrForbidden
+		}
 		return err
 	}
 	if tag.RowsAffected() == 0 {

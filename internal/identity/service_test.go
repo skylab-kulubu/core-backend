@@ -24,7 +24,9 @@ func setup(t *testing.T) (*identity.Memory, *user.MemoryStore, identity.Service)
 	t.Helper()
 	dir := identity.NewMemory()
 	store := user.NewMemoryStore()
-	svc := identity.NewService(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	svc := identity.NewServiceWithOptions(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{
+		AccountErasureEnabled: true,
+	})
 	return dir, store, svc
 }
 
@@ -285,7 +287,7 @@ func TestService_CreateUserSendsWelcome(t *testing.T) {
 	}
 }
 
-func TestService_DeleteUserRemovesBoth(t *testing.T) {
+func TestService_DeleteUserQueuesLifecycleWithoutPhysicalDelete(t *testing.T) {
 	t.Parallel()
 	dir, store, svc := setup(t)
 	ctx := context.Background()
@@ -302,11 +304,71 @@ func TestService_DeleteUserRemovesBoth(t *testing.T) {
 	if err := svc.DeleteUser(ctx, privileged(), created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dir.GetUser(ctx, created.ID); !errors.Is(err, identity.ErrNotFound) {
-		t.Fatalf("directory still has user: %v", err)
+	if _, err := dir.GetUser(ctx, created.ID); err != nil {
+		t.Fatalf("directory identity was physically deleted before worker: %v", err)
 	}
-	if _, err := store.Get(ctx, created.ID); !errors.Is(err, user.ErrNotFound) {
-		t.Fatalf("shadow still has user: %v", err)
+	shadow, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shadow.AccountState != user.AccountDeletionPending {
+		t.Fatalf("shadow state = %q", shadow.AccountState)
+	}
+	request, err := store.DeletionRequest(ctx, created.ID)
+	if err != nil || request.SubjectID != created.ID || request.Status != user.DeletionRequestPending {
+		t.Fatalf("request=%+v err=%v", request, err)
+	}
+}
+
+func TestService_DeleteUserFailsClosedWhenAccountErasureDisabled(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	svc := identity.NewService(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	ctx := context.Background()
+
+	created, err := identity.NewServiceWithOptions(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{
+		AccountErasureEnabled: true,
+	}).CreateUser(ctx, privileged(), identity.Person{
+		Email: "disabled@example.com", FirstName: "Release", LastName: "Gate",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeleteUser(ctx, privileged(), created.ID); !errors.Is(err, identity.ErrAccountErasureDisabled) {
+		t.Fatalf("delete error = %v", err)
+	}
+	shadow, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shadow.AccountState != user.AccountActive {
+		t.Fatalf("disabled delete changed account state to %q", shadow.AccountState)
+	}
+	if _, err := store.DeletionRequest(ctx, created.ID); !errors.Is(err, user.ErrNotFound) {
+		t.Fatalf("disabled delete created request: %v", err)
+	}
+}
+
+func TestService_DeleteUserQueuesDirectoryOnlyIdentity(t *testing.T) {
+	t.Parallel()
+	dir, store, svc := setup(t)
+	ctx := context.Background()
+	id := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+	dir.PutUser(identity.Person{ID: id, Email: "directory@example.com", FirstName: "Directory", LastName: "Only"})
+
+	if err := svc.DeleteUser(ctx, privileged(), id); err != nil {
+		t.Fatal(err)
+	}
+	shadow, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shadow.AccountState != user.AccountDeletionPending {
+		t.Fatalf("shadow state = %q", shadow.AccountState)
+	}
+	if _, err := dir.GetUser(ctx, id); err != nil {
+		t.Fatalf("directory identity deleted synchronously: %v", err)
 	}
 }
 

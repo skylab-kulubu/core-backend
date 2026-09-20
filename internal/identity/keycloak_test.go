@@ -85,3 +85,62 @@ func TestKeycloakDirectoryListsNestedGroups(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestKeycloakAccountLifecyclePreservesFederationMetadataAndTreatsDeleteRetryAsSuccess(t *testing.T) {
+	t.Parallel()
+
+	userID := uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	deleteCalls := 0
+	var disabledBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/protocol/openid-connect/token"):
+			_, _ = w.Write([]byte(`{"access_token":"tok","expires_in":300,"token_type":"Bearer"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/realms/e-skylab/users/"+userID.String():
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": userID.String(), "username": "ldap-user", "email": "ldap@example.com",
+				"firstName": "LDAP", "lastName": "Member", "enabled": true,
+				"federationLink": "ldap-provider-id", "attributes": map[string][]string{"sky_number": {"SKY-0000042"}},
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/admin/realms/e-skylab/users/"+userID.String():
+			if err := json.NewDecoder(r.Body).Decode(&disabledBody); err != nil {
+				t.Errorf("decode disable body: %v", err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/realms/e-skylab/users/"+userID.String()+"/logout":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodDelete && r.URL.Path == "/admin/realms/e-skylab/users/"+userID.String():
+			deleteCalls++
+			if deleteCalls == 1 {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	directory := identity.NewKeycloak(identity.KeycloakConfig{
+		URL: srv.URL, Realm: "e-skylab", ClientID: "core", ClientSecret: "secret",
+	})
+	lifecycle := identity.NewAccountIdentity(directory)
+	ctx := context.Background()
+	if err := lifecycle.EnsureDisabled(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	if disabledBody["enabled"] != false || disabledBody["federationLink"] != "ldap-provider-id" || disabledBody["username"] != "ldap-user" {
+		t.Fatalf("federated representation was not preserved: %+v", disabledBody)
+	}
+	if err := lifecycle.EnsureLoggedOut(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.EnsureDeleted(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.EnsureDeleted(ctx, userID); err != nil {
+		t.Fatalf("delete retry: %v", err)
+	}
+}

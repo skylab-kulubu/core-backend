@@ -38,15 +38,27 @@ type Service interface {
 }
 
 type service struct {
-	dir    Directory
-	users  user.Store
-	assign user.Service
-	authz  authz.Authorizer
-	mail   mail.Mailer
+	dir                   Directory
+	users                 user.Store
+	assign                user.Service
+	authz                 authz.Authorizer
+	mail                  mail.Mailer
+	accountErasureEnabled bool
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer, mailers ...mail.Mailer) Service {
-	s := &service{dir: dir, users: users, assign: user.NewService(users, dir), authz: az}
+	return NewServiceWithOptions(dir, users, az, Options{}, mailers...)
+}
+
+type Options struct {
+	AccountErasureEnabled bool
+}
+
+func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer, options Options, mailers ...mail.Mailer) Service {
+	s := &service{
+		dir: dir, users: users, assign: user.NewService(users, dir), authz: az,
+		accountErasureEnabled: options.AccountErasureEnabled,
+	}
 	if len(mailers) > 0 {
 		s.mail = mailers[0]
 	}
@@ -237,6 +249,9 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 			SkyNumber:   person.SkyNumber,
 		})
 		if err != nil {
+			if errors.Is(err, user.ErrAccountBlocked) {
+				continue
+			}
 			if errors.Is(err, user.ErrConflict) {
 				out = append(out, person)
 				continue
@@ -500,14 +515,28 @@ func (s *service) DeleteUser(ctx context.Context, p authz.Principal, id uuid.UUI
 	if err := s.allow(p, authz.TypeUser, authz.Delete); err != nil {
 		return err
 	}
-	if err := s.dir.DeleteUser(ctx, id); err != nil {
-		return err
+	if !s.accountErasureEnabled {
+		return ErrAccountErasureDisabled
 	}
-	err := s.users.Delete(ctx, id)
-	if err != nil && !errors.Is(err, user.ErrNotFound) {
-		return err
+	var requestedBy *uuid.UUID
+	if actorID, err := uuid.Parse(p.ID); err == nil {
+		requestedBy = &actorID
 	}
-	return nil
+	_, err := s.users.RequestDeletion(ctx, id, requestedBy)
+	if errors.Is(err, user.ErrNotFound) {
+		person, directoryErr := s.dir.GetUser(ctx, id)
+		if directoryErr != nil {
+			return directoryErr
+		}
+		if _, _, ensureErr := s.assign.Ensure(ctx, id, user.Profile{
+			Email: person.Email, FirstName: person.FirstName, LastName: person.LastName,
+			Username: person.Username, SchoolEmail: person.SchoolEmail, SkyNumber: person.SkyNumber,
+		}); ensureErr != nil {
+			return ensureErr
+		}
+		_, err = s.users.RequestDeletion(ctx, id, requestedBy)
+	}
+	return err
 }
 
 func (s *service) ListPublicTeams(ctx context.Context) ([]PublicTeam, error) {

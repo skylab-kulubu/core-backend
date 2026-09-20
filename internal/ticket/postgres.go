@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
 type PostgresStore struct {
@@ -54,6 +55,9 @@ func (s *PostgresStore) Create(ctx context.Context, t Ticket) (Ticket, error) {
 		t.ID, t.EventID, t.TicketType, t.OwnerID,
 		t.GuestFirstName, t.GuestLastName, t.GuestEmail, t.GuestPhoneNumber)
 	got, err := scanTicket(row)
+	if subjectlock.IsInactiveAccountReference(err) {
+		return Ticket{}, ErrNotFound
+	}
 	if err != nil {
 		return Ticket{}, err
 	}
