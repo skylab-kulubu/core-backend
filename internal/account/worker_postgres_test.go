@@ -28,7 +28,7 @@ func TestPostgresWorkerPersistsProgressAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	now := time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
+	now := request.NextAttemptAt.Add(time.Minute)
 	confirmDeletionProjection(t, store, request, now)
 	identity := &uncertainIdentity{}
 	config := account.WorkerConfig{

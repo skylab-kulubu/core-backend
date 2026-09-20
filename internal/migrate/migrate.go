@@ -336,6 +336,67 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND indexdef LIKE '%(created_at, id)%'
 			  AND indexdef LIKE '%platform_blocked_at IS NULL%'
 		)`,
+	20260920130000: `
+		SELECT 1
+		WHERE to_regclass('public.account_deletion_self_intakes') IS NOT NULL
+		AND (
+			SELECT count(*)
+			FROM (VALUES
+				('request_id', 'uuid', 'NO'),
+				('idempotency_key_hash', 'bytea', 'NO'),
+				('receipt_lookup_hash', 'bytea', 'NO'),
+				('receipt_hash', 'bytea', 'NO'),
+				('receipt_expires_at', 'timestamptz', 'NO'),
+				('receipt_revoked_at', 'timestamptz', 'YES'),
+				('created_at', 'timestamptz', 'NO')
+			) expected(column_name, udt_name, is_nullable)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema='public'
+			 AND actual.table_name='account_deletion_self_intakes'
+			 AND actual.column_name=expected.column_name
+			 AND actual.udt_name=expected.udt_name
+			 AND actual.is_nullable=expected.is_nullable
+		) = 7
+		AND (
+			SELECT count(*)
+			FROM information_schema.columns
+			WHERE table_schema='public'
+			  AND table_name='account_deletion_self_intakes'
+		) = 7
+		AND EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_schema='public'
+			  AND table_name='account_deletion_self_intakes'
+			  AND column_name='created_at'
+			  AND column_default='now()'
+		)
+		AND (
+			SELECT count(*)
+			FROM (VALUES
+				('account_deletion_self_intakes_pkey', 'p', 'PRIMARY KEY (request_id)'),
+				('account_deletion_self_intakes_request_id_fkey', 'f', 'FOREIGN KEY (request_id) REFERENCES account_deletion_requests(id)'),
+				('account_deletion_self_intakes_idempotency_key_hash_key', 'u', 'UNIQUE (idempotency_key_hash)'),
+				('account_deletion_self_intakes_receipt_lookup_hash_key', 'u', 'UNIQUE (receipt_lookup_hash)'),
+				('account_deletion_self_intakes_idempotency_key_hash_check', 'c', 'CHECK ((octet_length(idempotency_key_hash) = 32))'),
+				('account_deletion_self_intakes_receipt_lookup_hash_check', 'c', 'CHECK ((octet_length(receipt_lookup_hash) = 32))'),
+				('account_deletion_self_intakes_receipt_hash_check', 'c', 'CHECK ((octet_length(receipt_hash) = 32))'),
+				('account_deletion_self_intakes_expiry_check', 'c', 'CHECK ((receipt_expires_at > created_at))'),
+				('account_deletion_self_intakes_revocation_check', 'c', 'CHECK (((receipt_revoked_at IS NULL) OR (receipt_revoked_at >= created_at)))')
+			) expected(name, kind, definition)
+			JOIN pg_constraint actual
+			  ON actual.conrelid=to_regclass('public.account_deletion_self_intakes')
+			 AND actual.conname=expected.name
+			 AND actual.contype=expected.kind::"char"
+			 AND pg_get_constraintdef(actual.oid)=expected.definition
+		) = 9
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname='public'
+			  AND indexname='account_deletion_self_intakes_expiry_idx'
+			  AND indexdef LIKE '%(receipt_expires_at, request_id)%'
+			  AND indexdef LIKE '%receipt_revoked_at IS NULL%'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

@@ -57,6 +57,21 @@ type DeletionRequest struct {
 	PlatformBlockedAt *time.Time
 }
 
+type SelfDeletionIntake struct {
+	IdempotencyHash   [32]byte
+	ReceiptLookupHash [32]byte
+	ReceiptHash       [32]byte
+	ReceiptExpiresAt  time.Time
+	CreatedAt         time.Time
+}
+
+type SelfDeletionRecord struct {
+	Request DeletionRequest
+	SelfDeletionIntake
+	ReceiptRevokedAt *time.Time
+	HasCompletedStep bool
+}
+
 type User struct {
 	ID                  uuid.UUID    `json:"id"`
 	Email               string       `json:"email"`

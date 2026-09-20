@@ -37,6 +37,13 @@ Before any erasure or cross-service outbox work can advance, the shared account-
 
 Disable reads the complete Keycloak user representation, changes only `enabled`, and writes the representation back. This preserves `federationLink` and federated attributes before logout and deletion. Adapter integration tests cover that HTTP contract and idempotent delete retry. Core accepts deletion requests and starts the erasure worker only when `ACCOUNT_ERASURE_WORKER_ENABLED=true`; while it is off the privileged DELETE route returns `503` before changing Core state. The flag is default-off and startup then requires non-empty `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID` and `KEYCLOAK_CLIENT_SECRET`. Merely configuring Keycloak for normal identity operations never enables destructive account erasure, and the in-memory development directory can never acknowledge identity-erasure steps.
 
+Account Center uses the separate least-privilege self-service intake and
+hash-only status capability documented in
+[`account-self-delete.md`](account-self-delete.md). That route derives the
+subject only from a matching Account Center access token and freshly
+authenticated ID token, preserves the same durable request/outbox/marker
+ordering, and never exposes the privileged target-by-ID command.
+
 **Blocking release gate:** before account deletion is enabled in production, run disable, logout, delete, retry-after-404 and subsequent LDAP synchronization/import against a production-clone Keycloak realm connected to the real provider configuration. Record whether the external directory entry is retained, disabled or recreated and obtain the identity-service owner's approval. Repository tests cannot prove that external policy, so a release must not waive this rehearsal on the basis of the adapter tests alone.
 
 ## Rollback boundary

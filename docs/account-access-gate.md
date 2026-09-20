@@ -8,6 +8,13 @@ Core implements the v1 shared denylist contract for the exact issuer `https://e.
 
 Verified Bearer identity is evaluated after signature/issuer/audience validation and before JIT. A missing subject remains anonymous. An allowed subject continues; marker `1` returns a generic `401`; Redis, contract and malformed-value failures return `503`, `Cache-Control: no-store` and `Retry-After: 1` before JIT or product code. `/v1/go/:alias` uses this same chain and a PostgreSQL tri-state attribution check: a durable deletion marker returns `401`, a database failure returns `503`, and neither path records a hit or increments the click count. A genuinely anonymous hop keeps the existing silent `301`. `/v1/health` is process-only. `/v1/ready` checks the exact contract sentinel.
 
+The only non-product exception is the Account Center self-delete
+intake/status contract in `docs/account-self-delete.md`. It is isolated before
+the general gate and JIT middleware so a response-loss retry can recover the
+same irreversible request after marker installation. It accepts only the
+pinned two-token Account Center end-user context or a hash-only status receipt;
+it cannot read product data, choose a subject or create/update a profile.
+
 `/v1/metrics` exposes fixed, unlabeled Prometheus counters for aggregate gate decisions, Redis unavailability, contract mismatch, malformed markers, reconciliation drift, positive TTL detection and readiness failures. The request gate also writes a JSON decision event containing only the request correlation ID and `allowed`, `blocked` or `unavailable`; subjects, digests and Redis keys are never logged or used as metric labels.
 
 ## Deletion projection

@@ -19,6 +19,14 @@ func problem(c fiber.Ctx, status int, title string) error {
 }
 
 func problemDetail(c fiber.Ctx, status int, title, detail string) error {
+	return problemDetailCode(c, status, title, detail, "")
+}
+
+func problemCode(c fiber.Ctx, status int, title, code string) error {
+	return problemDetailCode(c, status, title, title, code)
+}
+
+func problemDetailCode(c fiber.Ctx, status int, title, detail, code string) error {
 	instance := c.Path()
 	if u := c.Request().URI(); u != nil {
 		path := string(u.Path())
@@ -29,13 +37,17 @@ func problemDetail(c fiber.Ctx, status int, title, detail string) error {
 			}
 		}
 	}
-	payload, err := json.Marshal(fiber.Map{
+	body := fiber.Map{
 		"type":     "about:blank",
 		"title":    title,
 		"status":   status,
 		"detail":   detail,
 		"instance": instance,
-	})
+	}
+	if code != "" {
+		body["code"] = code
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
