@@ -12,6 +12,13 @@ type Service interface {
 	Replace(ctx context.Context, id uuid.UUID, in ProfileUpdate) (User, error)
 	Patch(ctx context.Context, id uuid.UUID, in ProfilePatch) (User, error)
 	SetProfilePicture(ctx context.Context, id uuid.UUID, mediaID uuid.UUID, url string) (User, error)
+	// ClearProfilePicture unlinks the person's own profile picture and reports
+	// which media was linked so the caller can release it. A profile without a
+	// picture is left untouched and reports nil, so repeating the call is safe.
+	// The store enforces the active-account rule on the write like every other
+	// self-write; the service only repeats it so the early no-op path refuses a
+	// blocked account too.
+	ClearProfilePicture(ctx context.Context, id uuid.UUID) (*uuid.UUID, error)
 }
 
 type service struct {
@@ -138,4 +145,24 @@ func (s *service) SetProfilePicture(ctx context.Context, id uuid.UUID, mediaID u
 	existing.ProfilePictureID = &mediaID
 	existing.ProfilePictureURL = url
 	return s.store.UpdateProfile(ctx, existing)
+}
+
+func (s *service) ClearProfilePicture(ctx context.Context, id uuid.UUID) (*uuid.UUID, error) {
+	existing, err := s.store.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if existing.AccountState != AccountActive {
+		return nil, ErrAccountBlocked
+	}
+	if existing.ProfilePictureID == nil && existing.ProfilePictureURL == "" {
+		return nil, nil
+	}
+	released := existing.ProfilePictureID
+	existing.ProfilePictureID = nil
+	existing.ProfilePictureURL = ""
+	if _, err := s.store.UpdateProfile(ctx, existing); err != nil {
+		return nil, err
+	}
+	return released, nil
 }

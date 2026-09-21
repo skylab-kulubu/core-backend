@@ -47,9 +47,24 @@ func meError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	case errors.Is(err, media.ErrForbidden):
 		return problem(c, fiber.StatusForbidden, "Forbidden")
+	case errors.Is(err, user.ErrAccountBlocked):
+		// /me is the caller's own account: a blocked subject is refused the
+		// same way the JIT guard and short-link attribution refuse its token.
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		c.Set(fiber.HeaderWWWAuthenticate, `Bearer error="invalid_token"`)
+		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
 	default:
 		return err
 	}
+}
+
+// meUser is the caller's own view of their User shadow. It is the only
+// payload that carries phone (read-only in Account center until phone
+// verification exists); the domain struct keeps `json:"-"` so admin cards,
+// rosters, search results, SkyPass and ticket payloads never pick it up.
+type meUser struct {
+	user.User
+	Phone string `json:"phone,omitempty"`
 }
 
 func (h *MeHandler) GetMe(c fiber.Ctx) error {
@@ -57,7 +72,7 @@ func (h *MeHandler) GetMe(c fiber.Ctx) error {
 	if !ok {
 		return fiber.ErrUnauthorized
 	}
-	return c.JSON(publicUser(u))
+	return c.JSON(meView(u))
 }
 
 func (h *MeHandler) identityID(c fiber.Ctx) (user.User, error) {
@@ -88,7 +103,7 @@ func (h *MeHandler) PutMe(c fiber.Ctx) error {
 	if err != nil {
 		return meError(c, err)
 	}
-	return c.JSON(publicUser(updated))
+	return c.JSON(meView(updated))
 }
 
 func (h *MeHandler) PatchMe(c fiber.Ctx) error {
@@ -111,7 +126,7 @@ func (h *MeHandler) PatchMe(c fiber.Ctx) error {
 	if err != nil {
 		return meError(c, err)
 	}
-	return c.JSON(publicUser(updated))
+	return c.JSON(meView(updated))
 }
 
 func (h *MeHandler) ProfilePicture(c fiber.Ctx) error {
@@ -147,11 +162,48 @@ func (h *MeHandler) ProfilePicture(c fiber.Ctx) error {
 	if err != nil {
 		return meError(c, err)
 	}
-	return c.JSON(publicUser(updated))
+	return c.JSON(meView(updated))
 }
 
-func publicUser(u user.User) user.User {
+// DeleteProfilePicture removes the caller's own profile picture. It is an
+// idempotent lifecycle transition, not a physical delete: the person's upload
+// is archived and the shadow drops the link, so a repeated call is still 204.
+//
+// The archive happens first so a partial failure converges on retry: an
+// archived-but-still-linked picture is cleared by the next call, whereas an
+// unlinked-but-never-archived upload would be invisible to it.
+func (h *MeHandler) DeleteProfilePicture(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return meError(c, err)
+	}
+	u, err := h.identityID(c)
+	if err != nil {
+		return meError(c, err)
+	}
+	// The archive is the first side effect and the media store does not know
+	// the account state, so refuse a blocked account before touching it; the
+	// user store repeats the rule on the unlink like every other self-write.
+	if u.AccountState != user.AccountActive {
+		return meError(c, user.ErrAccountBlocked)
+	}
+	if u.ProfilePictureID != nil {
+		// Only the person's own upload is archived. A picture that is not
+		// theirs, or is already gone, stays with its uploader; the profile no
+		// longer links it either way.
+		archiveErr := h.media.ArchiveOwn(c.Context(), p, *u.ProfilePictureID)
+		if archiveErr != nil && !errors.Is(archiveErr, media.ErrNotFound) && !errors.Is(archiveErr, media.ErrForbidden) {
+			return meError(c, archiveErr)
+		}
+	}
+	if _, err := h.users.ClearProfilePicture(c.Context(), u.ID); err != nil {
+		return meError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func meView(u user.User) meUser {
 	u.ProfilePictureURL = media.PublicURL("", u.ProfilePictureURL)
 	u.StudentCardLinked = u.StudentCardUID != ""
-	return u
+	return meUser{User: u, Phone: u.Phone}
 }

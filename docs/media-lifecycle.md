@@ -6,6 +6,14 @@ Authorized management reads can use `GET /v1/media?lifecycle=inactive` or
 `lifecycle=all`. `POST /v1/media/{id}/restore` restores the record while its
 blob is still recoverable.
 
+A person removing their own profile picture
+(`DELETE /v1/users/me/profile-picture`, see
+[`account-self-service.md`](account-self-service.md)) archives that upload the
+same way, recorded with the person as the deleting actor, and then unlinks it
+from their User shadow. No media-management authority is involved: only the
+uploader's own record can be released this way, and the blob then follows the
+recovery window and reference check below.
+
 The background purge worker runs one bounded batch at startup and on its
 configured interval. A record is eligible only after the recovery window. The
 worker refuses to purge media still referenced by an Event cover or gallery,

@@ -133,6 +133,7 @@ func New(deps Deps) *fiber.App {
 	app.Put("/v1/users/me", me.PutMe)
 	app.Patch("/v1/users/me", me.PatchMe)
 	app.Post("/v1/users/me/profile-picture", me.ProfilePicture)
+	app.Delete("/v1/users/me/profile-picture", me.DeleteProfilePicture)
 	app.Get("/v1/users", ident.ListUsers)
 	app.Post("/v1/users", ident.CreateUser)
 	app.Get("/v1/users/:id", ident.GetUser)
