@@ -52,9 +52,7 @@ func TestProjectorRetriesDurableRequestUntilMarkerIsConfirmed(t *testing.T) {
 		t.Fatal(err)
 	}
 	writer := &projectionWriter{err: errors.New("redis unavailable")}
-	projector := account.NewAccessProjector(store, writer, func() time.Time {
-		return time.Date(2026, 9, 20, 19, 0, 0, 0, time.UTC)
-	})
+	projector := account.NewAccessProjector(store, writer, func() time.Time { return time.Now().UTC() })
 
 	if err := projector.Project(ctx, request); err == nil {
 		t.Fatal("projection unexpectedly succeeded")

@@ -45,7 +45,7 @@ func selfDeleteFixture(t *testing.T) (*account.SelfDeletion, *user.MemoryStore, 
 	store := user.NewMemoryStore()
 	subject := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	key := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
-	now := time.Date(2026, 9, 20, 8, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	projector := &recordingProjector{store: store, now: now}
 	service, err := account.NewSelfDeletion(store, projector, account.SelfDeletionConfig{
 		Enabled:    true,
@@ -69,7 +69,7 @@ func TestSelfDeletionBeginIsSubjectScopedIdempotentAndRequiresProjection(t *test
 	if first.Status != account.SelfDeletionPending || !first.PlatformBlocked || first.Partial {
 		t.Fatalf("first status = %+v", first)
 	}
-	expectedNow := time.Date(2026, 9, 20, 8, 0, 0, 0, time.UTC)
+	expectedNow := projector.now
 	if !first.RequestedAt.Equal(expectedNow) || !first.UpdatedAt.Equal(expectedNow) ||
 		!first.ReceiptExpiresAt.Equal(expectedNow.Add(90*24*time.Hour)) {
 		t.Fatalf("self-delete chronology = %+v", first)
@@ -249,7 +249,7 @@ func TestSelfDeletionReceiptExpiresAtItsFixedBound(t *testing.T) {
 	store := user.NewMemoryStore()
 	subject := uuid.New()
 	key := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
-	now := time.Date(2026, 9, 20, 8, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	projector := &recordingProjector{store: store, now: now}
 	service, err := account.NewSelfDeletion(store, projector, account.SelfDeletionConfig{
 		Enabled: true, ReceiptKey: []byte("0123456789abcdef0123456789abcdef"), ReceiptTTL: time.Hour,
