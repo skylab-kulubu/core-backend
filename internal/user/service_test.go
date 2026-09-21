@@ -320,6 +320,95 @@ func TestService_SetProfilePicture(t *testing.T) {
 	}
 }
 
+func TestService_ClearProfilePictureReleasesLinkedMedia(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	id := uuid.MustParse("ffffffff-ffff-ffff-ffff-fffffffffff1")
+	ctx := context.Background()
+	if _, _, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com", FirstName: "Ada", LastName: "Lovelace"}); err != nil {
+		t.Fatal(err)
+	}
+
+	released, err := svc.ClearProfilePicture(ctx, id)
+	if err != nil {
+		t.Fatalf("clear without picture: %v", err)
+	}
+	if released != nil {
+		t.Fatalf("released %v without a picture", released)
+	}
+
+	mediaID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	if _, err := svc.SetProfilePicture(ctx, id, mediaID, "https://cdn.example.test/pic"); err != nil {
+		t.Fatal(err)
+	}
+	released, err = svc.ClearProfilePicture(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released == nil || *released != mediaID {
+		t.Fatalf("released %v want %s", released, mediaID)
+	}
+	got, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProfilePictureID != nil || got.ProfilePictureURL != "" {
+		t.Fatalf("picture still linked %+v", got)
+	}
+	if got.FirstName != "Ada" || got.SkyNumber != "SKY-0000001" {
+		t.Fatalf("clear wiped neighbours %+v", got)
+	}
+
+	again, err := svc.ClearProfilePicture(ctx, id)
+	if err != nil {
+		t.Fatalf("repeated clear: %v", err)
+	}
+	if again != nil {
+		t.Fatalf("repeated clear released %v", again)
+	}
+
+	ensured, _, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com", FirstName: "Ada", LastName: "Lovelace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ensured.ProfilePictureID != nil || ensured.ProfilePictureURL != "" {
+		t.Fatalf("ensure resurrected picture %+v", ensured)
+	}
+}
+
+func TestService_ClearProfilePictureRequiresActiveAccount(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	id := uuid.MustParse("ffffffff-ffff-ffff-ffff-fffffffffff2")
+	ctx := context.Background()
+	if _, _, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com", FirstName: "Ada", LastName: "Lovelace"}); err != nil {
+		t.Fatal(err)
+	}
+	mediaID := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	if _, err := svc.SetProfilePicture(ctx, id, mediaID, "https://cdn.example.test/pic"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RequestDeletion(ctx, id, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.ClearProfilePicture(ctx, id); !errors.Is(err, ErrAccountBlocked) {
+		t.Fatalf("clear while deletion pending error = %v, want ErrAccountBlocked", err)
+	}
+	got, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProfilePictureID == nil || *got.ProfilePictureID != mediaID {
+		t.Fatalf("blocked account lost its picture link %+v", got)
+	}
+	if _, err := svc.ClearProfilePicture(ctx, uuid.MustParse("ffffffff-ffff-ffff-ffff-fffffffffff3")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown user error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestService_EnsureSkyNumberOwnedByOther(t *testing.T) {
 	t.Parallel()
 	store := NewMemoryStore()
