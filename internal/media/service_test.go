@@ -246,6 +246,57 @@ func TestService_DropsJPEGMetadataOnUpload(t *testing.T) {
 	}
 }
 
+func TestService_ArchiveOwnOnlyByUploader(t *testing.T) {
+	t.Parallel()
+	store := media.NewMemoryStore()
+	blobs := media.NewMemoryBlob()
+	svc := media.NewService(store, blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test")
+	uploaderID := uuid.MustParse("66666666-6666-6666-6666-666666666666")
+	uploader := authz.Principal{ID: uploaderID.String(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	created, err := svc.Upload(context.Background(), uploader, "me.png", "image/png", pngDot())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	other := authz.Principal{ID: uuid.MustParse("77777777-7777-7777-7777-777777777777").String(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	if err := svc.ArchiveOwn(context.Background(), other, created.ID); !errors.Is(err, media.ErrForbidden) {
+		t.Fatalf("other member archive %v", err)
+	}
+	if err := svc.ArchiveOwn(context.Background(), authz.Principal{}, created.ID); !errors.Is(err, media.ErrInvalid) {
+		t.Fatalf("anonymous archive %v", err)
+	}
+	if _, err := svc.Get(context.Background(), created.ID); err != nil {
+		t.Fatalf("rejected archive changed the record: %v", err)
+	}
+	if err := svc.ArchiveOwn(context.Background(), uploader, uuid.New()); !errors.Is(err, media.ErrNotFound) {
+		t.Fatalf("unknown media %v", err)
+	}
+
+	if err := svc.ArchiveOwn(context.Background(), uploader, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ArchiveOwn(context.Background(), uploader, created.ID); err != nil {
+		t.Fatalf("repeated archive: %v", err)
+	}
+	if _, ok := blobs.Get(created.Key); !ok {
+		t.Fatal("archive removed blob before recovery window")
+	}
+	if _, err := svc.Get(context.Background(), created.ID); !errors.Is(err, media.ErrNotFound) {
+		t.Fatalf("get after archive %v", err)
+	}
+	yk := authz.Principal{ID: uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").String(), Groups: []string{"/UYELER/YK"}}
+	archived, err := svc.ListLifecycle(context.Background(), yk, lifecycle.InactiveOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archived) != 1 || archived[0].ID != created.ID || archived[0].DeletedAt == nil || archived[0].DeletedBy == nil || *archived[0].DeletedBy != uploaderID {
+		t.Fatalf("archived %+v", archived)
+	}
+	if _, err := svc.Restore(context.Background(), yk, created.ID); err != nil {
+		t.Fatalf("management restore after self archive: %v", err)
+	}
+}
+
 func TestService_ListRequiresAuthAndDeleteIsPrivileged(t *testing.T) {
 	t.Parallel()
 	store := media.NewMemoryStore()
