@@ -18,6 +18,12 @@ type Service interface {
 	List(ctx context.Context, p authz.Principal) ([]Media, error)
 	ListLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]Media, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
+	// ArchiveOwn archives an upload the caller made themselves, such as a
+	// profile picture they removed. It is the self-service counterpart of
+	// Delete: no media-management authority is needed, but only the uploader
+	// may release it. The record follows the ordinary archive lifecycle, so
+	// the blob stays recoverable until the purge window passes.
+	ArchiveOwn(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Media, error)
 }
 
@@ -208,6 +214,21 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 		return err
 	}
 	return s.media.Archive(ctx, id, lifecycle.ActorID(p.ID))
+}
+
+func (s *service) ArchiveOwn(ctx context.Context, p authz.Principal, id uuid.UUID) error {
+	uploader := lifecycle.ActorID(p.ID)
+	if uploader == nil {
+		return ErrInvalid
+	}
+	m, err := s.media.GetIncludingDeleted(ctx, id)
+	if err != nil {
+		return err
+	}
+	if m.UploadedBy != *uploader {
+		return ErrForbidden
+	}
+	return s.media.Archive(ctx, id, uploader)
 }
 
 func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Media, error) {

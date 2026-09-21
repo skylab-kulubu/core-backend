@@ -129,7 +129,9 @@ func TestPatchOtherUserOmitLeavesEmptyClearsHTTP(t *testing.T) {
 	}
 }
 
-func TestGetMeOmitsPhoneAfterAdminPatchHTTP(t *testing.T) {
+// The person sees their own admin-written number read-only on /me; every
+// other payload built from the same shadow keeps omitting it.
+func TestGetMeReturnsOwnPhoneAfterAdminPatchHTTP(t *testing.T) {
 	t.Parallel()
 	dir := identity.NewMemory()
 	store := user.NewMemoryStore()
@@ -152,19 +154,24 @@ func TestGetMeOmitsPhoneAfterAdminPatchHTTP(t *testing.T) {
 		b, _ := io.ReadAll(meResp.Body)
 		t.Fatalf("me status %d body %s", meResp.StatusCode, b)
 	}
-	raw, err := io.ReadAll(meResp.Body)
+	if me := decodeJSONMap(t, meResp); me["phone"] != adminOnlyPhone {
+		t.Fatalf("own phone missing on /me: %+v", me)
+	}
+
+	reader := identityApp(t, usersReadIdent(), dir, store)
+	readerResp, err := reader.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users/"+id.String(), nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), adminOnlyPhone) {
-		t.Fatalf("phone leaked on /me: %s", raw)
+	if readerResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("users:read status %d", readerResp.StatusCode)
 	}
-	var me map[string]any
-	if err := json.Unmarshal(raw, &me); err != nil {
+	readerRaw, err := io.ReadAll(readerResp.Body)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := me["phone"]; ok {
-		t.Fatalf("phone key on /me: %s", raw)
+	if strings.Contains(string(readerRaw), adminOnlyPhone) || strings.Contains(string(readerRaw), `"phone"`) {
+		t.Fatalf("phone leaked on non-privileged card: %s", readerRaw)
 	}
 
 	cardResp, err := admin.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users/"+id.String(), nil))

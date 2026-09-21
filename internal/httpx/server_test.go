@@ -169,6 +169,85 @@ func TestBearerGroupsReachMe(t *testing.T) {
 	}
 }
 
+func TestMeOwnPhoneAndProfilePictureRemovalRoutes(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	app := memoryApp(keys.Parse())
+	adminID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	adminToken := keys.Token(t, jwt.MapClaims{
+		"sub": adminID.String(), "email": "yk@example.com", "given_name": "Y", "family_name": "K", "groups": []string{"/UYELER/YK"},
+	})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodDelete, "/v1/users/me/profile-picture", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("anonymous removal status %d", resp.StatusCode)
+	}
+
+	createReq := httptest.NewRequest(fiber.MethodPost, "/v1/users", strings.NewReader(`{"email":"ada@example.com","firstName":"Ada","lastName":"Lovelace"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err = app.Test(createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create status %d body %s", resp.StatusCode, body)
+	}
+	var created identity.Person
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	const phone = "+905551112233"
+	patchReq := httptest.NewRequest(fiber.MethodPatch, "/v1/users/"+created.ID.String(), strings.NewReader(`{"phone":"`+phone+`"}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchReq.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err = app.Test(patchReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("patch status %d body %s", resp.StatusCode, body)
+	}
+
+	memberToken := keys.Token(t, jwt.MapClaims{
+		"sub": created.ID.String(), "email": "ada@example.com", "given_name": "Ada", "family_name": "Lovelace",
+	})
+	meReq := httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil)
+	meReq.Header.Set("Authorization", "Bearer "+memberToken)
+	resp, err = app.Test(meReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("me status %d body %s", resp.StatusCode, body)
+	}
+	var me map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
+		t.Fatal(err)
+	}
+	if me["phone"] != phone || me["id"] != created.ID.String() {
+		t.Fatalf("me %+v", me)
+	}
+
+	removeReq := httptest.NewRequest(fiber.MethodDelete, "/v1/users/me/profile-picture", nil)
+	removeReq.Header.Set("Authorization", "Bearer "+memberToken)
+	resp, err = app.Test(removeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("removal status %d body %s", resp.StatusCode, body)
+	}
+}
+
 func TestInvalidBearerIs401Problem(t *testing.T) {
 	t.Parallel()
 	app := memoryApp()
