@@ -168,7 +168,7 @@ func TestParseAndVerifyRequiresAudienceAndIssuer(t *testing.T) {
 func TestParseSelfDeleteContextRequiresMatchingAccountTokenAndFreshIDToken(t *testing.T) {
 	t.Parallel()
 	keys := testauth.New(t)
-	now := time.Date(2026, 9, 20, 8, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	subject := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	validAccessClaims := jwt.MapClaims{
 		"sub": subject.String(), "iss": keys.Issuer, "aud": "account",
