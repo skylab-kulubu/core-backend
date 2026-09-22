@@ -46,6 +46,7 @@ services:
     environment:
       DATABASE_URL: postgres://super_skylab:${SUPER_SKYLAB_DB_PASSWORD:-postgres}@postgres:5432/super_skylab?sslmode=disable
       PORT: "8080"
+      TRUSTED_PROXY_RANGES: ${TRUSTED_PROXY_RANGES:-}
       KEYCLOAK_URL: ${KEYCLOAK_URL:-}
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-e-skylab}
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-}

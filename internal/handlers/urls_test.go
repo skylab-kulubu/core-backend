@@ -9,11 +9,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -47,10 +49,35 @@ func urlAppOn(t *testing.T, store shorturl.Store, ident authn.Identity, parse fu
 	})
 }
 
+// app.Test dials from 0.0.0.0, so tests name that address as the edge proxy.
+// A request carrying X-Forwarded-For then reaches the handler the way a real
+// one does once Traefik has rewritten the header.
+const testProxyRanges = "0.0.0.0/32," + clientip.DefaultRanges
+
+func testTrustedProxies(t *testing.T, raw string) clientip.Ranges {
+	t.Helper()
+	ranges, err := clientip.ParseRanges(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ranges
+}
+
 func urlAppOnGuard(t *testing.T, store shorturl.Store, ident authn.Identity, parse func(string) (authn.Identity, error), guard URLAttributionGuard) *fiber.App {
 	t.Helper()
-	h := NewURLHandler(shorturl.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy())), parse, guard)
-	app := fiber.New()
+	return urlAppBehindProxies(t, testProxyRanges, store, ident, parse, guard)
+}
+
+func urlAppBehindProxies(t *testing.T, proxies string, store shorturl.Store, ident authn.Identity, parse func(string) (authn.Identity, error), guard URLAttributionGuard) *fiber.App {
+	t.Helper()
+	trusted := testTrustedProxies(t, proxies)
+	h := NewURLHandler(shorturl.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy())), parse, guard).TrustProxies(trusted)
+	app := fiber.New(fiber.Config{
+		TrustProxy:         true,
+		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: trusted.Proxies()},
+		ProxyHeader:        fiber.HeaderXForwardedFor,
+		EnableIPValidation: true,
+	})
 	app.Use(func(c fiber.Ctx) error {
 		if ident.ID != uuid.Nil || len(ident.Roles) > 0 || len(ident.Groups) > 0 {
 			c.Locals(authn.LocalsIdentity, ident)
@@ -673,5 +700,100 @@ func TestURLRedirectAttachesUserFromBearerNotCookies(t *testing.T) {
 	}
 	if hits[3].UserID != nil {
 		t.Fatalf("invalid bearer should stay anonymous %+v", hits[3])
+	}
+}
+
+func allowAttribution(context.Context, uuid.UUID) (user.AttributionState, error) {
+	return user.AttributionAllowed, nil
+}
+
+// A hit must record the person who clicked, not the proxy in front of them and
+// not whatever address that person asked to be recorded as.
+func TestURLRedirectRecordsTheAddressTheTrustedProxyObserved(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		proxies   string
+		forwarded []string
+		want      string
+	}{
+		{
+			name:      "a trusted proxy forwards the client",
+			proxies:   testProxyRanges,
+			forwarded: []string{"198.51.100.20"},
+			want:      "198.51.100.20",
+		},
+		{
+			name:      "a forged leftmost entry never becomes the hit",
+			proxies:   testProxyRanges,
+			forwarded: []string{"1.2.3.4, 198.51.100.20"},
+			want:      "198.51.100.20",
+		},
+		{
+			name:      "an inner proxy hop is skipped",
+			proxies:   testProxyRanges,
+			forwarded: []string{"203.0.113.9, 10.0.1.42"},
+			want:      "203.0.113.9",
+		},
+		{
+			name:      "a chain split across header lines is still one chain",
+			proxies:   testProxyRanges,
+			forwarded: []string{"1.2.3.4", "198.51.100.20, 10.0.1.42"},
+			want:      "198.51.100.20",
+		},
+		{
+			name:      "an ipv6 client",
+			proxies:   testProxyRanges,
+			forwarded: []string{"2001:db8::1"},
+			want:      "2001:db8::1",
+		},
+		{
+			name:      "a malformed chain records the peer, never the text sent",
+			proxies:   testProxyRanges,
+			forwarded: []string{"totally bogus"},
+			want:      "0.0.0.0",
+		},
+		{
+			name:      "an untrusted peer cannot claim to be anybody",
+			proxies:   clientip.DefaultRanges,
+			forwarded: []string{"198.51.100.20"},
+			want:      "0.0.0.0",
+		},
+		{
+			name:    "no forwarded header at all",
+			proxies: testProxyRanges,
+			want:    "0.0.0.0",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := shorturl.NewMemoryStore()
+			created := createClubURL(t, store)
+
+			req := httptest.NewRequest(fiber.MethodGet, "/v1/go/club", nil)
+			for _, entry := range tc.forwarded {
+				req.Header.Add(fiber.HeaderXForwardedFor, entry)
+			}
+			app := urlAppBehindProxies(t, tc.proxies, store, authn.Identity{}, nil, allowAttribution)
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != fiber.StatusMovedPermanently {
+				t.Fatalf("redirect %d", resp.StatusCode)
+			}
+
+			hits, err := store.ListHits(context.Background(), created.ID, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(hits) != 1 {
+				t.Fatalf("hits %+v", hits)
+			}
+			if hits[0].IP != tc.want {
+				t.Fatalf("hit ip = %q, want %q", hits[0].IP, tc.want)
+			}
+		})
 	}
 }
