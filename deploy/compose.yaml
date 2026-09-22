@@ -46,12 +46,17 @@ services:
     environment:
       DATABASE_URL: postgres://super_skylab:${SUPER_SKYLAB_DB_PASSWORD:-postgres}@postgres:5432/super_skylab?sslmode=disable
       PORT: "8080"
+      TRUSTED_PROXY_RANGES: ${TRUSTED_PROXY_RANGES:-}
       KEYCLOAK_URL: ${KEYCLOAK_URL:-}
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-e-skylab}
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-}
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
       KEYCLOAK_JWKS_URL: ${KEYCLOAK_JWKS_URL:-}
       SKYMAIL_URL: ${SKYMAIL_URL:-}
+      # Unset takes the seeded key; an empty value falls back to the template id
+      # below. The dash without a colon is what keeps that difference.
+      SKYMAIL_WELCOME_TEMPLATE_KEY: ${SKYMAIL_WELCOME_TEMPLATE_KEY-core.welcome}
+      SKYMAIL_CERTIFICATE_TEMPLATE_KEY: ${SKYMAIL_CERTIFICATE_TEMPLATE_KEY-core.certificate}
       SKYMAIL_WELCOME_TEMPLATE_ID: ${SKYMAIL_WELCOME_TEMPLATE_ID:-}
       SKYMAIL_CERTIFICATE_TEMPLATE_ID: ${SKYMAIL_CERTIFICATE_TEMPLATE_ID:-}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}

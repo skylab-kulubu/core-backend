@@ -30,7 +30,8 @@ func TestDeletionRequestCannotAdvanceBeforePlatformBlockConfirmation(t *testing.
 		t.Fatalf("new request already projected: %+v", request)
 	}
 
-	now := time.Date(2026, 9, 20, 18, 0, 0, 0, time.UTC)
+	// Anchor the worker clock on the DB-assigned schedule so claims never depend on the calendar.
+	now := request.NextAttemptAt
 	if claimed, ok, err := store.ClaimDeletionRequest(ctx, now.Add(time.Hour), time.Minute); err != nil || ok {
 		t.Fatalf("unprojected claim=%+v ok=%v err=%v", claimed, ok, err)
 	}

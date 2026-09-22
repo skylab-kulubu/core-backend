@@ -35,7 +35,8 @@ func TestDeletionLeaseTokenFencesExpiredWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	// Anchor the worker clock on the DB-assigned schedule so claims never depend on the calendar.
+	now := request.NextAttemptAt
 	first, ok, err := store.ClaimDeletionRequest(ctx, now, time.Second)
 	if err != nil || !ok || first.LeaseToken == nil {
 		t.Fatalf("first claim=%+v ok=%v err=%v", first, ok, err)
@@ -122,7 +123,7 @@ func TestDeletionStepCheckpointCannotCommitAfterConcurrentLeaseReplacement(t *te
 		t.Fatal(err)
 	}
 
-	now := time.Date(2026, 9, 20, 16, 0, 0, 0, time.UTC)
+	now := request.NextAttemptAt
 	claim, ok, err := store.ClaimDeletionRequest(ctx, now, time.Second)
 	if err != nil || !ok || claim.LeaseToken == nil {
 		t.Fatalf("claim=%+v ok=%v err=%v", claim, ok, err)

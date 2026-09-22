@@ -21,6 +21,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
+	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
@@ -48,6 +49,17 @@ func testPassSigner() *skypass.Signer {
 		testPassKey = key
 	})
 	return skypass.NewSigner(testPassKey, skypass.DefaultTTL)
+}
+
+// app.Test dials from 0.0.0.0, so the assembled app names that address as the
+// edge proxy. A request carrying X-Forwarded-For then reaches the routes the
+// way a real one does once Traefik has rewritten the header.
+func testTrustedProxies() clientip.Ranges {
+	ranges, err := clientip.ParseRanges("0.0.0.0/32," + clientip.DefaultRanges)
+	if err != nil {
+		panic(err)
+	}
+	return ranges
 }
 
 func memoryApp(parse ...func(string) (authn.Identity, error)) *fiber.App {
@@ -82,6 +94,7 @@ func memoryAppWithAccessGateMetrics(gate accessgate.Reader, metrics *accessgate.
 		},
 		AccountAccessGate:    gate,
 		AccountAccessMetrics: metrics,
+		TrustedProxies:       testTrustedProxies(),
 	}
 	if len(parse) > 0 {
 		deps.ParseToken = parse[0]
@@ -696,5 +709,37 @@ func TestHitsListAuthThroughJWT(t *testing.T) {
 	if ykResp.StatusCode != fiber.StatusOK {
 		body, _ := io.ReadAll(ykResp.Body)
 		t.Fatalf("privileged %d %s", ykResp.StatusCode, body)
+	}
+}
+
+// The public certificate routes are unauthenticated, so their budget has to
+// follow the visitor. Keyed on the default c.IP() every visitor behind the
+// edge proxy would share one bucket, and one caller could lock the routes for
+// everybody.
+func TestPublicCertificateRateLimitFollowsTheClientNotTheProxy(t *testing.T) {
+	app := memoryApp()
+	const serial = "75E614C7A33C08CB5C04804D6C24F9E7"
+	visit := func(client string) int {
+		t.Helper()
+		request := httptest.NewRequest(fiber.MethodGet, "/v1/public/certificates/"+serial, nil)
+		request.Header.Set(fiber.HeaderXForwardedFor, client)
+		response, err := app.Test(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode
+	}
+
+	const budget = 120
+	for i := range budget {
+		if status := visit("198.51.100.20"); status == fiber.StatusTooManyRequests {
+			t.Fatalf("request %d of %d was limited early", i+1, budget)
+		}
+	}
+	if status := visit("198.51.100.20"); status != fiber.StatusTooManyRequests {
+		t.Fatalf("over-budget client status = %d, want 429", status)
+	}
+	if status := visit("203.0.113.9"); status == fiber.StatusTooManyRequests {
+		t.Fatal("a second client inherited the first client's budget")
 	}
 }

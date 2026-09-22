@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/skylab-kulubu/core-backend/internal/accessgate"
+	"github.com/skylab-kulubu/core-backend/internal/mail"
 )
 
 func TestLoadSkyPassKeyPrefersExplicitP256Environment(t *testing.T) {
@@ -135,5 +136,36 @@ func TestAccountSelfDeletionReceiptKeyIsRequiredOnlyWhenFeatureEnabled(t *testin
 	enabled, err := accountSelfDeletionConfig(getenv, true)
 	if err != nil || !enabled.Enabled || len(enabled.ReceiptKey) != 32 {
 		t.Fatalf("enabled config=%+v err=%v", enabled, err)
+	}
+}
+
+func TestTemplateKeyDefaultsToTheSeededKeyAndAnEmptyValueOptsOut(t *testing.T) {
+	t.Parallel()
+	values := map[string]string{}
+	lookup := func(key string) (string, bool) {
+		value, ok := values[key]
+		return value, ok
+	}
+	welcome := func() string {
+		return templateKey(lookup, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
+	}
+
+	if got := welcome(); got != "core.welcome" {
+		t.Fatalf("unset key = %q", got)
+	}
+	if got := templateKey(lookup, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey); got != "core.certificate" {
+		t.Fatalf("unset certificate key = %q", got)
+	}
+
+	values["SKYMAIL_WELCOME_TEMPLATE_KEY"] = "  core.welcome.next  "
+	if got := welcome(); got != "core.welcome.next" {
+		t.Fatalf("explicit key = %q", got)
+	}
+
+	// An empty variable is the documented way back to the template id while the
+	// keys are being seeded; it must not be read as "unset" and defaulted.
+	values["SKYMAIL_WELCOME_TEMPLATE_KEY"] = ""
+	if got := welcome(); got != "" {
+		t.Fatalf("emptied key = %q", got)
 	}
 }

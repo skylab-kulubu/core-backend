@@ -8,6 +8,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
@@ -21,6 +22,7 @@ type URLHandler struct {
 	svc              shorturl.Service
 	parse            func(string) (authn.Identity, error)
 	attributionGuard URLAttributionGuard
+	trustedProxies   clientip.Ranges
 }
 
 type URLAttributionGuard func(context.Context, uuid.UUID) (user.AttributionState, error)
@@ -30,6 +32,14 @@ func NewURLHandler(svc shorturl.Service, parse func(string) (authn.Identity, err
 	if len(guards) > 0 {
 		h.attributionGuard = guards[0]
 	}
+	return h
+}
+
+// TrustProxies names the peers whose forwarded-for header may be read when a
+// hop is recorded. Without it the handler records the socket address, which is
+// the edge proxy itself rather than the person who clicked.
+func (h *URLHandler) TrustProxies(ranges clientip.Ranges) *URLHandler {
+	h.trustedProxies = ranges
 	return h
 }
 
@@ -69,7 +79,7 @@ func (h *URLHandler) Redirect(c fiber.Ctx) error {
 		return urlError(c, err)
 	}
 	u, err := h.svc.Redirect(c.Context(), c.Params("alias"), shorturl.Hit{
-		IP:        hopIP(c),
+		IP:        h.hopIP(c),
 		UserAgent: strings.Clone(c.Get(fiber.HeaderUserAgent)),
 		Referer:   strings.Clone(c.Get(fiber.HeaderReferer)),
 		UserID:    userID,
@@ -268,9 +278,11 @@ func (h *URLHandler) hopUserID(c fiber.Ctx) (*uuid.UUID, error) {
 	}
 }
 
-func hopIP(c fiber.Ctx) string {
-	if xff := c.Get(fiber.HeaderXForwardedFor); xff != "" {
-		return strings.Clone(strings.TrimSpace(strings.Split(xff, ",")[0]))
-	}
-	return strings.Clone(c.IP())
+// hopIP is the address recorded on a short-link hit. It is the address the
+// edge proxy accepted the click from, never the leftmost forwarded-for entry:
+// that end of the chain belongs to the caller, who would otherwise choose what
+// url_hits.ip says about them. A value that does not parse as an address is
+// stored as "" rather than as the text that was sent.
+func (h *URLHandler) hopIP(c fiber.Ctx) string {
+	return clientip.FromCtx(c, h.trustedProxies)
 }

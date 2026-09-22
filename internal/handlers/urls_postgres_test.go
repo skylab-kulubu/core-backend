@@ -91,3 +91,39 @@ func TestURLRedirectFailsClosedWhenAttributionDatabaseIsUnavailable(t *testing.T
 		t.Fatalf("database failure click count=%d err=%v", stored.ClickCount, err)
 	}
 }
+
+// url_hits.ip is the durable answer to "who clicked this link". It has to hold
+// the client the edge proxy observed, not the proxy and not a header the
+// caller wrote.
+func TestURLRedirectWritesTheClientAddressToURLHits(t *testing.T) {
+	pool := testpostgres.Start(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	urls := shorturl.NewPostgresStore(pool)
+	link, err := urls.Create(ctx, shorturl.URL{Alias: "club", URL: "https://skylab.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(fiber.MethodGet, "/v1/go/club", nil)
+	request.Header.Set(fiber.HeaderXForwardedFor, "1.2.3.4, 198.51.100.20")
+	app := urlAppBehindProxies(t, testProxyRanges, urls, authn.Identity{}, nil, allowAttribution)
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != fiber.StatusMovedPermanently {
+		t.Fatalf("redirect %d", response.StatusCode)
+	}
+
+	var stored string
+	if err := pool.QueryRow(ctx, `SELECT ip FROM url_hits WHERE url_id = $1`, link.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "198.51.100.20" {
+		t.Fatalf("url_hits.ip = %q, want the address the proxy observed", stored)
+	}
+}

@@ -33,7 +33,7 @@ func (p handlerSelfDeleteProjector) Project(ctx context.Context, request user.De
 func selfDeleteApp(t *testing.T, enabled bool, projectionError error) (*fiber.App, *user.MemoryStore) {
 	t.Helper()
 	store := user.NewMemoryStore()
-	now := time.Date(2026, 9, 20, 8, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	service, err := account.NewSelfDeletion(store, handlerSelfDeleteProjector{store: store, now: now, err: projectionError}, account.SelfDeletionConfig{
 		Enabled: enabled, ReceiptKey: []byte("0123456789abcdef0123456789abcdef"), ReceiptTTL: 90 * 24 * time.Hour,
 	}, func() time.Time { return now })
