@@ -53,6 +53,10 @@ services:
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
       KEYCLOAK_JWKS_URL: ${KEYCLOAK_JWKS_URL:-}
       SKYMAIL_URL: ${SKYMAIL_URL:-}
+      # Unset takes the seeded key; an empty value falls back to the template id
+      # below. The dash without a colon is what keeps that difference.
+      SKYMAIL_WELCOME_TEMPLATE_KEY: ${SKYMAIL_WELCOME_TEMPLATE_KEY-core.welcome}
+      SKYMAIL_CERTIFICATE_TEMPLATE_KEY: ${SKYMAIL_CERTIFICATE_TEMPLATE_KEY-core.certificate}
       SKYMAIL_WELCOME_TEMPLATE_ID: ${SKYMAIL_WELCOME_TEMPLATE_ID:-}
       SKYMAIL_CERTIFICATE_TEMPLATE_ID: ${SKYMAIL_CERTIFICATE_TEMPLATE_ID:-}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
