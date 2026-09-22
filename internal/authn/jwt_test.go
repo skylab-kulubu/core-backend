@@ -189,10 +189,15 @@ func TestParseSelfDeleteContextRequiresMatchingAccountTokenAndFreshIDToken(t *te
 	}
 
 	for name, mutate := range map[string]func(jwt.MapClaims){
-		"wrong audience":    func(c jwt.MapClaims) { c["aud"] = "core" },
-		"multiple audience": func(c jwt.MapClaims) { c["aud"] = []string{"account", "core"} },
-		"wrong azp":         func(c jwt.MapClaims) { c["azp"] = "service-account" },
-		"broad scope":       func(c jwt.MapClaims) { c["scope"] = "openid profile" },
+		"wrong audience":          func(c jwt.MapClaims) { c["aud"] = "core" },
+		"foreign audience set":    func(c jwt.MapClaims) { c["aud"] = []string{"core"} },
+		"missing audience":        func(c jwt.MapClaims) { delete(c, "aud") },
+		"empty audience set":      func(c jwt.MapClaims) { c["aud"] = []string{} },
+		"non string audience":     func(c jwt.MapClaims) { c["aud"] = []any{1} },
+		"wrong azp":               func(c jwt.MapClaims) { c["azp"] = "service-account" },
+		"broad scope":             func(c jwt.MapClaims) { c["scope"] = "openid profile" },
+		"expired":                 func(c jwt.MapClaims) { c["exp"] = now.Add(-time.Second).Unix() },
+		"account audience prefix": func(c jwt.MapClaims) { c["aud"] = []string{"account-console"} },
 	} {
 		t.Run("access token "+name, func(t *testing.T) {
 			claims := jwt.MapClaims{}
@@ -227,5 +232,54 @@ func TestParseSelfDeleteContextRequiresMatchingAccountTokenAndFreshIDToken(t *te
 				t.Fatal("invalid reauthentication ID token accepted")
 			}
 		})
+	}
+}
+
+// The reconciled Account Center client resolves more than one audience, so the
+// intake reads `aud` as a set containing `account` instead of one exact string.
+func TestParseSelfDeleteContextAcceptsAccountAudienceSet(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	subject := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	idToken := keys.Sign(t, jwt.MapClaims{
+		"sub": subject.String(), "iss": keys.Issuer, "aud": "account-center",
+		"sid": "browser-session", "auth_time": now.Add(-2 * time.Minute).Unix(),
+		"exp": now.Add(time.Hour).Unix(),
+	})
+
+	for name, audience := range map[string]any{
+		"bare string":          "account",
+		"single element array": []string{"account"},
+		"reconciled audiences": []string{"account", "core"},
+		"account listed last":  []string{"core", "account"},
+	} {
+		t.Run("access token "+name, func(t *testing.T) {
+			accessToken := keys.Sign(t, jwt.MapClaims{
+				"sub": subject.String(), "iss": keys.Issuer, "aud": audience,
+				"azp": "account-center", "scope": "openid", "exp": now.Add(time.Hour).Unix(),
+			})
+			got, err := authn.ParseSelfDeleteContext(accessToken, idToken, keys.Verify, keys.Issuer, "account-center", now, 5*time.Minute)
+			if err != nil {
+				t.Fatalf("audience %v refused: %v", audience, err)
+			}
+			if got.ID != subject {
+				t.Fatalf("identity = %+v", got)
+			}
+		})
+	}
+
+	// The ID token audience stays exclusive; only its JSON shape is relaxed.
+	accessToken := keys.Sign(t, jwt.MapClaims{
+		"sub": subject.String(), "iss": keys.Issuer, "aud": []string{"account", "core"},
+		"azp": "account-center", "scope": "openid", "exp": now.Add(time.Hour).Unix(),
+	})
+	soleArrayID := keys.Sign(t, jwt.MapClaims{
+		"sub": subject.String(), "iss": keys.Issuer, "aud": []string{"account-center"},
+		"sid": "browser-session", "auth_time": now.Add(-2 * time.Minute).Unix(),
+		"exp": now.Add(time.Hour).Unix(),
+	})
+	if _, err := authn.ParseSelfDeleteContext(accessToken, soleArrayID, keys.Verify, keys.Issuer, "account-center", now, 5*time.Minute); err != nil {
+		t.Fatalf("single element ID token audience refused: %v", err)
 	}
 }
