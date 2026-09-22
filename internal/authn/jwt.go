@@ -16,6 +16,13 @@ var ErrInvalidToken = errors.New("authn: invalid token")
 
 const ResourceAudience = "core"
 
+// AccountAudience is the Keycloak Account REST audience the Account Center
+// end-user token must carry. Keycloak writes `aud` as a bare string or as an
+// array, and the Account Center client now also resolves Core's audience, so
+// the claim is read as a set that must contain this value rather than as one
+// exact string.
+const AccountAudience = "account"
+
 func ParseAccessToken(token string) (Identity, error) {
 	ident, _, err := decodeAccessToken(token)
 	return ident, err
@@ -46,6 +53,12 @@ func ParseAndVerify(token string, verify func(string) error, issuer, audience st
 // only by the Account Center self-deletion intake. The Account REST access
 // token proves the caller is a user of the confidential Account Center client;
 // the separately signature-verified ID token proves recent authentication.
+//
+// The access token's audience is a set that must contain AccountAudience: the
+// Account Center client resolves further audiences (Core's own among them), so
+// requiring one exact string would reject every reconciled token. The ID token
+// audience stays exclusive - a re-authentication proof may name the Account
+// Center client and nothing else.
 func ParseSelfDeleteContext(accessToken, idToken string, verify func(string) error, issuer, clientID string, now time.Time, maxAuthenticationAge time.Duration) (Identity, error) {
 	if verify == nil || strings.TrimSpace(issuer) == "" || strings.TrimSpace(clientID) == "" || maxAuthenticationAge <= 0 {
 		return Identity{}, ErrInvalidToken
@@ -61,8 +74,7 @@ func ParseSelfDeleteContext(accessToken, idToken string, verify func(string) err
 	if err != nil {
 		return Identity{}, err
 	}
-	audience, ok := claims["aud"].(string)
-	if !ok || audience != "account" || claims["iss"] != issuer || claims["azp"] != clientID || claims["scope"] != "openid" {
+	if !audienceIncludes(claims["aud"], AccountAudience) || claims["iss"] != issuer || claims["azp"] != clientID || claims["scope"] != "openid" {
 		return Identity{}, ErrInvalidToken
 	}
 	now = now.UTC()
@@ -82,8 +94,7 @@ func ParseSelfDeleteContext(accessToken, idToken string, verify func(string) err
 	if err != nil || reauthenticated.ID != ident.ID {
 		return Identity{}, ErrInvalidToken
 	}
-	idAudience, ok := idClaims["aud"].(string)
-	if !ok || idAudience != clientID || idClaims["iss"] != issuer {
+	if !audienceIsOnly(idClaims["aud"], clientID) || idClaims["iss"] != issuer {
 		return Identity{}, ErrInvalidToken
 	}
 	sid, ok := idClaims["sid"].(string)
@@ -194,6 +205,26 @@ func audienceIncludes(raw any, want string) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// audienceIsOnly reports whether an audience claim names want and nothing
+// else. Keycloak serialises a single audience as a bare string or as a
+// one-element array, so both shapes are read, but a second audience is a
+// different token than the one this check asks for.
+func audienceIsOnly(raw any, want string) bool {
+	switch v := raw.(type) {
+	case string:
+		return v == want
+	case []any:
+		if len(v) != 1 {
+			return false
+		}
+		s, ok := v[0].(string)
+		return ok && s == want
+	case []string:
+		return len(v) == 1 && v[0] == want
 	}
 	return false
 }
