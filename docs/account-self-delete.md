@@ -17,12 +17,52 @@ account, run JIT synchronization, or return profile data.
 The idempotency key therefore represents exactly 32 caller-generated random
 bytes. Core verifies both JWTs independently with the realm JWKS and RS256.
 The access token must have the canonical issuer, a canonical UUID subject,
-`typ=JWT`, `azp=account-center`, exactly `aud=account`, exactly
+`typ=JWT`, `azp=account-center`, an `aud` **set containing** `account`, exactly
 `scope=openid`, and a future integer expiry. The ID token must have the same
-issuer and subject, `typ=JWT`, exactly `aud=account-center`, a non-empty `sid`,
-a future integer expiry, and an integer `auth_time` no more than five minutes
-old (with five seconds of future clock skew). The verified matching subject is
-the only deletion target.
+issuer and subject, `typ=JWT`, an `aud` naming exactly `account-center`, a
+non-empty `sid`, a future integer expiry, and an integer `auth_time` no more
+than five minutes old (with five seconds of future clock skew). The verified
+matching subject is the only deletion target.
+
+Keycloak serialises `aud` either as a bare string or as an array, and the
+reconciled Account Center client resolves more than one audience, so the access
+token's claim is read as a set: `"account"`, `["account"]` and
+`["account","core"]` are all accepted, while `["core"]`, an empty array and a
+missing claim are refused. The ID token audience stays exclusive - only its
+JSON shape is relaxed, so `"account-center"` and `["account-center"]` are
+accepted but `["account-center","core"]` is refused. A re-authentication proof
+minted for a second client is a different token than the one this route asks
+for.
+
+### Accepted proof headers
+
+Core accepts exactly one proof of recent authentication, and it is mandatory:
+
+1. `X-Account-Reauth-Token` - a fresh Keycloak ID token, verified as above.
+   Freshness is the `auth_time` rule.
+
+The sky-account Sudo mode token that Account Center already holds for
+`credentials/*` and `identity/username` (`X-Sky-Sudo`) is **not** accepted yet,
+and Core ignores the header. That token is a Keycloak *internal* token: it is
+signed `HS512` with the realm HMAC key, which never leaves Keycloak, so Core
+cannot verify it against the realm JWKS. The remote check does not work either:
+Keycloak 26.7.4 refuses to introspect a token whose audience does not include
+the calling client, and the sudo token's audience is `sky-account`. A call to
+`{issuer}/protocol/openid-connect/token/introspect` with Core's own client
+credentials therefore answers `{"active": false}` unless the `core` client is
+given
+`allow.token.introspection.without.audience.check=true`, which would drop that
+check for every token Core introspects - too broad a concession for one route.
+
+Two mechanisms would make a sudo proof verifiable without weakening anything:
+sky-account could add Core's client id to the sudo token audience (then plain
+introspection succeeds with the audience check intact), or sky-account could
+expose a read-only endpoint that verifies a bearer/sudo pair. Until one of them
+exists, Account Center must keep the Keycloak re-authentication hop for
+deletion. When a sudo proof is added, the intake must read `X-Sky-Sudo` first
+and fall back to `X-Account-Reauth-Token`, so that both services can ship
+independently, and the `auth_time` rule must not apply on the sudo path: that
+token carries its own five-minute lifetime.
 
 This route is intentionally registered before Core's normal resource bearer,
 shared-access-gate and JIT middleware. That narrow exception lets a lost HTTP

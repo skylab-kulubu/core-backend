@@ -138,7 +138,7 @@ func TestWorkerReassertsPlatformMarkerBeforeFirstErasureSideEffect(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 9, 20, 20, 0, 0, 0, time.UTC)
+	now := request.NextAttemptAt
 	if err := store.MarkDeletionPlatformBlocked(ctx, request.ID, now); err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestWorkerSurfacesManualInterventionAfterRetryBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 9, 20, 4, 0, 0, 0, time.UTC)
+	now := request.NextAttemptAt
 	confirmDeletionProjection(t, store, request, now)
 	worker := account.NewWorker(store, failingIdentity{}, account.WorkerConfig{
 		Now: func() time.Time { return now }, MaxAttempts: 1, AccessBlocker: &accountBlockWriter{},

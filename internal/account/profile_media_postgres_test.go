@@ -86,7 +86,6 @@ func TestWorkerImmediatelyErasesUnreferencedProfileBlobAndSanitizesSharedMedia(t
 	users := user.NewPostgresStore(pool)
 	mediaStore := media.NewPostgresStore(pool)
 	blobs := media.NewMemoryBlob()
-	now := time.Date(2026, 9, 20, 13, 0, 0, 0, time.UTC)
 
 	run := func(t *testing.T, reference string) (media.Media, string) {
 		t.Helper()
@@ -126,6 +125,8 @@ func TestWorkerImmediatelyErasesUnreferencedProfileBlobAndSanitizesSharedMedia(t
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Anchor the worker clock on the DB-assigned schedule so claims never depend on the calendar.
+		now := request.NextAttemptAt
 		confirmDeletionProjection(t, users, request, now)
 		worker := account.NewWorker(users, successfulIdentity{}, account.WorkerConfig{
 			Now: func() time.Time { return now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
@@ -198,7 +199,7 @@ func TestWorkerRetriesWhenProfileMediaIsRestoredBeforeBlobErase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 9, 20, 14, 0, 0, 0, time.UTC)
+	now := request.NextAttemptAt
 	confirmDeletionProjection(t, users, request, now)
 	eraser := &restoreBeforeFirstErase{
 		store:    mediaStore,

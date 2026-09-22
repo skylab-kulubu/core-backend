@@ -21,6 +21,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
+	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
@@ -41,6 +42,15 @@ func main() {
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")
 	}
+	// A proxy list that cannot be read stops startup: continuing would either
+	// believe a header any caller can write or stop believing the real proxy,
+	// and both are silent until someone reads the recorded addresses.
+	trustedProxies, err := clientip.RangesFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("trusted proxy ranges: %s", trustedProxies)
+
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
 		log.Fatal(err)
@@ -223,6 +233,8 @@ func main() {
 				ClientID:     os.Getenv("KEYCLOAK_CLIENT_ID"),
 				ClientSecret: os.Getenv("KEYCLOAK_CLIENT_SECRET"),
 			},
+			TemplateKey:            templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey),
+			CertificateTemplateKey: templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey),
 		}
 		if raw := os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"); raw != "" {
 			tid, err := uuid.Parse(raw)
@@ -238,7 +250,10 @@ func main() {
 			}
 			sky.CertificateTemplateID = tid
 		}
-		if sky.TemplateID != uuid.Nil || sky.CertificateTemplateID != uuid.Nil {
+		// Said once, at startup: a kind with neither a key nor an id drops every
+		// mail of that kind, and the send path stays silent by design.
+		sky.WarnUnconfiguredTemplates()
+		if sky.Configured() {
 			mailer = sky
 		}
 	}
@@ -305,6 +320,7 @@ func main() {
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},
+		TrustedProxies: trustedProxies,
 	})
 
 	addr := os.Getenv("PORT")
@@ -359,6 +375,18 @@ func accountErasureWorkerEnabled(getenv func(string) string) (bool, error) {
 	default:
 		return false, fmt.Errorf("ACCOUNT_ERASURE_WORKER_ENABLED must be true or false")
 	}
+}
+
+// templateKey reads a SkyMail template key. An unset variable takes the seeded
+// default, because addressing by key is what core wants everywhere. A variable
+// set to an empty value opts that kind back onto its template id, which is how
+// the key rollout is held back or rolled back without a code change.
+func templateKey(lookup func(string) (string, bool), name, fallback string) string {
+	raw, ok := lookup(name)
+	if !ok {
+		return fallback
+	}
+	return strings.TrimSpace(raw)
 }
 
 func gotenbergURL() string {

@@ -41,6 +41,17 @@ func (e *StatusError) Unwrap() error {
 	return nil
 }
 
+// Mail kinds for the list calls. Like the send kinds they are fixed values, so
+// no list name or id can reach the log through them.
+const (
+	kindListCreate          = "list_create"
+	kindListDelete          = "list_delete"
+	kindListRead            = "list_read"
+	kindListRecipients      = "list_recipients"
+	kindListRecipientAdd    = "list_recipient_add"
+	kindListRecipientRemove = "list_recipient_remove"
+)
+
 type ListRecipient struct {
 	ID       uuid.UUID `json:"id"`
 	FullName string    `json:"full_name"`
@@ -57,14 +68,14 @@ type Lists interface {
 }
 
 func (s *SkyMail) DeleteList(ctx context.Context, id uuid.UUID) error {
-	return s.doJSON(ctx, http.MethodDelete, "/v1/mailing_lists/"+id.String(), nil, http.StatusNoContent, nil)
+	return s.doJSON(ctx, kindListDelete, http.MethodDelete, "/v1/mailing_lists/"+id.String(), nil, http.StatusNoContent, nil)
 }
 
 func (s *SkyMail) CreateList(ctx context.Context, name string) (uuid.UUID, error) {
 	var out struct {
 		ID uuid.UUID `json:"id"`
 	}
-	if err := s.doJSON(ctx, http.MethodPost, "/v1/mailing_lists", map[string]string{"name": name}, http.StatusCreated, &out); err != nil {
+	if err := s.doJSON(ctx, kindListCreate, http.MethodPost, "/v1/mailing_lists", map[string]string{"name": name}, http.StatusCreated, &out); err != nil {
 		return uuid.Nil, err
 	}
 	if out.ID == uuid.Nil {
@@ -74,13 +85,13 @@ func (s *SkyMail) CreateList(ctx context.Context, name string) (uuid.UUID, error
 }
 
 func (s *SkyMail) GetList(ctx context.Context, id uuid.UUID) error {
-	return s.doJSON(ctx, http.MethodGet, "/v1/mailing_lists/"+id.String(), nil, http.StatusOK, nil)
+	return s.doJSON(ctx, kindListRead, http.MethodGet, "/v1/mailing_lists/"+id.String(), nil, http.StatusOK, nil)
 }
 
 func (s *SkyMail) Recipients(ctx context.Context, id uuid.UUID) ([]ListRecipient, error) {
 	var out []ListRecipient
 	path := "/v1/mailing_lists/" + id.String() + "/recipients?_start=0&_end=10000"
-	if err := s.doJSON(ctx, http.MethodGet, path, nil, http.StatusOK, &out); err != nil {
+	if err := s.doJSON(ctx, kindListRecipients, http.MethodGet, path, nil, http.StatusOK, &out); err != nil {
 		return nil, err
 	}
 	if out == nil {
@@ -90,17 +101,17 @@ func (s *SkyMail) Recipients(ctx context.Context, id uuid.UUID) ([]ListRecipient
 }
 
 func (s *SkyMail) AddRecipient(ctx context.Context, id uuid.UUID, r ListRecipient) error {
-	return s.doJSON(ctx, http.MethodPost, "/v1/mailing_lists/"+id.String()+"/recipients", map[string]string{
+	return s.doJSON(ctx, kindListRecipientAdd, http.MethodPost, "/v1/mailing_lists/"+id.String()+"/recipients", map[string]string{
 		"full_name": r.FullName,
 		"email":     r.Email,
 	}, http.StatusCreated, nil)
 }
 
 func (s *SkyMail) RemoveRecipient(ctx context.Context, listID, recipientID uuid.UUID) error {
-	return s.doJSON(ctx, http.MethodDelete, "/v1/mailing_lists/"+listID.String()+"/recipients/"+recipientID.String(), nil, http.StatusNoContent, nil)
+	return s.doJSON(ctx, kindListRecipientRemove, http.MethodDelete, "/v1/mailing_lists/"+listID.String()+"/recipients/"+recipientID.String(), nil, http.StatusNoContent, nil)
 }
 
-func (s *SkyMail) doJSON(ctx context.Context, method, path string, body any, want int, dest any) error {
+func (s *SkyMail) doJSON(ctx context.Context, kind, method, path string, body any, want int, dest any) error {
 	if s == nil || strings.TrimSpace(s.BaseURL) == "" {
 		return errors.New("mail: skymail is not configured")
 	}
@@ -140,10 +151,14 @@ func (s *SkyMail) doJSON(ctx context.Context, method, path string, body any, wan
 	if err != nil {
 		return err
 	}
+	// A list SkyMail no longer holds is a typed answer every caller already acts
+	// on, so it needs no warning. Any other unexpected status does: the callers
+	// only see an error value, and the background sweeps swallow most of them.
 	if resp.StatusCode == http.StatusNotFound {
 		return ErrListNotFound
 	}
 	if resp.StatusCode != want {
+		warn(s.Logger, eventCallFailed, kind, resp.StatusCode, reasonUpstreamError, diagnosticCode(raw))
 		return &StatusError{Method: method, Path: path, Status: resp.StatusCode}
 	}
 	if dest == nil || len(raw) == 0 {

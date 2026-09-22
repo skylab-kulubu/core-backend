@@ -10,6 +10,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
+	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
@@ -44,6 +45,10 @@ type Deps struct {
 	AccountAccessMetrics   *accessgate.Metrics
 	SelfDeletion           handlers.AccountDeletionService
 	ParseSelfDeleteContext func(string, string) (authn.Identity, error)
+
+	// TrustedProxies are the peers allowed to speak for a client through
+	// `X-Forwarded-For`. An empty value falls back to clientip.Default().
+	TrustedProxies clientip.Ranges
 }
 
 func New(deps Deps) *fiber.App {
@@ -52,7 +57,22 @@ func New(deps Deps) *fiber.App {
 			return authn.Identity{}, authn.ErrInvalidToken
 		}
 	}
-	app := fiber.New(fiber.Config{ErrorHandler: handlers.ErrorHandler})
+	trustedProxies := deps.TrustedProxies
+	if trustedProxies.Empty() {
+		trustedProxies = clientip.Default()
+	}
+	// The edge proxy discards a caller-supplied `X-Forwarded-For` and writes
+	// its own, so the header is only worth reading when the connection came
+	// from one of those proxies. Fiber makes that decision for c.IP() from the
+	// same ranges the handlers use, and validation keeps c.IP() from handing
+	// back a raw header value.
+	app := fiber.New(fiber.Config{
+		ErrorHandler:       handlers.ErrorHandler,
+		TrustProxy:         true,
+		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: trustedProxies.Proxies()},
+		ProxyHeader:        fiber.HeaderXForwardedFor,
+		EnableIPValidation: true,
+	})
 	app.Use(recover.New())
 	app.Use(requestid.New())
 
@@ -65,7 +85,7 @@ func New(deps Deps) *fiber.App {
 	tickets := handlers.NewTicketHandler(deps.Tickets)
 	competitors := handlers.NewCompetitorHandler(deps.Competitors)
 	mediaH := handlers.NewMediaHandler(deps.Media)
-	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken, deps.URLAttributionGuard)
+	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken, deps.URLAttributionGuard).TrustProxies(trustedProxies)
 	jit := middlewares.NewJIT(deps.Users, deps.Mail)
 	var certs *handlers.CertificateHandler
 	if deps.Certificates != nil {
@@ -99,7 +119,19 @@ func New(deps Deps) *fiber.App {
 	})
 	app.Get("/v1/go/:alias/qr", urls.QR)
 	if certs != nil {
-		publicCertificateLimit := limiter.New(limiter.Config{Max: 120, Expiration: time.Minute})
+		// These routes are unauthenticated, so the budget has to follow the
+		// person holding the certificate link. Keying on the default c.IP()
+		// would put every visitor behind the edge proxy in one bucket and let
+		// a single caller exhaust it for everyone. An address that cannot be
+		// resolved shares one bucket on purpose: unattributable traffic is
+		// limited together rather than exempted.
+		publicCertificateLimit := limiter.New(limiter.Config{
+			Max:        120,
+			Expiration: time.Minute,
+			KeyGenerator: func(c fiber.Ctx) string {
+				return clientip.FromCtx(c, trustedProxies)
+			},
+		})
 		app.Get("/v1/go/c/:serial", publicCertificateLimit, certs.PublicPage)
 		app.Get("/c/:serial", publicCertificateLimit, certs.PublicPage)
 		app.Get("/v1/public/certificates/:serial", publicCertificateLimit, certs.Verify)
