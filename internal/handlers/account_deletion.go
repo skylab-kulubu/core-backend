@@ -14,22 +14,30 @@ import (
 
 type AccountDeletionService interface {
 	Begin(context.Context, uuid.UUID, string) (account.SelfDeletionView, error)
+	// Replay returns the outcome of a key already accepted for the subject,
+	// or account.ErrSelfDeletionNotAccepted.
+	Replay(context.Context, uuid.UUID, string) (account.SelfDeletionView, error)
 	Status(context.Context, string) (account.SelfDeletionView, error)
 	Retry(context.Context, string) (account.SelfDeletionView, error)
 }
 
 type AccountDeletionHandler struct {
-	service    AccountDeletionService
-	parseToken func(string, string) (authn.Identity, error)
-	parseSudo  func(context.Context, string, string) (authn.Identity, error)
+	service     AccountDeletionService
+	parseToken  func(string, string) (authn.Identity, error)
+	parseSudo   func(context.Context, string, string) (authn.Identity, error)
+	parseBearer func(string) (authn.Identity, error)
 }
 
 // NewAccountDeletionHandler takes one verifier per re-authentication proof:
 // parseToken checks the bearer with a fresh ID token (`X-Account-Reauth-Token`)
 // and parseSudo checks it with a sky-account Sudo mode token (`X-Sky-Sudo`).
-// A nil parseSudo refuses every sudo proof.
-func NewAccountDeletionHandler(service AccountDeletionService, parseToken func(string, string) (authn.Identity, error), parseSudo func(context.Context, string, string) (authn.Identity, error)) *AccountDeletionHandler {
-	return &AccountDeletionHandler{service: service, parseToken: parseToken, parseSudo: parseSudo}
+// parseBearer checks the bearer alone, with the sudo path's local rules, so
+// that a replay of an already accepted key can be answered without asking
+// the realm about a proof whose session the deletion has closed. A nil
+// parseSudo refuses every sudo proof; a nil parseSudo or parseBearer turns
+// the replay off.
+func NewAccountDeletionHandler(service AccountDeletionService, parseToken func(string, string) (authn.Identity, error), parseSudo func(context.Context, string, string) (authn.Identity, error), parseBearer func(string) (authn.Identity, error)) *AccountDeletionHandler {
+	return &AccountDeletionHandler{service: service, parseToken: parseToken, parseSudo: parseSudo, parseBearer: parseBearer}
 }
 
 type accountDeletionResponse struct {
@@ -58,6 +66,11 @@ func deletionResponse(view account.SelfDeletionView, includeReceipt bool) accoun
 
 func (h *AccountDeletionHandler) Begin(c fiber.Ctx) error {
 	c.Set(fiber.HeaderCacheControl, "no-store")
+	if view, replayed, err := h.replayAccepted(c); err != nil {
+		return accountDeletionError(c, err)
+	} else if replayed {
+		return c.Status(accountDeletionHTTPStatus(view)).JSON(deletionResponse(view, true))
+	}
 	identity, err := h.endUserIdentity(c)
 	if errors.Is(err, authn.ErrIntrospectionUnavailable) {
 		// The realm could not say whether the sudo proof is good. That is not
@@ -106,6 +119,40 @@ func (h *AccountDeletionHandler) Retry(c fiber.Ctx) error {
 		return accountDeletionError(c, err)
 	}
 	return c.Status(accountDeletionHTTPStatus(view)).JSON(deletionResponse(view, false))
+}
+
+// replayAccepted answers a sudo-path retry of an idempotency key Core already
+// accepted for the bearer's subject, before the sudo proof is checked. The
+// deletion saga closes the Keycloak session that proof is bound to, so the
+// realm calls it inactive while Account Center may still be retrying a lost
+// answer. Only a request shaped exactly like the sudo intake qualifies - a
+// verified Account Center bearer, one well-formed `X-Sky-Sudo`, an empty
+// body - and it can only read the stored outcome: a key Core never accepted
+// for this subject falls through to the proof, and the ID-token path never
+// replays. replayed=false with a nil error means "not a replay".
+func (h *AccountDeletionHandler) replayAccepted(c fiber.Ctx) (account.SelfDeletionView, bool, error) {
+	if h == nil || h.service == nil || h.parseSudo == nil || h.parseBearer == nil {
+		return account.SelfDeletionView{}, false, nil
+	}
+	if !singleCredential(c.Get("X-Sky-Sudo")) || len(c.Body()) != 0 {
+		return account.SelfDeletionView{}, false, nil
+	}
+	token, ok := authorizationCredential(c.Get(fiber.HeaderAuthorization), "Bearer")
+	if !ok {
+		return account.SelfDeletionView{}, false, nil
+	}
+	identity, err := h.parseBearer(token)
+	if err != nil {
+		return account.SelfDeletionView{}, false, nil
+	}
+	view, err := h.service.Replay(c.Context(), identity.ID, c.Get("Idempotency-Key"))
+	if errors.Is(err, account.ErrSelfDeletionNotAccepted) {
+		return account.SelfDeletionView{}, false, nil
+	}
+	if err != nil {
+		return account.SelfDeletionView{}, false, err
+	}
+	return view, true, nil
 }
 
 func (h *AccountDeletionHandler) endUserIdentity(c fiber.Ctx) (authn.Identity, error) {

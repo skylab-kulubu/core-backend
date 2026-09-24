@@ -50,6 +50,11 @@ type Deps struct {
 	// Sudo mode token (`X-Sky-Sudo`) instead of a fresh ID token. Nil refuses
 	// every sudo proof.
 	ParseSelfDeleteSudo func(context.Context, string, string) (authn.Identity, error)
+	// ParseSelfDeleteBearer verifies the self-delete bearer alone, with the
+	// sudo path's local rules, so a retry of an idempotency key Core already
+	// accepted is answered after the deletion closed the session its sudo
+	// proof is bound to. Nil (or a nil ParseSelfDeleteSudo) turns that off.
+	ParseSelfDeleteBearer func(string) (authn.Identity, error)
 
 	// TrustedProxies are the peers allowed to speak for a client through
 	// `X-Forwarded-For`. An empty value falls back to clientip.Default().
@@ -148,7 +153,7 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
 	}
 	if deps.SelfDeletion != nil {
-		selfDeletion := handlers.NewAccountDeletionHandler(deps.SelfDeletion, deps.ParseSelfDeleteContext, deps.ParseSelfDeleteSudo)
+		selfDeletion := handlers.NewAccountDeletionHandler(deps.SelfDeletion, deps.ParseSelfDeleteContext, deps.ParseSelfDeleteSudo, deps.ParseSelfDeleteBearer)
 		app.Post("/v1/account-deletion-requests/self", selfDeletion.Begin)
 		app.Get("/v1/account-deletion-requests/status", selfDeletion.Status)
 		app.Post("/v1/account-deletion-requests/status/retry", selfDeletion.Retry)

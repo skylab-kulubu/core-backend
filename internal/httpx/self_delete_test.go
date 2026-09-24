@@ -26,6 +26,10 @@ func (s *recordingSelfDeletion) Begin(_ context.Context, subject uuid.UUID, _ st
 	}, nil
 }
 
+func (s *recordingSelfDeletion) Replay(context.Context, uuid.UUID, string) (account.SelfDeletionView, error) {
+	return account.SelfDeletionView{}, account.ErrSelfDeletionNotAccepted
+}
+
 func (s *recordingSelfDeletion) Status(context.Context, string) (account.SelfDeletionView, error) {
 	return account.SelfDeletionView{}, account.ErrSelfDeletionReceiptNotFound
 }
