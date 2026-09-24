@@ -28,5 +28,6 @@ type Hit struct {
 	IP        string     `json:"ip"`
 	UserAgent string     `json:"userAgent"`
 	Referer   string     `json:"referer"`
+	UTM       UTM        `json:"utm"`
 	UserID    *uuid.UUID `json:"userId,omitempty"`
 }

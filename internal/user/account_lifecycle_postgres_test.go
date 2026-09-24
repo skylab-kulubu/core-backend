@@ -90,8 +90,8 @@ func TestPostgresAccountAnonymizationDetachesIdentityAndPreservesHistory(t *test
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO url_hits (id, url_id, alias, at, ip, user_agent, referer, user_id)
-		VALUES ($1, $2, 'ada-link', now(), '192.0.2.42', 'Ada Browser', 'https://private.example/ada', $3)
+		INSERT INTO url_hits (id, url_id, alias, at, ip, user_agent, referer, user_id, utm_source, utm_content)
+		VALUES ($1, $2, 'ada-link', now(), '192.0.2.42', 'Ada Browser', 'https://private.example/ada', $3, 'invite', 'ada-lovelace')
 	`, hitID, urlID, subjectID); err != nil {
 		t.Fatal(err)
 	}
@@ -173,12 +173,12 @@ func TestPostgresAccountAnonymizationDetachesIdentityAndPreservesHistory(t *test
 		}
 	}
 	var hitUserID *uuid.UUID
-	var hitIP, hitUserAgent, hitReferer string
-	if err := pool.QueryRow(ctx, `SELECT user_id, ip, user_agent, referer FROM url_hits WHERE id = $1`, hitID).Scan(&hitUserID, &hitIP, &hitUserAgent, &hitReferer); err != nil {
+	var hitIP, hitUserAgent, hitReferer, hitUTMSource, hitUTMContent string
+	if err := pool.QueryRow(ctx, `SELECT user_id, ip, user_agent, referer, utm_source, utm_content FROM url_hits WHERE id = $1`, hitID).Scan(&hitUserID, &hitIP, &hitUserAgent, &hitReferer, &hitUTMSource, &hitUTMContent); err != nil {
 		t.Fatal(err)
 	}
-	if hitUserID != nil || hitIP != "" || hitUserAgent != "" || hitReferer != "" {
-		t.Fatalf("URL hit retained subject PII: user=%v ip=%q agent=%q referer=%q", hitUserID, hitIP, hitUserAgent, hitReferer)
+	if hitUserID != nil || hitIP != "" || hitUserAgent != "" || hitReferer != "" || hitUTMSource != "" || hitUTMContent != "" {
+		t.Fatalf("URL hit retained subject PII: user=%v ip=%q agent=%q referer=%q utm_source=%q utm_content=%q", hitUserID, hitIP, hitUserAgent, hitReferer, hitUTMSource, hitUTMContent)
 	}
 	if got, err := competitor.NewPostgresStore(pool).GetIncludingWithdrawn(ctx, competitorID); err != nil || got.UserID != uuid.Nil || got.WithdrawnAt == nil {
 		t.Fatalf("detached competitor read = %+v, err=%v", got, err)

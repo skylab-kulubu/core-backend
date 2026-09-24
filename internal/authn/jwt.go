@@ -1,6 +1,7 @@
 package authn
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -63,24 +64,10 @@ func ParseSelfDeleteContext(accessToken, idToken string, verify func(string) err
 	if verify == nil || strings.TrimSpace(issuer) == "" || strings.TrimSpace(clientID) == "" || maxAuthenticationAge <= 0 {
 		return Identity{}, ErrInvalidToken
 	}
-	if err := verify(accessToken); err != nil {
-		return Identity{}, ErrInvalidToken
-	}
-	header, err := decodeJWTObject(strings.Split(strings.TrimSpace(accessToken), "."), 0)
-	if err != nil || header["alg"] != "RS256" || header["typ"] != "JWT" {
-		return Identity{}, ErrInvalidToken
-	}
-	ident, claims, err := decodeAccessToken(accessToken)
+	now = now.UTC()
+	ident, _, err := verifySelfDeleteBearer(accessToken, verify, issuer, clientID, now)
 	if err != nil {
 		return Identity{}, err
-	}
-	if !audienceIncludes(claims["aud"], AccountAudience) || claims["iss"] != issuer || claims["azp"] != clientID || claims["scope"] != "openid" {
-		return Identity{}, ErrInvalidToken
-	}
-	now = now.UTC()
-	expiresAt, ok := integerTimeClaim(claims["exp"])
-	if !ok || !expiresAt.After(now) {
-		return Identity{}, ErrInvalidToken
 	}
 
 	if err := verify(idToken); err != nil {
@@ -113,6 +100,99 @@ func ParseSelfDeleteContext(accessToken, idToken string, verify func(string) err
 		return Identity{}, ErrInvalidToken
 	}
 	return ident, nil
+}
+
+// SudoTokenType and SudoAudience describe the sky-account Sudo mode token:
+// Keycloak's sky-account extension mints it after the person re-proves
+// themselves inside Account Center, and it names Core in its audience next to
+// SudoAudience so that Core may introspect it.
+const (
+	SudoTokenType = "sky-sudo"
+	SudoAudience  = "sky-account"
+)
+
+// ParseSelfDeleteSudoContext verifies the self-deletion intake when Account
+// Center proves recent authentication with a Sudo mode token instead of a
+// fresh ID token. The bearer is checked exactly as in ParseSelfDeleteContext
+// and must carry the Keycloak session id (`sid`) that sky-account itself binds
+// every sudo token to.
+//
+// The sudo token is signed with the realm's internal HMAC key, which never
+// leaves Keycloak, so it cannot be verified against the JWKS. Core asks the
+// realm instead (RFC 7662) and requires an active token with `typ=sky-sudo`,
+// the realm issuer, `azp` of the Account Center client, an audience set
+// containing both `sky-account` and `core`, and the bearer's own subject and
+// session. Freshness is the token's own five-minute lifetime (a future
+// integer `exp`); the ID-token `auth_time` rule does not apply, because an
+// in-product proof never moves the session's `auth_time`.
+//
+// An error wrapping ErrIntrospectionUnavailable means the realm could not be
+// asked; every refusal is ErrInvalidToken.
+func ParseSelfDeleteSudoContext(ctx context.Context, accessToken, sudoToken string, verify func(string) error, introspect Introspector, issuer, clientID string, now time.Time) (Identity, error) {
+	if verify == nil || introspect == nil || strings.TrimSpace(issuer) == "" || strings.TrimSpace(clientID) == "" || sudoToken == "" {
+		return Identity{}, ErrInvalidToken
+	}
+	now = now.UTC()
+	// The bearer is verified locally first, so only a real Account Center
+	// session can make Core call the realm.
+	ident, claims, err := verifySelfDeleteBearer(accessToken, verify, issuer, clientID, now)
+	if err != nil {
+		return Identity{}, err
+	}
+	sessionID, ok := claims["sid"].(string)
+	if !ok || strings.TrimSpace(sessionID) == "" {
+		return Identity{}, ErrInvalidToken
+	}
+
+	proof, err := introspect.Introspect(ctx, sudoToken)
+	if err != nil {
+		if errors.Is(err, ErrIntrospectionUnavailable) {
+			return Identity{}, err
+		}
+		// A foreign error is not propagated: it could carry the token.
+		return Identity{}, ErrIntrospectionUnavailable
+	}
+	if active, _ := proof["active"].(bool); !active {
+		return Identity{}, ErrInvalidToken
+	}
+	if proof["typ"] != SudoTokenType || proof["iss"] != issuer || proof["azp"] != clientID {
+		return Identity{}, ErrInvalidToken
+	}
+	if !audienceIncludes(proof["aud"], SudoAudience) || !audienceIncludes(proof["aud"], ResourceAudience) {
+		return Identity{}, ErrInvalidToken
+	}
+	if proof["sub"] != ident.ID.String() || proof["sid"] != sessionID {
+		return Identity{}, ErrInvalidToken
+	}
+	expiresAt, ok := integerTimeClaim(proof["exp"])
+	if !ok || !expiresAt.After(now) {
+		return Identity{}, ErrInvalidToken
+	}
+	return ident, nil
+}
+
+// verifySelfDeleteBearer applies the Account Center bearer rules shared by
+// both self-deletion proofs and returns the identity and the verified claims.
+func verifySelfDeleteBearer(accessToken string, verify func(string) error, issuer, clientID string, now time.Time) (Identity, map[string]any, error) {
+	if err := verify(accessToken); err != nil {
+		return Identity{}, nil, ErrInvalidToken
+	}
+	header, err := decodeJWTObject(strings.Split(strings.TrimSpace(accessToken), "."), 0)
+	if err != nil || header["alg"] != "RS256" || header["typ"] != "JWT" {
+		return Identity{}, nil, ErrInvalidToken
+	}
+	ident, claims, err := decodeAccessToken(accessToken)
+	if err != nil {
+		return Identity{}, nil, err
+	}
+	if !audienceIncludes(claims["aud"], AccountAudience) || claims["iss"] != issuer || claims["azp"] != clientID || claims["scope"] != "openid" {
+		return Identity{}, nil, ErrInvalidToken
+	}
+	expiresAt, ok := integerTimeClaim(claims["exp"])
+	if !ok || !expiresAt.After(now) {
+		return Identity{}, nil, ErrInvalidToken
+	}
+	return ident, claims, nil
 }
 
 func decodeAccessToken(token string) (Identity, map[string]any, error) {

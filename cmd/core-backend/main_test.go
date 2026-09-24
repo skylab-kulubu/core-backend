@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"testing"
+	"time"
 
 	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
@@ -167,5 +168,38 @@ func TestTemplateKeyDefaultsToTheSeededKeyAndAnEmptyValueOptsOut(t *testing.T) {
 	values["SKYMAIL_WELCOME_TEMPLATE_KEY"] = ""
 	if got := welcome(); got != "" {
 		t.Fatalf("emptied key = %q", got)
+	}
+}
+
+// The sudo proof is introspected with the realm issuer and Core's own
+// confidential client; no new setting exists. Missing any part leaves the
+// sudo proof unverifiable, and the intake then refuses it.
+func TestSudoIntrospectionReusesIssuerAndCoreClientCredentials(t *testing.T) {
+	t.Parallel()
+	values := map[string]string{}
+	getenv := func(key string) string { return values[key] }
+	issuer := "https://identity.example.test/realms/e-skylab"
+
+	if _, ok := sudoIntrospection(getenv, issuer); ok {
+		t.Fatal("introspection configured without client credentials")
+	}
+	values["KEYCLOAK_CLIENT_ID"] = "core"
+	if _, ok := sudoIntrospection(getenv, issuer); ok {
+		t.Fatal("introspection configured without a client secret")
+	}
+	values["KEYCLOAK_CLIENT_SECRET"] = "secret"
+	if _, ok := sudoIntrospection(getenv, ""); ok {
+		t.Fatal("introspection configured without an issuer")
+	}
+
+	got, ok := sudoIntrospection(getenv, issuer)
+	if !ok {
+		t.Fatal("full configuration refused")
+	}
+	if got.URL != issuer+"/protocol/openid-connect/token/introspect" || got.ClientID != "core" || got.ClientSecret != "secret" {
+		t.Fatalf("introspection = {URL:%q ClientID:%q}", got.URL, got.ClientID)
+	}
+	if got.HTTP == nil || got.HTTP.Timeout <= 0 || got.HTTP.Timeout > 5*time.Second {
+		t.Fatalf("introspection client has no short timeout: %+v", got.HTTP)
 	}
 }

@@ -469,6 +469,72 @@ func TestGoRedirectInsertsHitWithoutKeycloak(t *testing.T) {
 	}
 }
 
+func TestGoRedirectRecordsUTMAndForwardsMissingTags(t *testing.T) {
+	t.Parallel()
+	store := shorturl.NewMemoryStore()
+	created := createClubURL(t, store)
+	anon := urlAppOn(t, store, authn.Identity{}, nil)
+	redir, err := anon.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club?utm_source=linkedin&utm_medium=social&ref=ignored", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redir.StatusCode != fiber.StatusMovedPermanently {
+		t.Fatalf("redirect %d", redir.StatusCode)
+	}
+	if loc := redir.Header.Get("Location"); loc != "https://skylab.com?utm_medium=social&utm_source=linkedin" {
+		t.Fatalf("location %s", loc)
+	}
+	plain, err := anon.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc := plain.Header.Get("Location"); loc != "https://skylab.com" {
+		t.Fatalf("untagged location %s", loc)
+	}
+
+	mod := urlAppOn(t, store, authn.Identity{
+		ID: uuid.MustParse("33333333-3333-3333-3333-333333333333"), Roles: []string{"url:moderator"},
+	}, nil)
+	list, err := mod.Test(httptest.NewRequest(fiber.MethodGet, "/v1/urls/"+created.ID.String()+"/hits", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire []map[string]any
+	if err := json.NewDecoder(list.Body).Decode(&wire); err != nil {
+		t.Fatal(err)
+	}
+	if len(wire) != 2 {
+		t.Fatalf("wire %+v", wire)
+	}
+	tagged, untagged := wire[1], wire[0]
+	utm, ok := tagged["utm"].(map[string]any)
+	if !ok || utm["source"] != "linkedin" || utm["medium"] != "social" || len(utm) != 2 {
+		t.Fatalf("tagged hit utm %+v", tagged["utm"])
+	}
+	if utm, ok := untagged["utm"].(map[string]any); !ok || len(utm) != 0 {
+		t.Fatalf("untagged hit utm %+v", untagged["utm"])
+	}
+}
+
+func TestGoRedirectKeepsTagsBakedIntoTheTarget(t *testing.T) {
+	t.Parallel()
+	store := shorturl.NewMemoryStore()
+	uid := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	app := urlAppOn(t, store, authn.Identity{ID: uid, Roles: []string{"url:access"}}, nil)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/urls", strings.NewReader(`{"url":"https://skylab.com/kayit?utm_source=afis","alias":"afis"}`))
+	req.Header.Set("Content-Type", "application/json")
+	if resp, err := app.Test(req); err != nil || resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("create %v %v", resp, err)
+	}
+	redir, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/afis?utm_source=instagram&utm_campaign=tanitim", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc := redir.Header.Get("Location"); loc != "https://skylab.com/kayit?utm_source=afis&utm_campaign=tanitim" {
+		t.Fatalf("location %s", loc)
+	}
+}
+
 func TestHitsListAuthPrivilegedOrModerator(t *testing.T) {
 	t.Parallel()
 	store := shorturl.NewMemoryStore()

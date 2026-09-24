@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -46,6 +47,18 @@ func selfDeleteApp(t *testing.T, enabled bool, projectionError error) (*fiber.Ap
 			return authn.Identity{}, authn.ErrInvalidToken
 		}
 		return authn.Identity{ID: subject}, nil
+	}, func(ctx context.Context, token, sudoToken string) (authn.Identity, error) {
+		if ctx == nil || token != "account-user-token" {
+			return authn.Identity{}, authn.ErrInvalidToken
+		}
+		switch sudoToken {
+		case "fresh-sudo-token":
+			return authn.Identity{ID: subject}, nil
+		case "sudo-token-realm-cannot-check":
+			return authn.Identity{}, fmt.Errorf("%w: introspection status 502", authn.ErrIntrospectionUnavailable)
+		default:
+			return authn.Identity{}, authn.ErrInvalidToken
+		}
 	})
 	app := fiber.New(fiber.Config{ErrorHandler: ErrorHandler})
 	app.Post("/v1/account-deletion-requests/self", handler.Begin)
@@ -168,6 +181,109 @@ func TestAccountDeletionHTTPFailsClosedWithoutFreshAuthKeyOrProjection(t *testin
 				t.Fatalf("problem = %#v", problem)
 			}
 		})
+	}
+}
+
+// Account Center moves from the fresh ID token to its Sudo mode token while
+// both services ship independently, so either proof is accepted. When both
+// arrive the sudo token decides alone: a refused sudo proof is not rescued by
+// the ID token, and the realm being unreachable is "try again", not a refusal.
+func TestAccountDeletionHTTPAcceptsSudoProofAndPrefersItOverIDToken(t *testing.T) {
+	t.Parallel()
+	key := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	tests := []struct {
+		name    string
+		sudo    string
+		reauth  string
+		want    int
+		code    string
+		retry   bool
+		invalid bool
+	}{
+		{name: "sudo proof alone", sudo: "fresh-sudo-token", want: 202},
+		{name: "id token alone", reauth: "fresh-reauth-id-token", want: 202},
+		{name: "both, sudo decides", sudo: "fresh-sudo-token", reauth: "stale-reauth-id-token", want: 202},
+		{name: "both, refused sudo is not rescued", sudo: "stale-sudo-token", reauth: "fresh-reauth-id-token", want: 401, code: "invalid_end_user_token", invalid: true},
+		{name: "refused sudo proof", sudo: "stale-sudo-token", want: 401, code: "invalid_end_user_token", invalid: true},
+		{name: "malformed sudo header", sudo: "fresh-sudo-token, fresh-sudo-token", reauth: "fresh-reauth-id-token", want: 401, code: "invalid_end_user_token", invalid: true},
+		{name: "two sudo tokens", sudo: "fresh-sudo-token fresh-sudo-token", want: 401, code: "invalid_end_user_token", invalid: true},
+		{name: "realm cannot check the proof", sudo: "sudo-token-realm-cannot-check", reauth: "fresh-reauth-id-token", want: 503, code: "account_deletion_unavailable", retry: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app, _ := selfDeleteApp(t, true, nil)
+			req := httptest.NewRequest(fiber.MethodPost, "/v1/account-deletion-requests/self", nil)
+			req.Header.Set(fiber.HeaderAuthorization, "Bearer account-user-token")
+			req.Header.Set("Idempotency-Key", key)
+			if tc.sudo != "" {
+				req.Header["X-Sky-Sudo"] = []string{tc.sudo}
+			}
+			if tc.reauth != "" {
+				req.Header.Set("X-Account-Reauth-Token", tc.reauth)
+			}
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != tc.want || resp.Header.Get(fiber.HeaderCacheControl) != "no-store" {
+				t.Fatalf("status=%d cache=%q", resp.StatusCode, resp.Header.Get(fiber.HeaderCacheControl))
+			}
+			if got := resp.Header.Get(fiber.HeaderWWWAuthenticate) != ""; got != tc.invalid {
+				t.Fatalf("WWW-Authenticate=%q", resp.Header.Get(fiber.HeaderWWWAuthenticate))
+			}
+			if got := resp.Header.Get(fiber.HeaderRetryAfter) != ""; got != tc.retry {
+				t.Fatalf("Retry-After=%q", resp.Header.Get(fiber.HeaderRetryAfter))
+			}
+			var body map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if tc.code == "" {
+				if receipt, _ := body["receipt"].(string); !strings.HasPrefix(receipt, "adr_") {
+					t.Fatalf("started = %#v", body)
+				}
+				return
+			}
+			if body["code"] != tc.code {
+				t.Fatalf("problem = %#v", body)
+			}
+			for _, secret := range []string{tc.sudo, tc.reauth} {
+				if secret != "" && strings.Contains(fmt.Sprint(body), secret) {
+					t.Fatalf("problem echoed a proof: %#v", body)
+				}
+			}
+		})
+	}
+}
+
+// A Core without introspection configured refuses the sudo proof rather than
+// quietly falling back to the other header.
+func TestAccountDeletionHTTPRefusesSudoProofWithoutVerifier(t *testing.T) {
+	t.Parallel()
+	store := user.NewMemoryStore()
+	service, err := account.NewSelfDeletion(store, handlerSelfDeleteProjector{store: store, now: time.Now().UTC()}, account.SelfDeletionConfig{
+		Enabled: true, ReceiptKey: []byte("0123456789abcdef0123456789abcdef"), ReceiptTTL: 90 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewAccountDeletionHandler(service, func(string, string) (authn.Identity, error) {
+		return authn.Identity{ID: uuid.MustParse("11111111-1111-1111-1111-111111111111")}, nil
+	}, nil)
+	app := fiber.New(fiber.Config{ErrorHandler: ErrorHandler})
+	app.Post("/v1/account-deletion-requests/self", handler.Begin)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/account-deletion-requests/self", nil)
+	req.Header.Set(fiber.HeaderAuthorization, "Bearer account-user-token")
+	req.Header.Set("X-Sky-Sudo", "fresh-sudo-token")
+	req.Header.Set("X-Account-Reauth-Token", "fresh-reauth-id-token")
+	req.Header.Set("Idempotency-Key", base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("status = %d", resp.StatusCode)
 	}
 }
 

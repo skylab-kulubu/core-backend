@@ -184,9 +184,13 @@ func (s *PostgresStore) RecordHit(ctx context.Context, id uuid.UUID, hit Hit) (U
 		return URL{}, mapURLErr(err)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO url_hits (id, url_id, alias, at, ip, user_agent, referer, user_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		hit.ID, id, alias, hit.CreatedAt, hit.IP, hit.UserAgent, hit.Referer, attributedUserID); err != nil {
+		INSERT INTO url_hits (
+			id, url_id, alias, at, ip, user_agent, referer, user_id,
+			utm_source, utm_medium, utm_campaign, utm_term, utm_content
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		hit.ID, id, alias, hit.CreatedAt, hit.IP, hit.UserAgent, hit.Referer, attributedUserID,
+		hit.UTM.Source, hit.UTM.Medium, hit.UTM.Campaign, hit.UTM.Term, hit.UTM.Content); err != nil {
 		return URL{}, mapURLErr(err)
 	}
 	u, err := scanURL(tx.QueryRow(ctx, `
@@ -225,7 +229,8 @@ func (s *PostgresStore) ListHits(ctx context.Context, id uuid.UUID, since time.T
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, url_id, alias, at, ip, user_agent, referer, user_id
+		SELECT id, url_id, alias, at, ip, user_agent, referer, user_id,
+			utm_source, utm_medium, utm_campaign, utm_term, utm_content
 		FROM url_hits
 		WHERE url_id = $1 AND at >= $2
 		ORDER BY at DESC, id DESC`, id, since)
@@ -236,7 +241,10 @@ func (s *PostgresStore) ListHits(ctx context.Context, id uuid.UUID, since time.T
 	out := make([]Hit, 0)
 	for rows.Next() {
 		var h Hit
-		if err := rows.Scan(&h.ID, &h.URLID, &h.Alias, &h.CreatedAt, &h.IP, &h.UserAgent, &h.Referer, &h.UserID); err != nil {
+		if err := rows.Scan(
+			&h.ID, &h.URLID, &h.Alias, &h.CreatedAt, &h.IP, &h.UserAgent, &h.Referer, &h.UserID,
+			&h.UTM.Source, &h.UTM.Medium, &h.UTM.Campaign, &h.UTM.Term, &h.UTM.Content,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, h)
