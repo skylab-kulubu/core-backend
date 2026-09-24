@@ -108,6 +108,11 @@ type Profile struct {
 	Username    string
 	SchoolEmail string
 	SkyNumber   string
+	// University and Department are the raw `university` and `department`
+	// claims. They are empty when the token carries no YTÜ claims; see
+	// ytu.FromClaims for what they mean and how they are cleaned.
+	University string
+	Department string
 }
 
 type ProfileUpdate struct {

@@ -72,6 +72,32 @@ func TestParseAccessTokenReadsSchoolEmail(t *testing.T) {
 	}
 }
 
+func TestParseAccessTokenReadsYTUClaims(t *testing.T) {
+	t.Parallel()
+	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	cases := []struct {
+		name, claims, university, department string
+	}{
+		{"strings", `"university":"Yıldız Teknik Üniversitesi","department":"011"`, "Yıldız Teknik Üniversitesi", "011"},
+		// A multivalued attribute mapper writes a JSON array; the first value is the attribute.
+		{"arrays", `"university":["Yıldız Teknik Üniversitesi"],"department":["Bilgisayar Mühendisliği"]`, "Yıldız Teknik Üniversitesi", "Bilgisayar Mühendisliği"},
+		{"absent", `"email":"yk@example.com"`, "", ""},
+		{"not text", `"university":7,"department":{"x":1}`, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := authn.ParseAccessToken(unsignedJWT(`{"sub":"` + id.String() + `",` + tc.claims + `}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Profile.University != tc.university || got.Profile.Department != tc.department {
+				t.Fatalf("profile %+v", got.Profile)
+			}
+		})
+	}
+}
+
 func TestParseAccessTokenReadsCoreRolesOnly(t *testing.T) {
 	t.Parallel()
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
