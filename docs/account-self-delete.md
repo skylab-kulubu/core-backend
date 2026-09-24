@@ -100,12 +100,52 @@ the audience sky-account adds; Core warns at startup otherwise. Without the
 client credentials the sudo proof is refused (`401`) and Core says so at
 startup.
 
+#### Replay of an accepted key
+
+Keycloak answers `active:false` for a sudo token once the user session named
+by its `sid` is gone, and Core's deletion saga closes the person's sessions.
+If Core accepted the request but the answer was lost, Account Center's retry
+with the same idempotency key and proof would then be refused although the
+deletion is under way. So on the sudo path a replay of a key Core already
+accepted is answered **before** the proof is introspected:
+
+- The request must look exactly like the sudo intake: one well-formed
+  `X-Sky-Sudo` header (its value is not checked on a replay), an empty body
+  and `Authorization: Bearer`.
+- The bearer is still verified locally with every rule above - realm JWKS and
+  RS256, `typ=JWT`, the realm issuer, `azp=account-center`, an `aud` set
+  containing `account`, exactly `scope=openid`, a canonical UUID subject, a
+  non-empty `sid` and a future integer `exp`. An expired bearer is refused;
+  the replay never asks the realm anything.
+- The verified subject and the key must name an intake Core already
+  **accepted**: the receipt Core derives from them finds a stored intake for
+  that subject and key whose global block is confirmed (`platformBlocked`),
+  whose receipt is neither revoked nor expired, while the feature is enabled.
+  That is the only state in which Core has answered the key with success, and
+  the saga cannot close the session before it.
+- The answer is the one a retry through the proof would give: the intake
+  response with the receipt, the request's current coarse state, `202` while
+  work is active and `200` for `completed`/`manual_intervention`. The replay
+  only reads; it creates, projects and changes nothing.
+
+Everything else falls through to the proof unchanged: a key Core never
+accepted, the same key under another subject (keys are scoped to the verified
+subject, so it names a different intake), an intake whose block is not yet
+confirmed (the proof is still good, and `Begin` finishes it) and every
+request on the ID-token path, whose proof is verified locally and does not
+depend on the session. A new key therefore always needs a live proof. A
+replay is only as good as its bearer: Account Center seals the bearer with the
+proof when the intent is prepared and cannot refresh it after the saga closed
+the session, so a retry after that bearer's own `exp` gets `401`.
+
 This route is intentionally registered before Core's normal resource bearer,
 shared-access-gate and JIT middleware. That narrow exception lets a lost HTTP
 response retry the same irreversible command after the permanent marker has
-made the old token unusable everywhere else. The route cannot read product
-data, select a different subject, reactivate an account, or initiate a second
-request with a different idempotency key.
+made the old token unusable everywhere else, and the replay above relies on it:
+the gate blocks the subject everywhere else once the marker is written, and it
+never runs for this route. The route cannot read product data, select a
+different subject, reactivate an account, or initiate a second request with a
+different idempotency key.
 
 Core hashes the key with a domain separator and verified subject. The raw key
 is never stored. The first call creates or reuses one durable lifecycle request
@@ -187,7 +227,7 @@ All responses use `Cache-Control: no-store`. Stable error codes are:
 - `400 invalid_request` for a non-empty body;
 - `401 invalid_end_user_token` for a missing/invalid/mismatched access token
   or proof, including a sudo token the realm reports inactive or whose claims
-  do not match;
+  do not match - except on a replay of an already accepted key (see above);
 - `409 idempotency_conflict` for a different key on the same durable request;
 - `404 account_deletion_receipt_not_found` for every unusable receipt;
 - `503 account_deletion_unavailable` while disabled, when projection fails, or
@@ -204,7 +244,9 @@ Account Center's `ACCOUNT_ERASURE_MODE` stays `off`, and Core's
 sudo proof for deletion and Keycloak K3e (sudo tokens naming `core` in their
 audience) is live in the same environment. Before that, a sudo proof
 introspects as inactive and is refused, and deletion depends on the Keycloak
-re-authentication hop.
+re-authentication hop. The replay of an accepted key must also be live in
+that environment, so that a lost answer is still recoverable after the saga
+has closed the session.
 
 Production enablement is still blocked on the documented real LDAP
 production-clone disable/logout/delete/reimport rehearsal, cross-service old

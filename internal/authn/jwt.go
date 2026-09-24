@@ -135,13 +135,9 @@ func ParseSelfDeleteSudoContext(ctx context.Context, accessToken, sudoToken stri
 	now = now.UTC()
 	// The bearer is verified locally first, so only a real Account Center
 	// session can make Core call the realm.
-	ident, claims, err := verifySelfDeleteBearer(accessToken, verify, issuer, clientID, now)
+	ident, sessionID, err := verifySelfDeleteSessionBearer(accessToken, verify, issuer, clientID, now)
 	if err != nil {
 		return Identity{}, err
-	}
-	sessionID, ok := claims["sid"].(string)
-	if !ok || strings.TrimSpace(sessionID) == "" {
-		return Identity{}, ErrInvalidToken
 	}
 
 	proof, err := introspect.Introspect(ctx, sudoToken)
@@ -169,6 +165,40 @@ func ParseSelfDeleteSudoContext(ctx context.Context, accessToken, sudoToken stri
 		return Identity{}, ErrInvalidToken
 	}
 	return ident, nil
+}
+
+// ParseSelfDeleteBearer verifies the Account Center bearer of the
+// self-deletion intake on its own, with exactly the local rules of the sudo
+// path: RS256 against the realm JWKS, `typ=JWT`, the realm issuer, `azp` of
+// the Account Center client, an audience set containing `account`, exactly
+// `scope=openid`, a canonical UUID subject, a future integer `exp` and a
+// non-empty `sid`. It never asks the realm anything.
+//
+// It proves who the caller is, not that they recently re-authenticated. The
+// intake uses it only to answer a replay of an idempotency key Core already
+// accepted for that same subject: the deletion saga closes the Keycloak
+// session the sudo proof is bound to, after which introspection calls the
+// proof inactive although the request it authorised is under way.
+func ParseSelfDeleteBearer(accessToken string, verify func(string) error, issuer, clientID string, now time.Time) (Identity, error) {
+	if verify == nil || strings.TrimSpace(issuer) == "" || strings.TrimSpace(clientID) == "" {
+		return Identity{}, ErrInvalidToken
+	}
+	ident, _, err := verifySelfDeleteSessionBearer(accessToken, verify, issuer, clientID, now.UTC())
+	return ident, err
+}
+
+// verifySelfDeleteSessionBearer is verifySelfDeleteBearer plus the Keycloak
+// session id (`sid`) the sudo path binds every proof to, which it returns.
+func verifySelfDeleteSessionBearer(accessToken string, verify func(string) error, issuer, clientID string, now time.Time) (Identity, string, error) {
+	ident, claims, err := verifySelfDeleteBearer(accessToken, verify, issuer, clientID, now)
+	if err != nil {
+		return Identity{}, "", err
+	}
+	sessionID, ok := claims["sid"].(string)
+	if !ok || strings.TrimSpace(sessionID) == "" {
+		return Identity{}, "", ErrInvalidToken
+	}
+	return ident, sessionID, nil
 }
 
 // verifySelfDeleteBearer applies the Account Center bearer rules shared by
