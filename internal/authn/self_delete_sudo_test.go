@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -348,5 +349,82 @@ func TestParseSelfDeleteSudoContextFailsClosedWithoutConfiguration(t *testing.T)
 	}
 	if realm.calls.Load() != 0 {
 		t.Fatalf("introspected %d times without a usable configuration", realm.calls.Load())
+	}
+}
+
+// A replay of an idempotency key Core already accepted is answered before the
+// sudo proof is introspected (the deletion saga closes the session the proof
+// is bound to). The bearer alone still has to pass every local rule of the
+// sudo path, so only the same person's Account Center session gets that far,
+// and verifying it never asks the realm anything.
+func TestParseSelfDeleteBearerAppliesTheSudoPathBearerRulesLocally(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	subject := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	got, err := authn.ParseSelfDeleteBearer(selfDeleteBearer(t, keys, subject, now, nil), keys.Verify, keys.Issuer, "account-center", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != subject {
+		t.Fatalf("identity = %+v", got)
+	}
+
+	for name, mutate := range map[string]func(jwt.MapClaims){
+		"missing sid":      func(c jwt.MapClaims) { delete(c, "sid") },
+		"blank sid":        func(c jwt.MapClaims) { c["sid"] = " " },
+		"foreign audience": func(c jwt.MapClaims) { c["aud"] = []string{"core"} },
+		"missing audience": func(c jwt.MapClaims) { delete(c, "aud") },
+		"wrong azp":        func(c jwt.MapClaims) { c["azp"] = "skyforms" },
+		"wrong issuer":     func(c jwt.MapClaims) { c["iss"] = "https://other.example/realms/e-skylab" },
+		"broad scope":      func(c jwt.MapClaims) { c["scope"] = "openid profile" },
+		"non-uuid subject": func(c jwt.MapClaims) { c["sub"] = "someone" },
+		"expired":          func(c jwt.MapClaims) { c["exp"] = now.Add(-time.Second).Unix() },
+		"expires now":      func(c jwt.MapClaims) { c["exp"] = now.Unix() },
+		"exp missing":      func(c jwt.MapClaims) { delete(c, "exp") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			bearer := selfDeleteBearer(t, keys, subject, now, mutate)
+			if _, err := authn.ParseSelfDeleteBearer(bearer, keys.Verify, keys.Issuer, "account-center", now); !errors.Is(err, authn.ErrInvalidToken) {
+				t.Fatalf("err = %v, want ErrInvalidToken", err)
+			}
+		})
+	}
+
+	t.Run("unsigned bearer", func(t *testing.T) {
+		t.Parallel()
+		bearer := unsignedJWT(`{"sub":"` + subject.String() + `","iss":"` + keys.Issuer + `","aud":"account","azp":"account-center","scope":"openid","sid":"` + testSessionID + `","exp":` + strconv.FormatInt(now.Add(time.Hour).Unix(), 10) + `}`)
+		if _, err := authn.ParseSelfDeleteBearer(bearer, keys.Verify, keys.Issuer, "account-center", now); !errors.Is(err, authn.ErrInvalidToken) {
+			t.Fatalf("err = %v, want ErrInvalidToken", err)
+		}
+	})
+	t.Run("signed by another key", func(t *testing.T) {
+		t.Parallel()
+		bearer := selfDeleteBearer(t, testauth.New(t), subject, now, nil)
+		if _, err := authn.ParseSelfDeleteBearer(bearer, keys.Verify, keys.Issuer, "account-center", now); !errors.Is(err, authn.ErrInvalidToken) {
+			t.Fatalf("err = %v, want ErrInvalidToken", err)
+		}
+	})
+
+	bearer := selfDeleteBearer(t, keys, subject, now, nil)
+	for name, call := range map[string]func() error{
+		"nil verify": func() error {
+			_, err := authn.ParseSelfDeleteBearer(bearer, nil, keys.Issuer, "account-center", now)
+			return err
+		},
+		"empty issuer": func() error {
+			_, err := authn.ParseSelfDeleteBearer(bearer, keys.Verify, "", "account-center", now)
+			return err
+		},
+		"empty client": func() error {
+			_, err := authn.ParseSelfDeleteBearer(bearer, keys.Verify, keys.Issuer, "", now)
+			return err
+		},
+	} {
+		if err := call(); !errors.Is(err, authn.ErrInvalidToken) {
+			t.Fatalf("%s: err = %v, want ErrInvalidToken", name, err)
+		}
 	}
 }

@@ -125,6 +125,8 @@ func main() {
 	parseSelfDeleteSudo := func(context.Context, string, string) (authn.Identity, error) {
 		return authn.Identity{}, authn.ErrInvalidToken
 	}
+	// Nil until the sudo path is configured: without it there is no replay.
+	var parseSelfDeleteBearer func(string) (authn.Identity, error)
 	jwksURL := os.Getenv("KEYCLOAK_JWKS_URL")
 	base := strings.TrimRight(os.Getenv("KEYCLOAK_URL"), "/")
 	realm := os.Getenv("KEYCLOAK_REALM")
@@ -170,6 +172,12 @@ func main() {
 					log.Printf("account self-delete sudo proof: %v", err)
 				}
 				return ident, err
+			}
+			// A retry of a key Core already accepted is answered from the
+			// stored request with the bearer verified locally: the deletion
+			// closes the session the sudo proof is bound to.
+			parseSelfDeleteBearer = func(accessToken string) (authn.Identity, error) {
+				return authn.ParseSelfDeleteBearer(accessToken, v.Verify, issuer, "account-center", time.Now().UTC())
 			}
 		} else {
 			log.Print("account self-delete sudo proof disabled: KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET are required")
@@ -336,6 +344,7 @@ func main() {
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
 		ParseSelfDeleteSudo:    parseSelfDeleteSudo,
+		ParseSelfDeleteBearer:  parseSelfDeleteBearer,
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},

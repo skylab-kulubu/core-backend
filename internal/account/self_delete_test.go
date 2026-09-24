@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -265,4 +266,155 @@ func TestSelfDeletionReceiptExpiresAtItsFixedBound(t *testing.T) {
 	if _, err := service.Status(context.Background(), started.Receipt); !errors.Is(err, account.ErrSelfDeletionReceiptNotFound) {
 		t.Fatalf("expired receipt error = %v", err)
 	}
+}
+
+// Replay answers a retry of an idempotency key Core already accepted for the
+// same subject with that request's current outcome, exactly as Begin would,
+// without a fresh proof. It is a read: nothing is created, projected or
+// changed, and a key Core never confirmed (or confirmed for someone else) is
+// not a replay.
+func TestSelfDeletionReplayReturnsTheAcceptedOutcomeAndNothingElse(t *testing.T) {
+	t.Parallel()
+	service, store, projector, subject, key := selfDeleteFixture(t)
+	ctx := context.Background()
+
+	if _, err := service.Replay(ctx, subject, key); !errors.Is(err, account.ErrSelfDeletionNotAccepted) {
+		t.Fatalf("replay before any intake = %v", err)
+	}
+	if _, err := store.DeletionRequest(ctx, subject); !errors.Is(err, user.ErrNotFound) {
+		t.Fatalf("replay created a request: %v", err)
+	}
+
+	first, err := service.Begin(ctx, subject, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projections := len(projector.requests)
+	replayed, err := service.Replay(ctx, subject, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(replayed, first) {
+		t.Fatalf("replay changed the outcome: first=%+v replay=%+v", first, replayed)
+	}
+	if len(projector.requests) != projections {
+		t.Fatalf("replay projected again: %d -> %d", projections, len(projector.requests))
+	}
+
+	otherKey := base64.RawURLEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
+	otherSubject := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	for name, call := range map[string]func() error{
+		"another key":     func() error { _, err := service.Replay(ctx, subject, otherKey); return err },
+		"another subject": func() error { _, err := service.Replay(ctx, otherSubject, key); return err },
+		"malformed key":   func() error { _, err := service.Replay(ctx, subject, "short"); return err },
+		"empty key":       func() error { _, err := service.Replay(ctx, subject, ""); return err },
+		"nil subject":     func() error { _, err := service.Replay(ctx, uuid.Nil, key); return err },
+	} {
+		if err := call(); !errors.Is(err, account.ErrSelfDeletionNotAccepted) {
+			t.Fatalf("%s: err = %v, want ErrSelfDeletionNotAccepted", name, err)
+		}
+	}
+	if _, err := store.DeletionRequest(ctx, otherSubject); !errors.Is(err, user.ErrNotFound) {
+		t.Fatalf("replay created a request for another subject: %v", err)
+	}
+
+	// The outcome follows the request, as a Begin retry would report it.
+	request, ok, err := store.ClaimDeletionRequest(ctx, time.Now().Add(24*time.Hour), time.Minute)
+	if err != nil || !ok || request.LeaseToken == nil {
+		t.Fatalf("claim = %+v ok=%v err=%v", request, ok, err)
+	}
+	if err := store.CompleteDeletionRequest(ctx, request.ID, *request.LeaseToken, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := service.Replay(ctx, subject, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != account.SelfDeletionCompleted || completed.Receipt != first.Receipt || completed.CompletedAt == nil {
+		t.Fatalf("completed replay = %+v", completed)
+	}
+	begun, err := service.Begin(ctx, subject, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(begun, completed) {
+		t.Fatalf("replay and Begin disagree: replay=%+v begin=%+v", completed, begun)
+	}
+}
+
+// A durable intake whose global block was never confirmed never produced a
+// success answer, and the saga cannot have closed the session yet, so it is
+// not a replay: the caller must bring a live proof and Begin finishes it.
+func TestSelfDeletionReplayIgnoresUnconfirmedRevokedExpiredAndDisabledIntakes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("unconfirmed", func(t *testing.T) {
+		t.Parallel()
+		service, _, projector, subject, key := selfDeleteFixture(t)
+		projector.err = errors.New("redis unavailable")
+		if _, err := service.Begin(ctx, subject, key); !errors.Is(err, account.ErrSelfDeletionUnavailable) {
+			t.Fatalf("begin = %v", err)
+		}
+		if _, err := service.Replay(ctx, subject, key); !errors.Is(err, account.ErrSelfDeletionNotAccepted) {
+			t.Fatalf("replay of an unconfirmed intake = %v", err)
+		}
+		if len(projector.requests) != 1 {
+			t.Fatalf("replay projected: %d", len(projector.requests))
+		}
+	})
+
+	t.Run("revoked receipt", func(t *testing.T) {
+		t.Parallel()
+		service, store, _, subject, key := selfDeleteFixture(t)
+		if _, err := service.Begin(ctx, subject, key); err != nil {
+			t.Fatal(err)
+		}
+		request, err := store.DeletionRequest(ctx, subject)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RevokeSelfDeletionReceipt(ctx, request.ID, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Replay(ctx, subject, key); !errors.Is(err, account.ErrSelfDeletionNotAccepted) {
+			t.Fatalf("replay of a revoked intake = %v", err)
+		}
+	})
+
+	t.Run("expired receipt", func(t *testing.T) {
+		t.Parallel()
+		store := user.NewMemoryStore()
+		subject := uuid.New()
+		key := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+		now := time.Now().UTC().Truncate(time.Second)
+		service, err := account.NewSelfDeletion(store, &recordingProjector{store: store, now: now}, account.SelfDeletionConfig{
+			Enabled: true, ReceiptKey: []byte("0123456789abcdef0123456789abcdef"), ReceiptTTL: time.Hour,
+		}, func() time.Time { return now })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Begin(ctx, subject, key); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Hour)
+		if _, err := service.Replay(ctx, subject, key); !errors.Is(err, account.ErrSelfDeletionNotAccepted) {
+			t.Fatalf("replay of an expired intake = %v", err)
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		t.Parallel()
+		service, store, projector, subject, key := selfDeleteFixture(t)
+		if _, err := service.Begin(ctx, subject, key); err != nil {
+			t.Fatal(err)
+		}
+		disabled, err := account.NewSelfDeletion(store, projector, account.SelfDeletionConfig{Enabled: false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := disabled.Replay(ctx, subject, key); !errors.Is(err, account.ErrSelfDeletionNotAccepted) {
+			t.Fatalf("replay while disabled = %v", err)
+		}
+	})
 }

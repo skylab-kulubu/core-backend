@@ -12,8 +12,11 @@ The only non-product exception is the Account Center self-delete
 intake/status contract in `docs/account-self-delete.md`. It is isolated before
 the general gate and JIT middleware so a response-loss retry can recover the
 same irreversible request after marker installation. It accepts only the
-pinned two-token Account Center end-user context or a hash-only status receipt;
-it cannot read product data, choose a subject or create/update a profile.
+pinned two-token Account Center end-user context, a hash-only status receipt,
+or - for a replay of an idempotency key already accepted for the same subject -
+the locally verified Account Center bearer alone, which can only read that
+request's stored outcome; it cannot read product data, choose a subject or
+create/update a profile.
 
 `/v1/metrics` exposes fixed, unlabeled Prometheus counters for aggregate gate decisions, Redis unavailability, contract mismatch, malformed markers, reconciliation drift, positive TTL detection and readiness failures. The request gate also writes a JSON decision event containing only the request correlation ID and `allowed`, `blocked` or `unavailable`; subjects, digests and Redis keys are never logged or used as metric labels.
 
