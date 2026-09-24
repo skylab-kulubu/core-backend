@@ -20,6 +20,10 @@ var (
 	ErrSelfDeletionInvalidIdempotencyKey = errors.New("invalid self deletion idempotency key")
 	ErrSelfDeletionIdempotencyConflict   = errors.New("self deletion idempotency conflict")
 	ErrSelfDeletionReceiptNotFound       = errors.New("self deletion receipt not found")
+	// ErrSelfDeletionNotAccepted means Replay has nothing to answer: Core
+	// never confirmed a request under this key for this subject, so the call
+	// is a new command and needs a live proof.
+	ErrSelfDeletionNotAccepted = errors.New("self deletion key not accepted")
 )
 
 type SelfDeletionStatus string
@@ -124,6 +128,47 @@ func (s *SelfDeletion) Begin(ctx context.Context, subjectID uuid.UUID, idempoten
 	record, err = s.store.SelfDeletionByReceiptLookup(ctx, lookupHash)
 	if err != nil || record.Request.PlatformBlockedAt == nil || !validSelfDeletionRecord(record, receiptHash, s.now().UTC()) {
 		return SelfDeletionView{}, ErrSelfDeletionUnavailable
+	}
+	view := selfDeletionView(record)
+	view.Receipt = receipt
+	return view, nil
+}
+
+// Replay answers a repeat of an idempotency key Core already accepted for
+// this subject with that request's current outcome, receipt included: the
+// answer Begin gives the same repeat. It is read-only and needs no proof of
+// recent authentication, because the deletion saga closes the Keycloak
+// session a sudo proof is bound to and the realm then calls that proof
+// inactive, while Account Center may still be retrying a lost answer.
+//
+// "Accepted" means Core answered the key with success, or could have: an
+// intake for exactly this subject and key whose global block is confirmed,
+// with a live receipt. Anything else - an unknown or malformed key, another
+// subject, an unconfirmed, revoked or expired intake, or the feature being
+// off - is ErrSelfDeletionNotAccepted, and the caller must present a proof.
+// Before the block is confirmed the saga cannot have started, so the proof
+// is still good for Begin to finish the request.
+func (s *SelfDeletion) Replay(ctx context.Context, subjectID uuid.UUID, idempotencyKey string) (SelfDeletionView, error) {
+	if !s.config.Enabled || subjectID == uuid.Nil || !validIdempotencyKey(idempotencyKey) {
+		return SelfDeletionView{}, ErrSelfDeletionNotAccepted
+	}
+	idempotencyHash := scopedIdempotencyHash(subjectID, idempotencyKey)
+	receipt := s.receipt(subjectID, idempotencyHash)
+	lookupHash, receiptHash := receiptDigests(receipt)
+	record, err := s.store.SelfDeletionByReceiptLookup(ctx, lookupHash)
+	if errors.Is(err, user.ErrNotFound) {
+		return SelfDeletionView{}, ErrSelfDeletionNotAccepted
+	}
+	if err != nil {
+		return SelfDeletionView{}, err
+	}
+	// The receipt already binds subject and key; the explicit comparisons
+	// keep a store bug from ever answering for someone else.
+	if record.Request.SubjectID != subjectID ||
+		subtle.ConstantTimeCompare(record.IdempotencyHash[:], idempotencyHash[:]) != 1 ||
+		record.Request.PlatformBlockedAt == nil ||
+		!validSelfDeletionRecord(record, receiptHash, s.now().UTC()) {
+		return SelfDeletionView{}, ErrSelfDeletionNotAccepted
 	}
 	view := selfDeletionView(record)
 	view.Receipt = receipt
