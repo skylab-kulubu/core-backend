@@ -122,6 +122,9 @@ func main() {
 	parseSelfDelete := func(string, string) (authn.Identity, error) {
 		return authn.Identity{}, authn.ErrInvalidToken
 	}
+	parseSelfDeleteSudo := func(context.Context, string, string) (authn.Identity, error) {
+		return authn.Identity{}, authn.ErrInvalidToken
+	}
 	jwksURL := os.Getenv("KEYCLOAK_JWKS_URL")
 	base := strings.TrimRight(os.Getenv("KEYCLOAK_URL"), "/")
 	realm := os.Getenv("KEYCLOAK_REALM")
@@ -155,6 +158,21 @@ func main() {
 		}
 		parseSelfDelete = func(accessToken, idToken string) (authn.Identity, error) {
 			return authn.ParseSelfDeleteContext(accessToken, idToken, v.Verify, issuer, "account-center", time.Now().UTC(), 5*time.Minute)
+		}
+		if introspection, ok := sudoIntrospection(os.Getenv, issuer); ok {
+			if introspection.ClientID != authn.ResourceAudience {
+				log.Printf("account self-delete sudo proof: KEYCLOAK_CLIENT_ID is not %q, so Keycloak will report every sudo token inactive", authn.ResourceAudience)
+			}
+			parseSelfDeleteSudo = func(ctx context.Context, accessToken, sudoToken string) (authn.Identity, error) {
+				ident, err := authn.ParseSelfDeleteSudoContext(ctx, accessToken, sudoToken, v.Verify, introspection, issuer, "account-center", time.Now().UTC())
+				if errors.Is(err, authn.ErrIntrospectionUnavailable) {
+					// The error names the endpoint and the failure, never a token.
+					log.Printf("account self-delete sudo proof: %v", err)
+				}
+				return ident, err
+			}
+		} else {
+			log.Print("account self-delete sudo proof disabled: KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET are required")
 		}
 	}
 
@@ -317,6 +335,7 @@ func main() {
 		AccountAccessMetrics:   accessMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
+		ParseSelfDeleteSudo:    parseSelfDeleteSudo,
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},
@@ -330,6 +349,27 @@ func main() {
 	if err := app.Listen(":" + addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// sudoIntrospection builds the client Core uses to ask the realm about a
+// sky-account Sudo mode token: the issuer's RFC 7662 endpoint and Core's own
+// confidential client, the same KEYCLOAK_CLIENT_ID/KEYCLOAK_CLIENT_SECRET pair
+// Core already uses for its client-credentials token. It reports false when a
+// part is missing; the intake then refuses every sudo proof.
+func sudoIntrospection(getenv func(string) string, issuer string) (authn.Introspection, bool) {
+	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
+	clientID := getenv("KEYCLOAK_CLIENT_ID")
+	clientSecret := getenv("KEYCLOAK_CLIENT_SECRET")
+	if issuer == "" || strings.TrimSpace(clientID) == "" || strings.TrimSpace(clientSecret) == "" {
+		return authn.Introspection{}, false
+	}
+	return authn.Introspection{
+		URL:          issuer + "/protocol/openid-connect/token/introspect",
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		HTTP:         &http.Client{Timeout: authn.DefaultIntrospectionTimeout},
+		Timeout:      authn.DefaultIntrospectionTimeout,
+	}, true
 }
 
 func optionalAccountAccessGate(gate *accessgate.RedisGate) accessgate.Reader {

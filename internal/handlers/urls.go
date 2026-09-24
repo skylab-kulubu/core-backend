@@ -78,16 +78,18 @@ func (h *URLHandler) Redirect(c fiber.Ctx) error {
 	if err != nil {
 		return urlError(c, err)
 	}
+	utm := shorturl.UTMFromQuery(func(key string) string { return strings.Clone(c.Query(key)) })
 	u, err := h.svc.Redirect(c.Context(), c.Params("alias"), shorturl.Hit{
 		IP:        h.hopIP(c),
 		UserAgent: strings.Clone(c.Get(fiber.HeaderUserAgent)),
 		Referer:   strings.Clone(c.Get(fiber.HeaderReferer)),
+		UTM:       utm,
 		UserID:    userID,
 	})
 	if err != nil {
 		return urlError(c, err)
 	}
-	c.Set(fiber.HeaderLocation, u.URL)
+	c.Set(fiber.HeaderLocation, utm.FillInto(u.URL))
 	return c.SendStatus(fiber.StatusMovedPermanently)
 }
 

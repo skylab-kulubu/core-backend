@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"context"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -45,6 +46,10 @@ type Deps struct {
 	AccountAccessMetrics   *accessgate.Metrics
 	SelfDeletion           handlers.AccountDeletionService
 	ParseSelfDeleteContext func(string, string) (authn.Identity, error)
+	// ParseSelfDeleteSudo verifies the self-delete bearer with a sky-account
+	// Sudo mode token (`X-Sky-Sudo`) instead of a fresh ID token. Nil refuses
+	// every sudo proof.
+	ParseSelfDeleteSudo func(context.Context, string, string) (authn.Identity, error)
 
 	// TrustedProxies are the peers allowed to speak for a client through
 	// `X-Forwarded-For`. An empty value falls back to clientip.Default().
@@ -143,7 +148,7 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
 	}
 	if deps.SelfDeletion != nil {
-		selfDeletion := handlers.NewAccountDeletionHandler(deps.SelfDeletion, deps.ParseSelfDeleteContext)
+		selfDeletion := handlers.NewAccountDeletionHandler(deps.SelfDeletion, deps.ParseSelfDeleteContext, deps.ParseSelfDeleteSudo)
 		app.Post("/v1/account-deletion-requests/self", selfDeletion.Begin)
 		app.Get("/v1/account-deletion-requests/status", selfDeletion.Status)
 		app.Post("/v1/account-deletion-requests/status/retry", selfDeletion.Retry)

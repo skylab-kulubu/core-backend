@@ -397,6 +397,16 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND indexdef LIKE '%(receipt_expires_at, request_id)%'
 			  AND indexdef LIKE '%receipt_revoked_at IS NULL%'
 		)`,
+	20260922100000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*)
+			FROM (VALUES ('utm_source'), ('utm_medium'), ('utm_campaign'), ('utm_term'), ('utm_content')) AS expected(column_name)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'url_hits'
+			 AND actual.column_name = expected.column_name
+		) = 5`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

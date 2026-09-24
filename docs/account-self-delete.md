@@ -10,19 +10,17 @@ account, run JIT synchronization, or return profile data.
 `POST /v1/account-deletion-requests/self` requires all of the following:
 
 - `Authorization: Bearer <account access token>`
-- `X-Account-Reauth-Token: <fresh ID token>`
+- one proof of recent authentication: `X-Sky-Sudo: <sky-account sudo token>`
+  or `X-Account-Reauth-Token: <fresh ID token>` (see below)
 - `Idempotency-Key: <43-character unpadded base64url value>`
 - an empty request body
 
 The idempotency key therefore represents exactly 32 caller-generated random
-bytes. Core verifies both JWTs independently with the realm JWKS and RS256.
-The access token must have the canonical issuer, a canonical UUID subject,
-`typ=JWT`, `azp=account-center`, an `aud` **set containing** `account`, exactly
-`scope=openid`, and a future integer expiry. The ID token must have the same
-issuer and subject, `typ=JWT`, an `aud` naming exactly `account-center`, a
-non-empty `sid`, a future integer expiry, and an integer `auth_time` no more
-than five minutes old (with five seconds of future clock skew). The verified
-matching subject is the only deletion target.
+bytes. Core verifies the access token with the realm JWKS and RS256. It must
+have the canonical issuer, a canonical UUID subject, `typ=JWT`,
+`azp=account-center`, an `aud` **set containing** `account`, exactly
+`scope=openid`, and a future integer expiry. The verified subject is the only
+deletion target; each proof must name the same subject.
 
 Keycloak serialises `aud` either as a bare string or as an array, and the
 reconciled Account Center client resolves more than one audience, so the access
@@ -36,33 +34,71 @@ for.
 
 ### Accepted proof headers
 
-Core accepts exactly one proof of recent authentication, and it is mandatory:
+Core accepts two proofs of recent authentication while Account Center moves
+from the Keycloak re-authentication hop to Sudo mode, so that Core and Account
+Center can ship independently. One of them is mandatory. When both headers
+arrive, `X-Sky-Sudo` decides alone: a refused sudo token is not rescued by the
+ID token, and a malformed `X-Sky-Sudo` is refused rather than skipped.
 
-1. `X-Account-Reauth-Token` - a fresh Keycloak ID token, verified as above.
-   Freshness is the `auth_time` rule.
+1. `X-Sky-Sudo` - the sky-account Sudo mode token Account Center already holds
+   for `credentials/*` and `identity/username`, minted after the person
+   re-proved themselves inside `my.` (password, TOTP, passkey, or a fresh
+   Microsoft login). Freshness is the token's own five-minute lifetime.
+2. `X-Account-Reauth-Token` - a fresh Keycloak ID token, verified with the
+   realm JWKS and RS256: the same issuer and subject as the access token,
+   `typ=JWT`, an `aud` naming exactly `account-center`, a non-empty `sid`, a
+   future integer expiry, and an integer `auth_time` no more than five minutes
+   old (with five seconds of future clock skew). Kept for the rollout and for
+   rollback; it goes away once Account Center only sends the sudo proof.
 
-The sky-account Sudo mode token that Account Center already holds for
-`credentials/*` and `identity/username` (`X-Sky-Sudo`) is **not** accepted yet,
-and Core ignores the header. That token is a Keycloak *internal* token: it is
-signed `HS512` with the realm HMAC key, which never leaves Keycloak, so Core
-cannot verify it against the realm JWKS. The remote check does not work either:
-Keycloak 26.7.4 refuses to introspect a token whose audience does not include
-the calling client, and the sudo token's audience is `sky-account`. A call to
-`{issuer}/protocol/openid-connect/token/introspect` with Core's own client
-credentials therefore answers `{"active": false}` unless the `core` client is
-given
-`allow.token.introspection.without.audience.check=true`, which would drop that
-check for every token Core introspects - too broad a concession for one route.
+#### Sudo proof
 
-Two mechanisms would make a sudo proof verifiable without weakening anything:
-sky-account could add Core's client id to the sudo token audience (then plain
-introspection succeeds with the audience check intact), or sky-account could
-expose a read-only endpoint that verifies a bearer/sudo pair. Until one of them
-exists, Account Center must keep the Keycloak re-authentication hop for
-deletion. When a sudo proof is added, the intake must read `X-Sky-Sudo` first
-and fall back to `X-Account-Reauth-Token`, so that both services can ship
-independently, and the `auth_time` rule must not apply on the sudo path: that
-token carries its own five-minute lifetime.
+The sudo token is a Keycloak *internal* token: it is signed `HS512` with the
+realm HMAC key, which never leaves Keycloak, so Core cannot verify it against
+the JWKS. Core asks the realm instead, with RFC 7662 token introspection at
+`{issuer}/protocol/openid-connect/token/introspect`, authenticated as Core's
+own confidential client (`client_secret_post`). Keycloak 26 answers
+`active:true` only for a token whose audience contains the calling client, so
+this works once sky-account mints the sudo token with
+`aud: ["sky-account", "core"]` (Keycloak ticket K3e). The audience check stays
+on for every token Core introspects;
+`allow.token.introspection.without.audience.check` is not needed and must not
+be set on the `core` client.
+
+The access token is verified first, locally, and must additionally carry a
+non-empty `sid` (the Keycloak session id; sky-account requires the same claim
+on every Account Center bearer). Only then does Core call the realm, so an
+anonymous caller cannot make Core introspect anything. The introspection
+answer must have:
+
+- `active` exactly `true`;
+- `typ` = `sky-sudo`;
+- `iss` = the realm issuer Core derives from `KEYCLOAK_URL`/`KEYCLOAK_REALM`;
+- `azp` = `account-center`;
+- `aud` containing both `sky-account` and `core` (a bare string or an array);
+- `sub` = the verified access token's subject;
+- `sid` = the verified access token's `sid`, so a sudo token proves only the
+  Account Center session that made it, as it does inside sky-account;
+- an integer `exp` in the future.
+
+The ID-token `auth_time` rule does not apply on this path: an in-product proof
+never moves the Keycloak session's `auth_time`, and the token's own
+five-minute life is the freshness bound.
+
+A realm that answers with anything but `200` and a JSON object - unreachable,
+a 5xx, a timeout after three seconds, or a `401` for Core's own client
+credentials - is not a refusal. The intake answers
+`503 account_deletion_unavailable` with `Retry-After`, and Account Center may
+try again. Core logs that failure with the endpoint and the reason only; the
+sudo token and the client secret travel in the request body and never appear
+in errors or logs.
+
+Configuration reuses what Core already has: the realm issuer and
+`KEYCLOAK_CLIENT_ID`/`KEYCLOAK_CLIENT_SECRET`, the same client Core uses for
+its SkyMail client-credentials token. `KEYCLOAK_CLIENT_ID` must be `core`,
+the audience sky-account adds; Core warns at startup otherwise. Without the
+client credentials the sudo proof is refused (`401`) and Core says so at
+startup.
 
 This route is intentionally registered before Core's normal resource bearer,
 shared-access-gate and JIT middleware. That narrow exception lets a lost HTTP
@@ -136,12 +172,12 @@ emergency operator can revoke individual or all outstanding receipts by
 setting `receipt_revoked_at`; that action never changes deletion state.
 
 Ingress, reverse proxies, request tracing and APM instrumentation must redact
-both `Authorization` and `X-Account-Reauth-Token` before this route is exposed.
-The custom re-authentication header carries a raw ID token and must never be
-captured, indexed, sampled or emitted in access/application logs. Release
-validation must include a synthetic request through the production ingress and
-an explicit inspection of proxy, APM and application telemetry proving that
-neither header value was retained.
+`Authorization`, `X-Sky-Sudo` and `X-Account-Reauth-Token` before this route is
+exposed. The custom re-authentication headers carry a raw sudo token or ID
+token and must never be captured, indexed, sampled or emitted in
+access/application logs. Release validation must include a synthetic request
+through the production ingress and an explicit inspection of proxy, APM and
+application telemetry proving that no header value was retained.
 
 ## Errors and release gate
 
@@ -149,16 +185,26 @@ All responses use `Cache-Control: no-store`. Stable error codes are:
 
 - `400 invalid_idempotency_key` for a missing/malformed idempotency key;
 - `400 invalid_request` for a non-empty body;
-- `401 invalid_end_user_token` for either missing/invalid/mismatched JWT;
+- `401 invalid_end_user_token` for a missing/invalid/mismatched access token
+  or proof, including a sudo token the realm reports inactive or whose claims
+  do not match;
 - `409 idempotency_conflict` for a different key on the same durable request;
 - `404 account_deletion_receipt_not_found` for every unusable receipt;
-- `503 account_deletion_unavailable` while disabled or when projection fails.
+- `503 account_deletion_unavailable` while disabled, when projection fails, or
+  when the realm cannot be asked about a sudo proof.
 
 `ACCOUNT_ERASURE_WORKER_ENABLED` remains the shared, destructive default-off
 gate for intake, retry and worker consumption. When it is true,
 `ACCOUNT_ACCESS_GATE_MODE=enforce`, the Keycloak worker configuration and an
 unpadded base64url `ACCOUNT_DELETION_RECEIPT_KEY` containing exactly 32 random
 bytes are mandatory. Status reads remain available while the feature is off.
+
+Account Center's `ACCOUNT_ERASURE_MODE` stays `off`, and Core's
+`ACCOUNT_ERASURE_WORKER_ENABLED` stays `false`, until Account Center sends the
+sudo proof for deletion and Keycloak K3e (sudo tokens naming `core` in their
+audience) is live in the same environment. Before that, a sudo proof
+introspects as inactive and is refused, and deletion depends on the Keycloak
+re-authentication hop.
 
 Production enablement is still blocked on the documented real LDAP
 production-clone disable/logout/delete/reimport rehearsal, cross-service old
