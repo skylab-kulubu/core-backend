@@ -21,10 +21,15 @@ type AccountDeletionService interface {
 type AccountDeletionHandler struct {
 	service    AccountDeletionService
 	parseToken func(string, string) (authn.Identity, error)
+	parseSudo  func(context.Context, string, string) (authn.Identity, error)
 }
 
-func NewAccountDeletionHandler(service AccountDeletionService, parseToken func(string, string) (authn.Identity, error)) *AccountDeletionHandler {
-	return &AccountDeletionHandler{service: service, parseToken: parseToken}
+// NewAccountDeletionHandler takes one verifier per re-authentication proof:
+// parseToken checks the bearer with a fresh ID token (`X-Account-Reauth-Token`)
+// and parseSudo checks it with a sky-account Sudo mode token (`X-Sky-Sudo`).
+// A nil parseSudo refuses every sudo proof.
+func NewAccountDeletionHandler(service AccountDeletionService, parseToken func(string, string) (authn.Identity, error), parseSudo func(context.Context, string, string) (authn.Identity, error)) *AccountDeletionHandler {
+	return &AccountDeletionHandler{service: service, parseToken: parseToken, parseSudo: parseSudo}
 }
 
 type accountDeletionResponse struct {
@@ -54,6 +59,12 @@ func deletionResponse(view account.SelfDeletionView, includeReceipt bool) accoun
 func (h *AccountDeletionHandler) Begin(c fiber.Ctx) error {
 	c.Set(fiber.HeaderCacheControl, "no-store")
 	identity, err := h.endUserIdentity(c)
+	if errors.Is(err, authn.ErrIntrospectionUnavailable) {
+		// The realm could not say whether the sudo proof is good. That is not
+		// a refusal: the person's proof may be fine, so they try again.
+		c.Set(fiber.HeaderRetryAfter, "1")
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", "account_deletion_unavailable")
+	}
 	if err != nil {
 		c.Set(fiber.HeaderWWWAuthenticate, `Bearer error="invalid_token"`)
 		return problemCode(c, fiber.StatusUnauthorized, "Unauthorized", "invalid_end_user_token")
@@ -105,11 +116,26 @@ func (h *AccountDeletionHandler) endUserIdentity(c fiber.Ctx) (authn.Identity, e
 	if !ok {
 		return authn.Identity{}, authn.ErrInvalidToken
 	}
+	// Account Center may send both proofs while it moves from the ID token to
+	// Sudo mode. The sudo token then decides alone: it is the proof the person
+	// just made, and a refused sudo token is not rescued by the other header.
+	if sudoToken := c.Get("X-Sky-Sudo"); sudoToken != "" {
+		if !singleCredential(sudoToken) || h.parseSudo == nil {
+			return authn.Identity{}, authn.ErrInvalidToken
+		}
+		return h.parseSudo(c.Context(), token, sudoToken)
+	}
 	reauthenticationToken := c.Get("X-Account-Reauth-Token")
-	if reauthenticationToken == "" || strings.TrimSpace(reauthenticationToken) != reauthenticationToken || strings.ContainsAny(reauthenticationToken, " \t\r\n,") {
+	if !singleCredential(reauthenticationToken) {
 		return authn.Identity{}, authn.ErrInvalidToken
 	}
 	return h.parseToken(token, reauthenticationToken)
+}
+
+// singleCredential reports whether a header carries exactly one non-empty
+// token with nothing around it.
+func singleCredential(value string) bool {
+	return value != "" && strings.TrimSpace(value) == value && !strings.ContainsAny(value, " \t\r\n,")
 }
 
 func deletionReceipt(header string) (string, bool) {
@@ -122,7 +148,7 @@ func authorizationCredential(header, scheme string) (string, bool) {
 		return "", false
 	}
 	credential := strings.TrimPrefix(header, prefix)
-	if credential == "" || strings.TrimSpace(credential) != credential || strings.ContainsAny(credential, " \t\r\n,") {
+	if !singleCredential(credential) {
 		return "", false
 	}
 	return credential, true
