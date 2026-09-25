@@ -142,6 +142,13 @@ func TestClientSendsThePUTContractAndReturnsCounts(t *testing.T) {
 	if call.header.Get("Idempotency-Key") != "" {
 		t.Fatal("request_id is the idempotency key; no header is sent")
 	}
+	// Services answer 404 to anything that looks like it came through the
+	// public ingress.
+	for _, name := range []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded", "X-Real-Ip"} {
+		if value := call.header.Get(name); value != "" {
+			t.Fatalf("command carries %s: %q", name, value)
+		}
+	}
 	for name, values := range call.header {
 		for _, value := range values {
 			if name != "Authorization" {

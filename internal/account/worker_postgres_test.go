@@ -3,7 +3,11 @@ package account_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,6 +121,34 @@ func TestPostgresServiceErasureKeepsProofAndHonoursTheFence(t *testing.T) {
 		t.Fatal("a checkpointed service was called again")
 	}
 
+	// The runbook's proof query lists the completed request with each step's
+	// time and counts, and nothing that identifies the person.
+	rows, err := pool.Query(ctx, erasureProofQuery(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proofRows := 0
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, value := range values {
+			if id, ok := value.([16]byte); ok {
+				values[i] = uuid.UUID(id).String()
+			}
+		}
+		line := fmt.Sprint(values...)
+		f.assertNoPersonalData(line)
+		if strings.Contains(line, f.request.ID.String()) {
+			proofRows++
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || proofRows != 3 {
+		t.Fatalf("proof query rows for the request = %d err=%v", proofRows, err)
+	}
+
 	// A rejection goes to manual intervention at once, with its code.
 	g := newErasureFixtureWith(t, store)
 	g.services[user.DeletionStepEraseForms].set(answerStatus(http.StatusConflict, ""))
@@ -154,4 +186,81 @@ func TestPostgresServiceErasureKeepsProofAndHonoursTheFence(t *testing.T) {
 	f.assertNoPersonalData()
 	g.assertNoPersonalData(g.state().LastErrorCode)
 	h.assertNoPersonalData()
+}
+
+func TestPostgresWatchdogGaugesMatchTheFixtures(t *testing.T) {
+	pool := testpostgres.Start(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	store := user.NewPostgresStore(pool)
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	fixtures := []struct {
+		status user.DeletionRequestStatus
+		age    time.Duration
+		code   string
+	}{
+		{user.DeletionRequestPending, 24 * time.Hour, ""},
+		{user.DeletionRequestProcessing, 21 * 24 * time.Hour, "erase_cms_failed"},
+		{user.DeletionRequestManualIntervention, 2 * 24 * time.Hour, "erase_forms_rejected_403"},
+		{user.DeletionRequestCompleted, 40 * 24 * time.Hour, ""},
+	}
+	for i, fixture := range fixtures {
+		subjectID := uuid.New()
+		if _, _, err := user.NewService(store).Ensure(ctx, subjectID, user.Profile{Email: "watchdog" + string(rune('a'+i)) + "@example.test"}); err != nil {
+			t.Fatal(err)
+		}
+		request, err := store.RequestDeletion(ctx, subjectID, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE account_deletion_requests SET status=$2, created_at=$3, last_error_code=$4 WHERE id=$1`,
+			request.ID, fixture.status, now.Add(-fixture.age), fixture.code); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gauges := account.NewErasureGauges()
+	var events []account.Attention
+	watchdog := account.NewWatchdog(store, gauges, account.WatchdogConfig{
+		AlertAfter: 480 * time.Hour, Now: func() time.Time { return now },
+		Attention: func(event account.Attention) { events = append(events, event) },
+	})
+	if err := watchdog.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	text := gauges.Prometheus()
+	for _, line := range []string{
+		"skylab_account_erasure_open_requests 3\n",
+		"skylab_account_erasure_overdue_requests 1\n",
+		"skylab_account_erasure_manual_intervention_requests 1\n",
+		"skylab_account_erasure_oldest_open_age_seconds 1814400\n",
+	} {
+		if !strings.Contains(text, line) {
+			t.Fatalf("gauges lack %q:\n%s", line, text)
+		}
+	}
+	if len(events) != 2 {
+		t.Fatalf("attention events = %+v", events)
+	}
+}
+
+// erasureProofQuery reads the proof query from the runbook, so the documented
+// query is the tested one.
+func erasureProofQuery(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "account-lifecycle.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, ok := strings.Cut(string(raw), "<!-- erasure-proof-query -->")
+	if !ok {
+		t.Fatal("runbook has no erasure proof query")
+	}
+	_, rest, ok = strings.Cut(rest, "```sql\n")
+	query, _, closed := strings.Cut(rest, "```")
+	if !ok || !closed || strings.Contains(query, "subject_id") {
+		t.Fatalf("runbook proof query is malformed or names the subject: %q", query)
+	}
+	return query
 }

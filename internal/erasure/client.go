@@ -181,8 +181,16 @@ func (c *Client) deferred(reason, retryAfter string) error {
 	return &DeferredError{Step: c.Service.Step, Reason: reason, At: now.Add(retryDelay(retryAfter, now))}
 }
 
+// directTransport never goes through an HTTP proxy from the environment: the
+// command body carries addresses and is meant for the internal network only.
+var directTransport = func() http.RoundTripper {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return transport
+}()
+
 func (c *Client) httpClient() *http.Client {
-	client := http.Client{Timeout: CommandTimeout}
+	client := http.Client{Timeout: CommandTimeout, Transport: directTransport}
 	if c.HTTP != nil {
 		client = *c.HTTP
 	}
