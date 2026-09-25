@@ -99,12 +99,15 @@ type storedFile struct {
 	width, height int
 	// variants are the image's stored sizes, written beside it.
 	variants []encodedVariant
+	// sized is set once core has made the image's sizes (maybe none), so
+	// the variant backfill leaves it alone.
+	sized bool
 }
 
 // storedSizes is how the variants are recorded on the Media: nil for a file
-// that is not a re-encoded image.
+// whose sizes core has not made.
 func (f storedFile) storedSizes() map[string]ImageSize {
-	if f.variants == nil {
+	if !f.sized {
 		return nil
 	}
 	return reencodedImage{variants: f.variants}.storedSizes()
@@ -168,7 +171,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	var sizes []string
 	for _, variant := range stored.variants {
 		sizes = append(sizes, variantKey(key, variant.size))
-		if err := s.blobs.Put(operationCtx, sizes[len(sizes)-1], variant.body, serving); err != nil {
+		if err := s.blobs.Put(operationCtx, sizes[len(sizes)-1], variant.body, ServingMetadata(variant.ctype, file.Name)); err != nil {
 			return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, sizes, err)
 		}
 	}
@@ -224,7 +227,7 @@ func (s *service) storedFile(ctx context.Context, purpose Purpose, file Uploaded
 		defer release()
 	}
 	if purpose.LegacyRules {
-		return legacyFile(file)
+		return legacyFile(purpose, file)
 	}
 	return purposeFile(purpose, file.Data)
 }
@@ -243,7 +246,11 @@ func pendingExpiry(purpose Purpose, now time.Time) *time.Time {
 // legacyFile applies the rules Media uploaded without a purpose had before
 // Media purpose: a raster image or SVG up to 10 MiB, a PDF named .pdf up to
 // 20 MiB, or any other named file up to 20 MiB, served as a download.
-func legacyFile(file UploadedFile) (storedFile, error) {
+//
+// A raster image keeps its own bytes, only stripped of metadata; its sizes
+// are made from it (keptImageSizes), and an image core cannot decode is
+// stored without them, as before.
+func legacyFile(purpose Purpose, file UploadedFile) (storedFile, error) {
 	name, contentType, data := file.Name, file.ContentType, file.Data
 	if strings.HasPrefix(contentType, "image/") || isImage(data) {
 		if len(data) > maxImageBytes {
@@ -253,7 +260,12 @@ func legacyFile(file UploadedFile) (storedFile, error) {
 		if err != nil {
 			return storedFile{}, err
 		}
-		return storedFile{body: clean, ctype: detected, kind: KindImage, keyPrefix: "images/"}, nil
+		stored := storedFile{body: clean, ctype: detected, kind: KindImage, keyPrefix: "images/", sized: true}
+		if isRasterType(detected) {
+			kept := keptImageSizes(clean, purpose.Image.Variants)
+			stored.width, stored.height, stored.variants = kept.size.Width, kept.size.Height, kept.variants
+		}
+		return stored, nil
 	}
 	if strings.EqualFold(strings.TrimSpace(contentType), pdfType) || isPDF(data) {
 		if len(data) > maxFileBytes || !isPDF(data) {
@@ -300,7 +312,7 @@ func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
 		if err != nil {
 			return storedFile{}, err
 		}
-		return storedFile{body: img.body, ctype: img.ctype, kind: KindImage, keyPrefix: "images/", width: img.width, height: img.height, variants: img.variants}, nil
+		return storedFile{body: img.body, ctype: img.ctype, kind: KindImage, keyPrefix: "images/", width: img.width, height: img.height, variants: img.variants, sized: true}, nil
 	}
 	clean, ctype, err := sanitizeImage(data)
 	if err != nil {

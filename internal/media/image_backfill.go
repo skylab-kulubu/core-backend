@@ -46,7 +46,7 @@ func makeImageVariants(ctx context.Context, store Store, blobs BlobStore, catalo
 	release()
 	written := make(map[string]ImageSize, len(kept.variants))
 	for _, variant := range kept.variants {
-		if err := blobs.Put(ctx, variantKey(item.Key, variant.size), variant.body, ServingMetadata(kept.ctype, "")); err != nil {
+		if err := blobs.Put(ctx, variantKey(item.Key, variant.size), variant.body, ServingMetadata(variant.ctype, "")); err != nil {
 			return err
 		}
 		written[variant.size] = ImageSize{Width: variant.width, Height: variant.height}

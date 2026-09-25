@@ -79,6 +79,7 @@ type reencodedImage struct {
 type encodedVariant struct {
 	size          string
 	body          []byte
+	ctype         string
 	width, height int
 }
 
@@ -148,17 +149,15 @@ func sizeVariants(img image.Image, ctype string, sizes map[string]int) ([]encode
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, encodedVariant{size: size, body: body, width: scaled.Bounds().Dx(), height: scaled.Bounds().Dy()})
+		out = append(out, encodedVariant{size: size, body: body, ctype: ctype, width: scaled.Bounds().Dx(), height: scaled.Bounds().Dy()})
 	}
 	return out, nil
 }
 
 // keptImage is what core makes of an image whose own bytes it keeps (a
-// Media uploaded without a purpose): its size as shown, and its sizes,
-// encoded as ctype.
+// Media uploaded without a purpose): its size as shown, and its sizes.
 type keptImage struct {
 	size     ImageSize
-	ctype    string
 	variants []encodedVariant
 }
 
@@ -176,7 +175,7 @@ func keptImageSizes(data []byte, sizes map[string]int) keptImage {
 	if err != nil {
 		return keptImage{}
 	}
-	return keptImage{size: ImageSize{Width: img.Bounds().Dx(), Height: img.Bounds().Dy()}, ctype: ctype, variants: variants}
+	return keptImage{size: ImageSize{Width: img.Bounds().Dx(), Height: img.Bounds().Dy()}, variants: variants}
 }
 
 // fittedSize is w×h scaled down, keeping its proportions, so that neither

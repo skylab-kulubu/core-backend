@@ -464,3 +464,41 @@ func TestService_ARejectedUploadLeavesNoStoredSize(t *testing.T) {
 		t.Fatalf("rejected upload left objects %v", left)
 	}
 }
+
+func TestService_LegacyUploadKeepsItsImageAndStoresItsSizes(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	p := signedIn("72727272-7272-7272-7272-727272727272")
+	photo := solidJPEG(t, 1600, 1200, color.RGBA{R: 70, G: 70, B: 200, A: 255})
+
+	created, err := svc.Upload(context.Background(), p, "cover.jpg", "image/jpeg", photo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if original, _ := blobs.Get(created.Key); !bytes.Equal(original, photo) {
+		t.Fatal("a legacy image was re-encoded")
+	}
+	if created.Width != 1600 || created.Height != 1200 {
+		t.Fatalf("recorded %d×%d", created.Width, created.Height)
+	}
+	for name, want := range map[string]image.Point{"card": {400, 300}, "page": {1200, 900}} {
+		stored, ok := blobs.Get(created.Key + "/" + name)
+		if !ok {
+			t.Fatalf("%s not stored", name)
+		}
+		if img, _ := decodeStored(t, stored); img.Bounds().Size() != want {
+			t.Errorf("%s stored %v", name, img.Bounds().Size())
+		}
+		if got := created.Variants[name]; got.URL != "https://cdn.example.test/"+created.Key+"/"+name {
+			t.Errorf("%s address %+v", name, got)
+		}
+	}
+
+	logo, err := svc.Upload(context.Background(), p, "logo.svg", "image/svg+xml", []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logo.Variants != nil || len(blobs.Keys()) != 3+1 {
+		t.Fatalf("an SVG got sizes %v, objects %v", logo.Variants, blobs.Keys())
+	}
+}
