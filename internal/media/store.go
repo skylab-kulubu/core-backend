@@ -121,6 +121,14 @@ type Store interface {
 	// SetServingPolicyApplied records that the object now follows the serving
 	// policy. It changes nothing else on the record.
 	SetServingPolicyApplied(ctx context.Context, id uuid.UUID) error
+	// ListPendingImageVariants returns, in id order and after the given id,
+	// current image Media whose sizes core has not made yet (StoredVariants
+	// nil). Media whose blob is purged or being purged are left out.
+	ListPendingImageVariants(ctx context.Context, after uuid.UUID, limit int) ([]Media, error)
+	// SetImageVariants records an image's size as shown and the sizes stored
+	// beside it; nil or empty variants record that it has none. It refuses
+	// with ErrPurgeInProgress or ErrPurged once the blob's purge has begun.
+	SetImageVariants(ctx context.Context, id uuid.UUID, size ImageSize, variants map[string]ImageSize) error
 	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	// Restore restores an archived Media and clears its expiry, so an expiry
 	// that passed while it was archived cannot purge it.

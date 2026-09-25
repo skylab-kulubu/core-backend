@@ -93,6 +93,45 @@ func (s *MemoryStore) SetServingPolicyApplied(_ context.Context, id uuid.UUID) e
 	return nil
 }
 
+func (s *MemoryStore) ListPendingImageVariants(_ context.Context, after uuid.UUID, limit int) ([]Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Media, 0)
+	for _, m := range s.byID {
+		if m.Kind != KindImage || m.StoredVariants != nil || m.DeletedAt != nil || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil || bytes.Compare(m.ID[:], after[:]) <= 0 {
+			continue
+		}
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].ID[:], out[j].ID[:]) < 0 })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) SetImageVariants(_ context.Context, id uuid.UUID, size ImageSize, variants map[string]ImageSize) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if m.BlobPurgedAt != nil {
+		return ErrPurged
+	}
+	if m.BlobPurgeStartedAt != nil {
+		return ErrPurgeInProgress
+	}
+	m.Width, m.Height = size.Width, size.Height
+	m.StoredVariants = maps.Clone(variants)
+	if m.StoredVariants == nil {
+		m.StoredVariants = map[string]ImageSize{}
+	}
+	s.byID[id] = m
+	return nil
+}
+
 func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (Media, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

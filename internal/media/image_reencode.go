@@ -96,12 +96,9 @@ func (r reencodedImage) storedSizes() map[string]ImageSize {
 // the purpose sets none), encodes it again, and makes each of the purpose's
 // sizes the image is larger than.
 func reencodeRaster(data []byte, handling ImageHandling) (reencodedImage, error) {
-	if err := checkPixels(data); err != nil {
-		return reencodedImage{}, err
-	}
-	img, _, err := image.Decode(bytes.NewReader(data))
+	img, err := decodeRaster(data)
 	if err != nil {
-		return reencodedImage{}, ErrInvalid
+		return reencodedImage{}, err
 	}
 	limit := handling.MaxDimension
 	if limit <= 0 {
@@ -115,21 +112,71 @@ func reencodeRaster(data []byte, handling ImageHandling) (reencodedImage, error)
 	if err != nil {
 		return reencodedImage{}, err
 	}
+	variants, err := sizeVariants(img, ctype, handling.Variants)
+	if err != nil {
+		return reencodedImage{}, err
+	}
 	bounds := img.Bounds()
-	out := reencodedImage{body: body, ctype: ctype, width: bounds.Dx(), height: bounds.Dy()}
+	return reencodedImage{body: body, ctype: ctype, width: bounds.Dx(), height: bounds.Dy(), variants: variants}, nil
+}
+
+// decodeRaster decodes a raster image after checking from its header that
+// core may decode it (checkPixels).
+func decodeRaster(data []byte) (image.Image, error) {
+	if err := checkPixels(data); err != nil {
+		return nil, err
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	return img, nil
+}
+
+// sizeVariants makes each of the sizes (size name to its longer side in
+// pixels) that the upright image is larger than, encoded as ctype.
+func sizeVariants(img image.Image, ctype string, sizes map[string]int) ([]encodedVariant, error) {
+	var out []encodedVariant
+	bounds := img.Bounds()
 	for _, size := range imageSizes {
-		px, ok := handling.Variants[size]
-		if !ok || (out.width <= px && out.height <= px) {
+		px, ok := sizes[size]
+		if !ok || (bounds.Dx() <= px && bounds.Dy() <= px) {
 			continue
 		}
 		scaled := fitWithin(img, px)
-		variantBody, err := encodeRaster(scaled, ctype)
+		body, err := encodeRaster(scaled, ctype)
 		if err != nil {
-			return reencodedImage{}, err
+			return nil, err
 		}
-		out.variants = append(out.variants, encodedVariant{size: size, body: variantBody, width: scaled.Bounds().Dx(), height: scaled.Bounds().Dy()})
+		out = append(out, encodedVariant{size: size, body: body, width: scaled.Bounds().Dx(), height: scaled.Bounds().Dy()})
 	}
 	return out, nil
+}
+
+// keptImage is what core makes of an image whose own bytes it keeps (a
+// Media uploaded without a purpose): its size as shown, and its sizes,
+// encoded as ctype.
+type keptImage struct {
+	size     ImageSize
+	ctype    string
+	variants []encodedVariant
+}
+
+// keptImageSizes makes the sizes of an image whose own bytes core keeps:
+// the original stays as it is, and only the sizes are made from it,
+// upright. An image core cannot decode gets no size and no sizes.
+func keptImageSizes(data []byte, sizes map[string]int) keptImage {
+	img, err := decodeRaster(data)
+	if err != nil {
+		return keptImage{}
+	}
+	img = orient(img, jpegOrientation(data))
+	ctype := outputType(detectContentType(data), img)
+	variants, err := sizeVariants(img, ctype, sizes)
+	if err != nil {
+		return keptImage{}
+	}
+	return keptImage{size: ImageSize{Width: img.Bounds().Dx(), Height: img.Bounds().Dy()}, ctype: ctype, variants: variants}
 }
 
 // fittedSize is w×h scaled down, keeping its proportions, so that neither

@@ -132,7 +132,7 @@
       "attach": "service"
     },
     "legacy": {
-      "description": "Media uploaded without a purpose, and every Media stored before Media purpose. Internal: clients cannot name it. It keeps the rules Media uploaded without a purpose had before this catalogue, until Skyforms and CMS send purposes.",
+      "description": "Media uploaded without a purpose, and every Media stored before Media purpose. Internal: clients cannot name it. It keeps the rules Media uploaded without a purpose had before this catalogue, until Skyforms and CMS send purposes. Its raster images keep their own (stripped) bytes, not re-encoded; core makes their sizes beside them.",
       "upload": "authenticated",
       "legacy_rules": true,
       "visibility": "public",
@@ -140,7 +140,8 @@
       "scan": false,
       "pending_ttl": "none",
       "transport": "single_step",
-      "attach": "core"
+      "attach": "core",
+      "image": { "reencode": false, "variants": { "card": 400, "page": 1200 } }
     }
   }
 }

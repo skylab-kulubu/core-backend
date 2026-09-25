@@ -143,12 +143,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if err != nil {
 		return Media{}, ErrInvalid
 	}
-	var stored storedFile
-	if purpose.LegacyRules {
-		stored, err = legacyFile(file)
-	} else {
-		stored, err = purposeFile(purpose, file.Data)
-	}
+	stored, err := s.storedFile(ctx, purpose, file)
 	if err != nil {
 		return Media{}, err
 	}
@@ -216,6 +211,22 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, sizes, err)
 	}
 	return s.withURL(created), nil
+}
+
+// storedFile is what the purpose's rules make of the file. Images wait
+// their turn to be decoded (acquireImageWork).
+func (s *service) storedFile(ctx context.Context, purpose Purpose, file UploadedFile) (storedFile, error) {
+	if isImage(file.Data) {
+		release, err := acquireImageWork(ctx)
+		if err != nil {
+			return storedFile{}, err
+		}
+		defer release()
+	}
+	if purpose.LegacyRules {
+		return legacyFile(file)
+	}
+	return purposeFile(purpose, file.Data)
 }
 
 // pendingExpiry is when a Media of the purpose uploaded at now is purged if

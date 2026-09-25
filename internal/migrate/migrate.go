@@ -546,6 +546,31 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		) = 19
 		AND to_regprocedure('public.core_media_links(jsonb, text, text, text)') IS NOT NULL
 		AND to_regprocedure('public.certificate_layout_media_ids(jsonb, jsonb)') IS NOT NULL`,
+	20260926130000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('width', 'int4'),
+				('height', 'int4'),
+				('variants', 'jsonb')
+			) expected(column_name, udt_name)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'media'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = 'YES'
+		) = 3
+		AND (
+			SELECT count(*) FROM pg_constraint
+			WHERE conrelid = to_regclass('public.media') AND contype = 'c'
+			  AND conname IN ('media_width_check', 'media_height_check', 'media_variants_check')
+		) = 3
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'media_variants_pending_idx'
+			  AND indexdef LIKE '%variants IS NULL%'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

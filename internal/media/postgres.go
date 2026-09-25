@@ -2,7 +2,9 @@ package media
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,7 +23,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at`
+const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, width, height, variants`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 	return insertMedia(ctx, s.pool, newRecord(m))
@@ -33,10 +35,15 @@ type rowQuerier interface {
 
 // insertMedia writes a record prepared by newRecord.
 func insertMedia(ctx context.Context, db rowQuerier, m Media) (Media, error) {
+	variants, err := variantsColumn(m.StoredVariants)
+	if err != nil {
+		return Media{}, err
+	}
 	created, err := scanMedia(db.QueryRow(ctx, `
-		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose, m.Status, m.ExpiresAt))
+		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at, width, height, variants)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)
+		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose, m.Status, m.ExpiresAt,
+		positiveOrNil(m.Width), positiveOrNil(m.Height), variants))
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Media{}, ErrForbidden
 	}
@@ -439,11 +446,98 @@ type rowScanner interface {
 func scanMedia(row rowScanner) (Media, error) {
 	var m Media
 	var created, updated time.Time
-	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt)
+	var width, height *int
+	var variants []byte
+	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt, &width, &height, &variants)
+	if err != nil {
+		return m, err
+	}
 	if m.CoverColors == nil {
 		m.CoverColors = []string{}
 	}
+	if width != nil && height != nil {
+		m.Width, m.Height = *width, *height
+	}
+	if variants != nil {
+		if err := json.Unmarshal(variants, &m.StoredVariants); err != nil {
+			return m, fmt.Errorf("media %s variants: %w", m.ID, err)
+		}
+		if m.StoredVariants == nil {
+			m.StoredVariants = map[string]ImageSize{}
+		}
+	}
 	m.CreatedAt = created
 	m.UpdatedAt = updated
-	return m, err
+	return m, nil
+}
+
+// variantsColumn is how StoredVariants is written: NULL while the sizes are
+// not made, a JSON object once they are.
+func variantsColumn(variants map[string]ImageSize) (*string, error) {
+	if variants == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(variants)
+	if err != nil {
+		return nil, err
+	}
+	column := string(encoded)
+	return &column, nil
+}
+
+func positiveOrNil(n int) *int {
+	if n <= 0 {
+		return nil
+	}
+	return &n
+}
+
+func (s *PostgresStore) ListPendingImageVariants(ctx context.Context, after uuid.UUID, limit int) ([]Media, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+mediaCols+` FROM media
+		WHERE variants IS NULL AND kind = $1 AND deleted_at IS NULL
+		  AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL AND id > $2
+		ORDER BY id LIMIT $3`, KindImage, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Media, 0)
+	for rows.Next() {
+		m, err := scanMedia(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) SetImageVariants(ctx context.Context, id uuid.UUID, size ImageSize, variants map[string]ImageSize) error {
+	if variants == nil {
+		variants = map[string]ImageSize{}
+	}
+	column, err := variantsColumn(variants)
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE media SET width = $2, height = $3, variants = $4::jsonb
+		WHERE id = $1 AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL`,
+		id, positiveOrNil(size.Width), positiveOrNil(size.Height), column)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		m, err := s.GetIncludingDeleted(ctx, id)
+		if err != nil {
+			return err
+		}
+		if m.BlobPurgedAt != nil {
+			return ErrPurged
+		}
+		return ErrPurgeInProgress
+	}
+	return nil
 }
