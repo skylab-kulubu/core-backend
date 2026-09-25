@@ -3,11 +3,15 @@ package media
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"net/url"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 type R2Config struct {
@@ -50,13 +54,14 @@ func NewR2(cfg R2Config) *R2 {
 	return &R2{client: client, bucket: cfg.Bucket}
 }
 
-func (r *R2) Put(ctx context.Context, key string, data []byte, contentType string) error {
+func (r *R2) Put(ctx context.Context, key string, data []byte, meta BlobMetadata) error {
 	_, err := r.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:        aws.String(r.bucket),
-		Key:           aws.String(key),
-		Body:          bytes.NewReader(data),
-		ContentType:   aws.String(contentType),
-		ContentLength: aws.Int64(int64(len(data))),
+		Bucket:             aws.String(r.bucket),
+		Key:                aws.String(key),
+		Body:               bytes.NewReader(data),
+		ContentType:        aws.String(meta.ContentType),
+		ContentDisposition: stringOrNil(meta.ContentDisposition),
+		ContentLength:      aws.Int64(int64(len(data))),
 	})
 	if err != nil {
 		return err
@@ -68,10 +73,37 @@ func (r *R2) Put(ctx context.Context, key string, data []byte, contentType strin
 	return err
 }
 
+// SetMetadata replaces the serving metadata of a stored object without
+// rewriting its bytes: a copy onto the same key with the REPLACE directive,
+// which R2's S3 API supports for CopyObject.
+func (r *R2) SetMetadata(ctx context.Context, key string, meta BlobMetadata) error {
+	_, err := r.client.CopyObject(ctx, &s3.CopyObjectInput{
+		Bucket:             aws.String(r.bucket),
+		Key:                aws.String(key),
+		CopySource:         aws.String((&url.URL{Path: r.bucket + "/" + key}).EscapedPath()),
+		MetadataDirective:  types.MetadataDirectiveReplace,
+		ContentType:        aws.String(meta.ContentType),
+		ContentDisposition: stringOrNil(meta.ContentDisposition),
+	})
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey" {
+		return ErrNotFound
+	}
+	return err
+}
+
 func (r *R2) Delete(ctx context.Context, key string) error {
 	_, err := r.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(key),
 	})
 	return err
+}
+
+// stringOrNil leaves an empty header unset instead of sending it empty.
+func stringOrNil(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return aws.String(value)
 }

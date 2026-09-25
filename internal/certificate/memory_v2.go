@@ -1,6 +1,7 @@
 package certificate
 
 import (
+	"bytes"
 	"context"
 	"sort"
 	"time"
@@ -57,6 +58,35 @@ func (s *MemoryStore) UpdateTemplate(_ context.Context, item Template) (Template
 	item.UpdatedAt = time.Now().UTC()
 	s.templates[item.ID] = item
 	return item, nil
+}
+
+func (s *MemoryStore) ListPendingAssetServingPolicy(_ context.Context, after uuid.UUID, limit int) ([]TemplateVersion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]TemplateVersion, 0)
+	for _, version := range s.versions {
+		if version.AssetServingPolicyApplied || bytes.Compare(version.ID[:], after[:]) <= 0 {
+			continue
+		}
+		out = append(out, version)
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].ID[:], out[j].ID[:]) < 0 })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) SetAssetServingPolicyApplied(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	version, ok := s.versions[id]
+	if !ok {
+		return ErrNotFound
+	}
+	version.AssetServingPolicyApplied = true
+	s.versions[id] = version
+	return nil
 }
 
 func (s *MemoryStore) CreateVersion(_ context.Context, version TemplateVersion) (TemplateVersion, error) {

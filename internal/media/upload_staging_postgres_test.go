@@ -61,7 +61,7 @@ func TestStagingSweeperNeverDeletesPublishedMedia(t *testing.T) {
 	store := media.NewPostgresStore(pool)
 	key := "images/published-staging-check"
 	blobs := &recordingBlobStore{}
-	if err := blobs.Put(ctx, key, pngDot(), "image/png"); err != nil {
+	if err := blobs.Put(ctx, key, pngDot(), media.BlobMetadata{ContentType: "image/png"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Create(ctx, media.Media{
@@ -108,7 +108,7 @@ func TestStagingSweeperPersistsBoundedRetryAfterR2Failure(t *testing.T) {
 	}
 	deleteErr := errors.New("temporary r2 failure")
 	blobs := &recordingBlobStore{deleteErr: deleteErr}
-	if err := blobs.Put(ctx, key, []byte("orphan"), "application/octet-stream"); err != nil {
+	if err := blobs.Put(ctx, key, []byte("orphan"), media.BlobMetadata{ContentType: "application/octet-stream"}); err != nil {
 		t.Fatal(err)
 	}
 

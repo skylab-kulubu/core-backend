@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 const maxTemplateAssetBytes = 50 << 20
@@ -62,7 +63,9 @@ func (s *service) snapshotVersionAssets(ctx context.Context, versionID uuid.UUID
 			return nil, ErrInvalid
 		}
 		key := "certificate-template-assets/" + versionID.String() + "/" + id.String()
-		if err := s.artifacts.Put(ctx, key, asset.Data, asset.ContentType); err != nil {
+		// The copy is as public as the Media it came from, so it is served
+		// under the same policy; the manifest keeps the type for rendering.
+		if err := s.artifacts.Put(ctx, key, asset.Data, media.ServingMetadata(asset.ContentType, "")); err != nil {
 			return nil, err
 		}
 		manifest[id.String()] = VersionAssetRef{Key: key, ContentType: asset.ContentType}

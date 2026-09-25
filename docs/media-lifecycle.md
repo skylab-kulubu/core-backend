@@ -47,7 +47,52 @@ publication outcome is unknown. Account erasure also waits for active intents
 and checkpoints subject-specific blob cleanup before deleting the identity or
 completing its request.
 
-Configuration:
+## Serving policy
+
+Objects are public at `https://cdn.yildizskylab.com/<key>`, so the metadata a
+Media is stored with decides what a browser does with it. Every write to the
+bucket takes that metadata from one policy (`media.ServingMetadata`,
+`internal/media/serving.go`):
+
+- The raster formats Upload accepts (JPEG, PNG, WebP, GIF; one table shared
+  with the sanitizer) and PDF are served inline with their type. The SkyForms
+  admin preview frames PDFs.
+- SVG keeps `image/svg+xml`, so `<img>` still renders it, but carries
+  `Content-Disposition: attachment`: opening its URL downloads it instead of
+  running any script the regex sanitizer missed.
+- Every other file is `application/octet-stream` with
+  `Content-Disposition: attachment; filename*=…` (the Media's name, RFC 2231
+  encoded), whatever type its client declared.
+
+The policy decides only the object's metadata. The media record keeps the
+file's own type, detected or declared. The copies a published certificate
+template keeps of its layout Media under `certificate-template-assets/` go
+through the same policy (without a name: a bare `attachment`), and their
+manifest keeps the asset's own type for rendering.
+
+Objects stored before the policy are rewritten in place by two background
+backfills that start with core: one over media records not yet flagged
+`serving_policy_applied`, one over certificate template versions not yet
+flagged `asset_serving_policy_applied`. Each pass walks the pending rows by id,
+25 at a time. Where the policy serves an object differently from the type it
+was stored with, the object gets an S3 `CopyObject` onto the same key with
+`MetadataDirective=REPLACE` (supported by R2's S3 API); then the row is
+flagged, and nothing else on it changes. Raster images and PDFs are only
+flagged. Purged blobs are skipped and a missing object counts as done. A row
+that fails is logged with its id and skipped, so it never holds up the rows
+after it; passes repeat a minute apart until one ends with nothing failed.
+Every step is idempotent, so the backfills are safe to interrupt and re-run.
+Upload and template publishing flag what they write themselves.
+
+Known gap: until Media purpose ships, Answer files are still public media;
+tracked by the media redesign. `GET /v1/media/{id}` answers a caller without
+a token with no `uploadedBy` and no `name`, but a signed-in caller still sees
+both, and the object itself stays reachable at its CDN address.
+
+`X-Content-Type-Options: nosniff` cannot be stored as R2 object metadata; it
+needs a Cloudflare Transform Rule on `cdn.yildizskylab.com`.
+
+## Configuration
 
 - `MEDIA_BLOB_RECOVERY_DAYS` — recovery window in whole days; default `30`.
 - `MEDIA_BLOB_PURGE_INTERVAL` — Go duration between bounded runs; default `1h`.

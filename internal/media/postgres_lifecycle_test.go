@@ -37,7 +37,7 @@ func TestPostgresBlobPurgeProtectsRetainedDomainReferences(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := blobs.Put(ctx, item.Key, pngDot(), item.Type); err != nil {
+		if err := blobs.Put(ctx, item.Key, pngDot(), media.BlobMetadata{ContentType: item.Type}); err != nil {
 			t.Fatal(err)
 		}
 		return item
