@@ -37,7 +37,7 @@ type service struct {
 	media              Store
 	blobs              BlobStore
 	authz              authz.Authorizer
-	publicBase         string
+	addresses          Addresses
 	uploadStagingGrace time.Duration
 	catalogue          Catalogue
 }
@@ -51,6 +51,9 @@ type ServiceOptions struct {
 	// Catalogue is the Media purpose catalogue. The zero value is the
 	// reviewed catalogue carried in the binary.
 	Catalogue Catalogue
+	// ImageAddressMode is where image sizes are served from
+	// (MEDIA_IMAGE_ADDRESS_MODE); empty is AddressStoredSizes.
+	ImageAddressMode AddressMode
 }
 
 func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, publicBase string, options ServiceOptions) Service {
@@ -62,7 +65,8 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	if catalogue.purposes == nil {
 		catalogue = reviewedCatalogue()
 	}
-	return &service{media: media, blobs: blobs, authz: az, publicBase: publicBase, uploadStagingGrace: grace, catalogue: catalogue}
+	addresses := Addresses{Base: publicBase, Mode: options.ImageAddressMode}
+	return &service{media: media, blobs: blobs, authz: az, addresses: addresses, uploadStagingGrace: grace, catalogue: catalogue}
 }
 
 // reviewedCatalogue is the catalogue carried in the binary. Core validates it
@@ -434,9 +438,8 @@ func (s *service) withURL(m Media) Media {
 		m.URL = ""
 		return m
 	}
-	addresses := Addresses{Base: s.publicBase}
-	m.URL = addresses.Object(m.Key)
+	m.URL = s.addresses.Object(m.Key)
 	purpose, _ := s.catalogue.Lookup(m.Purpose)
-	m.Variants = addresses.imageAddresses(m, purpose.Image.Variants)
+	m.Variants = s.addresses.imageAddresses(m, purpose.Image.Variants)
 	return m
 }

@@ -502,3 +502,21 @@ func TestService_LegacyUploadKeepsItsImageAndStoresItsSizes(t *testing.T) {
 		t.Fatalf("an SVG got sizes %v, objects %v", logo.Variants, blobs.Keys())
 	}
 }
+
+func TestService_ServesSizesThroughCloudflareWhenConfigured(t *testing.T) {
+	t.Parallel()
+	svc := media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test",
+		media.ServiceOptions{ImageAddressMode: media.AddressCloudflare})
+
+	created, err := svc.UploadForPurpose(context.Background(), signedIn("73737373-7373-7373-7373-737373737373"), "profile_picture", uploaded("photo.jpg", "image/jpeg", solidJPEG(t, 1600, 1200, color.RGBA{R: 1, A: 255})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://cdn.example.test/cdn-cgi/image/width=400,height=400,fit=scale-down/" + created.Key
+	if got := created.Variants["card"]; got.URL != want || got.Width != 400 || got.Height != 300 {
+		t.Fatalf("card %+v, want %s", got, want)
+	}
+	if created.URL != "https://cdn.example.test/"+created.Key {
+		t.Fatalf("original %s", created.URL)
+	}
+}

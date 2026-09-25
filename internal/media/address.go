@@ -1,6 +1,7 @@
 package media
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -39,12 +40,41 @@ func variantKey(key, size string) string {
 	return key + "/" + size
 }
 
+// AddressMode is where an image's sizes are served from.
+type AddressMode string
+
+const (
+	// AddressStoredSizes serves each size from the copy core stored beside
+	// the image (<key>/<size>). The default: it costs only storage.
+	AddressStoredSizes AddressMode = "stored"
+	// AddressCloudflare serves each size through Cloudflare image
+	// transformations of the original (/cdn-cgi/image/…), which must be
+	// enabled on the zone of the base. Switching needs no stored content
+	// rewritten.
+	AddressCloudflare AddressMode = "cloudflare"
+)
+
+// ImageAddressModeFromEnv reads MEDIA_IMAGE_ADDRESS_MODE: stored (the
+// default) or cloudflare.
+func ImageAddressModeFromEnv(getenv func(string) string) (AddressMode, error) {
+	switch mode := AddressMode(strings.TrimSpace(getenv("MEDIA_IMAGE_ADDRESS_MODE"))); mode {
+	case "", AddressStoredSizes:
+		return AddressStoredSizes, nil
+	case AddressCloudflare:
+		return mode, nil
+	}
+	return "", fmt.Errorf("MEDIA_IMAGE_ADDRESS_MODE must be %s or %s", AddressStoredSizes, AddressCloudflare)
+}
+
 // Addresses builds the public addresses of Media objects from a configured
 // base.
 type Addresses struct {
 	// Base is the public origin objects are served from. Empty leaves keys
 	// as they are (a development setup without a CDN).
 	Base string
+	// Mode is where image sizes are served from; empty is
+	// AddressStoredSizes.
+	Mode AddressMode
 }
 
 // Object is the public address of an object key. A key that is already an
@@ -59,7 +89,17 @@ func (a Addresses) Object(key string) string {
 // Image is the address of an image Media at the named size, whose longer
 // side the purpose sets at px. A size core has not stored (the image is
 // smaller than it, or was stored before sizes existed) is the original.
+//
+// With AddressCloudflare, every size is a Cloudflare transformation of the
+// original that fits it in a px square without enlarging it, sized from
+// the Media's recorded size when core knows it. An original whose key is
+// already an absolute address stays itself.
 func (a Addresses) Image(m Media, size string, px int) ImageAddress {
+	if a.Mode == AddressCloudflare && !isAbsoluteURL(m.Key) {
+		w, h := fittedSize(m.Width, m.Height, px)
+		options := fmt.Sprintf("width=%d,height=%d,fit=scale-down", px, px)
+		return ImageAddress{URL: a.Object("cdn-cgi/image/" + options + "/" + strings.TrimLeft(m.Key, "/")), Width: w, Height: h}
+	}
 	if stored, ok := m.StoredVariants[size]; ok {
 		return ImageAddress{URL: a.Object(variantKey(m.Key, size)), Width: stored.Width, Height: stored.Height}
 	}

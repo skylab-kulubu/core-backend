@@ -82,6 +82,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	imageAddressMode, err := media.ImageAddressModeFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	mediaPurgeConfig, err := media.BlobPurgeConfigFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -383,6 +387,7 @@ func main() {
 		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
 			UploadStagingGrace: uploadStagingConfig.Grace,
 			Catalogue:          mediaPurposes,
+			ImageAddressMode:   imageAddressMode,
 		}),
 		URLs:                   urlSvc,
 		Certificates:           certSvc,
