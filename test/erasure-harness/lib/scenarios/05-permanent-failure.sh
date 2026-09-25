@@ -95,6 +95,9 @@ retry_until_completed() {
   check "Account Center's retry answered 200 with the request back in the queue" \
     grep -Eqx '200/(pending|processing|completed)' <<<"$HTTP_STATUS/$(jq -r .status <<<"$HTTP_BODY" 2>/dev/null)"
   check 'request completes after the retry' wait_until 90 2 request_is "$1" completed
+  ac_bff_status
+  check "Account Center's status page shows the completed request ($(jq -r '.status + " updatedAt=" + .updatedAt' <<<"$HTTP_BODY" 2>/dev/null))" \
+    eq "$HTTP_STATUS/$(jq -r .status <<<"$HTTP_BODY" 2>/dev/null)" 200/completed
   check 'all nine steps are checkpointed' eq "$(pg super_skylab "SELECT count(*) FROM account_deletion_steps WHERE request_id = '$1'")" 9
   check 'the retry did not call SkyMail or Forms again (one receipt, one Forms PUT)' \
     eq "$(pg skymail "SELECT count(*) FROM account_erasure_receipts WHERE request_id = '$1'")/$(curl -s "http://forms:9090/harness/stats/$1" | jq -r .puts)" 1/1

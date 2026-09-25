@@ -55,6 +55,9 @@ scenario_7() {
   check 'the new secret gets a token' eq "$(token_status_with "$new")" '200 ok'
   log "  waiting for the deferred attempt (up to 5 minutes)"
   check 'request completes after the window' wait_until 420 5 request_is "$DEL_REQUEST" completed
+  ac_bff_status
+  check "Account Center's status page shows the completed request ($(jq -r '.status + " updatedAt=" + .updatedAt' <<<"$HTTP_BODY" 2>/dev/null))" \
+    eq "$HTTP_STATUS/$(jq -r .status <<<"$HTTP_BODY" 2>/dev/null)" 200/completed
   check 'all nine steps are checkpointed' eq "$(pg super_skylab "SELECT count(*) FROM account_deletion_steps WHERE request_id = '$DEL_REQUEST'")" 9
   check 'only the completing pass is counted (attempt_count 1)' eq "$(request_field "$DEL_REQUEST" attempt_count)" 1
   check 'Keycloak user deleted (404)' eq "$(kc_user_status "$subject")" 404

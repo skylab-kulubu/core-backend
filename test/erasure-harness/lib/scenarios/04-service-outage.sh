@@ -45,6 +45,9 @@ scenario_4() {
   check 'SkyMail is back' wait_until 120 3 service_ready http://skymail:3000/ready
   log "  waiting for the next deferred attempt (up to 5 minutes)"
   check 'request completes once SkyMail is back' wait_until 420 5 request_is "$DEL_REQUEST" completed
+  ac_bff_status
+  check "Account Center's status page shows the completed request ($(jq -r '.status + " updatedAt=" + .updatedAt' <<<"$HTTP_BODY" 2>/dev/null))" \
+    eq "$HTTP_STATUS/$(jq -r .status <<<"$HTTP_BODY" 2>/dev/null)" 200/completed
   check 'all nine steps are checkpointed' eq "$(pg super_skylab "SELECT count(*) FROM account_deletion_steps WHERE request_id = '$DEL_REQUEST'")" 9
   check 'SkyMail receipt written' eq "$(pg skymail "SELECT count(*) FROM account_erasure_receipts WHERE request_id = '$DEL_REQUEST'")" 1
   # Every claim counts one attempt and a deferral refunds it: after two deferred passes and the
