@@ -144,6 +144,7 @@ func stripJPEG(b []byte) []byte {
 	}
 	out := []byte{0xFF, 0xD8}
 	pos := 2
+	keptOrientation := false
 	for pos+4 <= len(b) {
 		if b[pos] != 0xFF {
 			break
@@ -160,6 +161,14 @@ func stripJPEG(b []byte) []byte {
 		drop := marker == 0xE1 || marker == 0xED || marker == 0xFE
 		if !drop {
 			out = append(out, b[pos:pos+segTotal]...)
+		}
+		if marker == 0xE1 && !keptOrientation {
+			// EXIF goes, but its Orientation stays: without it a phone
+			// photo shows sideways.
+			if o, ok := exifOrientation(b[pos+4 : pos+segTotal]); ok && o != 1 {
+				out = append(out, orientationSegment(o)...)
+				keptOrientation = true
+			}
 		}
 		pos += segTotal
 	}

@@ -121,3 +121,20 @@ func orient(img image.Image, orientation int) image.Image {
 	}
 	return dst
 }
+
+// orientationSegment is a JPEG APP1 segment whose EXIF holds only the
+// Orientation tag: what metadata stripping keeps of a photo's EXIF, so a
+// browser still shows it upright.
+func orientationSegment(orientation int) []byte {
+	payload := []byte("Exif\x00\x00MM\x00*\x00\x00\x00\x08")
+	payload = binary.BigEndian.AppendUint16(payload, 1)
+	payload = binary.BigEndian.AppendUint16(payload, exifOrientationTag)
+	payload = binary.BigEndian.AppendUint16(payload, 3) // SHORT
+	payload = binary.BigEndian.AppendUint32(payload, 1)
+	payload = binary.BigEndian.AppendUint16(payload, uint16(orientation))
+	payload = binary.BigEndian.AppendUint16(payload, 0)
+	payload = binary.BigEndian.AppendUint32(payload, 0) // no next IFD
+	segment := []byte{0xFF, 0xE1}
+	segment = binary.BigEndian.AppendUint16(segment, uint16(len(payload)+2))
+	return append(segment, payload...)
+}

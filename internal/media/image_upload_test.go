@@ -302,3 +302,34 @@ func TestService_PurposeTurnsAPhotoUprightByItsOrientation(t *testing.T) {
 		}
 	}
 }
+
+// Media uploaded without a purpose keep their bytes apart from the stripped
+// metadata. The Orientation tag stays, alone, so a browser still shows a
+// phone photo upright.
+func TestService_LegacyUploadKeepsOnlyTheOrientationOfAPhoto(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	p := signedIn("67676767-6767-6767-6767-676767676767")
+	exif := append(orientationEXIF(6), []byte("GPS-SECRET")...)
+
+	created, err := svc.Upload(context.Background(), p, "phone.jpg", "image/jpeg", withJPEGSegment(cornerJPEG(t), 0xE1, exif))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := blobs.Get(created.Key)
+	if bytes.Contains(stored, []byte("GPS-SECRET")) {
+		t.Fatal("the stored photo keeps the rest of its EXIF")
+	}
+	onlyOrientation := append([]byte{0xFF, 0xE1, 0x00, 0x22}, orientationEXIF(6)...)
+	if !bytes.Contains(stored, onlyOrientation) {
+		t.Fatalf("the stored photo lost its orientation: % x", stored[:min(len(stored), 64)])
+	}
+
+	upright, err := svc.Upload(context.Background(), p, "upright.jpg", "image/jpeg", withJPEGSegment(cornerJPEG(t), 0xE1, append(orientationEXIF(1), []byte("GPS-SECRET")...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ := blobs.Get(upright.Key); bytes.Contains(stored, []byte("Exif")) {
+		t.Fatal("an upright photo keeps an EXIF segment")
+	}
+}
