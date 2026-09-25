@@ -17,6 +17,7 @@ type MemoryStore struct {
 	byID                map[uuid.UUID]User
 	deletionRequests    map[uuid.UUID]DeletionRequest
 	deletionSteps       map[uuid.UUID]map[DeletionStep]time.Time
+	deletionStepCounts  map[uuid.UUID]map[DeletionStep]map[string]int64
 	selfDeletionIntakes map[uuid.UUID]SelfDeletionRecord
 }
 
@@ -25,6 +26,7 @@ func NewMemoryStore() *MemoryStore {
 		byID:                make(map[uuid.UUID]User),
 		deletionRequests:    make(map[uuid.UUID]DeletionRequest),
 		deletionSteps:       make(map[uuid.UUID]map[DeletionStep]time.Time),
+		deletionStepCounts:  make(map[uuid.UUID]map[DeletionStep]map[string]int64),
 		selfDeletionIntakes: make(map[uuid.UUID]SelfDeletionRecord),
 	}
 }
