@@ -24,15 +24,10 @@ func NewMemoryStore() *MemoryStore {
 func (s *MemoryStore) Create(_ context.Context, m Media) (Media, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if m.ID == uuid.Nil {
-		m.ID = uuid.New()
-	}
+	m = newRecord(m)
 	now := time.Now().UTC()
 	m.CreatedAt = now
 	m.UpdatedAt = now
-	if m.CoverColors == nil {
-		m.CoverColors = []string{}
-	}
 	s.byID[m.ID] = m
 	return m, nil
 }

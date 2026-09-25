@@ -442,6 +442,10 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		) = 2
 		AND to_regclass('public.media_serving_policy_pending_idx') IS NOT NULL
 		AND to_regclass('public.certificate_template_versions_asset_serving_pending_idx') IS NOT NULL`,
+	20260926090000: `
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'media' AND column_name = 'purpose'
+		  AND data_type = 'text' AND is_nullable = 'NO' AND column_default = '''legacy''::text'`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

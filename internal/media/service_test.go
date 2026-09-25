@@ -467,3 +467,21 @@ func TestService_UploadServesRasterImagesAndPDFsInline(t *testing.T) {
 		}
 	}
 }
+
+func TestService_UploadWithoutPurposeIsLegacy(t *testing.T) {
+	t.Parallel()
+	svc, _ := setup(t)
+	p := authz.Principal{ID: uuid.MustParse("40404040-4040-4040-4040-404040404040").String()}
+
+	created, err := svc.Upload(context.Background(), p, "page.html", "text/html", []byte("<html></html>"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Purpose != media.PurposeLegacy || got.Purpose != media.PurposeLegacy {
+		t.Fatalf("created purpose %q, stored purpose %q", created.Purpose, got.Purpose)
+	}
+}

@@ -53,6 +53,9 @@ type Resource struct {
 	OwnerID      string
 	DoorStaffIDs []string
 	TeamDoorScan bool
+	// MediaUploader is the upload rule of a Media purpose, for Upload on
+	// TypeMedia. Empty is MediaUploaderAuthenticated.
+	MediaUploader MediaUploader
 }
 
 type Policy struct {
@@ -78,4 +81,30 @@ func DefaultPolicy() Policy {
 			},
 		},
 	}
+}
+
+// MediaUploader is who may upload Media of a Media purpose. The Media purpose
+// catalogue names one for every purpose; every rule needs a signed-in caller.
+type MediaUploader string
+
+const (
+	// MediaUploaderAuthenticated is any signed-in person.
+	MediaUploaderAuthenticated MediaUploader = "authenticated"
+	// MediaUploaderEventEditor is a person who may create an Event for at
+	// least one Owner team: the Event create decision, _default fallback
+	// included. Which Event the Media ends up on is checked when it is linked.
+	MediaUploaderEventEditor MediaUploader = "event_editor"
+	// MediaUploaderCertificateTemplateEditor is a person who may create a
+	// certificate template for at least one Owner team: the certificate
+	// template create decision.
+	MediaUploaderCertificateTemplateEditor MediaUploader = "certificate_template_editor"
+	// MediaUploaderServiceOnly is no person: only the owning product's service
+	// identity may start such an upload.
+	MediaUploaderServiceOnly MediaUploader = "service_only"
+)
+
+// Known reports whether u is a rule the authorizer decides.
+func (u MediaUploader) Known() bool {
+	_, ok := mediaUploaders[u]
+	return ok
 }

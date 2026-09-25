@@ -1,0 +1,4 @@
+# The Media purpose catalogue and the hard ceilings no entry can loosen
+# (ADR-0052). A change to either widens what users can store; it is reviewed.
+/config/media-purposes.json @yustyy @fatiihnaz
+/internal/media/ceilings.go @yustyy @fatiihnaz

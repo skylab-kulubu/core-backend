@@ -72,6 +72,12 @@ func main() {
 	competitors := competitor.NewPostgresStore(pool)
 	certs := certificate.NewPostgresStore(pool)
 	mediaStore := media.NewPostgresStore(pool)
+	// A catalogue that breaks a hard ceiling fails the deploy here, not an
+	// upload later.
+	mediaPurposes, err := media.LoadCatalogue()
+	if err != nil {
+		log.Fatal(err)
+	}
 	blobs, cdnBase, err := media.BlobAndCDN(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -363,6 +369,7 @@ func main() {
 		Competitors: competitor.NewService(competitors, events, az),
 		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
 			UploadStagingGrace: uploadStagingConfig.Grace,
+			Catalogue:          mediaPurposes,
 		}),
 		URLs:                   shorturl.NewService(urlStore, az),
 		Certificates:           certSvc,

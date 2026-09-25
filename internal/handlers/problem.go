@@ -27,6 +27,12 @@ func problemCode(c fiber.Ctx, status int, title, code string) error {
 }
 
 func problemDetailCode(c fiber.Ctx, status int, title, detail, code string) error {
+	return problemWithFields(c, status, title, detail, code, nil)
+}
+
+// problemWithFields adds extension members (RFC 9457 §3.2) that tell the
+// caller how to fix the request. They never replace the standard members.
+func problemWithFields(c fiber.Ctx, status int, title, detail, code string, fields fiber.Map) error {
 	instance := c.Path()
 	if u := c.Request().URI(); u != nil {
 		path := string(u.Path())
@@ -37,13 +43,15 @@ func problemDetailCode(c fiber.Ctx, status int, title, detail, code string) erro
 			}
 		}
 	}
-	body := fiber.Map{
-		"type":     "about:blank",
-		"title":    title,
-		"status":   status,
-		"detail":   detail,
-		"instance": instance,
+	body := fiber.Map{}
+	for name, value := range fields {
+		body[name] = value
 	}
+	body["type"] = "about:blank"
+	body["title"] = title
+	body["status"] = status
+	body["detail"] = detail
+	body["instance"] = instance
 	if code != "" {
 		body["code"] = code
 	}
