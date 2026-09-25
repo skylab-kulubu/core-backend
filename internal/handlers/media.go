@@ -38,8 +38,12 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 			"The file's content is not a type this purpose accepts.", "media_type_not_allowed", fields)
 	case errors.Is(err, media.ErrTooLarge):
 		fields["maxBytes"] = refusal.MaxBytes
-		return true, problemWithFields(c, fiber.StatusRequestEntityTooLarge, "Content Too Large",
-			"The file is larger than this purpose allows.", "media_too_large", fields)
+		detail := "The file is larger than this purpose allows."
+		if refusal.MaxPixels > 0 {
+			fields["maxPixels"] = refusal.MaxPixels
+			detail = "The image has more pixels than core decodes."
+		}
+		return true, problemWithFields(c, fiber.StatusRequestEntityTooLarge, "Content Too Large", detail, "media_too_large", fields)
 	case errors.Is(err, media.ErrPurposeForbidden):
 		return true, problemWithFields(c, fiber.StatusForbidden, "Forbidden",
 			"The caller may not upload Media for this purpose.", "purpose_forbidden", fields)
@@ -147,14 +151,17 @@ func (h *MediaHandler) Get(c fiber.Ctx) error {
 // enough to render it, nothing about who uploaded it or what they named it.
 // Until Media purpose ships, Answer files are still Media on this route.
 type publicMedia struct {
-	ID          uuid.UUID `json:"id"`
-	Type        string    `json:"type"`
-	URL         string    `json:"url"`
-	Size        int64     `json:"size"`
-	Kind        string    `json:"kind"`
-	CoverColors []string  `json:"coverColors"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID          uuid.UUID                     `json:"id"`
+	Type        string                        `json:"type"`
+	URL         string                        `json:"url"`
+	Size        int64                         `json:"size"`
+	Kind        string                        `json:"kind"`
+	Width       int                           `json:"width,omitempty"`
+	Height      int                           `json:"height,omitempty"`
+	Variants    map[string]media.ImageAddress `json:"variants,omitempty"`
+	CoverColors []string                      `json:"coverColors"`
+	CreatedAt   time.Time                     `json:"createdAt"`
+	UpdatedAt   time.Time                     `json:"updatedAt"`
 }
 
 func publicMediaView(m media.Media) publicMedia {
@@ -164,6 +171,9 @@ func publicMediaView(m media.Media) publicMedia {
 		URL:         m.URL,
 		Size:        m.Size,
 		Kind:        m.Kind,
+		Width:       m.Width,
+		Height:      m.Height,
+		Variants:    m.Variants,
 		CoverColors: m.CoverColors,
 		CreatedAt:   m.CreatedAt,
 		UpdatedAt:   m.UpdatedAt,
