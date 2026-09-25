@@ -121,6 +121,26 @@ func TestService_EnsureKeepsSchoolEmailWhenClaimEmpty(t *testing.T) {
 	}
 }
 
+// Account Center's access token carries no e-mail claim; a request made with it
+// must not erase the address a token with the claim stored earlier.
+func TestService_EnsureKeepsEmailWhenClaimEmpty(t *testing.T) {
+	t.Parallel()
+	svc := NewService(NewMemoryStore())
+	id := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	ctx := context.Background()
+
+	if _, _, err := svc.Ensure(ctx, id, Profile{Email: "a@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := svc.Ensure(ctx, id, Profile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Email != "a@example.com" {
+		t.Fatalf("wiped email: %+v", second)
+	}
+}
+
 func TestService_EnsureConcurrentSameID(t *testing.T) {
 	t.Parallel()
 
