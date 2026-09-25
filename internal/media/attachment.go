@@ -28,15 +28,17 @@ const (
 // database sets it when it detaches a Media.
 const DetachedRetention = 30 * 24 * time.Hour
 
-// rolePurposes are the Media purposes each role accepts.
+// rolePurposes are the Media purposes each role accepts. The two Event
+// purposes fit both Event roles: the organizer's picker offers every photo of
+// the team's Events for the cover and the gallery alike.
 //
 // Transition rule: a legacy Media fits every role, as any Media could be
 // linked anywhere before Media purpose. superadmin, Skyforms and CMS still
 // upload without a purpose; the rule ends when they send one (media redesign
 // tickets 09 and 15).
 var rolePurposes = map[Role][]string{
-	RoleEventCover:       {PurposeEventCover},
-	RoleEventGallery:     {PurposeEventGallery},
+	RoleEventCover:       {PurposeEventCover, PurposeEventGallery},
+	RoleEventGallery:     {PurposeEventGallery, PurposeEventCover},
 	RoleProfilePicture:   {PurposeProfilePicture},
 	RoleCertificateAsset: {PurposeCertificateAsset},
 }

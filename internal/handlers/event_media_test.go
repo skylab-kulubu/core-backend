@@ -90,15 +90,43 @@ func (f eventMediaFixture) createEvent(t *testing.T, team, coverID string) uploa
 func TestEventCoverRefusesMediaOfAnotherPurposeHTTP(t *testing.T) {
 	t.Parallel()
 	f := newEventMediaFixture(t)
-	bylaws := f.upload(t, "cms_file", "bylaws.pdf", []byte("%PDF-1.7\n"))
+	portrait := f.upload(t, "profile_picture", "me.png", pngDotHTTP())
+	// A PDF a CMS page uses (attached by the CMS once it can).
+	bylaws, err := f.store.Create(t.Context(), media.Media{
+		Name: "bylaws.pdf", Type: "application/pdf", Kind: media.KindFile, Key: "files/bylaws",
+		UploadedBy: uuid.New(), Purpose: "cms_file",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	resp := f.createEvent(t, "WEBLAB", bylaws.ID.String())
-	requireProblem(t, resp, fiber.StatusUnprocessableEntity, "media_purpose_mismatch")
-	if resp.body["mediaId"] != bylaws.ID.String() || resp.body["role"] != "event_cover" || resp.body["purpose"] != "cms_file" {
-		t.Fatalf("problem %v", resp.body)
+	for _, refused := range []media.Media{portrait, bylaws} {
+		resp := f.createEvent(t, "WEBLAB", refused.ID.String())
+		requireProblem(t, resp, fiber.StatusUnprocessableEntity, "media_purpose_mismatch")
+		if resp.body["mediaId"] != refused.ID.String() || resp.body["role"] != "event_cover" || resp.body["purpose"] != refused.Purpose {
+			t.Fatalf("problem %v", resp.body)
+		}
 	}
 	if events, _ := f.events.List(t.Context(), "", false); len(events) != 0 {
 		t.Fatalf("refused Event was stored: %+v", events)
+	}
+}
+
+// The organizer's picker offers every photo of the team's Events for both
+// slots: an Event photo fits the cover and the gallery alike.
+func TestEventPhotosFitBothCoverAndGalleryHTTP(t *testing.T) {
+	t.Parallel()
+	f := newEventMediaFixture(t)
+	galleryPhoto := f.upload(t, "event_gallery", "photo.png", pngDotHTTP())
+	coverPhoto := f.upload(t, "event_cover", "cover.png", pngDotHTTP())
+
+	created := f.createEvent(t, "WEBLAB", galleryPhoto.ID.String())
+	if created.status != fiber.StatusCreated {
+		t.Fatalf("gallery photo as cover: status %d body %v", created.status, created.body)
+	}
+	resp := f.send(t, fiber.MethodPost, "/v1/events/"+created.body["id"].(string)+"/images", `["`+coverPhoto.ID.String()+`"]`)
+	if resp.status != fiber.StatusOK {
+		t.Fatalf("cover photo in the gallery: status %d body %v", resp.status, resp.body)
 	}
 }
 
