@@ -78,7 +78,11 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 		SELECT $1, $2, $3, $4, $5, $6, $7
 		WHERE NOT EXISTS (SELECT 1 FROM account_deletion_requests WHERE subject_id = $1)
 		ON CONFLICT (id) DO UPDATE SET
-			email = excluded.email,
+			-- Account Center's token carries no e-mail claim; keep the stored address.
+			email = CASE
+				WHEN excluded.email <> '' THEN excluded.email
+				ELSE users.email
+			END,
 			first_name = users.first_name,
 			last_name = users.last_name,
 			username = CASE
