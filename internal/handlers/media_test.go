@@ -274,3 +274,71 @@ func TestMediaLifecycleHTTP(t *testing.T) {
 	}
 	requireStatus(t, manager, fiber.MethodPost, pendingPath+"/restore", fiber.StatusConflict)
 }
+
+func uploadPNGHTTP(t *testing.T, app *fiber.App, filename string) media.Media {
+	t.Helper()
+	body, ctype := multipartPNG(t, "file", filename, pngDotHTTP())
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/media", body)
+	req.Header.Set("Content-Type", ctype)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("upload status %d body %s", resp.StatusCode, b)
+	}
+	var created media.Media
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	return created
+}
+
+func getMediaJSON(t *testing.T, app *fiber.App, id uuid.UUID) map[string]any {
+	t.Helper()
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/media/"+id.String(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("get status %d", resp.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func TestMediaGetHidesUploaderAndNameFromAnonymousCallersHTTP(t *testing.T) {
+	t.Parallel()
+	store := media.NewMemoryStore()
+	blobs := media.NewMemoryBlob()
+	uploader := authn.Identity{ID: uuid.MustParse("12121212-1212-1212-1212-121212121212")}
+	created := uploadPNGHTTP(t, mediaApp(t, uploader, store, blobs), "Ayşe Yılmaz - CV.png")
+
+	got := getMediaJSON(t, mediaApp(t, authn.Identity{}, store, blobs), created.ID)
+	for _, hidden := range []string{"uploadedBy", "deletedBy", "name"} {
+		if _, ok := got[hidden]; ok {
+			t.Errorf("anonymous response carries %q: %v", hidden, got)
+		}
+	}
+	if got["id"] != created.ID.String() || got["url"] != created.URL || got["type"] != "image/png" {
+		t.Fatalf("anonymous response %v", got)
+	}
+}
+
+func TestMediaGetKeepsUploaderAndNameForSignedInCallersHTTP(t *testing.T) {
+	t.Parallel()
+	store := media.NewMemoryStore()
+	blobs := media.NewMemoryBlob()
+	uploader := authn.Identity{ID: uuid.MustParse("13131313-1313-1313-1313-131313131313")}
+	created := uploadPNGHTTP(t, mediaApp(t, uploader, store, blobs), "Ayşe Yılmaz - CV.png")
+
+	reviewer := authn.Identity{ID: uuid.MustParse("14141414-1414-1414-1414-141414141414")}
+	got := getMediaJSON(t, mediaApp(t, reviewer, store, blobs), created.ID)
+	if got["uploadedBy"] != uploader.ID.String() || got["name"] != "Ayşe Yılmaz - CV.png" {
+		t.Fatalf("signed-in response %v", got)
+	}
+}

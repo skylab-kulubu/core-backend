@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"io"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -71,7 +72,37 @@ func (h *MediaHandler) Get(c fiber.Ctx) error {
 	if err != nil {
 		return mediaError(c, err)
 	}
+	if _, callerErr := caller(c); callerErr != nil {
+		return c.JSON(publicMediaView(got))
+	}
 	return c.JSON(got)
+}
+
+// publicMedia is what a caller without a token sees of a media record:
+// enough to render it, nothing about who uploaded it or what they named it.
+// A form applicant's CV is a media record too.
+type publicMedia struct {
+	ID          uuid.UUID `json:"id"`
+	Type        string    `json:"type"`
+	URL         string    `json:"url"`
+	Size        int64     `json:"size"`
+	Kind        string    `json:"kind"`
+	CoverColors []string  `json:"coverColors"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+func publicMediaView(m media.Media) publicMedia {
+	return publicMedia{
+		ID:          m.ID,
+		Type:        m.Type,
+		URL:         m.URL,
+		Size:        m.Size,
+		Kind:        m.Kind,
+		CoverColors: m.CoverColors,
+		CreatedAt:   m.CreatedAt,
+		UpdatedAt:   m.UpdatedAt,
+	}
 }
 
 func (h *MediaHandler) List(c fiber.Ctx) error {
