@@ -56,6 +56,10 @@ func identityError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusConflict, "Conflict")
 	case errors.Is(err, user.ErrAccountBlocked):
 		return problem(c, fiber.StatusConflict, "Conflict")
+	case errors.Is(err, user.ErrYTUManaged):
+		// Admins do not override the YTÜ values either: the person's next
+		// YTÜ login would silently put them back.
+		return problemCode(c, fiber.StatusConflict, "Conflict", ytuManagedCode)
 	case errors.Is(err, user.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
 	default:

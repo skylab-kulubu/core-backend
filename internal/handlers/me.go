@@ -45,6 +45,8 @@ func meError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusNotFound, "Not Found")
 	case errors.Is(err, user.ErrInvalid), errors.Is(err, media.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	case errors.Is(err, user.ErrYTUManaged):
+		return problemCode(c, fiber.StatusConflict, "Conflict", ytuManagedCode)
 	case errors.Is(err, media.ErrForbidden):
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, user.ErrAccountBlocked):
@@ -62,10 +64,20 @@ func meError(c fiber.Ctx, err error) error {
 // payload that carries phone (read-only in Account center until phone
 // verification exists); the domain struct keeps `json:"-"` so admin cards,
 // rosters, search results, SkyPass and ticket payloads never pick it up.
+//
+// ytuLinked tells the caller that university, faculty and department follow
+// the YTÜ Microsoft login and are read-only (an edit that changes them is
+// refused with 409 `ytu_managed_field`). It is always present so a client
+// never mistakes an older core for a non-YTÜ person.
 type meUser struct {
 	user.User
-	Phone string `json:"phone,omitempty"`
+	Phone     string `json:"phone,omitempty"`
+	YTULinked bool   `json:"ytuLinked"`
 }
+
+// ytuManagedCode is the problem code for an edit that would change a
+// university, faculty or department that follows the YTÜ login.
+const ytuManagedCode = "ytu_managed_field"
 
 func (h *MeHandler) GetMe(c fiber.Ctx) error {
 	u, ok := c.Locals(authn.LocalsUser).(user.User)
@@ -205,5 +217,5 @@ func (h *MeHandler) DeleteProfilePicture(c fiber.Ctx) error {
 func meView(u user.User) meUser {
 	u.ProfilePictureURL = media.PublicURL("", u.ProfilePictureURL)
 	u.StudentCardLinked = u.StudentCardUID != ""
-	return meUser{User: u, Phone: u.Phone}
+	return meUser{User: u, Phone: u.Phone, YTULinked: u.YTULinked}
 }

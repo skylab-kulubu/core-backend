@@ -14,6 +14,7 @@ import (
 
 	"github.com/Nerzal/gocloak/v13"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 type KeycloakConfig struct {
@@ -422,6 +423,67 @@ func (k *Keycloak) ListUsers(ctx context.Context) ([]Person, error) {
 			return out, nil
 		}
 		first += len(chunks)
+	}
+}
+
+// YTUAttributes reads the `university` and `department` attributes of every
+// account that carries a university, for the one-time YTÜ profile backfill.
+// It only reads (view-users is enough) and pages through the realm.
+func (k *Keycloak) YTUAttributes(ctx context.Context) ([]user.YTUAttributes, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]user.YTUAttributes, 0)
+	const pageSize = 100
+	client := &http.Client{Timeout: 60 * time.Second}
+	for first := 0; ; first += pageSize {
+		u := k.base + "/admin/realms/" + url.PathEscape(k.realm) + "/users?first=" + strconv.Itoa(first) +
+			"&max=" + strconv.Itoa(pageSize) + "&briefRepresentation=false"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 400 {
+			return nil, mapKCErr(&gocloak.APIError{Code: resp.StatusCode, Message: http.StatusText(resp.StatusCode)})
+		}
+		var rows []struct {
+			ID         string              `json:"id"`
+			Attributes map[string][]string `json:"attributes"`
+		}
+		if err := json.Unmarshal(body, &rows); err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			id, err := uuid.Parse(row.ID)
+			if err != nil {
+				continue
+			}
+			attr := func(name string) string {
+				for _, v := range row.Attributes[name] {
+					if strings.TrimSpace(v) != "" {
+						return v
+					}
+				}
+				return ""
+			}
+			if university := attr("university"); university != "" {
+				out = append(out, user.YTUAttributes{ID: id, University: university, Department: attr("department")})
+			}
+		}
+		if len(rows) < pageSize {
+			return out, nil
+		}
 	}
 }
 
