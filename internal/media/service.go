@@ -92,10 +92,22 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 // storedFile is what an uploaded file becomes once its purpose's rules
 // accept it.
 type storedFile struct {
-	body      []byte
-	ctype     string
-	kind      string
-	keyPrefix string
+	body          []byte
+	ctype         string
+	kind          string
+	keyPrefix     string
+	width, height int
+	// variants are the image's stored sizes, written beside it.
+	variants []encodedVariant
+}
+
+// storedSizes is how the variants are recorded on the Media: nil for a file
+// that is not a re-encoded image.
+func (f storedFile) storedSizes() map[string]ImageSize {
+	if f.variants == nil {
+		return nil
+	}
+	return reencodedImage{variants: f.variants}.storedSizes()
 }
 
 func (s *service) UploadForPurpose(ctx context.Context, p authz.Principal, purposeName string, file UploadedFile) (Media, error) {
@@ -158,6 +170,11 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if err := s.blobs.Put(operationCtx, key, stored.body, serving); err != nil {
 		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
 	}
+	for _, variant := range stored.variants {
+		if err := s.blobs.Put(operationCtx, variantKey(key, variant.size), variant.body, serving); err != nil {
+			return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
+		}
+	}
 	colors := []string{}
 	colorsComputed := false
 	if stored.kind == KindImage {
@@ -170,6 +187,9 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		Size:                int64(len(stored.body)),
 		UploadedBy:          uploadedBy,
 		Kind:                stored.kind,
+		Width:               stored.width,
+		Height:              stored.height,
+		StoredVariants:      stored.storedSizes(),
 		Purpose:             purpose.Name,
 		ExpiresAt:           pendingExpiry(purpose, time.Now().UTC()),
 		Key:                 key,
@@ -252,6 +272,22 @@ func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
 	}
 	if detected == pdfType {
 		return storedFile{body: data, ctype: pdfType, kind: KindFile, keyPrefix: "files/"}, nil
+	}
+	if purpose.Image.Reencode {
+		img, err := reencodeRaster(data, purpose.Image)
+		var tooMany errTooManyPixels
+		if errors.As(err, &tooMany) {
+			return storedFile{}, &PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: purpose.MaxBytes, MaxPixels: tooMany.limit}
+		}
+		if errors.Is(err, ErrInvalid) {
+			// The content starts like an accepted type but is not a valid
+			// image of it.
+			return storedFile{}, &PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: purpose.Name, AllowedTypes: purpose.Types}
+		}
+		if err != nil {
+			return storedFile{}, err
+		}
+		return storedFile{body: img.body, ctype: img.ctype, kind: KindImage, keyPrefix: "images/", width: img.width, height: img.height, variants: img.variants}, nil
 	}
 	clean, ctype, err := sanitizeImage(data)
 	if err != nil {
@@ -360,14 +396,14 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 }
 
 func (s *service) withURL(m Media) Media {
+	m.Variants = nil
 	if m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil {
 		m.URL = ""
 		return m
 	}
-	if strings.TrimSpace(s.publicBase) == "" {
-		m.URL = m.Key
-		return m
-	}
-	m.URL = PublicURL(s.publicBase, m.Key)
+	addresses := Addresses{Base: s.publicBase}
+	m.URL = addresses.Object(m.Key)
+	purpose, _ := s.catalogue.Lookup(m.Purpose)
+	m.Variants = addresses.imageAddresses(m, purpose.Image.Variants)
 	return m
 }

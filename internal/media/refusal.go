@@ -33,6 +33,9 @@ type PurposeRefusal struct {
 	AllowedTypes []string
 	// MaxBytes is the purpose's maximum size, with ErrTooLarge.
 	MaxBytes int64
+	// MaxPixels is the most pixels core decodes in an image like this one,
+	// with ErrTooLarge for an image that has more.
+	MaxPixels int64
 }
 
 func (r *PurposeRefusal) Error() string {

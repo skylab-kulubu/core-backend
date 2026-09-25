@@ -26,6 +26,20 @@ type Media struct {
 	Size       int64     `json:"size"`
 	UploadedBy uuid.UUID `json:"uploadedBy"`
 	Kind       string    `json:"kind"`
+	// Width and Height are an image's size in pixels as stored: after
+	// re-encoding for a purpose that re-encodes. Zero when unknown: not an
+	// image, or an image stored before core recorded sizes.
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
+	// Variants are the addresses of a raster image's sizes (SizeCard,
+	// SizePage), by size name: every size its purpose gives it. Built when
+	// the Media is returned, from the configured base.
+	Variants map[string]ImageAddress `json:"variants,omitempty"`
+	// StoredVariants are the sizes stored as objects beside the image, by
+	// size name: only those smaller than the image itself. Nil until core has
+	// made them: an image stored before sizes existed waits for the variant
+	// backfill.
+	StoredVariants map[string]ImageSize `json:"-"`
 	// Purpose is the Media purpose the file was uploaded for; legacy for
 	// Media uploaded without a purpose and for Media stored before purposes
 	// existed.
