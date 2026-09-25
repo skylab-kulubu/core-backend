@@ -60,7 +60,7 @@ func (r *R2) Put(ctx context.Context, key string, data []byte, meta BlobMetadata
 		Key:                aws.String(key),
 		Body:               bytes.NewReader(data),
 		ContentType:        aws.String(meta.ContentType),
-		ContentDisposition: optional(meta.ContentDisposition),
+		ContentDisposition: stringOrNil(meta.ContentDisposition),
 		ContentLength:      aws.Int64(int64(len(data))),
 	})
 	if err != nil {
@@ -83,7 +83,7 @@ func (r *R2) SetMetadata(ctx context.Context, key string, meta BlobMetadata) err
 		CopySource:         aws.String((&url.URL{Path: r.bucket + "/" + key}).EscapedPath()),
 		MetadataDirective:  types.MetadataDirectiveReplace,
 		ContentType:        aws.String(meta.ContentType),
-		ContentDisposition: optional(meta.ContentDisposition),
+		ContentDisposition: stringOrNil(meta.ContentDisposition),
 	})
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey" {
@@ -100,8 +100,8 @@ func (r *R2) Delete(ctx context.Context, key string) error {
 	return err
 }
 
-// optional leaves an empty header unset instead of sending it empty.
-func optional(value string) *string {
+// stringOrNil leaves an empty header unset instead of sending it empty.
+func stringOrNil(value string) *string {
 	if value == "" {
 		return nil
 	}

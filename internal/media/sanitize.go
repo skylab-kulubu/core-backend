@@ -30,26 +30,60 @@ var (
 	reSVGJS     = regexp.MustCompile(`(?i)javascript:`)
 )
 
+const (
+	svgType = "image/svg+xml"
+	pdfType = "application/pdf"
+)
+
+// rasterFormat is an image format Upload accepts as a raster image. The
+// serving policy serves every one of them inline, so a format added here
+// renders without touching the policy.
+type rasterFormat struct {
+	contentType string
+	detect      func([]byte) bool
+	strip       func([]byte) ([]byte, error)
+}
+
+var rasterFormats = []rasterFormat{
+	{contentType: "image/jpeg", detect: isJPEG, strip: func(b []byte) ([]byte, error) { return stripJPEG(b), nil }},
+	{contentType: "image/png", detect: isPNG, strip: func(b []byte) ([]byte, error) { return stripPNG(b), nil }},
+	{contentType: "image/webp", detect: isWebP, strip: stripWebP},
+	{contentType: "image/gif", detect: isGIF, strip: func(b []byte) ([]byte, error) { return stripGIF(b), nil }},
+}
+
+func isRasterType(contentType string) bool {
+	for _, format := range rasterFormats {
+		if format.contentType == contentType {
+			return true
+		}
+	}
+	return false
+}
+
+func isImage(data []byte) bool {
+	for _, format := range rasterFormats {
+		if format.detect(data) {
+			return true
+		}
+	}
+	return isSVG(data)
+}
+
 func sanitizeImage(data []byte) ([]byte, string, error) {
 	if len(data) == 0 {
 		return nil, "", ErrInvalid
 	}
-	switch {
-	case isJPEG(data):
-		return stripJPEG(data), "image/jpeg", nil
-	case isPNG(data):
-		return stripPNG(data), "image/png", nil
-	case isWebP(data):
-		out, err := stripWebP(data)
-		return out, "image/webp", err
-	case isGIF(data):
-		return stripGIF(data), "image/gif", nil
-	case isSVG(data):
-		out, err := sanitizeSVG(data)
-		return out, "image/svg+xml", err
-	default:
-		return nil, "", ErrInvalid
+	for _, format := range rasterFormats {
+		if format.detect(data) {
+			out, err := format.strip(data)
+			return out, format.contentType, err
+		}
 	}
+	if isSVG(data) {
+		out, err := sanitizeSVG(data)
+		return out, svgType, err
+	}
+	return nil, "", ErrInvalid
 }
 
 func isJPEG(b []byte) bool {
