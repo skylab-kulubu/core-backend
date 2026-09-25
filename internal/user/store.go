@@ -39,7 +39,10 @@ type Store interface {
 	SetStudentCardUID(ctx context.Context, id uuid.UUID, uid string) (User, error)
 	NextSkyNumber(ctx context.Context) (string, error)
 	RequestDeletion(ctx context.Context, id uuid.UUID, requestedBy *uuid.UUID) (DeletionRequest, error)
-	AnonymizeAccount(ctx context.Context, id uuid.UUID, at time.Time) error
+	// AnonymizeAccount erases core's personal data of the person. emails are
+	// the addresses the person holds outside core's row; with the row's own
+	// they select core's guest data to clear too.
+	AnonymizeAccount(ctx context.Context, id uuid.UUID, at time.Time, emails []string) error
 }
 
 type SkySync interface {

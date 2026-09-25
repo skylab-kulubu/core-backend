@@ -65,10 +65,47 @@ type serviceFailure struct {
 	err  error
 }
 
+// registryServices puts the configured steps in registry order and gives an
+// entry nobody configured a sender that refuses. Startup already refuses a
+// worker without every service URL (erasure.ConfigFromEnv); this keeps a
+// worker built any other way from treating a service as erased.
+func registryServices(configured ServiceErasure) ServiceErasure {
+	services := ServiceErasure{Addresses: configured.Addresses}
+	for _, entry := range erasure.Registry() {
+		step := ServiceStep{Step: entry.Step, Sender: unconfiguredService{step: entry.Step}}
+		for _, candidate := range configured.Steps {
+			if candidate.Step == entry.Step && candidate.Sender != nil {
+				step.Sender = candidate.Sender
+			}
+		}
+		services.Steps = append(services.Steps, step)
+	}
+	return services
+}
+
+// unconfiguredService stands for a registry entry the worker has no sender
+// for. It never calls anything.
+type unconfiguredService struct {
+	step user.DeletionStep
+}
+
+func (s unconfiguredService) Erase(context.Context, erasure.Command) (erasure.Result, error) {
+	return erasure.Result{}, notConfiguredError(s)
+}
+
+// notConfiguredError sends the request to manual intervention under
+// `erase_<service>_not_configured`.
+type notConfiguredError struct {
+	step user.DeletionStep
+}
+
+func (e notConfiguredError) Error() string         { return string(e.step) + ": service not configured" }
+func (e notConfiguredError) PermanentCode() string { return string(e.step) + "_not_configured" }
+
 // runServiceErasure runs one pass of the group. It returns nil when every
 // service step is checkpointed; otherwise it has already scheduled the retry
 // and returns that error.
-func (w *Worker) runServiceErasure(ctx context.Context, request user.DeletionRequest, leaseToken uuid.UUID, completed map[user.DeletionStep]bool, now time.Time, services *ServiceErasure) error {
+func (w *Worker) runServiceErasure(ctx context.Context, request user.DeletionRequest, leaseToken uuid.UUID, completed map[user.DeletionStep]bool, now time.Time, services *ServiceErasure, pass *erasurePass) error {
 	pending := make([]ServiceStep, 0, len(services.Steps))
 	for _, step := range services.Steps {
 		if !completed[step.Step] {
@@ -78,12 +115,15 @@ func (w *Worker) runServiceErasure(ctx context.Context, request user.DeletionReq
 	if len(pending) == 0 {
 		return nil
 	}
-	if services.Addresses == nil {
-		return w.retry(ctx, request, now, "erasure_addresses_failed", errors.New("erasure address source unavailable"), false)
+	// A service without a sender is refused before the addresses are read or
+	// any other service is called.
+	for _, step := range pending {
+		if unconfigured, ok := step.Sender.(unconfiguredService); ok {
+			err := notConfiguredError(unconfigured)
+			return w.retry(ctx, request, now, err.PermanentCode(), err, true)
+		}
 	}
-	addressCtx, cancel := context.WithTimeout(ctx, w.config.StepTimeout)
-	emails, err := services.Addresses.ErasureAddresses(addressCtx, request.SubjectID)
-	cancel()
+	emails, err := w.passAddresses(ctx, request, pass, services.Addresses)
 	if err != nil {
 		return w.retry(ctx, request, now, "erasure_addresses_failed", err, false)
 	}

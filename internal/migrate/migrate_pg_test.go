@@ -51,7 +51,7 @@ func TestAccountLifecycleDownRefusesToDropAntiResurrectionState(t *testing.T) {
 	if _, err := store.RequestDeletion(ctx, subjectID, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AnonymizeAccount(ctx, subjectID, time.Now().UTC()); err != nil {
+	if err := store.AnonymizeAccount(ctx, subjectID, time.Now().UTC(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE account_deletion_requests SET status='completed', completed_at=now() WHERE subject_id=$1`, subjectID); err != nil {

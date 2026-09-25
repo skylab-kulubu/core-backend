@@ -60,7 +60,7 @@ func TestRecordHitCannotRaceAccountAnonymizationAndRestoreAttribution(t *testing
 			deletionDone <- err
 			return
 		}
-		deletionDone <- users.AnonymizeAccount(ctx, subjectID, deletedAt)
+		deletionDone <- users.AnonymizeAccount(ctx, subjectID, deletedAt, nil)
 	}()
 	testpostgres.WaitForBlockedQuery(t, pool, "pg_advisory_xact_lock")
 

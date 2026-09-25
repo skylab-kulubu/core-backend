@@ -441,7 +441,9 @@ func (s *MemoryStore) RevokeSelfDeletionReceipt(_ context.Context, requestID uui
 	return nil
 }
 
-func (s *MemoryStore) AnonymizeAccount(_ context.Context, id uuid.UUID, at time.Time) error {
+// AnonymizeAccount erases the row. The memory store holds no guest tickets or
+// certificates, so emails select nothing here.
+func (s *MemoryStore) AnonymizeAccount(_ context.Context, id uuid.UUID, at time.Time, _ []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, ok := s.byID[id]

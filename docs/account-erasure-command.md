@@ -1,6 +1,6 @@
 # Account erasure command
 
-This is the canonical contract of the **Erasure command**: core's instruction to one service to erase one person's data for one deletion request (ADR-0051). SkyMail, CMS and Forms implement it and link here. Core's side (registry, configuration, retries, watchdog, completion proof) is in [`account-lifecycle.md`](account-lifecycle.md#service-erasure-framework).
+This is the canonical contract of the **Erasure command**: core's instruction to one service to erase one person's data for one deletion request (ADR-0051). SkyMail, CMS and Forms implement it and link here. Core's side (saga order, where the addresses come from, registry, configuration, retries, watchdog, completion proof) is in [`account-lifecycle.md`](account-lifecycle.md#service-erasure-steps).
 
 ## 1. Endpoint
 
@@ -63,6 +63,7 @@ Core takes the token from a separate Keycloak client, `core-erasure`.
 
 - **Client:** confidential, service account only (no other flow), `fullScopeAllowed=false`.
 - **Token request:** `grant_type=client_credentials`, `scope=openid account-erase-<service>`. Core caches the token per service until `exp − 30 s`. A failure of the token endpoint counts as transient.
+- **Token claims:** `azp=core-erasure`, the service's resource client in `aud`, its erase role in `resource_access`, and `sub` (the service account's), which the client's `basic` default scope adds. Core asks for no other scope.
 - **Why a separate client:** a token for one service must not carry another service's erase role. Otherwise the service that receives the token could replay it to another service and have it erase arbitrary addresses.
   - Core's own client (`core`) has `fullScopeAllowed` on. Turning it off would affect core's current tokens (SkyMail sends, Admin REST).
   - The precedent is Keycloak's mail client (`keycloak-mailer`, K5).

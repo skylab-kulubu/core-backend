@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -690,6 +691,51 @@ func (k *Keycloak) GetUser(ctx context.Context, id uuid.UUID) (Person, error) {
 		return Person{}, mapKCErr(err)
 	}
 	return personFrom(u)
+}
+
+// erasureAddressAttributes are the user attributes that hold an address of
+// the person besides the Primary e-mail (`email`): the School e-mail and the
+// Personal e-mail.
+var erasureAddressAttributes = []string{"schoolEmail", "personalEmail"}
+
+// UserAddresses reads, without changing anything, every address Keycloak holds
+// for the person: the Primary e-mail and the School and Personal e-mail
+// attributes, raw and without blanks. A user Keycloak does not know is
+// ErrNotFound.
+//
+// Account erasure sends these addresses to the services (ADR-0051), so no
+// error this returns names the subject or an address: the admin URL holds the
+// subject and a response body may hold anything.
+func (k *Keycloak) UserAddresses(ctx context.Context, id uuid.UUID) ([]string, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, errors.New("identity: user address lookup could not get an admin token")
+	}
+	u, err := k.gc.GetUserByID(ctx, token, k.realm, id.String())
+	if err != nil {
+		if mapKCErr(err) == ErrNotFound {
+			return nil, ErrNotFound
+		}
+		var api *gocloak.APIError
+		if errors.As(err, &api) && api != nil && api.Code != 0 {
+			return nil, fmt.Errorf("identity: user address lookup failed with status %d", api.Code)
+		}
+		return nil, errors.New("identity: user address lookup failed")
+	}
+	var addresses []string
+	if u.Email != nil && strings.TrimSpace(*u.Email) != "" {
+		addresses = append(addresses, *u.Email)
+	}
+	if u.Attributes != nil {
+		for _, name := range erasureAddressAttributes {
+			for _, value := range (*u.Attributes)[name] {
+				if strings.TrimSpace(value) != "" {
+					addresses = append(addresses, value)
+				}
+			}
+		}
+	}
+	return addresses, nil
 }
 
 func (k *Keycloak) DisableUser(ctx context.Context, id uuid.UUID) error {
