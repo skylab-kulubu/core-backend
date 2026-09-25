@@ -48,7 +48,7 @@ Errors use RFC 7807 (ADR-0010) and carry a fixed `code`. No response writes back
 | In progress | `202` + `Retry-After` | `{"request_id","status":"in_progress"}` | Repeats the same `PUT` later (deferred retry) |
 | Transient failure | `429`, `500`, `502`, `503`, `504`, timeout, connection failure | problem | Deferred retry |
 | Token refused | `401` | problem | Drops the cached token, ordinary retry (spends an attempt) |
-| Permanent failure | `400 invalid_erasure_command`, `403 erasure_forbidden`, `404` (no endpoint), `409 subject_not_blocked` | problem | The request goes to `manual_intervention` at once. The error code is `erase_<service>_rejected_<http>`, for example `erase_cms_rejected_403` |
+| Permanent failure | `400 invalid_erasure_command`, `403 erasure_forbidden`, `404` (no endpoint), `409 subject_not_blocked` | problem | The request goes to `manual_intervention` at once. The error code is `erase_<service>_rejected_<http>`, for example `erase_cms_rejected_403`. A `403` also drops the cached token, so the retry after the fix uses a new one |
 
 - **`counts`:** keys the service chooses, snake_case, non-negative integers, at most 32 keys. For example `{"recipients_deleted":1,"queue_rows_cleared":12,"actor_columns_replaced":3}`. No personal data.
 - **Deferred retry:** core's existing `RetryAt` path (`internal/account/worker.go`). The attempt is refunded.
