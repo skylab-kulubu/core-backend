@@ -138,3 +138,49 @@ func orientationSegment(orientation int) []byte {
 	segment = binary.BigEndian.AppendUint16(segment, uint16(len(payload)+2))
 	return append(segment, payload...)
 }
+
+// maxJPEGScans is the most scans core decodes in a JPEG. Encoders write one
+// (baseline) or about ten (progressive); a decoder walks the whole image
+// once per scan, and a scan can cost its sender a few bytes.
+const maxJPEGScans = 64
+
+// jpegScans counts the scans (SOS segments) of a JPEG, walking its
+// segments and skipping the entropy-coded data between them. It stops
+// counting past maxJPEGScans+1.
+func jpegScans(data []byte) int {
+	scans := 0
+	pos := 2
+	for pos+1 < len(data) && scans <= maxJPEGScans {
+		if data[pos] != 0xFF {
+			return scans
+		}
+		marker := data[pos+1]
+		switch {
+		case marker == 0xFF:
+			pos++ // fill byte
+			continue
+		case marker == 0xD9:
+			return scans
+		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7):
+			pos += 2
+			continue
+		}
+		if pos+4 > len(data) {
+			return scans
+		}
+		pos += 2 + int(binary.BigEndian.Uint16(data[pos+2:]))
+		if marker != 0xDA {
+			continue
+		}
+		scans++
+		// Entropy-coded data runs to the next marker: an 0xFF not followed
+		// by a stuffed 0x00 or a restart marker.
+		for pos+1 < len(data) {
+			if data[pos] == 0xFF && data[pos+1] != 0x00 && (data[pos+1] < 0xD0 || data[pos+1] > 0xD7) {
+				break
+			}
+			pos++
+		}
+	}
+	return scans
+}

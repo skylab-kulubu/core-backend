@@ -520,3 +520,48 @@ func TestService_ServesSizesThroughCloudflareWhenConfigured(t *testing.T) {
 		t.Fatalf("original %s", created.URL)
 	}
 }
+
+// progressiveJPEGWithScans is a valid progressive 8×8 grey JPEG with a DC
+// scan and then refinements of it, scans in all. A decoder walks the whole
+// image once per scan, and a scan can cost its sender a few bytes (an AC
+// scan's end-of-band run skips every block), so their number is a
+// decompression bomb of its own.
+func progressiveJPEGWithScans(scans int) []byte {
+	out := []byte{0xFF, 0xD8}
+	// DQT: table 0, every value 1.
+	out = append(out, 0xFF, 0xDB, 0x00, 0x43, 0x00)
+	for i := 0; i < 64; i++ {
+		out = append(out, 0x01)
+	}
+	// DHT: DC table 0 with one code, "0", for category 0.
+	out = append(out, 0xFF, 0xC4, 0x00, 0x14, 0x00, 0x01)
+	out = append(out, make([]byte, 15)...)
+	out = append(out, 0x00)
+	// SOF2: 8-bit, 8×8, one component, no subsampling, table 0.
+	out = append(out, 0xFF, 0xC2, 0x00, 0x0B, 0x08, 0x00, 0x08, 0x00, 0x08, 0x01, 0x01, 0x11, 0x00)
+	// The first DC scan (Ah=0, Al=1): the one block's code, padded with ones.
+	out = append(out, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x00, 0x01, 0x7F)
+	for i := 1; i < scans; i++ {
+		// A DC refinement (Ah=1, Al=0): one bit a block.
+		out = append(out, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x00, 0x10, 0x7F)
+	}
+	return append(out, 0xFF, 0xD9)
+}
+
+func TestService_PurposeRefusesAJPEGWithMoreScansThanADecoderNeeds(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	p := signedIn("79797979-7979-7979-7979-797979797979")
+
+	if _, err := svc.UploadForPurpose(context.Background(), p, "profile_picture", uploaded("progressive.jpg", "image/jpeg", progressiveJPEGWithScans(10))); err != nil {
+		t.Fatalf("a progressive JPEG with 10 scans: %v", err)
+	}
+	stored := len(blobs.Keys())
+	_, err := svc.UploadForPurpose(context.Background(), p, "profile_picture", uploaded("scans.jpg", "image/jpeg", progressiveJPEGWithScans(5000)))
+	if !errors.Is(err, media.ErrTypeNotAllowed) {
+		t.Fatalf("5000 scans: err = %v, want %v", err, media.ErrTypeNotAllowed)
+	}
+	if len(blobs.Keys()) != stored {
+		t.Fatalf("stored %v", blobs.Keys())
+	}
+}

@@ -31,11 +31,15 @@ type errTooManyPixels struct{ limit int64 }
 
 func (e errTooManyPixels) Error() string { return "media: image has too many pixels" }
 
-// checkPixels reads only the image's header and refuses it when decoding it
-// would take more than core allows.
+// checkPixels reads only the image's header (and, for a JPEG, its segment
+// markers) and refuses it when decoding it would take more than core
+// allows.
 func checkPixels(data []byte) error {
 	config, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil || config.Width <= 0 || config.Height <= 0 {
+		return ErrInvalid
+	}
+	if isJPEG(data) && jpegScans(data) > maxJPEGScans {
 		return ErrInvalid
 	}
 	limit := min(int64(MaxImagePixels), int64(maxDecodedImageBytes/bytesPerPixel(config.ColorModel)))
