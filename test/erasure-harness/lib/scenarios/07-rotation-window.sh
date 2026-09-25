@@ -40,6 +40,7 @@ scenario_7() {
 
   # The rotator's second half: core's environment gets the new value and core restarts.
   set_env ACCOUNT_ERASURE_CLIENT_SECRET "$new"
+  save_logs core
   dc up -d --no-deps core >/dev/null 2>&1
   wait_until 120 2 service_ready http://core:8080/v1/ready
   window_end=$(date +%s)

@@ -8,7 +8,10 @@ scenario_9() {
   scenario_begin S9 'log scan: no address or name of an erased person in any container log; subject only in Keycloak events'
   mkdir -p "$dir"
   for service in $(dc --profile account-center ps -a --services 2>/dev/null); do
-    dc --profile account-center logs --no-color --no-log-prefix --timestamps "$service" >"$dir/$service.log" 2>&1 || true
+    {
+      [[ ! -f $EVIDENCE/logs-archive/$service.log ]] || cat "$EVIDENCE/logs-archive/$service.log"
+      dc --profile account-center logs --no-color --no-log-prefix --timestamps "$service" 2>&1 || true
+    } >"$dir/$service.log"
   done
   local erased=()
   for p in "${PERSONS[@]}"; do

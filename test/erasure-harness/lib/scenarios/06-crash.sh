@@ -11,6 +11,7 @@ skymail_receipt_exists() { [[ $(pg skymail "SELECT count(*) FROM account_erasure
 
 # core_with_urls SKYMAIL CMS FORMS: recreate core with other service URLs (same env otherwise).
 core_with_urls() {
+  save_logs core
   HARNESS_SKYMAIL_URL=$1 HARNESS_CMS_URL=$2 HARNESS_FORMS_URL=$3 dc up -d --no-deps core >/dev/null 2>&1
   wait_until 120 2 service_ready http://core:8080/v1/ready
 }

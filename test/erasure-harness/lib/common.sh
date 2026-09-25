@@ -38,7 +38,7 @@ while IFS=$'\t' read -r key id user first last school personal _; do
   P_ID[$key]=$id P_USER[$key]=$user P_FIRST[$key]=$first P_LAST[$key]=$last
   P_SCHOOL[$key]=$school P_PERSONAL[$key]=$personal
 done <"$HARNESS_DIR/lib/persons.tsv"
-PERSONS=(p1 p2 p3 p4 p5 p6 p7 p8)
+PERSONS=(p1 p2 p3 p4 p5 p6 p7 p8 p9)
 full_name() { printf '%s %s' "${P_FIRST[$1]}" "${P_LAST[$1]}"; }
 
 # --- results --------------------------------------------------------------------------------------
@@ -281,3 +281,9 @@ steps_done() { local r=$1 s; shift; for s in "$@"; do step_done "$r" "$s" || ret
 # request_where REQUEST SQL_BOOLEAN: true when the boolean holds for the request row.
 request_where() { [[ $(pg super_skylab "SELECT ($2) FROM account_deletion_requests WHERE id = '$1'") == t ]]; }
 not() { ! "$@"; }
+# save_logs SERVICE: appends the container's log to .state/evidence/logs-archive before the
+# container is recreated, so the log scan (scenario 9) still sees what it wrote.
+save_logs() {
+  mkdir -p "$EVIDENCE/logs-archive"
+  dc logs --no-color --no-log-prefix --timestamps "$1" >>"$EVIDENCE/logs-archive/$1.log" 2>&1 || true
+}
