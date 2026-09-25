@@ -31,6 +31,9 @@ type Service interface {
 	// the blob stays recoverable until the purge window passes.
 	ArchiveOwn(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Media, error)
+	// Addresses builds public addresses from the configured base, for
+	// records that keep a Media's key, such as a User's profile picture.
+	Addresses() Addresses
 }
 
 type service struct {
@@ -430,6 +433,10 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 		}
 	}
 	return s.Get(ctx, id)
+}
+
+func (s *service) Addresses() Addresses {
+	return s.addresses
 }
 
 func (s *service) withURL(m Media) Media {

@@ -82,6 +82,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Every Media address core builds without a base of its own (Event
+	// resources, team rosters) uses the configured one too.
+	media.UsePublicBase(cdnBase)
 	imageAddressMode, err := media.ImageAddressModeFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
