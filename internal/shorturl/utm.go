@@ -31,6 +31,23 @@ func UTMFromQuery(query func(key string) string) UTM {
 	}
 }
 
+// channelSources maps the short suffix of a shared link (skyl.app/alias/ig)
+// to the utm_source it stands for, so the short form and the ?utm_source=
+// form of the same channel land in the same bucket.
+var channelSources = map[string]string{
+	"ig":   "instagram",
+	"wa":   "whatsapp",
+	"li":   "linkedin",
+	"mail": "email",
+	"web":  "website",
+}
+
+// ChannelUTM is the tag behind a channel suffix. An unknown suffix carries no
+// tag, so a mistyped printed link still reaches its target.
+func ChannelUTM(code string) UTM {
+	return UTM{Source: channelSources[strings.ToLower(strings.TrimSpace(code))]}
+}
+
 func (u UTM) IsZero() bool {
 	return u == UTM{}
 }

@@ -34,6 +34,14 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		return a.allowMedia(p, r, action)
 	case TypeURL:
 		return a.allowURL(p, r, action)
+	case TypeFormLink:
+		// A form's link is not owned by a person: the forms service checks the
+		// form role before it calls, so only that service and URL moderators
+		// may read or change one.
+		if action != Read && action != Create && action != Update {
+			return false
+		}
+		return a.isPrivileged(p) || hasRole(p, "url:forms", "url:moderator")
 	case TypeCertificate:
 		return a.allowCertificate(p, r, action)
 	case TypeCertificateTemplate:

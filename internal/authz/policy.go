@@ -30,6 +30,7 @@ const (
 	TypeCompetitor          Type = "COMPETITOR"
 	TypeMedia               Type = "MEDIA"
 	TypeURL                 Type = "URL"
+	TypeFormLink            Type = "FORM_LINK"
 	TypeCertificate         Type = "CERTIFICATE"
 	TypeCertificateTemplate Type = "CERTIFICATE_TEMPLATE"
 )
