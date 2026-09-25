@@ -121,9 +121,10 @@ func TestMediaAttachmentsAttachMediaLinkedBeforeThem(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE certificate_templates SET draft_layout = '{}'::jsonb WHERE id = $1`, templateID); err != nil {
 		t.Fatal(err)
 	}
+	// They are legacy: still in use outside core, perhaps, so no expiry.
 	for name, id := range map[string]uuid.UUID{"cover": cover, "gallery": gallery, "profile": profile, "draft": draft} {
-		if got := status(id); got.Status != media.StatusDetached {
-			t.Errorf("%s after unlinking: status %q, want detached", name, got.Status)
+		if got := status(id); got.Status != media.StatusDetached || got.ExpiresAt != nil {
+			t.Errorf("%s after unlinking: status %q expires %v, want detached with no expiry", name, got.Status, got.ExpiresAt)
 		}
 	}
 

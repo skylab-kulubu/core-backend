@@ -122,7 +122,9 @@ BEGIN
     IF TG_OP IN ('UPDATE', 'DELETE') THEN
         PERFORM 1 FROM media WHERE id = OLD.media_id FOR UPDATE;
         UPDATE media
-        SET status = 'detached', expires_at = now() + interval '30 days', updated_at = now()
+        SET status = 'detached',
+            expires_at = CASE WHEN purpose = 'legacy' THEN NULL ELSE now() + interval '30 days' END,
+            updated_at = now()
         WHERE id = OLD.media_id
           AND status = 'attached'
           AND NOT EXISTS (SELECT 1 FROM media_attachments WHERE media_id = OLD.media_id);

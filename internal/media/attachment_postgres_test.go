@@ -262,11 +262,11 @@ func TestPostgresMediaAttachmentFollowsItsLinksTransaction(t *testing.T) {
 func TestPostgresMediaAttachmentRefusesInactiveMedia(t *testing.T) {
 	db := newMediaDatabase(t)
 	ctx := context.Background()
-	archived := db.upload(t, "cms_image")
+	archived := db.upload(t, "event_gallery")
 	if err := db.store.Archive(ctx, archived.ID, nil); err != nil {
 		t.Fatal(err)
 	}
-	purged := db.upload(t, "cms_image")
+	purged := db.upload(t, "event_gallery")
 	if _, err := db.pool.Exec(ctx, `UPDATE media SET blob_purge_started_at = now() WHERE id = $1`, purged.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -275,5 +275,32 @@ func TestPostgresMediaAttachmentRefusesInactiveMedia(t *testing.T) {
 			VALUES ($1, 'cms', 'page', $2, 'cms_image')`, id, uuid.New()); err == nil {
 			t.Errorf("attachment to %s media accepted", name)
 		}
+	}
+}
+
+// A legacy Media may still be used outside core, by its address (CMS content
+// stores addresses): detaching it from its last core record sets no expiry.
+// Only the legacy backfill reports and removes unused legacy Media.
+func TestPostgresDetachedLegacyMediaKeepsNoExpiry(t *testing.T) {
+	db := newMediaDatabase(t)
+	ctx := context.Background()
+	events := event.NewService(event.NewPostgresStore(db.pool), authz.NewAuthorizer(authz.DefaultPolicy()))
+	legacy, err := db.svc.Upload(ctx, db.organizer, "poster.png", "image/png", pngDot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	purposed := db.upload(t, "event_cover")
+	created, err := events.Create(ctx, db.organizer, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", CoverImageID: &legacy.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attached(t, db.get(t, legacy.ID))
+
+	created.CoverImageID = &purposed.ID
+	if _, err := events.Update(ctx, db.organizer, created.ID, created); err != nil {
+		t.Fatal(err)
+	}
+	if got := db.get(t, legacy.ID); got.Status != media.StatusDetached || got.ExpiresAt != nil {
+		t.Fatalf("detached legacy Media: status %q expires %v, want detached with no expiry", got.Status, got.ExpiresAt)
 	}
 }
