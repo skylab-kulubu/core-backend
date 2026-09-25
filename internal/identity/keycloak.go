@@ -909,40 +909,43 @@ func (k *Keycloak) ListClientRoles(ctx context.Context) ([]ClientRole, error) {
 	return out, nil
 }
 
-// EnsureClientRoles creates missing roles without changing existing role mappings.
-func (k *Keycloak) EnsureClientRoles(ctx context.Context, clientID string, names []string) error {
+// MissingClientRoles reports which of names the Keycloak client clientID does not have, in
+// the order given. It only reads (GET /clients and GET /clients/{id}/roles, covered by
+// view-clients): core's service account holds no realm-management manage-clients, which would
+// let it rewrite every client's redirect URIs and secrets (ADR-0048), so core never creates
+// client roles. The Keycloak operator script config/identity-guardrails.sh creates them.
+func (k *Keycloak) MissingClientRoles(ctx context.Context, clientID string, names []string) ([]string, error) {
 	token, err := k.accessToken(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	clientUUID, err := k.clientUUID(ctx, token, clientID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	roles, err := k.gc.GetClientRoles(ctx, token, k.realm, clientUUID, gocloak.GetRoleParams{Max: gocloak.IntP(500)})
 	if err != nil {
-		return mapKCErr(err)
+		return nil, mapKCErr(err)
 	}
-	existing := make(map[string]struct{}, len(roles))
+	present := make(map[string]struct{}, len(roles))
 	for _, role := range roles {
 		if role != nil && role.Name != nil {
-			existing[*role.Name] = struct{}{}
+			present[*role.Name] = struct{}{}
 		}
 	}
+	missing := make([]string, 0)
 	for _, raw := range names {
 		name := strings.TrimSpace(raw)
 		if name == "" {
 			continue
 		}
-		if _, ok := existing[name]; ok {
+		if _, ok := present[name]; ok {
 			continue
 		}
-		if _, err := k.gc.CreateClientRole(ctx, token, k.realm, clientUUID, gocloak.Role{Name: &name}); err != nil {
-			return mapKCErr(err)
-		}
-		existing[name] = struct{}{}
+		present[name] = struct{}{}
+		missing = append(missing, name)
 	}
-	return nil
+	return missing, nil
 }
 
 func (k *Keycloak) lookupRole(ctx context.Context, token, clientID, name string) (gocloak.Role, error) {

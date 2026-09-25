@@ -199,3 +199,72 @@ func TestKeycloakYTUAttributesPagesThroughEveryUser(t *testing.T) {
 		t.Fatalf("pages %v", pages)
 	}
 }
+
+// Core's service account holds no manage-clients (ADR-0048): the startup check of the
+// certificate roles may only read, and reports the missing ones in the order asked.
+func TestKeycloakMissingClientRolesOnlyReads(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		present []string
+		want    []string
+	}{
+		{name: "some missing", present: []string{"url:create", "certificate:issue"}, want: []string{"certificate:template:manage", "certificate:binding:manage", "certificate:revoke"}},
+		{name: "all present", present: []string{"certificate:revoke", "certificate:issue", "certificate:binding:manage", "certificate:template:manage"}, want: []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/protocol/openid-connect/token"):
+					_, _ = w.Write([]byte(`{"access_token":"tok","expires_in":300,"token_type":"Bearer"}`))
+				case r.Method != http.MethodGet:
+					t.Errorf("the role check wrote to Keycloak: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusForbidden)
+				case r.URL.Path == "/admin/realms/e-skylab/clients" && r.URL.Query().Get("clientId") == "core":
+					_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": "core-uuid", "clientId": "core"}})
+				case r.URL.Path == "/admin/realms/e-skylab/clients/core-uuid/roles":
+					roles := make([]any, 0, len(tc.present))
+					for _, name := range tc.present {
+						roles = append(roles, map[string]any{"id": name + "-id", "name": name})
+					}
+					_ = json.NewEncoder(w).Encode(roles)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+
+			dir := identity.NewKeycloak(identity.KeycloakConfig{
+				URL: srv.URL, Realm: "e-skylab", ClientID: "core", ClientSecret: "secret",
+			})
+			missing, err := dir.MissingClientRoles(context.Background(), "core", identity.CertificateClientRoles)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(missing, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("missing roles %v, want %v", missing, tc.want)
+			}
+		})
+	}
+}
+
+func TestCertificateRolesWarningNamesTheRolesAndTheOperatorScript(t *testing.T) {
+	t.Parallel()
+
+	if got := identity.CertificateRolesWarning("core", []string{}, nil); got != "" {
+		t.Fatalf("no warning expected when every role exists, got %q", got)
+	}
+	got := identity.CertificateRolesWarning("core", []string{"certificate:issue", "certificate:revoke"}, nil)
+	for _, want := range []string{"certificate client roles missing on Keycloak client core", "certificate:issue, certificate:revoke", "/opt/keycloak/config/identity-guardrails.sh"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("warning %q does not contain %q", got, want)
+		}
+	}
+	got = identity.CertificateRolesWarning("core", nil, errors.New("403 Forbidden"))
+	if !strings.Contains(got, "certificate client roles could not be checked on Keycloak client core: 403 Forbidden") {
+		t.Fatalf("read failure warning %q", got)
+	}
+}
