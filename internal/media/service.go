@@ -117,7 +117,8 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 	}
 	operationCtx, cancelOperation := context.WithTimeout(ctx, operationTimeout)
 	defer cancelOperation()
-	if err := s.blobs.Put(operationCtx, key, body, ctype); err != nil {
+	serving := servingMetadata(ctype, name)
+	if err := s.blobs.Put(operationCtx, key, body, serving); err != nil {
 		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
 	}
 	colors := []string{}
@@ -128,7 +129,7 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 	}
 	item := Media{
 		Name:                name,
-		Type:                ctype,
+		Type:                serving.ContentType,
 		Size:                int64(len(body)),
 		UploadedBy:          uploadedBy,
 		Kind:                kind,

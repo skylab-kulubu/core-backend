@@ -48,7 +48,7 @@ func TestPostgresClearProfilePictureUnlinksAndArchivesOwnUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := blobs.Put(ctx, picture.Key, []byte("png"), picture.Type); err != nil {
+	if err := blobs.Put(ctx, picture.Key, []byte("png"), media.BlobMetadata{ContentType: picture.Type}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := users.SetProfilePicture(ctx, subjectID, picture.ID, picture.Key); err != nil {

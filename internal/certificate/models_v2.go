@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 const (
@@ -228,7 +229,7 @@ type JobStore interface {
 }
 
 type ArtifactStore interface {
-	Put(ctx context.Context, key string, data []byte, contentType string) error
+	Put(ctx context.Context, key string, data []byte, meta media.BlobMetadata) error
 	Read(ctx context.Context, key string) ([]byte, error)
 }
 

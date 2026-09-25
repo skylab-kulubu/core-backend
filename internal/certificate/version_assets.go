@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 const maxTemplateAssetBytes = 50 << 20
@@ -62,7 +63,7 @@ func (s *service) snapshotVersionAssets(ctx context.Context, versionID uuid.UUID
 			return nil, ErrInvalid
 		}
 		key := "certificate-template-assets/" + versionID.String() + "/" + id.String()
-		if err := s.artifacts.Put(ctx, key, asset.Data, asset.ContentType); err != nil {
+		if err := s.artifacts.Put(ctx, key, asset.Data, media.BlobMetadata{ContentType: asset.ContentType}); err != nil {
 			return nil, err
 		}
 		manifest[id.String()] = VersionAssetRef{Key: key, ContentType: asset.ContentType}

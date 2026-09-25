@@ -200,21 +200,21 @@ func (s *MemoryStore) SetReferenced(id uuid.UUID, referenced bool) {
 }
 
 type MemoryBlob struct {
-	mu      sync.Mutex
-	objects map[string][]byte
-	types   map[string]string
+	mu       sync.Mutex
+	objects  map[string][]byte
+	metadata map[string]BlobMetadata
 }
 
 func NewMemoryBlob() *MemoryBlob {
-	return &MemoryBlob{objects: make(map[string][]byte), types: make(map[string]string)}
+	return &MemoryBlob{objects: make(map[string][]byte), metadata: make(map[string]BlobMetadata)}
 }
 
-func (s *MemoryBlob) Put(_ context.Context, key string, data []byte, contentType string) error {
+func (s *MemoryBlob) Put(_ context.Context, key string, data []byte, meta BlobMetadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := append([]byte{}, data...)
 	s.objects[key] = cp
-	s.types[key] = contentType
+	s.metadata[key] = meta
 	return nil
 }
 
@@ -222,7 +222,7 @@ func (s *MemoryBlob) Delete(_ context.Context, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.objects, key)
-	delete(s.types, key)
+	delete(s.metadata, key)
 	return nil
 }
 
@@ -241,4 +241,12 @@ func (s *MemoryBlob) Get(key string) ([]byte, bool) {
 	defer s.mu.Unlock()
 	data, ok := s.objects[key]
 	return data, ok
+}
+
+// Metadata is the serving metadata the object was stored with.
+func (s *MemoryBlob) Metadata(key string) (BlobMetadata, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	meta, ok := s.metadata[key]
+	return meta, ok
 }

@@ -52,8 +52,15 @@ type Store interface {
 	PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(key string) error) (bool, error)
 }
 
+// BlobMetadata is how the CDN serves a stored object. An empty
+// ContentDisposition leaves the object inline.
+type BlobMetadata struct {
+	ContentType        string
+	ContentDisposition string
+}
+
 type BlobStore interface {
-	Put(ctx context.Context, key string, data []byte, contentType string) error
+	Put(ctx context.Context, key string, data []byte, meta BlobMetadata) error
 	Read(ctx context.Context, key string) ([]byte, error)
 	Delete(ctx context.Context, key string) error
 }

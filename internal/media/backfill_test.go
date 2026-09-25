@@ -15,7 +15,7 @@ func TestBackfillCoverColorsProcessesExistingImages(t *testing.T) {
 	store := media.NewMemoryStore()
 	blobs := media.NewMemoryBlob()
 	key := "images/existing"
-	if err := blobs.Put(ctx, key, twoTonePNG(t), "image/png"); err != nil {
+	if err := blobs.Put(ctx, key, twoTonePNG(t), media.BlobMetadata{ContentType: "image/png"}); err != nil {
 		t.Fatal(err)
 	}
 	existing, err := store.Create(ctx, media.Media{

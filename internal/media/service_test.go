@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"mime"
 	"reflect"
 	"strings"
 	"testing"
@@ -50,7 +51,7 @@ type recordingBlobStore struct {
 	deleteErr error
 }
 
-func (b *recordingBlobStore) Put(_ context.Context, key string, data []byte, _ string) error {
+func (b *recordingBlobStore) Put(_ context.Context, key string, data []byte, _ media.BlobMetadata) error {
 	if b.objects == nil {
 		b.objects = make(map[string][]byte)
 	}
@@ -365,5 +366,100 @@ func TestService_ListRequiresAuthAndDeleteIsPrivileged(t *testing.T) {
 	}
 	if _, err := svc.Get(context.Background(), created.ID); err != nil {
 		t.Fatalf("get restored: %v", err)
+	}
+}
+
+func TestService_UploadServesOtherFilesAsNamedDownloads(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	p := authz.Principal{ID: uuid.MustParse("35353535-3535-3535-3535-353535353535").String()}
+
+	created, err := svc.Upload(context.Background(), p, "Özgeçmiş.html", "text/html", []byte("<html><script>alert(1)</script></html>"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := blobs.Metadata(created.Key)
+	want := media.BlobMetadata{
+		ContentType:        "application/octet-stream",
+		ContentDisposition: "attachment; filename*=utf-8''%C3%96zge%C3%A7mi%C5%9F.html",
+	}
+	if !ok || got != want {
+		t.Fatalf("blob metadata = %+v (stored %v), want %+v", got, ok, want)
+	}
+}
+
+func TestService_UploadKeepsHostileFileNamesInsideTheDispositionParameter(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	p := authz.Principal{ID: uuid.MustParse("36363636-3636-3636-3636-363636363636").String()}
+	name := "cv\"; filename=\"x.html\r\nContent-Type: text/html; a=b.txt"
+
+	created, err := svc.Upload(context.Background(), p, name, "text/plain", []byte("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := blobs.Metadata(created.Key)
+	if strings.ContainsAny(got.ContentDisposition, "\r\n") {
+		t.Fatalf("disposition carries a line break: %q", got.ContentDisposition)
+	}
+	disposition, params, err := mime.ParseMediaType(got.ContentDisposition)
+	if err != nil || disposition != "attachment" || len(params) != 1 || params["filename"] != name {
+		t.Fatalf("disposition %q parsed as %q %v (%v)", got.ContentDisposition, disposition, params, err)
+	}
+}
+
+func TestService_UploadRecordsTheTypeTheCDNServes(t *testing.T) {
+	t.Parallel()
+	svc, _ := setup(t)
+	p := authz.Principal{ID: uuid.MustParse("37373737-3737-3737-3737-373737373737").String()}
+
+	created, err := svc.Upload(context.Background(), p, "page.html", "text/html", []byte("<html></html>"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Type != "application/octet-stream" || got.Type != "application/octet-stream" {
+		t.Fatalf("created type %q, stored type %q", created.Type, got.Type)
+	}
+}
+
+func TestService_UploadServesSVGAsAnImageThatDownloadsWhenOpened(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	p := authz.Principal{ID: uuid.MustParse("38383838-3838-3838-3838-383838383838").String()}
+
+	created, err := svc.Upload(context.Background(), p, "logo.svg", "image/svg+xml", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := blobs.Metadata(created.Key)
+	want := media.BlobMetadata{ContentType: "image/svg+xml", ContentDisposition: "attachment; filename=logo.svg"}
+	if got != want || created.Type != "image/svg+xml" {
+		t.Fatalf("blob metadata %+v, record type %q", got, created.Type)
+	}
+}
+
+func TestService_UploadServesRasterImagesAndPDFsInline(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	p := authz.Principal{ID: uuid.MustParse("39393939-3939-3939-3939-393939393939").String()}
+	for _, tc := range []struct {
+		name, declared string
+		data           []byte
+		want           media.BlobMetadata
+	}{
+		{"dot.png", "image/png", pngDot(), media.BlobMetadata{ContentType: "image/png"}},
+		{"cv.pdf", "application/pdf", []byte("%PDF-1.4"), media.BlobMetadata{ContentType: "application/pdf"}},
+	} {
+		created, err := svc.Upload(context.Background(), p, tc.name, tc.declared, tc.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := blobs.Metadata(created.Key); got != tc.want {
+			t.Fatalf("%s blob metadata %+v, want %+v", tc.name, got, tc.want)
+		}
 	}
 }

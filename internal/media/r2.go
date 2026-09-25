@@ -50,12 +50,12 @@ func NewR2(cfg R2Config) *R2 {
 	return &R2{client: client, bucket: cfg.Bucket}
 }
 
-func (r *R2) Put(ctx context.Context, key string, data []byte, contentType string) error {
+func (r *R2) Put(ctx context.Context, key string, data []byte, meta BlobMetadata) error {
 	_, err := r.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(r.bucket),
 		Key:           aws.String(key),
 		Body:          bytes.NewReader(data),
-		ContentType:   aws.String(contentType),
+		ContentType:   aws.String(meta.ContentType),
 		ContentLength: aws.Int64(int64(len(data))),
 	})
 	if err != nil {
