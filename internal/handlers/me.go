@@ -38,6 +38,9 @@ type mePatchBody struct {
 }
 
 func meError(c fiber.Ctx, err error) error {
+	if handled, problemErr := purposeProblem(c, err); handled {
+		return problemErr
+	}
 	switch {
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
@@ -166,7 +169,7 @@ func (h *MeHandler) ProfilePicture(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	uploaded, err := h.media.Upload(c.Context(), p, header.Filename, header.Header.Get("Content-Type"), data)
+	uploaded, err := h.media.UploadForPurpose(c.Context(), p, media.PurposeProfilePicture, header.Filename, header.Header.Get("Content-Type"), data)
 	if err != nil {
 		return meError(c, err)
 	}

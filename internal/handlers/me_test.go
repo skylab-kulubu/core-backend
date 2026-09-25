@@ -745,3 +745,40 @@ func TestDeleteProfilePictureConvergesAfterPartialFailureHTTP(t *testing.T) {
 		})
 	}
 }
+
+func TestProfilePictureUploadsAsProfilePictureHTTP(t *testing.T) {
+	t.Parallel()
+	id := uuid.MustParse("89898989-8989-8989-8989-898989898989")
+	mediaSvc := media.NewService(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test")
+	app := meIdentApp(t, user.NewMemoryStore(), id, user.Profile{Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"}, mediaSvc)
+	post := func(filename string, data []byte) *http.Response {
+		t.Helper()
+		body, ctype := multipartPNG(t, "image", filename, data)
+		req := httptest.NewRequest(fiber.MethodPost, "/v1/users/me/profile-picture", body)
+		req.Header.Set("Content-Type", ctype)
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	resp := post("cv.pdf", []byte("%PDF-1.7\n"))
+	var refused map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&refused); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnsupportedMediaType || refused["code"] != "media-type-not-allowed" || refused["purpose"] != "profile_picture" {
+		t.Fatalf("PDF profile picture: status %d body %v", resp.StatusCode, refused)
+	}
+
+	resp = post("dot.png", pngDotHTTP())
+	var got user.User
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil || resp.StatusCode != fiber.StatusOK || got.ProfilePictureID == nil {
+		t.Fatalf("PNG profile picture: status %d user %+v err %v", resp.StatusCode, got, err)
+	}
+	picture, err := mediaSvc.Get(t.Context(), *got.ProfilePictureID)
+	if err != nil || picture.Purpose != "profile_picture" {
+		t.Fatalf("picture %+v err %v", picture, err)
+	}
+}

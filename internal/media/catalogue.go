@@ -14,9 +14,13 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
-// PurposeLegacy is the Media purpose of a purpose-less upload and of every
-// Media stored before Media purpose existed.
-const PurposeLegacy = "legacy"
+const (
+	// PurposeLegacy is the Media purpose of a purpose-less upload and of
+	// every Media stored before Media purpose existed.
+	PurposeLegacy = "legacy"
+	// PurposeProfilePicture is a person's own profile picture.
+	PurposeProfilePicture = "profile_picture"
+)
 
 // ErrCatalogueInvalid is a catalogue file core cannot read as one: a field it
 // does not know, a value outside the vocabulary, or a missing legacy purpose.
