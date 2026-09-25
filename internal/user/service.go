@@ -3,8 +3,10 @@ package user
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/ytu"
 )
 
 type Service interface {
@@ -63,7 +65,43 @@ func (s *service) Ensure(ctx context.Context, id uuid.UUID, profile Profile) (Us
 	if err != nil {
 		return User{}, false, err
 	}
-	return s.assignSky(ctx, first, created)
+	u, created, err := s.assignSky(ctx, first, created)
+	if err != nil {
+		return User{}, false, err
+	}
+	if p, linked := ytu.FromClaims(profile.University, profile.Department); linked {
+		if u, err = s.syncYTU(ctx, u, p); err != nil {
+			return User{}, false, err
+		}
+	}
+	return u, created, nil
+}
+
+// syncYTU stores what the YTÜ Microsoft login says when it differs from the
+// record. Every YTÜ login carries the current values (people change
+// department), and most requests change nothing, so it compares first and
+// writes only a difference.
+func (s *service) syncYTU(ctx context.Context, u User, p ytu.Profile) (User, error) {
+	if u.YTULinked && u.University == p.University && u.Faculty == p.Faculty && u.Department == p.Department {
+		return u, nil
+	}
+	return s.store.SetYTUProfile(ctx, u.ID, p)
+}
+
+// ytuEdit decides a self or admin edit of the three YTÜ fields. It reports
+// whether the record takes the edited values: a person who is not
+// YTÜ-linked edits freely; for a YTÜ-linked person the values follow the
+// login, so sending the stored value back is fine and anything else is
+// ErrYTUManaged.
+func ytuEdit(existing User, university, faculty, department *string) (bool, error) {
+	if !existing.YTULinked {
+		return true, nil
+	}
+	same := func(in *string, stored string) bool { return in == nil || strings.TrimSpace(*in) == stored }
+	if same(university, existing.University) && same(faculty, existing.Faculty) && same(department, existing.Department) {
+		return false, nil
+	}
+	return false, ErrYTUManaged
 }
 
 func (s *service) assignSky(ctx context.Context, first User, created bool) (User, bool, error) {
@@ -99,12 +137,18 @@ func (s *service) Replace(ctx context.Context, id uuid.UUID, in ProfileUpdate) (
 	if err != nil {
 		return User{}, err
 	}
+	editable, err := ytuEdit(existing, &in.University, &in.Faculty, &in.Department)
+	if err != nil {
+		return User{}, err
+	}
 	existing.FirstName = in.FirstName
 	existing.LastName = in.LastName
 	existing.Linkedin = in.Linkedin
-	existing.University = in.University
-	existing.Faculty = in.Faculty
-	existing.Department = in.Department
+	if editable {
+		existing.University = in.University
+		existing.Faculty = in.Faculty
+		existing.Department = in.Department
+	}
 	return s.store.UpdateProfile(ctx, existing)
 }
 
@@ -119,16 +163,20 @@ func (s *service) Patch(ctx context.Context, id uuid.UUID, in ProfilePatch) (Use
 	if in.LastName != nil {
 		existing.LastName = *in.LastName
 	}
+	editable, err := ytuEdit(existing, in.University, in.Faculty, in.Department)
+	if err != nil {
+		return User{}, err
+	}
 	if in.Linkedin != nil {
 		existing.Linkedin = *in.Linkedin
 	}
-	if in.University != nil {
+	if editable && in.University != nil {
 		existing.University = *in.University
 	}
-	if in.Faculty != nil {
+	if editable && in.Faculty != nil {
 		existing.Faculty = *in.Faculty
 	}
-	if in.Department != nil {
+	if editable && in.Department != nil {
 		existing.Department = *in.Department
 	}
 	if in.Phone != nil {

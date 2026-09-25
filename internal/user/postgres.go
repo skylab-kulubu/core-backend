@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
+	"github.com/skylab-kulubu/core-backend/internal/ytu"
 )
 
 type PostgresStore struct {
@@ -21,13 +22,13 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const userCols = `id, email, first_name, last_name, username, school_email, sky_number, COALESCE(student_card_uid, ''), linkedin, university, faculty, department, phone, profile_picture_id, profile_picture_url, account_state, deletion_requested_at, anonymized_at, created_at, updated_at`
+const userCols = `id, email, first_name, last_name, username, school_email, sky_number, COALESCE(student_card_uid, ''), linkedin, university, faculty, department, ytu_linked, phone, profile_picture_id, profile_picture_url, account_state, deletion_requested_at, anonymized_at, created_at, updated_at`
 
 func scanUser(row interface{ Scan(dest ...any) error }) (User, error) {
 	var u User
 	err := row.Scan(
 		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Username, &u.SchoolEmail, &u.SkyNumber, &u.StudentCardUID,
-		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.Phone, &u.ProfilePictureID, &u.ProfilePictureURL,
+		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.YTULinked, &u.Phone, &u.ProfilePictureID, &u.ProfilePictureURL,
 		&u.AccountState, &u.DeletionRequestedAt, &u.AnonymizedAt,
 		&u.CreatedAt, &u.UpdatedAt,
 	)
@@ -102,7 +103,7 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 		RETURNING `+userCols+`, (xmax = 0)
 	`, u.ID, u.Email, u.FirstName, u.LastName, u.Username, u.SchoolEmail, u.SkyNumber).Scan(
 		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Username, &u.SchoolEmail, &u.SkyNumber, &u.StudentCardUID,
-		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.Phone, &u.ProfilePictureID, &u.ProfilePictureURL,
+		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.YTULinked, &u.Phone, &u.ProfilePictureID, &u.ProfilePictureURL,
 		&u.AccountState, &u.DeletionRequestedAt, &u.AnonymizedAt,
 		&u.CreatedAt, &u.UpdatedAt, &created,
 	)
@@ -124,9 +125,9 @@ func (s *PostgresStore) UpdateProfile(ctx context.Context, u User) (User, error)
 			first_name = $2,
 			last_name = $3,
 			linkedin = $4,
-			university = $5,
-			faculty = $6,
-			department = $7,
+			university = CASE WHEN ytu_linked THEN university ELSE $5 END,
+			faculty = CASE WHEN ytu_linked THEN faculty ELSE $6 END,
+			department = CASE WHEN ytu_linked THEN department ELSE $7 END,
 			phone = $8,
 			student_card_uid = $9,
 			profile_picture_id = $10,
@@ -140,6 +141,29 @@ func (s *PostgresStore) UpdateProfile(ctx context.Context, u User) (User, error)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var state AccountState
 		stateErr := s.pool.QueryRow(ctx, `SELECT account_state FROM users WHERE id = $1`, u.ID).Scan(&state)
+		if stateErr == nil && state != AccountActive {
+			return User{}, ErrAccountBlocked
+		}
+		return User{}, ErrNotFound
+	}
+	return got, err
+}
+
+func (s *PostgresStore) SetYTUProfile(ctx context.Context, id uuid.UUID, p ytu.Profile) (User, error) {
+	got, err := scanUser(s.pool.QueryRow(ctx, `
+		UPDATE users SET
+			university = $2,
+			faculty = $3,
+			department = $4,
+			ytu_linked = true,
+			updated_at = now()
+		WHERE id = $1 AND account_state = 'active'
+		RETURNING `+userCols,
+		id, p.University, p.Faculty, p.Department,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		var state AccountState
+		stateErr := s.pool.QueryRow(ctx, `SELECT account_state FROM users WHERE id = $1`, id).Scan(&state)
 		if stateErr == nil && state != AccountActive {
 			return User{}, ErrAccountBlocked
 		}
@@ -421,7 +445,7 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 	if _, err := tx.Exec(ctx, `
 		UPDATE users SET
 			email = '', first_name = '', last_name = '', username = '', school_email = '', sky_number = '',
-			student_card_uid = NULL, linkedin = '', university = '', faculty = '', department = '', phone = '',
+			student_card_uid = NULL, linkedin = '', university = '', faculty = '', department = '', ytu_linked = false, phone = '',
 			profile_picture_id = NULL, profile_picture_url = '', account_state = 'anonymized',
 			anonymized_at = COALESCE(anonymized_at, $2), updated_at = $2
 		WHERE id = $1 AND account_state = 'deletion_pending'
