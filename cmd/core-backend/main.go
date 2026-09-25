@@ -23,6 +23,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
+	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
@@ -215,7 +216,7 @@ func main() {
 		})
 	}
 
-	workerEnabled, err := accountErasureWorkerEnabled(os.Getenv)
+	workerEnabled, erasureConfig, err := accountErasureStartup(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -230,7 +231,20 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	var erasureGauges *account.ErasureGauges
 	if workerEnabled {
+		// The watchdog counts open, overdue (ACCOUNT_ERASURE_ALERT_AFTER) and
+		// manual-intervention requests every five minutes for /v1/metrics and
+		// writes one account_erasure_attention line per request that needs a
+		// person. The service erasure steps are not in the saga yet (ADR-0051).
+		erasureGauges = account.NewErasureGauges()
+		account.MaintainWatchdog(context.Background(), account.NewWatchdog(users, erasureGauges, account.WatchdogConfig{
+			AlertAfter: erasureConfig.AlertAfter,
+		}), account.DefaultWatchdogInterval, func(err error) {
+			log.Printf("account erasure watchdog: %v", err)
+		})
+		log.Printf("account erasure watchdog: alert after %s; periodic destruction interval %s",
+			erasureConfig.AlertAfter, erasureConfig.PeriodicDestructionInterval)
 		account.Maintain(
 			context.Background(),
 			account.NewWorker(users, identity.NewAccountIdentity(dir), account.WorkerConfig{
@@ -341,6 +355,7 @@ func main() {
 		ParseToken:             parse,
 		AccountAccessGate:      optionalAccountAccessGate(gate),
 		AccountAccessMetrics:   accessMetrics,
+		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
 		ParseSelfDeleteSudo:    parseSelfDeleteSudo,
@@ -400,6 +415,28 @@ func accountSelfDeletionConfig(getenv func(string) string, enabled bool) (accoun
 	}
 	config.ReceiptKey = key
 	return config, nil
+}
+
+// accountErasureStartup reads the erasure master flag and, when it is on, the
+// Erasure command configuration. Every error names a variable, never a value.
+func accountErasureStartup(getenv func(string) string) (bool, erasure.Config, error) {
+	enabled, err := accountErasureWorkerEnabled(getenv)
+	if err != nil {
+		return false, erasure.Config{}, err
+	}
+	config, err := erasure.ConfigFromEnv(getenv, enabled)
+	if err != nil {
+		return false, erasure.Config{}, err
+	}
+	return enabled, config, nil
+}
+
+// optionalErasureMetrics keeps a worker that is off from publishing gauges.
+func optionalErasureMetrics(gauges *account.ErasureGauges) interface{ Prometheus() string } {
+	if gauges == nil {
+		return nil
+	}
+	return gauges
 }
 
 func validateAccountErasureGate(workerEnabled bool, mode accessgate.Mode) error {

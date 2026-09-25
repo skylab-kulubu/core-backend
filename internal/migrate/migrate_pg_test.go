@@ -1070,3 +1070,82 @@ func TestEventMailSnapshotRetentionStorePersistsExpiry(t *testing.T) {
 		t.Fatalf("remaining %+v", rows)
 	}
 }
+
+func TestAccountErasureServiceStepsAreForwardOnlyOnceProofExists(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	var definition string
+	if err := pool.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE conrelid='account_deletion_steps'::regclass AND conname='account_deletion_steps_step_check'
+	`).Scan(&definition); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []string{"erase_skymail", "erase_cms", "erase_forms", "anonymize_core", "delete_identity"} {
+		if !strings.Contains(definition, "'"+step+"'") {
+			t.Fatalf("step check lacks %s: %s", step, definition)
+		}
+	}
+
+	// Proof rows follow only their own request: deleting anything else (a
+	// hard-purged user, for one) never cascades into them.
+	var cascading int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM pg_constraint
+		WHERE contype='f' AND confdeltype='c'
+		  AND conrelid IN ('account_deletion_requests'::regclass, 'account_deletion_steps'::regclass)
+		  AND confrelid <> 'account_deletion_requests'::regclass
+	`).Scan(&cascading); err != nil || cascading != 0 {
+		t.Fatalf("cascading foreign keys into erasure proof=%d err=%v", cascading, err)
+	}
+
+	store := user.NewPostgresStore(pool)
+	subjectID := uuid.New()
+	if _, _, err := user.NewService(store).Ensure(ctx, subjectID, user.Profile{Email: "service-steps-rollback@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	request, err := store.RequestDeletion(ctx, subjectID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	down, err := fs.ReadFile(db.DownSQL, "migrations/20260925120000_account_erasure_service_steps.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := fs.ReadFile(db.UpSQL, "migrations/20260925120000_account_erasure_service_steps.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Without a service step the rollback is clean and the up is repeatable.
+	if _, err := pool.Exec(ctx, `INSERT INTO account_deletion_steps (request_id, step) VALUES ($1, 'disable_identity')`, request.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(down)); err != nil {
+		t.Fatalf("down without service steps: %v", err)
+	}
+	var countsColumn bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='account_deletion_steps' AND column_name='counts')`).Scan(&countsColumn); err != nil || countsColumn {
+		t.Fatalf("counts column after down=%v err=%v", countsColumn, err)
+	}
+	if _, err := pool.Exec(ctx, string(up)); err != nil {
+		t.Fatalf("up after down: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(up)); err != nil {
+		t.Fatalf("repeated up: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `INSERT INTO account_deletion_steps (request_id, step, counts) VALUES ($1, 'erase_cms', '{"collection_items_updated":2}')`, request.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(down)); err == nil || !strings.Contains(err.Error(), "forward-only") {
+		t.Fatalf("down with a service step error = %v", err)
+	}
+	var proof int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM account_deletion_steps WHERE request_id=$1 AND step='erase_cms' AND counts IS NOT NULL`, request.ID).Scan(&proof); err != nil || proof != 1 {
+		t.Fatalf("proof rows=%d err=%v", proof, err)
+	}
+}

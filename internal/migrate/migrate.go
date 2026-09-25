@@ -408,6 +408,25 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			 AND actual.column_name = expected.column_name
 		) = 5`,
 	20260925100000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'ytu_linked'`,
+	20260925120000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema='public' AND table_name='account_deletion_steps'
+			  AND column_name='counts' AND data_type='jsonb'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid=to_regclass('public.account_deletion_steps')
+			  AND conname='account_deletion_steps_counts_check'
+			  AND pg_get_constraintdef(oid) LIKE '%jsonb_typeof(counts)%object%'
+		)
+		AND (
+			SELECT count(*) FROM pg_constraint, unnest(ARRAY['erase_skymail','erase_cms','erase_forms']) AS step(name)
+			WHERE conrelid=to_regclass('public.account_deletion_steps')
+			  AND conname='account_deletion_steps_step_check'
+			  AND pg_get_constraintdef(oid) LIKE '%''' || step.name || '''%'
+		) = 3`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

@@ -15,6 +15,7 @@ type Store interface {
 	ClaimDeletionRequest(context.Context, time.Time, time.Duration) (user.DeletionRequest, bool, error)
 	CompletedDeletionSteps(context.Context, uuid.UUID, uuid.UUID) (map[user.DeletionStep]bool, error)
 	CompleteDeletionStep(context.Context, uuid.UUID, uuid.UUID, user.DeletionStep, time.Time) error
+	CompleteServiceErasureStep(context.Context, uuid.UUID, uuid.UUID, user.DeletionStep, time.Time, map[string]int64) error
 	RetryDeletionRequest(context.Context, uuid.UUID, uuid.UUID, time.Time, string, bool, bool) error
 	CompleteDeletionRequest(context.Context, uuid.UUID, uuid.UUID, time.Time) error
 	AnonymizeAccount(context.Context, uuid.UUID, time.Time) error
@@ -47,6 +48,17 @@ type Worker struct {
 	identity Identity
 	media    MediaEraser
 	config   WorkerConfig
+	// saga lists the steps of one pass in order. It is the core saga; the
+	// service erasure group (ADR-0051) is not placed in it yet.
+	saga func(user.DeletionRequest, time.Time) []sagaStep
+}
+
+// sagaStep is one checkpointed step, or, when services is set, the service
+// erasure group whose steps are checkpointed one by one.
+type sagaStep struct {
+	name     user.DeletionStep
+	run      func(context.Context, uuid.UUID) error
+	services *ServiceErasure
 }
 
 func NewWorker(store Store, identity Identity, config WorkerConfig, media ...MediaEraser) *Worker {
@@ -72,6 +84,7 @@ func NewWorker(store Store, identity Identity, config WorkerConfig, media ...Med
 	if len(media) > 0 {
 		worker.media = media[0]
 	}
+	worker.saga = worker.coreSaga
 	return worker
 }
 
@@ -86,19 +99,45 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	}
 	leaseToken := *request.LeaseToken
 	if w.config.AccessBlocker == nil {
-		return true, w.retry(ctx, request, now, "platform_block_failed", errors.New("account access marker writer unavailable"))
+		return true, w.retry(ctx, request, now, "platform_block_failed", errors.New("account access marker writer unavailable"), false)
 	}
 	if err := w.config.AccessBlocker.EnsureBlocked(ctx, request.SubjectID.String()); err != nil {
-		return true, w.retry(ctx, request, now, "platform_block_failed", err)
+		return true, w.retry(ctx, request, now, "platform_block_failed", err, false)
 	}
 	completed, err := w.store.CompletedDeletionSteps(ctx, request.ID, leaseToken)
 	if err != nil {
-		return true, w.retry(ctx, request, now, "read_steps_failed", err)
+		return true, w.retry(ctx, request, now, "read_steps_failed", err, false)
 	}
-	steps := []struct {
-		name user.DeletionStep
-		run  func(context.Context, uuid.UUID) error
-	}{
+	for _, step := range w.saga(request, now) {
+		if step.services != nil {
+			if err := w.runServiceErasure(ctx, request, leaseToken, completed, now, step.services); err != nil {
+				return true, err
+			}
+			continue
+		}
+		if completed[step.name] {
+			continue
+		}
+		stepCtx, cancel := context.WithTimeout(ctx, w.config.StepTimeout)
+		err := step.run(stepCtx, request.SubjectID)
+		cancel()
+		if err != nil {
+			return true, w.retry(ctx, request, now, string(step.name)+"_failed", err, false)
+		}
+		if err := w.store.CompleteDeletionStep(ctx, request.ID, leaseToken, step.name, now); err != nil {
+			return true, w.retry(ctx, request, now, string(step.name)+"_checkpoint_failed", err, false)
+		}
+	}
+	if err := w.store.CompleteDeletionRequest(ctx, request.ID, leaseToken, now); err != nil {
+		return true, w.retry(ctx, request, now, "complete_request_failed", err, false)
+	}
+	return true, nil
+}
+
+// coreSaga is today's order: block the identity, erase core, delete the
+// identity last.
+func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaStep {
+	return []sagaStep{
 		{name: user.DeletionStepDisableIdentity, run: w.identity.EnsureDisabled},
 		{name: user.DeletionStepLogoutSessions, run: w.identity.EnsureLoggedOut},
 		{name: user.DeletionStepAnonymizeCore, run: func(ctx context.Context, id uuid.UUID) error {
@@ -122,36 +161,22 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		}},
 		{name: user.DeletionStepDeleteIdentity, run: w.identity.EnsureDeleted},
 	}
-	for _, step := range steps {
-		if completed[step.name] {
-			continue
-		}
-		stepCtx, cancel := context.WithTimeout(ctx, w.config.StepTimeout)
-		err := step.run(stepCtx, request.SubjectID)
-		cancel()
-		if err != nil {
-			return true, w.retry(ctx, request, now, string(step.name)+"_failed", err)
-		}
-		if err := w.store.CompleteDeletionStep(ctx, request.ID, leaseToken, step.name, now); err != nil {
-			return true, w.retry(ctx, request, now, string(step.name)+"_checkpoint_failed", err)
-		}
-	}
-	if err := w.store.CompleteDeletionRequest(ctx, request.ID, leaseToken, now); err != nil {
-		return true, w.retry(ctx, request, now, "complete_request_failed", err)
-	}
-	return true, nil
 }
 
-func (w *Worker) retry(ctx context.Context, request user.DeletionRequest, now time.Time, code string, cause error) error {
+// retry releases the claim. A permanent failure goes to manual intervention at
+// once; a deferred one (RetryAt) refunds the attempt until the horizon; any
+// other failure spends an attempt and goes to manual intervention when the
+// budget is spent.
+func (w *Worker) retry(ctx context.Context, request user.DeletionRequest, now time.Time, code string, cause error, permanent bool) error {
 	if request.LeaseToken == nil {
 		return fmt.Errorf("account erasure %s without lease token: %w", code, cause)
 	}
 	next := now.Add(w.config.RetryDelay)
-	manual := request.AttemptCount >= w.config.MaxAttempts
+	manual := permanent || request.AttemptCount >= w.config.MaxAttempts
 	refundAttempt := false
 	var deferred interface{ RetryAt() time.Time }
 	horizon := request.CreatedAt.Add(w.config.DeferredRetryHorizon)
-	if errors.As(cause, &deferred) && now.Before(horizon) {
+	if !permanent && errors.As(cause, &deferred) && now.Before(horizon) {
 		if retryAt := deferred.RetryAt(); retryAt.After(next) {
 			next = retryAt
 		}
