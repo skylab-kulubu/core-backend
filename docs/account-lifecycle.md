@@ -127,10 +127,16 @@ subject only from a matching Account Center access token and freshly
 authenticated ID token, preserves the same durable request/outbox/marker
 ordering, and never exposes the privileged target-by-ID command.
 
-**Blocking release gate:** before account deletion is enabled in production, run disable, logout, delete, retry-after-404 and subsequent LDAP synchronization/import against a production-clone Keycloak realm connected to the real provider configuration. Record whether the external directory entry is retained, disabled or recreated and obtain the identity-service owner's approval. Repository tests cannot prove that external policy, so a release must not waive this rehearsal on the basis of the adapter tests alone.
+**Blocking release gate.** The realm has no LDAP or other user-storage federation: 0 components and 0 `federation_link` (checked 2026-09-24). YTÜ sign-in goes through the `OBS` identity provider, which links an identity and imports no directory. A deleted person who signs in again with YTÜ Microsoft therefore gets a new, empty account with a new `sub`. Nothing links it to the old account, and the old marker does not block the new `sub` (Yusuf, 2026-09-24). No production clone is built. Before account deletion is enabled in production:
+
+1. The local full harness proves disable, logout, delete and the retry after `404` against a real Keycloak, inside the nine-step saga with its three service checkpoints (ADR-0051; account-erasure ticket 10).
+2. In the same harness, a deleted person signs in again through a fake `OBS` identity provider. The record shows a new `sub`, no block from the old marker and no link to the old data (ticket 10).
+3. The old-JWT matrix then runs in production with a throwaway test account, and the identity-service owner approves in writing, the `OBS` behaviour above included (ticket 11).
+
+Repository tests cannot prove this, so a release must not waive it on the basis of the adapter tests alone.
 
 ## Rollback boundary
 
 Migration `20260925120000` (service erasure steps and `counts`) is forward-only once a service erasure step row exists: that row is completion proof, and its down migration refuses rather than delete it.
 
-Migration `20260920010000` is forward-only after the first deletion request or non-active account. Its down migration locks every subject-link table for the complete preflight/drop transaction, refuses to remove the durable anti-resurrection marker (including after a hard purge), and also fails if detached competitor or media history contains `NULL`; it never deletes or fabricates historical rows to force a rollback. After live deletion traffic, rollback means restoring a pre-migration database backup or shipping a forward repair while keeping the service stopped. Rehearse both migration and backup restore on a production clone before release.
+Migration `20260920010000` is forward-only after the first deletion request or non-active account. Its down migration locks every subject-link table for the complete preflight/drop transaction, refuses to remove the durable anti-resurrection marker (including after a hard purge), and also fails if detached competitor or media history contains `NULL`; it never deletes or fabricates historical rows to force a rollback. After live deletion traffic, rollback means restoring a pre-migration database backup or shipping a forward repair while keeping the service stopped. Rehearse both the migration and a backup restore in the local full harness before release (account-erasure ticket 10); no production clone is built.
