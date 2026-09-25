@@ -38,6 +38,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == ytuBackfillCommandName {
+		os.Exit(runYTUBackfill(os.Args[2:], os.Getenv, os.Stdout))
+	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")

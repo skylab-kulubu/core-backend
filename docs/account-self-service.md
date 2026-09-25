@@ -13,7 +13,8 @@ changes after that check.
 `GET /v1/users/me` returns the shadow fields (`id`, `email`, `firstName`,
 `lastName`, `username`, `schoolEmail`, `skyNumber`, `studentCardLinked`,
 `linkedin`, `university`, `faculty`, `department`, `profilePictureId`,
-`profilePictureUrl`, `createdAt`, `updatedAt`) plus the person's own `phone`.
+`profilePictureUrl`, `createdAt`, `updatedAt`) plus the person's own `phone`
+and `ytuLinked` (see below).
 
 `phone` is omitted while empty and is read-only on this route: until phone
 verification exists it is written only through the privileged user card
@@ -25,6 +26,56 @@ Student-card UID is likewise reported here only as `studentCardLinked`.
 
 `PUT` and `PATCH /v1/users/me` accept `firstName`, `lastName`, `linkedin`,
 `university`, `faculty` and `department` and answer with the same view.
+
+## University, faculty and department from the YTÜ login
+
+A person is **YTÜ-linked** once core has seen the `university` claim that
+Keycloak's YTÜ Microsoft (OBS) login writes (client scope
+`department_ve_university_to_jwt`). Core remembers it in `users.ytu_linked`:
+Account Center's own token carries no YTÜ claims, so a request without them
+says nothing about the person and never unlinks them. The view reports it as
+`ytuLinked` (always present, `false` for everyone else).
+
+- **On every request whose token carries the claims** core computes the
+  current values and writes them only when they differ from the record:
+  `university` as sent, `department` cleaned by `internal/ytu`, and
+  `faculty` derived from the department. Program codes (`011`, `02D`, …)
+  become department names, names written without spaces get them back, and
+  an unknown code leaves the department empty; an unknown department leaves
+  the faculty empty. People change department, so the login always wins,
+  including over values the person typed before they linked YTÜ.
+- **Self edits.** For a YTÜ-linked person `PUT`/`PATCH /v1/users/me` refuse
+  a change to `university`, `faculty` or `department` with
+  `409 Conflict`, problem `code` `ytu_managed_field`; nothing in the request
+  is saved. Sending the stored value back is not a change, so a form that
+  posts every field still saves `linkedin` or the name. Everyone else edits
+  the three fields as before.
+- **Admin edits.** `PATCH /v1/users/{id}` follows the same rule and the admin
+  card carries `ytuLinked`. An admin override would be put back by the
+  person's next YTÜ login, so it is refused instead; wrong data is fixed at
+  the source (the person's Microsoft record, or the Keycloak attribute).
+- The store enforces the rule too: `UpdateProfile` keeps the stored three
+  values of a YTÜ-linked record, so a write built from an older read cannot
+  revert a login that happened in between. Anonymization clears the flag
+  with the values.
+
+### One-time backfill
+
+People who never sign in again would otherwise keep empty values in rosters.
+`core-backend backfill-ytu-profile` reads every Keycloak account's
+`university` and `department` attributes with core's service account
+(read-only: it lists users), applies the same rule and comparison to the
+existing core records, and prints counts and the department values that gave
+no faculty. It never creates a record (the first request does) and skips
+accounts pending deletion or anonymized. Without `-apply` it only counts.
+Run it inside the running core container, which already has the environment:
+
+```sh
+docker exec <core container> ./core-backend backfill-ytu-profile          # dry run
+docker exec <core container> ./core-backend backfill-ytu-profile -apply   # write
+```
+
+A second run reports every record as already in step.
 
 ## Profile picture
 

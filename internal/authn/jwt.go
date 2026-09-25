@@ -260,6 +260,8 @@ func decodeAccessToken(token string) (Identity, map[string]any, error) {
 	school, _ := claims["school_email"].(string)
 	sky := claimString(claims, "sky_number", "skyNumber")
 	username := claimString(claims, "preferred_username")
+	university := claimFirstString(claims, "university")
+	department := claimFirstString(claims, "department")
 	return Identity{
 		ID: id,
 		Profile: user.Profile{
@@ -269,6 +271,8 @@ func decodeAccessToken(token string) (Identity, map[string]any, error) {
 			Username:    username,
 			SchoolEmail: school,
 			SkyNumber:   sky,
+			University:  university,
+			Department:  department,
 		},
 		Groups: groupsFromClaims(claims),
 		Roles:  rolesFromClaims(claims),
@@ -391,6 +395,23 @@ func rolesFromClaims(claims map[string]any) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// claimFirstString reads a user-attribute claim that Keycloak writes as a bare
+// string or, from a multivalued mapper, as an array; the first non-empty text
+// value is the attribute.
+func claimFirstString(claims map[string]any, key string) string {
+	switch v := claims[key].(type) {
+	case string:
+		return v
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 func claimString(claims map[string]any, keys ...string) string {
