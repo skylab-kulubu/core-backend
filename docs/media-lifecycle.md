@@ -121,11 +121,17 @@ code. CODEOWNERS covers the file and the ceilings. Each entry has:
 | `scan` | Needs a malware scan before it can be opened. |
 | `pending_ttl` | How long a Media with no Media attachment is kept (Go duration). `none` only for the legacy rules. |
 | `transport` | `single_step` (through `POST /v1/media`) or `direct` (Direct upload). |
+| `attach` | Who attaches the purpose's Media: `core` (a core record links it) or `service` (another product, through the service attach API). |
 | `image` | Raster handling: `reencode`, `max_dimension`, `variants` (name → px), `rasterize_svg`. |
 | `legacy_rules` | Only on `legacy`: the rules below instead of `types` and `max_mib`. |
 
 `pending_ttl` sets a new Media's expiry (see
-[Media attachment](#media-attachment)). `scan` and `image` are declared now
+[Media attachment](#media-attachment)). `attach` decides whether a purpose can
+be uploaded at all: a Media nothing can attach would only wait for its expiry,
+so a `service` purpose is refused until the service attach API exists (media
+redesign ticket 03). Today that is `cms_image`, `cms_file`, `answer_file`,
+`answer_file_large`, `club_file` and `video`; where club files and videos are
+attached is for the Direct upload tickets to settle. `scan` and `image` are declared now
 and not yet acted on: scanning and re-encoding with variants (media redesign
 ticket 04) read them as they ship. Until re-encoding ships, a raster image
 under any purpose gets the same metadata stripping as before (EXIF, XMP and
@@ -198,8 +204,8 @@ Core refuses to start with a catalogue that breaks one:
 
 `POST /v1/media` takes an optional multipart field `purpose`. With a purpose,
 core checks, in order: the purpose exists, the caller may upload it, it is not
-private (refused until private Media storage ships), it is single-step, the
-size, and the type detected from the content. `POST /v1/users/me/profile-picture` always uploads
+private (refused until private Media storage ships), it is single-step,
+something can attach it, the size, and the type detected from the content. `POST /v1/users/me/profile-picture` always uploads
 as `profile_picture`: raster images up to 5 MiB, no PDF, no SVG.
 
 Media uploaded without a purpose are `legacy` and keep the rules they have
@@ -220,6 +226,7 @@ over their upload budget gets `429` `media_rate_limited`, described under
 | 403 | `purpose_forbidden` | `purpose` | The caller's upload rule does not allow it. |
 | 422 | `private_media_disabled` | `purpose` | A private purpose. Private Media storage (encryption, the private bucket) is not built yet, so nothing is stored; retrying does not help. |
 | 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media`. |
+| 422 | `purpose_not_available` | `purpose` | Another product attaches Media of this purpose (`attach: service`) and the service attach API it needs arrives with media redesign ticket 03. Nothing is stored; the file would only wait for its expiry. |
 | 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum. |
 | 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types. |
 
@@ -300,24 +307,40 @@ recorded apart.
 
 | Status | Meaning | `expiresAt` |
 |---|---|---|
-| `pending` | No Media attachment yet. Every new Media starts here. | Upload time plus the purpose's `pending_ttl` (24 hours for every purpose today). `legacy` has `pending_ttl` `none`: no expiry. |
+| `pending` | No Media attachment yet. Every new Media starts here. | Upload time plus the purpose's `pending_ttl` (24 hours for every purpose today). |
 | `attached` | At least one Media attachment. Never purged by expiry. | None. |
-| `detached` | Its last Media attachment was removed. | 30 days after that (`media.DetachedRetention`, the recovery window). Attaching it again within the window makes it attached. |
+| `detached` | Its last Media attachment was removed. | 30 days after that. Attaching it again within the window makes it attached. |
 
-The database keeps the status in step with the attachments, in the
-transaction that adds or removes one: the first attachment makes the Media
-attached, removing the last detaches it. It locks the Media row first, so two
-transactions removing the last two attachments cannot both miss each other.
+**A legacy Media never gets an expiry**: not when it is uploaded (`legacy`
+has `pending_ttl` `none`), and not when its last Media attachment is removed.
+Skyforms, CMS and superadmin upload without a purpose today, and a legacy
+Media may still be used outside core by its address (CMS content stores
+addresses) after core stops linking it. The expiry cleanup therefore never
+touches a legacy Media; the legacy backfill (ticket 08) reports unused ones to
+Yusuf before anything removes them.
 
-Media uploaded without a purpose (Skyforms, CMS and superadmin today) are
-`legacy`, so they never expire: nothing those products link is visible to
-core yet, and the cleanup must not purge it.
+The database keeps the status in step with the Media attachments, once per
+statement that adds or removes them: a Media with a Media attachment is
+attached, a Media whose last one went is detached. It first locks the Media
+rows the statement touched, in id order and with a lock that does not wait
+for foreign key references. Two statements therefore never lock the same
+Media the other way round, two links of one Media written at once do not wait
+for each other, and two transactions removing the last two Media attachments
+of one Media cannot both see the other one still there. (Locks taken by
+separate statements of one transaction, such as an Event delete's gallery
+cascade and then its cover, follow the order of those statements; a deadlock
+there is detected by PostgreSQL and the transaction can be retried.)
+
+Restoring an archived Media (`POST /v1/media/{id}/restore`) starts its expiry
+again: a Media no Media attachment keeps gets its purpose's `pending_ttl` from
+the restore (a legacy one none), so a window that ran out while it was
+archived does not purge it on the next pass.
 
 ### Core's own links
 
-Core's links write and remove their Media attachments in the transaction
-that writes the link, whoever writes it. Database triggers on the linking
-tables do this, so every writer is covered, including account erasure's
+Core's links write and remove their Media attachments in the statement that
+writes the link, whoever writes it. Statement triggers on the linking tables
+do this, so every writer is covered, including account erasure's
 anonymization and maintenance SQL:
 
 | Link | `owner_type` | `role` |
@@ -343,12 +366,16 @@ link with `application/problem+json`, a stable `code`, and the members
 
 | Status | `code` | Extra members | When |
 |---|---|---|---|
-| 422 | `media_purpose_mismatch` | `purpose` | The Media's purpose does not fit the role: an Event cover needs `event_cover`, a gallery photo `event_gallery`, a profile picture `profile_picture`, a certificate asset `certificate_asset`. A PDF uploaded for a CMS page cannot be a cover. |
-| 422 | `media_not_linkable` | | There is no such Media, or it is archived, its blob is purged or being purged, or it expired before anything attached it. A pending, attached, or detached-but-not-expired Media can be linked. |
+| 422 | `media_purpose_mismatch` | `purpose` | The Media's purpose does not fit the role. An Event cover or gallery photo needs `event_cover` or `event_gallery` (the organizer's picker offers every photo of the team's Events for both); a certificate asset needs `certificate_asset`. A profile picture or a CMS page's PDF cannot be a cover. |
+| 422 | `media_not_linkable` | | There is no such Media, or it is archived, its blob is purged or being purged, or its expiry has passed. A pending or attached Media can be linked, and a Media removed from a record can be linked again until its window ends. |
 | 403 | `media_team_mismatch` | | Team media library: the Media is on an Event (archived ones included) of another Owner team. An Event may reuse a photo of another Event of its own Owner team. |
 
 Only new links are checked: an Event saved with the cover it already has, or
-a template draft keeping an asset, is not refused for it. The profile picture
+a template draft keeping an asset, is not refused for it. One exception:
+moving an Event to another Owner team checks the Team media library again for
+its current cover and gallery, and refuses the move with
+`media_team_mismatch` while another Event of the old team uses one of them;
+the organizer removes that photo from the Event first. The profile picture
 has no separate check: the only way to link one is
 `POST /v1/users/me/profile-picture`, which uploads it as `profile_picture`.
 
@@ -365,26 +392,27 @@ writes it.
 
 ### Expiry cleanup
 
-The purge worker, after its archived batch, makes one pass over the Media no
-attachment keeps whose `expiresAt` has passed: pending Media past their
-purpose's pending TTL and detached Media past their 30 days. It walks them by
-id, 25 at a time, and purges each blob with the same locked reference check
-and two-phase claim as an archived Media (a Media that something still uses
-is kept). The Media is archived as its blob goes, so ordinary reads hide it
+The purge worker, after its archived batch, makes one pass over the Media
+whose `expiresAt` has passed: pending Media past their purpose's pending TTL
+and detached purposed Media past their 30 days. It walks them by id, 25 at a
+time, and purges each blob with the same locked check and two-phase claim as
+an archived Media: a Media that a Media attachment or a core link still uses
+is kept. The Media is archived as its blob goes, so ordinary reads hide it
 and restore answers `410 Gone`. A Media whose blob cannot be deleted is
 logged with its id and retried on the next pass; it never holds up the
-others. Attached Media, legacy Media (no expiry) and archived Media are never
-purged by expiry; archived Media keep the archive window above.
+others. Attached Media, legacy Media (they have no expiry) and archived Media
+are never purged by expiry; archived Media keep the archive window above.
 
-### Media stored before attachments
+### Media stored before Media attachments
 
 The migration gives every Media core already links its Media attachment and
 the attached status, including a Media archived after it was linked. A Media
 nothing in core links stays `pending` with no expiry: this change purges
-nothing that existed before it. The legacy backfill (ticket 08) assigns
-purposes, reports the orphans to Yusuf, and only then gives them an expiry.
-The unused `attached` column of the first media migration is dropped;
-`status` replaces it.
+nothing that existed before it. All of them are legacy, so removing a core
+link from one later sets no expiry either. The legacy backfill (ticket 08)
+assigns purposes, reports the orphans to Yusuf, and only then gives them an
+expiry. The unused `attached` column of the first media migration is
+dropped; `status` replaces it.
 
 ## Configuration
 
