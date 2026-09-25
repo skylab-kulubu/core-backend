@@ -45,10 +45,13 @@ type ClientRole struct {
 
 type UserCard struct {
 	Person
-	Linkedin          string       `json:"linkedin,omitempty"`
-	University        string       `json:"university,omitempty"`
-	Faculty           string       `json:"faculty,omitempty"`
-	Department        string       `json:"department,omitempty"`
+	Linkedin   string `json:"linkedin,omitempty"`
+	University string `json:"university,omitempty"`
+	Faculty    string `json:"faculty,omitempty"`
+	Department string `json:"department,omitempty"`
+	// YTULinked marks university, faculty and department as following the
+	// YTÜ login; an admin edit that changes them is refused.
+	YTULinked         bool         `json:"ytuLinked,omitempty"`
 	Phone             string       `json:"phone,omitempty"`
 	StudentCardUid    string       `json:"studentCardUid,omitempty"`
 	ProfilePictureURL string       `json:"profilePictureUrl,omitempty"`
