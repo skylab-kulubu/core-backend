@@ -113,6 +113,9 @@ services:
       KEYCLOAK_REALM: e-skylab
       KEYCLOAK_CLIENT_ID: core
       KEYCLOAK_CLIENT_SECRET: ${CORE_CLIENT_SECRET}
+      # core's welcome and certificate mails go to SkyMail; the core client holds no SkyMail
+      # send role here, so SkyMail refuses them (a warning in core's log, no row, no mail).
+      SKYMAIL_URL: http://skymail:3000
       ACCOUNT_ACCESS_GATE_MODE: enforce
       ACCOUNT_ACCESS_REDIS_ADDR: account-access-redis:6379
       ACCOUNT_ACCESS_REDIS_USERNAME: core-writer
@@ -241,13 +244,16 @@ services:
     mem_limit: 64m
     logging: *logging
 
-  # Transparent proxies in front of the three services. Core points at them only in the crash
-  # scenario, where a held answer lets core die after a service committed its erasure.
+  # Transparent proxies in front of the three services and core. Core points at the service
+  # ones only in the crash scenario, where a held answer lets core die after a service committed
+  # its erasure; the edge reaches core through :9004, so a held intake answer makes Account
+  # Center's call time out after core accepted (the lost answer of scenario 2).
   hold-proxy:
     image: ${HARNESS_IMAGE_STUBS}
     command: ["-mode", "proxy"]
     environment:
-      PROXY_ROUTES: ":9001=http://skymail:3000,:9002=http://cms:5000,:9003=http://forms:8080"
+      PROXY_ROUTES: ":9001=http://skymail:3000,:9002=http://cms:5000,:9003=http://forms:8080,:9004=http://core:8080"
+      PROXY_HOLD_PREFIXES: /internal/v1/account-erasures/,/v1/account-deletion-requests/self
     mem_limit: 32m
     logging: *logging
 

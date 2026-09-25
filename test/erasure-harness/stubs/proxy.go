@@ -14,10 +14,23 @@ import (
 
 // runProxy forwards PROXY_ROUTES ("listen=upstream,listen=upstream", e.g.
 // ":9001=http://skymail:3000") unchanged. POST /harness/hold?seconds=N on :9091 makes every
-// proxy hold the next erase responses N seconds after the upstream answered, so core can be
-// killed while the service has already committed and core has not seen the answer.
+// proxy hold the answers to paths under PROXY_HOLD_PREFIXES (default: the erase route) N
+// seconds after the upstream answered: core can be killed while a service has already
+// committed, and Account Center's call to core's intake can time out after core accepted.
 func runProxy() {
 	var hold atomic.Int64
+	prefixes := strings.Split(os.Getenv("PROXY_HOLD_PREFIXES"), ",")
+	if os.Getenv("PROXY_HOLD_PREFIXES") == "" {
+		prefixes = []string{"/internal/v1/account-erasures/"}
+	}
+	held := func(path string) bool {
+		for _, prefix := range prefixes {
+			if prefix != "" && strings.HasPrefix(path, strings.TrimSpace(prefix)) {
+				return true
+			}
+		}
+		return false
+	}
 	routes := strings.Split(os.Getenv("PROXY_ROUTES"), ",")
 	for _, route := range routes {
 		listen, upstream, ok := strings.Cut(strings.TrimSpace(route), "=")
@@ -30,7 +43,7 @@ func runProxy() {
 		}
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		proxy.ModifyResponse = func(resp *http.Response) error {
-			if seconds := hold.Load(); seconds > 0 && strings.HasPrefix(resp.Request.URL.Path, "/internal/v1/account-erasures/") {
+			if seconds := hold.Load(); seconds > 0 && held(resp.Request.URL.Path) {
 				log.Printf("harness hold %s seconds=%d upstream_status=%d", resp.Request.URL.Path, seconds, resp.StatusCode)
 				time.Sleep(time.Duration(seconds) * time.Second)
 			}

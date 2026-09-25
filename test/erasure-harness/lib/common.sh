@@ -247,8 +247,16 @@ start_deletion() {
 # --- PII scans ------------------------------------------------------------------------------------
 # db_lines DB: every data row of every table as "table<TAB>row", from pg_dump --data-only.
 db_lines() {
-  PGPASSWORD=$POSTGRES_PASSWORD pg_dump -h postgres -U postgres -d "$1" --data-only --no-owner --no-privileges \
-    | awk '/^COPY / { table = $2; next } /^\\\.$/ { table = ""; next } table != "" { print table "\t" $0 }'
+  local dump
+  dump=$(mktemp)
+  if ! PGPASSWORD=$POSTGRES_PASSWORD pg_dump -h postgres -U postgres -d "$1" --data-only --no-owner --no-privileges \
+    >"$dump" 2>"$dump.err"; then
+    cat "$dump.err" >&2
+    rm -f "$dump" "$dump.err"
+    return 1
+  fi
+  awk '/^COPY / { table = $2; next } /^\\\.$/ { table = ""; next } table != "" { print table "\t" $0 }' "$dump"
+  rm -f "$dump" "$dump.err"
 }
 # pii_needles PERSON: the strings that name the person (addresses, full name, surname).
 pii_needles() {
@@ -257,13 +265,19 @@ pii_needles() {
 # pii_hits DB PERSON [ALLOWED_TABLE_REGEX]: rows of DB naming the person, outside the tables the
 # decision keeps on purpose (Certificate recipient name, News byline). Prints "table" per hit.
 pii_hits() {
-  local db=$1 person=$2 allowed=${3:-'^$'} needles
+  local db=$1 person=$2 allowed=${3:-'^$'} needles lines
   needles=$(pii_needles "$person")
-  db_lines "$db" | grep -iF -f <(printf '%s\n' "$needles") | cut -f1 | grep -Ev "$allowed" || true
+  lines=$(db_lines "$db") || { echo "dump-of-$db-failed"; return 0; }
+  grep -iF -f <(printf '%s\n' "$needles") <<<"$lines" | cut -f1 | grep -Ev "$allowed" || true
 }
 # subject_hits DB SUBJECT [ALLOWED_TABLE_REGEX]: rows of DB carrying the subject id.
 subject_hits() {
-  local db=$1 subject=$2 allowed=${3:-'^$'}
-  db_lines "$db" | grep -iF "$subject" | cut -f1 | grep -Ev "$allowed" || true
+  local db=$1 subject=$2 allowed=${3:-'^$'} lines
+  lines=$(db_lines "$db") || { echo "dump-of-$db-failed"; return 0; }
+  grep -iF "$subject" <<<"$lines" | cut -f1 | grep -Ev "$allowed" || true
 }
 count_lines() { if [[ -z $1 ]]; then echo 0; else grep -c . <<<"$1"; fi; }
+steps_done() { local r=$1 s; shift; for s in "$@"; do step_done "$r" "$s" || return 1; done; }
+# request_where REQUEST SQL_BOOLEAN: true when the boolean holds for the request row.
+request_where() { [[ $(pg super_skylab "SELECT ($2) FROM account_deletion_requests WHERE id = '$1'") == t ]]; }
+not() { ! "$@"; }

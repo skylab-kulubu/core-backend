@@ -11,6 +11,7 @@ set -Eeuo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 source "$HARNESS_DIR/lib/provision.sh"
 source "$HARNESS_DIR/lib/seed.sh"
+source "$HARNESS_DIR/lib/account-center.sh"
 shopt -s nullglob
 for file in "$HARNESS_DIR"/lib/scenarios/*.sh; do
   # shellcheck source=/dev/null
