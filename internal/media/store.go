@@ -50,10 +50,11 @@ type Store interface {
 	ListLifecycle(ctx context.Context, visibility lifecycle.Visibility) ([]Media, error)
 	ListPendingCoverColors(ctx context.Context, limit int) ([]Media, error)
 	SetCoverColors(ctx context.Context, id uuid.UUID, colors []string) error
-	// ListPendingServingPolicy returns media whose object may still carry the
-	// metadata it was stored with before the serving policy. Media whose blob
-	// is purged or being purged is left out.
-	ListPendingServingPolicy(ctx context.Context, limit int) ([]Media, error)
+	// ListPendingServingPolicy returns, in id order and after the given id,
+	// media whose object may still carry the metadata it was stored with
+	// before the serving policy. Media whose blob is purged or being purged
+	// is left out.
+	ListPendingServingPolicy(ctx context.Context, after uuid.UUID, limit int) ([]Media, error)
 	// SetServingPolicyApplied records that the object now follows the serving
 	// policy. It changes nothing else on the record.
 	SetServingPolicyApplied(ctx context.Context, id uuid.UUID) error

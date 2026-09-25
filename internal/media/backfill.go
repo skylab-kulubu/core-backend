@@ -3,7 +3,10 @@ package media
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -28,45 +31,10 @@ func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore) (int
 	return len(items), len(items) < coverColorBackfillBatchSize, nil
 }
 
-// BackfillServingPolicy brings one batch of objects stored before the serving
-// policy under it. Upload wrote those with the recorded type as their only
-// metadata, so an object is rewritten in place only when the policy serves
-// it differently; the record itself keeps its type and is only flagged. An
-// object that is already gone has nothing left to serve and is recorded as
-// done. Every step is idempotent, so a batch cut short is simply taken again.
-func BackfillServingPolicy(ctx context.Context, store Store, blobs BlobStore) (int, bool, error) {
-	items, err := store.ListPendingServingPolicy(ctx, servingPolicyBackfillBatchSize)
-	if err != nil {
-		return 0, false, err
-	}
-	for i, item := range items {
-		serving := ServingMetadata(item.Type, item.Name)
-		if serving != (BlobMetadata{ContentType: item.Type}) {
-			if err := blobs.SetMetadata(ctx, item.Key, serving); err != nil && !errors.Is(err, ErrNotFound) {
-				return i, false, err
-			}
-		}
-		if err := store.SetServingPolicyApplied(ctx, item.ID); err != nil {
-			return i, false, err
-		}
-	}
-	return len(items), len(items) < servingPolicyBackfillBatchSize, nil
-}
-
 func MaintainCoverColorBackfill(ctx context.Context, store Store, blobs BlobStore, retryEvery time.Duration, onError func(error)) {
-	maintainBackfill(ctx, store, blobs, BackfillCoverColors, retryEvery, onError)
-}
-
-// MaintainServingPolicyBackfill runs BackfillServingPolicy in the background,
-// batch after batch until nothing is pending, and retries after a failure.
-func MaintainServingPolicyBackfill(ctx context.Context, store Store, blobs BlobStore, retryEvery time.Duration, onError func(error)) {
-	maintainBackfill(ctx, store, blobs, BackfillServingPolicy, retryEvery, onError)
-}
-
-func maintainBackfill(ctx context.Context, store Store, blobs BlobStore, backfill func(context.Context, Store, BlobStore) (int, bool, error), retryEvery time.Duration, onError func(error)) {
 	go func() {
 		for {
-			_, done, err := backfill(ctx, store, blobs)
+			_, done, err := BackfillCoverColors(ctx, store, blobs)
 			if err == nil {
 				if done {
 					return
@@ -74,6 +42,87 @@ func maintainBackfill(ctx context.Context, store Store, blobs BlobStore, backfil
 				continue
 			}
 			if onError != nil {
+				onError(err)
+			}
+			timer := time.NewTimer(retryEvery)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+	}()
+}
+
+// BackfillReport counts one pass of a backfill.
+type BackfillReport struct {
+	Applied int
+	Failed  int
+}
+
+// BackfillServingPolicy makes one pass over the media stored before the
+// serving policy, in batches of 25 by id. Upload wrote those objects with the
+// recorded type as their only metadata, so an object is rewritten in place
+// only when the policy serves it differently; the record keeps its type and
+// is only flagged. An object that is already gone has nothing left to serve
+// and counts as done. A record that fails is reported through onError and
+// left for the next pass, so it never holds up the records after it. Every
+// step is idempotent, so a pass cut short is simply run again.
+func BackfillServingPolicy(ctx context.Context, store Store, blobs BlobStore, onError func(error)) (BackfillReport, error) {
+	var report BackfillReport
+	after := uuid.Nil
+	for {
+		items, err := store.ListPendingServingPolicy(ctx, after, servingPolicyBackfillBatchSize)
+		if err != nil {
+			return report, err
+		}
+		for _, item := range items {
+			if err := applyServingPolicy(ctx, store, blobs, item); err != nil {
+				report.Failed++
+				if onError != nil {
+					onError(fmt.Errorf("media %s: %w", item.ID, err))
+				}
+				continue
+			}
+			report.Applied++
+		}
+		if len(items) < servingPolicyBackfillBatchSize {
+			return report, nil
+		}
+		after = items[len(items)-1].ID
+	}
+}
+
+func applyServingPolicy(ctx context.Context, store Store, blobs BlobStore, item Media) error {
+	serving := ServingMetadata(item.Type, item.Name)
+	if serving != (BlobMetadata{ContentType: item.Type}) {
+		if err := blobs.SetMetadata(ctx, item.Key, serving); err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+	}
+	return store.SetServingPolicyApplied(ctx, item.ID)
+}
+
+// MaintainServingPolicyBackfill runs BackfillServingPolicy in the background
+// until a pass leaves nothing failed.
+func MaintainServingPolicyBackfill(ctx context.Context, store Store, blobs BlobStore, retryEvery time.Duration, onError func(error)) {
+	MaintainBackfill(ctx, func(ctx context.Context) (BackfillReport, error) {
+		return BackfillServingPolicy(ctx, store, blobs, onError)
+	}, retryEvery, onError)
+}
+
+// MaintainBackfill runs pass in the background until one ends with nothing
+// failed, waiting retryEvery after a pass that left failures or could not
+// finish.
+func MaintainBackfill(ctx context.Context, pass func(context.Context) (BackfillReport, error), retryEvery time.Duration, onError func(error)) {
+	go func() {
+		for {
+			report, err := pass(ctx)
+			if err == nil && report.Failed == 0 {
+				return
+			}
+			if err != nil && onError != nil {
 				onError(err)
 			}
 			timer := time.NewTimer(retryEvery)

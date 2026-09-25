@@ -2,8 +2,11 @@ package media_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -81,9 +84,9 @@ func TestBackfillServingPolicyRewritesLegacyDownloadsAndSVGs(t *testing.T) {
 	page := legacyMedia(t, store, blobs, media.Media{Name: "page.html", Type: "text/html", Kind: media.KindFile, Key: "files/page"})
 	logo := legacyMedia(t, store, blobs, media.Media{Name: "logo.svg", Type: "image/svg+xml", Kind: media.KindImage, Key: "images/logo"})
 
-	processed, done, err := media.BackfillServingPolicy(ctx, store, blobs)
-	if err != nil || processed != 2 || !done {
-		t.Fatalf("processed %d done %v err %v", processed, done, err)
+	report, err := media.BackfillServingPolicy(ctx, store, blobs, nil)
+	if err != nil || report != (media.BackfillReport{Applied: 2}) {
+		t.Fatalf("report %+v err %v", report, err)
 	}
 	if got, _ := blobs.Metadata(page.Key); got != (media.BlobMetadata{ContentType: "application/octet-stream", ContentDisposition: "attachment; filename=page.html"}) {
 		t.Fatalf("page metadata %+v", got)
@@ -95,9 +98,9 @@ func TestBackfillServingPolicyRewritesLegacyDownloadsAndSVGs(t *testing.T) {
 		t.Fatalf("page record type %q updated %v (was %v) err %v", stored.Type, stored.UpdatedAt, page.UpdatedAt, err)
 	}
 
-	processed, done, err = media.BackfillServingPolicy(ctx, store, blobs)
-	if err != nil || processed != 0 || !done {
-		t.Fatalf("second processed %d done %v err %v", processed, done, err)
+	report, err = media.BackfillServingPolicy(ctx, store, blobs, nil)
+	if err != nil || report != (media.BackfillReport{}) {
+		t.Fatalf("second report %+v err %v", report, err)
 	}
 }
 
@@ -112,9 +115,9 @@ func TestBackfillServingPolicySkipsUploadsMadeUnderThePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	processed, done, err := media.BackfillServingPolicy(ctx, store, blobs)
-	if err != nil || processed != 0 || !done {
-		t.Fatalf("processed %d done %v err %v", processed, done, err)
+	report, err := media.BackfillServingPolicy(ctx, store, blobs, nil)
+	if err != nil || report != (media.BackfillReport{}) {
+		t.Fatalf("report %+v err %v", report, err)
 	}
 }
 
@@ -126,7 +129,7 @@ func TestBackfillServingPolicyLeavesInlineMediaInline(t *testing.T) {
 	photo := legacyMedia(t, store, blobs, media.Media{Name: "photo.png", Type: "image/png", Kind: media.KindImage, Key: "images/photo"})
 	cv := legacyMedia(t, store, blobs, media.Media{Name: "cv.pdf", Type: "application/pdf", Kind: media.KindFile, Key: "files/cv"})
 
-	if _, _, err := media.BackfillServingPolicy(ctx, store, blobs); err != nil {
+	if _, err := media.BackfillServingPolicy(ctx, store, blobs, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, item := range []media.Media{photo, cv} {
@@ -157,9 +160,9 @@ func TestBackfillServingPolicyCoversArchivedMediaButNotPurgedBlobs(t *testing.T)
 		t.Fatal(err)
 	}
 
-	processed, _, err := media.BackfillServingPolicy(ctx, store, blobs)
-	if err != nil || processed != 1 {
-		t.Fatalf("processed %d err %v", processed, err)
+	report, err := media.BackfillServingPolicy(ctx, store, blobs, nil)
+	if err != nil || report != (media.BackfillReport{Applied: 1}) {
+		t.Fatalf("report %+v err %v", report, err)
 	}
 	if got, _ := blobs.Metadata(archived.Key); got.ContentType != "application/octet-stream" {
 		t.Fatalf("archived metadata %+v", got)
@@ -179,15 +182,15 @@ func TestBackfillServingPolicyDoesNotStallOnAnObjectThatIsGone(t *testing.T) {
 	}
 	page := legacyMedia(t, store, blobs, media.Media{Name: "page.html", Type: "text/html", Kind: media.KindFile, Key: "files/page"})
 
-	if _, _, err := media.BackfillServingPolicy(ctx, store, blobs); err != nil {
+	if _, err := media.BackfillServingPolicy(ctx, store, blobs, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := blobs.Metadata(page.Key); got.ContentType != "application/octet-stream" {
 		t.Fatalf("page metadata %+v", got)
 	}
-	processed, done, err := media.BackfillServingPolicy(ctx, store, blobs)
-	if err != nil || processed != 0 || !done {
-		t.Fatalf("second processed %d done %v err %v", processed, done, err)
+	report, err := media.BackfillServingPolicy(ctx, store, blobs, nil)
+	if err != nil || report != (media.BackfillReport{}) {
+		t.Fatalf("second report %+v err %v", report, err)
 	}
 }
 
@@ -216,5 +219,100 @@ func TestMaintainServingPolicyBackfillWorksThroughEveryBatch(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
+	}
+}
+
+// failingBlob answers SetMetadata for one key with an error that is not
+// ErrNotFound, as an unreachable or refusing R2 would, until healed.
+type failingBlob struct {
+	*media.MemoryBlob
+	mu      sync.Mutex
+	failKey string
+}
+
+func (b *failingBlob) SetMetadata(ctx context.Context, key string, meta media.BlobMetadata) error {
+	b.mu.Lock()
+	fail := key == b.failKey
+	b.mu.Unlock()
+	if fail {
+		return errors.New("r2: internal error")
+	}
+	return b.MemoryBlob.SetMetadata(ctx, key, meta)
+}
+
+func (b *failingBlob) heal() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.failKey = ""
+}
+
+func TestBackfillServingPolicyGoesPastARecordThatFails(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := media.NewMemoryStore()
+	blobs := media.NewMemoryBlob()
+	first := legacyMedia(t, store, blobs, media.Media{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), Name: "first.html", Type: "text/html", Kind: media.KindFile, Key: "files/first"})
+	var later []media.Media
+	for i := range 30 {
+		later = append(later, legacyMedia(t, store, blobs, media.Media{Name: "later.html", Type: "text/html", Kind: media.KindFile, Key: "files/later-" + strconv.Itoa(i)}))
+	}
+	failing := &failingBlob{MemoryBlob: blobs, failKey: first.Key}
+	var reported []error
+
+	report, err := media.BackfillServingPolicy(ctx, store, failing, func(err error) { reported = append(reported, err) })
+	if err != nil || report != (media.BackfillReport{Applied: 30, Failed: 1}) {
+		t.Fatalf("report %+v err %v", report, err)
+	}
+	if len(reported) != 1 || !strings.Contains(reported[0].Error(), first.ID.String()) {
+		t.Fatalf("reported %v", reported)
+	}
+	for _, item := range later {
+		if got, _ := blobs.Metadata(item.Key); got.ContentType != "application/octet-stream" {
+			t.Fatalf("%s left behind the failing record: %+v", item.Key, got)
+		}
+	}
+
+	failing.heal()
+	report, err = media.BackfillServingPolicy(ctx, store, failing, nil)
+	if err != nil || report != (media.BackfillReport{Applied: 1}) {
+		t.Fatalf("retry report %+v err %v", report, err)
+	}
+	if got, _ := blobs.Metadata(first.Key); got.ContentType != "application/octet-stream" {
+		t.Fatalf("failed record was not retried: %+v", got)
+	}
+}
+
+func TestMaintainServingPolicyBackfillRetriesAFailedRecordOnTheNextPass(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	store := media.NewMemoryStore()
+	blobs := media.NewMemoryBlob()
+	page := legacyMedia(t, store, blobs, media.Media{Name: "page.html", Type: "text/html", Kind: media.KindFile, Key: "files/page"})
+	failing := &failingBlob{MemoryBlob: blobs, failKey: page.Key}
+	reported := make(chan error, 1)
+
+	media.MaintainServingPolicyBackfill(ctx, store, failing, time.Millisecond, func(err error) {
+		select {
+		case reported <- err:
+		default:
+		}
+	})
+	select {
+	case <-reported:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the failing record was never reported")
+	}
+	failing.heal()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got, _ := blobs.Metadata(page.Key); got.ContentType == "application/octet-stream" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the failed record was never retried")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

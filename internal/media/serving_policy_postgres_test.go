@@ -55,9 +55,9 @@ func TestPostgresServingPolicyBackfillRewritesOnlyLegacyObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	processed, done, err := media.BackfillServingPolicy(ctx, store, blobs)
-	if err != nil || processed != 2 || !done {
-		t.Fatalf("processed %d done %v err %v", processed, done, err)
+	report, err := media.BackfillServingPolicy(ctx, store, blobs, nil)
+	if err != nil || report != (media.BackfillReport{Applied: 2}) {
+		t.Fatalf("report %+v err %v", report, err)
 	}
 	for _, item := range []media.Media{page, archived} {
 		stored, err := store.GetIncludingDeleted(ctx, item.ID)
@@ -72,8 +72,8 @@ func TestPostgresServingPolicyBackfillRewritesOnlyLegacyObjects(t *testing.T) {
 		t.Fatalf("purged record changed to %q", stored.Type)
 	}
 
-	processed, done, err = media.BackfillServingPolicy(ctx, store, blobs)
-	if err != nil || processed != 0 || !done {
-		t.Fatalf("second processed %d done %v err %v", processed, done, err)
+	report, err = media.BackfillServingPolicy(ctx, store, blobs, nil)
+	if err != nil || report != (media.BackfillReport{}) {
+		t.Fatalf("second report %+v err %v", report, err)
 	}
 }

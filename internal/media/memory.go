@@ -1,7 +1,9 @@
 package media
 
 import (
+	"bytes"
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -65,18 +67,19 @@ func (s *MemoryStore) SetCoverColors(_ context.Context, id uuid.UUID, colors []s
 	return nil
 }
 
-func (s *MemoryStore) ListPendingServingPolicy(_ context.Context, limit int) ([]Media, error) {
+func (s *MemoryStore) ListPendingServingPolicy(_ context.Context, after uuid.UUID, limit int) ([]Media, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Media, 0)
 	for _, m := range s.byID {
-		if m.ServingPolicyApplied || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil {
+		if m.ServingPolicyApplied || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil || bytes.Compare(m.ID[:], after[:]) <= 0 {
 			continue
 		}
 		out = append(out, m)
-		if limit > 0 && len(out) == limit {
-			break
-		}
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].ID[:], out[j].ID[:]) < 0 })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }

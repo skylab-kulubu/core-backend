@@ -120,13 +120,13 @@ func (s *PostgresStore) SetCoverColors(ctx context.Context, id uuid.UUID, colors
 	return nil
 }
 
-func (s *PostgresStore) ListPendingServingPolicy(ctx context.Context, limit int) ([]Media, error) {
+func (s *PostgresStore) ListPendingServingPolicy(ctx context.Context, after uuid.UUID, limit int) ([]Media, error) {
 	if limit <= 0 {
 		limit = 25
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+mediaCols+` FROM media
-		WHERE serving_policy_applied = false AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL
-		ORDER BY created_at, id LIMIT $1`, limit)
+		WHERE serving_policy_applied = false AND id > $1 AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL
+		ORDER BY id LIMIT $2`, after, limit)
 	if err != nil {
 		return nil, err
 	}
