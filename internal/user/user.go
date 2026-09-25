@@ -38,6 +38,12 @@ const (
 	DeletionStepEraseProfile    DeletionStep = "erase_profile_media"
 	DeletionStepEraseUploads    DeletionStep = "erase_staged_uploads"
 	DeletionStepDeleteIdentity  DeletionStep = "delete_identity"
+
+	// Service erasure steps: one Erasure command each (ADR-0051). Their
+	// checkpoint rows also keep the service's counts as completion proof.
+	DeletionStepEraseSkyMail DeletionStep = "erase_skymail"
+	DeletionStepEraseCMS     DeletionStep = "erase_cms"
+	DeletionStepEraseForms   DeletionStep = "erase_forms"
 )
 
 type DeletionRequest struct {

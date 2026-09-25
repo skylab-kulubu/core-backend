@@ -408,6 +408,25 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			 AND actual.column_name = expected.column_name
 		) = 5`,
 	20260925100000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'ytu_linked'`,
+	20260925120000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema='public' AND table_name='account_deletion_steps'
+			  AND column_name='counts' AND data_type='jsonb'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid=to_regclass('public.account_deletion_steps')
+			  AND conname='account_deletion_steps_counts_check'
+			  AND pg_get_constraintdef(oid) LIKE '%jsonb_typeof(counts)%object%'
+		)
+		AND (
+			SELECT count(*) FROM pg_constraint, unnest(ARRAY['erase_skymail','erase_cms','erase_forms']) AS step(name)
+			WHERE conrelid=to_regclass('public.account_deletion_steps')
+			  AND conname='account_deletion_steps_step_check'
+			  AND pg_get_constraintdef(oid) LIKE '%''' || step.name || '''%'
+		) = 3`,
 	20260925180000: `
 		SELECT 1
 		WHERE (
@@ -423,6 +442,10 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		) = 2
 		AND to_regclass('public.media_serving_policy_pending_idx') IS NOT NULL
 		AND to_regclass('public.certificate_template_versions_asset_serving_pending_idx') IS NOT NULL`,
+	20260926090000: `
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'media' AND column_name = 'purpose'
+		  AND data_type = 'text' AND is_nullable = 'NO' AND column_default = '''legacy''::text'`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

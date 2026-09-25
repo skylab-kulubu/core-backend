@@ -11,7 +11,7 @@ Core calls Keycloak Admin REST with the client-credentials token of its own clie
 | Role mappings | `GET /users/{id}/role-mappings`, `POST`/`DELETE /users/{id}/role-mappings/clients/{client}`, `GET /groups/{id}/role-mappings`, `POST`/`DELETE /groups/{id}/role-mappings/clients/{client}` | `manage-users` |
 | Groups | `GET /groups`, `GET /groups/{id}`, `GET /groups/{id}/children`, `GET /group-by-path/{path}`, `GET /groups/{id}/members`, `POST /groups`, `POST /groups/{id}/children`, `PUT /groups/{id}` | `manage-users` / `query-groups` |
 
-Core never writes under `/clients`. `cmd/ldapimport` is a separate one-off tool: it reads users and their federated identities and deletes federated identity links (`manage-users`).
+Core never writes under `/clients`.
 
 ## Certificate roles
 

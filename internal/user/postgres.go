@@ -3,6 +3,7 @@ package user
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -376,7 +377,14 @@ func (s *PostgresStore) RequestDeletion(ctx context.Context, id uuid.UUID, reque
 	return request, nil
 }
 
-func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at time.Time) error {
+// AnonymizeAccount erases core's personal data of the person in one
+// transaction. emails are the addresses the person holds outside core's row
+// (Keycloak's Primary, School and Personal e-mail); with the row's own
+// addresses, read under the same row lock, they select core's guest data to
+// clear: guest tickets lose name, e-mail and phone, ownerless certificates
+// lose the recipient e-mail. The addresses are used for this transaction only
+// and written nowhere.
+func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at time.Time, emails []string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -395,7 +403,8 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 
 	var state AccountState
 	var profileMediaID *uuid.UUID
-	if err := tx.QueryRow(ctx, `SELECT account_state, profile_picture_id FROM users WHERE id = $1 FOR UPDATE`, id).Scan(&state, &profileMediaID); errors.Is(err, pgx.ErrNoRows) {
+	var email, schoolEmail string
+	if err := tx.QueryRow(ctx, `SELECT account_state, profile_picture_id, email, school_email FROM users WHERE id = $1 FOR UPDATE`, id).Scan(&state, &profileMediaID, &email, &schoolEmail); errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
@@ -405,6 +414,9 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 	}
 	if state != AccountDeletionPending {
 		return ErrInvalid
+	}
+	if err := clearGuestData(ctx, tx, slices.Concat(emails, []string{email, schoolEmail}), at); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE competitors
@@ -491,6 +503,35 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// clearGuestData clears the guest data keyed by the person's addresses (spec
+// §3.4). Only rows without an owner are guest data: a guest ticket keeps its
+// check-ins and an ownerless certificate its recipient name, serial and PDF,
+// the rule owned certificates already follow.
+func clearGuestData(ctx context.Context, tx pgx.Tx, addresses []string, at time.Time) error {
+	emails := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if address = strings.ToLower(strings.TrimSpace(address)); address != "" && !slices.Contains(emails, address) {
+			emails = append(emails, address)
+		}
+	}
+	if len(emails) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE tickets
+		SET guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '', updated_at = $2
+		WHERE owner_id IS NULL AND guest_email <> '' AND lower(btrim(guest_email)) = ANY($1)
+	`, emails, at); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `
+		UPDATE certificates
+		SET recipient_email = ''
+		WHERE owner_id IS NULL AND recipient_email <> '' AND lower(btrim(recipient_email)) = ANY($1)
+	`, emails)
+	return err
 }
 
 // HardPurgeAccount is intentionally not exposed through Store or an HTTP service.
