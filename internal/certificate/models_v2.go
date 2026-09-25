@@ -89,6 +89,11 @@ type TemplateVersion struct {
 	Checksum      string                     `json:"checksum"`
 	PublishedBy   *uuid.UUID                 `json:"publishedBy,omitempty"`
 	PublishedAt   time.Time                  `json:"publishedAt"`
+
+	// AssetServingPolicyApplied is set once every asset copy of the version
+	// is known to follow the media serving policy: at publish, or by the
+	// asset serving backfill.
+	AssetServingPolicyApplied bool `json:"-"`
 }
 
 type VersionAssetRef struct {

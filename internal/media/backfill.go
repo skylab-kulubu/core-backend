@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	coverColorBackfillBatchSize    = 25
-	servingPolicyBackfillBatchSize = 25
+	coverColorBackfillBatchSize = 25
+	backfillBatchSize           = 25
 )
 
 func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore) (int, bool, error) {
@@ -62,35 +62,43 @@ type BackfillReport struct {
 }
 
 // BackfillServingPolicy makes one pass over the media stored before the
-// serving policy, in batches of 25 by id. Upload wrote those objects with the
-// recorded type as their only metadata, so an object is rewritten in place
-// only when the policy serves it differently; the record keeps its type and
-// is only flagged. An object that is already gone has nothing left to serve
-// and counts as done. A record that fails is reported through onError and
-// left for the next pass, so it never holds up the records after it. Every
-// step is idempotent, so a pass cut short is simply run again.
+// serving policy. Upload wrote those objects with the recorded type as their
+// only metadata, so an object is rewritten in place only when the policy
+// serves it differently; the record keeps its type and is only flagged. An
+// object that is already gone has nothing left to serve and counts as done.
 func BackfillServingPolicy(ctx context.Context, store Store, blobs BlobStore, onError func(error)) (BackfillReport, error) {
+	return BackfillPass(ctx, "media", store.ListPendingServingPolicy,
+		func(item Media) uuid.UUID { return item.ID },
+		func(ctx context.Context, item Media) error { return applyServingPolicy(ctx, store, blobs, item) },
+		onError)
+}
+
+// BackfillPass walks every pending item once, by id in batches of 25, and
+// applies each one. An item that fails is reported through onError, named by
+// kind and id, and left pending for the next pass, so it never holds up the
+// items after it. apply must be idempotent: a pass cut short is run again.
+func BackfillPass[T any](ctx context.Context, kind string, list func(ctx context.Context, after uuid.UUID, limit int) ([]T, error), id func(T) uuid.UUID, apply func(context.Context, T) error, onError func(error)) (BackfillReport, error) {
 	var report BackfillReport
 	after := uuid.Nil
 	for {
-		items, err := store.ListPendingServingPolicy(ctx, after, servingPolicyBackfillBatchSize)
+		items, err := list(ctx, after, backfillBatchSize)
 		if err != nil {
 			return report, err
 		}
 		for _, item := range items {
-			if err := applyServingPolicy(ctx, store, blobs, item); err != nil {
+			if err := apply(ctx, item); err != nil {
 				report.Failed++
 				if onError != nil {
-					onError(fmt.Errorf("media %s: %w", item.ID, err))
+					onError(fmt.Errorf("%s %s: %w", kind, id(item), err))
 				}
 				continue
 			}
 			report.Applied++
 		}
-		if len(items) < servingPolicyBackfillBatchSize {
+		if len(items) < backfillBatchSize {
 			return report, nil
 		}
-		after = items[len(items)-1].ID
+		after = id(items[len(items)-1])
 	}
 }
 

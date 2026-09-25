@@ -23,8 +23,18 @@ func (a layoutAssets) ReadAsset(_ context.Context, id uuid.UUID) (certificate.As
 	return asset, nil
 }
 
-func TestPublishedTemplateAssetsFollowTheMediaServingPolicy(t *testing.T) {
-	t.Parallel()
+type publishedAssets struct {
+	store     *certificate.MemoryStore
+	artifacts *media.MemoryBlob
+	version   certificate.TemplateVersion
+	logoID    uuid.UUID
+	photoID   uuid.UUID
+}
+
+// publishWithAssets publishes a template whose layout places an SVG and a
+// PNG Media.
+func publishWithAssets(t *testing.T) publishedAssets {
+	t.Helper()
 	ctx := context.Background()
 	store := certificate.NewMemoryStore()
 	artifacts := media.NewMemoryBlob()
@@ -45,16 +55,73 @@ func TestPublishedTemplateAssetsFollowTheMediaServingPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	version, err := service.PublishTemplate(ctx, authz.Principal{ID: uuid.NewString(), Groups: []string{"/ADMIN"}}, template.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prefix := "certificate-template-assets/" + version.ID.String() + "/"
-	if got, _ := artifacts.Metadata(prefix + logoID.String()); got != (media.BlobMetadata{ContentType: "image/svg+xml", ContentDisposition: "attachment"}) {
+	return publishedAssets{store: store, artifacts: artifacts, version: version, logoID: logoID, photoID: photoID}
+}
+
+func TestPublishedTemplateAssetsFollowTheMediaServingPolicy(t *testing.T) {
+	t.Parallel()
+	published := publishWithAssets(t)
+
+	prefix := "certificate-template-assets/" + published.version.ID.String() + "/"
+	if got, _ := published.artifacts.Metadata(prefix + published.logoID.String()); got != (media.BlobMetadata{ContentType: "image/svg+xml", ContentDisposition: "attachment"}) {
 		t.Errorf("svg asset metadata %+v", got)
 	}
-	if got, _ := artifacts.Metadata(prefix + photoID.String()); got != (media.BlobMetadata{ContentType: "image/png"}) {
+	if got, _ := published.artifacts.Metadata(prefix + published.photoID.String()); got != (media.BlobMetadata{ContentType: "image/png"}) {
 		t.Errorf("png asset metadata %+v", got)
+	}
+}
+
+func TestAssetServingBackfillSkipsVersionsPublishedUnderThePolicy(t *testing.T) {
+	t.Parallel()
+	published := publishWithAssets(t)
+
+	report, err := certificate.BackfillAssetServingPolicy(context.Background(), published.store, published.artifacts, nil)
+	if err != nil || report != (media.BackfillReport{}) {
+		t.Fatalf("report %+v err %v", report, err)
+	}
+}
+
+func TestAssetServingBackfillBringsExistingTemplateAssetsUnderThePolicy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := certificate.NewMemoryStore()
+	blobs := media.NewMemoryBlob()
+	template, err := store.CreateTemplate(ctx, certificate.Template{ID: uuid.New(), Name: "LEGACY", OwnerTeam: "ARTLAB", SourceKind: "sky", DraftLayout: versionedLayout("LEGACY")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionID := uuid.New()
+	logo := certificate.VersionAssetRef{Key: "certificate-template-assets/" + versionID.String() + "/logo", ContentType: "image/svg+xml"}
+	photo := certificate.VersionAssetRef{Key: "certificate-template-assets/" + versionID.String() + "/photo", ContentType: "image/png"}
+	gone := certificate.VersionAssetRef{Key: "certificate-template-assets/" + versionID.String() + "/gone", ContentType: "image/svg+xml"}
+	for _, ref := range []certificate.VersionAssetRef{logo, photo} {
+		if err := blobs.Put(ctx, ref.Key, []byte("legacy"), media.BlobMetadata{ContentType: ref.ContentType}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.CreateVersion(ctx, certificate.TemplateVersion{
+		ID: versionID, TemplateID: template.ID, Layout: template.DraftLayout, Checksum: "legacy",
+		AssetManifest: map[string]certificate.VersionAssetRef{"logo": logo, "photo": photo, "gone": gone},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := certificate.BackfillAssetServingPolicy(ctx, store, blobs, nil)
+	if err != nil || report != (media.BackfillReport{Applied: 1}) {
+		t.Fatalf("report %+v err %v", report, err)
+	}
+	if got, _ := blobs.Metadata(logo.Key); got != (media.BlobMetadata{ContentType: "image/svg+xml", ContentDisposition: "attachment"}) {
+		t.Errorf("svg asset metadata %+v", got)
+	}
+	if got, _ := blobs.Metadata(photo.Key); got != (media.BlobMetadata{ContentType: "image/png"}) {
+		t.Errorf("png asset metadata %+v", got)
+	}
+	report, err = certificate.BackfillAssetServingPolicy(ctx, store, blobs, nil)
+	if err != nil || report != (media.BackfillReport{}) {
+		t.Fatalf("second report %+v err %v", report, err)
 	}
 }

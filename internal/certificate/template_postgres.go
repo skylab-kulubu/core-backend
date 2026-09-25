@@ -103,9 +103,9 @@ func (s *PostgresStore) CreateVersion(ctx context.Context, v TemplateVersion) (T
 		return TemplateVersion{}, err
 	}
 	err = s.pool.QueryRow(ctx, `
-		INSERT INTO certificate_template_versions (id,template_id,version,layout,asset_manifest,checksum,published_by)
-		VALUES ($1,$2,(SELECT COALESCE(MAX(version),0)+1 FROM certificate_template_versions WHERE template_id=$2),$3,$4,$5,$6)
-		RETURNING `+versionCols, v.ID, v.TemplateID, raw, assets, v.Checksum, v.PublishedBy).Scan(
+		INSERT INTO certificate_template_versions (id,template_id,version,layout,asset_manifest,checksum,published_by,asset_serving_policy_applied)
+		VALUES ($1,$2,(SELECT COALESCE(MAX(version),0)+1 FROM certificate_template_versions WHERE template_id=$2),$3,$4,$5,$6,$7)
+		RETURNING `+versionCols, v.ID, v.TemplateID, raw, assets, v.Checksum, v.PublishedBy, v.AssetServingPolicyApplied).Scan(
 		&v.ID, &v.TemplateID, &v.Version, &raw, &assets, &v.Checksum, &v.PublishedBy, &v.PublishedAt,
 	)
 	if isUnique(err) {
@@ -121,6 +121,41 @@ func (s *PostgresStore) CreateVersion(ctx context.Context, v TemplateVersion) (T
 		err = json.Unmarshal(assets, &v.AssetManifest)
 	}
 	return v, err
+}
+
+func (s *PostgresStore) ListPendingAssetServingPolicy(ctx context.Context, after uuid.UUID, limit int) ([]TemplateVersion, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, asset_manifest FROM certificate_template_versions
+		WHERE asset_serving_policy_applied = false AND id > $1 ORDER BY id LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]TemplateVersion, 0)
+	for rows.Next() {
+		var v TemplateVersion
+		var assets []byte
+		if err := rows.Scan(&v.ID, &assets); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(assets, &v.AssetManifest); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// SetAssetServingPolicyApplied touches only the flag, so the guards on a
+// version's layout and asset manifest do not run again.
+func (s *PostgresStore) SetAssetServingPolicyApplied(ctx context.Context, id uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE certificate_template_versions SET asset_serving_policy_applied = true WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *PostgresStore) LatestVersion(ctx context.Context, templateID uuid.UUID) (TemplateVersion, error) {
