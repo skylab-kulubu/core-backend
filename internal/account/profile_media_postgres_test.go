@@ -39,14 +39,14 @@ type deletionRaceBlob struct {
 	deleteErr  error
 }
 
-func (b *deletionRaceBlob) Put(ctx context.Context, key string, data []byte, contentType string) error {
+func (b *deletionRaceBlob) Put(ctx context.Context, key string, data []byte, meta media.BlobMetadata) error {
 	b.once.Do(func() { close(b.putStarted) })
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-b.releasePut:
 	}
-	return b.MemoryBlob.Put(ctx, key, data, contentType)
+	return b.MemoryBlob.Put(ctx, key, data, meta)
 }
 
 func (b *deletionRaceBlob) Delete(ctx context.Context, key string) error {
@@ -100,7 +100,7 @@ func TestWorkerImmediatelyErasesUnreferencedProfileBlobAndSanitizesSharedMedia(t
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := blobs.Put(ctx, item.Key, []byte("private-profile"), item.Type); err != nil {
+		if err := blobs.Put(ctx, item.Key, []byte("private-profile"), media.BlobMetadata{ContentType: item.Type}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := pool.Exec(ctx, `UPDATE users SET profile_picture_id=$2, profile_picture_url=$3 WHERE id=$1`, subjectID, item.ID, item.Key); err != nil {
@@ -189,7 +189,7 @@ func TestWorkerRetriesWhenProfileMediaIsRestoredBeforeBlobErase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := blobs.Put(ctx, item.Key, []byte("private-profile"), item.Type); err != nil {
+	if err := blobs.Put(ctx, item.Key, []byte("private-profile"), media.BlobMetadata{ContentType: item.Type}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE users SET profile_picture_id=$2, profile_picture_url=$3 WHERE id=$1`, subjectID, item.ID, item.Key); err != nil {

@@ -69,7 +69,7 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 		kind  string
 		body  []byte
 	)
-	if strings.HasPrefix(contentType, "image/") || isJPEG(data) || isPNG(data) || isWebP(data) || isGIF(data) || isSVG(data) {
+	if strings.HasPrefix(contentType, "image/") || isImage(data) {
 		if len(data) > maxImageBytes {
 			return Media{}, ErrInvalid
 		}
@@ -81,7 +81,7 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 		ctype = detected
 		kind = KindImage
 		key = "images/" + uuid.NewString()
-	} else if strings.EqualFold(strings.TrimSpace(contentType), "application/pdf") || isPDF(data) {
+	} else if strings.EqualFold(strings.TrimSpace(contentType), pdfType) || isPDF(data) {
 		if len(data) > maxFileBytes || !isPDF(data) {
 			return Media{}, ErrInvalid
 		}
@@ -89,7 +89,7 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 			return Media{}, ErrInvalid
 		}
 		body = data
-		ctype = "application/pdf"
+		ctype = pdfType
 		kind = KindFile
 		key = "files/" + uuid.NewString()
 	} else {
@@ -117,7 +117,8 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 	}
 	operationCtx, cancelOperation := context.WithTimeout(ctx, operationTimeout)
 	defer cancelOperation()
-	if err := s.blobs.Put(operationCtx, key, body, ctype); err != nil {
+	serving := ServingMetadata(ctype, name)
+	if err := s.blobs.Put(operationCtx, key, body, serving); err != nil {
 		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
 	}
 	colors := []string{}
@@ -135,6 +136,8 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 		Key:                 key,
 		CoverColors:         colors,
 		CoverColorsComputed: colorsComputed,
+
+		ServingPolicyApplied: true,
 	}
 	var created Media
 	if durableStaging {
