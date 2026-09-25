@@ -220,19 +220,21 @@ func TestPostgresCertificateTemplateAssetsAttachTheirMedia(t *testing.T) {
 	}
 	attached(t, db.get(t, logo.ID))
 
-	// A draft-only asset is detached when the draft drops it.
+	// A draft-only asset is detached when the draft drops it; being legacy,
+	// it gets no expiry.
 	extra := legacy()
 	template.DraftLayout = layout(background.ID, extra.ID)
 	if _, err := templates.UpdateTemplate(ctx, template); err != nil {
 		t.Fatal(err)
 	}
 	attached(t, db.get(t, extra.ID))
-	before := time.Now()
 	template.DraftLayout = layout(background.ID, background.ID)
 	if _, err := templates.UpdateTemplate(ctx, template); err != nil {
 		t.Fatal(err)
 	}
-	detachedWindow(t, db.get(t, extra.ID), before, time.Now())
+	if got := db.get(t, extra.ID); got.Status != media.StatusDetached || got.ExpiresAt != nil {
+		t.Fatalf("dropped asset: status %q expires %v, want detached with no expiry", got.Status, got.ExpiresAt)
+	}
 }
 
 func TestPostgresMediaAttachmentFollowsItsLinksTransaction(t *testing.T) {

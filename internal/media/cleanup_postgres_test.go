@@ -189,13 +189,13 @@ func TestPostgresPurgeKeepsMediaAnAttachmentOrACoreLinkStillUses(t *testing.T) {
 	// Safety net: an Event cover linked without its Media attachment still
 	// keeps an expired upload.
 	cover := db.withBlob(t, "event_cover")
-	if _, err := db.pool.Exec(ctx, `ALTER TABLE events DISABLE TRIGGER events_sync_media_attachments`); err != nil {
+	if _, err := db.pool.Exec(ctx, `ALTER TABLE events DISABLE TRIGGER events_media_attachments_insert`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.pool.Exec(ctx, `INSERT INTO events (id, name, location, owner_team, cover_image_id) VALUES ($1, 'Unattached', 'YTÜ', 'WEBLAB', $2)`, uuid.New(), cover.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.pool.Exec(ctx, `ALTER TABLE events ENABLE TRIGGER events_sync_media_attachments`); err != nil {
+	if _, err := db.pool.Exec(ctx, `ALTER TABLE events ENABLE TRIGGER events_media_attachments_insert`); err != nil {
 		t.Fatal(err)
 	}
 	expiry, err := media.PurgeExpired(ctx, db.store, db.blobs, time.Now().Add(25*time.Hour), nil)

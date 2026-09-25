@@ -507,16 +507,33 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			 AND actual.contype = expected.constraint_type::"char"
 		) = 4
 		AND to_regclass('public.media_attachments_owner_idx') IS NOT NULL
-		AND to_regclass('public.media_expiry_candidates_idx') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'media_expiry_idx'
+			  AND indexdef LIKE '%(expires_at, id)%'
+			  AND indexdef LIKE '%expires_at IS NOT NULL%'
+		)
 		AND (
 			SELECT count(*) FROM (VALUES
 				('media_attachments', 'media_attachments_require_current_media', 'require_current_attached_media'),
-				('media_attachments', 'media_attachments_status', 'media_attachment_status'),
-				('events', 'events_sync_media_attachments', 'sync_core_media_attachments'),
-				('event_images', 'event_images_sync_media_attachments', 'sync_core_media_attachments'),
-				('users', 'users_sync_media_attachments', 'sync_core_media_attachments'),
-				('certificate_templates', 'certificate_templates_sync_media_attachments', 'sync_core_media_attachments'),
-				('certificate_template_versions', 'certificate_template_versions_sync_media_attachments', 'sync_core_media_attachments')
+				('media_attachments', 'media_attachments_status_insert', 'media_attachment_status'),
+				('media_attachments', 'media_attachments_status_update', 'media_attachment_status'),
+				('media_attachments', 'media_attachments_status_delete', 'media_attachment_status'),
+				('events', 'events_media_attachments_insert', 'sync_core_media_attachments'),
+				('events', 'events_media_attachments_update', 'sync_core_media_attachments'),
+				('events', 'events_media_attachments_delete', 'sync_core_media_attachments'),
+				('event_images', 'event_images_media_attachments_insert', 'sync_core_media_attachments'),
+				('event_images', 'event_images_media_attachments_update', 'sync_core_media_attachments'),
+				('event_images', 'event_images_media_attachments_delete', 'sync_core_media_attachments'),
+				('users', 'users_media_attachments_insert', 'sync_core_media_attachments'),
+				('users', 'users_media_attachments_update', 'sync_core_media_attachments'),
+				('users', 'users_media_attachments_delete', 'sync_core_media_attachments'),
+				('certificate_templates', 'certificate_templates_media_attachments_insert', 'sync_core_media_attachments'),
+				('certificate_templates', 'certificate_templates_media_attachments_update', 'sync_core_media_attachments'),
+				('certificate_templates', 'certificate_templates_media_attachments_delete', 'sync_core_media_attachments'),
+				('certificate_template_versions', 'certificate_template_versions_media_attachments_insert', 'sync_core_media_attachments'),
+				('certificate_template_versions', 'certificate_template_versions_media_attachments_update', 'sync_core_media_attachments'),
+				('certificate_template_versions', 'certificate_template_versions_media_attachments_delete', 'sync_core_media_attachments')
 			) expected(table_name, trigger_name, function_name)
 			JOIN pg_trigger actual
 			  ON actual.tgrelid = to_regclass('public.' || expected.table_name)
@@ -526,7 +543,9 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			JOIN pg_proc trigger_function
 			  ON trigger_function.oid = actual.tgfoid
 			 AND trigger_function.proname = expected.function_name
-		) = 7`,
+		) = 19
+		AND to_regprocedure('public.core_media_links(jsonb, text, text, text)') IS NOT NULL
+		AND to_regprocedure('public.certificate_layout_media_ids(jsonb, jsonb)') IS NOT NULL`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

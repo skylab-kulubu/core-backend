@@ -146,7 +146,7 @@ func TestApplyRepairsAMissingMediaAttachmentTrigger(t *testing.T) {
 	if err := migrate.Apply(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `DROP TRIGGER users_sync_media_attachments ON users`); err != nil {
+	if _, err := pool.Exec(ctx, `DROP TRIGGER users_media_attachments_update ON users`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `DROP TABLE schema_migrations`); err != nil {
@@ -157,7 +157,7 @@ func TestApplyRepairsAMissingMediaAttachmentTrigger(t *testing.T) {
 	}
 	var restored bool
 	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_trigger
-		WHERE tgrelid = 'users'::regclass AND tgname = 'users_sync_media_attachments')`).Scan(&restored); err != nil {
+		WHERE tgrelid = 'users'::regclass AND tgname = 'users_media_attachments_update')`).Scan(&restored); err != nil {
 		t.Fatal(err)
 	}
 	if !restored {
