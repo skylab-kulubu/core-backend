@@ -65,6 +65,36 @@ func (s *MemoryStore) SetCoverColors(_ context.Context, id uuid.UUID, colors []s
 	return nil
 }
 
+func (s *MemoryStore) ListPendingServingPolicy(_ context.Context, limit int) ([]Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Media, 0)
+	for _, m := range s.byID {
+		if m.ServingPolicyApplied || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil {
+			continue
+		}
+		out = append(out, m)
+		if limit > 0 && len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) SetServingPolicyApplied(_ context.Context, id uuid.UUID, servedType string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	m.Type = servedType
+	m.ServingPolicyApplied = true
+	m.UpdatedAt = time.Now().UTC()
+	s.byID[id] = m
+	return nil
+}
+
 func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (Media, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -214,6 +244,16 @@ func (s *MemoryBlob) Put(_ context.Context, key string, data []byte, meta BlobMe
 	defer s.mu.Unlock()
 	cp := append([]byte{}, data...)
 	s.objects[key] = cp
+	s.metadata[key] = meta
+	return nil
+}
+
+func (s *MemoryBlob) SetMetadata(_ context.Context, key string, meta BlobMetadata) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.objects[key]; !ok {
+		return ErrNotFound
+	}
 	s.metadata[key] = meta
 	return nil
 }

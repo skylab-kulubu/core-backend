@@ -95,6 +95,9 @@ func main() {
 	media.MaintainCoverColorBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
 		log.Printf("media cover color backfill: %v", err)
 	})
+	media.MaintainServingPolicyBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
+		log.Printf("media serving policy backfill: %v", err)
+	})
 
 	dir := identity.Directory(identity.NewMemory())
 	keycloakConfigured := strings.TrimSpace(os.Getenv("KEYCLOAK_URL")) != ""

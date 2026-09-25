@@ -36,6 +36,10 @@ type Media struct {
 	BlobPurgeCheckedAt  *time.Time `json:"-"`
 	CreatedAt           time.Time  `json:"createdAt"`
 	UpdatedAt           time.Time  `json:"updatedAt"`
+
+	// ServingPolicyApplied is set once the object's metadata is known to
+	// follow the serving policy: at upload, or by the serving policy backfill.
+	ServingPolicyApplied bool `json:"-"`
 }
 
 type Store interface {
@@ -46,6 +50,13 @@ type Store interface {
 	ListLifecycle(ctx context.Context, visibility lifecycle.Visibility) ([]Media, error)
 	ListPendingCoverColors(ctx context.Context, limit int) ([]Media, error)
 	SetCoverColors(ctx context.Context, id uuid.UUID, colors []string) error
+	// ListPendingServingPolicy returns media whose object may still carry the
+	// metadata it was stored with before the serving policy. Media whose blob
+	// is purged or being purged is left out.
+	ListPendingServingPolicy(ctx context.Context, limit int) ([]Media, error)
+	// SetServingPolicyApplied records that the object now follows the serving
+	// policy and the type it is served as.
+	SetServingPolicyApplied(ctx context.Context, id uuid.UUID, servedType string) error
 	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	Restore(ctx context.Context, id uuid.UUID) error
 	ListPurgeCandidates(ctx context.Context, deletedBefore time.Time, limit int) ([]Media, error)
@@ -61,6 +72,9 @@ type BlobMetadata struct {
 
 type BlobStore interface {
 	Put(ctx context.Context, key string, data []byte, meta BlobMetadata) error
+	// SetMetadata replaces the metadata of a stored object; ErrNotFound when
+	// there is no such object.
+	SetMetadata(ctx context.Context, key string, meta BlobMetadata) error
 	Read(ctx context.Context, key string) ([]byte, error)
 	Delete(ctx context.Context, key string) error
 }

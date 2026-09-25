@@ -427,6 +427,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND conname='account_deletion_steps_step_check'
 			  AND pg_get_constraintdef(oid) LIKE '%''' || step.name || '''%'
 		) = 3`,
+	20260925180000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'media' AND column_name = 'serving_policy_applied'`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

@@ -47,7 +47,42 @@ publication outcome is unknown. Account erasure also waits for active intents
 and checkpoints subject-specific blob cleanup before deleting the identity or
 completing its request.
 
-Configuration:
+## Serving policy
+
+Objects are public at `https://cdn.yildizskylab.com/<key>`, so the metadata an
+upload is stored with decides what a browser does with it
+(`internal/media/serving.go`):
+
+- JPEG, PNG, WebP, GIF and PDF are served inline with their type. The SkyForms
+  admin preview frames PDFs.
+- SVG keeps `image/svg+xml`, so `<img>` still renders it, but carries
+  `Content-Disposition: attachment`: opening its URL downloads it instead of
+  running any script the regex sanitizer missed.
+- Every other file is `application/octet-stream` with
+  `Content-Disposition: attachment; filename*=…` (the uploaded name, RFC 2231
+  encoded), whatever type its client declared.
+
+The media record's `type` is the type the CDN serves, not the declared one,
+because code that republishes a blob by its record (certificate template
+assets) must not bring back a type the policy took away.
+
+Objects stored before the policy are rewritten in place by a background
+backfill that starts with core: a batch of 25 records at a time, an S3
+`CopyObject` onto the same key with `MetadataDirective=REPLACE` (supported by
+R2's S3 API), then `serving_policy_applied` and the served type on the record.
+Raster images and PDFs only get the flag. Purged blobs are skipped, a missing
+object is recorded as done, and any other failure is retried a minute later,
+so the backfill is safe to interrupt and re-run. Uploads set the flag
+themselves.
+
+`GET /v1/media/{id}` stays public, but a caller without a token gets no
+`uploadedBy` and no `name`: applicants' CVs are media records too.
+
+`X-Content-Type-Options: nosniff` cannot be stored as R2 object metadata; it
+needs a Cloudflare Transform Rule on `cdn.yildizskylab.com`.
+
+## Configuration
+
 
 - `MEDIA_BLOB_RECOVERY_DAYS` — recovery window in whole days; default `30`.
 - `MEDIA_BLOB_PURGE_INTERVAL` — Go duration between bounded runs; default `1h`.

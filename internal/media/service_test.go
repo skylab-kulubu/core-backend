@@ -59,6 +59,10 @@ func (b *recordingBlobStore) Put(_ context.Context, key string, data []byte, _ m
 	return nil
 }
 
+func (b *recordingBlobStore) SetMetadata(context.Context, string, media.BlobMetadata) error {
+	return nil
+}
+
 func (b *recordingBlobStore) Read(_ context.Context, key string) ([]byte, error) {
 	data, ok := b.objects[key]
 	if !ok {

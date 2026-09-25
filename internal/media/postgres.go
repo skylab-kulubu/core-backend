@@ -21,7 +21,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at`
+const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 	if m.ID == uuid.Nil {
@@ -31,9 +31,9 @@ func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 		m.CoverColors = []string{}
 	}
 	created, err := scanMedia(s.pool.QueryRow(ctx, `
-			INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed))
+			INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied))
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Media{}, ErrForbidden
 	}
@@ -111,6 +111,39 @@ func (s *PostgresStore) ListPendingCoverColors(ctx context.Context, limit int) (
 
 func (s *PostgresStore) SetCoverColors(ctx context.Context, id uuid.UUID, colors []string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE media SET cover_colors = $2, cover_colors_computed = true, updated_at = now() WHERE id = $1 AND deleted_at IS NULL`, id, colors)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) ListPendingServingPolicy(ctx context.Context, limit int) ([]Media, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+mediaCols+` FROM media
+		WHERE serving_policy_applied = false AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL
+		ORDER BY created_at, id LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Media, 0)
+	for rows.Next() {
+		m, err := scanMedia(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) SetServingPolicyApplied(ctx context.Context, id uuid.UUID, servedType string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE media SET file_type = $2, serving_policy_applied = true, updated_at = now() WHERE id = $1`, id, servedType)
 	if err != nil {
 		return err
 	}
@@ -314,7 +347,7 @@ type rowScanner interface {
 func scanMedia(row rowScanner) (Media, error) {
 	var m Media
 	var created, updated time.Time
-	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated)
+	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied)
 	if m.CoverColors == nil {
 		m.CoverColors = []string{}
 	}

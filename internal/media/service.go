@@ -136,6 +136,8 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 		Key:                 key,
 		CoverColors:         colors,
 		CoverColorsComputed: colorsComputed,
+
+		ServingPolicyApplied: true,
 	}
 	var created Media
 	if durableStaging {
