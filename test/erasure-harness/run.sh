@@ -19,7 +19,10 @@ STATE=$HERE/.state
 PROJECT=${HARNESS_PROJECT:-skylab-erasure-harness}
 export HARNESS_PROJECT=$PROJECT
 
-"$HERE/build.sh"
+# A driver command works against the running stack: it keeps the images the stack runs.
+if [ "${1:-}" != "--driver" ] || [ ! -s "$STATE/images.env" ]; then
+  "$HERE/build.sh"
+fi
 # shellcheck source=/dev/null
 . "$STATE/images.env"
 
