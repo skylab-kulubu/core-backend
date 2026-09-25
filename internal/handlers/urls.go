@@ -111,16 +111,28 @@ func (h *URLHandler) QR(c fiber.Ctx) error {
 	if err != nil {
 		return urlError(c, err)
 	}
+	// The code carries the tags it was asked for (utm_source=qr on a poster),
+	// so scans are counted apart from clicks on the same link.
+	utm := shorturl.UTMFromQuery(func(key string) string { return strings.Clone(c.Query(key)) })
+	content := utm.FillInto(qr.ShortURL(u.Alias))
+	logo := qr.LogoFromQuery(c.Query("logo"))
+	if strings.EqualFold(c.Query("format"), "svg") {
+		svg, err := qr.SVG(content, logo)
+		if err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+		c.Set(fiber.HeaderContentType, "image/svg+xml")
+		return c.Send(svg)
+	}
 	size := qr.SizeFromQuery(c.Query("size"))
-	content := qr.ShortURL(u.Alias)
 	var png []byte
-	if qr.LogoFromQuery(c.Query("logo")) {
+	if logo {
 		png, err = qr.PNGWithLogo(content, size)
 	} else {
 		png, err = qr.PNG(content, size)
 	}
 	if err != nil {
-		return err
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	c.Set(fiber.HeaderContentType, "image/png")
 	return c.Send(png)

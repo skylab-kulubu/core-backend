@@ -901,3 +901,29 @@ func TestURLChannelSuffixTagsTheRedirect(t *testing.T) {
 		t.Fatalf("hits %+v", hits)
 	}
 }
+
+func TestURLQRServesSVGWithTheLogo(t *testing.T) {
+	t.Parallel()
+	store := shorturl.NewMemoryStore()
+	createClubURL(t, store)
+	app := urlAppWith(t, authn.Identity{}, store)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?format=svg&logo=1&utm_source=qr", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != fiber.StatusOK || resp.Header.Get(fiber.HeaderContentType) != "image/svg+xml" {
+		t.Fatalf("status=%d type=%s", resp.StatusCode, resp.Header.Get(fiber.HeaderContentType))
+	}
+	if !strings.HasPrefix(string(body), "<svg") || !strings.Contains(string(body), "data:image/png;base64,") {
+		t.Fatalf("svg body %.120s", body)
+	}
+	plain, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?utm_source=qr", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.StatusCode != fiber.StatusOK || plain.Header.Get(fiber.HeaderContentType) != "image/png" {
+		t.Fatalf("png status=%d type=%s", plain.StatusCode, plain.Header.Get(fiber.HeaderContentType))
+	}
+}
