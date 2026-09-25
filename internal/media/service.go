@@ -168,11 +168,13 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	defer cancelOperation()
 	serving := ServingMetadata(stored.ctype, file.Name)
 	if err := s.blobs.Put(operationCtx, key, stored.body, serving); err != nil {
-		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
+		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, nil, err)
 	}
+	var sizes []string
 	for _, variant := range stored.variants {
-		if err := s.blobs.Put(operationCtx, variantKey(key, variant.size), variant.body, serving); err != nil {
-			return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
+		sizes = append(sizes, variantKey(key, variant.size))
+		if err := s.blobs.Put(operationCtx, sizes[len(sizes)-1], variant.body, serving); err != nil {
+			return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, sizes, err)
 		}
 	}
 	colors := []string{}
@@ -211,7 +213,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 			// durable staging row for the sweeper.
 			return Media{}, err
 		}
-		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
+		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, sizes, err)
 	}
 	return s.withURL(created), nil
 }
@@ -296,12 +298,20 @@ func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
 	return storedFile{body: clean, ctype: ctype, kind: KindImage, keyPrefix: "images/"}, nil
 }
 
-func (s *service) cleanupRejectedUpload(ctx context.Context, staging UploadStagingStore, durableStaging bool, key string, cause error) error {
+// cleanupRejectedUpload deletes what a refused upload wrote: the stored
+// sizes written so far (sizes), then the object at key. The staging sweeper
+// finds any of them a failure here leaves.
+func (s *service) cleanupRejectedUpload(ctx context.Context, staging UploadStagingStore, durableStaging bool, key string, sizes []string, cause error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	if durableStaging {
 		if err := staging.ReadyStagedUploadForCleanup(cleanupCtx, key, time.Now().UTC()); err != nil {
 			cause = errors.Join(cause, fmt.Errorf("schedule rejected upload cleanup: %w", err))
+		}
+	}
+	for _, size := range sizes {
+		if err := s.blobs.Delete(cleanupCtx, size); err != nil {
+			return errors.Join(cause, fmt.Errorf("cleanup rejected upload size: %w", err))
 		}
 	}
 	if err := s.blobs.Delete(cleanupCtx, key); err != nil {

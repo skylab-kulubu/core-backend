@@ -344,7 +344,7 @@ func (s *PostgresStore) purgeBlob(ctx context.Context, id uuid.UUID, purgedAt ti
 		}
 		return false, nil
 	}
-	if err := purge(key); err != nil {
+	if err := purgeObjects(key, purge); err != nil {
 		return false, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE media

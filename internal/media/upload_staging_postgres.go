@@ -132,7 +132,7 @@ func (s *PostgresStore) PurgeNextStagedUpload(ctx context.Context, now time.Time
 		return true, tx.Commit(ctx)
 	}
 
-	if err := purge(key); err != nil {
+	if err := purgeObjects(key, purge); err != nil {
 		if _, updateErr := tx.Exec(ctx, `
 			UPDATE media_upload_staging
 			SET attempt_count=attempt_count+1,
@@ -192,7 +192,7 @@ func (s *PostgresStore) PurgeNextSubjectStagedUpload(ctx context.Context, subjec
 		}
 		return true, tx.Commit(ctx)
 	}
-	if err := purge(key); err != nil {
+	if err := purgeObjects(key, purge); err != nil {
 		retryAt := now.Add(uploadStagingRetryDelay)
 		if _, updateErr := tx.Exec(ctx, `
 			UPDATE media_upload_staging

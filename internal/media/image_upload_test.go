@@ -13,6 +13,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"testing"
+	"time"
 
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -401,5 +402,65 @@ func TestService_PurposeKeepsTheFirstFrameOfAnAnimatedGIF(t *testing.T) {
 	img, format := decodeStored(t, stored)
 	if created.Type != "image/png" || format != "png" || !isRed(img.At(4, 4)) {
 		t.Fatalf("recorded %s, stored %s, pixel %v; want the red first frame as PNG", created.Type, format, img.At(4, 4))
+	}
+}
+
+func TestPurgeRemovesTheStoredSizesWithTheImage(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := media.NewMemoryStore()
+	blobs := media.NewMemoryBlob()
+	svc := media.NewService(store, blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test")
+	p := signedIn("70707070-7070-7070-7070-707070707070")
+	upload := func() media.Media {
+		created, err := svc.UploadForPurpose(ctx, p, "profile_picture", uploaded("photo.jpg", "image/jpeg", solidJPEG(t, 1600, 1200, color.RGBA{G: 200, A: 255})))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+	objects := func(m media.Media) []string {
+		var left []string
+		for _, key := range []string{m.Key, m.Key + "/card", m.Key + "/page"} {
+			if _, ok := blobs.Get(key); ok {
+				left = append(left, key)
+			}
+		}
+		return left
+	}
+
+	archived, expiring := upload(), upload()
+	if len(objects(archived)) != 3 {
+		t.Fatalf("stored %v", objects(archived))
+	}
+	if err := svc.ArchiveOwn(ctx, p, archived.ID); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().UTC().Add(31 * 24 * time.Hour)
+	if _, err := media.PurgeDeleted(ctx, store, blobs, later, 30*24*time.Hour, 25); err != nil {
+		t.Fatal(err)
+	}
+	if left := objects(archived); len(left) != 0 {
+		t.Errorf("archived image purged, objects left: %v", left)
+	}
+	if _, err := media.PurgeExpired(ctx, store, blobs, later, nil); err != nil {
+		t.Fatal(err)
+	}
+	if left := objects(expiring); len(left) != 0 {
+		t.Errorf("expired image purged, objects left: %v", left)
+	}
+}
+
+func TestService_ARejectedUploadLeavesNoStoredSize(t *testing.T) {
+	t.Parallel()
+	blobs := media.NewMemoryBlob()
+	svc := media.NewService(rejectingCreateStore{MemoryStore: media.NewMemoryStore()}, blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test")
+
+	_, err := svc.UploadForPurpose(context.Background(), signedIn("71717171-7171-7171-7171-717171717171"), "profile_picture", uploaded("photo.jpg", "image/jpeg", solidJPEG(t, 1600, 1200, color.RGBA{R: 10, A: 255})))
+	if !errors.Is(err, media.ErrForbidden) {
+		t.Fatalf("err = %v", err)
+	}
+	if left := blobs.Keys(); len(left) != 0 {
+		t.Fatalf("rejected upload left objects %v", left)
 	}
 }

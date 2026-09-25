@@ -3,6 +3,8 @@ package media
 import (
 	"bytes"
 	"context"
+	"maps"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -223,7 +225,7 @@ func (s *MemoryStore) PurgeBlobIfUnreferenced(_ context.Context, id uuid.UUID, p
 		m.BlobPurgeCheckedAt = &purgedAt
 		s.byID[id] = m
 	}
-	if err := purge(m.Key); err != nil {
+	if err := purgeObjects(m.Key, purge); err != nil {
 		return false, err
 	}
 	m.BlobPurgedAt = &purgedAt
@@ -271,7 +273,7 @@ func (s *MemoryStore) PurgeExpiredBlobIfUnattached(_ context.Context, id uuid.UU
 		m.BlobPurgeCheckedAt = &now
 		s.byID[id] = m
 	}
-	if err := purge(m.Key); err != nil {
+	if err := purgeObjects(m.Key, purge); err != nil {
 		return false, err
 	}
 	m.BlobPurgedAt = &now
@@ -351,4 +353,11 @@ func (s *MemoryBlob) Metadata(key string) (BlobMetadata, bool) {
 	defer s.mu.Unlock()
 	meta, ok := s.metadata[key]
 	return meta, ok
+}
+
+// Keys are the keys of every stored object, in order.
+func (s *MemoryBlob) Keys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Sorted(maps.Keys(s.objects))
 }
