@@ -236,7 +236,7 @@ func main() {
 		// The watchdog counts open, overdue (ACCOUNT_ERASURE_ALERT_AFTER) and
 		// manual-intervention requests every five minutes for /v1/metrics and
 		// writes one account_erasure_attention line per request that needs a
-		// person. The service erasure steps are not in the saga yet (ADR-0051).
+		// person.
 		erasureGauges = account.NewErasureGauges()
 		account.MaintainWatchdog(context.Background(), account.NewWatchdog(users, erasureGauges, account.WatchdogConfig{
 			AlertAfter: erasureConfig.AlertAfter,
@@ -245,15 +245,26 @@ func main() {
 		})
 		log.Printf("account erasure watchdog: alert after %s; periodic destruction interval %s",
 			erasureConfig.AlertAfter, erasureConfig.PeriodicDestructionInterval)
+		accountIdentity := identity.NewAccountIdentity(dir)
+		// SkyMail, CMS and Forms each get the Erasure command after logout and
+		// before core is anonymized (ADR-0051): one client per registry entry,
+		// each with its own core-erasure token for its own erase scope. The
+		// secret source is handed on as it is and read for every token
+		// request. The addresses are read afresh on every pass from Keycloak
+		// and core's row, and kept nowhere.
+		serviceErasure := account.NewServiceErasure(erasureConfig,
+			base+"/realms/"+realm+"/protocol/openid-connect/token",
+			account.NewErasureAddresses(accountIdentity, users))
 		account.Maintain(
 			context.Background(),
-			account.NewWorker(users, identity.NewAccountIdentity(dir), account.WorkerConfig{
+			account.NewWorker(users, accountIdentity, account.WorkerConfig{
 				Lease:                5 * time.Minute,
 				RetryDelay:           30 * time.Second,
 				MaxAttempts:          8,
 				StepTimeout:          20 * time.Second,
 				DeferredRetryHorizon: uploadStagingConfig.Grace + 24*time.Hour,
 				AccessBlocker:        gate,
+				Services:             serviceErasure,
 			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
 			2*time.Second,
 			func(err error) { log.Printf("account erasure worker: %v", err) },
