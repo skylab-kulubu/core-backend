@@ -105,19 +105,19 @@ seed_cms_person() {
   name=$(full_name "$p")
   pg skylab_cms "
     INSERT INTO collection_items (\"Id\", \"CollectionKey\", \"Slug\", \"Data\", \"UpdatedBy\", \"IsArchived\", \"CreatedAt\", \"UpdatedAt\", \"Version\")
-    VALUES ('$(uuid_of "$p-news")', 'news', 'harness-haber-$p',
+    VALUES ('$(uuid_of "$p-news")', 'News', 'harness-haber-$p',
             jsonb_build_object('title', 'Harness haberi $p', 'author', $(sql_quote "$name"), 'body', 'Kulüp haberi.'),
             '$subject', false, now() - interval '1 day', now() - interval '1 day', 3);
     INSERT INTO collection_items (\"Id\", \"CollectionKey\", \"Slug\", \"Data\", \"UpdatedBy\", \"IsArchived\", \"ArchivedAt\", \"ArchivedBy\",
                                   \"CreatedAt\", \"UpdatedAt\", \"Version\")
-    VALUES ('$(uuid_of "$p-news-archived")', 'news', 'harness-arsiv-$p', jsonb_build_object('title', 'Arşiv $p'),
+    VALUES ('$(uuid_of "$p-news-archived")', 'News', 'harness-arsiv-$p', jsonb_build_object('title', 'Arşiv $p'),
             '$subject', true, now(), '$subject', now() - interval '2 days', now() - interval '2 days', 1);
     INSERT INTO content_blocks (\"Id\", \"ClientId\", \"Slug\", \"BlockPath\", \"BlockType\", \"Value\", \"SortOrder\", \"UpdatedBy\",
                                 \"IsArchived\", \"CreatedAt\", \"UpdatedAt\", \"Version\")
     VALUES ('$(uuid_of "$p-block")', 'skylab-site', 'harness', 'hero.$p', 'text', '\"Harness\"'::jsonb, 1, '$subject',
             false, now(), now(), 1);" >/dev/null
   cms_redis SET "draft:skylab-site:$subject:harness" '{"blocks":[]}' EX 172800 >/dev/null
-  cms_redis SET "cd:item:news:harness-haber-$p:$subject" '{"title":"taslak"}' EX 604800 >/dev/null
+  cms_redis SET "cd:item:News:harness-haber-$p:$subject" '{"title":"taslak"}' EX 604800 >/dev/null
 }
 
 seed_forms_person() {

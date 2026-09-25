@@ -21,7 +21,7 @@ anonymous_statuses() {
   http GET "$CORE/v1/health"; out+=("core=$HTTP_STATUS")
   http GET "$CORE/v1/events"; out+=("core-events=$HTTP_STATUS")
   http GET "http://skymail:3000/health"; out+=("skymail=$HTTP_STATUS")
-  http GET "http://cms:5000/cms/collections/news/"; out+=("cms-news=$HTTP_STATUS")
+  http GET "http://cms:5000/cms/collections/News/"; out+=("cms-news=$HTTP_STATUS")
   http GET "http://forms:8080/api/health"; out+=("forms=$HTTP_STATUS")
   http GET "$AC_URL/api/health"; out+=("account-center=$HTTP_STATUS")
   printf '%s ' "${out[@]}"

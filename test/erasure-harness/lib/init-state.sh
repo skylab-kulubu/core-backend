@@ -46,6 +46,9 @@ issue() { # issue NAME CN SAN_LIST USAGE
 issue edge e.yildizskylab.com 'DNS:e.yildizskylab.com,DNS:my.yildizskylab.com,DNS:api.yildizskylab.com' serverAuth
 cat "$PKI/edge.crt" "$PKI/edge.key" >"$PKI/edge.pem"
 
+# mailpit offers STARTTLS: SkyMail's sender insists on it (TLSMandatory).
+issue mailpit mailpit 'DNS:mailpit' serverAuth
+
 issue redis-server account-access-redis 'DNS:account-access-redis' serverAuth,clientAuth
 cp "$PKI/redis-server.crt" "$PKI/redis-server/account-access-tls.crt"
 cp "$PKI/redis-server.key" "$PKI/redis-server/account-access-tls.key"

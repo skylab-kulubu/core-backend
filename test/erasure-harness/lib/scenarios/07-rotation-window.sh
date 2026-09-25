@@ -26,7 +26,11 @@ scenario_7() {
   kc PUT "/clients/$client" --data "$(jq -cn --arg s "$new" '{secret: $s}')"
   check 'Keycloak rotated the core-erasure secret (the rotator'"'"'s first half)' eq "$HTTP_STATUS" 204
   window_start=$(date +%s)
-  check 'the old secret now gets 401 invalid_client' eq "$(token_status_with "$old")" '401 invalid_client'
+  local refused
+  refused=$(token_status_with "$old")
+  # Keycloak 26.7.4 names the error unauthorized_client ("Invalid client or Invalid client
+  # credentials"); the ticket's invalid_client is the RFC 6749 name of the same refusal.
+  check "the old secret is refused by the token endpoint with 401 ($refused)" grep -Eqx '401 (invalid_client|unauthorized_client)' <<<"$refused"
 
   check 'Account Center: login, Sudo mode, prepare, confirmation inside the window' ac_bff_delete "$person"
   check 'the service steps defer on the token endpoint' \
@@ -35,8 +39,11 @@ scenario_7() {
   check 'no attempt spent' eq "$(request_field "$DEL_REQUEST" attempt_count)" 0
   check 'no service step and nothing after them ran' \
     eq "$(pg super_skylab "SELECT count(*) FROM account_deletion_steps WHERE request_id = '$DEL_REQUEST' AND step NOT IN ('disable_identity','logout_sessions')")" 0
-  check 'core logged the token endpoint failure without a secret' \
-    bash -c 'l=$(docker logs "$1" 2>&1 | grep -F "$2" | grep -i "token" | tail -n1); [[ -n $l && $l != *"$3"* && $l != *"$4"* ]]' _ "$(dc ps -q core)" "$DEL_REQUEST" "$old" "$new"
+  local failure
+  failure=$(docker logs "$(dc ps -q core)" 2>&1 | grep 'token unavailable' | tail -n1 || true)
+  log "  core: ${failure#* }"
+  check 'core logged the token endpoint failure (status only, no secret, no token)' \
+    bash -c '[[ $1 == *"token endpoint status 401"* && $1 != *"$2"* && $1 != *"$3"* ]]' _ "$failure" "$old" "$new"
 
   # The rotator's second half: core's environment gets the new value and core restarts.
   set_env ACCOUNT_ERASURE_CLIENT_SECRET "$new"

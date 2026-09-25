@@ -5,7 +5,7 @@
 # decide the remedy (ticket 09). PASS means the evidence was taken; the finding is a note.
 
 scenario_10() {
-  local p subject out=$EVIDENCE/s10-keycloak-events.tsv events fields with_pii=0 delete_rep total=0
+  local p subject out=$EVIDENCE/s10-keycloak-events.tsv events with_pii=0 delete_rep total=0
   scenario_begin S10 "Keycloak admin/user events of erased persons: evidence for ticket 09"
   printf 'person\tevent\toperation_or_type\tresource\tpersonal fields present\n' >"$out"
   for p in "${PERSONS[@]}"; do
@@ -13,20 +13,21 @@ scenario_10() {
     [[ $(pg super_skylab "SELECT status FROM account_deletion_requests WHERE subject_id = '$subject'") == completed ]] || continue
     kc GET "/admin-events?resourcePath=users/$subject*&max=200"
     events=$HTTP_BODY
-    while IFS=$'\t' read -r op path rep; do
-      fields=$(jq -r --arg school "${P_SCHOOL[$p]}" --arg personal "${P_PERSONAL[$p]}" '
-        (try fromjson catch {}) as $r
-        | [ (if ($r.email // "") != "" then "email" else empty end),
-            (if ($r.firstName // "") != "" then "firstName" else empty end),
-            (if ($r.lastName // "") != "" then "lastName" else empty end),
-            (if ($r.username // "") != "" then "username" else empty end),
-            (if ($r.attributes.schoolEmail // []) != [] then "schoolEmail" else empty end),
-            (if ($r.attributes.personalEmail // []) != [] then "personalEmail" else empty end) ] | join(",")' <<<"${rep:-null}")
+    while IFS=$'\t' read -r op path fields; do
       printf '%s\tadmin\t%s\t%s\t%s\n' "$p" "$op" "${path//$subject/<sub>}" "${fields:--}" >>"$out"
       total=$((total + 1))
-      [[ $fields == *email* || $fields == *Name* ]] && with_pii=$((with_pii + 1))
+      [[ $fields == *mail* || $fields == *Name* ]] && with_pii=$((with_pii + 1))
       [[ $op == DELETE ]] && delete_rep=$fields
-    done < <(jq -r '.[] | [.operationType, .resourcePath, (.representation // "")] | @tsv' <<<"$events")
+    done < <(jq -r '.[] | [.operationType, .resourcePath,
+        ((.representation // "{}") | (try fromjson catch {}) as $r
+         | [ (if ($r | type) != "object" then empty else
+               ((if ($r.email // "") != "" then "email" else empty end),
+                (if ($r.firstName // "") != "" then "firstName" else empty end),
+                (if ($r.lastName // "") != "" then "lastName" else empty end),
+                (if ($r.username // "") != "" then "username" else empty end),
+                (if ($r.attributes.schoolEmail // []) != [] then "schoolEmail" else empty end),
+                (if ($r.attributes.personalEmail // []) != [] then "personalEmail" else empty end)) end) ]
+         | join(","))] | @tsv' <<<"$events")
     kc GET "/events?user=$subject&max=200"
     jq -r --arg p "$p" '.[] | [$p, "user", .type, (.clientId // ""), ((.details // {}) | keys | join(","))] | @tsv' <<<"$HTTP_BODY" >>"$out"
   done

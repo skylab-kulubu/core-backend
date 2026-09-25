@@ -56,6 +56,12 @@ services:
       MP_SMTP_AUTH_ACCEPT_ANY: "true"
       MP_SMTP_AUTH_ALLOW_INSECURE: "true"
       MP_MAX_MESSAGES: "500"
+      # SkyMail's sender requires STARTTLS; the certificate is signed by the harness CA.
+      MP_SMTP_TLS_CERT: /harness/mailpit.crt
+      MP_SMTP_TLS_KEY: /harness/mailpit.key
+    volumes:
+      - ${HARNESS_STATE}/pki/mailpit.crt:/harness/mailpit.crt:ro
+      - ${HARNESS_STATE}/pki/mailpit.key:/harness/mailpit.key:ro
     mem_limit: 64m
     logging: *logging
 

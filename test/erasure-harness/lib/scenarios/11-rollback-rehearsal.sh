@@ -6,7 +6,11 @@
 # with "emails": [] for every completed request) erases the subject-keyed data again. The
 # e-mail-keyed rows the backup brought back stay: the documented limit.
 
-core_migrations_dir() { ls -d "$STATE"/build/core-*/db/migrations 2>/dev/null | tail -n1; }
+# The migrations of the commit the running core image was built from (build.sh keeps its tree).
+core_migrations_dir() {
+  local dir=$STATE/build/core-${HARNESS_IMAGE_CORE##*:}/db/migrations
+  [[ -d $dir ]] && printf '%s' "$dir"
+}
 
 # down_refused FILE: runs one down migration on the rehearsal copy in one transaction; prints
 # the error, succeeds only when the migration refused.
@@ -70,11 +74,26 @@ scenario_11() {
   wait_until 120 3 service_ready http://cms:5000/health/ready
   wait_until 60 2 service_ready http://forms:8080/api/health
 
-  # §8: every completed request is sent again with "emails": [] (the addresses are gone).
+  # The backup also brought back the queue rows that were pending when it was taken. Once they
+  # are due SkyMail sends them (they were pending in the seed with a week's delay: time passes
+  # here), and until then SkyMail answers the replay 202, since a mail in flight names the person.
+  local restored_pending
+  restored_pending=$(pg skymail "SELECT count(*) FROM mail_queue WHERE status = 'pending'")
+  note "the restore brought back $restored_pending pending SkyMail queue row(s); they go out once due, to the erased persons' addresses too"
+  pg skymail "UPDATE mail_queue SET next_attempt_at = now() WHERE status = 'pending'" >/dev/null
+
+  # §8: every completed request is sent again with "emails": [] (the addresses are gone). A 202
+  # is repeated after its Retry-After, as core would.
   while IFS=$'\t' read -r request subject; do
     for service in skymail cms forms; do
       case $service in skymail) url=http://skymail:3000 ;; cms) url=http://cms:5000 ;; forms) url=http://forms:8080 ;; esac
+      local tries=0
       replay_command "$service" "$url" "$request" "$subject"
+      while [[ $HTTP_STATUS == 202 && $tries -lt 12 ]]; do
+        tries=$((tries + 1))
+        sleep 10
+        replay_command "$service" "$url" "$request" "$subject"
+      done
       [[ $HTTP_STATUS == 200 ]] && replayed=$((replayed + 1)) || log "        replay $service $request answered $HTTP_STATUS"
     done
   done < <(pg super_skylab "SELECT id, subject_id FROM account_deletion_requests WHERE status = 'completed' ORDER BY created_at")
