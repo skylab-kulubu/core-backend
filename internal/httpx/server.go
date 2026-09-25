@@ -81,7 +81,10 @@ func New(deps Deps) *fiber.App {
 	// same ranges the handlers use, and validation keeps c.IP() from handing
 	// back a raw header value.
 	app := fiber.New(fiber.Config{
-		ErrorHandler:       handlers.ErrorHandler,
+		ErrorHandler: handlers.ErrorHandler,
+		// Fiber's 4 MiB default rejected media the service accepts. Leave room
+		// for the multipart envelope around the largest allowed file.
+		BodyLimit:          media.MaxUploadBytes + 1<<20,
 		TrustProxy:         true,
 		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: trustedProxies.Proxies()},
 		ProxyHeader:        fiber.HeaderXForwardedFor,
