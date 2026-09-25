@@ -58,7 +58,7 @@ func TestDeletionLeaseTokenFencesExpiredWorker(t *testing.T) {
 	if retained, err := store.ProfileMediaForDeletion(ctx, request.ID); err != nil || retained == nil || *retained != profileMediaID {
 		t.Fatalf("stale checkpoint cleared retry media: id=%v err=%v", retained, err)
 	}
-	if err := store.RetryDeletionRequest(ctx, request.ID, *first.LeaseToken, now, "stale", false, true); !errors.Is(err, user.ErrLeaseLost) {
+	if err := store.RetryDeletionRequest(ctx, request.ID, *first.LeaseToken, now, now, "stale", false, true); !errors.Is(err, user.ErrLeaseLost) {
 		t.Fatalf("stale retry error = %v", err)
 	}
 	var attemptsAfterStale int
@@ -72,7 +72,7 @@ func TestDeletionLeaseTokenFencesExpiredWorker(t *testing.T) {
 		t.Fatalf("stale completion error = %v", err)
 	}
 
-	if err := store.RetryDeletionRequest(ctx, request.ID, *second.LeaseToken, now.Add(2*time.Second), "durable_deferral", false, true); err != nil {
+	if err := store.RetryDeletionRequest(ctx, request.ID, *second.LeaseToken, now, now.Add(2*time.Second), "durable_deferral", false, true); err != nil {
 		t.Fatal(err)
 	}
 	var attemptsAfterRefund int
