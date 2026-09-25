@@ -68,6 +68,10 @@ func keepProfile(existing, u User) User {
 	u.AnonymizedAt = existing.AnonymizedAt
 	u.FirstName = existing.FirstName
 	u.LastName = existing.LastName
+	// Account Center's token carries no e-mail claim; keep the stored address.
+	if u.Email == "" {
+		u.Email = existing.Email
+	}
 	if u.SchoolEmail == "" {
 		u.SchoolEmail = existing.SchoolEmail
 	}
