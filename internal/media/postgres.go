@@ -241,8 +241,9 @@ func (s *PostgresStore) ListPurgeCandidates(ctx context.Context, deletedBefore t
 }
 
 // expiredSQL is the database's counterpart of Media.expired, with the time
-// as $1: true only for a Media whose expiry is at or before it, never NULL.
-const expiredSQL = `(expires_at <= $1) IS TRUE`
+// as $1. It is NULL for a Media with no expiry: a WHERE clause leaves such a
+// Media out, and a value read from it goes through COALESCE.
+const expiredSQL = `expires_at <= $1`
 
 // ListExpired returns, in id order and after the given id, the Media the
 // expiry cleanup purges at now: expired, with a blob. Archived Media are left
@@ -370,7 +371,7 @@ func lockMediaReferenceWriters(ctx context.Context, tx postgresMediaTx) error {
 // mediaReferenced reports whether anything still uses the Media: a Media
 // attachment, or one of core's own links. The links are checked directly
 // too, as a safety net, until the legacy backfill (media redesign ticket 08)
-// has proven every link has its attachment: a Media is unreferenced only when
+// has proven every link has its Media attachment: a Media is unused only when
 // both say so.
 func mediaReferenced(ctx context.Context, tx postgresMediaTx, id uuid.UUID) (bool, error) {
 	var referenced bool
@@ -396,7 +397,7 @@ func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claime
 	}
 	var startedAt, purgedAt *time.Time
 	var archived, expired bool
-	err = tx.QueryRow(ctx, `SELECT blob_purge_started_at, blob_purged_at, deleted_at IS NOT NULL, `+expiredSQL+`
+	err = tx.QueryRow(ctx, `SELECT blob_purge_started_at, blob_purged_at, deleted_at IS NOT NULL, COALESCE(`+expiredSQL+`, false)
 		FROM media WHERE id = $2 FOR UPDATE`, claimedAt, id).Scan(&startedAt, &purgedAt, &archived, &expired)
 	if errors.Is(err, pgx.ErrNoRows) || purgedAt != nil {
 		return false, nil
