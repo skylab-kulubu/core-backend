@@ -1090,6 +1090,18 @@ func TestAccountErasureServiceStepsAreForwardOnlyOnceProofExists(t *testing.T) {
 		}
 	}
 
+	// Proof rows follow only their own request: deleting anything else (a
+	// hard-purged user, for one) never cascades into them.
+	var cascading int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM pg_constraint
+		WHERE contype='f' AND confdeltype='c'
+		  AND conrelid IN ('account_deletion_requests'::regclass, 'account_deletion_steps'::regclass)
+		  AND confrelid <> 'account_deletion_requests'::regclass
+	`).Scan(&cascading); err != nil || cascading != 0 {
+		t.Fatalf("cascading foreign keys into erasure proof=%d err=%v", cascading, err)
+	}
+
 	store := user.NewPostgresStore(pool)
 	subjectID := uuid.New()
 	if _, _, err := user.NewService(store).Ensure(ctx, subjectID, user.Profile{Email: "service-steps-rollback@example.test"}); err != nil {

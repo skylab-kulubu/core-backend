@@ -28,22 +28,25 @@ import (
 )
 
 type Deps struct {
-	Users                  user.Service
-	Identity               identity.Service
-	Events                 event.Service
-	Seasons                season.Service
-	Tickets                ticket.Service
-	Competitors            competitor.Service
-	Media                  media.Service
-	URLs                   shorturl.Service
-	Certificates           certificate.Service
-	SkyPass                skypass.Service
-	Mail                   mail.Mailer
-	EventMail              eventmail.Service
-	ParseToken             func(string) (authn.Identity, error)
-	URLAttributionGuard    handlers.URLAttributionGuard
-	AccountAccessGate      accessgate.Reader
-	AccountAccessMetrics   *accessgate.Metrics
+	Users                user.Service
+	Identity             identity.Service
+	Events               event.Service
+	Seasons              season.Service
+	Tickets              ticket.Service
+	Competitors          competitor.Service
+	Media                media.Service
+	URLs                 shorturl.Service
+	Certificates         certificate.Service
+	SkyPass              skypass.Service
+	Mail                 mail.Mailer
+	EventMail            eventmail.Service
+	ParseToken           func(string) (authn.Identity, error)
+	URLAttributionGuard  handlers.URLAttributionGuard
+	AccountAccessGate    accessgate.Reader
+	AccountAccessMetrics *accessgate.Metrics
+	// AccountErasureMetrics are the account erasure watchdog's gauges. Nil
+	// while the erasure worker is off.
+	AccountErasureMetrics  interface{ Prometheus() string }
 	SelfDeletion           handlers.AccountDeletionService
 	ParseSelfDeleteContext func(string, string) (authn.Identity, error)
 	// ParseSelfDeleteSudo verifies the self-delete bearer with a sky-account
@@ -109,11 +112,15 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	if deps.AccountAccessMetrics != nil {
+	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
-			return c.SendString(deps.AccountAccessMetrics.Prometheus())
+			text := deps.AccountAccessMetrics.Prometheus()
+			if deps.AccountErasureMetrics != nil {
+				text += deps.AccountErasureMetrics.Prometheus()
+			}
+			return c.SendString(text)
 		})
 	}
 	app.Get("/v1/ready", func(c fiber.Ctx) error {

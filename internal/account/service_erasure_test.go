@@ -84,6 +84,7 @@ type erasureTestStore interface {
 	DeletionRequest(context.Context, uuid.UUID) (user.DeletionRequest, error)
 	DeletionStepRecords(context.Context, uuid.UUID) ([]user.DeletionStepRecord, error)
 	MarkDeletionPlatformBlocked(context.Context, uuid.UUID, time.Time) error
+	account.WatchdogStore
 }
 
 type erasureFixture struct {
