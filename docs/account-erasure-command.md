@@ -55,7 +55,9 @@ Errors use RFC 7807 (ADR-0010) and carry a fixed `code`. No response writes back
   - The wait comes from `Retry-After` and is clamped between 30 seconds and 15 minutes. Without the header it is 5 minutes.
   - The horizon is the existing `DeferredRetryHorizon` (48 hours by default, counted from the request's creation). After the horizon the ordinary budget applies: 8 attempts × 30 seconds, then `manual_intervention` and the alarm.
   - This window comfortably outlasts the nightly 03:30 secret rotation (ADR-0050).
-- A **permanent failure** is a configuration or contract fault: a missing role, an endpoint not deployed, a missing marker. An operator fixes it, and the existing retry path then returns the request to `pending`.
+- A **permanent failure** is a configuration or contract fault: an endpoint not deployed, a missing marker, a token that keeps the audience but lacks the role. An operator fixes it, and the existing retry path then returns the request to `pending`.
+- **A missing erase role shows up as `401`, not `403`.** The `account-erase-<service>` scope is bound to the service's erase role, so when `service-account-core-erasure` lacks that role Keycloak leaves the scope, and with it the service's audience, out of the token. The service refuses the token for its missing `aud` with `401`. Core treats that as a refused token: it drops the token and retries as usual, and after 8 attempts (about 4 minutes) the request goes to `manual_intervention` with `erase_<service>_failed`, not `erase_<service>_rejected_403` (local harness, account-erasure ticket 10). `erase_<service>_rejected_403` appears only when the token keeps the audience and loses the role.
+  - For `manual_intervention` with `erase_<service>_failed`, the operator first checks `core-erasure`'s roles: the dry run of e-skylab-keycloak's `config/create-erasure-client.sh --admin-user <admin>` (inside the Keycloak image, without `--apply`) changes nothing and prints what is missing. `would assign role <client>/<role> to service-account-core-erasure` is this case; the same run with `--apply` gives the role back, and the retry then asks for a new token.
 
 ## 5. Authentication
 
