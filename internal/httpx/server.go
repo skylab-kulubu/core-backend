@@ -63,6 +63,10 @@ type Deps struct {
 	// AccountErasureMetrics are the account erasure watchdog's gauges. Nil
 	// while the erasure worker is off.
 	AccountErasureMetrics interface{ Prometheus() string }
+
+	// MediaUploadLimiter is each person's single-step upload budget. Nil
+	// uses media.DefaultUploadLimits.
+	MediaUploadLimiter *media.UploadLimiter
 }
 
 func New(deps Deps) *fiber.App {
@@ -104,6 +108,14 @@ func New(deps Deps) *fiber.App {
 	mediaH := handlers.NewMediaHandler(deps.Media)
 	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken, deps.URLAttributionGuard).TrustProxies(trustedProxies)
 	jit := middlewares.NewJIT(deps.Users, deps.Mail)
+	uploadLimiter := deps.MediaUploadLimiter
+	if uploadLimiter == nil {
+		uploadLimiter = media.NewUploadLimiter(media.DefaultUploadLimits(), time.Now)
+	}
+	// One budget per person across every single-step upload route. A Direct
+	// upload route, once it exists, stays off it: the owning product limits
+	// its grants.
+	limitUploads := handlers.LimitMediaUploads(uploadLimiter)
 	var certs *handlers.CertificateHandler
 	if deps.Certificates != nil {
 		certs = handlers.NewCertificateHandler(deps.Certificates)
@@ -186,7 +198,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/users/me", me.GetMe)
 	app.Put("/v1/users/me", me.PutMe)
 	app.Patch("/v1/users/me", me.PatchMe)
-	app.Post("/v1/users/me/profile-picture", me.ProfilePicture)
+	app.Post("/v1/users/me/profile-picture", limitUploads, me.ProfilePicture)
 	app.Delete("/v1/users/me/profile-picture", me.DeleteProfilePicture)
 	app.Get("/v1/users", ident.ListUsers)
 	app.Post("/v1/users", ident.CreateUser)
@@ -310,7 +322,7 @@ func New(deps Deps) *fiber.App {
 	app.Delete("/v1/competitors/:id", competitors.Delete)
 	app.Post("/v1/competitors/:id/reinstate", competitors.Reinstate)
 
-	app.Post("/v1/media", mediaH.Upload)
+	app.Post("/v1/media", limitUploads, mediaH.Upload)
 	app.Get("/v1/media", mediaH.List)
 	app.Get("/v1/media/:id", mediaH.Get)
 	app.Delete("/v1/media/:id", mediaH.Delete)
