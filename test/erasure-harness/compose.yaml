@@ -1,0 +1,309 @@
+# Local full erasure harness (account-erasure ticket 10). Started by run.sh, never by hand:
+# run.sh generates .state/ (PKI, passwords, image tags) and passes it as --env-file.
+# Every candidate image is built from origin/main by build.sh; third-party images are pinned by
+# digest. Heaps and memory limits keep the whole stack near 3 GB.
+
+x-ca: &harness-ca ${HARNESS_STATE}/pki/ca.crt:/harness/ca.crt:ro
+x-logging: &logging
+  driver: json-file
+  options: {max-size: 20m, max-file: "3"}
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      CORE_DB_PASSWORD: ${CORE_DB_PASSWORD}
+      SKYMAIL_DB_PASSWORD: ${SKYMAIL_DB_PASSWORD}
+      CMS_DB_PASSWORD: ${CMS_DB_PASSWORD}
+      FORMS_DB_PASSWORD: ${FORMS_DB_PASSWORD}
+      ACCOUNT_CENTER_DB_PASSWORD: ${ACCOUNT_CENTER_DB_PASSWORD}
+    command: ["postgres", "-c", "shared_buffers=96MB", "-c", "max_connections=150"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    mem_limit: 512m
+    logging: *logging
+
+  # The dedicated account-access Redis exactly as deploy/account-access-redis ships it: mTLS only,
+  # ACL users, noeviction, AOF appendfsync always. The same pinned image.
+  account-access-redis:
+    image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+    command: ["redis-server", "/etc/redis/account-access.conf"]
+    volumes:
+      - account_access_redis_data:/data
+      - ../../deploy/account-access-redis/redis.conf:/etc/redis/account-access.conf:ro
+      - ${HARNESS_STATE}/pki/redis-server:/run/secrets:ro
+    mem_limit: 128m
+    logging: *logging
+
+  # CMS's own cache Redis (drafts). Not the account-access Redis.
+  cms-redis:
+    image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    mem_limit: 64m
+    logging: *logging
+
+  mailpit:
+    image: axllent/mailpit:v1.28@sha256:c6cf0b06eb516a0b80a8a5251f945c131e6beb8396112964404f62856487f5bd
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+      MP_MAX_MESSAGES: "500"
+    mem_limit: 64m
+    logging: *logging
+
+  keycloak:
+    image: ${HARNESS_IMAGE_KEYCLOAK}
+    command: ["start", "--optimized", "--import-realm"]
+    environment:
+      KC_HOSTNAME: https://e.yildizskylab.com
+      KC_PROXY_HEADERS: xforwarded
+      KC_HTTP_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD}
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_LOG_LEVEL: info
+      JAVA_OPTS_KC_HEAP: "-XX:MaxRAMPercentage=60 -XX:InitialRAMPercentage=25"
+    volumes:
+      - ${HARNESS_STATE}/realm:/opt/keycloak/data/import:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+    mem_limit: 1200m
+    logging: *logging
+
+  # The Keycloak image as the operator runs it: bootstrap-reconciler.sh, reconcile-account-center.sh
+  # and create-erasure-client.sh (SKY_HARNESS=1, as the Keycloak repository's harness does).
+  keycloak-config:
+    image: ${HARNESS_IMAGE_KEYCLOAK}
+    profiles: ["tools"]
+    entrypoint: ["/bin/true"]
+    logging: *logging
+
+  # TLS edge for the public names: e. (Keycloak), my. (Account Center) and api. (core). The
+  # harness CA signs its certificate and is the only CA every service trusts.
+  edge:
+    image: haproxy:3.2-alpine@sha256:5961c68bc8a81c5124d0a98ab20f81b74717d6afe596e805977d9cf84c126222
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    volumes:
+      - ./edge/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ${HARNESS_STATE}/pki/edge.pem:/usr/local/etc/haproxy/edge.pem:ro
+    networks:
+      default:
+        aliases: [e.yildizskylab.com, my.yildizskylab.com, api.yildizskylab.com]
+    mem_limit: 64m
+    logging: *logging
+
+  core:
+    image: ${HARNESS_IMAGE_CORE}
+    environment:
+      DATABASE_URL: postgres://super_skylab:${CORE_DB_PASSWORD}@postgres:5432/super_skylab?sslmode=disable
+      PORT: "8080"
+      SSL_CERT_FILE: /harness/ca.crt
+      KEYCLOAK_URL: https://e.yildizskylab.com
+      KEYCLOAK_REALM: e-skylab
+      KEYCLOAK_CLIENT_ID: core
+      KEYCLOAK_CLIENT_SECRET: ${CORE_CLIENT_SECRET}
+      ACCOUNT_ACCESS_GATE_MODE: enforce
+      ACCOUNT_ACCESS_REDIS_ADDR: account-access-redis:6379
+      ACCOUNT_ACCESS_REDIS_USERNAME: core-writer
+      ACCOUNT_ACCESS_REDIS_PASSWORD: ${REDIS_CORE_WRITER_PASSWORD}
+      ACCOUNT_ACCESS_REDIS_DB: "0"
+      ACCOUNT_ACCESS_REDIS_TLS: "true"
+      ACCOUNT_ACCESS_REDIS_TLS_SERVER_NAME: account-access-redis
+      ACCOUNT_ACCESS_REDIS_TLS_CERT_FILE: /harness/redis/client.crt
+      ACCOUNT_ACCESS_REDIS_TLS_KEY_FILE: /harness/redis/client.key
+      ACCOUNT_ACCESS_REDIS_CA_CERT_FILE: /harness/ca.crt
+      ACCOUNT_ACCESS_REDIS_OPERATION_TIMEOUT: 500ms
+      ACCOUNT_ACCESS_REDIS_REQUIRED_REPLICAS: "0"
+      ACCOUNT_ACCESS_REDIS_WAIT_TIMEOUT: 200ms
+      ACCOUNT_ERASURE_WORKER_ENABLED: "true"
+      ACCOUNT_DELETION_RECEIPT_KEY: ${ACCOUNT_DELETION_RECEIPT_KEY}
+      ACCOUNT_ERASURE_SKYMAIL_URL: ${HARNESS_SKYMAIL_URL:-http://skymail:3000}
+      ACCOUNT_ERASURE_CMS_URL: ${HARNESS_CMS_URL:-http://cms:5000}
+      ACCOUNT_ERASURE_FORMS_URL: ${HARNESS_FORMS_URL:-http://forms:8080}
+      ACCOUNT_ERASURE_CLIENT_ID: core-erasure
+      ACCOUNT_ERASURE_CLIENT_SECRET: ${ACCOUNT_ERASURE_CLIENT_SECRET}
+      ACCOUNT_ERASURE_ALERT_AFTER: 480h
+      PERIODIC_DESTRUCTION_INTERVAL: 2160h
+    volumes:
+      - *harness-ca
+      - ${HARNESS_STATE}/pki/clients/core-writer.crt:/harness/redis/client.crt:ro
+      - ${HARNESS_STATE}/pki/clients/core-writer.key:/harness/redis/client.key:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+    mem_limit: 256m
+    logging: *logging
+
+  skymail:
+    image: ${HARNESS_IMAGE_SKYMAIL}
+    environment:
+      DATABASE_URL: postgres://skymail:${SKYMAIL_DB_PASSWORD}@postgres:5432/skymail?sslmode=disable
+      DATABASE_MIGRATIONS_MODE: apply
+      SSL_CERT_FILE: /harness/ca.crt
+      SMTP_FROM: skymail@harness.invalid
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USER: harness
+      SMTP_PASS: harness
+      SMTP_FQDN: skymail.harness.invalid
+      SMTP_PLAIN: "TRUE"
+      KEYCLOAK_REALM_URL: https://e.yildizskylab.com/realms/e-skylab
+      KEYCLOAK_CLIENT_ID: skymail
+      KEYCLOAK_SERVICE_CLIENT_ID: skymail-backend
+      KEYCLOAK_SERVICE_CLIENT_SECRET: ${SKYMAIL_SERVICE_CLIENT_SECRET}
+      APP_PORT: "3000"
+      ACCOUNT_ACCESS_GATE_MODE: enforce
+      ACCOUNT_ACCESS_REDIS_ADDR: account-access-redis:6379
+      ACCOUNT_ACCESS_REDIS_USERNAME: skymail-reader
+      ACCOUNT_ACCESS_REDIS_PASSWORD: ${REDIS_SKYMAIL_READER_PASSWORD}
+      ACCOUNT_ACCESS_REDIS_DB: "0"
+      ACCOUNT_ACCESS_REDIS_TLS: "true"
+      ACCOUNT_ACCESS_REDIS_TLS_SERVER_NAME: account-access-redis
+      ACCOUNT_ACCESS_REDIS_TLS_CERT_FILE: /harness/redis/client.crt
+      ACCOUNT_ACCESS_REDIS_TLS_KEY_FILE: /harness/redis/client.key
+      ACCOUNT_ACCESS_REDIS_CA_CERT_FILE: /harness/ca.crt
+      ACCOUNT_ACCESS_REDIS_OPERATION_TIMEOUT: 500ms
+    volumes:
+      - *harness-ca
+      - ${HARNESS_STATE}/pki/clients/skymail-reader.crt:/harness/redis/client.crt:ro
+      - ${HARNESS_STATE}/pki/clients/skymail-reader.key:/harness/redis/client.key:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+    mem_limit: 192m
+    logging: *logging
+
+  cms:
+    image: ${HARNESS_IMAGE_CMS}
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      SSL_CERT_FILE: /harness/ca.crt
+      DOTNET_GCHeapHardLimit: "0xC000000"
+      ConnectionStrings__Default: Host=postgres;Port=5432;Database=skylab_cms;Username=skylab_cms;Password=${CMS_DB_PASSWORD}
+      ConnectionStrings__Redis: cms-redis:6379,defaultDatabase=0
+      Cors__AllowedOrigins: https://www.yildizskylab.com
+      Keycloak__Authority: https://e.yildizskylab.com/realms/e-skylab
+      Keycloak__Audience: skycms
+      ACCOUNT_ACCESS_GATE_MODE: enforce
+      ACCOUNT_ACCESS_REDIS_ENDPOINT: account-access-redis:6379
+      ACCOUNT_ACCESS_REDIS_USERNAME: cms-reader
+      ACCOUNT_ACCESS_REDIS_PASSWORD: ${REDIS_CMS_READER_PASSWORD}
+      ACCOUNT_ACCESS_REDIS_DATABASE: "0"
+      ACCOUNT_ACCESS_REDIS_TLS: "true"
+      ACCOUNT_ACCESS_REDIS_CA_CERT_FILE: /harness/ca.crt
+      ACCOUNT_ACCESS_REDIS_TLS_CERT_FILE: /harness/redis/client.crt
+      ACCOUNT_ACCESS_REDIS_TLS_KEY_FILE: /harness/redis/client.key
+      ACCOUNT_ACCESS_REDIS_OPERATION_TIMEOUT_MS: "500"
+      ACCOUNT_ACCESS_GATE_RETRY_AFTER_SECONDS: "1"
+    volumes:
+      # .NET builds its chain from the system bundle; the harness CA is the whole bundle here.
+      - ${HARNESS_STATE}/pki/ca.crt:/etc/ssl/certs/ca-certificates.crt:ro
+      - *harness-ca
+      - ${HARNESS_STATE}/pki/clients/cms-reader.crt:/harness/redis/client.crt:ro
+      - ${HARNESS_STATE}/pki/clients/cms-reader.key:/harness/redis/client.key:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+    mem_limit: 320m
+    logging: *logging
+
+  # Forms stand-in until Forms ships its endpoint (ticket 06): the stub in stubs/ implements the
+  # Erasure command contract. It is not the real Forms image.
+  forms:
+    image: ${HARNESS_IMAGE_STUBS}
+    command: ["-mode", "forms"]
+    environment:
+      SSL_CERT_FILE: /harness/ca.crt
+      FORMS_DATABASE_URL: postgres://forms:${FORMS_DB_PASSWORD}@postgres:5432/forms_db?sslmode=disable
+      FORMS_ISSUER: https://e.yildizskylab.com/realms/e-skylab
+      ACCOUNT_ACCESS_REDIS_ADDR: account-access-redis:6379
+      ACCOUNT_ACCESS_REDIS_USERNAME: forms-reader
+      ACCOUNT_ACCESS_REDIS_PASSWORD: ${REDIS_FORMS_READER_PASSWORD}
+      ACCOUNT_ACCESS_REDIS_DB: "0"
+      ACCOUNT_ACCESS_REDIS_TLS_SERVER_NAME: account-access-redis
+      ACCOUNT_ACCESS_REDIS_TLS_CERT_FILE: /harness/redis/client.crt
+      ACCOUNT_ACCESS_REDIS_TLS_KEY_FILE: /harness/redis/client.key
+      ACCOUNT_ACCESS_REDIS_CA_CERT_FILE: /harness/ca.crt
+    volumes:
+      - *harness-ca
+      - ${HARNESS_STATE}/pki/clients/forms-reader.crt:/harness/redis/client.crt:ro
+      - ${HARNESS_STATE}/pki/clients/forms-reader.key:/harness/redis/client.key:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+    mem_limit: 64m
+    logging: *logging
+
+  # Transparent proxies in front of the three services. Core points at them only in the crash
+  # scenario, where a held answer lets core die after a service committed its erasure.
+  hold-proxy:
+    image: ${HARNESS_IMAGE_STUBS}
+    command: ["-mode", "proxy"]
+    environment:
+      PROXY_ROUTES: ":9001=http://skymail:3000,:9002=http://cms:5000,:9003=http://forms:8080"
+    mem_limit: 32m
+    logging: *logging
+
+  account-center:
+    image: ${HARNESS_IMAGE_ACCOUNT_CENTER}
+    profiles: ["account-center"]
+    environment:
+      APP_URL: https://my.yildizskylab.com
+      DATABASE_URL: postgres://account_center:${ACCOUNT_CENTER_DB_PASSWORD}@postgres:5432/account_center
+      SESSION_SECRET: ${ACCOUNT_CENTER_SESSION_SECRET}
+      TOKEN_ENCRYPTION_KEY: ${ACCOUNT_CENTER_TOKEN_ENCRYPTION_KEY}
+      OIDC_ISSUER: https://e.yildizskylab.com/realms/e-skylab
+      OIDC_CLIENT_ID: account-center
+      OIDC_CLIENT_SECRET: ${ACCOUNT_CENTER_OIDC_CLIENT_SECRET}
+      OIDC_UPSTREAM_SESSION_MAX_SECONDS: "28800"
+      AUTH_TRUSTED_PROXY: traefik
+      NODE_EXTRA_CA_CERTS: /harness/ca.crt
+      NODE_OPTIONS: --max-old-space-size=256
+      CORE_API_URL: https://api.yildizskylab.com
+      ACCOUNT_ERASURE_MODE: enforce
+      ACCOUNT_ACCESS_GATE_MODE: enforce
+      ACCOUNT_ACCESS_REDIS_HOST: account-access-redis
+      ACCOUNT_ACCESS_REDIS_PORT: "6379"
+      ACCOUNT_ACCESS_REDIS_USERNAME: account-center-reader
+      ACCOUNT_ACCESS_REDIS_PASSWORD: ${REDIS_ACCOUNT_CENTER_READER_PASSWORD}
+      ACCOUNT_ACCESS_REDIS_DATABASE: "0"
+      ACCOUNT_ACCESS_REDIS_TLS: "true"
+      ACCOUNT_ACCESS_REDIS_TLS_SERVER_NAME: account-access-redis
+      ACCOUNT_ACCESS_REDIS_CA_CERT_FILE: /harness/ca.crt
+      ACCOUNT_ACCESS_REDIS_TLS_CERT_FILE: /harness/redis/client.crt
+      ACCOUNT_ACCESS_REDIS_TLS_KEY_FILE: /harness/redis/client.key
+      ACCOUNT_ACCESS_REDIS_OPERATION_TIMEOUT_MS: "500"
+    volumes:
+      - *harness-ca
+      - ${HARNESS_STATE}/pki/clients/account-center-reader.crt:/harness/redis/client.crt:ro
+      - ${HARNESS_STATE}/pki/clients/account-center-reader.key:/harness/redis/client.key:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+    mem_limit: 384m
+    logging: *logging
+
+  # The scenario driver (run.sh starts it with `run`). It reaches the other containers by name
+  # and drives docker through the socket to stop, start and kill them.
+  driver:
+    image: ${HARNESS_IMAGE_DRIVER}
+    profiles: ["driver"]
+    working_dir: ${HARNESS_DIR}
+    environment:
+      HARNESS_DIR: ${HARNESS_DIR}
+      HARNESS_STATE: ${HARNESS_STATE}
+      HARNESS_PROJECT: ${HARNESS_PROJECT:-skylab-erasure-harness}
+    volumes:
+      - ${HARNESS_DIR}:${HARNESS_DIR}
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging: *logging
+
+volumes:
+  postgres_data:
+  account_access_redis_data:

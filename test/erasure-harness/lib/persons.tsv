@@ -1,0 +1,9 @@
+# key	keycloak id	username	first name	last name	school e-mail	personal e-mail	scenario
+p1	1a000001-0000-4000-8000-000000000001	harness-p1	Deryanur	Silinecekoğlu	deryanur.silinecek@std.example.test	deryanur.kisisel@example.test	1 full saga, then 8 OBS re-login
+p2	1a000002-0000-4000-8000-000000000002	harness-p2	Ilgaz	Kesintioğlu	ilgaz.kesinti@std.example.test	ilgaz.kisisel@example.test	4 SkyMail outage
+p3	1a000003-0000-4000-8000-000000000003	harness-p3	Sanemnur	Kalıcıhataoğlu	sanemnur.kalicihata@std.example.test	sanemnur.kisisel@example.test	5 permanent failure
+p4	1a000004-0000-4000-8000-000000000004	harness-p4	Tolunay	Çökmeoğlu	tolunay.cokme@std.example.test	tolunay.kisisel@example.test	6 crash
+p5	1a000005-0000-4000-8000-000000000005	harness-p5	Berkenaz	Rotasyonoğlu	berkenaz.rotasyon@std.example.test	berkenaz.kisisel@example.test	7 rotation window
+p6	1a000006-0000-4000-8000-000000000006	harness-p6	Ayçanur	Kayıpyanıtoğlu	aycanur.kayipyanit@std.example.test	aycanur.kisisel@example.test	2 lost response
+p7	1a000007-0000-4000-8000-000000000007	harness-p7	Eftalya	Eskijwtoğlu	eftalya.eskijwt@std.example.test	eftalya.kisisel@example.test	3 old JWTs
+p8	1a000008-0000-4000-8000-000000000008	harness-p8	Bora	Korunanoğlu	bora.korunan@std.example.test	bora.kisisel@example.test	bystander, never deleted
