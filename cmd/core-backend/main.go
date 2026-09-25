@@ -236,7 +236,7 @@ func main() {
 		// The watchdog counts open, overdue (ACCOUNT_ERASURE_ALERT_AFTER) and
 		// manual-intervention requests every five minutes for /v1/metrics and
 		// writes one account_erasure_attention line per request that needs a
-		// person. The service erasure steps join the saga in ticket 07.
+		// person. The service erasure steps are not in the saga yet (ADR-0051).
 		erasureGauges = account.NewErasureGauges()
 		account.MaintainWatchdog(context.Background(), account.NewWatchdog(users, erasureGauges, account.WatchdogConfig{
 			AlertAfter: erasureConfig.AlertAfter,

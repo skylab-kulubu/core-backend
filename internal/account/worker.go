@@ -49,7 +49,7 @@ type Worker struct {
 	media    MediaEraser
 	config   WorkerConfig
 	// saga lists the steps of one pass in order. It is the core saga; the
-	// service erasure group joins it in ticket 07.
+	// service erasure group (ADR-0051) is not placed in it yet.
 	saga func(user.DeletionRequest, time.Time) []sagaStep
 }
 
