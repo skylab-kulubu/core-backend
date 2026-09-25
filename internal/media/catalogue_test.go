@@ -67,19 +67,18 @@ func TestCatalogue_PublicRasterImagesAreReencoded(t *testing.T) {
 
 func TestCatalogue_SVGIsNeverStoredAsSVG(t *testing.T) {
 	t.Parallel()
+	// cms_image names SVG and rasterizes it; the reviewed file loads.
 	data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
-		purposes["cms_image"]["types"] = append(purposes["cms_image"]["types"].([]any), "image/svg+xml")
+		purposes["cms_image"]["image"].(map[string]any)["rasterize_svg"] = false
 	})
 	if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingSVG) {
 		t.Fatalf("purpose keeping SVG as SVG: err = %v, want %v", err, media.ErrCeilingSVG)
 	}
-
-	rasterized := reviewedCatalogueWith(t, func(purposes purposeEntries) {
-		purposes["cms_image"]["types"] = append(purposes["cms_image"]["types"].([]any), "image/svg+xml")
-		purposes["cms_image"]["image"].(map[string]any)["rasterize_svg"] = true
+	data = reviewedCatalogueWith(t, func(purposes purposeEntries) {
+		purposes["event_cover"]["types"] = append(purposes["event_cover"]["types"].([]any), "image/svg+xml")
 	})
-	if _, err := media.ParseCatalogue(rasterized); err != nil {
-		t.Fatalf("purpose rasterizing SVG to PNG: %v", err)
+	if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingSVG) {
+		t.Fatalf("SVG named by a purpose that does not rasterize it: err = %v, want %v", err, media.ErrCeilingSVG)
 	}
 }
 

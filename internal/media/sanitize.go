@@ -70,13 +70,14 @@ func isImage(data []byte) bool {
 }
 
 // detectContentType names the type of a file from its content: one of the
-// raster formats, PDF when the file starts with its header, or "" for
-// anything else. isPDF, which finds the header anywhere in the first KiB,
-// stays the rule only for Media uploaded without a purpose.
+// raster formats, PDF when the file starts with its header, SVG when an
+// <svg element opens in its first KiB, or "" for anything else. isPDF,
+// which finds the header anywhere in the first KiB, stays the rule only for
+// Media uploaded without a purpose. An SVG is never stored as one: a
+// purpose that names it rasterizes it (rasterizeSVG).
 //
-// SVG is not among them: no purpose keeps SVG, and rasterizing it is not
-// built yet. DOCX, ZIP and MP4 are detected when private Media and Direct
-// upload arrive; until then nothing reaches a purpose that names them.
+// DOCX, ZIP and MP4 are detected when private Media and Direct upload
+// arrive; until then nothing reaches a purpose that names them.
 func detectContentType(data []byte) string {
 	for _, format := range rasterFormats {
 		if format.detect(data) {
@@ -85,6 +86,9 @@ func detectContentType(data []byte) string {
 	}
 	if bytes.HasPrefix(data, []byte("%PDF-")) {
 		return pdfType
+	}
+	if isSVG(data) {
+		return svgType
 	}
 	return ""
 }

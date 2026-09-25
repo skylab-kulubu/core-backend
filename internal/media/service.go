@@ -305,6 +305,20 @@ func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
 	if detected == pdfType {
 		return storedFile{body: data, ctype: pdfType, kind: KindFile, keyPrefix: "files/"}, nil
 	}
+	if detected == svgType {
+		// The ceilings let a purpose name SVG only with rasterize_svg.
+		img, err := rasterizeSVG(data, purpose.Image)
+		if errors.Is(err, errSVGTooLarge) {
+			return storedFile{}, &PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: maxSVGBytes}
+		}
+		if errors.Is(err, errSVGNotDrawn) {
+			return storedFile{}, &PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: purpose.Name, AllowedTypes: purpose.Types}
+		}
+		if err != nil {
+			return storedFile{}, err
+		}
+		return storedFile{body: img.body, ctype: img.ctype, kind: KindImage, keyPrefix: "images/", width: img.width, height: img.height, variants: img.variants, sized: true}, nil
+	}
 	if purpose.Image.Reencode {
 		img, err := reencodeRaster(data, purpose.Image)
 		var tooMany errTooManyPixels
