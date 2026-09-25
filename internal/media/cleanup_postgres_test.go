@@ -206,3 +206,41 @@ func TestPostgresPurgeKeepsMediaAnAttachmentOrACoreLinkStillUses(t *testing.T) {
 		t.Fatal("expired Media still used as an Event cover was purged")
 	}
 }
+
+// A restored Media no Media attachment keeps starts its purpose's window
+// again: an expiry that passed while it was archived would purge it on the
+// next pass.
+func TestPostgresRestoreStartsTheExpiryAgain(t *testing.T) {
+	db := newMediaDatabase(t)
+	ctx := context.Background()
+	cover := db.withBlob(t, "event_cover")
+	legacy := db.withBlob(t, media.PurposeLegacy)
+	for _, item := range []media.Media{cover, legacy} {
+		if err := db.svc.Delete(ctx, db.organizer, item.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Archived for two days: the upload's 24 hours are long gone.
+	if _, err := db.pool.Exec(ctx, `UPDATE media SET expires_at = now() - interval '1 day' WHERE id = $1`, cover.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	before := time.Now()
+	for _, item := range []media.Media{cover, legacy} {
+		if _, err := db.svc.Restore(ctx, db.organizer, item.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after := time.Now()
+	if got := db.get(t, cover.ID); got.ExpiresAt == nil ||
+		got.ExpiresAt.Before(before.Add(24*time.Hour).Truncate(time.Microsecond)) || got.ExpiresAt.After(after.Add(24*time.Hour)) {
+		t.Fatalf("restored cover expires %v, want 24h after the restore", got.ExpiresAt)
+	}
+	if got := db.get(t, legacy.ID); got.ExpiresAt != nil {
+		t.Fatalf("restored legacy Media expires %v, want no expiry", got.ExpiresAt)
+	}
+	report, err := media.PurgeExpired(ctx, db.store, db.blobs, time.Now().Add(time.Hour), nil)
+	if err != nil || report.Purged != 0 {
+		t.Fatalf("report %+v err %v", report, err)
+	}
+}

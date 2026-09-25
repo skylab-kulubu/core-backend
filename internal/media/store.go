@@ -99,7 +99,12 @@ type Store interface {
 	// policy. It changes nothing else on the record.
 	SetServingPolicyApplied(ctx context.Context, id uuid.UUID) error
 	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
+	// Restore restores an archived Media and clears its expiry, so an expiry
+	// that passed while it was archived cannot purge it.
 	Restore(ctx context.Context, id uuid.UUID) error
+	// ExpireUnattachedAt sets when a current Media no Media attachment keeps
+	// is purged; nil keeps it. An attached Media is left alone.
+	ExpireUnattachedAt(ctx context.Context, id uuid.UUID, at *time.Time) error
 	ListPurgeCandidates(ctx context.Context, deletedBefore time.Time, limit int) ([]Media, error)
 	PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(key string) error) (bool, error)
 	// ListExpired returns, in id order and after the given id, the Media

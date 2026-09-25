@@ -180,6 +180,7 @@ func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
 		UPDATE media
 		SET deleted_at = NULL,
 			deleted_by = NULL,
+			expires_at = CASE WHEN deleted_at IS NOT NULL THEN NULL ELSE expires_at END,
 			updated_at = CASE WHEN deleted_at IS NOT NULL THEN now() ELSE updated_at END
 		WHERE id = $1 AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL`, id)
 	if err != nil {
@@ -197,6 +198,22 @@ func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
 			return ErrPurgeInProgress
 		}
 		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) ExpireUnattachedAt(ctx context.Context, id uuid.UUID, at *time.Time) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE media SET expires_at = $2
+		WHERE id = $1 AND status <> 'attached' AND deleted_at IS NULL
+		  AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL`, id, at)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		if _, err := s.Get(ctx, id); err != nil {
+			return err
+		}
 	}
 	return nil
 }

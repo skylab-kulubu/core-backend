@@ -165,7 +165,22 @@ func (s *MemoryStore) Restore(_ context.Context, id uuid.UUID) error {
 	if m.DeletedAt != nil {
 		m.DeletedAt = nil
 		m.DeletedBy = nil
+		m.ExpiresAt = nil
 		m.UpdatedAt = time.Now().UTC()
+		s.byID[id] = m
+	}
+	return nil
+}
+
+func (s *MemoryStore) ExpireUnattachedAt(_ context.Context, id uuid.UUID, at *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok || m.DeletedAt != nil {
+		return ErrNotFound
+	}
+	if m.Status != StatusAttached && m.BlobPurgeStartedAt == nil && m.BlobPurgedAt == nil {
+		m.ExpiresAt = at
 		s.byID[id] = m
 	}
 	return nil

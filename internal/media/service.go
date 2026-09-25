@@ -341,11 +341,20 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.Delete) {
 		return Media{}, ErrForbidden
 	}
-	if _, err := s.media.GetIncludingDeleted(ctx, id); err != nil {
+	m, err := s.media.GetIncludingDeleted(ctx, id)
+	if err != nil {
 		return Media{}, err
 	}
 	if err := s.media.Restore(ctx, id); err != nil {
 		return Media{}, err
+	}
+	if m.DeletedAt != nil {
+		// Restore left the Media with no expiry; its purpose's window starts
+		// again now. Should this step fail, the Media is only kept longer.
+		purpose, _ := s.catalogue.Lookup(m.Purpose)
+		if err := s.media.ExpireUnattachedAt(ctx, id, pendingExpiry(purpose, time.Now().UTC())); err != nil {
+			return Media{}, err
+		}
 	}
 	return s.Get(ctx, id)
 }
