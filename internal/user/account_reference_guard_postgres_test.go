@@ -122,7 +122,7 @@ func TestDeletionMarkerRejectsNewSubjectLinksAndDetachedCompetitorReinstate(t *t
 		t.Fatalf("rejected requester changed target state=%s markers=%d", targetState, targetMarkers)
 	}
 
-	if err := users.AnonymizeAccount(ctx, subjectID, time.Now().UTC()); err != nil {
+	if err := users.AnonymizeAccount(ctx, subjectID, time.Now().UTC(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT requested_by FROM account_deletion_requests WHERE id=$1`, request.ID).Scan(&request.RequestedBy); err != nil {
@@ -190,7 +190,7 @@ func TestInFlightTicketWriterCommitsBeforeDeletionAndIsThenDetached(t *testing.T
 			deletionDone <- err
 			return
 		}
-		deletionDone <- users.AnonymizeAccount(ctx, subjectID, time.Now().UTC())
+		deletionDone <- users.AnonymizeAccount(ctx, subjectID, time.Now().UTC(), nil)
 	}()
 	testpostgres.WaitForBlockedQuery(t, pool, "pg_advisory_xact_lock")
 
@@ -284,7 +284,7 @@ func TestDirectSQLDeletionMarkerWaitsForGuardedSubjectWriter(t *testing.T) {
 	if err := <-markerDone; err != nil {
 		t.Fatal(err)
 	}
-	if err := users.AnonymizeAccount(ctx, subjectID, time.Now().UTC()); err != nil {
+	if err := users.AnonymizeAccount(ctx, subjectID, time.Now().UTC(), nil); err != nil {
 		t.Fatal(err)
 	}
 	var ownerID *uuid.UUID
@@ -376,7 +376,7 @@ func TestActorReferenceGuardsAreInstalledAndSerializeWithDeletion(t *testing.T) 
 			deletionDone <- err
 			return
 		}
-		deletionDone <- users.AnonymizeAccount(ctx, actorID, time.Now().UTC())
+		deletionDone <- users.AnonymizeAccount(ctx, actorID, time.Now().UTC(), nil)
 	}()
 	testpostgres.WaitForBlockedQuery(t, pool, "pg_advisory_xact_lock")
 	if err := blocker.Commit(ctx); err != nil {

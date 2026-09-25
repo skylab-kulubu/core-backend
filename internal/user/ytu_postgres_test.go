@@ -88,7 +88,7 @@ func TestPostgresYTUProfile(t *testing.T) {
 	if _, err := store.SetYTUProfile(ctx, id, ytu.Profile{University: "Yıldız Teknik Üniversitesi"}); !errors.Is(err, user.ErrAccountBlocked) {
 		t.Fatalf("pending deletion err=%v", err)
 	}
-	if err := store.AnonymizeAccount(ctx, id, time.Now().UTC()); err != nil {
+	if err := store.AnonymizeAccount(ctx, id, time.Now().UTC(), nil); err != nil {
 		t.Fatal(err)
 	}
 	var linked bool

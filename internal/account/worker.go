@@ -18,7 +18,7 @@ type Store interface {
 	CompleteServiceErasureStep(context.Context, uuid.UUID, uuid.UUID, user.DeletionStep, time.Time, map[string]int64) error
 	RetryDeletionRequest(context.Context, uuid.UUID, uuid.UUID, time.Time, string, bool, bool) error
 	CompleteDeletionRequest(context.Context, uuid.UUID, uuid.UUID, time.Time) error
-	AnonymizeAccount(context.Context, uuid.UUID, time.Time) error
+	AnonymizeAccount(context.Context, uuid.UUID, time.Time, []string) error
 	ProfileMediaForDeletion(context.Context, uuid.UUID) (*uuid.UUID, error)
 }
 
@@ -141,7 +141,7 @@ func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaSte
 		{name: user.DeletionStepDisableIdentity, run: w.identity.EnsureDisabled},
 		{name: user.DeletionStepLogoutSessions, run: w.identity.EnsureLoggedOut},
 		{name: user.DeletionStepAnonymizeCore, run: func(ctx context.Context, id uuid.UUID) error {
-			return w.store.AnonymizeAccount(ctx, id, now)
+			return w.store.AnonymizeAccount(ctx, id, now, nil)
 		}},
 		{name: user.DeletionStepEraseProfile, run: func(ctx context.Context, _ uuid.UUID) error {
 			mediaID, err := w.store.ProfileMediaForDeletion(ctx, request.ID)
