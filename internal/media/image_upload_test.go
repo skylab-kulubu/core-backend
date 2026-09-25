@@ -3,11 +3,13 @@ package media_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"testing"
@@ -331,5 +333,73 @@ func TestService_LegacyUploadKeepsOnlyTheOrientationOfAPhoto(t *testing.T) {
 	}
 	if stored, _ := blobs.Get(upright.Key); bytes.Contains(stored, []byte("Exif")) {
 		t.Fatal("an upright photo keeps an EXIF segment")
+	}
+}
+
+// One-pixel WebP images from Modernizr's feature tests: a lossy one (opaque
+// grey) and one with an alpha channel (fully transparent).
+const (
+	lossyWebP = "UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA"
+	alphaWebP = "UklGRkoAAABXRUJQVlA4WAoAAAAQAAAAAAAAAAAAQUxQSAwAAAARBxAR/Q9ERP8DAABWUDggGAAAABQBAJ0BKgEAAQAAAP4AAA3AAP7mtQAAAA=="
+)
+
+func TestService_PurposeStoresAWebPAsJPEGOrPNGByItsTransparency(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	p := signedIn("68686868-6868-6868-6868-686868686868")
+	for _, tc := range []struct {
+		name, webp, wantType, wantFormat string
+	}{
+		{name: "opaque", webp: lossyWebP, wantType: "image/jpeg", wantFormat: "jpeg"},
+		{name: "transparent", webp: alphaWebP, wantType: "image/png", wantFormat: "png"},
+	} {
+		data, err := base64.StdEncoding.DecodeString(tc.webp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		created, err := svc.UploadForPurpose(context.Background(), p, "profile_picture", uploaded("image.webp", "image/webp", data))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		stored, _ := blobs.Get(created.Key)
+		img, format := decodeStored(t, stored)
+		if created.Type != tc.wantType || format != tc.wantFormat {
+			t.Errorf("%s: recorded %s, stored %s; want %s", tc.name, created.Type, format, tc.wantType)
+		}
+		if meta, _ := blobs.Metadata(created.Key); meta.ContentType != tc.wantType {
+			t.Errorf("%s: served as %s", tc.name, meta.ContentType)
+		}
+		if _, _, _, a := img.At(0, 0).RGBA(); tc.name == "transparent" && a != 0 {
+			t.Errorf("transparent: alpha %d after re-encoding", a)
+		}
+	}
+}
+
+func TestService_PurposeKeepsTheFirstFrameOfAnAnimatedGIF(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	frame := func(c color.Color) *image.Paletted {
+		img := image.NewPaletted(image.Rect(0, 0, 8, 8), color.Palette{color.RGBA{R: 230, A: 255}, color.RGBA{B: 230, A: 255}})
+		for i := range img.Pix {
+			img.Pix[i] = uint8(img.Palette.Index(c))
+		}
+		return img
+	}
+	var animated bytes.Buffer
+	if err := gif.EncodeAll(&animated, &gif.GIF{
+		Image: []*image.Paletted{frame(color.RGBA{R: 230, A: 255}), frame(color.RGBA{B: 230, A: 255})},
+		Delay: []int{10, 10},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := svc.UploadForPurpose(context.Background(), signedIn("69696969-6969-6969-6969-696969696969"), "profile_picture", uploaded("wave.gif", "image/gif", animated.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := blobs.Get(created.Key)
+	img, format := decodeStored(t, stored)
+	if created.Type != "image/png" || format != "png" || !isRed(img.At(4, 4)) {
+		t.Fatalf("recorded %s, stored %s, pixel %v; want the red first frame as PNG", created.Type, format, img.At(4, 4))
 	}
 }

@@ -110,7 +110,7 @@ func reencodeRaster(data []byte, handling ImageHandling) (reencodedImage, error)
 	// Scaled first, then turned: the limit is a square, so the turned image
 	// fits it too, and turning the smaller image is cheaper.
 	img = orient(fitWithin(img, limit), jpegOrientation(data))
-	ctype := outputType(detectContentType(data))
+	ctype := outputType(detectContentType(data), img)
 	body, err := encodeRaster(img, ctype)
 	if err != nil {
 		return reencodedImage{}, err
@@ -155,10 +155,18 @@ func fitWithin(img image.Image, limit int) image.Image {
 	return dst
 }
 
-// outputType is the type core stores an image of the given type as.
-func outputType(uploaded string) string {
-	if uploaded == "image/jpeg" {
+// outputType is the type core stores an image uploaded as the given type
+// as. Go has no WebP encoder, so a WebP becomes a JPEG when it is opaque
+// (a photo) and a PNG when it has transparency. A GIF becomes a PNG of its
+// first frame. Everything else keeps its type.
+func outputType(uploaded string, img image.Image) string {
+	switch uploaded {
+	case "image/jpeg":
 		return "image/jpeg"
+	case "image/webp":
+		if opaque, ok := img.(interface{ Opaque() bool }); ok && opaque.Opaque() {
+			return "image/jpeg"
+		}
 	}
 	return "image/png"
 }
