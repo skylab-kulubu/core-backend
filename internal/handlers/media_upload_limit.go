@@ -16,16 +16,40 @@ import (
 //
 // An anonymous request passes through untouched, so the route refuses it
 // with 401 as before.
+//
+// An upload that ends in a server error (5xx, a panic included) is refunded:
+// the failure is core's, not the person's. Any other refusal stays charged,
+// since its bytes were received and free refusals would allow endless junk.
 func LimitMediaUploads(limiter *media.UploadLimiter) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		ident, ok := c.Locals(authn.LocalsIdentity).(authn.Identity)
 		if !ok {
 			return c.Next()
 		}
-		if refusal, ok := limiter.Admit(ident.ID, receivedBodyBytes(c)); !ok {
-			return uploadRateLimited(c, refusal)
+		charge, refusal := limiter.Admit(ident.ID, receivedBodyBytes(c))
+		if refusal != nil {
+			return uploadRateLimited(c, *refusal)
 		}
-		return c.Next()
+		answered := false
+		defer func() {
+			// A panic passes through here on its way to the recover
+			// middleware, which answers 500.
+			if !answered {
+				charge.Refund()
+			}
+		}()
+		if err := c.Next(); err != nil {
+			// Answer the error here, as fiber's logger does, so that its
+			// status decides the refund.
+			if handlerErr := c.App().ErrorHandler(c, err); handlerErr != nil {
+				_ = c.SendStatus(fiber.StatusInternalServerError)
+			}
+		}
+		answered = true
+		if c.Response().StatusCode() >= fiber.StatusInternalServerError {
+			charge.Refund()
+		}
+		return nil
 	}
 }
 
@@ -42,19 +66,17 @@ func receivedBodyBytes(c fiber.Ctx) int64 {
 	return int64(len(c.Request().Body()))
 }
 
+// uploadRateLimited answers 429 with the limit hit and the person's whole
+// budget, each maximum under its own member.
 func uploadRateLimited(c fiber.Ctx, refusal media.UploadLimitRefusal) error {
 	seconds := int64(refusal.RetryAfter / time.Second)
 	c.Set(fiber.HeaderRetryAfter, strconv.FormatInt(seconds, 10))
-	fields := fiber.Map{
-		"limit":             string(refusal.Limit),
-		"windowSeconds":     int64(refusal.Window / time.Second),
-		"retryAfterSeconds": seconds,
-	}
-	if refusal.Limit == media.UploadLimitVolume {
-		fields["maxBytes"] = refusal.Max
-	} else {
-		fields["maxUploads"] = refusal.Max
-	}
 	return problemWithFields(c, fiber.StatusTooManyRequests, "Too Many Requests",
-		"The person's upload limit is reached; retry after the given seconds.", "media_rate_limited", fields)
+		"The person's upload limit is reached; retry after the given seconds.", "media_rate_limited", fiber.Map{
+			"limit":               string(refusal.Limit),
+			"maxUploads":          refusal.Budget.Count,
+			"uploadWindowSeconds": int64(refusal.Budget.CountWindow / time.Second),
+			"maxDailyBytes":       refusal.Budget.DailyBytes,
+			"retryAfterSeconds":   seconds,
+		})
 }

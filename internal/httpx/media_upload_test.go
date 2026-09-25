@@ -16,24 +16,37 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-func uploadPDF(t *testing.T, app *fiber.App, keys *testauth.Bundle, size int) (int, error) {
+// fileForm is a multipart form carrying data as the file field, named name.
+func fileForm(t *testing.T, field, name string, data []byte) (*bytes.Buffer, string) {
 	t.Helper()
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
-	part, err := form.CreateFormFile("file", "cv.pdf")
+	part, err := form.CreateFormFile(field, name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pdf := make([]byte, size)
-	copy(pdf, "%PDF-1.7\n")
-	if _, err := part.Write(pdf); err != nil {
+	if _, err := part.Write(data); err != nil {
 		t.Fatal(err)
 	}
 	if err := form.Close(); err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(fiber.MethodPost, "/v1/media", &body)
-	req.Header.Set("Content-Type", form.FormDataContentType())
+	return &body, form.FormDataContentType()
+}
+
+// pdfForm is a form uploading a PDF of size bytes as its "file".
+func pdfForm(t *testing.T, size int) (*bytes.Buffer, string) {
+	t.Helper()
+	pdf := make([]byte, size)
+	copy(pdf, "%PDF-1.7\n")
+	return fileForm(t, "file", "cv.pdf", pdf)
+}
+
+func uploadPDF(t *testing.T, app *fiber.App, keys *testauth.Bundle, size int) (int, error) {
+	t.Helper()
+	body, contentType := pdfForm(t, size)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/media", body)
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Authorization", "Bearer "+keys.Token(t, jwt.MapClaims{
 		"sub": uuid.NewString(), "email": "applicant@example.com", "given_name": "A", "family_name": "B",
 	}))
