@@ -121,6 +121,9 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if purpose.Transport == TransportDirect {
 		return Media{}, &PurposeRefusal{Err: ErrDirectUploadOnly, Purpose: purpose.Name}
 	}
+	if !purpose.Available() {
+		return Media{}, &PurposeRefusal{Err: ErrPurposeNotAvailable, Purpose: purpose.Name}
+	}
 	if len(file.Data) == 0 {
 		return Media{}, ErrInvalid
 	}
