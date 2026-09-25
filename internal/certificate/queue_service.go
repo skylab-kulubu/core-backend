@@ -297,7 +297,7 @@ func (s *service) materializeVersion(ctx context.Context, ev event.Event, item t
 	legacyPDF := pdf
 	if s.artifacts != nil {
 		cert.PDFKey = "certificates/" + serial + ".pdf"
-		if err := s.artifacts.Put(ctx, cert.PDFKey, pdf, media.BlobMetadata{ContentType: "application/pdf"}); err != nil {
+		if err := s.artifacts.Put(ctx, cert.PDFKey, pdf, media.ServingMetadata("application/pdf", "")); err != nil {
 			return Certificate{}, err
 		}
 		legacyPDF = nil

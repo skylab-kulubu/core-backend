@@ -40,7 +40,7 @@ func BackfillServingPolicy(ctx context.Context, store Store, blobs BlobStore) (i
 		return 0, false, err
 	}
 	for i, item := range items {
-		serving := servingMetadata(item.Type, item.Name)
+		serving := ServingMetadata(item.Type, item.Name)
 		if serving != (BlobMetadata{ContentType: item.Type}) {
 			if err := blobs.SetMetadata(ctx, item.Key, serving); err != nil && !errors.Is(err, ErrNotFound) {
 				return i, false, err
