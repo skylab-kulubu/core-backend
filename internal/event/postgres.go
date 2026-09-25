@@ -237,6 +237,30 @@ func (s *PostgresStore) RemoveImages(ctx context.Context, eventID uuid.UUID, ids
 	return s.Get(ctx, eventID)
 }
 
+func (s *PostgresStore) TeamsUsingMedia(ctx context.Context, mediaID, except uuid.UUID) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT e.owner_team
+		FROM events e
+		WHERE e.id <> $2
+		  AND (e.cover_image_id = $1 OR EXISTS (
+			SELECT 1 FROM event_images ei WHERE ei.event_id = e.id AND ei.media_id = $1
+		  ))
+	`, mediaID, except)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	teams := make([]string, 0)
+	for rows.Next() {
+		var team string
+		if err := rows.Scan(&team); err != nil {
+			return nil, err
+		}
+		teams = append(teams, team)
+	}
+	return teams, rows.Err()
+}
+
 func (s *PostgresStore) loadImages(ctx context.Context, e *Event) error {
 	rows, err := s.pool.Query(ctx, `
 		SELECT m.id, m.file_url

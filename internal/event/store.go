@@ -26,6 +26,10 @@ type Store interface {
 	Restore(ctx context.Context, id uuid.UUID) error
 	AddImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
 	RemoveImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
+	// TeamsUsingMedia returns the Owner teams of the Events, archived ones
+	// included, that use the Media as their cover or in their gallery,
+	// leaving out the Event except.
+	TeamsUsingMedia(ctx context.Context, mediaID, except uuid.UUID) ([]string, error)
 	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
 	GetDayIncludingArchived(ctx context.Context, id uuid.UUID) (Day, error)
 	CreateDay(ctx context.Context, d Day) (Day, error)

@@ -15,8 +15,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
-// The Media purposes core itself uploads as. The catalogue must define every
-// one of them (requiredPurposes).
+// The Media purposes core itself uploads as or links. The catalogue must
+// define every one of them (requiredPurposes).
 const (
 	// PurposeLegacy is the Media purpose of Media uploaded without a purpose
 	// and of every Media stored before Media purpose existed. It is internal:
@@ -24,11 +24,20 @@ const (
 	PurposeLegacy = "legacy"
 	// PurposeProfilePicture is a person's own profile picture.
 	PurposeProfilePicture = "profile_picture"
+	// PurposeEventCover is an Event's cover image.
+	PurposeEventCover = "event_cover"
+	// PurposeEventGallery is a photo in an Event's gallery.
+	PurposeEventGallery = "event_gallery"
+	// PurposeCertificateAsset is a certificate template's background or
+	// image.
+	PurposeCertificateAsset = "certificate_asset"
 )
 
 // requiredPurposes are the purposes core refers to in code. A catalogue that
 // lacks one stops core at startup.
-var requiredPurposes = []string{PurposeLegacy, PurposeProfilePicture}
+var requiredPurposes = []string{
+	PurposeLegacy, PurposeProfilePicture, PurposeEventCover, PurposeEventGallery, PurposeCertificateAsset,
+}
 
 // ErrCatalogueInvalid is a catalogue file core cannot read as one: a field it
 // does not know, a value outside the vocabulary, or a missing purpose that

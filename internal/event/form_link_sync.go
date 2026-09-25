@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 // FormLink is a form an event points at and the alias the event gave it.
@@ -27,10 +28,14 @@ type FormLinkSync interface {
 type ServiceOptions struct {
 	PublicBase string
 	FormLinks  FormLinkSync
+	// Media checks each Media an Event is about to link as its cover or in
+	// its gallery. Nil leaves the Media's own rules (purpose, state) to the
+	// database's guards; the Team media library rule holds either way.
+	Media media.Linker
 }
 
 func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOptions) Service {
-	return &service{store: store, authz: az, publicBase: options.PublicBase, formLinks: options.FormLinks}
+	return &service{store: store, authz: az, publicBase: options.PublicBase, formLinks: options.FormLinks, media: options.Media}
 }
 
 func formLinksOf(e Event) []FormLink {
