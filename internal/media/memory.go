@@ -33,6 +33,9 @@ func (s *MemoryStore) Create(_ context.Context, m Media) (Media, error) {
 	if m.CoverColors == nil {
 		m.CoverColors = []string{}
 	}
+	if m.Purpose == "" {
+		m.Purpose = PurposeLegacy
+	}
 	s.byID[m.ID] = m
 	return m, nil
 }

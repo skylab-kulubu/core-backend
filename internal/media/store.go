@@ -19,13 +19,16 @@ var (
 )
 
 type Media struct {
-	ID                  uuid.UUID  `json:"id"`
-	Name                string     `json:"name"`
-	Type                string     `json:"type"`
-	URL                 string     `json:"url"`
-	Size                int64      `json:"size"`
-	UploadedBy          uuid.UUID  `json:"uploadedBy"`
-	Kind                string     `json:"kind"`
+	ID         uuid.UUID `json:"id"`
+	Name       string    `json:"name"`
+	Type       string    `json:"type"`
+	URL        string    `json:"url"`
+	Size       int64     `json:"size"`
+	UploadedBy uuid.UUID `json:"uploadedBy"`
+	Kind       string    `json:"kind"`
+	// Purpose is the Media purpose the file was uploaded for; legacy for a
+	// purpose-less upload and for Media stored before purposes existed.
+	Purpose             string     `json:"purpose"`
 	Key                 string     `json:"-"`
 	CoverColors         []string   `json:"coverColors"`
 	CoverColorsComputed bool       `json:"-"`

@@ -79,10 +79,13 @@ func (s *PostgresStore) CreateStaged(ctx context.Context, item Media) (Media, er
 	if item.CoverColors == nil {
 		item.CoverColors = []string{}
 	}
+	if item.Purpose == "" {
+		item.Purpose = PurposeLegacy
+	}
 	created, err := scanMedia(tx.QueryRow(ctx, `
-		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING `+mediaCols, item.ID, item.Name, item.Type, item.Key, item.Size, item.UploadedBy, item.Kind, item.CoverColors, item.CoverColorsComputed, item.ServingPolicyApplied))
+		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING `+mediaCols, item.ID, item.Name, item.Type, item.Key, item.Size, item.UploadedBy, item.Kind, item.CoverColors, item.CoverColorsComputed, item.ServingPolicyApplied, item.Purpose))
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Media{}, ErrForbidden
 	}
