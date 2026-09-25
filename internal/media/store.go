@@ -38,7 +38,7 @@ type Media struct {
 	UpdatedAt           time.Time  `json:"updatedAt"`
 
 	// ServingPolicyApplied is set once the object's metadata is known to
-	// follow the serving policy: at upload, or by the serving policy backfill.
+	// follow the serving policy: set by Upload, or by the serving policy backfill.
 	ServingPolicyApplied bool `json:"-"`
 }
 

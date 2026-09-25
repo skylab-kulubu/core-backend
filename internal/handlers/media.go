@@ -80,7 +80,7 @@ func (h *MediaHandler) Get(c fiber.Ctx) error {
 
 // publicMedia is what a caller without a token sees of a media record:
 // enough to render it, nothing about who uploaded it or what they named it.
-// A form applicant's CV is a media record too.
+// Until Media purpose ships, Answer files are still Media on this route.
 type publicMedia struct {
 	ID          uuid.UUID `json:"id"`
 	Type        string    `json:"type"`

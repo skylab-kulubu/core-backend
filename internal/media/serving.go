@@ -3,9 +3,10 @@ package media
 import "mime"
 
 // ServingMetadata is the serving policy: how the CDN answers for an object of
-// this type. Every write to the public bucket takes its metadata from here. Only types a browser cannot run script from are served inline:
-// the raster formats Upload accepts, and PDF. SVG keeps its type so `<img>`
-// still renders it, but opening its URL downloads it instead of running its
+// this type. Every write to the public bucket takes its metadata from here.
+// Only types a browser cannot run script from are served inline: the raster
+// formats Upload accepts, and PDF. SVG keeps its type so `<img>` still
+// renders it, but opening its URL downloads it instead of running its
 // script. Everything else is stored as an opaque download under its name.
 func ServingMetadata(contentType, name string) BlobMetadata {
 	switch {

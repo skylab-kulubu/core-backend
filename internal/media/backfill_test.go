@@ -104,7 +104,7 @@ func TestBackfillServingPolicyRewritesLegacyDownloadsAndSVGs(t *testing.T) {
 	}
 }
 
-func TestBackfillServingPolicySkipsUploadsMadeUnderThePolicy(t *testing.T) {
+func TestBackfillServingPolicySkipsMediaStoredUnderThePolicy(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := media.NewMemoryStore()
