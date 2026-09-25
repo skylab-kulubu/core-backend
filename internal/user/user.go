@@ -73,19 +73,24 @@ type SelfDeletionRecord struct {
 }
 
 type User struct {
-	ID                  uuid.UUID    `json:"id"`
-	Email               string       `json:"email"`
-	FirstName           string       `json:"firstName"`
-	LastName            string       `json:"lastName"`
-	Username            string       `json:"username,omitempty"`
-	SchoolEmail         string       `json:"schoolEmail,omitempty"`
-	SkyNumber           string       `json:"skyNumber,omitempty"`
-	StudentCardUID      string       `json:"-"`
-	StudentCardLinked   bool         `json:"studentCardLinked"`
-	Linkedin            string       `json:"linkedin,omitempty"`
-	University          string       `json:"university,omitempty"`
-	Faculty             string       `json:"faculty,omitempty"`
-	Department          string       `json:"department,omitempty"`
+	ID                uuid.UUID `json:"id"`
+	Email             string    `json:"email"`
+	FirstName         string    `json:"firstName"`
+	LastName          string    `json:"lastName"`
+	Username          string    `json:"username,omitempty"`
+	SchoolEmail       string    `json:"schoolEmail,omitempty"`
+	SkyNumber         string    `json:"skyNumber,omitempty"`
+	StudentCardUID    string    `json:"-"`
+	StudentCardLinked bool      `json:"studentCardLinked"`
+	Linkedin          string    `json:"linkedin,omitempty"`
+	University        string    `json:"university,omitempty"`
+	Faculty           string    `json:"faculty,omitempty"`
+	Department        string    `json:"department,omitempty"`
+	// YTULinked is true once core has seen the YTÜ Microsoft login's
+	// `university` claim for this person (see ytu.FromClaims). University,
+	// Faculty and Department then follow that login and nobody edits them
+	// through core. Only the caller's own view and the admin card show it.
+	YTULinked           bool         `json:"-"`
 	Phone               string       `json:"-"`
 	ProfilePictureID    *uuid.UUID   `json:"profilePictureId,omitempty"`
 	ProfilePictureURL   string       `json:"profilePictureUrl,omitempty"`
@@ -108,6 +113,12 @@ type Profile struct {
 	Username    string
 	SchoolEmail string
 	SkyNumber   string
+	// University and Department are the raw `university` and `department`
+	// claims. They are empty when the token carries no YTÜ claims (Account
+	// Center's token never does); see ytu.FromClaims for what they mean and
+	// how they are cleaned.
+	University string
+	Department string
 }
 
 type ProfileUpdate struct {

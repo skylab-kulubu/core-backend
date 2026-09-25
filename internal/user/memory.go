@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/ytu"
 )
 
 type MemoryStore struct {
@@ -72,6 +73,7 @@ func keepProfile(existing, u User) User {
 	if u.Email == "" {
 		u.Email = existing.Email
 	}
+	u.YTULinked = existing.YTULinked
 	if u.SchoolEmail == "" {
 		u.SchoolEmail = existing.SchoolEmail
 	}
@@ -164,15 +166,36 @@ func (s *MemoryStore) UpdateProfile(_ context.Context, u User) (User, error) {
 	existing.FirstName = u.FirstName
 	existing.LastName = u.LastName
 	existing.Linkedin = u.Linkedin
-	existing.University = u.University
-	existing.Faculty = u.Faculty
-	existing.Department = u.Department
+	if !existing.YTULinked {
+		existing.University = u.University
+		existing.Faculty = u.Faculty
+		existing.Department = u.Department
+	}
 	existing.Phone = u.Phone
 	existing.StudentCardUID = u.StudentCardUID
 	existing.ProfilePictureID = u.ProfilePictureID
 	existing.ProfilePictureURL = u.ProfilePictureURL
 	existing.UpdatedAt = time.Now().UTC()
 	s.byID[u.ID] = existing
+	return withStudentCardStatus(existing), nil
+}
+
+func (s *MemoryStore) SetYTUProfile(_ context.Context, id uuid.UUID, p ytu.Profile) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.byID[id]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	if existing.AccountState != AccountActive {
+		return User{}, ErrAccountBlocked
+	}
+	existing.University = p.University
+	existing.Faculty = p.Faculty
+	existing.Department = p.Department
+	existing.YTULinked = true
+	existing.UpdatedAt = time.Now().UTC()
+	s.byID[id] = existing
 	return withStudentCardStatus(existing), nil
 }
 
@@ -447,6 +470,7 @@ func (s *MemoryStore) AnonymizeAccount(_ context.Context, id uuid.UUID, at time.
 	u.University = ""
 	u.Faculty = ""
 	u.Department = ""
+	u.YTULinked = false
 	u.Phone = ""
 	u.ProfilePictureID = nil
 	u.ProfilePictureURL = ""

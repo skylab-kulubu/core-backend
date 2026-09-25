@@ -407,6 +407,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			 AND actual.table_name = 'url_hits'
 			 AND actual.column_name = expected.column_name
 		) = 5`,
+	20260925100000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'ytu_linked'`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

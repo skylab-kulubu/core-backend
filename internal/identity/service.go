@@ -402,6 +402,7 @@ func userCard(person Person, groups []Group, inherited, extra []ClientRole, shad
 		University:     shadow.University,
 		Faculty:        shadow.Faculty,
 		Department:     shadow.Department,
+		YTULinked:      shadow.YTULinked,
 		Phone:          shadow.Phone,
 		StudentCardUid: shadow.StudentCardUID,
 		Groups:         groups,
