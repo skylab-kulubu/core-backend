@@ -256,9 +256,14 @@ re-authentication hop. The replay of an accepted key must also be live in
 that environment, so that a lost answer is still recoverable after the saga
 has closed the session.
 
-Production enablement is still blocked on the documented real LDAP
-production-clone disable/logout/delete/reimport rehearsal, cross-service old
-JWT exercise, the ingress/APM redaction validation above, identity-service
-owner approval and the erase endpoints of all three services, Forms' included
-(ADR-0051): the worker does not start without every service URL. This
-implementation does not enable the flag or deploy production.
+Production enablement is still blocked on the release gate in
+[`account-lifecycle.md`](account-lifecycle.md#keycloak-and-federated-users).
+The local full harness proves disable, logout, delete and the retry after
+`404` against a real Keycloak, and that a deleted person who signs in again
+through `OBS` gets a new `sub` (account-erasure ticket 10). The old-JWT matrix
+then runs in production with a throwaway test account, and the
+identity-service owner approves (ticket 11). No production clone is built.
+Enablement is also blocked on the ingress/APM redaction validation above and
+the erase endpoints of all three services, Forms' included (ADR-0051): the
+worker does not start without every service URL. This implementation does not
+enable the flag or deploy production.
