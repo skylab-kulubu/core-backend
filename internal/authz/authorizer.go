@@ -127,12 +127,35 @@ func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
 	case List:
 		return a.isPrivileged(p)
 	case Upload:
-		return p.ID != ""
+		if p.ID == "" {
+			return false
+		}
+		switch r.MediaUploader {
+		case "", MediaUploaderAuthenticated:
+			return true
+		case MediaUploaderEventEditor:
+			return a.isPrivileged(p) || isAnyLeader(p) || a.createsEventsAsMember(p)
+		case MediaUploaderCertificateTemplate:
+			return a.isPrivileged(p) || isAnyLeader(p) || (isAnyTeamMember(p) && hasRole(p, "certificate:template:manage"))
+		default:
+			return false
+		}
 	case Delete:
 		return a.isPrivileged(p)
 	default:
 		return false
 	}
+}
+
+// createsEventsAsMember reports whether p is a member of a team whose own
+// Event permissions let plain members create Events.
+func (a *authorizer) createsEventsAsMember(p Principal) bool {
+	for team, table := range a.policy.EventPermissions {
+		if slices.Contains(table[Create], LevelMember) && slices.Contains(a.ownerLevels(p, team), LevelMember) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {

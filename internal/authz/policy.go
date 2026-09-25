@@ -53,6 +53,9 @@ type Resource struct {
 	OwnerID      string
 	DoorStaffIDs []string
 	TeamDoorScan bool
+	// MediaUploader is the upload rule of a Media purpose, for Upload on
+	// TypeMedia. Empty is MediaUploaderAuthenticated.
+	MediaUploader MediaUploader
 }
 
 type Policy struct {

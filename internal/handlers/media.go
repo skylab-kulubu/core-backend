@@ -19,7 +19,45 @@ func NewMediaHandler(svc media.Service) *MediaHandler {
 	return &MediaHandler{svc: svc}
 }
 
+// purposeProblem answers an upload its Media purpose refused: problem+json
+// with a stable code and what the caller needs to fix the upload. handled is
+// false for any other error.
+func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
+	var refusal *media.PurposeRefusal
+	if !errors.As(err, &refusal) {
+		return false, nil
+	}
+	fields := fiber.Map{"purpose": refusal.Purpose}
+	switch {
+	case errors.Is(err, media.ErrPurposeUnknown):
+		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
+			"The purpose is not in the Media purpose catalogue.", "purpose-unknown", fields)
+	case errors.Is(err, media.ErrTypeNotAllowed):
+		fields["allowedTypes"] = refusal.AllowedTypes
+		return true, problemWithFields(c, fiber.StatusUnsupportedMediaType, "Unsupported Media Type",
+			"The file's content is not a type this purpose accepts.", "media-type-not-allowed", fields)
+	case errors.Is(err, media.ErrTooLarge):
+		fields["maxBytes"] = refusal.MaxBytes
+		return true, problemWithFields(c, fiber.StatusRequestEntityTooLarge, "Content Too Large",
+			"The file is larger than this purpose allows.", "media-too-large", fields)
+	case errors.Is(err, media.ErrPurposeForbidden):
+		return true, problemWithFields(c, fiber.StatusForbidden, "Forbidden",
+			"The caller may not upload Media for this purpose.", "purpose-forbidden", fields)
+	case errors.Is(err, media.ErrPrivateMediaDisabled):
+		return true, problemWithFields(c, fiber.StatusServiceUnavailable, "Service Unavailable",
+			"Private Media is not enabled; this purpose cannot be uploaded yet.", "private-media-disabled", fields)
+	case errors.Is(err, media.ErrDirectUploadOnly):
+		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
+			"This purpose is uploaded by Direct upload, not through this endpoint.", "purpose-requires-direct-upload", fields)
+	default:
+		return false, nil
+	}
+}
+
 func mediaError(c fiber.Ctx, err error) error {
+	if handled, problemErr := purposeProblem(c, err); handled {
+		return problemErr
+	}
 	switch {
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
@@ -56,7 +94,13 @@ func (h *MediaHandler) Upload(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	created, err := h.svc.Upload(c.Context(), p, header.Filename, header.Header.Get("Content-Type"), data)
+	// Without a purpose the upload is legacy, under the rules purpose-less
+	// uploads have always had.
+	purpose := c.FormValue("purpose")
+	if purpose == "" {
+		purpose = media.PurposeLegacy
+	}
+	created, err := h.svc.UploadForPurpose(c.Context(), p, purpose, header.Filename, header.Header.Get("Content-Type"), data)
 	if err != nil {
 		return mediaError(c, err)
 	}
