@@ -3,8 +3,10 @@ package media_test
 import (
 	"context"
 	"errors"
+	"image/color"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -150,5 +152,84 @@ func TestPostgresListsTheImagesWaitingForTheirSizes(t *testing.T) {
 	}
 	if err := store.SetImageVariants(ctx, done.ID, media.ImageSize{Width: 5, Height: 5}, nil); err != nil {
 		t.Fatalf("recording again: %v", err)
+	}
+}
+
+func TestPostgresPurgeAndStagingSweeperRemoveAnImagesStoredSizes(t *testing.T) {
+	store, uploader, exec := postgresImageStore(t)
+	ctx := context.Background()
+	blobs := media.NewMemoryBlob()
+	put := func(key string) {
+		t.Helper()
+		for _, k := range []string{key, key + "/card", key + "/page"} {
+			if err := blobs.Put(ctx, k, pngDot(), media.BlobMetadata{ContentType: "image/png"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	now := time.Now().UTC()
+
+	// An archived image past its recovery window.
+	archived, err := store.Create(ctx, media.Media{
+		Name: "old.png", Type: "image/png", Kind: media.KindImage, Key: "images/archived-sizes", UploadedBy: uploader,
+		StoredVariants: map[string]media.ImageSize{"card": {Width: 400, Height: 300}, "page": {Width: 1200, Height: 900}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	put(archived.Key)
+	exec(`UPDATE media SET deleted_at = $2 WHERE id = $1`, archived.ID, now.Add(-31*24*time.Hour))
+	if report, err := media.PurgeDeleted(ctx, store, blobs, now, 30*24*time.Hour, 25); err != nil || report.Purged != 1 {
+		t.Fatalf("purge %+v %v", report, err)
+	}
+
+	// An upload that wrote its image and sizes and never published.
+	unpublished := "images/unpublished-sizes"
+	put(unpublished)
+	if err := store.StageUpload(ctx, unpublished, uploader, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := media.PurgeStagedUploads(ctx, store, blobs, now, 25); err != nil || report.Resolved != 1 {
+		t.Fatalf("sweep %+v %v", report, err)
+	}
+
+	if left := blobs.Keys(); len(left) != 0 {
+		t.Fatalf("objects left: %v", left)
+	}
+}
+
+func TestPostgresImageVariantBackfillMakesTheSizesOfARowStoredBefore(t *testing.T) {
+	store, uploader, exec := postgresImageStore(t)
+	ctx := context.Background()
+	blobs := media.NewMemoryBlob()
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A row as core stored it before image sizes existed.
+	id := uuid.New()
+	exec(`INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind)
+		VALUES ($1, 'wide.png', 'image/png', 'images/wide-before', 1, $2, 'IMAGE')`, id, uploader)
+	if err := blobs.Put(ctx, "images/wide-before", solidPNG(t, 1000, 500, color.RGBA{R: 200, A: 255}), media.BlobMetadata{ContentType: "image/png"}); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := media.BackfillImageVariants(ctx, store, blobs, catalogue, nil)
+	if err != nil || report != (media.BackfillReport{Applied: 1}) {
+		t.Fatalf("report %+v %v", report, err)
+	}
+	got, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]media.ImageSize{"card": {Width: 400, Height: 200}}
+	if got.Width != 1000 || got.Height != 500 || !reflect.DeepEqual(got.StoredVariants, want) {
+		t.Fatalf("recorded %d×%d %v", got.Width, got.Height, got.StoredVariants)
+	}
+	if _, ok := blobs.Get("images/wide-before/card"); !ok {
+		t.Fatal("card not stored")
+	}
+	if again, err := media.BackfillImageVariants(ctx, store, blobs, catalogue, nil); err != nil || again != (media.BackfillReport{}) {
+		t.Fatalf("second pass %+v %v", again, err)
 	}
 }
