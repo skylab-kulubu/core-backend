@@ -442,6 +442,46 @@ func TestServiceErasurePermanentRejectionGoesStraightToManualIntervention(t *tes
 	}
 }
 
+func TestServiceErasureRetryStampsTheChangeTimeNotTheNextAttempt(t *testing.T) {
+	t.Parallel()
+	testRetryStampsTheChangeTimeNotTheNextAttempt(t, user.NewMemoryStore())
+}
+
+// testRetryStampsTheChangeTimeNotTheNextAttempt: a deferral, an ordinary
+// failure and manual intervention each stamp updated_at with the moment of the
+// change; the next attempt's time goes only to next_attempt_at. Account
+// Center orders the statuses it reads by updatedAt, so a stamp in the future
+// kept it on manual_intervention after a completed retry (ticket 13).
+func testRetryStampsTheChangeTimeNotTheNextAttempt(t *testing.T, store erasureTestStore) {
+	t.Helper()
+	f := newErasureFixtureWith(t, store)
+	worker := f.worker()
+	for _, tc := range []struct {
+		name   string
+		answer func(http.ResponseWriter, *http.Request)
+		status user.DeletionRequestStatus
+		wait   time.Duration
+	}{
+		{name: "deferred", answer: answerStatus(http.StatusServiceUnavailable, "600"), status: user.DeletionRequestPending, wait: 10 * time.Minute},
+		{name: "ordinary", answer: answerStatus(http.StatusUnauthorized, ""), status: user.DeletionRequestPending, wait: 30 * time.Second},
+		{name: "manual", answer: answerStatus(http.StatusForbidden, ""), status: user.DeletionRequestManualIntervention, wait: 30 * time.Second},
+	} {
+		f.services[user.DeletionStepEraseCMS].set(tc.answer)
+		if worked, err := f.run(worker); !worked || err == nil {
+			t.Fatalf("%s: worked=%v err=%v", tc.name, worked, err)
+		}
+		state := f.state()
+		if state.Status != tc.status || !state.NextAttemptAt.Equal(f.now.Add(tc.wait)) {
+			t.Fatalf("%s: request = %+v, want %s with the next attempt in %s", tc.name, state, tc.status, tc.wait)
+		}
+		if !state.UpdatedAt.Equal(f.now) {
+			t.Fatalf("%s: updated_at = %s, want the moment of the change %s (next attempt %s)", tc.name, state.UpdatedAt, f.now, state.NextAttemptAt)
+		}
+		f.now = state.NextAttemptAt
+	}
+	f.assertNoPersonalData()
+}
+
 func TestServiceErasureStopsAtALostLease(t *testing.T) {
 	t.Parallel()
 

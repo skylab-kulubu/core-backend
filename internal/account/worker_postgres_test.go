@@ -189,6 +189,21 @@ func TestPostgresServiceErasureKeepsProofAndHonoursTheFence(t *testing.T) {
 	h.assertNoPersonalData()
 }
 
+// The subtests share one database; each leaves its request completed or in
+// manual intervention, so the next one's worker claims only its own.
+func TestPostgresErasureTimestamps(t *testing.T) {
+	pool := testpostgres.Start(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	store := user.NewPostgresStore(pool)
+
+	t.Run("a retry stamps the change time, not the next attempt", func(t *testing.T) {
+		testRetryStampsTheChangeTimeNotTheNextAttempt(t, store)
+	})
+}
+
 func TestPostgresWatchdogGaugesMatchTheFixtures(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()

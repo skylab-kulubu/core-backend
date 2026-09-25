@@ -622,7 +622,7 @@ func (s *MemoryStore) CompleteDeletionStep(_ context.Context, requestID, leaseTo
 	return nil
 }
 
-func (s *MemoryStore) RetryDeletionRequest(_ context.Context, requestID, leaseToken uuid.UUID, next time.Time, code string, manual, refundAttempt bool) error {
+func (s *MemoryStore) RetryDeletionRequest(_ context.Context, requestID, leaseToken uuid.UUID, at, next time.Time, code string, manual, refundAttempt bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for subjectID, request := range s.deletionRequests {
@@ -640,7 +640,7 @@ func (s *MemoryStore) RetryDeletionRequest(_ context.Context, requestID, leaseTo
 		request.LeaseUntil = nil
 		request.LeaseToken = nil
 		request.LastErrorCode = code
-		request.UpdatedAt = next
+		request.UpdatedAt = at
 		if refundAttempt && request.AttemptCount > 0 {
 			request.AttemptCount--
 		}

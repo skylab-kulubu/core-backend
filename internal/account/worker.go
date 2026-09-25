@@ -16,7 +16,7 @@ type Store interface {
 	CompletedDeletionSteps(context.Context, uuid.UUID, uuid.UUID) (map[user.DeletionStep]bool, error)
 	CompleteDeletionStep(context.Context, uuid.UUID, uuid.UUID, user.DeletionStep, time.Time) error
 	CompleteServiceErasureStep(context.Context, uuid.UUID, uuid.UUID, user.DeletionStep, time.Time, map[string]int64) error
-	RetryDeletionRequest(context.Context, uuid.UUID, uuid.UUID, time.Time, string, bool, bool) error
+	RetryDeletionRequest(ctx context.Context, requestID, leaseToken uuid.UUID, at, next time.Time, code string, manual, refundAttempt bool) error
 	CompleteDeletionRequest(context.Context, uuid.UUID, uuid.UUID, time.Time) error
 	AnonymizeAccount(context.Context, uuid.UUID, time.Time, []string) error
 	ProfileMediaForDeletion(context.Context, uuid.UUID) (*uuid.UUID, error)
@@ -239,7 +239,9 @@ func (w *Worker) retry(ctx context.Context, request user.DeletionRequest, now ti
 		manual = false
 		refundAttempt = true
 	}
-	if err := w.store.RetryDeletionRequest(ctx, request.ID, *request.LeaseToken, next, code, manual, refundAttempt); err != nil {
+	// updated_at is the moment of this change, read now rather than at the
+	// start of the pass; the next attempt's time goes only to next_attempt_at.
+	if err := w.store.RetryDeletionRequest(ctx, request.ID, *request.LeaseToken, w.config.Now(), next, code, manual, refundAttempt); err != nil {
 		return fmt.Errorf("account erasure %s; checkpoint retry: %w", code, err)
 	}
 	return fmt.Errorf("account erasure %s: %w", code, cause)
