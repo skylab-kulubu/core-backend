@@ -28,6 +28,7 @@ type erasureService struct {
 	server  *httptest.Server
 	calls   int
 	bodies  []string
+	headers []http.Header
 	respond func(http.ResponseWriter, *http.Request)
 }
 
@@ -109,9 +110,16 @@ func newErasureFixture(t *testing.T) *erasureFixture {
 
 func newErasureFixtureWith(t *testing.T, store erasureTestStore) *erasureFixture {
 	t.Helper()
+	return newErasureFixtureFor(t, store, user.Profile{Email: erasureTestAddresses[1], FirstName: "Ada"})
+}
+
+// newErasureFixtureFor starts from core's row of the person as profile holds
+// it.
+func newErasureFixtureFor(t *testing.T, store erasureTestStore, profile user.Profile) *erasureFixture {
+	t.Helper()
 	f := &erasureFixture{t: t, store: store, subjectID: uuid.New(), services: map[user.DeletionStep]*erasureService{}}
 	ctx := context.Background()
-	if _, _, err := user.NewService(f.store).Ensure(ctx, f.subjectID, user.Profile{Email: erasureTestAddresses[1], FirstName: "Ada"}); err != nil {
+	if _, _, err := user.NewService(f.store).Ensure(ctx, f.subjectID, profile); err != nil {
 		t.Fatal(err)
 	}
 	request, err := f.store.RequestDeletion(ctx, f.subjectID, nil)
@@ -136,6 +144,7 @@ func newErasureFixtureWith(t *testing.T, store erasureTestStore) *erasureFixture
 			s.mu.Lock()
 			s.calls++
 			s.bodies = append(s.bodies, string(body))
+			s.headers = append(s.headers, r.Header.Clone())
 			respond := s.respond
 			s.mu.Unlock()
 			respond(w, r)
