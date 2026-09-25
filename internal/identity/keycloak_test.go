@@ -6,11 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 func TestKeycloakDirectoryListsNestedGroups(t *testing.T) {
@@ -142,5 +144,58 @@ func TestKeycloakAccountLifecyclePreservesFederationMetadataAndTreatsDeleteRetry
 	}
 	if err := lifecycle.EnsureDeleted(ctx, userID); err != nil {
 		t.Fatalf("delete retry: %v", err)
+	}
+}
+
+func TestKeycloakYTUAttributesPagesThroughEveryUser(t *testing.T) {
+	t.Parallel()
+	linked := "aaaaaaaa-0000-0000-0000-000000000001"
+	other := "aaaaaaaa-0000-0000-0000-000000000002"
+	coded := "aaaaaaaa-0000-0000-0000-000000000003"
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/protocol/openid-connect/token"):
+			_, _ = w.Write([]byte(`{"access_token":"tok","expires_in":300,"token_type":"Bearer"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/realms/e-skylab/users":
+			if r.Header.Get("Authorization") != "Bearer tok" || r.URL.Query().Get("briefRepresentation") != "false" {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			pages = append(pages, r.URL.Query().Get("first")+"/"+r.URL.Query().Get("max"))
+			rows := []any{}
+			if r.URL.Query().Get("first") == "0" {
+				rows = append(rows,
+					map[string]any{"id": linked, "attributes": map[string][]string{"university": {"Yıldız Teknik Üniversitesi"}, "department": {"Bilgisayar Mühendisliği"}}},
+					map[string]any{"id": other, "attributes": map[string][]string{"schoolEmail": {"x@std.yildiz.edu.tr"}}},
+				)
+				for len(rows) < 100 {
+					rows = append(rows, map[string]any{"id": "not-a-uuid"})
+				}
+			} else {
+				rows = append(rows, map[string]any{"id": coded, "attributes": map[string][]string{"university": {"Yıldız Teknik Üniversitesi"}, "department": {"011"}}})
+			}
+			_ = json.NewEncoder(w).Encode(rows)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := identity.NewKeycloak(identity.KeycloakConfig{URL: srv.URL, Realm: "e-skylab", ClientID: "core", ClientSecret: "secret"})
+	got, err := dir.YTUAttributes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []user.YTUAttributes{
+		{ID: uuid.MustParse(linked), University: "Yıldız Teknik Üniversitesi", Department: "Bilgisayar Mühendisliği"},
+		{ID: uuid.MustParse(coded), University: "Yıldız Teknik Üniversitesi", Department: "011"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v", got)
+	}
+	if !reflect.DeepEqual(pages, []string{"0/100", "100/100"}) {
+		t.Fatalf("pages %v", pages)
 	}
 }

@@ -82,10 +82,15 @@ func (s *service) Ensure(ctx context.Context, id uuid.UUID, profile Profile) (Us
 // department), and most requests change nothing, so it compares first and
 // writes only a difference.
 func (s *service) syncYTU(ctx context.Context, u User, p ytu.Profile) (User, error) {
-	if u.YTULinked && u.University == p.University && u.Faculty == p.Faculty && u.Department == p.Department {
+	if !ytuDiffers(u, p) {
 		return u, nil
 	}
 	return s.store.SetYTUProfile(ctx, u.ID, p)
+}
+
+// ytuDiffers reports whether the record must be written to match the login.
+func ytuDiffers(u User, p ytu.Profile) bool {
+	return !u.YTULinked || u.University != p.University || u.Faculty != p.Faculty || u.Department != p.Department
 }
 
 // ytuEdit decides a self or admin edit of the three YTÜ fields. It reports
