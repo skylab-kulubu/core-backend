@@ -140,11 +140,22 @@ func TestCatalogue_RefusesMalformedEntries(t *testing.T) {
 		},
 		"name that is not a slug": func(p purposeEntries) { p["Event Cover"] = p["event_cover"] },
 		"no legacy purpose":       func(p purposeEntries) { delete(p, "legacy") },
+		"no profile picture":      func(p purposeEntries) { delete(p, "profile_picture") },
 		"legacy rules on another": func(p purposeEntries) { p["cms_file"]["legacy_rules"] = true },
 	} {
 		data := reviewedCatalogueWith(t, change)
 		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCatalogueInvalid) {
 			t.Errorf("%s: err = %v, want %v", name, err, media.ErrCatalogueInvalid)
+		}
+	}
+}
+
+func TestCatalogue_RefusesContentAfterTheCatalogue(t *testing.T) {
+	t.Parallel()
+	for _, trailing := range []string{`{"purposes": {}}`, "x"} {
+		data := append(append([]byte{}, config.MediaPurposes...), trailing...)
+		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCatalogueInvalid) {
+			t.Errorf("catalogue followed by %q: err = %v, want %v", trailing, err, media.ErrCatalogueInvalid)
 		}
 	}
 }

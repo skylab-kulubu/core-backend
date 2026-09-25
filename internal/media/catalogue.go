@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"regexp"
 	"slices"
@@ -14,16 +15,24 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
+// The Media purposes core itself uploads as. The catalogue must define every
+// one of them (requiredPurposes).
 const (
-	// PurposeLegacy is the Media purpose of a purpose-less upload and of
-	// every Media stored before Media purpose existed.
+	// PurposeLegacy is the Media purpose of Media uploaded without a purpose
+	// and of every Media stored before Media purpose existed. It is internal:
+	// a client cannot name it.
 	PurposeLegacy = "legacy"
 	// PurposeProfilePicture is a person's own profile picture.
 	PurposeProfilePicture = "profile_picture"
 )
 
+// requiredPurposes are the purposes core refers to in code. A catalogue that
+// lacks one stops core at startup.
+var requiredPurposes = []string{PurposeLegacy, PurposeProfilePicture}
+
 // ErrCatalogueInvalid is a catalogue file core cannot read as one: a field it
-// does not know, a value outside the vocabulary, or a missing legacy purpose.
+// does not know, a value outside the vocabulary, or a missing purpose that
+// core refers to.
 var ErrCatalogueInvalid = errors.New("media purpose catalogue: invalid")
 
 // Catalogue is the Media purpose catalogue: every Media purpose core accepts
@@ -58,7 +67,10 @@ type Purpose struct {
 	LegacyRules bool
 }
 
-// ImageHandling is what core does with a raster image of a purpose.
+// ImageHandling is what core is to do with a raster image of a purpose. The
+// catalogue declares it now; re-encoding, the dimension cap, variants and SVG
+// rasterization are carried out from media redesign ticket 04 on. Until then
+// a raster image only has its metadata stripped.
 type ImageHandling struct {
 	Reencode     bool           `json:"reencode"`
 	MaxDimension int            `json:"max_dimension"`
@@ -108,6 +120,9 @@ func ParseCatalogue(data []byte) (Catalogue, error) {
 	if err := decoder.Decode(&file); err != nil {
 		return Catalogue{}, fmt.Errorf("%w: %v", ErrCatalogueInvalid, err)
 	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return Catalogue{}, fmt.Errorf("%w: content after the catalogue", ErrCatalogueInvalid)
+	}
 	purposes := make(map[string]Purpose, len(file.Purposes))
 	for _, name := range slices.Sorted(maps.Keys(file.Purposes)) {
 		p, err := file.Purposes[name].purpose(name)
@@ -119,8 +134,10 @@ func ParseCatalogue(data []byte) (Catalogue, error) {
 		}
 		purposes[name] = p
 	}
-	if _, ok := purposes[PurposeLegacy]; !ok {
-		return Catalogue{}, fmt.Errorf("%w: no %s purpose for purpose-less uploads", ErrCatalogueInvalid, PurposeLegacy)
+	for _, name := range requiredPurposes {
+		if _, ok := purposes[name]; !ok {
+			return Catalogue{}, fmt.Errorf("%w: no %s purpose, which core refers to", ErrCatalogueInvalid, name)
+		}
 	}
 	return Catalogue{purposes: purposes}, nil
 }

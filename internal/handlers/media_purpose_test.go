@@ -86,7 +86,7 @@ func TestMediaUploadForUnknownPurposeHTTP(t *testing.T) {
 	app := mediaApp(t, authn.Identity{ID: uuid.New()}, media.NewMemoryStore(), media.NewMemoryBlob())
 
 	resp := postMedia(t, app, "banner", "dot.png", pngDotHTTP())
-	requireProblem(t, resp, fiber.StatusBadRequest, "purpose-unknown")
+	requireProblem(t, resp, fiber.StatusBadRequest, "purpose_unknown")
 	if resp.body["purpose"] != "banner" {
 		t.Fatalf("problem %v", resp.body)
 	}
@@ -97,7 +97,7 @@ func TestMediaUploadOfTheWrongTypeHTTP(t *testing.T) {
 	app := mediaApp(t, authn.Identity{ID: uuid.New()}, media.NewMemoryStore(), media.NewMemoryBlob())
 
 	resp := postMedia(t, app, "profile_picture", "me.png", []byte("%PDF-1.7\n"))
-	requireProblem(t, resp, fiber.StatusUnsupportedMediaType, "media-type-not-allowed")
+	requireProblem(t, resp, fiber.StatusUnsupportedMediaType, "media_type_not_allowed")
 	allowed, _ := resp.body["allowedTypes"].([]any)
 	if resp.body["purpose"] != "profile_picture" || len(allowed) != 4 || allowed[0] != "image/jpeg" {
 		t.Fatalf("problem %v", resp.body)
@@ -111,7 +111,7 @@ func TestMediaUploadAboveThePurposeMaximumHTTP(t *testing.T) {
 	copy(picture, pngDotHTTP())
 
 	resp := postMedia(t, app, "profile_picture", "me.png", picture)
-	requireProblem(t, resp, fiber.StatusRequestEntityTooLarge, "media-too-large")
+	requireProblem(t, resp, fiber.StatusRequestEntityTooLarge, "media_too_large")
 	if resp.body["purpose"] != "profile_picture" || resp.body["maxBytes"] != float64(5<<20) {
 		t.Fatalf("problem %v", resp.body)
 	}
@@ -123,19 +123,19 @@ func TestMediaUploadBySomeoneThePurposeDoesNotAllowHTTP(t *testing.T) {
 	app := mediaApp(t, member, media.NewMemoryStore(), media.NewMemoryBlob())
 
 	resp := postMedia(t, app, "event_cover", "cover.png", pngDotHTTP())
-	requireProblem(t, resp, fiber.StatusForbidden, "purpose-forbidden")
+	requireProblem(t, resp, fiber.StatusForbidden, "purpose_forbidden")
 	if resp.body["purpose"] != "event_cover" {
 		t.Fatalf("problem %v", resp.body)
 	}
 }
 
-func TestMediaUploadForAPrivatePurposeWhilePrivateMediaIsOffHTTP(t *testing.T) {
+func TestMediaUploadForAPrivatePurposeIsRefusedHTTP(t *testing.T) {
 	t.Parallel()
 	store := media.NewMemoryStore()
 	app := mediaApp(t, authn.Identity{ID: uuid.New()}, store, media.NewMemoryBlob())
 
 	resp := postMedia(t, app, "answer_file", "cv.pdf", []byte("%PDF-1.7\n"))
-	requireProblem(t, resp, fiber.StatusServiceUnavailable, "private-media-disabled")
+	requireProblem(t, resp, fiber.StatusUnprocessableEntity, "private_media_disabled")
 	if stored, _ := store.List(t.Context()); len(stored) != 0 || resp.body["purpose"] != "answer_file" {
 		t.Fatalf("problem %v, stored %d", resp.body, len(stored))
 	}
@@ -147,7 +147,7 @@ func TestMediaUploadForADirectUploadPurposeHTTP(t *testing.T) {
 	app := mediaApp(t, organizer, media.NewMemoryStore(), media.NewMemoryBlob())
 
 	resp := postMedia(t, app, "video", "talk.mp4", []byte("\x00\x00\x00\x18ftypmp42"))
-	requireProblem(t, resp, fiber.StatusBadRequest, "purpose-requires-direct-upload")
+	requireProblem(t, resp, fiber.StatusBadRequest, "purpose_requires_direct_upload")
 	if resp.body["purpose"] != "video" {
 		t.Fatalf("problem %v", resp.body)
 	}
@@ -177,5 +177,34 @@ func TestMediaUploadWithoutPurposeKeepsTheLegacyRulesHTTP(t *testing.T) {
 	resp := postMedia(t, app, "", "cv.txt", []byte("%PDF-1.7\n"))
 	if resp.status != fiber.StatusBadRequest || resp.body["code"] != nil {
 		t.Fatalf("PDF under a .txt name: status %d body %v", resp.status, resp.body)
+	}
+}
+
+func TestMediaUploadNamingTheLegacyPurposeHTTP(t *testing.T) {
+	t.Parallel()
+	app := mediaApp(t, authn.Identity{ID: uuid.New()}, media.NewMemoryStore(), media.NewMemoryBlob())
+
+	resp := postMedia(t, app, "legacy", "page.html", []byte("<html></html>"))
+	requireProblem(t, resp, fiber.StatusBadRequest, "purpose_unknown")
+}
+
+func TestMediaUploadReadsThePurposeOnlyFromTheFormHTTP(t *testing.T) {
+	t.Parallel()
+	organizer := authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/YK"}}
+	app := mediaApp(t, organizer, media.NewMemoryStore(), media.NewMemoryBlob())
+
+	body, ctype := multipartPNG(t, "file", "cover.png", pngDotHTTP())
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/media?purpose=event_cover", body)
+	req.Header.Set("Content-Type", ctype)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated || got["purpose"] != media.PurposeLegacy {
+		t.Fatalf("purpose in the query string: status %d body %v", resp.StatusCode, got)
 	}
 }

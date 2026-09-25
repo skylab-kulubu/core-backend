@@ -78,9 +78,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := media.CheckPrivateMediaFlag(os.Getenv); err != nil {
-		log.Fatal(err)
-	}
 	blobs, cdnBase, err := media.BlobAndCDN(os.Getenv)
 	if err != nil {
 		log.Fatal(err)

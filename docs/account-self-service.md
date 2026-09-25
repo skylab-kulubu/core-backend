@@ -84,7 +84,7 @@ uploads a new picture through the media service as the `profile_picture`
 Media purpose (a raster image up to 5 MiB, judged by content; see
 [`media-lifecycle.md`](media-lifecycle.md#media-purpose)), links it to the
 shadow and answers with the same view. Anything else is refused with the
-purpose's problem code, for example `415 media-type-not-allowed` for a PDF.
+purpose's problem code, for example `415 media_type_not_allowed` for a PDF.
 
 `DELETE /v1/users/me/profile-picture` removes it. The person's own upload is
 archived first under the ordinary media lifecycle described in

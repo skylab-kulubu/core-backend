@@ -91,18 +91,3 @@ func TestBlobAndCDNMemoryWhenUnset(t *testing.T) {
 		t.Fatalf("got %T", blob)
 	}
 }
-
-func TestPrivateMediaFlagCannotBeTurnedOnWithoutPrivateStorage(t *testing.T) {
-	t.Parallel()
-	for value, wantErr := range map[string]bool{"": false, "false": false, "true": true, "yes please": true} {
-		err := media.CheckPrivateMediaFlag(func(k string) string {
-			if k == "MEDIA_PRIVATE_ENABLED" {
-				return value
-			}
-			return ""
-		})
-		if (err != nil) != wantErr {
-			t.Errorf("MEDIA_PRIVATE_ENABLED=%q: err = %v, want error %v", value, err, wantErr)
-		}
-	}
-}

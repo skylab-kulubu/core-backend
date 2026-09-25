@@ -768,7 +768,7 @@ func TestProfilePictureUploadsAsProfilePictureHTTP(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&refused); err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != fiber.StatusUnsupportedMediaType || refused["code"] != "media-type-not-allowed" || refused["purpose"] != "profile_picture" {
+	if resp.StatusCode != fiber.StatusUnsupportedMediaType || refused["code"] != "media_type_not_allowed" || refused["purpose"] != "profile_picture" {
 		t.Fatalf("PDF profile picture: status %d body %v", resp.StatusCode, refused)
 	}
 

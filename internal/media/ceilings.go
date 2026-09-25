@@ -11,9 +11,12 @@ var (
 	// ErrCeilingPublicType: a public purpose accepts only raster images, PDF
 	// and MP4, the types a browser cannot run script from.
 	ErrCeilingPublicType = errors.New("media purpose catalogue: a public purpose accepts only raster images, PDF and MP4")
-	// ErrCeilingPublicRaster: a public purpose re-encodes every raster image,
-	// so no uploaded image bytes reach the CDN as they came.
-	ErrCeilingPublicRaster = errors.New("media purpose catalogue: a public purpose re-encodes raster images")
+	// ErrCeilingPublicRaster: a public purpose that accepts raster images
+	// declares image.reencode, so that no uploaded image bytes reach the CDN
+	// as they came. Only the declaration is checked today: re-encoding itself
+	// lands with media redesign ticket 04. Until then public raster uploads
+	// get the metadata stripping they always had (sanitizeImage).
+	ErrCeilingPublicRaster = errors.New("media purpose catalogue: a public purpose declares re-encoding for raster images")
 	// ErrCeilingSVG: SVG is never stored as SVG. A purpose that accepts it
 	// rasterizes it to PNG.
 	ErrCeilingSVG = errors.New("media purpose catalogue: SVG is rasterized to PNG, never stored as SVG")

@@ -171,3 +171,33 @@ func TestService_ServiceOnlyPurposeIsRefusedToEveryPerson(t *testing.T) {
 		t.Fatalf("err = %v, want %v", err, media.ErrPurposeForbidden)
 	}
 }
+
+func TestService_PurposePDFStartsWithItsHeader(t *testing.T) {
+	t.Parallel()
+	svc, _ := setup(t)
+	p := signedIn("55555555-5555-5555-5555-000000000055")
+	prefixed := []byte("<html><!-- -->\n%PDF-1.7\n")
+
+	_, err := svc.UploadForPurpose(context.Background(), p, "cms_file", "bylaws.pdf", "application/pdf", prefixed)
+	if !errors.Is(err, media.ErrTypeNotAllowed) {
+		t.Fatalf("PDF marker after other bytes: err = %v, want %v", err, media.ErrTypeNotAllowed)
+	}
+	if _, err := svc.UploadForPurpose(context.Background(), p, "cms_file", "bylaws.pdf", "application/pdf", []byte("%PDF-1.7\n")); err != nil {
+		t.Fatalf("PDF with its header first: %v", err)
+	}
+	// Media uploaded without a purpose keep the old rule: the marker within
+	// the first KiB.
+	if _, err := svc.Upload(context.Background(), p, "old.pdf", "application/pdf", prefixed); err != nil {
+		t.Fatalf("legacy PDF: %v", err)
+	}
+}
+
+func TestService_LegacyPurposeCannotBeNamed(t *testing.T) {
+	t.Parallel()
+	svc, _ := setup(t)
+
+	_, err := svc.UploadForPurpose(context.Background(), signedIn("56565656-5656-5656-5656-565656565656"), media.PurposeLegacy, "page.html", "text/html", []byte("<html></html>"))
+	if !errors.Is(err, media.ErrPurposeUnknown) {
+		t.Fatalf("err = %v, want %v", err, media.ErrPurposeUnknown)
+	}
+}

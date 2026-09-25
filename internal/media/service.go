@@ -76,7 +76,8 @@ func reviewedCatalogue() Catalogue {
 }
 
 func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentType string, data []byte) (Media, error) {
-	return s.UploadForPurpose(ctx, p, PurposeLegacy, name, contentType, data)
+	legacy, _ := s.catalogue.Lookup(PurposeLegacy) // every catalogue has it
+	return s.upload(ctx, p, legacy, name, contentType, data)
 }
 
 // storedFile is what an upload becomes once its purpose's rules accept it.
@@ -89,15 +90,22 @@ type storedFile struct {
 
 func (s *service) UploadForPurpose(ctx context.Context, p authz.Principal, purposeName, name, contentType string, data []byte) (Media, error) {
 	purpose, ok := s.catalogue.Lookup(purposeName)
-	if !ok {
+	if !ok || purposeName == PurposeLegacy {
+		// legacy is internal: only Upload, for Media uploaded without a
+		// purpose, stores it.
 		return Media{}, &PurposeRefusal{Err: ErrPurposeUnknown, Purpose: purposeName}
 	}
+	return s.upload(ctx, p, purpose, name, contentType, data)
+}
+
+func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose, name, contentType string, data []byte) (Media, error) {
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia, MediaUploader: purpose.Uploader}, authz.Upload) {
 		return Media{}, &PurposeRefusal{Err: ErrPurposeForbidden, Purpose: purpose.Name}
 	}
 	if purpose.Visibility == visibilityPrivate {
-		// Encryption and the private bucket are not built yet, and
-		// MEDIA_PRIVATE_ENABLED cannot be turned on without them.
+		// Private Media storage (encryption, the private bucket) is not
+		// built yet. Until it is, a private purpose is refused, never stored
+		// publicly instead.
 		return Media{}, &PurposeRefusal{Err: ErrPrivateMediaDisabled, Purpose: purpose.Name}
 	}
 	if purpose.Transport == transportDirect {

@@ -119,8 +119,11 @@ code. CODEOWNERS covers the file and the ceilings. Each entry has:
 | `image` | Raster handling: `reencode`, `max_dimension`, `variants` (name → px), `rasterize_svg`. |
 | `legacy_rules` | Only on `legacy`: the rules below instead of `types` and `max_mib`. |
 
-`scan`, `pending_ttl` and `image` are declared now; the cleanup worker,
-re-encoding, variants and scanning read them as they ship. An unknown field or
+`scan`, `pending_ttl` and `image` are declared now and not yet acted on:
+the cleanup worker, scanning, and re-encoding with variants (media redesign
+ticket 04) read them as they ship. Until re-encoding ships, a raster image
+under any purpose gets the same metadata stripping as before (EXIF, XMP and
+comments removed), not a re-encode. An unknown field or
 value, a missing `legacy` entry, or a ceiling violation stops core at startup.
 
 The initial entries:
@@ -166,20 +169,24 @@ Core refuses to start with a catalogue that breaks one:
 
 - a public purpose accepts only raster images (JPEG, PNG, WebP, GIF), PDF and
   MP4;
-- a public purpose re-encodes its raster images (`image.reencode`);
+- a public purpose that accepts raster images declares re-encoding
+  (`image.reencode`). The declaration is enforced now; the re-encoding
+  itself arrives with ticket 04, and until then these images are only
+  stripped of metadata;
 - SVG is never stored as SVG: a purpose naming it rasterizes it to PNG
   (`image.rasterize_svg`);
 - the maximum size stays under 20 MiB for single-step uploads and 2 GiB for
   Direct upload;
-- images stay within 2560 px (`image.max_dimension`, variants);
+- the declared image size stays within 2560 px (`image.max_dimension`,
+  variants), applied when re-encoding ships;
 - a private purpose is encrypted.
 
 ### Uploading
 
 `POST /v1/media` takes an optional multipart field `purpose`. With a purpose,
 core checks, in order: the purpose exists, the caller may upload it, it is not
-private while private Media is off, it is single-step, the size, and the type
-detected from the content. `POST /v1/users/me/profile-picture` always uploads
+private (refused until private Media storage ships), it is single-step, the
+size, and the type detected from the content. `POST /v1/users/me/profile-picture` always uploads
 as `profile_picture`: raster images up to 5 MiB, no PDF, no SVG.
 
 Without a purpose the upload is `legacy` and keeps the rules purpose-less
@@ -194,12 +201,12 @@ members:
 
 | Status | `code` | Extra members | When |
 |---|---|---|---|
-| 400 | `purpose-unknown` | `purpose` | The purpose is not in the catalogue. |
-| 403 | `purpose-forbidden` | `purpose` | The caller's upload rule does not allow it. |
-| 503 | `private-media-disabled` | `purpose` | A private purpose while `MEDIA_PRIVATE_ENABLED` is off. Nothing is stored. |
-| 400 | `purpose-requires-direct-upload` | `purpose` | A `direct` purpose sent to `POST /v1/media`. |
-| 413 | `media-too-large` | `purpose`, `maxBytes` | Above the purpose's maximum. |
-| 415 | `media-type-not-allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types. |
+| 400 | `purpose_unknown` | `purpose` | The purpose is not in the catalogue. |
+| 403 | `purpose_forbidden` | `purpose` | The caller's upload rule does not allow it. |
+| 422 | `private_media_disabled` | `purpose` | A private purpose. Private Media storage (encryption, the private bucket) is not built yet, so nothing is stored; retrying does not help. |
+| 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media`. |
+| 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum. |
+| 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types. |
 
 A body above the server's limit (20 MiB plus room for the form) is still
 refused by the HTTP server with a bare `413` before any purpose is read.
@@ -214,6 +221,3 @@ refused by the HTTP server with a bare `413` before any purpose is read.
 - `MEDIA_UPLOAD_STAGING_SWEEP_INTERVAL` — retry sweep interval; default `15m`.
 - `MEDIA_UPLOAD_STAGING_BATCH_SIZE` — maximum staging intents per run; default
   `25`.
-- `MEDIA_PRIVATE_ENABLED` — private Media purposes; default `false`, which
-  refuses them with `private-media-disabled`. This build has no private Media
-  storage, so `true` stops core at startup.
