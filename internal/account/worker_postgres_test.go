@@ -202,6 +202,10 @@ func TestPostgresErasureTimestamps(t *testing.T) {
 	t.Run("a retry stamps the change time, not the next attempt", func(t *testing.T) {
 		testRetryStampsTheChangeTimeNotTheNextAttempt(t, store)
 	})
+
+	t.Run("each checkpoint carries the time its step finished", func(t *testing.T) {
+		testCheckpointsCarryTheTimeTheirStepFinished(t, store)
+	})
 }
 
 func TestPostgresWatchdogGaugesMatchTheFixtures(t *testing.T) {

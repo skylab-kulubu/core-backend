@@ -152,11 +152,13 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		if err != nil {
 			return true, w.retry(ctx, request, now, string(step.name)+"_failed", err, false)
 		}
-		if err := w.store.CompleteDeletionStep(ctx, request.ID, leaseToken, step.name, now); err != nil {
+		// A checkpoint carries the time its step finished, not the start of
+		// the pass: the completion proof lists when each step was done.
+		if err := w.store.CompleteDeletionStep(ctx, request.ID, leaseToken, step.name, w.config.Now()); err != nil {
 			return true, w.retry(ctx, request, now, string(step.name)+"_checkpoint_failed", err, false)
 		}
 	}
-	if err := w.store.CompleteDeletionRequest(ctx, request.ID, leaseToken, now); err != nil {
+	if err := w.store.CompleteDeletionRequest(ctx, request.ID, leaseToken, w.config.Now()); err != nil {
 		return true, w.retry(ctx, request, now, "complete_request_failed", err, false)
 	}
 	return true, nil

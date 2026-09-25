@@ -276,6 +276,46 @@ func TestErasureSagaErasesTheServicesAfterLogoutAndBeforeCoreAndTheIdentity(t *t
 	f.assertNoPersonalData(f.state().LastErrorCode)
 }
 
+func TestErasureSagaCheckpointsCarryTheTimeTheirStepFinished(t *testing.T) {
+	t.Parallel()
+	testCheckpointsCarryTheTimeTheirStepFinished(t, user.NewMemoryStore())
+}
+
+// testCheckpointsCarryTheTimeTheirStepFinished: each checkpoint of one pass
+// holds the time its own step finished, so the completion proof's step times
+// differ and rise in saga order, and the request completes after its last
+// step (ticket 15).
+func testCheckpointsCarryTheTimeTheirStepFinished(t *testing.T, store erasureTestStore) {
+	t.Helper()
+	f := newSagaFixture(t, store)
+	// Every read of the worker's clock is a second later, as if each step
+	// took that long.
+	f.config.Now = func() time.Time {
+		f.now = f.now.Add(time.Second)
+		return f.now
+	}
+	if worked, err := f.run(f.saga()); !worked || err != nil {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	records := f.records()
+	var previous time.Time
+	for _, step := range sagaSteps {
+		record, ok := records[step]
+		if !ok {
+			t.Fatalf("%s has no checkpoint", step)
+		}
+		if !record.CompletedAt.After(previous) {
+			t.Fatalf("%s checkpointed at %s, not after the step before it (%s)", step, record.CompletedAt, previous)
+		}
+		previous = record.CompletedAt
+	}
+	state := f.state()
+	if state.Status != user.DeletionRequestCompleted || state.CompletedAt == nil || !state.CompletedAt.After(previous) ||
+		!state.UpdatedAt.Equal(*state.CompletedAt) {
+		t.Fatalf("request = %+v, want completed after its last checkpoint %s", state, previous)
+	}
+}
+
 func TestErasureSagaWaitsForEveryServiceBeforeAnonymizingOrDeleting(t *testing.T) {
 	t.Parallel()
 	testErasureSagaWaitsForEveryService(t, user.NewMemoryStore())
