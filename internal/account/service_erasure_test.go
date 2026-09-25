@@ -337,8 +337,11 @@ func TestServiceErasureTimeoutIsDeferred(t *testing.T) {
 		case <-r.Context().Done():
 		}
 	})
-	f.config.StepTimeout = 100 * time.Millisecond
-	if worked, err := f.run(f.worker()); !worked || err == nil || !strings.Contains(err.Error(), "timeout") {
+	// Only the stalled service's call times out; the others keep the
+	// production timeout, so a slow machine cannot make them fail too.
+	services := f.serviceErasure(nil)
+	services.Steps[2].Sender.(*erasure.Client).HTTP = &http.Client{Timeout: 200 * time.Millisecond}
+	if worked, err := f.run(account.NewServiceErasureWorker(f.store, services, f.config)); !worked || err == nil || !strings.Contains(err.Error(), "timeout") {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
 	state := f.state()

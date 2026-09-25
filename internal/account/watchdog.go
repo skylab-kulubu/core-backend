@@ -145,13 +145,14 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		return err
 	}
 	now := w.config.Now()
-	var overdue, manual int
+	var open, overdue, manual int
 	var oldest time.Time
 	current := make(map[attentionKey]bool)
 	for _, request := range requests {
 		if request.Status == user.DeletionRequestCompleted {
 			continue
 		}
+		open++
 		if oldest.IsZero() || request.CreatedAt.Before(oldest) {
 			oldest = request.CreatedAt
 		}
@@ -169,7 +170,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	if !oldest.IsZero() && now.After(oldest) {
 		oldestAge = now.Sub(oldest)
 	}
-	w.gauges.set(len(requests), overdue, manual, oldestAge)
+	w.gauges.set(open, overdue, manual, oldestAge)
 	return nil
 }
 

@@ -107,7 +107,7 @@ func (w *Worker) runServiceErasure(ctx context.Context, request user.DeletionReq
 	if len(failures) == 0 {
 		return nil
 	}
-	code, cause, permanent := classifyServiceFailures(failures)
+	code, permanent, cause := classifyServiceFailures(failures)
 	return w.retry(ctx, request, now, code, cause, permanent)
 }
 
@@ -115,7 +115,7 @@ func (w *Worker) runServiceErasure(ctx context.Context, request user.DeletionReq
 // any rejection sends the request to manual intervention; otherwise any
 // ordinary failure spends an attempt; only when every failure is deferred is
 // the attempt refunded, until the earliest time a service asked for.
-func classifyServiceFailures(failures []serviceFailure) (string, error, bool) {
+func classifyServiceFailures(failures []serviceFailure) (code string, permanent bool, cause error) {
 	messages := make([]string, 0, len(failures))
 	for _, failure := range failures {
 		messages = append(messages, failure.err.Error())
@@ -124,7 +124,7 @@ func classifyServiceFailures(failures []serviceFailure) (string, error, bool) {
 	for _, failure := range failures {
 		var rejected permanentFailure
 		if errors.As(failure.err, &rejected) {
-			return rejected.PermanentCode(), errors.New(message), true
+			return rejected.PermanentCode(), true, errors.New(message)
 		}
 	}
 	var earliest time.Time
@@ -133,13 +133,13 @@ func classifyServiceFailures(failures []serviceFailure) (string, error, bool) {
 		if !errors.As(failure.err, &deferred) {
 			// Flattened on purpose: the joined cause must not expose a
 			// deferred member, or the retry would refund this attempt.
-			return string(failure.step) + "_failed", errors.New(message), false
+			return string(failure.step) + "_failed", false, errors.New(message)
 		}
 		if at := deferred.RetryAt(); earliest.IsZero() || at.Before(earliest) {
 			earliest = at
 		}
 	}
-	return string(failures[0].step) + "_failed", deferredServiceErasure{message: message, at: earliest}, false
+	return string(failures[0].step) + "_failed", false, deferredServiceErasure{message: message, at: earliest}
 }
 
 type deferredServiceErasure struct {

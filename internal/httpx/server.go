@@ -28,25 +28,22 @@ import (
 )
 
 type Deps struct {
-	Users                user.Service
-	Identity             identity.Service
-	Events               event.Service
-	Seasons              season.Service
-	Tickets              ticket.Service
-	Competitors          competitor.Service
-	Media                media.Service
-	URLs                 shorturl.Service
-	Certificates         certificate.Service
-	SkyPass              skypass.Service
-	Mail                 mail.Mailer
-	EventMail            eventmail.Service
-	ParseToken           func(string) (authn.Identity, error)
-	URLAttributionGuard  handlers.URLAttributionGuard
-	AccountAccessGate    accessgate.Reader
-	AccountAccessMetrics *accessgate.Metrics
-	// AccountErasureMetrics are the account erasure watchdog's gauges. Nil
-	// while the erasure worker is off.
-	AccountErasureMetrics  interface{ Prometheus() string }
+	Users                  user.Service
+	Identity               identity.Service
+	Events                 event.Service
+	Seasons                season.Service
+	Tickets                ticket.Service
+	Competitors            competitor.Service
+	Media                  media.Service
+	URLs                   shorturl.Service
+	Certificates           certificate.Service
+	SkyPass                skypass.Service
+	Mail                   mail.Mailer
+	EventMail              eventmail.Service
+	ParseToken             func(string) (authn.Identity, error)
+	URLAttributionGuard    handlers.URLAttributionGuard
+	AccountAccessGate      accessgate.Reader
+	AccountAccessMetrics   *accessgate.Metrics
 	SelfDeletion           handlers.AccountDeletionService
 	ParseSelfDeleteContext func(string, string) (authn.Identity, error)
 	// ParseSelfDeleteSudo verifies the self-delete bearer with a sky-account
@@ -62,6 +59,10 @@ type Deps struct {
 	// TrustedProxies are the peers allowed to speak for a client through
 	// `X-Forwarded-For`. An empty value falls back to clientip.Default().
 	TrustedProxies clientip.Ranges
+
+	// AccountErasureMetrics are the account erasure watchdog's gauges. Nil
+	// while the erasure worker is off.
+	AccountErasureMetrics interface{ Prometheus() string }
 }
 
 func New(deps Deps) *fiber.App {
