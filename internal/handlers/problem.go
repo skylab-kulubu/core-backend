@@ -56,7 +56,9 @@ func problemDetailCode(c fiber.Ctx, status int, title, detail, code string) erro
 }
 
 func ErrorHandler(c fiber.Ctx, err error) error {
-	log.Printf("http error: %v", err)
+	// Name the route so an unmatched path or wrong method is traceable to its
+	// caller. The query string stays out: it can carry share tokens.
+	log.Printf("http error: %s %s: %v", c.Method(), c.Path(), err)
 	var fe *fiber.Error
 	if errors.As(err, &fe) {
 		return problem(c, fe.Code, fe.Message)

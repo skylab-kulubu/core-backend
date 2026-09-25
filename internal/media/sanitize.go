@@ -14,6 +14,9 @@ const (
 
 	maxImageBytes = 10 * 1024 * 1024
 	maxFileBytes  = 20 * 1024 * 1024
+
+	// MaxUploadBytes is the largest file Upload accepts of any kind.
+	MaxUploadBytes = maxFileBytes
 )
 
 var pngKeepAncillary = map[string]struct{}{
