@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -221,7 +222,9 @@ func (f *erasureFixture) records() map[user.DeletionStep]user.DeletionStepRecord
 func (f *erasureFixture) assertNoPersonalData(texts ...string) {
 	f.t.Helper()
 	for _, text := range append(append([]string{}, f.errors...), texts...) {
-		lowered := strings.ToLower(text)
+		// The request id is not personal data, and its hex digits can spell
+		// "ada".
+		lowered := strings.ToLower(strings.ReplaceAll(text, f.request.ID.String(), "<request_id>"))
 		for _, value := range append(append([]string{}, erasureTestAddresses...), f.subjectID.String(), "ada") {
 			if strings.Contains(lowered, value) {
 				f.t.Fatalf("%q carries personal data %q", text, value)
@@ -480,6 +483,50 @@ func testRetryStampsTheChangeTimeNotTheNextAttempt(t *testing.T, store erasureTe
 		f.now = state.NextAttemptAt
 	}
 	f.assertNoPersonalData()
+}
+
+// main.go logs every error the worker returns as one line. Spec §2.7: the
+// line carries the request_id, the step and the code, never the subject, an
+// address or a name.
+func TestWorkerErrorLinesCarryTheRequestIDAndNoSubject(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		setup func(*erasureFixture)
+		code  string
+	}{
+		{name: "marker write failed", code: "platform_block_failed", setup: func(f *erasureFixture) {
+			f.config.AccessBlocker = &accountBlockWriter{err: errors.New("redis unavailable")}
+		}},
+		{name: "addresses unreadable", code: "erasure_addresses_failed", setup: func(f *erasureFixture) {
+			f.addresses.err = errors.New("identity directory unavailable")
+		}},
+		{name: "service deferred", code: "erase_cms_failed", setup: func(f *erasureFixture) {
+			f.services[user.DeletionStepEraseCMS].set(answerStatus(http.StatusServiceUnavailable, "60"))
+		}},
+		{name: "token refused", code: "erase_cms_failed", setup: func(f *erasureFixture) {
+			f.services[user.DeletionStepEraseCMS].set(answerStatus(http.StatusUnauthorized, ""))
+		}},
+		{name: "rejected", code: "erase_cms_rejected_403", setup: func(f *erasureFixture) {
+			f.services[user.DeletionStepEraseCMS].set(answerStatus(http.StatusForbidden, ""))
+		}},
+	} {
+		f := newErasureFixture(t)
+		tc.setup(f)
+		_, err := f.run(f.worker())
+		if err == nil {
+			t.Fatalf("%s: the pass succeeded", tc.name)
+		}
+		line := fmt.Sprintf("account erasure worker: %v", err)
+		if want := "account erasure " + tc.code + " request_id=" + f.request.ID.String() + ":"; !strings.Contains(line, want) {
+			t.Fatalf("%s: line %q lacks %q", tc.name, line, want)
+		}
+		if state := f.state(); state.LastErrorCode != tc.code {
+			t.Fatalf("%s: stored code %q, line code %q", tc.name, state.LastErrorCode, tc.code)
+		}
+		f.assertNoPersonalData(line)
+	}
 }
 
 func TestServiceErasureStopsAtALostLease(t *testing.T) {

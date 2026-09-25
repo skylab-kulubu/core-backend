@@ -111,7 +111,7 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		return ok, err
 	}
 	if request.LeaseToken == nil {
-		return true, fmt.Errorf("account erasure claim missing lease token")
+		return true, fmt.Errorf("account erasure claim request_id=%s: missing lease token", request.ID)
 	}
 	leaseToken := *request.LeaseToken
 	if w.config.AccessBlocker == nil {
@@ -218,9 +218,13 @@ func (w *Worker) passAddresses(ctx context.Context, request user.DeletionRequest
 // once; a deferred one (RetryAt) refunds the attempt until the horizon; any
 // other failure spends an attempt and goes to manual intervention when the
 // budget is spent.
+//
+// The error it returns is the worker's log line (spec §2.7): the code, which
+// names the step, and the request_id. It never carries the subject, and the
+// cause carries no address or name.
 func (w *Worker) retry(ctx context.Context, request user.DeletionRequest, now time.Time, code string, cause error, permanent bool) error {
 	if request.LeaseToken == nil {
-		return fmt.Errorf("account erasure %s without lease token: %w", code, cause)
+		return fmt.Errorf("account erasure %s request_id=%s: without lease token: %w", code, request.ID, cause)
 	}
 	next := now.Add(w.config.RetryDelay)
 	manual := permanent || request.AttemptCount >= w.config.MaxAttempts
@@ -244,9 +248,9 @@ func (w *Worker) retry(ctx context.Context, request user.DeletionRequest, now ti
 	// updated_at is the moment of this change, read now rather than at the
 	// start of the pass; the next attempt's time goes only to next_attempt_at.
 	if err := w.store.RetryDeletionRequest(ctx, request.ID, *request.LeaseToken, w.config.Now(), next, code, manual, refundAttempt); err != nil {
-		return fmt.Errorf("account erasure %s; checkpoint retry: %w", code, err)
+		return fmt.Errorf("account erasure %s request_id=%s; checkpoint retry: %w", code, request.ID, err)
 	}
-	return fmt.Errorf("account erasure %s: %w", code, cause)
+	return fmt.Errorf("account erasure %s request_id=%s: %w", code, request.ID, cause)
 }
 
 func Maintain(ctx context.Context, worker *Worker, interval time.Duration, onError func(error)) {

@@ -549,6 +549,11 @@ func TestErasureSagaLogsNoAddressOrSubject(t *testing.T) {
 	if !strings.Contains(captured.String(), "account_erasure_attention") {
 		t.Fatalf("the watchdog wrote no attention line:\n%s", captured.String())
 	}
+	for _, code := range []string{"erasure_addresses_failed", "erase_skymail_failed", "erase_skymail_rejected_403"} {
+		if want := "account erasure worker: account erasure " + code + " request_id=" + f.request.ID.String() + ":"; !strings.Contains(captured.String(), want) {
+			t.Fatalf("no worker line %q:\n%s", want, captured.String())
+		}
+	}
 
 	f.assertNoPersonalData(captured.String(), f.state().LastErrorCode, gauges.Prometheus())
 	for _, value := range []string{sagaPersonal, sagaSchool} {

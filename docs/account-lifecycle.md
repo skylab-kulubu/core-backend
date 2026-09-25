@@ -87,6 +87,8 @@ ADR-0051 has this worker send SkyMail, CMS and Forms one Erasure command each, a
 
 After an operator fixes a rejection, the existing retry path returns the request to `pending`, and checkpointed services are not called again.
 
+Every failed pass logs one line, `account erasure worker: account erasure <code> request_id=…: <reason>`. The code names the step; the line carries no subject, address or name.
+
 **Tokens.** One `client_credentials` cache per service scope (`scope=openid account-erase-<service>`), so each token carries only its own service's audience and erase role. It is held until 30 seconds before the token's expiry and never longer; a token that lives 30 seconds or less is not cached. Keycloak client secrets rotate nightly (ADR-0050), so core keeps no copy of `ACCOUNT_ERASURE_CLIENT_SECRET`: startup only checks that it is set, and every token request reads it from the configuration again. A `401` from a service drops that token and spends one ordinary attempt; the retry asks for a new token with the secret the configuration holds then. A `403` drops the token too: the request goes to `manual_intervention`, and the retry after the operator's fix asks for a new token instead of reusing the refused one. A failure of the token endpoint, including a `401` for a secret that has just rotated, is deferred.
 
 **Watchdog.** While the worker is on, core counts every five minutes and publishes four unlabelled gauges on `/v1/metrics`, starting with the first successful count:
