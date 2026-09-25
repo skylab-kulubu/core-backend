@@ -46,6 +46,7 @@ type service struct {
 	store      Store
 	authz      authz.Authorizer
 	publicBase string
+	formLinks  FormLinkSync
 }
 
 func NewService(store Store, az authz.Authorizer, publicBase ...string) Service {
@@ -160,7 +161,11 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Assign) {
 		in.DoorStaffIDs = nil
 	}
-	return s.published(s.store.Create(ctx, in))
+	created, err := s.store.Create(ctx, in)
+	if err == nil {
+		s.syncFormLinks(ctx, created.ID, formLinksOf(created))
+	}
+	return s.published(created, err)
 }
 
 func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Event) (Event, error) {
@@ -197,7 +202,11 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	if in.MailListID == nil {
 		in.MailListID = existing.MailListID
 	}
-	return s.published(s.store.Update(ctx, in))
+	updated, err := s.store.Update(ctx, in)
+	if err == nil {
+		s.syncFormLinks(ctx, updated.ID, formLinksOf(updated))
+	}
+	return s.published(updated, err)
 }
 
 func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error {
@@ -208,7 +217,11 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Delete) {
 		return ErrForbidden
 	}
-	return s.store.Archive(ctx, id, lifecycle.ActorID(p.ID))
+	if err := s.store.Archive(ctx, id, lifecycle.ActorID(p.ID)); err != nil {
+		return err
+	}
+	s.syncFormLinks(ctx, id, nil)
+	return nil
 }
 
 func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error) {
@@ -222,7 +235,11 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if err := s.store.Restore(ctx, id); err != nil {
 		return Event{}, err
 	}
-	return s.Get(ctx, id)
+	restored, err := s.Get(ctx, id)
+	if err == nil {
+		s.syncFormLinks(ctx, restored.ID, formLinksOf(restored))
+	}
+	return restored, err
 }
 
 func (s *service) AddImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error) {

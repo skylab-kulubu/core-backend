@@ -356,6 +356,7 @@ func main() {
 	shorturl.MaintainHitRetention(context.Background(), urlStore, time.Hour, func(err error) {
 		log.Printf("short-link hit retention: %v", err)
 	})
+	urlSvc := shorturl.NewService(urlStore, az)
 
 	app := httpx.New(httpx.Deps{
 		Users: user.NewService(users, dir),
@@ -363,7 +364,10 @@ func main() {
 			AccountErasureEnabled: workerEnabled,
 			AccessProjector:       accessProjector,
 		}, mailer),
-		Events:      event.NewService(events, az, cdnBase),
+		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
+			PublicBase: cdnBase,
+			FormLinks:  eventFormLinks{urls: urlSvc},
+		}),
 		Seasons:     season.NewService(seasons, az),
 		Tickets:     ticketSvc,
 		Competitors: competitor.NewService(competitors, events, az),
@@ -371,7 +375,7 @@ func main() {
 			UploadStagingGrace: uploadStagingConfig.Grace,
 			Catalogue:          mediaPurposes,
 		}),
-		URLs:                   shorturl.NewService(urlStore, az),
+		URLs:                   urlSvc,
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
 		Mail:                   mailer,
@@ -425,6 +429,18 @@ func optionalAccountAccessGate(gate *accessgate.RedisGate) accessgate.Reader {
 		return nil
 	}
 	return gate
+}
+
+type eventFormLinks struct {
+	urls shorturl.Service
+}
+
+func (l eventFormLinks) SyncEventForms(ctx context.Context, eventID uuid.UUID, links []event.FormLink) error {
+	forms := make([]shorturl.EventForm, len(links))
+	for i, link := range links {
+		forms[i] = shorturl.EventForm{FormID: link.FormID, URL: link.URL, Alias: link.Alias, Label: link.Label}
+	}
+	return l.urls.SyncEventForms(ctx, eventID, forms)
 }
 
 func accountSelfDeletionConfig(getenv func(string) string, enabled bool) (account.SelfDeletionConfig, error) {
