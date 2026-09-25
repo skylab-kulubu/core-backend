@@ -21,16 +21,16 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const urlCols = `id, alias, url, click_count, created_by, disabled_at, disabled_by, created_at, updated_at`
+const urlCols = `id, alias, url, click_count, created_by, form_id, event_id, label, disabled_at, disabled_by, created_at, updated_at`
 
 func (s *PostgresStore) Create(ctx context.Context, u URL) (URL, error) {
 	if u.ID == uuid.Nil {
 		u.ID = uuid.New()
 	}
 	got, err := scanURL(s.pool.QueryRow(ctx, `
-		INSERT INTO urls (id, alias, url, click_count, created_by)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING `+urlCols, u.ID, u.Alias, u.URL, u.ClickCount, u.CreatedBy))
+		INSERT INTO urls (id, alias, url, click_count, created_by, form_id, event_id, label)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING `+urlCols, u.ID, u.Alias, u.URL, u.ClickCount, u.CreatedBy, u.FormID, u.EventID, u.Label))
 	return got, mapURLErr(err)
 }
 
@@ -62,6 +62,15 @@ func (s *PostgresStore) GetByRetiredAlias(ctx context.Context, alias string) (UR
 		WHERE id = (SELECT url_id FROM url_retired_aliases WHERE alias = $1)
 		  AND disabled_at IS NULL`, alias))
 	return u, mapURLErr(err)
+}
+
+func (s *PostgresStore) GetByForm(ctx context.Context, formID uuid.UUID) (URL, error) {
+	u, err := scanURL(s.pool.QueryRow(ctx, `SELECT `+urlCols+` FROM urls WHERE form_id = $1 AND disabled_at IS NULL`, formID))
+	return u, mapURLErr(err)
+}
+
+func (s *PostgresStore) ListByEvent(ctx context.Context, eventID uuid.UUID) ([]URL, error) {
+	return s.list(ctx, `SELECT `+urlCols+` FROM urls WHERE event_id = $1 AND disabled_at IS NULL ORDER BY created_at DESC`, eventID)
 }
 
 func (s *PostgresStore) ListByCreator(ctx context.Context, userID uuid.UUID) ([]URL, error) {
@@ -109,9 +118,9 @@ func (s *PostgresStore) Update(ctx context.Context, u URL) (URL, error) {
 		}
 	}
 	got, err := scanURL(tx.QueryRow(ctx, `
-		UPDATE urls SET alias = $2, url = $3, updated_at = now()
+		UPDATE urls SET alias = $2, url = $3, label = $4, updated_at = now()
 		WHERE id = $1 AND disabled_at IS NULL
-		RETURNING `+urlCols, u.ID, u.Alias, u.URL))
+		RETURNING `+urlCols, u.ID, u.Alias, u.URL, u.Label))
 	if err != nil {
 		return URL{}, mapURLErr(err)
 	}
@@ -121,6 +130,38 @@ func (s *PostgresStore) Update(ctx context.Context, u URL) (URL, error) {
 	return got, nil
 }
 
+func (s *PostgresStore) BindForm(ctx context.Context, id, formID uuid.UUID, eventID *uuid.UUID, label string) (URL, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return URL{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		UPDATE urls SET form_id = NULL, event_id = NULL, updated_at = now()
+		WHERE form_id = $1 AND id <> $2 AND disabled_at IS NULL`, formID, id); err != nil {
+		return URL{}, mapURLErr(err)
+	}
+	got, err := scanURL(tx.QueryRow(ctx, `
+		UPDATE urls SET form_id = $2, event_id = $3, label = $4, updated_at = now()
+		WHERE id = $1 AND disabled_at IS NULL
+		RETURNING `+urlCols, id, formID, eventID, label))
+	if err != nil {
+		return URL{}, mapURLErr(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return URL{}, err
+	}
+	return got, nil
+}
+
+func (s *PostgresStore) ReleaseForm(ctx context.Context, id uuid.UUID) (URL, error) {
+	got, err := scanURL(s.pool.QueryRow(ctx, `
+		UPDATE urls SET form_id = NULL, event_id = NULL, updated_at = now()
+		WHERE id = $1
+		RETURNING `+urlCols, id))
+	return got, mapURLErr(err)
+}
+
 func (s *PostgresStore) AliasTaken(ctx context.Context, alias string, except uuid.UUID) (bool, error) {
 	var taken bool
 	err := s.pool.QueryRow(ctx, `
@@ -128,6 +169,30 @@ func (s *PostgresStore) AliasTaken(ctx context.Context, alias string, except uui
 		    OR EXISTS (SELECT 1 FROM url_retired_aliases WHERE lower(alias) = lower($1) AND url_id IS DISTINCT FROM $2)`,
 		alias, except).Scan(&taken)
 	return taken, err
+}
+
+func (s *PostgresStore) FormSources(ctx context.Context, formID uuid.UUID, since time.Time) ([]SourceCount, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT h.utm_source, count(*)
+		FROM url_hits h
+		JOIN urls u ON u.id = h.url_id
+		WHERE (u.form_id = $1::uuid OR position($1::uuid::text IN lower(u.url)) > 0)
+		  AND h.at >= $2
+		GROUP BY h.utm_source
+		ORDER BY count(*) DESC, h.utm_source`, formID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]SourceCount, 0)
+	for rows.Next() {
+		var c SourceCount
+		if err := rows.Scan(&c.Source, &c.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 func (s *PostgresStore) Disable(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
@@ -318,7 +383,7 @@ type urlRow interface {
 func scanURL(row urlRow) (URL, error) {
 	var u URL
 	var created, updated time.Time
-	err := row.Scan(&u.ID, &u.Alias, &u.URL, &u.ClickCount, &u.CreatedBy, &u.DisabledAt, &u.DisabledBy, &created, &updated)
+	err := row.Scan(&u.ID, &u.Alias, &u.URL, &u.ClickCount, &u.CreatedBy, &u.FormID, &u.EventID, &u.Label, &u.DisabledAt, &u.DisabledBy, &created, &updated)
 	u.CreatedAt = created
 	u.UpdatedAt = updated
 	return u, err

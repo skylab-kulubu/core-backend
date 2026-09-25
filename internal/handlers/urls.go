@@ -48,10 +48,26 @@ type urlBody struct {
 	Alias string `json:"alias"`
 }
 
+type formLinkBody struct {
+	URL     string     `json:"url"`
+	Label   string     `json:"label"`
+	Alias   string     `json:"alias"`
+	ActorID *uuid.UUID `json:"actorId"`
+}
+
+type formAliasBody struct {
+	Alias      string `json:"alias"`
+	Suggestion string `json:"suggestion"`
+}
+
 func urlError(c fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
+	case errors.Is(err, shorturl.ErrEventManaged):
+		return problemCode(c, fiber.StatusForbidden, "Forbidden", "event_managed")
+	case errors.Is(err, shorturl.ErrManaged):
+		return problemCode(c, fiber.StatusConflict, "Conflict", "managed")
 	case errors.Is(err, shorturl.ErrForbidden):
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, shorturl.ErrNotFound):
@@ -138,6 +154,106 @@ func (h *URLHandler) QR(c fiber.Ctx) error {
 	return c.Send(png)
 }
 
+func (h *URLHandler) Availability(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	out, err := h.svc.Availability(c.Context(), p, c.Query("alias"))
+	if err != nil {
+		return urlError(c, err)
+	}
+	return c.JSON(out)
+}
+
+func (h *URLHandler) FormLink(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	formID, err := uuid.Parse(c.Params("formId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	link, err := h.svc.FormLink(c.Context(), p, formID)
+	if err != nil {
+		return urlError(c, err)
+	}
+	return c.JSON(link)
+}
+
+func (h *URLHandler) EnsureFormLink(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	formID, err := uuid.Parse(c.Params("formId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var b formLinkBody
+	if err := c.Bind().Body(&b); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	link, err := h.svc.EnsureFormLink(c.Context(), p, formID, shorturl.FormLinkInput{URL: b.URL, Label: b.Label, Alias: b.Alias, ActorID: b.ActorID})
+	if err != nil {
+		return urlError(c, err)
+	}
+	return c.JSON(link)
+}
+
+func (h *URLHandler) RenameFormLink(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	formID, err := uuid.Parse(c.Params("formId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var b formAliasBody
+	if err := c.Bind().Body(&b); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	link, err := h.svc.RenameFormLink(c.Context(), p, formID, b.Alias, b.Suggestion)
+	if err != nil {
+		return urlError(c, err)
+	}
+	return c.JSON(link)
+}
+
+func (h *URLHandler) FormStats(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	formID, err := uuid.Parse(c.Params("formId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	stats, err := h.svc.FormStats(c.Context(), p, formID)
+	if err != nil {
+		return urlError(c, err)
+	}
+	return c.JSON(stats)
+}
+
+// withSource narrows a listing to one kind of link (form, event, personal);
+// an empty filter keeps everything.
+func withSource(items []shorturl.URL, source string) []shorturl.URL {
+	source = strings.ToLower(strings.TrimSpace(source))
+	if source == "" {
+		return items
+	}
+	out := make([]shorturl.URL, 0, len(items))
+	for _, item := range items {
+		if item.Source() == source {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func (h *URLHandler) Create(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
@@ -172,7 +288,7 @@ func (h *URLHandler) ListMine(c fiber.Ctx) error {
 	if err != nil {
 		return urlError(c, err)
 	}
-	return c.JSON(items)
+	return c.JSON(withSource(items, c.Query("source")))
 }
 
 func (h *URLHandler) ListAll(c fiber.Ctx) error {
@@ -193,7 +309,7 @@ func (h *URLHandler) ListAll(c fiber.Ctx) error {
 	if err != nil {
 		return urlError(c, err)
 	}
-	return c.JSON(items)
+	return c.JSON(withSource(items, c.Query("source")))
 }
 
 func (h *URLHandler) Restore(c fiber.Ctx) error {

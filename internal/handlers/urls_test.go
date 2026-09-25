@@ -90,6 +90,11 @@ func urlAppBehindProxies(t *testing.T, proxies string, store shorturl.Store, ide
 	app.Post("/v1/urls", h.Create)
 	app.Get("/v1/urls", h.ListMine)
 	app.Get("/v1/urls/all", h.ListAll)
+	app.Get("/v1/urls/availability", h.Availability)
+	app.Get("/v1/urls/forms/:formId", h.FormLink)
+	app.Put("/v1/urls/forms/:formId", h.EnsureFormLink)
+	app.Patch("/v1/urls/forms/:formId", h.RenameFormLink)
+	app.Get("/v1/urls/forms/:formId/stats", h.FormStats)
 	app.Get("/v1/urls/:id/hits", h.ListHits)
 	app.Patch("/v1/urls/:id", h.Update)
 	app.Delete("/v1/urls/:id", h.Delete)
@@ -925,5 +930,88 @@ func TestURLQRServesSVGWithTheLogo(t *testing.T) {
 	}
 	if plain.StatusCode != fiber.StatusOK || plain.Header.Get(fiber.HeaderContentType) != "image/png" {
 		t.Fatalf("png status=%d type=%s", plain.StatusCode, plain.Header.Get(fiber.HeaderContentType))
+	}
+}
+
+func TestURLFormLinkEndpointsNeedTheFormsRole(t *testing.T) {
+	t.Parallel()
+	store := shorturl.NewMemoryStore()
+	formID := uuid.New()
+	forms := urlAppWith(t, authn.Identity{ID: uuid.MustParse("22222222-2222-2222-2222-222222222222"), Roles: []string{"url:forms"}}, store)
+	member := urlAppWith(t, authn.Identity{ID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), Roles: []string{"url:access"}}, store)
+	body := `{"url":"https://forms.yildizskylab.com/` + formID.String() + `","label":"Yaz Kampı","alias":"yaz-kampi-2026"}`
+
+	send := func(app *fiber.App, method, path, payload string) *http.Response {
+		t.Helper()
+		var req *http.Request
+		if payload == "" {
+			req = httptest.NewRequest(method, path, nil)
+		} else {
+			req = httptest.NewRequest(method, path, strings.NewReader(payload))
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	if resp := send(member, fiber.MethodPut, "/v1/urls/forms/"+formID.String(), body); resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("member ensure %d", resp.StatusCode)
+	}
+	ensured := send(forms, fiber.MethodPut, "/v1/urls/forms/"+formID.String(), body)
+	var link shorturl.URL
+	if err := json.NewDecoder(ensured.Body).Decode(&link); err != nil {
+		t.Fatal(err)
+	}
+	if ensured.StatusCode != fiber.StatusOK || link.Alias != "yaz-kampi-2026" || link.FormID == nil || *link.FormID != formID || link.Label != "Yaz Kampı" {
+		t.Fatalf("ensure %d %+v", ensured.StatusCode, link)
+	}
+
+	renamed := send(forms, fiber.MethodPatch, "/v1/urls/forms/"+formID.String(), `{"alias":"yaz-kampi"}`)
+	var after shorturl.URL
+	if err := json.NewDecoder(renamed.Body).Decode(&after); err != nil {
+		t.Fatal(err)
+	}
+	if renamed.StatusCode != fiber.StatusOK || after.Alias != "yaz-kampi" || after.ID != link.ID {
+		t.Fatalf("rename %d %+v", renamed.StatusCode, after)
+	}
+
+	availability := send(forms, fiber.MethodGet, "/v1/urls/availability?alias=Yaz-Kampi", "")
+	var answer shorturl.Availability
+	if err := json.NewDecoder(availability.Body).Decode(&answer); err != nil {
+		t.Fatal(err)
+	}
+	if answer.Available || answer.Reason != shorturl.ReasonTaken {
+		t.Fatalf("availability %+v", answer)
+	}
+
+	if resp := send(forms, fiber.MethodGet, "/v1/go/yaz-kampi-2026/wa", ""); resp.StatusCode != fiber.StatusMovedPermanently {
+		t.Fatalf("the retired alias must keep redirecting, got %d", resp.StatusCode)
+	}
+	stats := send(forms, fiber.MethodGet, "/v1/urls/forms/"+formID.String()+"/stats", "")
+	var counted shorturl.Stats
+	if err := json.NewDecoder(stats.Body).Decode(&counted); err != nil {
+		t.Fatal(err)
+	}
+	if stats.StatusCode != fiber.StatusOK || counted.Total != 1 || len(counted.Sources) != 1 || counted.Sources[0].Source != "whatsapp" {
+		t.Fatalf("stats %d %+v", stats.StatusCode, counted)
+	}
+
+	generic := send(member, fiber.MethodPatch, "/v1/urls/"+link.ID.String(), `{"alias":"baska"}`)
+	if generic.StatusCode != fiber.StatusForbidden && generic.StatusCode != fiber.StatusConflict {
+		t.Fatalf("generic rename of a form link %d", generic.StatusCode)
+	}
+	moderator := urlAppWith(t, authn.Identity{ID: uuid.MustParse("44444444-4444-4444-4444-444444444444"), Roles: []string{"url:moderator"}}, store)
+	for source, want := range map[string]int{"form": 1, "personal": 0, "": 1} {
+		listed := send(moderator, fiber.MethodGet, "/v1/urls/all?source="+source, "")
+		var mine []shorturl.URL
+		if err := json.NewDecoder(listed.Body).Decode(&mine); err != nil {
+			t.Fatal(err)
+		}
+		if listed.StatusCode != fiber.StatusOK || len(mine) != want {
+			t.Fatalf("source %q: %d %+v", source, listed.StatusCode, mine)
+		}
 	}
 }

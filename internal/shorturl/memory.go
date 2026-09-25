@@ -41,6 +41,68 @@ func (s *MemoryStore) GetByRetiredAlias(_ context.Context, alias string) (URL, e
 	return u, nil
 }
 
+func (s *MemoryStore) GetByForm(_ context.Context, formID uuid.UUID) (URL, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, u := range s.byID {
+		if u.DisabledAt == nil && u.FormID != nil && *u.FormID == formID {
+			return u, nil
+		}
+	}
+	return URL{}, ErrNotFound
+}
+
+func (s *MemoryStore) ListByEvent(_ context.Context, eventID uuid.UUID) ([]URL, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]URL, 0)
+	for _, u := range s.byID {
+		if u.DisabledAt == nil && u.EventID != nil && *u.EventID == eventID {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) BindForm(_ context.Context, id, formID uuid.UUID, eventID *uuid.UUID, label string) (URL, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	target, ok := s.byID[id]
+	if !ok || target.DisabledAt != nil {
+		return URL{}, ErrNotFound
+	}
+	now := time.Now().UTC()
+	for otherID, other := range s.byID {
+		if otherID != id && other.DisabledAt == nil && other.FormID != nil && *other.FormID == formID {
+			other.FormID = nil
+			other.EventID = nil
+			other.UpdatedAt = now
+			s.byID[otherID] = other
+		}
+	}
+	form := formID
+	target.FormID = &form
+	target.EventID = eventID
+	target.Label = label
+	target.UpdatedAt = now
+	s.byID[id] = target
+	return target, nil
+}
+
+func (s *MemoryStore) ReleaseForm(_ context.Context, id uuid.UUID) (URL, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.byID[id]
+	if !ok {
+		return URL{}, ErrNotFound
+	}
+	u.FormID = nil
+	u.EventID = nil
+	u.UpdatedAt = time.Now().UTC()
+	s.byID[id] = u
+	return u, nil
+}
+
 func (s *MemoryStore) AliasTaken(_ context.Context, alias string, except uuid.UUID) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -54,6 +116,33 @@ func (s *MemoryStore) AliasTaken(_ context.Context, alias string, except uuid.UU
 		return true, nil
 	}
 	return false, nil
+}
+
+func (s *MemoryStore) FormSources(_ context.Context, formID uuid.UUID, since time.Time) ([]SourceCount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	needle := strings.ToLower(formID.String())
+	counts := map[string]int{}
+	for _, h := range s.hits {
+		u, ok := s.byID[h.URLID]
+		if !ok || h.CreatedAt.Before(since) {
+			continue
+		}
+		if (u.FormID != nil && *u.FormID == formID) || strings.Contains(strings.ToLower(u.URL), needle) {
+			counts[h.UTM.Source]++
+		}
+	}
+	out := make([]SourceCount, 0, len(counts))
+	for source, n := range counts {
+		out = append(out, SourceCount{Source: source, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Source < out[j].Source
+	})
+	return out, nil
 }
 
 func (s *MemoryStore) Create(_ context.Context, u URL) (URL, error) {

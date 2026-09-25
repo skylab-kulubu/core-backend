@@ -25,6 +25,12 @@ type Service interface {
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, target, alias string) (URL, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (URL, error)
+	Availability(ctx context.Context, p authz.Principal, alias string) (Availability, error)
+	FormLink(ctx context.Context, p authz.Principal, formID uuid.UUID) (URL, error)
+	EnsureFormLink(ctx context.Context, p authz.Principal, formID uuid.UUID, in FormLinkInput) (URL, error)
+	RenameFormLink(ctx context.Context, p authz.Principal, formID uuid.UUID, alias, suggestion string) (URL, error)
+	FormStats(ctx context.Context, p authz.Principal, formID uuid.UUID) (Stats, error)
+	SyncEventForms(ctx context.Context, eventID uuid.UUID, forms []EventForm) error
 }
 
 type service struct {
@@ -134,6 +140,10 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, t
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL, OwnerID: owner}, authz.Update) {
 		return URL{}, ErrForbidden
 	}
+	renamed := alias != "" && alias != existing.Alias
+	if existing.FormID != nil && (renamed || target != "") {
+		return URL{}, ErrManaged
+	}
 	if target != "" {
 		target, err = normalizeTarget(target)
 		if err != nil {
@@ -141,7 +151,7 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, t
 		}
 		existing.URL = target
 	}
-	if alias != "" && alias != existing.Alias {
+	if renamed {
 		if err := validateAlias(alias); err != nil {
 			return URL{}, err
 		}
@@ -168,6 +178,9 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL, OwnerID: owner}, authz.Delete) {
 		return ErrForbidden
+	}
+	if existing.FormID != nil && !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL}, authz.Read) {
+		return ErrManaged
 	}
 	return s.store.Disable(ctx, id, lifecycle.ActorID(p.ID))
 }

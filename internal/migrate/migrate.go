@@ -450,6 +450,17 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		SELECT 1
 		WHERE to_regclass('public.url_retired_aliases') IS NOT NULL
 		  AND to_regclass('public.urls_alias_lower_idx') IS NOT NULL`,
+	20260926114000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*)
+			FROM (VALUES ('form_id'), ('event_id'), ('label')) AS expected(column_name)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'urls'
+			 AND actual.column_name = expected.column_name
+		) = 3
+		AND to_regclass('public.urls_current_form_idx') IS NOT NULL`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
