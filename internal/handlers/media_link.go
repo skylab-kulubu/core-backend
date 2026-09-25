@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
@@ -24,7 +25,7 @@ func linkProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 	case errors.Is(err, media.ErrNotLinkable):
 		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
 			"The Media does not exist, is archived or purged, or expired before anything used it.", "media_not_linkable", fields)
-	case errors.Is(err, media.ErrTeamMismatch):
+	case errors.Is(err, event.ErrMediaTeamMismatch):
 		return true, problemWithFields(c, fiber.StatusForbidden, "Forbidden",
 			"The Media is used on an Event of another Owner team.", "media_team_mismatch", fields)
 	default:

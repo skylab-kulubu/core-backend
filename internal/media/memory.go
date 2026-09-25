@@ -238,7 +238,7 @@ func (s *MemoryStore) ListExpired(_ context.Context, now time.Time, after uuid.U
 	defer s.mu.Unlock()
 	out := make([]Media, 0)
 	for _, m := range s.byID {
-		if m.BlobPurgedAt != nil || !expired(m, now) || (m.DeletedAt != nil && m.BlobPurgeStartedAt == nil) || bytes.Compare(m.ID[:], after[:]) <= 0 {
+		if m.BlobPurgedAt != nil || !m.expired(now) || (m.DeletedAt != nil && m.BlobPurgeStartedAt == nil) || bytes.Compare(m.ID[:], after[:]) <= 0 {
 			continue
 		}
 		out = append(out, m)
@@ -250,17 +250,17 @@ func (s *MemoryStore) ListExpired(_ context.Context, now time.Time, after uuid.U
 	return out, nil
 }
 
-func (s *MemoryStore) PurgeExpiredBlobIfUnreferenced(_ context.Context, id uuid.UUID, now time.Time, purge func(string) error) (bool, error) {
+func (s *MemoryStore) PurgeExpiredBlobIfUnattached(_ context.Context, id uuid.UUID, now time.Time, purge func(string) error) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, ok := s.byID[id]
 	if !ok {
 		return false, ErrNotFound
 	}
-	if m.BlobPurgedAt != nil || (m.BlobPurgeStartedAt == nil && (m.DeletedAt != nil || !expired(m, now))) {
+	if m.BlobPurgedAt != nil || (m.BlobPurgeStartedAt == nil && (m.DeletedAt != nil || !m.expired(now))) {
 		return false, nil
 	}
-	if s.referenced[id] {
+	if s.referenced[id] || m.Status == StatusAttached {
 		m.BlobPurgeStartedAt = nil
 		m.BlobPurgeCheckedAt = &now
 		s.byID[id] = m
@@ -282,12 +282,6 @@ func (s *MemoryStore) PurgeExpiredBlobIfUnreferenced(_ context.Context, id uuid.
 	m.UpdatedAt = now
 	s.byID[id] = m
 	return true, nil
-}
-
-// expired reports whether a Media no attachment keeps is past its expiry at
-// now.
-func expired(m Media, now time.Time) bool {
-	return (m.Status == StatusPending || m.Status == StatusDetached) && m.ExpiresAt != nil && !m.ExpiresAt.After(now)
 }
 
 // SetReferenced models a durable domain reference in in-memory service tests.

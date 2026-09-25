@@ -34,11 +34,11 @@ type Media struct {
 	// record, attached while one does, and detached once the last one is
 	// removed. Archive and purge are recorded apart (DeletedAt,
 	// BlobPurgedAt).
-	Status string `json:"status"`
+	Status Status `json:"status"`
 	// ExpiresAt is when a Media no Media attachment keeps is purged: a
 	// pending Media when its purpose's pending TTL runs out, a detached one
-	// DetachedRetention after its last attachment was removed. Nil keeps the
-	// Media: it is attached, or legacy.
+	// 30 days after its last Media attachment was removed. Nil keeps the
+	// Media: it is attached, or legacy (a legacy Media never gets an expiry).
 	ExpiresAt           *time.Time `json:"expiresAt,omitempty"`
 	Key                 string     `json:"-"`
 	CoverColors         []string   `json:"coverColors"`
@@ -56,12 +56,21 @@ type Media struct {
 	ServingPolicyApplied bool `json:"-"`
 }
 
-// The statuses of a Media (Media.Status).
+// Status is where a Media is in its life (Media.Status).
+type Status string
+
 const (
-	StatusPending  = "pending"
-	StatusAttached = "attached"
-	StatusDetached = "detached"
+	StatusPending  Status = "pending"
+	StatusAttached Status = "attached"
+	StatusDetached Status = "detached"
 )
+
+// expired reports whether the Media's expiry is at or before now. Only a
+// Media no Media attachment keeps has one. The database's counterpart is
+// expiredSQL.
+func (m Media) expired(now time.Time) bool {
+	return m.ExpiresAt != nil && !m.ExpiresAt.After(now)
+}
 
 // newRecord fills what a Media record takes by default when it is created:
 // an id, an empty cover colour list, the legacy purpose when none is given,
@@ -109,14 +118,15 @@ type Store interface {
 	PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(key string) error) (bool, error)
 	// ListExpired returns, in id order and after the given id, the Media
 	// no Media attachment keeps whose expiry is at or before now: pending
-	// Media past their purpose's pending TTL and detached Media past
-	// DetachedRetention. Archived Media are left to the archive window.
+	// Media past their purpose's pending TTL and detached Media past their
+	// 30 days. Archived Media are left to the archive window.
 	ListExpired(ctx context.Context, now time.Time, after uuid.UUID, limit int) ([]Media, error)
-	// PurgeExpiredBlobIfUnreferenced purges the blob of such a Media with
+	// PurgeExpiredBlobIfUnattached purges the blob of such a Media with
 	// the same checks and two-phase claim as PurgeBlobIfUnreferenced, and
 	// archives the Media as its blob goes. It reports false, and keeps the
-	// Media, when the Media is no longer expired or something still uses it.
-	PurgeExpiredBlobIfUnreferenced(ctx context.Context, id uuid.UUID, now time.Time, purge func(key string) error) (bool, error)
+	// Media, when the Media is no longer expired or a Media attachment or a
+	// core link still uses it.
+	PurgeExpiredBlobIfUnattached(ctx context.Context, id uuid.UUID, now time.Time, purge func(key string) error) (bool, error)
 }
 
 // BlobMetadata is how the CDN serves a stored object. An empty

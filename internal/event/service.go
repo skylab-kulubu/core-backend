@@ -292,7 +292,7 @@ func (s *service) checkMedia(ctx context.Context, eventID uuid.UUID, ownerTeam s
 	}
 	for _, team := range teams {
 		if team != ownerTeam {
-			return &media.LinkRefusal{Err: media.ErrTeamMismatch, MediaID: mediaID, Role: role}
+			return &media.LinkRefusal{Err: ErrMediaTeamMismatch, MediaID: mediaID, Role: role}
 		}
 	}
 	return nil

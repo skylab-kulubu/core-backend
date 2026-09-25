@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
@@ -13,6 +14,9 @@ var (
 	ErrForbidden = errors.New("event: forbidden")
 	ErrInvalid   = errors.New("event: invalid")
 	ErrConflict  = errors.New("event: conflict")
+	// ErrMediaTeamMismatch refuses a Media another Owner team's Event uses
+	// (Team media library). It comes in a *media.LinkRefusal.
+	ErrMediaTeamMismatch = fmt.Errorf("event: the Media is used on another Owner team's Event: %w", ErrForbidden)
 )
 
 type Store interface {

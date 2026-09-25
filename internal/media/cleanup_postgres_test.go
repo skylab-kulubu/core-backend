@@ -244,3 +244,20 @@ func TestPostgresRestoreStartsTheExpiryAgain(t *testing.T) {
 		t.Fatalf("report %+v err %v", report, err)
 	}
 }
+
+// A Media with no expiry is simply not expired: asking to purge it keeps it.
+func TestPostgresExpiryPurgeKeepsAMediaWithNoExpiry(t *testing.T) {
+	db := newMediaDatabase(t)
+	legacy := db.withBlob(t, media.PurposeLegacy)
+
+	ctx := context.Background()
+	purged, err := db.store.PurgeExpiredBlobIfUnattached(ctx, legacy.ID, time.Now().Add(365*24*time.Hour), func(key string) error {
+		return db.blobs.Delete(ctx, key)
+	})
+	if err != nil || purged {
+		t.Fatalf("purged %v err %v, want kept", purged, err)
+	}
+	if db.purged(t, legacy) {
+		t.Fatal("legacy Media purged")
+	}
+}

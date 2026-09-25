@@ -240,16 +240,19 @@ func (s *PostgresStore) ListPurgeCandidates(ctx context.Context, deletedBefore t
 	return out, rows.Err()
 }
 
+// expiredSQL is the database's counterpart of Media.expired, with the time
+// as $1: true only for a Media whose expiry is at or before it, never NULL.
+const expiredSQL = `(expires_at <= $1) IS TRUE`
+
 // ListExpired returns, in id order and after the given id, the Media the
-// expiry cleanup purges at now: pending or detached, expired, with a blob.
-// Archived Media are left to the archive window, unless the cleanup already
-// claimed their purge.
+// expiry cleanup purges at now: expired, with a blob. Archived Media are left
+// to the archive window, unless the cleanup already claimed their purge.
 func (s *PostgresStore) ListExpired(ctx context.Context, now time.Time, after uuid.UUID, limit int) ([]Media, error) {
 	if limit <= 0 {
 		limit = 25
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+mediaCols+` FROM media
-		WHERE status IN ('pending', 'detached') AND expires_at <= $1 AND blob_purged_at IS NULL
+		WHERE `+expiredSQL+` AND blob_purged_at IS NULL
 		  AND (deleted_at IS NULL OR blob_purge_started_at IS NOT NULL)
 		  AND id > $2
 		ORDER BY id LIMIT $3`, now, after, limit)
@@ -268,31 +271,40 @@ func (s *PostgresStore) ListExpired(ctx context.Context, now time.Time, after uu
 	return out, rows.Err()
 }
 
-// The Media a purge may start on, as a condition on the media row;
-// purge.at is the purge's time. A purge already started goes on whatever the
-// condition says.
+// purgeQueue is why a Media's blob may be purged.
+type purgeQueue int
+
 const (
-	// archivedPurge: an archived Media. The caller decides the window.
-	archivedPurge = `media.deleted_at IS NOT NULL`
-	// expiredPurge: a current Media no attachment keeps, past its expiry.
-	expiredPurge = `media.deleted_at IS NULL AND media.status IN ('pending', 'detached') AND media.expires_at <= purge.at`
+	// archivedQueue: the Media is archived. The caller decides the window.
+	archivedQueue purgeQueue = iota
+	// expiredQueue: the Media is current and past its expiry.
+	expiredQueue
 )
 
-func (s *PostgresStore) PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(string) error) (bool, error) {
-	return s.purgeBlob(ctx, id, purgedAt, archivedPurge, purge)
+// claimable reports whether a purge that has not started yet may start on a
+// Media in this state.
+func (q purgeQueue) claimable(archived, expired bool) bool {
+	if q == expiredQueue {
+		return !archived && expired
+	}
+	return archived
 }
 
-// PurgeExpiredBlobIfUnreferenced purges the blob of a Media past its expiry
+func (s *PostgresStore) PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(string) error) (bool, error) {
+	return s.purgeBlob(ctx, id, purgedAt, archivedQueue, purge)
+}
+
+// PurgeExpiredBlobIfUnattached purges the blob of a Media past its expiry
 // the way PurgeBlobIfUnreferenced purges an archived one, and archives the
 // Media as its blob goes.
-func (s *PostgresStore) PurgeExpiredBlobIfUnreferenced(ctx context.Context, id uuid.UUID, now time.Time, purge func(string) error) (bool, error) {
-	return s.purgeBlob(ctx, id, now, expiredPurge, purge)
+func (s *PostgresStore) PurgeExpiredBlobIfUnattached(ctx context.Context, id uuid.UUID, now time.Time, purge func(string) error) (bool, error) {
+	return s.purgeBlob(ctx, id, now, expiredQueue, purge)
 }
 
 // purgeBlob is the two-phase purge: a durable claim after the locked
 // reference check, the idempotent object deletion, then the record.
-func (s *PostgresStore) purgeBlob(ctx context.Context, id uuid.UUID, purgedAt time.Time, eligible string, purge func(string) error) (bool, error) {
-	claimed, err := s.claimBlobPurge(ctx, id, purgedAt, eligible)
+func (s *PostgresStore) purgeBlob(ctx context.Context, id uuid.UUID, purgedAt time.Time, queue purgeQueue, purge func(string) error) (bool, error) {
+	claimed, err := s.claimBlobPurge(ctx, id, purgedAt, queue)
 	if err != nil || !claimed {
 		return false, err
 	}
@@ -367,18 +379,13 @@ func mediaReferenced(ctx context.Context, tx postgresMediaTx, id uuid.UUID) (boo
 		UNION ALL SELECT 1 FROM events WHERE cover_image_id = $1
 		UNION ALL SELECT 1 FROM event_images WHERE media_id = $1
 		UNION ALL SELECT 1 FROM users WHERE profile_picture_id = $1
-		UNION ALL SELECT 1 FROM certificate_templates
-			WHERE draft_layout->>'backgroundMediaId' = $1::text
-			   OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(draft_layout->'elements', '[]'::jsonb)) element WHERE element->>'mediaId' = $1::text)
-		UNION ALL SELECT 1 FROM certificate_template_versions
-			WHERE layout->>'backgroundMediaId' = $1::text
-			   OR asset_manifest ? $1::text
-			   OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(layout->'elements', '[]'::jsonb)) element WHERE element->>'mediaId' = $1::text)
+		UNION ALL SELECT 1 FROM certificate_templates WHERE $1 = ANY (certificate_layout_media_ids(draft_layout, NULL))
+		UNION ALL SELECT 1 FROM certificate_template_versions WHERE $1 = ANY (certificate_layout_media_ids(layout, asset_manifest))
 	)`, id).Scan(&referenced)
 	return referenced, err
 }
 
-func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claimedAt time.Time, eligible string) (bool, error) {
+func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claimedAt time.Time, queue purgeQueue) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -388,11 +395,9 @@ func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claime
 		return false, err
 	}
 	var startedAt, purgedAt *time.Time
-	var claimable bool
-	err = tx.QueryRow(ctx, `SELECT media.blob_purge_started_at, media.blob_purged_at, `+eligible+`
-		FROM media, (SELECT $2::timestamptz AS at) purge
-		WHERE media.id = $1
-		FOR UPDATE OF media`, id, claimedAt).Scan(&startedAt, &purgedAt, &claimable)
+	var archived, expired bool
+	err = tx.QueryRow(ctx, `SELECT blob_purge_started_at, blob_purged_at, deleted_at IS NOT NULL, `+expiredSQL+`
+		FROM media WHERE id = $2 FOR UPDATE`, claimedAt, id).Scan(&startedAt, &purgedAt, &archived, &expired)
 	if errors.Is(err, pgx.ErrNoRows) || purgedAt != nil {
 		return false, nil
 	}
@@ -400,7 +405,7 @@ func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claime
 		return false, err
 	}
 	if startedAt == nil {
-		if !claimable {
+		if !queue.claimable(archived, expired) {
 			return false, nil
 		}
 		referenced, err := mediaReferenced(ctx, tx, id)

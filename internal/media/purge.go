@@ -96,7 +96,7 @@ type ExpiryReport struct {
 
 // PurgeExpired makes one pass over the Media no Media attachment keeps whose
 // expiry is at or before now: pending Media past their purpose's pending TTL
-// and detached Media past DetachedRetention. Each blob goes through the same
+// and detached Media past their 30 days. Each blob goes through the same
 // locked reference check and two-phase claim as PurgeDeleted, and the Media
 // is archived as its blob goes. Attached Media, legacy Media (no expiry) and
 // archived Media are never purged here. The pass walks the Media by id in
@@ -112,7 +112,7 @@ func PurgeExpired(ctx context.Context, store Store, blobs BlobStore, now time.Ti
 		func(ctx context.Context, item Media) error {
 			candidateCtx, cancel := context.WithTimeout(ctx, blobPurgeCandidateTimeout)
 			defer cancel()
-			purged, err := store.PurgeExpiredBlobIfUnreferenced(candidateCtx, item.ID, now, func(key string) error {
+			purged, err := store.PurgeExpiredBlobIfUnattached(candidateCtx, item.ID, now, func(key string) error {
 				return blobs.Delete(candidateCtx, key)
 			})
 			if err != nil {

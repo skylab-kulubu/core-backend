@@ -19,14 +19,8 @@ type Role string
 const (
 	RoleEventCover       Role = "event_cover"
 	RoleEventGallery     Role = "event_gallery"
-	RoleProfilePicture   Role = "profile_picture"
 	RoleCertificateAsset Role = "certificate_asset"
 )
-
-// DetachedRetention is how long a Media is kept after its last Media
-// attachment is removed, the recovery window of an archived Media. The
-// database sets it when it detaches a Media.
-const DetachedRetention = 30 * 24 * time.Hour
 
 // rolePurposes are the Media purposes each role accepts. The two Event
 // purposes fit both Event roles: the organizer's picker offers every photo of
@@ -39,11 +33,10 @@ const DetachedRetention = 30 * 24 * time.Hour
 var rolePurposes = map[Role][]string{
 	RoleEventCover:       {PurposeEventCover, PurposeEventGallery},
 	RoleEventGallery:     {PurposeEventGallery, PurposeEventCover},
-	RoleProfilePicture:   {PurposeProfilePicture},
 	RoleCertificateAsset: {PurposeCertificateAsset},
 }
 
-// Link refusals. Each also matches ErrInvalid or ErrForbidden.
+// Link refusals by the Media itself. Each also matches ErrInvalid.
 var (
 	// ErrPurposeMismatch: the Media's purpose does not fit the role, such as
 	// a PDF uploaded for a CMS page linked as an Event cover.
@@ -51,12 +44,11 @@ var (
 	// ErrNotLinkable: there is no such Media, or it is archived, its blob is
 	// purged or being purged, or it expired unattached.
 	ErrNotLinkable = fmt.Errorf("media: cannot be linked: %w", ErrInvalid)
-	// ErrTeamMismatch: the Media is on an Event of another Owner team (Team
-	// media library).
-	ErrTeamMismatch = fmt.Errorf("media: used on another Owner team's Event: %w", ErrForbidden)
 )
 
-// LinkRefusal is a link refused for its Media. errors.Is matches its Err.
+// LinkRefusal is a link refused for its Media: by the Media's own rules, or
+// by a rule of the record's domain (such as the Team media library). errors.Is
+// matches its Err.
 type LinkRefusal struct {
 	Err     error
 	MediaID uuid.UUID
@@ -106,11 +98,11 @@ func (l linker) CheckLink(ctx context.Context, id uuid.UUID, role Role) error {
 }
 
 // linkable reports whether m may get a new Media attachment at now: it is
-// not archived, no purge has started, and it has not expired. A detached
-// Media inside its 30 days may be linked again.
+// not archived, no purge has started, and it has not expired. A Media removed
+// from a record can be linked again until its window ends.
 func linkable(m Media, now time.Time) bool {
 	if m.DeletedAt != nil || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil {
 		return false
 	}
-	return m.ExpiresAt == nil || m.ExpiresAt.After(now)
+	return !m.expired(now)
 }
