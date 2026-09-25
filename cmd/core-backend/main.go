@@ -90,6 +90,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	uploadLimits, err := media.UploadLimitsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	mediaPurgeContext, stopMediaPurge := context.WithCancel(context.Background())
 	defer stopMediaPurge()
 	media.MaintainBlobPurge(mediaPurgeContext, mediaStore, blobs, mediaPurgeConfig, func(err error) {
@@ -391,7 +395,8 @@ func main() {
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},
-		TrustedProxies: trustedProxies,
+		TrustedProxies:     trustedProxies,
+		MediaUploadLimiter: media.NewUploadLimiter(uploadLimits, time.Now),
 	})
 
 	addr := os.Getenv("PORT")

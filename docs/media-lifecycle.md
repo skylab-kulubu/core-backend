@@ -203,8 +203,10 @@ by the serving policy), refused with a plain `400` without a code. Once
 Skyforms and CMS send purposes, `legacy` falls to the strict rule (raster
 only, 5 MiB, 24 hours unless attached) by a catalogue change.
 
-Refusals are `application/problem+json` with a stable `code` and extension
-members:
+Refusals by the purpose are `application/problem+json` with a stable `code`
+and extension members. This is not the full list of upload refusals: a person
+over their upload budget gets `429` `media_rate_limited`, described under
+[Upload limits](#upload-limits).
 
 | Status | `code` | Extra members | When |
 |---|---|---|---|
@@ -218,6 +220,65 @@ members:
 A body above the server's limit (20 MiB plus room for the form) is still
 refused by the HTTP server with a bare `413` before any purpose is read.
 
+### Upload limits
+
+Each signed-in person has one budget for single-step uploads, shared by
+`POST /v1/media` and `POST /v1/users/me/profile-picture` (ADR-0052, media
+redesign ticket 05):
+
+- at most 100 uploads per rolling 10 minutes;
+- at most 2048 MiB (2 GiB) of request body per rolling 24 hours.
+
+These are higher than the spec's example numbers (30 and 500 MB) on purpose.
+Superadmin's gallery input uploads every selected image in one loop, so a
+lower count would refuse an organizer's gallery partway through, on every
+retry, and leave the uploads before it unattached; a normal event photo day
+would use up 500 MB. The budget is there to bound a stolen or misused
+account, and 100 uploads per 10 minutes and 2 GiB a day still do that. Both
+stay configurable (see [Configuration](#configuration)).
+
+An upload is charged before the route reads its form, purpose or file. Its
+size is the request body core accepted: the declared `Content-Length`, which is
+exactly what the server read, or, for a chunked body, the bytes that arrived.
+(The server receives the whole body, up to its limit, before any route runs;
+the charge comes before the form is parsed and before anything is stored.)
+
+- A refusal by the route (`400`, `403`, `413`, `415`, `422`) stays charged:
+  its bytes were received, and free refusals would let anyone send junk
+  without end.
+- An upload that ends in a server error (`5xx`, a crash included) is given
+  back, count and bytes: the failure is core's.
+- A request the limit refuses is not charged.
+- A request without a token is not counted and is still refused with `401`.
+
+Over either limit, core answers `429` problem+json with `code`
+`media_rate_limited`, a `Retry-After` header in seconds, and these members:
+
+| Member | Meaning |
+|---|---|
+| `limit` | The limit hit: `uploads` (the count) or `volume` (the bytes). When both refuse, the one with the longer wait. |
+| `maxUploads` | Uploads allowed per window. |
+| `uploadWindowSeconds` | That rolling window, `600` by default. |
+| `maxDailyBytes` | Bytes allowed per rolling 24 hours. |
+| `retryAfterSeconds` | The `Retry-After` value, for callers that cannot read the header across origins. |
+
+`Retry-After` is when the same upload would fit again.
+
+The budget lives in core's memory (`media.UploadLimiter`): a restart clears
+it. It holds a person only while they have an upload inside a window, so its
+size follows the people who uploaded in the last day. If core runs more than
+one replica, each keeps its own budget, which loosens the limit (never
+tightens it) until the budget moves to a shared store. The account-access
+Redis is deliberately not that store: it is a security projection whose ACL
+allows only the gate's keys and commands. It is not fiber's `limiter`
+middleware either, which counts requests only: this one also counts bytes and
+gives back server failures.
+
+Direct upload is not counted here. The product that owns a Direct upload
+grant limits it; the Direct upload routes, when they land, stay off this
+limiter. A test (`TestEveryRouteThatStoresAFileIsChargedToTheUploadBudget`)
+fails when any route stores a file sent through core without being charged.
+
 ## Configuration
 
 - `MEDIA_BLOB_RECOVERY_DAYS` — recovery window in whole days; default `30`.
@@ -228,3 +289,9 @@ refused by the HTTP server with a bare `413` before any purpose is read.
 - `MEDIA_UPLOAD_STAGING_SWEEP_INTERVAL` — retry sweep interval; default `15m`.
 - `MEDIA_UPLOAD_STAGING_BATCH_SIZE` — maximum staging intents per run; default
   `25`.
+- `MEDIA_UPLOAD_RATE_MAX` — single-step uploads per person per window; default
+  `100`.
+- `MEDIA_UPLOAD_RATE_WINDOW` — Go duration of that rolling window; default
+  `10m`.
+- `MEDIA_UPLOAD_DAILY_MAX_MIB` — MiB of upload body per person per rolling
+  24 hours; default `2048`.

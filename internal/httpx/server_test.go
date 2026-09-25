@@ -71,12 +71,23 @@ func memoryAppWithAccessGate(gate accessgate.Reader, parse ...func(string) (auth
 }
 
 func memoryAppWithAccessGateMetrics(gate accessgate.Reader, metrics *accessgate.Metrics, parse ...func(string) (authn.Identity, error)) *fiber.App {
+	deps := memoryDeps()
+	deps.AccountAccessGate = gate
+	deps.AccountAccessMetrics = metrics
+	if len(parse) > 0 {
+		deps.ParseToken = parse[0]
+	}
+	return httpx.New(deps)
+}
+
+// memoryDeps are the assembled app's services over in-memory stores.
+func memoryDeps() httpx.Deps {
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
 	users := user.NewMemoryStore()
 	events := event.NewMemoryStore()
 	tickets := ticket.NewMemoryStore()
 	dir := identity.NewMemory()
-	deps := httpx.Deps{
+	return httpx.Deps{
 		Users:       user.NewService(users),
 		Identity:    identity.NewService(dir, users, az),
 		Events:      event.NewService(events, az),
@@ -92,14 +103,8 @@ func memoryAppWithAccessGateMetrics(gate accessgate.Reader, metrics *accessgate.
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},
-		AccountAccessGate:    gate,
-		AccountAccessMetrics: metrics,
-		TrustedProxies:       testTrustedProxies(),
+		TrustedProxies: testTrustedProxies(),
 	}
-	if len(parse) > 0 {
-		deps.ParseToken = parse[0]
-	}
-	return httpx.New(deps)
 }
 
 func TestCertificateShortLinkProxyRoute(t *testing.T) {
