@@ -209,9 +209,24 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	if in.MailListID == nil {
 		in.MailListID = existing.MailListID
 	}
-	if in.CoverImageID != nil && (existing.CoverImageID == nil || *existing.CoverImageID != *in.CoverImageID) {
+	newCover := in.CoverImageID != nil && (existing.CoverImageID == nil || *existing.CoverImageID != *in.CoverImageID)
+	if newCover {
 		if err := s.checkMedia(ctx, in.ID, in.OwnerTeam, *in.CoverImageID, media.RoleEventCover); err != nil {
 			return Event{}, err
+		}
+	}
+	if in.OwnerTeam != existing.OwnerTeam {
+		// The Event's photos move with it: each must still fit the Team
+		// media library under the new Owner team.
+		if in.CoverImageID != nil && !newCover {
+			if err := s.checkTeam(ctx, in.ID, in.OwnerTeam, *in.CoverImageID, media.RoleEventCover); err != nil {
+				return Event{}, err
+			}
+		}
+		for _, image := range existing.Images {
+			if err := s.checkTeam(ctx, in.ID, in.OwnerTeam, image.ID, media.RoleEventGallery); err != nil {
+				return Event{}, err
+			}
 		}
 	}
 	updated, err := s.store.Update(ctx, in)
@@ -278,14 +293,19 @@ func (s *service) AddImages(ctx context.Context, p authz.Principal, id uuid.UUID
 }
 
 // checkMedia checks a Media the Event is about to link in role: the Media's
-// own rules through the Linker, then the Team media library: an Event may
-// reuse a Media another Event uses only when both have the same Owner team.
+// own rules through the Linker, then the Team media library.
 func (s *service) checkMedia(ctx context.Context, eventID uuid.UUID, ownerTeam string, mediaID uuid.UUID, role media.Role) error {
 	if s.media != nil {
 		if err := s.media.CheckLink(ctx, mediaID, role); err != nil {
 			return err
 		}
 	}
+	return s.checkTeam(ctx, eventID, ownerTeam, mediaID, role)
+}
+
+// checkTeam applies the Team media library: an Event of ownerTeam may use a
+// Media another Event uses only when both have the same Owner team.
+func (s *service) checkTeam(ctx context.Context, eventID uuid.UUID, ownerTeam string, mediaID uuid.UUID, role media.Role) error {
 	teams, err := s.store.TeamsUsingMedia(ctx, mediaID, eventID)
 	if err != nil {
 		return err

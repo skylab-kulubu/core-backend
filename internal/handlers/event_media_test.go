@@ -190,3 +190,43 @@ func TestEventCoverRefusesMediaThatCannotBeLinkedHTTP(t *testing.T) {
 		}
 	}
 }
+
+// Moving an Event to another Owner team checks its cover and gallery again:
+// a photo another Event of the old team still uses cannot go with it.
+func TestEventOwnerTeamChangeRechecksItsPhotosHTTP(t *testing.T) {
+	t.Parallel()
+	f := newEventMediaFixture(t)
+	shared := f.upload(t, "event_gallery", "shared.png", pngDotHTTP())
+	own := f.upload(t, "event_cover", "own.png", pngDotHTTP())
+	first := f.createEvent(t, "WEBLAB", "")
+	second := f.createEvent(t, "WEBLAB", own.ID.String())
+	for _, created := range []uploadResponse{first, second} {
+		resp := f.send(t, fiber.MethodPost, "/v1/events/"+created.body["id"].(string)+"/images", `["`+shared.ID.String()+`"]`)
+		if resp.status != fiber.StatusOK {
+			t.Fatalf("gallery status %d body %v", resp.status, resp.body)
+		}
+	}
+	move := func(id, cover string) uploadResponse {
+		t.Helper()
+		body := `{"name":"Hack","location":"YTÜ","ownerTeam":"GAMELAB"`
+		if cover != "" {
+			body += `,"coverImageId":"` + cover + `"`
+		}
+		return f.send(t, fiber.MethodPut, "/v1/events/"+id, body+`}`)
+	}
+
+	resp := move(second.body["id"].(string), own.ID.String())
+	requireProblem(t, resp, fiber.StatusForbidden, "media_team_mismatch")
+	if resp.body["mediaId"] != shared.ID.String() || resp.body["role"] != "event_gallery" {
+		t.Fatalf("problem %v", resp.body)
+	}
+
+	// Once the shared photo leaves its gallery, the Event moves with its own
+	// cover.
+	if resp := f.send(t, fiber.MethodDelete, "/v1/events/"+second.body["id"].(string)+"/images", `["`+shared.ID.String()+`"]`); resp.status != fiber.StatusOK {
+		t.Fatalf("remove status %d body %v", resp.status, resp.body)
+	}
+	if resp := move(second.body["id"].(string), own.ID.String()); resp.status != fiber.StatusOK || resp.body["ownerTeam"] != "GAMELAB" {
+		t.Fatalf("move status %d body %v", resp.status, resp.body)
+	}
+}
