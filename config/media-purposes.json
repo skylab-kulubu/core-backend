@@ -1,0 +1,135 @@
+{
+  "purposes": {
+    "profile_picture": {
+      "description": "A person's own profile picture, set through /v1/users/me/profile-picture.",
+      "upload": "authenticated",
+      "types": ["image/jpeg", "image/png", "image/webp", "image/gif"],
+      "max_mib": 5,
+      "visibility": "public",
+      "encrypted": false,
+      "scan": false,
+      "pending_ttl": "24h",
+      "transport": "single_step",
+      "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
+    },
+    "event_cover": {
+      "description": "An Event's cover image.",
+      "upload": "event_editor",
+      "types": ["image/jpeg", "image/png", "image/webp", "image/gif"],
+      "max_mib": 10,
+      "visibility": "public",
+      "encrypted": false,
+      "scan": false,
+      "pending_ttl": "24h",
+      "transport": "single_step",
+      "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
+    },
+    "event_gallery": {
+      "description": "A photo in an Event's gallery.",
+      "upload": "event_editor",
+      "types": ["image/jpeg", "image/png", "image/webp", "image/gif"],
+      "max_mib": 10,
+      "visibility": "public",
+      "encrypted": false,
+      "scan": false,
+      "pending_ttl": "24h",
+      "transport": "single_step",
+      "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
+    },
+    "certificate_asset": {
+      "description": "A certificate template's background or image, read only by core's certificate renderer.",
+      "upload": "certificate_template",
+      "types": ["image/png", "image/jpeg", "application/pdf"],
+      "max_mib": 20,
+      "visibility": "private",
+      "encrypted": true,
+      "scan": false,
+      "pending_ttl": "24h",
+      "transport": "single_step",
+      "image": { "reencode": true, "max_dimension": 2560 }
+    },
+    "cms_image": {
+      "description": "An image on a CMS page. SVG joins this list, rasterized to PNG, once core rasterizes SVG uploads.",
+      "upload": "authenticated",
+      "types": ["image/jpeg", "image/png", "image/webp", "image/gif"],
+      "max_mib": 10,
+      "visibility": "public",
+      "encrypted": false,
+      "scan": false,
+      "pending_ttl": "24h",
+      "transport": "single_step",
+      "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
+    },
+    "cms_file": {
+      "description": "A document anyone can open from a CMS page, such as bylaws or a brochure.",
+      "upload": "authenticated",
+      "types": ["application/pdf"],
+      "max_mib": 20,
+      "visibility": "public",
+      "encrypted": false,
+      "scan": false,
+      "pending_ttl": "24h",
+      "transport": "single_step"
+    },
+    "answer_file": {
+      "description": "An Answer file: a person's file for a Skyforms file question. Skyforms decides who may open it.",
+      "upload": "authenticated",
+      "types": [
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      ],
+      "max_mib": 20,
+      "visibility": "private",
+      "encrypted": true,
+      "scan": true,
+      "pending_ttl": "24h",
+      "transport": "single_step",
+      "image": { "reencode": true, "max_dimension": 2560 }
+    },
+    "club_file": {
+      "description": "A large club download, such as event material, that anyone can open.",
+      "upload": "event_editor",
+      "types": ["application/pdf"],
+      "max_mib": 1024,
+      "visibility": "public",
+      "encrypted": false,
+      "scan": true,
+      "pending_ttl": "24h",
+      "transport": "direct"
+    },
+    "answer_file_large": {
+      "description": "A large Answer file, such as a game-jam build. Skyforms grants the Direct upload.",
+      "upload": "service_only",
+      "types": ["application/zip", "application/pdf"],
+      "max_mib": 1024,
+      "visibility": "private",
+      "encrypted": true,
+      "scan": true,
+      "pending_ttl": "24h",
+      "transport": "direct"
+    },
+    "video": {
+      "description": "An event recording, served as plain MP4.",
+      "upload": "event_editor",
+      "types": ["video/mp4"],
+      "max_mib": 2048,
+      "visibility": "public",
+      "encrypted": false,
+      "scan": false,
+      "pending_ttl": "24h",
+      "transport": "direct"
+    },
+    "legacy": {
+      "description": "A purpose-less upload, and every Media stored before Media purpose. It follows the rules purpose-less uploads had before this catalogue until Skyforms and CMS send purposes.",
+      "upload": "authenticated",
+      "legacy_rules": true,
+      "visibility": "public",
+      "encrypted": false,
+      "scan": false,
+      "pending_ttl": "none",
+      "transport": "single_step"
+    }
+  }
+}

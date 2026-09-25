@@ -72,6 +72,11 @@ func main() {
 	competitors := competitor.NewPostgresStore(pool)
 	certs := certificate.NewPostgresStore(pool)
 	mediaStore := media.NewPostgresStore(pool)
+	// A catalogue that breaks a hard ceiling fails the deploy here, not an
+	// upload later.
+	if _, err := media.LoadCatalogue(); err != nil {
+		log.Fatal(err)
+	}
 	blobs, cdnBase, err := media.BlobAndCDN(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
