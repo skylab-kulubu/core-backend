@@ -17,6 +17,7 @@ type MemoryStore struct {
 	byID                map[uuid.UUID]User
 	deletionRequests    map[uuid.UUID]DeletionRequest
 	deletionSteps       map[uuid.UUID]map[DeletionStep]time.Time
+	deletionStepCounts  map[uuid.UUID]map[DeletionStep]map[string]int64
 	selfDeletionIntakes map[uuid.UUID]SelfDeletionRecord
 }
 
@@ -25,6 +26,7 @@ func NewMemoryStore() *MemoryStore {
 		byID:                make(map[uuid.UUID]User),
 		deletionRequests:    make(map[uuid.UUID]DeletionRequest),
 		deletionSteps:       make(map[uuid.UUID]map[DeletionStep]time.Time),
+		deletionStepCounts:  make(map[uuid.UUID]map[DeletionStep]map[string]int64),
 		selfDeletionIntakes: make(map[uuid.UUID]SelfDeletionRecord),
 	}
 }
@@ -439,7 +441,9 @@ func (s *MemoryStore) RevokeSelfDeletionReceipt(_ context.Context, requestID uui
 	return nil
 }
 
-func (s *MemoryStore) AnonymizeAccount(_ context.Context, id uuid.UUID, at time.Time) error {
+// AnonymizeAccount erases the row. The memory store holds no guest tickets or
+// certificates, so emails select nothing here.
+func (s *MemoryStore) AnonymizeAccount(_ context.Context, id uuid.UUID, at time.Time, _ []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, ok := s.byID[id]

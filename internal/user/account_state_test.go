@@ -39,7 +39,7 @@ func TestEnsureCannotRepopulateDeletionPendingOrAnonymizedAccount(t *testing.T) 
 		t.Fatalf("pending account was changed: %+v", pending)
 	}
 
-	if err := store.AnonymizeAccount(ctx, subjectID, time.Now().UTC()); err != nil {
+	if err := store.AnonymizeAccount(ctx, subjectID, time.Now().UTC(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := service.Ensure(ctx, subjectID, Profile{

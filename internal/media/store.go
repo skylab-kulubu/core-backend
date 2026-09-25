@@ -19,13 +19,17 @@ var (
 )
 
 type Media struct {
-	ID                  uuid.UUID  `json:"id"`
-	Name                string     `json:"name"`
-	Type                string     `json:"type"`
-	URL                 string     `json:"url"`
-	Size                int64      `json:"size"`
-	UploadedBy          uuid.UUID  `json:"uploadedBy"`
-	Kind                string     `json:"kind"`
+	ID         uuid.UUID `json:"id"`
+	Name       string    `json:"name"`
+	Type       string    `json:"type"`
+	URL        string    `json:"url"`
+	Size       int64     `json:"size"`
+	UploadedBy uuid.UUID `json:"uploadedBy"`
+	Kind       string    `json:"kind"`
+	// Purpose is the Media purpose the file was uploaded for; legacy for
+	// Media uploaded without a purpose and for Media stored before purposes
+	// existed.
+	Purpose             string     `json:"purpose"`
 	Key                 string     `json:"-"`
 	CoverColors         []string   `json:"coverColors"`
 	CoverColorsComputed bool       `json:"-"`
@@ -40,6 +44,22 @@ type Media struct {
 	// ServingPolicyApplied is set once the object's metadata is known to
 	// follow the serving policy: set by Upload, or by the serving policy backfill.
 	ServingPolicyApplied bool `json:"-"`
+}
+
+// newRecord fills what a Media record takes by default when it is created:
+// an id, an empty cover colour list, and the legacy purpose when none is
+// given. Every Store applies it, and only it.
+func newRecord(m Media) Media {
+	if m.ID == uuid.Nil {
+		m.ID = uuid.New()
+	}
+	if m.CoverColors == nil {
+		m.CoverColors = []string{}
+	}
+	if m.Purpose == "" {
+		m.Purpose = PurposeLegacy
+	}
+	return m
 }
 
 type Store interface {

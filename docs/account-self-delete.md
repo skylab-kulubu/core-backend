@@ -191,6 +191,14 @@ never discloses a receipt before confirmation. `partial=true` means at least
 one durable erasure checkpoint completed while the request is not complete.
 It does not identify the step or expose its error.
 
+`completed` means all nine erasure steps are checkpointed: SkyMail, CMS and
+Forms each confirmed the Erasure command, core is anonymized together with its
+guest data, and the Keycloak identity is deleted last (ADR-0051, the saga in
+[`account-lifecycle.md`](account-lifecycle.md#durable-erasure-flow)). While a
+service has not confirmed, the request stays `pending` or `processing` (or
+`manual_intervention` after a rejection) with `partial=true`; the person is
+already blocked and logged out. The response shape does not change.
+
 Retry is idempotent. It only moves `manual_intervention` back to `pending`,
 clears the stable internal error and retry budget, and preserves the permanent
 marker and `deletion_pending`/`anonymized` account state. Pending, processing
@@ -248,8 +256,14 @@ re-authentication hop. The replay of an accepted key must also be live in
 that environment, so that a lost answer is still recoverable after the saga
 has closed the session.
 
-Production enablement is still blocked on the documented real LDAP
-production-clone disable/logout/delete/reimport rehearsal, cross-service old
-JWT exercise, the ingress/APM redaction validation above and identity-service
-owner approval. This implementation does not enable the flag or deploy
-production.
+Production enablement is still blocked on the release gate in
+[`account-lifecycle.md`](account-lifecycle.md#keycloak-and-federated-users).
+The local full harness proves disable, logout, delete and the retry after
+`404` against a real Keycloak, and that a deleted person who signs in again
+through `OBS` gets a new `sub` (account-erasure ticket 10). The old-JWT matrix
+then runs in production with a throwaway test account, and the
+identity-service owner approves (ticket 11). No production clone is built.
+Enablement is also blocked on the ingress/APM redaction validation above and
+the erase endpoints of all three services, Forms' included (ADR-0051): the
+worker does not start without every service URL. This implementation does not
+enable the flag or deploy production.

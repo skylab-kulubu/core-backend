@@ -28,7 +28,9 @@ func mediaApp(t *testing.T, ident authn.Identity, store media.Store, blobs media
 	t.Helper()
 	svc := media.NewService(store, blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test")
 	h := NewMediaHandler(svc)
-	app := fiber.New()
+	// The server's body limit (httpx.New), so a file up to the media limit
+	// reaches the handler.
+	app := fiber.New(fiber.Config{BodyLimit: media.MaxUploadBytes + 1<<20})
 	app.Use(func(c fiber.Ctx) error {
 		if ident.ID != uuid.Nil || len(ident.Groups) > 0 {
 			c.Locals(authn.LocalsIdentity, ident)
@@ -45,8 +47,19 @@ func mediaApp(t *testing.T, ident authn.Identity, store media.Store, blobs media
 
 func multipartPNG(t *testing.T, field, filename string, data []byte) (*bytes.Buffer, string) {
 	t.Helper()
+	return multipartFile(t, nil, field, filename, data)
+}
+
+// multipartFile is a multipart body with the form values, then the file.
+func multipartFile(t *testing.T, values map[string]string, field, filename string, data []byte) (*bytes.Buffer, string) {
+	t.Helper()
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
+	for name, value := range values {
+		if err := w.WriteField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
 	part, err := w.CreateFormFile(field, filename)
 	if err != nil {
 		t.Fatal(err)

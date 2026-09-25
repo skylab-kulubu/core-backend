@@ -132,10 +132,10 @@ func TestPostgresAccountAnonymizationDetachesIdentityAndPreservesHistory(t *test
 	}
 
 	anonymizedAt := time.Date(2026, 9, 20, 1, 2, 3, 0, time.UTC)
-	if err := store.AnonymizeAccount(ctx, subjectID, anonymizedAt); err != nil {
+	if err := store.AnonymizeAccount(ctx, subjectID, anonymizedAt, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AnonymizeAccount(ctx, subjectID, anonymizedAt.Add(time.Hour)); err != nil {
+	if err := store.AnonymizeAccount(ctx, subjectID, anonymizedAt.Add(time.Hour), nil); err != nil {
 		t.Fatalf("anonymization retry: %v", err)
 	}
 	tombstone, err := store.Get(ctx, subjectID)
@@ -274,7 +274,7 @@ func TestConcurrentAnonymizersAcquireReferenceTableLocksWithoutUpgradeDeadlock(t
 		id := id
 		go func() {
 			<-start
-			done <- store.AnonymizeAccount(ctx, id, time.Now().UTC())
+			done <- store.AnonymizeAccount(ctx, id, time.Now().UTC(), nil)
 		}()
 	}
 	close(start)

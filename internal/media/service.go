@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,7 +14,12 @@ import (
 )
 
 type Service interface {
+	// Upload stores Media uploaded without a purpose: the legacy Media
+	// purpose.
 	Upload(ctx context.Context, p authz.Principal, name, contentType string, data []byte) (Media, error)
+	// UploadForPurpose stores a file for a Media purpose from the catalogue,
+	// under that purpose's rules.
+	UploadForPurpose(ctx context.Context, p authz.Principal, purpose string, file UploadedFile) (Media, error)
 	Get(ctx context.Context, id uuid.UUID) (Media, error)
 	List(ctx context.Context, p authz.Principal) ([]Media, error)
 	ListLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]Media, error)
@@ -33,6 +39,7 @@ type service struct {
 	authz              authz.Authorizer
 	publicBase         string
 	uploadStagingGrace time.Duration
+	catalogue          Catalogue
 }
 
 func NewService(media Store, blobs BlobStore, az authz.Authorizer, publicBase string) Service {
@@ -41,6 +48,9 @@ func NewService(media Store, blobs BlobStore, az authz.Authorizer, publicBase st
 
 type ServiceOptions struct {
 	UploadStagingGrace time.Duration
+	// Catalogue is the Media purpose catalogue. The zero value is the
+	// reviewed catalogue carried in the binary.
+	Catalogue Catalogue
 }
 
 func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, publicBase string, options ServiceOptions) Service {
@@ -48,62 +58,86 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	if grace <= 0 {
 		grace = DefaultUploadStagingGrace
 	}
-	return &service{media: media, blobs: blobs, authz: az, publicBase: publicBase, uploadStagingGrace: grace}
+	catalogue := options.Catalogue
+	if catalogue.purposes == nil {
+		catalogue = reviewedCatalogue()
+	}
+	return &service{media: media, blobs: blobs, authz: az, publicBase: publicBase, uploadStagingGrace: grace, catalogue: catalogue}
+}
+
+// reviewedCatalogue is the catalogue carried in the binary. Core validates it
+// at startup (LoadCatalogue) before any service exists, so a failure here is
+// a build that never passed its own tests.
+func reviewedCatalogue() Catalogue {
+	catalogue, err := LoadCatalogue()
+	if err != nil {
+		panic(err)
+	}
+	return catalogue
+}
+
+// UploadedFile is a file as its client sent it: its name, the type the client
+// declared, and its bytes.
+type UploadedFile struct {
+	Name        string
+	ContentType string
+	Data        []byte
 }
 
 func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentType string, data []byte) (Media, error) {
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.Upload) {
-		return Media{}, ErrForbidden
+	legacy, _ := s.catalogue.Lookup(PurposeLegacy) // every catalogue has it
+	return s.upload(ctx, p, legacy, UploadedFile{Name: name, ContentType: contentType, Data: data})
+}
+
+// storedFile is what an uploaded file becomes once its purpose's rules
+// accept it.
+type storedFile struct {
+	body      []byte
+	ctype     string
+	kind      string
+	keyPrefix string
+}
+
+func (s *service) UploadForPurpose(ctx context.Context, p authz.Principal, purposeName string, file UploadedFile) (Media, error) {
+	purpose, ok := s.catalogue.Lookup(purposeName)
+	if !ok || purposeName == PurposeLegacy {
+		// legacy is internal: only Upload, for Media uploaded without a
+		// purpose, stores it.
+		return Media{}, &PurposeRefusal{Err: ErrPurposeUnknown, Purpose: purposeName}
 	}
-	if len(data) == 0 {
+	return s.upload(ctx, p, purpose, file)
+}
+
+func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose, file UploadedFile) (Media, error) {
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia, MediaUploader: purpose.Uploader}, authz.Upload) {
+		return Media{}, &PurposeRefusal{Err: ErrPurposeForbidden, Purpose: purpose.Name}
+	}
+	if purpose.Visibility == VisibilityPrivate {
+		// Private Media storage (encryption, the private bucket) is not
+		// built yet. Until it is, a private purpose is refused, never stored
+		// publicly instead.
+		return Media{}, &PurposeRefusal{Err: ErrPrivateMediaDisabled, Purpose: purpose.Name}
+	}
+	if purpose.Transport == TransportDirect {
+		return Media{}, &PurposeRefusal{Err: ErrDirectUploadOnly, Purpose: purpose.Name}
+	}
+	if len(file.Data) == 0 {
 		return Media{}, ErrInvalid
 	}
 	uploadedBy, err := uuid.Parse(p.ID)
 	if err != nil {
 		return Media{}, ErrInvalid
 	}
-
-	var (
-		key   string
-		ctype string
-		kind  string
-		body  []byte
-	)
-	if strings.HasPrefix(contentType, "image/") || isImage(data) {
-		if len(data) > maxImageBytes {
-			return Media{}, ErrInvalid
-		}
-		clean, detected, err := sanitizeImage(data)
-		if err != nil {
-			return Media{}, err
-		}
-		body = clean
-		ctype = detected
-		kind = KindImage
-		key = "images/" + uuid.NewString()
-	} else if strings.EqualFold(strings.TrimSpace(contentType), pdfType) || isPDF(data) {
-		if len(data) > maxFileBytes || !isPDF(data) {
-			return Media{}, ErrInvalid
-		}
-		if ext, err := fileExtension(name); err != nil || ext != "pdf" {
-			return Media{}, ErrInvalid
-		}
-		body = data
-		ctype = pdfType
-		kind = KindFile
-		key = "files/" + uuid.NewString()
+	var stored storedFile
+	if purpose.LegacyRules {
+		stored, err = legacyFile(file)
 	} else {
-		if len(data) > maxFileBytes {
-			return Media{}, ErrInvalid
-		}
-		if _, err := fileExtension(name); err != nil {
-			return Media{}, err
-		}
-		body = data
-		ctype = contentType
-		kind = KindFile
-		key = "files/" + uuid.NewString()
+		stored, err = purposeFile(purpose, file.Data)
 	}
+	if err != nil {
+		return Media{}, err
+	}
+	key := stored.keyPrefix + uuid.NewString()
 
 	staging, durableStaging := s.media.(UploadStagingStore)
 	if durableStaging {
@@ -117,22 +151,23 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 	}
 	operationCtx, cancelOperation := context.WithTimeout(ctx, operationTimeout)
 	defer cancelOperation()
-	serving := ServingMetadata(ctype, name)
-	if err := s.blobs.Put(operationCtx, key, body, serving); err != nil {
+	serving := ServingMetadata(stored.ctype, file.Name)
+	if err := s.blobs.Put(operationCtx, key, stored.body, serving); err != nil {
 		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
 	}
 	colors := []string{}
 	colorsComputed := false
-	if kind == KindImage {
-		colors = ExtractCoverColors(body)
+	if stored.kind == KindImage {
+		colors = ExtractCoverColors(stored.body)
 		colorsComputed = true
 	}
 	item := Media{
-		Name:                name,
-		Type:                ctype,
-		Size:                int64(len(body)),
+		Name:                file.Name,
+		Type:                stored.ctype,
+		Size:                int64(len(stored.body)),
 		UploadedBy:          uploadedBy,
-		Kind:                kind,
+		Kind:                stored.kind,
+		Purpose:             purpose.Name,
 		Key:                 key,
 		CoverColors:         colors,
 		CoverColorsComputed: colorsComputed,
@@ -155,6 +190,59 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
 	}
 	return s.withURL(created), nil
+}
+
+// legacyFile applies the rules Media uploaded without a purpose had before
+// Media purpose: a raster image or SVG up to 10 MiB, a PDF named .pdf up to
+// 20 MiB, or any other named file up to 20 MiB, served as a download.
+func legacyFile(file UploadedFile) (storedFile, error) {
+	name, contentType, data := file.Name, file.ContentType, file.Data
+	if strings.HasPrefix(contentType, "image/") || isImage(data) {
+		if len(data) > maxImageBytes {
+			return storedFile{}, ErrInvalid
+		}
+		clean, detected, err := sanitizeImage(data)
+		if err != nil {
+			return storedFile{}, err
+		}
+		return storedFile{body: clean, ctype: detected, kind: KindImage, keyPrefix: "images/"}, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(contentType), pdfType) || isPDF(data) {
+		if len(data) > maxFileBytes || !isPDF(data) {
+			return storedFile{}, ErrInvalid
+		}
+		if ext, err := fileExtension(name); err != nil || ext != "pdf" {
+			return storedFile{}, ErrInvalid
+		}
+		return storedFile{body: data, ctype: pdfType, kind: KindFile, keyPrefix: "files/"}, nil
+	}
+	if len(data) > maxFileBytes {
+		return storedFile{}, ErrInvalid
+	}
+	if _, err := fileExtension(name); err != nil {
+		return storedFile{}, err
+	}
+	return storedFile{body: data, ctype: contentType, kind: KindFile, keyPrefix: "files/"}, nil
+}
+
+// purposeFile accepts a file by its content under its purpose's rules. The
+// name and the declared type play no part.
+func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
+	if int64(len(data)) > purpose.MaxBytes {
+		return storedFile{}, &PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: purpose.MaxBytes}
+	}
+	detected := detectContentType(data)
+	if detected == "" || !slices.Contains(purpose.Types, detected) {
+		return storedFile{}, &PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: purpose.Name, AllowedTypes: purpose.Types}
+	}
+	if detected == pdfType {
+		return storedFile{body: data, ctype: pdfType, kind: KindFile, keyPrefix: "files/"}, nil
+	}
+	clean, ctype, err := sanitizeImage(data)
+	if err != nil {
+		return storedFile{}, err
+	}
+	return storedFile{body: clean, ctype: ctype, kind: KindImage, keyPrefix: "images/"}, nil
 }
 
 func (s *service) cleanupRejectedUpload(ctx context.Context, staging UploadStagingStore, durableStaging bool, key string, cause error) error {

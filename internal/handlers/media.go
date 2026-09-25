@@ -19,7 +19,47 @@ func NewMediaHandler(svc media.Service) *MediaHandler {
 	return &MediaHandler{svc: svc}
 }
 
+// purposeProblem answers an upload its Media purpose refused: problem+json
+// with a stable code and what the caller needs to fix the upload. handled is
+// false for any other error.
+func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
+	var refusal *media.PurposeRefusal
+	if !errors.As(err, &refusal) {
+		return false, nil
+	}
+	fields := fiber.Map{"purpose": refusal.Purpose}
+	switch {
+	case errors.Is(err, media.ErrPurposeUnknown):
+		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
+			"The purpose is not in the Media purpose catalogue.", "purpose_unknown", fields)
+	case errors.Is(err, media.ErrTypeNotAllowed):
+		fields["allowedTypes"] = refusal.AllowedTypes
+		return true, problemWithFields(c, fiber.StatusUnsupportedMediaType, "Unsupported Media Type",
+			"The file's content is not a type this purpose accepts.", "media_type_not_allowed", fields)
+	case errors.Is(err, media.ErrTooLarge):
+		fields["maxBytes"] = refusal.MaxBytes
+		return true, problemWithFields(c, fiber.StatusRequestEntityTooLarge, "Content Too Large",
+			"The file is larger than this purpose allows.", "media_too_large", fields)
+	case errors.Is(err, media.ErrPurposeForbidden):
+		return true, problemWithFields(c, fiber.StatusForbidden, "Forbidden",
+			"The caller may not upload Media for this purpose.", "purpose_forbidden", fields)
+	case errors.Is(err, media.ErrPrivateMediaDisabled):
+		// Not 503: nothing here is transient, and 503 is kept for an
+		// unreachable key service once private Media ships.
+		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
+			"Private Media is not available yet; this purpose cannot be uploaded.", "private_media_disabled", fields)
+	case errors.Is(err, media.ErrDirectUploadOnly):
+		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
+			"This purpose is uploaded by Direct upload, not through this endpoint.", "purpose_requires_direct_upload", fields)
+	default:
+		return false, nil
+	}
+}
+
 func mediaError(c fiber.Ctx, err error) error {
+	if handled, problemErr := purposeProblem(c, err); handled {
+		return problemErr
+	}
 	switch {
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
@@ -56,11 +96,30 @@ func (h *MediaHandler) Upload(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	created, err := h.svc.Upload(c.Context(), p, header.Filename, header.Header.Get("Content-Type"), data)
+	var created media.Media
+	if purpose := formPurpose(c); purpose != "" {
+		created, err = h.svc.UploadForPurpose(c.Context(), p, purpose, media.UploadedFile{
+			Name: header.Filename, ContentType: header.Header.Get("Content-Type"), Data: data,
+		})
+	} else {
+		// Without a purpose the Media is legacy, under the rules Media
+		// uploaded without a purpose have always had.
+		created, err = h.svc.Upload(c.Context(), p, header.Filename, header.Header.Get("Content-Type"), data)
+	}
 	if err != nil {
 		return mediaError(c, err)
 	}
 	return c.Status(fiber.StatusCreated).JSON(created)
+}
+
+// formPurpose is the upload's purpose field. It is read from the multipart
+// body only: a purpose in the query string is ignored.
+func formPurpose(c fiber.Ctx) string {
+	form, err := c.MultipartForm()
+	if err != nil || form == nil || len(form.Value["purpose"]) == 0 {
+		return ""
+	}
+	return form.Value["purpose"][0]
 }
 
 func (h *MediaHandler) Get(c fiber.Ctx) error {

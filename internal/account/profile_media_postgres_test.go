@@ -129,7 +129,8 @@ func TestWorkerImmediatelyErasesUnreferencedProfileBlobAndSanitizesSharedMedia(t
 		now := request.NextAttemptAt
 		confirmDeletionProjection(t, users, request, now)
 		worker := account.NewWorker(users, successfulIdentity{}, account.WorkerConfig{
-			Now: func() time.Time { return now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
+			Services: erasedServices(),
+			Now:      func() time.Time { return now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
 		}, media.NewImmediateBlobEraser(mediaStore, blobs))
 		if worked, err := worker.RunOnce(ctx); err != nil || !worked {
 			t.Fatalf("worker worked=%v err=%v", worked, err)
@@ -206,7 +207,8 @@ func TestWorkerRetriesWhenProfileMediaIsRestoredBeforeBlobErase(t *testing.T) {
 		delegate: media.NewImmediateBlobEraser(mediaStore, blobs),
 	}
 	worker := account.NewWorker(users, successfulIdentity{}, account.WorkerConfig{
-		Now: func() time.Time { return now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
+		Services: erasedServices(),
+		Now:      func() time.Time { return now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
 	}, eraser)
 
 	worked, err := worker.RunOnce(ctx)
@@ -296,7 +298,8 @@ func TestDeletionCannotCompleteWhileJITAuthorizedUploadNeedsDurableCleanup(t *te
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	confirmDeletionProjection(t, users, request, now)
 	worker := account.NewWorker(users, successfulIdentity{}, account.WorkerConfig{
-		Now: func() time.Time { return now }, Lease: time.Minute, RetryDelay: 0, MaxAttempts: 1,
+		Services: erasedServices(),
+		Now:      func() time.Time { return now }, Lease: time.Minute, RetryDelay: 0, MaxAttempts: 1,
 		AccessBlocker: &accountBlockWriter{},
 	}, media.NewImmediateBlobEraser(mediaStore, blobs))
 	if worked, err := worker.RunOnce(ctx); !worked || !errors.Is(err, media.ErrStagedUploadNotErased) || !errors.Is(err, media.ErrStagedUploadInFlight) {

@@ -59,6 +59,10 @@ type Deps struct {
 	// TrustedProxies are the peers allowed to speak for a client through
 	// `X-Forwarded-For`. An empty value falls back to clientip.Default().
 	TrustedProxies clientip.Ranges
+
+	// AccountErasureMetrics are the account erasure watchdog's gauges. Nil
+	// while the erasure worker is off.
+	AccountErasureMetrics interface{ Prometheus() string }
 }
 
 func New(deps Deps) *fiber.App {
@@ -112,11 +116,15 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	if deps.AccountAccessMetrics != nil {
+	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
-			return c.SendString(deps.AccountAccessMetrics.Prometheus())
+			text := deps.AccountAccessMetrics.Prometheus()
+			if deps.AccountErasureMetrics != nil {
+				text += deps.AccountErasureMetrics.Prometheus()
+			}
+			return c.SendString(text)
 		})
 	}
 	app.Get("/v1/ready", func(c fiber.Ctx) error {
