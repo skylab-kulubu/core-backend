@@ -93,3 +93,12 @@ ac_bff_delete() {
   log "  Account Center submit answered $HTTP_STATUS -> $AC_SUBMIT_LOCATION"
   DEL_REQUEST=$(request_of "${P_ID[$person]}")
 }
+
+# ac_bff_retry: the status page's retry button (receipt cookie and its receipt-bound CSRF token).
+ac_bff_retry() {
+  local csrf
+  ac_bff_status
+  csrf=$(jq -r .csrfToken <<<"$HTTP_BODY" 2>/dev/null)
+  http POST "$AC_URL/api/account/deletion/status/retry" --cookie "$AC_JAR" --cookie-jar "$AC_JAR" \
+    -H "Origin: $AC_URL" -H "x-csrf-token: $csrf"
+}

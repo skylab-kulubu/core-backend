@@ -59,8 +59,11 @@ record() {
   trap 'rmdir "$STATE/.record.lock" 2>/dev/null || true' RETURN
   key=$(env_name "$name")
   id=$(docker image inspect --format '{{.Id}}' "$tag")
-  bases=$(grep -hoE '^(FROM|ARG [A-Z_]*IMAGE=)[^ ]*[[:space:]]*[^ ]*' "$context"/Dockerfile 2>/dev/null \
-    | sed -E 's/^FROM (--platform=[^ ]+ )?//; s/^ARG [A-Z_]*IMAGE=//; s/ AS .*//' | sort -u | paste -sd' ' - || true)
+  bases=$(awk '
+      $1 == "FROM" { for (i = 2; i <= NF; i++) if ($i !~ /^--/) { if (!($i in stage)) print $i; break }
+                     if (toupper($(NF - 1)) == "AS") stage[$NF] = 1 }
+      $1 == "ARG" && $2 ~ /IMAGE=/ { sub(/^[^=]*=/, "", $2); print $2 }' "$context"/Dockerfile 2>/dev/null \
+    | grep -v '^\$' | sort -u | paste -sd' ' - || true)
   tmp=$(mktemp)
   grep -v "^$key=" "$STATE/images.env" >"$tmp" || true
   printf '%s=%s\n' "$key" "$tag" >>"$tmp"

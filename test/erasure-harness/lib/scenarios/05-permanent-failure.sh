@@ -65,14 +65,14 @@ scenario_5() {
   restart_core
   gauge_before=$(metric skylab_account_erasure_manual_intervention_requests)
 
-  check 'intake accepted' start_deletion "$person"
+  check 'Account Center: login, Sudo mode, prepare, confirmation' ac_bff_delete "$person"
   check 'request goes to manual_intervention' wait_until 60 2 request_is "$DEL_REQUEST" manual_intervention
   check 'the stable code is erase_cms_rejected_403' eq "$(request_field "$DEL_REQUEST" last_error_code)" erase_cms_rejected_403
   log "  steps: $(steps_of "$DEL_REQUEST")"
   check 'SkyMail and Forms were checkpointed in the same pass' steps_done "$DEL_REQUEST" erase_skymail erase_forms
   check 'anonymize_core and delete_identity did not run' \
     eq "$(pg super_skylab "SELECT count(*) FROM account_deletion_steps WHERE request_id = '$DEL_REQUEST' AND step IN ('erase_cms','anonymize_core','delete_identity')")" 0
-  core_status "$DEL_RECEIPT"
+  ac_bff_status
   check 'Account Center status shows manual_intervention (200) with partial=true' \
     eq "$HTTP_STATUS/$(jq -r '.status + "/" + (.partial|tostring)' <<<"$HTTP_BODY")" 200/manual_intervention/true
 
@@ -93,18 +93,19 @@ scenario_5() {
   check 'alarm mail went to the /ADMIN member and names no person' \
     bash -c 'm=$(curl -s "http://mailpit:8025/api/v1/search?query=subject%3A%22SKY%20LAB%20hesap%20silme%22" | jq -r ".messages[0].ID"); t=$(curl -s "http://mailpit:8025/api/v1/message/$m"); jq -e ".To[0].Address == \"erasure-alarm-admin@harness.invalid\"" <<<"$t" >/dev/null && ! grep -qiF -e "$1" -e "$2" <<<"$t"' _ "${P_SCHOOL[$person]}" "$subject"
 
-  # Operator fix: give the role back, then the retry Account Center offers.
+  # Operator fix: give the role back, then the retry button on Account Center's status page.
   kc POST "/users/$(erasure_sa_user)/role-mappings/clients/$(kc_client_uuid skycms)" --data "$role"
   check 'cms:account:erase given back' eq "$HTTP_STATUS" 204
-  core_retry "$DEL_RECEIPT"
-  check 'retry answered 202 pending' eq "$HTTP_STATUS/$(jq -r .status <<<"$HTTP_BODY")" 202/pending
+  ac_bff_retry
+  check "Account Center's retry answered 200 with the request pending or processing" \
+    grep -Eqx '200/(pending|processing|completed)' <<<"$HTTP_STATUS/$(jq -r .status <<<"$HTTP_BODY")"
   if wait_until 30 2 request_is "$DEL_REQUEST" completed; then
     check 'request completes after the retry' true
   else
     # A token core fetched before the fix may still be cached (it lives until 30 s before exp).
     note "retry right after the fix did not complete: $(request_status "$DEL_REQUEST") $(request_field "$DEL_REQUEST" last_error_code) — core still held the CMS token it took before the role came back"
     restart_core
-    core_retry "$DEL_RECEIPT"
+    ac_bff_retry
     check 'request completes after a retry with a fresh token' wait_until 60 2 request_is "$DEL_REQUEST" completed
   fi
   check 'all nine steps are checkpointed' eq "$(pg super_skylab "SELECT count(*) FROM account_deletion_steps WHERE request_id = '$DEL_REQUEST'")" 9

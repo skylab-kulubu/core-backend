@@ -10,7 +10,7 @@ scenario_4() {
 
   dc stop skymail >/dev/null 2>&1
   check 'SkyMail is stopped' eq "$(dc ps --status running --services 2>/dev/null | grep -cx skymail)" 0
-  check 'intake accepted with SkyMail down' start_deletion "$person"
+  check 'Account Center: login, Sudo mode, prepare, confirmation with SkyMail down' ac_bff_delete "$person"
   check 'the first pass defers on erase_skymail' \
     wait_until 60 2 request_where "$DEL_REQUEST" "last_error_code = 'erase_skymail_failed'"
   deferred_at=$(pg super_skylab "SELECT extract(epoch FROM next_attempt_at)::bigint FROM account_deletion_requests WHERE id = '$DEL_REQUEST'")
@@ -28,7 +28,7 @@ scenario_4() {
     eq "$(pg super_skylab "SELECT account_state FROM users WHERE id = '$subject'")" deletion_pending
   check 'Keycloak user still exists, disabled' \
     eq "$(kc GET "/users/$subject"; jq -r '.enabled' <<<"$HTTP_BODY")" false
-  core_status "$DEL_RECEIPT"
+  ac_bff_status
   local coarse
   coarse=$(jq -r '.status + "/" + (.partial|tostring)' <<<"$HTTP_BODY")
   check "receipt status reports pending or processing with partial=true ($coarse)" grep -Eqx '(pending|processing)/true' <<<"$coarse"

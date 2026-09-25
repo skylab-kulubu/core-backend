@@ -4,7 +4,9 @@
 # 5-minute lease expires the restarted core sends the same command again and SkyMail answers
 # from its receipt: the erasure ran once.
 
-hold_proxy() { curl --silent --fail -X POST "http://hold-proxy:9091/harness/hold?seconds=$1" >/dev/null; }
+hold_proxy() { # hold_proxy SECONDS: hold only the answers of the erase route
+  curl --silent --fail -X POST "http://hold-proxy:9091/harness/hold?seconds=$1&prefix=/internal/v1/account-erasures/" >/dev/null
+}
 skymail_receipt_exists() { [[ $(pg skymail "SELECT count(*) FROM account_erasure_receipts WHERE request_id = '$1'") == 1 ]]; }
 
 # core_with_urls SKYMAIL CMS FORMS: recreate core with other service URLs (same env otherwise).
@@ -20,7 +22,7 @@ scenario_6() {
 
   check 'core now reaches the services through the hold proxy' core_with_urls http://hold-proxy:9001 http://hold-proxy:9002 http://hold-proxy:9003
   hold_proxy 20
-  check 'intake accepted' start_deletion "$person"
+  check 'Account Center: login, Sudo mode, prepare, confirmation' ac_bff_delete "$person"
   check 'SkyMail committed its erasure while the proxy holds the answer' wait_until 30 1 skymail_receipt_exists "$DEL_REQUEST"
   core_container=$(dc ps -q core)
   docker kill --signal KILL "$core_container" >/dev/null

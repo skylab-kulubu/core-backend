@@ -28,7 +28,7 @@ scenario_7() {
   window_start=$(date +%s)
   check 'the old secret now gets 401 invalid_client' eq "$(token_status_with "$old")" '401 invalid_client'
 
-  check 'intake accepted inside the window' start_deletion "$person"
+  check 'Account Center: login, Sudo mode, prepare, confirmation inside the window' ac_bff_delete "$person"
   check 'the service steps defer on the token endpoint' \
     wait_until 60 2 request_where "$DEL_REQUEST" "last_error_code IN ('erase_skymail_failed','erase_cms_failed','erase_forms_failed') AND status = 'pending'"
   log "  request: $(pg super_skylab "SELECT status, attempt_count, last_error_code, next_attempt_at FROM account_deletion_requests WHERE id = '$DEL_REQUEST'" | tr '\t' ' ')"

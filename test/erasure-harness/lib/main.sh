@@ -18,22 +18,24 @@ for file in "$HARNESS_DIR"/lib/scenarios/*.sh; do
   source "$file"
 done
 
-DEFAULT_ORDER=(1 4 5 6 7 9 2 3 8 11 10)
+# Scenario 9 scans the logs after every erasure and before scenario 8 brings p1 back.
+DEFAULT_ORDER=(1 4 5 6 7 2 3 9 8 11 10)
 
 run_scenario() {
-  local n=$1
+  local n=$1 before
+  touch "$RESULTS"
   if ! declare -F "scenario_$n" >/dev/null; then
     printf '%s\tNOT-DONE\t%s\tno scenario implementation\n' "S$n" "$(date -u +%FT%TZ)" >>"$RESULTS"
     printf '\n==> SCENARIO S%s: NOT-DONE\n\n' "$n"
     return 0
   fi
-  # A failing scenario must not stop the others: its checks are recorded, and an unexpected
-  # error inside it is recorded as a failure of that scenario.
-  if ! ( set -Eeuo pipefail; "scenario_$n" ); then
-    if ! grep -q "^S$n	\(PASS\|FAIL\)" "$RESULTS" 2>/dev/null; then
-      printf '%s\tFAIL\t%s\taborted\n' "S$n" "$(date -u +%FT%TZ)" >>"$RESULTS"
-      printf '\n==> SCENARIO S%s: FAIL (aborted)\n\n' "$n"
-    fi
+  # A failing scenario must not stop the others. Checks record failures; an unexpected abort
+  # inside a scenario is recorded as a failure of that scenario.
+  before=$(wc -l <"$RESULTS")
+  ( set -uo pipefail; "scenario_$n" ) || true
+  if ! tail -n +$((before + 1)) "$RESULTS" | grep -qE "^S$n"$'\t'"(PASS|FAIL)"; then
+    printf '%s\tFAIL\t%s\taborted\n' "S$n" "$(date -u +%FT%TZ)" >>"$RESULTS"
+    printf '\n==> SCENARIO S%s: FAIL (aborted)\n\n' "$n"
   fi
 }
 

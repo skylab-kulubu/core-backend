@@ -100,7 +100,7 @@ services:
     networks:
       default:
         aliases: [e.yildizskylab.com, my.yildizskylab.com, api.yildizskylab.com]
-    mem_limit: 64m
+    mem_limit: 128m
     logging: *logging
 
   core:

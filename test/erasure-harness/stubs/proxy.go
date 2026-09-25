@@ -19,11 +19,16 @@ import (
 // committed, and Account Center's call to core's intake can time out after core accepted.
 func runProxy() {
 	var hold atomic.Int64
+	var only atomic.Value // a prefix set with the hold, or "" for every configured one
+	only.Store("")
 	prefixes := strings.Split(os.Getenv("PROXY_HOLD_PREFIXES"), ",")
 	if os.Getenv("PROXY_HOLD_PREFIXES") == "" {
 		prefixes = []string{"/internal/v1/account-erasures/"}
 	}
 	held := func(path string) bool {
+		if selected := only.Load().(string); selected != "" {
+			return strings.HasPrefix(path, selected)
+		}
 		for _, prefix := range prefixes {
 			if prefix != "" && strings.HasPrefix(path, strings.TrimSpace(prefix)) {
 				return true
@@ -63,6 +68,7 @@ func runProxy() {
 	control := http.NewServeMux()
 	control.HandleFunc("POST /harness/hold", func(w http.ResponseWriter, r *http.Request) {
 		seconds, _ := strconv.ParseInt(r.URL.Query().Get("seconds"), 10, 64)
+		only.Store(r.URL.Query().Get("prefix"))
 		hold.Store(seconds)
 		w.WriteHeader(http.StatusNoContent)
 	})

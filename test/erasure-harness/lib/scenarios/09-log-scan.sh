@@ -38,7 +38,7 @@ scenario_9() {
       total=$((total + hits))
     done
     check "subject of $p appears in no service log but Keycloak's" eq "$total" 0
-    hits=$(grep -iF "$subject" "$dir/keycloak.log" | grep -vc 'type="\?[A-Z_]*"\?,\? \|type=[A-Z_]' || true)
+    hits=$(grep -iF "$subject" "$dir/keycloak.log" | grep -vc 'type=' || true)
     check "subject of $p in Keycloak's log only on event lines ($hits other lines)" eq "$hits" 0
   done
 

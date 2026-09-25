@@ -184,6 +184,34 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "harness-browser",
+      "name": "Harness browser sign-in (OBS re-login scenario)",
+      "description": "Test-only public client with the standard flow: a sign-in through the fake OBS IdP yields a token core accepts.",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "https://harness.invalid/callback"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-core",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "core",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "roles": {
