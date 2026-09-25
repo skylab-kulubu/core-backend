@@ -218,6 +218,46 @@ members:
 A body above the server's limit (20 MiB plus room for the form) is still
 refused by the HTTP server with a bare `413` before any purpose is read.
 
+### Upload limits
+
+Each signed-in person has one budget for single-step uploads, shared by
+`POST /v1/media` and `POST /v1/users/me/profile-picture` (ADR-0052, media
+redesign ticket 05):
+
+- at most 30 uploads per rolling 10 minutes;
+- at most 500 MiB of request body per rolling 24 hours.
+
+An upload is charged before the route reads its form, purpose or file, so a
+refused one still counts: the budget is on what a person sends, not on what is
+stored. Its size is the request body core accepted: the declared
+`Content-Length`, which is exactly what the server read, or, for a chunked
+body, the bytes that arrived. (The server receives the whole body, up to its
+limit, before any route runs; the charge comes before the form is parsed and
+before anything is stored.) A request the limit refuses is not charged.
+A request without a token is not counted and is still refused with `401`.
+
+Over either limit, core answers `429` problem+json with `code`
+`media_rate_limited`, a `Retry-After` header in seconds, and these members:
+
+| Member | Meaning |
+|---|---|
+| `limit` | `uploads` (the count) or `volume` (the bytes). When both refuse, the one with the longer wait. |
+| `maxUploads` / `maxBytes` | The limit hit, with `uploads` / `volume`. |
+| `windowSeconds` | Its rolling window: `600` and `86400` by default. |
+| `retryAfterSeconds` | The `Retry-After` value, for callers that cannot read the header across origins. |
+
+`Retry-After` is when the same upload would fit again.
+
+The budget lives in core's memory (`media.UploadLimiter`): a restart clears
+it. Core runs as one replica; if it ever runs more, each keeps its own budget,
+which loosens the limit (never tightens it) until the budget moves to a shared
+store. The account-access Redis is deliberately not that store: it is a
+security projection whose ACL allows only the gate's keys and commands.
+
+Direct upload is not counted here. The product that owns a Direct upload
+grant limits it; the Direct upload routes, when they land, stay off this
+limiter.
+
 ## Configuration
 
 - `MEDIA_BLOB_RECOVERY_DAYS` — recovery window in whole days; default `30`.
@@ -228,3 +268,9 @@ refused by the HTTP server with a bare `413` before any purpose is read.
 - `MEDIA_UPLOAD_STAGING_SWEEP_INTERVAL` — retry sweep interval; default `15m`.
 - `MEDIA_UPLOAD_STAGING_BATCH_SIZE` — maximum staging intents per run; default
   `25`.
+- `MEDIA_UPLOAD_RATE_MAX` — single-step uploads per person per window; default
+  `30`.
+- `MEDIA_UPLOAD_RATE_WINDOW` — Go duration of that rolling window; default
+  `10m`.
+- `MEDIA_UPLOAD_DAILY_MAX_MIB` — MiB of upload body per person per rolling
+  24 hours; default `500`.
