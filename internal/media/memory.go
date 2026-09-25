@@ -1,7 +1,9 @@
 package media
 
 import (
+	"bytes"
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -61,6 +63,35 @@ func (s *MemoryStore) SetCoverColors(_ context.Context, id uuid.UUID, colors []s
 	m.CoverColors = append([]string{}, colors...)
 	m.CoverColorsComputed = true
 	m.UpdatedAt = time.Now().UTC()
+	s.byID[id] = m
+	return nil
+}
+
+func (s *MemoryStore) ListPendingServingPolicy(_ context.Context, after uuid.UUID, limit int) ([]Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Media, 0)
+	for _, m := range s.byID {
+		if m.ServingPolicyApplied || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil || bytes.Compare(m.ID[:], after[:]) <= 0 {
+			continue
+		}
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].ID[:], out[j].ID[:]) < 0 })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) SetServingPolicyApplied(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	m.ServingPolicyApplied = true
 	s.byID[id] = m
 	return nil
 }
@@ -200,21 +231,31 @@ func (s *MemoryStore) SetReferenced(id uuid.UUID, referenced bool) {
 }
 
 type MemoryBlob struct {
-	mu      sync.Mutex
-	objects map[string][]byte
-	types   map[string]string
+	mu       sync.Mutex
+	objects  map[string][]byte
+	metadata map[string]BlobMetadata
 }
 
 func NewMemoryBlob() *MemoryBlob {
-	return &MemoryBlob{objects: make(map[string][]byte), types: make(map[string]string)}
+	return &MemoryBlob{objects: make(map[string][]byte), metadata: make(map[string]BlobMetadata)}
 }
 
-func (s *MemoryBlob) Put(_ context.Context, key string, data []byte, contentType string) error {
+func (s *MemoryBlob) Put(_ context.Context, key string, data []byte, meta BlobMetadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := append([]byte{}, data...)
 	s.objects[key] = cp
-	s.types[key] = contentType
+	s.metadata[key] = meta
+	return nil
+}
+
+func (s *MemoryBlob) SetMetadata(_ context.Context, key string, meta BlobMetadata) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.objects[key]; !ok {
+		return ErrNotFound
+	}
+	s.metadata[key] = meta
 	return nil
 }
 
@@ -222,7 +263,7 @@ func (s *MemoryBlob) Delete(_ context.Context, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.objects, key)
-	delete(s.types, key)
+	delete(s.metadata, key)
 	return nil
 }
 
@@ -241,4 +282,12 @@ func (s *MemoryBlob) Get(key string) ([]byte, bool) {
 	defer s.mu.Unlock()
 	data, ok := s.objects[key]
 	return data, ok
+}
+
+// Metadata is the serving metadata the object was stored with.
+func (s *MemoryBlob) Metadata(key string) (BlobMetadata, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	meta, ok := s.metadata[key]
+	return meta, ok
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 const (
@@ -88,6 +89,11 @@ type TemplateVersion struct {
 	Checksum      string                     `json:"checksum"`
 	PublishedBy   *uuid.UUID                 `json:"publishedBy,omitempty"`
 	PublishedAt   time.Time                  `json:"publishedAt"`
+
+	// AssetServingPolicyApplied is set once every asset copy of the version
+	// is known to follow the media serving policy: at publish, or by the
+	// asset serving backfill.
+	AssetServingPolicyApplied bool `json:"-"`
 }
 
 type VersionAssetRef struct {
@@ -228,7 +234,7 @@ type JobStore interface {
 }
 
 type ArtifactStore interface {
-	Put(ctx context.Context, key string, data []byte, contentType string) error
+	Put(ctx context.Context, key string, data []byte, meta media.BlobMetadata) error
 	Read(ctx context.Context, key string) ([]byte, error)
 }
 

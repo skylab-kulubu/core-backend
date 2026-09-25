@@ -107,7 +107,7 @@ func (s *service) PublishTemplate(ctx context.Context, p authz.Principal, id uui
 	if err != nil {
 		return TemplateVersion{}, err
 	}
-	version := TemplateVersion{ID: versionID, TemplateID: item.ID, Layout: item.DraftLayout, AssetManifest: manifest}
+	version := TemplateVersion{ID: versionID, TemplateID: item.ID, Layout: item.DraftLayout, AssetManifest: manifest, AssetServingPolicyApplied: true}
 	if preview, err := s.renderLayoutPDF(ctx, item.DraftLayout, sample, s.verifyURL(sample.Serial), s.assetsForVersion(version)); err != nil || len(preview) == 0 {
 		if err != nil {
 			return TemplateVersion{}, err

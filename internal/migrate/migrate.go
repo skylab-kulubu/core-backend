@@ -408,6 +408,21 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			 AND actual.column_name = expected.column_name
 		) = 5`,
 	20260925100000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'ytu_linked'`,
+	20260925180000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*)
+			FROM (VALUES
+				('media', 'serving_policy_applied'),
+				('certificate_template_versions', 'asset_serving_policy_applied')
+			) AS expected(table_name, column_name)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = expected.table_name
+			 AND actual.column_name = expected.column_name
+		) = 2
+		AND to_regclass('public.media_serving_policy_pending_idx') IS NOT NULL
+		AND to_regclass('public.certificate_template_versions_asset_serving_pending_idx') IS NOT NULL`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

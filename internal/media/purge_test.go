@@ -29,7 +29,7 @@ func TestPurgeDeleted_RemovesOnlyExpiredUnreferencedBlobAndMakesRestoreGone(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := blobs.Put(ctx, created.Key, pngDot(), "image/png"); err != nil {
+	if err := blobs.Put(ctx, created.Key, pngDot(), media.BlobMetadata{ContentType: "image/png"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -87,7 +87,7 @@ func TestPurgeDeleted_DefersRecentAndReferencedMedia(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := blobs.Put(ctx, item.Key, pngDot(), item.Type); err != nil {
+		if err := blobs.Put(ctx, item.Key, pngDot(), media.BlobMetadata{ContentType: item.Type}); err != nil {
 			t.Fatal(err)
 		}
 		return item
@@ -131,7 +131,7 @@ func TestPurgeDeleted_DoesNotMarkBlobPurgedWhenStorageDeletionFails(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := base.Put(ctx, item.Key, pngDot(), item.Type); err != nil {
+	if err := base.Put(ctx, item.Key, pngDot(), media.BlobMetadata{ContentType: item.Type}); err != nil {
 		t.Fatal(err)
 	}
 	wantErr := errors.New("r2 unavailable")
@@ -231,7 +231,7 @@ func TestMaintainBlobPurge_RunsBoundedBatchAndStopsWithContext(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := base.Put(ctx, item.Key, pngDot(), item.Type); err != nil {
+		if err := base.Put(ctx, item.Key, pngDot(), media.BlobMetadata{ContentType: item.Type}); err != nil {
 			t.Fatal(err)
 		}
 	}
