@@ -27,7 +27,10 @@ const (
 	MaxPeriodicDestructionInterval = 184 * 24 * time.Hour
 )
 
-const enabledFlag = "ACCOUNT_ERASURE_WORKER_ENABLED"
+const (
+	enabledFlag     = "ACCOUNT_ERASURE_WORKER_ENABLED"
+	clientSecretVar = "ACCOUNT_ERASURE_CLIENT_SECRET"
+)
 
 // Service is one registry entry: the saga step, the variable holding the
 // service's internal base URL and the token scope that carries its erase role.
@@ -59,9 +62,12 @@ type Endpoint struct {
 
 // Config is the erasure command configuration.
 type Config struct {
-	Endpoints    []Endpoint
-	ClientID     string
-	ClientSecret string
+	Endpoints []Endpoint
+	ClientID  string
+	// ClientSecret reads ACCOUNT_ERASURE_CLIENT_SECRET from the configuration
+	// each time it is called. Config keeps no copy of the secret, which
+	// rotates nightly (ADR-0050). Nil while the worker is off.
+	ClientSecret SecretSource
 	// AlertAfter is how long after creation an open request is overdue.
 	AlertAfter time.Duration
 	// PeriodicDestructionInterval is the one configured periodic-destruction
@@ -96,9 +102,12 @@ func ConfigFromEnv(getenv func(string) string, enabled bool) (Config, error) {
 	if config.ClientID, err = required(getenv, "ACCOUNT_ERASURE_CLIENT_ID"); err != nil {
 		return Config{}, err
 	}
-	if config.ClientSecret, err = required(getenv, "ACCOUNT_ERASURE_CLIENT_SECRET"); err != nil {
+	// Startup only proves the secret is there; the value is not kept.
+	secret := func() (string, error) { return required(getenv, clientSecretVar) }
+	if _, err = secret(); err != nil {
 		return Config{}, err
 	}
+	config.ClientSecret = secret
 	if config.AlertAfter, err = duration(getenv, "ACCOUNT_ERASURE_ALERT_AFTER", DefaultAlertAfter, 0); err != nil {
 		return Config{}, err
 	}

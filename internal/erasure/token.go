@@ -17,19 +17,27 @@ import (
 // so a token is never sent close to the end of its life.
 const tokenRefreshMargin = 30 * time.Second
 
+// SecretSource reads the client secret from configuration. It is called once
+// for every token request and the value is dropped when that request is sent.
+type SecretSource func() (string, error)
+
 // ClientCredentials fetches the `core-erasure` client's token for one
 // service's erase scope and keeps it until 30 seconds before it expires. It
 // keeps nothing beyond that: a token whose lifetime is 30 seconds or less is
 // not cached, a failure caches nothing, and Invalidate forgets the token when a
-// service rejects it. The secret is the one configured at startup; a nightly
-// rotation (ADR-0050) redeploys core, which re-reads it.
+// service rejects it.
+//
+// It never holds the secret. Keycloak client secrets rotate nightly
+// (ADR-0050), so every token request reads the secret from Secret again; a
+// request that follows a rotation sends whatever the configuration holds by
+// then.
 type ClientCredentials struct {
-	TokenURL     string
-	ClientID     string
-	ClientSecret string
-	Scope        string
-	HTTP         *http.Client
-	Now          func() time.Time
+	TokenURL string
+	ClientID string
+	Secret   SecretSource
+	Scope    string
+	HTTP     *http.Client
+	Now      func() time.Time
 
 	mu      sync.Mutex
 	token   string
@@ -68,10 +76,21 @@ func (c *ClientCredentials) Invalidate() {
 }
 
 func (c *ClientCredentials) fetch(ctx context.Context) (string, time.Duration, error) {
+	if c.Secret == nil {
+		return "", 0, errors.New("client secret source not configured")
+	}
+	// The source's error names a variable, never a value.
+	secret, err := c.Secret()
+	if err != nil {
+		return "", 0, fmt.Errorf("client secret unavailable: %w", err)
+	}
+	if secret == "" {
+		return "", 0, errors.New("client secret is empty")
+	}
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
 	form.Set("client_id", c.ClientID)
-	form.Set("client_secret", c.ClientSecret)
+	form.Set("client_secret", secret)
 	form.Set("scope", "openid "+c.Scope)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {

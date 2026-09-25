@@ -68,13 +68,14 @@ type Client struct {
 }
 
 // NewClient builds the client for one configured endpoint with its own token
-// cache for that service's scope.
-func NewClient(endpoint Endpoint, tokenURL, clientID, clientSecret string) *Client {
+// cache for that service's scope. secret is read again for every token
+// request.
+func NewClient(endpoint Endpoint, tokenURL, clientID string, secret SecretSource) *Client {
 	return &Client{
 		Service: endpoint.Service,
 		BaseURL: endpoint.BaseURL,
 		Tokens: &ClientCredentials{
-			TokenURL: tokenURL, ClientID: clientID, ClientSecret: clientSecret, Scope: endpoint.Service.Scope,
+			TokenURL: tokenURL, ClientID: clientID, Secret: secret, Scope: endpoint.Service.Scope,
 		},
 	}
 }

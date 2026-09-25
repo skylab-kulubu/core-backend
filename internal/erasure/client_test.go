@@ -349,6 +349,46 @@ func TestClientDropsTheTokenOnUnauthorizedAndSpendsAnOrdinaryRetry(t *testing.T)
 	assertNoPII(t, err.Error())
 }
 
+func TestClientRetriesA401WithAFreshTokenFromTheSecretConfiguredNow(t *testing.T) {
+	t.Parallel()
+
+	endpoint := newTokenEndpoint(t)
+	endpoint.rotate("secret-monday")
+	secret := fixedSecret("secret-monday")
+	service := newFakeService(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token-b" {
+			status(http.StatusUnauthorized, nil)(w, r)
+			return
+		}
+		completed(`{"drafts_deleted":1}`)(w, r)
+	})
+	client := erasure.NewClient(erasure.Endpoint{Service: erasure.Registry()[1], BaseURL: service.server.URL},
+		endpoint.server.URL, "core-erasure", secret.read)
+	client.Now = func() time.Time { return testNow }
+
+	_, err := client.Erase(context.Background(), command())
+	var deferred interface{ RetryAt() time.Time }
+	var permanent interface{ PermanentCode() string }
+	if err == nil || errors.As(err, &deferred) || errors.As(err, &permanent) {
+		t.Fatalf("401 = %T %v, want an ordinary retry", err, err)
+	}
+	assertNoPII(t, err.Error())
+
+	// The nightly rotation (ADR-0050) has since changed the secret. The retry
+	// does not reuse the refused token; it asks Keycloak again with the value
+	// the configuration holds now.
+	secret.set("secret-tuesday", nil)
+	endpoint.rotate("secret-tuesday")
+	result, err := client.Erase(context.Background(), command())
+	if err != nil || result.Counts["drafts_deleted"] != 1 {
+		t.Fatalf("retry after 401: counts=%v err=%v", result.Counts, err)
+	}
+	if endpoint.count() != 2 || endpoint.secretSent(1) != "secret-tuesday" || len(service.calls) != 2 {
+		t.Fatalf("token requests=%d second secret ok=%v service calls=%d",
+			endpoint.count(), endpoint.secretSent(1) == "secret-tuesday", len(service.calls))
+	}
+}
+
 func TestClientDefersWhenTheTokenEndpointFails(t *testing.T) {
 	t.Parallel()
 
@@ -356,7 +396,7 @@ func TestClientDefersWhenTheTokenEndpointFails(t *testing.T) {
 	endpoint.set(http.StatusUnauthorized, 300)
 	service := newFakeService(t, completed(`{}`))
 	client := newClient(service, &erasure.ClientCredentials{
-		TokenURL: endpoint.server.URL, ClientID: "core-erasure", ClientSecret: "s3cr3t-value-never-printed", Scope: "account-erase-cms",
+		TokenURL: endpoint.server.URL, ClientID: "core-erasure", Secret: fixedSecret("s3cr3t-value-never-printed").read, Scope: "account-erase-cms",
 	})
 	_, err := client.Erase(context.Background(), command())
 	var deferred interface{ RetryAt() time.Time }

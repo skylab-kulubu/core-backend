@@ -158,7 +158,7 @@ func (f *erasureFixture) serviceErasure(httpClient *http.Client) account.Service
 			Service: service,
 			BaseURL: f.services[service.Step].server.URL,
 			Tokens: &erasure.ClientCredentials{
-				TokenURL: f.tokenServer.URL, ClientID: "core-erasure", ClientSecret: "secret", Scope: service.Scope,
+				TokenURL: f.tokenServer.URL, ClientID: "core-erasure", Secret: func() (string, error) { return "secret", nil }, Scope: service.Scope,
 				Now: func() time.Time { return f.now },
 			},
 			HTTP: httpClient,
@@ -484,7 +484,11 @@ func TestServiceErasureAddressFailureCallsNoService(t *testing.T) {
 func TestNewServiceErasureFollowsTheRegistry(t *testing.T) {
 	t.Parallel()
 
-	config := erasure.Config{ClientID: "core-erasure", ClientSecret: "secret"}
+	secretReads := 0
+	config := erasure.Config{ClientID: "core-erasure", ClientSecret: func() (string, error) {
+		secretReads++
+		return "secret", nil
+	}}
 	for _, service := range erasure.Registry() {
 		config.Endpoints = append(config.Endpoints, erasure.Endpoint{Service: service, BaseURL: "http://" + service.Name + ":8080"})
 	}
@@ -502,6 +506,14 @@ func TestNewServiceErasureFollowsTheRegistry(t *testing.T) {
 		if !ok || tokens.Scope != service.Scope || tokens.ClientID != "core-erasure" ||
 			tokens.TokenURL != "http://keycloak:8080/realms/e-skylab/protocol/openid-connect/token" {
 			t.Fatalf("step %d tokens = %+v", i, client.Tokens)
+		}
+		// Each token cache reads the secret from the configuration when it
+		// asks for a token, never at construction.
+		if reads := secretReads; tokens.Secret == nil || reads != i {
+			t.Fatalf("step %d: secret source=%v, read %d times before use", i, tokens.Secret != nil, reads)
+		}
+		if secret, err := tokens.Secret(); err != nil || secret != "secret" || secretReads != i+1 {
+			t.Fatalf("step %d secret source does not read the configuration", i)
 		}
 	}
 	if services.Steps[0].Sender.(*erasure.Client).Tokens == services.Steps[1].Sender.(*erasure.Client).Tokens {

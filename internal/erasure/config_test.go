@@ -57,7 +57,7 @@ func TestConfigIsNotReadWhileTheWorkerIsOff(t *testing.T) {
 	if reads != 0 {
 		t.Fatalf("disabled config read %d variables", reads)
 	}
-	if len(config.Endpoints) != 0 || config.ClientID != "" || config.ClientSecret != "" {
+	if len(config.Endpoints) != 0 || config.ClientID != "" || config.ClientSecret != nil {
 		t.Fatalf("disabled config = %+v", config)
 	}
 	if config.AlertAfter != 480*time.Hour || config.PeriodicDestructionInterval != 90*24*time.Hour {
@@ -133,8 +133,11 @@ func TestConfigBuildsEndpointsInRegistryOrder(t *testing.T) {
 			t.Fatalf("endpoint[%d] = %+v", i, endpoint)
 		}
 	}
-	if config.ClientID != "core-erasure" || config.ClientSecret != "s3cr3t-value-never-printed" {
-		t.Fatal("client credentials not read")
+	if config.ClientID != "core-erasure" {
+		t.Fatal("client id not read")
+	}
+	if secret, err := config.ClientSecret(); err != nil || secret != "s3cr3t-value-never-printed" {
+		t.Fatal("client secret not read")
 	}
 	if config.AlertAfter != 72*time.Hour || config.PeriodicDestructionInterval != 4380*time.Hour {
 		t.Fatalf("durations = %s %s", config.AlertAfter, config.PeriodicDestructionInterval)
@@ -151,5 +154,26 @@ func TestConfigBuildsEndpointsInRegistryOrder(t *testing.T) {
 	}
 	if config.PeriodicDestructionInterval != 2160*time.Hour {
 		t.Fatalf("default periodic destruction interval = %s", config.PeriodicDestructionInterval)
+	}
+}
+
+func TestConfigReadsTheClientSecretAgainOnEveryCall(t *testing.T) {
+	t.Parallel()
+
+	values := completeEnv()
+	config, err := erasure.ConfigFromEnv(func(key string) string { return values[key] }, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Config keeps no copy: a token request after the configuration changes
+	// sends the new secret (ADR-0050 rotates it nightly).
+	values["ACCOUNT_ERASURE_CLIENT_SECRET"] = " rotated-secret-value "
+	if secret, err := config.ClientSecret(); err != nil || secret != "rotated-secret-value" {
+		t.Fatal("rotated client secret not read")
+	}
+	values["ACCOUNT_ERASURE_CLIENT_SECRET"] = ""
+	_, err = config.ClientSecret()
+	if err == nil || err.Error() != "ACCOUNT_ERASURE_CLIENT_SECRET is required when ACCOUNT_ERASURE_WORKER_ENABLED=true" {
+		t.Fatalf("emptied client secret error = %v", err)
 	}
 }
