@@ -130,16 +130,12 @@ func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
 		if p.ID == "" {
 			return false
 		}
-		switch r.MediaUploader {
-		case "", MediaUploaderAuthenticated:
-			return true
-		case MediaUploaderEventEditor:
-			return a.isPrivileged(p) || isAnyLeader(p) || a.createsEventsAsMember(p)
-		case MediaUploaderCertificateTemplate:
-			return a.isPrivileged(p) || isAnyLeader(p) || (isAnyTeamMember(p) && hasRole(p, "certificate:template:manage"))
-		default:
-			return false
+		rule := r.MediaUploader
+		if rule == "" {
+			rule = MediaUploaderAuthenticated
 		}
+		decide, ok := mediaUploaders[rule]
+		return ok && decide(a, p)
 	case Delete:
 		return a.isPrivileged(p)
 	default:
@@ -147,12 +143,38 @@ func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
 	}
 }
 
-// createsEventsAsMember reports whether p is a member of a team whose own
-// Event permissions let plain members create Events.
-func (a *authorizer) createsEventsAsMember(p Principal) bool {
-	for team, table := range a.policy.EventPermissions {
-		if slices.Contains(table[Create], LevelMember) && slices.Contains(a.ownerLevels(p, team), LevelMember) {
-			return true
+// mediaUploaders decides every MediaUploader rule for a signed-in person, and
+// is the list of rules the Media purpose catalogue may name (Known).
+var mediaUploaders = map[MediaUploader]func(a *authorizer, p Principal) bool{
+	MediaUploaderAuthenticated: func(*authorizer, Principal) bool { return true },
+	MediaUploaderEventEditor: func(a *authorizer, p Principal) bool {
+		return a.forSomeOwnerTeam(p, func(team string) bool {
+			return a.allowEvent(p, Resource{Type: TypeEvent, OwnerTeam: team}, Create)
+		})
+	},
+	MediaUploaderCertificateTemplateEditor: func(a *authorizer, p Principal) bool {
+		return a.forSomeOwnerTeam(p, func(team string) bool {
+			return a.allowCertificateTemplate(p, Resource{Type: TypeCertificateTemplate, OwnerTeam: team}, Create)
+		})
+	},
+	MediaUploaderServiceOnly: func(*authorizer, Principal) bool { return false },
+}
+
+// forSomeOwnerTeam reports whether allow holds for any Owner team p may act
+// for. An upload names no Owner team yet, so the candidates are the names in
+// p's group paths, leader subgroups aside; the decision itself stays the one
+// allow makes for a real record of that team.
+func (a *authorizer) forSomeOwnerTeam(p Principal, allow func(team string) bool) bool {
+	seen := map[string]bool{}
+	for _, group := range p.Groups {
+		for _, team := range strings.Split(strings.Trim(group, "/"), "/") {
+			if team == "" || seen[team] || slices.Contains(a.policy.LeaderSubgroups, team) {
+				continue
+			}
+			seen[team] = true
+			if allow(team) {
+				return true
+			}
 		}
 	}
 	return false

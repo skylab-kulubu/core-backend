@@ -47,8 +47,19 @@ func mediaApp(t *testing.T, ident authn.Identity, store media.Store, blobs media
 
 func multipartPNG(t *testing.T, field, filename string, data []byte) (*bytes.Buffer, string) {
 	t.Helper()
+	return multipartFile(t, nil, field, filename, data)
+}
+
+// multipartFile is a multipart body with the form values, then the file.
+func multipartFile(t *testing.T, values map[string]string, field, filename string, data []byte) (*bytes.Buffer, string) {
+	t.Helper()
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
+	for name, value := range values {
+		if err := w.WriteField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
 	part, err := w.CreateFormFile(field, filename)
 	if err != nil {
 		t.Fatal(err)

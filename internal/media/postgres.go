@@ -24,19 +24,19 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
-	if m.ID == uuid.Nil {
-		m.ID = uuid.New()
-	}
-	if m.CoverColors == nil {
-		m.CoverColors = []string{}
-	}
-	if m.Purpose == "" {
-		m.Purpose = PurposeLegacy
-	}
-	created, err := scanMedia(s.pool.QueryRow(ctx, `
-			INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-			RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose))
+	return insertMedia(ctx, s.pool, newRecord(m))
+}
+
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// insertMedia writes a record prepared by newRecord.
+func insertMedia(ctx context.Context, db rowQuerier, m Media) (Media, error) {
+	created, err := scanMedia(db.QueryRow(ctx, `
+		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose))
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Media{}, ErrForbidden
 	}

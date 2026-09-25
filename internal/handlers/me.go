@@ -169,7 +169,9 @@ func (h *MeHandler) ProfilePicture(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	uploaded, err := h.media.UploadForPurpose(c.Context(), p, media.PurposeProfilePicture, header.Filename, header.Header.Get("Content-Type"), data)
+	uploaded, err := h.media.UploadForPurpose(c.Context(), p, media.PurposeProfilePicture, media.UploadedFile{
+		Name: header.Filename, ContentType: header.Header.Get("Content-Type"), Data: data,
+	})
 	if err != nil {
 		return meError(c, err)
 	}

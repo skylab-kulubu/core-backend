@@ -98,7 +98,9 @@ func (h *MediaHandler) Upload(c fiber.Ctx) error {
 	}
 	var created media.Media
 	if purpose := formPurpose(c); purpose != "" {
-		created, err = h.svc.UploadForPurpose(c.Context(), p, purpose, header.Filename, header.Header.Get("Content-Type"), data)
+		created, err = h.svc.UploadForPurpose(c.Context(), p, purpose, media.UploadedFile{
+			Name: header.Filename, ContentType: header.Header.Get("Content-Type"), Data: data,
+		})
 	} else {
 		// Without a purpose the Media is legacy, under the rules Media
 		// uploaded without a purpose have always had.

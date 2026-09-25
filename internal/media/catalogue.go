@@ -42,6 +42,26 @@ type Catalogue struct {
 	purposes map[string]Purpose
 }
 
+// Visibility is where a purpose's Media are served from.
+type Visibility string
+
+const (
+	// VisibilityPublic Media are served from the CDN.
+	VisibilityPublic Visibility = "public"
+	// VisibilityPrivate Media are encrypted and never get a public address.
+	VisibilityPrivate Visibility = "private"
+)
+
+// Transport is how a purpose's files reach storage.
+type Transport string
+
+const (
+	// TransportSingleStep files come through core (POST /v1/media).
+	TransportSingleStep Transport = "single_step"
+	// TransportDirect files go straight to storage by Direct upload.
+	TransportDirect Transport = "direct"
+)
+
 // Purpose is one Media purpose from the catalogue.
 type Purpose struct {
 	Name string
@@ -49,21 +69,20 @@ type Purpose struct {
 	Uploader authz.MediaUploader
 	// Types are the content types the purpose accepts, detected from the
 	// file's content, never from its name or declared type.
-	Types    []string
-	MaxBytes int64
-	// Visibility is "public" (served from the CDN) or "private".
-	Visibility string
+	Types      []string
+	MaxBytes   int64
+	Visibility Visibility
 	Encrypted  bool
 	Scan       bool
 	// PendingTTL is how long a Media with no Media attachment is kept. Zero
-	// keeps it: only the legacy purpose may, until purpose-less uploads fall
-	// to the strict rule.
+	// keeps it: only the legacy purpose may, until Media uploaded without a
+	// purpose fall to the strict rule.
 	PendingTTL time.Duration
-	// Transport is "single_step" (through core) or "direct" (Direct upload).
-	Transport string
-	Image     ImageHandling
-	// LegacyRules makes the purpose accept what purpose-less uploads accepted
-	// before Media purpose: see docs/media-lifecycle.md.
+	Transport  Transport
+	Image      ImageHandling
+	// LegacyRules makes the purpose accept what Media uploaded without a
+	// purpose were accepted as before Media purpose: see
+	// docs/media-lifecycle.md.
 	LegacyRules bool
 }
 
@@ -87,21 +106,28 @@ type purposeEntry struct {
 	Upload      authz.MediaUploader `json:"upload"`
 	Types       []string            `json:"types"`
 	MaxMiB      int64               `json:"max_mib"`
-	Visibility  string              `json:"visibility"`
+	Visibility  Visibility          `json:"visibility"`
 	Encrypted   bool                `json:"encrypted"`
 	Scan        bool                `json:"scan"`
 	PendingTTL  string              `json:"pending_ttl"`
-	Transport   string              `json:"transport"`
+	Transport   Transport           `json:"transport"`
 	Image       *ImageHandling      `json:"image"`
 	LegacyRules bool                `json:"legacy_rules"`
 }
 
 var purposeName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-// catalogueTypes are the content types a purpose may name.
-var catalogueTypes = []string{
-	"image/jpeg", "image/png", "image/webp", "image/gif",
-	svgType, pdfType, docxType, zipType, mp4Type,
+// catalogueTypes are the content types a purpose may name: the raster
+// formats, from the one table the sanitizer and the serving policy share,
+// and the other types core knows.
+var catalogueTypes = append(rasterContentTypes(), svgType, pdfType, docxType, zipType, mp4Type)
+
+func rasterContentTypes() []string {
+	out := make([]string, 0, len(rasterFormats))
+	for _, format := range rasterFormats {
+		out = append(out, format.contentType)
+	}
+	return out
 }
 
 // LoadCatalogue reads and validates the reviewed catalogue carried in the
@@ -158,15 +184,15 @@ func (e purposeEntry) purpose(name string) (Purpose, error) {
 		return Purpose{}, fmt.Errorf("unknown upload rule %q", e.Upload)
 	}
 	switch e.Visibility {
-	case visibilityPublic:
+	case VisibilityPublic:
 		if e.Encrypted {
 			return Purpose{}, errors.New("a public purpose is served from the CDN and cannot be encrypted")
 		}
-	case visibilityPrivate:
+	case VisibilityPrivate:
 	default:
 		return Purpose{}, fmt.Errorf("unknown visibility %q", e.Visibility)
 	}
-	if e.Transport != transportSingleStep && e.Transport != transportDirect {
+	if e.Transport != TransportSingleStep && e.Transport != TransportDirect {
 		return Purpose{}, fmt.Errorf("unknown transport %q", e.Transport)
 	}
 	if e.PendingTTL == "none" {
@@ -184,7 +210,7 @@ func (e purposeEntry) purpose(name string) (Purpose, error) {
 		if name != PurposeLegacy {
 			return Purpose{}, fmt.Errorf("only the %s purpose follows the legacy rules", PurposeLegacy)
 		}
-		if len(e.Types) > 0 || e.MaxMiB != 0 || e.Visibility != visibilityPublic || e.Transport != transportSingleStep {
+		if len(e.Types) > 0 || e.MaxMiB != 0 || e.Visibility != VisibilityPublic || e.Transport != TransportSingleStep {
 			return Purpose{}, errors.New("the legacy rules fix types and size; the purpose is public and single_step")
 		}
 	} else {

@@ -1,10 +1,8 @@
 package handlers
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
-	"mime/multipart"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -25,25 +23,13 @@ type uploadResponse struct {
 // field when purpose is not empty.
 func postMedia(t *testing.T, app *fiber.App, purpose, filename string, data []byte) uploadResponse {
 	t.Helper()
-	var body bytes.Buffer
-	form := multipart.NewWriter(&body)
+	var values map[string]string
 	if purpose != "" {
-		if err := form.WriteField("purpose", purpose); err != nil {
-			t.Fatal(err)
-		}
+		values = map[string]string{"purpose": purpose}
 	}
-	part, err := form.CreateFormFile("file", filename)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := part.Write(data); err != nil {
-		t.Fatal(err)
-	}
-	if err := form.Close(); err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(fiber.MethodPost, "/v1/media", &body)
-	req.Header.Set("Content-Type", form.FormDataContentType())
+	body, contentType := multipartFile(t, values, "file", filename, data)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/media", body)
+	req.Header.Set("Content-Type", contentType)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatal(err)
@@ -153,9 +139,9 @@ func TestMediaUploadForADirectUploadPurposeHTTP(t *testing.T) {
 	}
 }
 
-// Purpose-less uploads keep the rules they had before Media purpose until
-// Skyforms and CMS send purposes (ADR-0052): any named file up to 20 MiB,
-// SVG kept, a PDF only under a .pdf name, and no purpose codes.
+// Media uploaded without a purpose keep the rules they had before Media
+// purpose until Skyforms and CMS send purposes (ADR-0052): any named file up
+// to 20 MiB, SVG kept, a PDF only under a .pdf name, and no purpose codes.
 func TestMediaUploadWithoutPurposeKeepsTheLegacyRulesHTTP(t *testing.T) {
 	t.Parallel()
 	app := mediaApp(t, authn.Identity{ID: uuid.New()}, media.NewMemoryStore(), media.NewMemoryBlob())

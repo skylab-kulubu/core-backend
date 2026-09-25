@@ -14,11 +14,12 @@ import (
 )
 
 type Service interface {
-	// Upload stores a purpose-less upload: the legacy Media purpose.
+	// Upload stores Media uploaded without a purpose: the legacy Media
+	// purpose.
 	Upload(ctx context.Context, p authz.Principal, name, contentType string, data []byte) (Media, error)
 	// UploadForPurpose stores a file for a Media purpose from the catalogue,
 	// under that purpose's rules.
-	UploadForPurpose(ctx context.Context, p authz.Principal, purpose, name, contentType string, data []byte) (Media, error)
+	UploadForPurpose(ctx context.Context, p authz.Principal, purpose string, file UploadedFile) (Media, error)
 	Get(ctx context.Context, id uuid.UUID) (Media, error)
 	List(ctx context.Context, p authz.Principal) ([]Media, error)
 	ListLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]Media, error)
@@ -75,12 +76,21 @@ func reviewedCatalogue() Catalogue {
 	return catalogue
 }
 
-func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentType string, data []byte) (Media, error) {
-	legacy, _ := s.catalogue.Lookup(PurposeLegacy) // every catalogue has it
-	return s.upload(ctx, p, legacy, name, contentType, data)
+// UploadedFile is a file as its client sent it: its name, the type the client
+// declared, and its bytes.
+type UploadedFile struct {
+	Name        string
+	ContentType string
+	Data        []byte
 }
 
-// storedFile is what an upload becomes once its purpose's rules accept it.
+func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentType string, data []byte) (Media, error) {
+	legacy, _ := s.catalogue.Lookup(PurposeLegacy) // every catalogue has it
+	return s.upload(ctx, p, legacy, UploadedFile{Name: name, ContentType: contentType, Data: data})
+}
+
+// storedFile is what an uploaded file becomes once its purpose's rules
+// accept it.
 type storedFile struct {
 	body      []byte
 	ctype     string
@@ -88,46 +98,46 @@ type storedFile struct {
 	keyPrefix string
 }
 
-func (s *service) UploadForPurpose(ctx context.Context, p authz.Principal, purposeName, name, contentType string, data []byte) (Media, error) {
+func (s *service) UploadForPurpose(ctx context.Context, p authz.Principal, purposeName string, file UploadedFile) (Media, error) {
 	purpose, ok := s.catalogue.Lookup(purposeName)
 	if !ok || purposeName == PurposeLegacy {
 		// legacy is internal: only Upload, for Media uploaded without a
 		// purpose, stores it.
 		return Media{}, &PurposeRefusal{Err: ErrPurposeUnknown, Purpose: purposeName}
 	}
-	return s.upload(ctx, p, purpose, name, contentType, data)
+	return s.upload(ctx, p, purpose, file)
 }
 
-func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose, name, contentType string, data []byte) (Media, error) {
+func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose, file UploadedFile) (Media, error) {
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia, MediaUploader: purpose.Uploader}, authz.Upload) {
 		return Media{}, &PurposeRefusal{Err: ErrPurposeForbidden, Purpose: purpose.Name}
 	}
-	if purpose.Visibility == visibilityPrivate {
+	if purpose.Visibility == VisibilityPrivate {
 		// Private Media storage (encryption, the private bucket) is not
 		// built yet. Until it is, a private purpose is refused, never stored
 		// publicly instead.
 		return Media{}, &PurposeRefusal{Err: ErrPrivateMediaDisabled, Purpose: purpose.Name}
 	}
-	if purpose.Transport == transportDirect {
+	if purpose.Transport == TransportDirect {
 		return Media{}, &PurposeRefusal{Err: ErrDirectUploadOnly, Purpose: purpose.Name}
 	}
-	if len(data) == 0 {
+	if len(file.Data) == 0 {
 		return Media{}, ErrInvalid
 	}
 	uploadedBy, err := uuid.Parse(p.ID)
 	if err != nil {
 		return Media{}, ErrInvalid
 	}
-	var file storedFile
+	var stored storedFile
 	if purpose.LegacyRules {
-		file, err = legacyFile(name, contentType, data)
+		stored, err = legacyFile(file)
 	} else {
-		file, err = purposeFile(purpose, data)
+		stored, err = purposeFile(purpose, file.Data)
 	}
 	if err != nil {
 		return Media{}, err
 	}
-	key := file.keyPrefix + uuid.NewString()
+	key := stored.keyPrefix + uuid.NewString()
 
 	staging, durableStaging := s.media.(UploadStagingStore)
 	if durableStaging {
@@ -141,22 +151,22 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	}
 	operationCtx, cancelOperation := context.WithTimeout(ctx, operationTimeout)
 	defer cancelOperation()
-	serving := ServingMetadata(file.ctype, name)
-	if err := s.blobs.Put(operationCtx, key, file.body, serving); err != nil {
+	serving := ServingMetadata(stored.ctype, file.Name)
+	if err := s.blobs.Put(operationCtx, key, stored.body, serving); err != nil {
 		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
 	}
 	colors := []string{}
 	colorsComputed := false
-	if file.kind == KindImage {
-		colors = ExtractCoverColors(file.body)
+	if stored.kind == KindImage {
+		colors = ExtractCoverColors(stored.body)
 		colorsComputed = true
 	}
 	item := Media{
-		Name:                name,
-		Type:                file.ctype,
-		Size:                int64(len(file.body)),
+		Name:                file.Name,
+		Type:                stored.ctype,
+		Size:                int64(len(stored.body)),
 		UploadedBy:          uploadedBy,
-		Kind:                file.kind,
+		Kind:                stored.kind,
 		Purpose:             purpose.Name,
 		Key:                 key,
 		CoverColors:         colors,
@@ -182,10 +192,11 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	return s.withURL(created), nil
 }
 
-// legacyFile applies the rules purpose-less uploads had before Media
-// purpose: a raster image or SVG up to 10 MiB, a PDF named .pdf up to
+// legacyFile applies the rules Media uploaded without a purpose had before
+// Media purpose: a raster image or SVG up to 10 MiB, a PDF named .pdf up to
 // 20 MiB, or any other named file up to 20 MiB, served as a download.
-func legacyFile(name, contentType string, data []byte) (storedFile, error) {
+func legacyFile(file UploadedFile) (storedFile, error) {
+	name, contentType, data := file.Name, file.ContentType, file.Data
 	if strings.HasPrefix(contentType, "image/") || isImage(data) {
 		if len(data) > maxImageBytes {
 			return storedFile{}, ErrInvalid

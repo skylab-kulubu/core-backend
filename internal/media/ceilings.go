@@ -39,20 +39,14 @@ const MaxImageDimension = 2560
 const MaxDirectUploadBytes = 2 << 30
 
 const (
-	visibilityPublic  = "public"
-	visibilityPrivate = "private"
-
 	mp4Type  = "video/mp4"
 	zipType  = "application/zip"
 	docxType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
-	transportSingleStep = "single_step"
-	transportDirect     = "direct"
 )
 
 func checkCeilings(p Purpose) error {
 	limit := int64(MaxUploadBytes)
-	if p.Transport == transportDirect {
+	if p.Transport == TransportDirect {
 		limit = MaxDirectUploadBytes
 	}
 	if p.MaxBytes > limit {
@@ -61,7 +55,7 @@ func checkCeilings(p Purpose) error {
 	if p.Image.MaxDimension > MaxImageDimension {
 		return fmt.Errorf("%s keeps %d px: %w", p.Name, p.Image.MaxDimension, ErrCeilingImageDimension)
 	}
-	if p.Visibility == visibilityPrivate && !p.Encrypted {
+	if p.Visibility == VisibilityPrivate && !p.Encrypted {
 		return fmt.Errorf("%s: %w", p.Name, ErrCeilingPrivate)
 	}
 	for _, t := range p.Types {
@@ -69,7 +63,7 @@ func checkCeilings(p Purpose) error {
 			return fmt.Errorf("%s names %s: %w", p.Name, t, ErrCeilingSVG)
 		}
 	}
-	if p.Visibility == visibilityPublic {
+	if p.Visibility == VisibilityPublic {
 		for _, t := range p.Types {
 			if t == svgType {
 				continue // rasterized to PNG, checked above

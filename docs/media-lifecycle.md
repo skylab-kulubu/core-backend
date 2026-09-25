@@ -132,7 +132,7 @@ The initial entries:
 |---|---|---|---|---|---|
 | `profile_picture` | authenticated | JPEG, PNG, WebP, GIF | 5 MiB | public | single-step |
 | `event_cover`, `event_gallery` | event_editor | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step |
-| `certificate_asset` | certificate_template | PNG, JPEG, PDF | 20 MiB | private | single-step |
+| `certificate_asset` | certificate_template_editor | PNG, JPEG, PDF | 20 MiB | private | single-step |
 | `cms_image` | authenticated | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step |
 | `cms_file` | authenticated | PDF | 20 MiB | public | single-step |
 | `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step |
@@ -149,18 +149,25 @@ SVG joins `cms_image`, rasterized to PNG, once core rasterizes SVG.
 rule needs a signed-in caller.
 
 - `authenticated`: any signed-in person.
-- `event_editor`: someone who may create Events for at least one Owner team:
-  a privileged person (ADMIN, YK, DK), a leader or coordinator of any team, or
-  a member of a team whose Event permissions let members create Events
-  (GECEKODU). Which Event the Media ends up on is checked when it is linked.
-- `certificate_template`: someone who may create certificate templates for at
-  least one Owner team: a privileged person, a leader or coordinator of any
-  team, or a team member with `certificate:template:manage`.
+- `event_editor`: someone who may create an Event for at least one Owner
+  team, by the same decision as creating the Event (`_default` fallback
+  included): today a privileged person (ADMIN, YK, DK), a leader or
+  coordinator of a team, or a member of a team whose Event permissions let
+  members create Events (GECEKODU). Which Event the Media ends up on is
+  checked when it is linked.
+- `certificate_template_editor`: someone who may create a certificate
+  template for at least one Owner team, by the same decision as creating the
+  template: a privileged person, a leader or coordinator of a team, or a team
+  member with `certificate:template:manage`.
+
+An upload names no Owner team yet, so the candidate teams are the names in
+the person's group paths (leader subgroups aside).
 - `service_only`: no person. Only the owning product's service identity may
   start such an upload; until that path exists nobody can.
 
 CMS editor roles live on the CMS client, which core does not see, so the CMS
-purposes are `authenticated` for now, as purpose-less uploads are.
+purposes are `authenticated` for now, as Media uploaded without a purpose
+are.
 
 ### Hard ceilings
 
@@ -189,8 +196,8 @@ private (refused until private Media storage ships), it is single-step, the
 size, and the type detected from the content. `POST /v1/users/me/profile-picture` always uploads
 as `profile_picture`: raster images up to 5 MiB, no PDF, no SVG.
 
-Without a purpose the upload is `legacy` and keeps the rules purpose-less
-uploads have had: a raster image or SVG up to 10 MiB, a PDF under a `.pdf`
+Media uploaded without a purpose are `legacy` and keep the rules they have
+always had: a raster image or SVG up to 10 MiB, a PDF under a `.pdf`
 name up to 20 MiB, any other named file up to 20 MiB (served as a download
 by the serving policy), refused with a plain `400` without a code. Once
 Skyforms and CMS send purposes, `legacy` falls to the strict rule (raster

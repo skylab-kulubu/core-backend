@@ -38,7 +38,7 @@
     },
     "certificate_asset": {
       "description": "A certificate template's background or image, read only by core's certificate renderer.",
-      "upload": "certificate_template",
+      "upload": "certificate_template_editor",
       "types": ["image/png", "image/jpeg", "application/pdf"],
       "max_mib": 20,
       "visibility": "private",
@@ -122,7 +122,7 @@
       "transport": "direct"
     },
     "legacy": {
-      "description": "A purpose-less upload, and every Media stored before Media purpose. It follows the rules purpose-less uploads had before this catalogue until Skyforms and CMS send purposes.",
+      "description": "Media uploaded without a purpose, and every Media stored before Media purpose. Internal: clients cannot name it. It keeps the rules Media uploaded without a purpose had before this catalogue, until Skyforms and CMS send purposes.",
       "upload": "authenticated",
       "legacy_rules": true,
       "visibility": "public",
