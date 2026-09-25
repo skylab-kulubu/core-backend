@@ -173,6 +173,7 @@ func New(deps Deps) *fiber.App {
 	app.Use(middlewares.Bearer(deps.ParseToken))
 	app.Use(middlewares.AccountAccessGate(deps.AccountAccessGate, deps.AccountAccessMetrics))
 	app.Get("/v1/go/:alias", urls.Redirect)
+	app.Get("/v1/go/:alias/:channel", urls.RedirectChannel)
 	app.Use(jit.Handle)
 
 	if pass != nil {

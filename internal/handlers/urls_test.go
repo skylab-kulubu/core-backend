@@ -86,6 +86,7 @@ func urlAppBehindProxies(t *testing.T, proxies string, store shorturl.Store, ide
 	})
 	app.Get("/v1/go/:alias/qr", h.QR)
 	app.Get("/v1/go/:alias", h.Redirect)
+	app.Get("/v1/go/:alias/:channel", h.RedirectChannel)
 	app.Post("/v1/urls", h.Create)
 	app.Get("/v1/urls", h.ListMine)
 	app.Get("/v1/urls/all", h.ListAll)
@@ -861,5 +862,42 @@ func TestURLRedirectRecordsTheAddressTheTrustedProxyObserved(t *testing.T) {
 				t.Fatalf("hit ip = %q, want %q", hits[0].IP, tc.want)
 			}
 		})
+	}
+}
+
+func TestURLChannelSuffixTagsTheRedirect(t *testing.T) {
+	t.Parallel()
+	store := shorturl.NewMemoryStore()
+	created := createClubURL(t, store)
+	app := urlAppWith(t, authn.Identity{}, store)
+
+	tagged, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/ig?utm_source=poster&utm_campaign=son-gun", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tagged.StatusCode != fiber.StatusMovedPermanently {
+		t.Fatalf("status %d", tagged.StatusCode)
+	}
+	if loc := tagged.Header.Get(fiber.HeaderLocation); loc != "https://skylab.com?utm_campaign=son-gun&utm_source=instagram" {
+		t.Fatalf("location %s", loc)
+	}
+	unknown, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/xyz", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc := unknown.Header.Get(fiber.HeaderLocation); unknown.StatusCode != fiber.StatusMovedPermanently || loc != "https://skylab.com" {
+		t.Fatalf("unknown suffix status=%d location=%s", unknown.StatusCode, loc)
+	}
+
+	hits, err := store.ListHits(context.Background(), created.ID, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := map[string]int{}
+	for _, h := range hits {
+		sources[h.UTM.Source]++
+	}
+	if len(hits) != 2 || sources["instagram"] != 1 || sources[""] != 1 {
+		t.Fatalf("hits %+v", hits)
 	}
 }

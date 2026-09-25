@@ -74,11 +74,24 @@ func urlError(c fiber.Ctx, err error) error {
 }
 
 func (h *URLHandler) Redirect(c fiber.Ctx) error {
+	return h.redirect(c, shorturl.UTM{})
+}
+
+// RedirectChannel serves skyl.app/alias/ig: the suffix names the channel the
+// link was shared on and wins over a utm_source in the query.
+func (h *URLHandler) RedirectChannel(c fiber.Ctx) error {
+	return h.redirect(c, shorturl.ChannelUTM(c.Params("channel")))
+}
+
+func (h *URLHandler) redirect(c fiber.Ctx, channel shorturl.UTM) error {
 	userID, err := h.hopUserID(c)
 	if err != nil {
 		return urlError(c, err)
 	}
 	utm := shorturl.UTMFromQuery(func(key string) string { return strings.Clone(c.Query(key)) })
+	if channel.Source != "" {
+		utm.Source = channel.Source
+	}
 	u, err := h.svc.Redirect(c.Context(), c.Params("alias"), shorturl.Hit{
 		IP:        h.hopIP(c),
 		UserAgent: strings.Clone(c.Get(fiber.HeaderUserAgent)),
