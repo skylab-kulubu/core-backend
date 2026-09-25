@@ -446,6 +446,10 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		SELECT 1 FROM information_schema.columns
 		WHERE table_schema = 'public' AND table_name = 'media' AND column_name = 'purpose'
 		  AND data_type = 'text' AND is_nullable = 'NO' AND column_default = '''legacy''::text'`,
+	20260926113000: `
+		SELECT 1
+		WHERE to_regclass('public.url_retired_aliases') IS NOT NULL
+		  AND to_regclass('public.urls_alias_lower_idx') IS NOT NULL`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

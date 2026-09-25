@@ -56,6 +56,14 @@ func (s *PostgresStore) GetByAlias(ctx context.Context, alias string) (URL, erro
 	return u, mapURLErr(err)
 }
 
+func (s *PostgresStore) GetByRetiredAlias(ctx context.Context, alias string) (URL, error) {
+	u, err := scanURL(s.pool.QueryRow(ctx, `
+		SELECT `+urlCols+` FROM urls
+		WHERE id = (SELECT url_id FROM url_retired_aliases WHERE alias = $1)
+		  AND disabled_at IS NULL`, alias))
+	return u, mapURLErr(err)
+}
+
 func (s *PostgresStore) ListByCreator(ctx context.Context, userID uuid.UUID) ([]URL, error) {
 	return s.ListByCreatorLifecycle(ctx, userID, lifecycle.CurrentOnly)
 }
@@ -81,11 +89,45 @@ func (s *PostgresStore) ListLifecycle(ctx context.Context, visibility lifecycle.
 }
 
 func (s *PostgresStore) Update(ctx context.Context, u URL) (URL, error) {
-	got, err := scanURL(s.pool.QueryRow(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return URL{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var previous string
+	if err := tx.QueryRow(ctx, `SELECT alias FROM urls WHERE id = $1 AND disabled_at IS NULL FOR UPDATE`, u.ID).Scan(&previous); err != nil {
+		return URL{}, mapURLErr(err)
+	}
+	if previous != u.Alias {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO url_retired_aliases (alias, url_id) VALUES ($1, $2)
+			ON CONFLICT (alias) DO UPDATE SET url_id = EXCLUDED.url_id, retired_at = now()`, previous, u.ID); err != nil {
+			return URL{}, mapURLErr(err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM url_retired_aliases WHERE lower(alias) = lower($1) AND url_id = $2`, u.Alias, u.ID); err != nil {
+			return URL{}, mapURLErr(err)
+		}
+	}
+	got, err := scanURL(tx.QueryRow(ctx, `
 		UPDATE urls SET alias = $2, url = $3, updated_at = now()
 		WHERE id = $1 AND disabled_at IS NULL
 		RETURNING `+urlCols, u.ID, u.Alias, u.URL))
-	return got, mapURLErr(err)
+	if err != nil {
+		return URL{}, mapURLErr(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return URL{}, err
+	}
+	return got, nil
+}
+
+func (s *PostgresStore) AliasTaken(ctx context.Context, alias string, except uuid.UUID) (bool, error) {
+	var taken bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM urls WHERE lower(alias) = lower($1) AND id <> $2)
+		    OR EXISTS (SELECT 1 FROM url_retired_aliases WHERE lower(alias) = lower($1) AND url_id IS DISTINCT FROM $2)`,
+		alias, except).Scan(&taken)
+	return taken, err
 }
 
 func (s *PostgresStore) Disable(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {

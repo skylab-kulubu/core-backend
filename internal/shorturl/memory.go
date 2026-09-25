@@ -3,6 +3,7 @@ package shorturl
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,13 +12,48 @@ import (
 )
 
 type MemoryStore struct {
-	mu   sync.Mutex
-	byID map[uuid.UUID]URL
-	hits []Hit
+	mu      sync.Mutex
+	byID    map[uuid.UUID]URL
+	hits    []Hit
+	retired map[string]retiredAlias
+}
+
+type retiredAlias struct {
+	alias string
+	urlID uuid.UUID
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{byID: map[uuid.UUID]URL{}}
+	return &MemoryStore{byID: map[uuid.UUID]URL{}, retired: map[string]retiredAlias{}}
+}
+
+func (s *MemoryStore) GetByRetiredAlias(_ context.Context, alias string) (URL, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.retired[strings.ToLower(alias)]
+	if !ok || entry.alias != alias {
+		return URL{}, ErrNotFound
+	}
+	u, ok := s.byID[entry.urlID]
+	if !ok || u.DisabledAt != nil {
+		return URL{}, ErrNotFound
+	}
+	return u, nil
+}
+
+func (s *MemoryStore) AliasTaken(_ context.Context, alias string, except uuid.UUID) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := strings.ToLower(alias)
+	for id, u := range s.byID {
+		if id != except && strings.ToLower(u.Alias) == key {
+			return true, nil
+		}
+	}
+	if entry, ok := s.retired[key]; ok && entry.urlID != except {
+		return true, nil
+	}
+	return false, nil
 }
 
 func (s *MemoryStore) Create(_ context.Context, u URL) (URL, error) {
@@ -114,6 +150,12 @@ func (s *MemoryStore) Update(_ context.Context, u URL) (URL, error) {
 	}
 	if _, err := s.findAliasLocked(u.Alias, u.ID, true); err == nil {
 		return URL{}, ErrConflict
+	}
+	if existing.Alias != u.Alias {
+		s.retired[strings.ToLower(existing.Alias)] = retiredAlias{alias: existing.Alias, urlID: u.ID}
+		if entry, ok := s.retired[strings.ToLower(u.Alias)]; ok && entry.urlID == u.ID {
+			delete(s.retired, strings.ToLower(u.Alias))
+		}
 	}
 	u.UpdatedAt = time.Now().UTC()
 	s.byID[u.ID] = u
