@@ -31,9 +31,9 @@ func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore) (int
 // BackfillServingPolicy brings one batch of objects stored before the serving
 // policy under it. Upload wrote those with the recorded type as their only
 // metadata, so an object is rewritten in place only when the policy serves
-// it differently; the record then reports the type the CDN serves. An object
-// that is already gone has nothing left to serve and is recorded as done.
-// Every step is idempotent, so a batch cut short is simply taken again.
+// it differently; the record itself keeps its type and is only flagged. An
+// object that is already gone has nothing left to serve and is recorded as
+// done. Every step is idempotent, so a batch cut short is simply taken again.
 func BackfillServingPolicy(ctx context.Context, store Store, blobs BlobStore) (int, bool, error) {
 	items, err := store.ListPendingServingPolicy(ctx, servingPolicyBackfillBatchSize)
 	if err != nil {
@@ -46,7 +46,7 @@ func BackfillServingPolicy(ctx context.Context, store Store, blobs BlobStore) (i
 				return i, false, err
 			}
 		}
-		if err := store.SetServingPolicyApplied(ctx, item.ID, serving.ContentType); err != nil {
+		if err := store.SetServingPolicyApplied(ctx, item.ID); err != nil {
 			return i, false, err
 		}
 	}

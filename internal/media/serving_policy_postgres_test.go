@@ -42,6 +42,10 @@ func TestPostgresServingPolicyBackfillRewritesOnlyLegacyObjects(t *testing.T) {
 	if err := store.Archive(ctx, archived.ID, nil); err != nil {
 		t.Fatal(err)
 	}
+	archived, err := store.GetIncludingDeleted(ctx, archived.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	purged := legacy("gone.html", "text/html", media.KindFile, "files/gone")
 	if _, err := pool.Exec(ctx, `UPDATE media SET deleted_at = now(), blob_purge_started_at = now(), blob_purged_at = now() WHERE id = $1`, purged.ID); err != nil {
 		t.Fatal(err)
@@ -57,8 +61,8 @@ func TestPostgresServingPolicyBackfillRewritesOnlyLegacyObjects(t *testing.T) {
 	}
 	for _, item := range []media.Media{page, archived} {
 		stored, err := store.GetIncludingDeleted(ctx, item.ID)
-		if err != nil || stored.Type != "application/octet-stream" {
-			t.Fatalf("%s record type %q err %v", item.Name, stored.Type, err)
+		if err != nil || stored.Type != "text/html" || !stored.UpdatedAt.Equal(item.UpdatedAt) {
+			t.Fatalf("%s record type %q updated %v (was %v) err %v", item.Name, stored.Type, stored.UpdatedAt, item.UpdatedAt, err)
 		}
 		if got, _ := blobs.Metadata(item.Key); got.ContentDisposition != "attachment; filename="+item.Name {
 			t.Fatalf("%s metadata %+v", item.Name, got)

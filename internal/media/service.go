@@ -129,7 +129,7 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 	}
 	item := Media{
 		Name:                name,
-		Type:                serving.ContentType,
+		Type:                ctype,
 		Size:                int64(len(body)),
 		UploadedBy:          uploadedBy,
 		Kind:                kind,

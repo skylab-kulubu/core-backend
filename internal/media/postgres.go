@@ -142,8 +142,8 @@ func (s *PostgresStore) ListPendingServingPolicy(ctx context.Context, limit int)
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) SetServingPolicyApplied(ctx context.Context, id uuid.UUID, servedType string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE media SET file_type = $2, serving_policy_applied = true, updated_at = now() WHERE id = $1`, id, servedType)
+func (s *PostgresStore) SetServingPolicyApplied(ctx context.Context, id uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE media SET serving_policy_applied = true WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}

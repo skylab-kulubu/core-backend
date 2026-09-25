@@ -55,8 +55,8 @@ type Store interface {
 	// is purged or being purged is left out.
 	ListPendingServingPolicy(ctx context.Context, limit int) ([]Media, error)
 	// SetServingPolicyApplied records that the object now follows the serving
-	// policy and the type it is served as.
-	SetServingPolicyApplied(ctx context.Context, id uuid.UUID, servedType string) error
+	// policy. It changes nothing else on the record.
+	SetServingPolicyApplied(ctx context.Context, id uuid.UUID) error
 	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	Restore(ctx context.Context, id uuid.UUID) error
 	ListPurgeCandidates(ctx context.Context, deletedBefore time.Time, limit int) ([]Media, error)

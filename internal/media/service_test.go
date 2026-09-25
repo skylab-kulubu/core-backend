@@ -412,7 +412,7 @@ func TestService_UploadKeepsHostileFileNamesInsideTheDispositionParameter(t *tes
 	}
 }
 
-func TestService_UploadRecordsTheTypeTheCDNServes(t *testing.T) {
+func TestService_UploadRecordsTheFilesOwnType(t *testing.T) {
 	t.Parallel()
 	svc, _ := setup(t)
 	p := authz.Principal{ID: uuid.MustParse("37373737-3737-3737-3737-373737373737").String()}
@@ -425,7 +425,7 @@ func TestService_UploadRecordsTheTypeTheCDNServes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Type != "application/octet-stream" || got.Type != "application/octet-stream" {
+	if created.Type != "text/html" || got.Type != "text/html" {
 		t.Fatalf("created type %q, stored type %q", created.Type, got.Type)
 	}
 }

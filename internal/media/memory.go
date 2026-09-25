@@ -81,16 +81,14 @@ func (s *MemoryStore) ListPendingServingPolicy(_ context.Context, limit int) ([]
 	return out, nil
 }
 
-func (s *MemoryStore) SetServingPolicyApplied(_ context.Context, id uuid.UUID, servedType string) error {
+func (s *MemoryStore) SetServingPolicyApplied(_ context.Context, id uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, ok := s.byID[id]
 	if !ok {
 		return ErrNotFound
 	}
-	m.Type = servedType
 	m.ServingPolicyApplied = true
-	m.UpdatedAt = time.Now().UTC()
 	s.byID[id] = m
 	return nil
 }

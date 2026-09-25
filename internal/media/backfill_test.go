@@ -91,8 +91,8 @@ func TestBackfillServingPolicyRewritesLegacyDownloadsAndSVGs(t *testing.T) {
 	if got, _ := blobs.Metadata(logo.Key); got != (media.BlobMetadata{ContentType: "image/svg+xml", ContentDisposition: "attachment; filename=logo.svg"}) {
 		t.Fatalf("logo metadata %+v", got)
 	}
-	if stored, err := store.Get(ctx, page.ID); err != nil || stored.Type != "application/octet-stream" {
-		t.Fatalf("page record type %q err %v", stored.Type, err)
+	if stored, err := store.Get(ctx, page.ID); err != nil || stored.Type != "text/html" || !stored.UpdatedAt.Equal(page.UpdatedAt) {
+		t.Fatalf("page record type %q updated %v (was %v) err %v", stored.Type, stored.UpdatedAt, page.UpdatedAt, err)
 	}
 
 	processed, done, err = media.BackfillServingPolicy(ctx, store, blobs)
