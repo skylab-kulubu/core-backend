@@ -121,10 +121,12 @@ type Purpose struct {
 	LegacyRules bool
 }
 
-// ImageHandling is what core is to do with a raster image of a purpose. The
-// catalogue declares it now; re-encoding, the dimension cap, variants and SVG
-// rasterization are carried out from media redesign ticket 04 on. Until then
-// a raster image only has its metadata stripped.
+// ImageHandling is what core does with a raster image of a purpose:
+// re-encode it (Reencode) within MaxDimension (MaxImageDimension when 0),
+// store its Variants beside it (size name, one of SizeCard and SizePage, to
+// its longer side in pixels), and rasterize an SVG to PNG (RasterizeSVG).
+// A purpose that does not re-encode keeps the image's own bytes, stripped of
+// metadata, and still gets its Variants.
 type ImageHandling struct {
 	Reencode     bool           `json:"reencode"`
 	MaxDimension int            `json:"max_dimension"`
@@ -276,6 +278,9 @@ func (e purposeEntry) purpose(name string) (Purpose, error) {
 		largest = MaxImageDimension
 	}
 	for variant, size := range p.Image.Variants {
+		if !slices.Contains(imageSizes, variant) {
+			return Purpose{}, fmt.Errorf("variant %q is not a size clients can ask for (%v)", variant, imageSizes)
+		}
 		if size <= 0 || size > largest {
 			return Purpose{}, fmt.Errorf("variant %q is %d px, outside 1..%d", variant, size, largest)
 		}
