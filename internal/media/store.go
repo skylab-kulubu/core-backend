@@ -29,7 +29,17 @@ type Media struct {
 	// Purpose is the Media purpose the file was uploaded for; legacy for
 	// Media uploaded without a purpose and for Media stored before purposes
 	// existed.
-	Purpose             string     `json:"purpose"`
+	Purpose string `json:"purpose"`
+	// Status is pending until a Media attachment links the Media to a
+	// record, attached while one does, and detached once the last one is
+	// removed. Archive and purge are recorded apart (DeletedAt,
+	// BlobPurgedAt).
+	Status string `json:"status"`
+	// ExpiresAt is when a Media no Media attachment keeps is purged: a
+	// pending Media when its purpose's pending TTL runs out, a detached one
+	// DetachedRetention after its last attachment was removed. Nil keeps the
+	// Media: it is attached, or legacy.
+	ExpiresAt           *time.Time `json:"expiresAt,omitempty"`
 	Key                 string     `json:"-"`
 	CoverColors         []string   `json:"coverColors"`
 	CoverColorsComputed bool       `json:"-"`
@@ -46,9 +56,16 @@ type Media struct {
 	ServingPolicyApplied bool `json:"-"`
 }
 
+// The statuses of a Media (Media.Status).
+const (
+	StatusPending  = "pending"
+	StatusAttached = "attached"
+	StatusDetached = "detached"
+)
+
 // newRecord fills what a Media record takes by default when it is created:
-// an id, an empty cover colour list, and the legacy purpose when none is
-// given. Every Store applies it, and only it.
+// an id, an empty cover colour list, the legacy purpose when none is given,
+// and the pending status. Every Store applies it, and only it.
 func newRecord(m Media) Media {
 	if m.ID == uuid.Nil {
 		m.ID = uuid.New()
@@ -58,6 +75,9 @@ func newRecord(m Media) Media {
 	}
 	if m.Purpose == "" {
 		m.Purpose = PurposeLegacy
+	}
+	if m.Status == "" {
+		m.Status = StatusPending
 	}
 	return m
 }
@@ -82,6 +102,16 @@ type Store interface {
 	Restore(ctx context.Context, id uuid.UUID) error
 	ListPurgeCandidates(ctx context.Context, deletedBefore time.Time, limit int) ([]Media, error)
 	PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(key string) error) (bool, error)
+	// ListExpired returns, in id order and after the given id, the Media
+	// no Media attachment keeps whose expiry is at or before now: pending
+	// Media past their purpose's pending TTL and detached Media past
+	// DetachedRetention. Archived Media are left to the archive window.
+	ListExpired(ctx context.Context, now time.Time, after uuid.UUID, limit int) ([]Media, error)
+	// PurgeExpiredBlobIfUnreferenced purges the blob of such a Media with
+	// the same checks and two-phase claim as PurgeBlobIfUnreferenced, and
+	// archives the Media as its blob goes. It reports false, and keeps the
+	// Media, when the Media is no longer expired or something still uses it.
+	PurgeExpiredBlobIfUnreferenced(ctx context.Context, id uuid.UUID, now time.Time, purge func(key string) error) (bool, error)
 }
 
 // BlobMetadata is how the CDN serves a stored object. An empty

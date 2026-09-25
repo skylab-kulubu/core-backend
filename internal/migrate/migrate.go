@@ -461,6 +461,72 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			 AND actual.column_name = expected.column_name
 		) = 3
 		AND to_regclass('public.urls_current_form_idx') IS NOT NULL`,
+	20260926120000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('id', 'uuid', 'NO'),
+				('media_id', 'uuid', 'NO'),
+				('owner_service', 'text', 'NO'),
+				('owner_type', 'text', 'NO'),
+				('owner_id', 'uuid', 'NO'),
+				('role', 'text', 'NO'),
+				('created_at', 'timestamptz', 'NO')
+			) expected(column_name, udt_name, is_nullable)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'media_attachments'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = expected.is_nullable
+		) = 7
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'media' AND column_name = 'status'
+			  AND data_type = 'text' AND is_nullable = 'NO' AND column_default = '''pending''::text'
+		)
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'media' AND column_name = 'expires_at'
+			  AND udt_name = 'timestamptz' AND is_nullable = 'YES'
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'media' AND column_name = 'attached'
+		)
+		AND (
+			SELECT count(*) FROM (VALUES
+				('media', 'media_status_check', 'c'),
+				('media_attachments', 'media_attachments_pkey', 'p'),
+				('media_attachments', 'media_attachments_link_key', 'u'),
+				('media_attachments', 'media_attachments_media_id_fkey', 'f')
+			) expected(table_name, constraint_name, constraint_type)
+			JOIN pg_constraint actual
+			  ON actual.conrelid = to_regclass('public.' || expected.table_name)
+			 AND actual.conname = expected.constraint_name
+			 AND actual.contype = expected.constraint_type::"char"
+		) = 4
+		AND to_regclass('public.media_attachments_owner_idx') IS NOT NULL
+		AND to_regclass('public.media_expiry_candidates_idx') IS NOT NULL
+		AND (
+			SELECT count(*) FROM (VALUES
+				('media_attachments', 'media_attachments_require_current_media', 'require_current_attached_media'),
+				('media_attachments', 'media_attachments_status', 'media_attachment_status'),
+				('events', 'events_sync_media_attachments', 'sync_core_media_attachments'),
+				('event_images', 'event_images_sync_media_attachments', 'sync_core_media_attachments'),
+				('users', 'users_sync_media_attachments', 'sync_core_media_attachments'),
+				('certificate_templates', 'certificate_templates_sync_media_attachments', 'sync_core_media_attachments'),
+				('certificate_template_versions', 'certificate_template_versions_sync_media_attachments', 'sync_core_media_attachments')
+			) expected(table_name, trigger_name, function_name)
+			JOIN pg_trigger actual
+			  ON actual.tgrelid = to_regclass('public.' || expected.table_name)
+			 AND actual.tgname = expected.trigger_name
+			 AND actual.tgenabled = 'O'
+			 AND NOT actual.tgisinternal
+			JOIN pg_proc trigger_function
+			  ON trigger_function.oid = actual.tgfoid
+			 AND trigger_function.proname = expected.function_name
+		) = 7`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
