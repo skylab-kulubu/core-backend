@@ -107,16 +107,13 @@ func main() {
 			ClientID:     os.Getenv("KEYCLOAK_CLIENT_ID"),
 			ClientSecret: os.Getenv("KEYCLOAK_CLIENT_SECRET"),
 		})
-		roleContext, cancelRoleSetup := context.WithTimeout(context.Background(), 15*time.Second)
-		if err := keycloakDirectory.EnsureClientRoles(roleContext, os.Getenv("KEYCLOAK_CLIENT_ID"), []string{
-			"certificate:template:manage",
-			"certificate:binding:manage",
-			"certificate:issue",
-			"certificate:revoke",
-		}); err != nil {
-			log.Printf("certificate client roles could not be ensured: %v", err)
+		// Read-only: core holds no manage-clients; Keycloak's operator script creates the roles.
+		roleContext, cancelRoleCheck := context.WithTimeout(context.Background(), 15*time.Second)
+		missingRoles, err := keycloakDirectory.MissingClientRoles(roleContext, os.Getenv("KEYCLOAK_CLIENT_ID"), identity.CertificateClientRoles)
+		cancelRoleCheck()
+		if warning := identity.CertificateRolesWarning(os.Getenv("KEYCLOAK_CLIENT_ID"), missingRoles, err); warning != "" {
+			log.Print(warning)
 		}
-		cancelRoleSetup()
 		dir = keycloakDirectory
 	}
 	parse := func(string) (authn.Identity, error) {
