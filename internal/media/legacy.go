@@ -23,8 +23,8 @@ type LegacyPurposeReport struct {
 	// Assigned legacy Media got the purpose of their use.
 	Assigned int
 	// KeptPrivate legacy Media are used where only a private purpose fits
-	// (certificate template assets). They stay legacy until private Media
-	// storage moves their blobs.
+	// (certificate template assets). They stay legacy for good: nothing
+	// moves their public blobs into private storage (decision G1).
 	KeptPrivate int
 	// KeptMixed legacy Media have uses that no one purpose fits, such as an
 	// Event cover that is also someone's profile picture (decision K1).

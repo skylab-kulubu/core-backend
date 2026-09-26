@@ -380,14 +380,32 @@ func TestAdminReadLinkToACertificateAssetHTTP(t *testing.T) {
 		t.Fatalf("content: status %d, %+v, %v", resp.StatusCode, got, err)
 	}
 
-	// An admin names no one; a value that is no user id is refused, not
-	// read as none.
-	for _, body := range []string{`{"onBehalfOf":"not-a-uuid"}`, `{"onBehalfOf":"` + reviewerHTTP.String() + `"}`} {
+	// An admin names no one: any onBehalfOf, and a body that cannot be
+	// read, is a malformed request, never read as none. No key, or no body,
+	// is fine.
+	post := func(ident authn.Identity, body string) int {
+		t.Helper()
 		req := httptest.NewRequest(fiber.MethodPost, "/v1/media/"+id+"/links", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
-		if resp, raw := do(t, h.app(t, admin), req); resp.StatusCode != fiber.StatusBadRequest {
-			t.Errorf("%s: status %d body %s", body, resp.StatusCode, raw)
+		resp, _ := do(t, h.app(t, ident), req)
+		return resp.StatusCode
+	}
+	for _, body := range []string{
+		`{"onBehalfOf":"not-a-uuid"}`, `{"onBehalfOf":"` + reviewerHTTP.String() + `"}`,
+		`{"onBehalfOf":null}`, `{"onBehalfOf":""}`, `{"onBehalfOf":5}`, `not json`, `[]`,
+	} {
+		if status := post(admin, body); status != fiber.StatusBadRequest {
+			t.Errorf("admin %s: status %d", body, status)
 		}
+	}
+	for _, body := range []string{`{}`, ``} {
+		if status := post(admin, body); status != fiber.StatusCreated {
+			t.Errorf("admin %q: status %d", body, status)
+		}
+	}
+	// A person without the right is refused before the body counts.
+	if status := post(respondentHTTP, `not json`); status != fiber.StatusForbidden {
+		t.Errorf("a member with a malformed body: status %d", status)
 	}
 }
 

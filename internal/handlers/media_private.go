@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -22,9 +24,28 @@ func (h *MediaHandler) TrustProxies(ranges clientip.Ranges) *MediaHandler {
 	return h
 }
 
-// readLinkBody is the body of POST /v1/media/{id}/links.
-type readLinkBody struct {
-	OnBehalfOf string `json:"onBehalfOf"`
+// readLinkRequest reads the body of POST /v1/media/{id}/links. Nothing is
+// refused here, so the service authorizes the caller before a malformed
+// body counts: a body that is not a JSON object, or an onBehalfOf that is
+// not a string, is marked malformed; a present onBehalfOf, even null or "",
+// is kept as present. No body, or no key, names no one.
+func readLinkRequest(raw []byte) media.ReadLinkRequest {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return media.ReadLinkRequest{}
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil || body == nil {
+		return media.ReadLinkRequest{Malformed: true}
+	}
+	value, present := body["onBehalfOf"]
+	if !present {
+		return media.ReadLinkRequest{}
+	}
+	var onBehalfOf string
+	if bytes.Equal(bytes.TrimSpace(value), []byte("null")) || json.Unmarshal(value, &onBehalfOf) != nil {
+		return media.ReadLinkRequest{Malformed: true}
+	}
+	return media.ReadLinkRequest{OnBehalfOf: &onBehalfOf}
 }
 
 // IssueReadLink gives the owning product a five-minute read link to one of
@@ -34,11 +55,7 @@ func (h *MediaHandler) IssueReadLink(c fiber.Ctx) error {
 	if err != nil {
 		return mediaError(c, err)
 	}
-	var body readLinkBody
-	if err := c.Bind().JSON(&body); err != nil {
-		body = readLinkBody{}
-	}
-	link, err := h.svc.IssueReadLink(c.Context(), p, parsedID(c.Params("id")), body.OnBehalfOf)
+	link, err := h.svc.IssueReadLink(c.Context(), p, parsedID(c.Params("id")), readLinkRequest(c.Body()))
 	if err != nil {
 		return h.error(c, err)
 	}

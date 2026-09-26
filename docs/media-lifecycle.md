@@ -214,15 +214,18 @@ Core refuses to start with a catalogue that breaks one:
 - a public purpose that accepts raster images declares re-encoding
   (`image.reencode`), and core re-encodes every such image (see
   [Images and sizes](#images-and-sizes));
-- only `cms_image`, `event_cover` and `event_gallery` may list SVG (never a
-  profile picture or a private purpose). In code, an SVG is stored only for
+- only `cms_image`, `event_cover` and `event_gallery` may list SVG, and only
+  while public: never a profile picture, and never a private purpose, whatever
+  its name. In code, an SVG is stored only for
   a purpose that lists it, only sanitized, under a key ending in `.svg`, and
   is always served as a download (`Content-Disposition: attachment`);
 - the maximum size stays under 20 MiB for single-step uploads and 2 GiB for
   Direct upload;
 - the declared image size stays within 2560 px (`image.max_dimension`,
   `image.sizes`), and re-encoding scales a larger image down to it;
-- a private purpose is encrypted.
+- a private purpose is encrypted, and one that accepts raster images declares
+  re-encoding (`image.reencode`), so the image is re-encoded before it is
+  encrypted.
 
 ### Uploading
 
@@ -975,8 +978,9 @@ rules](#link-rules)).
   (below); after the release it gives purposes without it.
 - **Private purposes are never given.** `certificate_asset` is private: the
   purpose says the file is encrypted in the private bucket, and these blobs
-  are public. Certificate template assets stay `legacy` until private Media
-  storage (ticket 06) moves them and gives them the purpose itself.
+  are public. Certificate template assets stay `legacy` for good: nothing
+  moves them into private storage (decision G1; see
+  [Certificate assets](#certificate-assets)).
 - **Mixed uses stay legacy (decision K1).** The backfill does not pick
   between an Event and a person's profile picture, or between core and a
   product's record. Those Media keep the legacy rules: no expiry of their
@@ -991,8 +995,7 @@ holds up the ones after it; passes repeat a minute apart until one ends with
 nothing failed. The log names a failing Media once an hour, not on every
 pass, and prints a pass only when it assigned something or its number of
 failures changed: `media legacy purpose backfill: assigned N, kept legacy P
-(private purpose, until private Media storage) and M (mixed uses), skipped S,
-failed F`. Skipped are Media that were no longer legacy, or no longer used by
+(their purpose would be private) and M (mixed uses), skipped S, failed F`. Skipped are Media that were no longer legacy, or no longer used by
 core, when the pass reached them.
 
 What changes for a Media that got a purpose: a new link checks its purpose (a
@@ -1313,7 +1316,15 @@ encryption, and the asset serving backfill skips it. A publish that fails
 deletes the private copies it wrote, however far it got; one whose version
 may have been stored although the store answered an error (a lost commit
 answer) keeps them, since that version's certificates need them: they are
-deleted only when the version is provably not there.
+deleted only when the version is provably not there. One rare race remains:
+an INSERT still running on the database when the lookup misses it; a request
+context is cancelled only at shutdown, so the window is narrow, and what it
+could leave is a version whose private copy is gone.
+
+Issued certificate PDFs (`certificates/<serial>.pdf`) are written to the
+public bucket by design, and contain the rendered assets, private ones
+included: a certificate is meant to be shared and verified by anyone who has
+its link.
 
 Certificate assets uploaded before private Media are `legacy` and public, and
 stay so: they render as before, and their version copies stay in the public

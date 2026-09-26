@@ -47,11 +47,10 @@ type Service interface {
 	// IssueReadLink gives a five-minute read link to a private Media: to
 	// the owning product's service account for one of its purposes, for
 	// the person it acts for (onBehalfOf), or to a privileged admin for a
-	// core purpose, the admin being the actor (onBehalfOf empty). onBehalfOf
-	// is the request's user id as sent; one that is not a UUID is
-	// ErrInvalid once the caller is authorized. Every link is written to the
-	// access log.
-	IssueReadLink(ctx context.Context, p authz.Principal, id uuid.UUID, onBehalfOf string) (ReadLink, error)
+	// core purpose, the admin being the actor (the request names no one).
+	// A malformed request is ErrInvalid once the caller is authorized. Every
+	// link is written to the access log.
+	IssueReadLink(ctx context.Context, p authz.Principal, id uuid.UUID, req ReadLinkRequest) (ReadLink, error)
 	// OpenContent opens a private Media's decrypted content for a read link
 	// token, and writes the open to the access log.
 	OpenContent(ctx context.Context, id uuid.UUID, token, clientIP string) (Content, error)

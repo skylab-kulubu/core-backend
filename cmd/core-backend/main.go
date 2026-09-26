@@ -171,7 +171,7 @@ func main() {
 	// Legacy Media core attaches get the purpose of their use (media redesign
 	// ticket 08). Only the purpose changes; the blobs stay where they are.
 	media.MaintainLegacyPurposeBackfill(context.Background(), mediaStore, mediaPurposes, time.Minute, func(report media.LegacyPurposeReport) {
-		log.Printf("media legacy purpose backfill: assigned %d, kept legacy %d (private purpose, until private Media storage) and %d (mixed uses), skipped %d, failed %d",
+		log.Printf("media legacy purpose backfill: assigned %d, kept legacy %d (their purpose would be private) and %d (mixed uses), skipped %d, failed %d",
 			report.Assigned, report.KeptPrivate, report.KeptMixed, report.Skipped, report.Failed)
 	}, func(err error) {
 		log.Printf("media legacy purpose backfill: %v", err)

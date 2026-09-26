@@ -67,6 +67,56 @@ func TestApplyRepairsAPermissiveMediaVisibilityCheck(t *testing.T) {
 	}
 }
 
+// TestApplyRepairsTheReadLinkConstraints: a read link that may expire before
+// it is issued, or name a Media that does not exist, is not the migrated
+// schema; the migration runs again and puts the exact constraints back.
+func TestApplyRepairsTheReadLinkConstraints(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM schema_migrations WHERE version = 20260926170000;
+		ALTER TABLE media_read_links
+			DROP CONSTRAINT media_read_links_media_id_fkey,
+			DROP CONSTRAINT media_read_links_expiry_check,
+			ADD CONSTRAINT media_read_links_expiry_check CHECK (expires_at >= issued_at);
+		ALTER TABLE media_read_link_opens
+			DROP CONSTRAINT media_read_link_opens_link_id_fkey,
+			ADD CONSTRAINT media_read_link_opens_link_id_fkey FOREIGN KEY (link_id) REFERENCES media_read_links(id);
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE conrelid IN ('media_read_links'::regclass, 'media_read_link_opens'::regclass) AND contype IN ('f', 'c')
+		ORDER BY conname`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for rows.Next() {
+		var name, definition string
+		if err := rows.Scan(&name, &definition); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, name+": "+definition)
+	}
+	want := []string{
+		"media_read_link_opens_link_id_fkey: FOREIGN KEY (link_id) REFERENCES media_read_links(id) ON DELETE CASCADE",
+		"media_read_links_expiry_check: CHECK ((expires_at > issued_at))",
+		"media_read_links_media_id_fkey: FOREIGN KEY (media_id) REFERENCES media(id)",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("constraints\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 // A private Media without a key version is refused.
 func TestPrivateMediaNeedsAKeyVersion(t *testing.T) {
 	pool := postgresPool(t)

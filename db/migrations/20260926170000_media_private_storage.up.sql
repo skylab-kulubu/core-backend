@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS media_read_links (
     expires_at TIMESTAMPTZ NOT NULL,
     CONSTRAINT media_read_links_expiry_check CHECK (expires_at > issued_at)
 );
+-- The constraints are put back as written when a rerun finds them changed.
+ALTER TABLE media_read_links DROP CONSTRAINT IF EXISTS media_read_links_media_id_fkey;
+ALTER TABLE media_read_links ADD CONSTRAINT media_read_links_media_id_fkey FOREIGN KEY (media_id) REFERENCES media(id);
+ALTER TABLE media_read_links DROP CONSTRAINT IF EXISTS media_read_links_expiry_check;
+ALTER TABLE media_read_links ADD CONSTRAINT media_read_links_expiry_check CHECK (expires_at > issued_at);
 CREATE INDEX IF NOT EXISTS media_read_links_media_idx ON media_read_links (media_id, issued_at);
 CREATE INDEX IF NOT EXISTS media_read_links_issued_idx ON media_read_links (issued_at);
 
@@ -36,5 +41,8 @@ CREATE TABLE IF NOT EXISTS media_read_link_opens (
     opened_at TIMESTAMPTZ NOT NULL,
     client_ip TEXT NOT NULL
 );
+ALTER TABLE media_read_link_opens DROP CONSTRAINT IF EXISTS media_read_link_opens_link_id_fkey;
+ALTER TABLE media_read_link_opens ADD CONSTRAINT media_read_link_opens_link_id_fkey
+    FOREIGN KEY (link_id) REFERENCES media_read_links(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS media_read_link_opens_link_idx ON media_read_link_opens (link_id, opened_at);
 CREATE INDEX IF NOT EXISTS media_read_link_opens_opened_idx ON media_read_link_opens (opened_at);

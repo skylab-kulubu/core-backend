@@ -28,6 +28,11 @@ var (
 	// .svg, and serves it as a download (ServingMetadata): never inline,
 	// and never for a purpose that does not list it.
 	ErrCeilingSVG = errors.New("media purpose catalogue: only CMS images and Event pictures accept SVG")
+	// ErrCeilingPrivateRaster: a private purpose that accepts raster images
+	// declares re-encoding, as a public one does: the image is re-encoded
+	// before it is encrypted, so no uploaded image bytes are stored as they
+	// came.
+	ErrCeilingPrivateRaster = errors.New("media purpose catalogue: a private purpose declares re-encoding for raster images")
 	// ErrCeilingSize: a purpose's maximum stays under the global maximum of
 	// its transport: MaxUploadBytes through core, MaxDirectUploadBytes by
 	// Direct upload.
@@ -71,8 +76,12 @@ func checkCeilings(p Purpose) error {
 	if p.Visibility == VisibilityPrivate && !p.Encrypted {
 		return fmt.Errorf("%s: %w", p.Name, ErrCeilingPrivate)
 	}
-	if slices.Contains(p.Types, svgType) && !slices.Contains(svgPurposes, p.Name) {
+	// SVG is never private, whatever the purpose is called.
+	if slices.Contains(p.Types, svgType) && (p.Visibility == VisibilityPrivate || !slices.Contains(svgPurposes, p.Name)) {
 		return fmt.Errorf("%s names %s: %w", p.Name, svgType, ErrCeilingSVG)
+	}
+	if p.Visibility == VisibilityPrivate && !p.Image.Reencode && slices.ContainsFunc(p.Types, isRasterType) {
+		return fmt.Errorf("%s: %w", p.Name, ErrCeilingPrivateRaster)
 	}
 	if p.Visibility == VisibilityPublic {
 		for _, t := range p.Types {

@@ -95,7 +95,7 @@ func TestPostgresAccessLogKeepsEveryLinkAndOpen(t *testing.T) {
 	}
 	issuedAt := db.bao.Clock.Now()
 
-	link, err := db.svc.IssueReadLink(ctx, formsService, created.ID, reviewer.String())
+	link, err := db.svc.IssueReadLink(ctx, formsService, created.ID, forPerson(reviewer.String()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestPostgresReadLinkNeedsAnActiveAccount(t *testing.T) {
 	}
 
 	for name, person := range map[string]uuid.UUID{"unknown to core": uuid.New(), "being erased": leaving} {
-		if _, err := db.svc.IssueReadLink(ctx, formsService, created.ID, person.String()); !errors.Is(err, media.ErrLinkSubjectInactive) {
+		if _, err := db.svc.IssueReadLink(ctx, formsService, created.ID, forPerson(person.String())); !errors.Is(err, media.ErrLinkSubjectInactive) {
 			t.Errorf("%s: err = %v, want %v", name, err, media.ErrLinkSubjectInactive)
 		}
 	}

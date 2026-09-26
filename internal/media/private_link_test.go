@@ -17,6 +17,15 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/transit"
 )
 
+// forPerson is a read link request naming the person as sent; "" names no
+// one.
+func forPerson(onBehalfOf string) media.ReadLinkRequest {
+	if onBehalfOf == "" {
+		return media.ReadLinkRequest{}
+	}
+	return media.ReadLinkRequest{OnBehalfOf: &onBehalfOf}
+}
+
 // reviewer is the Skyforms reviewer the service account acts for.
 var reviewer = uuid.MustParse("80808080-8080-8080-8080-808080808080")
 
@@ -46,7 +55,7 @@ func TestService_OwningProductGetsAFiveMinuteReadLink(t *testing.T) {
 	file := pm.answerFile(t, signedIn("81818181-8181-8181-8181-818181818181"))
 	issuedAt := pm.bao.Clock.Now()
 
-	link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, reviewer.String())
+	link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, forPerson(reviewer.String()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +107,7 @@ func TestService_ReadLinkIsOnlyForTheOwningProduct(t *testing.T) {
 		"an acting person not a UUID":   {formsService, file.ID, "reviewer", media.ErrInvalid},
 		"a person with a malformed id":  {withoutRole, file.ID, "reviewer", media.ErrLinkForbidden},
 	} {
-		if _, err := pm.svc.IssueReadLink(context.Background(), tc.p, tc.id, tc.onBehalfOf); !errors.Is(err, tc.want) {
+		if _, err := pm.svc.IssueReadLink(context.Background(), tc.p, tc.id, forPerson(tc.onBehalfOf)); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err = %v, want %v", name, err, tc.want)
 		}
 	}
@@ -111,7 +120,7 @@ func TestService_ReadLinkOpensTheDecryptedFileAndLogsTheOpen(t *testing.T) {
 	t.Parallel()
 	pm := newPrivateMedia(t)
 	file := pm.answerFile(t, signedIn("83838383-8383-8383-8383-838383838383"))
-	link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, reviewer.String())
+	link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, forPerson(reviewer.String()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +149,7 @@ func TestService_ExpiredReadLinkIsRefused(t *testing.T) {
 	t.Parallel()
 	pm := newPrivateMedia(t)
 	file := pm.answerFile(t, signedIn("84848484-8484-8484-8484-848484848484"))
-	link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, reviewer.String())
+	link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, forPerson(reviewer.String()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +168,7 @@ func TestService_TamperedReadLinkIsRefused(t *testing.T) {
 	pm := newPrivateMedia(t)
 	respondent := signedIn("85858585-8585-8585-8585-858585858585")
 	file, other := pm.answerFile(t, respondent), pm.answerFile(t, respondent)
-	link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, reviewer.String())
+	link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, forPerson(reviewer.String()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +202,7 @@ func TestService_ReadLinksStillOpenFilesAfterKeyRotation(t *testing.T) {
 	after := pm.answerFile(t, respondent)
 
 	for _, file := range []media.Media{before, after} {
-		link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, reviewer.String())
+		link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, forPerson(reviewer.String()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -214,7 +223,7 @@ func TestService_OpenBaoDownRefusesPrivateReads(t *testing.T) {
 	t.Parallel()
 	pm := newPrivateMedia(t)
 	file := pm.answerFile(t, signedIn("87878787-8787-8787-8787-878787878787"))
-	link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, reviewer.String())
+	link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, forPerson(reviewer.String()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +247,7 @@ func TestService_ChangedCiphertextIsNeverServed(t *testing.T) {
 	if err := pm.private.Put(context.Background(), file.Key, changed, media.BlobMetadata{}); err != nil {
 		t.Fatal(err)
 	}
-	link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, reviewer.String())
+	link, err := pm.svc.IssueReadLink(context.Background(), formsService, file.ID, forPerson(reviewer.String()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +278,7 @@ func TestService_WrongKeyVersionIsRefused(t *testing.T) {
 		if _, err := pm.store.Create(ctx, copied); err != nil {
 			t.Fatal(err)
 		}
-		link, err := pm.svc.IssueReadLink(ctx, formsService, copied.ID, reviewer.String())
+		link, err := pm.svc.IssueReadLink(ctx, formsService, copied.ID, forPerson(reviewer.String()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -290,7 +299,7 @@ func TestService_AdminGetsAReadLinkToCoresOwnPrivateMedia(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	link, err := pm.svc.IssueReadLink(context.Background(), editor, asset.ID, "")
+	link, err := pm.svc.IssueReadLink(context.Background(), editor, asset.ID, media.ReadLinkRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +326,25 @@ func TestService_AdminGetsAReadLinkToCoresOwnPrivateMedia(t *testing.T) {
 		"a team leader":                {authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}, "", media.ErrLinkForbidden},
 		"Skyforms":                     {formsService, reviewer.String(), media.ErrNotFound},
 	} {
-		if _, err := pm.svc.IssueReadLink(context.Background(), tc.p, asset.ID, tc.onBehalfOf); !errors.Is(err, tc.want) {
+		if _, err := pm.svc.IssueReadLink(context.Background(), tc.p, asset.ID, forPerson(tc.onBehalfOf)); !errors.Is(err, tc.want) {
+			t.Errorf("%s: err = %v, want %v", name, err, tc.want)
+		}
+	}
+	// An admin names no one: a present onBehalfOf, even empty, and a body
+	// that could not be read are malformed requests; a person without the
+	// right is refused before the body counts.
+	empty := ""
+	for name, tc := range map[string]struct {
+		p    authz.Principal
+		req  media.ReadLinkRequest
+		want error
+	}{
+		"an admin with an empty onBehalfOf":   {editor, media.ReadLinkRequest{OnBehalfOf: &empty}, media.ErrInvalid},
+		"an admin with a malformed body":      {editor, media.ReadLinkRequest{Malformed: true}, media.ErrInvalid},
+		"Skyforms with a malformed body":      {formsService, media.ReadLinkRequest{Malformed: true}, media.ErrInvalid},
+		"a team leader with a malformed body": {authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}, media.ReadLinkRequest{Malformed: true}, media.ErrLinkForbidden},
+	} {
+		if _, err := pm.svc.IssueReadLink(context.Background(), tc.p, asset.ID, tc.req); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err = %v, want %v", name, err, tc.want)
 		}
 	}
@@ -343,7 +370,7 @@ func TestService_PrivateObjectCopiedToAnotherKeyIsNeverServed(t *testing.T) {
 	if _, err := pm.store.Create(ctx, copied); err != nil {
 		t.Fatal(err)
 	}
-	link, err := pm.svc.IssueReadLink(ctx, formsService, copied.ID, reviewer.String())
+	link, err := pm.svc.IssueReadLink(ctx, formsService, copied.ID, forPerson(reviewer.String()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +382,7 @@ func TestService_PrivateObjectCopiedToAnotherKeyIsNeverServed(t *testing.T) {
 func TestService_ReadLinksAreRefusedWhilePrivateMediaIsOff(t *testing.T) {
 	t.Parallel()
 	svc, _ := setup(t)
-	if _, err := svc.IssueReadLink(context.Background(), formsService, uuid.New(), reviewer.String()); !errors.Is(err, media.ErrPrivateMediaDisabled) {
+	if _, err := svc.IssueReadLink(context.Background(), formsService, uuid.New(), forPerson(reviewer.String())); !errors.Is(err, media.ErrPrivateMediaDisabled) {
 		t.Fatalf("link: err = %v", err)
 	}
 	if _, err := svc.OpenContent(context.Background(), uuid.New(), "token", "203.0.113.9"); !errors.Is(err, media.ErrPrivateMediaDisabled) {
@@ -380,7 +407,7 @@ func TestService_MissingTransitKeyIsUnavailableNotIntegrity(t *testing.T) {
 				LinkOrigin: "https://api.example.test", AccessLog: pm.store, Now: pm.bao.Clock.Now,
 			},
 		})
-	link, err := svc.IssueReadLink(context.Background(), formsService, file.ID, reviewer.String())
+	link, err := svc.IssueReadLink(context.Background(), formsService, file.ID, forPerson(reviewer.String()))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -34,6 +34,16 @@ var (
 	ErrLinkExpired = errors.New("media: the read link has expired")
 )
 
+// ReadLinkRequest is a read link request as its caller sent it.
+type ReadLinkRequest struct {
+	// OnBehalfOf is the person the link is for, as sent; nil when the
+	// request names no one.
+	OnBehalfOf *string
+	// Malformed is a request that could not be read: not JSON, or an
+	// onBehalfOf that is not a string.
+	Malformed bool
+}
+
 // ReadLink is a link to a private Media's content that opens it for
 // ReadLinkTTL.
 type ReadLink struct {
@@ -88,22 +98,25 @@ type AccessLog interface {
 //     admin being the person the link is for.
 //
 // Core records every link before it hands it out.
-func (s *service) IssueReadLink(ctx context.Context, p authz.Principal, id uuid.UUID, onBehalfOf string) (ReadLink, error) {
+func (s *service) IssueReadLink(ctx context.Context, p authz.Principal, id uuid.UUID, req ReadLinkRequest) (ReadLink, error) {
 	if s.private == nil {
 		return ReadLink{}, ErrPrivateMediaDisabled
 	}
 	switch {
 	case s.authz.Allow(p, authz.Resource{Type: authz.TypeMediaReadLink}, authz.Create):
-		person, err := uuid.Parse(onBehalfOf)
-		if id == uuid.Nil || err != nil || person == uuid.Nil {
+		if id == uuid.Nil || req.Malformed || req.OnBehalfOf == nil {
+			return ReadLink{}, ErrInvalid
+		}
+		person, err := uuid.Parse(*req.OnBehalfOf)
+		if err != nil || person == uuid.Nil {
 			return ReadLink{}, ErrInvalid
 		}
 		return s.issueReadLink(ctx, id, p.Product, person)
 	case s.authz.Allow(p, authz.Resource{Type: authz.TypeMediaReadLink}, authz.Read):
-		// The admin is the person the link is for; naming anyone, or
-		// anything, else is a malformed request.
+		// The admin is the person the link is for; naming anyone, even
+		// no one ("" or null), is a malformed request.
 		admin := lifecycle.ActorID(p.ID)
-		if id == uuid.Nil || admin == nil || onBehalfOf != "" {
+		if id == uuid.Nil || admin == nil || req.Malformed || req.OnBehalfOf != nil {
 			return ReadLink{}, ErrInvalid
 		}
 		return s.issueReadLink(ctx, id, authz.ProductCore, *admin)
