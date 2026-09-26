@@ -98,9 +98,21 @@ func (a Addresses) Image(m Media, size string, px int) ImageAddress {
 }
 
 // imageAddresses are the addresses of every size the purpose gives an
-// image Media, or nil when the Media has none: not a raster image.
+// image Media: the SVG itself for an SVG, or nil when the Media has none
+// (not a raster image or SVG).
 func (a Addresses) imageAddresses(m Media, sizes map[string]int) map[string]ImageAddress {
-	if m.Kind != KindImage || !isRasterType(m.Type) || len(sizes) == 0 {
+	if m.Kind != KindImage || len(sizes) == 0 {
+		return nil
+	}
+	if m.Type == svgType {
+		// An SVG scales itself: every size is the SVG.
+		out := make(map[string]ImageAddress, len(sizes))
+		for size := range sizes {
+			out[size] = ImageAddress{URL: a.Object(m.Key)}
+		}
+		return out
+	}
+	if !isRasterType(m.Type) {
 		return nil
 	}
 	out := make(map[string]ImageAddress, len(sizes))

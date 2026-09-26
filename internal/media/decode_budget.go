@@ -17,10 +17,9 @@ var ErrDecodeBusy = errors.New("media: busy decoding other images")
 // of them, so that together they hold at most Slots decoded images in
 // memory (docs/media-lifecycle.md, "Decode budget", has the worst case).
 type DecodeBudget struct {
-	slots    chan struct{}
-	svg      chan struct{}
-	wait     time.Duration
-	svgLimit time.Duration
+	slots chan struct{}
+	svg   chan struct{}
+	wait  time.Duration
 }
 
 // DecodeBudgetConfig sizes a DecodeBudget. Zero fields take the defaults.
@@ -30,13 +29,10 @@ type DecodeBudgetConfig struct {
 	// Wait is how long work waits for a slot before ErrDecodeBusy; default
 	// 10 seconds.
 	Wait time.Duration
-	// SVGDrawingLimit is how long drawing one SVG may take; default 5
-	// seconds.
-	SVGDrawingLimit time.Duration
 }
 
 // NewDecodeBudget makes a budget. SVG gets one slot of its own on top of
-// the shared ones: at most one SVG is drawn at a time.
+// the shared ones: at most one SVG is sanitized at a time.
 func NewDecodeBudget(config DecodeBudgetConfig) *DecodeBudget {
 	if config.Slots <= 0 {
 		config.Slots = 2
@@ -44,14 +40,10 @@ func NewDecodeBudget(config DecodeBudgetConfig) *DecodeBudget {
 	if config.Wait <= 0 {
 		config.Wait = 10 * time.Second
 	}
-	if config.SVGDrawingLimit <= 0 {
-		config.SVGDrawingLimit = 5 * time.Second
-	}
 	return &DecodeBudget{
-		slots:    make(chan struct{}, config.Slots),
-		svg:      make(chan struct{}, 1),
-		wait:     config.Wait,
-		svgLimit: config.SVGDrawingLimit,
+		slots: make(chan struct{}, config.Slots),
+		svg:   make(chan struct{}, 1),
+		wait:  config.Wait,
 	}
 }
 
@@ -75,8 +67,8 @@ func (b *DecodeBudget) TryAcquire() (release func(), ok bool) {
 	}
 }
 
-// AcquireSVG waits, within one wait, for the SVG slot (one SVG is drawn at
-// a time) and then a shared slot.
+// AcquireSVG waits, within one wait, for the SVG slot (one SVG is
+// sanitized at a time) and then a shared slot.
 func (b *DecodeBudget) AcquireSVG(ctx context.Context) (release func(), err error) {
 	timer := time.NewTimer(b.wait)
 	defer timer.Stop()

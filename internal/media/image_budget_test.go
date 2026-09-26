@@ -155,7 +155,7 @@ func TestService_UploadWaitsForADecodingSlotThenAnswersBusy(t *testing.T) {
 	}
 }
 
-func TestDecodeBudgetDrawsOneSVGAtATime(t *testing.T) {
+func TestDecodeBudgetSanitizesOneSVGAtATime(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	budget := media.NewDecodeBudget(media.DecodeBudgetConfig{Slots: 3, Wait: 20 * time.Millisecond})

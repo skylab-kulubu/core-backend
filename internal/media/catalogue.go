@@ -110,8 +110,8 @@ type Purpose struct {
 	// Uploader is who may upload Media of this purpose.
 	Uploader authz.MediaUploader
 	// Types are the content types the purpose accepts, detected from the
-	// file's content, never from its name or declared type. SVG is never
-	// among them: image.rasterize_svg accepts it (acceptedTypes).
+	// file's content, never from its name or declared type. SVG among them
+	// is stored sanitized (sanitizeSVG), as a download.
 	Types      []string
 	MaxBytes   int64
 	Visibility Visibility
@@ -135,16 +135,14 @@ type Purpose struct {
 	LegacyRules bool
 }
 
-// ImageHandling is what core does with an image of a purpose: re-encode it
-// (Reencode) within MaxDimension (MaxImageDimension when 0), store its Sizes
-// beside it (size name, SizeCard or SizePage, to its longer side in
-// pixels), and accept SVG, stored as PNG (RasterizeSVG, the one switch for
-// SVG).
+// ImageHandling is what core does with a raster image of a purpose:
+// re-encode it (Reencode) within MaxDimension (MaxImageDimension when 0)
+// and store its Sizes beside it (size name, SizeCard or SizePage, to its
+// longer side in pixels).
 type ImageHandling struct {
 	Reencode     bool           `json:"reencode"`
 	MaxDimension int            `json:"max_dimension"`
 	Sizes        map[string]int `json:"sizes"`
-	RasterizeSVG bool           `json:"rasterize_svg"`
 }
 
 // maxDimension is the longer side a re-encoded image is scaled down to.
@@ -343,23 +341,14 @@ func (c Catalogue) purposesWithSizes() []string {
 	return out
 }
 
-// acceptedTypes are the content types the purpose accepts: its types, and
-// SVG when it rasterizes SVG (image.rasterize_svg), the one switch for SVG.
-func (p Purpose) acceptedTypes() []string {
-	if p.Image.RasterizeSVG {
-		return append(slices.Clone(p.Types), svgType)
-	}
-	return p.Types
-}
-
 // accepts reports whether the purpose accepts content of the type.
 func (p Purpose) accepts(contentType string) bool {
-	return slices.Contains(p.acceptedTypes(), contentType)
+	return slices.Contains(p.Types, contentType)
 }
 
 // typeRefusal refuses content the purpose does not accept.
 func (p Purpose) typeRefusal() error {
-	return &PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: p.Name, AllowedTypes: p.acceptedTypes()}
+	return &PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: p.Name, AllowedTypes: p.Types}
 }
 
 // Lookup returns the Media purpose with this name.

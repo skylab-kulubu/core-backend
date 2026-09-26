@@ -73,8 +73,8 @@ func isImage(data []byte) bool {
 // raster formats, PDF when the file starts with its header, SVG when an
 // <svg element opens in its first KiB, or "" for anything else. isPDF,
 // which finds the header anywhere in the first KiB, stays the rule only for
-// Media uploaded without a purpose. An SVG is never stored as one: a
-// purpose that names it rasterizes it (rasterizeSVG).
+// Media uploaded without a purpose. An SVG for a purpose that lists it is
+// stored sanitized (sanitizeSVG).
 //
 // DOCX, ZIP and MP4 are detected when private Media and Direct upload
 // arrive; until then nothing reaches a purpose that names them.
@@ -104,7 +104,7 @@ func sanitizeImage(data []byte) ([]byte, string, error) {
 		}
 	}
 	if isSVG(data) {
-		out, err := sanitizeSVG(data)
+		out, err := stripSVGScripts(data)
 		return out, svgType, err
 	}
 	return nil, "", ErrInvalid
@@ -358,7 +358,10 @@ func isGIFXMP(b []byte, p int) bool {
 	return strings.HasPrefix(string(b[p+1:p+12]), "XMP Data")
 }
 
-func sanitizeSVG(b []byte) ([]byte, error) {
+// stripSVGScripts is the regex strip Media uploaded without a purpose keep
+// for SVG (served as a download); an SVG for a purpose is sanitized
+// strictly (sanitizeSVG).
+func stripSVGScripts(b []byte) ([]byte, error) {
 	s := string(b)
 	s = reSVGScript.ReplaceAllString(s, "")
 	s = reSVGOnAttr.ReplaceAllString(s, "")

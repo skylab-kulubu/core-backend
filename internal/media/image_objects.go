@@ -16,11 +16,12 @@ var sizeObjectTypes = []string{"image/jpeg", "image/png"}
 // backfill and every purge ask here.
 
 // canHaveSizeObjects reports whether sizes may be stored beside the object
-// at key: only an object core itself stored under images/. The size
+// at key: only a raster image core itself stored under images/ (an SVG
+// gets none). The size
 // backfill leaves any other key (an absolute address kept from before core
 // stored keys, a key of another shape) without sizes.
 func canHaveSizeObjects(key string) bool {
-	return strings.HasPrefix(key, "images/") && !isAbsoluteURL(key)
+	return strings.HasPrefix(key, "images/") && !strings.HasSuffix(key, ".svg") && !isAbsoluteURL(key)
 }
 
 // sizeObjectKey is the object key of an image's size: next to the image's

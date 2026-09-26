@@ -3,6 +3,7 @@ package media_test
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/skylab-kulubu/core-backend/config"
@@ -65,11 +66,11 @@ func TestCatalogue_PublicRasterImagesAreReencoded(t *testing.T) {
 	}
 }
 
-func TestCatalogue_SVGIsNeverStoredAsSVG(t *testing.T) {
+// SVG is served only as a sanitized download from the CDN: a private
+// purpose (an Answer file, a certificate asset) cannot list it.
+func TestCatalogue_OnlyAPublicPurposeAcceptsSVG(t *testing.T) {
 	t.Parallel()
-	// SVG is accepted only by image.rasterize_svg; naming it in types
-	// would keep it as SVG, even beside the switch.
-	for _, purpose := range []string{"cms_image", "event_cover"} {
+	for _, purpose := range []string{"answer_file", "certificate_asset"} {
 		data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
 			purposes[purpose]["types"] = append(purposes[purpose]["types"].([]any), "image/svg+xml")
 		})
@@ -77,12 +78,15 @@ func TestCatalogue_SVGIsNeverStoredAsSVG(t *testing.T) {
 			t.Fatalf("%s naming SVG: err = %v, want %v", purpose, err, media.ErrCeilingSVG)
 		}
 	}
-	// Turning the switch off is one edit that loads.
-	data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
-		purposes["cms_image"]["image"].(map[string]any)["rasterize_svg"] = false
-	})
-	if _, err := media.ParseCatalogue(data); err != nil {
-		t.Fatalf("cms_image without SVG: %v", err)
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for purpose, want := range map[string]bool{"cms_image": true, "event_cover": true, "event_gallery": true, "profile_picture": false, "answer_file": false} {
+		p, _ := catalogue.Lookup(purpose)
+		if got := slices.Contains(p.Types, "image/svg+xml"); got != want {
+			t.Errorf("%s lists SVG: %v, want %v", purpose, got, want)
+		}
 	}
 }
 
@@ -153,6 +157,9 @@ func TestCatalogue_RefusesMalformedEntries(t *testing.T) {
 			p["event_cover"]["image"].(map[string]any)["sizes"] = map[string]any{"poster": 800}
 		},
 		"name that is not a slug": func(p purposeEntries) { p["Event Cover"] = p["event_cover"] },
+		"SVG rasterizing, no more": func(p purposeEntries) {
+			p["cms_image"]["image"].(map[string]any)["rasterize_svg"] = true
+		},
 		"no legacy purpose":       func(p purposeEntries) { delete(p, "legacy") },
 		"no profile picture":      func(p purposeEntries) { delete(p, "profile_picture") },
 		"legacy rules on another": func(p purposeEntries) { p["cms_file"]["legacy_rules"] = true },

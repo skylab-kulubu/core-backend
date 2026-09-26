@@ -3,14 +3,15 @@ package media
 import (
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // The hard ceilings of ADR-0052. No catalogue entry can loosen them: core
 // refuses to start with a catalogue that breaks one.
 var (
-	// ErrCeilingPublicType: a public purpose accepts only raster images, PDF
-	// and MP4, the types a browser cannot run script from.
-	ErrCeilingPublicType = errors.New("media purpose catalogue: a public purpose accepts only raster images, PDF and MP4")
+	// ErrCeilingPublicType: a public purpose accepts only raster images,
+	// SVG (sanitized, served as a download), PDF and MP4.
+	ErrCeilingPublicType = errors.New("media purpose catalogue: a public purpose accepts only raster images, SVG, PDF and MP4")
 	// ErrCeilingPublicRaster: a public purpose that accepts raster images
 	// declares image.reencode, so that no uploaded image bytes reach the CDN
 	// as they came: core decodes such an image and stores only its pixels,
@@ -18,10 +19,11 @@ var (
 	// (legacy) are not a purpose's upload and keep their stripped bytes
 	// until they fall to the strict rule.
 	ErrCeilingPublicRaster = errors.New("media purpose catalogue: a public purpose declares re-encoding for raster images")
-	// ErrCeilingSVG: SVG is never stored as SVG. A purpose accepts it only
-	// with image.rasterize_svg, which rasterizes it to PNG; naming it in
-	// types breaks the ceiling.
-	ErrCeilingSVG = errors.New("media purpose catalogue: SVG is rasterized to PNG, never stored as SVG")
+	// ErrCeilingSVG: only a public purpose accepts SVG. Core stores an SVG
+	// only after sanitizing it (sanitizeSVG), under a key ending in .svg,
+	// and serves it as a download (ServingMetadata): never inline, and
+	// never for a purpose that does not list it.
+	ErrCeilingSVG = errors.New("media purpose catalogue: only a public purpose accepts SVG")
 	// ErrCeilingSize: a purpose's maximum stays under the global maximum of
 	// its transport: MaxUploadBytes through core, MaxDirectUploadBytes by
 	// Direct upload.
@@ -62,16 +64,12 @@ func checkCeilings(p Purpose) error {
 	if p.Visibility == VisibilityPrivate && !p.Encrypted {
 		return fmt.Errorf("%s: %w", p.Name, ErrCeilingPrivate)
 	}
-	for _, t := range p.Types {
-		if t == svgType {
-			// SVG is accepted only by image.rasterize_svg, which stores it
-			// as PNG: one switch turns it off.
-			return fmt.Errorf("%s names %s: %w", p.Name, t, ErrCeilingSVG)
-		}
+	if p.Visibility != VisibilityPublic && slices.Contains(p.Types, svgType) {
+		return fmt.Errorf("%s names %s: %w", p.Name, svgType, ErrCeilingSVG)
 	}
 	if p.Visibility == VisibilityPublic {
 		for _, t := range p.Types {
-			if !isRasterType(t) && t != pdfType && t != mp4Type {
+			if !isRasterType(t) && t != svgType && t != pdfType && t != mp4Type {
 				return fmt.Errorf("%s names %s: %w", p.Name, t, ErrCeilingPublicType)
 			}
 			if isRasterType(t) && !p.Image.Reencode {

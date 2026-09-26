@@ -126,15 +126,21 @@ type storedFile struct {
 	ctype     string
 	kind      string
 	keyPrefix string
-	// image is set for an image core re-encoded (or rasterized): its size,
-	// its sizes to store beside it and its cover colours. Nil for anything
-	// else, whose sizes core does not make.
+	// keySuffix ends the object key: .svg for an SVG.
+	keySuffix string
+	// image is set for an image core encoded or sanitized itself: its
+	// size, its sizes to store beside it and its cover colours. Nil for
+	// anything else, whose sizes core does not make.
 	image *reencodedImage
 }
 
-// imageFile is the storedFile of an image core encoded.
+// imageFile is the storedFile of an image core encoded or sanitized.
 func imageFile(img reencodedImage) storedFile {
-	return storedFile{body: img.body, ctype: img.ctype, kind: KindImage, keyPrefix: "images/", image: &img}
+	file := storedFile{body: img.body, ctype: img.ctype, kind: KindImage, keyPrefix: "images/", image: &img}
+	if img.ctype == svgType {
+		file.keySuffix = ".svg"
+	}
+	return file
 }
 
 func (s *service) UploadForPurpose(ctx context.Context, p authz.Principal, purposeName string, file UploadedFile) (Media, error) {
@@ -174,7 +180,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if err != nil {
 		return Media{}, err
 	}
-	key := stored.keyPrefix + uuid.NewString()
+	key := stored.keyPrefix + uuid.NewString() + stored.keySuffix
 
 	staging, durableStaging := s.media.(UploadStagingStore)
 	if durableStaging {
@@ -197,7 +203,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	var sizeObjects map[string]SizeObject
 	colors, colorsComputed := []string{}, false
 	if stored.image != nil {
-		if !canHaveSizeObjects(key) {
+		if len(stored.image.sizes) > 0 && !canHaveSizeObjects(key) {
 			return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, nil, fmt.Errorf("media: key %q cannot have sizes", key))
 		}
 		for _, size := range stored.image.sizes {
@@ -247,16 +253,16 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 }
 
 // storedFile is what the purpose's rules make of the file. An image for a
-// purpose is decoded within the decode budget, and an SVG within its own
-// slot too; a wait that runs out is ErrDecodeBusy. A file uploaded without
-// a purpose is never decoded here.
+// purpose is decoded within the decode budget, and an SVG sanitized within
+// its own slot too; a wait that runs out is ErrDecodeBusy. A file uploaded
+// without a purpose is never decoded here.
 func (s *service) storedFile(ctx context.Context, purpose Purpose, file UploadedFile) (storedFile, error) {
 	if purpose.LegacyRules {
 		return legacyFile(file)
 	}
 	if isImage(file.Data) {
 		acquire := s.decoding.Acquire
-		if isSVG(file.Data) && purpose.Image.RasterizeSVG {
+		if isSVG(file.Data) && purpose.accepts(svgType) {
 			acquire = s.decoding.AcquireSVG
 		}
 		release, err := acquire(ctx)
@@ -265,7 +271,7 @@ func (s *service) storedFile(ctx context.Context, purpose Purpose, file Uploaded
 		}
 		defer release()
 	}
-	return purposeFile(ctx, purpose, file.Data, s.decoding.svgLimit)
+	return purposeFile(purpose, file.Data)
 }
 
 // coverColors picks the cover colours of an image stored as uploaded,
@@ -337,7 +343,7 @@ func legacyFile(file UploadedFile) (storedFile, error) {
 // purposeFile accepts a file by its content under its purpose's rules. The
 // name and the declared type play no part. The caller holds a decoding
 // slot for an image.
-func purposeFile(ctx context.Context, purpose Purpose, data []byte, svgLimit time.Duration) (storedFile, error) {
+func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
 	if int64(len(data)) > purpose.MaxBytes {
 		return storedFile{}, &PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: purpose.MaxBytes}
 	}
@@ -352,10 +358,14 @@ func purposeFile(ctx context.Context, purpose Purpose, data []byte, svgLimit tim
 	var err error
 	switch {
 	case detected == svgType:
-		img, err = rasterizeSVG(ctx, data, purpose.Image, svgLimit)
+		var clean []byte
+		clean, err = sanitizeSVG(data)
 		if errors.Is(err, errSVGTooLarge) {
 			return storedFile{}, &PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: maxSVGBytes}
 		}
+		// Stored as SVG, sanitized; no sizes (every size is the SVG itself)
+		// and no cover colours.
+		img = reencodedImage{body: clean, ctype: svgType, coverColors: []string{}}
 	case purpose.Image.Reencode:
 		img, err = reencodeRaster(data, purpose.Image)
 	default:
@@ -369,9 +379,9 @@ func purposeFile(ctx context.Context, purpose Purpose, data []byte, svgLimit tim
 	switch {
 	case errors.As(err, &tooLarge):
 		return storedFile{}, &PurposeRefusal{Err: ErrImageTooLarge, Purpose: purpose.Name, MaxPixels: tooLarge.maxPixels}
-	case errors.Is(err, ErrInvalid), errors.Is(err, errSVGNotDrawn):
+	case errors.Is(err, ErrInvalid), errors.Is(err, errSVGRefused):
 		// The content starts like an accepted type but is not a valid
-		// image of it, or an SVG core does not rasterize.
+		// image of it, or an SVG core does not sanitize.
 		return storedFile{}, purpose.typeRefusal()
 	case err != nil:
 		return storedFile{}, err
