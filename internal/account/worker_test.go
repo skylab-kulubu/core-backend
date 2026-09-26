@@ -3,6 +3,7 @@ package account_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -471,5 +472,193 @@ func TestWorkerAllowsDeferredCleanupToBecomeManualAfterPolicyHorizon(t *testing.
 	}
 	if manual.Status != user.DeletionRequestManualIntervention || manual.LastErrorCode != "erase_staged_uploads_failed" {
 		t.Fatalf("expired deferral did not enter manual intervention: %+v", manual)
+	}
+}
+
+// fewPerPass is a person's recorded uploads for erase_profile_media and the
+// eraser that erases only perPass of them in each pass, as a pass the step's
+// time cuts short. The broken one is never erased.
+type fewPerPass struct {
+	*user.MemoryStore
+	left    []uuid.UUID
+	perPass int
+	broken  uuid.UUID
+	erased  map[time.Time]int
+}
+
+// newFewPerPass requests the erasure of a person with n recorded uploads.
+func newFewPerPass(t *testing.T, n, perPass int) (*fewPerPass, user.DeletionRequest) {
+	t.Helper()
+	ctx := context.Background()
+	store := &fewPerPass{MemoryStore: user.NewMemoryStore(), perPass: perPass, erased: map[time.Time]int{}}
+	for range n {
+		store.left = append(store.left, uuid.New())
+	}
+	subjectID := uuid.New()
+	if _, _, err := user.NewService(store.MemoryStore).Ensure(ctx, subjectID, user.Profile{Email: "many-files@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	request, err := store.RequestDeletion(ctx, subjectID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, request
+}
+
+func (m *fewPerPass) MediaForDeletion(context.Context, uuid.UUID) ([]uuid.UUID, error) {
+	return slices.Clone(m.left), nil
+}
+
+// EnsureErased counts a pass by its time, which the worker hands every call
+// of that pass.
+func (m *fewPerPass) EnsureErased(_ context.Context, id uuid.UUID, at time.Time) error {
+	if id == m.broken || m.erased[at] >= m.perPass {
+		return errors.New("media not erased")
+	}
+	m.erased[at]++
+	m.left = slices.DeleteFunc(m.left, func(left uuid.UUID) bool { return left == id })
+	return nil
+}
+
+func (m *fewPerPass) EnsureSubjectUploadsErased(context.Context, uuid.UUID, time.Time) error {
+	return nil
+}
+
+// A person with fifty recorded uploads whose erasure reaches
+// erase_profile_media past the deferral horizon (a service kept it waiting):
+// every pass erases a few and gives its attempt back, even with a budget of
+// one, until the pass that erases the last completes the request.
+func TestWorkerGivesBackAPassThatErasedSomePastTheHorizon(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, request := newFewPerPass(t, 50, 7)
+	now := request.CreatedAt.Add(49 * time.Hour)
+	confirmDeletionProjection(t, store, request, now)
+	worker := account.NewWorker(store, successfulIdentity{}, account.WorkerConfig{
+		Services: erasedServices(),
+		Now:      func() time.Time { return now }, MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
+		AccessBlocker: &accountBlockWriter{},
+	}, store)
+
+	passes := 0
+	for {
+		if passes++; passes > 10 {
+			t.Fatal("no pass finished the step")
+		}
+		worked, err := worker.RunOnce(ctx)
+		if !worked {
+			t.Fatalf("pass %d was not claimed", passes)
+		}
+		if err == nil {
+			break
+		}
+		pending, err := store.DeletionRequest(ctx, request.SubjectID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pending.Status != user.DeletionRequestPending || pending.AttemptCount != 0 || !pending.NextAttemptAt.Equal(now.Add(30*time.Second)) {
+			t.Fatalf("pass %d past the horizon: %+v; want pending, 0 attempts, in 30 s", passes, pending)
+		}
+		now = now.Add(30 * time.Second)
+	}
+	completed, err := store.DeletionRequest(ctx, request.SubjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != user.DeletionRequestCompleted || completed.AttemptCount != 1 || passes != 8 || len(store.left) != 0 {
+		t.Fatalf("after %d passes: %+v, %d left; want completed in 8 passes, 1 attempt", passes, completed, len(store.left))
+	}
+}
+
+// Past the horizon, the passes that erase some give their attempts back, and
+// once only a Media that never goes is left, each pass erases nothing and
+// spends its attempt: the eighth sends the request to manual intervention.
+func TestWorkerSpendsTheBudgetOnPassesThatEraseNothing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, request := newFewPerPass(t, 50, 7)
+	store.broken = store.left[0]
+	now := request.CreatedAt.Add(49 * time.Hour)
+	confirmDeletionProjection(t, store, request, now)
+	worker := account.NewWorker(store, successfulIdentity{}, account.WorkerConfig{
+		Services: erasedServices(),
+		Now:      func() time.Time { return now }, MaxAttempts: 8, DeferredRetryHorizon: 48 * time.Hour,
+		AccessBlocker: &accountBlockWriter{},
+	}, store)
+
+	for pass := 1; pass <= 7; pass++ {
+		if worked, err := worker.RunOnce(ctx); !worked || err == nil {
+			t.Fatalf("pass %d worked=%v err=%v", pass, worked, err)
+		}
+		pending, err := store.DeletionRequest(ctx, request.SubjectID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pending.AttemptCount != 0 {
+			t.Fatalf("pass %d erased some and spent %d attempts", pass, pending.AttemptCount)
+		}
+		now = now.Add(30 * time.Second)
+	}
+	if !slices.Equal(store.left, []uuid.UUID{store.broken}) {
+		t.Fatalf("%d left after the passes that erased some; want only the broken one", len(store.left))
+	}
+	for attempt := 1; attempt <= 8; attempt++ {
+		if worked, err := worker.RunOnce(ctx); !worked || err == nil {
+			t.Fatalf("attempt %d worked=%v err=%v", attempt, worked, err)
+		}
+		state, err := store.DeletionRequest(ctx, request.SubjectID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := user.DeletionRequestPending
+		if attempt == 8 {
+			want = user.DeletionRequestManualIntervention
+		}
+		if state.Status != want || state.AttemptCount != attempt || state.LastErrorCode != "erase_profile_media_failed" {
+			t.Fatalf("attempt %d: %+v; want %s", attempt, state, want)
+		}
+	}
+	if worked, err := worker.RunOnce(ctx); worked || err != nil {
+		t.Fatalf("manual request was reclaimed: worked=%v err=%v", worked, err)
+	}
+}
+
+// Inside the horizon a pass that erased some is the deferral it always was:
+// its attempt comes back and its next claim is no later than the horizon.
+// The pass at the horizon is given back all the same.
+func TestWorkerKeepsAPassThatErasedSomeInsideTheHorizonClampedToIt(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, request := newFewPerPass(t, 20, 7)
+	horizon := request.CreatedAt.Add(48 * time.Hour)
+	now := horizon.Add(-10 * time.Second)
+	confirmDeletionProjection(t, store, request, now)
+	worker := account.NewWorker(store, successfulIdentity{}, account.WorkerConfig{
+		Services: erasedServices(),
+		Now:      func() time.Time { return now }, MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
+		AccessBlocker: &accountBlockWriter{},
+	}, store)
+
+	for _, next := range []time.Time{horizon, horizon.Add(30 * time.Second)} {
+		if worked, err := worker.RunOnce(ctx); !worked || err == nil {
+			t.Fatalf("pass at %v worked=%v err=%v", now, worked, err)
+		}
+		pending, err := store.DeletionRequest(ctx, request.SubjectID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pending.Status != user.DeletionRequestPending || pending.AttemptCount != 0 || !pending.NextAttemptAt.Equal(next) {
+			t.Fatalf("pass at %v: %+v; want pending, 0 attempts, next at %v", now, pending, next)
+		}
+		now = next
+	}
+	if worked, err := worker.RunOnce(ctx); !worked || err != nil {
+		t.Fatalf("last pass worked=%v err=%v", worked, err)
+	}
+	if len(store.left) != 0 {
+		t.Fatalf("%d left", len(store.left))
 	}
 }

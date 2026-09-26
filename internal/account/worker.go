@@ -237,9 +237,10 @@ func (w *Worker) passAddresses(ctx context.Context, request user.DeletionRequest
 }
 
 // retry releases the claim. A permanent failure goes to manual intervention at
-// once; a deferred one (RetryAt) refunds the attempt until the horizon; any
-// other failure spends an attempt and goes to manual intervention when the
-// budget is spent.
+// once; a deferred one (RetryAt) refunds the attempt until the horizon, and
+// past it too when it made progress (Progressed), since what is left shrinks
+// with every such pass; any other failure spends an attempt and goes to
+// manual intervention when the budget is spent.
 //
 // The error it returns is the worker's log line (spec §2.7): the code, which
 // names the step, and the request_id. It never carries the subject, and the
@@ -252,18 +253,24 @@ func (w *Worker) retry(ctx context.Context, request user.DeletionRequest, now ti
 	manual := permanent || request.AttemptCount >= w.config.MaxAttempts
 	refundAttempt := false
 	var deferred interface{ RetryAt() time.Time }
+	var progress interface{ Progressed() bool }
+	progressed := errors.As(cause, &progress) && progress.Progressed()
 	horizon := request.CreatedAt.Add(w.config.DeferredRetryHorizon)
-	if !permanent && errors.As(cause, &deferred) && now.Before(horizon) {
+	withinHorizon := now.Before(horizon)
+	if !permanent && errors.As(cause, &deferred) && (withinHorizon || progressed) {
 		if retryAt := deferred.RetryAt(); retryAt.After(next) {
 			next = retryAt
 		}
-		if next.After(horizon) {
+		if withinHorizon && next.After(horizon) {
 			next = horizon
 		}
 		// A staged upload can legitimately retain its pre-publication lease for
 		// the configured grace period and an R2 delete failure adds another
 		// durable retry delay. Atomically refund this claim under the lease fence
 		// so any later genuine failure still receives the full attempt budget.
+		// A deferral that made progress is refunded past the horizon too: a
+		// person with many files is not sent to manual intervention because
+		// earlier steps spent the horizon waiting for a service.
 		manual = false
 		refundAttempt = true
 	}
