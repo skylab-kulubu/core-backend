@@ -1477,13 +1477,20 @@ No new saga step does this; the two existing ones do:
      and PDFs are served inline and named nothing. Then its record goes.
 
    A rerun gets only what is left; a Media purged another way meanwhile only
-   loses its record. Every upload is tried even when another fails. A pass
+   loses its record. Club content the archive or expiry purge has already
+   claimed keeps that claim untouched (it guards an object that may be half
+   deleted): the erasure only rewrites its metadata, lets its record go, and
+   the other purge finishes. The serving-policy backfill, which may have read
+   an upload's file name before the erasure, reads the Media again after each
+   metadata write and writes once more if the name changed, so it never
+   brings an erased name back. Every upload is tried even when another fails. A pass
    that erased some but not all (the step's time ran out for a person with
    many files) gives its attempt back and comes again in 30 seconds; a pass
    that erased none spends its attempt, so a lasting failure ends in manual
    intervention. The step's error goes to the worker's log: it counts the
    failures and names no Media, object, file or person, only errors core wrote
-   itself and a database error's SQLSTATE.
+   itself and a database error's SQLSTATE. `erase_staged_uploads` reports its
+   errors the same way.
 
 `cdn.` is not edge-cached (`cf-cache-status: DYNAMIC` for images, sizes and
 files, checked 2026-09-27), so the new metadata is what the CDN serves at

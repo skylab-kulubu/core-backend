@@ -38,8 +38,8 @@ func (e errObjectStorage) Unwrap() error { return e.cause }
 // erasureTexts are the errors an erasure error may name: core wrote their
 // text, and it holds no Media, object, file or person.
 var erasureTexts = []error{
-	ErrRecordedMediaNotErased, ErrProfileBlobNotErased, ErrPrivateMediaDisabled, ErrNotFound,
-	context.DeadlineExceeded, context.Canceled,
+	ErrRecordedMediaNotErased, ErrProfileBlobNotErased, ErrStagedUploadNotErased, ErrStagedUploadInFlight,
+	ErrPrivateMediaDisabled, ErrNotFound, context.DeadlineExceeded, context.Canceled,
 }
 
 // erasureError is an erasure error as the erasure worker may log it
@@ -294,13 +294,15 @@ func (e *ImmediateBlobEraser) deleteObject(ctx context.Context) func(string) err
 	}
 }
 
+// EnsureSubjectUploadsErased erases every staged upload of the person
+// (erase_staged_uploads). Its error goes to the erasure worker's log, so it
+// names no object or person (erasureError); a deferral still reaches the
+// worker (RetryAt).
 func (e *ImmediateBlobEraser) EnsureSubjectUploadsErased(ctx context.Context, subjectID uuid.UUID, at time.Time) error {
 	for {
-		found, err := e.media.PurgeNextSubjectStagedUpload(ctx, subjectID, at, func(key string) error {
-			return e.blobs.Delete(ctx, key)
-		})
+		found, err := e.media.PurgeNextSubjectStagedUpload(ctx, subjectID, at, e.deleteObject(ctx))
 		if err != nil {
-			return errors.Join(ErrStagedUploadNotErased, err)
+			return erasureError(fmt.Errorf("%w: %w", ErrStagedUploadNotErased, err))
 		}
 		if !found {
 			return nil

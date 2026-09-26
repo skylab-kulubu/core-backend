@@ -538,6 +538,15 @@ func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claime
 	if err != nil {
 		return purgeSkipped, err
 	}
+	if startedAt != nil && queue == erasedQueue {
+		// Another purge's claim (the archive or expiry purge) is left as it
+		// is: it guards an object that may be half deleted. The erasure goes
+		// on only with the person's own; club content is held back.
+		held, err := queue.holdsBack(ctx, tx, id)
+		if err != nil || held {
+			return purgeHeldBack, err
+		}
+	}
 	if startedAt == nil {
 		if !queue.claimable(archived, expired) {
 			return purgeSkipped, nil

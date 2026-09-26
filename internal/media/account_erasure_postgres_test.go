@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -295,5 +296,67 @@ func TestPostgresAccountErasurePurgesAnAnswerFileAResponseHolds(t *testing.T) {
 	}
 	if _, err := p.svc.OpenContent(ctx, p.answer.ID, tokenOf(t, earlier), "203.0.113.9"); !errors.Is(err, media.ErrNotFound) {
 		t.Fatalf("opening an earlier read link to the purged Answer file: %v, want not found", err)
+	}
+}
+
+// eraseDuringWrite runs an account erasure the first time metadata is
+// written, before the write lands: the serving-policy backfill read the
+// Media before the erasure and writes after it.
+type eraseDuringWrite struct {
+	*media.MemoryBlob
+	erase func()
+	once  sync.Once
+}
+
+func (b *eraseDuringWrite) SetMetadata(ctx context.Context, key string, meta media.BlobMetadata) error {
+	b.once.Do(b.erase)
+	return b.MemoryBlob.SetMetadata(ctx, key, meta)
+}
+
+// The serving-policy backfill that read an upload's file name before its
+// uploader's erasure does not bring that name back after the erasure
+// stripped it: it reads the Media again after writing and writes what it
+// holds now.
+func TestPostgresServingPolicyBackfillDoesNotBringBackAnErasedName(t *testing.T) {
+	db := newMediaDatabase(t)
+	ctx := context.Background()
+	users := user.NewPostgresStore(db.pool)
+	poster, err := db.store.Create(ctx, media.Media{
+		Name: "Ada_Organizer_poster.svg", Type: "image/svg+xml", Kind: media.KindImage, Key: "images/" + uuid.NewString() + ".svg",
+		UploadedBy: db.uploader(), Purpose: media.PurposeEventCover,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.blobs.Put(ctx, poster.Key, []byte("<svg/>"), media.BlobMetadata{ContentType: poster.Type}); err != nil {
+		t.Fatal(err)
+	}
+	request, err := users.RequestDeletion(ctx, db.uploader(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs := &eraseDuringWrite{MemoryBlob: db.blobs, erase: func() {
+		at := time.Now().UTC()
+		if err := users.AnonymizeAccount(ctx, db.uploader(), at, nil); err != nil {
+			t.Error(err)
+			return
+		}
+		ids, err := users.MediaForDeletion(ctx, request.ID)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		for _, id := range ids {
+			if err := media.NewImmediateBlobEraser(db.store, db.blobs).EnsureErased(ctx, id, at); err != nil {
+				t.Error(err)
+			}
+		}
+	}}
+
+	if _, err := media.BackfillServingPolicy(ctx, db.store, blobs, func(err error) { t.Error(err) }); err != nil {
+		t.Fatal(err)
+	}
+	if meta, _ := db.blobs.Metadata(poster.Key); meta.ContentDisposition != "attachment" {
+		t.Fatalf("the backfill wrote the erased name back: disposition %q", meta.ContentDisposition)
 	}
 }

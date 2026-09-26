@@ -858,3 +858,80 @@ func TestEraseProfileMediaStripsTheNameFromASharedProfilePicture(t *testing.T) {
 		t.Fatalf("records %v left", got)
 	}
 }
+
+// erase_staged_uploads' error goes to the worker's log too: a staged object
+// whose deletion fails, with a storage error naming it, leaves no key in it.
+func TestEraseStagedUploadsErrorNamesNoObject(t *testing.T) {
+	f := newRecordsFixture(t)
+	ctx := context.Background()
+	key := "files/" + uuid.NewString()
+	if err := f.media.StageUpload(ctx, key, f.subject, time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.public.Put(ctx, key, []byte("staged"), media.BlobMetadata{}); err != nil {
+		t.Fatal(err)
+	}
+	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, &brokenDeleteNamingKey{Buckets: f.buckets, key: key}))
+
+	worked, err := worker.RunOnce(ctx)
+	if !worked || !errors.Is(err, media.ErrStagedUploadNotErased) {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	if strings.Contains(err.Error(), key) || strings.Contains(err.Error(), f.subject.String()) {
+		t.Fatalf("error names the object or the subject: %v", err)
+	}
+}
+
+// brokenDeleteNamingKey is the buckets failing one object's deletion with an
+// error that names it, as a storage client's may.
+type brokenDeleteNamingKey struct {
+	media.Buckets
+	key string
+}
+
+func (b *brokenDeleteNamingKey) Delete(ctx context.Context, key string) error {
+	if key == b.key {
+		return errors.New(`DeleteObject "https://r2.example.test/media/` + key + `": connection reset`)
+	}
+	return b.Buckets.Delete(ctx, key)
+}
+
+// Club content another purge has claimed (its archive window is over) keeps
+// that claim: the erasure strips the person's name and lets its record go,
+// and the archive purge finishes what it started.
+func TestEraseProfileMediaLeavesAnotherPurgesClaimOnClubContent(t *testing.T) {
+	f := newRecordsFixture(t)
+	ctx := context.Background()
+	poster, err := f.media.Create(ctx, media.Media{
+		Name: "Ada_Lovelace_poster.svg", Type: "image/svg+xml", Kind: media.KindImage, Key: "images/" + uuid.NewString() + ".svg",
+		UploadedBy: f.subject, Purpose: media.PurposeEventCover,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.public.Put(ctx, poster.Key, []byte("<svg/>"), media.ServingMetadata(poster.Type, poster.Name)); err != nil {
+		t.Fatal(err)
+	}
+	claimedAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+	if _, err := f.pool.Exec(ctx, `UPDATE media SET deleted_at = $2, blob_purge_started_at = $2 WHERE id = $1`, poster.ID, claimedAt); err != nil {
+		t.Fatal(err)
+	}
+	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, f.buckets))
+
+	if worked, err := worker.RunOnce(ctx); !worked || err != nil || !f.completed(t) {
+		t.Fatalf("worked=%v err=%v completed=%v", worked, err, f.completed(t))
+	}
+	stored, err := f.media.GetIncludingDeleted(ctx, poster.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.BlobPurgeStartedAt == nil || !stored.BlobPurgeStartedAt.Equal(claimedAt) {
+		t.Fatalf("the archive purge's claim became %v, want %v kept", stored.BlobPurgeStartedAt, claimedAt)
+	}
+	if meta, _ := f.public.Metadata(poster.Key); meta.ContentDisposition != "attachment" {
+		t.Fatalf("the claimed poster is served with disposition %q", meta.ContentDisposition)
+	}
+	if got := f.recorded(t); len(got) != 0 {
+		t.Fatalf("records %v left", got)
+	}
+}
