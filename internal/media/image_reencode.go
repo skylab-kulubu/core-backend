@@ -54,17 +54,19 @@ func reencodeRaster(data []byte, handling ImageHandling) (reencodedImage, error)
 	// Scaled first, then turned: the limit is a square, so the turned image
 	// fits it too, and a 48 MP photo is never turned at full size.
 	img = orient(fitWithin(img, handling.maxDimension()), jpegOrientation(data))
-	return finishImage(img, outputType(detectContentType(data), img), handling.Sizes)
+	return finishImage(img, outputType(detectContentType(data), img), handling.Sizes, imageICC(data))
 }
 
 // finishImage encodes an upright image that core stores in place of what
-// was uploaded, and makes its sizes and cover colours.
-func finishImage(img image.Image, ctype string, sizes map[string]int) (reencodedImage, error) {
+// was uploaded, with the colour profile it had (icc, maybe nil), and makes
+// its sizes and cover colours.
+func finishImage(img image.Image, ctype string, sizes map[string]int, icc []byte) (reencodedImage, error) {
 	body, err := encodeRaster(img, ctype)
 	if err != nil {
 		return reencodedImage{}, err
 	}
-	encoded, err := makeSizes(img, sizeOf(img), ctype, sizes, nil)
+	body = withICC(body, ctype, icc)
+	encoded, err := makeSizes(img, sizeOf(img), ctype, sizes, icc)
 	if err != nil {
 		return reencodedImage{}, err
 	}
@@ -73,7 +75,8 @@ func finishImage(img image.Image, ctype string, sizes map[string]int) (reencoded
 
 // makeSizes makes each of the sizes (size name to its longer side in
 // pixels) that an image of size shown is larger than, from img: the image
-// upright, maybe already scaled down to the largest size.
+// upright, maybe already scaled down to the largest size. Each carries the
+// colour profile icc (maybe nil).
 func makeSizes(img image.Image, shown ImageSize, ctype string, sizes map[string]int, icc []byte) ([]encodedSize, error) {
 	var out []encodedSize
 	for _, name := range imageSizes {
@@ -86,7 +89,7 @@ func makeSizes(img image.Image, shown ImageSize, ctype string, sizes map[string]
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, encodedSize{name: name, body: body, ctype: ctype, size: sizeOf(scaled)})
+		out = append(out, encodedSize{name: name, body: withICC(body, ctype, icc), ctype: ctype, size: sizeOf(scaled)})
 	}
 	return out, nil
 }
@@ -110,7 +113,7 @@ func sizesOfStored(data []byte, sizes map[string]int) (ImageSize, []encodedSize,
 		largest = max(largest, px)
 	}
 	work := orient(fitWithin(img, largest), orientation)
-	encoded, err := makeSizes(work, shown, outputType(detectContentType(data), work), sizes, nil)
+	encoded, err := makeSizes(work, shown, outputType(detectContentType(data), work), sizes, imageICC(data))
 	if err != nil {
 		return ImageSize{}, nil, err
 	}
