@@ -408,14 +408,18 @@ when purpose-less uploads fall to the strict rule (ticket 15).
 The database's triggers are the backstop for the state rule: a new link or a
 new Media attachment to an archived or purging Media is rejected whoever
 writes it. They also check the purpose again (migration `20260926161000`,
-`media_purpose_fits_role`, a copy of the role table that a test keeps equal
-to `rolePurposes`). The link rules read the Media before the write and
-outside its transaction, so the legacy backfill could give a legacy Media a
-purpose in between; the trigger reads the Media under the lock the foreign
-key takes anyway, which waits for the backfill and never for the status
-trigger. Such a link is refused like a Media that cannot be linked (a
-service attach answers `media_not_linkable`; retrying it gets the ordinary
-purpose check), never written mismatched.
+`media_purpose_fits_role` over `media_role_purposes`, a copy of the role
+table that a test keeps equal to `rolePurposes`, both ways). The link rules
+read the Media before the write and outside its transaction, so the legacy
+backfill could give a legacy Media a purpose in between; the trigger reads
+the Media under the lock the foreign key takes anyway, which waits for the
+backfill and never for the status trigger. Such a link is never written
+mismatched: the trigger refuses it with its own code (SQLSTATE `23514`,
+constraint `media_attachment_purpose_fits`), and the Event, certificate
+template and service attach paths answer it as `422 media_not_linkable` for
+that Media and role. Retrying gets the ordinary purpose check. (A profile
+picture is linked only right after its upload as `profile_picture`, which
+the backfill never touches, so that link cannot race.)
 
 ### Service attach API
 
@@ -524,7 +528,10 @@ links and the service attach API share one link check.
   once the product already holds a Media attachment to it (a CMS editor
   reusing an image the CMS already uses). No product can pin another
   product's or core's legacy Media, such as a still-public legacy Answer
-  file or an Event cover.
+  file or an Event cover. A Media whose detach expiry is held (the legacy
+  backfill gave it a purpose, see [Detach expiry hold](#detach-expiry-hold))
+  counts as legacy here until the hold is released; linking it where its
+  purpose does not fit gives it back `legacy` (below).
 - Nothing else: not another product's Media, private or not, and not core's.
 
 A Media the product may not link is refused exactly like a Media that does
@@ -628,8 +635,9 @@ rules](#link-rules)).
 
 - **Only the purpose changes, and the hold is set.** Status, expiry,
   `updatedAt`, the blob, its address and its serving metadata stay as they
-  are; nothing is re-encoded or moved. The backfill sets the Media's detach
-  expiry hold in the same statement (below).
+  are; nothing is re-encoded or moved. Until the hold is released, the
+  backfill sets the Media's detach expiry hold in the same statement
+  (below); after the release it gives purposes without it.
 - **Private purposes are never given.** `certificate_asset` is private: the
   purpose says the file is encrypted in the private bucket, and these blobs
   are public. Certificate template assets stay `legacy` until private Media
@@ -667,19 +675,38 @@ Media attachments. So its detach expiry is held (decision K2, column
 - Removed from its last record, it is detached with **no** expiry, as a
   legacy Media is. Restoring it after an archive sets none either.
 - Linking it again works as for any Media; the hold stays.
+- **A product may link it as a legacy Media** (for its uploader, or once the
+  product holds it), because the uses the hold protects are the products'.
+  When its purpose does not fit the product's role (an Event cover becoming
+  a CMS page's `image`, the stage 5 case), the service attach gives it back
+  `legacy` and attaches it in one transaction: it locks the Media row for
+  update first, so two attaches of one held Media queue instead of
+  deadlocking, sets `legacy`, keeps the hold, and inserts the Media
+  attachment. Core logs one line with the Media, its old purpose and the
+  role. Its uses are now mixed, so the backfill keeps it legacy (K1). A
+  Media uploaded with a purpose is never given back: a product is refused as
+  before.
 - Nothing else reads the hold. An archived held Media follows the archive
   window, and account erasure purges a held profile picture at once like any
   other.
 
 `core-backend media-legacy-release-hold` ends the hold, after stage 5 (ticket
 18). **It is not run yet.** Without `-apply` it only counts the held Media and
-those of them no record uses. With `-apply` it walks the held Media by id, 25
-at a time, clears each one's hold, and gives the ones no record uses by then
-their 30 days **from the release**, not from when they were detached. A Media
-that fails is named on standard error and stays held; a second run releases
-only what is left, and a run over released Media changes nothing. It prints
-counts only, to standard error, and exits non-zero if a Media failed or the
-run was interrupted (with the counts so far).
+those of them whose 30 days the release starts. With `-apply` it first
+records the release (table `media_legacy_hold`, the first release's time is
+kept): the backfill runs on every start and purpose-less uploads keep
+arriving until stage 6, and from then on it gives purposes without the hold,
+so nothing is held for ever. The backfill reads the release under a share
+lock that the release's update waits for, so a hold written before the
+release is there for it to clear. Then it walks the held Media by id, 25 at
+a time, clears each one's hold, and gives the ones no record uses by then
+their 30 days **from the release**, not from when they were detached. A held
+Media a product's attach gave back `legacy` gets no window: only the orphan
+switch gives a legacy Media one. A Media that fails is named on standard
+error and stays held; a second run releases only what is left, and a run
+over released Media changes nothing. It prints counts only, to standard
+error, and exits non-zero if a Media failed or the run was interrupted (with
+the counts so far).
 
 On the server running core, inside the core container:
 
@@ -703,8 +730,10 @@ carries only the report: a header row and one tab-separated row per orphan,
 so it can be redirected to a file and opened as a spreadsheet. The summary
 goes to standard error: the orphans and their size, the legacy Media core
 still attaches (what the purpose backfill has not reached or keeps legacy),
-the core links without a Media attachment, and the Media whose detach expiry
-is still held. Columns:
+the core links without a Media attachment, the Media whose detach expiry is
+still held, and whether (and when) the hold was released. If an interrupt or
+the ten-minute limit cuts off the uploaders' group lookups, the summary says
+how many and the command exits non-zero: the report is incomplete. Columns:
 
 | Column | Value |
 |---|---|
