@@ -6,10 +6,13 @@ import (
 	"context"
 	"encoding/binary"
 	"hash/crc32"
+	"image"
 	"image/color"
 	"io"
 	"sort"
 	"testing"
+
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 // iccTag is a tag of an ICC profile: its signature and its element.
@@ -312,4 +315,96 @@ func TestService_PurposeDropsAColourProfileItCannotRebuild(t *testing.T) {
 			t.Errorf("%s: a profile was kept", name)
 		}
 	}
+}
+
+// shortMLUC is a 156-byte profile whose desc tag is a 12-byte mluc element,
+// too short for the mluc header it names.
+func shortMLUC() []byte {
+	profile := buildICC("mntr", "RGB ", "XYZ ", []iccTag{{"desc", []byte("mluc\x00\x00\x00\x00\x00\x00\x00\x01")}})
+	return profile
+}
+
+// A malformed profile never stops an upload or the process: it is dropped,
+// whether the image is re-encoded or kept (an animated WebP).
+func TestService_PurposeDropsAMalformedColourProfile(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	photo := withJPEGICC(solidJPEG(t, 64, 48, color.RGBA{R: 1, A: 255}), shortMLUC())
+	created, err := svc.UploadForPurpose(context.Background(), signedIn("95959595-9595-9595-9595-959595959595"), "profile_picture", uploaded("x.jpg", "image/jpeg", photo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ := blobs.Get(created.Key); bytes.Contains(stored, []byte("ICC_PROFILE")) {
+		t.Fatal("the malformed profile was kept")
+	}
+	animated, err := svc.UploadForPurpose(context.Background(), organizer(), "event_gallery", uploaded("x.webp", "image/webp", withICCP(animatedWebP(4, 4, []image.Point{{0, 0}}), shortMLUC())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ := blobs.Get(animated.Key); bytes.Contains(stored, []byte("ICCP")) || stored[20]&0x20 != 0 {
+		t.Fatal("the animated WebP kept the malformed profile")
+	}
+}
+
+// v2DescTag is a v2 textDescription element with only its ASCII part.
+func v2DescTag(text string) []byte {
+	out := binary.BigEndian.AppendUint32([]byte("desc\x00\x00\x00\x00"), uint32(len(text)+1))
+	return append(append(out, text...), 0)
+}
+
+// A v2 description is rebuilt whole: its ASCII text, then an empty Unicode
+// and ScriptCode part, so a reader following every count stays inside it.
+func TestRebuildICC_RebuildsAV2Description(t *testing.T) {
+	t.Parallel()
+	profile := displayP3(paraTag)
+	tags := iccTags(t, profile)
+	profile = buildICC("mntr", "RGB ", "XYZ ", []iccTag{
+		{"desc", v2DescTag("sRGB")}, {"wtpt", tags["wtpt"]},
+		{"rXYZ", tags["rXYZ"]}, {"gXYZ", tags["gXYZ"]}, {"bXYZ", tags["bXYZ"]},
+		{"rTRC", tags["rTRC"]}, {"gTRC", tags["gTRC"]}, {"bTRC", tags["bTRC"]},
+	})
+	desc := iccTags(t, media.RebuildICCTags(profile))["desc"]
+	want := append(v2DescTag("sRGB"), make([]byte, 4+4+2+1+67)...)
+	if !bytes.Equal(desc, want) {
+		t.Fatalf("desc % x, want % x", desc, want)
+	}
+}
+
+// A profile whose rebuilding panics is dropped, never passed on.
+func TestGuardICC_DropsAProfileWhoseRebuildingPanics(t *testing.T) {
+	t.Parallel()
+	got := media.GuardICC(func([]byte) []byte { panic("hostile profile") }, displayP3(paraTag))
+	if got != nil {
+		t.Fatalf("kept % x", got)
+	}
+}
+
+// FuzzRebuildICC: rebuilding any bytes never panics (the unguarded
+// rebuild), and a profile it keeps is a whole profile that rebuilds to
+// itself.
+func FuzzRebuildICC(f *testing.F) {
+	for _, seed := range [][]byte{
+		shortMLUC(),
+		displayP3(paraTag),
+		displayP3(func() []byte { return curvTag(1024) }),
+		displayP3(func() []byte { return curvTag(1) }, iccTag{"A2B0", bytes.Repeat([]byte{1}, 64)}),
+		buildICC("mntr", "RGB ", "XYZ ", []iccTag{{"desc", v2DescTag("sRGB")}, {"cprt", []byte("text\x00\x00\x00\x00none")}}),
+		buildICC("prtr", "CMYK", "Lab ", []iccTag{{"desc", mlucTag("CMYK")}}),
+		displayP3(paraTag)[:200],
+		{},
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, profile []byte) {
+		rebuilt := media.RebuildICCTags(profile)
+		if rebuilt == nil {
+			return
+		}
+		if int(binary.BigEndian.Uint32(rebuilt)) != len(rebuilt) || string(rebuilt[36:40]) != "acsp" {
+			t.Fatalf("not a whole profile: % x", rebuilt)
+		}
+		if again := media.RebuildICCTags(rebuilt); !bytes.Equal(again, rebuilt) {
+			t.Fatalf("rebuilt again % x, was % x", again, rebuilt)
+		}
+	})
 }

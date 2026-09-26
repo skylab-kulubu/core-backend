@@ -6,7 +6,9 @@ import (
 	"encoding/binary"
 	"hash/crc32"
 	"io"
+	"log"
 	"slices"
+	"sync"
 )
 
 // maxICCBytes is the largest colour profile core carries over.
@@ -53,8 +55,33 @@ const maxICCText = 4096
 // recomputed, its profile ID and everything identifying the maker zeroed)
 // and a new tag table. Anything else, a profile above maxICCBytes, one
 // without the 'acsp' signature or its own size, or a tag of any kind that
-// leaves the profile, is nil: no profile.
+// leaves the profile, is nil: no profile. A profile whose rebuilding panics
+// is nil too (guardICC).
 func rebuildICC(profile []byte) []byte {
+	return guardICC(rebuildICCTags, profile)
+}
+
+// iccPanicLogged logs the first profile dropped because rebuilding it
+// panicked, once per process.
+var iccPanicLogged sync.Once
+
+// guardICC runs build on a profile. A build that panics drops the profile
+// (nil: the image is shown as sRGB) instead of refusing the upload or
+// stopping core; the first such panic is logged.
+func guardICC(build func([]byte) []byte, profile []byte) (rebuilt []byte) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			rebuilt = nil
+			iccPanicLogged.Do(func() {
+				log.Printf("media: dropped a colour profile: rebuilding it panicked: %v", recovered)
+			})
+		}
+	}()
+	return build(profile)
+}
+
+// rebuildICCTags is rebuildICC without its guard.
+func rebuildICCTags(profile []byte) []byte {
 	be := binary.BigEndian
 	if len(profile) < 132 || len(profile) > maxICCBytes || int(be.Uint32(profile)) != len(profile) || string(profile[36:40]) != "acsp" {
 		return nil
@@ -115,7 +142,8 @@ func rebuildICC(profile []byte) []byte {
 }
 
 // iccElement is a tag's element checked against the types the tag may
-// have, trimmed to its own length, or nil when it does not check.
+// have, every length it declares in bounds, trimmed to its own length (a
+// v2 description rebuilt), or nil when it does not check.
 func iccElement(sig string, element []byte) []byte {
 	be := binary.BigEndian
 	if len(element) < 12 {
@@ -124,21 +152,25 @@ func iccElement(sig string, element []byte) []byte {
 	kind := string(element[:4])
 	switch sig {
 	case "wtpt", "rXYZ", "gXYZ", "bXYZ":
+		// 'XYZ ', reserved, one XYZNumber.
 		if kind == "XYZ " && len(element) >= 20 {
 			return element[:20]
 		}
 	case "chad":
+		// 'sf32', reserved, a 3x3 matrix.
 		if kind == "sf32" && len(element) >= 44 {
 			return element[:44]
 		}
 	case "rTRC", "gTRC", "bTRC":
 		switch kind {
 		case "curv":
+			// 'curv', reserved, entry count, the entries.
 			entries := int(be.Uint32(element[8:]))
 			if entries <= 65536 && len(element) >= 12+2*entries {
 				return element[:12+2*entries]
 			}
 		case "para":
+			// 'para', reserved, function type, reserved, its parameters.
 			params := map[uint16]int{0: 1, 1: 3, 2: 4, 3: 5, 4: 7}
 			n, ok := params[be.Uint16(element[8:])]
 			if ok && len(element) >= 12+4*n {
@@ -151,28 +183,62 @@ func iccElement(sig string, element []byte) []byte {
 		}
 		switch kind {
 		case "mluc":
-			records, recordSize := int(be.Uint32(element[8:])), int(be.Uint32(element[12:]))
-			if records < 1 || records > 32 || recordSize != 12 || 16+12*records > len(element) {
-				return nil
-			}
-			for r := 0; r < records; r++ {
-				record := element[16+12*r:]
-				length, offset := int(be.Uint32(record[4:])), int(be.Uint32(record[8:]))
-				if length%2 != 0 || offset < 16+12*records || offset+length > len(element) {
-					return nil
-				}
-			}
-			return element
+			return iccMultiLocalized(element)
 		case "desc":
-			ascii := int(be.Uint32(element[8:]))
-			if 12+ascii <= len(element) {
-				return element
-			}
+			return iccTextDescription(element)
 		case "text":
+			// 'text', reserved, the text.
 			return element
 		}
 	}
 	return nil
+}
+
+// iccMultiLocalized is an mluc element whose header, records and strings
+// are all in bounds: 'mluc', reserved, record count, record size (12),
+// then per record a language, a country, its string's length and offset.
+func iccMultiLocalized(element []byte) []byte {
+	be := binary.BigEndian
+	if len(element) < 16 {
+		return nil
+	}
+	records, recordSize := int(be.Uint32(element[8:])), int(be.Uint32(element[12:]))
+	if records < 1 || records > 32 || recordSize != 12 {
+		return nil
+	}
+	strings := 16 + 12*records
+	if strings > len(element) {
+		return nil
+	}
+	for r := 0; r < records; r++ {
+		record := element[16+12*r : 16+12*(r+1)]
+		length, offset := int(be.Uint32(record[4:])), int(be.Uint32(record[8:]))
+		if length%2 != 0 || offset < strings || offset+length > len(element) {
+			return nil
+		}
+	}
+	return element
+}
+
+// iccTextDescription rebuilds a v2 textDescription element around its
+// ASCII description: 'desc', reserved, the ASCII count and text (NUL
+// ended), then an empty Unicode and ScriptCode description, so a reader
+// that follows every count stays inside it.
+func iccTextDescription(element []byte) []byte {
+	be := binary.BigEndian
+	ascii := int(be.Uint32(element[8:]))
+	if ascii < 1 || 12+ascii > len(element) {
+		return nil
+	}
+	text := element[12 : 12+ascii]
+	if end := bytes.IndexByte(text, 0); end >= 0 {
+		text = text[:end]
+	}
+	out := append([]byte("desc\x00\x00\x00\x00"), be.AppendUint32(nil, uint32(len(text)+1))...)
+	out = append(append(out, text...), 0)
+	// Unicode language and count, ScriptCode code and count, and the
+	// 67-byte ScriptCode field.
+	return append(out, make([]byte, 4+4+2+1+67)...)
 }
 
 // jpegICCProfile reassembles a profile from the APP2 ICC_PROFILE segments

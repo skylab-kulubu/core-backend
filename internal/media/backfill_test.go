@@ -316,3 +316,20 @@ func TestMaintainServingPolicyBackfillRetriesAFailedRecordOnTheNextPass(t *testi
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// A cover colour pick that panics inside its decode slot gives the slot
+// back and picks nothing, instead of keeping the slot or stopping the
+// backfill goroutine.
+func TestCoverColorsInSlot_ReleasesTheSlotWhenPickingPanics(t *testing.T) {
+	t.Parallel()
+	budget := media.NewDecodeBudget(media.DecodeBudgetConfig{Slots: 1, Wait: time.Millisecond})
+	colors, err := media.CoverColorsInSlot(context.Background(), budget, []byte("image"), func([]byte) []string { panic("hostile image") })
+	if err != nil || len(colors) != 0 {
+		t.Fatalf("colors %v err %v", colors, err)
+	}
+	release, ok := budget.TryAcquire()
+	if !ok {
+		t.Fatal("the slot was kept")
+	}
+	release()
+}

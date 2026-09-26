@@ -26,17 +26,33 @@ func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore, budg
 		if err != nil {
 			return i, false, err
 		}
-		release, err := budget.Acquire(ctx)
+		colors, err := coverColorsInSlot(ctx, budget, data, ExtractCoverColors)
 		if err != nil {
 			return i, false, err
 		}
-		colors := ExtractCoverColors(data)
-		release()
 		if err := store.SetCoverColors(ctx, item.ID, colors); err != nil {
 			return i, false, err
 		}
 	}
 	return len(items), len(items) < coverColorBackfillBatchSize, nil
+}
+
+// coverColorsInSlot picks an image's cover colours within one decode
+// slot, released however picking ends. A pick that panics picks none
+// (cover colours are decoration) rather than keep the slot or stop the
+// backfill goroutine, which nothing else recovers.
+func coverColorsInSlot(ctx context.Context, budget *DecodeBudget, data []byte, pick func([]byte) []string) (colors []string, err error) {
+	release, err := budget.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	defer func() {
+		if recover() != nil {
+			colors = []string{}
+		}
+	}()
+	return pick(data), nil
 }
 
 func MaintainCoverColorBackfill(ctx context.Context, store Store, blobs BlobStore, budget *DecodeBudget, retryEvery time.Duration, onError func(error)) {

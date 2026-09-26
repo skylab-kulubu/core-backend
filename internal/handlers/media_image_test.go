@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -128,4 +129,67 @@ func TestMediaUploadOfAnSVGWithASecondRootHTTP(t *testing.T) {
 
 	resp := postMedia(t, app, "event_cover", "two.svg", svg)
 	requireProblem(t, resp, fiber.StatusUnsupportedMediaType, "media_type_not_allowed")
+}
+
+// shortMLUCProfile is a 156-byte colour profile whose one desc tag is a
+// 12-byte mluc element: too short for the mluc header it names.
+func shortMLUCProfile() []byte {
+	out := make([]byte, 156)
+	binary.BigEndian.PutUint32(out[0:], 156)
+	binary.BigEndian.PutUint32(out[8:], 0x04400000)
+	copy(out[12:], "mntrRGB XYZ ")
+	copy(out[36:], "acsp")
+	binary.BigEndian.PutUint32(out[128:], 1)
+	copy(out[132:], "desc")
+	binary.BigEndian.PutUint32(out[136:], 144)
+	binary.BigEndian.PutUint32(out[140:], 12)
+	copy(out[144:], "mluc\x00\x00\x00\x00\x00\x00\x00\x01")
+	return out
+}
+
+// withICCPChunk inserts an iCCP chunk with the profile after a PNG's
+// header.
+func withICCPChunk(t *testing.T, data, profile []byte) []byte {
+	t.Helper()
+	var compressed bytes.Buffer
+	w := zlib.NewWriter(&compressed)
+	_, _ = w.Write(profile)
+	_ = w.Close()
+	payload := append([]byte("P\x00\x00"), compressed.Bytes()...)
+	chunk := binary.BigEndian.AppendUint32(nil, uint32(len(payload)))
+	chunk = append(chunk, "iCCP"...)
+	chunk = append(chunk, payload...)
+	chunk = binary.BigEndian.AppendUint32(chunk, crc32.ChecksumIEEE(chunk[4:]))
+	out := append([]byte{}, data[:33]...)
+	out = append(out, chunk...)
+	return append(out, data[33:]...)
+}
+
+// A malformed colour profile is dropped, never a crash: the image is
+// stored without it, and the server answers the next request.
+func TestMediaUploadWithAMalformedColourProfileHTTP(t *testing.T) {
+	t.Parallel()
+	blobs := media.NewMemoryBlob()
+	svc := media.NewServiceWithOptions(media.NewMemoryStore(), blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test",
+		media.ServiceOptions{ServiceProducts: []authz.Product{authz.ProductCMS}})
+	h := NewMediaHandler(svc)
+	app := fiber.New(fiber.Config{BodyLimit: media.MaxUploadBytes + 1<<20})
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(authn.LocalsIdentity, authn.Identity{ID: uuid.New()})
+		return c.Next()
+	})
+	app.Post("/v1/media", h.Upload)
+	crafted := withICCPChunk(t, grayPNGHTTP(t, 64, 48), shortMLUCProfile())
+
+	for attempt := 0; attempt < 2; attempt++ {
+		resp := postMedia(t, app, "cms_image", "crafted.png", crafted)
+		if resp.status != fiber.StatusCreated {
+			t.Fatalf("attempt %d: status %d body %v", attempt, resp.status, resp.body)
+		}
+		url, _ := resp.body["url"].(string)
+		stored, ok := blobs.Get(url[len("https://cdn.example.test/"):])
+		if !ok || bytes.Contains(stored, []byte("iCCP")) {
+			t.Fatalf("attempt %d: stored with a profile: %v", attempt, ok)
+		}
+	}
 }
