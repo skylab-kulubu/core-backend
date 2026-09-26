@@ -135,8 +135,8 @@ func TestWorkerImmediatelyErasesUnreferencedProfileBlobAndSanitizesSharedMedia(t
 		if worked, err := worker.RunOnce(ctx); err != nil || !worked {
 			t.Fatalf("worker worked=%v err=%v", worked, err)
 		}
-		if retained, err := users.ProfileMediaForDeletion(ctx, request.ID); err != nil || retained != nil {
-			t.Fatalf("completed profile erasure retained association: id=%v err=%v", retained, err)
+		if retained, err := users.MediaForDeletion(ctx, request.ID); err != nil || len(retained) != 0 {
+			t.Fatalf("completed profile erasure retained association: ids=%v err=%v", retained, err)
 		}
 		stored, err := mediaStore.GetIncludingDeleted(ctx, item.ID)
 		if err != nil {

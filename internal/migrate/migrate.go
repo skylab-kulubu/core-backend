@@ -703,6 +703,51 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND actual.tgfoid = to_regprocedure('public.require_active_account_reference()')
 		  AND actual.tgattr::text = attribute.attnum::text
 		  AND encode(actual.tgargs, 'hex') = encode(convert_to('on_behalf_of', 'UTF8'), 'hex') || '00'`,
+	// The uploads of an account erasure hold ids only, and a request cannot
+	// complete while any is left: a BEFORE UPDATE OF status row trigger
+	// (tgtype 19) whose WHEN clause is the move to completed.
+	20260927100000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns actual
+			WHERE actual.table_schema = 'public' AND actual.table_name = 'account_deletion_media'
+		) = 2
+		AND (
+			SELECT count(*) FROM (VALUES ('request_id'), ('media_id')) expected(column_name)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'account_deletion_media'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = 'uuid'
+			 AND actual.is_nullable = 'NO'
+		) = 2
+		AND (
+			SELECT count(*) FROM (VALUES
+				('account_deletion_media_pkey', 'p', 'PRIMARY KEY (request_id, media_id)'),
+				('account_deletion_media_request_id_fkey', 'f', 'FOREIGN KEY (request_id) REFERENCES account_deletion_requests(id) ON DELETE CASCADE'),
+				('account_deletion_media_media_id_fkey', 'f', 'FOREIGN KEY (media_id) REFERENCES media(id)')
+			) expected(constraint_name, constraint_type, definition)
+			JOIN pg_constraint actual
+			  ON actual.conrelid = to_regclass('public.account_deletion_media')
+			 AND actual.conname = expected.constraint_name
+			 AND actual.contype = expected.constraint_type::"char"
+			 AND pg_get_constraintdef(actual.oid) = expected.definition
+		) = 3
+		AND to_regclass('public.account_deletion_media_media_idx') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM pg_trigger actual
+			JOIN pg_attribute attribute
+			  ON attribute.attrelid = actual.tgrelid AND attribute.attname = 'status'
+			WHERE actual.tgrelid = to_regclass('public.account_deletion_requests')
+			  AND actual.tgname = 'account_deletion_requests_require_media_erased'
+			  AND actual.tgtype = 19
+			  AND actual.tgenabled = 'O'
+			  AND NOT actual.tgisinternal
+			  AND actual.tgattr::text = attribute.attnum::text
+			  AND actual.tgqual IS NOT NULL
+			  AND pg_get_triggerdef(actual.oid) LIKE '% FOR EACH ROW WHEN ((new.status = ''completed''::text)) EXECUTE %'
+			  AND actual.tgfoid = to_regprocedure('public.require_account_deletion_media_erased()')
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
