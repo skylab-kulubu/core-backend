@@ -229,3 +229,46 @@ func TestService_SVGDropsAPublicDOCTYPE(t *testing.T) {
 		t.Fatalf("elements %v", elements)
 	}
 }
+
+// CSS loads through more than url(): image-set(), cross-fade(), element()
+// and src() can name an address in a plain string. Only rgb(), rgba(),
+// hsl(), hsla(), calc(), var(), url(#id) and, for transforms, the
+// transform functions stay; any other function, or a string that looks
+// like an address, takes its declaration with it.
+func TestService_SVGStyleLoadsNothing(t *testing.T) {
+	t.Parallel()
+	svc, blobs := svgService(t)
+	hostile := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">
+<style>
+rect { fill: image-set("https://evil.example/a.png" 1x); stroke: rgb(10, 20, 30) }
+circle { fill: -webkit-image-set("https://evil.example/b.png" 1x) }
+path { fill: cross-fade(url(#a), url(#b), 50%) }
+line { fill: element(#x) }
+@font-face { font-family: X; src: src("https://evil.example/f.woff") }
+@media screen { rect { fill: url(https://evil.example/m.svg#m) } }
+text { font-family: "//evil.example/font"; stroke: hsla(0, 50%, 50%, .5); fill: url(#g) }
+</style>
+<rect width="10" height="10" style="fill: image-set('https://evil.example/c.png' 1x); stroke: rgba(0,0,0,.5)"/>
+<circle r="2" style="fill: -webkit-image-set('https://evil.example/d.png' 1x)"/>
+<ellipse rx="1" ry="1" fill="image-set('https://evil.example/e.png' 1x)"/>
+<text x="1" y="5" style="font-family: 'Open Sans'; width: calc(1px + 2px); fill: url(#g)">t</text>
+<g transform="translate(1 2) rotate(45) scale(2)"><rect width="1" height="1"/></g>
+</svg>`
+
+	created, err := svc.UploadForPurpose(context.Background(), organizer(), "event_cover", uploaded("style.svg", "image/svg+xml", []byte(hostile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := blobs.Get(created.Key)
+	lower := strings.ToLower(string(stored))
+	for _, gone := range []string{"evil", "image-set", "cross-fade", "element(", "src(", "@font-face", "@media"} {
+		if strings.Contains(lower, gone) {
+			t.Errorf("the stored SVG still carries %q:\n%s", gone, stored)
+		}
+	}
+	for _, kept := range []string{"rgb(10, 20, 30)", "rgba(0,0,0,.5)", "hsla(0, 50%, 50%, .5)", "Open Sans", "calc(1px + 2px)", "url(#g)", "rotate(45)"} {
+		if !strings.Contains(string(stored), kept) {
+			t.Errorf("the stored SVG lost %q:\n%s", kept, stored)
+		}
+	}
+}

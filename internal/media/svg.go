@@ -207,10 +207,10 @@ func sanitizeSVGAttributes(attrs []xml.Attr) []xml.Attr {
 			// Namespace declarations are written anew; editor attributes,
 			// event handlers and everything else go.
 		case a.Name.Local == "style":
-			if css := sanitizeCSS(a.Value); strings.TrimSpace(css) != "" {
+			if css := sanitizeCSS(a.Value, false); strings.TrimSpace(css) != "" {
 				out = append(out, xml.Attr{Name: a.Name, Value: css})
 			}
-		case safeSVGValue(a.Value):
+		case safeSVGValue(a.Name.Local, a.Value):
 			out = append(out, a)
 		}
 	}
@@ -221,60 +221,158 @@ func sanitizeSVGAttributes(attrs []xml.Attr) []xml.Attr {
 var svgFragment = regexp.MustCompile(`^#[A-Za-z_][A-Za-z0-9_.:-]*$`)
 
 var (
-	cssComment = regexp.MustCompile(`(?s)/\*.*?\*/`)
-	cssImport  = regexp.MustCompile(`(?i)@import[^;]*;?`)
-	cssURL     = regexp.MustCompile(`(?i)url\(\s*(['"]?)([^'")]*)(['"]?)\s*\)`)
+	cssComment  = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	cssFunction = regexp.MustCompile(`([a-z_-][a-z0-9_-]*)\s*\(`)
+	cssString   = regexp.MustCompile(`"[^"]*"|'[^']*'`)
+	cssProperty = regexp.MustCompile(`^-{0,2}[a-z][a-z0-9-]*$`)
 )
 
-// sanitizeCSS removes from CSS what loads or runs anything: @import rules,
-// url() references to anything but an element of the same document
-// (replaced with none), and expression(). CSS with escapes, which could
-// spell any of them another way, or that still names a script, is removed
-// whole.
-func sanitizeCSS(css string) string {
-	if strings.Contains(css, `\`) {
-		return ""
-	}
-	css = cssComment.ReplaceAllString(css, "")
-	css = cssImport.ReplaceAllString(css, "")
-	css = cssURL.ReplaceAllStringFunc(css, func(ref string) string {
-		target := cssURL.FindStringSubmatch(ref)[2]
-		if svgFragment.MatchString(strings.TrimSpace(target)) {
-			return ref
-		}
-		return "none"
-	})
-	if !safeSVGValue(css) || strings.Contains(strings.ToLower(css), "@import") {
-		return ""
-	}
-	return css
-}
+// cssFunctions are the only CSS functions a sanitized SVG keeps: colours,
+// arithmetic and custom properties, and url() to an element of the same
+// document. image-set(), cross-fade(), element(), src() and every other
+// function go, since they can name an address in a plain string.
+var cssFunctions = setOf("rgb", "rgba", "hsl", "hsla", "calc", "var", "url")
 
-// safeSVGValue reports whether an attribute value or CSS loads and runs
-// nothing: no script, data or expression URL, and every url() pointing at
-// an element of the same document.
-func safeSVGValue(value string) bool {
-	normalized := strings.Map(func(r rune) rune {
+// transformFunctions are kept in transforms (the transform attributes and
+// the transform property).
+var transformFunctions = setOf("matrix", "translate", "translatex", "translatey", "scale", "scalex", "scaley", "rotate", "skewx", "skewy")
+
+// transformAttributes are the attributes whose values are transforms.
+var transformAttributes = setOf("transform", "gradientTransform", "patternTransform")
+
+// safeCSSValue reports whether a CSS value or a presentation attribute
+// loads and runs nothing: only the allowed functions (and, with transforms,
+// the transform functions), url() only to #id, no string that looks like
+// an address (a colon, a slash or a dot in it), no escapes, and no script
+// or data scheme anywhere.
+func safeCSSValue(value string, transforms bool) bool {
+	lower := strings.ToLower(value)
+	if strings.Contains(lower, `\`) {
+		return false
+	}
+	compact := strings.Map(func(r rune) rune {
 		if r <= ' ' {
 			return -1
 		}
 		return r
-	}, strings.ToLower(value))
-	for _, bad := range []string{"javascript:", "vbscript:", "data:", "expression(", "behavior:", "-moz-binding"} {
-		if strings.Contains(normalized, bad) {
+	}, lower)
+	for _, bad := range []string{"javascript:", "vbscript:", "data:", "expression", "behavior:", "-moz-binding", "@import"} {
+		if strings.Contains(compact, bad) {
 			return false
 		}
 	}
-	for rest := normalized; ; {
-		i := strings.Index(rest, "url(")
-		if i < 0 {
-			return true
+	for _, match := range cssFunction.FindAllStringSubmatchIndex(lower, -1) {
+		name := lower[match[2]:match[3]]
+		if !cssFunctions[name] && !(transforms && transformFunctions[name]) {
+			return false
 		}
-		rest = strings.TrimLeft(rest[i+len("url("):], `'"`)
-		if !strings.HasPrefix(rest, "#") {
+		if name == "url" {
+			target := strings.TrimLeft(strings.TrimSpace(lower[match[1]:]), `'"`)
+			if !strings.HasPrefix(target, "#") {
+				return false
+			}
+		}
+	}
+	for _, text := range cssString.FindAllString(lower, -1) {
+		if strings.ContainsAny(text, ":/.") {
 			return false
 		}
 	}
+	return true
+}
+
+// safeSVGValue reports whether a presentation attribute's value loads and
+// runs nothing (safeCSSValue).
+func safeSVGValue(attribute, value string) bool {
+	return safeCSSValue(value, transformAttributes[attribute])
+}
+
+// sanitizeDeclarations keeps the CSS declarations whose property is a
+// plain name and whose value is safe (safeCSSValue).
+func sanitizeDeclarations(css string) string {
+	var kept []string
+	for _, declaration := range strings.Split(css, ";") {
+		name, value, ok := strings.Cut(declaration, ":")
+		name = strings.ToLower(strings.TrimSpace(name))
+		if !ok || !cssProperty.MatchString(name) || !safeCSSValue(value, name == "transform") {
+			continue
+		}
+		kept = append(kept, strings.TrimSpace(declaration))
+	}
+	return strings.Join(kept, "; ")
+}
+
+// sanitizeCSS keeps what CSS may keep in a sanitized SVG. A style
+// attribute (block false) keeps its safe declarations. A <style> element
+// (block true) keeps its rules, each with its safe declarations, and drops
+// every at-rule (@import, @font-face, @media, …) whole. CSS with escapes,
+// which could spell anything another way, is removed whole, and comments
+// go first.
+func sanitizeCSS(css string, block bool) string {
+	if strings.Contains(css, `\`) {
+		return ""
+	}
+	css = cssComment.ReplaceAllString(css, "")
+	if !block {
+		return sanitizeDeclarations(css)
+	}
+	var out strings.Builder
+	for rest := css; ; {
+		rest = strings.TrimSpace(rest)
+		if rest == "" {
+			return out.String()
+		}
+		if strings.HasPrefix(rest, "@") {
+			// An at-rule: to its ; or to the end of its block.
+			semicolon, brace := strings.IndexByte(rest, ';'), strings.IndexByte(rest, '{')
+			if brace < 0 || (semicolon >= 0 && semicolon < brace) {
+				if semicolon < 0 {
+					return out.String()
+				}
+				rest = rest[semicolon+1:]
+				continue
+			}
+			end := closingBrace(rest, brace)
+			if end < 0 {
+				return out.String()
+			}
+			rest = rest[end+1:]
+			continue
+		}
+		open := strings.IndexByte(rest, '{')
+		if open < 0 {
+			return out.String()
+		}
+		end := strings.IndexByte(rest[open:], '}')
+		if end < 0 {
+			return out.String()
+		}
+		selector, body := strings.TrimSpace(rest[:open]), rest[open+1:open+end]
+		rest = rest[open+end+1:]
+		if strings.ContainsAny(body, "{") || strings.ContainsAny(selector, ";}") {
+			continue
+		}
+		if declarations := sanitizeDeclarations(body); declarations != "" {
+			out.WriteString(selector + " { " + declarations + " }\n")
+		}
+	}
+}
+
+// closingBrace is the index of the brace that closes the one at open.
+func closingBrace(css string, open int) int {
+	depth := 0
+	for i := open; i < len(css); i++ {
+		switch css[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // write serializes the node; the root declares the namespaces it needs.
@@ -312,7 +410,7 @@ func (n *svgNode) write(out *bytes.Buffer, root bool) {
 				css.WriteString(text)
 			}
 		}
-		_ = xml.EscapeText(out, []byte(sanitizeCSS(css.String())))
+		_ = xml.EscapeText(out, []byte(sanitizeCSS(css.String(), true)))
 		out.WriteString("</style>")
 		return
 	}
