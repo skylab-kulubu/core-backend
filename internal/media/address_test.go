@@ -66,3 +66,23 @@ func TestAddressesWithoutABaseUseTheConfiguredOne(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// The mode core starts with (UseImageAddressMode) is for callers with no
+// media dependency of their own, and only through ConfiguredAddresses: an
+// Addresses that names no mode serves the stored sizes, whatever is
+// configured. Not parallel: it sets the process-wide mode, and restores it.
+func TestOnlyConfiguredAddressesFollowTheConfiguredMode(t *testing.T) {
+	t.Cleanup(media.UseImageAddressMode(media.AddressCloudflare))
+	t.Cleanup(media.UsePublicBase("https://cdn.example.test"))
+	photo := media.Media{
+		Key: "images/abc", Kind: media.KindImage, Type: "image/jpeg", Width: 1600, Height: 1200,
+		SizeObjects: map[string]media.SizeObject{"card": {ImageSize: media.ImageSize{Width: 400, Height: 300}, Type: "image/jpeg"}},
+	}
+
+	if got := (media.Addresses{Base: "https://cdn.example.test"}).Image(photo, "card", 400); got.URL != "https://cdn.example.test/images/abc/card.jpg" {
+		t.Fatalf("an Addresses without a mode followed the configured one: %+v", got)
+	}
+	if got := media.ConfiguredAddresses().Image(photo, "card", 400); got.URL != "https://cdn.example.test/cdn-cgi/image/width=400,height=400,fit=scale-down/images/abc" {
+		t.Fatalf("the configured addresses: %+v", got)
+	}
+}

@@ -574,10 +574,17 @@ domain) is a configuration change:
   address stored there before is no longer read while the Media exists. The
   API's `profilePictureUrl` is unchanged while the base is the same.
 
-Addresses built without a service's own base (Event resources in tickets and
-competitors, team rosters) use the base core sets once at startup
-(`media.UsePublicBase`), a process-wide setting: those call sites have no
-media dependency to carry it.
+Addresses built without a service's own base (Event resources in tickets,
+competitors and the door, team rosters) use the base core sets once at
+startup (`media.UsePublicBase`), a process-wide setting: those call sites
+have no media dependency to carry it. The address mode below is set the same
+way (`media.UseImageAddressMode`) and reaches them only through
+`media.ConfiguredAddresses()`. Everything with a media dependency gets its
+base and mode from startup explicitly: the Media service
+(`media.ServiceOptions.ImageAddressMode`) and the Event service
+(`event.ServiceOptions.PublicBase`, `ImageAddressMode`). An `Addresses` that
+names no mode serves the stored sizes; it never follows the process-wide mode
+on its own.
 
 `MEDIA_IMAGE_ADDRESS_MODE` picks where sizes point:
 
@@ -606,9 +613,71 @@ list) carries, for a raster image of a purpose with sizes:
 ```
 
 `sizes` lists every size of the Media's purpose; `width`/`height` are left
-out when core does not know them. Event and User responses keep their fields
-(`coverImageUrl`, `images[].url`, `profilePictureUrl`); a client reads a size
-from the Media by its id.
+out when core does not know them.
+
+### Sizes in Event and User responses
+
+Media redesign ticket 17. A record that shows an image answers its `card`
+and `page` addresses next to its full-size address, so a list (Event cards,
+a member roster) loads the small image:
+
+| Response | Full-size address (unchanged) | Sizes |
+|---|---|---|
+| Event, list and detail: every Event answer under `/v1/events` (list, active list, detail, create, update, restore, gallery add and remove) and `GET /v1/seasons/{id}/events` | `coverImageUrl` | `coverImageSizes` |
+| Event gallery image, in the same answers | `images[].url` (and `imageUrls`) | `images[].sizes` |
+| Event summary (`event.Resource`): `GET /v1/door/events`; the `event` of every ticket answer (`/v1/tickets/me`, `/v1/tickets`, `/v1/tickets/{id}`, `/v1/tickets/user/{userId}/event/{eventId}`, `/v1/events/{eventId}/tickets`, the application answers under `/v1/events/{eventId}/applications/…`); the `event` of every competitor answer (`/v1/competitors…`, `/v1/events/{eventId}/competitors…`; leaderboards have none) | `coverImageUrl` | `coverImageSizes` |
+| The caller's profile (`GET`/`PUT`/`PATCH /v1/users/me`, `POST /v1/users/me/profile-picture`) | `profilePictureUrl` | `profilePictureSizes` |
+| Public team roster (`GET /v1/teams/{team}/members`) | `members[].profilePictureUrl` | `members[].profilePictureSizes` |
+
+```json
+{
+  "coverImageId": "0b7e4c1a-…",
+  "coverImageUrl": "https://cdn.yildizskylab.com/images/<id>",
+  "coverImageSizes": {
+    "card": { "url": "https://cdn.yildizskylab.com/images/<id>/card.jpg", "width": 400, "height": 300 },
+    "page": { "url": "https://cdn.yildizskylab.com/images/<id>/page.jpg", "width": 1200, "height": 900 }
+  },
+  "images": [
+    {
+      "id": "5d1c9a70-…",
+      "url": "https://cdn.yildizskylab.com/images/<id2>",
+      "sizes": {
+        "card": { "url": "https://cdn.yildizskylab.com/images/<id2>/card.jpg", "width": 400, "height": 300 },
+        "page": { "url": "https://cdn.yildizskylab.com/images/<id2>", "width": 1000, "height": 750 }
+      }
+    }
+  ]
+}
+```
+
+- The sizes are built by the same builder, base and mode as the Media
+  JSON's `sizes` (`media.Addresses.LinkedSizes`): a stored size object, a
+  Cloudflare transformation in that mode, the SVG itself for an SVG, the
+  original for a size the image already fits in (the `page` above).
+- They always name both `card` and `page` when the record links a Media
+  with a public address. A size with no object of its own is the original,
+  as in the Media JSON: an image already smaller than the size, an animated
+  WebP, one whose sizes the backfill has not made yet. A Media whose purpose
+  has no sizes (`legacy`), which the Media JSON answers without `sizes`,
+  answers the original at both. So a client never builds an address and
+  needs no fallback while the field is there.
+- They are left out when the record links no Media (an Event without a
+  cover; a profile whose `profilePictureUrl` is an address stored before
+  Media, with no Media behind it), and for a Media with no public address:
+  private, or its object purged. No record can link a private Media.
+- A profile picture whose object is purged while the profile still links it
+  keeps answering `profilePictureUrl`, as before sizes existed, but has no
+  `profilePictureSizes`. An Event cannot show one: its cover and gallery
+  read only Media that are not archived, and only an archived Media is
+  purged.
+- Existing fields keep their names and values; `imageUrls` stays a list of
+  full-size addresses.
+- The record reads the Media it links in its own query
+  (`media.LinkedImageSQL`, scanned into a `media.LinkedImage`), so sizes cost
+  no query per Media. The Event list takes three queries whatever the number
+  of Events: the Events with their covers, every listed Event's gallery, and
+  every listed Event's door staff. Gallery images are in upload order, and
+  two uploaded at the same instant in id order.
 
 ### Stored images before sizes
 
@@ -1368,8 +1437,9 @@ used in production, so there is nothing to move).
   default `https://cdn.yildizskylab.com`.
 - The decode budget (2 images at once, 1 SVG, a 10-second wait) is fixed in
   code (`media.DecodeBudgetConfig`).
-- `MEDIA_IMAGE_ADDRESS_MODE` — where image sizes point: `stored` (default) or
-  `cloudflare`. Any other value stops core at startup.
+- `MEDIA_IMAGE_ADDRESS_MODE` — where image sizes point, in the Media JSON and
+  in Event and User responses alike: `stored` (default) or `cloudflare`. Any
+  other value stops core at startup.
 
 - `MEDIA_SERVICE_CLIENTS` — the products' service clients for the
   [service attach API](#service-attach-api), `product:client` pairs

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 type AccountState string
@@ -105,6 +106,11 @@ type User struct {
 	AnonymizedAt        *time.Time   `json:"-"`
 	CreatedAt           time.Time    `json:"createdAt"`
 	UpdatedAt           time.Time    `json:"updatedAt"`
+
+	// ProfilePicture is the Media the profile links, as the store read it
+	// with the profile: what the picture's size addresses are built from
+	// (media.Addresses.LinkedSizes). Nil when the profile links none.
+	ProfilePicture *media.LinkedImage `json:"-"`
 }
 
 func withStudentCardStatus(u User) User {

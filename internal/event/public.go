@@ -2,20 +2,24 @@ package event
 
 import "github.com/skylab-kulubu/core-backend/internal/media"
 
-func withPublicMedia(e Event, base string) Event {
-	e.CoverImageURL = media.PublicURL(base, e.CoverImageURL)
+// withPublicMedia answers the Event's images at their addresses, full size
+// and sizes, under addresses.
+func withPublicMedia(e Event, addresses media.Addresses) Event {
+	e.CoverImageURL = addresses.Object(e.CoverImageURL)
+	e.CoverImageSizes = addresses.LinkedSizes(e.coverImage)
 	if n := len(e.Images); n > 0 {
 		images := make([]GalleryImage, n)
 		copy(images, e.Images)
 		for i := range images {
-			images[i].URL = media.PublicURL(base, images[i].URL)
+			images[i].URL = addresses.Object(images[i].URL)
+			images[i].Sizes = addresses.LinkedSizes(images[i].image)
 		}
 		e.Images = images
 	}
 	if n := len(e.ImageURLs); n > 0 {
 		urls := make([]string, 0, n)
 		for _, u := range e.ImageURLs {
-			if abs := media.PublicURL(base, u); abs != "" {
+			if abs := addresses.Object(u); abs != "" {
 				urls = append(urls, abs)
 			}
 		}
@@ -24,10 +28,10 @@ func withPublicMedia(e Event, base string) Event {
 	return emptyGallery(e)
 }
 
-func withPublicMediaAll(events []Event, base string) []Event {
+func withPublicMediaAll(events []Event, addresses media.Addresses) []Event {
 	out := make([]Event, len(events))
 	for i, e := range events {
-		out[i] = withPublicMedia(e, base)
+		out[i] = withPublicMedia(e, addresses)
 	}
 	return out
 }

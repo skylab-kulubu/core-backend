@@ -132,7 +132,7 @@ func (s *service) linkableMedia(ctx context.Context, id uuid.UUID, product authz
 	if err != nil {
 		return Media{}, err
 	}
-	purpose, known := s.catalogue.Lookup(m.Purpose)
+	purpose, known := s.addresses.Catalogue.Lookup(m.Purpose)
 	if m.Visibility != VisibilityPrivate || m.Encryption == nil || !known || purpose.OwningProduct() != product {
 		return Media{}, ErrNotFound
 	}
