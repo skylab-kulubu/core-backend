@@ -271,9 +271,10 @@ func TestEventGalleryImagesCarryTheirSizesHTTP(t *testing.T) {
 	}
 }
 
-// The Event list answers each Event's cover and gallery sizes, and costs the
-// same number of queries for four Events as for one: the Media each Event
-// links are read with it, never one query per Event or per Media.
+// The Event list answers each Event's cover and gallery sizes in three
+// queries, for four Events as for one: the Events with their covers, every
+// listed Event's gallery with its Media, and every listed Event's door staff.
+// Never one query per Event or per Media.
 func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T) {
 	f := newImageSizesFixture(t)
 	type seeded struct {
@@ -302,6 +303,9 @@ func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T)
 	one, oneQueries := list()
 	if len(one) != 1 || one[0].ID != first.ID {
 		t.Fatalf("list %+v", one)
+	}
+	if oneQueries != 3 {
+		t.Fatalf("listing 1 Event took %d queries, want 3", oneQueries)
 	}
 
 	seededByEvent := map[uuid.UUID]seeded{}
