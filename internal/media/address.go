@@ -75,9 +75,9 @@ type Addresses struct {
 	Catalogue Catalogue
 }
 
-// reviewedSizes is the reviewed catalogue, read once for every Addresses
-// that names none.
-var reviewedSizes = sync.OnceValue(reviewedCatalogue)
+// reviewedCatalogueOnce is the reviewed catalogue, read once for every
+// Addresses that names none.
+var reviewedCatalogueOnce = sync.OnceValue(reviewedCatalogue)
 
 func (a Addresses) mode() AddressMode {
 	if a.Mode != "" {
@@ -91,7 +91,7 @@ func (a Addresses) mode() AddressMode {
 
 func (a Addresses) catalogue() Catalogue {
 	if a.Catalogue.purposes == nil {
-		return reviewedSizes()
+		return reviewedCatalogueOnce()
 	}
 	return a.Catalogue
 }
