@@ -343,6 +343,7 @@ func main() {
 		Jobs:            certs,
 		Artifacts:       blobs,
 		Assets:          certificate.MediaAssets{Media: mediaStore, Blobs: blobs},
+		Media:           media.NewLinker(mediaStore),
 	})
 	certificate.MaintainIssuance(context.Background(), certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
@@ -371,6 +372,7 @@ func main() {
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase: cdnBase,
 			FormLinks:  eventFormLinks{urls: urlSvc},
+			Media:      media.NewLinker(mediaStore),
 		}),
 		Seasons:     season.NewService(seasons, az),
 		Tickets:     ticketSvc,

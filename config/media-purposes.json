@@ -10,6 +10,7 @@
       "scan": false,
       "pending_ttl": "24h",
       "transport": "single_step",
+      "attach": "core",
       "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
     },
     "event_cover": {
@@ -22,6 +23,7 @@
       "scan": false,
       "pending_ttl": "24h",
       "transport": "single_step",
+      "attach": "core",
       "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
     },
     "event_gallery": {
@@ -34,6 +36,7 @@
       "scan": false,
       "pending_ttl": "24h",
       "transport": "single_step",
+      "attach": "core",
       "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
     },
     "certificate_asset": {
@@ -46,6 +49,7 @@
       "scan": false,
       "pending_ttl": "24h",
       "transport": "single_step",
+      "attach": "core",
       "image": { "reencode": true, "max_dimension": 2560 }
     },
     "cms_image": {
@@ -58,6 +62,7 @@
       "scan": false,
       "pending_ttl": "24h",
       "transport": "single_step",
+      "attach": "service",
       "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
     },
     "cms_file": {
@@ -69,7 +74,8 @@
       "encrypted": false,
       "scan": false,
       "pending_ttl": "24h",
-      "transport": "single_step"
+      "transport": "single_step",
+      "attach": "service"
     },
     "answer_file": {
       "description": "An Answer file: a person's file for a Skyforms file question. Skyforms decides who may open it.",
@@ -86,6 +92,7 @@
       "scan": true,
       "pending_ttl": "24h",
       "transport": "single_step",
+      "attach": "service",
       "image": { "reencode": true, "max_dimension": 2560 }
     },
     "club_file": {
@@ -97,7 +104,8 @@
       "encrypted": false,
       "scan": true,
       "pending_ttl": "24h",
-      "transport": "direct"
+      "transport": "direct",
+      "attach": "service"
     },
     "answer_file_large": {
       "description": "A large Answer file, such as a game-jam build. Skyforms grants the Direct upload.",
@@ -108,7 +116,8 @@
       "encrypted": true,
       "scan": true,
       "pending_ttl": "24h",
-      "transport": "direct"
+      "transport": "direct",
+      "attach": "service"
     },
     "video": {
       "description": "An event recording, served as plain MP4.",
@@ -119,7 +128,8 @@
       "encrypted": false,
       "scan": false,
       "pending_ttl": "24h",
-      "transport": "direct"
+      "transport": "direct",
+      "attach": "service"
     },
     "legacy": {
       "description": "Media uploaded without a purpose, and every Media stored before Media purpose. Internal: clients cannot name it. It keeps the rules Media uploaded without a purpose had before this catalogue, until Skyforms and CMS send purposes.",
@@ -129,7 +139,8 @@
       "encrypted": false,
       "scan": false,
       "pending_ttl": "none",
-      "transport": "single_step"
+      "transport": "single_step",
+      "attach": "core"
     }
   }
 }

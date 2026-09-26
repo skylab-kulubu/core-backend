@@ -15,8 +15,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
-// The Media purposes core itself uploads as. The catalogue must define every
-// one of them (requiredPurposes).
+// The Media purposes core itself uploads as or links. The catalogue must
+// define every one of them (requiredPurposes).
 const (
 	// PurposeLegacy is the Media purpose of Media uploaded without a purpose
 	// and of every Media stored before Media purpose existed. It is internal:
@@ -24,11 +24,20 @@ const (
 	PurposeLegacy = "legacy"
 	// PurposeProfilePicture is a person's own profile picture.
 	PurposeProfilePicture = "profile_picture"
+	// PurposeEventCover is an Event's cover image.
+	PurposeEventCover = "event_cover"
+	// PurposeEventGallery is a photo in an Event's gallery.
+	PurposeEventGallery = "event_gallery"
+	// PurposeCertificateAsset is a certificate template's background or
+	// image.
+	PurposeCertificateAsset = "certificate_asset"
 )
 
 // requiredPurposes are the purposes core refers to in code. A catalogue that
 // lacks one stops core at startup.
-var requiredPurposes = []string{PurposeLegacy, PurposeProfilePicture}
+var requiredPurposes = []string{
+	PurposeLegacy, PurposeProfilePicture, PurposeEventCover, PurposeEventGallery, PurposeCertificateAsset,
+}
 
 // ErrCatalogueInvalid is a catalogue file core cannot read as one: a field it
 // does not know, a value outside the vocabulary, or a missing purpose that
@@ -51,6 +60,30 @@ const (
 	// VisibilityPrivate Media are encrypted and never get a public address.
 	VisibilityPrivate Visibility = "private"
 )
+
+// Attacher is who attaches the Media of a purpose to the records that use
+// them.
+type Attacher string
+
+const (
+	// AttachCore: a core record links the Media, and the database writes its
+	// Media attachment.
+	AttachCore Attacher = "core"
+	// AttachService: another product attaches the Media through the service
+	// attach API.
+	AttachService Attacher = "service"
+)
+
+// serviceAttachAPI reports whether the service attach API exists. Until it
+// does (media redesign ticket 03), nothing can attach a Media whose purpose
+// another product attaches, so such a purpose cannot be uploaded.
+const serviceAttachAPI = false
+
+// Available reports whether something can attach Media of this purpose
+// today. A Media nothing can attach would only wait for its expiry.
+func (p Purpose) Available() bool {
+	return p.Attach == AttachCore || serviceAttachAPI
+}
 
 // Transport is how a purpose's files reach storage.
 type Transport string
@@ -79,7 +112,9 @@ type Purpose struct {
 	// purpose fall to the strict rule.
 	PendingTTL time.Duration
 	Transport  Transport
-	Image      ImageHandling
+	// Attach is who attaches the purpose's Media.
+	Attach Attacher
+	Image  ImageHandling
 	// LegacyRules makes the purpose accept what Media uploaded without a
 	// purpose were accepted as before Media purpose: see
 	// docs/media-lifecycle.md.
@@ -111,6 +146,7 @@ type purposeEntry struct {
 	Scan        bool                `json:"scan"`
 	PendingTTL  string              `json:"pending_ttl"`
 	Transport   Transport           `json:"transport"`
+	Attach      Attacher            `json:"attach"`
 	Image       *ImageHandling      `json:"image"`
 	LegacyRules bool                `json:"legacy_rules"`
 }
@@ -172,7 +208,7 @@ func (e purposeEntry) purpose(name string) (Purpose, error) {
 	p := Purpose{
 		Name: name, Uploader: e.Upload, Types: e.Types, MaxBytes: e.MaxMiB << 20,
 		Visibility: e.Visibility, Encrypted: e.Encrypted, Scan: e.Scan,
-		Transport: e.Transport, LegacyRules: e.LegacyRules,
+		Transport: e.Transport, Attach: e.Attach, LegacyRules: e.LegacyRules,
 	}
 	if e.Image != nil {
 		p.Image = *e.Image
@@ -194,6 +230,9 @@ func (e purposeEntry) purpose(name string) (Purpose, error) {
 	}
 	if e.Transport != TransportSingleStep && e.Transport != TransportDirect {
 		return Purpose{}, fmt.Errorf("unknown transport %q", e.Transport)
+	}
+	if e.Attach != AttachCore && e.Attach != AttachService {
+		return Purpose{}, fmt.Errorf("unknown attach %q", e.Attach)
 	}
 	if e.PendingTTL == "none" {
 		if !e.LegacyRules {

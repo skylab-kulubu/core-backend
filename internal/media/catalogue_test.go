@@ -133,6 +133,8 @@ func TestCatalogue_RefusesMalformedEntries(t *testing.T) {
 		"unknown visibility":      func(p purposeEntries) { p["cms_file"]["visibility"] = "internal" },
 		"public and encrypted":    func(p purposeEntries) { p["cms_file"]["encrypted"] = true },
 		"unknown transport":       func(p purposeEntries) { p["cms_file"]["transport"] = "courier" },
+		"unknown attacher":        func(p purposeEntries) { p["cms_file"]["attach"] = "anyone" },
+		"no attacher":             func(p purposeEntries) { delete(p["cms_file"], "attach") },
 		"unreadable pending TTL":  func(p purposeEntries) { p["cms_file"]["pending_ttl"] = "tomorrow" },
 		"pending that never ends": func(p purposeEntries) { p["cms_file"]["pending_ttl"] = "none" },
 		"variant above the image": func(p purposeEntries) {

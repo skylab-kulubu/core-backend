@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -199,6 +200,25 @@ func (s *MemoryStore) RemoveImages(_ context.Context, eventID uuid.UUID, ids []u
 	e.UpdatedAt = time.Now().UTC()
 	s.byID[eventID] = e
 	return emptyGallery(e), nil
+}
+
+func (s *MemoryStore) TeamsUsingMedia(_ context.Context, mediaID, except uuid.UUID) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	teams := make([]string, 0)
+	for _, e := range s.byID {
+		if e.ID == except || slices.Contains(teams, e.OwnerTeam) {
+			continue
+		}
+		uses := e.CoverImageID != nil && *e.CoverImageID == mediaID
+		for _, im := range e.Images {
+			uses = uses || im.ID == mediaID
+		}
+		if uses {
+			teams = append(teams, e.OwnerTeam)
+		}
+	}
+	return teams, nil
 }
 
 func urlsOf(images []GalleryImage) []string {

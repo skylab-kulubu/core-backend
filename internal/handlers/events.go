@@ -41,6 +41,9 @@ type eventBody struct {
 }
 
 func eventError(c fiber.Ctx, err error) error {
+	if handled, problemErr := linkProblem(c, err); handled {
+		return problemErr
+	}
 	switch {
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")

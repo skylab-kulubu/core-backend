@@ -121,6 +121,9 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if purpose.Transport == TransportDirect {
 		return Media{}, &PurposeRefusal{Err: ErrDirectUploadOnly, Purpose: purpose.Name}
 	}
+	if !purpose.Available() {
+		return Media{}, &PurposeRefusal{Err: ErrPurposeNotAvailable, Purpose: purpose.Name}
+	}
 	if len(file.Data) == 0 {
 		return Media{}, ErrInvalid
 	}
@@ -168,6 +171,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		UploadedBy:          uploadedBy,
 		Kind:                stored.kind,
 		Purpose:             purpose.Name,
+		ExpiresAt:           pendingExpiry(purpose, time.Now().UTC()),
 		Key:                 key,
 		CoverColors:         colors,
 		CoverColorsComputed: colorsComputed,
@@ -190,6 +194,17 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
 	}
 	return s.withURL(created), nil
+}
+
+// pendingExpiry is when a Media of the purpose uploaded at now is purged if
+// no Media attachment links it by then. A purpose without a pending TTL
+// (legacy) keeps it.
+func pendingExpiry(purpose Purpose, now time.Time) *time.Time {
+	if purpose.PendingTTL <= 0 {
+		return nil
+	}
+	expires := now.Add(purpose.PendingTTL)
+	return &expires
 }
 
 // legacyFile applies the rules Media uploaded without a purpose had before
@@ -326,11 +341,20 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.Delete) {
 		return Media{}, ErrForbidden
 	}
-	if _, err := s.media.GetIncludingDeleted(ctx, id); err != nil {
+	m, err := s.media.GetIncludingDeleted(ctx, id)
+	if err != nil {
 		return Media{}, err
 	}
 	if err := s.media.Restore(ctx, id); err != nil {
 		return Media{}, err
+	}
+	if m.DeletedAt != nil {
+		// Restore left the Media with no expiry; its purpose's window starts
+		// again now. Should this step fail, the Media is only kept longer.
+		purpose, _ := s.catalogue.Lookup(m.Purpose)
+		if err := s.media.ExpireUnattachedAt(ctx, id, pendingExpiry(purpose, time.Now().UTC())); err != nil {
+			return Media{}, err
+		}
 	}
 	return s.Get(ctx, id)
 }

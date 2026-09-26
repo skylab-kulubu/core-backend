@@ -165,7 +165,22 @@ func (s *MemoryStore) Restore(_ context.Context, id uuid.UUID) error {
 	if m.DeletedAt != nil {
 		m.DeletedAt = nil
 		m.DeletedBy = nil
+		m.ExpiresAt = nil
 		m.UpdatedAt = time.Now().UTC()
+		s.byID[id] = m
+	}
+	return nil
+}
+
+func (s *MemoryStore) ExpireUnattachedAt(_ context.Context, id uuid.UUID, at *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok || m.DeletedAt != nil {
+		return ErrNotFound
+	}
+	if m.Status != StatusAttached && m.BlobPurgeStartedAt == nil && m.BlobPurgedAt == nil {
+		m.ExpiresAt = at
 		s.byID[id] = m
 	}
 	return nil
@@ -214,6 +229,57 @@ func (s *MemoryStore) PurgeBlobIfUnreferenced(_ context.Context, id uuid.UUID, p
 	m.BlobPurgedAt = &purgedAt
 	m.BlobPurgeCheckedAt = &purgedAt
 	m.UpdatedAt = purgedAt
+	s.byID[id] = m
+	return true, nil
+}
+
+func (s *MemoryStore) ListExpired(_ context.Context, now time.Time, after uuid.UUID, limit int) ([]Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Media, 0)
+	for _, m := range s.byID {
+		if m.BlobPurgedAt != nil || !m.expired(now) || (m.DeletedAt != nil && m.BlobPurgeStartedAt == nil) || bytes.Compare(m.ID[:], after[:]) <= 0 {
+			continue
+		}
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].ID[:], out[j].ID[:]) < 0 })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) PurgeExpiredBlobIfUnattached(_ context.Context, id uuid.UUID, now time.Time, purge func(string) error) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if m.BlobPurgedAt != nil || (m.BlobPurgeStartedAt == nil && (m.DeletedAt != nil || !m.expired(now))) {
+		return false, nil
+	}
+	if s.referenced[id] || m.Status == StatusAttached {
+		m.BlobPurgeStartedAt = nil
+		m.BlobPurgeCheckedAt = &now
+		s.byID[id] = m
+		return false, nil
+	}
+	if m.BlobPurgeStartedAt == nil {
+		m.BlobPurgeStartedAt = &now
+		m.BlobPurgeCheckedAt = &now
+		s.byID[id] = m
+	}
+	if err := purge(m.Key); err != nil {
+		return false, err
+	}
+	m.BlobPurgedAt = &now
+	m.BlobPurgeCheckedAt = &now
+	if m.DeletedAt == nil {
+		m.DeletedAt = &now
+	}
+	m.UpdatedAt = now
 	s.byID[id] = m
 	return true, nil
 }
