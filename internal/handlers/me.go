@@ -76,6 +76,9 @@ type meUser struct {
 	user.User
 	Phone     string `json:"phone,omitempty"`
 	YTULinked bool   `json:"ytuLinked"`
+	// ProfilePictureSizes are the picture's card and page addresses, built
+	// like the Media JSON's sizes.
+	ProfilePictureSizes map[string]media.ImageAddress `json:"profilePictureSizes,omitempty"`
 }
 
 // ytuManagedCode is the problem code for an edit that would change a
@@ -222,13 +225,13 @@ func (h *MeHandler) DeleteProfilePicture(c fiber.Ctx) error {
 }
 
 // view is the caller's profile as the API answers it: the profile picture
-// at its address under the configured base.
+// at its address and sizes under the configured base.
 func (h *MeHandler) view(u user.User) meUser {
+	addresses := media.Addresses{}
 	if h.media != nil {
-		u.ProfilePictureURL = h.media.Addresses().Object(u.ProfilePictureURL)
-	} else {
-		u.ProfilePictureURL = media.PublicURL("", u.ProfilePictureURL)
+		addresses = h.media.Addresses()
 	}
+	u.ProfilePictureURL = addresses.Object(u.ProfilePictureURL)
 	u.StudentCardLinked = u.StudentCardUID != ""
-	return meUser{User: u, Phone: u.Phone, YTULinked: u.YTULinked}
+	return meUser{User: u, Phone: u.Phone, YTULinked: u.YTULinked, ProfilePictureSizes: addresses.LinkedSizes(u.ProfilePicture)}
 }

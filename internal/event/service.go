@@ -44,11 +44,11 @@ type Service interface {
 }
 
 type service struct {
-	store      Store
-	authz      authz.Authorizer
-	publicBase string
-	formLinks  FormLinkSync
-	media      media.Linker
+	store     Store
+	authz     authz.Authorizer
+	addresses media.Addresses // of the Event's images: base and address mode
+	formLinks FormLinkSync
+	media     media.Linker
 }
 
 func NewService(store Store, az authz.Authorizer, publicBase ...string) Service {
@@ -56,15 +56,15 @@ func NewService(store Store, az authz.Authorizer, publicBase ...string) Service 
 	if len(publicBase) > 0 {
 		base = publicBase[0]
 	}
-	return &service{store: store, authz: az, publicBase: base}
+	return &service{store: store, authz: az, addresses: media.Addresses{Base: base}}
 }
 
 func (s *service) publish(e Event) Event {
-	return withPublicMedia(e, s.publicBase)
+	return withPublicMedia(e, s.addresses)
 }
 
 func (s *service) publishAll(events []Event) []Event {
-	return withPublicMediaAll(events, s.publicBase)
+	return withPublicMediaAll(events, s.addresses)
 }
 
 func resource(ownerTeam string) authz.Resource {

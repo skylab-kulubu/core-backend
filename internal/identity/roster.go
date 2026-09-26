@@ -1,5 +1,7 @@
 package identity
 
+import "github.com/skylab-kulubu/core-backend/internal/media"
+
 type LocalizedText struct {
 	TR string `json:"tr"`
 	EN string `json:"en,omitempty"`
@@ -14,6 +16,9 @@ type PublicMember struct {
 	Faculty           string `json:"faculty,omitempty"`
 	Department        string `json:"department,omitempty"`
 	Leader            bool   `json:"leader"`
+	// ProfilePictureSizes are the picture's card and page addresses, built
+	// like the Media JSON's sizes.
+	ProfilePictureSizes map[string]media.ImageAddress `json:"profilePictureSizes,omitempty"`
 }
 
 type PublicTeam struct {
