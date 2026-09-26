@@ -105,6 +105,10 @@ find "$PKI" -type f -exec chmod 0644 {} +
   for user in "${REDIS_USERS[@]}"; do
     printf 'REDIS_%s_PASSWORD=%s\n' "$(tr 'a-z-' 'A-Z_' <<<"$user")" "${REDIS_PASSWORD[$user]}"
   done
+  # The media store (Garage): its key id is GK and 24 hex digits, its secret 64 hex digits.
+  printf 'MEDIA_STORE_RPC_SECRET=%s\n' "$(rand_hex 32)"
+  printf 'MEDIA_STORE_ACCESS_KEY=GK%s\n' "$(rand_hex 12)"
+  printf 'MEDIA_STORE_SECRET_KEY=%s\n' "$(rand_hex 32)"
   # Filled in by provisioning once Keycloak created the clients.
   printf 'ACCOUNT_ERASURE_CLIENT_SECRET=pending\n'
   printf 'ACCOUNT_CENTER_OIDC_CLIENT_SECRET=pending-until-the-reconciler-created-the-client\n'

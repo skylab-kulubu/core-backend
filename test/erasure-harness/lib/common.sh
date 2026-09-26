@@ -54,7 +54,7 @@ check() { # check "description" command...
   local description=$1
   shift
   if "$@"; then
-    log "  ok    $description"
+    log "  PASS  $description"
   else
     log "  FAIL  $description"
     SCENARIO_FAILURES=$((SCENARIO_FAILURES + 1))
@@ -119,6 +119,38 @@ aa_redis() { # the recovery operator: read-only checks
 marker_key() { printf 'skylab:account-access:v1:blocked:%s' "$(printf '%s\0%s' "$ISSUER" "$1" | sha256sum | cut -c1-64)"; }
 marker_of() { aa_redis GET "$(marker_key "$1")"; }
 cms_redis() { redis-cli -h cms-redis -p 6379 "$@"; }
+
+# --- media store ----------------------------------------------------------------------------------
+# core's public Media bucket (R2 in production) is the media-store service. The driver reads it
+# with SigV4 for region "auto", as core writes it.
+MEDIA_STORE=http://media-store:3900
+MEDIA_BUCKET=harness-media
+media_s3() {
+  curl --silent --show-error --aws-sigv4 'aws:amz:auto:s3' --user "$MEDIA_STORE_ACCESS_KEY:$MEDIA_STORE_SECRET_KEY" "$@"
+}
+media_store_ready() {
+  [[ $(media_s3 --head --output /dev/null --write-out '%{http_code}' "$MEDIA_STORE/$MEDIA_BUCKET" 2>/dev/null) == 200 ]]
+}
+# media_objects KEY: how many objects the bucket holds under a Media's key, the object itself and
+# its image sizes (KEY/card.png, KEY/page.jpg, ...). "error" when the bucket cannot be listed.
+media_objects() {
+  local out
+  out=$(media_s3 --fail "$MEDIA_STORE/$MEDIA_BUCKET?list-type=2&prefix=$1") || { echo error; return 0; }
+  grep -o '<KeyCount>[0-9]*</KeyCount>' <<<"$out" | tr -dc '0-9' || echo error
+}
+# media_header KEY HEADER: one response header of the stored object, as the CDN would serve it;
+# "status <code>" when the object cannot be read.
+media_header() {
+  local headers status
+  headers=$(media_s3 --head "$MEDIA_STORE/$MEDIA_BUCKET/$1" | tr -d '\r') || { echo 'status 000'; return 0; }
+  status=$(awk 'NR == 1 { print $2 }' <<<"$headers")
+  [[ $status == 200 ]] || { echo "status $status"; return 0; }
+  awk -v name="$(tr 'A-Z' 'a-z' <<<"$2")" 'index(tolower($0), name ":") == 1 { sub(/^[^:]*:[[:space:]]*/, ""); print; exit }' <<<"$headers"
+}
+# media_seeded PERSON: "role<TAB>media id" of every upload seed_core_media made for the person.
+media_seeded() { cat "$STATE/media-$1.tsv" 2>/dev/null || true; }
+media_id_of() { media_seeded "$1" | awk -F'\t' -v role="$2" '$1 == role { print $2 }'; }
+media_key() { pg super_skylab "SELECT file_url FROM media WHERE id = '$1'"; }
 
 # --- Keycloak -------------------------------------------------------------------------------------
 kc_admin_token() {

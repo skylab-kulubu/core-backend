@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scenario 1 — the full saga (audit gates 2 and 5): Sudo mode, intake, marker, worker and the
 # nine steps; then PII queries in every service database, receipts and counts, the preserved
-# records and Keycloak's 404.
+# records, the person's Media (media redesign ticket 07) and Keycloak's 404.
 
 # backup_databases NAME: custom-format dumps of every service database (scenario 11 restores them).
 backup_databases() {
@@ -24,6 +24,7 @@ scenario_1() {
 
   check 'p1 exists in Keycloak before the request' eq "$(kc_user_status "$subject")" 200
   check 'p1 is not blocked before the request' eq "$(marker_of "$subject")" ''
+  check_media_before "$person"
   # The whole Account Center path: its own OIDC login, Sudo mode with the password (the sudo
   # token sky-account mints for account-center with aud core), prepare, the typed confirmation.
   check 'Account Center: login, Sudo mode, prepare and the typed confirmation' ac_bff_delete "$person"
@@ -92,6 +93,9 @@ scenario_1() {
   # Preserved records.
   check_preserved_records "$person"
 
+  # The person's Media: personal purged, club content kept without their name.
+  check_media_after "$person" "$DEL_REQUEST"
+
   # The bystander keeps everything.
   local db8
   for db8 in super_skylab skymail forms_db; do
@@ -139,6 +143,64 @@ check_preserved_records() {
   check 'Forms: the response stays, redacted and detached; the form stays with Silinmiş kullanıcı as owner' \
     eq "$(pg forms_db "SELECT r.user_id IS NULL, r.data::text, f.owned_by FROM responses r, forms f
           WHERE r.id = '$(uuid_of "$p-response")' AND f.id = '$(uuid_of "$p-form")'" | tr '\t' '|')" "t|{}|$DELETED_SUBJECT"
+}
+
+# check_media_before PERSON: the uploads seed_core_media made, as the erasure will find them:
+# each object in the bucket, the person as uploader, the file name recorded, the second picture
+# current, and the club SVG served as a download under the person's name.
+check_media_before() {
+  local p=$1 subject=${P_ID[$1]} role id key
+  check "media: seed_core_media uploaded two profile pictures and a cms_image for $p" \
+    eq "$(media_seeded "$p" | cut -f1 | paste -sd, -)" 'profile-old,profile-current,club'
+  while IFS=$'\t' read -r role id; do
+    key=$(media_key "$id")
+    if [[ $role == club ]]; then
+      check "media $role: its object is in the bucket before the request" eq "$(media_objects "$key")" 1
+    else
+      check "media $role: its object and its card size are in the bucket before the request" ge "$(media_objects "$key")" 2
+    fi
+    check "media $role: uploaded by $p under a file name, not purged" \
+      eq "$(pg super_skylab "SELECT uploaded_by = '$subject', file_name <> '', blob_purged_at IS NULL FROM media WHERE id = '$id'" | tr '\t' '|')" 't|t|t'
+  done < <(media_seeded "$p")
+  check "media profile-current: it is $p's current profile picture" \
+    eq "$(pg super_skylab "SELECT profile_picture_id FROM users WHERE id = '$subject'")" "$(media_id_of "$p" profile-current)"
+  key=$(media_key "$(media_id_of "$p" club)")
+  printf 'before\t%s\t%s\n' "$key" "$(media_header "$key" content-disposition)" >"$EVIDENCE/s1-media-club-disposition.tsv"
+  check "media club: a cms_image SVG, served as a download under its file name" \
+    grep -Eq '^image/svg\+xml [|] attachment; filename' <<<"$(media_header "$key" content-type) | $(media_header "$key" content-disposition)"
+}
+
+# check_media_after PERSON REQUEST: the erasure's part in the person's Media (core
+# docs/account-lifecycle.md, docs/media-lifecycle.md; spec §3.4a). Personal Media (both profile
+# pictures: the replaced one through account_deletion_media, the current one through
+# profile_media_id) is purged: every object under its key is gone, the Media is archived with its
+# purge recorded. Club content keeps its object and its Media, loses uploader and file name, and
+# is served as a plain download: Content-Disposition exactly "attachment". Nothing of the request
+# is left to erase and the request row keeps no Media id.
+check_media_after() {
+  local p=$1 request=$2 role id key
+  while IFS=$'\t' read -r role id; do
+    key=$(media_key "$id")
+    case $role in
+      profile-*)
+        check "media $role (personal): no object left under its key, sizes included" eq "$(media_objects "$key")" 0
+        check "media $role (personal): purged and archived, no uploader, no file name" \
+          eq "$(pg super_skylab "SELECT blob_purged_at IS NOT NULL, deleted_at IS NOT NULL, uploaded_by IS NULL, file_name FROM media WHERE id = '$id'" | tr '\t' '|')" 't|t|t|'
+        ;;
+      club)
+        check "media club: its object is still in the bucket" eq "$(media_objects "$key")" 1
+        check "media club: kept (not purged, not archived), uploaded_by NULL, file_name empty" \
+          eq "$(pg super_skylab "SELECT blob_purged_at IS NULL, deleted_at IS NULL, uploaded_by IS NULL, file_name FROM media WHERE id = '$id'" | tr '\t' '|')" 't|t|t|'
+        printf 'after\t%s\t%s\n' "$key" "$(media_header "$key" content-disposition)" >>"$EVIDENCE/s1-media-club-disposition.tsv"
+        check "media club: object metadata Content-Disposition is exactly attachment" eq "$(media_header "$key" content-disposition)" attachment
+        check "media club: object keeps its Content-Type" eq "$(media_header "$key" content-type)" image/svg+xml
+        ;;
+    esac
+  done < <(media_seeded "$p")
+  check 'media: account_deletion_media holds nothing for the request' \
+    eq "$(pg super_skylab "SELECT count(*) FROM account_deletion_media WHERE request_id = '$request'")" 0
+  check 'media: the request is completed and its row keeps no Media id (profile_media_id NULL)' \
+    eq "$(pg super_skylab "SELECT status, profile_media_id IS NULL FROM account_deletion_requests WHERE id = '$request'" | tr '\t' '|')" 'completed|t'
 }
 
 # admin_event_times SUBJECT: "operation<TAB>epoch ms" of Keycloak's admin events on the user.
