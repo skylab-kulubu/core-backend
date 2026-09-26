@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"image/png"
 	"strings"
 	"sync"
 	"testing"
@@ -78,12 +79,11 @@ func TestPrivateCertificateAssetRendersThroughDecryption(t *testing.T) {
 		t.Fatal(err)
 	}
 	template := c.template(t, background.ID)
-	encoded := base64.StdEncoding.EncodeToString(pngDot())
 
 	if _, err := c.service.PreviewTemplate(ctx, c.admin, template.ID, certificate.PreviewData{}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(c.render.html, encoded) {
+	if !embedsTheDot(c.render.html) {
 		t.Fatal("the draft preview did not render the decrypted background")
 	}
 
@@ -92,7 +92,7 @@ func TestPrivateCertificateAssetRendersThroughDecryption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(c.render.html, encoded) {
+	if !embedsTheDot(c.render.html) {
 		t.Fatal("the published version did not render the decrypted background")
 	}
 	copyKey := "certificate-template-assets/" + version.ID.String() + "/" + background.ID.String()
@@ -293,4 +293,25 @@ func TestPublishWithAnUncertainCommitKeepsItsPrivateCopies(t *testing.T) {
 	if _, ok := c.private.Get(ref.Key); !ok || c.private.Len() != objectsBefore+1 {
 		t.Fatalf("the stored version's private copy is gone (%d objects, %d before)", c.private.Len(), objectsBefore)
 	}
+}
+
+// embedsTheDot reports whether the rendered HTML embeds the 1-pixel PNG
+// background: decrypted, as it was stored (re-encoded, still 1 by 1).
+func embedsTheDot(html string) bool {
+	const prefix = "data:image/png;base64,"
+	start := strings.Index(html, prefix)
+	if start < 0 {
+		return false
+	}
+	rest := html[start+len(prefix):]
+	end := strings.IndexAny(rest, "\"')")
+	if end < 0 {
+		return false
+	}
+	data, err := base64.StdEncoding.DecodeString(rest[:end])
+	if err != nil {
+		return false
+	}
+	config, err := png.DecodeConfig(bytes.NewReader(data))
+	return err == nil && config.Width == 1 && config.Height == 1
 }

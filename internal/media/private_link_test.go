@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"image/png"
 	"io"
 	"net/url"
 	"strings"
@@ -297,8 +298,9 @@ func TestService_AdminGetsAReadLinkToCoresOwnPrivateMedia(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := readAll(t, content); !bytes.Equal(got, pngDot()) {
-		t.Fatal("opened other bytes")
+	// The 1-pixel PNG as it was stored: re-encoded, still 1 by 1.
+	if got, err := png.DecodeConfig(bytes.NewReader(readAll(t, content))); err != nil || got.Width != 1 || got.Height != 1 {
+		t.Fatalf("opened %+v, %v", got, err)
 	}
 	actor := uuid.MustParse(editor.ID)
 	if log := pm.store.ReadLinkLog(asset.ID); len(log) != 1 || log[0].Product != authz.ProductCore || log[0].OnBehalfOf != actor {

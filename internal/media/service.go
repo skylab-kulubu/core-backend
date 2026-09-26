@@ -440,7 +440,7 @@ func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
 	if detected == "" || !purpose.accepts(detected) {
 		return storedFile{}, purpose.typeRefusal()
 	}
-	if !isRasterType(detected) {
+	if detected == pdfType || detected == docxType {
 		// PDF and DOCX are kept as they came.
 		return storedFile{body: data, ctype: detected, kind: KindFile, keyPrefix: "files/"}, nil
 	}

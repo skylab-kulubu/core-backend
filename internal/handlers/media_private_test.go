@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -374,8 +375,9 @@ func TestAdminReadLinkToACertificateAssetHTTP(t *testing.T) {
 		t.Fatalf("link: status %d body %s", resp.StatusCode, raw)
 	}
 	resp, raw = do(t, h.app(t, authn.Identity{}), httptest.NewRequest(fiber.MethodGet, contentPath(t, link["url"].(string)), nil))
-	if resp.StatusCode != fiber.StatusOK || !bytes.Equal(raw, pngDotHTTP()) {
-		t.Fatalf("content: status %d", resp.StatusCode)
+	// The 1-pixel PNG as it was stored: re-encoded, still 1 by 1.
+	if got, err := png.DecodeConfig(bytes.NewReader(raw)); resp.StatusCode != fiber.StatusOK || err != nil || got.Width != 1 {
+		t.Fatalf("content: status %d, %+v, %v", resp.StatusCode, got, err)
 	}
 
 	// An admin names no one; a value that is no user id is refused, not

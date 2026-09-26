@@ -6,6 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"testing"
 
 	"github.com/google/uuid"
@@ -239,5 +242,61 @@ func TestService_PurposeThatNeedsAScanIsRefusedWithoutAScanner(t *testing.T) {
 	}
 	if bao.Logins() != 0 {
 		t.Fatal("the refused upload reached OpenBao")
+	}
+}
+
+// largePNG is a PNG larger than every size a public image gets, with a
+// comment chunk re-encoding drops.
+func largePNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 3000, 1500))
+	for y := 0; y < 1500; y++ {
+		for x := 0; x < 3000; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 90, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// A private image is re-encoded like a public one, then encrypted; it gets
+// no sizes, and nothing of it reaches the public bucket.
+func TestService_PrivateImageIsReencodedAndGetsNoPublicSizes(t *testing.T) {
+	t.Parallel()
+	pm := newPrivateMedia(t)
+	ctx := context.Background()
+	original := largePNG(t)
+
+	created, err := pm.svc.UploadForPurpose(ctx, admin(), "certificate_asset", uploaded("background.png", "image/png", original))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pm.public.Len() != 0 {
+		t.Fatalf("%d objects in the public bucket", pm.public.Len())
+	}
+	if pm.private.Len() != 1 {
+		t.Fatalf("%d objects in the private bucket, want the image alone", pm.private.Len())
+	}
+	record, err := pm.store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(record.SizeObjects) != 0 || record.SizeObjects == nil || len(created.Sizes) != 0 {
+		t.Fatalf("size objects %v, sizes %v", record.SizeObjects, created.Sizes)
+	}
+	sealed, _ := record.Sealed()
+	stored, err := pm.storage.Read(ctx, sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := png.DecodeConfig(bytes.NewReader(stored))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Width != 2560 || record.Width != 2560 || bytes.Equal(stored, original) {
+		t.Fatalf("stored %dx%d (record %dx%d), re-encoded %v", decoded.Width, decoded.Height, record.Width, record.Height, !bytes.Equal(stored, original))
 	}
 }

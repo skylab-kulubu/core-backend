@@ -1178,12 +1178,17 @@ Core signs in to OpenBao with AppRole (`auth/approle/login`,
 upload or read, not at startup: an OpenBao that is down never stops core
 (`internal/transit`). It keeps the token and renews it in the background once
 half its lease (1 hour) has passed; a token with lease left is used until a
-new one arrives. It logs in again when the token nears its end or its 24-hour
-maximum, and once when OpenBao refuses it. Callers that need a new token
-share one login, each waiting only as long as its own request allows; a
-failed login is answered from memory for 5 seconds. Every request to OpenBao
-has a 5-second timeout, and a redirect from OpenBao is never followed (the
-token would go wherever it points).
+new one arrives, and stops being used 30 seconds before its lease ends (a
+quarter of a shorter lease). It logs in again when the token nears its end or
+its 24-hour maximum, and once when OpenBao refuses it; the token a login
+replaces is revoked (revoke-self) as far as OpenBao lets it. Callers that need
+a new token share one login, each waiting only as long as its own request
+allows. A failed login or renewal is answered from memory for 5 seconds, and
+so is a refusal of a token that was just issued: that is core's policy not
+covering the request (or encrypt having to create a missing key), a
+configuration to fix (`503`), not something another login mends. Every
+request to OpenBao has a 5-second timeout, and a redirect from OpenBao is
+never followed (the token would go wherever it points).
 
 ### Storing a private Media
 
@@ -1240,8 +1245,9 @@ Two callers may ask:
   file (Skyforms for an Answer file: the reviewer).
 - **A privileged admin** (ADMIN, YK, DK), for a core purpose
   (`certificate_asset`): the admin is the person the link is for, and the body
-  names no one (`{}`). This is how superadmin's certificate template editor
-  shows a private background.
+  names no one (`{}`); any `onBehalfOf`, a malformed one included, is `400`.
+  This is how superadmin's certificate template editor shows a private
+  background.
 
 Anything else is `404`: another product's Media, a public one, a core Media
 for a product, a product's Media for an admin, one that does not exist. The
@@ -1287,8 +1293,10 @@ not logged as an open.
 
 The access log is kept **one year** (decision G2, `media.ReadLinkRetention`).
 An hourly cleanup deletes, a batch at a time, the links issued more than a
-year ago with their opens, and any open older than a year; it runs with the
-flag off too, and says nothing when there is nothing to delete. A person's
+year ago with their opens, and any open older than a year. It runs in the
+background from startup on (its first run never holds up core), with the flag
+off too, logs how many links (and their opens) it deleted, and says nothing
+when there is nothing to delete. A person's
 account erasure leaves their rows in place until their year is up: they are
 the access audit record, and the erasure steps do not touch them
 ([`data-lifecycle.md`](data-lifecycle.md)).
@@ -1302,7 +1310,10 @@ copy of a private asset is kept encrypted in the private bucket under a data
 key of its own (`private/certificate-template-assets/<version>/<asset>`; the
 version id is new on every publish); its manifest entry carries the
 encryption, and the asset serving backfill skips it. A publish that fails
-deletes the private copies it made.
+deletes the private copies it wrote, however far it got; one whose version
+may have been stored although the store answered an error (a lost commit
+answer) keeps them, since that version's certificates need them: they are
+deleted only when the version is provably not there.
 
 Certificate assets uploaded before private Media are `legacy` and public, and
 stay so: they render as before, and their version copies stay in the public
