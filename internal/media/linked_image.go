@@ -17,6 +17,10 @@ type LinkedImage struct {
 // Media it links, the media row aliased alias (a trusted identifier, never
 // input): NULL when the record links none. Scan it into a *LinkedImage
 // (a **LinkedImage destination), which a NULL leaves nil.
+//
+// It maps media columns to Media fields as mediaCols and scanMedia
+// (postgres.go) do, as one JSON object rather than positional columns; a
+// column those two change here, with linkedImageColumns.
 func LinkedImageSQL(alias string) string {
 	return `CASE WHEN ` + alias + `.id IS NULL THEN NULL ELSE jsonb_build_object(
 		'key', ` + alias + `.file_url,
@@ -31,7 +35,8 @@ func LinkedImageSQL(alias string) string {
 		'blobPurgedAt', ` + alias + `.blob_purged_at) END`
 }
 
-// linkedImageColumns are the fields LinkedImageSQL builds.
+// linkedImageColumns are the fields LinkedImageSQL builds, named for the
+// Media fields scanMedia fills from the same columns.
 type linkedImageColumns struct {
 	Key                string                `json:"key"`
 	Kind               string                `json:"kind"`
@@ -43,6 +48,15 @@ type linkedImageColumns struct {
 	SizeObjects        map[string]SizeObject `json:"sizeObjects"`
 	BlobPurgeStartedAt *time.Time            `json:"blobPurgeStartedAt"`
 	BlobPurgedAt       *time.Time            `json:"blobPurgedAt"`
+}
+
+// Key is the linked Media's object key; empty for no Media (a nil
+// LinkedImage).
+func (l *LinkedImage) Key() string {
+	if l == nil {
+		return ""
+	}
+	return l.media.Key
 }
 
 // UnmarshalJSON reads the value LinkedImageSQL selects.

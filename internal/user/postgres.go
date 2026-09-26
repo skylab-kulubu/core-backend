@@ -24,13 +24,10 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-// userCols reads the profile picture from the Media the profile links (its
-// object key), not from profile_picture_url: an address stored there before
-// (https://cdn…) must not outlive a change of the configured base. The
-// column is still read for a picture with no Media, and written with the
-// key. The Media itself comes with the profile (media.LinkedImageSQL), for
-// the picture's size addresses.
-var userCols = `id, email, first_name, last_name, username, school_email, sky_number, COALESCE(student_card_uid, ''), linkedin, university, faculty, department, ytu_linked, phone, profile_picture_id, COALESCE((SELECT m.file_url FROM media m WHERE m.id = profile_picture_id), profile_picture_url), (SELECT ` + media.LinkedImageSQL("m") + ` FROM media m WHERE m.id = profile_picture_id), account_state, deletion_requested_at, anonymized_at, created_at, updated_at`
+// userCols reads the Media the profile links with the profile, in one
+// lookup (media.LinkedImageSQL): its key and its size addresses
+// (withLinkedPicture).
+var userCols = `id, email, first_name, last_name, username, school_email, sky_number, COALESCE(student_card_uid, ''), linkedin, university, faculty, department, ytu_linked, phone, profile_picture_id, profile_picture_url, (SELECT ` + media.LinkedImageSQL("m") + ` FROM media m WHERE m.id = profile_picture_id), account_state, deletion_requested_at, anonymized_at, created_at, updated_at`
 
 func scanUser(row interface{ Scan(dest ...any) error }) (User, error) {
 	var u User
@@ -40,7 +37,19 @@ func scanUser(row interface{ Scan(dest ...any) error }) (User, error) {
 		&u.AccountState, &u.DeletionRequestedAt, &u.AnonymizedAt,
 		&u.CreatedAt, &u.UpdatedAt,
 	)
-	return withStudentCardStatus(u), err
+	return withStudentCardStatus(withLinkedPicture(u)), err
+}
+
+// withLinkedPicture reads the profile picture from the Media the profile
+// links (its object key), not from profile_picture_url: an address stored
+// there before (https://cdn…) must not outlive a change of the configured
+// base. The column is still read for a picture with no Media, and written
+// with the key.
+func withLinkedPicture(u User) User {
+	if key := u.ProfilePicture.Key(); key != "" {
+		u.ProfilePictureURL = key
+	}
+	return u
 }
 
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (User, error) {
@@ -124,7 +133,7 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 	if err != nil {
 		return User{}, false, err
 	}
-	return withStudentCardStatus(u), created, nil
+	return withStudentCardStatus(withLinkedPicture(u)), created, nil
 }
 
 func (s *PostgresStore) UpdateProfile(ctx context.Context, u User) (User, error) {
