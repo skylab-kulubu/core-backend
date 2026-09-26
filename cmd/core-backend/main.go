@@ -42,6 +42,12 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == ytuBackfillCommandName {
 		os.Exit(runYTUBackfill(os.Args[2:], os.Getenv, os.Stdout))
 	}
+	if len(os.Args) > 1 && os.Args[1] == mediaLegacyReportCommandName {
+		os.Exit(runMediaLegacyReport(os.Args[2:], os.Getenv, os.Stdout))
+	}
+	if len(os.Args) > 1 && os.Args[1] == mediaLegacyExpireCommandName {
+		os.Exit(runMediaLegacyExpire(os.Args[2:], os.Getenv, os.Stdin, os.Stdout))
+	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")
@@ -117,6 +123,14 @@ func main() {
 	})
 	certificate.MaintainAssetServingPolicyBackfill(context.Background(), certs, blobs, time.Minute, func(err error) {
 		log.Printf("certificate template asset serving policy backfill: %v", err)
+	})
+	// Legacy Media core attaches get the purpose of their use (media redesign
+	// ticket 08). Only the purpose changes; the blobs stay where they are.
+	media.MaintainLegacyPurposeBackfill(context.Background(), mediaStore, mediaPurposes, time.Minute, func(report media.LegacyPurposeReport) {
+		log.Printf("media legacy purpose backfill: assigned %d, kept legacy %d (private purpose, until private Media storage) and %d (mixed uses), failed %d",
+			report.Assigned, report.KeptPrivate, report.KeptMixed, report.Failed)
+	}, func(err error) {
+		log.Printf("media legacy purpose backfill: %v", err)
 	})
 
 	dir := identity.Directory(identity.NewMemory())
