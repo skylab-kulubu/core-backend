@@ -2,7 +2,6 @@ package media
 
 import (
 	"bytes"
-	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -23,12 +22,6 @@ var pngKeepAncillary = map[string]struct{}{
 	"tRNS": {}, "gAMA": {}, "cHRM": {}, "sRGB": {}, "iCCP": {},
 	"bKGD": {}, "pHYs": {}, "sBIT": {}, "hIST": {},
 }
-
-var (
-	reSVGScript = regexp.MustCompile(`(?is)<script[\s\S]*?</script>`)
-	reSVGOnAttr = regexp.MustCompile(`(?i)\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
-	reSVGJS     = regexp.MustCompile(`(?i)javascript:`)
-)
 
 const (
 	svgType = "image/svg+xml"
@@ -102,10 +95,6 @@ func sanitizeImage(data []byte) ([]byte, string, error) {
 			out, err := format.strip(data)
 			return out, format.contentType, err
 		}
-	}
-	if isSVG(data) {
-		out, err := stripSVGScripts(data)
-		return out, svgType, err
 	}
 	return nil, "", ErrInvalid
 }
@@ -356,20 +345,6 @@ func isGIFXMP(b []byte, p int) bool {
 		return false
 	}
 	return strings.HasPrefix(string(b[p+1:p+12]), "XMP Data")
-}
-
-// stripSVGScripts is the regex strip Media uploaded without a purpose keep
-// for SVG (served as a download); an SVG for a purpose is sanitized
-// strictly (sanitizeSVG).
-func stripSVGScripts(b []byte) ([]byte, error) {
-	s := string(b)
-	s = reSVGScript.ReplaceAllString(s, "")
-	s = reSVGOnAttr.ReplaceAllString(s, "")
-	s = reSVGJS.ReplaceAllString(s, "")
-	if !strings.Contains(strings.ToLower(s), "<svg") {
-		return nil, ErrInvalid
-	}
-	return []byte(s), nil
 }
 
 func fileExtension(name string) (string, error) {

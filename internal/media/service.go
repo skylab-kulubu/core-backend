@@ -258,6 +258,9 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 // without a purpose is never decoded here.
 func (s *service) storedFile(ctx context.Context, purpose Purpose, file UploadedFile) (storedFile, error) {
 	if purpose.LegacyRules {
+		if detectContentType(file.Data) == svgType && len(file.Data) <= maxImageBytes {
+			return s.legacySVG(ctx, file.Data)
+		}
 		return legacyFile(file)
 	}
 	if isImage(file.Data) {
@@ -272,6 +275,24 @@ func (s *service) storedFile(ctx context.Context, purpose Purpose, file Uploaded
 		defer release()
 	}
 	return purposeFile(purpose, file.Data)
+}
+
+// legacySVG stores an SVG uploaded without a purpose the way a purpose
+// stores one: sanitized, under a .svg key, within the SVG decoding slot.
+// Media uploaded without a purpose keep accepting what they accepted, so
+// an SVG the sanitizer refuses is stored anyway, as an opaque download
+// (application/octet-stream, attachment) that never renders.
+func (s *service) legacySVG(ctx context.Context, data []byte) (storedFile, error) {
+	release, err := s.decoding.AcquireSVG(ctx)
+	if err != nil {
+		return storedFile{}, err
+	}
+	defer release()
+	clean, err := sanitizeSVG(data, MaxImageDimension)
+	if err != nil {
+		return storedFile{body: data, ctype: "application/octet-stream", kind: KindFile, keyPrefix: "files/"}, nil
+	}
+	return imageFile(reencodedImage{body: clean, ctype: svgType, coverColors: []string{}}), nil
 }
 
 // coverColors picks the cover colours of an image stored as uploaded,
@@ -306,10 +327,10 @@ func pendingExpiry(purpose Purpose, now time.Time) *time.Time {
 }
 
 // legacyFile applies the rules Media uploaded without a purpose had before
-// Media purpose: a raster image or SVG up to 10 MiB, a PDF named .pdf up to
-// 20 MiB, or any other named file up to 20 MiB, served as a download. An
+// Media purpose: a raster image up to 10 MiB, a PDF named .pdf up to 20
+// MiB, or any other named file up to 20 MiB, served as a download. A raster
 // image keeps its own bytes, stripped of metadata (sanitizeImage), and gets
-// no sizes.
+// no sizes. An SVG up to 10 MiB is stored by legacySVG.
 func legacyFile(file UploadedFile) (storedFile, error) {
 	name, contentType, data := file.Name, file.ContentType, file.Data
 	if strings.HasPrefix(contentType, "image/") || isImage(data) {

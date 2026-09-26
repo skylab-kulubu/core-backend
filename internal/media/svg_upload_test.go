@@ -357,3 +357,45 @@ func TestService_SVGWithNothingLeftToDrawIsRefused(t *testing.T) {
 		t.Fatalf("stored %v", keys)
 	}
 }
+
+// An SVG uploaded without a purpose goes through the same sanitizer and
+// gets a .svg key, which the CDN's CSP rule for .svg paths matches.
+func TestService_LegacySVGIsSanitizedUnderASVGKey(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><script href="https://evil.example/x.js"/><rect width="10" height="10" onmouseover="alert(1)"/></svg>`
+
+	created, err := svc.Upload(context.Background(), signedIn("93939393-9393-9393-9393-939393939393"), "logo.svg", "image/svg+xml", []byte(svg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := blobs.Get(created.Key)
+	if !strings.HasSuffix(created.Key, ".svg") || created.Type != "image/svg+xml" || bytes.Contains(stored, []byte("script")) ||
+		bytes.Contains(stored, []byte("evil")) || bytes.Contains(stored, []byte("onmouseover")) {
+		t.Fatalf("key %s type %s:\n%s", created.Key, created.Type, stored)
+	}
+	if meta, _ := blobs.Metadata(created.Key); meta.ContentType != "image/svg+xml" || !strings.HasPrefix(meta.ContentDisposition, "attachment") {
+		t.Fatalf("served as %+v", meta)
+	}
+}
+
+// Media uploaded without a purpose keep accepting what they accepted: an
+// SVG the sanitizer refuses is stored, but as an opaque download that
+// never renders, like any other file of an unknown type.
+func TestService_LegacySVGTheSanitizerRefusesIsAnOpaqueDownload(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	svg := []byte(`<!DOCTYPE svg [<!ENTITY a "x">]><svg xmlns="http://www.w3.org/2000/svg"><text>&a;</text></svg>`)
+
+	created, err := svc.Upload(context.Background(), signedIn("94949494-9494-9494-9494-949494949494"), "logo.svg", "image/svg+xml", svg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := blobs.Metadata(created.Key)
+	if created.Type != "application/octet-stream" || created.Kind != media.KindFile || meta.ContentType != "application/octet-stream" || !strings.HasPrefix(meta.ContentDisposition, "attachment") {
+		t.Fatalf("created %s %s, served as %+v", created.Type, created.Kind, meta)
+	}
+	if strings.HasSuffix(created.Key, ".svg") {
+		t.Fatalf("key %s", created.Key)
+	}
+}

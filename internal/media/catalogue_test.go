@@ -68,9 +68,11 @@ func TestCatalogue_PublicRasterImagesAreReencoded(t *testing.T) {
 
 // SVG is served only as a sanitized download from the CDN: a private
 // purpose (an Answer file, a certificate asset) cannot list it.
-func TestCatalogue_OnlyAPublicPurposeAcceptsSVG(t *testing.T) {
+func TestCatalogue_OnlyCMSImagesAndEventPicturesAcceptSVG(t *testing.T) {
 	t.Parallel()
-	for _, purpose := range []string{"answer_file", "certificate_asset"} {
+	// And among the public ones, only CMS images and Event pictures: SVG is
+	// never a profile picture.
+	for _, purpose := range []string{"answer_file", "certificate_asset", "profile_picture"} {
 		data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
 			purposes[purpose]["types"] = append(purposes[purpose]["types"].([]any), "image/svg+xml")
 		})
