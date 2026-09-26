@@ -68,10 +68,44 @@ func (s *PostgresStore) assignLegacyPurpose(ctx context.Context, id uuid.UUID, c
 	if err != nil || decision != legacyAssigned {
 		return decision, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE media SET purpose = $2, detach_expiry_held = true WHERE id = $1`, id, purpose); err != nil {
+	hold, err := holdNotReleased(ctx, tx)
+	if err != nil {
+		return legacySkipped, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE media SET purpose = $2, detach_expiry_held = $3 WHERE id = $1`, id, purpose, hold); err != nil {
 		return legacySkipped, err
 	}
 	return decision, tx.Commit(ctx)
+}
+
+// holdNotReleased reports whether the backfill still holds the detach expiry
+// of the Media it gives a purpose, reading the release under a share lock
+// that the release's update waits for.
+func holdNotReleased(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var released *time.Time
+	err := tx.QueryRow(ctx, `SELECT released_at FROM media_legacy_hold FOR SHARE`).Scan(&released)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	return released == nil, err
+}
+
+// recordHoldRelease records the release of the hold, keeping the time of
+// the first one.
+func (s *PostgresStore) recordHoldRelease(ctx context.Context, at time.Time) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO media_legacy_hold (released_at) VALUES ($1)
+		ON CONFLICT (singleton) DO UPDATE SET released_at = COALESCE(media_legacy_hold.released_at, EXCLUDED.released_at)`, at)
+	return err
+}
+
+// holdReleasedAt is when the hold was released; nil before.
+func (s *PostgresStore) holdReleasedAt(ctx context.Context) (*time.Time, error) {
+	var released *time.Time
+	err := s.pool.QueryRow(ctx, `SELECT released_at FROM media_legacy_hold`).Scan(&released)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return released, err
 }
 
 // legacyOrphanSQL holds for a current legacy Media that nothing in core uses:
@@ -146,10 +180,16 @@ func (s *PostgresStore) expireLegacyOrphan(ctx context.Context, id uuid.UUID, at
 	}
 }
 
-// countDetachExpiryHeld counts the held Media, and those of them no record
-// uses (current and unattached).
+// windowAtReleaseSQL holds for a held Media whose 30 days the release
+// starts: current, used by no record, with no expiry, and with a purpose. A
+// held Media a product's attach gave back legacy keeps legacy's rule: no
+// expiry but the orphan switch's.
+const windowAtReleaseSQL = unattachedCurrentSQL + ` AND media.expires_at IS NULL AND media.purpose <> 'legacy'`
+
+// countDetachExpiryHeld counts the held Media, and those of them whose 30
+// days the release starts.
 func (s *PostgresStore) countDetachExpiryHeld(ctx context.Context) (held, unattached int, err error) {
-	err = s.pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE `+unattachedCurrentSQL+`)
+	err = s.pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE `+windowAtReleaseSQL+`)
 		FROM media WHERE media.detach_expiry_held`).Scan(&held, &unattached)
 	return held, unattached, err
 }
@@ -165,12 +205,12 @@ func (s *PostgresStore) listDetachExpiryHeld(ctx context.Context, after uuid.UUI
 }
 
 // releaseDetachExpiryHold clears the Media's hold and, when no record uses
-// it and it has no expiry, sets its expiry to at. The Media row is locked as
+// it, it has no expiry and it has a purpose, sets its expiry to at. The Media row is locked as
 // it is read, so a detach waits and then sees the hold gone (and sets the
 // ordinary 30 days), or has already detached it for this to see.
 func (s *PostgresStore) releaseDetachExpiryHold(ctx context.Context, id uuid.UUID, at time.Time) (released, windowStarted bool, err error) {
 	err = s.pool.QueryRow(ctx, `WITH target AS (
-			SELECT id, (`+unattachedCurrentSQL+` AND media.expires_at IS NULL) AS starts
+			SELECT id, (`+windowAtReleaseSQL+`) AS starts
 			FROM media WHERE id = $1 AND detach_expiry_held FOR UPDATE
 		)
 		UPDATE media SET detach_expiry_held = false,

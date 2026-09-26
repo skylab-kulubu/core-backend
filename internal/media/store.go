@@ -55,6 +55,11 @@ type Media struct {
 	// ServingPolicyApplied is set once the object's metadata is known to
 	// follow the serving policy: set by Upload, or by the serving policy backfill.
 	ServingPolicyApplied bool `json:"-"`
+
+	// DetachExpiryHeld marks a Media the legacy backfill gave a purpose
+	// (decision K2): detached, it gets no expiry, and another product may
+	// link it as a legacy Media, until the hold is released (ticket 18).
+	DetachExpiryHeld bool `json:"-"`
 }
 
 // Status is where a Media is in its life (Media.Status).
@@ -133,6 +138,14 @@ type Store interface {
 	// false when the same link already exists; that one is returned. A Media
 	// that is gone, archived, or whose purge started is ErrNotLinkable.
 	Attach(ctx context.Context, a Attachment) (_ Attachment, created bool, _ error)
+	// AttachHeld writes a Media attachment another product makes to a Media
+	// whose detach expiry is held. When the Media's purpose does not fit the
+	// role, the Media goes back to legacy first, in the same transaction,
+	// and keeps its hold (decision K1: a Media core and a product both use
+	// stays legacy); demotedFrom is the purpose it had, "" when it fitted. A
+	// Media no longer held, gone, archived, or whose purge started is
+	// ErrNotLinkable.
+	AttachHeld(ctx context.Context, a Attachment) (_ Attachment, created bool, demotedFrom string, _ error)
 	// FindAttachment returns the Media attachment of the same link as a
 	// (Media, owner and role); ErrNotFound when there is none.
 	FindAttachment(ctx context.Context, a Attachment) (Attachment, error)

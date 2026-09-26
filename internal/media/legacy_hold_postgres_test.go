@@ -13,7 +13,6 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/media"
-	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -276,9 +275,11 @@ func TestPostgresReleaseWalksPastAMediaItCannotUpdate(t *testing.T) {
 }
 
 // The link rules check a Media's purpose before the write, outside its
-// transaction. A link checked while the Media was legacy, written after the
-// backfill gave it a purpose, must end refused or fitting, never mismatched:
-// the database checks the purpose again under the lock the backfill holds.
+// transaction. A link checked while the Media was legacy, written while the
+// backfill gives it a purpose, must end refused or fitting, never
+// mismatched: the database checks the purpose again, under a lock that waits
+// for the backfill's. The backfill here is the real step, held after it
+// locked the Media and read its uses.
 func TestPostgresALinkRacingTheBackfillEndsRefusedOrFitting(t *testing.T) {
 	for name, link := range map[string]struct {
 		write   func(db mediaDatabase, m media.Media) error
@@ -290,6 +291,13 @@ func TestPostgresALinkRacingTheBackfillEndsRefusedOrFitting(t *testing.T) {
 				return err
 			},
 			blocked: "INSERT INTO media_attachments",
+		},
+		"an Event's cover": {
+			write: func(db mediaDatabase, m media.Media) error {
+				_, err := db.events().Create(context.Background(), db.organizer, event.Event{Name: "Jam", Location: "YTÜ", OwnerTeam: "WEBLAB", CoverImageID: &m.ID})
+				return err
+			},
+			blocked: "INSERT INTO events",
 		},
 		"a certificate template's background": {
 			write: func(db mediaDatabase, m media.Media) error {
@@ -305,44 +313,81 @@ func TestPostgresALinkRacingTheBackfillEndsRefusedOrFitting(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			db := newMediaDatabase(t)
 			ctx := context.Background()
-			cover := db.storedBeforePurposes(t, "cover.png")
-			if _, err := db.events().Create(ctx, db.organizer, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", CoverImageID: &cover.ID}); err != nil {
+			// A legacy profile picture: the backfill gives it
+			// profile_picture, which fits none of the links below.
+			cover := db.storedBeforePurposes(t, "me.png")
+			if _, err := user.NewService(user.NewPostgresStore(db.pool)).SetProfilePicture(ctx, uuid.MustParse(db.organizer.ID), cover.ID, cover.Key); err != nil {
 				t.Fatal(err)
 			}
-			// The backfill's transaction for the cover, held open after it
-			// wrote the purpose.
-			backfill, err := db.pool.Begin(ctx)
+			catalogue, err := media.LoadCatalogue()
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer backfill.Rollback(ctx)
-			if _, err := backfill.Exec(ctx, `SELECT id FROM media WHERE id = $1 AND purpose = 'legacy' FOR UPDATE`, cover.ID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := backfill.Exec(ctx, `UPDATE media SET purpose = 'event_cover', detach_expiry_held = true WHERE id = $1`, cover.ID); err != nil {
-				t.Fatal(err)
-			}
+			locked, proceed := make(chan struct{}), make(chan struct{})
+			backfilled := make(chan error, 1)
+			go func() {
+				backfilled <- media.BackfillOneLegacyPurpose(ctx, db.store, catalogue, cover.ID, func() {
+					close(locked)
+					<-proceed
+				})
+			}()
+			<-locked
 
 			written := make(chan error, 1)
 			go func() { written <- link.write(db, cover) }()
-			testpostgres.WaitForBlockedQuery(t, db.pool, link.blocked)
-			if err := backfill.Commit(ctx); err != nil {
+			linkErr, done := blockedOrDone(t, db, link.blocked, written)
+			close(proceed)
+			if err := <-backfilled; err != nil {
 				t.Fatal(err)
 			}
-
-			if err := <-written; err == nil {
-				t.Fatal("the link was written to a Media whose purpose no longer fits it")
+			if !done {
+				linkErr = <-written
 			}
-			rows, err := db.pool.Query(ctx, `SELECT owner_service || ' ' || role FROM media_attachments WHERE media_id = $1`, cover.ID)
+
+			purpose := db.get(t, cover.ID).Purpose
+			rows, err := db.pool.Query(ctx, `SELECT owner_service || ' ' || role FROM media_attachments
+				WHERE media_id = $1 AND NOT media_purpose_fits_role(owner_service, role, $2)`, cover.ID, purpose)
 			if err != nil {
 				t.Fatal(err)
 			}
-			uses, err := pgx.CollectRows(rows, pgx.RowTo[string])
-			if err != nil || len(uses) != 1 || uses[0] != "core event_cover" {
-				t.Fatalf("Media attachments %v (err %v), want only the Event cover", uses, err)
+			mismatched, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil || len(mismatched) != 0 {
+				t.Fatalf("a %s Media has Media attachments %v that do not fit it (link err %v)", purpose, mismatched, linkErr)
+			}
+			// Refused as a Media that cannot be linked, not a server error.
+			var refusal *media.LinkRefusal
+			if linkErr != nil && (!errors.As(linkErr, &refusal) || !errors.Is(linkErr, media.ErrNotLinkable) || refusal.MediaID != cover.ID) {
+				t.Fatalf("link refused with %v, want media_not_linkable for %s", linkErr, cover.ID)
 			}
 		})
 	}
+}
+
+// blockedOrDone waits until a query containing fragment waits for a lock,
+// or until done delivers; it reports what done delivered, if it did.
+func blockedOrDone(t *testing.T, db mediaDatabase, fragment string, done <-chan error) (error, bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			return err, true
+		default:
+		}
+		var blocked bool
+		if err := db.pool.QueryRow(context.Background(), `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database() AND pid <> pg_backend_pid()
+			  AND wait_event_type = 'Lock' AND query LIKE '%' || $1 || '%')`, fragment).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked {
+			return nil, false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the link neither waited for the backfill nor finished")
+	return nil, false
 }
 
 // A pass stops at a cancelled context with the counts so far; the items it
@@ -429,5 +474,164 @@ func TestPostgresLegacyPurposeBackfillReportsAMediaThatKeepsFailingOnce(t *testi
 	}
 	if got := db.get(t, photo.ID); got.Purpose != media.PurposeEventCover {
 		t.Fatalf("the Media after the stuck one: purpose %q", got.Purpose)
+	}
+}
+
+// The release is recorded: purpose-less uploads keep arriving until stage 6,
+// and the backfill that gives them a purpose afterwards does not hold them,
+// so nothing is held for ever. A dry run records nothing, and a second
+// release keeps the first release's time.
+func TestPostgresTheBackfillHoldsNothingAfterTheRelease(t *testing.T) {
+	db := newMediaDatabase(t)
+	if report := db.legacyReport(t); report.HoldReleasedAt != nil {
+		t.Fatalf("released at %v before any release", report.HoldReleasedAt)
+	}
+	db.releaseHold(t, time.Now(), false)
+	if report := db.legacyReport(t); report.HoldReleasedAt != nil {
+		t.Fatalf("a dry run recorded a release at %v", report.HoldReleasedAt)
+	}
+	releasedAt := time.Now().Truncate(time.Microsecond)
+	db.releaseHold(t, releasedAt, true)
+	db.releaseHold(t, releasedAt.Add(time.Hour), true)
+	if report := db.legacyReport(t); report.HoldReleasedAt == nil || !report.HoldReleasedAt.Equal(releasedAt) {
+		t.Fatalf("released at %v, want %v", report.HoldReleasedAt, releasedAt)
+	}
+
+	cover, created := db.backfilledCover(t)
+	before := time.Now()
+	db.dropCover(t, created)
+	detachedWindow(t, db.get(t, cover.ID), before, time.Now())
+	if held := db.legacyReport(t).DetachExpiryHeld; held != 0 {
+		t.Fatalf("%d held after the release", held)
+	}
+}
+
+// attachmentsOf lists a Media's Media attachments as "service role".
+func (d mediaDatabase) attachmentsOf(t *testing.T, id uuid.UUID) []string {
+	t.Helper()
+	rows, err := d.pool.Query(context.Background(), `SELECT owner_service || ' ' || role FROM media_attachments WHERE media_id = $1 ORDER BY 1`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uses, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return uses
+}
+
+// The hold protects uses core cannot see yet, such as a CMS page showing an
+// Event cover by address. When stage 5 attaches that use, the held Media's
+// purpose no longer fits all of its uses: it goes back to legacy, as a Media
+// with mixed uses does (K1), keeps its hold and gets the CMS attachment.
+func TestPostgresAProductAttachingAHeldMediaTurnsItBackToLegacy(t *testing.T) {
+	db := newMediaDatabase(t)
+	ctx := context.Background()
+	cover, created := db.backfilledCover(t)
+
+	a, isNew, err := db.svc.Attach(ctx, cmsService, cover.ID, media.AttachRequest{Owner: homePage, Role: media.RoleCMSImage, OnBehalfOf: db.uploader()})
+	if err != nil || !isNew || a.Owner != homePage {
+		t.Fatalf("attach %+v created %v err %v", a, isNew, err)
+	}
+
+	got := db.get(t, cover.ID)
+	if got.Purpose != media.PurposeLegacy {
+		t.Fatalf("purpose %q, want legacy", got.Purpose)
+	}
+	attached(t, got)
+	if uses := db.attachmentsOf(t, cover.ID); len(uses) != 2 || uses[0] != "cms image" || uses[1] != "core event_cover" {
+		t.Fatalf("Media attachments %v, want the CMS page's and the Event's", uses)
+	}
+	if held := db.legacyReport(t).DetachExpiryHeld; held != 1 {
+		t.Fatalf("%d held, want the hold kept", held)
+	}
+	// The next backfill keeps it legacy: its uses are mixed now.
+	if report := db.backfillPurposes(t); report.KeptMixed != 1 || db.get(t, cover.ID).Purpose != media.PurposeLegacy {
+		t.Fatalf("backfill %+v purpose %q", report, db.get(t, cover.ID).Purpose)
+	}
+	// Legacy again, it gets no expiry from the release either: only the
+	// orphan switch gives a legacy Media one.
+	if err := db.svc.Detach(ctx, cmsService, cover.ID, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	db.dropCover(t, created)
+	if report := db.releaseHold(t, time.Now(), true); report.Released != 1 || report.WindowsStarted != 0 {
+		t.Fatalf("release %+v, want the hold cleared and no window", report)
+	}
+	if got := db.get(t, cover.ID); got.Status != media.StatusDetached || got.ExpiresAt != nil {
+		t.Fatalf("released legacy Media: status %q expires %v", got.Status, got.ExpiresAt)
+	}
+}
+
+// Only held Media go back: a Media uploaded with a core purpose stays core's
+// and is refused as today.
+func TestPostgresAProductCannotAttachAMediaUploadedWithACorePurpose(t *testing.T) {
+	db := newMediaDatabase(t)
+	ctx := context.Background()
+	cover := db.withBlob(t, "event_cover")
+
+	_, _, err := db.svc.Attach(ctx, cmsService, cover.ID, media.AttachRequest{Owner: homePage, Role: media.RoleCMSImage, OnBehalfOf: db.uploader()})
+	if !errors.Is(err, media.ErrNotLinkable) {
+		t.Fatalf("attach err %v, want media_not_linkable", err)
+	}
+	if got := db.get(t, cover.ID); got.Purpose != media.PurposeEventCover || len(db.attachmentsOf(t, cover.ID)) != 0 {
+		t.Fatalf("purpose %q attachments %v", got.Purpose, db.attachmentsOf(t, cover.ID))
+	}
+}
+
+// Two products' pages attaching the same held Media at once both succeed:
+// each takes the Media row's lock before anything else, so they queue and
+// cannot deadlock.
+func TestPostgresTwoAttachesOfAHeldMediaAtOnceDoNotDeadlock(t *testing.T) {
+	db := newMediaDatabase(t)
+	ctx := context.Background()
+	cover, _ := db.backfilledCover(t)
+	// Hold both attaches at the Media row's lock, after their checks.
+	gate, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Rollback(ctx)
+	if _, err := gate.Exec(ctx, `SELECT id FROM media WHERE id = $1 FOR UPDATE`, cover.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	results := make(chan error, 2)
+	for _, page := range []media.Owner{homePage, aboutPage} {
+		go func() {
+			_, _, err := db.svc.Attach(ctx, cmsService, cover.ID, media.AttachRequest{Owner: page, Role: media.RoleCMSImage, OnBehalfOf: db.uploader()})
+			results <- err
+		}()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting int
+		if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND pid <> pg_backend_pid() AND wait_event_type = 'Lock'
+			  AND query LIKE '%detach_expiry_held%FOR UPDATE%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d attaches waiting for the Media row, want 2", waiting)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatalf("attach: %v", err)
+		}
+	}
+	if uses := db.attachmentsOf(t, cover.ID); len(uses) != 3 {
+		t.Fatalf("Media attachments %v, want both pages and the Event", uses)
+	}
+	if got := db.get(t, cover.ID).Purpose; got != media.PurposeLegacy {
+		t.Fatalf("purpose %q", got)
 	}
 }

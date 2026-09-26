@@ -17,6 +17,7 @@ END;
 $$;
 
 DROP FUNCTION IF EXISTS media_purpose_fits_role(TEXT, TEXT, TEXT);
+DROP FUNCTION IF EXISTS media_role_purposes();
 
 CREATE OR REPLACE FUNCTION media_attachment_status()
 RETURNS trigger
@@ -50,6 +51,8 @@ BEGIN
     RETURN NULL;
 END;
 $$;
+
+DROP TABLE IF EXISTS media_legacy_hold;
 
 ALTER TABLE media
     DROP COLUMN IF EXISTS detach_expiry_held;

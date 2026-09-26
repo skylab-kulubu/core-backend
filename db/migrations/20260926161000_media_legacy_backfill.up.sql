@@ -10,6 +10,17 @@
 ALTER TABLE media
     ADD COLUMN IF NOT EXISTS detach_expiry_held BOOLEAN NOT NULL DEFAULT false;
 
+-- When the hold was released: one row, released_at empty until then. The
+-- backfill runs on every start and purpose-less uploads keep arriving, so
+-- after the release it gives purposes without the hold. It reads the row
+-- under a share lock, and the release's update waits for it: a hold written
+-- before the release is there for the release to clear.
+CREATE TABLE IF NOT EXISTS media_legacy_hold (
+    singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+    released_at TIMESTAMPTZ
+);
+INSERT INTO media_legacy_hold DEFAULT VALUES ON CONFLICT DO NOTHING;
+
 -- 20260926120000's status function, with the hold beside legacy.
 CREATE OR REPLACE FUNCTION media_attachment_status()
 RETURNS trigger
@@ -44,15 +55,15 @@ BEGIN
 END;
 $$;
 
--- Whether a Media of the purpose may play the product's role: the database's
--- copy of rolePurposes (internal/media/attachment.go), which a test keeps
--- equal to it. A legacy Media fits every role.
-CREATE OR REPLACE FUNCTION media_purpose_fits_role(owner_service TEXT, role TEXT, purpose TEXT)
-RETURNS BOOLEAN
+-- The database's copy of rolePurposes (internal/media/attachment.go): for
+-- each product, the roles its records give a Media and the purposes each
+-- accepts. A test keeps it equal to rolePurposes, both ways.
+CREATE OR REPLACE FUNCTION media_role_purposes()
+RETURNS TABLE (owner_service TEXT, role TEXT, purpose TEXT)
 LANGUAGE sql
 IMMUTABLE
 AS $$
-    SELECT purpose = 'legacy' OR (owner_service, role, purpose) IN (
+    VALUES
         ('core', 'event_cover', 'event_cover'),
         ('core', 'event_cover', 'event_gallery'),
         ('core', 'event_gallery', 'event_gallery'),
@@ -63,6 +74,20 @@ AS $$
         ('forms', 'answer', 'answer_file_large'),
         ('cms', 'image', 'cms_image'),
         ('cms', 'file', 'cms_file')
+$$;
+
+-- Whether a Media of the purpose may play the product's role. A legacy
+-- Media fits every role.
+CREATE OR REPLACE FUNCTION media_purpose_fits_role(owner_service TEXT, role TEXT, purpose TEXT)
+RETURNS BOOLEAN
+LANGUAGE sql
+IMMUTABLE
+AS $$
+    SELECT purpose = 'legacy' OR EXISTS (
+        SELECT 1 FROM media_role_purposes() fitting
+        WHERE fitting.owner_service = media_purpose_fits_role.owner_service
+          AND fitting.role = media_purpose_fits_role.role
+          AND fitting.purpose = media_purpose_fits_role.purpose
     )
 $$;
 
@@ -89,9 +114,11 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'media % is not current', NEW.media_id USING ERRCODE = '23503';
     END IF;
+    -- Its own code and constraint name, so that the stores tell it from a
+    -- missing Media; the detail names the Media and the role.
     IF NOT media_purpose_fits_role(NEW.owner_service, NEW.role, current_purpose) THEN
         RAISE EXCEPTION 'media % (%) does not fit the % role %', NEW.media_id, current_purpose, NEW.owner_service, NEW.role
-            USING ERRCODE = '23503';
+            USING ERRCODE = '23514', CONSTRAINT = 'media_attachment_purpose_fits', DETAIL = NEW.media_id::TEXT || ' ' || NEW.role;
     END IF;
     RETURN NEW;
 END;

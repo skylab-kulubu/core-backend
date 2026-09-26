@@ -170,6 +170,9 @@ type LegacyReport struct {
 	// DetachExpiryHeld counts the Media the backfill gave a purpose whose
 	// detach expiry is still held (decision K2, ReleaseDetachExpiryHold).
 	DetachExpiryHeld int
+	// HoldReleasedAt is when the hold was released (ticket 18); nil before.
+	// After it the backfill gives purposes without the hold.
+	HoldReleasedAt *time.Time
 }
 
 // ReportLegacy reads the legacy report. It changes nothing.
@@ -190,7 +193,11 @@ func ReportLegacy(ctx context.Context, store *PostgresStore) (LegacyReport, erro
 	if err != nil {
 		return LegacyReport{}, err
 	}
-	return LegacyReport{Orphans: orphans, CoreLinksWithoutAttachment: unattached, AttachedByCore: attached, DetachExpiryHeld: held}, nil
+	released, err := store.holdReleasedAt(ctx)
+	if err != nil {
+		return LegacyReport{}, err
+	}
+	return LegacyReport{Orphans: orphans, CoreLinksWithoutAttachment: unattached, AttachedByCore: attached, DetachExpiryHeld: held, HoldReleasedAt: released}, nil
 }
 
 // DetachedWindow is how long a Media no record uses any more is kept: the
@@ -260,8 +267,10 @@ type HoldReleaseReport struct {
 
 // ReleaseDetachExpiryHold ends the hold the legacy purpose backfill put on
 // the Media it gave a purpose (decision K2), once stage 5 has given the uses
-// core could not see their Media attachments (ticket 18). Every held Media
-// follows its purpose again; one that no record uses by then gets its 30
+// core could not see their Media attachments (ticket 18). The release is
+// recorded, so the backfill gives purposes without the hold from then on
+// (the first release's time is kept). Every held Media follows its purpose
+// again; one that no record uses by then gets its 30
 // days from now, not from when it was detached. Without apply it only
 // counts. It walks the held Media by id in batches: a Media that fails is
 // reported through onError and stays held for the next run, and a run over
@@ -271,6 +280,11 @@ func ReleaseDetachExpiryHold(ctx context.Context, store *PostgresStore, now time
 	var err error
 	report.Held, report.HeldDetached, err = store.countDetachExpiryHeld(ctx)
 	if err != nil || !apply {
+		return report, err
+	}
+	// Recorded first: a backfill after this sets no hold, and one that set
+	// a hold before it committed first, so the walk below finds it.
+	if err := store.recordHoldRelease(ctx, now); err != nil {
 		return report, err
 	}
 	at := now.Add(DetachedWindow)

@@ -22,7 +22,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at`
+const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, detach_expiry_held`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 	return insertMedia(ctx, s.pool, newRecord(m))
@@ -203,10 +203,11 @@ func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// unattachedCurrentSQL holds for a current Media no Media attachment keeps:
-// not attached, not archived, no purge started.
-const unattachedCurrentSQL = `media.status <> 'attached' AND media.deleted_at IS NULL
-	AND media.blob_purge_started_at IS NULL AND media.blob_purged_at IS NULL`
+// currentSQL holds for a current Media: not archived, no purge started.
+const currentSQL = `media.deleted_at IS NULL AND media.blob_purge_started_at IS NULL AND media.blob_purged_at IS NULL`
+
+// unattachedCurrentSQL holds for a current Media no Media attachment keeps.
+const unattachedCurrentSQL = `media.status <> 'attached' AND ` + currentSQL
 
 // ExpireUnattachedAt sets the expiry; a Media whose detach expiry is held
 // (the legacy backfill, decision K2) keeps none, as a legacy one does.
@@ -498,7 +499,7 @@ type rowScanner interface {
 func scanMedia(row rowScanner) (Media, error) {
 	var m Media
 	var created, updated time.Time
-	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt)
+	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt, &m.DetachExpiryHeld)
 	if m.CoverColors == nil {
 		m.CoverColors = []string{}
 	}
