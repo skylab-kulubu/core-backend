@@ -22,7 +22,7 @@ links checked directly (an Event cover or gallery, a User profile, a
 Certificate template draft, or a published Certificate template version).
 Both must say unused. The legacy report counts the core links that have no
 Media attachment (see [Legacy Media](#legacy-media)); once production shows
-zero, removing the direct check is a separate change. Database triggers also reject new
+zero, removing the direct check is media redesign ticket 18. Database triggers also reject new
 durable references and new Media attachments to inactive or purged media.
 The same worker then runs the expiry cleanup described under
 [Media attachment](#media-attachment).
@@ -326,7 +326,7 @@ recorded apart.
 |---|---|---|
 | `pending` | No Media attachment yet. Every new Media starts here. | Upload time plus the purpose's `pending_ttl` (24 hours for every purpose today). |
 | `attached` | At least one Media attachment. Never purged by expiry. | None. |
-| `detached` | Its last Media attachment was removed. | 30 days after that. Attaching it again within the window makes it attached. |
+| `detached` | Its last Media attachment was removed. | 30 days after that, except while its detach expiry is held (below). Attaching it again within the window makes it attached. |
 
 **A legacy Media gets no expiry by itself**: not when it is uploaded
 (`legacy` has `pending_ttl` `none`), and not when its last Media attachment is
@@ -334,7 +334,9 @@ removed. Skyforms, CMS and superadmin upload without a purpose today, and a
 legacy Media may still be used outside core by its address (CMS content stores
 addresses) after core stops linking it. The only thing that gives one an
 expiry is the orphan switch Yusuf runs after reviewing the legacy report (see
-[Legacy Media](#legacy-media)).
+[Legacy Media](#legacy-media)). **Nor does a Media whose detach expiry is
+held**: one the legacy backfill gave a purpose, until the hold is released
+after stage 5 (see [Detach expiry hold](#detach-expiry-hold)).
 
 The database keeps the status in step with the Media attachments, once per
 statement that adds or removes them: a Media with a Media attachment is
@@ -350,8 +352,8 @@ there is detected by PostgreSQL and the transaction can be retried.)
 
 Restoring an archived Media (`POST /v1/media/{id}/restore`) starts its expiry
 again: a Media no Media attachment keeps gets its purpose's `pending_ttl` from
-the restore (a legacy one none), so a window that ran out while it was
-archived does not purge it on the next pass.
+the restore (a legacy one, or one whose detach expiry is held, none), so a
+window that ran out while it was archived does not purge it on the next pass.
 
 ### Core's own links
 
@@ -405,7 +407,15 @@ when purpose-less uploads fall to the strict rule (ticket 15).
 
 The database's triggers are the backstop for the state rule: a new link or a
 new Media attachment to an archived or purging Media is rejected whoever
-writes it.
+writes it. They also check the purpose again (migration `20260926161000`,
+`media_purpose_fits_role`, a copy of the role table that a test keeps equal
+to `rolePurposes`). The link rules read the Media before the write and
+outside its transaction, so the legacy backfill could give a legacy Media a
+purpose in between; the trigger reads the Media under the lock the foreign
+key takes anyway, which waits for the backfill and never for the status
+trigger. Such a link is refused like a Media that cannot be linked (a
+service attach answers `media_not_linkable`; retrying it gets the ordinary
+purpose check), never written mismatched.
 
 ### Service attach API
 
@@ -565,8 +575,8 @@ is kept. The Media is archived as its blob goes, so ordinary reads hide it
 and restore answers `410 Gone`. A Media whose blob cannot be deleted is
 logged with its id and retried on the next pass; it never holds up the
 others. Attached Media, legacy Media (they have no expiry, unless the orphan
-switch gave them one) and archived Media are never purged by expiry; archived
-Media keep the archive window above.
+switch gave them one), Media whose detach expiry is held and archived Media
+are never purged by expiry; archived Media keep the archive window above.
 
 ### Media stored before Media attachments
 
@@ -581,8 +591,9 @@ Media next is under [Legacy Media](#legacy-media).
 
 Every Media stored before Media purpose is `legacy` (media redesign ticket
 08, decision Q19: a purpose comes from where the Media is used; a Media used
-nowhere is kept 30 days, reported to Yusuf, then deleted). Core does three
-things with them. Only the first runs by itself.
+nowhere is kept 30 days, reported to Yusuf, then deleted). Core does four
+things with them. Only the first runs by itself; the two commands that end
+retention are for after stage 5 (ticket 18).
 
 ### Purpose backfill
 
@@ -590,7 +601,8 @@ A background backfill starts with core, beside the serving policy backfill,
 and gives each legacy Media that core attaches the purpose of its use. It
 walks the legacy Media with at least one of core's own Media attachments by
 id, 25 at a time. For each one it locks the Media row (a new Media attachment
-checks its Media and waits), reads all of its Media attachments, and picks:
+checks its Media under a lock that waits for this one), reads all of its
+Media attachments, and picks:
 
 | Media attachments | Purpose |
 |---|---|
@@ -599,48 +611,82 @@ checks its Media and waits), reads all of its Media attachments, and picks:
 | Event cover and gallery (one Event or several) | `event_cover` |
 | User profile picture | `profile_picture` |
 | Certificate template draft or version asset | stays `legacy` (private purpose, below) |
-| Uses no one purpose fits: an Event photo that is also a profile picture or a certificate asset, or a core use plus another product's Media attachment | stays `legacy` (mixed use) |
+| Uses no one purpose fits: an Event photo that is also a profile picture or a certificate asset, or a core use plus another product's Media attachment | stays `legacy` (mixed use, K1) |
 
 The rule behind the table: the backfill tries core's roles in the order Event
 cover, Event gallery, profile picture, certificate asset, and takes the
-purpose of the first role the Media plays whose purpose fits **every** Media
-attachment it has, by the same check a new link gets (`rolePurposes`,
-`internal/media/attachment.go`: an Event role takes `event_cover` or
-`event_gallery`, the profile picture `profile_picture`, a certificate asset
-`certificate_asset`, a product's role only its own purposes). Both Event
-purposes fit both Event roles, so an Event photo always gets one, and the
-cover wins over the gallery. Every Media attachment still fits its Media's
-purpose afterwards.
+role's own purpose (the first `rolePurposes` lists for it) for the first role
+the Media plays whose purpose fits **every** Media attachment it has, by the
+same check a new link gets (`rolePurposes`, `internal/media/attachment.go`:
+an Event role takes `event_cover` or `event_gallery`, the profile picture
+`profile_picture`, a certificate asset `certificate_asset`, a product's role
+only its own purposes). Both Event purposes fit both Event roles, so an Event
+photo always gets one, and the cover wins over the gallery. Every Media
+attachment still fits its Media's purpose afterwards, including one written
+while the backfill ran: the database checks the purpose again (see [Link
+rules](#link-rules)).
 
-- **Only the purpose changes.** Status, expiry, `updatedAt`, the blob, its
-  address and its serving metadata stay as they are; nothing is re-encoded or
-  moved.
+- **Only the purpose changes, and the hold is set.** Status, expiry,
+  `updatedAt`, the blob, its address and its serving metadata stay as they
+  are; nothing is re-encoded or moved. The backfill sets the Media's detach
+  expiry hold in the same statement (below).
 - **Private purposes are never given.** `certificate_asset` is private: the
   purpose says the file is encrypted in the private bucket, and these blobs
   are public. Certificate template assets stay `legacy` until private Media
   storage (ticket 06) moves them and gives them the purpose itself.
-- **Mixed uses stay legacy.** The backfill does not pick between an Event and
-  a person's profile picture, or between core and a product's record; those
-  Media keep the legacy rules (no expiry, fit every role).
+- **Mixed uses stay legacy (decision K1).** The backfill does not pick
+  between an Event and a person's profile picture, or between core and a
+  product's record. Those Media keep the legacy rules: no expiry of their
+  own, fit every role, and no image variants.
 - Skyforms answers and CMS content are not backfilled here: core cannot see
   them (stage 5). A legacy Media only another product attaches is left
   alone.
 
 Every step is idempotent: a Media that got a purpose is no longer listed, and
-a pass cut short is run again. A Media that fails is logged with its id and
-skipped, so it never holds up the ones after it; passes repeat a minute apart
-until one ends with nothing failed. Each finished pass logs one line:
-`media legacy purpose backfill: assigned N, kept legacy P (private purpose,
-until private Media storage) and M (mixed uses), failed F`. Kept Media are
-listed again on the next start, so the line repeats with the same counts.
+a pass cut short is run again. A Media that fails is skipped, so it never
+holds up the ones after it; passes repeat a minute apart until one ends with
+nothing failed. The log names a failing Media once an hour, not on every
+pass, and prints a pass only when it assigned something or its number of
+failures changed: `media legacy purpose backfill: assigned N, kept legacy P
+(private purpose, until private Media storage) and M (mixed uses), skipped S,
+failed F`. Skipped are Media that were no longer legacy, or no longer used by
+core, when the pass reached them.
 
-What changes for a Media that got a purpose: it now follows its purpose's
-rules. Removed from its last record, it is detached and purged 30 days later
-unless something attaches it again, like any purposed Media. A new link
-checks its purpose: a former legacy profile picture cannot become an Event
-cover. **Known risk:** if CMS content also shows such a Media by its address,
-the CMS page loses the image 30 days after core stops using it. Core cannot
-see that use until stage 5 gives CMS images their Media attachments.
+What changes for a Media that got a purpose: a new link checks its purpose (a
+former legacy profile picture cannot become an Event cover), and, once its
+hold is released, removing it from its last record starts the 30 days of any
+purposed Media.
+
+### Detach expiry hold
+
+A Media the backfill gave a purpose may still be shown by CMS content through
+its address, which core cannot see until stage 5 gives CMS images their
+Media attachments. So its detach expiry is held (decision K2, column
+`media.detach_expiry_held`, migration `20260926161000`):
+
+- Removed from its last record, it is detached with **no** expiry, as a
+  legacy Media is. Restoring it after an archive sets none either.
+- Linking it again works as for any Media; the hold stays.
+- Nothing else reads the hold. An archived held Media follows the archive
+  window, and account erasure purges a held profile picture at once like any
+  other.
+
+`core-backend media-legacy-release-hold` ends the hold, after stage 5 (ticket
+18). **It is not run yet.** Without `-apply` it only counts the held Media and
+those of them no record uses. With `-apply` it walks the held Media by id, 25
+at a time, clears each one's hold, and gives the ones no record uses by then
+their 30 days **from the release**, not from when they were detached. A Media
+that fails is named on standard error and stays held; a second run releases
+only what is left, and a run over released Media changes nothing. It prints
+counts only, to standard error, and exits non-zero if a Media failed or the
+run was interrupted (with the counts so far).
+
+On the server running core, inside the core container:
+
+```sh
+docker exec <core container> ./core-backend media-legacy-release-hold          # counts
+docker exec <core container> ./core-backend media-legacy-release-hold -apply   # release
+```
 
 ### Orphan report
 
@@ -651,12 +697,14 @@ not listed: the archive window already decides them. **An orphan is not
 unused**: Skyforms answers and CMS content use Media by their address, which
 core cannot see, so most Answer files and CMS images are orphans here.
 
-`core-backend media-legacy-report` prints the report as tab-separated rows
-under `#` comment lines. It reads core's database (and Keycloak, read-only,
-for the uploaders' groups) and changes nothing. The header counts the
-orphans and their size, the legacy Media core still attaches (what the
-purpose backfill has not reached or keeps legacy), and the core links without
-a Media attachment. Columns:
+`core-backend media-legacy-report` reads core's database (and Keycloak,
+read-only, for the uploaders' groups) and changes nothing. Standard output
+carries only the report: a header row and one tab-separated row per orphan,
+so it can be redirected to a file and opened as a spreadsheet. The summary
+goes to standard error: the orphans and their size, the legacy Media core
+still attaches (what the purpose backfill has not reached or keeps legacy),
+the core links without a Media attachment, and the Media whose detach expiry
+is still held. Columns:
 
 | Column | Value |
 |---|---|
@@ -664,35 +712,31 @@ a Media attachment. Columns:
 | `created_at` | Upload time, UTC. |
 | `type`, `size` | The recorded type and size in bytes. |
 | `name` | The file name (tabs and line breaks become spaces). |
-| `uploader_teams` | The uploader's current Keycloak group paths, comma separated; `-` for none or a deleted account, `?` when Keycloak could not be read. The uploader is not named. |
+| `uploader_groups_now` | The uploader's Keycloak group paths today (not when they uploaded), comma separated; `-` for none or a deleted account, `?` when Keycloak could not be read. The uploader is not named. |
 | `status`, `expires_at` | `pending` (never attached) or `detached`; the expiry, `-` until the switch runs. |
-| `key` | The object key: the address is `https://cdn.yildizskylab.com/<key>`. Match it against Skyforms answers and CMS content. |
+| `key` | The object key: the Media's address is the CDN base followed by it. Match it against Skyforms answers and CMS content. |
 
 Whether CMS content uses an address is not checked: the CMS database is not
 core's. The file names in the report can be personal data (CVs): keep the
 file off shared places and delete the server copy once it is downloaded.
 
-Yusuf runs it on the production server (`ssh -p 1911
-yusssss@api.yildizskylab.com`), inside the running core container, which has
-the environment:
+On the server running core, inside the core container, which has the
+environment:
 
 ```sh
-core=$(docker ps -q --filter name=sky-lab-production-core-8qn0in | head -n1)
-docker exec "$core" ./core-backend media-legacy-report > legacy-media-report.tsv
+docker exec <core container> ./core-backend media-legacy-report > legacy-media-report.tsv
 ```
-
-(Sandbox: `sky-lab-sandbox-core-ljnbrl`.) Then, on the Mac:
-`scp -P 1911 yusssss@api.yildizskylab.com:legacy-media-report.tsv .`
 
 ### Orphan expiry switch
 
 `core-backend media-legacy-expire` starts the 30-day window (Q19) of the
 orphans Yusuf reviewed. **It is not run yet.** It must wait until Skyforms
-answers and CMS content have their Media attachments (stage 5): until then
-their files are orphans here, and the switch would delete them 30 days later.
+answers and CMS content have their Media attachments (stage 5, ticket 18):
+until then their files are orphans here, and the switch would delete them 30
+days later.
 
 It reads Media ids from standard input: the first column of each row, with
-`#` lines, the header and empty lines skipped, so the reviewed report, with
+the header, `#` lines and empty lines skipped, so the reviewed report, with
 the rows to keep deleted, goes back in as it is. Without `-apply` it only
 counts. Each Media is checked again as it is written: one that is no longer
 a legacy orphan (attached, given a purpose, archived, linked by a core
@@ -700,12 +744,12 @@ record) is listed and left alone, and a Media that already has a window
 keeps it. An orphan that gets its window keeps `legacy`, gets `expiresAt` 30
 days from the run, and the [expiry cleanup](#expiry-cleanup) purges it when
 the window ends, unless something attaches it first (which clears the
-expiry).
+expiry). It writes to standard error only, and an interrupted run prints what
+it applied before it exits non-zero.
 
 ```sh
-core=$(docker ps -q --filter name=sky-lab-production-core-8qn0in | head -n1)
-docker exec -i "$core" ./core-backend media-legacy-expire < reviewed.tsv          # dry run
-docker exec -i "$core" ./core-backend media-legacy-expire -apply < reviewed.tsv   # start the windows
+docker exec -i <core container> ./core-backend media-legacy-expire < reviewed.tsv          # dry run
+docker exec -i <core container> ./core-backend media-legacy-expire -apply < reviewed.tsv   # start the windows
 ```
 
 A window already started ends early only by an attachment: a core record or
