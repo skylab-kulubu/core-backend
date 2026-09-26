@@ -121,17 +121,23 @@ code. CODEOWNERS covers the file and the ceilings. Each entry has:
 | `scan` | Needs a malware scan before it can be opened. |
 | `pending_ttl` | How long a Media with no Media attachment is kept (Go duration). `none` only for the legacy rules. |
 | `transport` | `single_step` (through `POST /v1/media`) or `direct` (Direct upload). |
-| `attach` | Who attaches the purpose's Media: `core` (a core record links it) or `service` (another product, through the service attach API). |
+| `attach` | Who attaches the purpose's Media: `core` (a core record links it) or `service` (another product, through the [service attach API](#service-attach-api)). |
+| `service` | Only with `attach: service`: the product that attaches the purpose's Media, `forms` or `cms`. It is also the purpose's owning product: only it may attach a private Media of the purpose. |
 | `image` | Raster handling: `reencode`, `max_dimension`, `variants` (name → px), `rasterize_svg`. |
 | `legacy_rules` | Only on `legacy`: the rules below instead of `types` and `max_mib`. |
 
 `pending_ttl` sets a new Media's expiry (see
-[Media attachment](#media-attachment)). `attach` decides whether a purpose can
-be uploaded at all: a Media nothing can attach would only wait for its expiry,
-so a `service` purpose is refused until the service attach API exists (media
-redesign ticket 03). Today that is `cms_image`, `cms_file`, `answer_file`,
-`answer_file_large`, `club_file` and `video`; where club files and videos are
-attached is for the Direct upload tickets to settle. `scan` and `image` are declared now
+[Media attachment](#media-attachment)). `attach` and `service` decide whether a
+purpose can be uploaded at all: a Media nothing can attach would only wait for
+its expiry, so a `service` purpose that names no product is refused with
+`purpose_not_available`. Today that is `club_file` and `video`: where club
+files and videos are attached is for the Direct upload and video tickets (11
+and 13) to settle, and both are Direct upload purposes anyway. `cms_image` and
+`cms_file` (attached by the CMS) can be uploaded; `answer_file` (attached by
+Skyforms) stays refused with `private_media_disabled` until private Media
+ships. Every purpose a product's role accepts must name that product, and the
+purposes core refers to in code (the core purposes, the CMS purposes and the
+Answer file purposes) must all be in the file. `scan` and `image` are declared now
 and not yet acted on: scanning and re-encoding with variants (media redesign
 ticket 04) read them as they ship. Until re-encoding ships, a raster image
 under any purpose gets the same metadata stripping as before (EXIF, XMP and
@@ -140,18 +146,18 @@ value, a missing `legacy` entry, or a ceiling violation stops core at startup.
 
 The initial entries:
 
-| Purpose | Upload | Types | Max | Visibility | Transport |
-|---|---|---|---|---|---|
-| `profile_picture` | authenticated | JPEG, PNG, WebP, GIF | 5 MiB | public | single-step |
-| `event_cover`, `event_gallery` | event_editor | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step |
-| `certificate_asset` | certificate_template_editor | PNG, JPEG, PDF | 20 MiB | private | single-step |
-| `cms_image` | authenticated | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step |
-| `cms_file` | authenticated | PDF | 20 MiB | public | single-step |
-| `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step |
-| `club_file` | event_editor | PDF | 1 GiB | public, scanned | direct |
-| `answer_file_large` | service_only | ZIP, PDF | 1 GiB | private, scanned | direct |
-| `video` | event_editor | MP4 | 2 GiB | public | direct |
-| `legacy` | authenticated | legacy rules | legacy rules | public | single-step |
+| Purpose | Upload | Types | Max | Visibility | Transport | Attached by |
+|---|---|---|---|---|---|---|
+| `profile_picture` | authenticated | JPEG, PNG, WebP, GIF | 5 MiB | public | single-step | core |
+| `event_cover`, `event_gallery` | event_editor | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step | core |
+| `certificate_asset` | certificate_template_editor | PNG, JPEG, PDF | 20 MiB | private | single-step | core |
+| `cms_image` | authenticated | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step | cms |
+| `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms |
+| `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step | forms |
+| `club_file` | event_editor | PDF | 1 GiB | public, scanned | direct | not settled (ticket 11) |
+| `answer_file_large` | service_only | ZIP, PDF | 1 GiB | private, scanned | direct | forms |
+| `video` | event_editor | MP4 | 2 GiB | public | direct | not settled (ticket 13) |
+| `legacy` | authenticated | legacy rules | legacy rules | public | single-step | core, or any product (transition rule) |
 
 SVG joins `cms_image`, rasterized to PNG, once core rasterizes SVG.
 
@@ -226,7 +232,7 @@ over their upload budget gets `429` `media_rate_limited`, described under
 | 403 | `purpose_forbidden` | `purpose` | The caller's upload rule does not allow it. |
 | 422 | `private_media_disabled` | `purpose` | A private purpose. Private Media storage (encryption, the private bucket) is not built yet, so nothing is stored; retrying does not help. |
 | 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media`. |
-| 422 | `purpose_not_available` | `purpose` | Another product attaches Media of this purpose (`attach: service`) and the service attach API it needs arrives with media redesign ticket 03. Nothing is stored; the file would only wait for its expiry. |
+| 422 | `purpose_not_available` | `purpose` | A `service` purpose that names no product to attach its Media (`club_file` and `video` today, which reach `purpose_requires_direct_upload` first). Nothing is stored; the file would only wait for its expiry. |
 | 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum. |
 | 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types. |
 
@@ -389,6 +395,120 @@ when purpose-less uploads fall to the strict rule (ticket 15).
 The database's triggers are the backstop for the state rule: a new link or a
 new Media attachment to an archived or purging Media is rejected whoever
 writes it.
+
+### Service attach API
+
+Another product links a Media to its own records through core (media
+redesign ticket 03). The product stores the Media id, attaches it when it
+saves the record, and detaches it when the record lets it go; core keeps the
+Media while any Media attachment does.
+
+**Endpoints**
+
+`POST /v1/media/{id}/attachments` with a JSON body:
+
+```json
+{ "owner": { "service": "cms", "type": "page", "id": "9d3c…" }, "role": "image" }
+```
+
+- `owner.service`: the calling product (`forms` or `cms`).
+- `owner.type`: the product's record type, lowercase snake_case, at most 64
+  characters (`response`, `draft`, `page`, …). Core does not interpret it.
+- `owner.id`: the record's id, a UUID.
+- `role`: one of the product's roles below.
+
+It answers `201 Created` with the new Media attachment, or `200 OK` with the
+one already there when the same link (Media, owner and role) exists, even if
+the Media was archived since. A retry is therefore safe:
+
+```json
+{ "id": "5b1e…", "mediaId": "0f2a…", "owner": { "service": "cms", "type": "page", "id": "9d3c…" }, "role": "image", "createdAt": "2026-09-26T09:00:00Z" }
+```
+
+`DELETE /v1/media/{id}/attachments/{attachmentId}` removes one of the
+product's Media attachments and answers `204 No Content`, also when it is not
+there (any more), so a retry is safe too. When it was the Media's last Media
+attachment, the Media becomes `detached` and is purged 30 days later unless
+something attaches it again; a `legacy` Media gets no expiry (see
+[Status and expiry](#status-and-expiry)). The database's status trigger does
+this for another product's Media attachments exactly as for core's own.
+
+**Who may call**
+
+Only a product's own service account: a client-credentials token of the
+product's Keycloak client that carries `aud` `core` and the role
+`media:attach` on the `core` client (`resource_access.core.roles`, ADR-0019).
+
+- Core tells a service account from a person by the `client_id` claim, which
+  Keycloak writes only into a client-credentials token (the `service_account`
+  client scope), naming the same client as `azp`. A person's token is
+  refused, whatever roles it carries and whichever client it was issued to.
+- The token's client (`azp`) names the product. The mapping is fixed in code
+  (`serviceClients`, `internal/media/service_attach.go`):
+
+  | Keycloak client | Product |
+  |---|---|
+  | `forms` (forms-backend's `KEYCLOAK_CLIENT_ID`) | `forms` |
+  | `skyforms` (if the service account lives on the Skyforms login client) | `forms` |
+  | `skycms` (the CMS client; cms-backend has no service account yet) | `cms` |
+
+  A service account of any other client is refused.
+- A product manages only its own Media attachments: `owner.service` must be
+  the calling product, and it can remove only Media attachments whose
+  `owner_service` is its own. Core's own links (`owner_service` `core`) are
+  never written or removed through this API.
+
+Keycloak must therefore hold the client role `media:attach` on the `core`
+client, assigned only to the service accounts of the product clients above,
+and each of those clients' service tokens must carry `aud` `core` and the
+role. Core does not set this up; it is a human step in Keycloak, done per
+realm (sandbox, then production). Until it is done every call is refused with
+`media_attach_forbidden`, which changes nothing for anyone today.
+
+**Roles**
+
+| Product | Role | Purposes it accepts |
+|---|---|---|
+| `forms` | `answer` | `answer_file`, `answer_file_large` |
+| `cms` | `image` | `cms_image` |
+| `cms` | `file` | `cms_file` |
+
+A `legacy` Media fits every role (the transition rule above): Skyforms and
+the CMS upload without a purpose until stage 5.
+
+**Checks, in order**
+
+1. The caller is a known product's service account with `media:attach`
+   (`media_attach_forbidden`).
+2. `owner.service` is the caller (`media_attach_wrong_service`).
+3. The body is well formed and the role is one of the product's
+   (`media_role_unknown`).
+4. The same link already exists: answered with `200`, nothing else checked.
+5. The Media is linkable: it exists, is not archived, no purge started, and
+   its expiry has not passed (`media_not_linkable`).
+6. A private Media (`answer_file`, `answer_file_large`, `certificate_asset`)
+   is attached only by its owning product, the purpose's `service` (core for
+   `certificate_asset`, so no product) (`media_product_mismatch`). This comes
+   before the role check, so the refusal does not tell another product the
+   Media's purpose.
+7. The Media's purpose fits the role (`media_purpose_mismatch`).
+
+The database's triggers stay the backstop: a Media archived or claimed by a
+purge between these checks and the write is refused with
+`media_not_linkable` too.
+
+**Refusals** are `application/problem+json` with a stable `code`:
+
+| Status | `code` | Extra members | When |
+|---|---|---|---|
+| 401 | | | No token, or an invalid one. |
+| 403 | `media_attach_forbidden` | | Not a product's service account with `media:attach` on the core client: a person, a service account without the role, or of a client core does not map to a product. |
+| 403 | `media_attach_wrong_service` | | `owner.service` is another product, or the Media attachment to remove belongs to another product or to core. |
+| 400 | `media_role_unknown` | `role` | Not a role of the calling product. |
+| 400 | | | A malformed body: not JSON, `owner.id` not a UUID, `owner.type` not lowercase snake_case, or a path id that is not a UUID. |
+| 422 | `media_not_linkable` | `mediaId`, `role` | As for core's own links. |
+| 403 | `media_product_mismatch` | `mediaId`, `role` | The Media is private to another product. No `purpose` member. |
+| 422 | `media_purpose_mismatch` | `mediaId`, `role`, `purpose` | The Media's purpose does not fit the role. |
 
 ### Expiry cleanup
 
