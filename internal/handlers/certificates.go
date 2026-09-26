@@ -18,6 +18,9 @@ func NewCertificateHandler(svc certificate.Service) *CertificateHandler {
 }
 
 func certError(c fiber.Ctx, err error) error {
+	if handled, problemErr := linkProblem(c, err); handled {
+		return problemErr
+	}
 	switch {
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")

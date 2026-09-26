@@ -5,9 +5,9 @@ import (
 	"fmt"
 )
 
-// Upload refusals by a Media purpose. Each except ErrPrivateMediaDisabled
-// also matches ErrInvalid or ErrForbidden, so a caller that only knows those
-// keeps working.
+// Upload refusals by a Media purpose. Each except ErrPrivateMediaDisabled and
+// ErrPurposeNotAvailable also matches ErrInvalid or ErrForbidden, so a caller
+// that only knows those keeps working.
 var (
 	ErrPurposeUnknown   = fmt.Errorf("media: unknown purpose: %w", ErrInvalid)
 	ErrPurposeForbidden = fmt.Errorf("media: this uploader may not upload for the purpose: %w", ErrForbidden)
@@ -18,6 +18,10 @@ var (
 	// private Media storage. A private purpose is never stored publicly
 	// instead.
 	ErrPrivateMediaDisabled = errors.New("media: private Media is not enabled")
+	// ErrPurposeNotAvailable refuses a service purpose whose product has no
+	// service client configured, or that names no product: nothing could
+	// attach the Media before it expires.
+	ErrPurposeNotAvailable = errors.New("media: nothing can attach Media of this purpose yet")
 )
 
 // PurposeRefusal is an upload its Media purpose refuses. errors.Is matches

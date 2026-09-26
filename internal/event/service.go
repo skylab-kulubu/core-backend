@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 type Service interface {
@@ -46,6 +47,8 @@ type service struct {
 	store      Store
 	authz      authz.Authorizer
 	publicBase string
+	formLinks  FormLinkSync
+	media      media.Linker
 }
 
 func NewService(store Store, az authz.Authorizer, publicBase ...string) Service {
@@ -160,7 +163,16 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Assign) {
 		in.DoorStaffIDs = nil
 	}
-	return s.published(s.store.Create(ctx, in))
+	if in.CoverImageID != nil {
+		if err := s.checkMedia(ctx, in.ID, in.OwnerTeam, *in.CoverImageID, media.RoleEventCover); err != nil {
+			return Event{}, err
+		}
+	}
+	created, err := s.store.Create(ctx, in)
+	if err == nil {
+		s.syncFormLinks(ctx, created.ID, formLinksOf(created))
+	}
+	return s.published(created, err)
 }
 
 func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Event) (Event, error) {
@@ -197,7 +209,31 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	if in.MailListID == nil {
 		in.MailListID = existing.MailListID
 	}
-	return s.published(s.store.Update(ctx, in))
+	newCover := in.CoverImageID != nil && (existing.CoverImageID == nil || *existing.CoverImageID != *in.CoverImageID)
+	if newCover {
+		if err := s.checkMedia(ctx, in.ID, in.OwnerTeam, *in.CoverImageID, media.RoleEventCover); err != nil {
+			return Event{}, err
+		}
+	}
+	if in.OwnerTeam != existing.OwnerTeam {
+		// The Event's photos move with it: each must still fit the Team
+		// media library under the new Owner team.
+		if in.CoverImageID != nil && !newCover {
+			if err := s.checkTeam(ctx, in.ID, in.OwnerTeam, *in.CoverImageID, media.RoleEventCover); err != nil {
+				return Event{}, err
+			}
+		}
+		for _, image := range existing.Images {
+			if err := s.checkTeam(ctx, in.ID, in.OwnerTeam, image.ID, media.RoleEventGallery); err != nil {
+				return Event{}, err
+			}
+		}
+	}
+	updated, err := s.store.Update(ctx, in)
+	if err == nil {
+		s.syncFormLinks(ctx, updated.ID, formLinksOf(updated))
+	}
+	return s.published(updated, err)
 }
 
 func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error {
@@ -208,7 +244,11 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Delete) {
 		return ErrForbidden
 	}
-	return s.store.Archive(ctx, id, lifecycle.ActorID(p.ID))
+	if err := s.store.Archive(ctx, id, lifecycle.ActorID(p.ID)); err != nil {
+		return err
+	}
+	s.syncFormLinks(ctx, id, nil)
+	return nil
 }
 
 func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error) {
@@ -222,7 +262,11 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if err := s.store.Restore(ctx, id); err != nil {
 		return Event{}, err
 	}
-	return s.Get(ctx, id)
+	restored, err := s.Get(ctx, id)
+	if err == nil {
+		s.syncFormLinks(ctx, restored.ID, formLinksOf(restored))
+	}
+	return restored, err
 }
 
 func (s *service) AddImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error) {
@@ -233,7 +277,45 @@ func (s *service) AddImages(ctx context.Context, p authz.Principal, id uuid.UUID
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
 		return Event{}, ErrForbidden
 	}
+	inGallery := make(map[uuid.UUID]bool, len(existing.Images))
+	for _, image := range existing.Images {
+		inGallery[image.ID] = true
+	}
+	for _, mediaID := range ids {
+		if mediaID == uuid.Nil || inGallery[mediaID] {
+			continue
+		}
+		if err := s.checkMedia(ctx, id, existing.OwnerTeam, mediaID, media.RoleEventGallery); err != nil {
+			return Event{}, err
+		}
+	}
 	return s.published(s.store.AddImages(ctx, id, ids))
+}
+
+// checkMedia checks a Media the Event is about to link in role: the Media's
+// own rules through the Linker, then the Team media library.
+func (s *service) checkMedia(ctx context.Context, eventID uuid.UUID, ownerTeam string, mediaID uuid.UUID, role media.Role) error {
+	if s.media != nil {
+		if err := s.media.CheckLink(ctx, mediaID, role); err != nil {
+			return err
+		}
+	}
+	return s.checkTeam(ctx, eventID, ownerTeam, mediaID, role)
+}
+
+// checkTeam applies the Team media library: an Event of ownerTeam may use a
+// Media another Event uses only when both have the same Owner team.
+func (s *service) checkTeam(ctx context.Context, eventID uuid.UUID, ownerTeam string, mediaID uuid.UUID, role media.Role) error {
+	teams, err := s.store.TeamsUsingMedia(ctx, mediaID, eventID)
+	if err != nil {
+		return err
+	}
+	for _, team := range teams {
+		if team != ownerTeam {
+			return &media.LinkRefusal{Err: ErrMediaTeamMismatch, MediaID: mediaID, Role: role}
+		}
+	}
+	return nil
 }
 
 func (s *service) RemoveImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error) {

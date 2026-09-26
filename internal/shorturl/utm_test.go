@@ -58,3 +58,21 @@ func TestUTMFromQueryReadsStandardKeysAndCleansValues(t *testing.T) {
 		t.Fatal("empty query produced tags")
 	}
 }
+
+func TestChannelUTMNamesTheSourceBehindASuffix(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"ig":   "instagram",
+		"WA":   "whatsapp",
+		"li":   "linkedin",
+		"mail": "email",
+		"web":  "website",
+		"qr":   "",
+		"xyz":  "",
+	}
+	for code, want := range cases {
+		if got := ChannelUTM(code); got.Source != want || got.Medium != "" {
+			t.Errorf("%s: %+v", code, got)
+		}
+	}
+}

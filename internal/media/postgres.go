@@ -21,7 +21,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose`
+const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 	return insertMedia(ctx, s.pool, newRecord(m))
@@ -34,9 +34,9 @@ type rowQuerier interface {
 // insertMedia writes a record prepared by newRecord.
 func insertMedia(ctx context.Context, db rowQuerier, m Media) (Media, error) {
 	created, err := scanMedia(db.QueryRow(ctx, `
-		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose))
+		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose, m.Status, m.ExpiresAt))
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Media{}, ErrForbidden
 	}
@@ -180,6 +180,7 @@ func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
 		UPDATE media
 		SET deleted_at = NULL,
 			deleted_by = NULL,
+			expires_at = CASE WHEN deleted_at IS NOT NULL THEN NULL ELSE expires_at END,
 			updated_at = CASE WHEN deleted_at IS NOT NULL THEN now() ELSE updated_at END
 		WHERE id = $1 AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL`, id)
 	if err != nil {
@@ -197,6 +198,22 @@ func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
 			return ErrPurgeInProgress
 		}
 		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) ExpireUnattachedAt(ctx context.Context, id uuid.UUID, at *time.Time) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE media SET expires_at = $2
+		WHERE id = $1 AND status <> 'attached' AND deleted_at IS NULL
+		  AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL`, id, at)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		if _, err := s.Get(ctx, id); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -223,8 +240,72 @@ func (s *PostgresStore) ListPurgeCandidates(ctx context.Context, deletedBefore t
 	return out, rows.Err()
 }
 
+// expiredSQL is the database's counterpart of Media.expired, with the time
+// as $1. It is NULL for a Media with no expiry: a WHERE clause leaves such a
+// Media out, and a value read from it goes through COALESCE.
+const expiredSQL = `expires_at <= $1`
+
+// ListExpired returns, in id order and after the given id, the Media the
+// expiry cleanup purges at now: expired, with a blob. Archived Media are left
+// to the archive window, unless the cleanup already claimed their purge.
+func (s *PostgresStore) ListExpired(ctx context.Context, now time.Time, after uuid.UUID, limit int) ([]Media, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+mediaCols+` FROM media
+		WHERE `+expiredSQL+` AND blob_purged_at IS NULL
+		  AND (deleted_at IS NULL OR blob_purge_started_at IS NOT NULL)
+		  AND id > $2
+		ORDER BY id LIMIT $3`, now, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Media, 0)
+	for rows.Next() {
+		m, err := scanMedia(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// purgeQueue is why a Media's blob may be purged.
+type purgeQueue int
+
+const (
+	// archivedQueue: the Media is archived. The caller decides the window.
+	archivedQueue purgeQueue = iota
+	// expiredQueue: the Media is current and past its expiry.
+	expiredQueue
+)
+
+// claimable reports whether a purge that has not started yet may start on a
+// Media in this state.
+func (q purgeQueue) claimable(archived, expired bool) bool {
+	if q == expiredQueue {
+		return !archived && expired
+	}
+	return archived
+}
+
 func (s *PostgresStore) PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(string) error) (bool, error) {
-	claimed, err := s.claimBlobPurge(ctx, id, purgedAt)
+	return s.purgeBlob(ctx, id, purgedAt, archivedQueue, purge)
+}
+
+// PurgeExpiredBlobIfUnattached purges the blob of a Media past its expiry
+// the way PurgeBlobIfUnreferenced purges an archived one, and archives the
+// Media as its blob goes.
+func (s *PostgresStore) PurgeExpiredBlobIfUnattached(ctx context.Context, id uuid.UUID, now time.Time, purge func(string) error) (bool, error) {
+	return s.purgeBlob(ctx, id, now, expiredQueue, purge)
+}
+
+// purgeBlob is the two-phase purge: a durable claim after the locked
+// reference check, the idempotent object deletion, then the record.
+func (s *PostgresStore) purgeBlob(ctx context.Context, id uuid.UUID, purgedAt time.Time, queue purgeQueue, purge func(string) error) (bool, error) {
+	claimed, err := s.claimBlobPurge(ctx, id, purgedAt, queue)
 	if err != nil || !claimed {
 		return false, err
 	}
@@ -240,7 +321,7 @@ func (s *PostgresStore) PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUI
 	}
 	var key string
 	err = tx.QueryRow(ctx, `SELECT file_url FROM media
-		WHERE id = $1 AND deleted_at IS NOT NULL AND blob_purge_started_at IS NOT NULL AND blob_purged_at IS NULL
+		WHERE id = $1 AND blob_purge_started_at IS NOT NULL AND blob_purged_at IS NULL
 		FOR UPDATE`, id).Scan(&key)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -266,7 +347,9 @@ func (s *PostgresStore) PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUI
 	if err := purge(key); err != nil {
 		return false, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE media SET blob_purged_at = $2, blob_purge_checked_at = $2, updated_at = $2 WHERE id = $1`, id, purgedAt); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE media
+		SET blob_purged_at = $2, blob_purge_checked_at = $2, updated_at = $2, deleted_at = COALESCE(deleted_at, $2)
+		WHERE id = $1`, id, purgedAt); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -281,28 +364,29 @@ type postgresMediaTx interface {
 }
 
 func lockMediaReferenceWriters(ctx context.Context, tx postgresMediaTx) error {
-	_, err := tx.Exec(ctx, `LOCK TABLE events, event_images, users, certificate_templates, certificate_template_versions IN SHARE MODE`)
+	_, err := tx.Exec(ctx, `LOCK TABLE events, event_images, users, certificate_templates, certificate_template_versions, media_attachments IN SHARE MODE`)
 	return err
 }
 
+// mediaReferenced reports whether anything still uses the Media: a Media
+// attachment, or one of core's own links. The links are checked directly
+// too, as a safety net, until the legacy backfill (media redesign ticket 08)
+// has proven every link has its Media attachment: a Media is unused only when
+// both say so.
 func mediaReferenced(ctx context.Context, tx postgresMediaTx, id uuid.UUID) (bool, error) {
 	var referenced bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS (
-		SELECT 1 FROM events WHERE cover_image_id = $1
+		SELECT 1 FROM media_attachments WHERE media_id = $1
+		UNION ALL SELECT 1 FROM events WHERE cover_image_id = $1
 		UNION ALL SELECT 1 FROM event_images WHERE media_id = $1
 		UNION ALL SELECT 1 FROM users WHERE profile_picture_id = $1
-		UNION ALL SELECT 1 FROM certificate_templates
-			WHERE draft_layout->>'backgroundMediaId' = $1::text
-			   OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(draft_layout->'elements', '[]'::jsonb)) element WHERE element->>'mediaId' = $1::text)
-		UNION ALL SELECT 1 FROM certificate_template_versions
-			WHERE layout->>'backgroundMediaId' = $1::text
-			   OR asset_manifest ? $1::text
-			   OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(layout->'elements', '[]'::jsonb)) element WHERE element->>'mediaId' = $1::text)
+		UNION ALL SELECT 1 FROM certificate_templates WHERE $1 = ANY (certificate_layout_media_ids(draft_layout, NULL))
+		UNION ALL SELECT 1 FROM certificate_template_versions WHERE $1 = ANY (certificate_layout_media_ids(layout, asset_manifest))
 	)`, id).Scan(&referenced)
 	return referenced, err
 }
 
-func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claimedAt time.Time) (bool, error) {
+func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claimedAt time.Time, queue purgeQueue) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -312,7 +396,9 @@ func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claime
 		return false, err
 	}
 	var startedAt, purgedAt *time.Time
-	err = tx.QueryRow(ctx, `SELECT blob_purge_started_at, blob_purged_at FROM media WHERE id = $1 AND deleted_at IS NOT NULL FOR UPDATE`, id).Scan(&startedAt, &purgedAt)
+	var archived, expired bool
+	err = tx.QueryRow(ctx, `SELECT blob_purge_started_at, blob_purged_at, deleted_at IS NOT NULL, COALESCE(`+expiredSQL+`, false)
+		FROM media WHERE id = $2 FOR UPDATE`, claimedAt, id).Scan(&startedAt, &purgedAt, &archived, &expired)
 	if errors.Is(err, pgx.ErrNoRows) || purgedAt != nil {
 		return false, nil
 	}
@@ -320,6 +406,9 @@ func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claime
 		return false, err
 	}
 	if startedAt == nil {
+		if !queue.claimable(archived, expired) {
+			return false, nil
+		}
 		referenced, err := mediaReferenced(ctx, tx, id)
 		if err != nil {
 			return false, err
@@ -350,7 +439,7 @@ type rowScanner interface {
 func scanMedia(row rowScanner) (Media, error) {
 	var m Media
 	var created, updated time.Time
-	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose)
+	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt)
 	if m.CoverColors == nil {
 		m.CoverColors = []string{}
 	}

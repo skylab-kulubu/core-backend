@@ -189,7 +189,10 @@ fields in the intake response. Allowed coarse states are `blocking`, `pending`,
 `platformBlocked=false` exists only for recovery diagnostics; normal intake
 never discloses a receipt before confirmation. `partial=true` means at least
 one durable erasure checkpoint completed while the request is not complete.
-It does not identify the step or expose its error.
+It does not identify the step or expose its error. `updatedAt` is when the
+request last changed and is never in the future: a deferred or failed attempt
+stamps the moment it failed, not the time of the next attempt, so a client may
+order the statuses it reads by `updatedAt`.
 
 `completed` means all nine erasure steps are checkpointed: SkyMail, CMS and
 Forms each confirmed the Erasure command, core is anonymized together with its

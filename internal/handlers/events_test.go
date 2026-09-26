@@ -17,7 +17,12 @@ import (
 
 func eventApp(t *testing.T, ident authn.Identity, store event.Store) *fiber.App {
 	t.Helper()
-	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	return eventServiceApp(t, ident, event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy())))
+}
+
+// eventServiceApp serves the Event routes of svc to ident.
+func eventServiceApp(t *testing.T, ident authn.Identity, svc event.Service) *fiber.App {
+	t.Helper()
 	h := NewEventHandler(svc)
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {

@@ -26,7 +26,12 @@ func pngDotHTTP() []byte {
 
 func mediaApp(t *testing.T, ident authn.Identity, store media.Store, blobs media.BlobStore) *fiber.App {
 	t.Helper()
-	svc := media.NewService(store, blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test")
+	return mediaServiceApp(t, ident, media.NewService(store, blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test"))
+}
+
+// mediaServiceApp serves the media routes of svc to ident.
+func mediaServiceApp(t *testing.T, ident authn.Identity, svc media.Service) *fiber.App {
+	t.Helper()
 	h := NewMediaHandler(svc)
 	// The server's body limit (httpx.New), so a file up to the media limit
 	// reaches the handler.
@@ -42,6 +47,8 @@ func mediaApp(t *testing.T, ident authn.Identity, store media.Store, blobs media
 	app.Get("/v1/media/:id", h.Get)
 	app.Delete("/v1/media/:id", h.Delete)
 	app.Post("/v1/media/:id/restore", h.Restore)
+	app.Post("/v1/media/:id/attachments", h.Attach)
+	app.Delete("/v1/media/:id/attachments/:attachmentId", h.Detach)
 	return app
 }
 

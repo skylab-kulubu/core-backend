@@ -31,6 +31,13 @@ type Service interface {
 	// the blob stays recoverable until the purge window passes.
 	ArchiveOwn(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Media, error)
+	// Attach links the Media to a record of the calling product through the
+	// service attach API. created is false when the same link already
+	// exists; that Media attachment is returned.
+	Attach(ctx context.Context, p authz.Principal, mediaID uuid.UUID, req AttachRequest) (a Attachment, created bool, err error)
+	// Detach removes a Media attachment of the calling product; removing
+	// one that is not there succeeds.
+	Detach(ctx context.Context, p authz.Principal, mediaID, attachmentID uuid.UUID) error
 }
 
 type service struct {
@@ -40,6 +47,7 @@ type service struct {
 	publicBase         string
 	uploadStagingGrace time.Duration
 	catalogue          Catalogue
+	serviceProducts    []authz.Product
 }
 
 func NewService(media Store, blobs BlobStore, az authz.Authorizer, publicBase string) Service {
@@ -51,6 +59,10 @@ type ServiceOptions struct {
 	// Catalogue is the Media purpose catalogue. The zero value is the
 	// reviewed catalogue carried in the binary.
 	Catalogue Catalogue
+	// ServiceProducts are the products with a service client configured
+	// (authz.ServiceClients): only they can attach Media, so a service
+	// purpose of any other product cannot be uploaded.
+	ServiceProducts []authz.Product
 }
 
 func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, publicBase string, options ServiceOptions) Service {
@@ -62,7 +74,10 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	if catalogue.purposes == nil {
 		catalogue = reviewedCatalogue()
 	}
-	return &service{media: media, blobs: blobs, authz: az, publicBase: publicBase, uploadStagingGrace: grace, catalogue: catalogue}
+	return &service{
+		media: media, blobs: blobs, authz: az, publicBase: publicBase, uploadStagingGrace: grace, catalogue: catalogue,
+		serviceProducts: options.ServiceProducts,
+	}
 }
 
 // reviewedCatalogue is the catalogue carried in the binary. Core validates it
@@ -121,6 +136,9 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if purpose.Transport == TransportDirect {
 		return Media{}, &PurposeRefusal{Err: ErrDirectUploadOnly, Purpose: purpose.Name}
 	}
+	if !s.attachable(purpose) {
+		return Media{}, &PurposeRefusal{Err: ErrPurposeNotAvailable, Purpose: purpose.Name}
+	}
 	if len(file.Data) == 0 {
 		return Media{}, ErrInvalid
 	}
@@ -168,6 +186,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		UploadedBy:          uploadedBy,
 		Kind:                stored.kind,
 		Purpose:             purpose.Name,
+		ExpiresAt:           pendingExpiry(purpose, time.Now().UTC()),
 		Key:                 key,
 		CoverColors:         colors,
 		CoverColorsComputed: colorsComputed,
@@ -190,6 +209,24 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
 	}
 	return s.withURL(created), nil
+}
+
+// attachable reports whether something can attach Media of the purpose
+// today: core, or the purpose's product once it has a service client. A
+// Media nothing can attach would only wait for its expiry.
+func (s *service) attachable(purpose Purpose) bool {
+	return purpose.Attach == AttachCore || (purpose.Service != "" && slices.Contains(s.serviceProducts, purpose.Service))
+}
+
+// pendingExpiry is when a Media of the purpose uploaded at now is purged if
+// no Media attachment links it by then. A purpose without a pending TTL
+// (legacy) keeps it.
+func pendingExpiry(purpose Purpose, now time.Time) *time.Time {
+	if purpose.PendingTTL <= 0 {
+		return nil
+	}
+	expires := now.Add(purpose.PendingTTL)
+	return &expires
 }
 
 // legacyFile applies the rules Media uploaded without a purpose had before
@@ -326,11 +363,20 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.Delete) {
 		return Media{}, ErrForbidden
 	}
-	if _, err := s.media.GetIncludingDeleted(ctx, id); err != nil {
+	m, err := s.media.GetIncludingDeleted(ctx, id)
+	if err != nil {
 		return Media{}, err
 	}
 	if err := s.media.Restore(ctx, id); err != nil {
 		return Media{}, err
+	}
+	if m.DeletedAt != nil {
+		// Restore left the Media with no expiry; its purpose's window starts
+		// again now. Should this step fail, the Media is only kept longer.
+		purpose, _ := s.catalogue.Lookup(m.Purpose)
+		if err := s.media.ExpireUnattachedAt(ctx, id, pendingExpiry(purpose, time.Now().UTC())); err != nil {
+			return Media{}, err
+		}
 	}
 	return s.Get(ctx, id)
 }

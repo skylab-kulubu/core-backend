@@ -85,6 +85,9 @@ Media purpose (a raster image up to 5 MiB, judged by content; see
 [`media-lifecycle.md`](media-lifecycle.md#media-purpose)), links it to the
 shadow and answers with the same view. Anything else is refused with the
 purpose's problem code, for example `415 media_type_not_allowed` for a PDF.
+Linking attaches the new picture; the picture it replaces is detached and
+purged 30 days later unless something attaches it again (see
+[`media-lifecycle.md`](media-lifecycle.md#media-attachment)).
 
 `DELETE /v1/users/me/profile-picture` removes it. The person's own upload is
 archived first under the ordinary media lifecycle described in

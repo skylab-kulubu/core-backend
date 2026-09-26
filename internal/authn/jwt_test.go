@@ -111,6 +111,35 @@ func TestParseAccessTokenReadsCoreRolesOnly(t *testing.T) {
 	}
 }
 
+// A client-credentials token names its client twice: azp, and client_id,
+// which Keycloak writes only for a service account. A person's token, even
+// one issued to a service's client, has no client_id.
+func TestParseAccessTokenTellsAServiceAccountFromAPerson(t *testing.T) {
+	t.Parallel()
+	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	for name, tc := range map[string]struct {
+		claims  string
+		service bool
+	}{
+		"service account":           {`"azp":"forms","client_id":"forms"`, true},
+		"person through the client": {`"azp":"forms"`, false},
+		"client_id of another":      {`"azp":"frontend-main","client_id":"forms"`, false},
+		"client_id without azp":     {`"client_id":"forms"`, false},
+	} {
+		got, err := authn.ParseAccessToken(unsignedJWT(`{"sub":"` + id.String() + `",` + tc.claims + `}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ServiceAccount != tc.service {
+			t.Errorf("%s: service account %v, want %v", name, got.ServiceAccount, tc.service)
+		}
+	}
+	got, _ := authn.ParseAccessToken(unsignedJWT(`{"sub":"` + id.String() + `","azp":"skycms"}`))
+	if got.Client != "skycms" {
+		t.Fatalf("client %q, want the azp", got.Client)
+	}
+}
+
 func TestParseAccessTokenRejectsBadSub(t *testing.T) {
 	t.Parallel()
 	_, err := authn.ParseAccessToken(unsignedJWT(`{"sub":"not-a-uuid"}`))

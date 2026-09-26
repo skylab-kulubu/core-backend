@@ -18,13 +18,16 @@ func Start(t testing.TB) *redis.Client {
 		t.Skip("docker not available")
 	}
 	name := fmt.Sprintf("core-access-redis-test-%d", time.Now().UnixNano())
+	// The image declares /data as a VOLUME; tmpfs keeps each test from leaving
+	// an anonymous volume behind (Cleanup's `rm -f` bypasses `--rm`).
 	run := exec.Command("docker", "run", "-d", "--rm", "--name", name,
+		"--tmpfs", "/data",
 		"-p", "127.0.0.1::6379", "redis:7-alpine", "redis-server",
 		"--appendonly", "yes", "--appendfsync", "always", "--maxmemory-policy", "noeviction")
 	if out, err := run.CombinedOutput(); err != nil {
 		t.Skipf("docker run redis: %v %s", err, out)
 	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", "-v", name).Run() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
