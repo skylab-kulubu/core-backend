@@ -91,7 +91,7 @@ func TestPostgresLegacyBackfillGivesEachCoreUseItsPurpose(t *testing.T) {
 
 // certificate_asset is a private purpose: giving it to a Media whose blob is
 // public would claim an encryption that never happened. Certificate template
-// assets stay legacy until private Media storage (ticket 06) moves them.
+// assets stay legacy for good (decision G1).
 func TestPostgresLegacyBackfillKeepsCertificateTemplateAssetsLegacy(t *testing.T) {
 	db := newMediaDatabase(t)
 	ctx := context.Background()

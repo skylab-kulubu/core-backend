@@ -809,13 +809,7 @@ func TestAccountLifecycleDownSerializesWithDeletionRequest(t *testing.T) {
 	if _, _, err := user.NewService(users).Ensure(ctx, subjectID, user.Profile{Email: "down-race@example.test"}); err != nil {
 		t.Fatal(err)
 	}
-	selfDeleteDown, err := fs.ReadFile(db.DownSQL, "migrations/20260920130000_account_self_delete_intake.down.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, string(selfDeleteDown)); err != nil {
-		t.Fatal(err)
-	}
+	undoAccountLifecycleDependents(t, pool)
 	down, err := fs.ReadFile(db.DownSQL, "migrations/20260920010000_account_lifecycle.down.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -876,13 +870,7 @@ func TestAccountLifecycleDownLocksGuardedLeafBeforeDeletionMarker(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	selfDeleteDown, err := fs.ReadFile(db.DownSQL, "migrations/20260920130000_account_self_delete_intake.down.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, string(selfDeleteDown)); err != nil {
-		t.Fatal(err)
-	}
+	undoAccountLifecycleDependents(t, pool)
 	down, err := fs.ReadFile(db.DownSQL, "migrations/20260920010000_account_lifecycle.down.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -1147,5 +1135,25 @@ func TestAccountErasureServiceStepsAreForwardOnlyOnceProofExists(t *testing.T) {
 	var proof int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM account_deletion_steps WHERE request_id=$1 AND step='erase_cms' AND counts IS NOT NULL`, request.ID).Scan(&proof); err != nil || proof != 1 {
 		t.Fatalf("proof rows=%d err=%v", proof, err)
+	}
+}
+
+// undoAccountLifecycleDependents rolls back, newest first, the later
+// migrations that build on the account lifecycle schema (its tables, or its
+// require_active_account_reference guard), so the lifecycle's own down
+// migration can run.
+func undoAccountLifecycleDependents(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	for _, name := range []string{
+		"migrations/20260926171000_media_read_link_subjects.down.sql",
+		"migrations/20260920130000_account_self_delete_intake.down.sql",
+	} {
+		down, err := fs.ReadFile(db.DownSQL, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(context.Background(), string(down)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
 	}
 }

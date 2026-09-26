@@ -1,7 +1,9 @@
 package media
 
 import (
+	"archive/zip"
 	"bytes"
+	"io"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -63,14 +65,14 @@ func isImage(data []byte) bool {
 }
 
 // detectContentType names the type of a file from its content: one of the
-// raster formats, PDF when the file starts with its header, SVG when an
-// <svg element opens in its first KiB, or "" for anything else. isPDF,
-// which finds the header anywhere in the first KiB, stays the rule only for
-// Media uploaded without a purpose. An SVG for a purpose that lists it is
-// stored sanitized (sanitizeSVG).
+// raster formats, PDF when the file starts with its header, DOCX (isDOCX),
+// SVG when an <svg element opens in its first KiB, or "" for anything else.
+// isPDF, which finds the header anywhere in the first KiB, stays the rule
+// only for Media uploaded without a purpose. An SVG for a purpose that lists
+// it is stored sanitized (sanitizeSVG).
 //
-// DOCX, ZIP and MP4 are detected when private Media and Direct upload
-// arrive; until then nothing reaches a purpose that names them.
+// ZIP and MP4 are detected when Direct upload arrives; until then nothing
+// reaches a purpose that names them.
 func detectContentType(data []byte) string {
 	for _, format := range rasterFormats {
 		if format.detect(data) {
@@ -80,10 +82,53 @@ func detectContentType(data []byte) string {
 	if bytes.HasPrefix(data, []byte("%PDF-")) {
 		return pdfType
 	}
+	// A DOCX is a ZIP package; it is recognized before anything that looks
+	// for markup in the first KiB.
+	if isDOCX(data) {
+		return docxType
+	}
 	if isSVG(data) {
 		return svgType
 	}
 	return ""
+}
+
+// docxMainPart is the content type [Content_Types].xml gives a Word
+// document's main part. A macro-enabled document (.docm) names another.
+const docxMainPart = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+
+// isDOCX reports whether data is a ZIP package with a Word document part
+// that its [Content_Types].xml declares as a (macro-free) Word document.
+// Only the archive's directory and at most 1 MiB of that one entry are read,
+// so a crafted archive cannot make core inflate much.
+func isDOCX(data []byte) bool {
+	if !bytes.HasPrefix(data, []byte("PK\x03\x04")) {
+		return false
+	}
+	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return false
+	}
+	var types *zip.File
+	document := false
+	for _, f := range archive.File {
+		switch f.Name {
+		case "[Content_Types].xml":
+			types = f
+		case "word/document.xml":
+			document = true
+		}
+	}
+	if types == nil || !document {
+		return false
+	}
+	r, err := types.Open()
+	if err != nil {
+		return false
+	}
+	defer r.Close()
+	declared, err := io.ReadAll(io.LimitReader(r, 1<<20))
+	return err == nil && bytes.Contains(declared, []byte(docxMainPart))
 }
 
 func sanitizeImage(data []byte) ([]byte, string, error) {

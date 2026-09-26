@@ -92,6 +92,33 @@ func TestCatalogue_OnlyCMSImagesAndEventPicturesAcceptSVG(t *testing.T) {
 	}
 }
 
+// SVG is refused for a private purpose by its visibility, not only by its
+// name: even a purpose that may list SVG cannot once it is private.
+func TestCatalogue_NoPrivatePurposeAcceptsSVG(t *testing.T) {
+	t.Parallel()
+	data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+		purposes["cms_image"]["visibility"] = "private"
+		purposes["cms_image"]["encrypted"] = true
+		purposes["cms_image"]["types"] = []any{"image/svg+xml"}
+	})
+	if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingSVG) {
+		t.Fatalf("a private purpose naming SVG: err = %v, want %v", err, media.ErrCeilingSVG)
+	}
+}
+
+// A private raster image is re-encoded before it is encrypted, as a public
+// one is before it is served: no uploaded image bytes are stored as they
+// came.
+func TestCatalogue_PrivateRasterPurposeDeclaresReencoding(t *testing.T) {
+	t.Parallel()
+	data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+		delete(purposes["certificate_asset"], "image")
+	})
+	if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingPrivateRaster) {
+		t.Fatalf("private raster purpose without re-encoding: err = %v, want %v", err, media.ErrCeilingPrivateRaster)
+	}
+}
+
 func TestCatalogue_SizesStayUnderTheGlobalMaximums(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

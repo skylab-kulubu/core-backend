@@ -78,7 +78,7 @@ func TestPostgresCleanupPurgesPendingAndDetachedMediaOnlyAfterTheirExpiry(t *tes
 	if !db.purged(t, abandoned) || db.get(t, abandoned.ID).DeletedAt == nil {
 		t.Fatalf("abandoned upload after 24 hours: %+v", db.get(t, abandoned.ID))
 	}
-	if _, err := db.svc.Get(ctx, abandoned.ID); !errors.Is(err, media.ErrNotFound) {
+	if _, err := db.svc.Get(ctx, authz.Principal{}, abandoned.ID); !errors.Is(err, media.ErrNotFound) {
 		t.Fatalf("purged Media still current: %v", err)
 	}
 

@@ -21,10 +21,15 @@ var (
 	// private Media storage. A private purpose is never stored publicly
 	// instead.
 	ErrPrivateMediaDisabled = errors.New("media: private Media is not enabled")
-	// ErrPurposeNotAvailable refuses a service purpose whose product has no
-	// service client configured, or that names no product: nothing could
-	// attach the Media before it expires.
+	// ErrPurposeNotAvailable refuses a purpose core cannot take yet: a
+	// service purpose whose product has no service client configured, or
+	// that names no product (nothing could attach the Media before it
+	// expires), and ErrPurposeNeedsScanner.
 	ErrPurposeNotAvailable = errors.New("media: nothing can attach Media of this purpose yet")
+	// ErrPurposeNeedsScanner refuses a purpose that needs a malware scan
+	// while core has no scanner (ticket 12): its Media could never be
+	// opened. errors.Is matches ErrPurposeNotAvailable.
+	ErrPurposeNeedsScanner = fmt.Errorf("media: the purpose needs a malware scan and no scanner is configured: %w", ErrPurposeNotAvailable)
 )
 
 // PurposeRefusal is an upload its Media purpose refuses. errors.Is matches

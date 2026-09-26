@@ -36,6 +36,9 @@ const (
 	// TypeMediaAttachment is a Media attachment another product makes or
 	// removes for its own records through the service attach API.
 	TypeMediaAttachment Type = "MEDIA_ATTACHMENT"
+	// TypeMediaReadLink is a five-minute read link to a private Media that
+	// its owning product asks core for.
+	TypeMediaReadLink Type = "MEDIA_READ_LINK"
 )
 
 type Level string

@@ -92,11 +92,12 @@ after it; passes repeat a minute apart until one ends with nothing failed.
 Every step is idempotent, so the backfills are safe to interrupt and re-run.
 Upload and template publishing flag what they write themselves.
 
-Known gap: until Skyforms sends the `answer_file` purpose and private Media
-ships, Answer files are still public legacy media; tracked by the media
-redesign. `GET /v1/media/{id}` answers a caller without a token with no
-`uploadedBy` and no `name`, but a signed-in caller still sees both, and the
-object itself stays reachable at its CDN address.
+Known gap: until Skyforms sends the `answer_file` purpose (stage 5), Answer
+files are still public legacy media; tracked by the media redesign.
+`GET /v1/media/{id}` answers a caller without a token with no `uploadedBy`
+and no `name`, but a signed-in caller still sees both, and the object itself
+stays reachable at its CDN address. An Answer file uploaded with its purpose
+is private (see [Private Media](#private-media)).
 
 `X-Content-Type-Options: nosniff` cannot be stored as R2 object metadata; it
 needs a Cloudflare Transform Rule on `cdn.yildizskylab.com`.
@@ -138,9 +139,13 @@ unless its product has a service client configured
 
 - `cms_image` and `cms_file` (the CMS) stay refused: the CMS has no service
   account yet, and opening them is Yusuf's decision once it has one;
-- `answer_file` (Skyforms, configured by default) stays refused with
-  `private_media_disabled` until private Media ships, and
-  `answer_file_large` is a Direct upload purpose;
+- `answer_file` (Skyforms, configured by default) and `certificate_asset`
+  are private: refused with `private_media_disabled` while
+  `MEDIA_PRIVATE_ENABLED` is off, stored encrypted in the private bucket
+  when it is on ([Private Media](#private-media)). `answer_file` also needs
+  a malware scan, so it stays refused (`purpose_not_available`) until the
+  scanner exists (ticket 12). `answer_file_large` is a Direct upload purpose
+  and stays refused (ticket 11);
 - `club_file` and `video` name no product: where club files and videos are
   attached is for the Direct upload and video tickets (11 and 13) to settle,
   and both are Direct upload purposes anyway.
@@ -148,10 +153,12 @@ unless its product has a service client configured
 Every purpose a product's role accepts must name that product, and the
 purposes core refers to in code (the core purposes, the CMS purposes and the
 Answer file purposes) must all be in the file. `image` is acted on (see
-[Images and sizes](#images-and-sizes)); `scan` is declared now and read when
-scanning ships. `image.sizes` may name only the sizes clients can ask for,
-`card` and `page`. An unknown field or value, a missing `legacy` entry, or a
-ceiling violation stops core at startup.
+[Images and sizes](#images-and-sizes)). `scan` is acted on by refusal: while
+core has no malware scanner (ticket 12), a purpose with `scan: true` cannot be
+uploaded (`purpose_not_available`), since its Media are opened only once
+clean. `image.sizes` may name only the sizes clients can ask for, `card` and
+`page`. An unknown field or value, a missing `legacy` entry, or a ceiling
+violation stops core at startup.
 
 The initial entries:
 
@@ -207,22 +214,27 @@ Core refuses to start with a catalogue that breaks one:
 - a public purpose that accepts raster images declares re-encoding
   (`image.reencode`), and core re-encodes every such image (see
   [Images and sizes](#images-and-sizes));
-- only `cms_image`, `event_cover` and `event_gallery` may list SVG (never a
-  profile picture or a private purpose). In code, an SVG is stored only for
+- only `cms_image`, `event_cover` and `event_gallery` may list SVG, and only
+  while public: never a profile picture, and never a private purpose, whatever
+  its name. In code, an SVG is stored only for
   a purpose that lists it, only sanitized, under a key ending in `.svg`, and
   is always served as a download (`Content-Disposition: attachment`);
 - the maximum size stays under 20 MiB for single-step uploads and 2 GiB for
   Direct upload;
 - the declared image size stays within 2560 px (`image.max_dimension`,
   `image.sizes`), and re-encoding scales a larger image down to it;
-- a private purpose is encrypted.
+- a private purpose is encrypted, and one that accepts raster images declares
+  re-encoding (`image.reencode`), so the image is re-encoded before it is
+  encrypted.
 
 ### Uploading
 
 `POST /v1/media` takes an optional multipart field `purpose`. With a purpose,
-core checks, in order: the purpose exists, the caller may upload it, it is not
-private (refused until private Media storage ships), it is single-step,
-something can attach it, the size, and the type detected from the content. `POST /v1/users/me/profile-picture` always uploads
+core checks, in order: the purpose exists, the caller may upload it, private
+Media is on if the purpose is private, it is single-step, something can attach
+it, a malware scanner exists if the purpose needs a scan, the size, and the type detected from the content (a raster format, PDF by
+its header, or DOCX: a ZIP package whose `[Content_Types].xml` declares a
+macro-free Word document part `word/document.xml`). `POST /v1/users/me/profile-picture` always uploads
 as `profile_picture`: raster images up to 5 MiB, no PDF, no SVG.
 
 Media uploaded without a purpose are `legacy` and keep the rules they have
@@ -241,9 +253,10 @@ over their upload budget gets `429` `media_rate_limited`, described under
 |---|---|---|---|
 | 400 | `purpose_unknown` | `purpose` | The purpose is not in the catalogue. |
 | 403 | `purpose_forbidden` | `purpose` | The caller's upload rule does not allow it. |
-| 422 | `private_media_disabled` | `purpose` | A private purpose. Private Media storage (encryption, the private bucket) is not built yet, so nothing is stored; retrying does not help. |
+| 422 | `private_media_disabled` | `purpose` | A private purpose while `MEDIA_PRIVATE_ENABLED` is off. Nothing is stored, and never publicly instead; retrying does not help. |
+| 503 | `private_media_unavailable` | | A private purpose while OpenBao cannot be reached. Nothing is stored; retry later (`Retry-After`). Public purposes are not affected. |
 | 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media`. |
-| 422 | `purpose_not_available` | `purpose` | A `service` purpose whose product has no service client configured (`cms_image` and `cms_file` today), or that names no product (`club_file` and `video`, which reach `purpose_requires_direct_upload` first). Nothing is stored; the file would only wait for its expiry. |
+| 422 | `purpose_not_available` | `purpose` | A `service` purpose whose product has no service client configured (`cms_image` and `cms_file` today), or that names no product (`club_file` and `video`, which reach `purpose_requires_direct_upload` first): nothing is stored, the file would only wait for its expiry. Also a purpose that needs a malware scan while core has no scanner (`answer_file` today). |
 | 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum; an SVG above 1 MiB (`maxBytes` is then 1 MiB). |
 | 413 | `media_image_too_large` | `purpose`, `maxPixels` | Decoding the image would take more than core allows, judged from its header before anything is decoded (see [Decode cost](#decode-cost)). `maxPixels` is the most pixels an image of its kind may have: 50 000 000, fewer for costly pixels (16-bit PNG, progressive JPEG, an animation's many frames). An animated GIF or WebP larger than 2560 px on a side is refused this way too. |
 | 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types, or starts like one but does not decode or check as it: a broken image, a WebP whose frame is not its canvas, an animated WebP whose structure does not check, a GIF with more than 300 frames or a frame outside its screen, a JPEG with more than 64 scans, an SVG core does not sanitize. |
@@ -965,8 +978,9 @@ rules](#link-rules)).
   (below); after the release it gives purposes without it.
 - **Private purposes are never given.** `certificate_asset` is private: the
   purpose says the file is encrypted in the private bucket, and these blobs
-  are public. Certificate template assets stay `legacy` until private Media
-  storage (ticket 06) moves them and gives them the purpose itself.
+  are public. Certificate template assets stay `legacy` for good: nothing
+  moves them into private storage (decision G1; see
+  [Certificate assets](#certificate-assets)).
 - **Mixed uses stay legacy (decision K1).** The backfill does not pick
   between an Event and a person's profile picture, or between core and a
   product's record. Those Media keep the legacy rules: no expiry of their
@@ -981,8 +995,7 @@ holds up the ones after it; passes repeat a minute apart until one ends with
 nothing failed. The log names a failing Media once an hour, not on every
 pass, and prints a pass only when it assigned something or its number of
 failures changed: `media legacy purpose backfill: assigned N, kept legacy P
-(private purpose, until private Media storage) and M (mixed uses), skipped S,
-failed F`. Skipped are Media that were no longer legacy, or no longer used by
+(their purpose would be private) and M (mixed uses), skipped S, failed F`. Skipped are Media that were no longer legacy, or no longer used by
 core, when the pass reached them.
 
 What changes for a Media that got a purpose: a new link checks its purpose (a
@@ -1116,6 +1129,223 @@ A window already started ends early only by an attachment: a core record or
 a product linking the Media clears its expiry. There is no command that
 clears it otherwise yet; review the report before `-apply`.
 
+## Private Media
+
+Private purposes (`answer_file`, `certificate_asset`) are stored encrypted in a
+second, non-public R2 bucket and never get a public address (ADR-0052, media
+redesign ticket 06, decisions Q16, Q18, Q25, Q28, Q29, G1, G2). Everything
+here sits behind `MEDIA_PRIVATE_ENABLED`, which stays `false` in production
+until the wizard (`ops/wizards/media-private-storage-wizard.sh` in
+sky_lab_genel) has run and Yusuf turns it on.
+
+### Encryption
+
+Each object gets its own random 256-bit data key and is encrypted with it
+before it leaves core (`internal/envelope`), so R2 and Cloudflare only ever
+hold ciphertext. The format (`aes-256-gcm-chunked-v1`) is AES-256-GCM over
+64 KiB segments in the STREAM construction, so a file of any size is written
+and read in constant memory:
+
+```text
+header   "SKYM" | 0x01 | segment size (uint32 BE, 65536) | nonce prefix (7 random bytes)
+segment  AES-256-GCM(up to 64 KiB of plaintext) | 16-byte tag   (repeated)
+nonce    nonce prefix | segment index (uint32 BE) | 0x01 on the last segment, else 0x00
+AAD      the 16-byte header, then the object key (e.g. private/files/<uuid>)
+```
+
+A changed byte anywhere, a segment moved, dropped or added, a file cut short,
+or an object copied under another key fails a segment's check; no plaintext
+of a segment that fails is released. (Binding the object key came in before
+anything was stored, so the format kept `v1`.) The object key starts with
+`private/` (`media.PrivateObjectKey`), which is how the work that deletes by
+key alone (the blob purge, the expiry cleanup, the staged upload sweeper,
+account erasure's `erase_profile_media` and `erase_staged_uploads`) reaches
+the private bucket (`media.Buckets`); a private object is never read, written
+or given serving metadata as a public one. Deleting an object that is not
+there succeeds in either bucket, so those steps can be repeated.
+
+The data key is wrapped by the OpenBao Transit key `MEDIA_TRANSIT_KEY`
+(`media`) on `MEDIA_TRANSIT_MOUNT` (`transit/<side>`): core makes the data key
+itself and calls `encrypt`, since the policy grants no `datakey`. The Media
+record keeps the wrapped key (`wrapped_data_key`, Transit's `vault:v<N>:…`
+ciphertext), its key version (`key_version`, read from that prefix) and the
+format (`encryption_algorithm`); migration `20260926170000` adds them with
+`visibility` and a check that a private Media has all three (a key version of
+at least 1) and a public one none. The key rotates every 90 days in OpenBao;
+older versions still unwrap what they wrapped, so nothing is re-encrypted.
+Rewrap (`transit/<side>/rewrap/media`) is allowed by the policy and not used
+yet.
+
+Core signs in to OpenBao with AppRole (`auth/approle/login`,
+`MEDIA_OPENBAO_ROLE_ID` and `MEDIA_OPENBAO_SECRET_ID`) on the first private
+upload or read, not at startup: an OpenBao that is down never stops core
+(`internal/transit`). It keeps the token and renews it in the background once
+half its lease (1 hour) has passed; a token with lease left is used until a
+new one arrives, and stops being used 30 seconds before its lease ends (a
+quarter of a shorter lease). It logs in again when the token nears its end or
+its 24-hour maximum, and once when OpenBao refuses it; the token a login
+replaces is revoked (revoke-self) as far as OpenBao lets it. Callers that need
+a new token share one login, each waiting only as long as its own request
+allows. A failed login or renewal is answered from memory for 5 seconds, and
+so is a refusal of a token that was just issued: that is core's policy not
+covering the request (or encrypt having to create a missing key), a
+configuration to fix (`503`), not something another login mends. Every
+request to OpenBao has a 5-second timeout, and a redirect from OpenBao is
+never followed (the token would go wherever it points).
+
+### Storing a private Media
+
+A private purpose goes through the same checks as any other, including
+re-encoding a raster image (`image.reencode`). What is stored is the result,
+encrypted, in the private bucket instead of the public one: the Media is
+`"visibility": "private"` with `"url": ""`. A private image keeps its width
+and height but gets no sizes and no cover colours, so nothing of it reaches
+the public bucket; its sizes are recorded as none, and the size backfill
+never picks it up.
+
+A purpose whose entry has `scan: true` is refused with `422`
+`purpose_not_available` while core has no malware scanner (ticket 12): a Media
+that needs a scan is not opened before it is clean, so nothing of it could be
+opened. Today that is `answer_file`: Answer files cannot be uploaded until
+the scanner exists, whatever `MEDIA_PRIVATE_ENABLED` says. `certificate_asset`
+needs no scan.
+
+An OpenBao that cannot be reached, is sealed, refuses core's identity, or has
+no such mount or key fails only private uploads and reads, with `503`
+`private_media_unavailable`; public Media are not affected. The log names
+OpenBao's answer (the mount and key when one is missing), never a token.
+
+### Metadata
+
+`GET /v1/media/{id}` answers a private Media only to its owning product's
+service account (Skyforms for an Answer file) and to privileged admins, never
+with an address. Anyone else, anonymous or signed in, the uploader included,
+gets `404`. The admin list (`GET /v1/media`) shows private Media without an
+address.
+
+### Read links
+
+A private Media is opened through a five-minute link core issues:
+
+```http
+POST /v1/media/{id}/links
+Authorization: Bearer <token>
+
+{"onBehalfOf": "<user id>"}
+```
+
+`201` with `Cache-Control: no-store`:
+
+```json
+{"url": "https://api.yildizskylab.com/v1/media/{id}/content?token=…", "expiresAt": "2026-09-26T12:05:00Z"}
+```
+
+Two callers may ask:
+
+- **The owning product**, for one of its purposes: its service account with
+  `media:attach` on the core client (the role that already manages its Media
+  attachments), with `onBehalfOf` naming the person it decided may open the
+  file (Skyforms for an Answer file: the reviewer).
+- **A privileged admin** (ADMIN, YK, DK), for a core purpose
+  (`certificate_asset`): the admin is the person the link is for, and the body
+  names no one (`{}`); any `onBehalfOf`, a malformed one included, is `400`.
+  This is how superadmin's certificate template editor shows a private
+  background.
+
+Anything else is `404`: another product's Media, a public one, a core Media
+for a product, a product's Media for an admin, one that does not exist. The
+person a link is for must be an active account in core (`422`
+`media_link_subject_inactive` otherwise), like every other current-identity
+link ([`account-lifecycle.md`](account-lifecycle.md)).
+
+The token is `base64url(claims) "." base64url(signature)`: the claims are a
+format byte, a disposition byte (always download), the link's id, the Media
+id and the expiry in Unix seconds; the signature is HMAC-SHA256 under
+`MEDIA_LINK_SIGNING_KEY` over a fixed domain string followed by the claims,
+so the key signs nothing but read links. The key has the format of
+`ACCOUNT_DELETION_RECEIPT_KEY`: 32 random bytes, unpadded base64url; the
+wizard makes it inside OpenBao. Changing it ends every link out there, which
+is harmless five minutes later. Links point at `PUBLIC_API_ORIGIN`.
+
+`GET /v1/media/{id}/content?token=…` needs no sign-in: the token is the
+permission. It checks the signature, the Media id and the expiry, unwraps the
+data key, decrypts as it streams, and answers with:
+
+- `Content-Type`: the type detected at upload;
+- `Content-Disposition: attachment; filename*=UTF-8''<the name, percent-encoded>`;
+- `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store`,
+  `Referrer-Policy: no-referrer`, `Content-Security-Policy: default-src 'none'; sandbox`.
+
+The first segment is checked before the answer starts, so a file that is
+wrong from the start is a `500`. A later segment that fails its check ends
+the download short (the status is already sent), and the log names the Media
+and the segment. The route is limited to 120 requests a minute per client
+address, like the public certificate routes. A link may be opened more than
+once until it expires. A problem answer never repeats the token; the edge
+proxy's own request log may still hold it for its five minutes.
+
+### Access log
+
+Every link core issues is written before it is handed out
+(`media_read_links`: id, Media, product, the person it is for, issued at,
+expires at), and every successful open before any byte is sent
+(`media_read_link_opens`: link, time, and the client address as the trusted
+proxies report it, see [`client-ip-trust.md`](client-ip-trust.md)). A failed
+open (a bad or expired token, OpenBao down, a file that fails its check) is
+not logged as an open.
+
+The access log is kept **one year** (decision G2, `media.ReadLinkRetention`).
+An hourly cleanup deletes, a batch at a time, the links issued more than a
+year ago with their opens, and any open older than a year. It runs in the
+background from startup on (its first run never holds up core), with the flag
+off too, logs how many links (and their opens) it deleted, and says nothing
+when there is nothing to delete. A person's
+account erasure leaves their rows in place until their year is up: they are
+the access audit record, and the erasure steps do not touch them
+([`data-lifecycle.md`](data-lifecycle.md)).
+
+### Certificate assets
+
+Certificate rendering reads a private asset through decryption, in the draft
+preview and at publish, and decrypts only `certificate_asset` Media: another
+product's private Media named in a layout is never read. A published version's
+copy of a private asset is kept encrypted in the private bucket under a data
+key of its own (`private/certificate-template-assets/<version>/<asset>`; the
+version id is new on every publish); its manifest entry carries the
+encryption, and the asset serving backfill skips it. A publish that fails
+deletes the private copies it wrote, however far it got; one whose version
+may have been stored although the store answered an error (a lost commit
+answer) keeps them, since that version's certificates need them: they are
+deleted only when the version is provably not there. One rare race remains:
+an INSERT still running on the database when the lookup misses it; a request
+context is cancelled only at shutdown, so the window is narrow, and what it
+could leave is a version whose private copy is gone.
+
+Issued certificate PDFs (`certificates/<serial>.pdf`) are written to the
+public bucket by design, and contain the rendered assets, private ones
+included: a certificate is meant to be shared and verified by anyone who has
+its link.
+
+Certificate assets uploaded before private Media are `legacy` and public, and
+stay so: they render as before, and their version copies stay in the public
+bucket. Nothing moves them (decision G1: the certificate feature has not been
+used in production, so there is nothing to move).
+
+### Refusals
+
+| Status | `code` | When |
+|---|---|---|
+| 403 | `media_link_forbidden` | A link asked for by anyone but a configured product's service account with `media:attach` or a privileged admin. |
+| 400 | | A product's request without `onBehalfOf`, an admin's request with one, or ids that are not UUIDs. |
+| 404 | | A link to a Media that is not a current private Media the caller may open; a content request for a Media that is not a current private one. |
+| 422 | `media_link_subject_inactive` | The person the link is for is unknown to core or being erased. |
+| 403 | `media_link_invalid` | A token core did not sign for this Media. |
+| 403 | `media_link_expired` | A token past its five minutes. |
+| 422 | `private_media_disabled` | Private Media is off. |
+| 422 | `purpose_not_available` | An upload of a purpose that needs a malware scan (no scanner yet). |
+| 503 | `private_media_unavailable` | OpenBao cannot be reached, is sealed, refuses core's identity, or has no such mount or key. Retry later (`Retry-After`). |
+| 500 | `private_media_integrity` | The stored object or its wrapped key is not what core wrote. Nothing of it is served; the log names the request. |
+
 ## Configuration
 
 - `MEDIA_BLOB_RECOVERY_DAYS` — recovery window in whole days; default `30`.
@@ -1149,3 +1379,26 @@ clears it otherwise yet; review the report before `-apply`.
 
 The detached window is fixed at 30 days by the database;
 `MEDIA_BLOB_RECOVERY_DAYS` does not change it.
+
+[Private Media](#private-media) reads these names (the wizard prints their
+values). With `MEDIA_PRIVATE_ENABLED` unset or `false`, none of the others is
+read or required (and `PUBLIC_API_ORIGIN` keeps its default for certificate
+and QR links). With `true`, every one is required and checked at startup, and
+core does not start on a missing or invalid one; the error names the
+variable, never its value.
+
+| Variable | Value in core's Dokploy env | |
+|---|---|---|
+| `MEDIA_PRIVATE_ENABLED` | `false` | `true` or `false`; anything else stops core. |
+| `MEDIA_OPENBAO_ADDR` | `http://<OpenBao Swarm service>:8200` | Internal network only; an http(s) address with no path. |
+| `MEDIA_TRANSIT_MOUNT` | `transit/<side>` | |
+| `MEDIA_TRANSIT_KEY` | `media` | |
+| `MEDIA_OPENBAO_ROLE_ID` | `${{vault.bao-<side>.<core appName>/MEDIA_OPENBAO_ROLE_ID:value}}` | Not secret, kept in KV. |
+| `MEDIA_OPENBAO_SECRET_ID` | `${{vault.bao-<side>.<core appName>/MEDIA_OPENBAO_SECRET_ID:value}}` | Secret. |
+| `R2_PRIVATE_BUCKET` | `skylab-private-<side>` | Never the public bucket (`R2_BUCKET`). |
+| `R2_PRIVATE_ACCESS_KEY` | `${{vault.bao-<side>.<core appName>/R2_PRIVATE_ACCESS_KEY:value}}` | Scoped to the private bucket; never the public bucket's `R2_ACCESS_KEY`. |
+| `R2_PRIVATE_SECRET_KEY` | `${{vault.bao-<side>.<core appName>/R2_PRIVATE_SECRET_KEY:value}}` | |
+| `MEDIA_LINK_SIGNING_KEY` | `${{vault.bao-<side>.<core appName>/MEDIA_LINK_SIGNING_KEY:value}}` | 32 random bytes, unpadded base64url; the wizard makes it in OpenBao. Signs read links. |
+| `PUBLIC_API_ORIGIN` | sandbox `https://sandbox-api.yildizskylab.com`, production `https://api.yildizskylab.com` | Where read links point. Required with the flag on, so a sandbox without it cannot hand out links to production; the sandbox must set it. |
+
+The private bucket uses core's `R2_ENDPOINT`.

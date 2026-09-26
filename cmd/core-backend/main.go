@@ -35,6 +35,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -98,6 +99,33 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Private Media (MEDIA_PRIVATE_ENABLED, docs/media-lifecycle.md). Off,
+	// private purposes are refused and none of its settings is read. On,
+	// every setting must be right or core does not start; OpenBao itself is
+	// reached only by the first private upload or read, so an OpenBao that
+	// is down never stops core.
+	privateConfig, err := media.PrivateConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var privateStorage *media.PrivateStorage
+	var privateMedia *media.PrivateMedia
+	var privateArtifacts media.PrivateObjects
+	if privateConfig.Enabled {
+		privateStorage = media.NewPrivateStorage(media.NewR2(privateConfig.Bucket), transit.New(privateConfig.Transit))
+		privateMedia = &media.PrivateMedia{
+			Storage: privateStorage, LinkKey: privateConfig.LinkKey, LinkOrigin: privateConfig.LinkOrigin, AccessLog: mediaStore,
+		}
+		privateArtifacts = privateStorage
+		log.Printf("private media: on (Transit key %s/%s, bucket %s, read links at %s)",
+			privateConfig.Transit.Mount, privateConfig.Transit.Key, privateConfig.Bucket.Bucket, privateConfig.LinkOrigin)
+	} else {
+		log.Printf("private media: off (%s is not true); private purposes are refused", media.PrivateEnabledEnv)
+	}
+	// Work that deletes by object key alone reaches the private bucket for
+	// a private object through blobs.
+	publicBlobs := blobs
+	blobs = media.Buckets{Public: publicBlobs, Private: privateStorage}
 	mediaPurgeConfig, err := media.BlobPurgeConfigFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -143,10 +171,15 @@ func main() {
 	// Legacy Media core attaches get the purpose of their use (media redesign
 	// ticket 08). Only the purpose changes; the blobs stay where they are.
 	media.MaintainLegacyPurposeBackfill(context.Background(), mediaStore, mediaPurposes, time.Minute, func(report media.LegacyPurposeReport) {
-		log.Printf("media legacy purpose backfill: assigned %d, kept legacy %d (private purpose, until private Media storage) and %d (mixed uses), skipped %d, failed %d",
+		log.Printf("media legacy purpose backfill: assigned %d, kept legacy %d (their purpose would be private) and %d (mixed uses), skipped %d, failed %d",
 			report.Assigned, report.KeptPrivate, report.KeptMixed, report.Skipped, report.Failed)
 	}, func(err error) {
 		log.Printf("media legacy purpose backfill: %v", err)
+	})
+	// The access log of private Media is kept a year (decision G2). It runs
+	// with the flag off too: rows written while it was on still age out.
+	media.MaintainReadLinkRetention(mediaPurgeContext, mediaStore, time.Hour, func(err error) {
+		log.Printf("media read link retention: %v", err)
 	})
 
 	dir := identity.Directory(identity.NewMemory())
@@ -370,13 +403,14 @@ func main() {
 
 	ticketSvc := ticket.NewService(tickets, events, az, users, dir)
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
-		PublicAPIOrigin: os.Getenv("PUBLIC_API_ORIGIN"),
-		VerifyOrigin:    os.Getenv("PUBLIC_VERIFY_ORIGIN"),
-		Templates:       certs,
-		Jobs:            certs,
-		Artifacts:       blobs,
-		Assets:          certificate.MediaAssets{Media: mediaStore, Blobs: blobs},
-		Media:           media.NewLinker(mediaStore),
+		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
+		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
+		Templates:        certs,
+		Jobs:             certs,
+		Artifacts:        blobs,
+		Assets:           certificate.MediaAssets{Media: mediaStore, Blobs: blobs},
+		PrivateArtifacts: privateArtifacts,
+		Media:            media.NewLinker(mediaStore),
 	})
 	certificate.MaintainIssuance(context.Background(), certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
@@ -416,6 +450,7 @@ func main() {
 			ImageAddressMode:   imageAddressMode,
 			DecodeBudget:       decodeBudget,
 			ServiceProducts:    serviceClients.Products(),
+			Private:            privateMedia,
 		}),
 		URLs:                   urlSvc,
 		Certificates:           certSvc,

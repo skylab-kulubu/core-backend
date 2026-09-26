@@ -111,7 +111,7 @@ func New(deps Deps) *fiber.App {
 	schedule := handlers.NewScheduleHandler(deps.Events)
 	tickets := handlers.NewTicketHandler(deps.Tickets)
 	competitors := handlers.NewCompetitorHandler(deps.Competitors)
-	mediaH := handlers.NewMediaHandler(deps.Media)
+	mediaH := handlers.NewMediaHandler(deps.Media).TrustProxies(trustedProxies)
 	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken, deps.URLAttributionGuard).TrustProxies(trustedProxies)
 	jit := middlewares.NewJIT(deps.Users, deps.Mail)
 	uploadLimiter := deps.MediaUploadLimiter
@@ -159,18 +159,8 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/go/:alias/qr", urls.QR)
 	if certs != nil {
 		// These routes are unauthenticated, so the budget has to follow the
-		// person holding the certificate link. Keying on the default c.IP()
-		// would put every visitor behind the edge proxy in one bucket and let
-		// a single caller exhaust it for everyone. An address that cannot be
-		// resolved shares one bucket on purpose: unattributable traffic is
-		// limited together rather than exempted.
-		publicCertificateLimit := limiter.New(limiter.Config{
-			Max:        120,
-			Expiration: time.Minute,
-			KeyGenerator: func(c fiber.Ctx) string {
-				return clientip.FromCtx(c, trustedProxies)
-			},
-		})
+		// person holding the certificate link (perClientLimit).
+		publicCertificateLimit := perClientLimit(trustedProxies)
 		app.Get("/v1/go/c/:serial", publicCertificateLimit, certs.PublicPage)
 		app.Get("/c/:serial", publicCertificateLimit, certs.PublicPage)
 		app.Get("/v1/public/certificates/:serial", publicCertificateLimit, certs.Verify)
@@ -188,6 +178,10 @@ func New(deps Deps) *fiber.App {
 		app.Post("/v1/account-deletion-requests/status/retry", selfDeletion.Retry)
 	}
 	app.Post("/v1/events/:eventId/applications/guest", tickets.ApplyGuest)
+	// A read link opens a private Media without a sign-in: the token in it is
+	// the permission (docs/media-lifecycle.md). The budget follows the
+	// opener's address, like the public certificate routes.
+	app.Get("/v1/media/:id/content", perClientLimit(trustedProxies), mediaH.Content)
 	app.Use(middlewares.Bearer(authn.WithServiceProducts(deps.ParseToken, deps.ServiceClients)))
 	app.Use(middlewares.AccountAccessGate(deps.AccountAccessGate, deps.AccountAccessMetrics))
 	app.Get("/v1/go/:alias", urls.Redirect)
@@ -336,6 +330,8 @@ func New(deps Deps) *fiber.App {
 	// The service attach API: another product's service account links Media
 	// to its own records (docs/media-lifecycle.md).
 	app.Post("/v1/media/:id/attachments", mediaH.Attach)
+	// The owning product's five-minute read link to one of its private Media.
+	app.Post("/v1/media/:id/links", mediaH.IssueReadLink)
 	app.Delete("/v1/media/:id/attachments/:attachmentId", mediaH.Detach)
 
 	app.Post("/v1/urls", urls.Create)
@@ -352,4 +348,20 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/urls/:id/restore", urls.Restore)
 
 	return app
+}
+
+// perClientLimit is the budget of an unauthenticated route: 120 requests a
+// minute for each client address. Keying on the default c.IP() would put
+// every visitor behind the edge proxy in one bucket and let a single caller
+// exhaust it for everyone. An address that cannot be resolved shares one
+// bucket on purpose: unattributable traffic is limited together rather than
+// exempted.
+func perClientLimit(trustedProxies clientip.Ranges) fiber.Handler {
+	return limiter.New(limiter.Config{
+		Max:        120,
+		Expiration: time.Minute,
+		KeyGenerator: func(c fiber.Ctx) string {
+			return clientip.FromCtx(c, trustedProxies)
+		},
+	})
 }
