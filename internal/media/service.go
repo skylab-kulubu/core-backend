@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -62,9 +63,8 @@ type service struct {
 	// objects deletes from whichever bucket holds an object.
 	objects            Buckets
 	authz              authz.Authorizer
-	addresses          Addresses
+	addresses          Addresses // and the purpose catalogue every rule is read from
 	uploadStagingGrace time.Duration
-	catalogue          Catalogue
 	decoding           *DecodeBudget
 	serviceProducts    []authz.Product
 	private            *PrivateMedia
@@ -118,7 +118,7 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	if catalogue.purposes == nil {
 		catalogue = reviewedCatalogue()
 	}
-	addresses := Addresses{Base: publicBase, Mode: options.ImageAddressMode}
+	addresses := Addresses{Base: publicBase, Mode: options.ImageAddressMode, Catalogue: catalogue}
 	decoding := options.DecodeBudget
 	if decoding == nil {
 		decoding = NewDecodeBudget(DecodeBudgetConfig{})
@@ -129,20 +129,21 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	}
 	return &service{
 		media: media, blobs: blobs, objects: objects, authz: az, addresses: addresses, uploadStagingGrace: grace,
-		catalogue: catalogue, decoding: decoding, serviceProducts: options.ServiceProducts, private: options.Private,
+		decoding: decoding, serviceProducts: options.ServiceProducts, private: options.Private,
 	}
 }
 
-// reviewedCatalogue is the catalogue carried in the binary. Core validates it
-// at startup (LoadCatalogue) before any service exists, so a failure here is
-// a build that never passed its own tests.
-func reviewedCatalogue() Catalogue {
+// reviewedCatalogue is the catalogue carried in the binary, read once for
+// every service and Addresses that names none. Core validates it at startup
+// (LoadCatalogue) before any service exists, so a failure here is a build
+// that never passed its own tests.
+var reviewedCatalogue = sync.OnceValue(func() Catalogue {
 	catalogue, err := LoadCatalogue()
 	if err != nil {
 		panic(err)
 	}
 	return catalogue
-}
+})
 
 // UploadedFile is a file as its client sent it: its name, the type the client
 // declared, and its bytes.
@@ -153,7 +154,7 @@ type UploadedFile struct {
 }
 
 func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentType string, data []byte) (Media, error) {
-	legacy, _ := s.catalogue.Lookup(PurposeLegacy) // every catalogue has it
+	legacy, _ := s.addresses.Catalogue.Lookup(PurposeLegacy) // every catalogue has it
 	return s.upload(ctx, p, legacy, UploadedFile{Name: name, ContentType: contentType, Data: data})
 }
 
@@ -182,7 +183,7 @@ func imageFile(img reencodedImage) storedFile {
 }
 
 func (s *service) UploadForPurpose(ctx context.Context, p authz.Principal, purposeName string, file UploadedFile) (Media, error) {
-	purpose, ok := s.catalogue.Lookup(purposeName)
+	purpose, ok := s.addresses.Catalogue.Lookup(purposeName)
 	if !ok || purposeName == PurposeLegacy {
 		// legacy is internal: only Upload, for Media uploaded without a
 		// purpose, stores it.
@@ -538,7 +539,7 @@ func (s *service) mayReadPrivate(p authz.Principal, m Media) bool {
 	if s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.List) {
 		return true
 	}
-	purpose, known := s.catalogue.Lookup(m.Purpose)
+	purpose, known := s.addresses.Catalogue.Lookup(m.Purpose)
 	return known && p.Product != "" && p.Product == purpose.OwningProduct()
 }
 
@@ -600,7 +601,7 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if m.DeletedAt != nil {
 		// Restore left the Media with no expiry; its purpose's window starts
 		// again now. Should this step fail, the Media is only kept longer.
-		purpose, _ := s.catalogue.Lookup(m.Purpose)
+		purpose, _ := s.addresses.Catalogue.Lookup(m.Purpose)
 		if err := s.media.ExpireUnattachedAt(ctx, id, pendingExpiry(purpose, time.Now().UTC())); err != nil {
 			return Media{}, err
 		}
@@ -616,12 +617,17 @@ func (s *service) Addresses() Addresses {
 // read only through a read link.
 func (s *service) withURL(m Media) Media {
 	m.Sizes = nil
-	if m.Visibility == VisibilityPrivate || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil {
+	if !m.hasPublicAddress() {
 		m.URL = ""
 		return m
 	}
 	m.URL = s.addresses.Object(m.Key)
-	purpose, _ := s.catalogue.Lookup(m.Purpose)
-	m.Sizes = s.addresses.imageAddresses(m, purpose.Image.Sizes)
+	m.Sizes = s.addresses.sizes(m)
 	return m
+}
+
+// hasPublicAddress reports whether the Media is served from the CDN: a
+// private Media never is, nor one whose object is being or was purged.
+func (m Media) hasPublicAddress() bool {
+	return m.Visibility != VisibilityPrivate && m.BlobPurgeStartedAt == nil && m.BlobPurgedAt == nil
 }

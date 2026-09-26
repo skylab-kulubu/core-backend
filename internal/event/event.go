@@ -8,42 +8,57 @@ import (
 )
 
 type Event struct {
-	ID              uuid.UUID       `json:"id"`
-	Name            string          `json:"name"`
-	Description     string          `json:"description"`
-	Location        string          `json:"location"`
-	OwnerTeam       string          `json:"ownerTeam"`
-	FormURL         string          `json:"formUrl,omitempty"`
-	FormAlias       string          `json:"formAlias,omitempty"`
-	ExtraFormURLs   []EventFormLink `json:"extraFormUrls"`
-	Capacity        int             `json:"capacity"`
-	StartDate       *time.Time      `json:"startDate,omitempty"`
-	EndDate         *time.Time      `json:"endDate,omitempty"`
-	Linkedin        string          `json:"linkedin,omitempty"`
-	Active          bool            `json:"active"`
-	Ranked          bool            `json:"ranked"`
-	PrizeInfo       string          `json:"prizeInfo,omitempty"`
-	SeasonID        *uuid.UUID      `json:"seasonId,omitempty"`
-	CoverImageID    *uuid.UUID      `json:"coverImageId,omitempty"`
-	CoverImageURL   string          `json:"coverImageUrl,omitempty"`
-	CoverColors     []string        `json:"coverColors"`
-	AttendanceRule  string          `json:"attendanceRule"`
-	AttendanceRatio *float64        `json:"attendanceRatio,omitempty"`
-	Images          []GalleryImage  `json:"images"`
-	ImageURLs       []string        `json:"imageUrls"`
-	DoorStaffIDs    []uuid.UUID     `json:"doorStaffIds,omitempty"`
-	MailListID      *uuid.UUID      `json:"mailListId,omitempty"`
-	ArchivedAt      *time.Time      `json:"archivedAt,omitempty"`
-	ArchivedBy      *uuid.UUID      `json:"archivedBy,omitempty"`
-	CreatedAt       time.Time       `json:"createdAt"`
-	UpdatedAt       time.Time       `json:"updatedAt"`
+	ID            uuid.UUID       `json:"id"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	Location      string          `json:"location"`
+	OwnerTeam     string          `json:"ownerTeam"`
+	FormURL       string          `json:"formUrl,omitempty"`
+	FormAlias     string          `json:"formAlias,omitempty"`
+	ExtraFormURLs []EventFormLink `json:"extraFormUrls"`
+	Capacity      int             `json:"capacity"`
+	StartDate     *time.Time      `json:"startDate,omitempty"`
+	EndDate       *time.Time      `json:"endDate,omitempty"`
+	Linkedin      string          `json:"linkedin,omitempty"`
+	Active        bool            `json:"active"`
+	Ranked        bool            `json:"ranked"`
+	PrizeInfo     string          `json:"prizeInfo,omitempty"`
+	SeasonID      *uuid.UUID      `json:"seasonId,omitempty"`
+	CoverImageID  *uuid.UUID      `json:"coverImageId,omitempty"`
+	CoverImageURL string          `json:"coverImageUrl,omitempty"`
+	// CoverImageSizes are the cover's card and page addresses, built like
+	// the Media JSON's sizes.
+	CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes,omitempty"`
+	CoverColors     []string                      `json:"coverColors"`
+	AttendanceRule  string                        `json:"attendanceRule"`
+	AttendanceRatio *float64                      `json:"attendanceRatio,omitempty"`
+	Images          []GalleryImage                `json:"images"`
+	ImageURLs       []string                      `json:"imageUrls"`
+	DoorStaffIDs    []uuid.UUID                   `json:"doorStaffIds,omitempty"`
+	MailListID      *uuid.UUID                    `json:"mailListId,omitempty"`
+	ArchivedAt      *time.Time                    `json:"archivedAt,omitempty"`
+	ArchivedBy      *uuid.UUID                    `json:"archivedBy,omitempty"`
+	CreatedAt       time.Time                     `json:"createdAt"`
+	UpdatedAt       time.Time                     `json:"updatedAt"`
+
+	// coverImage is the cover Media as the store read it with the Event,
+	// what CoverImageSizes is built from.
+	coverImage *media.LinkedImage
 }
 
 type GalleryImage struct {
 	ID  uuid.UUID `json:"id"`
 	URL string    `json:"url,omitempty"`
+	// Sizes are the image's card and page addresses, built like the Media
+	// JSON's sizes.
+	Sizes map[string]media.ImageAddress `json:"sizes,omitempty"`
+
+	// image is the Media as the store read it with the gallery, what Sizes
+	// is built from.
+	image *media.LinkedImage
 }
 
+// Resource is the Event summary tickets, competitors and the door answer.
 type Resource struct {
 	ID            uuid.UUID  `json:"id"`
 	Name          string     `json:"name"`
@@ -52,23 +67,31 @@ type Resource struct {
 	Location      string     `json:"location"`
 	OwnerTeam     string     `json:"ownerTeam"`
 	CoverImageURL string     `json:"coverImageUrl,omitempty"`
-	CoverColors   []string   `json:"coverColors"`
-	Active        bool       `json:"active"`
-	Ranked        bool       `json:"ranked"`
+	// CoverImageSizes are the cover's card and page addresses, built like
+	// the Media JSON's sizes.
+	CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes,omitempty"`
+	CoverColors     []string                      `json:"coverColors"`
+	Active          bool                          `json:"active"`
+	Ranked          bool                          `json:"ranked"`
 }
 
+// Resource is the Event's summary. Its callers (tickets, competitors, the
+// door) have no media dependency to carry a base and address mode: the
+// cover is answered under the ones core is configured with.
 func (e Event) Resource() Resource {
+	addresses := media.ConfiguredAddresses()
 	return Resource{
-		ID:            e.ID,
-		Name:          e.Name,
-		StartDate:     e.StartDate,
-		EndDate:       e.EndDate,
-		Location:      e.Location,
-		OwnerTeam:     e.OwnerTeam,
-		CoverImageURL: media.PublicURL("", e.CoverImageURL),
-		CoverColors:   append([]string{}, e.CoverColors...),
-		Active:        e.Active,
-		Ranked:        e.Ranked,
+		ID:              e.ID,
+		Name:            e.Name,
+		StartDate:       e.StartDate,
+		EndDate:         e.EndDate,
+		Location:        e.Location,
+		OwnerTeam:       e.OwnerTeam,
+		CoverImageURL:   addresses.Object(e.CoverImageURL),
+		CoverImageSizes: addresses.LinkedSizes(e.coverImage),
+		CoverColors:     append([]string{}, e.CoverColors...),
+		Active:          e.Active,
+		Ranked:          e.Ranked,
 	}
 }
 

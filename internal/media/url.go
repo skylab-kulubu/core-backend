@@ -25,6 +25,38 @@ func UsePublicBase(base string) (restore func()) {
 	return func() { publicBase.Store(previous) }
 }
 
+// imageAddressMode is the process's configured address mode
+// (UseImageAddressMode), read only by ConfiguredAddresses.
+var imageAddressMode atomic.Pointer[AddressMode]
+
+// UseImageAddressMode makes mode the image address mode of
+// ConfiguredAddresses: core sets it at startup from
+// MEDIA_IMAGE_ADDRESS_MODE, beside the public base, so that the callers
+// with no media dependency of their own answer sizes where the Media JSON
+// does. An empty mode keeps AddressStoredSizes. The returned restore puts
+// back the mode it replaced.
+func UseImageAddressMode(mode AddressMode) (restore func()) {
+	previous := imageAddressMode.Load()
+	if mode != "" {
+		imageAddressMode.Store(&mode)
+	}
+	return func() { imageAddressMode.Store(previous) }
+}
+
+// ConfiguredAddresses are the addresses core is configured with: its public
+// base (UsePublicBase) and image address mode (UseImageAddressMode), with
+// the reviewed catalogue. They are for the callers that have no media
+// dependency to carry a base and mode of their own: Event resources in
+// tickets, competitors and the door, and team rosters. Anything that has
+// one (the Media service, the Event service) builds its own Addresses.
+func ConfiguredAddresses() Addresses {
+	mode := AddressStoredSizes
+	if configured := imageAddressMode.Load(); configured != nil {
+		mode = *configured
+	}
+	return Addresses{Mode: mode}
+}
+
 // configuredPublicBase is the base UsePublicBase set, or DefaultPublicBase.
 func configuredPublicBase() string {
 	if base := publicBase.Load(); base != nil {

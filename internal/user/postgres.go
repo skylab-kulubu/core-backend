@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 	"github.com/skylab-kulubu/core-backend/internal/ytu"
 )
@@ -23,22 +24,32 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-// userCols reads the profile picture from the Media the profile links (its
-// object key), not from profile_picture_url: an address stored there before
-// (https://cdn…) must not outlive a change of the configured base. The
-// column is still read for a picture with no Media, and written with the
-// key.
-const userCols = `id, email, first_name, last_name, username, school_email, sky_number, COALESCE(student_card_uid, ''), linkedin, university, faculty, department, ytu_linked, phone, profile_picture_id, COALESCE((SELECT m.file_url FROM media m WHERE m.id = profile_picture_id), profile_picture_url), account_state, deletion_requested_at, anonymized_at, created_at, updated_at`
+// userCols reads the Media the profile links with the profile, in one
+// lookup (media.LinkedImageSQL): its key and its size addresses
+// (withLinkedPicture).
+var userCols = `id, email, first_name, last_name, username, school_email, sky_number, COALESCE(student_card_uid, ''), linkedin, university, faculty, department, ytu_linked, phone, profile_picture_id, profile_picture_url, (SELECT ` + media.LinkedImageSQL("m") + ` FROM media m WHERE m.id = profile_picture_id), account_state, deletion_requested_at, anonymized_at, created_at, updated_at`
 
 func scanUser(row interface{ Scan(dest ...any) error }) (User, error) {
 	var u User
 	err := row.Scan(
 		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Username, &u.SchoolEmail, &u.SkyNumber, &u.StudentCardUID,
-		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.YTULinked, &u.Phone, &u.ProfilePictureID, &u.ProfilePictureURL,
+		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.YTULinked, &u.Phone, &u.ProfilePictureID, &u.ProfilePictureURL, &u.ProfilePicture,
 		&u.AccountState, &u.DeletionRequestedAt, &u.AnonymizedAt,
 		&u.CreatedAt, &u.UpdatedAt,
 	)
-	return withStudentCardStatus(u), err
+	return withStudentCardStatus(withLinkedPicture(u)), err
+}
+
+// withLinkedPicture reads the profile picture from the Media the profile
+// links (its object key), not from profile_picture_url: an address stored
+// there before (https://cdn…) must not outlive a change of the configured
+// base. The column is still read for a picture with no Media, and written
+// with the key.
+func withLinkedPicture(u User) User {
+	if key := u.ProfilePicture.Key(); key != "" {
+		u.ProfilePictureURL = key
+	}
+	return u
 }
 
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (User, error) {
@@ -109,7 +120,7 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 		RETURNING `+userCols+`, (xmax = 0)
 	`, u.ID, u.Email, u.FirstName, u.LastName, u.Username, u.SchoolEmail, u.SkyNumber).Scan(
 		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Username, &u.SchoolEmail, &u.SkyNumber, &u.StudentCardUID,
-		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.YTULinked, &u.Phone, &u.ProfilePictureID, &u.ProfilePictureURL,
+		&u.Linkedin, &u.University, &u.Faculty, &u.Department, &u.YTULinked, &u.Phone, &u.ProfilePictureID, &u.ProfilePictureURL, &u.ProfilePicture,
 		&u.AccountState, &u.DeletionRequestedAt, &u.AnonymizedAt,
 		&u.CreatedAt, &u.UpdatedAt, &created,
 	)
@@ -122,7 +133,7 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 	if err != nil {
 		return User{}, false, err
 	}
-	return withStudentCardStatus(u), created, nil
+	return withStudentCardStatus(withLinkedPicture(u)), created, nil
 }
 
 func (s *PostgresStore) UpdateProfile(ctx context.Context, u User) (User, error) {

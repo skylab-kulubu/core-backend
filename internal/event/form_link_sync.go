@@ -27,7 +27,11 @@ type FormLinkSync interface {
 
 type ServiceOptions struct {
 	PublicBase string
-	FormLinks  FormLinkSync
+	// ImageAddressMode is where the sizes of the Event's images point
+	// (MEDIA_IMAGE_ADDRESS_MODE), as for the Media JSON; empty is
+	// media.AddressStoredSizes.
+	ImageAddressMode media.AddressMode
+	FormLinks        FormLinkSync
 	// Media checks each Media an Event is about to link as its cover or in
 	// its gallery. Nil leaves the Media's own rules (purpose, state) to the
 	// database's guards; the Team media library rule holds either way.
@@ -35,7 +39,10 @@ type ServiceOptions struct {
 }
 
 func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOptions) Service {
-	return &service{store: store, authz: az, publicBase: options.PublicBase, formLinks: options.FormLinks, media: options.Media}
+	return &service{
+		store: store, authz: az, formLinks: options.FormLinks, media: options.Media,
+		addresses: media.Addresses{Base: options.PublicBase, Mode: options.ImageAddressMode},
+	}
 }
 
 func formLinksOf(e Event) []FormLink {

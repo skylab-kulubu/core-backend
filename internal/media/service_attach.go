@@ -159,7 +159,7 @@ func (s *service) mayLink(ctx context.Context, product authz.Product, m Media, o
 		}
 		return s.media.HeldBy(ctx, m.ID, product)
 	}
-	purpose, known := s.catalogue.Lookup(m.Purpose)
+	purpose, known := s.addresses.Catalogue.Lookup(m.Purpose)
 	if !known || purpose.OwningProduct() != product {
 		return false, nil
 	}

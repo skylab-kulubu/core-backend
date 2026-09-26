@@ -21,7 +21,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, m.file_url, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at`
+var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, m.file_url, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at`
 
 const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id AND m.deleted_at IS NULL`
 
@@ -55,6 +55,12 @@ func (s *PostgresStore) list(ctx context.Context, ownerTeam string, activeOnly b
 	if err != nil {
 		return nil, err
 	}
+	return s.scanListed(ctx, rows)
+}
+
+// scanListed reads the Events of a list query, then every listed Event's
+// gallery and door staff (withGalleriesAndDoorStaff).
+func (s *PostgresStore) scanListed(ctx context.Context, rows pgx.Rows) ([]Event, error) {
 	defer rows.Close()
 	out := make([]Event, 0)
 	for rows.Next() {
@@ -62,15 +68,16 @@ func (s *PostgresStore) list(ctx context.Context, ownerTeam string, activeOnly b
 		if err != nil {
 			return nil, err
 		}
-		if err := s.loadImages(ctx, &e); err != nil {
-			return nil, err
-		}
-		if err := s.loadDoorStaff(ctx, &e); err != nil {
-			return nil, err
-		}
-		out = append(out, emptyGallery(e))
+		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err := s.withGalleriesAndDoorStaff(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Event, error) {
@@ -93,13 +100,11 @@ func (s *PostgresStore) get(ctx context.Context, id uuid.UUID, includeArchived b
 	if err != nil {
 		return e, err
 	}
-	if err := s.loadImages(ctx, &e); err != nil {
+	events := []Event{e}
+	if err := s.withGalleriesAndDoorStaff(ctx, events); err != nil {
 		return Event{}, err
 	}
-	if err := s.loadDoorStaff(ctx, &e); err != nil {
-		return Event{}, err
-	}
-	return emptyGallery(e), nil
+	return events[0], nil
 }
 
 func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
@@ -271,59 +276,66 @@ func (s *PostgresStore) TeamsUsingMedia(ctx context.Context, mediaID, except uui
 	return teams, rows.Err()
 }
 
-func (s *PostgresStore) loadImages(ctx context.Context, e *Event) error {
+// withGalleriesAndDoorStaff reads the gallery images and door staff of every
+// Event, in one query each whatever the number of Events: a gallery image
+// comes with the Media it is (media.LinkedImageSQL), so its sizes need no
+// query either. Every Event gets empty lists, never nil ones.
+func (s *PostgresStore) withGalleriesAndDoorStaff(ctx context.Context, events []Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, len(events))
+	byID := make(map[uuid.UUID]int, len(events))
+	for i := range events {
+		ids[i] = events[i].ID
+		byID[events[i].ID] = i
+		events[i].Images = make([]GalleryImage, 0)
+		events[i].ImageURLs = make([]string, 0)
+		events[i].DoorStaffIDs = make([]uuid.UUID, 0)
+	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT m.id, m.file_url
+		SELECT ei.event_id, m.id, m.file_url, `+media.LinkedImageSQL("m")+`
 		FROM event_images ei
 		JOIN media m ON m.id = ei.media_id AND m.deleted_at IS NULL
-		WHERE ei.event_id = $1
-		ORDER BY m.created_at
-	`, e.ID)
+		WHERE ei.event_id = ANY($1)
+		ORDER BY m.created_at, m.id
+	`, ids)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	images := make([]GalleryImage, 0)
-	urls := make([]string, 0)
 	for rows.Next() {
+		var eventID uuid.UUID
 		var im GalleryImage
-		if err := rows.Scan(&im.ID, &im.URL); err != nil {
+		if err := rows.Scan(&eventID, &im.ID, &im.URL, &im.image); err != nil {
 			return err
 		}
-		images = append(images, im)
+		e := &events[byID[eventID]]
+		e.Images = append(e.Images, im)
 		if im.URL != "" {
-			urls = append(urls, im.URL)
+			e.ImageURLs = append(e.ImageURLs, im.URL)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	e.Images = images
-	e.ImageURLs = urls
-	return nil
-}
-
-func (s *PostgresStore) loadDoorStaff(ctx context.Context, e *Event) error {
-	rows, err := s.pool.Query(ctx, `
-		SELECT user_id FROM event_door_staff WHERE event_id = $1 ORDER BY user_id
-	`, e.ID)
+	rows.Close()
+	staff, err := s.pool.Query(ctx, `
+		SELECT event_id, user_id FROM event_door_staff WHERE event_id = ANY($1) ORDER BY user_id
+	`, ids)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	ids := make([]uuid.UUID, 0)
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
+	defer staff.Close()
+	for staff.Next() {
+		var eventID, userID uuid.UUID
+		if err := staff.Scan(&eventID, &userID); err != nil {
 			return err
 		}
-		ids = append(ids, id)
+		e := &events[byID[eventID]]
+		e.DoorStaffIDs = append(e.DoorStaffIDs, userID)
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	e.DoorStaffIDs = ids
-	return nil
+	return staff.Err()
 }
 
 func (s *PostgresStore) replaceDoorStaff(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, ids []uuid.UUID) error {
@@ -475,23 +487,7 @@ func (s *PostgresStore) ListBySeason(ctx context.Context, seasonID uuid.UUID) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := make([]Event, 0)
-	for rows.Next() {
-		e, err := scanEvent(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-		if err := s.loadImages(ctx, &out[len(out)-1]); err != nil {
-			return nil, err
-		}
-		if err := s.loadDoorStaff(ctx, &out[len(out)-1]); err != nil {
-			return nil, err
-		}
-		out[len(out)-1] = emptyGallery(out[len(out)-1])
-	}
-	return out, rows.Err()
+	return s.scanListed(ctx, rows)
 }
 
 func (s *PostgresStore) SetSeason(ctx context.Context, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error) {
@@ -662,7 +658,7 @@ func scanEvent(row rowScanner) (Event, error) {
 	err := row.Scan(
 		&e.ID, &e.Name, &e.Description, &e.Location, &e.OwnerTeam, &e.FormURL, &e.Capacity,
 		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Ranked, &e.PrizeInfo, &e.SeasonID,
-		&e.CoverImageID, &coverURL, &e.CoverColors, &e.AttendanceRule, &e.AttendanceRatio, &extraRaw, &e.MailListID, &e.ArchivedAt, &e.ArchivedBy, &e.CreatedAt, &e.UpdatedAt,
+		&e.CoverImageID, &coverURL, &e.coverImage, &e.CoverColors, &e.AttendanceRule, &e.AttendanceRatio, &extraRaw, &e.MailListID, &e.ArchivedAt, &e.ArchivedBy, &e.CreatedAt, &e.UpdatedAt,
 	)
 	if coverURL != nil {
 		e.CoverImageURL = *coverURL

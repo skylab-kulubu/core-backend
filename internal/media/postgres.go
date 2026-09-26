@@ -24,6 +24,9 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
+// mediaCols and scanMedia map the media columns to Media fields; the part
+// of that mapping a record reads with the Media it links is repeated in
+// LinkedImageSQL (linked_image.go), so a column changed here changes there.
 const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, detach_expiry_held, width, height, size_objects, visibility, encryption_algorithm, wrapped_data_key, key_version`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
