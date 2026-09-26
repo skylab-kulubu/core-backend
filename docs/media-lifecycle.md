@@ -206,9 +206,10 @@ Core refuses to start with a catalogue that breaks one:
 - a public purpose that accepts raster images declares re-encoding
   (`image.reencode`), and core re-encodes every such image (see
   [Images and sizes](#images-and-sizes));
-- only a public purpose lists SVG. In code, an SVG is stored only for a
-  purpose that lists it, only sanitized, under a key ending in `.svg`, and is
-  always served as a download (`Content-Disposition: attachment`);
+- only `cms_image`, `event_cover` and `event_gallery` may list SVG (never a
+  profile picture or a private purpose). In code, an SVG is stored only for
+  a purpose that lists it, only sanitized, under a key ending in `.svg`, and
+  is always served as a download (`Content-Disposition: attachment`);
 - the maximum size stays under 20 MiB for single-step uploads and 2 GiB for
   Direct upload;
 - the declared image size stays within 2560 px (`image.max_dimension`,
@@ -337,30 +338,49 @@ image, polyglot payloads.
    it has transparency. The Media's `type` is the stored type. Its cover
    colours are picked from the same decoded image.
 4. **Colours.** The image's ICC colour profile (JPEG APP2 `ICC_PROFILE`,
-   PNG `iCCP`, WebP `ICCP`) is embedded, byte for byte, in the re-encoded
-   image and every size: JPEG as APP2 segments of at most 65 519 profile
-   bytes, PNG as `iCCP`. No colour conversion is done, so a Display P3 photo
-   keeps its colours. A profile above 1 MiB, or without the `acsp` signature
-   and its own size in its header, is dropped.
+   PNG `iCCP`, WebP `ICCP`) is **rebuilt**, never copied, and the rebuilt
+   profile embedded in the re-encoded image and every size (JPEG as APP2
+   segments of at most 65 519 profile bytes, PNG as `iCCP`). No colour
+   conversion is done, so a Display P3 photo keeps its colours:
+   - only a monitor or scanner (`mntr`, `scnr`) `RGB ` profile with PCS
+     `XYZ ` or `Lab `, and with its matrix and curves (`wtpt`, `rXYZ`,
+     `gXYZ`, `bXYZ`, `rTRC`, `gTRC`, `bTRC`);
+   - it keeps `desc`, `cprt`, `wtpt`, `chad`, the primaries and the
+     curves, each checked against its type (`XYZ `, `sf32`, `curv`, `para`,
+     `mluc`/`desc`/`text`) with every length in bounds and text at most
+     4 KiB; the colour-defining tags stay byte for byte;
+   - under a new header (size recomputed, profile ID and maker fields
+     zeroed) and a new tag table.
+
+   A profile of lookup tables only, a CMYK or grey profile, one above 1 MiB,
+   one without the `acsp` signature or its own size, or one with any tag
+   outside its bounds is dropped, and the image is then shown as sRGB.
 
 **Animations** look as uploaded (decision D2):
 
+- One ceiling for every animation: at most 300 frames, and at most
+  256 Mi pixels across frames × canvas (a GIF's logical screen); more is
+  `media_image_too_large` (more frames: `media_type_not_allowed`).
 - A **GIF** is decoded with every frame and encoded again, frame by frame:
   its frames, delays, disposal and loop count stay; comments and other
-  extensions go. Before decoding, its blocks are walked: more than 300
-  frames, or a frame outside the logical screen, is refused, and frames ×
-  screen counts against the decode cost. Its sizes are its first frame,
+  extensions go. Before decoding, its blocks are walked once: a frame
+  outside the logical screen is refused, and frames × screen counts against
+  the decode cost. Its sizes are its first frame,
   still, as PNG. An animated GIF larger than 2560 px on a side is refused; a
   one-frame GIF that large is scaled like a still image, to PNG.
 - An **animated WebP** cannot be re-encoded (no Go encoder), so it is the
-  one image kept as uploaded, after its structure is checked chunk by chunk:
-  the RIFF size must be the file's (no trailing or missing bytes); only
-  `VP8X` (first, with the animation flag), `ICCP`, `ANIM`, `ANMF`, `EXIF` and
-  `XMP ` chunks; each frame within the canvas, its VP8/VP8L bitstream the
-  size its `ANMF` declares; at most 300 frames and 256 Mi pixels across
-  frames × canvas; a canvas at most 2560 px on a side. `EXIF` and `XMP`
-  chunks go (with their VP8X flags) and the RIFF size is rewritten. It gets
-  no size objects: every size address is the image itself.
+  one image kept as uploaded, after its structure is checked chunk by chunk
+  **and every frame decodes**: the RIFF size must be the file's (no trailing
+  or missing bytes); only `VP8X` (first, with the animation flag), `ICCP`,
+  `ANIM`, `ANMF`, `EXIF` and `XMP ` chunks; each frame within the canvas,
+  its VP8/VP8L bitstream the size its `ANMF` declares; a canvas at most
+  2560 px on a side. Then each frame (its bitstream, and its `ALPH` chunk
+  where present) is decoded on its own, one after another within the
+  decoding slot; a frame that does not decode, or decodes to another size
+  than its `ANMF` declares, refuses the file. `EXIF` and `XMP` chunks go
+  (with their VP8X flags), the `ICCP` profile is rebuilt or dropped (with
+  its flag), and the RIFF size is rewritten. It gets no size objects: every
+  size address is the image itself.
 
 **Scaling** uses no kernel scaler on the source: Catmull-Rom keeps a float64
 buffer of source height × target width (half a gigabyte for a 48 MP photo).
@@ -457,29 +477,47 @@ Two changes to the strip, both for JPEG:
 
 An SVG is stored as SVG (decision D1), sanitized, for the purposes that list
 it: `cms_image`, `event_cover` and `event_gallery` — not profile pictures, not
-Answer files. Core reads it as XML and writes it again from an allowlist;
-the original bytes are never stored:
+Answer files (a code ceiling keeps it there). Core reads it as XML and writes
+it again from an allowlist; the original bytes are never stored:
 
 - **Kept:** shapes and paths (`path`, `rect`, `circle`, `ellipse`, `line`,
   `polyline`, `polygon`), text (`text`, `tspan`, `textPath`), gradients
   (`linearGradient`, `radialGradient`, `stop`), `pattern`, `clipPath`,
   `mask`, structure (`svg`, `g`, `defs`, `symbol`, `use`), `title`, `desc`
   and `style`, with their geometry and presentation attributes. `href` and
-  `xlink:href` only as a same-document `#id`. A `style` attribute or element
-  only after `@import`, `expression()` and every `url()` to anything but
-  `#id` are removed (CSS with escapes is removed whole, and a `<style>` is
-  sanitized whole, so a comment cannot split `@import`).
+  `xlink:href` only as a same-document `#id`.
+- **CSS** (a `style` attribute or element, and presentation attributes)
+  keeps only the functions `rgb()`, `rgba()`, `hsl()`, `hsla()`, `calc()`,
+  `var()` and `url(#id)`, plus the transform functions in transforms. A
+  declaration with any other function (`image-set()`, `-webkit-image-set()`,
+  `cross-fade()`, `element()`, `src()`, …) or with a string that looks like
+  an address is dropped. A `<style>` keeps its rules and drops every
+  at-rule (`@import`, `@font-face`, `@media`) whole; it is sanitized whole,
+  so a comment cannot split a name; CSS with escapes is removed.
+- **Bitmaps:** an `<image>` stays only with a `data:image/png|jpeg|gif|webp;base64,`
+  URI. The bitmap is decoded and re-encoded like an uploaded raster image
+  (within the SVG's decoding slot), and embedded again as PNG or JPEG. A
+  bitmap too large to decode, or bitmaps that together cost more than the
+  decode budget, refuse the SVG (`media_image_too_large`); the 1 MiB limit
+  applies to the result too. Any other `<image>` is removed.
 - **Removed, with everything inside:** `script`, `foreignObject`, `iframe`,
-  `image`, `a`, the animation elements (`animate`, `set`, …, which can set
+  `a`, markers, the animation elements (`animate`, `set`, …, which can set
   `href`), filters (`feImage` loads images), and anything outside the SVG
   namespace (editor metadata, HTML). Every `on*` attribute, every attribute
   outside the allowlist, and every value naming `javascript:`, `data:` or an
   external address go too.
-- **Refused** (`media_type_not_allowed`): a document type (with or without
-  entities: Illustrator's DTD line included), an entity, anything that does
-  not parse as XML in UTF-8, a root that is not `<svg>`, more than 10 000
-  elements or nesting deeper than 64. Above 1 MiB: `media_too_large`
-  (`maxBytes` 1 MiB).
+- **DOCTYPE:** one DOCTYPE before the root without an internal subset (the
+  line Illustrator writes, `<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" …>`)
+  is dropped: `encoding/xml` fetches and expands nothing, and it is never
+  written out.
+- **Refused** (`media_type_not_allowed`): an internal subset, an entity, a
+  second DOCTYPE or any other directive; anything but whitespace, comments
+  and processing instructions after the root (a second root, text); anything
+  that does not parse as XML in UTF-8; a root that is not `<svg>`; more than
+  10 000 elements or nesting deeper than 64; nothing left to draw once
+  sanitized (no shape, path, text, `use` or bitmap), rather than a blank
+  file. A fault in the parser refuses the file too. Above 1 MiB:
+  `media_too_large` (`maxBytes` 1 MiB).
 
 The sanitized SVG is stored under a key ending in `.svg`, as `image/svg+xml`
 with `Content-Disposition: attachment`: `<img>` renders it, opening its
@@ -487,13 +525,16 @@ address downloads it. It gets no size objects and every size address is the
 SVG itself; it has no cover colours. One SVG is sanitized at a time, within a
 shared decoding slot.
 
+**An SVG uploaded without a purpose** goes through the same sanitizer and
+gets a `.svg` key too. Media uploaded without a purpose keep accepting what
+they accepted, so an SVG the sanitizer refuses is stored anyway, as an opaque
+download (`application/octet-stream`, `attachment`, under `files/`) that never
+renders.
+
 **Yusuf, on Cloudflare:** add a Response Header Transform Rule on `cdn.` for
 paths ending in `.svg` that sets
 `Content-Security-Policy: sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:`,
 so an SVG opened directly still runs nothing, whatever a sanitizer missed.
-
-Media uploaded without a purpose keep the older regex strip of scripts and
-event handlers for SVG, served as a download as before.
 
 ### Addresses
 
