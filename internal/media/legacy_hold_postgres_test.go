@@ -147,11 +147,11 @@ func TestPostgresAccountErasurePurgesAHeldProfilePicture(t *testing.T) {
 	if err := users.AnonymizeAccount(ctx, person, at, nil); err != nil {
 		t.Fatal(err)
 	}
-	mediaID, err := users.ProfileMediaForDeletion(ctx, request.ID)
-	if err != nil || mediaID == nil || *mediaID != picture.ID {
-		t.Fatalf("profile media for deletion %v err %v", mediaID, err)
+	mediaIDs, err := users.MediaForDeletion(ctx, request.ID)
+	if err != nil || len(mediaIDs) != 1 || mediaIDs[0] != picture.ID {
+		t.Fatalf("media for deletion %v err %v", mediaIDs, err)
 	}
-	if err := media.NewImmediateBlobEraser(db.store, db.blobs).EnsureErased(ctx, *mediaID, at); err != nil {
+	if err := media.NewImmediateBlobEraser(db.store, db.blobs).EnsureErased(ctx, mediaIDs[0], at); err != nil {
 		t.Fatal(err)
 	}
 

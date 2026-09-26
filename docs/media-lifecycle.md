@@ -1415,6 +1415,91 @@ used in production, so there is nothing to move).
 | 503 | `private_media_unavailable` | OpenBao cannot be reached, is sealed, refuses core's identity, or has no such mount or key. Retry later (`Retry-After`). |
 | 500 | `private_media_integrity` | The stored object or its wrapped key is not what core wrote. Nothing of it is served; the log names the request. |
 
+## Account erasure
+
+A person's account erasure ([`account-lifecycle.md`](account-lifecycle.md))
+tells their uploads apart by Media purpose (media redesign ticket 07). The
+rule is one function, `personalOnErasureSQL` in
+`internal/media/account_erasure.go`, read under the purge's locks when
+`erase_profile_media` comes to each upload:
+
+- **Personal** (`answer_file`, `answer_file_large`): purged at once, whatever
+  still uses them.
+- **Profile picture** (`profile_picture`): the person's own and purged, unless
+  it is someone's current profile picture: a picture belongs to the person it
+  shows, not to its uploader, so one the erased person uploaded for someone
+  else is kept like club content.
+- **Legacy** (decision E1, Yusuf, 2026-09-27): the person's own and purged
+  while only personal uses hold it (nothing, or a Skyforms answer); any other
+  use (another product's Media attachment, one of core's own links, the
+  safety net, someone's profile) makes it club content.
+- **Club** (every other purpose: `event_cover`, `event_gallery`, `cms_image`,
+  `cms_file`, `club_file`, `video`, `certificate_asset`): the Media and its
+  file stay, without the uploader and the file name.
+
+**Known consequence of E1.** Until stage 5, when the CMS attaches the Media
+its pages use (ticket 18), a legacy image a CMS page uses only by its address,
+with no Media attachment, looks unused: it is purged when its uploader's
+account is erased, and the page loses the image. Yusuf decided this knowingly
+(E1).
+
+No new saga step does this; the two existing ones do:
+
+1. `anonymize_core`, in its one transaction and in this order, records every
+   upload of the person that still has its object in `account_deletion_media`
+   (by id only: request id and Media id), clears the file name of every upload
+   of theirs, and then clears their uploader. The current profile picture
+   stays with `profile_media_id` and today's rule, unless it is shared:
+   anything but the person's own profile uses it (an Event, a gallery, another
+   profile, a certificate template, or a Media attachment of another product,
+   such as a CMS page). A shared picture is not the profile erasure's
+   (`profile_media_id` stays empty): it is recorded with the other uploads,
+   and the rule keeps it as club content, so it also stops being served under
+   the person's file name. No Media is both `profile_media_id` and a record.
+   A rerun finds no uploads left with their uploader, records nothing new and
+   keeps what the first run recorded.
+2. `erase_profile_media` hands the eraser the profile picture (unless its
+   object is purged already), then every recorded upload, and the rule above
+   decides each one:
+   - The person's own is purged through the same two-phase purge as the
+     archive and expiry purges, with the same table locks, the durable claim
+     that blocks restore and new Media attachments, and the image sizes, but
+     without their reference check. Its Media attachments stay, pointing at a
+     purged Media, which reads refuse as not found (a Skyforms read link,
+     `404`). The object is deleted from the bucket that holds it
+     (`media.Buckets`), and an object already gone counts as deleted. Its
+     record goes in the transaction that records the purge.
+   - Club content keeps its file. A public object stored to download under
+     the person's file name (an SVG, a video, a legacy document) gets new
+     metadata from the serving policy without a name: `Content-Disposition:
+     attachment`, so it downloads under its key. The key never held the name
+     (`images/<uuid>`, `images/<uuid>.svg`, `files/<uuid>`). Raster images
+     and PDFs are served inline and named nothing. Then its record goes.
+
+   A rerun gets only what is left; a Media purged another way meanwhile only
+   loses its record. Club content the archive or expiry purge has already
+   claimed keeps that claim untouched (it guards an object that may be half
+   deleted): the erasure only rewrites its metadata, lets its record go, and
+   the other purge finishes. The serving-policy backfill, which may have read
+   an upload's file name before the erasure, reads the Media again after each
+   metadata write and writes once more if the name changed, so it never
+   brings an erased name back. Every upload is tried even when another fails. A pass
+   that erased some but not all (the step's time ran out for a person with
+   many files) gives its attempt back and comes again in 30 seconds; a pass
+   that erased none spends its attempt, so a lasting failure ends in manual
+   intervention. The step's error goes to the worker's log: it counts the
+   failures and names no Media, object, file or person, only errors core wrote
+   itself and a database error's SQLSTATE. `erase_staged_uploads` reports its
+   errors the same way.
+
+`cdn.` is not edge-cached (`cf-cache-status: DYNAMIC` for images, sizes and
+files, checked 2026-09-27), so the new metadata is what the CDN serves at
+once. If edge caching is ever enabled, the erasure's metadata rewrite must
+also purge the URL from Cloudflare's cache.
+
+What happens to the records when the request completes is in
+[`data-lifecycle.md`](data-lifecycle.md).
+
 ## Configuration
 
 - `MEDIA_BLOB_RECOVERY_DAYS` — recovery window in whole days; default `30`.

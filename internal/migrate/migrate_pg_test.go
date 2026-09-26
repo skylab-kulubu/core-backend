@@ -765,12 +765,17 @@ func TestApplyDoesNotRecordMalformedLifecycleStructuralContract(t *testing.T) {
 	if err := migrate.Apply(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	selfDeleteDown, err := fs.ReadFile(db.DownSQL, "migrations/20260920130000_account_self_delete_intake.down.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, string(selfDeleteDown)); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{
+		"migrations/20260927100000_account_deletion_media.down.sql",
+		"migrations/20260920130000_account_self_delete_intake.down.sql",
+	} {
+		down, err := fs.ReadFile(db.DownSQL, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, string(down)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
 	}
 	if _, err := pool.Exec(ctx, `
 		DELETE FROM schema_migrations WHERE version=20260920010000;
@@ -785,7 +790,7 @@ func TestApplyDoesNotRecordMalformedLifecycleStructuralContract(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = migrate.Apply(ctx, pool)
+	err := migrate.Apply(ctx, pool)
 	if err == nil || !strings.Contains(err.Error(), "migration 20260920010000 postcondition") {
 		t.Fatalf("malformed structural contract error = %v", err)
 	}
@@ -1145,6 +1150,7 @@ func TestAccountErasureServiceStepsAreForwardOnlyOnceProofExists(t *testing.T) {
 func undoAccountLifecycleDependents(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	for _, name := range []string{
+		"migrations/20260927100000_account_deletion_media.down.sql",
 		"migrations/20260926171000_media_read_link_subjects.down.sql",
 		"migrations/20260920130000_account_self_delete_intake.down.sql",
 	} {

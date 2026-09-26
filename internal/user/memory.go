@@ -672,7 +672,9 @@ func (s *MemoryStore) CompleteDeletionRequest(_ context.Context, requestID, leas
 	return ErrNotFound
 }
 
-func (s *MemoryStore) ProfileMediaForDeletion(_ context.Context, requestID uuid.UUID) (*uuid.UUID, error) {
+// MediaForDeletion is the profile picture alone: the memory store records
+// no uploads (account_deletion_media is Postgres only).
+func (s *MemoryStore) MediaForDeletion(_ context.Context, requestID uuid.UUID) ([]uuid.UUID, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, request := range s.deletionRequests {
@@ -682,8 +684,7 @@ func (s *MemoryStore) ProfileMediaForDeletion(_ context.Context, requestID uuid.
 		if request.ProfileMediaID == nil {
 			return nil, nil
 		}
-		mediaID := *request.ProfileMediaID
-		return &mediaID, nil
+		return []uuid.UUID{*request.ProfileMediaID}, nil
 	}
 	return nil, ErrNotFound
 }

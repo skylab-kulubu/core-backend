@@ -441,6 +441,13 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 	`, id, at); err != nil {
 		return err
 	}
+	// Before the uploader goes: record every upload for erase_profile_media
+	// and clear every upload's file name (media redesign ticket 07). The
+	// current profile picture stays with profile_media_id unless it is
+	// shared (below).
+	if err := media.RecordAccountErasure(ctx, tx, id, profileMediaID, at); err != nil {
+		return err
+	}
 	statements := []string{
 		`UPDATE media SET uploaded_by = NULL WHERE uploaded_by = $1`,
 		`UPDATE tickets SET owner_id = NULL WHERE owner_id = $1`,
@@ -481,9 +488,14 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		return err
 	}
 	if profileMediaID != nil {
+		// Shared: anything but the person's own profile uses it, a Media
+		// attachment of another product included.
 		var shared bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (
-			SELECT 1 FROM events WHERE cover_image_id = $1
+			SELECT 1 FROM media_attachments
+				WHERE media_id = $1
+				  AND NOT (owner_service = 'core' AND owner_type = 'user' AND role = 'profile_picture' AND owner_id = $2::text)
+			UNION ALL SELECT 1 FROM events WHERE cover_image_id = $1
 			UNION ALL SELECT 1 FROM event_images WHERE media_id = $1
 			UNION ALL SELECT 1 FROM users WHERE profile_picture_id = $1
 			UNION ALL SELECT 1 FROM certificate_templates
@@ -493,8 +505,15 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 				WHERE layout->>'backgroundMediaId' = $1::text
 				   OR asset_manifest ? $1::text
 				   OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(layout->'elements', '[]'::jsonb)) element WHERE element->>'mediaId' = $1::text)
-		)`, *profileMediaID).Scan(&shared); err != nil {
+		)`, *profileMediaID, id).Scan(&shared); err != nil {
 			return err
+		}
+		// A shared picture is not the profile erasure's (profile_media_id
+		// stays empty): it goes with the recorded uploads, as club content.
+		if shared {
+			if err := media.RecordSharedProfilePicture(ctx, tx, id, *profileMediaID); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE account_deletion_requests
