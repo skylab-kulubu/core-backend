@@ -59,7 +59,7 @@ func (s *PostgresStore) list(ctx context.Context, ownerTeam string, activeOnly b
 }
 
 // scanListed reads the Events of a list query, then every listed Event's
-// gallery and door staff (withGalleries).
+// gallery and door staff (withGalleriesAndDoorStaff).
 func (s *PostgresStore) scanListed(ctx context.Context, rows pgx.Rows) ([]Event, error) {
 	defer rows.Close()
 	out := make([]Event, 0)
@@ -74,11 +74,8 @@ func (s *PostgresStore) scanListed(ctx context.Context, rows pgx.Rows) ([]Event,
 		return nil, err
 	}
 	rows.Close()
-	if err := s.withGalleries(ctx, out); err != nil {
+	if err := s.withGalleriesAndDoorStaff(ctx, out); err != nil {
 		return nil, err
-	}
-	for i := range out {
-		out[i] = emptyGallery(out[i])
 	}
 	return out, nil
 }
@@ -104,10 +101,10 @@ func (s *PostgresStore) get(ctx context.Context, id uuid.UUID, includeArchived b
 		return e, err
 	}
 	events := []Event{e}
-	if err := s.withGalleries(ctx, events); err != nil {
+	if err := s.withGalleriesAndDoorStaff(ctx, events); err != nil {
 		return Event{}, err
 	}
-	return emptyGallery(events[0]), nil
+	return events[0], nil
 }
 
 func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
@@ -279,10 +276,11 @@ func (s *PostgresStore) TeamsUsingMedia(ctx context.Context, mediaID, except uui
 	return teams, rows.Err()
 }
 
-// withGalleries reads the gallery images and door staff of every Event, in
-// one query each whatever the number of Events: a gallery image comes with
-// the Media it is (media.LinkedImageSQL), so its sizes need no query either.
-func (s *PostgresStore) withGalleries(ctx context.Context, events []Event) error {
+// withGalleriesAndDoorStaff reads the gallery images and door staff of every
+// Event, in one query each whatever the number of Events: a gallery image
+// comes with the Media it is (media.LinkedImageSQL), so its sizes need no
+// query either. Every Event gets empty lists, never nil ones.
+func (s *PostgresStore) withGalleriesAndDoorStaff(ctx context.Context, events []Event) error {
 	if len(events) == 0 {
 		return nil
 	}

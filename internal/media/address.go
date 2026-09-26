@@ -5,7 +5,6 @@ import (
 	"maps"
 	"slices"
 	"strings"
-	"sync"
 )
 
 // The image sizes a client can ask for by name. Each purpose's catalogue
@@ -76,13 +75,9 @@ type Addresses struct {
 	Catalogue Catalogue
 }
 
-// reviewedCatalogueOnce is the reviewed catalogue, read once for every
-// Addresses that names none.
-var reviewedCatalogueOnce = sync.OnceValue(reviewedCatalogue)
-
 func (a Addresses) catalogue() Catalogue {
 	if a.Catalogue.purposes == nil {
-		return reviewedCatalogueOnce()
+		return reviewedCatalogue()
 	}
 	return a.Catalogue
 }
