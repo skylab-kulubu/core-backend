@@ -525,7 +525,8 @@ without sizes, its slot is given back, and the pass goes on.
 
 ### Deleting sizes
 
-Every path that deletes a Media's object deletes its sizes first: the archive
+Every path that deletes a Media's object deletes its sizes with it (the object
+first, then the sizes; a purge cut short is retried whole): the archive
 and expiry purges, account erasure's immediate purge (through the same store
 call), the upload staging sweepers, and a refused upload. One rule decides
 which keys may have sizes and where they are (`images/…` keys, at

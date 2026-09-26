@@ -50,14 +50,19 @@ func sizeObjectKeys(key string) []string {
 	return keys
 }
 
-// purgeObjects deletes every object a Media key may have: its sizes, then
-// the object itself, so a failure part way leaves the object for the retry
-// to find. Deleting an object that is not there succeeds.
+// purgeObjects deletes every object a Media key may have: the object
+// itself, then its sizes. A failure part way leaves the purge claimed, and
+// its retry deletes them all again (deleting an object that is not there
+// succeeds), so the order only decides what a crash leaves until then: a
+// size, never the image without its purge recorded.
 func purgeObjects(key string, purge func(key string) error) error {
+	if err := purge(key); err != nil {
+		return err
+	}
 	for _, sizeKey := range sizeObjectKeys(key) {
 		if err := purge(sizeKey); err != nil {
 			return err
 		}
 	}
-	return purge(key)
+	return nil
 }
