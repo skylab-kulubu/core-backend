@@ -49,11 +49,10 @@ type Principal struct {
 	ID     string
 	Groups []string
 	Roles  []string
-	// Client is the Keycloak client the caller's token was issued to.
-	Client string
-	// Service is true when the caller is Client's own service account (a
-	// client-credentials token), never a person.
-	Service bool
+	// Product is the product whose service account the caller is (see
+	// ServiceClients). Empty for a person, whatever client their token was
+	// issued to.
+	Product Product
 }
 
 type Resource struct {

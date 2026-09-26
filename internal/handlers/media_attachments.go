@@ -5,6 +5,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
@@ -38,7 +39,7 @@ func (h *MediaHandler) Attach(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	owner := media.Owner{Service: body.Owner.Service, Type: body.Owner.Type, ID: ownerID}
+	owner := media.Owner{Service: authz.Product(body.Owner.Service), Type: body.Owner.Type, ID: ownerID}
 	attachment, created, err := h.svc.Attach(c.Context(), p, mediaID, owner, media.Role(body.Role))
 	if errors.Is(err, media.ErrRoleUnknown) {
 		return problemWithFields(c, fiber.StatusBadRequest, "Bad Request",

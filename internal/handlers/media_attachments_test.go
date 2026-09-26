@@ -10,14 +10,15 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
-// serviceAttachApp serves the service attach API to the service account of
-// a Keycloak client holding media:attach, over store.
-func serviceAttachApp(t *testing.T, client string, store *media.MemoryStore) *fiber.App {
+// serviceAttachApp serves the service attach API to a product's service
+// account holding media:attach, over store.
+func serviceAttachApp(t *testing.T, product authz.Product, store *media.MemoryStore) *fiber.App {
 	t.Helper()
-	ident := authn.Identity{ID: uuid.New(), Client: client, ServiceAccount: true, Roles: []string{"media:attach"}}
+	ident := authn.Identity{ID: uuid.New(), ServiceAccount: true, Product: product, Roles: []string{"media:attach"}}
 	return mediaApp(t, ident, store, media.NewMemoryBlob())
 }
 
@@ -62,7 +63,7 @@ func attachmentJSON(service, ownerType, ownerID, role string) string {
 func TestServiceAttachRefusalsHTTP(t *testing.T) {
 	t.Parallel()
 	store := media.NewMemoryStore()
-	app := serviceAttachApp(t, "skycms", store)
+	app := serviceAttachApp(t, authz.ProductCMS, store)
 	bylaws := storedMedia(t, store, "cms_file")
 	answer := storedMedia(t, store, "answer_file")
 	page := uuid.NewString()

@@ -83,22 +83,13 @@ const (
 	AttachService Attacher = "service"
 )
 
-// Available reports whether something can attach Media of this purpose
-// today: core, or the product named as its service. A service purpose that
-// names no product yet (club files and videos, until the Direct upload
-// tickets settle who attaches them) cannot be uploaded: its Media would only
-// wait for their expiry.
-func (p Purpose) Available() bool {
-	return p.Attach == AttachCore || p.Service != ""
-}
-
 // OwningProduct is the product whose records use the purpose's Media: core
 // for a core purpose, the named service for a service purpose, and empty for
 // a service purpose that names none yet. Only the owning product may attach
 // private Media of the purpose.
-func (p Purpose) OwningProduct() string {
+func (p Purpose) OwningProduct() authz.Product {
 	if p.Attach == AttachCore {
-		return ServiceCore
+		return authz.ProductCore
 	}
 	return p.Service
 }
@@ -133,8 +124,9 @@ type Purpose struct {
 	// Attach is who attaches the purpose's Media.
 	Attach Attacher
 	// Service is the product that attaches the Media of a service purpose
-	// through the service attach API: ServiceForms or ServiceCMS.
-	Service string
+	// through the service attach API: authz.ProductForms or
+	// authz.ProductCMS.
+	Service authz.Product
 	Image   ImageHandling
 	// LegacyRules makes the purpose accept what Media uploaded without a
 	// purpose were accepted as before Media purpose: see
@@ -168,7 +160,7 @@ type purposeEntry struct {
 	PendingTTL  string              `json:"pending_ttl"`
 	Transport   Transport           `json:"transport"`
 	Attach      Attacher            `json:"attach"`
-	Service     string              `json:"service"`
+	Service     authz.Product       `json:"service"`
 	Image       *ImageHandling      `json:"image"`
 	LegacyRules bool                `json:"legacy_rules"`
 }
@@ -223,7 +215,10 @@ func ParseCatalogue(data []byte) (Catalogue, error) {
 			return Catalogue{}, fmt.Errorf("%w: no %s purpose, which core refers to", ErrCatalogueInvalid, name)
 		}
 	}
-	for service, roles := range serviceRoles {
+	for service, roles := range rolePurposes {
+		if service == authz.ProductCore {
+			continue
+		}
 		for role, accepted := range roles {
 			for _, name := range accepted {
 				if purposes[name].Service != service {
@@ -270,7 +265,7 @@ func (e purposeEntry) purpose(name string) (Purpose, error) {
 		if e.Attach != AttachService {
 			return Purpose{}, errors.New("only a service purpose names the service that attaches it")
 		}
-		if _, known := serviceRoles[e.Service]; !known {
+		if _, known := rolePurposes[e.Service]; !known || e.Service == authz.ProductCore {
 			return Purpose{}, fmt.Errorf("unknown service %q", e.Service)
 		}
 	}

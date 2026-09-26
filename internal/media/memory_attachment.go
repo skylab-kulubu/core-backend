@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
 // Attach models the database's Media attachment and its triggers: only a
@@ -36,7 +37,7 @@ const detachedWindow = 30 * 24 * time.Hour
 
 // Detach models the database's status trigger: the Media's last Media
 // attachment going detaches it.
-func (s *MemoryStore) Detach(_ context.Context, mediaID, attachmentID uuid.UUID, service string) error {
+func (s *MemoryStore) Detach(_ context.Context, mediaID, attachmentID uuid.UUID, service authz.Product) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a, ok := s.attachments[attachmentID]

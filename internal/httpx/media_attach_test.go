@@ -17,6 +17,10 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/testauth"
 )
 
+// cmsClient is the CMS service client the test app is configured with
+// (memoryDeps). Production has none yet.
+const cmsClient = "cms-service"
+
 // serviceToken is a client-credentials token of a Keycloak client's service
 // account, as Keycloak 26 issues it: azp and client_id name the client.
 func serviceToken(t *testing.T, keys *testauth.Bundle, client string, coreRoles ...string) string {
@@ -110,7 +114,7 @@ func TestAProductAttachesMediaToItsOwnRecordHTTP(t *testing.T) {
 	mediaID := uploadAs(t, app, personToken(t, keys, "inscribed"), "cms_image")
 	page := uuid.NewString()
 
-	resp := sendJSON(t, app, serviceToken(t, keys, "skycms", "media:attach"), fiber.MethodPost,
+	resp := sendJSON(t, app, serviceToken(t, keys, cmsClient, "media:attach"), fiber.MethodPost,
 		"/v1/media/"+mediaID+"/attachments", attachBody("cms", "page", page, "image"))
 	if resp.status != fiber.StatusCreated {
 		t.Fatalf("attach: status %d body %v", resp.status, resp.body)
@@ -146,9 +150,12 @@ func TestOnlyAProductsServiceAccountWithTheRoleMayAttachHTTP(t *testing.T) {
 	body := attachBody("cms", "page", uuid.NewString(), "image")
 
 	for name, token := range map[string]string{
-		"person with the role":         personToken(t, keys, "skycms", "media:attach"),
-		"service without the role":     serviceToken(t, keys, "skycms", "users:read"),
+		"person with the role":         personToken(t, keys, cmsClient, "media:attach"),
+		"service without the role":     serviceToken(t, keys, cmsClient, "users:read"),
 		"service of an unknown client": serviceToken(t, keys, "frontend-main", "media:attach"),
+		// The Skyforms login client has no service account; only the
+		// configured forms client speaks for Skyforms.
+		"service of an unconfigured client": serviceToken(t, keys, "skyforms", "media:attach"),
 	} {
 		resp := sendJSON(t, app, token, fiber.MethodPost, "/v1/media/"+mediaID+"/attachments", body)
 		if resp.status != fiber.StatusForbidden || resp.body["code"] != "media_attach_forbidden" {
@@ -186,7 +193,7 @@ func TestServiceAttachAndDetachAreIdempotentHTTP(t *testing.T) {
 	app := memoryApp(keys.Parse())
 	person := personToken(t, keys, "inscribed")
 	mediaID := uploadAs(t, app, person, "cms_image")
-	cms := serviceToken(t, keys, "skycms", "media:attach")
+	cms := serviceToken(t, keys, cmsClient, "media:attach")
 	body := attachBody("cms", "page", uuid.NewString(), "image")
 	path := "/v1/media/" + mediaID + "/attachments"
 

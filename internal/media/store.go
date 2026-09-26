@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
@@ -141,7 +142,7 @@ type Store interface {
 	// owns it, and does nothing otherwise. A Media whose last Media
 	// attachment goes is detached: purged 30 days later, or never for a
 	// legacy Media.
-	Detach(ctx context.Context, mediaID, attachmentID uuid.UUID, service string) error
+	Detach(ctx context.Context, mediaID, attachmentID uuid.UUID, service authz.Product) error
 }
 
 // BlobMetadata is how the CDN serves a stored object. An empty

@@ -47,6 +47,7 @@ type service struct {
 	publicBase         string
 	uploadStagingGrace time.Duration
 	catalogue          Catalogue
+	serviceProducts    []authz.Product
 }
 
 func NewService(media Store, blobs BlobStore, az authz.Authorizer, publicBase string) Service {
@@ -58,6 +59,10 @@ type ServiceOptions struct {
 	// Catalogue is the Media purpose catalogue. The zero value is the
 	// reviewed catalogue carried in the binary.
 	Catalogue Catalogue
+	// ServiceProducts are the products with a service client configured
+	// (authz.ServiceClients): only they can attach Media, so a service
+	// purpose of any other product cannot be uploaded.
+	ServiceProducts []authz.Product
 }
 
 func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, publicBase string, options ServiceOptions) Service {
@@ -69,7 +74,10 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	if catalogue.purposes == nil {
 		catalogue = reviewedCatalogue()
 	}
-	return &service{media: media, blobs: blobs, authz: az, publicBase: publicBase, uploadStagingGrace: grace, catalogue: catalogue}
+	return &service{
+		media: media, blobs: blobs, authz: az, publicBase: publicBase, uploadStagingGrace: grace, catalogue: catalogue,
+		serviceProducts: options.ServiceProducts,
+	}
 }
 
 // reviewedCatalogue is the catalogue carried in the binary. Core validates it
@@ -128,7 +136,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if purpose.Transport == TransportDirect {
 		return Media{}, &PurposeRefusal{Err: ErrDirectUploadOnly, Purpose: purpose.Name}
 	}
-	if !purpose.Available() {
+	if !s.attachable(purpose) {
 		return Media{}, &PurposeRefusal{Err: ErrPurposeNotAvailable, Purpose: purpose.Name}
 	}
 	if len(file.Data) == 0 {
@@ -201,6 +209,13 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
 	}
 	return s.withURL(created), nil
+}
+
+// attachable reports whether something can attach Media of the purpose
+// today: core, or the purpose's product once it has a service client. A
+// Media nothing can attach would only wait for its expiry.
+func (s *service) attachable(purpose Purpose) bool {
+	return purpose.Attach == AttachCore || (purpose.Service != "" && slices.Contains(s.serviceProducts, purpose.Service))
 }
 
 // pendingExpiry is when a Media of the purpose uploaded at now is purged if

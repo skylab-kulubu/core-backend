@@ -178,8 +178,9 @@ func TestService_ServiceOnlyPurposeIsRefusedToEveryPerson(t *testing.T) {
 
 func TestService_PurposePDFStartsWithItsHeader(t *testing.T) {
 	t.Parallel()
-	// cms_file is the public PDF purpose.
-	svc, _ := setup(t)
+	// cms_file is the public PDF purpose; the CMS attaches it.
+	svc := media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
+		media.ServiceOptions{ServiceProducts: []authz.Product{authz.ProductCMS}})
 	p := signedIn("55555555-5555-5555-5555-000000000055")
 	prefixed := []byte("<html><!-- -->\n%PDF-1.7\n")
 
@@ -208,39 +209,33 @@ func TestService_LegacyPurposeCannotBeNamed(t *testing.T) {
 }
 
 // A Media nothing can attach would only wait for its expiry: a service
-// purpose that names no product to attach it (club files and videos, until
-// the Direct upload tickets settle who does) is refused.
+// purpose is refused while its product has no service client configured (the
+// CMS today), or when it names no product (club files and videos, until the
+// Direct upload tickets settle who attaches them).
 func TestService_PurposeNothingCanAttachYetIsRefused(t *testing.T) {
 	t.Parallel()
-	// A single-step club_flyer purpose, like cms_file but with no product
-	// named to attach it.
-	catalogue, err := media.ParseCatalogue(reviewedCatalogueWith(t, func(purposes purposeEntries) {
-		flyer := map[string]any{}
-		for field, value := range purposes["cms_file"] {
-			flyer[field] = value
-		}
-		delete(flyer, "service")
-		purposes["club_flyer"] = flyer
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
 	svc := media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
-		media.ServiceOptions{Catalogue: catalogue})
+		media.ServiceOptions{ServiceProducts: []authz.Product{authz.ProductForms}})
+	p := signedIn("57575757-5757-5757-5757-575757575757")
 
-	_, err = svc.UploadForPurpose(context.Background(), signedIn("57575757-5757-5757-5757-575757575757"), "club_flyer",
-		uploaded("flyer.pdf", "application/pdf", []byte("%PDF-1.7\n")))
-	var refusal *media.PurposeRefusal
-	if !errors.Is(err, media.ErrPurposeNotAvailable) || !errors.As(err, &refusal) || refusal.Purpose != "club_flyer" {
-		t.Fatalf("err = %v, want %v", err, media.ErrPurposeNotAvailable)
+	for purpose, file := range map[string]media.UploadedFile{
+		"cms_image": uploaded("logo.png", "image/png", pngDot()),
+		"cms_file":  uploaded("bylaws.pdf", "application/pdf", []byte("%PDF-1.7\n")),
+	} {
+		_, err := svc.UploadForPurpose(context.Background(), p, purpose, file)
+		var refusal *media.PurposeRefusal
+		if !errors.Is(err, media.ErrPurposeNotAvailable) || !errors.As(err, &refusal) || refusal.Purpose != purpose {
+			t.Errorf("%s: err = %v, want %v", purpose, err, media.ErrPurposeNotAvailable)
+		}
 	}
 }
 
-// The CMS attaches its Media through the service attach API, so its
+// Once the CMS has a service client, it can attach its Media, so its
 // purposes can be uploaded.
-func TestService_CMSPurposesCanBeUploaded(t *testing.T) {
+func TestService_CMSPurposesCanBeUploadedOnceTheCMSHasAServiceClient(t *testing.T) {
 	t.Parallel()
-	svc, _ := setup(t)
+	svc := media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
+		media.ServiceOptions{ServiceProducts: []authz.Product{authz.ProductForms, authz.ProductCMS}})
 	p := signedIn("58585858-5858-5858-5858-585858585858")
 
 	for purpose, file := range map[string]media.UploadedFile{

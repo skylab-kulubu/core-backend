@@ -37,7 +37,7 @@ func caller(c fiber.Ctx) (authz.Principal, error) {
 	}
 	return authz.Principal{
 		ID: ident.ID.String(), Groups: ident.Groups, Roles: ident.Roles,
-		Client: ident.Client, Service: ident.ServiceAccount,
+		Product: ident.Product,
 	}, nil
 }
 

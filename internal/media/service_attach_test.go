@@ -12,15 +12,15 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
-// serviceAccount is the service account of a Keycloak client holding the
+// serviceAccount is the service account of a product holding the
 // media:attach role on the core client.
-func serviceAccount(client string) authz.Principal {
-	return authz.Principal{ID: uuid.NewString(), Client: client, Service: true, Roles: []string{"media:attach"}}
+func serviceAccount(product authz.Product) authz.Principal {
+	return authz.Principal{ID: uuid.NewString(), Product: product, Roles: []string{"media:attach"}}
 }
 
 var (
-	formsService = serviceAccount("forms")
-	cmsService   = serviceAccount("skycms")
+	formsService = serviceAccount(authz.ProductForms)
+	cmsService   = serviceAccount(authz.ProductCMS)
 )
 
 // attachFixture is the media service over a memory store the test fills
@@ -53,7 +53,7 @@ func (f attachFixture) stored(t *testing.T, purpose string) media.Media {
 }
 
 func (f attachFixture) attach(p authz.Principal, m media.Media, service, role string) (media.Attachment, bool, error) {
-	owner := media.Owner{Service: service, Type: "record", ID: uuid.New()}
+	owner := media.Owner{Service: authz.Product(service), Type: "record", ID: uuid.New()}
 	return f.svc.Attach(context.Background(), p, m.ID, owner, media.Role(role))
 }
 
@@ -146,7 +146,7 @@ func TestServiceAttach_RefusesMediaThatCannotBeLinked(t *testing.T) {
 	} {
 		_, _, err := f.attach(cmsService, m, "cms", "image")
 		var refusal *media.LinkRefusal
-		if !errors.Is(err, media.ErrNotLinkable) || !errors.As(err, &refusal) || refusal.MediaID != m.ID || refusal.Role != media.RoleImage {
+		if !errors.Is(err, media.ErrNotLinkable) || !errors.As(err, &refusal) || refusal.MediaID != m.ID || refusal.Role != media.RoleCMSImage {
 			t.Errorf("%s: err = %v, want %v", name, err, media.ErrNotLinkable)
 		}
 	}
@@ -160,7 +160,7 @@ func TestServiceAttach_SameLinkAgainAnswersTheExistingAttachment(t *testing.T) {
 	ctx := context.Background()
 	m := f.stored(t, "cms_file")
 	owner := media.Owner{Service: "cms", Type: "page", ID: uuid.New()}
-	first, created, err := f.svc.Attach(ctx, cmsService, m.ID, owner, media.RoleFile)
+	first, created, err := f.svc.Attach(ctx, cmsService, m.ID, owner, media.RoleCMSFile)
 	if err != nil || !created {
 		t.Fatalf("attach: created %v, err %v", created, err)
 	}
@@ -168,7 +168,7 @@ func TestServiceAttach_SameLinkAgainAnswersTheExistingAttachment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	again, created, err := f.svc.Attach(ctx, cmsService, m.ID, owner, media.RoleFile)
+	again, created, err := f.svc.Attach(ctx, cmsService, m.ID, owner, media.RoleCMSFile)
 	if err != nil || created || again.ID != first.ID {
 		t.Fatalf("attach again: %+v created %v err %v; want %s", again, created, err, first.ID)
 	}
@@ -258,7 +258,7 @@ func TestServiceAttach_RefusesUnknownRolesAndMalformedOwners(t *testing.T) {
 	ctx := context.Background()
 	m := f.stored(t, "legacy")
 
-	for name, role := range map[string]media.Role{"no such role": "cover", "another product's role": media.RoleAnswer, "empty": ""} {
+	for name, role := range map[string]media.Role{"no such role": "cover", "another product's role": media.RoleFormsAnswer, "empty": ""} {
 		_, _, err := f.svc.Attach(ctx, cmsService, m.ID, media.Owner{Service: "cms", Type: "page", ID: uuid.New()}, role)
 		if !errors.Is(err, media.ErrRoleUnknown) || !errors.Is(err, media.ErrInvalid) {
 			t.Errorf("%s: err = %v, want %v", name, err, media.ErrRoleUnknown)
@@ -270,7 +270,7 @@ func TestServiceAttach_RefusesUnknownRolesAndMalformedOwners(t *testing.T) {
 		"type too long":  {Service: "cms", Type: "p" + strings.Repeat("a", 64), ID: uuid.New()},
 		"no id":          {Service: "cms", Type: "page"},
 	} {
-		_, _, err := f.svc.Attach(ctx, cmsService, m.ID, owner, media.RoleImage)
+		_, _, err := f.svc.Attach(ctx, cmsService, m.ID, owner, media.RoleCMSImage)
 		if !errors.Is(err, media.ErrInvalid) || errors.Is(err, media.ErrRoleUnknown) {
 			t.Errorf("%s: err = %v, want %v", name, err, media.ErrInvalid)
 		}

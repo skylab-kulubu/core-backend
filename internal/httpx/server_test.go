@@ -87,6 +87,8 @@ func memoryDeps() httpx.Deps {
 	events := event.NewMemoryStore()
 	tickets := ticket.NewMemoryStore()
 	dir := identity.NewMemory()
+	// Skyforms' client and a CMS one (production has none yet).
+	clients := authz.ServiceClients{"forms": authz.ProductForms, "cms-service": authz.ProductCMS}
 	return httpx.Deps{
 		Users:       user.NewService(users),
 		Identity:    identity.NewService(dir, users, az),
@@ -94,8 +96,9 @@ func memoryDeps() httpx.Deps {
 		Seasons:     season.NewService(season.NewMemoryStore(), az),
 		Tickets:     ticket.NewService(tickets, events, az, users, dir),
 		Competitors: competitor.NewService(competitor.NewMemoryStore(events), events, az),
-		Media:       media.NewService(media.NewMemoryStore(), media.NewMemoryBlob(), az, ""),
-		URLs:        shorturl.NewService(shorturl.NewMemoryStore(), az),
+		Media: media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), az, "",
+			media.ServiceOptions{ServiceProducts: clients.Products()}),
+		URLs: shorturl.NewService(shorturl.NewMemoryStore(), az),
 		Certificates: certificate.NewService(
 			certificate.NewMemoryStore(), tickets, events, users, az, nil, nil, "https://api.example.test",
 		),
@@ -104,6 +107,7 @@ func memoryDeps() httpx.Deps {
 			return users.AttributionState(ctx, id)
 		},
 		TrustedProxies: testTrustedProxies(),
+		ServiceClients: clients,
 	}
 }
 

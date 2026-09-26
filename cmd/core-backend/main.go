@@ -94,6 +94,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The products whose service accounts may attach Media; a product
+	// without one keeps its purposes closed.
+	serviceClients, err := authz.ServiceClientsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("media service attach: products with a service client: %v", serviceClients.Products())
 	mediaPurgeContext, stopMediaPurge := context.WithCancel(context.Background())
 	defer stopMediaPurge()
 	media.MaintainBlobPurge(mediaPurgeContext, mediaStore, blobs, mediaPurgeConfig, func(err error) {
@@ -380,6 +387,7 @@ func main() {
 		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
 			UploadStagingGrace: uploadStagingConfig.Grace,
 			Catalogue:          mediaPurposes,
+			ServiceProducts:    serviceClients.Products(),
 		}),
 		URLs:                   urlSvc,
 		Certificates:           certSvc,
@@ -399,6 +407,7 @@ func main() {
 		},
 		TrustedProxies:     trustedProxies,
 		MediaUploadLimiter: media.NewUploadLimiter(uploadLimits, time.Now),
+		ServiceClients:     serviceClients,
 	})
 
 	addr := os.Getenv("PORT")

@@ -32,16 +32,16 @@ func TestPostgresServiceAttachmentKeepsTheMediaAttachedUntilItsLastGoes(t *testi
 	home := media.Owner{Service: "cms", Type: "page", ID: uuid.New()}
 	about := media.Owner{Service: "cms", Type: "page", ID: uuid.New()}
 
-	first, created, err := db.svc.Attach(ctx, cmsService, logo.ID, home, media.RoleImage)
+	first, created, err := db.svc.Attach(ctx, cmsService, logo.ID, home, media.RoleCMSImage)
 	if err != nil || !created {
 		t.Fatalf("attach: created %v, err %v", created, err)
 	}
 	attached(t, db.get(t, logo.ID))
-	again, created, err := db.svc.Attach(ctx, cmsService, logo.ID, home, media.RoleImage)
+	again, created, err := db.svc.Attach(ctx, cmsService, logo.ID, home, media.RoleCMSImage)
 	if err != nil || created || again.ID != first.ID {
 		t.Fatalf("same link again: %+v created %v err %v; want %s", again, created, err, first.ID)
 	}
-	second := db.attachFor(t, cmsService, logo, about, media.RoleImage)
+	second := db.attachFor(t, cmsService, logo, about, media.RoleCMSImage)
 
 	if err := db.svc.Detach(ctx, cmsService, logo.ID, first.ID); err != nil {
 		t.Fatal(err)
@@ -58,7 +58,7 @@ func TestPostgresServiceAttachmentKeepsTheMediaAttachedUntilItsLastGoes(t *testi
 	}
 
 	// Within its window the Media can be attached again.
-	db.attachFor(t, cmsService, logo, home, media.RoleImage)
+	db.attachFor(t, cmsService, logo, home, media.RoleCMSImage)
 	attached(t, db.get(t, logo.ID))
 }
 
@@ -69,7 +69,7 @@ func TestPostgresServiceAttachmentOfALegacyMediaSetsNoExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer := db.attachFor(t, formsService, legacy, media.Owner{Service: "forms", Type: "response", ID: uuid.New()}, media.RoleAnswer)
+	answer := db.attachFor(t, formsService, legacy, media.Owner{Service: "forms", Type: "response", ID: uuid.New()}, media.RoleFormsAnswer)
 	attached(t, db.get(t, legacy.ID))
 
 	if err := db.svc.Detach(ctx, formsService, legacy.ID, answer.ID); err != nil {
@@ -97,7 +97,7 @@ func TestPostgresStoreRefusesAnAttachmentToMediaThatIsNotCurrent(t *testing.T) {
 
 	for name, id := range map[string]uuid.UUID{"missing": uuid.New(), "archived": archived.ID, "purge started": purging.ID} {
 		_, _, err := db.store.Attach(ctx, media.Attachment{
-			MediaID: id, Owner: media.Owner{Service: "cms", Type: "page", ID: uuid.New()}, Role: media.RoleImage,
+			MediaID: id, Owner: media.Owner{Service: "cms", Type: "page", ID: uuid.New()}, Role: media.RoleCMSImage,
 		})
 		if !errors.Is(err, media.ErrNotLinkable) {
 			t.Errorf("%s: err = %v, want %v", name, err, media.ErrNotLinkable)
@@ -120,7 +120,7 @@ func TestPostgresConcurrentSameLinkMakesOneAttachment(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i], createdCount[i], errs[i] = db.svc.Attach(context.Background(), cmsService, logo.ID, owner, media.RoleImage)
+			results[i], createdCount[i], errs[i] = db.svc.Attach(context.Background(), cmsService, logo.ID, owner, media.RoleCMSImage)
 		}()
 	}
 	wg.Wait()
@@ -172,7 +172,7 @@ func TestPostgresExpiryCleanupKeepsWhatAProductAttached(t *testing.T) {
 	db := newMediaDatabase(t)
 	ctx := context.Background()
 	logo := db.withBlob(t, "cms_image")
-	page := db.attachFor(t, cmsService, logo, media.Owner{Service: "cms", Type: "page", ID: uuid.New()}, media.RoleImage)
+	page := db.attachFor(t, cmsService, logo, media.Owner{Service: "cms", Type: "page", ID: uuid.New()}, media.RoleCMSImage)
 
 	if _, err := media.PurgeExpired(ctx, db.store, db.blobs, time.Now().Add(48*time.Hour), nil); err != nil {
 		t.Fatal(err)

@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
 const attachmentCols = `id, media_id, owner_service, owner_type, owner_id, role, created_at`
@@ -68,7 +69,7 @@ func (s *PostgresStore) GetAttachment(ctx context.Context, mediaID, attachmentID
 
 // Detach deletes the Media attachment; the database's status trigger detaches
 // the Media when it was the last.
-func (s *PostgresStore) Detach(ctx context.Context, mediaID, attachmentID uuid.UUID, service string) error {
+func (s *PostgresStore) Detach(ctx context.Context, mediaID, attachmentID uuid.UUID, service authz.Product) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM media_attachments WHERE id = $1 AND media_id = $2 AND owner_service = $3`,
 		attachmentID, mediaID, service)
 	return err
