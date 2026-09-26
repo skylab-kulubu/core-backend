@@ -66,7 +66,7 @@ bucket takes that metadata from one policy (`media.ServingMetadata`,
   admin preview frames PDFs.
 - SVG keeps `image/svg+xml`, so `<img>` still renders it, but carries
   `Content-Disposition: attachment`: opening its URL downloads it instead of
-  running any script the regex sanitizer missed.
+  running any script a sanitizer missed (see [SVG](#svg)).
 - Every other file is `application/octet-stream` with
   `Content-Disposition: attachment; filename*=…` (the Media's name, RFC 2231
   encoded), whatever type its client declared.
@@ -116,7 +116,7 @@ code. CODEOWNERS covers the file and the ceilings. Each entry has:
 |---|---|
 | `description` | What the purpose is for (for reviewers). |
 | `upload` | Who may upload: see the upload rules below. |
-| `types` | Content types accepted, detected from the file's content, never from its name or declared type. Never SVG: see `image.rasterize_svg`. |
+| `types` | Content types accepted, detected from the file's content, never from its name or declared type. SVG is stored sanitized, as a download (see [SVG](#svg)). |
 | `max_mib` | Maximum size in MiB. |
 | `visibility` | `public` (served from the CDN) or `private`. |
 | `encrypted` | Encrypted before storage; true exactly for private purposes. |
@@ -125,7 +125,7 @@ code. CODEOWNERS covers the file and the ceilings. Each entry has:
 | `transport` | `single_step` (through `POST /v1/media`) or `direct` (Direct upload). |
 | `attach` | Who attaches the purpose's Media: `core` (a core record links it) or `service` (another product, through the [service attach API](#service-attach-api)). |
 | `service` | Only with `attach: service`: the product that attaches the purpose's Media, `forms` or `cms`. It is also the purpose's owning product: only that product may link the purpose's Media at all. |
-| `image` | Image handling: `reencode`, `max_dimension`, `sizes` (size name → px on the longer side), `rasterize_svg` (also accept SVG, stored as PNG). |
+| `image` | Image handling: `reencode`, `max_dimension`, `sizes` (size name → px on the longer side). |
 | `legacy_rules` | Only on `legacy`: the rules below instead of `types` and `max_mib`. |
 
 `pending_ttl` sets a new Media's expiry (see
@@ -157,9 +157,9 @@ The initial entries:
 | Purpose | Upload | Types | Max | Visibility | Transport | Attached by |
 |---|---|---|---|---|---|---|
 | `profile_picture` | authenticated | JPEG, PNG, WebP, GIF | 5 MiB | public | single-step | core |
-| `event_cover`, `event_gallery` | event_editor | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step | core |
+| `event_cover`, `event_gallery` | event_editor | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | core |
 | `certificate_asset` | certificate_template_editor | PNG, JPEG, PDF | 20 MiB | private | single-step | core |
-| `cms_image` | authenticated | JPEG, PNG, WebP, GIF; SVG while `rasterize_svg` (stored as PNG) | 10 MiB | public | single-step | cms (no service client yet) |
+| `cms_image` | authenticated | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | cms (no service client yet) |
 | `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms (no service client yet) |
 | `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step | forms |
 | `club_file` | event_editor | PDF | 1 GiB | public, scanned | direct | not settled (ticket 11) |
@@ -201,14 +201,14 @@ are.
 `internal/media/ceilings.go` holds limits no catalogue entry can loosen.
 Core refuses to start with a catalogue that breaks one:
 
-- a public purpose accepts only raster images (JPEG, PNG, WebP, GIF), PDF and
-  MP4;
+- a public purpose accepts only raster images (JPEG, PNG, WebP, GIF), SVG,
+  PDF and MP4;
 - a public purpose that accepts raster images declares re-encoding
   (`image.reencode`), and core re-encodes every such image (see
   [Images and sizes](#images-and-sizes));
-- SVG is never stored as SVG: a purpose accepts it only with
-  `image.rasterize_svg`, which stores it as PNG; naming it in `types` stops
-  core;
+- only a public purpose lists SVG. In code, an SVG is stored only for a
+  purpose that lists it, only sanitized, under a key ending in `.svg`, and is
+  always served as a download (`Content-Disposition: attachment`);
 - the maximum size stays under 20 MiB for single-step uploads and 2 GiB for
   Direct upload;
 - the declared image size stays within 2560 px (`image.max_dimension`,
@@ -243,8 +243,8 @@ over their upload budget gets `429` `media_rate_limited`, described under
 | 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media`. |
 | 422 | `purpose_not_available` | `purpose` | A `service` purpose whose product has no service client configured (`cms_image` and `cms_file` today), or that names no product (`club_file` and `video`, which reach `purpose_requires_direct_upload` first). Nothing is stored; the file would only wait for its expiry. |
 | 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum; an SVG above 1 MiB (`maxBytes` is then 1 MiB). |
-| 413 | `media_image_too_large` | `purpose`, `maxPixels` | Decoding the image would take more than core allows, judged from its header before anything is decoded (see [Decode cost](#decode-cost)). `maxPixels` is the most pixels an image of its kind may have: 50 000 000, fewer for costly pixels (16-bit PNG, progressive JPEG). |
-| 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types, or starts like one but does not decode as it (a broken image, an animated WebP, a WebP whose frame is not its canvas, a JPEG with more than 64 scans, an SVG core does not rasterize). |
+| 413 | `media_image_too_large` | `purpose`, `maxPixels` | Decoding the image would take more than core allows, judged from its header before anything is decoded (see [Decode cost](#decode-cost)). `maxPixels` is the most pixels an image of its kind may have: 50 000 000, fewer for costly pixels (16-bit PNG, progressive JPEG, an animation's many frames). An animated GIF or WebP larger than 2560 px on a side is refused this way too. |
+| 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types, or starts like one but does not decode or check as it: a broken image, a WebP whose frame is not its canvas, an animated WebP whose structure does not check, a GIF with more than 300 frames or a frame outside its screen, a JPEG with more than 64 scans, an SVG core does not sanitize. |
 | 503 | `media_busy` | `retryAfterSeconds`, `Retry-After` header | The upload waited 10 seconds for a [decoding slot](#decode-budget) while other images were decoded. Nothing is stored and the upload is not charged to the upload budget; retry it. |
 
 A body above the server's limit (20 MiB plus room for the form) is still
@@ -333,12 +333,34 @@ image, polyglot payloads.
    and the stored pixels need no tag. Content that starts like an accepted
    type but does not decode is `media_type_not_allowed`.
 3. **Encode.** JPEG stays JPEG (quality 85). PNG stays PNG. Go has no WebP
-   encoder, so a WebP becomes a JPEG when it is opaque and a PNG when it has
-   transparency. A GIF becomes a PNG of its **first frame**: animations are
-   not kept, so no frame count can multiply the work (an animated WebP does
-   not decode at all and is refused). Colour profiles (ICC) are not carried
-   over. The Media's `type` is the stored type. Its cover colours are picked
-   from the same decoded image.
+   encoder, so a still WebP becomes a JPEG when it is opaque and a PNG when
+   it has transparency. The Media's `type` is the stored type. Its cover
+   colours are picked from the same decoded image.
+4. **Colours.** The image's ICC colour profile (JPEG APP2 `ICC_PROFILE`,
+   PNG `iCCP`, WebP `ICCP`) is embedded, byte for byte, in the re-encoded
+   image and every size: JPEG as APP2 segments of at most 65 519 profile
+   bytes, PNG as `iCCP`. No colour conversion is done, so a Display P3 photo
+   keeps its colours. A profile above 1 MiB, or without the `acsp` signature
+   and its own size in its header, is dropped.
+
+**Animations** look as uploaded (decision D2):
+
+- A **GIF** is decoded with every frame and encoded again, frame by frame:
+  its frames, delays, disposal and loop count stay; comments and other
+  extensions go. Before decoding, its blocks are walked: more than 300
+  frames, or a frame outside the logical screen, is refused, and frames ×
+  screen counts against the decode cost. Its sizes are its first frame,
+  still, as PNG. An animated GIF larger than 2560 px on a side is refused; a
+  one-frame GIF that large is scaled like a still image, to PNG.
+- An **animated WebP** cannot be re-encoded (no Go encoder), so it is the
+  one image kept as uploaded, after its structure is checked chunk by chunk:
+  the RIFF size must be the file's (no trailing or missing bytes); only
+  `VP8X` (first, with the animation flag), `ICCP`, `ANIM`, `ANMF`, `EXIF` and
+  `XMP ` chunks; each frame within the canvas, its VP8/VP8L bitstream the
+  size its `ANMF` declares; at most 300 frames and 256 Mi pixels across
+  frames × canvas; a canvas at most 2560 px on a side. `EXIF` and `XMP`
+  chunks go (with their VP8X flags) and the RIFF size is rewritten. It gets
+  no size objects: every size address is the image itself.
 
 **Scaling** uses no kernel scaler on the source: Catmull-Rom keeps a float64
 buffer of source height × target width (half a gigabyte for a 48 MP photo).
@@ -356,16 +378,16 @@ estimate is above 256 MiB:
 |---|---|
 | JPEG | Each component's sample plane over whole MCUs (read from the frame header, SOF); for a **progressive** JPEG also the coefficients it keeps between scans, a 256-byte block per 8×8 samples (at 4:4:4 that is 15 bytes a pixel: a progressive JPEG gets about 17 MP); a CMYK JPEG also 4 bytes a pixel for its conversion. More than 64 scans is refused. |
 | PNG | The pixels at their depth (up to 8 bytes a pixel at 16 bits a channel), twice for an interlaced PNG. |
-| GIF | A byte a pixel of the logical screen (the decoder refuses a frame larger than it). |
+| GIF | A byte a pixel for every frame, counted as frames × logical screen, plus a 4-byte canvas of the screen for the still first frame. More than 300 frames, or a frame outside the screen, is refused. |
 | WebP | The frame its VP8 or VP8L bitstream declares, read from the bitstream: an extended WebP's VP8X canvas is what `image.DecodeConfig` reports, but the decoder allocates the frame, so a frame that is not the canvas is refused. 2 bytes a pixel for VP8, 8 for VP8L, plus an alpha plane over the canvas (5 bytes a pixel when compressed). |
 
 ### Decode budget
 
 Everything that decodes an image shares one budget per core process
 (`media.DecodeBudget`, made at startup and handed to each): uploads for a
-purpose, SVG rasterizing, cover colours, the cover colour backfill and the
+purpose, SVG sanitizing, cover colours, the cover colour backfill and the
 size backfill. At most **2** images are decoded at once, and at most **1** SVG
-is drawn (it also takes one of the 2).
+is sanitized (it also takes one of the 2).
 
 - An upload for a purpose waits at most 10 seconds for a slot, then answers
   `503 media_busy` with `Retry-After: 5`; nothing is stored, and the 5xx is
@@ -382,8 +404,8 @@ image at most 256 MiB by the estimate; the upload body and its copies up to
 about 60 MiB (20 MiB, held by the HTTP server, the form and the service);
 the scaling buffers at most 128 MiB plus the 26 MiB result and its upright
 copy (26 MiB); the encoded image and its sizes under 40 MiB. About 540 MiB
-live per slot, 1.1 GiB for both. The SVG slot adds at most about 100 MiB
-(1 MiB of SVG parsed, a 1200 px canvas). Go's collector lets the heap grow to
+live per slot, 1.1 GiB for both. Sanitizing an SVG (at most 1 MiB, 10 000
+elements) takes a few tens of MiB at most. Go's collector lets the heap grow to
 about twice what is live before collecting (`GOGC=100`), so allow ~2.5 GiB
 for image work at its peak.
 
@@ -433,37 +455,45 @@ Two changes to the strip, both for JPEG:
 
 ### SVG
 
-`image.rasterize_svg` is the one switch: set, the purpose also accepts SVG
-(it is never in `types`), stored as PNG; unset, SVG is refused as
-`media_type_not_allowed` and nothing else changes. `cms_image` has it set;
-Yusuf decides whether it ships (the purpose itself stays unavailable,
-`purpose_not_available`, until the CMS has a service client).
+An SVG is stored as SVG (decision D1), sanitized, for the purposes that list
+it: `cms_image`, `event_cover` and `event_gallery` — not profile pictures, not
+Answer files. Core reads it as XML and writes it again from an allowlist;
+the original bytes are never stored:
 
-Core never stores the SVG: it draws it in pure Go (`github.com/fyne-io/oksvg`
-v0.2.0 and `github.com/srwiley/rasterx`, BSD-3-Clause) into a PNG whose longer
-side is 1200 px (the `page` size), makes the `card` size, and stores those.
-Scripts, event handlers and links go with the markup. The drawing is bounded:
+- **Kept:** shapes and paths (`path`, `rect`, `circle`, `ellipse`, `line`,
+  `polyline`, `polygon`), text (`text`, `tspan`, `textPath`), gradients
+  (`linearGradient`, `radialGradient`, `stop`), `pattern`, `clipPath`,
+  `mask`, structure (`svg`, `g`, `defs`, `symbol`, `use`), `title`, `desc`
+  and `style`, with their geometry and presentation attributes. `href` and
+  `xlink:href` only as a same-document `#id`. A `style` attribute or element
+  only after `@import`, `expression()` and every `url()` to anything but
+  `#id` are removed (CSS with escapes is removed whole, and a `<style>` is
+  sanitized whole, so a comment cannot split `@import`).
+- **Removed, with everything inside:** `script`, `foreignObject`, `iframe`,
+  `image`, `a`, the animation elements (`animate`, `set`, …, which can set
+  `href`), filters (`feImage` loads images), and anything outside the SVG
+  namespace (editor metadata, HTML). Every `on*` attribute, every attribute
+  outside the allowlist, and every value naming `javascript:`, `data:` or an
+  external address go too.
+- **Refused** (`media_type_not_allowed`): a document type (with or without
+  entities: Illustrator's DTD line included), an entity, anything that does
+  not parse as XML in UTF-8, a root that is not `<svg>`, more than 10 000
+  elements or nesting deeper than 64. Above 1 MiB: `media_too_large`
+  (`maxBytes` 1 MiB).
 
-- one SVG is drawn at a time, within a shared decoding slot;
-- above 1 MiB: `media_too_large` (`maxBytes` 1 MiB);
-- read as XML first, and `media_type_not_allowed` for a document type, more
-  than 10 000 elements (counting what each `<use>` copies), nesting deeper than
-  64, a `<use>` inside `<defs>` (which could refer to itself), no size
-  (`viewBox` or `width`/`height`), or anything that does not parse;
-- drawing runs under a 5-second context deadline, checked between shapes and
-  on every line a shape is flattened into; past it the upload is
-  `media_type_not_allowed`. A single call into the rasterizer between two
-  checks can still overshoot (6.2 seconds in total has been measured). The
-  per-line check relies on how `rasterx`, an untagged 2022 commit, flattens
-  shapes; the checks between shapes do not. Every shape costs a pass over
-  the canvas, so an SVG with more than about a thousand shapes can hit the
-  limit;
-- a fault in the parser refuses the file instead of stopping core;
-- dashes are drawn solid; text, filters and embedded images are not drawn
-  (convert text to paths).
+The sanitized SVG is stored under a key ending in `.svg`, as `image/svg+xml`
+with `Content-Disposition: attachment`: `<img>` renders it, opening its
+address downloads it. It gets no size objects and every size address is the
+SVG itself; it has no cover colours. One SVG is sanitized at a time, within a
+shared decoding slot.
 
-It runs in the request, in the core process, not in a separate one: the
-limits above bound it instead.
+**Yusuf, on Cloudflare:** add a Response Header Transform Rule on `cdn.` for
+paths ending in `.svg` that sets
+`Content-Security-Policy: sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:`,
+so an SVG opened directly still runs nothing, whatever a sanitizer missed.
+
+Media uploaded without a purpose keep the older regex strip of scripts and
+event handlers for SVG, served as a download as before.
 
 ### Addresses
 
@@ -840,8 +870,8 @@ dropped; `status` replaces it.
   24 hours; default `2048`.
 - `CDN_BASE` (or `R2_PUBLIC_URL`) — the public base of every Media address;
   default `https://cdn.yildizskylab.com`.
-- The decode budget (2 images at once, 1 SVG, a 10-second wait, a 5-second
-  SVG drawing limit) is fixed in code (`media.DecodeBudgetConfig`).
+- The decode budget (2 images at once, 1 SVG, a 10-second wait) is fixed in
+  code (`media.DecodeBudgetConfig`).
 - `MEDIA_IMAGE_ADDRESS_MODE` — where image sizes point: `stored` (default) or
   `cloudflare`. Any other value stops core at startup.
 
