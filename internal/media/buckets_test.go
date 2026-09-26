@@ -106,3 +106,51 @@ func TestBucketsDeleteOfAMissingObjectSucceeds(t *testing.T) {
 		}
 	}
 }
+
+// Account erasure's erase_profile_media deletes the recorded Answer file
+// from the private bucket only, and the public personal Media from the
+// public bucket only.
+func TestAccountErasureDeletesFromTheBucketThatHoldsTheObject(t *testing.T) {
+	p := newErasedPerson(t)
+	public := &deleteRecorder{MemoryBlob: p.blobs}
+	private := &deleteRecorder{MemoryBlob: p.private}
+	buckets := media.Buckets{Public: public, Private: media.NewPrivateStorage(private, transit.New(p.bao.Config()))}
+	p.anonymize(t)
+	p.eraseProfileMedia(t, buckets)
+
+	if !slices.Equal(private.deleted, []string{p.answer.Key}) {
+		t.Fatalf("private bucket deleted %v, want only the Answer file %s", private.deleted, p.answer.Key)
+	}
+	for _, item := range []media.Media{p.oldPicture, p.picture, p.legacyPDF} {
+		if !slices.Contains(public.deleted, item.Key) {
+			t.Errorf("public bucket did not delete %s: %v", item.Key, public.deleted)
+		}
+	}
+	if slices.Contains(public.deleted, p.answer.Key) {
+		t.Fatalf("public bucket was asked for the private %s", p.answer.Key)
+	}
+}
+
+// An object already gone is erased, in either bucket: erase_profile_media
+// records the purge and drops the record. A kept club object already gone
+// needs no new metadata either.
+func TestAccountErasureOfAMissingObjectSucceeds(t *testing.T) {
+	p := newErasedPerson(t)
+	public, publicS3 := fakeR2(t)
+	private, privateS3 := fakeR2(t)
+	for _, item := range []media.Media{p.oldPicture, p.picture, p.legacyPDF, p.poster} {
+		publicS3.fail("/media/"+item.Key, "NoSuchKey")
+	}
+	privateS3.fail("/media/"+p.answer.Key, "NoSuchKey")
+	p.anonymize(t)
+	p.eraseProfileMedia(t, media.Buckets{Public: public, Private: media.NewPrivateStorage(private, transit.New(p.bao.Config()))})
+
+	for _, item := range []media.Media{p.oldPicture, p.picture, p.answer, p.legacyPDF} {
+		if p.get(t, item.ID).BlobPurgedAt == nil {
+			t.Errorf("%s is not recorded purged", item.Key)
+		}
+	}
+	if got := p.recorded(t); len(got) != 0 {
+		t.Fatalf("records %v left", got)
+	}
+}

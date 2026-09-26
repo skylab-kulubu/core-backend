@@ -241,16 +241,6 @@ func (s *PostgresStore) CompleteDeletionRequest(ctx context.Context, requestID, 
 	return nil
 }
 
-func (s *PostgresStore) ProfileMediaForDeletion(ctx context.Context, requestID uuid.UUID) (*uuid.UUID, error) {
-	var mediaID *uuid.UUID
-	if err := s.pool.QueryRow(ctx, `SELECT profile_media_id FROM account_deletion_requests WHERE id = $1`, requestID).Scan(&mediaID); errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	} else if err != nil {
-		return nil, err
-	}
-	return mediaID, nil
-}
-
 func (s *PostgresStore) requireDeletionLease(ctx context.Context, requestID, leaseToken uuid.UUID) error {
 	var held bool
 	if err := s.pool.QueryRow(ctx, `

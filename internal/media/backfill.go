@@ -142,11 +142,24 @@ func BackfillPass[T any](ctx context.Context, kind string, list func(ctx context
 	}
 }
 
+// applyServingPolicy writes the item's serving metadata. The name it wrote
+// was read before the write, so it reads the Media again afterwards and
+// writes once more if the name changed meanwhile: an account erasure that
+// stripped the name (media redesign ticket 07) stays stripped.
 func applyServingPolicy(ctx context.Context, store Store, blobs BlobStore, item Media) error {
 	serving := ServingMetadata(item.Type, item.Name)
 	if serving != (BlobMetadata{ContentType: item.Type}) {
 		if err := blobs.SetMetadata(ctx, item.Key, serving); err != nil && !errors.Is(err, ErrNotFound) {
 			return err
+		}
+		now, err := store.GetIncludingDeleted(ctx, item.ID)
+		if err != nil {
+			return err
+		}
+		if now.Name != item.Name {
+			if err := blobs.SetMetadata(ctx, item.Key, ServingMetadata(now.Type, now.Name)); err != nil && !errors.Is(err, ErrNotFound) {
+				return err
+			}
 		}
 	}
 	return store.SetServingPolicyApplied(ctx, item.ID)

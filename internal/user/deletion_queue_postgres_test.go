@@ -55,8 +55,8 @@ func TestDeletionLeaseTokenFencesExpiredWorker(t *testing.T) {
 	if err := store.CompleteDeletionStep(ctx, request.ID, *first.LeaseToken, user.DeletionStepEraseProfile, now); !errors.Is(err, user.ErrLeaseLost) {
 		t.Fatalf("stale step error = %v", err)
 	}
-	if retained, err := store.ProfileMediaForDeletion(ctx, request.ID); err != nil || retained == nil || *retained != profileMediaID {
-		t.Fatalf("stale checkpoint cleared retry media: id=%v err=%v", retained, err)
+	if retained, err := store.MediaForDeletion(ctx, request.ID); err != nil || len(retained) != 1 || retained[0] != profileMediaID {
+		t.Fatalf("stale checkpoint cleared retry media: ids=%v err=%v", retained, err)
 	}
 	if err := store.RetryDeletionRequest(ctx, request.ID, *first.LeaseToken, now, now, "stale", false, true); !errors.Is(err, user.ErrLeaseLost) {
 		t.Fatalf("stale retry error = %v", err)
@@ -92,8 +92,8 @@ func TestDeletionLeaseTokenFencesExpiredWorker(t *testing.T) {
 	if err := store.CompleteDeletionStep(ctx, request.ID, *third.LeaseToken, user.DeletionStepEraseProfile, now.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if retained, err := store.ProfileMediaForDeletion(ctx, request.ID); err != nil || retained != nil {
-		t.Fatalf("successful checkpoint retained profile association: id=%v err=%v", retained, err)
+	if retained, err := store.MediaForDeletion(ctx, request.ID); err != nil || len(retained) != 0 {
+		t.Fatalf("successful checkpoint retained profile association: ids=%v err=%v", retained, err)
 	}
 	if err := store.CompleteDeletionRequest(ctx, request.ID, *third.LeaseToken, now.Add(2*time.Second)); err != nil {
 		t.Fatal(err)

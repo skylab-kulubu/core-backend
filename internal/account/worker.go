@@ -19,7 +19,7 @@ type Store interface {
 	RetryDeletionRequest(ctx context.Context, requestID, leaseToken uuid.UUID, at, next time.Time, code string, manual, refundAttempt bool) error
 	CompleteDeletionRequest(context.Context, uuid.UUID, uuid.UUID, time.Time) error
 	AnonymizeAccount(context.Context, uuid.UUID, time.Time, []string) error
-	ProfileMediaForDeletion(context.Context, uuid.UUID) (*uuid.UUID, error)
+	MediaForDeletion(context.Context, uuid.UUID) ([]uuid.UUID, error)
 }
 
 type Identity interface {
@@ -176,14 +176,36 @@ func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaSte
 			return w.store.AnonymizeAccount(ctx, id, now, emails)
 		}},
 		{name: user.DeletionStepEraseProfile, run: func(ctx context.Context, _ uuid.UUID) error {
-			mediaID, err := w.store.ProfileMediaForDeletion(ctx, request.ID)
-			if err != nil || mediaID == nil {
+			// The profile picture and the uploads anonymize_core recorded.
+			// Each one is tried even when another fails; the error counts the
+			// failures and carries the first.
+			mediaIDs, err := w.store.MediaForDeletion(ctx, request.ID)
+			if err != nil || len(mediaIDs) == 0 {
 				return err
 			}
 			if w.media == nil {
 				return fmt.Errorf("profile media eraser unavailable")
 			}
-			return w.media.EnsureErased(ctx, *mediaID, now)
+			failed := 0
+			var first error
+			for _, mediaID := range mediaIDs {
+				if err := w.media.EnsureErased(ctx, mediaID, now); err != nil {
+					failed++
+					if first == nil {
+						first = err
+					}
+				}
+			}
+			if failed == 0 {
+				return nil
+			}
+			err = fmt.Errorf("%d of %d media not erased: %w", failed, len(mediaIDs), first)
+			if failed < len(mediaIDs) {
+				// The pass erased some (a person with many files meets the
+				// step timeout): the attempt is given back.
+				return partlyErased{err: err, at: now.Add(30 * time.Second)}
+			}
+			return err
 		}},
 		{name: user.DeletionStepEraseUploads, run: func(ctx context.Context, id uuid.UUID) error {
 			if w.media == nil {
