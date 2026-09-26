@@ -58,6 +58,7 @@ type GalleryImage struct {
 	image *media.LinkedImage
 }
 
+// Resource is the Event summary tickets, competitors and the door answer.
 type Resource struct {
 	ID            uuid.UUID  `json:"id"`
 	Name          string     `json:"name"`
@@ -66,23 +67,31 @@ type Resource struct {
 	Location      string     `json:"location"`
 	OwnerTeam     string     `json:"ownerTeam"`
 	CoverImageURL string     `json:"coverImageUrl,omitempty"`
-	CoverColors   []string   `json:"coverColors"`
-	Active        bool       `json:"active"`
-	Ranked        bool       `json:"ranked"`
+	// CoverImageSizes are the cover's card and page addresses, built like
+	// the Media JSON's sizes.
+	CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes,omitempty"`
+	CoverColors     []string                      `json:"coverColors"`
+	Active          bool                          `json:"active"`
+	Ranked          bool                          `json:"ranked"`
 }
 
+// Resource is the Event's summary. Its callers (tickets, competitors, the
+// door) have no media dependency to carry a base and address mode: the
+// cover is answered under the ones core is configured with.
 func (e Event) Resource() Resource {
+	addresses := media.ConfiguredAddresses()
 	return Resource{
-		ID:            e.ID,
-		Name:          e.Name,
-		StartDate:     e.StartDate,
-		EndDate:       e.EndDate,
-		Location:      e.Location,
-		OwnerTeam:     e.OwnerTeam,
-		CoverImageURL: media.PublicURL("", e.CoverImageURL),
-		CoverColors:   append([]string{}, e.CoverColors...),
-		Active:        e.Active,
-		Ranked:        e.Ranked,
+		ID:              e.ID,
+		Name:            e.Name,
+		StartDate:       e.StartDate,
+		EndDate:         e.EndDate,
+		Location:        e.Location,
+		OwnerTeam:       e.OwnerTeam,
+		CoverImageURL:   addresses.Object(e.CoverImageURL),
+		CoverImageSizes: addresses.LinkedSizes(e.coverImage),
+		CoverColors:     append([]string{}, e.CoverColors...),
+		Active:          e.Active,
+		Ranked:          e.Ranked,
 	}
 }
 

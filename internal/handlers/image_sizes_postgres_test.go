@@ -21,6 +21,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
+	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -537,5 +538,47 @@ func TestEventCoverSizesFollowTheConfiguredAddressModeHTTP(t *testing.T) {
 	}
 	if got.CoverImageURL != sizesBase+"/images/cf-cover" {
 		t.Fatalf("coverImageUrl %q", got.CoverImageURL)
+	}
+}
+
+// The Event summary tickets, competitors and the door answer carries the
+// cover's sizes too: the door's Event list is a list of Event cards. The
+// summary has no base of its own (media.ConfiguredAddresses). Not parallel:
+// it sets the process-wide base, and restores it.
+func TestDoorEventsCarryTheCoverSizesHTTP(t *testing.T) {
+	t.Cleanup(media.UsePublicBase(sizesBase))
+	f := newImageSizesFixture(t)
+	sized := f.image(t, media.PurposeEventCover, "images/door-cover", 1600, 1200, map[string]media.SizeObject{
+		media.SizeCard: jpegSize(400, 300), media.SizePage: jpegSize(1200, 900),
+	})
+	legacy := f.image(t, media.PurposeLegacy, "images/door-legacy", 0, 0, nil)
+	withCover := f.event(t, "Sized", &sized.ID)
+	withLegacy := f.event(t, "Legacy", &legacy.ID)
+	withoutCover := f.event(t, "Bare", nil)
+	app := ticketApp(t, yk(), f.events, ticket.NewMemoryStore())
+
+	var got []struct {
+		ID              uuid.UUID                     `json:"id"`
+		CoverImageURL   string                        `json:"coverImageUrl"`
+		CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes"`
+	}
+	answer(t, app, httptest.NewRequest(fiber.MethodGet, "/v1/door/events", nil), &got)
+
+	legacyOriginal := media.ImageAddress{URL: sizesBase + "/images/door-legacy"}
+	want := map[uuid.UUID]map[string]media.ImageAddress{
+		withCover.ID: bothSizes(
+			media.ImageAddress{URL: sizesBase + "/images/door-cover/card.jpg", Width: 400, Height: 300},
+			media.ImageAddress{URL: sizesBase + "/images/door-cover/page.jpg", Width: 1200, Height: 900},
+		),
+		withLegacy.ID:   bothSizes(legacyOriginal, legacyOriginal),
+		withoutCover.ID: nil,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("door events %+v", got)
+	}
+	for _, summary := range got {
+		if !reflect.DeepEqual(summary.CoverImageSizes, want[summary.ID]) {
+			t.Errorf("Event %s cover %q sizes %+v, want %+v", summary.ID, summary.CoverImageURL, summary.CoverImageSizes, want[summary.ID])
+		}
 	}
 }
