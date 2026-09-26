@@ -20,7 +20,10 @@ type Service interface {
 	// UploadForPurpose stores a file for a Media purpose from the catalogue,
 	// under that purpose's rules.
 	UploadForPurpose(ctx context.Context, p authz.Principal, purpose string, file UploadedFile) (Media, error)
-	Get(ctx context.Context, id uuid.UUID) (Media, error)
+	// Get returns a Media's metadata to p. A private Media is shown only to
+	// its owning product's service account and to privileged admins, and
+	// never with an address; to anyone else it does not exist.
+	Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Media, error)
 	List(ctx context.Context, p authz.Principal) ([]Media, error)
 	ListLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]Media, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
@@ -31,6 +34,9 @@ type Service interface {
 	// the blob stays recoverable until the purge window passes.
 	ArchiveOwn(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Media, error)
+	// Addresses builds public addresses from the configured base, for
+	// records that keep a Media's key, such as a User's profile picture.
+	Addresses() Addresses
 	// Attach links the Media to a record of the calling product through the
 	// service attach API. created is false when the same link already
 	// exists; that Media attachment is returned.
@@ -38,16 +44,30 @@ type Service interface {
 	// Detach removes a Media attachment of the calling product; removing
 	// one that is not there succeeds.
 	Detach(ctx context.Context, p authz.Principal, mediaID, attachmentID uuid.UUID) error
+	// IssueReadLink gives a five-minute read link to a private Media: to
+	// the owning product's service account for one of its purposes, for
+	// the person it acts for (onBehalfOf), or to a privileged admin for a
+	// core purpose, the admin being the actor (the request names no one).
+	// A malformed request is ErrInvalid once the caller is authorized. Every
+	// link is written to the access log.
+	IssueReadLink(ctx context.Context, p authz.Principal, id uuid.UUID, req ReadLinkRequest) (ReadLink, error)
+	// OpenContent opens a private Media's decrypted content for a read link
+	// token, and writes the open to the access log.
+	OpenContent(ctx context.Context, id uuid.UUID, token, clientIP string) (Content, error)
 }
 
 type service struct {
-	media              Store
-	blobs              BlobStore
+	media Store
+	blobs BlobStore
+	// objects deletes from whichever bucket holds an object.
+	objects            Buckets
 	authz              authz.Authorizer
-	publicBase         string
+	addresses          Addresses
 	uploadStagingGrace time.Duration
 	catalogue          Catalogue
+	decoding           *DecodeBudget
 	serviceProducts    []authz.Product
+	private            *PrivateMedia
 }
 
 func NewService(media Store, blobs BlobStore, az authz.Authorizer, publicBase string) Service {
@@ -59,10 +79,34 @@ type ServiceOptions struct {
 	// Catalogue is the Media purpose catalogue. The zero value is the
 	// reviewed catalogue carried in the binary.
 	Catalogue Catalogue
+	// ImageAddressMode is where image sizes are served from
+	// (MEDIA_IMAGE_ADDRESS_MODE); empty is AddressStoredSizes.
+	ImageAddressMode AddressMode
+	// DecodeBudget is the process's decode budget, shared with the
+	// backfills. Nil makes one for this service alone.
+	DecodeBudget *DecodeBudget
 	// ServiceProducts are the products with a service client configured
 	// (authz.ServiceClients): only they can attach Media, so a service
 	// purpose of any other product cannot be uploaded.
 	ServiceProducts []authz.Product
+	// Private turns private Media on. Nil keeps it off: private purposes
+	// are refused, never stored publicly instead.
+	Private *PrivateMedia
+}
+
+// PrivateMedia is what private Media needs (docs/media-lifecycle.md).
+type PrivateMedia struct {
+	// Storage encrypts into and decrypts from the private bucket.
+	Storage *PrivateStorage
+	// LinkKey signs read links: MEDIA_LINK_SIGNING_KEY.
+	LinkKey []byte
+	// LinkOrigin is core's public address, where read links point:
+	// PUBLIC_API_ORIGIN.
+	LinkOrigin string
+	// AccessLog records every read link issued and every open.
+	AccessLog AccessLog
+	// Now defaults to time.Now.
+	Now func() time.Time
 }
 
 func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, publicBase string, options ServiceOptions) Service {
@@ -74,9 +118,18 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	if catalogue.purposes == nil {
 		catalogue = reviewedCatalogue()
 	}
+	addresses := Addresses{Base: publicBase, Mode: options.ImageAddressMode}
+	decoding := options.DecodeBudget
+	if decoding == nil {
+		decoding = NewDecodeBudget(DecodeBudgetConfig{})
+	}
+	objects := Buckets{Public: blobs}
+	if options.Private != nil {
+		objects.Private = options.Private.Storage
+	}
 	return &service{
-		media: media, blobs: blobs, authz: az, publicBase: publicBase, uploadStagingGrace: grace, catalogue: catalogue,
-		serviceProducts: options.ServiceProducts,
+		media: media, blobs: blobs, objects: objects, authz: az, addresses: addresses, uploadStagingGrace: grace,
+		catalogue: catalogue, decoding: decoding, serviceProducts: options.ServiceProducts, private: options.Private,
 	}
 }
 
@@ -111,6 +164,21 @@ type storedFile struct {
 	ctype     string
 	kind      string
 	keyPrefix string
+	// keySuffix ends the object key: .svg for an SVG.
+	keySuffix string
+	// image is set for an image core encoded or sanitized itself: its
+	// size, its sizes to store beside it and its cover colours. Nil for
+	// anything else, whose sizes core does not make.
+	image *reencodedImage
+}
+
+// imageFile is the storedFile of an image core encoded or sanitized.
+func imageFile(img reencodedImage) storedFile {
+	file := storedFile{body: img.body, ctype: img.ctype, kind: KindImage, keyPrefix: "images/", image: &img}
+	if img.ctype == svgType {
+		file.keySuffix = ".svg"
+	}
+	return file
 }
 
 func (s *service) UploadForPurpose(ctx context.Context, p authz.Principal, purposeName string, file UploadedFile) (Media, error) {
@@ -127,10 +195,10 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia, MediaUploader: purpose.Uploader}, authz.Upload) {
 		return Media{}, &PurposeRefusal{Err: ErrPurposeForbidden, Purpose: purpose.Name}
 	}
-	if purpose.Visibility == VisibilityPrivate {
-		// Private Media storage (encryption, the private bucket) is not
-		// built yet. Until it is, a private purpose is refused, never stored
-		// publicly instead.
+	private := purpose.Visibility == VisibilityPrivate
+	if private && s.private == nil {
+		// Private Media is off (MEDIA_PRIVATE_ENABLED): a private purpose is
+		// refused, never stored publicly instead.
 		return Media{}, &PurposeRefusal{Err: ErrPrivateMediaDisabled, Purpose: purpose.Name}
 	}
 	if purpose.Transport == TransportDirect {
@@ -139,6 +207,11 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if !s.attachable(purpose) {
 		return Media{}, &PurposeRefusal{Err: ErrPurposeNotAvailable, Purpose: purpose.Name}
 	}
+	if purpose.Scan && !scannerAvailable {
+		// A purpose that needs a malware scan is opened only once it is
+		// clean; with no scanner, nothing of it could ever be opened.
+		return Media{}, &PurposeRefusal{Err: ErrPurposeNeedsScanner, Purpose: purpose.Name}
+	}
 	if len(file.Data) == 0 {
 		return Media{}, ErrInvalid
 	}
@@ -146,16 +219,14 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if err != nil {
 		return Media{}, ErrInvalid
 	}
-	var stored storedFile
-	if purpose.LegacyRules {
-		stored, err = legacyFile(file)
-	} else {
-		stored, err = purposeFile(purpose, file.Data)
-	}
+	stored, err := s.storedFile(ctx, purpose, file)
 	if err != nil {
 		return Media{}, err
 	}
-	key := stored.keyPrefix + uuid.NewString()
+	key := stored.keyPrefix + uuid.NewString() + stored.keySuffix
+	if private {
+		key = PrivateObjectKey(key)
+	}
 
 	staging, durableStaging := s.media.(UploadStagingStore)
 	if durableStaging {
@@ -169,15 +240,47 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	}
 	operationCtx, cancelOperation := context.WithTimeout(ctx, operationTimeout)
 	defer cancelOperation()
-	serving := ServingMetadata(stored.ctype, file.Name)
-	if err := s.blobs.Put(operationCtx, key, stored.body, serving); err != nil {
-		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
-	}
-	colors := []string{}
-	colorsComputed := false
-	if stored.kind == KindImage {
-		colors = ExtractCoverColors(stored.body)
-		colorsComputed = true
+	var encryption *Encryption
+	var sizes []string
+	var shown ImageSize
+	var sizeObjects map[string]SizeObject
+	colors, colorsComputed := []string{}, false
+	if private {
+		sealed, err := s.private.Storage.Seal(operationCtx, key, stored.body)
+		if err != nil {
+			return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, nil, err)
+		}
+		encryption = &sealed.Encryption
+		if stored.kind == KindImage {
+			// A private image is stored re-encoded, as a public one is, and
+			// encrypted. It gets no sizes and no cover colours: nothing
+			// shows it on a page, and nothing of it reaches the public
+			// bucket.
+			if stored.image != nil {
+				shown = stored.image.size
+			}
+			sizeObjects, colorsComputed = noSizes, true
+		}
+	} else {
+		serving := ServingMetadata(stored.ctype, file.Name)
+		if err := s.blobs.Put(operationCtx, key, stored.body, serving); err != nil {
+			return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, nil, err)
+		}
+		if stored.image != nil {
+			if len(stored.image.sizes) > 0 && !canHaveSizeObjects(key) {
+				return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, nil, fmt.Errorf("media: key %q cannot have sizes", key))
+			}
+			for _, size := range stored.image.sizes {
+				sizes = append(sizes, sizeObjectKey(key, size.name, size.ctype))
+				if err := s.blobs.Put(operationCtx, sizes[len(sizes)-1], size.body, ServingMetadata(size.ctype, file.Name)); err != nil {
+					return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, sizes, err)
+				}
+			}
+			shown, sizeObjects = stored.image.size, sizeObjectsOf(stored.image.sizes)
+			colors, colorsComputed = stored.image.coverColors, true
+		} else if stored.kind == KindImage {
+			colors, colorsComputed = s.coverColors(stored.body)
+		}
 	}
 	item := Media{
 		Name:                file.Name,
@@ -185,7 +288,12 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		Size:                int64(len(stored.body)),
 		UploadedBy:          uploadedBy,
 		Kind:                stored.kind,
+		Width:               shown.Width,
+		Height:              shown.Height,
+		SizeObjects:         sizeObjects,
 		Purpose:             purpose.Name,
+		Visibility:          purpose.Visibility,
+		Encryption:          encryption,
 		ExpiresAt:           pendingExpiry(purpose, time.Now().UTC()),
 		Key:                 key,
 		CoverColors:         colors,
@@ -206,9 +314,65 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 			// durable staging row for the sweeper.
 			return Media{}, err
 		}
-		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, err)
+		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, sizes, err)
 	}
 	return s.withURL(created), nil
+}
+
+// storedFile is what the purpose's rules make of the file. An image for a
+// purpose is decoded within the decode budget, and an SVG sanitized within
+// its own slot too; a wait that runs out is ErrDecodeBusy. A file uploaded
+// without a purpose is never decoded here.
+func (s *service) storedFile(ctx context.Context, purpose Purpose, file UploadedFile) (storedFile, error) {
+	if purpose.LegacyRules {
+		if detectContentType(file.Data) == svgType && len(file.Data) <= maxImageBytes {
+			return s.legacySVG(ctx, file.Data)
+		}
+		return legacyFile(file)
+	}
+	if isImage(file.Data) {
+		acquire := s.decoding.Acquire
+		if isSVG(file.Data) && purpose.accepts(svgType) {
+			acquire = s.decoding.AcquireSVG
+		}
+		release, err := acquire(ctx)
+		if err != nil {
+			return storedFile{}, err
+		}
+		defer release()
+	}
+	return purposeFile(purpose, file.Data)
+}
+
+// legacySVG stores an SVG uploaded without a purpose the way a purpose
+// stores one: sanitized, under a .svg key, within the SVG decoding slot.
+// Media uploaded without a purpose keep accepting what they accepted, so
+// an SVG the sanitizer refuses is stored anyway, as an opaque download
+// (application/octet-stream, attachment) that never renders.
+func (s *service) legacySVG(ctx context.Context, data []byte) (storedFile, error) {
+	release, err := s.decoding.AcquireSVG(ctx)
+	if err != nil {
+		return storedFile{}, err
+	}
+	defer release()
+	clean, err := sanitizeSVG(data, MaxImageDimension)
+	if err != nil {
+		return storedFile{body: data, ctype: "application/octet-stream", kind: KindFile, keyPrefix: "files/"}, nil
+	}
+	return imageFile(reencodedImage{body: clean, ctype: svgType, coverColors: []string{}}), nil
+}
+
+// coverColors picks the cover colours of an image stored as uploaded,
+// within the decode budget. They are decoration: when no decoding slot is
+// free the upload does not wait; the image is stored without them
+// (computed false), and the cover colour backfill picks them later.
+func (s *service) coverColors(data []byte) ([]string, bool) {
+	release, ok := s.decoding.TryAcquire()
+	if !ok {
+		return []string{}, false
+	}
+	defer release()
+	return ExtractCoverColors(data), true
 }
 
 // attachable reports whether something can attach Media of the purpose
@@ -230,8 +394,10 @@ func pendingExpiry(purpose Purpose, now time.Time) *time.Time {
 }
 
 // legacyFile applies the rules Media uploaded without a purpose had before
-// Media purpose: a raster image or SVG up to 10 MiB, a PDF named .pdf up to
-// 20 MiB, or any other named file up to 20 MiB, served as a download.
+// Media purpose: a raster image up to 10 MiB, a PDF named .pdf up to 20
+// MiB, or any other named file up to 20 MiB, served as a download. A raster
+// image keeps its own bytes, stripped of metadata (sanitizeImage), and gets
+// no sizes. An SVG up to 10 MiB is stored by legacySVG.
 func legacyFile(file UploadedFile) (storedFile, error) {
 	name, contentType, data := file.Name, file.ContentType, file.Data
 	if strings.HasPrefix(contentType, "image/") || isImage(data) {
@@ -263,26 +429,68 @@ func legacyFile(file UploadedFile) (storedFile, error) {
 }
 
 // purposeFile accepts a file by its content under its purpose's rules. The
-// name and the declared type play no part.
+// name and the declared type play no part. The caller holds a decoding
+// slot for an image.
 func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
 	if int64(len(data)) > purpose.MaxBytes {
 		return storedFile{}, &PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: purpose.MaxBytes}
 	}
 	detected := detectContentType(data)
-	if detected == "" || !slices.Contains(purpose.Types, detected) {
-		return storedFile{}, &PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: purpose.Name, AllowedTypes: purpose.Types}
+	if detected == "" || !purpose.accepts(detected) {
+		return storedFile{}, purpose.typeRefusal()
 	}
-	if detected == pdfType {
-		return storedFile{body: data, ctype: pdfType, kind: KindFile, keyPrefix: "files/"}, nil
+	if detected == pdfType || detected == docxType {
+		// PDF and DOCX are kept as they came.
+		return storedFile{body: data, ctype: detected, kind: KindFile, keyPrefix: "files/"}, nil
 	}
-	clean, ctype, err := sanitizeImage(data)
-	if err != nil {
+	var img reencodedImage
+	var err error
+	switch {
+	case detected == svgType:
+		var clean []byte
+		clean, err = sanitizeSVG(data, purpose.Image.maxDimension())
+		if errors.Is(err, errSVGTooLarge) {
+			return storedFile{}, &PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: maxSVGBytes}
+		}
+		// Stored as SVG, sanitized; no sizes (every size is the SVG itself)
+		// and no cover colours.
+		img = reencodedImage{body: clean, ctype: svgType, coverColors: []string{}}
+	case purpose.Image.Reencode && detected == "image/gif":
+		img, err = reencodeGIF(data, purpose.Image)
+	case purpose.Image.Reencode && isAnimatedWebP(data):
+		// Go has no WebP encoder: an animated WebP is kept as uploaded
+		// once its structure is checked, without metadata and sizes.
+		var clean []byte
+		var canvas ImageSize
+		clean, canvas, err = cleanAnimatedWebP(data, purpose.Image.maxDimension())
+		img = reencodedImage{body: clean, ctype: "image/webp", size: canvas, coverColors: []string{}}
+	case purpose.Image.Reencode:
+		img, err = reencodeRaster(data, purpose.Image)
+	default:
+		clean, ctype, err := sanitizeImage(data)
+		if err != nil {
+			return storedFile{}, err
+		}
+		return storedFile{body: clean, ctype: ctype, kind: KindImage, keyPrefix: "images/"}, nil
+	}
+	var tooLarge errImageTooLarge
+	switch {
+	case errors.As(err, &tooLarge):
+		return storedFile{}, &PurposeRefusal{Err: ErrImageTooLarge, Purpose: purpose.Name, MaxPixels: tooLarge.maxPixels}
+	case errors.Is(err, ErrInvalid), errors.Is(err, errSVGRefused):
+		// The content starts like an accepted type but is not a valid
+		// image of it, or an SVG core does not sanitize.
+		return storedFile{}, purpose.typeRefusal()
+	case err != nil:
 		return storedFile{}, err
 	}
-	return storedFile{body: clean, ctype: ctype, kind: KindImage, keyPrefix: "images/"}, nil
+	return imageFile(img), nil
 }
 
-func (s *service) cleanupRejectedUpload(ctx context.Context, staging UploadStagingStore, durableStaging bool, key string, cause error) error {
+// cleanupRejectedUpload deletes what a refused upload wrote: the stored
+// sizes written so far (sizes), then the object at key. The staging sweeper
+// finds any of them a failure here leaves.
+func (s *service) cleanupRejectedUpload(ctx context.Context, staging UploadStagingStore, durableStaging bool, key string, sizes []string, cause error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	if durableStaging {
@@ -290,7 +498,12 @@ func (s *service) cleanupRejectedUpload(ctx context.Context, staging UploadStagi
 			cause = errors.Join(cause, fmt.Errorf("schedule rejected upload cleanup: %w", err))
 		}
 	}
-	if err := s.blobs.Delete(cleanupCtx, key); err != nil {
+	for _, size := range sizes {
+		if err := s.blobs.Delete(cleanupCtx, size); err != nil {
+			return errors.Join(cause, fmt.Errorf("cleanup rejected upload size: %w", err))
+		}
+	}
+	if err := s.objects.Delete(cleanupCtx, key); err != nil {
 		// A durable staging row is deliberately retained for the sweeper.
 		return errors.Join(cause, fmt.Errorf("cleanup rejected upload blob: %w", err))
 	}
@@ -304,15 +517,29 @@ func (s *service) cleanupRejectedUpload(ctx context.Context, staging UploadStagi
 	return cause
 }
 
-func (s *service) Get(ctx context.Context, id uuid.UUID) (Media, error) {
-	if !s.authz.Allow(authz.Principal{}, authz.Resource{Type: authz.TypeMedia}, authz.Read) {
+func (s *service) Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Media, error) {
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.Read) {
 		return Media{}, ErrForbidden
 	}
 	m, err := s.media.Get(ctx, id)
 	if err != nil {
 		return Media{}, err
 	}
+	if m.Visibility == VisibilityPrivate && !s.mayReadPrivate(p, m) {
+		return Media{}, ErrNotFound
+	}
 	return s.withURL(m), nil
+}
+
+// mayReadPrivate reports whether p may see a private Media's metadata: a
+// privileged admin (who may list all Media), or the service account of the
+// product whose records use the Media's purpose.
+func (s *service) mayReadPrivate(p authz.Principal, m Media) bool {
+	if s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.List) {
+		return true
+	}
+	purpose, known := s.catalogue.Lookup(m.Purpose)
+	return known && p.Product != "" && p.Product == purpose.OwningProduct()
 }
 
 func (s *service) List(ctx context.Context, p authz.Principal) ([]Media, error) {
@@ -378,18 +605,23 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 			return Media{}, err
 		}
 	}
-	return s.Get(ctx, id)
+	return s.Get(ctx, p, id)
 }
 
+func (s *service) Addresses() Addresses {
+	return s.addresses
+}
+
+// withURL fills the Media's public address. A private Media has none: it is
+// read only through a read link.
 func (s *service) withURL(m Media) Media {
-	if m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil {
+	m.Sizes = nil
+	if m.Visibility == VisibilityPrivate || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil {
 		m.URL = ""
 		return m
 	}
-	if strings.TrimSpace(s.publicBase) == "" {
-		m.URL = m.Key
-		return m
-	}
-	m.URL = PublicURL(s.publicBase, m.Key)
+	m.URL = s.addresses.Object(m.Key)
+	purpose, _ := s.catalogue.Lookup(m.Purpose)
+	m.Sizes = s.addresses.imageAddresses(m, purpose.Image.Sizes)
 	return m
 }

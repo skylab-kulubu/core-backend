@@ -39,3 +39,21 @@ func TestPublicURLJoinsStorageKeys(t *testing.T) {
 		})
 	}
 }
+
+// Not parallel: it sets the process's public base, which every address
+// built without a base of its own uses (Event resources, team rosters).
+func TestPublicURLWithoutABaseUsesTheConfiguredOne(t *testing.T) {
+	restore := media.UsePublicBase("https://media.example.org/")
+	defer restore()
+
+	if got := media.PublicURL("", "images/x"); got != "https://media.example.org/images/x" {
+		t.Fatalf("got %q", got)
+	}
+	if got := media.PublicURL("https://cdn.example.test", "images/x"); got != "https://cdn.example.test/images/x" {
+		t.Fatalf("an explicit base: %q", got)
+	}
+	restore()
+	if got := media.PublicURL("", "images/x"); got != "https://cdn.yildizskylab.com/images/x" {
+		t.Fatalf("with nothing configured: %q", got)
+	}
+}

@@ -20,6 +20,7 @@ type Role string
 const (
 	RoleEventCover       Role = "event_cover"
 	RoleEventGallery     Role = "event_gallery"
+	RoleProfilePicture   Role = "profile_picture"
 	RoleCertificateAsset Role = "certificate_asset"
 )
 
@@ -35,9 +36,14 @@ const (
 )
 
 // rolePurposes are, for each product, the roles its records give a Media and
-// the Media purposes each role accepts. The two Event purposes fit both Event
+// the Media purposes each role accepts, the role's own purpose first (the
+// legacy backfill gives that one). The database keeps a copy for its
+// backstop (media_role_purposes, migration 20260926161000); a test keeps
+// the two equal. The two Event purposes fit both Event
 // roles: the organizer's picker offers every photo of the team's Events for
-// the cover and the gallery alike.
+// the cover and the gallery alike. A profile picture is linked only by
+// POST /v1/users/me/profile-picture, which uploads it as profile_picture, so
+// no link checks that role; the legacy backfill reads it.
 //
 // Transition rule: a legacy Media fits every role, as any Media could be
 // linked anywhere before Media purpose (fits). superadmin, Skyforms and CMS
@@ -47,6 +53,7 @@ var rolePurposes = map[authz.Product]map[Role][]string{
 	authz.ProductCore: {
 		RoleEventCover:       {PurposeEventCover, PurposeEventGallery},
 		RoleEventGallery:     {PurposeEventGallery, PurposeEventCover},
+		RoleProfilePicture:   {PurposeProfilePicture},
 		RoleCertificateAsset: {PurposeCertificateAsset},
 	},
 	authz.ProductForms: {RoleFormsAnswer: {PurposeAnswerFile, PurposeAnswerFileLarge}},
@@ -103,7 +110,8 @@ type linker struct {
 }
 
 func (l linker) CheckLink(ctx context.Context, id uuid.UUID, role Role) error {
-	return checkLink(ctx, l.store, id, authz.ProductCore, role, nil)
+	_, err := checkLink(ctx, l.store, id, authz.ProductCore, role, nil)
+	return err
 }
 
 // checkLink is the one check of every new link, core's own and another
@@ -111,31 +119,32 @@ func (l linker) CheckLink(ctx context.Context, id uuid.UUID, role Role) error {
 // all (may, when the product has such a rule), and its purpose fits the
 // product's role. A Media the product may not link is refused exactly like
 // one that does not exist, so the refusal tells the caller nothing about it.
-func checkLink(ctx context.Context, store Store, id uuid.UUID, product authz.Product, role Role, may func(Media) (bool, error)) error {
+// The Media it read comes back with a purpose refusal.
+func checkLink(ctx context.Context, store Store, id uuid.UUID, product authz.Product, role Role, may func(Media) (bool, error)) (Media, error) {
 	notLinkable := &LinkRefusal{Err: ErrNotLinkable, MediaID: id, Role: role}
 	m, err := store.GetIncludingDeleted(ctx, id)
 	if errors.Is(err, ErrNotFound) {
-		return notLinkable
+		return Media{}, notLinkable
 	}
 	if err != nil {
-		return err
+		return Media{}, err
 	}
 	if !linkable(m, time.Now()) {
-		return notLinkable
+		return Media{}, notLinkable
 	}
 	if may != nil {
 		allowed, err := may(m)
 		if err != nil {
-			return err
+			return Media{}, err
 		}
 		if !allowed {
-			return notLinkable
+			return Media{}, notLinkable
 		}
 	}
 	if !fits(product, role, m.Purpose) {
-		return &LinkRefusal{Err: ErrPurposeMismatch, MediaID: id, Role: role, Purpose: m.Purpose}
+		return m, &LinkRefusal{Err: ErrPurposeMismatch, MediaID: id, Role: role, Purpose: m.Purpose}
 	}
-	return nil
+	return m, nil
 }
 
 // linkable reports whether m may get a new Media attachment at now: it is

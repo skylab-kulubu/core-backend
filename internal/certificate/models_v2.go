@@ -99,6 +99,17 @@ type TemplateVersion struct {
 type VersionAssetRef struct {
 	Key         string `json:"key"`
 	ContentType string `json:"contentType"`
+	// Encryption opens the copy of a private asset, which is kept encrypted
+	// in the private bucket; nil for a public copy.
+	Encryption *media.Encryption `json:"encryption,omitempty"`
+}
+
+// Sealed is the copy's private object; false for a public copy.
+func (r VersionAssetRef) Sealed() (media.SealedObject, bool) {
+	if r.Encryption == nil {
+		return media.SealedObject{}, false
+	}
+	return media.SealedObject{Key: r.Key, Encryption: *r.Encryption}, true
 }
 
 type Binding struct {
@@ -241,6 +252,11 @@ type ArtifactStore interface {
 type Asset struct {
 	ContentType string
 	Data        []byte
+	// Sealed is the private object of an asset read from a private Media
+	// (or from a version's private copy): the service decrypts it into Data,
+	// and a published version keeps its copy encrypted, never in the public
+	// bucket.
+	Sealed *media.SealedObject
 }
 
 type AssetReader interface {

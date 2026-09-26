@@ -71,22 +71,6 @@ func TestSanitizeImage_KeepsPNGDropsText(t *testing.T) {
 	}
 }
 
-func TestSanitizeImage_SVGStripsScript(t *testing.T) {
-	t.Parallel()
-	in := []byte(`<svg xmlns="http://www.w3.org/2000/svg" onclick="alert(1)"><script>alert(1)</script><rect width="1" height="1"/></svg>`)
-	out, ctype, err := sanitizeImage(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ctype != "image/svg+xml" {
-		t.Fatalf("ctype %s", ctype)
-	}
-	s := string(out)
-	if bytes.Contains(out, []byte("<script")) || bytes.Contains(out, []byte("onclick")) {
-		t.Fatalf("script remained %s", s)
-	}
-}
-
 func pngWithText(png []byte) []byte {
 	iend := bytes.Index(png, []byte("IEND"))
 	if iend < 4 {

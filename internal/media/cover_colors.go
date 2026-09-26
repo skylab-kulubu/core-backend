@@ -36,10 +36,11 @@ type colorCluster struct {
 	share float64
 }
 
-// coverColorDecodes bounds how many images are decoded for cover colours at
-// once, so concurrent uploads can't stack full-size decodes in memory.
-var coverColorDecodes = make(chan struct{}, 2)
-
+// ExtractCoverColors decodes an image and picks its cover colours: at most
+// five, apart from each other. The image's header is checked first
+// (checkDecode), and the caller holds a decoding slot of the process's
+// DecodeBudget, so concurrent uploads can't stack full-size decodes in
+// memory.
 func ExtractCoverColors(data []byte) []string {
 	config, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil || config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > coverColorMaxPixels {
@@ -52,12 +53,15 @@ func ExtractCoverColors(data []byte) []string {
 	if format == "webp" {
 		return []string{}
 	}
-	coverColorDecodes <- struct{}{}
-	img, _, err := image.Decode(bytes.NewReader(data))
-	<-coverColorDecodes
+	img, err := decodeRaster(data)
 	if err != nil {
 		return []string{}
 	}
+	return coverColorsOf(img)
+}
+
+// coverColorsOf picks the cover colours of a decoded image.
+func coverColorsOf(img image.Image) []string {
 	img = resizeCoverImage(img)
 	points := coverHistogram(img)
 	if len(points) == 0 {
@@ -111,6 +115,11 @@ func resizeCoverImage(src image.Image) image.Image {
 	}
 	if bounds.Dx() <= 120 {
 		return src
+	}
+	if bounds.Dy() > 4*bounds.Dx() {
+		// A very tall image: a kernel scaler would keep a buffer of its
+		// whole height (downscale).
+		return downscale(src, fittedSize(sizeOf(src), 120))
 	}
 	height := int(math.Round(float64(bounds.Dy()) * 120 / float64(bounds.Dx())))
 	if height < 1 {

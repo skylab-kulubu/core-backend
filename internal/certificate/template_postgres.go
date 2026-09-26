@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
@@ -72,6 +73,9 @@ func (s *PostgresStore) CreateTemplate(ctx context.Context, t Template) (Templat
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Template{}, ErrForbidden
 	}
+	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
+		return Template{}, refusal
+	}
 	return created, err
 }
 
@@ -86,6 +90,9 @@ func (s *PostgresStore) UpdateTemplate(ctx context.Context, t Template) (Templat
 		t.ID, t.Name, t.OwnerTeam, t.SourceKind, t.SourceRef, t.SourceEditURL, raw))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Template{}, ErrNotFound
+	}
+	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
+		return Template{}, refusal
 	}
 	return updated, err
 }
@@ -113,6 +120,9 @@ func (s *PostgresStore) CreateVersion(ctx context.Context, v TemplateVersion) (T
 	}
 	if subjectlock.IsInactiveAccountReference(err) {
 		return TemplateVersion{}, ErrForbidden
+	}
+	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
+		return TemplateVersion{}, refusal
 	}
 	if err == nil {
 		err = json.Unmarshal(raw, &v.Layout)

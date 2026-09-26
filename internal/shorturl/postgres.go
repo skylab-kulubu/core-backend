@@ -113,7 +113,9 @@ func (s *PostgresStore) Update(ctx context.Context, u URL) (URL, error) {
 			ON CONFLICT (alias) DO UPDATE SET url_id = EXCLUDED.url_id, retired_at = now()`, previous, u.ID); err != nil {
 			return URL{}, mapURLErr(err)
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM url_retired_aliases WHERE lower(alias) = lower($1) AND url_id = $2`, u.Alias, u.ID); err != nil {
+		// Only the exact spelling comes back: a case-only rename (Foo → foo)
+		// must keep the Foo it just retired, because redirects match exactly.
+		if _, err := tx.Exec(ctx, `DELETE FROM url_retired_aliases WHERE alias = $1 AND url_id = $2`, u.Alias, u.ID); err != nil {
 			return URL{}, mapURLErr(err)
 		}
 	}
@@ -250,7 +252,9 @@ func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
 			updated_at = CASE WHEN disabled_at IS NOT NULL THEN now() ELSE updated_at END
 		WHERE id = $1`, id)
 	if err != nil {
-		return err
+		// urls_current_form_idx: the form got another link while this one was
+		// disabled.
+		return mapURLErr(err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

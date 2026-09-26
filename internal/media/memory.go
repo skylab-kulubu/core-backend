@@ -3,6 +3,9 @@ package media
 import (
 	"bytes"
 	"context"
+	"io"
+	"maps"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -16,6 +19,7 @@ type MemoryStore struct {
 	byID        map[uuid.UUID]Media
 	referenced  map[uuid.UUID]bool
 	attachments map[uuid.UUID]Attachment
+	readLinks   []ReadLinkRecord
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -92,6 +96,42 @@ func (s *MemoryStore) SetServingPolicyApplied(_ context.Context, id uuid.UUID) e
 		return ErrNotFound
 	}
 	m.ServingPolicyApplied = true
+	s.byID[id] = m
+	return nil
+}
+
+func (s *MemoryStore) ListPendingImageSizes(_ context.Context, purposes []string, after uuid.UUID, limit int) ([]Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Media, 0)
+	for _, m := range s.byID {
+		if m.Kind != KindImage || m.SizeObjects != nil || !slices.Contains(purposes, m.Purpose) || m.DeletedAt != nil || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil || bytes.Compare(m.ID[:], after[:]) <= 0 {
+			continue
+		}
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].ID[:], out[j].ID[:]) < 0 })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) SetImageSizes(_ context.Context, id uuid.UUID, size ImageSize, objects map[string]SizeObject) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if m.BlobPurgedAt != nil {
+		return ErrPurged
+	}
+	if m.BlobPurgeStartedAt != nil {
+		return ErrPurgeInProgress
+	}
+	m.Width, m.Height = size.Width, size.Height
+	m.SizeObjects = maps.Clone(objects)
 	s.byID[id] = m
 	return nil
 }
@@ -228,7 +268,7 @@ func (s *MemoryStore) PurgeBlobIfUnreferenced(_ context.Context, id uuid.UUID, p
 		m.BlobPurgeCheckedAt = &purgedAt
 		s.byID[id] = m
 	}
-	if err := purge(m.Key); err != nil {
+	if err := purgeObjects(m.Key, purge); err != nil {
 		return false, err
 	}
 	m.BlobPurgedAt = &purgedAt
@@ -276,7 +316,7 @@ func (s *MemoryStore) PurgeExpiredBlobIfUnattached(_ context.Context, id uuid.UU
 		m.BlobPurgeCheckedAt = &now
 		s.byID[id] = m
 	}
-	if err := purge(m.Key); err != nil {
+	if err := purgeObjects(m.Key, purge); err != nil {
 		return false, err
 	}
 	m.BlobPurgedAt = &now
@@ -294,6 +334,44 @@ func (s *MemoryStore) SetReferenced(id uuid.UUID, referenced bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.referenced[id] = referenced
+}
+
+func (s *MemoryStore) RecordReadLink(_ context.Context, link ReadLinkRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID[link.MediaID]; !ok {
+		return ErrNotFound
+	}
+	link.Opens = nil
+	s.readLinks = append(s.readLinks, link)
+	return nil
+}
+
+func (s *MemoryStore) RecordReadLinkOpen(_ context.Context, open ReadLinkOpen) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.readLinks {
+		if s.readLinks[i].ID == open.LinkID {
+			s.readLinks[i].Opens = append(s.readLinks[i].Opens, open)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// ReadLinkLog is the Media's access log, oldest first, each link with its
+// opens: what a test checks core recorded.
+func (s *MemoryStore) ReadLinkLog(mediaID uuid.UUID) []ReadLinkRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []ReadLinkRecord{}
+	for _, link := range s.readLinks {
+		if link.MediaID == mediaID {
+			link.Opens = append([]ReadLinkOpen(nil), link.Opens...)
+			out = append(out, link)
+		}
+	}
+	return out
 }
 
 type MemoryBlob struct {
@@ -343,6 +421,22 @@ func (s *MemoryBlob) Read(_ context.Context, key string) ([]byte, error) {
 	return append([]byte{}, data...), nil
 }
 
+// Open streams a stored object.
+func (s *MemoryBlob) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	data, err := s.Read(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+// Len is how many objects the bucket holds.
+func (s *MemoryBlob) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.objects)
+}
+
 func (s *MemoryBlob) Get(key string) ([]byte, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -356,4 +450,11 @@ func (s *MemoryBlob) Metadata(key string) (BlobMetadata, bool) {
 	defer s.mu.Unlock()
 	meta, ok := s.metadata[key]
 	return meta, ok
+}
+
+// Keys are the keys of every stored object, in order.
+func (s *MemoryBlob) Keys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Sorted(maps.Keys(s.objects))
 }

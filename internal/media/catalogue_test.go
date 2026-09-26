@@ -3,6 +3,7 @@ package media_test
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/skylab-kulubu/core-backend/config"
@@ -65,21 +66,56 @@ func TestCatalogue_PublicRasterImagesAreReencoded(t *testing.T) {
 	}
 }
 
-func TestCatalogue_SVGIsNeverStoredAsSVG(t *testing.T) {
+// SVG is served only as a sanitized download from the CDN: a private
+// purpose (an Answer file, a certificate asset) cannot list it.
+func TestCatalogue_OnlyCMSImagesAndEventPicturesAcceptSVG(t *testing.T) {
+	t.Parallel()
+	// And among the public ones, only CMS images and Event pictures: SVG is
+	// never a profile picture.
+	for _, purpose := range []string{"answer_file", "certificate_asset", "profile_picture"} {
+		data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+			purposes[purpose]["types"] = append(purposes[purpose]["types"].([]any), "image/svg+xml")
+		})
+		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingSVG) {
+			t.Fatalf("%s naming SVG: err = %v, want %v", purpose, err, media.ErrCeilingSVG)
+		}
+	}
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for purpose, want := range map[string]bool{"cms_image": true, "event_cover": true, "event_gallery": true, "profile_picture": false, "answer_file": false} {
+		p, _ := catalogue.Lookup(purpose)
+		if got := slices.Contains(p.Types, "image/svg+xml"); got != want {
+			t.Errorf("%s lists SVG: %v, want %v", purpose, got, want)
+		}
+	}
+}
+
+// SVG is refused for a private purpose by its visibility, not only by its
+// name: even a purpose that may list SVG cannot once it is private.
+func TestCatalogue_NoPrivatePurposeAcceptsSVG(t *testing.T) {
 	t.Parallel()
 	data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
-		purposes["cms_image"]["types"] = append(purposes["cms_image"]["types"].([]any), "image/svg+xml")
+		purposes["cms_image"]["visibility"] = "private"
+		purposes["cms_image"]["encrypted"] = true
+		purposes["cms_image"]["types"] = []any{"image/svg+xml"}
 	})
 	if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingSVG) {
-		t.Fatalf("purpose keeping SVG as SVG: err = %v, want %v", err, media.ErrCeilingSVG)
+		t.Fatalf("a private purpose naming SVG: err = %v, want %v", err, media.ErrCeilingSVG)
 	}
+}
 
-	rasterized := reviewedCatalogueWith(t, func(purposes purposeEntries) {
-		purposes["cms_image"]["types"] = append(purposes["cms_image"]["types"].([]any), "image/svg+xml")
-		purposes["cms_image"]["image"].(map[string]any)["rasterize_svg"] = true
+// A private raster image is re-encoded before it is encrypted, as a public
+// one is before it is served: no uploaded image bytes are stored as they
+// came.
+func TestCatalogue_PrivateRasterPurposeDeclaresReencoding(t *testing.T) {
+	t.Parallel()
+	data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+		delete(purposes["certificate_asset"], "image")
 	})
-	if _, err := media.ParseCatalogue(rasterized); err != nil {
-		t.Fatalf("purpose rasterizing SVG to PNG: %v", err)
+	if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingPrivateRaster) {
+		t.Fatalf("private raster purpose without re-encoding: err = %v, want %v", err, media.ErrCeilingPrivateRaster)
 	}
 }
 
@@ -143,9 +179,16 @@ func TestCatalogue_RefusesMalformedEntries(t *testing.T) {
 		"unreadable pending TTL":  func(p purposeEntries) { p["cms_file"]["pending_ttl"] = "tomorrow" },
 		"pending that never ends": func(p purposeEntries) { p["cms_file"]["pending_ttl"] = "none" },
 		"variant above the image": func(p purposeEntries) {
-			p["event_cover"]["image"].(map[string]any)["variants"] = map[string]any{"poster": 3000}
+			p["event_cover"]["image"].(map[string]any)["sizes"] = map[string]any{"page": 3000}
+		},
+		// Size names are what clients ask for; a new one is a code change.
+		"size clients cannot name": func(p purposeEntries) {
+			p["event_cover"]["image"].(map[string]any)["sizes"] = map[string]any{"poster": 800}
 		},
 		"name that is not a slug": func(p purposeEntries) { p["Event Cover"] = p["event_cover"] },
+		"SVG rasterizing, no more": func(p purposeEntries) {
+			p["cms_image"]["image"].(map[string]any)["rasterize_svg"] = true
+		},
 		"no legacy purpose":       func(p purposeEntries) { delete(p, "legacy") },
 		"no profile picture":      func(p purposeEntries) { delete(p, "profile_picture") },
 		"legacy rules on another": func(p purposeEntries) { p["cms_file"]["legacy_rules"] = true },

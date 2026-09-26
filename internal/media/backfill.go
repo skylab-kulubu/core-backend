@@ -14,7 +14,9 @@ const (
 	backfillBatchSize           = 25
 )
 
-func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore) (int, bool, error) {
+// BackfillCoverColors picks the cover colours of a batch of images stored
+// without them. Each image decodes within the decode budget.
+func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore, budget *DecodeBudget) (int, bool, error) {
 	items, err := store.ListPendingCoverColors(ctx, coverColorBackfillBatchSize)
 	if err != nil {
 		return 0, false, err
@@ -24,17 +26,39 @@ func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore) (int
 		if err != nil {
 			return i, false, err
 		}
-		if err := store.SetCoverColors(ctx, item.ID, ExtractCoverColors(data)); err != nil {
+		colors, err := coverColorsInSlot(ctx, budget, data, ExtractCoverColors)
+		if err != nil {
+			return i, false, err
+		}
+		if err := store.SetCoverColors(ctx, item.ID, colors); err != nil {
 			return i, false, err
 		}
 	}
 	return len(items), len(items) < coverColorBackfillBatchSize, nil
 }
 
-func MaintainCoverColorBackfill(ctx context.Context, store Store, blobs BlobStore, retryEvery time.Duration, onError func(error)) {
+// coverColorsInSlot picks an image's cover colours within one decode
+// slot, released however picking ends. A pick that panics picks none
+// (cover colours are decoration) rather than keep the slot or stop the
+// backfill goroutine, which nothing else recovers.
+func coverColorsInSlot(ctx context.Context, budget *DecodeBudget, data []byte, pick func([]byte) []string) (colors []string, err error) {
+	release, err := budget.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	defer func() {
+		if recover() != nil {
+			colors = []string{}
+		}
+	}()
+	return pick(data), nil
+}
+
+func MaintainCoverColorBackfill(ctx context.Context, store Store, blobs BlobStore, budget *DecodeBudget, retryEvery time.Duration, onError func(error)) {
 	go func() {
 		for {
-			_, done, err := BackfillCoverColors(ctx, store, blobs)
+			_, done, err := BackfillCoverColors(ctx, store, blobs, budget)
 			if err == nil {
 				if done {
 					return
@@ -73,10 +97,23 @@ func BackfillServingPolicy(ctx context.Context, store Store, blobs BlobStore, on
 		onError)
 }
 
+// BackfillError is an item a backfill pass could not apply, named by kind
+// and id.
+type BackfillError struct {
+	Kind string
+	ID   uuid.UUID
+	Err  error
+}
+
+func (e *BackfillError) Error() string { return fmt.Sprintf("%s %s: %v", e.Kind, e.ID, e.Err) }
+
+func (e *BackfillError) Unwrap() error { return e.Err }
+
 // BackfillPass walks every pending item once, by id in batches of 25, and
-// applies each one. An item that fails is reported through onError, named by
-// kind and id, and left pending for the next pass, so it never holds up the
-// items after it. apply must be idempotent: a pass cut short is run again.
+// applies each one. An item that fails is reported through onError as a
+// *BackfillError and left pending for the next pass, so it never holds up
+// the items after it. A cancelled ctx ends the pass with its error and the
+// counts so far. apply must be idempotent: a pass cut short is run again.
 func BackfillPass[T any](ctx context.Context, kind string, list func(ctx context.Context, after uuid.UUID, limit int) ([]T, error), id func(T) uuid.UUID, apply func(context.Context, T) error, onError func(error)) (BackfillReport, error) {
 	var report BackfillReport
 	after := uuid.Nil
@@ -86,10 +123,13 @@ func BackfillPass[T any](ctx context.Context, kind string, list func(ctx context
 			return report, err
 		}
 		for _, item := range items {
+			if err := ctx.Err(); err != nil {
+				return report, err
+			}
 			if err := apply(ctx, item); err != nil {
 				report.Failed++
 				if onError != nil {
-					onError(fmt.Errorf("%s %s: %w", kind, id(item), err))
+					onError(&BackfillError{Kind: kind, ID: id(item), Err: err})
 				}
 				continue
 			}

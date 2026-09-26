@@ -6,7 +6,7 @@ Core implements the v1 shared denylist contract for the exact issuer `https://e.
 
 ## Request ordering
 
-Verified Bearer identity is evaluated after signature/issuer/audience validation and before JIT. A missing subject remains anonymous. An allowed subject continues; marker `1` returns a generic `401`; Redis, contract and malformed-value failures return `503`, `Cache-Control: no-store` and `Retry-After: 1` before JIT or product code. `/v1/go/:alias` uses this same chain and a PostgreSQL tri-state attribution check: a durable deletion marker returns `401`, a database failure returns `503`, and neither path records a hit or increments the click count. A genuinely anonymous hop keeps the existing silent `301`. `/v1/health` is process-only. `/v1/ready` checks the exact contract sentinel.
+Verified Bearer identity is evaluated after signature/issuer/audience validation and before JIT. A missing subject remains anonymous. An allowed subject continues; marker `1` returns a generic `401`; Redis, contract and malformed-value failures return `503`, `Cache-Control: no-store` and `Retry-After: 1` before JIT or product code. `/v1/go/:alias` and its channel form `/v1/go/:alias/:channel` use this same chain and a PostgreSQL tri-state attribution check: a durable deletion marker returns `401`, a database failure returns `503`, and neither path records a hit or increments the click count. A genuinely anonymous hop keeps the existing silent `301`. `/v1/health` is process-only. `/v1/ready` checks the exact contract sentinel.
 
 The only non-product exception is the Account Center self-delete
 intake/status contract in `docs/account-self-delete.md`. It is isolated before

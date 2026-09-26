@@ -1,0 +1,279 @@
+{
+  "realm": "e-skylab",
+  "enabled": true,
+  "displayName": "SKY LAB (erasure harness)",
+  "sslRequired": "external",
+  "loginTheme": "e-skylab-theme",
+  "internationalizationEnabled": true,
+  "supportedLocales": [
+    "tr",
+    "en"
+  ],
+  "defaultLocale": "tr",
+  "accessTokenLifespan": 300,
+  "eventsEnabled": true,
+  "eventsExpiration": 2592000,
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true,
+  "eventsListeners": [
+    "jboss-logging"
+  ],
+  "smtpServer": {
+    "host": "mailpit",
+    "port": "1025",
+    "from": "no-reply@harness.invalid",
+    "fromDisplayName": "SKY LAB harness",
+    "ssl": "false",
+    "starttls": "false",
+    "auth": "false"
+  },
+  "clients": [
+    {
+      "clientId": "skyapp",
+      "name": "SKY LAB Mobile",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "com.yildizskylab.skyapp:/oauth/callback"
+      ]
+    },
+    {
+      "clientId": "core",
+      "name": "SKY LAB core API",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "__CORE_CLIENT_SECRET__",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true
+    },
+    {
+      "clientId": "skymail",
+      "name": "SkyMail",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "redirectUris": [
+        "https://mail.yildizskylab.com/*"
+      ]
+    },
+    {
+      "clientId": "skymail-backend",
+      "name": "SkyMail backend",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "__SKYMAIL_SERVICE_CLIENT_SECRET__",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true
+    },
+    {
+      "clientId": "skycms",
+      "name": "SKY LAB CMS API",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false
+    },
+    {
+      "clientId": "forms",
+      "name": "SKY LAB Forms API",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false
+    },
+    {
+      "clientId": "skyforms",
+      "name": "SKY LAB Forms",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "redirectUris": [
+        "https://forms.yildizskylab.com/api/auth/callback/keycloak"
+      ]
+    },
+    {
+      "clientId": "harness-core",
+      "name": "Harness end-user token for core",
+      "description": "Test-only public client: a direct grant gives a person's token for one service (old-JWT scenario and seeding).",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "aud-core",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "core",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "harness-skymail",
+      "name": "Harness end-user token for skymail",
+      "description": "Test-only public client: a direct grant gives a person's token for one service (old-JWT scenario and seeding).",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "aud-skymail",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "skymail",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "harness-cms",
+      "name": "Harness end-user token for skycms",
+      "description": "Test-only public client: a direct grant gives a person's token for one service (old-JWT scenario and seeding).",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "aud-skycms",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "skycms",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "harness-forms",
+      "name": "Harness end-user token for forms",
+      "description": "Test-only public client: a direct grant gives a person's token for one service (old-JWT scenario and seeding).",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "aud-forms",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "forms",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "harness-browser",
+      "name": "Harness browser sign-in (OBS re-login scenario)",
+      "description": "Test-only public client with the standard flow: a sign-in through the fake OBS IdP yields a token core accepts.",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "https://harness.invalid/callback"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-core",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "core",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "roles": {
+    "client": {
+      "core": [
+        {
+          "name": "url:create"
+        },
+        {
+          "name": "certificate:issue"
+        }
+      ],
+      "skymail": [
+        {
+          "name": "skymail:access"
+        },
+        {
+          "name": "skymail:mails:read"
+        },
+        {
+          "name": "skymail:mails:send"
+        }
+      ],
+      "harness-cms": [
+        {
+          "name": "cms:access",
+          "description": "CMS reads roles from resource_access[azp] (ADR-0014)"
+        }
+      ]
+    }
+  },
+  "groups": [
+    {
+      "name": "ADMIN"
+    }
+  ],
+  "identityProviders": [
+    {
+      "alias": "OBS",
+      "displayName": "YTÜ (fake OBS for the harness)",
+      "providerId": "oidc",
+      "enabled": true,
+      "trustEmail": true,
+      "storeToken": false,
+      "linkOnly": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "clientId": "e-skylab-broker",
+        "clientSecret": "__OBS_BROKER_CLIENT_SECRET__",
+        "clientAuthMethod": "client_secret_post",
+        "authorizationUrl": "https://e.yildizskylab.com/realms/obs-fake/protocol/openid-connect/auth",
+        "tokenUrl": "http://keycloak:8080/realms/obs-fake/protocol/openid-connect/token",
+        "userInfoUrl": "http://keycloak:8080/realms/obs-fake/protocol/openid-connect/userinfo",
+        "jwksUrl": "http://keycloak:8080/realms/obs-fake/protocol/openid-connect/certs",
+        "issuer": "https://e.yildizskylab.com/realms/obs-fake",
+        "validateSignature": "true",
+        "useJwksUrl": "true",
+        "defaultScope": "openid email profile",
+        "syncMode": "IMPORT",
+        "pkceEnabled": "false"
+      }
+    }
+  ],
+  "users": []
+}

@@ -24,28 +24,32 @@ type Options struct {
 	Jobs            JobStore
 	Artifacts       ArtifactStore
 	Assets          AssetReader
-	LegacyImmediate bool
+	// PrivateArtifacts keeps the copies of private assets a published
+	// version takes. Nil while private Media is off.
+	PrivateArtifacts media.PrivateObjects
+	LegacyImmediate  bool
 	// Media checks each Media a template draft is about to link. Nil leaves
 	// the Media's rules to the database's guards.
 	Media media.Linker
 }
 
 type service struct {
-	store           Store
-	tickets         ticket.Store
-	events          event.Store
-	users           user.Store
-	authz           authz.Authorizer
-	render          Renderer
-	mail            Mailer
-	apiOrigin       string
-	verifyOrigin    string
-	templates       TemplateStore
-	jobs            JobStore
-	artifacts       ArtifactStore
-	assets          AssetReader
-	legacyImmediate bool
-	media           media.Linker
+	store            Store
+	tickets          ticket.Store
+	events           event.Store
+	users            user.Store
+	authz            authz.Authorizer
+	render           Renderer
+	mail             Mailer
+	apiOrigin        string
+	verifyOrigin     string
+	templates        TemplateStore
+	jobs             JobStore
+	artifacts        ArtifactStore
+	assets           AssetReader
+	privateArtifacts media.PrivateObjects
+	legacyImmediate  bool
+	media            media.Linker
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -83,7 +87,7 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 		store: store, tickets: tickets, events: events, users: users, authz: az,
 		render: render, mail: mail, apiOrigin: apiOrigin, verifyOrigin: verifyOrigin,
 		templates: opts.Templates, jobs: opts.Jobs, artifacts: opts.Artifacts,
-		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media,
+		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media, privateArtifacts: opts.PrivateArtifacts,
 	}
 }
 

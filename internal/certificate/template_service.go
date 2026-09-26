@@ -135,7 +135,25 @@ func (s *service) PublishTemplate(ctx context.Context, p authz.Principal, id uui
 	if err != nil {
 		return TemplateVersion{}, err
 	}
-	version := TemplateVersion{ID: versionID, TemplateID: item.ID, Layout: item.DraftLayout, AssetManifest: manifest, AssetServingPolicyApplied: true}
+	published, err := s.createVersion(ctx, p, item, sample, TemplateVersion{
+		ID: versionID, TemplateID: item.ID, Layout: item.DraftLayout, AssetManifest: manifest, AssetServingPolicyApplied: true,
+	})
+	if err != nil && s.versionNotStored(ctx, versionID) {
+		// The private copies are this attempt's own; nothing refers to them.
+		s.discardPrivateCopies(ctx, privateCopyKeys(manifest))
+	}
+	return published, err
+}
+
+// versionNotStored reports whether the version is provably absent. A store
+// that answered an error may still have committed it (the answer was lost):
+// its copies are then in use, and only an ErrNotFound lets them go.
+func (s *service) versionNotStored(ctx context.Context, versionID uuid.UUID) bool {
+	_, err := s.templates.GetVersion(context.WithoutCancel(ctx), versionID)
+	return errors.Is(err, ErrNotFound)
+}
+
+func (s *service) createVersion(ctx context.Context, p authz.Principal, item Template, sample PreviewData, version TemplateVersion) (TemplateVersion, error) {
 	if preview, err := s.renderLayoutPDF(ctx, item.DraftLayout, sample, s.verifyURL(sample.Serial), s.assetsForVersion(version)); err != nil || len(preview) == 0 {
 		if err != nil {
 			return TemplateVersion{}, err
@@ -174,7 +192,7 @@ func (s *service) PreviewTemplate(ctx context.Context, p authz.Principal, id uui
 	if sample.IssueDate == "" {
 		sample.IssueDate = time.Now().Format("02.01.2006")
 	}
-	return s.renderLayoutPDF(ctx, item.DraftLayout, sample, s.verifyURL(sample.Serial), s.assets)
+	return s.renderLayoutPDF(ctx, item.DraftLayout, sample, s.verifyURL(sample.Serial), s.decrypted(s.assets))
 }
 
 func (s *service) PreviewEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]byte, error) {

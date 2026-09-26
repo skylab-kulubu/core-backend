@@ -17,11 +17,12 @@ recovery window and reference check below.
 The background purge worker runs one bounded batch at startup and on its
 configured interval. A record is eligible only after the recovery window. The
 worker refuses to purge media that anything still uses: any Media attachment
-(see [Media attachment](#media-attachment)), and, as a safety net until the
-legacy backfill (media redesign ticket 08) has proven every link has its
-attachment, core's own links checked directly (an Event cover or gallery, a
-User profile, a Certificate template draft, or a published Certificate
-template version). Both must say unused. Database triggers also reject new
+(see [Media attachment](#media-attachment)), and, as a safety net, core's own
+links checked directly (an Event cover or gallery, a User profile, a
+Certificate template draft, or a published Certificate template version).
+Both must say unused. The legacy report counts the core links that have no
+Media attachment (see [Legacy Media](#legacy-media)); once production shows
+zero, removing the direct check is media redesign ticket 18. Database triggers also reject new
 durable references and new Media attachments to inactive or purged media.
 The same worker then runs the expiry cleanup described under
 [Media attachment](#media-attachment).
@@ -54,8 +55,10 @@ completing its request.
 
 ## Serving policy
 
-Objects are public at `https://cdn.yildizskylab.com/<key>`, so the metadata a
-Media is stored with decides what a browser does with it. Every write to the
+Objects are public at `<base>/<key>`, the base being `CDN_BASE` (or
+`R2_PUBLIC_URL`; `https://cdn.yildizskylab.com` when neither is set, see
+[Addresses](#addresses)), so the metadata a Media is stored with decides what a
+browser does with it. Every write to the
 bucket takes that metadata from one policy (`media.ServingMetadata`,
 `internal/media/serving.go`):
 
@@ -64,7 +67,7 @@ bucket takes that metadata from one policy (`media.ServingMetadata`,
   admin preview frames PDFs.
 - SVG keeps `image/svg+xml`, so `<img>` still renders it, but carries
   `Content-Disposition: attachment`: opening its URL downloads it instead of
-  running any script the regex sanitizer missed.
+  running any script a sanitizer missed (see [SVG](#svg)).
 - Every other file is `application/octet-stream` with
   `Content-Disposition: attachment; filename*=…` (the Media's name, RFC 2231
   encoded), whatever type its client declared.
@@ -89,11 +92,12 @@ after it; passes repeat a minute apart until one ends with nothing failed.
 Every step is idempotent, so the backfills are safe to interrupt and re-run.
 Upload and template publishing flag what they write themselves.
 
-Known gap: until Skyforms sends the `answer_file` purpose and private Media
-ships, Answer files are still public legacy media; tracked by the media
-redesign. `GET /v1/media/{id}` answers a caller without a token with no
-`uploadedBy` and no `name`, but a signed-in caller still sees both, and the
-object itself stays reachable at its CDN address.
+Known gap: until Skyforms sends the `answer_file` purpose (stage 5), Answer
+files are still public legacy media; tracked by the media redesign.
+`GET /v1/media/{id}` answers a caller without a token with no `uploadedBy`
+and no `name`, but a signed-in caller still sees both, and the object itself
+stays reachable at its CDN address. An Answer file uploaded with its purpose
+is private (see [Private Media](#private-media)).
 
 `X-Content-Type-Options: nosniff` cannot be stored as R2 object metadata; it
 needs a Cloudflare Transform Rule on `cdn.yildizskylab.com`.
@@ -114,7 +118,7 @@ code. CODEOWNERS covers the file and the ceilings. Each entry has:
 |---|---|
 | `description` | What the purpose is for (for reviewers). |
 | `upload` | Who may upload: see the upload rules below. |
-| `types` | Content types accepted, detected from the file's content, never from its name or declared type. |
+| `types` | Content types accepted, detected from the file's content, never from its name or declared type. SVG is stored sanitized, as a download (see [SVG](#svg)). |
 | `max_mib` | Maximum size in MiB. |
 | `visibility` | `public` (served from the CDN) or `private`. |
 | `encrypted` | Encrypted before storage; true exactly for private purposes. |
@@ -123,7 +127,7 @@ code. CODEOWNERS covers the file and the ceilings. Each entry has:
 | `transport` | `single_step` (through `POST /v1/media`) or `direct` (Direct upload). |
 | `attach` | Who attaches the purpose's Media: `core` (a core record links it) or `service` (another product, through the [service attach API](#service-attach-api)). |
 | `service` | Only with `attach: service`: the product that attaches the purpose's Media, `forms` or `cms`. It is also the purpose's owning product: only that product may link the purpose's Media at all. |
-| `image` | Raster handling: `reencode`, `max_dimension`, `variants` (name → px), `rasterize_svg`. |
+| `image` | Image handling: `reencode`, `max_dimension`, `sizes` (size name → px on the longer side). |
 | `legacy_rules` | Only on `legacy`: the rules below instead of `types` and `max_mib`. |
 
 `pending_ttl` sets a new Media's expiry (see
@@ -135,30 +139,35 @@ unless its product has a service client configured
 
 - `cms_image` and `cms_file` (the CMS) stay refused: the CMS has no service
   account yet, and opening them is Yusuf's decision once it has one;
-- `answer_file` (Skyforms, configured by default) stays refused with
-  `private_media_disabled` until private Media ships, and
-  `answer_file_large` is a Direct upload purpose;
+- `answer_file` (Skyforms, configured by default) and `certificate_asset`
+  are private: refused with `private_media_disabled` while
+  `MEDIA_PRIVATE_ENABLED` is off, stored encrypted in the private bucket
+  when it is on ([Private Media](#private-media)). `answer_file` also needs
+  a malware scan, so it stays refused (`purpose_not_available`) until the
+  scanner exists (ticket 12). `answer_file_large` is a Direct upload purpose
+  and stays refused (ticket 11);
 - `club_file` and `video` name no product: where club files and videos are
   attached is for the Direct upload and video tickets (11 and 13) to settle,
   and both are Direct upload purposes anyway.
 
 Every purpose a product's role accepts must name that product, and the
 purposes core refers to in code (the core purposes, the CMS purposes and the
-Answer file purposes) must all be in the file. `scan` and `image` are declared now
-and not yet acted on: scanning and re-encoding with variants (media redesign
-ticket 04) read them as they ship. Until re-encoding ships, a raster image
-under any purpose gets the same metadata stripping as before (EXIF, XMP and
-comments removed), not a re-encode. An unknown field or
-value, a missing `legacy` entry, or a ceiling violation stops core at startup.
+Answer file purposes) must all be in the file. `image` is acted on (see
+[Images and sizes](#images-and-sizes)). `scan` is acted on by refusal: while
+core has no malware scanner (ticket 12), a purpose with `scan: true` cannot be
+uploaded (`purpose_not_available`), since its Media are opened only once
+clean. `image.sizes` may name only the sizes clients can ask for, `card` and
+`page`. An unknown field or value, a missing `legacy` entry, or a ceiling
+violation stops core at startup.
 
 The initial entries:
 
 | Purpose | Upload | Types | Max | Visibility | Transport | Attached by |
 |---|---|---|---|---|---|---|
 | `profile_picture` | authenticated | JPEG, PNG, WebP, GIF | 5 MiB | public | single-step | core |
-| `event_cover`, `event_gallery` | event_editor | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step | core |
+| `event_cover`, `event_gallery` | event_editor | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | core |
 | `certificate_asset` | certificate_template_editor | PNG, JPEG, PDF | 20 MiB | private | single-step | core |
-| `cms_image` | authenticated | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step | cms (no service client yet) |
+| `cms_image` | authenticated | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | cms (no service client yet) |
 | `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms (no service client yet) |
 | `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step | forms |
 | `club_file` | event_editor | PDF | 1 GiB | public, scanned | direct | not settled (ticket 11) |
@@ -166,7 +175,8 @@ The initial entries:
 | `video` | event_editor | MP4 | 2 GiB | public | direct | not settled (ticket 13) |
 | `legacy` | authenticated | legacy rules | legacy rules | public | single-step | core, or a product for its uploader or once it holds it (transition rule) |
 
-SVG joins `cms_image`, rasterized to PNG, once core rasterizes SVG.
+Every public raster purpose re-encodes (2560 px) and gets the `card` (400 px)
+and `page` (1200 px) sizes. `legacy` does neither.
 
 ### Upload rules
 
@@ -199,26 +209,32 @@ are.
 `internal/media/ceilings.go` holds limits no catalogue entry can loosen.
 Core refuses to start with a catalogue that breaks one:
 
-- a public purpose accepts only raster images (JPEG, PNG, WebP, GIF), PDF and
-  MP4;
+- a public purpose accepts only raster images (JPEG, PNG, WebP, GIF), SVG,
+  PDF and MP4;
 - a public purpose that accepts raster images declares re-encoding
-  (`image.reencode`). The declaration is enforced now; the re-encoding
-  itself arrives with ticket 04, and until then these images are only
-  stripped of metadata;
-- SVG is never stored as SVG: a purpose naming it rasterizes it to PNG
-  (`image.rasterize_svg`);
+  (`image.reencode`), and core re-encodes every such image (see
+  [Images and sizes](#images-and-sizes));
+- only `cms_image`, `event_cover` and `event_gallery` may list SVG, and only
+  while public: never a profile picture, and never a private purpose, whatever
+  its name. In code, an SVG is stored only for
+  a purpose that lists it, only sanitized, under a key ending in `.svg`, and
+  is always served as a download (`Content-Disposition: attachment`);
 - the maximum size stays under 20 MiB for single-step uploads and 2 GiB for
   Direct upload;
 - the declared image size stays within 2560 px (`image.max_dimension`,
-  variants), applied when re-encoding ships;
-- a private purpose is encrypted.
+  `image.sizes`), and re-encoding scales a larger image down to it;
+- a private purpose is encrypted, and one that accepts raster images declares
+  re-encoding (`image.reencode`), so the image is re-encoded before it is
+  encrypted.
 
 ### Uploading
 
 `POST /v1/media` takes an optional multipart field `purpose`. With a purpose,
-core checks, in order: the purpose exists, the caller may upload it, it is not
-private (refused until private Media storage ships), it is single-step,
-something can attach it, the size, and the type detected from the content. `POST /v1/users/me/profile-picture` always uploads
+core checks, in order: the purpose exists, the caller may upload it, private
+Media is on if the purpose is private, it is single-step, something can attach
+it, a malware scanner exists if the purpose needs a scan, the size, and the type detected from the content (a raster format, PDF by
+its header, or DOCX: a ZIP package whose `[Content_Types].xml` declares a
+macro-free Word document part `word/document.xml`). `POST /v1/users/me/profile-picture` always uploads
 as `profile_picture`: raster images up to 5 MiB, no PDF, no SVG.
 
 Media uploaded without a purpose are `legacy` and keep the rules they have
@@ -237,11 +253,14 @@ over their upload budget gets `429` `media_rate_limited`, described under
 |---|---|---|---|
 | 400 | `purpose_unknown` | `purpose` | The purpose is not in the catalogue. |
 | 403 | `purpose_forbidden` | `purpose` | The caller's upload rule does not allow it. |
-| 422 | `private_media_disabled` | `purpose` | A private purpose. Private Media storage (encryption, the private bucket) is not built yet, so nothing is stored; retrying does not help. |
+| 422 | `private_media_disabled` | `purpose` | A private purpose while `MEDIA_PRIVATE_ENABLED` is off. Nothing is stored, and never publicly instead; retrying does not help. |
+| 503 | `private_media_unavailable` | | A private purpose while OpenBao cannot be reached. Nothing is stored; retry later (`Retry-After`). Public purposes are not affected. |
 | 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media`. |
-| 422 | `purpose_not_available` | `purpose` | A `service` purpose whose product has no service client configured (`cms_image` and `cms_file` today), or that names no product (`club_file` and `video`, which reach `purpose_requires_direct_upload` first). Nothing is stored; the file would only wait for its expiry. |
-| 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum. |
-| 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types. |
+| 422 | `purpose_not_available` | `purpose` | A `service` purpose whose product has no service client configured (`cms_image` and `cms_file` today), or that names no product (`club_file` and `video`, which reach `purpose_requires_direct_upload` first): nothing is stored, the file would only wait for its expiry. Also a purpose that needs a malware scan while core has no scanner (`answer_file` today). |
+| 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum; an SVG above 1 MiB (`maxBytes` is then 1 MiB). |
+| 413 | `media_image_too_large` | `purpose`, `maxPixels` | Decoding the image would take more than core allows, judged from its header before anything is decoded (see [Decode cost](#decode-cost)). `maxPixels` is the most pixels an image of its kind may have: 50 000 000, fewer for costly pixels (16-bit PNG, progressive JPEG, an animation's many frames). An animated GIF or WebP larger than 2560 px on a side is refused this way too. |
+| 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types, or starts like one but does not decode or check as it: a broken image, a WebP whose frame is not its canvas, an animated WebP whose structure does not check, a GIF with more than 300 frames or a frame outside its screen, a JPEG with more than 64 scans, an SVG core does not sanitize. |
+| 503 | `media_busy` | `retryAfterSeconds`, `Retry-After` header | The upload waited 10 seconds for a [decoding slot](#decode-budget) while other images were decoded. Nothing is stored and the upload is not charged to the upload budget; retry it. |
 
 A body above the server's limit (20 MiB plus room for the form) is still
 refused by the HTTP server with a bare `413` before any purpose is read.
@@ -305,6 +324,326 @@ grant limits it; the Direct upload routes, when they land, stay off this
 limiter. A test (`TestEveryRouteThatStoresAFileIsChargedToTheUploadBudget`)
 fails when any route stores a file sent through core without being charged.
 
+## Images and sizes
+
+Media redesign ticket 04 (ADR-0052, decisions Q13 and Q24).
+
+### Re-encoding
+
+A raster upload for a purpose whose `image.reencode` is set (every public
+image purpose) is decoded and encoded again, so nothing that came with the
+pixels reaches the CDN: EXIF and other metadata, comments, bytes after the
+image, polyglot payloads.
+
+1. **Decode cost first.** Core reads the header, and the markers a decoder
+   would follow, and refuses the image before any pixel is decoded when
+   decoding it would take more than core allows (see
+   [Decode cost](#decode-cost)): `media_image_too_large`. A JPEG with more
+   than 64 scans, and a WebP whose frame is not its canvas, are
+   `media_type_not_allowed`.
+2. **Decode, fit, upright.** The image is decoded (a decoder that panics
+   refuses the file instead of stopping core), scaled down to the purpose's
+   `max_dimension` on its longer side (2560 px), and only then turned upright
+   by its EXIF Orientation, so a 48 MP photo is never turned at full size
+   and the stored pixels need no tag. Content that starts like an accepted
+   type but does not decode is `media_type_not_allowed`.
+3. **Encode.** JPEG stays JPEG (quality 85). PNG stays PNG. Go has no WebP
+   encoder, so a still WebP becomes a JPEG when it is opaque and a PNG when
+   it has transparency. The Media's `type` is the stored type. Its cover
+   colours are picked from the same decoded image.
+4. **Colours.** The image's ICC colour profile (JPEG APP2 `ICC_PROFILE`,
+   PNG `iCCP`, WebP `ICCP`) is **rebuilt**, never copied, and the rebuilt
+   profile embedded in the re-encoded image and every size (JPEG as APP2
+   segments of at most 65 519 profile bytes, PNG as `iCCP`). No colour
+   conversion is done, so a Display P3 photo keeps its colours:
+   - only a monitor or scanner (`mntr`, `scnr`) `RGB ` profile with PCS
+     `XYZ ` or `Lab `, and with its matrix and curves (`wtpt`, `rXYZ`,
+     `gXYZ`, `bXYZ`, `rTRC`, `gTRC`, `bTRC`);
+   - it keeps `desc`, `cprt`, `wtpt`, `chad`, the primaries and the
+     curves, each checked against its type (`XYZ `, `sf32`, `curv`, `para`,
+     `mluc`/`desc`/`text`) with every length in bounds (an `mluc` header,
+     record table and strings; a v2 `desc` is rebuilt around its ASCII
+     text, so a reader following its counts stays inside it) and text at
+     most 4 KiB; the colour-defining tags stay byte for byte;
+   - under a new header (size recomputed, profile ID and maker fields
+     zeroed) and a new tag table.
+
+   A profile of lookup tables only, a CMYK or grey profile, one above 1 MiB,
+   one without the `acsp` signature or its own size, or one with any tag
+   outside its bounds is dropped, and the image is then shown as sRGB. A
+   fault while rebuilding drops the profile the same way (logged once per
+   process) instead of refusing the upload.
+
+**Animations** look as uploaded (decision D2):
+
+- One ceiling for every animation: at most 300 frames, and at most
+  256 Mi pixels across frames × canvas (a GIF's logical screen); more is
+  `media_image_too_large` (more frames: `media_type_not_allowed`).
+- A **GIF** is decoded with every frame and encoded again, frame by frame:
+  its frames, delays, disposal and loop count stay; comments and other
+  extensions go. Before decoding, its blocks are walked once: a frame
+  outside the logical screen is refused, and frames × screen counts against
+  the decode cost. Its sizes are its first frame,
+  still, as PNG. An animated GIF larger than 2560 px on a side is refused; a
+  one-frame GIF that large is scaled like a still image, to PNG.
+- An **animated WebP** cannot be re-encoded (no Go encoder), so it is the
+  one image kept as uploaded, after its structure is checked chunk by chunk
+  **and every frame decodes**: the RIFF size must be the file's (no trailing
+  or missing bytes); only `VP8X` (first, with the animation flag), `ICCP`,
+  `ANIM`, `ANMF`, `EXIF` and `XMP ` chunks; each frame within the canvas,
+  its VP8/VP8L bitstream the size its `ANMF` declares; a canvas at most
+  2560 px on a side. Then each frame (its bitstream, and its `ALPH` chunk
+  where present) is decoded on its own, one after another within the
+  decoding slot; a frame that does not decode, or decodes to another size
+  than its `ANMF` declares, refuses the file. `EXIF` and `XMP` chunks go
+  (with their VP8X flags), the `ICCP` profile is rebuilt or dropped (with
+  its flag), and the RIFF size is rewritten. It gets no size objects: every
+  size address is the image itself.
+
+**Scaling** uses no kernel scaler on the source: Catmull-Rom keeps a float64
+buffer of source height × target width (half a gigabyte for a 48 MP photo).
+A bilinear pass that reads the source in place brings the image to 2 or 4
+times the target (at most 128 MiB, never above the source), and exact 2×2
+averages halve it the rest of the way.
+
+### Decode cost
+
+Before decoding, core estimates from the header what the decoder will
+allocate and refuses the image when it has more than 50 000 000 pixels or the
+estimate is above 256 MiB:
+
+| Format | Estimate |
+|---|---|
+| JPEG | Each component's sample plane over whole MCUs (read from the frame header, SOF); for a **progressive** JPEG also the coefficients it keeps between scans, a 256-byte block per 8×8 samples (at 4:4:4 that is 15 bytes a pixel: a progressive JPEG gets about 17 MP); a CMYK JPEG also 4 bytes a pixel for its conversion. More than 64 scans is refused. |
+| PNG | The pixels at their depth (up to 8 bytes a pixel at 16 bits a channel), twice for an interlaced PNG. |
+| GIF | A byte a pixel for every frame, counted as frames × logical screen, plus a 4-byte canvas of the screen for the still first frame. More than 300 frames, or a frame outside the screen, is refused. |
+| WebP | The frame its VP8 or VP8L bitstream declares, read from the bitstream: an extended WebP's VP8X canvas is what `image.DecodeConfig` reports, but the decoder allocates the frame, so a frame that is not the canvas is refused. 2 bytes a pixel for VP8, 8 for VP8L, plus an alpha plane over the canvas (5 bytes a pixel when compressed). |
+
+### Decode budget
+
+Everything that decodes an image shares one budget per core process
+(`media.DecodeBudget`, made at startup and handed to each): uploads for a
+purpose, SVG sanitizing, cover colours, the cover colour backfill and the
+size backfill. At most **2** images are decoded at once, and at most **1** SVG
+is sanitized (it also takes one of the 2).
+
+- An upload for a purpose waits at most 10 seconds for a slot, then answers
+  `503 media_busy` with `Retry-After: 5`; nothing is stored, and the 5xx is
+  given back to the person's upload budget.
+- Cover colours of an image uploaded without a purpose take a slot only when
+  one is free; otherwise the image is stored without them and the cover
+  colour backfill picks them later. Such an upload never waits and never
+  fails for the budget.
+- The backfills wait like an upload; a wait that runs out leaves the image
+  for the next pass.
+- A slot is given back however the decode ends, a panic included. A cover
+  colour pick that panics picks none, and the backfill goes on.
+
+**Worst case on the production host** (15 GiB, no swap), per slot: the decoded
+image at most 256 MiB by the estimate; the upload body and its copies up to
+about 60 MiB (20 MiB, held by the HTTP server, the form and the service);
+the scaling buffers at most 128 MiB plus the 26 MiB result and its upright
+copy (26 MiB); the encoded image and its sizes under 40 MiB. About 540 MiB
+live per slot, 1.1 GiB for both. Sanitizing an SVG (at most 1 MiB, 10 000
+elements) takes a few tens of MiB at most. Go's collector lets the heap grow to
+about twice what is live before collecting (`GOGC=100`), so allow ~2.5 GiB
+for image work at its peak.
+
+### Sizes
+
+Clients ask for an image by Media and size name. The names are fixed in code,
+because clients build on them: `card` (400 px, e.g. an Event card) and `page`
+(1200 px, a picture across a page). Each purpose's `image.sizes` sets which
+it gets and how large, on the longer side.
+
+A size smaller than the image is stored as its own object next to it, at
+`<key>/card.jpg` or `<key>/card.png` (the extension is its type, so a CDN
+that caches by extension caches it), upright, with the serving policy's
+metadata. A size the image already fits in is not stored: its address is the
+original.
+
+Three things are called sizes, apart:
+
+- `image.sizes` in the catalogue: size name → pixels;
+- `size_objects` on the Media record (`Media.SizeObjects`): the sizes stored
+  as objects, `{"card": {"width": 400, "height": 300, "type": "image/jpeg"}}`;
+  `NULL` until core has made them, `{}` when the image needs none or could
+  not be read;
+- `sizes` in the Media JSON: every size's address, below.
+
+The Media also records its `width` and `height` as shown (upright).
+
+### Media uploaded without a purpose
+
+`legacy` Media keep their own bytes: a raster image is stripped of metadata,
+not re-encoded, and gets **no sizes**, neither at upload nor from the
+backfill. Sizes would cost every such upload a decode and two more writes,
+and would publish card and page copies of images nobody asked to be copied
+(Skyforms Answer files among them). A legacy Media gets sizes once the legacy
+backfill (ticket 08) gives it a purpose that has them.
+
+Two changes to the strip, both for JPEG:
+
+- The EXIF Orientation is kept, alone in a minimal EXIF segment, so a
+  portrait phone photo whose rotation lives only in EXIF no longer shows
+  sideways.
+- The file ends with the primary image's EOI. A phone JPEG can carry an MPF
+  index (APP2) of secondary images stored after the primary one, each with
+  its own EXIF and GPS, and a motion photo's video appended after them; the
+  MPF segment and everything after the primary image are dropped. Before,
+  everything after the first scan was kept.
+
+### SVG
+
+An SVG is stored as SVG (decision D1), sanitized, for the purposes that list
+it: `cms_image`, `event_cover` and `event_gallery` — not profile pictures, not
+Answer files (a code ceiling keeps it there). A file is an SVG when, within
+its first 64 KiB and past its prolog (a byte order mark, the XML
+declaration, comments, processing instructions, whitespace, one DOCTYPE),
+its root element is `svg` in the SVG namespace (or in none). Core reads it
+as XML and writes it again from an allowlist; the original bytes are never
+stored:
+
+- **Kept:** shapes and paths (`path`, `rect`, `circle`, `ellipse`, `line`,
+  `polyline`, `polygon`), text (`text`, `tspan`, `textPath`), gradients
+  (`linearGradient`, `radialGradient`, `stop`), `pattern`, `clipPath`,
+  `mask`, structure (`svg`, `g`, `defs`, `symbol`, `use`), `title`, `desc`
+  and `style`, with their geometry and presentation attributes. `href` and
+  `xlink:href` only as a same-document `#id`.
+- **CSS** (a `style` attribute or element, and presentation attributes)
+  keeps only the functions `rgb()`, `rgba()`, `hsl()`, `hsla()`, `calc()`,
+  `var()` and `url(#id)`, plus the transform functions in transforms. A
+  declaration with any other function (`image-set()`, `-webkit-image-set()`,
+  `cross-fade()`, `element()`, `src()`, …) or with a string that looks like
+  an address is dropped. A `<style>` keeps its rules and drops every
+  at-rule (`@import`, `@font-face`, `@media`) whole; it is sanitized whole,
+  so a comment cannot split a name; CSS with escapes is removed. A
+  presentation attribute holding a comment (`/*`) or an escape is dropped.
+- **Bitmaps:** an `<image>` stays only with a `data:image/png|jpeg|gif|webp;base64,`
+  URI. The bitmap is decoded and re-encoded like an uploaded raster image
+  (within the SVG's decoding slot), and embedded again as PNG or JPEG. A
+  bitmap too large to decode, or bitmaps that together cost more than the
+  decode budget, refuse the SVG (`media_image_too_large`); the 1 MiB limit
+  applies to the result too. Any other `<image>` is removed.
+- **Removed, with everything inside:** `script`, `foreignObject`, `iframe`,
+  `a`, markers, the animation elements (`animate`, `set`, …, which can set
+  `href`), filters (`feImage` loads images), and anything outside the SVG
+  namespace (editor metadata, HTML). Every `on*` attribute, every attribute
+  outside the allowlist, and every value naming `javascript:`, `data:` or an
+  external address go too.
+- **DOCTYPE:** one DOCTYPE before the root without an internal subset (the
+  line Illustrator writes, `<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" …>`)
+  is dropped: `encoding/xml` fetches and expands nothing, and it is never
+  written out.
+- **Refused** (`media_type_not_allowed`): an internal subset, an entity, a
+  second DOCTYPE or any other directive; anything but whitespace, comments
+  and processing instructions after the root (a second root, text); anything
+  that does not parse as XML in UTF-8; a root that is not `<svg>`; more than
+  10 000 elements or nesting deeper than 64; nothing left to draw once
+  sanitized (no shape, path, text, `use` or bitmap), rather than a blank
+  file. A fault in the parser refuses the file too. Above 1 MiB:
+  `media_too_large` (`maxBytes` 1 MiB).
+
+The sanitized SVG is stored under a key ending in `.svg`, as `image/svg+xml`
+with `Content-Disposition: attachment`: `<img>` renders it, opening its
+address downloads it. It gets no size objects and every size address is the
+SVG itself; it has no cover colours. One SVG is sanitized at a time, within a
+shared decoding slot.
+
+**An SVG uploaded without a purpose** goes through the same sanitizer and
+gets a `.svg` key too. Media uploaded without a purpose keep accepting what
+they accepted, so an SVG the sanitizer refuses is stored anyway, as an opaque
+download (`application/octet-stream`, `attachment`, under `files/`) that never
+renders. So is one above 1 MiB (up to 10 MiB), which the sanitizer does not read.
+
+**Yusuf, on Cloudflare:** add a Response Header Transform Rule on `cdn.` for
+paths ending in `.svg` that sets
+`Content-Security-Policy: sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:`,
+so an SVG opened directly still runs nothing, whatever a sanitizer missed.
+
+### Addresses
+
+Every address core answers with is built from a base: `CDN_BASE`, else
+`R2_PUBLIC_URL`, else `https://cdn.yildizskylab.com`. It is never a bare key.
+Nothing stored holds a base, so moving the CDN (or to a separate user-content
+domain) is a configuration change:
+
+- a Media keeps its object key;
+- a User's profile picture is read from the Media the profile links (its key);
+  `users.profile_picture_url` holds the key for new pictures, and an absolute
+  address stored there before is no longer read while the Media exists. The
+  API's `profilePictureUrl` is unchanged while the base is the same.
+
+Addresses built without a service's own base (Event resources in tickets and
+competitors, team rosters) use the base core sets once at startup
+(`media.UsePublicBase`), a process-wide setting: those call sites have no
+media dependency to carry it.
+
+`MEDIA_IMAGE_ADDRESS_MODE` picks where sizes point:
+
+- `stored` (default): the stored size object, or the original for a size not
+  stored;
+- `cloudflare`: a Cloudflare image transformation of the original,
+  `<base>/cdn-cgi/image/width=N,height=N,fit=scale-down/<key>` (never
+  enlarged). Transformations must be enabled on the base's zone; 5 000 unique
+  transformations a month are free, then $0.50 per 1 000 (Q24). Core keeps
+  storing the sizes in both modes, so switching back is a configuration change
+  too.
+
+The Media JSON (upload response, `GET /v1/media/{id}` for everyone, the media
+list) carries, for a raster image of a purpose with sizes:
+
+```json
+{
+  "url": "https://cdn.yildizskylab.com/images/<id>",
+  "width": 1600,
+  "height": 1200,
+  "sizes": {
+    "card": { "url": "https://cdn.yildizskylab.com/images/<id>/card.jpg", "width": 400, "height": 300 },
+    "page": { "url": "https://cdn.yildizskylab.com/images/<id>/page.jpg", "width": 1200, "height": 900 }
+  }
+}
+```
+
+`sizes` lists every size of the Media's purpose; `width`/`height` are left
+out when core does not know them. Event and User responses keep their fields
+(`coverImageUrl`, `images[].url`, `profilePictureUrl`); a client reads a size
+from the Media by its id.
+
+### Stored images before sizes
+
+A background backfill, started with core, walks the current image Media of
+the purposes that have sizes whose sizes are not made (`size_objects IS
+NULL`, partial index `media_size_objects_pending_idx`) by id, 25 at a time,
+and makes them from the stored original, which it never rewrites (images for a
+purpose stored before re-encoding keep their stripped bytes). For each image
+it:
+
+1. reads the object: gone, not raster, or a key that cannot have sizes →
+   recorded with none; a read error → left for the next pass;
+2. waits for a decoding slot, then records the image as done without sizes
+   **before** decoding it, so a decoder that panics, or a process that dies
+   out of memory, does not decode it again after a restart;
+3. decodes it (scaled to the largest size before it is turned upright) and
+   stores its sizes, then records them. A write that fails puts the image
+   back to not made, for the next pass; sizes written for an image whose
+   purge began meanwhile are deleted again.
+
+A panic anywhere in an image's step is recovered: the image stays done
+without sizes, its slot is given back, and the pass goes on.
+
+### Deleting sizes
+
+Every path that deletes a Media's object deletes its sizes with it (the object
+first, then the sizes; a purge cut short is retried whole): the archive
+and expiry purges, account erasure's immediate purge (through the same store
+call), the upload staging sweepers, and a refused upload. One rule decides
+which keys may have sizes and where they are (`images/…` keys, at
+`<key>/{card,page}.{jpg,png}`); the upload, the backfill and the purges all
+use it, and the purges delete every key it names, not only the recorded ones,
+so a size an interrupted upload or backfill wrote without recording is found
+too.
+
 ## Media attachment
 
 A Media attachment links a Media to the record that uses it, in core or in
@@ -325,15 +664,17 @@ recorded apart.
 |---|---|---|
 | `pending` | No Media attachment yet. Every new Media starts here. | Upload time plus the purpose's `pending_ttl` (24 hours for every purpose today). |
 | `attached` | At least one Media attachment. Never purged by expiry. | None. |
-| `detached` | Its last Media attachment was removed. | 30 days after that. Attaching it again within the window makes it attached. |
+| `detached` | Its last Media attachment was removed. | 30 days after that, except while its detach expiry is held (below). Attaching it again within the window makes it attached. |
 
-**A legacy Media never gets an expiry**: not when it is uploaded (`legacy`
-has `pending_ttl` `none`), and not when its last Media attachment is removed.
-Skyforms, CMS and superadmin upload without a purpose today, and a legacy
-Media may still be used outside core by its address (CMS content stores
-addresses) after core stops linking it. The expiry cleanup therefore never
-touches a legacy Media; the legacy backfill (ticket 08) reports unused ones to
-Yusuf before anything removes them.
+**A legacy Media gets no expiry by itself**: not when it is uploaded
+(`legacy` has `pending_ttl` `none`), and not when its last Media attachment is
+removed. Skyforms, CMS and superadmin upload without a purpose today, and a
+legacy Media may still be used outside core by its address (CMS content stores
+addresses) after core stops linking it. The only thing that gives one an
+expiry is the orphan switch Yusuf runs after reviewing the legacy report (see
+[Legacy Media](#legacy-media)). **Nor does a Media whose detach expiry is
+held**: one the legacy backfill gave a purpose, until the hold is released
+after stage 5 (see [Detach expiry hold](#detach-expiry-hold)).
 
 The database keeps the status in step with the Media attachments, once per
 statement that adds or removes them: a Media with a Media attachment is
@@ -349,8 +690,8 @@ there is detected by PostgreSQL and the transaction can be retried.)
 
 Restoring an archived Media (`POST /v1/media/{id}/restore`) starts its expiry
 again: a Media no Media attachment keeps gets its purpose's `pending_ttl` from
-the restore (a legacy one none), so a window that ran out while it was
-archived does not purge it on the next pass.
+the restore (a legacy one, or one whose detach expiry is held, none), so a
+window that ran out while it was archived does not purge it on the next pass.
 
 ### Core's own links
 
@@ -404,7 +745,19 @@ when purpose-less uploads fall to the strict rule (ticket 15).
 
 The database's triggers are the backstop for the state rule: a new link or a
 new Media attachment to an archived or purging Media is rejected whoever
-writes it.
+writes it. They also check the purpose again (migration `20260926161000`,
+`media_purpose_fits_role` over `media_role_purposes`, a copy of the role
+table that a test keeps equal to `rolePurposes`, both ways). The link rules
+read the Media before the write and outside its transaction, so the legacy
+backfill could give a legacy Media a purpose in between; the trigger reads
+the Media under the lock the foreign key takes anyway, which waits for the
+backfill and never for the status trigger. Such a link is never written
+mismatched: the trigger refuses it with its own code (SQLSTATE `23514`,
+constraint `media_attachment_purpose_fits`), and the Event, certificate
+template and service attach paths answer it as `422 media_not_linkable` for
+that Media and role. Retrying gets the ordinary purpose check. (A profile
+picture is linked only right after its upload as `profile_picture`, which
+the backfill never touches, so that link cannot race.)
 
 ### Service attach API
 
@@ -513,7 +866,10 @@ links and the service attach API share one link check.
   once the product already holds a Media attachment to it (a CMS editor
   reusing an image the CMS already uses). No product can pin another
   product's or core's legacy Media, such as a still-public legacy Answer
-  file or an Event cover.
+  file or an Event cover. A Media whose detach expiry is held (the legacy
+  backfill gave it a purpose, see [Detach expiry hold](#detach-expiry-hold))
+  counts as legacy here until the hold is released; linking it where its
+  purpose does not fit gives it back `legacy` (below).
 - Nothing else: not another product's Media, private or not, and not core's.
 
 A Media the product may not link is refused exactly like a Media that does
@@ -563,7 +919,8 @@ an archived Media: a Media that a Media attachment or a core link still uses
 is kept. The Media is archived as its blob goes, so ordinary reads hide it
 and restore answers `410 Gone`. A Media whose blob cannot be deleted is
 logged with its id and retried on the next pass; it never holds up the
-others. Attached Media, legacy Media (they have no expiry) and archived Media
+others. Attached Media, legacy Media (they have no expiry, unless the orphan
+switch gave them one), Media whose detach expiry is held and archived Media
 are never purged by expiry; archived Media keep the archive window above.
 
 ### Media stored before Media attachments
@@ -571,11 +928,423 @@ are never purged by expiry; archived Media keep the archive window above.
 The migration gives every Media core already links its Media attachment and
 the attached status, including a Media archived after it was linked. A Media
 nothing in core links stays `pending` with no expiry: this change purges
-nothing that existed before it. All of them are legacy, so removing a core
-link from one later sets no expiry either. The legacy backfill (ticket 08)
-assigns purposes, reports the orphans to Yusuf, and only then gives them an
-expiry. The unused `attached` column of the first media migration is
-dropped; `status` replaces it.
+nothing that existed before it. The unused `attached` column of the first
+media migration is dropped; `status` replaces it. What happens to these
+Media next is under [Legacy Media](#legacy-media).
+
+## Legacy Media
+
+Every Media stored before Media purpose is `legacy` (media redesign ticket
+08, decision Q19: a purpose comes from where the Media is used; a Media used
+nowhere is kept 30 days, reported to Yusuf, then deleted). Core does four
+things with them. Only the first runs by itself; the two commands that end
+retention are for after stage 5 (ticket 18).
+
+### Purpose backfill
+
+A background backfill starts with core, beside the serving policy backfill,
+and gives each legacy Media that core attaches the purpose of its use. It
+walks the legacy Media with at least one of core's own Media attachments by
+id, 25 at a time. For each one it locks the Media row (a new Media attachment
+checks its Media under a lock that waits for this one), reads all of its
+Media attachments, and picks:
+
+| Media attachments | Purpose |
+|---|---|
+| Event cover | `event_cover` |
+| Event gallery | `event_gallery` |
+| Event cover and gallery (one Event or several) | `event_cover` |
+| User profile picture | `profile_picture` |
+| Certificate template draft or version asset | stays `legacy` (private purpose, below) |
+| Uses no one purpose fits: an Event photo that is also a profile picture or a certificate asset, or a core use plus another product's Media attachment | stays `legacy` (mixed use, K1) |
+
+The rule behind the table: the backfill tries core's roles in the order Event
+cover, Event gallery, profile picture, certificate asset, and takes the
+role's own purpose (the first `rolePurposes` lists for it) for the first role
+the Media plays whose purpose fits **every** Media attachment it has, by the
+same check a new link gets (`rolePurposes`, `internal/media/attachment.go`:
+an Event role takes `event_cover` or `event_gallery`, the profile picture
+`profile_picture`, a certificate asset `certificate_asset`, a product's role
+only its own purposes). Both Event purposes fit both Event roles, so an Event
+photo always gets one, and the cover wins over the gallery. Every Media
+attachment still fits its Media's purpose afterwards, including one written
+while the backfill ran: the database checks the purpose again (see [Link
+rules](#link-rules)).
+
+- **Only the purpose changes, and the hold is set.** Status, expiry,
+  `updatedAt`, the blob, its address and its serving metadata stay as they
+  are; nothing is re-encoded or moved. Until the hold is released, the
+  backfill sets the Media's detach expiry hold in the same statement
+  (below); after the release it gives purposes without it.
+- **Private purposes are never given.** `certificate_asset` is private: the
+  purpose says the file is encrypted in the private bucket, and these blobs
+  are public. Certificate template assets stay `legacy` for good: nothing
+  moves them into private storage (decision G1; see
+  [Certificate assets](#certificate-assets)).
+- **Mixed uses stay legacy (decision K1).** The backfill does not pick
+  between an Event and a person's profile picture, or between core and a
+  product's record. Those Media keep the legacy rules: no expiry of their
+  own, fit every role, and no image variants.
+- Skyforms answers and CMS content are not backfilled here: core cannot see
+  them (stage 5). A legacy Media only another product attaches is left
+  alone.
+
+Every step is idempotent: a Media that got a purpose is no longer listed, and
+a pass cut short is run again. A Media that fails is skipped, so it never
+holds up the ones after it; passes repeat a minute apart until one ends with
+nothing failed. The log names a failing Media once an hour, not on every
+pass, and prints a pass only when it assigned something or its number of
+failures changed: `media legacy purpose backfill: assigned N, kept legacy P
+(their purpose would be private) and M (mixed uses), skipped S, failed F`. Skipped are Media that were no longer legacy, or no longer used by
+core, when the pass reached them.
+
+What changes for a Media that got a purpose: a new link checks its purpose (a
+former legacy profile picture cannot become an Event cover), and, once its
+hold is released, removing it from its last record starts the 30 days of any
+purposed Media.
+
+### Detach expiry hold
+
+A Media the backfill gave a purpose may still be shown by CMS content through
+its address, which core cannot see until stage 5 gives CMS images their
+Media attachments. So its detach expiry is held (decision K2, column
+`media.detach_expiry_held`, migration `20260926161000`):
+
+- Removed from its last record, it is detached with **no** expiry, as a
+  legacy Media is. Restoring it after an archive sets none either.
+- Linking it again works as for any Media; the hold stays.
+- **A product may link it as a legacy Media** (for its uploader, or once the
+  product holds it), because the uses the hold protects are the products'.
+  When its purpose does not fit the product's role (an Event cover becoming
+  a CMS page's `image`, the stage 5 case), the service attach gives it back
+  `legacy` and attaches it in one transaction: it locks the Media row for
+  update first, so two attaches of one held Media queue instead of
+  deadlocking, sets `legacy` (with a new `updatedAt`), keeps the hold, and
+  inserts the Media attachment. A Detach of the same link can still
+  deadlock with it (the Detach removed the link and waits for the Media
+  row; the insert waits for the removal); when PostgreSQL fails the attach,
+  it is tried once more, after the Detach. Core logs one line with the
+  Media, its old purpose and the role. Its uses are now mixed, so the backfill keeps it legacy (K1). A
+  Media uploaded with a purpose is never given back: a product is refused as
+  before.
+- Nothing else reads the hold. An archived held Media follows the archive
+  window, and account erasure purges a held profile picture at once like any
+  other.
+
+`core-backend media-legacy-release-hold` ends the hold, after stage 5 (ticket
+18). **It is not run yet.** Without `-apply` it only counts the held Media and
+those of them whose 30 days the release starts. With `-apply` it first
+records the release (table `media_legacy_hold`, the first release's time is
+kept): the backfill runs on every start and purpose-less uploads keep
+arriving until stage 6, and from then on it gives purposes without the hold,
+so nothing is held for ever. The backfill reads the release under a share
+lock that the release's update waits for, so a hold written before the
+release is there for it to count and clear: it counts only after recording.
+The table has exactly one row, made by the migration (and checked by its
+fingerprint); without it the backfill, the release and the report fail
+with an error naming it instead of guessing. Then it walks the held Media by id, 25 at
+a time, clears each one's hold, and gives the ones no record uses by then
+their 30 days **from the release**, not from when they were detached. A held
+Media a product's attach gave back `legacy` gets no window: only the orphan
+switch gives a legacy Media one. A Media that fails is named on standard
+error and stays held; a second run releases only what is left, and a run
+over released Media changes nothing. It prints counts only, to standard
+error, and exits non-zero if a Media failed or the run was interrupted (with
+the counts so far).
+
+On the server running core, inside the core container:
+
+```sh
+docker exec <core container> ./core-backend media-legacy-release-hold          # counts
+docker exec <core container> ./core-backend media-legacy-release-hold -apply   # release
+```
+
+### Orphan report
+
+A legacy orphan is a current legacy Media that nothing in core uses: no Media
+attachment (from core or any product) and no core link read directly (the
+safety net above), not archived, no purge started. Archived legacy Media are
+not listed: the archive window already decides them. **An orphan is not
+unused**: Skyforms answers and CMS content use Media by their address, which
+core cannot see, so most Answer files and CMS images are orphans here.
+
+`core-backend media-legacy-report` reads core's database (and Keycloak,
+read-only, for the uploaders' groups) and changes nothing. Standard output
+carries only the report: a header row and one tab-separated row per orphan,
+so it can be redirected to a file and opened as a spreadsheet. The summary
+goes to standard error: the orphans and their size, the legacy Media core
+still attaches (what the purpose backfill has not reached or keeps legacy),
+the core links without a Media attachment, the Media whose detach expiry is
+still held, and whether (and when) the hold was released. If an interrupt or
+the ten-minute limit cuts off the uploaders' group lookups, the summary says
+how many and the command exits non-zero: the report is incomplete. Columns:
+
+| Column | Value |
+|---|---|
+| `id` | The Media id. The expiry switch reads this column. |
+| `created_at` | Upload time, UTC. |
+| `type`, `size` | The recorded type and size in bytes. |
+| `name` | The file name (tabs and line breaks become spaces). |
+| `uploader_groups_now` | The uploader's Keycloak group paths today (not when they uploaded), comma separated; `-` for none or a deleted account, `?` when Keycloak could not be read. The uploader is not named. |
+| `status`, `expires_at` | `pending` (never attached) or `detached`; the expiry, `-` until the switch runs. |
+| `key` | The object key: the Media's address is the CDN base followed by it. Match it against Skyforms answers and CMS content. |
+
+Whether CMS content uses an address is not checked: the CMS database is not
+core's. The file names in the report can be personal data (CVs): keep the
+file off shared places and delete the server copy once it is downloaded.
+
+On the server running core, inside the core container, which has the
+environment:
+
+```sh
+docker exec <core container> ./core-backend media-legacy-report > legacy-media-report.tsv
+```
+
+### Orphan expiry switch
+
+`core-backend media-legacy-expire` starts the 30-day window (Q19) of the
+orphans Yusuf reviewed. **It is not run yet.** It must wait until Skyforms
+answers and CMS content have their Media attachments (stage 5, ticket 18):
+until then their files are orphans here, and the switch would delete them 30
+days later.
+
+It reads Media ids from standard input: the first column of each row, with
+the header, `#` lines and empty lines skipped, so the reviewed report, with
+the rows to keep deleted, goes back in as it is. Without `-apply` it only
+counts. Each Media is checked again as it is written: one that is no longer
+a legacy orphan (attached, given a purpose, archived, linked by a core
+record) is listed and left alone, and a Media that already has a window
+keeps it. An orphan that gets its window keeps `legacy`, gets `expiresAt` 30
+days from the run, and the [expiry cleanup](#expiry-cleanup) purges it when
+the window ends, unless something attaches it first (which clears the
+expiry). It writes to standard error only, and an interrupted run prints what
+it applied before it exits non-zero.
+
+```sh
+docker exec -i <core container> ./core-backend media-legacy-expire < reviewed.tsv          # dry run
+docker exec -i <core container> ./core-backend media-legacy-expire -apply < reviewed.tsv   # start the windows
+```
+
+A window already started ends early only by an attachment: a core record or
+a product linking the Media clears its expiry. There is no command that
+clears it otherwise yet; review the report before `-apply`.
+
+## Private Media
+
+Private purposes (`answer_file`, `certificate_asset`) are stored encrypted in a
+second, non-public R2 bucket and never get a public address (ADR-0052, media
+redesign ticket 06, decisions Q16, Q18, Q25, Q28, Q29, G1, G2). Everything
+here sits behind `MEDIA_PRIVATE_ENABLED`, which stays `false` in production
+until the wizard (`ops/wizards/media-private-storage-wizard.sh` in
+sky_lab_genel) has run and Yusuf turns it on.
+
+### Encryption
+
+Each object gets its own random 256-bit data key and is encrypted with it
+before it leaves core (`internal/envelope`), so R2 and Cloudflare only ever
+hold ciphertext. The format (`aes-256-gcm-chunked-v1`) is AES-256-GCM over
+64 KiB segments in the STREAM construction, so a file of any size is written
+and read in constant memory:
+
+```text
+header   "SKYM" | 0x01 | segment size (uint32 BE, 65536) | nonce prefix (7 random bytes)
+segment  AES-256-GCM(up to 64 KiB of plaintext) | 16-byte tag   (repeated)
+nonce    nonce prefix | segment index (uint32 BE) | 0x01 on the last segment, else 0x00
+AAD      the 16-byte header, then the object key (e.g. private/files/<uuid>)
+```
+
+A changed byte anywhere, a segment moved, dropped or added, a file cut short,
+or an object copied under another key fails a segment's check; no plaintext
+of a segment that fails is released. (Binding the object key came in before
+anything was stored, so the format kept `v1`.) The object key starts with
+`private/` (`media.PrivateObjectKey`), which is how the work that deletes by
+key alone (the blob purge, the expiry cleanup, the staged upload sweeper,
+account erasure's `erase_profile_media` and `erase_staged_uploads`) reaches
+the private bucket (`media.Buckets`); a private object is never read, written
+or given serving metadata as a public one. Deleting an object that is not
+there succeeds in either bucket, so those steps can be repeated.
+
+The data key is wrapped by the OpenBao Transit key `MEDIA_TRANSIT_KEY`
+(`media`) on `MEDIA_TRANSIT_MOUNT` (`transit/<side>`): core makes the data key
+itself and calls `encrypt`, since the policy grants no `datakey`. The Media
+record keeps the wrapped key (`wrapped_data_key`, Transit's `vault:v<N>:…`
+ciphertext), its key version (`key_version`, read from that prefix) and the
+format (`encryption_algorithm`); migration `20260926170000` adds them with
+`visibility` and a check that a private Media has all three (a key version of
+at least 1) and a public one none. The key rotates every 90 days in OpenBao;
+older versions still unwrap what they wrapped, so nothing is re-encrypted.
+Rewrap (`transit/<side>/rewrap/media`) is allowed by the policy and not used
+yet.
+
+Core signs in to OpenBao with AppRole (`auth/approle/login`,
+`MEDIA_OPENBAO_ROLE_ID` and `MEDIA_OPENBAO_SECRET_ID`) on the first private
+upload or read, not at startup: an OpenBao that is down never stops core
+(`internal/transit`). It keeps the token and renews it in the background once
+half its lease (1 hour) has passed; a token with lease left is used until a
+new one arrives, and stops being used 30 seconds before its lease ends (a
+quarter of a shorter lease). It logs in again when the token nears its end or
+its 24-hour maximum, and once when OpenBao refuses it; the token a login
+replaces is revoked (revoke-self) as far as OpenBao lets it. Callers that need
+a new token share one login, each waiting only as long as its own request
+allows. A failed login or renewal is answered from memory for 5 seconds, and
+so is a refusal of a token that was just issued: that is core's policy not
+covering the request (or encrypt having to create a missing key), a
+configuration to fix (`503`), not something another login mends. Every
+request to OpenBao has a 5-second timeout, and a redirect from OpenBao is
+never followed (the token would go wherever it points).
+
+### Storing a private Media
+
+A private purpose goes through the same checks as any other, including
+re-encoding a raster image (`image.reencode`). What is stored is the result,
+encrypted, in the private bucket instead of the public one: the Media is
+`"visibility": "private"` with `"url": ""`. A private image keeps its width
+and height but gets no sizes and no cover colours, so nothing of it reaches
+the public bucket; its sizes are recorded as none, and the size backfill
+never picks it up.
+
+A purpose whose entry has `scan: true` is refused with `422`
+`purpose_not_available` while core has no malware scanner (ticket 12): a Media
+that needs a scan is not opened before it is clean, so nothing of it could be
+opened. Today that is `answer_file`: Answer files cannot be uploaded until
+the scanner exists, whatever `MEDIA_PRIVATE_ENABLED` says. `certificate_asset`
+needs no scan.
+
+An OpenBao that cannot be reached, is sealed, refuses core's identity, or has
+no such mount or key fails only private uploads and reads, with `503`
+`private_media_unavailable`; public Media are not affected. The log names
+OpenBao's answer (the mount and key when one is missing), never a token.
+
+### Metadata
+
+`GET /v1/media/{id}` answers a private Media only to its owning product's
+service account (Skyforms for an Answer file) and to privileged admins, never
+with an address. Anyone else, anonymous or signed in, the uploader included,
+gets `404`. The admin list (`GET /v1/media`) shows private Media without an
+address.
+
+### Read links
+
+A private Media is opened through a five-minute link core issues:
+
+```http
+POST /v1/media/{id}/links
+Authorization: Bearer <token>
+
+{"onBehalfOf": "<user id>"}
+```
+
+`201` with `Cache-Control: no-store`:
+
+```json
+{"url": "https://api.yildizskylab.com/v1/media/{id}/content?token=…", "expiresAt": "2026-09-26T12:05:00Z"}
+```
+
+Two callers may ask:
+
+- **The owning product**, for one of its purposes: its service account with
+  `media:attach` on the core client (the role that already manages its Media
+  attachments), with `onBehalfOf` naming the person it decided may open the
+  file (Skyforms for an Answer file: the reviewer).
+- **A privileged admin** (ADMIN, YK, DK), for a core purpose
+  (`certificate_asset`): the admin is the person the link is for, and the body
+  names no one (`{}`); any `onBehalfOf`, a malformed one included, is `400`.
+  This is how superadmin's certificate template editor shows a private
+  background.
+
+Anything else is `404`: another product's Media, a public one, a core Media
+for a product, a product's Media for an admin, one that does not exist. The
+person a link is for must be an active account in core (`422`
+`media_link_subject_inactive` otherwise), like every other current-identity
+link ([`account-lifecycle.md`](account-lifecycle.md)).
+
+The token is `base64url(claims) "." base64url(signature)`: the claims are a
+format byte, a disposition byte (always download), the link's id, the Media
+id and the expiry in Unix seconds; the signature is HMAC-SHA256 under
+`MEDIA_LINK_SIGNING_KEY` over a fixed domain string followed by the claims,
+so the key signs nothing but read links. The key has the format of
+`ACCOUNT_DELETION_RECEIPT_KEY`: 32 random bytes, unpadded base64url; the
+wizard makes it inside OpenBao. Changing it ends every link out there, which
+is harmless five minutes later. Links point at `PUBLIC_API_ORIGIN`.
+
+`GET /v1/media/{id}/content?token=…` needs no sign-in: the token is the
+permission. It checks the signature, the Media id and the expiry, unwraps the
+data key, decrypts as it streams, and answers with:
+
+- `Content-Type`: the type detected at upload;
+- `Content-Disposition: attachment; filename*=UTF-8''<the name, percent-encoded>`;
+- `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store`,
+  `Referrer-Policy: no-referrer`, `Content-Security-Policy: default-src 'none'; sandbox`.
+
+The first segment is checked before the answer starts, so a file that is
+wrong from the start is a `500`. A later segment that fails its check ends
+the download short (the status is already sent), and the log names the Media
+and the segment. The route is limited to 120 requests a minute per client
+address, like the public certificate routes. A link may be opened more than
+once until it expires. A problem answer never repeats the token; the edge
+proxy's own request log may still hold it for its five minutes.
+
+### Access log
+
+Every link core issues is written before it is handed out
+(`media_read_links`: id, Media, product, the person it is for, issued at,
+expires at), and every successful open before any byte is sent
+(`media_read_link_opens`: link, time, and the client address as the trusted
+proxies report it, see [`client-ip-trust.md`](client-ip-trust.md)). A failed
+open (a bad or expired token, OpenBao down, a file that fails its check) is
+not logged as an open.
+
+The access log is kept **one year** (decision G2, `media.ReadLinkRetention`).
+An hourly cleanup deletes, a batch at a time, the links issued more than a
+year ago with their opens, and any open older than a year. It runs in the
+background from startup on (its first run never holds up core), with the flag
+off too, logs how many links (and their opens) it deleted, and says nothing
+when there is nothing to delete. A person's
+account erasure leaves their rows in place until their year is up: they are
+the access audit record, and the erasure steps do not touch them
+([`data-lifecycle.md`](data-lifecycle.md)).
+
+### Certificate assets
+
+Certificate rendering reads a private asset through decryption, in the draft
+preview and at publish, and decrypts only `certificate_asset` Media: another
+product's private Media named in a layout is never read. A published version's
+copy of a private asset is kept encrypted in the private bucket under a data
+key of its own (`private/certificate-template-assets/<version>/<asset>`; the
+version id is new on every publish); its manifest entry carries the
+encryption, and the asset serving backfill skips it. A publish that fails
+deletes the private copies it wrote, however far it got; one whose version
+may have been stored although the store answered an error (a lost commit
+answer) keeps them, since that version's certificates need them: they are
+deleted only when the version is provably not there. One rare race remains:
+an INSERT still running on the database when the lookup misses it; a request
+context is cancelled only at shutdown, so the window is narrow, and what it
+could leave is a version whose private copy is gone.
+
+Issued certificate PDFs (`certificates/<serial>.pdf`) are written to the
+public bucket by design, and contain the rendered assets, private ones
+included: a certificate is meant to be shared and verified by anyone who has
+its link.
+
+Certificate assets uploaded before private Media are `legacy` and public, and
+stay so: they render as before, and their version copies stay in the public
+bucket. Nothing moves them (decision G1: the certificate feature has not been
+used in production, so there is nothing to move).
+
+### Refusals
+
+| Status | `code` | When |
+|---|---|---|
+| 403 | `media_link_forbidden` | A link asked for by anyone but a configured product's service account with `media:attach` or a privileged admin. |
+| 400 | | A product's request without `onBehalfOf`, an admin's request with one, or ids that are not UUIDs. |
+| 404 | | A link to a Media that is not a current private Media the caller may open; a content request for a Media that is not a current private one. |
+| 422 | `media_link_subject_inactive` | The person the link is for is unknown to core or being erased. |
+| 403 | `media_link_invalid` | A token core did not sign for this Media. |
+| 403 | `media_link_expired` | A token past its five minutes. |
+| 422 | `private_media_disabled` | Private Media is off. |
+| 422 | `purpose_not_available` | An upload of a purpose that needs a malware scan (no scanner yet). |
+| 503 | `private_media_unavailable` | OpenBao cannot be reached, is sealed, refuses core's identity, or has no such mount or key. Retry later (`Retry-After`). |
+| 500 | `private_media_integrity` | The stored object or its wrapped key is not what core wrote. Nothing of it is served; the log names the request. |
 
 ## Configuration
 
@@ -595,6 +1364,12 @@ dropped; `status` replaces it.
   `10m`.
 - `MEDIA_UPLOAD_DAILY_MAX_MIB` — MiB of upload body per person per rolling
   24 hours; default `2048`.
+- `CDN_BASE` (or `R2_PUBLIC_URL`) — the public base of every Media address;
+  default `https://cdn.yildizskylab.com`.
+- The decode budget (2 images at once, 1 SVG, a 10-second wait) is fixed in
+  code (`media.DecodeBudgetConfig`).
+- `MEDIA_IMAGE_ADDRESS_MODE` — where image sizes point: `stored` (default) or
+  `cloudflare`. Any other value stops core at startup.
 
 - `MEDIA_SERVICE_CLIENTS` — the products' service clients for the
   [service attach API](#service-attach-api), `product:client` pairs
@@ -604,3 +1379,26 @@ dropped; `status` replaces it.
 
 The detached window is fixed at 30 days by the database;
 `MEDIA_BLOB_RECOVERY_DAYS` does not change it.
+
+[Private Media](#private-media) reads these names (the wizard prints their
+values). With `MEDIA_PRIVATE_ENABLED` unset or `false`, none of the others is
+read or required (and `PUBLIC_API_ORIGIN` keeps its default for certificate
+and QR links). With `true`, every one is required and checked at startup, and
+core does not start on a missing or invalid one; the error names the
+variable, never its value.
+
+| Variable | Value in core's Dokploy env | |
+|---|---|---|
+| `MEDIA_PRIVATE_ENABLED` | `false` | `true` or `false`; anything else stops core. |
+| `MEDIA_OPENBAO_ADDR` | `http://<OpenBao Swarm service>:8200` | Internal network only; an http(s) address with no path. |
+| `MEDIA_TRANSIT_MOUNT` | `transit/<side>` | |
+| `MEDIA_TRANSIT_KEY` | `media` | |
+| `MEDIA_OPENBAO_ROLE_ID` | `${{vault.bao-<side>.<core appName>/MEDIA_OPENBAO_ROLE_ID:value}}` | Not secret, kept in KV. |
+| `MEDIA_OPENBAO_SECRET_ID` | `${{vault.bao-<side>.<core appName>/MEDIA_OPENBAO_SECRET_ID:value}}` | Secret. |
+| `R2_PRIVATE_BUCKET` | `skylab-private-<side>` | Never the public bucket (`R2_BUCKET`). |
+| `R2_PRIVATE_ACCESS_KEY` | `${{vault.bao-<side>.<core appName>/R2_PRIVATE_ACCESS_KEY:value}}` | Scoped to the private bucket; never the public bucket's `R2_ACCESS_KEY`. |
+| `R2_PRIVATE_SECRET_KEY` | `${{vault.bao-<side>.<core appName>/R2_PRIVATE_SECRET_KEY:value}}` | |
+| `MEDIA_LINK_SIGNING_KEY` | `${{vault.bao-<side>.<core appName>/MEDIA_LINK_SIGNING_KEY:value}}` | 32 random bytes, unpadded base64url; the wizard makes it in OpenBao. Signs read links. |
+| `PUBLIC_API_ORIGIN` | sandbox `https://sandbox-api.yildizskylab.com`, production `https://api.yildizskylab.com` | Where read links point. Required with the flag on, so a sandbox without it cannot hand out links to production; the sandbox must set it. |
+
+The private bucket uses core's `R2_ENDPOINT`.

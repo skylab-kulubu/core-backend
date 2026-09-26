@@ -62,7 +62,10 @@ func TestBlobAndCDNRejectsIncompleteR2(t *testing.T) {
 	}
 }
 
-func TestUploadWithoutCDNBaseDoesNotInventProdHost(t *testing.T) {
+// Every Media address is built from a base, so a client never gets a bare
+// key: without a configured one, the default base, as every other address
+// core builds without one.
+func TestUploadWithoutCDNBaseGetsTheDefaultBase(t *testing.T) {
 	t.Parallel()
 	svc := media.NewService(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "")
 	p := authz.Principal{ID: uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").String()}
@@ -70,10 +73,7 @@ func TestUploadWithoutCDNBaseDoesNotInventProdHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(created.URL, "cdn.yildizskylab.com") {
-		t.Fatalf("invented prod cdn url %s", created.URL)
-	}
-	if !strings.HasPrefix(created.URL, "images/") {
+	if created.URL != media.PublicURL("", created.Key) || !strings.HasPrefix(created.URL, "https://") {
 		t.Fatalf("url %s", created.URL)
 	}
 }

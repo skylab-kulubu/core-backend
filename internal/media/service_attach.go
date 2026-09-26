@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"slices"
 	"time"
@@ -111,13 +112,33 @@ func (s *service) Attach(ctx context.Context, p authz.Principal, mediaID uuid.UU
 		return Attachment{}, false, err
 	}
 	may := func(m Media) (bool, error) { return s.mayLink(ctx, product, m, req.OnBehalfOf) }
-	if err := checkLink(ctx, s.media, mediaID, product, req.Role, may); err != nil {
+	m, err := checkLink(ctx, s.media, mediaID, product, req.Role, may)
+	if errors.Is(err, ErrPurposeMismatch) && m.DetachExpiryHeld {
+		return s.attachHeld(ctx, product, link)
+	}
+	if err != nil {
 		return Attachment{}, false, err
 	}
 	created, isNew, err := s.media.Attach(ctx, link)
 	if errors.Is(err, ErrNotLinkable) {
 		// Archived or claimed by a purge since it was read.
 		return Attachment{}, false, &LinkRefusal{Err: ErrNotLinkable, MediaID: mediaID, Role: req.Role}
+	}
+	return created, isNew, err
+}
+
+// attachHeld links a Media whose detach expiry the legacy backfill holds,
+// and whose purpose, given from core's uses, does not fit the product's
+// role: the use the hold protected until stage 5. The Media goes back to
+// legacy, as a Media with mixed uses does (K1), and is attached.
+func (s *service) attachHeld(ctx context.Context, product authz.Product, link Attachment) (Attachment, bool, error) {
+	created, isNew, demotedFrom, err := s.media.AttachHeld(ctx, link)
+	if errors.Is(err, ErrNotLinkable) {
+		// Released, archived or claimed by a purge since it was read.
+		return Attachment{}, false, &LinkRefusal{Err: ErrNotLinkable, MediaID: link.MediaID, Role: link.Role}
+	}
+	if err == nil && demotedFrom != "" {
+		log.Printf("media %s: held %s Media linked by %s as %s; back to legacy", link.MediaID, demotedFrom, product, link.Role)
 	}
 	return created, isNew, err
 }
@@ -129,9 +150,10 @@ func (s *service) Attach(ctx context.Context, p authz.Principal, mediaID uuid.UU
 //   - a legacy Media for the person who uploaded it, or one the product
 //     already holds a Media attachment to (an editor reusing a library
 //     image), so that no product pins another product's or core's legacy
-//     Media.
+//     Media. A Media whose detach expiry the legacy backfill holds counts as
+//     legacy here until the hold is released.
 func (s *service) mayLink(ctx context.Context, product authz.Product, m Media, onBehalfOf uuid.UUID) (bool, error) {
-	if m.Purpose == PurposeLegacy {
+	if m.Purpose == PurposeLegacy || m.DetachExpiryHeld {
 		if m.UploadedBy == onBehalfOf {
 			return true, nil
 		}

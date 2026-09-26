@@ -144,3 +144,13 @@ func TestR2_SetMetadataDoesNotMistakeAMissingBucketForAMissingObject(t *testing.
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestR2_ReadOfAMissingObjectIsNotFound(t *testing.T) {
+	t.Parallel()
+	r2, fake := fakeR2(t)
+	fake.fail("/media/images/gone", "NoSuchKey")
+
+	if _, err := r2.Read(context.Background(), "images/gone"); !errors.Is(err, media.ErrNotFound) {
+		t.Fatalf("err = %v, want %v", err, media.ErrNotFound)
+	}
+}

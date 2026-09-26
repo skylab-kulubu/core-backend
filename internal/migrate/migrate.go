@@ -572,6 +572,137 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND prosrc LIKE '%a.owner_id = gone.owner_id::TEXT%'
 			  AND prosrc LIKE '%added.owner_id::TEXT%'
 		)`,
+	20260926130000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('width', 'int4'),
+				('height', 'int4'),
+				('size_objects', 'jsonb')
+			) expected(column_name, udt_name)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'media'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = 'YES'
+		) = 3
+		AND (
+			SELECT count(*) FROM pg_constraint
+			WHERE conrelid = to_regclass('public.media') AND contype = 'c'
+			  AND conname IN ('media_width_check', 'media_height_check', 'media_size_objects_check')
+		) = 3
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'media_size_objects_pending_idx'
+			  AND indexdef LIKE '%size_objects IS NULL%'
+		)`,
+	// The legacy backfill's hold and the purpose check on new Media
+	// attachments. A rerun of 20260926120000 puts back its status and
+	// current-media functions; this fingerprint then fails and the migration
+	// runs again.
+	20260926161000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'media' AND column_name = 'detach_expiry_held'
+			  AND data_type = 'boolean' AND is_nullable = 'NO' AND column_default = 'false'
+		)
+		AND to_regprocedure('public.media_purpose_fits_role(text, text, text)') IS NOT NULL
+		AND to_regprocedure('public.media_role_purposes()') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'media_legacy_hold' AND column_name = 'released_at'
+			  AND udt_name = 'timestamptz' AND is_nullable = 'YES'
+		)
+		-- Its one state row: the backfill refuses to decide about the hold
+		-- without it. The table is read through dynamic SQL, and only once it
+		-- exists, so that the check does not fail before the migration.
+		AND CASE WHEN to_regclass('public.media_legacy_hold') IS NULL THEN false
+			ELSE (xpath('/row/n/text()', query_to_xml('SELECT count(*) AS n FROM public.media_legacy_hold', false, true, '')))[1]::text = '1'
+		END
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_attachment_status' AND prosrc LIKE '%OR detach_expiry_held THEN NULL%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'require_current_attached_media'
+			  AND prosrc LIKE '%FOR KEY SHARE%' AND prosrc LIKE '%media_purpose_fits_role(NEW.owner_service, NEW.role, current_purpose)%'
+			  AND prosrc LIKE '%media_attachment_purpose_fits%'
+		)`,
+	20260926170000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('visibility', 'text', 'NO'),
+				('encryption_algorithm', 'text', 'YES'),
+				('wrapped_data_key', 'text', 'YES'),
+				('key_version', 'int4', 'YES')
+			) expected(column_name, udt_name, is_nullable)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'media'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = expected.is_nullable
+		) = 4
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.media') AND conname = 'media_visibility_check' AND contype = 'c'
+			  AND pg_get_constraintdef(oid) = ` + "'" + `CHECK ((((visibility = ''public''::text) AND (encryption_algorithm IS NULL) AND (wrapped_data_key IS NULL) AND (key_version IS NULL)) OR ((visibility = ''private''::text) AND (encryption_algorithm IS NOT NULL) AND (wrapped_data_key IS NOT NULL) AND (key_version IS NOT NULL) AND (key_version >= 1))))` + "'" + `
+		)
+		AND (
+			SELECT count(*) FROM (VALUES
+				('media_read_links', 'id', 'uuid', 'NO'),
+				('media_read_links', 'media_id', 'uuid', 'NO'),
+				('media_read_links', 'product', 'text', 'NO'),
+				('media_read_links', 'on_behalf_of', 'uuid', 'NO'),
+				('media_read_links', 'issued_at', 'timestamptz', 'NO'),
+				('media_read_links', 'expires_at', 'timestamptz', 'NO'),
+				('media_read_link_opens', 'link_id', 'uuid', 'NO'),
+				('media_read_link_opens', 'opened_at', 'timestamptz', 'NO'),
+				('media_read_link_opens', 'client_ip', 'text', 'NO')
+			) expected(table_name, column_name, udt_name, is_nullable)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = expected.table_name
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = expected.is_nullable
+		) = 9
+		AND (
+			SELECT count(*) FROM (VALUES
+				('media_read_links', 'media_read_links_pkey', 'p', 'PRIMARY KEY (id)'),
+				('media_read_links', 'media_read_links_media_id_fkey', 'f', 'FOREIGN KEY (media_id) REFERENCES media(id)'),
+				('media_read_links', 'media_read_links_expiry_check', 'c', 'CHECK ((expires_at > issued_at))'),
+				('media_read_link_opens', 'media_read_link_opens_link_id_fkey', 'f', 'FOREIGN KEY (link_id) REFERENCES media_read_links(id) ON DELETE CASCADE')
+			) expected(table_name, constraint_name, constraint_type, definition)
+			JOIN pg_constraint actual
+			  ON actual.conrelid = to_regclass('public.' || expected.table_name)
+			 AND actual.conname = expected.constraint_name
+			 AND actual.contype = expected.constraint_type::"char"
+			 AND pg_get_constraintdef(actual.oid) = expected.definition
+		) = 4
+		AND to_regclass('public.media_read_links_media_idx') IS NOT NULL
+		AND to_regclass('public.media_read_links_issued_idx') IS NOT NULL
+		AND to_regclass('public.media_read_link_opens_link_idx') IS NOT NULL
+		AND to_regclass('public.media_read_link_opens_opened_idx') IS NOT NULL`,
+	// The read link names an active subject (account-lifecycle.md), like
+	// every other current-identity link.
+	20260926171000: `
+		SELECT 1 FROM pg_trigger actual
+		JOIN pg_attribute attribute
+		  ON attribute.attrelid = actual.tgrelid AND attribute.attname = 'on_behalf_of'
+		WHERE actual.tgrelid = to_regclass('public.media_read_links')
+		  AND actual.tgname = 'media_read_links_require_active_subject'
+		  AND actual.tgtype = 23
+		  AND actual.tgenabled = 'O'
+		  AND actual.tgqual IS NULL
+		  AND NOT actual.tgisinternal
+		  AND actual.tgfoid = to_regprocedure('public.require_active_account_reference()')
+		  AND actual.tgattr::text = attribute.attnum::text
+		  AND encode(actual.tgargs, 'hex') = encode(convert_to('on_behalf_of', 'UTF8'), 'hex') || '00'`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

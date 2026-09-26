@@ -127,6 +127,44 @@ func TestFormLinksOnPostgres(t *testing.T) {
 	}
 }
 
+func TestRestoringAReplacedFormLinkConflictsOnPostgres(t *testing.T) {
+	pool := testpostgres.Start(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	users := user.NewService(user.NewPostgresStore(pool))
+	serviceID := uuid.New()
+	moderatorID := uuid.New()
+	for id, email := range map[uuid.UUID]string{serviceID: "forms-service@example.test", moderatorID: "moderator@example.test"} {
+		if _, _, err := users.Ensure(ctx, id, user.Profile{Email: email}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	forms := authz.Principal{ID: serviceID.String(), Roles: []string{"url:forms"}}
+	moderator := authz.Principal{ID: moderatorID.String(), Roles: []string{"url:moderator"}}
+	svc := shorturl.NewService(shorturl.NewPostgresStore(pool), authz.NewAuthorizer(authz.DefaultPolicy()))
+
+	formID := uuid.New()
+	first, err := svc.EnsureFormLink(ctx, forms, formID, shorturl.FormLinkInput{URL: formsURL(formID), Alias: "yaz-kampi-2026"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Delete(ctx, moderator, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.EnsureFormLink(ctx, forms, formID, shorturl.FormLinkInput{URL: formsURL(formID), Alias: "yaz-kampi-2026"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Restore(ctx, moderator, first.ID); !errors.Is(err, shorturl.ErrConflict) {
+		t.Fatalf("restoring a form link while the form has another: %v", err)
+	}
+	if current, err := svc.FormLink(ctx, forms, formID); err != nil || current.ID != second.ID {
+		t.Fatalf("the form keeps its current link: %+v %v", current, err)
+	}
+}
+
 func TestURLFormLinksMigrationBindsExistingLinks(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
