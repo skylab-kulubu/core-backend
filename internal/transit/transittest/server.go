@@ -58,13 +58,18 @@ type Server struct {
 	TTL      time.Duration
 	MaxTTL   time.Duration
 
-	mu       sync.Mutex
-	keys     [][]byte
-	tokens   map[string]*token
-	sealed   bool
-	refusing bool
-	logins   int
-	renewals int
+	mu               sync.Mutex
+	keys             [][]byte
+	tokens           map[string]*token
+	sealed           bool
+	refusingLogins   bool
+	refusingRenewals bool
+	failingAuth      bool
+	denyingTransit   bool
+	logins           int
+	renewals         int
+	revocations      int
+	authAttempts     int
 }
 
 // NewServer starts a fake with key version 1 of the Transit key and closes
@@ -113,7 +118,44 @@ func (s *Server) RevokeTokens() {
 func (s *Server) RefuseRenewalsAndLogins() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.refusing = true
+	s.refusingLogins, s.refusingRenewals = true, true
+}
+
+// RefuseRenewals refuses every renewal from now on; logins still work.
+func (s *Server) RefuseRenewals() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refusingRenewals = true
+}
+
+// FailAuth answers every login and renewal with 503 from now on; Transit
+// requests with a live token still work.
+func (s *Server) FailAuth() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failingAuth = true
+}
+
+// DenyTransit refuses every encrypt and decrypt from now on, whatever the
+// token: a policy without the key's paths.
+func (s *Server) DenyTransit() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.denyingTransit = true
+}
+
+// AuthAttempts counts login and renewal requests, answered or not.
+func (s *Server) AuthAttempts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.authAttempts
+}
+
+// Revocations counts tokens revoked by revoke-self.
+func (s *Server) Revocations() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revocations
 }
 
 // Seal answers every request with 503, as a sealed OpenBao does.
@@ -165,8 +207,23 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	now := s.Clock.Now()
 	switch r.URL.Path {
+	case "/v1/auth/approle/login", "/v1/auth/token/renew-self":
+		s.authAttempts++
+		if s.failingAuth {
+			writeErrors(w, http.StatusServiceUnavailable, "Vault is sealed")
+			return
+		}
+	case "/v1/auth/token/revoke-self":
+		if _, ok := s.tokens[r.Header.Get("X-Vault-Token")]; ok {
+			delete(s.tokens, r.Header.Get("X-Vault-Token"))
+			s.revocations++
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	switch r.URL.Path {
 	case "/v1/auth/approle/login":
-		if s.refusing || body["role_id"] != s.RoleID || body["secret_id"] != s.SecretID {
+		if s.refusingLogins || body["role_id"] != s.RoleID || body["secret_id"] != s.SecretID {
 			writeErrors(w, http.StatusBadRequest, "invalid role or secret ID")
 			return
 		}
@@ -178,7 +235,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case "/v1/auth/token/renew-self":
 		id := r.Header.Get("X-Vault-Token")
 		tok := s.liveToken(id, now)
-		if tok == nil || s.refusing {
+		if tok == nil || s.refusingRenewals {
 			writeErrors(w, http.StatusForbidden, "permission denied")
 			return
 		}
@@ -190,7 +247,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		writeAuth(w, id, tok.expires.Sub(now))
 		return
 	}
-	if s.liveToken(r.Header.Get("X-Vault-Token"), now) == nil {
+	if s.liveToken(r.Header.Get("X-Vault-Token"), now) == nil || s.denyingTransit {
 		writeErrors(w, http.StatusForbidden, "permission denied")
 		return
 	}

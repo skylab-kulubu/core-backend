@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/transit/transittest"
@@ -94,7 +95,7 @@ func TestPostgresAccessLogKeepsEveryLinkAndOpen(t *testing.T) {
 	}
 	issuedAt := db.bao.Clock.Now()
 
-	link, err := db.svc.IssueReadLink(ctx, formsService, created.ID, reviewer)
+	link, err := db.svc.IssueReadLink(ctx, formsService, created.ID, reviewer.String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +157,7 @@ func TestPostgresReadLinkNeedsAnActiveAccount(t *testing.T) {
 	}
 
 	for name, person := range map[string]uuid.UUID{"unknown to core": uuid.New(), "being erased": leaving} {
-		if _, err := db.svc.IssueReadLink(ctx, formsService, created.ID, person); !errors.Is(err, media.ErrLinkSubjectInactive) {
+		if _, err := db.svc.IssueReadLink(ctx, formsService, created.ID, person.String()); !errors.Is(err, media.ErrLinkSubjectInactive) {
 			t.Errorf("%s: err = %v, want %v", name, err, media.ErrLinkSubjectInactive)
 		}
 	}
@@ -219,4 +220,36 @@ func TestPostgresAccessLogRefusesAnOpenOfNoIssuedLink(t *testing.T) {
 	if err == nil || errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+// Private Media are linked through the database's purpose check like any
+// other: a private certificate asset on a certificate template draft, and a
+// private Answer file on a Skyforms answer.
+func TestPostgresPrivateMediaPassTheAttachmentPurposeCheck(t *testing.T) {
+	db := newPrivateDatabase(t)
+	ctx := context.Background()
+
+	background, err := db.svc.UploadForPurpose(ctx, db.organizer, "certificate_asset", uploaded("background.png", "image/png", pngDot()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout := certificate.Layout{Width: 297, Height: 210, Orientation: "landscape", BackgroundMediaID: &background.ID, Elements: []certificate.Element{}}
+	if _, err := certificate.NewPostgresStore(db.pool).CreateTemplate(ctx, certificate.Template{
+		ID: uuid.New(), Name: "PRIVATE", OwnerTeam: "WEBLAB", SourceKind: "upload", DraftLayout: layout,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attached(t, db.get(t, background.ID))
+
+	answer, err := db.svc.UploadForPurpose(ctx, db.organizer, "answer_file", uploaded("cv.pdf", "application/pdf", pdfFile()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := db.svc.Attach(ctx, formsService, answer.ID, media.AttachRequest{
+		Owner: media.Owner{Service: authz.ProductForms, Type: "response", ID: uuid.NewString()},
+		Role:  media.RoleFormsAnswer, OnBehalfOf: uuid.MustParse(db.organizer.ID),
+	}); err != nil || !created {
+		t.Fatalf("Skyforms answer: created %v, err %v", created, err)
+	}
+	attached(t, db.get(t, answer.ID))
 }

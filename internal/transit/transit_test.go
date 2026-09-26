@@ -205,8 +205,8 @@ func TestOpenBaoDownIsUnavailable(t *testing.T) {
 }
 
 // A Transit mount without the configured key is a configuration mistake,
-// not a bad ciphertext. (Encrypt without the key is a permission refusal:
-// it would create the key.)
+// not a bad ciphertext. (Encrypt without the key is a permission refusal
+// right after a fresh login: it would create the key.)
 func TestMissingTransitKeyIsMisconfigured(t *testing.T) {
 	t.Parallel()
 	bao := transittest.NewServer(t)
@@ -221,8 +221,8 @@ func TestMissingTransitKeyIsMisconfigured(t *testing.T) {
 	if !strings.Contains(err.Error(), "transit/test") || !strings.Contains(err.Error(), "other") {
 		t.Fatalf("the error does not name the mount and key: %v", err)
 	}
-	if _, _, err := client.WrapKey(context.Background(), dataKey()); !errors.Is(err, transit.ErrDenied) {
-		t.Fatalf("encrypt: err = %v, want %v", err, transit.ErrDenied)
+	if _, _, err := transit.New(config).WrapKey(context.Background(), dataKey()); !errors.Is(err, transit.ErrMisconfigured) {
+		t.Fatalf("encrypt: err = %v, want %v", err, transit.ErrMisconfigured)
 	}
 }
 
@@ -354,5 +354,91 @@ func TestWrongAppRoleCredentialsAreDenied(t *testing.T) {
 	_, _, err := transit.New(config).WrapKey(context.Background(), dataKey())
 	if !errors.Is(err, transit.ErrDenied) {
 		t.Fatalf("err = %v, want %v", err, transit.ErrDenied)
+	}
+}
+
+// A renewal that fails is held back like a failed login: an OpenBao answering
+// 503 sees one renewal and one login, not a pair on every call.
+func TestFailingRenewalIsNotRetriedOnEveryCall(t *testing.T) {
+	t.Parallel()
+	bao := transittest.NewServer(t)
+	client := transit.New(bao.Config())
+	ctx := context.Background()
+	if _, _, err := client.WrapKey(ctx, dataKey()); err != nil {
+		t.Fatal(err)
+	}
+	before := bao.AuthAttempts()
+
+	bao.FailAuth()
+	bao.Clock.Advance(bao.TTL/2 + time.Minute)
+	for range 10 {
+		if _, _, err := client.WrapKey(ctx, dataKey()); err != nil {
+			t.Fatalf("with lease left: %v", err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	eventually(t, "the renewal and its login are tried", func() bool { return bao.AuthAttempts()-before >= 2 })
+	time.Sleep(20 * time.Millisecond)
+	if got := bao.AuthAttempts() - before; got != 2 {
+		t.Fatalf("%d renewals and logins tried, want one of each", got)
+	}
+}
+
+// A token refused right after a fresh login is core's policy, not the token:
+// OpenBao is misconfigured, and core does not log in again until the hold
+// ends.
+func TestPolicyRefusalAfterAFreshLoginIsMisconfigured(t *testing.T) {
+	t.Parallel()
+	bao := transittest.NewServer(t)
+	client := transit.New(bao.Config())
+	bao.DenyTransit()
+
+	for range 5 {
+		if _, _, err := client.WrapKey(context.Background(), dataKey()); !errors.Is(err, transit.ErrMisconfigured) {
+			t.Fatalf("err = %v, want %v", err, transit.ErrMisconfigured)
+		}
+	}
+	if bao.Logins() != 1 {
+		t.Fatalf("%d logins, want one until the hold ends", bao.Logins())
+	}
+	bao.Clock.Advance(10 * time.Second)
+	_, _, _ = client.WrapKey(context.Background(), dataKey())
+	if bao.Logins() != 2 {
+		t.Fatalf("%d logins after the hold, want one more", bao.Logins())
+	}
+}
+
+// A token replaced by a new login is revoked, as far as OpenBao lets it.
+func TestReplacedTokenIsRevoked(t *testing.T) {
+	t.Parallel()
+	bao := transittest.NewServer(t)
+	client := transit.New(bao.Config())
+	ctx := context.Background()
+	if _, _, err := client.WrapKey(ctx, dataKey()); err != nil {
+		t.Fatal(err)
+	}
+
+	bao.RefuseRenewals()
+	bao.Clock.Advance(bao.TTL/2 + time.Minute)
+	if _, _, err := client.WrapKey(ctx, dataKey()); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the old token is revoked", func() bool { return bao.Logins() == 2 && bao.Revocations() == 1 })
+}
+
+// A short lease does not make every call log in again.
+func TestShortLeaseIsKeptInProportion(t *testing.T) {
+	t.Parallel()
+	bao := transittest.NewServer(t)
+	bao.TTL, bao.MaxTTL = 20*time.Second, time.Hour
+	client := transit.New(bao.Config())
+	for range 5 {
+		if _, _, err := client.WrapKey(context.Background(), dataKey()); err != nil {
+			t.Fatal(err)
+		}
+		bao.Clock.Advance(time.Second)
+	}
+	if bao.Logins() != 1 {
+		t.Fatalf("%d logins within a 20-second lease", bao.Logins())
 	}
 }

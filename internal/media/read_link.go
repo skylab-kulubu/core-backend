@@ -88,19 +88,22 @@ type AccessLog interface {
 //     admin being the person the link is for.
 //
 // Core records every link before it hands it out.
-func (s *service) IssueReadLink(ctx context.Context, p authz.Principal, id, onBehalfOf uuid.UUID) (ReadLink, error) {
+func (s *service) IssueReadLink(ctx context.Context, p authz.Principal, id uuid.UUID, onBehalfOf string) (ReadLink, error) {
 	if s.private == nil {
 		return ReadLink{}, ErrPrivateMediaDisabled
 	}
 	switch {
 	case s.authz.Allow(p, authz.Resource{Type: authz.TypeMediaReadLink}, authz.Create):
-		if id == uuid.Nil || onBehalfOf == uuid.Nil {
+		person, err := uuid.Parse(onBehalfOf)
+		if id == uuid.Nil || err != nil || person == uuid.Nil {
 			return ReadLink{}, ErrInvalid
 		}
-		return s.issueReadLink(ctx, id, p.Product, onBehalfOf)
+		return s.issueReadLink(ctx, id, p.Product, person)
 	case s.authz.Allow(p, authz.Resource{Type: authz.TypeMediaReadLink}, authz.Read):
+		// The admin is the person the link is for; naming anyone, or
+		// anything, else is a malformed request.
 		admin := lifecycle.ActorID(p.ID)
-		if id == uuid.Nil || admin == nil || onBehalfOf != uuid.Nil {
+		if id == uuid.Nil || admin == nil || onBehalfOf != "" {
 			return ReadLink{}, ErrInvalid
 		}
 		return s.issueReadLink(ctx, id, authz.ProductCore, *admin)

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -188,5 +189,108 @@ func TestFailedPublishLeavesNoPrivateCopy(t *testing.T) {
 	}
 	if got := c.private.Len(); got != objectsBefore {
 		t.Fatalf("%d private objects after the failed publish, %d before", got, objectsBefore)
+	}
+}
+
+// failingSecondRead reads assets through reader and fails the second read.
+type failingSecondRead struct {
+	reader certificate.AssetReader
+	mu     sync.Mutex
+	reads  int
+}
+
+func (f *failingSecondRead) ReadAsset(ctx context.Context, id uuid.UUID) (certificate.Asset, error) {
+	f.mu.Lock()
+	f.reads++
+	n := f.reads
+	f.mu.Unlock()
+	if n == 2 {
+		return certificate.Asset{}, errors.New("r2: read failed")
+	}
+	return f.reader.ReadAsset(ctx, id)
+}
+
+// A publish whose snapshot fails part way deletes the private copies it
+// already made.
+func TestPublishFailingPartWayThroughItsAssetsLeavesNoPrivateCopy(t *testing.T) {
+	t.Parallel()
+	c := newPrivateCertificates(t)
+	ctx := context.Background()
+	var assets []uuid.UUID
+	for _, name := range []string{"background.png", "logo.png"} {
+		asset, err := c.uploads.UploadForPurpose(ctx, c.admin, "certificate_asset", media.UploadedFile{Name: name, Data: pngDot()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assets = append(assets, asset.ID)
+	}
+	layout := versionedLayout("TWO ASSETS")
+	layout.BackgroundMediaID = &assets[0]
+	layout.Elements = append(layout.Elements, certificate.Element{ID: "logo", Kind: "image", MediaID: &assets[1], X: 10, Y: 100, Width: 80, Height: 80, Opacity: 1})
+	store := certificate.NewMemoryStore()
+	template, err := store.CreateTemplate(ctx, certificate.Template{ID: uuid.New(), Name: "TWO", OwnerTeam: "WEBLAB", SourceKind: "sky", DraftLayout: layout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := certificate.NewServiceWithOptions(store, ticket.NewMemoryStore(), event.NewMemoryStore(), user.NewMemoryStore(),
+		authz.NewAuthorizer(authz.DefaultPolicy()), &recRender{}, nil,
+		certificate.Options{Templates: store, Artifacts: c.public, PrivateArtifacts: c.storage,
+			Assets: &failingSecondRead{reader: certificate.MediaAssets{Media: c.mediaStore, Blobs: c.public}}})
+	objectsBefore := c.private.Len()
+
+	if _, err := service.PublishTemplate(ctx, c.admin, template.ID); err == nil {
+		t.Fatal("published although an asset could not be read")
+	}
+	if got := c.private.Len(); got != objectsBefore {
+		t.Fatalf("%d private objects after the failed publish, %d before", got, objectsBefore)
+	}
+}
+
+// uncertainCommit stores the version and then answers an error, as a commit
+// whose answer was lost does.
+type uncertainCommit struct {
+	*certificate.MemoryStore
+}
+
+func (u uncertainCommit) CreateVersion(ctx context.Context, v certificate.TemplateVersion) (certificate.TemplateVersion, error) {
+	if _, err := u.MemoryStore.CreateVersion(ctx, v); err != nil {
+		return certificate.TemplateVersion{}, err
+	}
+	return certificate.TemplateVersion{}, errors.New("postgres: connection lost during commit")
+}
+
+// A publish whose version may have been stored keeps its private copies:
+// deleting them would break every certificate of that version.
+func TestPublishWithAnUncertainCommitKeepsItsPrivateCopies(t *testing.T) {
+	t.Parallel()
+	c := newPrivateCertificates(t)
+	ctx := context.Background()
+	background, err := c.uploads.UploadForPurpose(ctx, c.admin, "certificate_asset", media.UploadedFile{Name: "background.png", Data: pngDot()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout := versionedLayout("UNCERTAIN")
+	layout.BackgroundMediaID = &background.ID
+	memory := certificate.NewMemoryStore()
+	template, err := memory.CreateTemplate(ctx, certificate.Template{ID: uuid.New(), Name: "UNCERTAIN", OwnerTeam: "WEBLAB", SourceKind: "sky", DraftLayout: layout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := uncertainCommit{memory}
+	service := certificate.NewServiceWithOptions(store, ticket.NewMemoryStore(), event.NewMemoryStore(), user.NewMemoryStore(),
+		authz.NewAuthorizer(authz.DefaultPolicy()), &recRender{}, nil,
+		certificate.Options{Templates: store, Artifacts: c.public, PrivateArtifacts: c.storage, Assets: certificate.MediaAssets{Media: c.mediaStore, Blobs: c.public}})
+	objectsBefore := c.private.Len()
+
+	if _, err := service.PublishTemplate(ctx, c.admin, template.ID); err == nil {
+		t.Fatal("the lost commit answer was not reported")
+	}
+	version, err := memory.LatestVersion(ctx, template.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := version.AssetManifest[background.ID.String()]
+	if _, ok := c.private.Get(ref.Key); !ok || c.private.Len() != objectsBefore+1 {
+		t.Fatalf("the stored version's private copy is gone (%d objects, %d before)", c.private.Len(), objectsBefore)
 	}
 }

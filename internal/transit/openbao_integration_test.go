@@ -136,11 +136,13 @@ path "transit/empty/decrypt/media" { capabilities = ["update"] }`})
 	}
 
 	// Without the key, encrypt would create it, which the policy does not
-	// grant (403); decrypt says the key is not found.
+	// grant: a refusal right after a fresh login; decrypt says the key is
+	// not found. Both are OpenBao's configuration.
 	empty := transit.New(transit.Config{Addr: addr, Mount: "transit/empty", Key: "media", RoleID: roleID, SecretID: secretID})
-	if _, _, err := empty.WrapKey(ctx, dataKey()); !errors.Is(err, transit.ErrDenied) {
+	if _, _, err := empty.WrapKey(ctx, dataKey()); !errors.Is(err, transit.ErrMisconfigured) {
 		t.Fatalf("encrypt on a mount without the key: err = %v", err)
 	}
+	empty = transit.New(transit.Config{Addr: addr, Mount: "transit/empty", Key: "media", RoleID: roleID, SecretID: secretID})
 	if _, err := empty.UnwrapKey(ctx, before); !errors.Is(err, transit.ErrMisconfigured) {
 		t.Fatalf("decrypt on a mount without the key: err = %v", err)
 	}

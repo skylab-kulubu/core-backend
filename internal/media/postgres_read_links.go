@@ -30,10 +30,11 @@ func (s *PostgresStore) RecordReadLinkOpen(ctx context.Context, open ReadLinkOpe
 const readLinkPruneBatch = 500
 
 // PruneReadLinks deletes, a batch at a time, the read links issued before
-// the cutoff, with their opens, and any open made before it.
+// the cutoff, with their opens, and any open made before it. It reports the
+// links it deleted.
 func (s *PostgresStore) PruneReadLinks(ctx context.Context, before time.Time) (int64, error) {
-	var deleted int64
-	for _, statement := range []string{
+	var links int64
+	for i, statement := range []string{
 		// An open goes with its link (ON DELETE CASCADE).
 		`DELETE FROM media_read_links WHERE id IN (
 			SELECT id FROM media_read_links WHERE issued_at < $1 ORDER BY issued_at LIMIT $2)`,
@@ -43,13 +44,15 @@ func (s *PostgresStore) PruneReadLinks(ctx context.Context, before time.Time) (i
 		for {
 			tag, err := s.pool.Exec(ctx, statement, before, readLinkPruneBatch)
 			if err != nil {
-				return deleted, err
+				return links, err
 			}
-			deleted += tag.RowsAffected()
+			if i == 0 {
+				links += tag.RowsAffected()
+			}
 			if tag.RowsAffected() < readLinkPruneBatch {
 				break
 			}
 		}
 	}
-	return deleted, nil
+	return links, nil
 }

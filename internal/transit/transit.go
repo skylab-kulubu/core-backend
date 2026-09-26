@@ -48,10 +48,12 @@ var (
 // DefaultTimeout bounds each request to OpenBao.
 const DefaultTimeout = 5 * time.Second
 
-// expirySkew is how long before its lease ends a token is no longer used.
+// expirySkew is how long before its lease ends a token is no longer used,
+// at most: a quarter of a shorter lease.
 const expirySkew = 30 * time.Second
 
-// loginFailureHold is how long a failed login is answered from memory.
+// loginFailureHold is how long a failed login or renewal, or a token refused
+// right after a fresh login, is answered from memory.
 const loginFailureHold = 5 * time.Second
 
 // Config is how core reaches the Transit key (docs/media-lifecycle.md).
@@ -80,14 +82,21 @@ type Client struct {
 	http             *http.Client
 	now              func() time.Time
 
-	mu        sync.Mutex
-	token     string
-	expires   time.Time
+	mu    sync.Mutex
+	token string
+	// useUntil is when the token stops being used, a little before its
+	// lease ends.
+	useUntil  time.Time
 	renewAt   time.Time
 	renewable bool
+	// logins counts successful logins; a token is fresh to a call when it
+	// came from a login that finished after the call began.
+	logins     int
+	tokenLogin int
 	// refreshing is the login or renewal in progress, shared by callers.
 	refreshing *refresh
-	// loginErr is the last failed login, answered until loginErrUntil.
+	// loginErr is the last failed login or renewal, or a refusal of a fresh
+	// token, answered until loginErrUntil.
 	loginErr      error
 	loginErrUntil time.Time
 }
@@ -177,23 +186,32 @@ const (
 	opDecrypt = "decrypt"
 	opLogin   = "login"
 	opRenew   = "renew"
+	opRevoke  = "revoke"
 )
 
 // call runs a Transit operation with the key. A token OpenBao refuses is
-// dropped and the operation runs once more with a fresh login.
+// dropped and the operation runs once more with a fresh login. A fresh token
+// OpenBao refuses means core's policy does not cover the operation (or would
+// have to create the key): that is ErrMisconfigured, answered from memory for
+// loginFailureHold, with no login in between.
 func (c *Client) call(ctx context.Context, operation string, body, out any) error {
 	path := "/v1/" + c.mount + "/" + operation + "/" + c.key
-	for attempt := 0; ; attempt++ {
-		token, err := c.currentToken(ctx)
+	c.mu.Lock()
+	loginsBefore := c.logins
+	c.mu.Unlock()
+	for {
+		token, login, err := c.currentToken(ctx)
 		if err != nil {
 			return err
 		}
 		err = c.post(ctx, operation, path, token, body, out)
-		if errors.Is(err, ErrDenied) && attempt == 0 {
-			c.forget(token)
-			continue
+		if !errors.Is(err, ErrDenied) {
+			return err
 		}
-		return err
+		if login > loginsBefore {
+			return c.refusedFresh(token, err)
+		}
+		c.forget(token)
 	}
 }
 
@@ -202,30 +220,46 @@ func (c *Client) forget(token string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.token == token {
-		c.expires = time.Time{}
+		c.useUntil = time.Time{}
 	}
 }
 
-// currentToken returns a token with lease left. Past half its lease it
-// starts a renewal in the background and returns the token meanwhile.
-// Without one it waits, for as long as ctx allows, for the login in
-// progress (starting one if none is), unless a login failed a moment ago.
-func (c *Client) currentToken(ctx context.Context) (string, error) {
+// refusedFresh drops a token OpenBao refused right after it was issued and
+// holds the refusal, so callers do not log in again and again.
+func (c *Client) refusedFresh(token string, refusal error) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	err := fmt.Errorf("%w: a fresh token was refused, so core's policy does not allow it: %w", ErrMisconfigured, refusal)
+	if c.token == token {
+		c.useUntil = time.Time{}
+	}
+	c.loginErr = err
+	c.loginErrUntil = c.now().Add(loginFailureHold)
+	return err
+}
+
+// currentToken returns a token with lease left and the login it came from.
+// Past half its lease it starts a renewal in the background, unless one
+// failed a moment ago, and returns the token meanwhile. Without one it
+// waits, for as long as ctx allows, for the login in progress (starting one
+// if none is), unless a login failed a moment ago.
+func (c *Client) currentToken(ctx context.Context) (string, int, error) {
 	for {
 		c.mu.Lock()
 		now := c.now()
-		if c.token != "" && now.Before(c.expires.Add(-expirySkew)) {
-			token := c.token
-			if c.renewable && !now.Before(c.renewAt) && c.refreshing == nil {
+		held := c.loginErr != nil && now.Before(c.loginErrUntil)
+		if c.token != "" && now.Before(c.useUntil) {
+			token, login := c.token, c.tokenLogin
+			if c.renewable && !now.Before(c.renewAt) && c.refreshing == nil && !held {
 				c.startRefresh(true)
 			}
 			c.mu.Unlock()
-			return token, nil
+			return token, login, nil
 		}
-		if c.loginErr != nil && now.Before(c.loginErrUntil) {
+		if held {
 			err := c.loginErr
 			c.mu.Unlock()
-			return "", err
+			return "", 0, err
 		}
 		if c.refreshing == nil {
 			c.startRefresh(false)
@@ -235,14 +269,14 @@ func (c *Client) currentToken(ctx context.Context) (string, error) {
 		select {
 		case <-done:
 		case <-ctx.Done():
-			return "", fmt.Errorf("%w: waiting for an OpenBao token: %w", ErrUnavailable, ctx.Err())
+			return "", 0, fmt.Errorf("%w: waiting for an OpenBao token: %w", ErrUnavailable, ctx.Err())
 		}
 		c.mu.Lock()
 		failed := c.loginErr != nil && c.now().Before(c.loginErrUntil)
 		err := c.loginErr
 		c.mu.Unlock()
 		if failed {
-			return "", err
+			return "", 0, err
 		}
 	}
 }
@@ -266,12 +300,21 @@ func (c *Client) startRefresh(renew bool) {
 			}
 			auth.Auth.ClientToken = token
 		}
+		loggedIn := false
 		if !renew || err != nil {
 			auth, err = c.login(ctx)
+			loggedIn = err == nil
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if err == nil {
+			if loggedIn {
+				c.logins++
+				c.tokenLogin = c.logins
+				if token != "" && token != auth.Auth.ClientToken {
+					go c.revoke(token)
+				}
+			}
 			c.keep(auth, c.now())
 			c.loginErr = nil
 		} else {
@@ -308,13 +351,24 @@ func (c *Client) login(ctx context.Context) (authResponse, error) {
 	return out, nil
 }
 
-// keep takes a token and its lease. c.mu is held.
+// keep takes a token and its lease: it is renewed from half its lease and
+// used until a little before the lease ends, in proportion to a short one.
+// c.mu is held.
 func (c *Client) keep(out authResponse, now time.Time) {
 	lease := time.Duration(out.Auth.LeaseDuration) * time.Second
 	c.token = out.Auth.ClientToken
-	c.expires = now.Add(lease)
+	c.useUntil = now.Add(lease - min(expirySkew, lease/4))
 	c.renewAt = now.Add(lease / 2)
 	c.renewable = out.Auth.Renewable
+}
+
+// revoke revokes a token a new login replaced, as far as OpenBao lets it;
+// a failure changes nothing, the token only expires later.
+func (c *Client) revoke(token string) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	defer cancel()
+	var out struct{}
+	_ = c.post(ctx, opRevoke, "/v1/auth/token/revoke-self", token, map[string]string{}, &out)
 }
 
 func (c *Client) post(ctx context.Context, operation, path, token string, body, out any) error {

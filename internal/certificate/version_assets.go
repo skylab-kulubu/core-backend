@@ -46,18 +46,20 @@ func layoutAssetIDs(layout Layout) []uuid.UUID {
 	return out
 }
 
-func (s *service) snapshotVersionAssets(ctx context.Context, versionID uuid.UUID, layout Layout) (manifest map[string]VersionAssetRef, err error) {
+func (s *service) snapshotVersionAssets(ctx context.Context, versionID uuid.UUID, layout Layout) (_ map[string]VersionAssetRef, err error) {
 	ids := layoutAssetIDs(layout)
-	manifest = make(map[string]VersionAssetRef, len(ids))
+	manifest := make(map[string]VersionAssetRef, len(ids))
 	if len(ids) == 0 {
 		return manifest, nil
 	}
 	if s.assets == nil || s.artifacts == nil {
 		return nil, ErrInvalid
 	}
+	// The private copies this attempt has written, deleted if it fails.
+	var sealedKeys []string
 	defer func() {
 		if err != nil {
-			s.discardPrivateCopies(ctx, manifest)
+			s.discardPrivateCopies(ctx, sealedKeys)
 		}
 	}()
 	assets := s.decrypted(s.assets)
@@ -79,8 +81,12 @@ func (s *service) snapshotVersionAssets(ctx context.Context, versionID uuid.UUID
 			// bucket, under a data key of its own.
 			sealed, err := s.privateArtifacts.Seal(ctx, media.PrivateObjectKey(key), asset.Data)
 			if err != nil {
+				// A failed Put may have left the object: it is this
+				// attempt's own key, so it goes too.
+				sealedKeys = append(sealedKeys, media.PrivateObjectKey(key))
 				return nil, err
 			}
+			sealedKeys = append(sealedKeys, sealed.Key)
 			manifest[id.String()] = VersionAssetRef{Key: sealed.Key, ContentType: asset.ContentType, Encryption: &sealed.Encryption}
 			continue
 		}
@@ -94,15 +100,27 @@ func (s *service) snapshotVersionAssets(ctx context.Context, versionID uuid.UUID
 	return manifest, nil
 }
 
-// discardPrivateCopies deletes the private copies a publish that failed made
-// (its own, under its new version id). A copy that cannot be deleted is left
-// as ciphertext nothing refers to.
-func (s *service) discardPrivateCopies(ctx context.Context, manifest map[string]VersionAssetRef) {
+// discardPrivateCopies deletes private copies a publish that failed wrote:
+// its own, under its new version id, which nothing refers to. A copy that
+// cannot be deleted is left as ciphertext.
+func (s *service) discardPrivateCopies(ctx context.Context, keys []string) {
+	if s.privateArtifacts == nil {
+		return
+	}
+	for _, key := range keys {
+		_ = s.privateArtifacts.Delete(context.WithoutCancel(ctx), key)
+	}
+}
+
+// privateCopyKeys are the keys of a manifest's private copies.
+func privateCopyKeys(manifest map[string]VersionAssetRef) []string {
+	var keys []string
 	for _, ref := range manifest {
-		if ref.Encryption != nil && s.privateArtifacts != nil {
-			_ = s.privateArtifacts.Delete(context.WithoutCancel(ctx), ref.Key)
+		if ref.Encryption != nil {
+			keys = append(keys, ref.Key)
 		}
 	}
+	return keys
 }
 
 // decrypted reads assets through reader, decrypting the private ones.

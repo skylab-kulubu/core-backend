@@ -377,6 +377,16 @@ func TestAdminReadLinkToACertificateAssetHTTP(t *testing.T) {
 	if resp.StatusCode != fiber.StatusOK || !bytes.Equal(raw, pngDotHTTP()) {
 		t.Fatalf("content: status %d", resp.StatusCode)
 	}
+
+	// An admin names no one; a value that is no user id is refused, not
+	// read as none.
+	for _, body := range []string{`{"onBehalfOf":"not-a-uuid"}`, `{"onBehalfOf":"` + reviewerHTTP.String() + `"}`} {
+		req := httptest.NewRequest(fiber.MethodPost, "/v1/media/"+id+"/links", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if resp, raw := do(t, h.app(t, admin), req); resp.StatusCode != fiber.StatusBadRequest {
+			t.Errorf("%s: status %d body %s", body, resp.StatusCode, raw)
+		}
+	}
 }
 
 // inactiveSubjects is an access log that refuses every link as naming an

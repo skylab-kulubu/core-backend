@@ -38,7 +38,7 @@ func (h *MediaHandler) IssueReadLink(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		body = readLinkBody{}
 	}
-	link, err := h.svc.IssueReadLink(c.Context(), p, parsedID(c.Params("id")), parsedID(body.OnBehalfOf))
+	link, err := h.svc.IssueReadLink(c.Context(), p, parsedID(c.Params("id")), body.OnBehalfOf)
 	if err != nil {
 		return h.error(c, err)
 	}
