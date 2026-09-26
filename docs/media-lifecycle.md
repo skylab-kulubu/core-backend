@@ -1006,9 +1006,12 @@ Media attachments. So its detach expiry is held (decision K2, column
   a CMS page's `image`, the stage 5 case), the service attach gives it back
   `legacy` and attaches it in one transaction: it locks the Media row for
   update first, so two attaches of one held Media queue instead of
-  deadlocking, sets `legacy`, keeps the hold, and inserts the Media
-  attachment. Core logs one line with the Media, its old purpose and the
-  role. Its uses are now mixed, so the backfill keeps it legacy (K1). A
+  deadlocking, sets `legacy` (with a new `updatedAt`), keeps the hold, and
+  inserts the Media attachment. A Detach of the same link can still
+  deadlock with it (the Detach removed the link and waits for the Media
+  row; the insert waits for the removal); when PostgreSQL fails the attach,
+  it is tried once more, after the Detach. Core logs one line with the
+  Media, its old purpose and the role. Its uses are now mixed, so the backfill keeps it legacy (K1). A
   Media uploaded with a purpose is never given back: a product is refused as
   before.
 - Nothing else reads the hold. An archived held Media follows the archive
@@ -1023,7 +1026,10 @@ kept): the backfill runs on every start and purpose-less uploads keep
 arriving until stage 6, and from then on it gives purposes without the hold,
 so nothing is held for ever. The backfill reads the release under a share
 lock that the release's update waits for, so a hold written before the
-release is there for it to clear. Then it walks the held Media by id, 25 at
+release is there for it to count and clear: it counts only after recording.
+The table has exactly one row, made by the migration (and checked by its
+fingerprint); without it the backfill, the release and the report fail
+with an error naming it instead of guessing. Then it walks the held Media by id, 25 at
 a time, clears each one's hold, and gives the ones no record uses by then
 their 30 days **from the release**, not from when they were detached. A held
 Media a product's attach gave back `legacy` gets no window: only the orphan

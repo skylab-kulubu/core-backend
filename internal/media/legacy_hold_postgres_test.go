@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -528,6 +529,7 @@ func TestPostgresAProductAttachingAHeldMediaTurnsItBackToLegacy(t *testing.T) {
 	db := newMediaDatabase(t)
 	ctx := context.Background()
 	cover, created := db.backfilledCover(t)
+	before := db.get(t, cover.ID)
 
 	a, isNew, err := db.svc.Attach(ctx, cmsService, cover.ID, media.AttachRequest{Owner: homePage, Role: media.RoleCMSImage, OnBehalfOf: db.uploader()})
 	if err != nil || !isNew || a.Owner != homePage {
@@ -535,8 +537,8 @@ func TestPostgresAProductAttachingAHeldMediaTurnsItBackToLegacy(t *testing.T) {
 	}
 
 	got := db.get(t, cover.ID)
-	if got.Purpose != media.PurposeLegacy {
-		t.Fatalf("purpose %q, want legacy", got.Purpose)
+	if got.Purpose != media.PurposeLegacy || !got.UpdatedAt.After(before.UpdatedAt) {
+		t.Fatalf("purpose %q updated %v (was %v), want legacy and a new updatedAt", got.Purpose, got.UpdatedAt, before.UpdatedAt)
 	}
 	attached(t, got)
 	if uses := db.attachmentsOf(t, cover.ID); len(uses) != 2 || uses[0] != "cms image" || uses[1] != "core event_cover" {
@@ -634,4 +636,146 @@ func TestPostgresTwoAttachesOfAHeldMediaAtOnceDoNotDeadlock(t *testing.T) {
 	if got := db.get(t, cover.ID).Purpose; got != media.PurposeLegacy {
 		t.Fatalf("purpose %q", got)
 	}
+}
+
+// The hold's state row is made by the migration. Without it the backfill
+// cannot know whether to hold, so it fails loudly instead of holding with
+// no lock; so do the release and the report.
+func TestPostgresTheHoldFailsLoudlyWithoutItsStateRow(t *testing.T) {
+	db := newMediaDatabase(t)
+	ctx := context.Background()
+	cover := db.storedBeforePurposes(t, "cover.png")
+	if _, err := db.events().Create(ctx, db.organizer, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", CoverImageID: &cover.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.pool.Exec(ctx, `DELETE FROM media_legacy_hold`); err != nil {
+		t.Fatal(err)
+	}
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var failures []error
+	report, err := media.BackfillLegacyPurposes(ctx, db.store, catalogue, func(err error) { failures = append(failures, err) })
+	if err != nil || report.Failed != 1 || len(failures) != 1 || !strings.Contains(failures[0].Error(), "media_legacy_hold") {
+		t.Fatalf("backfill %+v err %v failures %v, want the missing state row named", report, err, failures)
+	}
+	if got := db.get(t, cover.ID); got.Purpose != media.PurposeLegacy {
+		t.Fatalf("purpose %q given without knowing the hold", got.Purpose)
+	}
+	if _, err := media.ReleaseDetachExpiryHold(ctx, db.store, time.Now(), true, nil); err == nil || !strings.Contains(err.Error(), "media_legacy_hold") {
+		t.Fatalf("release err %v", err)
+	}
+	if _, err := media.ReportLegacy(ctx, db.store); err == nil || !strings.Contains(err.Error(), "media_legacy_hold") {
+		t.Fatalf("report err %v", err)
+	}
+}
+
+// A backfill that writes a hold while the release starts: the release waits
+// for it (it reads the release under a share lock), then releases the hold,
+// and counts it among the held Media it reports.
+func TestPostgresTheReleaseCountsAHoldWrittenAsItStarts(t *testing.T) {
+	db := newMediaDatabase(t)
+	ctx := context.Background()
+	cover := db.storedBeforePurposes(t, "cover.png")
+	if _, err := db.events().Create(ctx, db.organizer, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", CoverImageID: &cover.ID}); err != nil {
+		t.Fatal(err)
+	}
+	// Test only: the backfill's write of the hold takes a second.
+	if _, err := db.pool.Exec(ctx, `
+		CREATE FUNCTION slow_hold() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_sleep(1); RETURN NEW; END; $$;
+		CREATE TRIGGER slow_hold BEFORE UPDATE ON media FOR EACH ROW
+		WHEN (NEW.detach_expiry_held AND NOT OLD.detach_expiry_held) EXECUTE FUNCTION slow_hold();`); err != nil {
+		t.Fatal(err)
+	}
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backfilled := make(chan error, 1)
+	go func() {
+		_, err := media.BackfillLegacyPurposes(ctx, db.store, catalogue, func(err error) { t.Errorf("backfill: %v", err) })
+		backfilled <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var sleeping bool
+		if err := db.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event = 'PgSleep')`).Scan(&sleeping); err != nil {
+			t.Fatal(err)
+		}
+		if sleeping {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the backfill never wrote the hold")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	report := db.releaseHold(t, time.Now(), true)
+
+	if err := <-backfilled; err != nil {
+		t.Fatal(err)
+	}
+	if report.Held != 1 || report.Released != 1 {
+		t.Fatalf("release %+v, want the hold written as it started counted and released", report)
+	}
+	if held := db.legacyReport(t).DetachExpiryHeld; held != 0 {
+		t.Fatalf("%d still held", held)
+	}
+}
+
+// A held Media's attach locks the Media row and then waits for a Detach that
+// removed the same link; the Detach's status trigger waits for the Media
+// row: PostgreSQL breaks the deadlock by failing the attach, which tries
+// once more, after the Detach, and writes the link again.
+func TestPostgresAHeldAttachDeadlockedWithADetachIsRetried(t *testing.T) {
+	db := newMediaDatabase(t)
+	ctx := context.Background()
+	cover, _ := db.backfilledCover(t)
+	first, _, err := db.svc.Attach(ctx, cmsService, cover.ID, media.AttachRequest{Owner: homePage, Role: media.RoleCMSImage, OnBehalfOf: db.uploader()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Test only: the Detach waits half a second between removing the link
+	// and its status trigger locking the Media row.
+	if _, err := db.pool.Exec(ctx, `
+		CREATE FUNCTION slow_detach() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_sleep(0.5); RETURN NULL; END; $$;
+		CREATE TRIGGER slow_detach AFTER DELETE ON media_attachments FOR EACH ROW EXECUTE FUNCTION slow_detach();`); err != nil {
+		t.Fatal(err)
+	}
+	detached := make(chan error, 1)
+	go func() { detached <- db.store.Detach(ctx, cover.ID, first.ID, authz.ProductCMS) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var sleeping bool
+		if err := db.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event = 'PgSleep')`).Scan(&sleeping); err != nil {
+			t.Fatal(err)
+		}
+		if sleeping {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the Detach never removed the link")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	again, created, _, err := db.store.AttachHeld(ctx, media.Attachment{MediaID: cover.ID, Owner: homePage, Role: media.RoleCMSImage})
+
+	if err != nil || !created || again.ID == first.ID {
+		t.Fatalf("attach after the deadlock: %+v created %v err %v, want the link written again", again, created, err)
+	}
+	if err := <-detached; err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if uses := db.attachmentsOf(t, cover.ID); len(uses) != 2 {
+		t.Fatalf("Media attachments %v, want the page's again and the Event's", uses)
+	}
+	attached(t, db.get(t, cover.ID))
 }

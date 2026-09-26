@@ -278,13 +278,16 @@ type HoldReleaseReport struct {
 func ReleaseDetachExpiryHold(ctx context.Context, store *PostgresStore, now time.Time, apply bool, onError func(error)) (HoldReleaseReport, error) {
 	var report HoldReleaseReport
 	var err error
+	if apply {
+		// Recorded before anything is counted: the record waits for every
+		// backfill that is writing a hold, and no backfill writes one
+		// after it, so the count and the walk below see every hold.
+		if err := store.recordHoldRelease(ctx, now); err != nil {
+			return report, err
+		}
+	}
 	report.Held, report.HeldDetached, err = store.countDetachExpiryHeld(ctx)
 	if err != nil || !apply {
-		return report, err
-	}
-	// Recorded first: a backfill after this sets no hold, and one that set
-	// a hold before it committed first, so the walk below finds it.
-	if err := store.recordHoldRelease(ctx, now); err != nil {
 		return report, err
 	}
 	at := now.Add(DetachedWindow)

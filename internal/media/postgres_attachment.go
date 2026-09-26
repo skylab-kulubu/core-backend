@@ -58,7 +58,27 @@ func (s *PostgresStore) Attach(ctx context.Context, a Attachment) (Attachment, b
 // attaches of one held Media queue instead of upgrading a shared lock into a
 // deadlock, then gives it back legacy when its purpose does not fit the
 // role, and inserts the Media attachment.
+//
+// A Detach of the same link can still deadlock with it: the Detach removed
+// the link and its status trigger waits for the Media row this holds, while
+// the insert waits for the removal. PostgreSQL fails one of the two; when it
+// is this one, it is tried once more, which then runs after the Detach.
 func (s *PostgresStore) AttachHeld(ctx context.Context, a Attachment) (Attachment, bool, string, error) {
+	created, isNew, demotedFrom, err := s.attachHeld(ctx, a)
+	if isDeadlock(err) {
+		created, isNew, demotedFrom, err = s.attachHeld(ctx, a)
+	}
+	return created, isNew, demotedFrom, err
+}
+
+// isDeadlock reports PostgreSQL's deadlock_detected. Media attachments are
+// written at read committed, so serialization failures do not occur.
+func isDeadlock(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "40P01"
+}
+
+func (s *PostgresStore) attachHeld(ctx context.Context, a Attachment) (Attachment, bool, string, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Attachment{}, false, "", err
@@ -74,7 +94,7 @@ func (s *PostgresStore) AttachHeld(ctx context.Context, a Attachment) (Attachmen
 	}
 	demotedFrom := ""
 	if !fits(a.Owner.Service, a.Role, purpose) {
-		if _, err := tx.Exec(ctx, `UPDATE media SET purpose = 'legacy' WHERE id = $1`, a.MediaID); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE media SET purpose = 'legacy', updated_at = now() WHERE id = $1`, a.MediaID); err != nil {
 			return Attachment{}, false, "", err
 		}
 		demotedFrom = purpose

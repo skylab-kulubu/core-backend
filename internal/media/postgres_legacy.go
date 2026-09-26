@@ -78,6 +78,11 @@ func (s *PostgresStore) assignLegacyPurpose(ctx context.Context, id uuid.UUID, c
 	return decision, tx.Commit(ctx)
 }
 
+// ErrHoldStateMissing: the hold's one state row (media_legacy_hold, made by
+// migration 20260926161000) is gone, so nobody can tell whether the hold was
+// released. Nothing is held, released or reported until it is back.
+var ErrHoldStateMissing = errors.New("media: media_legacy_hold has no row; run the migrations")
+
 // holdNotReleased reports whether the backfill still holds the detach expiry
 // of the Media it gives a purpose, reading the release under a share lock
 // that the release's update waits for.
@@ -85,7 +90,7 @@ func holdNotReleased(ctx context.Context, tx pgx.Tx) (bool, error) {
 	var released *time.Time
 	err := tx.QueryRow(ctx, `SELECT released_at FROM media_legacy_hold FOR SHARE`).Scan(&released)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return true, nil
+		return false, ErrHoldStateMissing
 	}
 	return released == nil, err
 }
@@ -93,8 +98,10 @@ func holdNotReleased(ctx context.Context, tx pgx.Tx) (bool, error) {
 // recordHoldRelease records the release of the hold, keeping the time of
 // the first one.
 func (s *PostgresStore) recordHoldRelease(ctx context.Context, at time.Time) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO media_legacy_hold (released_at) VALUES ($1)
-		ON CONFLICT (singleton) DO UPDATE SET released_at = COALESCE(media_legacy_hold.released_at, EXCLUDED.released_at)`, at)
+	tag, err := s.pool.Exec(ctx, `UPDATE media_legacy_hold SET released_at = COALESCE(released_at, $1)`, at)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrHoldStateMissing
+	}
 	return err
 }
 
@@ -103,7 +110,7 @@ func (s *PostgresStore) holdReleasedAt(ctx context.Context) (*time.Time, error) 
 	var released *time.Time
 	err := s.pool.QueryRow(ctx, `SELECT released_at FROM media_legacy_hold`).Scan(&released)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+		return nil, ErrHoldStateMissing
 	}
 	return released, err
 }
