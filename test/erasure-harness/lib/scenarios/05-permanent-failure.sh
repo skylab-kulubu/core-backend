@@ -141,11 +141,13 @@ scenario_5() {
   restart_core
   check 'p3: Account Center login, Sudo mode, prepare, confirmation' ac_bff_delete p3
   check 'p3: the first pass fails on CMS' wait_until 60 2 request_where "$DEL_REQUEST" "last_error_code <> ''"
-  note "p3: with the role taken from the service account the code is '$(request_field "$DEL_REQUEST" last_error_code)' (CMS 401: the token lost the scope's audience), not erase_cms_rejected_403; the request spends the ordinary budget before manual intervention"
+  note "p3: first failure code '$(request_field "$DEL_REQUEST" last_error_code)' (CMS 401: the token lost the scope's audience); the request spends the ordinary budget before manual intervention"
   log "  waiting for the ordinary retry budget (8 attempts, 30 s apart)"
   check 'p3: request reaches manual_intervention once the budget is spent' wait_until 420 5 request_is "$DEL_REQUEST" manual_intervention
   log "  p3 request: $(pg super_skylab "SELECT status, attempt_count, last_error_code FROM account_deletion_requests WHERE id = '$DEL_REQUEST'" | tr '\t' ' ')"
   check 'p3: all 8 attempts were spent' eq "$(request_field "$DEL_REQUEST" attempt_count)" 8
+  check 'p3: the stable code is erase_cms_failed, not erase_cms_rejected_403 (core docs/account-erasure-command.md §4)' \
+    eq "$(request_field "$DEL_REQUEST" last_error_code)" erase_cms_failed
   check_alarm_path "$DEL_REQUEST" "$(request_field "$DEL_REQUEST" last_error_code)" "${P_SCHOOL[p3]}" "$subject"
   kc POST "/users/$(erasure_sa_user)/role-mappings/clients/$(kc_client_uuid skycms)" --data "$role"
   check 'cms:account:erase given back to the service account' eq "$HTTP_STATUS" 204
