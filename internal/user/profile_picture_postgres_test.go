@@ -87,7 +87,7 @@ func TestPostgresClearProfilePictureUnlinksAndArchivesOwnUpload(t *testing.T) {
 	if _, ok := blobs.Get(picture.Key); !ok {
 		t.Fatal("archive removed blob before recovery window")
 	}
-	if _, err := mediaSvc.Get(ctx, picture.ID); !errors.Is(err, media.ErrNotFound) {
+	if _, err := mediaSvc.Get(ctx, authz.Principal{}, picture.ID); !errors.Is(err, media.ErrNotFound) {
 		t.Fatalf("archived picture still current: %v", err)
 	}
 

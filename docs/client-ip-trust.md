@@ -51,6 +51,10 @@ about them.
   `/v1/certificates/verify/…`) are rate limited on the same resolved address, so
   the budget follows one visitor instead of being shared by everyone behind the
   proxy.
+- `GET /v1/media/{id}/content` (a private Media's read link) records the
+  resolved address of every open as `media_read_link_opens.client_ip`, kept a
+  year, and is rate limited on it like the certificate routes (see
+  [`media-lifecycle.md`](media-lifecycle.md#access-log)).
 
 Fiber's `TrustProxy`, `TrustProxyConfig` and `ProxyHeader` are configured from
 the same list, so `c.IP()` and the resolution above can never disagree about

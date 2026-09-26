@@ -612,7 +612,7 @@ func TestDeleteProfilePictureBlockedAccountHTTP(t *testing.T) {
 	if stored.ProfilePictureID == nil || stored.ProfilePictureURL == "" {
 		t.Fatalf("blocked account lost its picture %+v", stored)
 	}
-	if _, err := mediaSvc.Get(t.Context(), *stored.ProfilePictureID); err != nil {
+	if _, err := mediaSvc.Get(t.Context(), authz.Principal{}, *stored.ProfilePictureID); err != nil {
 		t.Fatalf("blocked account's picture was archived: %v", err)
 	}
 }
@@ -777,7 +777,7 @@ func TestProfilePictureUploadsAsProfilePictureHTTP(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil || resp.StatusCode != fiber.StatusOK || got.ProfilePictureID == nil {
 		t.Fatalf("PNG profile picture: status %d user %+v err %v", resp.StatusCode, got, err)
 	}
-	picture, err := mediaSvc.Get(t.Context(), *got.ProfilePictureID)
+	picture, err := mediaSvc.Get(t.Context(), authz.Principal{}, *got.ProfilePictureID)
 	if err != nil || picture.Purpose != "profile_picture" {
 		t.Fatalf("picture %+v err %v", picture, err)
 	}

@@ -631,6 +631,51 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND prosrc LIKE '%FOR KEY SHARE%' AND prosrc LIKE '%media_purpose_fits_role(NEW.owner_service, NEW.role, current_purpose)%'
 			  AND prosrc LIKE '%media_attachment_purpose_fits%'
 		)`,
+	20260926170000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('visibility', 'text', 'NO'),
+				('encryption_algorithm', 'text', 'YES'),
+				('wrapped_data_key', 'text', 'YES'),
+				('key_version', 'int4', 'YES')
+			) expected(column_name, udt_name, is_nullable)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'media'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = expected.is_nullable
+		) = 4
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.media') AND conname = 'media_visibility_check' AND contype = 'c'
+			  AND pg_get_constraintdef(oid) = ` + "'" + `CHECK ((((visibility = ''public''::text) AND (encryption_algorithm IS NULL) AND (wrapped_data_key IS NULL) AND (key_version IS NULL)) OR ((visibility = ''private''::text) AND (encryption_algorithm IS NOT NULL) AND (wrapped_data_key IS NOT NULL) AND (key_version IS NOT NULL) AND (key_version >= 1))))` + "'" + `
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.media_read_link_opens') AND contype = 'f'
+			  AND confrelid = to_regclass('public.media_read_links') AND confdeltype = 'c'
+		)
+		AND to_regclass('public.media_read_links_media_idx') IS NOT NULL
+		AND to_regclass('public.media_read_links_issued_idx') IS NOT NULL
+		AND to_regclass('public.media_read_link_opens_link_idx') IS NOT NULL
+		AND to_regclass('public.media_read_link_opens_opened_idx') IS NOT NULL`,
+	// The read link names an active subject (account-lifecycle.md), like
+	// every other current-identity link.
+	20260926171000: `
+		SELECT 1 FROM pg_trigger actual
+		JOIN pg_attribute attribute
+		  ON attribute.attrelid = actual.tgrelid AND attribute.attname = 'on_behalf_of'
+		WHERE actual.tgrelid = to_regclass('public.media_read_links')
+		  AND actual.tgname = 'media_read_links_require_active_subject'
+		  AND actual.tgtype = 23
+		  AND actual.tgenabled = 'O'
+		  AND actual.tgqual IS NULL
+		  AND NOT actual.tgisinternal
+		  AND actual.tgfoid = to_regprocedure('public.require_active_account_reference()')
+		  AND actual.tgattr::text = attribute.attnum::text
+		  AND encode(actual.tgargs, 'hex') = encode(convert_to('on_behalf_of', 'UTF8'), 'hex') || '00'`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

@@ -24,7 +24,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, detach_expiry_held, width, height, size_objects`
+const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, detach_expiry_held, width, height, size_objects, visibility, encryption_algorithm, wrapped_data_key, key_version`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 	return insertMedia(ctx, s.pool, newRecord(m))
@@ -40,11 +40,17 @@ func insertMedia(ctx context.Context, db rowQuerier, m Media) (Media, error) {
 	if err != nil {
 		return Media{}, err
 	}
+	var algorithm, wrappedKey *string
+	var keyVersion *int
+	if m.Encryption != nil {
+		algorithm, wrappedKey, keyVersion = &m.Encryption.Algorithm, &m.Encryption.WrappedKey, &m.Encryption.KeyVersion
+	}
 	created, err := scanMedia(db.QueryRow(ctx, `
-		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at, width, height, size_objects)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)
+		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at, width, height, size_objects,
+			visibility, encryption_algorithm, wrapped_data_key, key_version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19, $20)
 		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose, m.Status, m.ExpiresAt,
-		positiveOrNil(m.Width), positiveOrNil(m.Height), sizeObjects))
+		positiveOrNil(m.Width), positiveOrNil(m.Height), sizeObjects, m.Visibility, algorithm, wrappedKey, keyVersion))
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Media{}, ErrForbidden
 	}
@@ -508,9 +514,15 @@ func scanMedia(row rowScanner) (Media, error) {
 	var created, updated time.Time
 	var width, height *int
 	var sizeObjects []byte
-	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt, &m.DetachExpiryHeld, &width, &height, &sizeObjects)
+	var algorithm, wrappedKey *string
+	var keyVersion *int
+	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt, &m.DetachExpiryHeld, &width, &height, &sizeObjects,
+		&m.Visibility, &algorithm, &wrappedKey, &keyVersion)
 	if err != nil {
 		return m, err
+	}
+	if algorithm != nil && wrappedKey != nil && keyVersion != nil {
+		m.Encryption = &Encryption{Algorithm: *algorithm, WrappedKey: *wrappedKey, KeyVersion: *keyVersion}
 	}
 	if m.CoverColors == nil {
 		m.CoverColors = []string{}

@@ -53,6 +53,12 @@ type Media struct {
 	// removed. Archive and purge are recorded apart (DeletedAt,
 	// BlobPurgedAt).
 	Status Status `json:"status"`
+	// Visibility is where the Media's object is: the public bucket, served
+	// from the CDN, or the private bucket, encrypted, read only through a
+	// read link. It is fixed when the Media is stored.
+	Visibility Visibility `json:"visibility"`
+	// Encryption opens a private Media's object; nil for a public one.
+	Encryption *Encryption `json:"-"`
 	// ExpiresAt is when a Media no Media attachment keeps is purged: a
 	// pending Media when its purpose's pending TTL runs out, a detached one
 	// 30 days after its last Media attachment was removed. Nil keeps the
@@ -102,7 +108,7 @@ func (m Media) expired(now time.Time) bool {
 
 // newRecord fills what a Media record takes by default when it is created:
 // an id, an empty cover colour list, the legacy purpose when none is given,
-// and the pending status. Every Store applies it, and only it.
+// the pending status and public visibility. Every Store applies it, and only it.
 func newRecord(m Media) Media {
 	if m.ID == uuid.Nil {
 		m.ID = uuid.New()
@@ -115,6 +121,9 @@ func newRecord(m Media) Media {
 	}
 	if m.Status == "" {
 		m.Status = StatusPending
+	}
+	if m.Visibility == "" {
+		m.Visibility = VisibilityPublic
 	}
 	return m
 }

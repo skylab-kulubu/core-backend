@@ -3,6 +3,7 @@ package media
 import (
 	"bytes"
 	"context"
+	"io"
 	"maps"
 	"slices"
 	"sort"
@@ -18,6 +19,7 @@ type MemoryStore struct {
 	byID        map[uuid.UUID]Media
 	referenced  map[uuid.UUID]bool
 	attachments map[uuid.UUID]Attachment
+	readLinks   []ReadLinkRecord
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -334,6 +336,44 @@ func (s *MemoryStore) SetReferenced(id uuid.UUID, referenced bool) {
 	s.referenced[id] = referenced
 }
 
+func (s *MemoryStore) RecordReadLink(_ context.Context, link ReadLinkRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID[link.MediaID]; !ok {
+		return ErrNotFound
+	}
+	link.Opens = nil
+	s.readLinks = append(s.readLinks, link)
+	return nil
+}
+
+func (s *MemoryStore) RecordReadLinkOpen(_ context.Context, open ReadLinkOpen) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.readLinks {
+		if s.readLinks[i].ID == open.LinkID {
+			s.readLinks[i].Opens = append(s.readLinks[i].Opens, open)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// ReadLinkLog is the Media's access log, oldest first, each link with its
+// opens: what a test checks core recorded.
+func (s *MemoryStore) ReadLinkLog(mediaID uuid.UUID) []ReadLinkRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []ReadLinkRecord{}
+	for _, link := range s.readLinks {
+		if link.MediaID == mediaID {
+			link.Opens = append([]ReadLinkOpen(nil), link.Opens...)
+			out = append(out, link)
+		}
+	}
+	return out
+}
+
 type MemoryBlob struct {
 	mu       sync.Mutex
 	objects  map[string][]byte
@@ -379,6 +419,22 @@ func (s *MemoryBlob) Read(_ context.Context, key string) ([]byte, error) {
 		return nil, ErrNotFound
 	}
 	return append([]byte{}, data...), nil
+}
+
+// Open streams a stored object.
+func (s *MemoryBlob) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	data, err := s.Read(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+// Len is how many objects the bucket holds.
+func (s *MemoryBlob) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.objects)
 }
 
 func (s *MemoryBlob) Get(key string) ([]byte, bool) {

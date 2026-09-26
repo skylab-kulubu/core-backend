@@ -115,7 +115,7 @@ func TestService_UploadImageThenGet(t *testing.T) {
 		t.Fatal("blob missing")
 	}
 
-	got, err := svc.Get(context.Background(), created.ID)
+	got, err := svc.Get(context.Background(), authz.Principal{}, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestService_ArchiveOwnOnlyByUploader(t *testing.T) {
 	if err := svc.ArchiveOwn(context.Background(), authz.Principal{}, created.ID); !errors.Is(err, media.ErrInvalid) {
 		t.Fatalf("anonymous archive %v", err)
 	}
-	if _, err := svc.Get(context.Background(), created.ID); err != nil {
+	if _, err := svc.Get(context.Background(), authz.Principal{}, created.ID); err != nil {
 		t.Fatalf("rejected archive changed the record: %v", err)
 	}
 	if err := svc.ArchiveOwn(context.Background(), uploader, uuid.New()); !errors.Is(err, media.ErrNotFound) {
@@ -286,7 +286,7 @@ func TestService_ArchiveOwnOnlyByUploader(t *testing.T) {
 	if _, ok := blobs.Get(created.Key); !ok {
 		t.Fatal("archive removed blob before recovery window")
 	}
-	if _, err := svc.Get(context.Background(), created.ID); !errors.Is(err, media.ErrNotFound) {
+	if _, err := svc.Get(context.Background(), authz.Principal{}, created.ID); !errors.Is(err, media.ErrNotFound) {
 		t.Fatalf("get after archive %v", err)
 	}
 	yk := authz.Principal{ID: uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").String(), Groups: []string{"/UYELER/YK"}}
@@ -343,7 +343,7 @@ func TestService_ListRequiresAuthAndDeleteIsPrivileged(t *testing.T) {
 	if _, ok := blobs.Get(created.Key); !ok {
 		t.Fatal("archive removed blob before recovery window")
 	}
-	_, err = svc.Get(context.Background(), created.ID)
+	_, err = svc.Get(context.Background(), authz.Principal{}, created.ID)
 	if !errors.Is(err, media.ErrNotFound) {
 		t.Fatalf("get after delete %v", err)
 	}
@@ -368,7 +368,7 @@ func TestService_ListRequiresAuthAndDeleteIsPrivileged(t *testing.T) {
 	if restored.DeletedAt != nil || restored.DeletedBy != nil || restored.ID != created.ID {
 		t.Fatalf("restored %+v", restored)
 	}
-	if _, err := svc.Get(context.Background(), created.ID); err != nil {
+	if _, err := svc.Get(context.Background(), authz.Principal{}, created.ID); err != nil {
 		t.Fatalf("get restored: %v", err)
 	}
 }
@@ -421,7 +421,7 @@ func TestService_UploadRecordsTheFilesOwnType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := svc.Get(context.Background(), created.ID)
+	got, err := svc.Get(context.Background(), authz.Principal{}, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +477,7 @@ func TestService_UploadWithoutPurposeIsLegacy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := svc.Get(context.Background(), created.ID)
+	got, err := svc.Get(context.Background(), authz.Principal{}, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -34,6 +34,9 @@ func BackfillAssetServingPolicy(ctx context.Context, store AssetServingStore, bl
 
 func applyAssetServingPolicy(ctx context.Context, store AssetServingStore, blobs media.BlobStore, version TemplateVersion) error {
 	for _, ref := range version.AssetManifest {
+		if ref.Encryption != nil {
+			continue // a private copy is never served
+		}
 		serving := media.ServingMetadata(ref.ContentType, "")
 		if serving == (media.BlobMetadata{ContentType: ref.ContentType}) {
 			continue

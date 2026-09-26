@@ -3,21 +3,26 @@ package handlers
 import (
 	"errors"
 	"io"
+	"log"
 	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 type MediaHandler struct {
-	svc media.Service
+	svc            media.Service
+	trustedProxies clientip.Ranges
+	// logf is log.Printf; a test reads what would be logged.
+	logf func(format string, args ...any)
 }
 
 func NewMediaHandler(svc media.Service) *MediaHandler {
-	return &MediaHandler{svc: svc}
+	return &MediaHandler{svc: svc, logf: log.Printf}
 }
 
 // mediaBusyRetrySeconds is the Retry-After of media_busy.
@@ -61,10 +66,14 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 		return true, problemWithFields(c, fiber.StatusForbidden, "Forbidden",
 			"The caller may not upload Media for this purpose.", "purpose_forbidden", fields)
 	case errors.Is(err, media.ErrPrivateMediaDisabled):
-		// Not 503: nothing here is transient, and 503 is kept for an
-		// unreachable key service once private Media ships.
+		// Not 503: nothing here is transient; 503 is an unreachable key
+		// service (private_media_unavailable).
 		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
-			"Private Media is not available yet; this purpose cannot be uploaded.", "private_media_disabled", fields)
+			"Private Media is not enabled; this purpose cannot be uploaded.", "private_media_disabled", fields)
+	case errors.Is(err, media.ErrPurposeNeedsScanner):
+		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
+			"This purpose needs a malware scan before its Media can be opened, and core has no scanner yet. Nothing is stored.",
+			"purpose_not_available", fields)
 	case errors.Is(err, media.ErrPurposeNotAvailable):
 		// Like private_media_disabled: nothing is stored, and retrying does
 		// not help until a product attaches these Media.
@@ -81,6 +90,9 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 
 func mediaError(c fiber.Ctx, err error) error {
 	if handled, problemErr := purposeProblem(c, err); handled {
+		return problemErr
+	}
+	if handled, problemErr := privateProblem(c, err, log.Printf); handled {
 		return problemErr
 	}
 	switch {
@@ -150,11 +162,12 @@ func (h *MediaHandler) Get(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	got, err := h.svc.Get(c.Context(), id)
+	p, callerErr := caller(c)
+	got, err := h.svc.Get(c.Context(), p, id)
 	if err != nil {
 		return mediaError(c, err)
 	}
-	if _, callerErr := caller(c); callerErr != nil {
+	if callerErr != nil {
 		return c.JSON(publicMediaView(got))
 	}
 	return c.JSON(got)
