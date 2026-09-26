@@ -304,15 +304,35 @@ const (
 	archivedQueue purgeQueue = iota
 	// expiredQueue: the Media is current and past its expiry.
 	expiredQueue
+	// erasedQueue: account erasure recorded the Media as the person's own
+	// (account_deletion_media). It goes in whatever state it is in and
+	// whatever still uses it: personal purposes win (media redesign ticket
+	// 07).
+	erasedQueue
 )
 
 // claimable reports whether a purge that has not started yet may start on a
 // Media in this state.
 func (q purgeQueue) claimable(archived, expired bool) bool {
-	if q == expiredQueue {
+	switch q {
+	case expiredQueue:
 		return !archived && expired
+	case erasedQueue:
+		return true
 	}
 	return archived
+}
+
+// keeps reports, under the purge's locks, whether the queue must leave the
+// Media: while anything uses it, or, for erasedQueue, while account erasure
+// has no record of it.
+func (q purgeQueue) keeps(ctx context.Context, tx postgresMediaTx, id uuid.UUID) (bool, error) {
+	if q != erasedQueue {
+		return mediaReferenced(ctx, tx, id)
+	}
+	var recorded bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM account_deletion_media WHERE media_id = $1)`, id).Scan(&recorded)
+	return !recorded, err
 }
 
 func (s *PostgresStore) PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(string) error) (bool, error) {
@@ -326,8 +346,9 @@ func (s *PostgresStore) PurgeExpiredBlobIfUnattached(ctx context.Context, id uui
 	return s.purgeBlob(ctx, id, now, expiredQueue, purge)
 }
 
-// purgeBlob is the two-phase purge: a durable claim after the locked
-// reference check, the idempotent object deletion, then the record.
+// purgeBlob is the two-phase purge: a durable claim after the locked check
+// of its queue (queue.keeps), the idempotent object deletion, then the
+// record.
 func (s *PostgresStore) purgeBlob(ctx context.Context, id uuid.UUID, purgedAt time.Time, queue purgeQueue, purge func(string) error) (bool, error) {
 	claimed, err := s.claimBlobPurge(ctx, id, purgedAt, queue)
 	if err != nil || !claimed {
@@ -354,12 +375,11 @@ func (s *PostgresStore) purgeBlob(ctx context.Context, id uuid.UUID, purgedAt ti
 		return false, err
 	}
 
-	var referenced bool
-	referenced, err = mediaReferenced(ctx, tx, id)
+	kept, err := queue.keeps(ctx, tx, id)
 	if err != nil {
 		return false, err
 	}
-	if referenced {
+	if kept {
 		if _, err := tx.Exec(ctx, `UPDATE media SET blob_purge_started_at = NULL, blob_purge_checked_at = $2 WHERE id = $1`, id, purgedAt); err != nil {
 			return false, err
 		}
@@ -375,6 +395,13 @@ func (s *PostgresStore) purgeBlob(ctx context.Context, id uuid.UUID, purgedAt ti
 		SET blob_purged_at = $2, blob_purge_checked_at = $2, updated_at = $2, deleted_at = COALESCE(deleted_at, $2)
 		WHERE id = $1`, id, purgedAt); err != nil {
 		return false, err
+	}
+	// Account erasure's record of the Media goes with its purge, so the
+	// request never holds the id of a Media already gone.
+	if queue == erasedQueue {
+		if _, err := tx.Exec(ctx, `DELETE FROM account_deletion_media WHERE media_id = $1`, id); err != nil {
+			return false, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
@@ -399,11 +426,17 @@ func lockMediaReferenceWriters(ctx context.Context, tx postgresMediaTx) error {
 // both say so.
 func mediaReferenced(ctx context.Context, tx postgresMediaTx, id uuid.UUID) (bool, error) {
 	var referenced bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS (
-		SELECT 1 FROM media_attachments WHERE media_id = $1
-		UNION ALL `+coreLinksSQL("$1")+`
-	)`, id).Scan(&referenced)
+	err := tx.QueryRow(ctx, `SELECT `+referencedSQL("$1"), id).Scan(&referenced)
 	return referenced, err
+}
+
+// referencedSQL is mediaReferenced as an SQL condition on the Media id names
+// (a parameter or a column).
+func referencedSQL(id string) string {
+	return `EXISTS (
+		SELECT 1 FROM media_attachments WHERE media_id = ` + id + `
+		UNION ALL ` + coreLinksSQL(id) + `
+	)`
 }
 
 // coreLinkSources are core's own links as their records hold them: the
@@ -485,11 +518,11 @@ func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claime
 		if !queue.claimable(archived, expired) {
 			return false, nil
 		}
-		referenced, err := mediaReferenced(ctx, tx, id)
+		kept, err := queue.keeps(ctx, tx, id)
 		if err != nil {
 			return false, err
 		}
-		if referenced {
+		if kept {
 			if _, err := tx.Exec(ctx, `UPDATE media SET blob_purge_checked_at = $2 WHERE id = $1`, id, claimedAt); err != nil {
 				return false, err
 			}
