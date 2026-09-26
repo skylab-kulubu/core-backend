@@ -110,7 +110,7 @@ func TestService_SVGThatTakesTooLongToDrawIsRefused(t *testing.T) {
 	svc, _ := svgService(t)
 	p := signedIn("78787878-7878-7878-7878-787878787878")
 	// Every shape costs a pass over the whole canvas.
-	detailed := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">` + strings.Repeat(`<rect width="10" height="10" fill="#123456"/>`, 300) + `</svg>`)
+	detailed := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">` + strings.Repeat(`<rect width="10" height="10" fill="#123456"/>`, 40) + `</svg>`)
 
 	restore := media.LimitSVGDrawingTo(10 * time.Millisecond)
 	start := time.Now()
