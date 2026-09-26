@@ -24,7 +24,7 @@ func linkProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 			"The Media was uploaded for a purpose that does not fit this role.", "media_purpose_mismatch", fields)
 	case errors.Is(err, media.ErrNotLinkable):
 		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
-			"The Media does not exist, is archived or purged, or expired before anything used it.", "media_not_linkable", fields)
+			"The Media does not exist, is archived or purged, expired before anything used it, or is not the caller's to link.", "media_not_linkable", fields)
 	case errors.Is(err, event.ErrMediaTeamMismatch):
 		return true, problemWithFields(c, fiber.StatusForbidden, "Forbidden",
 			"The Media is used on an Event of another Owner team.", "media_team_mismatch", fields)

@@ -33,6 +33,9 @@ const (
 	TypeFormLink            Type = "FORM_LINK"
 	TypeCertificate         Type = "CERTIFICATE"
 	TypeCertificateTemplate Type = "CERTIFICATE_TEMPLATE"
+	// TypeMediaAttachment is a Media attachment another product makes or
+	// removes for its own records through the service attach API.
+	TypeMediaAttachment Type = "MEDIA_ATTACHMENT"
 )
 
 type Level string
@@ -46,6 +49,10 @@ type Principal struct {
 	ID     string
 	Groups []string
 	Roles  []string
+	// Product is the product whose service account the caller is (see
+	// ServiceClients). Empty for a person, whatever client their token was
+	// issued to.
+	Product Product
 }
 
 type Resource struct {

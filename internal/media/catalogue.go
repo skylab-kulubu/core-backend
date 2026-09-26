@@ -31,12 +31,21 @@ const (
 	// PurposeCertificateAsset is a certificate template's background or
 	// image.
 	PurposeCertificateAsset = "certificate_asset"
+	// PurposeCMSImage is an image on a CMS page.
+	PurposeCMSImage = "cms_image"
+	// PurposeCMSFile is a document a CMS page offers.
+	PurposeCMSFile = "cms_file"
+	// PurposeAnswerFile is an Answer file.
+	PurposeAnswerFile = "answer_file"
+	// PurposeAnswerFileLarge is a large Answer file, sent by Direct upload.
+	PurposeAnswerFileLarge = "answer_file_large"
 )
 
 // requiredPurposes are the purposes core refers to in code. A catalogue that
 // lacks one stops core at startup.
 var requiredPurposes = []string{
 	PurposeLegacy, PurposeProfilePicture, PurposeEventCover, PurposeEventGallery, PurposeCertificateAsset,
+	PurposeCMSImage, PurposeCMSFile, PurposeAnswerFile, PurposeAnswerFileLarge,
 }
 
 // ErrCatalogueInvalid is a catalogue file core cannot read as one: a field it
@@ -74,15 +83,15 @@ const (
 	AttachService Attacher = "service"
 )
 
-// serviceAttachAPI reports whether the service attach API exists. Until it
-// does (media redesign ticket 03), nothing can attach a Media whose purpose
-// another product attaches, so such a purpose cannot be uploaded.
-const serviceAttachAPI = false
-
-// Available reports whether something can attach Media of this purpose
-// today. A Media nothing can attach would only wait for its expiry.
-func (p Purpose) Available() bool {
-	return p.Attach == AttachCore || serviceAttachAPI
+// OwningProduct is the product whose records use the purpose's Media: core
+// for a core purpose, the named service for a service purpose, and empty for
+// a service purpose that names none yet. Only the owning product may link
+// the purpose's Media.
+func (p Purpose) OwningProduct() authz.Product {
+	if p.Attach == AttachCore {
+		return authz.ProductCore
+	}
+	return p.Service
 }
 
 // Transport is how a purpose's files reach storage.
@@ -114,7 +123,11 @@ type Purpose struct {
 	Transport  Transport
 	// Attach is who attaches the purpose's Media.
 	Attach Attacher
-	Image  ImageHandling
+	// Service is the product that attaches the Media of a service purpose
+	// through the service attach API: authz.ProductForms or
+	// authz.ProductCMS.
+	Service authz.Product
+	Image   ImageHandling
 	// LegacyRules makes the purpose accept what Media uploaded without a
 	// purpose were accepted as before Media purpose: see
 	// docs/media-lifecycle.md.
@@ -147,6 +160,7 @@ type purposeEntry struct {
 	PendingTTL  string              `json:"pending_ttl"`
 	Transport   Transport           `json:"transport"`
 	Attach      Attacher            `json:"attach"`
+	Service     authz.Product       `json:"service"`
 	Image       *ImageHandling      `json:"image"`
 	LegacyRules bool                `json:"legacy_rules"`
 }
@@ -201,6 +215,19 @@ func ParseCatalogue(data []byte) (Catalogue, error) {
 			return Catalogue{}, fmt.Errorf("%w: no %s purpose, which core refers to", ErrCatalogueInvalid, name)
 		}
 	}
+	for service, roles := range rolePurposes {
+		if service == authz.ProductCore {
+			continue
+		}
+		for role, accepted := range roles {
+			for _, name := range accepted {
+				if purposes[name].Service != service {
+					return Catalogue{}, fmt.Errorf("%w: %s, which the %s role %s accepts, is not attached by %s",
+						ErrCatalogueInvalid, name, service, role, service)
+				}
+			}
+		}
+	}
 	return Catalogue{purposes: purposes}, nil
 }
 
@@ -208,7 +235,7 @@ func (e purposeEntry) purpose(name string) (Purpose, error) {
 	p := Purpose{
 		Name: name, Uploader: e.Upload, Types: e.Types, MaxBytes: e.MaxMiB << 20,
 		Visibility: e.Visibility, Encrypted: e.Encrypted, Scan: e.Scan,
-		Transport: e.Transport, Attach: e.Attach, LegacyRules: e.LegacyRules,
+		Transport: e.Transport, Attach: e.Attach, Service: e.Service, LegacyRules: e.LegacyRules,
 	}
 	if e.Image != nil {
 		p.Image = *e.Image
@@ -233,6 +260,14 @@ func (e purposeEntry) purpose(name string) (Purpose, error) {
 	}
 	if e.Attach != AttachCore && e.Attach != AttachService {
 		return Purpose{}, fmt.Errorf("unknown attach %q", e.Attach)
+	}
+	if e.Service != "" {
+		if e.Attach != AttachService {
+			return Purpose{}, errors.New("only a service purpose names the service that attaches it")
+		}
+		if _, known := rolePurposes[e.Service]; !known || e.Service == authz.ProductCore {
+			return Purpose{}, fmt.Errorf("unknown service %q", e.Service)
+		}
 	}
 	if e.PendingTTL == "none" {
 		if !e.LegacyRules {

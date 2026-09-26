@@ -469,7 +469,6 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 				('media_id', 'uuid', 'NO'),
 				('owner_service', 'text', 'NO'),
 				('owner_type', 'text', 'NO'),
-				('owner_id', 'uuid', 'NO'),
 				('role', 'text', 'NO'),
 				('created_at', 'timestamptz', 'NO')
 			) expected(column_name, udt_name, is_nullable)
@@ -479,7 +478,13 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			 AND actual.column_name = expected.column_name
 			 AND actual.udt_name = expected.udt_name
 			 AND actual.is_nullable = expected.is_nullable
-		) = 7
+		) = 6
+		-- uuid as created here; text once 20260926121000 has run.
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'media_attachments' AND column_name = 'owner_id'
+			  AND udt_name IN ('uuid', 'text') AND is_nullable = 'NO'
+		)
 		AND EXISTS (
 			SELECT 1 FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'media' AND column_name = 'status'
@@ -546,6 +551,27 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		) = 19
 		AND to_regprocedure('public.core_media_links(jsonb, text, text, text)') IS NOT NULL
 		AND to_regprocedure('public.certificate_layout_media_ids(jsonb, jsonb)') IS NOT NULL`,
+	// The owner id is text, and core's own links compare and write their
+	// owners' UUIDs as text. A rerun of 20260926120000 puts back the UUID
+	// comparison; this fingerprint then fails and the migration runs again.
+	20260926121000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'media_attachments' AND column_name = 'owner_id'
+			  AND udt_name = 'text' AND is_nullable = 'NO'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.media_attachments')
+			  AND conname = 'media_attachments_owner_id_check' AND contype = 'c'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'sync_core_media_attachments'
+			  AND prosrc LIKE '%a.owner_id = gone.owner_id::TEXT%'
+			  AND prosrc LIKE '%added.owner_id::TEXT%'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

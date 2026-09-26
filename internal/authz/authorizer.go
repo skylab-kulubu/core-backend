@@ -32,6 +32,12 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		return a.allowCompetitor(p, r, action)
 	case TypeMedia:
 		return a.allowMedia(p, r, action)
+	case TypeMediaAttachment:
+		// Only a product's own service identity manages the Media
+		// attachments of its records; a person never does, whatever roles
+		// they hold. Which product it is, and that the records are its own,
+		// the media service checks.
+		return (action == Create || action == Delete) && isServiceProduct(p.Product) && hasRole(p, "media:attach")
 	case TypeURL:
 		return a.allowURL(p, r, action)
 	case TypeFormLink:
