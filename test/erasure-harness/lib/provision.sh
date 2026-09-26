@@ -78,9 +78,10 @@ keycloak_tool() { # keycloak_tool SCRIPT [args]: an operator script from the can
 }
 
 provision_infrastructure() {
-  log "starting postgres, the account-access Redis, the CMS Redis, mailpit and the edge"
+  log "starting postgres, the account-access Redis, the CMS Redis, mailpit, the edge and the media store"
   dc up -d --wait postgres
-  dc up -d account-access-redis cms-redis mailpit edge
+  dc up -d account-access-redis cms-redis mailpit edge media-store
+  wait_until 60 2 media_store_ready || { log "the media store did not become ready"; dc logs --tail 40 media-store >&2; return 1; }
   render_realms
   log "starting Keycloak (realm import)"
   dc up -d keycloak

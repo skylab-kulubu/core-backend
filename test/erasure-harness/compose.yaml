@@ -65,6 +65,25 @@ services:
     mem_limit: 64m
     logging: *logging
 
+  # core's public Media bucket (R2 in production): Garage, single node, in memory. A flat key
+  # store like R2, so an image's sizes can sit under the image's own key (images/<id>/card.png),
+  # which a POSIX-backed store refuses. The key and the bucket are made at start from
+  # compose.env; the driver reads the bucket with SigV4 as core writes it.
+  media-store:
+    image: dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
+    command: ["/garage", "server", "--single-node", "--default-bucket"]
+    environment:
+      GARAGE_RPC_SECRET: ${MEDIA_STORE_RPC_SECRET}
+      GARAGE_DEFAULT_ACCESS_KEY: ${MEDIA_STORE_ACCESS_KEY}
+      GARAGE_DEFAULT_SECRET_KEY: ${MEDIA_STORE_SECRET_KEY}
+      GARAGE_DEFAULT_BUCKET: harness-media
+    volumes:
+      - ./media-store/garage.toml:/etc/garage.toml:ro
+    tmpfs:
+      - /var/lib/garage
+    mem_limit: 64m
+    logging: *logging
+
   keycloak:
     image: ${HARNESS_IMAGE_KEYCLOAK}
     command: ["start", "--optimized", "--import-realm"]
@@ -144,12 +163,21 @@ services:
       ACCOUNT_ERASURE_CLIENT_SECRET: ${ACCOUNT_ERASURE_CLIENT_SECRET}
       ACCOUNT_ERASURE_ALERT_AFTER: 480h
       PERIODIC_DESTRUCTION_INTERVAL: 2160h
+      # Media objects go to media-store as they go to R2 in production. MEDIA_SERVICE_CLIENTS
+      # names a CMS client only so that cms_image opens for upload (docs/media-lifecycle.md):
+      # scenario 1's person uploads club content with their own token. Nothing attaches it.
+      R2_ENDPOINT: http://media-store:3900
+      R2_BUCKET: harness-media
+      R2_ACCESS_KEY: ${MEDIA_STORE_ACCESS_KEY}
+      R2_SECRET_KEY: ${MEDIA_STORE_SECRET_KEY}
+      MEDIA_SERVICE_CLIENTS: forms:forms,cms:skycms
     volumes:
       - *harness-ca
       - ${HARNESS_STATE}/pki/clients/core-writer.crt:/harness/redis/client.crt:ro
       - ${HARNESS_STATE}/pki/clients/core-writer.key:/harness/redis/client.key:ro
     depends_on:
       postgres: {condition: service_healthy}
+      media-store: {condition: service_started}
     mem_limit: 256m
     logging: *logging
 
