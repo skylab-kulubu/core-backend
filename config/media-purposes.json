@@ -11,7 +11,7 @@
       "pending_ttl": "24h",
       "transport": "single_step",
       "attach": "core",
-      "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
+      "image": { "reencode": true, "max_dimension": 2560, "sizes": { "card": 400, "page": 1200 } }
     },
     "event_cover": {
       "description": "An Event's cover image.",
@@ -24,7 +24,7 @@
       "pending_ttl": "24h",
       "transport": "single_step",
       "attach": "core",
-      "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
+      "image": { "reencode": true, "max_dimension": 2560, "sizes": { "card": 400, "page": 1200 } }
     },
     "event_gallery": {
       "description": "A photo in an Event's gallery.",
@@ -37,7 +37,7 @@
       "pending_ttl": "24h",
       "transport": "single_step",
       "attach": "core",
-      "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
+      "image": { "reencode": true, "max_dimension": 2560, "sizes": { "card": 400, "page": 1200 } }
     },
     "certificate_asset": {
       "description": "A certificate template's background or image, read only by core's certificate renderer.",
@@ -63,7 +63,7 @@
       "pending_ttl": "24h",
       "transport": "single_step",
       "attach": "service",
-      "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 }, "rasterize_svg": true }
+      "image": { "reencode": true, "max_dimension": 2560, "sizes": { "card": 400, "page": 1200 }, "rasterize_svg": true }
     },
     "cms_file": {
       "description": "A document anyone can open from a CMS page, such as bylaws or a brochure.",
@@ -141,7 +141,7 @@
       "pending_ttl": "none",
       "transport": "single_step",
       "attach": "core",
-      "image": { "reencode": false, "variants": { "card": 400, "page": 1200 } }
+      "image": { "reencode": false, "sizes": { "card": 400, "page": 1200 } }
     }
   }
 }

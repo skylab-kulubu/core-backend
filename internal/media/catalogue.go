@@ -130,7 +130,7 @@ type Purpose struct {
 type ImageHandling struct {
 	Reencode     bool           `json:"reencode"`
 	MaxDimension int            `json:"max_dimension"`
-	Variants     map[string]int `json:"variants"`
+	Sizes        map[string]int `json:"sizes"`
 	RasterizeSVG bool           `json:"rasterize_svg"`
 }
 
@@ -277,12 +277,12 @@ func (e purposeEntry) purpose(name string) (Purpose, error) {
 	if largest == 0 {
 		largest = MaxImageDimension
 	}
-	for variant, size := range p.Image.Variants {
-		if !slices.Contains(imageSizes, variant) {
-			return Purpose{}, fmt.Errorf("variant %q is not a size clients can ask for (%v)", variant, imageSizes)
+	for name, size := range p.Image.Sizes {
+		if !slices.Contains(imageSizes, name) {
+			return Purpose{}, fmt.Errorf("size %q is not one clients can ask for (%v)", name, imageSizes)
 		}
 		if size <= 0 || size > largest {
-			return Purpose{}, fmt.Errorf("variant %q is %d px, outside 1..%d", variant, size, largest)
+			return Purpose{}, fmt.Errorf("size %q is %d px, outside 1..%d", name, size, largest)
 		}
 	}
 	return p, nil

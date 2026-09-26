@@ -65,7 +65,7 @@ func rasterizeSVG(data []byte, handling ImageHandling) (reencodedImage, error) {
 	if err != nil {
 		return reencodedImage{}, err
 	}
-	variants, err := sizeVariants(img, "image/png", handling.Variants)
+	variants, err := makeSizes(img, "image/png", handling.Sizes)
 	if err != nil {
 		return reencodedImage{}, err
 	}

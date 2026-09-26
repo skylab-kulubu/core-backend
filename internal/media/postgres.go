@@ -23,7 +23,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, width, height, variants`
+const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, width, height, size_objects`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 	return insertMedia(ctx, s.pool, newRecord(m))
@@ -35,12 +35,12 @@ type rowQuerier interface {
 
 // insertMedia writes a record prepared by newRecord.
 func insertMedia(ctx context.Context, db rowQuerier, m Media) (Media, error) {
-	variants, err := variantsColumn(m.StoredVariants)
+	variants, err := sizeObjectsColumn(m.SizeObjects)
 	if err != nil {
 		return Media{}, err
 	}
 	created, err := scanMedia(db.QueryRow(ctx, `
-		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at, width, height, variants)
+		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at, width, height, size_objects)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)
 		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose, m.Status, m.ExpiresAt,
 		positiveOrNil(m.Width), positiveOrNil(m.Height), variants))
@@ -459,11 +459,11 @@ func scanMedia(row rowScanner) (Media, error) {
 		m.Width, m.Height = *width, *height
 	}
 	if variants != nil {
-		if err := json.Unmarshal(variants, &m.StoredVariants); err != nil {
+		if err := json.Unmarshal(variants, &m.SizeObjects); err != nil {
 			return m, fmt.Errorf("media %s variants: %w", m.ID, err)
 		}
-		if m.StoredVariants == nil {
-			m.StoredVariants = map[string]ImageSize{}
+		if m.SizeObjects == nil {
+			m.SizeObjects = map[string]ImageSize{}
 		}
 	}
 	m.CreatedAt = created
@@ -471,9 +471,9 @@ func scanMedia(row rowScanner) (Media, error) {
 	return m, nil
 }
 
-// variantsColumn is how StoredVariants is written: NULL while the sizes are
+// sizeObjectsColumn is how SizeObjects is written: NULL while the sizes are
 // not made, a JSON object once they are.
-func variantsColumn(variants map[string]ImageSize) (*string, error) {
+func sizeObjectsColumn(variants map[string]ImageSize) (*string, error) {
 	if variants == nil {
 		return nil, nil
 	}
@@ -492,12 +492,12 @@ func positiveOrNil(n int) *int {
 	return &n
 }
 
-func (s *PostgresStore) ListPendingImageVariants(ctx context.Context, after uuid.UUID, limit int) ([]Media, error) {
+func (s *PostgresStore) ListPendingImageSizes(ctx context.Context, after uuid.UUID, limit int) ([]Media, error) {
 	if limit <= 0 {
 		limit = 25
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+mediaCols+` FROM media
-		WHERE variants IS NULL AND kind = $1 AND deleted_at IS NULL
+		WHERE size_objects IS NULL AND kind = $1 AND deleted_at IS NULL
 		  AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL AND id > $2
 		ORDER BY id LIMIT $3`, KindImage, after, limit)
 	if err != nil {
@@ -515,15 +515,15 @@ func (s *PostgresStore) ListPendingImageVariants(ctx context.Context, after uuid
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) SetImageVariants(ctx context.Context, id uuid.UUID, size ImageSize, variants map[string]ImageSize) error {
+func (s *PostgresStore) SetImageSizes(ctx context.Context, id uuid.UUID, size ImageSize, variants map[string]ImageSize) error {
 	if variants == nil {
 		variants = map[string]ImageSize{}
 	}
-	column, err := variantsColumn(variants)
+	column, err := sizeObjectsColumn(variants)
 	if err != nil {
 		return err
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE media SET width = $2, height = $3, variants = $4::jsonb
+	tag, err := s.pool.Exec(ctx, `UPDATE media SET width = $2, height = $3, size_objects = $4::jsonb
 		WHERE id = $1 AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL`,
 		id, positiveOrNil(size.Width), positiveOrNil(size.Height), column)
 	if err != nil {

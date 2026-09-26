@@ -552,7 +552,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT count(*) FROM (VALUES
 				('width', 'int4'),
 				('height', 'int4'),
-				('variants', 'jsonb')
+				('size_objects', 'jsonb')
 			) expected(column_name, udt_name)
 			JOIN information_schema.columns actual
 			  ON actual.table_schema = 'public'
@@ -564,12 +564,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND (
 			SELECT count(*) FROM pg_constraint
 			WHERE conrelid = to_regclass('public.media') AND contype = 'c'
-			  AND conname IN ('media_width_check', 'media_height_check', 'media_variants_check')
+			  AND conname IN ('media_width_check', 'media_height_check', 'media_size_objects_check')
 		) = 3
 		AND EXISTS (
 			SELECT 1 FROM pg_indexes
-			WHERE schemaname = 'public' AND indexname = 'media_variants_pending_idx'
-			  AND indexdef LIKE '%variants IS NULL%'
+			WHERE schemaname = 'public' AND indexname = 'media_size_objects_pending_idx'
+			  AND indexdef LIKE '%size_objects IS NULL%'
 		)`,
 }
 

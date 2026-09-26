@@ -152,7 +152,7 @@ func TestService_PurposeStoresTheCatalogueSizesOfAnImage(t *testing.T) {
 		if meta, _ := blobs.Metadata(key); meta != (media.BlobMetadata{ContentType: "image/jpeg"}) {
 			t.Errorf("%s: metadata %+v", name, meta)
 		}
-		got := created.Variants[name]
+		got := created.Sizes[name]
 		wantURL := "https://cdn.example.test/" + created.Key + "/" + name
 		if got.URL != wantURL || got.Width != want.X || got.Height != want.Y {
 			t.Errorf("%s: address %+v, want %s %v", name, got, wantURL, want)
@@ -172,7 +172,7 @@ func TestService_ASizeAnImageAlreadyFitsIsItsOriginal(t *testing.T) {
 		if _, ok := blobs.Get(created.Key + "/" + name); ok {
 			t.Errorf("%s: stored a copy of an image that already fits", name)
 		}
-		got := created.Variants[name]
+		got := created.Sizes[name]
 		if got.URL != created.URL || got.Width != 300 || got.Height != 200 {
 			t.Errorf("%s: address %+v, want the original %s 300×200", name, got, created.URL)
 		}
@@ -489,7 +489,7 @@ func TestService_LegacyUploadKeepsItsImageAndStoresItsSizes(t *testing.T) {
 		if img, _ := decodeStored(t, stored); img.Bounds().Size() != want {
 			t.Errorf("%s stored %v", name, img.Bounds().Size())
 		}
-		if got := created.Variants[name]; got.URL != "https://cdn.example.test/"+created.Key+"/"+name {
+		if got := created.Sizes[name]; got.URL != "https://cdn.example.test/"+created.Key+"/"+name {
 			t.Errorf("%s address %+v", name, got)
 		}
 	}
@@ -498,8 +498,8 @@ func TestService_LegacyUploadKeepsItsImageAndStoresItsSizes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if logo.Variants != nil || len(blobs.Keys()) != 3+1 {
-		t.Fatalf("an SVG got sizes %v, objects %v", logo.Variants, blobs.Keys())
+	if logo.Sizes != nil || len(blobs.Keys()) != 3+1 {
+		t.Fatalf("an SVG got sizes %v, objects %v", logo.Sizes, blobs.Keys())
 	}
 }
 
@@ -513,7 +513,7 @@ func TestService_ServesSizesThroughCloudflareWhenConfigured(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "https://cdn.example.test/cdn-cgi/image/width=400,height=400,fit=scale-down/" + created.Key
-	if got := created.Variants["card"]; got.URL != want || got.Width != 400 || got.Height != 300 {
+	if got := created.Sizes["card"]; got.URL != want || got.Width != 400 || got.Height != 300 {
 		t.Fatalf("card %+v, want %s", got, want)
 	}
 	if created.URL != "https://cdn.example.test/"+created.Key {

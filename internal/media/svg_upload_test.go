@@ -59,7 +59,7 @@ func TestService_SVGIsStoredAsAPNGOfIt(t *testing.T) {
 	if meta, _ := blobs.Metadata(created.Key); meta != (media.BlobMetadata{ContentType: "image/png"}) {
 		t.Fatalf("served as %+v", meta)
 	}
-	if card := created.Variants["card"]; card.URL != created.URL+"/card" || card.Width != 400 || card.Height != 200 {
+	if card := created.Sizes["card"]; card.URL != created.URL+"/card" || card.Width != 400 || card.Height != 200 {
 		t.Fatalf("card %+v", card)
 	}
 }

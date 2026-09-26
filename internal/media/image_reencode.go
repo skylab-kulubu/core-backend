@@ -76,11 +76,11 @@ type reencodedImage struct {
 	ctype         string
 	width, height int
 	// variants are the sizes smaller than the image, encoded the same way.
-	variants []encodedVariant
+	variants []encodedSize
 }
 
-// encodedVariant is one stored size of an image.
-type encodedVariant struct {
+// encodedSize is one stored size of an image.
+type encodedSize struct {
 	size          string
 	body          []byte
 	ctype         string
@@ -117,7 +117,7 @@ func reencodeRaster(data []byte, handling ImageHandling) (reencodedImage, error)
 	if err != nil {
 		return reencodedImage{}, err
 	}
-	variants, err := sizeVariants(img, ctype, handling.Variants)
+	variants, err := makeSizes(img, ctype, handling.Sizes)
 	if err != nil {
 		return reencodedImage{}, err
 	}
@@ -138,10 +138,10 @@ func decodeRaster(data []byte) (image.Image, error) {
 	return img, nil
 }
 
-// sizeVariants makes each of the sizes (size name to its longer side in
+// makeSizes makes each of the sizes (size name to its longer side in
 // pixels) that the upright image is larger than, encoded as ctype.
-func sizeVariants(img image.Image, ctype string, sizes map[string]int) ([]encodedVariant, error) {
-	var out []encodedVariant
+func makeSizes(img image.Image, ctype string, sizes map[string]int) ([]encodedSize, error) {
+	var out []encodedSize
 	bounds := img.Bounds()
 	for _, size := range imageSizes {
 		px, ok := sizes[size]
@@ -153,7 +153,7 @@ func sizeVariants(img image.Image, ctype string, sizes map[string]int) ([]encode
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, encodedVariant{size: size, body: body, ctype: ctype, width: scaled.Bounds().Dx(), height: scaled.Bounds().Dy()})
+		out = append(out, encodedSize{size: size, body: body, ctype: ctype, width: scaled.Bounds().Dx(), height: scaled.Bounds().Dy()})
 	}
 	return out, nil
 }
@@ -162,7 +162,7 @@ func sizeVariants(img image.Image, ctype string, sizes map[string]int) ([]encode
 // Media uploaded without a purpose): its size as shown, and its sizes.
 type keptImage struct {
 	size     ImageSize
-	variants []encodedVariant
+	variants []encodedSize
 }
 
 // keptImageSizes makes the sizes of an image whose own bytes core keeps:
@@ -175,7 +175,7 @@ func keptImageSizes(data []byte, sizes map[string]int) keptImage {
 	}
 	img = orient(img, jpegOrientation(data))
 	ctype := outputType(detectContentType(data), img)
-	variants, err := sizeVariants(img, ctype, sizes)
+	variants, err := makeSizes(img, ctype, sizes)
 	if err != nil {
 		return keptImage{}
 	}

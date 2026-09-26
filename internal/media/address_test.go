@@ -10,9 +10,9 @@ func TestAddressesPointAnImageSizeAtItsStoredCopyOrAtCloudflare(t *testing.T) {
 	t.Parallel()
 	photo := media.Media{
 		Key: "images/abc", Kind: media.KindImage, Type: "image/jpeg", Width: 1600, Height: 1200,
-		StoredVariants: map[string]media.ImageSize{"card": {Width: 400, Height: 300}},
+		SizeObjects: map[string]media.ImageSize{"card": {Width: 400, Height: 300}},
 	}
-	small := media.Media{Key: "images/small", Kind: media.KindImage, Type: "image/png", Width: 300, Height: 200, StoredVariants: map[string]media.ImageSize{}}
+	small := media.Media{Key: "images/small", Kind: media.KindImage, Type: "image/png", Width: 300, Height: 200, SizeObjects: map[string]media.ImageSize{}}
 	stored := media.Addresses{Base: "https://cdn.example.test/"}
 	cloudflare := media.Addresses{Base: "https://cdn.example.test", Mode: media.AddressCloudflare}
 

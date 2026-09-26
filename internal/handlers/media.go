@@ -158,7 +158,7 @@ type publicMedia struct {
 	Kind        string                        `json:"kind"`
 	Width       int                           `json:"width,omitempty"`
 	Height      int                           `json:"height,omitempty"`
-	Variants    map[string]media.ImageAddress `json:"variants,omitempty"`
+	Sizes       map[string]media.ImageAddress `json:"sizes,omitempty"`
 	CoverColors []string                      `json:"coverColors"`
 	CreatedAt   time.Time                     `json:"createdAt"`
 	UpdatedAt   time.Time                     `json:"updatedAt"`
@@ -173,7 +173,7 @@ func publicMediaView(m media.Media) publicMedia {
 		Kind:        m.Kind,
 		Width:       m.Width,
 		Height:      m.Height,
-		Variants:    m.Variants,
+		Sizes:       m.Sizes,
 		CoverColors: m.CoverColors,
 		CreatedAt:   m.CreatedAt,
 		UpdatedAt:   m.UpdatedAt,

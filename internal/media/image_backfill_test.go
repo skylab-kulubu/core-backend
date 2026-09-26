@@ -44,7 +44,7 @@ func (b failingReads) Read(ctx context.Context, key string) ([]byte, error) {
 	return b.MemoryBlob.Read(ctx, key)
 }
 
-func TestBackfillImageVariantsMakesTheSizesOfImagesStoredBefore(t *testing.T) {
+func TestBackfillImageSizesMakesTheSizesOfImagesStoredBefore(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := media.NewMemoryStore()
@@ -66,7 +66,7 @@ func TestBackfillImageVariantsMakesTheSizesOfImagesStoredBefore(t *testing.T) {
 	unreachable := storedBefore(t, store, blobs, "images/unreachable", "image/png", solidPNG(t, 900, 900, color.RGBA{G: 90, A: 255}))
 
 	var reported []error
-	report, err := media.BackfillImageVariants(ctx, store, blobs, catalogue, func(err error) { reported = append(reported, err) })
+	report, err := media.BackfillImageSizes(ctx, store, blobs, catalogue, func(err error) { reported = append(reported, err) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,8 +76,8 @@ func TestBackfillImageVariantsMakesTheSizesOfImagesStoredBefore(t *testing.T) {
 
 	got, _ := store.Get(ctx, photo.ID)
 	wantSizes := map[string]media.ImageSize{"card": {Width: 300, Height: 400}, "page": {Width: 900, Height: 1200}}
-	if got.Width != 1200 || got.Height != 1600 || !reflect.DeepEqual(got.StoredVariants, wantSizes) {
-		t.Fatalf("photo recorded %d×%d %v", got.Width, got.Height, got.StoredVariants)
+	if got.Width != 1200 || got.Height != 1600 || !reflect.DeepEqual(got.SizeObjects, wantSizes) {
+		t.Fatalf("photo recorded %d×%d %v", got.Width, got.Height, got.SizeObjects)
 	}
 	for size, want := range wantSizes {
 		stored, ok := memory.Get("images/photo/" + size)
@@ -98,18 +98,18 @@ func TestBackfillImageVariantsMakesTheSizesOfImagesStoredBefore(t *testing.T) {
 
 	for _, done := range []media.Media{small, broken, logo, gone} {
 		got, _ := store.Get(ctx, done.ID)
-		if got.StoredVariants == nil || len(got.StoredVariants) != 0 {
-			t.Errorf("%s: recorded %v, want no sizes and nothing left to do", done.Key, got.StoredVariants)
+		if got.SizeObjects == nil || len(got.SizeObjects) != 0 {
+			t.Errorf("%s: recorded %v, want no sizes and nothing left to do", done.Key, got.SizeObjects)
 		}
 	}
 	if got, _ := store.Get(ctx, small.ID); got.Width != 300 || got.Height != 200 {
 		t.Errorf("small recorded %d×%d", got.Width, got.Height)
 	}
-	if got, _ := store.Get(ctx, unreachable.ID); got.StoredVariants != nil {
-		t.Fatalf("an image whose read failed is recorded %v, want it left for the next pass", got.StoredVariants)
+	if got, _ := store.Get(ctx, unreachable.ID); got.SizeObjects != nil {
+		t.Fatalf("an image whose read failed is recorded %v, want it left for the next pass", got.SizeObjects)
 	}
 
-	again, err := media.BackfillImageVariants(ctx, store, blobs, catalogue, nil)
+	again, err := media.BackfillImageSizes(ctx, store, blobs, catalogue, nil)
 	if err != nil || again != (media.BackfillReport{Failed: 1}) {
 		t.Fatalf("second pass %+v %v", again, err)
 	}

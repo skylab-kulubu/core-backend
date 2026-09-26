@@ -137,11 +137,11 @@ func TestCatalogue_RefusesMalformedEntries(t *testing.T) {
 		"unreadable pending TTL":  func(p purposeEntries) { p["cms_file"]["pending_ttl"] = "tomorrow" },
 		"pending that never ends": func(p purposeEntries) { p["cms_file"]["pending_ttl"] = "none" },
 		"variant above the image": func(p purposeEntries) {
-			p["event_cover"]["image"].(map[string]any)["variants"] = map[string]any{"page": 3000}
+			p["event_cover"]["image"].(map[string]any)["sizes"] = map[string]any{"page": 3000}
 		},
 		// Size names are what clients ask for; a new one is a code change.
 		"size clients cannot name": func(p purposeEntries) {
-			p["event_cover"]["image"].(map[string]any)["variants"] = map[string]any{"poster": 800}
+			p["event_cover"]["image"].(map[string]any)["sizes"] = map[string]any{"poster": 800}
 		},
 		"name that is not a slug": func(p purposeEntries) { p["Event Cover"] = p["event_cover"] },
 		"no legacy purpose":       func(p purposeEntries) { delete(p, "legacy") },

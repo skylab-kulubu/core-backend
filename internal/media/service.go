@@ -105,7 +105,7 @@ type storedFile struct {
 	keyPrefix     string
 	width, height int
 	// variants are the image's stored sizes, written beside it.
-	variants []encodedVariant
+	variants []encodedSize
 	// sized is set once core has made the image's sizes (maybe none), so
 	// the variant backfill leaves it alone.
 	sized bool
@@ -177,7 +177,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	}
 	var sizes []string
 	for _, variant := range stored.variants {
-		sizes = append(sizes, variantKey(key, variant.size))
+		sizes = append(sizes, sizeObjectKey(key, variant.size))
 		if err := s.blobs.Put(operationCtx, sizes[len(sizes)-1], variant.body, ServingMetadata(variant.ctype, file.Name)); err != nil {
 			return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, sizes, err)
 		}
@@ -196,7 +196,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		Kind:                stored.kind,
 		Width:               stored.width,
 		Height:              stored.height,
-		StoredVariants:      stored.storedSizes(),
+		SizeObjects:      stored.storedSizes(),
 		Purpose:             purpose.Name,
 		ExpiresAt:           pendingExpiry(purpose, time.Now().UTC()),
 		Key:                 key,
@@ -269,7 +269,7 @@ func legacyFile(purpose Purpose, file UploadedFile) (storedFile, error) {
 		}
 		stored := storedFile{body: clean, ctype: detected, kind: KindImage, keyPrefix: "images/", sized: true}
 		if isRasterType(detected) {
-			kept := keptImageSizes(clean, purpose.Image.Variants)
+			kept := keptImageSizes(clean, purpose.Image.Sizes)
 			stored.width, stored.height, stored.variants = kept.size.Width, kept.size.Height, kept.variants
 		}
 		return stored, nil
@@ -454,13 +454,13 @@ func (s *service) Addresses() Addresses {
 }
 
 func (s *service) withURL(m Media) Media {
-	m.Variants = nil
+	m.Sizes = nil
 	if m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil {
 		m.URL = ""
 		return m
 	}
 	m.URL = s.addresses.Object(m.Key)
 	purpose, _ := s.catalogue.Lookup(m.Purpose)
-	m.Variants = s.addresses.imageAddresses(m, purpose.Image.Variants)
+	m.Sizes = s.addresses.imageAddresses(m, purpose.Image.Sizes)
 	return m
 }

@@ -2,9 +2,9 @@ package media
 
 import "strings"
 
-// variantKey is the object key of an image's stored size: next to the
+// sizeObjectKey is the object key of an image's stored size: next to the
 // image's own key, so every cleanup that knows the key finds its sizes.
-func variantKey(key, size string) string {
+func sizeObjectKey(key, size string) string {
 	return key + "/" + size
 }
 
@@ -16,7 +16,7 @@ func variantKey(key, size string) string {
 func purgeObjects(key string, purge func(key string) error) error {
 	if strings.HasPrefix(key, "images/") {
 		for _, size := range imageSizes {
-			if err := purge(variantKey(key, size)); err != nil {
+			if err := purge(sizeObjectKey(key, size)); err != nil {
 				return err
 			}
 		}

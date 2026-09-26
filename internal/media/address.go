@@ -94,8 +94,8 @@ func (a Addresses) Image(m Media, size string, px int) ImageAddress {
 		options := fmt.Sprintf("width=%d,height=%d,fit=scale-down", px, px)
 		return ImageAddress{URL: a.Object("cdn-cgi/image/" + options + "/" + strings.TrimLeft(m.Key, "/")), Width: w, Height: h}
 	}
-	if stored, ok := m.StoredVariants[size]; ok {
-		return ImageAddress{URL: a.Object(variantKey(m.Key, size)), Width: stored.Width, Height: stored.Height}
+	if stored, ok := m.SizeObjects[size]; ok {
+		return ImageAddress{URL: a.Object(sizeObjectKey(m.Key, size)), Width: stored.Width, Height: stored.Height}
 	}
 	return ImageAddress{URL: a.Object(m.Key), Width: m.Width, Height: m.Height}
 }

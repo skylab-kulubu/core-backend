@@ -65,9 +65,9 @@ func TestMediaGetGivesEveryoneTheAddressesOfAnImagesSizesHTTP(t *testing.T) {
 	id, _ := uuid.Parse(created.body["id"].(string))
 
 	got := getMediaJSON(t, mediaApp(t, authn.Identity{}, store, blobs), id)
-	variants, _ := got["variants"].(map[string]any)
-	card, _ := variants["card"].(map[string]any)
-	page, _ := variants["page"].(map[string]any)
+	sizes, _ := got["sizes"].(map[string]any)
+	card, _ := sizes["card"].(map[string]any)
+	page, _ := sizes["page"].(map[string]any)
 	url, _ := got["url"].(string)
 	if got["width"] != float64(1000) || got["height"] != float64(800) {
 		t.Fatalf("anonymous response %v", got)

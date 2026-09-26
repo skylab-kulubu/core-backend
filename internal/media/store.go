@@ -34,12 +34,12 @@ type Media struct {
 	// Variants are the addresses of a raster image's sizes (SizeCard,
 	// SizePage), by size name: every size its purpose gives it. Built when
 	// the Media is returned, from the configured base.
-	Variants map[string]ImageAddress `json:"variants,omitempty"`
-	// StoredVariants are the sizes stored as objects beside the image, by
+	Sizes map[string]ImageAddress `json:"sizes,omitempty"`
+	// SizeObjects are the sizes stored as objects beside the image, by
 	// size name: only those smaller than the image itself. Nil until core has
 	// made them: an image stored before sizes existed waits for the variant
 	// backfill.
-	StoredVariants map[string]ImageSize `json:"-"`
+	SizeObjects map[string]ImageSize `json:"-"`
 	// Purpose is the Media purpose the file was uploaded for; legacy for
 	// Media uploaded without a purpose and for Media stored before purposes
 	// existed.
@@ -121,14 +121,14 @@ type Store interface {
 	// SetServingPolicyApplied records that the object now follows the serving
 	// policy. It changes nothing else on the record.
 	SetServingPolicyApplied(ctx context.Context, id uuid.UUID) error
-	// ListPendingImageVariants returns, in id order and after the given id,
-	// current image Media whose sizes core has not made yet (StoredVariants
+	// ListPendingImageSizes returns, in id order and after the given id,
+	// current image Media whose sizes core has not made yet (SizeObjects
 	// nil). Media whose blob is purged or being purged are left out.
-	ListPendingImageVariants(ctx context.Context, after uuid.UUID, limit int) ([]Media, error)
-	// SetImageVariants records an image's size as shown and the sizes stored
+	ListPendingImageSizes(ctx context.Context, after uuid.UUID, limit int) ([]Media, error)
+	// SetImageSizes records an image's size as shown and the sizes stored
 	// beside it; nil or empty variants record that it has none. It refuses
 	// with ErrPurgeInProgress or ErrPurged once the blob's purge has begun.
-	SetImageVariants(ctx context.Context, id uuid.UUID, size ImageSize, variants map[string]ImageSize) error
+	SetImageSizes(ctx context.Context, id uuid.UUID, size ImageSize, variants map[string]ImageSize) error
 	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	// Restore restores an archived Media and clears its expiry, so an expiry
 	// that passed while it was archived cannot purge it.

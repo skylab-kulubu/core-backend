@@ -115,8 +115,8 @@ func main() {
 	media.MaintainServingPolicyBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
 		log.Printf("media serving policy backfill: %v", err)
 	})
-	media.MaintainImageVariantBackfill(context.Background(), mediaStore, blobs, mediaPurposes, time.Minute, func(err error) {
-		log.Printf("media image variant backfill: %v", err)
+	media.MaintainImageSizeBackfill(context.Background(), mediaStore, blobs, mediaPurposes, time.Minute, func(err error) {
+		log.Printf("media image size backfill: %v", err)
 	})
 	certificate.MaintainAssetServingPolicyBackfill(context.Background(), certs, blobs, time.Minute, func(err error) {
 		log.Printf("certificate template asset serving policy backfill: %v", err)
