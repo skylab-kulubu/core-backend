@@ -163,6 +163,8 @@ type BlobStore interface {
 	// SetMetadata replaces the metadata of a stored object; ErrNotFound when
 	// there is no such object.
 	SetMetadata(ctx context.Context, key string, meta BlobMetadata) error
+	// Read returns an object's bytes; ErrNotFound when there is no such
+	// object.
 	Read(ctx context.Context, key string) ([]byte, error)
 	Delete(ctx context.Context, key string) error
 }
