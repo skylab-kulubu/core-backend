@@ -120,7 +120,9 @@ func (s *service) EnsureFormLink(ctx context.Context, p authz.Principal, formID 
 }
 
 // RenameFormLink gives the form's link the alias asked for. An empty alias
-// asks for the readable default instead, built from suggestion.
+// asks for the readable default instead, built from suggestion. An unusable
+// suggestion is refused: falling back to a random alias would retire the
+// current one for good for a name nobody asked for.
 func (s *service) RenameFormLink(ctx context.Context, p authz.Principal, formID uuid.UUID, alias, suggestion string) (URL, error) {
 	if !s.formsAllowed(p, authz.Update) {
 		return URL{}, ErrForbidden
@@ -137,6 +139,9 @@ func (s *service) RenameFormLink(ctx context.Context, p authz.Principal, formID 
 		return existing, nil
 	}
 	if alias == "" {
+		if err := validateAlias(readableBase(suggestion)); err != nil {
+			return URL{}, err
+		}
 		next, err := s.readableAlias(ctx, suggestion, existing.ID)
 		if err != nil {
 			return URL{}, err
@@ -273,7 +278,7 @@ func (s *service) bindEventForm(ctx context.Context, eventID uuid.UUID, f EventF
 // numbered (-2, -3, ...) when that name is taken, and a random alias only when
 // no numbered variant is free. except lets a link take back its own name.
 func (s *service) readableAlias(ctx context.Context, suggestion string, except uuid.UUID) (string, error) {
-	base := strings.ToLower(strings.TrimSpace(suggestion))
+	base := readableBase(suggestion)
 	if validateAlias(base) == nil {
 		for n := 1; n <= maxSuggestionTries; n++ {
 			candidate := numberedAlias(base, n)
@@ -290,6 +295,11 @@ func (s *service) readableAlias(ctx context.Context, suggestion string, except u
 		}
 	}
 	return s.ensureAlias(ctx, "")
+}
+
+// readableBase is the alias a suggestion asks for, before any numbering.
+func readableBase(suggestion string) string {
+	return strings.ToLower(strings.TrimSpace(suggestion))
 }
 
 func numberedAlias(base string, n int) string {

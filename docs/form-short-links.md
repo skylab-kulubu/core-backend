@@ -18,7 +18,8 @@ active row per form. When an event points at the form, the row also carries
 
 Bound links are never renamed or disabled through the generic
 `/v1/urls/{id}` endpoints; those answer `409` with code `managed` so two places
-cannot fight over one alias. URL moderators can still disable one.
+cannot fight over one alias. URL moderators can still disable one. Restoring
+a disabled bound link answers `409` when the form got another link meanwhile.
 
 ## Endpoints
 
@@ -29,16 +30,18 @@ Form-link endpoints need the `url:forms` role (the forms service account) or
 |---|---|---|
 | `GET /v1/urls/forms/{formId}` | | the bound link, `404` when the form has none |
 | `PUT /v1/urls/forms/{formId}` | `{ url, label, alias, actorId }` | the bound link, created under the readable `alias` if missing; **idempotent** |
-| `PATCH /v1/urls/forms/{formId}` | `{ alias, suggestion }` | renamed link; an empty `alias` asks for the readable default built from `suggestion`; `403` with code `event_managed` on an event link, `409` when taken |
+| `PATCH /v1/urls/forms/{formId}` | `{ alias, suggestion }` | renamed link; an empty `alias` asks for the readable default built from `suggestion`; `400` when that `suggestion` gives no usable alias; `403` with code `event_managed` on an event link, `409` when taken |
 | `GET /v1/urls/forms/{formId}/stats` | | `{ since, total, sources: [{ source, count }] }` for the last 90 days |
 | `GET /v1/urls/availability` | `?alias=` | `{ alias, available, reason }`, reason is `invalid`, `reserved` or `taken` |
 
 A new link gets a **readable default name** (ADR 0033): Forms sends the form
 title and year as `alias` (for example `yaz-kampi-basvuru-2026`). When that
 name is taken Core numbers it (`-2` up to `-9`) and only falls back to a
-random alias when every numbered variant is taken. An explicit `alias` on
-`PATCH` is never numbered: the person typed that name, so a taken one answers
-`409` instead.
+random alias when every numbered variant is taken. A rename needs a usable
+`suggestion`: without one Core answers `400` rather than retire the current
+alias for a random name nobody asked for. An explicit `alias` on `PATCH` is
+never numbered: the person typed that name, so a taken one answers `409`
+instead.
 
 `url` must contain the form id; Core refuses a target that points at another
 form. `actorId` becomes `created_by` when that account exists in Core.
@@ -81,7 +84,9 @@ printed from `?utm_source=qr&logo=1` counts scans apart from clicks.
 - **Retired aliases keep working:** renaming a link retires its old alias. The
   old address keeps redirecting to the same link, so printed QR codes and old
   posts survive the rename, and nobody can ever claim the old alias for
-  another page. A link may take its own old alias back.
+  another page. A link may take its own old alias back. Each spelling is kept:
+  after `Foo` → `foo` the printed `Foo` still redirects, because redirects
+  match the alias exactly.
 
 ## Events
 
