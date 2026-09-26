@@ -12,13 +12,18 @@ import (
 )
 
 type MemoryStore struct {
-	mu         sync.Mutex
-	byID       map[uuid.UUID]Media
-	referenced map[uuid.UUID]bool
+	mu          sync.Mutex
+	byID        map[uuid.UUID]Media
+	referenced  map[uuid.UUID]bool
+	attachments map[uuid.UUID]Attachment
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{byID: make(map[uuid.UUID]Media), referenced: make(map[uuid.UUID]bool)}
+	return &MemoryStore{
+		byID:        make(map[uuid.UUID]Media),
+		referenced:  make(map[uuid.UUID]bool),
+		attachments: make(map[uuid.UUID]Attachment),
+	}
 }
 
 func (s *MemoryStore) Create(_ context.Context, m Media) (Media, error) {

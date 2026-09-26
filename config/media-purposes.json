@@ -63,6 +63,7 @@
       "pending_ttl": "24h",
       "transport": "single_step",
       "attach": "service",
+      "service": "cms",
       "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
     },
     "cms_file": {
@@ -75,7 +76,8 @@
       "scan": false,
       "pending_ttl": "24h",
       "transport": "single_step",
-      "attach": "service"
+      "attach": "service",
+      "service": "cms"
     },
     "answer_file": {
       "description": "An Answer file: a person's file for a Skyforms file question. Skyforms decides who may open it.",
@@ -93,6 +95,7 @@
       "pending_ttl": "24h",
       "transport": "single_step",
       "attach": "service",
+      "service": "forms",
       "image": { "reencode": true, "max_dimension": 2560 }
     },
     "club_file": {
@@ -117,7 +120,8 @@
       "scan": true,
       "pending_ttl": "24h",
       "transport": "direct",
-      "attach": "service"
+      "attach": "service",
+      "service": "forms"
     },
     "video": {
       "description": "An event recording, served as plain MP4.",

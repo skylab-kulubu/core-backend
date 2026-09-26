@@ -25,6 +25,10 @@ func linkProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 	case errors.Is(err, media.ErrNotLinkable):
 		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
 			"The Media does not exist, is archived or purged, or expired before anything used it.", "media_not_linkable", fields)
+	case errors.Is(err, media.ErrProductMismatch):
+		// No purpose member: the Media is not the caller's to know about.
+		return true, problemWithFields(c, fiber.StatusForbidden, "Forbidden",
+			"The Media is private to another product.", "media_product_mismatch", fields)
 	case errors.Is(err, event.ErrMediaTeamMismatch):
 		return true, problemWithFields(c, fiber.StatusForbidden, "Forbidden",
 			"The Media is used on an Event of another Owner team.", "media_team_mismatch", fields)

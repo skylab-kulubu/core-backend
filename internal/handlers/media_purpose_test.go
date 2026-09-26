@@ -9,7 +9,9 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/config"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
@@ -127,15 +129,39 @@ func TestMediaUploadForAPrivatePurposeIsRefusedHTTP(t *testing.T) {
 	}
 }
 
+// A service purpose that names no product to attach it (club files and
+// videos today) is refused: nothing could attach the file before it expires.
 func TestMediaUploadForAPurposeNothingCanAttachYetHTTP(t *testing.T) {
 	t.Parallel()
+	var file map[string]map[string]map[string]any
+	if err := json.Unmarshal(config.MediaPurposes, &file); err != nil {
+		t.Fatal(err)
+	}
+	// A single-step club_flyer purpose, like cms_file but with no product
+	// named to attach it.
+	flyer := map[string]any{}
+	for field, value := range file["purposes"]["cms_file"] {
+		flyer[field] = value
+	}
+	delete(flyer, "service")
+	file["purposes"]["club_flyer"] = flyer
+	raw, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogue, err := media.ParseCatalogue(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store := media.NewMemoryStore()
-	app := mediaApp(t, authn.Identity{ID: uuid.New()}, store, media.NewMemoryBlob())
+	app := mediaServiceApp(t, authn.Identity{ID: uuid.New()}, media.NewServiceWithOptions(store, media.NewMemoryBlob(),
+		authz.NewAuthorizer(authz.DefaultPolicy()), "", media.ServiceOptions{Catalogue: catalogue}))
 
-	resp := postMedia(t, app, "cms_file", "bylaws.pdf", []byte("%PDF-1.7\n"))
+	resp := postMedia(t, app, "club_flyer", "flyer.pdf", []byte("%PDF-1.7\n"))
 	requireProblem(t, resp, fiber.StatusUnprocessableEntity, "purpose_not_available")
-	if stored, _ := store.List(t.Context()); len(stored) != 0 || resp.body["purpose"] != "cms_file" ||
-		!strings.Contains(resp.body["detail"].(string), "ticket 03") {
+	detail, _ := resp.body["detail"].(string)
+	if stored, _ := store.List(t.Context()); len(stored) != 0 || resp.body["purpose"] != "club_flyer" ||
+		strings.Contains(detail, "ticket 03") || !strings.Contains(detail, "No product attaches") {
 		t.Fatalf("problem %v, stored %d", resp.body, len(stored))
 	}
 }

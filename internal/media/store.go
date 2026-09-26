@@ -127,6 +127,21 @@ type Store interface {
 	// Media, when the Media is no longer expired or a Media attachment or a
 	// core link still uses it.
 	PurgeExpiredBlobIfUnattached(ctx context.Context, id uuid.UUID, now time.Time, purge func(key string) error) (bool, error)
+	// Attach writes a Media attachment another product makes. created is
+	// false when the same link already exists; that one is returned. A Media
+	// that is gone, archived, or whose purge started is ErrNotLinkable.
+	Attach(ctx context.Context, a Attachment) (_ Attachment, created bool, _ error)
+	// FindAttachment returns the Media attachment of the same link as a
+	// (Media, owner and role); ErrNotFound when there is none.
+	FindAttachment(ctx context.Context, a Attachment) (Attachment, error)
+	// GetAttachment returns the Media's attachment with this id; ErrNotFound
+	// when the Media has none.
+	GetAttachment(ctx context.Context, mediaID, attachmentID uuid.UUID) (Attachment, error)
+	// Detach removes the Media's attachment with this id if the service
+	// owns it, and does nothing otherwise. A Media whose last Media
+	// attachment goes is detached: purged 30 days later, or never for a
+	// legacy Media.
+	Detach(ctx context.Context, mediaID, attachmentID uuid.UUID, service string) error
 }
 
 // BlobMetadata is how the CDN serves a stored object. An empty

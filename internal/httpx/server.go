@@ -327,6 +327,10 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/media/:id", mediaH.Get)
 	app.Delete("/v1/media/:id", mediaH.Delete)
 	app.Post("/v1/media/:id/restore", mediaH.Restore)
+	// The service attach API: another product's service account links Media
+	// to its own records (docs/media-lifecycle.md).
+	app.Post("/v1/media/:id/attachments", mediaH.Attach)
+	app.Delete("/v1/media/:id/attachments/:attachmentId", mediaH.Detach)
 
 	app.Post("/v1/urls", urls.Create)
 	app.Get("/v1/urls", urls.ListMine)
