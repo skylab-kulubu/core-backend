@@ -590,3 +590,33 @@ func TestPurgeDeletesEverySizeObjectOfAMedia(t *testing.T) {
 func signedInID() uuid.UUID {
 	return uuid.MustParse("84848484-8484-8484-8484-848484848484")
 }
+
+// A phone JPEG can carry more than its image: an MPF (APP2) index of
+// secondary images stored after the primary one's end, each with its own
+// EXIF and GPS, and a motion photo's video appended after them. Media
+// uploaded without a purpose are stripped, not re-encoded, so the strip
+// ends the file where the primary image ends.
+func TestService_LegacyUploadEndsAJPEGWithItsPrimaryImage(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	primary := withJPEGSegment(solidJPEG(t, 64, 48, color.RGBA{R: 10, G: 200, B: 10, A: 255}), 0xE2, []byte("MPF\x00MM\x00*\x00\x00\x00\x08"))
+	secondary := withJPEGSegment(solidJPEG(t, 32, 24, color.RGBA{B: 200, A: 255}), 0xE1, []byte("Exif\x00\x00GPS-SECRET-2"))
+	upload := append(append(append([]byte{}, primary...), secondary...), []byte("MotionPhoto_Data\x00\x00\x00\x18ftypmp42")...)
+
+	created, err := svc.Upload(context.Background(), signedIn("86868686-8686-8686-8686-868686868686"), "phone.jpg", "image/jpeg", upload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := blobs.Get(created.Key)
+	for _, hidden := range []string{"GPS-SECRET-2", "MotionPhoto", "ftypmp42", "MPF"} {
+		if bytes.Contains(stored, []byte(hidden)) {
+			t.Errorf("the stored JPEG still carries %q", hidden)
+		}
+	}
+	if !bytes.HasSuffix(stored, []byte{0xFF, 0xD9}) || bytes.Count(stored, []byte{0xFF, 0xD8}) != 1 {
+		t.Fatalf("the stored JPEG does not end with its primary image (%d bytes)", len(stored))
+	}
+	if img, format := decodeStored(t, stored); format != "jpeg" || img.Bounds().Size() != image.Pt(64, 48) {
+		t.Fatalf("stored %s %v", format, img.Bounds().Size())
+	}
+}
