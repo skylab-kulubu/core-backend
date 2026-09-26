@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/db"
@@ -265,5 +266,54 @@ func TestApplyRepairsTheTextOwnerComparisonAfterARerun(t *testing.T) {
 	var status string
 	if err := pool.QueryRow(ctx, `SELECT status FROM media WHERE id = $1`, picture).Scan(&status); err != nil || status != "detached" {
 		t.Fatalf("profile picture after unlinking: status %q (err %v), want detached", status, err)
+	}
+}
+
+// A rerun of the Media attachment migration puts back its status and
+// current-media functions, without the legacy backfill's hold and purpose
+// check; the backfill migration's fingerprint notices and runs it again.
+func TestApplyRepairsTheDetachExpiryHoldAfterARerun(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DROP TRIGGER users_media_attachments_update ON users`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DROP TABLE schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	person := uuid.New()
+	if _, _, err := user.NewService(user.NewPostgresStore(pool)).Ensure(ctx, person, user.Profile{
+		Email: "held@example.com", FirstName: "Ada", LastName: "Held", Username: "held",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	picture := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, purpose, detach_expiry_held)
+		VALUES ($1, 'me.png', 'image/png', $2, 3, $3, 'IMAGE', 'profile_picture', true)`, picture, "images/"+picture.String(), person); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`UPDATE users SET profile_picture_id = $2 WHERE id = $1`,
+		`UPDATE users SET profile_picture_id = NULL WHERE id = $1 AND $2::uuid IS NOT NULL`,
+	} {
+		if _, err := pool.Exec(ctx, statement, person, picture); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	var status string
+	var expires *time.Time
+	if err := pool.QueryRow(ctx, `SELECT status, expires_at FROM media WHERE id = $1`, picture).Scan(&status, &expires); err != nil || status != "detached" || expires != nil {
+		t.Fatalf("held picture after unlinking: status %q expires %v (err %v), want detached with no expiry", status, expires, err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_attachments (media_id, owner_service, owner_type, owner_id, role)
+		VALUES ($1, 'cms', 'page', 'skylab-site:hakkimizda', 'image')`, picture); err == nil {
+		t.Fatal("a profile picture was attached as a CMS image")
 	}
 }

@@ -32,27 +32,29 @@ func (s *PostgresStore) countLegacyAttachedByCore(ctx context.Context) (int, err
 	return count, err
 }
 
-// assignLegacyPurpose gives a legacy Media the purpose choose picks from its
-// Media attachments, and returns it; "" when choose keeps it legacy or it is
-// no longer legacy. The Media row is locked first: a new Media attachment
-// checks its Media and waits, so choose sees every one.
-func (s *PostgresStore) assignLegacyPurpose(ctx context.Context, id uuid.UUID, choose func([]attachmentUse) string) (string, error) {
+// assignLegacyPurpose gives a legacy Media the purpose choose decides on
+// from its Media attachments, with its detach expiry held, and returns the
+// decision; legacySkipped when it is no longer legacy. The Media row is
+// locked first: a new Media attachment checks its Media under a lock that
+// waits for this one (require_current_attached_media), so choose sees every
+// Media attachment, and one written after sees the new purpose.
+func (s *PostgresStore) assignLegacyPurpose(ctx context.Context, id uuid.UUID, choose func([]attachmentUse) (string, legacyDecision, error)) (legacyDecision, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return "", err
+		return legacySkipped, err
 	}
 	defer tx.Rollback(ctx)
 	var locked uuid.UUID
 	err = tx.QueryRow(ctx, `SELECT id FROM media WHERE id = $1 AND purpose = 'legacy' FOR UPDATE`, id).Scan(&locked)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
+		return legacySkipped, nil
 	}
 	if err != nil {
-		return "", err
+		return legacySkipped, err
 	}
 	rows, err := tx.Query(ctx, `SELECT owner_service, role FROM media_attachments WHERE media_id = $1 ORDER BY id`, id)
 	if err != nil {
-		return "", err
+		return legacySkipped, err
 	}
 	uses, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (attachmentUse, error) {
 		var use attachmentUse
@@ -60,23 +62,22 @@ func (s *PostgresStore) assignLegacyPurpose(ctx context.Context, id uuid.UUID, c
 		return use, err
 	})
 	if err != nil {
-		return "", err
+		return legacySkipped, err
 	}
-	purpose := choose(uses)
-	if purpose == "" {
-		return "", nil
+	purpose, decision, err := choose(uses)
+	if err != nil || decision != legacyAssigned {
+		return decision, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE media SET purpose = $2 WHERE id = $1`, id, purpose); err != nil {
-		return "", err
+	if _, err := tx.Exec(ctx, `UPDATE media SET purpose = $2, detach_expiry_held = true WHERE id = $1`, id, purpose); err != nil {
+		return legacySkipped, err
 	}
-	return purpose, tx.Commit(ctx)
+	return decision, tx.Commit(ctx)
 }
 
 // legacyOrphanSQL holds for a current legacy Media that nothing in core uses:
 // no Media attachment, and no core link either (coreLinksSQL, the safety
 // net until every link is proven to have its Media attachment).
-const legacyOrphanSQL = `media.purpose = 'legacy' AND media.status <> 'attached'
-	AND media.deleted_at IS NULL AND media.blob_purge_started_at IS NULL AND media.blob_purged_at IS NULL
+const legacyOrphanSQL = `media.purpose = 'legacy' AND ` + unattachedCurrentSQL + `
 	AND NOT EXISTS (SELECT 1 FROM media_attachments a WHERE a.media_id = media.id)`
 
 // listLegacyOrphans returns every legacy orphan, oldest upload first.
@@ -90,31 +91,18 @@ func (s *PostgresStore) listLegacyOrphans(ctx context.Context) ([]Media, error) 
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Media, error) { return scanMedia(row) })
 }
 
-// countCoreLinksWithoutAttachment counts core's own links, read from the
-// linking records as the Media attachment migration (20260926120000) read
-// them, that have no Media attachment. Zero proves the purge's hard-coded list
-// of core links (coreLinksSQL) adds nothing to the Media attachments.
+// countCoreLinksWithoutAttachment counts core's own links (coreLinkSources)
+// that have no Media attachment. Zero proves the purge's hard-coded list of
+// core links adds nothing to the Media attachments.
 func (s *PostgresStore) countCoreLinksWithoutAttachment(ctx context.Context) (int, error) {
 	var count int
 	err := s.pool.QueryRow(ctx, `SELECT count(*)
-		FROM (
-			SELECT 'event', 'event_cover', to_jsonb(owner), 'id', 'cover_image_id', NULL::TEXT FROM events owner
-			UNION ALL
-			SELECT 'event', 'event_gallery', to_jsonb(owner), 'event_id', 'media_id', NULL FROM event_images owner
-			UNION ALL
-			SELECT 'user', 'profile_picture', to_jsonb(owner), 'id', 'profile_picture_id', NULL FROM users owner
-			UNION ALL
-			SELECT 'certificate_template', 'certificate_asset', to_jsonb(owner), 'id', 'draft_layout', NULL FROM certificate_templates owner
-			UNION ALL
-			SELECT 'certificate_template_version', 'certificate_asset', to_jsonb(owner), 'id', 'layout', 'asset_manifest'
-			FROM certificate_template_versions owner
-		) source (owner_type, role, record, owner_column, media_column, manifest_column)
-		CROSS JOIN LATERAL core_media_links(source.record, source.owner_column, source.media_column, source.manifest_column) link
+		FROM (`+coreLinkRowsSQL()+`) link
 		JOIN media ON media.id = link.media_id
 		WHERE NOT EXISTS (
 			SELECT 1 FROM media_attachments a
-			WHERE a.media_id = link.media_id AND a.owner_service = 'core' AND a.owner_type = source.owner_type
-			  AND a.owner_id = link.owner_id::TEXT AND a.role = source.role
+			WHERE a.media_id = link.media_id AND a.owner_service = 'core' AND a.owner_type = link.owner_type
+			  AND a.owner_id = link.owner_id::TEXT AND a.role = link.role
 		)`).Scan(&count)
 	return count, err
 }
@@ -156,4 +144,41 @@ func (s *PostgresStore) expireLegacyOrphan(ctx context.Context, id uuid.UUID, at
 	default:
 		return orphanExpiring, nil
 	}
+}
+
+// countDetachExpiryHeld counts the held Media, and those of them no record
+// uses (current and unattached).
+func (s *PostgresStore) countDetachExpiryHeld(ctx context.Context) (held, unattached int, err error) {
+	err = s.pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE `+unattachedCurrentSQL+`)
+		FROM media WHERE media.detach_expiry_held`).Scan(&held, &unattached)
+	return held, unattached, err
+}
+
+// listDetachExpiryHeld returns, in id order and after the given id, the
+// held Media.
+func (s *PostgresStore) listDetachExpiryHeld(ctx context.Context, after uuid.UUID, limit int) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM media WHERE detach_expiry_held AND id > $1 ORDER BY id LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+}
+
+// releaseDetachExpiryHold clears the Media's hold and, when no record uses
+// it and it has no expiry, sets its expiry to at. The Media row is locked as
+// it is read, so a detach waits and then sees the hold gone (and sets the
+// ordinary 30 days), or has already detached it for this to see.
+func (s *PostgresStore) releaseDetachExpiryHold(ctx context.Context, id uuid.UUID, at time.Time) (released, windowStarted bool, err error) {
+	err = s.pool.QueryRow(ctx, `WITH target AS (
+			SELECT id, (`+unattachedCurrentSQL+` AND media.expires_at IS NULL) AS starts
+			FROM media WHERE id = $1 AND detach_expiry_held FOR UPDATE
+		)
+		UPDATE media SET detach_expiry_held = false,
+			expires_at = CASE WHEN target.starts THEN $2 ELSE media.expires_at END
+		FROM target WHERE media.id = target.id
+		RETURNING target.starts`, id, at).Scan(&windowStarted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
+	}
+	return err == nil, windowStarted, err
 }

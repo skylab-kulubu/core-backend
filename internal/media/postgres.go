@@ -3,6 +3,7 @@ package media
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -202,11 +203,17 @@ func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// unattachedCurrentSQL holds for a current Media no Media attachment keeps:
+// not attached, not archived, no purge started.
+const unattachedCurrentSQL = `media.status <> 'attached' AND media.deleted_at IS NULL
+	AND media.blob_purge_started_at IS NULL AND media.blob_purged_at IS NULL`
+
+// ExpireUnattachedAt sets the expiry; a Media whose detach expiry is held
+// (the legacy backfill, decision K2) keeps none, as a legacy one does.
 func (s *PostgresStore) ExpireUnattachedAt(ctx context.Context, id uuid.UUID, at *time.Time) error {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE media SET expires_at = $2
-		WHERE id = $1 AND status <> 'attached' AND deleted_at IS NULL
-		  AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL`, id, at)
+		UPDATE media SET expires_at = CASE WHEN media.detach_expiry_held THEN NULL ELSE $2::TIMESTAMPTZ END
+		WHERE id = $1 AND `+unattachedCurrentSQL, id, at)
 	if err != nil {
 		return err
 	}
@@ -382,16 +389,60 @@ func mediaReferenced(ctx context.Context, tx postgresMediaTx, id uuid.UUID) (boo
 	return referenced, err
 }
 
+// coreLinkSources are core's own links as their records hold them: the
+// hard-coded list the purge and the legacy report read beside the Media
+// attachments, as a safety net. Migration 20260926120000 wrote the first
+// Media attachments from the same list and its triggers keep them in step
+// (its copy stays as written: migrations are frozen).
+var coreLinkSources = []struct {
+	table     string
+	ownerType string
+	role      Role
+	owner     string
+	// media names the column that holds the Media id, or the certificate
+	// layout with it; manifest a published version's asset manifest.
+	media, manifest string
+	layout          bool
+}{
+	{table: "events", ownerType: "event", role: RoleEventCover, owner: "id", media: "cover_image_id"},
+	{table: "event_images", ownerType: "event", role: RoleEventGallery, owner: "event_id", media: "media_id"},
+	{table: "users", ownerType: "user", role: RoleProfilePicture, owner: "id", media: "profile_picture_id"},
+	{table: "certificate_templates", ownerType: "certificate_template", role: RoleCertificateAsset, owner: "id", media: "draft_layout", layout: true},
+	{table: "certificate_template_versions", ownerType: "certificate_template_version", role: RoleCertificateAsset, owner: "id", media: "layout", manifest: "asset_manifest", layout: true},
+}
+
 // coreLinksSQL selects a row for each of core's own links to the Media id
-// names (a parameter or a column), read from the linking records directly:
-// the hard-coded list the purge and the legacy report keep as a safety net
-// beside the Media attachments.
+// names (a parameter or a column).
 func coreLinksSQL(id string) string {
-	return `SELECT 1 FROM events WHERE cover_image_id = ` + id + `
-		UNION ALL SELECT 1 FROM event_images WHERE media_id = ` + id + `
-		UNION ALL SELECT 1 FROM users WHERE profile_picture_id = ` + id + `
-		UNION ALL SELECT 1 FROM certificate_templates WHERE ` + id + ` = ANY (certificate_layout_media_ids(draft_layout, NULL))
-		UNION ALL SELECT 1 FROM certificate_template_versions WHERE ` + id + ` = ANY (certificate_layout_media_ids(layout, asset_manifest))`
+	selects := make([]string, 0, len(coreLinkSources))
+	for _, source := range coreLinkSources {
+		match := source.media + ` = ` + id
+		if source.layout {
+			manifest := "NULL"
+			if source.manifest != "" {
+				manifest = source.manifest
+			}
+			match = id + ` = ANY (certificate_layout_media_ids(` + source.media + `, ` + manifest + `))`
+		}
+		selects = append(selects, `SELECT 1 FROM `+source.table+` WHERE `+match)
+	}
+	return strings.Join(selects, "\n\t\tUNION ALL ")
+}
+
+// coreLinkRowsSQL selects each of core's own links as (owner_type, role,
+// owner_id, media_id), read as the Media attachment migration read them.
+func coreLinkRowsSQL() string {
+	selects := make([]string, 0, len(coreLinkSources))
+	for _, source := range coreLinkSources {
+		manifest := "NULL::TEXT"
+		if source.manifest != "" {
+			manifest = `'` + source.manifest + `'`
+		}
+		selects = append(selects, `SELECT '`+source.ownerType+`', '`+string(source.role)+`', to_jsonb(owner), '`+source.owner+`', '`+source.media+`', `+manifest+` FROM `+source.table+` owner`)
+	}
+	return `SELECT source.owner_type, source.role, link.owner_id, link.media_id
+		FROM (` + strings.Join(selects, "\n\t\tUNION ALL ") + `) source (owner_type, role, record, owner_column, media_column, manifest_column)
+		CROSS JOIN LATERAL core_media_links(source.record, source.owner_column, source.media_column, source.manifest_column) link`
 }
 
 func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claimedAt time.Time, queue purgeQueue) (bool, error) {

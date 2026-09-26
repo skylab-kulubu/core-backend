@@ -113,7 +113,8 @@ type Store interface {
 	// that passed while it was archived cannot purge it.
 	Restore(ctx context.Context, id uuid.UUID) error
 	// ExpireUnattachedAt sets when a current Media no Media attachment keeps
-	// is purged; nil keeps it. An attached Media is left alone.
+	// is purged; nil keeps it. An attached Media is left alone, and a Media
+	// whose detach expiry the legacy backfill holds keeps no expiry.
 	ExpireUnattachedAt(ctx context.Context, id uuid.UUID, at *time.Time) error
 	ListPurgeCandidates(ctx context.Context, deletedBefore time.Time, limit int) ([]Media, error)
 	PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(key string) error) (bool, error)

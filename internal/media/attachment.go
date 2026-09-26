@@ -36,7 +36,10 @@ const (
 )
 
 // rolePurposes are, for each product, the roles its records give a Media and
-// the Media purposes each role accepts. The two Event purposes fit both Event
+// the Media purposes each role accepts, the role's own purpose first (the
+// legacy backfill gives that one). The database keeps a copy for its
+// backstop (media_purpose_fits_role, migration 20260926161000); a test keeps
+// the two equal. The two Event purposes fit both Event
 // roles: the organizer's picker offers every photo of the team's Events for
 // the cover and the gallery alike. A profile picture is linked only by
 // POST /v1/users/me/profile-picture, which uploads it as profile_picture, so

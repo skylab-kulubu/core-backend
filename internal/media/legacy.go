@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -26,34 +27,38 @@ type LegacyPurposeReport struct {
 	// storage moves their blobs.
 	KeptPrivate int
 	// KeptMixed legacy Media have uses that no one purpose fits, such as an
-	// Event cover that is also someone's profile picture. They stay legacy.
+	// Event cover that is also someone's profile picture (decision K1).
+	// They stay legacy.
 	KeptMixed int
-	Failed    int
+	// Skipped Media were no longer legacy, or no longer used by core, when
+	// the backfill reached them.
+	Skipped int
+	Failed  int
 }
 
 // BackfillLegacyPurposes makes one pass over the legacy Media that core
-// attaches and gives each one the Media purpose of its use.
+// attaches and gives each one the Media purpose of its use, holding its
+// detach expiry (decision K2, see ReleaseDetachExpiryHold).
 func BackfillLegacyPurposes(ctx context.Context, store *PostgresStore, catalogue Catalogue, onError func(error)) (LegacyPurposeReport, error) {
 	var report LegacyPurposeReport
 	pass, err := BackfillPass(ctx, "media", store.listLegacyAttachedByCore,
 		func(id uuid.UUID) uuid.UUID { return id },
 		func(ctx context.Context, id uuid.UUID) error {
-			var kept legacyKeep
-			assigned, err := store.assignLegacyPurpose(ctx, id, func(uses []attachmentUse) string {
-				var purpose string
-				purpose, kept = legacyPurpose(uses, catalogue)
-				return purpose
+			decision, err := store.assignLegacyPurpose(ctx, id, func(uses []attachmentUse) (string, legacyDecision, error) {
+				return legacyPurpose(uses, catalogue)
 			})
 			if err != nil {
 				return err
 			}
-			switch {
-			case assigned != "":
+			switch decision {
+			case legacyAssigned:
 				report.Assigned++
-			case kept == keptPrivate:
+			case legacyKeptPrivate:
 				report.KeptPrivate++
-			case kept == keptMixed:
+			case legacyKeptMixed:
 				report.KeptMixed++
+			default:
+				report.Skipped++
 			}
 			return nil
 		},
@@ -63,68 +68,86 @@ func BackfillLegacyPurposes(ctx context.Context, store *PostgresStore, catalogue
 }
 
 // MaintainLegacyPurposeBackfill runs BackfillLegacyPurposes in the
-// background, off the request path, until a pass leaves nothing failed,
-// reporting each pass that finishes through onPass.
+// background, off the request path, until a pass leaves nothing failed. A
+// pass is reported through onPass when it assigned a purpose or failed on a
+// different number of Media than the pass before, and a Media that keeps
+// failing is reported through onError at most once an hour.
 func MaintainLegacyPurposeBackfill(ctx context.Context, store *PostgresStore, catalogue Catalogue, retryEvery time.Duration, onPass func(LegacyPurposeReport), onError func(error)) {
+	itemErrors := throttleItemErrors(onError, time.Hour, time.Now)
+	lastFailed := 0
 	MaintainBackfill(ctx, func(ctx context.Context) (BackfillReport, error) {
-		report, err := BackfillLegacyPurposes(ctx, store, catalogue, onError)
-		if err == nil && onPass != nil {
+		report, err := BackfillLegacyPurposes(ctx, store, catalogue, itemErrors)
+		if err == nil && onPass != nil && (report.Assigned > 0 || report.Failed != lastFailed) {
 			onPass(report)
 		}
+		lastFailed = report.Failed
 		return BackfillReport{Applied: report.Assigned, Failed: report.Failed}, err
 	}, retryEvery, onError)
 }
 
-// legacyKeep is why the backfill keeps a legacy Media legacy.
-type legacyKeep int
-
-const (
-	notKept legacyKeep = iota
-	keptPrivate
-	keptMixed
-)
-
-// legacyUses are core's roles, each with the Media purpose of that use, in
-// the order the backfill tries them.
-var legacyUses = []struct {
-	role    Role
-	purpose string
-}{
-	{RoleEventCover, PurposeEventCover},
-	{RoleEventGallery, PurposeEventGallery},
-	{RoleProfilePicture, PurposeProfilePicture},
-	{RoleCertificateAsset, PurposeCertificateAsset},
+// throttleItemErrors passes on an item's failure (a *BackfillError) the first
+// time and then at most once every interval; other errors always.
+func throttleItemErrors(onError func(error), every time.Duration, now func() time.Time) func(error) {
+	if onError == nil {
+		return nil
+	}
+	reported := map[uuid.UUID]time.Time{}
+	return func(err error) {
+		var item *BackfillError
+		if errors.As(err, &item) {
+			if at, seen := reported[item.ID]; seen && now().Sub(at) < every {
+				return
+			}
+			reported[item.ID] = now()
+		}
+		onError(err)
+	}
 }
 
-// legacyPurpose is the Media purpose a legacy Media gets from its uses, or
-// "" and why it stays legacy. The purpose is the one of the first of core's
-// roles the Media plays whose purpose fits every one of its uses, as a new
-// link would be checked (fits): both Event purposes fit both Event roles, so
-// a cover that is also a gallery photo takes event_cover. A private purpose
-// is never given: the Media's blob is public.
-func legacyPurpose(uses []attachmentUse, catalogue Catalogue) (string, legacyKeep) {
+// legacyDecision is what the backfill did with one legacy Media.
+type legacyDecision int
+
+const (
+	// legacySkipped: no longer legacy, or no longer used by core.
+	legacySkipped legacyDecision = iota
+	legacyAssigned
+	legacyKeptPrivate
+	legacyKeptMixed
+)
+
+// legacyRoles are core's roles in the order the backfill tries their
+// purposes. A role's own purpose is the first rolePurposes lists for it.
+var legacyRoles = []Role{RoleEventCover, RoleEventGallery, RoleProfilePicture, RoleCertificateAsset}
+
+// legacyPurpose decides what a legacy Media used as uses becomes: the own
+// purpose of the first of core's roles it plays that fits every one of its
+// uses, as a new link would be checked (fits). Both Event purposes fit both
+// Event roles, so a cover that is also a gallery photo takes event_cover. A
+// private purpose is never given: the Media's blob is public.
+func legacyPurpose(uses []attachmentUse, catalogue Catalogue) (string, legacyDecision, error) {
 	played := false
-	for _, candidate := range legacyUses {
-		if !slices.Contains(uses, attachmentUse{Product: authz.ProductCore, Role: candidate.role}) {
+	for _, role := range legacyRoles {
+		if !slices.Contains(uses, attachmentUse{Product: authz.ProductCore, Role: role}) {
 			continue
 		}
 		played = true
-		fitsEvery := !slices.ContainsFunc(uses, func(use attachmentUse) bool {
-			return !fits(use.Product, use.Role, candidate.purpose)
-		})
-		if !fitsEvery {
+		candidate := rolePurposes[authz.ProductCore][role][0]
+		if slices.ContainsFunc(uses, func(use attachmentUse) bool { return !fits(use.Product, use.Role, candidate) }) {
 			continue
 		}
-		if purpose, ok := catalogue.Lookup(candidate.purpose); !ok || purpose.Visibility == VisibilityPrivate {
-			return "", keptPrivate
+		purpose, ok := catalogue.Lookup(candidate)
+		if !ok {
+			return "", legacySkipped, fmt.Errorf("purpose %s is not in the catalogue", candidate)
 		}
-		return candidate.purpose, notKept
+		if purpose.Visibility == VisibilityPrivate {
+			return "", legacyKeptPrivate, nil
+		}
+		return candidate, legacyAssigned, nil
 	}
 	if !played {
-		// Core stopped using it since it was listed.
-		return "", notKept
+		return "", legacySkipped, nil
 	}
-	return "", keptMixed
+	return "", legacyKeptMixed, nil
 }
 
 // LegacyReport is what Yusuf reviews before any legacy Media is removed
@@ -144,6 +167,9 @@ type LegacyReport struct {
 	// purpose backfill has not reached yet, and what it keeps legacy
 	// (certificate template assets, mixed uses).
 	AttachedByCore int
+	// DetachExpiryHeld counts the Media the backfill gave a purpose whose
+	// detach expiry is still held (decision K2, ReleaseDetachExpiryHold).
+	DetachExpiryHeld int
 }
 
 // ReportLegacy reads the legacy report. It changes nothing.
@@ -160,13 +186,17 @@ func ReportLegacy(ctx context.Context, store *PostgresStore) (LegacyReport, erro
 	if err != nil {
 		return LegacyReport{}, err
 	}
-	return LegacyReport{Orphans: orphans, CoreLinksWithoutAttachment: unattached, AttachedByCore: attached}, nil
+	held, _, err := store.countDetachExpiryHeld(ctx)
+	if err != nil {
+		return LegacyReport{}, err
+	}
+	return LegacyReport{Orphans: orphans, CoreLinksWithoutAttachment: unattached, AttachedByCore: attached, DetachExpiryHeld: held}, nil
 }
 
-// LegacyOrphanWindow is how long a legacy orphan is kept once Yusuf has
-// reviewed the report and started its window (Q19): the same 30 days as a
-// detached Media.
-const LegacyOrphanWindow = 30 * 24 * time.Hour
+// DetachedWindow is how long a Media no record uses any more is kept: the
+// 30 days the database gives a detached Media. A reviewed legacy orphan
+// (Q19) and a Media detached while its expiry was held (K2) get the same.
+const DetachedWindow = 30 * 24 * time.Hour
 
 // LegacyExpiryReport counts one run of ExpireLegacyOrphans.
 type LegacyExpiryReport struct {
@@ -189,7 +219,7 @@ type LegacyExpiryReport struct {
 // and does not stop the others.
 func ExpireLegacyOrphans(ctx context.Context, store *PostgresStore, ids []uuid.UUID, now time.Time, apply bool, onError func(error)) (LegacyExpiryReport, error) {
 	report := LegacyExpiryReport{NotOrphans: []uuid.UUID{}}
-	at := now.Add(LegacyOrphanWindow)
+	at := now.Add(DetachedWindow)
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
 			return report, err
@@ -212,4 +242,54 @@ func ExpireLegacyOrphans(ctx context.Context, store *PostgresStore, ids []uuid.U
 		}
 	}
 	return report, nil
+}
+
+// HoldReleaseReport counts one run of ReleaseDetachExpiryHold.
+type HoldReleaseReport struct {
+	// Held Media had their detach expiry held when the run began.
+	Held int
+	// HeldDetached of them were current and used by no record: releasing
+	// starts their window.
+	HeldDetached int
+	// Released Media follow their purpose again.
+	Released int
+	// WindowsStarted of them got their 30 days from the release.
+	WindowsStarted int
+	Failed         int
+}
+
+// ReleaseDetachExpiryHold ends the hold the legacy purpose backfill put on
+// the Media it gave a purpose (decision K2), once stage 5 has given the uses
+// core could not see their Media attachments (ticket 18). Every held Media
+// follows its purpose again; one that no record uses by then gets its 30
+// days from now, not from when it was detached. Without apply it only
+// counts. It walks the held Media by id in batches: a Media that fails is
+// reported through onError and stays held for the next run, and a run over
+// released Media changes nothing.
+func ReleaseDetachExpiryHold(ctx context.Context, store *PostgresStore, now time.Time, apply bool, onError func(error)) (HoldReleaseReport, error) {
+	var report HoldReleaseReport
+	var err error
+	report.Held, report.HeldDetached, err = store.countDetachExpiryHeld(ctx)
+	if err != nil || !apply {
+		return report, err
+	}
+	at := now.Add(DetachedWindow)
+	pass, err := BackfillPass(ctx, "media", store.listDetachExpiryHeld,
+		func(id uuid.UUID) uuid.UUID { return id },
+		func(ctx context.Context, id uuid.UUID) error {
+			released, windowStarted, err := store.releaseDetachExpiryHold(ctx, id, at)
+			if err != nil {
+				return err
+			}
+			if released {
+				report.Released++
+			}
+			if windowStarted {
+				report.WindowsStarted++
+			}
+			return nil
+		},
+		onError)
+	report.Failed = pass.Failed
+	return report, err
 }
