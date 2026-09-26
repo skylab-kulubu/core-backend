@@ -487,9 +487,14 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		return err
 	}
 	if profileMediaID != nil {
+		// Shared: anything but the person's own profile uses it, a Media
+		// attachment of another product included.
 		var shared bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (
-			SELECT 1 FROM events WHERE cover_image_id = $1
+			SELECT 1 FROM media_attachments
+				WHERE media_id = $1
+				  AND NOT (owner_service = 'core' AND owner_type = 'user' AND role = 'profile_picture' AND owner_id = $2::text)
+			UNION ALL SELECT 1 FROM events WHERE cover_image_id = $1
 			UNION ALL SELECT 1 FROM event_images WHERE media_id = $1
 			UNION ALL SELECT 1 FROM users WHERE profile_picture_id = $1
 			UNION ALL SELECT 1 FROM certificate_templates
@@ -499,7 +504,7 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 				WHERE layout->>'backgroundMediaId' = $1::text
 				   OR asset_manifest ? $1::text
 				   OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(layout->'elements', '[]'::jsonb)) element WHERE element->>'mediaId' = $1::text)
-		)`, *profileMediaID).Scan(&shared); err != nil {
+		)`, *profileMediaID, id).Scan(&shared); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/account"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
@@ -36,6 +37,8 @@ type recordsFixture struct {
 	subject         uuid.UUID
 	request         user.DeletionRequest
 	now             time.Time
+	// stepTimeout is the worker's StepTimeout; zero keeps its default.
+	stepTimeout time.Duration
 }
 
 func newRecordsFixture(t *testing.T) *recordsFixture {
@@ -89,7 +92,18 @@ func (f *recordsFixture) requestDeletion(t *testing.T, eraser account.MediaErase
 	return account.NewWorker(f.users, successfulIdentity{}, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return f.now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
+		StepTimeout: f.stepTimeout,
 	}, eraser)
+}
+
+// attempts is the request's spent attempts and when it is claimed next.
+func (f *recordsFixture) attempts(t *testing.T) (int, time.Time) {
+	t.Helper()
+	request, err := f.users.DeletionRequest(context.Background(), f.subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return request.AttemptCount, request.NextAttemptAt
 }
 
 func (f *recordsFixture) checkpointed(t *testing.T, step user.DeletionStep) bool {
@@ -154,6 +168,8 @@ type failingDelete struct {
 	media.Buckets
 	key  string
 	lost bool
+	// names is more the error names: the Media, its file.
+	names string
 
 	mu     sync.Mutex
 	failed bool
@@ -171,7 +187,7 @@ func (b *failingDelete) Delete(ctx context.Context, key string) error {
 			return err
 		}
 	}
-	return errors.New(`DeleteObject "https://r2.example.test/media/` + key + `": connection reset`)
+	return errors.New(`DeleteObject "https://r2.example.test/media/` + key + `" (` + b.names + `): connection reset`)
 }
 
 // countingEraser counts the Media erase_profile_media hands the eraser.
@@ -196,7 +212,7 @@ func (e *countingEraser) EnsureErased(ctx context.Context, id uuid.UUID, at time
 func TestEraseProfileMediaPurgesARecordedAnswerFileWithoutAProfilePicture(t *testing.T) {
 	f := newRecordsFixture(t)
 	answer := f.answerFile(t)
-	blobs := &failingDelete{Buckets: f.buckets, key: answer.Key, lost: true}
+	blobs := &failingDelete{Buckets: f.buckets, key: answer.Key, lost: true, names: answer.ID.String() + " " + answer.Name}
 	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, blobs))
 
 	worked, err := worker.RunOnce(context.Background())
@@ -216,6 +232,9 @@ func TestEraseProfileMediaPurgesARecordedAnswerFileWithoutAProfilePicture(t *tes
 	}
 	if got := f.mediaForDeletion(t); !slices.Equal(got, []uuid.UUID{answer.ID}) {
 		t.Fatalf("media for deletion after the failed pass %v, want the Answer file", got)
+	}
+	if spent, _ := f.attempts(t); spent != 1 {
+		t.Fatalf("a pass that erased nothing spent %d attempts, want 1", spent)
 	}
 
 	if worked, err := worker.RunOnce(context.Background()); !worked || err != nil {
@@ -252,7 +271,11 @@ func TestEraseProfileMediaResumesAnInterruptedStepWithWhatIsLeft(t *testing.T) {
 	if got := f.mediaForDeletion(t); !slices.Equal(got, []uuid.UUID{second.ID}) {
 		t.Fatalf("media for deletion after the interruption %v, want only %v", got, second.ID)
 	}
+	if spent, next := f.attempts(t); spent != 0 || !next.Equal(f.now.Add(30*time.Second)) {
+		t.Fatalf("a pass that erased something spent %d attempts, next at %v; want 0, in 30 s", spent, next)
+	}
 
+	f.now = f.now.Add(30 * time.Second)
 	if worked, err := worker.RunOnce(context.Background()); !worked || err != nil {
 		t.Fatalf("rerun worked=%v err=%v", worked, err)
 	}
@@ -385,5 +408,253 @@ func TestEraseProfileMediaCallsNoEraserWithNothingToErase(t *testing.T) {
 	}
 	if !f.checkpointed(t, user.DeletionStepEraseProfile) || eraser.calls != 0 {
 		t.Fatalf("erase_profile_media checkpointed %v with %d eraser calls, want 0", f.checkpointed(t, user.DeletionStepEraseProfile), eraser.calls)
+	}
+}
+
+// stalledDelete is the buckets with one object's deletion hanging, once,
+// until the step's time is up.
+type stalledDelete struct {
+	media.Buckets
+	key string
+
+	mu      sync.Mutex
+	stalled bool
+}
+
+func (b *stalledDelete) Delete(ctx context.Context, key string) error {
+	b.mu.Lock()
+	stall := key == b.key && !b.stalled
+	b.stalled = b.stalled || stall
+	b.mu.Unlock()
+	if stall {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return b.Buckets.Delete(ctx, key)
+}
+
+// A person with many files: the step's time runs out after the first of
+// three. The pass erased something, so the worker gives the attempt back and
+// comes again in 30 seconds; that pass erases the other two.
+func TestEraseProfileMediaGivesTheAttemptBackWhenItErasedSome(t *testing.T) {
+	f := newRecordsFixture(t)
+	f.stepTimeout = 2 * time.Second
+	answers := []media.Media{f.answerFile(t), f.answerFile(t), f.answerFile(t)}
+	slices.SortFunc(answers, func(a, b media.Media) int { return slices.Compare(a.ID[:], b.ID[:]) })
+	blobs := &stalledDelete{Buckets: f.buckets, key: answers[1].Key}
+	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, blobs))
+
+	worked, err := worker.RunOnce(context.Background())
+	if !worked || err == nil {
+		t.Fatalf("timed-out pass worked=%v err=%v", worked, err)
+	}
+	for _, answer := range answers {
+		for _, private := range []string{answer.ID.String(), answer.Key, answer.Name} {
+			if strings.Contains(err.Error(), private) {
+				t.Fatalf("error names %q: %v", private, err)
+			}
+		}
+	}
+	if !f.purged(t, answers[0]) || f.purged(t, answers[1]) || f.purged(t, answers[2]) {
+		t.Fatal("the timed-out pass did not purge exactly the first Answer file")
+	}
+	if spent, next := f.attempts(t); spent != 0 || !next.Equal(f.now.Add(30*time.Second)) {
+		t.Fatalf("the timed-out pass spent %d attempts, next at %v; want 0, in 30 s", spent, next)
+	}
+	if worked, err := worker.RunOnce(context.Background()); worked || err != nil {
+		t.Fatalf("the request was claimed before its 30 s: worked=%v err=%v", worked, err)
+	}
+
+	f.now = f.now.Add(30 * time.Second)
+	if worked, err := worker.RunOnce(context.Background()); !worked || err != nil {
+		t.Fatalf("next pass worked=%v err=%v", worked, err)
+	}
+	for _, answer := range answers {
+		if !f.purged(t, answer) {
+			t.Fatalf("%s is not purged", answer.ID)
+		}
+	}
+	if !f.completed(t) {
+		t.Fatal("the request did not complete")
+	}
+}
+
+// A profile picture purged in an earlier pass is not offered again, so it
+// cannot pass for progress: while a recorded Media keeps failing, each pass
+// after the first erases nothing and spends its attempt.
+func TestEraseProfileMediaSpendsTheAttemptWhenItErasedNothing(t *testing.T) {
+	f := newRecordsFixture(t)
+	ctx := context.Background()
+	picture, err := f.media.Create(ctx, media.Media{
+		Name: "Ada_Lovelace.png", Type: "image/png", Kind: media.KindImage, Key: "images/" + uuid.NewString(),
+		UploadedBy: f.subject, Purpose: media.PurposeProfilePicture,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := user.NewService(f.users).SetProfilePicture(ctx, f.subject, picture.ID, picture.Key); err != nil {
+		t.Fatal(err)
+	}
+	answer := f.answerFile(t)
+	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, &brokenDelete{Buckets: f.buckets, key: answer.Key}))
+
+	if worked, err := worker.RunOnce(ctx); !worked || err == nil {
+		t.Fatalf("first pass worked=%v err=%v", worked, err)
+	}
+	if spent, _ := f.attempts(t); spent != 0 || !f.purged(t, picture) {
+		t.Fatalf("first pass purged the picture %v and spent %d attempts; want purged, 0", f.purged(t, picture), spent)
+	}
+	if got := f.mediaForDeletion(t); !slices.Equal(got, []uuid.UUID{answer.ID}) {
+		t.Fatalf("media for deletion %v, want only the Answer file: the purged picture is done", got)
+	}
+
+	f.now = f.now.Add(30 * time.Second)
+	if worked, err := worker.RunOnce(ctx); !worked || !errors.Is(err, media.ErrPersonalMediaNotErased) {
+		t.Fatalf("second pass worked=%v err=%v", worked, err)
+	}
+	if spent, _ := f.attempts(t); spent != 1 {
+		t.Fatalf("a pass that erased nothing spent %d attempts, want 1", spent)
+	}
+}
+
+// brokenDelete is the buckets with one object's deletion always failing.
+type brokenDelete struct {
+	media.Buckets
+	key string
+}
+
+func (b *brokenDelete) Delete(ctx context.Context, key string) error {
+	if key == b.key {
+		return errors.New("object storage unavailable")
+	}
+	return b.Buckets.Delete(ctx, key)
+}
+
+// The step's error goes to the worker's log, so it names no Media, object or
+// file whatever failed underneath: here a stored record core cannot read,
+// whose own error names the Media.
+func TestEraseProfileMediaErrorNamesNoMedia(t *testing.T) {
+	f := newRecordsFixture(t)
+	ctx := context.Background()
+	picture, err := f.media.Create(ctx, media.Media{
+		Name: "Ada_Lovelace.png", Type: "image/png", Kind: media.KindImage, Key: "images/" + uuid.NewString(), UploadedBy: f.subject,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := user.NewService(f.users).SetProfilePicture(ctx, f.subject, picture.ID, picture.Key); err != nil {
+		t.Fatal(err)
+	}
+	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, f.buckets))
+	if err := f.users.AnonymizeAccount(ctx, f.subject, f.now, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.media.Restore(ctx, picture.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE media SET size_objects = '{"card": 5}' WHERE id = $1`, picture.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	worked, err := worker.RunOnce(ctx)
+	if !worked || err == nil {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	for _, private := range []string{picture.ID.String(), picture.Key, "Ada_Lovelace", f.subject.String()} {
+		if strings.Contains(err.Error(), private) {
+			t.Fatalf("error names %q: %v", private, err)
+		}
+	}
+}
+
+// legacyUpload is a legacy image of the person, stored with its object.
+func (f *recordsFixture) legacyUpload(t *testing.T) media.Media {
+	t.Helper()
+	ctx := context.Background()
+	item, err := f.media.Create(ctx, media.Media{
+		Name: "Ada_Lovelace.png", Type: "image/png", Kind: media.KindImage, Key: "images/" + uuid.NewString(), UploadedBy: f.subject,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.public.Put(ctx, item.Key, []byte("image"), media.BlobMetadata{ContentType: item.Type}); err != nil {
+		t.Fatal(err)
+	}
+	return item
+}
+
+// attachToCMSPage is a CMS page using the Media, through its Media
+// attachment only.
+func (f *recordsFixture) attachToCMSPage(t *testing.T, item media.Media) {
+	t.Helper()
+	if _, _, err := f.media.Attach(context.Background(), media.Attachment{
+		MediaID: item.ID, Owner: media.Owner{Service: authz.ProductCMS, Type: "page", ID: "skylab-site:anasayfa"}, Role: media.RoleCMSImage,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A profile picture club content uses only through a Media attachment (a
+// legacy picture a CMS page holds) is shared like one an Event uses: it is
+// not archived, the request does not stop at erase_profile_media, and the
+// file stays without its uploader and name.
+func TestEraseProfileMediaKeepsAProfilePictureACMSPageUses(t *testing.T) {
+	f := newRecordsFixture(t)
+	ctx := context.Background()
+	picture := f.legacyUpload(t)
+	if _, err := user.NewService(f.users).SetProfilePicture(ctx, f.subject, picture.ID, picture.Key); err != nil {
+		t.Fatal(err)
+	}
+	f.attachToCMSPage(t, picture)
+	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, f.buckets))
+
+	if worked, err := worker.RunOnce(ctx); !worked || err != nil || !f.completed(t) {
+		t.Fatalf("worked=%v err=%v completed=%v", worked, err, f.completed(t))
+	}
+	stored, err := f.media.GetIncludingDeleted(ctx, picture.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.public.Get(picture.Key); !ok || stored.DeletedAt != nil || stored.BlobPurgedAt != nil {
+		t.Fatalf("the picture a CMS page uses was not kept: %+v", stored)
+	}
+	if stored.UploadedBy != uuid.Nil || stored.Name != "" {
+		t.Fatalf("the kept picture has uploader %v and name %q", stored.UploadedBy, stored.Name)
+	}
+}
+
+// A legacy upload nothing used when anonymize_core recorded it, but that a
+// CMS page uses by the time erase_profile_media runs, is club content after
+// all (decision E1, read again under the purge's locks): its record goes
+// without a purge, the file stays, and the request completes past the
+// completion guard.
+func TestEraseProfileMediaKeepsARecordedLegacyUploadUsedSince(t *testing.T) {
+	f := newRecordsFixture(t)
+	ctx := context.Background()
+	upload := f.legacyUpload(t)
+	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, f.buckets))
+	if err := f.users.AnonymizeAccount(ctx, f.subject, f.now, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.recorded(t); !slices.Equal(got, []uuid.UUID{upload.ID}) {
+		t.Fatalf("recorded %v, want the unused legacy upload", got)
+	}
+	f.attachToCMSPage(t, upload)
+
+	if worked, err := worker.RunOnce(ctx); !worked || err != nil || !f.completed(t) {
+		t.Fatalf("worked=%v err=%v completed=%v", worked, err, f.completed(t))
+	}
+	if got := f.recorded(t); len(got) != 0 {
+		t.Fatalf("records %v left", got)
+	}
+	stored, err := f.media.GetIncludingDeleted(ctx, upload.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.public.Get(upload.Key); !ok || stored.DeletedAt != nil || stored.BlobPurgedAt != nil || stored.BlobPurgeStartedAt != nil {
+		t.Fatalf("the legacy upload a CMS page uses was not kept: %+v", stored)
+	}
+	if stored.UploadedBy != uuid.Nil || stored.Name != "" {
+		t.Fatalf("the kept upload has uploader %v and name %q", stored.UploadedBy, stored.Name)
 	}
 }

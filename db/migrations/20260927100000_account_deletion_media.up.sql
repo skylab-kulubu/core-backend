@@ -6,10 +6,12 @@
 -- person's uploader link is cleared in the same transaction, so this is the
 -- only way back to them.
 --
--- A row goes in the transaction that purges its Media. Whatever is left when
--- the request completes goes with the completion (the trigger below), so the
--- completion proof, which is kept for at least three years, never carries
--- this list.
+-- A row goes in the transaction that purges its Media, so the table holds a
+-- request's rows only until erase_profile_media is done. A row still there
+-- when the request is to complete is a personal Media that was never purged:
+-- completion is refused (the trigger below) rather than losing the only way
+-- back to it, so the completion proof, kept for at least three years, never
+-- carries this list and no personal Media is left behind unseen.
 CREATE TABLE IF NOT EXISTS account_deletion_media (
     request_id UUID NOT NULL,
     media_id UUID NOT NULL
@@ -26,16 +28,22 @@ ALTER TABLE account_deletion_media
 DROP INDEX IF EXISTS account_deletion_media_media_idx;
 CREATE INDEX account_deletion_media_media_idx ON account_deletion_media (media_id);
 
-CREATE OR REPLACE FUNCTION forget_account_deletion_media() RETURNS trigger
+DROP TRIGGER IF EXISTS account_deletion_requests_forget_media ON account_deletion_requests;
+DROP FUNCTION IF EXISTS forget_account_deletion_media();
+
+-- No id in the message: the worker logs it.
+CREATE OR REPLACE FUNCTION require_account_deletion_media_erased() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    DELETE FROM account_deletion_media WHERE request_id = NEW.id;
-    RETURN NULL;
+    IF EXISTS (SELECT 1 FROM account_deletion_media WHERE request_id = NEW.id) THEN
+        RAISE EXCEPTION 'account erasure has personal Media left to purge' USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
 END
 $$;
 
-DROP TRIGGER IF EXISTS account_deletion_requests_forget_media ON account_deletion_requests;
-CREATE TRIGGER account_deletion_requests_forget_media
-    AFTER UPDATE OF status ON account_deletion_requests
+DROP TRIGGER IF EXISTS account_deletion_requests_require_media_erased ON account_deletion_requests;
+CREATE TRIGGER account_deletion_requests_require_media_erased
+    BEFORE UPDATE OF status ON account_deletion_requests
     FOR EACH ROW WHEN (NEW.status = 'completed')
-    EXECUTE FUNCTION forget_account_deletion_media();
+    EXECUTE FUNCTION require_account_deletion_media_erased();

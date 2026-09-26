@@ -3,10 +3,12 @@ package media
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var ErrProfileBlobNotErased = errors.New("media: profile blob erasure not satisfied")
@@ -25,6 +27,50 @@ type errObjectDelete struct{ cause error }
 
 func (e errObjectDelete) Error() string { return "media: object storage delete failed" }
 func (e errObjectDelete) Unwrap() error { return e.cause }
+
+// erasureTexts are the errors an erasure error may name: core wrote their
+// text, and it holds no Media, object, file or person.
+var erasureTexts = []error{
+	ErrPersonalMediaNotErased, ErrProfileBlobNotErased, ErrPrivateMediaDisabled, ErrNotFound,
+	context.DeadlineExceeded, context.Canceled,
+}
+
+// erasureError is an erasure error as the erasure worker may log it
+// (account-lifecycle.md): the text of the erasureTexts and object deletion
+// failures it holds, the SQLSTATE of a database error, or only that the
+// erasure failed. Anything
+// else can name a Media: a database message, a record core cannot read.
+// errors.Is and errors.As still reach the cause.
+func erasureError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var texts []string
+	for _, known := range erasureTexts {
+		if errors.Is(err, known) {
+			texts = append(texts, known.Error())
+		}
+	}
+	if errors.As(err, new(errObjectDelete)) {
+		texts = append(texts, errObjectDelete{}.Error())
+	}
+	var database *pgconn.PgError
+	if errors.As(err, &database) {
+		texts = append(texts, "media: database error (SQLSTATE "+database.Code+")")
+	}
+	if len(texts) == 0 {
+		texts = append(texts, "media: erasure failed")
+	}
+	return redactedError{text: strings.Join(texts, ": "), cause: err}
+}
+
+type redactedError struct {
+	text  string
+	cause error
+}
+
+func (e redactedError) Error() string { return e.text }
+func (e redactedError) Unwrap() error { return e.cause }
 
 // erasedPersonalPurposes are the Media purposes of a person's own files
 // (media redesign spec, Account erasure): their account erasure purges them
@@ -105,7 +151,14 @@ func NewImmediateBlobEraser(media *PostgresStore, blobs BlobStore) *ImmediateBlo
 // once nothing uses it (the store's locked reference check), so a picture an
 // Event or a certificate also uses keeps its object and loses only its
 // uploader and name.
+//
+// The error goes to the erasure worker's log, so it names no Media, object,
+// file or person (erasureError).
 func (e *ImmediateBlobEraser) EnsureErased(ctx context.Context, id uuid.UUID, at time.Time) error {
+	return erasureError(e.ensureErased(ctx, id, at))
+}
+
+func (e *ImmediateBlobEraser) ensureErased(ctx context.Context, id uuid.UUID, at time.Time) error {
 	recorded, err := e.media.recordedForErasure(ctx, id)
 	if err != nil {
 		return err
@@ -132,7 +185,9 @@ func (e *ImmediateBlobEraser) EnsureErased(ctx context.Context, id uuid.UUID, at
 
 // erasePersonal purges a recorded Media through the store's two-phase purge
 // (erasedQueue), with its locks and its durable claim, but without the
-// reference check. A Media already purged another way only loses its record.
+// reference check of a personal purpose. A legacy Media something uses by
+// now is kept instead, its record gone. A Media already purged another way
+// only loses its record.
 func (e *ImmediateBlobEraser) erasePersonal(ctx context.Context, id uuid.UUID, at time.Time) error {
 	purged, err := e.media.purgeBlob(ctx, id, at, erasedQueue, e.deleteObject(ctx))
 	if err != nil {
@@ -145,11 +200,16 @@ func (e *ImmediateBlobEraser) erasePersonal(ctx context.Context, id uuid.UUID, a
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	if err == nil && item.BlobPurgedAt == nil {
-		// Another purge holds the claim (or reset it): try again later.
-		return ErrPersonalMediaNotErased
+	if err != nil || item.BlobPurgedAt != nil {
+		return e.media.forgetErased(ctx, id)
 	}
-	return e.media.forgetErased(ctx, id)
+	recorded, err := e.media.recordedForErasure(ctx, id)
+	if err != nil || !recorded {
+		// Not recorded any more: the purge kept it as club content.
+		return err
+	}
+	// Another purge holds the claim (or reset it): try again later.
+	return ErrPersonalMediaNotErased
 }
 
 func (e *ImmediateBlobEraser) deleteObject(ctx context.Context) func(string) error {

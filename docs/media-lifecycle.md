@@ -1421,14 +1421,21 @@ A person's account erasure ([`account-lifecycle.md`](account-lifecycle.md))
 tells their uploads apart by Media purpose (media redesign ticket 07):
 
 - **Personal** (`profile_picture`, `answer_file`, `answer_file_large`): purged
-  at once.
+  at once, whatever still uses them.
 - **Club** (every other purpose: `event_cover`, `event_gallery`, `cms_image`,
   `cms_file`, `club_file`, `video`, `certificate_asset`): the Media and its
   file stay, without the uploader and the file name.
 - **Legacy** (decision E1, Yusuf, 2026-09-27): a legacy Media anything still
   uses (a Media attachment, or one of core's own links, the safety net) is
   club content; one nothing uses is the person's own and purged. The rule is
-  one function, `legacyIsPersonalSQL` in `internal/media/account_erasure.go`.
+  one function, `legacyIsPersonalSQL` in `internal/media/account_erasure.go`,
+  read when `anonymize_core` records the Media and again when it is purged.
+
+**Known consequence of E1.** Until stage 5, when the CMS attaches the Media
+its pages use (ticket 18), a legacy image a CMS page uses only by its address,
+with no Media attachment, looks unused: it is purged when its uploader's
+account is erased, and the page loses the image. Yusuf decided this knowingly
+(E1).
 
 No new saga step does this; the two existing ones do:
 
@@ -1437,23 +1444,36 @@ No new saga step does this; the two existing ones do:
    id only: request id and Media id), clears the file name of every upload of
    theirs (a purged Media's record stays, so the personal ones lose it too),
    and then clears their uploader. The current profile picture is never
-   recorded: it stays with `profile_media_id` and today's rule, so a picture
-   club content also uses keeps its file. An earlier profile picture of theirs
-   is recorded like any personal Media. A rerun finds no uploads left with
-   their uploader, records nothing new and keeps what the first run recorded.
-2. `erase_profile_media` hands the eraser the profile picture, then every
-   recorded Media. A recorded Media is purged whatever still uses it (an
-   Answer file a Skyforms response still holds included: personal purposes
-   win). It goes through the same two-phase purge as the archive and expiry
-   purges, with the same table locks, the durable claim that blocks restore
-   and new Media attachments, and its sizes, but without the reference check;
-   its Media attachments stay, pointing at a purged Media. The object is
-   deleted from the bucket that holds it (`media.Buckets`), and an object
-   already gone counts as deleted. Its record is deleted in the transaction
-   that records the purge, so a rerun gets only what is left; a Media purged
-   another way meanwhile only loses its record. Every Media is tried even
-   when another fails; the error counts the failures and names no Media,
-   object, file or person.
+   recorded: it stays with `profile_media_id` and today's rule. It counts as
+   shared, and keeps its file, when anything but the person's own profile
+   uses it: an Event, a gallery, another profile, a certificate template, or
+   a Media attachment of another product (a CMS page). An earlier profile
+   picture of theirs is recorded like any personal Media. A rerun finds no
+   uploads left with their uploader, records nothing new and keeps what the
+   first run recorded.
+2. `erase_profile_media` hands the eraser the profile picture (unless its
+   object is purged already), then every recorded Media. A recorded Media of
+   a personal purpose is purged whatever still uses it (an Answer file a
+   Skyforms response still holds included: personal purposes win); its Media
+   attachments stay, pointing at a purged Media, which reads refuse as not
+   found (a read link, `404`). A recorded legacy Media is read again under the
+   purge's locks: if something uses it by now, it is club content after all,
+   and only its record goes. The purge is the same two-phase purge as the
+   archive and expiry purges, with the same table locks, the durable claim
+   that blocks restore and new Media attachments, and the image sizes. The
+   object is deleted from the bucket that holds it (`media.Buckets`), and an
+   object already gone counts as deleted. A record is deleted in the
+   transaction that ends its Media's purge (or keeps it as club content), so
+   a rerun gets only what is left; a Media purged another way meanwhile only
+   loses its record.
+
+   Every Media is tried even when another fails. A pass that erased some but
+   not all (the step's time ran out for a person with many files) gives its
+   attempt back and comes again in 30 seconds; a pass that erased none spends
+   its attempt, so a lasting failure ends in manual intervention. The step's
+   error goes to the worker's log: it counts the failures and names no Media,
+   object, file or person, only errors core wrote itself and a database
+   error's SQLSTATE.
 
 What happens to the records when the request completes is in
 [`data-lifecycle.md`](data-lifecycle.md).

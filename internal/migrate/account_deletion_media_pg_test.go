@@ -44,26 +44,43 @@ func mediaRecords(t *testing.T, pool *pgxpool.Pool, requestID uuid.UUID) int {
 	return n
 }
 
-// The records of a request go when it completes, whatever is left of them,
-// so the completion proof kept for three years never carries them. Other
-// requests keep theirs.
-func TestCompletedDeletionRequestDropsItsMediaRecords(t *testing.T) {
+// A record left when its request is completed is a personal Media that was
+// never purged, and the only way back to it: completion is refused while one
+// is left (no id in the error), so the worker retries and, failing, ends in
+// manual intervention. Without records the request completes.
+func TestDeletionRequestCannotCompleteWithMediaRecordsLeft(t *testing.T) {
 	pool := postgresPool(t)
 	ctx := context.Background()
 	if err := migrate.Apply(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	completed := deletionRequestWithRecord(t, pool)
-	open := deletionRequestWithRecord(t, pool)
-
-	if _, err := pool.Exec(ctx, `UPDATE account_deletion_requests SET status = 'completed', completed_at = now() WHERE id = $1`, completed); err != nil {
+	requestID := deletionRequestWithRecord(t, pool)
+	var mediaID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT media_id FROM account_deletion_media WHERE request_id = $1`, requestID).Scan(&mediaID); err != nil {
 		t.Fatal(err)
 	}
-	if got := mediaRecords(t, pool, completed); got != 0 {
-		t.Fatalf("completed request kept %d Media records", got)
+	complete := `UPDATE account_deletion_requests SET status = 'completed', completed_at = now() WHERE id = $1`
+
+	_, err := pool.Exec(ctx, complete, requestID)
+	if err == nil || !strings.Contains(err.Error(), "account erasure has personal Media left to purge") {
+		t.Fatalf("completion with a record left: %v", err)
 	}
-	if got := mediaRecords(t, pool, open); got != 1 {
-		t.Fatalf("open request has %d Media records, want 1", got)
+	if strings.Contains(err.Error(), mediaID.String()) || strings.Contains(err.Error(), requestID.String()) {
+		t.Fatalf("the refusal names an id: %v", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM account_deletion_requests WHERE id = $1`, requestID).Scan(&status); err != nil || status == "completed" {
+		t.Fatalf("status %q err %v after the refused completion", status, err)
+	}
+	if got := mediaRecords(t, pool, requestID); got != 1 {
+		t.Fatalf("records after the refused completion = %d, want 1", got)
+	}
+
+	if _, err := pool.Exec(ctx, `DELETE FROM account_deletion_media WHERE request_id = $1`, requestID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, complete, requestID); err != nil {
+		t.Fatalf("completion without records: %v", err)
 	}
 }
 
@@ -116,7 +133,7 @@ func TestAccountDeletionMediaDownRefusesWhileAPurgeIsLeft(t *testing.T) {
 	}
 }
 
-func TestApplyRepairsAMissingDeletionMediaCleanup(t *testing.T) {
+func TestApplyRepairsAMissingDeletionMediaCompletionGuard(t *testing.T) {
 	pool := postgresPool(t)
 	ctx := context.Background()
 	if err := migrate.Apply(ctx, pool); err != nil {
@@ -124,7 +141,7 @@ func TestApplyRepairsAMissingDeletionMediaCleanup(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `
 		DELETE FROM schema_migrations WHERE version = `+accountDeletionMediaVersion+`;
-		DROP TRIGGER account_deletion_requests_forget_media ON account_deletion_requests;`); err != nil {
+		DROP TRIGGER account_deletion_requests_require_media_erased ON account_deletion_requests;`); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate.Apply(ctx, pool); err != nil {
@@ -132,7 +149,7 @@ func TestApplyRepairsAMissingDeletionMediaCleanup(t *testing.T) {
 	}
 	var restored bool
 	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_trigger
-		WHERE tgrelid = 'account_deletion_requests'::regclass AND tgname = 'account_deletion_requests_forget_media')`).Scan(&restored); err != nil || !restored {
-		t.Fatalf("cleanup restored %v, err %v", restored, err)
+		WHERE tgrelid = 'account_deletion_requests'::regclass AND tgname = 'account_deletion_requests_require_media_erased')`).Scan(&restored); err != nil || !restored {
+		t.Fatalf("completion guard restored %v, err %v", restored, err)
 	}
 }

@@ -703,8 +703,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND actual.tgfoid = to_regprocedure('public.require_active_account_reference()')
 		  AND actual.tgattr::text = attribute.attnum::text
 		  AND encode(actual.tgargs, 'hex') = encode(convert_to('on_behalf_of', 'UTF8'), 'hex') || '00'`,
-	// The personal Media of an account erasure hold ids only, and go with
-	// their request's completion.
+	// The personal Media of an account erasure hold ids only, and a request
+	// cannot complete while any is left.
 	20260927100000: `
 		SELECT 1
 		WHERE (
@@ -735,10 +735,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND EXISTS (
 			SELECT 1 FROM pg_trigger actual
 			WHERE actual.tgrelid = to_regclass('public.account_deletion_requests')
-			  AND actual.tgname = 'account_deletion_requests_forget_media'
+			  AND actual.tgname = 'account_deletion_requests_require_media_erased'
+			  AND actual.tgtype = 19
 			  AND actual.tgenabled = 'O'
 			  AND NOT actual.tgisinternal
-			  AND actual.tgfoid = to_regprocedure('public.forget_account_deletion_media()')
+			  AND actual.tgqual IS NOT NULL
+			  AND actual.tgfoid = to_regprocedure('public.require_account_deletion_media_erased()')
 		)`,
 }
 

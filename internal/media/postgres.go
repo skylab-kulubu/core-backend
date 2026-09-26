@@ -324,15 +324,27 @@ func (q purgeQueue) claimable(archived, expired bool) bool {
 }
 
 // keeps reports, under the purge's locks, whether the queue must leave the
-// Media: while anything uses it, or, for erasedQueue, while account erasure
-// has no record of it.
+// Media: while anything uses it. erasedQueue leaves a Media account erasure
+// has no record of, and a recorded legacy Media something uses by now:
+// decision E1 read again, it is club content after all, so its record goes
+// here, in the caller's transaction, and the Media stays as it is.
 func (q purgeQueue) keeps(ctx context.Context, tx postgresMediaTx, id uuid.UUID) (bool, error) {
 	if q != erasedQueue {
 		return mediaReferenced(ctx, tx, id)
 	}
-	var recorded bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM account_deletion_media WHERE media_id = $1)`, id).Scan(&recorded)
-	return !recorded, err
+	var recorded, club bool
+	err := tx.QueryRow(ctx, `SELECT
+			EXISTS (SELECT 1 FROM account_deletion_media WHERE media_id = $1),
+			COALESCE((SELECT purpose = $2 AND NOT `+legacyIsPersonalSQL("$1")+` FROM media WHERE id = $1), false)`,
+		id, PurposeLegacy).Scan(&recorded, &club)
+	if err != nil || !recorded {
+		return true, err
+	}
+	if !club {
+		return false, nil
+	}
+	_, err = tx.Exec(ctx, `DELETE FROM account_deletion_media WHERE media_id = $1`, id)
+	return true, err
 }
 
 func (s *PostgresStore) PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(string) error) (bool, error) {

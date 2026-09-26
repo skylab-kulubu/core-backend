@@ -196,10 +196,16 @@ func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaSte
 					}
 				}
 			}
-			if failed > 0 {
-				return fmt.Errorf("%d of %d media not erased: %w", failed, len(mediaIDs), first)
+			if failed == 0 {
+				return nil
 			}
-			return nil
+			err = fmt.Errorf("%d of %d media not erased: %w", failed, len(mediaIDs), first)
+			if failed < len(mediaIDs) {
+				// The pass erased some (a person with many files meets the
+				// step timeout): the attempt is given back.
+				return partlyErased{err: err, at: now.Add(30 * time.Second)}
+			}
+			return err
 		}},
 		{name: user.DeletionStepEraseUploads, run: func(ctx context.Context, id uuid.UUID) error {
 			if w.media == nil {
@@ -210,6 +216,18 @@ func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaSte
 		{name: user.DeletionStepDeleteIdentity, run: w.identity.EnsureDeleted},
 	}
 }
+
+// partlyErased is an erase_profile_media pass that erased some of its Media
+// but not all. It made progress, so the worker's deferred retry (RetryAt)
+// gives its attempt back and the next pass goes on with what is left.
+type partlyErased struct {
+	err error
+	at  time.Time
+}
+
+func (e partlyErased) Error() string      { return e.err.Error() }
+func (e partlyErased) Unwrap() error      { return e.err }
+func (e partlyErased) RetryAt() time.Time { return e.at }
 
 // passAddresses reads the person's addresses the first time a pass needs
 // them and hands the same ones to every later step of that pass.

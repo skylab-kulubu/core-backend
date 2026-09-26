@@ -2,12 +2,14 @@ package media_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
@@ -24,7 +26,7 @@ type erasedPerson struct {
 	request user.DeletionRequest
 	// oldPicture was their profile picture before picture, the current one.
 	oldPicture, picture media.Media
-	// answer is an Answer file, private.
+	// answer is an Answer file, private, that a Skyforms response holds.
 	answer media.Media
 	// cover is an Event's cover image they uploaded.
 	cover media.Media
@@ -53,6 +55,7 @@ func newErasedPerson(t *testing.T) erasedPerson {
 		t.Fatal(err)
 	}
 	p.answer = answer
+	db.attachFor(t, formsService, p.answer, media.Owner{Service: authz.ProductForms, Type: "response", ID: uuid.NewString()}, media.RoleFormsAnswer)
 	p.cover = db.upload(t, media.PurposeEventCover)
 	if _, err := db.events().Create(ctx, db.organizer, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", CoverImageID: &p.cover.ID}); err != nil {
 		t.Fatal(err)
@@ -244,5 +247,33 @@ func TestPostgresAccountErasureRunsAgainWithoutHarm(t *testing.T) {
 	}
 	if got := p.recorded(t); len(got) != 0 {
 		t.Fatalf("records %v left", got)
+	}
+}
+
+// An Answer file a Skyforms response still holds is purged all the same:
+// personal purposes win. Its Media attachment stays, pointing at a purged
+// Media, and Skyforms' reads of it are refused as not found (404), both a new
+// read link and one issued before the erasure.
+func TestPostgresAccountErasurePurgesAnAnswerFileAResponseHolds(t *testing.T) {
+	p := newErasedPerson(t)
+	ctx := context.Background()
+	earlier, err := p.svc.IssueReadLink(ctx, formsService, p.answer.ID, forPerson(reviewer.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.anonymize(t)
+	p.eraseProfileMedia(t, p.buckets())
+
+	if !p.gone(t, p.answer) {
+		t.Fatal("the Answer file a response holds was not purged")
+	}
+	if got := p.attachmentsOf(t, p.answer.ID); len(got) != 1 {
+		t.Fatalf("the Answer file's Media attachments %v, want the response's", got)
+	}
+	if _, err := p.svc.IssueReadLink(ctx, formsService, p.answer.ID, forPerson(reviewer.String())); !errors.Is(err, media.ErrNotFound) {
+		t.Fatalf("read link to the purged Answer file: %v, want not found", err)
+	}
+	if _, err := p.svc.OpenContent(ctx, p.answer.ID, tokenOf(t, earlier), "203.0.113.9"); !errors.Is(err, media.ErrNotFound) {
+		t.Fatalf("opening an earlier read link to the purged Answer file: %v, want not found", err)
 	}
 }

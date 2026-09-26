@@ -12,6 +12,6 @@ BEGIN
 END
 $$;
 
-DROP TRIGGER IF EXISTS account_deletion_requests_forget_media ON account_deletion_requests;
-DROP FUNCTION IF EXISTS forget_account_deletion_media();
+DROP TRIGGER IF EXISTS account_deletion_requests_require_media_erased ON account_deletion_requests;
+DROP FUNCTION IF EXISTS require_account_deletion_media_erased();
 DROP TABLE IF EXISTS account_deletion_media;
