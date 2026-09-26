@@ -65,7 +65,8 @@ func TestSealedFileOpensToTheSameBytes(t *testing.T) {
 	for _, size := range []int{0, 1, envelope.SegmentSize - 1, envelope.SegmentSize, envelope.SegmentSize + 1, 3*envelope.SegmentSize + 17} {
 		plaintext := randomBytes(t, size)
 		ciphertext := seal(t, key, plaintext)
-		if bytes.Contains(ciphertext, plaintext) && size > 0 {
+		// A plaintext too short can turn up in random ciphertext by chance.
+		if size >= 16 && bytes.Contains(ciphertext, plaintext) {
 			t.Fatalf("%d bytes: the ciphertext carries the plaintext", size)
 		}
 		got, err := open(key, ciphertext)
