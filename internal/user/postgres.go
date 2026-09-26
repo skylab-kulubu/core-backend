@@ -23,7 +23,12 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const userCols = `id, email, first_name, last_name, username, school_email, sky_number, COALESCE(student_card_uid, ''), linkedin, university, faculty, department, ytu_linked, phone, profile_picture_id, profile_picture_url, account_state, deletion_requested_at, anonymized_at, created_at, updated_at`
+// userCols reads the profile picture from the Media the profile links (its
+// object key), not from profile_picture_url: an address stored there before
+// (https://cdn…) must not outlive a change of the configured base. The
+// column is still read for a picture with no Media, and written with the
+// key.
+const userCols = `id, email, first_name, last_name, username, school_email, sky_number, COALESCE(student_card_uid, ''), linkedin, university, faculty, department, ytu_linked, phone, profile_picture_id, COALESCE((SELECT m.file_url FROM media m WHERE m.id = profile_picture_id), profile_picture_url), account_state, deletion_requested_at, anonymized_at, created_at, updated_at`
 
 func scanUser(row interface{ Scan(dest ...any) error }) (User, error) {
 	var u User

@@ -13,6 +13,11 @@ import (
 func (s *MemoryStore) Attach(_ context.Context, a Attachment) (Attachment, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.attach(a)
+}
+
+// attach writes the Media attachment; s.mu is held.
+func (s *MemoryStore) attach(a Attachment) (Attachment, bool, error) {
 	if existing, ok := s.findAttachment(a); ok {
 		return existing, false, nil
 	}
@@ -28,6 +33,34 @@ func (s *MemoryStore) Attach(_ context.Context, a Attachment) (Attachment, bool,
 	m.UpdatedAt = a.CreatedAt
 	s.byID[m.ID] = m
 	return a, true, nil
+}
+
+// AttachHeld models the Postgres store's transaction: a held Media whose
+// purpose does not fit the role goes back to legacy only together with the
+// new Media attachment. When the same link is already there, or the Media
+// cannot be linked, nothing changes.
+func (s *MemoryStore) AttachHeld(_ context.Context, a Attachment) (Attachment, bool, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[a.MediaID]
+	if !ok || !m.DetachExpiryHeld || m.DeletedAt != nil || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil {
+		return Attachment{}, false, "", ErrNotLinkable
+	}
+	if existing, ok := s.findAttachment(a); ok {
+		return existing, false, "", nil
+	}
+	demotedFrom := ""
+	if !fits(a.Owner.Service, a.Role, m.Purpose) {
+		demotedFrom = m.Purpose
+		m.Purpose = PurposeLegacy
+		m.UpdatedAt = time.Now().UTC()
+		s.byID[m.ID] = m
+	}
+	created, isNew, err := s.attach(a)
+	if err != nil {
+		return Attachment{}, false, "", err
+	}
+	return created, isNew, demotedFrom, nil
 }
 
 // Detach models the database's status trigger: the Media's last Media
@@ -52,9 +85,10 @@ func (s *MemoryStore) Detach(_ context.Context, mediaID, attachmentID uuid.UUID,
 	now := time.Now().UTC()
 	m.Status = StatusDetached
 	m.ExpiresAt = nil
-	if m.Purpose != PurposeLegacy {
+	if m.Purpose != PurposeLegacy && !m.DetachExpiryHeld {
 		// The database's status trigger fixes the detached window at the
-		// default recovery window, 30 days (migration 20260926120000).
+		// default recovery window, 30 days (migration 20260926120000); a
+		// held Media gets none (20260926161000).
 		expires := now.Add(DefaultBlobRecoveryWindow)
 		m.ExpiresAt = &expires
 	}

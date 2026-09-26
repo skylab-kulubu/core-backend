@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
@@ -18,7 +19,7 @@ func TestService_UploadForPurposeIsPendingUntilItsPendingTTL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := svc.Get(context.Background(), created.ID)
+	got, err := svc.Get(context.Background(), authz.Principal{}, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +38,7 @@ func TestService_LegacyUploadIsPendingWithoutExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := svc.Get(context.Background(), created.ID)
+	got, err := svc.Get(context.Background(), authz.Principal{}, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

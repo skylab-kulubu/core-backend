@@ -1,8 +1,9 @@
 package media
 
 import (
+	"archive/zip"
 	"bytes"
-	"regexp"
+	"io"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -23,12 +24,6 @@ var pngKeepAncillary = map[string]struct{}{
 	"tRNS": {}, "gAMA": {}, "cHRM": {}, "sRGB": {}, "iCCP": {},
 	"bKGD": {}, "pHYs": {}, "sBIT": {}, "hIST": {},
 }
-
-var (
-	reSVGScript = regexp.MustCompile(`(?is)<script[\s\S]*?</script>`)
-	reSVGOnAttr = regexp.MustCompile(`(?i)\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
-	reSVGJS     = regexp.MustCompile(`(?i)javascript:`)
-)
 
 const (
 	svgType = "image/svg+xml"
@@ -70,13 +65,14 @@ func isImage(data []byte) bool {
 }
 
 // detectContentType names the type of a file from its content: one of the
-// raster formats, PDF when the file starts with its header, or "" for
-// anything else. isPDF, which finds the header anywhere in the first KiB,
-// stays the rule only for Media uploaded without a purpose.
+// raster formats, PDF when the file starts with its header, DOCX (isDOCX),
+// SVG when an <svg element opens in its first KiB, or "" for anything else.
+// isPDF, which finds the header anywhere in the first KiB, stays the rule
+// only for Media uploaded without a purpose. An SVG for a purpose that lists
+// it is stored sanitized (sanitizeSVG).
 //
-// SVG is not among them: no purpose keeps SVG, and rasterizing it is not
-// built yet. DOCX, ZIP and MP4 are detected when private Media and Direct
-// upload arrive; until then nothing reaches a purpose that names them.
+// ZIP and MP4 are detected when Direct upload arrives; until then nothing
+// reaches a purpose that names them.
 func detectContentType(data []byte) string {
 	for _, format := range rasterFormats {
 		if format.detect(data) {
@@ -86,7 +82,53 @@ func detectContentType(data []byte) string {
 	if bytes.HasPrefix(data, []byte("%PDF-")) {
 		return pdfType
 	}
+	// A DOCX is a ZIP package; it is recognized before anything that looks
+	// for markup in the first KiB.
+	if isDOCX(data) {
+		return docxType
+	}
+	if isSVG(data) {
+		return svgType
+	}
 	return ""
+}
+
+// docxMainPart is the content type [Content_Types].xml gives a Word
+// document's main part. A macro-enabled document (.docm) names another.
+const docxMainPart = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+
+// isDOCX reports whether data is a ZIP package with a Word document part
+// that its [Content_Types].xml declares as a (macro-free) Word document.
+// Only the archive's directory and at most 1 MiB of that one entry are read,
+// so a crafted archive cannot make core inflate much.
+func isDOCX(data []byte) bool {
+	if !bytes.HasPrefix(data, []byte("PK\x03\x04")) {
+		return false
+	}
+	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return false
+	}
+	var types *zip.File
+	document := false
+	for _, f := range archive.File {
+		switch f.Name {
+		case "[Content_Types].xml":
+			types = f
+		case "word/document.xml":
+			document = true
+		}
+	}
+	if types == nil || !document {
+		return false
+	}
+	r, err := types.Open()
+	if err != nil {
+		return false
+	}
+	defer r.Close()
+	declared, err := io.ReadAll(io.LimitReader(r, 1<<20))
+	return err == nil && bytes.Contains(declared, []byte(docxMainPart))
 }
 
 func sanitizeImage(data []byte) ([]byte, string, error) {
@@ -98,10 +140,6 @@ func sanitizeImage(data []byte) ([]byte, string, error) {
 			out, err := format.strip(data)
 			return out, format.contentType, err
 		}
-	}
-	if isSVG(data) {
-		out, err := sanitizeSVG(data)
-		return out, svgType, err
 	}
 	return nil, "", ErrInvalid
 }
@@ -128,44 +166,77 @@ func isGIF(b []byte) bool {
 		(b[4] == '7' || b[4] == '9') && b[5] == 'a'
 }
 
-func isSVG(b []byte) bool {
-	n := min(len(b), 1024)
-	return strings.Contains(strings.ToLower(string(b[:n])), "<svg")
-}
-
 func isPDF(b []byte) bool {
 	n := min(len(b), 1024)
 	return bytes.Contains(b[:n], []byte("%PDF-"))
 }
 
+// stripJPEG removes a JPEG's metadata and everything after its primary
+// image. Dropped: EXIF and XMP (APP1; the Orientation tag alone is kept, so
+// a phone photo is not shown sideways), the MPF index of secondary images
+// (APP2 "MPF"), Photoshop data (APP13) and comments. The file ends with the
+// primary image's EOI: a phone's secondary images, each with its own EXIF
+// and GPS, and a motion photo's video sit after it. Colour profiles (APP2
+// ICC) and everything the decoder needs stay.
 func stripJPEG(b []byte) []byte {
 	if len(b) < 2 || b[0] != 0xFF || b[1] != 0xD8 {
 		return b
 	}
 	out := []byte{0xFF, 0xD8}
 	pos := 2
-	for pos+4 <= len(b) {
+	keptOrientation := false
+	for pos+2 <= len(b) {
 		if b[pos] != 0xFF {
 			break
 		}
 		marker := b[pos+1]
-		if marker == 0xDA {
-			return append(out, b[pos:]...)
+		switch {
+		case marker == 0xFF:
+			pos++ // fill byte
+			continue
+		case marker == 0xD9:
+			return append(out, 0xFF, 0xD9)
+		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7):
+			out = append(out, b[pos:pos+2]...)
+			pos += 2
+			continue
+		}
+		if pos+4 > len(b) {
+			break
 		}
 		segLen := int(b[pos+2])<<8 | int(b[pos+3])
 		segTotal := 2 + segLen
 		if segLen < 2 || pos+segTotal > len(b) {
 			break
 		}
-		drop := marker == 0xE1 || marker == 0xED || marker == 0xFE
+		payload := b[pos+4 : pos+segTotal]
+		drop := marker == 0xE1 || marker == 0xED || marker == 0xFE ||
+			(marker == 0xE2 && bytes.HasPrefix(payload, []byte("MPF\x00")))
 		if !drop {
 			out = append(out, b[pos:pos+segTotal]...)
 		}
+		if marker == 0xE1 && !keptOrientation {
+			// EXIF goes, but its Orientation stays: without it a phone
+			// photo shows sideways.
+			if o, ok := exifOrientation(payload); ok && o != 1 {
+				out = append(out, orientationSegment(o)...)
+				keptOrientation = true
+			}
+		}
 		pos += segTotal
+		if marker == 0xDA {
+			// The scan's entropy-coded data runs to the next marker: an 0xFF
+			// not followed by a stuffed 0x00 or a restart marker.
+			start := pos
+			for pos+1 < len(b) && (b[pos] != 0xFF || b[pos+1] == 0x00 || (b[pos+1] >= 0xD0 && b[pos+1] <= 0xD7)) {
+				pos++
+			}
+			out = append(out, b[start:pos]...)
+		}
 	}
-	if pos < len(b) {
-		out = append(out, b[pos:]...)
-	}
+	// A JPEG cut short keeps what it has of its primary image (a scan's
+	// data is copied as it is read); bytes where a marker should be, and a
+	// segment cut short, are not kept.
 	return out
 }
 
@@ -206,9 +277,6 @@ func stripWebP(b []byte) ([]byte, error) {
 	for pos+8 <= len(b) {
 		fourcc := string(b[pos : pos+4])
 		size := int(b[pos+4]) | int(b[pos+5])<<8 | int(b[pos+6])<<16 | int(b[pos+7])<<24
-		if size < 0 {
-			break
-		}
 		chunkTotal := 8 + size + (size & 1)
 		if pos+chunkTotal > len(b) {
 			chunkTotal = len(b) - pos
@@ -314,17 +382,6 @@ func isGIFXMP(b []byte, p int) bool {
 		return false
 	}
 	return strings.HasPrefix(string(b[p+1:p+12]), "XMP Data")
-}
-
-func sanitizeSVG(b []byte) ([]byte, error) {
-	s := string(b)
-	s = reSVGScript.ReplaceAllString(s, "")
-	s = reSVGOnAttr.ReplaceAllString(s, "")
-	s = reSVGJS.ReplaceAllString(s, "")
-	if !strings.Contains(strings.ToLower(s), "<svg") {
-		return nil, ErrInvalid
-	}
-	return []byte(s), nil
 }
 
 func fileExtension(name string) (string, error) {

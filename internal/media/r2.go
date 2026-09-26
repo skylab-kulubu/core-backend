@@ -21,16 +21,38 @@ type R2Config struct {
 	Bucket    string
 }
 
+// Read returns an object's bytes; ErrNotFound when there is no such object.
 func (r *R2) Read(ctx context.Context, key string) ([]byte, error) {
 	got, err := r.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(key),
 	})
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey" {
+		return nil, ErrNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer got.Body.Close()
 	return io.ReadAll(got.Body)
+}
+
+// Open streams a stored object; ErrNotFound when there is none. The caller
+// closes it.
+func (r *R2) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	got, err := r.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(r.bucket),
+		Key:    aws.String(key),
+	})
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey" {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return got.Body, nil
 }
 
 type R2 struct {
@@ -92,11 +114,19 @@ func (r *R2) SetMetadata(ctx context.Context, key string, meta BlobMetadata) err
 	return err
 }
 
+// Delete removes a stored object. An object that is not there is deleted
+// already: S3 answers that with success, and an endpoint that answers
+// NoSuchKey instead is taken the same way, so every delete by key (purges,
+// account erasure) can be repeated.
 func (r *R2) Delete(ctx context.Context, key string) error {
 	_, err := r.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(key),
 	})
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey" {
+		return nil
+	}
 	return err
 }
 

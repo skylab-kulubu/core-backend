@@ -167,7 +167,7 @@ func TestMediaUploadWithoutPurposeKeepsTheLegacyRulesHTTP(t *testing.T) {
 		data               []byte
 	}{
 		{"page.html", "application/octet-stream", []byte("<html></html>")},
-		{"logo.svg", "image/svg+xml", []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)},
+		{"logo.svg", "image/svg+xml", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>`)},
 		{"cv.pdf", "application/pdf", []byte("%PDF-1.7\n")},
 	} {
 		resp := postMedia(t, app, "", tc.filename, tc.data)

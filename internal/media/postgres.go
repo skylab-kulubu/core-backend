@@ -2,7 +2,10 @@ package media
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,7 +24,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at`
+const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, detach_expiry_held, width, height, size_objects, visibility, encryption_algorithm, wrapped_data_key, key_version`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 	return insertMedia(ctx, s.pool, newRecord(m))
@@ -33,10 +36,21 @@ type rowQuerier interface {
 
 // insertMedia writes a record prepared by newRecord.
 func insertMedia(ctx context.Context, db rowQuerier, m Media) (Media, error) {
+	sizeObjects, err := sizeObjectsColumn(m.SizeObjects)
+	if err != nil {
+		return Media{}, err
+	}
+	var algorithm, wrappedKey *string
+	var keyVersion *int
+	if m.Encryption != nil {
+		algorithm, wrappedKey, keyVersion = &m.Encryption.Algorithm, &m.Encryption.WrappedKey, &m.Encryption.KeyVersion
+	}
 	created, err := scanMedia(db.QueryRow(ctx, `
-		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose, m.Status, m.ExpiresAt))
+		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at, width, height, size_objects,
+			visibility, encryption_algorithm, wrapped_data_key, key_version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19, $20)
+		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose, m.Status, m.ExpiresAt,
+		positiveOrNil(m.Width), positiveOrNil(m.Height), sizeObjects, m.Visibility, algorithm, wrappedKey, keyVersion))
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Media{}, ErrForbidden
 	}
@@ -202,11 +216,18 @@ func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// currentSQL holds for a current Media: not archived, no purge started.
+const currentSQL = `media.deleted_at IS NULL AND media.blob_purge_started_at IS NULL AND media.blob_purged_at IS NULL`
+
+// unattachedCurrentSQL holds for a current Media no Media attachment keeps.
+const unattachedCurrentSQL = `media.status <> 'attached' AND ` + currentSQL
+
+// ExpireUnattachedAt sets the expiry; a Media whose detach expiry is held
+// (the legacy backfill, decision K2) keeps none, as a legacy one does.
 func (s *PostgresStore) ExpireUnattachedAt(ctx context.Context, id uuid.UUID, at *time.Time) error {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE media SET expires_at = $2
-		WHERE id = $1 AND status <> 'attached' AND deleted_at IS NULL
-		  AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL`, id, at)
+		UPDATE media SET expires_at = CASE WHEN media.detach_expiry_held THEN NULL ELSE $2::TIMESTAMPTZ END
+		WHERE id = $1 AND `+unattachedCurrentSQL, id, at)
 	if err != nil {
 		return err
 	}
@@ -344,7 +365,7 @@ func (s *PostgresStore) purgeBlob(ctx context.Context, id uuid.UUID, purgedAt ti
 		}
 		return false, nil
 	}
-	if err := purge(key); err != nil {
+	if err := purgeObjects(key, purge); err != nil {
 		return false, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE media
@@ -377,13 +398,65 @@ func mediaReferenced(ctx context.Context, tx postgresMediaTx, id uuid.UUID) (boo
 	var referenced bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM media_attachments WHERE media_id = $1
-		UNION ALL SELECT 1 FROM events WHERE cover_image_id = $1
-		UNION ALL SELECT 1 FROM event_images WHERE media_id = $1
-		UNION ALL SELECT 1 FROM users WHERE profile_picture_id = $1
-		UNION ALL SELECT 1 FROM certificate_templates WHERE $1 = ANY (certificate_layout_media_ids(draft_layout, NULL))
-		UNION ALL SELECT 1 FROM certificate_template_versions WHERE $1 = ANY (certificate_layout_media_ids(layout, asset_manifest))
+		UNION ALL `+coreLinksSQL("$1")+`
 	)`, id).Scan(&referenced)
 	return referenced, err
+}
+
+// coreLinkSources are core's own links as their records hold them: the
+// hard-coded list the purge and the legacy report read beside the Media
+// attachments, as a safety net. Migration 20260926120000 wrote the first
+// Media attachments from the same list and its triggers keep them in step
+// (its copy stays as written: migrations are frozen).
+var coreLinkSources = []struct {
+	table     string
+	ownerType string
+	role      Role
+	owner     string
+	// media names the column that holds the Media id, or the certificate
+	// layout with it; manifest a published version's asset manifest.
+	media, manifest string
+	layout          bool
+}{
+	{table: "events", ownerType: "event", role: RoleEventCover, owner: "id", media: "cover_image_id"},
+	{table: "event_images", ownerType: "event", role: RoleEventGallery, owner: "event_id", media: "media_id"},
+	{table: "users", ownerType: "user", role: RoleProfilePicture, owner: "id", media: "profile_picture_id"},
+	{table: "certificate_templates", ownerType: "certificate_template", role: RoleCertificateAsset, owner: "id", media: "draft_layout", layout: true},
+	{table: "certificate_template_versions", ownerType: "certificate_template_version", role: RoleCertificateAsset, owner: "id", media: "layout", manifest: "asset_manifest", layout: true},
+}
+
+// coreLinksSQL selects a row for each of core's own links to the Media id
+// names (a parameter or a column).
+func coreLinksSQL(id string) string {
+	selects := make([]string, 0, len(coreLinkSources))
+	for _, source := range coreLinkSources {
+		match := source.media + ` = ` + id
+		if source.layout {
+			manifest := "NULL"
+			if source.manifest != "" {
+				manifest = source.manifest
+			}
+			match = id + ` = ANY (certificate_layout_media_ids(` + source.media + `, ` + manifest + `))`
+		}
+		selects = append(selects, `SELECT 1 FROM `+source.table+` WHERE `+match)
+	}
+	return strings.Join(selects, "\n\t\tUNION ALL ")
+}
+
+// coreLinkRowsSQL selects each of core's own links as (owner_type, role,
+// owner_id, media_id), read as the Media attachment migration read them.
+func coreLinkRowsSQL() string {
+	selects := make([]string, 0, len(coreLinkSources))
+	for _, source := range coreLinkSources {
+		manifest := "NULL::TEXT"
+		if source.manifest != "" {
+			manifest = `'` + source.manifest + `'`
+		}
+		selects = append(selects, `SELECT '`+source.ownerType+`', '`+string(source.role)+`', to_jsonb(owner), '`+source.owner+`', '`+source.media+`', `+manifest+` FROM `+source.table+` owner`)
+	}
+	return `SELECT source.owner_type, source.role, link.owner_id, link.media_id
+		FROM (` + strings.Join(selects, "\n\t\tUNION ALL ") + `) source (owner_type, role, record, owner_column, media_column, manifest_column)
+		CROSS JOIN LATERAL core_media_links(source.record, source.owner_column, source.media_column, source.manifest_column) link`
 }
 
 func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claimedAt time.Time, queue purgeQueue) (bool, error) {
@@ -439,11 +512,104 @@ type rowScanner interface {
 func scanMedia(row rowScanner) (Media, error) {
 	var m Media
 	var created, updated time.Time
-	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt)
+	var width, height *int
+	var sizeObjects []byte
+	var algorithm, wrappedKey *string
+	var keyVersion *int
+	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt, &m.DetachExpiryHeld, &width, &height, &sizeObjects,
+		&m.Visibility, &algorithm, &wrappedKey, &keyVersion)
+	if err != nil {
+		return m, err
+	}
+	if algorithm != nil && wrappedKey != nil && keyVersion != nil {
+		m.Encryption = &Encryption{Algorithm: *algorithm, WrappedKey: *wrappedKey, KeyVersion: *keyVersion}
+	}
 	if m.CoverColors == nil {
 		m.CoverColors = []string{}
 	}
+	if width != nil && height != nil {
+		m.Width, m.Height = *width, *height
+	}
+	if sizeObjects != nil {
+		if err := json.Unmarshal(sizeObjects, &m.SizeObjects); err != nil {
+			return m, fmt.Errorf("media %s size objects: %w", m.ID, err)
+		}
+		if m.SizeObjects == nil {
+			m.SizeObjects = map[string]SizeObject{}
+		}
+	}
 	m.CreatedAt = created
 	m.UpdatedAt = updated
-	return m, err
+	return m, nil
+}
+
+// sizeObjectsColumn is how SizeObjects is written: NULL while the sizes are
+// not made, a JSON object once they are.
+func sizeObjectsColumn(objects map[string]SizeObject) (*string, error) {
+	if objects == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(objects)
+	if err != nil {
+		return nil, err
+	}
+	column := string(encoded)
+	return &column, nil
+}
+
+func positiveOrNil(n int) *int {
+	if n <= 0 {
+		return nil
+	}
+	return &n
+}
+
+func (s *PostgresStore) ListPendingImageSizes(ctx context.Context, purposes []string, after uuid.UUID, limit int) ([]Media, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	// The conditions repeat media_size_objects_pending_idx's predicate
+	// literally, so the planner can use the partial index.
+	rows, err := s.pool.Query(ctx, `SELECT `+mediaCols+` FROM media
+		WHERE size_objects IS NULL AND kind = 'IMAGE' AND deleted_at IS NULL
+		  AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL
+		  AND purpose = ANY($1) AND id > $2
+		ORDER BY id LIMIT $3`, purposes, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Media, 0)
+	for rows.Next() {
+		m, err := scanMedia(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) SetImageSizes(ctx context.Context, id uuid.UUID, size ImageSize, objects map[string]SizeObject) error {
+	column, err := sizeObjectsColumn(objects)
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE media SET width = $2, height = $3, size_objects = $4::jsonb
+		WHERE id = $1 AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL`,
+		id, positiveOrNil(size.Width), positiveOrNil(size.Height), column)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		m, err := s.GetIncludingDeleted(ctx, id)
+		if err != nil {
+			return err
+		}
+		if m.BlobPurgedAt != nil {
+			return ErrPurged
+		}
+		return ErrPurgeInProgress
+	}
+	return nil
 }

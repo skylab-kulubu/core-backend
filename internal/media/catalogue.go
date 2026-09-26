@@ -110,7 +110,8 @@ type Purpose struct {
 	// Uploader is who may upload Media of this purpose.
 	Uploader authz.MediaUploader
 	// Types are the content types the purpose accepts, detected from the
-	// file's content, never from its name or declared type.
+	// file's content, never from its name or declared type. SVG among them
+	// is stored sanitized (sanitizeSVG), as a download.
 	Types      []string
 	MaxBytes   int64
 	Visibility Visibility
@@ -134,15 +135,22 @@ type Purpose struct {
 	LegacyRules bool
 }
 
-// ImageHandling is what core is to do with a raster image of a purpose. The
-// catalogue declares it now; re-encoding, the dimension cap, variants and SVG
-// rasterization are carried out from media redesign ticket 04 on. Until then
-// a raster image only has its metadata stripped.
+// ImageHandling is what core does with a raster image of a purpose:
+// re-encode it (Reencode) within MaxDimension (MaxImageDimension when 0)
+// and store its Sizes beside it (size name, SizeCard or SizePage, to its
+// longer side in pixels).
 type ImageHandling struct {
 	Reencode     bool           `json:"reencode"`
 	MaxDimension int            `json:"max_dimension"`
-	Variants     map[string]int `json:"variants"`
-	RasterizeSVG bool           `json:"rasterize_svg"`
+	Sizes        map[string]int `json:"sizes"`
+}
+
+// maxDimension is the longer side a re-encoded image is scaled down to.
+func (h ImageHandling) maxDimension() int {
+	if h.MaxDimension > 0 {
+		return h.MaxDimension
+	}
+	return MaxImageDimension
 }
 
 type catalogueFile struct {
@@ -310,12 +318,37 @@ func (e purposeEntry) purpose(name string) (Purpose, error) {
 	if largest == 0 {
 		largest = MaxImageDimension
 	}
-	for variant, size := range p.Image.Variants {
+	for name, size := range p.Image.Sizes {
+		if !slices.Contains(imageSizes, name) {
+			return Purpose{}, fmt.Errorf("size %q is not one clients can ask for (%v)", name, imageSizes)
+		}
 		if size <= 0 || size > largest {
-			return Purpose{}, fmt.Errorf("variant %q is %d px, outside 1..%d", variant, size, largest)
+			return Purpose{}, fmt.Errorf("size %q is %d px, outside 1..%d", name, size, largest)
 		}
 	}
 	return p, nil
+}
+
+// purposesWithSizes are the purposes whose images get sizes, in name
+// order.
+func (c Catalogue) purposesWithSizes() []string {
+	var out []string
+	for _, name := range slices.Sorted(maps.Keys(c.purposes)) {
+		if len(c.purposes[name].Image.Sizes) > 0 {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// accepts reports whether the purpose accepts content of the type.
+func (p Purpose) accepts(contentType string) bool {
+	return slices.Contains(p.Types, contentType)
+}
+
+// typeRefusal refuses content the purpose does not accept.
+func (p Purpose) typeRefusal() error {
+	return &PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: p.Name, AllowedTypes: p.Types}
 }
 
 // Lookup returns the Media purpose with this name.

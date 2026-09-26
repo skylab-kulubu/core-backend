@@ -13,7 +13,10 @@ type Service interface {
 	Ensure(ctx context.Context, id uuid.UUID, profile Profile) (User, bool, error)
 	Replace(ctx context.Context, id uuid.UUID, in ProfileUpdate) (User, error)
 	Patch(ctx context.Context, id uuid.UUID, in ProfilePatch) (User, error)
-	SetProfilePicture(ctx context.Context, id uuid.UUID, mediaID uuid.UUID, url string) (User, error)
+	// SetProfilePicture links the Media as the person's profile picture.
+	// key is the Media's object key: the address is built from the
+	// configured base when the profile is answered, never stored.
+	SetProfilePicture(ctx context.Context, id uuid.UUID, mediaID uuid.UUID, key string) (User, error)
 	// ClearProfilePicture unlinks the person's own profile picture and reports
 	// which media was linked so the caller can release it. A profile without a
 	// picture is left untouched and reports nil, so repeating the call is safe.
@@ -190,13 +193,13 @@ func (s *service) Patch(ctx context.Context, id uuid.UUID, in ProfilePatch) (Use
 	return s.store.UpdateProfile(ctx, existing)
 }
 
-func (s *service) SetProfilePicture(ctx context.Context, id uuid.UUID, mediaID uuid.UUID, url string) (User, error) {
+func (s *service) SetProfilePicture(ctx context.Context, id uuid.UUID, mediaID uuid.UUID, key string) (User, error) {
 	existing, err := s.store.Get(ctx, id)
 	if err != nil {
 		return User{}, err
 	}
 	existing.ProfilePictureID = &mediaID
-	existing.ProfilePictureURL = url
+	existing.ProfilePictureURL = key
 	return s.store.UpdateProfile(ctx, existing)
 }
 

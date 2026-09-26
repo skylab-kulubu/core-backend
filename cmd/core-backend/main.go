@@ -35,12 +35,22 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == ytuBackfillCommandName {
 		os.Exit(runYTUBackfill(os.Args[2:], os.Getenv, os.Stdout))
+	}
+	if len(os.Args) > 1 && os.Args[1] == mediaLegacyReportCommandName {
+		os.Exit(runMediaLegacyReport(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == mediaLegacyExpireCommandName {
+		os.Exit(runMediaLegacyExpire(os.Args[2:], os.Getenv, os.Stdin, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == mediaLegacyReleaseHoldCommandName {
+		os.Exit(runMediaLegacyReleaseHold(os.Args[2:], os.Getenv, os.Stderr))
 	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -82,6 +92,40 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Every Media address core builds without a base of its own (Event
+	// resources, team rosters) uses the configured one too.
+	media.UsePublicBase(cdnBase)
+	imageAddressMode, err := media.ImageAddressModeFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Private Media (MEDIA_PRIVATE_ENABLED, docs/media-lifecycle.md). Off,
+	// private purposes are refused and none of its settings is read. On,
+	// every setting must be right or core does not start; OpenBao itself is
+	// reached only by the first private upload or read, so an OpenBao that
+	// is down never stops core.
+	privateConfig, err := media.PrivateConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var privateStorage *media.PrivateStorage
+	var privateMedia *media.PrivateMedia
+	var privateArtifacts media.PrivateObjects
+	if privateConfig.Enabled {
+		privateStorage = media.NewPrivateStorage(media.NewR2(privateConfig.Bucket), transit.New(privateConfig.Transit))
+		privateMedia = &media.PrivateMedia{
+			Storage: privateStorage, LinkKey: privateConfig.LinkKey, LinkOrigin: privateConfig.LinkOrigin, AccessLog: mediaStore,
+		}
+		privateArtifacts = privateStorage
+		log.Printf("private media: on (Transit key %s/%s, bucket %s, read links at %s)",
+			privateConfig.Transit.Mount, privateConfig.Transit.Key, privateConfig.Bucket.Bucket, privateConfig.LinkOrigin)
+	} else {
+		log.Printf("private media: off (%s is not true); private purposes are refused", media.PrivateEnabledEnv)
+	}
+	// Work that deletes by object key alone reaches the private bucket for
+	// a private object through blobs.
+	publicBlobs := blobs
+	blobs = media.Buckets{Public: publicBlobs, Private: privateStorage}
 	mediaPurgeConfig, err := media.BlobPurgeConfigFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -109,28 +153,43 @@ func main() {
 	media.MaintainUploadStaging(mediaPurgeContext, mediaStore, blobs, uploadStagingConfig, func(err error) {
 		log.Printf("media upload staging cleanup: %v", err)
 	})
-	media.MaintainCoverColorBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
+	// One decode budget for everything that decodes an image, so that
+	// together they hold at most its slots of decoded images in memory.
+	decodeBudget := media.NewDecodeBudget(media.DecodeBudgetConfig{})
+	media.MaintainCoverColorBackfill(context.Background(), mediaStore, blobs, decodeBudget, time.Minute, func(err error) {
 		log.Printf("media cover color backfill: %v", err)
 	})
 	media.MaintainServingPolicyBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
 		log.Printf("media serving policy backfill: %v", err)
 	})
+	media.MaintainImageSizeBackfill(context.Background(), mediaStore, blobs, mediaPurposes, decodeBudget, time.Minute, func(err error) {
+		log.Printf("media image size backfill: %v", err)
+	})
 	certificate.MaintainAssetServingPolicyBackfill(context.Background(), certs, blobs, time.Minute, func(err error) {
 		log.Printf("certificate template asset serving policy backfill: %v", err)
+	})
+	// Legacy Media core attaches get the purpose of their use (media redesign
+	// ticket 08). Only the purpose changes; the blobs stay where they are.
+	media.MaintainLegacyPurposeBackfill(context.Background(), mediaStore, mediaPurposes, time.Minute, func(report media.LegacyPurposeReport) {
+		log.Printf("media legacy purpose backfill: assigned %d, kept legacy %d (their purpose would be private) and %d (mixed uses), skipped %d, failed %d",
+			report.Assigned, report.KeptPrivate, report.KeptMixed, report.Skipped, report.Failed)
+	}, func(err error) {
+		log.Printf("media legacy purpose backfill: %v", err)
+	})
+	// The access log of private Media is kept a year (decision G2). It runs
+	// with the flag off too: rows written while it was on still age out.
+	media.MaintainReadLinkRetention(mediaPurgeContext, mediaStore, time.Hour, func(err error) {
+		log.Printf("media read link retention: %v", err)
 	})
 
 	dir := identity.Directory(identity.NewMemory())
 	keycloakConfigured := strings.TrimSpace(os.Getenv("KEYCLOAK_URL")) != ""
 	if keycloakConfigured {
-		if os.Getenv("KEYCLOAK_REALM") == "" || os.Getenv("KEYCLOAK_CLIENT_ID") == "" || os.Getenv("KEYCLOAK_CLIENT_SECRET") == "" {
-			log.Fatal("KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET are required with KEYCLOAK_URL")
+		keycloakConfig, missing := keycloakFromEnv(os.Getenv)
+		if len(missing) > 0 {
+			log.Fatalf("%s required with KEYCLOAK_URL", strings.Join(missing, ", "))
 		}
-		keycloakDirectory := identity.NewKeycloak(identity.KeycloakConfig{
-			URL:          os.Getenv("KEYCLOAK_URL"),
-			Realm:        os.Getenv("KEYCLOAK_REALM"),
-			ClientID:     os.Getenv("KEYCLOAK_CLIENT_ID"),
-			ClientSecret: os.Getenv("KEYCLOAK_CLIENT_SECRET"),
-		})
+		keycloakDirectory := identity.NewKeycloak(keycloakConfig)
 		// Read-only: core holds no manage-clients; Keycloak's operator script creates the roles.
 		roleContext, cancelRoleCheck := context.WithTimeout(context.Background(), 15*time.Second)
 		missingRoles, err := keycloakDirectory.MissingClientRoles(roleContext, os.Getenv("KEYCLOAK_CLIENT_ID"), identity.CertificateClientRoles)
@@ -344,13 +403,14 @@ func main() {
 
 	ticketSvc := ticket.NewService(tickets, events, az, users, dir)
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
-		PublicAPIOrigin: os.Getenv("PUBLIC_API_ORIGIN"),
-		VerifyOrigin:    os.Getenv("PUBLIC_VERIFY_ORIGIN"),
-		Templates:       certs,
-		Jobs:            certs,
-		Artifacts:       blobs,
-		Assets:          certificate.MediaAssets{Media: mediaStore, Blobs: blobs},
-		Media:           media.NewLinker(mediaStore),
+		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
+		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
+		Templates:        certs,
+		Jobs:             certs,
+		Artifacts:        blobs,
+		Assets:           certificate.MediaAssets{Media: mediaStore, Blobs: blobs},
+		PrivateArtifacts: privateArtifacts,
+		Media:            media.NewLinker(mediaStore),
 	})
 	certificate.MaintainIssuance(context.Background(), certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
@@ -387,7 +447,10 @@ func main() {
 		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
 			UploadStagingGrace: uploadStagingConfig.Grace,
 			Catalogue:          mediaPurposes,
+			ImageAddressMode:   imageAddressMode,
+			DecodeBudget:       decodeBudget,
 			ServiceProducts:    serviceClients.Products(),
+			Private:            privateMedia,
 		}),
 		URLs:                   urlSvc,
 		Certificates:           certSvc,

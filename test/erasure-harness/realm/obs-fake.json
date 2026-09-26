@@ -1,0 +1,23 @@
+{
+  "realm": "obs-fake",
+  "enabled": true,
+  "displayName": "Fake OBS (YTÜ Microsoft stand-in)",
+  "sslRequired": "external",
+  "loginTheme": "keycloak",
+  "accessTokenLifespan": 300,
+  "eventsEnabled": false,
+  "adminEventsEnabled": false,
+  "clients": [
+    {
+      "clientId": "e-skylab-broker",
+      "name": "SKY LAB Keycloak (identity broker)",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "__OBS_BROKER_CLIENT_SECRET__",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["https://e.yildizskylab.com/realms/e-skylab/broker/OBS/endpoint"]
+    }
+  ],
+  "users": []
+}

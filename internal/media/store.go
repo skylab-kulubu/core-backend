@@ -27,6 +27,23 @@ type Media struct {
 	Size       int64     `json:"size"`
 	UploadedBy uuid.UUID `json:"uploadedBy"`
 	Kind       string    `json:"kind"`
+	// Width and Height are an image's size in pixels as shown (upright):
+	// after re-encoding for a purpose that re-encodes. Zero when core does
+	// not know it: not an image, uploaded without a purpose, or stored
+	// before core recorded sizes.
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
+	// Sizes are the addresses of a raster image's sizes (SizeCard,
+	// SizePage), by size name: every size its purpose names in the
+	// catalogue (image.sizes). Built when the Media is answered, from the
+	// configured base and address mode.
+	Sizes map[string]ImageAddress `json:"sizes,omitempty"`
+	// SizeObjects are the sizes stored as objects beside the image, by size
+	// name (column size_objects): only those smaller than the image itself.
+	// Nil until core has made them (an image stored before sizes waits for
+	// the size backfill); empty when the image needs none or could not be
+	// read.
+	SizeObjects map[string]SizeObject `json:"-"`
 	// Purpose is the Media purpose the file was uploaded for; legacy for
 	// Media uploaded without a purpose and for Media stored before purposes
 	// existed.
@@ -36,6 +53,12 @@ type Media struct {
 	// removed. Archive and purge are recorded apart (DeletedAt,
 	// BlobPurgedAt).
 	Status Status `json:"status"`
+	// Visibility is where the Media's object is: the public bucket, served
+	// from the CDN, or the private bucket, encrypted, read only through a
+	// read link. It is fixed when the Media is stored.
+	Visibility Visibility `json:"visibility"`
+	// Encryption opens a private Media's object; nil for a public one.
+	Encryption *Encryption `json:"-"`
 	// ExpiresAt is when a Media no Media attachment keeps is purged: a
 	// pending Media when its purpose's pending TTL runs out, a detached one
 	// 30 days after its last Media attachment was removed. Nil keeps the
@@ -55,6 +78,16 @@ type Media struct {
 	// ServingPolicyApplied is set once the object's metadata is known to
 	// follow the serving policy: set by Upload, or by the serving policy backfill.
 	ServingPolicyApplied bool `json:"-"`
+
+	// DetachExpiryHeld marks a Media the legacy backfill gave a purpose
+	// (decision K2): detached, it gets no expiry, and another product may
+	// link it as a legacy Media, until the hold is released (ticket 18).
+	DetachExpiryHeld bool `json:"-"`
+}
+
+// imageSize is the image's recorded size; zero when core does not know it.
+func (m Media) imageSize() ImageSize {
+	return ImageSize{Width: m.Width, Height: m.Height}
 }
 
 // Status is where a Media is in its life (Media.Status).
@@ -75,7 +108,7 @@ func (m Media) expired(now time.Time) bool {
 
 // newRecord fills what a Media record takes by default when it is created:
 // an id, an empty cover colour list, the legacy purpose when none is given,
-// and the pending status. Every Store applies it, and only it.
+// the pending status and public visibility. Every Store applies it, and only it.
 func newRecord(m Media) Media {
 	if m.ID == uuid.Nil {
 		m.ID = uuid.New()
@@ -88,6 +121,9 @@ func newRecord(m Media) Media {
 	}
 	if m.Status == "" {
 		m.Status = StatusPending
+	}
+	if m.Visibility == "" {
+		m.Visibility = VisibilityPublic
 	}
 	return m
 }
@@ -108,12 +144,23 @@ type Store interface {
 	// SetServingPolicyApplied records that the object now follows the serving
 	// policy. It changes nothing else on the record.
 	SetServingPolicyApplied(ctx context.Context, id uuid.UUID) error
+	// ListPendingImageSizes returns, in id order and after the given id,
+	// current image Media of the given purposes whose sizes core has not
+	// made yet (SizeObjects nil). Media whose blob is purged or being
+	// purged are left out.
+	ListPendingImageSizes(ctx context.Context, purposes []string, after uuid.UUID, limit int) ([]Media, error)
+	// SetImageSizes records an image's size as shown and the sizes stored
+	// beside it. Empty objects record that it has none, and nil that they
+	// are not made yet (listed again). It refuses with ErrPurgeInProgress or
+	// ErrPurged once the blob's purge has begun.
+	SetImageSizes(ctx context.Context, id uuid.UUID, size ImageSize, objects map[string]SizeObject) error
 	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	// Restore restores an archived Media and clears its expiry, so an expiry
 	// that passed while it was archived cannot purge it.
 	Restore(ctx context.Context, id uuid.UUID) error
 	// ExpireUnattachedAt sets when a current Media no Media attachment keeps
-	// is purged; nil keeps it. An attached Media is left alone.
+	// is purged; nil keeps it. An attached Media is left alone, and a Media
+	// whose detach expiry the legacy backfill holds keeps no expiry.
 	ExpireUnattachedAt(ctx context.Context, id uuid.UUID, at *time.Time) error
 	ListPurgeCandidates(ctx context.Context, deletedBefore time.Time, limit int) ([]Media, error)
 	PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(key string) error) (bool, error)
@@ -132,6 +179,14 @@ type Store interface {
 	// false when the same link already exists; that one is returned. A Media
 	// that is gone, archived, or whose purge started is ErrNotLinkable.
 	Attach(ctx context.Context, a Attachment) (_ Attachment, created bool, _ error)
+	// AttachHeld writes a Media attachment another product makes to a Media
+	// whose detach expiry is held. When the Media's purpose does not fit the
+	// role, the Media goes back to legacy first, in the same transaction,
+	// and keeps its hold (decision K1: a Media core and a product both use
+	// stays legacy); demotedFrom is the purpose it had, "" when it fitted. A
+	// Media no longer held, gone, archived, or whose purge started is
+	// ErrNotLinkable.
+	AttachHeld(ctx context.Context, a Attachment) (_ Attachment, created bool, demotedFrom string, _ error)
 	// FindAttachment returns the Media attachment of the same link as a
 	// (Media, owner and role); ErrNotFound when there is none.
 	FindAttachment(ctx context.Context, a Attachment) (Attachment, error)
@@ -160,6 +215,8 @@ type BlobStore interface {
 	// SetMetadata replaces the metadata of a stored object; ErrNotFound when
 	// there is no such object.
 	SetMetadata(ctx context.Context, key string, meta BlobMetadata) error
+	// Read returns an object's bytes; ErrNotFound when there is no such
+	// object.
 	Read(ctx context.Context, key string) ([]byte, error)
 	Delete(ctx context.Context, key string) error
 }

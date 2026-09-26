@@ -13,15 +13,23 @@ var (
 	ErrPurposeForbidden = fmt.Errorf("media: this uploader may not upload for the purpose: %w", ErrForbidden)
 	ErrTypeNotAllowed   = fmt.Errorf("media: type not allowed for its purpose: %w", ErrInvalid)
 	ErrTooLarge         = fmt.Errorf("media: too large for its purpose: %w", ErrInvalid)
+	// ErrImageTooLarge refuses an image whose header says decoding it would
+	// take more than core allows (PurposeRefusal.MaxPixels).
+	ErrImageTooLarge    = fmt.Errorf("media: image too large to decode: %w", ErrInvalid)
 	ErrDirectUploadOnly = fmt.Errorf("media: the purpose uploads by Direct upload: %w", ErrInvalid)
 	// ErrPrivateMediaDisabled refuses a private purpose while core has no
 	// private Media storage. A private purpose is never stored publicly
 	// instead.
 	ErrPrivateMediaDisabled = errors.New("media: private Media is not enabled")
-	// ErrPurposeNotAvailable refuses a service purpose whose product has no
-	// service client configured, or that names no product: nothing could
-	// attach the Media before it expires.
+	// ErrPurposeNotAvailable refuses a purpose core cannot take yet: a
+	// service purpose whose product has no service client configured, or
+	// that names no product (nothing could attach the Media before it
+	// expires), and ErrPurposeNeedsScanner.
 	ErrPurposeNotAvailable = errors.New("media: nothing can attach Media of this purpose yet")
+	// ErrPurposeNeedsScanner refuses a purpose that needs a malware scan
+	// while core has no scanner (ticket 12): its Media could never be
+	// opened. errors.Is matches ErrPurposeNotAvailable.
+	ErrPurposeNeedsScanner = fmt.Errorf("media: the purpose needs a malware scan and no scanner is configured: %w", ErrPurposeNotAvailable)
 )
 
 // PurposeRefusal is an upload its Media purpose refuses. errors.Is matches
@@ -33,6 +41,9 @@ type PurposeRefusal struct {
 	AllowedTypes []string
 	// MaxBytes is the purpose's maximum size, with ErrTooLarge.
 	MaxBytes int64
+	// MaxPixels is the most pixels core decodes in an image like this one,
+	// with ErrImageTooLarge.
+	MaxPixels int64
 }
 
 func (r *PurposeRefusal) Error() string {

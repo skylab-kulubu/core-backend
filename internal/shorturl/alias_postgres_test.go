@@ -51,3 +51,39 @@ func TestRenamedAliasKeepsRedirectingOnPostgres(t *testing.T) {
 		t.Fatalf("old alias after a second rename: %v", err)
 	}
 }
+
+func TestCaseOnlyRenameKeepsTheOldSpellingOnPostgres(t *testing.T) {
+	pool := testpostgres.Start(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	ownerID := uuid.New()
+	if _, _, err := user.NewService(user.NewPostgresStore(pool)).Ensure(ctx, ownerID, user.Profile{Email: "owner@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	owner := authz.Principal{ID: ownerID.String(), Roles: []string{"url:access"}}
+	svc := shorturl.NewService(shorturl.NewPostgresStore(pool), authz.NewAuthorizer(authz.DefaultPolicy()))
+
+	created, err := svc.Create(ctx, owner, "https://skylab.com", "GeceKodu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(ctx, owner, created.ID, "", "gecekodu"); err != nil {
+		t.Fatal(err)
+	}
+	if old, err := svc.Lookup(ctx, "GeceKodu"); err != nil || old.ID != created.ID {
+		t.Fatalf("a printed GeceKodu must keep working after a case-only rename: %+v %v", old, err)
+	}
+	if _, err := svc.Update(ctx, owner, created.ID, "", "kodgecesi"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(ctx, owner, created.ID, "", "GECEKODU"); err != nil {
+		t.Fatalf("take an old alias back in another case: %v", err)
+	}
+	for _, alias := range []string{"GeceKodu", "gecekodu", "kodgecesi", "GECEKODU"} {
+		if got, err := svc.Lookup(ctx, alias); err != nil || got.ID != created.ID {
+			t.Fatalf("%s: %+v %v", alias, got, err)
+		}
+	}
+}

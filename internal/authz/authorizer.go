@@ -38,6 +38,21 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		// they hold. Which product it is, and that the records are its own,
 		// the media service checks.
 		return (action == Create || action == Delete) && isServiceProduct(p.Product) && hasRole(p, "media:attach")
+	case TypeMediaReadLink:
+		switch action {
+		case Create:
+			// The product that manages a private Media's attachments decides
+			// who may open it (Skyforms for an Answer file) and asks for the
+			// link with the same service identity and role. Which product
+			// owns the Media, the media service checks.
+			return isServiceProduct(p.Product) && hasRole(p, "media:attach")
+		case Read:
+			// A privileged admin opens core's own private Media (a
+			// certificate asset in the template editor) for themselves.
+			return p.Product == "" && a.isPrivileged(p)
+		default:
+			return false
+		}
 	case TypeURL:
 		return a.allowURL(p, r, action)
 	case TypeFormLink:
