@@ -164,3 +164,106 @@ func TestApplyRepairsAMissingMediaAttachmentTrigger(t *testing.T) {
 		t.Fatal("the profile picture attachment trigger was not restored")
 	}
 }
+
+// TestMediaAttachmentOwnerIDsAreTheProductsOwn: after the owner id became
+// text, core's own links still write and remove their Media attachments with
+// their records' UUIDs, and another product's record id that is no UUID (a
+// CMS page as clientId:slug) is one link per Media, owner and role.
+func TestMediaAttachmentOwnerIDsAreTheProductsOwn(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	person := uuid.New()
+	if _, _, err := user.NewService(user.NewPostgresStore(pool)).Ensure(ctx, person, user.Profile{
+		Email: "owner@example.com", FirstName: "Ada", LastName: "Owner", Username: "owner",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stored := func() uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		if _, err := pool.Exec(ctx, `INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind)
+			VALUES ($1, 'x.png', 'image/png', $2, 3, $3, 'IMAGE')`, id, "images/"+id.String(), person); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	cover, logo := stored(), stored()
+	eventID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO events (id, name, location, owner_team, cover_image_id) VALUES ($1, 'Hack', 'YTÜ', 'WEBLAB', $2)`, eventID, cover); err != nil {
+		t.Fatal(err)
+	}
+	var ownerID string
+	if err := pool.QueryRow(ctx, `SELECT owner_id FROM media_attachments WHERE media_id = $1`, cover).Scan(&ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if ownerID != eventID.String() {
+		t.Fatalf("core's owner id %q, want %s", ownerID, eventID)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE events SET cover_image_id = NULL WHERE id = $1`, eventID); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_attachments WHERE media_id = $1`, cover).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("core link removed, %d Media attachments left (err %v)", left, err)
+	}
+
+	insert := `INSERT INTO media_attachments (media_id, owner_service, owner_type, owner_id, role)
+		VALUES ($1, 'cms', 'page', 'skylab-site:hakkimizda', 'image')`
+	if _, err := pool.Exec(ctx, insert, logo); err != nil {
+		t.Fatalf("CMS page owner id: %v", err)
+	}
+	if _, err := pool.Exec(ctx, insert, logo); err == nil {
+		t.Fatal("the same link was written twice")
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_attachments (media_id, owner_service, owner_type, owner_id, role)
+		VALUES ($1, 'cms', 'page', '', 'image')`, logo); err == nil {
+		t.Fatal("an empty owner id was accepted")
+	}
+}
+
+// A rerun of the Media attachment migration (a lost trigger) puts back its
+// UUID comparison; the owner id migration's fingerprint notices and runs it
+// again, so core's links keep removing their Media attachments.
+func TestApplyRepairsTheTextOwnerComparisonAfterARerun(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DROP TRIGGER users_media_attachments_update ON users`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DROP TABLE schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	person := uuid.New()
+	if _, _, err := user.NewService(user.NewPostgresStore(pool)).Ensure(ctx, person, user.Profile{
+		Email: "rerun@example.com", FirstName: "Ada", LastName: "Rerun", Username: "rerun",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	picture := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind)
+		VALUES ($1, 'me.png', 'image/png', $2, 3, $3, 'IMAGE')`, picture, "images/"+picture.String(), person); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`UPDATE users SET profile_picture_id = $2 WHERE id = $1`,
+		`UPDATE users SET profile_picture_id = NULL WHERE id = $1 AND $2::uuid IS NOT NULL`,
+	} {
+		if _, err := pool.Exec(ctx, statement, person, picture); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM media WHERE id = $1`, picture).Scan(&status); err != nil || status != "detached" {
+		t.Fatalf("profile picture after unlinking: status %q (err %v), want detached", status, err)
+	}
+}
