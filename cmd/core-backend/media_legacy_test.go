@@ -61,6 +61,7 @@ func TestMediaLegacyReportWritesRowsToStdoutAndTheSummaryToStderr(t *testing.T) 
 		"legacy Media core attaches: 4",
 		"core links without a Media attachment: 0",
 		"Media whose detach expiry is held (released after stage 5, ticket 18): 7",
+		"detach expiry hold: not released",
 		"uploader groups unread: 1",
 	} {
 		if !strings.Contains(summary.String(), line+"\n") {
@@ -69,6 +70,17 @@ func TestMediaLegacyReportWritesRowsToStdoutAndTheSummaryToStderr(t *testing.T) 
 	}
 	if all := rows.String() + summary.String(); strings.Contains(all, gone.String()) || strings.Contains(all, member.String()) {
 		t.Fatal("the report names an uploader")
+	}
+}
+
+func TestMediaLegacyReportSaysWhenTheHoldWasReleased(t *testing.T) {
+	report, _, _ := legacyReportFixture()
+	released := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
+	report.HoldReleasedAt = &released
+	var rows, summary bytes.Buffer
+	if code := mediaLegacyReportCommand(context.Background(), &rows, &summary, reportTime, readFixture(report), nil); code != 0 ||
+		!strings.Contains(summary.String(), "detach expiry hold: released 2026-11-02T09:30:00Z\n") {
+		t.Fatalf("exit %d:\n%s", code, summary.String())
 	}
 }
 
@@ -231,5 +243,27 @@ func TestMediaLegacyCommandsNeedTheDatabase(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "s3cret") || strings.Contains(out.String(), "e.example.test") {
 		t.Fatal("the output echoes configuration values")
+	}
+}
+
+// Uploader groups cut off by an interrupt or the time limit make the report
+// incomplete: it says so and fails. A lookup that simply failed leaves a ?.
+func TestMediaLegacyReportFailsWhenGroupLookupsWereCutOff(t *testing.T) {
+	report, member, _ := legacyReportFixture()
+	groups := func(_ context.Context, id uuid.UUID) ([]string, error) {
+		if id == member {
+			return nil, context.DeadlineExceeded
+		}
+		return nil, errors.New("keycloak down")
+	}
+	var rows, summary bytes.Buffer
+
+	code := mediaLegacyReportCommand(context.Background(), &rows, &summary, reportTime, readFixture(report), groups)
+
+	if code != 1 || !strings.Contains(summary.String(), "uploader groups cut off: 1") {
+		t.Fatalf("exit %d:\n%s", code, summary.String())
+	}
+	if !strings.Contains(rows.String(), "\t?\tpending\t") || !strings.Contains(rows.String(), "\t?\tdetached\t") {
+		t.Fatalf("rows:\n%s", rows.String())
 	}
 }

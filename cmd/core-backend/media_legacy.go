@@ -136,7 +136,7 @@ func mediaLegacyReportCommand(ctx context.Context, out, errOut io.Writer, now ti
 	for _, orphan := range report.Orphans {
 		total += orphan.Size
 	}
-	uploaderGroups, unread := orphanGroups(ctx, report.Orphans, groups)
+	uploaderGroups, unread, cutOff := orphanGroups(ctx, report.Orphans, groups)
 
 	fmt.Fprintln(out, "id\tcreated_at\ttype\tsize\tname\tuploader_groups_now\tstatus\texpires_at\tkey")
 	for _, orphan := range report.Orphans {
@@ -155,19 +155,29 @@ func mediaLegacyReportCommand(ctx context.Context, out, errOut io.Writer, now ti
 	fmt.Fprintf(errOut, "legacy Media core attaches: %d\n", report.AttachedByCore)
 	fmt.Fprintf(errOut, "core links without a Media attachment: %d\n", report.CoreLinksWithoutAttachment)
 	fmt.Fprintf(errOut, "Media whose detach expiry is held (released after stage 5, ticket 18): %d\n", report.DetachExpiryHeld)
+	if report.HoldReleasedAt == nil {
+		fmt.Fprintln(errOut, "detach expiry hold: not released")
+	} else {
+		fmt.Fprintf(errOut, "detach expiry hold: released %s\n", report.HoldReleasedAt.UTC().Format(time.RFC3339))
+	}
 	if groups == nil {
 		fmt.Fprintln(errOut, "uploader groups: not read (Keycloak is not configured)")
 	} else {
 		fmt.Fprintf(errOut, "uploader groups unread: %d\n", unread)
 	}
+	if cutOff > 0 {
+		fmt.Fprintf(errOut, "uploader groups cut off: %d (interrupted or out of time; their rows show ?): the report is incomplete\n", cutOff)
+		return 1
+	}
 	return 0
 }
 
 // orphanGroups reads each uploader's current group paths once: "-" for
-// none (or an account that is gone), "?" when they could not be read.
-func orphanGroups(ctx context.Context, orphans []media.Media, groups func(context.Context, uuid.UUID) ([]string, error)) (map[uuid.UUID]string, int) {
+// none (or an account that is gone), "?" when they could not be read. It
+// counts the lookups that failed, and those of them an interrupt or the time
+// limit cut off.
+func orphanGroups(ctx context.Context, orphans []media.Media, groups func(context.Context, uuid.UUID) ([]string, error)) (_ map[uuid.UUID]string, unread, cutOff int) {
 	out := map[uuid.UUID]string{}
-	unread := 0
 	for _, orphan := range orphans {
 		if _, seen := out[orphan.UploadedBy]; seen {
 			continue
@@ -183,13 +193,16 @@ func orphanGroups(ctx context.Context, orphans []media.Media, groups func(contex
 		case err != nil:
 			out[orphan.UploadedBy] = "?"
 			unread++
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				cutOff++
+			}
 		default:
 			paths = slices.Clone(paths)
 			slices.Sort(paths)
 			out[orphan.UploadedBy] = field(strings.Join(slices.Compact(paths), ","))
 		}
 	}
-	return out, unread
+	return out, unread, cutOff
 }
 
 // field keeps a value on its row: tabs, line breaks and other control
