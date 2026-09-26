@@ -317,3 +317,28 @@ func TestApplyRepairsTheDetachExpiryHoldAfterARerun(t *testing.T) {
 		t.Fatal("a profile picture was attached as a CMS image")
 	}
 }
+
+// The hold's state row is part of the legacy backfill migration: a schema
+// without it does not count as migrated, and applying again puts it back
+// (unreleased, as the migration makes it).
+func TestApplyPutsBackTheHoldStateRow(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM media_legacy_hold`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DROP TABLE schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	var released *time.Time
+	if err := pool.QueryRow(ctx, `SELECT count(*), max(released_at) FROM media_legacy_hold`).Scan(&rows, &released); err != nil || rows != 1 || released != nil {
+		t.Fatalf("state rows %d released %v (err %v), want one unreleased row", rows, released, err)
+	}
+}

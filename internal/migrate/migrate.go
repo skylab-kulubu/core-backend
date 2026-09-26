@@ -615,6 +615,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE table_schema = 'public' AND table_name = 'media_legacy_hold' AND column_name = 'released_at'
 			  AND udt_name = 'timestamptz' AND is_nullable = 'YES'
 		)
+		-- Its one state row: the backfill refuses to decide about the hold
+		-- without it. The table is read through dynamic SQL, and only once it
+		-- exists, so that the check does not fail before the migration.
+		AND CASE WHEN to_regclass('public.media_legacy_hold') IS NULL THEN false
+			ELSE (xpath('/row/n/text()', query_to_xml('SELECT count(*) AS n FROM public.media_legacy_hold', false, true, '')))[1]::text = '1'
+		END
 		AND EXISTS (
 			SELECT 1 FROM pg_proc
 			WHERE proname = 'media_attachment_status' AND prosrc LIKE '%OR detach_expiry_held THEN NULL%'
