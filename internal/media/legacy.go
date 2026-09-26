@@ -71,12 +71,17 @@ func BackfillLegacyPurposes(ctx context.Context, store *PostgresStore, catalogue
 // background, off the request path, until a pass leaves nothing failed. A
 // pass is reported through onPass when it assigned a purpose or failed on a
 // different number of Media than the pass before, and a Media that keeps
-// failing is reported through onError at most once an hour.
-func MaintainLegacyPurposeBackfill(ctx context.Context, store *PostgresStore, catalogue Catalogue, retryEvery time.Duration, onPass func(LegacyPurposeReport), onError func(error)) {
+// failing is reported through onError at most once an hour. onAssigned is
+// called after every pass that assigned a purpose, finished or not: the
+// image size backfill's rerun, so those Media get their sizes.
+func MaintainLegacyPurposeBackfill(ctx context.Context, store *PostgresStore, catalogue Catalogue, retryEvery time.Duration, onAssigned func(), onPass func(LegacyPurposeReport), onError func(error)) {
 	itemErrors := throttleItemErrors(onError, time.Hour, time.Now)
 	lastFailed := 0
 	MaintainBackfill(ctx, func(ctx context.Context) (BackfillReport, error) {
 		report, err := BackfillLegacyPurposes(ctx, store, catalogue, itemErrors)
+		if report.Assigned > 0 && onAssigned != nil {
+			onAssigned()
+		}
 		if err == nil && onPass != nil && (report.Assigned > 0 || report.Failed != lastFailed) {
 			onPass(report)
 		}

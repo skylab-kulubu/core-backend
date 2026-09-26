@@ -162,7 +162,7 @@ func main() {
 	media.MaintainServingPolicyBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
 		log.Printf("media serving policy backfill: %v", err)
 	})
-	media.MaintainImageSizeBackfill(context.Background(), mediaStore, blobs, mediaPurposes, decodeBudget, time.Minute, func(err error) {
+	rerunImageSizes := media.MaintainImageSizeBackfill(context.Background(), mediaStore, blobs, mediaPurposes, decodeBudget, time.Minute, func(err error) {
 		log.Printf("media image size backfill: %v", err)
 	})
 	certificate.MaintainAssetServingPolicyBackfill(context.Background(), certs, blobs, time.Minute, func(err error) {
@@ -170,7 +170,9 @@ func main() {
 	})
 	// Legacy Media core attaches get the purpose of their use (media redesign
 	// ticket 08). Only the purpose changes; the blobs stay where they are.
-	media.MaintainLegacyPurposeBackfill(context.Background(), mediaStore, mediaPurposes, time.Minute, func(report media.LegacyPurposeReport) {
+	// The size backfill may have finished its pass before a Media got its
+	// purpose, so each pass that assigns one runs it again.
+	media.MaintainLegacyPurposeBackfill(context.Background(), mediaStore, mediaPurposes, time.Minute, rerunImageSizes, func(report media.LegacyPurposeReport) {
 		log.Printf("media legacy purpose backfill: assigned %d, kept legacy %d (their purpose would be private) and %d (mixed uses), skipped %d, failed %d",
 			report.Assigned, report.KeptPrivate, report.KeptMixed, report.Skipped, report.Failed)
 	}, func(err error) {
