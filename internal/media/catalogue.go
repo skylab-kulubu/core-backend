@@ -85,8 +85,8 @@ const (
 
 // OwningProduct is the product whose records use the purpose's Media: core
 // for a core purpose, the named service for a service purpose, and empty for
-// a service purpose that names none yet. Only the owning product may attach
-// private Media of the purpose.
+// a service purpose that names none yet. Only the owning product may link
+// the purpose's Media.
 func (p Purpose) OwningProduct() authz.Product {
 	if p.Attach == AttachCore {
 		return authz.ProductCore
