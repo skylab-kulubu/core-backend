@@ -165,6 +165,11 @@ var oneByOneVP8L = []byte{0x2f, 0x00, 0x00, 0x00, 0x10, 0x07, 0x10, 0x11, 0x11, 
 // each of the given places, and EXIF and XMP chunks that name the uploader
 // and a place.
 func animatedWebP(w, h int, frames []image.Point, extra ...[]byte) []byte {
+	return animatedWebPOf(w, h, frames, oneByOneVP8L, extra...)
+}
+
+// animatedWebPOf is animatedWebP with every frame the given VP8L bitstream.
+func animatedWebPOf(w, h int, frames []image.Point, bitstream []byte, extra ...[]byte) []byte {
 	vp8x := append([]byte{0x02 | 0x08 | 0x04, 0, 0, 0}, uint24(w-1)...)
 	vp8x = append(vp8x, uint24(h-1)...)
 	body := []byte("WEBP")
@@ -176,7 +181,7 @@ func animatedWebP(w, h int, frames []image.Point, extra ...[]byte) []byte {
 		anmf = append(anmf, uint24(0)...) // height-1
 		anmf = append(anmf, uint24(100)...)
 		anmf = append(anmf, 0)
-		anmf = append(anmf, webpChunk("VP8L", oneByOneVP8L)...)
+		anmf = append(anmf, webpChunk("VP8L", bitstream)...)
 		body = append(body, webpChunk("ANMF", anmf)...)
 	}
 	body = append(body, webpChunk("EXIF", []byte("Exif\x00\x00GPS-SECRET"))...)
@@ -236,6 +241,8 @@ func TestService_PurposeRefusesAnAnimatedWebPWithABadStructure(t *testing.T) {
 		"an unknown chunk":            {animatedWebP(4, 4, []image.Point{{0, 0}}, webpChunk("ABCD", []byte("hi"))), media.ErrTypeNotAllowed},
 		"trailing data":               {append(animatedWebP(4, 4, []image.Point{{0, 0}}), []byte("<html>trailer</html>")...), media.ErrTypeNotAllowed},
 		"a truncated file":            {animatedWebP(4, 4, []image.Point{{0, 0}})[:40], media.ErrTypeNotAllowed},
+		// The bitstream says 1×1, as its frame does, but does not decode.
+		"a frame that does not decode": {animatedWebPOf(4, 4, []image.Point{{0, 0}}, append(append([]byte{}, oneByOneVP8L[:5]...), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff)), media.ErrTypeNotAllowed},
 	} {
 		_, err := svc.UploadForPurpose(context.Background(), organizer(), "event_gallery", uploaded("x.webp", "image/webp", tc.data))
 		if !errors.Is(err, tc.want) {

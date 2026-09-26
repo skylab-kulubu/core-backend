@@ -32,6 +32,12 @@ func checkDecode(data []byte) error {
 	if err != nil {
 		return err
 	}
+	return refuseCost(pixels, cost)
+}
+
+// refuseCost refuses an image of pixels pixels whose decoding takes cost
+// bytes when either is above what core allows.
+func refuseCost(pixels, cost int64) error {
 	if pixels > MaxImagePixels || cost > maxDecodedImageBytes {
 		perPixel := max(1, cost/max(1, pixels))
 		return errImageTooLarge{maxPixels: min(int64(MaxImagePixels), maxDecodedImageBytes/perPixel)}
@@ -76,6 +82,9 @@ func decodeCost(data []byte) (pixels, cost int64, err error) {
 	case "gif":
 		layout, err := readGIFLayout(data)
 		if err != nil {
+			return 0, 0, err
+		}
+		if err := checkAnimation(len(layout.frames), layout.screen); err != nil {
 			return 0, 0, err
 		}
 		return pixels, layout.decodeCost(), nil

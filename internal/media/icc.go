@@ -86,7 +86,7 @@ func jpegICCProfile(data []byte) []byte {
 func pngICCProfile(data []byte) []byte {
 	for pos := 8; pos+12 <= len(data); {
 		size := int(binary.BigEndian.Uint32(data[pos:]))
-		if size < 0 || pos+12+size > len(data) {
+		if pos+12+size > len(data) {
 			return nil
 		}
 		kind := string(data[pos+4 : pos+8])
@@ -116,15 +116,14 @@ func pngICCProfile(data []byte) []byte {
 
 // webpICCProfile is an extended WebP's ICCP chunk.
 func webpICCProfile(data []byte) []byte {
-	for pos := 12; pos+8 <= len(data); {
-		size := int(binary.LittleEndian.Uint32(data[pos+4:]))
-		if size < 0 || pos+8+size > len(data) {
-			return nil
+	chunks, err := webpChunks(data)
+	if err != nil {
+		return nil
+	}
+	for _, chunk := range chunks {
+		if chunk.fourcc == "ICCP" {
+			return chunk.payload
 		}
-		if string(data[pos:pos+4]) == "ICCP" {
-			return data[pos+8 : pos+8+size]
-		}
-		pos += 8 + size + size&1
 	}
 	return nil
 }

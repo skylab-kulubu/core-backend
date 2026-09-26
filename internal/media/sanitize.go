@@ -237,9 +237,6 @@ func stripWebP(b []byte) ([]byte, error) {
 	for pos+8 <= len(b) {
 		fourcc := string(b[pos : pos+4])
 		size := int(b[pos+4]) | int(b[pos+5])<<8 | int(b[pos+6])<<16 | int(b[pos+7])<<24
-		if size < 0 {
-			break
-		}
 		chunkTotal := 8 + size + (size & 1)
 		if pos+chunkTotal > len(b) {
 			chunkTotal = len(b) - pos

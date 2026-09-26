@@ -9,9 +9,6 @@ import (
 	"image/gif"
 )
 
-// maxAnimationFrames is the most frames core keeps in an animated image.
-const maxAnimationFrames = 300
-
 // gifLayout is a GIF's logical screen and the rectangles of its frames,
 // read from its blocks without decoding any image data.
 type gifLayout struct {
@@ -94,10 +91,17 @@ func readGIFLayout(data []byte) (gifLayout, error) {
 // purpose's maximum dimension is scaled as a still image when it has one
 // frame and refused when it is animated. The caller holds a decoding slot.
 func reencodeGIF(data []byte, handling ImageHandling) (reencodedImage, error) {
-	if err := checkDecode(data); err != nil {
+	layout, err := readGIFLayout(data)
+	if err != nil {
 		return reencodedImage{}, err
 	}
-	layout, _ := readGIFLayout(data)
+	if err := checkAnimation(len(layout.frames), layout.screen); err != nil {
+		return reencodedImage{}, err
+	}
+	screen := int64(layout.screen.Width) * int64(layout.screen.Height)
+	if err := refuseCost(screen, layout.decodeCost()); err != nil {
+		return reencodedImage{}, err
+	}
 	limit := handling.maxDimension()
 	if layout.screen.Width > limit || layout.screen.Height > limit {
 		if len(layout.frames) == 1 {

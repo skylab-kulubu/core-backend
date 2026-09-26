@@ -15,9 +15,12 @@ var (
 	// ErrCeilingPublicRaster: a public purpose that accepts raster images
 	// declares image.reencode, so that no uploaded image bytes reach the CDN
 	// as they came: core decodes such an image and stores only its pixels,
-	// encoded again (reencodeRaster). Media uploaded without a purpose
-	// (legacy) are not a purpose's upload and keep their stripped bytes
-	// until they fall to the strict rule.
+	// encoded again (reencodeRaster; a GIF frame by frame, reencodeGIF).
+	// The one exception is an animated WebP, which Go cannot encode: it is
+	// kept as uploaded only after its structure is checked chunk by chunk
+	// and every frame decodes (cleanAnimatedWebP), without its metadata.
+	// Media uploaded without a purpose (legacy) are not a purpose's upload
+	// and keep their stripped bytes until they fall to the strict rule.
 	ErrCeilingPublicRaster = errors.New("media purpose catalogue: a public purpose declares re-encoding for raster images")
 	// ErrCeilingSVG: only CMS images and Event pictures (svgPurposes)
 	// accept SVG; never a profile picture or a private purpose. Core stores
