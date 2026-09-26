@@ -582,3 +582,49 @@ func TestDoorEventsCarryTheCoverSizesHTTP(t *testing.T) {
 		}
 	}
 }
+
+// Gallery images are answered in upload order, and two uploaded at the same
+// instant in id order, so the order never changes between reads.
+func TestEventGalleryOrderIsStableForImagesUploadedTogetherHTTP(t *testing.T) {
+	f := newImageSizesFixture(t)
+	ctx := context.Background()
+	later := uuid.MustParse("ffffffff-0000-4000-8000-000000000001")
+	earlier := uuid.MustParse("00000000-0000-4000-8000-000000000001")
+	var ids []uuid.UUID
+	for _, id := range []uuid.UUID{later, earlier} {
+		m, err := f.media.Create(ctx, media.Media{
+			ID: id, Name: "photo.jpg", Type: "image/jpeg", Kind: media.KindImage, Key: "images/" + id.String(),
+			UploadedBy: f.uploader, Purpose: media.PurposeEventGallery,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, m.ID)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE media SET created_at = '2026-09-27T10:00:00Z' WHERE id = ANY($1)`, ids); err != nil {
+		t.Fatal(err)
+	}
+	created := f.event(t, "Together", nil, later, earlier)
+	// Read without index scans: an index would hand the images over in id
+	// order by chance, and only the ORDER BY must decide.
+	config := f.pool.Config()
+	config.ConnConfig.RuntimeParams["enable_indexscan"] = "off"
+	config.ConnConfig.RuntimeParams["enable_bitmapscan"] = "off"
+	config.ConnConfig.RuntimeParams["enable_indexonlyscan"] = "off"
+	unindexed, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(unindexed.Close)
+	app := eventServiceApp(t, authn.Identity{}, event.NewService(event.NewPostgresStore(unindexed), authz.NewAuthorizer(authz.DefaultPolicy()), sizesBase))
+
+	var got sizedEventView
+	answer(t, app, httptest.NewRequest(fiber.MethodGet, "/v1/events/"+created.ID.String(), nil), &got)
+
+	if len(got.Images) != 2 || got.Images[0].ID != earlier || got.Images[1].ID != later {
+		t.Fatalf("gallery order %+v, want %s then %s", got.Images, earlier, later)
+	}
+	if got.ImageURLs[0] != got.Images[0].URL {
+		t.Fatalf("imageUrls %v in another order than images %+v", got.ImageURLs, got.Images)
+	}
+}

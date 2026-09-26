@@ -300,7 +300,7 @@ func (s *PostgresStore) withGalleries(ctx context.Context, events []Event) error
 		FROM event_images ei
 		JOIN media m ON m.id = ei.media_id AND m.deleted_at IS NULL
 		WHERE ei.event_id = ANY($1)
-		ORDER BY m.created_at
+		ORDER BY m.created_at, m.id
 	`, ids)
 	if err != nil {
 		return err
