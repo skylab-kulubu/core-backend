@@ -9,7 +9,7 @@ import (
 
 // The image sizes a client can ask for by name. Each purpose's catalogue
 // entry picks which of them it stores and how large they are
-// (image.variants); the names are the contract clients rely on.
+// (image.sizes); the names are the contract clients rely on.
 const (
 	// SizeCard is a small image, such as the picture on an Event card.
 	SizeCard = "card"
@@ -63,8 +63,8 @@ func ImageAddressModeFromEnv(getenv func(string) string) (AddressMode, error) {
 // Addresses builds the public addresses of Media objects from a configured
 // base.
 type Addresses struct {
-	// Base is the public origin objects are served from. Empty leaves keys
-	// as they are (a development setup without a CDN).
+	// Base is the public origin objects are served from. Empty is the
+	// process's configured base (PublicURL): an address is never a bare key.
 	Base string
 	// Mode is where image sizes are served from; empty is
 	// AddressStoredSizes.
@@ -74,15 +74,12 @@ type Addresses struct {
 // Object is the public address of an object key. A key that is already an
 // absolute address (Media stored before core kept keys) is left alone.
 func (a Addresses) Object(key string) string {
-	if strings.TrimSpace(a.Base) == "" {
-		return key
-	}
 	return PublicURL(a.Base, key)
 }
 
 // Image is the address of an image Media at the named size, whose longer
 // side the purpose sets at px. A size core has not stored (the image is
-// smaller than it, or was stored before sizes existed) is the original.
+// smaller than it, or its sizes are not made yet) is the original.
 //
 // With AddressCloudflare, every size is a Cloudflare transformation of the
 // original that fits it in a px square without enlarging it, sized from
@@ -90,12 +87,12 @@ func (a Addresses) Object(key string) string {
 // already an absolute address stays itself.
 func (a Addresses) Image(m Media, size string, px int) ImageAddress {
 	if a.Mode == AddressCloudflare && !isAbsoluteURL(m.Key) {
-		w, h := fittedSize(m.Width, m.Height, px)
+		shown := fittedSize(m.imageSize(), px)
 		options := fmt.Sprintf("width=%d,height=%d,fit=scale-down", px, px)
-		return ImageAddress{URL: a.Object("cdn-cgi/image/" + options + "/" + strings.TrimLeft(m.Key, "/")), Width: w, Height: h}
+		return ImageAddress{URL: a.Object("cdn-cgi/image/" + options + "/" + strings.TrimLeft(m.Key, "/")), Width: shown.Width, Height: shown.Height}
 	}
-	if stored, ok := m.SizeObjects[size]; ok {
-		return ImageAddress{URL: a.Object(sizeObjectKey(m.Key, size)), Width: stored.Width, Height: stored.Height}
+	if object, ok := m.SizeObjects[size]; ok {
+		return ImageAddress{URL: a.Object(sizeObjectKey(m.Key, size, object.Type)), Width: object.Width, Height: object.Height}
 	}
 	return ImageAddress{URL: a.Object(m.Key), Width: m.Width, Height: m.Height}
 }

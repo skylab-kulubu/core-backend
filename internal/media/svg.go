@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"image"
@@ -27,9 +28,6 @@ const (
 	svgRasterSide = 1200
 )
 
-// svgDrawingLimit is how long drawing one SVG may take.
-var svgDrawingLimit = 5 * time.Second
-
 var (
 	// errSVGTooLarge refuses an SVG above maxSVGBytes.
 	errSVGTooLarge = errors.New("media: SVG too large to rasterize")
@@ -45,31 +43,23 @@ var (
 // (or the purpose's maximum dimension, when smaller) and makes the
 // purpose's sizes of it. Nothing of the SVG itself is kept: scripts, links
 // and the markup go with it. The drawing is pure Go (oksvg, rasterx), in
-// the request, within the limits above; dashes are drawn solid.
-func rasterizeSVG(data []byte, handling ImageHandling) (reencodedImage, error) {
+// the request, within the limits above and at most limit long (the decode
+// budget's SVG drawing limit); dashes are drawn solid. The caller holds the
+// decode budget's SVG slot.
+func rasterizeSVG(ctx context.Context, data []byte, handling ImageHandling, limit time.Duration) (reencodedImage, error) {
 	if len(data) > maxSVGBytes {
 		return reencodedImage{}, errSVGTooLarge
 	}
 	if err := checkSVGStructure(data); err != nil {
 		return reencodedImage{}, err
 	}
-	side := svgRasterSide
-	if handling.MaxDimension > 0 {
-		side = min(side, handling.MaxDimension)
-	}
-	img, err := drawSVG(data, side)
+	drawing, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	img, err := drawSVG(drawing, data, min(svgRasterSide, handling.maxDimension()))
 	if err != nil {
 		return reencodedImage{}, err
 	}
-	body, err := encodeRaster(img, "image/png")
-	if err != nil {
-		return reencodedImage{}, err
-	}
-	variants, err := makeSizes(img, "image/png", handling.Sizes)
-	if err != nil {
-		return reencodedImage{}, err
-	}
-	return reencodedImage{body: body, ctype: "image/png", width: img.Rect.Dx(), height: img.Rect.Dy(), variants: variants}, nil
+	return finishImage(img, "image/png", handling.Sizes)
 }
 
 // checkSVGStructure reads the SVG as XML before anything draws it and
@@ -120,8 +110,11 @@ func checkSVGStructure(data []byte) error {
 	return nil
 }
 
-// drawSVG draws the SVG on a transparent canvas whose longer side is side.
-func drawSVG(data []byte, side int) (img *image.RGBA, err error) {
+// drawSVG draws the SVG on a transparent canvas whose longer side is side,
+// until ctx ends: checked between shapes, and on every line a shape is
+// flattened into. A single call into the rasterizer between two checks can
+// still run on past the deadline.
+func drawSVG(ctx context.Context, data []byte, side int) (img *image.RGBA, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			// The time limit, or a fault in the parser on a hostile file:
@@ -142,11 +135,10 @@ func drawSVG(data []byte, side int) (img *image.RGBA, err error) {
 	h := max(1, int(math.Round(box.H*scale)))
 	icon.SetTarget(0, 0, float64(w), float64(h))
 	img = image.NewRGBA(image.Rect(0, 0, w, h))
-	deadline := time.Now().Add(svgDrawingLimit)
-	scanner := &deadlineScanner{ScannerGV: rasterx.NewScannerGV(w, h, img, img.Bounds()), deadline: deadline}
+	scanner := &deadlineScanner{ScannerGV: rasterx.NewScannerGV(w, h, img, img.Bounds()), done: ctx.Done()}
 	raster := rasterx.NewDasher(w, h, scanner)
 	for i := range icon.SVGPaths {
-		if time.Now().After(deadline) {
+		if ctx.Err() != nil {
 			return nil, errSVGNotDrawn
 		}
 		path := &icon.SVGPaths[i]
@@ -160,17 +152,21 @@ func finitePositive(v float64) bool {
 	return v > 0 && !math.IsInf(v, 0) && !math.IsNaN(v)
 }
 
-// deadlineScanner is the rasterizer's scanner, stopping a drawing that runs
-// past its deadline. Every line a shape is flattened into passes here, so
-// one huge shape cannot run on unchecked between shapes.
+// deadlineScanner is the rasterizer's scanner, stopping a drawing whose
+// context ended. Every line a shape is flattened into passes here in
+// github.com/srwiley/rasterx (an untagged 2022 commit), so one huge shape
+// cannot run on unchecked between shapes; the check relies on that
+// internal behaviour, and the checks between shapes do not.
 type deadlineScanner struct {
 	*rasterx.ScannerGV
-	deadline time.Time
+	done <-chan struct{}
 }
 
 func (s *deadlineScanner) Line(b fixed.Point26_6) {
-	if time.Now().After(s.deadline) {
+	select {
+	case <-s.done:
 		panic(errSVGDrawingTooSlow)
+	default:
 	}
 	s.ScannerGV.Line(b)
 }

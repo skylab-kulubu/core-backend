@@ -14,7 +14,9 @@ const (
 	backfillBatchSize           = 25
 )
 
-func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore) (int, bool, error) {
+// BackfillCoverColors picks the cover colours of a batch of images stored
+// without them. Each image decodes within the decode budget.
+func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore, budget *DecodeBudget) (int, bool, error) {
 	items, err := store.ListPendingCoverColors(ctx, coverColorBackfillBatchSize)
 	if err != nil {
 		return 0, false, err
@@ -24,17 +26,23 @@ func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore) (int
 		if err != nil {
 			return i, false, err
 		}
-		if err := store.SetCoverColors(ctx, item.ID, ExtractCoverColors(data)); err != nil {
+		release, err := budget.Acquire(ctx)
+		if err != nil {
+			return i, false, err
+		}
+		colors := ExtractCoverColors(data)
+		release()
+		if err := store.SetCoverColors(ctx, item.ID, colors); err != nil {
 			return i, false, err
 		}
 	}
 	return len(items), len(items) < coverColorBackfillBatchSize, nil
 }
 
-func MaintainCoverColorBackfill(ctx context.Context, store Store, blobs BlobStore, retryEvery time.Duration, onError func(error)) {
+func MaintainCoverColorBackfill(ctx context.Context, store Store, blobs BlobStore, budget *DecodeBudget, retryEvery time.Duration, onError func(error)) {
 	go func() {
 		for {
-			_, done, err := BackfillCoverColors(ctx, store, blobs)
+			_, done, err := BackfillCoverColors(ctx, store, blobs, budget)
 			if err == nil {
 				if done {
 					return

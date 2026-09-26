@@ -36,7 +36,7 @@ func TestBackfillCoverColorsProcessesExistingImages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	processed, done, err := media.BackfillCoverColors(ctx, store, blobs)
+	processed, done, err := media.BackfillCoverColors(ctx, store, blobs, media.NewDecodeBudget(media.DecodeBudgetConfig{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestBackfillCoverColorsProcessesExistingImages(t *testing.T) {
 		t.Fatalf("got %#v computed %v", got.CoverColors, got.CoverColorsComputed)
 	}
 
-	processed, done, err = media.BackfillCoverColors(ctx, store, blobs)
+	processed, done, err = media.BackfillCoverColors(ctx, store, blobs, media.NewDecodeBudget(media.DecodeBudgetConfig{}))
 	if err != nil || processed != 0 || !done {
 		t.Fatalf("second processed %d done %v err %v", processed, done, err)
 	}

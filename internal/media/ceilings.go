@@ -18,8 +18,9 @@ var (
 	// (legacy) are not a purpose's upload and keep their stripped bytes
 	// until they fall to the strict rule.
 	ErrCeilingPublicRaster = errors.New("media purpose catalogue: a public purpose declares re-encoding for raster images")
-	// ErrCeilingSVG: SVG is never stored as SVG. A purpose that accepts it
-	// rasterizes it to PNG.
+	// ErrCeilingSVG: SVG is never stored as SVG. A purpose accepts it only
+	// with image.rasterize_svg, which rasterizes it to PNG; naming it in
+	// types breaks the ceiling.
 	ErrCeilingSVG = errors.New("media purpose catalogue: SVG is rasterized to PNG, never stored as SVG")
 	// ErrCeilingSize: a purpose's maximum stays under the global maximum of
 	// its transport: MaxUploadBytes through core, MaxDirectUploadBytes by
@@ -62,15 +63,14 @@ func checkCeilings(p Purpose) error {
 		return fmt.Errorf("%s: %w", p.Name, ErrCeilingPrivate)
 	}
 	for _, t := range p.Types {
-		if t == svgType && !p.Image.RasterizeSVG {
+		if t == svgType {
+			// SVG is accepted only by image.rasterize_svg, which stores it
+			// as PNG: one switch turns it off.
 			return fmt.Errorf("%s names %s: %w", p.Name, t, ErrCeilingSVG)
 		}
 	}
 	if p.Visibility == VisibilityPublic {
 		for _, t := range p.Types {
-			if t == svgType {
-				continue // rasterized to PNG, checked above
-			}
 			if !isRasterType(t) && t != pdfType && t != mp4Type {
 				return fmt.Errorf("%s names %s: %w", p.Name, t, ErrCeilingPublicType)
 			}

@@ -53,9 +53,9 @@
       "image": { "reencode": true, "max_dimension": 2560 }
     },
     "cms_image": {
-      "description": "An image on a CMS page. An SVG is rasterized to PNG; no SVG bytes are stored.",
+      "description": "An image on a CMS page. rasterize_svg also accepts SVG, rasterized to PNG (no SVG bytes are stored); false refuses SVG.",
       "upload": "authenticated",
-      "types": ["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"],
+      "types": ["image/jpeg", "image/png", "image/webp", "image/gif"],
       "max_mib": 10,
       "visibility": "public",
       "encrypted": false,
@@ -132,7 +132,7 @@
       "attach": "service"
     },
     "legacy": {
-      "description": "Media uploaded without a purpose, and every Media stored before Media purpose. Internal: clients cannot name it. It keeps the rules Media uploaded without a purpose had before this catalogue, until Skyforms and CMS send purposes. Its raster images keep their own (stripped) bytes, not re-encoded; core makes their sizes beside them.",
+      "description": "Media uploaded without a purpose, and every Media stored before Media purpose. Internal: clients cannot name it. It keeps the rules Media uploaded without a purpose had before this catalogue, until Skyforms and CMS send purposes. Its images keep their own bytes, stripped of metadata, and get no sizes.",
       "upload": "authenticated",
       "legacy_rules": true,
       "visibility": "public",
@@ -140,8 +140,7 @@
       "scan": false,
       "pending_ttl": "none",
       "transport": "single_step",
-      "attach": "core",
-      "image": { "reencode": false, "sizes": { "card": 400, "page": 1200 } }
+      "attach": "core"
     }
   }
 }

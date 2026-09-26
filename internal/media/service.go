@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -43,6 +42,7 @@ type service struct {
 	addresses          Addresses
 	uploadStagingGrace time.Duration
 	catalogue          Catalogue
+	decoding           *DecodeBudget
 }
 
 func NewService(media Store, blobs BlobStore, az authz.Authorizer, publicBase string) Service {
@@ -57,6 +57,9 @@ type ServiceOptions struct {
 	// ImageAddressMode is where image sizes are served from
 	// (MEDIA_IMAGE_ADDRESS_MODE); empty is AddressStoredSizes.
 	ImageAddressMode AddressMode
+	// DecodeBudget is the process's decode budget, shared with the
+	// backfills. Nil makes one for this service alone.
+	DecodeBudget *DecodeBudget
 }
 
 func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, publicBase string, options ServiceOptions) Service {
@@ -69,7 +72,11 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 		catalogue = reviewedCatalogue()
 	}
 	addresses := Addresses{Base: publicBase, Mode: options.ImageAddressMode}
-	return &service{media: media, blobs: blobs, authz: az, addresses: addresses, uploadStagingGrace: grace, catalogue: catalogue}
+	decoding := options.DecodeBudget
+	if decoding == nil {
+		decoding = NewDecodeBudget(DecodeBudgetConfig{})
+	}
+	return &service{media: media, blobs: blobs, authz: az, addresses: addresses, uploadStagingGrace: grace, catalogue: catalogue, decoding: decoding}
 }
 
 // reviewedCatalogue is the catalogue carried in the binary. Core validates it
@@ -99,25 +106,19 @@ func (s *service) Upload(ctx context.Context, p authz.Principal, name, contentTy
 // storedFile is what an uploaded file becomes once its purpose's rules
 // accept it.
 type storedFile struct {
-	body          []byte
-	ctype         string
-	kind          string
-	keyPrefix     string
-	width, height int
-	// variants are the image's stored sizes, written beside it.
-	variants []encodedSize
-	// sized is set once core has made the image's sizes (maybe none), so
-	// the variant backfill leaves it alone.
-	sized bool
+	body      []byte
+	ctype     string
+	kind      string
+	keyPrefix string
+	// image is set for an image core re-encoded (or rasterized): its size,
+	// its sizes to store beside it and its cover colours. Nil for anything
+	// else, whose sizes core does not make.
+	image *reencodedImage
 }
 
-// storedSizes is how the variants are recorded on the Media: nil for a file
-// whose sizes core has not made.
-func (f storedFile) storedSizes() map[string]ImageSize {
-	if !f.sized {
-		return nil
-	}
-	return reencodedImage{variants: f.variants}.storedSizes()
+// imageFile is the storedFile of an image core encoded.
+func imageFile(img reencodedImage) storedFile {
+	return storedFile{body: img.body, ctype: img.ctype, kind: KindImage, keyPrefix: "images/", image: &img}
 }
 
 func (s *service) UploadForPurpose(ctx context.Context, p authz.Principal, purposeName string, file UploadedFile) (Media, error) {
@@ -176,17 +177,23 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, nil, err)
 	}
 	var sizes []string
-	for _, variant := range stored.variants {
-		sizes = append(sizes, sizeObjectKey(key, variant.size))
-		if err := s.blobs.Put(operationCtx, sizes[len(sizes)-1], variant.body, ServingMetadata(variant.ctype, file.Name)); err != nil {
-			return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, sizes, err)
+	var shown ImageSize
+	var sizeObjects map[string]SizeObject
+	colors, colorsComputed := []string{}, false
+	if stored.image != nil {
+		if !canHaveSizeObjects(key) {
+			return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, nil, fmt.Errorf("media: key %q cannot have sizes", key))
 		}
-	}
-	colors := []string{}
-	colorsComputed := false
-	if stored.kind == KindImage {
-		colors = ExtractCoverColors(stored.body)
-		colorsComputed = true
+		for _, size := range stored.image.sizes {
+			sizes = append(sizes, sizeObjectKey(key, size.name, size.ctype))
+			if err := s.blobs.Put(operationCtx, sizes[len(sizes)-1], size.body, ServingMetadata(size.ctype, file.Name)); err != nil {
+				return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, sizes, err)
+			}
+		}
+		shown, sizeObjects = stored.image.size, sizeObjectsOf(stored.image.sizes)
+		colors, colorsComputed = stored.image.coverColors, true
+	} else if stored.kind == KindImage {
+		colors, colorsComputed = s.coverColors(stored.body)
 	}
 	item := Media{
 		Name:                file.Name,
@@ -194,9 +201,9 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		Size:                int64(len(stored.body)),
 		UploadedBy:          uploadedBy,
 		Kind:                stored.kind,
-		Width:               stored.width,
-		Height:              stored.height,
-		SizeObjects:      stored.storedSizes(),
+		Width:               shown.Width,
+		Height:              shown.Height,
+		SizeObjects:         sizeObjects,
 		Purpose:             purpose.Name,
 		ExpiresAt:           pendingExpiry(purpose, time.Now().UTC()),
 		Key:                 key,
@@ -223,20 +230,39 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	return s.withURL(created), nil
 }
 
-// storedFile is what the purpose's rules make of the file. Images wait
-// their turn to be decoded (acquireImageWork).
+// storedFile is what the purpose's rules make of the file. An image for a
+// purpose is decoded within the decode budget, and an SVG within its own
+// slot too; a wait that runs out is ErrDecodeBusy. A file uploaded without
+// a purpose is never decoded here.
 func (s *service) storedFile(ctx context.Context, purpose Purpose, file UploadedFile) (storedFile, error) {
+	if purpose.LegacyRules {
+		return legacyFile(file)
+	}
 	if isImage(file.Data) {
-		release, err := acquireImageWork(ctx)
+		acquire := s.decoding.Acquire
+		if isSVG(file.Data) && purpose.Image.RasterizeSVG {
+			acquire = s.decoding.AcquireSVG
+		}
+		release, err := acquire(ctx)
 		if err != nil {
 			return storedFile{}, err
 		}
 		defer release()
 	}
-	if purpose.LegacyRules {
-		return legacyFile(purpose, file)
+	return purposeFile(ctx, purpose, file.Data, s.decoding.svgLimit)
+}
+
+// coverColors picks the cover colours of an image stored as uploaded,
+// within the decode budget. They are decoration: when no decoding slot is
+// free the upload does not wait; the image is stored without them
+// (computed false), and the cover colour backfill picks them later.
+func (s *service) coverColors(data []byte) ([]string, bool) {
+	release, ok := s.decoding.TryAcquire()
+	if !ok {
+		return []string{}, false
 	}
-	return purposeFile(purpose, file.Data)
+	defer release()
+	return ExtractCoverColors(data), true
 }
 
 // pendingExpiry is when a Media of the purpose uploaded at now is purged if
@@ -252,12 +278,10 @@ func pendingExpiry(purpose Purpose, now time.Time) *time.Time {
 
 // legacyFile applies the rules Media uploaded without a purpose had before
 // Media purpose: a raster image or SVG up to 10 MiB, a PDF named .pdf up to
-// 20 MiB, or any other named file up to 20 MiB, served as a download.
-//
-// A raster image keeps its own bytes, only stripped of metadata; its sizes
-// are made from it (keptImageSizes), and an image core cannot decode is
-// stored without them, as before.
-func legacyFile(purpose Purpose, file UploadedFile) (storedFile, error) {
+// 20 MiB, or any other named file up to 20 MiB, served as a download. An
+// image keeps its own bytes, stripped of metadata (sanitizeImage), and gets
+// no sizes.
+func legacyFile(file UploadedFile) (storedFile, error) {
 	name, contentType, data := file.Name, file.ContentType, file.Data
 	if strings.HasPrefix(contentType, "image/") || isImage(data) {
 		if len(data) > maxImageBytes {
@@ -267,12 +291,7 @@ func legacyFile(purpose Purpose, file UploadedFile) (storedFile, error) {
 		if err != nil {
 			return storedFile{}, err
 		}
-		stored := storedFile{body: clean, ctype: detected, kind: KindImage, keyPrefix: "images/", sized: true}
-		if isRasterType(detected) {
-			kept := keptImageSizes(clean, purpose.Image.Sizes)
-			stored.width, stored.height, stored.variants = kept.size.Width, kept.size.Height, kept.variants
-		}
-		return stored, nil
+		return storedFile{body: clean, ctype: detected, kind: KindImage, keyPrefix: "images/"}, nil
 	}
 	if strings.EqualFold(strings.TrimSpace(contentType), pdfType) || isPDF(data) {
 		if len(data) > maxFileBytes || !isPDF(data) {
@@ -293,53 +312,48 @@ func legacyFile(purpose Purpose, file UploadedFile) (storedFile, error) {
 }
 
 // purposeFile accepts a file by its content under its purpose's rules. The
-// name and the declared type play no part.
-func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
+// name and the declared type play no part. The caller holds a decoding
+// slot for an image.
+func purposeFile(ctx context.Context, purpose Purpose, data []byte, svgLimit time.Duration) (storedFile, error) {
 	if int64(len(data)) > purpose.MaxBytes {
 		return storedFile{}, &PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: purpose.MaxBytes}
 	}
 	detected := detectContentType(data)
-	if detected == "" || !slices.Contains(purpose.Types, detected) {
-		return storedFile{}, &PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: purpose.Name, AllowedTypes: purpose.Types}
+	if detected == "" || !purpose.accepts(detected) {
+		return storedFile{}, purpose.typeRefusal()
 	}
 	if detected == pdfType {
 		return storedFile{body: data, ctype: pdfType, kind: KindFile, keyPrefix: "files/"}, nil
 	}
-	if detected == svgType {
-		// The ceilings let a purpose name SVG only with rasterize_svg.
-		img, err := rasterizeSVG(data, purpose.Image)
+	var img reencodedImage
+	var err error
+	switch {
+	case detected == svgType:
+		img, err = rasterizeSVG(ctx, data, purpose.Image, svgLimit)
 		if errors.Is(err, errSVGTooLarge) {
 			return storedFile{}, &PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: maxSVGBytes}
 		}
-		if errors.Is(err, errSVGNotDrawn) {
-			return storedFile{}, &PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: purpose.Name, AllowedTypes: purpose.Types}
-		}
+	case purpose.Image.Reencode:
+		img, err = reencodeRaster(data, purpose.Image)
+	default:
+		clean, ctype, err := sanitizeImage(data)
 		if err != nil {
 			return storedFile{}, err
 		}
-		return storedFile{body: img.body, ctype: img.ctype, kind: KindImage, keyPrefix: "images/", width: img.width, height: img.height, variants: img.variants, sized: true}, nil
+		return storedFile{body: clean, ctype: ctype, kind: KindImage, keyPrefix: "images/"}, nil
 	}
-	if purpose.Image.Reencode {
-		img, err := reencodeRaster(data, purpose.Image)
-		var tooMany errTooManyPixels
-		if errors.As(err, &tooMany) {
-			return storedFile{}, &PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: purpose.MaxBytes, MaxPixels: tooMany.limit}
-		}
-		if errors.Is(err, ErrInvalid) {
-			// The content starts like an accepted type but is not a valid
-			// image of it.
-			return storedFile{}, &PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: purpose.Name, AllowedTypes: purpose.Types}
-		}
-		if err != nil {
-			return storedFile{}, err
-		}
-		return storedFile{body: img.body, ctype: img.ctype, kind: KindImage, keyPrefix: "images/", width: img.width, height: img.height, variants: img.variants, sized: true}, nil
-	}
-	clean, ctype, err := sanitizeImage(data)
-	if err != nil {
+	var tooLarge errImageTooLarge
+	switch {
+	case errors.As(err, &tooLarge):
+		return storedFile{}, &PurposeRefusal{Err: ErrImageTooLarge, Purpose: purpose.Name, MaxPixels: tooLarge.maxPixels}
+	case errors.Is(err, ErrInvalid), errors.Is(err, errSVGNotDrawn):
+		// The content starts like an accepted type but is not a valid
+		// image of it, or an SVG core does not rasterize.
+		return storedFile{}, purpose.typeRefusal()
+	case err != nil:
 		return storedFile{}, err
 	}
-	return storedFile{body: clean, ctype: ctype, kind: KindImage, keyPrefix: "images/"}, nil
+	return imageFile(img), nil
 }
 
 // cleanupRejectedUpload deletes what a refused upload wrote: the stored

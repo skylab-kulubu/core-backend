@@ -10,9 +10,9 @@ func TestAddressesPointAnImageSizeAtItsStoredCopyOrAtCloudflare(t *testing.T) {
 	t.Parallel()
 	photo := media.Media{
 		Key: "images/abc", Kind: media.KindImage, Type: "image/jpeg", Width: 1600, Height: 1200,
-		SizeObjects: map[string]media.ImageSize{"card": {Width: 400, Height: 300}},
+		SizeObjects: map[string]media.SizeObject{"card": {ImageSize: media.ImageSize{Width: 400, Height: 300}, Type: "image/jpeg"}},
 	}
-	small := media.Media{Key: "images/small", Kind: media.KindImage, Type: "image/png", Width: 300, Height: 200, SizeObjects: map[string]media.ImageSize{}}
+	small := media.Media{Key: "images/small", Kind: media.KindImage, Type: "image/png", Width: 300, Height: 200, SizeObjects: map[string]media.SizeObject{}}
 	stored := media.Addresses{Base: "https://cdn.example.test/"}
 	cloudflare := media.Addresses{Base: "https://cdn.example.test", Mode: media.AddressCloudflare}
 
@@ -24,7 +24,7 @@ func TestAddressesPointAnImageSizeAtItsStoredCopyOrAtCloudflare(t *testing.T) {
 		px        int
 		want      media.ImageAddress
 	}{
-		{"stored size", stored, photo, "card", 400, media.ImageAddress{URL: "https://cdn.example.test/images/abc/card", Width: 400, Height: 300}},
+		{"stored size", stored, photo, "card", 400, media.ImageAddress{URL: "https://cdn.example.test/images/abc/card.jpg", Width: 400, Height: 300}},
 		{"size not stored is the original", stored, photo, "page", 1200, media.ImageAddress{URL: "https://cdn.example.test/images/abc", Width: 1600, Height: 1200}},
 		{"cloudflare card", cloudflare, photo, "card", 400, media.ImageAddress{URL: "https://cdn.example.test/cdn-cgi/image/width=400,height=400,fit=scale-down/images/abc", Width: 400, Height: 300}},
 		{"cloudflare page", cloudflare, photo, "page", 1200, media.ImageAddress{URL: "https://cdn.example.test/cdn-cgi/image/width=1200,height=1200,fit=scale-down/images/abc", Width: 1200, Height: 900}},
@@ -55,5 +55,14 @@ func TestImageAddressModeComesFromConfiguration(t *testing.T) {
 	}
 	if _, err := media.ImageAddressModeFromEnv(func(string) string { return "imgix" }); err == nil {
 		t.Fatal("an unknown mode is accepted")
+	}
+}
+
+// An address is never a bare key: without a base of its own, the
+// configured one (by default the production CDN).
+func TestAddressesWithoutABaseUseTheConfiguredOne(t *testing.T) {
+	t.Parallel()
+	if got := (media.Addresses{}).Object("images/x"); got != media.PublicURL("", "images/x") || got != "https://cdn.yildizskylab.com/images/x" {
+		t.Fatalf("got %q", got)
 	}
 }

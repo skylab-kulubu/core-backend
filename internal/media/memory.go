@@ -93,12 +93,12 @@ func (s *MemoryStore) SetServingPolicyApplied(_ context.Context, id uuid.UUID) e
 	return nil
 }
 
-func (s *MemoryStore) ListPendingImageSizes(_ context.Context, after uuid.UUID, limit int) ([]Media, error) {
+func (s *MemoryStore) ListPendingImageSizes(_ context.Context, purposes []string, after uuid.UUID, limit int) ([]Media, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Media, 0)
 	for _, m := range s.byID {
-		if m.Kind != KindImage || m.SizeObjects != nil || m.DeletedAt != nil || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil || bytes.Compare(m.ID[:], after[:]) <= 0 {
+		if m.Kind != KindImage || m.SizeObjects != nil || !slices.Contains(purposes, m.Purpose) || m.DeletedAt != nil || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil || bytes.Compare(m.ID[:], after[:]) <= 0 {
 			continue
 		}
 		out = append(out, m)
@@ -110,7 +110,7 @@ func (s *MemoryStore) ListPendingImageSizes(_ context.Context, after uuid.UUID, 
 	return out, nil
 }
 
-func (s *MemoryStore) SetImageSizes(_ context.Context, id uuid.UUID, size ImageSize, variants map[string]ImageSize) error {
+func (s *MemoryStore) SetImageSizes(_ context.Context, id uuid.UUID, size ImageSize, objects map[string]SizeObject) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, ok := s.byID[id]
@@ -124,10 +124,7 @@ func (s *MemoryStore) SetImageSizes(_ context.Context, id uuid.UUID, size ImageS
 		return ErrPurgeInProgress
 	}
 	m.Width, m.Height = size.Width, size.Height
-	m.SizeObjects = maps.Clone(variants)
-	if m.SizeObjects == nil {
-		m.SizeObjects = map[string]ImageSize{}
-	}
+	m.SizeObjects = maps.Clone(objects)
 	s.byID[id] = m
 	return nil
 }

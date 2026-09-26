@@ -109,13 +109,16 @@ func main() {
 	media.MaintainUploadStaging(mediaPurgeContext, mediaStore, blobs, uploadStagingConfig, func(err error) {
 		log.Printf("media upload staging cleanup: %v", err)
 	})
-	media.MaintainCoverColorBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
+	// One decode budget for everything that decodes an image, so that
+	// together they hold at most its slots of decoded images in memory.
+	decodeBudget := media.NewDecodeBudget(media.DecodeBudgetConfig{})
+	media.MaintainCoverColorBackfill(context.Background(), mediaStore, blobs, decodeBudget, time.Minute, func(err error) {
 		log.Printf("media cover color backfill: %v", err)
 	})
 	media.MaintainServingPolicyBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
 		log.Printf("media serving policy backfill: %v", err)
 	})
-	media.MaintainImageSizeBackfill(context.Background(), mediaStore, blobs, mediaPurposes, time.Minute, func(err error) {
+	media.MaintainImageSizeBackfill(context.Background(), mediaStore, blobs, mediaPurposes, decodeBudget, time.Minute, func(err error) {
 		log.Printf("media image size backfill: %v", err)
 	})
 	certificate.MaintainAssetServingPolicyBackfill(context.Background(), certs, blobs, time.Minute, func(err error) {
@@ -391,6 +394,7 @@ func main() {
 			UploadStagingGrace: uploadStagingConfig.Grace,
 			Catalogue:          mediaPurposes,
 			ImageAddressMode:   imageAddressMode,
+			DecodeBudget:       decodeBudget,
 		}),
 		URLs:                   urlSvc,
 		Certificates:           certSvc,

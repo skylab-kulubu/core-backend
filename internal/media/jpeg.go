@@ -184,3 +184,88 @@ func jpegScans(data []byte) int {
 	}
 	return scans
 }
+
+// jpegFrame is a JPEG's frame header (SOF), read without decoding.
+type jpegFrame struct {
+	width, height int
+	progressive   bool
+	// components are each component's sampling factors.
+	components []struct{ h, v int }
+}
+
+// decodeCost is what image/jpeg allocates for the frame: each component's
+// sample plane, over whole MCUs; for a progressive JPEG also the
+// coefficients it keeps between scans, a 256-byte block per 8×8 samples;
+// and for a CMYK JPEG the 4-byte-a-pixel image it converts to.
+func (f jpegFrame) decodeCost() int64 {
+	hmax, vmax := 1, 1
+	for _, c := range f.components {
+		hmax, vmax = max(hmax, c.h), max(vmax, c.v)
+	}
+	mcusX := int64((f.width + 8*hmax - 1) / (8 * hmax))
+	mcusY := int64((f.height + 8*vmax - 1) / (8 * vmax))
+	var cost int64
+	for _, c := range f.components {
+		blocks := mcusX * mcusY * int64(c.h*c.v)
+		cost += blocks * 64
+		if f.progressive {
+			cost += blocks * 256
+		}
+	}
+	if len(f.components) == 4 {
+		cost += int64(f.width) * int64(f.height) * 4
+	}
+	return cost
+}
+
+// readJPEGFrame reads the first frame header (SOF0–SOF15 but DHT, JPG and
+// DAC) of a JPEG, walking the segments before it.
+func readJPEGFrame(data []byte) (jpegFrame, bool) {
+	if !isJPEG(data) {
+		return jpegFrame{}, false
+	}
+	pos := 2
+	for pos+4 <= len(data) {
+		if data[pos] != 0xFF {
+			return jpegFrame{}, false
+		}
+		marker := data[pos+1]
+		if marker == 0xFF {
+			pos++
+			continue
+		}
+		size := int(binary.BigEndian.Uint16(data[pos+2:]))
+		if size < 2 || pos+2+size > len(data) {
+			return jpegFrame{}, false
+		}
+		payload := data[pos+4 : pos+2+size]
+		if marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
+			if len(payload) < 6 {
+				return jpegFrame{}, false
+			}
+			frame := jpegFrame{
+				height:      int(binary.BigEndian.Uint16(payload[1:])),
+				width:       int(binary.BigEndian.Uint16(payload[3:])),
+				progressive: marker == 0xC2 || marker == 0xC6 || marker == 0xCA || marker == 0xCE,
+			}
+			count := int(payload[5])
+			if count == 0 || len(payload) < 6+3*count {
+				return jpegFrame{}, false
+			}
+			for i := 0; i < count; i++ {
+				sampling := payload[6+3*i+1]
+				h, v := int(sampling>>4), int(sampling&0x0F)
+				if h == 0 || v == 0 {
+					return jpegFrame{}, false
+				}
+				frame.components = append(frame.components, struct{ h, v int }{h, v})
+			}
+			return frame, true
+		}
+		if marker == 0xDA || marker == 0xD9 {
+			return jpegFrame{}, false
+		}
+		pos += 2 + size
+	}
+	return jpegFrame{}, false
+}

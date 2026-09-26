@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -19,10 +20,22 @@ func NewMediaHandler(svc media.Service) *MediaHandler {
 	return &MediaHandler{svc: svc}
 }
 
+// mediaBusyRetrySeconds is the Retry-After of media_busy.
+const mediaBusyRetrySeconds = 5
+
 // purposeProblem answers an upload its Media purpose refused: problem+json
-// with a stable code and what the caller needs to fix the upload. handled is
-// false for any other error.
+// with a stable code and what the caller needs to fix the upload. It also
+// answers an upload that waited too long for a decoding slot (503
+// media_busy). handled is false for any other error.
 func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
+	if errors.Is(err, media.ErrDecodeBusy) {
+		// Nothing is stored; the same upload succeeds once other images
+		// are decoded.
+		c.Set(fiber.HeaderRetryAfter, strconv.Itoa(mediaBusyRetrySeconds))
+		return true, problemWithFields(c, fiber.StatusServiceUnavailable, "Service Unavailable",
+			"Core is busy decoding other images; retry the upload.", "media_busy",
+			fiber.Map{"retryAfterSeconds": mediaBusyRetrySeconds})
+	}
 	var refusal *media.PurposeRefusal
 	if !errors.As(err, &refusal) {
 		return false, nil
@@ -36,14 +49,14 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 		fields["allowedTypes"] = refusal.AllowedTypes
 		return true, problemWithFields(c, fiber.StatusUnsupportedMediaType, "Unsupported Media Type",
 			"The file's content is not a type this purpose accepts.", "media_type_not_allowed", fields)
+	case errors.Is(err, media.ErrImageTooLarge):
+		fields["maxPixels"] = refusal.MaxPixels
+		return true, problemWithFields(c, fiber.StatusRequestEntityTooLarge, "Content Too Large",
+			"The image has more pixels than core decodes.", "media_image_too_large", fields)
 	case errors.Is(err, media.ErrTooLarge):
 		fields["maxBytes"] = refusal.MaxBytes
-		detail := "The file is larger than this purpose allows."
-		if refusal.MaxPixels > 0 {
-			fields["maxPixels"] = refusal.MaxPixels
-			detail = "The image has more pixels than core decodes."
-		}
-		return true, problemWithFields(c, fiber.StatusRequestEntityTooLarge, "Content Too Large", detail, "media_too_large", fields)
+		return true, problemWithFields(c, fiber.StatusRequestEntityTooLarge, "Content Too Large",
+			"The file is larger than this purpose allows.", "media_too_large", fields)
 	case errors.Is(err, media.ErrPurposeForbidden):
 		return true, problemWithFields(c, fiber.StatusForbidden, "Forbidden",
 			"The caller may not upload Media for this purpose.", "purpose_forbidden", fields)

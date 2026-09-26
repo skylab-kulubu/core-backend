@@ -35,7 +35,7 @@ type rowQuerier interface {
 
 // insertMedia writes a record prepared by newRecord.
 func insertMedia(ctx context.Context, db rowQuerier, m Media) (Media, error) {
-	variants, err := sizeObjectsColumn(m.SizeObjects)
+	sizeObjects, err := sizeObjectsColumn(m.SizeObjects)
 	if err != nil {
 		return Media{}, err
 	}
@@ -43,7 +43,7 @@ func insertMedia(ctx context.Context, db rowQuerier, m Media) (Media, error) {
 		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at, width, height, size_objects)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)
 		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose, m.Status, m.ExpiresAt,
-		positiveOrNil(m.Width), positiveOrNil(m.Height), variants))
+		positiveOrNil(m.Width), positiveOrNil(m.Height), sizeObjects))
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Media{}, ErrForbidden
 	}
@@ -447,8 +447,8 @@ func scanMedia(row rowScanner) (Media, error) {
 	var m Media
 	var created, updated time.Time
 	var width, height *int
-	var variants []byte
-	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt, &width, &height, &variants)
+	var sizeObjects []byte
+	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt, &width, &height, &sizeObjects)
 	if err != nil {
 		return m, err
 	}
@@ -458,12 +458,12 @@ func scanMedia(row rowScanner) (Media, error) {
 	if width != nil && height != nil {
 		m.Width, m.Height = *width, *height
 	}
-	if variants != nil {
-		if err := json.Unmarshal(variants, &m.SizeObjects); err != nil {
-			return m, fmt.Errorf("media %s variants: %w", m.ID, err)
+	if sizeObjects != nil {
+		if err := json.Unmarshal(sizeObjects, &m.SizeObjects); err != nil {
+			return m, fmt.Errorf("media %s size objects: %w", m.ID, err)
 		}
 		if m.SizeObjects == nil {
-			m.SizeObjects = map[string]ImageSize{}
+			m.SizeObjects = map[string]SizeObject{}
 		}
 	}
 	m.CreatedAt = created
@@ -473,11 +473,11 @@ func scanMedia(row rowScanner) (Media, error) {
 
 // sizeObjectsColumn is how SizeObjects is written: NULL while the sizes are
 // not made, a JSON object once they are.
-func sizeObjectsColumn(variants map[string]ImageSize) (*string, error) {
-	if variants == nil {
+func sizeObjectsColumn(objects map[string]SizeObject) (*string, error) {
+	if objects == nil {
 		return nil, nil
 	}
-	encoded, err := json.Marshal(variants)
+	encoded, err := json.Marshal(objects)
 	if err != nil {
 		return nil, err
 	}
@@ -492,14 +492,17 @@ func positiveOrNil(n int) *int {
 	return &n
 }
 
-func (s *PostgresStore) ListPendingImageSizes(ctx context.Context, after uuid.UUID, limit int) ([]Media, error) {
+func (s *PostgresStore) ListPendingImageSizes(ctx context.Context, purposes []string, after uuid.UUID, limit int) ([]Media, error) {
 	if limit <= 0 {
 		limit = 25
 	}
+	// The conditions repeat media_size_objects_pending_idx's predicate
+	// literally, so the planner can use the partial index.
 	rows, err := s.pool.Query(ctx, `SELECT `+mediaCols+` FROM media
-		WHERE size_objects IS NULL AND kind = $1 AND deleted_at IS NULL
-		  AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL AND id > $2
-		ORDER BY id LIMIT $3`, KindImage, after, limit)
+		WHERE size_objects IS NULL AND kind = 'IMAGE' AND deleted_at IS NULL
+		  AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL
+		  AND purpose = ANY($1) AND id > $2
+		ORDER BY id LIMIT $3`, purposes, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -515,11 +518,8 @@ func (s *PostgresStore) ListPendingImageSizes(ctx context.Context, after uuid.UU
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) SetImageSizes(ctx context.Context, id uuid.UUID, size ImageSize, variants map[string]ImageSize) error {
-	if variants == nil {
-		variants = map[string]ImageSize{}
-	}
-	column, err := sizeObjectsColumn(variants)
+func (s *PostgresStore) SetImageSizes(ctx context.Context, id uuid.UUID, size ImageSize, objects map[string]SizeObject) error {
+	column, err := sizeObjectsColumn(objects)
 	if err != nil {
 		return err
 	}

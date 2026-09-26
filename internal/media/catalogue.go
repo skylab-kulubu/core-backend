@@ -101,7 +101,8 @@ type Purpose struct {
 	// Uploader is who may upload Media of this purpose.
 	Uploader authz.MediaUploader
 	// Types are the content types the purpose accepts, detected from the
-	// file's content, never from its name or declared type.
+	// file's content, never from its name or declared type. SVG is never
+	// among them: image.rasterize_svg accepts it (acceptedTypes).
 	Types      []string
 	MaxBytes   int64
 	Visibility Visibility
@@ -121,17 +122,24 @@ type Purpose struct {
 	LegacyRules bool
 }
 
-// ImageHandling is what core does with a raster image of a purpose:
-// re-encode it (Reencode) within MaxDimension (MaxImageDimension when 0),
-// store its Variants beside it (size name, one of SizeCard and SizePage, to
-// its longer side in pixels), and rasterize an SVG to PNG (RasterizeSVG).
-// A purpose that does not re-encode keeps the image's own bytes, stripped of
-// metadata, and still gets its Variants.
+// ImageHandling is what core does with an image of a purpose: re-encode it
+// (Reencode) within MaxDimension (MaxImageDimension when 0), store its Sizes
+// beside it (size name, SizeCard or SizePage, to its longer side in
+// pixels), and accept SVG, stored as PNG (RasterizeSVG, the one switch for
+// SVG).
 type ImageHandling struct {
 	Reencode     bool           `json:"reencode"`
 	MaxDimension int            `json:"max_dimension"`
 	Sizes        map[string]int `json:"sizes"`
 	RasterizeSVG bool           `json:"rasterize_svg"`
+}
+
+// maxDimension is the longer side a re-encoded image is scaled down to.
+func (h ImageHandling) maxDimension() int {
+	if h.MaxDimension > 0 {
+		return h.MaxDimension
+	}
+	return MaxImageDimension
 }
 
 type catalogueFile struct {
@@ -286,6 +294,37 @@ func (e purposeEntry) purpose(name string) (Purpose, error) {
 		}
 	}
 	return p, nil
+}
+
+// purposesWithSizes are the purposes whose images get sizes, in name
+// order.
+func (c Catalogue) purposesWithSizes() []string {
+	var out []string
+	for _, name := range slices.Sorted(maps.Keys(c.purposes)) {
+		if len(c.purposes[name].Image.Sizes) > 0 {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// acceptedTypes are the content types the purpose accepts: its types, and
+// SVG when it rasterizes SVG (image.rasterize_svg), the one switch for SVG.
+func (p Purpose) acceptedTypes() []string {
+	if p.Image.RasterizeSVG {
+		return append(slices.Clone(p.Types), svgType)
+	}
+	return p.Types
+}
+
+// accepts reports whether the purpose accepts content of the type.
+func (p Purpose) accepts(contentType string) bool {
+	return slices.Contains(p.acceptedTypes(), contentType)
+}
+
+// typeRefusal refuses content the purpose does not accept.
+func (p Purpose) typeRefusal() error {
+	return &PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: p.Name, AllowedTypes: p.acceptedTypes()}
 }
 
 // Lookup returns the Media purpose with this name.

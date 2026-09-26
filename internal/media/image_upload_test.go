@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
@@ -28,6 +29,11 @@ func solidJPEG(t *testing.T, w, h int, c color.Color) []byte {
 			img.Set(x, y, c)
 		}
 	}
+	return encodeJPEG(t, img)
+}
+
+func encodeJPEG(t *testing.T, img image.Image) []byte {
+	t.Helper()
 	var out bytes.Buffer
 	if err := jpeg.Encode(&out, img, &jpeg.Options{Quality: 90}); err != nil {
 		t.Fatal(err)
@@ -140,7 +146,7 @@ func TestService_PurposeStoresTheCatalogueSizesOfAnImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]image.Point{"card": {400, 300}, "page": {1200, 900}} {
-		key := created.Key + "/" + name
+		key := created.Key + "/" + name + ".jpg"
 		stored, ok := blobs.Get(key)
 		if !ok {
 			t.Fatalf("%s: no object at %s", name, key)
@@ -153,7 +159,7 @@ func TestService_PurposeStoresTheCatalogueSizesOfAnImage(t *testing.T) {
 			t.Errorf("%s: metadata %+v", name, meta)
 		}
 		got := created.Sizes[name]
-		wantURL := "https://cdn.example.test/" + created.Key + "/" + name
+		wantURL := "https://cdn.example.test/" + created.Key + "/" + name + ".jpg"
 		if got.URL != wantURL || got.Width != want.X || got.Height != want.Y {
 			t.Errorf("%s: address %+v, want %s %v", name, got, wantURL, want)
 		}
@@ -169,8 +175,8 @@ func TestService_ASizeAnImageAlreadyFitsIsItsOriginal(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"card", "page"} {
-		if _, ok := blobs.Get(created.Key + "/" + name); ok {
-			t.Errorf("%s: stored a copy of an image that already fits", name)
+		if keys := blobs.Keys(); len(keys) != 1 {
+			t.Errorf("%s: stored a copy of an image that already fits: %v", name, keys)
 		}
 		got := created.Sizes[name]
 		if got.URL != created.URL || got.Width != 300 || got.Height != 200 {
@@ -206,8 +212,8 @@ func TestService_PurposeRefusesAnImageWithTooManyPixelsBeforeDecodingIt(t *testi
 
 	_, err := svc.UploadForPurpose(context.Background(), signedIn("64646464-6464-6464-6464-646464646464"), "profile_picture", uploaded("bomb.png", "image/png", pngClaiming(30000, 30000)))
 	var refusal *media.PurposeRefusal
-	if !errors.Is(err, media.ErrTooLarge) || !errors.As(err, &refusal) {
-		t.Fatalf("err = %v, want %v", err, media.ErrTooLarge)
+	if !errors.Is(err, media.ErrImageTooLarge) || !errors.As(err, &refusal) {
+		t.Fatalf("err = %v, want %v", err, media.ErrImageTooLarge)
 	}
 	if refusal.MaxPixels != media.MaxImagePixels || refusal.Purpose != "profile_picture" {
 		t.Fatalf("refusal %+v", refusal)
@@ -421,7 +427,7 @@ func TestPurgeRemovesTheStoredSizesWithTheImage(t *testing.T) {
 	}
 	objects := func(m media.Media) []string {
 		var left []string
-		for _, key := range []string{m.Key, m.Key + "/card", m.Key + "/page"} {
+		for _, key := range []string{m.Key, m.Key + "/card.jpg", m.Key + "/page.jpg"} {
 			if _, ok := blobs.Get(key); ok {
 				left = append(left, key)
 			}
@@ -465,7 +471,11 @@ func TestService_ARejectedUploadLeavesNoStoredSize(t *testing.T) {
 	}
 }
 
-func TestService_LegacyUploadKeepsItsImageAndStoresItsSizes(t *testing.T) {
+// Media uploaded without a purpose keep today's rules: stripped, not
+// re-encoded, and no sizes. Sizes would cost every such upload a decode
+// and two more writes, and would publish card and page copies of images
+// (Skyforms Answer files among them) nobody asked to be copied.
+func TestService_LegacyUploadKeepsItsImageWithoutSizes(t *testing.T) {
 	t.Parallel()
 	svc, blobs := setup(t)
 	p := signedIn("72727272-7272-7272-7272-727272727272")
@@ -478,28 +488,11 @@ func TestService_LegacyUploadKeepsItsImageAndStoresItsSizes(t *testing.T) {
 	if original, _ := blobs.Get(created.Key); !bytes.Equal(original, photo) {
 		t.Fatal("a legacy image was re-encoded")
 	}
-	if created.Width != 1600 || created.Height != 1200 {
-		t.Fatalf("recorded %d×%d", created.Width, created.Height)
+	if keys := blobs.Keys(); len(keys) != 1 || keys[0] != created.Key {
+		t.Fatalf("objects %v, want only the image", keys)
 	}
-	for name, want := range map[string]image.Point{"card": {400, 300}, "page": {1200, 900}} {
-		stored, ok := blobs.Get(created.Key + "/" + name)
-		if !ok {
-			t.Fatalf("%s not stored", name)
-		}
-		if img, _ := decodeStored(t, stored); img.Bounds().Size() != want {
-			t.Errorf("%s stored %v", name, img.Bounds().Size())
-		}
-		if got := created.Sizes[name]; got.URL != "https://cdn.example.test/"+created.Key+"/"+name {
-			t.Errorf("%s address %+v", name, got)
-		}
-	}
-
-	logo, err := svc.Upload(context.Background(), p, "logo.svg", "image/svg+xml", []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if logo.Sizes != nil || len(blobs.Keys()) != 3+1 {
-		t.Fatalf("an SVG got sizes %v, objects %v", logo.Sizes, blobs.Keys())
+	if created.Sizes != nil || created.SizeObjects != nil {
+		t.Fatalf("a legacy image got sizes %v %v", created.Sizes, created.SizeObjects)
 	}
 }
 
@@ -564,4 +557,36 @@ func TestService_PurposeRefusesAJPEGWithMoreScansThanADecoderNeeds(t *testing.T)
 	if len(blobs.Keys()) != stored {
 		t.Fatalf("stored %v", blobs.Keys())
 	}
+}
+
+// Every purge deletes every object an image's sizes may be stored at, JPEG
+// or PNG, recorded or not: no size outlives its Media.
+func TestPurgeDeletesEverySizeObjectOfAMedia(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := media.NewMemoryStore()
+	blobs := media.NewMemoryBlob()
+	deletedAt := time.Now().UTC().Add(-31 * 24 * time.Hour)
+	item, err := store.Create(ctx, media.Media{
+		Name: "cover.png", Type: "image/png", Kind: media.KindImage, Key: "images/every-size", UploadedBy: signedInID(), DeletedAt: &deletedAt,
+		SizeObjects: map[string]media.SizeObject{"card": {ImageSize: media.ImageSize{Width: 400, Height: 300}, Type: "image/png"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"images/every-size", "images/every-size/card.png", "images/every-size/card.jpg", "images/every-size/page.png", "images/every-size/page.jpg"} {
+		if err := blobs.Put(ctx, key, pngDot(), media.BlobMetadata{ContentType: "image/png"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if report, err := media.PurgeDeleted(ctx, store, blobs, time.Now().UTC(), 30*24*time.Hour, 25); err != nil || report.Purged != 1 {
+		t.Fatalf("purge %+v %v", report, err)
+	}
+	if left := blobs.Keys(); len(left) != 0 {
+		t.Fatalf("left after the purge of %s: %v", item.ID, left)
+	}
+}
+
+func signedInID() uuid.UUID {
+	return uuid.MustParse("84848484-8484-8484-8484-848484848484")
 }

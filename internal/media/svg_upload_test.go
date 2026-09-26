@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"image"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ import (
 // svgService uploads cms_image, the purpose that rasterizes SVG, with core
 // as its attacher: nothing else can attach it until the service attach API
 // exists.
-func svgService(t *testing.T) (media.Service, *media.MemoryBlob) {
+func svgService(t *testing.T, budget *media.DecodeBudget) (media.Service, *media.MemoryBlob) {
 	t.Helper()
 	catalogue, err := media.ParseCatalogue(reviewedCatalogueWith(t, func(purposes purposeEntries) {
 		purposes["cms_image"]["attach"] = "core"
@@ -26,7 +27,7 @@ func svgService(t *testing.T) (media.Service, *media.MemoryBlob) {
 	}
 	blobs := media.NewMemoryBlob()
 	return media.NewServiceWithOptions(media.NewMemoryStore(), blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test",
-		media.ServiceOptions{Catalogue: catalogue}), blobs
+		media.ServiceOptions{Catalogue: catalogue, DecodeBudget: budget}), blobs
 }
 
 const redLogo = `<?xml version="1.0"?>
@@ -37,7 +38,7 @@ const redLogo = `<?xml version="1.0"?>
 
 func TestService_SVGIsStoredAsAPNGOfIt(t *testing.T) {
 	t.Parallel()
-	svc, blobs := svgService(t)
+	svc, blobs := svgService(t, nil)
 
 	created, err := svc.UploadForPurpose(context.Background(), signedIn("75757575-7575-7575-7575-757575757575"), "cms_image", uploaded("logo.svg", "image/svg+xml", []byte(redLogo)))
 	if err != nil {
@@ -59,14 +60,14 @@ func TestService_SVGIsStoredAsAPNGOfIt(t *testing.T) {
 	if meta, _ := blobs.Metadata(created.Key); meta != (media.BlobMetadata{ContentType: "image/png"}) {
 		t.Fatalf("served as %+v", meta)
 	}
-	if card := created.Sizes["card"]; card.URL != created.URL+"/card" || card.Width != 400 || card.Height != 200 {
+	if card := created.Sizes["card"]; card.URL != created.URL+"/card.png" || card.Width != 400 || card.Height != 200 {
 		t.Fatalf("card %+v", card)
 	}
 }
 
 func TestService_SVGThatCoreDoesNotRasterizeIsRefused(t *testing.T) {
 	t.Parallel()
-	svc, blobs := svgService(t)
+	svc, blobs := svgService(t, nil)
 	p := signedIn("76767676-7676-7676-7676-767676767676")
 	manyShapes := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">` + strings.Repeat(`<rect width="1" height="1"/>`, 10001) + `</svg>`
 
@@ -105,18 +106,17 @@ func TestService_SVGForAPurposeThatDoesNotRasterizeIsRefused(t *testing.T) {
 	}
 }
 
-// Not parallel: it shortens the process's time limit for drawing an SVG.
 func TestService_SVGThatTakesTooLongToDrawIsRefused(t *testing.T) {
-	svc, _ := svgService(t)
+	t.Parallel()
+	svc, _ := svgService(t, nil)
+	short, _ := svgService(t, media.NewDecodeBudget(media.DecodeBudgetConfig{SVGDrawingLimit: 10 * time.Millisecond}))
 	p := signedIn("78787878-7878-7878-7878-787878787878")
 	// Every shape costs a pass over the whole canvas.
 	detailed := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">` + strings.Repeat(`<rect width="10" height="10" fill="#123456"/>`, 40) + `</svg>`)
 
-	restore := media.LimitSVGDrawingTo(10 * time.Millisecond)
 	start := time.Now()
-	_, err := svc.UploadForPurpose(context.Background(), p, "cms_image", uploaded("detailed.svg", "image/svg+xml", detailed))
+	_, err := short.UploadForPurpose(context.Background(), p, "cms_image", uploaded("detailed.svg", "image/svg+xml", detailed))
 	elapsed := time.Since(start)
-	restore()
 	if !errors.Is(err, media.ErrTypeNotAllowed) {
 		t.Fatalf("err = %v, want %v", err, media.ErrTypeNotAllowed)
 	}
@@ -125,5 +125,30 @@ func TestService_SVGThatTakesTooLongToDrawIsRefused(t *testing.T) {
 	}
 	if _, err := svc.UploadForPurpose(context.Background(), p, "cms_image", uploaded("detailed.svg", "image/svg+xml", detailed)); err != nil {
 		t.Fatalf("the same SVG within the usual limit: %v", err)
+	}
+}
+
+// rasterize_svg is the one switch: off, cms_image refuses SVG and lists
+// only its raster types.
+func TestService_SVGIsRefusedWhenTheSwitchIsOff(t *testing.T) {
+	t.Parallel()
+	catalogue, err := media.ParseCatalogue(reviewedCatalogueWith(t, func(purposes purposeEntries) {
+		purposes["cms_image"]["attach"] = "core"
+		purposes["cms_image"]["image"].(map[string]any)["rasterize_svg"] = false
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
+		media.ServiceOptions{Catalogue: catalogue})
+	p := signedIn("85858585-8585-8585-8585-858585858585")
+
+	_, err = svc.UploadForPurpose(context.Background(), p, "cms_image", uploaded("logo.svg", "image/svg+xml", []byte(redLogo)))
+	var refusal *media.PurposeRefusal
+	if !errors.Is(err, media.ErrTypeNotAllowed) || !errors.As(err, &refusal) || slices.Contains(refusal.AllowedTypes, "image/svg+xml") {
+		t.Fatalf("err = %v, refusal %+v", err, refusal)
+	}
+	if _, err := svc.UploadForPurpose(context.Background(), p, "cms_image", uploaded("logo.png", "image/png", pngDot())); err != nil {
+		t.Fatalf("a PNG: %v", err)
 	}
 }

@@ -2,15 +2,20 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"encoding/json"
 	"hash/crc32"
 	"image"
 	"image/png"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
@@ -47,9 +52,9 @@ func TestMediaUploadWithMorePixelsThanCoreDecodesHTTP(t *testing.T) {
 	app := mediaApp(t, authn.Identity{ID: uuid.New()}, media.NewMemoryStore(), media.NewMemoryBlob())
 
 	resp := postMedia(t, app, "profile_picture", "bomb.png", pngClaimingHTTP(30000, 30000))
-	requireProblem(t, resp, fiber.StatusRequestEntityTooLarge, "media_too_large")
-	if resp.body["purpose"] != "profile_picture" || resp.body["maxPixels"] != float64(media.MaxImagePixels) || resp.body["maxBytes"] != float64(5<<20) {
-		t.Fatalf("problem %v", resp.body)
+	requireProblem(t, resp, fiber.StatusRequestEntityTooLarge, "media_image_too_large")
+	if _, ok := resp.body["maxBytes"]; ok || resp.body["purpose"] != "profile_picture" || resp.body["maxPixels"] != float64(media.MaxImagePixels) {
+		t.Fatalf("problem %v, want maxPixels alone", resp.body)
 	}
 }
 
@@ -72,10 +77,44 @@ func TestMediaGetGivesEveryoneTheAddressesOfAnImagesSizesHTTP(t *testing.T) {
 	if got["width"] != float64(1000) || got["height"] != float64(800) {
 		t.Fatalf("anonymous response %v", got)
 	}
-	if card["url"] != url+"/card" || card["width"] != float64(400) || card["height"] != float64(320) {
+	if card["url"] != url+"/card.png" || card["width"] != float64(400) || card["height"] != float64(320) {
 		t.Fatalf("card %v (image at %s)", card, url)
 	}
 	if page["url"] != url || page["width"] != float64(1000) {
 		t.Fatalf("page %v, want the image itself", page)
+	}
+}
+
+func TestMediaUploadAnswersBusyWhenNoDecodingSlotFreesUpHTTP(t *testing.T) {
+	t.Parallel()
+	budget := media.NewDecodeBudget(media.DecodeBudgetConfig{Slots: 1, Wait: 20 * time.Millisecond})
+	svc := media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test",
+		media.ServiceOptions{DecodeBudget: budget})
+	h := NewMediaHandler(svc)
+	app := fiber.New(fiber.Config{BodyLimit: media.MaxUploadBytes + 1<<20})
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(authn.LocalsIdentity, authn.Identity{ID: uuid.New()})
+		return c.Next()
+	})
+	app.Post("/v1/media", h.Upload)
+
+	release, err := budget.Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	body, contentType := multipartFile(t, map[string]string{"purpose": "profile_picture"}, "file", "me.png", pngDotHTTP())
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/media", body)
+	req.Header.Set("Content-Type", contentType)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusServiceUnavailable || got["code"] != "media_busy" || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("status %d Retry-After %q body %v", resp.StatusCode, resp.Header.Get("Retry-After"), got)
 	}
 }

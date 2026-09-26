@@ -40,7 +40,10 @@ func postgresImageStore(t *testing.T) (*media.PostgresStore, uuid.UUID, func(sql
 func TestPostgresMediaKeepsItsImageSizes(t *testing.T) {
 	store, uploader, _ := postgresImageStore(t)
 	ctx := context.Background()
-	sizes := map[string]media.ImageSize{"card": {Width: 400, Height: 300}, "page": {Width: 1200, Height: 900}}
+	sizes := map[string]media.SizeObject{
+		"card": {ImageSize: media.ImageSize{Width: 400, Height: 300}, Type: "image/jpeg"},
+		"page": {ImageSize: media.ImageSize{Width: 1200, Height: 900}, Type: "image/jpeg"},
+	}
 
 	photo, err := store.Create(ctx, media.Media{
 		Name: "photo.jpg", Type: "image/jpeg", Kind: media.KindImage, Key: "images/photo", UploadedBy: uploader,
@@ -51,7 +54,7 @@ func TestPostgresMediaKeepsItsImageSizes(t *testing.T) {
 	}
 	small, err := store.Create(ctx, media.Media{
 		Name: "small.png", Type: "image/png", Kind: media.KindImage, Key: "images/small", UploadedBy: uploader,
-		Purpose: "event_cover", Width: 300, Height: 200, SizeObjects: map[string]media.ImageSize{},
+		Purpose: "event_cover", Width: 300, Height: 200, SizeObjects: map[string]media.SizeObject{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +92,7 @@ func TestPostgresListsTheImagesWaitingForTheirSizes(t *testing.T) {
 	ctx := context.Background()
 	image := func(key string) media.Media {
 		t.Helper()
-		created, err := store.Create(ctx, media.Media{Name: key, Type: "image/png", Kind: media.KindImage, Key: key, UploadedBy: uploader})
+		created, err := store.Create(ctx, media.Media{Name: key, Type: "image/png", Kind: media.KindImage, Key: key, UploadedBy: uploader, Purpose: "event_cover"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +100,7 @@ func TestPostgresListsTheImagesWaitingForTheirSizes(t *testing.T) {
 	}
 	waiting := image("images/waiting")
 	done, err := store.Create(ctx, media.Media{
-		Name: "done", Type: "image/png", Kind: media.KindImage, Key: "images/done", UploadedBy: uploader, SizeObjects: map[string]media.ImageSize{},
+		Name: "done", Type: "image/png", Kind: media.KindImage, Key: "images/done", UploadedBy: uploader, Purpose: "event_cover", SizeObjects: map[string]media.SizeObject{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -111,19 +114,24 @@ func TestPostgresListsTheImagesWaitingForTheirSizes(t *testing.T) {
 	if _, err := store.Create(ctx, media.Media{Name: "notes.pdf", Type: "application/pdf", Kind: media.KindFile, Key: "files/notes", UploadedBy: uploader}); err != nil {
 		t.Fatal(err)
 	}
+	// Uploaded without a purpose: not listed for the purposes that get sizes.
+	if _, err := store.Create(ctx, media.Media{Name: "legacy", Type: "image/png", Kind: media.KindImage, Key: "images/legacy", UploadedBy: uploader}); err != nil {
+		t.Fatal(err)
+	}
+	purposes := []string{"event_cover", "profile_picture"}
 
-	pending, err := store.ListPendingImageSizes(ctx, uuid.Nil, 25)
+	pending, err := store.ListPendingImageSizes(ctx, purposes, uuid.Nil, 25)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(pending) != 1 || pending[0].ID != waiting.ID {
 		t.Fatalf("pending %v, want only %s", pending, waiting.ID)
 	}
-	if after, err := store.ListPendingImageSizes(ctx, waiting.ID, 25); err != nil || len(after) != 0 {
+	if after, err := store.ListPendingImageSizes(ctx, purposes, waiting.ID, 25); err != nil || len(after) != 0 {
 		t.Fatalf("after the last one: %v %v", after, err)
 	}
 
-	sizes := map[string]media.ImageSize{"card": {Width: 400, Height: 200}}
+	sizes := map[string]media.SizeObject{"card": {ImageSize: media.ImageSize{Width: 400, Height: 200}, Type: "image/png"}}
 	if err := store.SetImageSizes(ctx, waiting.ID, media.ImageSize{Width: 800, Height: 400}, sizes); err != nil {
 		t.Fatal(err)
 	}
@@ -134,13 +142,20 @@ func TestPostgresListsTheImagesWaitingForTheirSizes(t *testing.T) {
 	if got.Width != 800 || got.Height != 400 || !reflect.DeepEqual(got.SizeObjects, sizes) {
 		t.Fatalf("recorded %d×%d %v", got.Width, got.Height, got.SizeObjects)
 	}
-	if pending, _ := store.ListPendingImageSizes(ctx, uuid.Nil, 25); len(pending) != 0 {
+	if pending, _ := store.ListPendingImageSizes(ctx, purposes, uuid.Nil, 25); len(pending) != 0 {
 		t.Fatalf("still pending %v", pending)
+	}
+	// Nil puts it back to not made: a write that failed is retried.
+	if err := store.SetImageSizes(ctx, waiting.ID, media.ImageSize{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := store.ListPendingImageSizes(ctx, purposes, uuid.Nil, 25); len(pending) != 1 {
+		t.Fatalf("pending again %v", pending)
 	}
 	// An image that does not decode is recorded with no size and no stored
 	// sizes, so it is not listed again.
 	undecodable := image("images/undecodable")
-	if err := store.SetImageSizes(ctx, undecodable.ID, media.ImageSize{}, map[string]media.ImageSize{}); err != nil {
+	if err := store.SetImageSizes(ctx, undecodable.ID, media.ImageSize{}, map[string]media.SizeObject{}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := store.Get(ctx, undecodable.ID); got.Width != 0 || got.SizeObjects == nil {
@@ -150,7 +165,7 @@ func TestPostgresListsTheImagesWaitingForTheirSizes(t *testing.T) {
 	if err := store.SetImageSizes(ctx, purging.ID, media.ImageSize{Width: 1, Height: 1}, sizes); !errors.Is(err, media.ErrPurgeInProgress) {
 		t.Fatalf("recording sizes of an image being purged: %v, want %v", err, media.ErrPurgeInProgress)
 	}
-	if err := store.SetImageSizes(ctx, done.ID, media.ImageSize{Width: 5, Height: 5}, nil); err != nil {
+	if err := store.SetImageSizes(ctx, done.ID, media.ImageSize{Width: 5, Height: 5}, map[string]media.SizeObject{}); err != nil {
 		t.Fatalf("recording again: %v", err)
 	}
 }
@@ -161,7 +176,7 @@ func TestPostgresPurgeAndStagingSweeperRemoveAnImagesStoredSizes(t *testing.T) {
 	blobs := media.NewMemoryBlob()
 	put := func(key string) {
 		t.Helper()
-		for _, k := range []string{key, key + "/card", key + "/page"} {
+		for _, k := range []string{key, key + "/card.jpg", key + "/page.jpg", key + "/card.png", key + "/page.png"} {
 			if err := blobs.Put(ctx, k, pngDot(), media.BlobMetadata{ContentType: "image/png"}); err != nil {
 				t.Fatal(err)
 			}
@@ -172,7 +187,10 @@ func TestPostgresPurgeAndStagingSweeperRemoveAnImagesStoredSizes(t *testing.T) {
 	// An archived image past its recovery window.
 	archived, err := store.Create(ctx, media.Media{
 		Name: "old.png", Type: "image/png", Kind: media.KindImage, Key: "images/archived-sizes", UploadedBy: uploader,
-		SizeObjects: map[string]media.ImageSize{"card": {Width: 400, Height: 300}, "page": {Width: 1200, Height: 900}},
+		SizeObjects: map[string]media.SizeObject{
+			"card": {ImageSize: media.ImageSize{Width: 400, Height: 300}, Type: "image/jpeg"},
+			"page": {ImageSize: media.ImageSize{Width: 1200, Height: 900}, Type: "image/png"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +216,7 @@ func TestPostgresPurgeAndStagingSweeperRemoveAnImagesStoredSizes(t *testing.T) {
 	}
 }
 
-func TestPostgresImageVariantBackfillMakesTheSizesOfARowStoredBefore(t *testing.T) {
+func TestPostgresImageSizeBackfillMakesTheSizesOfARowStoredBefore(t *testing.T) {
 	store, uploader, exec := postgresImageStore(t)
 	ctx := context.Background()
 	blobs := media.NewMemoryBlob()
@@ -206,15 +224,15 @@ func TestPostgresImageVariantBackfillMakesTheSizesOfARowStoredBefore(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A row as core stored it before image sizes existed.
+	// A purposed row as core stored it before image sizes existed.
 	id := uuid.New()
-	exec(`INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind)
-		VALUES ($1, 'wide.png', 'image/png', 'images/wide-before', 1, $2, 'IMAGE')`, id, uploader)
+	exec(`INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, purpose)
+		VALUES ($1, 'wide.png', 'image/png', 'images/wide-before', 1, $2, 'IMAGE', 'event_cover')`, id, uploader)
 	if err := blobs.Put(ctx, "images/wide-before", solidPNG(t, 1000, 500, color.RGBA{R: 200, A: 255}), media.BlobMetadata{ContentType: "image/png"}); err != nil {
 		t.Fatal(err)
 	}
 
-	report, err := media.BackfillImageSizes(ctx, store, blobs, catalogue, nil)
+	report, err := media.BackfillImageSizes(ctx, store, blobs, catalogue, media.NewDecodeBudget(media.DecodeBudgetConfig{}), nil)
 	if err != nil || report != (media.BackfillReport{Applied: 1}) {
 		t.Fatalf("report %+v %v", report, err)
 	}
@@ -222,14 +240,14 @@ func TestPostgresImageVariantBackfillMakesTheSizesOfARowStoredBefore(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]media.ImageSize{"card": {Width: 400, Height: 200}}
+	want := map[string]media.SizeObject{"card": {ImageSize: media.ImageSize{Width: 400, Height: 200}, Type: "image/png"}}
 	if got.Width != 1000 || got.Height != 500 || !reflect.DeepEqual(got.SizeObjects, want) {
 		t.Fatalf("recorded %d×%d %v", got.Width, got.Height, got.SizeObjects)
 	}
-	if _, ok := blobs.Get("images/wide-before/card"); !ok {
+	if _, ok := blobs.Get("images/wide-before/card.png"); !ok {
 		t.Fatal("card not stored")
 	}
-	if again, err := media.BackfillImageSizes(ctx, store, blobs, catalogue, nil); err != nil || again != (media.BackfillReport{}) {
+	if again, err := media.BackfillImageSizes(ctx, store, blobs, catalogue, media.NewDecodeBudget(media.DecodeBudgetConfig{}), nil); err != nil || again != (media.BackfillReport{}) {
 		t.Fatalf("second pass %+v %v", again, err)
 	}
 }
