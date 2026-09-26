@@ -20,6 +20,7 @@ type Role string
 const (
 	RoleEventCover       Role = "event_cover"
 	RoleEventGallery     Role = "event_gallery"
+	RoleProfilePicture   Role = "profile_picture"
 	RoleCertificateAsset Role = "certificate_asset"
 )
 
@@ -37,7 +38,9 @@ const (
 // rolePurposes are, for each product, the roles its records give a Media and
 // the Media purposes each role accepts. The two Event purposes fit both Event
 // roles: the organizer's picker offers every photo of the team's Events for
-// the cover and the gallery alike.
+// the cover and the gallery alike. A profile picture is linked only by
+// POST /v1/users/me/profile-picture, which uploads it as profile_picture, so
+// no link checks that role; the legacy backfill reads it.
 //
 // Transition rule: a legacy Media fits every role, as any Media could be
 // linked anywhere before Media purpose (fits). superadmin, Skyforms and CMS
@@ -47,6 +50,7 @@ var rolePurposes = map[authz.Product]map[Role][]string{
 	authz.ProductCore: {
 		RoleEventCover:       {PurposeEventCover, PurposeEventGallery},
 		RoleEventGallery:     {PurposeEventGallery, PurposeEventCover},
+		RoleProfilePicture:   {PurposeProfilePicture},
 		RoleCertificateAsset: {PurposeCertificateAsset},
 	},
 	authz.ProductForms: {RoleFormsAnswer: {PurposeAnswerFile, PurposeAnswerFileLarge}},

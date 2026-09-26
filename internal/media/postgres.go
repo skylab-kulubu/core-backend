@@ -377,13 +377,21 @@ func mediaReferenced(ctx context.Context, tx postgresMediaTx, id uuid.UUID) (boo
 	var referenced bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM media_attachments WHERE media_id = $1
-		UNION ALL SELECT 1 FROM events WHERE cover_image_id = $1
-		UNION ALL SELECT 1 FROM event_images WHERE media_id = $1
-		UNION ALL SELECT 1 FROM users WHERE profile_picture_id = $1
-		UNION ALL SELECT 1 FROM certificate_templates WHERE $1 = ANY (certificate_layout_media_ids(draft_layout, NULL))
-		UNION ALL SELECT 1 FROM certificate_template_versions WHERE $1 = ANY (certificate_layout_media_ids(layout, asset_manifest))
+		UNION ALL `+coreLinksSQL("$1")+`
 	)`, id).Scan(&referenced)
 	return referenced, err
+}
+
+// coreLinksSQL selects a row for each of core's own links to the Media id
+// names (a parameter or a column), read from the linking records directly:
+// the hard-coded list the purge and the legacy report keep as a safety net
+// beside the Media attachments.
+func coreLinksSQL(id string) string {
+	return `SELECT 1 FROM events WHERE cover_image_id = ` + id + `
+		UNION ALL SELECT 1 FROM event_images WHERE media_id = ` + id + `
+		UNION ALL SELECT 1 FROM users WHERE profile_picture_id = ` + id + `
+		UNION ALL SELECT 1 FROM certificate_templates WHERE ` + id + ` = ANY (certificate_layout_media_ids(draft_layout, NULL))
+		UNION ALL SELECT 1 FROM certificate_template_versions WHERE ` + id + ` = ANY (certificate_layout_media_ids(layout, asset_manifest))`
 }
 
 func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claimedAt time.Time, queue purgeQueue) (bool, error) {
