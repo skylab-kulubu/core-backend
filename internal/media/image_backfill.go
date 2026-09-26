@@ -129,9 +129,19 @@ func recordImageSizes(ctx context.Context, store Store, id uuid.UUID, size Image
 }
 
 // MaintainImageSizeBackfill runs BackfillImageSizes in the background until
-// a pass leaves nothing failed.
-func MaintainImageSizeBackfill(ctx context.Context, store Store, blobs BlobStore, catalogue Catalogue, budget *DecodeBudget, retryEvery time.Duration, onError func(error)) {
-	MaintainBackfill(ctx, func(ctx context.Context) (BackfillReport, error) {
+// a pass leaves nothing failed, and again after each call of rerun: a Media
+// given a purpose with sizes after that pass (the legacy purpose backfill
+// runs beside this one) gets its sizes without a restart. rerun does not
+// wait; calls made before the next pass begins are one pass.
+func MaintainImageSizeBackfill(ctx context.Context, store Store, blobs BlobStore, catalogue Catalogue, budget *DecodeBudget, retryEvery time.Duration, onError func(error)) (rerun func()) {
+	again := make(chan struct{}, 1)
+	maintainBackfill(ctx, func(ctx context.Context) (BackfillReport, error) {
 		return BackfillImageSizes(ctx, store, blobs, catalogue, budget, onError)
-	}, retryEvery, onError)
+	}, retryEvery, again, onError)
+	return func() {
+		select {
+		case again <- struct{}{}:
+		default:
+		}
+	}
 }
