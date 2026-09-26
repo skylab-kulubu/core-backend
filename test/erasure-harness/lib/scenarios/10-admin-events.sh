@@ -33,7 +33,7 @@ scenario_10() {
   done
   log "  $(wc -l <"$out") event rows written to $out"
   check 'admin events of the erased persons were read' test "$total" -gt 0
-  note "Keycloak keeps $with_pii of $total admin events of erased persons with e-mail or name in the representation (core's JIT and disable PUTs); DELETE carries: ${delete_rep:-nothing}. Remedy is ticket 09's decision."
+  note "Keycloak keeps $with_pii of $total admin events of erased persons with e-mail or name in the representation (which operation carries what: $out); DELETE carries: ${delete_rep:-nothing}. Remedy is ticket 09's decision."
   check 'DELETE events carry at most id and username' grep -Eqx '(username)?' <<<"${delete_rep:-}"
   scenario_end
 }
