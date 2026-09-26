@@ -67,8 +67,8 @@ type Addresses struct {
 	// Base is the public origin objects are served from. Empty is the
 	// process's configured base (PublicURL): an address is never a bare key.
 	Base string
-	// Mode is where image sizes are served from; empty is
-	// AddressStoredSizes.
+	// Mode is where image sizes are served from. Empty is the mode core is
+	// configured with (UseImageAddressMode), by default AddressStoredSizes.
 	Mode AddressMode
 	// Catalogue names the sizes of each Media purpose. The zero value is
 	// the reviewed catalogue carried in the binary.
@@ -78,6 +78,16 @@ type Addresses struct {
 // reviewedSizes is the reviewed catalogue, read once for every Addresses
 // that names none.
 var reviewedSizes = sync.OnceValue(reviewedCatalogue)
+
+func (a Addresses) mode() AddressMode {
+	if a.Mode != "" {
+		return a.Mode
+	}
+	if mode := imageAddressMode.Load(); mode != nil {
+		return *mode
+	}
+	return AddressStoredSizes
+}
 
 func (a Addresses) catalogue() Catalogue {
 	if a.Catalogue.purposes == nil {
@@ -101,7 +111,7 @@ func (a Addresses) Object(key string) string {
 // the Media's recorded size when core knows it. An original whose key is
 // already an absolute address stays itself.
 func (a Addresses) Image(m Media, size string, px int) ImageAddress {
-	if a.Mode == AddressCloudflare && !isAbsoluteURL(m.Key) {
+	if a.mode() == AddressCloudflare && !isAbsoluteURL(m.Key) {
 		shown := fittedSize(m.imageSize(), px)
 		options := fmt.Sprintf("width=%d,height=%d,fit=scale-down", px, px)
 		return ImageAddress{URL: a.Object("cdn-cgi/image/" + options + "/" + strings.TrimLeft(m.Key, "/")), Width: shown.Width, Height: shown.Height}

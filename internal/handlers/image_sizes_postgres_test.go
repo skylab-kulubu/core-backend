@@ -506,3 +506,28 @@ func TestTeamRosterCarriesEachMembersPictureSizesHTTP(t *testing.T) {
 		t.Fatalf("roster %+v", got.Members)
 	}
 }
+
+// With Cloudflare image transformations configured, an Event's sizes point
+// where the Media JSON's do: the address mode is the one core starts with.
+func TestEventCoverSizesFollowTheConfiguredAddressModeHTTP(t *testing.T) {
+	t.Cleanup(media.UseImageAddressMode(media.AddressCloudflare))
+	f := newImageSizesFixture(t)
+	cover := f.image(t, media.PurposeEventCover, "images/cf-cover", 1600, 1200, map[string]media.SizeObject{
+		media.SizeCard: jpegSize(400, 300), media.SizePage: jpegSize(1200, 900),
+	})
+	created := f.event(t, "Cloudflare", &cover.ID)
+
+	var got sizedEventView
+	f.get(t, "/v1/events/"+created.ID.String(), &got)
+
+	want := bothSizes(
+		media.ImageAddress{URL: sizesBase + "/cdn-cgi/image/width=400,height=400,fit=scale-down/images/cf-cover", Width: 400, Height: 300},
+		media.ImageAddress{URL: sizesBase + "/cdn-cgi/image/width=1200,height=1200,fit=scale-down/images/cf-cover", Width: 1200, Height: 900},
+	)
+	if !reflect.DeepEqual(got.CoverImageSizes, want) {
+		t.Fatalf("coverImageSizes %+v, want %+v", got.CoverImageSizes, want)
+	}
+	if got.CoverImageURL != sizesBase+"/images/cf-cover" {
+		t.Fatalf("coverImageUrl %q", got.CoverImageURL)
+	}
+}

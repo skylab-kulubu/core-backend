@@ -99,6 +99,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// And the image sizes of Events and rosters point where the Media's own
+	// do.
+	media.UseImageAddressMode(imageAddressMode)
 	// Private Media (MEDIA_PRIVATE_ENABLED, docs/media-lifecycle.md). Off,
 	// private purposes are refused and none of its settings is read. On,
 	// every setting must be right or core does not start; OpenBao itself is
