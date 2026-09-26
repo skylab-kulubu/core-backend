@@ -176,6 +176,27 @@ func TestService_RenameKeepsTheOldAliasRedirecting(t *testing.T) {
 	}
 }
 
+func TestService_CaseOnlyRenameKeepsTheOldSpelling(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := NewService(NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()))
+	owner := authz.Principal{ID: "11111111-1111-1111-1111-111111111111", Roles: []string{"url:access"}}
+	created, err := svc.Create(ctx, owner, "https://skylab.com", "GeceKodu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, alias := range []string{"gecekodu", "kodgecesi", "GECEKODU"} {
+		if _, err := svc.Update(ctx, owner, created.ID, "", alias); err != nil {
+			t.Fatalf("rename to %s: %v", alias, err)
+		}
+	}
+	for _, alias := range []string{"GeceKodu", "gecekodu", "kodgecesi", "GECEKODU"} {
+		if got, err := svc.Lookup(ctx, alias); err != nil || got.ID != created.ID {
+			t.Fatalf("%s: %+v %v", alias, got, err)
+		}
+	}
+}
+
 func TestService_RedirectRecordsHitAndListIsNewestFirst(t *testing.T) {
 	t.Parallel()
 	store := NewMemoryStore()

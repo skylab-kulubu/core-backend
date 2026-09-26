@@ -134,6 +134,49 @@ func TestRenameFormLinkKeepsThePreviousAliasPointingAtTheForm(t *testing.T) {
 	}
 }
 
+func TestRenameFormLinkRefusesAnUnusableSuggestion(t *testing.T) {
+	t.Parallel()
+	svc := formLinkService()
+	ctx := context.Background()
+	formID := uuid.New()
+
+	link, err := svc.EnsureFormLink(ctx, formsService, formID, FormLinkInput{URL: formTarget(formID), Alias: "yaz-kampi-2026"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, suggestion := range []string{"", "--"} {
+		if _, err := svc.RenameFormLink(ctx, formsService, formID, "", suggestion); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("suggestion %q gives no alias: %v", suggestion, err)
+		}
+	}
+	current, err := svc.FormLink(ctx, formsService, formID)
+	if err != nil || current.Alias != link.Alias {
+		t.Fatalf("a refused rename keeps the alias: %+v %v", current, err)
+	}
+}
+
+func TestRestoreFormLinkConflictsWhenTheFormHasAnother(t *testing.T) {
+	t.Parallel()
+	svc := formLinkService()
+	ctx := context.Background()
+	formID := uuid.New()
+	moderator := authz.Principal{ID: "33333333-3333-3333-3333-333333333333", Roles: []string{"url:moderator"}}
+
+	first, err := svc.EnsureFormLink(ctx, formsService, formID, FormLinkInput{URL: formTarget(formID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Delete(ctx, moderator, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.EnsureFormLink(ctx, formsService, formID, FormLinkInput{URL: formTarget(formID)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Restore(ctx, moderator, first.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("restoring a replaced form link: %v", err)
+	}
+}
+
 func TestSyncEventFormsTakesTheFormLinkOverAndHandsItBack(t *testing.T) {
 	t.Parallel()
 	svc := formLinkService()

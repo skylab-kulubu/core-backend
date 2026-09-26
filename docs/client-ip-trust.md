@@ -46,7 +46,7 @@ about them.
 
 ## What depends on it
 
-- `GET /v1/go/{alias}` records the resolved address as `url_hits.ip`.
+- `GET /v1/go/{alias}` and `GET /v1/go/{alias}/{channel}` record the resolved address as `url_hits.ip`.
 - The public certificate routes (`/c/{serial}`, `/v1/public/certificates/…`,
   `/v1/certificates/verify/…`) are rate limited on the same resolved address, so
   the budget follows one visitor instead of being shared by everyone behind the

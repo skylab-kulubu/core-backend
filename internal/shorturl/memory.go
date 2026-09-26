@@ -15,26 +15,21 @@ type MemoryStore struct {
 	mu      sync.Mutex
 	byID    map[uuid.UUID]URL
 	hits    []Hit
-	retired map[string]retiredAlias
-}
-
-type retiredAlias struct {
-	alias string
-	urlID uuid.UUID
+	retired map[string]uuid.UUID // exact retired spelling → link, like url_retired_aliases
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{byID: map[uuid.UUID]URL{}, retired: map[string]retiredAlias{}}
+	return &MemoryStore{byID: map[uuid.UUID]URL{}, retired: map[string]uuid.UUID{}}
 }
 
 func (s *MemoryStore) GetByRetiredAlias(_ context.Context, alias string) (URL, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entry, ok := s.retired[strings.ToLower(alias)]
-	if !ok || entry.alias != alias {
+	urlID, ok := s.retired[alias]
+	if !ok {
 		return URL{}, ErrNotFound
 	}
-	u, ok := s.byID[entry.urlID]
+	u, ok := s.byID[urlID]
 	if !ok || u.DisabledAt != nil {
 		return URL{}, ErrNotFound
 	}
@@ -44,12 +39,21 @@ func (s *MemoryStore) GetByRetiredAlias(_ context.Context, alias string) (URL, e
 func (s *MemoryStore) GetByForm(_ context.Context, formID uuid.UUID) (URL, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, u := range s.byID {
-		if u.DisabledAt == nil && u.FormID != nil && *u.FormID == formID {
-			return u, nil
-		}
+	if u, ok := s.currentFormLinkLocked(formID, uuid.Nil); ok {
+		return u, nil
 	}
 	return URL{}, ErrNotFound
+}
+
+// currentFormLinkLocked is the form's active link other than except: the row
+// urls_current_form_idx keeps unique. Callers hold s.mu.
+func (s *MemoryStore) currentFormLinkLocked(formID, except uuid.UUID) (URL, bool) {
+	for id, u := range s.byID {
+		if id != except && u.DisabledAt == nil && u.FormID != nil && *u.FormID == formID {
+			return u, true
+		}
+	}
+	return URL{}, false
 }
 
 func (s *MemoryStore) ListByEvent(_ context.Context, eventID uuid.UUID) ([]URL, error) {
@@ -72,13 +76,11 @@ func (s *MemoryStore) BindForm(_ context.Context, id, formID uuid.UUID, eventID 
 		return URL{}, ErrNotFound
 	}
 	now := time.Now().UTC()
-	for otherID, other := range s.byID {
-		if otherID != id && other.DisabledAt == nil && other.FormID != nil && *other.FormID == formID {
-			other.FormID = nil
-			other.EventID = nil
-			other.UpdatedAt = now
-			s.byID[otherID] = other
-		}
+	if other, ok := s.currentFormLinkLocked(formID, id); ok {
+		other.FormID = nil
+		other.EventID = nil
+		other.UpdatedAt = now
+		s.byID[other.ID] = other
 	}
 	form := formID
 	target.FormID = &form
@@ -112,8 +114,10 @@ func (s *MemoryStore) AliasTaken(_ context.Context, alias string, except uuid.UU
 			return true, nil
 		}
 	}
-	if entry, ok := s.retired[key]; ok && entry.urlID != except {
-		return true, nil
+	for retired, urlID := range s.retired {
+		if strings.ToLower(retired) == key && urlID != except {
+			return true, nil
+		}
 	}
 	return false, nil
 }
@@ -241,9 +245,9 @@ func (s *MemoryStore) Update(_ context.Context, u URL) (URL, error) {
 		return URL{}, ErrConflict
 	}
 	if existing.Alias != u.Alias {
-		s.retired[strings.ToLower(existing.Alias)] = retiredAlias{alias: existing.Alias, urlID: u.ID}
-		if entry, ok := s.retired[strings.ToLower(u.Alias)]; ok && entry.urlID == u.ID {
-			delete(s.retired, strings.ToLower(u.Alias))
+		s.retired[existing.Alias] = u.ID
+		if urlID, ok := s.retired[u.Alias]; ok && urlID == u.ID {
+			delete(s.retired, u.Alias)
 		}
 	}
 	u.UpdatedAt = time.Now().UTC()
@@ -274,6 +278,11 @@ func (s *MemoryStore) Restore(_ context.Context, id uuid.UUID) error {
 	u, ok := s.byID[id]
 	if !ok {
 		return ErrNotFound
+	}
+	if u.DisabledAt != nil && u.FormID != nil {
+		if _, taken := s.currentFormLinkLocked(*u.FormID, id); taken {
+			return ErrConflict
+		}
 	}
 	if u.DisabledAt != nil {
 		u.DisabledAt = nil
