@@ -40,6 +40,13 @@ type imageSizesFixture struct {
 
 func newImageSizesFixture(t *testing.T) imageSizesFixture {
 	t.Helper()
+	return newImageSizesFixtureInMode(t, "")
+}
+
+// newImageSizesFixtureInMode serves Events whose sizes point where mode
+// says (MEDIA_IMAGE_ADDRESS_MODE).
+func newImageSizesFixtureInMode(t *testing.T, mode media.AddressMode) imageSizesFixture {
+	t.Helper()
 	ctx := context.Background()
 	plain := testpostgres.Start(t)
 	if err := migrate.Apply(ctx, plain); err != nil {
@@ -61,8 +68,9 @@ func newImageSizesFixture(t *testing.T) imageSizesFixture {
 	mediaStore := media.NewPostgresStore(pool)
 	events := event.NewPostgresStore(pool)
 	svc := event.NewServiceWithOptions(events, authz.NewAuthorizer(authz.DefaultPolicy()), event.ServiceOptions{
-		PublicBase: sizesBase,
-		Media:      media.NewLinker(mediaStore),
+		PublicBase:       sizesBase,
+		ImageAddressMode: mode,
+		Media:            media.NewLinker(mediaStore),
 	})
 	return imageSizesFixture{
 		pool: pool, queries: queries, media: mediaStore, events: events, users: users, uploader: uploader,
@@ -508,10 +516,10 @@ func TestTeamRosterCarriesEachMembersPictureSizesHTTP(t *testing.T) {
 }
 
 // With Cloudflare image transformations configured, an Event's sizes point
-// where the Media JSON's do: the address mode is the one core starts with.
+// where the Media JSON's do: the Event service gets the address mode core
+// starts with, like its base.
 func TestEventCoverSizesFollowTheConfiguredAddressModeHTTP(t *testing.T) {
-	t.Cleanup(media.UseImageAddressMode(media.AddressCloudflare))
-	f := newImageSizesFixture(t)
+	f := newImageSizesFixtureInMode(t, media.AddressCloudflare)
 	cover := f.image(t, media.PurposeEventCover, "images/cf-cover", 1600, 1200, map[string]media.SizeObject{
 		media.SizeCard: jpegSize(400, 300), media.SizePage: jpegSize(1200, 900),
 	})

@@ -99,8 +99,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// And the image sizes of Events and rosters point where the Media's own
-	// do.
+	// And their image sizes (media.ConfiguredAddresses) point where the
+	// Media's own do.
 	media.UseImageAddressMode(imageAddressMode)
 	// Private Media (MEDIA_PRIVATE_ENABLED, docs/media-lifecycle.md). Off,
 	// private purposes are refused and none of its settings is read. On,
@@ -442,9 +442,10 @@ func main() {
 			AccessProjector:       accessProjector,
 		}, mailer),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
-			PublicBase: cdnBase,
-			FormLinks:  eventFormLinks{urls: urlSvc},
-			Media:      media.NewLinker(mediaStore),
+			PublicBase:       cdnBase,
+			ImageAddressMode: imageAddressMode,
+			FormLinks:        eventFormLinks{urls: urlSvc},
+			Media:            media.NewLinker(mediaStore),
 		}),
 		Seasons:     season.NewService(seasons, az),
 		Tickets:     ticketSvc,
