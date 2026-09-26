@@ -73,10 +73,23 @@ func BackfillServingPolicy(ctx context.Context, store Store, blobs BlobStore, on
 		onError)
 }
 
+// BackfillError is an item a backfill pass could not apply, named by kind
+// and id.
+type BackfillError struct {
+	Kind string
+	ID   uuid.UUID
+	Err  error
+}
+
+func (e *BackfillError) Error() string { return fmt.Sprintf("%s %s: %v", e.Kind, e.ID, e.Err) }
+
+func (e *BackfillError) Unwrap() error { return e.Err }
+
 // BackfillPass walks every pending item once, by id in batches of 25, and
-// applies each one. An item that fails is reported through onError, named by
-// kind and id, and left pending for the next pass, so it never holds up the
-// items after it. apply must be idempotent: a pass cut short is run again.
+// applies each one. An item that fails is reported through onError as a
+// *BackfillError and left pending for the next pass, so it never holds up
+// the items after it. A cancelled ctx ends the pass with its error and the
+// counts so far. apply must be idempotent: a pass cut short is run again.
 func BackfillPass[T any](ctx context.Context, kind string, list func(ctx context.Context, after uuid.UUID, limit int) ([]T, error), id func(T) uuid.UUID, apply func(context.Context, T) error, onError func(error)) (BackfillReport, error) {
 	var report BackfillReport
 	after := uuid.Nil
@@ -86,10 +99,13 @@ func BackfillPass[T any](ctx context.Context, kind string, list func(ctx context
 			return report, err
 		}
 		for _, item := range items {
+			if err := ctx.Err(); err != nil {
+				return report, err
+			}
 			if err := apply(ctx, item); err != nil {
 				report.Failed++
 				if onError != nil {
-					onError(fmt.Errorf("%s %s: %w", kind, id(item), err))
+					onError(&BackfillError{Kind: kind, ID: id(item), Err: err})
 				}
 				continue
 			}

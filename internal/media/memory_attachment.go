@@ -30,6 +30,29 @@ func (s *MemoryStore) Attach(_ context.Context, a Attachment) (Attachment, bool,
 	return a, true, nil
 }
 
+// AttachHeld models the Postgres store's: a held Media whose purpose does
+// not fit the role goes back to legacy, then it is attached.
+func (s *MemoryStore) AttachHeld(ctx context.Context, a Attachment) (Attachment, bool, string, error) {
+	s.mu.Lock()
+	m, ok := s.byID[a.MediaID]
+	if !ok || !m.DetachExpiryHeld || m.DeletedAt != nil || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil {
+		s.mu.Unlock()
+		return Attachment{}, false, "", ErrNotLinkable
+	}
+	demotedFrom := ""
+	if !fits(a.Owner.Service, a.Role, m.Purpose) {
+		demotedFrom = m.Purpose
+		m.Purpose = PurposeLegacy
+		s.byID[m.ID] = m
+	}
+	s.mu.Unlock()
+	created, isNew, err := s.Attach(ctx, a)
+	if !isNew {
+		demotedFrom = ""
+	}
+	return created, isNew, demotedFrom, err
+}
+
 // Detach models the database's status trigger: the Media's last Media
 // attachment going detaches it.
 func (s *MemoryStore) Detach(_ context.Context, mediaID, attachmentID uuid.UUID, service authz.Product) error {
@@ -52,9 +75,10 @@ func (s *MemoryStore) Detach(_ context.Context, mediaID, attachmentID uuid.UUID,
 	now := time.Now().UTC()
 	m.Status = StatusDetached
 	m.ExpiresAt = nil
-	if m.Purpose != PurposeLegacy {
+	if m.Purpose != PurposeLegacy && !m.DetachExpiryHeld {
 		// The database's status trigger fixes the detached window at the
-		// default recovery window, 30 days (migration 20260926120000).
+		// default recovery window, 30 days (migration 20260926120000); a
+		// held Media gets none (20260926161000).
 		expires := now.Add(DefaultBlobRecoveryWindow)
 		m.ExpiresAt = &expires
 	}

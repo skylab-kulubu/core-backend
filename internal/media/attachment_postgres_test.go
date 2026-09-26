@@ -277,7 +277,7 @@ func TestPostgresMediaAttachmentRefusesInactiveMedia(t *testing.T) {
 	}
 	for name, id := range map[string]uuid.UUID{"archived": archived.ID, "purge started": purged.ID} {
 		if _, err := db.pool.Exec(ctx, `INSERT INTO media_attachments (media_id, owner_service, owner_type, owner_id, role)
-			VALUES ($1, 'cms', 'page', $2, 'cms_image')`, id, uuid.New()); err == nil {
+			VALUES ($1, 'core', 'event', $2, 'event_gallery')`, id, uuid.New()); err == nil {
 			t.Errorf("attachment to %s media accepted", name)
 		}
 	}
