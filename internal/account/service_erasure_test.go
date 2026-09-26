@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -218,10 +220,20 @@ func (f *erasureFixture) records() map[user.DeletionStep]user.DeletionStepRecord
 	return out
 }
 
+var uuidPattern = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
 func (f *erasureFixture) assertNoPersonalData(texts ...string) {
 	f.t.Helper()
 	for _, text := range append(append([]string{}, f.errors...), texts...) {
-		lowered := strings.ToLower(text)
+		// Identifiers other than the subject (this or another fixture's
+		// request id) are not personal data, and their hex digits can spell
+		// "ada". The subject stays, so it is still caught.
+		lowered := strings.ToLower(uuidPattern.ReplaceAllStringFunc(text, func(id string) string {
+			if strings.EqualFold(id, f.subjectID.String()) {
+				return id
+			}
+			return "<uuid>"
+		}))
 		for _, value := range append(append([]string{}, erasureTestAddresses...), f.subjectID.String(), "ada") {
 			if strings.Contains(lowered, value) {
 				f.t.Fatalf("%q carries personal data %q", text, value)
@@ -439,6 +451,90 @@ func TestServiceErasurePermanentRejectionGoesStraightToManualIntervention(t *tes
 			t.Fatalf("%d: forms was not attempted beside the rejection", code)
 		}
 		f.assertNoPersonalData(state.LastErrorCode)
+	}
+}
+
+func TestServiceErasureRetryStampsTheChangeTimeNotTheNextAttempt(t *testing.T) {
+	t.Parallel()
+	testRetryStampsTheChangeTimeNotTheNextAttempt(t, user.NewMemoryStore())
+}
+
+// testRetryStampsTheChangeTimeNotTheNextAttempt: a deferral, an ordinary
+// failure and manual intervention each stamp updated_at with the moment of the
+// change; the next attempt's time goes only to next_attempt_at. Account
+// Center orders the statuses it reads by updatedAt, so a stamp in the future
+// kept it on manual_intervention after a completed retry (ticket 13).
+func testRetryStampsTheChangeTimeNotTheNextAttempt(t *testing.T, store erasureTestStore) {
+	t.Helper()
+	f := newErasureFixtureWith(t, store)
+	worker := f.worker()
+	for _, tc := range []struct {
+		name   string
+		answer func(http.ResponseWriter, *http.Request)
+		status user.DeletionRequestStatus
+		wait   time.Duration
+	}{
+		{name: "deferred", answer: answerStatus(http.StatusServiceUnavailable, "600"), status: user.DeletionRequestPending, wait: 10 * time.Minute},
+		{name: "ordinary", answer: answerStatus(http.StatusUnauthorized, ""), status: user.DeletionRequestPending, wait: 30 * time.Second},
+		{name: "manual", answer: answerStatus(http.StatusForbidden, ""), status: user.DeletionRequestManualIntervention, wait: 30 * time.Second},
+	} {
+		f.services[user.DeletionStepEraseCMS].set(tc.answer)
+		if worked, err := f.run(worker); !worked || err == nil {
+			t.Fatalf("%s: worked=%v err=%v", tc.name, worked, err)
+		}
+		state := f.state()
+		if state.Status != tc.status || !state.NextAttemptAt.Equal(f.now.Add(tc.wait)) {
+			t.Fatalf("%s: request = %+v, want %s with the next attempt in %s", tc.name, state, tc.status, tc.wait)
+		}
+		if !state.UpdatedAt.Equal(f.now) {
+			t.Fatalf("%s: updated_at = %s, want the moment of the change %s (next attempt %s)", tc.name, state.UpdatedAt, f.now, state.NextAttemptAt)
+		}
+		f.now = state.NextAttemptAt
+	}
+	f.assertNoPersonalData()
+}
+
+// main.go logs every error the worker returns as one line. Spec §2.7: the
+// line carries the request_id, the step and the code, never the subject, an
+// address or a name.
+func TestWorkerErrorLinesCarryTheRequestIDAndNoSubject(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		setup func(*erasureFixture)
+		code  string
+	}{
+		{name: "marker write failed", code: "platform_block_failed", setup: func(f *erasureFixture) {
+			f.config.AccessBlocker = &accountBlockWriter{err: errors.New("redis unavailable")}
+		}},
+		{name: "addresses unreadable", code: "erasure_addresses_failed", setup: func(f *erasureFixture) {
+			f.addresses.err = errors.New("identity directory unavailable")
+		}},
+		{name: "service deferred", code: "erase_cms_failed", setup: func(f *erasureFixture) {
+			f.services[user.DeletionStepEraseCMS].set(answerStatus(http.StatusServiceUnavailable, "60"))
+		}},
+		{name: "token refused", code: "erase_cms_failed", setup: func(f *erasureFixture) {
+			f.services[user.DeletionStepEraseCMS].set(answerStatus(http.StatusUnauthorized, ""))
+		}},
+		{name: "rejected", code: "erase_cms_rejected_403", setup: func(f *erasureFixture) {
+			f.services[user.DeletionStepEraseCMS].set(answerStatus(http.StatusForbidden, ""))
+		}},
+	} {
+		f := newErasureFixture(t)
+		tc.setup(f)
+		_, err := f.run(f.worker())
+		if err == nil {
+			t.Fatalf("%s: the pass succeeded", tc.name)
+		}
+		line := fmt.Sprintf("account erasure worker: %v", err)
+		if want := "account erasure " + tc.code + " request_id=" + f.request.ID.String() + ":"; !strings.Contains(line, want) {
+			t.Fatalf("%s: line %q lacks %q", tc.name, line, want)
+		}
+		if state := f.state(); state.LastErrorCode != tc.code {
+			t.Fatalf("%s: stored code %q, line code %q", tc.name, state.LastErrorCode, tc.code)
+		}
+		f.assertNoPersonalData(line)
 	}
 }
 
