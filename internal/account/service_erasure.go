@@ -137,7 +137,7 @@ func (w *Worker) runServiceErasure(ctx context.Context, request user.DeletionReq
 			failures = append(failures, serviceFailure{step: step.Step, err: err})
 			continue
 		}
-		if err := w.store.CompleteServiceErasureStep(ctx, request.ID, leaseToken, step.Step, now, result.Counts); err != nil {
+		if err := w.store.CompleteServiceErasureStep(ctx, request.ID, leaseToken, step.Step, w.config.Now(), result.Counts); err != nil {
 			// A lost lease means another worker owns the request now: stop
 			// before calling anything else under a stale claim.
 			return w.retry(ctx, request, now, string(step.Step)+"_checkpoint_failed", err, false)

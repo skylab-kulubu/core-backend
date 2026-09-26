@@ -201,7 +201,10 @@ func (s *PostgresStore) CompleteDeletionStep(ctx context.Context, requestID, lea
 	return nil
 }
 
-func (s *PostgresStore) RetryDeletionRequest(ctx context.Context, requestID, leaseToken uuid.UUID, next time.Time, code string, manual, refundAttempt bool) error {
+// RetryDeletionRequest releases the claim until next. updated_at is at, the
+// moment of this change; the next attempt's time lives only in
+// next_attempt_at, so a status read never shows a change from the future.
+func (s *PostgresStore) RetryDeletionRequest(ctx context.Context, requestID, leaseToken uuid.UUID, at, next time.Time, code string, manual, refundAttempt bool) error {
 	status := DeletionRequestPending
 	if manual {
 		status = DeletionRequestManualIntervention
@@ -209,10 +212,10 @@ func (s *PostgresStore) RetryDeletionRequest(ctx context.Context, requestID, lea
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE account_deletion_requests
 		SET status = $3, next_attempt_at = $4, lease_until = NULL, lease_token = NULL,
-			last_error_code = $5, updated_at = $4,
+			last_error_code = $5, updated_at = $7,
 			attempt_count = CASE WHEN $6 THEN GREATEST(attempt_count - 1, 0) ELSE attempt_count END
 		WHERE id = $1 AND status = 'processing' AND lease_token = $2
-	`, requestID, leaseToken, status, next, code, refundAttempt)
+	`, requestID, leaseToken, status, next, code, refundAttempt, at)
 	if err != nil {
 		return err
 	}
