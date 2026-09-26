@@ -121,11 +121,6 @@ func isGIF(b []byte) bool {
 		(b[4] == '7' || b[4] == '9') && b[5] == 'a'
 }
 
-func isSVG(b []byte) bool {
-	n := min(len(b), 1024)
-	return strings.Contains(strings.ToLower(string(b[:n])), "<svg")
-}
-
 func isPDF(b []byte) bool {
 	n := min(len(b), 1024)
 	return bytes.Contains(b[:n], []byte("%PDF-"))

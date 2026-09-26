@@ -399,3 +399,49 @@ func TestService_LegacySVGTheSanitizerRefusesIsAnOpaqueDownload(t *testing.T) {
 		t.Fatalf("key %s", created.Key)
 	}
 }
+
+// An SVG is recognised by its root element, read past its prolog (an XML
+// declaration, comments, one DOCTYPE) for up to 64 KiB: an exporter's
+// comment over 1 KiB does not hide it. A root that is not svg in the SVG
+// namespace, or one past 64 KiB, is not an SVG.
+func TestService_SVGIsRecognisedByItsRootElement(t *testing.T) {
+	t.Parallel()
+	svc, blobs := svgService(t)
+	root := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>`
+	long := "\xEF\xBB\xBF<?xml version=\"1.0\"?>\n<!-- " + strings.Repeat("exported by a generator ", 100) + "-->\n<!DOCTYPE svg>\n" + root
+	created, err := svc.UploadForPurpose(context.Background(), organizer(), "event_cover", uploaded("long.svg", "image/svg+xml", []byte(long)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := blobs.Get(created.Key)
+	if created.Type != "image/svg+xml" || len(svgElements(t, stored)) != 2 {
+		t.Fatalf("type %s, stored:\n%s", created.Type, stored)
+	}
+	for name, doc := range map[string]string{
+		"a root in another namespace": `<svg xmlns="http://example.test/not-svg"><rect width="1" height="1"/></svg>`,
+		"a root past 64 KiB":          `<!--` + strings.Repeat("x", 64<<10) + `-->` + root,
+		"svg only in a comment":       `<!-- <svg> --><html/>`,
+		"text before the root":        `text` + root,
+	} {
+		_, err := svc.UploadForPurpose(context.Background(), organizer(), "event_cover", uploaded("x.svg", "image/svg+xml", []byte(doc)))
+		if !errors.Is(err, media.ErrTypeNotAllowed) {
+			t.Errorf("%s: err = %v, want %v", name, err, media.ErrTypeNotAllowed)
+		}
+	}
+}
+
+// A presentation attribute holding a CSS comment is dropped: a comment
+// could split a word the value guard looks for (java/**/script:).
+func TestService_SVGDropsAPresentationAttributeWithAComment(t *testing.T) {
+	t.Parallel()
+	svc, blobs := svgService(t)
+	doc := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#000 /* note */" stroke="java/**/script:x" stroke-width="1"/></svg>`
+	created, err := svc.UploadForPurpose(context.Background(), organizer(), "event_cover", uploaded("c.svg", "image/svg+xml", []byte(doc)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := blobs.Get(created.Key)
+	if got := svgElements(t, stored); !slices.Equal(got, []string{"svg :viewBox=0 0 10 10", "rect :height=10 :stroke-width=1 :width=10"}) {
+		t.Fatalf("elements %v", got)
+	}
+}

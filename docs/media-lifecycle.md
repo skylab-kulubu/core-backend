@@ -347,14 +347,18 @@ image, polyglot payloads.
      `gXYZ`, `bXYZ`, `rTRC`, `gTRC`, `bTRC`);
    - it keeps `desc`, `cprt`, `wtpt`, `chad`, the primaries and the
      curves, each checked against its type (`XYZ `, `sf32`, `curv`, `para`,
-     `mluc`/`desc`/`text`) with every length in bounds and text at most
-     4 KiB; the colour-defining tags stay byte for byte;
+     `mluc`/`desc`/`text`) with every length in bounds (an `mluc` header,
+     record table and strings; a v2 `desc` is rebuilt around its ASCII
+     text, so a reader following its counts stays inside it) and text at
+     most 4 KiB; the colour-defining tags stay byte for byte;
    - under a new header (size recomputed, profile ID and maker fields
      zeroed) and a new tag table.
 
    A profile of lookup tables only, a CMYK or grey profile, one above 1 MiB,
    one without the `acsp` signature or its own size, or one with any tag
-   outside its bounds is dropped, and the image is then shown as sRGB.
+   outside its bounds is dropped, and the image is then shown as sRGB. A
+   fault while rebuilding drops the profile the same way (logged once per
+   process) instead of refusing the upload.
 
 **Animations** look as uploaded (decision D2):
 
@@ -418,6 +422,8 @@ is sanitized (it also takes one of the 2).
   fails for the budget.
 - The backfills wait like an upload; a wait that runs out leaves the image
   for the next pass.
+- A slot is given back however the decode ends, a panic included. A cover
+  colour pick that panics picks none, and the backfill goes on.
 
 **Worst case on the production host** (15 GiB, no swap), per slot: the decoded
 image at most 256 MiB by the estimate; the upload body and its copies up to
@@ -477,8 +483,12 @@ Two changes to the strip, both for JPEG:
 
 An SVG is stored as SVG (decision D1), sanitized, for the purposes that list
 it: `cms_image`, `event_cover` and `event_gallery` — not profile pictures, not
-Answer files (a code ceiling keeps it there). Core reads it as XML and writes
-it again from an allowlist; the original bytes are never stored:
+Answer files (a code ceiling keeps it there). A file is an SVG when, within
+its first 64 KiB and past its prolog (a byte order mark, the XML
+declaration, comments, processing instructions, whitespace, one DOCTYPE),
+its root element is `svg` in the SVG namespace (or in none). Core reads it
+as XML and writes it again from an allowlist; the original bytes are never
+stored:
 
 - **Kept:** shapes and paths (`path`, `rect`, `circle`, `ellipse`, `line`,
   `polyline`, `polygon`), text (`text`, `tspan`, `textPath`), gradients
@@ -493,7 +503,8 @@ it again from an allowlist; the original bytes are never stored:
   `cross-fade()`, `element()`, `src()`, …) or with a string that looks like
   an address is dropped. A `<style>` keeps its rules and drops every
   at-rule (`@import`, `@font-face`, `@media`) whole; it is sanitized whole,
-  so a comment cannot split a name; CSS with escapes is removed.
+  so a comment cannot split a name; CSS with escapes is removed. A
+  presentation attribute holding a comment (`/*`) or an escape is dropped.
 - **Bitmaps:** an `<image>` stays only with a `data:image/png|jpeg|gif|webp;base64,`
   URI. The bitmap is decoded and re-encoded like an uploaded raster image
   (within the SVG's decoding slot), and embedded again as PNG or JPEG. A
@@ -529,7 +540,7 @@ shared decoding slot.
 gets a `.svg` key too. Media uploaded without a purpose keep accepting what
 they accepted, so an SVG the sanitizer refuses is stored anyway, as an opaque
 download (`application/octet-stream`, `attachment`, under `files/`) that never
-renders.
+renders. So is one above 1 MiB (up to 10 MiB), which the sanitizer does not read.
 
 **Yusuf, on Cloudflare:** add a Response Header Transform Rule on `cdn.` for
 paths ending in `.svg` that sets

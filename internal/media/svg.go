@@ -24,6 +24,41 @@ const (
 	xmlNamespace   = "http://www.w3.org/XML/1998/namespace"
 )
 
+// maxSVGProlog is how far into a file isSVG reads for the root element.
+const maxSVGProlog = 64 << 10
+
+// isSVG reports whether a file is an SVG document: past an optional UTF-8
+// byte order mark, its prolog (an XML declaration, comments, processing
+// instructions, whitespace and at most one DOCTYPE) ends, within
+// maxSVGProlog bytes, at a root element svg in the SVG namespace (or in
+// none, which the sanitizer writes out in the SVG namespace). The prolog's
+// declared encoding is left to the sanitizer: it is read here as bytes.
+func isSVG(b []byte) bool {
+	b = bytes.TrimPrefix(b[:min(len(b), maxSVGProlog)], []byte("\xEF\xBB\xBF"))
+	decoder := xml.NewDecoder(bytes.NewReader(b))
+	decoder.CharsetReader = func(_ string, input io.Reader) (io.Reader, error) { return input, nil }
+	doctype := false
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		switch t := token.(type) {
+		case xml.StartElement:
+			return t.Name.Local == "svg" && (t.Name.Space == svgNamespace || t.Name.Space == "")
+		case xml.CharData:
+			if len(bytes.TrimSpace(t)) != 0 {
+				return false
+			}
+		case xml.Directive:
+			if doctype || !bytes.HasPrefix(t, []byte("DOCTYPE")) {
+				return false
+			}
+			doctype = true
+		}
+	}
+}
+
 var (
 	// errSVGTooLarge refuses an SVG above maxSVGBytes.
 	errSVGTooLarge = errors.New("media: SVG too large to sanitize")
@@ -336,7 +371,10 @@ var transformAttributes = setOf("transform", "gradientTransform", "patternTransf
 // or data scheme anywhere.
 func safeCSSValue(value string, transforms bool) bool {
 	lower := strings.ToLower(value)
-	if strings.Contains(lower, `\`) {
+	// A comment could split a word the guards below look for
+	// (java/**/script:). Style has its comments removed before it gets
+	// here; a presentation attribute with one is dropped.
+	if strings.Contains(lower, `\`) || strings.Contains(lower, "/*") {
 		return false
 	}
 	compact := strings.Map(func(r rune) rune {
