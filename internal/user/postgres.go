@@ -443,7 +443,8 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 	}
 	// Before the uploader goes: record every upload for erase_profile_media
 	// and clear every upload's file name (media redesign ticket 07). The
-	// current profile picture stays with profile_media_id.
+	// current profile picture stays with profile_media_id unless it is
+	// shared (below).
 	if err := media.RecordAccountErasure(ctx, tx, id, profileMediaID, at); err != nil {
 		return err
 	}
@@ -506,6 +507,13 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 				   OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(layout->'elements', '[]'::jsonb)) element WHERE element->>'mediaId' = $1::text)
 		)`, *profileMediaID, id).Scan(&shared); err != nil {
 			return err
+		}
+		// A shared picture is not the profile erasure's (profile_media_id
+		// stays empty): it goes with the recorded uploads, as club content.
+		if shared {
+			if err := media.RecordSharedProfilePicture(ctx, tx, id, *profileMediaID); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE account_deletion_requests

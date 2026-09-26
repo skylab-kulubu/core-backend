@@ -140,8 +140,9 @@ func forgetErased(ctx context.Context, db postgresMediaTx, id uuid.UUID) error {
 //  1. records in account_deletion_media, by id only, every upload of theirs
 //     that still has its object, for erase_profile_media to purge or keep by
 //     its purpose then (personalOnErasureSQL). The current profile picture
-//     (profilePicture) is never recorded: the profile-picture erasure
-//     (profile_media_id) has it, and keeps it when club content also uses it;
+//     (profilePicture) is not recorded here: the profile-picture erasure
+//     (profile_media_id) has it, or, when club content also uses it,
+//     RecordSharedProfilePicture records it;
 //  2. clears the file name of every upload of theirs.
 //
 // A rerun records nothing new and changes no existing record: once the
@@ -161,6 +162,24 @@ func RecordAccountErasure(ctx context.Context, tx pgx.Tx, subjectID uuid.UUID, p
 		return err
 	}
 	_, err := tx.Exec(ctx, `UPDATE media SET file_name = '', updated_at = $2 WHERE uploaded_by = $1 AND file_name <> ''`, subjectID, at)
+	return err
+}
+
+// RecordSharedProfilePicture records the person's current profile picture
+// in account_deletion_media when club content also uses it, so
+// profile_media_id stays empty: erase_profile_media then keeps it as club
+// content by the rule (personalOnErasureSQL) and strips the person's file
+// name from its object. It runs in anonymize_core's transaction; a rerun
+// keeps the record already there.
+func RecordSharedProfilePicture(ctx context.Context, tx pgx.Tx, subjectID, pictureID uuid.UUID) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO account_deletion_media (request_id, media_id)
+		SELECT request.id, picture.id
+		FROM account_deletion_requests request
+		JOIN media picture ON picture.id = $2
+		WHERE request.subject_id = $1 AND picture.blob_purged_at IS NULL
+		ON CONFLICT (request_id, media_id) DO NOTHING
+	`, subjectID, pictureID)
 	return err
 }
 

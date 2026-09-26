@@ -1448,13 +1448,16 @@ No new saga step does this; the two existing ones do:
 1. `anonymize_core`, in its one transaction and in this order, records every
    upload of the person that still has its object in `account_deletion_media`
    (by id only: request id and Media id), clears the file name of every upload
-   of theirs, and then clears their uploader. The current profile picture is
-   never recorded: it stays with `profile_media_id` and today's rule. It counts
-   as shared, and keeps its file, when anything but the person's own profile
-   uses it: an Event, a gallery, another profile, a certificate template, or a
-   Media attachment of another product (a CMS page). A rerun finds no uploads
-   left with their uploader, records nothing new and keeps what the first run
-   recorded.
+   of theirs, and then clears their uploader. The current profile picture
+   stays with `profile_media_id` and today's rule, unless it is shared:
+   anything but the person's own profile uses it (an Event, a gallery, another
+   profile, a certificate template, or a Media attachment of another product,
+   such as a CMS page). A shared picture is not the profile erasure's
+   (`profile_media_id` stays empty): it is recorded with the other uploads,
+   and the rule keeps it as club content, so it also stops being served under
+   the person's file name. No Media is both `profile_media_id` and a record.
+   A rerun finds no uploads left with their uploader, records nothing new and
+   keeps what the first run recorded.
 2. `erase_profile_media` hands the eraser the profile picture (unless its
    object is purged already), then every recorded upload, and the rule above
    decides each one:

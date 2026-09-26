@@ -288,10 +288,11 @@ func TestEraseProfileMediaResumesAnInterruptedStepWithWhatIsLeft(t *testing.T) {
 }
 
 // A profile picture club content also uses (a legacy picture that is an
-// Event's cover too) keeps today's rule: the reference-aware purge keeps it,
-// it loses its uploader and name, and profile_media_id goes. It never mixes
-// with the records, which are purged beside it.
-func TestEraseProfileMediaKeepsASharedProfilePictureApartFromTheRecords(t *testing.T) {
+// Event's cover too) is kept: it is not the profile erasure's
+// (profile_media_id stays empty) but a record like the Answer file beside
+// it, which the rule keeps as club content. It loses its uploader and name;
+// the Answer file is purged.
+func TestEraseProfileMediaKeepsASharedProfilePictureAsClubContent(t *testing.T) {
 	f := newRecordsFixture(t)
 	ctx := context.Background()
 	picture, err := f.media.Create(ctx, media.Media{
@@ -315,11 +316,13 @@ func TestEraseProfileMediaKeepsASharedProfilePictureApartFromTheRecords(t *testi
 	if err := f.users.AnonymizeAccount(ctx, f.subject, f.now, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.recorded(t); !slices.Equal(got, []uuid.UUID{answer.ID}) {
-		t.Fatalf("recorded %v, want only the Answer file", got)
+	both := []uuid.UUID{answer.ID, picture.ID}
+	slices.SortFunc(both, func(a, b uuid.UUID) int { return slices.Compare(a[:], b[:]) })
+	if got := f.recorded(t); !slices.Equal(got, both) {
+		t.Fatalf("recorded %v, want the Answer file and the shared picture", got)
 	}
-	if got := f.mediaForDeletion(t); !slices.Equal(got, []uuid.UUID{answer.ID}) {
-		t.Fatalf("media for deletion %v: a shared picture is not the profile erasure's", got)
+	if got := f.mediaForDeletion(t); !slices.Equal(got, both) {
+		t.Fatalf("media for deletion %v: a shared picture is not the profile erasure's, only a record", got)
 	}
 
 	if worked, err := worker.RunOnce(ctx); !worked || err != nil || !f.completed(t) {
@@ -800,5 +803,58 @@ func TestEraseProfileMediaFinishesFiftyUploadsOverSeveralPasses(t *testing.T) {
 		if !f.purged(t, answer) {
 			t.Fatal("an Answer file is not purged")
 		}
+	}
+}
+
+// A current profile picture club content also uses (a legacy SVG an Event
+// has as its cover) is not the profile erasure's, so anonymize_core records
+// it with the other uploads (profile_media_id stays empty) and the rule keeps
+// it as club content: the file stays, its object downloads under its key
+// instead of the person's file name, and its record goes.
+func TestEraseProfileMediaStripsTheNameFromASharedProfilePicture(t *testing.T) {
+	f := newRecordsFixture(t)
+	ctx := context.Background()
+	picture, err := f.media.Create(ctx, media.Media{
+		Name: "Ada_Lovelace_portrait.svg", Type: "image/svg+xml", Kind: media.KindImage, Key: "images/" + uuid.NewString() + ".svg", UploadedBy: f.subject,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.public.Put(ctx, picture.Key, []byte("<svg/>"), media.ServingMetadata(picture.Type, picture.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := user.NewService(f.users).SetProfilePicture(ctx, f.subject, picture.ID, picture.Key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := event.NewPostgresStore(f.pool).Create(ctx, event.Event{Name: "Shared cover", Location: "YTÜ", OwnerTeam: "WEBLAB", CoverImageID: &picture.ID}); err != nil {
+		t.Fatal(err)
+	}
+	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, f.buckets))
+
+	if err := f.users.AnonymizeAccount(ctx, f.subject, f.now, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.recorded(t); !slices.Equal(got, []uuid.UUID{picture.ID}) {
+		t.Fatalf("recorded %v, want the shared picture", got)
+	}
+	if got := f.mediaForDeletion(t); !slices.Equal(got, []uuid.UUID{picture.ID}) {
+		t.Fatalf("media for deletion %v, want the shared picture once, as a record", got)
+	}
+
+	if worked, err := worker.RunOnce(ctx); !worked || err != nil || !f.completed(t) {
+		t.Fatalf("worked=%v err=%v completed=%v", worked, err, f.completed(t))
+	}
+	stored, err := f.media.GetIncludingDeleted(ctx, picture.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.public.Get(picture.Key); !ok || stored.BlobPurgedAt != nil || stored.DeletedAt != nil {
+		t.Fatalf("the shared picture was not kept: %+v", stored)
+	}
+	if meta, _ := f.public.Metadata(picture.Key); meta.ContentDisposition != "attachment" || meta.ContentType != "image/svg+xml" {
+		t.Fatalf("the shared picture is served as %q, %q; want image/svg+xml, attachment", meta.ContentType, meta.ContentDisposition)
+	}
+	if got := f.recorded(t); len(got) != 0 {
+		t.Fatalf("records %v left", got)
 	}
 }
