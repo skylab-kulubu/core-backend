@@ -359,7 +359,7 @@ func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
 	switch {
 	case detected == svgType:
 		var clean []byte
-		clean, err = sanitizeSVG(data)
+		clean, err = sanitizeSVG(data, purpose.Image.maxDimension())
 		if errors.Is(err, errSVGTooLarge) {
 			return storedFile{}, &PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: maxSVGBytes}
 		}

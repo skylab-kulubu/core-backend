@@ -3,8 +3,13 @@ package media_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/xml"
 	"errors"
+	"hash/crc32"
+	"image"
+	"image/color"
 	"io"
 	"slices"
 	"strings"
@@ -270,5 +275,85 @@ text { font-family: "//evil.example/font"; stroke: hsla(0, 50%, 50%, .5); fill: 
 		if !strings.Contains(string(stored), kept) {
 			t.Errorf("the stored SVG lost %q:\n%s", kept, stored)
 		}
+	}
+}
+
+// withPNGText adds a tEXt chunk after a PNG's header, as editors write
+// comments.
+func withPNGText(data []byte, text string) []byte {
+	payload := append([]byte("Comment\x00"), text...)
+	chunk := binary.BigEndian.AppendUint32(nil, uint32(len(payload)))
+	chunk = append(chunk, "tEXt"...)
+	chunk = append(chunk, payload...)
+	chunk = binary.BigEndian.AppendUint32(chunk, crc32.ChecksumIEEE(chunk[4:]))
+	out := append([]byte{}, data[:33]...)
+	out = append(out, chunk...)
+	return append(out, data[33:]...)
+}
+
+// An SVG may carry a bitmap as a data: URI of a raster type. It is decoded
+// and re-encoded like any uploaded raster image, and embedded again; any
+// other <image> goes.
+func TestService_SVGKeepsAnEmbeddedBitmapReencoded(t *testing.T) {
+	t.Parallel()
+	svc, blobs := svgService(t)
+	bitmap := withPNGText(solidPNG(t, 40, 30, color.RGBA{R: 200, A: 255}), "SECRET-PNG-TEXT")
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 40 30">
+<image width="40" height="30" href="data:image/png;base64,` + base64.StdEncoding.EncodeToString(bitmap) + `"/>
+<image width="40" height="30" href="https://evil.example/x.png"/>
+<image width="40" height="30" xlink:href="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=="/>
+</svg>`
+
+	created, err := svc.UploadForPurpose(context.Background(), organizer(), "event_cover", uploaded("photo.svg", "image/svg+xml", []byte(svg)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := blobs.Get(created.Key)
+	if bytes.Contains(stored, []byte("evil")) || bytes.Contains(stored, []byte("text/html")) || bytes.Count(stored, []byte("<image")) != 1 {
+		t.Fatalf("stored:\n%s", stored)
+	}
+	const prefix = `href="data:image/png;base64,`
+	at := bytes.Index(stored, []byte(prefix))
+	if at < 0 {
+		t.Fatalf("no embedded PNG:\n%s", stored)
+	}
+	encoded := stored[at+len(prefix):]
+	encoded = encoded[:bytes.IndexByte(encoded, '"')]
+	embedded, err := base64.StdEncoding.DecodeString(string(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(embedded, []byte("SECRET-PNG-TEXT")) {
+		t.Fatal("the embedded bitmap was not re-encoded")
+	}
+	if img, format := decodeStored(t, embedded); format != "png" || img.Bounds().Size() != image.Pt(40, 30) {
+		t.Fatalf("embedded %s %v", format, img.Bounds().Size())
+	}
+}
+
+func TestService_SVGRefusesAnEmbeddedBitmapTooLargeToDecode(t *testing.T) {
+	t.Parallel()
+	svc, _ := svgService(t)
+	svg := `<svg xmlns="http://www.w3.org/2000/svg"><image width="1" height="1" href="data:image/png;base64,` + base64.StdEncoding.EncodeToString(pngClaiming(30000, 30000)) + `"/></svg>`
+
+	_, err := svc.UploadForPurpose(context.Background(), organizer(), "event_cover", uploaded("bomb.svg", "image/svg+xml", []byte(svg)))
+	if !errors.Is(err, media.ErrImageTooLarge) {
+		t.Fatalf("err = %v, want %v", err, media.ErrImageTooLarge)
+	}
+}
+
+// An SVG left with nothing to draw once sanitized is refused rather than
+// stored blank.
+func TestService_SVGWithNothingLeftToDrawIsRefused(t *testing.T) {
+	t.Parallel()
+	svc, blobs := svgService(t)
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><title>x</title><script>alert(1)</script><image href="https://evil.example/x.png" width="10" height="10"/><foreignObject><div xmlns="http://www.w3.org/1999/xhtml">hi</div></foreignObject></svg>`
+
+	_, err := svc.UploadForPurpose(context.Background(), organizer(), "event_cover", uploaded("blank.svg", "image/svg+xml", []byte(svg)))
+	if !errors.Is(err, media.ErrTypeNotAllowed) {
+		t.Fatalf("err = %v, want %v", err, media.ErrTypeNotAllowed)
+	}
+	if keys := blobs.Keys(); len(keys) != 0 {
+		t.Fatalf("stored %v", keys)
 	}
 }

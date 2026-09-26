@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/xml"
 	"errors"
 	"io"
@@ -97,7 +98,16 @@ type svgNode struct {
 // comments and processing instructions after the root, a root that is not
 // <svg>, or more than maxSVGElements elements or nesting deeper than
 // maxSVGDepth is errSVGRefused; so is a fault in the parser.
-func sanitizeSVG(data []byte) (out []byte, err error) {
+//
+// An <image> stays only with a data: URI of a raster type: the bitmap is
+// decoded and re-encoded like an uploaded raster image (within limit
+// pixels on its longer side), and embedded again as PNG or JPEG. A bitmap
+// too large to decode refuses the SVG (errImageTooLarge), and so do
+// bitmaps that together cost more than the decode budget allows. An SVG
+// left with nothing to draw, or larger than maxSVGBytes once its bitmaps
+// are embedded again, is refused too. The caller holds the decode budget's
+// SVG slot.
+func sanitizeSVG(data []byte, limit int) (out []byte, err error) {
 	if len(data) > maxSVGBytes {
 		return nil, errSVGTooLarge
 	}
@@ -111,6 +121,7 @@ func sanitizeSVG(data []byte) (out []byte, err error) {
 	var stack []*svgNode
 	elements, depth, skipped := 0, 0, 0
 	doctype, closed := false, false
+	var bitmapCost int64
 	for {
 		token, err := decoder.Token()
 		if errors.Is(err, io.EOF) {
@@ -149,15 +160,28 @@ func sanitizeSVG(data []byte) (out []byte, err error) {
 				continue
 			}
 			inSVG := t.Name.Space == "" || t.Name.Space == svgNamespace
+			var bitmap *xml.Attr
 			if root == nil {
 				if !inSVG || t.Name.Local != "svg" {
 					return nil, errSVGRefused
+				}
+			} else if inSVG && t.Name.Local == "image" {
+				bitmap, err = embeddedBitmap(t.Attr, limit, &bitmapCost)
+				if err != nil {
+					return nil, err
+				}
+				if bitmap == nil {
+					skipped = 1
+					continue
 				}
 			} else if !inSVG || !svgElements[t.Name.Local] {
 				skipped = 1
 				continue
 			}
 			node := &svgNode{name: t.Name.Local, attrs: sanitizeSVGAttributes(t.Attr)}
+			if bitmap != nil {
+				node.attrs = append(node.attrs, *bitmap)
+			}
 			if root == nil {
 				root = node
 			} else {
@@ -181,13 +205,78 @@ func sanitizeSVG(data []byte) (out []byte, err error) {
 			parent.children = append(parent.children, string(t))
 		}
 	}
-	if root == nil {
+	if root == nil || !root.draws() {
 		return nil, errSVGRefused
 	}
 	var written bytes.Buffer
 	written.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
 	root.write(&written, true)
+	if written.Len() > maxSVGBytes {
+		return nil, errSVGTooLarge
+	}
 	return written.Bytes(), nil
+}
+
+// svgDrawing are the elements that draw something.
+var svgDrawing = setOf("path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "text", "use", "image")
+
+// draws reports whether anything under the node draws.
+func (n *svgNode) draws() bool {
+	if svgDrawing[n.name] {
+		return true
+	}
+	for _, child := range n.children {
+		if c, ok := child.(*svgNode); ok && c.draws() {
+			return true
+		}
+	}
+	return false
+}
+
+// svgBitmap is a data: URI of a raster type an <image> may carry.
+var svgBitmap = regexp.MustCompile(`^data:image/(png|jpeg|gif|webp);base64,`)
+
+// embeddedBitmap re-encodes the bitmap an <image> carries as a data: URI
+// and returns it as the element's href, or nil when the element carries
+// none (it is then dropped). cost adds up what decoding every bitmap of the
+// SVG takes; past maxDecodedImageBytes the SVG is refused.
+func embeddedBitmap(attrs []xml.Attr, limit int, cost *int64) (*xml.Attr, error) {
+	var uri string
+	for _, a := range attrs {
+		if a.Name.Local == "href" && (a.Name.Space == "" || a.Name.Space == xlinkNamespace) {
+			uri = strings.TrimSpace(a.Value)
+		}
+	}
+	match := svgBitmap.FindString(uri)
+	if match == "" {
+		return nil, nil
+	}
+	encoded := strings.Map(func(r rune) rune {
+		if r <= ' ' {
+			return -1
+		}
+		return r
+	}, uri[len(match):])
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || !isRasterType(detectContentType(raw)) {
+		return nil, errSVGRefused
+	}
+	_, decoding, err := decodeCost(raw)
+	if err != nil {
+		return nil, errSVGRefused
+	}
+	if *cost += decoding; *cost > maxDecodedImageBytes {
+		return nil, errImageTooLarge{maxPixels: MaxImagePixels}
+	}
+	img, err := reencodeRaster(raw, ImageHandling{Reencode: true, MaxDimension: limit})
+	if err != nil {
+		var tooLarge errImageTooLarge
+		if errors.As(err, &tooLarge) {
+			return nil, err
+		}
+		return nil, errSVGRefused
+	}
+	return &xml.Attr{Name: xml.Name{Local: "href"}, Value: "data:" + img.ctype + ";base64," + base64.StdEncoding.EncodeToString(img.body)}, nil
 }
 
 // sanitizeSVGAttributes keeps the attributes in svgAttributes whose values
