@@ -445,7 +445,7 @@ func TestPostgresLegacyPurposeBackfillReportsAMediaThatKeepsFailingOnce(t *testi
 	var mu sync.Mutex
 	var passes []media.LegacyPurposeReport
 	var failures []error
-	media.MaintainLegacyPurposeBackfill(ctx, db.store, catalogue, time.Millisecond,
+	media.MaintainLegacyPurposeBackfill(ctx, db.store, catalogue, time.Millisecond, nil,
 		func(report media.LegacyPurposeReport) { mu.Lock(); passes = append(passes, report); mu.Unlock() },
 		func(err error) { mu.Lock(); failures = append(failures, err); mu.Unlock() })
 

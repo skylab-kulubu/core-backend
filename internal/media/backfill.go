@@ -164,11 +164,26 @@ func MaintainServingPolicyBackfill(ctx context.Context, store Store, blobs BlobS
 // failed, waiting retryEvery after a pass that left failures or could not
 // finish.
 func MaintainBackfill(ctx context.Context, pass func(context.Context) (BackfillReport, error), retryEvery time.Duration, onError func(error)) {
+	maintainBackfill(ctx, pass, retryEvery, nil, onError)
+}
+
+// maintainBackfill is MaintainBackfill that, with a non-nil again, does not
+// stop after a pass that leaves nothing failed: it waits for again and makes
+// the passes once more.
+func maintainBackfill(ctx context.Context, pass func(context.Context) (BackfillReport, error), retryEvery time.Duration, again <-chan struct{}, onError func(error)) {
 	go func() {
 		for {
 			report, err := pass(ctx)
 			if err == nil && report.Failed == 0 {
-				return
+				if again == nil {
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-again:
+				}
+				continue
 			}
 			if err != nil && onError != nil {
 				onError(err)
