@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sync/atomic"
@@ -99,7 +100,14 @@ func (f imageSizesFixture) event(t *testing.T, name string, cover *uuid.UUID, ga
 
 func (f imageSizesFixture) get(t *testing.T, path string, into any) {
 	t.Helper()
-	resp, err := f.app.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+	answer(t, f.app, httptest.NewRequest(fiber.MethodGet, path, nil), into)
+}
+
+// answer sends req and reads its 200 JSON answer into into.
+func answer(t *testing.T, app *fiber.App, req *http.Request, into any) {
+	t.Helper()
+	path := req.URL.Path
+	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,10 +117,10 @@ func (f imageSizesFixture) get(t *testing.T, path string, into any) {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != fiber.StatusOK {
-		t.Fatalf("GET %s: %d %s", path, resp.StatusCode, raw)
+		t.Fatalf("%s %s: %d %s", req.Method, path, resp.StatusCode, raw)
 	}
 	if err := json.Unmarshal(raw, into); err != nil {
-		t.Fatalf("GET %s: %s: %v", path, raw, err)
+		t.Fatalf("%s %s: %s: %v", req.Method, path, raw, err)
 	}
 }
 
@@ -329,5 +337,112 @@ func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T)
 				t.Errorf("Event %s gallery sizes %+v", got.ID, image.Sizes)
 			}
 		}
+	}
+}
+
+// sizedProfileView is a profile answer's picture with its sizes.
+type sizedProfileView struct {
+	ProfilePictureID    *uuid.UUID                    `json:"profilePictureId"`
+	ProfilePictureURL   string                        `json:"profilePictureUrl"`
+	ProfilePictureSizes map[string]media.ImageAddress `json:"profilePictureSizes"`
+}
+
+// profile is a person whose profile links picture (none when nil), and
+// their /v1/users/me routes.
+func (f imageSizesFixture) profile(t *testing.T, picture *media.Media) (*fiber.App, media.Service) {
+	t.Helper()
+	ctx := context.Background()
+	id := uuid.New()
+	profile := user.Profile{Email: id.String() + "@example.test", FirstName: "Ada", LastName: "Lovelace"}
+	users := user.NewService(f.users)
+	if _, _, err := users.Ensure(ctx, id, profile); err != nil {
+		t.Fatal(err)
+	}
+	if picture != nil {
+		if _, err := users.SetProfilePicture(ctx, id, picture.ID, picture.Key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := media.NewService(f.media, media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), sizesBase)
+	return meIdentApp(t, f.users, id, profile, svc), svc
+}
+
+// A person's own profile answers their picture's card and page addresses
+// next to its full-size address.
+func TestMeCarriesTheProfilePictureSizesHTTP(t *testing.T) {
+	f := newImageSizesFixture(t)
+	picture := f.image(t, media.PurposeProfilePicture, "images/portrait", 1600, 1600, map[string]media.SizeObject{
+		media.SizeCard: jpegSize(400, 400), media.SizePage: jpegSize(1200, 1200),
+	})
+	app, _ := f.profile(t, &picture)
+
+	var got sizedProfileView
+	answer(t, app, httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil), &got)
+
+	if got.ProfilePictureURL != sizesBase+"/images/portrait" {
+		t.Fatalf("profilePictureUrl %q", got.ProfilePictureURL)
+	}
+	want := bothSizes(
+		media.ImageAddress{URL: sizesBase + "/images/portrait/card.jpg", Width: 400, Height: 400},
+		media.ImageAddress{URL: sizesBase + "/images/portrait/page.jpg", Width: 1200, Height: 1200},
+	)
+	if !reflect.DeepEqual(got.ProfilePictureSizes, want) {
+		t.Fatalf("profilePictureSizes %+v, want %+v", got.ProfilePictureSizes, want)
+	}
+}
+
+// A picture stored without sizes of its own answers the original at every
+// size; a profile without a picture answers none.
+func TestMeProfilePictureWithoutSizesFallsBackToTheOriginalHTTP(t *testing.T) {
+	f := newImageSizesFixture(t)
+	legacy := f.image(t, media.PurposeLegacy, "images/legacy-portrait", 0, 0, nil)
+	app, _ := f.profile(t, &legacy)
+
+	var got sizedProfileView
+	answer(t, app, httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil), &got)
+
+	original := media.ImageAddress{URL: sizesBase + "/images/legacy-portrait"}
+	if got.ProfilePictureURL != original.URL {
+		t.Fatalf("profilePictureUrl %q", got.ProfilePictureURL)
+	}
+	if want := bothSizes(original, original); !reflect.DeepEqual(got.ProfilePictureSizes, want) {
+		t.Fatalf("profilePictureSizes %+v, want %+v", got.ProfilePictureSizes, want)
+	}
+
+	bare, _ := f.profile(t, nil)
+	var none sizedProfileView
+	answer(t, bare, httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil), &none)
+	if none.ProfilePictureURL != "" || none.ProfilePictureSizes != nil {
+		t.Fatalf("a profile without a picture answers %+v", none)
+	}
+}
+
+// Uploading a picture answers its sizes at once: the ones the Media JSON
+// gives the new Media.
+func TestMeProfilePictureUploadAnswersTheNewPicturesSizesHTTP(t *testing.T) {
+	f := newImageSizesFixture(t)
+	app, svc := f.profile(t, nil)
+	body, ctype := multipartPNG(t, "image", "portrait.png", grayPNGHTTP(t, 1600, 1200))
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/users/me/profile-picture", body)
+	req.Header.Set("Content-Type", ctype)
+
+	var got sizedProfileView
+	answer(t, app, req, &got)
+
+	if got.ProfilePictureID == nil {
+		t.Fatalf("upload answered %+v", got)
+	}
+	uploaded, err := svc.Get(context.Background(), authz.Principal{}, *got.ProfilePictureID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProfilePictureURL != uploaded.URL {
+		t.Fatalf("profilePictureUrl %q, the Media's %q", got.ProfilePictureURL, uploaded.URL)
+	}
+	if len(uploaded.Sizes) != 2 || !reflect.DeepEqual(got.ProfilePictureSizes, uploaded.Sizes) {
+		t.Fatalf("profilePictureSizes %+v, the Media's sizes %+v", got.ProfilePictureSizes, uploaded.Sizes)
+	}
+	if card := got.ProfilePictureSizes[media.SizeCard]; card.URL != uploaded.URL+"/card.png" || card.Width != 400 || card.Height != 300 {
+		t.Fatalf("card %+v", card)
 	}
 }
