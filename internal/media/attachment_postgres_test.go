@@ -43,7 +43,10 @@ func newMediaDatabase(t *testing.T) mediaDatabase {
 	blobs := media.NewMemoryBlob()
 	return mediaDatabase{
 		pool: pool, store: store, blobs: blobs,
-		svc:       media.NewService(store, blobs, authz.NewAuthorizer(authz.DefaultPolicy()), ""),
+		// Skyforms and the CMS both have a service client here, so their
+		// purposes can be uploaded and attached.
+		svc: media.NewServiceWithOptions(store, blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "",
+			media.ServiceOptions{ServiceProducts: authz.ServiceProducts}),
 		organizer: authz.Principal{ID: organizer.String(), Groups: []string{"/UYELER/YK"}},
 	}
 }

@@ -103,17 +103,36 @@ type linker struct {
 }
 
 func (l linker) CheckLink(ctx context.Context, id uuid.UUID, role Role) error {
-	m, err := l.store.GetIncludingDeleted(ctx, id)
+	return checkLink(ctx, l.store, id, authz.ProductCore, role, nil)
+}
+
+// checkLink is the one check of every new link, core's own and another
+// product's: the Media exists and is linkable, the product may link it at
+// all (may, when the product has such a rule), and its purpose fits the
+// product's role. A Media the product may not link is refused exactly like
+// one that does not exist, so the refusal tells the caller nothing about it.
+func checkLink(ctx context.Context, store Store, id uuid.UUID, product authz.Product, role Role, may func(Media) (bool, error)) error {
+	notLinkable := &LinkRefusal{Err: ErrNotLinkable, MediaID: id, Role: role}
+	m, err := store.GetIncludingDeleted(ctx, id)
 	if errors.Is(err, ErrNotFound) {
-		return &LinkRefusal{Err: ErrNotLinkable, MediaID: id, Role: role}
+		return notLinkable
 	}
 	if err != nil {
 		return err
 	}
 	if !linkable(m, time.Now()) {
-		return &LinkRefusal{Err: ErrNotLinkable, MediaID: id, Role: role}
+		return notLinkable
 	}
-	if !fits(authz.ProductCore, role, m.Purpose) {
+	if may != nil {
+		allowed, err := may(m)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return notLinkable
+		}
+	}
+	if !fits(product, role, m.Purpose) {
 		return &LinkRefusal{Err: ErrPurposeMismatch, MediaID: id, Role: role, Purpose: m.Purpose}
 	}
 	return nil

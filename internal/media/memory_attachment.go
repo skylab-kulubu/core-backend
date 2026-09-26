@@ -30,11 +30,6 @@ func (s *MemoryStore) Attach(_ context.Context, a Attachment) (Attachment, bool,
 	return a, true, nil
 }
 
-// detachedWindow is how long a detached Media is kept. The database fixes the
-// same 30 days in its status trigger (migration 20260926120000); the memory
-// store models it here.
-const detachedWindow = 30 * 24 * time.Hour
-
 // Detach models the database's status trigger: the Media's last Media
 // attachment going detaches it.
 func (s *MemoryStore) Detach(_ context.Context, mediaID, attachmentID uuid.UUID, service authz.Product) error {
@@ -58,7 +53,9 @@ func (s *MemoryStore) Detach(_ context.Context, mediaID, attachmentID uuid.UUID,
 	m.Status = StatusDetached
 	m.ExpiresAt = nil
 	if m.Purpose != PurposeLegacy {
-		expires := now.Add(detachedWindow)
+		// The database's status trigger fixes the detached window at the
+		// default recovery window, 30 days (migration 20260926120000).
+		expires := now.Add(DefaultBlobRecoveryWindow)
 		m.ExpiresAt = &expires
 	}
 	m.UpdatedAt = now
@@ -82,6 +79,17 @@ func (s *MemoryStore) findAttachment(a Attachment) (Attachment, bool) {
 		}
 	}
 	return Attachment{}, false
+}
+
+func (s *MemoryStore) HeldBy(_ context.Context, mediaID uuid.UUID, product authz.Product) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.attachments {
+		if a.MediaID == mediaID && a.Owner.Service == product {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *MemoryStore) GetAttachment(_ context.Context, mediaID, attachmentID uuid.UUID) (Attachment, error) {

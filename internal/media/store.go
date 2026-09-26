@@ -135,6 +135,9 @@ type Store interface {
 	// FindAttachment returns the Media attachment of the same link as a
 	// (Media, owner and role); ErrNotFound when there is none.
 	FindAttachment(ctx context.Context, a Attachment) (Attachment, error)
+	// HeldBy reports whether the product (owner_service) has any Media
+	// attachment to the Media.
+	HeldBy(ctx context.Context, mediaID uuid.UUID, product authz.Product) (bool, error)
 	// GetAttachment returns the Media's attachment with this id; ErrNotFound
 	// when the Media has none.
 	GetAttachment(ctx context.Context, mediaID, attachmentID uuid.UUID) (Attachment, error)

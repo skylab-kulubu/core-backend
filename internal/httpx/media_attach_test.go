@@ -32,11 +32,11 @@ func serviceToken(t *testing.T, keys *testauth.Bundle, client string, coreRoles 
 	})
 }
 
-// personToken is a person's token, signed in through client.
-func personToken(t *testing.T, keys *testauth.Bundle, client string, coreRoles ...string) string {
+// personToken is the token of the person sub, signed in through client.
+func personToken(t *testing.T, keys *testauth.Bundle, sub, client string, coreRoles ...string) string {
 	t.Helper()
 	return keys.Token(t, jwt.MapClaims{
-		"sub": uuid.NewString(), "azp": client, "email": "editor@example.com", "given_name": "E", "family_name": "D",
+		"sub": sub, "azp": client, "email": "editor@example.com", "given_name": "E", "family_name": "D",
 		"resource_access": map[string]any{"core": map[string]any{"roles": coreRoles}},
 	})
 }
@@ -103,28 +103,44 @@ func uploadAs(t *testing.T, app *fiber.App, token, purpose string) string {
 	return created["id"].(string)
 }
 
-func attachBody(service, ownerType, ownerID, role string) string {
-	return `{"owner":{"service":"` + service + `","type":"` + ownerType + `","id":"` + ownerID + `"},"role":"` + role + `"}`
+func attachBody(service, ownerType, ownerID, role, onBehalfOf string) string {
+	return `{"owner":{"service":"` + service + `","type":"` + ownerType + `","id":"` + ownerID + `"},"role":"` + role +
+		`","onBehalfOf":"` + onBehalfOf + `"}`
 }
+
+// editor is a person signed in to the site, who uploads for CMS pages.
+type editor struct {
+	id    string
+	token string
+}
+
+func newEditor(t *testing.T, keys *testauth.Bundle) editor {
+	t.Helper()
+	id := uuid.NewString()
+	return editor{id: id, token: personToken(t, keys, id, "inscribed")}
+}
+
+// A CMS page is the site's client id and the page's slug.
+const aboutPage = "skylab-site:hakkimizda"
 
 func TestAProductAttachesMediaToItsOwnRecordHTTP(t *testing.T) {
 	t.Parallel()
 	keys := testauth.New(t)
 	app := memoryApp(keys.Parse())
-	mediaID := uploadAs(t, app, personToken(t, keys, "inscribed"), "cms_image")
-	page := uuid.NewString()
+	e := newEditor(t, keys)
+	mediaID := uploadAs(t, app, e.token, "cms_image")
 
 	resp := sendJSON(t, app, serviceToken(t, keys, cmsClient, "media:attach"), fiber.MethodPost,
-		"/v1/media/"+mediaID+"/attachments", attachBody("cms", "page", page, "image"))
+		"/v1/media/"+mediaID+"/attachments", attachBody("cms", "page", aboutPage, "image", e.id))
 	if resp.status != fiber.StatusCreated {
 		t.Fatalf("attach: status %d body %v", resp.status, resp.body)
 	}
 	owner, _ := resp.body["owner"].(map[string]any)
 	if resp.body["mediaId"] != mediaID || resp.body["role"] != "image" || resp.body["id"] == nil ||
-		owner["service"] != "cms" || owner["type"] != "page" || owner["id"] != page {
+		owner["service"] != "cms" || owner["type"] != "page" || owner["id"] != aboutPage {
 		t.Fatalf("attachment %v", resp.body)
 	}
-	got := sendJSON(t, app, personToken(t, keys, "inscribed"), fiber.MethodGet, "/v1/media/"+mediaID, "")
+	got := sendJSON(t, app, e.token, fiber.MethodGet, "/v1/media/"+mediaID, "")
 	if got.body["status"] != "attached" || got.body["expiresAt"] != nil {
 		t.Fatalf("media after attach: %v", got.body)
 	}
@@ -141,28 +157,31 @@ func requireCode(t *testing.T, resp jsonResponse, status int, code string) {
 // Only a product's service account manages Media attachments. A person is
 // refused even with the media:attach role and signed in through a product's
 // client, and so is a service account without the role or of a client that
-// is no product core knows.
+// is no product's configured service client. A person is refused before the
+// request is read.
 func TestOnlyAProductsServiceAccountWithTheRoleMayAttachHTTP(t *testing.T) {
 	t.Parallel()
 	keys := testauth.New(t)
 	app := memoryApp(keys.Parse())
-	mediaID := uploadAs(t, app, personToken(t, keys, "inscribed"), "cms_image")
-	body := attachBody("cms", "page", uuid.NewString(), "image")
+	e := newEditor(t, keys)
+	mediaID := uploadAs(t, app, e.token, "cms_image")
+	body := attachBody("cms", "page", aboutPage, "image", e.id)
 
-	for name, token := range map[string]string{
-		"person with the role":         personToken(t, keys, cmsClient, "media:attach"),
-		"service without the role":     serviceToken(t, keys, cmsClient, "users:read"),
-		"service of an unknown client": serviceToken(t, keys, "frontend-main", "media:attach"),
+	for name, call := range map[string]struct{ token, path, body string }{
+		"person with the role":         {personToken(t, keys, uuid.NewString(), cmsClient, "media:attach"), mediaID, body},
+		"person sending nonsense":      {personToken(t, keys, uuid.NewString(), cmsClient, "media:attach"), "logo", `owner=cms`},
+		"service without the role":     {serviceToken(t, keys, cmsClient, "users:read"), mediaID, body},
+		"service of an unknown client": {serviceToken(t, keys, "frontend-main", "media:attach"), mediaID, body},
 		// The Skyforms login client has no service account; only the
 		// configured forms client speaks for Skyforms.
-		"service of an unconfigured client": serviceToken(t, keys, "skyforms", "media:attach"),
+		"service of an unconfigured client": {serviceToken(t, keys, "skyforms", "media:attach"), mediaID, body},
 	} {
-		resp := sendJSON(t, app, token, fiber.MethodPost, "/v1/media/"+mediaID+"/attachments", body)
+		resp := sendJSON(t, app, call.token, fiber.MethodPost, "/v1/media/"+call.path+"/attachments", call.body)
 		if resp.status != fiber.StatusForbidden || resp.body["code"] != "media_attach_forbidden" {
 			t.Errorf("%s: status %d body %v", name, resp.status, resp.body)
 		}
 	}
-	got := sendJSON(t, app, personToken(t, keys, "inscribed"), fiber.MethodGet, "/v1/media/"+mediaID, "")
+	got := sendJSON(t, app, e.token, fiber.MethodGet, "/v1/media/"+mediaID, "")
 	if got.body["status"] != "pending" {
 		t.Fatalf("media after refused attaches: %v", got.body)
 	}
@@ -174,12 +193,13 @@ func TestAProductCannotAttachForAnotherProductHTTP(t *testing.T) {
 	t.Parallel()
 	keys := testauth.New(t)
 	app := memoryApp(keys.Parse())
-	mediaID := uploadAs(t, app, personToken(t, keys, "inscribed"), "cms_image")
+	e := newEditor(t, keys)
+	mediaID := uploadAs(t, app, e.token, "cms_image")
 	forms := serviceToken(t, keys, "forms", "media:attach")
 
 	for _, service := range []string{"cms", "core"} {
 		resp := sendJSON(t, app, forms, fiber.MethodPost, "/v1/media/"+mediaID+"/attachments",
-			attachBody(service, "page", uuid.NewString(), "image"))
+			attachBody(service, "page", aboutPage, "image", e.id))
 		requireCode(t, resp, fiber.StatusForbidden, "media_attach_wrong_service")
 	}
 }
@@ -191,10 +211,10 @@ func TestServiceAttachAndDetachAreIdempotentHTTP(t *testing.T) {
 	t.Parallel()
 	keys := testauth.New(t)
 	app := memoryApp(keys.Parse())
-	person := personToken(t, keys, "inscribed")
-	mediaID := uploadAs(t, app, person, "cms_image")
+	e := newEditor(t, keys)
+	mediaID := uploadAs(t, app, e.token, "cms_image")
 	cms := serviceToken(t, keys, cmsClient, "media:attach")
-	body := attachBody("cms", "page", uuid.NewString(), "image")
+	body := attachBody("cms", "page", aboutPage, "image", e.id)
 	path := "/v1/media/" + mediaID + "/attachments"
 
 	first := sendJSON(t, app, cms, fiber.MethodPost, path, body)
@@ -211,7 +231,7 @@ func TestServiceAttachAndDetachAreIdempotentHTTP(t *testing.T) {
 		}
 	}
 	after := time.Now()
-	got := sendJSON(t, app, person, fiber.MethodGet, "/v1/media/"+mediaID, "")
+	got := sendJSON(t, app, e.token, fiber.MethodGet, "/v1/media/"+mediaID, "")
 	expires, err := time.Parse(time.RFC3339Nano, fmt.Sprint(got.body["expiresAt"]))
 	window := 30 * 24 * time.Hour
 	if got.body["status"] != "detached" || err != nil || expires.Before(before.Add(window)) || expires.After(after.Add(window)) {

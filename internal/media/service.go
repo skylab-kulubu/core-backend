@@ -34,7 +34,7 @@ type Service interface {
 	// Attach links the Media to a record of the calling product through the
 	// service attach API. created is false when the same link already
 	// exists; that Media attachment is returned.
-	Attach(ctx context.Context, p authz.Principal, mediaID uuid.UUID, owner Owner, role Role) (a Attachment, created bool, err error)
+	Attach(ctx context.Context, p authz.Principal, mediaID uuid.UUID, req AttachRequest) (a Attachment, created bool, err error)
 	// Detach removes a Media attachment of the calling product; removing
 	// one that is not there succeeds.
 	Detach(ctx context.Context, p authz.Principal, mediaID, attachmentID uuid.UUID) error

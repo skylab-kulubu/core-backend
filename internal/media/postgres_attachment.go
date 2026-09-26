@@ -21,26 +21,42 @@ func scanAttachment(row rowScanner) (Attachment, error) {
 // Attach inserts the Media attachment; the database's triggers refuse a Media
 // that is not current and make the Media attached. The same link again
 // returns the row already there.
+//
+// A concurrent call may write the same link between the insert and the read
+// that follows it, and a concurrent detach may remove it again before that
+// read: the attach then tries again, so it answers the state after both
+// rather than a missing row.
 func (s *PostgresStore) Attach(ctx context.Context, a Attachment) (Attachment, bool, error) {
-	created, err := scanAttachment(s.pool.QueryRow(ctx, `
-		INSERT INTO media_attachments (media_id, owner_service, owner_type, owner_id, role)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT ON CONSTRAINT media_attachments_link_key DO NOTHING
-		RETURNING `+attachmentCols, a.MediaID, a.Owner.Service, a.Owner.Type, a.Owner.ID, a.Role))
-	if err == nil {
-		return created, true, nil
+	for range 3 {
+		created, err := scanAttachment(s.pool.QueryRow(ctx, `
+			INSERT INTO media_attachments (media_id, owner_service, owner_type, owner_id, role)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT ON CONSTRAINT media_attachments_link_key DO NOTHING
+			RETURNING `+attachmentCols, a.MediaID, a.Owner.Service, a.Owner.Type, a.Owner.ID, a.Role))
+		if err == nil {
+			return created, true, nil
+		}
+		if isForeignKeyViolation(err) {
+			// No such Media (the foreign key), or it is archived or its purge
+			// started (require_current_attached_media).
+			return Attachment{}, false, ErrNotLinkable
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return Attachment{}, false, err
+		}
+		existing, err := s.FindAttachment(ctx, a)
+		if !errors.Is(err, ErrNotFound) {
+			return existing, false, err
+		}
 	}
-	if isForeignKeyViolation(err) {
-		// No such Media (the foreign key), or it is archived or its purge
-		// started (require_current_attached_media).
-		return Attachment{}, false, ErrNotLinkable
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return Attachment{}, false, err
-	}
-	// The same link, written by a concurrent call.
-	existing, err := s.FindAttachment(ctx, a)
-	return existing, false, err
+	return Attachment{}, false, errors.New("media: the link kept being written and removed under the attach")
+}
+
+func (s *PostgresStore) HeldBy(ctx context.Context, mediaID uuid.UUID, product authz.Product) (bool, error) {
+	var held bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM media_attachments WHERE media_id = $1 AND owner_service = $2)`,
+		mediaID, product).Scan(&held)
+	return held, err
 }
 
 func (s *PostgresStore) FindAttachment(ctx context.Context, a Attachment) (Attachment, error) {

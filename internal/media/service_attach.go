@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,11 +13,13 @@ import (
 )
 
 // Owner is the record a Media attachment links a Media to: the product that
-// owns it, its type there and its id.
+// owns it, its type there and its id. The id is the product's own: a Skyforms
+// response id, a CMS block or collection item id, or a CMS page as
+// clientId:slug.
 type Owner struct {
 	Service authz.Product `json:"service"`
 	Type    string        `json:"type"`
-	ID      uuid.UUID     `json:"id"`
+	ID      string        `json:"id"`
 }
 
 // Attachment is one Media attachment: a Media in a role on an owner's record.
@@ -28,46 +31,77 @@ type Attachment struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// AttachRequest is a product's request to link a Media to one of its
+// records.
+type AttachRequest struct {
+	Owner Owner
+	Role  Role
+	// OnBehalfOf is the person the product acts for: the respondent whose
+	// Skyforms answer it is, the editor saving the CMS page.
+	OnBehalfOf uuid.UUID
+}
+
+// personalPurposes are the purposes whose Media belong to the person who
+// uploaded them: a product links one only for that person.
+var personalPurposes = []string{PurposeAnswerFile, PurposeAnswerFileLarge}
+
 // ErrAttachForbidden refuses a caller of the service attach API that is not
 // a product's service account with the media:attach role on the core
 // client: a person, whatever roles they hold, a service account without the
-// role, or one of a client that is no product core knows.
+// role, or one of a client that is no product's configured service client.
 var ErrAttachForbidden = fmt.Errorf("media: only a product's service account may manage Media attachments: %w", ErrForbidden)
 
 // ErrAttachWrongService refuses a Media attachment of a record another
 // product (or core) owns: a product manages only its own.
 var ErrAttachWrongService = fmt.Errorf("media: the Media attachment belongs to another product: %w", ErrForbidden)
 
-// ErrProductMismatch refuses a link to a private Media by a product that
-// does not own it: only the owning product of its purpose (Skyforms for an
-// Answer file, core for a certificate asset) may link it.
-var ErrProductMismatch = fmt.Errorf("media: the Media is private to another product: %w", ErrForbidden)
-
 // ErrRoleUnknown refuses a role the calling product's records do not give a
-// Media (serviceRoles).
+// Media (rolePurposes).
 var ErrRoleUnknown = fmt.Errorf("media: not a role of the product's records: %w", ErrInvalid)
 
-// ownerType is how a product names the type of its records: lowercase
-// snake_case, at most 64 characters.
-var ownerType = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+// RoleRefusal is an attach request naming a role that is not the calling
+// product's. errors.Is matches ErrRoleUnknown.
+type RoleRefusal struct {
+	Role Role
+}
 
-// Attach links the Media to a record of the calling product. created is false
-// when the same link already exists; that Media attachment is returned.
-func (s *service) Attach(ctx context.Context, p authz.Principal, mediaID uuid.UUID, owner Owner, role Role) (Attachment, bool, error) {
+func (r *RoleRefusal) Error() string { return fmt.Sprintf("%v (%q)", ErrRoleUnknown, r.Role) }
+
+func (r *RoleRefusal) Unwrap() error { return ErrRoleUnknown }
+
+var (
+	// ownerType is how a product names the type of its records: lowercase
+	// snake_case, at most 64 characters.
+	ownerType = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	// ownerID is a record's id in its product: at most 200 letters, digits
+	// and - _ . : / (a UUID, or a CMS page as clientId:slug).
+	ownerID = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,200}$`)
+)
+
+// Attach links the Media to a record of the calling product, for the person
+// the product acts for. created is false when the same link already exists;
+// that Media attachment is returned.
+//
+// The caller is authorized before the request is read. A Media the product
+// may not link (another product's or core's, a personal one of another
+// person, a legacy one it has no claim on) is refused like a Media that does
+// not exist.
+func (s *service) Attach(ctx context.Context, p authz.Principal, mediaID uuid.UUID, req AttachRequest) (Attachment, bool, error) {
 	product, err := s.attachingProduct(p, authz.Create)
 	if err != nil {
 		return Attachment{}, false, err
 	}
-	if owner.Service != product {
-		return Attachment{}, false, ErrAttachWrongService
-	}
-	if !ownerType.MatchString(owner.Type) || owner.ID == uuid.Nil {
+	if mediaID == uuid.Nil || req.OnBehalfOf == uuid.Nil || req.Owner.Service == "" ||
+		!ownerType.MatchString(req.Owner.Type) || !ownerID.MatchString(req.Owner.ID) {
 		return Attachment{}, false, ErrInvalid
 	}
-	if _, known := rolePurposes[product][role]; !known {
-		return Attachment{}, false, ErrRoleUnknown
+	if req.Owner.Service != product {
+		return Attachment{}, false, ErrAttachWrongService
 	}
-	link := Attachment{MediaID: mediaID, Owner: owner, Role: role}
+	if _, known := rolePurposes[product][req.Role]; !known {
+		return Attachment{}, false, &RoleRefusal{Role: req.Role}
+	}
+	link := Attachment{MediaID: mediaID, Owner: req.Owner, Role: req.Role}
 	existing, err := s.media.FindAttachment(ctx, link)
 	if err == nil {
 		// A retry: the link exists, whatever became of the Media since.
@@ -76,33 +110,38 @@ func (s *service) Attach(ctx context.Context, p authz.Principal, mediaID uuid.UU
 	if !errors.Is(err, ErrNotFound) {
 		return Attachment{}, false, err
 	}
-	refused := func(reason error) (Attachment, bool, error) {
-		return Attachment{}, false, &LinkRefusal{Err: reason, MediaID: mediaID, Role: role}
-	}
-	m, err := s.media.GetIncludingDeleted(ctx, mediaID)
-	if errors.Is(err, ErrNotFound) {
-		return refused(ErrNotLinkable)
-	}
-	if err != nil {
+	may := func(m Media) (bool, error) { return s.mayLink(ctx, product, m, req.OnBehalfOf) }
+	if err := checkLink(ctx, s.media, mediaID, product, req.Role, may); err != nil {
 		return Attachment{}, false, err
-	}
-	if !linkable(m, time.Now()) {
-		return refused(ErrNotLinkable)
-	}
-	if purpose, _ := s.catalogue.Lookup(m.Purpose); purpose.Visibility == VisibilityPrivate && purpose.OwningProduct() != product {
-		// Before the role check, so that the refusal does not tell another
-		// product what the Media is.
-		return refused(ErrProductMismatch)
-	}
-	if !fits(product, role, m.Purpose) {
-		return Attachment{}, false, &LinkRefusal{Err: ErrPurposeMismatch, MediaID: mediaID, Role: role, Purpose: m.Purpose}
 	}
 	created, isNew, err := s.media.Attach(ctx, link)
 	if errors.Is(err, ErrNotLinkable) {
 		// Archived or claimed by a purge since it was read.
-		return refused(ErrNotLinkable)
+		return Attachment{}, false, &LinkRefusal{Err: ErrNotLinkable, MediaID: mediaID, Role: req.Role}
 	}
 	return created, isNew, err
+}
+
+// mayLink reports whether the product may link m at all, for the person it
+// acts for:
+//   - a Media of one of the product's own purposes; a personal one only for
+//     the person who uploaded it;
+//   - a legacy Media for the person who uploaded it, or one the product
+//     already holds a Media attachment to (an editor reusing a library
+//     image), so that no product pins another product's or core's legacy
+//     Media.
+func (s *service) mayLink(ctx context.Context, product authz.Product, m Media, onBehalfOf uuid.UUID) (bool, error) {
+	if m.Purpose == PurposeLegacy {
+		if m.UploadedBy == onBehalfOf {
+			return true, nil
+		}
+		return s.media.HeldBy(ctx, m.ID, product)
+	}
+	purpose, known := s.catalogue.Lookup(m.Purpose)
+	if !known || purpose.OwningProduct() != product {
+		return false, nil
+	}
+	return !slices.Contains(personalPurposes, m.Purpose) || m.UploadedBy == onBehalfOf, nil
 }
 
 // attachingProduct is the product whose service account p is, when p may
@@ -122,6 +161,9 @@ func (s *service) Detach(ctx context.Context, p authz.Principal, mediaID, attach
 	product, err := s.attachingProduct(p, authz.Delete)
 	if err != nil {
 		return err
+	}
+	if mediaID == uuid.Nil || attachmentID == uuid.Nil {
+		return ErrInvalid
 	}
 	a, err := s.media.GetAttachment(ctx, mediaID, attachmentID)
 	if errors.Is(err, ErrNotFound) {

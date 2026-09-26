@@ -13,35 +13,47 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
+// uploader is the person the database's Media were uploaded by.
+func (d mediaDatabase) uploader() uuid.UUID {
+	return uuid.MustParse(d.organizer.ID)
+}
+
+// attachFor links m to owner for its uploader.
 func (d mediaDatabase) attachFor(t *testing.T, p authz.Principal, m media.Media, owner media.Owner, role media.Role) media.Attachment {
 	t.Helper()
-	a, _, err := d.svc.Attach(context.Background(), p, m.ID, owner, role)
+	a, _, err := d.svc.Attach(context.Background(), p, m.ID, media.AttachRequest{Owner: owner, Role: role, OnBehalfOf: d.uploader()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return a
 }
 
+// A CMS page is the site's client id and the page's slug; a block has a
+// Guid.
+var (
+	homePage  = media.Owner{Service: authz.ProductCMS, Type: "page", ID: "skylab-site:anasayfa"}
+	aboutPage = media.Owner{Service: authz.ProductCMS, Type: "page", ID: "skylab-site:hakkimizda"}
+)
+
 // pending → attached → detached through another product's Media
 // attachments: the database's status trigger follows them as it follows
-// core's own links.
+// core's own links, with the product's own owner ids.
 func TestPostgresServiceAttachmentKeepsTheMediaAttachedUntilItsLastGoes(t *testing.T) {
 	db := newMediaDatabase(t)
 	ctx := context.Background()
 	logo := db.upload(t, "cms_image")
-	home := media.Owner{Service: "cms", Type: "page", ID: uuid.New()}
-	about := media.Owner{Service: "cms", Type: "page", ID: uuid.New()}
+	req := media.AttachRequest{Owner: homePage, Role: media.RoleCMSImage, OnBehalfOf: db.uploader()}
 
-	first, created, err := db.svc.Attach(ctx, cmsService, logo.ID, home, media.RoleCMSImage)
-	if err != nil || !created {
-		t.Fatalf("attach: created %v, err %v", created, err)
+	first, created, err := db.svc.Attach(ctx, cmsService, logo.ID, req)
+	if err != nil || !created || first.Owner.ID != "skylab-site:anasayfa" {
+		t.Fatalf("attach: %+v created %v, err %v", first, created, err)
 	}
 	attached(t, db.get(t, logo.ID))
-	again, created, err := db.svc.Attach(ctx, cmsService, logo.ID, home, media.RoleCMSImage)
+	again, created, err := db.svc.Attach(ctx, cmsService, logo.ID, req)
 	if err != nil || created || again.ID != first.ID {
 		t.Fatalf("same link again: %+v created %v err %v; want %s", again, created, err, first.ID)
 	}
-	second := db.attachFor(t, cmsService, logo, about, media.RoleCMSImage)
+	second := db.attachFor(t, cmsService, logo, aboutPage, media.RoleCMSImage)
 
 	if err := db.svc.Detach(ctx, cmsService, logo.ID, first.ID); err != nil {
 		t.Fatal(err)
@@ -58,7 +70,7 @@ func TestPostgresServiceAttachmentKeepsTheMediaAttachedUntilItsLastGoes(t *testi
 	}
 
 	// Within its window the Media can be attached again.
-	db.attachFor(t, cmsService, logo, home, media.RoleCMSImage)
+	db.attachFor(t, cmsService, logo, homePage, media.RoleCMSImage)
 	attached(t, db.get(t, logo.ID))
 }
 
@@ -69,7 +81,8 @@ func TestPostgresServiceAttachmentOfALegacyMediaSetsNoExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer := db.attachFor(t, formsService, legacy, media.Owner{Service: "forms", Type: "response", ID: uuid.New()}, media.RoleFormsAnswer)
+	response := media.Owner{Service: authz.ProductForms, Type: "response", ID: uuid.NewString()}
+	answer := db.attachFor(t, formsService, legacy, response, media.RoleFormsAnswer)
 	attached(t, db.get(t, legacy.ID))
 
 	if err := db.svc.Detach(ctx, formsService, legacy.ID, answer.ID); err != nil {
@@ -77,6 +90,32 @@ func TestPostgresServiceAttachmentOfALegacyMediaSetsNoExpiry(t *testing.T) {
 	}
 	if got := db.get(t, legacy.ID); got.Status != media.StatusDetached || got.ExpiresAt != nil {
 		t.Fatalf("detached legacy Media: status %q expires %v, want detached with no expiry", got.Status, got.ExpiresAt)
+	}
+}
+
+// A legacy Media core links (an Event cover) is not the CMS's to pin for an
+// editor who did not upload it; once the CMS holds it, any editor may reuse
+// it.
+func TestPostgresLegacyMediaNeedsItsUploaderOrTheProductsOwnAttachment(t *testing.T) {
+	db := newMediaDatabase(t)
+	ctx := context.Background()
+	events := event.NewService(event.NewPostgresStore(db.pool), authz.NewAuthorizer(authz.DefaultPolicy()))
+	cover, err := db.svc.Upload(ctx, db.organizer, "cover.png", "image/png", pngDot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.Create(ctx, db.organizer, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", CoverImageID: &cover.ID}); err != nil {
+		t.Fatal(err)
+	}
+	editor := uuid.New()
+
+	_, _, err = db.svc.Attach(ctx, cmsService, cover.ID, media.AttachRequest{Owner: homePage, Role: media.RoleCMSImage, OnBehalfOf: editor})
+	if !errors.Is(err, media.ErrNotLinkable) {
+		t.Fatalf("CMS pinning core's legacy Media for another editor: err = %v, want %v", err, media.ErrNotLinkable)
+	}
+	db.attachFor(t, cmsService, cover, homePage, media.RoleCMSImage)
+	if _, created, err := db.svc.Attach(ctx, cmsService, cover.ID, media.AttachRequest{Owner: aboutPage, Role: media.RoleCMSImage, OnBehalfOf: editor}); err != nil || !created {
+		t.Fatalf("reusing the CMS's own legacy Media: created %v, err %v", created, err)
 	}
 }
 
@@ -96,9 +135,7 @@ func TestPostgresStoreRefusesAnAttachmentToMediaThatIsNotCurrent(t *testing.T) {
 	}
 
 	for name, id := range map[string]uuid.UUID{"missing": uuid.New(), "archived": archived.ID, "purge started": purging.ID} {
-		_, _, err := db.store.Attach(ctx, media.Attachment{
-			MediaID: id, Owner: media.Owner{Service: "cms", Type: "page", ID: uuid.New()}, Role: media.RoleCMSImage,
-		})
+		_, _, err := db.store.Attach(ctx, media.Attachment{MediaID: id, Owner: homePage, Role: media.RoleCMSImage})
 		if !errors.Is(err, media.ErrNotLinkable) {
 			t.Errorf("%s: err = %v, want %v", name, err, media.ErrNotLinkable)
 		}
@@ -110,17 +147,17 @@ func TestPostgresStoreRefusesAnAttachmentToMediaThatIsNotCurrent(t *testing.T) {
 func TestPostgresConcurrentSameLinkMakesOneAttachment(t *testing.T) {
 	db := newMediaDatabase(t)
 	logo := db.upload(t, "cms_image")
-	owner := media.Owner{Service: "cms", Type: "page", ID: uuid.New()}
+	req := media.AttachRequest{Owner: homePage, Role: media.RoleCMSImage, OnBehalfOf: db.uploader()}
 
 	var wg sync.WaitGroup
 	results := make([]media.Attachment, 8)
-	createdCount := make([]bool, len(results))
+	isNew := make([]bool, len(results))
 	errs := make([]error, len(results))
 	for i := range results {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i], createdCount[i], errs[i] = db.svc.Attach(context.Background(), cmsService, logo.ID, owner, media.RoleCMSImage)
+			results[i], isNew[i], errs[i] = db.svc.Attach(context.Background(), cmsService, logo.ID, req)
 		}()
 	}
 	wg.Wait()
@@ -132,7 +169,7 @@ func TestPostgresConcurrentSameLinkMakesOneAttachment(t *testing.T) {
 		if results[i].ID != results[0].ID {
 			t.Fatalf("attachments %s and %s for one link", results[i].ID, results[0].ID)
 		}
-		if createdCount[i] {
+		if isNew[i] {
 			created++
 		}
 	}
@@ -142,7 +179,7 @@ func TestPostgresConcurrentSameLinkMakesOneAttachment(t *testing.T) {
 }
 
 // A product cannot remove core's own Media attachments, such as an Event
-// cover's.
+// cover's, whose owner ids stay the record's UUID.
 func TestPostgresProductCannotDetachCoresOwnLinks(t *testing.T) {
 	db := newMediaDatabase(t)
 	ctx := context.Background()
@@ -151,12 +188,17 @@ func TestPostgresProductCannotDetachCoresOwnLinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := events.Create(ctx, db.organizer, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", CoverImageID: &cover.ID}); err != nil {
+	created, err := events.Create(ctx, db.organizer, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", CoverImageID: &cover.ID})
+	if err != nil {
 		t.Fatal(err)
 	}
 	var coreAttachment uuid.UUID
-	if err := db.pool.QueryRow(ctx, `SELECT id FROM media_attachments WHERE media_id = $1`, cover.ID).Scan(&coreAttachment); err != nil {
+	var ownerID string
+	if err := db.pool.QueryRow(ctx, `SELECT id, owner_id FROM media_attachments WHERE media_id = $1`, cover.ID).Scan(&coreAttachment, &ownerID); err != nil {
 		t.Fatal(err)
+	}
+	if ownerID != created.ID.String() {
+		t.Fatalf("core's owner id %q, want the Event's id %s", ownerID, created.ID)
 	}
 
 	if err := db.svc.Detach(ctx, formsService, cover.ID, coreAttachment); !errors.Is(err, media.ErrAttachWrongService) {
@@ -172,7 +214,7 @@ func TestPostgresExpiryCleanupKeepsWhatAProductAttached(t *testing.T) {
 	db := newMediaDatabase(t)
 	ctx := context.Background()
 	logo := db.withBlob(t, "cms_image")
-	page := db.attachFor(t, cmsService, logo, media.Owner{Service: "cms", Type: "page", ID: uuid.New()}, media.RoleCMSImage)
+	page := db.attachFor(t, cmsService, logo, homePage, media.RoleCMSImage)
 
 	if _, err := media.PurgeExpired(ctx, db.store, db.blobs, time.Now().Add(48*time.Hour), nil); err != nil {
 		t.Fatal(err)
