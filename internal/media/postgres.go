@@ -304,10 +304,10 @@ const (
 	archivedQueue purgeQueue = iota
 	// expiredQueue: the Media is current and past its expiry.
 	expiredQueue
-	// erasedQueue: account erasure recorded the Media as the person's own
-	// (account_deletion_media). It goes in whatever state it is in and
-	// whatever still uses it: personal purposes win (media redesign ticket
-	// 07).
+	// erasedQueue: account erasure recorded the Media, an upload of the
+	// person being erased (account_deletion_media). The person's own goes in
+	// whatever state it is in and whatever still uses it (media redesign
+	// ticket 07).
 	erasedQueue
 )
 
@@ -323,29 +323,33 @@ func (q purgeQueue) claimable(archived, expired bool) bool {
 	return archived
 }
 
-// keeps reports, under the purge's locks, whether the queue must leave the
-// Media: while anything uses it. erasedQueue leaves a Media account erasure
-// has no record of, and a recorded legacy Media something uses by now:
-// decision E1 read again, it is club content after all, so its record goes
-// here, in the caller's transaction, and the Media stays as it is.
-func (q purgeQueue) keeps(ctx context.Context, tx postgresMediaTx, id uuid.UUID) (bool, error) {
-	if q != erasedQueue {
-		return mediaReferenced(ctx, tx, id)
+// holdsBack reports, under the purge's locks, whether the queue must leave
+// the Media: the archive and expiry purges while anything uses it
+// (mediaReferenced), the erasure purge unless account erasure recorded it and
+// it is the person's own (erasedAsPersonal).
+func (q purgeQueue) holdsBack(ctx context.Context, tx postgresMediaTx, id uuid.UUID) (bool, error) {
+	if q == erasedQueue {
+		personal, err := erasedAsPersonal(ctx, tx, id)
+		return !personal, err
 	}
-	var recorded, club bool
-	err := tx.QueryRow(ctx, `SELECT
-			EXISTS (SELECT 1 FROM account_deletion_media WHERE media_id = $1),
-			COALESCE((SELECT purpose = $2 AND NOT `+legacyIsPersonalSQL("$1")+` FROM media WHERE id = $1), false)`,
-		id, PurposeLegacy).Scan(&recorded, &club)
-	if err != nil || !recorded {
-		return true, err
-	}
-	if !club {
-		return false, nil
-	}
-	_, err = tx.Exec(ctx, `DELETE FROM account_deletion_media WHERE media_id = $1`, id)
-	return true, err
+	return mediaReferenced(ctx, tx, id)
 }
+
+// purgeOutcome is how a purge of one Media ended.
+type purgeOutcome int
+
+const (
+	// purgeSkipped: the queue may not start on the Media now (not
+	// claimable, purged already, or its claim went meanwhile).
+	purgeSkipped purgeOutcome = iota
+	// purgeHeldBack: the queue's check under the purge's locks leaves it.
+	purgeHeldBack
+	// purgeClaimed: the durable claim is taken (now or before); the purge
+	// goes on. Only the claim answers it.
+	purgeClaimed
+	// purgeDone: its objects are deleted and the purge recorded.
+	purgeDone
+)
 
 func (s *PostgresStore) PurgeBlobIfUnreferenced(ctx context.Context, id uuid.UUID, purgedAt time.Time, purge func(string) error) (bool, error) {
 	return s.purgeBlob(ctx, id, purgedAt, archivedQueue, purge)
@@ -358,67 +362,72 @@ func (s *PostgresStore) PurgeExpiredBlobIfUnattached(ctx context.Context, id uui
 	return s.purgeBlob(ctx, id, now, expiredQueue, purge)
 }
 
-// purgeBlob is the two-phase purge: a durable claim after the locked check
-// of its queue (queue.keeps), the idempotent object deletion, then the
-// record.
 func (s *PostgresStore) purgeBlob(ctx context.Context, id uuid.UUID, purgedAt time.Time, queue purgeQueue, purge func(string) error) (bool, error) {
-	claimed, err := s.claimBlobPurge(ctx, id, purgedAt, queue)
-	if err != nil || !claimed {
-		return false, err
+	outcome, err := s.purge(ctx, id, purgedAt, queue, purge)
+	return outcome == purgeDone, err
+}
+
+// purge is the two-phase purge: a durable claim after the locked check of
+// its queue (queue.holdsBack), the idempotent object deletion, then the
+// record.
+func (s *PostgresStore) purge(ctx context.Context, id uuid.UUID, purgedAt time.Time, queue purgeQueue, purge func(string) error) (purgeOutcome, error) {
+	claim, err := s.claimBlobPurge(ctx, id, purgedAt, queue)
+	if err != nil || claim != purgeClaimed {
+		return claim, err
 	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, err
+		return purgeSkipped, err
 	}
 	defer tx.Rollback(ctx)
 
 	if err := lockMediaReferenceWriters(ctx, tx); err != nil {
-		return false, err
+		return purgeSkipped, err
 	}
 	var key string
 	err = tx.QueryRow(ctx, `SELECT file_url FROM media
 		WHERE id = $1 AND blob_purge_started_at IS NOT NULL AND blob_purged_at IS NULL
 		FOR UPDATE`, id).Scan(&key)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return purgeSkipped, nil
 	}
 	if err != nil {
-		return false, err
+		return purgeSkipped, err
 	}
 
-	kept, err := queue.keeps(ctx, tx, id)
+	held, err := queue.holdsBack(ctx, tx, id)
 	if err != nil {
-		return false, err
+		return purgeSkipped, err
 	}
-	if kept {
+	if held {
 		if _, err := tx.Exec(ctx, `UPDATE media SET blob_purge_started_at = NULL, blob_purge_checked_at = $2 WHERE id = $1`, id, purgedAt); err != nil {
-			return false, err
+			return purgeSkipped, err
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return false, err
+			return purgeSkipped, err
 		}
-		return false, nil
+		return purgeHeldBack, nil
 	}
 	if err := purgeObjects(key, purge); err != nil {
-		return false, err
+		return purgeSkipped, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE media
 		SET blob_purged_at = $2, blob_purge_checked_at = $2, updated_at = $2, deleted_at = COALESCE(deleted_at, $2)
 		WHERE id = $1`, id, purgedAt); err != nil {
-		return false, err
+		return purgeSkipped, err
 	}
 	// Account erasure's record of the Media goes with its purge, so the
 	// request never holds the id of a Media already gone.
 	if queue == erasedQueue {
-		if _, err := tx.Exec(ctx, `DELETE FROM account_deletion_media WHERE media_id = $1`, id); err != nil {
-			return false, err
+		if err := forgetErased(ctx, tx, id); err != nil {
+			return purgeSkipped, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, err
+		return purgeSkipped, err
 	}
-	return true, nil
+	return purgeDone, nil
 }
 
 type postgresMediaTx interface {
@@ -507,50 +516,53 @@ func coreLinkRowsSQL() string {
 		CROSS JOIN LATERAL core_media_links(source.record, source.owner_column, source.media_column, source.manifest_column) link`
 }
 
-func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claimedAt time.Time, queue purgeQueue) (bool, error) {
+// claimBlobPurge takes the durable claim: purgeClaimed when the purge may go
+// on (claimed now or before), purgeHeldBack when the queue's check leaves the
+// Media, purgeSkipped when the queue may not start on it.
+func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claimedAt time.Time, queue purgeQueue) (purgeOutcome, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, err
+		return purgeSkipped, err
 	}
 	defer tx.Rollback(ctx)
 	if err := lockMediaReferenceWriters(ctx, tx); err != nil {
-		return false, err
+		return purgeSkipped, err
 	}
 	var startedAt, purgedAt *time.Time
 	var archived, expired bool
 	err = tx.QueryRow(ctx, `SELECT blob_purge_started_at, blob_purged_at, deleted_at IS NOT NULL, COALESCE(`+expiredSQL+`, false)
 		FROM media WHERE id = $2 FOR UPDATE`, claimedAt, id).Scan(&startedAt, &purgedAt, &archived, &expired)
 	if errors.Is(err, pgx.ErrNoRows) || purgedAt != nil {
-		return false, nil
+		return purgeSkipped, nil
 	}
 	if err != nil {
-		return false, err
+		return purgeSkipped, err
 	}
 	if startedAt == nil {
 		if !queue.claimable(archived, expired) {
-			return false, nil
+			return purgeSkipped, nil
 		}
-		kept, err := queue.keeps(ctx, tx, id)
+		held, err := queue.holdsBack(ctx, tx, id)
 		if err != nil {
-			return false, err
+			return purgeSkipped, err
 		}
-		if kept {
+		if held {
 			if _, err := tx.Exec(ctx, `UPDATE media SET blob_purge_checked_at = $2 WHERE id = $1`, id, claimedAt); err != nil {
-				return false, err
+				return purgeSkipped, err
 			}
 			if err := tx.Commit(ctx); err != nil {
-				return false, err
+				return purgeSkipped, err
 			}
-			return false, nil
+			return purgeHeldBack, nil
 		}
 		if _, err := tx.Exec(ctx, `UPDATE media SET blob_purge_started_at = $2, blob_purge_checked_at = $2 WHERE id = $1`, id, claimedAt); err != nil {
-			return false, err
+			return purgeSkipped, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, err
+		return purgeSkipped, err
 	}
-	return true, nil
+	return purgeClaimed, nil
 }
 
 type rowScanner interface {

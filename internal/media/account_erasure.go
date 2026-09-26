@@ -3,44 +3,50 @@ package media
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
 var ErrProfileBlobNotErased = errors.New("media: profile blob erasure not satisfied")
 
 var ErrStagedUploadNotErased = errors.New("media: staged upload erasure not satisfied")
 
-// ErrPersonalMediaNotErased is a Media account erasure recorded as the
-// person's own that is not purged yet: its object could not be deleted, or
-// another purge holds it. The worker retries the step.
-var ErrPersonalMediaNotErased = errors.New("media: recorded personal Media erasure not satisfied")
+// ErrRecordedMediaNotErased is an upload anonymize_core recorded that
+// erase_profile_media has not finished yet: its object could not be deleted
+// or given new metadata, or another purge holds it. The worker retries the
+// step.
+var ErrRecordedMediaNotErased = errors.New("media: recorded Media erasure not satisfied")
 
-// errObjectDelete stands for a failed object deletion in an erasure error.
-// The storage client's error can name the object's address, which an error
-// the erasure worker logs must not carry; errors.Is still reaches the cause.
-type errObjectDelete struct{ cause error }
+// errObjectStorage stands for a failed object storage request in an erasure
+// error. The storage client's error can name the object's address, which an
+// error the erasure worker logs must not carry; errors.Is still reaches the
+// cause.
+type errObjectStorage struct {
+	request string
+	cause   error
+}
 
-func (e errObjectDelete) Error() string { return "media: object storage delete failed" }
-func (e errObjectDelete) Unwrap() error { return e.cause }
+func (e errObjectStorage) Error() string { return "media: object storage " + e.request + " failed" }
+func (e errObjectStorage) Unwrap() error { return e.cause }
 
 // erasureTexts are the errors an erasure error may name: core wrote their
 // text, and it holds no Media, object, file or person.
 var erasureTexts = []error{
-	ErrPersonalMediaNotErased, ErrProfileBlobNotErased, ErrPrivateMediaDisabled, ErrNotFound,
+	ErrRecordedMediaNotErased, ErrProfileBlobNotErased, ErrPrivateMediaDisabled, ErrNotFound,
 	context.DeadlineExceeded, context.Canceled,
 }
 
 // erasureError is an erasure error as the erasure worker may log it
-// (account-lifecycle.md): the text of the erasureTexts and object deletion
+// (account-lifecycle.md): the text of the erasureTexts and object storage
 // failures it holds, the SQLSTATE of a database error, or only that the
-// erasure failed. Anything
-// else can name a Media: a database message, a record core cannot read.
-// errors.Is and errors.As still reach the cause.
+// erasure failed. Anything else can name a Media: a database message, a
+// record core cannot read. errors.Is and errors.As still reach the cause.
 func erasureError(err error) error {
 	if err == nil {
 		return nil
@@ -51,8 +57,9 @@ func erasureError(err error) error {
 			texts = append(texts, known.Error())
 		}
 	}
-	if errors.As(err, new(errObjectDelete)) {
-		texts = append(texts, errObjectDelete{}.Error())
+	var storage errObjectStorage
+	if errors.As(err, &storage) {
+		texts = append(texts, storage.Error())
 	}
 	var database *pgconn.PgError
 	if errors.As(err, &database) {
@@ -72,21 +79,57 @@ type redactedError struct {
 func (e redactedError) Error() string { return e.text }
 func (e redactedError) Unwrap() error { return e.cause }
 
-// erasedPersonalPurposes are the Media purposes of a person's own files
-// (media redesign spec, Account erasure): their account erasure purges them
-// at once. Every other purpose (event_cover, event_gallery, cms_image, cms_file,
-// club_file, video, certificate_asset) is club content, which keeps its file
-// without the uploader and the file name.
-var erasedPersonalPurposes = []string{PurposeProfilePicture, PurposeAnswerFile, PurposeAnswerFileLarge}
+// personalOnErasureSQL is the account erasure's rule, the one place it
+// lives: whether an upload the person's erasure recorded is theirs, and
+// purged at once, or club content, which keeps its file without their name.
+// It is an SQL condition on the Media id names, read under the purge's locks
+// once the person's own profile link is gone:
+//
+//   - answer_file, answer_file_large: theirs;
+//   - profile_picture: theirs, unless it is someone's current profile
+//     picture, which makes it that person's;
+//   - legacy (decision E1, Yusuf, 2026-09-27): theirs while only personal
+//     uses hold it (a Skyforms answer); any other use (another product's
+//     Media attachment, one of core's own links, the safety net, someone's
+//     profile) makes it club content;
+//   - every other purpose (event_cover, event_gallery, cms_image, cms_file,
+//     club_file, video, certificate_asset): club content.
+func personalOnErasureSQL(id string) string {
+	return `(SELECT CASE upload.purpose
+			WHEN '` + PurposeAnswerFile + `' THEN true
+			WHEN '` + PurposeAnswerFileLarge + `' THEN true
+			WHEN '` + PurposeProfilePicture + `' THEN NOT EXISTS (SELECT 1 FROM users WHERE profile_picture_id = upload.id)
+			WHEN '` + PurposeLegacy + `' THEN NOT EXISTS (
+				SELECT 1 FROM media_attachments link
+				WHERE link.media_id = upload.id
+				  AND NOT (link.owner_service = '` + string(authz.ProductForms) + `' AND link.role = '` + string(RoleFormsAnswer) + `')
+				UNION ALL ` + coreLinksSQL("upload.id") + `
+			)
+			ELSE false
+		END FROM media upload WHERE upload.id = ` + id + `)`
+}
 
-// legacyIsPersonalSQL is the account erasure's rule for a legacy Media, as
-// an SQL condition on the Media id names: decision E1 (Yusuf, 2026-09-27).
-// A legacy Media nothing uses (no Media attachment and none of core's own
-// links, the safety net) is the person's own and purged at once; one
-// anything still uses is club content, kept without its uploader and name.
-// This is the only place the rule lives.
-func legacyIsPersonalSQL(id string) string {
-	return `NOT ` + referencedSQL(id)
+// recordedSQL is true while account erasure has the Media ($1) to erase.
+const recordedSQL = `EXISTS (SELECT 1 FROM account_deletion_media WHERE media_id = $1)`
+
+func recordedForErasure(ctx context.Context, db postgresMediaTx, id uuid.UUID) (bool, error) {
+	var recorded bool
+	err := db.QueryRow(ctx, `SELECT `+recordedSQL, id).Scan(&recorded)
+	return recorded, err
+}
+
+// erasedAsPersonal reports, under the purge's locks, whether account erasure
+// recorded the Media and it is the person's own (personalOnErasureSQL).
+func erasedAsPersonal(ctx context.Context, tx postgresMediaTx, id uuid.UUID) (bool, error) {
+	var personal bool
+	err := tx.QueryRow(ctx, `SELECT `+recordedSQL+` AND COALESCE(`+personalOnErasureSQL("$1")+`, false)`, id).Scan(&personal)
+	return personal, err
+}
+
+// forgetErased removes account erasure's record of a Media it is done with.
+func forgetErased(ctx context.Context, db postgresMediaTx, id uuid.UUID) error {
+	_, err := db.Exec(ctx, `DELETE FROM account_deletion_media WHERE media_id = $1`, id)
+	return err
 }
 
 // RecordAccountErasure is anonymize_core's part in the person's uploads. It
@@ -94,24 +137,17 @@ func legacyIsPersonalSQL(id string) string {
 // and the person's user row, before the caller clears their uploader
 // (UPDATE media SET uploaded_by = NULL). In this order it
 //
-//  1. locks the person's uploads, so no Media attachment is written to one
-//     while it is being told apart;
-//  2. records in account_deletion_media, by id only, the uploads
-//     erase_profile_media purges at once: every upload of a personal purpose
-//     and every legacy upload legacyIsPersonalSQL makes personal. The current
-//     profile picture (profilePicture) is never recorded: the profile-picture
-//     erasure (profile_media_id) has it, and keeps it when club content also
-//     uses it;
-//  3. clears the file name of every upload of theirs: the club content kept,
-//     and the personal Media too, whose records stay after their objects go.
+//  1. records in account_deletion_media, by id only, every upload of theirs
+//     that still has its object, for erase_profile_media to purge or keep by
+//     its purpose then (personalOnErasureSQL). The current profile picture
+//     (profilePicture) is never recorded: the profile-picture erasure
+//     (profile_media_id) has it, and keeps it when club content also uses it;
+//  2. clears the file name of every upload of theirs.
 //
 // A rerun records nothing new and changes no existing record: once the
 // uploader is cleared nothing is found, and a record already there is kept
 // (ON CONFLICT DO NOTHING).
 func RecordAccountErasure(ctx context.Context, tx pgx.Tx, subjectID uuid.UUID, profilePicture *uuid.UUID, at time.Time) error {
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM media WHERE uploaded_by = $1 ORDER BY id FOR UPDATE`, subjectID); err != nil {
-		return err
-	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO account_deletion_media (request_id, media_id)
 		SELECT request.id, upload.id
@@ -120,9 +156,8 @@ func RecordAccountErasure(ctx context.Context, tx pgx.Tx, subjectID uuid.UUID, p
 		WHERE request.subject_id = $1
 		  AND upload.id IS DISTINCT FROM $2
 		  AND upload.blob_purged_at IS NULL
-		  AND (upload.purpose = ANY ($3) OR (upload.purpose = $4 AND `+legacyIsPersonalSQL("upload.id")+`))
 		ON CONFLICT (request_id, media_id) DO NOTHING
-	`, subjectID, profilePicture, erasedPersonalPurposes, PurposeLegacy); err != nil {
+	`, subjectID, profilePicture); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `UPDATE media SET file_name = '', updated_at = $2 WHERE uploaded_by = $1 AND file_name <> ''`, subjectID, at)
@@ -142,15 +177,17 @@ func NewImmediateBlobEraser(media *PostgresStore, blobs BlobStore) *ImmediateBlo
 	return &ImmediateBlobEraser{media: media, blobs: blobs}
 }
 
-// EnsureErased erases a Media erase_profile_media names: a Media
-// anonymize_core recorded as the person's own, or their profile picture.
+// EnsureErased erases a Media erase_profile_media names: an upload
+// anonymize_core recorded, or the person's profile picture.
 //
-// A recorded Media is purged whatever still uses it, an Answer file a
-// Skyforms response still holds included: personal purposes win. Its record
-// goes in the transaction that purges it. The profile picture is purged only
-// once nothing uses it (the store's locked reference check), so a picture an
-// Event or a certificate also uses keeps its object and loses only its
-// uploader and name.
+// A recorded upload is told apart by its purpose now (personalOnErasureSQL).
+// The person's own is purged whatever still uses it, an Answer file a
+// Skyforms response still holds included; its record goes in the
+// transaction that purges it. Club content keeps its file: its object is
+// served without the person's file name from then on, and its record goes.
+// The profile picture is purged only once nothing uses it (the store's
+// locked reference check), so a picture club content also uses keeps its
+// object and loses only its uploader and name.
 //
 // The error goes to the erasure worker's log, so it names no Media, object,
 // file or person (erasureError).
@@ -159,12 +196,12 @@ func (e *ImmediateBlobEraser) EnsureErased(ctx context.Context, id uuid.UUID, at
 }
 
 func (e *ImmediateBlobEraser) ensureErased(ctx context.Context, id uuid.UUID, at time.Time) error {
-	recorded, err := e.media.recordedForErasure(ctx, id)
+	recorded, err := recordedForErasure(ctx, e.media.pool, id)
 	if err != nil {
 		return err
 	}
 	if recorded {
-		return e.erasePersonal(ctx, id, at)
+		return e.eraseUpload(ctx, id, at)
 	}
 	purged, err := e.media.PurgeBlobIfUnreferenced(ctx, id, at, e.deleteObject(ctx))
 	if err != nil || purged {
@@ -183,33 +220,49 @@ func (e *ImmediateBlobEraser) ensureErased(ctx context.Context, id uuid.UUID, at
 	return ErrProfileBlobNotErased
 }
 
-// erasePersonal purges a recorded Media through the store's two-phase purge
-// (erasedQueue), with its locks and its durable claim, but without the
-// reference check of a personal purpose. A legacy Media something uses by
-// now is kept instead, its record gone. A Media already purged another way
-// only loses its record.
-func (e *ImmediateBlobEraser) erasePersonal(ctx context.Context, id uuid.UUID, at time.Time) error {
-	purged, err := e.media.purgeBlob(ctx, id, at, erasedQueue, e.deleteObject(ctx))
+// eraseUpload ends the erasure of a recorded upload. The store's two-phase
+// purge (erasedQueue), with its locks and durable claim, purges the
+// person's own; club content is held back and kept (keepClub). A Media
+// purged another way meanwhile only loses its record.
+func (e *ImmediateBlobEraser) eraseUpload(ctx context.Context, id uuid.UUID, at time.Time) error {
+	outcome, err := e.media.purge(ctx, id, at, erasedQueue, e.deleteObject(ctx))
 	if err != nil {
-		return errors.Join(ErrPersonalMediaNotErased, err)
+		return fmt.Errorf("%w: %w", ErrRecordedMediaNotErased, err)
 	}
-	if purged {
+	switch outcome {
+	case purgeDone:
 		return nil
+	case purgeHeldBack:
+		return e.keepClub(ctx, id)
 	}
 	item, err := e.media.GetIncludingDeleted(ctx, id)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	if err != nil || item.BlobPurgedAt != nil {
-		return e.media.forgetErased(ctx, id)
+		return forgetErased(ctx, e.media.pool, id)
 	}
-	recorded, err := e.media.recordedForErasure(ctx, id)
-	if err != nil || !recorded {
-		// Not recorded any more: the purge kept it as club content.
+	// Another purge holds its claim: try again later.
+	return ErrRecordedMediaNotErased
+}
+
+// keepClub ends the erasure of club content: its public object is served
+// without the person's file name from now on (only a download names one;
+// the key never does), then its record goes. An object already gone needs
+// no new metadata.
+func (e *ImmediateBlobEraser) keepClub(ctx context.Context, id uuid.UUID) error {
+	item, err := e.media.GetIncludingDeleted(ctx, id)
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	// Another purge holds the claim (or reset it): try again later.
-	return ErrPersonalMediaNotErased
+	if err == nil && item.Visibility == VisibilityPublic && item.BlobPurgedAt == nil {
+		if meta := ServingMetadata(item.Type, ""); meta.ContentDisposition != "" {
+			if err := e.blobs.SetMetadata(ctx, item.Key, meta); err != nil && !errors.Is(err, ErrNotFound) {
+				return fmt.Errorf("%w: %w", ErrRecordedMediaNotErased, errObjectStorage{request: "metadata rewrite", cause: err})
+			}
+		}
+	}
+	return forgetErased(ctx, e.media.pool, id)
 }
 
 func (e *ImmediateBlobEraser) deleteObject(ctx context.Context) func(string) error {
@@ -218,23 +271,8 @@ func (e *ImmediateBlobEraser) deleteObject(ctx context.Context) func(string) err
 		if err == nil || errors.Is(err, ErrPrivateMediaDisabled) {
 			return err
 		}
-		return errObjectDelete{cause: err}
+		return errObjectStorage{request: "delete", cause: err}
 	}
-}
-
-// recordedForErasure reports whether account erasure recorded the Media as
-// a person's own and has not purged it yet.
-func (s *PostgresStore) recordedForErasure(ctx context.Context, id uuid.UUID) (bool, error) {
-	var recorded bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM account_deletion_media WHERE media_id = $1)`, id).Scan(&recorded)
-	return recorded, err
-}
-
-// forgetErased removes account erasure's record of a Media that is already
-// purged.
-func (s *PostgresStore) forgetErased(ctx context.Context, id uuid.UUID) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM account_deletion_media WHERE media_id = $1`, id)
-	return err
 }
 
 func (e *ImmediateBlobEraser) EnsureSubjectUploadsErased(ctx context.Context, subjectID uuid.UUID, at time.Time) error {

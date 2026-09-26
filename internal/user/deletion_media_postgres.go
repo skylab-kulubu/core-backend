@@ -11,10 +11,10 @@ import (
 // MediaForDeletion returns the Media the request's erase_profile_media step
 // still has to erase: the profile picture anonymize_core kept for it
 // (profile_media_id) first, unless its object is purged already, then the
-// personal Media anonymize_core recorded (account_deletion_media), in id
-// order. A recorded Media leaves the list in the transaction that purges it,
-// and the profile picture as its object goes, so a rerun gets only what is
-// left and every Media the step erases is progress.
+// uploads anonymize_core recorded (account_deletion_media), in id order. A
+// recorded upload leaves the list once the step has purged or kept it, and
+// the profile picture as its object goes, so a rerun gets only what is left
+// and every Media the step erases is progress.
 func (s *PostgresStore) MediaForDeletion(ctx context.Context, requestID uuid.UUID) ([]uuid.UUID, error) {
 	var profile *uuid.UUID
 	var recorded []uuid.UUID

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,8 +29,9 @@ type erasedPerson struct {
 	oldPicture, picture media.Media
 	// answer is an Answer file, private, that a Skyforms response holds.
 	answer media.Media
-	// cover is an Event's cover image they uploaded.
-	cover media.Media
+	// cover is an Event's cover image they uploaded; poster an SVG cover no
+	// Event uses yet, stored to download under its name.
+	cover, poster media.Media
 	// legacyPDF is a legacy upload nothing uses; legacyImage is a legacy
 	// upload a CMS page uses.
 	legacyPDF, legacyImage media.Media
@@ -59,6 +61,15 @@ func newErasedPerson(t *testing.T) erasedPerson {
 	p.cover = db.upload(t, media.PurposeEventCover)
 	if _, err := db.events().Create(ctx, db.organizer, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", CoverImageID: &p.cover.ID}); err != nil {
 		t.Fatal(err)
+	}
+	poster, err := db.svc.UploadForPurpose(ctx, db.organizer, media.PurposeEventCover, uploaded("Ada_Organizer_poster.svg", "image/svg+xml",
+		[]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.poster = poster
+	if meta, _ := db.blobs.Metadata(poster.Key); !strings.Contains(meta.ContentDisposition, "Ada_Organizer_poster") {
+		t.Fatalf("the poster is stored with disposition %q, want its name", meta.ContentDisposition)
 	}
 	legacyPDF, err := db.svc.Upload(ctx, db.organizer, "Ada_Organizer_transcript.pdf", "application/pdf", pdfFile())
 	if err != nil {
@@ -111,22 +122,21 @@ func sortedIDs(items ...media.Media) []uuid.UUID {
 	return ids
 }
 
-// anonymize_core records, by id, the person's personal-purpose uploads and
-// their legacy uploads nothing uses; it keeps no uploader and no file name on
-// any of their uploads. The current profile picture is left to the
-// profile-picture erasure (profile_media_id) and never recorded.
-func TestPostgresAnonymizeRecordsThePersonalMediaAndClearsEveryName(t *testing.T) {
+// anonymize_core records, by id, every upload of the person but their
+// current profile picture, which the profile-picture erasure has
+// (profile_media_id); it keeps no uploader and no file name on any of them.
+func TestPostgresAnonymizeRecordsEveryUploadButTheCurrentPicture(t *testing.T) {
 	p := newErasedPerson(t)
 	p.anonymize(t)
 
-	if got, want := p.recorded(t), sortedIDs(p.oldPicture, p.answer, p.legacyPDF); !slices.Equal(got, want) {
-		t.Fatalf("recorded %v, want %v (old picture, Answer file, unreferenced legacy PDF)", got, want)
+	if got, want := p.recorded(t), sortedIDs(p.oldPicture, p.answer, p.cover, p.poster, p.legacyPDF, p.legacyImage); !slices.Equal(got, want) {
+		t.Fatalf("recorded %v, want %v (every upload but the current picture)", got, want)
 	}
-	profile, err := p.users.ProfileMediaForDeletion(context.Background(), p.request.ID)
-	if err != nil || profile == nil || *profile != p.picture.ID {
-		t.Fatalf("profile media for deletion %v err %v, want the current picture", profile, err)
+	ids, err := p.users.MediaForDeletion(context.Background(), p.request.ID)
+	if err != nil || len(ids) != 7 || ids[0] != p.picture.ID {
+		t.Fatalf("media for deletion %v err %v, want the current picture, then the six records", ids, err)
 	}
-	for _, item := range []media.Media{p.oldPicture, p.picture, p.answer, p.cover, p.legacyPDF, p.legacyImage} {
+	for _, item := range []media.Media{p.oldPicture, p.picture, p.answer, p.cover, p.poster, p.legacyPDF, p.legacyImage} {
 		got := p.get(t, item.ID)
 		if got.UploadedBy != uuid.Nil || got.Name != "" {
 			t.Errorf("%s kept uploader %v and name %q", item.Name, got.UploadedBy, got.Name)
@@ -149,7 +159,7 @@ func TestPostgresAnonymizeAgainKeepsTheFirstRecords(t *testing.T) {
 	}
 	p.anonymize(t)
 
-	if got := p.recorded(t); len(first) != 3 || !slices.Equal(got, first) {
+	if got := p.recorded(t); len(first) != 6 || !slices.Equal(got, first) {
 		t.Fatalf("recorded %v after the reruns, %v after the first run", got, first)
 	}
 }
@@ -215,13 +225,23 @@ func TestPostgresAccountErasurePurgesPersonalMediaAndKeepsClubMedia(t *testing.T
 			t.Errorf("personal Media %s was not purged", item.Key)
 		}
 	}
-	for _, item := range []media.Media{p.cover, p.legacyImage} {
+	for _, item := range []media.Media{p.cover, p.poster, p.legacyImage} {
 		if !p.kept(t, item) {
 			t.Errorf("club Media %s was not kept", item.Key)
 		}
 	}
+	// The kept SVG downloads under its key now, not under the person's file
+	// name, and the key never held any of the name.
+	if meta, _ := p.blobs.Metadata(p.poster.Key); meta.ContentDisposition != "attachment" || meta.ContentType != "image/svg+xml" {
+		t.Fatalf("the kept poster is served as %q, %q; want image/svg+xml, attachment", meta.ContentType, meta.ContentDisposition)
+	}
+	for _, part := range []string{"Ada", "Organizer", "poster"} {
+		if strings.Contains(p.poster.Key, part) {
+			t.Fatalf("the kept poster's key %q holds %q of its name", p.poster.Key, part)
+		}
+	}
 	if got := p.recorded(t); len(got) != 0 {
-		t.Fatalf("records %v left after their Media were purged", got)
+		t.Fatalf("records %v left after their Media were handled", got)
 	}
 }
 
@@ -240,7 +260,7 @@ func TestPostgresAccountErasureRunsAgainWithoutHarm(t *testing.T) {
 			t.Errorf("personal Media %s was not purged", item.Key)
 		}
 	}
-	for _, item := range []media.Media{p.cover, p.legacyImage} {
+	for _, item := range []media.Media{p.cover, p.poster, p.legacyImage} {
 		if !p.kept(t, item) {
 			t.Errorf("club Media %s was not kept", item.Key)
 		}

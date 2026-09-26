@@ -441,9 +441,9 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 	`, id, at); err != nil {
 		return err
 	}
-	// Before the uploader goes: record the uploads erase_profile_media
-	// purges at once and clear every upload's file name (media redesign
-	// ticket 07). The current profile picture stays with profile_media_id.
+	// Before the uploader goes: record every upload for erase_profile_media
+	// and clear every upload's file name (media redesign ticket 07). The
+	// current profile picture stays with profile_media_id.
 	if err := media.RecordAccountErasure(ctx, tx, id, profileMediaID, at); err != nil {
 		return err
 	}

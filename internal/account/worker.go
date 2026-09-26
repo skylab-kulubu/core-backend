@@ -176,9 +176,9 @@ func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaSte
 			return w.store.AnonymizeAccount(ctx, id, now, emails)
 		}},
 		{name: user.DeletionStepEraseProfile, run: func(ctx context.Context, _ uuid.UUID) error {
-			// The profile picture and the personal Media anonymize_core
-			// recorded. Each one is tried even when another fails; the error
-			// counts the failures and carries the first.
+			// The profile picture and the uploads anonymize_core recorded.
+			// Each one is tried even when another fails; the error counts the
+			// failures and carries the first.
 			mediaIDs, err := w.store.MediaForDeletion(ctx, request.ID)
 			if err != nil || len(mediaIDs) == 0 {
 				return err
@@ -216,18 +216,6 @@ func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaSte
 		{name: user.DeletionStepDeleteIdentity, run: w.identity.EnsureDeleted},
 	}
 }
-
-// partlyErased is an erase_profile_media pass that erased some of its Media
-// but not all. It made progress, so the worker's deferred retry (RetryAt)
-// gives its attempt back and the next pass goes on with what is left.
-type partlyErased struct {
-	err error
-	at  time.Time
-}
-
-func (e partlyErased) Error() string      { return e.err.Error() }
-func (e partlyErased) Unwrap() error      { return e.err }
-func (e partlyErased) RetryAt() time.Time { return e.at }
 
 // passAddresses reads the person's addresses the first time a pass needs
 // them and hands the same ones to every later step of that pass.

@@ -9,14 +9,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/db"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 const accountDeletionMediaVersion = "20260927100000"
 
-// deletionRequestWithRecord is a deletion request with one recorded
-// personal Media, as anonymize_core leaves it.
+// deletionRequestWithRecord is a deletion request with one recorded upload,
+// as anonymize_core leaves it.
 func deletionRequestWithRecord(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
@@ -25,11 +26,17 @@ func deletionRequestWithRecord(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	if _, _, err := user.NewService(store).Ensure(ctx, subjectID, user.Profile{Email: subjectID.String() + "@example.test"}); err != nil {
 		t.Fatal(err)
 	}
+	upload, err := media.NewPostgresStore(pool).Create(ctx, media.Media{
+		Name: "cv.pdf", Type: "application/pdf", Kind: media.KindFile, Key: "files/" + uuid.NewString(), UploadedBy: subjectID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	request, err := store.RequestDeletion(ctx, subjectID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO account_deletion_media (request_id, media_id) VALUES ($1, $2)`, request.ID, uuid.New()); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO account_deletion_media (request_id, media_id) VALUES ($1, $2)`, request.ID, upload.ID); err != nil {
 		t.Fatal(err)
 	}
 	return request.ID
@@ -44,8 +51,8 @@ func mediaRecords(t *testing.T, pool *pgxpool.Pool, requestID uuid.UUID) int {
 	return n
 }
 
-// A record left when its request is completed is a personal Media that was
-// never purged, and the only way back to it: completion is refused while one
+// A record left when its request is completed is an upload that was never
+// erased, and the only way back to it: completion is refused while one
 // is left (no id in the error), so the worker retries and, failing, ends in
 // manual intervention. Without records the request completes.
 func TestDeletionRequestCannotCompleteWithMediaRecordsLeft(t *testing.T) {
@@ -62,7 +69,7 @@ func TestDeletionRequestCannotCompleteWithMediaRecordsLeft(t *testing.T) {
 	complete := `UPDATE account_deletion_requests SET status = 'completed', completed_at = now() WHERE id = $1`
 
 	_, err := pool.Exec(ctx, complete, requestID)
-	if err == nil || !strings.Contains(err.Error(), "account erasure has personal Media left to purge") {
+	if err == nil || !strings.Contains(err.Error(), "account erasure has recorded uploads left to erase") {
 		t.Fatalf("completion with a record left: %v", err)
 	}
 	if strings.Contains(err.Error(), mediaID.String()) || strings.Contains(err.Error(), requestID.String()) {
@@ -84,8 +91,8 @@ func TestDeletionRequestCannotCompleteWithMediaRecordsLeft(t *testing.T) {
 	}
 }
 
-// A record is a personal Media the erasure still has to purge and the only
-// way back to it, so the rollback refuses while one is left. Without one it
+// A record is an upload the erasure still has to erase and the only way
+// back to it, so the rollback refuses while one is left. Without one it
 // is clean, and the up runs again.
 func TestAccountDeletionMediaDownRefusesWhileAPurgeIsLeft(t *testing.T) {
 	pool := postgresPool(t)
@@ -103,7 +110,7 @@ func TestAccountDeletionMediaDownRefusesWhileAPurgeIsLeft(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := pool.Exec(ctx, string(down)); err == nil || !strings.Contains(err.Error(), "personal Media left to purge") {
+	if _, err := pool.Exec(ctx, string(down)); err == nil || !strings.Contains(err.Error(), "recorded uploads left to erase") {
 		t.Fatalf("down with a record left: %v", err)
 	}
 	if got := mediaRecords(t, pool, requestID); got != 1 {

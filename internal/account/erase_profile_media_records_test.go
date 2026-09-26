@@ -23,8 +23,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-// The erase_profile_media step erases the personal Media anonymize_core
-// recorded (media redesign ticket 07) as well as the profile picture.
+// The erase_profile_media step erases the uploads anonymize_core recorded
+// (media redesign ticket 07) as well as the profile picture.
 
 // recordsFixture is a person being erased, core's Postgres store and the
 // public and private buckets.
@@ -216,7 +216,7 @@ func TestEraseProfileMediaPurgesARecordedAnswerFileWithoutAProfilePicture(t *tes
 	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, blobs))
 
 	worked, err := worker.RunOnce(context.Background())
-	if !worked || !errors.Is(err, media.ErrPersonalMediaNotErased) {
+	if !worked || !errors.Is(err, media.ErrRecordedMediaNotErased) {
 		t.Fatalf("first pass worked=%v err=%v", worked, err)
 	}
 	for _, private := range []string{answer.ID.String(), answer.Key, f.subject.String(), answer.Name} {
@@ -262,7 +262,7 @@ func TestEraseProfileMediaResumesAnInterruptedStepWithWhatIsLeft(t *testing.T) {
 	blobs := &failingDelete{Buckets: f.buckets, key: second.Key}
 	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, blobs))
 
-	if worked, err := worker.RunOnce(context.Background()); !worked || !errors.Is(err, media.ErrPersonalMediaNotErased) {
+	if worked, err := worker.RunOnce(context.Background()); !worked || !errors.Is(err, media.ErrRecordedMediaNotErased) {
 		t.Fatalf("first pass worked=%v err=%v", worked, err)
 	}
 	if !f.purged(t, first) || f.purged(t, second) {
@@ -335,8 +335,9 @@ func TestEraseProfileMediaKeepsASharedProfilePictureApartFromTheRecords(t *testi
 	if stored.UploadedBy != uuid.Nil || stored.Name != "" {
 		t.Fatalf("the shared picture kept uploader %v and name %q", stored.UploadedBy, stored.Name)
 	}
-	if profile, err := f.users.ProfileMediaForDeletion(ctx, f.request.ID); err != nil || profile != nil {
-		t.Fatalf("profile media for deletion %v err %v, want none", profile, err)
+	var profile *uuid.UUID
+	if err := f.pool.QueryRow(ctx, `SELECT profile_media_id FROM account_deletion_requests WHERE id = $1`, f.request.ID).Scan(&profile); err != nil || profile != nil {
+		t.Fatalf("profile_media_id %v err %v, want none", profile, err)
 	}
 	if !f.purged(t, answer) {
 		t.Fatal("the Answer file is not purged")
@@ -509,7 +510,7 @@ func TestEraseProfileMediaSpendsTheAttemptWhenItErasedNothing(t *testing.T) {
 	}
 
 	f.now = f.now.Add(30 * time.Second)
-	if worked, err := worker.RunOnce(ctx); !worked || !errors.Is(err, media.ErrPersonalMediaNotErased) {
+	if worked, err := worker.RunOnce(ctx); !worked || !errors.Is(err, media.ErrRecordedMediaNotErased) {
 		t.Fatalf("second pass worked=%v err=%v", worked, err)
 	}
 	if spent, _ := f.attempts(t); spent != 1 {
@@ -656,5 +657,148 @@ func TestEraseProfileMediaKeepsARecordedLegacyUploadUsedSince(t *testing.T) {
 	}
 	if stored.UploadedBy != uuid.Nil || stored.Name != "" {
 		t.Fatalf("the kept upload has uploader %v and name %q", stored.UploadedBy, stored.Name)
+	}
+}
+
+// A profile picture belongs to the person whose current picture it is, not
+// to its uploader: the one the erased person uploaded for someone else stays
+// that person's picture, without the uploader's name.
+func TestEraseProfileMediaKeepsSomeoneElsesProfilePicture(t *testing.T) {
+	f := newRecordsFixture(t)
+	ctx := context.Background()
+	other := uuid.New()
+	if _, _, err := user.NewService(f.users).Ensure(ctx, other, user.Profile{Email: "grace@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	picture, err := f.media.Create(ctx, media.Media{
+		Name: "Ada_Lovelace_for_Grace.png", Type: "image/png", Kind: media.KindImage, Key: "images/" + uuid.NewString(),
+		UploadedBy: f.subject, Purpose: media.PurposeProfilePicture,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.public.Put(ctx, picture.Key, []byte("picture"), media.BlobMetadata{ContentType: picture.Type}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := user.NewService(f.users).SetProfilePicture(ctx, other, picture.ID, picture.Key); err != nil {
+		t.Fatal(err)
+	}
+	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, f.buckets))
+
+	if worked, err := worker.RunOnce(ctx); !worked || err != nil || !f.completed(t) {
+		t.Fatalf("worked=%v err=%v completed=%v", worked, err, f.completed(t))
+	}
+	stored, err := f.media.GetIncludingDeleted(ctx, picture.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.public.Get(picture.Key); !ok || stored.BlobPurgedAt != nil || stored.DeletedAt != nil {
+		t.Fatalf("someone else's profile picture was not kept: %+v", stored)
+	}
+	if stored.UploadedBy != uuid.Nil || stored.Name != "" {
+		t.Fatalf("the kept picture has uploader %v and name %q", stored.UploadedBy, stored.Name)
+	}
+	if got := f.recorded(t); len(got) != 0 {
+		t.Fatalf("records %v left", got)
+	}
+}
+
+// A legacy upload only a Skyforms answer uses is the person's own (E1: an
+// answer is a personal use), so it is purged like an Answer file.
+func TestEraseProfileMediaPurgesALegacyUploadOnlyAnAnswerUses(t *testing.T) {
+	f := newRecordsFixture(t)
+	ctx := context.Background()
+	upload := f.legacyUpload(t)
+	if _, _, err := f.media.Attach(ctx, media.Attachment{
+		MediaID: upload.ID, Owner: media.Owner{Service: authz.ProductForms, Type: "response", ID: uuid.NewString()}, Role: media.RoleFormsAnswer,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, f.buckets))
+
+	if worked, err := worker.RunOnce(ctx); !worked || err != nil || !f.completed(t) {
+		t.Fatalf("worked=%v err=%v completed=%v", worked, err, f.completed(t))
+	}
+	if !f.purged(t, upload) {
+		t.Fatal("the legacy upload only an answer uses was not purged")
+	}
+}
+
+// slowMetadata is the buckets taking a while to rewrite an object's
+// metadata, as R2 does for a copy.
+type slowMetadata struct {
+	media.Buckets
+	delay time.Duration
+}
+
+func (b slowMetadata) SetMetadata(ctx context.Context, key string, meta media.BlobMetadata) error {
+	select {
+	case <-time.After(b.delay):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return b.Buckets.SetMetadata(ctx, key, meta)
+}
+
+// A person with fifty uploads, most of them club content whose object
+// metadata must lose their name: a pass ends when the step's time is up,
+// gives its attempt back and comes again in 30 seconds, until one pass
+// finishes. Then no record is left, and the request completes past the
+// completion guard.
+func TestEraseProfileMediaFinishesFiftyUploadsOverSeveralPasses(t *testing.T) {
+	f := newRecordsFixture(t)
+	f.stepTimeout = time.Second
+	ctx := context.Background()
+	var posters, answers []media.Media
+	for range 45 {
+		poster, err := f.media.Create(ctx, media.Media{
+			Name: "Ada_Lovelace_poster.svg", Type: "image/svg+xml", Kind: media.KindImage, Key: "images/" + uuid.NewString() + ".svg",
+			UploadedBy: f.subject, Purpose: media.PurposeEventCover,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.public.Put(ctx, poster.Key, []byte("<svg/>"), media.ServingMetadata(poster.Type, poster.Name)); err != nil {
+			t.Fatal(err)
+		}
+		posters = append(posters, poster)
+	}
+	for range 5 {
+		answers = append(answers, f.answerFile(t))
+	}
+	worker := f.requestDeletion(t, media.NewImmediateBlobEraser(f.media, slowMetadata{Buckets: f.buckets, delay: 60 * time.Millisecond}))
+
+	passes := 0
+	for !f.completed(t) {
+		if passes++; passes > 20 {
+			t.Fatal("no pass finished the step")
+		}
+		worked, err := worker.RunOnce(ctx)
+		if !worked {
+			t.Fatalf("pass %d was not claimed", passes)
+		}
+		if err == nil {
+			continue
+		}
+		if spent, next := f.attempts(t); spent != 0 || !next.Equal(f.now.Add(30*time.Second)) {
+			t.Fatalf("pass %d (%v) spent %d attempts, next at %v; want 0, in 30 s", passes, err, spent, next)
+		}
+		f.now = f.now.Add(30 * time.Second)
+	}
+	if passes < 2 {
+		t.Fatalf("one pass erased all fifty uploads; the step timeout did not cut it")
+	}
+	if got := f.recorded(t); len(got) != 0 {
+		t.Fatalf("%d records left", len(got))
+	}
+	for _, poster := range posters {
+		if meta, _ := f.public.Metadata(poster.Key); meta.ContentDisposition != "attachment" {
+			t.Fatalf("a kept poster is served with disposition %q", meta.ContentDisposition)
+		}
+	}
+	for _, answer := range answers {
+		if !f.purged(t, answer) {
+			t.Fatal("an Answer file is not purged")
+		}
 	}
 }

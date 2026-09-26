@@ -132,12 +132,13 @@ func TestAccountErasureDeletesFromTheBucketThatHoldsTheObject(t *testing.T) {
 }
 
 // An object already gone is erased, in either bucket: erase_profile_media
-// records the purge and drops the record.
+// records the purge and drops the record. A kept club object already gone
+// needs no new metadata either.
 func TestAccountErasureOfAMissingObjectSucceeds(t *testing.T) {
 	p := newErasedPerson(t)
 	public, publicS3 := fakeR2(t)
 	private, privateS3 := fakeR2(t)
-	for _, item := range []media.Media{p.oldPicture, p.picture, p.legacyPDF} {
+	for _, item := range []media.Media{p.oldPicture, p.picture, p.legacyPDF, p.poster} {
 		publicS3.fail("/media/"+item.Key, "NoSuchKey")
 	}
 	privateS3.fail("/media/"+p.answer.Key, "NoSuchKey")
