@@ -35,7 +35,10 @@ func caller(c fiber.Ctx) (authz.Principal, error) {
 	if !ok {
 		return authz.Principal{}, fiber.ErrUnauthorized
 	}
-	return authz.Principal{ID: ident.ID.String(), Groups: ident.Groups, Roles: ident.Roles}, nil
+	return authz.Principal{
+		ID: ident.ID.String(), Groups: ident.Groups, Roles: ident.Roles,
+		Product: ident.Product,
+	}, nil
 }
 
 func identityError(c fiber.Ctx, err error) error {

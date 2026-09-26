@@ -48,14 +48,16 @@ Errors use RFC 7807 (ADR-0010) and carry a fixed `code`. No response writes back
 | In progress | `202` + `Retry-After` | `{"request_id","status":"in_progress"}` | Repeats the same `PUT` later (deferred retry) |
 | Transient failure | `429`, `500`, `502`, `503`, `504`, timeout, connection failure | problem | Deferred retry |
 | Token refused | `401` | problem | Drops the cached token, ordinary retry (spends an attempt) |
-| Permanent failure | `400 invalid_erasure_command`, `403 erasure_forbidden`, `404` (no endpoint), `409 subject_not_blocked` | problem | The request goes to `manual_intervention` at once. The error code is `erase_<service>_rejected_<http>`, for example `erase_cms_rejected_403` |
+| Permanent failure | `400 invalid_erasure_command`, `403 erasure_forbidden`, `404` (no endpoint), `409 subject_not_blocked` | problem | The request goes to `manual_intervention` at once. The error code is `erase_<service>_rejected_<http>`, for example `erase_cms_rejected_403`. A `403` also drops the cached token, so the retry after the fix uses a new one |
 
 - **`counts`:** keys the service chooses, snake_case, non-negative integers, at most 32 keys. For example `{"recipients_deleted":1,"queue_rows_cleared":12,"actor_columns_replaced":3}`. No personal data.
 - **Deferred retry:** core's existing `RetryAt` path (`internal/account/worker.go`). The attempt is refunded.
   - The wait comes from `Retry-After` and is clamped between 30 seconds and 15 minutes. Without the header it is 5 minutes.
   - The horizon is the existing `DeferredRetryHorizon` (48 hours by default, counted from the request's creation). After the horizon the ordinary budget applies: 8 attempts × 30 seconds, then `manual_intervention` and the alarm.
   - This window comfortably outlasts the nightly 03:30 secret rotation (ADR-0050).
-- A **permanent failure** is a configuration or contract fault: a missing role, an endpoint not deployed, a missing marker. An operator fixes it, and the existing retry path then returns the request to `pending`.
+- A **permanent failure** is a configuration or contract fault: an endpoint not deployed, a missing marker, a token that keeps the audience but lacks the role. An operator fixes it, and the existing retry path then returns the request to `pending`.
+- **A missing erase role shows up as `401`, not `403`.** The `account-erase-<service>` scope is bound to the service's erase role, so when `service-account-core-erasure` lacks that role Keycloak leaves the scope, and with it the service's audience, out of the token. The service refuses the token for its missing `aud` with `401`. Core treats that as a refused token: it drops the token and retries as usual, and after 8 attempts (about 4 minutes) the request goes to `manual_intervention` with `erase_<service>_failed`, not `erase_<service>_rejected_403` (local harness, account-erasure ticket 10). `erase_<service>_rejected_403` appears only when the token keeps the audience and loses the role.
+  - For `manual_intervention` with `erase_<service>_failed`, the operator first checks `core-erasure`'s roles: the dry run of e-skylab-keycloak's `config/create-erasure-client.sh --admin-user <admin>` (inside the Keycloak image, without `--apply`) changes nothing and prints what is missing. `would assign role <client>/<role> to service-account-core-erasure` is this case; the same run with `--apply` gives the role back, and the retry then asks for a new token.
 
 ## 5. Authentication
 

@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
@@ -13,6 +14,9 @@ var (
 	ErrForbidden = errors.New("event: forbidden")
 	ErrInvalid   = errors.New("event: invalid")
 	ErrConflict  = errors.New("event: conflict")
+	// ErrMediaTeamMismatch refuses a Media another Owner team's Event uses
+	// (Team media library). It comes in a *media.LinkRefusal.
+	ErrMediaTeamMismatch = fmt.Errorf("event: the Media is used on another Owner team's Event: %w", ErrForbidden)
 )
 
 type Store interface {
@@ -26,6 +30,10 @@ type Store interface {
 	Restore(ctx context.Context, id uuid.UUID) error
 	AddImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
 	RemoveImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
+	// TeamsUsingMedia returns the Owner teams of the Events, archived ones
+	// included, that use the Media as their cover or in their gallery,
+	// leaving out the Event except.
+	TeamsUsingMedia(ctx context.Context, mediaID, except uuid.UUID) ([]string, error)
 	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
 	GetDayIncludingArchived(ctx context.Context, id uuid.UUID) (Day, error)
 	CreateDay(ctx context.Context, d Day) (Day, error)

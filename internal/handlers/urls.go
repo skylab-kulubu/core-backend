@@ -48,10 +48,26 @@ type urlBody struct {
 	Alias string `json:"alias"`
 }
 
+type formLinkBody struct {
+	URL     string     `json:"url"`
+	Label   string     `json:"label"`
+	Alias   string     `json:"alias"`
+	ActorID *uuid.UUID `json:"actorId"`
+}
+
+type formAliasBody struct {
+	Alias      string `json:"alias"`
+	Suggestion string `json:"suggestion"`
+}
+
 func urlError(c fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
+	case errors.Is(err, shorturl.ErrEventManaged):
+		return problemCode(c, fiber.StatusForbidden, "Forbidden", "event_managed")
+	case errors.Is(err, shorturl.ErrManaged):
+		return problemCode(c, fiber.StatusConflict, "Conflict", "managed")
 	case errors.Is(err, shorturl.ErrForbidden):
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, shorturl.ErrNotFound):
@@ -74,11 +90,24 @@ func urlError(c fiber.Ctx, err error) error {
 }
 
 func (h *URLHandler) Redirect(c fiber.Ctx) error {
+	return h.redirect(c, shorturl.UTM{})
+}
+
+// RedirectChannel serves skyl.app/alias/ig: the suffix names the channel the
+// link was shared on and wins over a utm_source in the query.
+func (h *URLHandler) RedirectChannel(c fiber.Ctx) error {
+	return h.redirect(c, shorturl.ChannelUTM(c.Params("channel")))
+}
+
+func (h *URLHandler) redirect(c fiber.Ctx, channel shorturl.UTM) error {
 	userID, err := h.hopUserID(c)
 	if err != nil {
 		return urlError(c, err)
 	}
 	utm := shorturl.UTMFromQuery(func(key string) string { return strings.Clone(c.Query(key)) })
+	if channel.Source != "" {
+		utm.Source = channel.Source
+	}
 	u, err := h.svc.Redirect(c.Context(), c.Params("alias"), shorturl.Hit{
 		IP:        h.hopIP(c),
 		UserAgent: strings.Clone(c.Get(fiber.HeaderUserAgent)),
@@ -98,19 +127,131 @@ func (h *URLHandler) QR(c fiber.Ctx) error {
 	if err != nil {
 		return urlError(c, err)
 	}
+	// The code carries the tags it was asked for (utm_source=qr on a poster),
+	// so scans are counted apart from clicks on the same link.
+	utm := shorturl.UTMFromQuery(func(key string) string { return strings.Clone(c.Query(key)) })
+	content := utm.FillInto(qr.ShortURL(u.Alias))
+	logo := qr.LogoFromQuery(c.Query("logo"))
+	if strings.EqualFold(c.Query("format"), "svg") {
+		svg, err := qr.SVG(content, logo)
+		if err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+		c.Set(fiber.HeaderContentType, "image/svg+xml")
+		return c.Send(svg)
+	}
 	size := qr.SizeFromQuery(c.Query("size"))
-	content := qr.ShortURL(u.Alias)
 	var png []byte
-	if qr.LogoFromQuery(c.Query("logo")) {
+	if logo {
 		png, err = qr.PNGWithLogo(content, size)
 	} else {
 		png, err = qr.PNG(content, size)
 	}
 	if err != nil {
-		return err
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	c.Set(fiber.HeaderContentType, "image/png")
 	return c.Send(png)
+}
+
+func (h *URLHandler) Availability(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	out, err := h.svc.Availability(c.Context(), p, c.Query("alias"))
+	if err != nil {
+		return urlError(c, err)
+	}
+	return c.JSON(out)
+}
+
+func (h *URLHandler) FormLink(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	formID, err := uuid.Parse(c.Params("formId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	link, err := h.svc.FormLink(c.Context(), p, formID)
+	if err != nil {
+		return urlError(c, err)
+	}
+	return c.JSON(link)
+}
+
+func (h *URLHandler) EnsureFormLink(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	formID, err := uuid.Parse(c.Params("formId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var b formLinkBody
+	if err := c.Bind().Body(&b); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	link, err := h.svc.EnsureFormLink(c.Context(), p, formID, shorturl.FormLinkInput{URL: b.URL, Label: b.Label, Alias: b.Alias, ActorID: b.ActorID})
+	if err != nil {
+		return urlError(c, err)
+	}
+	return c.JSON(link)
+}
+
+func (h *URLHandler) RenameFormLink(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	formID, err := uuid.Parse(c.Params("formId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var b formAliasBody
+	if err := c.Bind().Body(&b); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	link, err := h.svc.RenameFormLink(c.Context(), p, formID, b.Alias, b.Suggestion)
+	if err != nil {
+		return urlError(c, err)
+	}
+	return c.JSON(link)
+}
+
+func (h *URLHandler) FormStats(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	formID, err := uuid.Parse(c.Params("formId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	stats, err := h.svc.FormStats(c.Context(), p, formID)
+	if err != nil {
+		return urlError(c, err)
+	}
+	return c.JSON(stats)
+}
+
+// withSource narrows a listing to one kind of link (form, event, personal);
+// an empty filter keeps everything.
+func withSource(items []shorturl.URL, source string) []shorturl.URL {
+	source = strings.ToLower(strings.TrimSpace(source))
+	if source == "" {
+		return items
+	}
+	out := make([]shorturl.URL, 0, len(items))
+	for _, item := range items {
+		if item.Source() == source {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func (h *URLHandler) Create(c fiber.Ctx) error {
@@ -147,7 +288,7 @@ func (h *URLHandler) ListMine(c fiber.Ctx) error {
 	if err != nil {
 		return urlError(c, err)
 	}
-	return c.JSON(items)
+	return c.JSON(withSource(items, c.Query("source")))
 }
 
 func (h *URLHandler) ListAll(c fiber.Ctx) error {
@@ -168,7 +309,7 @@ func (h *URLHandler) ListAll(c fiber.Ctx) error {
 	if err != nil {
 		return urlError(c, err)
 	}
-	return c.JSON(items)
+	return c.JSON(withSource(items, c.Query("source")))
 }
 
 func (h *URLHandler) Restore(c fiber.Ctx) error {

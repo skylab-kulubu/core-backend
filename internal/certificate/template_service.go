@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 func (s *service) ListTemplates(ctx context.Context, p authz.Principal) ([]Template, error) {
@@ -50,6 +51,9 @@ func (s *service) CreateTemplate(ctx context.Context, p authz.Principal, in Temp
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: in.OwnerTeam}, authz.Create) {
 		return Template{}, ErrForbidden
 	}
+	if err := s.checkLayoutMedia(ctx, in.Layout, Layout{}); err != nil {
+		return Template{}, err
+	}
 	item := Template{
 		ID: uuid.New(), Name: strings.TrimSpace(in.Name), OwnerTeam: normalizeTeam(in.OwnerTeam),
 		SourceKind: in.SourceKind, SourceRef: strings.TrimSpace(in.SourceRef), SourceEditURL: strings.TrimSpace(in.SourceEditURL),
@@ -71,6 +75,9 @@ func (s *service) UpdateTemplate(ctx context.Context, p authz.Principal, id uuid
 	if !s.authz.Allow(p, oldResource, authz.Update) || !s.authz.Allow(p, newResource, authz.Update) {
 		return Template{}, ErrForbidden
 	}
+	if err := s.checkLayoutMedia(ctx, in.Layout, existing.DraftLayout); err != nil {
+		return Template{}, err
+	}
 	existing.Name = strings.TrimSpace(in.Name)
 	existing.OwnerTeam = normalizeTeam(in.OwnerTeam)
 	existing.SourceKind = in.SourceKind
@@ -78,6 +85,27 @@ func (s *service) UpdateTemplate(ctx context.Context, p authz.Principal, id uuid
 	existing.SourceEditURL = strings.TrimSpace(in.SourceEditURL)
 	existing.DraftLayout = in.Layout
 	return s.templates.UpdateTemplate(ctx, existing)
+}
+
+// checkLayoutMedia checks each Media the layout links that the previous
+// draft did not: a certificate asset, or a legacy Media.
+func (s *service) checkLayoutMedia(ctx context.Context, layout, previous Layout) error {
+	if s.media == nil {
+		return nil
+	}
+	linked := make(map[uuid.UUID]bool)
+	for _, id := range layoutAssetIDs(previous) {
+		linked[id] = true
+	}
+	for _, id := range layoutAssetIDs(layout) {
+		if linked[id] {
+			continue
+		}
+		if err := s.media.CheckLink(ctx, id, media.RoleCertificateAsset); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *service) PublishTemplate(ctx context.Context, p authz.Principal, id uuid.UUID) (TemplateVersion, error) {

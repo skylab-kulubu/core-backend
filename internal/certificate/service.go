@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
@@ -24,6 +25,9 @@ type Options struct {
 	Artifacts       ArtifactStore
 	Assets          AssetReader
 	LegacyImmediate bool
+	// Media checks each Media a template draft is about to link. Nil leaves
+	// the Media's rules to the database's guards.
+	Media media.Linker
 }
 
 type service struct {
@@ -41,6 +45,7 @@ type service struct {
 	artifacts       ArtifactStore
 	assets          AssetReader
 	legacyImmediate bool
+	media           media.Linker
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -78,7 +83,7 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 		store: store, tickets: tickets, events: events, users: users, authz: az,
 		render: render, mail: mail, apiOrigin: apiOrigin, verifyOrigin: verifyOrigin,
 		templates: opts.Templates, jobs: opts.Jobs, artifacts: opts.Artifacts,
-		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate,
+		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media,
 	}
 }
 

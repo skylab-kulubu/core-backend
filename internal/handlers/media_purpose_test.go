@@ -127,6 +127,22 @@ func TestMediaUploadForAPrivatePurposeIsRefusedHTTP(t *testing.T) {
 	}
 }
 
+// A service purpose whose product has no service client configured (the CMS
+// today) is refused: nothing could attach the file before it expires.
+func TestMediaUploadForAPurposeNothingCanAttachYetHTTP(t *testing.T) {
+	t.Parallel()
+	store := media.NewMemoryStore()
+	app := mediaApp(t, authn.Identity{ID: uuid.New()}, store, media.NewMemoryBlob())
+
+	resp := postMedia(t, app, "cms_file", "bylaws.pdf", []byte("%PDF-1.7\n"))
+	requireProblem(t, resp, fiber.StatusUnprocessableEntity, "purpose_not_available")
+	detail, _ := resp.body["detail"].(string)
+	if stored, _ := store.List(t.Context()); len(stored) != 0 || resp.body["purpose"] != "cms_file" ||
+		!strings.Contains(detail, "no service account") {
+		t.Fatalf("problem %v, stored %d", resp.body, len(stored))
+	}
+}
+
 func TestMediaUploadForADirectUploadPurposeHTTP(t *testing.T) {
 	t.Parallel()
 	organizer := authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/YK"}}

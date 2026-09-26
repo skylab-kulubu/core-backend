@@ -274,9 +274,20 @@ func decodeAccessToken(token string) (Identity, map[string]any, error) {
 			University:  university,
 			Department:  department,
 		},
-		Groups: groupsFromClaims(claims),
-		Roles:  rolesFromClaims(claims),
+		Groups:         groupsFromClaims(claims),
+		Roles:          rolesFromClaims(claims),
+		Client:         claimString(claims, "azp"),
+		ServiceAccount: serviceAccountClaims(claims),
 	}, claims, nil
+}
+
+// serviceAccountClaims reports a client-credentials token: `client_id`, which
+// Keycloak sets only on a service account's session, names the same client as
+// `azp`.
+func serviceAccountClaims(claims map[string]any) bool {
+	client, _ := claims["client_id"].(string)
+	azp, _ := claims["azp"].(string)
+	return client != "" && client == azp
 }
 
 func decodeJWTObject(parts []string, index int) (map[string]any, error) {

@@ -90,6 +90,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	uploadLimits, err := media.UploadLimitsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// The products whose service accounts may attach Media; a product
+	// without one keeps its purposes closed.
+	serviceClients, err := authz.ServiceClientsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("media service attach: products with a service client: %v", serviceClients.Products())
 	mediaPurgeContext, stopMediaPurge := context.WithCancel(context.Background())
 	defer stopMediaPurge()
 	media.MaintainBlobPurge(mediaPurgeContext, mediaStore, blobs, mediaPurgeConfig, func(err error) {
@@ -339,6 +350,7 @@ func main() {
 		Jobs:            certs,
 		Artifacts:       blobs,
 		Assets:          certificate.MediaAssets{Media: mediaStore, Blobs: blobs},
+		Media:           media.NewLinker(mediaStore),
 	})
 	certificate.MaintainIssuance(context.Background(), certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
@@ -356,6 +368,7 @@ func main() {
 	shorturl.MaintainHitRetention(context.Background(), urlStore, time.Hour, func(err error) {
 		log.Printf("short-link hit retention: %v", err)
 	})
+	urlSvc := shorturl.NewService(urlStore, az)
 
 	app := httpx.New(httpx.Deps{
 		Users: user.NewService(users, dir),
@@ -363,15 +376,20 @@ func main() {
 			AccountErasureEnabled: workerEnabled,
 			AccessProjector:       accessProjector,
 		}, mailer),
-		Events:      event.NewService(events, az, cdnBase),
+		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
+			PublicBase: cdnBase,
+			FormLinks:  eventFormLinks{urls: urlSvc},
+			Media:      media.NewLinker(mediaStore),
+		}),
 		Seasons:     season.NewService(seasons, az),
 		Tickets:     ticketSvc,
 		Competitors: competitor.NewService(competitors, events, az),
 		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
 			UploadStagingGrace: uploadStagingConfig.Grace,
 			Catalogue:          mediaPurposes,
+			ServiceProducts:    serviceClients.Products(),
 		}),
-		URLs:                   shorturl.NewService(urlStore, az),
+		URLs:                   urlSvc,
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
 		Mail:                   mailer,
@@ -387,7 +405,9 @@ func main() {
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},
-		TrustedProxies: trustedProxies,
+		TrustedProxies:     trustedProxies,
+		MediaUploadLimiter: media.NewUploadLimiter(uploadLimits, time.Now),
+		ServiceClients:     serviceClients,
 	})
 
 	addr := os.Getenv("PORT")
@@ -425,6 +445,18 @@ func optionalAccountAccessGate(gate *accessgate.RedisGate) accessgate.Reader {
 		return nil
 	}
 	return gate
+}
+
+type eventFormLinks struct {
+	urls shorturl.Service
+}
+
+func (l eventFormLinks) SyncEventForms(ctx context.Context, eventID uuid.UUID, links []event.FormLink) error {
+	forms := make([]shorturl.EventForm, len(links))
+	for i, link := range links {
+		forms[i] = shorturl.EventForm{FormID: link.FormID, URL: link.URL, Alias: link.Alias, Label: link.Label}
+	}
+	return l.urls.SyncEventForms(ctx, eventID, forms)
 }
 
 func accountSelfDeletionConfig(getenv func(string) string, enabled bool) (account.SelfDeletionConfig, error) {

@@ -25,6 +25,12 @@ type Service interface {
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, target, alias string) (URL, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (URL, error)
+	Availability(ctx context.Context, p authz.Principal, alias string) (Availability, error)
+	FormLink(ctx context.Context, p authz.Principal, formID uuid.UUID) (URL, error)
+	EnsureFormLink(ctx context.Context, p authz.Principal, formID uuid.UUID, in FormLinkInput) (URL, error)
+	RenameFormLink(ctx context.Context, p authz.Principal, formID uuid.UUID, alias, suggestion string) (URL, error)
+	FormStats(ctx context.Context, p authz.Principal, formID uuid.UUID) (Stats, error)
+	SyncEventForms(ctx context.Context, eventID uuid.UUID, forms []EventForm) error
 }
 
 type service struct {
@@ -38,12 +44,19 @@ func NewService(store Store, az authz.Authorizer) Service {
 
 var aliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
+// Lookup resolves an alias, including one the link was renamed away from: a
+// retired alias stays reserved for its link and keeps pointing at it, so a
+// printed QR code or an old post survives a rename.
 func (s *service) Lookup(ctx context.Context, alias string) (URL, error) {
-	return s.store.GetByAlias(ctx, alias)
+	u, err := s.store.GetByAlias(ctx, alias)
+	if errors.Is(err, ErrNotFound) {
+		return s.store.GetByRetiredAlias(ctx, alias)
+	}
+	return u, err
 }
 
 func (s *service) Redirect(ctx context.Context, alias string, hit Hit) (URL, error) {
-	u, err := s.store.GetByAlias(ctx, alias)
+	u, err := s.Lookup(ctx, alias)
 	if err != nil {
 		return URL{}, err
 	}
@@ -127,6 +140,10 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, t
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL, OwnerID: owner}, authz.Update) {
 		return URL{}, ErrForbidden
 	}
+	renamed := alias != "" && alias != existing.Alias
+	if existing.FormID != nil && (renamed || target != "") {
+		return URL{}, ErrManaged
+	}
 	if target != "" {
 		target, err = normalizeTarget(target)
 		if err != nil {
@@ -134,9 +151,16 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, t
 		}
 		existing.URL = target
 	}
-	if alias != "" && alias != existing.Alias {
+	if renamed {
 		if err := validateAlias(alias); err != nil {
 			return URL{}, err
+		}
+		taken, err := s.store.AliasTaken(ctx, alias, existing.ID)
+		if err != nil {
+			return URL{}, err
+		}
+		if taken {
+			return URL{}, ErrConflict
 		}
 		existing.Alias = alias
 	}
@@ -154,6 +178,9 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL, OwnerID: owner}, authz.Delete) {
 		return ErrForbidden
+	}
+	if existing.FormID != nil && !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL}, authz.Read) {
+		return ErrManaged
 	}
 	return s.store.Disable(ctx, id, lifecycle.ActorID(p.ID))
 }
@@ -183,11 +210,12 @@ func (s *service) ensureAlias(ctx context.Context, alias string) (string, error)
 			if err != nil {
 				return "", err
 			}
-			if _, err := s.store.GetByAlias(ctx, cand); err != nil {
-				if errors.Is(err, ErrNotFound) {
-					return cand, nil
-				}
+			taken, err := s.store.AliasTaken(ctx, cand, uuid.Nil)
+			if err != nil {
 				return "", err
+			}
+			if !taken {
+				return cand, nil
 			}
 		}
 		return "", ErrConflict
@@ -195,23 +223,32 @@ func (s *service) ensureAlias(ctx context.Context, alias string) (string, error)
 	if err := validateAlias(alias); err != nil {
 		return "", err
 	}
-	if _, err := s.store.GetByAlias(ctx, alias); err == nil {
-		return "", ErrConflict
-	} else if !errors.Is(err, ErrNotFound) {
+	taken, err := s.store.AliasTaken(ctx, alias, uuid.Nil)
+	if err != nil {
 		return "", err
+	}
+	if taken {
+		return "", ErrConflict
 	}
 	return alias, nil
 }
 
 func validateAlias(alias string) error {
-	if !aliasPattern.MatchString(alias) {
-		return ErrInvalid
-	}
-	switch strings.ToLower(alias) {
-	case "v1", "health", "go", "urls", "api", "docs":
+	if !aliasPattern.MatchString(alias) || reservedAlias(alias) {
 		return ErrInvalid
 	}
 	return nil
+}
+
+// reservedAlias names the first path segments skyl.app already routes
+// elsewhere; "c" is the certificate page, so skyl.app/c/ig would never reach
+// a link called c.
+func reservedAlias(alias string) bool {
+	switch strings.ToLower(alias) {
+	case "v1", "health", "go", "urls", "api", "docs", "c":
+		return true
+	}
+	return false
 }
 
 func normalizeTarget(raw string) (string, error) {

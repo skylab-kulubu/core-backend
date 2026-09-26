@@ -148,6 +148,34 @@ func TestService_DuplicateAlias(t *testing.T) {
 	}
 }
 
+func TestService_RenameKeepsTheOldAliasRedirecting(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := NewService(NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()))
+	owner := authz.Principal{ID: "11111111-1111-1111-1111-111111111111", Roles: []string{"url:access"}}
+	created, err := svc.Create(ctx, owner, "https://skylab.com", "club")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(ctx, owner, created.ID, "", "kulup"); err != nil {
+		t.Fatal(err)
+	}
+	if old, err := svc.Redirect(ctx, "club", Hit{}); err != nil || old.ID != created.ID || old.Alias != "kulup" {
+		t.Fatalf("old alias: %+v %v", old, err)
+	}
+	for _, alias := range []string{"club", "CLUB", "Kulup"} {
+		if _, err := svc.Create(ctx, owner, "https://example.com", alias); !errors.Is(err, ErrConflict) {
+			t.Fatalf("%s: %v", alias, err)
+		}
+	}
+	if _, err := svc.Create(ctx, owner, "https://example.com", "c"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("reserved c: %v", err)
+	}
+	if back, err := svc.Update(ctx, owner, created.ID, "", "club"); err != nil || back.Alias != "club" {
+		t.Fatalf("take the old alias back: %+v %v", back, err)
+	}
+}
+
 func TestService_RedirectRecordsHitAndListIsNewestFirst(t *testing.T) {
 	t.Parallel()
 	store := NewMemoryStore()

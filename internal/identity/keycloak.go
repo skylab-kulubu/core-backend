@@ -738,18 +738,34 @@ func (k *Keycloak) UserAddresses(ctx context.Context, id uuid.UUID) ([]string, e
 	return addresses, nil
 }
 
+// DisableUser sends Keycloak exactly `{"enabled":false}` and nothing else.
+// Keycloak copies the request body into the UPDATE admin event, which is not
+// deleted with the user, so a full representation would leave the person's
+// e-mail, names and attributes there. Keycloak 26.7.4 leaves every field the
+// body does not name unchanged (e-skylab-keycloak tests/erasure-event-pii.sh).
+// A user Keycloak does not know is ErrNotFound; an already disabled user is
+// disabled again. No error names the subject.
 func (k *Keycloak) DisableUser(ctx context.Context, id uuid.UUID) error {
 	token, err := k.accessToken(ctx)
 	if err != nil {
 		return err
 	}
-	account, err := k.gc.GetUserByID(ctx, token, k.realm, id.String())
+	resp, err := k.gc.GetRequestWithBearerAuth(ctx, token).
+		SetBody(map[string]bool{"enabled": false}).
+		Put(k.base + "/admin/realms/" + url.PathEscape(k.realm) + "/users/" + id.String())
 	if err != nil {
-		return mapKCErr(err)
+		return errors.New("identity: keycloak disable user request failed")
 	}
-	disabled := false
-	account.Enabled = &disabled
-	return mapKCErr(k.gc.UpdateUser(ctx, token, k.realm, *account))
+	switch {
+	case !resp.IsError():
+		return nil
+	case resp.StatusCode() == http.StatusNotFound:
+		return ErrNotFound
+	case resp.StatusCode() == http.StatusConflict:
+		return ErrInvalid
+	default:
+		return fmt.Errorf("identity: keycloak disable user failed with status %d", resp.StatusCode())
+	}
 }
 
 func (k *Keycloak) DeleteUser(ctx context.Context, id uuid.UUID) error {

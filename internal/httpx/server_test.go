@@ -71,20 +71,34 @@ func memoryAppWithAccessGate(gate accessgate.Reader, parse ...func(string) (auth
 }
 
 func memoryAppWithAccessGateMetrics(gate accessgate.Reader, metrics *accessgate.Metrics, parse ...func(string) (authn.Identity, error)) *fiber.App {
+	deps := memoryDeps()
+	deps.AccountAccessGate = gate
+	deps.AccountAccessMetrics = metrics
+	if len(parse) > 0 {
+		deps.ParseToken = parse[0]
+	}
+	return httpx.New(deps)
+}
+
+// memoryDeps are the assembled app's services over in-memory stores.
+func memoryDeps() httpx.Deps {
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
 	users := user.NewMemoryStore()
 	events := event.NewMemoryStore()
 	tickets := ticket.NewMemoryStore()
 	dir := identity.NewMemory()
-	deps := httpx.Deps{
+	// Skyforms' client and a CMS one (production has none yet).
+	clients := authz.ServiceClients{"forms": authz.ProductForms, "cms-service": authz.ProductCMS}
+	return httpx.Deps{
 		Users:       user.NewService(users),
 		Identity:    identity.NewService(dir, users, az),
 		Events:      event.NewService(events, az),
 		Seasons:     season.NewService(season.NewMemoryStore(), az),
 		Tickets:     ticket.NewService(tickets, events, az, users, dir),
 		Competitors: competitor.NewService(competitor.NewMemoryStore(events), events, az),
-		Media:       media.NewService(media.NewMemoryStore(), media.NewMemoryBlob(), az, ""),
-		URLs:        shorturl.NewService(shorturl.NewMemoryStore(), az),
+		Media: media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), az, "",
+			media.ServiceOptions{ServiceProducts: clients.Products()}),
+		URLs: shorturl.NewService(shorturl.NewMemoryStore(), az),
 		Certificates: certificate.NewService(
 			certificate.NewMemoryStore(), tickets, events, users, az, nil, nil, "https://api.example.test",
 		),
@@ -92,14 +106,9 @@ func memoryAppWithAccessGateMetrics(gate accessgate.Reader, metrics *accessgate.
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},
-		AccountAccessGate:    gate,
-		AccountAccessMetrics: metrics,
-		TrustedProxies:       testTrustedProxies(),
+		TrustedProxies: testTrustedProxies(),
+		ServiceClients: clients,
 	}
-	if len(parse) > 0 {
-		deps.ParseToken = parse[0]
-	}
-	return httpx.New(deps)
 }
 
 func TestCertificateShortLinkProxyRoute(t *testing.T) {

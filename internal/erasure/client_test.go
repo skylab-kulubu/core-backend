@@ -329,6 +329,54 @@ func TestClientTreatsTheStatedRejectionsAsPermanent(t *testing.T) {
 	}
 }
 
+func TestClientDropsTheTokenOnForbiddenAndStaysPermanent(t *testing.T) {
+	t.Parallel()
+
+	service := newFakeService(t, status(http.StatusForbidden, nil))
+	tokens := &staticTokens{token: "t"}
+	_, err := newClient(service, tokens).Erase(context.Background(), command())
+	var permanent interface{ PermanentCode() string }
+	if !errors.As(err, &permanent) || permanent.PermanentCode() != "erase_cms_rejected_403" {
+		t.Fatalf("403 = %T %v, want the permanent erase_cms_rejected_403", err, err)
+	}
+	if tokens.invalidated != 1 {
+		t.Fatalf("token invalidated %d times", tokens.invalidated)
+	}
+	assertNoPII(t, err.Error())
+}
+
+func TestClientRetriesA403WithAFreshToken(t *testing.T) {
+	t.Parallel()
+
+	endpoint := newTokenEndpoint(t)
+	service := newFakeService(t, func(w http.ResponseWriter, r *http.Request) {
+		// token-a was issued before the operator gave the erase role back.
+		if r.Header.Get("Authorization") == "Bearer token-a" {
+			status(http.StatusForbidden, nil)(w, r)
+			return
+		}
+		completed(`{"drafts_deleted":1}`)(w, r)
+	})
+	client := erasure.NewClient(erasure.Endpoint{Service: erasure.Registry()[1], BaseURL: service.server.URL},
+		endpoint.server.URL, "core-erasure", fixedSecret("secret").read)
+	client.Now = func() time.Time { return testNow }
+
+	_, err := client.Erase(context.Background(), command())
+	var permanent interface{ PermanentCode() string }
+	if !errors.As(err, &permanent) {
+		t.Fatalf("403 = %T %v, want a rejection", err, err)
+	}
+	// The retry after manual intervention comes well inside the cached
+	// token's lifetime; it still asks Keycloak for a new token.
+	result, err := client.Erase(context.Background(), command())
+	if err != nil || result.Counts["drafts_deleted"] != 1 {
+		t.Fatalf("retry after 403: counts=%v err=%v", result.Counts, err)
+	}
+	if endpoint.count() != 2 || len(service.calls) != 2 || service.calls[1].header.Get("Authorization") != "Bearer token-b" {
+		t.Fatalf("token requests=%d service calls=%d", endpoint.count(), len(service.calls))
+	}
+}
+
 func TestClientDropsTheTokenOnUnauthorizedAndSpendsAnOrdinaryRetry(t *testing.T) {
 	t.Parallel()
 

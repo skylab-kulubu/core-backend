@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
@@ -63,6 +64,15 @@ type Deps struct {
 	// AccountErasureMetrics are the account erasure watchdog's gauges. Nil
 	// while the erasure worker is off.
 	AccountErasureMetrics interface{ Prometheus() string }
+
+	// MediaUploadLimiter is each person's single-step upload budget. Nil
+	// uses media.DefaultUploadLimits.
+	MediaUploadLimiter *media.UploadLimiter
+
+	// ServiceClients are the products' service clients: a service
+	// account's token of one of them speaks for its product. Nil configures
+	// none.
+	ServiceClients authz.ServiceClients
 }
 
 func New(deps Deps) *fiber.App {
@@ -104,6 +114,14 @@ func New(deps Deps) *fiber.App {
 	mediaH := handlers.NewMediaHandler(deps.Media)
 	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken, deps.URLAttributionGuard).TrustProxies(trustedProxies)
 	jit := middlewares.NewJIT(deps.Users, deps.Mail)
+	uploadLimiter := deps.MediaUploadLimiter
+	if uploadLimiter == nil {
+		uploadLimiter = media.NewUploadLimiter(media.DefaultUploadLimits(), time.Now)
+	}
+	// One budget per person across every single-step upload route. A Direct
+	// upload route, once it exists, stays off it: the owning product limits
+	// its grants.
+	limitUploads := handlers.LimitMediaUploads(uploadLimiter)
 	var certs *handlers.CertificateHandler
 	if deps.Certificates != nil {
 		certs = handlers.NewCertificateHandler(deps.Certificates)
@@ -170,9 +188,10 @@ func New(deps Deps) *fiber.App {
 		app.Post("/v1/account-deletion-requests/status/retry", selfDeletion.Retry)
 	}
 	app.Post("/v1/events/:eventId/applications/guest", tickets.ApplyGuest)
-	app.Use(middlewares.Bearer(deps.ParseToken))
+	app.Use(middlewares.Bearer(authn.WithServiceProducts(deps.ParseToken, deps.ServiceClients)))
 	app.Use(middlewares.AccountAccessGate(deps.AccountAccessGate, deps.AccountAccessMetrics))
 	app.Get("/v1/go/:alias", urls.Redirect)
+	app.Get("/v1/go/:alias/:channel", urls.RedirectChannel)
 	app.Use(jit.Handle)
 
 	if pass != nil {
@@ -185,7 +204,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/users/me", me.GetMe)
 	app.Put("/v1/users/me", me.PutMe)
 	app.Patch("/v1/users/me", me.PatchMe)
-	app.Post("/v1/users/me/profile-picture", me.ProfilePicture)
+	app.Post("/v1/users/me/profile-picture", limitUploads, me.ProfilePicture)
 	app.Delete("/v1/users/me/profile-picture", me.DeleteProfilePicture)
 	app.Get("/v1/users", ident.ListUsers)
 	app.Post("/v1/users", ident.CreateUser)
@@ -309,15 +328,24 @@ func New(deps Deps) *fiber.App {
 	app.Delete("/v1/competitors/:id", competitors.Delete)
 	app.Post("/v1/competitors/:id/reinstate", competitors.Reinstate)
 
-	app.Post("/v1/media", mediaH.Upload)
+	app.Post("/v1/media", limitUploads, mediaH.Upload)
 	app.Get("/v1/media", mediaH.List)
 	app.Get("/v1/media/:id", mediaH.Get)
 	app.Delete("/v1/media/:id", mediaH.Delete)
 	app.Post("/v1/media/:id/restore", mediaH.Restore)
+	// The service attach API: another product's service account links Media
+	// to its own records (docs/media-lifecycle.md).
+	app.Post("/v1/media/:id/attachments", mediaH.Attach)
+	app.Delete("/v1/media/:id/attachments/:attachmentId", mediaH.Detach)
 
 	app.Post("/v1/urls", urls.Create)
 	app.Get("/v1/urls", urls.ListMine)
 	app.Get("/v1/urls/all", urls.ListAll)
+	app.Get("/v1/urls/availability", urls.Availability)
+	app.Get("/v1/urls/forms/:formId", urls.FormLink)
+	app.Put("/v1/urls/forms/:formId", urls.EnsureFormLink)
+	app.Patch("/v1/urls/forms/:formId", urls.RenameFormLink)
+	app.Get("/v1/urls/forms/:formId/stats", urls.FormStats)
 	app.Get("/v1/urls/:id/hits", urls.ListHits)
 	app.Patch("/v1/urls/:id", urls.Update)
 	app.Delete("/v1/urls/:id", urls.Delete)

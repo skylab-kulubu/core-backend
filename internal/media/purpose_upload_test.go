@@ -178,7 +178,9 @@ func TestService_ServiceOnlyPurposeIsRefusedToEveryPerson(t *testing.T) {
 
 func TestService_PurposePDFStartsWithItsHeader(t *testing.T) {
 	t.Parallel()
-	svc, _ := setup(t)
+	// cms_file is the public PDF purpose; the CMS attaches it.
+	svc := media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
+		media.ServiceOptions{ServiceProducts: []authz.Product{authz.ProductCMS}})
 	p := signedIn("55555555-5555-5555-5555-000000000055")
 	prefixed := []byte("<html><!-- -->\n%PDF-1.7\n")
 
@@ -203,5 +205,46 @@ func TestService_LegacyPurposeCannotBeNamed(t *testing.T) {
 	_, err := svc.UploadForPurpose(context.Background(), signedIn("56565656-5656-5656-5656-565656565656"), media.PurposeLegacy, uploaded("page.html", "text/html", []byte("<html></html>")))
 	if !errors.Is(err, media.ErrPurposeUnknown) {
 		t.Fatalf("err = %v, want %v", err, media.ErrPurposeUnknown)
+	}
+}
+
+// A Media nothing can attach would only wait for its expiry: a service
+// purpose is refused while its product has no service client configured (the
+// CMS today), or when it names no product (club files and videos, until the
+// Direct upload tickets settle who attaches them).
+func TestService_PurposeNothingCanAttachYetIsRefused(t *testing.T) {
+	t.Parallel()
+	svc := media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
+		media.ServiceOptions{ServiceProducts: []authz.Product{authz.ProductForms}})
+	p := signedIn("57575757-5757-5757-5757-575757575757")
+
+	for purpose, file := range map[string]media.UploadedFile{
+		"cms_image": uploaded("logo.png", "image/png", pngDot()),
+		"cms_file":  uploaded("bylaws.pdf", "application/pdf", []byte("%PDF-1.7\n")),
+	} {
+		_, err := svc.UploadForPurpose(context.Background(), p, purpose, file)
+		var refusal *media.PurposeRefusal
+		if !errors.Is(err, media.ErrPurposeNotAvailable) || !errors.As(err, &refusal) || refusal.Purpose != purpose {
+			t.Errorf("%s: err = %v, want %v", purpose, err, media.ErrPurposeNotAvailable)
+		}
+	}
+}
+
+// Once the CMS has a service client, it can attach its Media, so its
+// purposes can be uploaded.
+func TestService_CMSPurposesCanBeUploadedOnceTheCMSHasAServiceClient(t *testing.T) {
+	t.Parallel()
+	svc := media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
+		media.ServiceOptions{ServiceProducts: []authz.Product{authz.ProductForms, authz.ProductCMS}})
+	p := signedIn("58585858-5858-5858-5858-585858585858")
+
+	for purpose, file := range map[string]media.UploadedFile{
+		"cms_image": uploaded("logo.png", "image/png", pngDot()),
+		"cms_file":  uploaded("bylaws.pdf", "application/pdf", []byte("%PDF-1.7\n")),
+	} {
+		created, err := svc.UploadForPurpose(context.Background(), p, purpose, file)
+		if err != nil || created.Purpose != purpose || created.Status != media.StatusPending {
+			t.Errorf("%s: %+v, %v", purpose, created, err)
+		}
 	}
 }

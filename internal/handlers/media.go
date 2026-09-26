@@ -48,6 +48,12 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 		// unreachable key service once private Media ships.
 		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
 			"Private Media is not available yet; this purpose cannot be uploaded.", "private_media_disabled", fields)
+	case errors.Is(err, media.ErrPurposeNotAvailable):
+		// Like private_media_disabled: nothing is stored, and retrying does
+		// not help until a product attaches these Media.
+		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
+			"Nothing can attach Media of this purpose yet: the product that attaches them has no service account core accepts, or none is named. The file would only wait for its expiry.",
+			"purpose_not_available", fields)
 	case errors.Is(err, media.ErrDirectUploadOnly):
 		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
 			"This purpose is uploaded by Direct upload, not through this endpoint.", "purpose_requires_direct_upload", fields)
