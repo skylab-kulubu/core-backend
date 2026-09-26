@@ -122,20 +122,27 @@ code. CODEOWNERS covers the file and the ceilings. Each entry has:
 | `pending_ttl` | How long a Media with no Media attachment is kept (Go duration). `none` only for the legacy rules. |
 | `transport` | `single_step` (through `POST /v1/media`) or `direct` (Direct upload). |
 | `attach` | Who attaches the purpose's Media: `core` (a core record links it) or `service` (another product, through the [service attach API](#service-attach-api)). |
-| `service` | Only with `attach: service`: the product that attaches the purpose's Media, `forms` or `cms`. It is also the purpose's owning product: only it may attach a private Media of the purpose. |
+| `service` | Only with `attach: service`: the product that attaches the purpose's Media, `forms` or `cms`. It is also the purpose's owning product: only that product may link the purpose's Media at all. |
 | `image` | Raster handling: `reencode`, `max_dimension`, `variants` (name → px), `rasterize_svg`. |
 | `legacy_rules` | Only on `legacy`: the rules below instead of `types` and `max_mib`. |
 
 `pending_ttl` sets a new Media's expiry (see
 [Media attachment](#media-attachment)). `attach` and `service` decide whether a
 purpose can be uploaded at all: a Media nothing can attach would only wait for
-its expiry, so a `service` purpose that names no product is refused with
-`purpose_not_available`. Today that is `club_file` and `video`: where club
-files and videos are attached is for the Direct upload and video tickets (11
-and 13) to settle, and both are Direct upload purposes anyway. `cms_image` and
-`cms_file` (attached by the CMS) can be uploaded; `answer_file` (attached by
-Skyforms) stays refused with `private_media_disabled` until private Media
-ships. Every purpose a product's role accepts must name that product, and the
+its expiry, so a `service` purpose is refused with `purpose_not_available`
+unless its product has a service client configured
+(`MEDIA_SERVICE_CLIENTS`, see [Who may call](#service-attach-api)). Today:
+
+- `cms_image` and `cms_file` (the CMS) stay refused: the CMS has no service
+  account yet, and opening them is Yusuf's decision once it has one;
+- `answer_file` (Skyforms, configured by default) stays refused with
+  `private_media_disabled` until private Media ships, and
+  `answer_file_large` is a Direct upload purpose;
+- `club_file` and `video` name no product: where club files and videos are
+  attached is for the Direct upload and video tickets (11 and 13) to settle,
+  and both are Direct upload purposes anyway.
+
+Every purpose a product's role accepts must name that product, and the
 purposes core refers to in code (the core purposes, the CMS purposes and the
 Answer file purposes) must all be in the file. `scan` and `image` are declared now
 and not yet acted on: scanning and re-encoding with variants (media redesign
@@ -151,13 +158,13 @@ The initial entries:
 | `profile_picture` | authenticated | JPEG, PNG, WebP, GIF | 5 MiB | public | single-step | core |
 | `event_cover`, `event_gallery` | event_editor | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step | core |
 | `certificate_asset` | certificate_template_editor | PNG, JPEG, PDF | 20 MiB | private | single-step | core |
-| `cms_image` | authenticated | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step | cms |
-| `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms |
+| `cms_image` | authenticated | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step | cms (no service client yet) |
+| `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms (no service client yet) |
 | `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step | forms |
 | `club_file` | event_editor | PDF | 1 GiB | public, scanned | direct | not settled (ticket 11) |
 | `answer_file_large` | service_only | ZIP, PDF | 1 GiB | private, scanned | direct | forms |
 | `video` | event_editor | MP4 | 2 GiB | public | direct | not settled (ticket 13) |
-| `legacy` | authenticated | legacy rules | legacy rules | public | single-step | core, or any product (transition rule) |
+| `legacy` | authenticated | legacy rules | legacy rules | public | single-step | core, or a product for its uploader or once it holds it (transition rule) |
 
 SVG joins `cms_image`, rasterized to PNG, once core rasterizes SVG.
 
@@ -232,7 +239,7 @@ over their upload budget gets `429` `media_rate_limited`, described under
 | 403 | `purpose_forbidden` | `purpose` | The caller's upload rule does not allow it. |
 | 422 | `private_media_disabled` | `purpose` | A private purpose. Private Media storage (encryption, the private bucket) is not built yet, so nothing is stored; retrying does not help. |
 | 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media`. |
-| 422 | `purpose_not_available` | `purpose` | A `service` purpose that names no product to attach its Media (`club_file` and `video` today, which reach `purpose_requires_direct_upload` first). Nothing is stored; the file would only wait for its expiry. |
+| 422 | `purpose_not_available` | `purpose` | A `service` purpose whose product has no service client configured (`cms_image` and `cms_file` today), or that names no product (`club_file` and `video`, which reach `purpose_requires_direct_upload` first). Nothing is stored; the file would only wait for its expiry. |
 | 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum. |
 | 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types. |
 
@@ -303,7 +310,10 @@ fails when any route stores a file sent through core without being charged.
 A Media attachment links a Media to the record that uses it, in core or in
 another product. Each row names the Media, the owner (`owner_service`,
 `owner_type`, `owner_id`) and the Media's role there, and is unique per link
-(table `media_attachments`, migration `20260926120000`).
+(table `media_attachments`, migration `20260926120000`). `owner_id` is the
+owning product's own id for its record, as text (migration `20260926121000`):
+core's records and Skyforms responses have UUIDs, a CMS page is
+`<clientId>:<slug>`.
 
 ### Status and expiry
 
@@ -405,25 +415,40 @@ Media while any Media attachment does.
 
 **Endpoints**
 
-`POST /v1/media/{id}/attachments` with a JSON body:
+`POST /v1/media/{id}/attachments` with a JSON body. A CMS page:
 
 ```json
-{ "owner": { "service": "cms", "type": "page", "id": "9d3c…" }, "role": "image" }
+{ "owner": { "service": "cms", "type": "page", "id": "skylab-site:hakkimizda" }, "role": "image", "onBehalfOf": "5f0c…" }
+```
+
+A Skyforms answer:
+
+```json
+{ "owner": { "service": "forms", "type": "response", "id": "8b6e2d0a-…" }, "role": "answer", "onBehalfOf": "a41d…" }
 ```
 
 - `owner.service`: the calling product (`forms` or `cms`).
 - `owner.type`: the product's record type, lowercase snake_case, at most 64
-  characters (`response`, `draft`, `page`, …). Core does not interpret it.
-- `owner.id`: the record's id, a UUID.
+  characters (`response`, `draft`, `page`, `block`, …). Core does not
+  interpret it.
+- `owner.id`: the record's id in the product, at most 200 letters, digits and
+  `- _ . : /`: a Skyforms response or draft id, a CMS block or collection
+  item Guid, or a CMS page as `<clientId>:<slug>`. Core does not interpret it
+  either; core's own links use their records' UUIDs.
 - `role`: one of the product's roles below.
+- `onBehalfOf`: the id of the person the product acts for: the respondent
+  whose answer it is, the editor saving the page. Required.
 
 It answers `201 Created` with the new Media attachment, or `200 OK` with the
 one already there when the same link (Media, owner and role) exists, even if
 the Media was archived since. A retry is therefore safe:
 
 ```json
-{ "id": "5b1e…", "mediaId": "0f2a…", "owner": { "service": "cms", "type": "page", "id": "9d3c…" }, "role": "image", "createdAt": "2026-09-26T09:00:00Z" }
+{ "id": "5b1e…", "mediaId": "0f2a…", "owner": { "service": "cms", "type": "page", "id": "skylab-site:hakkimizda" }, "role": "image", "createdAt": "2026-09-26T09:00:00Z" }
 ```
+
+A retry that races a detach of the same link answers the state after both:
+the link again, never a missing one.
 
 `DELETE /v1/media/{id}/attachments/{attachmentId}` removes one of the
 product's Media attachments and answers `204 No Content`, also when it is not
@@ -431,38 +456,38 @@ there (any more), so a retry is safe too. When it was the Media's last Media
 attachment, the Media becomes `detached` and is purged 30 days later unless
 something attaches it again; a `legacy` Media gets no expiry (see
 [Status and expiry](#status-and-expiry)). The database's status trigger does
-this for another product's Media attachments exactly as for core's own.
+this for another product's Media attachments exactly as for core's own. The
+Media attachment row itself is a link row and is deleted.
 
 **Who may call**
 
 Only a product's own service account: a client-credentials token of the
-product's Keycloak client that carries `aud` `core` and the role
+product's configured Keycloak client that carries `aud` `core` and the role
 `media:attach` on the `core` client (`resource_access.core.roles`, ADR-0019).
 
 - Core tells a service account from a person by the `client_id` claim, which
   Keycloak writes only into a client-credentials token (the `service_account`
   client scope), naming the same client as `azp`. A person's token is
   refused, whatever roles it carries and whichever client it was issued to.
-- The token's client (`azp`) names the product. The mapping is fixed in code
-  (`serviceClients`, `internal/media/service_attach.go`):
-
-  | Keycloak client | Product |
-  |---|---|
-  | `forms` (forms-backend's `KEYCLOAK_CLIENT_ID`) | `forms` |
-  | `skyforms` (if the service account lives on the Skyforms login client) | `forms` |
-  | `skycms` (the CMS client; cms-backend has no service account yet) | `cms` |
-
-  A service account of any other client is refused.
+- The token's client (`azp`) names the product through
+  `MEDIA_SERVICE_CLIENTS`: `product:client` pairs separated by commas, read
+  and checked at startup (`authz.ServiceClientsFromEnv`). Unset, it is
+  `forms:forms`: forms-backend requests its service token as the `forms`
+  client. The CMS has no service account yet; once it has one, adding
+  `cms:<its client>` lets it attach and opens `cms_image` and `cms_file` for
+  upload. `none` configures no product. A service account of any other
+  client is refused; the Skyforms login client `skyforms` has no service
+  account and speaks for nobody.
 - A product manages only its own Media attachments: `owner.service` must be
   the calling product, and it can remove only Media attachments whose
   `owner_service` is its own. Core's own links (`owner_service` `core`) are
   never written or removed through this API.
 
 Keycloak must therefore hold the client role `media:attach` on the `core`
-client, assigned only to the service accounts of the product clients above,
-and each of those clients' service tokens must carry `aud` `core` and the
-role. Core does not set this up; it is a human step in Keycloak, done per
-realm (sandbox, then production). Until it is done every call is refused with
+client, assigned only to the configured products' service accounts, and
+each of those clients' service tokens must carry `aud` `core` and the role.
+Core does not set this up; it is a human step in Keycloak, done per realm
+(sandbox, then production). Until it is done every call is refused with
 `media_attach_forbidden`, which changes nothing for anyone today.
 
 **Roles**
@@ -474,24 +499,43 @@ realm (sandbox, then production). Until it is done every call is refused with
 | `cms` | `file` | `cms_file` |
 
 A `legacy` Media fits every role (the transition rule above): Skyforms and
-the CMS upload without a purpose until stage 5.
+the CMS upload without a purpose until stage 5. Core's own roles and these
+are one table (`rolePurposes`, `internal/media/attachment.go`), and core's
+links and the service attach API share one link check.
+
+**Which Media a product may link**
+
+- A Media of one of the product's own purposes (the catalogue's `service`).
+  An Answer file (`answer_file`, `answer_file_large`) belongs to the person
+  who uploaded it: Skyforms links it only with that person as `onBehalfOf`.
+- A `legacy` Media, uploaded before purposes, may be anyone's and used by
+  anything: a product links one only with its uploader as `onBehalfOf`, or
+  once the product already holds a Media attachment to it (a CMS editor
+  reusing an image the CMS already uses). No product can pin another
+  product's or core's legacy Media, such as a still-public legacy Answer
+  file or an Event cover.
+- Nothing else: not another product's Media, private or not, and not core's.
+
+A Media the product may not link is refused exactly like a Media that does
+not exist (`media_not_linkable`, without its purpose), so the refusal tells
+the product nothing about it.
 
 **Checks, in order**
 
-1. The caller is a known product's service account with `media:attach`
-   (`media_attach_forbidden`).
-2. `owner.service` is the caller (`media_attach_wrong_service`).
-3. The body is well formed and the role is one of the product's
-   (`media_role_unknown`).
-4. The same link already exists: answered with `200`, nothing else checked.
-5. The Media is linkable: it exists, is not archived, no purge started, and
-   its expiry has not passed (`media_not_linkable`).
-6. A private Media (`answer_file`, `answer_file_large`, `certificate_asset`)
-   is attached only by its owning product, the purpose's `service` (core for
-   `certificate_asset`, so no product) (`media_product_mismatch`). This comes
-   before the role check, so the refusal does not tell another product the
-   Media's purpose.
-7. The Media's purpose fits the role (`media_purpose_mismatch`).
+1. The caller is a configured product's service account with `media:attach`
+   (`media_attach_forbidden`). Nothing in the request is read before this: a
+   person always gets `403`.
+2. The request is well formed: the path ids, `owner`, `onBehalfOf` (a plain
+   `400`).
+3. `owner.service` is the caller (`media_attach_wrong_service`).
+4. The role is one of the product's (`media_role_unknown`).
+5. The same link already exists: answered with `200`, nothing else checked.
+6. The Media exists and is linkable: not archived, no purge started, its
+   expiry not passed; and the product may link it (above). Otherwise
+   `media_not_linkable`.
+7. The Media's purpose fits the role (`media_purpose_mismatch`). Only a Media
+   the product may link reaches this check, so the purpose it names is the
+   product's own.
 
 The database's triggers stay the backstop: a Media archived or claimed by a
 purge between these checks and the write is refused with
@@ -502,13 +546,12 @@ purge between these checks and the write is refused with
 | Status | `code` | Extra members | When |
 |---|---|---|---|
 | 401 | | | No token, or an invalid one. |
-| 403 | `media_attach_forbidden` | | Not a product's service account with `media:attach` on the core client: a person, a service account without the role, or of a client core does not map to a product. |
+| 403 | `media_attach_forbidden` | | Not a configured product's service account with `media:attach` on the core client: a person, a service account without the role, or of a client not in `MEDIA_SERVICE_CLIENTS`. |
+| 400 | | | A malformed request: not JSON, a path id or `onBehalfOf` that is not a UUID, `owner.type` not lowercase snake_case, `owner.id` empty, too long or with other characters. |
 | 403 | `media_attach_wrong_service` | | `owner.service` is another product, or the Media attachment to remove belongs to another product or to core. |
 | 400 | `media_role_unknown` | `role` | Not a role of the calling product. |
-| 400 | | | A malformed body: not JSON, `owner.id` not a UUID, `owner.type` not lowercase snake_case, or a path id that is not a UUID. |
-| 422 | `media_not_linkable` | `mediaId`, `role` | As for core's own links. |
-| 403 | `media_product_mismatch` | `mediaId`, `role` | The Media is private to another product. No `purpose` member. |
-| 422 | `media_purpose_mismatch` | `mediaId`, `role`, `purpose` | The Media's purpose does not fit the role. |
+| 422 | `media_not_linkable` | `mediaId`, `role` | No such Media, or archived, being purged, expired, or not the product's to link. |
+| 422 | `media_purpose_mismatch` | `mediaId`, `role`, `purpose` | One of the product's own Media whose purpose does not fit the role (a CMS file as an image). |
 
 ### Expiry cleanup
 
@@ -552,6 +595,12 @@ dropped; `status` replaces it.
   `10m`.
 - `MEDIA_UPLOAD_DAILY_MAX_MIB` — MiB of upload body per person per rolling
   24 hours; default `2048`.
+
+- `MEDIA_SERVICE_CLIENTS` — the products' service clients for the
+  [service attach API](#service-attach-api), `product:client` pairs
+  separated by commas (products `forms`, `cms`), or `none`; default
+  `forms:forms`. Startup fails on anything else. A product with no client
+  cannot attach, and its purposes cannot be uploaded.
 
 The detached window is fixed at 30 days by the database;
 `MEDIA_BLOB_RECOVERY_DAYS` does not change it.
