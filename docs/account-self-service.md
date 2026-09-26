@@ -81,9 +81,12 @@ A second run reports every record as already in step.
 
 `POST /v1/users/me/profile-picture` (multipart field `image` or `file`)
 uploads a new picture through the media service as the `profile_picture`
-Media purpose (a raster image up to 5 MiB, judged by content; see
-[`media-lifecycle.md`](media-lifecycle.md#media-purpose)), links it to the
-shadow and answers with the same view. Anything else is refused with the
+Media purpose (a raster image up to 5 MiB, judged by content, re-encoded
+upright within 2560 px with `card` and `page` sizes; see
+[`media-lifecycle.md`](media-lifecycle.md#images-and-sizes)), links it to the
+shadow and answers with the same view. The shadow keeps the Media, not an
+address: `profilePictureUrl` is built from the configured media base whenever
+the profile is answered. Anything else is refused with the
 purpose's problem code, for example `415 media_type_not_allowed` for a PDF.
 Linking attaches the new picture; the picture it replaces is detached and
 purged 30 days later unless something attaches it again (see

@@ -13,9 +13,10 @@ var (
 	ErrCeilingPublicType = errors.New("media purpose catalogue: a public purpose accepts only raster images, PDF and MP4")
 	// ErrCeilingPublicRaster: a public purpose that accepts raster images
 	// declares image.reencode, so that no uploaded image bytes reach the CDN
-	// as they came. Only the declaration is checked today: re-encoding itself
-	// lands with media redesign ticket 04. Until then public raster uploads
-	// get the metadata stripping they always had (sanitizeImage).
+	// as they came: core decodes such an image and stores only its pixels,
+	// encoded again (reencodeRaster). Media uploaded without a purpose
+	// (legacy) are not a purpose's upload and keep their stripped bytes
+	// until they fall to the strict rule.
 	ErrCeilingPublicRaster = errors.New("media purpose catalogue: a public purpose declares re-encoding for raster images")
 	// ErrCeilingSVG: SVG is never stored as SVG. A purpose that accepts it
 	// rasterizes it to PNG.
@@ -28,11 +29,13 @@ var (
 	// reaches storage (KVKK cloud guidance, §3.4).
 	ErrCeilingPrivate = errors.New("media purpose catalogue: a private purpose is encrypted")
 	// ErrCeilingImageDimension: a re-encoded image is at most
-	// MaxImageDimension pixels on its longer side.
+	// MaxImageDimension pixels on its longer side; re-encoding scales a
+	// larger one down to the purpose's max_dimension.
 	ErrCeilingImageDimension = errors.New("media purpose catalogue: image dimension above the cap")
 )
 
-// MaxImageDimension is the longest side, in pixels, of a re-encoded image.
+// MaxImageDimension is the longest side, in pixels, of a re-encoded image,
+// and of a purpose's image sizes.
 const MaxImageDimension = 2560
 
 // MaxDirectUploadBytes is the largest Media a Direct upload may carry.

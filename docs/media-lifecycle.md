@@ -54,8 +54,10 @@ completing its request.
 
 ## Serving policy
 
-Objects are public at `https://cdn.yildizskylab.com/<key>`, so the metadata a
-Media is stored with decides what a browser does with it. Every write to the
+Objects are public at `<base>/<key>`, the base being `CDN_BASE` (or
+`R2_PUBLIC_URL`; `https://cdn.yildizskylab.com` when neither is set, see
+[Addresses](#addresses)), so the metadata a Media is stored with decides what a
+browser does with it. Every write to the
 bucket takes that metadata from one policy (`media.ServingMetadata`,
 `internal/media/serving.go`):
 
@@ -131,12 +133,11 @@ be uploaded at all: a Media nothing can attach would only wait for its expiry,
 so a `service` purpose is refused until the service attach API exists (media
 redesign ticket 03). Today that is `cms_image`, `cms_file`, `answer_file`,
 `answer_file_large`, `club_file` and `video`; where club files and videos are
-attached is for the Direct upload tickets to settle. `scan` and `image` are declared now
-and not yet acted on: scanning and re-encoding with variants (media redesign
-ticket 04) read them as they ship. Until re-encoding ships, a raster image
-under any purpose gets the same metadata stripping as before (EXIF, XMP and
-comments removed), not a re-encode. An unknown field or
-value, a missing `legacy` entry, or a ceiling violation stops core at startup.
+attached is for the Direct upload tickets to settle. `image` is acted on (see
+[Images and sizes](#images-and-sizes)); `scan` is declared now and read when
+scanning ships. `image.variants` may name only the sizes clients can ask for,
+`card` and `page`. An unknown field or value, a missing `legacy` entry, or a
+ceiling violation stops core at startup.
 
 The initial entries:
 
@@ -145,7 +146,7 @@ The initial entries:
 | `profile_picture` | authenticated | JPEG, PNG, WebP, GIF | 5 MiB | public | single-step |
 | `event_cover`, `event_gallery` | event_editor | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step |
 | `certificate_asset` | certificate_template_editor | PNG, JPEG, PDF | 20 MiB | private | single-step |
-| `cms_image` | authenticated | JPEG, PNG, WebP, GIF | 10 MiB | public | single-step |
+| `cms_image` | authenticated | JPEG, PNG, WebP, GIF, SVG (rasterized to PNG) | 10 MiB | public | single-step |
 | `cms_file` | authenticated | PDF | 20 MiB | public | single-step |
 | `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step |
 | `club_file` | event_editor | PDF | 1 GiB | public, scanned | direct |
@@ -153,7 +154,8 @@ The initial entries:
 | `video` | event_editor | MP4 | 2 GiB | public | direct |
 | `legacy` | authenticated | legacy rules | legacy rules | public | single-step |
 
-SVG joins `cms_image`, rasterized to PNG, once core rasterizes SVG.
+Every public raster purpose re-encodes (2560 px) and gets the `card` (400 px)
+and `page` (1200 px) sizes; `legacy` gets the sizes without the re-encode.
 
 ### Upload rules
 
@@ -189,15 +191,14 @@ Core refuses to start with a catalogue that breaks one:
 - a public purpose accepts only raster images (JPEG, PNG, WebP, GIF), PDF and
   MP4;
 - a public purpose that accepts raster images declares re-encoding
-  (`image.reencode`). The declaration is enforced now; the re-encoding
-  itself arrives with ticket 04, and until then these images are only
-  stripped of metadata;
+  (`image.reencode`), and core re-encodes every such image (see
+  [Images and sizes](#images-and-sizes));
 - SVG is never stored as SVG: a purpose naming it rasterizes it to PNG
   (`image.rasterize_svg`);
 - the maximum size stays under 20 MiB for single-step uploads and 2 GiB for
   Direct upload;
 - the declared image size stays within 2560 px (`image.max_dimension`,
-  variants), applied when re-encoding ships;
+  variants), and re-encoding scales a larger image down to it;
 - a private purpose is encrypted.
 
 ### Uploading
@@ -227,8 +228,8 @@ over their upload budget gets `429` `media_rate_limited`, described under
 | 422 | `private_media_disabled` | `purpose` | A private purpose. Private Media storage (encryption, the private bucket) is not built yet, so nothing is stored; retrying does not help. |
 | 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media`. |
 | 422 | `purpose_not_available` | `purpose` | Another product attaches Media of this purpose (`attach: service`) and the service attach API it needs arrives with media redesign ticket 03. Nothing is stored; the file would only wait for its expiry. |
-| 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum. |
-| 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types. |
+| 413 | `media_too_large` | `purpose`, `maxBytes`, and `maxPixels` for an image | Above the purpose's maximum; an image whose header claims more pixels than core decodes (`maxPixels`); an SVG above 1 MiB (`maxBytes` is then 1 MiB). |
+| 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types, or starts like one but does not decode as it (a broken image, an animated WebP, a JPEG with more than 64 scans, an SVG core does not rasterize). |
 
 A body above the server's limit (20 MiB plus room for the form) is still
 refused by the HTTP server with a bare `413` before any purpose is read.
@@ -291,6 +292,154 @@ Direct upload is not counted here. The product that owns a Direct upload
 grant limits it; the Direct upload routes, when they land, stay off this
 limiter. A test (`TestEveryRouteThatStoresAFileIsChargedToTheUploadBudget`)
 fails when any route stores a file sent through core without being charged.
+
+## Images and sizes
+
+Media redesign ticket 04 (ADR-0052, decisions Q13 and Q24).
+
+### Re-encoding
+
+A raster upload for a purpose whose `image.reencode` is set (every public
+image purpose) is decoded and encoded again, so nothing that came with the
+pixels reaches the CDN: EXIF and other metadata, comments, bytes after the
+image, polyglot payloads.
+
+1. **Header first.** Core reads only the header and refuses an image with more
+   than 50 000 000 pixels, or whose decoding would take more than 256 MiB
+   (deep 16-bit PNGs reach that first), as `media_too_large` with
+   `maxPixels`: a decompression bomb costs nothing to refuse. A JPEG with more
+   than 64 scans is refused as `media_type_not_allowed` before decoding (each
+   scan makes a decoder walk the whole image again; encoders write one, or
+   about ten when progressive).
+2. **Decode, upright, fit.** The image is decoded, scaled down (Catmull-Rom)
+   to the purpose's `max_dimension` on its longer side (2560 px), and turned
+   upright by its EXIF Orientation, so the stored pixels need no tag. Content
+   that starts like an accepted type but does not decode is
+   `media_type_not_allowed`.
+3. **Encode.** JPEG stays JPEG (quality 85). PNG stays PNG. Go has no WebP
+   encoder, so a WebP becomes a JPEG when it is opaque and a PNG when it has
+   transparency. A GIF becomes a PNG of its **first frame**: animations are
+   not kept, so no frame count can multiply the work (an animated WebP does
+   not decode at all and is refused). Colour profiles (ICC) are not carried
+   over. The Media's `type` is the stored type.
+
+At most two images are decoded at once in a core process (uploads and the
+backfill below together), which bounds the memory decoding takes.
+
+### Sizes
+
+Clients ask for an image by Media and size name. The names are fixed in code,
+because clients build on them: `card` (400 px, e.g. an Event card) and `page`
+(1200 px, a picture across a page). Each purpose's `image.variants` sets
+which it gets and how large, on the longer side.
+
+A size smaller than the image is stored as its own object next to it, at
+`<key>/card` and `<key>/page`, upright, in the image's stored type, with the
+serving policy's metadata. A size the image already fits in is not stored:
+its address is the original. The Media records its `width` and `height`
+(as shown) and the sizes it stored (`variants` column: `{"card": {"width":
+400, "height": 300}}`; `NULL` until core has made them, `{}` when it needs
+none).
+
+### Media uploaded without a purpose
+
+`legacy` Media keep their own bytes, as before: a raster image is stripped of
+EXIF, XMP and comments, not re-encoded. **One change:** a JPEG's EXIF
+Orientation is kept, alone in a minimal EXIF segment, so a portrait phone
+photo whose rotation lives only in EXIF no longer shows sideways. Their sizes
+are made at upload time from the stripped image (upright); an image core
+cannot decode, or with too many pixels or scans, is stored as before without
+sizes. An SVG gets none.
+
+### SVG
+
+`cms_image` names SVG with `rasterize_svg`. Core never stores the SVG: it draws
+it in pure Go (`github.com/fyne-io/oksvg` and `github.com/srwiley/rasterx`,
+BSD-3-Clause) into a PNG whose longer side is 1200 px (the `page` size), makes
+the `card` size, and stores those. Scripts, event handlers and links go with
+the markup. The drawing is bounded:
+
+- above 1 MiB: `media_too_large` (`maxBytes` 1 MiB);
+- read as XML first, and `media_type_not_allowed` for a document type, more
+  than 10 000 elements (counting what each `<use>` copies), nesting deeper than
+  64, a `<use>` inside `<defs>` (which could refer to itself), no size
+  (`viewBox` or `width`/`height`), or anything that does not parse;
+- drawing stops after 5 seconds, checked on every line a shape is flattened
+  into, so a single huge shape cannot run on; the upload is then
+  `media_type_not_allowed`. Every shape costs a pass over the canvas, so an
+  SVG with more than about a thousand shapes can hit the limit;
+- a fault in the parser refuses the file instead of stopping core;
+- dashes are drawn solid; text, filters and embedded images are not drawn
+  (convert text to paths).
+
+It runs in the request, in the core process, not in a separate one: the
+limits above bound it instead. `cms_image` itself stays unavailable
+(`purpose_not_available`) until the service attach API ships (ticket 03).
+
+### Addresses
+
+Every address core answers with is built from the configured base: `CDN_BASE`,
+else `R2_PUBLIC_URL`, else `https://cdn.yildizskylab.com`. Nothing stored
+holds a base, so moving the CDN (or to a separate user-content domain) is a
+configuration change:
+
+- a Media keeps its object key;
+- a User's profile picture is read from the Media the profile links (its key);
+  `users.profile_picture_url` holds the key for new pictures, and an absolute
+  address stored there before is no longer read while the Media exists. The
+  API's `profilePictureUrl` is unchanged while the base is the same.
+
+`MEDIA_IMAGE_ADDRESS_MODE` picks where sizes point:
+
+- `stored` (default): `<base>/<key>/<size>`, or the original for a size not
+  stored;
+- `cloudflare`: a Cloudflare image transformation of the original,
+  `<base>/cdn-cgi/image/width=N,height=N,fit=scale-down/<key>` (never
+  enlarged). Transformations must be enabled on the base's zone; 5 000 unique
+  transformations a month are free, then $0.50 per 1 000 (Q24). Core keeps
+  storing the sizes in both modes, so switching back is a configuration change
+  too.
+
+The Media JSON (upload response, `GET /v1/media/{id}` for everyone, the media
+list) carries, for a raster image:
+
+```json
+{
+  "url": "https://cdn.yildizskylab.com/images/<id>",
+  "width": 1600,
+  "height": 1200,
+  "variants": {
+    "card": { "url": "https://cdn.yildizskylab.com/images/<id>/card", "width": 400, "height": 300 },
+    "page": { "url": "https://cdn.yildizskylab.com/images/<id>/page", "width": 1200, "height": 900 }
+  }
+}
+```
+
+`variants` lists every size of the Media's purpose; `width`/`height` are left
+out when core does not know them yet. Event and User responses keep their
+fields (`coverImageUrl`, `images[].url`, `profilePictureUrl`); a client reads
+a size from the Media by its id.
+
+### Stored images before sizes
+
+A background backfill, started with core, walks the current image Media whose
+sizes are not made (`variants IS NULL`, partial index
+`media_variants_pending_idx`) by id, 25 at a time, and makes them from the
+stored original, which it never rewrites: legacy originals keep their bytes,
+purposed ones were re-encoded on upload. An image whose object is gone, that
+does not decode, or is not a raster image is recorded with no sizes, so no pass
+tries it again. A failure to read or write an object is logged with the Media's
+id and retried on the next pass (a minute later) without holding up the rest.
+Sizes written for an image whose purge began meanwhile are deleted again.
+
+### Deleting sizes
+
+Every path that deletes a Media's object deletes its sizes first: the archive
+and expiry purges, account erasure's immediate purge (through the same store
+call), the upload staging sweepers, and a refused upload. The size keys are
+derived from the object key (`<key>/card`, `<key>/page`, for `images/` keys),
+not read from the record, so a size an interrupted upload or backfill wrote
+without recording is found too.
 
 ## Media attachment
 
@@ -432,6 +581,10 @@ dropped; `status` replaces it.
   `10m`.
 - `MEDIA_UPLOAD_DAILY_MAX_MIB` — MiB of upload body per person per rolling
   24 hours; default `2048`.
+- `CDN_BASE` (or `R2_PUBLIC_URL`) — the public base of every Media address;
+  default `https://cdn.yildizskylab.com`.
+- `MEDIA_IMAGE_ADDRESS_MODE` — where image sizes point: `stored` (default) or
+  `cloudflare`. Any other value stops core at startup.
 
 The detached window is fixed at 30 days by the database;
 `MEDIA_BLOB_RECOVERY_DAYS` does not change it.
