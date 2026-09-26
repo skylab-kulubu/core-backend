@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -219,12 +220,20 @@ func (f *erasureFixture) records() map[user.DeletionStep]user.DeletionStepRecord
 	return out
 }
 
+var uuidPattern = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
 func (f *erasureFixture) assertNoPersonalData(texts ...string) {
 	f.t.Helper()
 	for _, text := range append(append([]string{}, f.errors...), texts...) {
-		// The request id is not personal data, and its hex digits can spell
-		// "ada".
-		lowered := strings.ToLower(strings.ReplaceAll(text, f.request.ID.String(), "<request_id>"))
+		// Identifiers other than the subject (this or another fixture's
+		// request id) are not personal data, and their hex digits can spell
+		// "ada". The subject stays, so it is still caught.
+		lowered := strings.ToLower(uuidPattern.ReplaceAllStringFunc(text, func(id string) string {
+			if strings.EqualFold(id, f.subjectID.String()) {
+				return id
+			}
+			return "<uuid>"
+		}))
 		for _, value := range append(append([]string{}, erasureTestAddresses...), f.subjectID.String(), "ada") {
 			if strings.Contains(lowered, value) {
 				f.t.Fatalf("%q carries personal data %q", text, value)
