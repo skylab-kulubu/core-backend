@@ -20,7 +20,12 @@ func Start(t testing.TB) *pgxpool.Pool {
 		t.Skip("docker not available")
 	}
 	name := fmt.Sprintf("core-postgres-test-%d", time.Now().UnixNano())
+	// The image declares its data directory as a VOLUME, so every container
+	// would leave an anonymous volume behind: `--rm` only removes it when the
+	// container exits on its own, not when Cleanup removes it. Keeping the
+	// data in tmpfs creates no volume at all and makes the tests faster.
 	run := exec.Command("docker", "run", "-d", "--rm", "--name", name,
+		"--tmpfs", "/var/lib/postgresql/data",
 		"-e", "POSTGRES_PASSWORD=postgres",
 		"-e", "POSTGRES_DB=coretest",
 		"-p", "127.0.0.1::5432",
@@ -31,7 +36,7 @@ func Start(t testing.TB) *pgxpool.Pool {
 		t.Skipf("docker run postgres: %v %s", err, out)
 	}
 	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", name).Run()
+		_ = exec.Command("docker", "rm", "-f", "-v", name).Run()
 	})
 
 	portCtx, cancelPort := context.WithTimeout(context.Background(), 30*time.Second)
