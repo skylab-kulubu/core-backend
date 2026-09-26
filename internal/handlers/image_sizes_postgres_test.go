@@ -17,6 +17,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
@@ -444,5 +445,64 @@ func TestMeProfilePictureUploadAnswersTheNewPicturesSizesHTTP(t *testing.T) {
 	}
 	if card := got.ProfilePictureSizes[media.SizeCard]; card.URL != uploaded.URL+"/card.png" || card.Width != 400 || card.Height != 300 {
 		t.Fatalf("card %+v", card)
+	}
+}
+
+// A public team roster answers each member's picture sizes, from the base
+// core is configured with, like the picture's address.
+func TestTeamRosterCarriesEachMembersPictureSizesHTTP(t *testing.T) {
+	restore := media.UsePublicBase(sizesBase)
+	t.Cleanup(restore)
+	f := newImageSizesFixture(t)
+	ctx := context.Background()
+	dir := identity.NewMemory()
+	seedPublicTeam(t, dir)
+	members, err := dir.Members(ctx, "g-weblab")
+	if err != nil || len(members) != 1 {
+		t.Fatalf("members %+v %v", members, err)
+	}
+	ada := members[0]
+	picture := f.image(t, media.PurposeProfilePicture, "images/ada", 1600, 1600, map[string]media.SizeObject{
+		media.SizeCard: jpegSize(400, 400), media.SizePage: jpegSize(1200, 1200),
+	})
+	users := user.NewService(f.users)
+	if _, _, err := users.Ensure(ctx, ada.ID, user.Profile{Email: ada.Email, FirstName: ada.FirstName, LastName: ada.LastName}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := users.SetProfilePicture(ctx, ada.ID, picture.ID, picture.Key); err != nil {
+		t.Fatal(err)
+	}
+	h := NewTeamHandler(identity.NewService(dir, f.users, authz.NewAuthorizer(authz.DefaultPolicy())))
+	app := fiber.New()
+	app.Get("/v1/teams/:team/members", h.Members)
+
+	var got struct {
+		Members []struct {
+			FirstName           string                        `json:"firstName"`
+			ProfilePictureURL   string                        `json:"profilePictureUrl"`
+			ProfilePictureSizes map[string]media.ImageAddress `json:"profilePictureSizes"`
+		} `json:"members"`
+	}
+	answer(t, app, httptest.NewRequest(fiber.MethodGet, "/v1/teams/WEBLAB/members", nil), &got)
+
+	want := bothSizes(
+		media.ImageAddress{URL: sizesBase + "/images/ada/card.jpg", Width: 400, Height: 400},
+		media.ImageAddress{URL: sizesBase + "/images/ada/page.jpg", Width: 1200, Height: 1200},
+	)
+	var found bool
+	for _, member := range got.Members {
+		if member.FirstName != ada.FirstName {
+			if member.ProfilePictureSizes != nil {
+				t.Errorf("%s has no picture but sizes %+v", member.FirstName, member.ProfilePictureSizes)
+			}
+			continue
+		}
+		found = true
+		if member.ProfilePictureURL != sizesBase+"/images/ada" || !reflect.DeepEqual(member.ProfilePictureSizes, want) {
+			t.Fatalf("%s: %q %+v, want sizes %+v", member.FirstName, member.ProfilePictureURL, member.ProfilePictureSizes, want)
+		}
+	}
+	if !found {
+		t.Fatalf("roster %+v", got.Members)
 	}
 }

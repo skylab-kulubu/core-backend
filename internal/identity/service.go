@@ -799,7 +799,11 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 			m.University = shadow.University
 			m.Faculty = shadow.Faculty
 			m.Department = shadow.Department
-			m.ProfilePictureURL = media.PublicURL("", shadow.ProfilePictureURL)
+			// A roster has no base of its own: the one core is configured
+			// with (media.UsePublicBase).
+			var addresses media.Addresses
+			m.ProfilePictureURL = addresses.Object(shadow.ProfilePictureURL)
+			m.ProfilePictureSizes = addresses.LinkedSizes(shadow.ProfilePicture)
 		}
 		members = append(members, m)
 	}
