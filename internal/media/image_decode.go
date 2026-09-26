@@ -48,8 +48,10 @@ func checkDecode(data []byte) error {
 //     a CMYK JPEG is also converted, 4 bytes a pixel. More than
 //     maxJPEGScans scans is ErrInvalid.
 //   - PNG: the image's pixels at their depth, twice for an interlaced one.
-//   - GIF: the first frame, a byte a pixel of the logical screen (the
-//     decoder refuses a frame larger than the screen).
+//   - GIF: every frame, a byte a pixel, counted as frames × logical
+//     screen, and a canvas of the screen for the still first frame; more
+//     than maxAnimationFrames frames, or a frame outside the screen, is
+//     ErrInvalid (readGIFLayout).
 //   - WebP: the frame its bitstream declares, which must be the canvas an
 //     extended WebP declares (webpFrame), and its alpha.
 func decodeCost(data []byte) (pixels, cost int64, err error) {
@@ -72,7 +74,11 @@ func decodeCost(data []byte) (pixels, cost int64, err error) {
 		}
 		return pixels, cost, nil
 	case "gif":
-		return pixels, pixels, nil
+		layout, err := readGIFLayout(data)
+		if err != nil {
+			return 0, 0, err
+		}
+		return pixels, layout.decodeCost(), nil
 	case "webp":
 		frame, err := readWebPFrame(data)
 		if err != nil {

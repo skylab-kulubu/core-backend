@@ -64,7 +64,7 @@ func finishImage(img image.Image, ctype string, sizes map[string]int) (reencoded
 	if err != nil {
 		return reencodedImage{}, err
 	}
-	encoded, err := makeSizes(img, sizeOf(img), ctype, sizes)
+	encoded, err := makeSizes(img, sizeOf(img), ctype, sizes, nil)
 	if err != nil {
 		return reencodedImage{}, err
 	}
@@ -74,7 +74,7 @@ func finishImage(img image.Image, ctype string, sizes map[string]int) (reencoded
 // makeSizes makes each of the sizes (size name to its longer side in
 // pixels) that an image of size shown is larger than, from img: the image
 // upright, maybe already scaled down to the largest size.
-func makeSizes(img image.Image, shown ImageSize, ctype string, sizes map[string]int) ([]encodedSize, error) {
+func makeSizes(img image.Image, shown ImageSize, ctype string, sizes map[string]int, icc []byte) ([]encodedSize, error) {
 	var out []encodedSize
 	for _, name := range imageSizes {
 		px, ok := sizes[name]
@@ -110,7 +110,7 @@ func sizesOfStored(data []byte, sizes map[string]int) (ImageSize, []encodedSize,
 		largest = max(largest, px)
 	}
 	work := orient(fitWithin(img, largest), orientation)
-	encoded, err := makeSizes(work, shown, outputType(detectContentType(data), work), sizes)
+	encoded, err := makeSizes(work, shown, outputType(detectContentType(data), work), sizes, nil)
 	if err != nil {
 		return ImageSize{}, nil, err
 	}

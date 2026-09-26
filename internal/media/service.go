@@ -366,6 +366,8 @@ func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
 		// Stored as SVG, sanitized; no sizes (every size is the SVG itself)
 		// and no cover colours.
 		img = reencodedImage{body: clean, ctype: svgType, coverColors: []string{}}
+	case purpose.Image.Reencode && detected == "image/gif":
+		img, err = reencodeGIF(data, purpose.Image)
 	case purpose.Image.Reencode:
 		img, err = reencodeRaster(data, purpose.Image)
 	default:

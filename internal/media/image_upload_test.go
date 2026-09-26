@@ -9,7 +9,6 @@ import (
 	"hash/crc32"
 	"image"
 	"image/color"
-	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"testing"
@@ -379,35 +378,6 @@ func TestService_PurposeStoresAWebPAsJPEGOrPNGByItsTransparency(t *testing.T) {
 		if _, _, _, a := img.At(0, 0).RGBA(); tc.name == "transparent" && a != 0 {
 			t.Errorf("transparent: alpha %d after re-encoding", a)
 		}
-	}
-}
-
-func TestService_PurposeKeepsTheFirstFrameOfAnAnimatedGIF(t *testing.T) {
-	t.Parallel()
-	svc, blobs := setup(t)
-	frame := func(c color.Color) *image.Paletted {
-		img := image.NewPaletted(image.Rect(0, 0, 8, 8), color.Palette{color.RGBA{R: 230, A: 255}, color.RGBA{B: 230, A: 255}})
-		for i := range img.Pix {
-			img.Pix[i] = uint8(img.Palette.Index(c))
-		}
-		return img
-	}
-	var animated bytes.Buffer
-	if err := gif.EncodeAll(&animated, &gif.GIF{
-		Image: []*image.Paletted{frame(color.RGBA{R: 230, A: 255}), frame(color.RGBA{B: 230, A: 255})},
-		Delay: []int{10, 10},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	created, err := svc.UploadForPurpose(context.Background(), signedIn("69696969-6969-6969-6969-696969696969"), "profile_picture", uploaded("wave.gif", "image/gif", animated.Bytes()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored, _ := blobs.Get(created.Key)
-	img, format := decodeStored(t, stored)
-	if created.Type != "image/png" || format != "png" || !isRed(img.At(4, 4)) {
-		t.Fatalf("recorded %s, stored %s, pixel %v; want the red first frame as PNG", created.Type, format, img.At(4, 4))
 	}
 }
 
