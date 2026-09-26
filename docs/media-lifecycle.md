@@ -574,12 +574,17 @@ domain) is a configuration change:
   address stored there before is no longer read while the Media exists. The
   API's `profilePictureUrl` is unchanged while the base is the same.
 
-Addresses built without a service's own base (Event resources in tickets and
-competitors, team rosters) use the base core sets once at startup
-(`media.UsePublicBase`), a process-wide setting: those call sites have no
-media dependency to carry it. The address mode below is set the same way
-(`media.UseImageAddressMode`), so the sizes of Events and rosters point where
-the Media JSON's do.
+Addresses built without a service's own base (Event resources in tickets,
+competitors and the door, team rosters) use the base core sets once at
+startup (`media.UsePublicBase`), a process-wide setting: those call sites
+have no media dependency to carry it. The address mode below is set the same
+way (`media.UseImageAddressMode`) and reaches them only through
+`media.ConfiguredAddresses()`. Everything with a media dependency gets its
+base and mode from startup explicitly: the Media service
+(`media.ServiceOptions.ImageAddressMode`) and the Event service
+(`event.ServiceOptions.PublicBase`, `ImageAddressMode`). An `Addresses` that
+names no mode serves the stored sizes; it never follows the process-wide mode
+on its own.
 
 `MEDIA_IMAGE_ADDRESS_MODE` picks where sizes point:
 
@@ -618,8 +623,9 @@ a member roster) loads the small image:
 
 | Response | Full-size address (unchanged) | Sizes |
 |---|---|---|
-| Event, list and detail (every `/v1/events` answer, and `/v1/seasons/{id}/events`) | `coverImageUrl` | `coverImageSizes` |
-| Event gallery image | `images[].url` (and `imageUrls`) | `images[].sizes` |
+| Event, list and detail: every Event answer under `/v1/events` (list, active list, detail, create, update, restore, gallery add and remove) and `GET /v1/seasons/{id}/events` | `coverImageUrl` | `coverImageSizes` |
+| Event gallery image, in the same answers | `images[].url` (and `imageUrls`) | `images[].sizes` |
+| Event summary (`event.Resource`): `GET /v1/door/events`; the `event` of every ticket answer (`/v1/tickets/me`, `/v1/tickets`, `/v1/tickets/{id}`, `/v1/tickets/user/{userId}/event/{eventId}`, `/v1/events/{eventId}/tickets`, the application answers under `/v1/events/{eventId}/applications/…`); the `event` of every competitor answer (`/v1/competitors…`, `/v1/events/{eventId}/competitors…`; leaderboards have none) | `coverImageUrl` | `coverImageSizes` |
 | The caller's profile (`GET`/`PUT`/`PATCH /v1/users/me`, `POST /v1/users/me/profile-picture`) | `profilePictureUrl` | `profilePictureSizes` |
 | Public team roster (`GET /v1/teams/{team}/members`) | `members[].profilePictureUrl` | `members[].profilePictureSizes` |
 
@@ -659,13 +665,19 @@ a member roster) loads the small image:
   cover; a profile whose `profilePictureUrl` is an address stored before
   Media, with no Media behind it), and for a Media with no public address:
   private, or its object purged. No record can link a private Media.
+- A profile picture whose object is purged while the profile still links it
+  keeps answering `profilePictureUrl`, as before sizes existed, but has no
+  `profilePictureSizes`. An Event cannot show one: its cover and gallery
+  read only Media that are not archived, and only an archived Media is
+  purged.
 - Existing fields keep their names and values; `imageUrls` stays a list of
-  full-size addresses. Event resources nested in tickets and competitors
-  carry no sizes yet.
+  full-size addresses.
 - The record reads the Media it links in its own query
   (`media.LinkedImageSQL`, scanned into a `media.LinkedImage`), so sizes cost
-  no query per Media. The Event list reads every listed Event's gallery and
-  door staff in one query each, whatever the number of Events.
+  no query per Media. The Event list takes three queries whatever the number
+  of Events: the Events with their covers, every listed Event's gallery, and
+  every listed Event's door staff. Gallery images are in upload order, and
+  two uploaded at the same instant in id order.
 
 ### Stored images before sizes
 
