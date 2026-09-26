@@ -7,8 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -20,122 +23,122 @@ import (
 
 // The legacy Media commands run instead of the server, inside the running
 // core container, which already has the environment (docs/media-lifecycle.md,
-// Legacy Media):
+// Legacy Media). Only the report writes to standard output, and only its
+// rows; summaries and errors go to standard error.
 //
 //	core-backend media-legacy-report > report.tsv
 //	core-backend media-legacy-expire [-apply] < reviewed.tsv
+//	core-backend media-legacy-release-hold [-apply]
 const (
-	mediaLegacyReportCommandName = "media-legacy-report"
-	mediaLegacyExpireCommandName = "media-legacy-expire"
+	mediaLegacyReportCommandName      = "media-legacy-report"
+	mediaLegacyExpireCommandName      = "media-legacy-expire"
+	mediaLegacyReleaseHoldCommandName = "media-legacy-release-hold"
 )
 
 // runMediaLegacyReport wires the report to the database and, when core's
 // Keycloak service account is configured, to Keycloak for the uploaders'
 // current groups (read-only).
-func runMediaLegacyReport(args []string, getenv func(string) string, out io.Writer) int {
+func runMediaLegacyReport(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	if len(args) > 0 {
-		fmt.Fprintf(out, "%s takes no arguments\n", mediaLegacyReportCommandName)
+		fmt.Fprintf(errOut, "%s takes no arguments\n", mediaLegacyReportCommandName)
 		return 2
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	store, closeStore, code := legacyMediaStore(ctx, mediaLegacyReportCommandName, getenv, out)
+	ctx, stop := commandContext()
+	defer stop()
+	store, closeStore, code := legacyMediaStore(ctx, mediaLegacyReportCommandName, getenv, errOut)
 	if store == nil {
 		return code
 	}
 	defer closeStore()
-	var teams func(context.Context, uuid.UUID) ([]string, error)
-	if keycloakConfigured(getenv) {
-		keycloak := identity.NewKeycloak(identity.KeycloakConfig{
-			URL:          getenv("KEYCLOAK_URL"),
-			Realm:        getenv("KEYCLOAK_REALM"),
-			ClientID:     getenv("KEYCLOAK_CLIENT_ID"),
-			ClientSecret: getenv("KEYCLOAK_CLIENT_SECRET"),
-		})
-		teams = func(ctx context.Context, id uuid.UUID) ([]string, error) {
-			groups, err := keycloak.GroupsForUser(ctx, id)
-			paths := make([]string, 0, len(groups))
-			for _, group := range groups {
+	var groups func(context.Context, uuid.UUID) ([]string, error)
+	if config, missing := keycloakFromEnv(getenv); len(missing) == 0 {
+		keycloak := identity.NewKeycloak(config)
+		groups = func(ctx context.Context, id uuid.UUID) ([]string, error) {
+			found, err := keycloak.GroupsForUser(ctx, id)
+			paths := make([]string, 0, len(found))
+			for _, group := range found {
 				paths = append(paths, group.Path)
 			}
 			return paths, err
 		}
 	}
-	return mediaLegacyReportCommand(ctx, out, time.Now(), func(ctx context.Context) (media.LegacyReport, error) {
+	return mediaLegacyReportCommand(ctx, out, errOut, time.Now(), func(ctx context.Context) (media.LegacyReport, error) {
 		return media.ReportLegacy(ctx, store)
-	}, teams)
+	}, groups)
 }
 
-// runMediaLegacyExpire wires the switch to the database.
-func runMediaLegacyExpire(args []string, getenv func(string) string, in io.Reader, out io.Writer) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	store, closeStore, code := legacyMediaStore(ctx, mediaLegacyExpireCommandName, getenv, out)
+// runMediaLegacyExpire wires the orphan switch to the database.
+func runMediaLegacyExpire(args []string, getenv func(string) string, in io.Reader, errOut io.Writer) int {
+	ctx, stop := commandContext()
+	defer stop()
+	store, closeStore, code := legacyMediaStore(ctx, mediaLegacyExpireCommandName, getenv, errOut)
 	if store == nil {
 		return code
 	}
 	defer closeStore()
-	return mediaLegacyExpireCommand(ctx, args, in, out, func(ctx context.Context, ids []uuid.UUID, apply bool) (media.LegacyExpiryReport, error) {
+	return mediaLegacyExpireCommand(ctx, args, in, errOut, func(ctx context.Context, ids []uuid.UUID, apply bool) (media.LegacyExpiryReport, error) {
 		return media.ExpireLegacyOrphans(ctx, store, ids, time.Now(), apply, func(err error) {
-			fmt.Fprintln(out, err)
+			fmt.Fprintln(errOut, err)
 		})
 	})
 }
 
+// runMediaLegacyReleaseHold wires the hold release to the database.
+func runMediaLegacyReleaseHold(args []string, getenv func(string) string, errOut io.Writer) int {
+	ctx, stop := commandContext()
+	defer stop()
+	store, closeStore, code := legacyMediaStore(ctx, mediaLegacyReleaseHoldCommandName, getenv, errOut)
+	if store == nil {
+		return code
+	}
+	defer closeStore()
+	return mediaLegacyReleaseHoldCommand(ctx, args, errOut, func(ctx context.Context, apply bool) (media.HoldReleaseReport, error) {
+		return media.ReleaseDetachExpiryHold(ctx, store, time.Now(), apply, func(err error) {
+			fmt.Fprintln(errOut, err)
+		})
+	})
+}
+
+// commandContext ends a command's work on an interrupt or after ten
+// minutes; the command then reports what it did so far.
+func commandContext() (context.Context, context.CancelFunc) {
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	return ctx, func() { cancel(); stopSignals() }
+}
+
 // legacyMediaStore opens core's database for a legacy Media command. It
 // applies no migration: the running server has.
-func legacyMediaStore(ctx context.Context, command string, getenv func(string) string, out io.Writer) (*media.PostgresStore, func(), int) {
+func legacyMediaStore(ctx context.Context, command string, getenv func(string) string, errOut io.Writer) (*media.PostgresStore, func(), int) {
 	if strings.TrimSpace(getenv("DATABASE_URL")) == "" {
-		fmt.Fprintf(out, "%s needs DATABASE_URL\n", command)
+		fmt.Fprintf(errOut, "%s needs DATABASE_URL\n", command)
 		return nil, nil, 2
 	}
 	pool, err := pgxpool.New(ctx, getenv("DATABASE_URL"))
 	if err != nil {
-		fmt.Fprintln(out, "database: cannot open the connection pool")
+		fmt.Fprintln(errOut, "database: cannot open the connection pool")
 		return nil, nil, 1
 	}
 	return media.NewPostgresStore(pool), pool.Close, 0
 }
 
-// keycloakConfigured reports whether core's Keycloak service account is
-// configured, as the server requires it.
-func keycloakConfigured(getenv func(string) string) bool {
-	for _, name := range []string{"KEYCLOAK_URL", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"} {
-		if strings.TrimSpace(getenv(name)) == "" {
-			return false
-		}
-	}
-	return getenv("KEYCLOAK_REALM") != "" || strings.Contains(getenv("KEYCLOAK_URL"), "/realms/")
-}
-
-// mediaLegacyReportCommand writes the legacy report as tab-separated rows
-// under '#' comment lines: one row per orphan, with the uploader's current
-// Keycloak groups when teams can read them (nil: not configured). It prints
-// no person and no configuration value.
-func mediaLegacyReportCommand(ctx context.Context, out io.Writer, now time.Time, read func(context.Context) (media.LegacyReport, error), teams func(context.Context, uuid.UUID) ([]string, error)) int {
+// mediaLegacyReportCommand writes the legacy report: tab-separated rows, one
+// per orphan under a header row, to out, and the summary to errOut. The
+// uploader's current Keycloak group paths are read when groups can read them
+// (nil: not configured). It prints no person and no configuration value.
+func mediaLegacyReportCommand(ctx context.Context, out, errOut io.Writer, now time.Time, read func(context.Context) (media.LegacyReport, error), groups func(context.Context, uuid.UUID) ([]string, error)) int {
 	report, err := read(ctx)
 	if err != nil {
-		fmt.Fprintf(out, "core: %v\n", err)
+		fmt.Fprintf(errOut, "core: %v\n", err)
 		return 1
 	}
 	var total int64
 	for _, orphan := range report.Orphans {
 		total += orphan.Size
 	}
-	uploaderTeams, unread := orphanTeams(ctx, report.Orphans, teams)
+	uploaderGroups, unread := orphanGroups(ctx, report.Orphans, groups)
 
-	fmt.Fprintf(out, "# SKY LAB core legacy Media report, %s\n", now.UTC().Format(time.RFC3339))
-	fmt.Fprintln(out, "# Orphans are legacy Media nothing in core uses. Skyforms answers and CMS content use Media by address, which core cannot see: an orphan may still be used there.")
-	fmt.Fprintln(out, "# This report changes nothing. See docs/media-lifecycle.md, Legacy Media.")
-	fmt.Fprintf(out, "# orphans: %d (%.1f MiB)\n", len(report.Orphans), float64(total)/(1<<20))
-	fmt.Fprintf(out, "# legacy Media core attaches: %d\n", report.AttachedByCore)
-	fmt.Fprintf(out, "# core links without a Media attachment: %d\n", report.CoreLinksWithoutAttachment)
-	if teams == nil {
-		fmt.Fprintln(out, "# uploader teams: not read (Keycloak is not configured)")
-	} else {
-		fmt.Fprintf(out, "# uploader teams unread: %d\n", unread)
-	}
-	fmt.Fprintln(out, "id\tcreated_at\ttype\tsize\tname\tuploader_teams\tstatus\texpires_at\tkey")
+	fmt.Fprintln(out, "id\tcreated_at\ttype\tsize\tname\tuploader_groups_now\tstatus\texpires_at\tkey")
 	for _, orphan := range report.Orphans {
 		expires := "-"
 		if orphan.ExpiresAt != nil {
@@ -143,25 +146,37 @@ func mediaLegacyReportCommand(ctx context.Context, out io.Writer, now time.Time,
 		}
 		fmt.Fprintf(out, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
 			orphan.ID, orphan.CreatedAt.UTC().Format(time.RFC3339), field(orphan.Type), orphan.Size, field(orphan.Name),
-			uploaderTeams[orphan.UploadedBy], orphan.Status, expires, field(orphan.Key))
+			uploaderGroups[orphan.UploadedBy], orphan.Status, expires, field(orphan.Key))
+	}
+
+	fmt.Fprintf(errOut, "SKY LAB core legacy Media report, %s\n", now.UTC().Format(time.RFC3339))
+	fmt.Fprintln(errOut, "Orphans are legacy Media nothing in core uses. Skyforms answers and CMS content use Media by address, which core cannot see: an orphan may still be used there. This report changes nothing.")
+	fmt.Fprintf(errOut, "orphans: %d (%.1f MiB)\n", len(report.Orphans), float64(total)/(1<<20))
+	fmt.Fprintf(errOut, "legacy Media core attaches: %d\n", report.AttachedByCore)
+	fmt.Fprintf(errOut, "core links without a Media attachment: %d\n", report.CoreLinksWithoutAttachment)
+	fmt.Fprintf(errOut, "Media whose detach expiry is held (released after stage 5, ticket 18): %d\n", report.DetachExpiryHeld)
+	if groups == nil {
+		fmt.Fprintln(errOut, "uploader groups: not read (Keycloak is not configured)")
+	} else {
+		fmt.Fprintf(errOut, "uploader groups unread: %d\n", unread)
 	}
 	return 0
 }
 
-// orphanTeams reads each uploader's current groups once: their paths, "-"
-// for none (or an account that is gone), "?" when they could not be read.
-func orphanTeams(ctx context.Context, orphans []media.Media, teams func(context.Context, uuid.UUID) ([]string, error)) (map[uuid.UUID]string, int) {
+// orphanGroups reads each uploader's current group paths once: "-" for
+// none (or an account that is gone), "?" when they could not be read.
+func orphanGroups(ctx context.Context, orphans []media.Media, groups func(context.Context, uuid.UUID) ([]string, error)) (map[uuid.UUID]string, int) {
 	out := map[uuid.UUID]string{}
 	unread := 0
 	for _, orphan := range orphans {
 		if _, seen := out[orphan.UploadedBy]; seen {
 			continue
 		}
-		if teams == nil {
+		if groups == nil {
 			out[orphan.UploadedBy] = "-"
 			continue
 		}
-		paths, err := teams(ctx, orphan.UploadedBy)
+		paths, err := groups(ctx, orphan.UploadedBy)
 		switch {
 		case errors.Is(err, identity.ErrNotFound) || (err == nil && len(paths) == 0):
 			out[orphan.UploadedBy] = "-"
@@ -190,44 +205,44 @@ func field(value string) string {
 
 // mediaLegacyExpireCommand starts the 30-day window of the legacy orphans
 // Yusuf reviewed. It reads their ids from in: the first column of each row
-// of the report, '#' lines, the header and empty lines skipped, so the
+// of the report, the header, '#' lines and empty lines skipped, so the
 // reviewed report (rows to keep deleted) can be fed back as it is. Without
-// -apply it only counts.
-func mediaLegacyExpireCommand(ctx context.Context, args []string, in io.Reader, out io.Writer, expire func(context.Context, []uuid.UUID, bool) (media.LegacyExpiryReport, error)) int {
+// -apply it only counts. It writes to errOut only.
+func mediaLegacyExpireCommand(ctx context.Context, args []string, in io.Reader, errOut io.Writer, expire func(context.Context, []uuid.UUID, bool) (media.LegacyExpiryReport, error)) int {
 	flags := flag.NewFlagSet(mediaLegacyExpireCommandName, flag.ContinueOnError)
-	flags.SetOutput(out)
+	flags.SetOutput(errOut)
 	apply := flags.Bool("apply", false, "start the windows; without it the command only counts")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	ids, err := reviewedIDs(in)
 	if err != nil {
-		fmt.Fprintln(out, err)
+		fmt.Fprintln(errOut, err)
 		return 2
 	}
 	if len(ids) == 0 {
-		fmt.Fprintln(out, "no Media ids on standard input: feed it the reviewed report")
+		fmt.Fprintln(errOut, "no Media ids on standard input: feed it the reviewed report")
 		return 2
 	}
 	report, err := expire(ctx, ids, *apply)
+	if *apply {
+		fmt.Fprintln(errOut, "Legacy orphan expiry")
+		fmt.Fprintf(errOut, "given 30 days: %d\n", report.Expiring)
+	} else {
+		fmt.Fprintln(errOut, "Legacy orphan expiry, dry run (add -apply to write)")
+		fmt.Fprintf(errOut, "would get 30 days: %d\n", report.Expiring)
+	}
+	fmt.Fprintf(errOut, "Media ids read: %d\n", len(ids))
+	fmt.Fprintf(errOut, "already expiring (window kept): %d\n", report.AlreadyExpiring)
+	fmt.Fprintf(errOut, "not legacy orphans (left alone): %d\n", len(report.NotOrphans))
+	for _, id := range report.NotOrphans {
+		fmt.Fprintf(errOut, "  %s\n", id)
+	}
+	fmt.Fprintf(errOut, "failed: %d\n", report.Failed)
 	if err != nil {
-		fmt.Fprintf(out, "core: %v\n", err)
+		fmt.Fprintf(errOut, "stopped before the end: %v\n", err)
 		return 1
 	}
-	if *apply {
-		fmt.Fprintln(out, "Legacy orphan expiry")
-		fmt.Fprintf(out, "given 30 days: %d\n", report.Expiring)
-	} else {
-		fmt.Fprintln(out, "Legacy orphan expiry, dry run (add -apply to write)")
-		fmt.Fprintf(out, "would get 30 days: %d\n", report.Expiring)
-	}
-	fmt.Fprintf(out, "Media ids read: %d\n", len(ids))
-	fmt.Fprintf(out, "already expiring (window kept): %d\n", report.AlreadyExpiring)
-	fmt.Fprintf(out, "not legacy orphans (left alone): %d\n", len(report.NotOrphans))
-	for _, id := range report.NotOrphans {
-		fmt.Fprintf(out, "  %s\n", id)
-	}
-	fmt.Fprintf(out, "failed: %d\n", report.Failed)
 	if report.Failed > 0 {
 		return 1
 	}
@@ -259,4 +274,38 @@ func reviewedIDs(in io.Reader) ([]uuid.UUID, error) {
 		return nil, fmt.Errorf("standard input: %w", err)
 	}
 	return ids, nil
+}
+
+// mediaLegacyReleaseHoldCommand ends the hold the legacy purpose backfill
+// put on the detach expiry of the Media it gave a purpose (decision K2),
+// after stage 5 (ticket 18). Without -apply it only counts. It writes counts
+// to errOut only.
+func mediaLegacyReleaseHoldCommand(ctx context.Context, args []string, errOut io.Writer, release func(context.Context, bool) (media.HoldReleaseReport, error)) int {
+	flags := flag.NewFlagSet(mediaLegacyReleaseHoldCommandName, flag.ContinueOnError)
+	flags.SetOutput(errOut)
+	apply := flags.Bool("apply", false, "release the hold; without it the command only counts")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	report, err := release(ctx, *apply)
+	if *apply {
+		fmt.Fprintln(errOut, "Media detach expiry hold release")
+	} else {
+		fmt.Fprintln(errOut, "Media detach expiry hold release, dry run (add -apply to write)")
+	}
+	fmt.Fprintf(errOut, "held: %d\n", report.Held)
+	fmt.Fprintf(errOut, "held and used by no record: %d (their 30 days start at the release)\n", report.HeldDetached)
+	if *apply {
+		fmt.Fprintf(errOut, "released: %d\n", report.Released)
+		fmt.Fprintf(errOut, "30 days started: %d\n", report.WindowsStarted)
+		fmt.Fprintf(errOut, "failed: %d\n", report.Failed)
+	}
+	if err != nil {
+		fmt.Fprintf(errOut, "stopped before the end: %v\n", err)
+		return 1
+	}
+	if report.Failed > 0 {
+		return 1
+	}
+	return 0
 }

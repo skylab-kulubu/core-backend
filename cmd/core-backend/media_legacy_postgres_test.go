@@ -39,13 +39,17 @@ func TestPostgresMediaLegacyCommandsReadCoresDatabase(t *testing.T) {
 		return ""
 	}
 
-	var report bytes.Buffer
-	if code := runMediaLegacyReport(nil, getenv, &report); code != 0 {
-		t.Fatalf("report exit %d: %s", code, report.String())
+	var report, summary bytes.Buffer
+	if code := runMediaLegacyReport(nil, getenv, &report, &summary); code != 0 {
+		t.Fatalf("report exit %d: %s", code, summary.String())
 	}
-	for _, line := range []string{"# orphans: 1 (0.0 MiB)", "# uploader teams: not read", orphan.ID.String() + "\t", "\tbasvuru.pdf\t-\tpending\t-\tfiles/basvuru.pdf\n"} {
-		if !strings.Contains(report.String(), line) {
-			t.Fatalf("report lacks %q:\n%s", line, report.String())
+	if want := orphan.ID.String() + "\t"; !strings.HasPrefix(strings.SplitN(report.String(), "\n", 3)[1], want) ||
+		!strings.Contains(report.String(), "\tbasvuru.pdf\t-\tpending\t-\tfiles/basvuru.pdf\n") {
+		t.Fatalf("report rows:\n%s", report.String())
+	}
+	for _, line := range []string{"orphans: 1 (0.0 MiB)", "uploader groups: not read"} {
+		if !strings.Contains(summary.String(), line) {
+			t.Fatalf("summary lacks %q:\n%s", line, summary.String())
 		}
 	}
 
@@ -58,5 +62,10 @@ func TestPostgresMediaLegacyCommandsReadCoresDatabase(t *testing.T) {
 	}
 	if got, err := media.NewPostgresStore(pool).Get(ctx, orphan.ID); err != nil || got.ExpiresAt != nil {
 		t.Fatalf("a dry run set expiry %v (err %v)", got.ExpiresAt, err)
+	}
+
+	out.Reset()
+	if code := runMediaLegacyReleaseHold(nil, getenv, &out); code != 0 || !strings.Contains(out.String(), "held: 0") {
+		t.Fatalf("release exit %d:\n%s", code, out.String())
 	}
 }

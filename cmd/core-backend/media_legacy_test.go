@@ -25,40 +25,61 @@ func legacyReportFixture() (media.LegacyReport, uuid.UUID, uuid.UUID) {
 		},
 		CoreLinksWithoutAttachment: 0,
 		AttachedByCore:             4,
+		DetachExpiryHeld:           7,
 	}, member, gone
 }
 
-func TestMediaLegacyReportPrintsOneRowPerOrphan(t *testing.T) {
+func readFixture(report media.LegacyReport) func(context.Context) (media.LegacyReport, error) {
+	return func(context.Context) (media.LegacyReport, error) { return report, nil }
+}
+
+// The report goes to standard output as plain tab-separated rows, so it can
+// be redirected to a file; the summary goes to standard error.
+func TestMediaLegacyReportWritesRowsToStdoutAndTheSummaryToStderr(t *testing.T) {
 	report, member, gone := legacyReportFixture()
-	teams := func(_ context.Context, id uuid.UUID) ([]string, error) {
+	groups := func(_ context.Context, id uuid.UUID) ([]string, error) {
 		if id == member {
 			return []string{"/WEBLAB", "/AGC"}, nil
 		}
 		return nil, errors.New("keycloak down")
 	}
-	var out bytes.Buffer
+	var rows, summary bytes.Buffer
 
-	code := mediaLegacyReportCommand(context.Background(), &out, reportTime,
-		func(context.Context) (media.LegacyReport, error) { return report, nil }, teams)
+	code := mediaLegacyReportCommand(context.Background(), &rows, &summary, reportTime, readFixture(report), groups)
 
 	if code != 0 {
-		t.Fatalf("exit %d: %s", code, out.String())
+		t.Fatalf("exit %d: %s", code, summary.String())
+	}
+	wantRows := "id\tcreated_at\ttype\tsize\tname\tuploader_groups_now\tstatus\texpires_at\tkey\n" +
+		"00000000-0000-0000-0000-000000000001\t2025-03-01T09:00:00Z\tapplication/pdf\t3145728\tcv final v2.pdf\t/AGC,/WEBLAB\tpending\t-\tmedia/cv.pdf\n" +
+		"00000000-0000-0000-0000-000000000002\t2025-04-01T09:00:00Z\timage/png\t1048576\tafis.png\t?\tdetached\t-\tmedia/afis.png\n"
+	if rows.String() != wantRows {
+		t.Fatalf("rows:\n%s\nwant:\n%s", rows.String(), wantRows)
 	}
 	for _, line := range []string{
-		"# orphans: 2 (4.0 MiB)",
-		"# legacy Media core attaches: 4",
-		"# core links without a Media attachment: 0",
-		"# uploader teams unread: 1",
-		"id\tcreated_at\ttype\tsize\tname\tuploader_teams\tstatus\texpires_at\tkey",
-		"00000000-0000-0000-0000-000000000001\t2025-03-01T09:00:00Z\tapplication/pdf\t3145728\tcv final v2.pdf\t/AGC,/WEBLAB\tpending\t-\tmedia/cv.pdf",
-		"00000000-0000-0000-0000-000000000002\t2025-04-01T09:00:00Z\timage/png\t1048576\tafis.png\t?\tdetached\t-\tmedia/afis.png",
+		"orphans: 2 (4.0 MiB)",
+		"legacy Media core attaches: 4",
+		"core links without a Media attachment: 0",
+		"Media whose detach expiry is held (released after stage 5, ticket 18): 7",
+		"uploader groups unread: 1",
 	} {
-		if !strings.Contains(out.String(), line+"\n") {
-			t.Fatalf("report lacks %q:\n%s", line, out.String())
+		if !strings.Contains(summary.String(), line+"\n") {
+			t.Fatalf("summary lacks %q:\n%s", line, summary.String())
 		}
 	}
-	if strings.Contains(out.String(), gone.String()) || strings.Contains(out.String(), member.String()) {
+	if all := rows.String() + summary.String(); strings.Contains(all, gone.String()) || strings.Contains(all, member.String()) {
 		t.Fatal("the report names an uploader")
+	}
+}
+
+func TestMediaLegacyReportFailureGoesToStderr(t *testing.T) {
+	var rows, summary bytes.Buffer
+	code := mediaLegacyReportCommand(context.Background(), &rows, &summary, reportTime,
+		func(context.Context) (media.LegacyReport, error) {
+			return media.LegacyReport{}, errors.New("database down")
+		}, nil)
+	if code != 1 || rows.Len() != 0 || !strings.Contains(summary.String(), "database down") {
+		t.Fatalf("exit %d rows %q summary %q", code, rows.String(), summary.String())
 	}
 }
 
@@ -66,10 +87,9 @@ func TestMediaLegacyReportPrintsOneRowPerOrphan(t *testing.T) {
 // Without -apply it only counts.
 func TestMediaLegacyExpireReadsTheReviewedReportAndIsADryRunUnlessApplied(t *testing.T) {
 	report, _, _ := legacyReportFixture()
-	var reviewed bytes.Buffer
-	if code := mediaLegacyReportCommand(context.Background(), &reviewed, reportTime,
-		func(context.Context) (media.LegacyReport, error) { return report, nil }, nil); code != 0 {
-		t.Fatal(reviewed.String())
+	var reviewed, ignored bytes.Buffer
+	if code := mediaLegacyReportCommand(context.Background(), &reviewed, &ignored, reportTime, readFixture(report), nil); code != 0 {
+		t.Fatal(ignored.String())
 	}
 	var gotIDs []uuid.UUID
 	var gotApply []bool
@@ -97,6 +117,18 @@ func TestMediaLegacyExpireReadsTheReviewedReportAndIsADryRunUnlessApplied(t *tes
 	}
 	if len(gotApply) != 2 || gotApply[0] || !gotApply[1] || !strings.Contains(out.String(), "given 30 days: 1") {
 		t.Fatalf("apply %v output:\n%s", gotApply, out.String())
+	}
+}
+
+// An interrupted run says how far it got before it fails.
+func TestMediaLegacyExpireReportsWhatItAppliedBeforeAnInterruption(t *testing.T) {
+	expire := func(context.Context, []uuid.UUID, bool) (media.LegacyExpiryReport, error) {
+		return media.LegacyExpiryReport{Expiring: 3}, context.Canceled
+	}
+	var out bytes.Buffer
+	code := mediaLegacyExpireCommand(context.Background(), []string{"-apply"}, strings.NewReader("00000000-0000-0000-0000-000000000001\n"), &out, expire)
+	if code != 1 || !strings.Contains(out.String(), "given 30 days: 3") || !strings.Contains(out.String(), "context canceled") {
+		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 }
 
@@ -128,15 +160,74 @@ func TestMediaLegacyExpireRefusesInputItCannotRead(t *testing.T) {
 	}
 }
 
+// The release is a dry run unless applied, and prints counts only.
+func TestMediaLegacyReleaseHoldIsADryRunUnlessApplied(t *testing.T) {
+	var gotApply []bool
+	release := func(_ context.Context, apply bool) (media.HoldReleaseReport, error) {
+		gotApply = append(gotApply, apply)
+		if !apply {
+			return media.HoldReleaseReport{Held: 7, HeldDetached: 2}, nil
+		}
+		return media.HoldReleaseReport{Held: 7, HeldDetached: 2, Released: 7, WindowsStarted: 2}, nil
+	}
+
+	var out bytes.Buffer
+	if code := mediaLegacyReleaseHoldCommand(context.Background(), nil, &out, release); code != 0 {
+		t.Fatalf("dry run exit %d: %s", code, out.String())
+	}
+	for _, line := range []string{"dry run", "held: 7", "held and used by no record: 2"} {
+		if !strings.Contains(out.String(), line) {
+			t.Fatalf("dry run output lacks %q:\n%s", line, out.String())
+		}
+	}
+
+	out.Reset()
+	if code := mediaLegacyReleaseHoldCommand(context.Background(), []string{"-apply"}, &out, release); code != 0 {
+		t.Fatalf("apply exit %d: %s", code, out.String())
+	}
+	for _, line := range []string{"released: 7", "30 days started: 2", "failed: 0"} {
+		if !strings.Contains(out.String(), line+"\n") {
+			t.Fatalf("apply output lacks %q:\n%s", line, out.String())
+		}
+	}
+	if len(gotApply) != 2 || gotApply[0] || !gotApply[1] {
+		t.Fatalf("apply flags %v", gotApply)
+	}
+	if code := mediaLegacyReleaseHoldCommand(context.Background(), []string{"-force"}, &out, release); code != 2 {
+		t.Fatalf("unknown flag exit %d", code)
+	}
+}
+
+func TestMediaLegacyReleaseHoldFailsOnFailuresAndInterruptions(t *testing.T) {
+	for name, result := range map[string]struct {
+		report media.HoldReleaseReport
+		err    error
+		line   string
+	}{
+		"a Media failed": {report: media.HoldReleaseReport{Held: 3, Released: 2, Failed: 1}, line: "failed: 1"},
+		"interrupted":    {report: media.HoldReleaseReport{Held: 3, Released: 2}, err: context.Canceled, line: "released: 2"},
+	} {
+		var out bytes.Buffer
+		code := mediaLegacyReleaseHoldCommand(context.Background(), []string{"-apply"}, &out,
+			func(context.Context, bool) (media.HoldReleaseReport, error) { return result.report, result.err })
+		if code != 1 || !strings.Contains(out.String(), result.line) {
+			t.Errorf("%s: exit %d:\n%s", name, code, out.String())
+		}
+	}
+}
+
 func TestMediaLegacyCommandsNeedTheDatabase(t *testing.T) {
 	env := map[string]string{"KEYCLOAK_URL": "https://e.example.test", "KEYCLOAK_CLIENT_SECRET": "s3cret"}
 	getenv := func(k string) string { return env[k] }
-	var out bytes.Buffer
-	if code := runMediaLegacyReport(nil, getenv, &out); code != 2 || !strings.Contains(out.String(), "DATABASE_URL") {
+	var rows, out bytes.Buffer
+	if code := runMediaLegacyReport(nil, getenv, &rows, &out); code != 2 || !strings.Contains(out.String(), "DATABASE_URL") || rows.Len() != 0 {
 		t.Fatalf("report exit %d: %s", code, out.String())
 	}
 	if code := runMediaLegacyExpire(nil, getenv, strings.NewReader(""), &out); code != 2 || !strings.Contains(out.String(), "DATABASE_URL") {
 		t.Fatalf("expire exit %d: %s", code, out.String())
+	}
+	if code := runMediaLegacyReleaseHold(nil, getenv, &out); code != 2 || !strings.Contains(out.String(), "DATABASE_URL") {
+		t.Fatalf("release exit %d: %s", code, out.String())
 	}
 	if strings.Contains(out.String(), "s3cret") || strings.Contains(out.String(), "e.example.test") {
 		t.Fatal("the output echoes configuration values")

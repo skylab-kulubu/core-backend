@@ -43,10 +43,13 @@ func main() {
 		os.Exit(runYTUBackfill(os.Args[2:], os.Getenv, os.Stdout))
 	}
 	if len(os.Args) > 1 && os.Args[1] == mediaLegacyReportCommandName {
-		os.Exit(runMediaLegacyReport(os.Args[2:], os.Getenv, os.Stdout))
+		os.Exit(runMediaLegacyReport(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
 	if len(os.Args) > 1 && os.Args[1] == mediaLegacyExpireCommandName {
-		os.Exit(runMediaLegacyExpire(os.Args[2:], os.Getenv, os.Stdin, os.Stdout))
+		os.Exit(runMediaLegacyExpire(os.Args[2:], os.Getenv, os.Stdin, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == mediaLegacyReleaseHoldCommandName {
+		os.Exit(runMediaLegacyReleaseHold(os.Args[2:], os.Getenv, os.Stderr))
 	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -127,8 +130,8 @@ func main() {
 	// Legacy Media core attaches get the purpose of their use (media redesign
 	// ticket 08). Only the purpose changes; the blobs stay where they are.
 	media.MaintainLegacyPurposeBackfill(context.Background(), mediaStore, mediaPurposes, time.Minute, func(report media.LegacyPurposeReport) {
-		log.Printf("media legacy purpose backfill: assigned %d, kept legacy %d (private purpose, until private Media storage) and %d (mixed uses), failed %d",
-			report.Assigned, report.KeptPrivate, report.KeptMixed, report.Failed)
+		log.Printf("media legacy purpose backfill: assigned %d, kept legacy %d (private purpose, until private Media storage) and %d (mixed uses), skipped %d, failed %d",
+			report.Assigned, report.KeptPrivate, report.KeptMixed, report.Skipped, report.Failed)
 	}, func(err error) {
 		log.Printf("media legacy purpose backfill: %v", err)
 	})
@@ -136,15 +139,11 @@ func main() {
 	dir := identity.Directory(identity.NewMemory())
 	keycloakConfigured := strings.TrimSpace(os.Getenv("KEYCLOAK_URL")) != ""
 	if keycloakConfigured {
-		if os.Getenv("KEYCLOAK_REALM") == "" || os.Getenv("KEYCLOAK_CLIENT_ID") == "" || os.Getenv("KEYCLOAK_CLIENT_SECRET") == "" {
-			log.Fatal("KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET are required with KEYCLOAK_URL")
+		keycloakConfig, missing := keycloakFromEnv(os.Getenv)
+		if len(missing) > 0 {
+			log.Fatalf("%s required with KEYCLOAK_URL", strings.Join(missing, ", "))
 		}
-		keycloakDirectory := identity.NewKeycloak(identity.KeycloakConfig{
-			URL:          os.Getenv("KEYCLOAK_URL"),
-			Realm:        os.Getenv("KEYCLOAK_REALM"),
-			ClientID:     os.Getenv("KEYCLOAK_CLIENT_ID"),
-			ClientSecret: os.Getenv("KEYCLOAK_CLIENT_SECRET"),
-		})
+		keycloakDirectory := identity.NewKeycloak(keycloakConfig)
 		// Read-only: core holds no manage-clients; Keycloak's operator script creates the roles.
 		roleContext, cancelRoleCheck := context.WithTimeout(context.Background(), 15*time.Second)
 		missingRoles, err := keycloakDirectory.MissingClientRoles(roleContext, os.Getenv("KEYCLOAK_CLIENT_ID"), identity.CertificateClientRoles)

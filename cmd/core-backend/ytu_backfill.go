@@ -24,14 +24,11 @@ const ytuBackfillCommandName = "backfill-ytu-profile"
 // department values only, never a person or a configuration value.
 func runYTUBackfill(args []string, getenv func(string) string, out io.Writer) int {
 	var missing []string
-	for _, name := range []string{"DATABASE_URL", "KEYCLOAK_URL", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"} {
-		if strings.TrimSpace(getenv(name)) == "" {
-			missing = append(missing, name)
-		}
+	if strings.TrimSpace(getenv("DATABASE_URL")) == "" {
+		missing = append(missing, "DATABASE_URL")
 	}
-	if getenv("KEYCLOAK_REALM") == "" && !strings.Contains(getenv("KEYCLOAK_URL"), "/realms/") {
-		missing = append(missing, "KEYCLOAK_REALM")
-	}
+	keycloakConfig, keycloakMissing := keycloakFromEnv(getenv)
+	missing = append(missing, keycloakMissing...)
 	if len(missing) > 0 {
 		fmt.Fprintf(out, "%s needs %s\n", ytuBackfillCommandName, strings.Join(missing, ", "))
 		return 2
@@ -44,12 +41,7 @@ func runYTUBackfill(args []string, getenv func(string) string, out io.Writer) in
 		return 1
 	}
 	defer pool.Close()
-	keycloak := identity.NewKeycloak(identity.KeycloakConfig{
-		URL:          getenv("KEYCLOAK_URL"),
-		Realm:        getenv("KEYCLOAK_REALM"),
-		ClientID:     getenv("KEYCLOAK_CLIENT_ID"),
-		ClientSecret: getenv("KEYCLOAK_CLIENT_SECRET"),
-	})
+	keycloak := identity.NewKeycloak(keycloakConfig)
 	return ytuBackfillCommand(ctx, args, out, keycloak.YTUAttributes, user.NewPostgresStore(pool))
 }
 
