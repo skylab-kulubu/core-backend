@@ -184,7 +184,7 @@ func TestSelfDeletionReceiptReadsPIIFreeStatusAndRetriesWithoutReactivation(t *t
 	if err := store.CompleteDeletionStep(context.Background(), request.ID, *request.LeaseToken, user.DeletionStepDisableIdentity, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RetryDeletionRequest(context.Background(), request.ID, *request.LeaseToken, time.Now(), "disable_identity_failed", true, false); err != nil {
+	if err := store.RetryDeletionRequest(context.Background(), request.ID, *request.LeaseToken, time.Now(), time.Now(), "disable_identity_failed", true, false); err != nil {
 		t.Fatal(err)
 	}
 

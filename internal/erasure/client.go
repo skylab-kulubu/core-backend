@@ -170,7 +170,12 @@ func (c *Client) Erase(ctx context.Context, command Command) (Result, error) {
 	case code == http.StatusUnauthorized:
 		c.Tokens.Invalidate()
 		return Result{}, &Error{Step: c.Service.Step, Reason: "token rejected (401)"}
-	case code == http.StatusBadRequest || code == http.StatusForbidden || code == http.StatusNotFound || code == http.StatusConflict:
+	case code == http.StatusForbidden:
+		// The operator's fix (the erase role given back) reaches only a new
+		// token: the retry after manual intervention must not send this one.
+		c.Tokens.Invalidate()
+		return Result{}, &RejectedError{Step: c.Service.Step, Status: code}
+	case code == http.StatusBadRequest || code == http.StatusNotFound || code == http.StatusConflict:
 		return Result{}, &RejectedError{Step: c.Service.Step, Status: code}
 	default:
 		return Result{}, &Error{Step: c.Service.Step, Reason: fmt.Sprintf("unexpected status %d", code)}
