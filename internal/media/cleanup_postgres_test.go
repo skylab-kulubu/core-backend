@@ -167,9 +167,9 @@ func TestPostgresPurgeKeepsMediaAnAttachmentOrACoreLinkStillUses(t *testing.T) {
 
 	// A CMS page's Media attachment keeps an archived Media past the
 	// archive window: the reference check is "has any attachment".
-	onPage := db.withBlob(t, "event_gallery")
+	onPage := db.withBlob(t, "cms_image")
 	if _, err := db.pool.Exec(ctx, `INSERT INTO media_attachments (media_id, owner_service, owner_type, owner_id, role)
-		VALUES ($1, 'cms', 'page', $2, 'cms_image')`, onPage.ID, uuid.New()); err != nil {
+		VALUES ($1, 'cms', 'page', $2, 'image')`, onPage.ID, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.store.Archive(ctx, onPage.ID, nil); err != nil {

@@ -597,6 +597,34 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE schemaname = 'public' AND indexname = 'media_size_objects_pending_idx'
 			  AND indexdef LIKE '%size_objects IS NULL%'
 		)`,
+	// The legacy backfill's hold and the purpose check on new Media
+	// attachments. A rerun of 20260926120000 puts back its status and
+	// current-media functions; this fingerprint then fails and the migration
+	// runs again.
+	20260926161000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'media' AND column_name = 'detach_expiry_held'
+			  AND data_type = 'boolean' AND is_nullable = 'NO' AND column_default = 'false'
+		)
+		AND to_regprocedure('public.media_purpose_fits_role(text, text, text)') IS NOT NULL
+		AND to_regprocedure('public.media_role_purposes()') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'media_legacy_hold' AND column_name = 'released_at'
+			  AND udt_name = 'timestamptz' AND is_nullable = 'YES'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_attachment_status' AND prosrc LIKE '%OR detach_expiry_held THEN NULL%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'require_current_attached_media'
+			  AND prosrc LIKE '%FOR KEY SHARE%' AND prosrc LIKE '%media_purpose_fits_role(NEW.owner_service, NEW.role, current_purpose)%'
+			  AND prosrc LIKE '%media_attachment_purpose_fits%'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

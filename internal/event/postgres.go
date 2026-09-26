@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
@@ -119,6 +120,9 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
 		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e))
+	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
+		return Event{}, refusal
+	}
 	if err != nil {
 		return Event{}, err
 	}
@@ -150,6 +154,9 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
 		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e))
+	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
+		return Event{}, refusal
+	}
 	if err != nil {
 		return Event{}, err
 	}
@@ -215,6 +222,9 @@ func (s *PostgresStore) AddImages(ctx context.Context, eventID uuid.UUID, ids []
 			INSERT INTO event_images (event_id, media_id) VALUES ($1, $2)
 			ON CONFLICT DO NOTHING
 		`, eventID, id); err != nil {
+			if refusal, ok := media.DatabaseLinkRefusal(err); ok {
+				return Event{}, refusal
+			}
 			return Event{}, err
 		}
 	}
