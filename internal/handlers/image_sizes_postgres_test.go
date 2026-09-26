@@ -1,0 +1,333 @@
+package handlers
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http/httptest"
+	"reflect"
+	"sync/atomic"
+	"testing"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/migrate"
+	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
+	"github.com/skylab-kulubu/core-backend/internal/user"
+)
+
+const sizesBase = "https://cdn.example.test"
+
+// imageSizesFixture reads Events and profiles from Postgres, where a record
+// reads the Media it links in its own query, and counts the queries.
+type imageSizesFixture struct {
+	pool     *pgxpool.Pool
+	queries  *queryCounter
+	media    *media.PostgresStore
+	events   *event.PostgresStore
+	users    *user.PostgresStore
+	uploader uuid.UUID
+	app      *fiber.App
+}
+
+func newImageSizesFixture(t *testing.T) imageSizesFixture {
+	t.Helper()
+	ctx := context.Background()
+	plain := testpostgres.Start(t)
+	if err := migrate.Apply(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+	config := plain.Config()
+	queries := &queryCounter{}
+	config.ConnConfig.Tracer = queries
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	users := user.NewPostgresStore(pool)
+	uploader := uuid.New()
+	if _, _, err := user.NewService(users).Ensure(ctx, uploader, user.Profile{Email: "organizer@example.test", FirstName: "Org", LastName: "Anizer"}); err != nil {
+		t.Fatal(err)
+	}
+	mediaStore := media.NewPostgresStore(pool)
+	events := event.NewPostgresStore(pool)
+	svc := event.NewServiceWithOptions(events, authz.NewAuthorizer(authz.DefaultPolicy()), event.ServiceOptions{
+		PublicBase: sizesBase,
+		Media:      media.NewLinker(mediaStore),
+	})
+	return imageSizesFixture{
+		pool: pool, queries: queries, media: mediaStore, events: events, users: users, uploader: uploader,
+		app: eventServiceApp(t, authn.Identity{}, svc),
+	}
+}
+
+// image stores an image Media as core records it once its sizes are made:
+// sizes names the size objects stored beside it (nil: none recorded).
+func (f imageSizesFixture) image(t *testing.T, purpose, key string, width, height int, sizes map[string]media.SizeObject) media.Media {
+	t.Helper()
+	m, err := f.media.Create(context.Background(), media.Media{
+		Name: "photo.jpg", Type: "image/jpeg", Kind: media.KindImage, Key: key, UploadedBy: f.uploader,
+		Purpose: purpose, Width: width, Height: height, SizeObjects: sizes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func (f imageSizesFixture) event(t *testing.T, name string, cover *uuid.UUID, gallery ...uuid.UUID) event.Event {
+	t.Helper()
+	ctx := context.Background()
+	created, err := f.events.Create(ctx, event.Event{Name: name, Location: "YTÜ", OwnerTeam: "WEBLAB", Active: true, CoverImageID: cover})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gallery) > 0 {
+		if created, err = f.events.AddImages(ctx, created.ID, gallery); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return created
+}
+
+func (f imageSizesFixture) get(t *testing.T, path string, into any) {
+	t.Helper()
+	resp, err := f.app.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("GET %s: %d %s", path, resp.StatusCode, raw)
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		t.Fatalf("GET %s: %s: %v", path, raw, err)
+	}
+}
+
+type queryCounter struct{ n atomic.Int64 }
+
+func (c *queryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	c.n.Add(1)
+	return ctx
+}
+
+func (c *queryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// sizedEventView is an Event answer's images with their sizes.
+type sizedEventView struct {
+	ID              uuid.UUID                     `json:"id"`
+	CoverImageURL   string                        `json:"coverImageUrl"`
+	CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes"`
+	Images          []struct {
+		ID    uuid.UUID                     `json:"id"`
+		URL   string                        `json:"url"`
+		Sizes map[string]media.ImageAddress `json:"sizes"`
+	} `json:"images"`
+	ImageURLs []string `json:"imageUrls"`
+}
+
+func bothSizes(card, page media.ImageAddress) map[string]media.ImageAddress {
+	return map[string]media.ImageAddress{media.SizeCard: card, media.SizePage: page}
+}
+
+func jpegSize(width, height int) media.SizeObject {
+	return media.SizeObject{ImageSize: media.ImageSize{Width: width, Height: height}, Type: "image/jpeg"}
+}
+
+// An Event's cover carries its card and page addresses next to the full-size
+// address, built like the Media's own sizes.
+func TestEventDetailCarriesTheCoverSizesHTTP(t *testing.T) {
+	f := newImageSizesFixture(t)
+	cover := f.image(t, media.PurposeEventCover, "images/cover", 1600, 1200, map[string]media.SizeObject{
+		media.SizeCard: jpegSize(400, 300), media.SizePage: jpegSize(1200, 900),
+	})
+	created := f.event(t, "Hack", &cover.ID)
+
+	var got sizedEventView
+	f.get(t, "/v1/events/"+created.ID.String(), &got)
+
+	if got.CoverImageURL != sizesBase+"/images/cover" {
+		t.Fatalf("coverImageUrl %q", got.CoverImageURL)
+	}
+	want := bothSizes(
+		media.ImageAddress{URL: sizesBase + "/images/cover/card.jpg", Width: 400, Height: 300},
+		media.ImageAddress{URL: sizesBase + "/images/cover/page.jpg", Width: 1200, Height: 900},
+	)
+	if !reflect.DeepEqual(got.CoverImageSizes, want) {
+		t.Fatalf("coverImageSizes %+v, want %+v", got.CoverImageSizes, want)
+	}
+}
+
+// A cover without sizes of its own (a Media uploaded without a purpose)
+// answers the original at every size, so a client never builds one.
+func TestEventCoverWithoutSizesFallsBackToTheOriginalHTTP(t *testing.T) {
+	f := newImageSizesFixture(t)
+	legacy := f.image(t, media.PurposeLegacy, "images/legacy-cover", 0, 0, nil)
+	created := f.event(t, "Old", &legacy.ID)
+
+	var got sizedEventView
+	f.get(t, "/v1/events/"+created.ID.String(), &got)
+
+	original := media.ImageAddress{URL: sizesBase + "/images/legacy-cover"}
+	if got.CoverImageURL != original.URL {
+		t.Fatalf("coverImageUrl %q", got.CoverImageURL)
+	}
+	if want := bothSizes(original, original); !reflect.DeepEqual(got.CoverImageSizes, want) {
+		t.Fatalf("coverImageSizes %+v, want %+v", got.CoverImageSizes, want)
+	}
+}
+
+// An image smaller than the page size gets no page object: its page address
+// is the original, at its own size.
+func TestEventCoverSmallerThanThePageSizeAnswersTheOriginalAsPageHTTP(t *testing.T) {
+	f := newImageSizesFixture(t)
+	small := f.image(t, media.PurposeEventCover, "images/small-cover", 800, 600, map[string]media.SizeObject{
+		media.SizeCard: jpegSize(400, 300),
+	})
+	created := f.event(t, "Small", &small.ID)
+
+	var got sizedEventView
+	f.get(t, "/v1/events/"+created.ID.String(), &got)
+
+	want := bothSizes(
+		media.ImageAddress{URL: sizesBase + "/images/small-cover/card.jpg", Width: 400, Height: 300},
+		media.ImageAddress{URL: sizesBase + "/images/small-cover", Width: 800, Height: 600},
+	)
+	if !reflect.DeepEqual(got.CoverImageSizes, want) {
+		t.Fatalf("coverImageSizes %+v, want %+v", got.CoverImageSizes, want)
+	}
+}
+
+// Every gallery image carries its sizes beside its address, in the shape of
+// the Media JSON's sizes; imageUrls stays the full-size addresses.
+func TestEventGalleryImagesCarryTheirSizesHTTP(t *testing.T) {
+	f := newImageSizesFixture(t)
+	sized := f.image(t, media.PurposeEventGallery, "images/gallery-sized", 1600, 1200, map[string]media.SizeObject{
+		media.SizeCard: jpegSize(400, 300), media.SizePage: jpegSize(1200, 900),
+	})
+	legacy := f.image(t, media.PurposeLegacy, "images/gallery-legacy", 0, 0, nil)
+	created := f.event(t, "Gallery", nil, sized.ID, legacy.ID)
+
+	var got sizedEventView
+	f.get(t, "/v1/events/"+created.ID.String(), &got)
+
+	if got.CoverImageSizes != nil {
+		t.Fatalf("an Event without a cover has cover sizes %+v", got.CoverImageSizes)
+	}
+	legacyOriginal := media.ImageAddress{URL: sizesBase + "/images/gallery-legacy"}
+	want := map[uuid.UUID]struct {
+		url   string
+		sizes map[string]media.ImageAddress
+	}{
+		sized.ID: {sizesBase + "/images/gallery-sized", bothSizes(
+			media.ImageAddress{URL: sizesBase + "/images/gallery-sized/card.jpg", Width: 400, Height: 300},
+			media.ImageAddress{URL: sizesBase + "/images/gallery-sized/page.jpg", Width: 1200, Height: 900},
+		)},
+		legacy.ID: {legacyOriginal.URL, bothSizes(legacyOriginal, legacyOriginal)},
+	}
+	if len(got.Images) != 2 {
+		t.Fatalf("images %+v", got.Images)
+	}
+	for _, image := range got.Images {
+		if image.URL != want[image.ID].url {
+			t.Errorf("image %s url %q, want %q", image.ID, image.URL, want[image.ID].url)
+		}
+		if !reflect.DeepEqual(image.Sizes, want[image.ID].sizes) {
+			t.Errorf("image %s sizes %+v, want %+v", image.ID, image.Sizes, want[image.ID].sizes)
+		}
+	}
+	if len(got.ImageURLs) != 2 || got.ImageURLs[0] != got.Images[0].URL || got.ImageURLs[1] != got.Images[1].URL {
+		t.Fatalf("imageUrls %v, images %+v", got.ImageURLs, got.Images)
+	}
+}
+
+// The Event list answers each Event's cover and gallery sizes, and costs the
+// same number of queries for four Events as for one: the Media each Event
+// links are read with it, never one query per Event or per Media.
+func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T) {
+	f := newImageSizesFixture(t)
+	type seeded struct {
+		cover, gallery media.Media
+	}
+	seed := func(i int) (event.Event, seeded) {
+		key := "images/list-" + string(rune('a'+i))
+		cover := f.image(t, media.PurposeEventCover, key+"-cover", 1600, 1200, map[string]media.SizeObject{
+			media.SizeCard: jpegSize(400, 300), media.SizePage: jpegSize(1200, 900),
+		})
+		gallery := f.image(t, media.PurposeEventGallery, key+"-gallery", 1000, 750, map[string]media.SizeObject{
+			media.SizeCard: jpegSize(400, 300),
+		})
+		legacy := f.image(t, media.PurposeLegacy, key+"-legacy", 0, 0, nil)
+		return f.event(t, "Event "+key, &cover.ID, gallery.ID, legacy.ID), seeded{cover: cover, gallery: gallery}
+	}
+	list := func() ([]sizedEventView, int64) {
+		t.Helper()
+		var got []sizedEventView
+		f.queries.n.Store(0)
+		f.get(t, "/v1/events", &got)
+		return got, f.queries.n.Load()
+	}
+
+	first, _ := seed(0)
+	one, oneQueries := list()
+	if len(one) != 1 || one[0].ID != first.ID {
+		t.Fatalf("list %+v", one)
+	}
+
+	seededByEvent := map[uuid.UUID]seeded{}
+	for i := 1; i < 4; i++ {
+		created, images := seed(i)
+		seededByEvent[created.ID] = images
+	}
+	four, fourQueries := list()
+	if len(four) != 4 {
+		t.Fatalf("list of %d Events", len(four))
+	}
+	if fourQueries != oneQueries {
+		t.Fatalf("listing 4 Events took %d queries, 1 Event took %d", fourQueries, oneQueries)
+	}
+
+	for _, got := range four {
+		want, ok := seededByEvent[got.ID]
+		if !ok {
+			continue
+		}
+		coverKey := sizesBase + "/" + want.cover.Key
+		if !reflect.DeepEqual(got.CoverImageSizes, bothSizes(
+			media.ImageAddress{URL: coverKey + "/card.jpg", Width: 400, Height: 300},
+			media.ImageAddress{URL: coverKey + "/page.jpg", Width: 1200, Height: 900},
+		)) {
+			t.Errorf("Event %s cover sizes %+v", got.ID, got.CoverImageSizes)
+		}
+		if len(got.Images) != 2 {
+			t.Fatalf("Event %s images %+v", got.ID, got.Images)
+		}
+		for _, image := range got.Images {
+			if image.ID != want.gallery.ID {
+				if image.Sizes[media.SizeCard].URL != image.URL || image.Sizes[media.SizePage].URL != image.URL {
+					t.Errorf("Event %s legacy image sizes %+v", got.ID, image.Sizes)
+				}
+				continue
+			}
+			galleryKey := sizesBase + "/" + want.gallery.Key
+			if !reflect.DeepEqual(image.Sizes, bothSizes(
+				media.ImageAddress{URL: galleryKey + "/card.jpg", Width: 400, Height: 300},
+				media.ImageAddress{URL: galleryKey, Width: 1000, Height: 750},
+			)) {
+				t.Errorf("Event %s gallery sizes %+v", got.ID, image.Sizes)
+			}
+		}
+	}
+}

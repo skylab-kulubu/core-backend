@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // The image sizes a client can ask for by name. Each purpose's catalogue
@@ -69,6 +70,20 @@ type Addresses struct {
 	// Mode is where image sizes are served from; empty is
 	// AddressStoredSizes.
 	Mode AddressMode
+	// Catalogue names the sizes of each Media purpose. The zero value is
+	// the reviewed catalogue carried in the binary.
+	Catalogue Catalogue
+}
+
+// reviewedSizes is the reviewed catalogue, read once for every Addresses
+// that names none.
+var reviewedSizes = sync.OnceValue(reviewedCatalogue)
+
+func (a Addresses) catalogue() Catalogue {
+	if a.Catalogue.purposes == nil {
+		return reviewedSizes()
+	}
+	return a.Catalogue
 }
 
 // Object is the public address of an object key. A key that is already an
@@ -95,6 +110,37 @@ func (a Addresses) Image(m Media, size string, px int) ImageAddress {
 		return ImageAddress{URL: a.Object(sizeObjectKey(m.Key, size, object.Type)), Width: object.Width, Height: object.Height}
 	}
 	return ImageAddress{URL: a.Object(m.Key), Width: m.Width, Height: m.Height}
+}
+
+// sizes are the addresses of every size the Media's purpose gives it: the
+// sizes of the Media JSON.
+func (a Addresses) sizes(m Media) map[string]ImageAddress {
+	purpose, _ := a.catalogue().Lookup(m.Purpose)
+	return a.imageAddresses(m, purpose.Image.Sizes)
+}
+
+// LinkedSizes are the addresses of an image Media a record links (an Event's
+// cover or gallery image, a User's profile picture) at every size a client
+// can ask for, SizeCard and SizePage. A size the Media JSON gives an
+// address for is that address; any other, of a Media whose purpose has no
+// sizes (legacy) or that is no image, is the original. Nil when the record
+// links none, or when the Media has no public address: private, or its
+// object purged.
+func (a Addresses) LinkedSizes(image *LinkedImage) map[string]ImageAddress {
+	if image == nil || !image.media.hasPublicAddress() || image.media.Key == "" {
+		return nil
+	}
+	m := image.media
+	out := a.sizes(m)
+	if out == nil {
+		out = make(map[string]ImageAddress, len(imageSizes))
+	}
+	for _, size := range imageSizes {
+		if _, ok := out[size]; !ok {
+			out[size] = ImageAddress{URL: a.Object(m.Key), Width: m.Width, Height: m.Height}
+		}
+	}
+	return out
 }
 
 // imageAddresses are the addresses of every size the purpose gives an

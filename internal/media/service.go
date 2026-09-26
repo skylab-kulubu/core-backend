@@ -118,7 +118,7 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	if catalogue.purposes == nil {
 		catalogue = reviewedCatalogue()
 	}
-	addresses := Addresses{Base: publicBase, Mode: options.ImageAddressMode}
+	addresses := Addresses{Base: publicBase, Mode: options.ImageAddressMode, Catalogue: catalogue}
 	decoding := options.DecodeBudget
 	if decoding == nil {
 		decoding = NewDecodeBudget(DecodeBudgetConfig{})
@@ -616,12 +616,17 @@ func (s *service) Addresses() Addresses {
 // read only through a read link.
 func (s *service) withURL(m Media) Media {
 	m.Sizes = nil
-	if m.Visibility == VisibilityPrivate || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil {
+	if !m.hasPublicAddress() {
 		m.URL = ""
 		return m
 	}
 	m.URL = s.addresses.Object(m.Key)
-	purpose, _ := s.catalogue.Lookup(m.Purpose)
-	m.Sizes = s.addresses.imageAddresses(m, purpose.Image.Sizes)
+	m.Sizes = s.addresses.sizes(m)
 	return m
+}
+
+// hasPublicAddress reports whether the Media is served from the CDN: a
+// private Media never is, nor one whose object is being or was purged.
+func (m Media) hasPublicAddress() bool {
+	return m.Visibility != VisibilityPrivate && m.BlobPurgeStartedAt == nil && m.BlobPurgedAt == nil
 }

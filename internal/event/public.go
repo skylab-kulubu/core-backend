@@ -3,12 +3,15 @@ package event
 import "github.com/skylab-kulubu/core-backend/internal/media"
 
 func withPublicMedia(e Event, base string) Event {
+	addresses := media.Addresses{Base: base}
 	e.CoverImageURL = media.PublicURL(base, e.CoverImageURL)
+	e.CoverImageSizes = addresses.LinkedSizes(e.coverImage)
 	if n := len(e.Images); n > 0 {
 		images := make([]GalleryImage, n)
 		copy(images, e.Images)
 		for i := range images {
 			images[i].URL = media.PublicURL(base, images[i].URL)
+			images[i].Sizes = addresses.LinkedSizes(images[i].image)
 		}
 		e.Images = images
 	}

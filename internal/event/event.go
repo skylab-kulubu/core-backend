@@ -8,40 +8,54 @@ import (
 )
 
 type Event struct {
-	ID              uuid.UUID       `json:"id"`
-	Name            string          `json:"name"`
-	Description     string          `json:"description"`
-	Location        string          `json:"location"`
-	OwnerTeam       string          `json:"ownerTeam"`
-	FormURL         string          `json:"formUrl,omitempty"`
-	FormAlias       string          `json:"formAlias,omitempty"`
-	ExtraFormURLs   []EventFormLink `json:"extraFormUrls"`
-	Capacity        int             `json:"capacity"`
-	StartDate       *time.Time      `json:"startDate,omitempty"`
-	EndDate         *time.Time      `json:"endDate,omitempty"`
-	Linkedin        string          `json:"linkedin,omitempty"`
-	Active          bool            `json:"active"`
-	Ranked          bool            `json:"ranked"`
-	PrizeInfo       string          `json:"prizeInfo,omitempty"`
-	SeasonID        *uuid.UUID      `json:"seasonId,omitempty"`
-	CoverImageID    *uuid.UUID      `json:"coverImageId,omitempty"`
-	CoverImageURL   string          `json:"coverImageUrl,omitempty"`
-	CoverColors     []string        `json:"coverColors"`
-	AttendanceRule  string          `json:"attendanceRule"`
-	AttendanceRatio *float64        `json:"attendanceRatio,omitempty"`
-	Images          []GalleryImage  `json:"images"`
-	ImageURLs       []string        `json:"imageUrls"`
-	DoorStaffIDs    []uuid.UUID     `json:"doorStaffIds,omitempty"`
-	MailListID      *uuid.UUID      `json:"mailListId,omitempty"`
-	ArchivedAt      *time.Time      `json:"archivedAt,omitempty"`
-	ArchivedBy      *uuid.UUID      `json:"archivedBy,omitempty"`
-	CreatedAt       time.Time       `json:"createdAt"`
-	UpdatedAt       time.Time       `json:"updatedAt"`
+	ID            uuid.UUID       `json:"id"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	Location      string          `json:"location"`
+	OwnerTeam     string          `json:"ownerTeam"`
+	FormURL       string          `json:"formUrl,omitempty"`
+	FormAlias     string          `json:"formAlias,omitempty"`
+	ExtraFormURLs []EventFormLink `json:"extraFormUrls"`
+	Capacity      int             `json:"capacity"`
+	StartDate     *time.Time      `json:"startDate,omitempty"`
+	EndDate       *time.Time      `json:"endDate,omitempty"`
+	Linkedin      string          `json:"linkedin,omitempty"`
+	Active        bool            `json:"active"`
+	Ranked        bool            `json:"ranked"`
+	PrizeInfo     string          `json:"prizeInfo,omitempty"`
+	SeasonID      *uuid.UUID      `json:"seasonId,omitempty"`
+	CoverImageID  *uuid.UUID      `json:"coverImageId,omitempty"`
+	CoverImageURL string          `json:"coverImageUrl,omitempty"`
+	// CoverImageSizes are the cover's card and page addresses, built like
+	// the Media JSON's sizes.
+	CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes,omitempty"`
+	CoverColors     []string                      `json:"coverColors"`
+	AttendanceRule  string                        `json:"attendanceRule"`
+	AttendanceRatio *float64                      `json:"attendanceRatio,omitempty"`
+	Images          []GalleryImage                `json:"images"`
+	ImageURLs       []string                      `json:"imageUrls"`
+	DoorStaffIDs    []uuid.UUID                   `json:"doorStaffIds,omitempty"`
+	MailListID      *uuid.UUID                    `json:"mailListId,omitempty"`
+	ArchivedAt      *time.Time                    `json:"archivedAt,omitempty"`
+	ArchivedBy      *uuid.UUID                    `json:"archivedBy,omitempty"`
+	CreatedAt       time.Time                     `json:"createdAt"`
+	UpdatedAt       time.Time                     `json:"updatedAt"`
+
+	// coverImage is the cover Media as the store read it with the Event,
+	// what CoverImageSizes is built from.
+	coverImage *media.LinkedImage
 }
 
 type GalleryImage struct {
 	ID  uuid.UUID `json:"id"`
 	URL string    `json:"url,omitempty"`
+	// Sizes are the image's card and page addresses, built like the Media
+	// JSON's sizes.
+	Sizes map[string]media.ImageAddress `json:"sizes,omitempty"`
+
+	// image is the Media as the store read it with the gallery, what Sizes
+	// is built from.
+	image *media.LinkedImage
 }
 
 type Resource struct {
