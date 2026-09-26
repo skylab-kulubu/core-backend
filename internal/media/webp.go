@@ -180,8 +180,8 @@ type animationFrame struct {
 }
 
 // cleanAnimatedWebP checks an animated WebP and returns it without its
-// EXIF and XMP chunks, an invalid colour profile dropped, its RIFF size
-// and VP8X flags rewritten. Go has no WebP encoder, so this
+// EXIF and XMP chunks, its colour profile rebuilt or dropped (rebuildICC),
+// its RIFF size and VP8X flags rewritten. Go has no WebP encoder, so this
 // is the one image core keeps as uploaded, once its structure is checked
 // and every frame decodes:
 //
@@ -218,9 +218,9 @@ func cleanAnimatedWebP(data []byte, limit int) ([]byte, ImageSize, error) {
 	for _, chunk := range chunks[1:] {
 		switch {
 		case chunk.fourcc == "ICCP" && !seenANIM:
-			if validICC(chunk.payload) {
+			if profile := rebuildICC(chunk.payload); profile != nil {
 				vp8x[8] |= webpICCFlag
-				kept = append(kept, chunk.raw)
+				kept = append(kept, webpChunkOf("ICCP", profile))
 			}
 		case chunk.fourcc == "ANIM" && !seenANIM && len(chunk.payload) == 6:
 			seenANIM = true

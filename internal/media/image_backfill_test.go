@@ -69,7 +69,7 @@ func TestBackfillImageSizesMakesTheSizesOfPurposedImagesStoredBefore(t *testing.
 
 	// An Event cover stored before re-encoding: its EXIF says to turn it a
 	// quarter to the right, so it shows 1200×1600.
-	profile := iccProfile(4_000)
+	profile := displayP3(paraTag)
 	phone := withJPEGICC(withJPEGSegment(solidJPEG(t, 1600, 1200, color.RGBA{R: 30, G: 120, B: 60, A: 255}), 0xE1, orientationEXIF(6)), profile)
 	photo := storedBefore(t, store, blobs, "event_cover", "images/photo", "image/jpeg", phone)
 	small := storedBefore(t, store, blobs, "event_cover", "images/small", "image/png", solidPNG(t, 300, 200, color.RGBA{B: 90, A: 255}))
@@ -105,9 +105,7 @@ func TestBackfillImageSizesMakesTheSizesOfPurposedImagesStoredBefore(t *testing.
 		if img, format := decodeStored(t, stored); format != "jpeg" || img.Bounds().Size() != image.Pt(object.Width, object.Height) {
 			t.Errorf("%s stored %s %v", size, format, img.Bounds().Size())
 		}
-		if !bytes.Equal(jpegICC(t, stored), profile) {
-			t.Errorf("%s lost the colour profile", size)
-		}
+		requireColourTags(t, size, jpegICC(t, stored), profile)
 	}
 	if original, _ := memory.Get("images/photo"); !bytes.Equal(original, phone) {
 		t.Fatal("the backfill rewrote an original")

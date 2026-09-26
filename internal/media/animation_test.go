@@ -253,3 +253,44 @@ func TestService_PurposeRefusesAnAnimatedWebPWithABadStructure(t *testing.T) {
 		t.Fatalf("stored %v", keys)
 	}
 }
+
+// withICCP puts an ICCP chunk after an animated WebP's VP8X chunk and sets
+// its ICC flag.
+func withICCP(data, profile []byte) []byte {
+	body := append([]byte{}, data[12:12+18]...) // VP8X
+	body[8] |= 0x20
+	body = append(body, webpChunk("ICCP", profile)...)
+	body = append(body, data[12+18:]...)
+	out := append([]byte("RIFFxxxxWEBP"), body...)
+	binary.LittleEndian.PutUint32(out[4:], uint32(len(out)-8))
+	return out
+}
+
+// An animated WebP keeps its colours the way a re-encoded image does: its
+// profile rebuilt, or dropped with the VP8X ICC flag when it cannot be.
+func TestService_AnimatedWebPKeepsARebuiltColourProfile(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	profile := displayP3(paraTag)
+	for name, tc := range map[string]struct {
+		profile []byte
+		kept    bool
+	}{
+		"Display P3": {profile, true},
+		"CMYK":       {buildICC("prtr", "CMYK", "Lab ", []iccTag{{"desc", mlucTag("CMYK")}}), false},
+	} {
+		created, err := svc.UploadForPurpose(context.Background(), organizer(), "event_gallery", uploaded("wave.webp", "image/webp", withICCP(animatedWebP(4, 4, []image.Point{{0, 0}}), tc.profile)))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		stored, _ := blobs.Get(created.Key)
+		at := bytes.Index(stored, []byte("ICCP"))
+		if flag := stored[20]&0x20 != 0; flag != tc.kept || (at >= 0) != tc.kept {
+			t.Fatalf("%s: ICC flag %v, chunk at %d; want kept %v", name, flag, at, tc.kept)
+		}
+		if tc.kept {
+			size := int(binary.LittleEndian.Uint32(stored[at+4:]))
+			requireColourTags(t, name, stored[at+8:at+8+size], profile)
+		}
+	}
+}

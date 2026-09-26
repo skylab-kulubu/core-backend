@@ -6,39 +6,173 @@ import (
 	"encoding/binary"
 	"hash/crc32"
 	"io"
+	"slices"
 )
 
 // maxICCBytes is the largest colour profile core carries over.
 const maxICCBytes = 1 << 20
 
 // Colour profiles (D3): core does no colour conversion. It carries an
-// image's ICC profile over into the re-encoded image and every size, as
-// the image had it, so a wide-gamut photo (Display P3) keeps its colours.
+// image's colours over into the re-encoded image and every size by
+// embedding a colour profile rebuilt from the uploaded one (rebuildICC),
+// never the uploaded bytes themselves. An image whose profile cannot be
+// rebuilt gets none, and is then shown as sRGB.
 
-// imageICC is the ICC profile an image carries (JPEG APP2 ICC_PROFILE, PNG
-// iCCP, WebP ICCP), or nil when it has none or it is not a valid one
-// (validICC).
+// imageICC is the colour profile an image carries (JPEG APP2 ICC_PROFILE,
+// PNG iCCP, WebP ICCP), rebuilt; nil when it has none or it cannot be
+// rebuilt.
 func imageICC(data []byte) []byte {
-	var profile []byte
 	switch {
 	case isJPEG(data):
-		profile = jpegICCProfile(data)
+		return rebuildICC(jpegICCProfile(data))
 	case isPNG(data):
-		profile = pngICCProfile(data)
+		return rebuildICC(pngICCProfile(data))
 	case isWebP(data):
-		profile = webpICCProfile(data)
+		return rebuildICC(webpICCProfile(data))
 	}
-	if !validICC(profile) {
-		return nil
-	}
-	return profile
+	return nil
 }
 
-// validICC reports whether a profile is one: within maxICCBytes, its header
-// giving its own size, and the 'acsp' signature at byte 36.
-func validICC(profile []byte) bool {
-	return len(profile) >= 132 && len(profile) <= maxICCBytes &&
-		int(binary.BigEndian.Uint32(profile)) == len(profile) && string(profile[36:40]) == "acsp"
+// iccKeptTags are the tags a rebuilt profile keeps, in order: its
+// description and copyright, and the white point, adaptation, primaries
+// and transfer curves that define a matrix/TRC RGB profile's colours.
+var iccKeptTags = []string{"desc", "cprt", "wtpt", "chad", "rXYZ", "gXYZ", "bXYZ", "rTRC", "gTRC", "bTRC"}
+
+// iccRequiredTags are the tags without which a profile is not a matrix/TRC
+// RGB profile (a profile of lookup tables only is dropped).
+var iccRequiredTags = []string{"wtpt", "rXYZ", "gXYZ", "bXYZ", "rTRC", "gTRC", "bTRC"}
+
+// maxICCText is the longest description or copyright element kept.
+const maxICCText = 4096
+
+// rebuildICC builds a fresh profile from an uploaded one: only a monitor
+// or scanner RGB profile (device class mntr or scnr, colour space RGB, PCS
+// XYZ or Lab) with its matrix and curves, keeping the tags in iccKeptTags
+// once each is checked against its type (XYZ, sf32, curv or para, mluc,
+// desc or text) with every length in bounds, under a new header (its size
+// recomputed, its profile ID and everything identifying the maker zeroed)
+// and a new tag table. Anything else, a profile above maxICCBytes, one
+// without the 'acsp' signature or its own size, or a tag of any kind that
+// leaves the profile, is nil: no profile.
+func rebuildICC(profile []byte) []byte {
+	be := binary.BigEndian
+	if len(profile) < 132 || len(profile) > maxICCBytes || int(be.Uint32(profile)) != len(profile) || string(profile[36:40]) != "acsp" {
+		return nil
+	}
+	class, space, pcs := string(profile[12:16]), string(profile[16:20]), string(profile[20:24])
+	if (class != "mntr" && class != "scnr") || space != "RGB " || (pcs != "XYZ " && pcs != "Lab ") {
+		return nil
+	}
+	count := int(be.Uint32(profile[128:]))
+	table := 132 + 12*count
+	if count == 0 || count > 256 || table > len(profile) {
+		return nil
+	}
+	tags := map[string][]byte{}
+	for i := 0; i < count; i++ {
+		entry := profile[132+12*i:]
+		sig := string(entry[:4])
+		offset, size := int(be.Uint32(entry[4:])), int(be.Uint32(entry[8:]))
+		if offset < table || offset+size > len(profile) {
+			return nil
+		}
+		if _, seen := tags[sig]; seen || !slices.Contains(iccKeptTags, sig) {
+			continue
+		}
+		if element := iccElement(sig, profile[offset:offset+size]); element != nil {
+			tags[sig] = element
+		}
+	}
+	for _, sig := range iccRequiredTags {
+		if tags[sig] == nil {
+			return nil
+		}
+	}
+	var kept []string
+	for _, sig := range iccKeptTags {
+		if tags[sig] != nil {
+			kept = append(kept, sig)
+		}
+	}
+	out := make([]byte, 132+12*len(kept))
+	copy(out[8:12], profile[8:12])   // version
+	copy(out[12:24], profile[12:24]) // class, colour space, PCS
+	copy(out[36:40], "acsp")
+	copy(out[64:80], profile[64:80]) // rendering intent, illuminant
+	be.PutUint32(out[128:], uint32(len(kept)))
+	for i, sig := range kept {
+		for len(out)%4 != 0 {
+			out = append(out, 0)
+		}
+		entry := out[132+12*i:]
+		copy(entry, sig)
+		be.PutUint32(entry[4:], uint32(len(out)))
+		be.PutUint32(entry[8:], uint32(len(tags[sig])))
+		out = append(out, tags[sig]...)
+	}
+	be.PutUint32(out, uint32(len(out)))
+	return out
+}
+
+// iccElement is a tag's element checked against the types the tag may
+// have, trimmed to its own length, or nil when it does not check.
+func iccElement(sig string, element []byte) []byte {
+	be := binary.BigEndian
+	if len(element) < 12 {
+		return nil
+	}
+	kind := string(element[:4])
+	switch sig {
+	case "wtpt", "rXYZ", "gXYZ", "bXYZ":
+		if kind == "XYZ " && len(element) >= 20 {
+			return element[:20]
+		}
+	case "chad":
+		if kind == "sf32" && len(element) >= 44 {
+			return element[:44]
+		}
+	case "rTRC", "gTRC", "bTRC":
+		switch kind {
+		case "curv":
+			entries := int(be.Uint32(element[8:]))
+			if entries <= 65536 && len(element) >= 12+2*entries {
+				return element[:12+2*entries]
+			}
+		case "para":
+			params := map[uint16]int{0: 1, 1: 3, 2: 4, 3: 5, 4: 7}
+			n, ok := params[be.Uint16(element[8:])]
+			if ok && len(element) >= 12+4*n {
+				return element[:12+4*n]
+			}
+		}
+	case "desc", "cprt":
+		if len(element) > maxICCText {
+			return nil
+		}
+		switch kind {
+		case "mluc":
+			records, recordSize := int(be.Uint32(element[8:])), int(be.Uint32(element[12:]))
+			if records < 1 || records > 32 || recordSize != 12 || 16+12*records > len(element) {
+				return nil
+			}
+			for r := 0; r < records; r++ {
+				record := element[16+12*r:]
+				length, offset := int(be.Uint32(record[4:])), int(be.Uint32(record[8:]))
+				if length%2 != 0 || offset < 16+12*records || offset+length > len(element) {
+					return nil
+				}
+			}
+			return element
+		case "desc":
+			ascii := int(be.Uint32(element[8:]))
+			if 12+ascii <= len(element) {
+				return element
+			}
+		case "text":
+			return element
+		}
+	}
+	return nil
 }
 
 // jpegICCProfile reassembles a profile from the APP2 ICC_PROFILE segments
