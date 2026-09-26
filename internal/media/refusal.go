@@ -13,6 +13,9 @@ var (
 	ErrPurposeForbidden = fmt.Errorf("media: this uploader may not upload for the purpose: %w", ErrForbidden)
 	ErrTypeNotAllowed   = fmt.Errorf("media: type not allowed for its purpose: %w", ErrInvalid)
 	ErrTooLarge         = fmt.Errorf("media: too large for its purpose: %w", ErrInvalid)
+	// ErrImageTooLarge refuses an image whose header says decoding it would
+	// take more than core allows (PurposeRefusal.MaxPixels).
+	ErrImageTooLarge    = fmt.Errorf("media: image too large to decode: %w", ErrInvalid)
 	ErrDirectUploadOnly = fmt.Errorf("media: the purpose uploads by Direct upload: %w", ErrInvalid)
 	// ErrPrivateMediaDisabled refuses a private purpose while core has no
 	// private Media storage. A private purpose is never stored publicly
@@ -33,6 +36,9 @@ type PurposeRefusal struct {
 	AllowedTypes []string
 	// MaxBytes is the purpose's maximum size, with ErrTooLarge.
 	MaxBytes int64
+	// MaxPixels is the most pixels core decodes in an image like this one,
+	// with ErrImageTooLarge.
+	MaxPixels int64
 }
 
 func (r *PurposeRefusal) Error() string {

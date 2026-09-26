@@ -21,11 +21,16 @@ type R2Config struct {
 	Bucket    string
 }
 
+// Read returns an object's bytes; ErrNotFound when there is no such object.
 func (r *R2) Read(ctx context.Context, key string) ([]byte, error) {
 	got, err := r.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(key),
 	})
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey" {
+		return nil, ErrNotFound
+	}
 	if err != nil {
 		return nil, err
 	}

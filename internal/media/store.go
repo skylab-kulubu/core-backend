@@ -27,6 +27,23 @@ type Media struct {
 	Size       int64     `json:"size"`
 	UploadedBy uuid.UUID `json:"uploadedBy"`
 	Kind       string    `json:"kind"`
+	// Width and Height are an image's size in pixels as shown (upright):
+	// after re-encoding for a purpose that re-encodes. Zero when core does
+	// not know it: not an image, uploaded without a purpose, or stored
+	// before core recorded sizes.
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
+	// Sizes are the addresses of a raster image's sizes (SizeCard,
+	// SizePage), by size name: every size its purpose names in the
+	// catalogue (image.sizes). Built when the Media is answered, from the
+	// configured base and address mode.
+	Sizes map[string]ImageAddress `json:"sizes,omitempty"`
+	// SizeObjects are the sizes stored as objects beside the image, by size
+	// name (column size_objects): only those smaller than the image itself.
+	// Nil until core has made them (an image stored before sizes waits for
+	// the size backfill); empty when the image needs none or could not be
+	// read.
+	SizeObjects map[string]SizeObject `json:"-"`
 	// Purpose is the Media purpose the file was uploaded for; legacy for
 	// Media uploaded without a purpose and for Media stored before purposes
 	// existed.
@@ -60,6 +77,11 @@ type Media struct {
 	// (decision K2): detached, it gets no expiry, and another product may
 	// link it as a legacy Media, until the hold is released (ticket 18).
 	DetachExpiryHeld bool `json:"-"`
+}
+
+// imageSize is the image's recorded size; zero when core does not know it.
+func (m Media) imageSize() ImageSize {
+	return ImageSize{Width: m.Width, Height: m.Height}
 }
 
 // Status is where a Media is in its life (Media.Status).
@@ -113,6 +135,16 @@ type Store interface {
 	// SetServingPolicyApplied records that the object now follows the serving
 	// policy. It changes nothing else on the record.
 	SetServingPolicyApplied(ctx context.Context, id uuid.UUID) error
+	// ListPendingImageSizes returns, in id order and after the given id,
+	// current image Media of the given purposes whose sizes core has not
+	// made yet (SizeObjects nil). Media whose blob is purged or being
+	// purged are left out.
+	ListPendingImageSizes(ctx context.Context, purposes []string, after uuid.UUID, limit int) ([]Media, error)
+	// SetImageSizes records an image's size as shown and the sizes stored
+	// beside it. Empty objects record that it has none, and nil that they
+	// are not made yet (listed again). It refuses with ErrPurgeInProgress or
+	// ErrPurged once the blob's purge has begun.
+	SetImageSizes(ctx context.Context, id uuid.UUID, size ImageSize, objects map[string]SizeObject) error
 	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	// Restore restores an archived Media and clears its expiry, so an expiry
 	// that passed while it was archived cannot purge it.
@@ -174,6 +206,8 @@ type BlobStore interface {
 	// SetMetadata replaces the metadata of a stored object; ErrNotFound when
 	// there is no such object.
 	SetMetadata(ctx context.Context, key string, meta BlobMetadata) error
+	// Read returns an object's bytes; ErrNotFound when there is no such
+	// object.
 	Read(ctx context.Context, key string) ([]byte, error)
 	Delete(ctx context.Context, key string) error
 }

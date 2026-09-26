@@ -3,6 +3,8 @@ package media
 import (
 	"bytes"
 	"context"
+	"maps"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -92,6 +94,42 @@ func (s *MemoryStore) SetServingPolicyApplied(_ context.Context, id uuid.UUID) e
 		return ErrNotFound
 	}
 	m.ServingPolicyApplied = true
+	s.byID[id] = m
+	return nil
+}
+
+func (s *MemoryStore) ListPendingImageSizes(_ context.Context, purposes []string, after uuid.UUID, limit int) ([]Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Media, 0)
+	for _, m := range s.byID {
+		if m.Kind != KindImage || m.SizeObjects != nil || !slices.Contains(purposes, m.Purpose) || m.DeletedAt != nil || m.BlobPurgeStartedAt != nil || m.BlobPurgedAt != nil || bytes.Compare(m.ID[:], after[:]) <= 0 {
+			continue
+		}
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].ID[:], out[j].ID[:]) < 0 })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) SetImageSizes(_ context.Context, id uuid.UUID, size ImageSize, objects map[string]SizeObject) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if m.BlobPurgedAt != nil {
+		return ErrPurged
+	}
+	if m.BlobPurgeStartedAt != nil {
+		return ErrPurgeInProgress
+	}
+	m.Width, m.Height = size.Width, size.Height
+	m.SizeObjects = maps.Clone(objects)
 	s.byID[id] = m
 	return nil
 }
@@ -228,7 +266,7 @@ func (s *MemoryStore) PurgeBlobIfUnreferenced(_ context.Context, id uuid.UUID, p
 		m.BlobPurgeCheckedAt = &purgedAt
 		s.byID[id] = m
 	}
-	if err := purge(m.Key); err != nil {
+	if err := purgeObjects(m.Key, purge); err != nil {
 		return false, err
 	}
 	m.BlobPurgedAt = &purgedAt
@@ -276,7 +314,7 @@ func (s *MemoryStore) PurgeExpiredBlobIfUnattached(_ context.Context, id uuid.UU
 		m.BlobPurgeCheckedAt = &now
 		s.byID[id] = m
 	}
-	if err := purge(m.Key); err != nil {
+	if err := purgeObjects(m.Key, purge); err != nil {
 		return false, err
 	}
 	m.BlobPurgedAt = &now
@@ -356,4 +394,11 @@ func (s *MemoryBlob) Metadata(key string) (BlobMetadata, bool) {
 	defer s.mu.Unlock()
 	meta, ok := s.metadata[key]
 	return meta, ok
+}
+
+// Keys are the keys of every stored object, in order.
+func (s *MemoryBlob) Keys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Sorted(maps.Keys(s.objects))
 }

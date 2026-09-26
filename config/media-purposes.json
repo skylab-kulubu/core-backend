@@ -11,12 +11,12 @@
       "pending_ttl": "24h",
       "transport": "single_step",
       "attach": "core",
-      "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
+      "image": { "reencode": true, "max_dimension": 2560, "sizes": { "card": 400, "page": 1200 } }
     },
     "event_cover": {
       "description": "An Event's cover image.",
       "upload": "event_editor",
-      "types": ["image/jpeg", "image/png", "image/webp", "image/gif"],
+      "types": ["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"],
       "max_mib": 10,
       "visibility": "public",
       "encrypted": false,
@@ -24,12 +24,12 @@
       "pending_ttl": "24h",
       "transport": "single_step",
       "attach": "core",
-      "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
+      "image": { "reencode": true, "max_dimension": 2560, "sizes": { "card": 400, "page": 1200 } }
     },
     "event_gallery": {
       "description": "A photo in an Event's gallery.",
       "upload": "event_editor",
-      "types": ["image/jpeg", "image/png", "image/webp", "image/gif"],
+      "types": ["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"],
       "max_mib": 10,
       "visibility": "public",
       "encrypted": false,
@@ -37,7 +37,7 @@
       "pending_ttl": "24h",
       "transport": "single_step",
       "attach": "core",
-      "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
+      "image": { "reencode": true, "max_dimension": 2560, "sizes": { "card": 400, "page": 1200 } }
     },
     "certificate_asset": {
       "description": "A certificate template's background or image, read only by core's certificate renderer.",
@@ -53,9 +53,9 @@
       "image": { "reencode": true, "max_dimension": 2560 }
     },
     "cms_image": {
-      "description": "An image on a CMS page. SVG joins this list, rasterized to PNG, once core rasterizes SVG uploads.",
+      "description": "An image on a CMS page. An SVG is stored sanitized and served as a download.",
       "upload": "authenticated",
-      "types": ["image/jpeg", "image/png", "image/webp", "image/gif"],
+      "types": ["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"],
       "max_mib": 10,
       "visibility": "public",
       "encrypted": false,
@@ -64,7 +64,7 @@
       "transport": "single_step",
       "attach": "service",
       "service": "cms",
-      "image": { "reencode": true, "max_dimension": 2560, "variants": { "card": 400, "page": 1200 } }
+      "image": { "reencode": true, "max_dimension": 2560, "sizes": { "card": 400, "page": 1200 } }
     },
     "cms_file": {
       "description": "A document anyone can open from a CMS page, such as bylaws or a brochure.",
@@ -136,7 +136,7 @@
       "attach": "service"
     },
     "legacy": {
-      "description": "Media uploaded without a purpose, and every Media stored before Media purpose. Internal: clients cannot name it. It keeps the rules Media uploaded without a purpose had before this catalogue, until Skyforms and CMS send purposes.",
+      "description": "Media uploaded without a purpose, and every Media stored before Media purpose. Internal: clients cannot name it. It keeps the rules Media uploaded without a purpose had before this catalogue, until Skyforms and CMS send purposes. Its images keep their own bytes, stripped of metadata, and get no sizes.",
       "upload": "authenticated",
       "legacy_rules": true,
       "visibility": "public",

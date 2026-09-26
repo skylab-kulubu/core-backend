@@ -572,6 +572,31 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND prosrc LIKE '%a.owner_id = gone.owner_id::TEXT%'
 			  AND prosrc LIKE '%added.owner_id::TEXT%'
 		)`,
+	20260926130000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('width', 'int4'),
+				('height', 'int4'),
+				('size_objects', 'jsonb')
+			) expected(column_name, udt_name)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'media'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = 'YES'
+		) = 3
+		AND (
+			SELECT count(*) FROM pg_constraint
+			WHERE conrelid = to_regclass('public.media') AND contype = 'c'
+			  AND conname IN ('media_width_check', 'media_height_check', 'media_size_objects_check')
+		) = 3
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'media_size_objects_pending_idx'
+			  AND indexdef LIKE '%size_objects IS NULL%'
+		)`,
 	// The legacy backfill's hold and the purpose check on new Media
 	// attachments. A rerun of 20260926120000 puts back its status and
 	// current-media functions; this fingerprint then fails and the migration

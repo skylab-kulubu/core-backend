@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -19,10 +20,22 @@ func NewMediaHandler(svc media.Service) *MediaHandler {
 	return &MediaHandler{svc: svc}
 }
 
+// mediaBusyRetrySeconds is the Retry-After of media_busy.
+const mediaBusyRetrySeconds = 5
+
 // purposeProblem answers an upload its Media purpose refused: problem+json
-// with a stable code and what the caller needs to fix the upload. handled is
-// false for any other error.
+// with a stable code and what the caller needs to fix the upload. It also
+// answers an upload that waited too long for a decoding slot (503
+// media_busy). handled is false for any other error.
 func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
+	if errors.Is(err, media.ErrDecodeBusy) {
+		// Nothing is stored; the same upload succeeds once other images
+		// are decoded.
+		c.Set(fiber.HeaderRetryAfter, strconv.Itoa(mediaBusyRetrySeconds))
+		return true, problemWithFields(c, fiber.StatusServiceUnavailable, "Service Unavailable",
+			"Core is busy decoding other images; retry the upload.", "media_busy",
+			fiber.Map{"retryAfterSeconds": mediaBusyRetrySeconds})
+	}
 	var refusal *media.PurposeRefusal
 	if !errors.As(err, &refusal) {
 		return false, nil
@@ -36,6 +49,10 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 		fields["allowedTypes"] = refusal.AllowedTypes
 		return true, problemWithFields(c, fiber.StatusUnsupportedMediaType, "Unsupported Media Type",
 			"The file's content is not a type this purpose accepts.", "media_type_not_allowed", fields)
+	case errors.Is(err, media.ErrImageTooLarge):
+		fields["maxPixels"] = refusal.MaxPixels
+		return true, problemWithFields(c, fiber.StatusRequestEntityTooLarge, "Content Too Large",
+			"The image has more pixels than core decodes.", "media_image_too_large", fields)
 	case errors.Is(err, media.ErrTooLarge):
 		fields["maxBytes"] = refusal.MaxBytes
 		return true, problemWithFields(c, fiber.StatusRequestEntityTooLarge, "Content Too Large",
@@ -147,14 +164,17 @@ func (h *MediaHandler) Get(c fiber.Ctx) error {
 // enough to render it, nothing about who uploaded it or what they named it.
 // Until Media purpose ships, Answer files are still Media on this route.
 type publicMedia struct {
-	ID          uuid.UUID `json:"id"`
-	Type        string    `json:"type"`
-	URL         string    `json:"url"`
-	Size        int64     `json:"size"`
-	Kind        string    `json:"kind"`
-	CoverColors []string  `json:"coverColors"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID          uuid.UUID                     `json:"id"`
+	Type        string                        `json:"type"`
+	URL         string                        `json:"url"`
+	Size        int64                         `json:"size"`
+	Kind        string                        `json:"kind"`
+	Width       int                           `json:"width,omitempty"`
+	Height      int                           `json:"height,omitempty"`
+	Sizes       map[string]media.ImageAddress `json:"sizes,omitempty"`
+	CoverColors []string                      `json:"coverColors"`
+	CreatedAt   time.Time                     `json:"createdAt"`
+	UpdatedAt   time.Time                     `json:"updatedAt"`
 }
 
 func publicMediaView(m media.Media) publicMedia {
@@ -164,6 +184,9 @@ func publicMediaView(m media.Media) publicMedia {
 		URL:         m.URL,
 		Size:        m.Size,
 		Kind:        m.Kind,
+		Width:       m.Width,
+		Height:      m.Height,
+		Sizes:       m.Sizes,
 		CoverColors: m.CoverColors,
 		CreatedAt:   m.CreatedAt,
 		UpdatedAt:   m.UpdatedAt,

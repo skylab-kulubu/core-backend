@@ -6,6 +6,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// Unexported functions the external tests reach.
+var (
+	RebuildICCTags    = rebuildICCTags
+	GuardICC          = guardICC
+	CoverColorsInSlot = coverColorsInSlot
+)
+
 // BackfillOneLegacyPurpose runs the purpose backfill's step for one Media,
 // with its real lock, read and write, and calls locked once the Media row is
 // locked and its Media attachments read, before anything is written.

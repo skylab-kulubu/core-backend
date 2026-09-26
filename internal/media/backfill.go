@@ -14,7 +14,9 @@ const (
 	backfillBatchSize           = 25
 )
 
-func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore) (int, bool, error) {
+// BackfillCoverColors picks the cover colours of a batch of images stored
+// without them. Each image decodes within the decode budget.
+func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore, budget *DecodeBudget) (int, bool, error) {
 	items, err := store.ListPendingCoverColors(ctx, coverColorBackfillBatchSize)
 	if err != nil {
 		return 0, false, err
@@ -24,17 +26,39 @@ func BackfillCoverColors(ctx context.Context, store Store, blobs BlobStore) (int
 		if err != nil {
 			return i, false, err
 		}
-		if err := store.SetCoverColors(ctx, item.ID, ExtractCoverColors(data)); err != nil {
+		colors, err := coverColorsInSlot(ctx, budget, data, ExtractCoverColors)
+		if err != nil {
+			return i, false, err
+		}
+		if err := store.SetCoverColors(ctx, item.ID, colors); err != nil {
 			return i, false, err
 		}
 	}
 	return len(items), len(items) < coverColorBackfillBatchSize, nil
 }
 
-func MaintainCoverColorBackfill(ctx context.Context, store Store, blobs BlobStore, retryEvery time.Duration, onError func(error)) {
+// coverColorsInSlot picks an image's cover colours within one decode
+// slot, released however picking ends. A pick that panics picks none
+// (cover colours are decoration) rather than keep the slot or stop the
+// backfill goroutine, which nothing else recovers.
+func coverColorsInSlot(ctx context.Context, budget *DecodeBudget, data []byte, pick func([]byte) []string) (colors []string, err error) {
+	release, err := budget.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	defer func() {
+		if recover() != nil {
+			colors = []string{}
+		}
+	}()
+	return pick(data), nil
+}
+
+func MaintainCoverColorBackfill(ctx context.Context, store Store, blobs BlobStore, budget *DecodeBudget, retryEvery time.Duration, onError func(error)) {
 	go func() {
 		for {
-			_, done, err := BackfillCoverColors(ctx, store, blobs)
+			_, done, err := BackfillCoverColors(ctx, store, blobs, budget)
 			if err == nil {
 				if done {
 					return

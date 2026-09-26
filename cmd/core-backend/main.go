@@ -91,6 +91,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Every Media address core builds without a base of its own (Event
+	// resources, team rosters) uses the configured one too.
+	media.UsePublicBase(cdnBase)
+	imageAddressMode, err := media.ImageAddressModeFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	mediaPurgeConfig, err := media.BlobPurgeConfigFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -118,11 +125,17 @@ func main() {
 	media.MaintainUploadStaging(mediaPurgeContext, mediaStore, blobs, uploadStagingConfig, func(err error) {
 		log.Printf("media upload staging cleanup: %v", err)
 	})
-	media.MaintainCoverColorBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
+	// One decode budget for everything that decodes an image, so that
+	// together they hold at most its slots of decoded images in memory.
+	decodeBudget := media.NewDecodeBudget(media.DecodeBudgetConfig{})
+	media.MaintainCoverColorBackfill(context.Background(), mediaStore, blobs, decodeBudget, time.Minute, func(err error) {
 		log.Printf("media cover color backfill: %v", err)
 	})
 	media.MaintainServingPolicyBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
 		log.Printf("media serving policy backfill: %v", err)
+	})
+	media.MaintainImageSizeBackfill(context.Background(), mediaStore, blobs, mediaPurposes, decodeBudget, time.Minute, func(err error) {
+		log.Printf("media image size backfill: %v", err)
 	})
 	certificate.MaintainAssetServingPolicyBackfill(context.Background(), certs, blobs, time.Minute, func(err error) {
 		log.Printf("certificate template asset serving policy backfill: %v", err)
@@ -400,6 +413,8 @@ func main() {
 		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
 			UploadStagingGrace: uploadStagingConfig.Grace,
 			Catalogue:          mediaPurposes,
+			ImageAddressMode:   imageAddressMode,
+			DecodeBudget:       decodeBudget,
 			ServiceProducts:    serviceClients.Products(),
 		}),
 		URLs:                   urlSvc,

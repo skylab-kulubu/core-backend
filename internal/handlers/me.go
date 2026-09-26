@@ -87,7 +87,7 @@ func (h *MeHandler) GetMe(c fiber.Ctx) error {
 	if !ok {
 		return fiber.ErrUnauthorized
 	}
-	return c.JSON(meView(u))
+	return c.JSON(h.view(u))
 }
 
 func (h *MeHandler) identityID(c fiber.Ctx) (user.User, error) {
@@ -118,7 +118,7 @@ func (h *MeHandler) PutMe(c fiber.Ctx) error {
 	if err != nil {
 		return meError(c, err)
 	}
-	return c.JSON(meView(updated))
+	return c.JSON(h.view(updated))
 }
 
 func (h *MeHandler) PatchMe(c fiber.Ctx) error {
@@ -141,7 +141,7 @@ func (h *MeHandler) PatchMe(c fiber.Ctx) error {
 	if err != nil {
 		return meError(c, err)
 	}
-	return c.JSON(meView(updated))
+	return c.JSON(h.view(updated))
 }
 
 func (h *MeHandler) ProfilePicture(c fiber.Ctx) error {
@@ -175,11 +175,13 @@ func (h *MeHandler) ProfilePicture(c fiber.Ctx) error {
 	if err != nil {
 		return meError(c, err)
 	}
-	updated, err := h.users.SetProfilePicture(c.Context(), u.ID, uploaded.ID, uploaded.URL)
+	// The profile keeps the Media's key; its address is built when the
+	// profile is read (view), from the configured base.
+	updated, err := h.users.SetProfilePicture(c.Context(), u.ID, uploaded.ID, uploaded.Key)
 	if err != nil {
 		return meError(c, err)
 	}
-	return c.JSON(meView(updated))
+	return c.JSON(h.view(updated))
 }
 
 // DeleteProfilePicture removes the caller's own profile picture. It is an
@@ -219,8 +221,14 @@ func (h *MeHandler) DeleteProfilePicture(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func meView(u user.User) meUser {
-	u.ProfilePictureURL = media.PublicURL("", u.ProfilePictureURL)
+// view is the caller's profile as the API answers it: the profile picture
+// at its address under the configured base.
+func (h *MeHandler) view(u user.User) meUser {
+	if h.media != nil {
+		u.ProfilePictureURL = h.media.Addresses().Object(u.ProfilePictureURL)
+	} else {
+		u.ProfilePictureURL = media.PublicURL("", u.ProfilePictureURL)
+	}
 	u.StudentCardLinked = u.StudentCardUID != ""
 	return meUser{User: u, Phone: u.Phone, YTULinked: u.YTULinked}
 }

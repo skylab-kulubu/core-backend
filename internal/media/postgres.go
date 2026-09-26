@@ -2,7 +2,9 @@ package media
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -22,7 +24,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, detach_expiry_held`
+const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, detach_expiry_held, width, height, size_objects`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 	return insertMedia(ctx, s.pool, newRecord(m))
@@ -34,10 +36,15 @@ type rowQuerier interface {
 
 // insertMedia writes a record prepared by newRecord.
 func insertMedia(ctx context.Context, db rowQuerier, m Media) (Media, error) {
+	sizeObjects, err := sizeObjectsColumn(m.SizeObjects)
+	if err != nil {
+		return Media{}, err
+	}
 	created, err := scanMedia(db.QueryRow(ctx, `
-		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose, m.Status, m.ExpiresAt))
+		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at, width, height, size_objects)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)
+		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose, m.Status, m.ExpiresAt,
+		positiveOrNil(m.Width), positiveOrNil(m.Height), sizeObjects))
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Media{}, ErrForbidden
 	}
@@ -352,7 +359,7 @@ func (s *PostgresStore) purgeBlob(ctx context.Context, id uuid.UUID, purgedAt ti
 		}
 		return false, nil
 	}
-	if err := purge(key); err != nil {
+	if err := purgeObjects(key, purge); err != nil {
 		return false, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE media
@@ -499,11 +506,98 @@ type rowScanner interface {
 func scanMedia(row rowScanner) (Media, error) {
 	var m Media
 	var created, updated time.Time
-	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt, &m.DetachExpiryHeld)
+	var width, height *int
+	var sizeObjects []byte
+	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt, &m.DetachExpiryHeld, &width, &height, &sizeObjects)
+	if err != nil {
+		return m, err
+	}
 	if m.CoverColors == nil {
 		m.CoverColors = []string{}
 	}
+	if width != nil && height != nil {
+		m.Width, m.Height = *width, *height
+	}
+	if sizeObjects != nil {
+		if err := json.Unmarshal(sizeObjects, &m.SizeObjects); err != nil {
+			return m, fmt.Errorf("media %s size objects: %w", m.ID, err)
+		}
+		if m.SizeObjects == nil {
+			m.SizeObjects = map[string]SizeObject{}
+		}
+	}
 	m.CreatedAt = created
 	m.UpdatedAt = updated
-	return m, err
+	return m, nil
+}
+
+// sizeObjectsColumn is how SizeObjects is written: NULL while the sizes are
+// not made, a JSON object once they are.
+func sizeObjectsColumn(objects map[string]SizeObject) (*string, error) {
+	if objects == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(objects)
+	if err != nil {
+		return nil, err
+	}
+	column := string(encoded)
+	return &column, nil
+}
+
+func positiveOrNil(n int) *int {
+	if n <= 0 {
+		return nil
+	}
+	return &n
+}
+
+func (s *PostgresStore) ListPendingImageSizes(ctx context.Context, purposes []string, after uuid.UUID, limit int) ([]Media, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	// The conditions repeat media_size_objects_pending_idx's predicate
+	// literally, so the planner can use the partial index.
+	rows, err := s.pool.Query(ctx, `SELECT `+mediaCols+` FROM media
+		WHERE size_objects IS NULL AND kind = 'IMAGE' AND deleted_at IS NULL
+		  AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL
+		  AND purpose = ANY($1) AND id > $2
+		ORDER BY id LIMIT $3`, purposes, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Media, 0)
+	for rows.Next() {
+		m, err := scanMedia(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) SetImageSizes(ctx context.Context, id uuid.UUID, size ImageSize, objects map[string]SizeObject) error {
+	column, err := sizeObjectsColumn(objects)
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE media SET width = $2, height = $3, size_objects = $4::jsonb
+		WHERE id = $1 AND blob_purge_started_at IS NULL AND blob_purged_at IS NULL`,
+		id, positiveOrNil(size.Width), positiveOrNil(size.Height), column)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		m, err := s.GetIncludingDeleted(ctx, id)
+		if err != nil {
+			return err
+		}
+		if m.BlobPurgedAt != nil {
+			return ErrPurged
+		}
+		return ErrPurgeInProgress
+	}
+	return nil
 }

@@ -1,0 +1,271 @@
+package media
+
+import (
+	"encoding/binary"
+	"image"
+	"image/draw"
+)
+
+// exifOrientationTag is the EXIF (TIFF) tag that says how a camera held the
+// photo: 1 is upright, 2–8 are the mirrorings and quarter turns.
+const exifOrientationTag = 0x0112
+
+// jpegOrientation is the EXIF Orientation of a JPEG, read from its first
+// EXIF segment before the image data. It is 1 (upright) when the JPEG has
+// none or it cannot be read.
+func jpegOrientation(data []byte) int {
+	if !isJPEG(data) {
+		return 1
+	}
+	pos := 2
+	for pos+4 <= len(data) && data[pos] == 0xFF {
+		marker := data[pos+1]
+		if marker == 0xDA || marker == 0xD9 {
+			break
+		}
+		size := int(binary.BigEndian.Uint16(data[pos+2:]))
+		if size < 2 || pos+2+size > len(data) {
+			break
+		}
+		payload := data[pos+4 : pos+2+size]
+		if marker == 0xE1 {
+			if o, ok := exifOrientation(payload); ok {
+				return o
+			}
+		}
+		pos += 2 + size
+	}
+	return 1
+}
+
+// exifOrientation reads the Orientation tag from an APP1 payload
+// ("Exif\0\0" and a TIFF header), when it is there and valid.
+func exifOrientation(payload []byte) (int, bool) {
+	if len(payload) < 14 || string(payload[:6]) != "Exif\x00\x00" {
+		return 0, false
+	}
+	tiff := payload[6:]
+	var order binary.ByteOrder
+	switch string(tiff[:4]) {
+	case "II*\x00":
+		order = binary.LittleEndian
+	case "MM\x00*":
+		order = binary.BigEndian
+	default:
+		return 0, false
+	}
+	ifd := int(order.Uint32(tiff[4:]))
+	if ifd < 8 || ifd+2 > len(tiff) {
+		return 0, false
+	}
+	entries := int(order.Uint16(tiff[ifd:]))
+	for i := 0; i < entries; i++ {
+		entry := ifd + 2 + 12*i
+		if entry+12 > len(tiff) {
+			return 0, false
+		}
+		if order.Uint16(tiff[entry:]) != exifOrientationTag {
+			continue
+		}
+		// A SHORT, count 1, stored in the first bytes of the value field.
+		if order.Uint16(tiff[entry+2:]) != 3 || order.Uint32(tiff[entry+4:]) != 1 {
+			return 0, false
+		}
+		o := int(order.Uint16(tiff[entry+8:]))
+		if o < 1 || o > 8 {
+			return 0, false
+		}
+		return o, true
+	}
+	return 0, false
+}
+
+// orient turns and mirrors img the way its EXIF Orientation says a viewer
+// should show it, so that the pixels are upright and need no tag.
+func orient(img image.Image, orientation int) image.Image {
+	if orientation < 2 || orientation > 8 {
+		return img
+	}
+	src, ok := img.(*image.RGBA)
+	if !ok || src.Rect.Min != (image.Point{}) {
+		src = image.NewRGBA(image.Rect(0, 0, img.Bounds().Dx(), img.Bounds().Dy()))
+		draw.Draw(src, src.Rect, img, img.Bounds().Min, draw.Src)
+	}
+	w, h := src.Rect.Dx(), src.Rect.Dy()
+	dw, dh := w, h
+	if orientation >= 5 {
+		dw, dh = h, w
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
+	for y := 0; y < dh; y++ {
+		for x := 0; x < dw; x++ {
+			var sx, sy int
+			switch orientation {
+			case 2:
+				sx, sy = w-1-x, y
+			case 3:
+				sx, sy = w-1-x, h-1-y
+			case 4:
+				sx, sy = x, h-1-y
+			case 5:
+				sx, sy = y, x
+			case 6:
+				sx, sy = y, h-1-x
+			case 7:
+				sx, sy = w-1-y, h-1-x
+			case 8:
+				sx, sy = w-1-y, x
+			}
+			copy(dst.Pix[dst.PixOffset(x, y):dst.PixOffset(x, y)+4], src.Pix[src.PixOffset(sx, sy):src.PixOffset(sx, sy)+4])
+		}
+	}
+	return dst
+}
+
+// orientationSegment is a JPEG APP1 segment whose EXIF holds only the
+// Orientation tag: what metadata stripping keeps of a photo's EXIF, so a
+// browser still shows it upright.
+func orientationSegment(orientation int) []byte {
+	payload := []byte("Exif\x00\x00MM\x00*\x00\x00\x00\x08")
+	payload = binary.BigEndian.AppendUint16(payload, 1)
+	payload = binary.BigEndian.AppendUint16(payload, exifOrientationTag)
+	payload = binary.BigEndian.AppendUint16(payload, 3) // SHORT
+	payload = binary.BigEndian.AppendUint32(payload, 1)
+	payload = binary.BigEndian.AppendUint16(payload, uint16(orientation))
+	payload = binary.BigEndian.AppendUint16(payload, 0)
+	payload = binary.BigEndian.AppendUint32(payload, 0) // no next IFD
+	segment := []byte{0xFF, 0xE1}
+	segment = binary.BigEndian.AppendUint16(segment, uint16(len(payload)+2))
+	return append(segment, payload...)
+}
+
+// maxJPEGScans is the most scans core decodes in a JPEG. Encoders write one
+// (baseline) or about ten (progressive); a decoder walks the whole image
+// once per scan, and a scan can cost its sender a few bytes.
+const maxJPEGScans = 64
+
+// jpegScans counts the scans (SOS segments) of a JPEG, walking its
+// segments and skipping the entropy-coded data between them. It stops
+// counting past maxJPEGScans+1.
+func jpegScans(data []byte) int {
+	scans := 0
+	pos := 2
+	for pos+1 < len(data) && scans <= maxJPEGScans {
+		if data[pos] != 0xFF {
+			return scans
+		}
+		marker := data[pos+1]
+		switch {
+		case marker == 0xFF:
+			pos++ // fill byte
+			continue
+		case marker == 0xD9:
+			return scans
+		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7):
+			pos += 2
+			continue
+		}
+		if pos+4 > len(data) {
+			return scans
+		}
+		pos += 2 + int(binary.BigEndian.Uint16(data[pos+2:]))
+		if marker != 0xDA {
+			continue
+		}
+		scans++
+		// Entropy-coded data runs to the next marker: an 0xFF not followed
+		// by a stuffed 0x00 or a restart marker.
+		for pos+1 < len(data) {
+			if data[pos] == 0xFF && data[pos+1] != 0x00 && (data[pos+1] < 0xD0 || data[pos+1] > 0xD7) {
+				break
+			}
+			pos++
+		}
+	}
+	return scans
+}
+
+// jpegFrame is a JPEG's frame header (SOF), read without decoding.
+type jpegFrame struct {
+	width, height int
+	progressive   bool
+	// components are each component's sampling factors.
+	components []struct{ h, v int }
+}
+
+// decodeCost is what image/jpeg allocates for the frame: each component's
+// sample plane, over whole MCUs; for a progressive JPEG also the
+// coefficients it keeps between scans, a 256-byte block per 8×8 samples;
+// and for a CMYK JPEG the 4-byte-a-pixel image it converts to.
+func (f jpegFrame) decodeCost() int64 {
+	hmax, vmax := 1, 1
+	for _, c := range f.components {
+		hmax, vmax = max(hmax, c.h), max(vmax, c.v)
+	}
+	mcusX := int64((f.width + 8*hmax - 1) / (8 * hmax))
+	mcusY := int64((f.height + 8*vmax - 1) / (8 * vmax))
+	var cost int64
+	for _, c := range f.components {
+		blocks := mcusX * mcusY * int64(c.h*c.v)
+		cost += blocks * 64
+		if f.progressive {
+			cost += blocks * 256
+		}
+	}
+	if len(f.components) == 4 {
+		cost += int64(f.width) * int64(f.height) * 4
+	}
+	return cost
+}
+
+// readJPEGFrame reads the first frame header (SOF0–SOF15 but DHT, JPG and
+// DAC) of a JPEG, walking the segments before it.
+func readJPEGFrame(data []byte) (jpegFrame, bool) {
+	if !isJPEG(data) {
+		return jpegFrame{}, false
+	}
+	pos := 2
+	for pos+4 <= len(data) {
+		if data[pos] != 0xFF {
+			return jpegFrame{}, false
+		}
+		marker := data[pos+1]
+		if marker == 0xFF {
+			pos++
+			continue
+		}
+		size := int(binary.BigEndian.Uint16(data[pos+2:]))
+		if size < 2 || pos+2+size > len(data) {
+			return jpegFrame{}, false
+		}
+		payload := data[pos+4 : pos+2+size]
+		if marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
+			if len(payload) < 6 {
+				return jpegFrame{}, false
+			}
+			frame := jpegFrame{
+				height:      int(binary.BigEndian.Uint16(payload[1:])),
+				width:       int(binary.BigEndian.Uint16(payload[3:])),
+				progressive: marker == 0xC2 || marker == 0xC6 || marker == 0xCA || marker == 0xCE,
+			}
+			count := int(payload[5])
+			if count == 0 || len(payload) < 6+3*count {
+				return jpegFrame{}, false
+			}
+			for i := 0; i < count; i++ {
+				sampling := payload[6+3*i+1]
+				h, v := int(sampling>>4), int(sampling&0x0F)
+				if h == 0 || v == 0 {
+					return jpegFrame{}, false
+				}
+				frame.components = append(frame.components, struct{ h, v int }{h, v})
+			}
+			return frame, true
+		}
+		if marker == 0xDA || marker == 0xD9 {
+			return jpegFrame{}, false
+		}
+		pos += 2 + size
+	}
+	return jpegFrame{}, false
+}
