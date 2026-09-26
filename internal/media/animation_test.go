@@ -144,3 +144,105 @@ func TestService_PurposeRefusesAGIFBeyondItsFrameLimits(t *testing.T) {
 		t.Fatalf("stored %v", keys)
 	}
 }
+
+// webpChunk is a RIFF chunk, padded to an even length.
+func webpChunk(fourcc string, payload []byte) []byte {
+	out := append([]byte(fourcc), binary.LittleEndian.AppendUint32(nil, uint32(len(payload)))...)
+	out = append(out, payload...)
+	if len(payload)%2 == 1 {
+		out = append(out, 0)
+	}
+	return out
+}
+
+func uint24(v int) []byte { return []byte{byte(v), byte(v >> 8), byte(v >> 16)} }
+
+// oneByOneVP8L is the VP8L bitstream of a 1×1 lossless image (from
+// Modernizr's WebP feature test).
+var oneByOneVP8L = []byte{0x2f, 0x00, 0x00, 0x00, 0x10, 0x07, 0x10, 0x11, 0x11, 0x88, 0x88, 0xfe, 0x07, 0x00}
+
+// animatedWebP is an animated WebP over a w×h canvas with a 1×1 frame at
+// each of the given places, and EXIF and XMP chunks that name the uploader
+// and a place.
+func animatedWebP(w, h int, frames []image.Point, extra ...[]byte) []byte {
+	vp8x := append([]byte{0x02 | 0x08 | 0x04, 0, 0, 0}, uint24(w-1)...)
+	vp8x = append(vp8x, uint24(h-1)...)
+	body := []byte("WEBP")
+	body = append(body, webpChunk("VP8X", vp8x)...)
+	body = append(body, webpChunk("ANIM", []byte{0, 0, 0, 0, 0, 0})...)
+	for _, at := range frames {
+		anmf := append(uint24(at.X/2), uint24(at.Y/2)...)
+		anmf = append(anmf, uint24(0)...) // width-1
+		anmf = append(anmf, uint24(0)...) // height-1
+		anmf = append(anmf, uint24(100)...)
+		anmf = append(anmf, 0)
+		anmf = append(anmf, webpChunk("VP8L", oneByOneVP8L)...)
+		body = append(body, webpChunk("ANMF", anmf)...)
+	}
+	body = append(body, webpChunk("EXIF", []byte("Exif\x00\x00GPS-SECRET"))...)
+	body = append(body, webpChunk("XMP ", []byte("<x:xmpmeta>uploader</x:xmpmeta>"))...)
+	for _, chunk := range extra {
+		body = append(body, chunk...)
+	}
+	return append(append([]byte("RIFF"), binary.LittleEndian.AppendUint32(nil, uint32(len(body)))...), body...)
+}
+
+// An animated WebP cannot be re-encoded in Go: after its structure is
+// checked it is kept as uploaded, without its EXIF and XMP, and without
+// sizes (every size is the image itself).
+func TestService_PurposeKeepsAValidAnimatedWebPAsUploaded(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	upload := animatedWebP(4, 4, []image.Point{{0, 0}, {2, 2}})
+
+	created, err := svc.UploadForPurpose(context.Background(), organizer(), "event_gallery", uploaded("wave.webp", "image/webp", upload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := blobs.Get(created.Key)
+	for _, gone := range []string{"GPS-SECRET", "EXIF", "XMP ", "uploader"} {
+		if bytes.Contains(stored, []byte(gone)) {
+			t.Errorf("the stored WebP still carries %q", gone)
+		}
+	}
+	if string(stored[:4]) != "RIFF" || int(binary.LittleEndian.Uint32(stored[4:]))+8 != len(stored) {
+		t.Fatalf("the RIFF size does not match the file (%d bytes)", len(stored))
+	}
+	if stored[20]&0x02 == 0 || stored[20]&0x0C != 0 {
+		t.Fatalf("VP8X flags %08b, want animation without EXIF or XMP", stored[20])
+	}
+	if bytes.Count(stored, []byte("ANMF")) != 2 || !bytes.Contains(stored, oneByOneVP8L) {
+		t.Fatal("the frames changed")
+	}
+	if created.Type != "image/webp" || created.Width != 4 || created.Height != 4 || len(blobs.Keys()) != 1 {
+		t.Fatalf("created %s %d×%d, objects %v", created.Type, created.Width, created.Height, blobs.Keys())
+	}
+	if card := created.Sizes["card"]; card.URL != created.URL {
+		t.Fatalf("card %+v, want the WebP itself", card)
+	}
+}
+
+func TestService_PurposeRefusesAnAnimatedWebPWithABadStructure(t *testing.T) {
+	t.Parallel()
+	svc, blobs := setup(t)
+	manyFrames := make([]image.Point, 301)
+	for name, tc := range map[string]struct {
+		data []byte
+		want error
+	}{
+		"a frame outside the canvas":  {animatedWebP(4, 4, []image.Point{{4, 0}}), media.ErrTypeNotAllowed},
+		"more than 300 frames":        {animatedWebP(4, 4, manyFrames), media.ErrTypeNotAllowed},
+		"frames × canvas over budget": {animatedWebP(2560, 2560, make([]image.Point, 50)), media.ErrImageTooLarge},
+		"an unknown chunk":            {animatedWebP(4, 4, []image.Point{{0, 0}}, webpChunk("ABCD", []byte("hi"))), media.ErrTypeNotAllowed},
+		"trailing data":               {append(animatedWebP(4, 4, []image.Point{{0, 0}}), []byte("<html>trailer</html>")...), media.ErrTypeNotAllowed},
+		"a truncated file":            {animatedWebP(4, 4, []image.Point{{0, 0}})[:40], media.ErrTypeNotAllowed},
+	} {
+		_, err := svc.UploadForPurpose(context.Background(), organizer(), "event_gallery", uploaded("x.webp", "image/webp", tc.data))
+		if !errors.Is(err, tc.want) {
+			t.Errorf("%s: err = %v, want %v", name, err, tc.want)
+		}
+	}
+	if keys := blobs.Keys(); len(keys) != 0 {
+		t.Fatalf("stored %v", keys)
+	}
+}

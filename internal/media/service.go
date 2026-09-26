@@ -368,6 +368,13 @@ func purposeFile(purpose Purpose, data []byte) (storedFile, error) {
 		img = reencodedImage{body: clean, ctype: svgType, coverColors: []string{}}
 	case purpose.Image.Reencode && detected == "image/gif":
 		img, err = reencodeGIF(data, purpose.Image)
+	case purpose.Image.Reencode && isAnimatedWebP(data):
+		// Go has no WebP encoder: an animated WebP is kept as uploaded
+		// once its structure is checked, without metadata and sizes.
+		var clean []byte
+		var canvas ImageSize
+		clean, canvas, err = cleanAnimatedWebP(data, purpose.Image.maxDimension())
+		img = reencodedImage{body: clean, ctype: "image/webp", size: canvas, coverColors: []string{}}
 	case purpose.Image.Reencode:
 		img, err = reencodeRaster(data, purpose.Image)
 	default:
