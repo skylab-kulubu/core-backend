@@ -23,8 +23,8 @@ PostgreSQL applies that same lock-and-marker invariant to every durable current-
 3. `erase_skymail`: send SkyMail the [Erasure command](account-erasure-command.md);
 4. `erase_cms`: send CMS the Erasure command;
 5. `erase_forms`: send Forms the Erasure command (steps 3–5 are the service erasure steps below; every pass tries each unfinished one);
-6. `anonymize_core`: anonymize Core PII, detach historical identity links and clear core's guest data of the person's addresses;
-7. `erase_profile_media`: erase an unreferenced profile-picture blob immediately;
+6. `anonymize_core`: anonymize Core PII, detach historical identity links and clear core's guest data of the person's addresses; before it clears the person's uploader links it records, by id only, the personal-purpose Media they uploaded (and their legacy uploads nothing uses, decision E1) for `erase_profile_media`, and clears the file name of every upload of theirs ([media-lifecycle.md](media-lifecycle.md#account-erasure));
+7. `erase_profile_media`: erase immediately the profile picture (only when nothing else uses it) and the personal-purpose Media recorded by `anonymize_core` (whatever still uses them);
 8. `erase_staged_uploads`: wait for and erase every durable staged upload owned by the subject;
 9. `delete_identity`: delete the Keycloak identity.
 

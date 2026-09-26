@@ -1415,6 +1415,49 @@ used in production, so there is nothing to move).
 | 503 | `private_media_unavailable` | OpenBao cannot be reached, is sealed, refuses core's identity, or has no such mount or key. Retry later (`Retry-After`). |
 | 500 | `private_media_integrity` | The stored object or its wrapped key is not what core wrote. Nothing of it is served; the log names the request. |
 
+## Account erasure
+
+A person's account erasure ([`account-lifecycle.md`](account-lifecycle.md))
+tells their uploads apart by Media purpose (media redesign ticket 07):
+
+- **Personal** (`profile_picture`, `answer_file`, `answer_file_large`): purged
+  at once.
+- **Club** (every other purpose: `event_cover`, `event_gallery`, `cms_image`,
+  `cms_file`, `club_file`, `video`, `certificate_asset`): the Media and its
+  file stay, without the uploader and the file name.
+- **Legacy** (decision E1, Yusuf, 2026-09-27): a legacy Media anything still
+  uses (a Media attachment, or one of core's own links, the safety net) is
+  club content; one nothing uses is the person's own and purged. The rule is
+  one function, `legacyIsPersonalSQL` in `internal/media/account_erasure.go`.
+
+No new saga step does this; the two existing ones do:
+
+1. `anonymize_core`, in its one transaction and in this order, locks the
+   person's uploads, records the personal ones in `account_deletion_media` (by
+   id only: request id and Media id), clears the file name of every upload of
+   theirs (a purged Media's record stays, so the personal ones lose it too),
+   and then clears their uploader. The current profile picture is never
+   recorded: it stays with `profile_media_id` and today's rule, so a picture
+   club content also uses keeps its file. An earlier profile picture of theirs
+   is recorded like any personal Media. A rerun finds no uploads left with
+   their uploader, records nothing new and keeps what the first run recorded.
+2. `erase_profile_media` hands the eraser the profile picture, then every
+   recorded Media. A recorded Media is purged whatever still uses it (an
+   Answer file a Skyforms response still holds included: personal purposes
+   win). It goes through the same two-phase purge as the archive and expiry
+   purges, with the same table locks, the durable claim that blocks restore
+   and new Media attachments, and its sizes, but without the reference check;
+   its Media attachments stay, pointing at a purged Media. The object is
+   deleted from the bucket that holds it (`media.Buckets`), and an object
+   already gone counts as deleted. Its record is deleted in the transaction
+   that records the purge, so a rerun gets only what is left; a Media purged
+   another way meanwhile only loses its record. Every Media is tried even
+   when another fails; the error counts the failures and names no Media,
+   object, file or person.
+
+What happens to the records when the request completes is in
+[`data-lifecycle.md`](data-lifecycle.md).
+
 ## Configuration
 
 - `MEDIA_BLOB_RECOVERY_DAYS` — recovery window in whole days; default `30`.
