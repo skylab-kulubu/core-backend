@@ -36,12 +36,25 @@ type colorCluster struct {
 	share float64
 }
 
+// coverColorDecodes bounds how many images are decoded for cover colours at
+// once, so concurrent uploads can't stack full-size decodes in memory.
+var coverColorDecodes = make(chan struct{}, 2)
+
 func ExtractCoverColors(data []byte) []string {
-	config, _, err := image.DecodeConfig(bytes.NewReader(data))
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil || config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > coverColorMaxPixels {
 		return []string{}
 	}
+	// A WebP's DecodeConfig reports its VP8X canvas, but the decoder allocates
+	// the frame the bitstream declares, which can be far larger. Cover colours
+	// are decoration, so WebP images go without them rather than trust the
+	// canvas.
+	if format == "webp" {
+		return []string{}
+	}
+	coverColorDecodes <- struct{}{}
 	img, _, err := image.Decode(bytes.NewReader(data))
+	<-coverColorDecodes
 	if err != nil {
 		return []string{}
 	}
