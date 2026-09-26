@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -88,27 +89,36 @@ func TestKeycloakDirectoryListsNestedGroups(t *testing.T) {
 	}
 }
 
-func TestKeycloakAccountLifecyclePreservesFederationMetadataAndTreatsDeleteRetryAsSuccess(t *testing.T) {
+// Keycloak copies an update's request body into its UPDATE admin event, which
+// outlives the user. Disable therefore sends only `{"enabled":false}`: no
+// e-mail, name, username or attribute of the person, and no read before it.
+func TestKeycloakAccountLifecycleDisablesWithOnlyEnabledFalseAndTreatsDeleteRetryAsSuccess(t *testing.T) {
 	t.Parallel()
 
 	userID := uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 	deleteCalls := 0
-	var disabledBody map[string]any
+	var userCalls []string
+	var disableBodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/admin/realms/e-skylab/users/"+userID.String() {
+			userCalls = append(userCalls, r.Method)
+		}
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/protocol/openid-connect/token"):
 			_, _ = w.Write([]byte(`{"access_token":"tok","expires_in":300,"token_type":"Bearer"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/admin/realms/e-skylab/users/"+userID.String():
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id": userID.String(), "username": "ldap-user", "email": "ldap@example.com",
-				"firstName": "LDAP", "lastName": "Member", "enabled": true,
-				"federationLink": "ldap-provider-id", "attributes": map[string][]string{"sky_number": {"SKY-0000042"}},
+				"id": userID.String(), "username": "ada", "email": "ada@example.com",
+				"firstName": "Ada", "lastName": "Lovelace", "enabled": true,
+				"attributes": map[string][]string{"skyNumber": {"SKY-0000042"}, "schoolEmail": {"ada@std.yildiz.edu.tr"}},
 			})
 		case r.Method == http.MethodPut && r.URL.Path == "/admin/realms/e-skylab/users/"+userID.String():
-			if err := json.NewDecoder(r.Body).Decode(&disabledBody); err != nil {
-				t.Errorf("decode disable body: %v", err)
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read disable body: %v", err)
 			}
+			disableBodies = append(disableBodies, string(body))
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && r.URL.Path == "/admin/realms/e-skylab/users/"+userID.String()+"/logout":
 			w.WriteHeader(http.StatusNoContent)
@@ -130,11 +140,17 @@ func TestKeycloakAccountLifecyclePreservesFederationMetadataAndTreatsDeleteRetry
 	})
 	lifecycle := identity.NewAccountIdentity(directory)
 	ctx := context.Background()
-	if err := lifecycle.EnsureDisabled(ctx, userID); err != nil {
-		t.Fatal(err)
+	// The second disable is the saga's retry of an already disabled user.
+	for range 2 {
+		if err := lifecycle.EnsureDisabled(ctx, userID); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if disabledBody["enabled"] != false || disabledBody["federationLink"] != "ldap-provider-id" || disabledBody["username"] != "ldap-user" {
-		t.Fatalf("federated representation was not preserved: %+v", disabledBody)
+	if want := []string{`{"enabled":false}`, `{"enabled":false}`}; !reflect.DeepEqual(disableBodies, want) {
+		t.Fatalf("disable bodies = %q, want exactly %q", disableBodies, want)
+	}
+	if want := []string{http.MethodPut, http.MethodPut}; !reflect.DeepEqual(userCalls, want) {
+		t.Fatalf("user calls = %v, want only the two PUTs", userCalls)
 	}
 	if err := lifecycle.EnsureLoggedOut(ctx, userID); err != nil {
 		t.Fatal(err)
@@ -144,6 +160,39 @@ func TestKeycloakAccountLifecyclePreservesFederationMetadataAndTreatsDeleteRetry
 	}
 	if err := lifecycle.EnsureDeleted(ctx, userID); err != nil {
 		t.Fatalf("delete retry: %v", err)
+	}
+}
+
+func TestKeycloakDisableOfAMissingUserIsNotFoundAndDoneForTheLifecycle(t *testing.T) {
+	t.Parallel()
+
+	id := uuid.New()
+	fake := &fakeKeycloakUser{id: id}
+	directory := newAddressDirectory(fake.serve(t).URL)
+
+	if err := directory.DisableUser(context.Background(), id); !errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("directory error = %v, want ErrNotFound", err)
+	}
+	if err := identity.NewAccountIdentity(directory).EnsureDisabled(context.Background(), id); err != nil {
+		t.Fatalf("lifecycle error = %v, want nil", err)
+	}
+	if want := []string{http.MethodPut, http.MethodPut}; !reflect.DeepEqual(fake.methods, want) {
+		t.Fatalf("methods = %v, want only PUTs", fake.methods)
+	}
+}
+
+func TestKeycloakDisableFailureCarriesNoSubjectOrAddress(t *testing.T) {
+	t.Parallel()
+
+	id := uuid.New()
+	directory := newAddressDirectory((&fakeKeycloakUser{id: id, status: http.StatusInternalServerError}).serve(t).URL)
+
+	err := identity.NewAccountIdentity(directory).EnsureDisabled(context.Background(), id)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if msg := err.Error(); strings.Contains(msg, id.String()) || strings.Contains(msg, "kisi@example.com") || !strings.Contains(msg, "500") {
+		t.Fatalf("error = %q, want the status and neither the subject nor an address", msg)
 	}
 }
 

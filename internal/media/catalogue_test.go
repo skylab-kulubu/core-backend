@@ -138,6 +138,11 @@ func TestCatalogue_RefusesMalformedEntries(t *testing.T) {
 		"unknown transport":       func(p purposeEntries) { p["cms_file"]["transport"] = "courier" },
 		"unknown attacher":        func(p purposeEntries) { p["cms_file"]["attach"] = "anyone" },
 		"no attacher":             func(p purposeEntries) { delete(p["cms_file"], "attach") },
+		"unknown service":         func(p purposeEntries) { p["cms_file"]["service"] = "arge" },
+		"service on core purpose": func(p purposeEntries) { p["event_cover"]["service"] = "cms" },
+		"role of another service": func(p purposeEntries) { p["cms_image"]["service"] = "forms" },
+		"no CMS image":            func(p purposeEntries) { delete(p, "cms_image") },
+		"no Answer file":          func(p purposeEntries) { delete(p, "answer_file") },
 		"unreadable pending TTL":  func(p purposeEntries) { p["cms_file"]["pending_ttl"] = "tomorrow" },
 		"pending that never ends": func(p purposeEntries) { p["cms_file"]["pending_ttl"] = "none" },
 		"variant above the image": func(p purposeEntries) {

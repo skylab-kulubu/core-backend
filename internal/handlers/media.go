@@ -67,9 +67,9 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 			"Private Media is not available yet; this purpose cannot be uploaded.", "private_media_disabled", fields)
 	case errors.Is(err, media.ErrPurposeNotAvailable):
 		// Like private_media_disabled: nothing is stored, and retrying does
-		// not help until the path that attaches these Media ships.
+		// not help until a product attaches these Media.
 		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
-			"Media of this purpose are attached by another product through the service attach API, which arrives with media redesign ticket 03; until then nothing could attach the file before it expires.",
+			"Nothing can attach Media of this purpose yet: the product that attaches them has no service account core accepts, or none is named. The file would only wait for its expiry.",
 			"purpose_not_available", fields)
 	case errors.Is(err, media.ErrDirectUploadOnly):
 		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",

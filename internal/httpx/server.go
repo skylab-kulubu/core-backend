@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
@@ -67,6 +68,11 @@ type Deps struct {
 	// MediaUploadLimiter is each person's single-step upload budget. Nil
 	// uses media.DefaultUploadLimits.
 	MediaUploadLimiter *media.UploadLimiter
+
+	// ServiceClients are the products' service clients: a service
+	// account's token of one of them speaks for its product. Nil configures
+	// none.
+	ServiceClients authz.ServiceClients
 }
 
 func New(deps Deps) *fiber.App {
@@ -182,7 +188,7 @@ func New(deps Deps) *fiber.App {
 		app.Post("/v1/account-deletion-requests/status/retry", selfDeletion.Retry)
 	}
 	app.Post("/v1/events/:eventId/applications/guest", tickets.ApplyGuest)
-	app.Use(middlewares.Bearer(deps.ParseToken))
+	app.Use(middlewares.Bearer(authn.WithServiceProducts(deps.ParseToken, deps.ServiceClients)))
 	app.Use(middlewares.AccountAccessGate(deps.AccountAccessGate, deps.AccountAccessMetrics))
 	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Get("/v1/go/:alias/:channel", urls.RedirectChannel)
@@ -327,6 +333,10 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/media/:id", mediaH.Get)
 	app.Delete("/v1/media/:id", mediaH.Delete)
 	app.Post("/v1/media/:id/restore", mediaH.Restore)
+	// The service attach API: another product's service account links Media
+	// to its own records (docs/media-lifecycle.md).
+	app.Post("/v1/media/:id/attachments", mediaH.Attach)
+	app.Delete("/v1/media/:id/attachments/:attachmentId", mediaH.Detach)
 
 	app.Post("/v1/urls", urls.Create)
 	app.Get("/v1/urls", urls.ListMine)

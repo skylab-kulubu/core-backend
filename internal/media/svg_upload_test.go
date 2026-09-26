@@ -14,20 +14,13 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
-// svgService uploads cms_image, the purpose that rasterizes SVG, with core
-// as its attacher: nothing else can attach it until the service attach API
-// exists.
+// svgService uploads cms_image, the purpose that rasterizes SVG, as a core
+// whose CMS has a service client, so that cms_image can be uploaded.
 func svgService(t *testing.T, budget *media.DecodeBudget) (media.Service, *media.MemoryBlob) {
 	t.Helper()
-	catalogue, err := media.ParseCatalogue(reviewedCatalogueWith(t, func(purposes purposeEntries) {
-		purposes["cms_image"]["attach"] = "core"
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
 	blobs := media.NewMemoryBlob()
 	return media.NewServiceWithOptions(media.NewMemoryStore(), blobs, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test",
-		media.ServiceOptions{Catalogue: catalogue, DecodeBudget: budget}), blobs
+		media.ServiceOptions{DecodeBudget: budget, ServiceProducts: []authz.Product{authz.ProductCMS}}), blobs
 }
 
 const redLogo = `<?xml version="1.0"?>
@@ -133,14 +126,13 @@ func TestService_SVGThatTakesTooLongToDrawIsRefused(t *testing.T) {
 func TestService_SVGIsRefusedWhenTheSwitchIsOff(t *testing.T) {
 	t.Parallel()
 	catalogue, err := media.ParseCatalogue(reviewedCatalogueWith(t, func(purposes purposeEntries) {
-		purposes["cms_image"]["attach"] = "core"
 		purposes["cms_image"]["image"].(map[string]any)["rasterize_svg"] = false
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	svc := media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
-		media.ServiceOptions{Catalogue: catalogue})
+		media.ServiceOptions{Catalogue: catalogue, ServiceProducts: []authz.Product{authz.ProductCMS}})
 	p := signedIn("85858585-8585-8585-8585-858585858585")
 
 	_, err = svc.UploadForPurpose(context.Background(), p, "cms_image", uploaded("logo.svg", "image/svg+xml", []byte(redLogo)))

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
 // Role is what a Media is to the record a Media attachment links it to.
@@ -22,18 +23,39 @@ const (
 	RoleCertificateAsset Role = "certificate_asset"
 )
 
-// rolePurposes are the Media purposes each role accepts. The two Event
-// purposes fit both Event roles: the organizer's picker offers every photo of
-// the team's Events for the cover and the gallery alike.
+// The roles another product's records give a Media, through the service
+// attach API.
+const (
+	// RoleFormsAnswer: an Answer file of a Skyforms response or draft.
+	RoleFormsAnswer Role = "answer"
+	// RoleCMSImage: an image on a CMS page, block or collection item.
+	RoleCMSImage Role = "image"
+	// RoleCMSFile: a document a CMS page offers.
+	RoleCMSFile Role = "file"
+)
+
+// rolePurposes are, for each product, the roles its records give a Media and
+// the Media purposes each role accepts. The two Event purposes fit both Event
+// roles: the organizer's picker offers every photo of the team's Events for
+// the cover and the gallery alike.
 //
 // Transition rule: a legacy Media fits every role, as any Media could be
-// linked anywhere before Media purpose. superadmin, Skyforms and CMS still
-// upload without a purpose; the rule ends when they send one (media redesign
-// tickets 09 and 15).
-var rolePurposes = map[Role][]string{
-	RoleEventCover:       {PurposeEventCover, PurposeEventGallery},
-	RoleEventGallery:     {PurposeEventGallery, PurposeEventCover},
-	RoleCertificateAsset: {PurposeCertificateAsset},
+// linked anywhere before Media purpose (fits). superadmin, Skyforms and CMS
+// still upload without a purpose; the rule ends when they send one (media
+// redesign tickets 09 and 15).
+var rolePurposes = map[authz.Product]map[Role][]string{
+	authz.ProductCore: {
+		RoleEventCover:       {PurposeEventCover, PurposeEventGallery},
+		RoleEventGallery:     {PurposeEventGallery, PurposeEventCover},
+		RoleCertificateAsset: {PurposeCertificateAsset},
+	},
+	authz.ProductForms: {RoleFormsAnswer: {PurposeAnswerFile, PurposeAnswerFileLarge}},
+	authz.ProductCMS:   {RoleCMSImage: {PurposeCMSImage}, RoleCMSFile: {PurposeCMSFile}},
+}
+
+// fits reports whether a Media of the purpose may play the product's role.
+func fits(product authz.Product, role Role, purpose string) bool {
+	return purpose == PurposeLegacy || slices.Contains(rolePurposes[product][role], purpose)
 }
 
 // Link refusals by the Media itself. Each also matches ErrInvalid.
@@ -81,17 +103,36 @@ type linker struct {
 }
 
 func (l linker) CheckLink(ctx context.Context, id uuid.UUID, role Role) error {
-	m, err := l.store.GetIncludingDeleted(ctx, id)
+	return checkLink(ctx, l.store, id, authz.ProductCore, role, nil)
+}
+
+// checkLink is the one check of every new link, core's own and another
+// product's: the Media exists and is linkable, the product may link it at
+// all (may, when the product has such a rule), and its purpose fits the
+// product's role. A Media the product may not link is refused exactly like
+// one that does not exist, so the refusal tells the caller nothing about it.
+func checkLink(ctx context.Context, store Store, id uuid.UUID, product authz.Product, role Role, may func(Media) (bool, error)) error {
+	notLinkable := &LinkRefusal{Err: ErrNotLinkable, MediaID: id, Role: role}
+	m, err := store.GetIncludingDeleted(ctx, id)
 	if errors.Is(err, ErrNotFound) {
-		return &LinkRefusal{Err: ErrNotLinkable, MediaID: id, Role: role}
+		return notLinkable
 	}
 	if err != nil {
 		return err
 	}
 	if !linkable(m, time.Now()) {
-		return &LinkRefusal{Err: ErrNotLinkable, MediaID: id, Role: role}
+		return notLinkable
 	}
-	if m.Purpose != PurposeLegacy && !slices.Contains(rolePurposes[role], m.Purpose) {
+	if may != nil {
+		allowed, err := may(m)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return notLinkable
+		}
+	}
+	if !fits(product, role, m.Purpose) {
 		return &LinkRefusal{Err: ErrPurposeMismatch, MediaID: id, Role: role, Purpose: m.Purpose}
 	}
 	return nil

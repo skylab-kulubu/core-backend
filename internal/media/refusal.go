@@ -21,9 +21,9 @@ var (
 	// private Media storage. A private purpose is never stored publicly
 	// instead.
 	ErrPrivateMediaDisabled = errors.New("media: private Media is not enabled")
-	// ErrPurposeNotAvailable refuses a purpose that another product
-	// attaches while the service attach API (media redesign ticket 03) does
-	// not exist: nothing could attach the Media before it expires.
+	// ErrPurposeNotAvailable refuses a service purpose whose product has no
+	// service client configured, or that names no product: nothing could
+	// attach the Media before it expires.
 	ErrPurposeNotAvailable = errors.New("media: nothing can attach Media of this purpose yet")
 )
 

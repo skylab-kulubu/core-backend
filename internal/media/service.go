@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,6 +34,13 @@ type Service interface {
 	// Addresses builds public addresses from the configured base, for
 	// records that keep a Media's key, such as a User's profile picture.
 	Addresses() Addresses
+	// Attach links the Media to a record of the calling product through the
+	// service attach API. created is false when the same link already
+	// exists; that Media attachment is returned.
+	Attach(ctx context.Context, p authz.Principal, mediaID uuid.UUID, req AttachRequest) (a Attachment, created bool, err error)
+	// Detach removes a Media attachment of the calling product; removing
+	// one that is not there succeeds.
+	Detach(ctx context.Context, p authz.Principal, mediaID, attachmentID uuid.UUID) error
 }
 
 type service struct {
@@ -43,6 +51,7 @@ type service struct {
 	uploadStagingGrace time.Duration
 	catalogue          Catalogue
 	decoding           *DecodeBudget
+	serviceProducts    []authz.Product
 }
 
 func NewService(media Store, blobs BlobStore, az authz.Authorizer, publicBase string) Service {
@@ -60,6 +69,10 @@ type ServiceOptions struct {
 	// DecodeBudget is the process's decode budget, shared with the
 	// backfills. Nil makes one for this service alone.
 	DecodeBudget *DecodeBudget
+	// ServiceProducts are the products with a service client configured
+	// (authz.ServiceClients): only they can attach Media, so a service
+	// purpose of any other product cannot be uploaded.
+	ServiceProducts []authz.Product
 }
 
 func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, publicBase string, options ServiceOptions) Service {
@@ -76,7 +89,10 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	if decoding == nil {
 		decoding = NewDecodeBudget(DecodeBudgetConfig{})
 	}
-	return &service{media: media, blobs: blobs, authz: az, addresses: addresses, uploadStagingGrace: grace, catalogue: catalogue, decoding: decoding}
+	return &service{
+		media: media, blobs: blobs, authz: az, addresses: addresses, uploadStagingGrace: grace, catalogue: catalogue,
+		decoding: decoding, serviceProducts: options.ServiceProducts,
+	}
 }
 
 // reviewedCatalogue is the catalogue carried in the binary. Core validates it
@@ -144,7 +160,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if purpose.Transport == TransportDirect {
 		return Media{}, &PurposeRefusal{Err: ErrDirectUploadOnly, Purpose: purpose.Name}
 	}
-	if !purpose.Available() {
+	if !s.attachable(purpose) {
 		return Media{}, &PurposeRefusal{Err: ErrPurposeNotAvailable, Purpose: purpose.Name}
 	}
 	if len(file.Data) == 0 {
@@ -263,6 +279,13 @@ func (s *service) coverColors(data []byte) ([]string, bool) {
 	}
 	defer release()
 	return ExtractCoverColors(data), true
+}
+
+// attachable reports whether something can attach Media of the purpose
+// today: core, or the purpose's product once it has a service client. A
+// Media nothing can attach would only wait for its expiry.
+func (s *service) attachable(purpose Purpose) bool {
+	return purpose.Attach == AttachCore || (purpose.Service != "" && slices.Contains(s.serviceProducts, purpose.Service))
 }
 
 // pendingExpiry is when a Media of the purpose uploaded at now is purged if
