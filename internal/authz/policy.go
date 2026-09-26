@@ -33,6 +33,9 @@ const (
 	TypeFormLink            Type = "FORM_LINK"
 	TypeCertificate         Type = "CERTIFICATE"
 	TypeCertificateTemplate Type = "CERTIFICATE_TEMPLATE"
+	// TypeMediaAttachment is a Media attachment another product makes or
+	// removes for its own records through the service attach API.
+	TypeMediaAttachment Type = "MEDIA_ATTACHMENT"
 )
 
 type Level string
@@ -46,6 +49,11 @@ type Principal struct {
 	ID     string
 	Groups []string
 	Roles  []string
+	// Client is the Keycloak client the caller's token was issued to.
+	Client string
+	// Service is true when the caller is Client's own service account (a
+	// client-credentials token), never a person.
+	Service bool
 }
 
 type Resource struct {
