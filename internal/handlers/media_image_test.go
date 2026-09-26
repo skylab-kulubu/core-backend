@@ -118,3 +118,14 @@ func TestMediaUploadAnswersBusyWhenNoDecodingSlotFreesUpHTTP(t *testing.T) {
 		t.Fatalf("status %d Retry-After %q body %v", resp.StatusCode, resp.Header.Get("Retry-After"), got)
 	}
 }
+
+// A second root element after the first one closes is refused as a type
+// the purpose does not accept, not a crash: the caller gets problem+json.
+func TestMediaUploadOfAnSVGWithASecondRootHTTP(t *testing.T) {
+	t.Parallel()
+	app := mediaApp(t, authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/YK"}}, media.NewMemoryStore(), media.NewMemoryBlob())
+	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg><svg><rect width="2" height="2"/></svg>`)
+
+	resp := postMedia(t, app, "event_cover", "two.svg", svg)
+	requireProblem(t, resp, fiber.StatusUnsupportedMediaType, "media_type_not_allowed")
+}

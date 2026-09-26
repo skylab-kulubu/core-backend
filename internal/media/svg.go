@@ -88,17 +88,29 @@ type svgNode struct {
 // sanitizeSVG reads an SVG as XML and writes it again from what it keeps:
 // the elements and attributes in the allowlists above, same-document
 // references (#id) and nothing that loads or runs anything. The original
-// bytes are never passed through. A document type, an entity, a root that
-// is not <svg>, or more than maxSVGElements elements nested deeper than
-// maxSVGDepth is errSVGRefused.
-func sanitizeSVG(data []byte) ([]byte, error) {
+// bytes are never passed through.
+//
+// One DOCTYPE before the root is dropped when it has no internal subset
+// (Illustrator writes the SVG 1.1 one): encoding/xml fetches nothing and
+// expands nothing, and it is never written out. An internal subset, an
+// entity, any other directive, a second DOCTYPE, anything but whitespace,
+// comments and processing instructions after the root, a root that is not
+// <svg>, or more than maxSVGElements elements or nesting deeper than
+// maxSVGDepth is errSVGRefused; so is a fault in the parser.
+func sanitizeSVG(data []byte) (out []byte, err error) {
 	if len(data) > maxSVGBytes {
 		return nil, errSVGTooLarge
 	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			out, err = nil, errSVGRefused
+		}
+	}()
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	var root *svgNode
 	var stack []*svgNode
 	elements, depth, skipped := 0, 0, 0
+	doctype, closed := false, false
 	for {
 		token, err := decoder.Token()
 		if errors.Is(err, io.EOF) {
@@ -107,9 +119,25 @@ func sanitizeSVG(data []byte) ([]byte, error) {
 		if err != nil {
 			return nil, errSVGRefused
 		}
+		if closed {
+			// After the root: only whitespace, comments and processing
+			// instructions, which are dropped.
+			switch t := token.(type) {
+			case xml.Comment, xml.ProcInst:
+				continue
+			case xml.CharData:
+				if len(bytes.TrimSpace(t)) == 0 {
+					continue
+				}
+			}
+			return nil, errSVGRefused
+		}
 		switch t := token.(type) {
 		case xml.Directive:
-			return nil, errSVGRefused
+			if root != nil || doctype || !bytes.HasPrefix(t, []byte("DOCTYPE")) || bytes.ContainsRune(t, '[') {
+				return nil, errSVGRefused
+			}
+			doctype = true
 		case xml.StartElement:
 			elements++
 			depth++
@@ -144,6 +172,7 @@ func sanitizeSVG(data []byte) ([]byte, error) {
 				continue
 			}
 			stack = stack[:len(stack)-1]
+			closed = len(stack) == 0
 		case xml.CharData:
 			if skipped > 0 || len(stack) == 0 || !svgTextElements[stack[len(stack)-1].name] {
 				continue
@@ -155,10 +184,10 @@ func sanitizeSVG(data []byte) ([]byte, error) {
 	if root == nil {
 		return nil, errSVGRefused
 	}
-	var out bytes.Buffer
-	out.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
-	root.write(&out, true)
-	return out.Bytes(), nil
+	var written bytes.Buffer
+	written.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
+	root.write(&written, true)
+	return written.Bytes(), nil
 }
 
 // sanitizeSVGAttributes keeps the attributes in svgAttributes whose values

@@ -158,13 +158,18 @@ func TestService_SVGThatCoreRefuses(t *testing.T) {
 	svc, blobs := svgService(t)
 	p := organizer()
 	for name, svg := range map[string]string{
-		"a document type":   `<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg xmlns="http://www.w3.org/2000/svg"/>`,
-		"an entity bomb":    `<!DOCTYPE svg [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">]><svg xmlns="http://www.w3.org/2000/svg"><text>&b;</text></svg>`,
-		"an unknown entity": `<svg xmlns="http://www.w3.org/2000/svg"><text>&lol;</text></svg>`,
-		"not XML":           `<svg xmlns="http://www.w3.org/2000/svg"><rect`,
-		"not an SVG root":   `<html><svg xmlns="http://www.w3.org/2000/svg"/></html>`,
-		"too many elements": `<svg xmlns="http://www.w3.org/2000/svg">` + strings.Repeat(`<rect/>`, 10001) + `</svg>`,
-		"too deep":          `<svg xmlns="http://www.w3.org/2000/svg">` + strings.Repeat(`<g>`, 70) + strings.Repeat(`</g>`, 70) + `</svg>`,
+		"an entity bomb":           `<!DOCTYPE svg [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">]><svg xmlns="http://www.w3.org/2000/svg"><text>&b;</text></svg>`,
+		"an internal subset":       `<!DOCTYPE svg [<!ATTLIST svg onload CDATA "alert(1)">]><svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>`,
+		"a second DOCTYPE":         `<!DOCTYPE svg><!DOCTYPE svg><svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>`,
+		"another directive":        `<!ELEMENT svg ANY><svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>`,
+		"a DOCTYPE after the root": `<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg><!DOCTYPE svg>`,
+		"a second root":            `<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg><svg xmlns="http://www.w3.org/2000/svg"><rect width="2" height="2"/></svg>`,
+		"text after the root":      `<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>trailing`,
+		"an unknown entity":        `<svg xmlns="http://www.w3.org/2000/svg"><text>&lol;</text></svg>`,
+		"not XML":                  `<svg xmlns="http://www.w3.org/2000/svg"><rect`,
+		"not an SVG root":          `<html><svg xmlns="http://www.w3.org/2000/svg"/></html>`,
+		"too many elements":        `<svg xmlns="http://www.w3.org/2000/svg">` + strings.Repeat(`<rect/>`, 10001) + `</svg>`,
+		"too deep":                 `<svg xmlns="http://www.w3.org/2000/svg">` + strings.Repeat(`<g>`, 70) + strings.Repeat(`</g>`, 70) + `</svg>`,
 	} {
 		_, err := svc.UploadForPurpose(context.Background(), p, "event_gallery", uploaded("x.svg", "image/svg+xml", []byte(svg)))
 		if !errors.Is(err, media.ErrTypeNotAllowed) {
@@ -197,5 +202,30 @@ func TestService_SVGOnlyForThePurposesThatListIt(t *testing.T) {
 	var refusal *media.PurposeRefusal
 	if !errors.Is(err, media.ErrTypeNotAllowed) || !errors.As(err, &refusal) || slices.Contains(refusal.AllowedTypes, "image/svg+xml") {
 		t.Fatalf("profile picture: err = %v", err)
+	}
+}
+
+// An SVG exported by Illustrator starts with a DOCTYPE naming the SVG 1.1
+// DTD. With no internal subset it declares nothing core would expand, and
+// encoding/xml fetches nothing: it is dropped, and the SVG kept.
+func TestService_SVGDropsAPublicDOCTYPE(t *testing.T) {
+	t.Parallel()
+	svc, blobs := svgService(t)
+	illustrator := `<?xml version="1.0" encoding="utf-8"?>
+<!-- Generator: Adobe Illustrator 24.0.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#0a3d91"/></svg>
+<!-- trailing comment -->
+`
+	created, err := svc.UploadForPurpose(context.Background(), organizer(), "event_cover", uploaded("logo.svg", "image/svg+xml", []byte(illustrator)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := blobs.Get(created.Key)
+	if bytes.Contains(stored, []byte("DOCTYPE")) || bytes.Contains(stored, []byte("w3.org/Graphics")) || bytes.Contains(stored, []byte("Illustrator")) {
+		t.Fatalf("the DOCTYPE or a comment was written out:\n%s", stored)
+	}
+	if elements := svgElements(t, stored); len(elements) != 2 {
+		t.Fatalf("elements %v", elements)
 	}
 }
