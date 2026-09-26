@@ -632,3 +632,24 @@ func TestEventGalleryOrderIsStableForImagesUploadedTogetherHTTP(t *testing.T) {
 		t.Fatalf("imageUrls %v in another order than images %+v", got.ImageURLs, got.Images)
 	}
 }
+
+// A picture whose object is purged while the profile still links it keeps
+// answering profilePictureUrl (as before sizes existed) but has no sizes: a
+// Media with no public address never gets any.
+func TestMePurgedProfilePictureAnswersNoSizesHTTP(t *testing.T) {
+	f := newImageSizesFixture(t)
+	picture := f.image(t, media.PurposeProfilePicture, "images/purged-portrait", 1600, 1600, map[string]media.SizeObject{
+		media.SizeCard: jpegSize(400, 400), media.SizePage: jpegSize(1200, 1200),
+	})
+	app, _ := f.profile(t, &picture)
+	if _, err := f.pool.Exec(context.Background(), `UPDATE media SET deleted_at = now(), blob_purge_started_at = now() WHERE id = $1`, picture.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var got sizedProfileView
+	answer(t, app, httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil), &got)
+
+	if got.ProfilePictureURL != sizesBase+"/images/purged-portrait" || got.ProfilePictureSizes != nil {
+		t.Fatalf("purged picture answered %q with sizes %+v", got.ProfilePictureURL, got.ProfilePictureSizes)
+	}
+}
