@@ -133,20 +133,14 @@ func (h *URLHandler) QR(c fiber.Ctx) error {
 	content := utm.FillInto(qr.ShortURL(u.Alias))
 	logo := qr.LogoFromQuery(c.Query("logo"))
 	if strings.EqualFold(c.Query("format"), "svg") {
-		svg, err := qr.SVG(content, logo)
+		svg, err := qr.StyledSVG(content, logo)
 		if err != nil {
 			return problem(c, fiber.StatusBadRequest, "Bad Request")
 		}
 		c.Set(fiber.HeaderContentType, "image/svg+xml")
 		return c.Send(svg)
 	}
-	size := qr.SizeFromQuery(c.Query("size"))
-	var png []byte
-	if logo {
-		png, err = qr.PNGWithLogo(content, size)
-	} else {
-		png, err = qr.PNG(content, size)
-	}
+	png, err := qr.StyledPNG(content, qr.SizeFromQuery(c.Query("size")), logo)
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
