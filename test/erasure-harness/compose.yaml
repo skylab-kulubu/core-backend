@@ -210,6 +210,9 @@ services:
       ACCOUNT_ACCESS_REDIS_TLS_KEY_FILE: /harness/redis/client.key
       ACCOUNT_ACCESS_REDIS_CA_CERT_FILE: /harness/ca.crt
       ACCOUNT_ACCESS_REDIS_OPERATION_TIMEOUT: 500ms
+      # Unset (the sender on) unless the caller's environment sets it: scenario 11 redeploys
+      # SkyMail with MAIL_SENDER=paused for the restore, then without it (docs/data-lifecycle.md).
+      MAIL_SENDER:
     volumes:
       - *harness-ca
       - ${HARNESS_STATE}/pki/clients/skymail-reader.crt:/harness/redis/client.crt:ro

@@ -61,6 +61,12 @@ check() { # check "description" command...
   fi
 }
 note() { log "  note  $*"; printf '%s\tNOTE\t%s\t%s\n' "$SCENARIO" "$(date -u +%FT%TZ)" "$*" >>"$RESULTS"; }
+# known_gap TICKET TEXT: a documented limit the product does not close yet. Printed and recorded
+# (the summary lists it), never a failure. TEXT carries counts, never an address or a name.
+known_gap() {
+  log "  KNOWN GAP (ticket $1)  ${*:2}"
+  printf '%s\tKNOWN-GAP\t%s\t%s\n' "$SCENARIO" "$(date -u +%FT%TZ)" "KNOWN GAP (ticket $1): ${*:2}" >>"$RESULTS"
+}
 scenario_end() {
   local status=PASS
   ((SCENARIO_FAILURES == 0)) || status=FAIL
