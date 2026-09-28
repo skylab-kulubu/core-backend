@@ -27,8 +27,8 @@ var (
 	// expires), and ErrPurposeNeedsScanner.
 	ErrPurposeNotAvailable = errors.New("media: nothing can attach Media of this purpose yet")
 	// ErrPurposeNeedsScanner refuses a purpose that needs a malware scan
-	// while core has no scanner (ticket 12): its Media could never be
-	// opened. errors.Is matches ErrPurposeNotAvailable.
+	// while core has no scanner configured (MEDIA_CLAMAV_ADDR): its Media
+	// could never be opened. errors.Is matches ErrPurposeNotAvailable.
 	ErrPurposeNeedsScanner = fmt.Errorf("media: the purpose needs a malware scan and no scanner is configured: %w", ErrPurposeNotAvailable)
 )
 

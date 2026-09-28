@@ -27,7 +27,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 // mediaCols and scanMedia map the media columns to Media fields; the part
 // of that mapping a record reads with the Media it links is repeated in
 // LinkedImageSQL (linked_image.go), so a column changed here changes there.
-const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, detach_expiry_held, width, height, size_objects, visibility, encryption_algorithm, wrapped_data_key, key_version`
+const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, detach_expiry_held, width, height, size_objects, visibility, encryption_algorithm, wrapped_data_key, key_version, scan_result`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 	return insertMedia(ctx, s.pool, newRecord(m))
@@ -583,12 +583,15 @@ func scanMedia(row rowScanner) (Media, error) {
 	var created, updated time.Time
 	var width, height *int
 	var sizeObjects []byte
-	var algorithm, wrappedKey *string
+	var algorithm, wrappedKey, scanResult *string
 	var keyVersion *int
 	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt, &m.DetachExpiryHeld, &width, &height, &sizeObjects,
-		&m.Visibility, &algorithm, &wrappedKey, &keyVersion)
+		&m.Visibility, &algorithm, &wrappedKey, &keyVersion, &scanResult)
 	if err != nil {
 		return m, err
+	}
+	if scanResult != nil {
+		m.ScanResult = ScanResult(*scanResult)
 	}
 	if algorithm != nil && wrappedKey != nil && keyVersion != nil {
 		m.Encryption = &Encryption{Algorithm: *algorithm, WrappedKey: *wrappedKey, KeyVersion: *keyVersion}

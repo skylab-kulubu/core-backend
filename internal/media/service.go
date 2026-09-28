@@ -88,6 +88,8 @@ type service struct {
 	serviceProducts    []authz.Product
 	private            *PrivateMedia
 	direct             DirectUploadConfig
+	// scans is the malware scan; nil while core has no scanner.
+	scans ScanQueue
 }
 
 func NewService(media Store, blobs BlobStore, az authz.Authorizer, publicBase string) Service {
@@ -115,6 +117,10 @@ type ServiceOptions struct {
 	// Direct is what Direct upload needs. Its zero value has no storage:
 	// Direct upload answers ErrDirectUploadUnavailable.
 	Direct DirectUploadConfig
+	// Scans is the malware scan (ScanWorker; MEDIA_CLAMAV_ADDR). Nil keeps
+	// the scan gate closed: a purpose that needs a scan is refused
+	// (ErrPurposeNeedsScanner).
+	Scans ScanQueue
 }
 
 // PrivateMedia is what private Media needs (docs/media-lifecycle.md).
@@ -157,7 +163,7 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	return &service{
 		media: media, blobs: blobs, objects: objects, authz: az, addresses: addresses, uploadStagingGrace: grace,
 		decoding: decoding, serviceProducts: options.ServiceProducts, private: options.Private,
-		direct: options.Direct,
+		direct: options.Direct, scans: options.Scans,
 	}
 }
 
@@ -246,7 +252,7 @@ func (s *service) purposeRefusal(p authz.Principal, purpose Purpose, transport T
 	if !s.attachable(purpose) {
 		return &PurposeRefusal{Err: ErrPurposeNotAvailable, Purpose: purpose.Name}
 	}
-	if purpose.Scan && !scannerAvailable {
+	if purpose.Scan && s.scans == nil {
 		// A purpose that needs a malware scan is opened only once it is
 		// clean; with no scanner, nothing of it could ever be opened.
 		return &PurposeRefusal{Err: ErrPurposeNeedsScanner, Purpose: purpose.Name}
@@ -346,6 +352,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		Height:              shown.Height,
 		SizeObjects:         sizeObjects,
 		Purpose:             purpose.Name,
+		Status:              initialStatus(purpose),
 		Visibility:          purpose.Visibility,
 		Encryption:          encryption,
 		ExpiresAt:           pendingExpiry(purpose, time.Now().UTC()),
@@ -370,7 +377,24 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 		}
 		return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, sizes, err)
 	}
+	s.scanStored(created)
 	return s.withURL(created), nil
+}
+
+// initialStatus is the status a new Media of the purpose starts with:
+// scanning when it needs a malware scan, pending otherwise.
+func initialStatus(purpose Purpose) Status {
+	if purpose.Scan {
+		return StatusScanning
+	}
+	return StatusPending
+}
+
+// scanStored nudges the malware scan for a Media stored waiting for it.
+func (s *service) scanStored(m Media) {
+	if m.Status == StatusScanning && s.scans != nil {
+		s.scans.Wake()
+	}
 }
 
 // storedFile is what the purpose's rules make of the file. An image for a

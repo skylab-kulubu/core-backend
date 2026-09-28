@@ -58,7 +58,25 @@ var (
 	// MaxImageDimension pixels on its longer side; re-encoding scales a
 	// larger one down to the purpose's max_dimension.
 	ErrCeilingImageDimension = errors.New("media purpose catalogue: image dimension above the cap")
+	// ErrCeilingPublicScan: a public purpose that needs a malware scan is a
+	// Direct upload purpose. Its file must not be served before the scan
+	// finds it clean: core holds a Direct upload's file under the pending
+	// prefix, at a key only core knows, and copies it to its served key
+	// once clean; a single-step upload is written straight to its served
+	// key.
+	ErrCeilingPublicScan = errors.New("media purpose catalogue: a public purpose that needs a malware scan is sent by Direct upload")
+	// ErrCeilingScanSize: a purpose that needs a malware scan allows at
+	// most MaxScanBytes, what clamd takes in one stream (its
+	// StreamMaxLength, set by the ClamAV wizard). A larger file would be
+	// rejected as too large to scan every time.
+	ErrCeilingScanSize = errors.New("media purpose catalogue: a purpose that needs a malware scan allows at most what the scanner takes")
 )
+
+// MaxScanBytes is the largest file the malware scanner takes: clamd's
+// StreamMaxLength and MaxFileSize (1024M), which
+// ops/wizards/media-clamav-wizard.sh in sky_lab_genel sets. Raising it
+// means raising those first.
+const MaxScanBytes = 1 << 30
 
 // svgPurposes are the only purposes that may accept SVG.
 var svgPurposes = []string{"cms_image", PurposeEventCover, PurposeEventGallery}
@@ -96,6 +114,12 @@ func checkCeilings(p Purpose) error {
 				return fmt.Errorf("%s names %s: %w", p.Name, t, ErrCeilingDirectType)
 			}
 		}
+	}
+	if p.Scan && p.MaxBytes > MaxScanBytes {
+		return fmt.Errorf("%s allows %d bytes over %d: %w", p.Name, p.MaxBytes, MaxScanBytes, ErrCeilingScanSize)
+	}
+	if p.Scan && p.Visibility == VisibilityPublic && p.Transport != TransportDirect {
+		return fmt.Errorf("%s: %w", p.Name, ErrCeilingPublicScan)
 	}
 	if p.Image.MaxDimension > MaxImageDimension {
 		return fmt.Errorf("%s keeps %d px: %w", p.Name, p.Image.MaxDimension, ErrCeilingImageDimension)
