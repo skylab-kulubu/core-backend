@@ -31,7 +31,8 @@ func personFrom(u *gocloak.User) (Person, error) {
 	if err != nil {
 		return Person{}, ErrInvalid
 	}
-	p := Person{ID: id}
+	// A user without the flag counts as disabled.
+	p := Person{ID: id, Enabled: u.Enabled != nil && *u.Enabled}
 	if u.Email != nil {
 		p.Email = *u.Email
 	}

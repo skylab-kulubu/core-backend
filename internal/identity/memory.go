@@ -17,7 +17,10 @@ type Memory struct {
 	groupRoles map[string][]ClientRole
 	userRoles  map[uuid.UUID][]ClientRole
 	catalog    []ClientRole
-	Ops        []string
+	// disabled are the people PutDisabledUser put: Keycloak's
+	// enabled=false. Everyone else is enabled.
+	disabled map[uuid.UUID]struct{}
+	Ops      []string
 }
 
 func NewMemory() *Memory {
@@ -27,6 +30,7 @@ func NewMemory() *Memory {
 		members:    make(map[string]map[uuid.UUID]struct{}),
 		groupRoles: make(map[string][]ClientRole),
 		userRoles:  make(map[uuid.UUID][]ClientRole),
+		disabled:   make(map[uuid.UUID]struct{}),
 	}
 }
 
@@ -42,13 +46,28 @@ func (m *Memory) PutGroup(g Group) {
 	m.groups[g.ID] = g
 }
 
+// PutUser puts an enabled person.
 func (m *Memory) PutUser(p Person) {
+	m.put(p, true)
+}
+
+// PutDisabledUser puts a person Keycloak has disabled.
+func (m *Memory) PutDisabledUser(p Person) {
+	m.put(p, false)
+}
+
+func (m *Memory) put(p Person, enabled bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if p.ID == uuid.Nil {
 		p.ID = uuid.New()
 	}
 	m.people[p.ID] = p
+	if enabled {
+		delete(m.disabled, p.ID)
+	} else {
+		m.disabled[p.ID] = struct{}{}
+	}
 }
 
 func (m *Memory) record(op string) {
@@ -334,6 +353,8 @@ func (m *Memory) GetUser(_ context.Context, id uuid.UUID) (Person, error) {
 	if !ok {
 		return Person{}, ErrNotFound
 	}
+	_, disabled := m.disabled[id]
+	p.Enabled = !disabled
 	return p, nil
 }
 

@@ -30,6 +30,12 @@ type Person struct {
 	Username    string    `json:"username,omitempty"`
 	SchoolEmail string    `json:"schoolEmail,omitempty"`
 	SkyNumber   string    `json:"skyNumber,omitempty"`
+	// Enabled is Keycloak's enabled flag. The zero value is disabled: only
+	// the directory's reads set it (Keycloak's user; the memory directory
+	// defaults to true), and only read-link issuance uses it, to decide
+	// whether to ensure a core row for a person core has none for. Nothing
+	// else branches on it, and it is never part of an answer.
+	Enabled bool `json:"-"`
 }
 
 type GroupMember struct {
