@@ -23,15 +23,29 @@ var (
 	// ErrStreamTooLarge is a file longer than clamd takes in one stream
 	// (its StreamMaxLength): clamd refused it without scanning it.
 	ErrStreamTooLarge = errors.New("clamd: the file is longer than clamd's StreamMaxLength")
+	// ErrProtocol is an answer that breaks clamd's protocol: one sent
+	// before the end of the stream that is not a refusal, one cut short
+	// (no NUL terminator), more than one, or one core does not know. It is
+	// never a verdict.
+	ErrProtocol = errors.New("clamd: the answer breaks the protocol")
 )
 
 // ReplyError is an answer clamd gave instead of a verdict: it could not
-// scan the file ("... ERROR"), or answered something core does not know.
+// scan the file ("... ERROR"), or (Err ErrProtocol) answered what the
+// protocol does not allow there.
 type ReplyError struct {
 	Reply string
+	Err   error
 }
 
-func (e *ReplyError) Error() string { return "clamd answered " + fmt.Sprintf("%q", e.Reply) }
+func (e *ReplyError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("%v: clamd answered %q", e.Err, e.Reply)
+	}
+	return fmt.Sprintf("clamd answered %q", e.Reply)
+}
+
+func (e *ReplyError) Unwrap() error { return e.Err }
 
 // Result is clamd's verdict on a file: the name of what it found, or
 // nothing for a clean file.
@@ -72,7 +86,10 @@ func New(addr string) *Client {
 
 // Scan streams everything r yields to clamd and returns its verdict. The
 // verdict is only for the whole file: a file r cannot read to its end is an
-// error, the source's, and never a verdict. ctx bounds the whole scan,
+// error, the source's, and never a verdict. It is only the one answer clamd
+// sends after the stream's end (the zero-length chunk): an answer before
+// it may only refuse the stream (a size limit, an ERROR), and anything
+// else there is ErrProtocol, never clean. ctx bounds the whole scan,
 // clamd's own time included.
 func (c *Client) Scan(ctx context.Context, r io.Reader) (Result, error) {
 	conn, err := c.dial(ctx)
@@ -96,9 +113,8 @@ func (c *Client) Scan(ctx context.Context, r io.Reader) (Result, error) {
 			}
 		}
 		select {
-		case early := <-replies:
-			// clamd answers before the end only to refuse the stream.
-			return verdict(early)
+		case answer := <-replies:
+			return Result{}, earlyAnswer(answer)
 		default:
 		}
 		if errors.Is(readErr, io.EOF) {
@@ -110,6 +126,13 @@ func (c *Client) Scan(ctx context.Context, r io.Reader) (Result, error) {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
+	}
+	// Last look before the end: an answer that arrived by now came before
+	// clamd had the whole file.
+	select {
+	case answer := <-replies:
+		return Result{}, earlyAnswer(answer)
+	default:
 	}
 	if err := c.write(conn, []byte{0, 0, 0, 0}); err != nil {
 		return Result{}, c.afterWriteFailed(ctx, replies, err)
@@ -216,9 +239,7 @@ func (c *Client) afterWriteFailed(ctx context.Context, replies <-chan reply, wri
 	select {
 	case answer := <-replies:
 		if answer.err == nil {
-			if _, err := verdict(answer); err != nil {
-				return err
-			}
+			return earlyAnswer(answer)
 		}
 	case <-timer.C:
 	case <-ctx.Done():
@@ -232,8 +253,9 @@ type reply struct {
 	err  error
 }
 
-// readReply reads one NUL-terminated answer (a connection closed after it
-// ends it too).
+// readReply reads exactly one NUL-terminated answer. An answer cut short
+// (the connection closed before its NUL), or followed by more, is
+// ErrProtocol.
 func readReply(conn net.Conn) reply {
 	var answer bytes.Buffer
 	buf := make([]byte, 512)
@@ -241,20 +263,39 @@ func readReply(conn net.Conn) reply {
 		n, err := conn.Read(buf)
 		answer.Write(buf[:n])
 		if i := bytes.IndexByte(answer.Bytes(), 0); i >= 0 {
-			return reply{text: strings.TrimSpace(string(answer.Bytes()[:i]))}
+			text := strings.TrimSpace(string(answer.Bytes()[:i]))
+			if i != answer.Len()-1 {
+				return reply{err: &ReplyError{Reply: text, Err: ErrProtocol}}
+			}
+			return reply{text: text}
 		}
 		if errors.Is(err, io.EOF) && answer.Len() > 0 {
-			return reply{text: strings.TrimSpace(answer.String())}
+			return reply{err: &ReplyError{Reply: answer.String(), Err: ErrProtocol}}
 		}
 		if err != nil {
 			return reply{err: fmt.Errorf("clamd: read the answer: %w", err)}
 		}
 	}
-	return reply{err: &ReplyError{Reply: answer.String()[:64] + "…"}}
+	return reply{err: &ReplyError{Reply: answer.String()[:64] + "…", Err: ErrProtocol}}
 }
 
-// verdict reads an INSTREAM answer: "stream: OK", "stream: <name> FOUND",
-// or "<message> ERROR".
+// earlyAnswer is the error of an answer clamd sent before it had the whole
+// stream: only a refusal (a size limit, an ERROR) may come then. It is never
+// a verdict.
+func earlyAnswer(answer reply) error {
+	switch {
+	case answer.err != nil:
+		return answer.err
+	case strings.Contains(answer.text, "size limit exceeded"):
+		return fmt.Errorf("%w: %s", ErrStreamTooLarge, answer.text)
+	case strings.HasSuffix(answer.text, " ERROR"):
+		return &ReplyError{Reply: answer.text}
+	}
+	return &ReplyError{Reply: answer.text, Err: ErrProtocol}
+}
+
+// verdict reads the INSTREAM answer that came after the stream's end:
+// "stream: OK", "stream: <name> FOUND", or "<message> ERROR".
 func verdict(answer reply) (Result, error) {
 	if answer.err != nil {
 		return Result{}, answer.err
@@ -266,12 +307,14 @@ func verdict(answer reply) (Result, error) {
 	case strings.HasPrefix(text, "stream: ") && strings.HasSuffix(text, " FOUND"):
 		signature := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "stream: "), " FOUND"))
 		if signature == "" {
-			return Result{}, &ReplyError{Reply: text}
+			return Result{}, &ReplyError{Reply: text, Err: ErrProtocol}
 		}
 		return Result{Signature: signature}, nil
 	case strings.Contains(text, "size limit exceeded"):
 		return Result{}, fmt.Errorf("%w: %s", ErrStreamTooLarge, text)
-	default:
+	case strings.HasSuffix(text, " ERROR"):
 		return Result{}, &ReplyError{Reply: text}
+	default:
+		return Result{}, &ReplyError{Reply: text, Err: ErrProtocol}
 	}
 }

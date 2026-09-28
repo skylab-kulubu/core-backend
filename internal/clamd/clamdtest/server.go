@@ -36,6 +36,8 @@ type Server struct {
 	streamMax int64
 	delay     time.Duration
 	failure   string
+	early     string
+	truncated string
 	found     map[string]string
 	streams   [][]byte
 	wg        sync.WaitGroup
@@ -80,6 +82,23 @@ func (s *Server) Fail(reply string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failure = reply
+}
+
+// AnswerEarly makes the fake answer reply after the first chunk, before the
+// stream's end, and then read the rest without answering again: a clamd
+// that breaks the protocol.
+func (s *Server) AnswerEarly(reply string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.early = reply
+}
+
+// AnswerTruncated makes the fake answer text without its NUL terminator
+// and close the connection: an answer cut short.
+func (s *Server) AnswerTruncated(text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.truncated = text
 }
 
 // Report makes a stream containing marker FOUND as signature.
@@ -133,7 +152,7 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 	s.mu.Lock()
-	delay, failure, limit := s.delay, s.failure, s.streamMax
+	delay, failure, limit, early, truncated := s.delay, s.failure, s.streamMax, s.early, s.truncated
 	s.mu.Unlock()
 	reply := func(text string) {
 		if delay > 0 {
@@ -148,13 +167,17 @@ func (s *Server) handle(conn net.Conn) {
 		reply(Version)
 	case "zINSTREAM":
 		var stream bytes.Buffer
-		for {
+		for chunks := 0; ; chunks++ {
 			var size uint32
 			if err := binary.Read(r, binary.BigEndian, &size); err != nil {
 				return
 			}
 			if size == 0 {
 				break
+			}
+			if chunks == 1 && early != "" {
+				// After the first chunk, before the stream's end.
+				reply(early)
 			}
 			if limit > 0 && int64(stream.Len())+int64(size) > limit {
 				// clamd answers and closes without reading the rest.
@@ -175,6 +198,10 @@ func (s *Server) handle(conn net.Conn) {
 		}
 		s.mu.Unlock()
 		switch {
+		case truncated != "":
+			_, _ = conn.Write([]byte(truncated))
+		case early != "":
+			// Answered already.
 		case failure != "":
 			reply(failure + " ERROR")
 		case signature != "":

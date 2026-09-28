@@ -13,11 +13,15 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/clamd/clamdtest"
 )
 
-func scan(t *testing.T, client *clamd.Client, data []byte) (clamd.Result, error) {
+func scan(t *testing.T, client *clamd.Client, data any) (clamd.Result, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return client.Scan(ctx, bytes.NewReader(data))
+	r, ok := data.(io.Reader)
+	if !ok {
+		r = bytes.NewReader(data.([]byte))
+	}
+	return client.Scan(ctx, r)
 }
 
 func TestScanStreamsTheWholeFileInChunksAndAnswersClean(t *testing.T) {
@@ -186,5 +190,53 @@ func TestEICARIsTheStandardTestFile(t *testing.T) {
 	eicar := clamd.EICAR()
 	if len(eicar) != 68 || !bytes.HasPrefix(eicar, []byte("X5O!P%@AP[4")) || !bytes.HasSuffix(eicar, []byte("!$H+H*")) {
 		t.Fatalf("EICAR is %d bytes: %q", len(eicar), eicar)
+	}
+}
+
+// A verdict counts only once the whole file is sent and clamd has answered
+// once, after the end of the stream. clamd answers before the end only to
+// refuse the stream: an early "OK" (or FOUND) is a protocol failure and
+// never clean, even when the file's last chunk holds EICAR.
+func TestScanNeverTakesAnAnswerBeforeTheEndAsAVerdict(t *testing.T) {
+	file := append(bytes.Repeat([]byte("A"), 1<<20), clamd.EICAR()...)
+	for _, early := range []string{"stream: OK", "stream: Eicar-Test-Signature FOUND", "PONG"} {
+		fake := clamdtest.New(t)
+		fake.AnswerEarly(early)
+		result, err := scan(t, clamd.New(fake.Addr()), &slowReader{r: bytes.NewReader(file), wait: 2 * time.Millisecond})
+		var reply *clamd.ReplyError
+		if !errors.As(err, &reply) || !errors.Is(err, clamd.ErrProtocol) {
+			t.Errorf("early %q: result %+v, err %v; want a protocol failure", early, result, err)
+		}
+	}
+	// An early refusal is still the failure it names.
+	fake := clamdtest.New(t)
+	fake.AnswerEarly("stream: Can't allocate memory ERROR")
+	_, err := scan(t, clamd.New(fake.Addr()), &slowReader{r: bytes.NewReader(file), wait: 2 * time.Millisecond})
+	var reply *clamd.ReplyError
+	if !errors.As(err, &reply) || !strings.Contains(reply.Reply, "Can't allocate memory") || errors.Is(err, clamd.ErrProtocol) {
+		t.Fatalf("early ERROR: err = %v", err)
+	}
+}
+
+type slowReader struct {
+	r    io.Reader
+	wait time.Duration
+}
+
+func (s *slowReader) Read(p []byte) (int, error) {
+	time.Sleep(s.wait)
+	return s.r.Read(p)
+}
+
+// An answer cut short (no NUL terminator) is no verdict, even when what
+// arrived reads "stream: OK".
+func TestScanRefusesAnAnswerWithoutItsTerminator(t *testing.T) {
+	for _, text := range []string{"stream: OK", "stream: O"} {
+		fake := clamdtest.New(t)
+		fake.AnswerTruncated(text)
+		result, err := scan(t, clamd.New(fake.Addr()), []byte("anything"))
+		if err == nil || result.Infected() {
+			t.Errorf("truncated %q: result %+v, err %v; want an error", text, result, err)
+		}
 	}
 }
