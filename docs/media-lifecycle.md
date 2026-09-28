@@ -18,8 +18,9 @@ The background purge worker runs one bounded batch at startup and on its
 configured interval. A record is eligible only after the recovery window. The
 worker refuses to purge media that anything still uses: any Media attachment
 (see [Media attachment](#media-attachment)), and, as a safety net, core's own
-links checked directly (an Event cover or gallery, a User profile, a
-Certificate template draft, or a published Certificate template version).
+links checked directly (an Event cover, gallery photo, file or video, a User
+profile, a Certificate template draft, or a published Certificate template
+version).
 Both must say unused. The legacy report counts the core links that have no
 Media attachment (see [Legacy Media](#legacy-media)); once production shows
 zero, removing the direct check is media redesign ticket 18. Database triggers also reject new
@@ -151,14 +152,19 @@ unless its product has a service client configured
   is a Direct upload purpose no person may start (`service_only`), and a
   private one Direct upload does not take yet (ticket 21, see
   [Direct upload](#direct-upload));
-- `club_file` and `video` are Direct upload purposes that name no product:
-  where club files and videos are attached is not settled (superadmin's
-  large-file upload, ticket 20, and video, ticket 13), so both stay refused
-  (`purpose_not_available`). `club_file` also needs a malware scan.
+- `club_file` and `video` are Direct upload purposes core attaches: an
+  Event's files and videos (decision C1, ticket 22, see
+  [Event files and videos](#event-files-and-videos)). `club_file` needs a
+  malware scan, so it stays refused (`purpose_not_available`) while no
+  scanner is configured. `video` needs none (at 2 GiB it is larger than what
+  clamd scans), so it passes every purpose rule as soon as core runs this
+  catalogue: see [Before Event files open](#before-event-files-open) for what
+  must be in place in production first.
 
-Every purpose a product's role accepts must name that product, and the
-purposes core refers to in code (the core purposes, the CMS purposes and the
-Answer file purposes) must all be in the file. `image` is acted on (see
+Every purpose a product's role accepts must be attached by that product (a
+core role's by core, `attach: core`), and the purposes core refers to in code
+(the core purposes, club files and videos, the CMS purposes and the Answer
+file purposes) must all be in the file. `image` is acted on (see
 [Images and sizes](#images-and-sizes)). So is `scan`: while no malware
 scanner is configured (`MEDIA_CLAMAV_ADDR`), a purpose with `scan: true`
 cannot be uploaded (`purpose_not_available`), since its Media are opened only
@@ -177,9 +183,9 @@ The initial entries:
 | `cms_image` | authenticated | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | cms (no service client yet) |
 | `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms (no service client yet) |
 | `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step | forms |
-| `club_file` | event_editor | PDF, ZIP (download only) | 1 GiB | public, scanned | direct | not settled (ticket 20) |
+| `club_file` | event_editor | PDF, ZIP (download only) | 1 GiB | public, scanned | direct | core (an Event's files) |
 | `answer_file_large` | service_only | ZIP, PDF | 1 GiB | private, scanned | direct | forms |
-| `video` | event_editor | MP4 | 2 GiB | public | direct | not settled (ticket 13) |
+| `video` | event_editor | MP4 | 2 GiB | public | direct | core (an Event's videos) |
 | `legacy` | authenticated | legacy rules | legacy rules | public | single-step | core, or a product for its uploader or once it holds it (transition rule) |
 
 Every public raster purpose re-encodes (2560 px) and gets the `card` (400 px)
@@ -291,7 +297,7 @@ over their upload budget gets `429` `media_rate_limited`, described under
 | 422 | `private_media_disabled` | `purpose` | A private purpose while `MEDIA_PRIVATE_ENABLED` is off. Nothing is stored, and never publicly instead; retrying does not help. |
 | 503 | `private_media_unavailable` | | A private purpose while OpenBao cannot be reached. Nothing is stored; retry later (`Retry-After`). Public purposes are not affected. |
 | 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media` (see [Direct upload](#direct-upload)). |
-| 422 | `purpose_not_available` | `purpose` | A `service` purpose whose product has no service client configured (`cms_image` and `cms_file` today), or that names no product (`club_file` and `video`, which reach `purpose_requires_direct_upload` first): nothing is stored, the file would only wait for its expiry. Also a purpose that needs a malware scan while no scanner is configured (`MEDIA_CLAMAV_ADDR` unset). |
+| 422 | `purpose_not_available` | `purpose` | A `service` purpose whose product has no service client configured (`cms_image` and `cms_file` today), or that names no product (none today): nothing is stored, the file would only wait for its expiry. Also a purpose that needs a malware scan while no scanner is configured (`MEDIA_CLAMAV_ADDR` unset; `club_file`, which reaches `purpose_requires_direct_upload` first here). |
 | 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum; an SVG above 1 MiB (`maxBytes` is then 1 MiB). |
 | 413 | `media_image_too_large` | `purpose`, `maxPixels` | Decoding the image would take more than core allows, judged from its header before anything is decoded (see [Decode cost](#decode-cost)). `maxPixels` is the most pixels an image of its kind may have: 50 000 000, fewer for costly pixels (16-bit PNG, progressive JPEG, an animation's many frames). An animated GIF or WebP larger than 2560 px on a side is refused this way too. |
 | 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types, or starts like one but does not decode or check as it: a broken image, a WebP whose frame is not its canvas, an animated WebP whose structure does not check, a GIF with more than 300 frames or a frame outside its screen, a JPEG with more than 64 scans, an SVG core does not sanitize. |
@@ -370,12 +376,14 @@ part, to addresses core presigns, then asks core to complete it. Core never
 holds the file; it checks what R2 holds, copies it to its final key and
 creates the Media.
 
-Today no purpose can be started this way in production: `club_file` and
-`video` name no product that attaches them, and `answer_file_large` is
-private and `service_only` (see [The catalogue](#the-catalogue)). The whole
-flow is exercised with a test catalogue that lets core attach
-(`directCatalogue` in `internal/httpx/media_direct_upload_test.go`), with
-`club_file`'s malware scan off, and on in
+Core attaches `club_file` and `video` (an Event's files and videos, see
+[Event files and videos](#event-files-and-videos)). `video` can be started
+wherever core has R2; `club_file` also needs the malware scanner
+(`MEDIA_CLAMAV_ADDR`); `answer_file_large` is private and `service_only`
+(see [The catalogue](#the-catalogue)). A browser can send the parts only
+once the bucket's CORS allows its origin (the R2 wizard below). The tests
+run the flow with `club_file`'s malware scan off (`directCatalogue` in
+`internal/httpx/media_direct_upload_test.go`), and on in
 `internal/httpx/media_scan_test.go`.
 
 ### Endpoints
@@ -950,7 +958,7 @@ a member roster) loads the small image:
 
 | Response | Full-size address (unchanged) | Sizes |
 |---|---|---|
-| Event, list and detail: every Event answer under `/v1/events` (list, active list, detail, create, update, restore, gallery add and remove) and `GET /v1/seasons/{id}/events` | `coverImageUrl` | `coverImageSizes` |
+| Event, list and detail: every Event answer under `/v1/events` (list, active list, detail, create, update, restore, gallery add and remove, files and videos add, remove and order) and `GET /v1/seasons/{id}/events` | `coverImageUrl` | `coverImageSizes` |
 | Event gallery image, in the same answers | `images[].url` (and `imageUrls`) | `images[].sizes` |
 | Event summary (`event.Resource`): `GET /v1/door/events`; the `event` of every ticket answer (`/v1/tickets/me`, `/v1/tickets`, `/v1/tickets/{id}`, `/v1/tickets/user/{userId}/event/{eventId}`, `/v1/events/{eventId}/tickets`, the application answers under `/v1/events/{eventId}/applications/…`); the `event` of every competitor answer (`/v1/competitors…`, `/v1/events/{eventId}/competitors…`; leaderboards have none) | `coverImageUrl` | `coverImageSizes` |
 | The caller's profile (`GET`/`PUT`/`PATCH /v1/users/me`, `POST /v1/users/me/profile-picture`) | `profilePictureUrl` | `profilePictureSizes` |
@@ -1105,6 +1113,8 @@ anonymization and maintenance SQL:
 |---|---|---|
 | Event cover (`events.cover_image_id`) | `event` | `event_cover` |
 | Event gallery (`event_images`) | `event` | `event_gallery` |
+| Event files (`event_files`, migration `20260928160000`) | `event` | `event_file` |
+| Event videos (`event_videos`, migration `20260928160000`) | `event` | `event_video` |
 | User profile picture (`users.profile_picture_id`) | `user` | `profile_picture` |
 | Certificate template draft (`draft_layout` background and image elements) | `certificate_template` | `certificate_asset` |
 | Published certificate template version (`layout` and `asset_manifest`) | `certificate_template_version` | `certificate_asset` |
@@ -1117,38 +1127,47 @@ something attaches it again; removing the picture archives it as before.
 
 ### Link rules
 
-Before an Event links a cover or a gallery photo, or a certificate template
-draft links an asset, core checks the Media (`media.Linker`) and refuses the
-link with `application/problem+json`, a stable `code`, and the members
-`mediaId` and `role`:
+Before an Event links a cover, a gallery photo, a file or a video, or a
+certificate template draft links an asset, core checks the Media
+(`media.Linker`) and refuses the link with `application/problem+json`, a
+stable `code`, and the members `mediaId` and `role`:
 
 | Status | `code` | Extra members | When |
 |---|---|---|---|
-| 422 | `media_purpose_mismatch` | `purpose` | The Media's purpose does not fit the role. An Event cover or gallery photo needs `event_cover` or `event_gallery` (the organizer's picker offers every photo of the team's Events for both); a certificate asset needs `certificate_asset`. A profile picture or a CMS page's PDF cannot be a cover. |
+| 422 | `media_purpose_mismatch` | `purpose` | The Media's purpose does not fit the role. An Event cover or gallery photo needs `event_cover` or `event_gallery` (the organizer's picker offers every photo of the team's Events for both); an Event's file needs `club_file` and its video `video`; a certificate asset needs `certificate_asset`. A profile picture or a CMS page's PDF cannot be a cover. |
 | 422 | `media_not_linkable` | | There is no such Media, or it is archived, its blob is purged or being purged, or its expiry has passed. A pending or attached Media can be linked, and so can a scanning one (an Answer file while its malware scan runs); a rejected one cannot (its object is being or was deleted). A Media removed from a record can be linked again until its window ends. |
-| 403 | `media_team_mismatch` | | Team media library: the Media is on an Event (archived ones included) of another Owner team. An Event may reuse a photo of another Event of its own Owner team. |
+| 403 | `media_team_mismatch` | | Team media library: the Media is on an Event (archived ones included) of another Owner team, as its cover, a gallery photo, a file or a video. An Event may reuse a photo, file or video of another Event of its own Owner team. |
 
 Only new links are checked: an Event saved with the cover it already has, or
 a template draft keeping an asset, is not refused for it. One exception:
 moving an Event to another Owner team checks the Team media library again for
-its current cover and gallery, and refuses the move with
+its current cover, gallery, files and videos, and refuses the move with
 `media_team_mismatch` while another Event of the old team uses one of them;
-the organizer removes that photo from the Event first. The profile picture
+the organizer removes that photo, file or video from the Event first. The profile picture
 has no separate check: the only way to link one is
 `POST /v1/users/me/profile-picture`, which uploads it as `profile_picture`.
 
-**Transition rule for legacy Media.** A `legacy` Media fits every role, as
-any Media could be linked anywhere before Media purpose. superadmin still
-uploads Event covers, gallery photos and certificate assets without a purpose
-until it sends one (ticket 09), and Skyforms and CMS until stage 5. The other
-rules (linkable, Team media library) apply to legacy Media too. The rule ends
-when purpose-less uploads fall to the strict rule (ticket 15).
+**Transition rule for legacy Media.** A `legacy` Media fits every role but
+an Event's files and videos, as any Media could be linked anywhere before
+Media purpose. superadmin still uploads Event covers, gallery photos and
+certificate assets without a purpose until it sends one (ticket 09), and
+Skyforms and CMS until stage 5. The other rules (linkable, Team media
+library) apply to legacy Media too. The rule ends when purpose-less uploads
+fall to the strict rule (ticket 15). An Event's files and videos
+(`event_file`, `event_video`) came after Media purpose, so no Media was ever
+linked there without one, and their purposes are sent by Direct upload (a
+club file also scanned), which a legacy upload never was: a legacy Media is
+refused there with `media_purpose_mismatch` (`rolesWithoutLegacy`,
+`internal/media/attachment.go`).
 
 The database's triggers are the backstop for the state rule: a new link or a
 new Media attachment to an archived or purging Media is rejected whoever
 writes it. They also check the purpose again (migration `20260926161000`,
 `media_purpose_fits_role` over `media_role_purposes`, a copy of the role
-table that a test keeps equal to `rolePurposes`, both ways). The link rules
+table that a test keeps equal to `rolePurposes`, both ways; migration
+`20260928160000` adds the Event files' and videos' roles and
+`media_roles_without_legacy`, the copy of `rolesWithoutLegacy`, which the
+same test keeps equal). The link rules
 read the Media before the write and outside its transaction, so the legacy
 backfill could give a legacy Media a purpose in between; the trigger reads
 the Media under the lock the foreign key takes anyway, which waits for the
@@ -1782,7 +1801,8 @@ that means:
 
 - `answer_file` can be uploaded once private Media is on too
   (`MEDIA_PRIVATE_ENABLED`) and Skyforms has its service client;
-- `club_file` stays refused, since no product attaches it yet (ticket 20);
+- `club_file` can be uploaded: core attaches it as an Event's file (ticket
+  22). The Cloudflare `/pending/*` rule below must be in place first;
 - `answer_file_large` stays refused, since private Direct upload is ticket 21.
 
 A value that is not `host:port` stops core at startup. Core never needs clamd
@@ -1944,7 +1964,7 @@ therefore never left behind. A missing object counts as deleted.
 The hold sits under `pending/`, so two things cover it. The Cloudflare rule
 that answers `403` for `/pending/*` on `cdn.` refuses it even to someone who
 guessed the key. **This rule is required before any public purpose that
-needs a scan opens (`club_file`, ticket 20).** Both the ClamAV wizard and the
+needs a scan opens (`club_file`, an Event's files, ticket 22).** Both the ClamAV wizard and the
 Direct upload R2 wizard check it (a request to a `/pending/` path answers
 `403`) and report its absence as a failure. The R2 lifecycle rule deletes
 anything left there after two days (see
@@ -1954,11 +1974,12 @@ rejected as `lost`). A private file needs no hold, since the private bucket
 is never served: an `answer_file` stays at its `private/files/…` key
 throughout.
 
-Records that link a Media (an Event's cover and gallery, a User's profile
-picture) build no address for one that is `scanning` or `rejected`
-(`media.ServedKeySQL`, and the status in `media.LinkedImageSQL`), so a held
-key never becomes an address. No reviewed purpose can link such a Media
-today: the scanned public purposes take no image.
+Records that link a Media (an Event's cover, gallery, files and videos, a
+User's profile picture) build no address for one that is `scanning` or
+`rejected` (`media.ServedKeySQL`, and the status in
+`media.LinkedImageSQL`), so a held key never becomes an address. The one
+reviewed purpose that can be linked while it is scanned is `club_file`, as
+an Event's file: see [Event files and videos](#event-files-and-videos).
 
 ### Opening
 
@@ -2019,8 +2040,9 @@ application for each side, in core's project and environment:
   - an archive member that expands past `MaxFileSize` while the archive
     itself stays under it is skipped without a report.
 
-  Before `club_file` or `answer_file_large` opens (tickets 20 and 21), core
-  should refuse a ZIP whose uncompressed size exceeds what clamd scans. The
+  Before `club_file` or `answer_file_large` opens (tickets 22 and 21), core
+  should refuse a ZIP whose uncompressed size exceeds what clamd scans. It
+  does not yet (see [Before Event files open](#before-event-files-open)). The
   `AlertEncrypted*` settings stay off: they would report every
   password-protected PDF (a common kind of official document) as malware.
 - memory: a 3 GiB limit and a 1.5 GiB reservation. clamd holds about 1 GiB
@@ -2059,6 +2081,152 @@ docker exec <core container> ./core-backend media-scan-selftest
 Core's source and binary never carry the EICAR file whole; it is put together
 at run time.
 
+## Event files and videos
+
+Media redesign ticket 22 (ADR-0052, decision C1). An Event offers downloads
+in two lists, each in the order its organizers give: its **files**
+(`club_file`: PDF or ZIP up to 1 GiB, scanned) and its **videos** (`video`:
+MP4 up to 2 GiB). Both are sent by [Direct upload](#direct-upload). The
+Event links them in two link tables, `event_files` and `event_videos`
+(migration `20260928160000`), whose triggers write and remove their Media
+attachments (roles `event_file` and `event_video`) as the gallery's do (see
+[Core's own links](#cores-own-links)). The admin UI is core-frontend's
+(media redesign ticket 20).
+
+### Endpoints
+
+Whoever may edit the Event may change its lists, by the same decision as
+`PUT /v1/events/{id}` (its Owner team's leaders and coordinators, a
+privileged person, members where the team's Event permissions let them).
+Each route takes a JSON array of Media ids, as the gallery's do, and answers
+the Event's detail (`200`, below):
+
+| Route | What it does |
+|---|---|
+| `POST /v1/events/{id}/files` | Appends the club files after those listed, in the order given. One already listed stays where it is. |
+| `DELETE /v1/events/{id}/files` | Removes them: all of them, or none (`404`) when one is not listed. |
+| `PUT /v1/events/{id}/files/order` | Orders the list: every listed file once, in the new order. |
+| `POST /v1/events/{id}/videos`, `DELETE /v1/events/{id}/videos`, `PUT /v1/events/{id}/videos/order` | The same for videos. |
+
+```sh
+curl -X POST https://api.yildizskylab.com/v1/events/$EVENT/files \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '["0f2a…","7c41…"]'
+curl -X PUT https://api.yildizskylab.com/v1/events/$EVENT/files/order \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '["7c41…","0f2a…"]'
+```
+
+Refusals (problem+json):
+
+| Status | `code` | When |
+|---|---|---|
+| 401 | | No token. |
+| 403 | | The caller may not edit the Event. |
+| 404 | | No such Event, or it is archived; a removal names a Media the list does not hold. |
+| 400 | | The body is not a JSON array of UUIDs; an order names an item twice. |
+| 409 | | An order does not name exactly the list's items: the list changed meanwhile. Read the Event again. |
+| 422 | `media_purpose_mismatch` | A Media of another purpose: a video among the files, a club file among the videos, a photo, or a legacy Media (see [Link rules](#link-rules)). |
+| 422 | `media_not_linkable` | No such Media, or archived, rejected by its scan, being purged, or expired. |
+| 403 | `media_team_mismatch` | Another Owner team's Event lists it (Team media library). |
+
+A refused addition adds nothing: one Media that may not be linked refuses the
+whole request.
+
+### In Event responses
+
+An Event's detail carries both lists: `GET /v1/events/{id}` and the answer of
+every change to one Event (create, update, restore, the gallery's, files'
+and videos' routes, a season assignment).
+
+```json
+{
+  "files": [
+    { "id": "0f2a…", "name": "veri seti.zip", "type": "application/zip", "size": 734003200, "status": "attached", "url": "https://cdn.yildizskylab.com/files/9243…" },
+    { "id": "7c41…", "name": "sunum.pdf", "type": "application/pdf", "size": 1048576, "status": "scanning" },
+    { "id": "b810…", "name": "araç.zip", "type": "application/zip", "size": 52000, "status": "rejected", "scanResult": "infected" }
+  ],
+  "videos": [
+    { "id": "5e9d…", "name": "açılış.mp4", "type": "video/mp4", "size": 1610612736, "status": "attached", "url": "https://cdn.yildizskylab.com/files/1c07…" }
+  ],
+  "fileCount": 1,
+  "videoCount": 1
+}
+```
+
+- `id` is the Media's id; `name` its file name, which its download carries
+  (empty once its uploader's account was erased); `type` the type detected
+  from its first bytes; `size` in bytes.
+- `status` is the Media's: `attached`, `scanning` while its malware scan runs,
+  `rejected` once the scan rejected it (`pending` only for a moment no
+  answer shows).
+- `url` is there only while the item can be served, built like the cover's
+  address (`CDN_BASE`, see [Addresses](#addresses)): never while it is
+  scanned or once rejected, whose key is core's alone. A video is served as
+  a download until ticket 13; its poster is later work.
+- `scanResult` is only on a rejected item, and only the Event's editors see
+  one.
+- Whoever may not edit the Event (and anyone without a sign-in) sees only the
+  items with an address: none waiting for the scan, none rejected.
+  `fileCount` and `videoCount` count those, for everyone.
+- An item whose Media was archived is left out, as in the gallery.
+
+Lists (`GET /v1/events`, `/v1/events/active`, the lifecycle views,
+`GET /v1/seasons/{id}/events`) and the Event summary (`event.Resource`: the
+door's Events, a ticket's or a competitor's `event`) carry `fileCount` and
+`videoCount` alone, never `files` or `videos`. The counts are read in the
+Event's own row, so a list costs no query more; a detail reads both lists
+in one more query.
+
+### Rules
+
+- `event_file` takes only `club_file`, `event_video` only `video`, and a
+  legacy Media neither (see [Link rules](#link-rules)); the database checks
+  it again.
+- A club file may be added while its scan runs. Its editors see it
+  `scanning`; once clean the scan worker copies it to `files/<Media id>`,
+  it becomes `attached` and everyone sees it. A rejected one stays listed,
+  for the editors only, until they remove it.
+- The Team media library holds as for photos, and moving an Event to another
+  Owner team checks its files and videos again.
+- Removing an item removes its Media attachment; a Media with no other one
+  is detached and purged 30 days later unless something attaches it again.
+  An archived Event keeps its lists, as it keeps its gallery.
+- The Event's row is locked while one of its lists changes, so two editors'
+  additions take their places one after the other and an order is checked
+  against the list it rewrites. Ties in `order_index` are read in
+  `added_at`, then id order.
+- Account erasure keeps an Event's files and videos (club purposes, see
+  [Account erasure](#account-erasure)).
+
+### Before Event files open
+
+Deploying this changes what can be uploaded:
+
+- `video` passes every purpose rule at once for anyone who may create an
+  Event (`event_editor`). It needs no scan (`scan: false`, unchanged; at
+  2 GiB it is above what clamd scans, `media.MaxScanBytes`).
+- `club_file` passes them once `MEDIA_CLAMAV_ADDR` is set.
+
+Before either is offered in production (the admin UI, ticket 20), on each
+side, sandbox first:
+
+1. **R2**: `ops/wizards/media-direct-upload-r2-wizard.sh` has run: the
+   lifecycle rule on `pending/` and the bucket's CORS for the admin panel's
+   origin (core-frontend). Without the CORS rule a browser cannot send the
+   parts.
+2. **Cloudflare**: the WAF rule that answers `403` for `/pending/*` on
+   `cdn.` is in place (both wizards check it). Required before `club_file`:
+   a file waiting for its scan is held under `pending/scan/`.
+3. **ClamAV**: `ops/wizards/media-clamav-wizard.sh` has run, core's
+   environment has `MEDIA_CLAMAV_ADDR`, and the self-test in core's
+   container finds EICAR. Until then `club_file` is refused
+   (`purpose_not_available`).
+4. **Open**: clamd skips, without a report, an archive member that expands
+   past its `MaxFileSize` while the archive itself stays under it, and core
+   does not yet refuse a ZIP whose uncompressed size exceeds what clamd
+   scans (see [ClamAV](#clamav)). Decide before `club_file` opens.
+
 ## Account erasure
 
 A person's account erasure ([`account-lifecycle.md`](account-lifecycle.md))
@@ -2082,7 +2250,9 @@ rule is one function, `personalOnErasureSQL` in
   `cms_file`, `club_file`, `video`, `certificate_asset`): the Media and its
   file stay, without the uploader and the file name. A club file still
   waiting for its scan stays held, unserved, as the nameless download it
-  already is, and reaches `files/` once clean without the name.
+  already is, and reaches `files/` once clean without the name. An Event's
+  file or video stays on the Event, attached and at its address, with an
+  empty `name`, and downloads under its key.
 
 **Known consequence of E1.** Until stage 5, when the CMS attaches the Media
 its pages use (ticket 18), a legacy image a CMS page uses only by its address,
