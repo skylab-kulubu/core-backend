@@ -171,9 +171,10 @@ unless its product has a service client configured
   not open them: a Direct upload purpose opens only where its side names it
   in `MEDIA_DIRECT_UPLOAD_PURPOSES` (none by default; see
   [Checks](#checks)), since this file is the same on sandbox and production.
-  `club_file` also needs a malware scan (`MEDIA_CLAMAV_ADDR`) and stays off
-  everywhere until ticket 23 (the ZIP size check) ships. `video` needs no
-  scan (at 2 GiB it is larger than what clamd scans). See
+  `club_file` also needs a malware scan (`MEDIA_CLAMAV_ADDR`), and a ZIP
+  is checked against clamd's limits before it is scanned
+  ([The ZIP check](#the-zip-check), ticket 23). `video` needs no scan (at
+  2 GiB it is larger than what clamd scans). See
   [Before Event files open](#before-event-files-open).
 
 Every purpose a product's role accepts must be attached by that product (a
@@ -403,8 +404,9 @@ Core attaches `club_file` and `video` (an Event's files and videos, see
 purpose opens only where its side switches it on
 (`MEDIA_DIRECT_UPLOAD_PURPOSES`, see [Checks](#checks)): none by default.
 Switched on, `video` can be started wherever core has R2; `club_file` also
-needs the malware scanner (`MEDIA_CLAMAV_ADDR`) and must not be switched on
-before ticket 23; `answer_file_large` is private and `service_only` (see
+needs the malware scanner (`MEDIA_CLAMAV_ADDR`), which checks a ZIP before
+it scans it ([The ZIP check](#the-zip-check)); `answer_file_large` is
+private and `service_only` (see
 [The catalogue](#the-catalogue)). A browser can send the parts only once
 the bucket's CORS allows its origin (the R2 wizard below). The tests switch
 both on and run the flow with `club_file`'s malware scan off
@@ -1123,7 +1125,7 @@ recorded apart.
 | `attached` | At least one Media attachment. Never purged by expiry. | None. |
 | `detached` | Its last Media attachment was removed. | 30 days after that, except while its detach expiry is held (below). Attaching it again within the window makes it attached. |
 | `scanning` | Its purpose needs a malware scan that has not ended yet. It may be attached, but it is not opened or served ([Malware scan](#malware-scan)). Clean, it becomes `pending`, or `attached` when a Media attachment links it. A week after its upload it is rejected (`scan_timeout`). | As `pending` while nothing keeps it: upload time plus the purpose's `pending_ttl`. None while a Media attachment links it; 30 days after its last one is removed. |
-| `rejected` | The malware scan rejected it (`scanResult`: `infected`, `too_large_to_scan`, `lost`, `integrity` or `scan_timeout`); its object is deleted. | None. |
+| `rejected` | The malware scan rejected it (`scanResult`: `infected`, `too_large_to_scan`, `archive_invalid`, `lost`, `integrity` or `scan_timeout`); its object is deleted. | None. |
 
 **A legacy Media gets no expiry by itself**: not when it is uploaded
 (`legacy` has `pending_ttl` `none`), and not when its last Media attachment is
@@ -1854,9 +1856,10 @@ that means:
 
 - `answer_file` can be uploaded once private Media is on too
   (`MEDIA_PRIVATE_ENABLED`) and Skyforms has its service client;
-- `club_file` stays refused unless `MEDIA_DIRECT_UPLOAD_PURPOSES` names it,
-  which must wait for ticket 23 (core attaches it as an Event's file, ticket
-  22). The Cloudflare `/pending/*` rule below must be in place too;
+- `club_file` stays refused unless `MEDIA_DIRECT_UPLOAD_PURPOSES` names it
+  (core attaches it as an Event's file, ticket 22); a ZIP is checked before
+  it is scanned ([The ZIP check](#the-zip-check), ticket 23). The Cloudflare
+  `/pending/*` rule below must be in place too;
 - `answer_file_large` stays refused, since private Direct upload is ticket 21.
 
 A value that is not `host:port` stops core at startup. Core never needs clamd
@@ -1884,9 +1887,15 @@ by a Direct upload's completion alike, with its purpose's pending expiry. See
   recorded (below).
 - **Too large to scan**: the Media is `rejected` and `scanResult` is
   `too_large_to_scan`. This happens when clamd refuses the stream as longer
-  than its `StreamMaxLength` (`INSTREAM size limit exceeded`), or reports a
+  than its `StreamMaxLength` (`INSTREAM size limit exceeded`), reports a
   `Heuristics.Limits.Exceeded.*` signature (`AlertExceedsMax`, see
-  [ClamAV](#clamav)). Either way the file could not be scanned whole.
+  [ClamAV](#clamav)), or [the ZIP check](#the-zip-check) finds a ZIP holds
+  more than clamd scans whole. Either way the file could not be scanned
+  whole.
+- **Archive invalid**: [the ZIP check](#the-zip-check) finds a ZIP
+  malformed, or holding what clamd cannot read (an encrypted member, say).
+  The Media is `rejected` and `scanResult` is `archive_invalid`; clamd never
+  reads it.
 - **Lost**: the file to scan is gone, so it can never be scanned. The R2
   lifecycle rule deletes a held file after two days, so this happens when
   clamd was down that long. The Media is `rejected` and `scanResult` is
@@ -1931,8 +1940,9 @@ transaction picks the next due Media (`FOR UPDATE SKIP LOCKED`), records the
 claim (`scan_claim_id`) and its lease (`scan_claimed_until`), and commits.
 Rolling deploys start the new core before stopping the old one, so two
 workers overlap on every deploy; a Media another worker has claimed is left
-alone. The lease is the claim's work (the scan, the copy of a clean held
-file, the storage calls around them) plus two minutes, and the work stops
+alone. The lease is the claim's work (the ZIP check of a ZIP, the scan, the
+copy of a clean held file, the storage calls around them) plus two minutes,
+and the work stops
 before the lease ends. Every step that moves the Media on checks the claim
 is still its own. A worker whose lease ran out (another worker has claimed
 the Media since) moves nothing on and deletes nothing. The archive and
@@ -1940,7 +1950,8 @@ expiry purges wait for a live scan claim, so a copy the scan makes can never
 land after them. Account erasure does not wait.
 
 For each claimed Media the worker streams the file's plaintext to clamd with
-`INSTREAM`, in 64 KiB chunks:
+`INSTREAM`, in 64 KiB chunks, once a ZIP has passed
+[the ZIP check](#the-zip-check):
 
 - a public file is read straight from R2;
 - a private file is decrypted as it streams, through the same private storage
@@ -1985,6 +1996,91 @@ owning product reads why it was rejected.
 
 An archived Media waiting for its scan is not scanned: restored, it is
 scanned then.
+
+### The ZIP check
+
+Media redesign ticket 23. clamd skips, without a report, a ZIP member that
+inflates past its `MaxFileSize`, and it goes by what the member really
+inflates to, not by the sizes its headers declare (checked against a real
+clamd 1.5.4, see [ClamAV](#clamav)). So a ZIP (`application/zip`, whatever
+its purpose) is not streamed to clamd until core has checked that clamd
+would scan all of it (`internal/zipcheck`). The check runs in the scan
+worker, under the Media's scan claim, holding no database connection:
+
+1. It reads the ZIP's end and its central directory from R2 by ranged
+   GETs: the file's last 65,577 bytes (room for the end record's longest
+   comment and a ZIP64 locator), then the directory and what follows it,
+   in reads of at most 1 MiB. A directory over 8 MiB with what follows it
+   is refused as `too_large_to_scan`. It never downloads the whole file
+   into memory.
+2. It streams the file once, in order, and inflates every member without
+   keeping it, to check what each member really holds.
+3. It reads each ZIP inside it again (that member's bytes, inflated again)
+   and checks it the same way.
+
+A ZIP that fails is rejected before any byte of it reaches clamd, as any
+rejection (its held file deleted, the rejection recorded without a
+signature):
+
+- as `too_large_to_scan` when a member inflates to more than `MaxFileSize`,
+  all members together to more than `MaxScanSize`, the members of every
+  level together are more than `MaxFiles`, or an archive sits deeper than
+  core reads (the nesting rule below);
+- as `archive_invalid` when it is malformed or holds what clamd cannot
+  read:
+  - no end record at its end, or two;
+  - a central directory that is not where the end record says, or that
+    holds another number of entries;
+  - a ZIP64 end record or locator that disagrees with the end record, or an
+    end record that leaves its counts to ZIP64;
+  - members on another disk;
+  - an entry that points outside the members, members that overlap (the
+    overlap bomb), or bytes before, between or after members that no member
+    accounts for;
+  - an encrypted member;
+  - a compression method other than stored (0) or deflate (8);
+  - ZIP64 sizes (only needed past 4 GiB, and clamd 1.5.4 does not read
+    them: it passed such a member unscanned);
+  - a name that is empty, longer than 1024 bytes, or holds a NUL;
+  - a local header or data descriptor that disagrees with the directory;
+  - a member that inflates to other bytes than it declares (size or
+    checksum), or has bytes after its deflate stream.
+
+The worker logs why, naming members by their place in the directory
+(`member 3`, `member 2 of member 5`), never by name. A check that could not
+finish (storage down, a timeout) says nothing about the ZIP: the Media waits
+scanning and is tried again, as after any failure. The check is bounded by
+two minutes plus two seconds per MiB (it may read the file twice), and a
+ZIP's scan lease grows by that much.
+
+**Nesting.** An archive inside the ZIP is accepted one level deep, and only
+when it is itself a ZIP (Office documents, JARs and APKs are ZIPs), which
+core reads the same way. Its members count toward the same `MaxFiles`,
+`MaxScanSize` and `MaxFileSize`. Refused as `too_large_to_scan`:
+
+- an archive inside that nested ZIP: the upload is level 0, a ZIP among its
+  members level 1, and nothing deeper is read;
+- an archive of another format among the ZIP's members: 7-Zip, RAR, tar,
+  gzip (and `.tar.gz`), bzip2, xz, Zstandard, cab, cpio, ARJ, LHA, ISO 9660,
+  XAR, ar, RPM, EGG or ALZip, told by the member's name or its first bytes.
+  Core cannot look inside them, and clamd would skip there what it skips in
+  a ZIP;
+- any nested archive while `MaxRecursion` is below 3. clamd scans a file
+  inside n archives only while n is below `MaxRecursion` (checked), and a
+  member of a nested ZIP is inside two.
+
+A private ZIP is not checked yet. The check reads a public held file by
+ranged GETs, which a private object does not offer until private Direct
+upload (ticket 21), and no private purpose that can be uploaded today
+accepts ZIP. Should one reach the worker anyway, it is never scanned
+unchecked: it waits scanning, logged at each try
+(`media.ErrPrivateZIPUnchecked`), until its scan deadline rejects it.
+
+The check covers Media of type `application/zip` only. clamd also reads
+inside other containers, which core does not check: a DOCX Answer file is
+a ZIP package too (at most 20 MiB, yet a member could inflate past
+`MaxFileSize`), and clamd also opens a PDF's compressed streams and an
+archive appended to a program.
 
 ### Public files before their scan
 
@@ -2045,15 +2141,16 @@ still does not exist (`404`):
 | Status | `code` | Extra members | When |
 |---|---|---|---|
 | 409 | `media_scanning` | `retryAfterSeconds`, `Retry-After` header (30) | The Media is waiting for its malware scan. Show it as pending, not as missing, and retry later. |
-| 410 | `media_rejected` | `scanResult` | The scan rejected the Media (`infected`, `too_large_to_scan`, `lost`, `integrity` or `scan_timeout`) and its object is deleted. The uploader must upload the file again. |
+| 410 | `media_rejected` | `scanResult` | The scan rejected the Media (`infected`, `too_large_to_scan`, `archive_invalid`, `lost`, `integrity` or `scan_timeout`) and its object is deleted. The uploader must upload the file again. |
 
 A public Media gets its address (`url`, `sizes`) only once clean.
 
 ### Rejections
 
 Every rejection is kept in `media_scan_rejections` (migration
-`20260928140000`) as the scan's event record. It holds the Media id, the
-result (`infected`, `too_large_to_scan`, `lost`, `integrity` or
+`20260928140000`, `archive_invalid` since `20260928180000`) as the scan's
+event record. It holds the Media id, the result (`infected`,
+`too_large_to_scan`, `archive_invalid`, `lost`, `integrity` or
 `scan_timeout`), the name clamd gave what it found (`Eicar-Test-Signature`,
 `Heuristics.Limits.Exceeded.MaxFiles`, …; empty when clamd named nothing) and
 the time. It
@@ -2090,15 +2187,21 @@ application for each side, in core's project and environment:
   Being under `1024M` does not mean a file is scanned whole: an archive also
   meets the limits above. Checked against a real clamd 1.5.4:
 
-  - `AlertExceedsMax` reports `MaxFiles` and `MaxFileSize` exceeded;
-  - an archive member that expands past `MaxFileSize` while the archive
-    itself stays under it is skipped without a report.
+  - `AlertExceedsMax` reports `MaxFiles`, `MaxFileSize` and `MaxRecursion`
+    exceeded;
+  - an archive member that inflates past `MaxFileSize` while the archive
+    itself stays under it is skipped without a report, whatever sizes its
+    headers declare (a stored one is reported);
+  - so is a member with ZIP64 sizes, and one compressed with a method
+    clamd does not know.
 
-  Before `club_file` or `answer_file_large` opens (tickets 22 and 21), core
-  should refuse a ZIP whose uncompressed size exceeds what clamd scans. It
-  does not yet: ticket 23, which `club_file` waits for. The
+  So core checks every ZIP before clamd scans it and refuses one clamd
+  would not scan whole: see [The ZIP check](#the-zip-check). Its limits
+  (`MEDIA_CLAMAV_MAX_*`, see [Configuration](#configuration)) must be the
+  ones this configuration gives clamd; their defaults are. The
   `AlertEncrypted*` settings stay off: they would report every
   password-protected PDF (a common kind of official document) as malware.
+  A ZIP with an encrypted member is refused by the ZIP check instead.
 - memory: a 3 GiB limit and a 1.5 GiB reservation. clamd holds about 1 GiB
   with the full database loaded (measured, 1.5.4). freshclam's database test
   briefly loads a second copy, and a redeploy runs the old and the new clamd
@@ -2273,11 +2376,10 @@ Attaching and listing work whatever the switch says.
   items 1 and 2 below hold on that side. Anyone who may create an Event
   (`event_editor`) can then upload one. It needs no scan (`scan: false`,
   unchanged; at 2 GiB it is above what clamd scans, `media.MaxScanBytes`).
-- **`club_file`**: stays off everywhere until ticket 23 ships (core refuses
-  a ZIP clamd cannot scan whole: `.scratch/media-redesign/issues/23-zip-uncompressed-size-check.md`
-  in sky_lab_genel). Do not put it in the switch before that. ClamAV going
-  live for Answer files (single-step) does not open it. After ticket 23,
-  switch it on (`club_file,video`) once items 1 to 4 hold.
+- **`club_file`**: switch it on (`club_file,video`) once items 1 to 4 hold
+  on that side, on a core that has [the ZIP check](#the-zip-check)
+  (ticket 23: core refuses a ZIP clamd cannot scan whole). ClamAV going live
+  for Answer files (single-step) does not open it.
 
 On each side, sandbox first:
 
@@ -2299,7 +2401,10 @@ On each side, sandbox first:
 4. **ClamAV**: `ops/wizards/media-clamav-wizard.sh` has run, core's
    environment has `MEDIA_CLAMAV_ADDR`, and the self-test in core's
    container finds EICAR. Without it `club_file` is refused
-   (`purpose_not_available`) even when switched on.
+   (`purpose_not_available`) even when switched on. Core's startup line
+   `media scan limits (clamd.conf): ...` shows the limits the ZIP check
+   holds a ZIP within: they must be the wizard's clamd settings (the
+   defaults are).
 
 ## Account erasure
 
@@ -2422,8 +2527,8 @@ What happens to the records when the request completes is in
   (`purpose_not_available`), and an upload started before its purpose was
   taken out ends and is given back. A name that is not a Direct upload
   purpose of the catalogue, or a private one (`answer_file_large`, until
-  ticket 21), stops core at startup. Do not name `club_file` before
-  ticket 23 ships. See [Checks](#checks).
+  ticket 21), stops core at startup. See [Checks](#checks) and
+  [Before Event files open](#before-event-files-open).
 - The rest of Direct upload is fixed in code: an upload lives 12 hours, a
   part address an hour, every part but the last is 16 MiB, and a
   completion's claim is leased for 20 minutes (`media.DirectUploadTTL`,
@@ -2446,9 +2551,23 @@ What happens to the records when the request completes is in
   30 seconds (and after every scanned upload), a failed Media retried after
   30 seconds doubling to an hour, a pass after clamd was unreachable after
   10 seconds doubling to 5 minutes, a file's scan bounded by two minutes
-  plus a second per MiB, a scan's claim leased for its work plus two
-  minutes, and a Media still scanning a week after its upload rejected
-  (`media.ScanDeadline`).
+  plus a second per MiB, a ZIP's check by two minutes plus two seconds per
+  MiB, a scan's claim leased for its work plus two minutes, and a Media
+  still scanning a week after its upload rejected (`media.ScanDeadline`).
+- `MEDIA_CLAMAV_MAX_FILE_MIB`, `MEDIA_CLAMAV_MAX_SCAN_MIB`,
+  `MEDIA_CLAMAV_MAX_FILES`, `MEDIA_CLAMAV_MAX_RECURSION` — clamd's
+  `MaxFileSize` and `MaxScanSize` (whole MiB, 1 to 4095), `MaxFiles` (1 to
+  65535) and `MaxRecursion` (2 to 255), which
+  [the ZIP check](#the-zip-check) holds a ZIP within. **They must match
+  clamd's own configuration**: a ZIP within core's limits but past clamd's
+  would be scanned in part without a report. Defaults `1024`, `1024`,
+  `10000` and `17`: the ClamAV wizard's `MaxFileSize` and `MaxScanSize`
+  (`1024M`), and clamd's own `MaxFiles` and `MaxRecursion`, which the
+  wizard leaves as they are. Change one only with the same change to the
+  wizard's `CLAMD_CONF_*` settings. They are read only with
+  `MEDIA_CLAMAV_ADDR`; a value that is not a whole number in its range
+  stops core at startup. Core logs them at startup:
+  `media scan limits (clamd.conf): MaxFileSize 1024 MiB, MaxScanSize 1024 MiB, MaxFiles 10000, MaxRecursion 17`.
 - `MEDIA_SERVICE_CLIENTS` — the products' service clients for the
   [service attach API](#service-attach-api), `product:client` pairs
   separated by commas (products `forms`, `cms`), or `none`; default
