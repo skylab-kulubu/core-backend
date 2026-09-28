@@ -860,21 +860,25 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		) = 6
 		AND to_regclass('public.event_files_media_id_idx') IS NOT NULL
 		AND to_regclass('public.event_videos_media_id_idx') IS NOT NULL
-		-- Statement triggers (tgtype: 4 insert, 16 update, 8 delete) whose
-		-- arguments are the owner type, the role and the two columns.
+		-- Statement triggers (tgtype: 4 insert, 16 update, 8 delete) that
+		-- read the links through the transition tables the function names
+		-- (old_owners, new_owners), with the owner type, the role and the two
+		-- columns as their arguments.
 		AND (
 			SELECT count(*) FROM (VALUES
-				('event_files', 'event_files_media_attachments_insert', 4, 'event_file'),
-				('event_files', 'event_files_media_attachments_update', 16, 'event_file'),
-				('event_files', 'event_files_media_attachments_delete', 8, 'event_file'),
-				('event_videos', 'event_videos_media_attachments_insert', 4, 'event_video'),
-				('event_videos', 'event_videos_media_attachments_update', 16, 'event_video'),
-				('event_videos', 'event_videos_media_attachments_delete', 8, 'event_video')
-			) expected(table_name, trigger_name, trigger_type, role)
+				('event_files', 'event_files_media_attachments_insert', 4, NULL::TEXT, 'new_owners', 'event_file'),
+				('event_files', 'event_files_media_attachments_update', 16, 'old_owners', 'new_owners', 'event_file'),
+				('event_files', 'event_files_media_attachments_delete', 8, 'old_owners', NULL, 'event_file'),
+				('event_videos', 'event_videos_media_attachments_insert', 4, NULL, 'new_owners', 'event_video'),
+				('event_videos', 'event_videos_media_attachments_update', 16, 'old_owners', 'new_owners', 'event_video'),
+				('event_videos', 'event_videos_media_attachments_delete', 8, 'old_owners', NULL, 'event_video')
+			) expected(table_name, trigger_name, trigger_type, old_table, new_table, role)
 			JOIN pg_trigger actual
 			  ON actual.tgrelid = to_regclass('public.' || expected.table_name)
 			 AND actual.tgname = expected.trigger_name
 			 AND actual.tgtype = expected.trigger_type
+			 AND actual.tgoldtable::TEXT IS NOT DISTINCT FROM expected.old_table
+			 AND actual.tgnewtable::TEXT IS NOT DISTINCT FROM expected.new_table
 			 AND actual.tgenabled = 'O'
 			 AND NOT actual.tgisinternal
 			 AND actual.tgfoid = to_regprocedure('public.sync_core_media_attachments()')
@@ -883,7 +887,14 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 				|| encode(convert_to('event_id', 'UTF8'), 'hex') || '00'
 				|| encode(convert_to('media_id', 'UTF8'), 'hex') || '00'
 		) = 6
-		AND to_regprocedure('public.media_roles_without_legacy()') IS NOT NULL
+		-- The functions are read by their source, not called: before the
+		-- migration runs, media_roles_without_legacy does not exist.
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_roles_without_legacy'
+			  AND prosrc LIKE '%(''core'', ''event_file'')%'
+			  AND prosrc LIKE '%(''core'', ''event_video'')%'
+		)
 		AND EXISTS (
 			SELECT 1 FROM pg_proc
 			WHERE proname = 'media_role_purposes'
