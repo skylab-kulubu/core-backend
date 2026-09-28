@@ -9,7 +9,7 @@ STATE=$HERE/.state
 PROJECT=${HARNESS_PROJECT:-skylab-erasure-harness}
 
 if [ -f "$STATE/compose.env" ] && [ -f "$STATE/images.env" ]; then
-  docker compose -p "$PROJECT" -f "$HERE/compose.yaml" --profile driver --profile tools --profile account-center \
+  docker compose -p "$PROJECT" -f "$HERE/compose.yaml" --profile driver --profile tools --profile account-center --profile replay \
     --env-file "$STATE/compose.env" --env-file "$STATE/images.env" down --volumes --remove-orphans --timeout 5 || true
 fi
 # Belt and braces: anything still labelled with the project.
