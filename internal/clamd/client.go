@@ -70,6 +70,9 @@ const (
 	// earlyReplyWait is how long a client whose write failed waits for the
 	// answer clamd may have sent before it closed the connection.
 	earlyReplyWait = 5 * time.Second
+	// trailingWait is how long a client reads on after an answer, for a
+	// second one: clamd closes the connection once it has answered.
+	trailingWait = 200 * time.Millisecond
 )
 
 // Client talks to one clamd. Its zero timeouts take the defaults.
@@ -97,8 +100,20 @@ func (c *Client) Scan(ctx context.Context, r io.Reader) (Result, error) {
 		return Result{}, err
 	}
 	defer conn.Close()
+	// The first answer is handed over as soon as it is read, so an early
+	// one is seen before the stream's end; the reader then reads on for a
+	// second one (trail).
 	replies := make(chan reply, 1)
-	go func() { replies <- readReply(conn) }()
+	trail := make(chan error, 1)
+	go func() {
+		answer := readReply(conn)
+		replies <- answer
+		if answer.err != nil {
+			trail <- nil
+			return
+		}
+		trail <- afterReply(conn)
+	}()
 
 	if err := c.write(conn, []byte("zINSTREAM\x00")); err != nil {
 		return Result{}, c.afterWriteFailed(ctx, replies, err)
@@ -137,12 +152,30 @@ func (c *Client) Scan(ctx context.Context, r io.Reader) (Result, error) {
 	if err := c.write(conn, []byte{0, 0, 0, 0}); err != nil {
 		return Result{}, c.afterWriteFailed(ctx, replies, err)
 	}
+	var answer reply
 	select {
-	case answer := <-replies:
-		return verdict(answer)
+	case answer = <-replies:
 	case <-ctx.Done():
 		return Result{}, ctx.Err()
 	}
+	result, err := verdict(answer)
+	if err != nil {
+		return Result{}, err
+	}
+	// Exactly one answer: a second one, however late within trailingWait,
+	// makes the first no verdict.
+	select {
+	case extra := <-trail:
+		if extra != nil {
+			return Result{}, extra
+		}
+	case <-ctx.Done():
+		return Result{}, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	return result, nil
 }
 
 // Ping checks clamd answers.
@@ -179,6 +212,9 @@ func (c *Client) command(ctx context.Context, command string) (string, error) {
 		return "", err
 	}
 	answer := readReply(conn)
+	if answer.err == nil {
+		answer.err = afterReply(conn)
+	}
 	if answer.err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", ctxErr
@@ -277,6 +313,21 @@ func readReply(conn net.Conn) reply {
 		}
 	}
 	return reply{err: &ReplyError{Reply: answer.String()[:64] + "…", Err: ErrProtocol}}
+}
+
+// afterReply reads on for trailingWait after an answer: clamd closes the
+// connection once it has answered, so any byte that comes now is a second
+// answer (ErrProtocol). The connection closing, or nothing coming, is fine.
+func afterReply(conn net.Conn) error {
+	if err := conn.SetReadDeadline(time.Now().Add(trailingWait)); err != nil {
+		return err
+	}
+	buf := make([]byte, 64)
+	n, _ := conn.Read(buf)
+	if n > 0 {
+		return &ReplyError{Reply: strings.TrimRight(string(buf[:n]), "\x00"), Err: ErrProtocol}
+	}
+	return nil
 }
 
 // earlyAnswer is the error of an answer clamd sent before it had the whole

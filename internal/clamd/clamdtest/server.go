@@ -38,6 +38,7 @@ type Server struct {
 	failure   string
 	early     string
 	truncated string
+	second    string
 	found     map[string]string
 	streams   [][]byte
 	wg        sync.WaitGroup
@@ -101,6 +102,14 @@ func (s *Server) AnswerTruncated(text string) {
 	s.truncated = text
 }
 
+// AnswerTwice makes the fake, after its answer to a stream, send second as
+// another answer in a separate write: a clamd that breaks the protocol.
+func (s *Server) AnswerTwice(second string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.second = second
+}
+
 // Report makes a stream containing marker FOUND as signature.
 func (s *Server) Report(marker []byte, signature string) {
 	s.mu.Lock()
@@ -152,7 +161,7 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 	s.mu.Lock()
-	delay, failure, limit, early, truncated := s.delay, s.failure, s.streamMax, s.early, s.truncated
+	delay, failure, limit, early, truncated, second := s.delay, s.failure, s.streamMax, s.early, s.truncated, s.second
 	s.mu.Unlock()
 	reply := func(text string) {
 		if delay > 0 {
@@ -208,6 +217,10 @@ func (s *Server) handle(conn net.Conn) {
 			reply("stream: " + signature + " FOUND")
 		default:
 			reply("stream: OK")
+		}
+		if second != "" {
+			time.Sleep(20 * time.Millisecond)
+			_, _ = conn.Write([]byte(second + "\x00"))
 		}
 	default:
 		reply("UNKNOWN COMMAND")

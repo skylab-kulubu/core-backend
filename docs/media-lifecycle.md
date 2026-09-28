@@ -1879,7 +1879,15 @@ exactly one NUL-terminated answer after the end of the stream (the
 zero-length chunk). clamd answers before the end only to refuse the stream
 (a size limit, an `ERROR`). Any other answer there, an answer cut short, or
 one core does not know is a protocol failure (`clamd.ErrProtocol`): never
-clean, and tried again later.
+clean, and tried again later. After the answer, core reads on for 200
+milliseconds: clamd closes the connection once it has answered, and any
+second answer, even in a later write, is a protocol failure too.
+
+One case cannot be told apart at the protocol level. An early `OK` that
+arrives between the last chunk and the end of the stream reads like the real
+answer, and for a stream of one chunk (64 KiB or less) there is no later
+chunk to catch it. A real clamd never answers before the end of the stream,
+so this only matters for something that is not clamd.
 
 - A Media whose scan fails waits 30 seconds before it is tried again. Each
   failure in a row doubles the wait, up to an hour (`scan_attempts`,

@@ -240,3 +240,23 @@ func TestScanRefusesAnAnswerWithoutItsTerminator(t *testing.T) {
 		}
 	}
 }
+
+// clamd answers a stream once and closes. A second answer, even one that
+// arrives in a later write, breaks the protocol: the first is no verdict.
+func TestScanRefusesASecondAnswer(t *testing.T) {
+	for first, second := range map[string]string{
+		"clean":    "stream: Eicar-Test-Signature FOUND",
+		"infected": "stream: OK",
+	} {
+		fake := clamdtest.New(t)
+		fake.AnswerTwice(second)
+		file := []byte("harmless")
+		if first == "infected" {
+			file = clamd.EICAR()
+		}
+		result, err := scan(t, clamd.New(fake.Addr()), file)
+		if !errors.Is(err, clamd.ErrProtocol) {
+			t.Errorf("%s then %q: result %+v, err %v; want %v", first, second, result, err, clamd.ErrProtocol)
+		}
+	}
+}
