@@ -124,7 +124,7 @@
       "service": "forms"
     },
     "video": {
-      "description": "An event recording, served as plain MP4: one of an Event's videos (decision C1).",
+      "description": "An event recording: one of an Event's videos (decision C1), served inline as video/mp4 to play.",
       "upload": "event_editor",
       "types": ["video/mp4"],
       "max_mib": 2048,

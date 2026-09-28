@@ -41,10 +41,11 @@ type Event struct {
 	CreatedAt       time.Time                     `json:"createdAt"`
 	UpdatedAt       time.Time                     `json:"updatedAt"`
 
-	// Files and Videos are the Event's downloads, in their organizers'
-	// order (media redesign ticket 22). Only an Event's detail carries them:
-	// a list leaves them out (nil, omitzero) and answers FileCount and
-	// VideoCount alone, which count the items anyone can download.
+	// Files and Videos are the Event's files and videos, in their
+	// organizers' order (media redesign ticket 22). Only an Event's detail
+	// carries them: a list leaves them out (nil, omitzero) and answers
+	// FileCount and VideoCount alone, which count the items anyone can see
+	// (those that can be served, media.ServableSQL).
 	Files      []MediaItem `json:"files,omitzero"`
 	Videos     []MediaItem `json:"videos,omitzero"`
 	FileCount  int         `json:"fileCount"`
@@ -84,7 +85,7 @@ type Resource struct {
 	Ranked          bool                          `json:"ranked"`
 
 	// FileCount and VideoCount count the Event's files and videos anyone
-	// can download; the Event's detail lists them.
+	// can see; the Event's detail lists them.
 	FileCount  int `json:"fileCount"`
 	VideoCount int `json:"videoCount"`
 }
