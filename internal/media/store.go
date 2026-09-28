@@ -123,6 +123,16 @@ const (
 	// ScanTooLarge: the file is larger than the scanner takes, so it could
 	// not be scanned whole; the Media is rejected.
 	ScanTooLarge ScanResult = "too_large_to_scan"
+	// ScanLost: the file to scan is gone (the R2 lifecycle rule clears a
+	// held file after two days), so it can never be scanned; the Media is
+	// rejected.
+	ScanLost ScanResult = "lost"
+	// ScanTimeout: the Media was still waiting for its scan ScanDeadline
+	// after its upload; it is rejected.
+	ScanTimeout ScanResult = "scan_timeout"
+	// ScanIntegrity: the private object failed its integrity check while it
+	// was read for the scan; it is rejected.
+	ScanIntegrity ScanResult = "integrity"
 )
 
 // expired reports whether the Media's expiry is at or before now. Only a

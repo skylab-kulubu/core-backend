@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -166,10 +167,10 @@ func TestPostgresScanRejectsAnInfectedFileAndDeletesIt(t *testing.T) {
 	if got.Status != media.StatusRejected || got.ScanResult != media.ScanInfected || got.BlobPurgedAt == nil || got.ExpiresAt != nil {
 		t.Fatalf("rejected Media %s (%s), purged %v, expires %v", got.Status, got.ScanResult, got.BlobPurgedAt, got.ExpiresAt)
 	}
-	rejection, err := d.store.GetScanRejection(context.Background(), infected.ID)
-	if err != nil || rejection.Result != media.ScanInfected || rejection.Signature != clamdtest.Signature ||
-		rejection.RejectedAt.Sub(d.now).Abs() > time.Millisecond {
-		t.Fatalf("rejection %+v, err %v", rejection, err)
+	rejection := rejectionOf(t, d, infected.ID)
+	if rejection.result != media.ScanInfected || rejection.signature != clamdtest.Signature ||
+		rejection.at.Sub(d.now).Abs() > time.Millisecond {
+		t.Fatalf("rejection %+v", rejection)
 	}
 	var columns []string
 	rows, err := d.pool.Query(context.Background(), `SELECT column_name FROM information_schema.columns WHERE table_name = 'media_scan_rejections' ORDER BY column_name`)
@@ -211,8 +212,8 @@ func TestPostgresScanRejectsAFileTooLargeToScan(t *testing.T) {
 	if got := d.get(t, long.ID); got.Status != media.StatusRejected || got.ScanResult != media.ScanTooLarge {
 		t.Fatalf("%s (%s), want rejected as too large to scan", got.Status, got.ScanResult)
 	}
-	if rejection, err := d.store.GetScanRejection(context.Background(), long.ID); err != nil || rejection.Result != media.ScanTooLarge || rejection.Signature != "" {
-		t.Fatalf("rejection %+v, err %v", rejection, err)
+	if rejection := rejectionOf(t, d, long.ID); rejection.result != media.ScanTooLarge || rejection.signature != "" {
+		t.Fatalf("rejection %+v", rejection)
 	}
 
 	d.clamd.LimitStream(0)
@@ -222,9 +223,8 @@ func TestPostgresScanRejectsAFileTooLargeToScan(t *testing.T) {
 	if report := d.pass(t); report.Rejected != 1 {
 		t.Fatalf("report %+v", report)
 	}
-	if rejection, err := d.store.GetScanRejection(context.Background(), partial.ID); err != nil ||
-		rejection.Result != media.ScanTooLarge || rejection.Signature != "Heuristics.Limits.Exceeded.MaxFiles" {
-		t.Fatalf("rejection %+v, err %v", rejection, err)
+	if rejection := rejectionOf(t, d, partial.ID); rejection.result != media.ScanTooLarge || rejection.signature != "Heuristics.Limits.Exceeded.MaxFiles" {
+		t.Fatalf("rejection %+v", rejection)
 	}
 }
 
@@ -266,10 +266,12 @@ func attempts(t *testing.T, d *scanDatabase, id uuid.UUID) int {
 func TestPostgresScanRetriesAFailedMediaLaterAndWalksPastIt(t *testing.T) {
 	d := newScanDatabase(t)
 	unreadable, clean := d.answer(t, pdfFile()), d.answer(t, pdfFile())
-	object, _ := d.private.Get(unreadable.Key)
-	if err := d.private.Delete(context.Background(), unreadable.Key); err != nil {
-		t.Fatal(err)
-	}
+	flaky := &failingOpens{MemoryBlob: d.private, key: unreadable.Key}
+	d.worker = media.NewScanWorker(media.ScanWorkerConfig{
+		Store: d.store, Scanner: d.client, Public: d.blobs,
+		Private: media.NewPrivateStorage(flaky, transit.New(d.bao.Config())),
+		Now:     func() time.Time { return d.now },
+	})
 	if report := d.pass(t); report.Clean != 1 || report.Failed != 1 {
 		t.Fatalf("report %+v, want the readable one clean past the other", report)
 	}
@@ -279,9 +281,7 @@ func TestPostgresScanRetriesAFailedMediaLaterAndWalksPastIt(t *testing.T) {
 	if got := d.get(t, unreadable.ID); got.Status != media.StatusScanning || attempts(t, d, unreadable.ID) != 1 {
 		t.Fatalf("after a failure: %s, %d attempts", got.Status, attempts(t, d, unreadable.ID))
 	}
-	if err := d.private.Put(context.Background(), unreadable.Key, object, media.BlobMetadata{ContentType: "application/octet-stream"}); err != nil {
-		t.Fatal(err)
-	}
+	flaky.key = ""
 	// Tried again only once its wait (30 seconds) is over.
 	if report := d.pass(t); report.Clean+report.Failed != 0 {
 		t.Fatalf("scanned before its retry time: %+v", report)
@@ -524,4 +524,35 @@ func TestPostgresRestoringAnAttachedScanningMediaGivesItNoExpiry(t *testing.T) {
 	if got := d.get(t, loose.ID); got.Status != media.StatusScanning || got.ExpiresAt == nil {
 		t.Fatalf("restored with nothing keeping it: %s expires %v, want scanning with an expiry", got.Status, got.ExpiresAt)
 	}
+}
+
+// rejection is the scan's record of one rejection.
+type rejection struct {
+	result    media.ScanResult
+	signature string
+	at        time.Time
+}
+
+func rejectionOf(t *testing.T, d *scanDatabase, id uuid.UUID) rejection {
+	t.Helper()
+	var r rejection
+	if err := d.pool.QueryRow(context.Background(), `SELECT result, signature, rejected_at FROM media_scan_rejections WHERE media_id = $1`, id).
+		Scan(&r.result, &r.signature, &r.at); err != nil {
+		t.Fatalf("rejection of %s: %v", id, err)
+	}
+	return r
+}
+
+// failingOpens is a bucket whose reads of key fail, as a storage outage
+// does (not a missing object).
+type failingOpens struct {
+	*media.MemoryBlob
+	key string
+}
+
+func (f *failingOpens) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	if key == f.key {
+		return nil, errors.New("r2: 503 Service Unavailable")
+	}
+	return f.MemoryBlob.Open(ctx, key)
 }

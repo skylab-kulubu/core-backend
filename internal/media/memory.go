@@ -279,7 +279,7 @@ func (s *MemoryStore) PurgeBlobIfUnreferenced(_ context.Context, id uuid.UUID, p
 		m.BlobPurgeCheckedAt = &purgedAt
 		s.byID[id] = m
 	}
-	if err := purgeObjects(m.Key, purge); err != nil {
+	if err := purgeMediaObjects(id, m.Key, purge); err != nil {
 		return false, err
 	}
 	m.BlobPurgedAt = &purgedAt
@@ -327,7 +327,7 @@ func (s *MemoryStore) PurgeExpiredBlobIfUnattached(_ context.Context, id uuid.UU
 		m.BlobPurgeCheckedAt = &now
 		s.byID[id] = m
 	}
-	if err := purgeObjects(m.Key, purge); err != nil {
+	if err := purgeMediaObjects(id, m.Key, purge); err != nil {
 		return false, err
 	}
 	m.BlobPurgedAt = &now

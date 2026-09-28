@@ -29,6 +29,14 @@ const (
 	// scanCopyTimeout bounds copying a clean held file (at most
 	// MaxScanBytes) to its served key, inside R2.
 	scanCopyTimeout = 12 * time.Minute
+	// scanLeaseMargin is how long a scan's lease outlasts its work: the
+	// work stops that long before the lease ends.
+	scanLeaseMargin = 2 * time.Minute
+	// ScanDeadline is how long a Media may wait scanning after its upload.
+	// Past it, the Media is rejected as scan_timeout: its scan never ended
+	// (clamd down for a week, or a file that keeps failing), and the
+	// uploader must upload it again.
+	ScanDeadline = 7 * 24 * time.Hour
 )
 
 // scanTimeout bounds one file's scan: reading it from storage (decrypting
@@ -38,11 +46,22 @@ func scanTimeout(size int64) time.Duration {
 	return 2*time.Minute + time.Duration(size>>20)*time.Second
 }
 
+// scanWork bounds everything a claim does: the scan, the copy of a clean
+// held file, and the storage calls around them.
+func scanWork(size int64) time.Duration {
+	return scanTimeout(size) + scanCopyTimeout + 4*scanStorageTimeout
+}
+
+// scanLease is how long a scan's claim holds its Media.
+func scanLease(m Media) time.Duration {
+	return scanWork(m.Size) + scanLeaseMargin
+}
+
 // scanHoldPrefix starts the key a public file waiting for its scan is held
 // at, in the public bucket: under the pending prefix, which the R2
-// lifecycle rule clears after two days and the CDN may refuse, at a random
-// key only core knows. Once clean, it is copied to its served key
-// (servedKey).
+// lifecycle rule clears after two days and the CDN refuses, at a random key
+// only core knows. Once clean, it is copied to its served key
+// (servedKeyOf).
 const scanHoldPrefix = pendingKeyPrefix + "scan/"
 
 // scanHoldKey is a new key to hold a public file at until its scan ends.
@@ -58,11 +77,27 @@ func isScanHoldKey(key string) bool {
 // without a name.
 var scanHoldMetadata = BlobMetadata{ContentType: "application/octet-stream", ContentDisposition: "attachment"}
 
-// servedKey is where a held file is served from once clean. It is the
-// Media's id, so a copy retried after a crash lands on the same key; only
+// servedKeyOf is where a held file of the Media is served from once clean.
+// It is the Media's id, so a copy retried after a crash lands on the same
+// key, and so every purge of a held Media knows it (purgeMediaObjects); only
 // clean bytes are ever written there.
-func servedKey(m Media) string {
-	return "files/" + m.ID.String()
+func servedKeyOf(id uuid.UUID) string {
+	return "files/" + id.String()
+}
+
+// purgeMediaObjects deletes every object the Media at key may have: its
+// object and its sizes (purgeObjects), and, for a file held until its scan
+// ends, the clean copy a scan may have made at its served key already (a
+// scan that copied it and then found its Media gone, or crashed before
+// recording it). An object that is not there is deleted already.
+func purgeMediaObjects(id uuid.UUID, key string, purge func(key string) error) error {
+	if err := purgeObjects(key, purge); err != nil {
+		return err
+	}
+	if isScanHoldKey(key) {
+		return purge(servedKeyOf(id))
+	}
+	return nil
 }
 
 // ErrScannerDown is a pass that stopped because clamd cannot be reached:
@@ -105,17 +140,22 @@ type ScanWorkerConfig struct {
 //
 //   - clean: pending, or attached when a Media attachment already links it;
 //     a public file held apart is copied to its served key first;
-//   - infected, or too large for clamd to scan: rejected, its objects
-//     deleted from the bucket that holds them, and the rejection recorded
-//     (Media, reason, signature, time; no file name);
+//   - infected, too large for clamd to scan, its file lost (the held object
+//     is gone), or its private object failing its integrity check:
+//     rejected, its objects deleted from the bucket that holds them, and the
+//     rejection recorded (Media, reason, signature, time; no file name);
+//   - still scanning ScanDeadline after its upload: rejected as
+//     scan_timeout, whether clamd answers or not;
 //   - clamd unreachable: the pass stops and every Media waits scanning;
 //   - any other failure (clamd answered an error, storage failed): the
 //     Media waits scanning and is tried again later, each failure in a row
 //     doubling the wait (DeferScan).
 //
-// A pass walks the due Media by id in batches, and a Media that fails never
-// holds up the others. Every step is idempotent: a pass cut short is made
-// again.
+// Each Media is claimed before any clamd or storage work (ClaimNextScan), so
+// the core replicas a rolling deploy runs side by side never scan the same
+// Media, and a claim whose work ran past its lease moves nothing on. A pass
+// walks the due Media by id, and a Media that fails never holds up the
+// others. Every step is idempotent: a pass cut short is made again.
 type ScanWorker struct {
 	store   *PostgresStore
 	scanner Scanner
@@ -146,7 +186,8 @@ func (w *ScanWorker) Wake() {
 
 // ScanReport counts one pass.
 type ScanReport struct {
-	Clean    int
+	Clean int
+	// Rejected are the Media the pass rejected, scan_timeout included.
 	Rejected int
 	// Finished are rejected Media whose objects an earlier pass could not
 	// delete, deleted in this one.
@@ -158,42 +199,63 @@ func (r ScanReport) any() bool {
 	return r.Clean+r.Rejected+r.Finished+r.Failed > 0
 }
 
-// Pass makes one pass over the Media due for the scan. A Media that fails
-// is reported through onError and tried again later. It stops with
+// Pass makes one pass over the Media due for the scan: it first rejects the
+// ones past ScanDeadline, then claims and moves on each due Media in id
+// order. A Media that fails is reported through onError and tried again
+// later; one the pass rejects for a reason clamd did not give (its private
+// object failing its integrity check) is reported too. It stops with
 // ErrScannerDown when clamd cannot be reached.
 func (w *ScanWorker) Pass(ctx context.Context, onError func(error)) (ScanReport, error) {
 	var report ScanReport
-	passCtx, stop := context.WithCancelCause(ctx)
-	defer stop(nil)
-	listedAt := w.now().UTC()
-	_, err := BackfillPass(passCtx, "media",
-		func(ctx context.Context, after uuid.UUID, limit int) ([]Media, error) {
-			return w.store.ListScanDue(ctx, listedAt, after, limit)
-		},
-		func(m Media) uuid.UUID { return m.ID },
-		func(ctx context.Context, m Media) error {
-			err := w.step(ctx, m, &report)
-			if errors.Is(err, clamd.ErrUnreachable) {
-				stop(fmt.Errorf("%w: %w", ErrScannerDown, err))
-				return nil
-			}
-			if err != nil {
-				report.Failed++
-				deferCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scanStorageTimeout)
-				err = errors.Join(err, w.store.DeferScan(deferCtx, m.ID, w.now().UTC()))
-				cancel()
-			}
-			return err
-		},
-		onError)
-	if cause := context.Cause(passCtx); errors.Is(cause, ErrScannerDown) {
-		return report, cause
+	now := w.now().UTC()
+	overdue, err := w.store.RejectOverdueScans(ctx, now, ScanDeadline)
+	if err != nil {
+		return report, err
 	}
-	return report, err
+	report.Rejected += overdue
+	after := uuid.Nil
+	for {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
+		claim, found, err := w.store.ClaimNextScan(ctx, w.now().UTC(), after, scanLease)
+		if err != nil || !found {
+			return report, err
+		}
+		after = claim.Media.ID
+		err = w.step(ctx, claim, &report, onError)
+		if errors.Is(err, clamd.ErrUnreachable) {
+			return report, errors.Join(fmt.Errorf("%w: %w", ErrScannerDown, err), w.release(ctx, claim))
+		}
+		if err != nil {
+			report.Failed++
+			if onError != nil {
+				onError(&BackfillError{Kind: "media", ID: claim.Media.ID, Err: err})
+			}
+			w.deferScan(ctx, claim, onError)
+		}
+	}
 }
 
-// step moves one due Media on.
-func (w *ScanWorker) step(ctx context.Context, m Media, report *ScanReport) error {
+func (w *ScanWorker) release(ctx context.Context, claim ScanClaim) error {
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scanStorageTimeout)
+	defer cancel()
+	return w.store.ReleaseScan(releaseCtx, claim)
+}
+
+func (w *ScanWorker) deferScan(ctx context.Context, claim ScanClaim, onError func(error)) {
+	deferCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scanStorageTimeout)
+	defer cancel()
+	if err := w.store.DeferScan(deferCtx, claim, w.now().UTC()); err != nil && onError != nil {
+		onError(&BackfillError{Kind: "media", ID: claim.Media.ID, Err: err})
+	}
+}
+
+// step moves one claimed Media on, within its claim's work time.
+func (w *ScanWorker) step(ctx context.Context, claim ScanClaim, report *ScanReport, onError func(error)) error {
+	ctx, cancel := context.WithTimeout(ctx, scanWork(claim.Media.Size))
+	defer cancel()
+	m := claim.Media
 	if m.Status == StatusRejected {
 		done, err := w.finishRejection(ctx, m)
 		if done {
@@ -203,8 +265,17 @@ func (w *ScanWorker) step(ctx context.Context, m Media, report *ScanReport) erro
 	}
 	verdict, err := w.scan(ctx, m)
 	switch {
+	case errors.Is(err, ErrNotFound):
+		// The held file is gone (the R2 lifecycle rule clears pending/
+		// after two days) or the object is: it can never be scanned.
+		return w.reject(ctx, claim, ScanLost, "", report)
+	case errors.Is(err, ErrPrivateIntegrity):
+		if onError != nil {
+			onError(&BackfillError{Kind: "media", ID: m.ID, Err: errors.New("rejected: its private object failed its integrity check")})
+		}
+		return w.reject(ctx, claim, ScanIntegrity, "", report)
 	case errors.Is(err, clamd.ErrStreamTooLarge):
-		return w.reject(ctx, m, ScanTooLarge, "", report)
+		return w.reject(ctx, claim, ScanTooLarge, "", report)
 	case err != nil:
 		return err
 	case verdict.Infected():
@@ -213,9 +284,9 @@ func (w *ScanWorker) step(ctx context.Context, m Media, report *ScanReport) erro
 			// clamd could not scan all of it (AlertExceedsMax).
 			result = ScanTooLarge
 		}
-		return w.reject(ctx, m, result, verdict.Signature, report)
+		return w.reject(ctx, claim, result, verdict.Signature, report)
 	}
-	return w.clean(ctx, m, report)
+	return w.clean(ctx, claim, report)
 }
 
 // scan streams the Media's plaintext to clamd.
@@ -242,44 +313,56 @@ func (w *ScanWorker) scan(ctx context.Context, m Media) (clamd.Result, error) {
 	return w.scanner.Scan(scanCtx, body)
 }
 
-// clean ends the scan of a clean Media. A held public file is copied to its
-// served key, with the serving policy's metadata, before the Media points
-// there; the held copy then goes.
-func (w *ScanWorker) clean(ctx context.Context, m Media, report *ScanReport) error {
-	served := m.Key
-	if isScanHoldKey(m.Key) {
-		if w.public == nil {
-			return ErrDirectUploadUnavailable
-		}
-		served = servedKey(m)
-		copyCtx, cancel := context.WithTimeout(ctx, scanCopyTimeout)
-		err := w.public.Copy(copyCtx, m.Key, served, ServingMetadata(m.Type, m.Name))
-		cancel()
-		if err != nil {
-			return fmt.Errorf("copy the clean file to its served key: %w", err)
-		}
-	}
-	done, err := w.store.MarkScanClean(ctx, m.ID, m.Key, served, w.now().UTC())
-	if err != nil {
-		// A held file's copy stays: the next pass copies onto it again.
-		return err
-	}
-	if served == m.Key {
+// clean ends the scan of a clean Media: a held public file is copied to
+// its served key before the Media points there, and the held copy then
+// goes.
+func (w *ScanWorker) clean(ctx context.Context, claim ScanClaim, report *ScanReport) error {
+	m := claim.Media
+	if !isScanHoldKey(m.Key) {
+		done, err := w.store.MarkScanClean(ctx, claim, m.Key, w.now().UTC())
 		if done {
 			report.Clean++
 		}
-		return nil
+		return err
 	}
-	if !done {
-		// The Media is gone or archived meanwhile: nothing serves the copy.
-		return w.deletePublic(ctx, served)
+	served, err := w.copyToServed(ctx, m)
+	if err != nil {
+		return err
+	}
+	done, err := w.store.MarkScanClean(ctx, claim, served, w.now().UTC())
+	if err != nil || !done {
+		// Nothing is deleted: the claim was lost to another worker, which
+		// serves the same key, or the Media was purged or archived, and
+		// its purge deletes the copy (purgeMediaObjects); the archive and
+		// expiry purges wait for this claim's lease, so the copy cannot
+		// land after them.
+		return err
 	}
 	report.Clean++
 	// The R2 lifecycle rule clears pending/ should this fail.
 	_ = w.deletePublic(ctx, m.Key)
-	// The copy's download name was read before it; an account erasure may
-	// have cleared it since (as the serving policy backfill does, read the
-	// Media again).
+	return w.keepErasedName(ctx, m, served)
+}
+
+// copyToServed copies a clean held file to its served key with the serving
+// policy's metadata.
+func (w *ScanWorker) copyToServed(ctx context.Context, m Media) (string, error) {
+	if w.public == nil {
+		return "", ErrDirectUploadUnavailable
+	}
+	served := servedKeyOf(m.ID)
+	copyCtx, cancel := context.WithTimeout(ctx, scanCopyTimeout)
+	defer cancel()
+	if err := w.public.Copy(copyCtx, m.Key, served, ServingMetadata(m.Type, m.Name)); err != nil {
+		return "", fmt.Errorf("copy the clean file to its served key: %w", err)
+	}
+	return served, nil
+}
+
+// keepErasedName rewrites the served copy's metadata when an account
+// erasure cleared the Media's name after the copy read it (as the serving
+// policy backfill does, it reads the Media again).
+func (w *ScanWorker) keepErasedName(ctx context.Context, m Media, served string) error {
 	now, err := w.store.GetIncludingDeleted(ctx, m.ID)
 	if err != nil || now.Name == m.Name {
 		return err
@@ -292,14 +375,14 @@ func (w *ScanWorker) clean(ctx context.Context, m Media, report *ScanReport) err
 	return nil
 }
 
-// reject rejects the Media and deletes its objects.
-func (w *ScanWorker) reject(ctx context.Context, m Media, result ScanResult, signature string, report *ScanReport) error {
-	done, err := w.store.RejectScanned(ctx, m.ID, m.Key, result, signature, w.now().UTC())
+// reject rejects the Media under its claim and deletes its objects.
+func (w *ScanWorker) reject(ctx context.Context, claim ScanClaim, result ScanResult, signature string, report *ScanReport) error {
+	done, err := w.store.RejectScanned(ctx, claim, result, signature, w.now().UTC())
 	if err != nil || !done {
 		return err
 	}
 	report.Rejected++
-	_, err = w.finishRejection(ctx, m)
+	_, err = w.finishRejection(ctx, claim.Media)
 	return err
 }
 
@@ -358,7 +441,7 @@ func (w *ScanWorker) Run(ctx context.Context, logf func(format string, args ...a
 			case err != nil && ctx.Err() == nil:
 				logf("media scan: %v", err)
 			}
-			if downWait > 0 && !errors.Is(err, ErrScannerDown) && err == nil {
+			if downWait > 0 && err == nil {
 				logf("media scan: clamd answers again")
 				downWait = 0
 			}
