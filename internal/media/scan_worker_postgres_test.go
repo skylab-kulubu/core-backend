@@ -36,7 +36,7 @@ func newScanDatabase(t *testing.T) *scanDatabase {
 	pd := newPrivateDatabase(t)
 	fake := clamdtest.New(t)
 	d := &scanDatabase{clamd: fake, client: clamd.New(fake.Addr()), now: time.Now().UTC()}
-	d.worker = media.NewScanWorker(media.ScanWorkerConfig{
+	d.worker = mustScanWorker(t, media.ScanWorkerConfig{
 		Store: pd.store, Scanner: d.client, Public: pd.blobs,
 		Private: media.NewPrivateStorage(pd.private, transit.New(pd.bao.Config())),
 		Now:     func() time.Time { return d.now },
@@ -269,7 +269,7 @@ func TestPostgresScanRetriesAFailedMediaLaterAndWalksPastIt(t *testing.T) {
 	d := newScanDatabase(t)
 	unreadable, clean := d.answer(t, pdfFile()), d.answer(t, pdfFile())
 	flaky := &failingOpens{MemoryBlob: d.private, key: unreadable.Key}
-	d.worker = media.NewScanWorker(media.ScanWorkerConfig{
+	d.worker = mustScanWorker(t, media.ScanWorkerConfig{
 		Store: d.store, Scanner: d.client, Public: d.blobs,
 		Private: media.NewPrivateStorage(flaky, transit.New(d.bao.Config())),
 		Now:     func() time.Time { return d.now },
@@ -322,7 +322,7 @@ func TestPostgresScanFinishesARejectionCutShort(t *testing.T) {
 	d := newScanDatabase(t)
 	infected := d.answer(t, infectedPDF())
 	failing := &failingDeletes{MemoryBlob: d.private, fail: true}
-	worker := media.NewScanWorker(media.ScanWorkerConfig{
+	worker := mustScanWorker(t, media.ScanWorkerConfig{
 		Store: d.store, Scanner: d.client,
 		Private: media.NewPrivateStorage(failing, transit.New(d.bao.Config())),
 		Now:     func() time.Time { return d.now },
@@ -429,6 +429,12 @@ func TestPostgresAnAnswerFileOpensOnlyOnceClean(t *testing.T) {
 // waiting scanning.
 func (d *scanDatabase) heldClubFile(t *testing.T, name string, data []byte) media.Media {
 	t.Helper()
+	return d.held(t, name, "application/pdf", data)
+}
+
+// held stores a club file of the content type as heldClubFile does.
+func (d *scanDatabase) held(t *testing.T, name, contentType string, data []byte) media.Media {
+	t.Helper()
 	ctx := context.Background()
 	key := "pending/scan/" + uuid.NewString()
 	if err := d.blobs.Put(ctx, key, data, media.BlobMetadata{ContentType: "application/octet-stream", ContentDisposition: "attachment"}); err != nil {
@@ -436,7 +442,7 @@ func (d *scanDatabase) heldClubFile(t *testing.T, name string, data []byte) medi
 	}
 	expires := time.Now().Add(24 * time.Hour)
 	created, err := d.store.Create(ctx, media.Media{
-		Name: name, Type: "application/pdf", Key: key, Size: int64(len(data)), UploadedBy: d.uploader(), Kind: media.KindFile,
+		Name: name, Type: contentType, Key: key, Size: int64(len(data)), UploadedBy: d.uploader(), Kind: media.KindFile,
 		Purpose: media.PurposeClubFile, Status: media.StatusScanning, Visibility: media.VisibilityPublic, ExpiresAt: &expires,
 		CoverColors: []string{}, ServingPolicyApplied: true,
 	})

@@ -793,18 +793,22 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		) = 9
 		AND (
 			SELECT count(*) FROM (VALUES
-				('media', 'media_status_check', 'c', ` + "'" + `CHECK ((status = ANY (ARRAY[''pending''::text, ''attached''::text, ''detached''::text, ''scanning''::text, ''rejected''::text])))` + "'" + `),
-				('media', 'media_scan_result_check', 'c', ` + "'" + `CHECK ((((scan_result IS NULL) OR (scan_result = ANY (ARRAY[''clean''::text, ''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text]))) AND ((status = ''rejected''::text) = (COALESCE(scan_result, ''''::text) = ANY (ARRAY[''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text]))) AND ((status <> ''scanning''::text) OR (scan_result IS NULL)) AND (scan_attempts >= 0)))` + "'" + `),
-				('media', 'media_scan_claim_check', 'c', 'CHECK (((scan_claim_id IS NULL) = (scan_claimed_until IS NULL)))'),
-				('media_scan_rejections', 'media_scan_rejections_pkey', 'p', 'PRIMARY KEY (media_id)'),
-				('media_scan_rejections', 'media_scan_rejections_media_id_fkey', 'f', 'FOREIGN KEY (media_id) REFERENCES media(id)'),
-				('media_scan_rejections', 'media_scan_rejections_result_check', 'c', ` + "'" + `CHECK ((result = ANY (ARRAY[''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text])))` + "'" + `)
-			) expected(table_name, constraint_name, constraint_type, definition)
+				('media', 'media_status_check', 'c', ARRAY[` + "'" + `CHECK ((status = ANY (ARRAY[''pending''::text, ''attached''::text, ''detached''::text, ''scanning''::text, ''rejected''::text])))` + "'" + `]),
+				('media', 'media_scan_result_check', 'c', ARRAY[` + "'" + `CHECK ((((scan_result IS NULL) OR (scan_result = ANY (ARRAY[''clean''::text, ''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text]))) AND ((status = ''rejected''::text) = (COALESCE(scan_result, ''''::text) = ANY (ARRAY[''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text]))) AND ((status <> ''scanning''::text) OR (scan_result IS NULL)) AND (scan_attempts >= 0)))` + "'" + `, ` + "'" + `CHECK ((((scan_result IS NULL) OR (scan_result = ANY (ARRAY[''clean''::text, ''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text, ''archive_invalid''::text, ''archive_nested''::text]))) AND ((status = ''rejected''::text) = (COALESCE(scan_result, ''''::text) = ANY (ARRAY[''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text, ''archive_invalid''::text, ''archive_nested''::text]))) AND ((status <> ''scanning''::text) OR (scan_result IS NULL)) AND (scan_attempts >= 0)))` + "'" + `]),
+				('media', 'media_scan_claim_check', 'c', ARRAY['CHECK (((scan_claim_id IS NULL) = (scan_claimed_until IS NULL)))']),
+				('media_scan_rejections', 'media_scan_rejections_pkey', 'p', ARRAY['PRIMARY KEY (media_id)']),
+				('media_scan_rejections', 'media_scan_rejections_media_id_fkey', 'f', ARRAY['FOREIGN KEY (media_id) REFERENCES media(id)']),
+				('media_scan_rejections', 'media_scan_rejections_result_check', 'c', ARRAY[` + "'" + `CHECK ((result = ANY (ARRAY[''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text])))` + "'" + `, ` + "'" + `CHECK ((result = ANY (ARRAY[''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text, ''archive_invalid''::text, ''archive_nested''::text])))` + "'" + `])
+			) expected(table_name, constraint_name, constraint_type, definitions)
 			JOIN pg_constraint actual
 			  ON actual.conrelid = to_regclass('public.' || expected.table_name)
 			 AND actual.conname = expected.constraint_name
 			 AND actual.contype = expected.constraint_type::"char"
-			 AND pg_get_constraintdef(actual.oid) = expected.definition
+			 -- Each constraint names the definitions it may have: the result
+			 -- checks this migration writes, or those 20260928180000 writes
+			 -- over them with the ZIP check's results, which hold all of
+			 -- these.
+			 AND pg_get_constraintdef(actual.oid) = ANY (expected.definitions)
 		) = 6
 		AND EXISTS (
 			SELECT 1 FROM pg_indexes
@@ -905,6 +909,22 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_proc
 			WHERE proname = 'media_purpose_fits_role' AND prosrc LIKE '%media_roles_without_legacy()%'
 		)`,
+	// The ZIP check's result, archive_invalid, in both result checks. A
+	// rerun of 20260928140000 puts back the checks without it; this
+	// fingerprint then fails and the migration runs again.
+	20260928180000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('media', 'media_scan_result_check', 'c', ` + "'" + `CHECK ((((scan_result IS NULL) OR (scan_result = ANY (ARRAY[''clean''::text, ''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text, ''archive_invalid''::text, ''archive_nested''::text]))) AND ((status = ''rejected''::text) = (COALESCE(scan_result, ''''::text) = ANY (ARRAY[''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text, ''archive_invalid''::text, ''archive_nested''::text]))) AND ((status <> ''scanning''::text) OR (scan_result IS NULL)) AND (scan_attempts >= 0)))` + "'" + `),
+				('media_scan_rejections', 'media_scan_rejections_result_check', 'c', ` + "'" + `CHECK ((result = ANY (ARRAY[''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text, ''archive_invalid''::text, ''archive_nested''::text])))` + "'" + `)
+			) expected(table_name, constraint_name, constraint_type, definition)
+			JOIN pg_constraint actual
+			  ON actual.conrelid = to_regclass('public.' || expected.table_name)
+			 AND actual.conname = expected.constraint_name
+			 AND actual.contype = expected.constraint_type::"char"
+			 AND pg_get_constraintdef(actual.oid) = expected.definition
+		) = 2`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

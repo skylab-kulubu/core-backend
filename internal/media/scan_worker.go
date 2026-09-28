@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/clamd"
+	"github.com/skylab-kulubu/core-backend/internal/zipcheck"
 )
 
 const (
@@ -46,15 +47,25 @@ func scanTimeout(size int64) time.Duration {
 	return 2*time.Minute + time.Duration(size>>20)*time.Second
 }
 
-// scanWork bounds everything a claim does: the scan, the copy of a clean
-// held file, and the storage calls around them.
-func scanWork(size int64) time.Duration {
-	return scanTimeout(size) + scanCopyTimeout + 4*scanStorageTimeout
+// zipCheckWork bounds the ZIP check of a file of size bytes
+// (checkContent), which reads every file once more before clamd: the
+// longest the check may take under the limits (the file read twice, what it
+// inflates to never more than MaxScanSize; the check itself stops sooner,
+// after the time what it inflates to calls for: zipcheck.Timeout), and the
+// storage calls before it.
+func (w *ScanWorker) zipCheckWork(size int64) time.Duration {
+	return w.limits.MaxTimeout(size) + 2*scanStorageTimeout
 }
 
-// scanLease is how long a scan's claim holds its Media.
-func scanLease(m Media) time.Duration {
-	return scanWork(m.Size) + scanLeaseMargin
+// scanWork bounds everything a claim does: the ZIP check, the scan, the
+// copy of a clean held file, and the storage calls around them.
+func (w *ScanWorker) scanWork(m Media) time.Duration {
+	return w.zipCheckWork(m.Size) + scanTimeout(m.Size) + scanCopyTimeout + 4*scanStorageTimeout
+}
+
+// lease is how long a scan's claim holds its Media.
+func (w *ScanWorker) lease(m Media) time.Duration {
+	return w.scanWork(m) + scanLeaseMargin
 }
 
 // scanHoldPrefix starts the key a public file waiting for its scan is held
@@ -106,6 +117,48 @@ func purgeMediaObjects(id uuid.UUID, key string, purge func(key string) error) e
 // every Media waits scanning, and is tried again.
 var ErrScannerDown = errors.New("media: the malware scanner cannot be reached")
 
+// ErrPrivateZIPUnchecked is the scan of a private ZIP larger than
+// ScanLimits.MaxBuffer put off: the ZIP check decrypts a private file into
+// memory, and reads a larger one by ranged GETs only once private Direct
+// upload offers them (ticket 21). The Media is never scanned unchecked: it
+// waits scanning, is tried again, and is rejected as scan_timeout at its
+// scan deadline.
+var ErrPrivateZIPUnchecked = errors.New("media: a private ZIP larger than the ZIP check keeps in memory cannot be checked yet, so it is not scanned")
+
+// ScanRejection reports a Media the scan rejected for a reason clamd did
+// not name: its private object failing its integrity check, or a ZIP the ZIP
+// check refused, Err saying why (members by their place, never a file
+// name).
+type ScanRejection struct {
+	ID     uuid.UUID
+	Result ScanResult
+	Err    error
+}
+
+func (r *ScanRejection) Error() string {
+	return fmt.Sprintf("media %s rejected as %s: %v", r.ID, r.Result, r.Err)
+}
+
+func (r *ScanRejection) Unwrap() error { return r.Err }
+
+// scanRejections are the errors that end a scan in a rejection, in the
+// order they are looked for, the result each gives, and whether the pass
+// reports it (ScanRejection).
+var scanRejections = []struct {
+	err    error
+	result ScanResult
+	report bool
+}{
+	// The held file is gone (the R2 lifecycle rule clears pending/ after
+	// two days) or the object is: it can never be scanned.
+	{ErrNotFound, ScanLost, false},
+	{ErrPrivateIntegrity, ScanIntegrity, true},
+	{clamd.ErrStreamTooLarge, ScanTooLarge, false},
+	{zipcheck.ErrTooLarge, ScanTooLarge, true},
+	{zipcheck.ErrInvalid, ScanArchiveInvalid, true},
+	{zipcheck.ErrNested, ScanArchiveNested, true},
+}
+
 // Scanner is clamd (clamd.Client): it reads a whole file and names what it
 // found in it, if anything.
 type Scanner interface {
@@ -113,10 +166,15 @@ type Scanner interface {
 }
 
 // ScanStorage is the public bucket as the scan uses it (R2): it streams a
-// held file, copies a clean one to its served key, rewrites that copy's
-// metadata, and deletes.
+// held file, reads a ZIP's ranges for the ZIP check, copies a clean one to
+// its served key, rewrites that copy's metadata, and deletes.
 type ScanStorage interface {
 	Open(ctx context.Context, key string) (io.ReadCloser, error)
+	// Size is the stored object's size; ErrNotFound when there is none.
+	Size(ctx context.Context, key string) (int64, error)
+	// OpenRange streams the n bytes of the object from off (a ranged GET);
+	// ErrNotFound when there is none.
+	OpenRange(ctx context.Context, key string, off, n int64) (io.ReadCloser, error)
 	Copy(ctx context.Context, from, to string, meta BlobMetadata) error
 	SetMetadata(ctx context.Context, key string, meta BlobMetadata) error
 	Delete(ctx context.Context, key string) error
@@ -134,6 +192,10 @@ type ScanWorkerConfig struct {
 	Private *PrivateStorage
 	// Now defaults to time.Now.
 	Now func() time.Time
+	// Limits are clamd's archive limits, which a ZIP is held within before
+	// it is scanned (zipcheck); DefaultScanLimits when left out. Limits set
+	// only in part are refused (NewScanWorker).
+	Limits ScanLimits
 }
 
 // ScanWorker is the malware scan (media redesign ticket 12): it streams the
@@ -146,6 +208,11 @@ type ScanWorkerConfig struct {
 //     is gone), or its private object failing its integrity check:
 //     rejected, its objects deleted from the bucket that holds them, and the
 //     rejection recorded (Media, reason, signature, time; no file name);
+//   - a ZIP clamd could not scan whole (the ZIP check, zipcheck, on any
+//     file whose content is a ZIP, before any byte of it reaches clamd):
+//     rejected the same way, as too_large_to_scan, as archive_invalid when
+//     it is malformed or holds what clamd cannot read, or as
+//     archive_nested when it holds an archive core cannot check;
 //   - still scanning ScanDeadline after its upload: rejected as
 //     scan_timeout, whether clamd answers or not;
 //   - clamd unreachable: the pass stops and every Media waits scanning;
@@ -163,19 +230,30 @@ type ScanWorker struct {
 	scanner Scanner
 	public  ScanStorage
 	private *PrivateStorage
+	limits  ScanLimits
 	now     func() time.Time
 	wake    chan struct{}
 }
 
-func NewScanWorker(config ScanWorkerConfig) *ScanWorker {
+// NewScanWorker makes the scan worker. Its limits are DefaultScanLimits
+// when left out; limits set only in part are refused, so that core does not
+// start with them.
+func NewScanWorker(config ScanWorkerConfig) (*ScanWorker, error) {
 	now := config.Now
 	if now == nil {
 		now = time.Now
 	}
+	limits := config.Limits
+	if limits == (ScanLimits{}) {
+		limits = DefaultScanLimits
+	}
+	if err := limits.Validate(); err != nil {
+		return nil, fmt.Errorf("media scan limits: %w", err)
+	}
 	return &ScanWorker{
 		store: config.Store, scanner: config.Scanner, public: config.Public, private: config.Private,
-		now: now, wake: make(chan struct{}, 1),
-	}
+		limits: limits, now: now, wake: make(chan struct{}, 1),
+	}, nil
 }
 
 // Wake asks the worker for a pass now (ScanQueue).
@@ -205,8 +283,9 @@ func (r ScanReport) any() bool {
 // ones past ScanDeadline, then claims and moves on each due Media in id
 // order. A Media that fails is reported through onError and tried again
 // later; one the pass rejects for a reason clamd did not give (its private
-// object failing its integrity check) is reported too. It stops with
-// ErrScannerDown when clamd cannot be reached.
+// object failing its integrity check, a ZIP the ZIP check refuses, with
+// why) is reported too. It stops with ErrScannerDown when clamd cannot be
+// reached.
 func (w *ScanWorker) Pass(ctx context.Context, onError func(error)) (ScanReport, error) {
 	var report ScanReport
 	now := w.now().UTC()
@@ -220,7 +299,7 @@ func (w *ScanWorker) Pass(ctx context.Context, onError func(error)) (ScanReport,
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
-		claim, found, err := w.store.ClaimNextScan(ctx, w.now().UTC(), after, scanLease)
+		claim, found, err := w.store.ClaimNextScan(ctx, w.now().UTC(), after, w.lease)
 		if err != nil || !found {
 			return report, err
 		}
@@ -255,7 +334,7 @@ func (w *ScanWorker) deferScan(ctx context.Context, claim ScanClaim, onError fun
 
 // step moves one claimed Media on, within its claim's work time.
 func (w *ScanWorker) step(ctx context.Context, claim ScanClaim, report *ScanReport, onError func(error)) error {
-	ctx, cancel := context.WithTimeout(ctx, scanWork(claim.Media.Size))
+	ctx, cancel := context.WithTimeout(ctx, w.scanWork(claim.Media))
 	defer cancel()
 	m := claim.Media
 	if m.Status == StatusRejected {
@@ -266,21 +345,18 @@ func (w *ScanWorker) step(ctx context.Context, claim ScanClaim, report *ScanRepo
 		return err
 	}
 	verdict, err := w.scan(ctx, m)
-	switch {
-	case errors.Is(err, ErrNotFound):
-		// The held file is gone (the R2 lifecycle rule clears pending/
-		// after two days) or the object is: it can never be scanned.
-		return w.reject(ctx, claim, ScanLost, "", report)
-	case errors.Is(err, ErrPrivateIntegrity):
-		if onError != nil {
-			onError(&BackfillError{Kind: "media", ID: m.ID, Err: errors.New("rejected: its private object failed its integrity check")})
+	if err != nil {
+		for _, r := range scanRejections {
+			if errors.Is(err, r.err) {
+				if r.report && onError != nil {
+					onError(&ScanRejection{ID: m.ID, Result: r.result, Err: err})
+				}
+				return w.reject(ctx, claim, r.result, "", report)
+			}
 		}
-		return w.reject(ctx, claim, ScanIntegrity, "", report)
-	case errors.Is(err, clamd.ErrStreamTooLarge):
-		return w.reject(ctx, claim, ScanTooLarge, "", report)
-	case err != nil:
 		return err
-	case verdict.Infected():
+	}
+	if verdict.Infected() {
 		result := ScanInfected
 		if strings.HasPrefix(verdict.Signature, "Heuristics.Limits.Exceeded") {
 			// clamd could not scan all of it (AlertExceedsMax).
@@ -291,8 +367,12 @@ func (w *ScanWorker) step(ctx context.Context, claim ScanClaim, report *ScanRepo
 	return w.clean(ctx, claim, report)
 }
 
-// scan streams the Media's plaintext to clamd.
+// scan streams the Media's plaintext to clamd, once the ZIP check has
+// passed it.
 func (w *ScanWorker) scan(ctx context.Context, m Media) (clamd.Result, error) {
+	if err := w.checkContent(ctx, m); err != nil {
+		return clamd.Result{}, err
+	}
 	scanCtx, cancel := context.WithTimeout(ctx, scanTimeout(m.Size))
 	defer cancel()
 	var body io.ReadCloser
@@ -313,6 +393,55 @@ func (w *ScanWorker) scan(ctx context.Context, m Media) (clamd.Result, error) {
 	}
 	defer body.Close()
 	return w.scanner.Scan(scanCtx, body)
+}
+
+// checkContent refuses a file clamd could not scan whole (zipcheck, media
+// redesign ticket 23): clamd reads an archive member that inflates past its
+// MaxFileSize only up to MaxFileSize, without a report, in a ZIP and in an
+// archive it finds inside another file (an Office document, a ZIP appended
+// to a PDF or an image).
+// So every file is read once before clamd, whatever its type says: a file
+// whose content is a ZIP is checked whole, any other is searched for
+// archives past its first byte. It runs under the scan's claim, holding no
+// database connection. A public held file is read by ranged GETs. A private
+// file is decrypted as it streams, into nothing but memory: a ZIP is kept
+// there to be checked, at most MaxBuffer (ErrPrivateZIPUnchecked beyond).
+func (w *ScanWorker) checkContent(ctx context.Context, m Media) error {
+	ctx, cancel := context.WithTimeout(ctx, w.zipCheckWork(m.Size))
+	defer cancel()
+	if sealed, ok := m.Sealed(); ok {
+		if w.private == nil {
+			return ErrPrivateMediaDisabled
+		}
+		body, err := w.private.Open(ctx, sealed)
+		if err != nil {
+			return fmt.Errorf("open the file: %w", err)
+		}
+		defer body.Close()
+		err = zipcheck.CheckStream(ctx, body, m.Size, w.limits)
+		if errors.Is(err, zipcheck.ErrZIPTooLargeToKeep) {
+			return ErrPrivateZIPUnchecked
+		}
+		return err
+	}
+	if w.public == nil {
+		return ErrDirectUploadUnavailable
+	}
+	size, err := w.public.Size(ctx, m.Key)
+	if err != nil {
+		return fmt.Errorf("size the file: %w", err)
+	}
+	return zipcheck.CheckFile(ctx, heldRanges{storage: w.public, key: m.Key}, size, w.limits)
+}
+
+// heldRanges is a held file as the ZIP check reads it.
+type heldRanges struct {
+	storage ScanStorage
+	key     string
+}
+
+func (h heldRanges) OpenRange(ctx context.Context, off, n int64) (io.ReadCloser, error) {
+	return h.storage.OpenRange(ctx, h.key, off, n)
 }
 
 // clean ends the scan of a clean Media: a held public file is copied to

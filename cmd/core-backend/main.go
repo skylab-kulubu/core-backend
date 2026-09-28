@@ -179,8 +179,10 @@ func main() {
 	defer stopMediaPurge()
 	// Malware scan (MEDIA_CLAMAV_ADDR, docs/media-lifecycle.md). Unset, a
 	// purpose that needs a scan is refused, as before. Set, such a purpose's
-	// uploads wait scanning and the scan worker streams each to clamd; a
-	// clamd that is down never stops core (its Media wait scanning).
+	// uploads wait scanning and the scan worker streams each to clamd, a ZIP
+	// once it is within clamd's limits (MEDIA_CLAMAV_MAX_*, which must match
+	// clamd.conf); a clamd that is down never stops core (its Media wait
+	// scanning).
 	scanConfig, err := media.ScanConfigFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -191,9 +193,19 @@ func main() {
 		if r2, ok := publicBlobs.(*media.R2); ok {
 			scanStorage = r2
 		}
-		scanWorker := media.NewScanWorker(media.ScanWorkerConfig{
+		scanWorker, err := media.NewScanWorker(media.ScanWorkerConfig{
 			Store: mediaStore, Scanner: clamd.New(scanConfig.Addr), Public: scanStorage, Private: privateStorage,
+			Limits: scanConfig.Limits,
 		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		// Before the startup line below, which the ClamAV wizard reads as
+		// the last line starting "media scan: ". The wizard also reads this
+		// one against the clamd.conf it writes.
+		limits := scanConfig.Limits
+		log.Printf("media scan limits (clamd.conf): MaxFileSize %d MiB, MaxScanSize %d MiB, MaxFiles %d, MaxRecursion %d; ZIP check buffer %d MiB",
+			limits.MaxFileSize>>20, limits.MaxScanSize>>20, limits.MaxFiles, limits.MaxRecursion, limits.MaxBuffer>>20)
 		scanContext, stopScan := context.WithCancel(context.Background())
 		defer stopScan()
 		scanWorker.Run(scanContext, log.Printf)
