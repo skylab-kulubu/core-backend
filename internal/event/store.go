@@ -30,9 +30,22 @@ type Store interface {
 	Restore(ctx context.Context, id uuid.UUID) error
 	AddImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
 	RemoveImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
+	// ListFiles reads the Event's files and videos, each list in its
+	// organizers' order (empty lists, never nil). Get leaves them out: it
+	// answers their counts alone.
+	ListFiles(ctx context.Context, eventID uuid.UUID) (files, videos []EventFile, err error)
+	// AddFiles appends the Media to the Event's list, in the order given,
+	// leaving out those already in it.
+	AddFiles(ctx context.Context, eventID uuid.UUID, list FileList, ids []uuid.UUID) (Event, error)
+	// RemoveFiles removes the Media from the Event's list: all of them, or,
+	// when one is not in it, none (ErrNotFound).
+	RemoveFiles(ctx context.Context, eventID uuid.UUID, list FileList, ids []uuid.UUID) (Event, error)
+	// OrderFiles puts the Event's list in the order of ids, which name each
+	// of its items once: ErrConflict when they are not the list's items.
+	OrderFiles(ctx context.Context, eventID uuid.UUID, list FileList, ids []uuid.UUID) (Event, error)
 	// TeamsUsingMedia returns the Owner teams of the Events, archived ones
-	// included, that use the Media as their cover or in their gallery,
-	// leaving out the Event except.
+	// included, that use the Media as their cover, in their gallery, or
+	// among their files or videos, leaving out the Event except.
 	TeamsUsingMedia(ctx context.Context, mediaID, except uuid.UUID) ([]string, error)
 	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
 	GetDayIncludingArchived(ctx context.Context, id uuid.UUID) (Day, error)

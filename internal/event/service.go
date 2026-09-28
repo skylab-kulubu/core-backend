@@ -24,6 +24,17 @@ type Service interface {
 	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
 	AddImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error)
 	RemoveImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error)
+	// AddFiles appends Media to one of the Event's lists (its files or its
+	// videos), in the order given; those already in it stay where they are.
+	// Whoever may edit the Event may.
+	AddFiles(ctx context.Context, p authz.Principal, id uuid.UUID, list FileList, ids []uuid.UUID) (Event, error)
+	// RemoveFiles removes Media from one of the Event's lists: all of them,
+	// or none when one is not in it (ErrNotFound).
+	RemoveFiles(ctx context.Context, p authz.Principal, id uuid.UUID, list FileList, ids []uuid.UUID) (Event, error)
+	// OrderFiles orders one of the Event's lists: ids name each of its items
+	// once (a repeated one is ErrInvalid; a list that is not the Event's
+	// now, ErrConflict).
+	OrderFiles(ctx context.Context, p authz.Principal, id uuid.UUID, list FileList, ids []uuid.UUID) (Event, error)
 	ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error)
 	ListDaysLifecycle(ctx context.Context, p authz.Principal, eventID uuid.UUID, visibility lifecycle.Visibility) ([]Day, error)
 	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
@@ -75,9 +86,17 @@ func (s *service) CanAssign(p authz.Principal, ownerTeam string) bool {
 	return s.authz.Allow(p, resource(ownerTeam), authz.Assign)
 }
 
+// ProjectFor answers the Event as p may see it: its door staff only to who
+// may assign them; its files and videos in full (waiting for their malware
+// scan, or rejected by it with the reason) only to who may edit it, and to
+// anyone else only the ones they can download.
 func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 	if p == nil || !s.CanAssign(*p, in.OwnerTeam) {
 		in.DoorStaffIDs = nil
+	}
+	if p == nil || !s.authz.Allow(*p, resource(in.OwnerTeam), authz.Update) {
+		in.Files = downloadableFiles(in.Files)
+		in.Videos = downloadableFiles(in.Videos)
 	}
 	return in
 }
@@ -89,11 +108,20 @@ func (s *service) ProjectAllFor(p *authz.Principal, in []Event) []Event {
 	return in
 }
 
-func (s *service) published(e Event, err error) (Event, error) {
-	if err != nil {
-		return Event{}, err
+// detail answers what a store call returns as an Event's detail: with its
+// files and videos, which the store reads apart from the Event (the Event
+// summaries of tickets, competitors and the door read the Event once per
+// item and need only its counts).
+func (s *service) detail(ctx context.Context) func(Event, error) (Event, error) {
+	return func(e Event, err error) (Event, error) {
+		if err != nil {
+			return Event{}, err
+		}
+		if e.Files, e.Videos, err = s.store.ListFiles(ctx, e.ID); err != nil {
+			return Event{}, err
+		}
+		return s.publish(e), nil
 	}
-	return s.publish(e), nil
 }
 
 func (s *service) List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
@@ -122,11 +150,7 @@ func (s *service) ListLifecycle(ctx context.Context, p authz.Principal, ownerTea
 }
 
 func (s *service) Get(ctx context.Context, id uuid.UUID) (Event, error) {
-	e, err := s.store.Get(ctx, id)
-	if err != nil {
-		return Event{}, err
-	}
-	return s.publish(e), nil
+	return s.detail(ctx)(s.store.Get(ctx, id))
 }
 
 func normalizeAttendance(in Event) (Event, error) {
@@ -172,7 +196,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	if err == nil {
 		s.syncFormLinks(ctx, created.ID, formLinksOf(created))
 	}
-	return s.published(created, err)
+	return s.detail(ctx)(created, err)
 }
 
 func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Event) (Event, error) {
@@ -216,8 +240,8 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 		}
 	}
 	if in.OwnerTeam != existing.OwnerTeam {
-		// The Event's photos move with it: each must still fit the Team
-		// media library under the new Owner team.
+		// The Event's photos, files and videos move with it: each must
+		// still fit the Team media library under the new Owner team.
 		if in.CoverImageID != nil && !newCover {
 			if err := s.checkTeam(ctx, in.ID, in.OwnerTeam, *in.CoverImageID, media.RoleEventCover); err != nil {
 				return Event{}, err
@@ -228,12 +252,26 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 				return Event{}, err
 			}
 		}
+		files, videos, err := s.store.ListFiles(ctx, existing.ID)
+		if err != nil {
+			return Event{}, err
+		}
+		for _, item := range files {
+			if err := s.checkTeam(ctx, in.ID, in.OwnerTeam, item.ID, media.RoleEventFile); err != nil {
+				return Event{}, err
+			}
+		}
+		for _, item := range videos {
+			if err := s.checkTeam(ctx, in.ID, in.OwnerTeam, item.ID, media.RoleEventVideo); err != nil {
+				return Event{}, err
+			}
+		}
 	}
 	updated, err := s.store.Update(ctx, in)
 	if err == nil {
 		s.syncFormLinks(ctx, updated.ID, formLinksOf(updated))
 	}
-	return s.published(updated, err)
+	return s.detail(ctx)(updated, err)
 }
 
 func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error {
@@ -289,7 +327,65 @@ func (s *service) AddImages(ctx context.Context, p authz.Principal, id uuid.UUID
 			return Event{}, err
 		}
 	}
-	return s.published(s.store.AddImages(ctx, id, ids))
+	return s.detail(ctx)(s.store.AddImages(ctx, id, ids))
+}
+
+func (s *service) AddFiles(ctx context.Context, p authz.Principal, id uuid.UUID, list FileList, ids []uuid.UUID) (Event, error) {
+	existing, err := s.editableForFiles(ctx, p, id, list)
+	if err != nil {
+		return Event{}, err
+	}
+	files, videos, err := s.store.ListFiles(ctx, id)
+	if err != nil {
+		return Event{}, err
+	}
+	items := files
+	if list == Videos {
+		items = videos
+	}
+	listed := make(map[uuid.UUID]bool, len(items))
+	for _, item := range items {
+		listed[item.ID] = true
+	}
+	for _, mediaID := range ids {
+		if mediaID == uuid.Nil || listed[mediaID] {
+			continue
+		}
+		if err := s.checkMedia(ctx, id, existing.OwnerTeam, mediaID, list.Role()); err != nil {
+			return Event{}, err
+		}
+	}
+	return s.detail(ctx)(s.store.AddFiles(ctx, id, list, ids))
+}
+
+func (s *service) RemoveFiles(ctx context.Context, p authz.Principal, id uuid.UUID, list FileList, ids []uuid.UUID) (Event, error) {
+	if _, err := s.editableForFiles(ctx, p, id, list); err != nil {
+		return Event{}, err
+	}
+	return s.detail(ctx)(s.store.RemoveFiles(ctx, id, list, ids))
+}
+
+func (s *service) OrderFiles(ctx context.Context, p authz.Principal, id uuid.UUID, list FileList, ids []uuid.UUID) (Event, error) {
+	if _, err := s.editableForFiles(ctx, p, id, list); err != nil {
+		return Event{}, err
+	}
+	return s.detail(ctx)(s.store.OrderFiles(ctx, id, list, ids))
+}
+
+// editableForFiles is the Event whose list p is about to change, when p may
+// edit the Event.
+func (s *service) editableForFiles(ctx context.Context, p authz.Principal, id uuid.UUID, list FileList) (Event, error) {
+	if !list.known() {
+		return Event{}, ErrInvalid
+	}
+	existing, err := s.store.Get(ctx, id)
+	if err != nil {
+		return Event{}, err
+	}
+	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
+		return Event{}, ErrForbidden
+	}
+	return existing, nil
 }
 
 // checkMedia checks a Media the Event is about to link in role: the Media's
@@ -326,7 +422,7 @@ func (s *service) RemoveImages(ctx context.Context, p authz.Principal, id uuid.U
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
 		return Event{}, ErrForbidden
 	}
-	return s.published(s.store.RemoveImages(ctx, id, ids))
+	return s.detail(ctx)(s.store.RemoveImages(ctx, id, ids))
 }
 
 func (s *service) ownerResource(owner string, t authz.Type) authz.Resource {
@@ -582,5 +678,5 @@ func (s *service) AssignSeason(ctx context.Context, p authz.Principal, eventID u
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
 		return Event{}, ErrForbidden
 	}
-	return s.published(s.store.SetSeason(ctx, eventID, seasonID))
+	return s.detail(ctx)(s.store.SetSeason(ctx, eventID, seasonID))
 }

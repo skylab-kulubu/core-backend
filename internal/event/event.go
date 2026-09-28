@@ -41,6 +41,15 @@ type Event struct {
 	CreatedAt       time.Time                     `json:"createdAt"`
 	UpdatedAt       time.Time                     `json:"updatedAt"`
 
+	// Files and Videos are the Event's downloads, in their organizers'
+	// order (media redesign ticket 22). Only an Event's detail carries them:
+	// a list leaves them out (nil, omitzero) and answers FileCount and
+	// VideoCount alone, which count the items anyone can download.
+	Files      []EventFile `json:"files,omitzero"`
+	Videos     []EventFile `json:"videos,omitzero"`
+	FileCount  int         `json:"fileCount"`
+	VideoCount int         `json:"videoCount"`
+
 	// coverImage is the cover Media as the store read it with the Event,
 	// what CoverImageSizes is built from.
 	coverImage *media.LinkedImage
@@ -73,6 +82,11 @@ type Resource struct {
 	CoverColors     []string                      `json:"coverColors"`
 	Active          bool                          `json:"active"`
 	Ranked          bool                          `json:"ranked"`
+
+	// FileCount and VideoCount count the Event's files and videos anyone
+	// can download; the Event's detail lists them.
+	FileCount  int `json:"fileCount"`
+	VideoCount int `json:"videoCount"`
 }
 
 // Resource is the Event's summary. Its callers (tickets, competitors, the
@@ -92,6 +106,8 @@ func (e Event) Resource() Resource {
 		CoverColors:     append([]string{}, e.CoverColors...),
 		Active:          e.Active,
 		Ranked:          e.Ranked,
+		FileCount:       e.FileCount,
+		VideoCount:      e.VideoCount,
 	}
 }
 

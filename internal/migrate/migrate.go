@@ -818,6 +818,82 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND prosrc LIKE '%(status = ''scanning'' AND expires_at IS NULL)%'
 			  AND prosrc LIKE '%OR detach_expiry_held THEN NULL%'
 		)`,
+	// An Event's files and videos: the two link tables, the statement
+	// triggers that write their Media attachments (each with its role), and
+	// the role table and purpose check that know the two roles. A rerun of
+	// 20260926161000 puts back the older role table and check; this
+	// fingerprint then fails and the migration runs again.
+	20260928160000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('event_files', 'event_id', 'uuid'),
+				('event_files', 'media_id', 'uuid'),
+				('event_files', 'order_index', 'int4'),
+				('event_files', 'added_at', 'timestamptz'),
+				('event_videos', 'event_id', 'uuid'),
+				('event_videos', 'media_id', 'uuid'),
+				('event_videos', 'order_index', 'int4'),
+				('event_videos', 'added_at', 'timestamptz')
+			) expected(table_name, column_name, udt_name)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = expected.table_name
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = 'NO'
+		) = 8
+		AND (
+			SELECT count(*) FROM (VALUES
+				('event_files', 'event_files_pkey', 'p', 'PRIMARY KEY (event_id, media_id)'),
+				('event_files', 'event_files_event_id_fkey', 'f', 'FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE'),
+				('event_files', 'event_files_media_id_fkey', 'f', 'FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE'),
+				('event_videos', 'event_videos_pkey', 'p', 'PRIMARY KEY (event_id, media_id)'),
+				('event_videos', 'event_videos_event_id_fkey', 'f', 'FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE'),
+				('event_videos', 'event_videos_media_id_fkey', 'f', 'FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE')
+			) expected(table_name, constraint_name, constraint_type, definition)
+			JOIN pg_constraint actual
+			  ON actual.conrelid = to_regclass('public.' || expected.table_name)
+			 AND actual.conname = expected.constraint_name
+			 AND actual.contype = expected.constraint_type::"char"
+			 AND pg_get_constraintdef(actual.oid) = expected.definition
+		) = 6
+		AND to_regclass('public.event_files_media_id_idx') IS NOT NULL
+		AND to_regclass('public.event_videos_media_id_idx') IS NOT NULL
+		-- Statement triggers (tgtype: 4 insert, 16 update, 8 delete) whose
+		-- arguments are the owner type, the role and the two columns.
+		AND (
+			SELECT count(*) FROM (VALUES
+				('event_files', 'event_files_media_attachments_insert', 4, 'event_file'),
+				('event_files', 'event_files_media_attachments_update', 16, 'event_file'),
+				('event_files', 'event_files_media_attachments_delete', 8, 'event_file'),
+				('event_videos', 'event_videos_media_attachments_insert', 4, 'event_video'),
+				('event_videos', 'event_videos_media_attachments_update', 16, 'event_video'),
+				('event_videos', 'event_videos_media_attachments_delete', 8, 'event_video')
+			) expected(table_name, trigger_name, trigger_type, role)
+			JOIN pg_trigger actual
+			  ON actual.tgrelid = to_regclass('public.' || expected.table_name)
+			 AND actual.tgname = expected.trigger_name
+			 AND actual.tgtype = expected.trigger_type
+			 AND actual.tgenabled = 'O'
+			 AND NOT actual.tgisinternal
+			 AND actual.tgfoid = to_regprocedure('public.sync_core_media_attachments()')
+			 AND encode(actual.tgargs, 'hex') = encode(convert_to('event', 'UTF8'), 'hex') || '00'
+				|| encode(convert_to(expected.role, 'UTF8'), 'hex') || '00'
+				|| encode(convert_to('event_id', 'UTF8'), 'hex') || '00'
+				|| encode(convert_to('media_id', 'UTF8'), 'hex') || '00'
+		) = 6
+		AND to_regprocedure('public.media_roles_without_legacy()') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_role_purposes'
+			  AND prosrc LIKE '%(''core'', ''event_file'', ''club_file'')%'
+			  AND prosrc LIKE '%(''core'', ''event_video'', ''video'')%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_purpose_fits_role' AND prosrc LIKE '%media_roles_without_legacy()%'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

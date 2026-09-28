@@ -3,7 +3,7 @@ package event
 import "github.com/skylab-kulubu/core-backend/internal/media"
 
 // withPublicMedia answers the Event's images at their addresses, full size
-// and sizes, under addresses.
+// and sizes, and its files and videos at theirs, under addresses.
 func withPublicMedia(e Event, addresses media.Addresses) Event {
 	e.CoverImageURL = addresses.Object(e.CoverImageURL)
 	e.CoverImageSizes = addresses.LinkedSizes(e.coverImage)
@@ -16,6 +16,8 @@ func withPublicMedia(e Event, addresses media.Addresses) Event {
 		}
 		e.Images = images
 	}
+	e.Files = withFileAddresses(e.Files, addresses)
+	e.Videos = withFileAddresses(e.Videos, addresses)
 	if n := len(e.ImageURLs); n > 0 {
 		urls := make([]string, 0, n)
 		for _, u := range e.ImageURLs {

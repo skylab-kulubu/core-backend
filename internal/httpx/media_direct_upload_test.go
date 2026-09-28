@@ -34,22 +34,17 @@ import (
 // partSize is the part size core hands out.
 const partSize = 16 << 20
 
-// directCatalogue is the reviewed catalogue with club_file and video open:
-// no malware scan (these tests run without a scanner, where the reviewed
-// club_file is refused; media_scan_test.go has one) and attached by core
-// (where club files and videos are attached is not settled, so the reviewed
-// ones name no product).
+// directCatalogue is the reviewed catalogue with club_file's malware scan
+// off: these tests run without a scanner, where the reviewed club_file is
+// refused (media_scan_test.go has one). Core attaches club files and videos
+// (an Event's files and videos) in the reviewed catalogue already.
 func directCatalogue(t testing.TB) media.Catalogue {
 	t.Helper()
 	var file map[string]any
 	if err := json.Unmarshal(config.MediaPurposes, &file); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"club_file", "video"} {
-		purpose := file["purposes"].(map[string]any)[name].(map[string]any)
-		purpose["scan"] = false
-		purpose["attach"] = "core"
-	}
+	file["purposes"].(map[string]any)["club_file"].(map[string]any)["scan"] = false
 	raw, err := json.Marshal(file)
 	if err != nil {
 		t.Fatal(err)
@@ -200,11 +195,7 @@ func catalogueWith(t *testing.T, purpose string, change func(entry map[string]an
 	if err := json.Unmarshal(config.MediaPurposes, &file); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"club_file", "video"} {
-		entry := file["purposes"].(map[string]any)[name].(map[string]any)
-		entry["scan"] = false
-		entry["attach"] = "core"
-	}
+	file["purposes"].(map[string]any)["club_file"].(map[string]any)["scan"] = false
 	change(file["purposes"].(map[string]any)[purpose].(map[string]any))
 	raw, err := json.Marshal(file)
 	if err != nil {
@@ -1126,11 +1117,20 @@ func TestDirectUploadPurposeRulesHTTP(t *testing.T) {
 	reviewed.ParseToken = keys.Parse()
 	reviewedApp := httpx.New(reviewed)
 
-	// The reviewed club_file needs a malware scan (this core has no
-	// scanner), and names no product that attaches it: refused until a
-	// decision (ticket 20).
+	// The reviewed club_file needs a malware scan, and this core has no
+	// scanner: refused. Core attaches it (an Event's files, ticket 22), so
+	// with a scanner it passes every purpose rule; so does video, which
+	// needs no scan. This core has no R2, so they go no further.
 	requireCode(t, sendJSON(t, reviewedApp, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.zip", 100)),
 		fiber.StatusUnprocessableEntity, "purpose_not_available")
+	requireCode(t, sendJSON(t, reviewedApp, organizer, fiber.MethodPost, "/v1/uploads", startBody("video", "a.mp4", 100)),
+		fiber.StatusServiceUnavailable, "direct_upload_unavailable")
+	scanned := memoryDeps()
+	scanned.ParseToken = keys.Parse()
+	scanned.Media = media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
+		media.ServiceOptions{ServiceProducts: scanned.ServiceClients.Products(), Scans: idleScans{}})
+	requireCode(t, sendJSON(t, httpx.New(scanned), organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.zip", 100)),
+		fiber.StatusServiceUnavailable, "direct_upload_unavailable")
 	requireCode(t, sendJSON(t, reviewedApp, organizer, fiber.MethodPost, "/v1/uploads", startBody("answer_file_large", "a.zip", 100)),
 		fiber.StatusForbidden, "purpose_forbidden")
 	requireCode(t, sendJSON(t, reviewedApp, organizer, fiber.MethodPost, "/v1/uploads", startBody("event_cover", "a.png", 100)),

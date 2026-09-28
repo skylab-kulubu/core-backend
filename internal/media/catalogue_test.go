@@ -56,6 +56,27 @@ func TestCatalogue_PublicPurposeNamesOnlyRasterPDFOrMP4(t *testing.T) {
 	}
 }
 
+// Core attaches club files and videos (decision C1): an Event lists them as
+// its files and videos. So a club file or video can be uploaded (once the
+// runtime gates allow it) instead of being refused as nothing could attach
+// it.
+func TestCatalogue_CoreAttachesClubFilesAndVideos(t *testing.T) {
+	t.Parallel()
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"club_file", "video"} {
+		purpose, _ := catalogue.Lookup(name)
+		if purpose.Attach != media.AttachCore || purpose.Service != "" || purpose.OwningProduct() != "core" {
+			t.Errorf("%s is attached by %q (service %q), want core", name, purpose.Attach, purpose.Service)
+		}
+		if purpose.Transport != media.TransportDirect || purpose.Visibility != media.VisibilityPublic {
+			t.Errorf("%s: transport %s, visibility %s", name, purpose.Transport, purpose.Visibility)
+		}
+	}
+}
+
 // A club file may be a ZIP (decision D6): a download-only public type, never
 // served inline, and only where the catalogue names it.
 func TestCatalogue_ClubFilesAcceptZIPAsADownload(t *testing.T) {
@@ -234,6 +255,21 @@ func TestCatalogue_RefusesMalformedEntries(t *testing.T) {
 		"no legacy purpose":       func(p purposeEntries) { delete(p, "legacy") },
 		"no profile picture":      func(p purposeEntries) { delete(p, "profile_picture") },
 		"legacy rules on another": func(p purposeEntries) { p["cms_file"]["legacy_rules"] = true },
+		// An Event's files and videos are core's roles: core must attach
+		// club files and videos.
+		"core role's purpose attached by a service": func(p purposeEntries) {
+			p["club_file"]["attach"] = "service"
+			p["club_file"]["service"] = "cms"
+		},
+		"core role's purpose attached by nobody": func(p purposeEntries) {
+			p["video"]["attach"] = "service"
+		},
+		"no club file": func(p purposeEntries) {
+			delete(p, "club_file")
+		},
+		"no video": func(p purposeEntries) {
+			delete(p, "video")
+		},
 	} {
 		data := reviewedCatalogueWith(t, change)
 		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCatalogueInvalid) {

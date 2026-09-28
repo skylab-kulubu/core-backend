@@ -32,9 +32,10 @@ type ServiceOptions struct {
 	// media.AddressStoredSizes.
 	ImageAddressMode media.AddressMode
 	FormLinks        FormLinkSync
-	// Media checks each Media an Event is about to link as its cover or in
-	// its gallery. Nil leaves the Media's own rules (purpose, state) to the
-	// database's guards; the Team media library rule holds either way.
+	// Media checks each Media an Event is about to link as its cover, in
+	// its gallery, or among its files or videos. Nil leaves the Media's own
+	// rules (purpose, state) to the database's guards; the Team media
+	// library rule holds either way.
 	Media media.Linker
 }
 
