@@ -54,7 +54,7 @@ func TestGoHopUsesExistingJWTWithoutKeycloak(t *testing.T) {
 	if anonResp.StatusCode != fiber.StatusMovedPermanently {
 		t.Fatalf("anon redirect %d", anonResp.StatusCode)
 	}
-	if loc := anonResp.Header.Get("Location"); loc != "https://skylab.com" {
+	if loc := anonResp.Header.Get("Location"); loc != "https://skylab.com?utm_medium=referral&utm_source=instagram" {
 		t.Fatalf("anon location %s", loc)
 	}
 	if strings.Contains(strings.ToLower(anonResp.Header.Get("Location")), "keycloak") {
@@ -112,6 +112,9 @@ func TestGoHopUsesExistingJWTWithoutKeycloak(t *testing.T) {
 	}
 	if hits[1].IP != "198.51.100.20" || hits[1].UserAgent != "Safari/18" || hits[1].Referer != "https://instagram.com/" {
 		t.Fatalf("anon hit %+v", hits[1])
+	}
+	if hits[1].UTM.Source != "instagram" || hits[1].UTM.Medium != shorturl.MediumReferral {
+		t.Fatalf("anon hit from instagram.com should be tagged %+v", hits[1].UTM)
 	}
 }
 

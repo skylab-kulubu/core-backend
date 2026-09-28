@@ -108,10 +108,15 @@ func (h *URLHandler) redirect(c fiber.Ctx, channel shorturl.UTM) error {
 	if channel.Source != "" {
 		utm.Source = channel.Source
 	}
+	userAgent := strings.Clone(c.Get(fiber.HeaderUserAgent))
+	referer := strings.Clone(c.Get(fiber.HeaderReferer))
+	// The inferred source is forwarded to the target too, so the form counts
+	// the response under the same channel as the click.
+	utm = utm.WithInferredSource(userAgent, referer)
 	u, err := h.svc.Redirect(c.Context(), c.Params("alias"), shorturl.Hit{
 		IP:        h.hopIP(c),
-		UserAgent: strings.Clone(c.Get(fiber.HeaderUserAgent)),
-		Referer:   strings.Clone(c.Get(fiber.HeaderReferer)),
+		UserAgent: userAgent,
+		Referer:   referer,
 		UTM:       utm,
 		UserID:    userID,
 	})
