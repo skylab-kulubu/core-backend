@@ -55,10 +55,19 @@ type Hit struct {
 }
 
 // SourceCount is the number of hits under one utm_source; an empty source
-// counts the hits that carried no tag.
+// counts the hits that carried no tag. Scans is the part of Count that came
+// from a QR code: utm_medium=qr, or the plain utm_source=qr code.
 type SourceCount struct {
 	Source string `json:"source"`
 	Count  int    `json:"count"`
+	Scans  int    `json:"scans"`
+}
+
+// MediumQR marks a hop that came from scanning a QR code.
+const MediumQR = "qr"
+
+func (h Hit) scanned() bool {
+	return h.UTM.Medium == MediumQR || h.UTM.Source == MediumQR
 }
 
 type Stats struct {

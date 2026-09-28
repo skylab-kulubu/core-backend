@@ -933,6 +933,68 @@ func TestURLQRServesSVGWithTheLogo(t *testing.T) {
 	}
 }
 
+func TestURLQRPrintsTheChannelCodeOfItsSource(t *testing.T) {
+	t.Parallel()
+	store := shorturl.NewMemoryStore()
+	createClubURL(t, store)
+	app := urlAppWith(t, authn.Identity{}, store)
+
+	paths := func(query string) int {
+		t.Helper()
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?format=svg&logo=1&"+query, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return strings.Count(string(body), "<path")
+	}
+	if n := paths("utm_source=youtube&utm_medium=qr"); n != 2 {
+		t.Fatalf("youtube code paths = %d", n)
+	}
+	for _, query := range []string{"utm_source=qr", "utm_source=stant&utm_medium=qr"} {
+		if n := paths(query); n != 1 {
+			t.Fatalf("%s: paths = %d", query, n)
+		}
+	}
+}
+
+func TestURLRedirectInfersTheSourceOfAnUntaggedHop(t *testing.T) {
+	t.Parallel()
+	store := shorturl.NewMemoryStore()
+	created := createClubURL(t, store)
+	app := urlAppWith(t, authn.Identity{}, store)
+	const instagramApp = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148 Instagram 312.0.0.24.108"
+
+	hop := func(path string) string {
+		t.Helper()
+		req := httptest.NewRequest(fiber.MethodGet, path, nil)
+		req.Header.Set(fiber.HeaderUserAgent, instagramApp)
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.Header.Get(fiber.HeaderLocation)
+	}
+	if loc := hop("/v1/go/club"); loc != "https://skylab.com?utm_medium=referral&utm_source=instagram" {
+		t.Fatalf("untagged location %s", loc)
+	}
+	if loc := hop("/v1/go/club/wa"); loc != "https://skylab.com?utm_source=whatsapp" {
+		t.Fatalf("tagged location %s", loc)
+	}
+
+	hits, err := store.ListHits(context.Background(), created.ID, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, h := range hits {
+		got[h.UTM.Source] = h.UTM.Medium
+	}
+	if len(hits) != 2 || got["instagram"] != shorturl.MediumReferral || got["whatsapp"] != "" {
+		t.Fatalf("hits %+v", hits)
+	}
+}
+
 func TestURLFormLinkEndpointsNeedTheFormsRole(t *testing.T) {
 	t.Parallel()
 	store := shorturl.NewMemoryStore()
