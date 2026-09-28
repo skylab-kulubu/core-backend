@@ -2,8 +2,11 @@ package clamdtest
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +29,30 @@ const RealImage = "clamav/clamav:1.5.4-debian"
 // database for up to a few minutes.
 func Real(t testing.TB, conf ...string) string {
 	t.Helper()
+	return real(t, "", conf)
+}
+
+// Marker is a string the test signature RealWithMarker loads matches
+// anywhere in a scanned file, reported as MarkerSignature. Unlike the EICAR
+// test file, which clamd reports only as a whole file, it tells whether clamd
+// read the part of a file it sits in.
+const (
+	Marker = "CORE_ZIPCHECK_TEST_MARKER_7f3a"
+	// MarkerSignature is how clamd names what it found: the signature's
+	// name, marked as not from its official database.
+	MarkerSignature = markerName + ".UNOFFICIAL"
+	markerName      = "Core.Test.Marker"
+)
+
+// RealWithMarker is Real with one test signature loaded besides the
+// image's: Marker, anywhere in any file (MarkerSignature).
+func RealWithMarker(t testing.TB, conf ...string) string {
+	t.Helper()
+	return real(t, markerName+":0:*:"+hex.EncodeToString([]byte(Marker))+"\n", conf)
+}
+
+func real(t testing.TB, ndb string, conf []string) string {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("short mode")
 	}
@@ -33,15 +60,30 @@ func Real(t testing.TB, conf ...string) string {
 		t.Skip("docker not available")
 	}
 	name := fmt.Sprintf("core-clamav-test-%d", time.Now().UnixNano())
-	args := []string{"run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::3310",
+	args := []string{"create", "--rm", "--name", name, "-p", "127.0.0.1::3310",
 		"-e", "CLAMAV_NO_FRESHCLAMD=true", "-e", "CLAMD_CONF_ConcurrentDatabaseReload=no"}
 	for _, setting := range conf {
 		args = append(args, "-e", setting)
 	}
 	if out, err := exec.Command("docker", append(args, RealImage)...).CombinedOutput(); err != nil {
-		t.Skipf("docker run clamav: %v %s", err, out)
+		t.Skipf("docker create clamav: %v %s", err, out)
 	}
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", "-v", name).Run() })
+	// A signature file is copied in before clamd starts: the image's start
+	// script takes ownership of the database directory, which a bind mount
+	// would refuse.
+	if ndb != "" {
+		path := filepath.Join(t.TempDir(), "core-test.ndb")
+		if err := os.WriteFile(path, []byte(ndb), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("docker", "cp", path, name+":/var/lib/clamav/core-test.ndb").CombinedOutput(); err != nil {
+			t.Fatalf("docker cp the test signature: %v %s", err, out)
+		}
+	}
+	if out, err := exec.Command("docker", "start", name).CombinedOutput(); err != nil {
+		t.Skipf("docker start clamav: %v %s", err, out)
+	}
 
 	deadline := time.Now().Add(4 * time.Minute)
 	for {

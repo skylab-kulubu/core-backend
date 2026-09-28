@@ -146,17 +146,20 @@ func (w *walker) localHeader(e entry, m string) error {
 	if err != nil {
 		return err
 	}
-	return w.outsideData(append(append(h, name...), extra...), m+"'s local header")
+	return w.outsideData(append(append(h, name...), extra...), 0, m+"'s local header")
 }
 
-// outsideData refuses an end record signature starting in b, bytes of the
-// archive outside any member's data that were just read (one that runs on
-// into what follows included): a reader could take it for the archive's
-// end. Inside a member's data it is that member's content.
-func (w *walker) outsideData(b []byte, what string) error {
-	next, _ := w.s.r.Peek(len(endRecordMark) - 1)
-	if i := bytes.Index(append(b, next...), endRecordMark); i >= 0 && i < len(b) {
-		return invalid("%s holds an end record signature, outside the members' data", what)
+// outsideData refuses, in b, bytes of the archive outside any member's data
+// that were just read, an end record signature (a reader could take it for
+// the archive's end) or a local header signature other than the one at
+// ownLocal (-1 for none; clamd unpacks a lone local header wherever it
+// finds one). One that starts in b and runs on into what follows counts.
+// Inside a member's data either is that member's content, read as such.
+func (w *walker) outsideData(b []byte, ownLocal int64, what string) error {
+	next, _ := w.s.r.Peek(len(localMark) - 1)
+	all := append(b, next...)
+	if mark, i := strayMark(all, -1, ownLocal); i >= 0 && i < len(b) {
+		return invalid("%s holds %s signature, outside the members' data", what, mark)
 	}
 	return nil
 }
@@ -212,7 +215,7 @@ func (w *walker) descriptor(e entry, m string, next int64) error {
 	if le32(d) != e.crc || int64(le32(d[4:])) != e.csize || int64(le32(d[8:])) != e.usize {
 		return invalid("%s's data descriptor disagrees with the directory", m)
 	}
-	return w.outsideData(d, m+"'s data descriptor")
+	return w.outsideData(d, -1, m+"'s data descriptor")
 }
 
 // sink takes a member's inflated bytes, never more than it declares, and

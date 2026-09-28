@@ -94,7 +94,7 @@ type directory struct {
 func readDirectory(ctx context.Context, src Source, size int64, at place, depth int, b *budget, stub int64) (*directory, error) {
 	name := at.archive()
 	if size < endLen {
-		return nil, invalid("%s is shorter than an end record", name)
+		return nil, misplaced("%s is shorter than an end record", name)
 	}
 	tailLen := min(size, endLen+maxComment+locatorLen)
 	tail, err := readAt(ctx, src, size-tailLen, tailLen)
@@ -112,7 +112,7 @@ func readDirectory(ctx context.Context, src Source, size int64, at place, depth 
 		}
 	}
 	if found < 0 {
-		return nil, invalid("%s has no end record at its end", name)
+		return nil, misplaced("%s has no end record at its end", name)
 	}
 	end := tail[found:]
 	endPos := size - tailLen + int64(found)
@@ -136,7 +136,7 @@ func readDirectory(ctx context.Context, src Source, size int64, at place, depth 
 	}
 	dirOffset -= base
 	if dirOffset < 0 || dirOffset+dirSize != dirEnd {
-		return nil, invalid("%s's directory is not where its end record says", name)
+		return nil, misplaced("%s's directory is not where its end record says", name)
 	}
 	if err := b.count(count); err != nil {
 		return nil, err
@@ -149,10 +149,12 @@ func readDirectory(ctx context.Context, src Source, size int64, at place, depth 
 		return nil, err
 	}
 	// The directory and what follows it hold no end record signature but
-	// the end record's own: a reader taking another for the end would read
-	// another archive. (The walk checks the members' headers.)
-	if i := strayEndRecord(region, endPos-dirOffset); i >= 0 {
-		return nil, invalid("%s holds an end record signature at byte %d, outside its members' data", name, dirOffset+int64(i))
+	// the end record's own (a reader taking another for the end would read
+	// another archive), and no local header signature (clamd unpacks a lone
+	// local header wherever it finds one, the end record's comment
+	// included). The walk checks the members' headers alike.
+	if mark, i := strayMark(region, endPos-dirOffset, -1); i >= 0 {
+		return nil, invalid("%s holds %s signature at byte %d, outside its members' data", name, mark, dirOffset+int64(i))
 	}
 	d := &directory{size: size, start: dirOffset, endSum: sha256.Sum256(region)}
 	cd := region[:dirSize]
@@ -177,22 +179,35 @@ func readDirectory(ctx context.Context, src Source, size int64, at place, depth 
 	return d, d.checkLayout(at)
 }
 
-// endRecordMark is the end record's signature.
-var endRecordMark = []byte("PK\x05\x06")
+var (
+	// endRecordMark and localMark are the signatures of an end record and
+	// of a local header.
+	endRecordMark = []byte("PK\x05\x06")
+	localMark     = []byte("PK\x03\x04")
+)
 
-// strayEndRecord is where in b an end record signature starts, other than at
-// own (-1 for none there), or -1 when there is none.
-func strayEndRecord(b []byte, own int64) int {
-	for from := 0; ; {
-		i := bytes.Index(b[from:], endRecordMark)
-		if i < 0 {
-			return -1
+// strayMark finds, among bytes b of an archive outside its members' data,
+// an end record or local header signature that is not the archive's own:
+// the end record at ownEnd, the local header at ownLocal (-1 for none
+// there). It answers what it found and where it starts, or -1.
+func strayMark(b []byte, ownEnd, ownLocal int64) (string, int) {
+	for _, m := range []struct {
+		name string
+		mark []byte
+		own  int64
+	}{{"an end record", endRecordMark, ownEnd}, {"a local header", localMark, ownLocal}} {
+		for from := 0; ; {
+			i := bytes.Index(b[from:], m.mark)
+			if i < 0 {
+				break
+			}
+			if i += from; int64(i) != m.own {
+				return m.name, i
+			}
+			from = i + 1
 		}
-		if i += from; int64(i) != own {
-			return i
-		}
-		from = i + 1
 	}
+	return "", -1
 }
 
 // readEntry reads member k's directory entry at p in the central directory

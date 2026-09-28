@@ -25,6 +25,11 @@ var (
 type Refusal struct {
 	Err    error
 	Reason string
+	// misplaced is a ZIP that is not where it seemed: no end record at the
+	// end of the file, or a directory that is not where the end record
+	// says. For a ZIP found past a file's first byte, it means no ZIP ends
+	// the file there.
+	misplaced bool
 }
 
 func (r *Refusal) Error() string { return r.Err.Error() + ": " + r.Reason }
@@ -37,6 +42,12 @@ func tooLarge(format string, args ...any) error {
 
 func invalid(format string, args ...any) error {
 	return &Refusal{Err: ErrInvalid, Reason: fmt.Sprintf(format, args...)}
+}
+
+// misplaced refuses as invalid a ZIP that is not where it seemed
+// (Refusal.misplaced).
+func misplaced(format string, args ...any) error {
+	return &Refusal{Err: ErrInvalid, Reason: fmt.Sprintf(format, args...), misplaced: true}
 }
 
 func nested(format string, args ...any) error {

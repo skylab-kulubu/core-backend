@@ -98,11 +98,13 @@ func (c *checker) zip(src Source, size int64, at place, depth int) error {
 
 // embedded checks a ZIP found past the first byte of a file, which must
 // end the file: the ZIP src holds from there. Its offsets may count from
-// the ZIP or from the file's first byte, stub bytes before it. One whose
-// directory cannot be read so is refused as nested.
+// the ZIP or from the file's first byte, stub bytes before it. When no ZIP
+// ends the file there (a lone local header, or a ZIP followed by more), it
+// is refused as nested; a ZIP there that breaks a rule, as any.
 func (c *checker) embedded(src Source, size int64, at place, depth int, stub int64) error {
 	dir, err := readDirectory(c.ctx, src, size, at, depth, c.b, stub)
-	if errors.Is(err, ErrInvalid) {
+	var r *Refusal
+	if errors.As(err, &r) && r.misplaced {
 		return nested("%s is no ZIP core can read to the end of the file that holds it", at)
 	}
 	if err != nil {
@@ -223,12 +225,17 @@ func (c *checker) tar(r *bufio.Reader, f file) error {
 
 // plain reads a file that is no archive at its first byte, looking for the
 // archives clamd unpacks from past it (a self-extracting program, a ZIP
-// appended to an image). The first ZIP there is checked as a nested one,
-// ending the file: after the walk, from the file's own range, when the file
-// is stored; from memory (at most MaxBuffer) otherwise. Any other archive
-// there is refused as nested.
+// appended to an image or a PDF). The first local header there starts a
+// ZIP that must end the file, checked as a nested one: after the walk, from
+// the file's own range, when the file is stored; from memory (at most
+// MaxBuffer) otherwise. Every later local header must be that ZIP's own or
+// inside its members' data, which its check holds it to: its members must
+// run from that first header to its directory with nothing between them,
+// and no local header signature may stand outside their data (so a lone
+// one hidden in an extra field or the end record's comment is refused).
+// Any other archive past the first byte is refused as nested.
 func (c *checker) plain(r io.Reader, f file) error {
-	var s scanner
+	s := scanner{size: f.size}
 	zipAt := int64(-1)
 	var kept []byte
 	hit := func(sig signature, off int64) error {

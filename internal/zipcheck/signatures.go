@@ -58,7 +58,7 @@ func kindOf(head []byte) kind {
 		return kind{openNone, "ISO 9660"}
 	}
 	for _, sig := range foreignArchives {
-		if sig.matches(head) {
+		if sig.matches(head, -1) {
 			return kind{openNone, sig.name}
 		}
 	}
@@ -97,17 +97,17 @@ func isTar(head []byte) bool {
 type signature struct {
 	name  string
 	magic []byte
-	// valid checks the bytes from the magic's first one on; nil takes the
-	// magic alone.
-	valid func([]byte) bool
+	// valid checks the bytes from the magic's first one on, left of the
+	// file from there on (-1 when unknown); nil takes the magic alone.
+	valid func(b []byte, left int64) bool
 }
 
-func (s signature) matches(b []byte) bool {
-	return bytes.HasPrefix(b, s.magic) && (s.valid == nil || s.valid(b))
+func (s signature) matches(b []byte, left int64) bool {
+	return bytes.HasPrefix(b, s.magic) && (s.valid == nil || s.valid(b, left))
 }
 
 var (
-	rarSignature = signature{"RAR", []byte("Rar!\x1a\x07"), func(b []byte) bool {
+	rarSignature = signature{"RAR", []byte("Rar!\x1a\x07"), func(b []byte, _ int64) bool {
 		return len(b) >= 7 && (b[6] == 0 || (len(b) >= 8 && b[6] == 1 && b[7] == 0))
 	}}
 	sevenZipSignature = signature{"7-Zip", []byte("7z\xbc\xaf\x27\x1c"), nil}
@@ -132,26 +132,24 @@ var foreignArchives = []signature{
 // byte (checked for a ZIP), by signatures long or checked enough not to turn
 // up by chance in other data: gzip's two bytes are left out.
 var embeddedArchives = []signature{
-	{"ZIP", []byte("PK\x03\x04"), plausibleLocalHeader},
+	{"ZIP", localMark, unpackableLocalHeader},
 	rarSignature, sevenZipSignature, cabSignature, arjSignature,
 }
 
-// plausibleLocalHeader reports whether b starts with a local header a ZIP
-// writer could have written: a version needed of at most 6.3 (Go's
-// CreateRaw writes 0), no reserved flag set, a method the format defines,
-// and a name of 1 to maxNameBytes bytes. Chance data passes it about once
-// in a billion signature-like bytes.
-func plausibleLocalHeader(b []byte) bool {
-	if len(b) < localLen {
+// unpackableLocalHeader reports whether b starts with a local header clamd
+// would unpack on its own: a method the format defines, and a name, extra
+// field and data that fit in the rest of the file (left bytes from the
+// header on; -1 when unknown). clamd goes by nothing else: it unpacked lone
+// headers of version 25.5, with no name or one of 2000 bytes, and with a
+// reserved flag set (checked). Chance data passes it about once in 100,000
+// GiB.
+func unpackableLocalHeader(b []byte, left int64) bool {
+	if len(b) < localLen || !zipMethods[le16(b[8:])] {
 		return false
 	}
-	nameLen := le16(b[26:])
-	return b[4] <= 63 && b[5] <= 20 && le16(b[6:])&reservedFlags == 0 && zipMethods[le16(b[8:])] &&
-		nameLen >= 1 && nameLen <= maxNameBytes
+	need := int64(localLen) + int64(le16(b[26:])) + int64(le16(b[28:])) + int64(le32(b[18:]))
+	return left < 0 || need <= left
 }
-
-// reservedFlags are the general purpose flags the format reserves.
-const reservedFlags = 1<<7 | 1<<8 | 1<<9 | 1<<10 | 1<<12 | 1<<14 | 1<<15
 
 // zipMethods are the compression methods the format defines.
 var zipMethods = map[uint16]bool{
@@ -161,7 +159,7 @@ var zipMethods = map[uint16]bool{
 
 // validARJ reports whether b starts with an ARJ header that checks out: its
 // size (at most 2600 bytes) and the CRC-32 that follows it.
-func validARJ(b []byte) bool {
+func validARJ(b []byte, _ int64) bool {
 	if len(b) < 4 {
 		return false
 	}
@@ -176,6 +174,8 @@ const scanLook = 4 + 2600 + 4
 // scanner finds embedded archive signatures in a file fed to it in pieces,
 // one that straddles two pieces included.
 type scanner struct {
+	// size is the file's size, -1 when unknown.
+	size int64
 	// buf holds the bytes not yet examined as a signature's start, and
 	// what follows them.
 	buf  []byte
@@ -201,7 +201,11 @@ func (s *scanner) feed(p []byte, final bool, hit func(signature, int64) error) e
 			}
 			i += from
 			from = i + 1
-			if at := s.base + int64(i); at > 0 && sig.matches(s.buf[i:]) {
+			left := int64(-1)
+			if s.size >= 0 {
+				left = s.size - (s.base + int64(i))
+			}
+			if at := s.base + int64(i); at > 0 && sig.matches(s.buf[i:], left) {
 				if err := hit(sig, at); err != nil {
 					return err
 				}
