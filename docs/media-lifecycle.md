@@ -1945,11 +1945,10 @@ transaction picks the next due Media (`FOR UPDATE SKIP LOCKED`), records the
 claim (`scan_claim_id`) and its lease (`scan_claimed_until`), and commits.
 Rolling deploys start the new core before stopping the old one, so two
 workers overlap on every deploy; a Media another worker has claimed is left
-alone. The lease is the claim's work (the ZIP check at its longest, since
-only a file's content tells whether it is a ZIP; the scan; the copy of a
-clean held file; the storage calls around them) plus two minutes, and the
-work stops
-before the lease ends. Every step that moves the Media on checks the claim
+alone. The lease is the claim's work (the ZIP check at its longest, which
+reads every file once more; the scan; the copy of a clean held file; the
+storage calls around them) plus two minutes, and the work stops before the
+lease ends. Every step that moves the Media on checks the claim
 is still its own. A worker whose lease ran out (another worker has claimed
 the Media since) moves nothing on and deletes nothing. The archive and
 expiry purges wait for a live scan claim, so a copy the scan makes can never
@@ -2014,24 +2013,38 @@ are in `internal/zipcheck/clamav_integration_test.go`):
 - It skips a ZIP member with ZIP64 sizes, and one compressed with a method it
   does not know.
 - It unpacks archives it finds inside other files: an Office document is a
-  ZIP, and a ZIP appended to a program or an image is unpacked from past the
-  file's first byte, with the same limits and the same silent skip.
+  ZIP, and a ZIP appended to a program, an image or a PDF is unpacked from
+  past the file's first byte, with the same limits and the same silent
+  skip.
 - A gzip or tar member past `MaxFileSize` is reported, not skipped.
 
-So a file is not streamed to clamd until core has checked that clamd would
-scan all of it (`internal/zipcheck`). The check runs on **any file whose
-content is a ZIP**, told by its first bytes whatever its type says: a ZIP,
-a DOCX, an XLSX, a JAR. It runs in the scan worker, under the Media's scan
-claim, holding no database connection:
+So **every scanned file** is read once before clamd streams it, and not
+streamed to clamd until core has checked that clamd would scan all of it
+(`internal/zipcheck`). What the file is comes from its first bytes, whatever
+its type says:
 
-1. A public held file is read by ranged GETs: its first four bytes, then
-   the ZIP's end and central directory (the file's last 65,577 bytes: the
-   end record's longest comment and a ZIP64 locator, then the directory and
-   what follows it, in reads of at most 1 MiB; a directory over 8 MiB with
-   what follows it is refused as `too_large_to_scan`). A private file (an
-   Answer file) is decrypted; one that is a ZIP is kept in memory to be
-   checked, at most `MEDIA_ZIP_CHECK_BUFFER_MIB` (64 MiB), which an Answer
-   file (20 MiB) always fits.
+- **a file whose content is a ZIP** (a ZIP, a DOCX, an XLSX, a JAR) is
+  checked whole (below);
+- **any other file** (a PDF, an image) is streamed once and searched for
+  archives past its first byte, as a member is (see "Any other file" under
+  what a member holds): a ZIP appended to a PDF is checked as a nested
+  ZIP, any other archive there is refused as `archive_nested`.
+
+The check runs in the scan worker, under the Media's scan claim, holding no
+database connection. A public held file is read by ranged GETs. A private
+file (an Answer file) is decrypted as it streams, into nothing but memory,
+never to disk; a ZIP is kept in memory to be checked, at most
+`MEDIA_ZIP_CHECK_BUFFER_MIB` (64 MiB), which an Answer file (20 MiB) always
+fits. The extra read of every file is the price of it, and the claim's
+lease allows for it.
+
+A ZIP is checked so:
+
+1. Its end and central directory are read by ranged GETs (the file's last
+   65,577 bytes: the end record's longest comment and a ZIP64 locator, then
+   the directory and what follows it, in reads of at most 1 MiB; a
+   directory over 8 MiB with what follows it is refused as
+   `too_large_to_scan`), or from memory.
 2. The file is streamed once, in order, and every member is inflated
    without being kept, to check what each really holds.
 3. What each member holds is read as clamd would unpack it (below).
@@ -2046,8 +2059,10 @@ signature):
 - as `archive_invalid` when it is malformed or holds what clamd cannot
   read:
   - no end record at its end;
-  - an end record signature besides its own in its last 64 KiB and 22 bytes
-    (a reader could take either for the end, and read another archive);
+  - an end record signature after its own end record (in its comment), or
+    outside the members' data (in a local header, a data descriptor, the
+    directory): a reader could take it for the end, and read another
+    archive;
   - a central directory that is not where the end record says, or that
     holds another number of entries;
   - a ZIP64 end record or locator that disagrees with the end record, or an
@@ -2067,11 +2082,14 @@ signature):
 - as `archive_nested` when it holds an archive core cannot check (the
   nesting rule below).
 
-The end record rule also refuses a ZIP whose last 64 KiB hold another
-ZIP's end record: an inner ZIP (or Office file) stored, or deflated into
-stored blocks as incompressible data is, as the last members of the ZIP or
-anywhere in a ZIP smaller than that. clamd 1.5.4 itself takes the last end
-record (checked with such fixtures); the rule does not rely on it.
+An end record signature inside a member's data is that member's content,
+checked as such: a stored inner ZIP's own, or an Office file's deflated
+into stored blocks (deflate keeps incompressible data as it is). So a ZIP
+ending with a PPTX of images, a small ZIP with a stored inner ZIP, and what
+Info-ZIP writes when it stores an inner ZIP it cannot shrink all pass.
+clamd 1.5.4 reads the same, last end record in each of these (checked:
+it finds a test file in the first member, which only that directory
+lists).
 
 The worker logs why (a `media.ScanRejection`), naming members by their
 place (`member 3`, `member 2 of member 5`, `entry 1 of what member 4
@@ -2128,9 +2146,7 @@ Direct upload (ticket 21). It is never scanned unchecked: it waits
 scanning, logged at each try (`media.ErrPrivateZIPUnchecked`), until its
 scan deadline rejects it.
 
-Not covered: a file whose content is not a ZIP (a PDF, an image) is not
-searched for embedded archives, though clamd unpacks a ZIP appended to a PDF
-too (checked). Nor does core look inside a PDF's compressed streams.
+Not covered: core does not look inside a PDF's compressed streams.
 
 ### Public files before their scan
 
@@ -2610,8 +2626,8 @@ What happens to the records when the request completes is in
   10 seconds doubling to 5 minutes, a file's scan bounded by two minutes
   plus a second per MiB, a ZIP's check by two minutes, two seconds per MiB
   of the file and a second per MiB it inflates to (`zipcheck.Timeout`), a
-  scan's claim leased for its work (the check at its longest, since only a
-  file's content tells whether it is a ZIP) plus two minutes, and a Media
+  scan's claim leased for its work (the check at its longest, which reads
+  every file once more) plus two minutes, and a Media
   still scanning a week after its upload rejected (`media.ScanDeadline`).
 - `MEDIA_CLAMAV_MAX_FILE_MIB`, `MEDIA_CLAMAV_MAX_SCAN_MIB`,
   `MEDIA_CLAMAV_MAX_FILES`, `MEDIA_CLAMAV_MAX_RECURSION` — clamd's
