@@ -1,13 +1,32 @@
 package media
 
-import "mime"
+import (
+	"mime"
+	"slices"
+)
 
-// ServingMetadata is the serving policy: how the CDN answers for an object of
-// this type. Every write to the public bucket takes its metadata from here.
-// Only types a browser cannot run script from are served inline: the raster
-// formats Upload accepts, and PDF. SVG keeps its type so `<img>` still
-// renders it, but opening its URL downloads it instead of running its
-// script. Everything else is stored as an opaque download under its name.
+// ServingMetadataFor is the serving policy for a Media of the purpose: how
+// the CDN answers for its object. Every write of a Media's object to the
+// public bucket takes its metadata from here. It is ServingMetadata but for
+// a video: the MP4 of a purpose that plays (videoPurposes, the video purpose)
+// keeps its type and is served inline, so a <video> element and the
+// browser's player take it (the CDN answers Range requests, and a
+// Cloudflare rule adds nosniff). An MP4 of any other purpose, or of none,
+// stays an opaque download.
+func ServingMetadataFor(purpose, contentType, name string) BlobMetadata {
+	if contentType == mp4Type && slices.Contains(videoPurposes, purpose) {
+		return BlobMetadata{ContentType: mp4Type}
+	}
+	return ServingMetadata(contentType, name)
+}
+
+// ServingMetadata is the serving policy of an object written without a
+// purpose (a certificate's PDF and assets; a Media's object goes through
+// ServingMetadataFor). Only types a browser cannot run script from are
+// served inline: the raster formats Upload accepts, and PDF. SVG keeps its
+// type so `<img>` still renders it, but opening its URL downloads it
+// instead of running its script. Everything else is stored as an opaque
+// download under its name.
 func ServingMetadata(contentType, name string) BlobMetadata {
 	switch {
 	case isRasterType(contentType), contentType == pdfType:

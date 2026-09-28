@@ -56,6 +56,27 @@ func TestCatalogue_PublicPurposeNamesOnlyRasterPDFOrMP4(t *testing.T) {
 	}
 }
 
+// Core attaches club files and videos (decision C1): an Event lists them as
+// its files and videos. So a club file or video can be uploaded (once the
+// runtime gates allow it) instead of being refused as nothing could attach
+// it.
+func TestCatalogue_CoreAttachesClubFilesAndVideos(t *testing.T) {
+	t.Parallel()
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"club_file", "video"} {
+		purpose, _ := catalogue.Lookup(name)
+		if purpose.Attach != media.AttachCore || purpose.Service != "" || purpose.OwningProduct() != "core" {
+			t.Errorf("%s is attached by %q (service %q), want core", name, purpose.Attach, purpose.Service)
+		}
+		if purpose.Transport != media.TransportDirect || purpose.Visibility != media.VisibilityPublic {
+			t.Errorf("%s: transport %s, visibility %s", name, purpose.Transport, purpose.Visibility)
+		}
+	}
+}
+
 // A club file may be a ZIP (decision D6): a download-only public type, never
 // served inline, and only where the catalogue names it.
 func TestCatalogue_ClubFilesAcceptZIPAsADownload(t *testing.T) {
@@ -75,6 +96,38 @@ func TestCatalogue_ClubFilesAcceptZIPAsADownload(t *testing.T) {
 		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingZIP) {
 			t.Errorf("public %s naming ZIP: err = %v, want %v", purpose, err, media.ErrCeilingZIP)
 		}
+	}
+}
+
+// Only the video purpose names MP4 publicly: it is the one served inline, to
+// play (ServingMetadataFor). A club file or a CMS document naming MP4 is
+// refused at startup.
+func TestCatalogue_OnlyVideosAcceptMP4Publicly(t *testing.T) {
+	t.Parallel()
+	for _, purpose := range []string{"club_file", "cms_file"} {
+		data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+			purposes[purpose]["types"] = append(purposes[purpose]["types"].([]any), "video/mp4")
+		})
+		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingMP4) {
+			t.Errorf("public %s naming MP4: err = %v, want %v", purpose, err, media.ErrCeilingMP4)
+		}
+	}
+}
+
+// A video needs no malware scan. Its served key follows its type
+// (videos/<uuid>.mp4, so players and saved copies know it), while a scanned
+// file is served at files/<Media id>, which every purge of a held Media
+// finds by the id alone. A scanned video would be served without its
+// extension, so the catalogue may not ask for one, even within what clamd
+// scans.
+func TestCatalogue_VideosNeedNoScan(t *testing.T) {
+	t.Parallel()
+	data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+		purposes["video"]["scan"] = true
+		purposes["video"]["max_mib"] = media.MaxScanBytes >> 20
+	})
+	if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingVideoScan) {
+		t.Fatalf("a scanned video: err = %v, want %v", err, media.ErrCeilingVideoScan)
 	}
 }
 
@@ -234,6 +287,21 @@ func TestCatalogue_RefusesMalformedEntries(t *testing.T) {
 		"no legacy purpose":       func(p purposeEntries) { delete(p, "legacy") },
 		"no profile picture":      func(p purposeEntries) { delete(p, "profile_picture") },
 		"legacy rules on another": func(p purposeEntries) { p["cms_file"]["legacy_rules"] = true },
+		// An Event's files and videos are core's roles: core must attach
+		// club files and videos.
+		"core role's purpose attached by a service": func(p purposeEntries) {
+			p["club_file"]["attach"] = "service"
+			p["club_file"]["service"] = "cms"
+		},
+		"core role's purpose attached by nobody": func(p purposeEntries) {
+			p["video"]["attach"] = "service"
+		},
+		"no club file": func(p purposeEntries) {
+			delete(p, "club_file")
+		},
+		"no video": func(p purposeEntries) {
+			delete(p, "video")
+		},
 	} {
 		data := reviewedCatalogueWith(t, change)
 		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCatalogueInvalid) {

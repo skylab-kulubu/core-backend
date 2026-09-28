@@ -22,6 +22,11 @@ const (
 	RoleEventGallery     Role = "event_gallery"
 	RoleProfilePicture   Role = "profile_picture"
 	RoleCertificateAsset Role = "certificate_asset"
+	// RoleEventFile is one of an Event's downloadable files (event_files,
+	// migration 20260928160000).
+	RoleEventFile Role = "event_file"
+	// RoleEventVideo is one of an Event's videos (event_videos).
+	RoleEventVideo Role = "event_video"
 )
 
 // The roles another product's records give a Media, through the service
@@ -45,24 +50,41 @@ const (
 // POST /v1/users/me/profile-picture, which uploads it as profile_picture, so
 // no link checks that role; the legacy backfill reads it.
 //
-// Transition rule: a legacy Media fits every role, as any Media could be
-// linked anywhere before Media purpose (fits). superadmin, Skyforms and CMS
-// still upload without a purpose; the rule ends when they send one (media
-// redesign tickets 09 and 15).
+// Transition rule: a legacy Media fits every role but those of
+// rolesWithoutLegacy, as any Media could be linked anywhere before Media
+// purpose (fits). superadmin, Skyforms and CMS still upload without a
+// purpose; the rule ends when they send one (media redesign tickets 09 and
+// 15).
 var rolePurposes = map[authz.Product]map[Role][]string{
 	authz.ProductCore: {
 		RoleEventCover:       {PurposeEventCover, PurposeEventGallery},
 		RoleEventGallery:     {PurposeEventGallery, PurposeEventCover},
 		RoleProfilePicture:   {PurposeProfilePicture},
 		RoleCertificateAsset: {PurposeCertificateAsset},
+		RoleEventFile:        {PurposeClubFile},
+		RoleEventVideo:       {PurposeVideo},
 	},
 	authz.ProductForms: {RoleFormsAnswer: {PurposeAnswerFile, PurposeAnswerFileLarge}},
 	authz.ProductCMS:   {RoleCMSImage: {PurposeCMSImage}, RoleCMSFile: {PurposeCMSFile}},
 }
 
+// rolesWithoutLegacy are the roles the transition rule leaves out: a legacy
+// Media does not fit them. They were made after Media purpose, so no Media
+// was ever linked in them without one, and their purposes are sent by
+// Direct upload (club files also scanned), which a legacy upload never was:
+// an Event's files and videos. The database keeps a copy
+// (media_roles_without_legacy, migration 20260928160000); a test keeps the
+// two equal.
+var rolesWithoutLegacy = map[authz.Product][]Role{
+	authz.ProductCore: {RoleEventFile, RoleEventVideo},
+}
+
 // fits reports whether a Media of the purpose may play the product's role.
 func fits(product authz.Product, role Role, purpose string) bool {
-	return purpose == PurposeLegacy || slices.Contains(rolePurposes[product][role], purpose)
+	if purpose == PurposeLegacy {
+		return !slices.Contains(rolesWithoutLegacy[product], role)
+	}
+	return slices.Contains(rolePurposes[product][role], purpose)
 }
 
 // Link refusals by the Media itself. Each also matches ErrInvalid.

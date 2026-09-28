@@ -6,6 +6,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
@@ -216,6 +217,21 @@ func (h *EventHandler) Delete(c fiber.Ctx) error {
 }
 
 func (h *EventHandler) AddImages(c fiber.Ctx) error {
+	return h.eventMediaChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
+		return h.svc.AddImages(c.Context(), p, id, ids)
+	})
+}
+
+func (h *EventHandler) RemoveImages(c fiber.Ctx) error {
+	return h.eventMediaChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
+		return h.svc.RemoveImages(c.Context(), p, id, ids)
+	})
+}
+
+// eventMediaChange changes the Media an Event links (its gallery, files or
+// videos) with the Media ids of the body, a JSON array, and answers the
+// Event.
+func (h *EventHandler) eventMediaChange(c fiber.Ctx, change func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error)) error {
 	p, err := caller(c)
 	if err != nil {
 		return eventError(c, err)
@@ -228,29 +244,39 @@ func (h *EventHandler) AddImages(c fiber.Ctx) error {
 	if err := c.Bind().Body(&ids); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	updated, err := h.svc.AddImages(c.Context(), p, id, ids)
+	updated, err := change(p, id, ids)
 	if err != nil {
 		return eventError(c, err)
 	}
 	return c.JSON(h.svc.ProjectFor(&p, updated))
 }
 
-func (h *EventHandler) RemoveImages(c fiber.Ctx) error {
-	p, err := caller(c)
-	if err != nil {
-		return eventError(c, err)
+// AddFiles appends Media to the Event's list: POST /v1/events/{id}/files
+// (club files) or /videos, with the Media ids in the order to add them.
+func (h *EventHandler) AddFiles(list event.MediaList) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		return h.eventMediaChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
+			return h.svc.AddFiles(c.Context(), p, id, list, ids)
+		})
 	}
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+}
+
+// RemoveFiles removes Media from the Event's list: DELETE
+// /v1/events/{id}/files or /videos, with the Media ids.
+func (h *EventHandler) RemoveFiles(list event.MediaList) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		return h.eventMediaChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
+			return h.svc.RemoveFiles(c.Context(), p, id, list, ids)
+		})
 	}
-	var ids []uuid.UUID
-	if err := c.Bind().Body(&ids); err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+}
+
+// OrderFiles orders the Event's list: PUT /v1/events/{id}/files/order or
+// /videos/order, with every item's Media id in the new order.
+func (h *EventHandler) OrderFiles(list event.MediaList) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		return h.eventMediaChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
+			return h.svc.OrderFiles(c.Context(), p, id, list, ids)
+		})
 	}
-	updated, err := h.svc.RemoveImages(c.Context(), p, id, ids)
-	if err != nil {
-		return eventError(c, err)
-	}
-	return c.JSON(h.svc.ProjectFor(&p, updated))
 }

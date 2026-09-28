@@ -245,6 +245,13 @@ func (s *service) purposeRefusal(p authz.Principal, purpose Purpose, transport T
 		}
 		return &PurposeRefusal{Err: ErrSingleStepOnly, Purpose: purpose.Name}
 	}
+	if transport == TransportDirect {
+		// Off unless this side switches it on (MEDIA_DIRECT_UPLOAD_PURPOSES),
+		// whatever the rules below would say.
+		if refusal := s.directSwitchedOff(purpose.Name); refusal != nil {
+			return refusal
+		}
+	}
 	if transport == TransportDirect && private {
 		// Encrypting a large file after its Direct upload is ticket 21.
 		return &PurposeRefusal{Err: ErrDirectUploadPrivate, Purpose: purpose.Name}
@@ -322,7 +329,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 			sizeObjects, colorsComputed = noSizes, true
 		}
 	} else {
-		serving := ServingMetadata(stored.ctype, file.Name)
+		serving := ServingMetadataFor(purpose.Name, stored.ctype, file.Name)
 		if err := s.blobs.Put(operationCtx, key, stored.body, serving); err != nil {
 			return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, nil, err)
 		}
@@ -332,7 +339,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 			}
 			for _, size := range stored.image.sizes {
 				sizes = append(sizes, sizeObjectKey(key, size.name, size.ctype))
-				if err := s.blobs.Put(operationCtx, sizes[len(sizes)-1], size.body, ServingMetadata(size.ctype, file.Name)); err != nil {
+				if err := s.blobs.Put(operationCtx, sizes[len(sizes)-1], size.body, ServingMetadataFor(purpose.Name, size.ctype, file.Name)); err != nil {
 					return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, sizes, err)
 				}
 			}
@@ -694,7 +701,7 @@ func (s *service) Addresses() Addresses {
 // read only through a read link.
 func (s *service) withURL(m Media) Media {
 	m.Sizes = nil
-	if !m.hasPublicAddress() {
+	if !m.Servable() {
 		m.URL = ""
 		return m
 	}
@@ -703,10 +710,11 @@ func (s *service) withURL(m Media) Media {
 	return m
 }
 
-// hasPublicAddress reports whether the Media is served from the CDN: a
-// private Media never is, nor one whose object is being or was purged, nor
-// one waiting for its malware scan (its file is held at a key only core
-// knows) or rejected by it.
-func (m Media) hasPublicAddress() bool {
+// Servable reports whether the Media is served from the CDN, so has a
+// public address: a private Media never is, nor one whose object is being or
+// was purged, nor one waiting for its malware scan (its file is held at a
+// key only core knows) or rejected by it. ServableSQL is the same rule in
+// SQL; a test keeps the two equal.
+func (m Media) Servable() bool {
 	return m.Visibility != VisibilityPrivate && m.BlobPurgeStartedAt == nil && m.BlobPurgedAt == nil && m.openable() == nil
 }

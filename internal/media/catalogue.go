@@ -40,15 +40,19 @@ const (
 	// PurposeAnswerFileLarge is a large Answer file, sent by Direct upload.
 	PurposeAnswerFileLarge = "answer_file_large"
 	// PurposeClubFile is a large club download, sent by Direct upload: the
-	// one public purpose that may accept ZIP (zipPurposes).
+	// one public purpose that may accept ZIP (zipPurposes). An Event offers
+	// it as one of its files (RoleEventFile).
 	PurposeClubFile = "club_file"
+	// PurposeVideo is an event recording, sent by Direct upload. An Event
+	// offers it as one of its videos (RoleEventVideo).
+	PurposeVideo = "video"
 )
 
 // requiredPurposes are the purposes core refers to in code. A catalogue that
 // lacks one stops core at startup.
 var requiredPurposes = []string{
 	PurposeLegacy, PurposeProfilePicture, PurposeEventCover, PurposeEventGallery, PurposeCertificateAsset,
-	PurposeCMSImage, PurposeCMSFile, PurposeAnswerFile, PurposeAnswerFileLarge,
+	PurposeCMSImage, PurposeCMSFile, PurposeAnswerFile, PurposeAnswerFileLarge, PurposeClubFile, PurposeVideo,
 }
 
 // ErrCatalogueInvalid is a catalogue file core cannot read as one: a field it
@@ -227,12 +231,9 @@ func ParseCatalogue(data []byte) (Catalogue, error) {
 		}
 	}
 	for service, roles := range rolePurposes {
-		if service == authz.ProductCore {
-			continue
-		}
 		for role, accepted := range roles {
 			for _, name := range accepted {
-				if purposes[name].Service != service {
+				if purposes[name].OwningProduct() != service {
 					return Catalogue{}, fmt.Errorf("%w: %s, which the %s role %s accepts, is not attached by %s",
 						ErrCatalogueInvalid, name, service, role, service)
 				}

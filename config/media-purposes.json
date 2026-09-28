@@ -99,7 +99,7 @@
       "image": { "reencode": true, "max_dimension": 2560 }
     },
     "club_file": {
-      "description": "A large club download, such as event material or a dataset, that anyone can open. A ZIP is served only as a download (decision D6).",
+      "description": "A large club download, such as event material or a dataset, that anyone can open: one of an Event's files (decision C1). A ZIP is served only as a download (decision D6).",
       "upload": "event_editor",
       "types": ["application/pdf", "application/zip"],
       "max_mib": 1024,
@@ -108,7 +108,7 @@
       "scan": true,
       "pending_ttl": "24h",
       "transport": "direct",
-      "attach": "service"
+      "attach": "core"
     },
     "answer_file_large": {
       "description": "A large Answer file, such as a game-jam build. Skyforms grants the Direct upload.",
@@ -124,7 +124,7 @@
       "service": "forms"
     },
     "video": {
-      "description": "An event recording, served as plain MP4.",
+      "description": "An event recording: one of an Event's videos (decision C1), served inline as video/mp4 to play.",
       "upload": "event_editor",
       "types": ["video/mp4"],
       "max_mib": 2048,
@@ -133,7 +133,7 @@
       "scan": false,
       "pending_ttl": "24h",
       "transport": "direct",
-      "attach": "service"
+      "attach": "core"
     },
     "legacy": {
       "description": "Media uploaded without a purpose, and every Media stored before Media purpose. Internal: clients cannot name it. It keeps the rules Media uploaded without a purpose had before this catalogue, until Skyforms and CMS send purposes. Its images keep their own bytes, stripped of metadata, and get no sizes.",

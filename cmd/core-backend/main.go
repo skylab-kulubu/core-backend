@@ -162,6 +162,12 @@ func main() {
 	} else {
 		log.Printf("media direct upload: off (no R2 configured)")
 	}
+	// What this side opens by Direct upload: the catalogue is the same file
+	// on sandbox and production, so each side switches its purposes on.
+	if directUploads.Purposes, err = media.DirectUploadPurposesFromEnv(os.Getenv, mediaPurposes); err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("media direct upload purposes switched on: %v (MEDIA_DIRECT_UPLOAD_PURPOSES)", directUploads.Purposes)
 	// The products whose service accounts may attach Media; a product
 	// without one keeps its purposes closed.
 	serviceClients, err := authz.ServiceClientsFromEnv(os.Getenv)
