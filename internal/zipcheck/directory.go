@@ -27,10 +27,6 @@ const (
 	// descriptorLen is the shortest data descriptor: no signature, 32-bit
 	// sizes.
 	descriptorLen = 12
-	// endWindow is how far from the end an end record may start: 64 KiB of
-	// comment and the record itself. No other end record signature may
-	// be there.
-	endWindow = 1<<16 + endLen
 
 	// flagsEncrypted are the flags of an encrypted member: encrypted,
 	// strongly encrypted, and the directory's values masked.
@@ -105,12 +101,9 @@ func readDirectory(ctx context.Context, src Source, size int64, at place, depth 
 	if err != nil {
 		return nil, err
 	}
-	// Only the end record whose comment ends exactly at the end of the file
-	// counts, and no other end record signature may sit where a reader
-	// might take it for the end: the archive would read two ways.
-	if bytes.Count(tail[max(0, len(tail)-endWindow):], []byte("PK\x05\x06")) > 1 {
-		return nil, invalid("%s has more than one end record signature in its last 64 KiB", name)
-	}
+	// The end record is the one whose comment ends exactly at the end of
+	// the file; no other end record signature may follow it (checked with
+	// the directory below).
 	found := -1
 	for i := len(tail) - endLen; i >= 0; i-- {
 		if le32(tail[i:]) == endSig && int(le16(tail[i+20:])) == len(tail)-i-endLen {
@@ -155,6 +148,12 @@ func readDirectory(ctx context.Context, src Source, size int64, at place, depth 
 	if err != nil {
 		return nil, err
 	}
+	// The directory and what follows it hold no end record signature but
+	// the end record's own: a reader taking another for the end would read
+	// another archive. (The walk checks the members' headers.)
+	if i := strayEndRecord(region, endPos-dirOffset); i >= 0 {
+		return nil, invalid("%s holds an end record signature at byte %d, outside its members' data", name, dirOffset+int64(i))
+	}
 	d := &directory{size: size, start: dirOffset, endSum: sha256.Sum256(region)}
 	cd := region[:dirSize]
 	p := 0
@@ -176,6 +175,24 @@ func readDirectory(ctx context.Context, src Source, size int64, at place, depth 
 		return nil, invalid("%s's directory holds more than its %d members", name, count)
 	}
 	return d, d.checkLayout(at)
+}
+
+// endRecordMark is the end record's signature.
+var endRecordMark = []byte("PK\x05\x06")
+
+// strayEndRecord is where in b an end record signature starts, other than at
+// own (-1 for none there), or -1 when there is none.
+func strayEndRecord(b []byte, own int64) int {
+	for from := 0; ; {
+		i := bytes.Index(b[from:], endRecordMark)
+		if i < 0 {
+			return -1
+		}
+		if i += from; int64(i) != own {
+			return i
+		}
+		from = i + 1
+	}
 }
 
 // readEntry reads member k's directory entry at p in the central directory

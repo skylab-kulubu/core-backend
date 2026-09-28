@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"os"
 	"testing"
 
 	"github.com/skylab-kulubu/core-backend/internal/zipcheck"
@@ -247,41 +248,101 @@ func TestCheckRefusesZIP64Lies(t *testing.T) {
 	}
 }
 
-// An end record signature in the last 64 KiB and 22 bytes, besides the end
-// record that ends the file, lets the ZIP read two ways depending on which
-// end record a reader takes: refused as invalid, whatever rule clamd
-// follows. That includes a ZIP whose last member is a stored ZIP small
-// enough that its own end record falls there (deflated, as tools write it
-// by default, it passes). One further from the end reads one way only.
-func TestCheckRefusesMoreThanOneEndRecordNearTheEnd(t *testing.T) {
+// The ZIP's end record must be the last end record signature in the file,
+// and no other may stand outside member data: a reader taking another for
+// the end would read another archive. One inside a member's data is that
+// member's content, checked as such: a stored inner ZIP's own end record,
+// or an Office file's deflated into stored blocks (deflate keeps
+// incompressible data as it is). So a ZIP ending with a PPTX of images, a
+// small ZIP with a stored inner ZIP, and what Info-ZIP writes when it stores
+// an inner ZIP it cannot shrink all pass.
+func TestCheckTakesOnlyTheLastEndRecord(t *testing.T) {
 	t.Parallel()
-	var out bytes.Buffer
-	w := zip.NewWriter(&out)
-	m, err := w.Create("a.txt")
+	inner := build(t, deflated("b.txt", []byte("inner")))
+	images := build(t, stored("ppt/media/image1.jpeg", text(20<<10)))
+	infoZIP, err := os.ReadFile("testdata/infozip-stored-inner.zip")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Write([]byte("harmless")); err != nil {
+	for name, data := range map[string][]byte{
+		"a ZIP ending with a PPTX of images":   build(t, deflated("a.txt", []byte("a")), deflated("sunum.pptx", images)),
+		"a small ZIP with a stored inner ZIP":  build(t, deflated("a.txt", []byte("a")), stored("inner.zip", inner)),
+		"a ZIP ending with a stored empty ZIP": build(t, deflated("a.txt", []byte("a")), stored("empty.zip", build(t))),
+		"Info-ZIP storing an inner ZIP":        infoZIP,
+		"a stored member that holds the mark":  build(t, stored("a.bin", append(append(text(100), "PK\x05\x06"...), text(100)...))),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if n := bytes.Count(data, []byte("PK\x05\x06")); n < 2 {
+				t.Fatalf("the fixture holds %d end record signatures, want another besides its own", n)
+			}
+			passes(t, data, limits)
+		})
+	}
+
+	withComment := func(comment string) []byte {
+		var out bytes.Buffer
+		w := zip.NewWriter(&out)
+		m, err := w.Create("a.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.Write([]byte("harmless")); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.SetComment(comment); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return out.Bytes()
+	}
+	fakeEnd := "PK\x05\x06" + string(zeros(18))
+
+	// A local header's extra field holding the mark.
+	var extra bytes.Buffer
+	w := zip.NewWriter(&extra)
+	m, err := w.CreateRaw(&zip.FileHeader{Name: "a.txt", Method: zip.Store, CRC32: crc32.ChecksumIEEE([]byte("abc")),
+		CompressedSize64: 3, UncompressedSize64: 3, Extra: append([]byte{0xfe, 0xca, 22, 0}, fakeEnd...)})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.SetComment("PK\x05\x06" + string(zeros(18))); err != nil {
+	if _, err := m.Write([]byte("abc")); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	refused(t, out.Bytes(), limits, zipcheck.ErrInvalid)
 
-	inner := build(t, deflated("b.txt", []byte("inner")))
-	refused(t, build(t, deflated("a.txt", []byte("a")), stored("inner.zip", inner)), limits, zipcheck.ErrInvalid)
-	passes(t, build(t, deflated("a.txt", []byte("a")), deflated("inner.zip", inner)), limits)
-	// Deflate keeps incompressible data as it is (stored blocks), so an
-	// inner ZIP of such data, an Office file with images say, puts its end
-	// record there raw too. Followed by 64 KiB of other members, it passes.
-	incompressible := build(t, stored("photo.jpg", text(20<<10)))
-	refused(t, build(t, deflated("a.txt", []byte("a")), deflated("slides.pptx", incompressible)), limits, zipcheck.ErrInvalid)
-	passes(t, build(t, deflated("slides.pptx", incompressible), filler()), limits)
+	// A directory entry's comment holding it.
+	var dirComment bytes.Buffer
+	w = zip.NewWriter(&dirComment)
+	m, err = w.CreateHeader(&zip.FileHeader{Name: "a.txt", Method: zip.Deflate, Comment: fakeEnd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 
-	far := append(append(text(100), "PK\x05\x06"...), text(70<<10)...)
-	passes(t, build(t, stored("far.bin", far), deflated("b.txt", []byte("b"))), limits)
+	// Between the last member and the directory, the directory moved after it.
+	plain := build(t, file{name: "a.txt", data: text(100), method: zip.Store, sized: true})
+	l := layoutOf(t, plain)
+	start := int(binary.LittleEndian.Uint32(plain[l.end+16:]))
+	gap := append(append(append([]byte{}, plain[:start]...), fakeEnd...), plain[start:]...)
+	put32(gap, l.end+len(fakeEnd)+16, uint32(start+len(fakeEnd)))
+
+	for name, data := range map[string][]byte{
+		"one in the end record's comment":   withComment(fakeEnd),
+		"one in a local header's extra":     extra.Bytes(),
+		"one in a directory entry":          dirComment.Bytes(),
+		"one in a gap before the directory": gap,
+	} {
+		t.Run(name, func(t *testing.T) {
+			refused(t, data, limits, zipcheck.ErrInvalid)
+		})
+	}
 }

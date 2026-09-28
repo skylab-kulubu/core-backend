@@ -142,7 +142,23 @@ func (w *walker) localHeader(e entry, m string) error {
 	if !given(crc, int64(e.crc)) || !given(csize, e.csize) || !given(usize, e.usize) {
 		return disagrees
 	}
-	return w.s.skip(extraLen)
+	extra, err := w.s.next(int(extraLen))
+	if err != nil {
+		return err
+	}
+	return w.outsideData(append(append(h, name...), extra...), m+"'s local header")
+}
+
+// outsideData refuses an end record signature starting in b, bytes of the
+// archive outside any member's data that were just read (one that runs on
+// into what follows included): a reader could take it for the archive's
+// end. Inside a member's data it is that member's content.
+func (w *walker) outsideData(b []byte, what string) error {
+	next, _ := w.s.r.Peek(len(endRecordMark) - 1)
+	if i := bytes.Index(append(b, next...), endRecordMark); i >= 0 && i < len(b) {
+		return invalid("%s holds an end record signature, outside the members' data", what)
+	}
+	return nil
 }
 
 // content streams the member's data, inflated, through its checks: what it
@@ -196,7 +212,7 @@ func (w *walker) descriptor(e entry, m string, next int64) error {
 	if le32(d) != e.crc || int64(le32(d[4:])) != e.csize || int64(le32(d[8:])) != e.usize {
 		return invalid("%s's data descriptor disagrees with the directory", m)
 	}
-	return nil
+	return w.outsideData(d, m+"'s data descriptor")
 }
 
 // sink takes a member's inflated bytes, never more than it declares, and
