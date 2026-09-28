@@ -17,8 +17,8 @@ type Memory struct {
 	groupRoles map[string][]ClientRole
 	userRoles  map[uuid.UUID][]ClientRole
 	catalog    []ClientRole
-	// disabled are the people PutDisabledUser put: Keycloak's
-	// enabled=false. Everyone else is enabled.
+	// disabled are the people DisableUser disabled: Keycloak's
+	// enabled=false. Everyone else is enabled, and PutUser enables again.
 	disabled map[uuid.UUID]struct{}
 	Ops      []string
 }
@@ -48,26 +48,21 @@ func (m *Memory) PutGroup(g Group) {
 
 // PutUser puts an enabled person.
 func (m *Memory) PutUser(p Person) {
-	m.put(p, true)
-}
-
-// PutDisabledUser puts a person Keycloak has disabled.
-func (m *Memory) PutDisabledUser(p Person) {
-	m.put(p, false)
-}
-
-func (m *Memory) put(p Person, enabled bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if p.ID == uuid.Nil {
 		p.ID = uuid.New()
 	}
 	m.people[p.ID] = p
-	if enabled {
-		delete(m.disabled, p.ID)
-	} else {
-		m.disabled[p.ID] = struct{}{}
-	}
+	delete(m.disabled, p.ID)
+}
+
+// answerLocked is p as the directory's reads answer it: enabled unless
+// DisableUser disabled them. The caller holds m.mu.
+func (m *Memory) answerLocked(p Person) Person {
+	_, disabled := m.disabled[p.ID]
+	p.Enabled = !disabled
+	return p
 }
 
 func (m *Memory) record(op string) {
@@ -180,7 +175,7 @@ func (m *Memory) Members(_ context.Context, groupID string) ([]Person, error) {
 	out := make([]Person, 0, len(ids))
 	for id := range ids {
 		if p, ok := m.people[id]; ok {
-			out = append(out, p)
+			out = append(out, m.answerLocked(p))
 		}
 	}
 	return out, nil
@@ -252,7 +247,7 @@ func (m *Memory) ListUsers(_ context.Context) ([]Person, error) {
 	m.record("ListUsers")
 	out := make([]Person, 0, len(m.people))
 	for _, p := range m.people {
-		out = append(out, p)
+		out = append(out, m.answerLocked(p))
 	}
 	return out, nil
 }
@@ -264,7 +259,7 @@ func (m *Memory) SearchUsers(_ context.Context, query string, limit int) ([]Pers
 	out := make([]Person, 0)
 	for _, person := range m.people {
 		if personMatches(person, strings.TrimSpace(query)) {
-			out = append(out, person)
+			out = append(out, m.answerLocked(person))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -303,7 +298,7 @@ func (m *Memory) UsersWithClientRole(_ context.Context, clientID, role string) (
 			return
 		}
 		seen[id] = struct{}{}
-		out = append(out, p)
+		out = append(out, m.answerLocked(p))
 	}
 	for gid, roles := range m.groupRoles {
 		ok := false
@@ -353,9 +348,7 @@ func (m *Memory) GetUser(_ context.Context, id uuid.UUID) (Person, error) {
 	if !ok {
 		return Person{}, ErrNotFound
 	}
-	_, disabled := m.disabled[id]
-	p.Enabled = !disabled
-	return p, nil
+	return m.answerLocked(p), nil
 }
 
 func (m *Memory) DeleteUser(_ context.Context, id uuid.UUID) error {
@@ -380,6 +373,7 @@ func (m *Memory) DisableUser(_ context.Context, id uuid.UUID) error {
 	if _, ok := m.people[id]; !ok {
 		return ErrNotFound
 	}
+	m.disabled[id] = struct{}{}
 	return nil
 }
 

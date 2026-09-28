@@ -29,10 +29,16 @@ var (
 	// active account: unknown to core (for a product's link: and to the
 	// identity directory, or disabled there), or erased or being erased.
 	ErrLinkSubjectInactive = fmt.Errorf("media: the read link names no active account: %w", ErrInvalid)
-	// ErrLinkSubjectUnavailable is a read link for a person core has no row
-	// for, while the identity directory (Keycloak) cannot be asked about
-	// them. Nothing is created; the product retries later.
-	ErrLinkSubjectUnavailable = errors.New("media: the identity directory cannot be asked about the person the read link is for")
+	// ErrLinkSubjectUnavailable is a read link for a subject core has no row
+	// for and cannot make one for right now: the identity directory
+	// (Keycloak) cannot be reached or answers 5xx, or Sky numbers are
+	// contended. No link is issued; the product retries later.
+	ErrLinkSubjectUnavailable = errors.New("media: the read link's subject cannot be ensured right now")
+	// ErrLinkSubjectLookupFailed is a read link for a subject core has no
+	// row for, while the identity directory refuses core's lookup (a
+	// permission core lacks) or answers something that is not a user: a
+	// misconfiguration, which a retry does not mend.
+	ErrLinkSubjectLookupFailed = errors.New("media: the identity directory refused the lookup of the read link's subject")
 	// ErrLinkInvalid is a read link token core did not sign for this Media.
 	ErrLinkInvalid = errors.New("media: the read link is not valid")
 	// ErrLinkExpired is a read link past its five minutes.
@@ -95,17 +101,18 @@ type AccessLog interface {
 	RecordReadLinkOpen(ctx context.Context, open ReadLinkOpen) error
 }
 
-// ReadLinkSubjects ensures the core row of the person a product's read link
-// is for, before the link is recorded.
+// ReadLinkSubjects ensures the core row of a read link's subject, the
+// person a product's read link is for, before the link is recorded.
 type ReadLinkSubjects interface {
-	// EnsureAccount leaves a person core has a row for as they are (the
+	// EnsureSubject leaves a subject core has a row for as they are (the
 	// access log decides whether the row is active), and ensures a row
-	// from the identity directory for a person core has none for. It is
-	// ErrLinkSubjectInactive, creating no row, for a person the directory
+	// from the identity directory for a subject core has none for. It is
+	// ErrLinkSubjectInactive, creating no row, for a subject the directory
 	// does not know or has disabled, or whose account core has blocked
-	// (erased or being erased); ErrLinkSubjectUnavailable, creating no row,
-	// when the directory cannot be asked.
-	EnsureAccount(ctx context.Context, id uuid.UUID) error
+	// (erased or being erased). It is ErrLinkSubjectUnavailable when the
+	// directory cannot be reached or the row cannot be made right now, and
+	// ErrLinkSubjectLookupFailed when the directory refuses the lookup.
+	EnsureSubject(ctx context.Context, id uuid.UUID) error
 }
 
 // IssueReadLink gives a read link to a private Media:
@@ -139,7 +146,7 @@ func (s *service) IssueReadLink(ctx context.Context, p authz.Principal, id uuid.
 			return ReadLink{}, err
 		}
 		if s.private.Subjects != nil {
-			if err := s.private.Subjects.EnsureAccount(ctx, person); err != nil {
+			if err := s.private.Subjects.EnsureSubject(ctx, person); err != nil {
 				return ReadLink{}, err
 			}
 		}

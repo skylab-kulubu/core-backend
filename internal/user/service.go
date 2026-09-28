@@ -134,7 +134,7 @@ func (s *service) assignSky(ctx context.Context, first User, created bool) (User
 			return User{}, false, err
 		}
 	}
-	return User{}, false, ErrConflict
+	return User{}, false, ErrSkyNumberContended
 }
 
 func (s *service) Replace(ctx context.Context, id uuid.UUID, in ProfileUpdate) (User, error) {

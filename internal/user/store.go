@@ -3,6 +3,7 @@ package user
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +22,10 @@ var (
 	// faculty or department of a YTÜ-linked person: those follow the YTÜ
 	// Microsoft login, which would overwrite the edit anyway.
 	ErrYTUManaged = errors.New("user profile field follows the YTÜ login")
+	// ErrSkyNumberContended is Ensure giving up on assigning a Sky number
+	// while other people took every one it tried: contention that passes.
+	// It is an ErrConflict.
+	ErrSkyNumberContended = fmt.Errorf("%w: every Sky number tried was taken meanwhile", ErrConflict)
 )
 
 type Store interface {

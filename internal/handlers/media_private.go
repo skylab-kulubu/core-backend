@@ -173,13 +173,18 @@ func privateProblem(c fiber.Ctx, err error, logf func(string, ...any)) (handled 
 			"Read links are for the owning product's service account with the media:attach role on the core client, and for privileged admins (core's own Media).", "media_link_forbidden")
 	case errors.Is(err, media.ErrLinkSubjectInactive):
 		return true, problemDetailCode(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
-			"A read link is only issued for an active account: onBehalfOf is unknown to core and Keycloak, disabled in Keycloak, or erased or being erased.", "media_link_subject_inactive")
+			"A read link is only issued for an active account: onBehalfOf is erased or being erased, or has no core row and is unknown to or disabled in Keycloak.", "media_link_subject_inactive")
 	case errors.Is(err, media.ErrLinkSubjectUnavailable):
+		// The error names Keycloak's status, never the person.
 		logf("private media: %s %s: %v", c.Method(), c.Path(), err)
 		c.Set(fiber.HeaderRetryAfter, "30")
 		c.Set(fiber.HeaderCacheControl, "no-store")
 		return true, problemDetailCode(c, fiber.StatusServiceUnavailable, "Service Unavailable",
-			"Keycloak cannot be reached to check onBehalfOf, whom core does not know yet; retry later.", "media_link_subject_unavailable")
+			"Core cannot set up the account of onBehalfOf, whom it does not know yet, right now; retry later.", "media_link_subject_unavailable")
+	case errors.Is(err, media.ErrLinkSubjectLookupFailed):
+		logf("private media: %s %s: %v", c.Method(), c.Path(), err)
+		return true, problemDetailCode(c, fiber.StatusInternalServerError, "Internal Server Error",
+			"Keycloak refused core's lookup of onBehalfOf, whom core does not know yet; this needs an operator, not a retry.", "media_link_subject_lookup_failed")
 	case errors.Is(err, media.ErrLinkExpired):
 		return true, problemDetailCode(c, fiber.StatusForbidden, "Forbidden",
 			"The read link has expired; ask the product for a new one.", "media_link_expired")
