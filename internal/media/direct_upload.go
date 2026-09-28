@@ -19,8 +19,11 @@ import (
 // the browser straight to storage as an S3 multipart upload under
 // pending/<id>, through part addresses core presigns; core then checks the
 // parts, the size and the file's first bytes, copies it to its final key
-// with the metadata the serving policy writes, and creates the Media. See
-// "Direct upload" in docs/media-lifecycle.md.
+// with the metadata the serving policy writes, and creates the Media. A
+// file whose purpose needs a malware scan is copied instead to a key under
+// pending/scan/ only core knows, as an opaque download, and its Media waits
+// scanning: the scan worker copies it to its served key once clean
+// (ticket 12). See "Direct upload" in docs/media-lifecycle.md.
 
 const (
 	// DirectUploadTTL is how long a Direct upload may take from its start
@@ -364,8 +367,12 @@ func (s *service) CompleteDirectUpload(ctx context.Context, p authz.Principal, i
 	// same upload meanwhile is told to retry (ErrDirectUploadCompleting),
 	// and the account erasure defers.
 	now := s.directNow()
+	finalKey, err := s.directFinalKey(ctx, store, id)
+	if err != nil {
+		return Media{}, err
+	}
 	dbCtx, cancel := context.WithTimeout(ctx, directDatabaseTimeout)
-	claim, err := store.ClaimDirectUpload(dbCtx, id, uploader, "files/"+uuid.NewString(), now, now.Add(DirectUploadClaimLease))
+	claim, err := store.ClaimDirectUpload(dbCtx, id, uploader, finalKey, now, now.Add(DirectUploadClaimLease))
 	cancel()
 	if errors.Is(err, ErrNotFound) {
 		// Completed already (its answer was lost, or this is a retry told
@@ -385,6 +392,27 @@ func (s *service) CompleteDirectUpload(ctx context.Context, p authz.Principal, i
 	return c.run(work, p, sent)
 }
 
+// directFinalKey is the key a completion copies the upload's file to: its
+// served key under files/, or, when its purpose needs a malware scan, a key
+// under pending/scan/ where it waits unserved until the scan finds it clean
+// (scanHoldKey). An upload that is not there gets a served key: the claim
+// finds it gone.
+func (s *service) directFinalKey(ctx context.Context, store DirectUploadStore, id uuid.UUID) (string, error) {
+	dbCtx, cancel := context.WithTimeout(ctx, directDatabaseTimeout)
+	rec, err := store.GetDirectUpload(dbCtx, id)
+	cancel()
+	if errors.Is(err, ErrNotFound) {
+		return "files/" + uuid.NewString(), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if purpose, ok := s.addresses.Catalogue.Lookup(rec.Purpose); ok && purpose.Scan {
+		return scanHoldKey(), nil
+	}
+	return "files/" + uuid.NewString(), nil
+}
+
 // directCompletion is one completion of a claimed upload, step by step.
 type directCompletion struct {
 	*service
@@ -398,6 +426,12 @@ func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []Upl
 	purpose, types, err := c.rules(p)
 	if err != nil {
 		return Media{}, c.stop(ctx, err, notCopied, true)
+	}
+	held := isScanHoldKey(c.claim.FinalKey)
+	if held != purpose.Scan {
+		// The key was picked by the purpose before the claim, from the same
+		// catalogue: an unscanned file must never reach a served key.
+		return Media{}, c.release(ctx, errors.New("media: a Direct upload's final key does not follow its purpose's malware scan"))
 	}
 	if err := c.joinParts(ctx, sent); err != nil {
 		var sizeRefusal *DirectUploadRefusal
@@ -420,8 +454,13 @@ func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []Upl
 		refused := errors.As(err, &refusal) || errors.As(err, &sizeRefusal)
 		return Media{}, c.stop(ctx, err, notCopied, refused)
 	}
+	meta := ServingMetadata(detected, c.rec.Name)
+	if held {
+		// Not served before its scan: an opaque download without a name.
+		meta = scanHoldMetadata
+	}
 	copyCtx, cancel := context.WithTimeout(ctx, directCopyTimeout)
-	err = c.storage.Copy(copyCtx, c.rec.Key, c.claim.FinalKey, ServingMetadata(detected, c.rec.Name))
+	err = c.storage.Copy(copyCtx, c.rec.Key, c.claim.FinalKey, meta)
 	cancel()
 	if err != nil {
 		// R2 may still finish a copy core gave up on.
@@ -436,6 +475,7 @@ func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []Upl
 		UploadedBy:           c.rec.UploaderID,
 		Kind:                 KindFile,
 		Purpose:              purpose.Name,
+		Status:               initialStatus(purpose),
 		Visibility:           VisibilityPublic,
 		ExpiresAt:            pendingExpiry(purpose, now),
 		CoverColors:          []string{},
@@ -460,6 +500,7 @@ func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []Upl
 	}
 	c.direct.Limiter.settle(c.rec.ID)
 	c.deletePending(ctx)
+	c.scanStored(created)
 	return c.withURL(created), nil
 }
 

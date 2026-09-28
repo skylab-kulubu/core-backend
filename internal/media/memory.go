@@ -421,6 +421,21 @@ func (s *MemoryBlob) Read(_ context.Context, key string) ([]byte, error) {
 	return append([]byte{}, data...), nil
 }
 
+// Copy copies the object at from to the key to, stored with meta, as R2's
+// CopyObject with the REPLACE directive does; ErrNotFound when there is
+// none.
+func (s *MemoryBlob) Copy(_ context.Context, from, to string, meta BlobMetadata) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, ok := s.objects[from]
+	if !ok {
+		return ErrNotFound
+	}
+	s.objects[to] = append([]byte{}, data...)
+	s.metadata[to] = meta
+	return nil
+}
+
 // Open streams a stored object.
 func (s *MemoryBlob) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	data, err := s.Read(ctx, key)

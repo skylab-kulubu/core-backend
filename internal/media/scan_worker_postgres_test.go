@@ -14,6 +14,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/clamd/clamdtest"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 // scanDatabase is privateDatabase with the reviewed catalogue, so an Answer
@@ -33,7 +34,7 @@ func newScanDatabase(t *testing.T) *scanDatabase {
 	fake := clamdtest.New(t)
 	d := &scanDatabase{clamd: fake, client: clamd.New(fake.Addr()), now: time.Now().UTC()}
 	d.worker = media.NewScanWorker(media.ScanWorkerConfig{
-		Store: pd.store, Scanner: d.client,
+		Store: pd.store, Scanner: d.client, Public: pd.blobs,
 		Private: media.NewPrivateStorage(pd.private, transit.New(pd.bao.Config())),
 		Now:     func() time.Time { return d.now },
 	})
@@ -418,5 +419,84 @@ func TestPostgresAnAnswerFileOpensOnlyOnceClean(t *testing.T) {
 	if _, err := d.svc.OpenContent(ctx, created.ID, tokenOf(t, link), "203.0.113.9"); !errors.Is(err, media.ErrMediaRejected) ||
 		!errors.As(err, &refusal) || refusal.Result != media.ScanInfected {
 		t.Fatalf("content of a rejected Media: err = %v", err)
+	}
+}
+
+// heldClubFile stores a club file as a Direct upload's completion leaves
+// one that needs its scan: held under pending/scan/ as an opaque download,
+// waiting scanning.
+func (d *scanDatabase) heldClubFile(t *testing.T, name string, data []byte) media.Media {
+	t.Helper()
+	ctx := context.Background()
+	key := "pending/scan/" + uuid.NewString()
+	if err := d.blobs.Put(ctx, key, data, media.BlobMetadata{ContentType: "application/octet-stream", ContentDisposition: "attachment"}); err != nil {
+		t.Fatal(err)
+	}
+	expires := time.Now().Add(24 * time.Hour)
+	created, err := d.store.Create(ctx, media.Media{
+		Name: name, Type: "application/pdf", Key: key, Size: int64(len(data)), UploadedBy: d.uploader(), Kind: media.KindFile,
+		Purpose: media.PurposeClubFile, Status: media.StatusScanning, Visibility: media.VisibilityPublic, ExpiresAt: &expires,
+		CoverColors: []string{}, ServingPolicyApplied: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return created
+}
+
+// Account erasure takes the person's uploads whatever their scan state
+// (#133's rule, unchanged): an Answer file waiting for its scan is purged
+// at once; a club file waiting for it keeps its file, without the person's
+// name, and stays held unserved until the scan finds it clean (the
+// erasure's metadata rewrite only ever makes a nameless download, which a
+// held file already is); a rejected one has nothing left to erase.
+func TestPostgresAccountErasureTakesUploadsWhateverTheirScan(t *testing.T) {
+	d := newScanDatabase(t)
+	ctx := context.Background()
+	rejected := d.answer(t, infectedPDF())
+	d.pass(t)
+	answer := d.answer(t, pdfFile())
+	club := d.heldClubFile(t, "Ada_Organizer_dataset.pdf", pdfFile())
+
+	users := user.NewPostgresStore(d.pool)
+	if _, err := users.RequestDeletion(ctx, d.uploader(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := users.AnonymizeAccount(ctx, d.uploader(), time.Now().UTC(), nil); err != nil {
+		t.Fatal(err)
+	}
+	eraser := media.NewImmediateBlobEraser(d.store, media.Buckets{Public: d.blobs, Private: media.NewPrivateStorage(d.private, transit.New(d.bao.Config()))})
+	for _, item := range []media.Media{rejected, answer, club} {
+		if err := eraser.EnsureErased(ctx, item.ID, time.Now().UTC()); err != nil {
+			t.Fatalf("erase %s: %v", item.Purpose, err)
+		}
+	}
+	var left int
+	if err := d.pool.QueryRow(ctx, `SELECT count(*) FROM account_deletion_media`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("%d uploads left to erase, err %v", left, err)
+	}
+
+	if got := d.get(t, answer.ID); got.BlobPurgedAt == nil {
+		t.Fatalf("the scanning Answer file was kept: %s", got.Status)
+	}
+	if _, ok := d.private.Get(answer.Key); ok {
+		t.Fatal("the scanning Answer file's object is still stored")
+	}
+	kept := d.get(t, club.ID)
+	if kept.Status != media.StatusScanning || kept.BlobPurgedAt != nil || kept.Name != "" || kept.UploadedBy != uuid.Nil {
+		t.Fatalf("club file %s, purged %v, name %q, uploader %v", kept.Status, kept.BlobPurgedAt, kept.Name, kept.UploadedBy)
+	}
+	if meta, _ := d.blobs.Metadata(club.Key); meta.ContentType != "application/octet-stream" || meta.ContentDisposition != "attachment" {
+		t.Fatalf("the held club file is stored as %+v, want it opaque until clean", meta)
+	}
+
+	if report := d.pass(t); report.Clean != 1 {
+		t.Fatalf("report %+v", report)
+	}
+	served := d.get(t, club.ID)
+	meta, ok := d.blobs.Metadata(served.Key)
+	if served.Status != media.StatusPending || served.Key != "files/"+club.ID.String() || !ok || meta.ContentType != "application/pdf" ||
+		strings.Contains(meta.ContentDisposition, "Ada_Organizer") {
+		t.Fatalf("clean club file %s at %s stored as %+v", served.Status, served.Key, meta)
 	}
 }
