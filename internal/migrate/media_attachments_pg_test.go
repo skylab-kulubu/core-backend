@@ -33,6 +33,7 @@ func TestMediaAttachmentsAttachMediaLinkedBeforeThem(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	undoEventFiles(t, pool)
 	down, err := fs.ReadFile(db.DownSQL, "migrations/"+mediaAttachmentsVersion+"_media_attachments.down.sql")
 	if err != nil {
 		t.Fatal(err)

@@ -162,9 +162,9 @@ type LegacyReport struct {
 	// upload first. Skyforms answers and CMS content use Media by address,
 	// which core cannot see: an orphan may still be used there.
 	Orphans []Media
-	// CoreLinksWithoutAttachment counts core's own links (an Event cover or
-	// gallery photo, a profile picture, a certificate template asset) whose
-	// Media attachment is missing. While it is not zero, the purge and this
+	// CoreLinksWithoutAttachment counts core's own links (an Event cover,
+	// gallery photo, file or video, a profile picture, a certificate
+	// template asset) whose Media attachment is missing. While it is not zero, the purge and this
 	// report keep reading core's links directly beside the Media
 	// attachments.
 	CoreLinksWithoutAttachment int

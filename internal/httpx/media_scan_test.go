@@ -88,8 +88,8 @@ func TestReadLinkWaitsForTheMalwareScanHTTP(t *testing.T) {
 }
 
 // scannedDirectApp is e's core with club_file needing its malware scan (as
-// the reviewed catalogue has it) and attached by core, and a scan worker
-// over the same database and storage with a fake clamd.
+// the reviewed catalogue has it), and a scan worker over the same database
+// and storage with a fake clamd.
 func scannedDirectApp(t *testing.T, e *directEnv) (*fiber.App, *media.ScanWorker, *clamdtest.Server) {
 	t.Helper()
 	fake := clamdtest.New(t)
@@ -102,7 +102,7 @@ func scannedDirectApp(t *testing.T, e *directEnv) (*fiber.App, *media.ScanWorker
 		media.ServiceOptions{
 			Catalogue:       catalogueWith(t, "club_file", func(entry map[string]any) { entry["scan"] = true }),
 			ServiceProducts: deps.ServiceClients.Products(),
-			Direct:          media.DirectUploadConfig{Storage: e.r2, Limiter: e.limiter, Now: e.clock.Now},
+			Direct:          media.DirectUploadConfig{Storage: e.r2, Limiter: e.limiter, Now: e.clock.Now, Purposes: openDirectPurposes},
 			Scans:           worker,
 		})
 	return httpx.New(deps), worker, fake

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 type MemoryStore struct {
@@ -15,6 +16,27 @@ type MemoryStore struct {
 	byID     map[uuid.UUID]Event
 	days     map[uuid.UUID]Day
 	sessions map[uuid.UUID]Session
+	// media is where an Event's files and videos are read from; nil keeps
+	// each item its id alone.
+	media MediaReader
+}
+
+// MediaReader reads the Media an Event's files and videos link: the Media
+// store.
+type MediaReader interface {
+	GetIncludingDeleted(ctx context.Context, id uuid.UUID) (media.Media, error)
+}
+
+// ReadMediaFrom makes the store answer its Events' files and videos from the
+// Media r holds, as the database joins them: an archived one left out, an
+// address only for one that can be served (media.Media.Servable), and
+// counts of those alone. Without it an item is its id alone, which only the
+// Event's editors see and nothing counts.
+func (s *MemoryStore) ReadMediaFrom(r MediaReader) *MemoryStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.media = r
+	return s
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -47,7 +69,50 @@ func (s *MemoryStore) list(ownerTeam string, activeOnly bool, visibility lifecyc
 		if activeOnly && !e.Active {
 			continue
 		}
-		out = append(out, emptyGallery(e))
+		out = append(out, s.listed(e))
+	}
+	return out
+}
+
+// listed is the Event as a list answers it: its files and videos counted,
+// not listed.
+func (s *MemoryStore) listed(e Event) Event {
+	e = s.detailed(e)
+	e.Files, e.Videos = nil, nil
+	return e
+}
+
+// detailed is the Event as its detail answers it: its files and videos
+// listed as the database reads them (empty lists, never nil), and counted.
+func (s *MemoryStore) detailed(e Event) Event {
+	e = emptyGallery(e)
+	e.Files, e.Videos = s.shown(e.Files), s.shown(e.Videos)
+	e.FileCount, e.VideoCount = len(servableItems(e.Files)), len(servableItems(e.Videos))
+	return e
+}
+
+// shown are the stored items (ids in their order) as they are shown: each
+// with its Media, an address only when it can be served, a scan result only
+// when rejected; an item whose Media is archived is left out.
+func (s *MemoryStore) shown(stored []MediaItem) []MediaItem {
+	out := make([]MediaItem, 0, len(stored))
+	for _, item := range stored {
+		if s.media == nil {
+			out = append(out, MediaItem{ID: item.ID})
+			continue
+		}
+		m, err := s.media.GetIncludingDeleted(context.Background(), item.ID)
+		if err != nil || m.DeletedAt != nil {
+			continue
+		}
+		shown := MediaItem{ID: m.ID, Name: m.Name, Type: m.Type, Size: m.Size, Status: m.Status}
+		if m.Servable() {
+			shown.URL = m.Key
+		}
+		if m.Status == media.StatusRejected {
+			shown.ScanResult = m.ScanResult
+		}
+		out = append(out, shown)
 	}
 	return out
 }
@@ -59,7 +124,7 @@ func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (Event, error) {
 	if !ok || e.ArchivedAt != nil {
 		return Event{}, ErrNotFound
 	}
-	return emptyGallery(e), nil
+	return s.detailed(e), nil
 }
 
 func (s *MemoryStore) GetIncludingArchived(_ context.Context, id uuid.UUID) (Event, error) {
@@ -69,7 +134,7 @@ func (s *MemoryStore) GetIncludingArchived(_ context.Context, id uuid.UUID) (Eve
 	if !ok {
 		return Event{}, ErrNotFound
 	}
-	return emptyGallery(e), nil
+	return s.detailed(e), nil
 }
 
 func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
@@ -86,7 +151,7 @@ func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
 	e.UpdatedAt = now
 	e = emptyGallery(e)
 	s.byID[e.ID] = e
-	return e, nil
+	return s.detailed(e), nil
 }
 
 func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
@@ -100,12 +165,13 @@ func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
 	e.UpdatedAt = time.Now().UTC()
 	e.Images = existing.Images
 	e.ImageURLs = existing.ImageURLs
+	e.Files, e.Videos = existing.Files, existing.Videos
 	if e.MailListID == nil {
 		e.MailListID = existing.MailListID
 	}
 	e = emptyGallery(e)
 	s.byID[e.ID] = e
-	return e, nil
+	return s.detailed(e), nil
 }
 
 func (s *MemoryStore) Archive(_ context.Context, id uuid.UUID, actorID *uuid.UUID) error {
@@ -165,7 +231,7 @@ func (s *MemoryStore) AddImages(_ context.Context, eventID uuid.UUID, ids []uuid
 	e.ImageURLs = urlsOf(e.Images)
 	e.UpdatedAt = time.Now().UTC()
 	s.byID[eventID] = e
-	return emptyGallery(e), nil
+	return s.detailed(e), nil
 }
 
 func (s *MemoryStore) RemoveImages(_ context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error) {
@@ -199,7 +265,99 @@ func (s *MemoryStore) RemoveImages(_ context.Context, eventID uuid.UUID, ids []u
 	e.ImageURLs = urlsOf(e.Images)
 	e.UpdatedAt = time.Now().UTC()
 	s.byID[eventID] = e
-	return emptyGallery(e), nil
+	return s.detailed(e), nil
+}
+
+func (s *MemoryStore) ListFiles(_ context.Context, eventID uuid.UUID) ([]MediaItem, []MediaItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[eventID]
+	if !ok {
+		return nil, nil, ErrNotFound
+	}
+	e = s.detailed(e)
+	return e.Files, e.Videos, nil
+}
+
+// AddFiles appends the Media to the Event's list. The memory store keeps no
+// Media: an item is only its id, attached.
+func (s *MemoryStore) AddFiles(_ context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error) {
+	if !list.known() {
+		return Event{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[eventID]
+	if !ok || e.ArchivedAt != nil {
+		return Event{}, ErrNotFound
+	}
+	items := e.list(list)
+	for _, id := range ids {
+		if id == uuid.Nil || slices.ContainsFunc(items, func(item MediaItem) bool { return item.ID == id }) {
+			continue
+		}
+		items = append(items, MediaItem{ID: id})
+	}
+	e = e.withList(list, items)
+	s.byID[eventID] = e
+	return s.detailed(e), nil
+}
+
+func (s *MemoryStore) RemoveFiles(_ context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error) {
+	if !list.known() {
+		return Event{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[eventID]
+	if !ok || e.ArchivedAt != nil {
+		return Event{}, ErrNotFound
+	}
+	items := e.list(list)
+	for _, id := range ids {
+		if !slices.ContainsFunc(items, func(item MediaItem) bool { return item.ID == id }) {
+			return Event{}, ErrNotFound
+		}
+	}
+	kept := make([]MediaItem, 0, len(items))
+	for _, item := range items {
+		if !slices.Contains(ids, item.ID) {
+			kept = append(kept, item)
+		}
+	}
+	e = e.withList(list, kept)
+	s.byID[eventID] = e
+	return s.detailed(e), nil
+}
+
+func (s *MemoryStore) OrderFiles(_ context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error) {
+	if !list.known() || len(distinctIDs(ids)) != len(ids) {
+		return Event{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[eventID]
+	if !ok || e.ArchivedAt != nil {
+		return Event{}, ErrNotFound
+	}
+	// The list as it is shown: an item whose Media is archived is not in
+	// it, and keeps its place after the others.
+	stored, shown := e.list(list), s.shown(e.list(list))
+	if len(shown) != len(ids) || slices.ContainsFunc(shown, func(item MediaItem) bool { return !slices.Contains(ids, item.ID) }) {
+		return Event{}, ErrConflict
+	}
+	ordered := make([]MediaItem, 0, len(stored))
+	for _, id := range ids {
+		ordered = append(ordered, MediaItem{ID: id})
+	}
+	for _, item := range stored {
+		if !slices.Contains(ids, item.ID) {
+			ordered = append(ordered, item)
+		}
+	}
+	e = e.withList(list, ordered)
+	s.byID[eventID] = e
+	return s.detailed(e), nil
 }
 
 func (s *MemoryStore) TeamsUsingMedia(_ context.Context, mediaID, except uuid.UUID) ([]string, error) {
@@ -213,6 +371,9 @@ func (s *MemoryStore) TeamsUsingMedia(_ context.Context, mediaID, except uuid.UU
 		uses := e.CoverImageID != nil && *e.CoverImageID == mediaID
 		for _, im := range e.Images {
 			uses = uses || im.ID == mediaID
+		}
+		for _, item := range slices.Concat(e.Files, e.Videos) {
+			uses = uses || item.ID == mediaID
 		}
 		if uses {
 			teams = append(teams, e.OwnerTeam)
@@ -342,7 +503,7 @@ func (s *MemoryStore) ListBySeason(_ context.Context, seasonID uuid.UUID) ([]Eve
 	out := make([]Event, 0)
 	for _, e := range s.byID {
 		if e.ArchivedAt == nil && e.SeasonID != nil && *e.SeasonID == seasonID {
-			out = append(out, emptyGallery(e))
+			out = append(out, s.listed(e))
 		}
 	}
 	return out, nil
@@ -358,7 +519,7 @@ func (s *MemoryStore) SetSeason(_ context.Context, eventID uuid.UUID, seasonID *
 	e.SeasonID = seasonID
 	e.UpdatedAt = time.Now().UTC()
 	s.byID[eventID] = e
-	return emptyGallery(e), nil
+	return s.detailed(e), nil
 }
 
 func (s *MemoryStore) SetMailListID(_ context.Context, eventID, listID uuid.UUID) (Event, error) {
@@ -372,7 +533,7 @@ func (s *MemoryStore) SetMailListID(_ context.Context, eventID, listID uuid.UUID
 	e.MailListID = &id
 	e.UpdatedAt = time.Now().UTC()
 	s.byID[eventID] = e
-	return emptyGallery(e), nil
+	return s.detailed(e), nil
 }
 
 func (s *MemoryStore) GetSession(_ context.Context, id uuid.UUID) (Session, error) {

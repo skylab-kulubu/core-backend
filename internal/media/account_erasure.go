@@ -275,7 +275,7 @@ func (e *ImmediateBlobEraser) keepClub(ctx context.Context, id uuid.UUID) error 
 		return err
 	}
 	if err == nil && item.Visibility == VisibilityPublic && item.BlobPurgedAt == nil {
-		if meta := ServingMetadata(item.Type, ""); meta.ContentDisposition != "" {
+		if meta := ServingMetadataFor(item.Purpose, item.Type, ""); meta.ContentDisposition != "" {
 			if err := e.blobs.SetMetadata(ctx, item.Key, meta); err != nil && !errors.Is(err, ErrNotFound) {
 				return fmt.Errorf("%w: %w", ErrRecordedMediaNotErased, errObjectStorage{request: "metadata rewrite", cause: err})
 			}
