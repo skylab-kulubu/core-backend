@@ -111,9 +111,12 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 				WHEN excluded.school_email <> '' THEN excluded.school_email
 				ELSE users.school_email
 			END,
+			-- A stored Sky number is never replaced: of two concurrent first
+			-- requests that both assigned one, the first stored stays, and
+			-- RETURNING gives it to the second to write back to Keycloak.
 			sky_number = CASE
-				WHEN excluded.sky_number <> '' THEN excluded.sky_number
-				ELSE users.sky_number
+				WHEN users.sky_number <> '' THEN users.sky_number
+				ELSE excluded.sky_number
 			END,
 			updated_at = now()
 		WHERE users.account_state = 'active'

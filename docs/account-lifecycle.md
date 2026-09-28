@@ -8,7 +8,7 @@ User removal is an irreversible lifecycle command, not a synchronous row delete.
 - `deletion_pending`: new and previously issued JWTs cannot repopulate or update the Core user.
 - `anonymized`: only the non-PII tombstone and durable deletion marker remain.
 
-The JIT upsert checks both `users.account_state` and `account_deletion_requests`. The latter remains after an internal hard purge, so a subject from an old valid JWT cannot recreate its user row.
+The JIT upsert checks both `users.account_state` and `account_deletion_requests`. The latter remains after an internal hard purge, so a subject from an old valid JWT cannot recreate its user row. A product's private Media read link for a person with no row ensures the row through the same upsert, only for a person Keycloak knows and has enabled, and, as their first sign-in would, writes their Sky number to Keycloak ([media-lifecycle.md](media-lifecycle.md#read-links)).
 
 Public short-link attribution requires a current active Core identity and performs the deletion-marker check inside the hit transaction. It shares a transaction-scoped subject lock with deletion-request creation, so an in-flight redirect either commits before deletion and is scrubbed by anonymization, or observes the marker and records an anonymous hit. Valid JWT subjects that have no active Core row are also recorded anonymously.
 
