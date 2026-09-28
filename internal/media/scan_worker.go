@@ -396,9 +396,10 @@ func (w *ScanWorker) scan(ctx context.Context, m Media) (clamd.Result, error) {
 }
 
 // checkContent refuses a file clamd could not scan whole (zipcheck, media
-// redesign ticket 23): clamd skips, without a report, an archive member that
-// inflates past its MaxFileSize, in a ZIP and in an archive it finds inside
-// another file (an Office document, a ZIP appended to a PDF or an image).
+// redesign ticket 23): clamd reads an archive member that inflates past its
+// MaxFileSize only up to MaxFileSize, without a report, in a ZIP and in an
+// archive it finds inside another file (an Office document, a ZIP appended
+// to a PDF or an image).
 // So every file is read once before clamd, whatever its type says: a file
 // whose content is a ZIP is checked whole, any other is searched for
 // archives past its first byte. It runs under the scan's claim, holding no

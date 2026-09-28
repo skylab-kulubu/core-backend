@@ -1,9 +1,10 @@
 // Package zipcheck decides, before core streams a file to clamd, whether
 // clamd would scan all of it (media redesign ticket 23). Checked against a
-// real clamd 1.5.4, clamd skips without a report an archive member that
-// inflates past its MaxFileSize, going by what the member really inflates
-// to, not by the sizes its headers declare. It also skips a ZIP member with
-// ZIP64 sizes or a compression method it does not know, and it unpacks
+// real clamd 1.5.4, clamd reads an archive member that inflates past its
+// MaxFileSize only up to MaxFileSize, without a report: the rest goes
+// unscanned. It goes by what the member really inflates to, not by the
+// sizes its headers declare. It does not read a ZIP member with ZIP64 sizes
+// or a compression method it does not know at all, and it unpacks
 // archives it finds inside files (an Office package, a ZIP appended to a
 // program, a PDF or an image) with the same limits. So a file passes only
 // when everything clamd would unpack from it is within clamd's limits

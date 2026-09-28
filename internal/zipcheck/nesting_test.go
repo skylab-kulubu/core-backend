@@ -25,7 +25,7 @@ func TestCheckTellsArchivesByContentNotByName(t *testing.T) {
 
 // A ZIP inside the ZIP, an Office package among them, is checked the same
 // way, and so is one inside that, down to min(MaxRecursion-2, 3) archives
-// deep: clamd skips inside it what it skips at the top (checked). Its
+// deep: clamd holds what is inside it to the same limits (checked). Its
 // members count toward the same limits. Deeper nesting, or any while
 // MaxRecursion is too low for clamd to reach its members, is refused as
 // nested: unpack it and upload again.
@@ -177,7 +177,8 @@ func TestCheckOpensGzipBzip2AndTar(t *testing.T) {
 
 // An archive of a format clamd opens but core does not (7-Zip, RAR, xz,
 // cab, cpio, ARJ, LHA, ISO 9660, XAR, EGG, ALZip), told by its first bytes,
-// is refused as nested: core cannot see what clamd would skip inside it.
+// is refused as nested: core cannot see what clamd would leave unread inside
+// it.
 func TestCheckRefusesArchivesCoreCannotOpen(t *testing.T) {
 	t.Parallel()
 	iso := text(40000)

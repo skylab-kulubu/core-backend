@@ -7,7 +7,7 @@ import (
 
 var (
 	// ErrTooLarge refuses a ZIP that holds more than clamd scans whole:
-	// clamd would skip part of it without a report.
+	// clamd would leave part of it unscanned without a report.
 	ErrTooLarge = errors.New("zipcheck: the ZIP holds more than clamd scans whole")
 	// ErrInvalid refuses a ZIP that is malformed, or whose members clamd
 	// cannot read.

@@ -7,9 +7,9 @@ import (
 )
 
 // clamd unpacks a ZIP it finds past the first byte of a file (a
-// self-extracting program, an archive appended to an image), and skips
-// there what it skips anywhere (checked: the ZIP after a stub is unpacked,
-// and its member past MaxFileSize goes unscanned). So a member holding a ZIP
+// self-extracting program, an archive appended to an image), with the same
+// limits (checked: the ZIP after a stub is unpacked, and its member past
+// MaxFileSize is read only up to it). So a member holding a ZIP
 // past its first byte has that ZIP checked as a nested one: from the member
 // in the file when the member is stored, from memory otherwise. Its offsets
 // may count from the ZIP or, as zip -A leaves a self-extractor, from the

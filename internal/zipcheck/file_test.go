@@ -40,7 +40,7 @@ func checkFile(t *testing.T, data []byte, l zipcheck.Limits) error {
 
 // Every scanned file is read once before clamd, whatever it is: clamd
 // unpacks an archive it finds past the first byte of a PDF or an image too
-// (checked: a ZIP appended to a PDF), and skips there what it skips in a ZIP.
+// (checked: a ZIP appended to a PDF), with the limits it holds a ZIP to.
 // So a ZIP appended to a file is checked as a nested one, ending the file,
 // its offsets counted from the ZIP or from the file's first byte; one past
 // clamd's limits is refused as too large, and one that does not end the

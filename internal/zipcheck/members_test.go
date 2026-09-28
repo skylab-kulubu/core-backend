@@ -52,8 +52,8 @@ func TestCheckRefusesMembersClamdCannotRead(t *testing.T) {
 }
 
 // clamd goes by what a member really inflates to: a member whose headers
-// both say 100 bytes but that inflates past MaxFileSize was skipped
-// unscanned by clamd 1.5.4. Every member is inflated, never kept, and one
+// both say 100 bytes but that inflates past MaxFileSize was read only up to
+// MaxFileSize by clamd 1.5.4, without a report. Every member is inflated, never kept, and one
 // that inflates to more or less than it declares, whose checksum differs,
 // whose local header or data descriptor disagrees with the directory, or
 // that carries bytes after its deflate stream is refused as invalid.

@@ -83,7 +83,7 @@ func TestCheckRefusesAGarbageOrTruncatedFile(t *testing.T) {
 }
 
 // A member that inflates past MaxFileSize is refused as too large: clamd
-// would skip it without a report. So is one whose header only says so (a
+// would read it only up to MaxFileSize, without a report. So is one whose header only says so (a
 // stored member with a lying header), and the directory tells it before any
 // member is read.
 func TestCheckRefusesAMemberOverMaxFileSize(t *testing.T) {

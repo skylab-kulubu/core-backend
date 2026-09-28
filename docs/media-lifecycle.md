@@ -2005,18 +2005,28 @@ scanned then.
 ### The ZIP check
 
 Media redesign ticket 23. Checked against a real clamd 1.5.4 (the fixtures
-are in `internal/zipcheck/clamav_integration_test.go`):
+are in `internal/zipcheck/clamav_integration_test.go`; they load a test
+signature that matches a marker anywhere, so that a marker clamd misses is
+one it did not read):
 
-- clamd skips, without a report, an archive member that inflates past its
-  `MaxFileSize`, and it goes by what the member really inflates to, not by
-  the sizes its headers declare. A stored member that large is reported.
-- It skips a ZIP member with ZIP64 sizes, and one compressed with a method it
-  does not know.
+- clamd reads an archive member that inflates past its `MaxFileSize` only up
+  to `MaxFileSize`, without a report ("trimming output size to
+  maxfilesize" in its debug log): the rest goes unscanned. It goes by what
+  the member really inflates to, not by the sizes its headers declare. A
+  stored member that large is reported.
+- It does not read a ZIP member with ZIP64 sizes, nor one compressed with a
+  method it does not know.
 - It unpacks archives it finds inside other files: an Office document is a
   ZIP, and a ZIP appended to a program, an image or a PDF is unpacked from
   past the file's first byte, with the same limits and the same silent
-  skip.
-- A gzip or tar member past `MaxFileSize` is reported, not skipped.
+  truncation.
+- It unpacks a lone local header wherever it finds one, with no directory
+  listing it: hidden in a ZIP's end record comment or a member's extra
+  field, in a ZIP and in a ZIP appended to a PDF. It goes by the signature
+  alone: a header of version 25.5, with no name or one of 2000 bytes, or
+  with a reserved flag, is unpacked too.
+- A gzip or tar member past `MaxFileSize` is reported, not truncated
+  silently.
 
 So **every scanned file** is read once before clamd streams it, and not
 streamed to clamd until core has checked that clamd would scan all of it
@@ -2076,6 +2086,10 @@ signature):
   - ZIP64 sizes (only needed past 4 GiB);
   - a name that is empty, longer than 1024 bytes, or holds a NUL;
   - a local header or data descriptor that disagrees with the directory;
+  - a local header signature outside the members' data (in a local
+    header's name or extra field, a data descriptor, the directory, the end
+    record's comment): the ZIP's own local headers are the only ones, and
+    clamd would unpack a hidden one no directory lists;
   - a member that inflates to other bytes than it declares (size or
     checksum), or has bytes after its deflate stream;
   - a gzip, bzip2 or tar inside that is corrupt or cut short;
@@ -2120,19 +2134,25 @@ name alone: a `raspi.img` of plain bytes is a plain file, and a
   held to `MaxFileSize` and `MaxScanSize`, and read in turn.
 - **An archive of a format core cannot open**, told by its full signature
   (7-Zip, RAR, xz, cab, cpio, ARJ, LHA, ISO 9660, XAR, EGG, ALZip), is
-  refused as `archive_nested`: core cannot see what clamd would skip inside
-  it. A file that only starts like one (a text beginning `BZh`, an ARJ mark
+  refused as `archive_nested`: core cannot see what clamd would leave
+  unread inside it. A file that only starts like one (a text beginning `BZh`, an ARJ mark
   whose header does not check out) is plain, and so are formats clamd does
   not open (a static library, a Debian or RPM package).
 - **Any other file** is searched, as it streams, for archives embedded past
   its first byte (a self-extracting program, a ZIP appended to an image):
-  a ZIP's local header a writer could have written, or the full signature
+  a ZIP local header as clamd takes one (the signature, a method the format
+  defines, and a name, extra field and data that fit in the rest of the
+  file, whatever its version, flags or name length), or the full signature
   of RAR, 7-Zip, cab or ARJ (an ARJ header whose CRC checks out). The
-  first ZIP found is checked as a nested one, ending the file, its offsets
-  counted from the ZIP or from the file's first byte (as `zip -A` leaves a
-  self-extractor); from its own range when the member is stored, from
-  memory otherwise. One that does not end the file, or is larger than the
-  buffer, is refused as `archive_nested`; so is any other embedded archive.
+  first local header starts a ZIP that must end the file, checked as a
+  nested one, its offsets counted from the ZIP or from the file's first
+  byte (as `zip -A` leaves a self-extractor); from its own range when the
+  member is stored, from memory otherwise. Every later local header must
+  then be that ZIP's own or inside its members' data, which its check
+  holds it to. A lone local header (no ZIP ending the file there), a ZIP
+  that does not end the file, or one larger than the buffer, is refused as
+  `archive_nested`; so is any other embedded archive. Chance data passes
+  for a local header about once in 100,000 GiB.
 
 Depth is counted as clamd counts it: a member of an archive n deep is inside
 n + 1 archives, which clamd scans only while n + 1 is below `MaxRecursion`
@@ -2259,11 +2279,13 @@ application for each side, in core's project and environment:
   - `AlertExceedsMax` reports `MaxFiles`, `MaxFileSize` and `MaxRecursion`
     exceeded;
   - a compressed archive member that inflates past `MaxFileSize` while the
-    archive itself stays under it is skipped without a report, whatever
-    sizes its headers declare (a stored one is reported);
-  - so is a ZIP member with ZIP64 sizes, and one compressed with a method
-    clamd does not know, and the same inside an archive clamd finds in
-    another file (an Office document, a ZIP appended to a program).
+    archive itself stays under it is read only up to `MaxFileSize`, without
+    a report, whatever sizes its headers declare (a stored one is
+    reported);
+  - a ZIP member with ZIP64 sizes, or one compressed with a method clamd
+    does not know, is not read at all, and the same holds inside an archive
+    clamd finds in another file (an Office document, a ZIP appended to a
+    program or a PDF) and for a lone local header it finds anywhere.
 
   So core checks every file whose content is a ZIP before clamd scans it,
   and refuses one clamd would not scan whole: see
