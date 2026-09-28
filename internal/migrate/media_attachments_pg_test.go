@@ -24,6 +24,15 @@ func TestMediaAttachmentsAttachMediaLinkedBeforeThem(t *testing.T) {
 	if err := migrate.Apply(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
+	// The person exists before the rollback: the user store reads the
+	// schema of today (the linked Media's status), which the rollback takes
+	// away until the migration runs again.
+	person := uuid.New()
+	if _, _, err := user.NewService(user.NewPostgresStore(pool)).Ensure(ctx, person, user.Profile{
+		Email: "before@example.com", FirstName: "Ada", LastName: "Before", Username: "before",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	down, err := fs.ReadFile(db.DownSQL, "migrations/"+mediaAttachmentsVersion+"_media_attachments.down.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -32,13 +41,6 @@ func TestMediaAttachmentsAttachMediaLinkedBeforeThem(t *testing.T) {
 		t.Fatalf("down: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version = `+mediaAttachmentsVersion); err != nil {
-		t.Fatal(err)
-	}
-
-	person := uuid.New()
-	if _, _, err := user.NewService(user.NewPostgresStore(pool)).Ensure(ctx, person, user.Profile{
-		Email: "before@example.com", FirstName: "Ada", LastName: "Before", Username: "before",
-	}); err != nil {
 		t.Fatal(err)
 	}
 	stored := func(name string) uuid.UUID {
