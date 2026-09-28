@@ -86,6 +86,11 @@ type DeferredError struct {
 	Step   user.DeletionStep
 	Reason string
 	At     time.Time
+	// Status is the service's HTTP answer: 202 for a service that is still
+	// at work, 429 or 5xx for one that is busy or down, 0 when no usable
+	// answer came (timeout, connection or token-endpoint failure, a
+	// completion body cut off).
+	Status int
 }
 
 func (e *DeferredError) Error() string      { return string(e.Step) + ": " + e.Reason }
@@ -136,7 +141,7 @@ func (c *Client) Erase(ctx context.Context, command Command) (Result, error) {
 
 	token, err := c.Tokens.Token(ctx)
 	if err != nil {
-		return Result{}, c.deferred("token unavailable: "+err.Error(), "")
+		return Result{}, c.deferred(0, "token unavailable: "+err.Error(), "")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.BaseURL+"/internal/v1/account-erasures/"+command.RequestID.String(), bytes.NewReader(body))
 	if err != nil {
@@ -147,7 +152,7 @@ func (c *Client) Erase(ctx context.Context, command Command) (Result, error) {
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return Result{}, c.deferred("request failed ("+transportKind(err)+")", "")
+		return Result{}, c.deferred(0, "request failed ("+transportKind(err)+")", "")
 	}
 	defer resp.Body.Close()
 	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
@@ -155,7 +160,7 @@ func (c *Client) Erase(ctx context.Context, command Command) (Result, error) {
 	switch code := resp.StatusCode; {
 	case code == http.StatusOK:
 		if readErr != nil {
-			return Result{}, c.deferred("completion body could not be read", "")
+			return Result{}, c.deferred(0, "completion body could not be read", "")
 		}
 		counts, err := completion(raw, command.RequestID)
 		if err != nil {
@@ -163,10 +168,10 @@ func (c *Client) Erase(ctx context.Context, command Command) (Result, error) {
 		}
 		return Result{Counts: counts}, nil
 	case code == http.StatusAccepted:
-		return Result{}, c.deferred("in progress (202)", resp.Header.Get("Retry-After"))
+		return Result{}, c.deferred(code, "in progress (202)", resp.Header.Get("Retry-After"))
 	case code == http.StatusTooManyRequests || code == http.StatusInternalServerError ||
 		code == http.StatusBadGateway || code == http.StatusServiceUnavailable || code == http.StatusGatewayTimeout:
-		return Result{}, c.deferred(fmt.Sprintf("service unavailable (%d)", code), resp.Header.Get("Retry-After"))
+		return Result{}, c.deferred(code, fmt.Sprintf("service unavailable (%d)", code), resp.Header.Get("Retry-After"))
 	case code == http.StatusUnauthorized:
 		c.Tokens.Invalidate()
 		return Result{}, &Error{Step: c.Service.Step, Reason: "token rejected (401)"}
@@ -182,9 +187,9 @@ func (c *Client) Erase(ctx context.Context, command Command) (Result, error) {
 	}
 }
 
-func (c *Client) deferred(reason, retryAfter string) error {
+func (c *Client) deferred(status int, reason, retryAfter string) error {
 	now := c.now()
-	return &DeferredError{Step: c.Service.Step, Reason: reason, At: now.Add(retryDelay(retryAfter, now))}
+	return &DeferredError{Step: c.Service.Step, Reason: reason, At: now.Add(retryDelay(retryAfter, now)), Status: status}
 }
 
 // directTransport never goes through an HTTP proxy from the environment: the

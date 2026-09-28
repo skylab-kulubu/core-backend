@@ -54,6 +54,17 @@ func Registry() []Service {
 	return append([]Service(nil), registry...)
 }
 
+// ServiceNamed returns the registry entry with that name: skymail, cms or
+// forms.
+func ServiceNamed(name string) (Service, bool) {
+	for _, service := range registry {
+		if service.Name == name {
+			return service, true
+		}
+	}
+	return Service{}, false
+}
+
 // Endpoint is a registry entry with its configured internal base URL.
 type Endpoint struct {
 	Service Service
@@ -115,6 +126,40 @@ func ConfigFromEnv(getenv func(string) string, enabled bool) (Config, error) {
 		return Config{}, err
 	}
 	return config, nil
+}
+
+// ClientFromEnv builds the Erasure command client of one service for a
+// command run beside the server, the replay after a restore (ADR-0053). It
+// reads the service's URL variable, ACCOUNT_ERASURE_CLIENT_ID and
+// ACCOUNT_ERASURE_CLIENT_SECRET as the worker does, whether or not the worker
+// is on, and keeps no copy of the secret: the client reads it again for every
+// token request. Every error names a variable, never its value.
+func ClientFromEnv(getenv func(string) string, service Service, tokenURL string) (*Client, error) {
+	raw, err := set(getenv, service.URLVar)
+	if err != nil {
+		return nil, err
+	}
+	base, err := baseURL(service.URLVar, raw)
+	if err != nil {
+		return nil, err
+	}
+	clientID, err := set(getenv, "ACCOUNT_ERASURE_CLIENT_ID")
+	if err != nil {
+		return nil, err
+	}
+	secret := func() (string, error) { return set(getenv, clientSecretVar) }
+	if _, err := secret(); err != nil {
+		return nil, err
+	}
+	return NewClient(Endpoint{Service: service, BaseURL: base}, tokenURL, clientID, secret), nil
+}
+
+func set(getenv func(string) string, name string) (string, error) {
+	value := strings.TrimSpace(getenv(name))
+	if value == "" {
+		return "", fmt.Errorf("%s is required", name)
+	}
+	return value, nil
 }
 
 func required(getenv func(string) string, name string) (string, error) {
