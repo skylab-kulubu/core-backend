@@ -266,7 +266,7 @@ U+2066–U+2069, U+200E, U+200F, U+061C), such as the right-to-left override
 that shows `a\u202Egnp.exe` as `aexe.png`. With a purpose,
 core checks, in order: the purpose exists, the caller may upload it, private
 Media is on if the purpose is private, it is single-step, something can attach
-it, a malware scanner exists if the purpose needs a scan, the size, and the type detected from the content (a raster format, PDF by
+it, a malware scanner is configured if the purpose needs a scan, the size, and the type detected from the content (a raster format, PDF by
 its header, or DOCX: a ZIP package whose `[Content_Types].xml` declares a
 macro-free Word document part `word/document.xml`). `POST /v1/users/me/profile-picture` always uploads
 as `profile_picture`: raster images up to 5 MiB, no PDF, no SVG.
