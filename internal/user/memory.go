@@ -79,7 +79,8 @@ func keepProfile(existing, u User) User {
 	if u.SchoolEmail == "" {
 		u.SchoolEmail = existing.SchoolEmail
 	}
-	if u.SkyNumber == "" {
+	// A stored Sky number is never replaced (PostgresStore.Upsert).
+	if existing.SkyNumber != "" || u.SkyNumber == "" {
 		u.SkyNumber = existing.SkyNumber
 	}
 	if u.Username == "" {
