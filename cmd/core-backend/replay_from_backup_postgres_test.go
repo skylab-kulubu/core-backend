@@ -129,7 +129,7 @@ func TestPostgresReplayFromBackupSendsTheSnapshotsAddressesToTheRestoredService(
 
 	server := testpostgres.Start(t)
 	ctx := context.Background()
-	restored := time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
+	dumpedAt := time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
 
 	// Live core: four people erased, three of them after T. Their rows are
 	// anonymized, as after any completed erasure.
@@ -139,7 +139,7 @@ func TestPostgresReplayFromBackupSendsTheSnapshotsAddressesToTheRestoredService(
 	type person struct{ subject, request uuid.UUID }
 	people := map[string]person{}
 	for name, completedAt := range map[string]time.Time{
-		"ada": restored.Add(time.Hour), "alan": restored.Add(2 * time.Hour), "grace": restored.Add(3 * time.Hour), "early": restored.Add(-time.Hour),
+		"ada": dumpedAt.Add(time.Hour), "alan": dumpedAt.Add(2 * time.Hour), "grace": dumpedAt.Add(3 * time.Hour), "early": dumpedAt.Add(-time.Hour),
 	} {
 		p := person{subject: uuid.New(), request: uuid.New()}
 		people[name] = p
@@ -189,7 +189,7 @@ func TestPostgresReplayFromBackupSendsTheSnapshotsAddressesToTheRestoredService(
 		"KEYCLOAK_SNAPSHOT_DATABASE_URL": keycloakDSN,
 	}
 	getenv := func(key string) string { return env[key] }
-	args := []string{"--service", "skymail", "--restored-at", restored.Format(time.RFC3339)}
+	args := []string{"--service", "skymail", "--dumped-at", dumpedAt.Format(time.RFC3339)}
 	var outputs []string
 	run := func(apply bool) (int, string) {
 		t.Helper()
@@ -212,7 +212,7 @@ func TestPostgresReplayFromBackupSendsTheSnapshotsAddressesToTheRestoredService(
 	}
 	for _, line := range []string{
 		"dry run, nothing is sent",
-		"requests completed at or after the restore: 3\n",
+		"requests completed at or after the dump: 3\n",
 		"with 0 address(es) resolved: 0\n", "with 1 address(es) resolved: 1\n",
 		"with 2 address(es) resolved: 0\n", "with 3 address(es) resolved: 1\n",
 		"subject in neither snapshot (FAIL): 1\n", "addresses unreadable (FAIL): 0\n",

@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	restoredAt = time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
+	dumpedAt   = time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
 	replayNow  = time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 	skymail, _ = erasure.ServiceNamed("skymail")
 )
@@ -122,7 +122,7 @@ func newPeople() people {
 
 func (p people) replay(apply bool, sender *fakeSender, records *[]erasurereplay.Record) erasurereplay.Replay {
 	replay := erasurereplay.Replay{
-		Service: skymail, RestoredAt: restoredAt,
+		Service: skymail, DumpedAt: dumpedAt,
 		Requests: p.requests, Core: p.core, Keycloak: p.keycloak,
 		Apply:  apply,
 		Now:    func() time.Time { return replayNow },
@@ -154,7 +154,7 @@ func TestDryRunCountsTheResolvableAddressesAndSendsNothing(t *testing.T) {
 	if report.Failed() != 1 {
 		t.Fatalf("failed = %d", report.Failed())
 	}
-	if len(p.requests.since) != 2 || p.requests.since[0] != restoredAt || p.requests.steps[0] != user.DeletionStepEraseSkyMail {
+	if len(p.requests.since) != 2 || p.requests.since[0] != dumpedAt || p.requests.steps[0] != user.DeletionStepEraseSkyMail {
 		t.Fatalf("live core read since %v for %v", p.requests.since, p.requests.steps)
 	}
 	outcomes := map[uuid.UUID]erasurereplay.Outcome{}
@@ -241,7 +241,7 @@ func TestApplyTakes200AsDone202AsRetryLaterAndAnythingElseAsFail(t *testing.T) {
 	}}
 	var records []erasurereplay.Record
 	report, err := erasurereplay.Replay{
-		Service: skymail, RestoredAt: restoredAt, Requests: requests, Core: &fakeCore{}, Keycloak: keycloak,
+		Service: skymail, DumpedAt: dumpedAt, Requests: requests, Core: &fakeCore{}, Keycloak: keycloak,
 		Apply: true, Sender: sender, Record: func(record erasurereplay.Record) { records = append(records, record) },
 	}.Run(context.Background())
 	if err != nil {
@@ -267,7 +267,7 @@ func TestAPersonAnonymizedInTheCoreSnapshotAndAbsentFromKeycloakIsMissing(t *tes
 	sender := &fakeSender{}
 	var records []erasurereplay.Record
 	report, err := erasurereplay.Replay{
-		Service: skymail, RestoredAt: restoredAt,
+		Service: skymail, DumpedAt: dumpedAt,
 		Requests: &fakeRequests{completed: []erasurereplay.Request{request}},
 		Core:     &fakeCore{}, Keycloak: &fakeKeycloak{},
 		Apply: true, Sender: sender, Record: func(record erasurereplay.Record) { records = append(records, record) },
@@ -292,7 +292,7 @@ func TestAddressesThatCannotBeReadFailTheRequestWithoutASend(t *testing.T) {
 	sender := &fakeSender{}
 	var records []erasurereplay.Record
 	report, err := erasurereplay.Replay{
-		Service: skymail, RestoredAt: restoredAt,
+		Service: skymail, DumpedAt: dumpedAt,
 		Requests: &fakeRequests{completed: []erasurereplay.Request{tooMany, coreDown, keycloakDown}},
 		Core: &fakeCore{failFor: coreDown.SubjectID, rows: map[uuid.UUID][2]string{
 			tooMany.SubjectID: {"d@example.com", ""},
@@ -383,7 +383,7 @@ func TestRecordLinesCarryRequestIDsAndNoPersonalData(t *testing.T) {
 	// Only whole addresses and domains: a short name could turn up in a uuid.
 	assertNoPersonalData(t, all, "ada@", "ada.l", "alan@", "grace@", "example.com", "example.org", "yildiz.edu.tr",
 		p.both.SubjectID.String(), p.keycloakOnly.SubjectID.String(), p.coreOnly.SubjectID.String(), p.missing.SubjectID.String())
-	want := "account_erasure_replay at=2026-09-27T10:00:00Z service=skymail restored_at=2026-09-20T03:00:00Z request_id=" +
+	want := "account_erasure_replay at=2026-09-27T10:00:00Z service=skymail dumped_at=2026-09-20T03:00:00Z request_id=" +
 		p.both.ID.String() + " outcome=done counts=recipients_deleted:1"
 	if lines[0] != want {
 		t.Fatalf("line = %q, want %q", lines[0], want)

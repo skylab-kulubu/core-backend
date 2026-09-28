@@ -17,7 +17,11 @@ import (
 // (ADR-0053, docs/account-lifecycle.md, Replay after a restore):
 //
 //	CORE_SNAPSHOT_DATABASE_URL=… KEYCLOAK_SNAPSHOT_DATABASE_URL=… \
-//	    core-backend replay-from-backup --service skymail --restored-at 2026-09-20T03:00:00Z [--apply]
+//	    core-backend replay-from-backup --service skymail --dumped-at 2026-09-20T03:00:00Z [--apply]
+//
+// T is when the service dump was taken (pg_dump's snapshot, the start of the
+// dump), not when it was restored: a later T would miss the requests that
+// completed between the dump and the restore.
 //
 // It runs inside the core container, which has the rest of the environment.
 // The two snapshots are the core and Keycloak dumps taken with the service
@@ -36,10 +40,10 @@ const (
 const replayExitRetryLater = 3
 
 type replayOptions struct {
-	service    erasure.Service
-	restoredAt time.Time
-	realm      string
-	apply      bool
+	service  erasure.Service
+	dumpedAt time.Time
+	realm    string
+	apply    bool
 }
 
 // runReplayFromBackup wires the replay to the three databases, all read-only,
@@ -109,12 +113,12 @@ func runReplayFromBackup(args []string, getenv func(string) string, out io.Write
 	defer keycloak.Close()
 
 	replay := erasurereplay.Replay{
-		Service:    options.service,
-		RestoredAt: options.restoredAt,
-		Requests:   erasurereplay.LiveRequests{DB: live},
-		Core:       erasurereplay.PostgresCoreSnapshot{DB: core},
-		Keycloak:   erasurereplay.PostgresKeycloakSnapshot{DB: keycloak, Realm: options.realm},
-		Apply:      options.apply,
+		Service:  options.service,
+		DumpedAt: options.dumpedAt,
+		Requests: erasurereplay.LiveRequests{DB: live},
+		Core:     erasurereplay.PostgresCoreSnapshot{DB: core},
+		Keycloak: erasurereplay.PostgresKeycloakSnapshot{DB: keycloak, Realm: options.realm},
+		Apply:    options.apply,
 	}
 	if sender != nil {
 		replay.Sender = sender
@@ -126,17 +130,22 @@ func parseReplayOptions(args []string, out io.Writer, now time.Time) (replayOpti
 	flags := flag.NewFlagSet(replayFromBackupCommandName, flag.ContinueOnError)
 	flags.SetOutput(out)
 	flags.Usage = func() {
-		fmt.Fprintf(out, "usage: %s=<dsn> %s=<dsn> core-backend %s --service <skymail|cms|forms> --restored-at <RFC 3339> [--keycloak-realm e-skylab] [--apply]\n",
+		fmt.Fprintf(out, "usage: %s=<dsn> %s=<dsn> core-backend %s --service <skymail|cms|forms> --dumped-at <RFC 3339> [--keycloak-realm e-skylab] [--apply]\n",
 			coreSnapshotDatabaseURL, keycloakSnapshotDatabaseURL, replayFromBackupCommandName)
+		fmt.Fprintln(out, "T is when the service dump was taken (the start of the dump), not when it was restored.")
 		fmt.Fprintf(out, "%s and %s are the core and Keycloak dumps taken with the service dump at T, restored into temporary databases.\n",
 			coreSnapshotDatabaseURL, keycloakSnapshotDatabaseURL)
 		flags.PrintDefaults()
 	}
 	service := flags.String("service", "", "the restored service: skymail, cms or forms")
-	restoredAt := flags.String("restored-at", "", "the time T of the restored service dump (RFC 3339)")
+	dumpedAt := flags.String("dumped-at", "", "T: when the service dump was taken, its start, not when it was restored (RFC 3339)")
 	realm := flags.String("keycloak-realm", "e-skylab", "the realm of the people in the Keycloak dump")
 	apply := flags.Bool("apply", false, "send the Erasure command; without it the command only counts")
 	if err := flags.Parse(args); err != nil {
+		if passesFlag(args, "restored-at") {
+			fmt.Fprintf(out, "%s: --restored-at is now --dumped-at: T is when the service dump was taken, not when it was restored\n",
+				replayFromBackupCommandName)
+		}
 		return replayOptions{}, 2
 	}
 	usage := func(message string) (replayOptions, int) {
@@ -151,18 +160,36 @@ func parseReplayOptions(args []string, out io.Writer, now time.Time) (replayOpti
 	if options.service, ok = erasure.ServiceNamed(strings.TrimSpace(*service)); !ok {
 		return usage("--service must be skymail, cms or forms")
 	}
-	at, err := time.Parse(time.RFC3339, strings.TrimSpace(*restoredAt))
+	at, err := time.Parse(time.RFC3339, strings.TrimSpace(*dumpedAt))
 	if err != nil {
-		return usage("--restored-at must be an RFC 3339 time, such as 2026-09-20T03:00:00Z")
+		return usage("--dumped-at must be an RFC 3339 time, such as 2026-09-20T03:00:00Z")
 	}
 	if at.After(now) {
-		return usage("--restored-at is in the future")
+		return usage("--dumped-at is in the future")
 	}
-	options.restoredAt = at
+	options.dumpedAt = at
 	if options.realm == "" {
 		return usage("--keycloak-realm is empty")
 	}
 	return options, 0
+}
+
+// passesFlag reports whether args, up to a "--", pass the flag name as -name
+// or --name, with or without a value after "=".
+func passesFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		trimmed := strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-")
+		if trimmed == arg {
+			continue
+		}
+		if flagName, _, _ := strings.Cut(trimmed, "="); flagName == name {
+			return true
+		}
+	}
+	return false
 }
 
 // replayFromBackupCommand runs the replay and prints one record line per
@@ -172,8 +199,8 @@ func replayFromBackupCommand(ctx context.Context, out io.Writer, replay erasurer
 	if replay.Apply {
 		mode = "sending the Erasure command"
 	}
-	fmt.Fprintf(out, "account erasure replay into %s restored at %s: %s\n",
-		replay.Service.Name, replay.RestoredAt.UTC().Format(time.RFC3339Nano), mode)
+	fmt.Fprintf(out, "account erasure replay into %s dumped at %s: %s\n",
+		replay.Service.Name, replay.DumpedAt.UTC().Format(time.RFC3339Nano), mode)
 	replay.Record = func(record erasurereplay.Record) {
 		if replay.Apply || record.Outcome != erasurereplay.OutcomeResolved {
 			fmt.Fprintln(out, record)
@@ -185,7 +212,7 @@ func replayFromBackupCommand(ctx context.Context, out io.Writer, replay erasurer
 		return 1
 	}
 
-	fmt.Fprintf(out, "requests completed at or after the restore: %d\n", report.Requests)
+	fmt.Fprintf(out, "requests completed at or after the dump: %d\n", report.Requests)
 	for n, count := range report.ByAddresses {
 		fmt.Fprintf(out, "  with %d address(es) resolved: %d\n", n, count)
 	}
@@ -196,7 +223,7 @@ func replayFromBackupCommand(ctx context.Context, out io.Writer, replay erasurer
 		fmt.Fprintf(out, "in progress (202, run again later): %d\n", report.RetryLater)
 		fmt.Fprintf(out, "failed at the service (FAIL): %d\n", report.SendFailed)
 	}
-	fmt.Fprintf(out, "requests not completed yet whose %s ran at or after the restore (run again once they complete): %d\n",
+	fmt.Fprintf(out, "requests not completed yet whose %s ran at or after the dump (run again once they complete): %d\n",
 		replay.Service.Step, report.Open)
 	switch {
 	case report.Failed() > 0:

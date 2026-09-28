@@ -20,7 +20,7 @@
 # the services (T_core <= T_keycloak <= T_service). The core and Keycloak dumps are restored into
 # snapshot-postgres, a throwaway Postgres on an internal network, and core's own
 #   CORE_SNAPSHOT_DATABASE_URL=… KEYCLOAK_SNAPSHOT_DATABASE_URL=… \
-#     core-backend replay-from-backup --service <x> --restored-at <T_x> [--apply]
+#     core-backend replay-from-backup --service <x> --dumped-at <T_x> [--apply]
 # runs in core's container with the two DSNs in its environment, never in argv: a dry run, then
 # --apply. It reads each person's addresses from the pair and sends the normal Erasure command
 # with them, so it erases the e-mail-keyed rows (recipients, list memberships, the closed rows to
@@ -258,9 +258,9 @@ replay_from_backup() {
   REPLAY_OUT=$(CORE_SNAPSHOT_DATABASE_URL=$(snapshot_dsn "$SNAPSHOT_CORE_DB") \
     KEYCLOAK_SNAPSHOT_DATABASE_URL=$(snapshot_dsn "$SNAPSHOT_KEYCLOAK_DB") \
     docker exec -e CORE_SNAPSHOT_DATABASE_URL -e KEYCLOAK_SNAPSHOT_DATABASE_URL "$(dc ps -q core)" \
-    /app/core-backend replay-from-backup --service "$service" --restored-at "$at" "$@" 2>&1)
+    /app/core-backend replay-from-backup --service "$service" --dumped-at "$at" "$@" 2>&1)
   REPLAY_RC=$?
-  printf '$ replay-from-backup --service %s --restored-at %s %s\n%s\nexit %s\n\n' \
+  printf '$ replay-from-backup --service %s --dumped-at %s %s\n%s\nexit %s\n\n' \
     "$service" "$at" "$*" "$REPLAY_OUT" "$REPLAY_RC" >>"$EVIDENCE/s11-replay-from-backup.txt"
 }
 # replay_count LABEL: the number the replay's output prints after "LABEL: ".
@@ -272,7 +272,7 @@ replay_records() { grep -c "^account_erasure_replay .* outcome=${1:-}" <<<"$REPL
 # replay_summary: the counts of a run, for the check descriptions.
 replay_summary() {
   printf 'exit %s, requests %s, 2 addresses %s, missing %s, unreadable %s, done %s, 202 %s, failed %s, open %s' "$REPLAY_RC" \
-    "$(replay_count 'requests completed at or after the restore')" "$(replay_count 'with 2 address(es) resolved')" \
+    "$(replay_count 'requests completed at or after the dump')" "$(replay_count 'with 2 address(es) resolved')" \
     "$(replay_count 'subject in neither snapshot (FAIL)')" "$(replay_count 'addresses unreadable (FAIL)')" \
     "$(replay_count 'done (200)')" "$(replay_count 'in progress (202, run again later)')" \
     "$(replay_count 'failed at the service (FAIL)')" "$(replay_count_open)"
@@ -280,12 +280,12 @@ replay_summary() {
 replay_count_open() { awk -F': ' '/^requests not completed yet whose / { print $NF; exit }' <<<"$REPLAY_OUT"; }
 # replay_dry_run_ok N: a dry run that resolved N requests, two addresses each, and sent nothing.
 replay_dry_run_ok() {
-  eq "$REPLAY_RC|$(head -n1 <<<"$REPLAY_OUT" | grep -c 'dry run, nothing is sent')|$(replay_count 'requests completed at or after the restore')|$(replay_count 'with 2 address(es) resolved')|$(replay_count 'subject in neither snapshot (FAIL)')|$(replay_count 'addresses unreadable (FAIL)')|$(replay_count_open)|$(replay_records)|$(grep -c '^done (200)' <<<"$REPLAY_OUT")" \
+  eq "$REPLAY_RC|$(head -n1 <<<"$REPLAY_OUT" | grep -c 'dry run, nothing is sent')|$(replay_count 'requests completed at or after the dump')|$(replay_count 'with 2 address(es) resolved')|$(replay_count 'subject in neither snapshot (FAIL)')|$(replay_count 'addresses unreadable (FAIL)')|$(replay_count_open)|$(replay_records)|$(grep -c '^done (200)' <<<"$REPLAY_OUT")" \
     "0|1|$1|$1|0|0|0|0|0"
 }
 # replay_apply_ok N: --apply exited 0 with N requests done (200), none 202, none failed, none open.
 replay_apply_ok() {
-  eq "$REPLAY_RC|$(replay_count 'requests completed at or after the restore')|$(replay_count 'done (200)')|$(replay_records done)|$(replay_records)|$(replay_count 'in progress (202, run again later)')|$(replay_count 'failed at the service (FAIL)')|$(replay_count 'subject in neither snapshot (FAIL)')|$(replay_count 'addresses unreadable (FAIL)')|$(replay_count_open)" \
+  eq "$REPLAY_RC|$(replay_count 'requests completed at or after the dump')|$(replay_count 'done (200)')|$(replay_records done)|$(replay_records)|$(replay_count 'in progress (202, run again later)')|$(replay_count 'failed at the service (FAIL)')|$(replay_count 'subject in neither snapshot (FAIL)')|$(replay_count 'addresses unreadable (FAIL)')|$(replay_count_open)" \
     "0|$1|$1|$1|$1|0|0|0|0|0"
 }
 # replay_counts_sum KEY: the sum of one count over the done records (counts=key:n,...).
@@ -546,7 +546,7 @@ scenario_11() {
   check 'core is on the snapshots network for the replay' grep -qw -- "$SNAPSHOT_NET" <<<"$(snapshot_networks "$core_ctr")"
 
   replay_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  log "  replay-from-backup --service skymail --restored-at $skymail_t (the SkyMail dump's instant)"
+  log "  replay-from-backup --service skymail --dumped-at $skymail_t (the SkyMail dump's instant)"
   replay_from_backup skymail "$skymail_t"
   check "replay-from-backup --service skymail, dry run: $(replay_summary)" replay_dry_run_ok "$completed"
   check 'the dry run sent nothing: no receipt, the same e-mail-keyed rows, no erasure in SkyMail'"'"'s log' \
