@@ -765,6 +765,56 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			 AND actual.contype = expected.constraint_type::"char"
 			 AND pg_get_constraintdef(actual.oid) = expected.definition
 		) = 2`,
+	// The malware scan's statuses, its result and backoff columns, the
+	// rejections record, and the status function that keeps a scanning or
+	// rejected Media's status. A rerun of an older status function (as
+	// 20260926161000 writes it) fails this fingerprint and the migration
+	// runs again.
+	20260928140000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('media', 'scan_result', 'text', 'YES'),
+				('media', 'scan_attempts', 'int4', 'NO'),
+				('media', 'scan_retry_at', 'timestamptz', 'YES'),
+				('media_scan_rejections', 'media_id', 'uuid', 'NO'),
+				('media_scan_rejections', 'result', 'text', 'NO'),
+				('media_scan_rejections', 'signature', 'text', 'NO'),
+				('media_scan_rejections', 'rejected_at', 'timestamptz', 'NO')
+			) expected(table_name, column_name, udt_name, is_nullable)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = expected.table_name
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = expected.is_nullable
+		) = 7
+		AND (
+			SELECT count(*) FROM (VALUES
+				('media', 'media_status_check', 'c', ` + "'" + `CHECK ((status = ANY (ARRAY[''pending''::text, ''attached''::text, ''detached''::text, ''scanning''::text, ''rejected''::text])))` + "'" + `),
+				('media', 'media_scan_result_check', 'c', ` + "'" + `CHECK ((((scan_result IS NULL) OR (scan_result = ANY (ARRAY[''clean''::text, ''infected''::text, ''too_large_to_scan''::text]))) AND ((status = ''rejected''::text) = (COALESCE(scan_result, ''''::text) = ANY (ARRAY[''infected''::text, ''too_large_to_scan''::text]))) AND ((status <> ''scanning''::text) OR (scan_result IS NULL)) AND (scan_attempts >= 0)))` + "'" + `),
+				('media_scan_rejections', 'media_scan_rejections_pkey', 'p', 'PRIMARY KEY (media_id)'),
+				('media_scan_rejections', 'media_scan_rejections_media_id_fkey', 'f', 'FOREIGN KEY (media_id) REFERENCES media(id)'),
+				('media_scan_rejections', 'media_scan_rejections_result_check', 'c', ` + "'" + `CHECK ((result = ANY (ARRAY[''infected''::text, ''too_large_to_scan''::text])))` + "'" + `)
+			) expected(table_name, constraint_name, constraint_type, definition)
+			JOIN pg_constraint actual
+			  ON actual.conrelid = to_regclass('public.' || expected.table_name)
+			 AND actual.conname = expected.constraint_name
+			 AND actual.contype = expected.constraint_type::"char"
+			 AND pg_get_constraintdef(actual.oid) = expected.definition
+		) = 5
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'media_scan_due_idx'
+			  AND indexdef LIKE '%(id) WHERE ((status = ANY (ARRAY[''scanning''::text, ''rejected''::text])) AND (blob_purged_at IS NULL))'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_attachment_status'
+			  AND prosrc LIKE '%WHEN status IN (''scanning'', ''rejected'') THEN status ELSE ''attached''%'
+			  AND prosrc LIKE '%(status = ''scanning'' AND expires_at IS NULL)%'
+			  AND prosrc LIKE '%OR detach_expiry_held THEN NULL%'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
