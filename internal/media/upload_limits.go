@@ -10,9 +10,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// UploadLimits is the budget each person has for single-step uploads, shared
-// by every route that stores a file sent through core (ADR-0052, media
-// redesign ticket 05).
+// UploadLimits is the budget each person has for uploads, shared by every
+// route that stores a file sent through core (ADR-0052, media redesign
+// ticket 05) and by Direct upload, charged the size it declares (ticket 11).
 type UploadLimits struct {
 	// Count is the most uploads a person may start within CountWindow.
 	Count       int
@@ -75,7 +75,9 @@ const (
 	uploadSweepInterval = time.Hour
 )
 
-// UploadLimitRefusal is an upload refused by its person's budget.
+// UploadLimitRefusal is an upload refused by its person's budget. As an
+// error it is Direct upload's refusal (StartDirectUpload); a single-step
+// upload is refused before its route runs (handlers.LimitMediaUploads).
 type UploadLimitRefusal struct {
 	// Limit is the limit that refused it.
 	Limit UploadLimit
@@ -84,6 +86,10 @@ type UploadLimitRefusal struct {
 	// RetryAfter is how long until the same upload would fit, in whole
 	// seconds, at least one.
 	RetryAfter time.Duration
+}
+
+func (r *UploadLimitRefusal) Error() string {
+	return fmt.Sprintf("media: the person's upload limit (%s) is reached; retry after %s", r.Limit, r.RetryAfter)
 }
 
 // UploadLimiter keeps each person's budget in this process's memory: a
@@ -106,6 +112,25 @@ type chargedUpload struct {
 	id    uint64
 	at    time.Time
 	bytes int64
+	// lapses is when a charge AdmitUntil made stops counting unless it was
+	// kept by then; zero for a kept charge and for Admit's.
+	lapses time.Time
+}
+
+// lapsed reports whether the charge stopped counting by now.
+func (u chargedUpload) lapsed(now time.Time) bool {
+	return !u.lapses.IsZero() && !u.lapses.After(now)
+}
+
+// unlapsed is the uploads whose charge still counts at now, in their order.
+func unlapsed(uploads []chargedUpload, now time.Time) []chargedUpload {
+	out := uploads[:0:0]
+	for _, u := range uploads {
+		if !u.lapsed(now) {
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 func NewUploadLimiter(limits UploadLimits, now func() time.Time) *UploadLimiter {
@@ -123,11 +148,24 @@ type UploadCharge struct {
 // that does not fit is not charged: Admit returns the refusal instead, naming
 // the limit with the longer wait when both refuse.
 func (l *UploadLimiter) Admit(person uuid.UUID, size int64) (UploadCharge, *UploadLimitRefusal) {
+	return l.admit(person, size, time.Time{})
+}
+
+// AdmitUntil charges, like Admit, an upload whose bytes arrive later: a
+// Direct upload, charged for the size it declares when it starts. Unless
+// the charge is kept (Keep) before lapses, it stops counting then, count and
+// bytes, as if refunded: an upload never completed costs nothing once it
+// expires.
+func (l *UploadLimiter) AdmitUntil(person uuid.UUID, size int64, lapses time.Time) (UploadCharge, *UploadLimitRefusal) {
+	return l.admit(person, size, lapses)
+}
+
+func (l *UploadLimiter) admit(person uuid.UUID, size int64, lapses time.Time) (UploadCharge, *UploadLimitRefusal) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
 	l.sweep(now)
-	uploads := since(l.persons[person], now.Add(-l.longestWindow()))
+	uploads := unlapsed(since(l.persons[person], now.Add(-l.longestWindow())), now)
 
 	var refusal *UploadLimitRefusal
 	if recent := since(uploads, now.Add(-l.limits.CountWindow)); len(recent) >= l.limits.Count {
@@ -148,7 +186,7 @@ func (l *UploadLimiter) Admit(person uuid.UUID, size int64) (UploadCharge, *Uplo
 		return UploadCharge{}, refusal
 	}
 	l.lastID++
-	l.hold(person, append(uploads, chargedUpload{id: l.lastID, at: now, bytes: size}))
+	l.hold(person, append(uploads, chargedUpload{id: l.lastID, at: now, bytes: size, lapses: lapses}))
 	return UploadCharge{limiter: l, person: person, id: l.lastID}, nil
 }
 
@@ -170,9 +208,34 @@ func (c UploadCharge) Refund() {
 	}
 }
 
+// Keep makes a charge AdmitUntil made count through its windows like any
+// other: the upload was completed. A charge that already lapsed stays given
+// back. Keeping a charge Admit made changes nothing.
+func (c UploadCharge) Keep() {
+	l := c.limiter
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	uploads := l.persons[c.person]
+	for i, u := range uploads {
+		if u.id != c.id {
+			continue
+		}
+		if u.lapsed(now) {
+			l.hold(c.person, append(uploads[:i:i], uploads[i+1:]...))
+		} else {
+			uploads[i].lapses = time.Time{}
+		}
+		return
+	}
+}
+
 // sweep drops, at most once per uploadSweepInterval, the uploads that have
-// left every window and the people left with none, so memory follows the
-// people who uploaded within the longest window.
+// left every window or lapsed and the people left with none, so memory
+// follows the people who uploaded within the longest window.
 func (l *UploadLimiter) sweep(now time.Time) {
 	if now.Sub(l.sweptAt) < uploadSweepInterval {
 		return
@@ -180,7 +243,7 @@ func (l *UploadLimiter) sweep(now time.Time) {
 	l.sweptAt = now
 	cutoff := now.Add(-l.longestWindow())
 	for person, uploads := range l.persons {
-		l.hold(person, since(uploads, cutoff))
+		l.hold(person, unlapsed(since(uploads, cutoff), now))
 	}
 }
 
