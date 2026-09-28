@@ -62,6 +62,14 @@ type Server struct {
 	partQueries []url.Values
 	// counts are the requests received, by operation.
 	counts map[string]int
+	// holds keep an operation's requests waiting (Hold).
+	holds map[string]*hold
+	t     testing.TB
+}
+
+type hold struct {
+	entered  chan struct{}
+	released chan struct{}
 }
 
 type failure struct {
@@ -72,7 +80,10 @@ type failure struct {
 // New starts the fake; it stops with the test.
 func New(t testing.TB) *Server {
 	t.Helper()
-	s := &Server{objects: map[string]Object{}, uploads: map[string]*upload{}, failures: map[string][]failure{}, counts: map[string]int{}}
+	s := &Server{
+		objects: map[string]Object{}, uploads: map[string]*upload{}, failures: map[string][]failure{},
+		counts: map[string]int{}, holds: map[string]*hold{}, t: t,
+	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.Close)
 	return s
@@ -138,6 +149,29 @@ func (s *Server) UploadMetadata(bucket, key string) (Object, bool) {
 	return Object{}, false
 }
 
+// Hold keeps every request of the operation waiting, as a slow storage
+// would, until release is called (the test's end calls it too). entered
+// receives once for each request that starts waiting.
+func (s *Server) Hold(operation string) (entered <-chan struct{}, release func()) {
+	h := &hold{entered: make(chan struct{}, 64), released: make(chan struct{})}
+	s.mu.Lock()
+	s.holds[operation] = h
+	s.mu.Unlock()
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			s.mu.Lock()
+			if s.holds[operation] == h {
+				delete(s.holds, operation)
+			}
+			s.mu.Unlock()
+			close(h.released)
+		})
+	}
+	s.t.Cleanup(release)
+	return h.entered, release
+}
+
 // Count is how many requests of the operation the fake received.
 func (s *Server) Count(operation string) int {
 	s.mu.Lock()
@@ -165,7 +199,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	operation := operationOf(r, key, q)
 	s.mu.Lock()
 	s.counts[operation]++
+	held := s.holds[operation]
 	s.mu.Unlock()
+	if held != nil {
+		held.entered <- struct{}{}
+		<-held.released
+	}
 	if f, failed := s.takeFailure(operation); failed {
 		writeError(w, f.status, f.code)
 		return

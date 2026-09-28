@@ -242,7 +242,12 @@ Core refuses to start with a catalogue that breaks one:
 
 ### Uploading
 
-`POST /v1/media` takes an optional multipart field `purpose`. With a purpose,
+`POST /v1/media` takes an optional multipart field `purpose`. The file's name,
+whichever way it is uploaded (with a purpose, without one, as a profile
+picture, or by [Direct upload](#direct-upload)), must read as itself: valid
+UTF-8 without control characters and without invisible format characters
+(Unicode `Cf`, such as the right-to-left override that shows `a\u202Egnp.exe`
+as `aexe.png`); otherwise a plain `400`. With a purpose,
 core checks, in order: the purpose exists, the caller may upload it, private
 Media is on if the purpose is private, it is single-step, something can attach
 it, a malware scanner exists if the purpose needs a scan, the size, and the type detected from the content (a raster format, PDF by
@@ -435,14 +440,25 @@ the upload and open the multipart upload at `pending/<id>`, stored as an
 opaque download (`application/octet-stream`, `Content-Disposition:
 attachment`) whatever the browser sends.
 
-A completion holds the upload locked in the database from its first check
-to its last step (`BeginDirectCompletion`: the staging row of its pending
-object, then its record, the order the staging sweeper and account erasure
-lock them in). A second completion of the same upload, such as a retry that
-races the first, waits for it and then answers the Media it created: the
-file is checked and copied once. (The lock holds a database connection for
-as long as the copy takes, seconds for a large file; with a few uploads open
-per person this stays well within the pool.) In order:
+A completion holds no database lock and no connection while storage works.
+It **claims** the upload in one short transaction: the upload's record gets
+the claim and a lease (`claim_until`, 20 minutes,
+`media.DirectUploadClaimLease`), the key the file will be copied to is
+staged until the lease ends, and so is the pending object. Then, with no
+transaction open, it does the storage work, each call under its own timeout
+(30 seconds for a listing, a `HEAD`, the ranged `GET` or a delete, 3 minutes
+for R2 to join the parts, 12 minutes for the copy of up to 2 GiB, under R2's
+5 GiB `CopyObject` limit), all of it stopping 2 minutes before the lease
+ends. It **finishes** in another short transaction that checks the claim is
+still its own and its lease live, creates the Media, removes the copy's
+staging row and ends the upload. Only one pooled connection is ever held at
+a time.
+
+A second completion of an upload under a live claim, such as a retry that
+races the first, does not wait: it answers `409` `upload_completing` with
+`Retry-After` (5 seconds), and so does `POST /v1/uploads/{id}/parts`. Once
+the first is done, a completion answers the Media it created: the file is
+checked and copied once. In order:
 
 1. The caller's upload, not expired.
 2. The purpose's rules as they are now: a deploy may have changed the
@@ -471,14 +487,17 @@ A Media of a purpose that needs a scan would start `scanning`; none can be
 started until the scanner exists, and ticket 12 adds that status.
 
 Once the parts are joined (step 4), every way out but a created Media ends
-the upload: its record goes and its pending object is deleted at once. That
-is a refused file (step 2, 5 or 6) and core's own failure after the join (a
-`HEAD`, the ranged `GET`, the staging of the final key, the copy, or storing
-the Media failing). The one exception is a Media whose storing may have
-succeeded although the database answered an error: its objects stay for the
-staging sweeper, and the pending one is a download meanwhile. Before the
-join, core's failure (R2 or the database answering an error) leaves the
-upload open for another completion.
+the upload: storage deletes the copy and the pending object first, then a
+short transaction removes the upload and its staging rows (or leaves them
+ready for the sweeper when a delete failed). That is a refused file (step 2,
+5 or 6) and core's own failure after the join (a `HEAD`, the ranged `GET`,
+the copy, or storing the Media failing). The exceptions: a Media whose
+storing may have succeeded although the database answered an error (its
+objects stay for the staging sweeper, and the pending one is a download
+meanwhile), and a completion so slow its lease ran out (it deletes only its
+own copy; the upload is the sweeper's). Before the join, core's failure (R2
+or the database answering an error) and `upload_parts_mismatch` let go of
+the claim: the upload is open again for another completion.
 
 ### Refusals
 
@@ -493,6 +512,8 @@ with the types that apply), the budget's `429` (below), and these:
 | 400 | `media_limits_too_wide` | `purpose`, `allowedTypes`, `maxBytes` | `limits` names a type the purpose does not accept or a larger maximum. |
 | 422 | `purpose_not_available` | `purpose` | Also a private purpose, until ticket 21. |
 | 400 | `upload_parts_mismatch` | | The completion's parts are not the parts R2 holds. The upload stays open: `POST /v1/uploads/{id}/parts` lists them. |
+| 409 | `upload_completing` | `retryAfterSeconds`, `Retry-After` header | Another request is completing the upload (a completion, or `POST /v1/uploads/{id}/parts`). Retry: once it is done, a completion answers its Media. |
+| 403 | | | The uploader's account is being erased (a refusal: the charge stays, and the erasure takes the upload). |
 | 422 | `upload_size_mismatch` | `declaredSize`, `size` | The stored file is not the declared size. The upload is ended. |
 | 429 | `media_rate_limited` | `limit`, `maxOpenUploads`, `maxDailyBytes`, `retryAfterSeconds`, `Retry-After` header | The [Direct upload budget](#direct-upload-budget): `limit` is `open` (too many uploads open; `Retry-After` is when the first expires) or `volume`. |
 | 404 | | | Someone else's upload, an expired or ended one, or none. |
@@ -546,13 +567,18 @@ behind:
   default, `MEDIA_UPLOAD_STAGING_BATCH_SIZE` at a time) ends every upload
   that expired, and finishes a refusal or completion whose own cleanup
   failed; it is batched, idempotent, and walks past a failing row, which it
-  retries an hour later. It skips an upload a completion holds locked;
+  retries an hour later. An upload under a live claim is not due before
+  the lease ends (the claim stages its pending object and copy until then).
+  A claim whose lease ran out is stale, left by a completion that died: the
+  sweeper then deletes the pending object, the copy and the upload;
 - a completion deletes its pending object once the Media is stored, and
   every way out after the parts are joined deletes it too (above);
 - account erasure's `erase_staged_uploads` treats an open Direct upload as a
-  live upload: it waits until the upload expires (at most 12 hours; the
+  live upload: it defers (its attempt is given back) until the upload
+  expires, or until a completion's lease ends (at most 12 hours; the
   person's access is already blocked, so it cannot complete), then aborts
-  it and deletes its record, file name included.
+  it and deletes its record, file name included. It never waits on a
+  completion: no lock is held while storage works.
 
 The public bucket serves every key at the CDN, pending ones too. A pending
 object exists only between the join and the end of its completion, and is
@@ -1796,8 +1822,9 @@ What happens to the records when the request completes is in
 - `MEDIA_DIRECT_UPLOAD_DAILY_MAX_MIB` — MiB a person may declare in Direct
   uploads per rolling 24 hours; default `10240` (10 GiB).
 - The rest of Direct upload is fixed in code: an upload lives 12 hours, a
-  part address an hour, and every part but the last is 16 MiB
-  (`media.DirectUploadTTL`, `media.DirectUploadPartURLTTL`). It uses core's
+  part address an hour, every part but the last is 16 MiB, and a
+  completion's claim is leased for 20 minutes (`media.DirectUploadTTL`,
+  `media.DirectUploadPartURLTTL`, `media.DirectUploadClaimLease`). It uses core's
   R2 (`R2_*`); without it, it answers `503` `direct_upload_unavailable`. The
   staging sweeper's settings above end expired uploads.
 - `CDN_BASE` (or `R2_PUBLIC_URL`) — the public base of every Media address;

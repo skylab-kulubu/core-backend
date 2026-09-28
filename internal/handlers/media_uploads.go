@@ -9,6 +9,10 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
+// directCompletingRetrySeconds is the Retry-After of upload_completing: a
+// completion takes seconds.
+const directCompletingRetrySeconds = 5
+
 // startUploadBody is the body of POST /v1/uploads.
 type startUploadBody struct {
 	Purpose string                `json:"purpose"`
@@ -96,6 +100,11 @@ func directUploadError(c fiber.Ctx, err error) error {
 		return problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
 			"The parts are not the parts storage holds for this upload: send every part, in order, with the ETag its upload answered. POST /v1/uploads/{id}/parts lists them.",
 			"upload_parts_mismatch", nil)
+	case errors.Is(err, media.ErrDirectUploadCompleting):
+		c.Set(fiber.HeaderRetryAfter, strconv.Itoa(directCompletingRetrySeconds))
+		return problemWithFields(c, fiber.StatusConflict, "Conflict",
+			"Another request is completing this upload. Retry in a few seconds: once it is done, the completion answers its Media.",
+			"upload_completing", fiber.Map{"retryAfterSeconds": directCompletingRetrySeconds})
 	case errors.Is(err, media.ErrDirectUploadUnavailable):
 		return problemWithFields(c, fiber.StatusServiceUnavailable, "Service Unavailable",
 			"Direct upload is not available on this core.", "direct_upload_unavailable", nil)

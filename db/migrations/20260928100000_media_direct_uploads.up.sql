@@ -22,7 +22,16 @@ CREATE TABLE IF NOT EXISTS media_direct_uploads (
     -- Storage's multipart upload id: empty until storage opened it.
     multipart_upload_id TEXT NOT NULL DEFAULT '',
     expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- A completion's claim: taken in a short transaction before any storage
+    -- work and let go in another, so no lock is held while storage works.
+    -- The lease (claim_until) outlasts the completion's storage work; the
+    -- key it copies the file to (final_key) is staged with it. A claim whose
+    -- lease ran out is stale: the sweeper deletes what it left.
+    claim_id UUID,
+    claimed_at TIMESTAMPTZ,
+    claim_until TIMESTAMPTZ,
+    final_key TEXT
 );
 
 ALTER TABLE media_direct_uploads
@@ -33,4 +42,9 @@ ALTER TABLE media_direct_uploads
         FOREIGN KEY (object_key) REFERENCES media_upload_staging (object_key) ON DELETE CASCADE,
     DROP CONSTRAINT IF EXISTS media_direct_uploads_sizes_check,
     ADD CONSTRAINT media_direct_uploads_sizes_check
-        CHECK (declared_size > 0 AND declared_size <= max_bytes AND part_size > 0);
+        CHECK (declared_size > 0 AND declared_size <= max_bytes AND part_size > 0),
+    DROP CONSTRAINT IF EXISTS media_direct_uploads_claim_check,
+    ADD CONSTRAINT media_direct_uploads_claim_check
+        CHECK ((claim_id IS NULL) = (claimed_at IS NULL)
+            AND (claim_id IS NULL) = (claim_until IS NULL)
+            AND (claim_id IS NULL) = (final_key IS NULL));

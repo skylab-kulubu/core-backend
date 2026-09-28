@@ -5,8 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -74,9 +77,26 @@ type directEnv struct {
 
 func newDirectEnv(t *testing.T, limits media.DirectUploadLimits) *directEnv {
 	t.Helper()
+	return newDirectEnvWithPool(t, limits, 0)
+}
+
+// newDirectEnvWithPool is newDirectEnv whose core has at most maxConns
+// database connections (0: pgxpool's default).
+func newDirectEnvWithPool(t *testing.T, limits media.DirectUploadLimits, maxConns int32) *directEnv {
+	t.Helper()
 	pool := testpostgres.Start(t)
 	if err := migrate.Apply(context.Background(), pool); err != nil {
 		t.Fatal(err)
+	}
+	if maxConns > 0 {
+		config := pool.Config().Copy()
+		config.MaxConns = maxConns
+		small, err := pgxpool.NewWithConfig(context.Background(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(small.Close)
+		pool = small
 	}
 	fake := s3test.New(t)
 	clock := &manualClock{now: time.Now().UTC().Truncate(time.Second)}
@@ -137,10 +157,63 @@ func catalogueWith(t *testing.T, purpose string, change func(entry map[string]an
 // so the club_file purpose's event_editor rule lets them upload.
 func organizerToken(t *testing.T, keys *testauth.Bundle) string {
 	t.Helper()
-	return keys.Token(t, jwt.MapClaims{
-		"sub": uuid.NewString(), "email": uuid.NewString() + "@example.com", "given_name": "Y", "family_name": "K",
+	_, token := newOrganizer(t, keys)
+	return token
+}
+
+// newOrganizer is an organizer's id and token.
+func newOrganizer(t *testing.T, keys *testauth.Bundle) (uuid.UUID, string) {
+	t.Helper()
+	id := uuid.New()
+	return id, keys.Token(t, jwt.MapClaims{
+		"sub": id.String(), "email": uuid.NewString() + "@example.com", "given_name": "Y", "family_name": "K",
 		"groups": []string{"/UYELER/YK"},
 	})
+}
+
+// startSent starts an upload of file and sends its parts: the completion
+// body is ready.
+func (e *directEnv) startSent(t *testing.T, token, name string, file []byte) (string, string) {
+	t.Helper()
+	started := sendJSON(t, e.app, token, fiber.MethodPost, "/v1/uploads", startBody("club_file", name, len(file)))
+	if started.status != fiber.StatusCreated {
+		t.Fatalf("start: status %d body %v", started.status, started.body)
+	}
+	return started.body["id"].(string), completeBody(t, sendParts(t, partsOf(t, started.body), file))
+}
+
+// completeAsync completes the upload in the background, waiting as long as
+// storage is held.
+func (e *directEnv) completeAsync(t *testing.T, token, id, body string) <-chan jsonResponse {
+	t.Helper()
+	answer := make(chan jsonResponse, 1)
+	go func() {
+		req := httptest.NewRequest(fiber.MethodPost, "/v1/uploads/"+id+"/complete", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := e.app.Test(req, fiber.TestConfig{Timeout: 30 * time.Second})
+		if err != nil {
+			answer <- jsonResponse{status: -1, body: map[string]any{"error": err.Error()}}
+			return
+		}
+		defer resp.Body.Close()
+		got := map[string]any{}
+		_ = json.NewDecoder(resp.Body).Decode(&got)
+		answer <- jsonResponse{status: resp.StatusCode, body: got}
+	}()
+	return answer
+}
+
+// waitEntered waits until n requests are held.
+func waitEntered(t *testing.T, entered <-chan struct{}, n int) {
+	t.Helper()
+	for i := range n {
+		select {
+		case <-entered:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("only %d of %d requests reached storage", i, n)
+		}
+	}
 }
 
 func startBody(purpose, name string, size int) string {
@@ -615,47 +688,153 @@ func TestDirectUploadHasItsOwnBudgetHTTP(t *testing.T) {
 	}
 }
 
-// Two completions of one upload at once (a retry racing the first) are
-// one completion: the second waits for the first and answers its Media;
-// the file is copied once.
-func TestDirectUploadCompletionsOfOneUploadAreSerializedHTTP(t *testing.T) {
-	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
+// A completion holds no database lock or connection while storage works:
+// with a pool of two connections, three completions copying at once all
+// finish, and the database answers other requests meanwhile.
+func TestDirectUploadCompletionsHoldNoConnectionDuringTheCopyHTTP(t *testing.T) {
+	e := newDirectEnvWithPool(t, media.DefaultDirectUploadLimits(), 2)
 	organizer := organizerToken(t, e.keys)
-	file := pdfFile(partSize + 99)
-	started := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "iki kez.pdf", len(file)))
-	if started.status != fiber.StatusCreated {
-		t.Fatalf("start: status %d body %v", started.status, started.body)
+	type upload struct{ id, body string }
+	var uploads []upload
+	for range 3 {
+		id, body := e.startSent(t, organizer, "üç kopya.pdf", pdfFile(3000))
+		uploads = append(uploads, upload{id, body})
 	}
-	id := started.body["id"].(string)
-	body := completeBody(t, sendParts(t, partsOf(t, started.body), file))
+	entered, release := e.s3.Hold("CopyObject")
+	var answers []<-chan jsonResponse
+	for _, u := range uploads {
+		answers = append(answers, e.completeAsync(t, organizer, u.id, u.body))
+	}
+	waitEntered(t, entered, 3)
 
-	answers := make(chan jsonResponse, 2)
-	for range 2 {
-		go func() {
-			answers <- sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+id+"/complete", body)
-		}()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := e.store.GetDirectUpload(ctx, uuid.MustParse(uploads[0].id)); err != nil {
+		t.Fatalf("the database during the copies: %v", err)
 	}
-	first, second := <-answers, <-answers
-	for _, done := range []jsonResponse{first, second} {
-		if done.status != fiber.StatusCreated || done.body["id"] != id {
-			t.Fatalf("complete: status %d body %v", done.status, done.body)
+	if got := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 100)); got.status != fiber.StatusTooManyRequests {
+		t.Fatalf("a start during the copies: status %d body %v", got.status, got.body)
+	}
+	release()
+	for i, answer := range answers {
+		if done := <-answer; done.status != fiber.StatusCreated || done.body["id"] != uploads[i].id {
+			t.Fatalf("complete %d: status %d body %v", i, done.status, done.body)
 		}
 	}
-	if first.body["url"] != second.body["url"] {
-		t.Fatalf("two Media addresses: %v and %v", first.body["url"], second.body["url"])
+}
+
+// A second completion of an upload being completed (a retry racing the
+// first) does not wait on the first: it is told to retry, and the retry
+// answers the Media the first created. The file is copied once.
+func TestDirectUploadCompletionOfAnUploadBeingCompletedIsToldToRetryHTTP(t *testing.T) {
+	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
+	organizer := organizerToken(t, e.keys)
+	id, body := e.startSent(t, organizer, "iki kez.pdf", pdfFile(partSize+99))
+	entered, release := e.s3.Hold("CopyObject")
+	first := e.completeAsync(t, organizer, id, body)
+	waitEntered(t, entered, 1)
+
+	second := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+id+"/complete", body)
+	requireCode(t, second, fiber.StatusConflict, "upload_completing")
+	if second.body["retryAfterSeconds"] == nil {
+		t.Fatalf("problem %v", second.body)
+	}
+	if parts := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+id+"/parts", ""); parts.status != fiber.StatusConflict {
+		t.Fatalf("parts while completing: status %d body %v", parts.status, parts.body)
+	}
+	release()
+	done := <-first
+	if done.status != fiber.StatusCreated || done.body["id"] != id {
+		t.Fatalf("complete: status %d body %v", done.status, done.body)
+	}
+	retried := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+id+"/complete", body)
+	if retried.status != fiber.StatusCreated || retried.body["id"] != id || retried.body["url"] != done.body["url"] {
+		t.Fatalf("retry: status %d body %v", retried.status, retried.body)
 	}
 	if copies := e.s3.Count("CopyObject"); copies != 1 {
 		t.Fatalf("the file was copied %d times", copies)
 	}
-	var files []string
-	for _, key := range e.s3.Keys("media") {
-		if strings.HasPrefix(key, "files/") {
-			files = append(files, key)
+}
+
+// Account erasure's staged-upload step meets an upload being completed as a
+// live upload: it defers (its attempt is given back) at once, and does not
+// wait for the copy.
+func TestDirectUploadBeingCompletedDefersAccountErasureHTTP(t *testing.T) {
+	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
+	uploader, organizer := newOrganizer(t, e.keys)
+	id, body := e.startSent(t, organizer, "silinecek.pdf", pdfFile(3000))
+	entered, release := e.s3.Hold("CopyObject")
+	answer := e.completeAsync(t, organizer, id, body)
+	waitEntered(t, entered, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	err := media.NewImmediateBlobEraser(e.store, media.Buckets{Public: e.r2}).EnsureSubjectUploadsErased(ctx, uploader, e.clock.Now())
+	var deferred interface{ RetryAt() time.Time }
+	if !errors.As(err, &deferred) || errors.Is(err, context.DeadlineExceeded) || time.Since(start) > time.Second {
+		t.Fatalf("erasure during the copy: %v after %s", err, time.Since(start))
+	}
+	if !deferred.RetryAt().After(e.clock.Now()) {
+		t.Fatalf("retry at %s", deferred.RetryAt())
+	}
+	release()
+	if done := <-answer; done.status != fiber.StatusCreated {
+		t.Fatalf("complete: status %d body %v", done.status, done.body)
+	}
+}
+
+// A completion whose Media cannot be stored ends the upload: the joined file
+// is deleted with its copy, the upload no longer counts as open, and core's
+// failure is given back. An account being erased meanwhile is a refusal.
+func TestDirectUploadThatCannotBeStoredEndsHTTP(t *testing.T) {
+	e := newDirectEnv(t, media.DirectUploadLimits{MaxOpen: 1, DailyBytes: 10_000})
+
+	t.Run("core fails to store it", func(t *testing.T) {
+		organizer := organizerToken(t, e.keys)
+		id, body := e.startSent(t, organizer, "kayıp.pdf", pdfFile(6000))
+		entered, release := e.s3.Hold("CopyObject")
+		answer := e.completeAsync(t, organizer, id, body)
+		waitEntered(t, entered, 1)
+		// The final key's staging row goes: storing the Media fails.
+		if _, err := e.pool.Exec(context.Background(), `DELETE FROM media_upload_staging WHERE object_key LIKE 'files/%'`); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if len(files) != 1 {
-		t.Fatalf("final objects %v", files)
-	}
+		release()
+		if done := <-answer; done.status != fiber.StatusInternalServerError {
+			t.Fatalf("complete: status %d body %v", done.status, done.body)
+		}
+		for _, key := range e.s3.Keys("media") {
+			if strings.HasPrefix(key, "pending/") || strings.HasPrefix(key, "files/") {
+				t.Fatalf("left in storage: %s", key)
+			}
+		}
+		if _, err := e.store.GetDirectUpload(context.Background(), uuid.MustParse(id)); !errors.Is(err, media.ErrNotFound) {
+			t.Fatalf("the upload is still there: %v", err)
+		}
+		// Its place and its 6000 bytes are free again.
+		if next := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 6000)); next.status != fiber.StatusCreated {
+			t.Fatalf("after the failure: status %d body %v", next.status, next.body)
+		}
+	})
+
+	t.Run("the uploader's account is being erased", func(t *testing.T) {
+		uploader, organizer := newOrganizer(t, e.keys)
+		id, body := e.startSent(t, organizer, "gidecek.pdf", pdfFile(3000))
+		entered, release := e.s3.Hold("CopyObject")
+		answer := e.completeAsync(t, organizer, id, body)
+		waitEntered(t, entered, 1)
+		if _, err := user.NewPostgresStore(e.pool).RequestDeletion(context.Background(), uploader, nil); err != nil {
+			t.Fatal(err)
+		}
+		release()
+		if done := <-answer; done.status != fiber.StatusForbidden {
+			t.Fatalf("complete: status %d body %v", done.status, done.body)
+		}
+		if _, pending := e.s3.Object("media", "pending/"+id); pending {
+			t.Fatal("the refused completion left its pending object")
+		}
+	})
 }
 
 // An upload never completed is ended by the staging sweeper once it
@@ -759,5 +938,58 @@ func TestDirectUploadPurposeRulesHTTP(t *testing.T) {
 		fiber.StatusServiceUnavailable, "direct_upload_unavailable")
 	if anonymous := sendJSON(t, app, "", fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 100)); anonymous.status != fiber.StatusUnauthorized {
 		t.Fatalf("anonymous: status %d", anonymous.status)
+	}
+}
+
+// Every upload, single-step, without a purpose or as a profile picture,
+// refuses a file name with a control or an invisible format character: a
+// right-to-left override shows "a‮gnp.exe" as "aexe.png".
+func TestUploadsRefuseFileNamesThatReadAsAnotherHTTP(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	deps := memoryDeps()
+	deps.ParseToken = keys.Parse()
+	app := httpx.New(deps)
+	organizer := organizerToken(t, keys)
+	post := func(path, purpose, name string) int {
+		t.Helper()
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		if purpose != "" {
+			if err := form.WriteField("purpose", purpose); err != nil {
+				t.Fatal(err)
+			}
+		}
+		part, err := form.CreateFormFile("file", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(pngPicture(t)); err != nil {
+			t.Fatal(err)
+		}
+		if err := form.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(fiber.MethodPost, path, &body)
+		req.Header.Set("Content-Type", form.FormDataContentType())
+		req.Header.Set("Authorization", "Bearer "+organizer)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 10 * time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for _, name := range []string{"a‮gnp.exe", "kapak⁦.png", "a​.png"} {
+		for _, upload := range []struct{ path, purpose string }{
+			{"/v1/media", "event_cover"}, {"/v1/media", ""}, {"/v1/users/me/profile-picture", ""},
+		} {
+			if status := post(upload.path, upload.purpose, name); status != fiber.StatusBadRequest {
+				t.Errorf("%s (%q) named %q: status %d", upload.path, upload.purpose, name, status)
+			}
+		}
+	}
+	if status := post("/v1/media", "event_cover", "kapak görseli.png"); status != fiber.StatusCreated {
+		t.Fatalf("a plain name: status %d", status)
 	}
 }

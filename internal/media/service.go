@@ -58,7 +58,8 @@ type Service interface {
 	// StartDirectUpload starts a Direct upload of a large file for a Media
 	// purpose whose transport is Direct upload, under the same rules as a
 	// single-step upload, and charges its declared size to the person's
-	// upload budget. It answers with presigned addresses for every part.
+	// Direct upload budget (DirectUploadLimits). It answers with presigned
+	// addresses for every part.
 	StartDirectUpload(ctx context.Context, p authz.Principal, req DirectUploadRequest) (DirectUpload, error)
 	// DirectUploadParts answers the uploader of a Direct upload with the
 	// parts storage holds and new addresses for the others, so an
@@ -68,7 +69,10 @@ type Service interface {
 	// CompleteDirectUpload completes the uploader's Direct upload with the
 	// parts they sent: it checks the parts, the size and the file's type,
 	// copies the file to its final key and creates its Media. A file the
-	// purpose refuses ends the upload and gives its charge back.
+	// purpose refuses ends the upload and keeps its charge; core's own
+	// failure after the parts are joined ends it and gives the charge back.
+	// While another completion holds the upload it answers
+	// ErrDirectUploadCompleting.
 	CompleteDirectUpload(ctx context.Context, p authz.Principal, id uuid.UUID, parts []UploadedPart) (Media, error)
 }
 
@@ -253,6 +257,11 @@ func (s *service) purposeRefusal(p authz.Principal, purpose Purpose, transport T
 func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose, file UploadedFile) (Media, error) {
 	if err := s.purposeRefusal(p, purpose, TransportSingleStep); err != nil {
 		return Media{}, err
+	}
+	if !fileNameReadsAsItself(file.Name) {
+		// Kept with the Media and shown as its name: it must read as what
+		// it is, whichever way the file was uploaded.
+		return Media{}, ErrInvalid
 	}
 	private := purpose.Visibility == VisibilityPrivate
 	if len(file.Data) == 0 {
