@@ -22,8 +22,9 @@ type Querier interface {
 
 // OpenReadOnly opens a small pool whose every transaction is read-only
 // (`default_transaction_read_only`) and refuses a server that does not
-// report the setting on. what names the database in errors; no error carries
-// the DSN.
+// report the setting on. what (the variable that holds the DSN) names the
+// database in errors. No error carries the DSN or any part of it: pgx's
+// connect errors name the user, host and database, so they are dropped.
 func OpenReadOnly(ctx context.Context, what, dsn string) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {

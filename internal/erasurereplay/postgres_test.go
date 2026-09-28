@@ -126,7 +126,7 @@ func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testin
 	open("openBefore", "erase_skymail", restored.Add(-time.Minute))
 	open("openOtherStep", "erase_cms", restored.Add(time.Minute))
 
-	livePool, err := erasurereplay.OpenReadOnly(ctx, "live core", live.Config().ConnString())
+	livePool, err := erasurereplay.OpenReadOnly(ctx, "DATABASE_URL", live.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,9 +157,21 @@ func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testin
 	if !errors.As(err, &pgErr) || pgErr.Code != "25006" {
 		t.Fatalf("write through the read-only pool = %v", err)
 	}
-	if _, err := erasurereplay.OpenReadOnly(ctx, "core snapshot", "postgres://replay:pa55word-never-printed@[::1"); err == nil ||
-		strings.Contains(err.Error(), "pa55word") || !strings.HasPrefix(err.Error(), "core snapshot: ") {
-		t.Fatalf("bad DSN error = %v", err)
+	// Neither a DSN pgx cannot parse nor a database the server does not
+	// have shows any part of the DSN: the variable names the database.
+	missingDatabase, err := url.Parse(live.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingDatabase.Path = "/no_such_database"
+	for dsn, want := range map[string]string{
+		"postgres://replay:pa55word-never-printed@[::1": "CORE_SNAPSHOT_DATABASE_URL: the DSN cannot be parsed",
+		missingDatabase.String():                        "CORE_SNAPSHOT_DATABASE_URL: cannot connect",
+	} {
+		_, err := erasurereplay.OpenReadOnly(ctx, "CORE_SNAPSHOT_DATABASE_URL", dsn)
+		if err == nil || err.Error() != want {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
 	}
 
 	// Core snapshot: a person, and one anonymized before T.
@@ -170,7 +182,7 @@ func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testin
 	person, anonymized, stranger := uuid.New(), uuid.New(), uuid.New()
 	exec(t, coreRaw, `INSERT INTO users (id, email, school_email, first_name, last_name) VALUES ($1, ' Ada@Example.com', 'ada.lovelace@std.yildiz.edu.tr', 'Ada', 'Lovelace')`, person)
 	exec(t, coreRaw, `INSERT INTO users (id, email, school_email, account_state, anonymized_at) VALUES ($1, '', '', 'anonymized', now())`, anonymized)
-	corePool, err := erasurereplay.OpenReadOnly(ctx, "core snapshot", coreDSN)
+	corePool, err := erasurereplay.OpenReadOnly(ctx, "CORE_SNAPSHOT_DATABASE_URL", coreDSN)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +215,7 @@ func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testin
 	onlyLong, otherRealm := uuid.New(), uuid.New()
 	keycloakUser(t, keycloakRaw, "3a4d7c1e-0000-4000-8000-00000000e5k1", onlyLong, nil, map[string][]string{"personalEmail": {long}})
 	keycloakUser(t, keycloakRaw, "master", otherRealm, &email, nil)
-	keycloakPool, err := erasurereplay.OpenReadOnly(ctx, "keycloak snapshot", keycloakDSN)
+	keycloakPool, err := erasurereplay.OpenReadOnly(ctx, "KEYCLOAK_SNAPSHOT_DATABASE_URL", keycloakDSN)
 	if err != nil {
 		t.Fatal(err)
 	}

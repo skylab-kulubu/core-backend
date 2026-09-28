@@ -184,10 +184,12 @@ func TestPostgresReplayFromBackupSendsTheSnapshotsAddressesToTheRestoredService(
 		"ACCOUNT_ERASURE_SKYMAIL_URL":   httpServer.URL,
 		"ACCOUNT_ERASURE_CLIENT_ID":     "core-erasure",
 		"ACCOUNT_ERASURE_CLIENT_SECRET": "s3cr3t-value-never-printed",
+		// The snapshots' DSNs carry passwords: environment, never argv.
+		"CORE_SNAPSHOT_DATABASE_URL":     coreDSN,
+		"KEYCLOAK_SNAPSHOT_DATABASE_URL": keycloakDSN,
 	}
 	getenv := func(key string) string { return env[key] }
-	args := []string{"--service", "skymail", "--restored-at", restored.Format(time.RFC3339),
-		"--core-snapshot-dsn", coreDSN, "--keycloak-snapshot-dsn", keycloakDSN}
+	args := []string{"--service", "skymail", "--restored-at", restored.Format(time.RFC3339)}
 	var outputs []string
 	run := func(apply bool) (int, string) {
 		t.Helper()
@@ -280,11 +282,42 @@ func TestPostgresReplayFromBackupSendsTheSnapshotsAddressesToTheRestoredService(
 		t.Fatalf("clean run: exit %d\n%s", code, out)
 	}
 
+	// A snapshot that cannot be reached, or names a database the server does
+	// not have, is named by its variable alone: pgx's connect error, which
+	// names the user, host and database, is not printed.
+	unreachable, err := url.Parse(coreDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreachable.Host = "127.0.0.1:1"
+	env["CORE_SNAPSHOT_DATABASE_URL"] = unreachable.String()
+	service.reset()
+	if code, out = run(true); code != 1 || !strings.Contains(out, "CORE_SNAPSHOT_DATABASE_URL: cannot connect\n") {
+		t.Fatalf("unreachable core snapshot: exit %d\n%s", code, out)
+	}
+	noDatabase, err := url.Parse(keycloakDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noDatabase.Path = "/missing_db"
+	env["CORE_SNAPSHOT_DATABASE_URL"], env["KEYCLOAK_SNAPSHOT_DATABASE_URL"] = coreDSN, noDatabase.String()
+	if code, out = run(true); code != 1 || !strings.Contains(out, "KEYCLOAK_SNAPSHOT_DATABASE_URL: cannot connect\n") {
+		t.Fatalf("keycloak snapshot without its database: exit %d\n%s", code, out)
+	}
+	if tokens, bodies, _ := service.sent(); tokens != 0 || len(bodies) != 0 {
+		t.Fatalf("a run that could not open its snapshots asked for %d tokens and sent %d commands", tokens, len(bodies))
+	}
+
 	// No address, name, subject id, DSN password or secret in anything the
 	// command printed or logged.
 	everything := strings.ToLower(strings.Join(outputs, "\n") + logs.String())
+	serverAddress, err := url.Parse(server.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
 	forbidden := []string{"@example.com", "@example.org", "yildiz.edu.tr", "lovelace", "turing", "hopper", "early.bird",
-		"postgres:postgres", "s3cr3t", "replay-token"}
+		"postgres:postgres", "s3cr3t", "replay-token",
+		serverAddress.Host, "127.0.0.1", "user=postgres", "coretest", "core_at_t", "keycloak_at_t", "missing_db"}
 	for _, p := range people {
 		forbidden = append(forbidden, p.subject.String())
 	}

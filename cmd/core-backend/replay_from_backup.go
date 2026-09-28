@@ -16,43 +16,60 @@ import (
 // taken at T, the people whose deletion requests completed at or after T
 // (ADR-0053, docs/account-lifecycle.md, Replay after a restore):
 //
-//	core-backend replay-from-backup --service skymail --restored-at 2026-09-20T03:00:00Z \
-//	    --core-snapshot-dsn <dsn> --keycloak-snapshot-dsn <dsn> [--apply]
+//	CORE_SNAPSHOT_DATABASE_URL=… KEYCLOAK_SNAPSHOT_DATABASE_URL=… \
+//	    core-backend replay-from-backup --service skymail --restored-at 2026-09-20T03:00:00Z [--apply]
 //
-// It runs inside the core container, which has the environment. The two
-// snapshots are the core and Keycloak dumps taken with the service dump at
-// T, restored into temporary databases with no network.
+// It runs inside the core container, which has the rest of the environment.
+// The two snapshots are the core and Keycloak dumps taken with the service
+// dump at T, restored into temporary databases with no network. Their DSNs
+// carry passwords, so they come from the environment, never from argv.
 const replayFromBackupCommandName = "replay-from-backup"
+
+// The variables that hold the snapshots' DSNs.
+const (
+	coreSnapshotDatabaseURL     = "CORE_SNAPSHOT_DATABASE_URL"
+	keycloakSnapshotDatabaseURL = "KEYCLOAK_SNAPSHOT_DATABASE_URL"
+)
 
 // Exit codes beyond 0 (every request done, or resolved in a dry run), 1 (a
 // request failed) and 2 (usage or configuration).
 const replayExitRetryLater = 3
 
 type replayOptions struct {
-	service     erasure.Service
-	restoredAt  time.Time
-	coreDSN     string
-	keycloakDSN string
-	realm       string
-	apply       bool
+	service    erasure.Service
+	restoredAt time.Time
+	realm      string
+	apply      bool
 }
 
 // runReplayFromBackup wires the replay to the three databases, all read-only,
 // and with --apply to the service through the core-erasure client. It prints
 // counts and request ids only: never an address, a name, a subject id or a
-// configuration value.
+// configuration value; a database error names its variable, never the DSN.
 func runReplayFromBackup(args []string, getenv func(string) string, out io.Writer) int {
 	options, code := parseReplayOptions(args, out, time.Now())
 	if code != 0 {
 		return code
 	}
-	liveDSN := strings.TrimSpace(getenv("DATABASE_URL"))
-	if liveDSN == "" {
-		fmt.Fprintf(out, "%s needs DATABASE_URL\n", replayFromBackupCommandName)
+	dsns := map[string]string{}
+	var missing []string
+	for _, name := range []string{"DATABASE_URL", coreSnapshotDatabaseURL, keycloakSnapshotDatabaseURL} {
+		if dsns[name] = strings.TrimSpace(getenv(name)); dsns[name] == "" {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(out, "%s needs %s\n", replayFromBackupCommandName, strings.Join(missing, ", "))
 		return 2
 	}
-	if options.coreDSN == liveDSN || options.keycloakDSN == liveDSN {
-		fmt.Fprintln(out, "a snapshot DSN is DATABASE_URL: the snapshots are the dumps taken with the service dump, restored elsewhere")
+	liveDSN, coreDSN, keycloakDSN := dsns["DATABASE_URL"], dsns[coreSnapshotDatabaseURL], dsns[keycloakSnapshotDatabaseURL]
+	if coreDSN == liveDSN || keycloakDSN == liveDSN {
+		fmt.Fprintf(out, "%s or %s is DATABASE_URL: the snapshots are the dumps taken with the service dump, restored elsewhere\n",
+			coreSnapshotDatabaseURL, keycloakSnapshotDatabaseURL)
+		return 2
+	}
+	if coreDSN == keycloakDSN {
+		fmt.Fprintf(out, "%s and %s name the same database\n", coreSnapshotDatabaseURL, keycloakSnapshotDatabaseURL)
 		return 2
 	}
 	var sender *erasure.Client
@@ -72,19 +89,19 @@ func runReplayFromBackup(args []string, getenv func(string) string, out io.Write
 
 	ctx, stop := commandContext()
 	defer stop()
-	live, err := erasurereplay.OpenReadOnly(ctx, "live core", liveDSN)
+	live, err := erasurereplay.OpenReadOnly(ctx, "DATABASE_URL", liveDSN)
 	if err != nil {
 		fmt.Fprintln(out, err)
 		return 1
 	}
 	defer live.Close()
-	core, err := erasurereplay.OpenReadOnly(ctx, "core snapshot", options.coreDSN)
+	core, err := erasurereplay.OpenReadOnly(ctx, coreSnapshotDatabaseURL, coreDSN)
 	if err != nil {
 		fmt.Fprintln(out, err)
 		return 1
 	}
 	defer core.Close()
-	keycloak, err := erasurereplay.OpenReadOnly(ctx, "keycloak snapshot", options.keycloakDSN)
+	keycloak, err := erasurereplay.OpenReadOnly(ctx, keycloakSnapshotDatabaseURL, keycloakDSN)
 	if err != nil {
 		fmt.Fprintln(out, err)
 		return 1
@@ -108,10 +125,15 @@ func runReplayFromBackup(args []string, getenv func(string) string, out io.Write
 func parseReplayOptions(args []string, out io.Writer, now time.Time) (replayOptions, int) {
 	flags := flag.NewFlagSet(replayFromBackupCommandName, flag.ContinueOnError)
 	flags.SetOutput(out)
+	flags.Usage = func() {
+		fmt.Fprintf(out, "usage: %s=<dsn> %s=<dsn> core-backend %s --service <skymail|cms|forms> --restored-at <RFC 3339> [--keycloak-realm e-skylab] [--apply]\n",
+			coreSnapshotDatabaseURL, keycloakSnapshotDatabaseURL, replayFromBackupCommandName)
+		fmt.Fprintf(out, "%s and %s are the core and Keycloak dumps taken with the service dump at T, restored into temporary databases.\n",
+			coreSnapshotDatabaseURL, keycloakSnapshotDatabaseURL)
+		flags.PrintDefaults()
+	}
 	service := flags.String("service", "", "the restored service: skymail, cms or forms")
 	restoredAt := flags.String("restored-at", "", "the time T of the restored service dump (RFC 3339)")
-	coreDSN := flags.String("core-snapshot-dsn", "", "the core dump taken at T, restored into a temporary database")
-	keycloakDSN := flags.String("keycloak-snapshot-dsn", "", "the Keycloak dump taken at T, restored into a temporary database")
 	realm := flags.String("keycloak-realm", "e-skylab", "the realm of the people in the Keycloak dump")
 	apply := flags.Bool("apply", false, "send the Erasure command; without it the command only counts")
 	if err := flags.Parse(args); err != nil {
@@ -124,10 +146,7 @@ func parseReplayOptions(args []string, out io.Writer, now time.Time) (replayOpti
 	if flags.NArg() > 0 {
 		return usage("takes no arguments besides its flags")
 	}
-	options := replayOptions{
-		coreDSN: strings.TrimSpace(*coreDSN), keycloakDSN: strings.TrimSpace(*keycloakDSN),
-		realm: strings.TrimSpace(*realm), apply: *apply,
-	}
+	options := replayOptions{realm: strings.TrimSpace(*realm), apply: *apply}
 	var ok bool
 	if options.service, ok = erasure.ServiceNamed(strings.TrimSpace(*service)); !ok {
 		return usage("--service must be skymail, cms or forms")
@@ -140,12 +159,6 @@ func parseReplayOptions(args []string, out io.Writer, now time.Time) (replayOpti
 		return usage("--restored-at is in the future")
 	}
 	options.restoredAt = at
-	if options.coreDSN == "" || options.keycloakDSN == "" {
-		return usage("--core-snapshot-dsn and --keycloak-snapshot-dsn are required")
-	}
-	if options.coreDSN == options.keycloakDSN {
-		return usage("--core-snapshot-dsn and --keycloak-snapshot-dsn name the same database")
-	}
 	if options.realm == "" {
 		return usage("--keycloak-realm is empty")
 	}
