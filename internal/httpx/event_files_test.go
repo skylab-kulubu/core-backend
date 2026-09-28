@@ -380,7 +380,10 @@ func listed(t *testing.T, list []map[string]any, eventID string) map[string]any 
 func TestAnEventShowsAScannedFileToAnyoneOnlyOnceCleanHTTP(t *testing.T) {
 	f := newEventFilesEnv(t)
 	fake := clamdtest.New(t)
-	worker := media.NewScanWorker(media.ScanWorkerConfig{Store: f.store, Scanner: clamd.New(fake.Addr()), Public: f.r2})
+	worker, err := media.NewScanWorker(media.ScanWorkerConfig{Store: f.store, Scanner: clamd.New(fake.Addr()), Public: f.r2})
+	if err != nil {
+		t.Fatal(err)
+	}
 	f.app = f.appWith(t, catalogueWith(t, "club_file", func(entry map[string]any) { entry["scan"] = true }), worker)
 	organizer := organizerToken(t, f.keys)
 	eventID := f.createEvent(t, organizer, "WEBLAB")

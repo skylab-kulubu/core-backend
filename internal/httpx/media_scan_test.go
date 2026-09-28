@@ -93,7 +93,10 @@ func TestReadLinkWaitsForTheMalwareScanHTTP(t *testing.T) {
 func scannedDirectApp(t *testing.T, e *directEnv) (*fiber.App, *media.ScanWorker, *clamdtest.Server) {
 	t.Helper()
 	fake := clamdtest.New(t)
-	worker := media.NewScanWorker(media.ScanWorkerConfig{Store: e.store, Scanner: clamd.New(fake.Addr()), Public: e.r2})
+	worker, err := media.NewScanWorker(media.ScanWorkerConfig{Store: e.store, Scanner: clamd.New(fake.Addr()), Public: e.r2})
+	if err != nil {
+		t.Fatal(err)
+	}
 	deps := memoryDeps()
 	deps.Users = user.NewService(user.NewPostgresStore(e.pool))
 	deps.ParseToken = e.keys.Parse()
