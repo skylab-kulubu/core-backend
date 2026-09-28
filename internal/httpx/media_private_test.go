@@ -74,8 +74,8 @@ func TestPrivateMediaReadLinkOpensWithoutSignInHTTP(t *testing.T) {
 }
 
 // unscannedCatalogue is the reviewed catalogue with answer_file's malware
-// scan lifted: no scanner exists until ticket 12, so the reviewed
-// answer_file cannot be uploaded at all.
+// scan lifted: these tests run without a scanner, where the reviewed
+// answer_file cannot be uploaded at all (media_scan_test.go has one).
 func unscannedCatalogue(t testing.TB) media.Catalogue {
 	t.Helper()
 	var file map[string]any

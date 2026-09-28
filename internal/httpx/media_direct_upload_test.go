@@ -35,9 +35,10 @@ import (
 const partSize = 16 << 20
 
 // directCatalogue is the reviewed catalogue with club_file and video open:
-// no malware scan (core has no scanner until ticket 12, so the reviewed
-// club_file is refused) and attached by core (where club files and videos
-// are attached is not settled, so the reviewed ones name no product).
+// no malware scan (these tests run without a scanner, where the reviewed
+// club_file is refused; media_scan_test.go has one) and attached by core
+// (where club files and videos are attached is not settled, so the reviewed
+// ones name no product).
 func directCatalogue(t testing.TB) media.Catalogue {
 	t.Helper()
 	var file map[string]any
@@ -1125,8 +1126,9 @@ func TestDirectUploadPurposeRulesHTTP(t *testing.T) {
 	reviewed.ParseToken = keys.Parse()
 	reviewedApp := httpx.New(reviewed)
 
-	// The reviewed club_file needs a malware scan, and names no product
-	// that attaches it: refused until ticket 12 and a decision.
+	// The reviewed club_file needs a malware scan (this core has no
+	// scanner), and names no product that attaches it: refused until a
+	// decision (ticket 20).
 	requireCode(t, sendJSON(t, reviewedApp, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.zip", 100)),
 		fiber.StatusUnprocessableEntity, "purpose_not_available")
 	requireCode(t, sendJSON(t, reviewedApp, organizer, fiber.MethodPost, "/v1/uploads", startBody("answer_file_large", "a.zip", 100)),
