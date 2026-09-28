@@ -41,7 +41,7 @@ func TestDirectUploadsFollowTheirUploadersAccount(t *testing.T) {
 	r2, fake := multipartR2(t)
 	now := time.Now().UTC()
 	rec := directUploadRecord(uploader, now.Add(media.DirectUploadTTL))
-	if err := store.StageDirectUpload(ctx, rec); err != nil {
+	if err := store.StageDirectUpload(ctx, rec, 0, now); err != nil {
 		t.Fatal(err)
 	}
 	multipartID, err := r2.CreateMultipart(ctx, rec.Key)
@@ -60,7 +60,7 @@ func TestDirectUploadsFollowTheirUploadersAccount(t *testing.T) {
 	if _, err := users.RequestDeletion(ctx, uploader, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StageDirectUpload(ctx, directUploadRecord(uploader, now.Add(time.Hour))); !errors.Is(err, media.ErrForbidden) {
+	if err := store.StageDirectUpload(ctx, directUploadRecord(uploader, now.Add(time.Hour)), 0, now); !errors.Is(err, media.ErrForbidden) {
 		t.Fatalf("an upload started while the account is erased: %v", err)
 	}
 
@@ -87,8 +87,9 @@ func TestDirectUploadsFollowTheirUploadersAccount(t *testing.T) {
 	}
 }
 
-// An upload ended (published or dropped) is gone for every later end.
-func TestDirectUploadEndsOnce(t *testing.T) {
+// An upload ended is gone for every later end, and a person has at most
+// maxOpen uploads open: expired ones do not count.
+func TestDirectUploadEndsOnceAndOpenOnesAreCounted(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
 	if err := migrate.Apply(ctx, pool); err != nil {
@@ -101,7 +102,7 @@ func TestDirectUploadEndsOnce(t *testing.T) {
 	store := media.NewPostgresStore(pool)
 	now := time.Now().UTC()
 	rec := directUploadRecord(uploader, now.Add(time.Hour))
-	if err := store.StageDirectUpload(ctx, rec); err != nil {
+	if err := store.StageDirectUpload(ctx, rec, 2, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.DropDirectUpload(ctx, rec.ID, now); err != nil {
@@ -110,19 +111,28 @@ func TestDirectUploadEndsOnce(t *testing.T) {
 	if err := store.DropDirectUpload(ctx, rec.ID, now); !errors.Is(err, media.ErrNotFound) {
 		t.Fatalf("second drop: %v", err)
 	}
-	if err := store.StageUpload(ctx, "files/once", uploader, now.Add(time.Hour)); err != nil {
-		t.Fatal(err)
+	if _, err := store.BeginDirectCompletion(ctx, rec.ID); !errors.Is(err, media.ErrNotFound) {
+		t.Fatalf("completing a dropped upload: %v", err)
 	}
-	_, err := store.PublishDirectUpload(ctx, rec.ID, media.Media{
-		Name: rec.Name, Type: "application/pdf", Size: 100, UploadedBy: uploader, Kind: media.KindFile, Key: "files/once",
-	}, now)
-	if !errors.Is(err, media.ErrNotFound) {
-		t.Fatalf("publishing a dropped upload: %v", err)
-	}
-	// Its pending object is left to the sweeper at once; the other staged
-	// object waits for its own time.
+	// Its pending object is left to the sweeper at once.
 	report, err := media.PurgeStagedUploads(ctx, store, media.NewMemoryBlob(), now, 10)
 	if err != nil || report.Scanned != 1 || report.Resolved != 1 {
 		t.Fatalf("sweep: %+v err %v", report, err)
+	}
+
+	first := directUploadRecord(uploader, now.Add(time.Hour))
+	second := directUploadRecord(uploader, now.Add(2*time.Hour))
+	for _, open := range []media.DirectUploadRecord{first, second} {
+		if err := store.StageDirectUpload(ctx, open, 2, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var tooMany *media.TooManyOpenDirectUploads
+	err = store.StageDirectUpload(ctx, directUploadRecord(uploader, now.Add(3*time.Hour)), 2, now)
+	if !errors.As(err, &tooMany) || !tooMany.NextExpiry.Equal(first.ExpiresAt.Truncate(time.Microsecond)) {
+		t.Fatalf("a third open upload: %v", err)
+	}
+	if err := store.StageDirectUpload(ctx, directUploadRecord(uploader, now.Add(3*time.Hour)), 2, first.ExpiresAt); err != nil {
+		t.Fatalf("once the first expired: %v", err)
 	}
 }

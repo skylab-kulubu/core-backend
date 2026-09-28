@@ -101,6 +101,12 @@ func TestR2_CompletesAMultipartUploadThenReadsCopiesAndSizesIt(t *testing.T) {
 	if open := fake.OpenUploads("media"); len(open) != 0 {
 		t.Fatalf("open uploads after completion %v", open)
 	}
+	// The public bucket serves every key at the CDN, pending ones too: the
+	// joined object downloads there, it never renders.
+	pending, ok := fake.Object("media", "pending/two")
+	if !ok || pending.ContentType != "application/octet-stream" || pending.ContentDisposition != "attachment" {
+		t.Fatalf("pending object %+v (found %v)", pending, ok)
+	}
 	size, err := r2.Size(ctx, "pending/two")
 	if err != nil || size != 13 {
 		t.Fatalf("size %d err %v", size, err)

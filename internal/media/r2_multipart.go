@@ -24,9 +24,12 @@ func (r *R2) CreateMultipart(ctx context.Context, key string) (string, error) {
 	out, err := r.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(key),
-		// What the browser sends is not served from here: completion copies
-		// it to its final key with the serving policy's metadata.
-		ContentType: aws.String("application/octet-stream"),
+		// Completion copies the file to its final key with the serving
+		// policy's metadata. Until then the joined object sits at its
+		// pending key, which the public bucket's CDN would serve too: as an
+		// opaque download, never rendered.
+		ContentType:        aws.String(pendingMetadata.ContentType),
+		ContentDisposition: aws.String(pendingMetadata.ContentDisposition),
 	})
 	if err != nil {
 		return "", err

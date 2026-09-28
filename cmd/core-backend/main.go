@@ -144,11 +144,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// One budget per person for single-step uploads and Direct uploads.
-	uploadLimiter := media.NewUploadLimiter(uploadLimits, time.Now)
-	// Direct upload needs R2's multipart upload; a core without R2 answers
-	// it with 503 direct_upload_unavailable.
-	directUploads := media.DirectUploadConfig{Limiter: uploadLimiter}
+	// Direct upload has its own budget, apart from single-step uploads
+	// (decision Q23). It needs R2's multipart upload; a core without R2
+	// answers it with 503 direct_upload_unavailable.
+	directUploadLimits, err := media.DirectUploadLimitsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	directUploads := media.DirectUploadConfig{Limiter: media.NewDirectUploadLimiter(directUploadLimits, time.Now)}
 	if r2, ok := publicBlobs.(*media.R2); ok {
 		directUploads.Storage = r2
 	} else {
@@ -489,7 +492,7 @@ func main() {
 			return users.AttributionState(ctx, id)
 		},
 		TrustedProxies:     trustedProxies,
-		MediaUploadLimiter: uploadLimiter,
+		MediaUploadLimiter: media.NewUploadLimiter(uploadLimits, time.Now),
 		ServiceClients:     serviceClients,
 	})
 

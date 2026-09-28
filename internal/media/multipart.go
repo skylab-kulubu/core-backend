@@ -15,6 +15,10 @@ import (
 // two days.
 const pendingKeyPrefix = "pending/"
 
+// pendingMetadata is what a pending object is stored with: an opaque
+// download, whatever the browser sent.
+var pendingMetadata = BlobMetadata{ContentType: "application/octet-stream", ContentDisposition: "attachment"}
+
 // isPendingKey reports whether the key is a Direct upload's pending object,
 // in the public bucket (pending/…) or the private one (private/pending/…).
 func isPendingKey(key string) bool {
@@ -43,7 +47,8 @@ type UploadedPart struct {
 // the browser fills through presigned part addresses, which core then
 // completes, checks, and copies to its final key. R2 is one.
 type MultipartStore interface {
-	// CreateMultipart opens a multipart upload at key.
+	// CreateMultipart opens a multipart upload at key, whose object is
+	// stored as an opaque download (pendingMetadata).
 	CreateMultipart(ctx context.Context, key string) (uploadID string, err error)
 	// PresignPart is the address a browser PUTs one part to: signed for
 	// exactly size bytes, valid for ttl.

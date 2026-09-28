@@ -119,9 +119,8 @@ func New(deps Deps) *fiber.App {
 		uploadLimiter = media.NewUploadLimiter(media.DefaultUploadLimits(), time.Now)
 	}
 	// One budget per person across every single-step upload route. Direct
-	// upload (/v1/uploads) is charged the size it declares by the media
-	// service itself, to the same budget (main hands it the same limiter):
-	// its bytes never pass through core.
+	// upload (/v1/uploads) stays off it: it has its own budget, kept by the
+	// media service (decision Q23), since its bytes never pass through core.
 	limitUploads := handlers.LimitMediaUploads(uploadLimiter)
 	var certs *handlers.CertificateHandler
 	if deps.Certificates != nil {

@@ -84,7 +84,6 @@ type service struct {
 	serviceProducts    []authz.Product
 	private            *PrivateMedia
 	direct             DirectUploadConfig
-	charges            *directCharges
 }
 
 func NewService(media Store, blobs BlobStore, az authz.Authorizer, publicBase string) Service {
@@ -150,7 +149,7 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	return &service{
 		media: media, blobs: blobs, objects: objects, authz: az, addresses: addresses, uploadStagingGrace: grace,
 		decoding: decoding, serviceProducts: options.ServiceProducts, private: options.Private,
-		direct: options.Direct, charges: &directCharges{},
+		direct: options.Direct,
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/config"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
@@ -56,40 +57,80 @@ func directCatalogue(t testing.TB) media.Catalogue {
 }
 
 // directEnv is the assembled app with Direct upload: real PostgreSQL, R2
-// against a fake S3, and the upload budget on a clock the test moves.
+// against a fake S3, and the Direct upload budget on a clock the test moves.
 type directEnv struct {
 	app     *fiber.App
+	pool    *pgxpool.Pool
 	keys    *testauth.Bundle
 	s3      *s3test.Server
 	r2      *media.R2
 	store   *media.PostgresStore
 	clock   *manualClock
-	limiter *media.UploadLimiter
+	limiter *media.DirectUploadLimiter
+	// singleStep is the single-step upload budget: Direct upload never
+	// touches it (decision Q23).
+	singleStep *media.UploadLimiter
 }
 
-func newDirectEnv(t *testing.T, limits media.UploadLimits) *directEnv {
+func newDirectEnv(t *testing.T, limits media.DirectUploadLimits) *directEnv {
 	t.Helper()
 	pool := testpostgres.Start(t)
 	if err := migrate.Apply(context.Background(), pool); err != nil {
 		t.Fatal(err)
 	}
 	fake := s3test.New(t)
-	r2 := media.NewR2(media.R2Config{Endpoint: fake.URL, AccessKey: "access", SecretKey: "secret", Bucket: "media"})
 	clock := &manualClock{now: time.Now().UTC().Truncate(time.Second)}
-	limiter := media.NewUploadLimiter(limits, clock.Now)
-	store := media.NewPostgresStore(pool)
-	keys := testauth.New(t)
+	e := &directEnv{
+		pool: pool, keys: testauth.New(t), s3: fake,
+		r2:         media.NewR2(media.R2Config{Endpoint: fake.URL, AccessKey: "access", SecretKey: "secret", Bucket: "media"}),
+		store:      media.NewPostgresStore(pool),
+		clock:      clock,
+		limiter:    media.NewDirectUploadLimiter(limits, clock.Now),
+		singleStep: media.NewUploadLimiter(media.DefaultUploadLimits(), clock.Now),
+	}
+	e.app = e.appWith(t, directCatalogue(t))
+	return e
+}
+
+// appWith is another core over the same database, storage and budget, with
+// its own catalogue: the same core after a deploy that changed it.
+func (e *directEnv) appWith(t *testing.T, catalogue media.Catalogue) *fiber.App {
+	t.Helper()
 	deps := memoryDeps()
-	deps.Users = user.NewService(user.NewPostgresStore(pool))
-	deps.ParseToken = keys.Parse()
-	deps.MediaUploadLimiter = limiter
-	deps.Media = media.NewServiceWithOptions(store, r2, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test",
+	deps.Users = user.NewService(user.NewPostgresStore(e.pool))
+	deps.ParseToken = e.keys.Parse()
+	deps.MediaUploadLimiter = e.singleStep
+	deps.Media = media.NewServiceWithOptions(e.store, e.r2, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test",
 		media.ServiceOptions{
-			Catalogue:       directCatalogue(t),
+			Catalogue:       catalogue,
 			ServiceProducts: deps.ServiceClients.Products(),
-			Direct:          media.DirectUploadConfig{Storage: r2, Limiter: limiter, Now: clock.Now},
+			Direct:          media.DirectUploadConfig{Storage: e.r2, Limiter: e.limiter, Now: e.clock.Now},
 		})
-	return &directEnv{app: httpx.New(deps), keys: keys, s3: fake, r2: r2, store: store, clock: clock, limiter: limiter}
+	return httpx.New(deps)
+}
+
+// catalogueWith is directCatalogue after one change to a purpose.
+func catalogueWith(t *testing.T, purpose string, change func(entry map[string]any)) media.Catalogue {
+	t.Helper()
+	var file map[string]any
+	if err := json.Unmarshal(config.MediaPurposes, &file); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"club_file", "video"} {
+		entry := file["purposes"].(map[string]any)[name].(map[string]any)
+		entry["scan"] = false
+		entry["attach"] = "core"
+	}
+	change(file["purposes"].(map[string]any)[purpose].(map[string]any))
+	raw, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogue, err := media.ParseCatalogue(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalogue
 }
 
 // organizerToken is an organizer's token: someone who may create Events,
@@ -203,7 +244,7 @@ func (e *directEnv) upload(t *testing.T, token, purpose, name string, file []byt
 }
 
 func TestDirectUploadCompletesIntoAMediaHTTP(t *testing.T) {
-	e := newDirectEnv(t, media.DefaultUploadLimits())
+	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
 	organizer := organizerToken(t, e.keys)
 
 	t.Run("a PDF in two parts", func(t *testing.T) {
@@ -220,6 +261,12 @@ func TestDirectUploadCompletesIntoAMediaHTTP(t *testing.T) {
 		id := started.body["id"].(string)
 		if open := e.s3.OpenUploads("media"); !slices.Equal(open, []string{"pending/" + id}) {
 			t.Fatalf("open uploads %v", open)
+		}
+		// Should the pending object ever be reached at its CDN address, it
+		// downloads; it never renders.
+		if meta, ok := e.s3.UploadMetadata("media", "pending/"+id); !ok || meta.ContentType != "application/octet-stream" ||
+			meta.ContentDisposition != "attachment" {
+			t.Fatalf("pending upload metadata %+v (found %v)", meta, ok)
 		}
 
 		sent := sendParts(t, parts, file)
@@ -314,7 +361,7 @@ func TestDirectUploadCompletesIntoAMediaHTTP(t *testing.T) {
 }
 
 func TestDirectUploadRefusalsHTTP(t *testing.T) {
-	e := newDirectEnv(t, media.DefaultUploadLimits())
+	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
 	organizer := organizerToken(t, e.keys)
 
 	start := func(t *testing.T, file []byte) (string, []map[string]any) {
@@ -381,6 +428,55 @@ func TestDirectUploadRefusalsHTTP(t *testing.T) {
 		ended(t, id, sent)
 	})
 
+	t.Run("the catalogue as it is at completion", func(t *testing.T) {
+		// A ZIP started while club_file took ZIPs, completed after a deploy
+		// that took ZIP out of it.
+		file := zipFile(t, 100)
+		started := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.zip", len(file)))
+		if started.status != fiber.StatusCreated {
+			t.Fatalf("start: status %d body %v", started.status, started.body)
+		}
+		id := started.body["id"].(string)
+		sent := sendParts(t, partsOf(t, started.body), file)
+		deployed := e.appWith(t, catalogueWith(t, "club_file", func(entry map[string]any) {
+			entry["types"] = []any{"application/pdf"}
+		}))
+		done := sendJSON(t, deployed, organizer, fiber.MethodPost, "/v1/uploads/"+id+"/complete", completeBody(t, sent))
+		requireCode(t, done, fiber.StatusUnsupportedMediaType, "media_type_not_allowed")
+		if allowed, _ := done.body["allowedTypes"].([]any); len(allowed) != 1 || allowed[0] != "application/pdf" {
+			t.Fatalf("problem %v", done.body)
+		}
+		ended(t, id, sent)
+
+		// And a maximum the deploy lowered under the file.
+		file = pdfFile(1<<20 + 10)
+		started = sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", len(file)))
+		if started.status != fiber.StatusCreated {
+			t.Fatalf("start: status %d body %v", started.status, started.body)
+		}
+		id = started.body["id"].(string)
+		sent = sendParts(t, partsOf(t, started.body), file)
+		smaller := e.appWith(t, catalogueWith(t, "club_file", func(entry map[string]any) { entry["max_mib"] = 1 }))
+		done = sendJSON(t, smaller, organizer, fiber.MethodPost, "/v1/uploads/"+id+"/complete", completeBody(t, sent))
+		requireCode(t, done, fiber.StatusRequestEntityTooLarge, "media_too_large")
+		if done.body["maxBytes"] != float64(1<<20) {
+			t.Fatalf("problem %v", done.body)
+		}
+		ended(t, id, sent)
+	})
+
+	t.Run("a completion core fails leaves no pending object", func(t *testing.T) {
+		file := pdfFile(3000)
+		id, parts := start(t, file)
+		sent := sendParts(t, parts, file)
+		e.s3.Fail("GetObject", http.StatusForbidden, "AccessDenied")
+		done := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+id+"/complete", completeBody(t, sent))
+		if done.status != fiber.StatusInternalServerError {
+			t.Fatalf("complete: status %d body %v", done.status, done.body)
+		}
+		ended(t, id, sent)
+	})
+
 	t.Run("parts that are not the stored ones leave the upload open", func(t *testing.T) {
 		file := pdfFile(3000)
 		id, parts := start(t, file)
@@ -418,74 +514,154 @@ func TestDirectUploadRefusalsHTTP(t *testing.T) {
 	})
 }
 
-// A Direct upload is charged to the same budget as single-step uploads, for
-// the size it declares, when it starts. A file refused at completion is
-// given back, and so is an upload that never completes once it expires, or
-// one core failed to start.
-func TestDirectUploadIsChargedToThePersonsUploadBudgetHTTP(t *testing.T) {
-	e := newDirectEnv(t, media.UploadLimits{Count: 3, CountWindow: time.Hour, DailyBytes: 10_000})
+// Direct upload has its own budget, apart from single-step uploads
+// (decision Q23: the product that grants a Direct upload limits it, and
+// core is that product for the uploads it starts): a few uploads open at
+// once, and a volume of declared bytes per rolling day. A file refused at
+// completion stays charged, as a single-step refusal does, so refused 2 GiB
+// uploads cannot be repeated without end; only core's own failures are
+// given back.
+func TestDirectUploadHasItsOwnBudgetHTTP(t *testing.T) {
+	e := newDirectEnv(t, media.DirectUploadLimits{MaxOpen: 2, DailyBytes: 10_000})
+
+	t.Run("a refused file stays charged", func(t *testing.T) {
+		organizer := organizerToken(t, e.keys)
+		first := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 6000))
+		if first.status != fiber.StatusCreated {
+			t.Fatalf("start: status %d body %v", first.status, first.body)
+		}
+		sent := sendParts(t, partsOf(t, first.body), bytes.Repeat([]byte{'x'}, 6000))
+		refused := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+first.body["id"].(string)+"/complete", completeBody(t, sent))
+		requireCode(t, refused, fiber.StatusUnsupportedMediaType, "media_type_not_allowed")
+
+		again := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 6000))
+		requireCode(t, again, fiber.StatusTooManyRequests, "media_rate_limited")
+		if again.body["limit"] != "volume" || again.body["maxDailyBytes"] != float64(10_000) || again.body["retryAfterSeconds"] == nil {
+			t.Fatalf("problem %v", again.body)
+		}
+		// The next day it fits again.
+		e.clock.Advance(24 * time.Hour)
+		if next := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 6000)); next.status != fiber.StatusCreated {
+			t.Fatalf("a day later: status %d body %v", next.status, next.body)
+		}
+	})
+
+	t.Run("a few uploads open at once", func(t *testing.T) {
+		organizer := organizerToken(t, e.keys)
+		var open []jsonResponse
+		for range 2 {
+			started := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 1000))
+			if started.status != fiber.StatusCreated {
+				t.Fatalf("start: status %d body %v", started.status, started.body)
+			}
+			open = append(open, started)
+		}
+		third := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 1000))
+		requireCode(t, third, fiber.StatusTooManyRequests, "media_rate_limited")
+		if third.body["limit"] != "open" || third.body["maxOpenUploads"] != float64(2) ||
+			third.body["retryAfterSeconds"] != float64(media.DirectUploadTTL/time.Second) {
+			t.Fatalf("problem %v", third.body)
+		}
+		// Completing one frees its place.
+		done := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+open[0].body["id"].(string)+"/complete",
+			completeBody(t, sendParts(t, partsOf(t, open[0].body), pdfFile(1000))))
+		if done.status != fiber.StatusCreated {
+			t.Fatalf("complete: status %d body %v", done.status, done.body)
+		}
+		if started := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 1000)); started.status != fiber.StatusCreated {
+			t.Fatalf("after a completion: status %d body %v", started.status, started.body)
+		}
+		// So does an upload expiring, swept or not.
+		requireCode(t, sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 1000)),
+			fiber.StatusTooManyRequests, "media_rate_limited")
+		e.clock.Advance(media.DirectUploadTTL)
+		if started := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 1000)); started.status != fiber.StatusCreated {
+			t.Fatalf("after the uploads expired: status %d body %v", started.status, started.body)
+		}
+	})
+
+	t.Run("core's own failures are given back", func(t *testing.T) {
+		organizer := organizerToken(t, e.keys)
+		e.s3.Fail("CreateMultipartUpload", http.StatusForbidden, "AccessDenied")
+		if failed := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 6000)); failed.status != fiber.StatusInternalServerError {
+			t.Fatalf("storage down at the start: status %d body %v", failed.status, failed.body)
+		}
+		started := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 6000))
+		if started.status != fiber.StatusCreated {
+			t.Fatalf("after the failed start: status %d body %v", started.status, started.body)
+		}
+		id := started.body["id"].(string)
+		sent := sendParts(t, partsOf(t, started.body), pdfFile(6000))
+		e.s3.Fail("CopyObject", http.StatusForbidden, "AccessDenied")
+		failed := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+id+"/complete", completeBody(t, sent))
+		if failed.status != fiber.StatusInternalServerError {
+			t.Fatalf("storage down at the copy: status %d body %v", failed.status, failed.body)
+		}
+		// The joined object is not left at its pending key, and the upload
+		// is over: the file must be sent again.
+		if _, pending := e.s3.Object("media", "pending/"+id); pending {
+			t.Fatal("the failed completion left its pending object")
+		}
+		if again := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+id+"/complete", completeBody(t, sent)); again.status != fiber.StatusNotFound {
+			t.Fatalf("completing it again: status %d body %v", again.status, again.body)
+		}
+		if next := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 6000)); next.status != fiber.StatusCreated {
+			t.Fatalf("after the failed completion: status %d body %v", next.status, next.body)
+		}
+	})
+
+	if tracked := e.singleStep.Tracked(); tracked != 0 {
+		t.Fatalf("Direct uploads were charged to the single-step budget (%d people)", tracked)
+	}
+}
+
+// Two completions of one upload at once (a retry racing the first) are
+// one completion: the second waits for the first and answers its Media;
+// the file is copied once.
+func TestDirectUploadCompletionsOfOneUploadAreSerializedHTTP(t *testing.T) {
+	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
 	organizer := organizerToken(t, e.keys)
-	start := func(size int) jsonResponse {
-		return sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", size))
+	file := pdfFile(partSize + 99)
+	started := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "iki kez.pdf", len(file)))
+	if started.status != fiber.StatusCreated {
+		t.Fatalf("start: status %d body %v", started.status, started.body)
 	}
+	id := started.body["id"].(string)
+	body := completeBody(t, sendParts(t, partsOf(t, started.body), file))
 
-	first := start(6000)
-	if first.status != fiber.StatusCreated {
-		t.Fatalf("start: status %d body %v", first.status, first.body)
+	answers := make(chan jsonResponse, 2)
+	for range 2 {
+		go func() {
+			answers <- sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+id+"/complete", body)
+		}()
 	}
-	over := start(6000)
-	requireCode(t, over, fiber.StatusTooManyRequests, "media_rate_limited")
-	if over.body["limit"] != "volume" || over.body["maxDailyBytes"] != float64(10_000) {
-		t.Fatalf("problem %v", over.body)
-	}
-
-	// The first file is refused at completion (not a PDF): given back.
-	file := bytes.Repeat([]byte{'x'}, 6000)
-	sent := sendParts(t, partsOf(t, first.body), file)
-	refused := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+first.body["id"].(string)+"/complete", completeBody(t, sent))
-	requireCode(t, refused, fiber.StatusUnsupportedMediaType, "media_type_not_allowed")
-	second := start(6000)
-	if second.status != fiber.StatusCreated {
-		t.Fatalf("after the refusal: status %d body %v", second.status, second.body)
-	}
-
-	// The second is never completed: it counts until it expires.
-	requireCode(t, start(6000), fiber.StatusTooManyRequests, "media_rate_limited")
-	e.clock.Advance(media.DirectUploadTTL)
-	third := start(6000)
-	if third.status != fiber.StatusCreated {
-		t.Fatalf("after the upload expired: status %d body %v", third.status, third.body)
-	}
-	// A completed upload stays charged.
-	done := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+third.body["id"].(string)+"/complete",
-		completeBody(t, sendParts(t, partsOf(t, third.body), pdfFile(6000))))
-	if done.status != fiber.StatusCreated {
-		t.Fatalf("complete: status %d body %v", done.status, done.body)
-	}
-	requireCode(t, start(6000), fiber.StatusTooManyRequests, "media_rate_limited")
-
-	// Storage failing to open the upload is core's failure: given back. With
-	// the completed upload, three uploads fit the hour: two more after it.
-	e.s3.Fail("CreateMultipartUpload", http.StatusForbidden, "AccessDenied")
-	if failed := start(1000); failed.status != fiber.StatusInternalServerError {
-		t.Fatalf("storage down: status %d body %v", failed.status, failed.body)
-	}
-	for i := range 2 {
-		if ok := start(1000); ok.status != fiber.StatusCreated {
-			t.Fatalf("upload %d after the failure: status %d body %v", i+2, ok.status, ok.body)
+	first, second := <-answers, <-answers
+	for _, done := range []jsonResponse{first, second} {
+		if done.status != fiber.StatusCreated || done.body["id"] != id {
+			t.Fatalf("complete: status %d body %v", done.status, done.body)
 		}
 	}
-	count := start(1000)
-	requireCode(t, count, fiber.StatusTooManyRequests, "media_rate_limited")
-	if count.body["limit"] != "uploads" {
-		t.Fatalf("problem %v", count.body)
+	if first.body["url"] != second.body["url"] {
+		t.Fatalf("two Media addresses: %v and %v", first.body["url"], second.body["url"])
+	}
+	if copies := e.s3.Count("CopyObject"); copies != 1 {
+		t.Fatalf("the file was copied %d times", copies)
+	}
+	var files []string
+	for _, key := range e.s3.Keys("media") {
+		if strings.HasPrefix(key, "files/") {
+			files = append(files, key)
+		}
+	}
+	if len(files) != 1 {
+		t.Fatalf("final objects %v", files)
 	}
 }
 
 // An upload never completed is ended by the staging sweeper once it
 // expires: its multipart upload is aborted and its record goes.
 func TestDirectUploadThatExpiresIsAbortedByTheStagingSweeperHTTP(t *testing.T) {
-	e := newDirectEnv(t, media.DefaultUploadLimits())
+	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
 	organizer := organizerToken(t, e.keys)
 	file := pdfFile(partSize + 10)
 	started := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "yarım.pdf", len(file)))
@@ -568,7 +744,12 @@ func TestDirectUploadPurposeRulesHTTP(t *testing.T) {
 			`{"purpose":"club_file","name":"a.pdf","size":100,"limits":`+limits+`}`)
 		requireCode(t, wide, fiber.StatusBadRequest, "media_limits_too_wide")
 	}
-	for _, body := range []string{startBody("club_file", "", 100), startBody("club_file", "a.pdf", 0), `{"purpose":"club_file","name":"a\u0000.pdf","size":1}`, "not json"} {
+	for _, body := range []string{
+		startBody("club_file", "", 100), startBody("club_file", "a.pdf", 0), `{"purpose":"club_file","name":"a\u0000.pdf","size":1}`,
+		// A right-to-left override shows "a\u202Epiz.exe" as "aexe.zip".
+		`{"purpose":"club_file","name":"a\u202epiz.exe","size":1}`, `{"purpose":"club_file","name":"a\u2066b.pdf","size":1}`,
+		"not json",
+	} {
 		if got := sendJSON(t, app, organizer, fiber.MethodPost, "/v1/uploads", body); got.status != fiber.StatusBadRequest {
 			t.Fatalf("%s: status %d body %v", body, got.status, got.body)
 		}

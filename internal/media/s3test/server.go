@@ -41,6 +41,9 @@ type part struct {
 type upload struct {
 	bucket, key string
 	parts       map[int32]part
+	// meta is what the object is stored with once completed: the
+	// metadata the upload was created with.
+	meta Object
 }
 
 // Server is the fake.
@@ -57,6 +60,8 @@ type Server struct {
 	// partQueries are the query strings of the part uploads received: the
 	// presigned addresses' signing parameters.
 	partQueries []url.Values
+	// counts are the requests received, by operation.
+	counts map[string]int
 }
 
 type failure struct {
@@ -67,7 +72,7 @@ type failure struct {
 // New starts the fake; it stops with the test.
 func New(t testing.TB) *Server {
 	t.Helper()
-	s := &Server{objects: map[string]Object{}, uploads: map[string]*upload{}, failures: map[string][]failure{}}
+	s := &Server{objects: map[string]Object{}, uploads: map[string]*upload{}, failures: map[string][]failure{}, counts: map[string]int{}}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.Close)
 	return s
@@ -119,6 +124,27 @@ func (s *Server) OpenUploads(bucket string) []string {
 	return keys
 }
 
+// UploadMetadata is the metadata of the multipart upload open at key in
+// bucket, as it was created: what the object is stored with once it is
+// completed.
+func (s *Server) UploadMetadata(bucket, key string) (Object, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, u := range s.uploads {
+		if u.bucket == bucket && u.key == key {
+			return u.meta, true
+		}
+	}
+	return Object{}, false
+}
+
+// Count is how many requests of the operation the fake received.
+func (s *Server) Count(operation string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.counts[operation]
+}
+
 // Aborted are the keys whose multipart upload was aborted, in order.
 func (s *Server) Aborted() []string {
 	s.mu.Lock()
@@ -137,13 +163,16 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	bucket, key, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	q := r.URL.Query()
 	operation := operationOf(r, key, q)
+	s.mu.Lock()
+	s.counts[operation]++
+	s.mu.Unlock()
 	if f, failed := s.takeFailure(operation); failed {
 		writeError(w, f.status, f.code)
 		return
 	}
 	switch operation {
 	case "CreateMultipartUpload":
-		s.createUpload(w, bucket, key)
+		s.createUpload(w, r, bucket, key)
 	case "UploadPart":
 		s.uploadPart(w, r, q)
 	case "ListParts":
@@ -209,11 +238,13 @@ func (s *Server) takeFailure(operation string) (failure, bool) {
 	return queued[0], true
 }
 
-func (s *Server) createUpload(w http.ResponseWriter, bucket, key string) {
+func (s *Server) createUpload(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	s.mu.Lock()
 	s.lastID++
 	id := "upload-" + strconv.Itoa(s.lastID)
-	s.uploads[id] = &upload{bucket: bucket, key: key, parts: map[int32]part{}}
+	s.uploads[id] = &upload{bucket: bucket, key: key, parts: map[int32]part{}, meta: Object{
+		ContentType: r.Header.Get("Content-Type"), ContentDisposition: r.Header.Get("Content-Disposition"),
+	}}
 	s.mu.Unlock()
 	writeXML(w, http.StatusOK, initiateResult{Bucket: bucket, Key: key, UploadID: id})
 }
@@ -294,7 +325,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, bucket, key, i
 	}
 	whole := md5.Sum(sums)
 	etag := fmt.Sprintf(`"%s-%d"`, hex.EncodeToString(whole[:]), len(body.Parts))
-	s.objects[bucket+"/"+key] = Object{Data: data.Bytes(), ContentType: "binary/octet-stream", ETag: etag}
+	s.objects[bucket+"/"+key] = Object{Data: data.Bytes(), ContentType: u.meta.ContentType, ContentDisposition: u.meta.ContentDisposition, ETag: etag}
 	delete(s.uploads, id)
 	writeXML(w, http.StatusOK, completeResult{Bucket: bucket, Key: key, ETag: etag})
 }

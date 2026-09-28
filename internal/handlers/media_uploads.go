@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"errors"
+	"strconv"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -78,12 +80,11 @@ func (h *MediaHandler) CompleteUpload(c fiber.Ctx) error {
 }
 
 // directUploadError answers a refused Direct upload: the purpose's refusals
-// as for POST /v1/media, the upload budget's 429 as for a single-step
-// upload, and Direct upload's own.
+// as for POST /v1/media, and Direct upload's own, its budget's included.
 func directUploadError(c fiber.Ctx, err error) error {
-	var limit *media.UploadLimitRefusal
+	var limit *media.DirectUploadLimitRefusal
 	if errors.As(err, &limit) {
-		return uploadRateLimited(c, *limit)
+		return directUploadLimited(c, *limit)
 	}
 	var size *media.DirectUploadRefusal
 	switch {
@@ -100,4 +101,19 @@ func directUploadError(c fiber.Ctx, err error) error {
 			"Direct upload is not available on this core.", "direct_upload_unavailable", nil)
 	}
 	return mediaError(c, err)
+}
+
+// directUploadLimited answers 429 with the Direct upload limit hit and the
+// person's whole Direct upload budget, as uploadRateLimited does for
+// single-step uploads.
+func directUploadLimited(c fiber.Ctx, refusal media.DirectUploadLimitRefusal) error {
+	seconds := int64(refusal.RetryAfter / time.Second)
+	c.Set(fiber.HeaderRetryAfter, strconv.FormatInt(seconds, 10))
+	return problemWithFields(c, fiber.StatusTooManyRequests, "Too Many Requests",
+		"The person's Direct upload limit is reached; retry after the given seconds.", "media_rate_limited", fiber.Map{
+			"limit":             string(refusal.Limit),
+			"maxOpenUploads":    refusal.Limits.MaxOpen,
+			"maxDailyBytes":     refusal.Limits.DailyBytes,
+			"retryAfterSeconds": seconds,
+		})
 }

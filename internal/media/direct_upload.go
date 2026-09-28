@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -26,10 +25,10 @@ import (
 const (
 	// DirectUploadTTL is how long a Direct upload may take from its start
 	// to its completion. After it the upload is gone: the staging sweeper
-	// deletes its pending object and aborts its multipart upload, and its
-	// charge to the person's upload budget lapses. It stays under the
-	// account erasure's deferral horizon (the staging grace plus a day) and
-	// the two days after which R2's lifecycle rule clears pending/.
+	// deletes its pending object and aborts its multipart upload, and it no
+	// longer counts as open (DirectUploadLimits.MaxOpen). It stays under
+	// the account erasure's deferral horizon (the staging grace plus a day)
+	// and the two days after which R2's lifecycle rule clears pending/.
 	DirectUploadTTL = 12 * time.Hour
 	// DirectUploadPartURLTTL is how long a part address works. An upload
 	// that takes longer asks for new ones (DirectUploadParts).
@@ -88,9 +87,9 @@ type DirectUploadConfig struct {
 	// Storage is the public bucket's multipart side (R2). Nil: Direct
 	// upload answers ErrDirectUploadUnavailable.
 	Storage MultipartStore
-	// Limiter is the budget single-step uploads are charged to; a Direct
-	// upload is charged the size it declares. Nil charges nothing.
-	Limiter *UploadLimiter
+	// Limiter is Direct upload's own budget (DirectUploadLimits), apart
+	// from the single-step one. Nil limits nothing.
+	Limiter *DirectUploadLimiter
 	// Now defaults to time.Now.
 	Now func() time.Time
 }
@@ -166,21 +165,37 @@ type DirectUploadRecord struct {
 type DirectUploadStore interface {
 	UploadStagingStore
 	// StageDirectUpload registers the upload and the staging row of its
-	// pending object before storage opens anything at that key.
-	StageDirectUpload(ctx context.Context, rec DirectUploadRecord) error
+	// pending object before storage opens anything at that key. With
+	// maxOpen above 0, a person who has that many uploads open at now
+	// (not expired) is refused with *TooManyOpenDirectUploads.
+	StageDirectUpload(ctx context.Context, rec DirectUploadRecord, maxOpen int, now time.Time) error
 	// SetDirectUploadMultipart records storage's multipart upload id.
 	SetDirectUploadMultipart(ctx context.Context, id uuid.UUID, multipartID string) error
 	// GetDirectUpload returns an upload not yet ended; ErrNotFound after.
 	GetDirectUpload(ctx context.Context, id uuid.UUID) (DirectUploadRecord, error)
-	// PublishDirectUpload creates the upload's Media (item, whose object is
-	// staged at its final key) with the upload's id, and ends the upload,
-	// in one transaction: the final key's staging row and the upload go,
-	// and the pending object is left to the cleanup. ErrNotFound when the
-	// upload ended already.
-	PublishDirectUpload(ctx context.Context, id uuid.UUID, item Media, now time.Time) (Media, error)
 	// DropDirectUpload ends an upload without a Media; its pending object
 	// is left to the cleanup. ErrNotFound when it ended already.
 	DropDirectUpload(ctx context.Context, id uuid.UUID, now time.Time) error
+	// BeginDirectCompletion locks the upload for its completion until the
+	// returned DirectCompletion publishes, drops or releases it: another
+	// completion of the same upload waits, then finds it ended.
+	// ErrNotFound when it ended already.
+	BeginDirectCompletion(ctx context.Context, id uuid.UUID) (DirectCompletion, error)
+}
+
+// DirectCompletion is a Direct upload locked for its completion.
+type DirectCompletion interface {
+	Upload() DirectUploadRecord
+	// Publish creates the upload's Media (item, whose object is staged at
+	// its final key) with the upload's id and ends the upload, in one
+	// transaction: the final key's staging row and the upload go, and the
+	// pending object is left to the cleanup.
+	Publish(ctx context.Context, item Media, now time.Time) (Media, error)
+	// Drop ends the upload without a Media; its pending object is left to
+	// the cleanup.
+	Drop(ctx context.Context, now time.Time) error
+	// Release lets the upload go as it was.
+	Release(ctx context.Context)
 }
 
 func (s *service) StartDirectUpload(ctx context.Context, p authz.Principal, req DirectUploadRequest) (DirectUpload, error) {
@@ -204,33 +219,39 @@ func (s *service) StartDirectUpload(ctx context.Context, p authz.Principal, req 
 		return DirectUpload{}, err
 	}
 	now := s.directNow()
-	expires := now.Add(DirectUploadTTL)
-	charge := UploadCharge{}
-	if limiter := s.direct.Limiter; limiter != nil {
-		var refusal *UploadLimitRefusal
-		if charge, refusal = limiter.AdmitUntil(uploader, req.Size, expires); refusal != nil {
-			return DirectUpload{}, refusal
-		}
-	}
 	id := uuid.New()
 	rec := DirectUploadRecord{
 		ID: id, UploaderID: uploader, Purpose: purpose.Name, Name: req.Name, Size: req.Size,
 		MaxBytes: maxBytes, Types: types, PartSize: directPartSize,
-		Key: pendingKeyPrefix + id.String(), ExpiresAt: expires,
+		Key: pendingKeyPrefix + id.String(), ExpiresAt: now.Add(DirectUploadTTL),
 	}
-	if err := store.StageDirectUpload(ctx, rec); err != nil {
-		// Nothing was sent: an upload that did not start costs nothing.
-		charge.Refund()
+	limiter := s.direct.Limiter
+	if refusal := limiter.charge(uploader, id, req.Size, now); refusal != nil {
+		return DirectUpload{}, refusal
+	}
+	var tooMany *TooManyOpenDirectUploads
+	err = store.StageDirectUpload(ctx, rec, limiter.maxOpen(), now)
+	switch {
+	case errors.As(err, &tooMany):
+		// A start the budget refuses is not charged.
+		limiter.refund(id)
+		return DirectUpload{}, limiter.openRefusal(tooMany, now)
+	case errors.Is(err, ErrForbidden):
+		// A refusal, like any 4xx: charged.
+		limiter.settle(id)
+		return DirectUpload{}, err
+	case err != nil:
+		limiter.refund(id)
 		return DirectUpload{}, err
 	}
 	if rec.MultipartID, err = storage.CreateMultipart(ctx, rec.Key); err == nil {
 		err = store.SetDirectUploadMultipart(ctx, id, rec.MultipartID)
 	}
 	if err != nil {
-		charge.Refund()
-		return DirectUpload{}, s.endDirectUpload(ctx, store, storage, rec, err)
+		// Core's failure: given back.
+		limiter.refund(id)
+		return DirectUpload{}, s.abandonDirectUpload(ctx, store, storage, rec, err)
 	}
-	s.charges.hold(id, charge, expires, now)
 	return s.directUploadView(ctx, storage, rec, nil)
 }
 
@@ -239,9 +260,16 @@ func (s *service) DirectUploadParts(ctx context.Context, p authz.Principal, id u
 	if err != nil {
 		return DirectUpload{}, err
 	}
-	rec, err := s.ownDirectUpload(ctx, store, p, id)
+	uploader, err := uuid.Parse(p.ID)
+	if err != nil {
+		return DirectUpload{}, ErrNotFound
+	}
+	rec, err := store.GetDirectUpload(ctx, id)
 	if err != nil {
 		return DirectUpload{}, err
+	}
+	if !s.ownOpenUpload(rec, uploader) {
+		return DirectUpload{}, ErrNotFound
 	}
 	stored, err := storage.ListParts(ctx, rec.Key, rec.MultipartID)
 	if errors.Is(err, ErrMultipartGone) {
@@ -259,73 +287,77 @@ func (s *service) CompleteDirectUpload(ctx context.Context, p authz.Principal, i
 	if err != nil {
 		return Media{}, err
 	}
-	rec, err := s.ownDirectUpload(ctx, store, p, id)
+	uploader, err := uuid.Parse(p.ID)
+	if err != nil {
+		return Media{}, ErrNotFound
+	}
+	// Held for the whole completion: a second completion of the same
+	// upload (a retry racing the first) waits here, then finds it ended.
+	completion, err := store.BeginDirectCompletion(ctx, id)
 	if errors.Is(err, ErrNotFound) {
-		// A completion retried after its answer was lost: the Media has the
-		// upload's id.
-		return s.completedDirectUpload(ctx, p, id)
+		// Completed already (the answer was lost, or this is the retry that
+		// waited): the Media has the upload's id.
+		return s.completedDirectUpload(ctx, uploader, id)
 	}
 	if err != nil {
 		return Media{}, err
 	}
-	// The catalogue may have changed with a deploy since the upload
-	// started: its rules are those of now.
-	purpose, err := s.directPurpose(p, rec.Purpose)
-	if err != nil {
-		return Media{}, s.refuseDirectUpload(ctx, store, storage, rec, err)
+	defer completion.Release(ctx)
+	rec := completion.Upload()
+	if !s.ownOpenUpload(rec, uploader) {
+		return Media{}, ErrNotFound
 	}
-	if err := s.completeParts(ctx, storage, rec, sent); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			// The pending object is gone too: completed by another request
-			// (whose Media then exists), or aborted.
-			if m, lookupErr := s.completedDirectUpload(ctx, p, id); lookupErr == nil {
-				return m, nil
-			}
-			return Media{}, s.refuseDirectUpload(ctx, store, storage, rec, ErrNotFound)
-		}
-		var sizeRefusal *DirectUploadRefusal
-		if errors.As(err, &sizeRefusal) {
-			return Media{}, s.refuseDirectUpload(ctx, store, storage, rec, err)
-		}
-		return Media{}, err
-	}
-	size, err := storage.Size(ctx, rec.Key)
-	if err != nil {
-		return Media{}, err
-	}
-	if size != rec.Size {
-		return Media{}, s.refuseDirectUpload(ctx, store, storage, rec, &DirectUploadRefusal{DeclaredSize: rec.Size, Size: size})
-	}
-	if size > rec.MaxBytes {
-		return Media{}, s.refuseDirectUpload(ctx, store, storage, rec,
-			&PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: rec.MaxBytes})
-	}
-	start, err := storage.ReadStart(ctx, rec.Key, directStartBytes)
-	if err != nil {
-		return Media{}, err
-	}
-	detected := detectDirectType(start)
-	if detected == "" || !slices.Contains(rec.Types, detected) {
-		return Media{}, s.refuseDirectUpload(ctx, store, storage, rec,
-			&PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: purpose.Name, AllowedTypes: rec.Types})
-	}
+	c := directCompletion{service: s, store: store, storage: storage, completion: completion, rec: rec}
+	return c.run(ctx, p, sent)
+}
 
-	// The file is what the upload declared. It is copied to its final key,
-	// staged like every object core writes, with the metadata the serving
-	// policy writes: a ZIP (and anything but a PDF) as a download.
-	now := s.directNow()
-	key := "files/" + uuid.NewString()
-	if err := store.StageUpload(ctx, key, rec.UploaderID, now.Add(s.uploadStagingGrace)); err != nil {
+// directCompletion is one completion of a locked upload, step by step.
+type directCompletion struct {
+	*service
+	store      DirectUploadStore
+	storage    MultipartStore
+	completion DirectCompletion
+	rec        DirectUploadRecord
+}
+
+func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []UploadedPart) (Media, error) {
+	purpose, types, err := c.rules(p)
+	if err != nil {
+		return Media{}, c.refuse(ctx, err)
+	}
+	if err := c.joinParts(ctx, sent); err != nil {
+		var sizeRefusal *DirectUploadRefusal
+		switch {
+		case errors.As(err, &sizeRefusal):
+			return Media{}, c.refuse(ctx, err)
+		case errors.Is(err, ErrNotFound):
+			// The multipart upload and its object are both gone: aborted.
+			return Media{}, c.refuse(ctx, err)
+		}
+		// The parts are not joined: the upload stays open for a retry.
 		return Media{}, err
 	}
-	if err := storage.Copy(ctx, rec.Key, key, ServingMetadata(detected, rec.Name)); err != nil {
-		return Media{}, s.cleanupRejectedUpload(ctx, store, true, key, nil, err)
+	// The parts are joined into the pending object. From here every way
+	// out but a published Media ends the upload and deletes that object.
+	detected, err := c.checkFile(ctx, purpose, types)
+	if err != nil {
+		var refusal *PurposeRefusal
+		var sizeRefusal *DirectUploadRefusal
+		if errors.As(err, &refusal) || errors.As(err, &sizeRefusal) {
+			return Media{}, c.refuse(ctx, err)
+		}
+		return Media{}, c.fail(ctx, err)
 	}
-	created, err := store.PublishDirectUpload(ctx, id, Media{
-		Name:                 rec.Name,
+	now := c.directNow()
+	key, err := c.copyToFinalKey(ctx, detected, now)
+	if err != nil {
+		return Media{}, c.fail(ctx, err)
+	}
+	created, err := c.completion.Publish(ctx, Media{
+		Name:                 c.rec.Name,
 		Type:                 detected,
-		Size:                 size,
-		UploadedBy:           rec.UploaderID,
+		Size:                 c.rec.Size,
+		UploadedBy:           c.rec.UploaderID,
 		Kind:                 KindFile,
 		Purpose:              purpose.Name,
 		Visibility:           VisibilityPublic,
@@ -334,52 +366,63 @@ func (s *service) CompleteDirectUpload(ctx context.Context, p authz.Principal, i
 		CoverColors:          []string{},
 		ServingPolicyApplied: true,
 	}, now)
-	switch {
-	case errors.Is(err, ErrPublicationUncertain):
+	if errors.Is(err, ErrPublicationUncertain) {
+		// The Media may be stored: its final object stays, and so does the
+		// pending one (a download, see pendingMetadata) for the sweeper.
 		return Media{}, err
-	case errors.Is(err, ErrNotFound):
-		// Another completion of the same upload got there first: its Media
-		// stands, and this copy goes.
-		cleanupErr := s.cleanupRejectedUpload(ctx, store, true, key, nil, nil)
-		m, lookupErr := s.completedDirectUpload(ctx, p, id)
-		if lookupErr != nil {
-			return Media{}, errors.Join(lookupErr, cleanupErr)
-		}
-		return m, nil
-	case err != nil:
-		return Media{}, s.cleanupRejectedUpload(ctx, store, true, key, nil, err)
 	}
-	s.charges.keep(id)
-	// The pending object has served its turn. Should deleting it fail, its
-	// staging row is ready for the sweeper already.
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancel()
-	if storage.Delete(cleanupCtx, rec.Key) == nil {
-		_ = store.CancelStagedUpload(cleanupCtx, rec.Key)
+	if err != nil {
+		return Media{}, c.fail(ctx, c.cleanupRejectedUpload(ctx, c.store, true, key, nil, err))
 	}
-	return s.withURL(created), nil
+	c.direct.Limiter.settle(c.rec.ID)
+	c.deletePending(ctx)
+	return c.withURL(created), nil
 }
 
-// completeParts completes the upload's multipart upload with the parts the
-// uploader sent, once they are exactly the parts the upload is split into,
-// each stored whole. A multipart upload storage no longer has was completed
-// by an earlier attempt whose answer was lost, when the pending object is
-// there; ErrNotFound when it is not.
-func (s *service) completeParts(ctx context.Context, storage MultipartStore, rec DirectUploadRecord, sent []UploadedPart) error {
-	stored, err := storage.ListParts(ctx, rec.Key, rec.MultipartID)
+// rules are the purpose's rules as they are now (a deploy may have changed
+// the catalogue since the upload started) narrowed by the limits the upload
+// started with: the types both accept, and the declared size within the
+// smaller maximum. A private purpose is refused here too: only a public
+// object is copied to files/.
+func (c directCompletion) rules(p authz.Principal) (Purpose, []string, error) {
+	purpose, err := c.directPurpose(p, c.rec.Purpose)
+	if err != nil {
+		return Purpose{}, nil, err
+	}
+	if purpose.Visibility != VisibilityPublic {
+		return Purpose{}, nil, &PurposeRefusal{Err: ErrDirectUploadPrivate, Purpose: purpose.Name}
+	}
+	var types []string
+	for _, t := range c.rec.Types {
+		if purpose.accepts(t) {
+			types = append(types, t)
+		}
+	}
+	if maxBytes := min(c.rec.MaxBytes, purpose.MaxBytes); c.rec.Size > maxBytes {
+		return Purpose{}, nil, &PurposeRefusal{Err: ErrTooLarge, Purpose: purpose.Name, MaxBytes: maxBytes}
+	}
+	return purpose, types, nil
+}
+
+// joinParts completes the multipart upload with the parts the uploader
+// sent, once they are exactly the parts the upload is split into, each
+// stored whole. A multipart upload storage no longer has was joined by an
+// earlier attempt when the pending object is there; ErrNotFound when it is
+// not.
+func (c directCompletion) joinParts(ctx context.Context, sent []UploadedPart) error {
+	stored, err := c.storage.ListParts(ctx, c.rec.Key, c.rec.MultipartID)
 	if errors.Is(err, ErrMultipartGone) {
-		return s.pendingObjectStored(ctx, storage, rec)
+		_, err = c.storage.Size(ctx, c.rec.Key)
+		return err
 	}
 	if err != nil {
 		return err
 	}
-	expected := directParts(rec.Size, rec.PartSize)
+	expected := directParts(c.rec.Size, c.rec.PartSize)
 	byNumber := map[int32]UploadedPart{}
-	for _, part := range stored {
-		byNumber[part.Number] = part
-	}
 	storedSize := int64(0)
 	for _, part := range stored {
+		byNumber[part.Number] = part
 		storedSize += part.Size
 	}
 	if len(sent) != len(expected) {
@@ -394,33 +437,104 @@ func (s *service) completeParts(ctx context.Context, storage MultipartStore, rec
 			// Part addresses are signed for their size, so storage should
 			// never hold another; a file that differs from its declaration
 			// is refused, whatever sent it.
-			return &DirectUploadRefusal{DeclaredSize: rec.Size, Size: storedSize}
+			return &DirectUploadRefusal{DeclaredSize: c.rec.Size, Size: storedSize}
 		}
 	}
-	err = storage.CompleteMultipart(ctx, rec.Key, rec.MultipartID, sent)
+	err = c.storage.CompleteMultipart(ctx, c.rec.Key, c.rec.MultipartID, sent)
 	switch {
 	case errors.Is(err, ErrMultipartPartsMismatch):
 		return ErrDirectUploadPartsMismatch
 	case errors.Is(err, ErrMultipartGone):
-		return s.pendingObjectStored(ctx, storage, rec)
+		_, err = c.storage.Size(ctx, c.rec.Key)
 	}
 	return err
 }
 
-// pendingObjectStored reports whether the upload's pending object is stored
-// (nil) or not (ErrNotFound).
-func (s *service) pendingObjectStored(ctx context.Context, storage MultipartStore, rec DirectUploadRecord) error {
-	_, err := storage.Size(ctx, rec.Key)
-	return err
+// checkFile checks the joined file: its size, by a HEAD, is exactly the
+// declared size, and its first bytes, by a ranged GET, name one of types.
+func (c directCompletion) checkFile(ctx context.Context, purpose Purpose, types []string) (string, error) {
+	size, err := c.storage.Size(ctx, c.rec.Key)
+	if err != nil {
+		return "", err
+	}
+	if size != c.rec.Size {
+		return "", &DirectUploadRefusal{DeclaredSize: c.rec.Size, Size: size}
+	}
+	start, err := c.storage.ReadStart(ctx, c.rec.Key, directStartBytes)
+	if err != nil {
+		return "", err
+	}
+	detected := detectDirectType(start)
+	if detected == "" || !slices.Contains(types, detected) {
+		return "", &PurposeRefusal{Err: ErrTypeNotAllowed, Purpose: purpose.Name, AllowedTypes: types}
+	}
+	return detected, nil
+}
+
+// copyToFinalKey copies the file to files/<uuid>, staged like every object
+// core writes, with the metadata the serving policy writes: a ZIP (and
+// anything but a PDF) as a download under its name.
+func (c directCompletion) copyToFinalKey(ctx context.Context, detected string, now time.Time) (string, error) {
+	key := "files/" + uuid.NewString()
+	if err := c.store.StageUpload(ctx, key, c.rec.UploaderID, now.Add(c.uploadStagingGrace)); err != nil {
+		return "", err
+	}
+	if err := c.storage.Copy(ctx, c.rec.Key, key, ServingMetadata(detected, c.rec.Name)); err != nil {
+		return "", c.cleanupRejectedUpload(ctx, c.store, true, key, nil, err)
+	}
+	return key, nil
+}
+
+// refuse ends an upload whose file (or purpose) is refused. The charge
+// stays, as a single-step refusal's does.
+func (c directCompletion) refuse(ctx context.Context, refusal error) error {
+	c.direct.Limiter.settle(c.rec.ID)
+	return c.end(ctx, refusal)
+}
+
+// fail ends an upload core failed after its parts were joined: the file is
+// sent again, so its charge is given back.
+func (c directCompletion) fail(ctx context.Context, cause error) error {
+	c.direct.Limiter.refund(c.rec.ID)
+	return c.end(ctx, cause)
+}
+
+// end ends the upload without a Media: its record goes, then its pending
+// object (with any multipart upload open at it) and its staging row. A step
+// that fails leaves the staging row ready for the sweeper.
+func (c directCompletion) end(ctx context.Context, cause error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := c.completion.Drop(cleanupCtx, c.directNow()); err != nil {
+		return errors.Join(cause, fmt.Errorf("end Direct upload: %w", err))
+	}
+	return deletePendingObject(cleanupCtx, c.store, c.storage, c.rec.Key, cause)
+}
+
+// deletePending deletes a published upload's pending object; the sweeper
+// retries should that fail.
+func (c directCompletion) deletePending(ctx context.Context) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	_ = deletePendingObject(cleanupCtx, c.store, c.storage, c.rec.Key, nil)
+}
+
+// deletePendingObject deletes a pending object, with the multipart upload
+// open at its key, then its staging row, and returns cause with anything
+// that failed.
+func deletePendingObject(ctx context.Context, store DirectUploadStore, storage MultipartStore, key string, cause error) error {
+	if err := storage.Delete(ctx, key); err != nil {
+		return errors.Join(cause, fmt.Errorf("delete Direct upload's pending object: %w", err))
+	}
+	if err := store.CancelStagedUpload(ctx, key); err != nil {
+		return errors.Join(cause, fmt.Errorf("complete Direct upload cleanup: %w", err))
+	}
+	return cause
 }
 
 // completedDirectUpload is the Media a completed upload created, for its
 // uploader; ErrNotFound for anyone else or when there is none.
-func (s *service) completedDirectUpload(ctx context.Context, p authz.Principal, id uuid.UUID) (Media, error) {
-	uploader, err := uuid.Parse(p.ID)
-	if err != nil {
-		return Media{}, ErrNotFound
-	}
+func (s *service) completedDirectUpload(ctx context.Context, uploader, id uuid.UUID) (Media, error) {
 	m, err := s.media.Get(ctx, id)
 	if err != nil || m.UploadedBy != uploader {
 		return Media{}, ErrNotFound
@@ -428,49 +542,22 @@ func (s *service) completedDirectUpload(ctx context.Context, p authz.Principal, 
 	return s.withURL(m), nil
 }
 
-// ownDirectUpload is the caller's upload, not yet expired; ErrNotFound for
-// anyone else's, so a refusal tells nothing about another person's upload.
-func (s *service) ownDirectUpload(ctx context.Context, store DirectUploadStore, p authz.Principal, id uuid.UUID) (DirectUploadRecord, error) {
-	uploader, err := uuid.Parse(p.ID)
-	if err != nil {
-		return DirectUploadRecord{}, ErrNotFound
-	}
-	rec, err := store.GetDirectUpload(ctx, id)
-	if err != nil {
-		return DirectUploadRecord{}, err
-	}
-	if rec.UploaderID != uploader || rec.MultipartID == "" || !s.directNow().Before(rec.ExpiresAt) {
-		return DirectUploadRecord{}, ErrNotFound
-	}
-	return rec, nil
+// ownOpenUpload reports whether the upload is the uploader's and open:
+// storage opened it and it has not expired. Anyone else's is not found, so
+// a refusal tells nothing about another person's upload.
+func (s *service) ownOpenUpload(rec DirectUploadRecord, uploader uuid.UUID) bool {
+	return rec.UploaderID == uploader && rec.MultipartID != "" && s.directNow().Before(rec.ExpiresAt)
 }
 
-// refuseDirectUpload ends an upload whose file is refused (or whose
-// purpose no longer takes it): its record goes, its pending object and
-// multipart upload are deleted, and its charge is given back. The refusal
-// is returned with anything that failed on the way; the staging sweeper
-// finishes what did not.
-func (s *service) refuseDirectUpload(ctx context.Context, store DirectUploadStore, storage MultipartStore, rec DirectUploadRecord, refusal error) error {
-	s.charges.refund(rec.ID)
-	return s.endDirectUpload(ctx, store, storage, rec, refusal)
-}
-
-// endDirectUpload ends an upload without a Media: its record goes, then its
-// pending object (with the multipart upload open at it) and its staging
-// row. A step that fails leaves the staging row ready for the sweeper.
-func (s *service) endDirectUpload(ctx context.Context, store DirectUploadStore, storage MultipartStore, rec DirectUploadRecord, cause error) error {
+// abandonDirectUpload ends an upload that never started right: its record
+// goes, then its pending object and staging row.
+func (s *service) abandonDirectUpload(ctx context.Context, store DirectUploadStore, storage MultipartStore, rec DirectUploadRecord, cause error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	if err := store.DropDirectUpload(cleanupCtx, rec.ID, s.directNow()); err != nil && !errors.Is(err, ErrNotFound) {
 		return errors.Join(cause, fmt.Errorf("end Direct upload: %w", err))
 	}
-	if err := storage.Delete(cleanupCtx, rec.Key); err != nil {
-		return errors.Join(cause, fmt.Errorf("delete Direct upload's pending object: %w", err))
-	}
-	if err := store.CancelStagedUpload(cleanupCtx, rec.Key); err != nil {
-		return errors.Join(cause, fmt.Errorf("complete Direct upload cleanup: %w", err))
-	}
-	return cause
+	return deletePendingObject(cleanupCtx, store, storage, rec.Key, cause)
 }
 
 // directUploadView presigns an address for every part storage does not
@@ -591,60 +678,17 @@ func detectDirectType(start []byte) string {
 }
 
 // validFileName reports whether name can be kept as the file's name: text
-// of at most 255 bytes, no control characters. It is stored and encoded
-// into the download name, never into a key.
+// of at most 255 bytes, without control characters and without the
+// invisible format characters (Unicode Cf: the bidirectional overrides and
+// isolates U+202A–U+202E and U+2066–U+2069, the marks U+200E and U+200F,
+// zero-width characters) that make a name read as another, such as
+// "a\u202Epiz.exe" showing as "aexe.zip". It is stored and encoded into
+// the download name, never into a key.
 func validFileName(name string) bool {
 	if strings.TrimSpace(name) == "" || len(name) > maxDirectNameBytes || !utf8.ValidString(name) {
 		return false
 	}
-	return !strings.ContainsFunc(name, unicode.IsControl)
-}
-
-// directCharges holds each started upload's charge to its person's budget
-// until the upload ends: kept once it completes, given back when its file
-// is refused. One never completed lapses by itself when the upload expires
-// (UploadLimiter.AdmitUntil); holding it longer changes nothing.
-type directCharges struct {
-	mu      sync.Mutex
-	charges map[uuid.UUID]heldCharge
-}
-
-type heldCharge struct {
-	charge UploadCharge
-	lapses time.Time
-}
-
-func (c *directCharges) hold(id uuid.UUID, charge UploadCharge, lapses, now time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.charges == nil {
-		c.charges = map[uuid.UUID]heldCharge{}
-	}
-	// Uploads that expired have nothing left to keep or give back.
-	for other, held := range c.charges {
-		if !held.lapses.After(now) {
-			delete(c.charges, other)
-		}
-	}
-	c.charges[id] = heldCharge{charge: charge, lapses: lapses}
-}
-
-func (c *directCharges) take(id uuid.UUID) (UploadCharge, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	held, ok := c.charges[id]
-	delete(c.charges, id)
-	return held.charge, ok
-}
-
-func (c *directCharges) keep(id uuid.UUID) {
-	if charge, ok := c.take(id); ok {
-		charge.Keep()
-	}
-}
-
-func (c *directCharges) refund(id uuid.UUID) {
-	if charge, ok := c.take(id); ok {
-		charge.Refund()
-	}
+	return !strings.ContainsFunc(name, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	})
 }
