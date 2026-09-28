@@ -177,3 +177,64 @@ func TestConfigReadsTheClientSecretAgainOnEveryCall(t *testing.T) {
 		t.Fatalf("emptied client secret error = %v", err)
 	}
 }
+
+func TestServiceNamedFindsARegistryEntry(t *testing.T) {
+	t.Parallel()
+
+	for _, entry := range erasure.Registry() {
+		if got, ok := erasure.ServiceNamed(entry.Name); !ok || got != entry {
+			t.Fatalf("%s = %+v %v", entry.Name, got, ok)
+		}
+	}
+	if _, ok := erasure.ServiceNamed("SkyMail"); ok {
+		t.Fatal("a name that is not in the registry was found")
+	}
+}
+
+func TestClientFromEnvBuildsOneServicesClientWithoutTheWorkerFlag(t *testing.T) {
+	t.Parallel()
+
+	values := completeEnv()
+	service, _ := erasure.ServiceNamed("skymail")
+	client, err := erasure.ClientFromEnv(func(key string) string { return values[key] }, service, "http://keycloak:8080/realms/e-skylab/protocol/openid-connect/token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.Service != service || client.BaseURL != "http://skymail-backend:8080" {
+		t.Fatalf("client = %+v", client)
+	}
+	tokens, ok := client.Tokens.(*erasure.ClientCredentials)
+	if !ok || tokens.ClientID != "core-erasure" || tokens.Scope != "account-erase-skymail" ||
+		tokens.TokenURL != "http://keycloak:8080/realms/e-skylab/protocol/openid-connect/token" {
+		t.Fatalf("tokens = %+v", client.Tokens)
+	}
+	// The client keeps no copy of the secret: it reads the rotated one.
+	values["ACCOUNT_ERASURE_CLIENT_SECRET"] = "rotated-secret-value"
+	if secret, err := tokens.Secret(); err != nil || secret != "rotated-secret-value" {
+		t.Fatal("rotated client secret not read")
+	}
+}
+
+func TestClientFromEnvNamesTheMissingOrMalformedVariableOnly(t *testing.T) {
+	t.Parallel()
+
+	service, _ := erasure.ServiceNamed("cms")
+	for variable, value := range map[string]string{
+		"ACCOUNT_ERASURE_CMS_URL":       "",
+		"ACCOUNT_ERASURE_CLIENT_ID":     " ",
+		"ACCOUNT_ERASURE_CLIENT_SECRET": "",
+	} {
+		values := completeEnv()
+		values[variable] = value
+		_, err := erasure.ClientFromEnv(func(key string) string { return values[key] }, service, "http://keycloak/token")
+		if err == nil || err.Error() != variable+" is required" {
+			t.Fatalf("%s: error = %v", variable, err)
+		}
+	}
+	values := completeEnv()
+	values["ACCOUNT_ERASURE_CMS_URL"] = "http://user:s3cr3t@cms-backend:8080"
+	_, err := erasure.ClientFromEnv(func(key string) string { return values[key] }, service, "http://keycloak/token")
+	if err == nil || !strings.HasPrefix(err.Error(), "ACCOUNT_ERASURE_CMS_URL must be") || strings.Contains(err.Error(), "s3cr3t") {
+		t.Fatalf("malformed URL error = %v", err)
+	}
+}

@@ -52,6 +52,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == mediaLegacyReleaseHoldCommandName {
 		os.Exit(runMediaLegacyReleaseHold(os.Args[2:], os.Getenv, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == replayFromBackupCommandName {
+		os.Exit(runReplayFromBackup(os.Args[2:], os.Getenv, os.Stdout))
+	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")

@@ -308,6 +308,26 @@ func TestClientDefersBusyAndUnavailableServicesByTheClampedRetryAfter(t *testing
 	}
 }
 
+// The replay after a restore (ADR-0053) tells a service still at work (202)
+// from one that is down: the deferral carries the status it answered.
+func TestClientDeferralCarriesTheStatusTheServiceAnswered(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range []int{http.StatusAccepted, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		service := newFakeService(t, status(code, nil))
+		_, err := newClient(service, &staticTokens{token: "t"}).Erase(context.Background(), command())
+		var deferred *erasure.DeferredError
+		if !errors.As(err, &deferred) || deferred.Status != code {
+			t.Fatalf("%d: deferral = %T %+v", code, err, err)
+		}
+	}
+	_, err := newClient(newFakeService(t, completed(`{}`)), &staticTokens{err: errors.New("down")}).Erase(context.Background(), command())
+	var deferred *erasure.DeferredError
+	if !errors.As(err, &deferred) || deferred.Status != 0 {
+		t.Fatalf("token failure deferral = %T %+v", err, err)
+	}
+}
+
 func TestClientTreatsTheStatedRejectionsAsPermanent(t *testing.T) {
 	t.Parallel()
 
