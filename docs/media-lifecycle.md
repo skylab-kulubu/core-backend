@@ -245,6 +245,10 @@ Core refuses to start with a catalogue that breaks one:
 - only `video` accepts MP4 publicly: its MP4 is the one file served inline
   besides images and PDF, to play (`video/mp4`, see
   [Serving policy](#serving-policy));
+- `video` needs no malware scan: its served key follows its type
+  (`videos/<uuid>.mp4`), while a scanned file is served once clean at
+  `files/<Media id>`, which every purge of a held Media finds by the id
+  alone, so a scanned video would lose its extension;
 - a Direct upload purpose accepts only PDF, ZIP and MP4: core never receives
   a Direct upload's bytes, it reads their start, and these three prove their
   type there. An image would reach storage without the re-encoding every
@@ -456,7 +460,9 @@ uploader and are never logged; the answer that carries them is never cached.
 lists the parts R2 holds whole, each with its `partNumber`, `size` and
 `etag`, and `parts` has new addresses for the others. An interrupted upload
 continues from there, and an upload that outlives its addresses asks here
-for new ones.
+for new ones. An upload whose purpose this side has switched off since its
+start gets `422` `purpose_not_available` here and is ended (see
+[Checks](#checks)).
 
 `POST /v1/uploads/{id}/complete` completes it, with every part in order:
 
@@ -478,24 +484,34 @@ The start checks the purpose as a single-step upload does, in the same order
 (see [Uploading](#uploading)): the purpose exists, the caller's upload rule,
 private Media on, the transport is `direct` (`purpose_requires_single_step`
 otherwise), **this side switches the purpose on**, a private purpose (none
-yet, ticket 21), something can attach it, the malware scan gate.
+yet, ticket 21), something can attach it, the malware scan gate. Then the
+request (name and size), the narrowed limits, the size against the
+(narrowed) maximum, and the person's
+[Direct upload budget](#direct-upload-budget). Only then does core register
+the upload and open the multipart upload at `pending/<id>`, stored as an
+opaque download (`application/octet-stream`, `Content-Disposition:
+attachment`) whatever the browser sends.
 
 The switch is `MEDIA_DIRECT_UPLOAD_PURPOSES`: the Direct upload purposes
 this side opens, separated by commas (`video`, or `club_file,video`), none
 when unset or empty. A purpose not in it is refused with `422`
 `purpose_not_available` whatever else holds: attachable, scanner
 configured, R2 there. The catalogue is the same file on sandbox and
-production, so what a side opens is decided here, per environment. A name
-that is not a Direct upload purpose of the catalogue stops core at startup,
-which logs the purposes switched on. Single-step purposes never read it:
-ClamAV going live for Answer files opens no club file. Taking a purpose out
-of the list refuses its uploads already started at their completion too
-(step 2 below). Then the request (name and size), the narrowed
-limits, the size against the (narrowed) maximum, and the person's
-[Direct upload budget](#direct-upload-budget). Only then does core register
-the upload and open the multipart upload at `pending/<id>`, stored as an
-opaque download (`application/octet-stream`, `Content-Disposition:
-attachment`) whatever the browser sends.
+production, so what a side opens is decided here, per environment. Core
+refuses to start with a name that is not a Direct upload purpose of the
+catalogue, or with one that can never open (a private purpose, such as
+`answer_file_large`, until ticket 21), and logs the purposes switched on.
+Single-step purposes never read it: ClamAV going live for Answer files
+opens no club file.
+
+Taking a purpose out of the list is core's change, not the uploader's
+doing. An upload of it already started is refused with `422`
+`purpose_not_available` when it asks for part addresses
+(`POST /v1/uploads/{id}/parts`, so no more parts are sent for an upload
+that cannot complete) and at its completion (step 2 below). Either way the
+upload ends: its pending object and the multipart upload open at it are
+deleted, and its charge is given back, the open place and the volume both
+(see [Direct upload budget](#direct-upload-budget)).
 
 A completion holds no database lock and no connection while storage works.
 It **claims** the upload in one short transaction: the upload's record gets
@@ -586,7 +602,7 @@ with the types that apply), the budget's `429` (below), and these:
 |---|---|---|---|
 | 400 | `purpose_requires_single_step` | `purpose` | A `single_step` purpose sent to `POST /v1/uploads`. |
 | 400 | `media_limits_too_wide` | `purpose`, `allowedTypes`, `maxBytes` | `limits` names a type the purpose does not accept or a larger maximum. |
-| 422 | `purpose_not_available` | `purpose` | Also a purpose `MEDIA_DIRECT_UPLOAD_PURPOSES` does not switch on (at the start, and at the completion when it was taken out since), and a private purpose, until ticket 21. |
+| 422 | `purpose_not_available` | `purpose` | Also a purpose `MEDIA_DIRECT_UPLOAD_PURPOSES` does not switch on: at the start, and at `/parts` and the completion when it was taken out since (the upload then ends and is given back). And a private purpose, until ticket 21. |
 | 400 | `upload_parts_mismatch` | | The completion's parts are not the parts R2 holds. The upload stays open: `POST /v1/uploads/{id}/parts` lists them. |
 | 409 | `upload_completing` | `retryAfterSeconds`, `Retry-After` header | Another request is completing the upload (a completion, or `POST /v1/uploads/{id}/parts`). Retry: once it is done, a completion answers its Media. |
 | 503 | `upload_claim_lost` | `retryAfterSeconds`, `Retry-After` header | This completion outlived its lease (core's failure: the volume is given back). Retry: the upload may still be completed, or answer the Media another completion created; `404` means it is gone and must be started again. |
@@ -619,11 +635,13 @@ budget refuses is not charged. The charge stays, as a single-step refusal's
 does, when the file is refused at completion (`upload_size_mismatch`,
 `media_type_not_allowed`, `media_too_large`, a purpose rule) and when the
 upload is never completed: its bytes may have been sent, and free refusals
-would let anyone send 2 GiB after 2 GiB without end. Only core's own failure
+would let anyone send 2 GiB after 2 GiB without end. Only core's own doing
 is given back: a start that fails on core's side, a completion core fails
 after joining the parts (the upload is then ended, and the file must be
-sent again), and a completion that outlived its lease
-(`upload_claim_lost`). `upload_parts_mismatch` changes nothing: the upload is still
+sent again), a completion that outlived its lease
+(`upload_claim_lost`), and an upload whose purpose core switched off since
+its start (`MEDIA_DIRECT_UPLOAD_PURPOSES`, refused at `/parts` or at its
+completion, see [Checks](#checks)). `upload_parts_mismatch` changes nothing: the upload is still
 open.
 
 ### Storage and cleanup
@@ -2344,11 +2362,13 @@ No new saga step does this; the two existing ones do:
      (`media.Buckets`), and an object already gone counts as deleted. Its
      record goes in the transaction that records the purge.
    - Club content keeps its file. A public object stored to download under
-     the person's file name (an SVG, a video, a legacy document) gets new
-     metadata from the serving policy without a name: `Content-Disposition:
-     attachment`, so it downloads under its key. The key never held the name
-     (`images/<uuid>`, `images/<uuid>.svg`, `files/<uuid>`). Raster images
-     and PDFs are served inline and named nothing. Then its record goes.
+     the person's file name (an SVG, a ZIP, a legacy document) gets new
+     metadata from the serving policy for its purpose without a name:
+     `Content-Disposition: attachment`, so it downloads under its key. The
+     key never held the name (`images/<uuid>`, `images/<uuid>.svg`,
+     `files/<uuid>`, `videos/<uuid>.mp4`). Raster images, PDFs and videos
+     are served inline and named nothing, so they keep their metadata: a
+     video still plays. Then its record goes.
 
    A rerun gets only what is left; a Media purged another way meanwhile only
    loses its record. Club content the archive or expiry purge has already
@@ -2399,8 +2419,10 @@ What happens to the records when the request completes is in
 - `MEDIA_DIRECT_UPLOAD_PURPOSES` — the Direct upload purposes this side
   opens, separated by commas (`video`, `club_file,video`); unset or empty
   opens none. Any other Direct upload purpose is refused
-  (`purpose_not_available`). A name that is not a Direct upload purpose of
-  the catalogue stops core at startup. Do not name `club_file` before
+  (`purpose_not_available`), and an upload started before its purpose was
+  taken out ends and is given back. A name that is not a Direct upload
+  purpose of the catalogue, or a private one (`answer_file_large`, until
+  ticket 21), stops core at startup. Do not name `club_file` before
   ticket 23 ships. See [Checks](#checks).
 - The rest of Direct upload is fixed in code: an upload lives 12 hours, a
   part address an hour, every part but the last is 16 MiB, and a
