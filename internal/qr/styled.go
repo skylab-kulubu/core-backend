@@ -19,7 +19,10 @@ import (
 // rounded shape, and a rounded clearing that keeps the club mark in its own
 // proportions. SVG and PNG are drawn from the same layout.
 const (
-	quietZone     = 4
+	// quietZone is narrower than the four modules the QR standard asks for:
+	// phones read 2.5 without trouble, and a wider margin only made the code
+	// look small. The corner code sits in the corner square of this margin.
+	quietZone     = 2.5
 	clearModules  = 11
 	clearShare    = 0.3
 	clearRounding = 0.24
@@ -66,8 +69,8 @@ func layoutStyled(content string, logo bool, shape moduleShape) (styledLayout, e
 	code.DisableBorder = true
 	bitmap := code.Bitmap()
 	n := len(bitmap)
-	q := float64(quietZone)
-	out := styledLayout{side: float64(n + 2*quietZone)}
+	q := quietZone
+	out := styledLayout{side: float64(n) + 2*quietZone}
 
 	clear := 0.0
 	if logo {
@@ -117,8 +120,9 @@ func insideRoundRect(px, py float64, r roundRect) bool {
 
 // StyledSVG draws the code as vector shapes so a poster stays sharp at any
 // print size. The mark is embedded as an image because it only exists as a
-// PNG.
-func StyledSVG(content string, logo bool) ([]byte, error) {
+// PNG. A non-empty corner is printed small in the bottom-right corner of the
+// margin, so a printed code shows which channel it counts for.
+func StyledSVG(content string, logo bool, corner string) ([]byte, error) {
 	layout, err := layoutStyled(content, logo, softModules)
 	if err != nil {
 		return nil, err
@@ -132,6 +136,15 @@ func StyledSVG(content string, logo bool) ([]byte, error) {
 		writeRoundRect(&b, r)
 	}
 	b.WriteString(`"/>`)
+	if corner != "" {
+		segments, err := cornerOutline(corner, layout.side)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(`<path fill="#000" d="`)
+		writeOutline(&b, segments)
+		b.WriteString(`"/>`)
+	}
 	if layout.mark != nil {
 		mark, err := markPNG()
 		if err != nil {
@@ -166,7 +179,7 @@ func num(v float64) string {
 
 // StyledPNG rasterizes the same layout as StyledSVG, anti-aliased, on a
 // size×size white square.
-func StyledPNG(content string, size int, logo bool) ([]byte, error) {
+func StyledPNG(content string, size int, logo bool, corner string) ([]byte, error) {
 	if size < 64 || size > 1024 {
 		size = DefaultSize
 	}
@@ -185,10 +198,21 @@ func StyledPNG(content string, size int, logo bool) ([]byte, error) {
 			return nil, err
 		}
 	}
-	offset := math.Floor((float64(size) - scale*layout.side) / 2)
+	// The symbol, not the margin, is put on whole pixels: a 2.5-module margin
+	// would otherwise start every module mid-pixel whenever scale is odd.
+	offset := math.Floor((float64(size)-scale*(layout.side-2*quietZone))/2) - quietZone*scale
 	raster := vector.NewRasterizer(size, size)
 	for _, r := range layout.rects {
 		addRoundRect(raster, r, scale, offset)
+	}
+	// Below minStyledPixels the code would be a few unreadable pixels, so a
+	// small PNG leaves it out.
+	if corner != "" && scale >= minStyledPixels {
+		segments, err := cornerOutline(corner, layout.side)
+		if err != nil {
+			return nil, err
+		}
+		addOutline(raster, segments, scale, offset)
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, size, size))
 	draw.Draw(dst, dst.Bounds(), image.White, image.Point{}, draw.Src)

@@ -933,6 +933,31 @@ func TestURLQRServesSVGWithTheLogo(t *testing.T) {
 	}
 }
 
+func TestURLQRPrintsTheChannelCodeOfItsSource(t *testing.T) {
+	t.Parallel()
+	store := shorturl.NewMemoryStore()
+	createClubURL(t, store)
+	app := urlAppWith(t, authn.Identity{}, store)
+
+	paths := func(query string) int {
+		t.Helper()
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?format=svg&logo=1&"+query, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return strings.Count(string(body), "<path")
+	}
+	if n := paths("utm_source=youtube&utm_medium=qr"); n != 2 {
+		t.Fatalf("youtube code paths = %d", n)
+	}
+	for _, query := range []string{"utm_source=qr", "utm_source=stant&utm_medium=qr"} {
+		if n := paths(query); n != 1 {
+			t.Fatalf("%s: paths = %d", query, n)
+		}
+	}
+}
+
 func TestURLFormLinkEndpointsNeedTheFormsRole(t *testing.T) {
 	t.Parallel()
 	store := shorturl.NewMemoryStore()
