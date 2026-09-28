@@ -32,9 +32,10 @@ type privateMedia struct {
 }
 
 // unscannedCatalogue is the reviewed catalogue with answer_file's malware
-// scan lifted. No scanner exists until ticket 12, so the reviewed answer_file
-// cannot be uploaded at all; these tests store Answer files as they will be
-// stored once a scanner has passed them.
+// scan lifted. These tests run without a scanner, where the reviewed
+// answer_file cannot be uploaded at all; they store Answer files as they are
+// once a scan has passed them (scan_upload_test.go and
+// scan_worker_postgres_test.go have a scanner).
 func unscannedCatalogue(t testing.TB) media.Catalogue {
 	t.Helper()
 	var file map[string]any

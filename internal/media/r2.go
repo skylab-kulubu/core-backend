@@ -118,7 +118,17 @@ func (r *R2) SetMetadata(ctx context.Context, key string, meta BlobMetadata) err
 // already: S3 answers that with success, and an endpoint that answers
 // NoSuchKey instead is taken the same way, so every delete by key (purges,
 // account erasure) can be repeated.
+//
+// A pending key (isPendingKey) is a Direct upload's: deleting it first
+// aborts any multipart upload still open at it, so every path that deletes
+// by key alone (the staging sweeper, account erasure, a refused completion)
+// leaves no parts behind either.
 func (r *R2) Delete(ctx context.Context, key string) error {
+	if isPendingKey(key) {
+		if err := r.abortMultipartUploads(ctx, key); err != nil {
+			return err
+		}
+	}
 	_, err := r.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(key),

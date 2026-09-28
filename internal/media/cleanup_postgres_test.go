@@ -233,7 +233,7 @@ func TestPostgresRestoreStartsTheExpiryAgain(t *testing.T) {
 	}
 	after := time.Now()
 	if got := db.get(t, cover.ID); got.ExpiresAt == nil ||
-		got.ExpiresAt.Before(before.Add(24*time.Hour).Truncate(time.Microsecond)) || got.ExpiresAt.After(after.Add(24*time.Hour)) {
+		got.ExpiresAt.Before(before.Add(24*time.Hour-clockSkew)) || got.ExpiresAt.After(after.Add(24*time.Hour+clockSkew)) {
 		t.Fatalf("restored cover expires %v, want 24h after the restore", got.ExpiresAt)
 	}
 	if got := db.get(t, legacy.ID); got.ExpiresAt != nil {

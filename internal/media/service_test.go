@@ -396,7 +396,12 @@ func TestService_UploadKeepsHostileFileNamesInsideTheDispositionParameter(t *tes
 	t.Parallel()
 	svc, blobs := setup(t)
 	p := authz.Principal{ID: uuid.MustParse("36363636-3636-3636-3636-363636363636").String()}
-	name := "cv\"; filename=\"x.html\r\nContent-Type: text/html; a=b.txt"
+	// A name with a line break is refused outright: no file name may carry
+	// a control character.
+	if _, err := svc.Upload(context.Background(), p, "cv\r\nContent-Type: text/html; a=b.txt", "text/plain", []byte("hello")); !errors.Is(err, media.ErrInvalid) {
+		t.Fatalf("a name with a line break: %v", err)
+	}
+	name := "cv\"; filename=\"x.html; Content-Type: text/html; a=b.txt"
 
 	created, err := svc.Upload(context.Background(), p, name, "text/plain", []byte("hello"))
 	if err != nil {

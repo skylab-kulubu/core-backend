@@ -58,6 +58,30 @@ func TestPersonFromRequiresUUID(t *testing.T) {
 	}
 }
 
+// Keycloak's enabled flag is read fail-closed: a user without the flag is
+// disabled.
+func TestPersonFromReadsEnabledFailClosed(t *testing.T) {
+	t.Parallel()
+	id := uuid.NewString()
+	yes, no := true, false
+	for name, tc := range map[string]struct {
+		enabled *bool
+		want    bool
+	}{
+		"enabled":  {&yes, true},
+		"disabled": {&no, false},
+		"no flag":  {nil, false},
+	} {
+		p, err := identity.PersonFromForTest(&gocloak.User{ID: &id, Enabled: tc.enabled})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Enabled != tc.want {
+			t.Errorf("%s: Enabled = %v, want %v", name, p.Enabled, tc.want)
+		}
+	}
+}
+
 func TestClientRolesFromMappingsUsesClientId(t *testing.T) {
 	t.Parallel()
 	client := "cms-site"

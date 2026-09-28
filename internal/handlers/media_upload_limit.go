@@ -11,8 +11,9 @@ import (
 
 // LimitMediaUploads charges each single-step upload to the signed-in
 // person's budget before the route reads the form. Every route that stores a
-// file sent through core shares the one limiter; a Direct upload grant is not
-// charged here, its owning product limits it (ADR-0052).
+// file sent through core shares the one limiter. A Direct upload is not
+// charged here: it has its own budget (media.DirectUploadLimits, decision
+// Q23), kept by the media service since its bytes never pass through core.
 //
 // An anonymous request passes through untouched, so the route refuses it
 // with 401 as before.

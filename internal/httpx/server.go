@@ -118,9 +118,9 @@ func New(deps Deps) *fiber.App {
 	if uploadLimiter == nil {
 		uploadLimiter = media.NewUploadLimiter(media.DefaultUploadLimits(), time.Now)
 	}
-	// One budget per person across every single-step upload route. A Direct
-	// upload route, once it exists, stays off it: the owning product limits
-	// its grants.
+	// One budget per person across every single-step upload route. Direct
+	// upload (/v1/uploads) stays off it: it has its own budget, kept by the
+	// media service (decision Q23), since its bytes never pass through core.
 	limitUploads := handlers.LimitMediaUploads(uploadLimiter)
 	var certs *handlers.CertificateHandler
 	if deps.Certificates != nil {
@@ -333,6 +333,11 @@ func New(deps Deps) *fiber.App {
 	// The owning product's five-minute read link to one of its private Media.
 	app.Post("/v1/media/:id/links", mediaH.IssueReadLink)
 	app.Delete("/v1/media/:id/attachments/:attachmentId", mediaH.Detach)
+	// Direct upload of large Media: the browser sends the parts straight to
+	// storage (docs/media-lifecycle.md).
+	app.Post("/v1/uploads", mediaH.StartUpload)
+	app.Post("/v1/uploads/:id/parts", mediaH.UploadParts)
+	app.Post("/v1/uploads/:id/complete", mediaH.CompleteUpload)
 
 	app.Post("/v1/urls", urls.Create)
 	app.Get("/v1/urls", urls.ListMine)

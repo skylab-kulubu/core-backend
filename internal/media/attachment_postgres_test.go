@@ -78,18 +78,24 @@ func TestPostgresUploadedMediaIsPendingUntilItsPendingTTL(t *testing.T) {
 
 	got := db.get(t, cover.ID)
 	if got.Status != media.StatusPending || got.ExpiresAt == nil ||
-		got.ExpiresAt.Before(before.Add(24*time.Hour).Truncate(time.Microsecond)) || got.ExpiresAt.After(after.Add(24*time.Hour)) {
+		got.ExpiresAt.Before(before.Add(24*time.Hour-clockSkew)) || got.ExpiresAt.After(after.Add(24*time.Hour+clockSkew)) {
 		t.Fatalf("status %q expires %v, want pending until 24h after the upload", got.Status, got.ExpiresAt)
 	}
 }
 
 // detachedWindow checks a Media detached between before and after: purged
 // 30 days later unless something attaches it again.
+// clockSkew is how far the test's clock may drift from the Postgres
+// container's: the expiry is the database's now() plus 30 days, while before
+// and after come from this process, and a container VM's clock can lag or
+// lead the host's by a second or more.
+const clockSkew = 5 * time.Second
+
 func detachedWindow(t *testing.T, got media.Media, before, after time.Time) {
 	t.Helper()
 	window := 30 * 24 * time.Hour
 	if got.Status != media.StatusDetached || got.ExpiresAt == nil ||
-		got.ExpiresAt.Before(before.Add(window).Truncate(time.Second)) || got.ExpiresAt.After(after.Add(window)) {
+		got.ExpiresAt.Before(before.Add(window-clockSkew)) || got.ExpiresAt.After(after.Add(window+clockSkew)) {
 		t.Fatalf("media %s status %q expires %v, want detached for 30 days", got.ID, got.Status, got.ExpiresAt)
 	}
 }

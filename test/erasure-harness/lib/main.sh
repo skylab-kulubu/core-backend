@@ -44,6 +44,10 @@ summary() {
   awk -F'\t' '$2 == "PASS" || $2 == "FAIL" || $2 == "NOT-DONE" { last[$1] = $2 "\t" $4; order[$1] = NR }
     END { for (s in last) print order[s] "\t" s "\t" last[s] }' "$RESULTS" | sort -n | cut -f2- \
     | while IFS=$'\t' read -r s status detail; do printf '%-5s %-9s %s\n' "$s" "$status" "$detail"; done
+  # Documented limits (not failures) of the latest run of each scenario that recorded one.
+  awk -F'\t' '$2 == "RUNNING" { gap[$1] = "" } $2 == "KNOWN-GAP" { gap[$1] = gap[$1] $1 "\t" $4 "\n" }
+    END { for (s in gap) printf "%s", gap[s] }' "$RESULTS" \
+    | while IFS=$'\t' read -r s detail; do printf '%-5s %s\n' "$s" "$detail"; done
 }
 
 command=${1:-all}

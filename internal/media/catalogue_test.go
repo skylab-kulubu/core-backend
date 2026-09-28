@@ -56,6 +56,48 @@ func TestCatalogue_PublicPurposeNamesOnlyRasterPDFOrMP4(t *testing.T) {
 	}
 }
 
+// A club file may be a ZIP (decision D6): a download-only public type, never
+// served inline, and only where the catalogue names it.
+func TestCatalogue_ClubFilesAcceptZIPAsADownload(t *testing.T) {
+	t.Parallel()
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	club, _ := catalogue.Lookup("club_file")
+	if !slices.Contains(club.Types, "application/zip") || !slices.Contains(club.Types, "application/pdf") {
+		t.Fatalf("club_file types %v, want PDF and ZIP", club.Types)
+	}
+	for _, purpose := range []string{"cms_file", "video"} {
+		data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+			purposes[purpose]["types"] = append(purposes[purpose]["types"].([]any), "application/zip")
+		})
+		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingZIP) {
+			t.Errorf("public %s naming ZIP: err = %v, want %v", purpose, err, media.ErrCeilingZIP)
+		}
+	}
+}
+
+// Core never receives a Direct upload's bytes; it reads only their start.
+// So a Direct upload purpose names only types that start the same way every
+// time and that core keeps as they came: PDF, ZIP and MP4. An image would
+// reach the CDN without the re-encoding every public image gets, and a DOCX
+// is told from a ZIP only by reading all of it.
+func TestCatalogue_DirectUploadPurposesNameOnlyTypesTheirFirstBytesProve(t *testing.T) {
+	t.Parallel()
+	for purpose, extra := range map[string]string{"video": "image/png", "answer_file_large": docxType, "club_file": "image/gif"} {
+		data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+			purposes[purpose]["types"] = append(purposes[purpose]["types"].([]any), extra)
+			if extra == "image/png" || extra == "image/gif" {
+				purposes[purpose]["image"] = map[string]any{"reencode": true}
+			}
+		})
+		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingDirectType) {
+			t.Errorf("%s naming %s: err = %v, want %v", purpose, extra, err, media.ErrCeilingDirectType)
+		}
+	}
+}
+
 func TestCatalogue_PublicRasterImagesAreReencoded(t *testing.T) {
 	t.Parallel()
 	data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
@@ -207,5 +249,41 @@ func TestCatalogue_RefusesContentAfterTheCatalogue(t *testing.T) {
 		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCatalogueInvalid) {
 			t.Errorf("catalogue followed by %q: err = %v, want %v", trailing, err, media.ErrCatalogueInvalid)
 		}
+	}
+}
+
+// A public file that needs a malware scan must not be served before it is
+// clean. Core holds a Direct upload's file under pending/ until its scan
+// ends; a single-step upload would be written straight to its served key.
+func TestCatalogue_PublicPurposeThatNeedsAScanIsADirectUpload(t *testing.T) {
+	t.Parallel()
+	data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+		purposes["cms_file"]["scan"] = true
+	})
+	if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingPublicScan) {
+		t.Fatalf("public single-step purpose with a scan: err = %v, want %v", err, media.ErrCeilingPublicScan)
+	}
+}
+
+// A purpose that needs a scan stays within what clamd takes in one stream
+// (MaxScanBytes, the StreamMaxLength the ClamAV wizard sets): a larger one
+// would be rejected as too large to scan every time.
+func TestCatalogue_PurposeThatNeedsAScanFitsTheScanner(t *testing.T) {
+	t.Parallel()
+	for _, purpose := range []string{"club_file", "answer_file_large"} {
+		data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+			purposes[purpose]["max_mib"] = media.MaxScanBytes>>20 + 1
+		})
+		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingScanSize) {
+			t.Errorf("%s above the scanner's limit: err = %v, want %v", purpose, err, media.ErrCeilingScanSize)
+		}
+	}
+	// video needs no scan: it may be larger.
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if video, _ := catalogue.Lookup("video"); video.Scan || video.MaxBytes <= media.MaxScanBytes {
+		t.Fatalf("video scan %v, max %d", video.Scan, video.MaxBytes)
 	}
 }

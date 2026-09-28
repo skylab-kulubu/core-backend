@@ -31,7 +31,8 @@ const mediaBusyRetrySeconds = 5
 // purposeProblem answers an upload its Media purpose refused: problem+json
 // with a stable code and what the caller needs to fix the upload. It also
 // answers an upload that waited too long for a decoding slot (503
-// media_busy). handled is false for any other error.
+// media_busy) and a file name core does not keep (400 media_name_invalid).
+// handled is false for any other error.
 func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 	if errors.Is(err, media.ErrDecodeBusy) {
 		// Nothing is stored; the same upload succeeds once other images
@@ -41,12 +42,23 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 			"Core is busy decoding other images; retry the upload.", "media_busy",
 			fiber.Map{"retryAfterSeconds": mediaBusyRetrySeconds})
 	}
+	if errors.Is(err, media.ErrNameInvalid) {
+		// Whichever way the file was uploaded, with a purpose or without.
+		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
+			"The file name carries a control character or a bidirectional formatting control (such as a right-to-left override). Rename the file and upload it again.",
+			"media_name_invalid", nil)
+	}
 	var refusal *media.PurposeRefusal
 	if !errors.As(err, &refusal) {
 		return false, nil
 	}
 	fields := fiber.Map{"purpose": refusal.Purpose}
 	switch {
+	case errors.Is(err, media.ErrLimitsTooWide):
+		fields["allowedTypes"] = refusal.AllowedTypes
+		fields["maxBytes"] = refusal.MaxBytes
+		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
+			"The limits are wider than the purpose's: they may only narrow its types and maximum size.", "media_limits_too_wide", fields)
 	case errors.Is(err, media.ErrPurposeUnknown):
 		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
 			"The purpose is not in the Media purpose catalogue.", "purpose_unknown", fields)
@@ -72,8 +84,11 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 			"Private Media is not enabled; this purpose cannot be uploaded.", "private_media_disabled", fields)
 	case errors.Is(err, media.ErrPurposeNeedsScanner):
 		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
-			"This purpose needs a malware scan before its Media can be opened, and core has no scanner yet. Nothing is stored.",
+			"This purpose needs a malware scan before its Media can be opened, and core has no scanner configured. Nothing is stored.",
 			"purpose_not_available", fields)
+	case errors.Is(err, media.ErrDirectUploadPrivate):
+		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
+			"A private purpose cannot be sent by Direct upload yet. Nothing is stored.", "purpose_not_available", fields)
 	case errors.Is(err, media.ErrPurposeNotAvailable):
 		// Like private_media_disabled: nothing is stored, and retrying does
 		// not help until a product attaches these Media.
@@ -83,6 +98,9 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 	case errors.Is(err, media.ErrDirectUploadOnly):
 		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
 			"This purpose is uploaded by Direct upload, not through this endpoint.", "purpose_requires_direct_upload", fields)
+	case errors.Is(err, media.ErrSingleStepOnly):
+		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
+			"This purpose is uploaded through POST /v1/media, not by Direct upload.", "purpose_requires_single_step", fields)
 	default:
 		return false, nil
 	}
