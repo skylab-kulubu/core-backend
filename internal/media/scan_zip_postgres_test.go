@@ -3,8 +3,11 @@ package media_test
 import (
 	"archive/zip"
 	"bytes"
+	"compress/flate"
 	"context"
 	"errors"
+	"fmt"
+	"hash/crc32"
 	"io"
 	"strings"
 	"sync"
@@ -192,9 +195,9 @@ func TestPostgresScanRejectsAZIPClamdCannotScanWhole(t *testing.T) {
 
 // A ZIP the check passes is scanned as any held file: streamed whole to
 // clamd, and served once clean; one carrying malware is still found by
-// clamd. A file that is no ZIP is read by one ranged read of its first
-// bytes before clamd scans it. The worker's limits default to the wizard's
-// (DefaultScanLimits).
+// clamd. A file that is no ZIP is read once more before clamd scans it, for
+// archives appended to it: its first bytes, then one stream. The worker's
+// limits default to the wizard's (DefaultScanLimits).
 func TestPostgresScanStreamsAZIPTheCheckPassesToClamd(t *testing.T) {
 	d := newScanDatabase(t)
 	watch := &rangeWatch{MemoryBlob: d.blobs, d: d}
@@ -226,8 +229,8 @@ func TestPostgresScanStreamsAZIPTheCheckPassesToClamd(t *testing.T) {
 	if len(streams) != 3 || !slicesContainBytes(streams, clean) || !slicesContainBytes(streams, infected.Bytes()) || !slicesContainBytes(streams, pdfFile()) {
 		t.Fatalf("clamd read %d files, want both ZIPs and the PDF whole", len(streams))
 	}
-	if watch.reads[pdf.Key] != 1 {
-		t.Fatalf("the PDF was read by %d ranged reads, want one of its first bytes", watch.reads[pdf.Key])
+	if watch.reads[pdf.Key] != 2 {
+		t.Fatalf("the PDF was read by %d ranged reads, want its first bytes and one stream", watch.reads[pdf.Key])
 	}
 	served := d.get(t, cleanZIP.ID)
 	if served.Status != media.StatusPending || served.ScanResult != media.ScanClean || served.Key != "files/"+cleanZIP.ID.String() {
@@ -337,4 +340,85 @@ func mustScanWorker(t *testing.T, config media.ScanWorkerConfig) *media.ScanWork
 		t.Fatal(err)
 	}
 	return w
+}
+
+// sizedZIP is a ZIP whose members give their sizes in their local headers,
+// as a ZIP appended to another file must for clamd to unpack it.
+func sizedZIP(t *testing.T, name string, data []byte) []byte {
+	t.Helper()
+	var body bytes.Buffer
+	fw, err := flate.NewWriter(&body, flate.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := fw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	w := zip.NewWriter(&out)
+	f, err := w.CreateRaw(&zip.FileHeader{Name: name, Method: zip.Deflate, CRC32: crc32.ChecksumIEEE(data),
+		CompressedSize64: uint64(body.Len()), UncompressedSize64: uint64(len(data))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(body.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+// clamd unpacks an archive appended to a PDF too, and skips there what it
+// skips in a ZIP. So every scanned file, whatever it is, is read once
+// before clamd for archives past its first byte: a public PDF by ranges, a
+// private one (an Answer file) as it is decrypted, into nothing but memory.
+// A PDF with a ZIP appended past clamd's limits is rejected as
+// too_large_to_scan, one with another archive appended as archive_nested,
+// neither reaching clamd; a PDF with a ZIP within the limits appended is
+// scanned as before.
+func TestPostgresScanRejectsAnArchiveAppendedToAPDF(t *testing.T) {
+	d := newScanDatabase(t)
+	worker := d.zipWorker(t, d.blobs, testLimits)
+	ctx := context.Background()
+	big := sizedZIP(t, "zeros.bin", make([]byte, 2<<20))
+	small := sizedZIP(t, "notlar.txt", []byte("ek notlar"))
+	publicBig := d.held(t, "program.pdf", "application/pdf", append(pdfFile(), big...))
+	publicRAR := d.held(t, "program2.pdf", "application/pdf", append(pdfFile(), append([]byte("Rar!\x1a\x07\x00"), make([]byte, 100)...)...))
+	publicSmall := d.held(t, "program3.pdf", "application/pdf", append(pdfFile(), small...))
+	privateBig, err := d.svc.UploadForPurpose(ctx, d.organizer, media.PurposeAnswerFile, uploaded("cv.pdf", "application/pdf", append(pdfFile(), big...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateSmall, err := d.svc.UploadForPurpose(ctx, d.organizer, media.PurposeAnswerFile, uploaded("ödev.pdf", "application/pdf", append(pdfFile(), small...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, reported := passWith(t, worker)
+	if report.Rejected != 3 || report.Clean != 2 || report.Failed != 0 {
+		t.Fatalf("report %+v %v", report, reported)
+	}
+	for _, c := range []struct {
+		m    media.Media
+		want media.ScanResult
+	}{{publicBig, media.ScanTooLarge}, {publicRAR, media.ScanArchiveNested}, {privateBig, media.ScanTooLarge}, {publicSmall, media.ScanClean}, {privateSmall, media.ScanClean}} {
+		if got := d.get(t, c.m.ID); got.ScanResult != c.want {
+			t.Errorf("%s: %s (%s), want %s", c.m.Name, got.Status, got.ScanResult, c.want)
+		}
+	}
+	if streams := d.clamd.Streams(); len(streams) != 2 {
+		t.Fatalf("clamd read %d files, want only the two with a small ZIP appended", len(streams))
+	}
+	if _, ok := d.private.Get(privateBig.Key); ok {
+		t.Fatal("the private PDF with a ZIP past the limits is still stored")
+	}
+	joined := fmt.Sprint(reported)
+	if !strings.Contains(joined, "the ZIP at byte") || strings.Contains(joined, "zeros.bin") || strings.Contains(joined, "cv.pdf") {
+		t.Fatalf("reported %s", joined)
+	}
 }

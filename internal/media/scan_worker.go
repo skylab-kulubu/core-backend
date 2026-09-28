@@ -1,7 +1,6 @@
 package media
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -49,11 +48,11 @@ func scanTimeout(size int64) time.Duration {
 }
 
 // zipCheckWork bounds the ZIP check of a file of size bytes
-// (checkContent): the longest the check may take under the limits, as what
-// a ZIP inflates to is never more than MaxScanSize (the check itself stops
-// sooner, after the time what it inflates to calls for:
-// zipcheck.Timeout), and the storage calls before it. Every file's claim
-// allows for it, since only its content tells whether it is a ZIP.
+// (checkContent), which reads every file once more before clamd: the
+// longest the check may take under the limits (the file read twice, what it
+// inflates to never more than MaxScanSize; the check itself stops sooner,
+// after the time what it inflates to calls for: zipcheck.Timeout), and the
+// storage calls before it.
 func (w *ScanWorker) zipCheckWork(size int64) time.Duration {
 	return w.limits.MaxTimeout(size) + 2*scanStorageTimeout
 }
@@ -398,17 +397,31 @@ func (w *ScanWorker) scan(ctx context.Context, m Media) (clamd.Result, error) {
 
 // checkContent refuses a file clamd could not scan whole (zipcheck, media
 // redesign ticket 23): clamd skips, without a report, an archive member that
-// inflates past its MaxFileSize. Any file whose content is a ZIP is checked,
-// whatever its type says (a DOCX, an XLSX, a JAR too); its first bytes tell.
-// It runs under the scan's claim, holding no database connection. A public
-// held file is read by ranged GETs: its first bytes, then the check's
-// directory reads and one stream. A private file is decrypted: into memory
-// to be checked, at most MaxBuffer (ErrPrivateZIPUnchecked beyond).
+// inflates past its MaxFileSize, in a ZIP and in an archive it finds inside
+// another file (an Office document, a ZIP appended to a PDF or an image).
+// So every file is read once before clamd, whatever its type says: a file
+// whose content is a ZIP is checked whole, any other is searched for
+// archives past its first byte. It runs under the scan's claim, holding no
+// database connection. A public held file is read by ranged GETs. A private
+// file is decrypted as it streams, into nothing but memory: a ZIP is kept
+// there to be checked, at most MaxBuffer (ErrPrivateZIPUnchecked beyond).
 func (w *ScanWorker) checkContent(ctx context.Context, m Media) error {
 	ctx, cancel := context.WithTimeout(ctx, w.zipCheckWork(m.Size))
 	defer cancel()
 	if sealed, ok := m.Sealed(); ok {
-		return w.checkPrivate(ctx, m, sealed)
+		if w.private == nil {
+			return ErrPrivateMediaDisabled
+		}
+		body, err := w.private.Open(ctx, sealed)
+		if err != nil {
+			return fmt.Errorf("open the file: %w", err)
+		}
+		defer body.Close()
+		err = zipcheck.CheckStream(ctx, body, m.Size, w.limits)
+		if errors.Is(err, zipcheck.ErrZIPTooLargeToKeep) {
+			return ErrPrivateZIPUnchecked
+		}
+		return err
 	}
 	if w.public == nil {
 		return ErrDirectUploadUnavailable
@@ -417,52 +430,7 @@ func (w *ScanWorker) checkContent(ctx context.Context, m Media) error {
 	if err != nil {
 		return fmt.Errorf("size the file: %w", err)
 	}
-	if size < 4 {
-		return nil
-	}
-	head, err := w.public.OpenRange(ctx, m.Key, 0, 4)
-	if err != nil {
-		return fmt.Errorf("read the file's first bytes: %w", err)
-	}
-	first, err := io.ReadAll(head)
-	head.Close()
-	if err != nil {
-		return fmt.Errorf("read the file's first bytes: %w", err)
-	}
-	if !zipcheck.IsZIP(first) {
-		return nil
-	}
-	return zipcheck.Check(ctx, heldRanges{storage: w.public, key: m.Key}, size, w.limits)
-}
-
-// checkPrivate checks a private file whose content is a ZIP, decrypted into
-// memory.
-func (w *ScanWorker) checkPrivate(ctx context.Context, m Media, sealed SealedObject) error {
-	if w.private == nil {
-		return ErrPrivateMediaDisabled
-	}
-	body, err := w.private.Open(ctx, sealed)
-	if err != nil {
-		return fmt.Errorf("open the file: %w", err)
-	}
-	defer body.Close()
-	r := bufio.NewReader(body)
-	if first, err := r.Peek(4); err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("read the file's first bytes: %w", err)
-	} else if !zipcheck.IsZIP(first) {
-		return nil
-	}
-	if m.Size > w.limits.MaxBuffer {
-		return ErrPrivateZIPUnchecked
-	}
-	data, err := io.ReadAll(io.LimitReader(r, w.limits.MaxBuffer+1))
-	if err != nil {
-		return fmt.Errorf("read the file: %w", err)
-	}
-	if int64(len(data)) > w.limits.MaxBuffer {
-		return ErrPrivateZIPUnchecked
-	}
-	return zipcheck.Check(ctx, zipcheck.Bytes(data), int64(len(data)), w.limits)
+	return zipcheck.CheckFile(ctx, heldRanges{storage: w.public, key: m.Key}, size, w.limits)
 }
 
 // heldRanges is a held file as the ZIP check reads it.
