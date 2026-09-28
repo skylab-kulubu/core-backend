@@ -704,7 +704,9 @@ func (s *service) withURL(m Media) Media {
 }
 
 // hasPublicAddress reports whether the Media is served from the CDN: a
-// private Media never is, nor one whose object is being or was purged.
+// private Media never is, nor one whose object is being or was purged, nor
+// one waiting for its malware scan (its file is held at a key only core
+// knows) or rejected by it.
 func (m Media) hasPublicAddress() bool {
-	return m.Visibility != VisibilityPrivate && m.BlobPurgeStartedAt == nil && m.BlobPurgedAt == nil
+	return m.Visibility != VisibilityPrivate && m.BlobPurgeStartedAt == nil && m.BlobPurgedAt == nil && m.openable() == nil
 }

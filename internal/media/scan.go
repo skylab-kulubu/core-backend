@@ -61,14 +61,26 @@ var (
 	ErrMediaRejected = errors.New("media: the Media was rejected by its malware scan")
 )
 
+// ScanRefusal refuses to open a Media because of its malware scan.
+// errors.Is matches ErrMediaScanning or ErrMediaRejected.
+type ScanRefusal struct {
+	Err error
+	// Result is why a rejected Media was rejected.
+	Result ScanResult
+}
+
+func (r *ScanRefusal) Error() string { return r.Err.Error() }
+
+func (r *ScanRefusal) Unwrap() error { return r.Err }
+
 // openable is nil for a Media whose file may be opened, or the scan's
 // refusal.
 func (m Media) openable() error {
 	switch m.Status {
 	case StatusScanning:
-		return ErrMediaScanning
+		return &ScanRefusal{Err: ErrMediaScanning}
 	case StatusRejected:
-		return ErrMediaRejected
+		return &ScanRefusal{Err: ErrMediaRejected, Result: m.ScanResult}
 	}
 	return nil
 }

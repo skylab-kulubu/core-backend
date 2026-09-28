@@ -384,3 +384,39 @@ func TestPostgresExpiryPurgesAMediaStillScanning(t *testing.T) {
 		t.Fatalf("the scan still had work for a purged Media: %+v", report)
 	}
 }
+
+// An Answer file is opened only once clean: no read link while it waits
+// for its scan, one that opens its plaintext after. Content is refused for a
+// Media that is not clean, whatever link is shown.
+func TestPostgresAnAnswerFileOpensOnlyOnceClean(t *testing.T) {
+	d := newScanDatabase(t)
+	ctx := context.Background()
+	created := d.answer(t, pdfFile())
+	if _, err := d.svc.IssueReadLink(ctx, formsService, created.ID, forPerson(reviewer.String())); !errors.Is(err, media.ErrMediaScanning) {
+		t.Fatalf("link while scanning: err = %v, want %v", err, media.ErrMediaScanning)
+	}
+
+	d.pass(t)
+	link, err := d.svc.IssueReadLink(ctx, formsService, created.ID, forPerson(reviewer.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := d.svc.OpenContent(ctx, created.ID, tokenOf(t, link), "203.0.113.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readAll(t, content); !bytes.Equal(got, pdfFile()) {
+		t.Fatalf("opened %q", got)
+	}
+
+	// The same link, for a Media no longer clean (as if a rescan rejected
+	// it), opens nothing.
+	if _, err := d.pool.Exec(ctx, `UPDATE media SET status = 'rejected', scan_result = 'infected' WHERE id = $1`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	var refusal *media.ScanRefusal
+	if _, err := d.svc.OpenContent(ctx, created.ID, tokenOf(t, link), "203.0.113.9"); !errors.Is(err, media.ErrMediaRejected) ||
+		!errors.As(err, &refusal) || refusal.Result != media.ScanInfected {
+		t.Fatalf("content of a rejected Media: err = %v", err)
+	}
+}
