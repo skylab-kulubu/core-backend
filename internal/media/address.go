@@ -123,7 +123,7 @@ func (a Addresses) sizes(m Media) map[string]ImageAddress {
 // links none, or when the Media has no public address: private, or its
 // object purged.
 func (a Addresses) LinkedSizes(image *LinkedImage) map[string]ImageAddress {
-	if image == nil || !image.media.hasPublicAddress() || image.media.Key == "" {
+	if image == nil || !image.media.Servable() || image.media.Key == "" {
 		return nil
 	}
 	m := image.media

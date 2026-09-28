@@ -594,3 +594,40 @@ func TestAnEventsSummaryCountsItsFilesAndVideosHTTP(t *testing.T) {
 		t.Fatalf("the Event's summary is %v, want the counts alone", summary)
 	}
 }
+
+// A private Media never gets an address, whatever links it: one forced
+// into an Event's files (only a writer bypassing core could put it there)
+// is shown to the Event's editors without an address, to nobody else, and
+// is not counted; the Media JSON has no address for it either.
+func TestAPrivateMediaAnEventListsNeverHasAnAddressHTTP(t *testing.T) {
+	f := newEventFilesEnv(t)
+	person, organizer := newOrganizer(t, f.keys)
+	eventID := f.createEvent(t, organizer, "WEBLAB")
+	ctx := context.Background()
+	private, err := f.store.Create(ctx, media.Media{
+		Name: "gizli.pdf", Type: "application/pdf", Kind: media.KindFile, Key: "private/files/" + uuid.NewString(), Size: 10,
+		UploadedBy: person, Purpose: media.PurposeClubFile, Status: media.StatusAttached, Visibility: media.VisibilityPrivate,
+		Encryption: &media.Encryption{Algorithm: "aes-256-gcm-chunked-v1", WrappedKey: "vault:v1:AAAA", KeyVersion: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `INSERT INTO event_files (event_id, media_id, order_index) VALUES ($1, $2, 1)`, eventID, private.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	mine := sendJSON(t, f.app, organizer, fiber.MethodGet, "/v1/events/"+eventID, "")
+	if files := items(t, mine, "files"); len(files) != 1 || files[0]["url"] != nil || mine.body["fileCount"] != float64(0) {
+		t.Fatalf("the editor sees %v (count %v), want the private file without an address, uncounted", files, mine.body["fileCount"])
+	}
+	public := anonymousGet(t, f.app, "/v1/events/"+eventID)
+	if files := items(t, public, "files"); len(files) != 0 || public.body["fileCount"] != float64(0) {
+		t.Fatalf("anyone sees %v (count %v)", files, public.body["fileCount"])
+	}
+	if entry := listed(t, getList(t, f.app, "/v1/events"), eventID); entry["fileCount"] != float64(0) {
+		t.Fatalf("the list counts %v", entry["fileCount"])
+	}
+	if meta := sendJSON(t, f.app, organizer, fiber.MethodGet, "/v1/media/"+private.ID.String(), ""); meta.status != fiber.StatusOK || meta.body["url"] != "" {
+		t.Fatalf("the Media JSON of the private file: status %d body %v", meta.status, meta.body)
+	}
+}

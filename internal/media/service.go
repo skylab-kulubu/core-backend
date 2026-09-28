@@ -699,7 +699,7 @@ func (s *service) Addresses() Addresses {
 // read only through a read link.
 func (s *service) withURL(m Media) Media {
 	m.Sizes = nil
-	if !m.hasPublicAddress() {
+	if !m.Servable() {
 		m.URL = ""
 		return m
 	}
@@ -708,10 +708,11 @@ func (s *service) withURL(m Media) Media {
 	return m
 }
 
-// hasPublicAddress reports whether the Media is served from the CDN: a
-// private Media never is, nor one whose object is being or was purged, nor
-// one waiting for its malware scan (its file is held at a key only core
-// knows) or rejected by it.
-func (m Media) hasPublicAddress() bool {
+// Servable reports whether the Media is served from the CDN, so has a
+// public address: a private Media never is, nor one whose object is being or
+// was purged, nor one waiting for its malware scan (its file is held at a
+// key only core knows) or rejected by it. ServableSQL is the same rule in
+// SQL; a test keeps the two equal.
+func (m Media) Servable() bool {
 	return m.Visibility != VisibilityPrivate && m.BlobPurgeStartedAt == nil && m.BlobPurgedAt == nil && m.openable() == nil
 }

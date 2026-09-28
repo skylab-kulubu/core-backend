@@ -24,21 +24,15 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 }
 
 var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at, ` +
-	downloadableCountSQL(Files) + `, ` + downloadableCountSQL(Videos)
+	servableCountSQL(Files) + `, ` + servableCountSQL(Videos)
 
-// downloadableSQL holds for a Media an Event's files or videos may offer to
-// anyone, the media row aliased alias: current, its object not being
-// purged, and neither waiting for its malware scan nor rejected by it.
-func downloadableSQL(alias string) string {
-	return alias + `.deleted_at IS NULL AND ` + alias + `.blob_purge_started_at IS NULL AND ` + alias + `.blob_purged_at IS NULL
-		AND ` + alias + `.status NOT IN ('` + string(media.StatusScanning) + `', '` + string(media.StatusRejected) + `')`
-}
-
-// downloadableCountSQL counts the Event's items of the list anyone can
-// download, in the Event's own row: an Event list costs no query for them.
-func downloadableCountSQL(list MediaList) string {
-	return `(SELECT count(*) FROM ` + list.table() + ` linked JOIN media lm ON lm.id = linked.media_id
-		WHERE linked.event_id = e.id AND ` + downloadableSQL("lm") + `)`
+// servableCountSQL counts the Event's items of the list anyone can see: a
+// subquery of the query that reads the Event, so a list of Events costs no
+// query more for them. An item is seen when its Media is current (as in
+// the gallery) and can be served (media.ServableSQL).
+func servableCountSQL(list MediaList) string {
+	return `(SELECT count(*) FROM ` + list.table() + ` linked JOIN media lm ON lm.id = linked.media_id AND lm.deleted_at IS NULL
+		WHERE linked.event_id = e.id AND ` + media.ServableSQL("lm") + `)`
 }
 
 const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id AND m.deleted_at IS NULL`
@@ -127,7 +121,8 @@ func (s *PostgresStore) get(ctx context.Context, id uuid.UUID, includeArchived b
 
 // ListFiles reads the Event's files and videos, in one query, each in its
 // organizers' order. An item whose Media was archived is left out, as in
-// the gallery; one waiting for its malware scan or rejected by it has no
+// the gallery; one that cannot be served (media.ServableSQL: private,
+// being purged, waiting for its malware scan or rejected by it) has no
 // address, and only a rejected one its scan result.
 func (s *PostgresStore) ListFiles(ctx context.Context, eventID uuid.UUID) ([]MediaItem, []MediaItem, error) {
 	lists := Event{Files: make([]MediaItem, 0), Videos: make([]MediaItem, 0)}
@@ -135,7 +130,7 @@ func (s *PostgresStore) ListFiles(ctx context.Context, eventID uuid.UUID) ([]Med
 	for _, list := range mediaLists {
 		selects = append(selects, `SELECT '`+string(list)+`' AS list, m.id, m.file_name, m.file_type, m.file_size, m.status,
 			CASE WHEN m.status = '`+string(media.StatusRejected)+`' THEN COALESCE(m.scan_result, '') ELSE '' END,
-			CASE WHEN `+downloadableSQL("m")+` THEN COALESCE(`+media.ServedKeySQL("m")+`, '') ELSE '' END,
+			COALESCE(`+media.ServableKeySQL("m")+`, ''),
 			linked.order_index, linked.added_at
 		FROM `+list.table()+` linked
 		JOIN media m ON m.id = linked.media_id AND m.deleted_at IS NULL
