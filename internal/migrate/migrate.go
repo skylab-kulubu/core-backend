@@ -748,6 +748,23 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND pg_get_triggerdef(actual.oid) LIKE '% FOR EACH ROW WHEN ((new.status = ''completed''::text)) EXECUTE %'
 			  AND actual.tgfoid = to_regprocedure('public.require_account_deletion_media_erased()')
 		)`,
+	// A Direct upload's details go with the staging row of its pending
+	// object: the staging sweeper and account erasure delete by that row
+	// alone.
+	20260928100000: `
+		SELECT 1
+		WHERE to_regclass('public.media_direct_uploads') IS NOT NULL
+		AND (
+			SELECT count(*) FROM (VALUES
+				('media_direct_uploads_object_key_key', 'u', 'UNIQUE (object_key)'),
+				('media_direct_uploads_object_key_fkey', 'f', 'FOREIGN KEY (object_key) REFERENCES media_upload_staging(object_key) ON DELETE CASCADE')
+			) expected(constraint_name, constraint_type, definition)
+			JOIN pg_constraint actual
+			  ON actual.conrelid = to_regclass('public.media_direct_uploads')
+			 AND actual.conname = expected.constraint_name
+			 AND actual.contype = expected.constraint_type::"char"
+			 AND pg_get_constraintdef(actual.oid) = expected.definition
+		) = 2`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

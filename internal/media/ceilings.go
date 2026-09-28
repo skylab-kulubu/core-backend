@@ -10,8 +10,22 @@ import (
 // refuses to start with a catalogue that breaks one.
 var (
 	// ErrCeilingPublicType: a public purpose accepts only raster images,
-	// SVG (sanitized, served as a download), PDF and MP4.
-	ErrCeilingPublicType = errors.New("media purpose catalogue: a public purpose accepts only raster images, SVG, PDF and MP4")
+	// SVG (sanitized, served as a download), PDF, MP4 and, where the
+	// catalogue names it, ZIP (ErrCeilingZIP).
+	ErrCeilingPublicType = errors.New("media purpose catalogue: a public purpose accepts only raster images, SVG, PDF, MP4 and, for club files, ZIP")
+	// ErrCeilingZIP: only club files (zipPurposes) accept ZIP publicly
+	// (decision D6). A ZIP is download-only: the serving policy stores it
+	// as application/octet-stream with Content-Disposition: attachment
+	// (ServingMetadata), never inline. A private purpose may name ZIP: it
+	// never reaches the CDN.
+	ErrCeilingZIP = errors.New("media purpose catalogue: only club files accept ZIP publicly, as a download")
+	// ErrCeilingDirectType: a Direct upload purpose accepts only PDF, ZIP
+	// and MP4 (directTypes). Core never receives a Direct upload's bytes; it
+	// reads their start (detectDirectType) and keeps the object as it came.
+	// These three prove their type in their first bytes. An image would
+	// reach storage without the re-encoding every stored image gets, and a
+	// DOCX is told from any other ZIP only by reading all of it.
+	ErrCeilingDirectType = errors.New("media purpose catalogue: a Direct upload purpose accepts only PDF, ZIP and MP4")
 	// ErrCeilingPublicRaster: a public purpose that accepts raster images
 	// declares image.reencode, so that no uploaded image bytes reach the CDN
 	// as they came: core decodes such an image and stores only its pixels,
@@ -49,6 +63,12 @@ var (
 // svgPurposes are the only purposes that may accept SVG.
 var svgPurposes = []string{"cms_image", PurposeEventCover, PurposeEventGallery}
 
+// zipPurposes are the only public purposes that may accept ZIP.
+var zipPurposes = []string{PurposeClubFile}
+
+// directTypes are the only types a Direct upload purpose may accept.
+var directTypes = []string{pdfType, zipType, mp4Type}
+
 // MaxImageDimension is the longest side, in pixels, of a re-encoded image,
 // and of a purpose's image sizes.
 const MaxImageDimension = 2560
@@ -70,6 +90,13 @@ func checkCeilings(p Purpose) error {
 	if p.MaxBytes > limit {
 		return fmt.Errorf("%s allows %d bytes over %d: %w", p.Name, p.MaxBytes, limit, ErrCeilingSize)
 	}
+	if p.Transport == TransportDirect {
+		for _, t := range p.Types {
+			if !slices.Contains(directTypes, t) {
+				return fmt.Errorf("%s names %s: %w", p.Name, t, ErrCeilingDirectType)
+			}
+		}
+	}
 	if p.Image.MaxDimension > MaxImageDimension {
 		return fmt.Errorf("%s keeps %d px: %w", p.Name, p.Image.MaxDimension, ErrCeilingImageDimension)
 	}
@@ -85,6 +112,12 @@ func checkCeilings(p Purpose) error {
 	}
 	if p.Visibility == VisibilityPublic {
 		for _, t := range p.Types {
+			if t == zipType {
+				if !slices.Contains(zipPurposes, p.Name) {
+					return fmt.Errorf("%s names %s: %w", p.Name, t, ErrCeilingZIP)
+				}
+				continue
+			}
 			if !isRasterType(t) && t != svgType && t != pdfType && t != mp4Type {
 				return fmt.Errorf("%s names %s: %w", p.Name, t, ErrCeilingPublicType)
 			}

@@ -39,6 +39,9 @@ const (
 	PurposeAnswerFile = "answer_file"
 	// PurposeAnswerFileLarge is a large Answer file, sent by Direct upload.
 	PurposeAnswerFileLarge = "answer_file_large"
+	// PurposeClubFile is a large club download, sent by Direct upload: the
+	// one public purpose that may accept ZIP (zipPurposes).
+	PurposeClubFile = "club_file"
 )
 
 // requiredPurposes are the purposes core refers to in code. A catalogue that

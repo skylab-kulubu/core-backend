@@ -1150,6 +1150,7 @@ func TestAccountErasureServiceStepsAreForwardOnlyOnceProofExists(t *testing.T) {
 func undoAccountLifecycleDependents(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	for _, name := range []string{
+		"migrations/20260928100000_media_direct_uploads.down.sql",
 		"migrations/20260927100000_account_deletion_media.down.sql",
 		"migrations/20260926171000_media_read_link_subjects.down.sql",
 		"migrations/20260920130000_account_self_delete_intake.down.sql",

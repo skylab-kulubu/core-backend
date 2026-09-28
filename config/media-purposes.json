@@ -99,9 +99,9 @@
       "image": { "reencode": true, "max_dimension": 2560 }
     },
     "club_file": {
-      "description": "A large club download, such as event material, that anyone can open.",
+      "description": "A large club download, such as event material or a dataset, that anyone can open. A ZIP is served only as a download (decision D6).",
       "upload": "event_editor",
-      "types": ["application/pdf"],
+      "types": ["application/pdf", "application/zip"],
       "max_mib": 1024,
       "visibility": "public",
       "encrypted": false,

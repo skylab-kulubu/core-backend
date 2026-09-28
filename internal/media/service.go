@@ -55,6 +55,25 @@ type Service interface {
 	// OpenContent opens a private Media's decrypted content for a read link
 	// token, and writes the open to the access log.
 	OpenContent(ctx context.Context, id uuid.UUID, token, clientIP string) (Content, error)
+	// StartDirectUpload starts a Direct upload of a large file for a Media
+	// purpose whose transport is Direct upload, under the same rules as a
+	// single-step upload, and charges its declared size to the person's
+	// Direct upload budget (DirectUploadLimits). It answers with presigned
+	// addresses for every part.
+	StartDirectUpload(ctx context.Context, p authz.Principal, req DirectUploadRequest) (DirectUpload, error)
+	// DirectUploadParts answers the uploader of a Direct upload with the
+	// parts storage holds and new addresses for the others, so an
+	// interrupted upload continues where it stopped. Anyone else gets
+	// ErrNotFound.
+	DirectUploadParts(ctx context.Context, p authz.Principal, id uuid.UUID) (DirectUpload, error)
+	// CompleteDirectUpload completes the uploader's Direct upload with the
+	// parts they sent: it checks the parts, the size and the file's type,
+	// copies the file to its final key and creates its Media. A file the
+	// purpose refuses ends the upload and keeps its charge; core's own
+	// failure after the parts are joined ends it and gives the charge back.
+	// While another completion holds the upload it answers
+	// ErrDirectUploadCompleting.
+	CompleteDirectUpload(ctx context.Context, p authz.Principal, id uuid.UUID, parts []UploadedPart) (Media, error)
 }
 
 type service struct {
@@ -68,6 +87,7 @@ type service struct {
 	decoding           *DecodeBudget
 	serviceProducts    []authz.Product
 	private            *PrivateMedia
+	direct             DirectUploadConfig
 }
 
 func NewService(media Store, blobs BlobStore, az authz.Authorizer, publicBase string) Service {
@@ -92,6 +112,9 @@ type ServiceOptions struct {
 	// Private turns private Media on. Nil keeps it off: private purposes
 	// are refused, never stored publicly instead.
 	Private *PrivateMedia
+	// Direct is what Direct upload needs. Its zero value has no storage:
+	// Direct upload answers ErrDirectUploadUnavailable.
+	Direct DirectUploadConfig
 }
 
 // PrivateMedia is what private Media needs (docs/media-lifecycle.md).
@@ -134,6 +157,7 @@ func NewServiceWithOptions(media Store, blobs BlobStore, az authz.Authorizer, pu
 	return &service{
 		media: media, blobs: blobs, objects: objects, authz: az, addresses: addresses, uploadStagingGrace: grace,
 		decoding: decoding, serviceProducts: options.ServiceProducts, private: options.Private,
+		direct: options.Direct,
 	}
 }
 
@@ -196,27 +220,52 @@ func (s *service) UploadForPurpose(ctx context.Context, p authz.Principal, purpo
 	return s.upload(ctx, p, purpose, file)
 }
 
-func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose, file UploadedFile) (Media, error) {
+// purposeRefusal is the first rule that refuses p an upload of the purpose
+// by the transport, nil when none does. Single-step uploads and Direct
+// upload check the same rules in the same order.
+func (s *service) purposeRefusal(p authz.Principal, purpose Purpose, transport Transport) error {
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia, MediaUploader: purpose.Uploader}, authz.Upload) {
-		return Media{}, &PurposeRefusal{Err: ErrPurposeForbidden, Purpose: purpose.Name}
+		return &PurposeRefusal{Err: ErrPurposeForbidden, Purpose: purpose.Name}
 	}
 	private := purpose.Visibility == VisibilityPrivate
 	if private && s.private == nil {
 		// Private Media is off (MEDIA_PRIVATE_ENABLED): a private purpose is
 		// refused, never stored publicly instead.
-		return Media{}, &PurposeRefusal{Err: ErrPrivateMediaDisabled, Purpose: purpose.Name}
+		return &PurposeRefusal{Err: ErrPrivateMediaDisabled, Purpose: purpose.Name}
 	}
-	if purpose.Transport == TransportDirect {
-		return Media{}, &PurposeRefusal{Err: ErrDirectUploadOnly, Purpose: purpose.Name}
+	if purpose.Transport != transport {
+		if transport == TransportSingleStep {
+			return &PurposeRefusal{Err: ErrDirectUploadOnly, Purpose: purpose.Name}
+		}
+		return &PurposeRefusal{Err: ErrSingleStepOnly, Purpose: purpose.Name}
+	}
+	if transport == TransportDirect && private {
+		// Encrypting a large file after its Direct upload is ticket 21.
+		return &PurposeRefusal{Err: ErrDirectUploadPrivate, Purpose: purpose.Name}
 	}
 	if !s.attachable(purpose) {
-		return Media{}, &PurposeRefusal{Err: ErrPurposeNotAvailable, Purpose: purpose.Name}
+		return &PurposeRefusal{Err: ErrPurposeNotAvailable, Purpose: purpose.Name}
 	}
 	if purpose.Scan && !scannerAvailable {
 		// A purpose that needs a malware scan is opened only once it is
 		// clean; with no scanner, nothing of it could ever be opened.
-		return Media{}, &PurposeRefusal{Err: ErrPurposeNeedsScanner, Purpose: purpose.Name}
+		return &PurposeRefusal{Err: ErrPurposeNeedsScanner, Purpose: purpose.Name}
 	}
+	return nil
+}
+
+func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose, file UploadedFile) (Media, error) {
+	if err := s.purposeRefusal(p, purpose, TransportSingleStep); err != nil {
+		return Media{}, err
+	}
+	// Kept with the Media and shown as its name: it must read as what it
+	// is, whichever way the file was uploaded.
+	name, err := cleanFileName(file.Name)
+	if err != nil {
+		return Media{}, err
+	}
+	file.Name = name
+	private := purpose.Visibility == VisibilityPrivate
 	if len(file.Data) == 0 {
 		return Media{}, ErrInvalid
 	}

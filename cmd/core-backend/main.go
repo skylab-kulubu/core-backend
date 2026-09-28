@@ -145,6 +145,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Direct upload has its own budget, apart from single-step uploads
+	// (decision Q23). It needs R2's multipart upload; a core without R2
+	// answers it with 503 direct_upload_unavailable.
+	directUploadLimits, err := media.DirectUploadLimitsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	directUploads := media.DirectUploadConfig{Limiter: media.NewDirectUploadLimiter(directUploadLimits, time.Now)}
+	if r2, ok := publicBlobs.(*media.R2); ok {
+		directUploads.Storage = r2
+	} else {
+		log.Printf("media direct upload: off (no R2 configured)")
+	}
 	// The products whose service accounts may attach Media; a product
 	// without one keeps its purposes closed.
 	serviceClients, err := authz.ServiceClientsFromEnv(os.Getenv)
@@ -466,6 +479,7 @@ func main() {
 			DecodeBudget:       decodeBudget,
 			ServiceProducts:    serviceClients.Products(),
 			Private:            privateMedia,
+			Direct:             directUploads,
 		}),
 		URLs:                   urlSvc,
 		Certificates:           certSvc,
