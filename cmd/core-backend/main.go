@@ -30,6 +30,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
@@ -206,6 +207,11 @@ func main() {
 			log.Print(warning)
 		}
 		dir = keycloakDirectory
+	}
+	if privateMedia != nil {
+		// A reviewer who never signed in to core gets their row from
+		// Keycloak when a product asks for a read link for them.
+		privateMedia.Subjects = readlinksubject.New(dir, users)
 	}
 	parse := func(string) (authn.Identity, error) {
 		return authn.Identity{}, authn.ErrInvalidToken

@@ -1325,7 +1325,12 @@ Anything else is `404`: another product's Media, a public one, a core Media
 for a product, a product's Media for an admin, one that does not exist. The
 person a link is for must be an active account in core (`422`
 `media_link_subject_inactive` otherwise), like every other current-identity
-link ([`account-lifecycle.md`](account-lifecycle.md)).
+link ([`account-lifecycle.md`](account-lifecycle.md)). For a product's link
+to a person core has no row for (a reviewer who never signed in to core),
+core first ensures the row from Keycloak, but for no one Keycloak does not
+know or has disabled, or core has erased or is erasing (`422`, no row), and
+answers `503` `media_link_subject_unavailable` while Keycloak cannot be
+reached.
 
 The token is `base64url(claims) "." base64url(signature)`: the claims are a
 format byte, a disposition byte (always download), the link's id, the Media
@@ -1407,7 +1412,8 @@ used in production, so there is nothing to move).
 | 403 | `media_link_forbidden` | A link asked for by anyone but a configured product's service account with `media:attach` or a privileged admin. |
 | 400 | | A product's request without `onBehalfOf`, an admin's request with one, or ids that are not UUIDs. |
 | 404 | | A link to a Media that is not a current private Media the caller may open; a content request for a Media that is not a current private one. |
-| 422 | `media_link_subject_inactive` | The person the link is for is unknown to core or being erased. |
+| 422 | `media_link_subject_inactive` | The person the link is for is unknown to core and Keycloak, disabled in Keycloak, or erased or being erased. |
+| 503 | `media_link_subject_unavailable` | Core has no row for the person the link is for, and Keycloak cannot be reached to ensure one. Retry later (`Retry-After`). |
 | 403 | `media_link_invalid` | A token core did not sign for this Media. |
 | 403 | `media_link_expired` | A token past its five minutes. |
 | 422 | `private_media_disabled` | Private Media is off. |

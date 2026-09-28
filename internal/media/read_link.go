@@ -26,8 +26,13 @@ var (
 	// admin.
 	ErrLinkForbidden = fmt.Errorf("media: only a product's service account or an admin may ask for read links: %w", ErrForbidden)
 	// ErrLinkSubjectInactive refuses a read link for a person who is not an
-	// active account: unknown to core, or being erased.
+	// active account: unknown to core (for a product's link: and to the
+	// identity directory, or disabled there), or erased or being erased.
 	ErrLinkSubjectInactive = fmt.Errorf("media: the read link names no active account: %w", ErrInvalid)
+	// ErrLinkSubjectUnavailable is a read link for a person core has no row
+	// for, while the identity directory (Keycloak) cannot be asked about
+	// them. Nothing is created; the product retries later.
+	ErrLinkSubjectUnavailable = errors.New("media: the identity directory cannot be asked about the person the read link is for")
 	// ErrLinkInvalid is a read link token core did not sign for this Media.
 	ErrLinkInvalid = errors.New("media: the read link is not valid")
 	// ErrLinkExpired is a read link past its five minutes.
@@ -90,12 +95,30 @@ type AccessLog interface {
 	RecordReadLinkOpen(ctx context.Context, open ReadLinkOpen) error
 }
 
+// ReadLinkSubjects ensures the core row of the person a product's read link
+// is for, before the link is recorded.
+type ReadLinkSubjects interface {
+	// EnsureAccount leaves a person core has a row for as they are (the
+	// access log decides whether the row is active), and ensures a row
+	// from the identity directory for a person core has none for. It is
+	// ErrLinkSubjectInactive, creating no row, for a person the directory
+	// does not know or has disabled, or whose account core has blocked
+	// (erased or being erased); ErrLinkSubjectUnavailable, creating no row,
+	// when the directory cannot be asked.
+	EnsureAccount(ctx context.Context, id uuid.UUID) error
+}
+
 // IssueReadLink gives a read link to a private Media:
 //   - to the owning product's service account, for one of the product's
 //     purposes, for the person it acts for (the reviewer): the product has
 //     decided that person may open it;
 //   - to a privileged admin, for a core purpose (a certificate asset), the
 //     admin being the person the link is for.
+//
+// For a product, a person core has no row for yet (a reviewer who never
+// signed in to core) gets one from the identity directory once the Media is
+// known to be the product's (PrivateMedia.Subjects). An admin is signed in
+// and acts for themselves: nothing is ensured for them.
 //
 // Core records every link before it hands it out.
 func (s *service) IssueReadLink(ctx context.Context, p authz.Principal, id uuid.UUID, req ReadLinkRequest) (ReadLink, error) {
@@ -111,7 +134,16 @@ func (s *service) IssueReadLink(ctx context.Context, p authz.Principal, id uuid.
 		if err != nil || person == uuid.Nil {
 			return ReadLink{}, ErrInvalid
 		}
-		return s.issueReadLink(ctx, id, p.Product, person)
+		m, err := s.linkableMedia(ctx, id, p.Product)
+		if err != nil {
+			return ReadLink{}, err
+		}
+		if s.private.Subjects != nil {
+			if err := s.private.Subjects.EnsureAccount(ctx, person); err != nil {
+				return ReadLink{}, err
+			}
+		}
+		return s.issueReadLink(ctx, m, p.Product, person)
 	case s.authz.Allow(p, authz.Resource{Type: authz.TypeMediaReadLink}, authz.Read):
 		// The admin is the person the link is for; naming anyone, even
 		// no one ("" or null), is a malformed request.
@@ -119,7 +151,11 @@ func (s *service) IssueReadLink(ctx context.Context, p authz.Principal, id uuid.
 		if id == uuid.Nil || admin == nil || req.Malformed || req.OnBehalfOf != nil {
 			return ReadLink{}, ErrInvalid
 		}
-		return s.issueReadLink(ctx, id, authz.ProductCore, *admin)
+		m, err := s.linkableMedia(ctx, id, authz.ProductCore)
+		if err != nil {
+			return ReadLink{}, err
+		}
+		return s.issueReadLink(ctx, m, authz.ProductCore, *admin)
 	default:
 		return ReadLink{}, ErrLinkForbidden
 	}
@@ -139,11 +175,9 @@ func (s *service) linkableMedia(ctx context.Context, id uuid.UUID, product authz
 	return m, nil
 }
 
-func (s *service) issueReadLink(ctx context.Context, id uuid.UUID, product authz.Product, onBehalfOf uuid.UUID) (ReadLink, error) {
-	m, err := s.linkableMedia(ctx, id, product)
-	if err != nil {
-		return ReadLink{}, err
-	}
+// issueReadLink records and signs a link to m, a Media linkableMedia gave
+// the product.
+func (s *service) issueReadLink(ctx context.Context, m Media, product authz.Product, onBehalfOf uuid.UUID) (ReadLink, error) {
 	// Whole seconds, as the token carries the expiry.
 	issued := s.private.now().UTC().Truncate(time.Second)
 	record := ReadLinkRecord{
