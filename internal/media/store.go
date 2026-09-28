@@ -120,9 +120,14 @@ const (
 	ScanClean ScanResult = "clean"
 	// ScanInfected: the scan found malware; the Media is rejected.
 	ScanInfected ScanResult = "infected"
-	// ScanTooLarge: the file is larger than the scanner takes, so it could
+	// ScanTooLarge: the file is larger than the scanner takes, or a ZIP
+	// holds more than clamd scans whole (zipcheck.ErrTooLarge), so it could
 	// not be scanned whole; the Media is rejected.
 	ScanTooLarge ScanResult = "too_large_to_scan"
+	// ScanArchiveInvalid: the file is a ZIP that is malformed, or that holds
+	// what clamd cannot read, such as an encrypted member
+	// (zipcheck.ErrInvalid); the Media is rejected.
+	ScanArchiveInvalid ScanResult = "archive_invalid"
 	// ScanLost: the file to scan is gone (the R2 lifecycle rule clears a
 	// held file after two days), so it can never be scanned; the Media is
 	// rejected.
