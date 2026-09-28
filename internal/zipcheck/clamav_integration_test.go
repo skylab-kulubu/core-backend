@@ -14,10 +14,14 @@ import (
 )
 
 // Against a real clamd 1.5.4 with the test's limits (MaxFileSize 1M,
-// MaxScanSize 4M, AlertExceedsMax on as the wizard sets it), each ZIP below
+// MaxScanSize 4M, AlertExceedsMax on as the wizard sets it), each file below
 // carries the EICAR test file where clamd does not find it: clamd answers it
-// clean. The check refuses every one. A ZIP the check passes is scanned
-// whole: clamd finds the EICAR test file in it, nested ZIP included.
+// clean. The check refuses every one. Among them: a DOCX whose part inflates
+// past MaxFileSize, and a ZIP appended to a stub (a self-extracting program)
+// inside a member, which clamd unpacks from past the member's first byte and
+// then skips. Each file the check passes is scanned whole: clamd finds the
+// EICAR test file in it, in a nested ZIP, a gzip, a tar.gz, a DOCX and a ZIP
+// appended to a stub alike.
 func TestRealClamAVPassesUnscannedWhatTheCheckRefuses(t *testing.T) {
 	addr := clamdtest.Real(t, "CLAMD_CONF_MaxFileSize=1M", "CLAMD_CONF_MaxScanSize=4M",
 		"CLAMD_CONF_StreamMaxLength=16M", "CLAMD_CONF_AlertExceedsMax=yes")
@@ -45,6 +49,12 @@ func TestRealClamAVPassesUnscannedWhatTheCheckRefuses(t *testing.T) {
 		"a member with ZIP64 sizes":              {zip64Member(eicar, uint64(len(eicar))), zipcheck.ErrInvalid},
 		"a member with an unknown method":        {unknownMethod, zipcheck.ErrInvalid},
 		"a nested ZIP's member past MaxFileSize": {build(t, deflated("inner.zip", build(t, deflated("e.txt", padded)))), zipcheck.ErrTooLarge},
+		"a DOCX whose part inflates past MaxFileSize": {
+			office(t, "word/document.xml", deflated("word/media/image1.bin", padded)), zipcheck.ErrTooLarge,
+		},
+		"a ZIP after a stub whose member inflates past MaxFileSize": {
+			build(t, deflated("setup.exe", sfx(t, stub(4096), build(t, sized(deflated("e.txt", padded))...), false))), zipcheck.ErrTooLarge,
+		},
 	} {
 		verdict, err := client.Scan(ctx, bytes.NewReader(c.data))
 		if err != nil || verdict.Infected() {
@@ -55,14 +65,18 @@ func TestRealClamAVPassesUnscannedWhatTheCheckRefuses(t *testing.T) {
 		}
 	}
 
-	scanned := build(t, deflated("e.txt", eicar), deflated("inner.zip", build(t, deflated("f.txt", eicar))))
-	passes(t, scanned, limits)
-	if verdict, err := client.Scan(ctx, bytes.NewReader(scanned)); err != nil || verdict.Signature != clamdtest.Signature {
-		t.Fatalf("a ZIP the check passes: clamd answered %+v, %v", verdict, err)
-	}
-	nestedOnly := build(t, deflated("inner.zip", build(t, deflated("f.txt", eicar))))
-	passes(t, nestedOnly, limits)
-	if verdict, err := client.Scan(ctx, bytes.NewReader(nestedOnly)); err != nil || verdict.Signature != clamdtest.Signature {
-		t.Fatalf("a nested ZIP the check passes: clamd answered %+v, %v", verdict, err)
+	for name, data := range map[string][]byte{
+		"a ZIP":                          build(t, deflated("e.txt", eicar), deflated("inner.zip", build(t, deflated("f.txt", eicar)))),
+		"a nested ZIP":                   build(t, deflated("inner.zip", build(t, deflated("f.txt", eicar)))),
+		"a ZIP three levels deep":        build(t, deflated("a.zip", build(t, deflated("b.zip", build(t, deflated("c.zip", build(t, deflated("f.txt", eicar)))))))),
+		"a gzip":                         build(t, stored("e.txt.gz", gzOf(t, eicar))),
+		"a tar.gz":                       build(t, stored("e.tgz", gzOf(t, tarOf(t, false, stored("e.txt", eicar))))),
+		"a DOCX":                         office(t, "word/document.xml", deflated("word/media/image1.bin", eicar)),
+		"a ZIP after a stub in a member": build(t, deflated("setup.exe", sfx(t, stub(4096), build(t, sized(deflated("e.txt", eicar))...), false)), filler()),
+	} {
+		passes(t, data, limits)
+		if verdict, err := client.Scan(ctx, bytes.NewReader(data)); err != nil || verdict.Signature != clamdtest.Signature {
+			t.Errorf("%s the check passes: clamd answered %+v, %v", name, verdict, err)
+		}
 	}
 }

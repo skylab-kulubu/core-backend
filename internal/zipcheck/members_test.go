@@ -95,7 +95,8 @@ func TestCheckRefusesMembersThatLieAboutWhatTheyHold(t *testing.T) {
 			put32(data, l.local[0]+locUSize, 4999)
 		}),
 	}
-	big := zipcheck.Limits{MaxFileSize: 4 << 20, MaxScanSize: 8 << 20, MaxFiles: 100, MaxRecursion: 17}
+	big := limits
+	big.MaxFileSize, big.MaxScanSize = 4<<20, 8<<20
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
 			refused(t, data, big, zipcheck.ErrInvalid)

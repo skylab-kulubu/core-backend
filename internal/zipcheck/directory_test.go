@@ -112,7 +112,8 @@ func TestCheckRefusesMoreThanMaxScanSizeOrMaxFiles(t *testing.T) {
 	refused(t, build(t, four...), limits, zipcheck.ErrTooLarge)
 	passes(t, build(t, four[:4]...), limits)
 
-	few := zipcheck.Limits{MaxFileSize: 1 << 20, MaxScanSize: 4 << 20, MaxFiles: 3, MaxRecursion: 17}
+	few := limits
+	few.MaxFiles = 3
 	many := []file{stored("a", nil), stored("b", nil), stored("c", nil), stored("d", nil)}
 	refused(t, build(t, many...), few, zipcheck.ErrTooLarge)
 	passes(t, build(t, many[:3]...), few)
@@ -244,4 +245,43 @@ func TestCheckRefusesZIP64Lies(t *testing.T) {
 			refused(t, data, limits, zipcheck.ErrInvalid)
 		})
 	}
+}
+
+// An end record signature in the last 64 KiB and 22 bytes, besides the end
+// record that ends the file, lets the ZIP read two ways depending on which
+// end record a reader takes: refused as invalid, whatever rule clamd
+// follows. That includes a ZIP whose last member is a stored ZIP small
+// enough that its own end record falls there (deflated, as tools write it
+// by default, it passes). One further from the end reads one way only.
+func TestCheckRefusesMoreThanOneEndRecordNearTheEnd(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	w := zip.NewWriter(&out)
+	m, err := w.Create("a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Write([]byte("harmless")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SetComment("PK\x05\x06" + string(zeros(18))); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	refused(t, out.Bytes(), limits, zipcheck.ErrInvalid)
+
+	inner := build(t, deflated("b.txt", []byte("inner")))
+	refused(t, build(t, deflated("a.txt", []byte("a")), stored("inner.zip", inner)), limits, zipcheck.ErrInvalid)
+	passes(t, build(t, deflated("a.txt", []byte("a")), deflated("inner.zip", inner)), limits)
+	// Deflate keeps incompressible data as it is (stored blocks), so an
+	// inner ZIP of such data, an Office file with images say, puts its end
+	// record there raw too. Followed by 64 KiB of other members, it passes.
+	incompressible := build(t, stored("photo.jpg", text(20<<10)))
+	refused(t, build(t, deflated("a.txt", []byte("a")), deflated("slides.pptx", incompressible)), limits, zipcheck.ErrInvalid)
+	passes(t, build(t, deflated("slides.pptx", incompressible), filler()), limits)
+
+	far := append(append(text(100), "PK\x05\x06"...), text(70<<10)...)
+	passes(t, build(t, stored("far.bin", far), deflated("b.txt", []byte("b"))), limits)
 }
