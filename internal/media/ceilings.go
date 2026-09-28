@@ -24,6 +24,13 @@ var (
 	// (ServingMetadataFor): video/mp4, never a download. No other purpose
 	// may have its MP4 played from the CDN.
 	ErrCeilingMP4 = errors.New("media purpose catalogue: only videos accept MP4 publicly")
+	// ErrCeilingVideoScan: a video (videoPurposes) needs no malware scan.
+	// Its served key follows its type (directServedKey: videos/<uuid>.mp4),
+	// while a scanned file is copied, once clean, to a served key that
+	// follows its Media id alone (servedKeyOf: files/<Media id>), which every
+	// purge of a held Media finds without knowing its purpose. A scanned
+	// video would be served without its extension.
+	ErrCeilingVideoScan = errors.New("media purpose catalogue: a video needs no malware scan")
 	// ErrCeilingDirectType: a Direct upload purpose accepts only PDF, ZIP
 	// and MP4 (directTypes). Core never receives a Direct upload's bytes; it
 	// reads their start (detectDirectType) and keeps the object as it came.
@@ -129,6 +136,9 @@ func checkCeilings(p Purpose) error {
 	}
 	if p.Scan && p.Visibility == VisibilityPublic && p.Transport != TransportDirect {
 		return fmt.Errorf("%s: %w", p.Name, ErrCeilingPublicScan)
+	}
+	if p.Scan && slices.Contains(videoPurposes, p.Name) {
+		return fmt.Errorf("%s: %w", p.Name, ErrCeilingVideoScan)
 	}
 	if p.Image.MaxDimension > MaxImageDimension {
 		return fmt.Errorf("%s keeps %d px: %w", p.Name, p.Image.MaxDimension, ErrCeilingImageDimension)

@@ -80,7 +80,9 @@ var scanHoldMetadata = BlobMetadata{ContentType: "application/octet-stream", Con
 // servedKeyOf is where a held file of the Media is served from once clean.
 // It is the Media's id, so a copy retried after a crash lands on the same
 // key, and so every purge of a held Media knows it (purgeMediaObjects); only
-// clean bytes are ever written there.
+// clean bytes are ever written there. No video is ever held: a video needs
+// no scan (ErrCeilingVideoScan), and its served key keeps its extension
+// (directServedKey).
 func servedKeyOf(id uuid.UUID) string {
 	return "files/" + id.String()
 }

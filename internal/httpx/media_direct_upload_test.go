@@ -1244,17 +1244,65 @@ func TestDirectUploadPurposesOpenOnlyWhereSwitchedOnHTTP(t *testing.T) {
 		t.Fatalf("the Answer file is %+v (err %v), want scanning", stored, err)
 	}
 
-	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
-	organizer = organizerToken(t, e.keys)
+}
+
+// Taking a purpose out of MEDIA_DIRECT_UPLOAD_PURPOSES while its uploads are
+// open is core's change, not the uploader's doing. An upload of it is
+// refused at its completion and when it asks for its part addresses
+// (/parts, so no more parts are sent for an upload that cannot complete):
+// either way the upload ends, its pending object and the multipart upload
+// open at it are deleted, and its charge is given back, the open place and
+// the volume both. The budget here holds one upload of this size: each
+// start after a refusal proves the one before was given back.
+func TestDirectUploadOfAPurposeSwitchedOffMidwayIsEndedAndGivenBackHTTP(t *testing.T) {
 	file := pdfFile(1000)
-	started := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", len(file)))
-	if started.status != fiber.StatusCreated {
-		t.Fatalf("start: status %d body %v", started.status, started.body)
-	}
-	body := completeBody(t, sendParts(t, partsOf(t, started.body), file))
+	e := newDirectEnv(t, media.DirectUploadLimits{MaxOpen: 1, DailyBytes: int64(len(file))})
+	organizer := organizerToken(t, e.keys)
 	switchedOff := e.appWithPurposes(t, directCatalogue(t), "video")
-	requireCode(t, sendJSON(t, switchedOff, organizer, fiber.MethodPost, "/v1/uploads/"+started.body["id"].(string)+"/complete", body),
+	start := func() string {
+		t.Helper()
+		started := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", len(file)))
+		if started.status != fiber.StatusCreated {
+			t.Fatalf("start: status %d body %v", started.status, started.body)
+		}
+		return started.body["id"].(string)
+	}
+	ended := func(id string) {
+		t.Helper()
+		if keys := e.s3.Keys("media"); len(keys) != 0 {
+			t.Fatalf("objects left after %s was refused: %v", id, keys)
+		}
+		if open := e.s3.OpenUploads("media"); len(open) != 0 {
+			t.Fatalf("multipart uploads left open after %s was refused: %v", id, open)
+		}
+		if !slices.Contains(e.s3.Aborted(), "pending/"+id) {
+			t.Fatalf("the multipart upload of %s was not aborted: %v", id, e.s3.Aborted())
+		}
+	}
+
+	// Refused at its completion, the parts all sent.
+	completing := start()
+	parts := partsOf(t, sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+completing+"/parts", "").body)
+	body := completeBody(t, sendParts(t, parts, file))
+	requireCode(t, sendJSON(t, switchedOff, organizer, fiber.MethodPost, "/v1/uploads/"+completing+"/complete", body),
 		fiber.StatusUnprocessableEntity, "purpose_not_available")
+	ended(completing)
+
+	// Refused when it asks for its part addresses, one part sent.
+	resuming := start()
+	first := partsOf(t, sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+resuming+"/parts", "").body)
+	sendParts(t, first[:1], file)
+	requireCode(t, sendJSON(t, switchedOff, organizer, fiber.MethodPost, "/v1/uploads/"+resuming+"/parts", ""),
+		fiber.StatusUnprocessableEntity, "purpose_not_available")
+	ended(resuming)
+	if gone := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads/"+resuming+"/parts", ""); gone.status != fiber.StatusNotFound {
+		t.Fatalf("the ended upload's parts: status %d body %v", gone.status, gone.body)
+	}
+
+	// Both were given back: the next upload fits the budget, and completes.
+	if done := e.upload(t, organizer, "club_file", "a.pdf", file); done.status != fiber.StatusCreated {
+		t.Fatalf("an upload after the refusals: status %d body %v", done.status, done.body)
+	}
 }
 
 // Every upload (single-step with a purpose, without one, as a profile

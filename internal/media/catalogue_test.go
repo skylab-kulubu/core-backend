@@ -114,6 +114,23 @@ func TestCatalogue_OnlyVideosAcceptMP4Publicly(t *testing.T) {
 	}
 }
 
+// A video needs no malware scan. Its served key follows its type
+// (videos/<uuid>.mp4, so players and saved copies know it), while a scanned
+// file is served at files/<Media id>, which every purge of a held Media
+// finds by the id alone. A scanned video would be served without its
+// extension, so the catalogue may not ask for one, even within what clamd
+// scans.
+func TestCatalogue_VideosNeedNoScan(t *testing.T) {
+	t.Parallel()
+	data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+		purposes["video"]["scan"] = true
+		purposes["video"]["max_mib"] = media.MaxScanBytes >> 20
+	})
+	if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingVideoScan) {
+		t.Fatalf("a scanned video: err = %v, want %v", err, media.ErrCeilingVideoScan)
+	}
+}
+
 // Core never receives a Direct upload's bytes; it reads only their start.
 // So a Direct upload purpose names only types that start the same way every
 // time and that core keeps as they came: PDF, ZIP and MP4. An image would

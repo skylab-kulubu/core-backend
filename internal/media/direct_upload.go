@@ -148,7 +148,8 @@ type DirectUploadConfig struct {
 // DirectUploadPurposesFromEnv reads MEDIA_DIRECT_UPLOAD_PURPOSES: the Direct
 // upload purposes this side opens, separated by commas (club_file,video).
 // Unset or empty opens none. A name that is not a Direct upload purpose of
-// the catalogue is an error: core refuses to start with it.
+// the catalogue, or one that can never open (a private purpose, until
+// ticket 21), is an error: core refuses to start with it.
 func DirectUploadPurposesFromEnv(getenv func(string) string, catalogue Catalogue) ([]string, error) {
 	var out []string
 	for _, name := range strings.Split(getenv("MEDIA_DIRECT_UPLOAD_PURPOSES"), ",") {
@@ -156,8 +157,13 @@ func DirectUploadPurposesFromEnv(getenv func(string) string, catalogue Catalogue
 		if name == "" || slices.Contains(out, name) {
 			continue
 		}
-		if purpose, ok := catalogue.Lookup(name); !ok || purpose.Transport != TransportDirect {
+		purpose, ok := catalogue.Lookup(name)
+		if !ok || purpose.Transport != TransportDirect {
 			return nil, fmt.Errorf("MEDIA_DIRECT_UPLOAD_PURPOSES: %q is not a Direct upload purpose of the catalogue", name)
+		}
+		if purpose.Visibility == VisibilityPrivate {
+			// It could never open: switching it on is a mistake.
+			return nil, fmt.Errorf("MEDIA_DIRECT_UPLOAD_PURPOSES: %q is private, and a private purpose cannot be sent by Direct upload until ticket 21", name)
 		}
 		out = append(out, name)
 	}
@@ -369,6 +375,12 @@ func (s *service) DirectUploadParts(ctx context.Context, p authz.Principal, id u
 	if rec.completing(s.directNow()) {
 		return DirectUpload{}, ErrDirectUploadCompleting
 	}
+	if refusal := s.directSwitchedOff(rec.Purpose); refusal != nil {
+		// Its completion would be refused: no more parts are sent. Core
+		// switched the purpose off, so the upload ends and is given back.
+		s.direct.Limiter.refund(rec.ID)
+		return DirectUpload{}, s.abandonDirectUpload(ctx, store, storage, rec, refusal)
+	}
 	listCtx, cancel := context.WithTimeout(ctx, directStorageTimeout)
 	stored, err := storage.ListParts(listCtx, rec.Key, rec.MultipartID)
 	cancel()
@@ -464,7 +476,9 @@ type directCompletion struct {
 func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []UploadedPart) (Media, error) {
 	purpose, types, err := c.rules(p)
 	if err != nil {
-		return Media{}, c.stop(ctx, err, notCopied, true)
+		// A purpose switched off since the start is core's change, not the
+		// uploader's refusal: the charge is given back.
+		return Media{}, c.stop(ctx, err, notCopied, !errors.Is(err, ErrDirectUploadSwitchedOff))
 	}
 	held := isScanHoldKey(c.claim.FinalKey)
 	if held != purpose.Scan {
@@ -853,6 +867,15 @@ func (s *service) directPurpose(p authz.Principal, name string) (Purpose, error)
 		return Purpose{}, err
 	}
 	return purpose, nil
+}
+
+// directSwitchedOff refuses a Direct upload purpose this side does not
+// switch on (MEDIA_DIRECT_UPLOAD_PURPOSES); nil when it does.
+func (s *service) directSwitchedOff(purpose string) error {
+	if slices.Contains(s.direct.Purposes, purpose) {
+		return nil
+	}
+	return &PurposeRefusal{Err: ErrDirectUploadSwitchedOff, Purpose: purpose}
 }
 
 func (s *service) directStorage() (DirectUploadStore, MultipartStore, error) {

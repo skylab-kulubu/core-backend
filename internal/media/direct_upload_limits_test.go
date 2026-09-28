@@ -2,6 +2,7 @@ package media_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -45,12 +46,11 @@ func TestDirectUploadPurposesFromEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	for raw, want := range map[string][]string{
-		"":                        nil,
-		"  ":                      nil,
-		"video":                   {"video"},
-		" club_file , video ":     {"club_file", "video"},
-		"video,,video,":           {"video"},
-		"answer_file_large,video": {"answer_file_large", "video"},
+		"":                    nil,
+		"  ":                  nil,
+		"video":               {"video"},
+		" club_file , video ": {"club_file", "video"},
+		"video,,video,":       {"video"},
 	} {
 		got, err := media.DirectUploadPurposesFromEnv(func(key string) string {
 			if key == "MEDIA_DIRECT_UPLOAD_PURPOSES" {
@@ -66,5 +66,11 @@ func TestDirectUploadPurposesFromEnv(t *testing.T) {
 		if _, err := media.DirectUploadPurposesFromEnv(func(string) string { return bad }, catalogue); err == nil {
 			t.Errorf("MEDIA_DIRECT_UPLOAD_PURPOSES=%s must be rejected", bad)
 		}
+	}
+	// A private purpose can never be sent by Direct upload yet (ticket 21):
+	// switching it on is a mistake to stop at, named as such.
+	_, err = media.DirectUploadPurposesFromEnv(func(string) string { return "video,answer_file_large" }, catalogue)
+	if err == nil || !strings.Contains(err.Error(), "answer_file_large") || !strings.Contains(err.Error(), "private") || !strings.Contains(err.Error(), "ticket 21") {
+		t.Fatalf("a private purpose switched on: %v", err)
 	}
 }

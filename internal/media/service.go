@@ -245,10 +245,12 @@ func (s *service) purposeRefusal(p authz.Principal, purpose Purpose, transport T
 		}
 		return &PurposeRefusal{Err: ErrSingleStepOnly, Purpose: purpose.Name}
 	}
-	if transport == TransportDirect && !slices.Contains(s.direct.Purposes, purpose.Name) {
+	if transport == TransportDirect {
 		// Off unless this side switches it on (MEDIA_DIRECT_UPLOAD_PURPOSES),
 		// whatever the rules below would say.
-		return &PurposeRefusal{Err: ErrDirectUploadSwitchedOff, Purpose: purpose.Name}
+		if refusal := s.directSwitchedOff(purpose.Name); refusal != nil {
+			return refusal
+		}
 	}
 	if transport == TransportDirect && private {
 		// Encrypting a large file after its Direct upload is ticket 21.
