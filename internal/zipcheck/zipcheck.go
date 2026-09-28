@@ -787,9 +787,8 @@ func (r *ring) last() []byte {
 var archiveExtensions = map[string]bool{
 	"zip": true, "jar": true, "war": true, "ear": true, "apk": true, "aar": true, "7z": true, "rar": true,
 	"tar": true, "gz": true, "tgz": true, "bz2": true, "tbz": true, "tbz2": true, "xz": true, "txz": true,
-	"zst": true, "lz": true, "lzma": true, "z": true, "cab": true, "arj": true, "lzh": true, "lha": true,
-	"cpio": true, "iso": true, "img": true, "dmg": true, "rpm": true, "deb": true, "xar": true, "pkg": true,
-	"egg": true, "alz": true,
+	"lzma": true, "cab": true, "arj": true, "lzh": true, "lha": true, "cpio": true, "iso": true, "img": true,
+	"dmg": true, "xar": true, "pkg": true, "egg": true, "alz": true,
 }
 
 // isArchiveName reports whether a member's name is an archive's.
@@ -809,21 +808,20 @@ func isZip(head []byte) bool {
 		bytes.HasPrefix(head, []byte("PK\x07\x08"))
 }
 
-// archiveMagic are the first bytes of archive formats clamd reads inside.
+// archiveMagic are the first bytes of archive formats clamd reads inside,
+// long enough that a file which only starts like one is not taken for it.
 var archiveMagic = [][]byte{
-	[]byte("7z\xbc\xaf\x27\x1c"), // 7-Zip
-	[]byte("Rar!\x1a\x07"),       // RAR 4 and 5
-	{0x1f, 0x8b},                 // gzip
-	[]byte("BZh"),                // bzip2
-	[]byte("\xfd7zXZ\x00"),       // xz
-	{0x28, 0xb5, 0x2f, 0xfd},     // Zstandard
-	[]byte("MSCF"),               // Microsoft Cabinet
-	[]byte("07070"),              // cpio, ASCII
-	[]byte("xar!"),               // XAR
-	[]byte("EGGA"),               // ESTsoft EGG
-	[]byte("ALZ\x01"),            // ALZip
-	[]byte("!<arch>\n"),          // ar, Debian packages
-	{0xed, 0xab, 0xee, 0xdb},     // RPM
+	[]byte("7z\xbc\xaf\x27\x1c"),   // 7-Zip
+	[]byte("Rar!\x1a\x07"),         // RAR 4 and 5
+	{0x1f, 0x8b, 0x08},             // gzip (deflate, its only method)
+	[]byte("\xfd7zXZ\x00"),         // xz
+	[]byte("MSCF\x00\x00\x00\x00"), // Microsoft Cabinet
+	[]byte("070701"),               // cpio, new ASCII
+	[]byte("070702"),               // cpio, new ASCII with checksums
+	[]byte("070707"),               // cpio, old ASCII
+	[]byte("xar!"),                 // XAR
+	[]byte("EGGA"),                 // ESTsoft EGG
+	[]byte("ALZ\x01"),              // ALZip
 }
 
 // isArchive reports whether a member's first bytes are an archive's.
@@ -841,12 +839,21 @@ func isArchive(head []byte) bool {
 		return true
 	case len(head) >= 4 && head[0] == 0x60 && head[1] == 0xea && le16(head[2:]) > 0 && le16(head[2:]) <= 2600: // ARJ
 		return true
-	case len(head) >= 7 && head[2] == '-' && head[3] == 'l' && head[6] == '-': // LHA
+	case isBzip2(head):
+		return true
+	case len(head) >= 7 && string(head[2:4]) == "-l" && (head[4] == 'h' || head[4] == 'z') && head[6] == '-': // LHA
 		return true
 	case len(head) >= headBytes && string(head[32769:32774]) == "CD001": // ISO 9660
 		return true
 	}
 	return false
+}
+
+// isBzip2 reports whether a member starts as a bzip2 stream: "BZh", a block
+// size from 1 to 9, then a block's magic or the end of an empty stream.
+func isBzip2(head []byte) bool {
+	return len(head) >= 10 && string(head[:3]) == "BZh" && head[3] >= '1' && head[3] <= '9' &&
+		(string(head[4:10]) == "1AY&SY" || string(head[4:10]) == "\x17\x72\x45\x38\x50\x90")
 }
 
 // errShort is a file that ends before its size: storage served less than it

@@ -2060,11 +2060,14 @@ core reads the same way. Its members count toward the same `MaxFiles`,
 
 - an archive inside that nested ZIP: the upload is level 0, a ZIP among its
   members level 1, and nothing deeper is read;
-- an archive of another format among the ZIP's members: 7-Zip, RAR, tar,
-  gzip (and `.tar.gz`), bzip2, xz, Zstandard, cab, cpio, ARJ, LHA, ISO 9660,
-  XAR, ar, RPM, EGG or ALZip, told by the member's name or its first bytes.
-  Core cannot look inside them, and clamd would skip there what it skips in
-  a ZIP;
+- an archive of another format clamd opens among the ZIP's members: 7-Zip,
+  RAR, tar, gzip (and `.tar.gz`), bzip2, xz, cab, cpio, ARJ, LHA, ISO 9660,
+  XAR, EGG or ALZip, told by the member's name or its first bytes. Core
+  cannot look inside them, and clamd would skip there what it skips in a
+  ZIP. The first bytes must be the format's full signature, so a file that
+  only starts like one (a text beginning `BZh`) is no archive, and neither
+  are formats clamd does not open (a static library, a Debian or RPM
+  package);
 - any nested archive while `MaxRecursion` is below 3. clamd scans a file
   inside n archives only while n is below `MaxRecursion` (checked), and a
   member of a nested ZIP is inside two.

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/flate"
+	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -778,4 +779,53 @@ func (s *shortSource) OpenRange(ctx context.Context, off, n int64) (io.ReadClose
 		return body, err
 	}
 	return io.NopCloser(io.LimitReader(body, s.cut)), nil
+}
+
+// A member is an archive by its name or its first bytes, and only formats
+// clamd opens count. What merely starts like one is no archive: a static
+// library (ar, which clamd does not open), a text that starts with "BZh" or
+// looks like an LHA header, bytes 1f 8b that are no deflate gzip, a cpio-like
+// number, and Debian or RPM packages by name.
+func TestCheckTakesNoLookalikeForAnArchive(t *testing.T) {
+	t.Parallel()
+	passes(t, build(t,
+		stored("lib/libsky.a", append([]byte("!<arch>\n"), text(200)...)),
+		deflated("notlar/bzh.txt", []byte("BZhello, SKY LAB")),
+		deflated("scripts/build.sh", []byte("# -lib-x build\n")),
+		stored("veri/binary.dat", append([]byte{0x1f, 0x8b, 0x00}, text(100)...)),
+		deflated("veri/sayı.txt", []byte("070709 not a cpio archive")),
+		stored("paket/sky.deb", text(300)),
+		stored("paket/sky.rpm", text(300)),
+		stored("rpm-like.bin", append([]byte{0xed, 0xab, 0xee, 0xdb}, text(100)...)),
+	), limits)
+}
+
+// Real archives of the formats clamd opens are still caught by their first
+// bytes, whatever their names.
+func TestCheckCatchesRealNestedArchivesByTheirFirstBytes(t *testing.T) {
+	t.Parallel()
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	if _, err := zw.Write([]byte("hidden")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lha := append([]byte{0x20, 0x00}, "-lh5-"...)
+	for name, data := range map[string][]byte{
+		"gzip":        gz.Bytes(),
+		"bzip2":       append([]byte("BZh91AY&SY"), text(100)...),
+		"empty bzip2": []byte("BZh9\x17\x72\x45\x38\x50\x90\x00\x00\x00\x00"),
+		"cpio":        append([]byte("070701"), text(100)...),
+		"LHA":         append(lha, text(100)...),
+		"7-Zip":       append([]byte("7z\xbc\xaf\x27\x1c"), text(100)...),
+		"RAR":         append([]byte("Rar!\x1a\x07\x01\x00"), text(100)...),
+		"xz":          append([]byte("\xfd7zXZ\x00"), text(100)...),
+		"cab":         append([]byte("MSCF\x00\x00\x00\x00"), text(100)...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			refused(t, build(t, deflated("data.bin", data)), limits, zipcheck.ErrTooLarge)
+		})
+	}
 }
