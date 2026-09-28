@@ -93,6 +93,23 @@ func (f imageSizesFixture) image(t *testing.T, purpose, key string, width, heigh
 	return m
 }
 
+// download stores a Media of an Event's files or videos as a completed
+// Direct upload records it.
+func (f imageSizesFixture) download(t *testing.T, purpose string) media.Media {
+	t.Helper()
+	contentType, key := "application/pdf", "files/"+uuid.NewString()
+	if purpose == media.PurposeVideo {
+		contentType, key = "video/mp4", "videos/"+uuid.NewString()+".mp4"
+	}
+	m, err := f.media.Create(context.Background(), media.Media{
+		Name: "x", Type: contentType, Kind: media.KindFile, Key: key, Size: 10, UploadedBy: f.uploader, Purpose: purpose,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
 func (f imageSizesFixture) event(t *testing.T, name string, cover *uuid.UUID, gallery ...uuid.UUID) event.Event {
 	t.Helper()
 	ctx := context.Background()
@@ -154,6 +171,12 @@ type sizedEventView struct {
 		Sizes map[string]media.ImageAddress `json:"sizes"`
 	} `json:"images"`
 	ImageURLs []string `json:"imageUrls"`
+	// Files and Videos are only in an Event's detail; a list carries the
+	// counts.
+	Files      []json.RawMessage `json:"files"`
+	Videos     []json.RawMessage `json:"videos"`
+	FileCount  int               `json:"fileCount"`
+	VideoCount int               `json:"videoCount"`
 }
 
 func bothSizes(card, page media.ImageAddress) map[string]media.ImageAddress {
@@ -271,10 +294,11 @@ func TestEventGalleryImagesCarryTheirSizesHTTP(t *testing.T) {
 	}
 }
 
-// The Event list answers each Event's cover and gallery sizes in three
-// queries, for four Events as for one: the Events with their covers, every
-// listed Event's gallery with its Media, and every listed Event's door staff.
-// Never one query per Event or per Media.
+// The Event list answers each Event's cover and gallery sizes, and the
+// counts of its files and videos, in three queries, for four Events as for
+// one: the Events with their covers and counts, every listed Event's gallery
+// with its Media, and every listed Event's door staff. Never one query per
+// Event or per Media.
 func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T) {
 	f := newImageSizesFixture(t)
 	type seeded struct {
@@ -289,7 +313,21 @@ func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T)
 			media.SizeCard: jpegSize(400, 300),
 		})
 		legacy := f.image(t, media.PurposeLegacy, key+"-legacy", 0, 0, nil)
-		return f.event(t, "Event "+key, &cover.ID, gallery.ID, legacy.ID), seeded{cover: cover, gallery: gallery}
+		created := f.event(t, "Event "+key, &cover.ID, gallery.ID, legacy.ID)
+		// Two files and a video, so the list reads their counts too.
+		for list, purposes := range map[event.MediaList][]string{
+			event.Files:  {media.PurposeClubFile, media.PurposeClubFile},
+			event.Videos: {media.PurposeVideo},
+		} {
+			ids := make([]uuid.UUID, 0, len(purposes))
+			for _, purpose := range purposes {
+				ids = append(ids, f.download(t, purpose).ID)
+			}
+			if _, err := f.events.AddFiles(context.Background(), created.ID, list, ids); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return created, seeded{cover: cover, gallery: gallery}
 	}
 	list := func() ([]sizedEventView, int64) {
 		t.Helper()
@@ -321,6 +359,12 @@ func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T)
 		t.Fatalf("listing 4 Events took %d queries, 1 Event took %d", fourQueries, oneQueries)
 	}
 
+	for _, got := range append(four, one...) {
+		if got.Files != nil || got.Videos != nil || got.FileCount != 2 || got.VideoCount != 1 {
+			t.Errorf("Event %s listed with files %v, videos %v, counts %d and %d; want the counts alone, 2 and 1",
+				got.ID, got.Files, got.Videos, got.FileCount, got.VideoCount)
+		}
+	}
 	for _, got := range four {
 		want, ok := seededByEvent[got.ID]
 		if !ok {
