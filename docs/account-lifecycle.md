@@ -124,9 +124,10 @@ A service restored from a dump taken at time T gets back the e-mail-keyed data o
 
 ```sh
 CORE_SNAPSHOT_DATABASE_URL=<dsn> KEYCLOAK_SNAPSHOT_DATABASE_URL=<dsn> \
-    core-backend replay-from-backup --service skymail|cms|forms --restored-at <T, RFC 3339> [--keycloak-realm e-skylab] [--apply]
+    core-backend replay-from-backup --service skymail|cms|forms --dumped-at <T, RFC 3339> [--keycloak-realm e-skylab] [--apply]
 ```
 
+- **`--dumped-at` is T: when the service dump was taken, not when it was restored.** Pass the dump's start (pg_dump takes its snapshot when it starts), such as the `start_utc` of the service's section in the `MANIFEST.txt` the SkyMail dump wizard writes. The restore runs later than T; passing its time would miss every request completed between the dump and the restore. There is no `--restored-at`: the command refuses it as an unknown flag and points at `--dumped-at`.
 - **It replaces the `emails: []` replay; it never follows it.** A service answers a repeated `request_id` with its stored receipt and does no work. If the `emails: []` replay reaches the restored service first, it writes a new receipt, and `replay-from-backup` then gets that receipt back, exits `0` and erases none of the e-mail-keyed data. So every restored service gets `replay-from-backup` first. `emails: []` is only a fallback, afterwards, for a request `replay-from-backup` reported as a FAIL because neither snapshot holds the subject; it re-erases the subject-keyed data only.
 - **The snapshots must be the pair taken with the service dump.** The core and Keycloak dumps taken at or before T, never after it (a core dump taken after T can miss a request whose `anonymize_core` ran in between; the nightly backup takes core, then Keycloak, then the services), restored into temporary databases with no network. Any other core or Keycloak dump can hold another address, or none. The command cannot tell, so the restore wizard hands it the pair and destroys the temporary databases afterwards.
 - **DSNs come from the environment.** `DATABASE_URL`, `CORE_SNAPSHOT_DATABASE_URL` and `KEYCLOAK_SNAPSHOT_DATABASE_URL` carry passwords, so none of them is a flag: argv shows in the process list. A snapshot variable equal to `DATABASE_URL`, or both snapshots naming the same database, is refused. A database that cannot be parsed, reached or opened is reported by its variable's name alone (`CORE_SNAPSHOT_DATABASE_URL: cannot connect`), never with the user, host or database pgx's own error names.
@@ -134,7 +135,7 @@ CORE_SNAPSHOT_DATABASE_URL=<dsn> KEYCLOAK_SNAPSHOT_DATABASE_URL=<dsn> \
 - **Dry run by default.** It prints counts only: the requests, how many have 0, 1, 2 or 3 addresses, and the FAILs by `request_id`. `--apply` sends each request the normal [Erasure command](account-erasure-command.md) to `ACCOUNT_ERASURE_<SERVICE>_URL` with the `core-erasure` token (`ACCOUNT_ERASURE_CLIENT_ID`, `ACCOUNT_ERASURE_CLIENT_SECRET`, `KEYCLOAK_URL`, `KEYCLOAK_REALM`). The restored service has no receipt for the request, so it does the work again and writes a new one.
 - **Nothing is skipped.** A subject neither snapshot holds, addresses that cannot be read (more than three included) and any answer but `200` or `202` are a FAIL. `202` asks for another run, and so does a request that is not completed yet: once it completes, the next run replays it.
 - **Exit code:** `0` everything done (or resolved in a dry run), `1` any FAIL, `2` usage or configuration, `3` no FAIL but a `202` or an open request: run it again later.
-- **Record.** One line per request, `account_erasure_replay at=… service=… restored_at=… request_id=… outcome=done|retry_later|fail [code=…] [reason=…] [counts=…]`. The addresses stay in memory for that request's call; no line, error or log carries an address, a name or a subject id.
+- **Record.** One line per request, `account_erasure_replay at=… service=… dumped_at=… request_id=… outcome=done|retry_later|fail [code=…] [reason=…] [counts=…]`. The addresses stay in memory for that request's call; no line, error or log carries an address, a name or a subject id.
 
 ## Keycloak and federated users
 

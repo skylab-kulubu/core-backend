@@ -18,10 +18,10 @@ func TestReplayOptionsRefuseWhatCannotBeReplayed(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
-	valid := []string{"--service", "skymail", "--restored-at", "2026-09-20T03:00:00+03:00"}
+	valid := []string{"--service", "skymail", "--dumped-at", "2026-09-20T03:00:00+03:00"}
 	options, code := parseReplayOptions(valid, &bytes.Buffer{}, now)
 	if code != 0 || options.service.Step != user.DeletionStepEraseSkyMail || options.apply || options.realm != "e-skylab" ||
-		!options.restoredAt.Equal(time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)) {
+		!options.dumpedAt.Equal(time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("options = %+v, code %d", options, code)
 	}
 	if options, _ := parseReplayOptions(append(valid, "-apply"), &bytes.Buffer{}, now); !options.apply {
@@ -39,13 +39,13 @@ func TestReplayOptionsRefuseWhatCannotBeReplayed(t *testing.T) {
 	}
 	and := func(extra ...string) []string { return append(append([]string(nil), valid...), extra...) }
 	for name, args := range map[string][]string{
-		"unknown service":       with("--service", "mail"),
-		"no restore time":       with("--restored-at", ""),
-		"not RFC 3339":          with("--restored-at", "2026-09-20 03:00"),
-		"restore in the future": with("--restored-at", "2026-09-28T00:00:00Z"),
-		"empty realm":           and("--keycloak-realm", ""),
-		"a stray argument":      and("now"),
-		"an unknown flag":       and("--force"),
+		"unknown service":    with("--service", "mail"),
+		"no dump time":       with("--dumped-at", ""),
+		"not RFC 3339":       with("--dumped-at", "2026-09-20 03:00"),
+		"dump in the future": with("--dumped-at", "2026-09-28T00:00:00Z"),
+		"empty realm":        and("--keycloak-realm", ""),
+		"a stray argument":   and("now"),
+		"an unknown flag":    and("--force"),
 		// A DSN carries a password: it never goes on the command line.
 		"a DSN in argv": and("--core-snapshot-dsn", "postgres://replay:pw@core-snap/core"),
 	} {
@@ -54,14 +54,31 @@ func TestReplayOptionsRefuseWhatCannotBeReplayed(t *testing.T) {
 			t.Fatalf("%s: exit %d\n%s", name, code, out.String())
 		}
 	}
+	// T is when the service dump was taken; the old name invited the restore
+	// time, which misses the requests completed in between. It is gone, and
+	// passing it points at the new one.
+	for _, old := range [][]string{
+		{"--service", "skymail", "--restored-at", "2026-09-20T03:00:00Z"},
+		{"--service", "skymail", "-restored-at=2026-09-20T03:00:00Z"},
+		append(append([]string(nil), valid...), "--restored-at", "2026-09-20T03:00:00Z"),
+	} {
+		var out bytes.Buffer
+		if _, code := parseReplayOptions(old, &out, now); code != 2 ||
+			!strings.Contains(out.String(), "--restored-at is now --dumped-at: T is when the service dump was taken") {
+			t.Fatalf("%q: exit %d\n%s", old, code, out.String())
+		}
+	}
 	var out bytes.Buffer
 	parseReplayOptions([]string{"-h"}, &out, now)
-	for _, want := range []string{"CORE_SNAPSHOT_DATABASE_URL=<dsn> KEYCLOAK_SNAPSHOT_DATABASE_URL=<dsn> core-backend replay-from-backup", "-apply", "-restored-at"} {
+	for _, want := range []string{"CORE_SNAPSHOT_DATABASE_URL=<dsn> KEYCLOAK_SNAPSHOT_DATABASE_URL=<dsn> core-backend replay-from-backup", "-apply", "-dumped-at"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("usage lacks %q:\n%s", want, out.String())
 		}
 	}
-	if strings.Contains(out.String(), "snapshot-dsn") {
+	if !strings.Contains(out.String(), "T is when the service dump was taken") {
+		t.Fatalf("usage does not say what T is:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "snapshot-dsn") || strings.Contains(out.String(), "restored-at") {
 		t.Fatalf("usage still offers a DSN flag:\n%s", out.String())
 	}
 }
@@ -85,7 +102,7 @@ func replayEnv() map[string]string {
 func TestReplayReadsTheSnapshotsFromTheEnvironmentAndNamesOnlyVariables(t *testing.T) {
 	t.Parallel()
 
-	dryRun := []string{"--service", "cms", "--restored-at", "2026-09-20T03:00:00Z"}
+	dryRun := []string{"--service", "cms", "--dumped-at", "2026-09-20T03:00:00Z"}
 	apply := append(append([]string(nil), dryRun...), "--apply")
 	for _, tc := range []struct {
 		name   string
@@ -213,7 +230,7 @@ func TestReplayExitsNonZeroOnAnyFailAndAsksForAnotherRunWhenUnfinished(t *testin
 	} {
 		var out bytes.Buffer
 		code := replayFromBackupCommand(context.Background(), &out, erasurereplay.Replay{
-			Service: service, RestoredAt: time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC),
+			Service: service, DumpedAt: time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC),
 			Requests: tc.requests, Core: stubCore{known: map[uuid.UUID]bool{known.SubjectID: true}}, Keycloak: stubKeycloak{},
 			Apply: tc.apply, Sender: stubSender{err: tc.sendError},
 		})
