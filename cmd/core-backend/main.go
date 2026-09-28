@@ -188,7 +188,9 @@ func main() {
 		scanWorker := media.NewScanWorker(media.ScanWorkerConfig{
 			Store: mediaStore, Scanner: clamd.New(scanConfig.Addr), Public: scanStorage, Private: privateStorage,
 		})
-		scanWorker.Run(mediaPurgeContext, log.Printf)
+		scanContext, stopScan := context.WithCancel(context.Background())
+		defer stopScan()
+		scanWorker.Run(scanContext, log.Printf)
 		mediaScans = scanWorker
 		log.Printf("media scan: on (clamd at %s)", scanConfig.Addr)
 	} else {
