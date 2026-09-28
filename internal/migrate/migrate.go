@@ -804,7 +804,9 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  ON actual.conrelid = to_regclass('public.' || expected.table_name)
 			 AND actual.conname = expected.constraint_name
 			 AND actual.contype = expected.constraint_type::"char"
-			 AND pg_get_constraintdef(actual.oid) = expected.definition
+			 -- 20260928180000 adds archive_invalid to both result checks,
+			 -- last in each list: read without it, they are these.
+			 AND replace(pg_get_constraintdef(actual.oid), ', ''archive_invalid''::text', '') = expected.definition
 		) = 6
 		AND EXISTS (
 			SELECT 1 FROM pg_indexes
@@ -905,6 +907,22 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_proc
 			WHERE proname = 'media_purpose_fits_role' AND prosrc LIKE '%media_roles_without_legacy()%'
 		)`,
+	// The ZIP check's result, archive_invalid, in both result checks. A
+	// rerun of 20260928140000 puts back the checks without it; this
+	// fingerprint then fails and the migration runs again.
+	20260928180000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('media', 'media_scan_result_check', 'c', ` + "'" + `CHECK ((((scan_result IS NULL) OR (scan_result = ANY (ARRAY[''clean''::text, ''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text, ''archive_invalid''::text]))) AND ((status = ''rejected''::text) = (COALESCE(scan_result, ''''::text) = ANY (ARRAY[''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text, ''archive_invalid''::text]))) AND ((status <> ''scanning''::text) OR (scan_result IS NULL)) AND (scan_attempts >= 0)))` + "'" + `),
+				('media_scan_rejections', 'media_scan_rejections_result_check', 'c', ` + "'" + `CHECK ((result = ANY (ARRAY[''infected''::text, ''too_large_to_scan''::text, ''lost''::text, ''scan_timeout''::text, ''integrity''::text, ''archive_invalid''::text])))` + "'" + `)
+			) expected(table_name, constraint_name, constraint_type, definition)
+			JOIN pg_constraint actual
+			  ON actual.conrelid = to_regclass('public.' || expected.table_name)
+			 AND actual.conname = expected.constraint_name
+			 AND actual.contype = expected.constraint_type::"char"
+			 AND pg_get_constraintdef(actual.oid) = expected.definition
+		) = 2`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
