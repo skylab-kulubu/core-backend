@@ -45,8 +45,8 @@ type Event struct {
 	// order (media redesign ticket 22). Only an Event's detail carries them:
 	// a list leaves them out (nil, omitzero) and answers FileCount and
 	// VideoCount alone, which count the items anyone can download.
-	Files      []EventFile `json:"files,omitzero"`
-	Videos     []EventFile `json:"videos,omitzero"`
+	Files      []MediaItem `json:"files,omitzero"`
+	Videos     []MediaItem `json:"videos,omitzero"`
 	FileCount  int         `json:"fileCount"`
 	VideoCount int         `json:"videoCount"`
 

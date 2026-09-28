@@ -16,8 +16,8 @@ func withPublicMedia(e Event, addresses media.Addresses) Event {
 		}
 		e.Images = images
 	}
-	e.Files = withFileAddresses(e.Files, addresses)
-	e.Videos = withFileAddresses(e.Videos, addresses)
+	e.Files = withItemAddresses(e.Files, addresses)
+	e.Videos = withItemAddresses(e.Videos, addresses)
 	if n := len(e.ImageURLs); n > 0 {
 		urls := make([]string, 0, n)
 		for _, u := range e.ImageURLs {

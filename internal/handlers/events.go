@@ -217,48 +217,21 @@ func (h *EventHandler) Delete(c fiber.Ctx) error {
 }
 
 func (h *EventHandler) AddImages(c fiber.Ctx) error {
-	p, err := caller(c)
-	if err != nil {
-		return eventError(c, err)
-	}
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
-	}
-	var ids []uuid.UUID
-	if err := c.Bind().Body(&ids); err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
-	}
-	updated, err := h.svc.AddImages(c.Context(), p, id, ids)
-	if err != nil {
-		return eventError(c, err)
-	}
-	return c.JSON(h.svc.ProjectFor(&p, updated))
+	return h.eventMediaChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
+		return h.svc.AddImages(c.Context(), p, id, ids)
+	})
 }
 
 func (h *EventHandler) RemoveImages(c fiber.Ctx) error {
-	p, err := caller(c)
-	if err != nil {
-		return eventError(c, err)
-	}
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
-	}
-	var ids []uuid.UUID
-	if err := c.Bind().Body(&ids); err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
-	}
-	updated, err := h.svc.RemoveImages(c.Context(), p, id, ids)
-	if err != nil {
-		return eventError(c, err)
-	}
-	return c.JSON(h.svc.ProjectFor(&p, updated))
+	return h.eventMediaChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
+		return h.svc.RemoveImages(c.Context(), p, id, ids)
+	})
 }
 
-// eventFilesChange changes one of an Event's lists (files or videos) with
-// the Media ids of the body, a JSON array, and answers the Event.
-func (h *EventHandler) eventFilesChange(c fiber.Ctx, change func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error)) error {
+// eventMediaChange changes the Media an Event links (its gallery, files or
+// videos) with the Media ids of the body, a JSON array, and answers the
+// Event.
+func (h *EventHandler) eventMediaChange(c fiber.Ctx, change func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error)) error {
 	p, err := caller(c)
 	if err != nil {
 		return eventError(c, err)
@@ -280,9 +253,9 @@ func (h *EventHandler) eventFilesChange(c fiber.Ctx, change func(p authz.Princip
 
 // AddFiles appends Media to the Event's list: POST /v1/events/{id}/files
 // (club files) or /videos, with the Media ids in the order to add them.
-func (h *EventHandler) AddFiles(list event.FileList) fiber.Handler {
+func (h *EventHandler) AddFiles(list event.MediaList) fiber.Handler {
 	return func(c fiber.Ctx) error {
-		return h.eventFilesChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
+		return h.eventMediaChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
 			return h.svc.AddFiles(c.Context(), p, id, list, ids)
 		})
 	}
@@ -290,9 +263,9 @@ func (h *EventHandler) AddFiles(list event.FileList) fiber.Handler {
 
 // RemoveFiles removes Media from the Event's list: DELETE
 // /v1/events/{id}/files or /videos, with the Media ids.
-func (h *EventHandler) RemoveFiles(list event.FileList) fiber.Handler {
+func (h *EventHandler) RemoveFiles(list event.MediaList) fiber.Handler {
 	return func(c fiber.Ctx) error {
-		return h.eventFilesChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
+		return h.eventMediaChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
 			return h.svc.RemoveFiles(c.Context(), p, id, list, ids)
 		})
 	}
@@ -300,9 +273,9 @@ func (h *EventHandler) RemoveFiles(list event.FileList) fiber.Handler {
 
 // OrderFiles orders the Event's list: PUT /v1/events/{id}/files/order or
 // /videos/order, with every item's Media id in the new order.
-func (h *EventHandler) OrderFiles(list event.FileList) fiber.Handler {
+func (h *EventHandler) OrderFiles(list event.MediaList) fiber.Handler {
 	return func(c fiber.Ctx) error {
-		return h.eventFilesChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
+		return h.eventMediaChange(c, func(p authz.Principal, id uuid.UUID, ids []uuid.UUID) (event.Event, error) {
 			return h.svc.OrderFiles(c.Context(), p, id, list, ids)
 		})
 	}

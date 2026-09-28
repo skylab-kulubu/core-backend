@@ -66,8 +66,8 @@ func listed(e Event) Event {
 // listed (empty lists, never nil) and counted.
 func detailed(e Event) Event {
 	e = emptyGallery(e)
-	e.Files = append(make([]EventFile, 0, len(e.Files)), e.Files...)
-	e.Videos = append(make([]EventFile, 0, len(e.Videos)), e.Videos...)
+	e.Files = append(make([]MediaItem, 0, len(e.Files)), e.Files...)
+	e.Videos = append(make([]MediaItem, 0, len(e.Videos)), e.Videos...)
 	e.FileCount, e.VideoCount = len(e.Files), len(e.Videos)
 	return e
 }
@@ -223,7 +223,7 @@ func (s *MemoryStore) RemoveImages(_ context.Context, eventID uuid.UUID, ids []u
 	return detailed(e), nil
 }
 
-func (s *MemoryStore) ListFiles(_ context.Context, eventID uuid.UUID) ([]EventFile, []EventFile, error) {
+func (s *MemoryStore) ListFiles(_ context.Context, eventID uuid.UUID) ([]MediaItem, []MediaItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.byID[eventID]
@@ -236,7 +236,7 @@ func (s *MemoryStore) ListFiles(_ context.Context, eventID uuid.UUID) ([]EventFi
 
 // AddFiles appends the Media to the Event's list. The memory store keeps no
 // Media: an item is only its id, attached.
-func (s *MemoryStore) AddFiles(_ context.Context, eventID uuid.UUID, list FileList, ids []uuid.UUID) (Event, error) {
+func (s *MemoryStore) AddFiles(_ context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error) {
 	if !list.known() {
 		return Event{}, ErrInvalid
 	}
@@ -248,17 +248,17 @@ func (s *MemoryStore) AddFiles(_ context.Context, eventID uuid.UUID, list FileLi
 	}
 	items := e.list(list)
 	for _, id := range ids {
-		if id == uuid.Nil || slices.ContainsFunc(items, func(item EventFile) bool { return item.ID == id }) {
+		if id == uuid.Nil || slices.ContainsFunc(items, func(item MediaItem) bool { return item.ID == id }) {
 			continue
 		}
-		items = append(items, EventFile{ID: id, Status: media.StatusAttached})
+		items = append(items, MediaItem{ID: id, Status: media.StatusAttached})
 	}
 	e = e.withList(list, items)
 	s.byID[eventID] = e
 	return detailed(e), nil
 }
 
-func (s *MemoryStore) RemoveFiles(_ context.Context, eventID uuid.UUID, list FileList, ids []uuid.UUID) (Event, error) {
+func (s *MemoryStore) RemoveFiles(_ context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error) {
 	if !list.known() {
 		return Event{}, ErrInvalid
 	}
@@ -270,11 +270,11 @@ func (s *MemoryStore) RemoveFiles(_ context.Context, eventID uuid.UUID, list Fil
 	}
 	items := e.list(list)
 	for _, id := range ids {
-		if !slices.ContainsFunc(items, func(item EventFile) bool { return item.ID == id }) {
+		if !slices.ContainsFunc(items, func(item MediaItem) bool { return item.ID == id }) {
 			return Event{}, ErrNotFound
 		}
 	}
-	kept := make([]EventFile, 0, len(items))
+	kept := make([]MediaItem, 0, len(items))
 	for _, item := range items {
 		if !slices.Contains(ids, item.ID) {
 			kept = append(kept, item)
@@ -285,7 +285,7 @@ func (s *MemoryStore) RemoveFiles(_ context.Context, eventID uuid.UUID, list Fil
 	return detailed(e), nil
 }
 
-func (s *MemoryStore) OrderFiles(_ context.Context, eventID uuid.UUID, list FileList, ids []uuid.UUID) (Event, error) {
+func (s *MemoryStore) OrderFiles(_ context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error) {
 	if !list.known() || len(distinctIDs(ids)) != len(ids) {
 		return Event{}, ErrInvalid
 	}
@@ -299,9 +299,9 @@ func (s *MemoryStore) OrderFiles(_ context.Context, eventID uuid.UUID, list File
 	if len(items) != len(ids) {
 		return Event{}, ErrConflict
 	}
-	ordered := make([]EventFile, 0, len(items))
+	ordered := make([]MediaItem, 0, len(items))
 	for _, id := range ids {
-		at := slices.IndexFunc(items, func(item EventFile) bool { return item.ID == id })
+		at := slices.IndexFunc(items, func(item MediaItem) bool { return item.ID == id })
 		if at < 0 {
 			return Event{}, ErrConflict
 		}

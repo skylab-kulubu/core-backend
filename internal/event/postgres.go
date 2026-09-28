@@ -36,7 +36,7 @@ func downloadableSQL(alias string) string {
 
 // downloadableCountSQL counts the Event's items of the list anyone can
 // download, in the Event's own row: an Event list costs no query for them.
-func downloadableCountSQL(list FileList) string {
+func downloadableCountSQL(list MediaList) string {
 	return `(SELECT count(*) FROM ` + list.table() + ` linked JOIN media lm ON lm.id = linked.media_id
 		WHERE linked.event_id = e.id AND ` + downloadableSQL("lm") + `)`
 }
@@ -129,10 +129,10 @@ func (s *PostgresStore) get(ctx context.Context, id uuid.UUID, includeArchived b
 // organizers' order. An item whose Media was archived is left out, as in
 // the gallery; one waiting for its malware scan or rejected by it has no
 // address, and only a rejected one its scan result.
-func (s *PostgresStore) ListFiles(ctx context.Context, eventID uuid.UUID) ([]EventFile, []EventFile, error) {
-	files, videos := make([]EventFile, 0), make([]EventFile, 0)
+func (s *PostgresStore) ListFiles(ctx context.Context, eventID uuid.UUID) ([]MediaItem, []MediaItem, error) {
+	lists := Event{Files: make([]MediaItem, 0), Videos: make([]MediaItem, 0)}
 	selects := make([]string, 0, 2)
-	for _, list := range []FileList{Files, Videos} {
+	for _, list := range mediaLists {
 		selects = append(selects, `SELECT '`+string(list)+`' AS list, m.id, m.file_name, m.file_type, m.file_size, m.status,
 			CASE WHEN m.status = '`+string(media.StatusRejected)+`' THEN COALESCE(m.scan_result, '') ELSE '' END,
 			CASE WHEN `+downloadableSQL("m")+` THEN COALESCE(`+media.ServedKeySQL("m")+`, '') ELSE '' END,
@@ -148,20 +148,16 @@ func (s *PostgresStore) ListFiles(ctx context.Context, eventID uuid.UUID) ([]Eve
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var list FileList
-		var item EventFile
+		var list MediaList
+		var item MediaItem
 		var order int
 		var added time.Time
 		if err := rows.Scan(&list, &item.ID, &item.Name, &item.Type, &item.Size, &item.Status, &item.ScanResult, &item.URL, &order, &added); err != nil {
 			return nil, nil, err
 		}
-		if list == Videos {
-			videos = append(videos, item)
-		} else {
-			files = append(files, item)
-		}
+		lists = lists.withList(list, append(lists.list(list), item))
 	}
-	return files, videos, rows.Err()
+	return lists.Files, lists.Videos, rows.Err()
 }
 
 // lockForFiles locks the current Event's row while one of its lists
@@ -178,7 +174,7 @@ func lockForFiles(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) error {
 	return err
 }
 
-func (s *PostgresStore) AddFiles(ctx context.Context, eventID uuid.UUID, list FileList, ids []uuid.UUID) (Event, error) {
+func (s *PostgresStore) AddFiles(ctx context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error) {
 	if !list.known() {
 		return Event{}, ErrInvalid
 	}
@@ -355,7 +351,7 @@ func (s *PostgresStore) RemoveImages(ctx context.Context, eventID uuid.UUID, ids
 	return s.Get(ctx, eventID)
 }
 
-func (s *PostgresStore) RemoveFiles(ctx context.Context, eventID uuid.UUID, list FileList, ids []uuid.UUID) (Event, error) {
+func (s *PostgresStore) RemoveFiles(ctx context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error) {
 	if !list.known() {
 		return Event{}, ErrInvalid
 	}
@@ -383,7 +379,7 @@ func (s *PostgresStore) RemoveFiles(ctx context.Context, eventID uuid.UUID, list
 	return s.Get(ctx, eventID)
 }
 
-func (s *PostgresStore) OrderFiles(ctx context.Context, eventID uuid.UUID, list FileList, ids []uuid.UUID) (Event, error) {
+func (s *PostgresStore) OrderFiles(ctx context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error) {
 	if !list.known() || len(distinctIDs(ids)) != len(ids) {
 		return Event{}, ErrInvalid
 	}
