@@ -752,3 +752,41 @@ func TestPublicCertificateRateLimitFollowsTheClientNotTheProxy(t *testing.T) {
 		t.Fatal("a second client inherited the first client's budget")
 	}
 }
+
+// An admin's bearer lists every client they reach, so it runs past 3 KB, and
+// the browser adds whatever cookies .yildizskylab.com holds (Cloudflare's
+// cf_clearance alone is 0.4 KB). Fiber's 4 KB read buffer answered such a
+// request 431 before auth ever ran; headers are allowed up to 16 KB now.
+func TestLargeRequestHeadersReachTheRoutes(t *testing.T) {
+	t.Parallel()
+	app := memoryApp()
+	for _, test := range []struct {
+		name   string
+		bearer int
+		cookie int
+	}{
+		{name: "admin bearer and cf_clearance", bearer: 3300, cookie: 425},
+		{name: "headroom up to 16 KB", bearer: 8000, cookie: 7000},
+	} {
+		req := httptest.NewRequest(fiber.MethodGet, "/v1/users/me", nil)
+		req.Header.Set("Authorization", "Bearer "+strings.Repeat("a", test.bearer))
+		req.Header.Set("Cookie", "cf_clearance="+strings.Repeat("b", test.cookie))
+		// The rest of what Safari sends with the admin panel's fetch.
+		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+		req.Header.Set("Accept-Language", "tr-TR,tr;q=0.9")
+		req.Header.Set("Origin", "https://admin.yildizskylab.com")
+		req.Header.Set("Referer", "https://admin.yildizskylab.com/")
+		req.Header.Set("Sec-Fetch-Dest", "empty")
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		req.Header.Set("Sec-Fetch-Site", "same-site")
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15")
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if resp.StatusCode != fiber.StatusUnauthorized {
+			t.Fatalf("%s: status %d, want the invalid bearer's 401", test.name, resp.StatusCode)
+		}
+	}
+}
