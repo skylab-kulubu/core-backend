@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -479,6 +480,28 @@ func TestAnEventsFilesFollowTheTeamMediaLibraryHTTP(t *testing.T) {
 	}
 }
 
+// A video is stored to play: at a key that ends in .mp4, as video/mp4 and
+// inline (no Content-Disposition), so a <video> element and the browser's
+// player take it from its address.
+func TestAVideoIsStoredToPlayInlineHTTP(t *testing.T) {
+	f := newEventFilesEnv(t)
+	organizer := organizerToken(t, f.keys)
+	_, videoURL := f.uploaded(t, organizer, "video", "açılış konuşması.mp4", mp4File(3000))
+	key := strings.TrimPrefix(videoURL, eventFilesCDN+"/")
+	if !regexp.MustCompile(`^videos/[0-9a-f-]{36}\.mp4$`).MatchString(key) {
+		t.Fatalf("the video is stored at %q, want videos/<uuid>.mp4", key)
+	}
+	stored, ok := f.s3.Object("media", key)
+	if !ok || stored.ContentType != "video/mp4" || stored.ContentDisposition != "" {
+		t.Fatalf("the video is stored %v as %q, %q; want video/mp4 inline", ok, stored.ContentType, stored.ContentDisposition)
+	}
+	// A club file is still an opaque download under its name.
+	_, zipURL := f.uploaded(t, organizer, "club_file", "veri.zip", zipFile(t, 1000))
+	if zipped, _ := f.s3.Object("media", strings.TrimPrefix(zipURL, eventFilesCDN+"/")); zipped.ContentType != "application/octet-stream" || !strings.Contains(zipped.ContentDisposition, "veri.zip") {
+		t.Fatalf("the club file is stored as %q, %q", zipped.ContentType, zipped.ContentDisposition)
+	}
+}
+
 // Account erasure keeps an Event's files (media redesign ticket 07: a club
 // purpose): an erased organizer's file stays on the Event, attached and
 // served at its address, with neither their name as its uploader nor its
@@ -489,6 +512,8 @@ func TestAnErasedOrganizersEventFileStaysAttachedAndNamelessHTTP(t *testing.T) {
 	eventID := f.createEvent(t, organizer, "WEBLAB")
 	fileID, fileURL := f.uploaded(t, organizer, "club_file", "Ada_Organizer_notlar.zip", zipFile(t, 2000))
 	sendJSON(t, f.app, organizer, fiber.MethodPost, "/v1/events/"+eventID+"/files", jsonIDs(fileID))
+	videoID, videoURL := f.uploaded(t, organizer, "video", "Ada_Organizer_konuşma.mp4", mp4File(2000))
+	sendJSON(t, f.app, organizer, fiber.MethodPost, "/v1/events/"+eventID+"/videos", jsonIDs(videoID))
 	key := strings.TrimPrefix(fileURL, eventFilesCDN+"/")
 	if stored, _ := f.s3.Object("media", key); !strings.Contains(stored.ContentDisposition, "Ada_Organizer") {
 		t.Fatalf("the ZIP downloads as %q before the erasure, want its name", stored.ContentDisposition)
@@ -527,6 +552,15 @@ func TestAnErasedOrganizersEventFileStaysAttachedAndNamelessHTTP(t *testing.T) {
 	stored, ok := f.s3.Object("media", key)
 	if !ok || stored.ContentDisposition != "attachment" || stored.ContentType != "application/octet-stream" {
 		t.Fatalf("the kept ZIP is stored %v as %q, %q; want a download without a name", ok, stored.ContentType, stored.ContentDisposition)
+	}
+	// The video still plays: it named nobody, and its erasure does not make
+	// it a download.
+	videos := items(t, anonymousGet(t, f.app, "/v1/events/"+eventID), "videos")
+	if len(videos) != 1 || videos[0]["name"] != "" || videos[0]["url"] != videoURL || videos[0]["status"] != "attached" {
+		t.Fatalf("after the erasure the Event's videos are %v", videos)
+	}
+	if played, ok := f.s3.Object("media", strings.TrimPrefix(videoURL, eventFilesCDN+"/")); !ok || played.ContentType != "video/mp4" || played.ContentDisposition != "" {
+		t.Fatalf("the kept video is stored %v as %q, %q; want video/mp4 inline", ok, played.ContentType, played.ContentDisposition)
 	}
 }
 

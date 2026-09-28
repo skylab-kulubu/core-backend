@@ -422,16 +422,16 @@ func (s *service) CompleteDirectUpload(ctx context.Context, p authz.Principal, i
 }
 
 // directFinalKey is the key a completion copies the upload's file to: its
-// served key under files/, or, when its purpose needs a malware scan, a key
-// under pending/scan/ where it waits unserved until the scan finds it clean
-// (scanHoldKey). An upload that is not there gets a served key: the claim
-// finds it gone.
+// served key (directServedKey), or, when its purpose needs a malware scan, a
+// key under pending/scan/ where it waits unserved until the scan finds it
+// clean (scanHoldKey). An upload that is not there gets a served key: the
+// claim finds it gone.
 func (s *service) directFinalKey(ctx context.Context, store DirectUploadStore, id uuid.UUID) (string, error) {
 	dbCtx, cancel := context.WithTimeout(ctx, directDatabaseTimeout)
 	rec, err := store.GetDirectUpload(dbCtx, id)
 	cancel()
 	if errors.Is(err, ErrNotFound) {
-		return "files/" + uuid.NewString(), nil
+		return directServedKey(""), nil
 	}
 	if err != nil {
 		return "", err
@@ -439,7 +439,17 @@ func (s *service) directFinalKey(ctx context.Context, store DirectUploadStore, i
 	if purpose, ok := s.addresses.Catalogue.Lookup(rec.Purpose); ok && purpose.Scan {
 		return scanHoldKey(), nil
 	}
-	return "files/" + uuid.NewString(), nil
+	return directServedKey(rec.Purpose), nil
+}
+
+// directServedKey is a new served key for a Direct upload of the purpose:
+// files/<uuid>, or, for a video, videos/<uuid>.mp4, whose extension players
+// and saved copies go by (the only type a video purpose accepts is MP4).
+func directServedKey(purpose string) string {
+	if slices.Contains(videoPurposes, purpose) {
+		return "videos/" + uuid.NewString() + ".mp4"
+	}
+	return "files/" + uuid.NewString()
 }
 
 // directCompletion is one completion of a claimed upload, step by step.
@@ -483,7 +493,7 @@ func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []Upl
 		refused := errors.As(err, &refusal) || errors.As(err, &sizeRefusal)
 		return Media{}, c.stop(ctx, err, notCopied, refused)
 	}
-	meta := ServingMetadata(detected, c.rec.Name)
+	meta := ServingMetadataFor(c.rec.Purpose, detected, c.rec.Name)
 	if held {
 		// Not served before its scan: an opaque download without a name.
 		meta = scanHoldMetadata

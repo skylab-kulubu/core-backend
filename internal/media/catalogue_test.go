@@ -99,6 +99,21 @@ func TestCatalogue_ClubFilesAcceptZIPAsADownload(t *testing.T) {
 	}
 }
 
+// Only the video purpose names MP4 publicly: it is the one served inline, to
+// play (ServingMetadataFor). A club file or a CMS document naming MP4 is
+// refused at startup.
+func TestCatalogue_OnlyVideosAcceptMP4Publicly(t *testing.T) {
+	t.Parallel()
+	for _, purpose := range []string{"club_file", "cms_file"} {
+		data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+			purposes[purpose]["types"] = append(purposes[purpose]["types"].([]any), "video/mp4")
+		})
+		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingMP4) {
+			t.Errorf("public %s naming MP4: err = %v, want %v", purpose, err, media.ErrCeilingMP4)
+		}
+	}
+}
+
 // Core never receives a Direct upload's bytes; it reads only their start.
 // So a Direct upload purpose names only types that start the same way every
 // time and that core keeps as they came: PDF, ZIP and MP4. An image would

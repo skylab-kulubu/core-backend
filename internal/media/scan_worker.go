@@ -367,7 +367,7 @@ func (w *ScanWorker) copyToServed(ctx context.Context, m Media) (string, error) 
 	served := servedKeyOf(m.ID)
 	copyCtx, cancel := context.WithTimeout(ctx, scanCopyTimeout)
 	defer cancel()
-	if err := w.public.Copy(copyCtx, m.Key, served, ServingMetadata(m.Type, m.Name)); err != nil {
+	if err := w.public.Copy(copyCtx, m.Key, served, ServingMetadataFor(m.Purpose, m.Type, m.Name)); err != nil {
 		return "", fmt.Errorf("copy the clean file to its served key: %w", err)
 	}
 	return served, nil
@@ -383,7 +383,7 @@ func (w *ScanWorker) keepErasedName(ctx context.Context, m Media, served string)
 	}
 	metaCtx, cancel := context.WithTimeout(ctx, scanStorageTimeout)
 	defer cancel()
-	if err := w.public.SetMetadata(metaCtx, served, ServingMetadata(now.Type, now.Name)); err != nil && !errors.Is(err, ErrNotFound) {
+	if err := w.public.SetMetadata(metaCtx, served, ServingMetadataFor(now.Purpose, now.Type, now.Name)); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	return nil

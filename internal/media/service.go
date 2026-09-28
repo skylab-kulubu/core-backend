@@ -327,7 +327,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 			sizeObjects, colorsComputed = noSizes, true
 		}
 	} else {
-		serving := ServingMetadata(stored.ctype, file.Name)
+		serving := ServingMetadataFor(purpose.Name, stored.ctype, file.Name)
 		if err := s.blobs.Put(operationCtx, key, stored.body, serving); err != nil {
 			return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, nil, err)
 		}
@@ -337,7 +337,7 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 			}
 			for _, size := range stored.image.sizes {
 				sizes = append(sizes, sizeObjectKey(key, size.name, size.ctype))
-				if err := s.blobs.Put(operationCtx, sizes[len(sizes)-1], size.body, ServingMetadata(size.ctype, file.Name)); err != nil {
+				if err := s.blobs.Put(operationCtx, sizes[len(sizes)-1], size.body, ServingMetadataFor(purpose.Name, size.ctype, file.Name)); err != nil {
 					return Media{}, s.cleanupRejectedUpload(ctx, staging, durableStaging, key, sizes, err)
 				}
 			}
