@@ -224,11 +224,22 @@ func (s *MemoryStore) ExpireUnattachedAt(_ context.Context, id uuid.UUID, at *ti
 	if !ok || m.DeletedAt != nil {
 		return ErrNotFound
 	}
-	if m.Status != StatusAttached && m.BlobPurgeStartedAt == nil && m.BlobPurgedAt == nil {
+	if m.Status != StatusAttached && !s.hasAttachment(id) && m.BlobPurgeStartedAt == nil && m.BlobPurgedAt == nil {
 		m.ExpiresAt = at
 		s.byID[id] = m
 	}
 	return nil
+}
+
+// hasAttachment reports whether a Media attachment links the Media; s.mu is
+// held.
+func (s *MemoryStore) hasAttachment(id uuid.UUID) bool {
+	for _, a := range s.attachments {
+		if a.MediaID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *MemoryStore) ListPurgeCandidates(_ context.Context, deletedBefore time.Time, limit int) ([]Media, error) {
@@ -268,7 +279,7 @@ func (s *MemoryStore) PurgeBlobIfUnreferenced(_ context.Context, id uuid.UUID, p
 		m.BlobPurgeCheckedAt = &purgedAt
 		s.byID[id] = m
 	}
-	if err := purgeObjects(m.Key, purge); err != nil {
+	if err := purgeMediaObjects(id, m.Key, purge); err != nil {
 		return false, err
 	}
 	m.BlobPurgedAt = &purgedAt
@@ -316,7 +327,7 @@ func (s *MemoryStore) PurgeExpiredBlobIfUnattached(_ context.Context, id uuid.UU
 		m.BlobPurgeCheckedAt = &now
 		s.byID[id] = m
 	}
-	if err := purgeObjects(m.Key, purge); err != nil {
+	if err := purgeMediaObjects(id, m.Key, purge); err != nil {
 		return false, err
 	}
 	m.BlobPurgedAt = &now
@@ -419,6 +430,21 @@ func (s *MemoryBlob) Read(_ context.Context, key string) ([]byte, error) {
 		return nil, ErrNotFound
 	}
 	return append([]byte{}, data...), nil
+}
+
+// Copy copies the object at from to the key to, stored with meta, as R2's
+// CopyObject with the REPLACE directive does; ErrNotFound when there is
+// none.
+func (s *MemoryBlob) Copy(_ context.Context, from, to string, meta BlobMetadata) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, ok := s.objects[from]
+	if !ok {
+		return ErrNotFound
+	}
+	s.objects[to] = append([]byte{}, data...)
+	s.metadata[to] = meta
+	return nil
 }
 
 // Open streams a stored object.

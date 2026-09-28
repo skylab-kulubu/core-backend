@@ -61,6 +61,17 @@ func (s *PostgresStore) CreateStaged(ctx context.Context, item Media) (Media, er
 	}
 	defer tx.Rollback(ctx)
 
+	created, err := publishStaged(ctx, tx, item)
+	if err != nil {
+		return Media{}, err
+	}
+	return s.commitPublication(ctx, tx, created)
+}
+
+// publishStaged inserts the Media of a staged object and removes the
+// object's staging row, holding that row's lock: the sweeper takes the same
+// lock, so the object is either published or cleaned up, never both.
+func publishStaged(ctx context.Context, tx pgx.Tx, item Media) (Media, error) {
 	var key string
 	var subjectID uuid.UUID
 	if err := tx.QueryRow(ctx, `
@@ -82,11 +93,18 @@ func (s *PostgresStore) CreateStaged(ctx context.Context, item Media) (Media, er
 	if _, err := tx.Exec(ctx, `DELETE FROM media_upload_staging WHERE object_key=$1`, item.Key); err != nil {
 		return Media{}, err
 	}
+	return created, nil
+}
+
+// commitPublication commits the transaction that published created. A
+// commit whose outcome is unknown is reconciled by the Media's id: never
+// report a failure for a Media that may be stored and referenced.
+func (s *PostgresStore) commitPublication(ctx context.Context, tx pgx.Tx, created Media) (Media, error) {
 	if commitErr := tx.Commit(ctx); commitErr != nil {
 		reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		published, lookupErr := s.GetIncludingDeleted(reconcileCtx, item.ID)
-		if lookupErr == nil && published.Key == item.Key {
+		published, lookupErr := s.GetIncludingDeleted(reconcileCtx, created.ID)
+		if lookupErr == nil && published.Key == created.Key {
 			return published, nil
 		}
 		if errors.Is(lookupErr, ErrNotFound) {

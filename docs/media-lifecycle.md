@@ -70,7 +70,9 @@ bucket takes that metadata from one policy (`media.ServingMetadata`,
   running any script a sanitizer missed (see [SVG](#svg)).
 - Every other file is `application/octet-stream` with
   `Content-Disposition: attachment; filename*=…` (the Media's name, RFC 2231
-  encoded), whatever type its client declared.
+  encoded), whatever type its client declared. A club file's ZIP is one of
+  them: download-only, never inline (decision D6, see
+  [Hard ceilings](#hard-ceilings)).
 
 The policy decides only the object's metadata. The media record keeps the
 file's own type, detected or declared. The copies a published certificate
@@ -143,20 +145,25 @@ unless its product has a service client configured
   are private: refused with `private_media_disabled` while
   `MEDIA_PRIVATE_ENABLED` is off, stored encrypted in the private bucket
   when it is on ([Private Media](#private-media)). `answer_file` also needs
-  a malware scan, so it stays refused (`purpose_not_available`) until the
-  scanner exists (ticket 12). `answer_file_large` is a Direct upload purpose
-  and stays refused (ticket 11);
-- `club_file` and `video` name no product: where club files and videos are
-  attached is for the Direct upload and video tickets (11 and 13) to settle,
-  and both are Direct upload purposes anyway.
+  a malware scan: refused (`purpose_not_available`) while no scanner is
+  configured (`MEDIA_CLAMAV_ADDR`), and stored `scanning` until clamd finds
+  it clean once one is ([Malware scan](#malware-scan)). `answer_file_large`
+  is a Direct upload purpose no person may start (`service_only`), and a
+  private one Direct upload does not take yet (ticket 21, see
+  [Direct upload](#direct-upload));
+- `club_file` and `video` are Direct upload purposes that name no product:
+  where club files and videos are attached is not settled (superadmin's
+  large-file upload, ticket 20, and video, ticket 13), so both stay refused
+  (`purpose_not_available`). `club_file` also needs a malware scan.
 
 Every purpose a product's role accepts must name that product, and the
 purposes core refers to in code (the core purposes, the CMS purposes and the
 Answer file purposes) must all be in the file. `image` is acted on (see
-[Images and sizes](#images-and-sizes)). `scan` is acted on by refusal: while
-core has no malware scanner (ticket 12), a purpose with `scan: true` cannot be
-uploaded (`purpose_not_available`), since its Media are opened only once
-clean. `image.sizes` may name only the sizes clients can ask for, `card` and
+[Images and sizes](#images-and-sizes)). So is `scan`: while no malware
+scanner is configured (`MEDIA_CLAMAV_ADDR`), a purpose with `scan: true`
+cannot be uploaded (`purpose_not_available`), since its Media are opened only
+once clean; with one, its Media wait `scanning` until clamd finds them clean
+(see [Malware scan](#malware-scan)). `image.sizes` may name only the sizes clients can ask for, `card` and
 `page`. An unknown field or value, a missing `legacy` entry, or a ceiling
 violation stops core at startup.
 
@@ -170,7 +177,7 @@ The initial entries:
 | `cms_image` | authenticated | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | cms (no service client yet) |
 | `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms (no service client yet) |
 | `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step | forms |
-| `club_file` | event_editor | PDF | 1 GiB | public, scanned | direct | not settled (ticket 11) |
+| `club_file` | event_editor | PDF, ZIP (download only) | 1 GiB | public, scanned | direct | not settled (ticket 20) |
 | `answer_file_large` | service_only | ZIP, PDF | 1 GiB | private, scanned | direct | forms |
 | `video` | event_editor | MP4 | 2 GiB | public | direct | not settled (ticket 13) |
 | `legacy` | authenticated | legacy rules | legacy rules | public | single-step | core, or a product for its uploader or once it holds it (transition rule) |
@@ -210,7 +217,15 @@ are.
 Core refuses to start with a catalogue that breaks one:
 
 - a public purpose accepts only raster images (JPEG, PNG, WebP, GIF), SVG,
-  PDF and MP4;
+  PDF and MP4, and ZIP only for `club_file` (decision D6): a ZIP is always
+  served as a download (`Content-Disposition: attachment`), never inline. A
+  private purpose may name ZIP (`answer_file_large`): it never reaches the
+  CDN;
+- a Direct upload purpose accepts only PDF, ZIP and MP4: core never receives
+  a Direct upload's bytes, it reads their start, and these three prove their
+  type there. An image would reach storage without the re-encoding every
+  stored image gets, and a DOCX is told from another ZIP only by reading all
+  of it;
 - a public purpose that accepts raster images declares re-encoding
   (`image.reencode`), and core re-encodes every such image (see
   [Images and sizes](#images-and-sizes));
@@ -225,14 +240,33 @@ Core refuses to start with a catalogue that breaks one:
   `image.sizes`), and re-encoding scales a larger image down to it;
 - a private purpose is encrypted, and one that accepts raster images declares
   re-encoding (`image.reencode`), so the image is re-encoded before it is
-  encrypted.
+  encrypted;
+- a public purpose that needs a malware scan is a Direct upload purpose:
+  core holds a Direct upload's file under `pending/scan/` until the scan
+  finds it clean, while a single-step upload is written straight to its
+  served key (see [Malware scan](#malware-scan));
+- a purpose that needs a malware scan allows at most 1 GiB
+  (`media.MaxScanBytes`), what clamd takes in one stream: its
+  `StreamMaxLength`, which the ClamAV wizard sets. Raising it means raising
+  that first.
 
 ### Uploading
 
-`POST /v1/media` takes an optional multipart field `purpose`. With a purpose,
+`POST /v1/media` takes an optional multipart field `purpose`.
+
+The file's name is kept as the browser sent it, whichever way the file is
+uploaded (with a purpose, without one, as a profile picture, or by
+[Direct upload](#direct-upload)): emoji (ZWJ sequences and tag flags
+included), every script's joiners (the Persian ZWNJ), soft hyphens and
+decomposed letters stay; a byte order mark is dropped. Refused with `400`
+`media_name_invalid` is only what makes a name read as another or break
+where it is shown: invalid UTF-8, a C0 or C1 control character (a line
+break, a tab, NUL), and the bidirectional formatting controls (U+202A–U+202E,
+U+2066–U+2069, U+200E, U+200F, U+061C), such as the right-to-left override
+that shows `a\u202Egnp.exe` as `aexe.png`. With a purpose,
 core checks, in order: the purpose exists, the caller may upload it, private
 Media is on if the purpose is private, it is single-step, something can attach
-it, a malware scanner exists if the purpose needs a scan, the size, and the type detected from the content (a raster format, PDF by
+it, a malware scanner is configured if the purpose needs a scan, the size, and the type detected from the content (a raster format, PDF by
 its header, or DOCX: a ZIP package whose `[Content_Types].xml` declares a
 macro-free Word document part `word/document.xml`). `POST /v1/users/me/profile-picture` always uploads
 as `profile_picture`: raster images up to 5 MiB, no PDF, no SVG.
@@ -252,11 +286,12 @@ over their upload budget gets `429` `media_rate_limited`, described under
 | Status | `code` | Extra members | When |
 |---|---|---|---|
 | 400 | `purpose_unknown` | `purpose` | The purpose is not in the catalogue. |
+| 400 | `media_name_invalid` | | The file name carries a control character or a bidirectional formatting control (above). Also for uploads without a purpose. |
 | 403 | `purpose_forbidden` | `purpose` | The caller's upload rule does not allow it. |
 | 422 | `private_media_disabled` | `purpose` | A private purpose while `MEDIA_PRIVATE_ENABLED` is off. Nothing is stored, and never publicly instead; retrying does not help. |
 | 503 | `private_media_unavailable` | | A private purpose while OpenBao cannot be reached. Nothing is stored; retry later (`Retry-After`). Public purposes are not affected. |
-| 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media`. |
-| 422 | `purpose_not_available` | `purpose` | A `service` purpose whose product has no service client configured (`cms_image` and `cms_file` today), or that names no product (`club_file` and `video`, which reach `purpose_requires_direct_upload` first): nothing is stored, the file would only wait for its expiry. Also a purpose that needs a malware scan while core has no scanner (`answer_file` today). |
+| 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media` (see [Direct upload](#direct-upload)). |
+| 422 | `purpose_not_available` | `purpose` | A `service` purpose whose product has no service client configured (`cms_image` and `cms_file` today), or that names no product (`club_file` and `video`, which reach `purpose_requires_direct_upload` first): nothing is stored, the file would only wait for its expiry. Also a purpose that needs a malware scan while no scanner is configured (`MEDIA_CLAMAV_ADDR` unset). |
 | 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum; an SVG above 1 MiB (`maxBytes` is then 1 MiB). |
 | 413 | `media_image_too_large` | `purpose`, `maxPixels` | Decoding the image would take more than core allows, judged from its header before anything is decoded (see [Decode cost](#decode-cost)). `maxPixels` is the most pixels an image of its kind may have: 50 000 000, fewer for costly pixels (16-bit PNG, progressive JPEG, an animation's many frames). An animated GIF or WebP larger than 2560 px on a side is refused this way too. |
 | 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types, or starts like one but does not decode or check as it: a broken image, a WebP whose frame is not its canvas, an animated WebP whose structure does not check, a GIF with more than 300 frames or a frame outside its screen, a JPEG with more than 64 scans, an SVG core does not sanitize. |
@@ -319,10 +354,302 @@ allows only the gate's keys and commands. It is not fiber's `limiter`
 middleware either, which counts requests only: this one also counts bytes and
 gives back server failures.
 
-Direct upload is not counted here. The product that owns a Direct upload
-grant limits it; the Direct upload routes, when they land, stay off this
-limiter. A test (`TestEveryRouteThatStoresAFileIsChargedToTheUploadBudget`)
-fails when any route stores a file sent through core without being charged.
+Direct upload is not counted here (decision Q23): the product that grants a
+Direct upload limits it, and for the Direct uploads core starts itself core
+is that product, with a budget of their own (see
+[Direct upload budget](#direct-upload-budget)). A test
+(`TestEveryRouteThatStoresAFileIsChargedToTheUploadBudget`) fails when any
+route stores a file sent through core without being charged.
+
+## Direct upload
+
+Media redesign ticket 11 (ADR-0052). A purpose whose `transport` is `direct`
+(`club_file`, `answer_file_large`, `video`) is not sent through core: the
+browser sends the file straight to R2 as an S3 multipart upload, part by
+part, to addresses core presigns, then asks core to complete it. Core never
+holds the file; it checks what R2 holds, copies it to its final key and
+creates the Media.
+
+Today no purpose can be started this way in production: `club_file` and
+`video` name no product that attaches them, and `answer_file_large` is
+private and `service_only` (see [The catalogue](#the-catalogue)). The whole
+flow is exercised with a test catalogue that lets core attach
+(`directCatalogue` in `internal/httpx/media_direct_upload_test.go`), with
+`club_file`'s malware scan off, and on in
+`internal/httpx/media_scan_test.go`.
+
+### Endpoints
+
+All three need a signed-in person. `POST /v1/uploads` starts one:
+
+```json
+{"purpose": "club_file", "name": "veri seti.zip", "size": 734003200, "limits": {"types": ["application/zip"], "maxBytes": 800000000}}
+```
+
+- `name`: the file's name, 1 to 255 bytes, under the rule every upload's
+  name follows (see [Uploading](#uploading)): `a\u202Epiz.exe` cannot pass
+  for `aexe.zip` (`400` `media_name_invalid`). It is kept with the Media and
+  names the download; it is never part of a key.
+- `size`: the file's exact size in bytes.
+- `limits` (optional): what the owning product allows for this one upload
+  (Skyforms: "only PDF, 5 MB"). It may only narrow the purpose: `types` the
+  purpose accepts, a `maxBytes` no larger than the purpose's. Core keeps the
+  narrowed limits with the upload and checks the file against them.
+
+It answers `201 Created` with `Cache-Control: no-store`:
+
+```json
+{
+  "id": "0f2a…",
+  "purpose": "club_file",
+  "name": "veri seti.zip",
+  "size": 734003200,
+  "partSize": 16777216,
+  "partCount": 44,
+  "expiresAt": "2026-09-28T21:00:00Z",
+  "uploaded": [],
+  "parts": [
+    {"partNumber": 1, "size": 16777216, "url": "https://<account>.r2.cloudflarestorage.com/<bucket>/pending/0f2a…?partNumber=1&uploadId=…&X-Amz-Signature=…"}
+  ],
+  "partUrlsExpireAt": "2026-09-28T10:00:00Z"
+}
+```
+
+Every part is 16 MiB but the last (R2 wants the parts equal; a 2 GiB file is
+128 parts). The browser PUTs each part's bytes to its `url` and keeps the
+`ETag` R2 answers (the bucket's CORS exposes it, see
+[R2 lifecycle and CORS](#r2-lifecycle-and-cors)). An address is signed for
+its part's length (`Content-Length` is a signed header), so no PUT can carry
+more, and it works for an hour. The addresses are handed only to the
+uploader and are never logged; the answer that carries them is never cached.
+
+`POST /v1/uploads/{id}/parts` answers the same shape with `200`: `uploaded`
+lists the parts R2 holds whole, each with its `partNumber`, `size` and
+`etag`, and `parts` has new addresses for the others. An interrupted upload
+continues from there, and an upload that outlives its addresses asks here
+for new ones.
+
+`POST /v1/uploads/{id}/complete` completes it, with every part in order:
+
+```json
+{"parts": [{"partNumber": 1, "etag": "\"a54f…\""}, {"partNumber": 2, "etag": "\"9c1e…\""}]}
+```
+
+It answers `201 Created` with the Media, as `POST /v1/media` does. The Media
+takes the upload's id, so a completion retried after its answer was lost
+answers the same Media.
+
+An upload is its uploader's: anyone else gets `404` for it, as for one that
+does not exist. So does an upload past `expiresAt` (12 hours after its
+start, `media.DirectUploadTTL`) and one that ended.
+
+### Checks
+
+The start checks the purpose as a single-step upload does, in the same order
+(see [Uploading](#uploading)): the purpose exists, the caller's upload rule,
+private Media on, the transport is `direct` (`purpose_requires_single_step`
+otherwise), a private purpose (none yet, ticket 21), something can attach it,
+the malware scan gate. Then the request (name and size), the narrowed
+limits, the size against the (narrowed) maximum, and the person's
+[Direct upload budget](#direct-upload-budget). Only then does core register
+the upload and open the multipart upload at `pending/<id>`, stored as an
+opaque download (`application/octet-stream`, `Content-Disposition:
+attachment`) whatever the browser sends.
+
+A completion holds no database lock and no connection while storage works.
+It **claims** the upload in one short transaction: the upload's record gets
+the claim and a lease (`claim_until`, 20 minutes,
+`media.DirectUploadClaimLease`), the pending object is staged until the
+lease ends, and the key the file will be copied to until an hour after it
+(`media.DirectUploadLateCopyMargin`, below). Then, with no
+transaction open, it does the storage work, each call under its own timeout
+(30 seconds for a listing, a `HEAD`, the ranged `GET` or a delete, 3 minutes
+for R2 to join the parts, 12 minutes for the copy of up to 2 GiB, under R2's
+5 GiB `CopyObject` limit), all of it stopping 2 minutes before the lease
+ends. It **finishes** in another short transaction that checks the claim is
+still its own and its lease live, creates the Media, removes the copy's
+staging row and ends the upload. Only one pooled connection is ever held at
+a time.
+
+A second completion of an upload under a live claim, such as a retry that
+races the first, does not wait: it answers `409` `upload_completing` with
+`Retry-After` (5 seconds), and so does `POST /v1/uploads/{id}/parts`. Once
+the first is done, a completion answers the Media it created: the file is
+checked and copied once.
+
+If core stops in the middle of a completion (a crash, a deploy), nothing
+lets go of its claim: the upload answers `409` `upload_completing` for up
+to the 20 minutes of the lease. After that, a completion claims it again
+and carries on (R2 still holds the parts, or the joined file). But the
+sweeper ends an upload whose claim went stale at its next pass (within 15
+minutes of the lease's end), possibly before the client's retry: the client
+then gets `404` and must start the upload again. In order:
+
+1. The caller's upload, not expired.
+2. The purpose's rules as they are now: a deploy may have changed the
+   catalogue since the start. The file must meet both the purpose's current
+   types and maximum and the limits the upload started with (their
+   intersection); a purpose that is no longer public is refused.
+3. The parts: every part from 1 to `partCount`, in order, each with the ETag
+   R2 holds and whole. Parts that are not R2's (a wrong ETag, one missing)
+   are `upload_parts_mismatch`: nothing is refused about the file, and the
+   upload stays open. A part of another size is the file's refusal
+   (`upload_size_mismatch`).
+4. R2 joins the parts (`CompleteMultipartUpload`) into the pending object.
+5. The size, by a `HEAD`, is exactly the declared size.
+6. The first 512 bytes, by a ranged `GET`, name one of the allowed types:
+   PDF by its `%PDF-` header, ZIP by its first local file header (or an
+   empty archive's end), MP4 by its `ftyp` box. Where an MP4's `moov` box
+   sits is video's own ticket (13).
+7. The object is copied to `files/<uuid>` with the `Content-Type` and
+   `Content-Disposition` of the [serving policy](#serving-policy), written by
+   core: a PDF inline, a ZIP (and an MP4, until ticket 13) as a download
+   under its name. The final key is staged like every object core writes.
+   A file whose purpose needs a malware scan is copied instead to
+   `pending/scan/<uuid>`, an opaque download without a name at a key only
+   core knows, and reaches `files/` only once clean (see
+   [Public files before their scan](#public-files-before-their-scan)).
+8. The Media is created `pending` (`scanning` when its purpose needs a
+   scan), with the purpose's `pending_ttl`, and the upload ends in the same
+   transaction; then the pending object is deleted.
+
+Once the parts are joined (step 4), every way out but a created Media ends
+the upload. A short transaction first checks the claim is still this
+completion's and ends the upload; only then does storage delete the copy
+and the pending object, and their staging rows go once deleted. So a
+completion whose lease ran out never deletes an upload another completion
+has claimed since: it finds the claim lost, deletes only its own copy, and
+answers `503` `upload_claim_lost`. A copy whose outcome core does not know
+(it failed or timed out: R2 may still finish it after core gave up) keeps
+its staging row until an hour after the lease, and so does a copy whose
+delete failed: the sweeper and account erasure delete whatever lands there. That is a refused file (step 2,
+5 or 6) and core's own failure after the join (a `HEAD`, the ranged `GET`,
+the copy, or storing the Media failing). The exceptions: a Media whose
+storing may have succeeded although the database answered an error (its
+objects stay for the staging sweeper, and the pending one is a download
+meanwhile), and a completion so slow its lease ran out (it deletes only its
+own copy; the upload is the sweeper's). Before the join, core's failure (R2
+or the database answering an error) and `upload_parts_mismatch` let go of
+the claim: the upload is open again for another completion.
+
+### Refusals
+
+The purpose's refusals of [Uploading](#uploading) (`purpose_unknown`,
+`purpose_forbidden`, `private_media_disabled`, `purpose_not_available`,
+`media_too_large` with the maximum that applies, `media_type_not_allowed`
+with the types that apply), the budget's `429` (below), and these:
+
+| Status | `code` | Extra members | When |
+|---|---|---|---|
+| 400 | `purpose_requires_single_step` | `purpose` | A `single_step` purpose sent to `POST /v1/uploads`. |
+| 400 | `media_limits_too_wide` | `purpose`, `allowedTypes`, `maxBytes` | `limits` names a type the purpose does not accept or a larger maximum. |
+| 422 | `purpose_not_available` | `purpose` | Also a private purpose, until ticket 21. |
+| 400 | `upload_parts_mismatch` | | The completion's parts are not the parts R2 holds. The upload stays open: `POST /v1/uploads/{id}/parts` lists them. |
+| 409 | `upload_completing` | `retryAfterSeconds`, `Retry-After` header | Another request is completing the upload (a completion, or `POST /v1/uploads/{id}/parts`). Retry: once it is done, a completion answers its Media. |
+| 503 | `upload_claim_lost` | `retryAfterSeconds`, `Retry-After` header | This completion outlived its lease (core's failure: the volume is given back). Retry: the upload may still be completed, or answer the Media another completion created; `404` means it is gone and must be started again. |
+| 403 | | | The uploader's account is being erased (a refusal: the charge stays, and the erasure takes the upload). |
+| 422 | `upload_size_mismatch` | `declaredSize`, `size` | The stored file is not the declared size. The upload is ended. |
+| 429 | `media_rate_limited` | `limit`, `maxOpenUploads`, `maxDailyBytes`, `retryAfterSeconds`, `Retry-After` header | The [Direct upload budget](#direct-upload-budget): `limit` is `open` (too many uploads open; `Retry-After` is when the first expires) or `volume`. |
+| 404 | | | Someone else's upload, an expired or ended one, or none. |
+| 503 | `direct_upload_unavailable` | | This core has no R2 (a local run without `R2_*`). |
+| 400 | `media_name_invalid` | | A blank name, one over 255 bytes, or one the name rule refuses. |
+| 400 | | | A body that is not JSON, a size of 0 or less. |
+
+### Direct upload budget
+
+Direct upload is not charged to the single-step
+[upload limits](#upload-limits) (decision Q23): the product that grants a
+Direct upload limits it, and core is that product for the uploads it starts.
+Each signed-in person has:
+
+- at most 3 Direct uploads open at once (`MEDIA_DIRECT_UPLOAD_MAX_OPEN`):
+  started, and neither completed, refused nor expired. They are counted in
+  the database, one start at a time per person, so the limit holds across
+  restarts and replicas. Completing, a refusal or the upload's expiry frees
+  its place;
+- at most 10 GiB declared per rolling 24 hours
+  (`MEDIA_DIRECT_UPLOAD_DAILY_MAX_MIB`, default `10240`), in core's memory
+  like the single-step budget (a restart forgets it).
+
+A start is charged its declared size once it passes every rule; a start the
+budget refuses is not charged. The charge stays, as a single-step refusal's
+does, when the file is refused at completion (`upload_size_mismatch`,
+`media_type_not_allowed`, `media_too_large`, a purpose rule) and when the
+upload is never completed: its bytes may have been sent, and free refusals
+would let anyone send 2 GiB after 2 GiB without end. Only core's own failure
+is given back: a start that fails on core's side, a completion core fails
+after joining the parts (the upload is then ended, and the file must be
+sent again), and a completion that outlived its lease
+(`upload_claim_lost`). `upload_parts_mismatch` changes nothing: the upload is still
+open.
+
+### Storage and cleanup
+
+The pending object is registered in `media_upload_staging` before R2 opens
+anything at its key, like every object write core causes: its staging row
+(key, uploader, `cleanup_after` = the upload's expiry) is what the staging
+sweeper and account erasure delete by. The upload's details (purpose, file
+name, narrowed limits, declared size, part size, R2's multipart upload id,
+expiry) are in `media_direct_uploads` (migration `20260928100000`), which
+goes with that staging row (`ON DELETE CASCADE`). The records survive a
+restart.
+
+Deleting a pending key (`pending/…`, or `private/pending/…` in the private
+bucket) also aborts every multipart upload still open at exactly that key
+(`media.R2.Delete`). So every path that deletes by key alone leaves no parts
+behind:
+
+- the staging sweeper (`MEDIA_UPLOAD_STAGING_SWEEP_INTERVAL`, 15 minutes by
+  default, `MEDIA_UPLOAD_STAGING_BATCH_SIZE` at a time) ends every upload
+  that expired, and finishes a refusal or completion whose own cleanup
+  failed; it is batched, idempotent, and walks past a failing row, which it
+  retries an hour later. An upload under a live claim is not due before
+  the lease ends. A claim whose lease ran out is stale, left by a
+  completion that died: the sweeper then deletes the pending object and the
+  upload, and an hour later the copy's key, with anything a late copy put
+  there;
+- a completion deletes its pending object once the Media is stored, and
+  every way out after the parts are joined deletes it too (above);
+- account erasure's `erase_staged_uploads` treats an open Direct upload as a
+  live upload: it defers (its attempt is given back) until the upload
+  expires, or until a completion's lease ends (at most 12 hours; the
+  person's access is already blocked, so it cannot complete), then aborts
+  it and deletes its record, file name included. It never waits on a
+  completion: no lock is held while storage works.
+
+The public bucket serves every key at the CDN, pending ones too. A pending
+object exists only between the join and the end of its completion, and is
+an opaque download (`attachment`), never rendered. A file waiting for its
+malware scan is held under `pending/scan/`, at a random key only core knows,
+also as an opaque download. An optional Cloudflare rule closes even that:
+see below.
+
+The R2 lifecycle rule below is the backstop for anything all of these miss.
+
+### R2 lifecycle and CORS
+
+A human step, done by `ops/wizards/media-direct-upload-r2-wizard.sh` in
+sky_lab_genel (sandbox first, then production):
+
+- a lifecycle rule on the pending prefix of the public and the private
+  bucket of each side (`pending/` in the public bucket, `private/pending/` in
+  the private one) that deletes objects and aborts incomplete multipart
+  uploads after 2 days;
+- a CORS rule on the public bucket only that lets browsers `PUT` from the
+  origins core's API allows (the Traefik `cors.yml` on the server; it is not
+  in this repo), with `AllowedHeaders` `content-type` and `ExposeHeaders`
+  `ETag`, so the browser can read each part's ETag. The private bucket's
+  CORS stays empty until private Direct upload (ticket 21);
+- optionally, a Cloudflare WAF custom rule on the CDN host that blocks
+  (`403`) every path starting with `/pending/`.
+
+No wizard holds a Cloudflare API token, so the wizard shows where to click in
+the Cloudflare dashboard and what to paste. It checks the CORS rule with a
+preflight from the server (every origin may `PUT`, a foreign one may not)
+and the CDN rule with two requests (`/pending/…` answers `403`, `/files/…`
+does not); the lifecycle rule is confirmed in the dashboard. It stops before
+anything is changed if one bucket name comes up for both sides or both
+roles.
 
 ## Images and sizes
 
@@ -734,6 +1061,8 @@ recorded apart.
 | `pending` | No Media attachment yet. Every new Media starts here. | Upload time plus the purpose's `pending_ttl` (24 hours for every purpose today). |
 | `attached` | At least one Media attachment. Never purged by expiry. | None. |
 | `detached` | Its last Media attachment was removed. | 30 days after that, except while its detach expiry is held (below). Attaching it again within the window makes it attached. |
+| `scanning` | Its purpose needs a malware scan that has not ended yet. It may be attached, but it is not opened or served ([Malware scan](#malware-scan)). Clean, it becomes `pending`, or `attached` when a Media attachment links it. A week after its upload it is rejected (`scan_timeout`). | As `pending` while nothing keeps it: upload time plus the purpose's `pending_ttl`. None while a Media attachment links it; 30 days after its last one is removed. |
+| `rejected` | The malware scan rejected it (`scanResult`: `infected`, `too_large_to_scan`, `lost`, `integrity` or `scan_timeout`); its object is deleted. | None. |
 
 **A legacy Media gets no expiry by itself**: not when it is uploaded
 (`legacy` has `pending_ttl` `none`), and not when its last Media attachment is
@@ -747,7 +1076,9 @@ after stage 5 (see [Detach expiry hold](#detach-expiry-hold)).
 
 The database keeps the status in step with the Media attachments, once per
 statement that adds or removes them: a Media with a Media attachment is
-attached, a Media whose last one went is detached. It first locks the Media
+attached, a Media whose last one went is detached. A `scanning` or `rejected`
+Media keeps its status (migration `20260928140000`); only its expiry follows
+its Media attachments. It first locks the Media
 rows the statement touched, in id order and with a lock that does not wait
 for foreign key references. Two statements therefore never lock the same
 Media the other way round, two links of one Media written at once do not wait
@@ -761,6 +1092,7 @@ Restoring an archived Media (`POST /v1/media/{id}/restore`) starts its expiry
 again: a Media no Media attachment keeps gets its purpose's `pending_ttl` from
 the restore (a legacy one, or one whose detach expiry is held, none), so a
 window that ran out while it was archived does not purge it on the next pass.
+A `scanning` one a Media attachment links gets none, as an attached one.
 
 ### Core's own links
 
@@ -793,7 +1125,7 @@ link with `application/problem+json`, a stable `code`, and the members
 | Status | `code` | Extra members | When |
 |---|---|---|---|
 | 422 | `media_purpose_mismatch` | `purpose` | The Media's purpose does not fit the role. An Event cover or gallery photo needs `event_cover` or `event_gallery` (the organizer's picker offers every photo of the team's Events for both); a certificate asset needs `certificate_asset`. A profile picture or a CMS page's PDF cannot be a cover. |
-| 422 | `media_not_linkable` | | There is no such Media, or it is archived, its blob is purged or being purged, or its expiry has passed. A pending or attached Media can be linked, and a Media removed from a record can be linked again until its window ends. |
+| 422 | `media_not_linkable` | | There is no such Media, or it is archived, its blob is purged or being purged, or its expiry has passed. A pending or attached Media can be linked, and so can a scanning one (an Answer file while its malware scan runs); a rejected one cannot (its object is being or was deleted). A Media removed from a record can be linked again until its window ends. |
 | 403 | `media_team_mismatch` | | Team media library: the Media is on an Event (archived ones included) of another Owner team. An Event may reuse a photo of another Event of its own Owner team. |
 
 Only new links are checked: an Event saved with the cover it already has, or
@@ -982,7 +1314,8 @@ purge between these checks and the write is refused with
 
 The purge worker, after its archived batch, makes one pass over the Media
 whose `expiresAt` has passed: pending Media past their purpose's pending TTL
-and detached purposed Media past their 30 days. It walks them by id, 25 at a
+(a `scanning` Media nothing keeps counts as pending: one whose scan never
+ended in time is purged too) and detached purposed Media past their 30 days. It walks them by id, 25 at a
 time, and purges each blob with the same locked check and two-phase claim as
 an archived Media: a Media that a Media attachment or a core link still uses
 is kept. The Media is archived as its blob goes, so ordinary reads hide it
@@ -1273,11 +1606,15 @@ the public bucket; its sizes are recorded as none, and the size backfill
 never picks it up.
 
 A purpose whose entry has `scan: true` is refused with `422`
-`purpose_not_available` while core has no malware scanner (ticket 12): a Media
-that needs a scan is not opened before it is clean, so nothing of it could be
-opened. Today that is `answer_file`: Answer files cannot be uploaded until
-the scanner exists, whatever `MEDIA_PRIVATE_ENABLED` says. `certificate_asset`
-needs no scan.
+`purpose_not_available` while no malware scanner is configured
+(`MEDIA_CLAMAV_ADDR`): a Media that needs a scan is not opened before it is
+clean, so nothing of it could be opened. Today that is `answer_file`. With a
+scanner, an Answer file is stored encrypted as above and waits `scanning`:
+the scan worker decrypts it as it streams it to clamd, and no read link is
+issued before it is clean ([Malware scan](#malware-scan)). `certificate_asset`
+needs no scan. `answer_file_large`, sent by [Direct upload](#direct-upload),
+is refused whatever the flag says until ticket 21 encrypts a large file after
+its completion.
 
 An OpenBao that cannot be reached, is sealed, refuses core's identity, or has
 no such mount or key fails only private uploads and reads, with `503`
@@ -1325,7 +1662,14 @@ Anything else is `404`: another product's Media, a public one, a core Media
 for a product, a product's Media for an admin, one that does not exist. The
 person a link is for must be an active account in core (`422`
 `media_link_subject_inactive` otherwise), like every other current-identity
-link ([`account-lifecycle.md`](account-lifecycle.md)).
+link ([`account-lifecycle.md`](account-lifecycle.md)). For a product's link
+to a person core has no row for (a reviewer who never signed in to core),
+core first ensures the row from Keycloak and, as the person's first sign-in
+would, writes their Sky number to Keycloak; it makes no row for a person
+Keycloak does not know or has disabled, or core has erased or is erasing
+(`422`), nor while Keycloak cannot be asked (`503` or `500`, see Refusals).
+Nothing is ensured for an admin, who acts for themselves: an admin with no
+core row gets `422`.
 
 The token is `base64url(claims) "." base64url(signature)`: the claims are a
 format byte, a disposition byte (always download), the link's id, the Media
@@ -1407,13 +1751,313 @@ used in production, so there is nothing to move).
 | 403 | `media_link_forbidden` | A link asked for by anyone but a configured product's service account with `media:attach` or a privileged admin. |
 | 400 | | A product's request without `onBehalfOf`, an admin's request with one, or ids that are not UUIDs. |
 | 404 | | A link to a Media that is not a current private Media the caller may open; a content request for a Media that is not a current private one. |
-| 422 | `media_link_subject_inactive` | The person the link is for is unknown to core or being erased. |
+| 422 | `media_link_subject_inactive` | The person the link is for is erased or being erased, or has no core row and is unknown to or disabled in Keycloak (product links only). Admins are never ensured: an admin with no core row gets it too. |
+| 503 | `media_link_subject_unavailable` | The person the link is for has no core row and core cannot make one right now: Keycloak cannot be reached or answers 5xx or 429, or Sky number assignment stayed contended. Retry later (`Retry-After`). |
+| 500 | `media_link_subject_lookup_failed` | The person the link is for has no core row and Keycloak refuses core's lookup (a permission core lacks, a wrong client secret) or answers something that is not a user: a misconfiguration, logged with Keycloak's status. A retry does not help. |
 | 403 | `media_link_invalid` | A token core did not sign for this Media. |
 | 403 | `media_link_expired` | A token past its five minutes. |
 | 422 | `private_media_disabled` | Private Media is off. |
-| 422 | `purpose_not_available` | An upload of a purpose that needs a malware scan (no scanner yet). |
+| 422 | `purpose_not_available` | An upload of a purpose that needs a malware scan while no scanner is configured. |
+| 409 | `media_scanning` | A read link or content for a Media waiting for its malware scan (`Retry-After`). See [Opening](#opening). |
+| 410 | `media_rejected` | A read link or content for a Media the malware scan rejected; `scanResult` says why. |
 | 503 | `private_media_unavailable` | OpenBao cannot be reached, is sealed, refuses core's identity, or has no such mount or key. Retry later (`Retry-After`). |
 | 500 | `private_media_integrity` | The stored object or its wrapped key is not what core wrote. Nothing of it is served; the log names the request. |
+
+## Malware scan
+
+Media redesign ticket 12 (ADR-0052, decision Q17). A purpose whose catalogue
+entry has `scan: true` (`answer_file`, `club_file` and `answer_file_large`
+today) is scanned by ClamAV before any of its Media is opened. ClamAV runs in
+its own container, reachable only on the internal network, and core talks to
+its daemon, clamd, over TCP: `MEDIA_CLAMAV_ADDR` (`host:port`, see
+[Configuration](#configuration)).
+
+### The scan gate
+
+Without `MEDIA_CLAMAV_ADDR` nothing changes from before the scanner existed: a
+purpose that needs a scan is refused (`422` `purpose_not_available`), since
+its Media could never be opened. With it, the gate is lifted and such a
+purpose is uploaded under its other rules. For each purpose that needs a scan,
+that means:
+
+- `answer_file` can be uploaded once private Media is on too
+  (`MEDIA_PRIVATE_ENABLED`) and Skyforms has its service client;
+- `club_file` stays refused, since no product attaches it yet (ticket 20);
+- `answer_file_large` stays refused, since private Direct upload is ticket 21.
+
+A value that is not `host:port` stops core at startup. Core never needs clamd
+to start: a clamd that is down only keeps Media waiting. At startup core logs
+`media scan: on (clamd at <addr>)`, or
+`media scan: off (MEDIA_CLAMAV_ADDR is not set); purposes that need a scan are refused`.
+
+Two [hard ceilings](#hard-ceilings) keep the catalogue in step with the scan:
+
+- a public purpose that needs a scan is a Direct upload purpose (see below);
+- a purpose that needs a scan allows at most 1 GiB (`media.MaxScanBytes`),
+  which is what clamd takes in one stream (the wizard's `StreamMaxLength`).
+
+### Statuses
+
+A Media of such a purpose is created `scanning`, by a single-step upload and
+by a Direct upload's completion alike, with its purpose's pending expiry. See
+[Status and expiry](#status-and-expiry).
+
+- **Clean**: the Media takes the status its Media attachments give it. It
+  becomes `attached` (with no expiry) if a Media attachment already links it,
+  and `pending` (keeping its expiry) otherwise. `scanResult` is `clean`.
+- **Infected**: the Media is `rejected` and `scanResult` is `infected`. Its
+  objects are deleted from the bucket that holds them, and the rejection is
+  recorded (below).
+- **Too large to scan**: the Media is `rejected` and `scanResult` is
+  `too_large_to_scan`. This happens when clamd refuses the stream as longer
+  than its `StreamMaxLength` (`INSTREAM size limit exceeded`), or reports a
+  `Heuristics.Limits.Exceeded.*` signature (`AlertExceedsMax`, see
+  [ClamAV](#clamav)). Either way the file could not be scanned whole.
+- **Lost**: the file to scan is gone, so it can never be scanned. The R2
+  lifecycle rule deletes a held file after two days, so this happens when
+  clamd was down that long. The Media is `rejected` and `scanResult` is
+  `lost`.
+- **Integrity**: a private object fails its integrity check while it is read
+  for the scan. The Media is `rejected`, `scanResult` is `integrity`, and the
+  worker logs it by the Media's id.
+- **Scan timeout**: the Media is still `scanning` a week after its upload
+  (`media.ScanDeadline`), attached or not, and whether clamd answers or not.
+  The Media is `rejected` and `scanResult` is `scan_timeout`.
+- **clamd unreachable**: the Media stays `scanning` and is tried again.
+- **clamd answered an error, or the file could not be read** (storage, OpenBao
+  down): the Media stays `scanning` and is tried again later.
+
+Every rejection deletes the Media's objects and is recorded (below). The
+uploader must upload the file again.
+
+A `scanning` Media can be attached, so a Skyforms draft or submission holds
+an Answer file while it is scanned. It is not opened or served until it is
+clean (see [Opening](#opening)). The database's status trigger keeps a
+`scanning` or `rejected` Media's status whatever its Media attachments do.
+A Media attachment written to a `scanning` Media clears its expiry, as for an
+attached Media. When its last Media attachment is removed, it expires 30 days
+later, as a detached Media does.
+
+The owning product and privileged admins see the status and `scanResult` in
+the Media JSON, and so does the uploader of a public Media. An Answer file's
+uploader does not read its metadata; Skyforms tells them, and they can upload
+a clean copy.
+
+### The scan worker
+
+The scan worker (`media.ScanWorker`) starts with core when `MEDIA_CLAMAV_ADDR`
+is set, on its own context. It makes a pass at once, whenever an upload
+stores a Media waiting for its scan, and every 30 seconds. A pass first
+rejects the Media past the scan deadline, then walks the due Media by id: the
+Media waiting for their scan whose retry time has come, and the rejected ones
+whose objects are still to delete.
+
+Each Media is **claimed** before any clamd or storage work. A short
+transaction picks the next due Media (`FOR UPDATE SKIP LOCKED`), records the
+claim (`scan_claim_id`) and its lease (`scan_claimed_until`), and commits.
+Rolling deploys start the new core before stopping the old one, so two
+workers overlap on every deploy; a Media another worker has claimed is left
+alone. The lease is the claim's work (the scan, the copy of a clean held
+file, the storage calls around them) plus two minutes, and the work stops
+before the lease ends. Every step that moves the Media on checks the claim
+is still its own. A worker whose lease ran out (another worker has claimed
+the Media since) moves nothing on and deletes nothing. The archive and
+expiry purges wait for a live scan claim, so a copy the scan makes can never
+land after them. Account erasure does not wait.
+
+For each claimed Media the worker streams the file's plaintext to clamd with
+`INSTREAM`, in 64 KiB chunks:
+
+- a public file is read straight from R2;
+- a private file is decrypted as it streams, through the same private storage
+  read path as a read link.
+
+Nothing is written to disk on core's side, and a file is never held whole in
+memory. Each file's scan is bounded by a timeout of two minutes plus a second
+per MiB (about 19 minutes for 1 GiB). A verdict counts only when clamd sends
+exactly one NUL-terminated answer after the end of the stream (the
+zero-length chunk). clamd answers before the end only to refuse the stream
+(a size limit, an `ERROR`). Any other answer there, an answer cut short, or
+one core does not know is a protocol failure (`clamd.ErrProtocol`): never
+clean, and tried again later. After the answer, core reads on for 200
+milliseconds: clamd closes the connection once it has answered, and any
+second answer, even in a later write, is a protocol failure too.
+
+One case cannot be told apart at the protocol level. An early `OK` that
+arrives between the last chunk and the end of the stream reads like the real
+answer, and for a stream of one chunk (64 KiB or less) there is no later
+chunk to catch it. A real clamd never answers before the end of the stream,
+so this only matters for something that is not clamd.
+
+- A Media whose scan fails waits 30 seconds before it is tried again. Each
+  failure in a row doubles the wait, up to an hour (`scan_attempts`,
+  `scan_retry_at` on the Media), and the pass walks past it to the others.
+- A clamd that cannot be reached ends the pass without counting a failure
+  against any Media (its claim is let go). The worker then waits 10 seconds
+  before the next pass, doubling the wait up to 5 minutes while clamd stays
+  down.
+- It logs what a pass changed (clean, rejected, failed) and each Media that
+  failed (by id; never a file name). It says once that clamd is down and once
+  that it answers again. A pass with nothing to do logs nothing.
+
+Every step is idempotent, and a pass cut short is simply made again. A
+rejection is recorded before any object is deleted. The Media is `rejected`,
+with the claim that its object is being deleted (`blob_purge_started_at`,
+which refuses new Media attachments and restores as a purge's claim does).
+The objects are deleted after that, and the purge is recorded
+(`blob_purged_at`). A rejection cut short (a crash, a storage failure) is
+finished by a later pass. The Media record stays, not archived, so its
+owning product reads why it was rejected.
+
+An archived Media waiting for its scan is not scanned: restored, it is
+scanned then.
+
+### Public files before their scan
+
+A public file must not reach the CDN before it is clean, and every key of the
+public bucket is served at `cdn.`. So a public purpose that needs a scan is a
+Direct upload purpose (ceiling), and a Direct upload's file is held apart
+until its scan ends:
+
+1. The completion copies the joined file to `pending/scan/<random uuid>`
+   instead of `files/<uuid>`. It is stored as an opaque download
+   (`application/octet-stream`, `Content-Disposition: attachment`, no name),
+   and nobody but core knows the key. The pending key the browser wrote to
+   (`pending/<upload id>`, which the uploader knows from the part addresses)
+   is deleted as usual. The Media is `scanning`, its `url` is empty and it
+   has no sizes.
+2. Once clean, the worker copies the file to `files/<Media id>` with the
+   [serving policy](#serving-policy)'s metadata, points the Media there,
+   gives it its status and then deletes the held copy. The served key is the
+   Media's id, so a copy retried after a crash lands on the same key, and
+   only clean bytes are ever written there. The copy's download name is read
+   before it, so the worker reads the Media again afterwards and rewrites the
+   metadata if an account erasure cleared the name meanwhile.
+3. A rejected file is deleted where it is held and never reaches `files/`.
+
+Because the served key follows from the Media's id, every purge of a held
+Media deletes both keys: the held one and `files/<Media id>`. This covers the
+archive, expiry and erasure purges and a rejection. A clean copy that landed
+before the Media was purged, or that a worker made before it crashed, is
+therefore never left behind. A missing object counts as deleted.
+
+The hold sits under `pending/`, so two things cover it. The Cloudflare rule
+that answers `403` for `/pending/*` on `cdn.` refuses it even to someone who
+guessed the key. **This rule is required before any public purpose that
+needs a scan opens (`club_file`, ticket 20).** Both the ClamAV wizard and the
+Direct upload R2 wizard check it (a request to a `/pending/` path answers
+`403`) and report its absence as a failure. The R2 lifecycle rule deletes
+anything left there after two days (see
+[R2 lifecycle and CORS](#r2-lifecycle-and-cors)): a held copy the worker
+could not delete, or a file whose scan waited that long (its Media is then
+rejected as `lost`). A private file needs no hold, since the private bucket
+is never served: an `answer_file` stays at its `private/files/…` key
+throughout.
+
+Records that link a Media (an Event's cover and gallery, a User's profile
+picture) build no address for one that is `scanning` or `rejected`
+(`media.ServedKeySQL`, and the status in `media.LinkedImageSQL`), so a held
+key never becomes an address. No reviewed purpose can link such a Media
+today: the scanned public purposes take no image.
+
+### Opening
+
+A read link (`POST /v1/media/{id}/links`) and the content it opens
+(`GET /v1/media/{id}/content`) are refused while the Media is not clean. The
+checks that the caller may open the Media come first, so to anyone else it
+still does not exist (`404`):
+
+| Status | `code` | Extra members | When |
+|---|---|---|---|
+| 409 | `media_scanning` | `retryAfterSeconds`, `Retry-After` header (30) | The Media is waiting for its malware scan. Show it as pending, not as missing, and retry later. |
+| 410 | `media_rejected` | `scanResult` | The scan rejected the Media (`infected`, `too_large_to_scan`, `lost`, `integrity` or `scan_timeout`) and its object is deleted. The uploader must upload the file again. |
+
+A public Media gets its address (`url`, `sizes`) only once clean.
+
+### Rejections
+
+Every rejection is kept in `media_scan_rejections` (migration
+`20260928140000`) as the scan's event record. It holds the Media id, the
+result (`infected`, `too_large_to_scan`, `lost`, `integrity` or
+`scan_timeout`), the name clamd gave what it found (`Eicar-Test-Signature`,
+`Heuristics.Limits.Exceeded.MaxFiles`, …; empty when clamd named nothing) and
+the time. It
+holds no file name and no person: the Media id leads to them while the Media
+keeps them, and account erasure clears both there. The row stays with the
+Media's record, which is never deleted.
+
+### ClamAV
+
+A human step, done by `ops/wizards/media-clamav-wizard.sh` in sky_lab_genel
+(on the server, sandbox first, then production). It creates a Dokploy
+application for each side, in core's project and environment:
+
+- the official image `clamav/clamav:1.5.4` (pinned; it ships a signature
+  database, and freshclam keeps it current);
+- the internal network only (`dokploy-network`), no published port and no
+  domain. Core reaches it at `<its appName>:3310`;
+- a named volume on `/var/lib/clamav` for the signature database;
+- clamd and freshclam configuration through the image's `CLAMD_CONF_*` and
+  `FRESHCLAM_*` environment:
+  - `ConcurrentDatabaseReload no`: one copy of the database in memory; scans
+    wait about a minute during a reload;
+  - `StreamMaxLength`, `MaxFileSize` and `MaxScanSize` of `1024M`, the
+    largest purpose that needs a scan;
+  - `MaxScanTime` of 10 minutes;
+  - `AlertExceedsMax yes`: a file clamd cannot scan whole is reported as
+    `Heuristics.Limits.Exceeded.<limit>` instead of passing as far as it got.
+    The limits are `MaxFileSize`, `MaxScanSize`, `MaxFiles` (10,000 files per
+    archive) and `MaxRecursion` (17 nested levels), and core rejects such a
+    file as `too_large_to_scan`. It is the only `AlertExceeds*` setting clamd
+    1.5.4 has;
+  - freshclam checks 6 times a day.
+
+  Being under `1024M` does not mean a file is scanned whole: an archive also
+  meets the limits above. Checked against a real clamd 1.5.4:
+
+  - `AlertExceedsMax` reports `MaxFiles` and `MaxFileSize` exceeded;
+  - an archive member that expands past `MaxFileSize` while the archive
+    itself stays under it is skipped without a report.
+
+  Before `club_file` or `answer_file_large` opens (tickets 20 and 21), core
+  should refuse a ZIP whose uncompressed size exceeds what clamd scans. The
+  `AlertEncrypted*` settings stay off: they would report every
+  password-protected PDF (a common kind of official document) as malware.
+- memory: a 3 GiB limit and a 1.5 GiB reservation. clamd holds about 1 GiB
+  with the full database loaded (measured, 1.5.4). freshclam's database test
+  briefly loads a second copy, and a redeploy runs the old and the new clamd
+  side by side for a few minutes. The production server has 15 GiB of RAM,
+  about 9.8 GiB available and no swap (decision S3: ClamAV if the RAM holds
+  it, and it does). The limit keeps a runaway clamd from taking core down with
+  it: the kernel kills ClamAV, and Swarm restarts it.
+
+The wizard waits for clamd to answer and for freshclam's first update. It
+then runs the self-test (below) from inside core's container and prints the
+line for core's environment, `MEDIA_CLAMAV_ADDR=<appName>:3310`; it does not
+set it. Once Yusuf has added it and core has been redeployed, the wizard runs
+the self-test again with core's own environment and checks core's startup
+line.
+
+### Self-test
+
+`core-backend media-scan-selftest [-addr host:port]` sends the EICAR test
+file to clamd at `MEDIA_CLAMAV_ADDR` (or `-addr`) and prints clamd's version
+and the name it gave the file. It exits:
+
+- 0 only when clamd reports it `FOUND`;
+- 1 when clamd answers it clean (no database that knows it), cannot be
+  reached, or answers an error;
+- 2 without a usable address.
+
+Run inside core's container, it also proves core reaches clamd over the
+internal network:
+
+```sh
+docker exec <core container> ./core-backend media-scan-selftest
+```
+
+Core's source and binary never carry the EICAR file whole; it is put together
+at run time.
 
 ## Account erasure
 
@@ -1424,7 +2068,8 @@ rule is one function, `personalOnErasureSQL` in
 `erase_profile_media` comes to each upload:
 
 - **Personal** (`answer_file`, `answer_file_large`): purged at once, whatever
-  still uses them.
+  still uses them and whatever their malware scan state (a `scanning` one
+  too; a `rejected` one's object is gone already).
 - **Profile picture** (`profile_picture`): the person's own and purged, unless
   it is someone's current profile picture: a picture belongs to the person it
   shows, not to its uploader, so one the erased person uploaded for someone
@@ -1435,7 +2080,9 @@ rule is one function, `personalOnErasureSQL` in
   safety net, someone's profile) makes it club content.
 - **Club** (every other purpose: `event_cover`, `event_gallery`, `cms_image`,
   `cms_file`, `club_file`, `video`, `certificate_asset`): the Media and its
-  file stay, without the uploader and the file name.
+  file stay, without the uploader and the file name. A club file still
+  waiting for its scan stays held, unserved, as the nameless download it
+  already is, and reaches `files/` once clean without the name.
 
 **Known consequence of E1.** Until stage 5, when the CMS attaches the Media
 its pages use (ticket 18), a legacy image a CMS page uses only by its address,
@@ -1518,6 +2165,16 @@ What happens to the records when the request completes is in
   `10m`.
 - `MEDIA_UPLOAD_DAILY_MAX_MIB` — MiB of upload body per person per rolling
   24 hours; default `2048`.
+- `MEDIA_DIRECT_UPLOAD_MAX_OPEN` — [Direct uploads](#direct-upload-budget) a
+  person may have open at once; default `3`.
+- `MEDIA_DIRECT_UPLOAD_DAILY_MAX_MIB` — MiB a person may declare in Direct
+  uploads per rolling 24 hours; default `10240` (10 GiB).
+- The rest of Direct upload is fixed in code: an upload lives 12 hours, a
+  part address an hour, every part but the last is 16 MiB, and a
+  completion's claim is leased for 20 minutes (`media.DirectUploadTTL`,
+  `media.DirectUploadPartURLTTL`, `media.DirectUploadClaimLease`). It uses core's
+  R2 (`R2_*`); without it, it answers `503` `direct_upload_unavailable`. The
+  staging sweeper's settings above end expired uploads.
 - `CDN_BASE` (or `R2_PUBLIC_URL`) — the public base of every Media address;
   default `https://cdn.yildizskylab.com`.
 - The decode budget (2 images at once, 1 SVG, a 10-second wait) is fixed in
@@ -1526,6 +2183,17 @@ What happens to the records when the request completes is in
   in Event and User responses alike: `stored` (default) or `cloudflare`. Any
   other value stops core at startup.
 
+- `MEDIA_CLAMAV_ADDR` — clamd's `host:port` on the internal network (the
+  ClamAV Dokploy application's appName and `3310`, printed by the ClamAV
+  wizard). Unset, core has no scanner and a purpose that needs a scan is
+  refused; anything but `host:port` stops core at startup. See
+  [Malware scan](#malware-scan). The rest is fixed in code: a pass every
+  30 seconds (and after every scanned upload), a failed Media retried after
+  30 seconds doubling to an hour, a pass after clamd was unreachable after
+  10 seconds doubling to 5 minutes, a file's scan bounded by two minutes
+  plus a second per MiB, a scan's claim leased for its work plus two
+  minutes, and a Media still scanning a week after its upload rejected
+  (`media.ScanDeadline`).
 - `MEDIA_SERVICE_CLIENTS` — the products' service clients for the
   [service attach API](#service-attach-api), `product:client` pairs
   separated by commas (products `forms`, `cms`), or `none`; default

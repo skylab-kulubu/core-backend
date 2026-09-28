@@ -50,9 +50,15 @@ type Media struct {
 	Purpose string `json:"purpose"`
 	// Status is pending until a Media attachment links the Media to a
 	// record, attached while one does, and detached once the last one is
-	// removed. Archive and purge are recorded apart (DeletedAt,
-	// BlobPurgedAt).
+	// removed. A Media of a purpose that needs a malware scan is scanning
+	// until its scan ends: clean, it takes the status its Media attachments
+	// give it; otherwise it is rejected, and its object is deleted. Archive
+	// and purge are recorded apart (DeletedAt, BlobPurgedAt).
 	Status Status `json:"status"`
+	// ScanResult is how the malware scan ended: clean, or, on a rejected
+	// Media, why it was rejected. Empty for a Media that needs no scan or
+	// is still waiting for it.
+	ScanResult ScanResult `json:"scanResult,omitempty"`
 	// Visibility is where the Media's object is: the public bucket, served
 	// from the CDN, or the private bucket, encrypted, read only through a
 	// read link. It is fixed when the Media is stored.
@@ -97,6 +103,36 @@ const (
 	StatusPending  Status = "pending"
 	StatusAttached Status = "attached"
 	StatusDetached Status = "detached"
+	// StatusScanning is a Media waiting for its malware scan: it may be
+	// attached, but it is not opened or served until the scan finds it
+	// clean.
+	StatusScanning Status = "scanning"
+	// StatusRejected is a Media the malware scan rejected (ScanResult says
+	// why): its object is deleted, and it is never opened or served.
+	StatusRejected Status = "rejected"
+)
+
+// ScanResult is how a Media's malware scan ended (Media.ScanResult).
+type ScanResult string
+
+const (
+	// ScanClean: the scan found nothing.
+	ScanClean ScanResult = "clean"
+	// ScanInfected: the scan found malware; the Media is rejected.
+	ScanInfected ScanResult = "infected"
+	// ScanTooLarge: the file is larger than the scanner takes, so it could
+	// not be scanned whole; the Media is rejected.
+	ScanTooLarge ScanResult = "too_large_to_scan"
+	// ScanLost: the file to scan is gone (the R2 lifecycle rule clears a
+	// held file after two days), so it can never be scanned; the Media is
+	// rejected.
+	ScanLost ScanResult = "lost"
+	// ScanTimeout: the Media was still waiting for its scan ScanDeadline
+	// after its upload; it is rejected.
+	ScanTimeout ScanResult = "scan_timeout"
+	// ScanIntegrity: the private object failed its integrity check while it
+	// was read for the scan; it is rejected.
+	ScanIntegrity ScanResult = "integrity"
 )
 
 // expired reports whether the Media's expiry is at or before now. Only a

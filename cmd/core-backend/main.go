@@ -21,6 +21,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
+	"github.com/skylab-kulubu/core-backend/internal/clamd"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
@@ -30,6 +31,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
@@ -51,6 +53,12 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == mediaLegacyReleaseHoldCommandName {
 		os.Exit(runMediaLegacyReleaseHold(os.Args[2:], os.Getenv, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == replayFromBackupCommandName {
+		os.Exit(runReplayFromBackup(os.Args[2:], os.Getenv, os.Stdout))
+	}
+	if len(os.Args) > 1 && os.Args[1] == mediaScanSelfTestCommandName {
+		os.Exit(runMediaScanSelfTest(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -141,6 +149,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Direct upload has its own budget, apart from single-step uploads
+	// (decision Q23). It needs R2's multipart upload; a core without R2
+	// answers it with 503 direct_upload_unavailable.
+	directUploadLimits, err := media.DirectUploadLimitsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	directUploads := media.DirectUploadConfig{Limiter: media.NewDirectUploadLimiter(directUploadLimits, time.Now)}
+	if r2, ok := publicBlobs.(*media.R2); ok {
+		directUploads.Storage = r2
+	} else {
+		log.Printf("media direct upload: off (no R2 configured)")
+	}
 	// The products whose service accounts may attach Media; a product
 	// without one keeps its purposes closed.
 	serviceClients, err := authz.ServiceClientsFromEnv(os.Getenv)
@@ -150,6 +171,31 @@ func main() {
 	log.Printf("media service attach: products with a service client: %v", serviceClients.Products())
 	mediaPurgeContext, stopMediaPurge := context.WithCancel(context.Background())
 	defer stopMediaPurge()
+	// Malware scan (MEDIA_CLAMAV_ADDR, docs/media-lifecycle.md). Unset, a
+	// purpose that needs a scan is refused, as before. Set, such a purpose's
+	// uploads wait scanning and the scan worker streams each to clamd; a
+	// clamd that is down never stops core (its Media wait scanning).
+	scanConfig, err := media.ScanConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var mediaScans media.ScanQueue
+	if scanConfig.Enabled() {
+		var scanStorage media.ScanStorage
+		if r2, ok := publicBlobs.(*media.R2); ok {
+			scanStorage = r2
+		}
+		scanWorker := media.NewScanWorker(media.ScanWorkerConfig{
+			Store: mediaStore, Scanner: clamd.New(scanConfig.Addr), Public: scanStorage, Private: privateStorage,
+		})
+		scanContext, stopScan := context.WithCancel(context.Background())
+		defer stopScan()
+		scanWorker.Run(scanContext, log.Printf)
+		mediaScans = scanWorker
+		log.Printf("media scan: on (clamd at %s)", scanConfig.Addr)
+	} else {
+		log.Printf("media scan: off (%s is not set); purposes that need a scan are refused", media.ClamAVAddrEnv)
+	}
 	media.MaintainBlobPurge(mediaPurgeContext, mediaStore, blobs, mediaPurgeConfig, func(err error) {
 		log.Printf("media blob purge: %v", err)
 	})
@@ -203,6 +249,11 @@ func main() {
 			log.Print(warning)
 		}
 		dir = keycloakDirectory
+	}
+	if privateMedia != nil {
+		// A reviewer who never signed in to core gets their row from
+		// Keycloak when a product asks for a read link for them.
+		privateMedia.Subjects = readlinksubject.New(dir, users)
 	}
 	parse := func(string) (authn.Identity, error) {
 		return authn.Identity{}, authn.ErrInvalidToken
@@ -457,6 +508,8 @@ func main() {
 			DecodeBudget:       decodeBudget,
 			ServiceProducts:    serviceClients.Products(),
 			Private:            privateMedia,
+			Direct:             directUploads,
+			Scans:              mediaScans,
 		}),
 		URLs:                   urlSvc,
 		Certificates:           certSvc,

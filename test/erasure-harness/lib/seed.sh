@@ -52,6 +52,38 @@ seed_core_person() {
             encode(sha256('\\x25504446'::bytea), 'hex'));" >/dev/null
 }
 
+# seed_core_media PERSON: uploads through core's own upload API with the person's own token
+# (media redesign ticket 07), from seed-media/. Personal: a profile picture, then a second one
+# that replaces it, so the first is an upload the erasure records and the second the current
+# picture (profile_media_id); at 480 px each also gets a card size stored under its key. Club
+# content: a cms_image SVG, which core serves as a download under its file name; the name
+# carries the person's name. Writes "role<TAB>media id" to .state/media-PERSON.tsv. A failed
+# upload is logged and left out: scenario 1's checks fail then.
+seed_core_media() {
+  local p=$1 token name id role files=$HARNESS_DIR/seed-media
+  : >"$STATE/media-$p.tsv"
+  token=$(user_token "$p" core)
+  name=$(full_name "$p")
+  for role in profile-old profile-current; do
+    http POST "$CORE/v1/users/me/profile-picture" -H "Authorization: Bearer $token" \
+      -F "image=@$files/$role.png;type=image/png;filename=\"$name $role.png\""
+    id=$(pg super_skylab "SELECT profile_picture_id FROM users WHERE id = '${P_ID[$p]}'")
+    if [[ $HTTP_STATUS == 200 && -n $id ]]; then
+      printf '%s\t%s\n' "$role" "$id" >>"$STATE/media-$p.tsv"
+    else
+      log "media seed: $p's $role upload answered $HTTP_STATUS: ${HTTP_BODY:0:200}"
+    fi
+  done
+  http POST "$CORE/v1/media" -H "Authorization: Bearer $token" -F purpose=cms_image \
+    -F "file=@$files/poster.svg;type=image/svg+xml;filename=\"$name afiş.svg\""
+  id=$(jq -r '.id // empty' <<<"$HTTP_BODY" 2>/dev/null || true)
+  if [[ $HTTP_STATUS == 201 && -n $id ]]; then
+    printf '%s\t%s\n' club "$id" >>"$STATE/media-$p.tsv"
+  else
+    log "media seed: $p's cms_image upload answered $HTTP_STATUS: ${HTTP_BODY:0:200}"
+  fi
+}
+
 seed_skymail_shared() {
   pg skymail "
     INSERT INTO mailing_lists (id, name, description) VALUES ('$(uuid_of list)', 'Harness listesi', 'harness') ON CONFLICT DO NOTHING;" >/dev/null
@@ -151,5 +183,7 @@ seed_all() {
     seed_cms_person "$p"
     seed_forms_person "$p"
   done
+  # Scenario 1's person uploads Media; the others upload none.
+  seed_core_media p1
   log "seeded"
 }

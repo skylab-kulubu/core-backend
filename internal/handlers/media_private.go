@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,10 @@ import (
 
 // contentStreamTimeout bounds how long one open of a read link may stream.
 const contentStreamTimeout = 10 * time.Minute
+
+// mediaScanningRetrySeconds is the Retry-After of media_scanning: a scan
+// takes seconds while clamd is up.
+const mediaScanningRetrySeconds = 30
 
 // TrustProxies names the peers whose forwarded-for header may be read when
 // an open of a read link is logged with the opener's address.
@@ -173,13 +178,40 @@ func privateProblem(c fiber.Ctx, err error, logf func(string, ...any)) (handled 
 			"Read links are for the owning product's service account with the media:attach role on the core client, and for privileged admins (core's own Media).", "media_link_forbidden")
 	case errors.Is(err, media.ErrLinkSubjectInactive):
 		return true, problemDetailCode(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
-			"A read link is only issued for an active account: onBehalfOf is unknown to core or being erased.", "media_link_subject_inactive")
+			"A read link is only issued for an active account: onBehalfOf is erased or being erased, or has no core row and is unknown to or disabled in Keycloak.", "media_link_subject_inactive")
+	case errors.Is(err, media.ErrLinkSubjectUnavailable):
+		// The error names Keycloak's status, never the person.
+		logf("private media: %s %s: %v", c.Method(), c.Path(), err)
+		c.Set(fiber.HeaderRetryAfter, "30")
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		return true, problemDetailCode(c, fiber.StatusServiceUnavailable, "Service Unavailable",
+			"Core cannot set up the account of onBehalfOf, whom it does not know yet, right now; retry later.", "media_link_subject_unavailable")
+	case errors.Is(err, media.ErrLinkSubjectLookupFailed):
+		logf("private media: %s %s: %v", c.Method(), c.Path(), err)
+		return true, problemDetailCode(c, fiber.StatusInternalServerError, "Internal Server Error",
+			"Keycloak refused core's lookup of onBehalfOf, whom core does not know yet; this needs an operator, not a retry.", "media_link_subject_lookup_failed")
 	case errors.Is(err, media.ErrLinkExpired):
 		return true, problemDetailCode(c, fiber.StatusForbidden, "Forbidden",
 			"The read link has expired; ask the product for a new one.", "media_link_expired")
 	case errors.Is(err, media.ErrLinkInvalid):
 		return true, problemDetailCode(c, fiber.StatusForbidden, "Forbidden",
 			"The read link is not valid for this Media.", "media_link_invalid")
+	case errors.Is(err, media.ErrMediaScanning):
+		c.Set(fiber.HeaderRetryAfter, strconv.Itoa(mediaScanningRetrySeconds))
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		return true, problemWithFields(c, fiber.StatusConflict, "Conflict",
+			"The file is waiting for its malware scan; it opens once the scan finds it clean. Show it as pending and retry later.",
+			"media_scanning", fiber.Map{"retryAfterSeconds": mediaScanningRetrySeconds})
+	case errors.Is(err, media.ErrMediaRejected):
+		var refusal *media.ScanRefusal
+		errors.As(err, &refusal)
+		fields := fiber.Map{}
+		if refusal != nil && refusal.Result != "" {
+			fields["scanResult"] = refusal.Result
+		}
+		return true, problemWithFields(c, fiber.StatusGone, "Gone",
+			"The malware scan rejected the file (scanResult says why) and it was deleted. The uploader must upload a clean copy.",
+			"media_rejected", fields)
 	default:
 		return false, nil
 	}

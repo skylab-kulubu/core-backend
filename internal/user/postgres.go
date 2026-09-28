@@ -44,10 +44,11 @@ func scanUser(row interface{ Scan(dest ...any) error }) (User, error) {
 // links (its object key), not from profile_picture_url: an address stored
 // there before (https://cdn…) must not outlive a change of the configured
 // base. The column is still read for a picture with no Media, and written
-// with the key.
+// with the key. A linked Media that is waiting for its malware scan, or was
+// rejected by it, has no address (its key is empty).
 func withLinkedPicture(u User) User {
-	if key := u.ProfilePicture.Key(); key != "" {
-		u.ProfilePictureURL = key
+	if u.ProfilePicture != nil {
+		u.ProfilePictureURL = u.ProfilePicture.Key()
 	}
 	return u
 }
@@ -111,9 +112,12 @@ func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) 
 				WHEN excluded.school_email <> '' THEN excluded.school_email
 				ELSE users.school_email
 			END,
+			-- A stored Sky number is never replaced: of two concurrent first
+			-- requests that both assigned one, the first stored stays, and
+			-- RETURNING gives it to the second to write back to Keycloak.
 			sky_number = CASE
-				WHEN excluded.sky_number <> '' THEN excluded.sky_number
-				ELSE users.sky_number
+				WHEN users.sky_number <> '' THEN users.sky_number
+				ELSE excluded.sky_number
 			END,
 			updated_at = now()
 		WHERE users.account_state = 'active'

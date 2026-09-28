@@ -31,8 +31,18 @@ func LinkedImageSQL(alias string) string {
 		'width', ` + alias + `.width,
 		'height', ` + alias + `.height,
 		'sizeObjects', ` + alias + `.size_objects,
+		'status', ` + alias + `.status,
 		'blobPurgeStartedAt', ` + alias + `.blob_purge_started_at,
 		'blobPurgedAt', ` + alias + `.blob_purged_at) END`
+}
+
+// ServedKeySQL is the SQL expression a record's query selects for the object
+// key of the Media it links, the media row aliased alias (a trusted
+// identifier, never input): NULL for a Media waiting for its malware scan or
+// rejected by it, whose key must never become an address (a held file's key
+// is known only to core).
+func ServedKeySQL(alias string) string {
+	return `CASE WHEN ` + alias + `.status IN ('` + string(StatusScanning) + `', '` + string(StatusRejected) + `') THEN NULL ELSE ` + alias + `.file_url END`
 }
 
 // linkedImageColumns are the fields LinkedImageSQL builds, named for the
@@ -46,14 +56,16 @@ type linkedImageColumns struct {
 	Width              int                   `json:"width"`
 	Height             int                   `json:"height"`
 	SizeObjects        map[string]SizeObject `json:"sizeObjects"`
+	Status             Status                `json:"status"`
 	BlobPurgeStartedAt *time.Time            `json:"blobPurgeStartedAt"`
 	BlobPurgedAt       *time.Time            `json:"blobPurgedAt"`
 }
 
 // Key is the linked Media's object key; empty for no Media (a nil
-// LinkedImage).
+// LinkedImage), and for a Media waiting for its malware scan or rejected by
+// it, whose key never becomes an address.
 func (l *LinkedImage) Key() string {
-	if l == nil {
+	if l == nil || l.media.openable() != nil {
 		return ""
 	}
 	return l.media.Key
@@ -68,7 +80,7 @@ func (l *LinkedImage) UnmarshalJSON(data []byte) error {
 	l.media = Media{
 		Key: columns.Key, Kind: columns.Kind, Type: columns.Type, Purpose: columns.Purpose,
 		Visibility: columns.Visibility, Width: columns.Width, Height: columns.Height, SizeObjects: columns.SizeObjects,
-		BlobPurgeStartedAt: columns.BlobPurgeStartedAt, BlobPurgedAt: columns.BlobPurgedAt,
+		Status: columns.Status, BlobPurgeStartedAt: columns.BlobPurgeStartedAt, BlobPurgedAt: columns.BlobPurgedAt,
 	}
 	return nil
 }
