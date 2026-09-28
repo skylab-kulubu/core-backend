@@ -27,7 +27,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 // mediaCols and scanMedia map the media columns to Media fields; the part
 // of that mapping a record reads with the Media it links is repeated in
 // LinkedImageSQL (linked_image.go), so a column changed here changes there.
-const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, detach_expiry_held, width, height, size_objects, visibility, encryption_algorithm, wrapped_data_key, key_version`
+const mediaCols = `id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, deleted_at, deleted_by, blob_purge_started_at, blob_purged_at, blob_purge_checked_at, created_at, updated_at, serving_policy_applied, purpose, status, expires_at, detach_expiry_held, width, height, size_objects, visibility, encryption_algorithm, wrapped_data_key, key_version, scan_result`
 
 func (s *PostgresStore) Create(ctx context.Context, m Media) (Media, error) {
 	return insertMedia(ctx, s.pool, newRecord(m))
@@ -223,7 +223,9 @@ func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
 const currentSQL = `media.deleted_at IS NULL AND media.blob_purge_started_at IS NULL AND media.blob_purged_at IS NULL`
 
 // unattachedCurrentSQL holds for a current Media no Media attachment keeps.
-const unattachedCurrentSQL = `media.status <> 'attached' AND ` + currentSQL
+// The status says so for every Media but one waiting for its malware scan,
+// which stays scanning whatever its Media attachments.
+const unattachedCurrentSQL = `media.status <> 'attached' AND NOT EXISTS (SELECT 1 FROM media_attachments a WHERE a.media_id = media.id) AND ` + currentSQL
 
 // ExpireUnattachedAt sets the expiry; a Media whose detach expiry is held
 // (the legacy backfill, decision K2) keeps none, as a legacy one does.
@@ -409,7 +411,7 @@ func (s *PostgresStore) purge(ctx context.Context, id uuid.UUID, purgedAt time.T
 		}
 		return purgeHeldBack, nil
 	}
-	if err := purgeObjects(key, purge); err != nil {
+	if err := purgeMediaObjects(id, key, purge); err != nil {
 		return purgeSkipped, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE media
@@ -529,9 +531,10 @@ func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claime
 		return purgeSkipped, err
 	}
 	var startedAt, purgedAt *time.Time
-	var archived, expired bool
-	err = tx.QueryRow(ctx, `SELECT blob_purge_started_at, blob_purged_at, deleted_at IS NOT NULL, COALESCE(`+expiredSQL+`, false)
-		FROM media WHERE id = $2 FOR UPDATE`, claimedAt, id).Scan(&startedAt, &purgedAt, &archived, &expired)
+	var archived, expired, scanning bool
+	err = tx.QueryRow(ctx, `SELECT blob_purge_started_at, blob_purged_at, deleted_at IS NOT NULL, COALESCE(`+expiredSQL+`, false),
+			COALESCE(scan_claimed_until > $1, false)
+		FROM media WHERE id = $2 FOR UPDATE`, claimedAt, id).Scan(&startedAt, &purgedAt, &archived, &expired, &scanning)
 	if errors.Is(err, pgx.ErrNoRows) || purgedAt != nil {
 		return purgeSkipped, nil
 	}
@@ -555,6 +558,10 @@ func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claime
 		if err != nil {
 			return purgeSkipped, err
 		}
+		// The archive and expiry purges wait while a scan's claim is live:
+		// a clean copy the scan makes cannot then land after the purge.
+		// Account erasure does not wait.
+		held = held || (scanning && queue != erasedQueue)
 		if held {
 			if _, err := tx.Exec(ctx, `UPDATE media SET blob_purge_checked_at = $2 WHERE id = $1`, id, claimedAt); err != nil {
 				return purgeSkipped, err
@@ -583,12 +590,15 @@ func scanMedia(row rowScanner) (Media, error) {
 	var created, updated time.Time
 	var width, height *int
 	var sizeObjects []byte
-	var algorithm, wrappedKey *string
+	var algorithm, wrappedKey, scanResult *string
 	var keyVersion *int
 	err := row.Scan(&m.ID, &m.Name, &m.Type, &m.Key, &m.Size, &m.UploadedBy, &m.Kind, &m.CoverColors, &m.CoverColorsComputed, &m.DeletedAt, &m.DeletedBy, &m.BlobPurgeStartedAt, &m.BlobPurgedAt, &m.BlobPurgeCheckedAt, &created, &updated, &m.ServingPolicyApplied, &m.Purpose, &m.Status, &m.ExpiresAt, &m.DetachExpiryHeld, &width, &height, &sizeObjects,
-		&m.Visibility, &algorithm, &wrappedKey, &keyVersion)
+		&m.Visibility, &algorithm, &wrappedKey, &keyVersion, &scanResult)
 	if err != nil {
 		return m, err
+	}
+	if scanResult != nil {
+		m.ScanResult = ScanResult(*scanResult)
 	}
 	if algorithm != nil && wrappedKey != nil && keyVersion != nil {
 		m.Encryption = &Encryption{Algorithm: *algorithm, WrappedKey: *wrappedKey, KeyVersion: *keyVersion}

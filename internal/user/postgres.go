@@ -44,10 +44,11 @@ func scanUser(row interface{ Scan(dest ...any) error }) (User, error) {
 // links (its object key), not from profile_picture_url: an address stored
 // there before (https://cdn…) must not outlive a change of the configured
 // base. The column is still read for a picture with no Media, and written
-// with the key.
+// with the key. A linked Media that is waiting for its malware scan, or was
+// rejected by it, has no address (its key is empty).
 func withLinkedPicture(u User) User {
-	if key := u.ProfilePicture.Key(); key != "" {
-		u.ProfilePictureURL = key
+	if u.ProfilePicture != nil {
+		u.ProfilePictureURL = u.ProfilePicture.Key()
 	}
 	return u
 }

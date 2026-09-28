@@ -115,7 +115,8 @@ type ReadLinkSubjects interface {
 	EnsureSubject(ctx context.Context, id uuid.UUID) error
 }
 
-// IssueReadLink gives a read link to a private Media:
+// IssueReadLink gives a read link to a private Media once its malware scan,
+// if its purpose needs one, found it clean (ScanRefusal otherwise):
 //   - to the owning product's service account, for one of the product's
 //     purposes, for the person it acts for (the reviewer): the product has
 //     decided that person may open it;
@@ -145,6 +146,9 @@ func (s *service) IssueReadLink(ctx context.Context, p authz.Principal, id uuid.
 		if err != nil {
 			return ReadLink{}, err
 		}
+		if err := m.openable(); err != nil {
+			return ReadLink{}, err
+		}
 		if s.private.Subjects != nil {
 			if err := s.private.Subjects.EnsureSubject(ctx, person); err != nil {
 				return ReadLink{}, err
@@ -160,6 +164,9 @@ func (s *service) IssueReadLink(ctx context.Context, p authz.Principal, id uuid.
 		}
 		m, err := s.linkableMedia(ctx, id, authz.ProductCore)
 		if err != nil {
+			return ReadLink{}, err
+		}
+		if err := m.openable(); err != nil {
 			return ReadLink{}, err
 		}
 		return s.issueReadLink(ctx, m, authz.ProductCore, *admin)
@@ -226,6 +233,9 @@ func (s *service) OpenContent(ctx context.Context, id uuid.UUID, token, clientIP
 	sealed, ok := m.Sealed()
 	if !ok {
 		return Content{}, ErrNotFound
+	}
+	if err := m.openable(); err != nil {
+		return Content{}, err
 	}
 	body, err := s.private.Storage.Open(ctx, sealed)
 	if err != nil {

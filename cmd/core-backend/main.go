@@ -21,6 +21,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
+	"github.com/skylab-kulubu/core-backend/internal/clamd"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
@@ -55,6 +56,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == replayFromBackupCommandName {
 		os.Exit(runReplayFromBackup(os.Args[2:], os.Getenv, os.Stdout))
+	}
+	if len(os.Args) > 1 && os.Args[1] == mediaScanSelfTestCommandName {
+		os.Exit(runMediaScanSelfTest(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -167,6 +171,31 @@ func main() {
 	log.Printf("media service attach: products with a service client: %v", serviceClients.Products())
 	mediaPurgeContext, stopMediaPurge := context.WithCancel(context.Background())
 	defer stopMediaPurge()
+	// Malware scan (MEDIA_CLAMAV_ADDR, docs/media-lifecycle.md). Unset, a
+	// purpose that needs a scan is refused, as before. Set, such a purpose's
+	// uploads wait scanning and the scan worker streams each to clamd; a
+	// clamd that is down never stops core (its Media wait scanning).
+	scanConfig, err := media.ScanConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var mediaScans media.ScanQueue
+	if scanConfig.Enabled() {
+		var scanStorage media.ScanStorage
+		if r2, ok := publicBlobs.(*media.R2); ok {
+			scanStorage = r2
+		}
+		scanWorker := media.NewScanWorker(media.ScanWorkerConfig{
+			Store: mediaStore, Scanner: clamd.New(scanConfig.Addr), Public: scanStorage, Private: privateStorage,
+		})
+		scanContext, stopScan := context.WithCancel(context.Background())
+		defer stopScan()
+		scanWorker.Run(scanContext, log.Printf)
+		mediaScans = scanWorker
+		log.Printf("media scan: on (clamd at %s)", scanConfig.Addr)
+	} else {
+		log.Printf("media scan: off (%s is not set); purposes that need a scan are refused", media.ClamAVAddrEnv)
+	}
 	media.MaintainBlobPurge(mediaPurgeContext, mediaStore, blobs, mediaPurgeConfig, func(err error) {
 		log.Printf("media blob purge: %v", err)
 	})
@@ -480,6 +509,7 @@ func main() {
 			ServiceProducts:    serviceClients.Products(),
 			Private:            privateMedia,
 			Direct:             directUploads,
+			Scans:              mediaScans,
 		}),
 		URLs:                   urlSvc,
 		Certificates:           certSvc,

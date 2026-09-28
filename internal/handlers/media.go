@@ -84,7 +84,7 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 			"Private Media is not enabled; this purpose cannot be uploaded.", "private_media_disabled", fields)
 	case errors.Is(err, media.ErrPurposeNeedsScanner):
 		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
-			"This purpose needs a malware scan before its Media can be opened, and core has no scanner yet. Nothing is stored.",
+			"This purpose needs a malware scan before its Media can be opened, and core has no scanner configured. Nothing is stored.",
 			"purpose_not_available", fields)
 	case errors.Is(err, media.ErrDirectUploadPrivate):
 		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",

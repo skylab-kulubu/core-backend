@@ -251,3 +251,39 @@ func TestCatalogue_RefusesContentAfterTheCatalogue(t *testing.T) {
 		}
 	}
 }
+
+// A public file that needs a malware scan must not be served before it is
+// clean. Core holds a Direct upload's file under pending/ until its scan
+// ends; a single-step upload would be written straight to its served key.
+func TestCatalogue_PublicPurposeThatNeedsAScanIsADirectUpload(t *testing.T) {
+	t.Parallel()
+	data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+		purposes["cms_file"]["scan"] = true
+	})
+	if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingPublicScan) {
+		t.Fatalf("public single-step purpose with a scan: err = %v, want %v", err, media.ErrCeilingPublicScan)
+	}
+}
+
+// A purpose that needs a scan stays within what clamd takes in one stream
+// (MaxScanBytes, the StreamMaxLength the ClamAV wizard sets): a larger one
+// would be rejected as too large to scan every time.
+func TestCatalogue_PurposeThatNeedsAScanFitsTheScanner(t *testing.T) {
+	t.Parallel()
+	for _, purpose := range []string{"club_file", "answer_file_large"} {
+		data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
+			purposes[purpose]["max_mib"] = media.MaxScanBytes>>20 + 1
+		})
+		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingScanSize) {
+			t.Errorf("%s above the scanner's limit: err = %v, want %v", purpose, err, media.ErrCeilingScanSize)
+		}
+	}
+	// video needs no scan: it may be larger.
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if video, _ := catalogue.Lookup("video"); video.Scan || video.MaxBytes <= media.MaxScanBytes {
+		t.Fatalf("video scan %v, max %d", video.Scan, video.MaxBytes)
+	}
+}

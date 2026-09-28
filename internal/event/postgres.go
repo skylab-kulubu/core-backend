@@ -21,7 +21,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, m.file_url, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at`
+var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at`
 
 const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id AND m.deleted_at IS NULL`
 
@@ -294,7 +294,7 @@ func (s *PostgresStore) withGalleriesAndDoorStaff(ctx context.Context, events []
 		events[i].DoorStaffIDs = make([]uuid.UUID, 0)
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT ei.event_id, m.id, m.file_url, `+media.LinkedImageSQL("m")+`
+		SELECT ei.event_id, m.id, COALESCE(`+media.ServedKeySQL("m")+`, ''), `+media.LinkedImageSQL("m")+`
 		FROM event_images ei
 		JOIN media m ON m.id = ei.media_id AND m.deleted_at IS NULL
 		WHERE ei.event_id = ANY($1)
