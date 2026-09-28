@@ -34,15 +34,19 @@ const (
 	ClamAVMaxFilesEnv = "MEDIA_CLAMAV_MAX_FILES"
 	// ClamAVMaxRecursionEnv is clamd's MaxRecursion.
 	ClamAVMaxRecursionEnv = "MEDIA_CLAMAV_MAX_RECURSION"
+	// ZIPCheckBufferEnv is core's own limit, in whole MiB, on what the ZIP
+	// check keeps in memory to read an inner archive again, and on a
+	// private file it decrypts into memory to check (ScanLimits.MaxBuffer).
+	ZIPCheckBufferEnv = "MEDIA_ZIP_CHECK_BUFFER_MIB"
 )
 
 // ScanLimits are clamd's archive limits (zipcheck.Limits).
 type ScanLimits = zipcheck.Limits
 
-// DefaultScanLimits are clamd's limits as the ClamAV wizard leaves them:
-// MaxFileSize and MaxScanSize of 1024M, which it sets, and clamd's own
-// MaxFiles (10000) and MaxRecursion (17), which it keeps.
-var DefaultScanLimits = ScanLimits{MaxFileSize: 1024 << 20, MaxScanSize: 1024 << 20, MaxFiles: 10000, MaxRecursion: 17}
+// DefaultScanLimits are clamd's limits as the ClamAV wizard sets them
+// (MaxFileSize and MaxScanSize 1024M, MaxFiles 10000, MaxRecursion 17), and
+// 64 MiB of an inner archive kept in memory.
+var DefaultScanLimits = ScanLimits{MaxFileSize: 1024 << 20, MaxScanSize: 1024 << 20, MaxFiles: 10000, MaxRecursion: 17, MaxBuffer: 64 << 20}
 
 // ScanConfig is where clamd is, and its limits.
 type ScanConfig struct {
@@ -57,9 +61,10 @@ func (c ScanConfig) Enabled() bool { return c.Addr != "" }
 
 // ScanConfigFromEnv reads MEDIA_CLAMAV_ADDR and, when it is set, clamd's
 // limits (MEDIA_CLAMAV_MAX_FILE_MIB, MEDIA_CLAMAV_MAX_SCAN_MIB,
-// MEDIA_CLAMAV_MAX_FILES, MEDIA_CLAMAV_MAX_RECURSION). An address that is not
-// host:port with a port from 1 to 65535, or a limit that is not a whole
-// number in its range, stops core at startup.
+// MEDIA_CLAMAV_MAX_FILES, MEDIA_CLAMAV_MAX_RECURSION) and the ZIP check's
+// memory (MEDIA_ZIP_CHECK_BUFFER_MIB). An address that is not host:port with
+// a port from 1 to 65535, or a limit that is not a whole number in its
+// range, stops core at startup.
 func ScanConfigFromEnv(getenv func(string) string) (ScanConfig, error) {
 	raw := strings.TrimSpace(getenv(ClamAVAddrEnv))
 	if raw == "" {
@@ -83,6 +88,7 @@ func ScanConfigFromEnv(getenv func(string) string) (ScanConfig, error) {
 		{ClamAVMaxScanEnv, 1, 4095, func(n int64) { limits.MaxScanSize = n << 20 }},
 		{ClamAVMaxFilesEnv, 1, zipcheck.MaxEntries, func(n int64) { limits.MaxFiles = int(n) }},
 		{ClamAVMaxRecursionEnv, 2, 255, func(n int64) { limits.MaxRecursion = int(n) }},
+		{ZIPCheckBufferEnv, 1, 1024, func(n int64) { limits.MaxBuffer = n << 20 }},
 	} {
 		value := strings.TrimSpace(getenv(setting.name))
 		if value == "" {
@@ -90,7 +96,7 @@ func ScanConfigFromEnv(getenv func(string) string) (ScanConfig, error) {
 		}
 		n, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || n < setting.low || n > setting.top {
-			return ScanConfig{}, fmt.Errorf("%s must be a whole number from %d to %d, as clamd.conf has it", setting.name, setting.low, setting.top)
+			return ScanConfig{}, fmt.Errorf("%s must be a whole number from %d to %d", setting.name, setting.low, setting.top)
 		}
 		setting.set(n)
 	}

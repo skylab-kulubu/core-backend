@@ -44,10 +44,14 @@ func (h *hookedScanStorage) Delete(ctx context.Context, key string) error {
 }
 
 func (d *scanDatabase) workerOn(storage media.ScanStorage, now func() time.Time) *media.ScanWorker {
-	return media.NewScanWorker(media.ScanWorkerConfig{
+	w, err := media.NewScanWorker(media.ScanWorkerConfig{
 		Store: d.store, Scanner: d.client, Public: storage,
 		Private: media.NewPrivateStorage(d.private, transit.New(d.bao.Config())), Now: now,
 	})
+	if err != nil {
+		panic(err)
+	}
+	return w
 }
 
 func passOf(t *testing.T, w *media.ScanWorker) media.ScanReport {
