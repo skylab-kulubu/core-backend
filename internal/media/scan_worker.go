@@ -113,10 +113,15 @@ type Scanner interface {
 }
 
 // ScanStorage is the public bucket as the scan uses it (R2): it streams a
-// held file, copies a clean one to its served key, rewrites that copy's
-// metadata, and deletes.
+// held file, reads a ZIP's ranges for the ZIP check, copies a clean one to
+// its served key, rewrites that copy's metadata, and deletes.
 type ScanStorage interface {
 	Open(ctx context.Context, key string) (io.ReadCloser, error)
+	// Size is the stored object's size; ErrNotFound when there is none.
+	Size(ctx context.Context, key string) (int64, error)
+	// OpenRange streams the n bytes of the object from off (a ranged GET);
+	// ErrNotFound when there is none.
+	OpenRange(ctx context.Context, key string, off, n int64) (io.ReadCloser, error)
 	Copy(ctx context.Context, from, to string, meta BlobMetadata) error
 	SetMetadata(ctx context.Context, key string, meta BlobMetadata) error
 	Delete(ctx context.Context, key string) error

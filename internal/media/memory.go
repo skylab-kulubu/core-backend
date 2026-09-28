@@ -3,6 +3,7 @@ package media
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"maps"
 	"slices"
@@ -454,6 +455,31 @@ func (s *MemoryBlob) Open(ctx context.Context, key string) (io.ReadCloser, error
 		return nil, err
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+// Size is the stored object's size; ErrNotFound when there is none.
+func (s *MemoryBlob) Size(_ context.Context, key string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, ok := s.objects[key]
+	if !ok {
+		return 0, ErrNotFound
+	}
+	return int64(len(data)), nil
+}
+
+// OpenRange streams the n bytes of the object from off; ErrNotFound when
+// there is none, and an error for a range it does not hold whole, as R2's
+// ranged GET does.
+func (s *MemoryBlob) OpenRange(ctx context.Context, key string, off, n int64) (io.ReadCloser, error) {
+	data, err := s.Read(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if off < 0 || n <= 0 || off+n > int64(len(data)) {
+		return nil, fmt.Errorf("media: bytes %d+%d are outside the %d stored: %w", off, n, len(data), ErrInvalid)
+	}
+	return io.NopCloser(bytes.NewReader(data[off : off+n])), nil
 }
 
 // Len is how many objects the bucket holds.
