@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,6 +126,68 @@ func (e *directEnv) appWith(t *testing.T, catalogue media.Catalogue) *fiber.App 
 			Catalogue:       catalogue,
 			ServiceProducts: deps.ServiceClients.Products(),
 			Direct:          media.DirectUploadConfig{Storage: e.r2, Limiter: e.limiter, Now: e.clock.Now},
+		})
+	return httpx.New(deps)
+}
+
+// hookedStorage is R2 with hooks around the copy and a switch that fails
+// deletes: a storage slower or less reliable than the fake.
+type hookedStorage struct {
+	*media.R2
+	mu         sync.Mutex
+	copies     int
+	beforeCopy func(n int, to string)
+	// copyResult, when it returns skip, answers the copy instead of R2.
+	copyResult func(n int, to string) (skip bool, err error)
+	// afterCopy runs once R2 copied.
+	afterCopy  func(n int, to string)
+	failDelete func(key string) bool
+}
+
+func (h *hookedStorage) Copy(ctx context.Context, from, to string, meta media.BlobMetadata) error {
+	h.mu.Lock()
+	h.copies++
+	n, before, result, after := h.copies, h.beforeCopy, h.copyResult, h.afterCopy
+	h.mu.Unlock()
+	if before != nil {
+		before(n, to)
+	}
+	if result != nil {
+		if skip, err := result(n, to); skip {
+			return err
+		}
+	}
+	if err := h.R2.Copy(ctx, from, to, meta); err != nil {
+		return err
+	}
+	if after != nil {
+		after(n, to)
+	}
+	return nil
+}
+
+func (h *hookedStorage) Delete(ctx context.Context, key string) error {
+	h.mu.Lock()
+	fail := h.failDelete
+	h.mu.Unlock()
+	if fail != nil && fail(key) {
+		return errors.New("storage: delete failed")
+	}
+	return h.R2.Delete(ctx, key)
+}
+
+// withStorage serves e's core with Direct upload's storage replaced.
+func (e *directEnv) withStorage(t *testing.T, storage media.MultipartStore) *fiber.App {
+	t.Helper()
+	deps := memoryDeps()
+	deps.Users = user.NewService(user.NewPostgresStore(e.pool))
+	deps.ParseToken = e.keys.Parse()
+	deps.MediaUploadLimiter = e.singleStep
+	deps.Media = media.NewServiceWithOptions(e.store, e.r2, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test",
+		media.ServiceOptions{
+			Catalogue:       directCatalogue(t),
+			ServiceProducts: deps.ServiceClients.Products(),
+			Direct:          media.DirectUploadConfig{Storage: storage, Limiter: e.limiter, Now: e.clock.Now},
 		})
 	return httpx.New(deps)
 }
@@ -837,6 +900,179 @@ func TestDirectUploadThatCannotBeStoredEndsHTTP(t *testing.T) {
 	})
 }
 
+// A copy whose outcome core does not know (it timed out, or failed) may
+// still land at its final key after core gave up. That key stays staged
+// until well after the lease, so the sweeper, or the uploader's account
+// erasure, deletes the late copy.
+func TestDirectUploadCopyThatLandsLateIsStillDeletedHTTP(t *testing.T) {
+	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
+	hook := &hookedStorage{R2: e.r2}
+	app := e.withStorage(t, hook)
+	late := func(t *testing.T, organizer string) (finalKey string, claimedAt time.Time) {
+		t.Helper()
+		id, body := e.startSent(t, organizer, "geç.pdf", pdfFile(3000))
+		claimedAt = e.clock.Now()
+		hook.copyResult = func(_ int, to string) (bool, error) {
+			finalKey = to
+			return true, context.DeadlineExceeded
+		}
+		done := sendJSON(t, app, organizer, fiber.MethodPost, "/v1/uploads/"+id+"/complete", body)
+		if done.status != fiber.StatusInternalServerError {
+			t.Fatalf("complete: status %d body %v", done.status, done.body)
+		}
+		hook.copyResult = nil
+		// R2 finishes the copy after core gave up on it.
+		if err := e.r2.Put(context.Background(), finalKey, pdfFile(3000), media.BlobMetadata{ContentType: "application/pdf"}); err != nil {
+			t.Fatal(err)
+		}
+		return finalKey, claimedAt
+	}
+	due := func(claimedAt time.Time) time.Time {
+		return claimedAt.Add(media.DirectUploadClaimLease + media.DirectUploadLateCopyMargin)
+	}
+
+	t.Run("the sweeper", func(t *testing.T) {
+		finalKey, claimedAt := late(t, organizerToken(t, e.keys))
+		if _, err := media.PurgeStagedUploads(context.Background(), e.store, e.r2, e.clock.Now().Add(media.DirectUploadClaimLease), 10); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := e.s3.Object("media", finalKey); !ok {
+			t.Fatal("the sweeper deleted the copy before a late copy could have landed")
+		}
+		if _, err := media.PurgeStagedUploads(context.Background(), e.store, e.r2, due(claimedAt), 10); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := e.s3.Object("media", finalKey); ok {
+			t.Fatal("the late copy survived the sweeper")
+		}
+	})
+
+	t.Run("account erasure", func(t *testing.T) {
+		uploader, organizer := newOrganizer(t, e.keys)
+		finalKey, claimedAt := late(t, organizer)
+		if _, err := user.NewPostgresStore(e.pool).RequestDeletion(context.Background(), uploader, nil); err != nil {
+			t.Fatal(err)
+		}
+		eraser := media.NewImmediateBlobEraser(e.store, media.Buckets{Public: e.r2})
+		var deferred interface{ RetryAt() time.Time }
+		if err := eraser.EnsureSubjectUploadsErased(context.Background(), uploader, e.clock.Now()); !errors.As(err, &deferred) {
+			t.Fatalf("erasure while a late copy may land: %v", err)
+		}
+		if err := eraser.EnsureSubjectUploadsErased(context.Background(), uploader, due(claimedAt)); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := e.s3.Object("media", finalKey); ok {
+			t.Fatal("the late copy survived the erasure")
+		}
+	})
+}
+
+// A completion whose lease ran out before it finished answers a retryable
+// upload_claim_lost and gives the volume back. Its copy is its own to
+// delete; when that delete fails, the copy stays staged, and the sweeper or
+// the uploader's account erasure deletes it.
+func TestDirectUploadLostClaimsCopyIsStillDeletedHTTP(t *testing.T) {
+	e := newDirectEnv(t, media.DirectUploadLimits{MaxOpen: 3, DailyBytes: 10_000})
+	hook := &hookedStorage{R2: e.r2}
+	app := e.withStorage(t, hook)
+	lost := func(t *testing.T, organizer string) string {
+		t.Helper()
+		id, body := e.startSent(t, organizer, "yavaş.pdf", pdfFile(6000))
+		var finalKey string
+		hook.afterCopy = func(_ int, to string) {
+			finalKey = to
+			// The copy outlives the lease, and the sweeper ends the upload.
+			e.clock.Advance(media.DirectUploadClaimLease + time.Minute)
+			if _, err := media.PurgeStagedUploads(context.Background(), e.store, e.r2, e.clock.Now(), 10); err != nil {
+				t.Error(err)
+			}
+		}
+		hook.failDelete = func(key string) bool { return strings.HasPrefix(key, "files/") }
+		done := sendJSON(t, app, organizer, fiber.MethodPost, "/v1/uploads/"+id+"/complete", body)
+		hook.afterCopy, hook.failDelete = nil, nil
+		requireCode(t, done, fiber.StatusServiceUnavailable, "upload_claim_lost")
+		if _, ok := e.s3.Object("media", finalKey); !ok {
+			t.Fatal("the copy is not there: the test did not fail its delete")
+		}
+		// Core's failure: the 6000 bytes are given back.
+		if again := sendJSON(t, app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 6000)); again.status != fiber.StatusCreated {
+			t.Fatalf("after the lost claim: status %d body %v", again.status, again.body)
+		}
+		return finalKey
+	}
+
+	t.Run("the sweeper", func(t *testing.T) {
+		finalKey := lost(t, organizerToken(t, e.keys))
+		if _, err := media.PurgeStagedUploads(context.Background(), e.store, e.r2, e.clock.Now(), 10); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := e.s3.Object("media", finalKey); ok {
+			t.Fatal("the lost claim's copy survived the sweeper")
+		}
+	})
+
+	t.Run("account erasure", func(t *testing.T) {
+		uploader, organizer := newOrganizer(t, e.keys)
+		finalKey := lost(t, organizer)
+		if _, err := user.NewPostgresStore(e.pool).RequestDeletion(context.Background(), uploader, nil); err != nil {
+			t.Fatal(err)
+		}
+		// The new upload the test started is still open: erasure waits for
+		// it, and takes the copy on its way.
+		if err := media.NewImmediateBlobEraser(e.store, media.Buckets{Public: e.r2}).EnsureSubjectUploadsErased(
+			context.Background(), uploader, e.clock.Now().Add(media.DirectUploadTTL)); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := e.s3.Object("media", finalKey); ok {
+			t.Fatal("the lost claim's copy survived the erasure")
+		}
+	})
+}
+
+// A completion that fails after its lease ran out, while another completion
+// has claimed the upload again and is copying it, deletes nothing of the
+// upload: it is no longer its own. The other completion creates the Media.
+func TestDirectUploadStaleCompletionLeavesTheNewClaimAloneHTTP(t *testing.T) {
+	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
+	hook := &hookedStorage{R2: e.r2}
+	app := e.withStorage(t, hook)
+	e.app = app
+	organizer := organizerToken(t, e.keys)
+	id, body := e.startSent(t, organizer, "yeniden.pdf", pdfFile(3000))
+	secondCopying := make(chan struct{})
+	firstDone := make(chan struct{})
+	var second <-chan jsonResponse
+	hook.beforeCopy = func(n int, _ string) {
+		if n == 2 {
+			close(secondCopying)
+			<-firstDone
+		}
+	}
+	hook.copyResult = func(n int, _ string) (bool, error) {
+		if n != 1 {
+			return false, nil
+		}
+		// The first completion's lease runs out mid-copy; a retry claims
+		// the upload again and starts its own copy; then the first copy
+		// fails.
+		e.clock.Advance(media.DirectUploadClaimLease + time.Second)
+		second = e.completeAsync(t, organizer, id, body)
+		<-secondCopying
+		return true, errors.New("storage: the copy failed")
+	}
+	first := <-e.completeAsync(t, organizer, id, body)
+	close(firstDone)
+	requireCode(t, first, fiber.StatusServiceUnavailable, "upload_claim_lost")
+	done := <-second
+	if done.status != fiber.StatusCreated || done.body["id"] != id {
+		t.Fatalf("the second completion: status %d body %v", done.status, done.body)
+	}
+	key := strings.TrimPrefix(done.body["url"].(string), "https://cdn.example.test/")
+	if _, ok := e.s3.Object("media", key); !ok {
+		t.Fatal("the Media's object is missing")
+	}
+}
+
 // An upload never completed is ended by the staging sweeper once it
 // expires: its multipart upload is aborted and its record goes.
 func TestDirectUploadThatExpiresIsAbortedByTheStagingSweeperHTTP(t *testing.T) {
@@ -941,17 +1177,22 @@ func TestDirectUploadPurposeRulesHTTP(t *testing.T) {
 	}
 }
 
-// Every upload, single-step, without a purpose or as a profile picture,
-// refuses a file name with a control or an invisible format character: a
-// right-to-left override shows "a‮gnp.exe" as "aexe.png".
-func TestUploadsRefuseFileNamesThatReadAsAnotherHTTP(t *testing.T) {
+// Every upload (single-step with a purpose, without one, as a profile
+// picture, and by Direct upload) keeps the file name the browser sent,
+// emoji, other scripts and decomposed letters included, and refuses only a
+// name with a control character or a bidirectional formatting control, with
+// media_name_invalid: a right-to-left override shows "a\u202Egnp.exe" as
+// "aexe.png". A byte order mark is dropped.
+func TestUploadFileNamesHTTP(t *testing.T) {
 	t.Parallel()
 	keys := testauth.New(t)
 	deps := memoryDeps()
 	deps.ParseToken = keys.Parse()
+	deps.Media = media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
+		media.ServiceOptions{Catalogue: directCatalogue(t), ServiceProducts: deps.ServiceClients.Products()})
 	app := httpx.New(deps)
 	organizer := organizerToken(t, keys)
-	post := func(path, purpose, name string) int {
+	post := func(path, purpose, name string) jsonResponse {
 		t.Helper()
 		var body bytes.Buffer
 		form := multipart.NewWriter(&body)
@@ -977,19 +1218,72 @@ func TestUploadsRefuseFileNamesThatReadAsAnotherHTTP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
-		return resp.StatusCode
+		defer resp.Body.Close()
+		got := map[string]any{}
+		_ = json.NewDecoder(resp.Body).Decode(&got)
+		return jsonResponse{status: resp.StatusCode, body: got}
 	}
-	for _, name := range []string{"a‮gnp.exe", "kapak⁦.png", "a​.png"} {
-		for _, upload := range []struct{ path, purpose string }{
-			{"/v1/media", "event_cover"}, {"/v1/media", ""}, {"/v1/users/me/profile-picture", ""},
-		} {
-			if status := post(upload.path, upload.purpose, name); status != fiber.StatusBadRequest {
-				t.Errorf("%s (%q) named %q: status %d", upload.path, upload.purpose, name, status)
+	singleSteps := []struct{ path, purpose string }{
+		{"/v1/media", "event_cover"}, {"/v1/media", ""}, {"/v1/users/me/profile-picture", ""},
+	}
+	startNamed := func(name string) jsonResponse {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{"purpose": "club_file", "name": name, "size": 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sendJSON(t, app, organizer, fiber.MethodPost, "/v1/uploads", string(raw))
+	}
+
+	for label, name := range map[string]string{
+		"Turkish":                "Kişisel Öğrenci Çalışması İĞÜŞÖÇı.png",
+		"decomposed (NFD)":       "Gu\u0308ls\u0327en o\u0308dev.png",
+		"emoji":                  "😀 ❤️ 👍🏽.png",
+		"ZWJ emoji":              "👩\u200d💻 dev.png",
+		"ZWJ family":             "👨\u200d👩\u200d👧.png",
+		"rainbow flag":           "🏳️\u200d🌈.png",
+		"England flag (tags)":    "🏴\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F.png",
+		"Persian ZWNJ":           "می\u200cخواهم.png",
+		"soft hyphen":            "Ab\u00adschluss.png",
+		"macOS screenshot NNBSP": "Screenshot 2026-09-28 at 11.48.00\u202fAM.png",
+		"word joiner":            "a\u2060b.png",
+	} {
+		for _, upload := range singleSteps {
+			got := post(upload.path, upload.purpose, name)
+			if got.status != fiber.StatusCreated && got.status != fiber.StatusOK {
+				t.Errorf("%s: %s (%q): status %d body %v", label, upload.path, upload.purpose, got.status, got.body)
 			}
 		}
+		if got := post("/v1/media", "event_cover", name); got.body["name"] != name {
+			t.Errorf("%s: kept as %q", label, got.body["name"])
+		}
+		// Direct upload has no R2 here: a name it accepts gets as far as that.
+		requireCode(t, startNamed(name), fiber.StatusServiceUnavailable, "direct_upload_unavailable")
 	}
-	if status := post("/v1/media", "event_cover", "kapak görseli.png"); status != fiber.StatusCreated {
-		t.Fatalf("a plain name: status %d", status)
+
+	// A byte order mark is not part of the name.
+	if got := post("/v1/media", "event_cover", "\ufeffrapor.png"); got.status != fiber.StatusCreated || got.body["name"] != "rapor.png" {
+		t.Errorf("BOM: status %d name %q", got.status, got.body["name"])
+	}
+
+	refused := []string{
+		"a\u202egnp.exe",  // right-to-left override
+		"a\u202ab.png",    // left-to-right embedding
+		"kapak\u2069.png", // pop directional isolate
+		"kapak\u2068.png", // first strong isolate
+		"a\u200eb.png",    // left-to-right mark
+		"a\u200fb.png",    // right-to-left mark
+		"a\u061cb.png",    // Arabic letter mark
+		"a\tb.png",        // tab
+		"a\u0085b.png",    // C1 next line
+	}
+	for _, name := range refused {
+		for _, upload := range singleSteps {
+			requireCode(t, post(upload.path, upload.purpose, name), fiber.StatusBadRequest, "media_name_invalid")
+		}
+	}
+	// A multipart header cannot carry a line break or NUL; JSON can.
+	for _, name := range append(refused, "a\nb.png", "a\rb.png", "a\x00b.png", "", "   ") {
+		requireCode(t, startNamed(name), fiber.StatusBadRequest, "media_name_invalid")
 	}
 }

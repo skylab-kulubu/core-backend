@@ -105,11 +105,11 @@ func TestDirectUploadEndsOnceAndOpenOnesAreCounted(t *testing.T) {
 	if err := store.StageDirectUpload(ctx, rec, 2, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.EndDirectUpload(ctx, rec.ID, uuid.Nil, "", false, now); err != nil {
-		t.Fatal(err)
+	if owned, err := store.EndDirectUpload(ctx, rec.ID, uuid.Nil, "", now, now); err != nil || !owned {
+		t.Fatalf("end: owned %v err %v", owned, err)
 	}
-	if err := store.EndDirectUpload(ctx, rec.ID, uuid.Nil, "", false, now); err != nil {
-		t.Fatalf("ending it again: %v", err)
+	if owned, err := store.EndDirectUpload(ctx, rec.ID, uuid.Nil, "", now, now); err != nil || owned {
+		t.Fatalf("ending it again: owned %v err %v", owned, err)
 	}
 	if _, err := store.ClaimDirectUpload(ctx, rec.ID, uploader, "files/"+uuid.NewString(), now, now.Add(media.DirectUploadClaimLease)); !errors.Is(err, media.ErrNotFound) {
 		t.Fatalf("completing an ended upload: %v", err)
@@ -139,8 +139,9 @@ func TestDirectUploadEndsOnceAndOpenOnesAreCounted(t *testing.T) {
 
 // A completion claims its upload in a short transaction and holds no lock
 // while storage works. A live claim turns other completions away; one whose
-// lease ran out is stale: the sweeper deletes what it left (the pending
-// object, the copy) and the upload with it.
+// lease ran out is stale: the sweeper deletes what it left, the pending
+// object and the upload at the lease's end, the copy once a late copy can
+// no longer land.
 func TestDirectUploadClaimsLeaseTheirUpload(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
@@ -213,16 +214,21 @@ func TestDirectUploadClaimsLeaseTheirUpload(t *testing.T) {
 		t.Fatalf("finishing after the lease: %v", err)
 	}
 	report, err = media.PurgeStagedUploads(ctx, store, r2, claim.Until, 10)
-	if err != nil || report.Resolved != 2 {
+	if err != nil || report.Resolved != 1 {
 		t.Fatalf("the sweeper after the lease: %+v %v", report, err)
 	}
 	if _, err := store.GetDirectUpload(ctx, stale.ID); !errors.Is(err, media.ErrNotFound) {
 		t.Fatalf("the stale upload is still there: %v", err)
 	}
-	for _, key := range []string{stale.Key, claim.FinalKey} {
-		if _, ok := fake.Object("media", key); ok {
-			t.Fatalf("%s left in storage", key)
-		}
+	if _, ok := fake.Object("media", stale.Key); ok {
+		t.Fatal("the stale pending object is left")
+	}
+	report, err = media.PurgeStagedUploads(ctx, store, r2, claim.Until.Add(media.DirectUploadLateCopyMargin), 10)
+	if err != nil || report.Resolved != 1 {
+		t.Fatalf("the sweeper once no late copy can land: %+v %v", report, err)
+	}
+	if _, ok := fake.Object("media", claim.FinalKey); ok {
+		t.Fatal("the stale copy is left")
 	}
 	// The released upload is still open.
 	if _, err := store.GetDirectUpload(ctx, rec.ID); err != nil {

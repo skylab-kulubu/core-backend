@@ -31,7 +31,8 @@ const mediaBusyRetrySeconds = 5
 // purposeProblem answers an upload its Media purpose refused: problem+json
 // with a stable code and what the caller needs to fix the upload. It also
 // answers an upload that waited too long for a decoding slot (503
-// media_busy). handled is false for any other error.
+// media_busy) and a file name core does not keep (400 media_name_invalid).
+// handled is false for any other error.
 func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 	if errors.Is(err, media.ErrDecodeBusy) {
 		// Nothing is stored; the same upload succeeds once other images
@@ -40,6 +41,12 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 		return true, problemWithFields(c, fiber.StatusServiceUnavailable, "Service Unavailable",
 			"Core is busy decoding other images; retry the upload.", "media_busy",
 			fiber.Map{"retryAfterSeconds": mediaBusyRetrySeconds})
+	}
+	if errors.Is(err, media.ErrNameInvalid) {
+		// Whichever way the file was uploaded, with a purpose or without.
+		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
+			"The file name carries a control character or a bidirectional formatting control (such as a right-to-left override). Rename the file and upload it again.",
+			"media_name_invalid", nil)
 	}
 	var refusal *media.PurposeRefusal
 	if !errors.As(err, &refusal) {

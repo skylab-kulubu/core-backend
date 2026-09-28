@@ -10,6 +10,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
+var _ DirectUploadStore = (*PostgresStore)(nil)
+
 const directUploadCols = `d.id, s.subject_id, d.purpose, d.file_name, d.declared_size, d.max_bytes, d.allowed_types,
 	d.part_size, d.object_key, d.multipart_upload_id, d.expires_at, d.claim_until`
 
@@ -123,9 +125,10 @@ func lockPendingRow(ctx context.Context, tx pgx.Tx, id uuid.UUID) (pendingKey st
 
 // ClaimDirectUpload claims the uploader's open upload for a completion, in
 // one short transaction: its record is marked with the claim and its lease,
-// finalKey is staged for the copy until the lease ends, and so is the
-// pending object (the sweeper and account erasure leave both alone until
-// then). Nothing is locked once it returns.
+// the pending object is staged until the lease ends and finalKey, for the
+// copy, until a late copy can no longer land (DirectUploadLateCopyMargin
+// after it): the sweeper and account erasure leave both alone until then.
+// Nothing is locked once it returns.
 func (s *PostgresStore) ClaimDirectUpload(ctx context.Context, id, uploader uuid.UUID, finalKey string, now, until time.Time) (DirectUploadClaim, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -158,7 +161,7 @@ func (s *PostgresStore) ClaimDirectUpload(ctx context.Context, id, uploader uuid
 	claim := DirectUploadClaim{Upload: rec, ID: uuid.New(), Until: until, FinalKey: finalKey}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO media_upload_staging (object_key, subject_id, cleanup_after) VALUES ($1, $2, $3)
-	`, finalKey, uploader, until)
+	`, finalKey, uploader, until.Add(DirectUploadLateCopyMargin))
 	if subjectlock.IsInactiveAccountReference(err) {
 		return DirectUploadClaim{}, ErrForbidden
 	}
@@ -262,28 +265,21 @@ func (s *PostgresStore) FinishDirectUpload(ctx context.Context, claim DirectUplo
 	return s.commitPublication(ctx, tx, created)
 }
 
-// EndDirectUpload ends an upload without a Media, once storage was asked to
-// delete its objects, in one short transaction. The record goes while it is
-// unclaimed (claimID Nil) or still under claimID, and with it the staging
-// row of its pending object; the staging row of finalKey (the claim's copy;
-// "" for none) goes in any case. removed false (a delete failed) leaves
-// those staging rows ready for the sweeper instead.
-func (s *PostgresStore) EndDirectUpload(ctx context.Context, id, claimID uuid.UUID, finalKey string, removed bool, now time.Time) error {
+// EndDirectUpload ends an upload without a Media in one short transaction,
+// before storage deletes anything (the DirectUploadStore contract).
+func (s *PostgresStore) EndDirectUpload(ctx context.Context, id, claimID uuid.UUID, finalKey string, finalDue, now time.Time) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback(ctx)
-	var keys []string
-	if finalKey != "" {
-		keys = append(keys, finalKey)
-	}
+	owned := false
 	pendingKey, held, err := lockPendingRow(ctx, tx, id)
 	switch {
 	case errors.Is(err, ErrNotFound), err == nil && !held:
 		// Ended already, or the sweeper has it.
 	case err != nil:
-		return err
+		return false, err
 	default:
 		var claim *uuid.UUID
 		if claimID != uuid.Nil {
@@ -291,19 +287,18 @@ func (s *PostgresStore) EndDirectUpload(ctx context.Context, id, claimID uuid.UU
 		}
 		tag, err := tx.Exec(ctx, `DELETE FROM media_direct_uploads WHERE id=$1 AND claim_id IS NOT DISTINCT FROM $2`, id, claim)
 		if err != nil {
-			return err
+			return false, err
 		}
-		if tag.RowsAffected() > 0 {
-			keys = append(keys, pendingKey)
+		if owned = tag.RowsAffected() > 0; owned {
+			if _, err := tx.Exec(ctx, `UPDATE media_upload_staging SET cleanup_after=LEAST(cleanup_after, $2) WHERE object_key=$1`, pendingKey, now); err != nil {
+				return false, err
+			}
 		}
 	}
-	if removed {
-		_, err = tx.Exec(ctx, `DELETE FROM media_upload_staging WHERE object_key = ANY($1)`, keys)
-	} else {
-		_, err = tx.Exec(ctx, `UPDATE media_upload_staging SET cleanup_after=LEAST(cleanup_after, $2) WHERE object_key = ANY($1)`, keys, now)
+	if finalKey != "" {
+		if _, err := tx.Exec(ctx, `UPDATE media_upload_staging SET cleanup_after=$2 WHERE object_key=$1`, finalKey, finalDue); err != nil {
+			return false, err
+		}
 	}
-	if err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return owned, tx.Commit(ctx)
 }

@@ -242,12 +242,18 @@ Core refuses to start with a catalogue that breaks one:
 
 ### Uploading
 
-`POST /v1/media` takes an optional multipart field `purpose`. The file's name,
-whichever way it is uploaded (with a purpose, without one, as a profile
-picture, or by [Direct upload](#direct-upload)), must read as itself: valid
-UTF-8 without control characters and without invisible format characters
-(Unicode `Cf`, such as the right-to-left override that shows `a\u202Egnp.exe`
-as `aexe.png`); otherwise a plain `400`. With a purpose,
+`POST /v1/media` takes an optional multipart field `purpose`.
+
+The file's name is kept as the browser sent it, whichever way the file is
+uploaded (with a purpose, without one, as a profile picture, or by
+[Direct upload](#direct-upload)): emoji (ZWJ sequences and tag flags
+included), every script's joiners (the Persian ZWNJ), soft hyphens and
+decomposed letters stay; a byte order mark is dropped. Refused with `400`
+`media_name_invalid` is only what makes a name read as another or break
+where it is shown: invalid UTF-8, a C0 or C1 control character (a line
+break, a tab, NUL), and the bidirectional formatting controls (U+202A–U+202E,
+U+2066–U+2069, U+200E, U+200F, U+061C), such as the right-to-left override
+that shows `a\u202Egnp.exe` as `aexe.png`. With a purpose,
 core checks, in order: the purpose exists, the caller may upload it, private
 Media is on if the purpose is private, it is single-step, something can attach
 it, a malware scanner exists if the purpose needs a scan, the size, and the type detected from the content (a raster format, PDF by
@@ -270,6 +276,7 @@ over their upload budget gets `429` `media_rate_limited`, described under
 | Status | `code` | Extra members | When |
 |---|---|---|---|
 | 400 | `purpose_unknown` | `purpose` | The purpose is not in the catalogue. |
+| 400 | `media_name_invalid` | | The file name carries a control character or a bidirectional formatting control (above). Also for uploads without a purpose. |
 | 403 | `purpose_forbidden` | `purpose` | The caller's upload rule does not allow it. |
 | 422 | `private_media_disabled` | `purpose` | A private purpose while `MEDIA_PRIVATE_ENABLED` is off. Nothing is stored, and never publicly instead; retrying does not help. |
 | 503 | `private_media_unavailable` | | A private purpose while OpenBao cannot be reached. Nothing is stored; retry later (`Retry-After`). Public purposes are not affected. |
@@ -368,12 +375,10 @@ All three need a signed-in person. `POST /v1/uploads` starts one:
 {"purpose": "club_file", "name": "veri seti.zip", "size": 734003200, "limits": {"types": ["application/zip"], "maxBytes": 800000000}}
 ```
 
-- `name`: the file's name, 1 to 255 bytes of text without control
-  characters and without invisible format characters (Unicode `Cf`: the
-  bidirectional overrides and isolates U+202A–U+202E and U+2066–U+2069,
-  zero-width characters), so `a\u202Epiz.exe` cannot pass for `aexe.zip`.
-  It is kept with the Media and names the download; it is never part of a
-  key.
+- `name`: the file's name, 1 to 255 bytes, under the rule every upload's
+  name follows (see [Uploading](#uploading)): `a\u202Epiz.exe` cannot pass
+  for `aexe.zip` (`400` `media_name_invalid`). It is kept with the Media and
+  names the download; it is never part of a key.
 - `size`: the file's exact size in bytes.
 - `limits` (optional): what the owning product allows for this one upload
   (Skyforms: "only PDF, 5 MB"). It may only narrow the purpose: `types` the
@@ -443,8 +448,9 @@ attachment`) whatever the browser sends.
 A completion holds no database lock and no connection while storage works.
 It **claims** the upload in one short transaction: the upload's record gets
 the claim and a lease (`claim_until`, 20 minutes,
-`media.DirectUploadClaimLease`), the key the file will be copied to is
-staged until the lease ends, and so is the pending object. Then, with no
+`media.DirectUploadClaimLease`), the pending object is staged until the
+lease ends, and the key the file will be copied to until an hour after it
+(`media.DirectUploadLateCopyMargin`, below). Then, with no
 transaction open, it does the storage work, each call under its own timeout
 (30 seconds for a listing, a `HEAD`, the ranged `GET` or a delete, 3 minutes
 for R2 to join the parts, 12 minutes for the copy of up to 2 GiB, under R2's
@@ -458,7 +464,15 @@ A second completion of an upload under a live claim, such as a retry that
 races the first, does not wait: it answers `409` `upload_completing` with
 `Retry-After` (5 seconds), and so does `POST /v1/uploads/{id}/parts`. Once
 the first is done, a completion answers the Media it created: the file is
-checked and copied once. In order:
+checked and copied once.
+
+If core stops in the middle of a completion (a crash, a deploy), nothing
+lets go of its claim: the upload answers `409` `upload_completing` for up
+to the 20 minutes of the lease. After that, a completion claims it again
+and carries on (R2 still holds the parts, or the joined file). But the
+sweeper ends an upload whose claim went stale at its next pass (within 15
+minutes of the lease's end), possibly before the client's retry: the client
+then gets `404` and must start the upload again. In order:
 
 1. The caller's upload, not expired.
 2. The purpose's rules as they are now: a deploy may have changed the
@@ -487,9 +501,15 @@ A Media of a purpose that needs a scan would start `scanning`; none can be
 started until the scanner exists, and ticket 12 adds that status.
 
 Once the parts are joined (step 4), every way out but a created Media ends
-the upload: storage deletes the copy and the pending object first, then a
-short transaction removes the upload and its staging rows (or leaves them
-ready for the sweeper when a delete failed). That is a refused file (step 2,
+the upload. A short transaction first checks the claim is still this
+completion's and ends the upload; only then does storage delete the copy
+and the pending object, and their staging rows go once deleted. So a
+completion whose lease ran out never deletes an upload another completion
+has claimed since: it finds the claim lost, deletes only its own copy, and
+answers `503` `upload_claim_lost`. A copy whose outcome core does not know
+(it failed or timed out: R2 may still finish it after core gave up) keeps
+its staging row until an hour after the lease, and so does a copy whose
+delete failed: the sweeper and account erasure delete whatever lands there. That is a refused file (step 2,
 5 or 6) and core's own failure after the join (a `HEAD`, the ranged `GET`,
 the copy, or storing the Media failing). The exceptions: a Media whose
 storing may have succeeded although the database answered an error (its
@@ -513,12 +533,14 @@ with the types that apply), the budget's `429` (below), and these:
 | 422 | `purpose_not_available` | `purpose` | Also a private purpose, until ticket 21. |
 | 400 | `upload_parts_mismatch` | | The completion's parts are not the parts R2 holds. The upload stays open: `POST /v1/uploads/{id}/parts` lists them. |
 | 409 | `upload_completing` | `retryAfterSeconds`, `Retry-After` header | Another request is completing the upload (a completion, or `POST /v1/uploads/{id}/parts`). Retry: once it is done, a completion answers its Media. |
+| 503 | `upload_claim_lost` | `retryAfterSeconds`, `Retry-After` header | This completion outlived its lease (core's failure: the volume is given back). Retry: the upload may still be completed, or answer the Media another completion created; `404` means it is gone and must be started again. |
 | 403 | | | The uploader's account is being erased (a refusal: the charge stays, and the erasure takes the upload). |
 | 422 | `upload_size_mismatch` | `declaredSize`, `size` | The stored file is not the declared size. The upload is ended. |
 | 429 | `media_rate_limited` | `limit`, `maxOpenUploads`, `maxDailyBytes`, `retryAfterSeconds`, `Retry-After` header | The [Direct upload budget](#direct-upload-budget): `limit` is `open` (too many uploads open; `Retry-After` is when the first expires) or `volume`. |
 | 404 | | | Someone else's upload, an expired or ended one, or none. |
 | 503 | `direct_upload_unavailable` | | This core has no R2 (a local run without `R2_*`). |
-| 400 | | | A body that is not JSON, an empty or unusable name, a size of 0 or less. |
+| 400 | `media_name_invalid` | | A blank name, one over 255 bytes, or one the name rule refuses. |
+| 400 | | | A body that is not JSON, a size of 0 or less. |
 
 ### Direct upload budget
 
@@ -542,9 +564,10 @@ does, when the file is refused at completion (`upload_size_mismatch`,
 `media_type_not_allowed`, `media_too_large`, a purpose rule) and when the
 upload is never completed: its bytes may have been sent, and free refusals
 would let anyone send 2 GiB after 2 GiB without end. Only core's own failure
-is given back: a start that fails on core's side, and a completion core
-fails after joining the parts (the upload is then ended, and the file must
-be sent again). `upload_parts_mismatch` changes nothing: the upload is still
+is given back: a start that fails on core's side, a completion core fails
+after joining the parts (the upload is then ended, and the file must be
+sent again), and a completion that outlived its lease
+(`upload_claim_lost`). `upload_parts_mismatch` changes nothing: the upload is still
 open.
 
 ### Storage and cleanup
@@ -568,9 +591,10 @@ behind:
   that expired, and finishes a refusal or completion whose own cleanup
   failed; it is batched, idempotent, and walks past a failing row, which it
   retries an hour later. An upload under a live claim is not due before
-  the lease ends (the claim stages its pending object and copy until then).
-  A claim whose lease ran out is stale, left by a completion that died: the
-  sweeper then deletes the pending object, the copy and the upload;
+  the lease ends. A claim whose lease ran out is stale, left by a
+  completion that died: the sweeper then deletes the pending object and the
+  upload, and an hour later the copy's key, with anything a late copy put
+  there;
 - a completion deletes its pending object once the Media is stored, and
   every way out after the parts are joined deletes it too (above);
 - account erasure's `erase_staged_uploads` treats an open Direct upload as a

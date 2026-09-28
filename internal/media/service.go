@@ -258,11 +258,13 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if err := s.purposeRefusal(p, purpose, TransportSingleStep); err != nil {
 		return Media{}, err
 	}
-	if !fileNameReadsAsItself(file.Name) {
-		// Kept with the Media and shown as its name: it must read as what
-		// it is, whichever way the file was uploaded.
-		return Media{}, ErrInvalid
+	// Kept with the Media and shown as its name: it must read as what it
+	// is, whichever way the file was uploaded.
+	name, err := cleanFileName(file.Name)
+	if err != nil {
+		return Media{}, err
 	}
+	file.Name = name
 	private := purpose.Visibility == VisibilityPrivate
 	if len(file.Data) == 0 {
 		return Media{}, ErrInvalid

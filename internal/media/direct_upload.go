@@ -49,6 +49,11 @@ const (
 	// and together they fit.
 	DirectUploadClaimLease = 20 * time.Minute
 	directClaimMargin      = 2 * time.Minute
+	// DirectUploadLateCopyMargin is how long after a lease ends a copy core
+	// gave up on (it timed out or failed, so its outcome is unknown) may
+	// still land at its final key: that key stays staged until then, so the
+	// staging sweeper and account erasure delete what lands.
+	DirectUploadLateCopyMargin = time.Hour
 	// directStorageTimeout bounds a storage call that moves no file: listing
 	// parts, a HEAD, the ranged GET, a delete.
 	directStorageTimeout = 30 * time.Second
@@ -87,8 +92,14 @@ var (
 	// answers its Media.
 	ErrDirectUploadCompleting = errors.New("media: the upload is being completed")
 	// ErrDirectUploadClaimLost is a completion whose claim is no longer the
-	// upload's: its lease ran out before it finished.
+	// upload's: its lease ran out before it finished. Core's failure: the
+	// volume is given back, and a retry may complete the upload (or find
+	// the Media another completion created).
 	ErrDirectUploadClaimLost = errors.New("media: the completion's claim on the upload is lost")
+	// ErrNameInvalid refuses a file name with a control character or a
+	// bidirectional formatting control (cleanFileName), whichever way the
+	// file is uploaded. errors.Is matches ErrInvalid.
+	ErrNameInvalid = fmt.Errorf("media: the file name carries a control character or a bidirectional formatting control: %w", ErrInvalid)
 	// ErrDirectUploadSizeMismatch refuses an upload whose stored size is
 	// not the size it declared (DirectUploadRefusal).
 	ErrDirectUploadSizeMismatch = fmt.Errorf("media: the upload's size is not the size it declared: %w", ErrInvalid)
@@ -231,11 +242,16 @@ type DirectUploadStore interface {
 	// claim's final key) with the upload's id and ends the upload, in one
 	// short transaction. ErrDirectUploadClaimLost when the claim is gone.
 	FinishDirectUpload(ctx context.Context, claim DirectUploadClaim, item Media, now time.Time) (Media, error)
-	// EndDirectUpload ends an upload without a Media once storage was asked
-	// to delete its objects: its record (unclaimed, or under claimID) and
-	// the staging rows of its pending object and of finalKey go; removed
-	// false leaves the staging rows ready for the sweeper instead.
-	EndDirectUpload(ctx context.Context, id, claimID uuid.UUID, finalKey string, removed bool, now time.Time) error
+	// EndDirectUpload ends an upload without a Media, in one short
+	// transaction, BEFORE storage deletes anything. owned reports whether
+	// the upload was still unclaimed (claimID Nil) or under claimID: then
+	// its record goes, and its pending object's staging row is due now, for
+	// the sweeper should storage fail to delete it. Otherwise it is another
+	// completion's now, or gone, and nothing of it is touched. finalKey's
+	// staging row (the claim's copy; "" for none) is due at finalDue either
+	// way: now for a copy whose outcome is known, later for one that may
+	// still land.
+	EndDirectUpload(ctx context.Context, id, claimID uuid.UUID, finalKey string, finalDue, now time.Time) (owned bool, err error)
 }
 
 func (s *service) StartDirectUpload(ctx context.Context, p authz.Principal, req DirectUploadRequest) (DirectUpload, error) {
@@ -244,8 +260,12 @@ func (s *service) StartDirectUpload(ctx context.Context, p authz.Principal, req 
 		return DirectUpload{}, err
 	}
 	uploader, err := uuid.Parse(p.ID)
-	if err != nil || req.Size <= 0 || !validFileName(req.Name) {
+	if err != nil || req.Size <= 0 {
 		return DirectUpload{}, ErrInvalid
+	}
+	name, err := directFileName(req.Name)
+	if err != nil {
+		return DirectUpload{}, err
 	}
 	types, maxBytes, err := narrowedLimits(purpose, req.Limits)
 	if err != nil {
@@ -261,7 +281,7 @@ func (s *service) StartDirectUpload(ctx context.Context, p authz.Principal, req 
 	now := s.directNow()
 	id := uuid.New()
 	rec := DirectUploadRecord{
-		ID: id, UploaderID: uploader, Purpose: purpose.Name, Name: req.Name, Size: req.Size,
+		ID: id, UploaderID: uploader, Purpose: purpose.Name, Name: name, Size: req.Size,
 		MaxBytes: maxBytes, Types: types, PartSize: directPartSize,
 		Key: pendingKeyPrefix + id.String(), ExpiresAt: now.Add(DirectUploadTTL),
 	}
@@ -377,16 +397,16 @@ type directCompletion struct {
 func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []UploadedPart) (Media, error) {
 	purpose, types, err := c.rules(p)
 	if err != nil {
-		return Media{}, c.refuse(ctx, err)
+		return Media{}, c.stop(ctx, err, notCopied, true)
 	}
 	if err := c.joinParts(ctx, sent); err != nil {
 		var sizeRefusal *DirectUploadRefusal
 		switch {
 		case errors.As(err, &sizeRefusal):
-			return Media{}, c.refuse(ctx, err)
+			return Media{}, c.stop(ctx, err, notCopied, true)
 		case errors.Is(err, ErrNotFound):
 			// The multipart upload and its object are both gone: aborted.
-			return Media{}, c.refuse(ctx, err)
+			return Media{}, c.stop(ctx, err, notCopied, true)
 		}
 		// The parts are not joined: the upload stays open for a retry.
 		return Media{}, c.release(ctx, err)
@@ -397,16 +417,15 @@ func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []Upl
 	if err != nil {
 		var refusal *PurposeRefusal
 		var sizeRefusal *DirectUploadRefusal
-		if errors.As(err, &refusal) || errors.As(err, &sizeRefusal) {
-			return Media{}, c.refuse(ctx, err)
-		}
-		return Media{}, c.fail(ctx, err)
+		refused := errors.As(err, &refusal) || errors.As(err, &sizeRefusal)
+		return Media{}, c.stop(ctx, err, notCopied, refused)
 	}
 	copyCtx, cancel := context.WithTimeout(ctx, directCopyTimeout)
 	err = c.storage.Copy(copyCtx, c.rec.Key, c.claim.FinalKey, ServingMetadata(detected, c.rec.Name))
 	cancel()
 	if err != nil {
-		return Media{}, c.fail(ctx, err)
+		// R2 may still finish a copy core gave up on.
+		return Media{}, c.stop(ctx, err, copyUnknown, false)
 	}
 	now := c.directNow()
 	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), directDatabaseTimeout)
@@ -431,14 +450,13 @@ func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []Upl
 	case errors.Is(err, ErrForbidden):
 		// The uploader's account is being erased: a refusal, not core's
 		// failure.
-		return Media{}, c.refuse(ctx, err)
+		return Media{}, c.stop(ctx, err, copied, true)
 	case errors.Is(err, ErrDirectUploadClaimLost):
-		// Too slow: the lease ran out. Only this completion's copy is its
-		// own to delete; the upload is the sweeper's, or a new claim's.
-		return Media{}, c.dropCopy(ctx, err)
+		// Too slow: the lease ran out.
+		return Media{}, c.stop(ctx, err, copied, false)
 	case err != nil:
 		// Not the caller's fault, whatever the store's error says.
-		return Media{}, c.fail(ctx, fmt.Errorf("media: store a Direct upload's Media: %v", err))
+		return Media{}, c.stop(ctx, fmt.Errorf("media: store a Direct upload's Media: %v", err), copied, false)
 	}
 	c.direct.Limiter.settle(c.rec.ID)
 	c.deletePending(ctx)
@@ -553,61 +571,110 @@ func (c directCompletion) checkFile(ctx context.Context, purpose Purpose, types 
 	return detected, nil
 }
 
-// refuse ends an upload whose file (or purpose) is refused. The charge
-// stays, as a single-step refusal's does.
-func (c directCompletion) refuse(ctx context.Context, refusal error) error {
-	c.direct.Limiter.settle(c.rec.ID)
-	return c.end(ctx, refusal)
-}
+// copyState is what a completion knows of its copy to the final key.
+type copyState int
 
-// fail ends an upload core failed after its parts were joined: the file is
-// sent again, so its charge is given back.
-func (c directCompletion) fail(ctx context.Context, cause error) error {
-	c.direct.Limiter.refund(c.rec.ID)
-	return c.end(ctx, cause)
-}
+const (
+	// notCopied: no copy was asked for.
+	notCopied copyState = iota
+	// copied: R2 answered the copy; the object is at the final key.
+	copied
+	// copyUnknown: the copy failed or timed out, and R2 may still finish
+	// it after core gave up.
+	copyUnknown
+)
 
-// end ends the upload without a Media: storage deletes its copy and its
-// pending object (with any multipart upload open at it) first, then a short
-// transaction removes the upload and its staging rows, or leaves them ready
-// for the sweeper when a delete failed.
-func (c directCompletion) end(ctx context.Context, cause error) error {
+// stop ends the upload without a Media. First a short transaction checks
+// the claim is still this completion's and, if so, ends the upload; only
+// then does storage delete anything, so a completion whose lease ran out
+// never deletes an upload another completion has claimed since. The copy's
+// staging row stays when its outcome is unknown, until a late copy can no
+// longer land (DirectUploadLateCopyMargin), and whenever its delete fails:
+// the staging sweeper and account erasure delete it then.
+//
+// A refusal keeps its charge, as a single-step refusal does; core's own
+// failure gives it back, and so does a lost claim (ErrDirectUploadClaimLost,
+// returned with the cause).
+func (c directCompletion) stop(ctx context.Context, cause error, copy copyState, refused bool) error {
 	base := context.WithoutCancel(ctx)
-	removed := true
-	for _, key := range []string{c.claim.FinalKey, c.rec.Key} {
-		deleteCtx, cancel := context.WithTimeout(base, directStorageTimeout)
-		if err := c.storage.Delete(deleteCtx, key); err != nil {
-			removed = false
-			cause = errors.Join(cause, fmt.Errorf("delete a Direct upload's object: %w", err))
-		}
-		cancel()
+	now := c.directNow()
+	finalDue := now
+	if copy == copyUnknown {
+		finalDue = c.claim.Until.Add(DirectUploadLateCopyMargin)
 	}
 	dbCtx, cancel := context.WithTimeout(base, directDatabaseTimeout)
-	defer cancel()
-	if err := c.store.EndDirectUpload(dbCtx, c.rec.ID, c.claim.ID, c.claim.FinalKey, removed, c.directNow()); err != nil {
-		cause = errors.Join(cause, fmt.Errorf("end a Direct upload: %w", err))
+	owned, err := c.store.EndDirectUpload(dbCtx, c.rec.ID, c.claim.ID, c.claim.FinalKey, finalDue, now)
+	cancel()
+	switch {
+	case err != nil:
+		// Whether the upload is still this completion's is unknown: nothing
+		// is deleted. Its staging rows fall due at the lease's end (the copy's
+		// later), and the sweeper ends it then.
+		c.charge(refused)
+		return errors.Join(cause, fmt.Errorf("end a Direct upload: %w", err))
+	case !owned:
+		c.direct.Limiter.refund(c.rec.ID)
+		cause = errors.Join(ErrDirectUploadClaimLost, cause)
+	default:
+		c.charge(refused)
+	}
+	if err := c.dropCopy(base, copy); err != nil {
+		cause = errors.Join(cause, err)
+	}
+	if owned {
+		if err := deleteStaged(base, c.store, c.storage, c.rec.Key); err != nil {
+			cause = errors.Join(cause, err)
+		}
 	}
 	return cause
 }
 
-// dropCopy deletes this completion's copy only: its claim is lost, so the
-// upload and its pending object are no longer its own.
-func (c directCompletion) dropCopy(ctx context.Context, cause error) error {
-	base := context.WithoutCancel(ctx)
-	deleteCtx, cancel := context.WithTimeout(base, directStorageTimeout)
-	err := c.storage.Delete(deleteCtx, c.claim.FinalKey)
+// charge settles a refusal's charge and gives core's failure's back.
+func (c directCompletion) charge(refused bool) {
+	if refused {
+		c.direct.Limiter.settle(c.rec.ID)
+	} else {
+		c.direct.Limiter.refund(c.rec.ID)
+	}
+}
+
+// dropCopy deletes the claim's copy, which is this completion's alone. A
+// copy of unknown outcome keeps its staging row even once deleted: a late
+// copy may land after the delete.
+func (c directCompletion) dropCopy(ctx context.Context, copy copyState) error {
+	switch copy {
+	case notCopied:
+		dbCtx, cancel := context.WithTimeout(ctx, directDatabaseTimeout)
+		defer cancel()
+		return c.store.CancelStagedUpload(dbCtx, c.claim.FinalKey)
+	case copied:
+		return deleteStaged(ctx, c.store, c.storage, c.claim.FinalKey)
+	default:
+		deleteCtx, cancel := context.WithTimeout(ctx, directStorageTimeout)
+		defer cancel()
+		if err := c.storage.Delete(deleteCtx, c.claim.FinalKey); err != nil {
+			return fmt.Errorf("delete a Direct upload's copy: %w", err)
+		}
+		return nil
+	}
+}
+
+// deleteStaged deletes a staged object (at a pending key, with any
+// multipart upload open at it), then its staging row. A delete that fails
+// leaves the row for the sweeper.
+func deleteStaged(ctx context.Context, store DirectUploadStore, storage MultipartStore, key string) error {
+	deleteCtx, cancel := context.WithTimeout(ctx, directStorageTimeout)
+	err := storage.Delete(deleteCtx, key)
 	cancel()
 	if err != nil {
-		// The final key's staging row, ready at the lease's end, has the
-		// sweeper delete it.
-		return errors.Join(cause, fmt.Errorf("delete a Direct upload's copy: %w", err))
+		return fmt.Errorf("delete a Direct upload's object: %w", err)
 	}
-	dbCtx, cancel := context.WithTimeout(base, directDatabaseTimeout)
+	dbCtx, cancel := context.WithTimeout(ctx, directDatabaseTimeout)
 	defer cancel()
-	if err := c.store.CancelStagedUpload(dbCtx, c.claim.FinalKey); err != nil {
-		return errors.Join(cause, fmt.Errorf("end a Direct upload's copy: %w", err))
+	if err := store.CancelStagedUpload(dbCtx, key); err != nil {
+		return fmt.Errorf("end a Direct upload's object: %w", err)
 	}
-	return cause
+	return nil
 }
 
 // release lets go of the claim when nothing was copied: the upload stays
@@ -623,18 +690,9 @@ func (c directCompletion) release(ctx context.Context, cause error) error {
 }
 
 // deletePending deletes a published upload's pending object; its staging
-// row, ready already, has the sweeper retry should that fail.
+// row, due already, has the sweeper retry should that fail.
 func (c directCompletion) deletePending(ctx context.Context) {
-	base := context.WithoutCancel(ctx)
-	deleteCtx, cancel := context.WithTimeout(base, directStorageTimeout)
-	err := c.storage.Delete(deleteCtx, c.rec.Key)
-	cancel()
-	if err != nil {
-		return
-	}
-	dbCtx, cancel := context.WithTimeout(base, directDatabaseTimeout)
-	defer cancel()
-	_ = c.store.CancelStagedUpload(dbCtx, c.rec.Key)
+	_ = deleteStaged(context.WithoutCancel(ctx), c.store, c.storage, c.rec.Key)
 }
 
 // completedDirectUpload is the Media a completed upload created, for its
@@ -654,22 +712,22 @@ func (s *service) ownOpenUpload(rec DirectUploadRecord, uploader uuid.UUID) bool
 	return rec.UploaderID == uploader && rec.MultipartID != "" && s.directNow().Before(rec.ExpiresAt)
 }
 
-// abandonDirectUpload ends an upload that never started right: storage
-// deletes its pending object (and any multipart upload open at it), then a
-// short transaction removes the upload and its staging row.
+// abandonDirectUpload ends an upload that never started right: a short
+// transaction ends it, then storage deletes its pending object (and any
+// multipart upload open at it).
 func (s *service) abandonDirectUpload(ctx context.Context, store DirectUploadStore, storage MultipartStore, rec DirectUploadRecord, cause error) error {
 	base := context.WithoutCancel(ctx)
-	deleteCtx, cancel := context.WithTimeout(base, directStorageTimeout)
-	err := storage.Delete(deleteCtx, rec.Key)
-	cancel()
-	removed := err == nil
-	if err != nil {
-		cause = errors.Join(cause, fmt.Errorf("delete a Direct upload's pending object: %w", err))
-	}
+	now := s.directNow()
 	dbCtx, cancel := context.WithTimeout(base, directDatabaseTimeout)
-	defer cancel()
-	if err := store.EndDirectUpload(dbCtx, rec.ID, uuid.Nil, "", removed, s.directNow()); err != nil {
-		cause = errors.Join(cause, fmt.Errorf("end a Direct upload: %w", err))
+	owned, err := store.EndDirectUpload(dbCtx, rec.ID, uuid.Nil, "", now, now)
+	cancel()
+	if err != nil {
+		return errors.Join(cause, fmt.Errorf("end a Direct upload: %w", err))
+	}
+	if owned {
+		if err := deleteStaged(base, store, storage, rec.Key); err != nil {
+			cause = errors.Join(cause, err)
+		}
 	}
 	return cause
 }
@@ -791,22 +849,47 @@ func detectDirectType(start []byte) string {
 	return ""
 }
 
-// validFileName reports whether name can be kept as a Direct upload's file
-// name: not blank, at most 255 bytes, and reading as itself
-// (fileNameReadsAsItself). It is stored and encoded into the download name,
-// never into a key.
-func validFileName(name string) bool {
-	return strings.TrimSpace(name) != "" && len(name) <= maxDirectNameBytes && fileNameReadsAsItself(name)
+// directFileName is the name core keeps for a Direct upload's file
+// (cleanFileName), which must also not be blank and fit 255 bytes. It names
+// the download, never a key.
+func directFileName(name string) (string, error) {
+	name, err := cleanFileName(name)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(name) == "" || len(name) > maxDirectNameBytes {
+		return "", ErrNameInvalid
+	}
+	return name, nil
 }
 
-// fileNameReadsAsItself reports whether a file name, shown to a person,
-// reads as what it is: valid UTF-8 without control characters and without
-// the invisible format characters (Unicode Cf: the bidirectional overrides
-// and isolates U+202A–U+202E and U+2066–U+2069, the marks U+200E and U+200F,
-// zero-width characters) that make a name read as another, such as
-// "a\u202Epiz.exe" showing as "aexe.zip". Every upload's name must.
-func fileNameReadsAsItself(name string) bool {
-	return utf8.ValidString(name) && !strings.ContainsFunc(name, func(r rune) bool {
-		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
-	})
+// cleanFileName is the name core keeps for an uploaded file, whichever way
+// it was uploaded: the name the browser sent, without byte order marks.
+// Emoji (ZWJ sequences and tag flags included), every script's joiners and
+// other format characters, and decomposed letters stay. Refused, with
+// ErrNameInvalid, is only what makes a name read as another or break the
+// places it is shown: invalid UTF-8, a C0 or C1 control character (a line
+// break, a tab, NUL), and the bidirectional formatting controls (the
+// embeddings and overrides U+202A–U+202E, the isolates U+2066–U+2069, the
+// marks U+200E, U+200F and U+061C), such as the right-to-left override that
+// shows "a\u202Epiz.exe" as "aexe.zip".
+func cleanFileName(name string) (string, error) {
+	if !utf8.ValidString(name) {
+		return "", ErrNameInvalid
+	}
+	name = strings.ReplaceAll(name, "\ufeff", "")
+	if strings.ContainsFunc(name, refusedNameRune) {
+		return "", ErrNameInvalid
+	}
+	return name, nil
+}
+
+func refusedNameRune(r rune) bool {
+	switch {
+	case unicode.IsControl(r):
+		return true
+	case r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069, r == 0x200E, r == 0x200F, r == 0x061C:
+		return true
+	}
+	return false
 }

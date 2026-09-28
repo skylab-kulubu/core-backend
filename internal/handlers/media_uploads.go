@@ -86,6 +86,14 @@ func (h *MediaHandler) CompleteUpload(c fiber.Ctx) error {
 // directUploadError answers a refused Direct upload: the purpose's refusals
 // as for POST /v1/media, and Direct upload's own, its budget's included.
 func directUploadError(c fiber.Ctx, err error) error {
+	if errors.Is(err, media.ErrDirectUploadClaimLost) {
+		// Core was too slow and its lease ran out: its failure, and worth a
+		// retry, which may complete the upload or find its Media.
+		c.Set(fiber.HeaderRetryAfter, strconv.Itoa(directCompletingRetrySeconds))
+		return problemWithFields(c, fiber.StatusServiceUnavailable, "Service Unavailable",
+			"The completion took longer than its lease and was let go. Retry: the upload may still be completed, or answer the Media another completion created; if it is gone, start a new one.",
+			"upload_claim_lost", fiber.Map{"retryAfterSeconds": directCompletingRetrySeconds})
+	}
 	var limit *media.DirectUploadLimitRefusal
 	if errors.As(err, &limit) {
 		return directUploadLimited(c, *limit)
