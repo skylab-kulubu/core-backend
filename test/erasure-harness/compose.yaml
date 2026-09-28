@@ -332,6 +332,24 @@ services:
     mem_limit: 384m
     logging: *logging
 
+  # Scenario 11's throwaway Postgres for core's replay-from-backup (ADR-0053, account-erasure
+  # ticket 18): the core and Keycloak dumps taken with the service dumps are restored into it and
+  # read through a SELECT-only role. Only on the internal snapshots network, no port, data in
+  # memory. Scenario 11 starts it with a password made for the run, loads the dumps through
+  # docker exec (the driver has no route to it), connects core to the network for the replay and
+  # removes the container, its volumes and the network afterwards.
+  snapshot-postgres:
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    profiles: ["replay"]
+    environment:
+      POSTGRES_PASSWORD: ${SNAPSHOT_POSTGRES_PASSWORD:-}
+    command: ["postgres", "-c", "shared_buffers=32MB", "-c", "max_connections=20"]
+    tmpfs:
+      - /var/lib/postgresql/data:size=256m
+    networks: [snapshots]
+    mem_limit: 384m
+    logging: *logging
+
   # The scenario driver (run.sh starts it with `run`). It reaches the other containers by name
   # and drives docker through the socket to stop, start and kill them.
   driver:
@@ -350,3 +368,8 @@ services:
 volumes:
   postgres_data:
   account_access_redis_data:
+
+networks:
+  # No route out and no published port: only snapshot-postgres and, during the replay, core.
+  snapshots:
+    internal: true

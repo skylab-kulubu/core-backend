@@ -3,11 +3,18 @@
 # nine steps; then PII queries in every service database, receipts and counts, the preserved
 # records, the person's Media (media redesign ticket 07) and Keycloak's 404.
 
-# backup_databases NAME: custom-format dumps of every service database (scenario 11 restores them).
+# backup_databases NAME: custom-format dumps of every service database (scenario 11 restores them)
+# and of core's and Keycloak's, which scenario 11 hands core's replay-from-backup as the pair taken
+# with the service dumps. The pairing rule (ADR-0053, account-erasure ticket 18): core first, then
+# Keycloak, then the services, so T_core <= T_keycloak <= T_service; a core dump taken after the
+# service dump would miss the addresses of a request whose anonymize_core ran in between.
+# dumped-at.tsv records, per database, the instant just before its pg_dump started.
 backup_databases() {
   local dir=$STATE/backups/$1 db
   mkdir -p "$dir"
-  for db in super_skylab skymail skylab_cms forms_db; do
+  : >"$dir/dumped-at.tsv"
+  for db in super_skylab keycloak skymail skylab_cms forms_db; do
+    printf '%s\t%s\n' "$db" "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >>"$dir/dumped-at.tsv"
     PGPASSWORD=$POSTGRES_PASSWORD pg_dump -h postgres -U postgres -d "$db" -Fc -f "$dir/$db.dump"
   done
 }
