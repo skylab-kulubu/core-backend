@@ -1061,8 +1061,8 @@ recorded apart.
 | `pending` | No Media attachment yet. Every new Media starts here. | Upload time plus the purpose's `pending_ttl` (24 hours for every purpose today). |
 | `attached` | At least one Media attachment. Never purged by expiry. | None. |
 | `detached` | Its last Media attachment was removed. | 30 days after that, except while its detach expiry is held (below). Attaching it again within the window makes it attached. |
-| `scanning` | Its purpose needs a malware scan that has not ended yet. It may be attached, but it is not opened or served ([Malware scan](#malware-scan)). Clean, it becomes `pending`, or `attached` when a Media attachment links it. | As `pending` while nothing keeps it: upload time plus the purpose's `pending_ttl`. None while a Media attachment links it; 30 days after its last one is removed. |
-| `rejected` | The malware scan rejected it (`scanResult`: `infected` or `too_large_to_scan`); its object is deleted. | None. |
+| `scanning` | Its purpose needs a malware scan that has not ended yet. It may be attached, but it is not opened or served ([Malware scan](#malware-scan)). Clean, it becomes `pending`, or `attached` when a Media attachment links it. A week after its upload it is rejected (`scan_timeout`). | As `pending` while nothing keeps it: upload time plus the purpose's `pending_ttl`. None while a Media attachment links it; 30 days after its last one is removed. |
+| `rejected` | The malware scan rejected it (`scanResult`: `infected`, `too_large_to_scan`, `lost`, `integrity` or `scan_timeout`); its object is deleted. | None. |
 
 **A legacy Media gets no expiry by itself**: not when it is uploaded
 (`legacy` has `pending_ttl` `none`), and not when its last Media attachment is
@@ -1811,12 +1811,24 @@ by a Direct upload's completion alike, with its purpose's pending expiry. See
 - **Too large to scan**: the Media is `rejected` and `scanResult` is
   `too_large_to_scan`. This happens when clamd refuses the stream as longer
   than its `StreamMaxLength` (`INSTREAM size limit exceeded`), or reports a
-  `Heuristics.Limits.Exceeded.*` signature (only with `AlertExceedsMax`, see
+  `Heuristics.Limits.Exceeded.*` signature (`AlertExceedsMax`, see
   [ClamAV](#clamav)). Either way the file could not be scanned whole.
+- **Lost**: the file to scan is gone, so it can never be scanned. The R2
+  lifecycle rule deletes a held file after two days, so this happens when
+  clamd was down that long. The Media is `rejected` and `scanResult` is
+  `lost`.
+- **Integrity**: a private object fails its integrity check while it is read
+  for the scan. The Media is `rejected`, `scanResult` is `integrity`, and the
+  worker logs it by the Media's id.
+- **Scan timeout**: the Media is still `scanning` a week after its upload
+  (`media.ScanDeadline`), attached or not, and whether clamd answers or not.
+  The Media is `rejected` and `scanResult` is `scan_timeout`.
 - **clamd unreachable**: the Media stays `scanning` and is tried again.
-- **clamd answered an error, or the file could not be read** (storage, OpenBao,
-  a private object that fails its integrity check): the Media stays `scanning`
-  and is tried again later.
+- **clamd answered an error, or the file could not be read** (storage, OpenBao
+  down): the Media stays `scanning` and is tried again later.
+
+Every rejection deletes the Media's objects and is recorded (below). The
+uploader must upload the file again.
 
 A `scanning` Media can be attached, so a Skyforms draft or submission holds
 an Answer file while it is scanned. It is not opened or served until it is
@@ -1834,11 +1846,27 @@ a clean copy.
 ### The scan worker
 
 The scan worker (`media.ScanWorker`) starts with core when `MEDIA_CLAMAV_ADDR`
-is set. It makes a pass at once, whenever an upload stores a Media waiting for
-its scan, and every 30 seconds. A pass walks the due Media by id, 25 at a
-time: the Media waiting for their scan whose retry time has come, and the
-rejected ones whose objects are still to delete. For each one it streams the
-file's plaintext to clamd with `INSTREAM`, in 64 KiB chunks:
+is set, on its own context. It makes a pass at once, whenever an upload
+stores a Media waiting for its scan, and every 30 seconds. A pass first
+rejects the Media past the scan deadline, then walks the due Media by id: the
+Media waiting for their scan whose retry time has come, and the rejected ones
+whose objects are still to delete.
+
+Each Media is **claimed** before any clamd or storage work. A short
+transaction picks the next due Media (`FOR UPDATE SKIP LOCKED`), records the
+claim (`scan_claim_id`) and its lease (`scan_claimed_until`), and commits.
+Rolling deploys start the new core before stopping the old one, so two
+workers overlap on every deploy; a Media another worker has claimed is left
+alone. The lease is the claim's work (the scan, the copy of a clean held
+file, the storage calls around them) plus two minutes, and the work stops
+before the lease ends. Every step that moves the Media on checks the claim
+is still its own. A worker whose lease ran out (another worker has claimed
+the Media since) moves nothing on and deletes nothing. The archive and
+expiry purges wait for a live scan claim, so a copy the scan makes can never
+land after them. Account erasure does not wait.
+
+For each claimed Media the worker streams the file's plaintext to clamd with
+`INSTREAM`, in 64 KiB chunks:
 
 - a public file is read straight from R2;
 - a private file is decrypted as it streams, through the same private storage
@@ -1846,14 +1874,20 @@ file's plaintext to clamd with `INSTREAM`, in 64 KiB chunks:
 
 Nothing is written to disk on core's side, and a file is never held whole in
 memory. Each file's scan is bounded by a timeout of two minutes plus a second
-per MiB (about 19 minutes for 1 GiB).
+per MiB (about 19 minutes for 1 GiB). A verdict counts only when clamd sends
+exactly one NUL-terminated answer after the end of the stream (the
+zero-length chunk). clamd answers before the end only to refuse the stream
+(a size limit, an `ERROR`). Any other answer there, an answer cut short, or
+one core does not know is a protocol failure (`clamd.ErrProtocol`): never
+clean, and tried again later.
 
 - A Media whose scan fails waits 30 seconds before it is tried again. Each
   failure in a row doubles the wait, up to an hour (`scan_attempts`,
   `scan_retry_at` on the Media), and the pass walks past it to the others.
 - A clamd that cannot be reached ends the pass without counting a failure
-  against any Media. The worker then waits 10 seconds before the next pass,
-  doubling the wait up to 5 minutes while clamd stays down.
+  against any Media (its claim is let go). The worker then waits 10 seconds
+  before the next pass, doubling the wait up to 5 minutes while clamd stays
+  down.
 - It logs what a pass changed (clean, rejected, failed) and each Media that
   failed (by id; never a file name). It says once that clamd is down and once
   that it answers again. A pass with nothing to do logs nothing.
@@ -1891,16 +1925,32 @@ until its scan ends:
    only clean bytes are ever written there. The copy's download name is read
    before it, so the worker reads the Media again afterwards and rewrites the
    metadata if an account erasure cleared the name meanwhile.
-3. An infected file is deleted where it is held and never reaches `files/`.
+3. A rejected file is deleted where it is held and never reaches `files/`.
 
-The hold sits under `pending/`, so two things cover it. The optional
-Cloudflare rule that answers `403` for `/pending/*` on `cdn.` refuses it even
-to someone who guessed the key. The R2 lifecycle rule deletes anything left
-there after two days (see [R2 lifecycle and CORS](#r2-lifecycle-and-cors)):
-a held copy the worker could not delete, or a file whose scan waited that long
-(its Media then keeps failing its scan until its expiry purges it). A private
-file needs no hold, since the private bucket is never served:
-an `answer_file` stays at its `private/files/…` key throughout.
+Because the served key follows from the Media's id, every purge of a held
+Media deletes both keys: the held one and `files/<Media id>`. This covers the
+archive, expiry and erasure purges and a rejection. A clean copy that landed
+before the Media was purged, or that a worker made before it crashed, is
+therefore never left behind. A missing object counts as deleted.
+
+The hold sits under `pending/`, so two things cover it. The Cloudflare rule
+that answers `403` for `/pending/*` on `cdn.` refuses it even to someone who
+guessed the key. **This rule is required before any public purpose that
+needs a scan opens (`club_file`, ticket 20).** Both the ClamAV wizard and the
+Direct upload R2 wizard check it (a request to a `/pending/` path answers
+`403`) and report its absence as a failure. The R2 lifecycle rule deletes
+anything left there after two days (see
+[R2 lifecycle and CORS](#r2-lifecycle-and-cors)): a held copy the worker
+could not delete, or a file whose scan waited that long (its Media is then
+rejected as `lost`). A private file needs no hold, since the private bucket
+is never served: an `answer_file` stays at its `private/files/…` key
+throughout.
+
+Records that link a Media (an Event's cover and gallery, a User's profile
+picture) build no address for one that is `scanning` or `rejected`
+(`media.ServedKeySQL`, and the status in `media.LinkedImageSQL`), so a held
+key never becomes an address. No reviewed purpose can link such a Media
+today: the scanned public purposes take no image.
 
 ### Opening
 
@@ -1912,7 +1962,7 @@ still does not exist (`404`):
 | Status | `code` | Extra members | When |
 |---|---|---|---|
 | 409 | `media_scanning` | `retryAfterSeconds`, `Retry-After` header (30) | The Media is waiting for its malware scan. Show it as pending, not as missing, and retry later. |
-| 410 | `media_rejected` | `scanResult` | The scan rejected the Media (`infected` or `too_large_to_scan`) and its object is deleted. The uploader must upload a clean copy. |
+| 410 | `media_rejected` | `scanResult` | The scan rejected the Media (`infected`, `too_large_to_scan`, `lost`, `integrity` or `scan_timeout`) and its object is deleted. The uploader must upload the file again. |
 
 A public Media gets its address (`url`, `sizes`) only once clean.
 
@@ -1920,8 +1970,10 @@ A public Media gets its address (`url`, `sizes`) only once clean.
 
 Every rejection is kept in `media_scan_rejections` (migration
 `20260928140000`) as the scan's event record. It holds the Media id, the
-result (`infected` or `too_large_to_scan`), the name clamd gave what it found
-(`Eicar-Test-Signature`, …; empty for a stream too long) and the time. It
+result (`infected`, `too_large_to_scan`, `lost`, `integrity` or
+`scan_timeout`), the name clamd gave what it found (`Eicar-Test-Signature`,
+`Heuristics.Limits.Exceeded.MaxFiles`, …; empty when clamd named nothing) and
+the time. It
 holds no file name and no person: the Media id leads to them while the Media
 keeps them, and account erasure clears both there. The row stays with the
 Media's record, which is never deleted.
@@ -1942,14 +1994,27 @@ application for each side, in core's project and environment:
   - `ConcurrentDatabaseReload no`: one copy of the database in memory; scans
     wait about a minute during a reload;
   - `StreamMaxLength`, `MaxFileSize` and `MaxScanSize` of `1024M`, the
-    largest purpose that needs a scan: every file within it is scanned whole;
+    largest purpose that needs a scan;
   - `MaxScanTime` of 10 minutes;
+  - `AlertExceedsMax yes`: a file clamd cannot scan whole is reported as
+    `Heuristics.Limits.Exceeded.<limit>` instead of passing as far as it got.
+    The limits are `MaxFileSize`, `MaxScanSize`, `MaxFiles` (10,000 files per
+    archive) and `MaxRecursion` (17 nested levels), and core rejects such a
+    file as `too_large_to_scan`. It is the only `AlertExceeds*` setting clamd
+    1.5.4 has;
   - freshclam checks 6 times a day.
 
-  `AlertExceedsMax` is left off: content beyond clamd's limits inside an
-  archive (`MaxFiles`, recursion, expanded size) is then scanned as far as
-  the limit and not reported. Turning it on (`CLAMD_CONF_AlertExceedsMax=yes`)
-  would reject such files as too large to scan, which core already handles.
+  Being under `1024M` does not mean a file is scanned whole: an archive also
+  meets the limits above. Checked against a real clamd 1.5.4:
+
+  - `AlertExceedsMax` reports `MaxFiles` and `MaxFileSize` exceeded;
+  - an archive member that expands past `MaxFileSize` while the archive
+    itself stays under it is skipped without a report.
+
+  Before `club_file` or `answer_file_large` opens (tickets 20 and 21), core
+  should refuse a ZIP whose uncompressed size exceeds what clamd scans. The
+  `AlertEncrypted*` settings stay off: they would report every
+  password-protected PDF (a common kind of official document) as malware.
 - memory: a 3 GiB limit and a 1.5 GiB reservation. clamd holds about 1 GiB
   with the full database loaded (measured, 1.5.4). freshclam's database test
   briefly loads a second copy, and a redeploy runs the old and the new clamd
@@ -2117,8 +2182,10 @@ What happens to the records when the request completes is in
   [Malware scan](#malware-scan). The rest is fixed in code: a pass every
   30 seconds (and after every scanned upload), a failed Media retried after
   30 seconds doubling to an hour, a pass after clamd was unreachable after
-  10 seconds doubling to 5 minutes, and a file's scan bounded by two minutes
-  plus a second per MiB.
+  10 seconds doubling to 5 minutes, a file's scan bounded by two minutes
+  plus a second per MiB, a scan's claim leased for its work plus two
+  minutes, and a Media still scanning a week after its upload rejected
+  (`media.ScanDeadline`).
 - `MEDIA_SERVICE_CLIENTS` — the products' service clients for the
   [service attach API](#service-attach-api), `product:client` pairs
   separated by commas (products `forms`, `cms`), or `none`; default
