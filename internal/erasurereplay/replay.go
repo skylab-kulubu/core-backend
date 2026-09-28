@@ -93,21 +93,21 @@ const (
 // the reason the erasure client or the address read gave, which name neither
 // the subject nor an address. A done record carries the service's counts.
 type Record struct {
-	At         time.Time
-	Service    string
-	RestoredAt time.Time
-	RequestID  uuid.UUID
-	Outcome    Outcome
-	Code       string
-	Reason     string
-	Counts     map[string]int64
+	At        time.Time
+	Service   string
+	DumpedAt  time.Time
+	RequestID uuid.UUID
+	Outcome   Outcome
+	Code      string
+	Reason    string
+	Counts    map[string]int64
 }
 
 // String is the record's log line.
 func (r Record) String() string {
 	var line strings.Builder
-	fmt.Fprintf(&line, "account_erasure_replay at=%s service=%s restored_at=%s request_id=%s outcome=%s",
-		r.At.UTC().Format(time.RFC3339), r.Service, r.RestoredAt.UTC().Format(time.RFC3339Nano), r.RequestID, r.Outcome)
+	fmt.Fprintf(&line, "account_erasure_replay at=%s service=%s dumped_at=%s request_id=%s outcome=%s",
+		r.At.UTC().Format(time.RFC3339), r.Service, r.DumpedAt.UTC().Format(time.RFC3339Nano), r.RequestID, r.Outcome)
 	if r.Code != "" {
 		fmt.Fprintf(&line, " code=%s", r.Code)
 	}
@@ -131,7 +131,7 @@ func (r Record) String() string {
 
 // Report counts one run.
 type Report struct {
-	// Requests is the number of requests completed at or after the restore.
+	// Requests is the number of requests completed at or after the dump.
 	Requests int
 	// ByAddresses[n] is the number of requests with n addresses resolved.
 	ByAddresses [erasure.MaxAddresses + 1]int
@@ -140,7 +140,7 @@ type Report struct {
 	// Unreadable are the requests whose addresses could not be read.
 	Unreadable int
 	// Open are the requests not completed yet whose step for the service
-	// ran at or after the restore.
+	// ran at or after the dump.
 	Open int
 	// Done, RetryLater and SendFailed count what the service answered.
 	Done, RetryLater, SendFailed int
@@ -152,11 +152,13 @@ func (r Report) Failed() int { return r.Missing + r.Unreadable + r.SendFailed }
 
 // Replay replays erasure into one restored service.
 type Replay struct {
-	Service    erasure.Service
-	RestoredAt time.Time
-	Requests   Requests
-	Core       CoreSnapshot
-	Keycloak   KeycloakSnapshot
+	Service erasure.Service
+	// DumpedAt is T, when the restored service's dump was taken (its
+	// start), not when it was restored.
+	DumpedAt time.Time
+	Requests Requests
+	Core     CoreSnapshot
+	Keycloak KeycloakSnapshot
 	// Apply sends the Erasure command; without it nothing is sent.
 	Apply bool
 	// Sender is the service's Erasure command client; needed with Apply.
@@ -168,7 +170,7 @@ type Replay struct {
 	Now         func() time.Time
 }
 
-// Run replays every request completed at or after the restore, one at a time.
+// Run replays every request completed at or after the dump, one at a time.
 // An error means nothing was sent: the live requests or a snapshot could not
 // be read at all. Every request after that gets a record and a count; none
 // is skipped.
@@ -185,11 +187,11 @@ func (r Replay) Run(ctx context.Context) (Report, error) {
 	if err := r.Keycloak.Check(ctx); err != nil {
 		return Report{}, err
 	}
-	requests, err := r.Requests.CompletedSince(ctx, r.RestoredAt)
+	requests, err := r.Requests.CompletedSince(ctx, r.DumpedAt)
 	if err != nil {
 		return Report{}, err
 	}
-	open, err := r.Requests.OpenWithStepSince(ctx, r.Service.Step, r.RestoredAt)
+	open, err := r.Requests.OpenWithStepSince(ctx, r.Service.Step, r.DumpedAt)
 	if err != nil {
 		return Report{}, err
 	}
@@ -286,7 +288,7 @@ func (r Replay) record(record Record) {
 	}
 	record.At = r.now()
 	record.Service = r.Service.Name
-	record.RestoredAt = r.RestoredAt
+	record.DumpedAt = r.DumpedAt
 	r.Record(record)
 }
 

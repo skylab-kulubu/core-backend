@@ -96,7 +96,7 @@ func keycloakUser(t *testing.T, pool *pgxpool.Pool, realmID string, id uuid.UUID
 func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testing.T) {
 	server := testpostgres.Start(t)
 	ctx := context.Background()
-	restored := time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
+	dumpedAt := time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
 
 	// Live core: requests completed before, at and after T; open requests
 	// whose SkyMail or CMS step ran before or after T.
@@ -119,12 +119,12 @@ func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testin
 			requests[name], subjects[name], at)
 		exec(t, live, `INSERT INTO account_deletion_steps (request_id, step, completed_at) VALUES ($1, $2, $3)`, requests[name], step, at)
 	}
-	complete("after", restored.Add(time.Hour))
-	complete("before", restored.Add(-time.Hour))
-	complete("atT", restored)
-	open("openAfter", "erase_skymail", restored.Add(time.Minute))
-	open("openBefore", "erase_skymail", restored.Add(-time.Minute))
-	open("openOtherStep", "erase_cms", restored.Add(time.Minute))
+	complete("after", dumpedAt.Add(time.Hour))
+	complete("before", dumpedAt.Add(-time.Hour))
+	complete("atT", dumpedAt)
+	open("openAfter", "erase_skymail", dumpedAt.Add(time.Minute))
+	open("openBefore", "erase_skymail", dumpedAt.Add(-time.Minute))
+	open("openOtherStep", "erase_cms", dumpedAt.Add(time.Minute))
 
 	livePool, err := erasurereplay.OpenReadOnly(ctx, "DATABASE_URL", live.Config().ConnString())
 	if err != nil {
@@ -132,7 +132,7 @@ func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testin
 	}
 	t.Cleanup(livePool.Close)
 	liveRequests := erasurereplay.LiveRequests{DB: livePool}
-	completed, err := liveRequests.CompletedSince(ctx, restored)
+	completed, err := liveRequests.CompletedSince(ctx, dumpedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testin
 	if !slices.Equal(completed, want) {
 		t.Fatalf("completed since T = %+v, want %+v", completed, want)
 	}
-	openIDs, err := liveRequests.OpenWithStepSince(ctx, user.DeletionStepEraseSkyMail, restored)
+	openIDs, err := liveRequests.OpenWithStepSince(ctx, user.DeletionStepEraseSkyMail, dumpedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestPostgresReadersReadTheRestoreWindowAndThePeopleInTheSnapshots(t *testin
 	// Together, through the live saga's union: three addresses.
 	var records []erasurereplay.Record
 	report, err := erasurereplay.Replay{
-		Service: skymail, RestoredAt: restored, Requests: &fakeRequests{completed: []erasurereplay.Request{
+		Service: skymail, DumpedAt: dumpedAt, Requests: &fakeRequests{completed: []erasurereplay.Request{
 			{ID: uuid.New(), SubjectID: person}, {ID: uuid.New(), SubjectID: onlyLong}, {ID: uuid.New(), SubjectID: stranger}, {ID: uuid.New(), SubjectID: anonymized},
 		}},
 		Core: core, Keycloak: keycloak,

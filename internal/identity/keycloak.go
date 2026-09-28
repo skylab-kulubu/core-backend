@@ -1058,6 +1058,28 @@ func (k *Keycloak) ReadSkyNumber(ctx context.Context, userID uuid.UUID) (string,
 	return p.SkyNumber, nil
 }
 
+// skyNumberWrite is the whole body of WriteSkyNumber's PUT: the attribute
+// map and the User Profile's root attributes, each as read. `enabled` and
+// every other field of the representation are left out on purpose.
+type skyNumberWrite struct {
+	Username   *string             `json:"username,omitempty"`
+	Email      *string             `json:"email,omitempty"`
+	FirstName  *string             `json:"firstName,omitempty"`
+	LastName   *string             `json:"lastName,omitempty"`
+	Attributes map[string][]string `json:"attributes"`
+}
+
+// WriteSkyNumber sets the person's skyNumber attribute. It reads the user and
+// sends Keycloak only the attribute map (every attribute the read returned,
+// values unchanged, with skyNumber set) and the username, e-mail, first and
+// last name as read. Keycloak 26.7.4 replaces the attribute map as a whole and
+// treats the User Profile's root attributes as part of it: a body with
+// `attributes` but without `email`, `firstName` or `lastName` clears them. It
+// leaves `enabled`, e-mail verification, required actions, IdP links, groups,
+// credentials and role mappings as they are when the body does not name them.
+// Leaving `enabled` out keeps an account erasure that disables the person
+// between the read and the write from being undone. A user Keycloak does not
+// know is ErrNotFound; no error names the subject.
 func (k *Keycloak) WriteSkyNumber(ctx context.Context, userID uuid.UUID, skyNumber string) error {
 	token, err := k.accessToken(ctx)
 	if err != nil {
@@ -1074,6 +1096,23 @@ func (k *Keycloak) WriteSkyNumber(ctx context.Context, userID uuid.UUID, skyNumb
 		}
 	}
 	attrs["skyNumber"] = []string{skyNumber}
-	u.Attributes = &attrs
-	return mapKCErr(k.gc.UpdateUser(ctx, token, k.realm, *u))
+	resp, err := k.gc.GetRequestWithBearerAuth(ctx, token).
+		SetBody(skyNumberWrite{
+			Username: u.Username, Email: u.Email, FirstName: u.FirstName, LastName: u.LastName,
+			Attributes: attrs,
+		}).
+		Put(k.base + "/admin/realms/" + url.PathEscape(k.realm) + "/users/" + userID.String())
+	if err != nil {
+		return errors.New("identity: keycloak sky number write request failed")
+	}
+	switch {
+	case !resp.IsError():
+		return nil
+	case resp.StatusCode() == http.StatusNotFound:
+		return ErrNotFound
+	case resp.StatusCode() == http.StatusConflict:
+		return ErrInvalid
+	default:
+		return fmt.Errorf("identity: keycloak sky number write failed with status %d", resp.StatusCode())
+	}
 }

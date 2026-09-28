@@ -124,6 +124,10 @@ type PrivateMedia struct {
 	LinkOrigin string
 	// AccessLog records every read link issued and every open.
 	AccessLog AccessLog
+	// Subjects ensures the core row of the person a product's read link is
+	// for when core has none (a reviewer who never signed in to core). Nil
+	// ensures nothing: the access log refuses a person without a row.
+	Subjects ReadLinkSubjects
 	// Now defaults to time.Now.
 	Now func() time.Time
 }
