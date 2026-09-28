@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -207,5 +208,52 @@ func TestR2_DeletingAPendingKeyAbortsItsOpenUploads(t *testing.T) {
 	}
 	if open := fake.OpenUploads("media"); !slices.Equal(open, []string{"files/a", "pending/ab"}) {
 		t.Fatalf("open after deleting files/a %v", open)
+	}
+}
+
+// The ZIP check reads a held file by ranges (ranged GETs): exactly the bytes
+// asked for, ErrNotFound for a file that is gone, and an error, never other
+// bytes, when storage answers a range it was not asked for. The bucket in
+// memory reads the same.
+func TestR2_OpenRangeReadsExactlyTheRangeAsked(t *testing.T) {
+	t.Parallel()
+	r2, _ := multipartR2(t)
+	memory := media.NewMemoryBlob()
+	ctx := context.Background()
+	data := []byte("0123456789abcdefghij")
+	for name, bucket := range map[string]media.ScanStorage{"r2": r2, "memory": memory} {
+		t.Run(name, func(t *testing.T) {
+			if err := bucket.(interface {
+				Put(context.Context, string, []byte, media.BlobMetadata) error
+			}).Put(ctx, "pending/scan/held", data, media.BlobMetadata{ContentType: "application/octet-stream"}); err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range []struct{ off, n int64 }{{0, 20}, {0, 1}, {5, 10}, {19, 1}} {
+				body, err := bucket.OpenRange(ctx, "pending/scan/held", r.off, r.n)
+				if err != nil {
+					t.Fatalf("%+v: %v", r, err)
+				}
+				got, err := io.ReadAll(body)
+				body.Close()
+				if err != nil || !bytes.Equal(got, data[r.off:r.off+r.n]) {
+					t.Fatalf("%+v: read %q, err %v", r, got, err)
+				}
+			}
+			if size, err := bucket.Size(ctx, "pending/scan/held"); err != nil || size != 20 {
+				t.Fatalf("size %d, err %v", size, err)
+			}
+			if _, err := bucket.OpenRange(ctx, "pending/scan/gone", 0, 1); !errors.Is(err, media.ErrNotFound) {
+				t.Fatalf("a file that is gone: err = %v", err)
+			}
+			for _, r := range []struct{ off, n int64 }{{20, 1}, {15, 10}, {-1, 2}, {0, 0}} {
+				if body, err := bucket.OpenRange(ctx, "pending/scan/held", r.off, r.n); err == nil {
+					got, readErr := io.ReadAll(body)
+					body.Close()
+					if readErr == nil {
+						t.Fatalf("%+v outside the file: read %q", r, got)
+					}
+				}
+			}
+		})
 	}
 }

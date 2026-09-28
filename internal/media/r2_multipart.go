@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -140,6 +141,34 @@ func (r *R2) ReadStart(ctx context.Context, key string, n int) ([]byte, error) {
 	}
 	defer got.Body.Close()
 	return io.ReadAll(io.LimitReader(got.Body, int64(n)))
+}
+
+// OpenRange streams the n bytes of the object from off (a ranged GET);
+// ErrNotFound when there is none. Storage must answer exactly that range:
+// an answer of other bytes (the whole object, a shorter range) is an error,
+// never read as the range.
+func (r *R2) OpenRange(ctx context.Context, key string, off, n int64) (io.ReadCloser, error) {
+	if off < 0 || n <= 0 {
+		return nil, ErrInvalid
+	}
+	last := off + n - 1
+	got, err := r.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(r.bucket),
+		Key:    aws.String(key),
+		Range:  aws.String(fmt.Sprintf("bytes=%d-%d", off, last)),
+	})
+	if apiErrorCode(err) == "NoSuchKey" {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	answered := aws.ToString(got.ContentRange)
+	if !strings.HasPrefix(answered, fmt.Sprintf("bytes %d-%d/", off, last)) || aws.ToInt64(got.ContentLength) != n {
+		got.Body.Close()
+		return nil, fmt.Errorf("r2: asked for bytes %d-%d, answered %q", off, last, answered)
+	}
+	return got.Body, nil
 }
 
 func (r *R2) Copy(ctx context.Context, from, to string, meta BlobMetadata) error {

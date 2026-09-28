@@ -6,67 +6,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/skylab-kulubu/core-backend/internal/clamd"
+	"github.com/skylab-kulubu/core-backend/internal/clamd/clamdtest"
 )
 
-// clamavImage is the ClamAV the deploy runs (clamav/clamav:1.5.4, see
-// ops/wizards/media-clamav-wizard.sh in sky_lab_genel), in its Debian build,
-// which also runs on arm64 machines. It carries a signature database, so
-// clamd starts without reaching the internet.
-const clamavImage = "clamav/clamav:1.5.4-debian"
-
-// startClamAV runs a disposable clamd with a 1 MiB StreamMaxLength,
-// AlertExceedsMax on (as the wizard sets it) and at most 2 files per
-// archive, and removes it when the test ends. The image declares no volume and the
-// container is --rm, so nothing is left behind. The test is skipped when
-// Docker or the image cannot be used. clamd loads its database for up to a
-// few minutes.
+// startClamAV runs a disposable clamd (clamdtest.Real) with a 1 MiB
+// StreamMaxLength, AlertExceedsMax on (as the wizard sets it) and at most 2
+// files per archive.
 func startClamAV(t *testing.T) string {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("short mode")
-	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not available")
-	}
-	name := fmt.Sprintf("core-clamav-test-%d", time.Now().UnixNano())
-	run := exec.Command("docker", "run", "-d", "--rm", "--name", name,
-		"-p", "127.0.0.1::3310",
-		"-e", "CLAMAV_NO_FRESHCLAMD=true",
-		"-e", "CLAMD_CONF_ConcurrentDatabaseReload=no",
-		"-e", "CLAMD_CONF_StreamMaxLength=1M",
-		"-e", "CLAMD_CONF_AlertExceedsMax=yes",
-		"-e", "CLAMD_CONF_MaxFiles=2",
-		clamavImage,
-	)
-	if out, err := run.CombinedOutput(); err != nil {
-		t.Skipf("docker run clamav: %v %s", err, out)
-	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", "-v", name).Run() })
-
-	deadline := time.Now().Add(4 * time.Minute)
-	for {
-		out, err := exec.Command("docker", "port", name, "3310/tcp").CombinedOutput()
-		if err == nil && strings.TrimSpace(string(out)) != "" {
-			addr := strings.TrimSpace(strings.Split(string(out), "\n")[0])
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			err = clamd.New(addr).Ping(ctx)
-			cancel()
-			if err == nil {
-				return addr
-			}
-		}
-		if time.Now().After(deadline) {
-			logs, _ := exec.Command("docker", "logs", "--tail", "20", name).CombinedOutput()
-			t.Fatalf("clamd never answered: %v\n%s", err, logs)
-		}
-		time.Sleep(time.Second)
-	}
+	return clamdtest.Real(t, "CLAMD_CONF_StreamMaxLength=1M", "CLAMD_CONF_AlertExceedsMax=yes", "CLAMD_CONF_MaxFiles=2")
 }
 
 func TestRealClamAV(t *testing.T) {
