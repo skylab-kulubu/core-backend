@@ -1,6 +1,7 @@
 package clamd_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"errors"
@@ -19,8 +20,9 @@ import (
 // clamd starts without reaching the internet.
 const clamavImage = "clamav/clamav:1.5.4-debian"
 
-// startClamAV runs a disposable clamd with a 1 MiB StreamMaxLength and
-// removes it when the test ends. The image declares no volume and the
+// startClamAV runs a disposable clamd with a 1 MiB StreamMaxLength,
+// AlertExceedsMax on (as the wizard sets it) and at most 2 files per
+// archive, and removes it when the test ends. The image declares no volume and the
 // container is --rm, so nothing is left behind. The test is skipped when
 // Docker or the image cannot be used. clamd loads its database for up to a
 // few minutes.
@@ -38,6 +40,8 @@ func startClamAV(t *testing.T) string {
 		"-e", "CLAMAV_NO_FRESHCLAMD=true",
 		"-e", "CLAMD_CONF_ConcurrentDatabaseReload=no",
 		"-e", "CLAMD_CONF_StreamMaxLength=1M",
+		"-e", "CLAMD_CONF_AlertExceedsMax=yes",
+		"-e", "CLAMD_CONF_MaxFiles=2",
 		clamavImage,
 	)
 	if out, err := run.CombinedOutput(); err != nil {
@@ -87,5 +91,25 @@ func TestRealClamAV(t *testing.T) {
 	// Over StreamMaxLength (1 MiB here): clamd refuses the stream.
 	if _, err := client.Scan(ctx, bytes.NewReader(make([]byte, 3<<20))); !errors.Is(err, clamd.ErrStreamTooLarge) {
 		t.Fatalf("a file over StreamMaxLength: err = %v, want %v", err, clamd.ErrStreamTooLarge)
+	}
+
+	// An archive clamd cannot scan whole (more files than MaxFiles) is
+	// reported under the Heuristics.Limits.Exceeded prefix the scan worker
+	// rejects as too large to scan.
+	var archive bytes.Buffer
+	w := zip.NewWriter(&archive)
+	for i := range 4 {
+		f, err := w.Create(fmt.Sprintf("part-%d.txt", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(f, "harmless %d", i)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	limited, err := client.Scan(ctx, &archive)
+	if err != nil || !strings.HasPrefix(limited.Signature, "Heuristics.Limits.Exceeded.") {
+		t.Fatalf("an archive over MaxFiles: %+v, %v", limited, err)
 	}
 }
