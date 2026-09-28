@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
@@ -72,5 +73,34 @@ func TestService_WithAScannerAnAnswerFileWaitsForItsScan(t *testing.T) {
 	}
 	if picture.Status != media.StatusPending || queue.n.Load() != 1 {
 		t.Fatalf("profile picture %s, nudges %d", picture.Status, queue.n.Load())
+	}
+}
+
+// The memory store follows the database's status trigger: an Answer file
+// attached while it waits for its scan stays scanning, without expiry, and
+// removed from its record it expires 30 days later.
+func TestMemoryStore_AttachingWhileScanningKeepsTheStatus(t *testing.T) {
+	t.Parallel()
+	pm, _ := newScannedMedia(t)
+	ctx := context.Background()
+	uploader := "63636363-6363-6363-6363-636363636363"
+	created, err := pm.svc.UploadForPurpose(ctx, signedIn(uploader), "answer_file", uploaded("cv.pdf", "application/pdf", pdfFile()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, _, err := pm.svc.Attach(ctx, formsService, created.ID, media.AttachRequest{
+		Owner: media.Owner{Service: authz.ProductForms, Type: "draft", ID: "d1"}, Role: media.RoleFormsAnswer, OnBehalfOf: uuid.MustParse(uploader),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := pm.store.Get(ctx, created.ID); got.Status != media.StatusScanning || got.ExpiresAt != nil {
+		t.Fatalf("attached while scanning: %s expires %v", got.Status, got.ExpiresAt)
+	}
+	if err := pm.svc.Detach(ctx, formsService, created.ID, link.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := pm.store.Get(ctx, created.ID); got.Status != media.StatusScanning || got.ExpiresAt == nil || got.ExpiresAt.Before(time.Now().Add(29*24*time.Hour)) {
+		t.Fatalf("detached while scanning: %s expires %v", got.Status, got.ExpiresAt)
 	}
 }

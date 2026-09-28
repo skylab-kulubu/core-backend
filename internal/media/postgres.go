@@ -223,7 +223,9 @@ func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
 const currentSQL = `media.deleted_at IS NULL AND media.blob_purge_started_at IS NULL AND media.blob_purged_at IS NULL`
 
 // unattachedCurrentSQL holds for a current Media no Media attachment keeps.
-const unattachedCurrentSQL = `media.status <> 'attached' AND ` + currentSQL
+// The status says so for every Media but one waiting for its malware scan,
+// which stays scanning whatever its Media attachments.
+const unattachedCurrentSQL = `media.status <> 'attached' AND NOT EXISTS (SELECT 1 FROM media_attachments a WHERE a.media_id = media.id) AND ` + currentSQL
 
 // ExpireUnattachedAt sets the expiry; a Media whose detach expiry is held
 // (the legacy backfill, decision K2) keeps none, as a legacy one does.

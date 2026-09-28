@@ -224,11 +224,22 @@ func (s *MemoryStore) ExpireUnattachedAt(_ context.Context, id uuid.UUID, at *ti
 	if !ok || m.DeletedAt != nil {
 		return ErrNotFound
 	}
-	if m.Status != StatusAttached && m.BlobPurgeStartedAt == nil && m.BlobPurgedAt == nil {
+	if m.Status != StatusAttached && !s.hasAttachment(id) && m.BlobPurgeStartedAt == nil && m.BlobPurgedAt == nil {
 		m.ExpiresAt = at
 		s.byID[id] = m
 	}
 	return nil
+}
+
+// hasAttachment reports whether a Media attachment links the Media; s.mu is
+// held.
+func (s *MemoryStore) hasAttachment(id uuid.UUID) bool {
+	for _, a := range s.attachments {
+		if a.MediaID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *MemoryStore) ListPurgeCandidates(_ context.Context, deletedBefore time.Time, limit int) ([]Media, error) {

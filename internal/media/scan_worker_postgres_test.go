@@ -500,3 +500,28 @@ func TestPostgresAccountErasureTakesUploadsWhateverTheirScan(t *testing.T) {
 		t.Fatalf("clean club file %s at %s stored as %+v", served.Status, served.Key, meta)
 	}
 }
+
+// Restoring an archived Media waiting for its scan starts its expiry again
+// only when nothing keeps it: one a Media attachment links keeps none, as
+// an attached Media does.
+func TestPostgresRestoringAnAttachedScanningMediaGivesItNoExpiry(t *testing.T) {
+	d := newScanDatabase(t)
+	ctx := context.Background()
+	kept := d.answer(t, pdfFile())
+	d.attachFor(t, formsService, kept, media.Owner{Service: authz.ProductForms, Type: "draft", ID: uuid.NewString()}, media.RoleFormsAnswer)
+	loose := d.answer(t, pdfFile())
+	for _, item := range []media.Media{kept, loose} {
+		if err := d.svc.Delete(ctx, d.organizer, item.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.svc.Restore(ctx, d.organizer, item.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := d.get(t, kept.ID); got.Status != media.StatusScanning || got.ExpiresAt != nil {
+		t.Fatalf("restored while attached: %s expires %v, want scanning with no expiry", got.Status, got.ExpiresAt)
+	}
+	if got := d.get(t, loose.ID); got.Status != media.StatusScanning || got.ExpiresAt == nil {
+		t.Fatalf("restored with nothing keeping it: %s expires %v, want scanning with an expiry", got.Status, got.ExpiresAt)
+	}
+}

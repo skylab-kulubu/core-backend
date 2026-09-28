@@ -9,7 +9,8 @@ import (
 )
 
 // Attach models the database's Media attachment and its triggers: only a
-// current Media is attached, and it becomes attached with no expiry.
+// current Media is attached, and it becomes attached with no expiry; one
+// waiting for its malware scan stays scanning.
 func (s *MemoryStore) Attach(_ context.Context, a Attachment) (Attachment, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -28,7 +29,9 @@ func (s *MemoryStore) attach(a Attachment) (Attachment, bool, error) {
 	a.ID = uuid.New()
 	a.CreatedAt = time.Now().UTC()
 	s.attachments[a.ID] = a
-	m.Status = StatusAttached
+	if m.Status != StatusScanning {
+		m.Status = StatusAttached
+	}
 	m.ExpiresAt = nil
 	m.UpdatedAt = a.CreatedAt
 	s.byID[m.ID] = m
@@ -64,7 +67,8 @@ func (s *MemoryStore) AttachHeld(_ context.Context, a Attachment) (Attachment, b
 }
 
 // Detach models the database's status trigger: the Media's last Media
-// attachment going detaches it.
+// attachment going detaches it; one waiting for its malware scan stays
+// scanning, with the detached window.
 func (s *MemoryStore) Detach(_ context.Context, mediaID, attachmentID uuid.UUID, service authz.Product) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -79,11 +83,13 @@ func (s *MemoryStore) Detach(_ context.Context, mediaID, attachmentID uuid.UUID,
 		}
 	}
 	m, ok := s.byID[mediaID]
-	if !ok || m.Status != StatusAttached {
+	if !ok || (m.Status != StatusAttached && m.Status != StatusScanning) {
 		return nil
 	}
 	now := time.Now().UTC()
-	m.Status = StatusDetached
+	if m.Status == StatusAttached {
+		m.Status = StatusDetached
+	}
 	m.ExpiresAt = nil
 	if m.Purpose != PurposeLegacy && !m.DetachExpiryHeld {
 		// The database's status trigger fixes the detached window at the
