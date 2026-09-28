@@ -27,6 +27,8 @@ type scanDatabase struct {
 	client *clamd.Client
 	worker *media.ScanWorker
 	now    time.Time
+	// midCopy runs while a test's copy is in flight (midCopyStorage).
+	midCopy func()
 }
 
 func newScanDatabase(t *testing.T) *scanDatabase {

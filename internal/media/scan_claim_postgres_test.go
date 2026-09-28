@@ -10,6 +10,7 @@ import (
 
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 // hookedScanStorage is the public bucket with hooks after a copy and a
@@ -202,5 +203,86 @@ func TestPostgresTheExpiryPurgeWaitsForAScanUnderWay(t *testing.T) {
 	got := d.get(t, club.ID)
 	if _, ok := d.blobs.Get(got.Key); got.Status != media.StatusPending || !ok {
 		t.Fatalf("%s at %s, object present %v", got.Status, got.Key, ok)
+	}
+}
+
+// midCopyStorage splits a copy into reading its source and writing its
+// destination, with a hook between them: an R2 copy that has read the held
+// file and lands later.
+type midCopyStorage struct {
+	*media.MemoryBlob
+	mu      sync.Mutex
+	midCopy func()
+}
+
+func (s *midCopyStorage) Copy(ctx context.Context, from, to string, meta media.BlobMetadata) error {
+	data, err := s.MemoryBlob.Read(ctx, from)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	hook := s.midCopy
+	s.midCopy = nil
+	s.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return s.MemoryBlob.Put(ctx, to, data, meta)
+}
+
+// A purge that does not wait for the scan's claim (account erasure), or
+// that runs once the claim's lease is over by its clock, can delete a held
+// file and its served key while the scan's copy is in flight; the copy then
+// lands. A Media whose purge has begun is never marked clean again, so the
+// scan deletes the copy it made: nothing is left at files/<id>.
+func TestPostgresACopyThatLandsAfterThePurgeIsDeleted(t *testing.T) {
+	ctx := context.Background()
+	for name, purge := range map[string]func(t *testing.T, d *scanDatabase, held media.Media){
+		"erasure": func(t *testing.T, d *scanDatabase, held media.Media) {
+			// A personal purpose, so that the erasure purges the held file
+			// rather than keep it as club content (no reviewed purpose is a
+			// held personal one today).
+			if _, err := d.pool.Exec(ctx, `UPDATE media SET purpose = 'profile_picture' WHERE id = $1`, held.ID); err != nil {
+				t.Fatal(err)
+			}
+			users := user.NewPostgresStore(d.pool)
+			if _, err := users.RequestDeletion(ctx, d.uploader(), nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := users.AnonymizeAccount(ctx, d.uploader(), time.Now().UTC(), nil); err != nil {
+				t.Fatal(err)
+			}
+			buckets := media.Buckets{Public: d.blobs, Private: media.NewPrivateStorage(d.private, transit.New(d.bao.Config()))}
+			d.midCopy = func() {
+				if err := media.NewImmediateBlobEraser(d.store, buckets).EnsureErased(ctx, held.ID, time.Now().UTC()); err != nil {
+					t.Errorf("erase: %v", err)
+				}
+			}
+		},
+		"expiry past the lease": func(t *testing.T, d *scanDatabase, held media.Media) {
+			buckets := media.Buckets{Public: d.blobs, Private: media.NewPrivateStorage(d.private, transit.New(d.bao.Config()))}
+			d.midCopy = func() {
+				report, err := media.PurgeExpired(ctx, d.store, buckets, held.ExpiresAt.Add(48*time.Hour), func(err error) { t.Log(err) })
+				if err != nil || report.Purged != 1 {
+					t.Errorf("purge %+v, err %v", report, err)
+				}
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := newScanDatabase(t)
+			held := d.heldClubFile(t, "x.pdf", pdfFile())
+			purge(t, d, held)
+			storage := &midCopyStorage{MemoryBlob: d.blobs, midCopy: d.midCopy}
+			w := d.workerOn(storage, func() time.Time { return d.now })
+			passOf(t, w)
+			passOf(t, w)
+			if got := d.get(t, held.ID); got.BlobPurgedAt == nil {
+				t.Fatalf("not purged: %s", got.Status)
+			}
+			if keys := d.blobs.Keys(); len(keys) != 0 {
+				t.Fatalf("left in the public bucket: %v", keys)
+			}
+		})
 	}
 }

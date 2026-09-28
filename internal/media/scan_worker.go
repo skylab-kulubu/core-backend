@@ -330,18 +330,32 @@ func (w *ScanWorker) clean(ctx context.Context, claim ScanClaim, report *ScanRep
 		return err
 	}
 	done, err := w.store.MarkScanClean(ctx, claim, served, w.now().UTC())
-	if err != nil || !done {
-		// Nothing is deleted: the claim was lost to another worker, which
-		// serves the same key, or the Media was purged or archived, and
-		// its purge deletes the copy (purgeMediaObjects); the archive and
-		// expiry purges wait for this claim's lease, so the copy cannot
-		// land after them.
+	if err != nil {
 		return err
+	}
+	if !done {
+		return w.dropUnservedCopy(ctx, m.ID, served)
 	}
 	report.Clean++
 	// The R2 lifecycle rule clears pending/ should this fail.
 	_ = w.deletePublic(ctx, m.Key)
 	return w.keepErasedName(ctx, m, served)
+}
+
+// dropUnservedCopy is a clean copy's end when its Media was not marked
+// clean. The claim may be lost to another worker, which serves the same key,
+// or the Media archived: the copy stays (a restored Media is scanned and
+// copied again; its archive purge deletes the copy with it). But a Media
+// whose purge has begun can never be marked clean again, and a purge that
+// did not wait for this claim (account erasure, or one past the lease) may
+// have deleted the served key before the copy landed: the copy goes. An
+// object already gone counts as deleted.
+func (w *ScanWorker) dropUnservedCopy(ctx context.Context, id uuid.UUID, served string) error {
+	now, err := w.store.GetIncludingDeleted(ctx, id)
+	if err != nil || (now.BlobPurgeStartedAt == nil && now.BlobPurgedAt == nil) {
+		return err
+	}
+	return w.deletePublic(ctx, served)
 }
 
 // copyToServed copies a clean held file to its served key with the serving
