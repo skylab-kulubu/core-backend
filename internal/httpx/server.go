@@ -94,7 +94,12 @@ func New(deps Deps) *fiber.App {
 		ErrorHandler: handlers.ErrorHandler,
 		// Fiber's 4 MiB default rejected media the service accepts. Leave room
 		// for the multipart envelope around the largest allowed file.
-		BodyLimit:          media.MaxUploadBytes + 1<<20,
+		BodyLimit: media.MaxUploadBytes + 1<<20,
+		// Fiber's 4 KiB read buffer also caps the request headers, and an
+		// admin's bearer (past 3 KB) plus the browser's .yildizskylab.com
+		// cookies ran over it: every call answered 431. 16 KiB matches
+		// Node's default, which the Next.js frontends already accept.
+		ReadBufferSize:     16 << 10,
 		TrustProxy:         true,
 		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: trustedProxies.Proxies()},
 		ProxyHeader:        fiber.HeaderXForwardedFor,
