@@ -47,6 +47,11 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 	}
 	fields := fiber.Map{"purpose": refusal.Purpose}
 	switch {
+	case errors.Is(err, media.ErrLimitsTooWide):
+		fields["allowedTypes"] = refusal.AllowedTypes
+		fields["maxBytes"] = refusal.MaxBytes
+		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
+			"The limits are wider than the purpose's: they may only narrow its types and maximum size.", "media_limits_too_wide", fields)
 	case errors.Is(err, media.ErrPurposeUnknown):
 		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
 			"The purpose is not in the Media purpose catalogue.", "purpose_unknown", fields)
@@ -74,6 +79,9 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
 			"This purpose needs a malware scan before its Media can be opened, and core has no scanner yet. Nothing is stored.",
 			"purpose_not_available", fields)
+	case errors.Is(err, media.ErrDirectUploadPrivate):
+		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
+			"A private purpose cannot be sent by Direct upload yet. Nothing is stored.", "purpose_not_available", fields)
 	case errors.Is(err, media.ErrPurposeNotAvailable):
 		// Like private_media_disabled: nothing is stored, and retrying does
 		// not help until a product attaches these Media.
@@ -83,6 +91,9 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 	case errors.Is(err, media.ErrDirectUploadOnly):
 		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
 			"This purpose is uploaded by Direct upload, not through this endpoint.", "purpose_requires_direct_upload", fields)
+	case errors.Is(err, media.ErrSingleStepOnly):
+		return true, problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
+			"This purpose is uploaded through POST /v1/media, not by Direct upload.", "purpose_requires_single_step", fields)
 	default:
 		return false, nil
 	}

@@ -71,8 +71,8 @@ func isImage(data []byte) bool {
 // only for Media uploaded without a purpose. An SVG for a purpose that lists
 // it is stored sanitized (sanitizeSVG).
 //
-// ZIP and MP4 are detected when Direct upload arrives; until then nothing
-// reaches a purpose that names them.
+// ZIP and MP4 reach core only by Direct upload, which tells them from their
+// first bytes (detectDirectType): no single-step purpose names them.
 func detectContentType(data []byte) string {
 	for _, format := range rasterFormats {
 		if format.detect(data) {

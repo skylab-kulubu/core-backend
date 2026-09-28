@@ -70,7 +70,9 @@ bucket takes that metadata from one policy (`media.ServingMetadata`,
   running any script a sanitizer missed (see [SVG](#svg)).
 - Every other file is `application/octet-stream` with
   `Content-Disposition: attachment; filename*=…` (the Media's name, RFC 2231
-  encoded), whatever type its client declared.
+  encoded), whatever type its client declared. A club file's ZIP is one of
+  them: download-only, never inline (decision D6, see
+  [Hard ceilings](#hard-ceilings)).
 
 The policy decides only the object's metadata. The media record keeps the
 file's own type, detected or declared. The copies a published certificate
@@ -145,10 +147,13 @@ unless its product has a service client configured
   when it is on ([Private Media](#private-media)). `answer_file` also needs
   a malware scan, so it stays refused (`purpose_not_available`) until the
   scanner exists (ticket 12). `answer_file_large` is a Direct upload purpose
-  and stays refused (ticket 11);
-- `club_file` and `video` name no product: where club files and videos are
-  attached is for the Direct upload and video tickets (11 and 13) to settle,
-  and both are Direct upload purposes anyway.
+  no person may start (`service_only`), and a private one Direct upload does
+  not take yet (ticket 21, see [Direct upload](#direct-upload));
+- `club_file` and `video` are Direct upload purposes that name no product:
+  where club files and videos are attached is not settled (superadmin's
+  large-file upload, ticket 20, and video, ticket 13), so both stay refused
+  (`purpose_not_available`). `club_file` also needs a malware scan
+  (ticket 12).
 
 Every purpose a product's role accepts must name that product, and the
 purposes core refers to in code (the core purposes, the CMS purposes and the
@@ -170,7 +175,7 @@ The initial entries:
 | `cms_image` | authenticated | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | cms (no service client yet) |
 | `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms (no service client yet) |
 | `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step | forms |
-| `club_file` | event_editor | PDF | 1 GiB | public, scanned | direct | not settled (ticket 11) |
+| `club_file` | event_editor | PDF, ZIP (download only) | 1 GiB | public, scanned | direct | not settled (ticket 20) |
 | `answer_file_large` | service_only | ZIP, PDF | 1 GiB | private, scanned | direct | forms |
 | `video` | event_editor | MP4 | 2 GiB | public | direct | not settled (ticket 13) |
 | `legacy` | authenticated | legacy rules | legacy rules | public | single-step | core, or a product for its uploader or once it holds it (transition rule) |
@@ -210,7 +215,15 @@ are.
 Core refuses to start with a catalogue that breaks one:
 
 - a public purpose accepts only raster images (JPEG, PNG, WebP, GIF), SVG,
-  PDF and MP4;
+  PDF and MP4, and ZIP only for `club_file` (decision D6): a ZIP is always
+  served as a download (`Content-Disposition: attachment`), never inline. A
+  private purpose may name ZIP (`answer_file_large`): it never reaches the
+  CDN;
+- a Direct upload purpose accepts only PDF, ZIP and MP4: core never receives
+  a Direct upload's bytes, it reads their start, and these three prove their
+  type there. An image would reach storage without the re-encoding every
+  stored image gets, and a DOCX is told from another ZIP only by reading all
+  of it;
 - a public purpose that accepts raster images declares re-encoding
   (`image.reencode`), and core re-encodes every such image (see
   [Images and sizes](#images-and-sizes));
@@ -255,7 +268,7 @@ over their upload budget gets `429` `media_rate_limited`, described under
 | 403 | `purpose_forbidden` | `purpose` | The caller's upload rule does not allow it. |
 | 422 | `private_media_disabled` | `purpose` | A private purpose while `MEDIA_PRIVATE_ENABLED` is off. Nothing is stored, and never publicly instead; retrying does not help. |
 | 503 | `private_media_unavailable` | | A private purpose while OpenBao cannot be reached. Nothing is stored; retry later (`Retry-After`). Public purposes are not affected. |
-| 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media`. |
+| 400 | `purpose_requires_direct_upload` | `purpose` | A `direct` purpose sent to `POST /v1/media` (see [Direct upload](#direct-upload)). |
 | 422 | `purpose_not_available` | `purpose` | A `service` purpose whose product has no service client configured (`cms_image` and `cms_file` today), or that names no product (`club_file` and `video`, which reach `purpose_requires_direct_upload` first): nothing is stored, the file would only wait for its expiry. Also a purpose that needs a malware scan while core has no scanner (`answer_file` today). |
 | 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum; an SVG above 1 MiB (`maxBytes` is then 1 MiB). |
 | 413 | `media_image_too_large` | `purpose`, `maxPixels` | Decoding the image would take more than core allows, judged from its header before anything is decoded (see [Decode cost](#decode-cost)). `maxPixels` is the most pixels an image of its kind may have: 50 000 000, fewer for costly pixels (16-bit PNG, progressive JPEG, an animation's many frames). An animated GIF or WebP larger than 2560 px on a side is refused this way too. |
@@ -267,12 +280,13 @@ refused by the HTTP server with a bare `413` before any purpose is read.
 
 ### Upload limits
 
-Each signed-in person has one budget for single-step uploads, shared by
-`POST /v1/media` and `POST /v1/users/me/profile-picture` (ADR-0052, media
-redesign ticket 05):
+Each signed-in person has one budget for uploads, shared by
+`POST /v1/media`, `POST /v1/users/me/profile-picture` (ADR-0052, media
+redesign ticket 05) and [Direct upload](#direct-upload) (ticket 11):
 
 - at most 100 uploads per rolling 10 minutes;
-- at most 2048 MiB (2 GiB) of request body per rolling 24 hours.
+- at most 2048 MiB (2 GiB) of request body (for a Direct upload, of declared
+  size) per rolling 24 hours.
 
 These are higher than the spec's example numbers (30 and 500 MB) on purpose.
 Superadmin's gallery input uploads every selected image in one loop, so a
@@ -319,10 +333,221 @@ allows only the gate's keys and commands. It is not fiber's `limiter`
 middleware either, which counts requests only: this one also counts bytes and
 gives back server failures.
 
-Direct upload is not counted here. The product that owns a Direct upload
-grant limits it; the Direct upload routes, when they land, stay off this
-limiter. A test (`TestEveryRouteThatStoresAFileIsChargedToTheUploadBudget`)
-fails when any route stores a file sent through core without being charged.
+A Direct upload is charged to the same budget, by the media service rather
+than by the route, since its bytes never pass through core: one upload and
+the size it declares, when it starts (see
+[Direct upload](#direct-upload)). (The spec left Direct upload to the owning
+product's grant; ticket 11 counts it here instead, so a person's large files
+and single-step uploads share one day.) A test
+(`TestEveryRouteThatStoresAFileIsChargedToTheUploadBudget`) fails when any
+route stores a file sent through core without being charged.
+
+## Direct upload
+
+Media redesign ticket 11 (ADR-0052). A purpose whose `transport` is `direct`
+(`club_file`, `answer_file_large`, `video`) is not sent through core: the
+browser sends the file straight to R2 as an S3 multipart upload, part by
+part, to addresses core presigns, then asks core to complete it. Core never
+holds the file; it checks what R2 holds, copies it to its final key and
+creates the Media.
+
+Today no purpose can be started this way in production: `club_file` needs a
+malware scan and names no product that attaches it, `video` names none
+either, and `answer_file_large` is private and `service_only` (see
+[The catalogue](#the-catalogue)). The whole flow is exercised with a test
+catalogue that turns the scan off and lets core attach (`directCatalogue` in
+`internal/httpx/media_direct_upload_test.go`); ticket 12 lifts the scan gate.
+
+### Endpoints
+
+All three need a signed-in person. `POST /v1/uploads` starts one:
+
+```json
+{"purpose": "club_file", "name": "veri seti.zip", "size": 734003200, "limits": {"types": ["application/zip"], "maxBytes": 800000000}}
+```
+
+- `name`: the file's name, 1 to 255 bytes of text without control
+  characters. It is kept with the Media and names the download; it is never
+  part of a key.
+- `size`: the file's exact size in bytes.
+- `limits` (optional): what the owning product allows for this one upload
+  (Skyforms: "only PDF, 5 MB"). It may only narrow the purpose: `types` the
+  purpose accepts, a `maxBytes` no larger than the purpose's. Core keeps the
+  narrowed limits with the upload and checks the file against them.
+
+It answers `201 Created` with `Cache-Control: no-store`:
+
+```json
+{
+  "id": "0f2a…",
+  "purpose": "club_file",
+  "name": "veri seti.zip",
+  "size": 734003200,
+  "partSize": 16777216,
+  "partCount": 44,
+  "expiresAt": "2026-09-28T21:00:00Z",
+  "uploaded": [],
+  "parts": [
+    {"partNumber": 1, "size": 16777216, "url": "https://<account>.r2.cloudflarestorage.com/<bucket>/pending/0f2a…?partNumber=1&uploadId=…&X-Amz-Signature=…"}
+  ],
+  "partUrlsExpireAt": "2026-09-28T10:00:00Z"
+}
+```
+
+Every part is 16 MiB but the last (R2 wants the parts equal; a 2 GiB file is
+128 parts). The browser PUTs each part's bytes to its `url` and keeps the
+`ETag` R2 answers (the bucket's CORS exposes it, see
+[R2 lifecycle and CORS](#r2-lifecycle-and-cors)). An address is signed for
+its part's length (`Content-Length` is a signed header), so no PUT can carry
+more, and it works for an hour. The addresses are handed only to the
+uploader and are never logged; the answer that carries them is never cached.
+
+`POST /v1/uploads/{id}/parts` answers the same shape with `200`: `uploaded`
+lists the parts R2 holds whole, each with its `partNumber`, `size` and
+`etag`, and `parts` has new addresses for the others. An interrupted upload
+continues from there, and an upload that outlives its addresses asks here
+for new ones.
+
+`POST /v1/uploads/{id}/complete` completes it, with every part in order:
+
+```json
+{"parts": [{"partNumber": 1, "etag": "\"a54f…\""}, {"partNumber": 2, "etag": "\"9c1e…\""}]}
+```
+
+It answers `201 Created` with the Media, as `POST /v1/media` does. The Media
+takes the upload's id, so a completion retried after its answer was lost
+answers the same Media.
+
+An upload is its uploader's: anyone else gets `404` for it, as for one that
+does not exist. So does an upload past `expiresAt` (12 hours after its
+start, `media.DirectUploadTTL`) and one that ended.
+
+### Checks
+
+The start checks the purpose as a single-step upload does, in the same order
+(see [Uploading](#uploading)): the purpose exists, the caller's upload rule,
+private Media on, the transport is `direct` (`purpose_requires_single_step`
+otherwise), a private purpose (none yet, ticket 21), something can attach it,
+the malware scan gate. Then the request (name and size), the narrowed
+limits, the size against the (narrowed) maximum, and the person's upload
+budget. Only then does core register the upload and open the multipart
+upload at `pending/<id>`.
+
+The completion, in order:
+
+1. The caller's upload, not expired.
+2. The purpose's rules again, as they are now: a deploy may have changed the
+   catalogue since the start.
+3. The parts: every part from 1 to `partCount`, in order, each with the ETag
+   R2 holds and whole. Parts that are not R2's (a wrong ETag, one missing)
+   are `upload_parts_mismatch`: nothing is refused about the file, and the
+   upload stays open. A part of another size is the file's refusal
+   (`upload_size_mismatch`).
+4. R2 joins the parts (`CompleteMultipartUpload`).
+5. The size, by a `HEAD`, is exactly the declared size and within the
+   maximum.
+6. The first 512 bytes, by a ranged `GET`, name one of the upload's types:
+   PDF by its `%PDF-` header, ZIP by its first local file header (or an
+   empty archive's end), MP4 by its `ftyp` box. Where an MP4's `moov` box
+   sits is video's own ticket (13).
+7. The object is copied to `files/<uuid>` with the `Content-Type` and
+   `Content-Disposition` of the [serving policy](#serving-policy), written by
+   core: a PDF inline, a ZIP (and an MP4, until ticket 13) as a download
+   under its name. The final key is staged like every object core writes.
+8. The Media is created `pending`, with the purpose's `pending_ttl`, and the
+   upload ends in the same transaction; then the pending object is deleted.
+
+A Media of a purpose that needs a scan would start `scanning`; none can be
+started until the scanner exists, and ticket 12 adds that status.
+
+A file the upload refuses (step 5 or 6, or step 2) ends the upload: its
+record goes, its pending object and any multipart upload still open are
+deleted, and its charge is given back.
+
+### Refusals
+
+The purpose's refusals of [Uploading](#uploading) (`purpose_unknown`,
+`purpose_forbidden`, `private_media_disabled`, `purpose_not_available`,
+`media_too_large` with the narrowed maximum, `media_type_not_allowed` with
+the narrowed types), the budget's `429` `media_rate_limited` (see
+[Upload limits](#upload-limits)), and these:
+
+| Status | `code` | Extra members | When |
+|---|---|---|---|
+| 400 | `purpose_requires_single_step` | `purpose` | A `single_step` purpose sent to `POST /v1/uploads`. |
+| 400 | `media_limits_too_wide` | `purpose`, `allowedTypes`, `maxBytes` | `limits` names a type the purpose does not accept or a larger maximum. |
+| 422 | `purpose_not_available` | `purpose` | Also a private purpose, until ticket 21. |
+| 400 | `upload_parts_mismatch` | | The completion's parts are not the parts R2 holds. The upload stays open: `POST /v1/uploads/{id}/parts` lists them. |
+| 422 | `upload_size_mismatch` | `declaredSize`, `size` | The stored file is not the declared size. The upload is ended. |
+| 404 | | | Someone else's upload, an expired or ended one, or none. |
+| 503 | `direct_upload_unavailable` | | This core has no R2 (a local run without `R2_*`). |
+| 400 | | | A body that is not JSON, an empty or unusable name, a size of 0 or less. |
+
+### Upload budget
+
+A Direct upload is charged to the person's [upload budget](#upload-limits),
+shared with single-step uploads, when it starts: one upload and its declared
+size. Nothing is charged for a start refused before that (no bytes arrive
+with it). The charge is given back when:
+
+- the start fails on core's side (R2 or the database, `5xx`);
+- the completion refuses the file (`upload_size_mismatch`,
+  `media_type_not_allowed`, `media_too_large`, or a purpose rule);
+- the upload is never completed: its charge lapses when the upload expires
+  (`UploadLimiter.AdmitUntil`), count and bytes.
+
+A completed upload stays charged. `upload_parts_mismatch` changes nothing:
+the upload is still open.
+
+### Storage and cleanup
+
+The pending object is registered in `media_upload_staging` before R2 opens
+anything at its key, like every object write core causes: its staging row
+(key, uploader, `cleanup_after` = the upload's expiry) is what the staging
+sweeper and account erasure delete by. The upload's details (purpose, file
+name, narrowed limits, declared size, part size, R2's multipart upload id,
+expiry) are in `media_direct_uploads` (migration `20260928100000`), which
+goes with that staging row (`ON DELETE CASCADE`). The records survive a
+restart; the budget, like the single-step one, lives in memory.
+
+Deleting a pending key (`pending/…`, or `private/pending/…` in the private
+bucket) also aborts every multipart upload still open at exactly that key
+(`media.R2.Delete`). So every path that deletes by key alone leaves no parts
+behind:
+
+- the staging sweeper (`MEDIA_UPLOAD_STAGING_SWEEP_INTERVAL`, 15 minutes by
+  default, `MEDIA_UPLOAD_STAGING_BATCH_SIZE` at a time) ends every upload
+  that expired, and finishes a refusal or completion whose own cleanup
+  failed; it is batched, idempotent, and walks past a failing row, which it
+  retries an hour later;
+- a completion deletes its pending object once the Media is stored, and a
+  refusal its pending object and multipart upload;
+- account erasure's `erase_staged_uploads` treats an open Direct upload as a
+  live upload: it waits until the upload expires (at most 12 hours; the
+  person's access is already blocked, so it cannot complete), then aborts
+  it and deletes its record, file name included.
+
+The R2 lifecycle rule below is the backstop for anything all of these miss.
+
+### R2 lifecycle and CORS
+
+A human step, done by `ops/wizards/media-direct-upload-r2-wizard.sh` in
+sky_lab_genel (sandbox first, then production). For the public and the
+private bucket of each side:
+
+- a lifecycle rule on the pending prefix (`pending/` in the public bucket,
+  `private/pending/` in the private one) that deletes objects and aborts
+  incomplete multipart uploads after 2 days;
+- a CORS rule that lets browsers `PUT` from the origins core's API allows
+  (the Traefik `cors.yml` on the server; it is not in this repo), with
+  `AllowedHeaders` `content-type` and `ExposeHeaders` `ETag`, so the browser
+  can read each part's ETag.
+
+No wizard holds a Cloudflare API token, so the wizard shows where to click in
+the Cloudflare dashboard and what to paste, then checks the CORS rule with a
+preflight from the server; the lifecycle rule is confirmed in the dashboard.
+The private bucket's rules wait for ticket 21 (private Direct upload); they
+change nothing until then.
 
 ## Images and sizes
 
@@ -1277,7 +1502,9 @@ A purpose whose entry has `scan: true` is refused with `422`
 that needs a scan is not opened before it is clean, so nothing of it could be
 opened. Today that is `answer_file`: Answer files cannot be uploaded until
 the scanner exists, whatever `MEDIA_PRIVATE_ENABLED` says. `certificate_asset`
-needs no scan.
+needs no scan. `answer_file_large`, sent by [Direct upload](#direct-upload),
+is refused whatever the flag says until ticket 21 encrypts a large file after
+its completion.
 
 An OpenBao that cannot be reached, is sealed, refuses core's identity, or has
 no such mount or key fails only private uploads and reads, with `503`
@@ -1512,12 +1739,18 @@ What happens to the records when the request completes is in
 - `MEDIA_UPLOAD_STAGING_SWEEP_INTERVAL` — retry sweep interval; default `15m`.
 - `MEDIA_UPLOAD_STAGING_BATCH_SIZE` — maximum staging intents per run; default
   `25`.
-- `MEDIA_UPLOAD_RATE_MAX` — single-step uploads per person per window; default
+- `MEDIA_UPLOAD_RATE_MAX` — uploads (single-step and Direct) per person per window; default
   `100`.
 - `MEDIA_UPLOAD_RATE_WINDOW` — Go duration of that rolling window; default
   `10m`.
 - `MEDIA_UPLOAD_DAILY_MAX_MIB` — MiB of upload body per person per rolling
-  24 hours; default `2048`.
+  24 hours; default `2048`. A [Direct upload](#direct-upload) counts its
+  declared size here too.
+- Direct upload has no setting of its own: an upload lives 12 hours, a part
+  address an hour, and every part but the last is 16 MiB, fixed in code
+  (`media.DirectUploadTTL`, `media.DirectUploadPartURLTTL`). It uses core's
+  R2 (`R2_*`); without it, it answers `503` `direct_upload_unavailable`. The
+  staging sweeper's settings above end expired uploads.
 - `CDN_BASE` (or `R2_PUBLIC_URL`) — the public base of every Media address;
   default `https://cdn.yildizskylab.com`.
 - The decode budget (2 images at once, 1 SVG, a 10-second wait) is fixed in
