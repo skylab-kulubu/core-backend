@@ -3,7 +3,9 @@ package event
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -21,7 +23,17 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at`
+var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at, ` +
+	servableCountSQL(Files) + `, ` + servableCountSQL(Videos)
+
+// servableCountSQL counts the Event's items of the list anyone can see: a
+// subquery of the query that reads the Event, so a list of Events costs no
+// query more for them. An item is seen when its Media is current (as in
+// the gallery) and can be served (media.ServableSQL).
+func servableCountSQL(list MediaList) string {
+	return `(SELECT count(*) FROM ` + list.table() + ` linked JOIN media lm ON lm.id = linked.media_id AND lm.deleted_at IS NULL
+		WHERE linked.event_id = e.id AND ` + media.ServableSQL("lm") + `)`
+}
 
 const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id AND m.deleted_at IS NULL`
 
@@ -105,6 +117,88 @@ func (s *PostgresStore) get(ctx context.Context, id uuid.UUID, includeArchived b
 		return Event{}, err
 	}
 	return events[0], nil
+}
+
+// ListFiles reads the Event's files and videos, in one query, each in its
+// organizers' order. An item whose Media was archived is left out, as in
+// the gallery; one that cannot be served (media.ServableSQL: private,
+// being purged, waiting for its malware scan or rejected by it) has no
+// address, and only a rejected one its scan result.
+func (s *PostgresStore) ListFiles(ctx context.Context, eventID uuid.UUID) ([]MediaItem, []MediaItem, error) {
+	lists := Event{Files: make([]MediaItem, 0), Videos: make([]MediaItem, 0)}
+	selects := make([]string, 0, 2)
+	for _, list := range mediaLists {
+		selects = append(selects, `SELECT '`+string(list)+`' AS list, m.id, m.file_name, m.file_type, m.file_size, m.status,
+			CASE WHEN m.status = '`+string(media.StatusRejected)+`' THEN COALESCE(m.scan_result, '') ELSE '' END,
+			COALESCE(`+media.ServableKeySQL("m")+`, ''),
+			linked.order_index, linked.added_at
+		FROM `+list.table()+` linked
+		JOIN media m ON m.id = linked.media_id AND m.deleted_at IS NULL
+		WHERE linked.event_id = $1`)
+	}
+	rows, err := s.pool.Query(ctx, strings.Join(selects, "\n\t\tUNION ALL ")+`
+		ORDER BY list, order_index, added_at, id`, eventID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var list MediaList
+		var item MediaItem
+		var order int
+		var added time.Time
+		if err := rows.Scan(&list, &item.ID, &item.Name, &item.Type, &item.Size, &item.Status, &item.ScanResult, &item.URL, &order, &added); err != nil {
+			return nil, nil, err
+		}
+		lists = lists.withList(list, append(lists.list(list), item))
+	}
+	return lists.Files, lists.Videos, rows.Err()
+}
+
+// lockForFiles locks the current Event's row while one of its lists
+// changes, so that the lists of one Event change one at a time: two
+// organizers' additions take places one after the other, and an order is
+// checked against the list it rewrites. It takes the lock an Event's update
+// takes, which a link's foreign key check does not wait for.
+func lockForFiles(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) error {
+	var locked uuid.UUID
+	err := tx.QueryRow(ctx, `SELECT id FROM events WHERE id = $1 AND archived_at IS NULL FOR NO KEY UPDATE`, eventID).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *PostgresStore) AddFiles(ctx context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error) {
+	if !list.known() {
+		return Event{}, ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Event{}, err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockForFiles(ctx, tx, eventID); err != nil {
+		return Event{}, err
+	}
+	// One statement: its trigger writes every new link's Media attachment,
+	// and one Media that cannot be linked refuses them all.
+	_, err = tx.Exec(ctx, `
+		INSERT INTO `+list.table()+` (event_id, media_id, order_index)
+		SELECT $1, added.media_id, COALESCE((SELECT max(order_index) FROM `+list.table()+` WHERE event_id = $1), 0) + added.n
+		FROM unnest($2::uuid[]) WITH ORDINALITY AS added (media_id, n)
+		WHERE added.media_id <> $3
+		ON CONFLICT (event_id, media_id) DO NOTHING`, eventID, ids, uuid.Nil)
+	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
+		return Event{}, refusal
+	}
+	if err != nil {
+		return Event{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Event{}, err
+	}
+	return s.Get(ctx, eventID)
 }
 
 func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
@@ -252,6 +346,84 @@ func (s *PostgresStore) RemoveImages(ctx context.Context, eventID uuid.UUID, ids
 	return s.Get(ctx, eventID)
 }
 
+func (s *PostgresStore) RemoveFiles(ctx context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error) {
+	if !list.known() {
+		return Event{}, ErrInvalid
+	}
+	gone := distinctIDs(ids)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Event{}, err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockForFiles(ctx, tx, eventID); err != nil {
+		return Event{}, err
+	}
+	// One statement: its trigger removes the links' Media attachments, and
+	// the Media whose last one goes are detached.
+	tag, err := tx.Exec(ctx, `DELETE FROM `+list.table()+` WHERE event_id = $1 AND media_id = ANY ($2)`, eventID, gone)
+	if err != nil {
+		return Event{}, err
+	}
+	if tag.RowsAffected() != int64(len(gone)) {
+		return Event{}, ErrNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Event{}, err
+	}
+	return s.Get(ctx, eventID)
+}
+
+func (s *PostgresStore) OrderFiles(ctx context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error) {
+	if !list.known() || len(distinctIDs(ids)) != len(ids) {
+		return Event{}, ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Event{}, err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockForFiles(ctx, tx, eventID); err != nil {
+		return Event{}, err
+	}
+	// The list as its answers show it: an item whose Media was archived is
+	// not in it, and keeps its place.
+	rows, err := tx.Query(ctx, `SELECT linked.media_id FROM `+list.table()+` linked
+		JOIN media m ON m.id = linked.media_id AND m.deleted_at IS NULL
+		WHERE linked.event_id = $1`, eventID)
+	if err != nil {
+		return Event{}, err
+	}
+	listed, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return Event{}, err
+	}
+	if len(listed) != len(ids) || slices.ContainsFunc(ids, func(id uuid.UUID) bool { return !slices.Contains(listed, id) }) {
+		return Event{}, ErrConflict
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE `+list.table()+` linked SET order_index = wanted.n
+		FROM unnest($2::uuid[]) WITH ORDINALITY AS wanted (media_id, n)
+		WHERE linked.event_id = $1 AND linked.media_id = wanted.media_id`, eventID, ids); err != nil {
+		return Event{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Event{}, err
+	}
+	return s.Get(ctx, eventID)
+}
+
+// distinctIDs are the ids, each once, in their first order.
+func distinctIDs(ids []uuid.UUID) []uuid.UUID {
+	out := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func (s *PostgresStore) TeamsUsingMedia(ctx context.Context, mediaID, except uuid.UUID) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT DISTINCT e.owner_team
@@ -259,6 +431,10 @@ func (s *PostgresStore) TeamsUsingMedia(ctx context.Context, mediaID, except uui
 		WHERE e.id <> $2
 		  AND (e.cover_image_id = $1 OR EXISTS (
 			SELECT 1 FROM event_images ei WHERE ei.event_id = e.id AND ei.media_id = $1
+		  ) OR EXISTS (
+			SELECT 1 FROM event_files ef WHERE ef.event_id = e.id AND ef.media_id = $1
+		  ) OR EXISTS (
+			SELECT 1 FROM event_videos ev WHERE ev.event_id = e.id AND ev.media_id = $1
 		  ))
 	`, mediaID, except)
 	if err != nil {
@@ -659,6 +835,7 @@ func scanEvent(row rowScanner) (Event, error) {
 		&e.ID, &e.Name, &e.Description, &e.Location, &e.OwnerTeam, &e.FormURL, &e.Capacity,
 		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Ranked, &e.PrizeInfo, &e.SeasonID,
 		&e.CoverImageID, &coverURL, &e.coverImage, &e.CoverColors, &e.AttendanceRule, &e.AttendanceRatio, &extraRaw, &e.MailListID, &e.ArchivedAt, &e.ArchivedBy, &e.CreatedAt, &e.UpdatedAt,
+		&e.FileCount, &e.VideoCount,
 	)
 	if coverURL != nil {
 		e.CoverImageURL = *coverURL

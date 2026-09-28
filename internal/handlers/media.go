@@ -86,6 +86,10 @@ func purposeProblem(c fiber.Ctx, err error) (handled bool, _ error) {
 		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
 			"This purpose needs a malware scan before its Media can be opened, and core has no scanner configured. Nothing is stored.",
 			"purpose_not_available", fields)
+	case errors.Is(err, media.ErrDirectUploadSwitchedOff):
+		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
+			"Direct upload of this purpose is not switched on here (MEDIA_DIRECT_UPLOAD_PURPOSES). Nothing is stored.",
+			"purpose_not_available", fields)
 	case errors.Is(err, media.ErrDirectUploadPrivate):
 		return true, problemWithFields(c, fiber.StatusUnprocessableEntity, "Unprocessable Content",
 			"A private purpose cannot be sent by Direct upload yet. Nothing is stored.", "purpose_not_available", fields)

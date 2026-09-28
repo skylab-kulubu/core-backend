@@ -147,7 +147,7 @@ func BackfillPass[T any](ctx context.Context, kind string, list func(ctx context
 // writes once more if the name changed meanwhile: an account erasure that
 // stripped the name (media redesign ticket 07) stays stripped.
 func applyServingPolicy(ctx context.Context, store Store, blobs BlobStore, item Media) error {
-	serving := ServingMetadata(item.Type, item.Name)
+	serving := ServingMetadataFor(item.Purpose, item.Type, item.Name)
 	if serving != (BlobMetadata{ContentType: item.Type}) {
 		if err := blobs.SetMetadata(ctx, item.Key, serving); err != nil && !errors.Is(err, ErrNotFound) {
 			return err
@@ -157,7 +157,7 @@ func applyServingPolicy(ctx context.Context, store Store, blobs BlobStore, item 
 			return err
 		}
 		if now.Name != item.Name {
-			if err := blobs.SetMetadata(ctx, item.Key, ServingMetadata(now.Type, now.Name)); err != nil && !errors.Is(err, ErrNotFound) {
+			if err := blobs.SetMetadata(ctx, item.Key, ServingMetadataFor(now.Purpose, now.Type, now.Name)); err != nil && !errors.Is(err, ErrNotFound) {
 				return err
 			}
 		}

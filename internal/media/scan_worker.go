@@ -80,7 +80,9 @@ var scanHoldMetadata = BlobMetadata{ContentType: "application/octet-stream", Con
 // servedKeyOf is where a held file of the Media is served from once clean.
 // It is the Media's id, so a copy retried after a crash lands on the same
 // key, and so every purge of a held Media knows it (purgeMediaObjects); only
-// clean bytes are ever written there.
+// clean bytes are ever written there. No video is ever held: a video needs
+// no scan (ErrCeilingVideoScan), and its served key keeps its extension
+// (directServedKey).
 func servedKeyOf(id uuid.UUID) string {
 	return "files/" + id.String()
 }
@@ -367,7 +369,7 @@ func (w *ScanWorker) copyToServed(ctx context.Context, m Media) (string, error) 
 	served := servedKeyOf(m.ID)
 	copyCtx, cancel := context.WithTimeout(ctx, scanCopyTimeout)
 	defer cancel()
-	if err := w.public.Copy(copyCtx, m.Key, served, ServingMetadata(m.Type, m.Name)); err != nil {
+	if err := w.public.Copy(copyCtx, m.Key, served, ServingMetadataFor(m.Purpose, m.Type, m.Name)); err != nil {
 		return "", fmt.Errorf("copy the clean file to its served key: %w", err)
 	}
 	return served, nil
@@ -383,7 +385,7 @@ func (w *ScanWorker) keepErasedName(ctx context.Context, m Media, served string)
 	}
 	metaCtx, cancel := context.WithTimeout(ctx, scanStorageTimeout)
 	defer cancel()
-	if err := w.public.SetMetadata(metaCtx, served, ServingMetadata(now.Type, now.Name)); err != nil && !errors.Is(err, ErrNotFound) {
+	if err := w.public.SetMetadata(metaCtx, served, ServingMetadataFor(now.Purpose, now.Type, now.Name)); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	return nil

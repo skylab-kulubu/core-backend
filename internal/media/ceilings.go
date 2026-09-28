@@ -19,6 +19,18 @@ var (
 	// (ServingMetadata), never inline. A private purpose may name ZIP: it
 	// never reaches the CDN.
 	ErrCeilingZIP = errors.New("media purpose catalogue: only club files accept ZIP publicly, as a download")
+	// ErrCeilingMP4: only videos (videoPurposes) accept MP4 publicly. Their
+	// MP4 is the one type served inline beside images and PDF, to play
+	// (ServingMetadataFor): video/mp4, never a download. No other purpose
+	// may have its MP4 played from the CDN.
+	ErrCeilingMP4 = errors.New("media purpose catalogue: only videos accept MP4 publicly")
+	// ErrCeilingVideoScan: a video (videoPurposes) needs no malware scan.
+	// Its served key follows its type (directServedKey: videos/<uuid>.mp4),
+	// while a scanned file is copied, once clean, to a served key that
+	// follows its Media id alone (servedKeyOf: files/<Media id>), which every
+	// purge of a held Media finds without knowing its purpose. A scanned
+	// video would be served without its extension.
+	ErrCeilingVideoScan = errors.New("media purpose catalogue: a video needs no malware scan")
 	// ErrCeilingDirectType: a Direct upload purpose accepts only PDF, ZIP
 	// and MP4 (directTypes). Core never receives a Direct upload's bytes; it
 	// reads their start (detectDirectType) and keeps the object as it came.
@@ -84,6 +96,10 @@ var svgPurposes = []string{"cms_image", PurposeEventCover, PurposeEventGallery}
 // zipPurposes are the only public purposes that may accept ZIP.
 var zipPurposes = []string{PurposeClubFile}
 
+// videoPurposes are the only public purposes that may accept MP4, and the
+// only ones whose MP4 is served inline, to play.
+var videoPurposes = []string{PurposeVideo}
+
 // directTypes are the only types a Direct upload purpose may accept.
 var directTypes = []string{pdfType, zipType, mp4Type}
 
@@ -121,6 +137,9 @@ func checkCeilings(p Purpose) error {
 	if p.Scan && p.Visibility == VisibilityPublic && p.Transport != TransportDirect {
 		return fmt.Errorf("%s: %w", p.Name, ErrCeilingPublicScan)
 	}
+	if p.Scan && slices.Contains(videoPurposes, p.Name) {
+		return fmt.Errorf("%s: %w", p.Name, ErrCeilingVideoScan)
+	}
 	if p.Image.MaxDimension > MaxImageDimension {
 		return fmt.Errorf("%s keeps %d px: %w", p.Name, p.Image.MaxDimension, ErrCeilingImageDimension)
 	}
@@ -141,6 +160,9 @@ func checkCeilings(p Purpose) error {
 					return fmt.Errorf("%s names %s: %w", p.Name, t, ErrCeilingZIP)
 				}
 				continue
+			}
+			if t == mp4Type && !slices.Contains(videoPurposes, p.Name) {
+				return fmt.Errorf("%s names %s: %w", p.Name, t, ErrCeilingMP4)
 			}
 			if !isRasterType(t) && t != svgType && t != pdfType && t != mp4Type {
 				return fmt.Errorf("%s names %s: %w", p.Name, t, ErrCeilingPublicType)

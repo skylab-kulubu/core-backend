@@ -45,6 +45,25 @@ func ServedKeySQL(alias string) string {
 	return `CASE WHEN ` + alias + `.status IN ('` + string(StatusScanning) + `', '` + string(StatusRejected) + `') THEN NULL ELSE ` + alias + `.file_url END`
 }
 
+// ServableSQL is Media.Servable as an SQL condition on the media row aliased
+// alias (a trusted identifier, never input): the Media is public, its
+// object neither being nor already purged, and it is neither waiting for its
+// malware scan nor rejected by it. Records that list Media with their
+// addresses (an Event's files and videos) and count them use it, so what
+// they show and count is what the Media JSON serves; a test keeps the two
+// equal.
+func ServableSQL(alias string) string {
+	return `(` + alias + `.visibility = '` + string(VisibilityPublic) + `' AND ` + alias + `.blob_purge_started_at IS NULL AND ` +
+		alias + `.blob_purged_at IS NULL AND ` + alias + `.status NOT IN ('` + string(StatusScanning) + `', '` + string(StatusRejected) + `'))`
+}
+
+// ServableKeySQL is the object key of the Media row aliased alias when it
+// can be served (ServableSQL), and NULL otherwise: the key a record answers
+// an address for.
+func ServableKeySQL(alias string) string {
+	return `CASE WHEN ` + ServableSQL(alias) + ` THEN ` + alias + `.file_url END`
+}
+
 // linkedImageColumns are the fields LinkedImageSQL builds, named for the
 // Media fields scanMedia fills from the same columns.
 type linkedImageColumns struct {

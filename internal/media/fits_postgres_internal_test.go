@@ -52,7 +52,37 @@ func TestPostgresTheDatabaseRoleTableIsRolePurposes(t *testing.T) {
 		t.Fatalf("the database's role table\n%v\nis not rolePurposes\n%v", database, code)
 	}
 
-	// And the check reads it, with legacy fitting every role.
+	// Its copy of the roles legacy does not fit (media_roles_without_legacy,
+	// migration 20260928160000) holds exactly rolesWithoutLegacy.
+	type strictRole struct {
+		Product authz.Product
+		Role    Role
+	}
+	rows, err = pool.Query(ctx, `SELECT owner_service, role FROM media_roles_without_legacy()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strictInDatabase, err := pgx.CollectRows(rows, pgx.RowToStructByPos[strictRole])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var strictInCode []strictRole
+	for product, roles := range rolesWithoutLegacy {
+		for _, role := range roles {
+			strictInCode = append(strictInCode, strictRole{product, role})
+		}
+	}
+	strictOrder := func(a, b strictRole) int {
+		return strings.Compare(string(a.Product)+" "+string(a.Role), string(b.Product)+" "+string(b.Role))
+	}
+	slices.SortFunc(strictInDatabase, strictOrder)
+	slices.SortFunc(strictInCode, strictOrder)
+	if !slices.Equal(strictInDatabase, strictInCode) {
+		t.Fatalf("the database's roles without legacy\n%v\nare not rolesWithoutLegacy\n%v", strictInDatabase, strictInCode)
+	}
+
+	// And the check reads both, with legacy fitting every role but those,
+	// as fits does.
 	for _, c := range []struct {
 		product authz.Product
 		role    Role
@@ -62,7 +92,16 @@ func TestPostgresTheDatabaseRoleTableIsRolePurposes(t *testing.T) {
 		{authz.ProductCMS, RoleCMSImage, PurposeCMSImage, true},
 		{authz.ProductCMS, RoleCMSImage, PurposeEventCover, false},
 		{authz.ProductCore, RoleCertificateAsset, PurposeLegacy, true},
+		{authz.ProductCore, RoleEventFile, PurposeClubFile, true},
+		{authz.ProductCore, RoleEventVideo, PurposeVideo, true},
+		{authz.ProductCore, RoleEventFile, PurposeVideo, false},
+		{authz.ProductCore, RoleEventFile, PurposeLegacy, false},
+		{authz.ProductCore, RoleEventVideo, PurposeLegacy, false},
+		{authz.ProductCMS, RoleCMSFile, PurposeClubFile, false},
 	} {
+		if got := fits(c.product, c.role, c.purpose); got != c.fits {
+			t.Errorf("%s %s %s: fits %v in code, want %v", c.product, c.role, c.purpose, got, c.fits)
+		}
 		var got bool
 		if err := pool.QueryRow(ctx, `SELECT media_purpose_fits_role($1, $2, $3)`, c.product, c.role, c.purpose).Scan(&got); err != nil || got != c.fits {
 			t.Errorf("%s %s %s: fits %v (err %v), want %v", c.product, c.role, c.purpose, got, err, c.fits)
