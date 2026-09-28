@@ -28,6 +28,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/testauth"
 	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
+	"github.com/skylab-kulubu/core-backend/internal/transit"
+	"github.com/skylab-kulubu/core-backend/internal/transit/transittest"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -109,9 +111,20 @@ func newDirectEnvWithPool(t *testing.T, limits media.DirectUploadLimits, maxConn
 	return e
 }
 
+// openDirectPurposes are the Direct upload purposes these tests' cores
+// switch on (MEDIA_DIRECT_UPLOAD_PURPOSES): every one core attaches.
+var openDirectPurposes = []string{"club_file", "video"}
+
 // appWith is another core over the same database, storage and budget, with
 // its own catalogue: the same core after a deploy that changed it.
 func (e *directEnv) appWith(t *testing.T, catalogue media.Catalogue) *fiber.App {
+	t.Helper()
+	return e.appWithPurposes(t, catalogue, openDirectPurposes...)
+}
+
+// appWithPurposes is appWith with only the Direct upload purposes named
+// switched on.
+func (e *directEnv) appWithPurposes(t *testing.T, catalogue media.Catalogue, purposes ...string) *fiber.App {
 	t.Helper()
 	deps := memoryDeps()
 	deps.Users = user.NewService(user.NewPostgresStore(e.pool))
@@ -121,7 +134,7 @@ func (e *directEnv) appWith(t *testing.T, catalogue media.Catalogue) *fiber.App 
 		media.ServiceOptions{
 			Catalogue:       catalogue,
 			ServiceProducts: deps.ServiceClients.Products(),
-			Direct:          media.DirectUploadConfig{Storage: e.r2, Limiter: e.limiter, Now: e.clock.Now},
+			Direct:          media.DirectUploadConfig{Storage: e.r2, Limiter: e.limiter, Now: e.clock.Now, Purposes: purposes},
 		})
 	return httpx.New(deps)
 }
@@ -183,7 +196,7 @@ func (e *directEnv) withStorage(t *testing.T, storage media.MultipartStore) *fib
 		media.ServiceOptions{
 			Catalogue:       directCatalogue(t),
 			ServiceProducts: deps.ServiceClients.Products(),
-			Direct:          media.DirectUploadConfig{Storage: storage, Limiter: e.limiter, Now: e.clock.Now},
+			Direct:          media.DirectUploadConfig{Storage: storage, Limiter: e.limiter, Now: e.clock.Now, Purposes: openDirectPurposes},
 		})
 	return httpx.New(deps)
 }
@@ -1117,20 +1130,12 @@ func TestDirectUploadPurposeRulesHTTP(t *testing.T) {
 	reviewed.ParseToken = keys.Parse()
 	reviewedApp := httpx.New(reviewed)
 
-	// The reviewed club_file needs a malware scan, and this core has no
-	// scanner: refused. Core attaches it (an Event's files, ticket 22), so
-	// with a scanner it passes every purpose rule; so does video, which
-	// needs no scan. This core has no R2, so they go no further.
+	// The reviewed club_file and video are switched on nowhere by default
+	// (TestDirectUploadPurposesOpenOnlyWhereSwitchedOnHTTP).
 	requireCode(t, sendJSON(t, reviewedApp, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.zip", 100)),
 		fiber.StatusUnprocessableEntity, "purpose_not_available")
 	requireCode(t, sendJSON(t, reviewedApp, organizer, fiber.MethodPost, "/v1/uploads", startBody("video", "a.mp4", 100)),
-		fiber.StatusServiceUnavailable, "direct_upload_unavailable")
-	scanned := memoryDeps()
-	scanned.ParseToken = keys.Parse()
-	scanned.Media = media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
-		media.ServiceOptions{ServiceProducts: scanned.ServiceClients.Products(), Scans: idleScans{}})
-	requireCode(t, sendJSON(t, httpx.New(scanned), organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.zip", 100)),
-		fiber.StatusServiceUnavailable, "direct_upload_unavailable")
+		fiber.StatusUnprocessableEntity, "purpose_not_available")
 	requireCode(t, sendJSON(t, reviewedApp, organizer, fiber.MethodPost, "/v1/uploads", startBody("answer_file_large", "a.zip", 100)),
 		fiber.StatusForbidden, "purpose_forbidden")
 	requireCode(t, sendJSON(t, reviewedApp, organizer, fiber.MethodPost, "/v1/uploads", startBody("event_cover", "a.png", 100)),
@@ -1141,7 +1146,8 @@ func TestDirectUploadPurposeRulesHTTP(t *testing.T) {
 	open := memoryDeps()
 	open.ParseToken = keys.Parse()
 	open.Media = media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
-		media.ServiceOptions{Catalogue: directCatalogue(t), ServiceProducts: open.ServiceClients.Products()})
+		media.ServiceOptions{Catalogue: directCatalogue(t), ServiceProducts: open.ServiceClients.Products(),
+			Direct: media.DirectUploadConfig{Purposes: openDirectPurposes}})
 	app := httpx.New(open)
 	requireCode(t, sendJSON(t, app, member, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", 100)),
 		fiber.StatusForbidden, "purpose_forbidden")
@@ -1179,6 +1185,78 @@ func TestDirectUploadPurposeRulesHTTP(t *testing.T) {
 	}
 }
 
+// A Direct upload purpose core attaches opens only where its side switches
+// it on (MEDIA_DIRECT_UPLOAD_PURPOSES): none by default, whatever else is
+// true. So ClamAV going live for Answer files, which are single-step and do
+// not read the switch, opens no club file. A purpose switched off after an
+// upload started is refused at its completion too.
+func TestDirectUploadPurposesOpenOnlyWhereSwitchedOnHTTP(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	organizer := organizerToken(t, keys)
+	// The reviewed catalogue and a malware scanner, as with ClamAV live;
+	// no R2, so a start that passes every purpose rule goes no further.
+	withSwitch := func(purposes ...string) *fiber.App {
+		deps := memoryDeps()
+		deps.ParseToken = keys.Parse()
+		deps.Media = media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
+			media.ServiceOptions{ServiceProducts: deps.ServiceClients.Products(), Scans: idleScans{},
+				Direct: media.DirectUploadConfig{Purposes: purposes}})
+		return httpx.New(deps)
+	}
+	for _, tc := range []struct {
+		purposes []string
+		open     map[string]bool
+	}{
+		{nil, map[string]bool{"club_file": false, "video": false}},
+		{[]string{"video"}, map[string]bool{"club_file": false, "video": true}},
+		{[]string{"club_file", "video"}, map[string]bool{"club_file": true, "video": true}},
+	} {
+		app := withSwitch(tc.purposes...)
+		for purpose, open := range tc.open {
+			got := sendJSON(t, app, organizer, fiber.MethodPost, "/v1/uploads", startBody(purpose, "a.bin", 100))
+			if open {
+				requireCode(t, got, fiber.StatusServiceUnavailable, "direct_upload_unavailable")
+			} else {
+				requireCode(t, got, fiber.StatusUnprocessableEntity, "purpose_not_available")
+			}
+		}
+	}
+
+	// An Answer file, single-step, is uploaded with the scanner and nothing
+	// switched on: it is scanned, not refused.
+	bao := transittest.NewServer(t)
+	store := media.NewMemoryStore()
+	answers := memoryDeps()
+	answers.ParseToken = keys.Parse()
+	answers.Media = media.NewServiceWithOptions(store, media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
+		media.ServiceOptions{
+			ServiceProducts: answers.ServiceClients.Products(),
+			Private: &media.PrivateMedia{
+				Storage: media.NewPrivateStorage(media.NewMemoryBlob(), transit.New(bao.Config())),
+				LinkKey: bytes.Repeat([]byte{5}, 32), LinkOrigin: "https://api.example.test",
+				AccessLog: store, Now: bao.Clock.Now,
+			},
+			Scans: idleScans{},
+		})
+	answer := uploadAs(t, httpx.New(answers), newEditor(t, keys).token, "answer_file")
+	if stored, err := store.Get(context.Background(), uuid.MustParse(answer)); err != nil || stored.Status != media.StatusScanning {
+		t.Fatalf("the Answer file is %+v (err %v), want scanning", stored, err)
+	}
+
+	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
+	organizer = organizerToken(t, e.keys)
+	file := pdfFile(1000)
+	started := sendJSON(t, e.app, organizer, fiber.MethodPost, "/v1/uploads", startBody("club_file", "a.pdf", len(file)))
+	if started.status != fiber.StatusCreated {
+		t.Fatalf("start: status %d body %v", started.status, started.body)
+	}
+	body := completeBody(t, sendParts(t, partsOf(t, started.body), file))
+	switchedOff := e.appWithPurposes(t, directCatalogue(t), "video")
+	requireCode(t, sendJSON(t, switchedOff, organizer, fiber.MethodPost, "/v1/uploads/"+started.body["id"].(string)+"/complete", body),
+		fiber.StatusUnprocessableEntity, "purpose_not_available")
+}
+
 // Every upload (single-step with a purpose, without one, as a profile
 // picture, and by Direct upload) keeps the file name the browser sent,
 // emoji, other scripts and decomposed letters included, and refuses only a
@@ -1191,7 +1269,8 @@ func TestUploadFileNamesHTTP(t *testing.T) {
 	deps := memoryDeps()
 	deps.ParseToken = keys.Parse()
 	deps.Media = media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "",
-		media.ServiceOptions{Catalogue: directCatalogue(t), ServiceProducts: deps.ServiceClients.Products()})
+		media.ServiceOptions{Catalogue: directCatalogue(t), ServiceProducts: deps.ServiceClients.Products(),
+			Direct: media.DirectUploadConfig{Purposes: openDirectPurposes}})
 	app := httpx.New(deps)
 	organizer := organizerToken(t, keys)
 	post := func(path, purpose, name string) jsonResponse {

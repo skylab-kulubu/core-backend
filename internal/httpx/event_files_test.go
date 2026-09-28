@@ -54,7 +54,7 @@ func (f *eventFilesEnv) appWith(t *testing.T, catalogue media.Catalogue, scans m
 	deps.Media = media.NewServiceWithOptions(f.store, f.r2, az, eventFilesCDN, media.ServiceOptions{
 		Catalogue:       catalogue,
 		ServiceProducts: deps.ServiceClients.Products(),
-		Direct:          media.DirectUploadConfig{Storage: f.r2, Limiter: f.limiter, Now: f.clock.Now},
+		Direct:          media.DirectUploadConfig{Storage: f.r2, Limiter: f.limiter, Now: f.clock.Now, Purposes: openDirectPurposes},
 		Scans:           scans,
 	})
 	deps.Events = event.NewServiceWithOptions(f.events, az, event.ServiceOptions{

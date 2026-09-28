@@ -102,7 +102,7 @@ func scannedDirectApp(t *testing.T, e *directEnv) (*fiber.App, *media.ScanWorker
 		media.ServiceOptions{
 			Catalogue:       catalogueWith(t, "club_file", func(entry map[string]any) { entry["scan"] = true }),
 			ServiceProducts: deps.ServiceClients.Products(),
-			Direct:          media.DirectUploadConfig{Storage: e.r2, Limiter: e.limiter, Now: e.clock.Now},
+			Direct:          media.DirectUploadConfig{Storage: e.r2, Limiter: e.limiter, Now: e.clock.Now, Purposes: openDirectPurposes},
 			Scans:           worker,
 		})
 	return httpx.New(deps), worker, fake

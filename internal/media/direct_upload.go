@@ -78,6 +78,10 @@ var (
 	// until its encryption after completion exists (ticket 21). errors.Is
 	// matches ErrPurposeNotAvailable.
 	ErrDirectUploadPrivate = fmt.Errorf("media: a private purpose cannot be sent by Direct upload yet: %w", ErrPurposeNotAvailable)
+	// ErrDirectUploadSwitchedOff refuses a Direct upload purpose this side
+	// does not open (DirectUploadConfig.Purposes). errors.Is matches
+	// ErrPurposeNotAvailable.
+	ErrDirectUploadSwitchedOff = fmt.Errorf("media: Direct upload of the purpose is not switched on here: %w", ErrPurposeNotAvailable)
 	// ErrLimitsTooWide refuses narrowed limits wider than the purpose's: a
 	// type it does not accept, or a larger maximum.
 	ErrLimitsTooWide = fmt.Errorf("media: the limits are wider than the purpose's: %w", ErrInvalid)
@@ -133,6 +137,31 @@ type DirectUploadConfig struct {
 	Limiter *DirectUploadLimiter
 	// Now defaults to time.Now.
 	Now func() time.Time
+	// Purposes are the Direct upload purposes this side opens
+	// (MEDIA_DIRECT_UPLOAD_PURPOSES, DirectUploadPurposesFromEnv). Any
+	// other is refused with ErrDirectUploadSwitchedOff, whatever else holds:
+	// the catalogue is the same file on every side, so what a side opens
+	// is decided here. None by default.
+	Purposes []string
+}
+
+// DirectUploadPurposesFromEnv reads MEDIA_DIRECT_UPLOAD_PURPOSES: the Direct
+// upload purposes this side opens, separated by commas (club_file,video).
+// Unset or empty opens none. A name that is not a Direct upload purpose of
+// the catalogue is an error: core refuses to start with it.
+func DirectUploadPurposesFromEnv(getenv func(string) string, catalogue Catalogue) ([]string, error) {
+	var out []string
+	for _, name := range strings.Split(getenv("MEDIA_DIRECT_UPLOAD_PURPOSES"), ",") {
+		name = strings.TrimSpace(name)
+		if name == "" || slices.Contains(out, name) {
+			continue
+		}
+		if purpose, ok := catalogue.Lookup(name); !ok || purpose.Transport != TransportDirect {
+			return nil, fmt.Errorf("MEDIA_DIRECT_UPLOAD_PURPOSES: %q is not a Direct upload purpose of the catalogue", name)
+		}
+		out = append(out, name)
+	}
+	return out, nil
 }
 
 // DirectUploadRequest starts a Direct upload.
