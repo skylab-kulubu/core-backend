@@ -18,9 +18,9 @@ The background purge worker runs one bounded batch at startup and on its
 configured interval. A record is eligible only after the recovery window. The
 worker refuses to purge media that anything still uses: any Media attachment
 (see [Media attachment](#media-attachment)), and, as a safety net, core's own
-links checked directly (an Event cover, gallery photo, file or video, a User
-profile, a Certificate template draft, or a published Certificate template
-version).
+links checked directly (an Event cover, gallery photo, file or video, a
+video's poster, a User profile, a Certificate template draft, or a published
+Certificate template version).
 Both must say unused. The legacy report counts the core links that have no
 Media attachment (see [Legacy Media](#legacy-media)); once production shows
 zero, removing the direct check is media redesign ticket 18. Database triggers also reject new
@@ -1014,8 +1014,9 @@ a member roster) loads the small image:
 
 | Response | Full-size address (unchanged) | Sizes |
 |---|---|---|
-| Event, list and detail: every Event answer under `/v1/events` (list, active list, detail, create, update, restore, gallery add and remove, files and videos add, remove and order) and `GET /v1/seasons/{id}/events` | `coverImageUrl` | `coverImageSizes` |
+| Event, list and detail: every Event answer under `/v1/events` (list, active list, detail, create, update, restore, gallery add and remove, files and videos add, remove and order, a video's poster set and clear) and `GET /v1/seasons/{id}/events` | `coverImageUrl` | `coverImageSizes` |
 | Event gallery image, in the same answers | `images[].url` (and `imageUrls`) | `images[].sizes` |
+| A video's poster, in an Event's detail (those answers but the lists; see [Video posters](#video-posters)) | `videos[].poster.url` | `videos[].poster.sizes` |
 | Event summary (`event.Resource`): `GET /v1/door/events`; the `event` of every ticket answer (`/v1/tickets/me`, `/v1/tickets`, `/v1/tickets/{id}`, `/v1/tickets/user/{userId}/event/{eventId}`, `/v1/events/{eventId}/tickets`, the application answers under `/v1/events/{eventId}/applications/…`); the `event` of every competitor answer (`/v1/competitors…`, `/v1/events/{eventId}/competitors…`; leaderboards have none) | `coverImageUrl` | `coverImageSizes` |
 | The caller's profile (`GET`/`PUT`/`PATCH /v1/users/me`, `POST /v1/users/me/profile-picture`) | `profilePictureUrl` | `profilePictureSizes` |
 | Public team roster (`GET /v1/teams/{team}/members`) | `members[].profilePictureUrl` | `members[].profilePictureSizes` |
@@ -1171,6 +1172,7 @@ anonymization and maintenance SQL:
 | Event gallery (`event_images`) | `event` | `event_gallery` |
 | Event files (`event_files`, migration `20260928160000`) | `event` | `event_file` |
 | Event videos (`event_videos`, migration `20260928160000`) | `event` | `event_video` |
+| A video's poster (`event_videos.poster_media_id`, migration `20260929140000`) | `event` | `event_video_poster` |
 | User profile picture (`users.profile_picture_id`) | `user` | `profile_picture` |
 | Certificate template draft (`draft_layout` background and image elements) | `certificate_template` | `certificate_asset` |
 | Published certificate template version (`layout` and `asset_manifest`) | `certificate_template_version` | `certificate_asset` |
@@ -1181,31 +1183,40 @@ long as the link itself does not change. Replacing a profile picture
 therefore detaches the previous one, which is purged 30 days later unless
 something attaches it again; removing the picture archives it as before.
 
+A poster's triggers run their own function
+(`sync_event_video_poster_attachments`): the same steps with one more. The
+Event owns every video's poster link, and two of its videos may show one
+image, so a link one video gives up keeps its Media attachment while
+another video of the Event still holds it (read in the table after the
+statement). A new link is always offered, so the Media attachment's guards
+check it even when another video holds the image already.
+
 ### Link rules
 
-Before an Event links a cover, a gallery photo, a file or a video, or a
-certificate template draft links an asset, core checks the Media
+Before an Event links a cover, a gallery photo, a file, a video or a video's
+poster, or a certificate template draft links an asset, core checks the Media
 (`media.Linker`) and refuses the link with `application/problem+json`, a
 stable `code`, and the members `mediaId` and `role`:
 
 | Status | `code` | Extra members | When |
 |---|---|---|---|
-| 422 | `media_purpose_mismatch` | `purpose` | The Media's purpose does not fit the role. An Event cover or gallery photo needs `event_cover` or `event_gallery` (the organizer's picker offers every photo of the team's Events for both); an Event's file needs `club_file` and its video `video`; a certificate asset needs `certificate_asset`. A profile picture or a CMS page's PDF cannot be a cover. |
+| 422 | `media_purpose_mismatch` | `purpose` | The Media's purpose does not fit the role. An Event cover, gallery photo or video poster needs `event_cover` or `event_gallery` (the organizer's picker offers every photo of the team's Events for all three); an Event's file needs `club_file` and its video `video`; a certificate asset needs `certificate_asset`. A profile picture or a CMS page's PDF cannot be a cover. |
 | 422 | `media_not_linkable` | | There is no such Media, or it is archived, its blob is purged or being purged, or its expiry has passed. A pending or attached Media can be linked, and so can a scanning one (an Answer file while its malware scan runs); a rejected one cannot (its object is being or was deleted). A Media removed from a record can be linked again until its window ends. |
-| 403 | `media_team_mismatch` | | Team media library: the Media is on an Event (archived ones included) of another Owner team, as its cover, a gallery photo, a file or a video. An Event may reuse a photo, file or video of another Event of its own Owner team. |
+| 403 | `media_team_mismatch` | | Team media library: the Media is on an Event (archived ones included) of another Owner team, as its cover, a gallery photo, a file, a video or a video's poster. An Event may reuse a photo, file or video of another Event of its own Owner team. |
 
 Only new links are checked: an Event saved with the cover it already has, or
 a template draft keeping an asset, is not refused for it. One exception:
 moving an Event to another Owner team checks the Team media library again for
-its current cover, gallery, files and videos, and refuses the move with
-`media_team_mismatch` while another Event of the old team uses one of them;
-the organizer removes that photo, file or video from the Event first. The profile picture
-has no separate check: the only way to link one is
-`POST /v1/users/me/profile-picture`, which uploads it as `profile_picture`.
+its current cover, gallery, files, videos and posters, and refuses the move
+with `media_team_mismatch` while another Event of the old team uses one of
+them; the organizer removes that photo, file or video from the Event (or
+clears that poster) first. The profile picture has no separate check: the
+only way to link one is `POST /v1/users/me/profile-picture`, which uploads
+it as `profile_picture`.
 
 **Transition rule for legacy Media.** A `legacy` Media fits every role but
-an Event's files and videos, as any Media could be linked anywhere before
-Media purpose. superadmin still uploads Event covers, gallery photos and
+an Event's files, videos and video posters, as any Media could be linked
+anywhere before Media purpose. superadmin still uploads Event covers, gallery photos and
 certificate assets without a purpose until it sends one (ticket 09), and
 Skyforms and CMS until stage 5. The other rules (linkable, Team media
 library) apply to legacy Media too. The rule ends when purpose-less uploads
@@ -1214,7 +1225,10 @@ fall to the strict rule (ticket 15). An Event's files and videos
 linked there without one, and their purposes are sent by Direct upload (a
 club file also scanned), which a legacy upload never was: a legacy Media is
 refused there with `media_purpose_mismatch` (`rolesWithoutLegacy`,
-`internal/media/attachment.go`).
+`internal/media/attachment.go`). A video's poster (`event_video_poster`)
+came later still, so it takes no legacy Media either: its image is sent
+with `event_cover` or `event_gallery` (the same exception as an Event's
+files and videos).
 
 The database's triggers are the backstop for the state rule: a new link or a
 new Media attachment to an archived or purging Media is rejected whoever
@@ -1223,7 +1237,8 @@ writes it. They also check the purpose again (migration `20260926161000`,
 table that a test keeps equal to `rolePurposes`, both ways; migration
 `20260928160000` adds the Event files' and videos' roles and
 `media_roles_without_legacy`, the copy of `rolesWithoutLegacy`, which the
-same test keeps equal). The link rules
+same test keeps equal; migration `20260929140000` adds the poster's role to
+both). The link rules
 read the Media before the write and outside its transaction, so the legacy
 backfill could give a legacy Media a purpose in between; the trigger reads
 the Media under the lock the foreign key takes anyway, which waits for the
@@ -2211,8 +2226,8 @@ rejected as `lost`). A private file needs no hold, since the private bucket
 is never served: an `answer_file` stays at its `private/files/…` key
 throughout.
 
-Records that link a Media (an Event's cover, gallery, files and videos, a
-User's profile picture) build no address for one that is `scanning` or
+Records that link a Media (an Event's cover, gallery, files, videos and
+video posters, a User's profile picture) build no address for one that is `scanning` or
 `rejected` (`media.ServedKeySQL`, and the status in
 `media.LinkedImageSQL`), so a held key never becomes an address. The one
 reviewed purpose that can be linked while it is scanned is `club_file`, as
@@ -2345,8 +2360,9 @@ MP4 up to 2 GiB, served to play). Both are sent by
 Event links them in two link tables, `event_files` and `event_videos`
 (migration `20260928160000`), whose triggers write and remove their Media
 attachments (roles `event_file` and `event_video`) as the gallery's do (see
-[Core's own links](#cores-own-links)). The admin UI is core-frontend's
-(media redesign ticket 20).
+[Core's own links](#cores-own-links)). A video may carry a poster its
+organizers chose ([Video posters](#video-posters), ticket 24). The admin UI
+is core-frontend's (media redesign ticket 20).
 
 ### Endpoints
 
@@ -2391,8 +2407,8 @@ whole request.
 ### In Event responses
 
 An Event's detail carries both lists: `GET /v1/events/{id}` and the answer of
-every change to one Event (create, update, restore, the gallery's, files'
-and videos' routes, a season assignment).
+every change to one Event (create, update, restore, the gallery's, files',
+videos' and posters' routes, a season assignment).
 
 ```json
 {
@@ -2402,7 +2418,17 @@ and videos' routes, a season assignment).
     { "id": "b810…", "name": "araç.zip", "type": "application/zip", "size": 52000, "status": "rejected", "scanResult": "infected" }
   ],
   "videos": [
-    { "id": "5e9d…", "name": "açılış.mp4", "type": "video/mp4", "size": 1610612736, "status": "attached", "url": "https://cdn.yildizskylab.com/videos/1c07….mp4" }
+    {
+      "id": "5e9d…", "name": "açılış.mp4", "type": "video/mp4", "size": 1610612736, "status": "attached", "url": "https://cdn.yildizskylab.com/videos/1c07….mp4",
+      "poster": {
+        "id": "a3f0…",
+        "url": "https://cdn.yildizskylab.com/images/77b2…",
+        "sizes": {
+          "card": { "url": "https://cdn.yildizskylab.com/images/77b2…/card.jpg", "width": 400, "height": 225 },
+          "page": { "url": "https://cdn.yildizskylab.com/images/77b2…/page.jpg", "width": 1200, "height": 675 }
+        }
+      }
+    }
   ],
   "fileCount": 1,
   "videoCount": 1
@@ -2426,7 +2452,9 @@ and videos' routes, a season assignment).
   for a private Media. A video's address is `videos/<uuid>.mp4`, served
   inline as `video/mp4` to play (see [Serving policy](#serving-policy)),
   until its faststart rewrite moves it to `videos/<uuid>.fs.<claim>.mp4` (see
-  [Video faststart](#video-faststart)). A video has no poster image yet.
+  [Video faststart](#video-faststart)).
+- `poster` is only on a video whose organizers chose one, and only while
+  its image can be served: see [Video posters](#video-posters).
 - `scanResult` is only on a rejected item, and only the Event's editors see
   one.
 - Whoever may not edit the Event (and anyone without a sign-in) sees only the
@@ -2440,7 +2468,7 @@ door's Events, a ticket's or a competitor's `event`) carry `fileCount` and
 `videoCount` alone, never `files` or `videos`. The counts are subqueries of
 the query that reads the Events, so a list still takes its three queries
 (a test lists Events with files and videos and counts them); a detail reads
-both lists in one more query.
+both lists, each video with its poster, in one more query.
 
 ### Rules
 
@@ -2453,15 +2481,82 @@ both lists in one more query.
   for the editors only, until they remove it.
 - The Team media library holds as for photos, and moving an Event to another
   Owner team checks its files and videos again.
-- Removing an item removes its Media attachment; a Media with no other one
-  is detached and purged 30 days later unless something attaches it again.
-  An archived Event keeps its lists, as it keeps its gallery.
+- Removing an item removes its Media attachment, and a video's poster's; a
+  Media with no other one is detached and purged 30 days later unless
+  something attaches it again. An archived Event keeps its lists, as it
+  keeps its gallery.
 - The Event's row is locked while one of its lists changes, so two editors'
   additions take their places one after the other and an order is checked
   against the list it rewrites. Ties in `order_index` are read in
   `added_at`, then id order.
 - Account erasure keeps an Event's files and videos (club purposes, see
-  [Account erasure](#account-erasure)).
+  [Account erasure](#account-erasure)), and their posters.
+
+### Video posters
+
+Media redesign ticket 24 (decision P1). An organizer gives a video a poster:
+an image uploaded for the Event, as a cover is (`POST /v1/media` with
+`purpose` `event_cover` or `event_gallery`), so it is re-encoded with its
+`card` and `page` sizes, or an SVG where those purposes take one. The video
+links it in `event_videos.poster_media_id` (migration `20260929140000`),
+whose triggers write its Media attachment: the Event owns it, in the role
+`event_video_poster` (see [Core's own links](#cores-own-links)). Nothing
+needs switching on: the image is a single-step upload, whatever
+`MEDIA_DIRECT_UPLOAD_PURPOSES` says. Ticket 25 will fill in a frame of the
+video when no poster is uploaded; an uploaded one will always win.
+
+Whoever may edit the Event may set, replace and clear a poster, by the same
+decision as `PUT /v1/events/{id}`. Both routes answer the Event's detail
+(`200`), as the lists' routes do:
+
+| Route | What it does |
+|---|---|
+| `PUT /v1/events/{id}/videos/{mediaId}/poster` | Body `{"posterId": "<Media id>"}`. Sets the video's poster, or replaces the one it had. Setting the poster it has changes nothing. |
+| `DELETE /v1/events/{id}/videos/{mediaId}/poster` | Clears it. A video without one is answered as it is. |
+
+```sh
+curl -X PUT https://api.yildizskylab.com/v1/events/$EVENT/videos/$VIDEO/poster \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"posterId":"a3f0…"}'
+```
+
+Refusals (problem+json; `mediaId` and `role` `event_video_poster` on the
+coded ones):
+
+| Status | `code` | When |
+|---|---|---|
+| 401 | | No token. |
+| 403 | | The caller may not edit the Event. |
+| 404 | | No such Event, or it is archived; the Event does not list the video (a file, another Event's video, one whose Media was archived). |
+| 400 | | The body names no poster (`posterId` missing, not a UUID, or the nil UUID); `{mediaId}` is not a UUID. |
+| 422 | `media_purpose_mismatch` | The image's purpose is not one a cover takes: a video, a club file, a profile picture, a CMS image, or a Media uploaded without a purpose (legacy fits no poster). |
+| 422 | `media_not_linkable` | No such Media, or archived, being purged or expired. |
+| 403 | `media_team_mismatch` | Another Owner team's Event uses the image (as its cover, a gallery photo or a video's poster). |
+
+A refused poster leaves the one the video had.
+
+In the Event's detail, the video carries `poster` (the JSON above): the
+image's Media `id`, its full-size `url`, and `sizes` with both `card` and
+`page`, built as the cover's are (`media.Addresses.LinkedSizes`: a stored
+size, a Cloudflare transformation in that mode, the SVG itself for an SVG,
+the original for a size the image fits in). `poster` is there only while the
+image can be served (`media.ServableSQL`): not once it is archived, nor
+while its object is purged, and never on a file. Who sees it follows the
+video: the Event's editors see it on every video they see, anyone else on
+the videos they can play. The detail reads each poster in the query that
+reads the videos (`media.LinkedImageSQL`), so posters add no query; lists
+and summaries carry the counts alone, never a poster.
+
+- Replacing or clearing a poster removes its Media attachment: the image,
+  with no other, is detached and purged 30 days later unless something
+  attaches it again. Removing the video does the same for its poster.
+- One image may be the poster of two of the Event's videos, and its cover
+  or a gallery photo too: it stays attached while anything shows it.
+- The Team media library holds as for photos, and moving an Event to another
+  Owner team checks its posters too.
+- The Event's row is locked while a poster changes, as while a list does.
+- Account erasure keeps a poster (an Event photo is club content): it stays
+  on the video, attached and at its address, without its uploader or name.
 
 ### Before Event files open
 
@@ -2705,7 +2800,8 @@ rule is one function, `personalOnErasureSQL` in
   already is, and reaches `files/` once clean without the name. An Event's
   file or video stays on the Event, attached and at its address, with an
   empty `name`: a ZIP downloads under its key from then on; a PDF or a video
-  named nobody in its metadata and is served as before.
+  named nobody in its metadata and is served as before. A video's poster (an
+  Event photo) stays on its video the same way, with its sizes.
 
 **Known consequence of E1.** Until stage 5, when the CMS attaches the Media
 its pages use (ticket 18), a legacy image a CMS page uses only by its address,
