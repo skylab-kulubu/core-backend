@@ -30,9 +30,12 @@ type frameAfter struct {
 	eventID, videoID uuid.UUID
 }
 
-// frameSettledSQL are the faststart states a video's frame waits for: its
-// key moves once, when faststart moves it to its copy (moved), and never
-// again (done, not_needed); a failed rewrite is served as it is.
+// frameSettledSQL are the faststart states a video's frame waits for: moved
+// to its checked copy (moved, then done), already faststart (not_needed),
+// or served as it is (failed). A moved video whose copy is found not whole
+// goes back to its original and is rewritten, so its key may change again;
+// a frame taken already is its own Media and does not depend on it, and a
+// frame being taken then reads a gone address and is tried again.
 const frameSettledSQL = `('` + string(FaststartMoved) + `', '` + string(FaststartDone) + `', '` + string(FaststartNotNeeded) + `', '` + string(FaststartFailed) + `')`
 
 // ClaimNextFrame claims, in one short transaction that commits before the

@@ -3,8 +3,12 @@
 # Core's own image (Dockerfile) carries no ffmpeg.
 #
 # It writes nothing to disk: ffmpeg reads the video from the service's
-# loopback proxy and writes its frame to a pipe. So it runs as a non-root user
-# on a read-only root filesystem; /tmp (TMPDIR) may be a tmpfs.
+# loopback proxy and writes its frame to a pipe. It runs as a non-root user
+# (10001), which can write only to /tmp and /var/tmp; everything else in the
+# image is root's. Dokploy (v0.30.7) cannot run a service with a read-only
+# root filesystem or a tmpfs mount, so that is not enforced there; what is:
+# this user, and the memory and CPU limits ops/wizards/media-frame-wizard.sh
+# sets. Run elsewhere, `--read-only --tmpfs /tmp` works (tested).
 FROM --platform=linux/amd64 golang:1.25-alpine AS builder
 WORKDIR /src
 COPY go.mod go.sum ./

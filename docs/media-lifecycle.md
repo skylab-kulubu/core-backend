@@ -2659,7 +2659,12 @@ makes a pass at once and every minute; a pass claims at most 25 videos
 - its Media is current and can be served (`media.ServableSQL`), and
   [Video faststart](#video-faststart) has settled it: `moved`, `done`,
   `not_needed` or `failed`. A video waiting for its rewrite waits for its
-  frame too: its key moves once, then stays.
+  frame too, so the frame is not taken from an original that is about to
+  move. The key can still change after that: a `moved` video whose copy is
+  found not whole is moved back to its original and rewritten. That never
+  touches a frame taken already, which is its own Media and does not name
+  the video's key. A frame being taken while the key changes reads an
+  address that is gone (`502`), and is tried again a minute later.
 
 For each, in turn:
 
@@ -2715,8 +2720,8 @@ Rules:
 
 - Removing the video from the Event (or the Event going) removes the
   frame's Media attachment: the frame is detached and purged 30 days later.
-- A frame stays valid when the video's key changes (faststart moved it): it
-  is its own Media.
+- A frame stays valid whenever the video's key changes (faststart moving it
+  to its copy, or back to its original to rewrite it): it is its own Media.
 - A video whose uploaded poster is cleared before it ever got a frame waits
   for one again: the worker takes it on its next pass.
 - A frame is one Event video's, and no one links it by hand, so the Team
@@ -2770,9 +2775,22 @@ How it reads the video:
   logs one line (status, code, time, bytes read), never the address.
 
 Its container (`Dockerfile.frame`) is Alpine with its `ffmpeg` package and
-the Go binary, running as user 10001. It writes nothing, so a read-only root
-filesystem with a tmpfs `/tmp` works; its `HEALTHCHECK` runs
-`media-frame health`. Its settings: `MEDIA_FRAME_ALLOWED_HOSTS` (required:
+the Go binary; its `HEALTHCHECK` runs `media-frame health`. What confines it
+on the server:
+
+- it runs as user 10001, never root: that user can write only to `/tmp` and
+  `/var/tmp`, and everything else in the image is root's (the wizard checks
+  the running container's user). ffmpeg writes nothing there anyway: its
+  frame goes to a pipe;
+- 1 CPU and 512 MiB of memory at most (the wizard sets them and checks the
+  running service), so a runaway ffmpeg takes down only this container;
+- the internal network only, with no published port and no domain.
+
+A read-only root filesystem is **not** enforced: Dokploy (v0.30.7) builds the
+service's container spec itself on every deploy, with no read-only flag and
+no tmpfs mount type, and a flag set by hand on the Swarm service would be
+dropped at the next deploy. The image works under one (`--read-only --tmpfs
+/tmp`, tested) should it run somewhere that sets it. Its settings: `MEDIA_FRAME_ALLOWED_HOSTS` (required:
 the host of core's `R2_ENDPOINT`, or that address itself; a pattern, an IP
 address, a port or a path stops it at startup), `PORT` (default `8080`) and
 `MEDIA_FRAME_FFMPEG` (default `ffmpeg`). At startup it checks that ffmpeg
@@ -2783,7 +2801,21 @@ CI (`.github/workflows/ghcr.yml`) builds
 same branches with the same tags (`main`: `:sandbox`, `:latest` and the
 commit; `production`: `:production` and the commit). It notifies no Dokploy
 hook: the wizard deploys the application, and redeploys it when the tag's
-image differs from the one running.
+image differs from the one running. So a change to the service
+(`cmd/media-frame`, `internal/mediaframe`, `Dockerfile.frame`) reaches a side
+only when the wizard is run again there after the build; until then core and
+the service may run different versions (a `400` from the service says so in
+core's log, see [The frame worker](#the-frame-worker)).
+
+**The package may be private at first.** GitHub creates a container package
+private when a workflow first publishes it, and Dokploy pulls it without
+credentials, as it pulls core's public `core-backend`. After the first build
+on `main`, make it public once: on GitHub, the `skylab-kulubu` organization
+→ **Packages** → `core-backend-media-frame` → **Package settings** →
+**Danger Zone** → **Change visibility** → **Public**. The image holds no
+secret (Alpine, ffmpeg and a binary built from this public repository). The
+wizard checks it (an anonymous pull of the side's tag) before it changes
+anything, and stops with these steps while the package is private.
 
 #### Setting it up
 
@@ -2792,10 +2824,12 @@ A human step, done by `ops/wizards/media-frame-wizard.sh` in sky_lab_genel
 a Dokploy application in core's project and environment:
 
 - from the GHCR image at the side's tag (`:sandbox`, `:production`); the
-  package must be public, as core's is (the wizard checks);
+  package must be public, as core's is (the wizard checks, see above);
 - on the internal network only (`dokploy-network`), with no published port
   and no domain. Core reaches it at `<its appName>:8080`;
-- 1 CPU and 512 MiB of memory at most, 256 MiB reserved;
+- 1 CPU and 512 MiB of memory at most, 256 MiB reserved (checked on the
+  running Swarm service after the deploy, with the container's user,
+  10001);
 - `MEDIA_FRAME_ALLOWED_HOSTS` set to the host of that side's core
   `R2_ENDPOINT`, read from core's running container.
 
@@ -2843,6 +2877,9 @@ Attaching and listing work whatever the switch says.
   (ticket 23: core refuses a ZIP clamd cannot scan whole). ClamAV going live
   for Answer files (single-step) does not open it.
 
+Item 6 is optional: `video` opens without it, and its videos then show a
+poster only where the organizers upload one.
+
 On each side, sandbox first:
 
 1. **R2**: `ops/wizards/media-direct-upload-r2-wizard.sh` has run: the
@@ -2887,6 +2924,14 @@ On each side, sandbox first:
       for the new one into `b.md5`, and `diff a.md5 b.md5` prints nothing.
    4. After the hour, the old address answers `404` and the new one still
       plays.
+6. **Video frames (optional)**: `ops/wizards/media-frame-wizard.sh` has run
+   on that side and core's environment has `MEDIA_FRAME_ADDR`, so a video
+   without an uploaded poster shows a frame of itself
+   ([Video frames](#video-frames)). Not needed for `video` to open. It may
+   come before or after: once it is on, the worker takes the frames of the
+   videos already there too. Its self-test in core's container
+   (`core-backend media-frame-selftest`) proves core reaches the service and
+   the service reads R2.
 
 ## Video faststart
 
