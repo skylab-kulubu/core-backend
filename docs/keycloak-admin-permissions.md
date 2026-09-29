@@ -18,3 +18,18 @@ Core never writes under `/clients`.
 Certificate authorization (`internal/authz`) reads four client roles of core's client from tokens: `certificate:template:manage`, `certificate:binding:manage`, `certificate:issue` and `certificate:revoke`. Keycloak owns them. The operator script `config/identity-guardrails.sh` of e-skylab-keycloak creates missing ones (runbook `docs/v2-identity-reconcile-runbook.md` §8). The same run removes `manage-clients` from `service-account-core`, but only after it has confirmed that all four roles exist.
 
 At startup core only checks them (`MissingClientRoles`, GET only). When a role is missing, or the roles cannot be read, core logs one line that starts with `certificate client roles` and names the missing roles and the operator command, then starts normally. Until the roles exist and are granted, certificate actions that need them are denied. A clean startup logs nothing about certificate roles.
+
+## Group count report
+
+`core-backend group-count-report` measures how many Group paths each user carries in a token, for the Group overage threshold of ADR-0059 (30 paths). It runs instead of the server, inside the running core container, whose environment already holds core's service account. It only reads: `GET /users` and `GET /users/{id}/groups` for every user Keycloak lists, disabled ones too.
+
+It counts each user's direct memberships with their full paths, which is what Keycloak's Group Membership mapper writes into the `groups` claim. The report goes to standard output: the number of users, how many users have each number of paths, the most paths any user has, how many users are above 30, the size of the largest `groups` claim, and the average path length with the size a 30-path claim of that length would have. A claim's size is its JSON (`"groups":["/A","/B"]`: each path's UTF-8 bytes in quotes, commas between them) and about four thirds of that in the token, whose payload is base64url. On Keycloak 26.7.4 the JSON size matched a real token byte for byte.
+
+By default the report names nobody and prints no Group path. `-list-overage` adds the users above 30 paths by `sub` (their Keycloak id); that part is personal data.
+
+A user whose Groups cannot be read is not counted as a user without Groups: the report says how many could not be read, the first error goes to standard error (it names nobody), and the command exits 1. A user deleted between the listing and the lookup is left out. Missing settings exit 2.
+
+```sh
+docker exec <core container> ./core-backend group-count-report
+docker exec <core container> ./core-backend group-count-report -list-overage
+```
