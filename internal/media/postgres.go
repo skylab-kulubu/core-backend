@@ -534,10 +534,10 @@ func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claime
 		return purgeSkipped, err
 	}
 	var startedAt, purgedAt *time.Time
-	var archived, expired, scanning bool
+	var archived, expired, claimed bool
 	err = tx.QueryRow(ctx, `SELECT blob_purge_started_at, blob_purged_at, deleted_at IS NOT NULL, COALESCE(`+expiredSQL+`, false),
-			COALESCE(scan_claimed_until > $1, false)
-		FROM media WHERE id = $2 FOR UPDATE`, claimedAt, id).Scan(&startedAt, &purgedAt, &archived, &expired, &scanning)
+			COALESCE(scan_claimed_until > $1, false) OR COALESCE(video_faststart_claimed_until > $1, false)
+		FROM media WHERE id = $2 FOR UPDATE`, claimedAt, id).Scan(&startedAt, &purgedAt, &archived, &expired, &claimed)
 	if errors.Is(err, pgx.ErrNoRows) || purgedAt != nil {
 		return purgeSkipped, nil
 	}
@@ -561,10 +561,10 @@ func (s *PostgresStore) claimBlobPurge(ctx context.Context, id uuid.UUID, claime
 		if err != nil {
 			return purgeSkipped, err
 		}
-		// The archive and expiry purges wait while a scan's claim is live:
-		// a clean copy the scan makes cannot then land after the purge.
-		// Account erasure does not wait.
-		held = held || (scanning && queue != erasedQueue)
+		// The archive and expiry purges wait while a scan's or a faststart
+		// rewrite's claim is live: a copy either makes cannot then land
+		// after the purge. Account erasure does not wait.
+		held = held || (claimed && queue != erasedQueue)
 		if held {
 			if _, err := tx.Exec(ctx, `UPDATE media SET blob_purge_checked_at = $2 WHERE id = $1`, id, claimedAt); err != nil {
 				return purgeSkipped, err

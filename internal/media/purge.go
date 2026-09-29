@@ -69,9 +69,7 @@ func PurgeDeleted(ctx context.Context, store Store, blobs BlobStore, now time.Ti
 	report := PurgeReport{Scanned: len(items)}
 	for _, item := range items {
 		candidateCtx, cancel := context.WithTimeout(ctx, blobPurgeCandidateTimeout)
-		purged, err := store.PurgeBlobIfUnreferenced(candidateCtx, item.ID, now, func(key string) error {
-			return blobs.Delete(candidateCtx, key)
-		})
+		purged, err := store.PurgeBlobIfUnreferenced(candidateCtx, item.ID, now, purgeDeleter(candidateCtx, blobs))
 		cancel()
 		if err != nil {
 			return report, err
@@ -112,9 +110,7 @@ func PurgeExpired(ctx context.Context, store Store, blobs BlobStore, now time.Ti
 		func(ctx context.Context, item Media) error {
 			candidateCtx, cancel := context.WithTimeout(ctx, blobPurgeCandidateTimeout)
 			defer cancel()
-			purged, err := store.PurgeExpiredBlobIfUnattached(candidateCtx, item.ID, now, func(key string) error {
-				return blobs.Delete(candidateCtx, key)
-			})
+			purged, err := store.PurgeExpiredBlobIfUnattached(candidateCtx, item.ID, now, purgeDeleter(candidateCtx, blobs))
 			if err != nil {
 				return err
 			}

@@ -1,9 +1,13 @@
 // Package s3test is a fake S3 endpoint for tests: the calls core's R2
 // adapter makes (objects, ranged reads, copies with new metadata) and the
 // multipart upload a Direct upload is (create, upload a part, list parts,
-// complete, abort, list the open uploads). It keeps everything in memory,
+// complete, abort, list the open uploads), with a part copied from another
+// object's byte range (UploadPartCopy), and the keys under a prefix
+// (ListObjectsV2, 1000 a page). It keeps everything in memory,
 // speaks path-style addresses (/<bucket>/<key>) and checks no signature: a
 // presigned part address works when the test PUTs to it as a browser would.
+// It joins parts only as R2 does: every part but the last the same size,
+// and at least 5 MiB.
 package s3test
 
 import (
@@ -32,6 +36,9 @@ type Object struct {
 	ContentDisposition string
 	ETag               string
 }
+
+// minPartSize is the smallest part R2 joins, but for the last.
+const minPartSize = 5 << 20
 
 type part struct {
 	data []byte
@@ -62,6 +69,8 @@ type Server struct {
 	partQueries []url.Values
 	// counts are the requests received, by operation.
 	counts map[string]int
+	// served counts the object bytes GetObject answered.
+	served int64
 	// holds keep an operation's requests waiting (Hold).
 	holds map[string]*hold
 	t     testing.TB
@@ -90,7 +99,7 @@ func New(t testing.TB) *Server {
 }
 
 // Fail makes the next request of the operation (CreateMultipartUpload,
-// UploadPart, ListParts, CompleteMultipartUpload, AbortMultipartUpload,
+// UploadPart, UploadPartCopy, ListParts, CompleteMultipartUpload, AbortMultipartUpload,
 // ListMultipartUploads, PutObject, CopyObject, GetObject, HeadObject,
 // DeleteObject) answer with the status and S3 error code.
 func (s *Server) Fail(operation string, status int, code string) {
@@ -179,6 +188,14 @@ func (s *Server) Count(operation string) int {
 	return s.counts[operation]
 }
 
+// Served is how many object bytes GetObject answered, ranged reads
+// included: what core downloaded.
+func (s *Server) Served() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.served
+}
+
 // Aborted are the keys whose multipart upload was aborted, in order.
 func (s *Server) Aborted() []string {
 	s.mu.Lock()
@@ -214,6 +231,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.createUpload(w, r, bucket, key)
 	case "UploadPart":
 		s.uploadPart(w, r, q)
+	case "UploadPartCopy":
+		s.uploadPartCopy(w, r, bucket, key, q)
 	case "ListParts":
 		s.listParts(w, bucket, key, q.Get("uploadId"))
 	case "CompleteMultipartUpload":
@@ -222,6 +241,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.abort(w, q.Get("uploadId"))
 	case "ListMultipartUploads":
 		s.listUploads(w, bucket, q.Get("prefix"))
+	case "ListObjectsV2":
+		s.listObjects(w, bucket, q)
 	case "CopyObject":
 		s.copyObject(w, r, bucket, key)
 	case "PutObject":
@@ -242,6 +263,8 @@ func operationOf(r *http.Request, key string, q url.Values) string {
 	switch {
 	case r.Method == http.MethodPost && q.Has("uploads"):
 		return "CreateMultipartUpload"
+	case r.Method == http.MethodPut && q.Has("uploadId") && q.Has("partNumber") && r.Header.Get("X-Amz-Copy-Source") != "":
+		return "UploadPartCopy"
 	case r.Method == http.MethodPut && q.Has("uploadId") && q.Has("partNumber"):
 		return "UploadPart"
 	case r.Method == http.MethodGet && q.Has("uploadId"):
@@ -252,6 +275,8 @@ func operationOf(r *http.Request, key string, q url.Values) string {
 		return "AbortMultipartUpload"
 	case r.Method == http.MethodGet && key == "" && q.Has("uploads"):
 		return "ListMultipartUploads"
+	case r.Method == http.MethodGet && key == "" && q.Get("list-type") == "2":
+		return "ListObjectsV2"
 	case r.Method == http.MethodPut && r.Header.Get("X-Amz-Copy-Source") != "":
 		return "CopyObject"
 	case r.Method == http.MethodPut:
@@ -313,6 +338,57 @@ func (s *Server) uploadPart(w http.ResponseWriter, r *http.Request, q url.Values
 	w.WriteHeader(http.StatusOK)
 }
 
+// uploadPartCopy stores as a part the byte range of another object that
+// X-Amz-Copy-Source-Range names (all of it without one).
+func (s *Server) uploadPartCopy(w http.ResponseWriter, r *http.Request, bucket, key string, q url.Values) {
+	number, err := strconv.ParseInt(q.Get("partNumber"), 10, 32)
+	if err != nil || number < 1 || number > 10000 {
+		writeError(w, http.StatusBadRequest, "InvalidArgument")
+		return
+	}
+	source, err := url.PathUnescape(strings.TrimPrefix(r.Header.Get("X-Amz-Copy-Source"), "/"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "InvalidArgument")
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.uploads[q.Get("uploadId")]
+	if !ok || u.bucket != bucket || u.key != key {
+		writeError(w, http.StatusNotFound, "NoSuchUpload")
+		return
+	}
+	src, ok := s.objects[source]
+	if !ok {
+		writeError(w, http.StatusNotFound, "NoSuchKey")
+		return
+	}
+	data := src.Data
+	if spec := r.Header.Get("X-Amz-Copy-Source-Range"); spec != "" {
+		first, last, ok := exactRange(spec, int64(len(src.Data)))
+		if !ok {
+			writeError(w, http.StatusBadRequest, "InvalidArgument")
+			return
+		}
+		data = src.Data[first : last+1]
+	}
+	etag := etagOf(data)
+	u.parts[int32(number)] = part{data: slices.Clone(data), etag: etag}
+	writeXML(w, http.StatusOK, copyPartResult{ETag: etag, LastModified: timestamp()})
+}
+
+// exactRange reads "bytes=first-last", which must lie within the object:
+// a part copy is never clamped.
+func exactRange(spec string, size int64) (int64, int64, bool) {
+	a, b, ok := strings.Cut(strings.TrimPrefix(spec, "bytes="), "-")
+	first, errA := strconv.ParseInt(a, 10, 64)
+	last, errB := strconv.ParseInt(b, 10, 64)
+	if !ok || !strings.HasPrefix(spec, "bytes=") || errA != nil || errB != nil || first < 0 || first > last || last >= size {
+		return 0, 0, false
+	}
+	return first, last, true
+}
+
 func (s *Server) listParts(w http.ResponseWriter, bucket, key, id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -358,6 +434,21 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, bucket, key, i
 			writeError(w, http.StatusBadRequest, "InvalidPart")
 			return
 		}
+		if i < len(body.Parts)-1 {
+			// R2: every part but the last at least 5 MiB, and all of them
+			// the same size (the last no larger).
+			if len(stored.data) < minPartSize {
+				writeError(w, http.StatusBadRequest, "EntityTooSmall")
+				return
+			}
+			if first := u.parts[body.Parts[0].PartNumber]; len(stored.data) != len(first.data) {
+				writeError(w, http.StatusBadRequest, "InvalidPart")
+				return
+			}
+		} else if i > 0 && len(stored.data) > len(u.parts[body.Parts[0].PartNumber].data) {
+			writeError(w, http.StatusBadRequest, "InvalidPart")
+			return
+		}
 		data.Write(stored.data)
 		sum, _ := hex.DecodeString(strings.Trim(stored.etag, `"`))
 		sums = append(sums, sum...)
@@ -392,6 +483,37 @@ func (s *Server) listUploads(w http.ResponseWriter, bucket, prefix string) {
 			result.Uploads = append(result.Uploads, listedUpload{Key: u.key, UploadID: id, Initiated: timestamp()})
 		}
 	}
+	writeXML(w, http.StatusOK, result)
+}
+
+// listObjects answers the keys under the prefix, in order, a page of
+// max-keys (1000 by default) at a time, continued after the token (the last
+// key of the page before).
+func (s *Server) listObjects(w http.ResponseWriter, bucket string, q url.Values) {
+	prefix, after := q.Get("prefix"), q.Get("continuation-token")
+	page := 1000
+	if n, err := strconv.Atoi(q.Get("max-keys")); err == nil && n > 0 && n < page {
+		page = n
+	}
+	s.mu.Lock()
+	var keys []string
+	for name := range s.objects {
+		if b, key, _ := strings.Cut(name, "/"); b == bucket && strings.HasPrefix(key, prefix) && key > after {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	result := listObjectsResult{Name: bucket, Prefix: prefix}
+	for i, key := range keys {
+		if i == page {
+			result.IsTruncated, result.NextContinuationToken = true, keys[i-1]
+			break
+		}
+		o := s.objects[bucket+"/"+key]
+		result.Contents = append(result.Contents, listedObject{Key: key, Size: int64(len(o.Data)), ETag: o.ETag, LastModified: timestamp()})
+	}
+	result.KeyCount = len(result.Contents)
+	s.mu.Unlock()
 	writeXML(w, http.StatusOK, result)
 }
 
@@ -460,6 +582,9 @@ func (s *Server) getObject(w http.ResponseWriter, r *http.Request, bucket, key s
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(status)
 	if !head {
+		s.mu.Lock()
+		s.served += int64(len(data))
+		s.mu.Unlock()
 		_, _ = w.Write(data)
 	}
 }
@@ -558,6 +683,29 @@ type listUploadsResult struct {
 	Prefix      string         `xml:"Prefix"`
 	IsTruncated bool           `xml:"IsTruncated"`
 	Uploads     []listedUpload `xml:"Upload"`
+}
+
+type listedObject struct {
+	Key          string `xml:"Key"`
+	LastModified string `xml:"LastModified"`
+	ETag         string `xml:"ETag"`
+	Size         int64  `xml:"Size"`
+}
+
+type listObjectsResult struct {
+	XMLName               xml.Name       `xml:"ListBucketResult"`
+	Name                  string         `xml:"Name"`
+	Prefix                string         `xml:"Prefix"`
+	KeyCount              int            `xml:"KeyCount"`
+	IsTruncated           bool           `xml:"IsTruncated"`
+	NextContinuationToken string         `xml:"NextContinuationToken,omitempty"`
+	Contents              []listedObject `xml:"Contents"`
+}
+
+type copyPartResult struct {
+	XMLName      xml.Name `xml:"CopyPartResult"`
+	ETag         string   `xml:"ETag"`
+	LastModified string   `xml:"LastModified"`
 }
 
 type copyResult struct {

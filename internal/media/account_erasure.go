@@ -285,8 +285,9 @@ func (e *ImmediateBlobEraser) keepClub(ctx context.Context, id uuid.UUID) error 
 }
 
 func (e *ImmediateBlobEraser) deleteObject(ctx context.Context) func(string) error {
+	del := purgeDeleter(ctx, e.blobs)
 	return func(key string) error {
-		err := e.blobs.Delete(ctx, key)
+		err := del(key)
 		if err == nil || errors.Is(err, ErrPrivateMediaDisabled) {
 			return err
 		}

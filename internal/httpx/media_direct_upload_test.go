@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/config"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/faststart/mp4test"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/media/s3test"
@@ -1415,4 +1417,60 @@ func TestUploadFileNamesHTTP(t *testing.T) {
 	for _, name := range append(refused, "a\nb.png", "a\rb.png", "a\x00b.png", "", "   ") {
 		requireCode(t, startNamed(name), fiber.StatusBadRequest, "media_name_invalid")
 	}
+}
+
+// countedWakes counts the faststart worker's wakes.
+type countedWakes struct{ n atomic.Int32 }
+
+func (w *countedWakes) Wake() { w.n.Add(1) }
+
+// A video uploaded with its moov at the end wakes the faststart worker,
+// whose pass moves the Media to its faststart copy: its address is then the
+// copy's (videos/<uuid>.fs.<claim>.mp4), served to play with its moov
+// first.
+func TestDirectUploadOfAVideoIsRewrittenFaststartHTTP(t *testing.T) {
+	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
+	organizer := organizerToken(t, e.keys)
+	wakes := &countedWakes{}
+	deps := memoryDeps()
+	deps.Users = user.NewService(user.NewPostgresStore(e.pool))
+	deps.ParseToken = e.keys.Parse()
+	deps.MediaUploadLimiter = e.singleStep
+	deps.Media = media.NewServiceWithOptions(e.store, e.r2, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test",
+		media.ServiceOptions{
+			Catalogue:       directCatalogue(t),
+			ServiceProducts: deps.ServiceClients.Products(),
+			Direct:          media.DirectUploadConfig{Storage: e.r2, Limiter: e.limiter, Now: e.clock.Now, Purposes: openDirectPurposes, Faststart: wakes},
+		})
+	e.app = httpx.New(deps)
+
+	movie := mp4test.TwoTracks()
+	file, _ := movie.Build()
+	done := e.upload(t, organizer, "video", "açılış.mp4", file)
+	if done.status != fiber.StatusCreated || !strings.HasSuffix(done.body["url"].(string), ".mp4") || wakes.n.Load() != 1 {
+		t.Fatalf("complete: status %d body %v, %d wakes", done.status, done.body, wakes.n.Load())
+	}
+	club := e.upload(t, organizer, "club_file", "notlar.pdf", pdfFile(3000))
+	if club.status != fiber.StatusCreated || wakes.n.Load() != 1 {
+		t.Fatalf("a club file woke the faststart worker: %d wakes", wakes.n.Load())
+	}
+
+	worker, err := media.NewFaststartWorker(media.FaststartWorkerConfig{Store: e.store, Storage: e.r2, Now: e.clock.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report, err := worker.Pass(context.Background(), func(err error) { t.Log(err) }); err != nil || report.Rewritten != 1 {
+		t.Fatalf("pass %+v, err %v", report, err)
+	}
+	got := sendJSON(t, e.app, organizer, fiber.MethodGet, "/v1/media/"+done.body["id"].(string), "")
+	url, _ := got.body["url"].(string)
+	copyPrefix := strings.TrimSuffix(done.body["url"].(string), ".mp4") + ".fs."
+	if got.status != fiber.StatusOK || !strings.HasPrefix(url, copyPrefix) || !strings.HasSuffix(url, ".mp4") || got.body["size"] != float64(len(file)) {
+		t.Fatalf("the Media after the rewrite: status %d body %v", got.status, got.body)
+	}
+	stored, ok := e.s3.Object("media", strings.TrimPrefix(url, "https://cdn.example.test/"))
+	if !ok || stored.ContentType != "video/mp4" || stored.ContentDisposition != "" {
+		t.Fatalf("faststart copy found %v, served as %q %q", ok, stored.ContentType, stored.ContentDisposition)
+	}
+	mp4test.AssertSamePlayback(t, movie, stored.Data)
 }
