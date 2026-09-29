@@ -19,8 +19,8 @@ configured interval. A record is eligible only after the recovery window. The
 worker refuses to purge media that anything still uses: any Media attachment
 (see [Media attachment](#media-attachment)), and, as a safety net, core's own
 links checked directly (an Event cover, gallery photo, file or video, a
-video's poster, a User profile, a Certificate template draft, or a published
-Certificate template version).
+video's poster or frame, a User profile, a Certificate template draft, or a
+published Certificate template version).
 Both must say unused. The legacy report counts the core links that have no
 Media attachment (see [Legacy Media](#legacy-media)); once production shows
 zero, removing the direct check is media redesign ticket 18. Database triggers also reject new
@@ -40,7 +40,10 @@ After `blob_purged_at` is set, the metadata remains available to authorized
 lifecycle views for audit, but restore returns `410 Gone`. There is no public
 force-purge endpoint.
 
-New uploads use a separate subject-bound durable staging intent. Its insert and
+New uploads use a separate subject-bound durable staging intent. (A video's
+frame, which has no uploader, writes its record first instead, pending and
+expiring, so the expiry cleanup finds whatever objects a worker cut short
+wrote: see [Video frames](#video-frames).) Its insert and
 metadata publication both acquire the same subject lock and active/deletion-
 marker guard as every other current-identity link. Core inserts the object key
 and uploader subject in PostgreSQL before writing R2, then inserts media
@@ -176,7 +179,10 @@ unless its product has a service client configured
   that is a ZIP is checked against clamd's limits before it is scanned
   ([The ZIP check](#the-zip-check), ticket 23). `video` needs no scan (at
   2 GiB it is larger than what clamd scans). See
-  [Before Event files open](#before-event-files-open).
+  [Before Event files open](#before-event-files-open);
+- `video_frame` is no one's upload (`service_only`): core makes it itself,
+  a frame of an Event video taken by the frame service, and attaches it
+  ([Video frames](#video-frames), ticket 25).
 
 Every purpose a product's role accepts must be attached by that product (a
 core role's by core, `attach: core`), and the purposes core refers to in code
@@ -203,6 +209,7 @@ The initial entries:
 | `club_file` | event_editor | PDF, ZIP (download only) | 1 GiB | public, scanned | direct | core (an Event's files) |
 | `answer_file_large` | service_only | ZIP, PDF | 1 GiB | private, scanned | direct | forms |
 | `video` | event_editor | MP4 | 2 GiB | public | direct | core (an Event's videos) |
+| `video_frame` | service_only (core makes it) | JPEG | 10 MiB | public | single-step | core (a video's frame) |
 | `legacy` | authenticated | legacy rules | legacy rules | public | single-step | core, or a product for its uploader or once it holds it (transition rule) |
 
 Every public raster purpose re-encodes (2560 px) and gets the `card` (400 px)
@@ -278,7 +285,11 @@ Core refuses to start with a catalogue that breaks one:
 - a purpose that needs a malware scan allows at most 1 GiB
   (`media.MaxScanBytes`), what clamd takes in one stream: its
   `StreamMaxLength`, which the ClamAV wizard sets. Raising it means raising
-  that first.
+  that first;
+- a video's frame (`video_frame`) is core's own image: no person uploads
+  it (`service_only`), core attaches it, and it is a public, single-step,
+  re-encoded raster image (no SVG, no PDF). Opening it to a person would
+  let one set what core shows as a video's frame.
 
 ### Uploading
 
@@ -1173,6 +1184,7 @@ anonymization and maintenance SQL:
 | Event files (`event_files`, migration `20260928160000`) | `event` | `event_file` |
 | Event videos (`event_videos`, migration `20260928160000`) | `event` | `event_video` |
 | A video's poster (`event_videos.poster_media_id`, migration `20260929140000`) | `event` | `event_video_poster` |
+| A video's frame (`event_videos.frame_media_id`, migration `20260929160000`) | `event` | `event_video_frame` |
 | User profile picture (`users.profile_picture_id`) | `user` | `profile_picture` |
 | Certificate template draft (`draft_layout` background and image elements) | `certificate_template` | `certificate_asset` |
 | Published certificate template version (`layout` and `asset_manifest`) | `certificate_template_version` | `certificate_asset` |
@@ -1203,7 +1215,10 @@ video; PostgreSQL detects it and aborts one of them, and nothing is left
 half written. The function is not shared with `sync_core_media_attachments`:
 that one belongs to migrations whose fingerprints read its source. A new
 link is always offered, so the Media attachment's guards check it even when
-another video holds the image already.
+another video holds the image already. A video's frame has its own function
+(`sync_event_video_frame_attachments`, migration `20260929160000`), the
+poster's steps on `frame_media_id` in the role `event_video_frame`, with the
+same lock on the Events.
 
 ### Link rules
 
@@ -1252,7 +1267,8 @@ table that a test keeps equal to `rolePurposes`, both ways; migration
 `20260928160000` adds the Event files' and videos' roles and
 `media_roles_without_legacy`, the copy of `rolesWithoutLegacy`, which the
 same test keeps equal; migration `20260929140000` adds the poster's role to
-both). The link rules
+both, and `20260929160000` the frame's: `event_video_frame` takes only
+`video_frame`, never a legacy Media). The link rules
 read the Media before the write and outside its transaction, so the legacy
 backfill could give a legacy Media a purpose in between; the trigger reads
 the Media under the lock the foreign key takes anyway, which waits for the
@@ -2441,7 +2457,8 @@ videos' and posters' routes, a season assignment).
         "sizes": {
           "card": { "url": "https://cdn.yildizskylab.com/images/77b2…/card.jpg", "width": 400, "height": 225 },
           "page": { "url": "https://cdn.yildizskylab.com/images/77b2…/page.jpg", "width": 1200, "height": 675 }
-        }
+        },
+        "source": "uploaded"
       }
     }
   ],
@@ -2468,8 +2485,10 @@ videos' and posters' routes, a season assignment).
   inline as `video/mp4` to play (see [Serving policy](#serving-policy)),
   until its faststart rewrite moves it to `videos/<uuid>.fs.<claim>.mp4` (see
   [Video faststart](#video-faststart)).
-- `poster` is only on a video whose organizers chose one, and only while
-  its image can be served: see [Video posters](#video-posters).
+- `poster` is only on a video: the image its organizers chose while it can
+  be served (`source` `uploaded`, see [Video posters](#video-posters)),
+  else the frame core took of the video while that can be served (`source`
+  `frame`, see [Video frames](#video-frames)).
 - `scanResult` is only on a rejected item, and only the Event's editors see
   one.
 - Whoever may not edit the Event (and anyone without a sign-in) sees only the
@@ -2483,7 +2502,7 @@ door's Events, a ticket's or a competitor's `event`) carry `fileCount` and
 `videoCount` alone, never `files` or `videos`. The counts are subqueries of
 the query that reads the Events, so a list still takes its three queries
 (a test lists Events with files and videos and counts them); a detail reads
-both lists, each video with its poster, in one more query.
+both lists, each video with its poster and its frame, in one more query.
 
 ### Rules
 
@@ -2496,8 +2515,8 @@ both lists, each video with its poster, in one more query.
   for the editors only, until they remove it.
 - The Team media library holds as for photos, and moving an Event to another
   Owner team checks its files and videos again.
-- Removing an item removes its Media attachment, and a video's poster's; a
-  Media with no other one is detached and purged 30 days later unless
+- Removing an item removes its Media attachment, and a video's poster's and
+  frame's; a Media with no other one is detached and purged 30 days later unless
   something attaches it again. An archived Event keeps its lists, as it
   keeps its gallery.
 - The Event's row is locked while one of its lists changes, so two editors'
@@ -2505,7 +2524,7 @@ both lists, each video with its poster, in one more query.
   against the list it rewrites. Ties in `order_index` are read in
   `added_at`, then id order.
 - Account erasure keeps an Event's files and videos (club purposes, see
-  [Account erasure](#account-erasure)), and their posters.
+  [Account erasure](#account-erasure)), their posters and their frames.
 
 ### Video posters
 
@@ -2517,8 +2536,9 @@ links it in `event_videos.poster_media_id` (migration `20260929140000`),
 whose triggers write its Media attachment: the Event owns it, in the role
 `event_video_poster` (see [Core's own links](#cores-own-links)). Nothing
 needs switching on: the image is a single-step upload, whatever
-`MEDIA_DIRECT_UPLOAD_PURPOSES` says. Ticket 25 will fill in a frame of the
-video when no poster is uploaded; an uploaded one will always win.
+`MEDIA_DIRECT_UPLOAD_PURPOSES` says. A video with no uploaded poster shows
+the frame core took of it instead ([Video frames](#video-frames), ticket
+25); an uploaded one always wins.
 
 Whoever may edit the Event may set, replace and clear a poster, by the same
 decision as `PUT /v1/events/{id}`. Both routes answer the Event's detail
@@ -2556,8 +2576,8 @@ the Event's lock. When another request replaced it meanwhile, core decides
 again, so a poster that was the video's a moment ago is checked as the new
 link it now is.
 
-In the Event's detail, the video carries `poster` (the JSON above): the
-image's Media `id`, its `type` (the Media's type as stored, such as
+In the Event's detail, the video carries `poster` (the JSON above, `source`
+`uploaded`): the image's Media `id`, its `type` (the Media's type as stored, such as
 `image/jpeg` or `image/png`; `image/svg+xml` for an SVG, which needs an SVG
 renderer and whose sizes carry no `width`/`height`), its full-size `url`,
 and `sizes` with both `card` and `page`, built as the cover's are (`media.Addresses.LinkedSizes`: a stored
@@ -2580,6 +2600,233 @@ and summaries carry the counts alone, never a poster.
 - The Event's row is locked while a poster changes, as while a list does.
 - Account erasure keeps a poster (an Event photo is club content): it stays
   on the video, attached and at its address, without its uploader or name.
+
+### Video frames
+
+Media redesign ticket 25 (decision P1). A video its organizers gave no
+poster shows a frame of itself instead, taken at one second. Core runs no
+ffmpeg: a small frame service does, in its own container (`cmd/media-frame`,
+image `ghcr.io/skylab-kulubu/core-backend-media-frame`), on the internal
+network only. Core reaches it at `MEDIA_FRAME_ADDR`; unset, a video without
+an uploaded poster has none, as before. An uploaded poster always wins.
+
+The frame is a Media of its own purpose, `video_frame`, which no one
+uploads (`service_only`; see [Hard ceilings](#hard-ceilings)): a public
+JPEG, re-encoded with its `card` and `page` sizes, with no uploader and no
+name. The video links it in its own column, `event_videos.frame_media_id`
+(migration `20260929160000`), never in `poster_media_id`, whose triggers
+write its Media attachment: the Event owns it, in the role
+`event_video_frame` (see [Core's own links](#cores-own-links)).
+
+#### In the Event's detail
+
+`poster` answers the uploaded poster while it can be served, else the frame
+while it can be served, in the same shape, with `source` telling them
+apart:
+
+```json
+"poster": {
+  "id": "c81e…",
+  "type": "image/jpeg",
+  "url": "https://cdn.yildizskylab.com/images/c81e…",
+  "sizes": {
+    "card": { "url": "https://cdn.yildizskylab.com/images/c81e…/card.jpg", "width": 400, "height": 225 },
+    "page": { "url": "https://cdn.yildizskylab.com/images/c81e…/page.jpg", "width": 1200, "height": 675 }
+  },
+  "source": "frame"
+}
+```
+
+- `id` is the frame's Media id. No one can pick it as an uploaded poster:
+  `video_frame` fits only `event_video_frame`.
+- Setting an uploaded poster later leaves the frame on the video, stored and
+  attached, but not shown. Clearing the uploaded poster
+  (`DELETE …/poster`), or its image being archived or purged, shows the
+  frame again.
+- The detail reads the frame in the query that reads the videos
+  (`media.LinkedImageSQL`), so it adds no query; lists and summaries carry
+  no poster.
+
+#### The frame worker
+
+The frame worker (`media.FrameWorker`) starts with core when
+`MEDIA_FRAME_ADDR` is set and core has R2 (`R2_*`), on its own context. It
+makes a pass at once and every minute; a pass claims at most 25 videos
+(another follows at once when it claimed 25). A video needs a frame when:
+
+- its Event is current (not archived), and its link has no uploaded poster,
+  no frame, and was not given up on;
+- its Media is current and can be served (`media.ServableSQL`), and
+  [Video faststart](#video-faststart) has settled it: `moved`, `done`,
+  `not_needed` or `failed`. A video waiting for its rewrite waits for its
+  frame too: its key moves once, then stays.
+
+For each, in turn:
+
+1. **Claim.** A short transaction picks the next video
+   (`FOR UPDATE SKIP LOCKED`) and records the claim (`frame_claim_id`,
+   `frame_claimed_until`): leased for five minutes, the claim's work (three)
+   plus two. A video another worker (the other core of a rolling deploy) has
+   claimed is left alone. No database connection is held while the service
+   or the storage works.
+2. **Ask.** Core presigns a GET of the video's key for two minutes
+   (`R2.PresignGet`) and asks the service for the frame at one second
+   (`POST /frame`, below), waiting at most two minutes. The address carries
+   the signature: it goes to the service and is never logged.
+3. **The image pipeline.** The JPEG goes through what an upload for a
+   purpose goes through, within the [decode budget](#decode-budget): its
+   decode cost first, then decoded, re-encoded (quality 85, its ICC profile
+   rebuilt), with its `card` and `page` sizes. Never an SVG: the purpose
+   takes JPEG alone.
+4. **Record, objects, link.** The frame's record is written first (pending,
+   expiring in 24 hours, no uploader and no name), then its objects
+   (`images/<uuid>` and its sizes, served inline as `image/jpeg`), then the
+   link, in a short transaction under the Event's lock (taken first, as
+   core's own writers take it), which lets go of the claim; the trigger
+   attaches the frame. A worker that stops in between leaves a pending
+   record the expiry cleanup purges, with whatever objects were written. A
+   frame whose video left the Event meanwhile, or whose claim went to
+   another worker, is not linked: its record expires at once.
+
+When it fails:
+
+- A frame that fails (the service's `502` storage error or `504` timeout, a
+  storage write, the pipeline) is tried again a minute later, each failure
+  in a row doubling the wait up to six hours (`frame_attempts`,
+  `frame_retry_at`). After twelve failures (about a day) the video is given
+  up (`frame_state` `failed`): it has no poster until one is uploaded.
+- A video the service takes no frame from (`422 no_frame`: not a video
+  ffmpeg decodes, one that needs more read than the service reads, a frame
+  larger than it answers) is given up at once.
+- A service that cannot be reached, answers `503` (busy), or refuses core's
+  address (`400`: its allowlist does not name R2's host) costs no video a
+  try: the pass ends and lets go of its claim. The worker then waits 10
+  seconds before the next pass, doubling the wait up to 5 minutes while
+  the service stays so, and says once that it cannot ask it and once that
+  it answers again.
+- A step that panics (a bug) gives its video up, counting the try; the log
+  names the Event and the video and nothing the panic held, and the pass
+  goes on. A pass that panics outside a video's step is logged, and the
+  next one comes as usual.
+- It logs what a pass changed and each video that failed, by the Event's
+  and the video's ids; a pass with nothing to do logs nothing.
+
+Rules:
+
+- Removing the video from the Event (or the Event going) removes the
+  frame's Media attachment: the frame is detached and purged 30 days later.
+- A frame stays valid when the video's key changes (faststart moved it): it
+  is its own Media.
+- A video whose uploaded poster is cleared before it ever got a frame waits
+  for one again: the worker takes it on its next pass.
+- A frame is one Event video's, and no one links it by hand, so the Team
+  media library does not concern it; moving an Event takes its frames
+  along.
+- Account erasure: a frame has no uploader (core made it from club
+  content), so no account erasure records or purges it; it stays with its
+  video, which is club content too.
+- An admin may archive a frame's Media (`DELETE /v1/media/{id}`): the video
+  then shows no poster until one is uploaded, and the worker takes no
+  other.
+
+#### The frame service
+
+`POST /frame` with `{"url": "<presigned GET>", "atMillis": 1000}` answers
+`200` with one JPEG (`image/jpeg`), or a problem
+(`application/problem+json`, member `code`):
+
+| Status | `code` | When |
+|---|---|---|
+| 400 | `invalid_request` | The body is not `{"url", "atMillis"}`: unknown members, more than one value, over 8 KiB, `atMillis` outside 0 to 24 hours. |
+| 400 | `url_not_allowed` | The address is not https, not on an allowed host (named by its name, never an IP address), on another port than 443, or carries credentials. Nothing is read. |
+| 503 | `busy` | ffmpeg runs and two requests wait already, or this one waited 30 seconds. `Retry-After: 5`. Nothing ran. |
+| 504 | `timeout` | ffmpeg ran past 30 seconds and was killed, its whole process group. |
+| 502 | `upstream_failed` | The storage answered an error (member `upstreamStatus`), a redirect, or could not be reached. |
+| 422 | `no_frame` | ffmpeg took no frame, the video needs more read than 256 MiB, or the frame is over 8 MiB or not a JPEG. |
+
+`GET /health` answers `{"status": "ok", "running": 0, "waiting": 0}`.
+
+How it reads the video:
+
+- ffmpeg never reaches the network. It reads
+  `http://127.0.0.1:<port>/video`, a loopback proxy the service starts for
+  the request, and may use no other protocol
+  (`-protocol_whitelist http,tcp`). The proxy reads the one address the
+  request named, checked as above, over TLS 1.2 or later; it forwards only
+  the `Range` header ffmpeg sends, follows no redirect (a `3xx` fails the
+  frame as the storage's), serves only `GET` and `HEAD` of that path, and
+  stops at 256 MiB read. A fast seek into a faststart MP4 reads its moov
+  and a few chunks.
+- ffmpeg runs with `-nostdin`, errors only, `-max_alloc` 256 MiB, one
+  decoding thread, `-ss` before `-i` (a fast seek to the keyframe before the
+  time), the first video stream only, one frame, no audio, subtitles or
+  data, scaled down (never up) to at most 1920 px on its longer side and
+  turned upright by the video's rotation, one JPEG (`-q:v 2`) to its
+  standard output. Nothing is written to disk. It gets an empty environment
+  and its own process group, killed whole at the timeout.
+- A clip shorter than the time asked for has no frame there: the service
+  takes its first frame instead, within the same 30 seconds.
+- One ffmpeg runs at a time, and two requests may wait for it. Each request
+  logs one line (status, code, time, bytes read), never the address.
+
+Its container (`Dockerfile.frame`) is Alpine with its `ffmpeg` package and
+the Go binary, running as user 10001. It writes nothing, so a read-only root
+filesystem with a tmpfs `/tmp` works; its `HEALTHCHECK` runs
+`media-frame health`. Its settings: `MEDIA_FRAME_ALLOWED_HOSTS` (required:
+the host of core's `R2_ENDPOINT`, or that address itself; a pattern, an IP
+address, a port or a path stops it at startup), `PORT` (default `8080`) and
+`MEDIA_FRAME_FFMPEG` (default `ffmpeg`). At startup it checks that ffmpeg
+runs and logs its version and the allowed hosts.
+
+CI (`.github/workflows/ghcr.yml`) builds
+`ghcr.io/skylab-kulubu/core-backend-media-frame` next to core's image, on the
+same branches with the same tags (`main`: `:sandbox`, `:latest` and the
+commit; `production`: `:production` and the commit). It notifies no Dokploy
+hook: the wizard deploys the application, and redeploys it when the tag's
+image differs from the one running.
+
+#### Setting it up
+
+A human step, done by `ops/wizards/media-frame-wizard.sh` in sky_lab_genel
+(on the server, sandbox first, then production). For each side it creates
+a Dokploy application in core's project and environment:
+
+- from the GHCR image at the side's tag (`:sandbox`, `:production`); the
+  package must be public, as core's is (the wizard checks);
+- on the internal network only (`dokploy-network`), with no published port
+  and no domain. Core reaches it at `<its appName>:8080`;
+- 1 CPU and 512 MiB of memory at most, 256 MiB reserved;
+- `MEDIA_FRAME_ALLOWED_HOSTS` set to the host of that side's core
+  `R2_ENDPOINT`, read from core's running container.
+
+The wizard waits for the service's health, then runs the self-test (below)
+from inside core's container and prints the line for core's environment,
+`MEDIA_FRAME_ADDR=<appName>:8080`; it does not set it. Once Yusuf has added
+it and core has been redeployed, the wizard checks core's startup line,
+`media frames: on (frame service at <appName>:8080)`, and runs the
+self-test again with core's own environment.
+
+#### Self-test
+
+`core-backend media-frame-selftest [-addr host:port]` stores a two-second
+sample video (`mediaframe.SampleVideo`, made at run time: 320x180, red for
+its first second, blue for its second) in core's public bucket under a
+temporary key (`pending/selftest/frame-<uuid>.mp4`: the CDN does not serve
+`pending/`, and R2's lifecycle rule clears it should the delete fail), asks
+the frame service at `MEDIA_FRAME_ADDR` (or `-addr`) for its frame at one
+second by a presigned GET, and deletes the key. It exits:
+
+- 0 only when the frame is the sample's, 320x180 and blue;
+- 1 when the service answers another frame or none, cannot be reached,
+  refuses R2's address (its allowlist), or R2 fails;
+- 2 without a usable address or without R2.
+
+Run inside core's container, it also proves core reaches the service over
+the internal network and the service reaches R2:
+
+```sh
+docker exec <core container> ./core-backend media-frame-selftest
+```
 
 ### Before Event files open
 
@@ -2824,7 +3071,10 @@ rule is one function, `personalOnErasureSQL` in
   file or video stays on the Event, attached and at its address, with an
   empty `name`: a ZIP downloads under its key from then on; a PDF or a video
   named nobody in its metadata and is served as before. A video's poster (an
-  Event photo) stays on its video the same way, with its sizes.
+  Event photo) stays on its video the same way, with its sizes. A video's
+  frame (`video_frame`) has no uploader at all (core made it from the
+  video), so no account erasure records or purges it: it stays with its
+  video ([Video frames](#video-frames)).
 
 **Known consequence of E1.** Until stage 5, when the CMS attaches the Media
 its pages use (ticket 18), a legacy image a CMS page uses only by its address,
@@ -2943,6 +3193,16 @@ What happens to the records when the request completes is in
   in Event and User responses alike: `stored` (default) or `cloudflare`. Any
   other value stops core at startup.
 
+- `MEDIA_FRAME_ADDR` — the frame service's `host:port` on the internal
+  network (its Dokploy application's appName and `8080`, printed by the
+  frame wizard). Unset, video frames are off: a video without an uploaded
+  poster has none. Anything but `host:port` stops core at startup; without
+  R2 it stays off. See [Video frames](#video-frames). The rest is fixed in
+  code: a pass every minute, 25 videos a pass, the frame at one second, a
+  presigned GET of two minutes, a claim leased for five minutes, a failed
+  frame retried after a minute doubling to six hours and given up after
+  twelve failures, a service that cannot be asked retried after 10 seconds
+  doubling to 5 minutes.
 - `MEDIA_CLAMAV_ADDR` — clamd's `host:port` on the internal network (the
   ClamAV Dokploy application's appName and `3310`, printed by the ClamAV
   wizard). Unset, core has no scanner and a purpose that needs a scan is
