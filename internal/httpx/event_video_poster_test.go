@@ -18,6 +18,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 // uploadImage uploads a gray PNG of w by h pixels for the purpose, as the
@@ -498,5 +499,61 @@ func TestAVideoAnswersItsPosterOnlyWhileTheImageCanBeServedHTTP(t *testing.T) {
 	}
 	if videos := ids(items(t, anonymousGet(t, f.app, "/v1/events/"+eventID), "videos")); !reflect.DeepEqual(videos, []string{videoID}) {
 		t.Fatalf("anyone sees the videos %v, want only the one they can play", videos)
+	}
+}
+
+// Account erasure keeps a video's poster (media redesign ticket 07: an
+// Event photo is a club purpose): an erased organizer's poster stays on the
+// video, attached and served at its address with its sizes, with neither
+// their name as its uploader nor its file name.
+func TestAnErasedOrganizersPosterStaysOnTheVideoNamelessHTTP(t *testing.T) {
+	f := newEventFilesEnv(t)
+	person, organizer := newOrganizer(t, f.keys)
+	eventID, videoID := f.eventWithVideo(t, organizer, "WEBLAB")
+	poster := f.uploadFile(t, organizer, "event_cover", "Ada_Organizer_kapak.png", func() []byte {
+		var file bytes.Buffer
+		if err := png.Encode(&file, image.NewGray(image.Rect(0, 0, 800, 600))); err != nil {
+			t.Fatal(err)
+		}
+		return file.Bytes()
+	}())
+	sendJSON(t, f.app, organizer, fiber.MethodPut, posterPath(eventID, videoID), posterBody(poster["id"].(string)))
+	key := strings.TrimPrefix(poster["url"].(string), eventFilesCDN+"/")
+	before, ok := f.s3.Object("media", key)
+	if !ok {
+		t.Fatalf("the poster is not stored at %s", key)
+	}
+
+	ctx := context.Background()
+	users := user.NewPostgresStore(f.pool)
+	request, err := users.RequestDeletion(ctx, person, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := users.AnonymizeAccount(ctx, person, now, nil); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := users.MediaForDeletion(ctx, request.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eraser := media.NewImmediateBlobEraser(f.store, media.Buckets{Public: f.r2})
+	for _, id := range recorded {
+		if err := eraser.EnsureErased(ctx, id, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := videoPoster(t, anonymousGet(t, f.app, "/v1/events/"+eventID), videoID); !reflect.DeepEqual(got, asPoster(poster)) {
+		t.Fatalf("after the erasure the video's poster is %v, want %v", got, asPoster(poster))
+	}
+	kept, err := f.store.Get(ctx, uuid.MustParse(poster["id"].(string)))
+	if err != nil || kept.Name != "" || kept.UploadedBy != uuid.Nil || kept.Status != media.StatusAttached || kept.BlobPurgedAt != nil {
+		t.Fatalf("the erased organizer's poster is %+v (err %v)", kept, err)
+	}
+	after, ok := f.s3.Object("media", key)
+	if !ok || after.ContentType != before.ContentType || after.ContentDisposition != before.ContentDisposition {
+		t.Fatalf("the kept poster is stored %v as %q, %q; before the erasure %q, %q", ok, after.ContentType, after.ContentDisposition, before.ContentType, before.ContentDisposition)
 	}
 }
