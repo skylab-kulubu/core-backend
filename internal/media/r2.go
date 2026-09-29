@@ -119,12 +119,13 @@ func (r *R2) SetMetadata(ctx context.Context, key string, meta BlobMetadata) err
 // NoSuchKey instead is taken the same way, so every delete by key (purges,
 // account erasure) can be repeated.
 //
-// A pending key (isPendingKey) is a Direct upload's: deleting it first
-// aborts any multipart upload still open at it, so every path that deletes
-// by key alone (the staging sweeper, account erasure, a refused completion)
-// leaves no parts behind either.
+// A pending key (isPendingKey) is a Direct upload's, and a faststart key
+// (isFaststartKey) a video's rewrite: deleting one first aborts any
+// multipart upload still open at it, so every path that deletes by key
+// alone (the staging sweeper, account erasure, a refused completion, a
+// purge, a rewrite cut short) leaves no parts behind either.
 func (r *R2) Delete(ctx context.Context, key string) error {
-	if isPendingKey(key) {
+	if isPendingKey(key) || isFaststartKey(key) {
 		if err := r.abortMultipartUploads(ctx, key); err != nil {
 			return err
 		}
