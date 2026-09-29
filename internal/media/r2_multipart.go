@@ -70,6 +70,21 @@ func (r *R2) PresignPart(ctx context.Context, key, uploadID string, number int32
 	return presigned.URL, nil
 }
 
+// PresignGet is a GET of the object at key that works without credentials
+// for ttl: the frame service reads a video by it (ranged GETs). The address
+// carries the signature; it is handed to the frame service and never
+// logged.
+func (r *R2) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	presigned, err := s3.NewPresignClient(r.client).PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(r.bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return "", err
+	}
+	return presigned.URL, nil
+}
+
 // UploadPart sends one part's bytes from core itself (a browser sends its
 // parts to presigned addresses instead); ErrMultipartGone when the upload
 // is.

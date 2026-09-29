@@ -145,9 +145,11 @@ func posterChangeLocksTheEvent(t *testing.T, pool *pgxpool.Pool) bool {
 
 // undoEventVideoPosters rolls back the poster migration, which builds on the
 // Event files migration's link table, so that an older down migration can
-// run; applying again brings it back.
+// run; applying again brings it back. The video frames' migration, which
+// builds on it, goes first.
 func undoEventVideoPosters(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	undoEventVideoFrames(t, pool)
 	down, err := fs.ReadFile(db.DownSQL, "migrations/"+eventVideoPostersVersion+"_event_video_posters.down.sql")
 	if err != nil {
 		t.Fatal(err)

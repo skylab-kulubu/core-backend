@@ -1021,6 +1021,94 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE proname = 'media_roles_without_legacy'
 			  AND prosrc LIKE '%(''core'', ''event_video_poster'')%'
 		)`,
+	// A video's frame: its column and foreign key, the worker's claim
+	// columns and their check, the indexes the purge and the worker read,
+	// the statement triggers that write its Media attachments (with the
+	// function that locks the Events before it reads them), and the role
+	// tables that know its role. A rerun of 20260929140000 puts back the role
+	// tables without it; this fingerprint then fails and the migration runs
+	// again.
+	20260929160000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('frame_media_id', 'uuid', 'YES'),
+				('frame_state', 'text', 'YES'),
+				('frame_attempts', 'int4', 'NO'),
+				('frame_retry_at', 'timestamptz', 'YES'),
+				('frame_claim_id', 'uuid', 'YES'),
+				('frame_claimed_until', 'timestamptz', 'YES')
+			) expected(column_name, udt_name, is_nullable)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public' AND actual.table_name = 'event_videos'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = expected.is_nullable
+		) = 6
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.event_videos')
+			  AND conname = 'event_videos_frame_media_id_fkey'
+			  AND contype = 'f'
+			  AND pg_get_constraintdef(oid) = 'FOREIGN KEY (frame_media_id) REFERENCES media(id) ON DELETE SET NULL'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.event_videos')
+			  AND conname = 'event_videos_frame_check'
+			  AND contype = 'c'
+			  AND pg_get_constraintdef(oid) LIKE '%frame_state = ''failed''%'
+			  AND pg_get_constraintdef(oid) LIKE '%frame_attempts >= 0%'
+			  AND pg_get_constraintdef(oid) LIKE '%(frame_claim_id IS NULL) = (frame_claimed_until IS NULL)%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'event_videos_frame_media_id_idx'
+			  AND indexdef LIKE '%(frame_media_id) WHERE (frame_media_id IS NOT NULL)'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'event_videos_frame_due_idx'
+			  AND indexdef LIKE '%(event_id, media_id) WHERE ((frame_media_id IS NULL) AND (poster_media_id IS NULL) AND (frame_state IS NULL))'
+		)
+		-- Statement triggers (tgtype: 4 insert, 16 update, 8 delete) that
+		-- read the links through the transition tables the function names.
+		AND (
+			SELECT count(*) FROM (VALUES
+				('event_videos_frame_attachments_insert', 4, NULL::TEXT, 'new_owners'),
+				('event_videos_frame_attachments_update', 16, 'old_owners', 'new_owners'),
+				('event_videos_frame_attachments_delete', 8, 'old_owners', NULL)
+			) expected(trigger_name, trigger_type, old_table, new_table)
+			JOIN pg_trigger actual
+			  ON actual.tgrelid = to_regclass('public.event_videos')
+			 AND actual.tgname = expected.trigger_name
+			 AND actual.tgtype = expected.trigger_type
+			 AND actual.tgoldtable::TEXT IS NOT DISTINCT FROM expected.old_table
+			 AND actual.tgnewtable::TEXT IS NOT DISTINCT FROM expected.new_table
+			 AND actual.tgenabled = 'O'
+			 AND NOT actual.tgisinternal
+			 AND actual.tgnargs = 0
+			 AND actual.tgfoid = to_regprocedure('public.sync_event_video_frame_attachments()')
+		) = 3
+		-- The functions are read by their source, not called.
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'sync_event_video_frame_attachments'
+			  AND prosrc LIKE '%''frame_media_id''%'
+			  AND prosrc LIKE '%a.role = ''event_video_frame''%'
+			  AND prosrc LIKE '%held.frame_media_id = gone.media_id%'
+			  AND prosrc LIKE '%PERFORM 1 FROM events%ORDER BY id%FOR NO KEY UPDATE;%DELETE FROM media_attachments%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_role_purposes'
+			  AND prosrc LIKE '%(''core'', ''event_video_frame'', ''video_frame'')%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_roles_without_legacy'
+			  AND prosrc LIKE '%(''core'', ''event_video_frame'')%'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

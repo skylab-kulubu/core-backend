@@ -135,6 +135,19 @@
       "transport": "direct",
       "attach": "core"
     },
+    "video_frame": {
+      "description": "A frame of an Event video, which core takes itself (by the frame service, ffmpeg) when the video has no poster its organizers uploaded (ticket 25, decision P1). No person uploads one: it is an ordinary public image, a JPEG re-encoded with its sizes.",
+      "upload": "service_only",
+      "types": ["image/jpeg"],
+      "max_mib": 10,
+      "visibility": "public",
+      "encrypted": false,
+      "scan": false,
+      "pending_ttl": "24h",
+      "transport": "single_step",
+      "attach": "core",
+      "image": { "reencode": true, "max_dimension": 2560, "sizes": { "card": 400, "page": 1200 } }
+    },
     "legacy": {
       "description": "Media uploaded without a purpose, and every Media stored before Media purpose. Internal: clients cannot name it. It keeps the rules Media uploaded without a purpose had before this catalogue, until Skyforms and CMS send purposes. Its images keep their own bytes, stripped of metadata, and get no sizes.",
       "upload": "authenticated",

@@ -38,7 +38,7 @@ func TestCatalogue_ReviewedFileLoadsWithEveryPurpose(t *testing.T) {
 	}
 	for _, name := range []string{
 		"profile_picture", "event_cover", "event_gallery", "certificate_asset", "cms_image", "cms_file",
-		"answer_file", "club_file", "answer_file_large", "video", "legacy",
+		"answer_file", "club_file", "answer_file_large", "video", "video_frame", "legacy",
 	} {
 		if _, ok := catalogue.Lookup(name); !ok {
 			t.Errorf("catalogue has no %q purpose", name)
@@ -73,6 +73,55 @@ func TestCatalogue_CoreAttachesClubFilesAndVideos(t *testing.T) {
 		}
 		if purpose.Transport != media.TransportDirect || purpose.Visibility != media.VisibilityPublic {
 			t.Errorf("%s: transport %s, visibility %s", name, purpose.Transport, purpose.Visibility)
+		}
+	}
+}
+
+// A video's frame (media redesign ticket 25) is an image core makes itself
+// from the video: no person uploads one, core attaches it, and it is an
+// ordinary public image, a JPEG re-encoded with its card and page sizes.
+func TestCatalogue_VideoFramesAreImagesOnlyCoreMakes(t *testing.T) {
+	t.Parallel()
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, ok := catalogue.Lookup("video_frame")
+	if !ok {
+		t.Fatal("no video_frame purpose")
+	}
+	if frame.Uploader != "service_only" || frame.Attach != media.AttachCore || frame.OwningProduct() != "core" {
+		t.Errorf("video_frame is uploaded by %q and attached by %q", frame.Uploader, frame.Attach)
+	}
+	if frame.Visibility != media.VisibilityPublic || frame.Transport != media.TransportSingleStep || frame.Scan {
+		t.Errorf("video_frame: %s, %s, scan %v", frame.Visibility, frame.Transport, frame.Scan)
+	}
+	if !slices.Equal(frame.Types, []string{"image/jpeg"}) || !frame.Image.Reencode || frame.Image.Sizes["card"] != 400 || frame.Image.Sizes["page"] != 1200 {
+		t.Errorf("video_frame: types %v, image %+v", frame.Types, frame.Image)
+	}
+}
+
+// Nothing in the catalogue can open video frames to a person, or make them
+// more than core's own JPEGs: every change of that kind stops core at
+// startup.
+func TestCatalogue_VideoFramesStayCoreMade(t *testing.T) {
+	t.Parallel()
+	for name, change := range map[string]func(frame map[string]any){
+		"a person uploads them":    func(f map[string]any) { f["upload"] = "event_editor" },
+		"anyone uploads them":      func(f map[string]any) { f["upload"] = "authenticated" },
+		"another product attaches": func(f map[string]any) { f["attach"] = "service"; f["service"] = "cms" },
+		"they take a PDF":          func(f map[string]any) { f["types"] = []any{"image/jpeg", "application/pdf"} },
+		"they are private": func(f map[string]any) {
+			f["visibility"] = "private"
+			f["encrypted"] = true
+		},
+		"they come by Direct upload": func(f map[string]any) { f["transport"] = "direct" },
+		"they take an SVG":           func(f map[string]any) { f["types"] = []any{"image/jpeg", "image/svg+xml"} },
+		"they are not re-encoded":    func(f map[string]any) { delete(f, "image") },
+	} {
+		data := reviewedCatalogueWith(t, func(purposes purposeEntries) { change(purposes["video_frame"]) })
+		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingVideoFrame) {
+			t.Errorf("%s: err = %v, want %v", name, err, media.ErrCeilingVideoFrame)
 		}
 	}
 }
