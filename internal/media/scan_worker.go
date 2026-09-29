@@ -106,7 +106,9 @@ func servedKeyOf(id uuid.UUID) string {
 // faststart copy a rewrite may have written beside the original, or the
 // original still kept beside the copy the Media moved to. An object that is
 // not there is deleted already. The staging sweeper deletes by
-// purgeObjects alone: a staged key is never paired.
+// purgeObjects alone: it deletes only a key no Media points at, and a
+// video's copy is written only for a key its Media points at, whose own
+// purge takes the pair.
 func purgeMediaObjects(id uuid.UUID, key string, purge func(key string) error) error {
 	if err := purgeObjects(key, purge); err != nil {
 		return err
