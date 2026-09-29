@@ -10,10 +10,12 @@ import (
 	"mime/multipart"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 )
 
 // uploadImage uploads a gray PNG of w by h pixels for the purpose, as the
@@ -29,16 +31,25 @@ func (f *eventFilesEnv) uploadImage(t *testing.T, token, purpose string, w, h in
 	if err := png.Encode(&file, picture); err != nil {
 		t.Fatal(err)
 	}
+	return f.uploadFile(t, token, purpose, "kapak.png", file.Bytes())
+}
+
+// uploadFile uploads the file for the purpose (none: "") by POST
+// /v1/media and answers its Media JSON.
+func (f *eventFilesEnv) uploadFile(t *testing.T, token, purpose, name string, file []byte) map[string]any {
+	t.Helper()
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
-	if err := form.WriteField("purpose", purpose); err != nil {
-		t.Fatal(err)
+	if purpose != "" {
+		if err := form.WriteField("purpose", purpose); err != nil {
+			t.Fatal(err)
+		}
 	}
-	part, err := form.CreateFormFile("file", "kapak.png")
+	part, err := form.CreateFormFile("file", name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := part.Write(file.Bytes()); err != nil {
+	if _, err := part.Write(file); err != nil {
 		t.Fatal(err)
 	}
 	if err := form.Close(); err != nil {
@@ -55,7 +66,7 @@ func (f *eventFilesEnv) uploadImage(t *testing.T, token, purpose string, w, h in
 	raw, _ := io.ReadAll(resp.Body)
 	var created map[string]any
 	if resp.StatusCode != fiber.StatusCreated || json.Unmarshal(raw, &created) != nil {
-		t.Fatalf("upload %s: status %d body %s", purpose, resp.StatusCode, raw)
+		t.Fatalf("upload %s for %q: status %d body %s", name, purpose, resp.StatusCode, raw)
 	}
 	return created
 }
@@ -241,5 +252,65 @@ func TestRemovingAVideoDetachesItsPosterUnlessSomethingStillShowsItHTTP(t *testi
 	readded := sendJSON(t, f.app, organizer, fiber.MethodPost, "/v1/events/"+eventID+"/videos", jsonIDs(first))
 	if got := videoPoster(t, readded, first); got != nil {
 		t.Fatalf("a video added again has the poster %v", got)
+	}
+}
+
+// A poster takes what an Event cover takes: a photo uploaded for the cover
+// or the gallery, an SVG among them (whose every size is the SVG itself).
+// Anything else is refused with media_purpose_mismatch in the poster's
+// role: a video, a club file, a profile picture, a CMS image, and a Media
+// uploaded without a purpose (legacy fits no poster, as it fits no Event
+// file or video). A Media that is missing or archived is not linkable. A
+// refused poster leaves the one the video had.
+func TestAVideosPosterTakesWhatAnEventCoverTakesHTTP(t *testing.T) {
+	f := newEventFilesEnv(t)
+	organizer := organizerToken(t, f.keys)
+	eventID, videoID := f.eventWithVideo(t, organizer, "WEBLAB")
+	path := posterPath(eventID, videoID)
+	kept := f.uploadImage(t, organizer, "event_gallery", 800, 600)
+	if set := sendJSON(t, f.app, organizer, fiber.MethodPut, path, posterBody(kept["id"].(string))); set.status != fiber.StatusOK {
+		t.Fatalf("set: status %d body %v", set.status, set.body)
+	}
+
+	otherVideo, _ := f.uploaded(t, organizer, "video", "başka.mp4", mp4File(1000))
+	clubFile, _ := f.uploaded(t, organizer, "club_file", "sunum.pdf", pdfFile(1000))
+	refused := map[string]string{
+		otherVideo: "video",
+		clubFile:   "club_file",
+		f.uploadImage(t, organizer, "profile_picture", 200, 200)["id"].(string):  "profile_picture",
+		f.uploadImage(t, organizer, "cms_image", 200, 200)["id"].(string):        "cms_image",
+		f.uploadFile(t, organizer, "", "eski.png", pngPicture(t))["id"].(string): "legacy",
+	}
+	for id, purpose := range refused {
+		resp := sendJSON(t, f.app, organizer, fiber.MethodPut, path, posterBody(id))
+		requireCode(t, resp, fiber.StatusUnprocessableEntity, "media_purpose_mismatch")
+		if resp.body["mediaId"] != id || resp.body["role"] != "event_video_poster" || resp.body["purpose"] != purpose {
+			t.Fatalf("a %s as a poster: %v", purpose, resp.body)
+		}
+	}
+	archived := f.uploadImage(t, organizer, "event_cover", 200, 200)
+	if gone := sendJSON(t, f.app, organizer, fiber.MethodDelete, "/v1/media/"+archived["id"].(string), ""); gone.status != fiber.StatusNoContent {
+		t.Fatalf("archive: status %d body %v", gone.status, gone.body)
+	}
+	for _, id := range []string{archived["id"].(string), uuid.NewString()} {
+		resp := sendJSON(t, f.app, organizer, fiber.MethodPut, path, posterBody(id))
+		requireCode(t, resp, fiber.StatusUnprocessableEntity, "media_not_linkable")
+		if resp.body["mediaId"] != id || resp.body["role"] != "event_video_poster" {
+			t.Fatalf("problem %v", resp.body)
+		}
+	}
+	if got := videoPoster(t, anonymousGet(t, f.app, "/v1/events/"+eventID), videoID); !reflect.DeepEqual(got, asPoster(kept)) {
+		t.Fatalf("after the refusals the poster is %v, want %v", got, asPoster(kept))
+	}
+
+	svg := f.uploadFile(t, organizer, "event_cover", "logo.svg",
+		[]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="#123456"/></svg>`))
+	set := sendJSON(t, f.app, organizer, fiber.MethodPut, path, posterBody(svg["id"].(string)))
+	svgURL, _ := svg["url"].(string)
+	want := map[string]any{"id": svg["id"], "url": svgURL, "sizes": map[string]any{
+		"card": map[string]any{"url": svgURL}, "page": map[string]any{"url": svgURL},
+	}}
+	if got := videoPoster(t, set, videoID); set.status != fiber.StatusOK || !strings.HasSuffix(svgURL, ".svg") || !reflect.DeepEqual(got, want) {
+		t.Fatalf("an SVG poster: status %d poster %v, want %v", set.status, got, want)
 	}
 }
