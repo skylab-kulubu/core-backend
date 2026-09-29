@@ -2470,7 +2470,7 @@ Nothing opens by deploying this: a Direct upload purpose opens only where
 Attaching and listing work whatever the switch says.
 
 - **`video`**: switch it on (`MEDIA_DIRECT_UPLOAD_PURPOSES=video`) once
-  items 1 and 2 below hold on that side. Anyone who may create an Event
+  items 1, 2 and 5 below hold on that side. Anyone who may create an Event
   (`event_editor`) can then upload one. It needs no scan (`scan: false`,
   unchanged; at 2 GiB it is above what clamd scans, `media.MaxScanBytes`).
 - **`club_file`**: switch it on (`club_file,video`) once items 1 to 4 hold
@@ -2502,6 +2502,26 @@ On each side, sandbox first:
    `media scan limits (clamd.conf): ...` shows the limits the ZIP check
    holds a ZIP within: they must be the wizard's clamd settings (the
    defaults are), and the wizard checks that they are.
+5. **Video faststart on real R2**: on sandbox, once a core with
+   [Video faststart](#video-faststart) runs there, before `video` opens in
+   production. The tests run against a fake R2; this proves R2's own
+   `UploadPartCopy` and its equal-parts rule:
+   1. Upload by Direct upload an MP4 of about 100 MiB whose `moov` comes
+      after its media data (a phone's or camera's recording, or
+      `ffmpeg -f lavfi -i testsrc=duration=600:size=1280x720 -c:v libx264 -b:v 1300k late.mp4`,
+      which writes the `moov` last). A video of 16 MiB or less is one
+      `PutObject` and proves nothing.
+   2. Within a minute or two, `GET /v1/media/{id}` answers a `url` ending
+      in `.fs.mp4`, and core's log has a
+      `media faststart: 1 rewritten, ...` line. On your own machine,
+      `curl -s -r 0-4095 <new url> | xxd | grep -m1 moov` finds the `moov`
+      in the first bytes, and `curl -sI <new url>` answers
+      `content-type: video/mp4` with no `Content-Disposition`.
+   3. Within the hour (the original is still there), both decode alike:
+      `ffmpeg -v error -i <old url> -map 0 -f framemd5 - > a.md5`, the same
+      for the new one into `b.md5`, and `diff a.md5 b.md5` prints nothing.
+   4. After the hour, the old address answers `404` and the new one still
+      plays.
 
 ## Video faststart
 
@@ -2511,10 +2531,9 @@ once the browser has it whole, or after a Range request to its end: cameras
 and phones write it so. Core rewrites every `video` Media into a faststart
 copy, `moov` first, without re-encoding: the samples stay byte for byte.
 
-Q26 said ffmpeg (`-movflags +faststart`) in a separate process with time
-and memory limits. Core does it without ffmpeg instead, with qt-faststart's
-method written in Go (`internal/faststart`): no binary in the image, no
-subprocess, and the video is never downloaded.
+Core does it without ffmpeg, with qt-faststart's method written in Go
+(`internal/faststart`; Q26 as updated 2026-09-29): no binary in the image,
+no subprocess, and the video is never downloaded.
 
 ### The rewrite
 
@@ -2547,9 +2566,15 @@ subprocess, and the video is never downloaded.
    byte, and the first and last chunk of each track (up to 16) against the
    original's.
 6. A short transaction points the Media at the copy, with the copy's size
-   (an `stco` upgraded to a `co64` grows it). The original stays an hour
-   (`media.FaststartOriginalGrace`), for a player that loaded its address,
-   then goes: the Media is `done`.
+   (an `stco` upgraded to a `co64` grows it): the Media is `moved`. Its
+   `url` and `size` change once, minutes after the upload.
+7. The original stays an hour (`media.FaststartOriginalGrace`), for a
+   player that loaded its address. Then the copy is checked once more (a
+   `HEAD`: there, and of the Media's size), and only then does the
+   original go: the Media is `done`. A copy that is not there whole moves
+   the Media back to its original (`url` and `size` with it), which the
+   next pass rewrites again; with the original gone too, the video is lost
+   and `failed`.
 
 A video the rewrite cannot move safely is `failed` and served as it is (it
 still plays once downloaded), logged by its id with why (box types and
@@ -2558,9 +2583,18 @@ over 64 MiB before or after the rewrite, more than 256 top-level or
 100 000 `moov` boxes, a compressed `moov` (`cmov`), a fragmented file
 (`mvex` in the `moov`, or a top-level `moof`, `mfra`, `sidx` or `ssix`
 with the `moov` after the media data), sample auxiliary offsets (`saio`),
-a chunk offset outside the media data, or no chunk offsets at all. Other
-absolute offsets (an `iloc` in a `meta` box) are not moved, as
-qt-faststart does not move them either.
+a chunk offset outside the media data, or no chunk offsets at all.
+
+Two more kinds of absolute offset are refused rather than moved:
+
+- item locations (`iloc`, HEIF-style items stored by file offset) in a
+  `meta` box of the `moov` or of a track, directly or in its `udta`
+  (ISO's `meta` and QuickTime's alike), and a top-level `meta` box. Any
+  `iloc` is refused, even one whose items would not move: simpler, and
+  videos rarely hold one. An iTunes-style or QuickTime `meta` without one
+  (`ilst`, `keys`) moves with the `moov`;
+- samples in another file: a data reference (`dinf/dref`) that is not
+  self-contained. Its chunk offsets are that file's, and must not move.
 
 ### The worker
 
@@ -2583,17 +2617,31 @@ when it claimed 25), each by id:
   `video_faststart_retry_at`). After twelve failed rewrites (about a day)
   the video is `failed`, served as it is. A moved video whose original
   cannot be deleted is tried again, never given up.
-- A copy cut short is deleted, and so is any multipart upload still open
-  at its key: deleting a `videos/<uuid>.fs.mp4` key aborts them, as
-  deleting a pending key does. A rewrite starts by deleting whatever an
-  earlier attempt left there.
-- It logs what a pass changed and each video that failed or was refused,
-  by id; a pass with nothing to do logs nothing.
+- A step that panics (a bug) fails its video, served as it is, with the
+  attempt counted; the log names the video's id and nothing the panic
+  held, and the pass goes on to the next video. A pass that panics
+  outside a video's step is logged, and the next one comes as usual.
+- A worker deletes a copy it wrote (cut short, or not moved to) only when
+  the Media does not point at it, and either its claim still holds, with
+  room for the delete before its lease ends, or the Media's purge has
+  begun (nothing will point at the copy again, and no worker claims such
+  a Media). Otherwise the copy stays: the next rewrite starts by deleting
+  whatever is at its key, and a purge takes it with the Media. Deleting a
+  `videos/<uuid>.fs.mp4` key also aborts any multipart upload open at it,
+  as deleting a pending key does.
+- Leases are compared with each replica's own clock, as the scan's are:
+  the replicas' clocks must agree within the lease margin (two minutes;
+  NTP keeps them within milliseconds). Where they do not, two workers may
+  write the same bytes to the same key, but neither deletes a copy the
+  Media points at or one the other holds, and no original goes before its
+  copy is checked there.
+- It logs what a pass changed and each video that failed, was refused or
+  moved back, by id; a pass with nothing to do logs nothing.
 
 The state is `video_faststart` (migration `20260929120000`): empty while
-the video waits (a moved video waits for its original's hour), then
-`done`, `not_needed` or `failed`. Videos stored before this are rewritten
-by the same worker after the deploy.
+the video waits for its rewrite, `moved` while its original waits out its
+hour, then `done`, `not_needed` or `failed`. Videos stored before this are
+rewritten by the same worker after the deploy.
 
 ### Purges
 
@@ -2605,9 +2653,9 @@ claim is live, as they wait for a scan's, so no copy lands after them. A
 copy whose claim's lease ran out (a stalled worker) never survives a purge
 that did not wait: the worker checks the Media before pointing it at the
 copy, and deletes the copy when the Media's purge has begun or it is gone.
-A worker that lost its claim to another deletes nothing the Media points
-at: both write the same bytes to the same key. Account erasure keeps a
-video (club content) at whichever key it is.
+A worker that lost its claim to another deletes nothing at the key, which
+is the other worker's now (both write the same bytes there). Account
+erasure keeps a video (club content) at whichever key it is.
 
 ## Account erasure
 
@@ -2741,7 +2789,8 @@ What happens to the records when the request completes is in
 - [Video faststart](#video-faststart) has no settings: it runs wherever
   core has R2. A pass every minute (and after every video uploaded), 25
   videos a pass, 16 MiB parts, a 64 MiB `moov` at most, an original kept an
-  hour after its Media moves, a failed step retried after a minute doubling
+  hour after its Media moves (and deleted only once its copy is checked
+  there), a failed step retried after a minute doubling
   to six hours, twelve failed rewrites before a video is `failed`, and a
   claim leased for five minutes and a second per MiB plus two minutes are
   fixed in code.
