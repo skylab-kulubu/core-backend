@@ -108,10 +108,15 @@ func (h *URLHandler) redirect(c fiber.Ctx, channel shorturl.UTM) error {
 	if channel.Source != "" {
 		utm.Source = channel.Source
 	}
+	userAgent := strings.Clone(c.Get(fiber.HeaderUserAgent))
+	referer := strings.Clone(c.Get(fiber.HeaderReferer))
+	// The inferred source is forwarded to the target too, so the form counts
+	// the response under the same channel as the click.
+	utm = utm.WithInferredSource(userAgent, referer)
 	u, err := h.svc.Redirect(c.Context(), c.Params("alias"), shorturl.Hit{
 		IP:        h.hopIP(c),
-		UserAgent: strings.Clone(c.Get(fiber.HeaderUserAgent)),
-		Referer:   strings.Clone(c.Get(fiber.HeaderReferer)),
+		UserAgent: userAgent,
+		Referer:   referer,
 		UTM:       utm,
 		UserID:    userID,
 	})
@@ -132,21 +137,16 @@ func (h *URLHandler) QR(c fiber.Ctx) error {
 	utm := shorturl.UTMFromQuery(func(key string) string { return strings.Clone(c.Query(key)) })
 	content := utm.FillInto(qr.ShortURL(u.Alias))
 	logo := qr.LogoFromQuery(c.Query("logo"))
+	corner := shorturl.ChannelCode(utm.Source)
 	if strings.EqualFold(c.Query("format"), "svg") {
-		svg, err := qr.SVG(content, logo)
+		svg, err := qr.StyledSVG(content, logo, corner)
 		if err != nil {
 			return problem(c, fiber.StatusBadRequest, "Bad Request")
 		}
 		c.Set(fiber.HeaderContentType, "image/svg+xml")
 		return c.Send(svg)
 	}
-	size := qr.SizeFromQuery(c.Query("size"))
-	var png []byte
-	if logo {
-		png, err = qr.PNGWithLogo(content, size)
-	} else {
-		png, err = qr.PNG(content, size)
-	}
+	png, err := qr.StyledPNG(content, qr.SizeFromQuery(c.Query("size")), logo, corner)
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}

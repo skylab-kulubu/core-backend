@@ -175,7 +175,7 @@ func (s *PostgresStore) AliasTaken(ctx context.Context, alias string, except uui
 
 func (s *PostgresStore) FormSources(ctx context.Context, formID uuid.UUID, since time.Time) ([]SourceCount, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT h.utm_source, count(*)
+		SELECT h.utm_source, count(*), count(*) FILTER (WHERE h.utm_medium = 'qr' OR h.utm_source = 'qr')
 		FROM url_hits h
 		JOIN urls u ON u.id = h.url_id
 		WHERE (u.form_id = $1::uuid OR position($1::uuid::text IN lower(u.url)) > 0)
@@ -189,7 +189,7 @@ func (s *PostgresStore) FormSources(ctx context.Context, formID uuid.UUID, since
 	out := make([]SourceCount, 0)
 	for rows.Next() {
 		var c SourceCount
-		if err := rows.Scan(&c.Source, &c.Count); err != nil {
+		if err := rows.Scan(&c.Source, &c.Count, &c.Scans); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

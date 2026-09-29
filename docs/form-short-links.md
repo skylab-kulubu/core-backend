@@ -31,7 +31,7 @@ Form-link endpoints need the `url:forms` role (the forms service account) or
 | `GET /v1/urls/forms/{formId}` | | the bound link, `404` when the form has none |
 | `PUT /v1/urls/forms/{formId}` | `{ url, label, alias, actorId }` | the bound link, created under the readable `alias` if missing; **idempotent** |
 | `PATCH /v1/urls/forms/{formId}` | `{ alias, suggestion }` | renamed link; an empty `alias` asks for the readable default built from `suggestion`; `400` when that `suggestion` gives no usable alias; `403` with code `event_managed` on an event link, `409` when taken |
-| `GET /v1/urls/forms/{formId}/stats` | | `{ since, total, sources: [{ source, count }] }` for the last 90 days |
+| `GET /v1/urls/forms/{formId}/stats` | | `{ since, total, sources: [{ source, count, scans }] }` for the last 90 days; `scans` is the part of `count` that came from a QR code |
 | `GET /v1/urls/availability` | `?alias=` | `{ alias, available, reason }`, reason is `invalid`, `reserved` or `taken` |
 
 A new link gets a **readable default name** (ADR 0033): Forms sends the form
@@ -49,27 +49,43 @@ Otherwise the service account stands in, because `created_by` only accepts
 active accounts.
 
 Stats count every link that points at the form, bound or not, so an old
-personal link to the form still shows up in the form's channels.
+personal link to the form still shows up in the form's channels. A hop counts
+as a scan when it carries `utm_medium=qr`, or `utm_source=qr` from a code
+printed without a channel.
 
 ## Channels and QR codes
 
-A shared link carries its channel either as a query or as a short suffix.
-Both are recorded as the same `utm_source`:
+A shared link carries its channel either as a query or as a two-letter
+suffix. Both are recorded as the same `utm_source`:
 
 | Suffix | Recorded as |
 |---|---|
 | `skyl.app/{alias}/ig` | `instagram` |
 | `skyl.app/{alias}/wa` | `whatsapp` |
-| `skyl.app/{alias}/li` | `linkedin` |
-| `skyl.app/{alias}/mail` | `email` |
-| `skyl.app/{alias}/web` | `website` |
+| `skyl.app/{alias}/in` | `linkedin` |
+| `skyl.app/{alias}/yt` | `youtube` |
+| `skyl.app/{alias}/ma` | `email` |
 
 The suffix wins over a `utm_source` in the query. An unknown suffix redirects
 without a tag, so a mistyped printed link still reaches the form.
 
-`GET /v1/go/{alias}/qr` encodes the `utm_*` tags it is called with, so a poster
-printed from `?utm_source=qr&logo=1` counts scans apart from clicks.
-`format=svg` returns a vector code for print.
+**Untagged hops are recognised where they can be.** When a hop carries no
+`utm_source`, Core names the channel from the browser that made it:
+Instagram's and LinkedIn's in-app browsers identify themselves, and YouTube
+sends links through its own redirect. The hop is then recorded, and forwarded
+to the form, as `utm_source=instagram` (or `linkedin`, `youtube`) with
+`utm_medium=referral`. WhatsApp, mail apps and camera scans open a plain
+browser without a trace and stay untagged. A tag on the link always wins.
+
+`GET /v1/go/{alias}/qr` encodes the `utm_*` tags it is called with. Forms asks
+for `utm_source={channel}&utm_medium=qr` when a channel is chosen and for
+`utm_source=qr` otherwise, so scans are counted apart from clicks within each
+channel. A code for a channel with a suffix prints that suffix small in its
+bottom-right corner, so a printed code shows which channel it counts for.
+`format=svg` returns a vector code for print; a PNG below 4 px a module falls
+back to square modules and leaves the corner code out. The margin is 2.5
+modules, narrower than the four the QR standard asks for, and phones read it
+without trouble.
 
 ## Aliases
 

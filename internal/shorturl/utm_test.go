@@ -64,15 +64,36 @@ func TestChannelUTMNamesTheSourceBehindASuffix(t *testing.T) {
 	cases := map[string]string{
 		"ig":   "instagram",
 		"WA":   "whatsapp",
-		"li":   "linkedin",
-		"mail": "email",
-		"web":  "website",
+		"in":   "linkedin",
+		"yt":   "youtube",
+		"ma":   "email",
+		"li":   "",
+		"mail": "",
+		"web":  "",
 		"qr":   "",
 		"xyz":  "",
 	}
 	for code, want := range cases {
 		if got := ChannelUTM(code); got.Source != want || got.Medium != "" {
 			t.Errorf("%s: %+v", code, got)
+		}
+	}
+}
+
+func TestChannelCodeIsTheSuffixOfAKnownSource(t *testing.T) {
+	t.Parallel()
+	for source, want := range map[string]string{
+		"instagram": "ig",
+		"WhatsApp":  "wa",
+		"linkedin":  "in",
+		"youtube":   "yt",
+		"email":     "ma",
+		"qr":        "",
+		"stant":     "",
+		"":          "",
+	} {
+		if got := ChannelCode(source); got != want {
+			t.Errorf("%q: %q, want %q", source, got, want)
 		}
 	}
 }

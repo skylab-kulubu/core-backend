@@ -38,6 +38,7 @@ type Store interface {
 	RecordHit(ctx context.Context, id uuid.UUID, hit Hit) (URL, error)
 	ListHits(ctx context.Context, id uuid.UUID, since time.Time) ([]Hit, error)
 	// FormSources counts the hits since the given time on every link that
-	// points at formID, bound or not, grouped by utm_source.
+	// points at formID, bound or not, grouped by utm_source, with the QR
+	// scans among them.
 	FormSources(ctx context.Context, formID uuid.UUID, since time.Time) ([]SourceCount, error)
 }

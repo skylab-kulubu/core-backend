@@ -80,8 +80,9 @@ func TestFormLinksOnPostgres(t *testing.T) {
 	for _, hop := range []struct {
 		alias  string
 		source string
-	}{{"yaz-kampi", "instagram"}, {link.Alias, "instagram"}, {"yaz-kampi", "qr"}, {personal.Alias, ""}} {
-		if _, err := svc.Redirect(ctx, hop.alias, shorturl.Hit{UTM: shorturl.UTM{Source: hop.source}}); err != nil {
+		medium string
+	}{{"yaz-kampi", "instagram", ""}, {link.Alias, "instagram", shorturl.MediumQR}, {"yaz-kampi", "qr", ""}, {personal.Alias, "", ""}} {
+		if _, err := svc.Redirect(ctx, hop.alias, shorturl.Hit{UTM: shorturl.UTM{Source: hop.source, Medium: hop.medium}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -89,8 +90,13 @@ func TestFormLinksOnPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Total != 4 || len(stats.Sources) != 3 || stats.Sources[0].Source != "instagram" || stats.Sources[0].Count != 2 {
+	if stats.Total != 4 || len(stats.Sources) != 3 || stats.Sources[0].Source != "instagram" || stats.Sources[0].Count != 2 || stats.Sources[0].Scans != 1 {
 		t.Fatalf("stats %+v", stats)
+	}
+	for _, c := range stats.Sources {
+		if want := map[string]int{"instagram": 1, "qr": 1, "": 0}[c.Source]; c.Scans != want {
+			t.Fatalf("scans %+v", c)
+		}
 	}
 
 	events := event.NewPostgresStore(pool)
