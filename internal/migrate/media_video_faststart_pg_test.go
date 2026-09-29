@@ -35,7 +35,7 @@ func videoMedia(t *testing.T, pool *pgxpool.Pool, set string, args ...any) error
 func videoFaststartHolds(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	for _, ok := range []string{
-		`video_faststart = NULL`, `video_faststart = 'done'`, `video_faststart = 'not_needed'`, `video_faststart = 'failed'`,
+		`video_faststart = NULL`, `video_faststart = 'moved'`, `video_faststart = 'done'`, `video_faststart = 'not_needed'`, `video_faststart = 'failed'`,
 		`video_faststart_attempts = 3, video_faststart_retry_at = now()`,
 		`video_faststart_claim_id = gen_random_uuid(), video_faststart_claimed_until = now()`,
 	} {
@@ -53,8 +53,9 @@ func videoFaststartHolds(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
-// A video Media waits for its faststart rewrite (NULL) until it ends done,
-// not needed or failed; a worker's claim is its id and lease together.
+// A video Media waits for its faststart rewrite (NULL), is moved to its
+// copy, and ends done, not needed or failed; a worker's claim is its id and
+// lease together.
 func TestMediaVideoFaststartStates(t *testing.T) {
 	pool := postgresPool(t)
 	if err := migrate.Apply(context.Background(), pool); err != nil {

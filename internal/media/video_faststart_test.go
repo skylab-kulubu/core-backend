@@ -30,3 +30,25 @@ func TestAVideosTwoKeysNameEachOther(t *testing.T) {
 		}
 	}
 }
+
+// A copy is written in 16 MiB parts, unless that would take more than the
+// 10 000 parts S3 allows: then in the fewest whole MiB that do not.
+func TestFaststartPartSizeStaysWithinTenThousandParts(t *testing.T) {
+	t.Parallel()
+	w, err := media.NewFaststartWorker(media.FaststartWorkerConfig{Store: &media.PostgresStore{}, Storage: media.NewR2(media.R2Config{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const mib, gib = 1 << 20, 1 << 30
+	for size, want := range map[int64]int64{
+		100:              16 * mib,
+		2 * gib:          16 * mib,
+		10000 * 16 * mib: 16 * mib,
+		10000*16*mib + 1: 17 * mib,
+		1 << 40:          105 * mib,
+	} {
+		if got := w.PartSizeFor(size); got != want || (size+got-1)/got > 10000 {
+			t.Errorf("a copy of %d bytes: parts of %d, want %d", size, got, want)
+		}
+	}
+}

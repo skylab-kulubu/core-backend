@@ -949,12 +949,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.media')
 			  AND conname = 'media_video_faststart_check'
 			  AND contype = 'c'
-			  AND pg_get_constraintdef(oid) = ` + "'" + `CHECK ((((video_faststart IS NULL) OR (video_faststart = ANY (ARRAY[''done''::text, ''not_needed''::text, ''failed''::text]))) AND (video_faststart_attempts >= 0) AND ((video_faststart_claim_id IS NULL) = (video_faststart_claimed_until IS NULL))))` + "'" + `
+			  AND pg_get_constraintdef(oid) = ` + "'" + `CHECK ((((video_faststart IS NULL) OR (video_faststart = ANY (ARRAY[''moved''::text, ''done''::text, ''not_needed''::text, ''failed''::text]))) AND (video_faststart_attempts >= 0) AND ((video_faststart_claim_id IS NULL) = (video_faststart_claimed_until IS NULL))))` + "'" + `
 		)
 		AND EXISTS (
 			SELECT 1 FROM pg_indexes
 			WHERE schemaname = 'public' AND indexname = 'media_video_faststart_due_idx'
-			  AND indexdef LIKE '%(id) WHERE ((purpose = ''video''::text) AND (video_faststart IS NULL) AND (blob_purged_at IS NULL))'
+			  AND indexdef LIKE '%(id) WHERE ((purpose = ''video''::text) AND ((video_faststart IS NULL) OR (video_faststart = ''moved''::text)) AND (blob_purged_at IS NULL))'
 		)`,
 }
 
