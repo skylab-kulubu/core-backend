@@ -143,6 +143,10 @@ type DirectUploadConfig struct {
 	// the catalogue is the same file on every side, so what a side opens
 	// is decided here. None by default.
 	Purposes []string
+	// Faststart is woken when a completion stores a video, so its rewrite
+	// with its moov in front starts at once (FaststartWorker). Nil: the
+	// worker finds it at its next pass.
+	Faststart interface{ Wake() }
 }
 
 // DirectUploadPurposesFromEnv reads MEDIA_DIRECT_UPLOAD_PURPOSES: the Direct
@@ -554,6 +558,9 @@ func (c directCompletion) run(ctx context.Context, p authz.Principal, sent []Upl
 	c.direct.Limiter.settle(c.rec.ID)
 	c.deletePending(ctx)
 	c.scanStored(created)
+	if slices.Contains(videoPurposes, created.Purpose) && c.direct.Faststart != nil {
+		c.direct.Faststart.Wake()
+	}
 	return c.withURL(created), nil
 }
 
@@ -946,7 +953,8 @@ func detectDirectType(start []byte) string {
 	case len(start) >= 16 && string(start[4:8]) == "ftyp" &&
 		(uint32(start[0])<<24|uint32(start[1])<<16|uint32(start[2])<<8|uint32(start[3])) >= 16:
 		// An ftyp box: its size, "ftyp", a major brand and a minor version.
-		// Where its moov box sits is for video's own ticket (13).
+		// A video whose moov box comes after its media data is rewritten
+		// faststart after its upload (FaststartWorker).
 		return mp4Type
 	}
 	return ""

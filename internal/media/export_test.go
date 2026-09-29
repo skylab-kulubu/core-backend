@@ -11,6 +11,9 @@ var (
 	RebuildICCTags    = rebuildICCTags
 	GuardICC          = guardICC
 	CoverColorsInSlot = coverColorsInSlot
+	FaststartCopyKey  = faststartCopyKey
+	VideoOriginalOf   = videoOriginalOf
+	CopiesPrefix      = faststartCopiesPrefix
 )
 
 // BackfillOneLegacyPurpose runs the purpose backfill's step for one Media,
@@ -23,3 +26,6 @@ func BackfillOneLegacyPurpose(ctx context.Context, store *PostgresStore, catalog
 	})
 	return err
 }
+
+// PartSizeFor is the part size the worker writes a copy of size bytes in.
+func (w *FaststartWorker) PartSizeFor(size int64) int64 { return w.partSizeFor(size) }

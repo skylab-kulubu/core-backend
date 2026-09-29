@@ -214,6 +214,21 @@ func main() {
 	} else {
 		log.Printf("media scan: off (%s is not set); purposes that need a scan are refused", media.ClamAVAddrEnv)
 	}
+	// Video faststart (docs/media-lifecycle.md): a video whose moov box
+	// comes after its media data is rewritten with its moov in front into a
+	// new object beside it (no ffmpeg, no re-encode), and its Media moves
+	// there. It needs R2; without it, videos are served as they are.
+	if r2, ok := publicBlobs.(*media.R2); ok {
+		faststartWorker, err := media.NewFaststartWorker(media.FaststartWorkerConfig{Store: mediaStore, Storage: r2})
+		if err != nil {
+			log.Fatal(err)
+		}
+		faststartWorker.Run(mediaPurgeContext, log.Printf)
+		directUploads.Faststart = faststartWorker
+		log.Printf("media faststart: on")
+	} else {
+		log.Printf("media faststart: off (no R2 configured); videos are served as they are")
+	}
 	media.MaintainBlobPurge(mediaPurgeContext, mediaStore, blobs, mediaPurgeConfig, func(err error) {
 		log.Printf("media blob purge: %v", err)
 	})

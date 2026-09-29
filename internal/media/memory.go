@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -421,6 +422,20 @@ func (s *MemoryBlob) Delete(_ context.Context, key string) error {
 	delete(s.objects, key)
 	delete(s.metadata, key)
 	return nil
+}
+
+// ListKeys lists the keys under prefix, in order.
+func (s *MemoryBlob) ListKeys(_ context.Context, prefix string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var keys []string
+	for key := range s.objects {
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	return keys, nil
 }
 
 func (s *MemoryBlob) Read(_ context.Context, key string) ([]byte, error) {
