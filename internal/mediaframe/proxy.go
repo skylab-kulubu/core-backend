@@ -169,6 +169,13 @@ func (p *upstreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) && r.Context().Err() == nil {
+				// The storage stopped sending (ffmpeg going away cancels
+				// the request's context instead): the storage's failure,
+				// and ffmpeg must see a failed read.
+				p.fail(errors.New("the storage stopped sending the video"))
+				panic(http.ErrAbortHandler)
+			}
 			return
 		}
 	}

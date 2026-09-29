@@ -348,6 +348,26 @@ func TestTheServiceTellsStorageFailuresFromVideosWithoutAFrame(t *testing.T) {
 	}
 }
 
+// A storage connection that breaks while the video is read fails the frame
+// as the storage's (502), not as the video's.
+func TestTheServiceTellsABrokenStorageReadFromAVideoWithoutAFrame(t *testing.T) {
+	t.Parallel()
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "100000")
+		w.WriteHeader(http.StatusOK)
+		w.Write(bytes.Repeat([]byte("v"), 1000))
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler)
+	})
+	server := frameService(t, up, func(ctx context.Context, args []string, _, _ io.Writer) error {
+		_, err := readInput(ctx, args)
+		return err
+	}, nil)
+	if got := askFrame(t, server, frameBody("https://"+videoHost+"/v.mp4", 0)); got.status != http.StatusBadGateway || got.code() != CodeUpstream {
+		t.Fatalf("a broken read: status %d code %q %s", got.status, got.code(), got.body)
+	}
+}
+
 // ffmpeg reads at most MaxInputBytes of the video: a fast seek into a
 // faststart MP4 reads its moov and a few chunks, never the whole file.
 func TestTheServiceStopsReadingPastItsInputBudget(t *testing.T) {
