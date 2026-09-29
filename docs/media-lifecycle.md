@@ -2614,8 +2614,8 @@ The frame is a Media of its own purpose, `video_frame`, which no one
 uploads (`service_only`; see [Hard ceilings](#hard-ceilings)): a public
 JPEG, re-encoded with its `card` and `page` sizes, with no uploader and no
 name. The video links it in its own column, `event_videos.frame_media_id`
-(migration `20260929160000`), never in `poster_media_id`, whose triggers
-write its Media attachment: the Event owns it, in the role
+(migration `20260929160000`), never in `poster_media_id`. That column's
+triggers write the frame's Media attachment: the Event owns it, in the role
 `event_video_frame` (see [Core's own links](#cores-own-links)).
 
 #### In the Event's detail
