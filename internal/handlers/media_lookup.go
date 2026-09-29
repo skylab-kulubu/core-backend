@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"strconv"
 	"time"
@@ -13,32 +14,51 @@ import (
 
 // lookupBody is the body of POST /v1/media/lookup.
 type lookupBody struct {
-	Addresses []string `json:"addresses"`
+	OnBehalfOf string   `json:"onBehalfOf"`
+	Addresses  []string `json:"addresses"`
 }
 
+// maxLookupBodyBytes is the largest lookup body read: 100 addresses of the
+// longest the lookup reads (2 048 characters) with room for JSON's quoting.
+const maxLookupBodyBytes = 256 << 10
+
+// errLookupBodyTooLarge refuses a lookup body over maxLookupBodyBytes,
+// unread.
+var errLookupBodyTooLarge = errors.New("handlers: the lookup body is larger than a lookup takes")
+
 // LookUp answers which Media each stored address names, for a product's
-// service account (the address lookup): 200 with one result per address,
-// in order.
+// service account acting for a person (the address lookup): 200 with one
+// result per address, in order.
 //
-// A body that cannot be read is passed on empty, so the service authorizes
-// the caller before it finds the request malformed, and a person always
-// gets 403.
+// The body is read only once the service has authorized the caller: a
+// person always gets 403, whatever they sent. It is read as it came, not
+// decoded from a Content-Encoding, and not at all past maxLookupBodyBytes.
 func (h *MediaHandler) LookUp(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
 		return mediaError(c, err)
 	}
-	var body lookupBody
-	if err := c.Bind().JSON(&body); err != nil {
-		body = lookupBody{}
-	}
-	results, err := h.svc.LookUp(c.Context(), p, body.Addresses)
-	if errors.Is(err, media.ErrLookupTooMany) {
+	results, err := h.svc.LookUp(c.Context(), p, func() (media.LookupRequest, error) {
+		raw := c.Request().Body()
+		if len(raw) > maxLookupBodyBytes {
+			return media.LookupRequest{}, errLookupBodyTooLarge
+		}
+		var body lookupBody
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return media.LookupRequest{}, media.ErrInvalid
+		}
+		return media.LookupRequest{OnBehalfOf: parsedID(body.OnBehalfOf), Addresses: body.Addresses}, nil
+	})
+	switch {
+	case errors.Is(err, errLookupBodyTooLarge):
+		return problemWithFields(c, fiber.StatusRequestEntityTooLarge, "Content Too Large",
+			"The lookup body is larger than a lookup of maxAddresses addresses needs.", "media_lookup_too_large",
+			fiber.Map{"maxBytes": maxLookupBodyBytes, "maxAddresses": media.MaxLookupAddresses})
+	case errors.Is(err, media.ErrLookupTooMany):
 		return problemWithFields(c, fiber.StatusBadRequest, "Bad Request",
 			"A lookup takes at most maxAddresses addresses; send the rest in another.", "media_lookup_too_many",
 			fiber.Map{"maxAddresses": media.MaxLookupAddresses})
-	}
-	if err != nil {
+	case err != nil:
 		return attachError(c, err)
 	}
 	return c.JSON(fiber.Map{"results": results})

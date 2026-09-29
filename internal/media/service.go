@@ -46,10 +46,11 @@ type Service interface {
 	// one that is not there succeeds.
 	Detach(ctx context.Context, p authz.Principal, mediaID, attachmentID uuid.UUID) error
 	// LookUp answers, in the order given, which Media each stored address
-	// names, to a product's service account that may attach: the Media id
-	// only for a Media the product may link, otherwise nothing, the same as
-	// an address that names no Media.
-	LookUp(ctx context.Context, p authz.Principal, addresses []string) ([]AddressMatch, error)
+	// names, to a product's service account that may attach, acting for a
+	// person: the Media id only for a Media the product may link for that
+	// person, otherwise nothing, the same as an address that names no
+	// Media. read is called once the caller is authorized.
+	LookUp(ctx context.Context, p authz.Principal, read func() (LookupRequest, error)) ([]AddressMatch, error)
 	// IssueReadLink gives a five-minute read link to a private Media: to
 	// the owning product's service account for one of its purposes, for
 	// the person it acts for (onBehalfOf), or to a privileged admin for a

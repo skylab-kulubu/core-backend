@@ -48,3 +48,12 @@ type scanWith struct {
 func (s scanWith) Scan(dest ...any) error {
 	return s.row.Scan(append(dest, s.extra...)...)
 }
+
+// CountFullAddressKeys counts the Media stored with a full address (an
+// absolute URL, isAbsoluteURL) where core keeps a key: no address lookup
+// finds them, since a lookup key is a key. current leaves archived ones out.
+func (s *PostgresStore) CountFullAddressKeys(ctx context.Context) (all, current int, err error) {
+	err = s.pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE deleted_at IS NULL) FROM media
+		WHERE file_url ~* '^[a-z][a-z0-9+.-]*://.' OR file_url LIKE '//%'`).Scan(&all, &current)
+	return all, current, err
+}

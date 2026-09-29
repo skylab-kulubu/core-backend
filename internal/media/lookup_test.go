@@ -2,6 +2,7 @@ package media_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -52,15 +53,17 @@ func TestLookUpReadsABatchOnce(t *testing.T) {
 		}
 		addresses = append(addresses, "https://cdn.example.test/"+m.Key, "https://cdn.example.test/"+m.Key+"/card.jpg")
 	}
-	got, err := svc.LookUp(ctx, cmsService, addresses)
+	got, err := svc.LookUp(ctx, cmsService, func() (media.LookupRequest, error) {
+		return media.LookupRequest{OnBehalfOf: uuid.New(), Addresses: addresses}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != len(addresses) || store.lookups != 1 || store.perMedia != 0 {
 		t.Fatalf("%d results, %d lookups, %d reads per Media", len(got), store.lookups, store.perMedia)
 	}
-	// The uploader is nobody: the legacy ones are the product's only once
-	// it holds them.
+	// The person is not the uploader: the legacy ones are the product's
+	// only once it holds them.
 	for i, match := range got {
 		if match.Address != addresses[i] {
 			t.Fatalf("result %d is %q's", i, match.Address)
@@ -68,5 +71,30 @@ func TestLookUpReadsABatchOnce(t *testing.T) {
 		if match.MediaID != nil && (i < 5 || i > 6) {
 			t.Fatalf("result %d names %s", i, match.MediaID)
 		}
+	}
+}
+
+// Only a product's service account that may attach gets its request read:
+// anyone else is refused before, whatever the request holds.
+func TestLookUpAuthorizesBeforeItReadsTheRequest(t *testing.T) {
+	svc := media.NewService(media.NewMemoryStore(), media.NewMemoryBlob(), authz.NewAuthorizer(authz.DefaultPolicy()), "")
+	unread := func() (media.LookupRequest, error) {
+		t.Fatal("the request of a caller that may not look up was read")
+		return media.LookupRequest{}, nil
+	}
+	for name, p := range map[string]authz.Principal{
+		"person with the role": {ID: uuid.NewString(), Roles: []string{"media:attach"}},
+		"service without it":   {ID: uuid.NewString(), Product: authz.ProductCMS},
+		"admin":                {ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}},
+	} {
+		if _, err := svc.LookUp(context.Background(), p, unread); !errors.Is(err, media.ErrAttachForbidden) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	read := errors.New("unreadable")
+	if _, err := svc.LookUp(context.Background(), cmsService, func() (media.LookupRequest, error) {
+		return media.LookupRequest{}, read
+	}); !errors.Is(err, read) {
+		t.Fatalf("a product's unreadable request: %v", err)
 	}
 }

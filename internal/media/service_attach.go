@@ -153,13 +153,14 @@ func (s *service) attachHeld(ctx context.Context, product authz.Product, link At
 //     Media. A Media whose detach expiry the legacy backfill holds counts as
 //     legacy here until the hold is released.
 func (s *service) mayLink(ctx context.Context, product authz.Product, m Media, onBehalfOf uuid.UUID) (bool, error) {
-	return s.linkRule(product, m, onBehalfOf, func() (bool, error) { return s.media.HeldBy(ctx, m.ID, product) })
+	return linkRule(s.addresses.catalogue(), product, m, onBehalfOf, func() (bool, error) { return s.media.HeldBy(ctx, m.ID, product) })
 }
 
-// linkRule is mayLink's rule, with held answering whether the product
-// already holds a Media attachment to m (asked only for a legacy Media the
-// person did not upload). Nobody (uuid.Nil) is never the uploader.
-func (s *service) linkRule(product authz.Product, m Media, onBehalfOf uuid.UUID, held func() (bool, error)) (bool, error) {
+// linkRule is mayLink's rule over the catalogue, with held answering
+// whether the product already holds a Media attachment to m (asked only
+// for a legacy Media the person did not upload). Nobody (uuid.Nil) is
+// never the uploader.
+func linkRule(catalogue Catalogue, product authz.Product, m Media, onBehalfOf uuid.UUID, held func() (bool, error)) (bool, error) {
 	uploader := onBehalfOf != uuid.Nil && m.UploadedBy == onBehalfOf
 	if m.Purpose == PurposeLegacy || m.DetachExpiryHeld {
 		if uploader {
@@ -167,7 +168,7 @@ func (s *service) linkRule(product authz.Product, m Media, onBehalfOf uuid.UUID,
 		}
 		return held()
 	}
-	purpose, known := s.addresses.Catalogue.Lookup(m.Purpose)
+	purpose, known := catalogue.Lookup(m.Purpose)
 	if !known || purpose.OwningProduct() != product {
 		return false, nil
 	}

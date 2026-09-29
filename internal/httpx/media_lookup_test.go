@@ -131,10 +131,11 @@ func requireNotFound(t *testing.T, got map[string]any) {
 	}
 }
 
-// lookUp sends the addresses to POST /v1/media/lookup with the token.
-func (e *lookupEnv) lookUp(t *testing.T, token string, addresses ...string) jsonResponse {
+// lookUp sends the addresses to POST /v1/media/lookup with the token, for
+// the person the product acts for.
+func (e *lookupEnv) lookUp(t *testing.T, token, onBehalfOf string, addresses ...string) jsonResponse {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{"addresses": addresses})
+	body, err := json.Marshal(map[string]any{"onBehalfOf": onBehalfOf, "addresses": addresses})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,11 +165,13 @@ func results(t *testing.T, resp jsonResponse) []map[string]any {
 func TestMediaAddressLookupHTTP(t *testing.T) {
 	e := newLookupEnv(t)
 	cms := serviceToken(t, e.keys, cmsClient, "media:attach")
+	forms := serviceToken(t, e.keys, "forms", "media:attach")
 
 	t.Run("a product's own Media by its address", func(t *testing.T) {
 		ed := newEditor(t, e.keys)
 		created := e.upload(t, ed.token, "cms_image")
-		got := results(t, e.lookUp(t, cms, created["url"].(string)))
+		// Another editor may save a page with it: a CMS image is the CMS's.
+		got := results(t, e.lookUp(t, cms, uuid.NewString(), created["url"].(string)))
 		if len(got) != 1 {
 			t.Fatalf("results %v", got)
 		}
@@ -189,79 +192,116 @@ func TestMediaAddressLookupHTTP(t *testing.T) {
 			"service of an unknown client":      serviceToken(t, e.keys, "frontend-main", "media:attach"),
 			"service of an unconfigured client": serviceToken(t, e.keys, "skyforms", "media:attach"),
 		} {
-			resp := e.lookUp(t, token, address)
+			resp := e.lookUp(t, token, ed.id, address)
 			if resp.status != fiber.StatusForbidden || resp.body["code"] != "media_attach_forbidden" {
 				t.Errorf("%s: status %d body %v", name, resp.status, resp.body)
 			}
 		}
-		// A person is refused before the request is read.
+		// A person is refused before the body is read: what they send does
+		// not matter, however malformed or large.
 		person := personToken(t, e.keys, uuid.NewString(), cmsClient, "media:attach")
-		requireCode(t, sendJSON(t, e.app, person, fiber.MethodPost, "/v1/media/lookup", `addresses=`),
-			fiber.StatusForbidden, "media_attach_forbidden")
+		for _, body := range []string{`addresses=`, `{"addresses":[`, `{"addresses":["` + strings.Repeat("a", 300<<10) + `"]}`} {
+			requireCode(t, sendJSON(t, e.app, person, fiber.MethodPost, "/v1/media/lookup", body),
+				fiber.StatusForbidden, "media_attach_forbidden")
+		}
+	})
+
+	t.Run("a body larger than a lookup needs is not read", func(t *testing.T) {
+		person := uuid.NewString()
+		address := lookupBase + "/images/" + uuid.NewString() + "?q="
+		address += strings.Repeat("a", 2048-len(address))
+		batch := make([]string, 100)
+		for i := range batch {
+			batch[i] = address
+		}
+		// The longest lookup the limits allow fits: 100 addresses of the
+		// longest length read.
+		if got := results(t, e.lookUp(t, cms, person, batch...)); len(got) != 100 {
+			t.Fatalf("%d results", len(got))
+		}
+		resp := sendJSON(t, e.app, cms, fiber.MethodPost, "/v1/media/lookup",
+			`{"onBehalfOf":"`+person+`","addresses":["`+strings.Repeat("a", 256<<10)+`"]}`)
+		requireCode(t, resp, fiber.StatusRequestEntityTooLarge, "media_lookup_too_large")
+		if resp.body["maxBytes"] != float64(256<<10) {
+			t.Fatalf("refusal %v", resp.body)
+		}
 	})
 
 	t.Run("another product's or core's Media is not found", func(t *testing.T) {
 		ed := newEditor(t, e.keys)
 		cmsImage := e.upload(t, ed.token, "cms_image")["url"].(string)
 		cover := lookupBase + "/images/" + uuid.NewString()
-		e.insert(t, strings.TrimPrefix(cover, lookupBase+"/"), "event_cover", uuid.Nil)
+		e.insert(t, strings.TrimPrefix(cover, lookupBase+"/"), "event_cover", uuid.MustParse(ed.id))
 		nowhere := lookupBase + "/images/" + uuid.NewString()
 
-		forms := serviceToken(t, e.keys, "forms", "media:attach")
-		for _, got := range results(t, e.lookUp(t, forms, cmsImage, cover, nowhere)) {
+		// Not even for the person who uploaded them.
+		for _, got := range results(t, e.lookUp(t, forms, ed.id, cmsImage, cover, nowhere)) {
 			requireNotFound(t, got)
 		}
-		got := results(t, e.lookUp(t, cms, cover, nowhere))
+		got := results(t, e.lookUp(t, cms, ed.id, cover, nowhere))
 		requireNotFound(t, got[0])
 		requireNotFound(t, got[1])
 	})
 
 	t.Run("a legacy Media for its uploader, or once the product holds it", func(t *testing.T) {
 		ed := newEditor(t, e.keys)
+		someoneElse := uuid.NewString()
 		legacy := e.upload(t, ed.token, "")
 		// A legacy Media core's uses gave a purpose, held until stage 5,
 		// counts as legacy.
 		heldAddress := lookupBase + "/images/" + uuid.NewString()
-		held := e.insert(t, strings.TrimPrefix(heldAddress, lookupBase+"/"), "event_cover", uuid.Nil)
+		held := e.insert(t, strings.TrimPrefix(heldAddress, lookupBase+"/"), "event_cover", uuid.MustParse(ed.id))
 		if _, err := e.pool.Exec(context.Background(), `UPDATE media SET detach_expiry_held = true WHERE id = $1`, held); err != nil {
 			t.Fatal(err)
 		}
-		forms := serviceToken(t, e.keys, "forms", "media:attach")
 		for _, token := range []string{cms, forms} {
-			got := results(t, e.lookUp(t, token, legacy["url"].(string), heldAddress))
+			got := results(t, e.lookUp(t, token, ed.id, legacy["url"].(string), heldAddress))
 			if got[0]["mediaId"] != legacy["id"] || got[0]["purpose"] != "legacy" || got[0]["linkable"] != true {
-				t.Fatalf("legacy: %v", got[0])
+				t.Fatalf("legacy for its uploader: %v", got[0])
 			}
 			if got[1]["mediaId"] != held || got[1]["purpose"] != "event_cover" {
-				t.Fatalf("held: %v", got[1])
+				t.Fatalf("held for its uploader: %v", got[1])
+			}
+			// For anyone else, another person's legacy Media (a still public
+			// Answer file, an Event cover) is not found.
+			for _, got := range results(t, e.lookUp(t, token, someoneElse, legacy["url"].(string), heldAddress)) {
+				requireNotFound(t, got)
 			}
 		}
+
+		// Once the CMS holds a legacy Media, any of its editors may reuse
+		// it; Skyforms still may not.
+		resp := sendJSON(t, e.app, cms, fiber.MethodPost, "/v1/media/"+legacy["id"].(string)+"/attachments",
+			attachBody("cms", "page", aboutPage, "image", ed.id))
+		if resp.status != fiber.StatusCreated {
+			t.Fatalf("attach: %d %v", resp.status, resp.body)
+		}
+		if got := results(t, e.lookUp(t, cms, someoneElse, legacy["url"].(string))); got[0]["mediaId"] != legacy["id"] || got[0]["status"] != "attached" {
+			t.Fatalf("held by the CMS: %v", got[0])
+		}
+		requireNotFound(t, results(t, e.lookUp(t, forms, someoneElse, legacy["url"].(string)))[0])
 
 		// An uploader whose account was erased leaves the Media without one:
 		// nobody can be named for it, so only a product that holds it may
 		// link it.
 		orphan := e.upload(t, ed.token, "")
-		resp := sendJSON(t, e.app, cms, fiber.MethodPost, "/v1/media/"+orphan["id"].(string)+"/attachments",
-			attachBody("cms", "page", aboutPage, "image", ed.id))
-		if resp.status != fiber.StatusCreated {
-			t.Fatalf("attach: %d %v", resp.status, resp.body)
-		}
 		if _, err := e.pool.Exec(context.Background(), `UPDATE media SET uploaded_by = NULL WHERE id = ANY($1::uuid[])`,
 			[]string{orphan["id"].(string), legacy["id"].(string)}); err != nil {
 			t.Fatal(err)
 		}
-		got := results(t, e.lookUp(t, cms, orphan["url"].(string), legacy["url"].(string)))
-		if got[0]["mediaId"] != orphan["id"] || got[0]["status"] != "attached" {
+		got := results(t, e.lookUp(t, cms, ed.id, legacy["url"].(string), orphan["url"].(string)))
+		if got[0]["mediaId"] != legacy["id"] {
 			t.Fatalf("held orphan: %v", got[0])
 		}
 		requireNotFound(t, got[1])
-		for _, got := range results(t, e.lookUp(t, forms, orphan["url"].(string), legacy["url"].(string))) {
+		for _, got := range results(t, e.lookUp(t, forms, ed.id, legacy["url"].(string), orphan["url"].(string))) {
 			requireNotFound(t, got)
 		}
 	})
 
 	t.Run("every public address core gives a Media", func(t *testing.T) {
 		ed := newEditor(t, e.keys)
+		uploader := uuid.MustParse(ed.id)
 		image := e.upload(t, ed.token, "cms_image")
 		address, id := image["url"].(string), image["id"].(string)
 		key := strings.TrimPrefix(address, lookupBase+"/")
@@ -277,7 +317,7 @@ func TestMediaAddressLookupHTTP(t *testing.T) {
 		pending := "pending/scan/" + uuid.NewString()
 		ids := map[string]string{}
 		for _, k := range []string{svg, file, video, movedCopy, private, pending} {
-			ids[k] = e.insert(t, k, "legacy", uuid.Nil)
+			ids[k] = e.insert(t, k, "legacy", uploader)
 		}
 
 		for want, addresses := range map[string][]string{
@@ -304,6 +344,12 @@ func TestMediaAddressLookupHTTP(t *testing.T) {
 				address + "/card.gif",
 				address + "/",
 				"https://elsewhere.example/" + key,
+				// Hosts are compared in ASCII only: a Unicode letter that
+				// folds to s or k (U+017F, the Kelvin sign U+212A) is
+				// another host.
+				"https://cdn.yildiz\u017fkylab.com/" + key,
+				"https://cdn.yildizs\u212aylab.com/" + key,
+				"https://cdn.example.te\u017ft/" + key,
 				"https://user@cdn.example.test/" + key,
 				"https://cdn.example.test:8443/" + key,
 				key,
@@ -311,12 +357,16 @@ func TestMediaAddressLookupHTTP(t *testing.T) {
 				lookupBase + "/images/" + strings.ToUpper(name),
 				lookupBase + "/cdn-cgi/image/width=400/" + address,
 				lookupBase + "/cdn-cgi/image/width=400/" + file,
+				// Only a raster original is transformed: never a stored size,
+				// never an SVG.
+				lookupBase + "/cdn-cgi/image/width=400/" + key + "/card.jpg",
+				lookupBase + "/cdn-cgi/image/width=400/" + svg,
 				address + "?q=" + strings.Repeat("a", 3000),
 				"not an address",
 				"",
 			},
 		} {
-			for i, got := range results(t, e.lookUp(t, cms, addresses...)) {
+			for i, got := range results(t, e.lookUp(t, cms, ed.id, addresses...)) {
 				if got["address"] != addresses[i] {
 					t.Fatalf("result %d is %v, for %q", i, got, addresses[i])
 				}
@@ -332,7 +382,7 @@ func TestMediaAddressLookupHTTP(t *testing.T) {
 	t.Run("results in the order sent, an address as often as sent", func(t *testing.T) {
 		ed := newEditor(t, e.keys)
 		first, second := e.upload(t, ed.token, "cms_image"), e.upload(t, ed.token, "cms_image")
-		got := results(t, e.lookUp(t, cms, second["url"].(string), "junk", first["url"].(string), second["url"].(string)))
+		got := results(t, e.lookUp(t, cms, ed.id, second["url"].(string), "junk", first["url"].(string), second["url"].(string)))
 		if len(got) != 4 || got[0]["mediaId"] != second["id"] || got[1]["mediaId"] != nil ||
 			got[2]["mediaId"] != first["id"] || got[3]["mediaId"] != second["id"] {
 			t.Fatalf("results %v", got)
@@ -354,30 +404,36 @@ func TestMediaAddressLookupHTTP(t *testing.T) {
 			}
 			addresses, ids = append(addresses, created["url"].(string)), append(ids, created["id"].(string))
 		}
-		for i, got := range results(t, e.lookUp(t, cms, addresses...)) {
+		for i, got := range results(t, e.lookUp(t, cms, ed.id, addresses...)) {
 			if got["mediaId"] != ids[i] || got["purpose"] != "cms_image" || got["linkable"] != false {
 				t.Fatalf("result %v", got)
 			}
 		}
 	})
 
-	t.Run("at most 100 addresses a batch", func(t *testing.T) {
+	t.Run("at most 100 addresses a batch, for a named person", func(t *testing.T) {
+		person := uuid.NewString()
 		batch := make([]string, 101)
 		for i := range batch {
 			batch[i] = lookupBase + "/images/" + uuid.NewString()
 		}
-		resp := e.lookUp(t, cms, batch...)
+		resp := e.lookUp(t, cms, person, batch...)
 		requireCode(t, resp, fiber.StatusBadRequest, "media_lookup_too_many")
 		if resp.body["maxAddresses"] != float64(100) {
 			t.Fatalf("refusal %v", resp.body)
 		}
-		if got := results(t, e.lookUp(t, cms, batch[:100]...)); len(got) != 100 {
+		if got := results(t, e.lookUp(t, cms, person, batch[:100]...)); len(got) != 100 {
 			t.Fatalf("%d results", len(got))
 		}
-		if got := results(t, sendJSON(t, e.app, cms, fiber.MethodPost, "/v1/media/lookup", `{"addresses":[]}`)); len(got) != 0 {
+		if got := results(t, sendJSON(t, e.app, cms, fiber.MethodPost, "/v1/media/lookup", `{"onBehalfOf":"`+person+`","addresses":[]}`)); len(got) != 0 {
 			t.Fatalf("results %v", got)
 		}
-		for _, body := range []string{`{}`, `{"addresses":"x"}`, `{"addresses":[1]}`, `addresses=x`} {
+		for _, body := range []string{
+			`{}`, `{"onBehalfOf":"` + person + `"}`, `{"onBehalfOf":"` + person + `","addresses":"x"}`,
+			`{"onBehalfOf":"` + person + `","addresses":[1]}`, `addresses=x`,
+			// The person the product acts for is required, as a UUID.
+			`{"addresses":[]}`, `{"onBehalfOf":"ed","addresses":[]}`, `{"onBehalfOf":"` + uuid.Nil.String() + `","addresses":[]}`,
+		} {
 			resp := sendJSON(t, e.app, cms, fiber.MethodPost, "/v1/media/lookup", body)
 			if resp.status != fiber.StatusBadRequest {
 				t.Errorf("%s: status %d body %v", body, resp.status, resp.body)
@@ -387,7 +443,7 @@ func TestMediaAddressLookupHTTP(t *testing.T) {
 
 	t.Run("rate-limited per product", func(t *testing.T) {
 		app := e.appWithLookupLimit(2)
-		body := `{"addresses":["` + lookupBase + `/images/` + uuid.NewString() + `"]}`
+		body := `{"onBehalfOf":"` + uuid.NewString() + `","addresses":["` + lookupBase + `/images/` + uuid.NewString() + `"]}`
 		for range 2 {
 			results(t, sendJSON(t, app, cms, fiber.MethodPost, "/v1/media/lookup", body))
 		}
@@ -409,7 +465,7 @@ func TestMediaAddressLookupHTTP(t *testing.T) {
 		}
 		// Each product has its own budget, and a person is still refused
 		// for who they are.
-		results(t, sendJSON(t, app, serviceToken(t, e.keys, "forms", "media:attach"), fiber.MethodPost, "/v1/media/lookup", body))
+		results(t, sendJSON(t, app, forms, fiber.MethodPost, "/v1/media/lookup", body))
 		requireCode(t, sendJSON(t, app, personToken(t, e.keys, uuid.NewString(), cmsClient, "media:attach"), fiber.MethodPost, "/v1/media/lookup", body),
 			fiber.StatusForbidden, "media_attach_forbidden")
 	})
@@ -426,13 +482,13 @@ func TestMediaAddressLookupHTTP(t *testing.T) {
 		log.SetOutput(&captured)
 		defer log.SetOutput(previous)
 
-		results(t, e.lookUp(t, cms, address, missing, "junk"))
-		e.lookUp(t, cms, make([]string, 101)...)
+		results(t, e.lookUp(t, cms, ed.id, address, missing, "junk"))
+		e.lookUp(t, cms, ed.id, make([]string, 101)...)
 		line := captured.String()
 		if !strings.Contains(line, "media lookup by cms: 3 addresses, 1 resolved") {
 			t.Fatalf("log %q", line)
 		}
-		for _, secret := range []string{address, strings.TrimPrefix(address, lookupBase+"/"), missing, id, "junk"} {
+		for _, secret := range []string{address, strings.TrimPrefix(address, lookupBase+"/"), missing, id, ed.id, "junk"} {
 			if strings.Contains(line, secret) {
 				t.Fatalf("log %q names %q", line, secret)
 			}
