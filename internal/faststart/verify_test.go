@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/skylab-kulubu/core-backend/internal/faststart"
+	"github.com/skylab-kulubu/core-backend/internal/faststart/mp4test"
 )
 
 // A stored rewrite is checked against its plan before anything points at
@@ -17,9 +18,9 @@ import (
 func TestVerifyTakesOnlyTheRewrite(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	file, _ := twoTracks().build()
+	file, _ := mp4test.TwoTracks().Build()
 	out, layout := rewrite(t, file)
-	if err := faststart.Verify(ctx, memory(out), memory(file), layout, faststart.DefaultLimits); err != nil {
+	if err := faststart.Verify(ctx, mp4test.Memory(out), mp4test.Memory(file), layout, faststart.DefaultLimits); err != nil {
 		t.Fatalf("the rewrite: %v", err)
 	}
 	moovChanged := bytes.Clone(out)
@@ -41,7 +42,7 @@ func TestVerifyTakesOnlyTheRewrite(t *testing.T) {
 			// it.
 			l.Size = int64(len(stored))
 		}
-		if err := faststart.Verify(ctx, memory(stored), memory(file), l, faststart.DefaultLimits); !errors.Is(err, faststart.ErrMismatch) {
+		if err := faststart.Verify(ctx, mp4test.Memory(stored), mp4test.Memory(file), l, faststart.DefaultLimits); !errors.Is(err, faststart.ErrMismatch) {
 			t.Errorf("%s: %v, want ErrMismatch", name, err)
 		}
 	}
@@ -52,9 +53,9 @@ func TestVerifyTakesOnlyTheRewrite(t *testing.T) {
 // the next.
 func TestCopySourceIsOneRunOfTheSource(t *testing.T) {
 	t.Parallel()
-	m := twoTracks()
-	m.after = [][]byte{box("free", make([]byte, 40))}
-	file, _ := m.build()
+	m := mp4test.TwoTracks()
+	m.After = [][]byte{mp4test.Box("free", make([]byte, 40))}
+	file, _ := m.Build()
 	_, layout := rewrite(t, file)
 	// The source: ftyp, mdat, moov, then the 48-byte free box.
 	oldMoovAt := int64(bytes.Index(file, []byte("moov")) - 4)

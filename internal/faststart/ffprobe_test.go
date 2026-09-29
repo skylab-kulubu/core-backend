@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/skylab-kulubu/core-backend/internal/faststart"
+	"github.com/skylab-kulubu/core-backend/internal/faststart/mp4test"
 )
 
 // An MP4 made by ffmpeg (which writes its moov at the end unless told
@@ -31,14 +32,14 @@ func TestRewriteOfARealMP4DecodesTheSame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if top := types(boxes(t, file, 0, int64(len(file)))); slices.Index(top, "moov") < slices.Index(top, "mdat") {
+	if top := mp4test.Types(mp4test.Boxes(t, file, 0, int64(len(file)))); slices.Index(top, "moov") < slices.Index(top, "mdat") {
 		t.Fatalf("ffmpeg wrote %v: the fixture already has its moov first", top)
 	}
 	rewritten, _ := rewrite(t, file)
 	if err := os.WriteFile(out, rewritten, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if top := types(boxes(t, rewritten, 0, int64(len(rewritten)))); slices.Index(top, "moov") > slices.Index(top, "mdat") {
+	if top := mp4test.Types(mp4test.Boxes(t, rewritten, 0, int64(len(rewritten)))); slices.Index(top, "moov") > slices.Index(top, "mdat") {
 		t.Fatalf("rewritten %v: the moov is not first", top)
 	}
 	if complaints := run(t, "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,nb_frames", "-of", "csv=p=0", out); !bytes.Equal(complaints, run(t, "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,nb_frames", "-of", "csv=p=0", in)) {
@@ -50,7 +51,7 @@ func TestRewriteOfARealMP4DecodesTheSame(t *testing.T) {
 	if a, b := decode(in), decode(out); !bytes.Equal(a, b) || len(a) == 0 {
 		t.Fatal("the rewrite does not decode to the same frames and audio")
 	}
-	if _, err := faststart.Plan(context.Background(), memory(rewritten), int64(len(rewritten)), faststart.DefaultLimits); err != faststart.ErrAlreadyFaststart {
+	if _, err := faststart.Plan(context.Background(), mp4test.Memory(rewritten), int64(len(rewritten)), faststart.DefaultLimits); err != faststart.ErrAlreadyFaststart {
 		t.Fatalf("planning the rewrite again: %v, want ErrAlreadyFaststart", err)
 	}
 }

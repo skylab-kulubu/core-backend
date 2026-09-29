@@ -99,16 +99,23 @@ func servedKeyOf(id uuid.UUID) string {
 }
 
 // purgeMediaObjects deletes every object the Media at key may have: its
-// object and its sizes (purgeObjects), and, for a file held until its scan
-// ends, the clean copy a scan may have made at its served key already (a
-// scan that copied it and then found its Media gone, or crashed before
-// recording it). An object that is not there is deleted already.
+// object and its sizes (purgeObjects); for a file held until its scan ends,
+// the clean copy a scan may have made at its served key already (a scan
+// that copied it and then found its Media gone, or crashed before recording
+// it); and for a video, the other key of its pair (videoPairKey): the
+// faststart copy a rewrite may have written beside the original, or the
+// original still kept beside the copy the Media moved to. An object that is
+// not there is deleted already. The staging sweeper deletes by
+// purgeObjects alone: a staged key is never paired.
 func purgeMediaObjects(id uuid.UUID, key string, purge func(key string) error) error {
 	if err := purgeObjects(key, purge); err != nil {
 		return err
 	}
 	if isScanHoldKey(key) {
 		return purge(servedKeyOf(id))
+	}
+	if other, ok := videoPairKey(key); ok {
+		return purge(other)
 	}
 	return nil
 }

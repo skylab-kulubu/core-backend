@@ -68,6 +68,8 @@ type Server struct {
 	partQueries []url.Values
 	// counts are the requests received, by operation.
 	counts map[string]int
+	// served counts the object bytes GetObject answered.
+	served int64
 	// holds keep an operation's requests waiting (Hold).
 	holds map[string]*hold
 	t     testing.TB
@@ -183,6 +185,14 @@ func (s *Server) Count(operation string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.counts[operation]
+}
+
+// Served is how many object bytes GetObject answered, ranged reads
+// included: what core downloaded.
+func (s *Server) Served() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.served
 }
 
 // Aborted are the keys whose multipart upload was aborted, in order.
@@ -536,6 +546,9 @@ func (s *Server) getObject(w http.ResponseWriter, r *http.Request, bucket, key s
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(status)
 	if !head {
+		s.mu.Lock()
+		s.served += int64(len(data))
+		s.mu.Unlock()
 		_, _ = w.Write(data)
 	}
 }
