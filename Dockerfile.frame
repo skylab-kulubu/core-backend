@@ -1,0 +1,29 @@
+# The video frame service (cmd/media-frame, media redesign ticket 25): ffmpeg
+# and a small HTTP wrapper, in its own container on the internal network only.
+# Core's own image (Dockerfile) carries no ffmpeg.
+#
+# It writes nothing to disk: ffmpeg reads the video from the service's
+# loopback proxy and writes its frame to a pipe. It runs as a non-root user
+# (10001), which can write only to /tmp and /var/tmp; everything else in the
+# image is root's. Dokploy (v0.30.7) cannot run a service with a read-only
+# root filesystem or a tmpfs mount, so that is not enforced there; what is:
+# this user, and the memory and CPU limits ops/wizards/media-frame-wizard.sh
+# sets. Run elsewhere, `--read-only --tmpfs /tmp` works (tested).
+FROM --platform=linux/amd64 golang:1.25-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/media-frame ./cmd/media-frame
+
+FROM --platform=linux/amd64 alpine:3.22
+LABEL org.opencontainers.image.source="https://github.com/skylab-kulubu/core-backend" \
+      org.opencontainers.image.description="core-backend video frame service (ffmpeg); internal network only"
+RUN apk add --no-cache ffmpeg ca-certificates \
+ && adduser -D -H -u 10001 -s /sbin/nologin frame
+COPY --from=builder /out/media-frame /usr/local/bin/media-frame
+USER 10001:10001
+ENV PORT=8080 TMPDIR=/tmp
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["/usr/local/bin/media-frame", "health"]
+ENTRYPOINT ["/usr/local/bin/media-frame"]

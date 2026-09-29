@@ -175,7 +175,7 @@ func TestMemoryStoreAnswersAVideosPoster(t *testing.T) {
 		t.Fatal(err)
 	}
 	original := media.ImageAddress{URL: "https://cdn.example.test/images/kapak", Width: 800, Height: 600}
-	want := &event.Poster{ID: poster.ID, Type: "image/png", URL: original.URL, Sizes: map[string]media.ImageAddress{media.SizeCard: original, media.SizePage: original}}
+	want := &event.Poster{ID: poster.ID, Type: "image/png", URL: original.URL, Sizes: map[string]media.ImageAddress{media.SizeCard: original, media.SizePage: original}, Source: event.PosterUploaded}
 	if len(detail.Videos) != 2 || detail.Videos[0].Poster != nil || !reflect.DeepEqual(detail.Videos[1].Poster, want) {
 		t.Fatalf("videos %+v, want the second without a poster (archived) and the first with %+v", detail.Videos, want)
 	}

@@ -124,8 +124,9 @@ func (s *PostgresStore) get(ctx context.Context, id uuid.UUID, includeArchived b
 // the gallery; one that cannot be served (media.ServableSQL: private,
 // being purged, waiting for its malware scan or rejected by it) has no
 // address, and only a rejected one its scan result. A video comes with its
-// poster's Media (MediaList.posterSQL), in the same query: an archived one
-// is none, and one that cannot be served has no address.
+// uploaded poster's Media and its frame's (MediaList.posterSQL), in the same
+// query: an archived one is none, and one that cannot be served has no
+// address.
 func (s *PostgresStore) ListFiles(ctx context.Context, eventID uuid.UUID) ([]MediaItem, []MediaItem, error) {
 	lists := Event{Files: make([]MediaItem, 0), Videos: make([]MediaItem, 0)}
 	selects := make([]string, 0, 2)
@@ -148,17 +149,21 @@ func (s *PostgresStore) ListFiles(ctx context.Context, eventID uuid.UUID) ([]Med
 	for rows.Next() {
 		var list MediaList
 		var item MediaItem
-		var poster linkedPoster
-		var posterID *uuid.UUID
+		var poster, frame linkedPoster
+		var posterID, frameID *uuid.UUID
 		var order int
 		var added time.Time
 		if err := rows.Scan(&list, &item.ID, &item.Name, &item.Type, &item.Size, &item.Status, &item.ScanResult, &item.URL,
-			&posterID, &poster.key, &poster.image, &order, &added); err != nil {
+			&posterID, &poster.key, &poster.image, &frameID, &frame.key, &frame.image, &order, &added); err != nil {
 			return nil, nil, err
 		}
 		if posterID != nil {
 			poster.id = *posterID
 			item.poster = &poster
+		}
+		if frameID != nil {
+			frame.id = *frameID
+			item.frame = &frame
 		}
 		lists = lists.withList(list, append(lists.list(list), item))
 	}

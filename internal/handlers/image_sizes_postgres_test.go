@@ -711,10 +711,11 @@ type sizedVideosView struct {
 	Videos []struct {
 		ID     uuid.UUID `json:"id"`
 		Poster *struct {
-			ID    uuid.UUID                     `json:"id"`
-			Type  string                        `json:"type"`
-			URL   string                        `json:"url"`
-			Sizes map[string]media.ImageAddress `json:"sizes"`
+			ID     uuid.UUID                     `json:"id"`
+			Type   string                        `json:"type"`
+			URL    string                        `json:"url"`
+			Sizes  map[string]media.ImageAddress `json:"sizes"`
+			Source string                        `json:"source"`
 		} `json:"poster"`
 	} `json:"videos"`
 }
@@ -779,7 +780,7 @@ func TestEventDetailAnswersVideoPostersWithoutAnotherQueryHTTP(t *testing.T) {
 		),
 	}
 	for i, video := range got.Videos {
-		if video.ID != videos[i] || video.Poster == nil || video.Poster.ID != posters[i].ID || video.Poster.Type != "image/jpeg" ||
+		if video.ID != videos[i] || video.Poster == nil || video.Poster.ID != posters[i].ID || video.Poster.Type != "image/jpeg" || video.Poster.Source != "uploaded" ||
 			video.Poster.URL != sizesBase+"/"+posters[i].Key || !reflect.DeepEqual(video.Poster.Sizes, want[posters[i].ID]) {
 			t.Errorf("video %d answered %+v, want the poster %s at %v", i, video, posters[i].ID, want[posters[i].ID])
 		}
@@ -828,5 +829,98 @@ func TestVideoPosterIsWrittenOnlyOverThePosterItWasDecidedAgainst(t *testing.T) 
 	}
 	if _, err := f.events.SetVideoPoster(ctx, created.ID, videos[0], nil, nil); err != nil {
 		t.Fatalf("clearing: %v", err)
+	}
+}
+
+// setFrame gives the video the frame core took of it, as the frame worker
+// does (event_videos.frame_media_id).
+func (f imageSizesFixture) setFrame(t *testing.T, eventID, videoID, frameID uuid.UUID) {
+	t.Helper()
+	if _, err := f.pool.Exec(context.Background(), `UPDATE event_videos SET frame_media_id = $3 WHERE event_id = $1 AND media_id = $2`, eventID, videoID, frameID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A video its organizers gave no poster answers the frame core took of it
+// (media redesign ticket 25), in the poster's shape with source "frame",
+// read in the query that reads the videos. An uploaded poster wins
+// (source "uploaded") while it can be served; clearing it, or it no longer
+// being servable, falls back to the frame, which stayed on the video. A
+// frame that cannot be served is no poster.
+func TestEventDetailAnswersAVideosFrameWhileNoPosterIsUploadedHTTP(t *testing.T) {
+	f := newImageSizesFixture(t)
+	ctx := context.Background()
+	created, videos, posters := f.posterFixture(t)
+	type answered struct {
+		id     uuid.UUID
+		source string
+		url    string
+		sizes  map[string]media.ImageAddress
+	}
+	detail := func() (answered, int64) {
+		t.Helper()
+		var got sizedVideosView
+		f.queries.n.Store(0)
+		f.get(t, "/v1/events/"+created.ID.String(), &got)
+		if got.Videos[0].ID != videos[0] {
+			t.Fatalf("videos %+v", got.Videos)
+		}
+		poster := got.Videos[0].Poster
+		if poster == nil {
+			return answered{}, f.queries.n.Load()
+		}
+		if poster.Type != "image/jpeg" {
+			t.Fatalf("poster type %q", poster.Type)
+		}
+		return answered{id: poster.ID, source: poster.Source, url: poster.URL, sizes: poster.Sizes}, f.queries.n.Load()
+	}
+	_, bareQueries := detail()
+
+	frame := f.image(t, media.PurposeVideoFrame, "images/frame-a", 1280, 720, map[string]media.SizeObject{
+		media.SizeCard: jpegSize(400, 225), media.SizePage: jpegSize(1200, 675),
+	})
+	f.setFrame(t, created.ID, videos[0], frame.ID)
+	wantFrame := answered{id: frame.ID, source: "frame", url: sizesBase + "/images/frame-a", sizes: bothSizes(
+		media.ImageAddress{URL: sizesBase + "/images/frame-a/card.jpg", Width: 400, Height: 225},
+		media.ImageAddress{URL: sizesBase + "/images/frame-a/page.jpg", Width: 1200, Height: 675},
+	)}
+	if got, queries := detail(); !reflect.DeepEqual(got, wantFrame) || queries != bareQueries {
+		t.Fatalf("with a frame: %+v in %d queries, want %+v in %d", got, queries, wantFrame, bareQueries)
+	}
+
+	if _, err := f.events.SetVideoPoster(ctx, created.ID, videos[0], &posters[0].ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := detail(); got.id != posters[0].ID || got.source != "uploaded" {
+		t.Fatalf("with an uploaded poster: %+v", got)
+	}
+	var frameStatus string
+	if err := f.pool.QueryRow(ctx, `SELECT status FROM media WHERE id = $1`, frame.ID).Scan(&frameStatus); err != nil || frameStatus != "attached" {
+		t.Fatalf("the frame under an uploaded poster is %q (%v), want attached", frameStatus, err)
+	}
+
+	// The uploaded poster archived: the frame shows again.
+	if _, err := f.pool.Exec(ctx, `UPDATE media SET deleted_at = now() WHERE id = $1`, posters[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := detail(); !reflect.DeepEqual(got, wantFrame) {
+		t.Fatalf("with an archived uploaded poster: %+v", got)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE media SET deleted_at = NULL WHERE id = $1`, posters[0].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.events.SetVideoPoster(ctx, created.ID, videos[0], nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := detail(); !reflect.DeepEqual(got, wantFrame) {
+		t.Fatalf("after the uploaded poster was cleared: %+v", got)
+	}
+
+	if _, err := f.pool.Exec(ctx, `UPDATE media SET blob_purge_started_at = now() WHERE id = $1`, frame.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := detail(); got.id != uuid.Nil {
+		t.Fatalf("a frame being purged answered %+v", got)
 	}
 }

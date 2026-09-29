@@ -3,6 +3,7 @@ package media_test
 import (
 	"context"
 	"errors"
+	"image/color"
 	"reflect"
 	"testing"
 
@@ -171,6 +172,18 @@ func TestService_ServiceOnlyPurposeIsRefusedToEveryPerson(t *testing.T) {
 	svc, _ := setup(t)
 	admin := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ADMIN"}}
 	_, err := svc.UploadForPurpose(context.Background(), admin, "answer_file_large", uploaded("build.zip", "application/zip", []byte("PK\x03\x04")))
+	if !errors.Is(err, media.ErrPurposeForbidden) {
+		t.Fatalf("err = %v, want %v", err, media.ErrPurposeForbidden)
+	}
+}
+
+// A video's frame is core's own image: no person may upload one, however
+// privileged.
+func TestService_VideoFrameIsRefusedToEveryPerson(t *testing.T) {
+	t.Parallel()
+	svc, _ := setup(t)
+	admin := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ADMIN"}}
+	_, err := svc.UploadForPurpose(context.Background(), admin, "video_frame", uploaded("frame.jpg", "image/jpeg", solidJPEG(t, 64, 36, color.Gray{Y: 128})))
 	if !errors.Is(err, media.ErrPurposeForbidden) {
 		t.Fatalf("err = %v, want %v", err, media.ErrPurposeForbidden)
 	}

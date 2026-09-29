@@ -46,6 +46,10 @@ const (
 	// PurposeVideo is an event recording, sent by Direct upload. An Event
 	// offers it as one of its videos (RoleEventVideo).
 	PurposeVideo = "video"
+	// PurposeVideoFrame is a frame of an Event video that core takes itself
+	// (FrameWorker) when the video has no uploaded poster: no person uploads
+	// one (framePurposes). The video's link shows it (RoleEventVideoFrame).
+	PurposeVideoFrame = "video_frame"
 )
 
 // requiredPurposes are the purposes core refers to in code. A catalogue that
@@ -53,6 +57,7 @@ const (
 var requiredPurposes = []string{
 	PurposeLegacy, PurposeProfilePicture, PurposeEventCover, PurposeEventGallery, PurposeCertificateAsset,
 	PurposeCMSImage, PurposeCMSFile, PurposeAnswerFile, PurposeAnswerFileLarge, PurposeClubFile, PurposeVideo,
+	PurposeVideoFrame,
 }
 
 // ErrCatalogueInvalid is a catalogue file core cannot read as one: a field it
