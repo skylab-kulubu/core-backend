@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -110,7 +111,7 @@ func (d *faststartDatabase) get(t *testing.T, id uuid.UUID) media.Media {
 // videoKeys are the objects stored for the video named in key
 // (videos/<name>.mp4 and videos/<name>.fs.mp4).
 func (d *faststartDatabase) videoKeys(key string) []string {
-	name := strings.TrimSuffix(strings.TrimSuffix(key, ".mp4"), ".fs")
+	name, _, _ := strings.Cut(strings.TrimSuffix(key, ".mp4"), ".fs.")
 	var out []string
 	for _, k := range d.fake.Keys("media") {
 		if strings.HasPrefix(k, name+".") {
@@ -120,7 +121,22 @@ func (d *faststartDatabase) videoKeys(key string) []string {
 	return out
 }
 
-func fsKey(key string) string { return strings.TrimSuffix(key, ".mp4") + ".fs.mp4" }
+// copyOf reports whether key is a faststart copy of the video at original
+// (videos/<uuid>.fs.<claim>.mp4).
+func copyOf(original, key string) bool {
+	return strings.HasPrefix(key, strings.TrimSuffix(original, ".mp4")+".fs.") && strings.HasSuffix(key, ".mp4")
+}
+
+// movedKey is the key v's Media points at, which must be a faststart copy
+// of its original.
+func (d *faststartDatabase) movedKey(t *testing.T, v media.Media) string {
+	t.Helper()
+	got := d.get(t, v.ID)
+	if !copyOf(v.Key, got.Key) {
+		t.Fatalf("Media at %s, not a faststart copy of %s", got.Key, v.Key)
+	}
+	return got.Key
+}
 
 // A video whose moov comes after its media data is rewritten with its moov
 // in front into videos/<uuid>.fs.mp4, served to play as the original was,
@@ -137,8 +153,8 @@ func TestPostgresFaststartMovesAVideosMoovInFront(t *testing.T) {
 		t.Fatalf("pass %+v, want the video rewritten", report)
 	}
 	got := d.get(t, v.ID)
-	if got.Key != fsKey(v.Key) || got.Size != int64(len(file)) {
-		t.Fatalf("Media at %s of %d bytes, want %s", got.Key, got.Size, fsKey(v.Key))
+	if !copyOf(v.Key, got.Key) || got.Size != int64(len(file)) {
+		t.Fatalf("Media at %s of %d bytes, want a copy of %s", got.Key, got.Size, v.Key)
 	}
 	stored, ok := d.fake.Object("media", got.Key)
 	if !ok || stored.ContentType != "video/mp4" || stored.ContentDisposition != "" {
@@ -236,7 +252,7 @@ func TestPostgresFaststartCopiesALargeVideoInStorage(t *testing.T) {
 	if report := faststartPass(t, w); report.Rewritten != 1 {
 		t.Fatalf("pass %+v", report)
 	}
-	stored, ok := d.fake.Object("media", fsKey(v.Key))
+	stored, ok := d.fake.Object("media", d.movedKey(t, v))
 	if !ok || stored.ContentType != "video/mp4" {
 		t.Fatalf("no faststart copy served to play (found %v)", ok)
 	}
@@ -307,7 +323,7 @@ func TestPostgresTwoWorkersRewriteAVideoOnce(t *testing.T) {
 	if second.Claimed != 0 {
 		t.Fatalf("the second worker took a claimed video: %+v", second)
 	}
-	if got := d.get(t, v.ID); got.Key != fsKey(v.Key) {
+	if got := d.get(t, v.ID); !copyOf(v.Key, got.Key) {
 		t.Fatalf("Media at %s", got.Key)
 	}
 }
@@ -332,7 +348,7 @@ func TestPostgresAFaststartWorkerThatLostItsClaimDeletesNothing(t *testing.T) {
 	}
 	got := d.get(t, v.ID)
 	stored, ok := d.fake.Object("media", got.Key)
-	if got.Key != fsKey(v.Key) || !ok {
+	if !copyOf(v.Key, got.Key) || !ok {
 		t.Fatalf("Media at %s, its object present %v", got.Key, ok)
 	}
 	mp4test.AssertSamePlayback(t, m, stored.Data)
@@ -520,10 +536,10 @@ func TestPostgresALateWorkerNeverDeletesTheCopyTheMediaMovedTo(t *testing.T) {
 	if report := faststartPass(t, a); report.Rewritten != 0 || second.Rewritten != 1 {
 		t.Fatalf("late worker %+v, second %+v", report, second)
 	}
-	if got := d.get(t, v.ID); got.Key != fsKey(v.Key) {
+	if got := d.get(t, v.ID); !copyOf(v.Key, got.Key) {
 		t.Fatalf("Media at %s", got.Key)
 	}
-	if _, ok := d.fake.Object("media", fsKey(v.Key)); !ok {
+	if _, ok := d.fake.Object("media", d.get(t, v.ID).Key); !ok {
 		t.Fatal("the late worker deleted the copy the Media points at")
 	}
 
@@ -569,7 +585,7 @@ func TestPostgresTheHourChecksTheCopyBeforeTheOriginalGoes(t *testing.T) {
 			if report := faststartPass(t, w); report.Rewritten != 1 || d.state(t, v.ID) != "moved" {
 				t.Fatalf("pass %+v, state %q", report, d.state(t, v.ID))
 			}
-			damage(d, fsKey(v.Key))
+			damage(d, d.movedKey(t, v))
 			d.now = d.now.Add(media.FaststartOriginalGrace)
 			if report := faststartPass(t, w); report.MovedBack != 1 || report.Finished != 0 {
 				t.Fatalf("the hour after %+v", report)
@@ -583,7 +599,7 @@ func TestPostgresTheHourChecksTheCopyBeforeTheOriginalGoes(t *testing.T) {
 			if report := faststartPass(t, w); report.Rewritten != 1 {
 				t.Fatalf("the rewrite again %+v", report)
 			}
-			stored, _ := d.fake.Object("media", fsKey(v.Key))
+			stored, _ := d.fake.Object("media", d.movedKey(t, v))
 			mp4test.AssertSamePlayback(t, m, stored.Data)
 		})
 	}
@@ -594,7 +610,7 @@ func TestPostgresTheHourChecksTheCopyBeforeTheOriginalGoes(t *testing.T) {
 		v := d.video(t, file)
 		w := d.worker(t, d.r2, d.clock)
 		faststartPass(t, w)
-		for _, key := range []string{v.Key, fsKey(v.Key)} {
+		for _, key := range []string{v.Key, d.movedKey(t, v)} {
 			if err := d.r2.Delete(ctx, key); err != nil {
 				t.Fatal(err)
 			}
@@ -634,7 +650,7 @@ func TestPostgresAFaststartPanicFailsOnlyThatVideo(t *testing.T) {
 	if attempts, _ := d.attempts(t, broken.ID); d.state(t, broken.ID) != "failed" || attempts != 1 || d.get(t, broken.ID).Key != broken.Key {
 		t.Fatalf("the video that panicked: state %q, attempts %d", d.state(t, broken.ID), attempts)
 	}
-	if keys := d.videoKeys(broken.Key); len(keys) != 1 || d.get(t, fine.ID).Key != fsKey(fine.Key) {
+	if keys := d.videoKeys(broken.Key); len(keys) != 1 || !copyOf(fine.Key, d.get(t, fine.ID).Key) {
 		t.Fatalf("objects %v", keys)
 	}
 	var failure *media.FaststartError
@@ -674,8 +690,464 @@ func TestPostgresALateWorkerNeverDeletesAnotherWorkersCopy(t *testing.T) {
 	}
 	got := d.get(t, v.ID)
 	stored, ok := d.fake.Object("media", got.Key)
-	if got.Key != fsKey(v.Key) || !ok {
+	if !copyOf(v.Key, got.Key) || !ok {
 		t.Fatalf("Media at %s, its object present %v", got.Key, ok)
 	}
 	mp4test.AssertSamePlayback(t, m, stored.Data)
+}
+
+// isCopyKey reports whether key is a video's faststart copy.
+func isCopyKey(key string) bool { return strings.Contains(key, ".fs.") }
+
+// stalledCleanup fails a worker's write of its copy (after onPut), then
+// stalls its cleanup: the first delete of a copy key after the failed
+// write runs stall first, as a worker that pauses between deciding to
+// delete and deleting.
+type stalledCleanup struct {
+	media.FaststartStorage
+	mu              sync.Mutex
+	failed, stalled bool
+	onPut, stall    func()
+	putKey          string
+}
+
+func (s *stalledCleanup) Put(_ context.Context, key string, _ []byte, _ media.BlobMetadata) error {
+	if s.onPut != nil {
+		s.onPut()
+	}
+	s.mu.Lock()
+	s.failed, s.putKey = true, key
+	s.mu.Unlock()
+	return errors.New("r2: 503")
+}
+
+func (s *stalledCleanup) Delete(ctx context.Context, key string) error {
+	s.mu.Lock()
+	run := s.failed && !s.stalled && isCopyKey(key) && s.stall != nil
+	if run {
+		s.stalled = true
+	}
+	s.mu.Unlock()
+	if run {
+		s.stall()
+	}
+	return s.FaststartStorage.Delete(ctx, key)
+}
+
+// assertServed checks the Media points at an object that is there, in the
+// state given.
+func (d *faststartDatabase) assertServed(t *testing.T, id uuid.UUID, state string) media.Media {
+	t.Helper()
+	got := d.get(t, id)
+	if _, ok := d.fake.Object("media", got.Key); !ok || d.state(t, id) != state {
+		t.Fatalf("Media %q at %s, its object present %v; keys %v", d.state(t, id), got.Key, ok, d.videoKeys(got.Key))
+	}
+	return got
+}
+
+// Probe 1: a worker whose write fails decides to delete its copy, then
+// stalls past its lease; another worker rewrites the video and moves the
+// Media meanwhile. The late delete lands, and must not take the copy the
+// Media points at: each claim writes and deletes only its own key.
+func TestPostgresAStalledCleanupNeverDeletesTheMovedCopy(t *testing.T) {
+	d := newFaststartDatabase(t)
+	file, _ := mp4test.TwoTracks().Build()
+	v := d.video(t, file)
+	late := d.now.Add(24 * time.Hour)
+	var second media.FaststartReport
+	a := d.worker(t, &stalledCleanup{FaststartStorage: d.r2, stall: func() {
+		second = faststartPass(t, d.worker(t, d.r2, func() time.Time { return late }))
+	}}, d.clock)
+	if report := faststartPass(t, a); report.Rewritten != 0 || second.Rewritten != 1 {
+		t.Fatalf("stalled worker %+v, other %+v", report, second)
+	}
+	d.assertServed(t, v.ID, "moved")
+}
+
+// Probe 1b: no stall at all. The first worker spent its step's whole time
+// before its write failed; the other's clock runs two minutes ahead (the
+// skew the docs allow), so it claims the video while the first one's
+// cleanup is under way. The Media still never points at nothing.
+func TestPostgresACleanupWithinTheClockSkewNeverDeletesTheMovedCopy(t *testing.T) {
+	d := newFaststartDatabase(t)
+	file, _ := mp4test.TwoTracks().Build()
+	v := d.video(t, file)
+	start := d.now
+	var mu sync.Mutex
+	aNow := start
+	aClock := func() time.Time { mu.Lock(); defer mu.Unlock(); return aNow }
+	work := 5*time.Minute + time.Duration(int64(len(file))>>20)*time.Second
+	var second media.FaststartReport
+	a := d.worker(t, &stalledCleanup{FaststartStorage: d.r2,
+		onPut: func() { mu.Lock(); aNow = start.Add(work); mu.Unlock() },
+		stall: func() {
+			second = faststartPass(t, d.worker(t, d.r2, func() time.Time { return aClock().Add(2 * time.Minute) }))
+		}}, aClock)
+	if report := faststartPass(t, a); report.Rewritten != 0 || second.Rewritten != 1 {
+		t.Fatalf("first worker %+v, second %+v", report, second)
+	}
+	d.assertServed(t, v.ID, "moved")
+}
+
+// afterHead runs hook once, right after the HEAD of key: a stale delete
+// landing between the hour's check of the copy and its delete of the
+// original.
+type afterHead struct {
+	media.FaststartStorage
+	mu   sync.Mutex
+	key  string
+	hook func()
+}
+
+func (a *afterHead) Size(ctx context.Context, key string) (int64, error) {
+	n, err := a.FaststartStorage.Size(ctx, key)
+	a.mu.Lock()
+	hook := a.hook
+	if key != a.key {
+		hook = nil
+	} else {
+		a.hook = nil
+	}
+	a.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return n, err
+}
+
+// Probe 2: the hour checks the copy the Media points at, then deletes the
+// original. A stale worker's delete (of the copy it tried to write) landing
+// between the two must not leave the Media with neither: the stale worker's
+// key is its own, never the one the Media points at.
+func TestPostgresAStaleDeleteDuringTheHourLeavesTheMovedCopy(t *testing.T) {
+	d := newFaststartDatabase(t)
+	m := mp4test.TwoTracks()
+	file, _ := m.Build()
+	v := d.video(t, file)
+	late := d.now.Add(24 * time.Hour)
+	stale := &stalledCleanup{FaststartStorage: d.r2, onPut: func() {
+		faststartPass(t, d.worker(t, d.r2, func() time.Time { return late }))
+	}}
+	faststartPass(t, d.worker(t, stale, d.clock))
+	moved := d.assertServed(t, v.ID, "moved")
+
+	d.now = late.Add(media.FaststartOriginalGrace)
+	hour := d.worker(t, &afterHead{FaststartStorage: d.r2, key: moved.Key, hook: func() {
+		if err := d.r2.Delete(context.Background(), stale.putKey); err != nil {
+			t.Error(err)
+		}
+	}}, d.clock)
+	if report := faststartPass(t, hour); report.Finished != 1 {
+		t.Fatalf("the hour %+v", report)
+	}
+	got := d.assertServed(t, v.ID, "done")
+	stored, _ := d.fake.Object("media", got.Key)
+	mp4test.AssertSamePlayback(t, m, stored.Data)
+	if keys := d.videoKeys(v.Key); len(keys) != 1 {
+		t.Fatalf("objects %v, want only the copy", keys)
+	}
+}
+
+// deleteBeforeWrite stalls the first delete of a copy key a worker makes
+// before its first write, and counts such deletes.
+type deleteBeforeWrite struct {
+	media.FaststartStorage
+	mu           sync.Mutex
+	wrote, fired bool
+	deletes      int
+	failPut      bool
+	stall        func()
+}
+
+func (s *deleteBeforeWrite) Put(ctx context.Context, key string, data []byte, meta media.BlobMetadata) error {
+	s.mu.Lock()
+	s.wrote = true
+	s.mu.Unlock()
+	if s.failPut {
+		return errors.New("r2: 503")
+	}
+	return s.FaststartStorage.Put(ctx, key, data, meta)
+}
+
+func (s *deleteBeforeWrite) Delete(ctx context.Context, key string) error {
+	s.mu.Lock()
+	run := false
+	if !s.wrote && isCopyKey(key) {
+		s.deletes++
+		run, s.fired = !s.fired, true
+	}
+	s.mu.Unlock()
+	if run {
+		s.stall()
+	}
+	return s.FaststartStorage.Delete(ctx, key)
+}
+
+// Probe 5: a worker deletes nothing before it writes its copy, so no
+// delete of its can land on a copy another worker moved the Media to
+// meanwhile, whether its own write then fails or not.
+func TestPostgresAWorkerDeletesNothingBeforeItWrites(t *testing.T) {
+	for _, failPut := range []bool{false, true} {
+		t.Run(fmt.Sprintf("its write fails: %v", failPut), func(t *testing.T) {
+			d := newFaststartDatabase(t)
+			file, _ := mp4test.TwoTracks().Build()
+			v := d.video(t, file)
+			late := d.now.Add(24 * time.Hour)
+			st := &deleteBeforeWrite{FaststartStorage: d.r2, failPut: failPut, stall: func() {
+				faststartPass(t, d.worker(t, d.r2, func() time.Time { return late }))
+			}}
+			faststartPass(t, d.worker(t, st, d.clock))
+			if st.deletes != 0 {
+				t.Errorf("%d deletes of a copy key before the write", st.deletes)
+			}
+			// A write that fails leaves the video at its original, waiting
+			// to be tried again.
+			want := "moved"
+			if failPut {
+				want = ""
+			}
+			d.assertServed(t, v.ID, want)
+		})
+	}
+}
+
+// strayCopy stores a faststart copy of v as a claim that crashed between
+// its write and its cleanup leaves it: at its own key, pointed at by
+// nothing.
+func (d *faststartDatabase) strayCopy(t *testing.T, v media.Media) string {
+	t.Helper()
+	key, ok := media.FaststartCopyKey(v.Key, uuid.New())
+	if !ok {
+		t.Fatalf("no copy key for %s", v.Key)
+	}
+	if err := d.r2.Put(context.Background(), key, []byte("a copy a crash left"), media.BlobMetadata{ContentType: "video/mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+// The hour after a move takes every other copy of the video with its
+// original (listed by their prefix): the ones earlier claims could not
+// delete. Another video's keys are not its.
+func TestPostgresTheHourSweepsTheStrayCopies(t *testing.T) {
+	d := newFaststartDatabase(t)
+	file, _ := mp4test.TwoTracks().Build()
+	v, other := d.video(t, file), d.video(t, file)
+	d.strayCopy(t, v)
+	w := d.worker(t, d.r2, d.clock)
+	faststartPass(t, w)
+	d.strayCopy(t, v)
+	moved := d.movedKey(t, v)
+	if keys := d.videoKeys(v.Key); len(keys) != 4 {
+		t.Fatalf("objects %v, want the original, its copy and two strays", keys)
+	}
+	d.now = d.now.Add(media.FaststartOriginalGrace)
+	if report := faststartPass(t, w); report.Finished != 2 {
+		t.Fatalf("the hour %+v", report)
+	}
+	if keys := d.videoKeys(v.Key); !slices.Equal(keys, []string{moved}) || d.state(t, v.ID) != "done" {
+		t.Fatalf("objects %v in state %q, want only %s", keys, d.state(t, v.ID), moved)
+	}
+	if keys := d.videoKeys(other.Key); len(keys) != 1 || !copyOf(other.Key, keys[0]) {
+		t.Fatalf("the other video's objects %v", keys)
+	}
+}
+
+// A rewrite given up on takes its video's stray copies with it: the video
+// is served as it is, from its original.
+func TestPostgresAFailedRewriteSweepsItsStrayCopies(t *testing.T) {
+	d := newFaststartDatabase(t)
+	file, _ := mp4test.TwoTracks().Build()
+	v := d.video(t, file)
+	d.strayCopy(t, v)
+	if _, err := d.pool.Exec(context.Background(), `UPDATE media SET video_faststart_attempts = 11 WHERE id = $1`, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	d.fake.Fail("HeadObject", 403, "AccessDenied")
+	if report := faststartPass(t, d.worker(t, d.r2, d.clock)); report.Abandoned != 1 || d.state(t, v.ID) != "failed" {
+		t.Fatalf("pass %+v, state %q", report, d.state(t, v.ID))
+	}
+	if keys := d.videoKeys(v.Key); !slices.Equal(keys, []string{v.Key}) {
+		t.Fatalf("objects %v, want only the original", keys)
+	}
+}
+
+// Every purge of a video takes all its keys: the original in its hour, the
+// copy the Media points at, and any stray copy, listed by their prefix.
+func TestPostgresAPurgeTakesEveryCopyOfAVideo(t *testing.T) {
+	d := newFaststartDatabase(t)
+	file, _ := mp4test.TwoTracks().Build()
+	v := d.video(t, file)
+	faststartPass(t, d.worker(t, d.r2, d.clock))
+	d.strayCopy(t, v)
+	d.expired(t, v.ID)
+	if keys := d.videoKeys(v.Key); len(keys) != 3 {
+		t.Fatalf("objects %v", keys)
+	}
+	if report := d.purgeExpired(t, d.now.Add(24*time.Hour)); report.Purged != 1 {
+		t.Fatalf("purge %+v", report)
+	}
+	if keys := d.videoKeys(v.Key); len(keys) != 0 {
+		t.Fatalf("the purge left %v", keys)
+	}
+	if d.state(t, v.ID) != "moved" {
+		t.Fatalf("state %q", d.state(t, v.ID))
+	}
+}
+
+// A video whose rewrite crashed between writing its copy and deleting it
+// leaves a stray copy. Its uploader's account erasure keeps the video as
+// club content, stray and all, without their name; the video's purge then
+// takes every key, the stray too.
+func TestPostgresAnErasedUploadersStrayCopyGoesWithTheVideosPurge(t *testing.T) {
+	d := newFaststartDatabase(t)
+	ctx := context.Background()
+	file, _ := mp4test.TwoTracks().Build()
+	v := d.video(t, file)
+	stray := d.strayCopy(t, v)
+	users := user.NewPostgresStore(d.pool)
+	request, err := users.RequestDeletion(ctx, d.uploader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := users.AnonymizeAccount(ctx, d.uploader, d.now, nil); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := users.MediaForDeletion(ctx, request.ID)
+	if err != nil || !slices.Contains(ids, v.ID) {
+		t.Fatalf("recorded %v, err %v", ids, err)
+	}
+	eraser := media.NewImmediateBlobEraser(d.store, media.Buckets{Public: d.r2})
+	for _, id := range ids {
+		if err := eraser.EnsureErased(ctx, id, d.now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := d.get(t, v.ID); got.Name != "" || got.BlobPurgedAt != nil {
+		t.Fatalf("the video after the erasure: name %q, purged %v", got.Name, got.BlobPurgedAt)
+	}
+	if keys := d.videoKeys(v.Key); !slices.Equal(keys, []string{stray, v.Key}) && !slices.Equal(keys, []string{v.Key, stray}) {
+		t.Fatalf("objects after the erasure %v", keys)
+	}
+	d.expired(t, v.ID)
+	if report := d.purgeExpired(t, d.now.Add(time.Hour)); report.Purged != 1 {
+		t.Fatalf("purge %+v", report)
+	}
+	if keys := d.videoKeys(v.Key); len(keys) != 0 {
+		t.Fatalf("the purge left %v", keys)
+	}
+}
+
+// sweepHook fails the worker's write, and runs beforeList before its sweep
+// lists the video's copies.
+type sweepHook struct {
+	media.FaststartStorage
+	beforeList func()
+}
+
+func (s *sweepHook) Put(context.Context, string, []byte, media.BlobMetadata) error {
+	return errors.New("r2: 503")
+}
+
+func (s *sweepHook) ListKeys(ctx context.Context, prefix string) ([]string, error) {
+	if s.beforeList != nil {
+		s.beforeList()
+	}
+	return s.FaststartStorage.ListKeys(ctx, prefix)
+}
+
+// A stale worker's sweep (it gives the rewrite up) lists a copy a newer
+// claim has written but not yet moved the Media to. The sweep checks its
+// claim after listing, finds it gone, and deletes nothing: the newer
+// worker checks its copy and moves the Media there.
+func TestPostgresAStaleSweepNeverDeletesANewerClaimsCopy(t *testing.T) {
+	d := newFaststartDatabase(t)
+	m := mp4test.TwoTracks()
+	file, _ := m.Build()
+	v := d.video(t, file)
+	if _, err := d.pool.Exec(context.Background(), `UPDATE media SET video_faststart_attempts = 11 WHERE id = $1`, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	aListing, bWritten, aDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	a := d.worker(t, &sweepHook{FaststartStorage: d.r2, beforeList: func() {
+		close(aListing)
+		<-bWritten
+	}}, d.clock)
+	go func() {
+		defer close(aDone)
+		_, _ = a.Pass(context.Background(), func(err error) { t.Logf("stale worker: %v", err) })
+	}()
+	<-aListing
+	b := d.worker(t, &hookedFaststartStorage{FaststartStorage: d.r2, onPut: func() {
+		close(bWritten)
+		<-aDone
+	}}, func() time.Time { return d.now.Add(24 * time.Hour) })
+	if report := faststartPass(t, b); report.Rewritten != 1 {
+		t.Fatalf("the newer worker %+v", report)
+	}
+	stored, _ := d.fake.Object("media", d.assertServed(t, v.ID, "moved").Key)
+	mp4test.AssertSamePlayback(t, m, stored.Data)
+}
+
+// panicOnHead panics sizing one object: a bug in the step after the hour.
+type panicOnHead struct {
+	media.FaststartStorage
+	key string
+}
+
+func (p *panicOnHead) Size(ctx context.Context, key string) (int64, error) {
+	if key == p.key {
+		panic("a bug")
+	}
+	return p.FaststartStorage.Size(ctx, key)
+}
+
+// A step that panics on a moved video keeps it moved, served from its
+// copy: the attempt counts, and the step that drops its original is tried
+// again after its wait, so the original does not stay until a purge.
+func TestPostgresAPanicAfterTheHourKeepsTheVideoMoved(t *testing.T) {
+	d := newFaststartDatabase(t)
+	file, _ := mp4test.TwoTracks().Build()
+	v := d.video(t, file)
+	w := d.worker(t, d.r2, d.clock)
+	faststartPass(t, w)
+	moved := d.movedKey(t, v)
+	d.now = d.now.Add(media.FaststartOriginalGrace)
+	if report := faststartPass(t, d.worker(t, &panicOnHead{FaststartStorage: d.r2, key: moved}, d.clock)); report.Panicked != 1 {
+		t.Fatalf("pass %+v", report)
+	}
+	if attempts, retry := d.attempts(t, v.ID); d.state(t, v.ID) != "moved" || attempts != 1 || retry == nil {
+		t.Fatalf("after the panic: state %q, attempts %d, retry %v", d.state(t, v.ID), attempts, retry)
+	}
+	d.now = d.now.Add(time.Minute)
+	if report := faststartPass(t, w); report.Finished != 1 {
+		t.Fatalf("the step again %+v", report)
+	}
+	d.assertServed(t, v.ID, "done")
+	if keys := d.videoKeys(v.Key); !slices.Equal(keys, []string{moved}) {
+		t.Fatalf("objects %v", keys)
+	}
+}
+
+// Ending a rewrite on a Media purged meanwhile changes nothing but letting
+// go of the claim.
+func TestPostgresFinishingARewriteOfAPurgedVideoChangesNothing(t *testing.T) {
+	d := newFaststartDatabase(t)
+	ctx := context.Background()
+	file, _ := mp4test.TwoTracks().Build()
+	v := d.video(t, file)
+	claim, found, err := d.store.ClaimNextFaststart(ctx, d.now, uuid.Nil, func(media.Media) time.Duration { return time.Hour })
+	if err != nil || !found || claim.Media.ID != v.ID {
+		t.Fatalf("claim %+v found %v err %v", claim, found, err)
+	}
+	if _, err := d.pool.Exec(ctx, `UPDATE media SET deleted_at = now(), blob_purge_started_at = now(), blob_purged_at = now() WHERE id = $1`, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := d.store.FinishFaststart(ctx, claim, media.FaststartDone); err != nil || done {
+		t.Fatalf("finish: done %v, err %v", done, err)
+	}
+	var claimed bool
+	if err := d.pool.QueryRow(ctx, `SELECT video_faststart_claim_id IS NOT NULL FROM media WHERE id = $1`, v.ID).Scan(&claimed); err != nil || claimed || d.state(t, v.ID) != "" {
+		t.Fatalf("state %q, still claimed %v, err %v", d.state(t, v.ID), claimed, err)
+	}
 }

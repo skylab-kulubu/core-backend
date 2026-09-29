@@ -124,6 +124,29 @@ func (r *R2) UploadPartCopy(ctx context.Context, key, uploadID string, number in
 	return aws.ToString(out.CopyPartResult.ETag), nil
 }
 
+// ListKeys lists the keys under prefix (ListObjectsV2), every page of them.
+func (r *R2) ListKeys(ctx context.Context, prefix string) ([]string, error) {
+	var keys []string
+	var token *string
+	for {
+		out, err := r.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(r.bucket),
+			Prefix:            aws.String(prefix),
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, o := range out.Contents {
+			keys = append(keys, aws.ToString(o.Key))
+		}
+		if !aws.ToBool(out.IsTruncated) || out.NextContinuationToken == nil {
+			return keys, nil
+		}
+		token = out.NextContinuationToken
+	}
+}
+
 func (r *R2) ListParts(ctx context.Context, key, uploadID string) ([]UploadedPart, error) {
 	var parts []UploadedPart
 	var marker *string

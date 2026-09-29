@@ -2,7 +2,8 @@
 // adapter makes (objects, ranged reads, copies with new metadata) and the
 // multipart upload a Direct upload is (create, upload a part, list parts,
 // complete, abort, list the open uploads), with a part copied from another
-// object's byte range (UploadPartCopy). It keeps everything in memory,
+// object's byte range (UploadPartCopy), and the keys under a prefix
+// (ListObjectsV2, 1000 a page). It keeps everything in memory,
 // speaks path-style addresses (/<bucket>/<key>) and checks no signature: a
 // presigned part address works when the test PUTs to it as a browser would.
 // It joins parts only as R2 does: every part but the last the same size,
@@ -240,6 +241,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.abort(w, q.Get("uploadId"))
 	case "ListMultipartUploads":
 		s.listUploads(w, bucket, q.Get("prefix"))
+	case "ListObjectsV2":
+		s.listObjects(w, bucket, q)
 	case "CopyObject":
 		s.copyObject(w, r, bucket, key)
 	case "PutObject":
@@ -272,6 +275,8 @@ func operationOf(r *http.Request, key string, q url.Values) string {
 		return "AbortMultipartUpload"
 	case r.Method == http.MethodGet && key == "" && q.Has("uploads"):
 		return "ListMultipartUploads"
+	case r.Method == http.MethodGet && key == "" && q.Get("list-type") == "2":
+		return "ListObjectsV2"
 	case r.Method == http.MethodPut && r.Header.Get("X-Amz-Copy-Source") != "":
 		return "CopyObject"
 	case r.Method == http.MethodPut:
@@ -481,6 +486,37 @@ func (s *Server) listUploads(w http.ResponseWriter, bucket, prefix string) {
 	writeXML(w, http.StatusOK, result)
 }
 
+// listObjects answers the keys under the prefix, in order, a page of
+// max-keys (1000 by default) at a time, continued after the token (the last
+// key of the page before).
+func (s *Server) listObjects(w http.ResponseWriter, bucket string, q url.Values) {
+	prefix, after := q.Get("prefix"), q.Get("continuation-token")
+	page := 1000
+	if n, err := strconv.Atoi(q.Get("max-keys")); err == nil && n > 0 && n < page {
+		page = n
+	}
+	s.mu.Lock()
+	var keys []string
+	for name := range s.objects {
+		if b, key, _ := strings.Cut(name, "/"); b == bucket && strings.HasPrefix(key, prefix) && key > after {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	result := listObjectsResult{Name: bucket, Prefix: prefix}
+	for i, key := range keys {
+		if i == page {
+			result.IsTruncated, result.NextContinuationToken = true, keys[i-1]
+			break
+		}
+		o := s.objects[bucket+"/"+key]
+		result.Contents = append(result.Contents, listedObject{Key: key, Size: int64(len(o.Data)), ETag: o.ETag, LastModified: timestamp()})
+	}
+	result.KeyCount = len(result.Contents)
+	s.mu.Unlock()
+	writeXML(w, http.StatusOK, result)
+}
+
 func (s *Server) copyObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	source, err := url.PathUnescape(strings.TrimPrefix(r.Header.Get("X-Amz-Copy-Source"), "/"))
 	if err != nil {
@@ -647,6 +683,23 @@ type listUploadsResult struct {
 	Prefix      string         `xml:"Prefix"`
 	IsTruncated bool           `xml:"IsTruncated"`
 	Uploads     []listedUpload `xml:"Upload"`
+}
+
+type listedObject struct {
+	Key          string `xml:"Key"`
+	LastModified string `xml:"LastModified"`
+	ETag         string `xml:"ETag"`
+	Size         int64  `xml:"Size"`
+}
+
+type listObjectsResult struct {
+	XMLName               xml.Name       `xml:"ListBucketResult"`
+	Name                  string         `xml:"Name"`
+	Prefix                string         `xml:"Prefix"`
+	KeyCount              int            `xml:"KeyCount"`
+	IsTruncated           bool           `xml:"IsTruncated"`
+	NextContinuationToken string         `xml:"NextContinuationToken,omitempty"`
+	Contents              []listedObject `xml:"Contents"`
 }
 
 type copyPartResult struct {

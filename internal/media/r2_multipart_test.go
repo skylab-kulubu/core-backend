@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -272,7 +273,7 @@ func TestR2_PartsFollowR2sSizeRules(t *testing.T) {
 		"parts of two sizes":           {6 << 20, 5 << 20, 1},
 		"a last part larger":           {5 << 20, 6 << 20},
 	} {
-		key := "videos/" + strings.ReplaceAll(name, " ", "-") + ".fs.mp4"
+		key := "videos/" + strings.ReplaceAll(name, " ", "-") + ".fs.1.mp4"
 		id, err := r2.CreateMultipartWith(ctx, key, media.BlobMetadata{ContentType: "video/mp4"})
 		if err != nil {
 			t.Fatal(err)
@@ -306,7 +307,7 @@ func TestR2_BuildsAnObjectFromPartsAndCopiedRanges(t *testing.T) {
 	if err := r2.Put(ctx, "videos/a.mp4", source, media.BlobMetadata{ContentType: "video/mp4"}); err != nil {
 		t.Fatal(err)
 	}
-	key := "videos/a.fs.mp4"
+	key := "videos/a.fs.5e9d.mp4"
 	id, err := r2.CreateMultipartWith(ctx, key, media.BlobMetadata{ContentType: "video/mp4"})
 	if err != nil {
 		t.Fatal(err)
@@ -352,5 +353,38 @@ func TestR2_BuildsAnObjectFromPartsAndCopiedRanges(t *testing.T) {
 	}
 	if _, ok := fake.Object("media", key); ok || len(fake.OpenUploads("media")) != 0 || !slices.Equal(fake.Aborted(), []string{key}) {
 		t.Fatalf("after the delete: open %v, aborted %v", fake.OpenUploads("media"), fake.Aborted())
+	}
+}
+
+// A video's faststart copies are found by their prefix (ListObjectsV2),
+// page by page: only keys under it, in order; the bucket in memory lists
+// the same.
+func TestR2_ListsTheKeysUnderAPrefix(t *testing.T) {
+	t.Parallel()
+	r2, _ := multipartR2(t)
+	memory := media.NewMemoryBlob()
+	ctx := context.Background()
+	var want []string
+	for i := 0; i < 1203; i++ {
+		want = append(want, fmt.Sprintf("videos/a.fs.%04d.mp4", i))
+	}
+	for name, bucket := range map[string]interface {
+		Put(context.Context, string, []byte, media.BlobMetadata) error
+		ListKeys(context.Context, string) ([]string, error)
+	}{"r2": r2, "memory": memory} {
+		t.Run(name, func(t *testing.T) {
+			for _, key := range append(slices.Clone(want), "videos/a.mp4", "videos/ab.fs.1.mp4", "files/a.fs.1") {
+				if err := bucket.Put(ctx, key, []byte("x"), media.BlobMetadata{ContentType: "video/mp4"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := bucket.ListKeys(ctx, "videos/a.fs.")
+			if err != nil || !slices.Equal(got, want) {
+				t.Fatalf("listed %d keys (first %v), err %v; want %d", len(got), got[:min(3, len(got))], err, len(want))
+			}
+			if got, err := bucket.ListKeys(ctx, "videos/none."); err != nil || len(got) != 0 {
+				t.Fatalf("an empty prefix listed %v, err %v", got, err)
+			}
+		})
 	}
 }

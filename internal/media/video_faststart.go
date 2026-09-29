@@ -19,73 +19,133 @@ import (
 // re-encode) into a new object beside it, and points the Media there. See
 // "Video faststart" in docs/media-lifecycle.md.
 
-// A video's two keys: the one a Direct upload stores it at
-// (videos/<uuid>.mp4, directServedKey) and its faststart copy beside it
-// (videos/<uuid>.fs.mp4). Each names the other, so every purge of the Media
-// deletes both, whichever it points at (purgeMediaObjects).
+// A video's keys: the one a Direct upload stores it at (its original,
+// videos/<name>.mp4, directServedKey), and each faststart copy beside it,
+// one per claim that writes one: videos/<name>.fs.<claim id>.mp4. A worker
+// writes only the key of its own claim, and deletes only that one, unless
+// the Media points at it (FaststartCopyDisposable): no worker can delete a
+// copy another worker moved the Media to. Copies a worker could not delete
+// (a crash, a failed delete) are swept by prefix (videos/<name>.fs.): by the
+// hour after a move and by a failed rewrite, every one but the copy the
+// Media points at; by every purge of the Media, every one
+// (purgeMediaObjects, purgeDeleter).
 const (
-	videoKeyPrefix     = "videos/"
-	videoKeySuffix     = ".mp4"
-	faststartKeySuffix = ".fs.mp4"
+	videoKeyPrefix       = "videos/"
+	videoKeySuffix       = ".mp4"
+	faststartCopyInfix   = ".fs."
+	faststartCopyIDChars = 32
 )
 
 // videoName is the name in a video's key, videos/<name>.mp4 or
-// videos/<name>.fs.mp4, and whether the key is its faststart copy's.
-func videoName(key string) (name string, faststart, ok bool) {
+// videos/<name>.fs.<claim>.mp4, and the claim part of a copy's ("" for
+// the original).
+func videoName(key string) (name, claim string, ok bool) {
 	rest, ok := strings.CutPrefix(key, videoKeyPrefix)
 	if !ok || strings.Contains(rest, "/") {
-		return "", false, false
+		return "", "", false
 	}
-	if name, ok := strings.CutSuffix(rest, faststartKeySuffix); ok {
-		// Never an original named "<name>.fs".
-		return name, true, name != ""
+	base, ok := strings.CutSuffix(rest, videoKeySuffix)
+	if !ok {
+		return "", "", false
 	}
-	if name, ok := strings.CutSuffix(rest, videoKeySuffix); ok && name != "" {
-		return name, false, true
+	name, claim, isCopy := strings.Cut(base, faststartCopyInfix)
+	switch {
+	case name == "":
+		return "", "", false
+	case isCopy:
+		// Never an original named "<name>.fs.<x>".
+		return name, claim, claim != "" && !strings.Contains(claim, ".")
 	}
-	return "", false, false
+	return name, "", true
 }
 
-// faststartKeyOf is the key of the faststart copy of the video at key; ok
-// is false for a key that is not a video's original.
-func faststartKeyOf(key string) (string, bool) {
-	name, faststart, ok := videoName(key)
-	if !ok || faststart {
+// faststartCopyKey is the key the claim writes the faststart copy of the
+// video at original to; ok is false for a key that is not a video's
+// original.
+func faststartCopyKey(original string, claim uuid.UUID) (string, bool) {
+	name, copyOf, ok := videoName(original)
+	if !ok || copyOf != "" {
 		return "", false
 	}
-	return videoKeyPrefix + name + faststartKeySuffix, true
+	id := strings.ReplaceAll(claim.String(), "-", "")
+	return videoKeyPrefix + name + faststartCopyInfix + id[:faststartCopyIDChars] + videoKeySuffix, true
 }
 
-// faststartSourceOf is the key of the original of the faststart copy at
-// key; ok is false for a key that is not a faststart copy's.
-func faststartSourceOf(key string) (string, bool) {
-	name, faststart, ok := videoName(key)
-	if !ok || !faststart {
+// videoOriginalOf is the original of any key of a video (itself, for the
+// original); ok is false for a key that is not a video's.
+func videoOriginalOf(key string) (string, bool) {
+	name, _, ok := videoName(key)
+	if !ok {
 		return "", false
 	}
 	return videoKeyPrefix + name + videoKeySuffix, true
 }
 
-// isFaststartKey reports whether key is a video's faststart copy.
-func isFaststartKey(key string) bool {
-	_, ok := faststartSourceOf(key)
-	return ok
+// faststartCopiesPrefix is the prefix every faststart copy of the video
+// at key starts with; ok is false for a key that is not a video's.
+func faststartCopiesPrefix(key string) (string, bool) {
+	name, _, ok := videoName(key)
+	if !ok {
+		return "", false
+	}
+	return videoKeyPrefix + name + faststartCopyInfix, true
 }
 
-// videoPairKey is the other key of a video's pair: the faststart copy of an
-// original, the original of a faststart copy.
-func videoPairKey(key string) (string, bool) {
-	if other, ok := faststartKeyOf(key); ok {
-		return other, true
+// isFaststartKey reports whether key is a video's faststart copy.
+func isFaststartKey(key string) bool {
+	_, claim, ok := videoName(key)
+	return ok && claim != ""
+}
+
+// keyLister lists the keys under a prefix (R2's ListObjectsV2).
+type keyLister interface {
+	ListKeys(ctx context.Context, prefix string) ([]string, error)
+}
+
+// errNoListing is a store that cannot list keys (Buckets over one).
+var errNoListing = errors.New("media: the store cannot list keys")
+
+// purgeDeleter is how a purge deletes a Media's objects from blobs: each
+// key it is given, and, for a video's original, every faststart copy beside
+// it (listed by their prefix): the copy the Media pointed at and any a
+// rewrite cut short left. purgeMediaObjects hands it a video's original
+// whichever key the Media pointed at. A store that cannot list deletes the
+// keys it is given alone.
+func purgeDeleter(ctx context.Context, blobs BlobStore) func(key string) error {
+	return func(key string) error {
+		if err := blobs.Delete(ctx, key); err != nil {
+			return err
+		}
+		prefix, ok := faststartCopiesPrefix(key)
+		lister, canList := blobs.(keyLister)
+		if !ok || isFaststartKey(key) || !canList {
+			return nil
+		}
+		copies, err := lister.ListKeys(ctx, prefix)
+		if errors.Is(err, errNoListing) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for _, copyKey := range copies {
+			if isFaststartKey(copyKey) {
+				if err := blobs.Delete(ctx, copyKey); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}
-	return faststartSourceOf(key)
 }
 
 // FaststartStorage is the public bucket as the faststart rewrite uses it
 // (R2): it reads the video by ranges, writes the faststart copy (a small one
 // whole, a larger one as a multipart upload whose parts storage copies
-// from the video where it can), checks it, and deletes.
+// from the video where it can), checks it, lists a video's copies, and
+// deletes.
 type FaststartStorage interface {
+	keyLister
 	// Size is the stored object's size; ErrNotFound when there is none.
 	Size(ctx context.Context, key string) (int64, error)
 	// OpenRange streams the n bytes of the object from off (a ranged GET);
@@ -163,9 +223,12 @@ const (
 	maxMultipartParts = 10000
 )
 
-// errFaststartPanicked is what the log says of a step that panicked: the
-// video's id, never what the panic held.
-var errFaststartPanicked = errors.New("the faststart rewrite panicked; the video is served as it is")
+// errFaststartPanicked and errFaststartMovedPanicked are what the log
+// says of a step that panicked: the video's id, never what the panic held.
+var (
+	errFaststartPanicked      = errors.New("the faststart rewrite panicked; the video is served as it is")
+	errFaststartMovedPanicked = errors.New("the faststart step after the hour panicked; the video stays at its copy, and the step is tried again later")
+)
 
 // faststartReadTimeout bounds a ranged read of n bytes: the moov, a part.
 func faststartReadTimeout(n int64) time.Duration {
@@ -360,11 +423,19 @@ func (j faststartJob) report(err error) {
 }
 
 // run moves the claimed video on: a moved one to done (dropOriginal), any
-// other to its faststart copy (rewrite). A step that fails is put off; one
-// that panics fails the video.
+// other to its faststart copy (rewrite). A step that fails is put off. One
+// that panics fails the video, unless the video is moved already: its copy
+// is served, and the step that drops its original is tried again later
+// (so the original is not left until a purge), the attempt counted.
 func (j faststartJob) run(ctx context.Context) {
 	panicked, err := j.step(ctx)
 	switch {
+	case panicked && j.claim.State == FaststartMoved:
+		j.counts.Panicked++
+		j.report(&FaststartError{ID: j.claim.Media.ID, Err: errFaststartMovedPanicked})
+		if err := j.deferStep(ctx, false); err != nil {
+			j.report(&FaststartError{ID: j.claim.Media.ID, Err: err})
+		}
 	case panicked:
 		j.failAfterPanic(ctx)
 	case err != nil:
@@ -389,11 +460,11 @@ func (j faststartJob) step(ctx context.Context) (panicked bool, err error) {
 	return false, j.rewrite(ctx)
 }
 
-// rewrite writes the video's faststart copy, checks it, and moves the
-// Media there.
+// rewrite writes the video's faststart copy to its claim's own key, checks
+// it, and moves the Media there.
 func (j faststartJob) rewrite(ctx context.Context) error {
 	m := j.claim.Media
-	target, ok := faststartKeyOf(m.Key)
+	target, ok := faststartCopyKey(m.Key, j.claim.ID)
 	if !ok {
 		return j.refuse(ctx, errors.New("its key is not a video's original (videos/<uuid>.mp4)"))
 	}
@@ -413,8 +484,8 @@ func (j faststartJob) rewrite(ctx context.Context) error {
 	moved, err := j.w.store.MoveToFaststart(dbCtx, j.claim, target, layout.Size, j.w.now().UTC())
 	cancel()
 	if err != nil {
-		// Whether the Media moved is unknown: the copy stays. The next
-		// claim finds the Media at one key or the other.
+		// Whether the Media moved is unknown: the copy stays. Should the
+		// Media not have moved, a sweep or its purge takes the copy.
 		return err
 	}
 	if !moved {
@@ -425,21 +496,26 @@ func (j faststartJob) rewrite(ctx context.Context) error {
 	return nil
 }
 
-// dropOriginal ends a moved video's hour: once its faststart copy is there
-// whole, the original goes and the video is done. A copy that is not (a
-// worker whose claim ran out deleted it, say) moves the Media back to its
-// original, which the next pass rewrites again; with the original gone
-// too, the video is lost, and failed.
+// dropOriginal ends a moved video's hour: once the copy the Media points
+// at is there whole (a HEAD), the original goes, then every other copy
+// (sweep), and the video is done. No worker deletes the copy the Media
+// points at meanwhile: it is the key of the claim that moved it, and no
+// other claim deletes a key but its own. A copy that is not there whole
+// moves the Media back to its original, which the next pass rewrites
+// again; with the original gone too, the video is lost, and failed.
 func (j faststartJob) dropOriginal(ctx context.Context) error {
 	m := j.claim.Media
-	original, ok := faststartSourceOf(m.Key)
-	if !ok {
-		return j.refuse(ctx, errors.New("it is moved, but its key is not a faststart copy's (videos/<uuid>.fs.mp4)"))
+	original, ok := videoOriginalOf(m.Key)
+	if !ok || !isFaststartKey(m.Key) {
+		return j.refuse(ctx, errors.New("it is moved, but its key is not a faststart copy's (videos/<uuid>.fs.<claim>.mp4)"))
 	}
 	size, err := j.w.size(ctx, m.Key)
 	switch {
 	case err == nil && size == m.Size:
 		if err := j.w.delete(ctx, original); err != nil {
+			return err
+		}
+		if err := j.sweep(ctx); err != nil {
 			return err
 		}
 		return j.finish(ctx, FaststartDone, &j.counts.Finished)
@@ -473,8 +549,10 @@ func (j faststartJob) finish(ctx context.Context, state FaststartState, count *i
 	return err
 }
 
-// refuse fails a video the rewrite refuses: it is served as it is.
+// refuse fails a video the rewrite refuses: it is served as it is. Its
+// stray copies go first, while the claim holds.
 func (j faststartJob) refuse(ctx context.Context, why error) error {
+	j.sweepOrReport(ctx)
 	done, err := j.w.store.FinishFaststart(ctx, j.claim, FaststartFailed)
 	if err != nil || !done {
 		return err
@@ -484,20 +562,67 @@ func (j faststartJob) refuse(ctx context.Context, why error) error {
 	return nil
 }
 
-// dropCopy deletes the faststart copy this job wrote at target, when the
-// database says it may (FaststartCopyDisposable): never one the Media
-// points at, and never one another worker may be writing. A copy kept is
-// deleted by the next rewrite, which starts with it, or by the Media's
-// purge.
+// dropCopy deletes the copy this job wrote at target (its claim's own key)
+// unless the Media points at it (FaststartCopyDisposable). No other worker
+// writes that key, and only this job moves the Media to it; a check that
+// races errs toward keeping the copy, which a sweep or the Media's purge
+// takes later.
 func (j faststartJob) dropCopy(ctx context.Context, target string) error {
 	base := context.WithoutCancel(ctx)
 	dbCtx, cancel := context.WithTimeout(base, faststartDatabaseTimeout)
-	disposable, err := j.w.store.FaststartCopyDisposable(dbCtx, j.claim, target, j.w.now().UTC().Add(faststartStorageTimeout))
+	disposable, err := j.w.store.FaststartCopyDisposable(dbCtx, j.claim, target)
 	cancel()
 	if err != nil || !disposable {
 		return err
 	}
 	return j.w.delete(base, target)
+}
+
+// sweep deletes every faststart copy of the video but the one the Media
+// points at: copies earlier claims could not delete (a crash, a failed
+// delete) and a stale worker's. It lists them first, then checks that this
+// job's claim is still the video's (FaststartClaimHolds): every listed copy
+// was written under a claim that existed before that check, so a newer
+// claim, whose copy the Media may be moved to, shows there and the sweep
+// deletes nothing. A copy written after the listing is not in it.
+func (j faststartJob) sweep(ctx context.Context) error {
+	prefix, ok := faststartCopiesPrefix(j.claim.Media.Key)
+	if !ok {
+		return nil
+	}
+	base := context.WithoutCancel(ctx)
+	listCtx, cancel := context.WithTimeout(base, faststartStorageTimeout)
+	copies, err := j.w.storage.ListKeys(listCtx, prefix)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("list the faststart copies: %w", err)
+	}
+	if len(copies) == 0 {
+		return nil
+	}
+	dbCtx, cancel := context.WithTimeout(base, faststartDatabaseTimeout)
+	pointed, holds, err := j.w.store.FaststartClaimHolds(dbCtx, j.claim)
+	cancel()
+	if err != nil || !holds {
+		return err
+	}
+	for _, key := range copies {
+		if key == pointed || !isFaststartKey(key) {
+			continue
+		}
+		if err := j.w.delete(base, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sweepOrReport sweeps before the video fails; a sweep that fails is
+// reported, and its copies are left to the Media's purge.
+func (j faststartJob) sweepOrReport(ctx context.Context) {
+	if err := j.sweep(ctx); err != nil {
+		j.report(&FaststartError{ID: j.claim.Media.ID, Err: err})
+	}
 }
 
 // release lets go of the claim, counting nothing against the video.
@@ -508,12 +633,14 @@ func (j faststartJob) release(ctx context.Context) error {
 }
 
 // putOff puts off a video whose step failed. Only a rewrite is given up
-// on: a moved video keeps trying to drop its original.
+// on (its stray copies swept first): a moved video keeps trying to drop
+// its original.
 func (j faststartJob) putOff(ctx context.Context) {
 	giveUp := j.claim.Attempts+1 >= faststartMaxAttempts && j.claim.State != FaststartMoved
-	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), faststartDatabaseTimeout)
-	defer cancel()
-	if err := j.w.store.DeferFaststart(dbCtx, j.claim, j.w.now().UTC(), giveUp); err != nil {
+	if giveUp {
+		j.sweepOrReport(ctx)
+	}
+	if err := j.deferStep(ctx, giveUp); err != nil {
 		j.report(&FaststartError{ID: j.claim.Media.ID, Err: err})
 		return
 	}
@@ -524,19 +651,21 @@ func (j faststartJob) putOff(ctx context.Context) {
 	}
 }
 
-// failAfterPanic fails a video its step panicked on: served as it is,
-// never tried again, the attempt counted. A copy the step may have written
-// goes first, while the claim still holds.
-func (j faststartJob) failAfterPanic(ctx context.Context) {
-	var errs []error
-	if target, ok := faststartKeyOf(j.claim.Media.Key); ok && j.claim.State != FaststartMoved {
-		errs = append(errs, j.dropCopy(ctx, target))
-	}
+func (j faststartJob) deferStep(ctx context.Context, giveUp bool) error {
 	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), faststartDatabaseTimeout)
 	defer cancel()
-	errs = append(errs, j.w.store.FailFaststart(dbCtx, j.claim))
+	return j.w.store.DeferFaststart(dbCtx, j.claim, j.w.now().UTC(), giveUp)
+}
+
+// failAfterPanic fails a video its rewrite panicked on: served as it is,
+// never tried again, the attempt counted. Its copies (one the step may
+// have written) go first, while the claim holds.
+func (j faststartJob) failAfterPanic(ctx context.Context) {
+	sweepErr := j.sweep(ctx)
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), faststartDatabaseTimeout)
+	defer cancel()
 	j.counts.Panicked++
-	j.report(&FaststartError{ID: j.claim.Media.ID, Err: errors.Join(append([]error{errFaststartPanicked}, errs...)...)})
+	j.report(&FaststartError{ID: j.claim.Media.ID, Err: errors.Join(errFaststartPanicked, sweepErr, j.w.store.FailFaststart(dbCtx, j.claim))})
 }
 
 // plan plans the rewrite of the video at key, from its size and the boxes
@@ -551,13 +680,10 @@ func (w *FaststartWorker) plan(ctx context.Context, key string) (faststart.Layou
 	return faststart.Plan(planCtx, objectRanges{storage: w.storage, key: key}, size, w.limits)
 }
 
-// write writes the faststart copy to target and checks it. A copy an
-// earlier attempt left there goes first, and so does any multipart upload
-// still open at the key.
+// write writes the faststart copy to target, its claim's own key (nothing
+// is there before), and checks it. It deletes nothing first: no delete of
+// a worker's can land on a key another worker moved the Media to.
 func (w *FaststartWorker) write(ctx context.Context, m Media, target string, layout faststart.Layout) error {
-	if err := w.delete(ctx, target); err != nil {
-		return err
-	}
 	meta := ServingMetadataFor(m.Purpose, m.Type, "")
 	source := objectRanges{storage: w.storage, key: m.Key}
 	partSize := w.partSizeFor(layout.Size)

@@ -15,11 +15,11 @@ import (
 // Only the worker holding the claim moves the Media on; the archive and
 // expiry purges wait for the lease.
 //
-// Leases are compared with each replica's own clock, as the scan's are:
-// the replicas' clocks must agree within the lease margin (two minutes).
-// Where they do not, two workers may write the same bytes to the same key,
-// but none deletes a copy the Media points at, and no original goes before
-// its copy is checked there (FaststartCopyDisposable, the hour's check).
+// Leases are compared with each replica's own clock, as the scan's are.
+// Where replicas' clocks disagree beyond the lease margin (two minutes),
+// two workers may rewrite the same video at once; each writes and deletes
+// only its own claim's copy key, so neither can delete the copy the Media
+// points at, and no original goes before that copy is checked there.
 type FaststartClaim struct {
 	Media    Media
 	State    FaststartState
@@ -117,42 +117,51 @@ func (s *PostgresStore) MoveBackFromFaststart(ctx context.Context, claim Faststa
 	return tag.RowsAffected() == 1, nil
 }
 
-// FaststartCopyDisposable reports whether the worker holding claim may
-// delete the faststart copy it wrote at key. Never while the Media points
-// at it. Always once the Media's purge has begun or it is gone: nothing
-// will point at the copy again, and no worker claims such a Media, so none
-// is writing there. Otherwise only while this claim holds until at least
-// until (room for the delete, before another worker may claim the video
-// and write the same key).
-func (s *PostgresStore) FaststartCopyDisposable(ctx context.Context, claim FaststartClaim, key string, until time.Time) (bool, error) {
-	var points, purging, holds bool
-	err := s.pool.QueryRow(ctx, `
-		SELECT file_url = $3,
-			blob_purge_started_at IS NOT NULL OR blob_purged_at IS NOT NULL,
-			COALESCE(video_faststart_claim_id = $2 AND video_faststart_claimed_until > $4, false)
-		FROM media WHERE id = $1`, claim.Media.ID, claim.ID, key, until).Scan(&points, &purging, &holds)
+// FaststartCopyDisposable reports whether the job holding claim may
+// delete the copy it wrote at key, its claim's own: unless the Media points
+// at it. Only that job moves the Media there, and no other writes the key.
+// A Media that is gone points at nothing.
+func (s *PostgresStore) FaststartCopyDisposable(ctx context.Context, claim FaststartClaim, key string) (bool, error) {
+	var points bool
+	err := s.pool.QueryRow(ctx, `SELECT file_url = $2 FROM media WHERE id = $1`, claim.Media.ID, key).Scan(&points)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return true, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return !points && (purging || holds), nil
+	return !points, nil
+}
+
+// FaststartClaimHolds reports whether claim is still the video's, and the
+// key the Media points at: a sweep of its copies checks it after listing
+// them.
+func (s *PostgresStore) FaststartClaimHolds(ctx context.Context, claim FaststartClaim) (pointed string, holds bool, err error) {
+	err = s.pool.QueryRow(ctx, `SELECT file_url FROM media WHERE id = $1 AND video_faststart_claim_id = $2`,
+		claim.Media.ID, claim.ID).Scan(&pointed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	return pointed, err == nil, err
 }
 
 // FinishFaststart ends a video's rewrite as state under its claim, and lets
-// go of the claim. done is false, and nothing changes, when the claim is no
-// longer this one.
+// go of the claim. done is false, and the state does not change, when the
+// claim is no longer this one or the Media is purged (its claim is still
+// let go).
 func (s *PostgresStore) FinishFaststart(ctx context.Context, claim FaststartClaim, state FaststartState) (done bool, err error) {
-	tag, err := s.pool.Exec(ctx, `
+	err = s.pool.QueryRow(ctx, `
 		UPDATE media SET
-			video_faststart = $3, video_faststart_attempts = 0, video_faststart_retry_at = NULL,
+			video_faststart = CASE WHEN blob_purged_at IS NULL THEN $3 ELSE video_faststart END,
+			video_faststart_attempts = CASE WHEN blob_purged_at IS NULL THEN 0 ELSE video_faststart_attempts END,
+			video_faststart_retry_at = NULL,
 			video_faststart_claim_id = NULL, video_faststart_claimed_until = NULL
-		WHERE id = $1 AND video_faststart_claim_id = $2`, claim.Media.ID, claim.ID, string(state))
-	if err != nil {
-		return false, err
+		WHERE id = $1 AND video_faststart_claim_id = $2
+		RETURNING blob_purged_at IS NULL`, claim.Media.ID, claim.ID, string(state)).Scan(&done)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
 	}
-	return tag.RowsAffected() == 1, nil
+	return done, err
 }
 
 // DeferFaststart puts off a video whose step failed, and lets go of its

@@ -44,6 +44,16 @@ func (b Buckets) Read(ctx context.Context, key string) ([]byte, error) {
 	return b.Public.Read(ctx, key)
 }
 
+// ListKeys lists the keys under prefix in the public bucket (a video's
+// faststart copies); errNoListing when it cannot list.
+func (b Buckets) ListKeys(ctx context.Context, prefix string) ([]string, error) {
+	lister, ok := b.Public.(keyLister)
+	if !ok {
+		return nil, errNoListing
+	}
+	return lister.ListKeys(ctx, prefix)
+}
+
 func (b Buckets) Delete(ctx context.Context, key string) error {
 	if !isPrivateKey(key) {
 		return b.Public.Delete(ctx, key)

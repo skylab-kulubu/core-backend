@@ -1426,7 +1426,8 @@ func (w *countedWakes) Wake() { w.n.Add(1) }
 
 // A video uploaded with its moov at the end wakes the faststart worker,
 // whose pass moves the Media to its faststart copy: its address is then the
-// copy's, served to play with its moov first.
+// copy's (videos/<uuid>.fs.<claim>.mp4), served to play with its moov
+// first.
 func TestDirectUploadOfAVideoIsRewrittenFaststartHTTP(t *testing.T) {
 	e := newDirectEnv(t, media.DefaultDirectUploadLimits())
 	organizer := organizerToken(t, e.keys)
@@ -1463,7 +1464,8 @@ func TestDirectUploadOfAVideoIsRewrittenFaststartHTTP(t *testing.T) {
 	}
 	got := sendJSON(t, e.app, organizer, fiber.MethodGet, "/v1/media/"+done.body["id"].(string), "")
 	url, _ := got.body["url"].(string)
-	if got.status != fiber.StatusOK || url != strings.TrimSuffix(done.body["url"].(string), ".mp4")+".fs.mp4" || got.body["size"] != float64(len(file)) {
+	copyPrefix := strings.TrimSuffix(done.body["url"].(string), ".mp4") + ".fs."
+	if got.status != fiber.StatusOK || !strings.HasPrefix(url, copyPrefix) || !strings.HasSuffix(url, ".mp4") || got.body["size"] != float64(len(file)) {
 		t.Fatalf("the Media after the rewrite: status %d body %v", got.status, got.body)
 	}
 	stored, ok := e.s3.Object("media", strings.TrimPrefix(url, "https://cdn.example.test/"))
