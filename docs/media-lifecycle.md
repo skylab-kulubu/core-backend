@@ -1184,12 +1184,26 @@ therefore detaches the previous one, which is purged 30 days later unless
 something attaches it again; removing the picture archives it as before.
 
 A poster's triggers run their own function
-(`sync_event_video_poster_attachments`): the same steps with one more. The
+(`sync_event_video_poster_attachments`): the same steps with two more. The
 Event owns every video's poster link, and two of its videos may show one
 image, so a link one video gives up keeps its Media attachment while
 another video of the Event still holds it (read in the table after the
-statement). A new link is always offered, so the Media attachment's guards
-check it even when another video holds the image already.
+statement). That read sees only what other writers committed, so the
+function first locks the Events whose poster links the statement changed
+(`FOR NO KEY UPDATE`, in id order): a writer that did not lock the Event
+itself (raw SQL, a cascade) waits there for the other to commit, and then
+sees its links; without it, two such writers could leave a Media attachment
+nothing holds, or a poster without one. Core's own writers lock the Event
+first anyway (the lists' lock, below), so for them the trigger's lock is one
+they hold already, and it takes nothing the purge waits for (the purge locks
+the tables `IN SHARE MODE`, which a row lock on an Event does not conflict
+with). A writer that changes a video's row before it locks the Event, the
+other way round from core's, can deadlock against a core write to the same
+video; PostgreSQL detects it and aborts one of them, and nothing is left
+half written. The function is not shared with `sync_core_media_attachments`:
+that one belongs to migrations whose fingerprints read its source. A new
+link is always offered, so the Media attachment's guards check it even when
+another video holds the image already.
 
 ### Link rules
 
@@ -2422,6 +2436,7 @@ videos' and posters' routes, a season assignment).
       "id": "5e9d…", "name": "açılış.mp4", "type": "video/mp4", "size": 1610612736, "status": "attached", "url": "https://cdn.yildizskylab.com/videos/1c07….mp4",
       "poster": {
         "id": "a3f0…",
+        "type": "image/jpeg",
         "url": "https://cdn.yildizskylab.com/images/77b2…",
         "sizes": {
           "card": { "url": "https://cdn.yildizskylab.com/images/77b2…/card.jpg", "width": 400, "height": 225 },
@@ -2532,12 +2547,20 @@ coded ones):
 | 422 | `media_purpose_mismatch` | The image's purpose is not one a cover takes: a video, a club file, a profile picture, a CMS image, or a Media uploaded without a purpose (legacy fits no poster). |
 | 422 | `media_not_linkable` | No such Media, or archived, being purged or expired. |
 | 403 | `media_team_mismatch` | Another Owner team's Event uses the image (as its cover, a gallery photo or a video's poster). |
+| 409 | | The video's poster kept changing while this one was checked (three times in a row): read the Event again. |
 
-A refused poster leaves the one the video had.
+A refused poster leaves the one the video had. Whether a poster is new (and
+checked) is decided against the video's poster when the request reads it;
+the store writes it only while the video still has that poster, read under
+the Event's lock. When another request replaced it meanwhile, core decides
+again, so a poster that was the video's a moment ago is checked as the new
+link it now is.
 
 In the Event's detail, the video carries `poster` (the JSON above): the
-image's Media `id`, its full-size `url`, and `sizes` with both `card` and
-`page`, built as the cover's are (`media.Addresses.LinkedSizes`: a stored
+image's Media `id`, its `type` (the Media's type as stored, such as
+`image/jpeg` or `image/png`; `image/svg+xml` for an SVG, which needs an SVG
+renderer and whose sizes carry no `width`/`height`), its full-size `url`,
+and `sizes` with both `card` and `page`, built as the cover's are (`media.Addresses.LinkedSizes`: a stored
 size, a Cloudflare transformation in that mode, the SVG itself for an SVG,
 the original for a size the image fits in). `poster` is there only while the
 image can be served (`media.ServableSQL`): not once it is archived, nor
