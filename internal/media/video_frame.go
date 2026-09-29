@@ -132,7 +132,6 @@ type FrameWorker struct {
 	purpose  Purpose
 	decoding *DecodeBudget
 	now      func() time.Time
-	wake     chan struct{}
 }
 
 // NewFrameWorker makes the frame worker.
@@ -150,7 +149,7 @@ func NewFrameWorker(config FrameWorkerConfig) (*FrameWorker, error) {
 	}
 	w := &FrameWorker{
 		store: config.Store, storage: config.Storage, frames: config.Frames, purpose: purpose,
-		decoding: config.DecodeBudget, now: config.Now, wake: make(chan struct{}, 1),
+		decoding: config.DecodeBudget, now: config.Now,
 	}
 	if w.decoding == nil {
 		w.decoding = NewDecodeBudget(DecodeBudgetConfig{})
@@ -159,14 +158,6 @@ func NewFrameWorker(config FrameWorkerConfig) (*FrameWorker, error) {
 		w.now = time.Now
 	}
 	return w, nil
-}
-
-// Wake asks the worker for a pass now.
-func (w *FrameWorker) Wake() {
-	select {
-	case w.wake <- struct{}{}:
-	default:
-	}
 }
 
 // FrameReport counts one pass.
@@ -422,9 +413,8 @@ func (j frameJob) discard(ctx context.Context, id uuid.UUID) error {
 	return j.settle(ctx, func(ctx context.Context) error { return j.w.store.ExpireUnattachedAt(ctx, id, &now) })
 }
 
-// Run makes passes in the background until ctx ends: at once, whenever
-// Wake is called, and every framePollInterval; right after a pass that
-// claimed a full batch. While the frame service cannot be asked it waits
+// Run makes passes in the background until ctx ends: at once and every
+// framePollInterval; right after a pass that claimed a full batch. While the frame service cannot be asked it waits
 // frameServiceDownFirst, doubling up to frameServiceDownMax, and says so
 // once. It logs what a pass changed and each video that failed (by id;
 // never an address); a pass with nothing to do says nothing. A pass that
@@ -440,7 +430,6 @@ func (w *FrameWorker) Run(ctx context.Context, logf func(format string, args ...
 			case <-ctx.Done():
 				return
 			case <-timer.C:
-			case <-w.wake:
 			}
 			var next time.Duration
 			next, downWait = w.runPass(ctx, logf, downWait)
