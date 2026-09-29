@@ -16,12 +16,18 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// PublicBaseFromEnv is the configured public base: CDN_BASE, else
+// R2_PUBLIC_URL; empty when neither is set (DefaultPublicBase then).
+func PublicBaseFromEnv(getenv func(string) string) string {
+	return firstNonEmpty(getenv("CDN_BASE"), getenv("R2_PUBLIC_URL"))
+}
+
 func BlobAndCDN(getenv func(string) string) (BlobStore, string, error) {
 	endpoint := firstNonEmpty(getenv("R2_ENDPOINT"))
 	bucket := firstNonEmpty(getenv("R2_BUCKET"), getenv("R2_BUCKET_NAME"))
 	access := firstNonEmpty(getenv("R2_ACCESS_KEY"))
 	secret := firstNonEmpty(getenv("R2_SECRET_KEY"))
-	cdn := firstNonEmpty(getenv("CDN_BASE"), getenv("R2_PUBLIC_URL"))
+	cdn := PublicBaseFromEnv(getenv)
 
 	any := endpoint != "" || bucket != "" || access != "" || secret != ""
 	if !any {

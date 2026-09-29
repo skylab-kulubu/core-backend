@@ -73,6 +73,10 @@ type Deps struct {
 	// account's token of one of them speaks for its product. Nil configures
 	// none.
 	ServiceClients authz.ServiceClients
+
+	// MediaLookupsPerMinute is each product's address lookup budget. Zero
+	// uses handlers.DefaultMediaLookupsPerMinute.
+	MediaLookupsPerMinute int
 }
 
 func New(deps Deps) *fiber.App {
@@ -336,6 +340,9 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/competitors/:id/reinstate", competitors.Reinstate)
 
 	app.Post("/v1/media", limitUploads, mediaH.Upload)
+	// The address lookup: a product's service account asks which Media the
+	// addresses its content stores name (docs/media-lifecycle.md).
+	app.Post("/v1/media/lookup", handlers.LimitMediaLookups(deps.MediaLookupsPerMinute), mediaH.LookUp)
 	app.Get("/v1/media", mediaH.List)
 	app.Get("/v1/media/:id", mediaH.Get)
 	app.Delete("/v1/media/:id", mediaH.Delete)
