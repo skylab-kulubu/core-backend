@@ -239,9 +239,12 @@ func (j frameJob) report(err error) {
 }
 
 // errFrameServiceRefuses is the frame service refusing core's request
-// (400): its allowlist does not name the storage, or the two disagree on
-// the protocol. No video is at fault.
-var errFrameServiceRefuses = errors.New("the frame service refuses core's request; check its MEDIA_FRAME_ALLOWED_HOSTS against core's R2_ENDPOINT")
+// (400). No video is at fault; the two likely causes are named, since the
+// log line is all an operator sees: its allowlist does not name the
+// storage's host, or core and the service run different versions (CI
+// publishes the service's image but deploys it only through the wizard).
+var errFrameServiceRefuses = errors.New("the frame service refuses core's request: either its MEDIA_FRAME_ALLOWED_HOSTS does not name the host of core's R2_ENDPOINT, " +
+	"or core and the frame service run different versions (the frame service is redeployed only by rerunning ops/wizards/media-frame-wizard.sh)")
 
 // run takes the claimed video's frame, and settles the claim however that
 // ends. It answers why the frame service cannot be asked (the pass stops

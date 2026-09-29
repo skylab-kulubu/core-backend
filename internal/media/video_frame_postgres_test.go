@@ -463,11 +463,24 @@ func TestPostgresFrameWorkerLetsGoWhileTheServiceIsDown(t *testing.T) {
 			problem(w, http.StatusBadRequest, mediaframe.CodeURLNotAllowed)
 			return true
 		},
+		"refusing core's request": func(w http.ResponseWriter, _ mediaframe.Request) bool {
+			problem(w, http.StatusBadRequest, mediaframe.CodeInvalidRequest)
+			return true
+		},
 	} {
 		d.frames.setAnswer(answer)
 		report, err := d.worker(t, d.frames.client(t)).Pass(context.Background(), func(error) {})
 		if !errors.Is(err, media.ErrFrameServiceDown) || report.Claimed != 1 || report.Released != 1 {
 			t.Fatalf("%s: report %+v, err %v", name, report, err)
+		}
+		// A 400 names both likely causes: the allowlist, and the two on
+		// different versions (only the wizard redeploys the service).
+		if strings.HasPrefix(name, "refusing") {
+			for _, cause := range []string{"MEDIA_FRAME_ALLOWED_HOSTS", "R2_ENDPOINT", "different versions", "media-frame-wizard.sh"} {
+				if !strings.Contains(err.Error(), cause) {
+					t.Errorf("%s: the error %q does not name %q", name, err, cause)
+				}
+			}
 		}
 		if f := d.frameOf(t, eventID, video.ID); f.attempts != 0 || f.retryAt != nil || f.claimed || f.state != "" {
 			t.Fatalf("%s: %+v", name, f)
