@@ -280,3 +280,53 @@ func (h *EventHandler) OrderFiles(list event.MediaList) fiber.Handler {
 		})
 	}
 }
+
+// posterBody names a video's new poster: an image Media uploaded for an
+// Event (event_cover or event_gallery).
+type posterBody struct {
+	PosterID *uuid.UUID `json:"posterId"`
+}
+
+// SetVideoPoster sets or replaces a video's poster: PUT
+// /v1/events/{id}/videos/{mediaId}/poster with {"posterId": "…"}.
+func (h *EventHandler) SetVideoPoster(c fiber.Ctx) error {
+	return h.videoPosterChange(c, func() (*uuid.UUID, bool) {
+		var body posterBody
+		if err := c.Bind().Body(&body); err != nil || body.PosterID == nil || *body.PosterID == uuid.Nil {
+			return nil, false
+		}
+		return body.PosterID, true
+	})
+}
+
+// ClearVideoPoster clears a video's poster: DELETE
+// /v1/events/{id}/videos/{mediaId}/poster.
+func (h *EventHandler) ClearVideoPoster(c fiber.Ctx) error {
+	return h.videoPosterChange(c, func() (*uuid.UUID, bool) { return nil, true })
+}
+
+// videoPosterChange gives the video the path names the poster the request
+// names (nil clears it), and answers the Event.
+func (h *EventHandler) videoPosterChange(c fiber.Ctx, poster func() (*uuid.UUID, bool)) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	videoID, err := uuid.Parse(c.Params("mediaId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	posterID, ok := poster()
+	if !ok {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	updated, err := h.svc.SetVideoPoster(c.Context(), p, id, videoID, posterID)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(h.svc.ProjectFor(&p, updated))
+}

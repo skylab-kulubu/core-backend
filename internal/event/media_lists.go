@@ -70,6 +70,52 @@ type MediaItem struct {
 	// ScanResult is why the malware scan rejected it: only on a rejected
 	// item, which only the Event's organizers see.
 	ScanResult media.ScanResult `json:"scanResult,omitempty"`
+	// Poster is a video's poster image, which its organizers chose (media
+	// redesign ticket 24): there only while the image can be served. A file
+	// has none, and neither has a video without one.
+	Poster *Poster `json:"poster,omitempty"`
+
+	// posterID is the poster Media the item links, unless it is archived:
+	// what a new poster is compared with and the Team media library checks.
+	posterID *uuid.UUID
+	// posterKey is the poster's object key while it can be served
+	// (media.ServableKeySQL), and empty otherwise.
+	posterKey string
+	// poster is the poster Media as the store read it with the item, what
+	// the poster's sizes are built from.
+	poster *media.LinkedImage
+}
+
+// Poster is a video's poster at its full-size address, with its card and
+// page sizes, built like an Event cover's (media.Addresses.LinkedSizes).
+type Poster struct {
+	ID    uuid.UUID                     `json:"id"`
+	URL   string                        `json:"url"`
+	Sizes map[string]media.ImageAddress `json:"sizes"`
+}
+
+// posterAt is the item's poster at its addresses: nil when it has none, or
+// none that can be served.
+func (item MediaItem) posterAt(addresses media.Addresses) *Poster {
+	if item.posterID == nil || item.posterKey == "" {
+		return nil
+	}
+	sizes := addresses.LinkedSizes(item.poster)
+	if sizes == nil {
+		return nil
+	}
+	return &Poster{ID: *item.posterID, URL: addresses.Object(item.posterKey), Sizes: sizes}
+}
+
+// item is the item of the Event's list l whose Media is id, as the store
+// read it.
+func (e Event) item(l MediaList, id uuid.UUID) (MediaItem, bool) {
+	for _, item := range e.list(l) {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return MediaItem{}, false
 }
 
 // list is the Event's list l, as the store read it; nil for a list it did
@@ -105,7 +151,8 @@ func servableItems(items []MediaItem) []MediaItem {
 	return out
 }
 
-// withItemAddresses answers each item's key at its public address.
+// withItemAddresses answers each item's key at its public address, and a
+// video's poster at its own.
 func withItemAddresses(items []MediaItem, addresses media.Addresses) []MediaItem {
 	if items == nil {
 		return nil
@@ -114,6 +161,7 @@ func withItemAddresses(items []MediaItem, addresses media.Addresses) []MediaItem
 	copy(out, items)
 	for i := range out {
 		out[i].URL = addresses.Object(out[i].URL)
+		out[i].Poster = out[i].posterAt(addresses)
 	}
 	return out
 }

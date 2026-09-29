@@ -35,6 +35,11 @@ type Service interface {
 	// once (a repeated one is ErrInvalid; a list that is not the Event's
 	// now, ErrConflict).
 	OrderFiles(ctx context.Context, p authz.Principal, id uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error)
+	// SetVideoPoster sets or replaces the poster of one of the Event's
+	// videos, or clears it (posterID nil): media redesign ticket 24.
+	// Whoever may edit the Event may; ErrNotFound when the Event does not
+	// list the video.
+	SetVideoPoster(ctx context.Context, p authz.Principal, id, videoID uuid.UUID, posterID *uuid.UUID) (Event, error)
 	ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error)
 	ListDaysLifecycle(ctx context.Context, p authz.Principal, eventID uuid.UUID, visibility lifecycle.Visibility) ([]Day, error)
 	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
@@ -266,6 +271,11 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 				if err := s.checkTeam(ctx, in.ID, in.OwnerTeam, item.ID, list.Role()); err != nil {
 					return Event{}, err
 				}
+				if item.posterID != nil {
+					if err := s.checkTeam(ctx, in.ID, in.OwnerTeam, *item.posterID, media.RoleEventVideoPoster); err != nil {
+						return Event{}, err
+					}
+				}
 			}
 		}
 	}
@@ -370,6 +380,34 @@ func (s *service) OrderFiles(ctx context.Context, p authz.Principal, id uuid.UUI
 		return Event{}, err
 	}
 	updated, err := s.store.OrderFiles(ctx, id, list, ids)
+	return s.detail(ctx, updated, err)
+}
+
+func (s *service) SetVideoPoster(ctx context.Context, p authz.Principal, id, videoID uuid.UUID, posterID *uuid.UUID) (Event, error) {
+	existing, err := s.editableForFiles(ctx, p, id, Videos)
+	if err != nil {
+		return Event{}, err
+	}
+	if posterID != nil {
+		if *posterID == uuid.Nil {
+			return Event{}, ErrInvalid
+		}
+		if existing, err = s.withLists(ctx, existing); err != nil {
+			return Event{}, err
+		}
+		video, listed := existing.item(Videos, videoID)
+		if !listed {
+			return Event{}, ErrNotFound
+		}
+		// Only a new link is checked, as for the cover: a video keeping
+		// its poster is not refused for it.
+		if video.posterID == nil || *video.posterID != *posterID {
+			if err := s.checkMedia(ctx, id, existing.OwnerTeam, *posterID, media.RoleEventVideoPoster); err != nil {
+				return Event{}, err
+			}
+		}
+	}
+	updated, err := s.store.SetVideoPoster(ctx, id, videoID, posterID)
 	return s.detail(ctx, updated, err)
 }
 

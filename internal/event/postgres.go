@@ -123,17 +123,25 @@ func (s *PostgresStore) get(ctx context.Context, id uuid.UUID, includeArchived b
 // organizers' order. An item whose Media was archived is left out, as in
 // the gallery; one that cannot be served (media.ServableSQL: private,
 // being purged, waiting for its malware scan or rejected by it) has no
-// address, and only a rejected one its scan result.
+// address, and only a rejected one its scan result. A video comes with its
+// poster's Media (media.LinkedImageSQL), in the same query: an archived one
+// is none, and one that cannot be served has no address.
 func (s *PostgresStore) ListFiles(ctx context.Context, eventID uuid.UUID) ([]MediaItem, []MediaItem, error) {
 	lists := Event{Files: make([]MediaItem, 0), Videos: make([]MediaItem, 0)}
 	selects := make([]string, 0, 2)
 	for _, list := range mediaLists {
+		poster, posterJoin := `NULL::uuid AS poster_id, '' AS poster_key, NULL::jsonb AS poster`, ``
+		if list == Videos {
+			poster = `p.id AS poster_id, COALESCE(` + media.ServableKeySQL("p") + `, '') AS poster_key, ` + media.LinkedImageSQL("p") + ` AS poster`
+			posterJoin = `
+		LEFT JOIN media p ON p.id = linked.poster_media_id AND p.deleted_at IS NULL`
+		}
 		selects = append(selects, `SELECT '`+string(list)+`' AS list, m.id, m.file_name, m.file_type, m.file_size, m.status,
 			CASE WHEN m.status = '`+string(media.StatusRejected)+`' THEN COALESCE(m.scan_result, '') ELSE '' END,
-			COALESCE(`+media.ServableKeySQL("m")+`, ''),
+			COALESCE(`+media.ServableKeySQL("m")+`, ''), `+poster+`,
 			linked.order_index, linked.added_at
 		FROM `+list.table()+` linked
-		JOIN media m ON m.id = linked.media_id AND m.deleted_at IS NULL
+		JOIN media m ON m.id = linked.media_id AND m.deleted_at IS NULL`+posterJoin+`
 		WHERE linked.event_id = $1`)
 	}
 	rows, err := s.pool.Query(ctx, strings.Join(selects, "\n\t\tUNION ALL ")+`
@@ -147,7 +155,8 @@ func (s *PostgresStore) ListFiles(ctx context.Context, eventID uuid.UUID) ([]Med
 		var item MediaItem
 		var order int
 		var added time.Time
-		if err := rows.Scan(&list, &item.ID, &item.Name, &item.Type, &item.Size, &item.Status, &item.ScanResult, &item.URL, &order, &added); err != nil {
+		if err := rows.Scan(&list, &item.ID, &item.Name, &item.Type, &item.Size, &item.Status, &item.ScanResult, &item.URL,
+			&item.posterID, &item.posterKey, &item.poster, &order, &added); err != nil {
 			return nil, nil, err
 		}
 		lists = lists.withList(list, append(lists.list(list), item))
@@ -413,6 +422,41 @@ func (s *PostgresStore) OrderFiles(ctx context.Context, eventID uuid.UUID, list 
 	return s.Get(ctx, eventID)
 }
 
+// SetVideoPoster links the poster Media to the Event's video, in place of
+// the one it had, or clears it (nil). The video's row is written in one
+// statement: its trigger writes the new poster's Media attachment, checked
+// as every new link is, and removes the old one's unless another video of
+// the Event still shows it.
+func (s *PostgresStore) SetVideoPoster(ctx context.Context, eventID, videoID uuid.UUID, posterID *uuid.UUID) (Event, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Event{}, err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockForFiles(ctx, tx, eventID); err != nil {
+		return Event{}, err
+	}
+	// The video as the list shows it: one whose Media was archived is not
+	// in it.
+	tag, err := tx.Exec(ctx, `UPDATE event_videos linked SET poster_media_id = $3
+		FROM media m
+		WHERE linked.event_id = $1 AND linked.media_id = $2 AND m.id = linked.media_id AND m.deleted_at IS NULL`,
+		eventID, videoID, posterID)
+	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
+		return Event{}, refusal
+	}
+	if err != nil {
+		return Event{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return Event{}, ErrNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Event{}, err
+	}
+	return s.Get(ctx, eventID)
+}
+
 // distinctIDs are the ids, each once, in their first order.
 func distinctIDs(ids []uuid.UUID) []uuid.UUID {
 	out := make([]uuid.UUID, 0, len(ids))
@@ -434,7 +478,7 @@ func (s *PostgresStore) TeamsUsingMedia(ctx context.Context, mediaID, except uui
 		  ) OR EXISTS (
 			SELECT 1 FROM event_files ef WHERE ef.event_id = e.id AND ef.media_id = $1
 		  ) OR EXISTS (
-			SELECT 1 FROM event_videos ev WHERE ev.event_id = e.id AND ev.media_id = $1
+			SELECT 1 FROM event_videos ev WHERE ev.event_id = e.id AND (ev.media_id = $1 OR ev.poster_media_id = $1)
 		  ))
 	`, mediaID, except)
 	if err != nil {

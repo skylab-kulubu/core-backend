@@ -27,6 +27,10 @@ const (
 	RoleEventFile Role = "event_file"
 	// RoleEventVideo is one of an Event's videos (event_videos).
 	RoleEventVideo Role = "event_video"
+	// RoleEventVideoPoster is the poster of one of an Event's videos
+	// (event_videos.poster_media_id, migration 20260929140000). The Event
+	// owns the link, as it owns its cover's.
+	RoleEventVideoPoster Role = "event_video_poster"
 )
 
 // The roles another product's records give a Media, through the service
@@ -44,11 +48,12 @@ const (
 // the Media purposes each role accepts, the role's own purpose first (the
 // legacy backfill gives that one). The database keeps a copy for its
 // backstop (media_role_purposes, migration 20260926161000); a test keeps
-// the two equal. The two Event purposes fit both Event
-// roles: the organizer's picker offers every photo of the team's Events for
-// the cover and the gallery alike. A profile picture is linked only by
-// POST /v1/users/me/profile-picture, which uploads it as profile_picture, so
-// no link checks that role; the legacy backfill reads it.
+// the two equal. The two Event purposes fit both Event roles and a video's
+// poster: the organizer's picker offers every photo of the team's Events for
+// the cover, the gallery and a poster alike. A profile picture is linked
+// only by POST /v1/users/me/profile-picture, which uploads it as
+// profile_picture, so no link checks that role; the legacy backfill reads
+// it.
 //
 // Transition rule: a legacy Media fits every role but those of
 // rolesWithoutLegacy, as any Media could be linked anywhere before Media
@@ -63,6 +68,7 @@ var rolePurposes = map[authz.Product]map[Role][]string{
 		RoleCertificateAsset: {PurposeCertificateAsset},
 		RoleEventFile:        {PurposeClubFile},
 		RoleEventVideo:       {PurposeVideo},
+		RoleEventVideoPoster: {PurposeEventCover, PurposeEventGallery},
 	},
 	authz.ProductForms: {RoleFormsAnswer: {PurposeAnswerFile, PurposeAnswerFileLarge}},
 	authz.ProductCMS:   {RoleCMSImage: {PurposeCMSImage}, RoleCMSFile: {PurposeCMSFile}},
@@ -70,13 +76,13 @@ var rolePurposes = map[authz.Product]map[Role][]string{
 
 // rolesWithoutLegacy are the roles the transition rule leaves out: a legacy
 // Media does not fit them. They were made after Media purpose, so no Media
-// was ever linked in them without one, and their purposes are sent by
-// Direct upload (club files also scanned), which a legacy upload never was:
-// an Event's files and videos. The database keeps a copy
-// (media_roles_without_legacy, migration 20260928160000); a test keeps the
-// two equal.
+// was ever linked in them without one: an Event's files and videos, whose
+// purposes are sent by Direct upload (club files also scanned), which a
+// legacy upload never was, and a video's poster. The database keeps a copy
+// (media_roles_without_legacy, migrations 20260928160000 and
+// 20260929140000); a test keeps the two equal.
 var rolesWithoutLegacy = map[authz.Product][]Role{
-	authz.ProductCore: {RoleEventFile, RoleEventVideo},
+	authz.ProductCore: {RoleEventFile, RoleEventVideo, RoleEventVideoPoster},
 }
 
 // fits reports whether a Media of the purpose may play the product's role.
