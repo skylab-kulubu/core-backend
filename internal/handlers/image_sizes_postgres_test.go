@@ -298,7 +298,8 @@ func TestEventGalleryImagesCarryTheirSizesHTTP(t *testing.T) {
 // counts of its files and videos, in three queries, for four Events as for
 // one: the Events with their covers and counts, every listed Event's gallery
 // with its Media, and every listed Event's door staff. Never one query per
-// Event or per Media.
+// Event or per Media, and none for the videos' posters, which a list does
+// not carry.
 func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T) {
 	f := newImageSizesFixture(t)
 	type seeded struct {
@@ -314,7 +315,8 @@ func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T)
 		})
 		legacy := f.image(t, media.PurposeLegacy, key+"-legacy", 0, 0, nil)
 		created := f.event(t, "Event "+key, &cover.ID, gallery.ID, legacy.ID)
-		// Two files and a video, so the list reads their counts too.
+		// Two files and a video with a poster, so the list reads their
+		// counts too.
 		for list, purposes := range map[event.MediaList][]string{
 			event.Files:  {media.PurposeClubFile, media.PurposeClubFile},
 			event.Videos: {media.PurposeVideo},
@@ -325,6 +327,11 @@ func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T)
 			}
 			if _, err := f.events.AddFiles(context.Background(), created.ID, list, ids); err != nil {
 				t.Fatal(err)
+			}
+			if list == event.Videos {
+				if _, err := f.events.SetVideoPoster(context.Background(), created.ID, ids[0], &gallery.ID); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 		return created, seeded{cover: cover, gallery: gallery}
@@ -695,5 +702,103 @@ func TestMePurgedProfilePictureAnswersNoSizesHTTP(t *testing.T) {
 
 	if got.ProfilePictureURL != sizesBase+"/images/purged-portrait" || got.ProfilePictureSizes != nil {
 		t.Fatalf("purged picture answered %q with sizes %+v", got.ProfilePictureURL, got.ProfilePictureSizes)
+	}
+}
+
+// sizedVideosView is an Event detail's videos with their posters.
+type sizedVideosView struct {
+	Videos []struct {
+		ID     uuid.UUID `json:"id"`
+		Poster *struct {
+			ID    uuid.UUID                     `json:"id"`
+			URL   string                        `json:"url"`
+			Sizes map[string]media.ImageAddress `json:"sizes"`
+		} `json:"poster"`
+	} `json:"videos"`
+}
+
+// posterFixture is an Event with two videos and the poster photo each
+// gets.
+func (f imageSizesFixture) posterFixture(t *testing.T) (event.Event, [2]uuid.UUID, [2]media.Media) {
+	t.Helper()
+	created := f.event(t, "Posters", nil)
+	videos := [2]uuid.UUID{f.download(t, media.PurposeVideo).ID, f.download(t, media.PurposeVideo).ID}
+	if _, err := f.events.AddFiles(context.Background(), created.ID, event.Videos, videos[:]); err != nil {
+		t.Fatal(err)
+	}
+	posters := [2]media.Media{
+		f.image(t, media.PurposeEventCover, "images/poster-cover", 1600, 1200, map[string]media.SizeObject{
+			media.SizeCard: jpegSize(400, 300), media.SizePage: jpegSize(1200, 900),
+		}),
+		f.image(t, media.PurposeEventGallery, "images/poster-small", 800, 600, map[string]media.SizeObject{
+			media.SizeCard: jpegSize(400, 300),
+		}),
+	}
+	return created, videos, posters
+}
+
+// An Event's detail answers each video's poster with its card and page
+// sizes, from the same builder as the cover's (a stored size, or the
+// original for a size the image already fits in), and reads the posters in
+// the query that reads the videos: the detail takes as many queries with
+// posters as without.
+func TestEventDetailAnswersVideoPostersWithoutAnotherQueryHTTP(t *testing.T) {
+	f := newImageSizesFixture(t)
+	ctx := context.Background()
+	created, videos, posters := f.posterFixture(t)
+	detail := func() (sizedVideosView, int64) {
+		t.Helper()
+		var got sizedVideosView
+		f.queries.n.Store(0)
+		f.get(t, "/v1/events/"+created.ID.String(), &got)
+		return got, f.queries.n.Load()
+	}
+	bare, bareQueries := detail()
+	if len(bare.Videos) != 2 || bare.Videos[0].Poster != nil || bare.Videos[1].Poster != nil {
+		t.Fatalf("videos without posters %+v", bare.Videos)
+	}
+	for i := range videos {
+		if _, err := f.events.SetVideoPoster(ctx, created.ID, videos[i], &posters[i].ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, queries := detail()
+	if queries != bareQueries {
+		t.Fatalf("the detail took %d queries with posters, %d without", queries, bareQueries)
+	}
+	want := map[uuid.UUID]map[string]media.ImageAddress{
+		posters[0].ID: bothSizes(
+			media.ImageAddress{URL: sizesBase + "/images/poster-cover/card.jpg", Width: 400, Height: 300},
+			media.ImageAddress{URL: sizesBase + "/images/poster-cover/page.jpg", Width: 1200, Height: 900},
+		),
+		posters[1].ID: bothSizes(
+			media.ImageAddress{URL: sizesBase + "/images/poster-small/card.jpg", Width: 400, Height: 300},
+			media.ImageAddress{URL: sizesBase + "/images/poster-small", Width: 800, Height: 600},
+		),
+	}
+	for i, video := range got.Videos {
+		if video.ID != videos[i] || video.Poster == nil || video.Poster.ID != posters[i].ID ||
+			video.Poster.URL != sizesBase+"/"+posters[i].Key || !reflect.DeepEqual(video.Poster.Sizes, want[posters[i].ID]) {
+			t.Errorf("video %d answered %+v, want the poster %s at %v", i, video, posters[i].ID, want[posters[i].ID])
+		}
+	}
+}
+
+// With Cloudflare image transformations configured, a poster's sizes point
+// where the cover's do.
+func TestVideoPosterSizesFollowTheConfiguredAddressModeHTTP(t *testing.T) {
+	f := newImageSizesFixtureInMode(t, media.AddressCloudflare)
+	created, videos, posters := f.posterFixture(t)
+	if _, err := f.events.SetVideoPoster(context.Background(), created.ID, videos[0], &posters[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	var got sizedVideosView
+	f.get(t, "/v1/events/"+created.ID.String(), &got)
+	want := bothSizes(
+		media.ImageAddress{URL: sizesBase + "/cdn-cgi/image/width=400,height=400,fit=scale-down/images/poster-cover", Width: 400, Height: 300},
+		media.ImageAddress{URL: sizesBase + "/cdn-cgi/image/width=1200,height=1200,fit=scale-down/images/poster-cover", Width: 1200, Height: 900},
+	)
+	if poster := got.Videos[0].Poster; poster == nil || poster.URL != sizesBase+"/images/poster-cover" || !reflect.DeepEqual(poster.Sizes, want) {
+		t.Fatalf("poster %+v, want sizes %+v", poster, want)
 	}
 }
