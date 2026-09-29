@@ -2,6 +2,7 @@ package httpx_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 // uploadImage uploads a gray PNG of w by h pixels for the purpose, as the
@@ -430,5 +432,71 @@ func TestAVideosPosterFollowsTheTeamMediaLibraryHTTP(t *testing.T) {
 	sendJSON(t, f.app, organizer, fiber.MethodDelete, posterPath(second, secondVideo), "")
 	if moved := sendJSON(t, f.app, organizer, fiber.MethodPut, "/v1/events/"+second, move); moved.status != fiber.StatusOK {
 		t.Fatalf("move once the poster is cleared: status %d body %v", moved.status, moved.body)
+	}
+}
+
+// A video answers its poster only while the image can be served (the rule
+// of media.ServableSQL): not once the image is archived (restored, it is
+// back), nor while its object is being purged; the video itself is answered
+// as before. Who sees the poster follows the video: a video nobody but its
+// editors may see (a private one, which only a writer bypassing core could
+// list) shows its poster to its editors alone.
+func TestAVideoAnswersItsPosterOnlyWhileTheImageCanBeServedHTTP(t *testing.T) {
+	f := newEventFilesEnv(t)
+	person, organizer := newOrganizer(t, f.keys)
+	eventID, videoID := f.eventWithVideo(t, organizer, "WEBLAB")
+	poster := f.uploadImage(t, organizer, "event_cover", 800, 600)
+	sendJSON(t, f.app, organizer, fiber.MethodPut, posterPath(eventID, videoID), posterBody(poster["id"].(string)))
+	posterID := poster["id"].(string)
+	withoutPoster := func(when string) {
+		t.Helper()
+		for who, seen := range map[string]jsonResponse{
+			"the organizer": sendJSON(t, f.app, organizer, fiber.MethodGet, "/v1/events/"+eventID, ""),
+			"anyone":        anonymousGet(t, f.app, "/v1/events/"+eventID),
+		} {
+			video := items(t, seen, "videos")[0]
+			if _, carried := video["poster"]; carried || video["url"] == nil {
+				t.Fatalf("%s, %s sees the video as %v, want it without its poster", when, who, video)
+			}
+		}
+	}
+
+	if gone := sendJSON(t, f.app, organizer, fiber.MethodDelete, "/v1/media/"+posterID, ""); gone.status != fiber.StatusNoContent {
+		t.Fatalf("archive: status %d body %v", gone.status, gone.body)
+	}
+	withoutPoster("archived")
+	if back := sendJSON(t, f.app, organizer, fiber.MethodPost, "/v1/media/"+posterID+"/restore", ""); back.status != fiber.StatusOK {
+		t.Fatalf("restore: status %d body %v", back.status, back.body)
+	}
+	if got := videoPoster(t, anonymousGet(t, f.app, "/v1/events/"+eventID), videoID); !reflect.DeepEqual(got, asPoster(poster)) {
+		t.Fatalf("restored, the poster is %v", got)
+	}
+	ctx := context.Background()
+	if _, err := f.pool.Exec(ctx, `UPDATE media SET blob_purge_started_at = now() WHERE id = $1`, posterID); err != nil {
+		t.Fatal(err)
+	}
+	withoutPoster("being purged")
+	if _, err := f.pool.Exec(ctx, `UPDATE media SET blob_purge_started_at = NULL WHERE id = $1`, posterID); err != nil {
+		t.Fatal(err)
+	}
+
+	private, err := f.store.Create(ctx, media.Media{
+		Name: "gizli.mp4", Type: "video/mp4", Kind: media.KindFile, Key: "private/files/" + uuid.NewString(), Size: 10,
+		UploadedBy: person, Purpose: media.PurposeVideo, Status: media.StatusAttached, Visibility: media.VisibilityPrivate,
+		Encryption: &media.Encryption{Algorithm: "aes-256-gcm-chunked-v1", WrappedKey: "vault:v1:AAAA", KeyVersion: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `INSERT INTO event_videos (event_id, media_id, order_index, poster_media_id) VALUES ($1, $2, 2, $3)`,
+		eventID, private.ID, posterID); err != nil {
+		t.Fatal(err)
+	}
+	mine := sendJSON(t, f.app, organizer, fiber.MethodGet, "/v1/events/"+eventID, "")
+	if got := videoPoster(t, mine, private.ID.String()); !reflect.DeepEqual(got, asPoster(poster)) {
+		t.Fatalf("the editor sees the private video's poster as %v", got)
+	}
+	if videos := ids(items(t, anonymousGet(t, f.app, "/v1/events/"+eventID), "videos")); !reflect.DeepEqual(videos, []string{videoID}) {
+		t.Fatalf("anyone sees the videos %v, want only the one they can play", videos)
 	}
 }
