@@ -191,12 +191,14 @@ func (p *moovParser) child(b []byte, h header, parent string) (*node, error) {
 		return &node{typ: h.typ, large: h.large, table: t}, nil
 	case walked[parent] == h.typ:
 		return p.container(b, h)
-	case (parent == "moov" || parent == "trak") && h.typ == "meta":
+	case h.typ == "meta":
+		// In any box the walk enters (moov, trak, mdia, minf, stbl).
 		if err := p.checkMeta(b, h); err != nil {
 			return nil, err
 		}
-	case (parent == "moov" || parent == "trak") && h.typ == "udta":
-		if err := p.checkUserData(b, h); err != nil {
+	case h.typ == "udta" || h.typ == "meco":
+		// User data, and additional metadata containers, hold meta boxes.
+		if err := p.checkMetaContainer(b, h); err != nil {
 			return nil, err
 		}
 	case parent == "minf" && h.typ == "dinf":
@@ -263,10 +265,10 @@ func (p *moovParser) checkMeta(b []byte, h header) error {
 	return nil
 }
 
-// checkUserData checks the meta boxes in a udta box.
-func (p *moovParser) checkUserData(b []byte, h header) error {
+// checkMetaContainer checks the meta boxes in a udta or meco box.
+func (p *moovParser) checkMetaContainer(b []byte, h header) error {
 	payload := b[h.head:h.size]
-	kids, err := p.children(payload, h.off+h.head, "udta")
+	kids, err := p.children(payload, h.off+h.head, h.typ)
 	if err != nil {
 		return err
 	}

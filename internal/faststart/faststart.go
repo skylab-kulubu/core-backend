@@ -23,9 +23,10 @@
 // A file it cannot rewrite safely is refused (ErrInvalid, with the reason):
 // a malformed box, too many boxes, a moov larger than the limit, a
 // compressed moov (cmov), a fragmented file (moof, mvex, ...), sample
-// auxiliary offsets (saio), item locations (an iloc in a meta box of the
-// moov or a track, or a top-level meta), samples in another file (a data
-// reference that is not self-contained). Such a file still plays, once it
+// auxiliary offsets (saio), item locations (an iloc in a meta box anywhere
+// the walk enters, in a udta or meco there too, or a top-level meta or
+// meco), samples in another file (a data reference that is not
+// self-contained). Such a file still plays, once it
 // has been downloaded.
 //
 // See "Video faststart" in docs/media-lifecycle.md.
@@ -169,9 +170,9 @@ func Plan(ctx context.Context, src Source, size int64, limits Limits) (Layout, e
 		if fragmentBoxes[h.typ] {
 			return Layout{}, invalid("a fragmented file (a %s box at %d) with its moov after its media data", h.typ, h.off)
 		}
-		if h.typ == "meta" {
-			// Its item locations (iloc) may name offsets that move.
-			return Layout{}, invalid("a top-level meta box at %d, whose item locations the rewrite does not move", h.off)
+		if h.typ == "meta" || h.typ == "meco" {
+			// Item locations (iloc) in it may name offsets that move.
+			return Layout{}, invalid("a top-level %s box at %d, whose item locations the rewrite does not move", h.typ, h.off)
 		}
 	}
 	old := top[moovAt]

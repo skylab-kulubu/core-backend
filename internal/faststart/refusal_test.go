@@ -109,6 +109,21 @@ func refusals() map[string]refusal {
 		}), small},
 		"a top-level meta":        {append(withMoov(oneTrack), ilocMeta(36)...), small},
 		"samples in another file": {withMoov(func(o []uint32) []byte { return mp4test.Box("moov", externalTrak(o)) }), small},
+		"a second data reference in another file": {withMoov(func(o []uint32) []byte {
+			return mp4test.Box("moov", mp4test.Box("trak", mp4test.Box("mdia", mp4test.Box("minf",
+				mp4test.Box("dinf", mp4test.FullBox("dref", 0, 0, mp4test.U32(2), mp4test.FullBox("url ", 0, 1), mp4test.FullBox("url ", 0, 0, []byte("x\x00")))),
+				mp4test.Box("stbl", mp4test.Stco(o...))))))
+		}), small},
+		"an iloc in a track's udta": {withMoov(func(o []uint32) []byte {
+			return mp4test.Box("moov", mp4test.Box("trak", mp4test.Box("mdia", mp4test.Box("minf", mp4test.Box("stbl", mp4test.Stco(o[0])))), mp4test.Box("udta", ilocMeta(o[1]))))
+		}), small},
+		"an iloc in a media box's meta": {withMoov(func(o []uint32) []byte {
+			return mp4test.Box("moov", mp4test.Box("trak", mp4test.Box("mdia", mp4test.Box("minf", mp4test.Box("stbl", mp4test.Stco(o[0]))), ilocMeta(o[1]))))
+		}), small},
+		"an iloc in the moov's meco": {withMoov(func(o []uint32) []byte {
+			return mp4test.Box("moov", mp4test.Trak(1, mp4test.Stco(o...)), mp4test.Box("meco", ilocMeta(o[1])))
+		}), small},
+		"a top-level meco": {append(withMoov(oneTrack), mp4test.Box("meco", ilocMeta(36))...), small},
 	}
 }
 
