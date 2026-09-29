@@ -21,10 +21,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-// uploadImage uploads a gray PNG of w by h pixels for the purpose, as the
-// organizer's picker does, and answers its Media JSON: its id, its
-// full-size address and its sizes.
-func (f *eventFilesEnv) uploadImage(t *testing.T, token, purpose string, w, h int) map[string]any {
+// grayPNG is a gray PNG of w by h pixels.
+func grayPNG(t *testing.T, w, h int) []byte {
 	t.Helper()
 	picture := image.NewGray(image.Rect(0, 0, w, h))
 	for i := range picture.Pix {
@@ -34,7 +32,15 @@ func (f *eventFilesEnv) uploadImage(t *testing.T, token, purpose string, w, h in
 	if err := png.Encode(&file, picture); err != nil {
 		t.Fatal(err)
 	}
-	return f.uploadFile(t, token, purpose, "kapak.png", file.Bytes())
+	return file.Bytes()
+}
+
+// uploadImage uploads a gray PNG of w by h pixels for the purpose, as the
+// organizer's picker does, and answers its Media JSON: its id, its
+// full-size address and its sizes.
+func (f *eventFilesEnv) uploadImage(t *testing.T, token, purpose string, w, h int) map[string]any {
+	t.Helper()
+	return f.uploadFile(t, token, purpose, "kapak.png", grayPNG(t, w, h))
 }
 
 // uploadFile uploads the file for the purpose (none: "") by POST
@@ -510,13 +516,7 @@ func TestAnErasedOrganizersPosterStaysOnTheVideoNamelessHTTP(t *testing.T) {
 	f := newEventFilesEnv(t)
 	person, organizer := newOrganizer(t, f.keys)
 	eventID, videoID := f.eventWithVideo(t, organizer, "WEBLAB")
-	poster := f.uploadFile(t, organizer, "event_cover", "Ada_Organizer_kapak.png", func() []byte {
-		var file bytes.Buffer
-		if err := png.Encode(&file, image.NewGray(image.Rect(0, 0, 800, 600))); err != nil {
-			t.Fatal(err)
-		}
-		return file.Bytes()
-	}())
+	poster := f.uploadFile(t, organizer, "event_cover", "Ada_Organizer_kapak.png", grayPNG(t, 800, 600))
 	sendJSON(t, f.app, organizer, fiber.MethodPut, posterPath(eventID, videoID), posterBody(poster["id"].(string)))
 	key := strings.TrimPrefix(poster["url"].(string), eventFilesCDN+"/")
 	before, ok := f.s3.Object("media", key)
