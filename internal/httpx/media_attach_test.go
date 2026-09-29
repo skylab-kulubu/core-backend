@@ -51,7 +51,9 @@ func sendJSON(t *testing.T, app *fiber.App, token, method, path, body string) js
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := app.Test(req)
+	// No deadline: under a busy machine a request can take longer than
+	// app.Test's default second, which would fail the test, not the request.
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	if err != nil {
 		t.Fatal(err)
 	}

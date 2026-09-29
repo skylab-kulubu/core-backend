@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -35,6 +36,11 @@ type Service interface {
 	// once (a repeated one is ErrInvalid; a list that is not the Event's
 	// now, ErrConflict).
 	OrderFiles(ctx context.Context, p authz.Principal, id uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error)
+	// SetVideoPoster sets or replaces the poster of one of the Event's
+	// videos, or clears it (posterID nil): media redesign ticket 24.
+	// Whoever may edit the Event may; ErrNotFound when the Event does not
+	// list the video.
+	SetVideoPoster(ctx context.Context, p authz.Principal, id, videoID uuid.UUID, posterID *uuid.UUID) (Event, error)
 	ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error)
 	ListDaysLifecycle(ctx context.Context, p authz.Principal, eventID uuid.UUID, visibility lifecycle.Visibility) ([]Day, error)
 	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
@@ -263,8 +269,10 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 		}
 		for _, list := range mediaLists {
 			for _, item := range existing.list(list) {
-				if err := s.checkTeam(ctx, in.ID, in.OwnerTeam, item.ID, list.Role()); err != nil {
-					return Event{}, err
+				for _, link := range list.links(item) {
+					if err := s.checkTeam(ctx, in.ID, in.OwnerTeam, link.id, link.role); err != nil {
+						return Event{}, err
+					}
 				}
 			}
 		}
@@ -371,6 +379,50 @@ func (s *service) OrderFiles(ctx context.Context, p authz.Principal, id uuid.UUI
 	}
 	updated, err := s.store.OrderFiles(ctx, id, list, ids)
 	return s.detail(ctx, updated, err)
+}
+
+// posterAttempts is how often SetVideoPoster decides a poster's checks
+// again when the video's poster changed while they ran.
+const posterAttempts = 3
+
+func (s *service) SetVideoPoster(ctx context.Context, p authz.Principal, id, videoID uuid.UUID, posterID *uuid.UUID) (Event, error) {
+	existing, err := s.editableForFiles(ctx, p, id, Videos)
+	if err != nil {
+		return Event{}, err
+	}
+	if posterID == nil {
+		updated, err := s.store.SetVideoPoster(ctx, id, videoID, nil, nil)
+		return s.detail(ctx, updated, err)
+	}
+	if *posterID == uuid.Nil {
+		return Event{}, ErrInvalid
+	}
+	for range posterAttempts {
+		listed, err := s.withLists(ctx, existing)
+		if err != nil {
+			return Event{}, err
+		}
+		video, ok := listed.item(Videos, videoID)
+		if !ok {
+			return Event{}, ErrNotFound
+		}
+		// Only a new link is checked, as for the cover: a video keeping its
+		// poster is not refused for it. The store writes it only while the
+		// video's poster is still the one this was decided against, read
+		// under the Event's lock, so a racing replace cannot skip the checks.
+		was := video.posterID()
+		if !sameID(was, posterID) {
+			if err := s.checkMedia(ctx, id, existing.OwnerTeam, *posterID, media.RoleEventVideoPoster); err != nil {
+				return Event{}, err
+			}
+		}
+		updated, err := s.store.SetVideoPoster(ctx, id, videoID, posterID, was)
+		if errors.Is(err, ErrConflict) {
+			continue
+		}
+		return s.detail(ctx, updated, err)
+	}
+	return Event{}, ErrConflict
 }
 
 // editableForFiles is the Event whose list p is about to change, when p may

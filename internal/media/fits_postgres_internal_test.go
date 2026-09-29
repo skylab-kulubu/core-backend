@@ -97,6 +97,11 @@ func TestPostgresTheDatabaseRoleTableIsRolePurposes(t *testing.T) {
 		{authz.ProductCore, RoleEventFile, PurposeVideo, false},
 		{authz.ProductCore, RoleEventFile, PurposeLegacy, false},
 		{authz.ProductCore, RoleEventVideo, PurposeLegacy, false},
+		{authz.ProductCore, RoleEventVideoPoster, PurposeEventCover, true},
+		{authz.ProductCore, RoleEventVideoPoster, PurposeEventGallery, true},
+		{authz.ProductCore, RoleEventVideoPoster, PurposeLegacy, false},
+		{authz.ProductCore, RoleEventVideoPoster, PurposeVideo, false},
+		{authz.ProductCore, RoleEventVideoPoster, PurposeProfilePicture, false},
 		{authz.ProductCMS, RoleCMSFile, PurposeClubFile, false},
 	} {
 		if got := fits(c.product, c.role, c.purpose); got != c.fits {
