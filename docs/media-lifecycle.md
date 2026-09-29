@@ -72,7 +72,7 @@ for an object written without one, such as a certificate's PDF):
   running any script a sanitizer missed (see [SVG](#svg)).
 - A video (the `video` purpose's MP4, ticket 22) keeps `video/mp4` and is
   served inline, with no `Content-Disposition`, at a key ending in `.mp4`
-  (`videos/<uuid>.mp4`, and its faststart copy `videos/<uuid>.fs.mp4`, see
+  (`videos/<uuid>.mp4`, and its faststart copy `videos/<uuid>.fs.<claim>.mp4`, see
   [Video faststart](#video-faststart)), so a `<video>` element and the
   browser's player take it. The CDN answers Range requests for it, and `nosniff` comes from a
   Cloudflare rule (below). An MP4 of any other purpose, or of none, is a
@@ -2425,7 +2425,7 @@ and videos' routes, a season assignment).
   while it is scanned or once rejected (whose key is core's alone), never
   for a private Media. A video's address is `videos/<uuid>.mp4`, served
   inline as `video/mp4` to play (see [Serving policy](#serving-policy)),
-  until its faststart rewrite moves it to `videos/<uuid>.fs.mp4` (see
+  until its faststart rewrite moves it to `videos/<uuid>.fs.<claim>.mp4` (see
   [Video faststart](#video-faststart)). A video has no poster image yet.
 - `scanResult` is only on a rejected item, and only the Event's editors see
   one.
@@ -2512,7 +2512,7 @@ On each side, sandbox first:
       which writes the `moov` last). A video of 16 MiB or less is one
       `PutObject` and proves nothing.
    2. Within a minute or two, `GET /v1/media/{id}` answers a `url` ending
-      in `.fs.mp4`, and core's log has a
+      in `.mp4` under `videos/<uuid>.fs.` (the copy), and core's log has a
       `media faststart: 1 rewritten, ...` line. On your own machine,
       `curl -s -r 0-4095 <new url> | xxd | grep -m1 moov` finds the `moov`
       in the first bytes, and `curl -sI <new url>` answers
@@ -2552,8 +2552,11 @@ no subprocess, and the video is never downloaded.
    for what followed it. An `stco` whose offsets would pass 4 GiB once moved
    is upgraded to a `co64` (every `stco` at once, as qt-faststart does), and
    the shift is worked out again with the larger `moov`.
-4. The copy is written to `videos/<uuid>.fs.mp4`, beside the original,
-   never over it: a half-written rewrite is never served. A copy of up to
+4. The copy is written beside the original, never over it (a half-written
+   rewrite is never served), at a key of the claim's own:
+   `videos/<uuid>.fs.<claim id>.mp4` (the claim's id, 32 hex digits). A
+   worker writes only its own claim's key, and nothing is there before it
+   writes. A copy of up to
    16 MiB is one `PutObject`. A larger one is a multipart upload of 16 MiB
    parts (R2 wants every part but the last the same size, at least 5 MiB):
    core writes the parts that hold the rewritten `moov` or straddle a
@@ -2569,9 +2572,11 @@ no subprocess, and the video is never downloaded.
    (an `stco` upgraded to a `co64` grows it): the Media is `moved`. Its
    `url` and `size` change once, minutes after the upload.
 7. The original stays an hour (`media.FaststartOriginalGrace`), for a
-   player that loaded its address. Then the copy is checked once more (a
-   `HEAD`: there, and of the Media's size), and only then does the
-   original go: the Media is `done`. A copy that is not there whole moves
+   player that loaded its address. Then the copy the Media points at is
+   checked once more (a `HEAD`: there, and of the Media's size), and only
+   then does the original go, followed by every other copy of the video
+   (the sweep below): the Media is `done`. A copy that is not there whole
+   moves
    the Media back to its original (`url` and `size` with it), which the
    next pass rewrites again; with the original gone too, the video is lost
    and `failed`.
@@ -2588,8 +2593,9 @@ a chunk offset outside the media data, or no chunk offsets at all.
 Two more kinds of absolute offset are refused rather than moved:
 
 - item locations (`iloc`, HEIF-style items stored by file offset) in a
-  `meta` box of the `moov` or of a track, directly or in its `udta`
-  (ISO's `meta` and QuickTime's alike), and a top-level `meta` box. Any
+  `meta` box anywhere the walk enters (the `moov`, a track, its `mdia`,
+  `minf` or `stbl`), directly or in a `udta` or `meco` there (ISO's
+  `meta` and QuickTime's alike), and a top-level `meta` or `meco` box. Any
   `iloc` is refused, even one whose items would not move: simpler, and
   videos rarely hold one. An iTunes-style or QuickTime `meta` without one
   (`ilst`, `keys`) moves with the `moov`;
@@ -2619,22 +2625,35 @@ when it claimed 25), each by id:
   cannot be deleted is tried again, never given up.
 - A step that panics (a bug) fails its video, served as it is, with the
   attempt counted; the log names the video's id and nothing the panic
-  held, and the pass goes on to the next video. A pass that panics
-  outside a video's step is logged, and the next one comes as usual.
-- A worker deletes a copy it wrote (cut short, or not moved to) only when
-  the Media does not point at it, and either its claim still holds, with
-  room for the delete before its lease ends, or the Media's purge has
-  begun (nothing will point at the copy again, and no worker claims such
-  a Media). Otherwise the copy stays: the next rewrite starts by deleting
-  whatever is at its key, and a purge takes it with the Media. Deleting a
-  `videos/<uuid>.fs.mp4` key also aborts any multipart upload open at it,
-  as deleting a pending key does.
-- Leases are compared with each replica's own clock, as the scan's are:
-  the replicas' clocks must agree within the lease margin (two minutes;
-  NTP keeps them within milliseconds). Where they do not, two workers may
-  write the same bytes to the same key, but neither deletes a copy the
-  Media points at or one the other holds, and no original goes before its
-  copy is checked there.
+  held, and the pass goes on to the next video. On a `moved` video it
+  stays `moved` instead: its copy is served already, and the step that
+  drops its original is tried again after its wait, so the original is
+  not left until a purge. A pass that panics outside a video's step is
+  logged, and the next one comes as usual.
+- A worker deletes a copy it wrote (cut short, or not moved to) unless the
+  Media points at it, which it checks in a short transaction. The key is
+  its claim's own: no other worker writes it, and only this worker moves
+  the Media to it. So no delete of a worker's, however late, can take the
+  copy another worker moved the Media to. A check that races errs toward
+  keeping the copy, which the sweep takes later. Deleting a copy's key
+  also aborts any multipart upload open at it, as deleting a pending key
+  does.
+- **The sweep** deletes the copies no one points at: those a crash, a
+  failed delete or a stale worker left. After the hour (above), and before
+  a video is `failed` (refused, given up, or panicked on), the worker lists
+  the video's copies by their prefix (`videos/<uuid>.fs.`, R2's
+  `ListObjectsV2`), then checks in the database that its claim is still
+  the video's, and deletes every listed copy but the one the Media points
+  at. A listed copy was written under a claim that existed before that
+  check, so a newer claim (whose copy the Media may be about to move to)
+  shows there, and the sweep deletes nothing; a copy written after the
+  listing is not in it.
+- Leases are compared with each replica's own clock, as the scan's are.
+  Where replicas' clocks disagree beyond the lease margin (two minutes;
+  NTP keeps them within milliseconds), two workers may rewrite the same
+  video at once, each to its own key: neither can delete the copy the
+  Media points at, and no original goes before that copy is checked
+  there.
 - It logs what a pass changed and each video that failed, was refused or
   moved back, by id; a pass with nothing to do logs nothing.
 
@@ -2645,17 +2664,20 @@ rewritten by the same worker after the deploy.
 
 ### Purges
 
-Each of a video's two keys names the other, so every purge of the Media
-(archive, expiry, a scan rejection, account erasure) deletes both,
-whichever the Media points at: the copy a rewrite wrote, and the original
-still in its hour. The archive and expiry purges wait while a rewrite's
+Every key of a video names its original, so every purge of the Media
+(archive, expiry, account erasure) deletes the original, whichever key the
+Media points at, and with it every copy (listed by their prefix,
+`ListObjectsV2`): the one the Media points at, and any stray a crash left.
+A person's stray copy that survives their account erasure (a video is
+club content, kept) goes with the video's purge. The archive and expiry
+purges wait while a rewrite's
 claim is live, as they wait for a scan's, so no copy lands after them. A
 copy whose claim's lease ran out (a stalled worker) never survives a purge
 that did not wait: the worker checks the Media before pointing it at the
 copy, and deletes the copy when the Media's purge has begun or it is gone.
-A worker that lost its claim to another deletes nothing at the key, which
-is the other worker's now (both write the same bytes there). Account
-erasure keeps a video (club content) at whichever key it is.
+A worker that lost its claim to another deletes only its own claim's key,
+never the other's. Account erasure keeps a video (club content) at
+whichever key it is.
 
 ## Account erasure
 
@@ -2722,7 +2744,7 @@ No new saga step does this; the two existing ones do:
      metadata from the serving policy for its purpose without a name:
      `Content-Disposition: attachment`, so it downloads under its key. The
      key never held the name (`images/<uuid>`, `images/<uuid>.svg`,
-     `files/<uuid>`, `videos/<uuid>.mp4`, `videos/<uuid>.fs.mp4`). Raster images, PDFs and videos
+     `files/<uuid>`, `videos/<uuid>.mp4`, `videos/<uuid>.fs.<claim>.mp4`). Raster images, PDFs and videos
      are served inline and named nothing, so they keep their metadata: a
      video still plays. Then its record goes.
 
