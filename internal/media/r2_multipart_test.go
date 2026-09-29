@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,8 +87,10 @@ func TestR2_CompletesAMultipartUploadThenReadsCopiesAndSizesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// R2 wants every part but the last at least 5 MiB, all of one size.
+	first := append([]byte("%PDF-1.7 "), bytes.Repeat([]byte("."), 5<<20-9)...)
 	var parts []media.UploadedPart
-	for i, chunk := range [][]byte{[]byte("%PDF-1.7 "), []byte("rest")} {
+	for i, chunk := range [][]byte{first, []byte("rest")} {
 		number := int32(i + 1)
 		address, err := r2.PresignPart(ctx, "pending/two", id, number, int64(len(chunk)), time.Hour)
 		if err != nil {
@@ -109,7 +112,7 @@ func TestR2_CompletesAMultipartUploadThenReadsCopiesAndSizesIt(t *testing.T) {
 		t.Fatalf("pending object %+v (found %v)", pending, ok)
 	}
 	size, err := r2.Size(ctx, "pending/two")
-	if err != nil || size != 13 {
+	if err != nil || size != 5<<20+4 {
 		t.Fatalf("size %d err %v", size, err)
 	}
 	start, err := r2.ReadStart(ctx, "pending/two", 5)
@@ -122,7 +125,7 @@ func TestR2_CompletesAMultipartUploadThenReadsCopiesAndSizesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	copied, ok := fake.Object("media", "files/two")
-	if !ok || string(copied.Data) != "%PDF-1.7 rest" || copied.ContentType != "application/octet-stream" ||
+	if !ok || !bytes.Equal(copied.Data, append(first, "rest"...)) || copied.ContentType != "application/octet-stream" ||
 		copied.ContentDisposition != "attachment; filename=two.zip" {
 		t.Fatalf("copy %+v", copied)
 	}
@@ -255,5 +258,99 @@ func TestR2_OpenRangeReadsExactlyTheRangeAsked(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// R2 joins parts only when every part but the last is the same size and at
+// least 5 MiB; the fake refuses the others as R2 does.
+func TestR2_PartsFollowR2sSizeRules(t *testing.T) {
+	t.Parallel()
+	r2, _ := multipartR2(t)
+	ctx := context.Background()
+	for name, sizes := range map[string][]int{
+		"a small part before the last": {5 << 20, 4 << 20, 1},
+		"parts of two sizes":           {6 << 20, 5 << 20, 1},
+		"a last part larger":           {5 << 20, 6 << 20},
+	} {
+		key := "videos/" + strings.ReplaceAll(name, " ", "-") + ".fs.mp4"
+		id, err := r2.CreateMultipartWith(ctx, key, media.BlobMetadata{ContentType: "video/mp4"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parts []media.UploadedPart
+		for i, size := range sizes {
+			etag, err := r2.UploadPart(ctx, key, id, int32(i+1), make([]byte, size))
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts = append(parts, media.UploadedPart{Number: int32(i + 1), ETag: etag})
+		}
+		if err := r2.CompleteMultipart(ctx, key, id, parts); !errors.Is(err, media.ErrMultipartPartsMismatch) {
+			t.Errorf("%s: %v, want the parts refused", name, err)
+		}
+	}
+}
+
+// Core builds a video's faststart copy as a multipart upload of its own:
+// the parts it rewrote from memory, and the rest copied by storage from the
+// source object's byte ranges (UploadPartCopy), never downloaded. The object
+// is stored with the metadata the upload was opened with.
+func TestR2_BuildsAnObjectFromPartsAndCopiedRanges(t *testing.T) {
+	t.Parallel()
+	r2, fake := multipartR2(t)
+	ctx := context.Background()
+	source := make([]byte, 12<<20)
+	for i := range source {
+		source[i] = byte(i / 4096)
+	}
+	if err := r2.Put(ctx, "videos/a.mp4", source, media.BlobMetadata{ContentType: "video/mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	key := "videos/a.fs.mp4"
+	id, err := r2.CreateMultipartWith(ctx, key, media.BlobMetadata{ContentType: "video/mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := bytes.Repeat([]byte("h"), 5<<20)
+	first, err := r2.UploadPart(ctx, key, id, 1, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := r2.UploadPartCopy(ctx, key, id, 2, "videos/a.mp4", 1<<20, 5<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, err := r2.UploadPartCopy(ctx, key, id, 3, "videos/a.mp4", 6<<20, 2<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r2.CompleteMultipart(ctx, key, id, []media.UploadedPart{{Number: 1, ETag: first}, {Number: 2, ETag: second}, {Number: 3, ETag: last}}); err != nil {
+		t.Fatal(err)
+	}
+	stored, ok := fake.Object("media", key)
+	want := append(append(append([]byte{}, head...), source[1<<20:6<<20]...), source[6<<20:8<<20]...)
+	if !ok || !bytes.Equal(stored.Data, want) || stored.ContentType != "video/mp4" || stored.ContentDisposition != "" {
+		t.Fatalf("stored %d bytes as %q %q (found %v)", len(stored.Data), stored.ContentType, stored.ContentDisposition, ok)
+	}
+	if n := fake.Count("UploadPartCopy"); n != 2 {
+		t.Fatalf("%d part copies, want 2", n)
+	}
+	if _, err := r2.UploadPartCopy(ctx, key, "no-such-upload", 1, "videos/a.mp4", 0, 1); !errors.Is(err, media.ErrMultipartGone) {
+		t.Fatalf("a part copy into an upload that is gone: %v", err)
+	}
+	id, err = r2.CreateMultipartWith(ctx, key, media.BlobMetadata{ContentType: "video/mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r2.UploadPartCopy(ctx, key, id, 1, "videos/gone.mp4", 0, 1); !errors.Is(err, media.ErrNotFound) {
+		t.Fatalf("a part copy of an object that is gone: %v", err)
+	}
+	// Deleting a faststart copy's key aborts the multipart upload open at
+	// it too: a rewrite cut short leaves no parts behind.
+	if err := r2.Delete(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fake.Object("media", key); ok || len(fake.OpenUploads("media")) != 0 || !slices.Equal(fake.Aborted(), []string{key}) {
+		t.Fatalf("after the delete: open %v, aborted %v", fake.OpenUploads("media"), fake.Aborted())
 	}
 }

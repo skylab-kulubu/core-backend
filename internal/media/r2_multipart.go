@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,22 +16,32 @@ import (
 	"github.com/aws/smithy-go"
 )
 
-// The R2 side of Direct upload (MultipartStore). R2's S3 API supports every
-// call here; R2 also requires every part but the last to be the same size,
-// which the parts core hands out are.
+// The R2 side of Direct upload (MultipartStore) and of a video's faststart
+// copy (FaststartStorage). R2's S3 API supports every call here; R2 also
+// requires every part but the last to be the same size, and at least 5 MiB,
+// which the parts core hands out and writes are.
 
-var _ MultipartStore = (*R2)(nil)
+var (
+	_ MultipartStore   = (*R2)(nil)
+	_ FaststartStorage = (*R2)(nil)
+)
 
 func (r *R2) CreateMultipart(ctx context.Context, key string) (string, error) {
+	// Completion copies the file to its final key with the serving policy's
+	// metadata. Until then the joined object sits at its pending key, which
+	// the public bucket's CDN would serve too: as an opaque download, never
+	// rendered.
+	return r.CreateMultipartWith(ctx, key, pendingMetadata)
+}
+
+// CreateMultipartWith opens a multipart upload at key whose object is
+// stored with meta once completed.
+func (r *R2) CreateMultipartWith(ctx context.Context, key string, meta BlobMetadata) (string, error) {
 	out, err := r.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
-		Bucket: aws.String(r.bucket),
-		Key:    aws.String(key),
-		// Completion copies the file to its final key with the serving
-		// policy's metadata. Until then the joined object sits at its
-		// pending key, which the public bucket's CDN would serve too: as an
-		// opaque download, never rendered.
-		ContentType:        aws.String(pendingMetadata.ContentType),
-		ContentDisposition: aws.String(pendingMetadata.ContentDisposition),
+		Bucket:             aws.String(r.bucket),
+		Key:                aws.String(key),
+		ContentType:        aws.String(meta.ContentType),
+		ContentDisposition: stringOrNil(meta.ContentDisposition),
 	})
 	if err != nil {
 		return "", err
@@ -57,6 +68,60 @@ func (r *R2) PresignPart(ctx context.Context, key, uploadID string, number int32
 		return "", err
 	}
 	return presigned.URL, nil
+}
+
+// UploadPart sends one part's bytes from core itself (a browser sends its
+// parts to presigned addresses instead); ErrMultipartGone when the upload
+// is.
+func (r *R2) UploadPart(ctx context.Context, key, uploadID string, number int32, data []byte) (string, error) {
+	out, err := r.client.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:        aws.String(r.bucket),
+		Key:           aws.String(key),
+		UploadId:      aws.String(uploadID),
+		PartNumber:    aws.Int32(number),
+		Body:          bytes.NewReader(data),
+		ContentLength: aws.Int64(int64(len(data))),
+	})
+	if apiErrorCode(err) == "NoSuchUpload" {
+		return "", ErrMultipartGone
+	}
+	if err != nil {
+		return "", err
+	}
+	if aws.ToString(out.ETag) == "" {
+		return "", errors.New("media: storage stored a part without an ETag")
+	}
+	return aws.ToString(out.ETag), nil
+}
+
+// UploadPartCopy has storage copy the n bytes of the object at from, from
+// off, as one part: they never leave the bucket. ErrNotFound when there is
+// no such object, ErrMultipartGone when the upload is gone.
+func (r *R2) UploadPartCopy(ctx context.Context, key, uploadID string, number int32, from string, off, n int64) (string, error) {
+	if off < 0 || n <= 0 {
+		return "", ErrInvalid
+	}
+	out, err := r.client.UploadPartCopy(ctx, &s3.UploadPartCopyInput{
+		Bucket:          aws.String(r.bucket),
+		Key:             aws.String(key),
+		UploadId:        aws.String(uploadID),
+		PartNumber:      aws.Int32(number),
+		CopySource:      aws.String((&url.URL{Path: r.bucket + "/" + from}).EscapedPath()),
+		CopySourceRange: aws.String(fmt.Sprintf("bytes=%d-%d", off, off+n-1)),
+	})
+	switch apiErrorCode(err) {
+	case "NoSuchKey":
+		return "", ErrNotFound
+	case "NoSuchUpload":
+		return "", ErrMultipartGone
+	}
+	if err != nil {
+		return "", err
+	}
+	if out.CopyPartResult == nil || aws.ToString(out.CopyPartResult.ETag) == "" {
+		return "", errors.New("media: storage copied a part without an ETag")
+	}
+	return aws.ToString(out.CopyPartResult.ETag), nil
 }
 
 func (r *R2) ListParts(ctx context.Context, key, uploadID string) ([]UploadedPart, error) {

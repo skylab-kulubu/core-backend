@@ -11,6 +11,8 @@ var (
 	RebuildICCTags    = rebuildICCTags
 	GuardICC          = guardICC
 	CoverColorsInSlot = coverColorsInSlot
+	FaststartKeyOf    = faststartKeyOf
+	VideoPairKey      = videoPairKey
 )
 
 // BackfillOneLegacyPurpose runs the purpose backfill's step for one Media,
