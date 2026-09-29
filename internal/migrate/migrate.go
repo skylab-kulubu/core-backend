@@ -925,6 +925,37 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			 AND actual.contype = expected.constraint_type::"char"
 			 AND pg_get_constraintdef(actual.oid) = expected.definition
 		) = 2`,
+	// Video faststart: its state, backoff and claim columns, the check that
+	// holds them, and the index the worker walks.
+	20260929120000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('video_faststart', 'text', 'YES'),
+				('video_faststart_attempts', 'int4', 'NO'),
+				('video_faststart_retry_at', 'timestamptz', 'YES'),
+				('video_faststart_claim_id', 'uuid', 'YES'),
+				('video_faststart_claimed_until', 'timestamptz', 'YES')
+			) expected(column_name, udt_name, is_nullable)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'media'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = expected.is_nullable
+		) = 5
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.media')
+			  AND conname = 'media_video_faststart_check'
+			  AND contype = 'c'
+			  AND pg_get_constraintdef(oid) = ` + "'" + `CHECK ((((video_faststart IS NULL) OR (video_faststart = ANY (ARRAY[''done''::text, ''not_needed''::text, ''failed''::text]))) AND (video_faststart_attempts >= 0) AND ((video_faststart_claim_id IS NULL) = (video_faststart_claimed_until IS NULL))))` + "'" + `
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'media_video_faststart_due_idx'
+			  AND indexdef LIKE '%(id) WHERE ((purpose = ''video''::text) AND (video_faststart IS NULL) AND (blob_purged_at IS NULL))'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
