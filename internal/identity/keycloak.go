@@ -407,6 +407,7 @@ func (k *Keycloak) ListUsers(ctx context.Context) ([]Person, error) {
 				FirstName string `json:"firstName"`
 				LastName  string `json:"lastName"`
 				Username  string `json:"username"`
+				Enabled   bool   `json:"enabled"`
 			}
 			if err := json.Unmarshal(chunk, &row); err != nil {
 				continue
@@ -417,7 +418,7 @@ func (k *Keycloak) ListUsers(ctx context.Context) ([]Person, error) {
 			}
 			out = append(out, Person{
 				ID: id, Email: row.Email, FirstName: row.FirstName,
-				LastName: row.LastName, Username: row.Username,
+				LastName: row.LastName, Username: row.Username, Enabled: row.Enabled,
 			})
 		}
 		if len(chunks) < pageSize {
@@ -776,19 +777,61 @@ func (k *Keycloak) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	return mapKCErr(k.gc.DeleteUser(ctx, token, k.realm, id.String()))
 }
 
+// GroupsForUser reads the person's Groups from Keycloak Admin REST: their
+// direct memberships, each with its full path, which is what the groups
+// claim of their token carries (Keycloak's Group Membership mapper). It
+// pages through all of them. A failure on any page is an error with no
+// Groups, never a shorter list, so a person whose Groups could not be read
+// never reads as a person with fewer. A user Keycloak does not know is
+// ErrNotFound. No error names the person: their id is in the request
+// address and Keycloak's error body may hold anything.
+//
+// Keycloak leaves out of each page the Groups the caller may not view, and
+// a short page ends the list. Core's service account holds view-users
+// (docs/keycloak-admin-permissions.md), which views every Group; without it
+// the list could come back shorter.
 func (k *Keycloak) GroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group, error) {
 	token, err := k.accessToken(ctx)
 	if err != nil {
 		return nil, err
 	}
-	gs, err := k.gc.GetUserGroups(ctx, token, k.realm, userID.String(), gocloak.GetGroupsParams{
-		Full: gocloak.BoolP(true),
-		Max:  gocloak.IntP(1000),
-	})
-	if err != nil {
-		return nil, mapKCErr(err)
+	const pageSize = 100
+	out := make([]Group, 0)
+	for first := 0; ; first += pageSize {
+		var page []*gocloak.Group
+		resp, err := k.gc.GetRequestWithBearerAuth(ctx, token).
+			SetResult(&page).
+			SetQueryParams(map[string]string{
+				"first":               strconv.Itoa(first),
+				"max":                 strconv.Itoa(pageSize),
+				"briefRepresentation": "false",
+			}).
+			Get(k.base + "/admin/realms/" + url.PathEscape(k.realm) + "/users/" + userID.String() + "/groups")
+		if err != nil {
+			// The transport error quotes the address; keep only its cause.
+			var addressed *url.Error
+			if errors.As(err, &addressed) {
+				err = addressed.Err
+			}
+			return nil, fmt.Errorf("identity: keycloak user groups request failed: %w", err)
+		}
+		switch {
+		case resp.StatusCode() == http.StatusNotFound:
+			return nil, ErrNotFound
+		case resp.IsError():
+			return nil, fmt.Errorf("identity: keycloak user groups failed with status %d", resp.StatusCode())
+		}
+		// Only the direct memberships: a subgroup nested in the answer is
+		// not one of the person's Groups.
+		for _, g := range page {
+			if g != nil {
+				out = append(out, groupFrom(g))
+			}
+		}
+		if len(page) < pageSize {
+			return out, nil
+		}
 	}
-	return flattenGroups(gs), nil
 }
 
 func (k *Keycloak) GroupClientRoles(ctx context.Context, groupID string) ([]ClientRole, error) {

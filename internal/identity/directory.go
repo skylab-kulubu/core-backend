@@ -22,6 +22,15 @@ type Group struct {
 	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
+// GroupPaths lists the full paths of groups, in their order.
+func GroupPaths(groups []Group) []string {
+	paths := make([]string, 0, len(groups))
+	for _, group := range groups {
+		paths = append(paths, group.Path)
+	}
+	return paths
+}
+
 type Person struct {
 	ID          uuid.UUID `json:"id"`
 	Email       string    `json:"email"`
@@ -31,11 +40,12 @@ type Person struct {
 	SchoolEmail string    `json:"schoolEmail,omitempty"`
 	SkyNumber   string    `json:"skyNumber,omitempty"`
 	// Enabled is Keycloak's enabled flag. The zero value is disabled: only
-	// the directory's reads set it (Keycloak's user; the memory directory
-	// reports a person enabled until its DisableUser), and only read-link
-	// issuance uses it, to decide whether to ensure a core row for a person
-	// core has none for. Nothing else branches on it, and it is never part
-	// of an answer.
+	// the directory's reads set it (Keycloak's user and user list; the
+	// memory directory reports a person enabled until its DisableUser).
+	// Read-link issuance uses it to decide whether to ensure a core row for
+	// a person core has none for, and the group count report to leave out
+	// users who get no token. Nothing else branches on it, and it is never
+	// part of an answer.
 	Enabled bool `json:"-"`
 }
 

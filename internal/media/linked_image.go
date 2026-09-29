@@ -13,6 +13,12 @@ type LinkedImage struct {
 	media Media
 }
 
+// LinkedImageOf is m as a record's query reads it (LinkedImageSQL), for a
+// store that reads the Media it links another way: the memory stores.
+func LinkedImageOf(m Media) *LinkedImage {
+	return &LinkedImage{media: m}
+}
+
 // LinkedImageSQL is the SQL expression a record's query selects for the
 // Media it links, the media row aliased alias (a trusted identifier, never
 // input): NULL when the record links none. Scan it into a *LinkedImage
@@ -88,6 +94,15 @@ func (l *LinkedImage) Key() string {
 		return ""
 	}
 	return l.media.Key
+}
+
+// Type is the linked Media's content type, as it is stored (an SVG is
+// image/svg+xml); empty for no Media.
+func (l *LinkedImage) Type() string {
+	if l == nil {
+		return ""
+	}
+	return l.media.Type
 }
 
 // UnmarshalJSON reads the value LinkedImageSQL selects.

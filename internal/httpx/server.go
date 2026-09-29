@@ -245,6 +245,8 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/events/:id/videos", events.AddFiles(event.Videos))
 	app.Delete("/v1/events/:id/videos", events.RemoveFiles(event.Videos))
 	app.Put("/v1/events/:id/videos/order", events.OrderFiles(event.Videos))
+	app.Put("/v1/events/:id/videos/:mediaId/poster", events.SetVideoPoster)
+	app.Delete("/v1/events/:id/videos/:mediaId/poster", events.ClearVideoPoster)
 	app.Get("/v1/events/:eventId/days", schedule.ListDays)
 	app.Post("/v1/events/:eventId/applications/me", tickets.Apply)
 	app.Post("/v1/events/:eventId/applications/users/:userId", tickets.ApplyForOther)

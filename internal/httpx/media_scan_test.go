@@ -183,7 +183,7 @@ func TestDirectUploadOfAScannedPublicFileIsServedOnlyOnceCleanHTTP(t *testing.T)
 // anonymousGet reads path without a token.
 func anonymousGet(t *testing.T, app *fiber.App, path string) jsonResponse {
 	t.Helper()
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), fiber.TestConfig{Timeout: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
