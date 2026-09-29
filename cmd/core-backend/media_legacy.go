@@ -55,11 +55,7 @@ func runMediaLegacyReport(args []string, getenv func(string) string, out, errOut
 		keycloak := identity.NewKeycloak(config)
 		groups = func(ctx context.Context, id uuid.UUID) ([]string, error) {
 			found, err := keycloak.GroupsForUser(ctx, id)
-			paths := make([]string, 0, len(found))
-			for _, group := range found {
-				paths = append(paths, group.Path)
-			}
-			return paths, err
+			return identity.GroupPaths(found), err
 		}
 	}
 	return mediaLegacyReportCommand(ctx, out, errOut, time.Now(), func(ctx context.Context) (media.LegacyReport, error) {

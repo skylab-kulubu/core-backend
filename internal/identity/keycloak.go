@@ -407,6 +407,7 @@ func (k *Keycloak) ListUsers(ctx context.Context) ([]Person, error) {
 				FirstName string `json:"firstName"`
 				LastName  string `json:"lastName"`
 				Username  string `json:"username"`
+				Enabled   bool   `json:"enabled"`
 			}
 			if err := json.Unmarshal(chunk, &row); err != nil {
 				continue
@@ -417,7 +418,7 @@ func (k *Keycloak) ListUsers(ctx context.Context) ([]Person, error) {
 			}
 			out = append(out, Person{
 				ID: id, Email: row.Email, FirstName: row.FirstName,
-				LastName: row.LastName, Username: row.Username,
+				LastName: row.LastName, Username: row.Username, Enabled: row.Enabled,
 			})
 		}
 		if len(chunks) < pageSize {
@@ -784,6 +785,11 @@ func (k *Keycloak) DeleteUser(ctx context.Context, id uuid.UUID) error {
 // never reads as a person with fewer. A user Keycloak does not know is
 // ErrNotFound. No error names the person: their id is in the request
 // address and Keycloak's error body may hold anything.
+//
+// Keycloak leaves out of each page the Groups the caller may not view, and
+// a short page ends the list. Core's service account holds view-users
+// (docs/keycloak-admin-permissions.md), which views every Group; without it
+// the list could come back shorter.
 func (k *Keycloak) GroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group, error) {
 	token, err := k.accessToken(ctx)
 	if err != nil {

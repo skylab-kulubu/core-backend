@@ -51,9 +51,9 @@ func (f *fakeUserGroups) serve(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		first, max := pageParam(r, "first", 0), pageParam(r, "max", -1)
+		first, limit := pageParam(r, "first", 0), pageParam(r, "max", -1)
 		f.mu.Lock()
-		f.pages = append(f.pages, fmt.Sprintf("%d/%d", first, max))
+		f.pages = append(f.pages, fmt.Sprintf("%d/%d", first, limit))
 		f.mu.Unlock()
 		switch {
 		case f.drop:
@@ -73,8 +73,8 @@ func (f *fakeUserGroups) serve(t *testing.T) *httptest.Server {
 			return
 		}
 		page := f.groups[min(first, len(f.groups)):]
-		if max >= 0 && max < len(page) {
-			page = page[:max]
+		if limit >= 0 && limit < len(page) {
+			page = page[:limit]
 		}
 		_ = json.NewEncoder(w).Encode(page)
 	}))
@@ -90,12 +90,9 @@ func pageParam(r *http.Request, name string, fallback int) int {
 	return value
 }
 
-func groupPaths(groups []identity.Group) []string {
-	paths := make([]string, 0, len(groups))
-	for _, group := range groups {
-		paths = append(paths, group.Path)
-	}
-	return paths
+func (f *fakeUserGroups) directory(t *testing.T) *identity.Keycloak {
+	t.Helper()
+	return identity.NewKeycloak(identity.KeycloakConfig{URL: f.serve(t).URL, Realm: "e-skylab", ClientID: "core", ClientSecret: "secret"})
 }
 
 // The person's groups come back as the token's groups claim carries them:
@@ -111,12 +108,12 @@ func TestKeycloakGroupsForUserReturnsTheDirectGroupsWithTheirFullPaths(t *testin
 			"subGroups": []map[string]any{{"id": "g3", "name": "YK", "path": "/UYELER/ARGE/YK"}}},
 	}}
 
-	got, err := newAddressDirectory(fake.serve(t).URL).GroupsForUser(context.Background(), id)
+	got, err := fake.directory(t).GroupsForUser(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"/UYELER/ARGE/WEBLAB/LIDERLER", "/UYELER/ARGE"}; !slices.Equal(groupPaths(got), want) {
-		t.Fatalf("paths = %v, want %v", groupPaths(got), want)
+	if want := []string{"/UYELER/ARGE/WEBLAB/LIDERLER", "/UYELER/ARGE"}; !slices.Equal(identity.GroupPaths(got), want) {
+		t.Fatalf("paths = %v, want %v", identity.GroupPaths(got), want)
 	}
 	if got[0].ID != "g1" || got[0].Name != "LIDERLER" || got[1].Attributes["public_listing"] != "true" {
 		t.Fatalf("groups = %+v", got)
@@ -137,11 +134,11 @@ func TestKeycloakGroupsForUserPagesThroughEveryGroup(t *testing.T) {
 		want = append(want, path)
 	}
 
-	got, err := newAddressDirectory(fake.serve(t).URL).GroupsForUser(context.Background(), id)
+	got, err := fake.directory(t).GroupsForUser(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(groupPaths(got), want) {
+	if !slices.Equal(identity.GroupPaths(got), want) {
 		t.Fatalf("got %d paths, want all %d in order", len(got), len(want))
 	}
 	if len(fake.pages) < 2 {
@@ -176,12 +173,12 @@ func TestKeycloakGroupsForUserFailsWithoutNamingThePerson(t *testing.T) {
 			fake := tc.fake
 			fake.id = id
 
-			got, err := newAddressDirectory(fake.serve(t).URL).GroupsForUser(context.Background(), id)
+			got, err := fake.directory(t).GroupsForUser(context.Background(), id)
 			if err == nil {
-				t.Fatalf("groups = %v, want an error", groupPaths(got))
+				t.Fatalf("groups = %v, want an error", identity.GroupPaths(got))
 			}
 			if got != nil {
-				t.Fatalf("groups = %v alongside the error, want none", groupPaths(got))
+				t.Fatalf("groups = %v alongside the error, want none", identity.GroupPaths(got))
 			}
 			if errors.Is(err, identity.ErrNotFound) {
 				t.Fatalf("error = %v, want a failure, not an unknown user", err)
@@ -199,7 +196,7 @@ func TestKeycloakGroupsForUserOfAnUnknownUserIsNotFound(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeUserGroups{id: uuid.New()}
-	_, err := newAddressDirectory(fake.serve(t).URL).GroupsForUser(context.Background(), uuid.New())
+	_, err := fake.directory(t).GroupsForUser(context.Background(), uuid.New())
 	if !errors.Is(err, identity.ErrNotFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
 	}

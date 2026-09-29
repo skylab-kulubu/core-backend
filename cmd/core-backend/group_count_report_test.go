@@ -18,9 +18,10 @@ import (
 // by first and max; the groups of failing fail with an error body that names
 // the person.
 type fakeRealm struct {
-	users   []uuid.UUID
-	groups  map[uuid.UUID][]string
-	failing uuid.UUID
+	users    []uuid.UUID
+	disabled map[uuid.UUID]bool
+	groups   map[uuid.UUID][]string
+	failing  uuid.UUID
 }
 
 func (f *fakeRealm) serve(t *testing.T) *httptest.Server {
@@ -46,16 +47,16 @@ func (f *fakeRealm) serve(t *testing.T) *httptest.Server {
 			for _, id := range f.users {
 				rows = append(rows, map[string]any{
 					"id": id.String(), "username": "u-" + id.String()[:8], "email": id.String()[:8] + "@example.com",
-					"firstName": "Ada", "lastName": "Lovelace", "enabled": true,
+					"firstName": "Ada", "lastName": "Lovelace", "enabled": !f.disabled[id],
 				})
 			}
 			_ = json.NewEncoder(w).Encode(fakePage(r, rows))
 			return
 		}
-		raw, found := strings.CutPrefix(r.URL.Path, users+"/")
-		raw, found2 := strings.CutSuffix(raw, "/groups")
+		raw, underUsers := strings.CutPrefix(r.URL.Path, users+"/")
+		raw, groupsOfOne := strings.CutSuffix(raw, "/groups")
 		id, err := uuid.Parse(raw)
-		if !found || !found2 || err != nil {
+		if !underUsers || !groupsOfOne || err != nil {
 			t.Errorf("unexpected Keycloak call %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
 			return
@@ -87,8 +88,8 @@ func fakePage(r *http.Request, rows []any) []any {
 		first = 0
 	}
 	rows = rows[min(first, len(rows)):]
-	if max, err := strconv.Atoi(r.URL.Query().Get("max")); err == nil && max < len(rows) {
-		rows = rows[:max]
+	if limit, err := strconv.Atoi(r.URL.Query().Get("max")); err == nil && limit < len(rows) {
+		rows = rows[:limit]
 	}
 	return rows
 }
@@ -103,28 +104,36 @@ func (f *fakeRealm) env(t *testing.T) func(string) string {
 	}
 }
 
-// Four users: none, one, two and 31 Group paths.
+// Users with none, one, two, 30 (the threshold) and 31 Group paths, and a
+// disabled user with 40.
 func groupCountRealm() (*fakeRealm, []uuid.UUID) {
-	none, one, two, many := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	manyPaths := make([]string, 0, 31)
-	for i := 1; i <= 31; i++ {
-		manyPaths = append(manyPaths, fmt.Sprintf("/UYELER/T%02d", i))
+	none, one, two, thirty, many, disabled := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	paths := func(prefix string, count int) []string {
+		out := make([]string, 0, count)
+		for i := 1; i <= count; i++ {
+			out = append(out, fmt.Sprintf("/UYELER/%s%02d", prefix, i))
+		}
+		return out
 	}
+	ids := []uuid.UUID{none, one, two, thirty, many, disabled}
 	return &fakeRealm{
-		users: []uuid.UUID{none, one, two, many},
+		users:    ids,
+		disabled: map[uuid.UUID]bool{disabled: true},
 		groups: map[uuid.UUID][]string{
-			none: {},
-			one:  {"/ADMIN"},
-			two:  {"/UYELER/ARGE/WEBLAB/LIDERLER", "/UYELER/YK"},
-			many: manyPaths,
+			none:     {},
+			one:      {"/ADMIN"},
+			two:      {"/UYELER/ARGE/WEBLAB/LIDERLER", "/UYELER/YK"},
+			thirty:   paths("U", 30),
+			many:     paths("T", 31),
+			disabled: paths("D", 40),
 		},
-	}, []uuid.UUID{none, one, two, many}
+	}, ids
 }
 
-// The report counts each user's direct Group paths and prints how they are
-// spread, the most any user has, how many are above the Group overage
-// threshold, and what the largest groups claim weighs in a token. It names
-// nobody.
+// The report counts each enabled user's direct Group paths and prints how
+// they are spread, the most any user has, how many are above the Group
+// overage threshold, and what the largest groups claim weighs in a token.
+// A disabled user gets no token and is left out. It names nobody.
 func TestGroupCountReportPrintsTheDistributionAndNamesNobody(t *testing.T) {
 	realm, ids := groupCountRealm()
 	var out, errOut bytes.Buffer
@@ -135,19 +144,22 @@ func TestGroupCountReportPrintsTheDistributionAndNamesNobody(t *testing.T) {
 		t.Fatalf("exit %d:\n%s\n%s", code, out.String(), errOut.String())
 	}
 	for _, line := range []string{
-		"users: 4",
-		"group paths per user (paths: users):",
+		"users: 5",
+		"disabled users (left out: they get no token): 1",
+		"Group paths per user (paths: users):",
 		"  0: 1",
 		"  1: 1",
 		"  2: 1",
+		"  30: 1",
 		"  31: 1",
-		"most group paths: 31",
+		"most Group paths: 31",
 		"users above 30 paths (Group overage): 1",
 		// `"groups":[` (10) + 31 × `"/UYELER/Tnn"` (13) + 30 commas + `]`.
 		"largest groups claim: 444 bytes of JSON, about 592 bytes in a token (base64url)",
-		// 385 bytes over 34 paths; `"groups":[]` (11) + 30 × (11.32 + 2
-		// quotes) + 29 commas = 439.7, × 4/3 = 586.3.
-		"average group path: 11.3 bytes; 30 of them: about 440 bytes of JSON, about 586 bytes in a token",
+		// 6 + 38 + 30 × 11 + 31 × 11 = 715 bytes over 64 paths (11.17);
+		// `"groups":[]` (11) + 30 × (11.17 + 2 quotes) + 29 commas = 435.2,
+		// × 4/3 = 580.2.
+		"average Group path: 11.2 bytes; 30 of them: about 435 bytes of JSON, about 580 bytes in a token",
 	} {
 		if !strings.Contains(out.String(), line+"\n") {
 			t.Fatalf("report lacks %q:\n%s", line, out.String())
@@ -177,13 +189,13 @@ func TestGroupCountReportListsOnlyTheUsersInGroupOverageBySub(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d:\n%s\n%s", code, out.String(), errOut.String())
 	}
-	many := ids[3]
+	many := ids[4]
 	if want := "users above 30 paths, by sub (sub: paths):\n  " + many.String() + ": 31\n"; !strings.Contains(out.String(), want) {
 		t.Fatalf("report lacks %q:\n%s", want, out.String())
 	}
-	for _, id := range ids[:3] {
+	for _, id := range append(ids[:4:4], ids[5]) {
 		if strings.Contains(out.String(), id.String()) {
-			t.Fatalf("the list names a user at or under the threshold:\n%s", out.String())
+			t.Fatalf("the list names a user at or under the threshold, or disabled:\n%s", out.String())
 		}
 	}
 	if strings.Contains(out.String()+errOut.String(), "@example.com") {
@@ -204,7 +216,7 @@ func TestGroupCountReportCountsUnreadUsersAndFails(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit %d, want 1:\n%s\n%s", code, out.String(), errOut.String())
 	}
-	for _, line := range []string{"users: 4", "  0: 1", "  2: 1", "  31: 1", "users whose groups could not be read: 1 (the report is incomplete)"} {
+	for _, line := range []string{"users: 5", "  0: 1", "  2: 1", "  31: 1", "users whose Groups could not be read: 1 (the report is incomplete)"} {
 		if !strings.Contains(out.String(), line+"\n") {
 			t.Fatalf("report lacks %q:\n%s", line, out.String())
 		}
