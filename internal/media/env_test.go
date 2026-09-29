@@ -91,3 +91,20 @@ func TestBlobAndCDNMemoryWhenUnset(t *testing.T) {
 		t.Fatalf("got %T", blob)
 	}
 }
+
+// MEDIA_FRAME_ADDR is the frame service's host:port; unset turns video
+// frames off, and anything else stops core at startup.
+func TestFrameAddrFromEnv(t *testing.T) {
+	t.Parallel()
+	for raw, want := range map[string]string{"": "", "  ": "", "sky-lab-sandbox-media-frame-abc123:8080": "sky-lab-sandbox-media-frame-abc123:8080"} {
+		got, err := media.FrameAddrFromEnv(func(string) string { return raw })
+		if err != nil || got != want {
+			t.Errorf("%q: %q, %v", raw, got, err)
+		}
+	}
+	for _, bad := range []string{"media-frame", "http://media-frame:8080", "media-frame:0"} {
+		if _, err := media.FrameAddrFromEnv(func(string) string { return bad }); err == nil || !strings.Contains(err.Error(), media.FrameAddrEnv) {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
+}

@@ -32,6 +32,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
+	"github.com/skylab-kulubu/core-backend/internal/mediaframe"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
@@ -59,6 +60,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == mediaScanSelfTestCommandName {
 		os.Exit(runMediaScanSelfTest(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == mediaFrameSelfTestCommandName {
+		os.Exit(runMediaFrameSelfTest(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
 	if len(os.Args) > 1 && os.Args[1] == groupCountReportCommandName {
 		os.Exit(runGroupCountReport(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
@@ -247,6 +251,33 @@ func main() {
 	media.MaintainServingPolicyBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
 		log.Printf("media serving policy backfill: %v", err)
 	})
+	// Video frames (MEDIA_FRAME_ADDR, docs/media-lifecycle.md): an Event
+	// video with no uploaded poster gets a frame of itself, taken by the
+	// frame service (ffmpeg, its own container) from a presigned GET of the
+	// video. It needs R2; unset, videos without an uploaded poster have
+	// none.
+	frameAddr, err := media.FrameAddrFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if r2, ok := publicBlobs.(*media.R2); ok && frameAddr != "" {
+		frameClient, err := mediaframe.NewClient(frameAddr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		frameWorker, err := media.NewFrameWorker(media.FrameWorkerConfig{
+			Store: mediaStore, Storage: r2, Frames: frameClient, Catalogue: mediaPurposes, DecodeBudget: decodeBudget,
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		frameWorker.Run(mediaPurgeContext, log.Printf)
+		log.Printf("media frames: on (frame service at %s)", frameAddr)
+	} else if frameAddr != "" {
+		log.Printf("media frames: off (no R2 configured); videos without an uploaded poster have none")
+	} else {
+		log.Printf("media frames: off (%s is not set); videos without an uploaded poster have none", media.FrameAddrEnv)
+	}
 	rerunImageSizes := media.MaintainImageSizeBackfill(context.Background(), mediaStore, blobs, mediaPurposes, decodeBudget, time.Minute, func(err error) {
 		log.Printf("media image size backfill: %v", err)
 	})
