@@ -314,3 +314,121 @@ func TestAVideosPosterTakesWhatAnEventCoverTakesHTTP(t *testing.T) {
 		t.Fatalf("an SVG poster: status %d poster %v, want %v", set.status, got, want)
 	}
 }
+
+// Whoever may edit the Event may set, replace and clear a video's poster,
+// by the same decision as editing it: the Owner team's leader may; a member
+// of the team (whose Event permissions do not let members edit), another
+// team's leader and nobody without a sign-in may not. A video the Event
+// does not list (a file, a video not added, one whose Media was archived)
+// is not found, and neither is an Event that does not exist. A body that
+// names no poster is a bad request.
+func TestOnlyWhoMayEditTheEventSetsAVideosPosterHTTP(t *testing.T) {
+	f := newEventFilesEnv(t)
+	organizer := organizerToken(t, f.keys)
+	eventID, videoID := f.eventWithVideo(t, organizer, "WEBLAB")
+	poster := f.uploadImage(t, organizer, "event_cover", 800, 600)
+	path, body := posterPath(eventID, videoID), posterBody(poster["id"].(string))
+
+	for _, method := range []string{fiber.MethodPut, fiber.MethodDelete} {
+		if anonymous := sendJSON(t, f.app, "", method, path, body); anonymous.status != fiber.StatusUnauthorized {
+			t.Fatalf("anonymous %s: status %d body %v", method, anonymous.status, anonymous.body)
+		}
+		for who, token := range map[string]string{
+			"a member of the Owner team": teamToken(t, f, "/UYELER/ARGE/WEBLAB"),
+			"another team's leader":      teamToken(t, f, "/UYELER/ARGE/GAMELAB/LIDERLER"),
+		} {
+			if refused := sendJSON(t, f.app, token, method, path, body); refused.status != fiber.StatusForbidden {
+				t.Fatalf("%s %s: status %d body %v", who, method, refused.status, refused.body)
+			}
+		}
+	}
+	if got := videoPoster(t, anonymousGet(t, f.app, "/v1/events/"+eventID), videoID); got != nil {
+		t.Fatalf("refused requests set the poster %v", got)
+	}
+	leader := teamToken(t, f, "/UYELER/ARGE/WEBLAB/LIDERLER")
+	if set := sendJSON(t, f.app, leader, fiber.MethodPut, path, body); set.status != fiber.StatusOK || !reflect.DeepEqual(videoPoster(t, set, videoID), asPoster(poster)) {
+		t.Fatalf("the Owner team's leader: status %d body %v", set.status, set.body)
+	}
+
+	fileID, _ := f.uploaded(t, organizer, "club_file", "sunum.pdf", pdfFile(1000))
+	sendJSON(t, f.app, organizer, fiber.MethodPost, "/v1/events/"+eventID+"/files", jsonIDs(fileID))
+	notAdded, _ := f.uploaded(t, organizer, "video", "eklenmedi.mp4", mp4File(1000))
+	archived, _ := f.uploaded(t, organizer, "video", "arşiv.mp4", mp4File(1000))
+	sendJSON(t, f.app, organizer, fiber.MethodPost, "/v1/events/"+eventID+"/videos", jsonIDs(archived))
+	if gone := sendJSON(t, f.app, organizer, fiber.MethodDelete, "/v1/media/"+archived, ""); gone.status != fiber.StatusNoContent {
+		t.Fatalf("archive the video: status %d body %v", gone.status, gone.body)
+	}
+	for name, missing := range map[string]string{
+		"a file":                     posterPath(eventID, fileID),
+		"a video not added":          posterPath(eventID, notAdded),
+		"an archived video":          posterPath(eventID, archived),
+		"an Event that is not there": posterPath(uuid.NewString(), videoID),
+	} {
+		for _, method := range []string{fiber.MethodPut, fiber.MethodDelete} {
+			if resp := sendJSON(t, f.app, organizer, method, missing, body); resp.status != fiber.StatusNotFound {
+				t.Fatalf("%s, %s: status %d body %v", name, method, resp.status, resp.body)
+			}
+		}
+	}
+	for _, bad := range []string{`{}`, `{"posterId":"kapak"}`, `{"posterId":"00000000-0000-0000-0000-000000000000"}`, jsonIDs(poster["id"].(string))} {
+		if resp := sendJSON(t, f.app, organizer, fiber.MethodPut, path, bad); resp.status != fiber.StatusBadRequest {
+			t.Fatalf("body %s: status %d body %v", bad, resp.status, resp.body)
+		}
+	}
+	if resp := sendJSON(t, f.app, organizer, fiber.MethodPut, posterPath(eventID, "video"), body); resp.status != fiber.StatusBadRequest {
+		t.Fatalf("a video id that is not one: status %d", resp.status)
+	}
+	if got := videoPoster(t, anonymousGet(t, f.app, "/v1/events/"+eventID), videoID); !reflect.DeepEqual(got, asPoster(poster)) {
+		t.Fatalf("after the refusals the poster is %v", got)
+	}
+}
+
+// The Team media library holds for posters as for photos: a video may show
+// a photo another Event of its own Owner team uses, not one another team's
+// Event uses, as its cover or a video's poster (media_team_mismatch); and
+// another team's Event cannot take a poster as its cover. Moving an Event
+// to another Owner team is refused while an Event of the old team shows
+// one of its posters; clearing the poster first lets it move.
+func TestAVideosPosterFollowsTheTeamMediaLibraryHTTP(t *testing.T) {
+	f := newEventFilesEnv(t)
+	organizer := organizerToken(t, f.keys)
+	first, firstVideo := f.eventWithVideo(t, organizer, "WEBLAB")
+	second, secondVideo := f.eventWithVideo(t, organizer, "WEBLAB")
+	other, otherVideo := f.eventWithVideo(t, organizer, "GAMELAB")
+	poster := f.uploadImage(t, organizer, "event_cover", 800, 600)
+	for eventID, videoID := range map[string]string{first: firstVideo, second: secondVideo} {
+		if set := sendJSON(t, f.app, organizer, fiber.MethodPut, posterPath(eventID, videoID), posterBody(poster["id"].(string))); set.status != fiber.StatusOK {
+			t.Fatalf("a poster within the Owner team: status %d body %v", set.status, set.body)
+		}
+	}
+
+	refused := sendJSON(t, f.app, organizer, fiber.MethodPut, posterPath(other, otherVideo), posterBody(poster["id"].(string)))
+	requireCode(t, refused, fiber.StatusForbidden, "media_team_mismatch")
+	if refused.body["mediaId"] != poster["id"] || refused.body["role"] != "event_video_poster" {
+		t.Fatalf("problem %v", refused.body)
+	}
+	covered := sendJSON(t, f.app, organizer, fiber.MethodPut, "/v1/events/"+other,
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"GAMELAB","active":true,"coverImageId":"`+poster["id"].(string)+`"}`)
+	requireCode(t, covered, fiber.StatusForbidden, "media_team_mismatch")
+	if covered.body["role"] != "event_cover" {
+		t.Fatalf("problem %v", covered.body)
+	}
+	otherCover := f.uploadImage(t, organizer, "event_cover", 800, 600)
+	if set := sendJSON(t, f.app, organizer, fiber.MethodPut, "/v1/events/"+other,
+		`{"name":"Hack","location":"YTÜ","ownerTeam":"GAMELAB","active":true,"coverImageId":"`+otherCover["id"].(string)+`"}`); set.status != fiber.StatusOK {
+		t.Fatalf("cover: status %d body %v", set.status, set.body)
+	}
+	requireCode(t, sendJSON(t, f.app, organizer, fiber.MethodPut, posterPath(first, firstVideo), posterBody(otherCover["id"].(string))),
+		fiber.StatusForbidden, "media_team_mismatch")
+
+	move := `{"name":"Hack","location":"YTÜ","ownerTeam":"GAMELAB","active":true}`
+	moved := sendJSON(t, f.app, organizer, fiber.MethodPut, "/v1/events/"+second, move)
+	requireCode(t, moved, fiber.StatusForbidden, "media_team_mismatch")
+	if moved.body["mediaId"] != poster["id"] || moved.body["role"] != "event_video_poster" {
+		t.Fatalf("problem %v", moved.body)
+	}
+	sendJSON(t, f.app, organizer, fiber.MethodDelete, posterPath(second, secondVideo), "")
+	if moved := sendJSON(t, f.app, organizer, fiber.MethodPut, "/v1/events/"+second, move); moved.status != fiber.StatusOK {
+		t.Fatalf("move once the poster is cleared: status %d body %v", moved.status, moved.body)
+	}
+}
