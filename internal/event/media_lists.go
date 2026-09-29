@@ -51,19 +51,23 @@ func (l MediaList) Role() media.Role { return mediaListSpecs[l].role }
 
 func (l MediaList) table() string { return mediaListSpecs[l].table }
 
-// posterSQL is what the list's items query selects for an item's poster
-// (poster_id, poster_key, poster), and the join it reads it through: NULLs
-// and no join for a list whose items have none. The poster's id is the
-// video's own link, archived or not; its key only while it can be served
+// posterSQL is what the list's items query selects for an item's uploaded
+// poster (poster_id, poster_key, poster) and its frame (frame_id,
+// frame_key, frame), and the joins it reads them through: NULLs and no join
+// for a list whose items have none. Each id is the video's own link,
+// archived or not; its key only while it can be served
 // (media.ServableKeySQL), and its Media (media.LinkedImageSQL) only while
 // it is not archived.
 func (l MediaList) posterSQL() (columns, join string) {
 	if !mediaListSpecs[l].posters {
-		return `NULL::uuid AS poster_id, '' AS poster_key, NULL::jsonb AS poster`, ``
+		return `NULL::uuid AS poster_id, '' AS poster_key, NULL::jsonb AS poster,
+			NULL::uuid AS frame_id, '' AS frame_key, NULL::jsonb AS frame`, ``
 	}
-	return `linked.poster_media_id AS poster_id, COALESCE(` + media.ServableKeySQL("p") + `, '') AS poster_key, ` + media.LinkedImageSQL("p") + ` AS poster`,
+	return `linked.poster_media_id AS poster_id, COALESCE(` + media.ServableKeySQL("p") + `, '') AS poster_key, ` + media.LinkedImageSQL("p") + ` AS poster,
+			linked.frame_media_id AS frame_id, COALESCE(` + media.ServableKeySQL("fr") + `, '') AS frame_key, ` + media.LinkedImageSQL("fr") + ` AS frame`,
 		`
-		LEFT JOIN media p ON p.id = linked.poster_media_id AND p.deleted_at IS NULL`
+		LEFT JOIN media p ON p.id = linked.poster_media_id AND p.deleted_at IS NULL
+		LEFT JOIN media fr ON fr.id = linked.frame_media_id AND fr.deleted_at IS NULL`
 }
 
 // mediaLink is a Media an Event links, in its role.
@@ -105,14 +109,18 @@ type MediaItem struct {
 	// ScanResult is why the malware scan rejected it: only on a rejected
 	// item, which only the Event's organizers see.
 	ScanResult media.ScanResult `json:"scanResult,omitempty"`
-	// Poster is a video's poster image, which its organizers chose (media
-	// redesign ticket 24): there only while the image can be served. A file
-	// has none, and neither has a video without one.
+	// Poster is a video's poster image: the one its organizers uploaded
+	// (media redesign ticket 24) while it can be served, else the frame core
+	// took of the video (ticket 25) while that can be served. A file has
+	// none, and neither has a video without either.
 	Poster *Poster `json:"poster,omitempty"`
 
-	// poster is the video's poster as the store read it with the video; nil
-	// for a file, or a video without one.
+	// poster is the video's uploaded poster as the store read it with the
+	// video; nil for a file, or a video without one.
 	poster *linkedPoster
+	// frame is the frame core took of the video, as the store read it; nil
+	// for a file, or a video without one.
+	frame *linkedPoster
 }
 
 // linkedPoster is a video's poster as the store read it with the video.
@@ -131,25 +139,44 @@ type linkedPoster struct {
 // Poster is a video's poster at its full-size address, with its card and
 // page sizes, built like an Event cover's (media.Addresses.LinkedSizes).
 // Type is the image's content type: an SVG (image/svg+xml) needs an SVG
-// renderer, and its sizes have no width or height.
+// renderer, and its sizes have no width or height. Source says where it
+// comes from: PosterUploaded or PosterFrame.
 type Poster struct {
-	ID    uuid.UUID                     `json:"id"`
-	Type  string                        `json:"type"`
-	URL   string                        `json:"url"`
-	Sizes map[string]media.ImageAddress `json:"sizes"`
+	ID     uuid.UUID                     `json:"id"`
+	Type   string                        `json:"type"`
+	URL    string                        `json:"url"`
+	Sizes  map[string]media.ImageAddress `json:"sizes"`
+	Source string                        `json:"source"`
 }
 
-// posterAt is the item's poster at its addresses: nil when it has none, or
-// none that can be served.
+// Where a video's poster comes from (Poster.Source).
+const (
+	// PosterUploaded: its organizers uploaded it (ticket 24).
+	PosterUploaded = "uploaded"
+	// PosterFrame: core took it from the video (ticket 25).
+	PosterFrame = "frame"
+)
+
+// posterAt is the item's poster at its addresses: its uploaded poster while
+// that can be served, else its frame while that can; nil for neither.
 func (item MediaItem) posterAt(addresses media.Addresses) *Poster {
-	if item.poster == nil || item.poster.key == "" {
+	if poster := item.poster.at(addresses, PosterUploaded); poster != nil {
+		return poster
+	}
+	return item.frame.at(addresses, PosterFrame)
+}
+
+// at is the linked image as a poster from source: nil when there is none,
+// or it cannot be served.
+func (p *linkedPoster) at(addresses media.Addresses, source string) *Poster {
+	if p == nil || p.key == "" {
 		return nil
 	}
-	sizes := addresses.LinkedSizes(item.poster.image)
+	sizes := addresses.LinkedSizes(p.image)
 	if sizes == nil {
 		return nil
 	}
-	return &Poster{ID: item.poster.id, Type: item.poster.image.Type(), URL: addresses.Object(item.poster.key), Sizes: sizes}
+	return &Poster{ID: p.id, Type: p.image.Type(), URL: addresses.Object(p.key), Sizes: sizes, Source: source}
 }
 
 // posterID is the poster Media the video links, archived or not; nil for

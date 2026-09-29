@@ -116,9 +116,9 @@ func videoPoster(t *testing.T, answer jsonResponse, videoID string) any {
 
 // asPoster is the poster an Event answers for the image's Media JSON: its
 // id, its type, its full-size address and its sizes, as the Media JSON
-// gives them.
+// gives them, uploaded by its organizers.
 func asPoster(uploaded map[string]any) map[string]any {
-	return map[string]any{"id": uploaded["id"], "type": uploaded["type"], "url": uploaded["url"], "sizes": uploaded["sizes"]}
+	return map[string]any{"id": uploaded["id"], "type": uploaded["type"], "url": uploaded["url"], "sizes": uploaded["sizes"], "source": "uploaded"}
 }
 
 // An organizer gives one of their Event's videos a poster: an image uploaded
@@ -324,7 +324,7 @@ func TestAVideosPosterTakesWhatAnEventCoverTakesHTTP(t *testing.T) {
 	// width or height.
 	want := map[string]any{"id": svg["id"], "type": "image/svg+xml", "url": svgURL, "sizes": map[string]any{
 		"card": map[string]any{"url": svgURL}, "page": map[string]any{"url": svgURL},
-	}}
+	}, "source": "uploaded"}
 	if got := videoPoster(t, set, videoID); set.status != fiber.StatusOK || !strings.HasSuffix(svgURL, ".svg") || !reflect.DeepEqual(got, want) {
 		t.Fatalf("an SVG poster: status %d poster %v, want %v", set.status, got, want)
 	}
