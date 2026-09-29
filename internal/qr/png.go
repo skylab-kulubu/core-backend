@@ -83,7 +83,7 @@ var (
 	logoSource image.Image
 )
 
-func clubLogo(size int) *image.NRGBA {
+func markSource() image.Image {
 	logoOnce.Do(func() {
 		raw, err := base64.StdEncoding.DecodeString(logoAssetBase64)
 		if err != nil {
@@ -95,14 +95,31 @@ func clubLogo(size int) *image.NRGBA {
 		}
 		logoSource = cropTransparent(decoded)
 	})
-	img := image.NewNRGBA(image.Rect(0, 0, size, size))
-	xdraw.CatmullRom.Scale(img, img.Bounds(), logoSource, logoSource.Bounds(), xdraw.Src, nil)
+	return logoSource
+}
+
+func clubLogo(size int) *image.NRGBA {
+	return blackMark(size, size)
+}
+
+// blackMark scales the club mark to w×h and paints it black, keeping only its
+// shape (alpha).
+func blackMark(w, h int) *image.NRGBA {
+	src := markSource()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	xdraw.CatmullRom.Scale(img, img.Bounds(), src, src.Bounds(), xdraw.Src, nil)
 	for i := 0; i < len(img.Pix); i += 4 {
 		img.Pix[i] = 0
 		img.Pix[i+1] = 0
 		img.Pix[i+2] = 0
 	}
 	return img
+}
+
+// markAspect is the club mark's height over its width.
+func markAspect() float64 {
+	b := markSource().Bounds()
+	return float64(b.Dy()) / float64(b.Dx())
 }
 
 func cropTransparent(src image.Image) image.Image {

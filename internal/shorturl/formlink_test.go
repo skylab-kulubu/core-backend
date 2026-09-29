@@ -308,14 +308,16 @@ func TestFormStatsCountsEveryLinkToTheForm(t *testing.T) {
 	for _, hop := range []struct {
 		alias  string
 		source string
+		medium string
 	}{
-		{link.Alias, "instagram"},
-		{link.Alias, "instagram"},
-		{link.Alias, "qr"},
-		{personal.Alias, ""},
-		{"baska", "instagram"},
+		{link.Alias, "instagram", ""},
+		{link.Alias, "instagram", ""},
+		{link.Alias, "instagram", MediumQR},
+		{link.Alias, "qr", ""},
+		{personal.Alias, "", ""},
+		{"baska", "instagram", MediumQR},
 	} {
-		if _, err := svc.Redirect(ctx, hop.alias, Hit{UTM: UTM{Source: hop.source}}); err != nil {
+		if _, err := svc.Redirect(ctx, hop.alias, Hit{UTM: UTM{Source: hop.source, Medium: hop.medium}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -324,13 +326,13 @@ func TestFormStatsCountsEveryLinkToTheForm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]int{"instagram": 2, "qr": 1, "": 1}
-	if stats.Total != 4 || len(stats.Sources) != len(want) {
+	want := map[string][2]int{"instagram": {3, 1}, "qr": {1, 1}, "": {1, 0}}
+	if stats.Total != 5 || len(stats.Sources) != len(want) {
 		t.Fatalf("stats: %+v", stats)
 	}
 	for _, c := range stats.Sources {
-		if want[c.Source] != c.Count {
-			t.Fatalf("source %q: %d", c.Source, c.Count)
+		if w := want[c.Source]; w[0] != c.Count || w[1] != c.Scans {
+			t.Fatalf("source %q: %d clicks, %d scans", c.Source, c.Count, c.Scans)
 		}
 	}
 }

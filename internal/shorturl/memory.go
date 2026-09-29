@@ -126,19 +126,27 @@ func (s *MemoryStore) FormSources(_ context.Context, formID uuid.UUID, since tim
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	needle := strings.ToLower(formID.String())
-	counts := map[string]int{}
+	counts := map[string]*SourceCount{}
 	for _, h := range s.hits {
 		u, ok := s.byID[h.URLID]
 		if !ok || h.CreatedAt.Before(since) {
 			continue
 		}
 		if (u.FormID != nil && *u.FormID == formID) || strings.Contains(strings.ToLower(u.URL), needle) {
-			counts[h.UTM.Source]++
+			c := counts[h.UTM.Source]
+			if c == nil {
+				c = &SourceCount{Source: h.UTM.Source}
+				counts[h.UTM.Source] = c
+			}
+			c.Count++
+			if h.scanned() {
+				c.Scans++
+			}
 		}
 	}
 	out := make([]SourceCount, 0, len(counts))
-	for source, n := range counts {
-		out = append(out, SourceCount{Source: source, Count: n})
+	for _, c := range counts {
+		out = append(out, *c)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Count != out[j].Count {
