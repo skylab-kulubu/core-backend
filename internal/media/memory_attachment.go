@@ -1,7 +1,10 @@
 package media
 
 import (
+	"cmp"
 	"context"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -140,4 +143,40 @@ func (s *MemoryStore) GetAttachment(_ context.Context, mediaID, attachmentID uui
 		return Attachment{}, ErrNotFound
 	}
 	return a, nil
+}
+
+// LookUpKeys models the database's lookup (lookUpKeysSQL), in its order:
+// by key, the current and newest Media first.
+func (s *MemoryStore) LookUpKeys(_ context.Context, keys []string, product authz.Product) ([]KeyMatch, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]KeyMatch, 0)
+	for _, m := range s.byID {
+		key := lookupKeyOf(m.Key)
+		if !slices.Contains(keys, key) {
+			continue
+		}
+		held := false
+		for _, a := range s.attachments {
+			held = held || (a.MediaID == m.ID && a.Owner.Service == product)
+		}
+		out = append(out, KeyMatch{LookupKey: key, Media: m, Held: held})
+	}
+	slices.SortFunc(out, func(a, b KeyMatch) int {
+		return cmp.Or(
+			strings.Compare(a.LookupKey, b.LookupKey),
+			cmp.Compare(boolRank(a.Media.DeletedAt != nil), boolRank(b.Media.DeletedAt != nil)),
+			b.Media.CreatedAt.Compare(a.Media.CreatedAt),
+			strings.Compare(a.Media.ID.String(), b.Media.ID.String()),
+		)
+	})
+	return out, nil
+}
+
+// boolRank orders false before true.
+func boolRank(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

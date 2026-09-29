@@ -1109,6 +1109,23 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE proname = 'media_roles_without_legacy'
 			  AND prosrc LIKE '%(''core'', ''event_video_frame'')%'
 		)`,
+	// The address lookup: the key a Media is looked up by, an immutable
+	// function read by its source (strpos, not LIKE, which would take the
+	// pattern's backslashes for escapes), and the index built on it.
+	20260929180000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE oid = to_regprocedure('public.media_lookup_key(text)')
+			  AND provolatile = 'i'
+			  AND prorettype = 'text'::regtype
+			  AND strpos(prosrc, $$regexp_replace(key, '^(videos/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.fs\.[0-9a-f]{32}\.mp4$', '\1.mp4')$$) > 0
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'media_lookup_key_idx'
+			  AND indexdef = 'CREATE INDEX media_lookup_key_idx ON public.media USING btree (media_lookup_key(file_url))'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

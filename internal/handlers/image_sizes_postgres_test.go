@@ -135,7 +135,10 @@ func (f imageSizesFixture) get(t *testing.T, path string, into any) {
 func answer(t *testing.T, app *fiber.App, req *http.Request, into any) {
 	t.Helper()
 	path := req.URL.Path
-	resp, err := app.Test(req)
+	// No deadline: re-encoding a 1600 px picture can take longer than
+	// app.Test's default second on a busy machine (under -race), which
+	// would fail the test, not the request.
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
