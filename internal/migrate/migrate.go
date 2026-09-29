@@ -958,8 +958,9 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		)`,
 	// A video's poster: its column and foreign key, the index the purge and
 	// the Team media library read, the statement triggers that write its
-	// Media attachments (with the function that keeps a poster two videos
-	// share), and the role tables that know its role. A rerun of
+	// Media attachments (with the function that locks the Events before it
+	// reads them and keeps a poster two videos share), and the role tables
+	// that know its role. A rerun of
 	// 20260928160000 puts back the role tables without it; this fingerprint
 	// then fails and the migration runs again.
 	20260929140000: `
@@ -1007,6 +1008,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND prosrc LIKE '%''poster_media_id''%'
 			  AND prosrc LIKE '%a.role = ''event_video_poster''%'
 			  AND prosrc LIKE '%held.poster_media_id = gone.media_id%'
+			  AND prosrc LIKE '%PERFORM 1 FROM events%ORDER BY id%FOR NO KEY UPDATE;%DELETE FROM media_attachments%'
 		)
 		AND EXISTS (
 			SELECT 1 FROM pg_proc

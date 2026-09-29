@@ -198,4 +198,13 @@ func TestPostgresTheDatabaseRefusesAPosterACoverWouldNotTake(t *testing.T) {
 		gallery, eventID.String()).Scan(&role); err != nil || role != string(media.RoleEventVideoPoster) {
 		t.Fatalf("the gallery photo's Media attachment: role %q, err %v", role, err)
 	}
+	// An Event deleted outright (maintenance: core archives them) takes its
+	// videos and their posters' Media attachments with it; the poster
+	// trigger's Event lock does not stand in the way of the cascade.
+	if _, err := db.pool.Exec(ctx, `DELETE FROM events WHERE id = $1`, eventID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := db.store.GetIncludingDeleted(ctx, gallery); err != nil || got.Status != media.StatusDetached {
+		t.Fatalf("the poster of a deleted Event is %q (err %v), want detached", got.Status, err)
+	}
 }

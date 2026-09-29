@@ -17,12 +17,17 @@ CREATE INDEX IF NOT EXISTS event_videos_poster_media_id_idx
 
 -- sync_core_media_attachments (20260926121000) for the posters: statement
 -- triggers read the links the statement changed from its transition
--- tables and write only those. One thing differs: the Event owns every
+-- tables and write only those. Two things differ. The Event owns every
 -- video's poster link, and two of its videos may show the same image, so a
 -- link one video gave up keeps its Media attachment while another video of
 -- the Event still holds it (read after the statement, in the table itself).
--- A new link is always offered, so the Media attachment guards check it
--- (current Media, purpose fit) even when another video holds it already.
+-- And that read must see every other writer of the Event's posters: it sees
+-- only what they committed, so the trigger first locks the Events whose
+-- links the statement changed (in id order, the lock core's own writers
+-- take before they write, see lockForFiles), and a writer that did not
+-- waits here until the other commits. A new link is always offered, so the
+-- Media attachment guards check it (current Media, purpose fit) even when
+-- another video holds it already.
 CREATE OR REPLACE FUNCTION sync_event_video_poster_attachments()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -30,6 +35,8 @@ AS $$
 DECLARE
     before_links JSONB := '[]';
     after_links JSONB := '[]';
+    gone_links JSONB;
+    added_links JSONB;
 BEGIN
     IF TG_OP IN ('UPDATE', 'DELETE') THEN
         SELECT COALESCE(jsonb_agg(to_jsonb(link)), '[]') INTO before_links
@@ -41,13 +48,27 @@ BEGIN
         FROM new_owners owner
         CROSS JOIN LATERAL core_media_links(to_jsonb(owner), 'event_id', 'poster_media_id', NULL) link;
     END IF;
-
-    DELETE FROM media_attachments a
-    USING (
+    SELECT COALESCE(jsonb_agg(to_jsonb(gone)), '[]') INTO gone_links FROM (
         SELECT * FROM jsonb_to_recordset(before_links) AS link (owner_id UUID, media_id UUID)
         EXCEPT
         SELECT * FROM jsonb_to_recordset(after_links) AS link (owner_id UUID, media_id UUID)
-    ) gone
+    ) gone;
+    SELECT COALESCE(jsonb_agg(to_jsonb(added)), '[]') INTO added_links FROM (
+        SELECT * FROM jsonb_to_recordset(after_links) AS link (owner_id UUID, media_id UUID)
+        EXCEPT
+        SELECT * FROM jsonb_to_recordset(before_links) AS link (owner_id UUID, media_id UUID)
+    ) added;
+    IF gone_links = '[]' AND added_links = '[]' THEN
+        RETURN NULL;
+    END IF;
+
+    PERFORM 1 FROM events
+    WHERE id IN (SELECT link.owner_id FROM jsonb_to_recordset(gone_links || added_links) AS link (owner_id UUID, media_id UUID))
+    ORDER BY id
+    FOR NO KEY UPDATE;
+
+    DELETE FROM media_attachments a
+    USING jsonb_to_recordset(gone_links) AS gone (owner_id UUID, media_id UUID)
     WHERE a.owner_service = 'core' AND a.owner_type = 'event' AND a.role = 'event_video_poster'
       AND a.owner_id = gone.owner_id::TEXT AND a.media_id = gone.media_id
       AND NOT EXISTS (
@@ -56,11 +77,7 @@ BEGIN
       );
     INSERT INTO media_attachments (media_id, owner_service, owner_type, owner_id, role)
     SELECT added.media_id, 'core', 'event', added.owner_id::TEXT, 'event_video_poster'
-    FROM (
-        SELECT * FROM jsonb_to_recordset(after_links) AS link (owner_id UUID, media_id UUID)
-        EXCEPT
-        SELECT * FROM jsonb_to_recordset(before_links) AS link (owner_id UUID, media_id UUID)
-    ) added
+    FROM jsonb_to_recordset(added_links) AS added (owner_id UUID, media_id UUID)
     ON CONFLICT ON CONSTRAINT media_attachments_link_key DO NOTHING;
     RETURN NULL;
 END;

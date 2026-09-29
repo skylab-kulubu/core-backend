@@ -2,12 +2,15 @@ package migrate_test
 
 import (
 	"context"
+	"errors"
 	"io/fs"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/db"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
@@ -116,6 +119,30 @@ func postersIndexed(t *testing.T, pool *pgxpool.Pool) bool {
 	return indexed
 }
 
+// posterChangeLocksTheEvent reports whether a poster written without the
+// Event's lock (raw SQL) takes it: until the writer commits, no one else
+// can lock the Event.
+func posterChangeLocksTheEvent(t *testing.T, pool *pgxpool.Pool) bool {
+	t.Helper()
+	ctx := context.Background()
+	eventID, videos := eventWithVideos(t, pool, 1)
+	poster := posterMedia(t, pool, "event_cover", "image/png")
+	writer, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback(ctx)
+	if _, err := writer.Exec(ctx, `UPDATE event_videos SET poster_media_id = $3 WHERE event_id = $1 AND media_id = $2`, eventID, videos[0], poster); err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `SELECT 1 FROM events WHERE id = $1 FOR NO KEY UPDATE NOWAIT`, eventID)
+	var pgErr *pgconn.PgError
+	if err != nil && !(errors.As(err, &pgErr) && pgErr.Code == "55P03") {
+		t.Fatal(err)
+	}
+	return err != nil
+}
+
 // undoEventVideoPosters rolls back the poster migration, which builds on the
 // Event files migration's link table, so that an older down migration can
 // run; applying again brings it back.
@@ -131,6 +158,24 @@ func undoEventVideoPosters(t *testing.T, pool *pgxpool.Pool) {
 	if _, err := pool.Exec(context.Background(), `DELETE FROM schema_migrations WHERE version = `+eventVideoPostersVersion); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// withoutEventLock is the poster function as the migration writes it, but
+// without the step that locks the Events.
+func withoutEventLock(t *testing.T) string {
+	t.Helper()
+	up, err := fs.ReadFile(db.UpSQL, "migrations/"+eventVideoPostersVersion+"_event_video_posters.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(up)
+	start := strings.Index(body, "CREATE OR REPLACE FUNCTION sync_event_video_poster_attachments()")
+	end := strings.Index(body, "CREATE OR REPLACE TRIGGER event_videos_poster_attachments_insert")
+	lock := regexp.MustCompile(`(?s)\n\s*PERFORM 1 FROM events.*?FOR NO KEY UPDATE;`)
+	if start < 0 || end < start || !lock.MatchString(body[start:end]) {
+		t.Fatal("the migration's poster function is not where the test looks for it")
+	}
+	return lock.ReplaceAllString(body[start:end], "")
 }
 
 // A database that lost part of the posters' schema, or whose role tables a
@@ -149,7 +194,8 @@ func TestApplyRepairsTheVideoPosterLinks(t *testing.T) {
 			FOR EACH STATEMENT EXECUTE FUNCTION sync_core_media_attachments('event', 'event_video_poster', 'event_id', 'poster_media_id')`,
 		"a function that forgets a shared poster": `CREATE OR REPLACE FUNCTION sync_event_video_poster_attachments() RETURNS trigger
 			LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END; $$`,
-		"a lost foreign key": `ALTER TABLE event_videos DROP CONSTRAINT event_videos_poster_media_id_fkey`,
+		"a function that does not lock the Event": withoutEventLock(t),
+		"a lost foreign key":                      `ALTER TABLE event_videos DROP CONSTRAINT event_videos_poster_media_id_fkey`,
 		"a foreign key that takes the video's row": `ALTER TABLE event_videos DROP CONSTRAINT event_videos_poster_media_id_fkey;
 			ALTER TABLE event_videos ADD CONSTRAINT event_videos_poster_media_id_fkey FOREIGN KEY (poster_media_id) REFERENCES media (id) ON DELETE CASCADE`,
 		"a lost index": `DROP INDEX event_videos_poster_media_id_idx`,
@@ -160,7 +206,7 @@ func TestApplyRepairsTheVideoPosterLinks(t *testing.T) {
 			if err := migrate.Apply(ctx, pool); err != nil {
 				t.Fatal(err)
 			}
-			if !postersHold(t, pool) || !sharedPosterKept(t, pool) {
+			if !postersHold(t, pool) || !sharedPosterKept(t, pool) || !posterChangeLocksTheEvent(t, pool) {
 				t.Fatal("a fresh database does not keep videos' posters")
 			}
 			if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version = `+eventVideoPostersVersion); err != nil {
@@ -169,13 +215,13 @@ func TestApplyRepairsTheVideoPosterLinks(t *testing.T) {
 			if _, err := pool.Exec(ctx, damage); err != nil {
 				t.Fatal(err)
 			}
-			if postersHold(t, pool) && sharedPosterKept(t, pool) && postersIndexed(t, pool) {
+			if postersHold(t, pool) && sharedPosterKept(t, pool) && postersIndexed(t, pool) && posterChangeLocksTheEvent(t, pool) {
 				t.Fatal("the damage broke nothing")
 			}
 			if err := migrate.Apply(ctx, pool); err != nil {
 				t.Fatal(err)
 			}
-			if !postersHold(t, pool) || !sharedPosterKept(t, pool) || !postersIndexed(t, pool) {
+			if !postersHold(t, pool) || !sharedPosterKept(t, pool) || !postersIndexed(t, pool) || !posterChangeLocksTheEvent(t, pool) {
 				t.Fatalf("%s was not repaired", name)
 			}
 		})
