@@ -1430,6 +1430,119 @@ purge between these checks and the write is refused with
 | 422 | `media_not_linkable` | `mediaId`, `role` | No such Media, or archived, being purged, expired, or not the product's to link. |
 | 422 | `media_purpose_mismatch` | `mediaId`, `role`, `purpose` | One of the product's own Media whose purpose does not fit the role (a CMS file as an image). |
 
+### Address lookup
+
+Media redesign ticket 28. Skyforms answers and CMS content keep the CDN
+addresses of Media uploaded before stage 5. The uuid in such an address is
+the object's key, not the Media's id, so before a product stores the id and
+attaches the Media (stage 5) it asks core which Media each address names.
+
+`POST /v1/media/lookup` with at most 100 addresses:
+
+```json
+{ "addresses": [
+  "https://cdn.yildizskylab.com/images/7c1e…",
+  "https://cdn.yildizskylab.com/images/7c1e…/card.jpg?v=2",
+  "https://cdn.yildizskylab.com/images/9d40…",
+  "https://cdn.yildizskylab.com/images/e5a8…",
+  "https://example.com/logo.png"
+] }
+```
+
+It answers `200 OK` with one result per address, in the order sent; an
+address sent twice is answered twice:
+
+```json
+{ "results": [
+  { "address": "https://cdn.yildizskylab.com/images/7c1e…", "mediaId": "0f2a…", "purpose": "legacy", "status": "pending", "linkable": true },
+  { "address": "https://cdn.yildizskylab.com/images/7c1e…/card.jpg?v=2", "mediaId": "0f2a…", "purpose": "legacy", "status": "pending", "linkable": true },
+  { "address": "https://cdn.yildizskylab.com/images/9d40…", "mediaId": "5b1e…", "purpose": "cms_image", "status": "detached", "linkable": false },
+  { "address": "https://cdn.yildizskylab.com/images/e5a8…", "mediaId": null, "purpose": null, "status": null, "linkable": false },
+  { "address": "https://example.com/logo.png", "mediaId": null, "purpose": null, "status": null, "linkable": false }
+] }
+```
+
+- `address`: the address as sent.
+- `mediaId`, `purpose`, `status`: the Media the address names, or `null`
+  for all three when it names no Media the product may link (below).
+- `linkable`: whether the Media may take a new Media attachment now: it is
+  not archived, no purge has started (a rejected Media's has) and its expiry
+  has not passed (the third result above: a detached Media whose 30 days
+  ran out). The attach API still checks that its purpose fits the role.
+  Always `false` without a `mediaId`.
+
+**Who may call**: the service attach API's caller, a configured product's
+service account with `media:attach` on the core client. Anyone else, a
+person or an admin whatever roles they hold, gets `media_attach_forbidden`
+before the body is read.
+
+**Which addresses name a Media**
+
+- The address is under the configured base (`CDN_BASE`, else
+  `R2_PUBLIC_URL`) or under the production CDN,
+  `https://cdn.yildizskylab.com`, which is also the base of a core that has
+  none configured (the sandbox). The host is compared without case, `https`
+  and `http` are both read, the port must be the base's, and a query or
+  fragment is ignored.
+- Its path is a key core gives a public Media, `<uuid>` written as core
+  writes it (lowercase, with hyphens):
+
+| Path after the base | The Media named |
+|---|---|
+| `images/<uuid>`, `images/<uuid>.svg` | The image. |
+| `images/<uuid>/card.jpg`, `…/page.png` (`card` or `page`, `.jpg` or `.png`) | The image the stored size belongs to (see [Sizes](#sizes)). |
+| `cdn-cgi/image/<options>/images/<uuid>` | The image a Cloudflare transformation is made from (`MEDIA_IMAGE_ADDRESS_MODE=cloudflare`, see [Addresses](#addresses)). |
+| `files/<uuid>` | The file. |
+| `videos/<uuid>.mp4`, `videos/<uuid>.fs.<claim>.mp4` | The video, before and after its move to its faststart copy (see [Video faststart](#video-faststart)): content keeps the address it was given. |
+
+- Nothing else names a Media: a private key (`private/…`), a Direct upload's
+  pending key (`pending/…`), another host, a bare key without a base, an
+  address longer than 2 048 characters.
+
+**Which Media a result names**: those the product may link under the
+service attach API's rule ([Which Media a product may link](#service-attach-api)),
+asked for the Media's uploader, the person stage 5 attaches it for
+(`onBehalfOf` = `uploadedBy`):
+
+- a Media of one of the product's own purposes;
+- a `legacy` Media, or one whose detach expiry is held, that has an uploader,
+  or that the product already holds a Media attachment to. A Media whose
+  uploader's account was erased has no uploader: it is named only to a
+  product that holds it.
+
+Everything else is answered with `null`, exactly like an address that names
+no Media: another product's Media, core's own, a legacy Media no one can be
+named for. The lookup tells a product nothing about a Media it cannot link.
+A Media the product may link is named even when it is archived or its blob
+purged, with `linkable` `false`, so the product can list it for review
+instead of taking it for an address core never had.
+
+**Limits**
+
+- At most 100 addresses a lookup; an empty list answers no results.
+- 60 lookups a minute (6 000 addresses) for each product, counted by each
+  core process on its own.
+- Logged by count only (`media lookup by cms: 100 addresses, 87 resolved`):
+  never an address or a Media id.
+
+**One query a batch**: the addresses are turned into lookup keys in core,
+and every Media of a batch is read in one query, with whether the product
+holds a Media attachment to each, through the index `media_lookup_key_idx`
+on `media_lookup_key(file_url)` (migration `20260929180000`). The lookup
+key is the Media's key, or, for a video's faststart copy, its original's
+(`videos/<uuid>.mp4`). Core's copy of that function is `lookupKeyOf`
+(`internal/media/lookup.go`); a test keeps the two equal.
+
+**Refusals** are `application/problem+json`:
+
+| Status | `code` | Extra members | When |
+|---|---|---|---|
+| 401 | | | No token, or an invalid one. |
+| 403 | `media_attach_forbidden` | | Not a configured product's service account with `media:attach` on the core client. |
+| 400 | | | Not JSON, or no `addresses` list of strings. |
+| 400 | `media_lookup_too_many` | `maxAddresses` | More than 100 addresses. |
+| 429 | `media_lookup_rate_limited` | `maxLookups`, `windowSeconds`, `retryAfterSeconds` | The product's 60 lookups this minute are spent; `Retry-After` says when to retry. |
+
 ### Expiry cleanup
 
 The purge worker, after its archived batch, makes one pass over the Media
@@ -1609,7 +1722,7 @@ how many and the command exits non-zero: the report is incomplete. Columns:
 | `name` | The file name (tabs and line breaks become spaces). |
 | `uploader_groups_now` | The uploader's Keycloak group paths today (not when they uploaded), comma separated; `-` for none or a deleted account, `?` when Keycloak could not be read. The uploader is not named. |
 | `status`, `expires_at` | `pending` (never attached) or `detached`; the expiry, `-` until the switch runs. |
-| `key` | The object key: the Media's address is the CDN base followed by it. Match it against Skyforms answers and CMS content. |
+| `key` | The object key: the Media's address is the CDN base followed by it. Match it against Skyforms answers and CMS content; a product asks the [address lookup](#address-lookup) for its own. |
 
 Whether CMS content uses an address is not checked: the CMS database is not
 core's. The file names in the report can be personal data (CVs): keep the
