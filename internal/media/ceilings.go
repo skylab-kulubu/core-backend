@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
 // The hard ceilings of ADR-0052. No catalogue entry can loosen them: core
@@ -82,6 +84,12 @@ var (
 	// StreamMaxLength, set by the ClamAV wizard). A larger file would be
 	// rejected as too large to scan every time.
 	ErrCeilingScanSize = errors.New("media purpose catalogue: a purpose that needs a malware scan allows at most what the scanner takes")
+	// ErrCeilingVideoFrame: a video's frame (framePurposes) is an image core
+	// makes itself from the video (FrameWorker), never an upload: no person
+	// may upload one (service_only), core attaches it, and it is a public,
+	// single-step raster image that is re-encoded with the rest. Opening it
+	// to a person would let one set what core shows as a video's frame.
+	ErrCeilingVideoFrame = errors.New("media purpose catalogue: a video frame is a public raster image core makes and attaches, which no person uploads")
 )
 
 // MaxScanBytes is the largest file the malware scanner takes: clamd's
@@ -100,6 +108,10 @@ var zipPurposes = []string{PurposeClubFile}
 // only ones whose MP4 is served inline, to play.
 var videoPurposes = []string{PurposeVideo}
 
+// framePurposes are the images core makes itself from a video: no person
+// uploads them.
+var framePurposes = []string{PurposeVideoFrame}
+
 // directTypes are the only types a Direct upload purpose may accept.
 var directTypes = []string{pdfType, zipType, mp4Type}
 
@@ -117,6 +129,9 @@ const (
 )
 
 func checkCeilings(p Purpose) error {
+	if slices.Contains(framePurposes, p.Name) && !coreMadeImage(p) {
+		return fmt.Errorf("%s: %w", p.Name, ErrCeilingVideoFrame)
+	}
 	limit := int64(MaxUploadBytes)
 	if p.Transport == TransportDirect {
 		limit = MaxDirectUploadBytes
@@ -173,4 +188,20 @@ func checkCeilings(p Purpose) error {
 		}
 	}
 	return nil
+}
+
+// coreMadeImage reports whether the purpose is one of core's own images: no
+// person uploads it, core attaches it, and it is a public, single-step,
+// re-encoded raster image.
+func coreMadeImage(p Purpose) bool {
+	if p.Uploader != authz.MediaUploaderServiceOnly || p.Attach != AttachCore || p.Visibility != VisibilityPublic ||
+		p.Transport != TransportSingleStep || !p.Image.Reencode || len(p.Types) == 0 {
+		return false
+	}
+	for _, t := range p.Types {
+		if !isRasterType(t) {
+			return false
+		}
+	}
+	return true
 }
