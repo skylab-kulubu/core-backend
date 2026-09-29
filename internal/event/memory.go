@@ -98,7 +98,7 @@ func (s *MemoryStore) shown(stored []MediaItem) []MediaItem {
 	out := make([]MediaItem, 0, len(stored))
 	for _, item := range stored {
 		if s.media == nil {
-			out = append(out, MediaItem{ID: item.ID, posterID: item.posterID})
+			out = append(out, MediaItem{ID: item.ID, poster: item.poster})
 			continue
 		}
 		m, err := s.media.GetIncludingDeleted(context.Background(), item.ID)
@@ -112,11 +112,12 @@ func (s *MemoryStore) shown(stored []MediaItem) []MediaItem {
 		if m.Status == media.StatusRejected {
 			shown.ScanResult = m.ScanResult
 		}
-		if item.posterID != nil {
-			if poster, err := s.media.GetIncludingDeleted(context.Background(), *item.posterID); err == nil && poster.DeletedAt == nil {
-				shown.posterID, shown.poster = &poster.ID, media.LinkedImageOf(poster)
+		if item.poster != nil {
+			shown.poster = &linkedPoster{id: item.poster.id}
+			if poster, err := s.media.GetIncludingDeleted(context.Background(), item.poster.id); err == nil && poster.DeletedAt == nil {
+				shown.poster.image = media.LinkedImageOf(poster)
 				if poster.Servable() {
-					shown.posterKey = poster.Key
+					shown.poster.key = poster.Key
 				}
 			}
 		}
@@ -370,8 +371,9 @@ func (s *MemoryStore) OrderFiles(_ context.Context, eventID uuid.UUID, list Medi
 }
 
 // SetVideoPoster links the poster to the Event's video, or clears it
-// (nil). The memory store keeps no Media attachments.
-func (s *MemoryStore) SetVideoPoster(_ context.Context, eventID, videoID uuid.UUID, posterID *uuid.UUID) (Event, error) {
+// (nil), while its poster is still was. The memory store keeps no Media
+// attachments.
+func (s *MemoryStore) SetVideoPoster(_ context.Context, eventID, videoID uuid.UUID, posterID, was *uuid.UUID) (Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.byID[eventID]
@@ -380,13 +382,20 @@ func (s *MemoryStore) SetVideoPoster(_ context.Context, eventID, videoID uuid.UU
 	}
 	// The video as the list shows it: one whose Media is archived is not in
 	// it.
-	if !slices.ContainsFunc(s.shown(e.Videos), func(item MediaItem) bool { return item.ID == videoID }) {
+	video, listed := Event{Videos: s.shown(e.Videos)}.item(Videos, videoID)
+	if !listed {
 		return Event{}, ErrNotFound
+	}
+	if posterID != nil && !sameID(video.posterID(), was) {
+		return Event{}, ErrConflict
 	}
 	videos := slices.Clone(e.Videos)
 	for i := range videos {
 		if videos[i].ID == videoID {
-			videos[i].posterID = posterID
+			videos[i].poster = nil
+			if posterID != nil {
+				videos[i].poster = &linkedPoster{id: *posterID}
+			}
 		}
 	}
 	e.Videos = videos
@@ -407,7 +416,7 @@ func (s *MemoryStore) TeamsUsingMedia(_ context.Context, mediaID, except uuid.UU
 			uses = uses || im.ID == mediaID
 		}
 		for _, item := range slices.Concat(e.Files, e.Videos) {
-			uses = uses || item.ID == mediaID || (item.posterID != nil && *item.posterID == mediaID)
+			uses = uses || item.ID == mediaID || sameID(item.posterID(), &mediaID)
 		}
 		if uses {
 			teams = append(teams, e.OwnerTeam)

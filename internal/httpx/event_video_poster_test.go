@@ -115,9 +115,10 @@ func videoPoster(t *testing.T, answer jsonResponse, videoID string) any {
 }
 
 // asPoster is the poster an Event answers for the image's Media JSON: its
-// id, its full-size address and its sizes, as the Media JSON gives them.
+// id, its type, its full-size address and its sizes, as the Media JSON
+// gives them.
 func asPoster(uploaded map[string]any) map[string]any {
-	return map[string]any{"id": uploaded["id"], "url": uploaded["url"], "sizes": uploaded["sizes"]}
+	return map[string]any{"id": uploaded["id"], "type": uploaded["type"], "url": uploaded["url"], "sizes": uploaded["sizes"]}
 }
 
 // An organizer gives one of their Event's videos a poster: an image uploaded
@@ -130,8 +131,8 @@ func TestAnOrganizerGivesAVideoAPosterHTTP(t *testing.T) {
 	organizer := organizerToken(t, f.keys)
 	eventID, videoID := f.eventWithVideo(t, organizer, "WEBLAB")
 	poster := f.uploadImage(t, organizer, "event_cover", 1600, 1200)
-	if card, _ := poster["sizes"].(map[string]any)["card"].(map[string]any); card["width"] != float64(400) {
-		t.Fatalf("the poster was stored without a card size: %v", poster)
+	if card, _ := poster["sizes"].(map[string]any)["card"].(map[string]any); card["width"] != float64(400) || poster["type"] != "image/png" {
+		t.Fatalf("the poster was stored without a card size, or not as a PNG: %v", poster)
 	}
 
 	set := sendJSON(t, f.app, organizer, fiber.MethodPut, posterPath(eventID, videoID), posterBody(poster["id"].(string)))
@@ -318,7 +319,10 @@ func TestAVideosPosterTakesWhatAnEventCoverTakesHTTP(t *testing.T) {
 		[]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="#123456"/></svg>`))
 	set := sendJSON(t, f.app, organizer, fiber.MethodPut, path, posterBody(svg["id"].(string)))
 	svgURL, _ := svg["url"].(string)
-	want := map[string]any{"id": svg["id"], "url": svgURL, "sizes": map[string]any{
+	// Its type tells a client that cannot draw an SVG (Flutter's
+	// Image.network) to use an SVG renderer or skip it; its sizes carry no
+	// width or height.
+	want := map[string]any{"id": svg["id"], "type": "image/svg+xml", "url": svgURL, "sizes": map[string]any{
 		"card": map[string]any{"url": svgURL}, "page": map[string]any{"url": svgURL},
 	}}
 	if got := videoPoster(t, set, videoID); set.status != fiber.StatusOK || !strings.HasSuffix(svgURL, ".svg") || !reflect.DeepEqual(got, want) {

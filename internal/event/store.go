@@ -45,8 +45,11 @@ type Store interface {
 	OrderFiles(ctx context.Context, eventID uuid.UUID, list MediaList, ids []uuid.UUID) (Event, error)
 	// SetVideoPoster links the poster Media to the Event's video, in place
 	// of the one it had, or clears it (nil): ErrNotFound when the Event
-	// does not list the video.
-	SetVideoPoster(ctx context.Context, eventID, videoID uuid.UUID, posterID *uuid.UUID) (Event, error)
+	// does not list the video. A poster is written only while the video's
+	// poster, read under the Event's lock, is still was: the one (nil for
+	// none) the caller decided the poster's checks against. ErrConflict
+	// when it changed meanwhile.
+	SetVideoPoster(ctx context.Context, eventID, videoID uuid.UUID, posterID, was *uuid.UUID) (Event, error)
 	// TeamsUsingMedia returns the Owner teams of the Events, archived ones
 	// included, that use the Media as their cover, in their gallery, among
 	// their files or videos, or as a video's poster, leaving out the Event

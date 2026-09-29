@@ -27,11 +27,14 @@ type mediaListSpec struct {
 	table string
 	// items is the Event's field that holds the list.
 	items func(e *Event) *[]MediaItem
+	// posters tells whether the list's items may have a poster (a video's,
+	// in event_videos.poster_media_id, migration 20260929140000).
+	posters bool
 }
 
 var mediaListSpecs = map[MediaList]mediaListSpec{
 	Files:  {role: media.RoleEventFile, table: "event_files", items: func(e *Event) *[]MediaItem { return &e.Files }},
-	Videos: {role: media.RoleEventVideo, table: "event_videos", items: func(e *Event) *[]MediaItem { return &e.Videos }},
+	Videos: {role: media.RoleEventVideo, table: "event_videos", items: func(e *Event) *[]MediaItem { return &e.Videos }, posters: true},
 }
 
 // mediaLists are both lists, in the order a store reads them.
@@ -47,6 +50,38 @@ func (l MediaList) known() bool {
 func (l MediaList) Role() media.Role { return mediaListSpecs[l].role }
 
 func (l MediaList) table() string { return mediaListSpecs[l].table }
+
+// posterSQL is what the list's items query selects for an item's poster
+// (poster_id, poster_key, poster), and the join it reads it through: NULLs
+// and no join for a list whose items have none. The poster's id is the
+// video's own link, archived or not; its key only while it can be served
+// (media.ServableKeySQL), and its Media (media.LinkedImageSQL) only while
+// it is not archived.
+func (l MediaList) posterSQL() (columns, join string) {
+	if !mediaListSpecs[l].posters {
+		return `NULL::uuid AS poster_id, '' AS poster_key, NULL::jsonb AS poster`, ``
+	}
+	return `linked.poster_media_id AS poster_id, COALESCE(` + media.ServableKeySQL("p") + `, '') AS poster_key, ` + media.LinkedImageSQL("p") + ` AS poster`,
+		`
+		LEFT JOIN media p ON p.id = linked.poster_media_id AND p.deleted_at IS NULL`
+}
+
+// mediaLink is a Media an Event links, in its role.
+type mediaLink struct {
+	id   uuid.UUID
+	role media.Role
+}
+
+// links are the Media an item of the list links on the Event, each in its
+// role: its own, in the list's role, and a video's poster unless the
+// poster's Media is archived (left out as an archived gallery photo is).
+func (l MediaList) links(item MediaItem) []mediaLink {
+	links := []mediaLink{{id: item.ID, role: l.Role()}}
+	if item.poster != nil && item.poster.image != nil {
+		links = append(links, mediaLink{id: item.poster.id, role: media.RoleEventVideoPoster})
+	}
+	return links
+}
 
 // MediaItem is one item of an Event's files or videos.
 type MediaItem struct {
@@ -75,21 +110,31 @@ type MediaItem struct {
 	// has none, and neither has a video without one.
 	Poster *Poster `json:"poster,omitempty"`
 
-	// posterID is the poster Media the item links, unless it is archived:
-	// what a new poster is compared with and the Team media library checks.
-	posterID *uuid.UUID
-	// posterKey is the poster's object key while it can be served
-	// (media.ServableKeySQL), and empty otherwise.
-	posterKey string
-	// poster is the poster Media as the store read it with the item, what
-	// the poster's sizes are built from.
-	poster *media.LinkedImage
+	// poster is the video's poster as the store read it with the video; nil
+	// for a file, or a video without one.
+	poster *linkedPoster
+}
+
+// linkedPoster is a video's poster as the store read it with the video.
+type linkedPoster struct {
+	// id is the poster Media the video links, archived or not: what a new
+	// poster is compared with.
+	id uuid.UUID
+	// key is its object key while it can be served (media.ServableKeySQL),
+	// and empty otherwise.
+	key string
+	// image is its Media, what its type and sizes are built from; nil once
+	// it is archived.
+	image *media.LinkedImage
 }
 
 // Poster is a video's poster at its full-size address, with its card and
 // page sizes, built like an Event cover's (media.Addresses.LinkedSizes).
+// Type is the image's content type: an SVG (image/svg+xml) needs an SVG
+// renderer, and its sizes have no width or height.
 type Poster struct {
 	ID    uuid.UUID                     `json:"id"`
+	Type  string                        `json:"type"`
 	URL   string                        `json:"url"`
 	Sizes map[string]media.ImageAddress `json:"sizes"`
 }
@@ -97,14 +142,23 @@ type Poster struct {
 // posterAt is the item's poster at its addresses: nil when it has none, or
 // none that can be served.
 func (item MediaItem) posterAt(addresses media.Addresses) *Poster {
-	if item.posterID == nil || item.posterKey == "" {
+	if item.poster == nil || item.poster.key == "" {
 		return nil
 	}
-	sizes := addresses.LinkedSizes(item.poster)
+	sizes := addresses.LinkedSizes(item.poster.image)
 	if sizes == nil {
 		return nil
 	}
-	return &Poster{ID: *item.posterID, URL: addresses.Object(item.posterKey), Sizes: sizes}
+	return &Poster{ID: item.poster.id, Type: item.poster.image.Type(), URL: addresses.Object(item.poster.key), Sizes: sizes}
+}
+
+// posterID is the poster Media the video links, archived or not; nil for
+// none.
+func (item MediaItem) posterID() *uuid.UUID {
+	if item.poster == nil {
+		return nil
+	}
+	return &item.poster.id
 }
 
 // item is the item of the Event's list l whose Media is id, as the store
@@ -164,4 +218,12 @@ func withItemAddresses(items []MediaItem, addresses media.Addresses) []MediaItem
 		out[i].Poster = out[i].posterAt(addresses)
 	}
 	return out
+}
+
+// sameID reports whether a and b name the same Media, or both none.
+func sameID(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }

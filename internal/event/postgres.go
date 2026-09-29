@@ -124,18 +124,13 @@ func (s *PostgresStore) get(ctx context.Context, id uuid.UUID, includeArchived b
 // the gallery; one that cannot be served (media.ServableSQL: private,
 // being purged, waiting for its malware scan or rejected by it) has no
 // address, and only a rejected one its scan result. A video comes with its
-// poster's Media (media.LinkedImageSQL), in the same query: an archived one
+// poster's Media (MediaList.posterSQL), in the same query: an archived one
 // is none, and one that cannot be served has no address.
 func (s *PostgresStore) ListFiles(ctx context.Context, eventID uuid.UUID) ([]MediaItem, []MediaItem, error) {
 	lists := Event{Files: make([]MediaItem, 0), Videos: make([]MediaItem, 0)}
 	selects := make([]string, 0, 2)
 	for _, list := range mediaLists {
-		poster, posterJoin := `NULL::uuid AS poster_id, '' AS poster_key, NULL::jsonb AS poster`, ``
-		if list == Videos {
-			poster = `p.id AS poster_id, COALESCE(` + media.ServableKeySQL("p") + `, '') AS poster_key, ` + media.LinkedImageSQL("p") + ` AS poster`
-			posterJoin = `
-		LEFT JOIN media p ON p.id = linked.poster_media_id AND p.deleted_at IS NULL`
-		}
+		poster, posterJoin := list.posterSQL()
 		selects = append(selects, `SELECT '`+string(list)+`' AS list, m.id, m.file_name, m.file_type, m.file_size, m.status,
 			CASE WHEN m.status = '`+string(media.StatusRejected)+`' THEN COALESCE(m.scan_result, '') ELSE '' END,
 			COALESCE(`+media.ServableKeySQL("m")+`, ''), `+poster+`,
@@ -153,11 +148,17 @@ func (s *PostgresStore) ListFiles(ctx context.Context, eventID uuid.UUID) ([]Med
 	for rows.Next() {
 		var list MediaList
 		var item MediaItem
+		var poster linkedPoster
+		var posterID *uuid.UUID
 		var order int
 		var added time.Time
 		if err := rows.Scan(&list, &item.ID, &item.Name, &item.Type, &item.Size, &item.Status, &item.ScanResult, &item.URL,
-			&item.posterID, &item.posterKey, &item.poster, &order, &added); err != nil {
+			&posterID, &poster.key, &poster.image, &order, &added); err != nil {
 			return nil, nil, err
+		}
+		if posterID != nil {
+			poster.id = *posterID
+			item.poster = &poster
 		}
 		lists = lists.withList(list, append(lists.list(list), item))
 	}
@@ -423,11 +424,13 @@ func (s *PostgresStore) OrderFiles(ctx context.Context, eventID uuid.UUID, list 
 }
 
 // SetVideoPoster links the poster Media to the Event's video, in place of
-// the one it had, or clears it (nil). The video's row is written in one
-// statement: its trigger writes the new poster's Media attachment, checked
-// as every new link is, and removes the old one's unless another video of
-// the Event still shows it.
-func (s *PostgresStore) SetVideoPoster(ctx context.Context, eventID, videoID uuid.UUID, posterID *uuid.UUID) (Event, error) {
+// the one it had, or clears it (nil). Under the Event's lock it first reads
+// the video's poster: a poster is written only while it is still was, the
+// one the caller decided its checks against (ErrConflict otherwise). The
+// video's row is written in one statement: its trigger writes the new
+// poster's Media attachment, checked as every new link is, and removes the
+// old one's unless another video of the Event still shows it.
+func (s *PostgresStore) SetVideoPoster(ctx context.Context, eventID, videoID uuid.UUID, posterID, was *uuid.UUID) (Event, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Event{}, err
@@ -438,18 +441,25 @@ func (s *PostgresStore) SetVideoPoster(ctx context.Context, eventID, videoID uui
 	}
 	// The video as the list shows it: one whose Media was archived is not
 	// in it.
-	tag, err := tx.Exec(ctx, `UPDATE event_videos linked SET poster_media_id = $3
-		FROM media m
-		WHERE linked.event_id = $1 AND linked.media_id = $2 AND m.id = linked.media_id AND m.deleted_at IS NULL`,
-		eventID, videoID, posterID)
+	var current *uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT linked.poster_media_id FROM event_videos linked
+		JOIN media m ON m.id = linked.media_id AND m.deleted_at IS NULL
+		WHERE linked.event_id = $1 AND linked.media_id = $2`, eventID, videoID).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Event{}, ErrNotFound
+	}
+	if err != nil {
+		return Event{}, err
+	}
+	if posterID != nil && !sameID(current, was) {
+		return Event{}, ErrConflict
+	}
+	_, err = tx.Exec(ctx, `UPDATE event_videos SET poster_media_id = $3 WHERE event_id = $1 AND media_id = $2`, eventID, videoID, posterID)
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
 	}
 	if err != nil {
 		return Event{}, err
-	}
-	if tag.RowsAffected() == 0 {
-		return Event{}, ErrNotFound
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Event{}, err

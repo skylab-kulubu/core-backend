@@ -96,6 +96,15 @@ func (l *LinkedImage) Key() string {
 	return l.media.Key
 }
 
+// Type is the linked Media's content type, as it is stored (an SVG is
+// image/svg+xml); empty for no Media.
+func (l *LinkedImage) Type() string {
+	if l == nil {
+		return ""
+	}
+	return l.media.Type
+}
+
 // UnmarshalJSON reads the value LinkedImageSQL selects.
 func (l *LinkedImage) UnmarshalJSON(data []byte) error {
 	var columns linkedImageColumns

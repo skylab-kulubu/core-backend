@@ -292,7 +292,7 @@ type posterBody struct {
 func (h *EventHandler) SetVideoPoster(c fiber.Ctx) error {
 	return h.videoPosterChange(c, func() (*uuid.UUID, bool) {
 		var body posterBody
-		if err := c.Bind().Body(&body); err != nil || body.PosterID == nil || *body.PosterID == uuid.Nil {
+		if err := c.Bind().Body(&body); err != nil || body.PosterID == nil {
 			return nil, false
 		}
 		return body.PosterID, true

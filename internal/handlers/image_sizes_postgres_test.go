@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -329,7 +330,7 @@ func TestEventListCarriesEveryEventsSizesWithoutAQueryPerEventHTTP(t *testing.T)
 				t.Fatal(err)
 			}
 			if list == event.Videos {
-				if _, err := f.events.SetVideoPoster(context.Background(), created.ID, ids[0], &gallery.ID); err != nil {
+				if _, err := f.events.SetVideoPoster(context.Background(), created.ID, ids[0], &gallery.ID, nil); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -711,6 +712,7 @@ type sizedVideosView struct {
 		ID     uuid.UUID `json:"id"`
 		Poster *struct {
 			ID    uuid.UUID                     `json:"id"`
+			Type  string                        `json:"type"`
 			URL   string                        `json:"url"`
 			Sizes map[string]media.ImageAddress `json:"sizes"`
 		} `json:"poster"`
@@ -758,7 +760,7 @@ func TestEventDetailAnswersVideoPostersWithoutAnotherQueryHTTP(t *testing.T) {
 		t.Fatalf("videos without posters %+v", bare.Videos)
 	}
 	for i := range videos {
-		if _, err := f.events.SetVideoPoster(ctx, created.ID, videos[i], &posters[i].ID); err != nil {
+		if _, err := f.events.SetVideoPoster(ctx, created.ID, videos[i], &posters[i].ID, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -777,7 +779,7 @@ func TestEventDetailAnswersVideoPostersWithoutAnotherQueryHTTP(t *testing.T) {
 		),
 	}
 	for i, video := range got.Videos {
-		if video.ID != videos[i] || video.Poster == nil || video.Poster.ID != posters[i].ID ||
+		if video.ID != videos[i] || video.Poster == nil || video.Poster.ID != posters[i].ID || video.Poster.Type != "image/jpeg" ||
 			video.Poster.URL != sizesBase+"/"+posters[i].Key || !reflect.DeepEqual(video.Poster.Sizes, want[posters[i].ID]) {
 			t.Errorf("video %d answered %+v, want the poster %s at %v", i, video, posters[i].ID, want[posters[i].ID])
 		}
@@ -789,7 +791,7 @@ func TestEventDetailAnswersVideoPostersWithoutAnotherQueryHTTP(t *testing.T) {
 func TestVideoPosterSizesFollowTheConfiguredAddressModeHTTP(t *testing.T) {
 	f := newImageSizesFixtureInMode(t, media.AddressCloudflare)
 	created, videos, posters := f.posterFixture(t)
-	if _, err := f.events.SetVideoPoster(context.Background(), created.ID, videos[0], &posters[0].ID); err != nil {
+	if _, err := f.events.SetVideoPoster(context.Background(), created.ID, videos[0], &posters[0].ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	var got sizedVideosView
@@ -800,5 +802,31 @@ func TestVideoPosterSizesFollowTheConfiguredAddressModeHTTP(t *testing.T) {
 	)
 	if poster := got.Videos[0].Poster; poster == nil || poster.URL != sizesBase+"/images/poster-cover" || !reflect.DeepEqual(poster.Sizes, want) {
 		t.Fatalf("poster %+v, want sizes %+v", poster, want)
+	}
+}
+
+// The store writes a poster only over the one it was decided against, read
+// under the Event's lock: a write decided against a poster the video no
+// longer has is a conflict and changes nothing. Clearing needs no decision.
+func TestVideoPosterIsWrittenOnlyOverThePosterItWasDecidedAgainst(t *testing.T) {
+	f := newImageSizesFixture(t)
+	ctx := context.Background()
+	created, videos, posters := f.posterFixture(t)
+	if _, err := f.events.SetVideoPoster(ctx, created.ID, videos[0], &posters[0].ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.events.SetVideoPoster(ctx, created.ID, videos[0], &posters[1].ID, nil); !errors.Is(err, event.ErrConflict) {
+		t.Fatalf("a poster decided against none, over one: %v, want a conflict", err)
+	}
+	var got sizedVideosView
+	f.get(t, "/v1/events/"+created.ID.String(), &got)
+	if got.Videos[0].Poster == nil || got.Videos[0].Poster.ID != posters[0].ID {
+		t.Fatalf("after the conflict the poster is %+v, want %s", got.Videos[0].Poster, posters[0].ID)
+	}
+	if _, err := f.events.SetVideoPoster(ctx, created.ID, videos[0], &posters[1].ID, &posters[0].ID); err != nil {
+		t.Fatalf("a poster decided against the current one: %v", err)
+	}
+	if _, err := f.events.SetVideoPoster(ctx, created.ID, videos[0], nil, nil); err != nil {
+		t.Fatalf("clearing: %v", err)
 	}
 }
