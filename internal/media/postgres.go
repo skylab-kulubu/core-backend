@@ -52,12 +52,22 @@ func insertMedia(ctx context.Context, db rowQuerier, m Media) (Media, error) {
 		INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind, cover_colors, cover_colors_computed, serving_policy_applied, purpose, status, expires_at, width, height, size_objects,
 			visibility, encryption_algorithm, wrapped_data_key, key_version)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19, $20)
-		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, m.UploadedBy, m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose, m.Status, m.ExpiresAt,
+		RETURNING `+mediaCols, m.ID, m.Name, m.Type, m.Key, m.Size, uploaderColumn(m.UploadedBy), m.Kind, m.CoverColors, m.CoverColorsComputed, m.ServingPolicyApplied, m.Purpose, m.Status, m.ExpiresAt,
 		positiveOrNil(m.Width), positiveOrNil(m.Height), sizeObjects, m.Visibility, algorithm, wrappedKey, keyVersion))
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Media{}, ErrForbidden
 	}
 	return created, err
+}
+
+// uploaderColumn is how UploadedBy is written: NULL for none, as for a
+// video's frame, which core makes itself (and as account erasure leaves an
+// upload).
+func uploaderColumn(id uuid.UUID) *uuid.UUID {
+	if id == uuid.Nil {
+		return nil
+	}
+	return &id
 }
 
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Media, error) {
