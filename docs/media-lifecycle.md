@@ -72,8 +72,9 @@ for an object written without one, such as a certificate's PDF):
   running any script a sanitizer missed (see [SVG](#svg)).
 - A video (the `video` purpose's MP4, ticket 22) keeps `video/mp4` and is
   served inline, with no `Content-Disposition`, at a key ending in `.mp4`
-  (`videos/<uuid>.mp4`), so a `<video>` element and the browser's player
-  take it. The CDN answers Range requests for it, and `nosniff` comes from a
+  (`videos/<uuid>.mp4`, and its faststart copy `videos/<uuid>.fs.mp4`, see
+  [Video faststart](#video-faststart)), so a `<video>` element and the
+  browser's player take it. The CDN answers Range requests for it, and `nosniff` comes from a
   Cloudflare rule (below). An MP4 of any other purpose, or of none, is a
   download like every other file; only `video` may name MP4 publicly (see
   [Hard ceilings](#hard-ceilings)).
@@ -559,8 +560,8 @@ then gets `404` and must start the upload again. In order:
 6. The first 512 bytes, by a ranged `GET`, name one of the allowed types:
    PDF by its `%PDF-` header, ZIP by its first local file header (or an
    empty archive's end), MP4 by its `ftyp` box. Where an MP4's `moov` box
-   sits is video's own ticket (13): with it at the end, a player first
-   fetches it by a Range request before playing.
+   sits is not checked here: a video whose `moov` comes after its media data
+   is rewritten after its completion (see [Video faststart](#video-faststart)).
 7. The object is copied to `files/<uuid>` with the `Content-Type` and
    `Content-Disposition` of the [serving policy](#serving-policy), written by
    core: a PDF inline, a ZIP as a download under its name, a video's MP4 to
@@ -2423,8 +2424,9 @@ and videos' routes, a season assignment).
   already purged, neither waiting for its malware scan nor rejected. So never
   while it is scanned or once rejected (whose key is core's alone), never
   for a private Media. A video's address is `videos/<uuid>.mp4`, served
-  inline as `video/mp4` to play (see [Serving policy](#serving-policy)); its
-  poster and faststart are ticket 13.
+  inline as `video/mp4` to play (see [Serving policy](#serving-policy)),
+  until its faststart rewrite moves it to `videos/<uuid>.fs.mp4` (see
+  [Video faststart](#video-faststart)). A video has no poster image yet.
 - `scanResult` is only on a rejected item, and only the Event's editors see
   one.
 - Whoever may not edit the Event (and anyone without a sign-in) sees only the
@@ -2501,6 +2503,112 @@ On each side, sandbox first:
    holds a ZIP within: they must be the wizard's clamd settings (the
    defaults are), and the wizard checks that they are.
 
+## Video faststart
+
+Media redesign ticket 13 (ADR-0052, decision Q26). An MP4 whose `moov` box
+(the index of its samples) comes after its `mdat` (the samples) plays only
+once the browser has it whole, or after a Range request to its end: cameras
+and phones write it so. Core rewrites every `video` Media into a faststart
+copy, `moov` first, without re-encoding: the samples stay byte for byte.
+
+Q26 said ffmpeg (`-movflags +faststart`) in a separate process with time
+and memory limits. Core does it without ffmpeg instead, with qt-faststart's
+method written in Go (`internal/faststart`): no binary in the image, no
+subprocess, and the video is never downloaded.
+
+### The rewrite
+
+1. The video's top-level boxes are read by bounded ranged reads (32- and
+   64-bit sizes, and a last box whose size 0 runs to the end of the file).
+   A video whose `moov` already comes before its first `mdat`, or that has
+   none, needs nothing: `not_needed`.
+2. The `moov` is read whole (up to 64 MiB; a two-hour video's is a few MiB)
+   and walked down `moov/trak/mdia/minf/stbl` to every track's chunk offset
+   table (`stco`, or `co64` for 64-bit offsets). Every other box is kept as
+   it is.
+3. The copy is: the video's bytes up to its first `mdat`, the rewritten
+   `moov`, the bytes from that `mdat` up to the old `moov`, and whatever
+   followed the old `moov`. Every chunk offset moves with the bytes it
+   points into: by the new `moov`'s size for the media data, by its growth
+   for what followed it. An `stco` whose offsets would pass 4 GiB once moved
+   is upgraded to a `co64` (every `stco` at once, as qt-faststart does), and
+   the shift is worked out again with the larger `moov`.
+4. The copy is written to `videos/<uuid>.fs.mp4`, beside the original,
+   never over it: a half-written rewrite is never served. A copy of up to
+   16 MiB is one `PutObject`. A larger one is a multipart upload of 16 MiB
+   parts (R2 wants every part but the last the same size, at least 5 MiB):
+   core writes the parts that hold the rewritten `moov` or straddle a
+   boundary (at most a few, each read by ranged `GET`s), and R2 copies every
+   other part from the original's bytes itself (`UploadPartCopy` with a
+   byte range). Its metadata comes from the [serving policy](#serving-policy):
+   `video/mp4`, inline.
+5. The copy is checked before anything points at it: its size by a `HEAD`,
+   its top-level boxes (`moov` first, where planned), its `moov` byte for
+   byte, and the first and last chunk of each track (up to 16) against the
+   original's.
+6. A short transaction points the Media at the copy, with the copy's size
+   (an `stco` upgraded to a `co64` grows it). The original stays an hour
+   (`media.FaststartOriginalGrace`), for a player that loaded its address,
+   then goes: the Media is `done`.
+
+A video the rewrite cannot move safely is `failed` and served as it is (it
+still plays once downloaded), logged by its id with why (box types and
+offsets, never a file name): a malformed box, a file cut short, a `moov`
+over 64 MiB before or after the rewrite, more than 256 top-level or
+100 000 `moov` boxes, a compressed `moov` (`cmov`), a fragmented file
+(`mvex` in the `moov`, or a top-level `moof`, `mfra`, `sidx` or `ssix`
+with the `moov` after the media data), sample auxiliary offsets (`saio`),
+a chunk offset outside the media data, or no chunk offsets at all. Other
+absolute offsets (an `iloc` in a `meta` box) are not moved, as
+qt-faststart does not move them either.
+
+### The worker
+
+The faststart worker (`media.FaststartWorker`) starts with core wherever it
+has R2 (`R2_*`), on its own context; without R2, videos are served as they
+are. It makes a pass at once, whenever a Direct upload stores a video, and
+every minute. A pass claims at most 25 videos (another pass follows at once
+when it claimed 25), each by id:
+
+- A video is **claimed** in a short transaction (`FOR UPDATE SKIP LOCKED`,
+  `video_faststart_claim_id` and `video_faststart_claimed_until`) before
+  any storage work, and no database connection is held while storage
+  works. The lease is the claim's work (five minutes and a second per MiB:
+  about 39 minutes for 2 GiB) plus two minutes, and the work stops before
+  the lease ends. A video another worker (the other core of a rolling
+  deploy) has claimed is left alone. Every step that moves the Media on
+  checks the claim is still its own.
+- A step storage fails is tried again a minute later, each failure in a
+  row doubling the wait up to six hours (`video_faststart_attempts`,
+  `video_faststart_retry_at`). After twelve failed rewrites (about a day)
+  the video is `failed`, served as it is. A moved video whose original
+  cannot be deleted is tried again, never given up.
+- A copy cut short is deleted, and so is any multipart upload still open
+  at its key: deleting a `videos/<uuid>.fs.mp4` key aborts them, as
+  deleting a pending key does. A rewrite starts by deleting whatever an
+  earlier attempt left there.
+- It logs what a pass changed and each video that failed or was refused,
+  by id; a pass with nothing to do logs nothing.
+
+The state is `video_faststart` (migration `20260929120000`): empty while
+the video waits (a moved video waits for its original's hour), then
+`done`, `not_needed` or `failed`. Videos stored before this are rewritten
+by the same worker after the deploy.
+
+### Purges
+
+Each of a video's two keys names the other, so every purge of the Media
+(archive, expiry, a scan rejection, account erasure) deletes both,
+whichever the Media points at: the copy a rewrite wrote, and the original
+still in its hour. The archive and expiry purges wait while a rewrite's
+claim is live, as they wait for a scan's, so no copy lands after them. A
+copy whose claim's lease ran out (a stalled worker) never survives a purge
+that did not wait: the worker checks the Media before pointing it at the
+copy, and deletes the copy when the Media's purge has begun or it is gone.
+A worker that lost its claim to another deletes nothing the Media points
+at: both write the same bytes to the same key. Account erasure keeps a
+video (club content) at whichever key it is.
+
 ## Account erasure
 
 A person's account erasure ([`account-lifecycle.md`](account-lifecycle.md))
@@ -2566,7 +2674,7 @@ No new saga step does this; the two existing ones do:
      metadata from the serving policy for its purpose without a name:
      `Content-Disposition: attachment`, so it downloads under its key. The
      key never held the name (`images/<uuid>`, `images/<uuid>.svg`,
-     `files/<uuid>`, `videos/<uuid>.mp4`). Raster images, PDFs and videos
+     `files/<uuid>`, `videos/<uuid>.mp4`, `videos/<uuid>.fs.mp4`). Raster images, PDFs and videos
      are served inline and named nothing, so they keep their metadata: a
      video still plays. Then its record goes.
 
@@ -2630,6 +2738,13 @@ What happens to the records when the request completes is in
   `media.DirectUploadPartURLTTL`, `media.DirectUploadClaimLease`). It uses core's
   R2 (`R2_*`); without it, it answers `503` `direct_upload_unavailable`. The
   staging sweeper's settings above end expired uploads.
+- [Video faststart](#video-faststart) has no settings: it runs wherever
+  core has R2. A pass every minute (and after every video uploaded), 25
+  videos a pass, 16 MiB parts, a 64 MiB `moov` at most, an original kept an
+  hour after its Media moves, a failed step retried after a minute doubling
+  to six hours, twelve failed rewrites before a video is `failed`, and a
+  claim leased for five minutes and a second per MiB plus two minutes are
+  fixed in code.
 - `CDN_BASE` (or `R2_PUBLIC_URL`) — the public base of every Media address;
   default `https://cdn.yildizskylab.com`.
 - The decode budget (2 images at once, 1 SVG, a 10-second wait) is fixed in
