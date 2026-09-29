@@ -40,9 +40,11 @@ func eventFilesRolesHold(t *testing.T, pool *pgxpool.Pool) bool {
 
 // undoEventFiles rolls back the Event files migration, which builds on the
 // Media attachment migration's link function, so that an older down
-// migration can run; applying again brings it back.
+// migration can run; applying again brings it back. The video posters'
+// migration, which builds on it, goes first.
 func undoEventFiles(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	undoEventVideoPosters(t, pool)
 	down, err := fs.ReadFile(db.DownSQL, "migrations/"+eventFilesVersion+"_event_files.down.sql")
 	if err != nil {
 		t.Fatal(err)
