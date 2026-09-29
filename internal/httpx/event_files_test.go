@@ -106,7 +106,7 @@ func items(t *testing.T, answer jsonResponse, list string) []map[string]any {
 // getList reads a JSON array answer without a token.
 func getList(t *testing.T, app *fiber.App, path string) []map[string]any {
 	t.Helper()
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil), fiber.TestConfig{Timeout: 0})
 	if err != nil {
 		t.Fatal(err)
 	}

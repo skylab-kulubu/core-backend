@@ -3,7 +3,9 @@ package event_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -115,5 +117,150 @@ func TestMemoryStoreListsAndCountsTheFilesItCanServe(t *testing.T) {
 	added, err := bare.AddFiles(ctx, other.ID, event.Files, []uuid.UUID{servable.ID})
 	if err != nil || len(added.Files) != 1 || added.Files[0].URL != "" || added.FileCount != 0 {
 		t.Fatalf("a store without Media answers %+v, count %d (err %v)", added.Files, added.FileCount, err)
+	}
+}
+
+// The memory store answers a video's poster as the database does: from the
+// Media it reads it from, none for an archived one, an address only for
+// one that can be served. The poster stays through a reorder, clearing
+// takes it, a video the Event does not list has none to set, and the Team
+// media library sees it.
+func TestMemoryStoreAnswersAVideosPoster(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mediaStore := media.NewMemoryStore()
+	stored := func(purpose, contentType, key string) media.Media {
+		t.Helper()
+		m, err := mediaStore.Create(ctx, media.Media{
+			Name: "x", Type: contentType, Kind: media.KindImage, Key: key, Size: 7, Width: 800, Height: 600,
+			UploadedBy: uuid.New(), Purpose: purpose, Status: media.StatusAttached, Visibility: media.VisibilityPublic,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	first := stored(media.PurposeVideo, "video/mp4", "videos/a.mp4")
+	second := stored(media.PurposeVideo, "video/mp4", "videos/b.mp4")
+	poster := stored(media.PurposeEventCover, "image/png", "images/kapak")
+	archived := stored(media.PurposeEventGallery, "image/png", "images/arsiv")
+	if err := mediaStore.Archive(ctx, archived.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	store := event.NewMemoryStore().ReadMediaFrom(mediaStore)
+	created, err := store.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddFiles(ctx, created.ID, event.Videos, []uuid.UUID{first.ID, second.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetVideoPoster(ctx, created.ID, first.ID, &poster.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetVideoPoster(ctx, created.ID, second.ID, &archived.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetVideoPoster(ctx, created.ID, poster.ID, &poster.ID, nil); !errors.Is(err, event.ErrNotFound) {
+		t.Fatalf("a poster for a video the Event does not list: %v", err)
+	}
+	if _, err := store.OrderFiles(ctx, created.ID, event.Videos, []uuid.UUID{second.ID, first.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test")
+	detail, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := media.ImageAddress{URL: "https://cdn.example.test/images/kapak", Width: 800, Height: 600}
+	want := &event.Poster{ID: poster.ID, Type: "image/png", URL: original.URL, Sizes: map[string]media.ImageAddress{media.SizeCard: original, media.SizePage: original}}
+	if len(detail.Videos) != 2 || detail.Videos[0].Poster != nil || !reflect.DeepEqual(detail.Videos[1].Poster, want) {
+		t.Fatalf("videos %+v, want the second without a poster (archived) and the first with %+v", detail.Videos, want)
+	}
+	if teams, err := store.TeamsUsingMedia(ctx, poster.ID, uuid.New()); err != nil || !slices.Equal(teams, []string{"WEBLAB"}) {
+		t.Fatalf("teams using the poster %v (err %v)", teams, err)
+	}
+
+	cleared, err := store.SetVideoPoster(ctx, created.ID, first.ID, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published, _ := svc.Get(ctx, cleared.ID); published.Videos[1].Poster != nil {
+		t.Fatalf("a cleared poster is still answered: %+v", published.Videos[1].Poster)
+	}
+}
+
+// racingStore runs race once, just before the first poster write reaches
+// the store: another organizer's request that got there first.
+type racingStore struct {
+	*event.MemoryStore
+	race func()
+	once sync.Once
+}
+
+func (r *racingStore) SetVideoPoster(ctx context.Context, eventID, videoID uuid.UUID, posterID, was *uuid.UUID) (event.Event, error) {
+	r.once.Do(r.race)
+	return r.MemoryStore.SetVideoPoster(ctx, eventID, videoID, posterID, was)
+}
+
+// A video keeping its poster is not checked for it (as an Event keeping its
+// cover), but only while it keeps it: when another request replaces the
+// poster between the service's read and its write, the store refuses the
+// write, and the service decides again, checking the poster as the new link
+// it now is. Here the image is used by another Owner team's Event, so the
+// Team media library refuses it, where a stale "it is the video's poster
+// already" would have let it through.
+func TestAPosterRacingAReplaceIsCheckedAsANewLink(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mediaStore := media.NewMemoryStore()
+	stored := func(purpose, contentType string) media.Media {
+		t.Helper()
+		m, err := mediaStore.Create(ctx, media.Media{
+			Name: "x", Type: contentType, Kind: media.KindImage, Key: "images/" + uuid.NewString(), Size: 7,
+			UploadedBy: uuid.New(), Purpose: purpose, Status: media.StatusAttached, Visibility: media.VisibilityPublic,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	video, shared, other := stored(media.PurposeVideo, "video/mp4"), stored(media.PurposeEventCover, "image/png"), stored(media.PurposeEventCover, "image/png")
+	memory := event.NewMemoryStore().ReadMediaFrom(mediaStore)
+	mine, err := memory.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.AddFiles(ctx, mine.ID, event.Videos, []uuid.UUID{video.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.SetVideoPoster(ctx, mine.ID, video.ID, &shared.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Written past core's checks: another team's Event uses the poster too.
+	if _, err := memory.Create(ctx, event.Event{Name: "Jam", Location: "YTÜ", OwnerTeam: "GAMELAB", CoverImageID: &shared.ID}); err != nil {
+		t.Fatal(err)
+	}
+	organizer := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}}
+	az := authz.NewAuthorizer(authz.DefaultPolicy())
+
+	if _, err := event.NewService(memory, az).SetVideoPoster(ctx, organizer, mine.ID, video.ID, &shared.ID); err != nil {
+		t.Fatalf("keeping the poster: %v", err)
+	}
+	racing := &racingStore{MemoryStore: memory, race: func() {
+		if _, err := memory.SetVideoPoster(ctx, mine.ID, video.ID, &other.ID, &shared.ID); err != nil {
+			t.Error(err)
+		}
+	}}
+	_, err = event.NewService(racing, az).SetVideoPoster(ctx, organizer, mine.ID, video.ID, &shared.ID)
+	var refusal *media.LinkRefusal
+	if !errors.As(err, &refusal) || !errors.Is(err, event.ErrMediaTeamMismatch) || refusal.MediaID != shared.ID || refusal.Role != media.RoleEventVideoPoster {
+		t.Fatalf("setting the poster back after a racing replace: %v, want the Team media library's refusal", err)
+	}
+	detail, err := event.NewService(memory, az).Get(ctx, mine.ID)
+	if err != nil || detail.Videos[0].Poster == nil || detail.Videos[0].Poster.ID != other.ID {
+		t.Fatalf("after the refusal the video's poster is %+v (err %v), want the racing one %s", detail.Videos[0].Poster, err, other.ID)
 	}
 }

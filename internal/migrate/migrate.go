@@ -956,6 +956,71 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE schemaname = 'public' AND indexname = 'media_video_faststart_due_idx'
 			  AND indexdef LIKE '%(id) WHERE ((purpose = ''video''::text) AND ((video_faststart IS NULL) OR (video_faststart = ''moved''::text)) AND (blob_purged_at IS NULL))'
 		)`,
+	// A video's poster: its column and foreign key, the index the purge and
+	// the Team media library read, the statement triggers that write its
+	// Media attachments (with the function that locks the Events before it
+	// reads them and keeps a poster two videos share), and the role tables
+	// that know its role. A rerun of
+	// 20260928160000 puts back the role tables without it; this fingerprint
+	// then fails and the migration runs again.
+	20260929140000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'event_videos' AND column_name = 'poster_media_id'
+			  AND udt_name = 'uuid' AND is_nullable = 'YES'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.event_videos')
+			  AND conname = 'event_videos_poster_media_id_fkey'
+			  AND contype = 'f'
+			  AND pg_get_constraintdef(oid) = 'FOREIGN KEY (poster_media_id) REFERENCES media(id) ON DELETE SET NULL'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'event_videos_poster_media_id_idx'
+			  AND indexdef LIKE '%(poster_media_id) WHERE (poster_media_id IS NOT NULL)'
+		)
+		-- Statement triggers (tgtype: 4 insert, 16 update, 8 delete) that
+		-- read the links through the transition tables the function names.
+		AND (
+			SELECT count(*) FROM (VALUES
+				('event_videos_poster_attachments_insert', 4, NULL::TEXT, 'new_owners'),
+				('event_videos_poster_attachments_update', 16, 'old_owners', 'new_owners'),
+				('event_videos_poster_attachments_delete', 8, 'old_owners', NULL)
+			) expected(trigger_name, trigger_type, old_table, new_table)
+			JOIN pg_trigger actual
+			  ON actual.tgrelid = to_regclass('public.event_videos')
+			 AND actual.tgname = expected.trigger_name
+			 AND actual.tgtype = expected.trigger_type
+			 AND actual.tgoldtable::TEXT IS NOT DISTINCT FROM expected.old_table
+			 AND actual.tgnewtable::TEXT IS NOT DISTINCT FROM expected.new_table
+			 AND actual.tgenabled = 'O'
+			 AND NOT actual.tgisinternal
+			 AND actual.tgnargs = 0
+			 AND actual.tgfoid = to_regprocedure('public.sync_event_video_poster_attachments()')
+		) = 3
+		-- The functions are read by their source, not called.
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'sync_event_video_poster_attachments'
+			  AND prosrc LIKE '%''poster_media_id''%'
+			  AND prosrc LIKE '%a.role = ''event_video_poster''%'
+			  AND prosrc LIKE '%held.poster_media_id = gone.media_id%'
+			  AND prosrc LIKE '%PERFORM 1 FROM events%ORDER BY id%FOR NO KEY UPDATE;%DELETE FROM media_attachments%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_role_purposes'
+			  AND prosrc LIKE '%(''core'', ''event_video_poster'', ''event_cover'')%'
+			  AND prosrc LIKE '%(''core'', ''event_video_poster'', ''event_gallery'')%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_roles_without_legacy'
+			  AND prosrc LIKE '%(''core'', ''event_video_poster'')%'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

@@ -467,7 +467,8 @@ func referencedSQL(id string) string {
 // attachments, as a safety net. Migration 20260926120000 wrote the first
 // Media attachments from the same list and its triggers keep them in step
 // (its copy stays as written: migrations are frozen); an Event's files and
-// videos came later, with their own triggers (20260928160000).
+// videos came later, with their own triggers (20260928160000), and so did
+// their posters (20260929140000).
 var coreLinkSources = []struct {
 	table     string
 	ownerType string
@@ -482,6 +483,7 @@ var coreLinkSources = []struct {
 	{table: "event_images", ownerType: "event", role: RoleEventGallery, owner: "event_id", media: "media_id"},
 	{table: "event_files", ownerType: "event", role: RoleEventFile, owner: "event_id", media: "media_id"},
 	{table: "event_videos", ownerType: "event", role: RoleEventVideo, owner: "event_id", media: "media_id"},
+	{table: "event_videos", ownerType: "event", role: RoleEventVideoPoster, owner: "event_id", media: "poster_media_id"},
 	{table: "users", ownerType: "user", role: RoleProfilePicture, owner: "id", media: "profile_picture_id"},
 	{table: "certificate_templates", ownerType: "certificate_template", role: RoleCertificateAsset, owner: "id", media: "draft_layout", layout: true},
 	{table: "certificate_template_versions", ownerType: "certificate_template_version", role: RoleCertificateAsset, owner: "id", media: "layout", manifest: "asset_manifest", layout: true},
