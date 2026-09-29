@@ -30,18 +30,40 @@ func trakWith(stblBoxes ...[]byte) []byte {
 	return mp4test.Box("trak", mp4test.Box("mdia", mp4test.Box("minf", mp4test.Box("stbl", stblBoxes...))))
 }
 
-// A file the rewrite cannot move safely is refused, with a reason, and
-// never half rewritten: a malformed box, a moov too large to read, what a
-// fragmented or compressed file holds, a chunk offset outside the media
-// data. It still plays once downloaded whole.
-func TestPlanRefusesWhatItCannotMoveSafely(t *testing.T) {
-	t.Parallel()
+// refusal is a file the rewrite must refuse, and the limits it is
+// planned with.
+type refusal struct {
+	file   []byte
+	limits faststart.Limits
+}
+
+// ilocMeta is a meta box (a full box, as ISO writes it) whose item
+// locations name 40 bytes at off: HEIF-style items, stored by absolute
+// file offset (construction method 0).
+func ilocMeta(off uint32) []byte {
+	iloc := mp4test.FullBox("iloc", 0, 0, []byte{0x44, 0x00}, []byte{0, 1}, []byte{0, 1}, []byte{0, 0}, []byte{0, 1}, mp4test.U32(off), mp4test.U32(40))
+	return mp4test.FullBox("meta", 0, 0, mp4test.FullBox("hdlr", 0, 0, mp4test.U32(0), []byte("pict"), make([]byte, 12), []byte{0}), iloc)
+}
+
+// quickTimeMeta is a meta box as QuickTime writes it: no version and
+// flags, its handler first.
+func quickTimeMeta(children ...[]byte) []byte {
+	return mp4test.Box("meta", append([][]byte{mp4test.FullBox("hdlr", 0, 0, mp4test.U32(0), []byte("mdta"), make([]byte, 12), []byte{0})}, children...)...)
+}
+
+// externalTrak is a track whose samples are in another file: its data
+// reference is not self-contained (flags 0).
+func externalTrak(offsets []uint32) []byte {
+	return mp4test.Box("trak", mp4test.Box("mdia", mp4test.Box("minf",
+		mp4test.Box("dinf", mp4test.FullBox("dref", 0, 0, mp4test.U32(1), mp4test.FullBox("url ", 0, 0, []byte("http://example.test/a.mp4\x00")))),
+		mp4test.Box("stbl", mp4test.Stco(offsets...)))))
+}
+
+// refusals are the files the rewrite cannot move safely, by why.
+func refusals() map[string]refusal {
 	good := withMoov(oneTrack)
 	small := faststart.DefaultLimits
-	for name, c := range map[string]struct {
-		file   []byte
-		limits faststart.Limits
-	}{
+	return map[string]refusal{
 		"a moov over the limit":         {good, faststart.Limits{MaxMoovBytes: 64, MaxTopLevelBoxes: 256, MaxMoovBoxes: 100}},
 		"a cut-short file":              {good[:len(good)-10], small},
 		"stray bytes at the end":        {append(append([]byte{}, good...), 0, 0, 0), small},
@@ -76,7 +98,28 @@ func TestPlanRefusesWhatItCannotMoveSafely(t *testing.T) {
 		"stray bytes in a walked box": {withMoov(func(o []uint32) []byte {
 			return mp4test.Moov(mp4test.Box("trak", mp4test.Box("mdia", mp4test.Box("minf", mp4test.Box("stbl", mp4test.Stco(o...)), []byte{1, 2, 3}))))
 		}), small},
-	} {
+		"an iloc in the moov's meta": {withMoov(func(o []uint32) []byte {
+			return mp4test.Box("moov", mp4test.FullBox("mvhd", 0, 0, make([]byte, 96)), mp4test.Trak(1, mp4test.Stco(o[0])), ilocMeta(o[1]))
+		}), small},
+		"an iloc in a QuickTime meta in udta": {withMoov(func(o []uint32) []byte {
+			return mp4test.Box("moov", mp4test.Trak(1, mp4test.Stco(o[0])), mp4test.Box("udta", quickTimeMeta(mp4test.FullBox("iloc", 0, 0, make([]byte, 4)))))
+		}), small},
+		"an iloc in a track's meta": {withMoov(func(o []uint32) []byte {
+			return mp4test.Box("moov", mp4test.Box("trak", mp4test.Box("mdia", mp4test.Box("minf", mp4test.Box("stbl", mp4test.Stco(o[0])))), ilocMeta(o[1])))
+		}), small},
+		"a top-level meta":        {append(withMoov(oneTrack), ilocMeta(36)...), small},
+		"samples in another file": {withMoov(func(o []uint32) []byte { return mp4test.Box("moov", externalTrak(o)) }), small},
+	}
+}
+
+// A file the rewrite cannot move safely is refused, with a reason, and
+// never half rewritten: a malformed box, a moov too large to read, what a
+// fragmented or compressed file holds, a chunk offset outside the media
+// data, item locations (iloc) the rewrite would not move, samples in
+// another file. It still plays once downloaded whole.
+func TestPlanRefusesWhatItCannotMoveSafely(t *testing.T) {
+	t.Parallel()
+	for name, c := range refusals() {
 		t.Run(name, func(t *testing.T) {
 			_, err := faststart.Plan(context.Background(), mp4test.Memory(c.file), int64(len(c.file)), c.limits)
 			var refusal *faststart.Refusal
@@ -85,6 +128,22 @@ func TestPlanRefusesWhatItCannotMoveSafely(t *testing.T) {
 			}
 			t.Log(refusal.Reason)
 		})
+	}
+}
+
+// Metadata without item locations moves with the moov: an iTunes-style
+// meta (ilst) in the moov and a QuickTime meta in udta are kept as they
+// are, and so is a self-contained data reference.
+func TestPlanMovesMetadataWithoutItemLocations(t *testing.T) {
+	t.Parallel()
+	file := withMoov(func(o []uint32) []byte {
+		return mp4test.Box("moov", mp4test.FullBox("mvhd", 0, 0, make([]byte, 96)), mp4test.Trak(1, mp4test.Stco(o...)),
+			mp4test.FullBox("meta", 0, 0, mp4test.FullBox("hdlr", 0, 0, mp4test.U32(0), []byte("mdir"), make([]byte, 12), []byte{0}), mp4test.Box("ilst")),
+			mp4test.Box("udta", quickTimeMeta(mp4test.Box("keys"), mp4test.Box("ilst"))))
+	})
+	out, _ := rewrite(t, file)
+	if !bytes.Contains(out, []byte("ilst")) || !bytes.Contains(out, []byte("keys")) || len(out) != len(file) {
+		t.Fatal("the metadata did not move with the moov")
 	}
 }
 

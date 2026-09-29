@@ -191,8 +191,124 @@ func (p *moovParser) child(b []byte, h header, parent string) (*node, error) {
 		return &node{typ: h.typ, large: h.large, table: t}, nil
 	case walked[parent] == h.typ:
 		return p.container(b, h)
+	case (parent == "moov" || parent == "trak") && h.typ == "meta":
+		if err := p.checkMeta(b, h); err != nil {
+			return nil, err
+		}
+	case (parent == "moov" || parent == "trak") && h.typ == "udta":
+		if err := p.checkUserData(b, h); err != nil {
+			return nil, err
+		}
+	case parent == "minf" && h.typ == "dinf":
+		if err := p.checkDataReferences(b, h); err != nil {
+			return nil, err
+		}
 	}
 	return &node{typ: h.typ, raw: b}, nil
+}
+
+// children reads the boxes that make up payload (at off in the file),
+// counting them against the limit; zero bytes after the last one (a
+// QuickTime terminator) are allowed.
+func (p *moovParser) children(payload []byte, off int64, parent string) ([]header, error) {
+	var out []header
+	for at := 0; at < len(payload); {
+		rest := payload[at:]
+		if len(rest) < 8 {
+			for _, c := range rest {
+				if c != 0 {
+					return nil, invalid("%d stray bytes at the end of a %q box", len(rest), parent)
+				}
+			}
+			break
+		}
+		p.boxes++
+		if p.boxes > p.limits.MaxMoovBoxes {
+			return nil, invalid("more than %d boxes in the moov box", p.limits.MaxMoovBoxes)
+		}
+		h, err := parseHeader(rest, off+int64(at), int64(len(rest)), false)
+		if err != nil {
+			return nil, err
+		}
+		h.off = int64(at) // within payload
+		out = append(out, h)
+		at += int(h.size)
+	}
+	return out, nil
+}
+
+// checkMeta refuses a meta box that holds item locations (iloc): they
+// may name absolute file offsets (HEIF-style items), which the rewrite
+// does not move. ISO writes meta as a full box (version and flags first);
+// QuickTime does not, and starts with its handler. Any iloc is refused,
+// even one whose items would not move: simpler, and such files are rare.
+func (p *moovParser) checkMeta(b []byte, h header) error {
+	payload := b[h.head:h.size]
+	from := 4
+	if len(payload) >= 8 && string(payload[4:8]) == "hdlr" {
+		from = 0
+	}
+	if len(payload) < from {
+		return invalid("a meta box at %d is too short for its version and flags", h.off)
+	}
+	kids, err := p.children(payload[from:], h.off+h.head+int64(from), "meta")
+	if err != nil {
+		return err
+	}
+	for _, k := range kids {
+		if k.typ == "iloc" {
+			return invalid("item locations (iloc) in a meta box at %d, which the rewrite does not move", h.off)
+		}
+	}
+	return nil
+}
+
+// checkUserData checks the meta boxes in a udta box.
+func (p *moovParser) checkUserData(b []byte, h header) error {
+	payload := b[h.head:h.size]
+	kids, err := p.children(payload, h.off+h.head, "udta")
+	if err != nil {
+		return err
+	}
+	for _, k := range kids {
+		if k.typ == "meta" {
+			if err := p.checkMeta(payload[k.off:k.off+k.size], header{typ: k.typ, off: h.off + h.head + k.off, size: k.size, head: k.head, large: k.large}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkDataReferences refuses a track whose samples may be in another
+// file: a data reference (dinf/dref) that is not self-contained (flag 1
+// clear). Its chunk offsets are that file's, and must not move.
+func (p *moovParser) checkDataReferences(b []byte, h header) error {
+	payload := b[h.head:h.size]
+	kids, err := p.children(payload, h.off+h.head, "dinf")
+	if err != nil {
+		return err
+	}
+	for _, k := range kids {
+		if k.typ != "dref" {
+			continue
+		}
+		body := payload[k.off+k.head : k.off+k.size]
+		if len(body) < 8 {
+			return invalid("a dref box at %d is too short for its entry count", h.off+h.head+k.off)
+		}
+		entries, err := p.children(body[8:], h.off+h.head+k.off+k.head+8, "dref")
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			entry := body[8+e.off+e.head : 8+e.off+e.size]
+			if len(entry) < 4 || entry[3]&1 == 0 {
+				return invalid("a data reference (%q) at %d that is not self-contained: samples in another file", e.typ, h.off+h.head+k.off)
+			}
+		}
+	}
+	return nil
 }
 
 // offsetTable is a track's chunk offsets: an stco (32-bit) or a co64
