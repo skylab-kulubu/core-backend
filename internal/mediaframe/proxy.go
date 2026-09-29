@@ -32,8 +32,9 @@ const proxyPath = "/video"
 
 // upstreamProxy serves one video to ffmpeg on the loopback interface: it
 // reads the video's allowed https address (and no other) with the Range
-// ffmpeg asks for, follows no redirect, and stops once it has served
-// budget bytes. Its first failure is what the request answers.
+// ffmpeg asks for, follows no redirect, answers a fixed Content-Type
+// (application/octet-stream, never the storage's), and stops once it has
+// served budget bytes. Its first failure is what the request answers.
 type upstreamProxy struct {
 	target   string
 	client   *http.Client
@@ -141,7 +142,10 @@ func (p *upstreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upstream", http.StatusBadGateway)
 		return
 	}
-	for _, name := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
+	// Never the storage's Content-Type: ffmpeg takes a MIME type as a hint
+	// for which demuxer reads the input. Only the byte-range headers pass.
+	w.Header().Set("Content-Type", "application/octet-stream")
+	for _, name := range []string{"Content-Length", "Content-Range", "Accept-Ranges"} {
 		if value := resp.Header.Get(name); value != "" {
 			w.Header().Set(name, value)
 		}

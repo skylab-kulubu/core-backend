@@ -100,28 +100,34 @@ func argAfter(args []string, flag string) (string, bool) {
 // readInput reads the whole input the ffmpeg arguments name, as ffmpeg
 // would, and fails when the proxy does not serve it.
 func readInput(ctx context.Context, args []string) ([]byte, error) {
+	body, _, err := readInputTyped(ctx, args)
+	return body, err
+}
+
+// readInputTyped is readInput, with the Content-Type the proxy answered.
+func readInputTyped(ctx context.Context, args []string) ([]byte, string, error) {
 	input, ok := argAfter(args, "-i")
 	if !ok {
-		return nil, errors.New("no -i")
+		return nil, "", errors.New("no -i")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, input, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	req.Header.Set("Range", "bytes=0-")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return nil, fmt.Errorf("input answered %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("input answered %d", resp.StatusCode)
 	}
-	return body, nil
+	return body, resp.Header.Get("Content-Type"), nil
 }
 
 // frameService is the service under test over a fake ffmpeg.
@@ -182,8 +188,9 @@ func (a answer) code() string {
 // The service reads the video through its own loopback proxy, which reads
 // the allowed https address with the same Range, and answers the one JPEG
 // frame ffmpeg writes. ffmpeg is held to its limits: no stdin, loopback http
-// only, a fast seek before the input, one frame, at most 1920 px, written
-// to its standard output.
+// only, the input read as an MP4 alone (the mov demuxer, its external
+// references off) whatever type the storage names, a fast seek before the
+// input, one frame, at most 1920 px, written to its standard output.
 func TestTheServiceAnswersOneJPEGFrame(t *testing.T) {
 	t.Parallel()
 	video := []byte("not really a video, but the proxy does not care")
@@ -191,10 +198,11 @@ func TestTheServiceAnswersOneJPEGFrame(t *testing.T) {
 	frame := testJPEG(t)
 	var gotArgs []string
 	var read []byte
+	var inputType string
 	server := frameService(t, up, func(ctx context.Context, args []string, stdout, _ io.Writer) error {
 		gotArgs = args
 		var err error
-		if read, err = readInput(ctx, args); err != nil {
+		if read, inputType, err = readInputTyped(ctx, args); err != nil {
 			return err
 		}
 		_, err = stdout.Write(frame)
@@ -207,6 +215,16 @@ func TestTheServiceAnswersOneJPEGFrame(t *testing.T) {
 	}
 	if !bytes.Equal(read, video) {
 		t.Fatalf("ffmpeg read %q through the proxy", read)
+	}
+	if inputType != "application/octet-stream" {
+		t.Fatalf("the proxy answered ffmpeg Content-Type %q, not the fixed application/octet-stream (the storage said video/mp4)", inputType)
+	}
+	format := slices.Index(gotArgs, "-f")
+	if format < 0 || format+1 >= len(gotArgs) || gotArgs[format+1] != "mov" || format > slices.Index(gotArgs, "-i") {
+		t.Fatalf("args %v: want -f mov before -i", gotArgs)
+	}
+	if drefs := slices.Index(gotArgs, "-enable_drefs"); drefs < 0 || gotArgs[drefs+1] != "0" || drefs > slices.Index(gotArgs, "-i") {
+		t.Fatalf("args %v: want -enable_drefs 0 before -i", gotArgs)
 	}
 	if seen := up.seen(); len(seen) != 1 || seen[0] != "GET /bucket/videos/a.mp4 bytes=0-" {
 		t.Fatalf("upstream saw %v", seen)
@@ -221,13 +239,15 @@ func TestTheServiceAnswersOneJPEGFrame(t *testing.T) {
 	for flag, want := range map[string]string{
 		"-protocol_whitelist": "http,tcp",
 		"-frames:v":           "1",
-		"-f":                  "image2pipe",
 		"-c:v":                "mjpeg",
 		"-threads":            "1",
 	} {
 		if got, _ := argAfter(gotArgs, flag); got != want {
 			t.Errorf("%s %q, want %q (args %v)", flag, got, want, gotArgs)
 		}
+	}
+	if output := gotArgs[slices.Index(gotArgs, "-i"):]; !slices.Contains(output, "image2pipe") {
+		t.Errorf("args %v: want the frame written as image2pipe", gotArgs)
 	}
 	if !slices.Contains(gotArgs, "-nostdin") || gotArgs[len(gotArgs)-1] != "pipe:1" {
 		t.Errorf("args %v: want -nostdin and the frame on pipe:1", gotArgs)

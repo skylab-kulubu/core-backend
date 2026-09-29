@@ -20,6 +20,12 @@ const maxAllocBytes = 256 << 20
 //   - only the loopback proxy's http (-protocol_whitelist http,tcp): no
 //     file, no other protocol, and never the network beyond the proxy;
 //   - one decoding thread, and no allocation above maxAllocBytes;
+//   - the input read as an MP4 alone (-f mov, the mov/mp4 demuxer), with its
+//     external data references off (-enable_drefs 0): ffmpeg never guesses
+//     the format from the content or a MIME type. -protocol_whitelist
+//     limits protocols, not hosts: a playlist (HLS), a concat list or a
+//     reference ffmpeg took the input for would open other http addresses
+//     on the internal network, past the proxy;
 //   - -ss before -i: a fast seek, to the keyframe before at, by the
 //     video's index (a faststart MP4's moov is read first);
 //   - the first video stream only, one frame, no audio, subtitles or data;
@@ -32,6 +38,7 @@ func ffmpegArgs(input string, at time.Duration, maxDimension int) []string {
 		"-max_alloc", fmt.Sprint(maxAllocBytes),
 		"-protocol_whitelist", "http,tcp",
 		"-threads", "1",
+		"-f", "mov", "-enable_drefs", "0",
 		"-ss", fmt.Sprintf("%d.%03d", at/time.Second, (at%time.Second)/time.Millisecond),
 		"-i", input,
 		"-map", "0:v:0", "-frames:v", "1", "-an", "-sn", "-dn",
