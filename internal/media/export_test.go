@@ -14,7 +14,12 @@ var (
 	FaststartCopyKey  = faststartCopyKey
 	VideoOriginalOf   = videoOriginalOf
 	CopiesPrefix      = faststartCopiesPrefix
+	LookupKeyOf       = lookupKeyOf
 )
+
+// LookUpKeysSQL is the address lookup's query: keys ($1) and the asking
+// product ($2).
+const LookUpKeysSQL = lookUpKeysSQL
 
 // BackfillOneLegacyPurpose runs the purpose backfill's step for one Media,
 // with its real lock, read and write, and calls locked once the Media row is

@@ -241,6 +241,10 @@ type Store interface {
 	// HeldBy reports whether the product (owner_service) has any Media
 	// attachment to the Media.
 	HeldBy(ctx context.Context, mediaID uuid.UUID, product authz.Product) (bool, error)
+	// LookUpKeys returns, in one read, the Media whose lookup key is one of
+	// keys, archived and purged ones too, each with whether the product
+	// holds a Media attachment to it.
+	LookUpKeys(ctx context.Context, keys []string, product authz.Product) ([]KeyMatch, error)
 	// GetAttachment returns the Media's attachment with this id; ErrNotFound
 	// when the Media has none.
 	GetAttachment(ctx context.Context, mediaID, attachmentID uuid.UUID) (Attachment, error)
