@@ -67,7 +67,9 @@ func (f *eventFilesEnv) uploadFile(t *testing.T, token, purpose, name string, fi
 	req := httptest.NewRequest(fiber.MethodPost, "/v1/media", &body)
 	req.Header.Set("Content-Type", form.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := f.app.Test(req)
+	// No deadline: re-encoding a large image and making its sizes takes
+	// longer than app.Test's default second under -race and a busy suite.
+	resp, err := f.app.Test(req, fiber.TestConfig{Timeout: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
