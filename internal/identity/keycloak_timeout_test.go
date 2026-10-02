@@ -251,7 +251,9 @@ func TestKeycloakFailedTokenRequestIsRetriedByTheNextCall(t *testing.T) {
 	t.Parallel()
 
 	fake := newSlowKeycloak(t, &slowKeycloak{hangFirstTokenRequests: 1})
-	dir := fake.directory(200 * time.Millisecond)
+	// Long enough that the second call, which Keycloak answers at once, never
+	// meets the timeout on a busy machine.
+	dir := fake.directory(time.Second)
 
 	err := within(t, 5*time.Second, "the first call", func() error { _, err := dir.ListGroups(context.Background()); return err })
 	if !endedAtItsDeadline(err) {
