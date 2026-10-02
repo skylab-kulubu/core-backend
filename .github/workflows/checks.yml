@@ -1,0 +1,81 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push to the same pull request makes the older run pointless.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The job's name is the check's name, which is what a branch protection rule
+  # asks for.
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # The integration tests start their own throwaway containers through the
+      # runner's Docker (internal/testpostgres, testredis, clamdtest and the
+      # OpenBao test), so there is no `services:` database to configure. The
+      # database fixture defaults to the version deploy/compose.yaml runs (17);
+      # production runs PostgreSQL 18, so CI tests against that.
+      CORE_TEST_POSTGRES_IMAGE: postgres:18-alpine
+    steps:
+      # The tests pull what they need on first use. Starting the pulls now,
+      # while Go downloads and builds, keeps the large ClamAV image off the
+      # tests' clock. A pull that fails here is not fatal; the last step
+      # catches any test that then skipped for it.
+      - name: Start pulling the images the integration tests use
+        run: |
+          for image in "$CORE_TEST_POSTGRES_IMAGE" redis:7-alpine openbao/openbao:2.7.0 clamav/clamav:1.5.4-debian; do
+            nohup docker pull --quiet "$image" >/dev/null 2>&1 &
+          done
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # The binaries the Dockerfiles build, the way they build them.
+      - name: go build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          go build -o "$RUNNER_TEMP/bin/" ./cmd/core-backend ./cmd/media-frame
+
+      - name: go test -race
+        shell: bash
+        run: go test -race -count=1 -v ./... 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+      # A test that cannot reach Docker skips itself and the run stays green.
+      # Here that would mean the database tests did not run, so it fails.
+      - name: No test may skip for want of Docker
+        run: |
+          if grep -E '^\s+[a-z_0-9]+\.go:[0-9]+: docker (not available|run |create |start )' "$RUNNER_TEMP/test.log"; then
+            echo "A test skipped itself for want of Docker; see above."
+            exit 1
+          fi
