@@ -1,6 +1,10 @@
 package identity
 
-import "github.com/Nerzal/gocloak/v13"
+import (
+	"time"
+
+	"github.com/Nerzal/gocloak/v13"
+)
 
 func FlattenGroupsForTest(gs []*gocloak.Group) []Group {
 	return flattenGroups(gs)
@@ -12,4 +16,8 @@ func PersonFromForTest(u *gocloak.User) (Person, error) {
 
 func ClientRolesFromMappingsForTest(m *gocloak.MappingsRepresentation) []ClientRole {
 	return clientRolesFromMappings(m)
+}
+
+func (k *Keycloak) TimeoutForTest() time.Duration {
+	return k.timeout
 }
