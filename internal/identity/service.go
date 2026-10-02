@@ -46,6 +46,7 @@ type service struct {
 	mail                  mail.Mailer
 	accountErasureEnabled bool
 	accessProjector       DeletionProjector
+	groupCache            GroupCache
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer, mailers ...mail.Mailer) Service {
@@ -55,6 +56,10 @@ func NewService(dir Directory, users user.Store, az authz.Authorizer, mailers ..
 type Options struct {
 	AccountErasureEnabled bool
 	AccessProjector       DeletionProjector
+	// GroupCache is what core remembers of people's Groups for Group
+	// overage tokens (OverageGroups). The service's membership writes and
+	// Group renames drop it at once. Nil remembers nothing.
+	GroupCache GroupCache
 }
 
 type DeletionProjector interface {
@@ -66,6 +71,7 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		dir: dir, users: users, assign: user.NewService(users, dir), authz: az,
 		accountErasureEnabled: options.AccountErasureEnabled,
 		accessProjector:       options.AccessProjector,
+		groupCache:            options.GroupCache,
 	}
 	if len(mailers) > 0 {
 		s.mail = mailers[0]
@@ -125,6 +131,10 @@ func (s *service) UpdateGroup(ctx context.Context, p authz.Principal, groupRef, 
 	if err != nil {
 		return Group{}, err
 	}
+	if name != "" && name != g.Name {
+		// A new name is a new path for the Group and everything under it.
+		defer s.forgetAllGroups()
+	}
 	if name != "" {
 		g.Name = name
 	}
@@ -153,6 +163,8 @@ func (s *service) AddMember(ctx context.Context, p authz.Principal, groupRef str
 	if err := s.allow(p, authz.TypeGroup, authz.Update); err != nil {
 		return err
 	}
+	// Forgotten even when the write fails: it may have reached Keycloak.
+	defer s.forgetGroups(userID)
 	return s.dir.AddMember(ctx, groupRef, userID)
 }
 
@@ -160,6 +172,7 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 	if err := s.allow(p, authz.TypeGroup, authz.Update); err != nil {
 		return err
 	}
+	defer s.forgetGroups(userID)
 	g, err := s.dir.GetGroup(ctx, groupRef)
 	if err != nil {
 		return err
@@ -174,6 +187,18 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 		}
 	}
 	return s.dir.RemoveMember(ctx, g.ID, userID)
+}
+
+func (s *service) forgetGroups(userID uuid.UUID) {
+	if s.groupCache != nil {
+		s.groupCache.Forget(userID)
+	}
+}
+
+func (s *service) forgetAllGroups() {
+	if s.groupCache != nil {
+		s.groupCache.ForgetAll()
+	}
 }
 
 func (s *service) ListClientRoles(ctx context.Context, p authz.Principal) ([]ClientRole, error) {
