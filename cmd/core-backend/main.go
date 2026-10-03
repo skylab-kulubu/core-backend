@@ -27,6 +27,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
@@ -82,6 +83,11 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("trusted proxy ranges: %s", trustedProxies)
+	guestApplyIPLimit, err := handlers.ParseGuestApplyLimitMode(os.Getenv(handlers.GuestApplyLimitModeEnv))
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("guest apply per-address limit: %s", guestApplyIPLimit)
 
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
@@ -595,11 +601,13 @@ func main() {
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},
-		TrustedProxies:     trustedProxies,
-		MediaUploadLimiter: media.NewUploadLimiter(uploadLimits, time.Now),
-		ServiceClients:     serviceClients,
-		GroupOverage:       overageGroups,
-		GithubActivity:     githubActivity,
+		TrustedProxies:          trustedProxies,
+		MediaUploadLimiter:      media.NewUploadLimiter(uploadLimits, time.Now),
+		ServiceClients:          serviceClients,
+		GroupOverage:            overageGroups,
+		GuestApplyMetrics:       handlers.NewGuestApplyMetrics(),
+		GuestApplyPublicIPLimit: guestApplyIPLimit,
+		GithubActivity:          githubActivity,
 	})
 
 	addr := os.Getenv("PORT")

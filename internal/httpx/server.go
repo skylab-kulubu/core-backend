@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -77,6 +78,14 @@ type Deps struct {
 	// MediaLookupsPerMinute is each product's address lookup budget. Zero
 	// uses handlers.DefaultMediaLookupsPerMinute.
 	MediaLookupsPerMinute int
+
+	// GuestApplyMetrics counts Guest apply requests by caller class and
+	// outcome, and serves them on /v1/metrics. Nil counts into nothing.
+	GuestApplyMetrics *handlers.GuestApplyMetrics
+
+	// GuestApplyPublicIPLimit is what Guest apply's per-address budget does
+	// when it runs out (GUEST_APPLY_PUBLIC_IP_LIMIT_MODE). Empty enforces.
+	GuestApplyPublicIPLimit handlers.GuestApplyLimitMode
 
 	// GroupOverage reads the Groups of a person whose token carries the
 	// Group overage marker instead of the groups claim (ADR-0059), and
@@ -154,7 +163,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil {
+	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -163,6 +172,7 @@ func New(deps Deps) *fiber.App {
 				text += deps.AccountErasureMetrics.Prometheus()
 			}
 			text += deps.GroupOverage.Prometheus()
+			text += deps.GuestApplyMetrics.Prometheus()
 			return c.SendString(text)
 		})
 	}
@@ -198,12 +208,30 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/account-deletion-requests/status", selfDeletion.Status)
 		app.Post("/v1/account-deletion-requests/status/retry", selfDeletion.Retry)
 	}
-	app.Post("/v1/events/:eventId/applications/guest", tickets.ApplyGuest)
+	// Guest apply takes a token but does not require one (docs/guest-apply.md):
+	// an invalid token leaves the request anonymous, so the route stays ahead
+	// of Bearer, which would answer it 401. A valid one meets the same account
+	// access gate and Group overage step as on every other route.
+	parseToken := authn.WithServiceProducts(deps.ParseToken, deps.ServiceClients)
+	guestLimits := handlers.DefaultGuestApplyLimits()
+	if deps.GuestApplyPublicIPLimit != "" {
+		guestLimits.PublicIPMode = deps.GuestApplyPublicIPLimit
+	}
+	guestApply := handlers.NewGuestApply(trustedProxies, deps.GuestApplyMetrics, guestLimits, log.Default())
+	guestApplyRoute := []any{
+		middlewares.OptionalBearer(parseToken),
+		middlewares.AccountAccessGate(deps.AccountAccessGate, deps.AccountAccessMetrics),
+		middlewares.GroupOverage(deps.GroupOverage),
+	}
+	for _, limit := range guestApply.Limits() {
+		guestApplyRoute = append(guestApplyRoute, limit)
+	}
+	app.Post("/v1/events/:eventId/applications/guest", guestApply.Observe, append(guestApplyRoute, tickets.ApplyGuest)...)
 	// A read link opens a private Media without a sign-in: the token in it is
 	// the permission (docs/media-lifecycle.md). The budget follows the
 	// opener's address, like the public certificate routes.
 	app.Get("/v1/media/:id/content", perClientLimit(trustedProxies), mediaH.Content)
-	app.Use(middlewares.Bearer(authn.WithServiceProducts(deps.ParseToken, deps.ServiceClients)))
+	app.Use(middlewares.Bearer(parseToken))
 	app.Use(middlewares.AccountAccessGate(deps.AccountAccessGate, deps.AccountAccessMetrics))
 	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Get("/v1/go/:alias/:channel", urls.RedirectChannel)

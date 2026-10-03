@@ -58,6 +58,11 @@ func (s *PostgresStore) Create(ctx context.Context, t Ticket) (Ticket, error) {
 	if subjectlock.IsInactiveAccountReference(err) {
 		return Ticket{}, ErrNotFound
 	}
+	if isUnique(err) {
+		// The Event already has a Ticket for the owner or the guest e-mail,
+		// written since the caller looked.
+		return Ticket{}, ErrConflict
+	}
 	if err != nil {
 		return Ticket{}, err
 	}
