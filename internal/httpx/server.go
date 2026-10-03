@@ -77,6 +77,12 @@ type Deps struct {
 	// MediaLookupsPerMinute is each product's address lookup budget. Zero
 	// uses handlers.DefaultMediaLookupsPerMinute.
 	MediaLookupsPerMinute int
+
+	// GroupOverage reads the Groups of a person whose token carries the
+	// Group overage marker instead of the groups claim (ADR-0059), and
+	// serves its counters on /v1/metrics. Nil refuses every marked token
+	// with 503; tokens with their groups claim do not use it.
+	GroupOverage *identity.OverageGroups
 }
 
 func New(deps Deps) *fiber.App {
@@ -143,7 +149,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil {
+	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -151,6 +157,7 @@ func New(deps Deps) *fiber.App {
 			if deps.AccountErasureMetrics != nil {
 				text += deps.AccountErasureMetrics.Prometheus()
 			}
+			text += deps.GroupOverage.Prometheus()
 			return c.SendString(text)
 		})
 	}
@@ -195,6 +202,10 @@ func New(deps Deps) *fiber.App {
 	app.Use(middlewares.AccountAccessGate(deps.AccountAccessGate, deps.AccountAccessMetrics))
 	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Get("/v1/go/:alias/:channel", urls.RedirectChannel)
+	// Before JIT and every product route: a Group overage token gets its
+	// Groups, or the request stops here. The short-link hops above use no
+	// Group and keep working while Keycloak is unreachable.
+	app.Use(middlewares.GroupOverage(deps.GroupOverage))
 	app.Use(jit.Handle)
 
 	if pass != nil {
