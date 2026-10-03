@@ -3,6 +3,7 @@ package account_test
 import (
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +30,8 @@ func TestErasureSagaWaitsForTheTokenWindowBeforeCallingAnUngatedService(t *testi
 
 	f := newSagaFixture(t, user.NewMemoryStore())
 	start := f.now
-	worker := f.sagaWith(withRegistryWaits(f.group()))
+	// The group carries no wait of its own: the registry's floor applies.
+	worker := f.sagaAsProduction(f.group())
 	if worked, err := f.run(worker); !worked || err == nil {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
@@ -138,4 +140,68 @@ func TestServiceErasureAFailureNamesTheFailedServiceNotTheWaitingOne(t *testing.
 		t.Fatalf("cms called %d times inside the token window", got)
 	}
 	f.assertNoPersonalData()
+}
+
+// Past the deferral horizon a pure wait is still refunded and comes back when
+// the window ends: it is bounded by the window, not by a service's answer.
+func TestErasureSagaWaitPastTheHorizonSpendsNoAttempt(t *testing.T) {
+	t.Parallel()
+
+	f := newSagaFixture(t, user.NewMemoryStore())
+	// The worker reaches the request 72 hours after it was made (the
+	// horizon is 48), so the identity closes now.
+	f.now = f.now.Add(72 * time.Hour)
+	closed := f.now
+	worker := f.sagaAsProduction(f.group())
+	if worked, err := f.run(worker); !worked || err == nil {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	// Spending attempts here sent the request to manual intervention after
+	// eight 30-second retries, all inside the window.
+	state := f.state()
+	if state.Status != user.DeletionRequestPending || state.AttemptCount != 0 || state.LastErrorCode != "erase_cms_waiting" ||
+		!state.NextAttemptAt.Equal(closed.Add(6*time.Minute)) {
+		t.Fatalf("waiting request = %+v", state)
+	}
+	f.now = state.NextAttemptAt
+	if worked, err := f.run(worker); !worked || err != nil {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	if state := f.state(); state.Status != user.DeletionRequestCompleted || state.AttemptCount != 1 {
+		t.Fatalf("request = %+v", state)
+	}
+	if got := f.services[user.DeletionStepEraseCMS].callCount(); got != 1 {
+		t.Fatalf("cms called %d times", got)
+	}
+}
+
+func TestIdentityClosedAtCapsAFutureTimeAndTakesNowForNone(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	future := now.Add(2 * time.Hour)
+	blocked := now.Add(-time.Minute)
+	disabled := now.Add(-30 * time.Second)
+
+	cases := []struct {
+		name        string
+		request     user.DeletionRequest
+		checkpoints map[user.DeletionStep]time.Time
+		want        time.Time
+	}{
+		{"latest of block and identity checkpoints", user.DeletionRequest{PlatformBlockedAt: &blocked},
+			map[user.DeletionStep]time.Time{user.DeletionStepDisableIdentity: disabled}, disabled},
+		{"nothing known is now", user.DeletionRequest{}, nil, now},
+		{"a future block is capped", user.DeletionRequest{PlatformBlockedAt: &future}, nil, now.Add(account.ClosedAtTolerance)},
+		{"a future checkpoint is capped", user.DeletionRequest{PlatformBlockedAt: &blocked},
+			map[user.DeletionStep]time.Time{user.DeletionStepLogoutSessions: future}, now.Add(account.ClosedAtTolerance)},
+	}
+	for _, tc := range cases {
+		if got := account.IdentityClosedAt(tc.request, tc.checkpoints, now); !got.Equal(tc.want) {
+			t.Fatalf("%s: closed at %s, want %s", tc.name, got, tc.want)
+		}
+	}
+	if !strings.HasPrefix(account.ClosedAtTolerance.String(), "1m") {
+		t.Fatalf("tolerance = %s", account.ClosedAtTolerance)
+	}
 }

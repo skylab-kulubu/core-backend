@@ -3,7 +3,9 @@ package account
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -75,6 +77,13 @@ type serviceFailure struct {
 // worker without every service URL (erasure.ConfigFromEnv); this keeps a
 // worker built any other way from treating a service as erased.
 func registryServices(configured ServiceErasure) ServiceErasure {
+	return registryServicesWith(configured, true)
+}
+
+// registryServicesWith is registryServices; with registryWaits each step
+// waits at least its registry entry's WaitAfterIdentityClosed, so a worker
+// built without NewServiceErasure cannot call the CMS inside the token window.
+func registryServicesWith(configured ServiceErasure, registryWaits bool) ServiceErasure {
 	services := ServiceErasure{Addresses: configured.Addresses}
 	for _, entry := range erasure.Registry() {
 		step := ServiceStep{Step: entry.Step, Sender: unconfiguredService{step: entry.Step}}
@@ -83,6 +92,9 @@ func registryServices(configured ServiceErasure) ServiceErasure {
 				step.Sender = candidate.Sender
 				step.WaitAfterIdentityClosed = candidate.WaitAfterIdentityClosed
 			}
+		}
+		if registryWaits {
+			step.WaitAfterIdentityClosed = max(step.WaitAfterIdentityClosed, entry.WaitAfterIdentityClosed)
 		}
 		services.Steps = append(services.Steps, step)
 	}
@@ -121,12 +133,21 @@ func (e notYetDue) Error() string {
 }
 func (e notYetDue) RetryAt() time.Time { return e.at }
 
+// closedAtTolerance bounds how far in the future a stored close time may lie
+// (clock skew between the database and this worker) before it is capped: a
+// time far ahead would otherwise hold the step back, refund after refund.
+const closedAtTolerance = time.Minute
+
+// futureCloseLogged keeps the capped-close log line to one per request.
+var futureCloseLogged sync.Map
+
 // identityClosedAt is when the person's last token could have been issued:
 // the latest of the platform block and the disable_identity and
 // logout_sessions checkpoints. Keycloak does not read the account access
 // marker, so a session could still mint an access token between the block
-// and the disable.
-func identityClosedAt(request user.DeletionRequest, checkpoints map[user.DeletionStep]time.Time) time.Time {
+// and the disable. With none of them known it is now; a time beyond
+// now+closedAtTolerance is capped there.
+func identityClosedAt(request user.DeletionRequest, checkpoints map[user.DeletionStep]time.Time, now time.Time) time.Time {
 	var closed time.Time
 	if request.PlatformBlockedAt != nil {
 		closed = *request.PlatformBlockedAt
@@ -135,6 +156,16 @@ func identityClosedAt(request user.DeletionRequest, checkpoints map[user.Deletio
 		if at := checkpoints[step]; at.After(closed) {
 			closed = at
 		}
+	}
+	if closed.IsZero() {
+		return now
+	}
+	if limit := now.Add(closedAtTolerance); closed.After(limit) {
+		if _, seen := futureCloseLogged.LoadOrStore(request.ID, true); !seen {
+			log.Printf("account erasure request_id=%s: identity close time is %s ahead of this worker's clock; capped at %s",
+				request.ID, closed.Sub(now).Round(time.Second), closedAtTolerance)
+		}
+		return limit
 	}
 	return closed
 }
@@ -167,7 +198,7 @@ func (w *Worker) runServiceErasure(ctx context.Context, request user.DeletionReq
 	var waiting []serviceFailure
 	for _, step := range pending {
 		if step.WaitAfterIdentityClosed > 0 {
-			if at := identityClosedAt(request, pass.checkpoints).Add(step.WaitAfterIdentityClosed); now.Before(at) {
+			if at := identityClosedAt(request, pass.checkpoints, now).Add(step.WaitAfterIdentityClosed); now.Before(at) {
 				waiting = append(waiting, serviceFailure{step: step.Step, err: notYetDue{step: step.Step, at: at}})
 				continue
 			}
@@ -240,16 +271,21 @@ func classifyServiceFailures(failures []serviceFailure) (code string, permanent 
 		}
 	}
 	code = string(failures[0].step) + "_failed"
-	if _, waits := failures[0].err.(notYetDue); waits {
+	_, waiting := failures[0].err.(notYetDue)
+	if waiting {
 		code = string(failures[0].step) + "_waiting"
 	}
-	return code, false, deferredServiceErasure{message: message, at: earliest}
+	return code, false, deferredServiceErasure{message: message, at: earliest, waiting: waiting}
 }
 
 type deferredServiceErasure struct {
 	message string
 	at      time.Time
+	// waiting: every failure only waits for a token window. The wait ends at
+	// a known time, so it is refunded past the deferral horizon too.
+	waiting bool
 }
 
 func (e deferredServiceErasure) Error() string      { return e.message }
 func (e deferredServiceErasure) RetryAt() time.Time { return e.at }
+func (e deferredServiceErasure) Waiting() bool      { return e.waiting }

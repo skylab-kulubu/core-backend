@@ -265,13 +265,18 @@ func (w *Worker) retry(ctx context.Context, request user.DeletionRequest, now ti
 	var deferred interface{ RetryAt() time.Time }
 	var progress interface{ Progressed() bool }
 	progressed := errors.As(cause, &progress) && progress.Progressed()
+	// A pure wait for a token window (service erasure, ungated service) ends
+	// at a known time: it is refunded past the horizon too, and comes back
+	// exactly when the window ends.
+	var wait interface{ Waiting() bool }
+	waiting := errors.As(cause, &wait) && wait.Waiting()
 	horizon := request.CreatedAt.Add(w.config.DeferredRetryHorizon)
 	withinHorizon := now.Before(horizon)
-	if !permanent && errors.As(cause, &deferred) && (withinHorizon || progressed) {
+	if !permanent && errors.As(cause, &deferred) && (withinHorizon || progressed || waiting) {
 		if retryAt := deferred.RetryAt(); retryAt.After(next) {
 			next = retryAt
 		}
-		if withinHorizon && next.After(horizon) {
+		if withinHorizon && !waiting && next.After(horizon) {
 			next = horizon
 		}
 		// A staged upload can legitimately retain its pre-publication lease for
