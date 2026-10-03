@@ -16,6 +16,7 @@ import (
 	"github.com/Nerzal/gocloak/v13"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/user"
+	"golang.org/x/sync/singleflight"
 )
 
 type KeycloakConfig struct {
@@ -23,7 +24,13 @@ type KeycloakConfig struct {
 	Realm        string
 	ClientID     string
 	ClientSecret string
+	// Timeout bounds each request to Keycloak, token requests included; zero
+	// means DefaultKeycloakTimeout.
+	Timeout time.Duration
 }
+
+// DefaultKeycloakTimeout bounds each request to Keycloak.
+const DefaultKeycloakTimeout = 30 * time.Second
 
 type Keycloak struct {
 	gc           *gocloak.GoCloak
@@ -31,11 +38,23 @@ type Keycloak struct {
 	realm        string
 	clientID     string
 	clientSecret string
+	timeout      time.Duration
+	// login asks Keycloak for the service account's token.
+	login func(ctx context.Context) (*gocloak.JWT, error)
+	// http is for the admin calls made without gocloak; gc has its own
+	// client. Both end a request at timeout.
+	http *http.Client
 
+	// mu guards the fields below and is never held across a request to
+	// Keycloak.
 	mu          sync.Mutex
 	token       string
 	tokenExpiry time.Time
 	clientsByID map[string]string
+
+	// tokenFlight lets the callers that find the token expired share one
+	// request for the next.
+	tokenFlight singleflight.Group
 }
 
 func NewKeycloak(cfg KeycloakConfig) *Keycloak {
@@ -47,33 +66,94 @@ func NewKeycloak(cfg KeycloakConfig) *Keycloak {
 			realm = parts[1]
 		}
 	}
-	return &Keycloak{
-		gc:           gocloak.NewClient(base),
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = DefaultKeycloakTimeout
+	}
+	gc := gocloak.NewClient(base)
+	// resty's client, which gocloak sends every request through, has no
+	// timeout of its own.
+	gc.RestyClient().SetTimeout(timeout)
+	k := &Keycloak{
+		timeout:      timeout,
+		http:         &http.Client{Timeout: timeout},
+		gc:           gc,
 		base:         base,
 		realm:        realm,
 		clientID:     cfg.ClientID,
 		clientSecret: cfg.ClientSecret,
 		clientsByID:  map[string]string{},
 	}
+	k.login = func(ctx context.Context) (*gocloak.JWT, error) {
+		return k.gc.LoginClient(ctx, k.clientID, k.clientSecret, k.realm)
+	}
+	return k
 }
 
+// accessToken answers the service account's token, asking Keycloak for a new
+// one when the held one is about to expire. The request runs outside k.mu, so
+// a Keycloak that stops answering holds up only the callers that need the new
+// token, and each of those leaves when its own ctx ends.
 func (k *Keycloak) accessToken(ctx context.Context) (string, error) {
+	if token, ok := k.cachedToken(); ok {
+		return token, nil
+	}
+	flight := k.tokenFlight.DoChan("token", k.refreshToken)
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case result := <-flight:
+		if result.Err != nil {
+			return "", result.Err
+		}
+		return result.Val.(string), nil
+	}
+}
+
+func (k *Keycloak) cachedToken() (string, bool) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.token != "" && time.Now().Before(k.tokenExpiry) {
-		return k.token, nil
+		return k.token, true
 	}
-	jwt, err := k.gc.LoginClient(ctx, k.clientID, k.clientSecret, k.realm)
+	return "", false
+}
+
+// refreshToken is what the callers waiting for a token share. It belongs to
+// none of them: it must not end because the caller that started it gave up,
+// and it must not keep that caller's request (which fasthttp reuses) alive.
+// It ends at the timeout.
+func (k *Keycloak) refreshToken() (token any, err error) {
+	// singleflight runs this in a goroutine of its own and, should it panic,
+	// panics again there, which ends the whole process. The callers get an
+	// error instead.
+	defer func() {
+		if r := recover(); r != nil {
+			token, err = "", fmt.Errorf("identity: keycloak token request panicked: %v", r)
+		}
+	}()
+	// A refresh may have finished between the caller's check and this one.
+	if cached, ok := k.cachedToken(); ok {
+		return cached, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), k.timeout)
+	defer cancel()
+	// Keycloak dates the token when it issues it, so its life counts from
+	// before the request, not from when the answer arrived.
+	start := time.Now()
+	jwt, err := k.login(ctx)
 	if err != nil {
 		return "", err
 	}
-	k.token = jwt.AccessToken
 	ttl := time.Duration(jwt.ExpiresIn-30) * time.Second
 	if ttl < time.Second {
 		ttl = 30 * time.Second
 	}
-	k.tokenExpiry = time.Now().Add(ttl)
-	return k.token, nil
+	k.mu.Lock()
+	k.token = jwt.AccessToken
+	k.tokenExpiry = start.Add(ttl)
+	k.mu.Unlock()
+	return jwt.AccessToken, nil
 }
 
 func mapKCErr(err error) error {
@@ -376,15 +456,14 @@ func (k *Keycloak) ListUsers(ctx context.Context) ([]Person, error) {
 	out := make([]Person, 0)
 	first := 0
 	const pageSize = 20
-	client := &http.Client{Timeout: 60 * time.Second}
 	for {
 		u := k.base + "/admin/realms/" + k.realm + "/users?first=" + strconv.Itoa(first) + "&max=" + strconv.Itoa(pageSize) + "&briefRepresentation=true"
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := client.Do(req)
+		resp, err := k.http.Do(req)
 		if err != nil {
 			return nil, err
 		}
@@ -438,7 +517,6 @@ func (k *Keycloak) YTUAttributes(ctx context.Context) ([]user.YTUAttributes, err
 	}
 	out := make([]user.YTUAttributes, 0)
 	const pageSize = 100
-	client := &http.Client{Timeout: 60 * time.Second}
 	for first := 0; ; first += pageSize {
 		u := k.base + "/admin/realms/" + url.PathEscape(k.realm) + "/users?first=" + strconv.Itoa(first) +
 			"&max=" + strconv.Itoa(pageSize) + "&briefRepresentation=false"
@@ -447,7 +525,7 @@ func (k *Keycloak) YTUAttributes(ctx context.Context) ([]user.YTUAttributes, err
 			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := client.Do(req)
+		resp, err := k.http.Do(req)
 		if err != nil {
 			return nil, err
 		}
@@ -507,7 +585,7 @@ func (k *Keycloak) SearchUsers(ctx context.Context, query string, limit int) ([]
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	resp, err := k.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
