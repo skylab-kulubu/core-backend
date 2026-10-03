@@ -28,6 +28,9 @@ type fakeCloudflare struct {
 	status int
 	// failBody answers 200 with success false.
 	failBody bool
+	// rejects answers 400, as Cloudflare does for an address it refuses,
+	// to every call naming an address that contains it.
+	rejects string
 }
 
 func (f *fakeCloudflare) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -45,9 +48,14 @@ func (f *fakeCloudflare) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.calls = append(f.calls, body.Files)
 	f.auth = append(f.auth, r.Header.Get("Authorization"))
-	status, failBody := f.status, f.failBody
+	status, failBody, rejects := f.status, f.failBody, f.rejects
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	if rejects != "" && slices.ContainsFunc(body.Files, func(file string) bool { return strings.Contains(file, rejects) }) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":1016,"message":"Invalid url"}]}`))
+		return
+	}
 	if status != 0 {
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":10000,"message":"Authentication error for https://cdn.example.com/x"}]}`))
@@ -196,6 +204,137 @@ func TestCDNPurgerQueuesTheAddressOfAKey(t *testing.T) {
 	want := []string{"https://cdn.example.com/files/0b0c", "https://cdn.example.com/images/a.jpg", "https://cdn.example.com/images/a.jpg/card.jpg"}
 	if got := queue.URLs(); !slices.Equal(got, want) {
 		t.Fatalf("queued %v, want %v", got, want)
+	}
+}
+
+// A key is a path: each of its segments is escaped as a browser asks for
+// it, so the purge names the address the CDN cached.
+func TestCDNPurgerEscapesEachSegmentOfAKey(t *testing.T) {
+	t.Parallel()
+	purger, queue, _ := newPurger(t, media.CloudflarePurge{})
+	if err := purger.QueueKey(context.Background(), "files/a b/ç?#.pdf"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := queue.URLs(), []string{"https://cdn.example.com/files/a%20b/%C3%A7%3F%23.pdf"}; !slices.Equal(got, want) {
+		t.Fatalf("queued %v, want %v", got, want)
+	}
+}
+
+// One address Cloudflare refuses (400) must not hold up the others in its
+// batch: the batch is tried address by address, and the refused one is
+// dropped and counted.
+func TestCDNPurgerDropsAnAddressCloudflareRefusesAndPurgesTheRest(t *testing.T) {
+	t.Parallel()
+	fake, client := newFakeCloudflare(t)
+	purger, queue, _ := newPurger(t, client)
+	ctx := context.Background()
+	for _, key := range []string{"images/a.jpg", "images/bad.jpg", "images/c.jpg"} {
+		if err := purger.QueueKey(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fake.mu.Lock()
+	fake.rejects = "bad"
+	fake.mu.Unlock()
+
+	report, err := purger.Pass(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Purged != 2 || report.Rejected != 1 || report.Failed != 0 || report.Err != nil || len(queue.URLs()) != 0 {
+		t.Fatalf("report %+v, left %v", report, queue.URLs())
+	}
+	if calls := fake.purged(); len(calls) != 4 {
+		t.Fatalf("calls %v: the batch, then each address", calls)
+	}
+	if !strings.Contains(purger.Prometheus(), `skylab_media_cdn_purge_urls_total{outcome="rejected"} 1`+"\n") {
+		t.Fatalf("metrics:\n%s", purger.Prometheus())
+	}
+}
+
+// Each batch reads the clock: a later batch's lease and backoff run from
+// when it was sent, not from when the pass began.
+func TestCDNPurgerTimesEachBatchFromItsOwnStart(t *testing.T) {
+	t.Parallel()
+	queue := media.NewMemoryCDNPurgeQueue()
+	at := &clock{now: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
+	client := &slowClient{clock: at, took: 5 * time.Minute, failFrom: 2}
+	purger, err := media.NewCDNPurger(media.CDNPurgerConfig{Base: "https://cdn.example.com", Queue: queue, Client: client, Now: at.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for i := range media.CDNPurgeBatch + 1 {
+		if err := purger.QueueKey(ctx, fmt.Sprintf("images/%02d.jpg", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := at.Now()
+	if report, err := purger.Pass(ctx); err != nil || report.Purged != media.CDNPurgeBatch || report.Failed != 1 {
+		t.Fatalf("report %+v, err %v", report, err)
+	}
+	// The second batch began five minutes in; its backoff counts from then.
+	at.mu.Lock()
+	at.now = start.Add(5*time.Minute + media.CDNPurgeRetryFirst/2)
+	at.mu.Unlock()
+	if due, _ := queue.ClaimCDNPurges(ctx, at.Now(), time.Second, 10); len(due) != 0 {
+		t.Fatalf("due before its backoff from the batch's start: %v", due)
+	}
+}
+
+// slowClient takes its time on each call (moving the clock) and fails from
+// its failFrom-th call on.
+type slowClient struct {
+	clock    *clock
+	took     time.Duration
+	failFrom int
+	calls    int
+}
+
+func (c *slowClient) PurgeURLs(context.Context, []string) error {
+	c.calls++
+	c.clock.advance(c.took)
+	if c.calls >= c.failFrom {
+		return errors.New("cloudflare down")
+	}
+	return nil
+}
+
+func TestCDNPurgerReportsItsLastSuccess(t *testing.T) {
+	t.Parallel()
+	_, client := newFakeCloudflare(t)
+	purger, _, at := newPurger(t, client)
+	if !strings.Contains(purger.Prometheus(), "skylab_media_cdn_purge_last_success_timestamp_seconds 0\n") {
+		t.Fatalf("before any purge:\n%s", purger.Prometheus())
+	}
+	if err := purger.QueueKey(context.Background(), "images/a.jpg"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := purger.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("skylab_media_cdn_purge_last_success_timestamp_seconds %d\n", at.Now().Unix())
+	if text := purger.Prometheus(); !strings.Contains(text, want) || !strings.Contains(text, "skylab_media_cdn_purge_enabled 1\n") {
+		t.Fatalf("want %q in:\n%s", want, text)
+	}
+}
+
+// Purging off, core says so on /v1/metrics, and whether its settings are
+// wrong (a mistake that turns it off instead of stopping core).
+func TestCDNPurgeOffMetrics(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		off  media.CDNPurgeOff
+		want []string
+	}{
+		{media.CDNPurgeOff{}, []string{"skylab_media_cdn_purge_enabled 0\n", "skylab_media_cdn_purge_misconfigured 0\n"}},
+		{media.CDNPurgeOff{Misconfigured: true}, []string{"skylab_media_cdn_purge_enabled 0\n", "skylab_media_cdn_purge_misconfigured 1\n"}},
+	} {
+		for _, line := range test.want {
+			if !strings.Contains(test.off.Prometheus(), line) {
+				t.Errorf("%+v: missing %q in:\n%s", test.off, line, test.off.Prometheus())
+			}
+		}
 	}
 }
 
@@ -443,6 +582,30 @@ func TestR2_SetMetadataQueuesTheKeyForACDNPurge(t *testing.T) {
 	}
 	if want := []string{"files/club"}; !slices.Equal(recorder.keys, want) {
 		t.Fatalf("queued %v, want %v", recorder.keys, want)
+	}
+}
+
+// A public key is written once, so a write needs no purge, but for an
+// image's size: the size backfill writes it again when it runs again
+// (ticket 17). A size written over one already stored is queued.
+func TestR2_PutQueuesAPurgeOnlyWhenItOverwritesASize(t *testing.T) {
+	t.Parallel()
+	r2, bucket := multipartR2(t)
+	recorder := &keyRecorder{}
+	r2.PurgeCDNOnChange(recorder)
+	ctx := context.Background()
+	jpeg := media.BlobMetadata{ContentType: "image/jpeg"}
+
+	for _, key := range []string{"images/a", "images/a/card.jpg", "images/a/card.jpg", "files/b", "files/b"} {
+		if err := r2.Put(ctx, key, []byte("data"), jpeg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []string{"images/a/card.jpg"}; !slices.Equal(recorder.keys, want) {
+		t.Fatalf("queued %v, want %v", recorder.keys, want)
+	}
+	if heads := bucket.Count("HeadObject"); heads != 5+2 {
+		t.Fatalf("%d HEADs: one after every write, one before each size write", heads)
 	}
 }
 

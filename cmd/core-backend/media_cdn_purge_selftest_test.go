@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -168,5 +169,48 @@ func TestMediaCDNPurgeSelfTestNeedsThePurgeSettings(t *testing.T) {
 	}
 	if strings.Contains(errOut.String(), "token") && !strings.Contains(errOut.String(), media.CDNPurgeTokenEnv) {
 		t.Fatalf("the error names the token: %s", errOut.String())
+	}
+}
+
+// Browsers get max-age=3600 when the header names it among others
+// ("public, max-age=3600"), not when it names a longer one.
+func TestMediaCDNPurgeSelfTestReadsMaxAgeAsADirective(t *testing.T) {
+	for header, ok := range map[string]bool{
+		"max-age=3600": true, "public, max-age=3600": true, "max-age=3600, must-revalidate": true,
+		"max-age=36000": false, "public, max-age=14400": false, "s-maxage=3600": false, "": false,
+	} {
+		if got := hasMaxAge(header, 3600); got != ok {
+			t.Errorf("hasMaxAge(%q) = %v", header, got)
+		}
+	}
+	check, _, _ := selfTestRig(t, "public, max-age=3600", true)
+	var out, errOut bytes.Buffer
+	if code := check.run(context.Background(), &out, &errOut); code != 0 {
+		t.Fatalf("exit %d:\n%s%s", code, out.String(), errOut.String())
+	}
+}
+
+// A test object a check left behind (a killed check cannot delete its own)
+// is deleted by the next check once it is an hour old; a newer one may be
+// another check's, running now.
+func TestMediaCDNPurgeSelfTestSweepsStaleTestObjects(t *testing.T) {
+	check, _, bucket := selfTestRig(t, "max-age=3600", true)
+	ctx := context.Background()
+	stale := fmt.Sprintf("selftest/cdn-purge-%d-%s.png", time.Now().Add(-2*time.Hour).Unix(), "0b0c")
+	fresh := fmt.Sprintf("selftest/cdn-purge-%d-%s.png", time.Now().Add(-time.Minute).Unix(), "0d0e")
+	for _, key := range []string{stale, fresh} {
+		if err := check.store.Put(ctx, key, []byte("png"), media.BlobMetadata{ContentType: "image/png"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out, errOut bytes.Buffer
+	if code := check.run(ctx, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d:\n%s%s", code, out.String(), errOut.String())
+	}
+	if keys := bucket.Keys("media"); len(keys) != 1 || keys[0] != fresh {
+		t.Fatalf("left %v, want only %s", keys, fresh)
+	}
+	if !strings.Contains(out.String(), "SWEPT 1") {
+		t.Fatalf("out:\n%s", out.String())
 	}
 }

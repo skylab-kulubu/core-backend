@@ -98,7 +98,19 @@ func NewR2(cfg R2Config) *R2 {
 	return &R2{client: client, bucket: cfg.Bucket}
 }
 
+// Put stores data at key. A public key is written once: core writes every
+// object at a fresh key (an id), so a write needs no CDN purge. An image's
+// sizes are the exception: the size backfill writes them again when it runs
+// again (ticket 17), so a size written over one already stored is queued
+// for a purge (PurgeCDNOnChange), as a delete is.
 func (r *R2) Put(ctx context.Context, key string, data []byte, meta BlobMetadata) error {
+	overwrites := false
+	if r.cdn != nil && isSizeObjectKey(key) {
+		// Anything but a clear "not there" counts as there: a needless
+		// purge costs nothing, a missed one serves the old size.
+		_, err := r.Size(ctx, key)
+		overwrites = !errors.Is(err, ErrNotFound)
+	}
 	_, err := r.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:             aws.String(r.bucket),
 		Key:                aws.String(key),
@@ -114,7 +126,10 @@ func (r *R2) Put(ctx context.Context, key string, data []byte, meta BlobMetadata
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(key),
 	})
-	return err
+	if err != nil || !overwrites {
+		return err
+	}
+	return r.changed(ctx, key)
 }
 
 // SetMetadata replaces the serving metadata of a stored object without

@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -161,12 +163,34 @@ func (c CloudflarePurge) PurgeURLs(ctx context.Context, urls []string) error {
 	if resp.StatusCode == http.StatusOK && decodeErr == nil && answer.Success {
 		return nil
 	}
-	codes := make([]string, 0, len(answer.Errors))
+	failure := &CDNPurgeError{Status: resp.StatusCode}
 	for _, e := range answer.Errors {
-		codes = append(codes, strconv.Itoa(e.Code))
+		failure.Codes = append(failure.Codes, e.Code)
 	}
-	return fmt.Errorf("media: CDN purge: Cloudflare answered %d (error codes [%s])", resp.StatusCode, strings.Join(codes, " "))
+	return failure
 }
+
+// CDNPurgeError is a purge call Cloudflare answered without success: its
+// HTTP status and error codes, never its messages (which may echo an
+// address).
+type CDNPurgeError struct {
+	Status int
+	Codes  []int
+}
+
+func (e *CDNPurgeError) Error() string {
+	codes := make([]string, len(e.Codes))
+	for i, code := range e.Codes {
+		codes[i] = strconv.Itoa(code)
+	}
+	return fmt.Sprintf("media: CDN purge: Cloudflare answered %d (error codes [%s])", e.Status, strings.Join(codes, " "))
+}
+
+// Refused reports whether Cloudflare refused the request itself (400, such
+// as an address it does not take): the same addresses would be refused
+// again, unlike a failure of its own (5xx), a rate limit (429) or a token it
+// does not accept (401, 403), which a later try can get past.
+func (e *CDNPurgeError) Refused() bool { return e.Status == http.StatusBadRequest }
 
 // CDNPurgeEntry is one queued address.
 type CDNPurgeEntry struct {
@@ -222,9 +246,11 @@ type CDNPurger struct {
 	purged      int64
 	failed      int64
 	dropped     int64
+	rejected    int64
 	queueErrors int64
 	backlog     int
 	oldest      time.Duration
+	lastSuccess time.Time
 }
 
 // NewCDNPurger checks config.
@@ -253,7 +279,7 @@ func (p *CDNPurger) QueueKey(ctx context.Context, key string) error {
 	if key == "" || isAbsoluteURL(key) {
 		return nil
 	}
-	url := p.base + "/" + strings.TrimLeft(key, "/")
+	url := p.base + "/" + escapeKeyPath(strings.TrimLeft(key, "/"))
 	if err := p.queue.EnqueueCDNPurges(ctx, []string{url}, p.now().UTC()); err != nil {
 		p.mu.Lock()
 		p.queueErrors++
@@ -268,30 +294,47 @@ func (p *CDNPurger) QueueKey(ctx context.Context, key string) error {
 	return nil
 }
 
+// escapeKeyPath escapes each segment of a key's path as a browser asks for
+// it, so the address purged is the one the CDN cached.
+func escapeKeyPath(key string) string {
+	segments := strings.Split(key, "/")
+	for i, segment := range segments {
+		segments[i] = neturl.PathEscape(segment)
+	}
+	return strings.Join(segments, "/")
+}
+
 // CDNPurgeReport counts one pass.
 type CDNPurgeReport struct {
-	Purged  int
-	Failed  int
-	Dropped int
+	Purged int
+	Failed int
+	// Rejected are addresses Cloudflare refused (CDNPurgeError.Refused)
+	// when tried alone: dropped, since no later try would take them.
+	Rejected int
+	Dropped  int
 	// Err is the last purge call's failure; the pass's addresses wait for
 	// their backoff.
 	Err error
 }
 
 // Pass drops the addresses past CDNPurgeGiveUpAfter, then purges the due
-// ones in batches of CDNPurgeBatch until none is due. A failed call puts
-// its batch back with backoff and ends the pass. Its error is the queue's
-// (the database's); Cloudflare's is in the report.
+// ones in batches of CDNPurgeBatch until none is due. Each batch reads the
+// clock, so its lease and backoff run from when it is sent. A batch
+// Cloudflare refuses (400) is tried address by address, so one address it
+// will never take does not hold up the others: that one is dropped and
+// counted as rejected. A failed call puts its addresses back with backoff
+// and ends the pass. Its error is the queue's (the database's); Cloudflare's
+// is in the report.
 func (p *CDNPurger) Pass(ctx context.Context) (CDNPurgeReport, error) {
 	var report CDNPurgeReport
-	now := p.now().UTC()
-	dropped, err := p.queue.DropCDNPurges(ctx, now.Add(-CDNPurgeGiveUpAfter))
+	dropped, err := p.queue.DropCDNPurges(ctx, p.now().UTC().Add(-CDNPurgeGiveUpAfter))
 	if err != nil {
 		return report, err
 	}
 	report.Dropped = dropped
 	p.count(func() { p.dropped += int64(dropped) })
 	for range cdnPurgeMaxBatches {
+		now := p.now().UTC()
 		entries, err := p.queue.ClaimCDNPurges(ctx, now, cdnPurgeLease, CDNPurgeBatch)
 		if err != nil {
 			return report, err
@@ -299,41 +342,81 @@ func (p *CDNPurger) Pass(ctx context.Context) (CDNPurgeReport, error) {
 		if len(entries) == 0 {
 			break
 		}
-		urls := make([]string, len(entries))
-		for i, e := range entries {
-			urls[i] = e.URL
-		}
-		callCtx, cancel := context.WithTimeout(ctx, cdnPurgeCallTimeout)
-		purgeErr := p.client.PurgeURLs(callCtx, urls)
-		cancel()
-		if purgeErr != nil {
-			at := make([]time.Time, len(entries))
-			for i, e := range entries {
-				at[i] = now.Add(cdnPurgeBackoff(e.Attempts + 1))
+		purgeErr := p.purge(ctx, entries)
+		var done, refused, failed []CDNPurgeEntry
+		var refusal *CDNPurgeError
+		switch {
+		case purgeErr == nil:
+			done = entries
+		case errors.As(purgeErr, &refusal) && refusal.Refused() && len(entries) == 1:
+			refused = entries
+		case errors.As(purgeErr, &refusal) && refusal.Refused():
+			purgeErr = nil
+			for _, e := range entries {
+				err := p.purge(ctx, []CDNPurgeEntry{e})
+				switch {
+				case err == nil:
+					done = append(done, e)
+				case errors.As(err, &refusal) && refusal.Refused():
+					refused = append(refused, e)
+				default:
+					failed = append(failed, e)
+					purgeErr = err
+				}
 			}
-			if err := p.queue.RetryCDNPurges(ctx, entries, at); err != nil {
-				return report, err
-			}
-			report.Failed += len(entries)
-			report.Err = purgeErr
-			p.count(func() { p.failed += int64(len(entries)) })
-			break
+		default:
+			failed = entries
 		}
-		if err := p.queue.CompleteCDNPurges(ctx, entries); err != nil {
+		// A refused address is removed like a purged one: nothing more is
+		// owed to it.
+		if err := p.queue.CompleteCDNPurges(ctx, append(slices.Clip(done), refused...)); err != nil {
 			return report, err
 		}
-		report.Purged += len(entries)
-		p.count(func() { p.purged += int64(len(entries)) })
+		if len(failed) > 0 {
+			at := make([]time.Time, len(failed))
+			for i, e := range failed {
+				at[i] = now.Add(cdnPurgeBackoff(e.Attempts + 1))
+			}
+			if err := p.queue.RetryCDNPurges(ctx, failed, at); err != nil {
+				return report, err
+			}
+		}
+		report.Purged += len(done)
+		report.Rejected += len(refused)
+		report.Failed += len(failed)
+		p.count(func() {
+			p.purged += int64(len(done))
+			p.rejected += int64(len(refused))
+			p.failed += int64(len(failed))
+			if len(done) > 0 {
+				p.lastSuccess = p.now().UTC()
+			}
+		})
+		if purgeErr != nil {
+			report.Err = purgeErr
+			break
+		}
 		if len(entries) < CDNPurgeBatch {
 			break
 		}
 	}
-	backlog, oldest, err := p.queue.CDNPurgeBacklog(ctx, now)
+	backlog, oldest, err := p.queue.CDNPurgeBacklog(ctx, p.now().UTC())
 	if err != nil {
 		return report, err
 	}
 	p.count(func() { p.backlog, p.oldest = backlog, oldest })
 	return report, nil
+}
+
+// purge has Cloudflare purge the entries' addresses in one call.
+func (p *CDNPurger) purge(ctx context.Context, entries []CDNPurgeEntry) error {
+	urls := make([]string, len(entries))
+	for i, e := range entries {
+		urls[i] = e.URL
+	}
+	callCtx, cancel := context.WithTimeout(ctx, cdnPurgeCallTimeout)
+	defer cancel()
+	return p.client.PurgeURLs(callCtx, urls)
 }
 
 // cdnPurgeBackoff is the wait after the nth failure in a row.
@@ -366,9 +449,10 @@ func (p *CDNPurger) Run(ctx context.Context, logf func(string, ...any)) <-chan s
 			case err != nil && ctx.Err() == nil:
 				logf("media CDN purge: queue: %v", err)
 			case report.Err != nil:
-				logf("media CDN purge: %d purged, %d failed and retried later, %d dropped: %v", report.Purged, report.Failed, report.Dropped, report.Err)
-			case report.Purged+report.Dropped > 0:
-				logf("media CDN purge: %d purged, %d dropped", report.Purged, report.Dropped)
+				logf("media CDN purge: %d purged, %d failed and retried later, %d refused by Cloudflare, %d dropped: %v",
+					report.Purged, report.Failed, report.Rejected, report.Dropped, report.Err)
+			case report.Purged+report.Rejected+report.Dropped > 0:
+				logf("media CDN purge: %d purged, %d refused by Cloudflare, %d dropped", report.Purged, report.Rejected, report.Dropped)
 			}
 			select {
 			case <-ctx.Done():
@@ -390,17 +474,43 @@ func (p *CDNPurger) Prometheus() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var out strings.Builder
+	out.WriteString(cdnPurgeStateMetrics(true, false))
 	out.WriteString("# TYPE skylab_media_cdn_purge_urls_total counter\n")
 	for _, outcome := range []struct {
 		name  string
 		value int64
-	}{{"purged", p.purged}, {"failed", p.failed}, {"dropped", p.dropped}} {
+	}{{"purged", p.purged}, {"failed", p.failed}, {"rejected", p.rejected}, {"dropped", p.dropped}} {
 		fmt.Fprintf(&out, "skylab_media_cdn_purge_urls_total{outcome=%q} %d\n", outcome.name, outcome.value)
 	}
 	fmt.Fprintf(&out, "# TYPE skylab_media_cdn_purge_queue_errors_total counter\nskylab_media_cdn_purge_queue_errors_total %d\n", p.queueErrors)
 	fmt.Fprintf(&out, "# TYPE skylab_media_cdn_purge_backlog gauge\nskylab_media_cdn_purge_backlog %d\n", p.backlog)
 	fmt.Fprintf(&out, "# TYPE skylab_media_cdn_purge_oldest_age_seconds gauge\nskylab_media_cdn_purge_oldest_age_seconds %d\n", int64(p.oldest/time.Second))
+	var last int64
+	if !p.lastSuccess.IsZero() {
+		last = p.lastSuccess.Unix()
+	}
+	fmt.Fprintf(&out, "# TYPE skylab_media_cdn_purge_last_success_timestamp_seconds gauge\nskylab_media_cdn_purge_last_success_timestamp_seconds %d\n", last)
 	return out.String()
+}
+
+// CDNPurgeOff is /v1/metrics for a core whose purge is off: unset, or
+// Misconfigured (settings core could not use, which turn the purge off
+// instead of stopping core; see the startup log).
+type CDNPurgeOff struct {
+	Misconfigured bool
+}
+
+func (o CDNPurgeOff) Prometheus() string { return cdnPurgeStateMetrics(false, o.Misconfigured) }
+
+func cdnPurgeStateMetrics(enabled, misconfigured bool) string {
+	gauge := func(on bool) int {
+		if on {
+			return 1
+		}
+		return 0
+	}
+	return fmt.Sprintf("# TYPE skylab_media_cdn_purge_enabled gauge\nskylab_media_cdn_purge_enabled %d\n"+
+		"# TYPE skylab_media_cdn_purge_misconfigured gauge\nskylab_media_cdn_purge_misconfigured %d\n", gauge(enabled), gauge(misconfigured))
 }
 
 // CDNKeyQueue queues a public object's CDN address for a purge

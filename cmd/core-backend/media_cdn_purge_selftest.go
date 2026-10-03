@@ -10,7 +10,11 @@ import (
 	"image/png"
 	"io"
 	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,7 +26,7 @@ import (
 // instead of running the server: `core-backend media-cdn-purge-selftest
 // [-wait 90s]` (media redesign ticket 29). Inside core's container it
 // stores a 1x1 PNG in the public bucket at a fresh key
-// (selftest/cdn-purge-<uuid>.png), fetches it from the CDN until the CDN
+// (selftest/cdn-purge-<unix time>-<uuid>.png), fetches it from the CDN until the CDN
 // answers it from its cache (cf-cache-status HIT) and reads the
 // Cache-Control browsers get, then deletes it the way core deletes every
 // object: through the public bucket, which queues its address in the
@@ -34,10 +38,25 @@ import (
 // it itself, so no copy is left behind, and exits 1. The deploy check runs
 // it (ops/wizards/cdn-cache-purge-wizard.sh in sky_lab_genel). It prints
 // the test object's address, which is an id and no one's data.
+//
+// SIGTERM or SIGINT ends it early, deleting its object on the way out. A
+// check killed harder leaves its object behind; the next check deletes
+// every test object older than an hour (its key carries its time), and
+// leaves newer ones to the check that may still be running.
+//
+// At its longest it runs 6 fetches of at most 16 s, -wait, a purge of its
+// own and 30 s more, about -wait + 3 min; the wizard allows 6 min.
 const mediaCDNPurgeSelfTestCommandName = "media-cdn-purge-selftest"
 
-// wantBrowserCacheControl is what the Cache Rule gives browsers.
-const wantBrowserCacheControl = "max-age=3600"
+// wantBrowserMaxAge is the max-age the Cache Rule gives browsers.
+const wantBrowserMaxAge = 3600
+
+// selfTestPrefix is where the check stores its test objects; staleSelfTest
+// is the age past which a test object is a dead check's.
+const (
+	selfTestPrefix = "selftest/cdn-purge-"
+	staleSelfTest  = time.Hour
+)
 
 func runMediaCDNPurgeSelfTest(args []string, getenv func(string) string, out, errOut io.Writer) int {
 	flags := flag.NewFlagSet(mediaCDNPurgeSelfTestCommandName, flag.ContinueOnError)
@@ -68,7 +87,9 @@ func runMediaCDNPurgeSelfTest(args []string, getenv func(string) string, out, er
 	if strings.TrimSpace(getenv("DATABASE_URL")) == "" {
 		return fail(2, "%s needs DATABASE_URL (the purge queue)", mediaCDNPurgeSelfTestCommandName)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), *wait+3*time.Minute)
+	signalled, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stopSignals()
+	ctx, cancel := context.WithTimeout(signalled, *wait+3*time.Minute)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, getenv("DATABASE_URL"))
 	if err != nil {
@@ -95,6 +116,7 @@ type cdnSelfTest struct {
 	store interface {
 		Put(ctx context.Context, key string, data []byte, meta media.BlobMetadata) error
 		Delete(ctx context.Context, key string) error
+		ListKeys(ctx context.Context, prefix string) ([]string, error)
 	}
 	// purger purges what the running core has not, so no copy is left.
 	purger *media.CDNPurger
@@ -107,7 +129,8 @@ type cdnSelfTest struct {
 
 func (c cdnSelfTest) run(ctx context.Context, out, errOut io.Writer) int {
 	say := func(format string, a ...any) { fmt.Fprintf(out, format+"\n", a...) }
-	key := "selftest/cdn-purge-" + uuid.NewString() + ".png"
+	c.sweep(ctx, say)
+	key := fmt.Sprintf("%s%d-%s.png", selfTestPrefix, time.Now().Unix(), uuid.NewString())
 	address := strings.TrimRight(c.base, "/") + "/" + key
 	sample, err := onePixelPNG()
 	if err != nil {
@@ -150,9 +173,9 @@ func (c cdnSelfTest) run(ctx context.Context, out, errOut io.Writer) int {
 		}
 	}
 	say("CACHE-CONTROL %s", orDash(cacheControl))
-	browserOK := cacheControl == wantBrowserCacheControl
+	browserOK := hasMaxAge(cacheControl, wantBrowserMaxAge)
 	if !browserOK {
-		say("BROWSER TTL WRONG: browsers get %q, the Cache Rule gives %q", cacheControl, wantBrowserCacheControl)
+		say("BROWSER TTL WRONG: browsers get %q, the Cache Rule gives max-age=%d", cacheControl, wantBrowserMaxAge)
 	}
 	if !cached {
 		say("NOT CACHED: the CDN never answered it from its cache; the purge cannot be checked")
@@ -188,6 +211,43 @@ func (c cdnSelfTest) run(ctx context.Context, out, errOut io.Writer) int {
 		say("PURGE FAIL: the CDN still serves it after this check's own purge")
 	}
 	return 1
+}
+
+// sweep deletes the test objects older than staleSelfTest, through the
+// bucket, so each one's purge is queued too.
+func (c cdnSelfTest) sweep(ctx context.Context, say func(string, ...any)) {
+	keys, err := c.store.ListKeys(ctx, selfTestPrefix)
+	if err != nil {
+		say("SWEEP SKIPPED: %v", err)
+		return
+	}
+	swept := 0
+	for _, key := range keys {
+		stamp, _, ok := strings.Cut(strings.TrimPrefix(key, selfTestPrefix), "-")
+		unix, err := strconv.ParseInt(stamp, 10, 64)
+		if !ok || err != nil || time.Since(time.Unix(unix, 0)) < staleSelfTest {
+			continue
+		}
+		if err := c.store.Delete(ctx, key); err != nil {
+			say("SWEEP: %s stays: %v", key, err)
+			continue
+		}
+		swept++
+	}
+	if swept > 0 {
+		say("SWEPT %d stale test objects", swept)
+	}
+}
+
+// hasMaxAge reports whether the Cache-Control header gives browsers
+// exactly max-age=seconds among its directives.
+func hasMaxAge(header string, seconds int) bool {
+	for _, directive := range strings.Split(header, ",") {
+		if strings.EqualFold(strings.TrimSpace(directive), "max-age="+strconv.Itoa(seconds)) {
+			return true
+		}
+	}
+	return false
 }
 
 // waitGone asks the CDN for address every poll until it answers 404, for

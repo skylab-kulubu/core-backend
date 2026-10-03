@@ -2,10 +2,36 @@ package media
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // The CDN purge queue (CDNPurgeQueue) in media_cdn_purges.
+
+// cdnPurgeQueueConns are the queue's own connections.
+const cdnPurgeQueueConns = 2
+
+// NewCDNPurgeQueuePool opens the purge queue's own connections to the
+// database at connString; core gives the queue a PostgresStore over it.
+// The queue must not share core's pool: a blob purge holds one of its
+// connections in a transaction whose reference check takes SHARE locks
+// (on users, events, …) while it deletes the object, and the delete queues
+// the address. Requests waiting on those locks can hold every other
+// connection of a shared pool, and the queue's insert would then wait for
+// one until the purge's timeout, with the locks held all the while. Two
+// connections of its own never wait on core's.
+func NewCDNPurgeQueuePool(ctx context.Context, connString string) (*pgxpool.Pool, error) {
+	config, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		// pgx's error may quote the address, password and all.
+		return nil, errors.New("media: CDN purge queue: the database address cannot be read")
+	}
+	config.MaxConns = cdnPurgeQueueConns
+	config.MinConns = 0
+	return pgxpool.NewWithConfig(ctx, config)
+}
 
 func (s *PostgresStore) EnqueueCDNPurges(ctx context.Context, urls []string, now time.Time) error {
 	if len(urls) == 0 {
