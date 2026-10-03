@@ -110,6 +110,14 @@ func abilityKeys(list []ability) []string {
 const otherTeam = "\x00other"
 
 func (a *authorizer) Capabilities(p Principal) Capabilities {
+	// The same decisions without the disagreement count: one answer checks
+	// every role, which would drown the count of real requests.
+	quiet := *a
+	quiet.metrics = nil
+	return quiet.capabilities(p)
+}
+
+func (a *authorizer) capabilities(p Principal) Capabilities {
 	out := Capabilities{
 		Permissions: []string{},
 		Can:         map[string]bool{},

@@ -62,6 +62,10 @@ type Principal struct {
 	// Client is the Keycloak client the token was issued to (azp). No
 	// decision reads it; it only labels the role mode's disagreement count.
 	Client string
+	// ServiceAccount is true for a client's service account token, never a
+	// person. A service account is never Privileged through a role of the
+	// contract (roles.go), whatever roles it holds.
+	ServiceAccount bool
 }
 
 type Resource struct {

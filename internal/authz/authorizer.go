@@ -91,7 +91,7 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		if action != Read && action != Create && action != Update {
 			return false
 		}
-		return a.privileged(p, RoleURLModerator) || hasRole(p, "url:forms", RoleURLModerator)
+		return a.privilegedGroupOnly(p, RoleURLModerator) || hasRole(p, "url:forms", RoleURLModerator)
 	case TypeCertificate:
 		return a.allowCertificate(p, r, action)
 	case TypeCertificateTemplate:
@@ -387,11 +387,9 @@ func (a *authorizer) allowDoorCheckIn(p Principal, r Resource) bool {
 }
 
 func (a *authorizer) allowURL(p Principal, r Resource, action Action) bool {
-	// The two roles together grant everything the Privileged Groups did;
-	// each is still read on its own below, as before.
-	moderator := a.privileged(p, RoleURLModerator)
-	access := a.privileged(p, RoleURLAccess)
-	if moderator && access {
+	// url:moderator and url:access, read below as before, together grant
+	// every short-link action a Privileged member has.
+	if a.privilegedGroupOnly(p, RoleURLModerator, RoleURLAccess) {
 		return true
 	}
 	switch action {
@@ -442,9 +440,10 @@ func (a *authorizer) Permitted(p Principal, role string) bool {
 // mode, either in the both mode, which counts every check where the two
 // disagree. A role that existed before the contract (url:moderator,
 // url:access) counts in every mode, as it always has, and holding it
-// outside the Privileged Groups is no disagreement.
+// outside the Privileged Groups is no disagreement. A service account
+// never holds a role here: no role makes it Privileged.
 func (a *authorizer) privileged(p Principal, role string) bool {
-	byRole := hasRole(p, role)
+	byRole := hasRole(p, role) && !p.ServiceAccount
 	switch a.mode {
 	case RoleModeRoles:
 		return byRole
@@ -457,6 +456,26 @@ func (a *authorizer) privileged(p Principal, role string) bool {
 	default:
 		return a.privilegedGroup(p) != "" || (byRole && preexistingRole(role))
 	}
+}
+
+// privilegedGroupOnly is the Privileged Group shortcut of a check whose
+// roles are read on their own after it (short links, form links): p's
+// Privileged Group in the groups and both modes, nothing in the roles mode.
+// The both mode counts a Privileged member who lacks one of roles, as
+// privileged does.
+func (a *authorizer) privilegedGroupOnly(p Principal, roles ...string) bool {
+	if a.mode == RoleModeRoles {
+		return false
+	}
+	group := a.privilegedGroup(p)
+	if group != "" && a.mode == RoleModeBoth {
+		for _, role := range roles {
+			if !hasRole(p, role) || p.ServiceAccount {
+				a.metrics.record(role, group, p.Client)
+			}
+		}
+	}
+	return group != ""
 }
 
 // privilegedGroup is the Privileged Group (ADMIN, YK or DK) p is in, itself

@@ -346,10 +346,12 @@ func main() {
 		if warning := identity.CertificateRolesWarning(os.Getenv("KEYCLOAK_CLIENT_ID"), missingRoles, err); warning != "" {
 			log.Print(warning)
 		}
+		// The roles live on the client tokens carry them for
+		// (resource_access.core), whichever client core signs in as.
 		roleContext, cancelRoleCheck = context.WithTimeout(context.Background(), 15*time.Second)
-		missingRoles, err = keycloakDirectory.MissingClientRoles(roleContext, os.Getenv("KEYCLOAK_CLIENT_ID"), authz.PermissionRoles())
+		missingRoles, err = keycloakDirectory.MissingClientRoles(roleContext, authn.ResourceAudience, authz.PermissionRoles())
 		cancelRoleCheck()
-		if warning := identity.PermissionRolesWarning(os.Getenv("KEYCLOAK_CLIENT_ID"), roleMode, missingRoles, err); warning != "" {
+		if warning := identity.PermissionRolesWarning(authn.ResourceAudience, roleMode, missingRoles, err); warning != "" {
 			log.Print(warning)
 		}
 		dir = keycloakDirectory

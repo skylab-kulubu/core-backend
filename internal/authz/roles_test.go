@@ -305,3 +305,81 @@ func TestRoleMetrics_NilIsQuiet(t *testing.T) {
 		t.Fatal("refused")
 	}
 }
+
+// A service account never becomes Privileged through a role of the
+// contract, in any mode; the product and service paths it has today stay.
+func TestAuthorizer_ServiceAccountsGetNoPrivilegeFromRoles(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []RoleMode{RoleModeGroups, RoleModeBoth, RoleModeRoles} {
+		auth := NewAuthorizer(policyIn(mode))
+		svc := Principal{ID: "svc", Client: "some-client", ServiceAccount: true, Roles: PermissionRoles()}
+		for _, c := range roleChecks {
+			if c.role == RoleURLModerator {
+				continue // url:moderator reads form links on its own, as before
+			}
+			if auth.Allow(svc, c.r, c.a) {
+				t.Errorf("%s: service account with every role allowed %s %s", mode, c.r.Type, c.a)
+			}
+		}
+		if got := auth.Capabilities(svc).Permissions; len(got) != 0 {
+			t.Errorf("%s: service account permissions %v", mode, got)
+		}
+		forms := Principal{ID: "svc", Client: "forms", ServiceAccount: true, Product: ProductForms, Roles: []string{"url:forms", "media:attach"}}
+		if !auth.Allow(forms, Resource{Type: TypeFormLink}, Update) {
+			t.Errorf("%s: forms service lost url:forms", mode)
+		}
+		if !auth.Allow(forms, Resource{Type: TypeMediaAttachment}, Create) {
+			t.Errorf("%s: forms service lost media:attach", mode)
+		}
+	}
+}
+
+// Short-link roles grant the short-link actions only; actions the
+// Privileged shortcut used to answer and no short link uses stay refused.
+func TestAuthorizer_URLRolesGrantNoOtherAction(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []RoleMode{RoleModeGroups, RoleModeBoth, RoleModeRoles} {
+		auth := NewAuthorizer(policyIn(mode))
+		both := Principal{ID: "u1", Roles: []string{RoleURLModerator, RoleURLAccess}}
+		for _, a := range []Action{List, Assign, Validate, Issue, Revoke, Upload} {
+			if auth.Allow(both, Resource{Type: TypeURL, OwnerID: "u2"}, a) {
+				t.Errorf("%s: url:moderator + url:access allowed URL %s", mode, a)
+			}
+		}
+	}
+}
+
+// The capabilities answer evaluates every check; it must not count as
+// disagreements.
+func TestAuthorizer_CapabilitiesCountNothing(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	metrics := NewRoleMetrics(log.New(&logs, "", 0), time.Now)
+	auth := NewAuthorizer(policyIn(RoleModeBoth), WithRoleMetrics(metrics))
+	auth.Capabilities(Principal{ID: "u1", Client: "admin", Groups: []string{"/UYELER/YK"}})
+	auth.Capabilities(Principal{ID: "u2", Client: "admin", Roles: []string{RoleSeasonManage}})
+	if text := metrics.Prometheus(); strings.Contains(text, "skylab_authz_role_disagreements_total{") || logs.Len() != 0 {
+		t.Errorf("capabilities counted:\n%s%s", text, logs.String())
+	}
+	// The same authorizer still counts real checks afterwards.
+	auth.Allow(Principal{ID: "u1", Client: "admin", Groups: []string{"/UYELER/YK"}}, Resource{Type: TypeSeason}, Create)
+	if !strings.Contains(metrics.Prometheus(), `permission="season:manage",granted_by="group"`) {
+		t.Error("real check not counted after capabilities")
+	}
+}
+
+// Both modes count a Privileged member lacking a short-link role.
+func TestAuthorizer_BothModeCountsMissingURLRoles(t *testing.T) {
+	t.Parallel()
+	metrics := NewRoleMetrics(log.New(&bytes.Buffer{}, "", 0), time.Now)
+	auth := NewAuthorizer(policyIn(RoleModeBoth), WithRoleMetrics(metrics))
+	if !auth.Allow(Principal{ID: "u1", Client: "admin", Groups: []string{"/ADMIN"}}, Resource{Type: TypeURL, OwnerID: "u2"}, Delete) {
+		t.Fatal("ADMIN refused")
+	}
+	text := metrics.Prometheus()
+	for _, role := range []string{RoleURLModerator, RoleURLAccess} {
+		if !strings.Contains(text, `permission="`+role+`",granted_by="group",client="admin"`) {
+			t.Errorf("%s gap not counted:\n%s", role, text)
+		}
+	}
+}

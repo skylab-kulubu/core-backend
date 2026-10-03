@@ -82,6 +82,16 @@ func (e roleModeEnv) status(t *testing.T, token, method, path, body string) int 
 	return resp.StatusCode
 }
 
+// serviceToken is a client's service account token (client credentials)
+// with core roles.
+func (e roleModeEnv) serviceToken(t *testing.T, roles ...string) string {
+	t.Helper()
+	return e.keys.Token(t, jwt.MapClaims{
+		"sub": uuid.NewString(), "azp": "some-service", "client_id": "some-service",
+		"resource_access": map[string]any{"core": map[string]any{"roles": roles}},
+	})
+}
+
 func (e roleModeEnv) capabilities(t *testing.T, token string) authz.Capabilities {
 	t.Helper()
 	req := httptest.NewRequest(fiber.MethodGet, "/v1/users/me/capabilities", nil)
@@ -162,6 +172,9 @@ func TestRolesModeDecidesFromTheRole(t *testing.T) {
 		}
 		if got := e.status(t, e.token(t, []string{"/UYELER/YK"}), r.method, r.path, r.body); got != fiber.StatusForbidden {
 			t.Errorf("%s %s as YK without roles: %d, want 403", r.method, r.path, got)
+		}
+		if got := e.status(t, e.serviceToken(t, r.role), r.method, r.path, r.body); got != fiber.StatusForbidden {
+			t.Errorf("%s %s as a service account with %s: %d, want 403", r.method, r.path, r.role, got)
 		}
 	}
 
