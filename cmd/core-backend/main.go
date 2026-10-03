@@ -27,6 +27,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
@@ -598,6 +599,7 @@ func main() {
 		MediaUploadLimiter: media.NewUploadLimiter(uploadLimits, time.Now),
 		ServiceClients:     serviceClients,
 		GroupOverage:       overageGroups,
+		GuestApplyMetrics:  handlers.NewGuestApplyMetrics(),
 	})
 
 	addr := os.Getenv("PORT")

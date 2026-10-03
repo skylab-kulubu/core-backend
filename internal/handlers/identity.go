@@ -41,6 +41,16 @@ func caller(c fiber.Ctx) (authz.Principal, error) {
 	}, nil
 }
 
+// optionalCaller is the signed-in caller, or the zero Principal when the
+// request carries no identity.
+func optionalCaller(c fiber.Ctx) authz.Principal {
+	p, err := caller(c)
+	if err != nil {
+		return authz.Principal{}
+	}
+	return p
+}
+
 func identityError(c fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, fiber.ErrUnauthorized):

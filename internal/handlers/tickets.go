@@ -122,6 +122,16 @@ func (h *TicketHandler) SearchDoorAttendees(c fiber.Ctx) error {
 	return c.JSON(attendees)
 }
 
+// guestApplied is Guest apply's answer to a caller who may not see the
+// Ticket. It is the same for a new guest and for one already registered, so
+// the answer does not tell whether the e-mail had applied.
+type guestApplied struct {
+	Status string `json:"status"`
+}
+
+// ApplyGuest is Guest apply (docs/guest-apply.md). The route takes a token
+// but does not require one: an operator of the Event and a product's service
+// identity get the Ticket, as before; anybody else gets guestApplied.
 func (h *TicketHandler) ApplyGuest(c fiber.Ctx) error {
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
@@ -131,13 +141,17 @@ func (h *TicketHandler) ApplyGuest(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	created, err := h.svc.ApplyGuest(c.Context(), eventID, ticket.GuestInfo{
+	applied, err := h.svc.ApplyGuest(c.Context(), optionalCaller(c), eventID, ticket.GuestInfo{
 		FirstName: body.FirstName, LastName: body.LastName, Email: body.Email, PhoneNumber: body.PhoneNumber,
 	})
 	if err != nil {
 		return ticketError(c, err)
 	}
-	return c.Status(fiber.StatusCreated).JSON(created)
+	c.Locals(localsGuestApplyResult, applied.Result)
+	if !applied.Trusted {
+		return c.Status(fiber.StatusCreated).JSON(guestApplied{Status: "applied"})
+	}
+	return c.Status(fiber.StatusCreated).JSON(applied.Ticket)
 }
 
 func (h *TicketHandler) Mine(c fiber.Ctx) error {
