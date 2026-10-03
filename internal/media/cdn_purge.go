@@ -46,7 +46,7 @@ const (
 	CDNPurgeRetryFirst = 10 * time.Second
 	cdnPurgeRetryMax   = 15 * time.Minute
 	// CDNPurgeGiveUpAfter is how long an address is tried: past it, the
-	// CDN's own copy has run out (its edge keeps an object a day at most,
+	// CDN's own copy has run out (its edge keeps an object about two hours,
 	// see docs/media-lifecycle.md), so the address is dropped and counted.
 	CDNPurgeGiveUpAfter = 48 * time.Hour
 	// cdnPurgeLease is how long a pass holds the addresses it took: another

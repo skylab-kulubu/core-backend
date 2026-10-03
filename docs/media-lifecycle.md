@@ -131,12 +131,16 @@ set by a Cloudflare Cache Rule on the two CDN hosts instead, which covers
 every object already stored without rewriting one
 (`ops/wizards/cdn-cache-purge-wizard.sh` in the hub sets and checks it):
 
-- Edge: a `2xx` answer is kept a day (R2 sends no `Cache-Control`, so the
-  rule's default for `2xx` applies); other answers keep Cloudflare's defaults
-  (a `404` a few minutes).
 - Browser: `max-age=3600`, whatever the origin says.
-- Every object on the hosts is eligible, extensionless `files/<id>` too, so
-  the browser time holds for every object.
+- Edge: Cloudflare's defaults, left as they are (R2 sends no `Cache-Control`,
+  so a `2xx` is kept about two hours, a `404` a few minutes). The purge makes
+  a longer edge time safe; it is left for later, once purges have run in
+  production for a while.
+- Every object on the host is eligible, extensionless `files/<id>` too, so
+  the browser time holds for every object. While a side's core does not run
+  the purge yet, the wizard sets a narrower rule there (only paths with an
+  extension, which Cloudflare caches already), so `files/<id>` is not kept
+  at the edge without a purge; `--kural` widens it once the purge runs.
 
 **Purge on change** (media redesign ticket 29). The public bucket queues the
 CDN address (`<CDN_BASE>/<key>`) of every object it deletes, or whose serving
@@ -162,7 +166,7 @@ Cloudflare purge them in one call (`POST /zones/{zone}/purge_cache`;
 Cloudflare takes 100 a call below Enterprise, 30 was its earlier limit), and
 removes them. A failed call puts its batch back, due again after 10 seconds,
 doubling to 15 minutes; an address still queued 48 hours after it was queued
-is dropped and counted (by then the edge's day has run out). A purge never
+is dropped and counted (by then the edge's own copy has long run out). A purge never
 holds up a delete: only a queue that cannot be written (the database) fails
 the delete, which its caller repeats like any failed delete, queuing the
 address again.
