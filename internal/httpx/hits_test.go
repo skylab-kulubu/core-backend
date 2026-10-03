@@ -192,7 +192,7 @@ func TestSessionQRLogoIsPNGAndNotAShortLinkHit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	qrResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/sessions/"+sess.ID.String()+"/qr?logo=1", nil))
+	qrResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/sessions/"+sess.ID.String()+"/qr?logo=1", nil), slowRequest)
 	if err != nil {
 		t.Fatal(err)
 	}

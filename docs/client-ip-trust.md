@@ -55,6 +55,11 @@ about them.
   resolved address of every open as `media_read_link_opens.client_ip`, kept a
   year, and is rate limited on it like the certificate routes (see
   [`media-lifecycle.md`](media-lifecycle.md#access-log)).
+- Guest apply (`POST /v1/events/{eventId}/applications/guest`) limits
+  token-less requests whose resolved address is outside these ranges, per
+  address, and counts token-less requests as internal or public by the same
+  test. The address decides neither what the caller sees nor what it may
+  change ([`guest-apply.md`](guest-apply.md)).
 
 Fiber's `TrustProxy`, `TrustProxyConfig` and `ProxyHeader` are configured from
 the same list, so `c.IP()` and the resolution above can never disagree about
