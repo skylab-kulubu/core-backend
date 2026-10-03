@@ -18,7 +18,7 @@ jobs:
   # asks for.
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       # The integration tests start their own throwaway containers through the
       # runner's Docker (internal/testpostgres, testredis, clamdtest and the
@@ -30,20 +30,25 @@ jobs:
       # The tests pull what they need on first use. Starting the pulls now,
       # while Go downloads and builds, keeps the large ClamAV image off the
       # tests' clock. ffmpeg and ffprobe are for the tests that run the real
-      # tools (they skip themselves without). Neither is fatal if it fails
-      # here; the last step catches any test that then skipped for it.
+      # tools (they skip themselves without); the install leaves
+      # ffmpeg.ok behind, which a later step waits for. A failed image pull
+      # is not fatal here; the last step catches any test that then skipped
+      # for it.
       - name: Start fetching what the integration tests use
         run: |
           for image in "$CORE_TEST_POSTGRES_IMAGE" redis:7-alpine openbao/openbao:2.7.0 clamav/clamav:1.5.4-debian; do
             nohup docker pull --quiet "$image" >/dev/null 2>&1 &
           done
-          nohup sh -c 'sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg' >"$RUNNER_TEMP/ffmpeg-install.log" 2>&1 &
+          nohup sh -c "sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg && touch $RUNNER_TEMP/ffmpeg.ok" >"$RUNNER_TEMP/ffmpeg-install.log" 2>&1 &
 
       - uses: actions/checkout@v7
 
+      # The newest 1.25 patch release, which is what the Dockerfiles build with
+      # (golang:1.25-alpine). go.mod's `go 1.25.0` is only the minimum.
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: "1.25"
+          check-latest: true
           cache: true
 
       - name: gofmt
@@ -69,16 +74,28 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bin"
           go build -o "$RUNNER_TEMP/bin/" ./cmd/core-backend ./cmd/media-frame
 
+      - name: Wait for ffmpeg
+        run: |
+          for _ in $(seq 1 90); do
+            [ -f "$RUNNER_TEMP/ffmpeg.ok" ] && exit 0
+            sleep 2
+          done
+          echo "ffmpeg was not installed within 3 minutes; install log:"
+          cat "$RUNNER_TEMP/ffmpeg-install.log"
+          exit 1
+
+      # -timeout: the default of ten minutes per package is close to what
+      # internal/media takes under -race.
       - name: go test -race
         shell: bash
-        run: go test -race -count=1 -v ./... 2>&1 | tee "$RUNNER_TEMP/test.log"
+        run: go test -race -count=1 -timeout 20m -v ./... 2>&1 | tee "$RUNNER_TEMP/test.log"
 
-      # A test that cannot reach Docker (or ffmpeg) skips itself and the run
-      # stays green. Here that would mean the database or media tests did not
-      # run, so it fails.
-      - name: No test may skip for want of Docker or ffmpeg
+      # A test that cannot reach Docker or ffmpeg skips itself and the run
+      # stays green, which would mean the database or media tests did not
+      # run. No test here skips on purpose, so any skip fails the job.
+      - name: No test may skip
         run: |
-          if grep -E '^\s+[a-z_0-9]+\.go:[0-9]+: (docker (not available|run |create |start )|(ffmpeg|ffprobe) is not installed)' "$RUNNER_TEMP/test.log"; then
-            echo "A test skipped itself for want of Docker or ffmpeg; see above."
+          if grep -E '^\s*--- SKIP' "$RUNNER_TEMP/test.log"; then
+            echo "A test was skipped (often for want of Docker or ffmpeg); see above."
             exit 1
           fi
