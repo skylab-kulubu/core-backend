@@ -438,12 +438,13 @@ func TestService_ApplyGuestFromAdminDoesNotOwnTicket(t *testing.T) {
 	ctx := context.Background()
 	ev := seedEvent(t, events, "WEBLAB")
 
-	created, err := svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{
+	applied, err := svc.ApplyGuest(ctx, weblabLead, ev.ID, ticket.GuestInfo{
 		FirstName: "Ada", LastName: "Lovelace", Email: "ada@example.com", PhoneNumber: "555",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	created := applied.Ticket
 	if created.TicketType != ticket.Guest || created.GuestEmail != "ada@example.com" {
 		t.Fatalf("created %+v", created)
 	}
@@ -458,22 +459,24 @@ func TestService_ApplyGuest(t *testing.T) {
 	ctx := context.Background()
 	ev := seedEvent(t, events, "WEBLAB")
 
-	created, err := svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{
+	applied, err := svc.ApplyGuest(ctx, weblabLead, ev.ID, ticket.GuestInfo{
 		FirstName: "Ada", LastName: "Lovelace", Email: "Ada@Example.com",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	created := applied.Ticket
 	if created.TicketType != ticket.Guest || created.GuestEmail != "ada@example.com" {
 		t.Fatalf("created %+v", created)
 	}
 
-	updated, err := svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{
+	applied, err = svc.ApplyGuest(ctx, weblabLead, ev.ID, ticket.GuestInfo{
 		FirstName: "Augusta", LastName: "Byron", Email: "ADA@example.com", PhoneNumber: "555",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	updated := applied.Ticket
 	if updated.ID != created.ID {
 		t.Fatalf("upsert id %s want %s", updated.ID, created.ID)
 	}
@@ -489,7 +492,7 @@ func TestService_ApplyGuest(t *testing.T) {
 		t.Fatalf("roster %+v", listed)
 	}
 
-	_, err = svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{FirstName: "Ada", Email: "ada@example.com"})
+	_, err = svc.ApplyGuest(ctx, weblabLead, ev.ID, ticket.GuestInfo{FirstName: "Ada", Email: "ada@example.com"})
 	if !errors.Is(err, ticket.ErrInvalid) {
 		t.Fatalf("missing last name: %v", err)
 	}
@@ -670,12 +673,13 @@ func TestService_CheckInGuestByEmail(t *testing.T) {
 		t.Fatal(err)
 	}
 	sess := seedSession(t, events, day.ID, "Opening")
-	created, err := svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{
+	applied, err := svc.ApplyGuest(ctx, weblabLead, ev.ID, ticket.GuestInfo{
 		FirstName: "Ada", LastName: "Lovelace", Email: "ada@example.com", PhoneNumber: "555",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	created := applied.Ticket
 	ci, err := svc.CheckInGuest(ctx, sess.ID, "ada@example.com")
 	if err != nil {
 		t.Fatal(err)
@@ -753,12 +757,13 @@ func TestService_CheckInMissingSessionAndStaffGuest(t *testing.T) {
 	if !errors.Is(err, ticket.ErrNotFound) {
 		t.Fatalf("missing session: %v", err)
 	}
-	guest, err := svc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{
+	applied, err := svc.ApplyGuest(ctx, leader, ev.ID, ticket.GuestInfo{
 		FirstName: "Ada", LastName: "Lovelace", Email: "guest@example.com", PhoneNumber: "555",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	guest := applied.Ticket
 	ci, err := svc.CheckIn(ctx, leader, guest.ID, sess.ID)
 	if err != nil {
 		t.Fatal(err)

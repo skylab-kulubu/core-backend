@@ -20,7 +20,7 @@ type Service interface {
 	ListAssignableUsers(ctx context.Context, p authz.Principal, eventID uuid.UUID, query string) ([]PersonSummary, error)
 	ListDoorEvents(ctx context.Context, p authz.Principal) ([]event.Resource, error)
 	SearchDoorAttendees(ctx context.Context, p authz.Principal, eventID uuid.UUID, query string) ([]DoorAttendee, error)
-	ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo) (Ticket, error)
+	ApplyGuest(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo) (GuestApplication, error)
 	Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 	ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Ticket, error)
 	Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
@@ -516,19 +516,82 @@ func normalizeGuest(g GuestInfo) GuestInfo {
 	return g
 }
 
-func (s *service) ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo) (Ticket, error) {
+// ApplyGuest writes the guest Ticket of g's e-mail on the Event, or finds the
+// one already there (docs/guest-apply.md).
+//
+// Only a trusted caller (guestApplyTrusted) gets the Ticket back and may
+// change an existing guest's name or phone number. Anybody else, the
+// token-less forms hop included, gets the zero Ticket and may only fill a
+// detail the stored Ticket lacks: the route is public, and whoever knows a
+// guest's e-mail and a public Event id must not read the guest's phone number
+// or rename them.
+func (s *service) ApplyGuest(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo) (GuestApplication, error) {
 	g = normalizeGuest(g)
 	if g.FirstName == "" || g.LastName == "" || g.Email == "" {
-		return Ticket{}, ErrInvalid
+		return GuestApplication{}, ErrInvalid
 	}
-	if _, err := s.events.Get(ctx, eventID); err != nil {
+	ev, err := s.events.Get(ctx, eventID)
+	if err != nil {
 		if errors.Is(err, event.ErrNotFound) {
-			return Ticket{}, ErrNotFound
+			return GuestApplication{}, ErrNotFound
 		}
-		return Ticket{}, err
+		return GuestApplication{}, err
 	}
+	trusted := s.guestApplyTrusted(p, ev)
+	applied, err := s.writeGuest(ctx, eventID, g, trusted)
+	if err != nil {
+		return GuestApplication{}, err
+	}
+	applied.Trusted = trusted
+	if trusted {
+		applied.Ticket = s.withEvent(ctx, applied.Ticket)
+	} else {
+		applied.Ticket = Ticket{}
+	}
+	return applied, nil
+}
+
+// guestApplyTrusted reports whether p may see the Ticket a Guest apply wrote
+// and change an existing guest's details: a product's service identity, or an
+// operator of the Event, that is a person who may update the Event or assign
+// its Tickets (Privileged included). The Event hub's "Katılımcı ekle" is
+// offered to exactly those people.
+func (s *service) guestApplyTrusted(p authz.Principal, ev event.Event) bool {
+	if p.Product != "" {
+		return true
+	}
+	if p.ID == "" {
+		return false
+	}
+	return s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update) ||
+		s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign)
+}
+
+func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo, trusted bool) (GuestApplication, error) {
 	existing, err := s.tickets.GetByGuestEvent(ctx, g.Email, eventID)
-	if err == nil {
+	if errors.Is(err, ErrNotFound) {
+		created, createErr := s.tickets.Create(ctx, Ticket{
+			EventID:          eventID,
+			TicketType:       Guest,
+			GuestFirstName:   g.FirstName,
+			GuestLastName:    g.LastName,
+			GuestEmail:       g.Email,
+			GuestPhoneNumber: g.PhoneNumber,
+		})
+		if createErr == nil {
+			return GuestApplication{Ticket: created, Result: GuestCreated}, nil
+		}
+		if !errors.Is(createErr, ErrConflict) {
+			return GuestApplication{}, createErr
+		}
+		// A concurrent application (a double submit) wrote the Ticket since
+		// the read: answer as for one that was already there.
+		existing, err = s.tickets.GetByGuestEvent(ctx, g.Email, eventID)
+	}
+	if err != nil {
+		return GuestApplication{}, err
+	}
+	if trusted {
 		existing.GuestFirstName = g.FirstName
 		existing.GuestLastName = g.LastName
 		existing.GuestEmail = g.Email
@@ -537,25 +600,38 @@ func (s *service) ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 		}
 		updated, err := s.tickets.Update(ctx, existing)
 		if err != nil {
-			return Ticket{}, err
+			return GuestApplication{}, err
 		}
-		return s.withEvent(ctx, updated), nil
+		return GuestApplication{Ticket: updated, Result: GuestExisting}, nil
 	}
-	if !errors.Is(err, ErrNotFound) {
-		return Ticket{}, err
+	result := GuestExisting
+	filled := false
+	for _, field := range []struct {
+		stored *string
+		sent   string
+	}{
+		{&existing.GuestFirstName, g.FirstName},
+		{&existing.GuestLastName, g.LastName},
+		{&existing.GuestPhoneNumber, g.PhoneNumber},
+	} {
+		switch {
+		case field.sent == "" || field.sent == *field.stored:
+			// Nothing asked for.
+		case *field.stored == "":
+			*field.stored = field.sent
+			filled = true
+		default:
+			result = GuestKept
+		}
 	}
-	created, err := s.tickets.Create(ctx, Ticket{
-		EventID:          eventID,
-		TicketType:       Guest,
-		GuestFirstName:   g.FirstName,
-		GuestLastName:    g.LastName,
-		GuestEmail:       g.Email,
-		GuestPhoneNumber: g.PhoneNumber,
-	})
+	if !filled {
+		return GuestApplication{Ticket: existing, Result: result}, nil
+	}
+	updated, err := s.tickets.Update(ctx, existing)
 	if err != nil {
-		return Ticket{}, err
+		return GuestApplication{}, err
 	}
-	return s.withEvent(ctx, created), nil
+	return GuestApplication{Ticket: updated, Result: result}, nil
 }
 
 func (s *service) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error) {
