@@ -122,6 +122,111 @@ it, and the CDN answers Range requests from R2 (checked 2026-09-28: a
 nosniff`). A video plays only with both; check the sandbox CDN the same way
 before its videos open (see [Before Event files open](#before-event-files-open)).
 
+## CDN cache
+
+Cloudflare caches what `cdn.` (and `sandbox-cdn.`) serves from the public
+bucket. Core stores no `Cache-Control` on objects: a zone's Browser Cache TTL
+(4 hours by default) overrides any lower origin `max-age`, so the times are
+set by a Cloudflare Cache Rule on the two CDN hosts instead, which covers
+every object already stored without rewriting one
+(`ops/wizards/cdn-cache-purge-wizard.sh` in the hub sets and checks it):
+
+- Browser: `max-age=3600`, whatever the origin says.
+- Edge: Cloudflare's defaults, left as they are (R2 sends no `Cache-Control`,
+  so a `2xx` is kept about two hours, a `404` a few minutes). The purge makes
+  a longer edge time safe; it is left for later, once purges have run in
+  production for a while.
+- The cache key ignores the query string, so `<address>?x` is the same
+  cached object as `<address>` and a purge by address covers both.
+- Every object on the host is eligible, extensionless `files/<id>` too, so
+  the browser time holds for every object. While a side's core does not run
+  the purge yet, the wizard sets a narrower rule there (only paths with an
+  extension, which Cloudflare caches already), so `files/<id>` is not kept
+  at the edge without a purge; `--kural` widens it once the purge runs.
+
+**Purge on change** (media redesign ticket 29). The public bucket queues the
+CDN address (`<CDN_BASE>/<key>`) of every object it deletes, or whose serving
+metadata it replaces (`R2.PurgeCDNOnChange`), once storage has done it; an
+object already gone is queued too, since the CDN may still hold it. Every path
+that removes a public object goes through that one delete: the archive and
+expiry purges, account erasure (`erase_profile_media`, staged uploads), the
+upload staging sweepers, a refused upload, the scan worker, the faststart
+worker (an original after its hour, stray copies) and the size backfill. So
+every derived object is purged with its Media, each by its own delete: every
+size key (`<key>/{card,page}.{jpg,png}`, see [Deleting sizes](#deleting-sizes)),
+every faststart copy of a video, and a video's poster or frame (Media of their
+own, purged with their own purge). With `MEDIA_IMAGE_ADDRESS_MODE=cloudflare`,
+purging an image's address purges every transformation of it
+(`/cdn-cgi/image/…`), as Cloudflare documents. The private bucket is never
+served by the CDN and queues nothing.
+
+A public key is written once (core writes every object at a fresh key, an
+id), so a write queues nothing, with one exception: an image's size, which the
+size backfill writes again when it runs again. A size written over one
+already stored is queued like a delete (`R2.Put` looks first, for size keys
+alone). Each segment of a key is escaped in its address as a browser asks for
+it.
+
+The queue is the `media_cdn_purges` table, one row per address, so a restart
+loses no purge; queuing an address again makes it due at once. It has two
+database connections of its own, apart from core's pool: a blob purge holds
+one of core's connections in a transaction whose reference check takes SHARE
+locks while it deletes, and requests waiting on those locks could hold every
+other connection of a shared pool, so the delete's insert would wait for the
+purge's timeout with the locks held. The purge
+worker (`media.CDNPurger`) runs at startup, whenever an address is queued and
+every 15 seconds: it leases up to 30 due addresses for two minutes, has
+Cloudflare purge them in one call (`POST /zones/{zone}/purge_cache`;
+Cloudflare takes 100 a call below Enterprise, 30 was its earlier limit), and
+removes them. Each batch reads the clock, so its lease and backoff run from
+when it is sent. A batch Cloudflare refuses (`400`) is tried address by
+address: an address refused alone is dropped and counted as `rejected` (no
+later try would take it), and the others go through. Any other failed call
+puts its batch back, due again after 10 seconds, doubling to 15 minutes; an address still queued 48 hours after it was queued
+is dropped and counted (by then the edge's own copy has long run out). A purge never
+holds up a delete: only a queue that cannot be written (the database) fails
+the delete, which its caller repeats like any failed delete, queuing the
+address again.
+
+Logs and metrics name no address: the worker logs counts and Cloudflare's
+status and error codes, never its messages (which may echo an address) or the
+token. `/v1/metrics` carries `skylab_media_cdn_purge_enabled` and
+`skylab_media_cdn_purge_misconfigured` (0 or 1),
+`skylab_media_cdn_purge_urls_total{outcome}` (`purged`, `failed`,
+`rejected`, `dropped`), `skylab_media_cdn_purge_queue_errors_total`,
+`skylab_media_cdn_purge_backlog` and
+`skylab_media_cdn_purge_oldest_age_seconds` (at the last pass), and
+`skylab_media_cdn_purge_last_success_timestamp_seconds` (0 before the first). An address is
+the CDN base and the key (`images/<uuid>.jpg`, `files/<uuid>`, …): ids, no
+names.
+
+**What it guarantees.** Once an object is deleted, the CDN stops serving it
+within about a minute while Cloudflare answers (the purge is queued with the
+delete and sent at once; Cloudflare's purge itself takes seconds), and a
+browser that fetched it before keeps it at most an hour. Archiving a Media
+(`DELETE /v1/media/{id}`) deletes no object: it stays at its address, at the
+origin as at the edge, until its blob purge after the recovery window, which
+deletes and purges it. Account erasure deletes a personal upload's objects at
+once, so the guarantee holds from that step.
+
+**Self-test.** `core-backend media-cdn-purge-selftest [-wait 90s]`, run inside
+core's container, stores a 1x1 PNG at a fresh
+`selftest/cdn-purge-<unix time>-<uuid>.png`,
+fetches it from the CDN until it is answered from the cache
+(`cf-cache-status: HIT`) and reads its `Cache-Control`, then deletes it through
+the public bucket, which queues its purge in the database, and waits for the
+CDN to answer `404`. The running core's worker does the purge (within its 15
+seconds). It prints `CDN SELFTEST OK` and exits 0 only when the object was
+cached, browsers got `max-age=3600` and the running core's purge took it
+within `-wait`; otherwise it purges the object itself, so no copy is left,
+and exits 1 (`2` without the settings, R2 or `DATABASE_URL`). `browsers got
+max-age=3600` means the header names that directive, among others or alone.
+SIGTERM or SIGINT ends it early and deletes its object; a check killed harder
+leaves its object, and the next check deletes every test object older than an
+hour (newer ones may be a running check's). At its longest it takes about
+`-wait` plus three minutes. The hub's `ops/wizards/cdn-cache-purge-wizard.sh`
+runs it.
+
 ## Media purpose
 
 Every Media has a Media purpose (ADR-0052), stored on the record as
@@ -3400,6 +3505,19 @@ What happens to the records when the request completes is in
   fixed in code.
 - `CDN_BASE` (or `R2_PUBLIC_URL`) — the public base of every Media address;
   default `https://cdn.yildizskylab.com`.
+- `MEDIA_CDN_PURGE_ZONE_ID`, `MEDIA_CDN_PURGE_API_TOKEN` — the Cloudflare
+  zone of the CDN's host (32 hex characters) and an API token allowed only
+  Zone → Cache Purge on it (OpenBao references in Dokploy). Both unset turns
+  the [CDN purge](#cdn-cache) off. The purge is not what core is for, so
+  settings it cannot use (one without the other, a zone that is not a zone
+  id) turn it off instead of stopping core: core logs `media CDN purge: OFF,
+  settings are wrong: …` (never naming the token) and `/v1/metrics` shows
+  `skylab_media_cdn_purge_misconfigured 1`. Without R2 it stays off. Core logs
+  `media CDN purge: on (zone …, addresses under …)`, `off (no R2
+  configured)` or `off (MEDIA_CDN_PURGE_ZONE_ID is not set)`. The rest is fixed in code: 30 addresses a call,
+  a pass every 15 seconds and after every delete, a two-minute lease, a retry
+  after 10 seconds doubling to 15 minutes, and an address dropped 48 hours
+  after it was queued.
 - The decode budget (2 images at once, 1 SVG, a 10-second wait) is fixed in
   code (`media.DecodeBudgetConfig`).
 - `MEDIA_IMAGE_ADDRESS_MODE` — where image sizes point, in the Media JSON and

@@ -58,6 +58,28 @@ func (r *R2) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 type R2 struct {
 	client *s3.Client
 	bucket string
+	// cdn queues the CDN address of each object deleted or given new
+	// metadata (PurgeCDNOnChange); nil for a bucket the CDN does not
+	// serve.
+	cdn CDNKeyQueue
+}
+
+// PurgeCDNOnChange has every object this bucket deletes, or whose metadata
+// it replaces, queued for a CDN cache purge once storage has done it (media
+// redesign ticket 29). Only the public bucket, which the CDN serves, is
+// given one; core sets it at startup, before the bucket is used.
+func (r *R2) PurgeCDNOnChange(queue CDNKeyQueue) {
+	r.cdn = queue
+}
+
+// changed queues key's CDN purge. Its error fails the call that changed the
+// object, so the caller does it again (every delete by key and every
+// metadata rewrite may be repeated) and the purge is queued again.
+func (r *R2) changed(ctx context.Context, key string) error {
+	if r.cdn == nil {
+		return nil
+	}
+	return r.cdn.QueueKey(ctx, key)
 }
 
 func (r *R2) Bucket() string {
@@ -76,7 +98,19 @@ func NewR2(cfg R2Config) *R2 {
 	return &R2{client: client, bucket: cfg.Bucket}
 }
 
+// Put stores data at key. A public key is written once: core writes every
+// object at a fresh key (an id), so a write needs no CDN purge. An image's
+// sizes are the exception: the size backfill writes them again when it runs
+// again (ticket 17), so a size written over one already stored is queued
+// for a purge (PurgeCDNOnChange), as a delete is.
 func (r *R2) Put(ctx context.Context, key string, data []byte, meta BlobMetadata) error {
+	overwrites := false
+	if r.cdn != nil && isSizeObjectKey(key) {
+		// Anything but a clear "not there" counts as there: a needless
+		// purge costs nothing, a missed one serves the old size.
+		_, err := r.Size(ctx, key)
+		overwrites = !errors.Is(err, ErrNotFound)
+	}
 	_, err := r.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:             aws.String(r.bucket),
 		Key:                aws.String(key),
@@ -92,7 +126,10 @@ func (r *R2) Put(ctx context.Context, key string, data []byte, meta BlobMetadata
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(key),
 	})
-	return err
+	if err != nil || !overwrites {
+		return err
+	}
+	return r.changed(ctx, key)
 }
 
 // SetMetadata replaces the serving metadata of a stored object without
@@ -111,7 +148,10 @@ func (r *R2) SetMetadata(ctx context.Context, key string, meta BlobMetadata) err
 	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey" {
 		return ErrNotFound
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return r.changed(ctx, key)
 }
 
 // Delete removes a stored object. An object that is not there is deleted
@@ -124,6 +164,9 @@ func (r *R2) SetMetadata(ctx context.Context, key string, meta BlobMetadata) err
 // multipart upload still open at it, so every path that deletes by key
 // alone (the staging sweeper, account erasure, a refused completion, a
 // purge, a rewrite cut short) leaves no parts behind either.
+//
+// An object deleted, or not there, is queued for a CDN purge
+// (PurgeCDNOnChange): the CDN may still hold a copy of it.
 func (r *R2) Delete(ctx context.Context, key string) error {
 	if isPendingKey(key) || isFaststartKey(key) {
 		if err := r.abortMultipartUploads(ctx, key); err != nil {
@@ -135,10 +178,10 @@ func (r *R2) Delete(ctx context.Context, key string) error {
 		Key:    aws.String(key),
 	})
 	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey" {
-		return nil
+	if err != nil && !(errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey") {
+		return err
 	}
-	return err
+	return r.changed(ctx, key)
 }
 
 // stringOrNil leaves an empty header unset instead of sending it empty.
