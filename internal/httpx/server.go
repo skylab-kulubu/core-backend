@@ -67,6 +67,10 @@ type Deps struct {
 	// while the erasure worker is off.
 	AccountErasureMetrics interface{ Prometheus() string }
 
+	// MediaCDNPurgeMetrics are the media CDN purge's counters. Nil while
+	// the purge is off.
+	MediaCDNPurgeMetrics interface{ Prometheus() string }
+
 	// MediaUploadLimiter is each person's single-step upload budget. Nil
 	// uses media.DefaultUploadLimits.
 	MediaUploadLimiter *media.UploadLimiter
@@ -177,7 +181,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil || deps.GuestCheckInMetrics != nil {
+	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil || deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -189,6 +193,9 @@ func New(deps Deps) *fiber.App {
 			text += deps.GuestApplyMetrics.Prometheus()
 			if deps.GuestCheckInMetrics != nil {
 				text += deps.GuestCheckInMetrics.Prometheus()
+			}
+			if deps.MediaCDNPurgeMetrics != nil {
+				text += deps.MediaCDNPurgeMetrics.Prometheus()
 			}
 			return c.SendString(text)
 		})

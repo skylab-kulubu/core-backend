@@ -70,6 +70,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == mediaFrameSelfTestCommandName {
 		os.Exit(runMediaFrameSelfTest(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == mediaCDNPurgeSelfTestCommandName {
+		os.Exit(runMediaCDNPurgeSelfTest(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == groupCountReportCommandName {
 		os.Exit(runGroupCountReport(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
@@ -195,6 +198,12 @@ func main() {
 	log.Printf("media service attach: products with a service client: %v", serviceClients.Products())
 	mediaPurgeContext, stopMediaPurge := context.WithCancel(context.Background())
 	defer stopMediaPurge()
+	// CDN cache purge (MEDIA_CDN_PURGE_*, docs/media-lifecycle.md): every
+	// object the public bucket deletes, or gives new metadata, is purged
+	// from Cloudflare's cache, so deleted media stops being served within
+	// about a minute. Set before any worker below deletes. Settings it
+	// cannot use turn it off loudly instead of stopping core.
+	_, cdnPurgeMetrics := startCDNPurge(mediaPurgeContext, os.Getenv, publicBlobs, cdnBase, log.Printf)
 	// Malware scan (MEDIA_CLAMAV_ADDR, docs/media-lifecycle.md). Unset, a
 	// purpose that needs a scan is refused, as before. Set, such a purpose's
 	// uploads wait scanning and the scan worker streams each to clamd, a ZIP
@@ -607,6 +616,7 @@ func main() {
 		AccountAccessGate:      optionalAccountAccessGate(gate),
 		AccountAccessMetrics:   accessMetrics,
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
+		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
 		ParseSelfDeleteSudo:    parseSelfDeleteSudo,
