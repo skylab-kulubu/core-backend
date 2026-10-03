@@ -913,7 +913,7 @@ func TestURLQRServesSVGWithTheLogo(t *testing.T) {
 	createClubURL(t, store)
 	app := urlAppWith(t, authn.Identity{}, store)
 
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?format=svg&logo=1&utm_source=qr", nil))
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?format=svg&logo=1&utm_source=qr", nil), slowRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -941,7 +941,7 @@ func TestURLQRPrintsTheChannelCodeOfItsSource(t *testing.T) {
 
 	paths := func(query string) int {
 		t.Helper()
-		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?format=svg&logo=1&"+query, nil))
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?format=svg&logo=1&"+query, nil), slowRequest)
 		if err != nil {
 			t.Fatal(err)
 		}

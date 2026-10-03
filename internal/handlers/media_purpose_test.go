@@ -6,12 +6,18 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
+
+// slowRequest is app.Test's setting for a request that does real work, such as
+// scaling an uploaded image or drawing a QR code with its logo. Under -race on
+// a busy machine that takes longer than app.Test's default second.
+var slowRequest = fiber.TestConfig{Timeout: 10 * time.Second, FailOnTimeout: true}
 
 type uploadResponse struct {
 	status      int
@@ -30,7 +36,7 @@ func postMedia(t *testing.T, app *fiber.App, purpose, filename string, data []by
 	body, contentType := multipartFile(t, values, "file", filename, data)
 	req := httptest.NewRequest(fiber.MethodPost, "/v1/media", body)
 	req.Header.Set("Content-Type", contentType)
-	resp, err := app.Test(req)
+	resp, err := app.Test(req, slowRequest)
 	if err != nil {
 		t.Fatal(err)
 	}

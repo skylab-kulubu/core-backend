@@ -4,6 +4,7 @@ package testpostgres
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -11,6 +12,21 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// DefaultImage is the PostgreSQL the fixture starts: the major version
+// deploy/compose.yaml runs locally.
+const DefaultImage = "postgres:17-alpine"
+
+// ImageEnv names the variable that replaces DefaultImage. CI sets it to the
+// major version production runs (18), so the tests run against that.
+const ImageEnv = "CORE_TEST_POSTGRES_IMAGE"
+
+func image() string {
+	if image := os.Getenv(ImageEnv); image != "" {
+		return image
+	}
+	return DefaultImage
+}
 
 // Start launches a disposable PostgreSQL container and registers all cleanup
 // with t. Tests are skipped when Docker is unavailable.
@@ -20,16 +36,22 @@ func Start(t testing.TB) *pgxpool.Pool {
 		t.Skip("docker not available")
 	}
 	name := fmt.Sprintf("core-postgres-test-%d", time.Now().UnixNano())
-	// The image declares its data directory as a VOLUME, so every container
-	// would leave an anonymous volume behind: `--rm` only removes it when the
-	// container exits on its own, not when Cleanup removes it. Keeping the
-	// data in tmpfs creates no volume at all and makes the tests faster.
+	// The image declares a VOLUME (PostgreSQL 17: /var/lib/postgresql/data,
+	// 18: /var/lib/postgresql), so a container would leave an anonymous
+	// volume behind: `--rm` only removes it when the container exits on its
+	// own, not when Cleanup removes it. A tmpfs on each of the two paths
+	// covers whichever the image declares, so no volume is created and the
+	// data stays in memory, which also makes the tests faster. PGDATA is
+	// spelled out because PostgreSQL 18's image keeps its data elsewhere by
+	// default (/var/lib/postgresql/18/docker).
 	run := exec.Command("docker", "run", "-d", "--rm", "--name", name,
+		"--tmpfs", "/var/lib/postgresql",
 		"--tmpfs", "/var/lib/postgresql/data",
+		"-e", "PGDATA=/var/lib/postgresql/data",
 		"-e", "POSTGRES_PASSWORD=postgres",
 		"-e", "POSTGRES_DB=coretest",
 		"-p", "127.0.0.1::5432",
-		"postgres:17-alpine",
+		image(),
 	)
 	out, err := run.CombinedOutput()
 	if err != nil {
