@@ -325,6 +325,10 @@ func main() {
 		// Keycloak when a product asks for a read link for them.
 		privateMedia.Subjects = readlinksubject.New(dir, users)
 	}
+	// A Group overage token (ADR-0059) carries a marker instead of the
+	// person's Groups; core reads them from Keycloak with its own service
+	// account and keeps them a minute.
+	overageGroups := identity.NewOverageGroups(dir, identity.OverageOptions{})
 	parse := func(string) (authn.Identity, error) {
 		return authn.Identity{}, authn.ErrInvalidToken
 	}
@@ -553,6 +557,7 @@ func main() {
 		Identity: identity.NewServiceWithOptions(dir, users, az, identity.Options{
 			AccountErasureEnabled: workerEnabled,
 			AccessProjector:       accessProjector,
+			GroupCache:            overageGroups,
 		}, mailer),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
@@ -592,6 +597,7 @@ func main() {
 		TrustedProxies:     trustedProxies,
 		MediaUploadLimiter: media.NewUploadLimiter(uploadLimits, time.Now),
 		ServiceClients:     serviceClients,
+		GroupOverage:       overageGroups,
 	})
 
 	addr := os.Getenv("PORT")

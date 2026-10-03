@@ -275,6 +275,7 @@ func decodeAccessToken(token string) (Identity, map[string]any, error) {
 			Department:  department,
 		},
 		Groups:         groupsFromClaims(claims),
+		GroupOverage:   groupOverage(claims),
 		Roles:          rolesFromClaims(claims),
 		Client:         claimString(claims, "azp"),
 		ServiceAccount: serviceAccountClaims(claims),
@@ -354,7 +355,26 @@ func audienceIsOnly(raw any, want string) bool {
 	return false
 }
 
+// groupOverage reports the Group overage marker of ADR-0059, Microsoft's
+// distributed-claim form: `_claim_names` names `groups` (and
+// `_claim_sources` says where the list is). Only the marker's presence
+// counts; the endpoint in it is never read or called.
+func groupOverage(claims map[string]any) bool {
+	names, ok := claims["_claim_names"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = names["groups"]
+	return ok
+}
+
+// groupsFromClaims reads the person's Group paths. A token with the Group
+// overage marker has none to read: a list next to the marker is not the
+// whole list, so it is ignored.
 func groupsFromClaims(claims map[string]any) []string {
+	if groupOverage(claims) {
+		return nil
+	}
 	raw, ok := claims["groups"]
 	if !ok {
 		raw = claims["group"]
