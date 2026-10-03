@@ -110,7 +110,8 @@ func TestPostgresSelfDeletionRetryOnlyRequeuesManualIntervention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blockedAt := time.Now().UTC()
+	// Postgres keeps microseconds; Linux's clock has nanoseconds.
+	blockedAt := time.Now().UTC().Truncate(time.Microsecond)
 	if err := store.MarkDeletionPlatformBlocked(ctx, record.Request.ID, blockedAt); err != nil {
 		t.Fatal(err)
 	}
