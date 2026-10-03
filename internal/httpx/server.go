@@ -15,6 +15,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
+	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
@@ -92,6 +93,10 @@ type Deps struct {
 	// serves its counters on /v1/metrics. Nil refuses every marked token
 	// with 503; tokens with their groups claim do not use it.
 	GroupOverage *identity.OverageGroups
+
+	// Dashboard answers the admin panel's summary
+	// (docs/dashboard-summary.md). Nil leaves the route out.
+	Dashboard dashboard.Service
 
 	// GithubActivity is the club's GitHub activity for the admin dashboard
 	// (docs/github-activity.md). Nil (its settings unset) leaves
@@ -276,6 +281,10 @@ func New(deps Deps) *fiber.App {
 	app.Delete("/v1/groups/:groupId/members/:userId", ident.RemoveMember)
 	app.Get("/v1/groups/:groupId/client-roles", ident.GroupClientRoles)
 	app.Put("/v1/groups/:groupId/client-roles", ident.SetGroupClientRoles)
+
+	if deps.Dashboard != nil {
+		app.Get("/v1/dashboard/summary", handlers.NewDashboardHandler(deps.Dashboard).Summary)
+	}
 
 	app.Get("/v1/teams", teams.List)
 	app.Get("/v1/teams/:team/members", teams.Members)

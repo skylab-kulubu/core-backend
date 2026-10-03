@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
@@ -21,7 +22,7 @@ func TestKeycloakDirectoryListsNestedGroups(t *testing.T) {
 	parent := map[string]any{"id": "p1", "name": "UYELER", "path": "/UYELER", "attributes": map[string][]string{"public_listing": {"true"}}}
 	child := map[string]any{"id": "c1", "name": "YK", "path": "/UYELER/YK"}
 	memberID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-	member := map[string]any{"id": memberID, "email": "yk@example.com", "firstName": "Y", "lastName": "K", "username": "yk"}
+	member := map[string]any{"id": memberID, "email": "yk@example.com", "firstName": "Y", "lastName": "K", "username": "yk", "createdTimestamp": 1758000000123}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -83,6 +84,9 @@ func TestKeycloakDirectoryListsNestedGroups(t *testing.T) {
 	}
 	if len(people) != 1 || people[0].ID != uuid.MustParse(memberID) {
 		t.Fatalf("members %+v", people)
+	}
+	if people[0].CreatedAt == nil || !people[0].CreatedAt.Equal(time.UnixMilli(1758000000123)) {
+		t.Fatalf("a member's createdTimestamp is read as CreatedAt: %v", people[0].CreatedAt)
 	}
 	if _, err := dir.GetGroup(ctx, "missing"); !errors.Is(err, identity.ErrNotFound) {
 		t.Fatalf("got %v", err)

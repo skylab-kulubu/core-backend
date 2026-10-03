@@ -19,6 +19,10 @@ Certificate authorization (`internal/authz`) reads four client roles of core's c
 
 At startup core only checks them (`MissingClientRoles`, GET only). When a role is missing, or the roles cannot be read, core logs one line that starts with `certificate client roles` and names the missing roles and the operator command, then starts normally. Until the roles exist and are granted, certificate actions that need them are denied. A clean startup logs nothing about certificate roles.
 
+## Dashboard summary
+
+The Members section of `GET /v1/dashboard/summary` reads the `UYELER` tree: `GET /group-by-path/UYELER`, then `GET /groups/{id}/children` and `GET /groups/{id}/members` for each Group in it, about `1 + 2 × G` requests for `G` Groups. One read serves every caller for 5 minutes, runs one at a time with a 5 s limit, a failure stops new reads for 30 s, and only people who may read people trigger it. Nothing new is needed: these are the Group reads of the rosters. See [`dashboard-summary.md`](dashboard-summary.md).
+
 ## Group count report
 
 `core-backend group-count-report` measures how many Group paths each user carries in a token, for the Group overage threshold of ADR-0059 (30 paths). It runs instead of the server, inside the running core container, whose environment already holds core's service account. It only reads: `GET /users`, then `GET /users/{id}/groups` for every enabled user. Disabled users get no token and are only counted.
