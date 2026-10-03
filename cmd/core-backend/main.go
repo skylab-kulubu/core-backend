@@ -24,6 +24,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/clamd"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
+	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
@@ -557,6 +558,14 @@ func main() {
 		log.Printf("short-link hit retention: %v", err)
 	})
 	urlSvc := shorturl.NewService(urlStore, az)
+	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
+
+	dashboardSvc, err := dashboard.NewService(dashboard.Options{
+		Events: events, Store: dashboard.NewPostgresStore(pool), Authz: az, Directory: dir,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	app := httpx.New(httpx.Deps{
 		Users: user.NewService(users, dir),
@@ -606,6 +615,8 @@ func main() {
 		GroupOverage:            overageGroups,
 		GuestApplyMetrics:       handlers.NewGuestApplyMetrics(),
 		GuestApplyPublicIPLimit: guestApplyIPLimit,
+		Dashboard:               dashboardSvc,
+		GithubActivity:          githubActivity,
 	})
 
 	addr := os.Getenv("PORT")

@@ -1,6 +1,8 @@
 package identity
 
 import (
+	"time"
+
 	"github.com/Nerzal/gocloak/v13"
 	"github.com/google/uuid"
 )
@@ -44,6 +46,10 @@ func personFrom(u *gocloak.User) (Person, error) {
 	}
 	if u.Username != nil {
 		p.Username = *u.Username
+	}
+	if u.CreatedTimestamp != nil && *u.CreatedTimestamp > 0 {
+		created := time.UnixMilli(*u.CreatedTimestamp).UTC()
+		p.CreatedAt = &created
 	}
 	attrs := firstAttrs(u.Attributes)
 	if attrs != nil {

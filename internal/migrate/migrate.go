@@ -1126,6 +1126,11 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE schemaname = 'public' AND indexname = 'media_lookup_key_idx'
 			  AND indexdef = 'CREATE INDEX media_lookup_key_idx ON public.media USING btree (media_lookup_key(file_url))'
 		)`,
+	// The dashboard summary's index on an Event's Tickets by creation time.
+	20261003120000: `
+		SELECT 1 FROM pg_indexes
+		WHERE schemaname = 'public' AND indexname = 'tickets_event_created_idx'
+		  AND indexdef = 'CREATE INDEX tickets_event_created_idx ON public.tickets USING btree (event_id, created_at)'`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
