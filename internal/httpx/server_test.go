@@ -23,6 +23,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
+	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
@@ -118,7 +119,18 @@ func memoryDepsOver(dir *identity.Memory, options identity.Options) httpx.Deps {
 		},
 		TrustedProxies: testTrustedProxies(),
 		ServiceClients: clients,
+		Dashboard:      memoryDashboard(events, tickets, users, dir, az),
 	}
+}
+
+func memoryDashboard(events event.Store, tickets ticket.Store, users *user.MemoryStore, dir *identity.Memory, az authz.Authorizer) dashboard.Service {
+	svc, err := dashboard.NewService(dashboard.Options{
+		Events: events, Store: dashboard.NewMemoryStore(tickets, users), Authz: az, Directory: dir,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return svc
 }
 
 func TestCertificateShortLinkProxyRoute(t *testing.T) {
