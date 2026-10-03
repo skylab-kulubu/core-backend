@@ -3,6 +3,7 @@ package githubactivity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -24,17 +25,20 @@ const (
 	maxEvents       = 20
 	// maxContributors is how many people a repository lists.
 	maxContributors = 5
-	// workers is how many repositories are read at once.
-	workers = 4
-	// maxPages bounds the pages read of one list, against a runaway.
-	maxPages = 50
+	// maxRepositoryPages bounds the GraphQL pages of the organisation's
+	// repositories (100 each), against a runaway.
+	maxRepositoryPages = 50
+	// minPrivateSplit is the fewest active private repositories whose
+	// figures are shown apart: one alone would be its own figures.
+	minPrivateSplit = 2
 )
 
 const repositoriesQuery = `query($org: String!, $cursor: String) {
   organization(login: $org) {
-    repositories(first: 100, after: $cursor, orderBy: {field: PUSHED_AT, direction: DESC}) {
+    repositories(first: 100, after: $cursor, orderBy: {field: NAME, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
+        id
         name
         url
         description
@@ -54,6 +58,7 @@ const repositoriesQuery = `query($org: String!, $cursor: String) {
 // repo is a repository as core reads it. For a private one, only the counts
 // below ever leave this package.
 type repo struct {
+	id            string
 	name          string
 	url           string
 	description   *string
@@ -72,14 +77,18 @@ type repo struct {
 	people          []string
 	mergedPRs       []Event
 	releases        []Event
+	// truncated is a list that ran past the page budget.
+	truncated bool
 }
 
 // collector gathers the activity from GitHub.
 type collector struct {
-	gh   *client
-	org  string
-	days int
-	now  func() time.Time
+	gh       *client
+	org      string
+	days     int
+	workers  int
+	maxPages int
+	now      func() time.Time
 }
 
 func (c *collector) collect(ctx context.Context) (Activity, error) {
@@ -93,14 +102,14 @@ func (c *collector) collect(ctx context.Context) (Activity, error) {
 		return Activity{}, err
 	}
 	group, groupCtx := errgroup.WithContext(ctx)
-	group.SetLimit(workers)
+	group.SetLimit(c.workers)
 	for _, r := range covered {
 		// A commit is pushed after it is made, so a repository last pushed
 		// before the previous window has nothing in either.
 		if r.pushedAt.Before(previous) || r.defaultBranch == "" {
 			continue
 		}
-		group.Go(func() error { return c.fill(groupCtx, r, previous, since, now) })
+		group.Go(protect(func() error { return c.fill(groupCtx, r, previous, since, now) }))
 	}
 	if err := group.Wait(); err != nil {
 		return Activity{}, err
@@ -114,7 +123,9 @@ func (c *collector) collect(ctx context.Context) (Activity, error) {
 		Events:       []Event{},
 	}
 	people := map[string]bool{}
+	var private PrivateTotals
 	for _, r := range covered {
+		activity.Truncated = activity.Truncated || r.truncated
 		activity.Totals.Commits += r.commits
 		activity.Totals.CommitsPrevious += r.commitsPrevious
 		activity.Totals.MergedPullRequests += len(r.mergedPRs)
@@ -127,18 +138,22 @@ func (c *collector) collect(ctx context.Context) (Activity, error) {
 			continue
 		}
 		if r.private {
-			activity.Totals.PrivateRepositories.Active++
-			activity.Totals.PrivateRepositories.Commits += r.commits
+			private.Active++
+			private.Commits += r.commits
 			continue
 		}
 		activity.Repositories = append(activity.Repositories, Repository{
 			Name: r.name, URL: r.url, Description: r.description, Language: r.language, PushedAt: r.pushedAt,
 			Commits: r.commits, CommitsByDay: r.commitsByDay, OpenPullRequests: r.openPRs, Contributors: r.contributors,
+			Truncated: r.truncated,
 		})
 		activity.Events = append(activity.Events, r.mergedPRs...)
 		activity.Events = append(activity.Events, r.releases...)
 	}
 	activity.Totals.ActiveContributors = len(people)
+	if private.Active >= minPrivateSplit {
+		activity.Totals.PrivateRepositories = &private
+	}
 	slices.SortStableFunc(activity.Repositories, func(a, b Repository) int {
 		if a.Commits != b.Commits {
 			return b.Commits - a.Commits
@@ -167,9 +182,10 @@ func (c *collector) collect(ctx context.Context) (Activity, error) {
 // archived ones and forks left out.
 func (c *collector) repositories(ctx context.Context) ([]*repo, error) {
 	var out []*repo
+	byID := map[string]*repo{}
 	var cursor *string
 	for page := 0; ; page++ {
-		if page == maxPages {
+		if page == maxRepositoryPages {
 			return nil, errors.New("githubactivity: too many pages of repositories")
 		}
 		var data struct {
@@ -180,6 +196,7 @@ func (c *collector) repositories(ctx context.Context) ([]*repo, error) {
 						EndCursor   string `json:"endCursor"`
 					} `json:"pageInfo"`
 					Nodes []struct {
+						ID              string     `json:"id"`
 						Name            string     `json:"name"`
 						URL             string     `json:"url"`
 						Description     *string    `json:"description"`
@@ -212,11 +229,23 @@ func (c *collector) repositories(ctx context.Context) ([]*repo, error) {
 			if node.IsArchived || node.IsFork {
 				continue
 			}
-			r := &repo{
-				name: node.Name, url: node.URL, description: nonEmpty(node.Description), openPRs: node.PullRequests.TotalCount,
-				// Anything but public (private, internal) counts only in totals.
-				private: node.IsPrivate || !strings.EqualFold(node.Visibility, "PUBLIC"),
+			private := node.IsPrivate || !strings.EqualFold(node.Visibility, "PUBLIC")
+			key := node.ID
+			if key == "" {
+				key = "name:" + strings.ToLower(node.Name)
 			}
+			if seen := byID[key]; seen != nil {
+				// Met again on a later page (the list moved between pages):
+				// counted once, and private if either copy says so.
+				seen.private = seen.private || private
+				continue
+			}
+			r := &repo{
+				id: key, name: node.Name, url: node.URL, description: nonEmpty(node.Description), openPRs: node.PullRequests.TotalCount,
+				// Anything but public (private, internal) counts only in totals.
+				private: private,
+			}
+			byID[key] = r
 			if node.PushedAt != nil {
 				r.pushedAt = node.PushedAt.UTC()
 			}
@@ -279,8 +308,9 @@ func (c *collector) fillCommits(ctx context.Context, r *repo, previous, since, n
 	address := c.repoPath(r) + "/commits?" + query.Encode()
 	byLogin := map[string]*Contributor{}
 	for page := 0; address != ""; page++ {
-		if page == maxPages {
-			return errors.New("githubactivity: too many pages of commits")
+		if page == c.maxPages {
+			r.truncated = true
+			break
 		}
 		var commits []struct {
 			Commit struct {
@@ -353,8 +383,9 @@ func (c *collector) fillPullRequests(ctx context.Context, r *repo, since time.Ti
 	query.Set("per_page", "100")
 	address := c.repoPath(r) + "/pulls?" + query.Encode()
 	for page := 0; address != ""; page++ {
-		if page == maxPages {
-			return errors.New("githubactivity: too many pages of pull requests")
+		if page == c.maxPages {
+			r.truncated = true
+			return nil
 		}
 		var pulls []struct {
 			Title     string      `json:"title"`
@@ -426,6 +457,20 @@ func (c *collector) fillReleases(ctx context.Context, r *repo, since time.Time) 
 		r.releases = append(r.releases, event)
 	}
 	return nil
+}
+
+// protect turns a panic in a worker into its error. errgroup runs each
+// worker in a goroutine of its own, where a panic would end the process: the
+// refresh's own recover does not reach it.
+func protect(work func() error) func() error {
+	return func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("githubactivity: a repository's read panicked: %v", r)
+			}
+		}()
+		return work()
+	}
 }
 
 func nonEmpty(s *string) *string {

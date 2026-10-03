@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +35,9 @@ const (
 	lowRemaining = 20
 	// maxBody bounds a GitHub answer core reads.
 	maxBody = 8 << 20
+	// maxHold bounds how long a rate limit holds requests, whatever reset
+	// GitHub names.
+	maxHold = time.Hour
 )
 
 // ErrRateLimited is GitHub's request budget spent (or nearly): core asks
@@ -210,8 +216,8 @@ func (c *client) graphql(ctx context.Context, query string, variables map[string
 
 var errUnauthorized = errors.New("githubactivity: GitHub refused the token")
 
-// statusError is a GitHub answer other than 2xx. It names the path, never a
-// token or a query string.
+// statusError is a GitHub answer other than 2xx. It names the path with any
+// repository by its hash (redact), never a token or a query string.
 type statusError struct {
 	Path   string
 	Status int
@@ -252,9 +258,13 @@ func (c *client) call(ctx context.Context, method, address, token string, body [
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return fmt.Errorf("githubactivity: %s %s: %w", method, target.Path, errors.Unwrap(err))
+		return fmt.Errorf("githubactivity: %s %s: %w", method, redact(target.Path), errors.Unwrap(err))
 	}
-	defer response.Body.Close()
+	defer func() {
+		// Drained, the connection goes back to the pool.
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxBody))
+		_ = response.Body.Close()
+	}()
 	c.noteRateLimit(response)
 	if header != nil {
 		*header = response.Header
@@ -267,14 +277,13 @@ func (c *client) call(ctx context.Context, method, address, token string, body [
 		c.limitUntil(response)
 		return ErrRateLimited
 	case response.StatusCode < 200 || response.StatusCode > 299:
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxBody))
-		return &statusError{Path: target.Path, Status: response.StatusCode}
+		return &statusError{Path: redact(target.Path), Status: response.StatusCode}
 	}
 	if out == nil {
 		return nil
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxBody)).Decode(out); err != nil {
-		return fmt.Errorf("githubactivity: reading %s: %w", target.Path, err)
+		return fmt.Errorf("githubactivity: reading %s: %w", redact(target.Path), err)
 	}
 	return nil
 }
@@ -298,8 +307,8 @@ func (c *client) noteRateLimit(response *http.Response) {
 	c.limitUntil(response)
 }
 
-// limitUntil holds requests until GitHub's Retry-After or budget reset, and
-// at least a minute when it names neither.
+// limitUntil holds requests until GitHub's Retry-After or budget reset (at
+// most an hour), and a minute when it names neither.
 func (c *client) limitUntil(response *http.Response) {
 	c.limitMu.Lock()
 	defer c.limitMu.Unlock()
@@ -309,6 +318,9 @@ func (c *client) limitUntil(response *http.Response) {
 		until = now.Add(time.Duration(seconds) * time.Second)
 	} else if reset, err := strconv.ParseInt(response.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil && time.Unix(reset, 0).After(now) {
 		until = time.Unix(reset, 0)
+	}
+	if until.After(now.Add(maxHold)) {
+		until = now.Add(maxHold)
 	}
 	if until.After(c.limitedUntil) {
 		c.limitedUntil = until
@@ -339,4 +351,27 @@ func (c *client) nextPage(header http.Header) (string, error) {
 		return address, nil
 	}
 	return "", nil
+}
+
+// repoPath is /repos/{owner}/{name}[/rest] in an API path.
+var repoPathPattern = regexp.MustCompile(`^/repos/([^/]+)/([^/]+)(/.*)?$`)
+
+// redact names a repository in an API path by a short hash of its owner and
+// name: the repository may be private, and logs are not the place for its
+// name. Other paths are left as they are.
+func redact(path string) string {
+	m := repoPathPattern.FindStringSubmatch(path)
+	if m == nil {
+		return path
+	}
+	owner, _ := url.PathUnescape(m[1])
+	name, _ := url.PathUnescape(m[2])
+	return "/repos/" + m[1] + "/repo-" + repoHash(owner, name) + m[3]
+}
+
+// repoHash is the first eight hex digits of the SHA-256 of owner/name, case
+// folded like GitHub's names.
+func repoHash(owner, name string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(owner + "/" + name)))
+	return hex.EncodeToString(sum[:])[:8]
 }

@@ -28,7 +28,7 @@ func githubActivityFromEnv(getenv func(string) string, az authz.Authorizer, logf
 	if config.InstallationID != 0 {
 		installation = strconv.FormatInt(config.InstallationID, 10)
 	}
-	logf("github activity: on (org %s, app %d, installation %s, window %d days)",
-		config.Org, config.AppID, installation, config.WindowDays)
+	logf("github activity: on (org %s, app %d, installation %s, window %d days; %d workers, %d pages a list, %s a read)",
+		config.Org, config.AppID, installation, config.WindowDays, config.Workers, config.MaxPages, config.RefreshTimeout)
 	return githubactivity.New(config, az, githubactivity.Options{})
 }

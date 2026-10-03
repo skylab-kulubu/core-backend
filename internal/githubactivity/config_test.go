@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/skylab-kulubu/core-backend/internal/githubactivity"
 )
@@ -104,5 +105,37 @@ func TestConfigNamesWhatIsWrongNeverAValue(t *testing.T) {
 		if strings.Contains(err.Error(), "TOPSECRET") || strings.Contains(err.Error(), "BEGIN") {
 			t.Fatalf("%s: the error quotes the value: %q", tc.name, err)
 		}
+	}
+}
+
+func TestConfigReadsTheReadBudget(t *testing.T) {
+	t.Parallel()
+	base := map[string]string{githubactivity.OrgEnv: "skylab-kulubu", githubactivity.AppIDEnv: "1", githubactivity.PrivateKeyEnv: appKeyPEM(t)}
+	config, _, err := githubactivity.ConfigFromEnv(env(base))
+	if err != nil || config.Workers != 4 || config.MaxPages != 10 || config.RefreshTimeout != 45*time.Second {
+		t.Fatalf("defaults %+v %v", config, err)
+	}
+	set := map[string]string{githubactivity.WorkersEnv: "8", githubactivity.MaxPagesEnv: "20", githubactivity.RefreshTimeoutEnv: "2m"}
+	for k, v := range base {
+		set[k] = v
+	}
+	config, _, err = githubactivity.ConfigFromEnv(env(set))
+	if err != nil || config.Workers != 8 || config.MaxPages != 20 || config.RefreshTimeout != 2*time.Minute {
+		t.Fatalf("set %+v %v", config, err)
+	}
+	for name, value := range map[string]string{
+		githubactivity.WorkersEnv: "0", githubactivity.MaxPagesEnv: "51", githubactivity.RefreshTimeoutEnv: "5s",
+	} {
+		bad := map[string]string{name: value}
+		for k, v := range base {
+			bad[k] = v
+		}
+		if _, _, err := githubactivity.ConfigFromEnv(env(bad)); err == nil || !strings.Contains(err.Error(), name) {
+			t.Fatalf("%s=%s: %v", name, value, err)
+		}
+	}
+	// The budget alone does not switch the feature on.
+	if _, ok, _ := githubactivity.ConfigFromEnv(env(map[string]string{githubactivity.WorkersEnv: "8"})); ok {
+		t.Fatal("on with only a budget set")
 	}
 }

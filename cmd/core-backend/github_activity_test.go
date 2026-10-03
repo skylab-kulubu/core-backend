@@ -36,7 +36,7 @@ func TestGithubActivityFromEnv(t *testing.T) {
 	}
 
 	source, line = run(map[string]string{githubactivity.OrgEnv: "skylab-kulubu", githubactivity.AppIDEnv: "4242", githubactivity.PrivateKeyEnv: stored})
-	if _, ok := source.(*githubactivity.Service); !ok || line != "github activity: on (org skylab-kulubu, app 4242, installation found from the organisation, window 30 days)" {
+	if _, ok := source.(*githubactivity.Service); !ok || line != "github activity: on (org skylab-kulubu, app 4242, installation found from the organisation, window 30 days; 4 workers, 10 pages a list, 45s a read)" {
 		t.Fatalf("set: %T %q", source, line)
 	}
 

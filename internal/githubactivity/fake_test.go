@@ -85,6 +85,7 @@ type fakeRelease struct {
 }
 
 type fakeRepo struct {
+	ID          string // "" is "R_" + Name; two entries with one ID are one repository listed twice
 	Name        string
 	Description string
 	Language    string
@@ -124,6 +125,7 @@ type fakeGitHub struct {
 	permissions []map[string]string
 	gate        chan struct{} // non-nil: the GraphQL list waits on it
 	nextLink    string        // non-empty: the first commits page names this as the next page
+	failRepo    string        // its commits answer 500
 }
 
 func newFakeGitHub(t *testing.T, c *clock, repos ...fakeRepo) *fakeGitHub {
@@ -302,6 +304,10 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Variables.Org != f.org {
 		f.t.Errorf("fake GitHub: GraphQL body %v org %q", err, body.Variables.Org)
 	}
+	// A stable order: pushes reorder a PUSHED_AT list between pages.
+	if !strings.Contains(body.Query, "orderBy: {field: NAME, direction: ASC}") || !strings.Contains(body.Query, "id\n") {
+		f.t.Errorf("fake GitHub: repositories not asked by name with their id: %s", body.Query)
+	}
 	start := 0
 	if body.Variables.Cursor != nil {
 		start, _ = strconv.Atoi(*body.Variables.Cursor)
@@ -320,7 +326,7 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		node := map[string]any{
-			"name": repo.Name, "url": "https://github.com/" + f.org + "/" + repo.Name,
+			"id": cmpOr(repo.ID, "R_"+repo.Name), "name": repo.Name, "url": "https://github.com/" + f.org + "/" + repo.Name,
 			"description": nil, "isArchived": repo.Archived, "isFork": repo.Fork, "isPrivate": repo.Private,
 			"visibility": visibility, "pushedAt": repo.PushedAt.UTC().Format(time.RFC3339),
 			"primaryLanguage": nil, "defaultBranchRef": map[string]any{"name": cmpOr(repo.Branch, "main")},
@@ -364,6 +370,13 @@ func (f *fakeGitHub) page(w http.ResponseWriter, r *http.Request, n int) (int, i
 func (f *fakeGitHub) commits(w http.ResponseWriter, r *http.Request, repo fakeRepo) {
 	if repo.Empty {
 		http.Error(w, `{"message":"Git Repository is empty."}`, http.StatusConflict)
+		return
+	}
+	f.mu.Lock()
+	fail := f.failRepo == repo.Name
+	f.mu.Unlock()
+	if fail {
+		http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
 		return
 	}
 	if got := r.URL.Query().Get("sha"); got != cmpOr(repo.Branch, "main") {

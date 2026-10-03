@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The settings. The private key comes from OpenBao through a Dokploy
@@ -20,6 +21,9 @@ const (
 	InstallationIDEnv = "GITHUB_ACTIVITY_INSTALLATION_ID"
 	PrivateKeyEnv     = "GITHUB_ACTIVITY_APP_PRIVATE_KEY"
 	WindowDaysEnv     = "GITHUB_ACTIVITY_WINDOW_DAYS"
+	WorkersEnv        = "GITHUB_ACTIVITY_WORKERS"
+	MaxPagesEnv       = "GITHUB_ACTIVITY_MAX_PAGES"
+	RefreshTimeoutEnv = "GITHUB_ACTIVITY_REFRESH_TIMEOUT"
 )
 
 const (
@@ -28,6 +32,17 @@ const (
 	// MaxWindowDays bounds the window: twice it is how far back commits are
 	// read.
 	MaxWindowDays = 90
+	// DefaultWorkers is how many repositories are read at once.
+	DefaultWorkers = 4
+	MaxWorkers     = 16
+	// DefaultMaxPages is the pages (of 100) read of one repository's commits
+	// or pull requests before it is marked truncated.
+	DefaultMaxPages = 10
+	MaxMaxPages     = 50
+	// DefaultRefreshTimeout bounds one read of GitHub.
+	DefaultRefreshTimeout = 45 * time.Second
+	MinRefreshTimeout     = 10 * time.Second
+	MaxRefreshTimeout     = 5 * time.Minute
 )
 
 // Config is how core reaches the organisation's GitHub App.
@@ -39,6 +54,10 @@ type Config struct {
 	InstallationID int64
 	PrivateKey     *rsa.PrivateKey
 	WindowDays     int
+	// The read's budget; zero values take the defaults.
+	Workers        int
+	MaxPages       int
+	RefreshTimeout time.Duration
 }
 
 var orgLogin = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
@@ -82,10 +101,37 @@ func ConfigFromEnv(getenv func(string) string) (config Config, ok bool, err erro
 			config.WindowDays = n
 		}
 	}
+	if config.Workers, err = boundedInt(getenv(WorkersEnv), DefaultWorkers, 1, MaxWorkers); err != nil {
+		problems = append(problems, WorkersEnv+" "+err.Error())
+	}
+	if config.MaxPages, err = boundedInt(getenv(MaxPagesEnv), DefaultMaxPages, 1, MaxMaxPages); err != nil {
+		problems = append(problems, MaxPagesEnv+" "+err.Error())
+	}
+	config.RefreshTimeout = DefaultRefreshTimeout
+	if raw := strings.TrimSpace(getenv(RefreshTimeoutEnv)); raw != "" {
+		d, convErr := time.ParseDuration(raw)
+		if convErr != nil || d < MinRefreshTimeout || d > MaxRefreshTimeout {
+			problems = append(problems, fmt.Sprintf("%s must be a duration from %s to %s", RefreshTimeoutEnv, MinRefreshTimeout, MaxRefreshTimeout))
+		} else {
+			config.RefreshTimeout = d
+		}
+	}
 	if len(problems) > 0 {
 		return Config{}, true, errors.New(strings.Join(problems, "; "))
 	}
 	return config, true, nil
+}
+
+func boundedInt(raw string, fallback, low, high int) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < low || n > high {
+		return 0, fmt.Errorf("must be a whole number from %d to %d", low, high)
+	}
+	return n, nil
 }
 
 func positiveID(raw string) (int64, error) {

@@ -32,6 +32,9 @@ type Activity struct {
 	// Stale is true when GitHub could not be read and this is the last good
 	// answer; GeneratedAt says how old it is.
 	Stale bool `json:"stale"`
+	// Truncated is true when a repository's list ran past the page budget
+	// (GITHUB_ACTIVITY_MAX_PAGES): its figures are a lower bound.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // Window is the period the figures cover: Days whole days in Turkish time,
@@ -52,8 +55,10 @@ type Totals struct {
 	OpenPullRequests int `json:"openPullRequests"`
 	// ActiveContributors are the people (bots excluded) with a commit or a
 	// merged pull request in the window.
-	ActiveContributors  int           `json:"activeContributors"`
-	PrivateRepositories PrivateTotals `json:"privateRepositories"`
+	ActiveContributors int `json:"activeContributors"`
+	// PrivateRepositories is left out while fewer than two private
+	// repositories are active: one alone would be its own figures.
+	PrivateRepositories *PrivateTotals `json:"privateRepositories,omitempty"`
 }
 
 // PrivateTotals are the private repositories with activity in the window and
@@ -75,6 +80,9 @@ type Repository struct {
 	CommitsByDay     []int         `json:"commitsByDay"`
 	OpenPullRequests int           `json:"openPullRequests"`
 	Contributors     []Contributor `json:"contributors"`
+	// Truncated is true when its commits or pull requests ran past the page
+	// budget: the counts are a lower bound.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // Contributor is a person behind a public repository's commits in the window.
@@ -99,10 +107,4 @@ type Event struct {
 	URL        string    `json:"url"`
 	Author     *string   `json:"author"`
 	At         time.Time `json:"at"`
-}
-
-// stale is a copy of a marked stale.
-func (a Activity) stale() Activity {
-	a.Stale = true
-	return a
 }

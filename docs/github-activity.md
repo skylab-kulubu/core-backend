@@ -6,7 +6,10 @@ GitHub as a read-only GitHub App installed on the organisation and keeps the
 answer ten minutes. Private repositories only count in the totals.
 
 The response is core-frontend's `GithubActivity`
-(`src/lib/dashboard/github-activity.ts`) field by field, plus `stale`.
+(`src/lib/dashboard/github-activity.ts`) field by field, with three
+differences: `stale` (always there), `truncated` (on the answer and on a
+repository, only when true) and `totals.privateRepositories`, which is left
+out while fewer than two private repositories are active.
 
 ## Who may read it
 
@@ -25,7 +28,7 @@ section on any failed answer.
 | Status | When |
 |---|---|
 | 200 | The activity. `Cache-Control: private, max-age=60`. |
-| 200, `"stale": true` | GitHub could not be read; this is the last good answer and `generatedAt` says how old it is. |
+| 200, `"stale": true` | GitHub could not be read; this is the last good answer and `generatedAt` says how old it is. Served until it is twelve hours old; after that 503. |
 | 401 / 403 | No bearer / not a privileged person. |
 | 404 | The settings are unset: the route is not served. |
 | 503 `github_activity_unavailable` | The settings are set but wrong (the startup line says which), or GitHub could not be read and nothing was read before. `Retry-After: 60`, `no-store`. |
@@ -36,7 +39,12 @@ section on any failed answer.
   GraphQL API. Archived repositories and forks are left out of everything.
   A repository that is not public (private or internal) counts in the totals
   only: its name, address, description, language, pull request titles,
-  releases and the people who worked on it never appear.
+  releases and the people who worked on it never appear. The list is read by
+  name (a push between two pages would reorder a list by push date); a
+  repository met twice counts once, and as private if either copy says so.
+- **Private split:** `privateRepositories` (how many private repositories were
+  active, their commits) only when at least two were: one alone would be its
+  own figures. The totals include them either way.
 - **Window:** `GITHUB_ACTIVITY_WINDOW_DAYS` whole days (default 30) in Turkish
   time (UTC+3), today included; `window.since` is the first day's midnight.
   `commitsPrevious` is the same number of days before it.
@@ -70,20 +78,32 @@ for the order.
 4. One GraphQL query per 100 repositories (with each one's open pull request
    count), then for each recently pushed repository its commits, closed pull
    requests (newest first, until one older than the window) and, for public
-   ones, its releases. Four repositories are read at once; every list follows
-   its `Link: rel="next"` pages, never to another host.
+   ones, its releases. `GITHUB_ACTIVITY_WORKERS` repositories (4) are read at
+   once; every list follows its `Link: rel="next"` pages, never to another
+   host, up to `GITHUB_ACTIVITY_MAX_PAGES` pages (10, that is 1,000 commits
+   or pull requests). A longer list stops there and marks the repository and
+   the answer `truncated`: its counts are a lower bound, and the rest of the
+   read goes on. A panic while reading one repository fails the read, not
+   the process.
 
-Each request gives up after 15 seconds and a whole read after 45. One read
-runs at a time (`singleflight`) whoever asks; a caller who stops waiting gets
-the last answer while the read goes on. After a failed read GitHub is left
-alone for a minute. When GitHub's budget is nearly spent
-(`X-RateLimit-Remaining` 20 or under) or it answers 403/429 for its rate limit,
-core asks nothing until `Retry-After` or `X-RateLimit-Reset`. A read is about
-two GraphQL calls and three or four REST calls per active repository, every
-ten minutes at most: far below the installation's 5,000 an hour.
+Each request gives up after 15 seconds and a whole read after
+`GITHUB_ACTIVITY_REFRESH_TIMEOUT` (45s). One read runs at a time whoever
+asks. An answer is fresh for ten minutes; after that the cached answer is
+still served at once and GitHub is read in the background, so only the first
+caller after a start (or after the answer passed twelve hours) waits. A first
+caller who stops waiting gets 503 while the read goes on for the next. After a
+failed read GitHub is left alone for a minute. When GitHub's budget is nearly
+spent (`X-RateLimit-Remaining` 20 or under) or it answers 403/429 for its rate
+limit, core asks nothing until `Retry-After` or `X-RateLimit-Reset`, an hour at
+most. A read is about two GraphQL calls and three or four REST calls per
+active repository, every ten minutes at most: far below the installation's
+5,000 an hour.
 
 Failures are logged as `github activity: refresh failed: …` with the path and
-status, never a token.
+status, never a token. A repository in a path is named by the first eight hex
+digits of the SHA-256 of `owner/name` (lower case), `repo-1a2b3c4d`, since it
+may be private: `printf '%s' skylab-kulubu/site | shasum -a 256 | cut -c1-8`
+finds it.
 
 ## Settings
 
@@ -94,8 +114,12 @@ status, never a token.
 | `GITHUB_ACTIVITY_INSTALLATION_ID` | Optional: the installation's ID (the number at the end of the installation's settings address). Unset, core asks GitHub. |
 | `GITHUB_ACTIVITY_APP_PRIVATE_KEY` | The app's private key: an OpenBao reference (ADR-0049), `${{vault.bao-<side>.<core appName>/GITHUB_ACTIVITY_APP_PRIVATE_KEY:value}}`. The value is the downloaded `.pem` base64-encoded on one line (a plain PEM, or one with `\n` for its line breaks, also works). |
 | `GITHUB_ACTIVITY_WINDOW_DAYS` | Optional, 1 to 90, default 30. |
+| `GITHUB_ACTIVITY_WORKERS` | Optional, 1 to 16, default 4. |
+| `GITHUB_ACTIVITY_MAX_PAGES` | Optional, 1 to 50, default 10. |
+| `GITHUB_ACTIVITY_REFRESH_TIMEOUT` | Optional, a duration from `10s` to `5m`, default `45s`. |
 
-All of the first four unset: off, startup says `github activity: off (…)` and
+The optional budget settings alone switch nothing on. All of the first four
+unset: off, startup says `github activity: off (…)` and
 the route is not served. Set: `github activity: on (org …, app …,
 installation …, window … days)`. Set but wrong, or partly set: `github
 activity: settings are wrong, … answers 503: <which variable>`; core still
@@ -106,5 +130,15 @@ starts. No line carries the key.
 Organisation settings → Developer settings → GitHub Apps → New GitHub App:
 no webhook; repository permissions **Metadata**, **Contents** and **Pull
 requests**, all read-only; nothing else; installable only on this account.
-Install it on all repositories. `ops/wizards/github-activity-app-wizard.sh` in
-the hub walks through it and puts the key into OpenBao.
+Install it on all repositories. Generate one private key per side (sandbox,
+production; an app holds several) so that a sandbox leak never reaches
+production and each side's key is revoked on its own.
+`ops/wizards/github-activity-app-wizard.sh` in the hub walks through it and
+puts each key into its side's OpenBao path.
+
+### Rollback
+
+Remove the four `GITHUB_ACTIVITY_*` lines (and the comment above them) from
+core's Dokploy environment and redeploy: the route is gone (404) and the
+dashboard hides the section. The OpenBao entries can stay or be deleted; to
+cut GitHub access, delete the keys (or the app) in GitHub.

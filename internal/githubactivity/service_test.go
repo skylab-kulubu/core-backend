@@ -128,17 +128,35 @@ func (l *logs) all() string {
 
 func newHarness(t *testing.T, edit ...func(*githubactivity.Config)) *harness {
 	t.Helper()
+	return newHarnessOver(t, clubRepos(t), nil, edit...)
+}
+
+func newHarnessOver(t *testing.T, repos []fakeRepo, options func(*githubactivity.Options), edit ...func(*githubactivity.Config)) *harness {
+	t.Helper()
 	c := newClock(testNow)
-	f := newFakeGitHub(t, c, clubRepos(t)...)
+	f := newFakeGitHub(t, c, repos...)
 	config := githubactivity.Config{Org: f.org, AppID: f.appID, InstallationID: f.installation, PrivateKey: appKey(t), WindowDays: 7}
 	for _, e := range edit {
 		e(&config)
 	}
 	l := &logs{}
-	s := githubactivity.New(config, authz.NewAuthorizer(authz.DefaultPolicy()), githubactivity.Options{
-		APIURL: f.srv.URL, HTTP: f.srv.Client(), Now: c.Now, Logf: l.Logf,
-	})
+	o := githubactivity.Options{APIURL: f.srv.URL, HTTP: f.srv.Client(), Now: c.Now, Logf: l.Logf}
+	if options != nil {
+		options(&o)
+	}
+	s := githubactivity.New(config, authz.NewAuthorizer(authz.DefaultPolicy()), o)
 	return &harness{f: f, clock: c, service: s, logs: l}
+}
+
+// refreshed is the answer once any read of GitHub a Get started is over: a
+// Get after ten minutes answers at once and reads in the background.
+func (h *harness) refreshed(t *testing.T) githubactivity.Activity {
+	t.Helper()
+	if _, err := h.service.Get(context.Background(), yk); err != nil && !errors.Is(err, githubactivity.ErrUnavailable) {
+		t.Fatal(err)
+	}
+	h.service.WaitRefresh()
+	return h.get(t)
 }
 
 func (h *harness) get(t *testing.T) githubactivity.Activity {
@@ -165,9 +183,9 @@ func TestActivityOfTheOrganisation(t *testing.T) {
 	}
 	wantTotals := githubactivity.Totals{
 		Commits: 13, CommitsPrevious: 2, MergedPullRequests: 2, OpenPullRequests: 4, ActiveContributors: 6,
-		PrivateRepositories: githubactivity.PrivateTotals{Active: 2, Commits: 5},
+		PrivateRepositories: &githubactivity.PrivateTotals{Active: 2, Commits: 5},
 	}
-	if got.Totals != wantTotals {
+	if !reflect.DeepEqual(got.Totals, wantTotals) {
 		t.Fatalf("totals\n got %+v\nwant %+v", got.Totals, wantTotals)
 	}
 	wantRepos := []githubactivity.Repository{
@@ -320,17 +338,53 @@ func TestCachedForTenMinutes(t *testing.T) {
 	h := newHarness(t)
 	h.get(t)
 	h.clock.Advance(9 * time.Minute)
-	h.get(t)
+	h.refreshed(t)
 	if n := h.f.count("graphql"); n != 4 {
 		t.Fatalf("GitHub read again within ten minutes (%d GraphQL calls)", n)
 	}
 	h.clock.Advance(2 * time.Minute)
-	got := h.get(t)
+	got := h.refreshed(t)
 	if n := h.f.count("graphql"); n != 8 {
 		t.Fatalf("GitHub not read again after ten minutes (%d GraphQL calls)", n)
 	}
 	if !got.GeneratedAt.Equal(testNow.Add(11*time.Minute)) || got.Stale {
 		t.Fatalf("generatedAt %s stale %v", got.GeneratedAt, got.Stale)
+	}
+}
+
+// After ten minutes the cached answer comes at once while GitHub is read in
+// the background; the next caller gets the new one.
+func TestAfterTenMinutesTheCachedAnswerComesAtOnce(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	first := h.get(t)
+	h.clock.Advance(11 * time.Minute)
+	gate := make(chan struct{})
+	h.f.mu.Lock()
+	h.f.gate = gate
+	h.f.mu.Unlock()
+	done := make(chan githubactivity.Activity, 1)
+	go func() {
+		a, _ := h.service.Get(context.Background(), yk)
+		done <- a
+	}()
+	select {
+	case got := <-done:
+		if !got.GeneratedAt.Equal(first.GeneratedAt) || got.Stale {
+			t.Fatalf("want the cached answer, not stale: %s stale %v", got.GeneratedAt, got.Stale)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the caller waited for GitHub")
+	}
+	// A second caller meanwhile starts no second read.
+	h.get(t)
+	close(gate)
+	h.service.WaitRefresh()
+	if n := h.f.count("graphql"); n != 8 {
+		t.Fatalf("%d GraphQL calls, want one background read (8)", n)
+	}
+	if got := h.get(t); !got.GeneratedAt.Equal(testNow.Add(11 * time.Minute)) {
+		t.Fatalf("the background read was not kept: %s", got.GeneratedAt)
 	}
 }
 
@@ -340,8 +394,8 @@ func TestGitHubDownServesTheLastGoodAnswerStale(t *testing.T) {
 	first := h.get(t)
 	h.clock.Advance(11 * time.Minute)
 	h.f.setDown(true)
-	got := h.get(t)
-	if !got.Stale || !got.GeneratedAt.Equal(first.GeneratedAt) || got.Totals != first.Totals {
+	got := h.refreshed(t)
+	if !got.Stale || !got.GeneratedAt.Equal(first.GeneratedAt) || !reflect.DeepEqual(got.Totals, first.Totals) {
 		t.Fatalf("stale answer %+v", got)
 	}
 	if !strings.Contains(h.logs.all(), "github activity: refresh failed") || !strings.Contains(h.logs.all(), "502") {
@@ -350,7 +404,7 @@ func TestGitHubDownServesTheLastGoodAnswerStale(t *testing.T) {
 	// GitHub is left alone for a minute after a failure.
 	before := h.f.total()
 	h.clock.Advance(30 * time.Second)
-	if again := h.get(t); !again.Stale {
+	if again := h.refreshed(t); !again.Stale {
 		t.Fatal("not stale")
 	}
 	if h.f.total() != before {
@@ -358,13 +412,38 @@ func TestGitHubDownServesTheLastGoodAnswerStale(t *testing.T) {
 	}
 	h.f.setDown(false)
 	h.clock.Advance(31 * time.Second)
-	fresh := h.get(t)
+	fresh := h.refreshed(t)
 	if fresh.Stale || !fresh.GeneratedAt.Equal(h.clock.Now()) {
 		t.Fatalf("not fresh after GitHub came back: stale %v generatedAt %s", fresh.Stale, fresh.GeneratedAt)
 	}
-	// The stale copy did not mark the cached answer.
-	if cached := h.get(t); cached.Stale {
-		t.Fatal("the cached answer turned stale")
+}
+
+// Past twelve hours a last good answer is too old to serve: 503 until GitHub
+// answers again.
+func TestAStaleAnswerExpiresAfterTwelveHours(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.get(t)
+	h.f.setDown(true)
+	h.clock.Advance(11*time.Hour + 59*time.Minute)
+	if got := h.refreshed(t); !got.Stale {
+		t.Fatal("want the last answer within twelve hours")
+	}
+	h.clock.Advance(2 * time.Minute)
+	if _, err := h.service.Get(context.Background(), yk); !errors.Is(err, githubactivity.ErrUnavailable) {
+		t.Fatalf("err %v, want ErrUnavailable past twelve hours", err)
+	}
+	h.f.setDown(false)
+	h.clock.Advance(time.Minute)
+	if got := h.get(t); got.Stale {
+		t.Fatal("not fresh after GitHub came back")
+	}
+	custom := newHarnessOver(t, clubRepos(t), func(o *githubactivity.Options) { o.MaxStale = time.Hour })
+	custom.get(t)
+	custom.f.setDown(true)
+	custom.clock.Advance(61 * time.Minute)
+	if _, err := custom.service.Get(context.Background(), yk); !errors.Is(err, githubactivity.ErrUnavailable) {
+		t.Fatalf("MaxStale not applied: %v", err)
 	}
 }
 
@@ -415,27 +494,27 @@ func TestOneReadOfGitHubAtATime(t *testing.T) {
 	}
 }
 
-// A caller who gives up gets the last good answer; the read goes on for the
-// others.
-func TestACallerWhoGivesUpGetsTheLastAnswer(t *testing.T) {
+// The first caller waits for GitHub; one who gives up gets 503, and the read
+// goes on for the next.
+func TestACallerWhoGivesUpOnTheFirstReadGets503(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	first := h.get(t)
-	h.clock.Advance(11 * time.Minute)
 	gate := make(chan struct{})
 	h.f.mu.Lock()
 	h.f.gate = gate
 	h.f.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	got, err := h.service.Get(ctx, yk)
-	if err != nil || !got.Stale || !got.GeneratedAt.Equal(first.GeneratedAt) {
-		t.Fatalf("got stale=%v err=%v", got.Stale, err)
+	if _, err := h.service.Get(ctx, yk); !errors.Is(err, githubactivity.ErrUnavailable) {
+		t.Fatalf("err %v", err)
 	}
 	close(gate)
-	fresh := h.get(t)
-	if fresh.Stale {
+	h.service.WaitRefresh()
+	if got := h.get(t); got.Stale || got.Org == "" {
 		t.Fatal("the read did not finish for the next caller")
+	}
+	if n := h.f.count("graphql"); n != 4 {
+		t.Fatalf("%d GraphQL calls, want one read", n)
 	}
 }
 
@@ -444,15 +523,15 @@ func TestInstallationTokenKeptUntilShortlyBeforeItExpires(t *testing.T) {
 	h := newHarness(t)
 	h.get(t)
 	h.clock.Advance(11 * time.Minute)
-	h.get(t)
+	h.refreshed(t)
 	h.clock.Advance(11 * time.Minute)
-	h.get(t)
+	h.refreshed(t)
 	if n := h.f.count("token"); n != 1 {
 		t.Fatalf("%d tokens within 22 minutes of an hour-long one", n)
 	}
 	// 56 minutes in: under five minutes left, so a new one.
 	h.clock.Advance(34 * time.Minute)
-	h.get(t)
+	h.refreshed(t)
 	if n := h.f.count("token"); n != 2 {
 		t.Fatalf("%d tokens, want a second one near the first's expiry", n)
 	}
@@ -471,7 +550,7 @@ func TestInstallationFoundFromTheOrganisation(t *testing.T) {
 	h := newHarness(t, func(c *githubactivity.Config) { c.InstallationID = 0 })
 	h.get(t)
 	h.clock.Advance(56 * time.Minute)
-	h.get(t)
+	h.refreshed(t)
 	if n := h.f.count("installation"); n != 1 {
 		t.Fatalf("installation looked up %d times, want once", n)
 	}
@@ -494,11 +573,11 @@ func TestARefusedTokenIsReplaced(t *testing.T) {
 	h.f.tokens = append(h.f.tokens, "revoked-elsewhere")
 	h.f.mu.Unlock()
 	h.clock.Advance(11 * time.Minute)
-	if got := h.get(t); !got.Stale {
+	if got := h.refreshed(t); !got.Stale {
 		t.Fatal("want the last answer while the token is refused")
 	}
 	h.clock.Advance(61 * time.Second)
-	if got := h.get(t); got.Stale {
+	if got := h.refreshed(t); got.Stale {
 		t.Fatal("a new token was not fetched")
 	}
 	if n := h.f.count("token"); n != 2 {
@@ -514,22 +593,45 @@ func TestRateLimitHoldsRequestsUntilItResets(t *testing.T) {
 	h.f.mu.Lock()
 	h.f.limitReset = h.clock.Now().Add(30 * time.Minute)
 	h.f.mu.Unlock()
-	if got := h.get(t); !got.Stale {
+	if got := h.refreshed(t); !got.Stale {
 		t.Fatal("want the last answer while rate limited")
 	}
-	before := h.f.total()
+	before := len(h.f.requested())
 	// Past the minute's pause after a failure but before GitHub's reset: core
 	// asks nothing.
 	h.clock.Advance(5 * time.Minute)
-	if got := h.get(t); !got.Stale {
+	if got := h.refreshed(t); !got.Stale {
 		t.Fatal("want the last answer while rate limited")
 	}
-	if h.f.total() != before {
-		t.Fatalf("GitHub asked %d more times before its reset", h.f.total()-before)
+	if len(h.f.requested()) != before {
+		t.Fatalf("GitHub asked %d more times before its reset", len(h.f.requested())-before)
 	}
 	h.clock.Advance(26 * time.Minute)
-	if got := h.get(t); got.Stale {
+	if got := h.refreshed(t); got.Stale {
 		t.Fatal("not read again after the reset")
+	}
+}
+
+// A reset GitHub names far ahead holds requests for an hour at most.
+func TestRateLimitHoldIsAtMostAnHour(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.get(t)
+	h.clock.Advance(11 * time.Minute)
+	h.f.mu.Lock()
+	h.f.limitReset = h.clock.Now().Add(5 * time.Hour)
+	h.f.mu.Unlock()
+	h.refreshed(t)
+	before := len(h.f.requested())
+	h.clock.Advance(59 * time.Minute)
+	h.refreshed(t)
+	if len(h.f.requested()) != before {
+		t.Fatal("asked GitHub within the hour")
+	}
+	h.clock.Advance(2 * time.Minute)
+	h.refreshed(t)
+	if len(h.f.requested()) == before {
+		t.Fatal("still holding requests past an hour")
 	}
 }
 
@@ -590,7 +692,7 @@ func TestLogsCarryNoToken(t *testing.T) {
 	h.f.tokens = append(h.f.tokens, "revoked")
 	h.f.mu.Unlock()
 	h.clock.Advance(11 * time.Minute)
-	h.get(t)
+	h.refreshed(t)
 	text := h.logs.all()
 	if text == "" {
 		t.Fatal("expected failure logs")
@@ -599,6 +701,26 @@ func TestLogsCarryNoToken(t *testing.T) {
 		if strings.Contains(text, leak) {
 			t.Fatalf("log carries %q: %s", leak, text)
 		}
+	}
+}
+
+// A failing repository is logged by a short hash of its path, never by name:
+// it may be private.
+func TestErrorsDoNotNameRepositories(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.f.mu.Lock()
+	h.f.failRepo = "secret-infra"
+	h.f.mu.Unlock()
+	if _, err := h.service.Get(context.Background(), yk); !errors.Is(err, githubactivity.ErrUnavailable) {
+		t.Fatalf("err %v", err)
+	}
+	text := h.logs.all()
+	if strings.Contains(text, "secret-infra") || !strings.Contains(text, "500") {
+		t.Fatalf("log %q", text)
+	}
+	if !strings.Contains(text, "/repos/skylab-kulubu/repo-"+githubactivity.RepoHash("skylab-kulubu", "secret-infra")) {
+		t.Fatalf("log does not name the repository by its hash: %q", text)
 	}
 }
 
@@ -612,14 +734,93 @@ func TestAReinstalledAppIsFoundAgain(t *testing.T) {
 	h.f.installation = 778
 	h.f.mu.Unlock()
 	h.clock.Advance(56 * time.Minute)
-	if got := h.get(t); !got.Stale {
+	if got := h.refreshed(t); !got.Stale {
 		t.Fatal("want the last answer while the old installation is gone")
 	}
 	h.clock.Advance(61 * time.Second)
-	if got := h.get(t); got.Stale {
+	if got := h.refreshed(t); got.Stale {
 		t.Fatalf("the new installation was not found: %s", h.logs.all())
 	}
 	if n := h.f.count("installation"); n != 2 {
 		t.Fatalf("installation looked up %d times, want 2", n)
+	}
+}
+
+// Repositories are listed by name (a push between two pages would reorder a
+// list by push date) and a repository met twice counts once; copies that
+// disagree on visibility count as private.
+func TestRepositoriesAreListedByNameAndCountedOnce(t *testing.T) {
+	t.Parallel()
+	repos := clubRepos(t)
+	// site appears again on a later page, now private.
+	privateCopy := repos[0]
+	privateCopy.Private = true
+	repos = append(repos, privateCopy)
+	h := newHarnessOver(t, repos, nil)
+	got := h.get(t)
+	for _, r := range got.Repositories {
+		if r.Name == "site" {
+			t.Fatal("site's copies disagree on visibility: it must count as private")
+		}
+	}
+	// site counted once: its 6 commits, not 12.
+	if got.Totals.Commits != 13 || got.Totals.OpenPullRequests != 4 {
+		t.Fatalf("totals %+v", got.Totals)
+	}
+	if got.Totals.PrivateRepositories == nil || got.Totals.PrivateRepositories.Active != 3 || got.Totals.PrivateRepositories.Commits != 11 {
+		t.Fatalf("private %+v", got.Totals.PrivateRepositories)
+	}
+	body, _ := json.Marshal(got)
+	if strings.Contains(string(body), "Kulüp sitesi") || strings.Contains(string(body), "Add footer") {
+		t.Fatalf("a repository that is private in one copy is named: %s", body)
+	}
+}
+
+// With fewer than two active private repositories their figures would be one
+// repository's: the private split is left out, the totals stay combined.
+func TestASinglePrivateRepositoryIsNotSplitOut(t *testing.T) {
+	t.Parallel()
+	var repos []fakeRepo
+	for _, r := range clubRepos(t) {
+		if r.Name != "internal-tool" {
+			repos = append(repos, r)
+		}
+	}
+	h := newHarnessOver(t, repos, nil)
+	got := h.get(t)
+	if got.Totals.PrivateRepositories != nil {
+		t.Fatalf("private split %+v with one active private repository", got.Totals.PrivateRepositories)
+	}
+	if got.Totals.Commits != 12 {
+		t.Fatalf("commits %d, want the private one included (12)", got.Totals.Commits)
+	}
+	body, _ := json.Marshal(got)
+	if strings.Contains(string(body), "privateRepositories") {
+		t.Fatalf("%s", body)
+	}
+}
+
+// A list longer than the page budget marks its repository truncated instead
+// of failing the read.
+func TestALongListMarksTheRepositoryTruncated(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, func(c *githubactivity.Config) { c.MaxPages = 2 })
+	got := h.get(t)
+	if !got.Truncated {
+		t.Fatal("the answer is not marked truncated")
+	}
+	var site githubactivity.Repository
+	for _, r := range got.Repositories {
+		if r.Name == "site" {
+			site = r
+		}
+	}
+	// site's eight commits in the two windows, two to a page: two pages read.
+	if !site.Truncated || site.Commits != 4 {
+		t.Fatalf("site truncated %v commits %d", site.Truncated, site.Commits)
+	}
+	full := newHarness(t).get(t)
+	if full.Truncated || full.Repositories[0].Truncated {
+		t.Fatal("a complete answer is marked truncated")
 	}
 }
