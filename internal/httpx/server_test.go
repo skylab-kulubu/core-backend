@@ -40,6 +40,11 @@ var (
 	testPassKeyOnce sync.Once
 )
 
+// slowRequest is app.Test's setting for a request that does real work, such as
+// drawing a QR code with its logo. Under -race on a busy machine that takes
+// longer than app.Test's default second.
+var slowRequest = fiber.TestConfig{Timeout: 10 * time.Second, FailOnTimeout: true}
+
 func testPassSigner() *skypass.Signer {
 	testPassKeyOnce.Do(func() {
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -611,7 +616,7 @@ func TestGoRedirectRecordsHitsWithoutRequiringLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	qrResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?logo=1", nil))
+	qrResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?logo=1", nil), slowRequest)
 	if err != nil {
 		t.Fatal(err)
 	}

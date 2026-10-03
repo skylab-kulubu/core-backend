@@ -348,7 +348,7 @@ func TestSessionQRLogoOverlaysClubMark(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logoResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path+"?logo=1&size=256", nil))
+	logoResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path+"?logo=1&size=256", nil), slowRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
