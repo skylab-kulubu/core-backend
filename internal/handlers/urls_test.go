@@ -279,7 +279,7 @@ func TestURLQRWithLogoDoesNotIncrementClicks(t *testing.T) {
 		t.Fatalf("status %d body %s", resp.StatusCode, b)
 	}
 
-	qrResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?logo=1", nil))
+	qrResp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?logo=1", nil), slowRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestURLQRWithLogoDoesNotIncrementClicks(t *testing.T) {
 		t.Fatalf("not png len=%d", len(body))
 	}
 
-	missing, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/nope/qr?logo=1", nil))
+	missing, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/nope/qr?logo=1", nil), slowRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -680,7 +680,7 @@ func TestURLQRDoesNotInsertHits(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?logo=1", nil)); err != nil {
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/go/club/qr?logo=1", nil), slowRequest); err != nil {
 		t.Fatal(err)
 	}
 	mod := urlAppOn(t, store, authn.Identity{ID: uuid.MustParse("33333333-3333-3333-3333-333333333333"), Roles: []string{"url:moderator"}}, nil)
