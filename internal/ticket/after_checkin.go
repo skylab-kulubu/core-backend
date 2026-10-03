@@ -40,8 +40,8 @@ func (a *afterCheckIn) SearchDoorAttendees(ctx context.Context, p authz.Principa
 	return a.inner.SearchDoorAttendees(ctx, p, eventID, query)
 }
 
-func (a *afterCheckIn) ApplyGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo) (Ticket, error) {
-	return a.inner.ApplyGuest(ctx, eventID, g)
+func (a *afterCheckIn) ApplyGuest(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo) (GuestApplication, error) {
+	return a.inner.ApplyGuest(ctx, p, eventID, g)
 }
 
 func (a *afterCheckIn) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error) {

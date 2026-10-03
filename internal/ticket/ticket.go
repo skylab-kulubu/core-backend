@@ -81,3 +81,32 @@ type GuestInfo struct {
 	Email       string
 	PhoneNumber string
 }
+
+// GuestApplyResult is what a Guest apply did to the guest Ticket.
+type GuestApplyResult string
+
+const (
+	// GuestCreated means the Event had no guest Ticket for the e-mail; one
+	// was written.
+	GuestCreated GuestApplyResult = "created"
+	// GuestExisting means the Ticket was already there and the caller asked
+	// for no change it may not make. A trusted caller's details were
+	// written; anybody else's only filled what the Ticket lacked.
+	GuestExisting GuestApplyResult = "existing"
+	// GuestKept means the Ticket was already there and the caller, who may
+	// not change an existing guest's details, sent a name or phone number
+	// different from the stored one. The stored details were kept.
+	GuestKept GuestApplyResult = "kept"
+)
+
+// GuestApplication is the outcome of a Guest apply.
+type GuestApplication struct {
+	Result GuestApplyResult
+	// Trusted reports whether the caller is a product's service identity or
+	// an operator of the Event. Only such a caller sees the Ticket and may
+	// change an existing guest's details.
+	Trusted bool
+	// Ticket is the guest Ticket as stored, for a Trusted caller. Anybody
+	// else gets the zero Ticket: not even its id.
+	Ticket Ticket
+}

@@ -486,6 +486,25 @@ func TestGuestApplyFromAdminHTTP(t *testing.T) {
 	}
 }
 
+func postGuest(t *testing.T, app *fiber.App, eventID uuid.UUID, body string) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/events/"+eventID.String()+"/applications/guest", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("status %d body %s: %v", resp.StatusCode, raw, err)
+	}
+	return resp.StatusCode, decoded
+}
+
 func TestGuestApplyHTTP(t *testing.T) {
 	t.Parallel()
 	events := event.NewMemoryStore()
@@ -494,30 +513,50 @@ func TestGuestApplyHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := ticketApp(t, authn.Identity{}, events, ticket.NewMemoryStore())
-	req := httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/applications/guest", strings.NewReader(
-		`{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com","phoneNumber":"555"}`,
-	))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := app.Test(req)
+
+	status, body := postGuest(t, app, ev.ID, `{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com","phoneNumber":"555"}`)
+	if status != fiber.StatusCreated || len(body) != 1 || body["status"] != "applied" {
+		t.Fatalf("new guest: status %d body %v", status, body)
+	}
+	status, body = postGuest(t, app, ev.ID, `{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com"}`)
+	if status != fiber.StatusCreated || len(body) != 1 || body["status"] != "applied" {
+		t.Fatalf("upsert: status %d body %v", status, body)
+	}
+}
+
+// An anonymous caller who knows a guest's e-mail and the public Event id gets
+// the same answer as for a new guest: nothing of the stored Ticket, and no
+// rename.
+func TestGuestApplyHTTPAnonymousLearnsNothingOfAnExistingGuest(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != fiber.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	leader := authn.Identity{
+		ID:     uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+		Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"},
+	}
+	status, seeded := postGuest(t, ticketApp(t, leader, events, tickets), ev.ID,
+		`{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com","phoneNumber":"555"}`)
+	if status != fiber.StatusCreated || seeded["guestPhoneNumber"] != "555" {
+		t.Fatalf("seed: status %d body %v", status, seeded)
 	}
 
-	req = httptest.NewRequest(fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/applications/guest", strings.NewReader(
-		`{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com"}`,
-	))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = app.Test(req)
+	anonymous := ticketApp(t, authn.Identity{}, events, tickets)
+	status, body := postGuest(t, anonymous, ev.ID, `{"firstName":"Mallory","lastName":"Renamed","email":"ADA@example.com"}`)
+	if status != fiber.StatusCreated || len(body) != 1 || body["status"] != "applied" {
+		t.Fatalf("anonymous: status %d body %v", status, body)
+	}
+
+	stored, err := tickets.GetByGuestEvent(t.Context(), "ada@example.com", ev.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != fiber.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("upsert status %d body %s", resp.StatusCode, body)
+	if stored.GuestFirstName != "Ada" || stored.GuestLastName != "Lovelace" || stored.GuestPhoneNumber != "555" {
+		t.Fatalf("an anonymous caller changed the guest: %+v", stored)
 	}
 }
 
