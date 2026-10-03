@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Nerzal/gocloak/v13"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 )
 
@@ -27,6 +28,10 @@ type slowKeycloak struct {
 	// hangFirstTokenRequests holds the first n token requests until the client
 	// gives up; later ones are answered at once.
 	hangFirstTokenRequests int32
+	// tokenDelay is how long a token request takes to answer; tokenExpiresIn
+	// is the lifetime it reports in seconds (zero: 300).
+	tokenDelay     time.Duration
+	tokenExpiresIn int
 
 	tokenRequests atomic.Int32
 	server        *httptest.Server
@@ -56,7 +61,12 @@ func newSlowKeycloak(t *testing.T, k *slowKeycloak) *slowKeycloak {
 			if k.tokenGate != nil && !hold(w, r, k.tokenGate) {
 				return
 			}
-			_, _ = w.Write([]byte(`{"access_token":"tok","expires_in":300,"token_type":"Bearer"}`))
+			time.Sleep(k.tokenDelay)
+			expiresIn := k.tokenExpiresIn
+			if expiresIn == 0 {
+				expiresIn = 300
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok", "expires_in": expiresIn, "token_type": "Bearer"})
 			return
 		}
 		if k.apiGate != nil && !hold(w, r, k.apiGate) {
@@ -291,5 +301,51 @@ func TestKeycloakZeroTimeoutMeansTheDefault(t *testing.T) {
 	}
 	if identity.DefaultKeycloakTimeout <= 0 {
 		t.Fatalf("default timeout %s", identity.DefaultKeycloakTimeout)
+	}
+}
+
+// The token's life counts from before the request for it was sent: Keycloak
+// dates the token when it issues it, so a slow answer has already used up part
+// of that life.
+func TestKeycloakTokenLifeCountsFromTheStartOfItsRequest(t *testing.T) {
+	t.Parallel()
+
+	// 31 seconds of life, less the 30 held back, is one second; the answer
+	// takes longer than that.
+	fake := newSlowKeycloak(t, &slowKeycloak{tokenDelay: 1100 * time.Millisecond, tokenExpiresIn: 31})
+	dir := fake.directory(time.Minute)
+
+	for call := 1; call <= 2; call++ {
+		if err := within(t, 10*time.Second, "ListGroups", func() error { _, err := dir.ListGroups(context.Background()); return err }); err != nil {
+			t.Fatalf("call %d: %v", call, err)
+		}
+	}
+	if got := fake.tokenRequests.Load(); got != 2 {
+		t.Fatalf("%d token requests, want a second one because the first token had run out when it arrived", got)
+	}
+}
+
+// A panic in the shared token request must reach the callers as an error: the
+// goroutine singleflight runs it in would otherwise end the whole process.
+func TestKeycloakPanicInTheTokenRequestIsAnErrorForTheCallers(t *testing.T) {
+	t.Parallel()
+
+	fake := newSlowKeycloak(t, &slowKeycloak{})
+	dir := fake.directory(time.Minute)
+	attempts := 0
+	dir.SetLoginForTest(func(context.Context) (*gocloak.JWT, error) {
+		attempts++
+		if attempts == 1 {
+			panic("token decoder blew up")
+		}
+		return &gocloak.JWT{AccessToken: "tok", ExpiresIn: 300}, nil
+	})
+
+	err := within(t, 5*time.Second, "the first call", func() error { _, err := dir.ListGroups(context.Background()); return err })
+	if err == nil || !strings.Contains(err.Error(), "token decoder blew up") {
+		t.Fatalf("first call got %v, want the panic as an error", err)
+	}
+	if err := within(t, 5*time.Second, "the second call", func() error { _, err := dir.ListGroups(context.Background()); return err }); err != nil {
+		t.Fatalf("second call: %v", err)
 	}
 }

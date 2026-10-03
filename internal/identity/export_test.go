@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"context"
 	"time"
 
 	"github.com/Nerzal/gocloak/v13"
@@ -20,4 +21,8 @@ func ClientRolesFromMappingsForTest(m *gocloak.MappingsRepresentation) []ClientR
 
 func (k *Keycloak) TimeoutForTest() time.Duration {
 	return k.timeout
+}
+
+func (k *Keycloak) SetLoginForTest(login func(context.Context) (*gocloak.JWT, error)) {
+	k.login = login
 }

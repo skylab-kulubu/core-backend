@@ -39,6 +39,8 @@ type Keycloak struct {
 	clientID     string
 	clientSecret string
 	timeout      time.Duration
+	// login asks Keycloak for the service account's token.
+	login func(ctx context.Context) (*gocloak.JWT, error)
 	// http is for the admin calls made without gocloak; gc has its own
 	// client. Both end a request at timeout.
 	http *http.Client
@@ -72,7 +74,7 @@ func NewKeycloak(cfg KeycloakConfig) *Keycloak {
 	// resty's client, which gocloak sends every request through, has no
 	// timeout of its own.
 	gc.RestyClient().SetTimeout(timeout)
-	return &Keycloak{
+	k := &Keycloak{
 		timeout:      timeout,
 		http:         &http.Client{Timeout: timeout},
 		gc:           gc,
@@ -82,6 +84,10 @@ func NewKeycloak(cfg KeycloakConfig) *Keycloak {
 		clientSecret: cfg.ClientSecret,
 		clientsByID:  map[string]string{},
 	}
+	k.login = func(ctx context.Context) (*gocloak.JWT, error) {
+		return k.gc.LoginClient(ctx, k.clientID, k.clientSecret, k.realm)
+	}
+	return k
 }
 
 // accessToken answers the service account's token, asking Keycloak for a new
@@ -117,14 +123,25 @@ func (k *Keycloak) cachedToken() (string, bool) {
 // none of them: it must not end because the caller that started it gave up,
 // and it must not keep that caller's request (which fasthttp reuses) alive.
 // It ends at the timeout.
-func (k *Keycloak) refreshToken() (any, error) {
+func (k *Keycloak) refreshToken() (token any, err error) {
+	// singleflight runs this in a goroutine of its own and, should it panic,
+	// panics again there, which ends the whole process. The callers get an
+	// error instead.
+	defer func() {
+		if r := recover(); r != nil {
+			token, err = "", fmt.Errorf("identity: keycloak token request panicked: %v", r)
+		}
+	}()
 	// A refresh may have finished between the caller's check and this one.
-	if token, ok := k.cachedToken(); ok {
-		return token, nil
+	if cached, ok := k.cachedToken(); ok {
+		return cached, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), k.timeout)
 	defer cancel()
-	jwt, err := k.gc.LoginClient(ctx, k.clientID, k.clientSecret, k.realm)
+	// Keycloak dates the token when it issues it, so its life counts from
+	// before the request, not from when the answer arrived.
+	start := time.Now()
+	jwt, err := k.login(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -134,7 +151,7 @@ func (k *Keycloak) refreshToken() (any, error) {
 	}
 	k.mu.Lock()
 	k.token = jwt.AccessToken
-	k.tokenExpiry = time.Now().Add(ttl)
+	k.tokenExpiry = start.Add(ttl)
 	k.mu.Unlock()
 	return jwt.AccessToken, nil
 }
