@@ -558,6 +558,7 @@ func main() {
 		log.Printf("short-link hit retention: %v", err)
 	})
 	urlSvc := shorturl.NewService(urlStore, az)
+	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
 
 	dashboardSvc, err := dashboard.NewService(dashboard.Options{
 		Events: events, Store: dashboard.NewPostgresStore(pool), Authz: az, Directory: dir,
@@ -615,6 +616,7 @@ func main() {
 		GuestApplyMetrics:       handlers.NewGuestApplyMetrics(),
 		GuestApplyPublicIPLimit: guestApplyIPLimit,
 		Dashboard:               dashboardSvc,
+		GithubActivity:          githubActivity,
 	})
 
 	addr := os.Getenv("PORT")
