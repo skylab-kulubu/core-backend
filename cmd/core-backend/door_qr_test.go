@@ -34,7 +34,7 @@ func TestDoorQRGateSharesTheSkyPassKeyAcrossReplicas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Admit(pass.Token, session, ev); err != nil {
+	if _, err := b.Admit(pass.Token, session, ev); err != nil {
 		t.Fatalf("second replica: %v", err)
 	}
 	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -45,7 +45,7 @@ func TestDoorQRGateSharesTheSkyPassKeyAcrossReplicas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Admit(pass.Token, session, ev); err == nil {
+	if _, err := c.Admit(pass.Token, session, ev); err == nil {
 		t.Fatal("another SkyPass key accepted the door QR")
 	}
 }

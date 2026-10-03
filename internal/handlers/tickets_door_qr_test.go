@@ -82,7 +82,7 @@ func TestDoorQRHTTPMintThenGuestCheckIn(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&pass); err != nil {
 		t.Fatal(err)
 	}
-	if pass.Token == "" || pass.SessionID != sess.ID.String() || pass.EventID != ev.ID.String() || pass.ExpiresAt == "" || pass.RefreshAfterSeconds != 30 {
+	if pass.Token == "" || pass.SessionID != sess.ID.String() || pass.EventID != ev.ID.String() || pass.ExpiresAt == "" || pass.RefreshAfterSeconds != 15 {
 		t.Fatalf("pass %+v", pass)
 	}
 	u, err := url.Parse(pass.URL)
@@ -134,6 +134,9 @@ func TestDoorQRHTTPMintThenGuestCheckIn(t *testing.T) {
 	}
 	if status, code := guest(`{"email":"ada@example.com","doorToken":"x.y.z"}`); status != fiber.StatusForbidden || code != "door_qr_invalid" {
 		t.Fatalf("bad token %d %q", status, code)
+	}
+	if status, code := guest(`{"email":"ada@example.com","doorToken":"` + pass.Token + strings.Repeat(" ", 1100) + `"}`); status != fiber.StatusForbidden || code != "door_qr_invalid" {
+		t.Fatalf("over 1 KB %d %q", status, code)
 	}
 	if status, _ := guest(`{"email":"ada@example.com","doorToken":"` + pass.Token + `"}`); status != fiber.StatusCreated {
 		t.Fatalf("good token %d", status)

@@ -4,14 +4,20 @@
 // Door staff show a short-lived token on a screen at the door; it rotates
 // every RefreshAfter. A guest scans it, and Guest check-in sends it back with
 // the guest's e-mail. Core alone mints and reads these tokens, so the key is
-// symmetric (HS256) and never published, unlike SkyPass's.
+// symmetric and never published, unlike SkyPass's.
+//
+// The token is kept short so the QR stays small enough to scan from a screen
+// across a doorway: `v1.<exp>.<jti>.<mac>`. The Session id travels in the
+// URL path and the Event id is not sent at all; both are bound into the MAC.
 package doorqr
 
 import (
 	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/url"
@@ -21,19 +27,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 )
 
 var (
 	// ErrInvalid is a token that is missing, malformed, signed with another
-	// key or algorithm, or minted for another Session or Event.
+	// key, or minted for another Session or Event.
 	ErrInvalid = errors.New("doorqr: invalid")
 	// ErrExpired is a genuine token past its expiry.
 	ErrExpired = errors.New("doorqr: expired")
-	// ErrUsedUp is a genuine token that has already admitted MaxUses
-	// check-in attempts.
+	// ErrUsedUp is a genuine token that has already let MaxUses guests in.
 	ErrUsedUp = errors.New("doorqr: used up")
 )
 
@@ -42,40 +46,58 @@ type Mode string
 
 const (
 	// ModeOpen takes a guest's e-mail alone, as before the door QR. A token
-	// that is sent is still checked. The default until the door screens
-	// ship.
+	// that is sent is still checked.
 	ModeOpen Mode = "open"
 	// ModeQR requires a valid door QR token on every guest check-in.
 	ModeQR Mode = "qr"
 )
 
 const (
-	ModeEnv     = "GUEST_SELF_CHECKIN_MODE"
-	TTLEnv      = "DOOR_QR_TTL"
-	MaxUsesEnv  = "DOOR_QR_MAX_USES"
-	GuestURLEnv = "DOOR_QR_GUEST_URL"
+	ModeEnv         = "GUEST_SELF_CHECKIN_MODE"
+	TTLEnv          = "DOOR_QR_TTL"
+	MaxUsesEnv      = "DOOR_QR_MAX_USES"
+	GuestURLEnv     = "DOOR_QR_GUEST_URL"
+	SessionGraceEnv = "DOOR_QR_SESSION_GRACE"
 
 	// DefaultTTL is how long a door QR token is accepted. The screen asks
-	// for a new one every quarter of it, so a guest who has just scanned has
-	// at least three quarters left to type an e-mail.
-	DefaultTTL = 120 * time.Second
+	// for a new one every quarter of it (RefreshAfter), so a guest who has
+	// just scanned has at least three quarters left to type an e-mail.
+	DefaultTTL = 60 * time.Second
 	MinTTL     = 30 * time.Second
 	MaxTTL     = 10 * time.Minute
-	// DefaultMaxUses is how many guest check-in attempts one token admits.
-	DefaultMaxUses = 50
+	// DefaultMaxUses is how many guests one token checks in (successful or
+	// already checked in). Failed attempts do not count; the route's
+	// per-address budget limits those.
+	DefaultMaxUses = 20
+	// DefaultSessionGrace is how long before a Session's start and after its
+	// end guests may check themselves in.
+	DefaultSessionGrace = 30 * time.Minute
+	MaxSessionGrace     = 12 * time.Hour
 
-	// TokenType is the JWT `typ` header of a door QR token. Tokens without
-	// it are refused, so no other HS256 token can pass as one.
-	TokenType = "door-qr+jwt"
-	// Kid names the key derivation, for a later rotation.
-	Kid = "dq1"
+	// ClockLeeway is how far a token's expiry may lie beyond now + TTL: a
+	// replica whose clock runs slightly ahead still has its tokens accepted.
+	ClockLeeway = 5 * time.Second
+	// MaxTokenBytes is the longest token looked at; anything longer is
+	// refused before it is parsed.
+	MaxTokenBytes = 1024
+
+	// Version prefixes every token and names the key derivation.
+	Version = "v1"
 	// QueryParam carries the token in the URL the QR encodes.
 	QueryParam = "dq"
 	// SessionPlaceholder is replaced by the Session id in DOOR_QR_GUEST_URL.
 	SessionPlaceholder = "{sessionId}"
 
-	keyInfo = "skylab core door-qr v1"
+	keyInfo   = "skylab core door-qr v1"
+	macDomain = "door-qr v1\x00"
+	jtiBytes  = 6
+	macBytes  = 12
+	// maxTracked bounds the use counts kept in memory. Only genuine tokens
+	// are counted, and minting is rate limited, so it is not reached in use.
+	maxTracked = 10000
 )
+
+var b64 = base64.RawURLEncoding
 
 // Config is the door QR's settings.
 type Config struct {
@@ -87,13 +109,16 @@ type Config struct {
 	// (`PUBLIC_API_ORIGIN/v1/sessions/{id}`), the shape the Session QR
 	// already has, so sky-app's scanner reads it as that Session.
 	GuestURL string
+	// SessionGrace widens a Session's time window on both sides. Negative
+	// means the default; zero means none.
+	SessionGrace time.Duration
 }
 
 // ConfigFromEnv reads the settings. Unset values take their defaults; a value
 // that does not parse is an error, so a typo cannot quietly reopen guest
-// check-in or disable the cap.
+// check-in or disable a limit.
 func ConfigFromEnv(getenv func(string) string) (Config, error) {
-	cfg := Config{Mode: ModeOpen, TTL: DefaultTTL, MaxUses: DefaultMaxUses}
+	cfg := Config{Mode: ModeOpen, TTL: DefaultTTL, MaxUses: DefaultMaxUses, SessionGrace: DefaultSessionGrace}
 	switch mode := Mode(strings.TrimSpace(getenv(ModeEnv))); mode {
 	case "":
 	case ModeOpen, ModeQR:
@@ -125,6 +150,16 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		}
 		cfg.GuestURL = raw
 	}
+	if raw := strings.TrimSpace(getenv(SessionGraceEnv)); raw != "" {
+		grace, err := time.ParseDuration(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("%s: %w", SessionGraceEnv, err)
+		}
+		if grace < 0 || grace > MaxSessionGrace {
+			return Config{}, fmt.Errorf("%s: %s is outside 0–%s", SessionGraceEnv, grace, MaxSessionGrace)
+		}
+		cfg.SessionGrace = grace
+	}
 	return cfg, nil
 }
 
@@ -149,12 +184,6 @@ type Pass struct {
 	RefreshAfter time.Duration
 }
 
-type claims struct {
-	SessionID string `json:"sid"`
-	EventID   string `json:"eid"`
-	jwt.RegisteredClaims
-}
-
 // Gate mints and admits door QR tokens and counts guest check-ins.
 type Gate struct {
 	cfg Config
@@ -162,8 +191,10 @@ type Gate struct {
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 
-	mu   sync.Mutex
-	uses map[string]use
+	mu        sync.Mutex
+	uses      map[string]use
+	maxTrack  int
+	lastSweep time.Time
 
 	counts [2][outcomeCount]atomic.Uint64
 }
@@ -184,7 +215,10 @@ func NewGate(key []byte, cfg Config) *Gate {
 	if cfg.MaxUses <= 0 {
 		cfg.MaxUses = DefaultMaxUses
 	}
-	return &Gate{cfg: cfg, key: append([]byte(nil), key...), uses: map[string]use{}}
+	if cfg.SessionGrace < 0 {
+		cfg.SessionGrace = DefaultSessionGrace
+	}
+	return &Gate{cfg: cfg, key: append([]byte(nil), key...), uses: map[string]use{}, maxTrack: maxTracked}
 }
 
 // NewEphemeralGate makes an open-mode gate with a random key: what a service
@@ -194,7 +228,7 @@ func NewEphemeralGate() *Gate {
 	if _, err := rand.Read(key); err != nil {
 		panic(err)
 	}
-	return NewGate(key, Config{})
+	return NewGate(key, Config{SessionGrace: -1})
 }
 
 func (g *Gate) clock() time.Time {
@@ -212,33 +246,51 @@ func (g *Gate) Mode() Mode {
 	return g.cfg.Mode
 }
 
+// SessionOpen reports whether guests may check in now to a Session with this
+// schedule: not cancelled, and within [start − grace, end + grace]. A missing
+// start or end leaves that side open.
+func (g *Gate) SessionOpen(start, end *time.Time, cancelled bool) bool {
+	if cancelled {
+		return false
+	}
+	now := g.clock()
+	if start != nil && now.Before(start.Add(-g.cfg.SessionGrace)) {
+		return false
+	}
+	if end != nil && now.After(end.Add(g.cfg.SessionGrace)) {
+		return false
+	}
+	return true
+}
+
+func (g *Gate) mac(sessionID, eventID uuid.UUID, exp int64, jti []byte) []byte {
+	m := hmac.New(sha256.New, g.key)
+	m.Write([]byte(macDomain))
+	m.Write(sessionID[:])
+	m.Write(eventID[:])
+	var e [8]byte
+	binary.BigEndian.PutUint64(e[:], uint64(exp))
+	m.Write(e[:])
+	m.Write(jti)
+	return m.Sum(nil)[:macBytes]
+}
+
 // Mint signs a token for one Session of one Event.
 func (g *Gate) Mint(sessionID, eventID uuid.UUID) (Pass, error) {
 	now := g.clock().Truncate(time.Second)
 	exp := now.Add(g.cfg.TTL)
-	jti := make([]byte, 12)
+	jti := make([]byte, jtiBytes)
 	if _, err := rand.Read(jti); err != nil {
 		return Pass{}, err
 	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims{
-		SessionID: sessionID.String(),
-		EventID:   eventID.String(),
-		RegisteredClaims: jwt.RegisteredClaims{
-			ID:        base64.RawURLEncoding.EncodeToString(jti),
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(exp),
-		},
-	})
-	tok.Header["typ"] = TokenType
-	tok.Header["kid"] = Kid
-	signed, err := tok.SignedString(g.key)
-	if err != nil {
-		return Pass{}, err
-	}
-	g.sweep(now)
+	token := Version + "." + strconv.FormatInt(exp.Unix(), 36) + "." + b64.EncodeToString(jti) + "." +
+		b64.EncodeToString(g.mac(sessionID, eventID, exp.Unix(), jti))
+	g.mu.Lock()
+	g.sweepLocked(now)
+	g.mu.Unlock()
 	return Pass{
-		Token:        signed,
-		URL:          g.passURL(sessionID, signed),
+		Token:        token,
+		URL:          g.passURL(sessionID, token),
 		IssuedAt:     now,
 		ExpiresAt:    exp,
 		RefreshAfter: g.cfg.TTL / 4,
@@ -260,50 +312,86 @@ func (g *Gate) passURL(sessionID uuid.UUID, token string) string {
 	return u.String()
 }
 
-// Admit checks a token for a guest check-in on sessionID, whose Event is
-// eventID, and spends one of its uses.
-func (g *Gate) Admit(raw string, sessionID, eventID uuid.UUID) error {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ErrInvalid
-	}
-	now := g.clock()
-	parser := jwt.NewParser(
-		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
-		jwt.WithTimeFunc(func() time.Time { return now }),
-		jwt.WithExpirationRequired(),
-		jwt.WithIssuedAt(),
-	)
-	var c claims
-	_, err := parser.ParseWithClaims(raw, &c, func(t *jwt.Token) (any, error) {
-		if t.Header["typ"] != TokenType || t.Header["kid"] != Kid {
-			return nil, ErrInvalid
-		}
-		return g.key, nil
-	})
-	if err != nil {
-		if errors.Is(err, jwt.ErrTokenExpired) {
-			return ErrExpired
-		}
-		return ErrInvalid
-	}
-	if c.ID == "" || c.SessionID != sessionID.String() || c.EventID != eventID.String() {
-		return ErrInvalid
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	u := g.uses[c.ID]
-	if u.n >= g.cfg.MaxUses {
-		return ErrUsedUp
-	}
-	g.uses[c.ID] = use{n: u.n + 1, exp: c.ExpiresAt.Time}
-	return nil
+// Use is one admitted check-in on a token. Release gives the use back when
+// the check-in did not happen.
+type Use struct {
+	g   *Gate
+	key string
 }
 
-// sweep forgets the use counts of tokens that have expired.
-func (g *Gate) sweep(now time.Time) {
+// Release returns the use to the token: a failed attempt (an e-mail without a
+// Ticket, a server error) does not spend a guest's place.
+func (u Use) Release() {
+	if u.g == nil {
+		return
+	}
+	u.g.mu.Lock()
+	defer u.g.mu.Unlock()
+	if cur, ok := u.g.uses[u.key]; ok && cur.n > 0 {
+		cur.n--
+		u.g.uses[u.key] = cur
+	}
+}
+
+// Admit checks a token for a guest check-in on sessionID, whose Event is
+// eventID, and reserves one of its uses. The caller releases the use if the
+// check-in fails.
+func (g *Gate) Admit(raw string, sessionID, eventID uuid.UUID) (Use, error) {
+	if len(raw) > MaxTokenBytes {
+		return Use{}, ErrInvalid
+	}
+	parts := strings.Split(strings.TrimSpace(raw), ".")
+	if len(parts) != 4 || parts[0] != Version {
+		return Use{}, ErrInvalid
+	}
+	expUnix, err := strconv.ParseInt(parts[1], 36, 64)
+	if err != nil || expUnix <= 0 || strconv.FormatInt(expUnix, 36) != parts[1] {
+		return Use{}, ErrInvalid
+	}
+	jti, err := b64.DecodeString(parts[2])
+	if err != nil || len(jti) != jtiBytes {
+		return Use{}, ErrInvalid
+	}
+	mac, err := b64.DecodeString(parts[3])
+	if err != nil || len(mac) != macBytes {
+		return Use{}, ErrInvalid
+	}
+	if !hmac.Equal(mac, g.mac(sessionID, eventID, expUnix, jti)) {
+		return Use{}, ErrInvalid
+	}
+	now := g.clock()
+	exp := time.Unix(expUnix, 0).UTC()
+	if !now.Before(exp) {
+		return Use{}, ErrExpired
+	}
+	// No token is minted to live longer than TTL; one that claims to is
+	// from a clock far ahead or another configuration.
+	if exp.After(now.Add(g.cfg.TTL + ClockLeeway)) {
+		return Use{}, ErrInvalid
+	}
+	key := parts[1] + "." + parts[2]
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	cur, tracked := g.uses[key]
+	if !tracked && len(g.uses) >= g.maxTrack {
+		g.sweepLocked(now)
+		if len(g.uses) >= g.maxTrack {
+			return Use{}, ErrUsedUp
+		}
+	}
+	if cur.n >= g.cfg.MaxUses {
+		return Use{}, ErrUsedUp
+	}
+	g.uses[key] = use{n: cur.n + 1, exp: exp}
+	if now.Sub(g.lastSweep) > g.cfg.TTL {
+		g.sweepLocked(now)
+	}
+	return Use{g: g, key: key}, nil
+}
+
+// sweepLocked forgets the use counts of tokens that have expired.
+func (g *Gate) sweepLocked(now time.Time) {
+	g.lastSweep = now
 	for id, u := range g.uses {
 		if !now.Before(u.exp) {
 			delete(g.uses, id)
@@ -325,6 +413,7 @@ const (
 	OutcomeAlready
 	OutcomeNotFound
 	OutcomeBadRequest
+	OutcomeSessionClosed
 	OutcomeRequired
 	OutcomeInvalid
 	OutcomeExpired
@@ -334,8 +423,8 @@ const (
 )
 
 var outcomeNames = [outcomeCount]string{
-	"checked_in", "already_checked_in", "not_found", "bad_request", "door_qr_required", "door_qr_invalid",
-	"door_qr_expired", "door_qr_used_up", "failed",
+	"checked_in", "already_checked_in", "not_found", "bad_request", "session_closed", "door_qr_required",
+	"door_qr_invalid", "door_qr_expired", "door_qr_used_up", "failed",
 }
 
 // Record counts a guest check-in by whether it carried a door QR token.

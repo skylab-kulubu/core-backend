@@ -93,6 +93,10 @@ type Deps struct {
 	// (docs/guest-self-check-in.md). Nil leaves them out.
 	GuestCheckInMetrics interface{ Prometheus() string }
 
+	// DoorQRLimits are the door QR routes' budgets. Nil uses
+	// handlers.DefaultDoorQRLimits.
+	DoorQRLimits *handlers.DoorQRLimits
+
 	// GroupOverage reads the Groups of a person whose token carries the
 	// Group overage marker instead of the groups claim (ADR-0059), and
 	// serves its counters on /v1/metrics. Nil refuses every marked token
@@ -385,8 +389,15 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/tickets", tickets.List)
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
-	app.Post("/v1/sessions/:sessionId/check-in/guest", tickets.CheckInGuest)
-	app.Post("/v1/sessions/:sessionId/door-qr", tickets.MintDoorQR)
+	// Guest check-in takes no sign-in; failures are budgeted per address, and
+	// the door QR caps how many guests one token lets in
+	// (docs/guest-self-check-in.md).
+	doorQRLimits := handlers.DefaultDoorQRLimits()
+	if deps.DoorQRLimits != nil {
+		doorQRLimits = *deps.DoorQRLimits
+	}
+	app.Post("/v1/sessions/:sessionId/check-in/guest", doorQRLimits.GuestCheckInLimit(trustedProxies), tickets.CheckInGuest)
+	app.Post("/v1/sessions/:sessionId/door-qr", doorQRLimits.MintLimit(), tickets.MintDoorQR)
 	app.Post("/v1/sessions/:sessionId/check-in/resolve", tickets.ResolveAndCheckIn)
 	app.Get("/v1/sessions/:sessionId/check-ins", tickets.DoorActivity)
 	if pass != nil {

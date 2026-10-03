@@ -19,6 +19,9 @@ var (
 	ErrDoorQRInvalid  = errors.New("ticket: door qr invalid")
 	ErrDoorQRExpired  = errors.New("ticket: door qr expired")
 	ErrDoorQRUsedUp   = errors.New("ticket: door qr used up")
+	// ErrSessionClosed is a Session that is cancelled, or not within its
+	// time window (with the door QR's grace) now.
+	ErrSessionClosed = errors.New("ticket: session closed")
 )
 
 type Store interface {

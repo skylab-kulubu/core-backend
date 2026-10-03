@@ -860,21 +860,27 @@ func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uui
 }
 
 func (s *service) ticketEventID(ctx context.Context, sessionID uuid.UUID) (uuid.UUID, error) {
+	_, eventID, err := s.sessionAndEvent(ctx, sessionID)
+	return eventID, err
+}
+
+// sessionAndEvent reads a Session and the id of the Event its day belongs to.
+func (s *service) sessionAndEvent(ctx context.Context, sessionID uuid.UUID) (event.Session, uuid.UUID, error) {
 	sess, err := s.events.GetSession(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, event.ErrNotFound) {
-			return uuid.Nil, ErrNotFound
+			return event.Session{}, uuid.Nil, ErrNotFound
 		}
-		return uuid.Nil, err
+		return event.Session{}, uuid.Nil, err
 	}
 	day, err := s.events.GetDay(ctx, sess.EventDayID)
 	if err != nil {
 		if errors.Is(err, event.ErrNotFound) {
-			return uuid.Nil, ErrNotFound
+			return event.Session{}, uuid.Nil, ErrNotFound
 		}
-		return uuid.Nil, err
+		return event.Session{}, uuid.Nil, err
 	}
-	return day.EventID, nil
+	return sess, day.EventID, nil
 }
 
 func (s *service) CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (CheckIn, error) {
@@ -905,16 +911,31 @@ func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g Guest
 	if email == "" {
 		return CheckIn{}, ErrInvalid
 	}
-	eventID, err := s.ticketEventID(ctx, sessionID)
+	sess, eventID, err := s.sessionAndEvent(ctx, sessionID)
 	if err != nil {
 		return CheckIn{}, err
+	}
+	if !s.door.SessionOpen(sess.StartTime, sess.EndTime, sess.Cancelled) {
+		return CheckIn{}, ErrSessionClosed
 	}
 	// The door QR is checked before any Ticket is looked up, so without one
 	// (in qr mode) the route says nothing about which e-mails are
 	// registered.
-	if err := s.admitDoorQR(g.DoorToken, sessionID, eventID); err != nil {
+	use, err := s.admitDoorQR(g.DoorToken, sessionID, eventID)
+	if err != nil {
 		return CheckIn{}, err
 	}
+	ci, err := s.checkInGuestTicket(ctx, sessionID, eventID, email)
+	// Only a guest who is now checked in (or already was) spends a place on
+	// the token; an e-mail without a Ticket gives it back, so junk e-mails
+	// cannot use a door QR up. The route's per-address budget limits those.
+	if err != nil && !errors.Is(err, ErrConflict) {
+		use.Release()
+	}
+	return ci, err
+}
+
+func (s *service) checkInGuestTicket(ctx context.Context, sessionID, eventID uuid.UUID, email string) (CheckIn, error) {
 	listed, err := s.tickets.ListByGuestEmail(ctx, email)
 	if err != nil {
 		return CheckIn{}, err
@@ -929,22 +950,23 @@ func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g Guest
 
 // admitDoorQR applies GUEST_SELF_CHECKIN_MODE: qr requires a valid token;
 // open takes none, but a token that is sent must be valid either way.
-func (s *service) admitDoorQR(token string, sessionID, eventID uuid.UUID) error {
+func (s *service) admitDoorQR(token string, sessionID, eventID uuid.UUID) (doorqr.Use, error) {
 	if strings.TrimSpace(token) == "" {
 		if s.door.Mode() == doorqr.ModeQR {
-			return ErrDoorQRRequired
+			return doorqr.Use{}, ErrDoorQRRequired
 		}
-		return nil
+		return doorqr.Use{}, nil
 	}
-	switch err := s.door.Admit(token, sessionID, eventID); {
+	use, err := s.door.Admit(token, sessionID, eventID)
+	switch {
 	case err == nil:
-		return nil
+		return use, nil
 	case errors.Is(err, doorqr.ErrExpired):
-		return ErrDoorQRExpired
+		return doorqr.Use{}, ErrDoorQRExpired
 	case errors.Is(err, doorqr.ErrUsedUp):
-		return ErrDoorQRUsedUp
+		return doorqr.Use{}, ErrDoorQRUsedUp
 	default:
-		return ErrDoorQRInvalid
+		return doorqr.Use{}, ErrDoorQRInvalid
 	}
 }
 
@@ -958,6 +980,8 @@ func guestCheckInOutcome(err error) doorqr.Outcome {
 		return doorqr.OutcomeNotFound
 	case errors.Is(err, ErrInvalid):
 		return doorqr.OutcomeBadRequest
+	case errors.Is(err, ErrSessionClosed):
+		return doorqr.OutcomeSessionClosed
 	case errors.Is(err, ErrDoorQRRequired):
 		return doorqr.OutcomeRequired
 	case errors.Is(err, ErrDoorQRInvalid):
@@ -978,6 +1002,17 @@ func (s *service) MintDoorQR(ctx context.Context, p authz.Principal, sessionID u
 	ev, err := s.authorizedDoorEvent(ctx, p, sessionID)
 	if err != nil {
 		return DoorQR{}, err
+	}
+	sess, err := s.events.GetSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, event.ErrNotFound) {
+			return DoorQR{}, ErrNotFound
+		}
+		return DoorQR{}, err
+	}
+	// A QR no guest could use would only confuse the door.
+	if !s.door.SessionOpen(sess.StartTime, sess.EndTime, sess.Cancelled) {
+		return DoorQR{}, ErrSessionClosed
 	}
 	pass, err := s.door.Mint(sessionID, ev.ID)
 	if err != nil {

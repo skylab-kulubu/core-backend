@@ -28,7 +28,7 @@ func newDoorFixture(t *testing.T, mode doorqr.Mode) doorFixture {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, 10, 3, 18, 0, 0, 0, time.UTC)
-	gate := doorqr.NewGate([]byte("door qr test key, door qr test k"), doorqr.Config{Mode: mode, MaxUses: 3})
+	gate := doorqr.NewGate([]byte("door qr test key, door qr test k"), doorqr.Config{Mode: mode, MaxUses: 3, SessionGrace: 30 * time.Minute})
 	gate.Now = func() time.Time { return now }
 	events := event.NewMemoryStore()
 	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), gate)
@@ -46,10 +46,13 @@ func newDoorFixture(t *testing.T, mode doorqr.Mode) doorFixture {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ApplyGuest(ctx, weblabLead, ev.ID, ticket.GuestInfo{
-		FirstName: "Grace", LastName: "Hopper", Email: "grace@example.com",
-	}); err != nil {
-		t.Fatal(err)
+	for _, g := range []ticket.GuestInfo{
+		{FirstName: "Grace", LastName: "Hopper", Email: "grace@example.com"},
+		{FirstName: "Alan", LastName: "Turing", Email: "alan@example.com"},
+	} {
+		if _, err := svc.ApplyGuest(ctx, weblabLead, ev.ID, g); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return doorFixture{
 		svc: svc, gate: gate, events: events, ev: ev, sess: sess,
@@ -72,7 +75,7 @@ func TestMintDoorQRDoorStaffOnly(t *testing.T) {
 		if pass.Token == "" || pass.URL == "" || pass.SessionID != f.sess.ID || pass.EventID != f.ev.ID {
 			t.Fatalf("%s: %+v", name, pass)
 		}
-		if !pass.ExpiresAt.Equal(f.minted.Add(doorqr.DefaultTTL)) || pass.RefreshAfterSeconds != 30 {
+		if !pass.ExpiresAt.Equal(f.minted.Add(doorqr.DefaultTTL)) || pass.RefreshAfterSeconds != 15 {
 			t.Fatalf("%s: times %+v", name, pass)
 		}
 	}
@@ -85,6 +88,65 @@ func TestMintDoorQRDoorStaffOnly(t *testing.T) {
 	}
 	if _, err := f.svc.MintDoorQR(ctx, f.staff, uuid.New()); !errors.Is(err, ticket.ErrNotFound) {
 		t.Fatalf("unknown session: %v", err)
+	}
+}
+
+// Door staff of one Event cannot mint a door QR for another Event's Session.
+func TestMintDoorQRRefusesAnotherEventsSession(t *testing.T) {
+	t.Parallel()
+	f := newDoorFixture(t, doorqr.ModeQR)
+	ctx := context.Background()
+	other, err := f.events.Create(ctx, event.Event{Name: "Other", Location: "YTÜ", OwnerTeam: "GAMELAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := seedDay(t, f.events, other.ID, "Day 1")
+	sess := seedSession(t, f.events, day.ID, "Elsewhere")
+	if _, err := f.svc.MintDoorQR(ctx, f.staff, sess.ID); !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("cross-event mint: %v", err)
+	}
+	if _, err := f.svc.MintDoorQR(ctx, weblabLead, sess.ID); !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("other team's leader: %v", err)
+	}
+}
+
+func TestGuestCheckInAndMintOnlyWhileTheSessionIsOpen(t *testing.T) {
+	t.Parallel()
+	f := newDoorFixture(t, doorqr.ModeOpen)
+	ctx := context.Background()
+	at := func(d time.Duration) *time.Time { v := f.minted.Add(d); return &v }
+	schedule := func(start, end *time.Time, cancelled bool) {
+		t.Helper()
+		s := f.sess
+		s.StartTime, s.EndTime, s.Cancelled = start, end, cancelled
+		if _, err := f.events.UpdateSession(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	guest := ticket.GuestCheckIn{Email: "ada@example.com"}
+
+	schedule(at(2*time.Hour), at(3*time.Hour), false)
+	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, guest); !errors.Is(err, ticket.ErrSessionClosed) {
+		t.Fatalf("before the window: %v", err)
+	}
+	if _, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID); !errors.Is(err, ticket.ErrSessionClosed) {
+		t.Fatalf("mint before the window: %v", err)
+	}
+	schedule(at(-3*time.Hour), at(-2*time.Hour), false)
+	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, guest); !errors.Is(err, ticket.ErrSessionClosed) {
+		t.Fatalf("after the window: %v", err)
+	}
+	schedule(at(-time.Hour), at(time.Hour), true)
+	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, guest); !errors.Is(err, ticket.ErrSessionClosed) {
+		t.Fatalf("cancelled: %v", err)
+	}
+	// Within the grace before the start.
+	schedule(at(10*time.Minute), at(time.Hour), false)
+	if _, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID); err != nil {
+		t.Fatalf("mint within grace: %v", err)
+	}
+	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, guest); err != nil {
+		t.Fatalf("within grace: %v", err)
 	}
 }
 
@@ -110,15 +172,21 @@ func TestGuestCheckInQRModeRequiresDoorQR(t *testing.T) {
 	if !errors.Is(err, ticket.ErrConflict) {
 		t.Fatalf("dup: %v", err)
 	}
-	// An e-mail without a Ticket still spends a use: the token is not an
-	// oracle for which e-mails are registered.
-	_, err = f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "nobody@example.com", DoorToken: pass.Token})
-	if !errors.Is(err, ticket.ErrNotFound) {
-		t.Fatalf("nobody: %v", err)
+	// An e-mail without a Ticket gives its use back: junk e-mails cannot use
+	// a door QR up (the route's per-address budget limits them instead).
+	for range 5 {
+		_, err = f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "nobody@example.com", DoorToken: pass.Token})
+		if !errors.Is(err, ticket.ErrNotFound) {
+			t.Fatalf("nobody: %v", err)
+		}
 	}
-	_, err = f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "grace@example.com", DoorToken: pass.Token})
+	// Ada (1), Ada again (2: already checked in counts), Grace (3).
+	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "grace@example.com", DoorToken: pass.Token}); err != nil {
+		t.Fatalf("third guest: %v", err)
+	}
+	_, err = f.svc.CheckInGuest(ctx, f.sess.ID, ticket.GuestCheckIn{Email: "alan@example.com", DoorToken: pass.Token})
 	if !errors.Is(err, ticket.ErrDoorQRUsedUp) {
-		t.Fatalf("fourth use: %v", err)
+		t.Fatalf("fourth guest: %v", err)
 	}
 }
 

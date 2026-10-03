@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -46,6 +47,8 @@ func ticketError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusForbidden, "Door QR Expired", "door_qr_expired")
 	case errors.Is(err, ticket.ErrDoorQRUsedUp):
 		return problemCode(c, fiber.StatusForbidden, "Door QR Used Up", "door_qr_used_up")
+	case errors.Is(err, ticket.ErrSessionClosed):
+		return problemCode(c, fiber.StatusForbidden, "Session Not Open", "session_closed")
 	default:
 		return err
 	}
@@ -269,16 +272,27 @@ func (h *TicketHandler) MintDoorQR(c fiber.Ctx) error {
 		return ticketError(c, err)
 	}
 	c.Set(fiber.HeaderCacheControl, "no-store")
-	if !qr.LogoFromQuery(c.Query("svg")) {
+	if !queryFlag(c.Query("svg")) {
 		return c.Status(fiber.StatusCreated).JSON(pass)
 	}
 	// ?svg=1: the QR itself, drawn from pass.URL, for a screen that has no QR
-	// library. No logo: a screen is scanned from further away than a poster.
-	svg, err := qr.StyledSVG(pass.URL, false, "")
+	// library. Square modules, no logo: it is redrawn every few seconds and
+	// scanned from further away than a poster.
+	svg, err := qr.PlainSVG(pass.URL)
 	if err != nil {
 		return err
 	}
 	return c.Status(fiber.StatusCreated).JSON(doorQRWithSVG{DoorQR: pass, SVG: string(svg)})
+}
+
+// queryFlag reads a yes/no query parameter: 1, true or yes is yes.
+func queryFlag(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 type doorQRWithSVG struct {
