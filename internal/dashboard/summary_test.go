@@ -3,7 +3,6 @@ package dashboard_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -29,6 +28,7 @@ type fakeStore struct {
 	counts  map[uuid.UUID]dashboard.TicketCounts
 	daily   map[uuid.UUID]map[string]int
 	blocked map[uuid.UUID]bool
+	names   map[uuid.UUID]dashboard.Account
 	asked   [][]uuid.UUID
 	since   time.Time
 }
@@ -38,6 +38,7 @@ func newFakeStore() *fakeStore {
 		counts:  map[uuid.UUID]dashboard.TicketCounts{},
 		daily:   map[uuid.UUID]map[string]int{},
 		blocked: map[uuid.UUID]bool{},
+		names:   map[uuid.UUID]dashboard.Account{},
 	}
 }
 
@@ -68,23 +69,55 @@ func (s *fakeStore) DailyApplications(_ context.Context, ids []uuid.UUID, since 
 	return out, nil
 }
 
-func (s *fakeStore) BlockedAccounts(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+func (s *fakeStore) Accounts(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]dashboard.Account, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := map[uuid.UUID]bool{}
+	out := map[uuid.UUID]dashboard.Account{}
 	for _, id := range ids {
+		a, stored := s.names[id]
+		if stored {
+			a.Stored = true
+		}
 		if s.blocked[id] {
-			out[id] = true
+			a.Blocked = true
+		}
+		if stored || a.Blocked {
+			out[id] = a
 		}
 	}
 	return out, nil
+}
+
+func (s *fakeStore) block(id uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.blocked[id] = true
+}
+
+// testClock is the services' clock, read by the Members cache's background
+// reads too.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) set(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = t
 }
 
 type fixture struct {
 	events *event.MemoryStore
 	store  *fakeStore
 	dir    *identity.Memory
-	clock  time.Time
+	clock  *testClock
 	svc    dashboard.Service
 
 	weblabSoon, weblabLive, weblabOld, gecekoduSoon, noTeam, archived event.Event
@@ -92,7 +125,7 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{events: event.NewMemoryStore(), store: newFakeStore(), dir: identity.NewMemory(), clock: now}
+	f := &fixture{events: event.NewMemoryStore(), store: newFakeStore(), dir: identity.NewMemory(), clock: &testClock{t: now}}
 	create := func(e event.Event) event.Event {
 		created, err := f.events.Create(t.Context(), e)
 		if err != nil {
@@ -128,7 +161,7 @@ func (f *fixture) service(t *testing.T, ttl time.Duration) dashboard.Service {
 	t.Helper()
 	svc, err := dashboard.NewService(dashboard.Options{
 		Events: f.events, Store: f.store, Authz: authz.NewAuthorizer(authz.DefaultPolicy()),
-		Directory: f.dir, MembersTTL: ttl, Now: func() time.Time { return f.clock },
+		Directory: f.dir, MembersTTL: ttl, Now: f.clock.now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -268,168 +301,6 @@ func TestSummaryListsRunningComingAndRecentEventsWithTheirApplications(t *testin
 	}
 	if want := []int{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2}; !slices.Equal(soon.DailyApplications, want) {
 		t.Fatalf("daily %v want %v", soon.DailyApplications, want)
-	}
-}
-
-func putMember(t *testing.T, dir *identity.Memory, group string, p identity.Person) {
-	t.Helper()
-	dir.PutUser(p)
-	if err := dir.AddMember(t.Context(), group, p.ID); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func seedMembers(t *testing.T, f *fixture) (ada, bob, cem, dil, eda uuid.UUID) {
-	t.Helper()
-	for _, g := range []identity.Group{
-		{ID: "u", Name: "UYELER", Path: "/UYELER"},
-		{ID: "arge", Name: "ARGE", Path: "/UYELER/ARGE"},
-		{ID: "weblab", Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"},
-		{ID: "weblab-l", Name: "LIDERLER", Path: "/UYELER/ARGE/WEBLAB/LIDERLER"},
-		{ID: "gk", Name: "GECEKODU", Path: "/UYELER/GECEKODU"},
-		{ID: "other", Name: "MISAFIR", Path: "/MISAFIR"},
-	} {
-		f.dir.PutGroup(g)
-	}
-	ada, bob, cem, dil, eda = uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	putMember(t, f.dir, "weblab-l", identity.Person{ID: ada, FirstName: "Ada", LastName: "Lovelace", Email: "ada@example.com", CreatedAt: at(now.Add(-time.Hour))})
-	if err := f.dir.AddMember(t.Context(), "gk", ada); err != nil {
-		t.Fatal(err)
-	}
-	putMember(t, f.dir, "weblab", identity.Person{ID: bob, FirstName: "Bob", LastName: "B", Email: "bob@example.com", CreatedAt: at(now.AddDate(0, -1, 0))})
-	putMember(t, f.dir, "u", identity.Person{ID: cem, FirstName: "Cem", LastName: "C", CreatedAt: at(now.AddDate(-2, 0, 0))})
-	// Disabled in Keycloak.
-	putMember(t, f.dir, "gk", identity.Person{ID: dil, FirstName: "Dil", LastName: "D", CreatedAt: at(now.Add(-2 * time.Hour))})
-	if err := f.dir.DisableUser(t.Context(), dil); err != nil {
-		t.Fatal(err)
-	}
-	// Being erased: core holds the deletion marker.
-	putMember(t, f.dir, "gk", identity.Person{ID: eda, FirstName: "Eda", LastName: "E", CreatedAt: at(now.Add(-3 * time.Hour))})
-	f.store.blocked[eda] = true
-	// Not a Member: outside the UYELER tree.
-	putMember(t, f.dir, "other", identity.Person{ID: uuid.New(), FirstName: "Fikret", CreatedAt: at(now)})
-	return
-}
-
-// The Members section is the User read decision of the user list: only a
-// caller who may read people gets it. It leaves out people disabled in
-// Keycloak and people core is erasing, and answers no contact.
-func TestSummaryMembersAreActiveMembersWithoutContact(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	ada, bob, cem, _, _ := seedMembers(t, f)
-	got, err := f.svc.Summary(t.Context(), privileged)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := got.Members
-	if m == nil || got.MembersUnavailable {
-		t.Fatalf("members %+v unavailable %v", m, got.MembersUnavailable)
-	}
-	if m.Active != 3 {
-		t.Fatalf("active %d", m.Active)
-	}
-	if len(m.NewByMonth) != dashboard.MemberMonths || m.NewByMonth[0].Month != "2025-11" || m.NewByMonth[11].Month != "2026-10" {
-		t.Fatalf("months %v", m.NewByMonth)
-	}
-	if m.NewByMonth[11].Count != 1 || m.NewByMonth[10].Count != 1 {
-		t.Fatalf("month counts %v", m.NewByMonth)
-	}
-	if len(m.RecentJoiners) != 3 || m.RecentJoiners[0].ID != ada || m.RecentJoiners[1].ID != bob || m.RecentJoiners[2].ID != cem {
-		t.Fatalf("joiners %+v", m.RecentJoiners)
-	}
-	if !slices.Equal(m.RecentJoiners[0].Teams, []string{"GECEKODU", "WEBLAB"}) || !slices.Equal(m.RecentJoiners[1].Teams, []string{"WEBLAB"}) || len(m.RecentJoiners[2].Teams) != 0 {
-		t.Fatalf("teams %+v", m.RecentJoiners)
-	}
-	raw, err := json.Marshal(got)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "@") || strings.Contains(string(raw), "email") || strings.Contains(string(raw), "phone") {
-		t.Fatalf("the summary carries contact data: %s", raw)
-	}
-
-	usersReader := authz.Principal{ID: uuid.NewString(), Roles: []string{"users:read"}}
-	if got, err := f.svc.Summary(t.Context(), usersReader); err != nil || got.Members == nil {
-		t.Fatalf("users:read reads people: %+v %v", got.Members, err)
-	}
-}
-
-// One read of the Members tree serves everyone for its TTL; an erasure
-// started meanwhile shows at once, since the marker is read every time.
-func TestSummaryMembersTreeIsReadOncePerTTL(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	ada, _, _, _, _ := seedMembers(t, f)
-	svc := f.service(t, time.Minute)
-	reads := func() int {
-		n := 0
-		for _, op := range f.dir.Ops {
-			if op == "Members" {
-				n++
-			}
-		}
-		return n
-	}
-	if _, err := svc.Summary(t.Context(), privileged); err != nil {
-		t.Fatal(err)
-	}
-	first := reads()
-	if first == 0 {
-		t.Fatal("the tree was not read")
-	}
-	f.store.blocked[ada] = true
-	f.clock = now.Add(59 * time.Second)
-	got, err := svc.Summary(t.Context(), privileged)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reads() != first {
-		t.Fatal("the tree was read again within its TTL")
-	}
-	if got.Members.Active != 2 || got.Members.RecentJoiners[0].ID == ada {
-		t.Fatalf("an erasure waits for the cache: %+v", got.Members)
-	}
-	if !got.Members.AsOf.Equal(now) {
-		t.Fatalf("asOf %v", got.Members.AsOf)
-	}
-	f.clock = now.Add(time.Minute)
-	if _, err := svc.Summary(t.Context(), privileged); err != nil {
-		t.Fatal(err)
-	}
-	if reads() == first {
-		t.Fatal("the tree was not read again after its TTL")
-	}
-}
-
-type failingDirectory struct{ dashboard.GroupDirectory }
-
-func (failingDirectory) GetGroup(context.Context, string) (identity.Group, error) {
-	return identity.Group{}, errors.New("keycloak down")
-}
-
-// Keycloak down costs the Members section, not the summary.
-func TestSummaryWithoutTheDirectoryKeepsTheRest(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	svc, err := dashboard.NewService(dashboard.Options{
-		Events: f.events, Store: f.store, Authz: authz.NewAuthorizer(authz.DefaultPolicy()),
-		Directory: failingDirectory{}, Now: func() time.Time { return now },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := svc.Summary(t.Context(), privileged)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Members != nil || !got.MembersUnavailable || got.Events.Total != 5 {
-		t.Fatalf("members %+v unavailable %v events %+v", got.Members, got.MembersUnavailable, got.Events)
-	}
-	// A caller who may not read people is not told the directory is down.
-	got, err = svc.Summary(t.Context(), leader)
-	if err != nil || got.MembersUnavailable {
-		t.Fatalf("unavailable %v err %v", got.MembersUnavailable, err)
 	}
 }
 

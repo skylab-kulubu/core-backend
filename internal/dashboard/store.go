@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,16 +29,30 @@ type Store interface {
 	// DailyApplications counts the Tickets of each Event created at or
 	// after since, by calendar day in loc ("2006-01-02").
 	DailyApplications(ctx context.Context, eventIDs []uuid.UUID, since time.Time, loc *time.Location) (map[uuid.UUID]map[string]int, error)
-	// BlockedAccounts names the people among ids whose account core may no
-	// longer show: one with an account deletion request (the erasure
-	// marker, which outlives the row) or whose row is no longer active.
-	// Someone core has no row for is not blocked.
-	BlockedAccounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error)
+	// Accounts reads what core holds of each of ids: whether core may still
+	// show them (Account.Blocked) and the names it stores. A person core has
+	// neither a row nor a deletion marker for is left out.
+	Accounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Account, error)
 }
 
-// attributions is what MemoryStore reads an account's state from:
-// user.MemoryStore's rule for a person core may still name.
-type attributions interface {
+// Account is what core holds of a person the Members section may name.
+type Account struct {
+	// Blocked is true for a person core may no longer show: one with an
+	// account deletion request (the erasure marker, which outlives the row)
+	// or whose row is no longer active. It is user.PostgresStore's
+	// AttributionState rule, for many people at once.
+	Blocked bool
+	// Stored is true when core has a row for the person; FirstName and
+	// LastName are then the names it stores, which core's other people
+	// reads answer in place of Keycloak's.
+	Stored    bool
+	FirstName string
+	LastName  string
+}
+
+// accounts is what MemoryStore reads people from: user.MemoryStore.
+type accounts interface {
+	Get(ctx context.Context, id uuid.UUID) (user.User, error)
 	AttributionState(ctx context.Context, id uuid.UUID) (user.AttributionState, error)
 }
 
@@ -45,11 +60,11 @@ type attributions interface {
 // Event at a time: for development and tests, where nothing is large.
 type MemoryStore struct {
 	tickets ticket.Store
-	users   attributions
+	users   accounts
 }
 
 // NewMemoryStore reads tickets and, when users is not nil, account states.
-func NewMemoryStore(tickets ticket.Store, users attributions) *MemoryStore {
+func NewMemoryStore(tickets ticket.Store, users accounts) *MemoryStore {
 	return &MemoryStore{tickets: tickets, users: users}
 }
 
@@ -99,18 +114,29 @@ func (s *MemoryStore) DailyApplications(ctx context.Context, eventIDs []uuid.UUI
 	return out, nil
 }
 
-func (s *MemoryStore) BlockedAccounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
-	out := make(map[uuid.UUID]bool)
+// Accounts follows the Postgres rule: a deletion marker blocks, and so does
+// a row that is no longer active (user.MemoryStore.AttributionState).
+func (s *MemoryStore) Accounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Account, error) {
+	out := make(map[uuid.UUID]Account)
 	if s.users == nil {
 		return out, nil
 	}
 	for _, id := range ids {
+		var a Account
+		row, err := s.users.Get(ctx, id)
+		switch {
+		case err == nil:
+			a.Stored, a.FirstName, a.LastName = true, row.FirstName, row.LastName
+		case !errors.Is(err, user.ErrNotFound):
+			return nil, err
+		}
 		state, err := s.users.AttributionState(ctx, id)
 		if err != nil {
 			return nil, err
 		}
-		if state == user.AttributionBlocked {
-			out[id] = true
+		a.Blocked = state == user.AttributionBlocked
+		if a.Stored || a.Blocked {
+			out[id] = a
 		}
 	}
 	return out, nil

@@ -21,7 +21,7 @@ At startup core only checks them (`MissingClientRoles`, GET only). When a role i
 
 ## Dashboard summary
 
-The Members section of `GET /v1/dashboard/summary` reads the `UYELER` tree: `GET /group-by-path/UYELER`, `GET /groups/{id}/children` and `GET /groups/{id}/members` for each Group in it. One read serves every caller for 5 minutes and only callers who may read people trigger it. Nothing new is needed: these are the Group reads of the rosters. See [`dashboard-summary.md`](dashboard-summary.md).
+The Members section of `GET /v1/dashboard/summary` reads the `UYELER` tree: `GET /group-by-path/UYELER`, then `GET /groups/{id}/children` and `GET /groups/{id}/members` for each Group in it, about `1 + 2 × G` requests for `G` Groups. One read serves every caller for 5 minutes, runs one at a time with a 5 s limit, a failure stops new reads for 30 s, and only people who may read people trigger it. Nothing new is needed: these are the Group reads of the rosters. See [`dashboard-summary.md`](dashboard-summary.md).
 
 ## Group count report
 

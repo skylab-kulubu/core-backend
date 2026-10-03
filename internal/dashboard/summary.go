@@ -11,6 +11,7 @@ package dashboard
 
 import (
 	"context"
+	"log"
 	"slices"
 	"sort"
 	"time"
@@ -139,9 +140,18 @@ type Options struct {
 	// Directory reads the Members tree. Nil leaves the Members section
 	// out (null) for everyone.
 	Directory GroupDirectory
-	// MembersTTL is how long one read of the Members tree is used.
-	// Zero is DefaultMembersTTL.
+	// MembersTTL is how long one read of the Members tree is used before a
+	// new one starts. Zero is DefaultMembersTTL.
 	MembersTTL time.Duration
+	// MembersReadTimeout bounds one read of the tree. Zero is
+	// DefaultMembersReadTimeout.
+	MembersReadTimeout time.Duration
+	// MembersFailureTTL is how long a failed read is kept. Zero is
+	// DefaultMembersFailureTTL.
+	MembersFailureTTL time.Duration
+	// Logf writes the line logged when a read of the tree fails; nil is
+	// log.Printf.
+	Logf func(format string, args ...any)
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 }
@@ -166,11 +176,18 @@ func NewService(o Options) (Service, error) {
 	}
 	s := &service{events: o.Events, store: o.Store, authz: o.Authz, now: now, loc: loc}
 	if o.Directory != nil {
-		ttl := o.MembersTTL
-		if ttl <= 0 {
-			ttl = DefaultMembersTTL
+		logf := o.Logf
+		if logf == nil {
+			logf = log.Printf
 		}
-		s.members = newMemberCache(o.Directory, ttl, now)
+		s.members = &memberCache{
+			dir:         o.Directory,
+			ttl:         orDefault(o.MembersTTL, DefaultMembersTTL),
+			readTimeout: orDefault(o.MembersReadTimeout, DefaultMembersReadTimeout),
+			failureTTL:  orDefault(o.MembersFailureTTL, DefaultMembersFailureTTL),
+			now:         now,
+			logf:        logf,
+		}
 	}
 	return s, nil
 }
@@ -255,8 +272,11 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 		return out.EventStats[i].StartDate.Before(*out.EventStats[j].StartDate)
 	})
 
-	if s.members != nil && s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Read) {
-		members, err := s.memberSummary(ctx, now)
+	// The Members section is for people: a product's service account gets
+	// none, whatever roles it holds.
+	if s.members != nil && p.Product == "" && s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Read) {
+		allTeams := s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Update)
+		members, err := s.memberSummary(ctx, now, allTeams)
 		if err != nil {
 			out.MembersUnavailable = true
 		} else {
@@ -323,6 +343,13 @@ func span(e event.Event) (start, end time.Time, dated bool) {
 		end = *e.EndDate
 	}
 	return start, end, true
+}
+
+func orDefault(d, fallback time.Duration) time.Duration {
+	if d <= 0 {
+		return fallback
+	}
+	return d
 }
 
 func startOfDay(t time.Time, loc *time.Location) time.Time {

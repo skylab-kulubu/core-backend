@@ -75,18 +75,21 @@ func (s *PostgresStore) DailyApplications(ctx context.Context, eventIDs []uuid.U
 	return out, rows.Err()
 }
 
-// BlockedAccounts is user.PostgresStore's attribution rule for many people
-// at once: a deletion request blocks, and so does a row that is no longer
-// active.
-func (s *PostgresStore) BlockedAccounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
-	out := make(map[uuid.UUID]bool)
+// Accounts reads the people's rows and deletion markers in one query.
+func (s *PostgresStore) Accounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Account, error) {
+	out := make(map[uuid.UUID]Account)
 	if len(ids) == 0 {
 		return out, nil
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id FROM users WHERE id = ANY($1) AND account_state <> 'active'
-		UNION
-		SELECT subject_id FROM account_deletion_requests WHERE subject_id = ANY($1)
+		SELECT ids.id,
+		       u.id IS NOT NULL,
+		       COALESCE(u.first_name, ''),
+		       COALESCE(u.last_name, ''),
+		       COALESCE(u.account_state <> 'active', false)
+		         OR EXISTS (SELECT 1 FROM account_deletion_requests r WHERE r.subject_id = ids.id)
+		FROM unnest($1::uuid[]) AS ids(id)
+		LEFT JOIN users u ON u.id = ids.id
 	`, ids)
 	if err != nil {
 		return nil, err
@@ -94,10 +97,13 @@ func (s *PostgresStore) BlockedAccounts(ctx context.Context, ids []uuid.UUID) (m
 	defer rows.Close()
 	for rows.Next() {
 		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
+		var a Account
+		if err := rows.Scan(&id, &a.Stored, &a.FirstName, &a.LastName, &a.Blocked); err != nil {
 			return nil, err
 		}
-		out[id] = true
+		if a.Stored || a.Blocked {
+			out[id] = a
+		}
 	}
 	return out, rows.Err()
 }

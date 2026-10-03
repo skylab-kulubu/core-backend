@@ -108,20 +108,47 @@ func TestPostgresStoreAggregates(t *testing.T) {
 	}
 }
 
-func TestPostgresStoreBlockedAccountsFollowErasure(t *testing.T) {
+// accountsContract checks a Store's Accounts over people seeded the same
+// way in each store: an active person with names, one whose erasure was
+// requested, one anonymized, and one core has no row for.
+func accountsContract(t *testing.T, store dashboard.Store, active, pending, anonymized uuid.UUID) {
+	t.Helper()
+	unknown := uuid.New()
+	got, err := store.Accounts(context.Background(), []uuid.UUID{active, pending, anonymized, unknown})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := got[active]; a.Blocked || !a.Stored || a.FirstName != "Ada" || a.LastName != "Lovelace" {
+		t.Fatalf("active %+v", a)
+	}
+	if !got[pending].Blocked || !got[anonymized].Blocked {
+		t.Fatalf("pending %+v anonymized %+v", got[pending], got[anonymized])
+	}
+	if _, listed := got[unknown]; listed || len(got) != 3 {
+		t.Fatalf("accounts %+v", got)
+	}
+	if none, err := store.Accounts(context.Background(), nil); err != nil || len(none) != 0 {
+		t.Fatalf("no people: %v %v", none, err)
+	}
+}
+
+func TestPostgresStoreAccountsFollowErasure(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	store := dashboard.NewPostgresStore(pool)
 	users := user.NewPostgresStore(pool)
 
-	active, pending, anonymized, unknown := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	for _, id := range []uuid.UUID{active, pending, anonymized} {
+	active, pending, anonymized := uuid.New(), uuid.New(), uuid.New()
+	exec(t, pool, `INSERT INTO users (id, email, first_name, last_name) VALUES ($1, 'ada@example.com', 'Ada', 'Lovelace')`, active)
+	for _, id := range []uuid.UUID{pending, anonymized} {
 		exec(t, pool, `INSERT INTO users (id, email) VALUES ($1, $2)`, id, id.String()+"@example.com")
 	}
 	if _, err := users.RequestDeletion(ctx, pending, nil); err != nil {
 		t.Fatal(err)
 	}
 	exec(t, pool, `UPDATE users SET account_state = 'anonymized' WHERE id = $1`, anonymized)
+	accountsContract(t, store, active, pending, anonymized)
+
 	// A deletion marker outlives the row it was for.
 	purged := uuid.New()
 	exec(t, pool, `INSERT INTO users (id) VALUES ($1)`, purged)
@@ -129,12 +156,34 @@ func TestPostgresStoreBlockedAccountsFollowErasure(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec(t, pool, `DELETE FROM users WHERE id = $1`, purged)
+	got, err := store.Accounts(ctx, []uuid.UUID{purged})
+	if err != nil || !got[purged].Blocked || got[purged].Stored {
+		t.Fatalf("purged %+v %v", got[purged], err)
+	}
+}
 
-	blocked, err := store.BlockedAccounts(ctx, []uuid.UUID{active, pending, anonymized, unknown, purged})
-	if err != nil {
+// The in-memory store answers as the Postgres one does.
+func TestMemoryStoreAccountsFollowErasure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	users := user.NewMemoryStore()
+	active, pending, anonymized := uuid.New(), uuid.New(), uuid.New()
+	for _, u := range []user.User{
+		{ID: active, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"},
+		{ID: pending, Email: "p@example.com"},
+		{ID: anonymized, Email: "a@example.com"},
+	} {
+		if _, _, err := users.Upsert(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []uuid.UUID{pending, anonymized} {
+		if _, err := users.RequestDeletion(ctx, id, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := users.AnonymizeAccount(ctx, anonymized, time.Now(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if blocked[active] || blocked[unknown] || !blocked[pending] || !blocked[anonymized] || !blocked[purged] || len(blocked) != 3 {
-		t.Fatalf("blocked %v", blocked)
-	}
+	accountsContract(t, dashboard.NewMemoryStore(nil, users), active, pending, anonymized)
 }

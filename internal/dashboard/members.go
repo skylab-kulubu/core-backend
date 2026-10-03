@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
 	"strings"
@@ -17,9 +18,15 @@ const (
 	// MembersRoot is the Group whose tree holds the club's Members
 	// (CONTEXT.md, Member).
 	MembersRoot = "/UYELER"
-	// DefaultMembersTTL is how long one read of the Members tree is used:
-	// reading it costs two Keycloak requests per Group in the tree.
+	// DefaultMembersTTL is how long one read of the Members tree is used
+	// before a new one starts: reading it costs about two Keycloak requests
+	// per Group in the tree.
 	DefaultMembersTTL = 5 * time.Minute
+	// DefaultMembersReadTimeout bounds one read of the tree as a whole.
+	DefaultMembersReadTimeout = 5 * time.Second
+	// DefaultMembersFailureTTL is how long a failed read is kept: no new read
+	// starts before it passes.
+	DefaultMembersFailureTTL = 30 * time.Second
 	// MemberMonths is how many months Members.NewByMonth covers, this one
 	// included.
 	MemberMonths = 12
@@ -40,8 +47,8 @@ type Members struct {
 	// RecentJoiners are the active Members who registered last, newest
 	// first.
 	RecentJoiners []Joiner `json:"recentJoiners"`
-	// AsOf is when the Members tree was read; it may be up to
-	// DefaultMembersTTL old.
+	// AsOf is when the Members tree was read: usually less than
+	// DefaultMembersTTL ago, older while Keycloak cannot be read.
 	AsOf time.Time `json:"asOf"`
 }
 
@@ -52,7 +59,8 @@ type Joiner struct {
 	FirstName string    `json:"firstName"`
 	LastName  string    `json:"lastName"`
 	// Teams are the names of the teams under UYELER the person sits in
-	// (leadership subgroups count as their team), sorted.
+	// (leadership subgroups count as their team), sorted. A caller who may
+	// not manage people (User Update) gets the publicly listed ones only.
 	Teams []string `json:"teams"`
 	// RegisteredAt is when their Keycloak account was created.
 	RegisteredAt time.Time `json:"registeredAt"`
@@ -73,7 +81,14 @@ type treeMember struct {
 	lastName   string
 	enabled    bool
 	registered *time.Time
-	teams      []string
+	teams      []treeTeam
+}
+
+// treeTeam is a team a person sits in and whether it is publicly listed
+// (the public_listing attribute of its Group).
+type treeTeam struct {
+	name   string
+	public bool
 }
 
 type memberSnapshot struct {
@@ -81,39 +96,99 @@ type memberSnapshot struct {
 	people []treeMember
 }
 
+// errMembersUnavailable answers a caller while no read of the tree has
+// succeeded: the last read failed and its failure is still kept, or the
+// caller stopped waiting.
+var errMembersUnavailable = errors.New("dashboard: the Members tree could not be read")
+
 // memberCache holds one read of the Members tree for everyone allowed to
 // see it: what it holds does not depend on the caller, and who may see it
 // is decided on every request before it is used. Erasure is applied on
-// every request too (BlockedAccounts), so an erased person never waits for
-// the cache to expire.
+// every request too (Store.Accounts), so an erased person never waits for
+// the cache.
+//
+// One read runs at a time, detached from the requests that wait for it and
+// bounded by readTimeout; a request that goes away stops waiting without
+// failing the others. Once a read is ttl old the next request starts a new
+// one in the background and is answered the old one meanwhile. A failed
+// read leaves the last good one in place (served on, however old) and is
+// kept for failureTTL: no new read starts before that.
 type memberCache struct {
-	dir GroupDirectory
-	ttl time.Duration
-	now func() time.Time
+	dir         GroupDirectory
+	ttl         time.Duration
+	readTimeout time.Duration
+	failureTTL  time.Duration
+	now         func() time.Time
+	logf        func(format string, args ...any)
 
 	mu       sync.Mutex
 	snapshot *memberSnapshot
+	failedAt *time.Time
+	reading  chan struct{}
 }
 
-func newMemberCache(dir GroupDirectory, ttl time.Duration, now func() time.Time) *memberCache {
-	return &memberCache{dir: dir, ttl: ttl, now: now}
-}
-
-// get answers the snapshot, reading the tree again once it is ttl old.
-// Concurrent callers wait for one read; a failed read is not kept.
+// get answers the last good read, starting a new one when it is due, and
+// waits for that read only when there is no good read yet.
 func (c *memberCache) get(ctx context.Context) (memberSnapshot, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	now := c.now()
-	if c.snapshot != nil && now.Sub(c.snapshot.at) < c.ttl {
-		return *c.snapshot, nil
+	failing := c.failedAt != nil && now.Sub(*c.failedAt) < c.failureTTL
+	if c.snapshot != nil {
+		if now.Sub(c.snapshot.at) >= c.ttl && !failing {
+			c.startLocked()
+		}
+		snapshot := *c.snapshot
+		c.mu.Unlock()
+		return snapshot, nil
 	}
-	people, err := readTree(ctx, c.dir)
-	if err != nil {
-		return memberSnapshot{}, err
+	if failing {
+		c.mu.Unlock()
+		return memberSnapshot{}, errMembersUnavailable
 	}
-	c.snapshot = &memberSnapshot{at: now, people: people}
+	reading := c.startLocked()
+	c.mu.Unlock()
+
+	select {
+	case <-reading:
+	case <-ctx.Done():
+		return memberSnapshot{}, errMembersUnavailable
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.snapshot == nil {
+		return memberSnapshot{}, errMembersUnavailable
+	}
 	return *c.snapshot, nil
+}
+
+// startLocked starts a read unless one is running, and answers the channel
+// that closes when the running read ends. The caller holds c.mu.
+func (c *memberCache) startLocked() chan struct{} {
+	if c.reading != nil {
+		return c.reading
+	}
+	done := make(chan struct{})
+	c.reading = done
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), c.readTimeout)
+		people, err := readTree(ctx, c.dir)
+		cancel()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.reading = nil
+		at := c.now()
+		if err != nil {
+			c.failedAt = &at
+			// The error is the directory's: Keycloak's status or a
+			// timeout. It names no person; no id, name or path is added.
+			c.logf(`{"event":"dashboard_members","outcome":"unavailable","stale":%t,"error":%q}`, c.snapshot != nil, err.Error())
+			return
+		}
+		c.failedAt = nil
+		c.snapshot = &memberSnapshot{at: at, people: people}
+	}()
+	return done
 }
 
 // readTree reads every person in the Members tree once, with the teams of
@@ -131,6 +206,10 @@ func readTree(ctx context.Context, dir GroupDirectory) ([]treeMember, error) {
 		}
 		groups = append(groups, children...)
 	}
+	byPath := make(map[string]identity.Group, len(groups))
+	for _, g := range groups {
+		byPath[g.Path] = g
+	}
 	byID := make(map[uuid.UUID]*treeMember)
 	order := make([]uuid.UUID, 0)
 	for _, g := range groups {
@@ -138,7 +217,14 @@ func readTree(ctx context.Context, dir GroupDirectory) ([]treeMember, error) {
 		if err != nil {
 			return nil, err
 		}
-		team := teamOf(root.Path, g.Path)
+		teamPath := teamOf(root.Path, g.Path)
+		var team treeTeam
+		if teamPath != "" {
+			team = treeTeam{
+				name:   teamPath[strings.LastIndex(teamPath, "/")+1:],
+				public: strings.EqualFold(byPath[teamPath].Attributes["public_listing"], "true"),
+			}
+		}
 		for _, p := range people {
 			m, ok := byID[p.ID]
 			if !ok {
@@ -149,7 +235,7 @@ func readTree(ctx context.Context, dir GroupDirectory) ([]treeMember, error) {
 				byID[p.ID] = m
 				order = append(order, p.ID)
 			}
-			if team != "" && !slices.Contains(m.teams, team) {
+			if team.name != "" && !slices.Contains(m.teams, team) {
 				m.teams = append(m.teams, team)
 			}
 		}
@@ -157,14 +243,15 @@ func readTree(ctx context.Context, dir GroupDirectory) ([]treeMember, error) {
 	out := make([]treeMember, 0, len(order))
 	for _, id := range order {
 		m := byID[id]
-		sort.Strings(m.teams)
+		sort.Slice(m.teams, func(i, j int) bool { return m.teams[i].name < m.teams[j].name })
 		out = append(out, *m)
 	}
 	return out, nil
 }
 
-// teamOf is the team a Group of the Members tree stands for: its last name
-// once leadership subgroups are set aside, or "" for the root itself.
+// teamOf is the path of the team a Group of the Members tree stands for:
+// the Group itself once leadership subgroups are set aside, or "" for the
+// root.
 func teamOf(rootPath, path string) string {
 	rest, under := strings.CutPrefix(path, rootPath+"/")
 	if !under || rest == "" {
@@ -178,10 +265,13 @@ func teamOf(rootPath, path string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return parts[len(parts)-1]
+	return rootPath + "/" + strings.Join(parts, "/")
 }
 
-func (s *service) memberSummary(ctx context.Context, now time.Time) (Members, error) {
+// memberSummary answers the section from the cached tree and core's
+// accounts. allTeams is false for a caller who may read people but not
+// manage them: they see the publicly listed teams only.
+func (s *service) memberSummary(ctx context.Context, now time.Time, allTeams bool) (Members, error) {
 	snapshot, err := s.members.get(ctx)
 	if err != nil {
 		return Members{}, err
@@ -190,7 +280,7 @@ func (s *service) memberSummary(ctx context.Context, now time.Time) (Members, er
 	for i, m := range snapshot.people {
 		ids[i] = m.id
 	}
-	blocked, err := s.store.BlockedAccounts(ctx, ids)
+	accounts, err := s.store.Accounts(ctx, ids)
 	if err != nil {
 		return Members{}, err
 	}
@@ -209,7 +299,7 @@ func (s *service) memberSummary(ctx context.Context, now time.Time) (Members, er
 	}
 	registered := make([]treeMember, 0)
 	for _, m := range snapshot.people {
-		if !m.enabled || blocked[m.id] {
+		if !m.enabled || accounts[m.id].Blocked {
 			continue
 		}
 		out.Active++
@@ -225,11 +315,20 @@ func (s *service) memberSummary(ctx context.Context, now time.Time) (Members, er
 		return registered[i].registered.After(*registered[j].registered)
 	})
 	for _, m := range registered[:min(RecentJoiners, len(registered))] {
-		teams := append([]string{}, m.teams...)
-		out.RecentJoiners = append(out.RecentJoiners, Joiner{
+		joiner := Joiner{
 			ID: m.id, FirstName: m.firstName, LastName: m.lastName,
-			Teams: teams, RegisteredAt: m.registered.UTC(),
-		})
+			Teams: make([]string, 0, len(m.teams)), RegisteredAt: m.registered.UTC(),
+		}
+		// As core's other people reads: the names core stores win.
+		if account := accounts[m.id]; account.Stored {
+			joiner.FirstName, joiner.LastName = account.FirstName, account.LastName
+		}
+		for _, team := range m.teams {
+			if allTeams || team.public {
+				joiner.Teams = append(joiner.Teams, team.name)
+			}
+		}
+		out.RecentJoiners = append(out.RecentJoiners, joiner)
 	}
 	return out, nil
 }
