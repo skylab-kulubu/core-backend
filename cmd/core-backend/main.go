@@ -103,7 +103,18 @@ func main() {
 		log.Fatal(err)
 	}
 
-	az := authz.NewAuthorizer(authz.DefaultPolicy())
+	// Where Privileged decisions come from while the roles roll out
+	// (docs/authz-roles.md): the Groups by default, so a release changes
+	// nothing until the mode is switched.
+	roleMode, err := authz.ParseRoleMode(os.Getenv(authz.RoleModeEnv))
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("authz role mode: %s (%s)", roleMode, authz.RoleModeEnv)
+	authzPolicy := authz.DefaultPolicy()
+	authzPolicy.RoleMode = roleMode
+	authzRoleMetrics := authz.NewRoleMetrics(log.Default(), time.Now)
+	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics))
 	users := user.NewPostgresStore(pool)
 	events := event.NewPostgresStore(pool)
 	seasons := season.NewPostgresStore(pool)
@@ -333,6 +344,14 @@ func main() {
 		missingRoles, err := keycloakDirectory.MissingClientRoles(roleContext, os.Getenv("KEYCLOAK_CLIENT_ID"), identity.CertificateClientRoles)
 		cancelRoleCheck()
 		if warning := identity.CertificateRolesWarning(os.Getenv("KEYCLOAK_CLIENT_ID"), missingRoles, err); warning != "" {
+			log.Print(warning)
+		}
+		// The roles live on the client tokens carry them for
+		// (resource_access.core), whichever client core signs in as.
+		roleContext, cancelRoleCheck = context.WithTimeout(context.Background(), 15*time.Second)
+		missingRoles, err = keycloakDirectory.MissingClientRoles(roleContext, authn.ResourceAudience, authz.PermissionRoles())
+		cancelRoleCheck()
+		if warning := identity.PermissionRolesWarning(authn.ResourceAudience, roleMode, missingRoles, err); warning != "" {
 			log.Print(warning)
 		}
 		dir = keycloakDirectory
@@ -629,6 +648,8 @@ func main() {
 		ServiceClients:          serviceClients,
 		GroupOverage:            overageGroups,
 		GuestApplyMetrics:       handlers.NewGuestApplyMetrics(),
+		Authz:                   az,
+		AuthzRoleMetrics:        authzRoleMetrics,
 		GuestCheckInMetrics:     doorQR,
 		GuestApplyPublicIPLimit: guestApplyIPLimit,
 		Dashboard:               dashboardSvc,
