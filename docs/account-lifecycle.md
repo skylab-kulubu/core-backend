@@ -14,6 +14,24 @@ Public short-link attribution requires a current active Core identity and perfor
 
 PostgreSQL applies that same lock-and-marker invariant to every durable current-identity link, even when SQL bypasses the Go services. Ticket owners, competitors, media uploaders, certificate owners, URL creators/hit attribution, event door staff and the person a private Media read link is for (`media_read_links.on_behalf_of`, migration `20260926171000`) can reference only an active subject with no deletion marker. Audit actors use the same rule for lifecycle archivers/deleters/withdrawers, certificate template publishers and binding/finalization/batch operations, and deletion-request requesters. A writer that commits first is observed and detached by anonymization; a writer behind the deletion marker is rejected atomically. `NULL` history remains valid and detached competitors cannot be reinstated.
 
+## Reading a person
+
+The reads that answer for another person (`GET /v1/users/{id}`, `GET /v1/users`, the answer of `PATCH /v1/users/{id}`, a ticket's `owner`) carry a `status` and a `displayName` besides the fields they had:
+
+| `status` | When | Answer |
+|---|---|---|
+| `active` | The account is active, or core has no row but Keycloak knows the person | As before; `displayName` is `firstName` and `lastName` joined |
+| `deletion_pending` | The person asked to be erased and the erasure is running | `id`, `status`, `displayName: "Silinmiş kullanıcı"`, `firstName: "Silinmiş kullanıcı"`, `lastName: ""`, `email: ""`; nothing else |
+| `deleted` | The account is anonymized, or hard-purged (no row, a deletion marker), or the id is the placeholder sub `00000000-0000-4000-8000-000000000000` | The same, with `status: "deleted"` |
+
+```json
+{"id": "6f1c…", "email": "", "firstName": "Silinmiş kullanıcı", "lastName": "", "status": "deleted", "displayName": "Silinmiş kullanıcı"}
+```
+
+- **Deletion pending is shown as deleted.** The request cannot be withdrawn, and the person's data is erased within days, so no reader shows it in the meantime. `status` still tells the two apart: a service with `deletion_pending` knows its Erasure command is coming.
+- **`firstName` holds the fixed name** (account-erasure-command.md §8: name columns get `Silinmiş kullanıcı`), so a client that joins `firstName` and `lastName` shows it without reading `status`. Clients should read `status` and `displayName`.
+- **Endpoints.** `GET /v1/users/{id}` (the admin card and the `users:read` card Forms reads) answers the three states above with `200`, whatever Keycloak still holds: core's row, or after the hard purge its deletion marker, decides. An id core has neither a row nor a marker for, and Keycloak does not know, is still `404`. A caller that may not read users is refused (`403`) before any of this, so it learns nothing of the id. `GET /v1/users` (and its `q`/`role` searches) leaves out deletion-pending and erased people, as the admin list already did, and marks the rest `active`. A ticket's embedded `owner` carries `status` and `displayName` the same way; anonymization detaches the ticket (`owner_id` NULL), so only a deletion-pending owner is ever embedded that way. Group member lists and the public team rosters come from Keycloak, which keeps a deletion-pending person until `delete_identity`; they carry no `status`.
+
 ## Durable erasure flow
 
 `account_deletion_requests` stores queue state without an e-mail, name or other erased profile data. `account_deletion_steps` checkpoints these idempotent steps, in this order (ADR-0051):

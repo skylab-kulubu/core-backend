@@ -1,10 +1,12 @@
 package ticket
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 const (
@@ -57,6 +59,28 @@ type PersonSummary struct {
 	Email     string    `json:"email"`
 	FirstName string    `json:"firstName"`
 	LastName  string    `json:"lastName"`
+	// Status and DisplayName are set on a ticket's owner, as the user reads
+	// answer them (identity.Person): a deletion-pending owner is answered
+	// with the id, the status and "Silinmiş kullanıcı" only.
+	Status      user.ReadStatus `json:"status,omitempty"`
+	DisplayName string          `json:"displayName,omitempty"`
+}
+
+// ownerSummary is a ticket owner as core's row has them.
+func ownerSummary(u user.User) PersonSummary {
+	if u.AccountState != user.AccountActive {
+		return PersonSummary{
+			ID: u.ID, FirstName: user.DeletedDisplayName,
+			Status: u.AccountState.ReadStatus(), DisplayName: user.DeletedDisplayName,
+		}
+	}
+	return activeSummary(PersonSummary{ID: u.ID, Email: u.Email, FirstName: u.FirstName, LastName: u.LastName})
+}
+
+func activeSummary(summary PersonSummary) PersonSummary {
+	summary.Status = user.ReadStatusActive
+	summary.DisplayName = strings.TrimSpace(summary.FirstName + " " + summary.LastName)
+	return summary
 }
 
 type Ticket struct {

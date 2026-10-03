@@ -192,18 +192,16 @@ func (s *service) withEvent(ctx context.Context, t Ticket) Ticket {
 	if t.OwnerID != nil {
 		if s.users != nil {
 			if shadow, err := s.users.Get(ctx, *t.OwnerID); err == nil {
-				summary := PersonSummary{
-					ID: shadow.ID, Email: shadow.Email, FirstName: shadow.FirstName, LastName: shadow.LastName,
-				}
+				summary := ownerSummary(shadow)
 				t.Owner = &summary
 			}
 		}
 		if t.Owner == nil && s.people != nil {
 			if directoryPerson, err := s.people.GetUser(ctx, *t.OwnerID); err == nil {
-				summary := PersonSummary{
+				summary := activeSummary(PersonSummary{
 					ID: directoryPerson.ID, Email: directoryPerson.Email,
 					FirstName: directoryPerson.FirstName, LastName: directoryPerson.LastName,
-				}
+				})
 				t.Owner = &summary
 			}
 		}
