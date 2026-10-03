@@ -13,7 +13,13 @@ type Identity struct {
 	ID      uuid.UUID
 	Profile user.Profile
 	Groups  []string
-	Roles   []string
+	// GroupOverage is true when the token carries the Group overage marker
+	// (ADR-0059) instead of the groups claim: the person is in more Groups
+	// than a token carries. Groups is then empty until core has read the
+	// person's Groups from Keycloak (middlewares.GroupOverage); an empty
+	// list here never means the person has none.
+	GroupOverage bool
+	Roles        []string
 	// Client is the Keycloak client the token was issued to (`azp`).
 	Client string
 	// ServiceAccount is true for a client-credentials token: the Client's

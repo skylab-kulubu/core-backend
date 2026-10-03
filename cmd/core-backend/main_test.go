@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -8,7 +9,11 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -238,5 +243,44 @@ func TestAccountErasureStartupRefusesAMissingServiceSettingByName(t *testing.T) 
 	if _, _, err = accountErasureStartup(getenv); err == nil || strings.Contains(err.Error(), "cms-backend") ||
 		!strings.HasPrefix(err.Error(), "ACCOUNT_ERASURE_CMS_URL ") {
 		t.Fatalf("bad URL error = %v", err)
+	}
+}
+
+// A Keycloak that stops answering must not hold the Welcome mail of a first
+// login for ever: the mail runs inside that request, and a token request on
+// http.DefaultClient has no timeout.
+func TestSkyMailTokenRequestEndsAtItsTimeout(t *testing.T) {
+	t.Parallel()
+	var path atomic.Value
+	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path.Store(r.URL.Path)
+		// The server notices a client that went away only once the body is read.
+		_, _ = io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(func() {
+		keycloak.CloseClientConnections()
+		keycloak.Close()
+	})
+	sky := newSkyMail(keycloak.URL, "e-skylab", "core", "secret", "https://mail.example", 200*time.Millisecond)
+	if sky.HTTP == nil || sky.HTTP.Timeout != 200*time.Millisecond {
+		t.Fatalf("SkyMail client %+v, want the timeout", sky.HTTP)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := sky.Tokens.Token(context.Background())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a Keycloak that never answers gave a token")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the token request was still waiting after five seconds")
+	}
+	if got := path.Load(); got != "/realms/e-skylab/protocol/openid-connect/token" {
+		t.Fatalf("token request went to %v", got)
 	}
 }

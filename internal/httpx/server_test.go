@@ -82,16 +82,21 @@ func memoryAppWithAccessGateMetrics(gate accessgate.Reader, metrics *accessgate.
 
 // memoryDeps are the assembled app's services over in-memory stores.
 func memoryDeps() httpx.Deps {
+	return memoryDepsOver(identity.NewMemory(), identity.Options{})
+}
+
+// memoryDepsOver are memoryDeps over the given directory, with the identity
+// service's options.
+func memoryDepsOver(dir *identity.Memory, options identity.Options) httpx.Deps {
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
 	users := user.NewMemoryStore()
 	events := event.NewMemoryStore()
 	tickets := ticket.NewMemoryStore()
-	dir := identity.NewMemory()
 	// Skyforms' client and a CMS one (production has none yet).
 	clients := authz.ServiceClients{"forms": authz.ProductForms, "cms-service": authz.ProductCMS}
 	return httpx.Deps{
 		Users:       user.NewService(users),
-		Identity:    identity.NewService(dir, users, az),
+		Identity:    identity.NewServiceWithOptions(dir, users, az, options),
 		Events:      event.NewService(events, az),
 		Seasons:     season.NewService(season.NewMemoryStore(), az),
 		Tickets:     ticket.NewService(tickets, events, az, users, dir),
