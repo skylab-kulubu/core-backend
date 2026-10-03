@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 var (
@@ -40,6 +41,12 @@ type Person struct {
 	Username    string    `json:"username,omitempty"`
 	SchoolEmail string    `json:"schoolEmail,omitempty"`
 	SkyNumber   string    `json:"skyNumber,omitempty"`
+	// Status and DisplayName are what the user reads (GET /v1/users/{id},
+	// GET /v1/users, PATCH /v1/users/{id}) answer for every person: an erased
+	// or deletion-pending person is answered as erasedPerson. Other answers
+	// leave them empty and omit them.
+	Status      user.ReadStatus `json:"status,omitempty"`
+	DisplayName string          `json:"displayName,omitempty"`
 	// Enabled is Keycloak's enabled flag. The zero value is disabled: only
 	// the directory's reads set it (Keycloak's user and user list; the
 	// memory directory reports a person enabled until its DisableUser).
