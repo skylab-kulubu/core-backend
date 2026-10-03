@@ -69,6 +69,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == mediaFrameSelfTestCommandName {
 		os.Exit(runMediaFrameSelfTest(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == mediaCDNPurgeSelfTestCommandName {
+		os.Exit(runMediaCDNPurgeSelfTest(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == groupCountReportCommandName {
 		os.Exit(runGroupCountReport(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
@@ -194,6 +197,31 @@ func main() {
 	log.Printf("media service attach: products with a service client: %v", serviceClients.Products())
 	mediaPurgeContext, stopMediaPurge := context.WithCancel(context.Background())
 	defer stopMediaPurge()
+	// CDN cache purge (MEDIA_CDN_PURGE_*, docs/media-lifecycle.md): every
+	// object the public bucket deletes, or gives new metadata, is purged
+	// from Cloudflare's cache, so deleted media stops being served within
+	// about a minute. Set before any worker below deletes. Unset, the CDN
+	// keeps its copies until they run out.
+	cdnPurgeConfig, err := media.CDNPurgeConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var cdnPurger *media.CDNPurger
+	if r2, ok := publicBlobs.(*media.R2); ok && cdnPurgeConfig.Enabled() {
+		cdnPurger, err = media.NewCDNPurger(media.CDNPurgerConfig{
+			Base: cdnBase, Queue: mediaStore, Client: media.NewCloudflarePurge(cdnPurgeConfig),
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		r2.PurgeCDNOnChange(cdnPurger)
+		cdnPurger.Run(mediaPurgeContext, log.Printf)
+		log.Printf("media CDN purge: on (zone %s, addresses under %s)", cdnPurgeConfig.ZoneID, cdnBase)
+	} else if cdnPurgeConfig.Enabled() {
+		log.Printf("media CDN purge: off (no R2 configured)")
+	} else {
+		log.Printf("media CDN purge: off (%s is not set); the CDN keeps deleted objects until its copies run out", media.CDNPurgeZoneEnv)
+	}
 	// Malware scan (MEDIA_CLAMAV_ADDR, docs/media-lifecycle.md). Unset, a
 	// purpose that needs a scan is refused, as before. Set, such a purpose's
 	// uploads wait scanning and the scan worker streams each to clamd, a ZIP
@@ -602,6 +630,7 @@ func main() {
 		AccountAccessGate:      optionalAccountAccessGate(gate),
 		AccountAccessMetrics:   accessMetrics,
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
+		MediaCDNPurgeMetrics:   optionalCDNPurgeMetrics(cdnPurger),
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
 		ParseSelfDeleteSudo:    parseSelfDeleteSudo,
@@ -702,6 +731,13 @@ func optionalErasureMetrics(gauges *account.ErasureGauges) interface{ Prometheus
 		return nil
 	}
 	return gauges
+}
+
+func optionalCDNPurgeMetrics(purger *media.CDNPurger) interface{ Prometheus() string } {
+	if purger == nil {
+		return nil
+	}
+	return purger
 }
 
 func validateAccountErasureGate(workerEnabled bool, mode accessgate.Mode) error {
