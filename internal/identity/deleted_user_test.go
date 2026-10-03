@@ -230,3 +230,51 @@ func TestService_ListUsersLeavesOutPeopleBeingOrAlreadyErased(t *testing.T) {
 		}
 	}
 }
+
+// failingStore is core's store when the database answers with an error.
+type failingStore struct {
+	*user.MemoryStore
+	getErr, markerErr error
+}
+
+func (s failingStore) Get(ctx context.Context, id uuid.UUID) (user.User, error) {
+	if s.getErr != nil {
+		return user.User{}, s.getErr
+	}
+	return s.MemoryStore.Get(ctx, id)
+}
+
+func (s failingStore) AttributionState(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
+	if s.markerErr != nil {
+		return "", s.markerErr
+	}
+	return s.MemoryStore.AttributionState(ctx, id)
+}
+
+func TestService_GetUserFailsWhenCoreCannotSayWhetherThePersonIsErased(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	down := errors.New("database unavailable")
+	for _, tc := range []struct {
+		name  string
+		store func(*user.MemoryStore) failingStore
+	}{
+		{name: "row read fails", store: func(m *user.MemoryStore) failingStore { return failingStore{MemoryStore: m, getErr: down} }},
+		{name: "marker read fails", store: func(m *user.MemoryStore) failingStore { return failingStore{MemoryStore: m, markerErr: down} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := identity.NewMemory()
+			// Keycloak still knows the person, core has no row: only the
+			// marker says whether they were hard-purged.
+			id := uuid.New()
+			dir.PutUser(identity.Person{ID: id, Email: adaEmail(id), FirstName: "Ada", LastName: "Lovelace"})
+			svc := identity.NewService(dir, tc.store(user.NewMemoryStore()), authz.NewAuthorizer(authz.DefaultPolicy()))
+			for _, p := range []authz.Principal{formsReader(), privileged()} {
+				if card, err := svc.GetUser(ctx, p, id); !errors.Is(err, down) {
+					t.Fatalf("%s: card=%+v err=%v, want the store's error", p.ID, card, err)
+				}
+			}
+		})
+	}
+}

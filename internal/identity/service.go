@@ -352,17 +352,24 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 		return UserCard{Person: erasedPerson(id, user.ReadStatusDeleted)}, nil
 	}
 	shadow, shadowErr := s.users.Get(ctx, id)
-	if shadowErr == nil && shadow.AccountState != user.AccountActive {
-		return UserCard{Person: erasedPerson(id, shadow.AccountState.ReadStatus())}, nil
-	}
-	if errors.Is(shadowErr, user.ErrNotFound) {
-		marked, err := s.deletionMarked(ctx, id)
+	switch {
+	case shadowErr == nil:
+		if shadow.AccountState != user.AccountActive {
+			return UserCard{Person: erasedPerson(id, shadow.AccountState.ReadStatus())}, nil
+		}
+	case errors.Is(shadowErr, user.ErrNotFound):
+		// No row: a deletion marker means the person was hard-purged.
+		state, err := s.users.AttributionState(ctx, id)
 		if err != nil {
 			return UserCard{}, err
 		}
-		if marked {
+		if state == user.AttributionBlocked {
 			return UserCard{Person: erasedPerson(id, user.ReadStatusDeleted)}, nil
 		}
+	default:
+		// Without core's row the answer cannot say whether the person is
+		// erased; it is not guessed from Keycloak.
+		return UserCard{}, shadowErr
 	}
 	person, err := s.dir.GetUser(ctx, id)
 	if err != nil {
@@ -382,8 +389,6 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	}
 	if shadowErr == nil {
 		person = overlayPerson(person, shadow)
-	} else {
-		shadow = user.User{}
 	}
 	groups, err := s.dir.GroupsForUser(ctx, id)
 	if err != nil {
@@ -442,19 +447,6 @@ func activePerson(person Person) Person {
 // lastName shows "Silinmiş kullanıcı" too. Nothing else of the person.
 func erasedPerson(id uuid.UUID, status user.ReadStatus) Person {
 	return Person{ID: id, FirstName: user.DeletedDisplayName, Status: status, DisplayName: user.DeletedDisplayName}
-}
-
-// deletionMarked reports whether core holds a deletion marker for a person
-// it has no row for: the person was hard-purged after their erasure.
-func (s *service) deletionMarked(ctx context.Context, id uuid.UUID) (bool, error) {
-	marker, ok := s.users.(interface {
-		AttributionState(context.Context, uuid.UUID) (user.AttributionState, error)
-	})
-	if !ok {
-		return false, nil
-	}
-	state, err := marker.AttributionState(ctx, id)
-	return state == user.AttributionBlocked, err
 }
 
 func overlayPerson(person Person, shadow user.User) Person {
