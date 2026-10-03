@@ -100,7 +100,8 @@ Rules shared by all three services:
   - Every actor column in a service that names the person takes this value.
   - Nullable columns take it too, because NULL can mean something else. Example: in SkyMail `actor_sub IS NULL` means "SkyMail itself".
   - Name columns get `Silinmiş kullanıcı`. E-mail columns become NULL, or `''` when NOT NULL.
-  - An interface that asks core to resolve a name for this value shows `Silinmiş kullanıcı` instead.
+  - An interface that asks core to resolve a name for this value shows `Silinmiş kullanıcı` instead. Core answers it too: `GET /v1/users/00000000-0000-4000-8000-000000000000` returns `status: "deleted"` and `displayName: "Silinmiş kullanıcı"`, the same answer as for any erased person ([account-lifecycle.md](account-lifecycle.md#reading-a-person)).
+  - A service that still holds an erased person's own sub (it missed the Erasure command, or reads a row it keeps) gets the same answer from core for that sub; it shows `displayName` and does not rely on a `404`.
   - Core keeps its current behaviour (NULL) in its own columns.
 - **Free text and rendered bodies:** a field that contains the person's address, or the full name the service holds for the person, is deleted **whole**; there is no partial masking.
   - The match is a case-insensitive substring search.

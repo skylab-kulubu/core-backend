@@ -48,6 +48,10 @@ type Store interface {
 	// the addresses the person holds outside core's row; with the row's own
 	// they select core's guest data to clear too.
 	AnonymizeAccount(ctx context.Context, id uuid.UUID, at time.Time, emails []string) error
+	// AttributionState is AttributionBlocked for a person with a deletion
+	// marker, a row or not: user reads answer a hard-purged person (no row,
+	// a marker) as deleted from it.
+	AttributionState(ctx context.Context, id uuid.UUID) (AttributionState, error)
 }
 
 type SkySync interface {
