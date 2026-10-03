@@ -2,6 +2,7 @@ package identity_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/Nerzal/gocloak/v13"
 	"github.com/google/uuid"
@@ -97,5 +98,27 @@ func TestClientRolesFromMappingsUsesClientId(t *testing.T) {
 	got := identity.ClientRolesFromMappingsForTest(mapping)
 	if len(got) != 1 || got[0].ClientID != "cms-site" || got[0].Role != "cms:access" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// Keycloak's createdTimestamp (milliseconds) is when the account was
+// created; a read without it, or with zero, leaves CreatedAt nil.
+func TestPersonFromReadsCreatedTimestamp(t *testing.T) {
+	t.Parallel()
+	id := uuid.NewString()
+	created := int64(1758000000123)
+	zero := int64(0)
+	p, err := identity.PersonFromForTest(&gocloak.User{ID: &id, CreatedTimestamp: &created})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.CreatedAt == nil || !p.CreatedAt.Equal(time.UnixMilli(created)) || p.CreatedAt.Location() != time.UTC {
+		t.Fatalf("CreatedAt %v", p.CreatedAt)
+	}
+	for _, ts := range []*int64{nil, &zero} {
+		p, err := identity.PersonFromForTest(&gocloak.User{ID: &id, CreatedTimestamp: ts})
+		if err != nil || p.CreatedAt != nil {
+			t.Fatalf("CreatedAt %v, err %v", p.CreatedAt, err)
+		}
 	}
 }
