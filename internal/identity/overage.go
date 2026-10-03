@@ -133,9 +133,10 @@ func (o *OverageGroups) Paths(ctx context.Context, userID uuid.UUID) ([]string, 
 	read := o.reads.DoChan(userID.String()+"@"+strconv.FormatUint(generation, 10), func() (any, error) {
 		return o.read(userID, generation)
 	})
-	// The read has its own deadline, but a Keycloak call can block before
-	// it looks at one (the service account's token is fetched under a
-	// lock), so the request bounds its own wait too.
+	// The read has its own deadline, and the Keycloak client lets a call
+	// waiting for the service account's token leave when its context ends.
+	// The request still bounds its own wait, so it never outlasts o.timeout
+	// whatever the reader does.
 	wait := time.NewTimer(o.timeout)
 	defer wait.Stop()
 	select {
@@ -153,7 +154,16 @@ func (o *OverageGroups) Paths(ctx context.Context, userID uuid.UUID) ([]string, 
 
 // read asks Keycloak once for everyone waiting. It is not bound to the
 // request that started it, which may leave, only to its own timeout.
-func (o *OverageGroups) read(userID uuid.UUID, generation uint64) ([]string, error) {
+func (o *OverageGroups) read(userID uuid.UUID, generation uint64) (paths []string, err error) {
+	// singleflight runs this in a goroutine of its own and, should it panic,
+	// panics again there, which ends the whole process. The callers get the
+	// answer they get when Keycloak cannot be reached.
+	defer func() {
+		if r := recover(); r != nil {
+			o.failures.Add(1)
+			paths, err = nil, fmt.Errorf("%w: the read panicked: %v", ErrGroupsUnavailable, r)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
 	defer cancel()
 	o.lookups.Add(1)
@@ -167,7 +177,7 @@ func (o *OverageGroups) read(userID uuid.UUID, generation uint64) ([]string, err
 		// GroupsForUser's errors name nobody.
 		return nil, fmt.Errorf("%w: %v", ErrGroupsUnavailable, err)
 	}
-	paths := GroupPaths(groups)
+	paths = GroupPaths(groups)
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.generation == generation {

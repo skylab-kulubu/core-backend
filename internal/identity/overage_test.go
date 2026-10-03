@@ -30,14 +30,19 @@ type keycloakGroups struct {
 	// deaf holds a call at the gate past its context's deadline, like a
 	// call stuck before it looks at its context.
 	deaf bool
+	// panicWith makes a call panic with it, while set.
+	panicWith any
 }
 
 func (k *keycloakGroups) GroupsForUser(ctx context.Context, userID uuid.UUID) ([]identity.Group, error) {
 	k.calls.Add(1)
 	k.mu.Lock()
-	gate, err, deaf := k.gate, k.err, k.deaf
+	gate, err, deaf, panicWith := k.gate, k.err, k.deaf, k.panicWith
 	paths, known := k.paths[userID]
 	k.mu.Unlock()
+	if panicWith != nil {
+		panic(panicWith)
+	}
 	if gate != nil && deaf {
 		<-gate
 	} else if gate != nil {
@@ -73,6 +78,12 @@ func (k *keycloakGroups) fail(err error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.err = err
+}
+
+func (k *keycloakGroups) panicking(with any) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.panicWith = with
 }
 
 func (k *keycloakGroups) hold() chan struct{} {
@@ -231,6 +242,33 @@ func TestOverageGroupsNeverRememberAFailure(t *testing.T) {
 	if got := kc.calls.Load(); got != 2 {
 		t.Fatalf("Keycloak asked %d times, want 2", got)
 	}
+}
+
+// singleflight runs a read in a goroutine of its own and panics again there
+// when the read panics, which ends the process: the callers get an error.
+func TestOverageGroupsAPanicInTheReadIsAnUnavailableAnswer(t *testing.T) {
+	t.Parallel()
+	kc := &keycloakGroups{}
+	person := uuid.New()
+	kc.set(person, "/UYELER/ARGE/WEBLAB")
+	kc.panicking("keycloak client blew up")
+	groups, _ := newOverage(t, kc)
+	ctx := context.Background()
+
+	paths, _, err := groups.Paths(ctx, person)
+	if !errors.Is(err, identity.ErrGroupsUnavailable) || paths != nil {
+		t.Fatalf("panicking read: paths %q err %v", paths, err)
+	}
+	if errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("a panic reads as an unknown person: %v", err)
+	}
+
+	kc.panicking(nil)
+	paths, cached, err := groups.Paths(ctx, person)
+	if err != nil || cached {
+		t.Fatalf("after the panic: cached=%v err=%v", cached, err)
+	}
+	wantPaths(t, paths, "/UYELER/ARGE/WEBLAB")
 }
 
 func TestOverageGroupsReportAPersonKeycloakDoesNotKnow(t *testing.T) {
