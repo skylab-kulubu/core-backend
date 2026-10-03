@@ -27,6 +27,10 @@ type ErasureAddressSource interface {
 type ServiceStep struct {
 	Step   user.DeletionStep
 	Sender ErasureSender
+	// WaitAfterIdentityClosed holds the command back until this long after
+	// the identity was closed (erasure.Service). NewServiceErasure takes it
+	// from the registry.
+	WaitAfterIdentityClosed time.Duration
 }
 
 // ServiceErasure is the service erasure step group. Every pass attempts each
@@ -43,8 +47,9 @@ func NewServiceErasure(config erasure.Config, tokenURL string, addresses Erasure
 	services := ServiceErasure{Addresses: addresses}
 	for _, endpoint := range config.Endpoints {
 		services.Steps = append(services.Steps, ServiceStep{
-			Step:   endpoint.Service.Step,
-			Sender: erasure.NewClient(endpoint, tokenURL, config.ClientID, config.ClientSecret),
+			Step:                    endpoint.Service.Step,
+			Sender:                  erasure.NewClient(endpoint, tokenURL, config.ClientID, config.ClientSecret),
+			WaitAfterIdentityClosed: endpoint.Service.WaitAfterIdentityClosed,
 		})
 	}
 	return services
@@ -76,6 +81,7 @@ func registryServices(configured ServiceErasure) ServiceErasure {
 		for _, candidate := range configured.Steps {
 			if candidate.Step == entry.Step && candidate.Sender != nil {
 				step.Sender = candidate.Sender
+				step.WaitAfterIdentityClosed = candidate.WaitAfterIdentityClosed
 			}
 		}
 		services.Steps = append(services.Steps, step)
@@ -102,6 +108,37 @@ type notConfiguredError struct {
 func (e notConfiguredError) Error() string         { return string(e.step) + ": service not configured" }
 func (e notConfiguredError) PermanentCode() string { return string(e.step) + "_not_configured" }
 
+// notYetDue holds back the command to a service without the access gate
+// until a token issued before the identity was closed has expired there. It
+// is deferred: the attempt is refunded and the request comes back at At.
+type notYetDue struct {
+	step user.DeletionStep
+	at   time.Time
+}
+
+func (e notYetDue) Error() string {
+	return string(e.step) + ": waits for access tokens issued before the identity was closed to expire"
+}
+func (e notYetDue) RetryAt() time.Time { return e.at }
+
+// identityClosedAt is when the person's last token could have been issued:
+// the latest of the platform block and the disable_identity and
+// logout_sessions checkpoints. Keycloak does not read the account access
+// marker, so a session could still mint an access token between the block
+// and the disable.
+func identityClosedAt(request user.DeletionRequest, checkpoints map[user.DeletionStep]time.Time) time.Time {
+	var closed time.Time
+	if request.PlatformBlockedAt != nil {
+		closed = *request.PlatformBlockedAt
+	}
+	for _, step := range []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions} {
+		if at := checkpoints[step]; at.After(closed) {
+			closed = at
+		}
+	}
+	return closed
+}
+
 // runServiceErasure runs one pass of the group. It returns nil when every
 // service step is checkpointed; otherwise it has already scheduled the retry
 // and returns that error.
@@ -123,13 +160,31 @@ func (w *Worker) runServiceErasure(ctx context.Context, request user.DeletionReq
 			return w.retry(ctx, request, now, err.PermanentCode(), err, true)
 		}
 	}
+	// A service without the access gate is called only once a token issued
+	// before the identity was closed has expired, or an edit made with it
+	// would bring the person's sub back after the erasure (spec §3.2).
+	due := make([]ServiceStep, 0, len(pending))
+	var waiting []serviceFailure
+	for _, step := range pending {
+		if step.WaitAfterIdentityClosed > 0 {
+			if at := identityClosedAt(request, pass.checkpoints).Add(step.WaitAfterIdentityClosed); now.Before(at) {
+				waiting = append(waiting, serviceFailure{step: step.Step, err: notYetDue{step: step.Step, at: at}})
+				continue
+			}
+		}
+		due = append(due, step)
+	}
+	if len(due) == 0 {
+		code, permanent, cause := classifyServiceFailures(waiting)
+		return w.retry(ctx, request, now, code, cause, permanent)
+	}
 	emails, err := w.passAddresses(ctx, request, pass, services.Addresses)
 	if err != nil {
 		return w.retry(ctx, request, now, "erasure_addresses_failed", err, false)
 	}
 
 	var failures []serviceFailure
-	for _, step := range pending {
+	for _, step := range due {
 		stepCtx, cancel := context.WithTimeout(ctx, w.config.StepTimeout)
 		result, err := step.Sender.Erase(stepCtx, erasure.Command{RequestID: request.ID, SubjectID: request.SubjectID, Emails: emails})
 		cancel()
@@ -144,6 +199,9 @@ func (w *Worker) runServiceErasure(ctx context.Context, request user.DeletionReq
 		}
 		completed[step.Step] = true
 	}
+	// A wait comes last, so the code names a service that failed when there
+	// is one.
+	failures = append(failures, waiting...)
 	if len(failures) == 0 {
 		return nil
 	}
@@ -154,7 +212,9 @@ func (w *Worker) runServiceErasure(ctx context.Context, request user.DeletionReq
 // classifyServiceFailures turns one pass's failures into one retry decision:
 // any rejection sends the request to manual intervention; otherwise any
 // ordinary failure spends an attempt; only when every failure is deferred is
-// the attempt refunded, until the earliest time a service asked for.
+// the attempt refunded, until the earliest time a service asked for. When the
+// first failure is a step that only waits, every failure is one, and the code
+// is `erase_<service>_waiting`.
 func classifyServiceFailures(failures []serviceFailure) (code string, permanent bool, cause error) {
 	messages := make([]string, 0, len(failures))
 	for _, failure := range failures {
@@ -179,7 +239,11 @@ func classifyServiceFailures(failures []serviceFailure) (code string, permanent 
 			earliest = at
 		}
 	}
-	return string(failures[0].step) + "_failed", false, deferredServiceErasure{message: message, at: earliest}
+	code = string(failures[0].step) + "_failed"
+	if _, waits := failures[0].err.(notYetDue); waits {
+		code = string(failures[0].step) + "_waiting"
+	}
+	return code, false, deferredServiceErasure{message: message, at: earliest}
 }
 
 type deferredServiceErasure struct {

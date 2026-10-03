@@ -15,7 +15,9 @@ func TestRegistryListsTheThreeServicesInSagaOrder(t *testing.T) {
 	got := erasure.Registry()
 	want := []erasure.Service{
 		{Name: "skymail", Step: user.DeletionStepEraseSkyMail, URLVar: "ACCOUNT_ERASURE_SKYMAIL_URL", Scope: "account-erase-skymail"},
-		{Name: "cms", Step: user.DeletionStepEraseCMS, URLVar: "ACCOUNT_ERASURE_CMS_URL", Scope: "account-erase-cms"},
+		// inscribed has no access gate: its step waits until a token issued
+		// before the identity was closed has expired (300 s + 30 s skew).
+		{Name: "cms", Step: user.DeletionStepEraseCMS, URLVar: "ACCOUNT_ERASURE_CMS_URL", Scope: "account-erase-cms", WaitAfterIdentityClosed: 6 * time.Minute},
 		{Name: "forms", Step: user.DeletionStepEraseForms, URLVar: "ACCOUNT_ERASURE_FORMS_URL", Scope: "account-erase-forms"},
 	}
 	if len(got) != len(want) {
@@ -35,7 +37,7 @@ func TestRegistryListsTheThreeServicesInSagaOrder(t *testing.T) {
 func completeEnv() map[string]string {
 	return map[string]string{
 		"ACCOUNT_ERASURE_SKYMAIL_URL":   "http://skymail-backend:8080/",
-		"ACCOUNT_ERASURE_CMS_URL":       "http://cms-backend:8080",
+		"ACCOUNT_ERASURE_CMS_URL":       "http://inscribed:5000",
 		"ACCOUNT_ERASURE_FORMS_URL":     "https://forms-backend.internal",
 		"ACCOUNT_ERASURE_CLIENT_ID":     "core-erasure",
 		"ACCOUNT_ERASURE_CLIENT_SECRET": "s3cr3t-value-never-printed",
@@ -127,7 +129,7 @@ func TestConfigBuildsEndpointsInRegistryOrder(t *testing.T) {
 	if len(config.Endpoints) != 3 {
 		t.Fatalf("endpoints = %+v", config.Endpoints)
 	}
-	wantURLs := []string{"http://skymail-backend:8080", "http://cms-backend:8080", "https://forms-backend.internal"}
+	wantURLs := []string{"http://skymail-backend:8080", "http://inscribed:5000", "https://forms-backend.internal"}
 	for i, endpoint := range config.Endpoints {
 		if endpoint.Service != erasure.Registry()[i] || endpoint.BaseURL != wantURLs[i] {
 			t.Fatalf("endpoint[%d] = %+v", i, endpoint)

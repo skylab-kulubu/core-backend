@@ -82,7 +82,8 @@ func TestPostgresServiceErasureCheckpointKeepsCountsUnderTheLeaseFence(t *testin
 		t.Fatalf("a core step has no counts: %+v", disable)
 	}
 	completed, err := store.CompletedDeletionSteps(ctx, request.ID, *second.LeaseToken)
-	if err != nil || !completed[user.DeletionStepEraseSkyMail] || !completed[user.DeletionStepEraseCMS] || completed[user.DeletionStepEraseForms] {
+	if _, forms := completed[user.DeletionStepEraseForms]; err != nil || !completed[user.DeletionStepEraseSkyMail].Equal(at) ||
+		completed[user.DeletionStepEraseCMS].IsZero() || forms {
 		t.Fatalf("completed = %v err=%v", completed, err)
 	}
 

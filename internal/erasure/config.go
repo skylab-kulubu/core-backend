@@ -32,6 +32,14 @@ const (
 	clientSecretVar = "ACCOUNT_ERASURE_CLIENT_SECRET"
 )
 
+// UngatedServiceWait is how long the erase step of a service without the
+// account access gate waits after the identity is closed. Such a service still
+// accepts an access token issued before Keycloak disabled the person until the
+// token expires: Keycloak's default access token lifespan of 300 seconds plus
+// the service's 30-second clock skew, rounded up (spec §3.2). Erasing after
+// that also erases an edit made with such a token.
+const UngatedServiceWait = 6 * time.Minute
+
 // Service is one registry entry: the saga step, the variable holding the
 // service's internal base URL and the token scope that carries its erase role.
 type Service struct {
@@ -39,11 +47,17 @@ type Service struct {
 	Step   user.DeletionStep
 	URLVar string
 	Scope  string
+	// WaitAfterIdentityClosed is how long the step waits after the person was
+	// blocked, disabled and logged out before it sends the command. Zero for a
+	// service that refuses a blocked person's token itself (the access gate).
+	WaitAfterIdentityClosed time.Duration
 }
 
 var registry = []Service{
 	{Name: "skymail", Step: user.DeletionStepEraseSkyMail, URLVar: "ACCOUNT_ERASURE_SKYMAIL_URL", Scope: "account-erase-skymail"},
-	{Name: "cms", Step: user.DeletionStepEraseCMS, URLVar: "ACCOUNT_ERASURE_CMS_URL", Scope: "account-erase-cms"},
+	// The CMS is inscribed (ADR-0056), which keeps no accounts and has no
+	// access gate; it holds the person's sub in its editor columns only.
+	{Name: "cms", Step: user.DeletionStepEraseCMS, URLVar: "ACCOUNT_ERASURE_CMS_URL", Scope: "account-erase-cms", WaitAfterIdentityClosed: UngatedServiceWait},
 	{Name: "forms", Step: user.DeletionStepEraseForms, URLVar: "ACCOUNT_ERASURE_FORMS_URL", Scope: "account-erase-forms"},
 }
 
