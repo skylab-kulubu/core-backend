@@ -484,17 +484,9 @@ func main() {
 	var mailer mail.Mailer
 	var sky *mail.SkyMail
 	if base != "" && realm != "" && os.Getenv("KEYCLOAK_CLIENT_ID") != "" && os.Getenv("KEYCLOAK_CLIENT_SECRET") != "" {
-		sky = &mail.SkyMail{
-			BaseURL: mail.APIOrigin(os.Getenv("SKYMAIL_URL")),
-			HTTP:    &http.Client{Timeout: 15 * time.Second},
-			Tokens: mail.ClientCredentials{
-				TokenURL:     base + "/realms/" + realm + "/protocol/openid-connect/token",
-				ClientID:     os.Getenv("KEYCLOAK_CLIENT_ID"),
-				ClientSecret: os.Getenv("KEYCLOAK_CLIENT_SECRET"),
-			},
-			TemplateKey:            templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey),
-			CertificateTemplateKey: templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey),
-		}
+		sky = newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout)
+		sky.TemplateKey = templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
+		sky.CertificateTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey)
 		if raw := os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"); raw != "" {
 			tid, err := uuid.Parse(raw)
 			if err != nil {
@@ -708,6 +700,29 @@ func accountErasureWorkerEnabled(getenv func(string) string) (bool, error) {
 		return true, nil
 	default:
 		return false, fmt.Errorf("ACCOUNT_ERASURE_WORKER_ENABLED must be true or false")
+	}
+}
+
+// skyMailTimeout bounds each request core makes for a mail: the token request
+// to Keycloak and the post to SkyMail.
+const skyMailTimeout = 15 * time.Second
+
+// newSkyMail is core's SkyMail client, which asks the realm at base for its
+// token with core's own service account. The token request uses the same
+// client as the post: without one, mail.ClientCredentials falls back to
+// http.DefaultClient, which never gives up, and the Welcome mail of a first
+// login runs inside that login's request.
+func newSkyMail(base, realm, clientID, clientSecret, skyMailURL string, timeout time.Duration) *mail.SkyMail {
+	client := &http.Client{Timeout: timeout}
+	return &mail.SkyMail{
+		BaseURL: mail.APIOrigin(skyMailURL),
+		HTTP:    client,
+		Tokens: mail.ClientCredentials{
+			TokenURL:     base + "/realms/" + realm + "/protocol/openid-connect/token",
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			HTTP:         client,
+		},
 	}
 }
 
