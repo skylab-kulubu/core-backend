@@ -134,3 +134,20 @@ func TestGuestApplyLogsTheClassAndOutcomeButNoPersonalData(t *testing.T) {
 		}
 	}
 }
+
+func TestParseGuestApplyLimitMode(t *testing.T) {
+	t.Parallel()
+	for raw, want := range map[string]GuestApplyLimitMode{
+		"": GuestApplyLimitEnforce, " enforce ": GuestApplyLimitEnforce, "observe": GuestApplyLimitObserve,
+	} {
+		got, err := ParseGuestApplyLimitMode(raw)
+		if err != nil || got != want {
+			t.Fatalf("%q: %v %v, want %v", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{"off", "Enforce", "log"} {
+		if _, err := ParseGuestApplyLimitMode(raw); err == nil {
+			t.Fatalf("%q accepted", raw)
+		}
+	}
+}

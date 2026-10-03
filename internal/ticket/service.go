@@ -570,7 +570,7 @@ func (s *service) guestApplyTrusted(p authz.Principal, ev event.Event) bool {
 func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo, trusted bool) (GuestApplication, error) {
 	existing, err := s.tickets.GetByGuestEvent(ctx, g.Email, eventID)
 	if errors.Is(err, ErrNotFound) {
-		created, err := s.tickets.Create(ctx, Ticket{
+		created, createErr := s.tickets.Create(ctx, Ticket{
 			EventID:          eventID,
 			TicketType:       Guest,
 			GuestFirstName:   g.FirstName,
@@ -578,10 +578,15 @@ func (s *service) writeGuest(ctx context.Context, eventID uuid.UUID, g GuestInfo
 			GuestEmail:       g.Email,
 			GuestPhoneNumber: g.PhoneNumber,
 		})
-		if err != nil {
-			return GuestApplication{}, err
+		if createErr == nil {
+			return GuestApplication{Ticket: created, Result: GuestCreated}, nil
 		}
-		return GuestApplication{Ticket: created, Result: GuestCreated}, nil
+		if !errors.Is(createErr, ErrConflict) {
+			return GuestApplication{}, createErr
+		}
+		// A concurrent application (a double submit) wrote the Ticket since
+		// the read: answer as for one that was already there.
+		existing, err = s.tickets.GetByGuestEvent(ctx, g.Email, eventID)
 	}
 	if err != nil {
 		return GuestApplication{}, err

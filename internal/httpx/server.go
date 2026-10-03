@@ -83,6 +83,10 @@ type Deps struct {
 	// outcome, and serves them on /v1/metrics. Nil counts into nothing.
 	GuestApplyMetrics *handlers.GuestApplyMetrics
 
+	// GuestApplyPublicIPLimit is what Guest apply's per-address budget does
+	// when it runs out (GUEST_APPLY_PUBLIC_IP_LIMIT_MODE). Empty enforces.
+	GuestApplyPublicIPLimit handlers.GuestApplyLimitMode
+
 	// GroupOverage reads the Groups of a person whose token carries the
 	// Group overage marker instead of the groups claim (ADR-0059), and
 	// serves its counters on /v1/metrics. Nil refuses every marked token
@@ -204,7 +208,11 @@ func New(deps Deps) *fiber.App {
 	// of Bearer, which would answer it 401. A valid one meets the same account
 	// access gate and Group overage step as on every other route.
 	parseToken := authn.WithServiceProducts(deps.ParseToken, deps.ServiceClients)
-	guestApply := handlers.NewGuestApply(trustedProxies, deps.GuestApplyMetrics, handlers.DefaultGuestApplyLimits(), log.Default())
+	guestLimits := handlers.DefaultGuestApplyLimits()
+	if deps.GuestApplyPublicIPLimit != "" {
+		guestLimits.PublicIPMode = deps.GuestApplyPublicIPLimit
+	}
+	guestApply := handlers.NewGuestApply(trustedProxies, deps.GuestApplyMetrics, guestLimits, log.Default())
 	guestApplyRoute := []any{
 		middlewares.OptionalBearer(parseToken),
 		middlewares.AccountAccessGate(deps.AccountAccessGate, deps.AccountAccessMetrics),

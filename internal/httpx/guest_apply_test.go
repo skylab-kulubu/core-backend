@@ -32,12 +32,15 @@ const (
 	memberSub = "33333333-3333-3333-3333-333333333333"
 )
 
-func newGuestApplyEnv(t *testing.T) guestApplyEnv {
+func newGuestApplyEnv(t *testing.T, configure ...func(*httpx.Deps)) guestApplyEnv {
 	t.Helper()
 	keys := testauth.New(t)
 	deps := memoryDeps()
 	deps.ParseToken = keys.Parse()
 	deps.GuestApplyMetrics = handlers.NewGuestApplyMetrics()
+	for _, change := range configure {
+		change(&deps)
+	}
 	app := httpx.New(deps)
 	created := sendJSON(t, app, groupToken(t, keys, ykSub, "/UYELER/YK"), fiber.MethodPost, "/v1/events",
 		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB"}`)
@@ -178,7 +181,33 @@ func TestGuestApplyAnswersEachCallerClass(t *testing.T) {
 	}
 }
 
-func TestGuestApplyLimitsEachInternetClient(t *testing.T) {
+// GUEST_APPLY_PUBLIC_IP_LIMIT_MODE=observe is the emergency switch: the
+// address budget counts and logs what it would refuse but refuses nothing.
+func TestGuestApplyObservesTheAddressBudgetWhenSwitchedToObserve(t *testing.T) {
+	t.Parallel()
+	e := newGuestApplyEnv(t, func(deps *httpx.Deps) { deps.GuestApplyPublicIPLimit = handlers.GuestApplyLimitObserve })
+	limits := handlers.DefaultGuestApplyLimits()
+
+	for i := range limits.PerClient + 2 {
+		got := e.apply(t, "", publicClient, guest("Ada", fmt.Sprintf("ada%d@example.com", i), ""))
+		assertApplied(t, fmt.Sprint("request ", i), got)
+		if got.header.Get(fiber.HeaderRetryAfter) != "" {
+			t.Fatalf("request %d: Retry-After %q while observing", i, got.header.Get(fiber.HeaderRetryAfter))
+		}
+	}
+	text := e.metrics(t)
+	for _, line := range []string{
+		"skylab_guest_apply_public_ip_would_limit_total 2",
+		`skylab_guest_apply_requests_total{caller="anonymous_public",outcome="rate_limited"} 0`,
+		`skylab_guest_apply_requests_total{caller="anonymous_public",outcome="created"} 22`,
+	} {
+		if !strings.Contains(text, line+"\n") {
+			t.Fatalf("metrics lack %q:\n%s", line, text)
+		}
+	}
+}
+
+func TestGuestApplyEnforcesTheAddressBudgetByDefault(t *testing.T) {
 	t.Parallel()
 	e := newGuestApplyEnv(t)
 	limits := handlers.DefaultGuestApplyLimits()
@@ -200,7 +229,7 @@ func TestGuestApplyLimitsEachInternetClient(t *testing.T) {
 	}
 
 	// Another client keeps its own budget; the forms hop and an operator
-	// have none here.
+	// do not use this one.
 	assertApplied(t, "another client", e.apply(t, "", "198.51.100.9", guest("Ada", "other@example.com", "")))
 	leader := groupToken(t, e.keys, leaderSub, "/UYELER/ARGE/WEBLAB/LIDERLER")
 	for i := range limits.PerClient + 5 {
@@ -211,8 +240,64 @@ func TestGuestApplyLimitsEachInternetClient(t *testing.T) {
 	}
 
 	text := e.metrics(t)
-	if !strings.Contains(text, `skylab_guest_apply_requests_total{caller="anonymous_public",outcome="rate_limited"} 1`+"\n") {
-		t.Fatalf("rate limit not counted:\n%s", text)
+	for _, line := range []string{
+		`skylab_guest_apply_requests_total{caller="anonymous_public",outcome="rate_limited"} 1`,
+		"skylab_guest_apply_public_ip_would_limit_total 0",
+	} {
+		if !strings.Contains(text, line+"\n") {
+			t.Fatalf("metrics lack %q:\n%s", line, text)
+		}
+	}
+}
+
+// A valid token is not an unlimited licence: a member's token must not be
+// able to write fake guest Tickets without end. The budget is wide enough
+// for an operator adding guests by hand.
+func TestGuestApplyLimitsEachTokenSubject(t *testing.T) {
+	t.Parallel()
+	e := newGuestApplyEnv(t)
+	limits := handlers.DefaultGuestApplyLimits()
+	member := groupToken(t, e.keys, memberSub, "/UYELER/ARGE/GAMELAB")
+	forms := serviceToken(t, e.keys, "forms")
+
+	for i := range limits.PerSubject {
+		assertApplied(t, fmt.Sprint("member ", i), e.apply(t, member, "", guest("Ada", fmt.Sprintf("m%d@example.com", i), "")))
+		if got := e.apply(t, forms, "", guest("Ada", fmt.Sprintf("f%d@example.com", i), "")); got.status != fiber.StatusCreated {
+			t.Fatalf("forms %d: status %d body %v", i, got.status, got.body)
+		}
+	}
+	for who, token := range map[string]string{"member": member, "forms": forms} {
+		refused := e.apply(t, token, "", guest("Ada", "one-more-"+who+"@example.com", ""))
+		if refused.status != fiber.StatusTooManyRequests || refused.body["code"] != "guest_apply_rate_limited" ||
+			refused.header.Get(fiber.HeaderRetryAfter) == "" {
+			t.Fatalf("%s over the budget: status %d header %v body %v", who, refused.status, refused.header, refused.body)
+		}
+	}
+	leader := groupToken(t, e.keys, leaderSub, "/UYELER/ARGE/WEBLAB/LIDERLER")
+	if got := e.apply(t, leader, "", guest("Ada", "lead@example.com", "")); got.status != fiber.StatusCreated {
+		t.Fatalf("another subject: status %d body %v", got.status, got.body)
+	}
+	assertApplied(t, "forms hop without a token", e.apply(t, "", "", guest("Ada", "hop@example.com", "")))
+
+	text := e.metrics(t)
+	for _, line := range []string{
+		`skylab_guest_apply_requests_total{caller="person",outcome="rate_limited"} 1`,
+		`skylab_guest_apply_requests_total{caller="service",outcome="rate_limited"} 1`,
+	} {
+		if !strings.Contains(text, line+"\n") {
+			t.Fatalf("metrics lack %q:\n%s", line, text)
+		}
+	}
+}
+
+// A service account whose client is no product's is counted as service but
+// is not trusted: it gets what an anonymous caller gets.
+func TestGuestApplyServiceAccountOfNoProductIsNotTrusted(t *testing.T) {
+	t.Parallel()
+	e := newGuestApplyEnv(t)
+	assertApplied(t, "unmapped service account", e.apply(t, serviceToken(t, e.keys, "some-other-client"), "", guest("Ada", "ada@example.com", "555")))
+	if text := e.metrics(t); !strings.Contains(text, `skylab_guest_apply_requests_total{caller="service",outcome="created"} 1`+"\n") {
+		t.Fatalf("not counted as service:\n%s", text)
 	}
 }
 
@@ -243,19 +328,9 @@ func TestGuestApplyLimitsEachGuestAcrossInternetClients(t *testing.T) {
 // asked about at all.
 func TestGuestApplyRefusesABlockedAccountsToken(t *testing.T) {
 	t.Parallel()
-	keys := testauth.New(t)
-	deps := memoryDeps()
-	deps.ParseToken = keys.Parse()
-	deps.GuestApplyMetrics = handlers.NewGuestApplyMetrics()
 	gate := &httpAccessGate{decision: accessgate.Allowed}
-	deps.AccountAccessGate = gate
-	e := guestApplyEnv{app: httpx.New(deps), keys: keys}
-	created := sendJSON(t, e.app, groupToken(t, keys, ykSub, "/UYELER/YK"), fiber.MethodPost, "/v1/events",
-		`{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB"}`)
-	if created.status != fiber.StatusCreated {
-		t.Fatalf("create event %d %v", created.status, created.body)
-	}
-	e.eventID = created.body["id"].(string)
+	e := newGuestApplyEnv(t, func(deps *httpx.Deps) { deps.AccountAccessGate = gate })
+	keys := e.keys
 
 	gate.decision = accessgate.Blocked
 	leader := groupToken(t, keys, leaderSub, "/UYELER/ARGE/WEBLAB/LIDERLER")

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/netip"
 	"strconv"
@@ -24,6 +25,10 @@ import (
 // Guest apply from the handler to GuestApply.Observe.
 const localsGuestApplyResult = "guest_apply_result"
 
+// localsGuestApplyWouldLimit marks a request the address budget would have
+// refused while it only observes.
+const localsGuestApplyWouldLimit = "guest_apply_would_limit"
+
 // localsGuestApplyCaller caches the request's guestCaller once the identity
 // is settled.
 const localsGuestApplyCaller = "guest_apply_caller"
@@ -42,7 +47,9 @@ const (
 	guestAnonymousInternal
 	// guestPerson is a person's token (the Event hub).
 	guestPerson
-	// guestService is a service account's token.
+	// guestService is a service account's token. Only a service account
+	// whose client is a product's (MEDIA_SERVICE_CLIENTS) is trusted; any
+	// other is counted here but answered like an anonymous caller.
 	guestService
 	guestCallerCount
 )
@@ -71,7 +78,8 @@ var guestOutcomeNames = [guestOutcomeCount]string{
 // GuestApplyMetrics counts Guest apply requests by caller class and outcome.
 // Every label value is fixed; nobody and no Event is named.
 type GuestApplyMetrics struct {
-	counts [guestCallerCount][guestOutcomeCount]atomic.Uint64
+	counts     [guestCallerCount][guestOutcomeCount]atomic.Uint64
+	wouldLimit atomic.Uint64
 }
 
 func NewGuestApplyMetrics() *GuestApplyMetrics { return &GuestApplyMetrics{} }
@@ -106,19 +114,59 @@ func (m *GuestApplyMetrics) Prometheus() string {
 		out.WriteString("# TYPE " + name + " counter\n")
 		out.WriteString(name + " " + strconv.FormatUint(totals[caller], 10) + "\n")
 	}
+	out.WriteString("# TYPE skylab_guest_apply_public_ip_would_limit_total counter\n")
+	out.WriteString("skylab_guest_apply_public_ip_would_limit_total " + strconv.FormatUint(m.wouldLimit.Load(), 10) + "\n")
 	return out.String()
 }
 
-// GuestApplyLimits are the budgets of anonymous_public Guest apply requests.
-// The other classes are not limited here: the forms hop is the one caller
-// every guest's form answer goes through, and a token holder is limited by
-// what the token allows.
+// GuestApplyLimitMode is what the address budget does when it runs out
+// (GUEST_APPLY_PUBLIC_IP_LIMIT_MODE).
+type GuestApplyLimitMode string
+
+const (
+	// GuestApplyLimitEnforce refuses the request with 429. The default.
+	GuestApplyLimitEnforce GuestApplyLimitMode = "enforce"
+	// GuestApplyLimitObserve lets the request through and counts it on
+	// skylab_guest_apply_public_ip_would_limit_total: the emergency switch
+	// should a legitimate caller turn out to share one public address.
+	GuestApplyLimitObserve GuestApplyLimitMode = "observe"
+)
+
+// GuestApplyLimitModeEnv names the address budget's mode.
+const GuestApplyLimitModeEnv = "GUEST_APPLY_PUBLIC_IP_LIMIT_MODE"
+
+// ParseGuestApplyLimitMode reads GuestApplyLimitModeEnv: empty is enforce,
+// and anything but the two spellings is an error, so a typo cannot quietly
+// turn the budget off.
+func ParseGuestApplyLimitMode(raw string) (GuestApplyLimitMode, error) {
+	switch mode := GuestApplyLimitMode(strings.TrimSpace(raw)); mode {
+	case "":
+		return GuestApplyLimitEnforce, nil
+	case GuestApplyLimitEnforce, GuestApplyLimitObserve:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("%s: %q is neither %q nor %q", GuestApplyLimitModeEnv, raw, GuestApplyLimitEnforce, GuestApplyLimitObserve)
+	}
+}
+
+// GuestApplyLimits are the budgets of Guest apply. The forms hop
+// (anonymous_internal) is not limited: every guest's form answer goes
+// through it, and a 429 there loses the answer.
 type GuestApplyLimits struct {
-	// PerClient requests per PerClientWindow for each client address.
+	// PerSubject requests per PerSubjectWindow for each valid token's
+	// subject (person and service): wide enough for an operator adding
+	// guests by hand, narrow enough that a member's token cannot write fake
+	// guests without end.
+	PerSubject       int
+	PerSubjectWindow time.Duration
+	// PerClient requests per PerClientWindow for each client address of an
+	// anonymous_public request. PublicIPMode says whether running out
+	// refuses the request.
 	PerClient       int
 	PerClientWindow time.Duration
-	// PerGuest requests per PerGuestWindow for each Event and e-mail, from
-	// any address.
+	PublicIPMode    GuestApplyLimitMode
+	// PerGuest requests per PerGuestWindow for each Event and e-mail of an
+	// anonymous_public request, from any address. Always enforced.
 	PerGuest       int
 	PerGuestWindow time.Duration
 }
@@ -126,10 +174,13 @@ type GuestApplyLimits struct {
 // DefaultGuestApplyLimits are the production budgets (docs/guest-apply.md).
 func DefaultGuestApplyLimits() GuestApplyLimits {
 	return GuestApplyLimits{
-		PerClient:       20,
-		PerClientWindow: 10 * time.Minute,
-		PerGuest:        5,
-		PerGuestWindow:  time.Hour,
+		PerSubject:       60,
+		PerSubjectWindow: 10 * time.Minute,
+		PerClient:        20,
+		PerClientWindow:  10 * time.Minute,
+		PublicIPMode:     GuestApplyLimitEnforce,
+		PerGuest:         5,
+		PerGuestWindow:   time.Hour,
 	}
 }
 
@@ -146,6 +197,13 @@ type GuestApply struct {
 // NewGuestApply classifies callers with proxies. A nil metrics counts into
 // nothing; a nil logger writes no line.
 func NewGuestApply(proxies clientip.Ranges, metrics *GuestApplyMetrics, limits GuestApplyLimits, logger *log.Logger) *GuestApply {
+	defaults := DefaultGuestApplyLimits()
+	if limits.PerSubject <= 0 || limits.PerSubjectWindow <= 0 {
+		limits.PerSubject, limits.PerSubjectWindow = defaults.PerSubject, defaults.PerSubjectWindow
+	}
+	if limits.PublicIPMode == "" {
+		limits.PublicIPMode = defaults.PublicIPMode
+	}
 	return &GuestApply{proxies: proxies, metrics: metrics, limits: limits, logger: logger}
 }
 
@@ -182,6 +240,10 @@ func (g *GuestApply) Observe(c fiber.Ctx) error {
 	status := c.Response().StatusCode()
 	outcome := guestOutcomeOf(c, status)
 	g.metrics.record(caller, outcome)
+	wouldLimit, _ := c.Locals(localsGuestApplyWouldLimit).(bool)
+	if wouldLimit && g.metrics != nil {
+		g.metrics.wouldLimit.Add(1)
+	}
 	if g.logger != nil {
 		payload, err := json.Marshal(struct {
 			Event         string `json:"event"`
@@ -189,7 +251,8 @@ func (g *GuestApply) Observe(c fiber.Ctx) error {
 			Caller        string `json:"caller"`
 			Outcome       string `json:"outcome"`
 			Status        int    `json:"status"`
-		}{"guest_apply", requestid.FromContext(c), guestCallerNames[caller], guestOutcomeNames[outcome], status})
+			WouldLimit    bool   `json:"would_limit,omitempty"`
+		}{"guest_apply", requestid.FromContext(c), guestCallerNames[caller], guestOutcomeNames[outcome], status, wouldLimit})
 		if err == nil {
 			g.logger.Print(string(payload))
 		}
@@ -221,10 +284,25 @@ func guestOutcomeOf(c fiber.Ctx, status int) guestOutcome {
 	}
 }
 
-// Limits are the route's two budgets for anonymous_public requests, in
-// order: each client address, then each Event and e-mail. A request the first
-// refuses does not count against the second.
+// Limits are the route's budgets, in order: each token subject (person and
+// service), each client address (anonymous_public), then each Event and
+// e-mail (anonymous_public). A request one refuses does not count against
+// the next.
 func (g *GuestApply) Limits() []fiber.Handler {
+	perSubject := limiter.New(limiter.Config{
+		Max:        g.limits.PerSubject,
+		Expiration: g.limits.PerSubjectWindow,
+		Next: func(c fiber.Ctx) bool {
+			class := g.caller(c)
+			return class != guestPerson && class != guestService
+		},
+		KeyGenerator: func(c fiber.Ctx) string {
+			ident, _ := c.Locals(authn.LocalsIdentity).(authn.Identity)
+			return ident.ID.String()
+		},
+		LimitReached: guestApplyRateLimited,
+	})
+	observe := g.limits.PublicIPMode == GuestApplyLimitObserve
 	perClient := limiter.New(limiter.Config{
 		Max:        g.limits.PerClient,
 		Expiration: g.limits.PerClientWindow,
@@ -232,7 +310,16 @@ func (g *GuestApply) Limits() []fiber.Handler {
 		KeyGenerator: func(c fiber.Ctx) string {
 			return clientip.FromCtx(c, g.proxies)
 		},
-		LimitReached: guestApplyRateLimited,
+		// While observing, no header may suggest a refusal that does not
+		// come.
+		DisableHeaders: observe,
+		LimitReached: func(c fiber.Ctx) error {
+			if observe {
+				c.Locals(localsGuestApplyWouldLimit, true)
+				return c.Next()
+			}
+			return guestApplyRateLimited(c)
+		},
 	})
 	perGuest := limiter.New(limiter.Config{
 		Max:        g.limits.PerGuest,
@@ -258,7 +345,7 @@ func (g *GuestApply) Limits() []fiber.Handler {
 			return guestApplyRateLimited(c)
 		},
 	})
-	return []fiber.Handler{perClient, perGuest}
+	return []fiber.Handler{perSubject, perClient, perGuest}
 }
 
 const localsGuestKey = "guest_apply_key"
