@@ -83,6 +83,11 @@ type Deps struct {
 	// serves its counters on /v1/metrics. Nil refuses every marked token
 	// with 503; tokens with their groups claim do not use it.
 	GroupOverage *identity.OverageGroups
+
+	// GithubActivity is the club's GitHub activity for the admin dashboard
+	// (docs/github-activity.md). Nil (its settings unset) leaves
+	// /v1/dashboard/github-activity unserved: 404.
+	GithubActivity handlers.GithubActivitySource
 }
 
 func New(deps Deps) *fiber.App {
@@ -213,6 +218,10 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/skypass/card", pass.LookupCard)
 		app.Post("/v1/skypass/qr", pass.Mint)
 		app.Post("/v1/skypass/verify", pass.Verify)
+	}
+
+	if deps.GithubActivity != nil {
+		app.Get("/v1/dashboard/github-activity", handlers.NewGithubActivityHandler(deps.GithubActivity).Get)
 	}
 
 	app.Get("/v1/users/me", me.GetMe)
