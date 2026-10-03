@@ -388,12 +388,13 @@ func TestMineAndGuestIssue(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	events, tickets, users, ticketSvc, certs, _, mailer, ev, _, sessions, leader := artlabSetup(t, 0.75)
-	guest, err := ticketSvc.ApplyGuest(ctx, ev.ID, ticket.GuestInfo{
+	applied, err := ticketSvc.ApplyGuest(ctx, leader, ev.ID, ticket.GuestInfo{
 		FirstName: "Grace", LastName: "Hopper", Email: "grace@example.com", PhoneNumber: "555",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	guest := applied.Ticket
 	checkInN(t, ticketSvc, leader, guest.ID, sessions, 6)
 	issued, err := certs.RecomputeTicket(ctx, guest.ID)
 	if err != nil || issued == nil {
