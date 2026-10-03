@@ -25,6 +25,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
+	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
@@ -558,7 +559,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	ticketSvc := ticket.NewService(tickets, events, az, users, dir)
+	doorQR, err := doorQRGate(os.Getenv, passKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR)
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -643,6 +648,7 @@ func main() {
 		ServiceClients:          serviceClients,
 		GroupOverage:            overageGroups,
 		GuestApplyMetrics:       handlers.NewGuestApplyMetrics(),
+		GuestCheckInMetrics:     doorQR,
 		GuestApplyPublicIPLimit: guestApplyIPLimit,
 		Dashboard:               dashboardSvc,
 		GithubActivity:          githubActivity,
@@ -804,6 +810,20 @@ func gotenbergURL() string {
 		return explicit
 	}
 	return "http://gotenberg:3000"
+}
+
+// doorQRGate builds guest check-in's door QR (docs/guest-self-check-in.md).
+// Its HMAC key is derived from the SkyPass signing key, so it needs no secret
+// of its own and every replica with the same SkyPass key accepts the same
+// door QR, yet no door QR is ever signed with the SkyPass key itself.
+func doorQRGate(getenv func(string) string, passKey *ecdsa.PrivateKey) (*doorqr.Gate, error) {
+	cfg, err := doorqr.ConfigFromEnv(getenv)
+	if err != nil {
+		return nil, err
+	}
+	gate := doorqr.NewGate(doorqr.DeriveKey(passKey.D.FillBytes(make([]byte, 32))), cfg)
+	log.Printf("guest self check-in: %s=%s", doorqr.ModeEnv, gate.Mode())
+	return gate, nil
 }
 
 func loadSkyPassKey() (*ecdsa.PrivateKey, error) {

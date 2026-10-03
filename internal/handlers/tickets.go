@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
@@ -37,6 +39,16 @@ func ticketError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusConflict, "Ambiguous Match")
 	case errors.Is(err, ticket.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	case errors.Is(err, ticket.ErrDoorQRRequired):
+		return problemCode(c, fiber.StatusForbidden, "Door QR Required", "door_qr_required")
+	case errors.Is(err, ticket.ErrDoorQRInvalid):
+		return problemCode(c, fiber.StatusForbidden, "Door QR Invalid", "door_qr_invalid")
+	case errors.Is(err, ticket.ErrDoorQRExpired):
+		return problemCode(c, fiber.StatusForbidden, "Door QR Expired", "door_qr_expired")
+	case errors.Is(err, ticket.ErrDoorQRUsedUp):
+		return problemCode(c, fiber.StatusForbidden, "Door QR Used Up", "door_qr_used_up")
+	case errors.Is(err, ticket.ErrSessionClosed):
+		return problemCode(c, fiber.StatusForbidden, "Session Not Open", "session_closed")
 	default:
 		return err
 	}
@@ -203,7 +215,8 @@ func (h *TicketHandler) CheckIn(c fiber.Ctx) error {
 }
 
 type guestCheckInBody struct {
-	Email string `json:"email"`
+	Email     string `json:"email"`
+	DoorToken string `json:"doorToken"`
 }
 
 type resolveCheckInBody struct {
@@ -236,11 +249,55 @@ func (h *TicketHandler) CheckInGuest(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	ci, err := h.svc.CheckInGuest(c.Context(), sessionID, body.Email)
+	ci, err := h.svc.CheckInGuest(c.Context(), sessionID, ticket.GuestCheckIn{Email: body.Email, DoorToken: body.DoorToken})
 	if err != nil {
 		return ticketError(c, err)
 	}
 	return c.Status(fiber.StatusCreated).JSON(ci)
+}
+
+// MintDoorQR answers the door screen: a fresh signed door QR for the Session
+// (docs/guest-self-check-in.md).
+func (h *TicketHandler) MintDoorQR(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	sessionID, err := uuid.Parse(c.Params("sessionId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	pass, err := h.svc.MintDoorQR(c.Context(), p, sessionID)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	if !queryFlag(c.Query("svg")) {
+		return c.Status(fiber.StatusCreated).JSON(pass)
+	}
+	// ?svg=1: the QR itself, drawn from pass.URL, for a screen that has no QR
+	// library. Square modules, no logo: it is redrawn every few seconds and
+	// scanned from further away than a poster.
+	svg, err := qr.PlainSVG(pass.URL)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusCreated).JSON(doorQRWithSVG{DoorQR: pass, SVG: string(svg)})
+}
+
+// queryFlag reads a yes/no query parameter: 1, true or yes is yes.
+func queryFlag(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+type doorQRWithSVG struct {
+	ticket.DoorQR
+	SVG string `json:"svg"`
 }
 
 func (h *TicketHandler) ResolveAndCheckIn(c fiber.Ctx) error {
