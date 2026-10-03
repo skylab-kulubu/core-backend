@@ -6,9 +6,11 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/user"
@@ -28,7 +30,8 @@ type Service interface {
 	ListQuery(ctx context.Context, p authz.Principal, email string, userID *uuid.UUID) ([]Ticket, error)
 	CheckIn(ctx context.Context, p authz.Principal, ticketID, sessionID uuid.UUID) (CheckIn, error)
 	CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (CheckIn, error)
-	CheckInGuest(ctx context.Context, sessionID uuid.UUID, email string) (CheckIn, error)
+	CheckInGuest(ctx context.Context, sessionID uuid.UUID, g GuestCheckIn) (CheckIn, error)
+	MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorQR, error)
 	CheckInUser(ctx context.Context, p authz.Principal, sessionID, userID uuid.UUID) (CheckIn, error)
 	ResolveAndCheckIn(ctx context.Context, p authz.Principal, sessionID uuid.UUID, target DoorCheckInTarget) (DoorCheckIn, error)
 	DoorActivity(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorActivity, error)
@@ -59,6 +62,7 @@ type service struct {
 	directory PersonDirectory
 	teams     TeamReader
 	authz     authz.Authorizer
+	door      *doorqr.Gate
 }
 
 func NewService(tickets Store, events event.Store, az authz.Authorizer, extras ...any) Service {
@@ -78,6 +82,12 @@ func NewService(tickets Store, events event.Store, az authz.Authorizer, extras .
 		if v, ok := extra.(PersonReader); ok && s.people == nil {
 			s.people = v
 		}
+		if v, ok := extra.(*doorqr.Gate); ok && v != nil {
+			s.door = v
+		}
+	}
+	if s.door == nil {
+		s.door = doorqr.NewEphemeralGate()
 	}
 	return s
 }
@@ -883,13 +893,26 @@ func (s *service) CheckInMe(ctx context.Context, p authz.Principal, sessionID uu
 	return s.addSessionCheckIn(ctx, t, sessionID)
 }
 
-func (s *service) CheckInGuest(ctx context.Context, sessionID uuid.UUID, email string) (CheckIn, error) {
-	email = strings.TrimSpace(email)
+func (s *service) CheckInGuest(ctx context.Context, sessionID uuid.UUID, g GuestCheckIn) (CheckIn, error) {
+	withToken := strings.TrimSpace(g.DoorToken) != ""
+	ci, err := s.checkInGuest(ctx, sessionID, g)
+	s.door.Record(withToken, guestCheckInOutcome(err))
+	return ci, err
+}
+
+func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g GuestCheckIn) (CheckIn, error) {
+	email := strings.TrimSpace(g.Email)
 	if email == "" {
 		return CheckIn{}, ErrInvalid
 	}
 	eventID, err := s.ticketEventID(ctx, sessionID)
 	if err != nil {
+		return CheckIn{}, err
+	}
+	// The door QR is checked before any Ticket is looked up, so without one
+	// (in qr mode) the route says nothing about which e-mails are
+	// registered.
+	if err := s.admitDoorQR(g.DoorToken, sessionID, eventID); err != nil {
 		return CheckIn{}, err
 	}
 	listed, err := s.tickets.ListByGuestEmail(ctx, email)
@@ -902,6 +925,73 @@ func (s *service) CheckInGuest(ctx context.Context, sessionID uuid.UUID, email s
 		}
 	}
 	return CheckIn{}, ErrNotFound
+}
+
+// admitDoorQR applies GUEST_SELF_CHECKIN_MODE: qr requires a valid token;
+// open takes none, but a token that is sent must be valid either way.
+func (s *service) admitDoorQR(token string, sessionID, eventID uuid.UUID) error {
+	if strings.TrimSpace(token) == "" {
+		if s.door.Mode() == doorqr.ModeQR {
+			return ErrDoorQRRequired
+		}
+		return nil
+	}
+	switch err := s.door.Admit(token, sessionID, eventID); {
+	case err == nil:
+		return nil
+	case errors.Is(err, doorqr.ErrExpired):
+		return ErrDoorQRExpired
+	case errors.Is(err, doorqr.ErrUsedUp):
+		return ErrDoorQRUsedUp
+	default:
+		return ErrDoorQRInvalid
+	}
+}
+
+func guestCheckInOutcome(err error) doorqr.Outcome {
+	switch {
+	case err == nil:
+		return doorqr.OutcomeCheckedIn
+	case errors.Is(err, ErrConflict):
+		return doorqr.OutcomeAlready
+	case errors.Is(err, ErrNotFound):
+		return doorqr.OutcomeNotFound
+	case errors.Is(err, ErrInvalid):
+		return doorqr.OutcomeBadRequest
+	case errors.Is(err, ErrDoorQRRequired):
+		return doorqr.OutcomeRequired
+	case errors.Is(err, ErrDoorQRInvalid):
+		return doorqr.OutcomeInvalid
+	case errors.Is(err, ErrDoorQRExpired):
+		return doorqr.OutcomeExpired
+	case errors.Is(err, ErrDoorQRUsedUp):
+		return doorqr.OutcomeUsedUp
+	default:
+		return doorqr.OutcomeFailed
+	}
+}
+
+// MintDoorQR signs a door QR for a Session. Whoever may take check-ins at the
+// Event's door may show one (canUseDoor: door staff, the owning team's
+// leaders, Privileged, team door scan).
+func (s *service) MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorQR, error) {
+	ev, err := s.authorizedDoorEvent(ctx, p, sessionID)
+	if err != nil {
+		return DoorQR{}, err
+	}
+	pass, err := s.door.Mint(sessionID, ev.ID)
+	if err != nil {
+		return DoorQR{}, err
+	}
+	return DoorQR{
+		Token:               pass.Token,
+		URL:                 pass.URL,
+		SessionID:           sessionID,
+		EventID:             ev.ID,
+		IssuedAt:            pass.IssuedAt,
+		ExpiresAt:           pass.ExpiresAt,
+		RefreshAfterSeconds: int(pass.RefreshAfter / time.Second),
+	}, nil
 }
 
 func (s *service) CheckInUser(ctx context.Context, p authz.Principal, sessionID, userID uuid.UUID) (CheckIn, error) {

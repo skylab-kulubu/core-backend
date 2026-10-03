@@ -88,6 +88,11 @@ type Deps struct {
 	// when it runs out (GUEST_APPLY_PUBLIC_IP_LIMIT_MODE). Empty enforces.
 	GuestApplyPublicIPLimit handlers.GuestApplyLimitMode
 
+	// GuestCheckInMetrics counts guest self check-ins by door QR presence
+	// and outcome, and serves them on /v1/metrics
+	// (docs/guest-self-check-in.md). Nil leaves them out.
+	GuestCheckInMetrics interface{ Prometheus() string }
+
 	// GroupOverage reads the Groups of a person whose token carries the
 	// Group overage marker instead of the groups claim (ADR-0059), and
 	// serves its counters on /v1/metrics. Nil refuses every marked token
@@ -168,7 +173,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil {
+	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil || deps.GuestCheckInMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -178,6 +183,9 @@ func New(deps Deps) *fiber.App {
 			}
 			text += deps.GroupOverage.Prometheus()
 			text += deps.GuestApplyMetrics.Prometheus()
+			if deps.GuestCheckInMetrics != nil {
+				text += deps.GuestCheckInMetrics.Prometheus()
+			}
 			return c.SendString(text)
 		})
 	}
@@ -378,6 +386,7 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
 	app.Post("/v1/sessions/:sessionId/check-in/guest", tickets.CheckInGuest)
+	app.Post("/v1/sessions/:sessionId/door-qr", tickets.MintDoorQR)
 	app.Post("/v1/sessions/:sessionId/check-in/resolve", tickets.ResolveAndCheckIn)
 	app.Get("/v1/sessions/:sessionId/check-ins", tickets.DoorActivity)
 	if pass != nil {

@@ -13,6 +13,12 @@ var (
 	ErrInvalid   = errors.New("ticket: invalid")
 	ErrConflict  = errors.New("ticket: conflict")
 	ErrAmbiguous = errors.New("ticket: ambiguous match")
+
+	// Guest check-in's door QR (docs/guest-self-check-in.md).
+	ErrDoorQRRequired = errors.New("ticket: door qr required")
+	ErrDoorQRInvalid  = errors.New("ticket: door qr invalid")
+	ErrDoorQRExpired  = errors.New("ticket: door qr expired")
+	ErrDoorQRUsedUp   = errors.New("ticket: door qr used up")
 )
 
 type Store interface {
