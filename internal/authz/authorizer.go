@@ -67,6 +67,10 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		return a.allowCertificate(p, r, action)
 	case TypeCertificateTemplate:
 		return a.allowCertificateTemplate(p, r, action)
+	case TypeGithubActivity:
+		// Internal club data whose private repositories' totals are not
+		// public: privileged people only, never a product's service account.
+		return action == Read && p.Product == "" && a.isPrivileged(p)
 	case TypeTeam:
 		return action == Read
 	case TypeGroup:

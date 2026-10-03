@@ -39,6 +39,9 @@ const (
 	// TypeMediaReadLink is a five-minute read link to a private Media that
 	// its owning product asks core for.
 	TypeMediaReadLink Type = "MEDIA_READ_LINK"
+	// TypeGithubActivity is the club's GitHub organisation activity on the
+	// admin dashboard, private repositories' totals included.
+	TypeGithubActivity Type = "GITHUB_ACTIVITY"
 )
 
 type Level string

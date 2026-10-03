@@ -557,6 +557,7 @@ func main() {
 		log.Printf("short-link hit retention: %v", err)
 	})
 	urlSvc := shorturl.NewService(urlStore, az)
+	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
 
 	app := httpx.New(httpx.Deps{
 		Users: user.NewService(users, dir),
@@ -606,6 +607,7 @@ func main() {
 		GroupOverage:            overageGroups,
 		GuestApplyMetrics:       handlers.NewGuestApplyMetrics(),
 		GuestApplyPublicIPLimit: guestApplyIPLimit,
+		GithubActivity:          githubActivity,
 	})
 
 	addr := os.Getenv("PORT")
