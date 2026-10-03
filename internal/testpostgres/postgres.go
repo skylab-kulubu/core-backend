@@ -36,13 +36,16 @@ func Start(t testing.TB) *pgxpool.Pool {
 		t.Skip("docker not available")
 	}
 	name := fmt.Sprintf("core-postgres-test-%d", time.Now().UnixNano())
-	// The image declares its data directory as a VOLUME, so every container
-	// would leave an anonymous volume behind: `--rm` only removes it when the
-	// container exits on its own, not when Cleanup removes it. Keeping the
-	// data in tmpfs creates no volume at all and makes the tests faster.
-	// PGDATA is spelled out because PostgreSQL 18's image keeps its data
-	// elsewhere by default (/var/lib/postgresql/18/docker), outside the tmpfs.
+	// The image declares a VOLUME (PostgreSQL 17: /var/lib/postgresql/data,
+	// 18: /var/lib/postgresql), so a container would leave an anonymous
+	// volume behind: `--rm` only removes it when the container exits on its
+	// own, not when Cleanup removes it. A tmpfs on each of the two paths
+	// covers whichever the image declares, so no volume is created and the
+	// data stays in memory, which also makes the tests faster. PGDATA is
+	// spelled out because PostgreSQL 18's image keeps its data elsewhere by
+	// default (/var/lib/postgresql/18/docker).
 	run := exec.Command("docker", "run", "-d", "--rm", "--name", name,
+		"--tmpfs", "/var/lib/postgresql",
 		"--tmpfs", "/var/lib/postgresql/data",
 		"-e", "PGDATA=/var/lib/postgresql/data",
 		"-e", "POSTGRES_PASSWORD=postgres",
