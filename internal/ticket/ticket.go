@@ -36,6 +36,26 @@ type DoorCheckIn struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
+// GuestCheckIn is a guest checking themselves in to a Session: the e-mail
+// their guest Ticket was written for, and the door QR token they scanned
+// (docs/guest-self-check-in.md).
+type GuestCheckIn struct {
+	Email     string
+	DoorToken string
+}
+
+// DoorQR is a minted door QR for the screen at a Session's door. URL is what
+// the QR encodes; the screen asks for a new one after RefreshAfterSeconds.
+type DoorQR struct {
+	Token               string    `json:"token"`
+	URL                 string    `json:"url"`
+	SessionID           uuid.UUID `json:"sessionId"`
+	EventID             uuid.UUID `json:"eventId"`
+	IssuedAt            time.Time `json:"issuedAt"`
+	ExpiresAt           time.Time `json:"expiresAt"`
+	RefreshAfterSeconds int       `json:"refreshAfterSeconds"`
+}
+
 type DoorActivity struct {
 	Total int           `json:"total"`
 	Items []DoorCheckIn `json:"items"`
