@@ -58,7 +58,7 @@ ADR-0051 has this worker send SkyMail, CMS and Forms one Erasure command each, a
 | Step | Service | Internal URL setting | Token scope |
 |---|---|---|---|
 | `erase_skymail` | SkyMail | `ACCOUNT_ERASURE_SKYMAIL_URL` | `account-erase-skymail` |
-| `erase_cms` | CMS | `ACCOUNT_ERASURE_CMS_URL` | `account-erase-cms` |
+| `erase_cms` | CMS (inscribed) | `ACCOUNT_ERASURE_CMS_URL` | `account-erase-cms` |
 | `erase_forms` | Forms | `ACCOUNT_ERASURE_FORMS_URL` | `account-erase-forms` |
 
 **Configuration.** Nothing is read while `ACCOUNT_ERASURE_WORKER_ENABLED` is off, and nothing of the service steps is built. While it is on, startup requires the three URLs (absolute `http`/`https` base URLs without credentials, query or fragment), `ACCOUNT_ERASURE_CLIENT_ID` (`core-erasure`) and `ACCOUNT_ERASURE_CLIENT_SECRET` (an OpenBao reference), and refuses to start with the missing or malformed variable's name only, never its value. `ACCOUNT_ERASURE_ALERT_AFTER` defaults to `480h` (day 20) and `PERIODIC_DESTRUCTION_INTERVAL` to `2160h` (90 days).
@@ -68,6 +68,8 @@ ADR-0051 has this worker send SkyMail, CMS and Forms one Erasure command each, a
 - While Forms has no endpoint, `ACCOUNT_ERASURE_FORMS_URL` has nothing to point at, so the worker cannot be enabled: startup refuses with the variable's name.
 - A URL that points at a Forms without the endpoint gets `404`: `erase_forms_rejected_404`, manual intervention, before core is anonymized.
 - A worker built without a sender for a registry entry refuses the request with `erase_<service>_not_configured` (manual intervention) before it calls any service.
+
+**Services without the access gate.** The CMS is inscribed (ADR-0056), which does not read the account-access marker: an access token issued before the person was disabled keeps working there until it expires. A registry entry says how long its step waits after the identity is closed (`WaitAfterIdentityClosed`); for the CMS it is six minutes, Keycloak's 300-second access token lifespan plus inscribed's 30-second clock skew, rounded up. The identity is closed at the latest of `platform_blocked_at` and the `disable_identity` and `logout_sessions` checkpoints, since Keycloak can still mint tokens between the block and the disable. Before that the step is not called; it is deferred to that moment under `erase_cms_waiting`, without spending an attempt and without reading the addresses for it, while the other services are called as usual. A pass in which every unfinished service only waits is refunded past the deferral horizon too and comes back exactly when the wait ends, since the wait has a known end; it never reaches `manual_intervention`. A close time more than one minute ahead of the worker's clock (clock skew) is capped at one minute ahead and logged once per request; with no close time known the worker takes now. The registry's wait is a floor: a worker built without `NewServiceErasure` still waits at least that long. A shorter Keycloak access token lifespan needs no change here; a longer one needs this wait raised first.
 
 **Addresses.** Read the first time a pass needs them, by a service step or by `anonymize_core`, and handed to both; the next pass reads them again.
 
@@ -83,6 +85,7 @@ ADR-0051 has this worker send SkyMail, CMS and Forms one Erasure command each, a
 - `erase_<service>_failed`: deferred (`202`, `429`, `5xx`, timeout, connection or token-endpoint failure; the attempt is refunded until the deferral horizon) or ordinary (`401`, an unexpected status or an invalid `200` body; spends an attempt);
 - `erase_<service>_rejected_<http>`: `400`, `403`, `404` or `409`; the request goes to `manual_intervention` at once, even while other services in the same pass were deferred;
 - `erase_<service>_not_configured`: no sender for that service; `manual_intervention` at once;
+- `erase_<service>_waiting`: every unfinished service only waits for its token window (above); deferred, the attempt is refunded, past the deferral horizon too. A failure of another service in the same pass names that service instead, and the ordinary rules apply to that pass;
 - `erase_<service>_checkpoint_failed` and `erasure_addresses_failed`: ordinary.
 
 After an operator fixes a rejection, the existing retry path returns the request to `pending`, and checkpointed services are not called again.

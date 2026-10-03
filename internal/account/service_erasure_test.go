@@ -604,7 +604,8 @@ func TestNewServiceErasureFollowsTheRegistry(t *testing.T) {
 	}
 	for i, service := range erasure.Registry() {
 		client, ok := services.Steps[i].Sender.(*erasure.Client)
-		if !ok || services.Steps[i].Step != service.Step || client.BaseURL != "http://"+service.Name+":8080" || client.Service != service {
+		if !ok || services.Steps[i].Step != service.Step || client.BaseURL != "http://"+service.Name+":8080" || client.Service != service ||
+			services.Steps[i].WaitAfterIdentityClosed != service.WaitAfterIdentityClosed {
 			t.Fatalf("step %d = %+v", i, services.Steps[i])
 		}
 		tokens, ok := client.Tokens.(*erasure.ClientCredentials)
@@ -620,6 +621,9 @@ func TestNewServiceErasureFollowsTheRegistry(t *testing.T) {
 		if secret, err := tokens.Secret(); err != nil || secret != "secret" || secretReads != i+1 {
 			t.Fatalf("step %d secret source does not read the configuration", i)
 		}
+	}
+	if services.Steps[1].WaitAfterIdentityClosed != 6*time.Minute {
+		t.Fatalf("cms waits %s after the identity is closed, want 6m: inscribed has no access gate", services.Steps[1].WaitAfterIdentityClosed)
 	}
 	if services.Steps[0].Sender.(*erasure.Client).Tokens == services.Steps[1].Sender.(*erasure.Client).Tokens {
 		t.Fatal("services share one token cache; a token must carry only its own service's role")

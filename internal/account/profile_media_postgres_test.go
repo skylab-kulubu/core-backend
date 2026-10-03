@@ -128,7 +128,7 @@ func TestWorkerImmediatelyErasesUnreferencedProfileBlobAndSanitizesSharedMedia(t
 		// Anchor the worker clock on the DB-assigned schedule so claims never depend on the calendar.
 		now := request.NextAttemptAt
 		confirmDeletionProjection(t, users, request, now)
-		worker := account.NewWorker(users, successfulIdentity{}, account.WorkerConfig{
+		worker := account.NewWorkerWithConfiguredWaits(users, successfulIdentity{}, account.WorkerConfig{
 			Services: erasedServices(),
 			Now:      func() time.Time { return now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
 		}, media.NewImmediateBlobEraser(mediaStore, blobs))
@@ -206,7 +206,7 @@ func TestWorkerRetriesWhenProfileMediaIsRestoredBeforeBlobErase(t *testing.T) {
 		store:    mediaStore,
 		delegate: media.NewImmediateBlobEraser(mediaStore, blobs),
 	}
-	worker := account.NewWorker(users, successfulIdentity{}, account.WorkerConfig{
+	worker := account.NewWorkerWithConfiguredWaits(users, successfulIdentity{}, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
 	}, eraser)
@@ -297,7 +297,7 @@ func TestDeletionCannotCompleteWhileJITAuthorizedUploadNeedsDurableCleanup(t *te
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	confirmDeletionProjection(t, users, request, now)
-	worker := account.NewWorker(users, successfulIdentity{}, account.WorkerConfig{
+	worker := account.NewWorkerWithConfiguredWaits(users, successfulIdentity{}, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return now }, Lease: time.Minute, RetryDelay: 0, MaxAttempts: 1,
 		AccessBlocker: &accountBlockWriter{},
