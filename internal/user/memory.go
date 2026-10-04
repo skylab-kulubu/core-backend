@@ -585,15 +585,17 @@ func (s *MemoryStore) DeletionRequestsPage(_ context.Context, after uuid.UUID, l
 	return out, nil
 }
 
-func (s *MemoryStore) CompletedDeletionSteps(_ context.Context, requestID, leaseToken uuid.UUID) (map[DeletionStep]bool, error) {
+// CompletedDeletionSteps returns each checkpointed step of the request with
+// the time it was checkpointed.
+func (s *MemoryStore) CompletedDeletionSteps(_ context.Context, requestID, leaseToken uuid.UUID) (map[DeletionStep]time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.holdsLeaseLocked(requestID, leaseToken) {
 		return nil, ErrLeaseLost
 	}
-	out := make(map[DeletionStep]bool)
-	for step := range s.deletionSteps[requestID] {
-		out[step] = true
+	out := make(map[DeletionStep]time.Time)
+	for step, at := range s.deletionSteps[requestID] {
+		out[step] = at
 	}
 	return out, nil
 }

@@ -42,11 +42,11 @@ func TestPostgresWorkerPersistsProgressAcrossRestart(t *testing.T) {
 		Now:      func() time.Time { return now }, Lease: time.Minute, MaxAttempts: 3,
 		AccessBlocker: &accountBlockWriter{},
 	}
-	if worked, err := account.NewWorker(store, identity, config, noAccountMedia{}).RunOnce(ctx); !worked || err == nil {
+	if worked, err := account.NewWorkerWithConfiguredWaits(store, identity, config, noAccountMedia{}).RunOnce(ctx); !worked || err == nil {
 		t.Fatalf("first worker worked=%v err=%v", worked, err)
 	}
 
-	if worked, err := account.NewWorker(store, identity, config, noAccountMedia{}).RunOnce(ctx); !worked || err != nil {
+	if worked, err := account.NewWorkerWithConfiguredWaits(store, identity, config, noAccountMedia{}).RunOnce(ctx); !worked || err != nil {
 		t.Fatalf("restarted worker worked=%v err=%v", worked, err)
 	}
 	completed, err := store.DeletionRequest(ctx, subjectID)
@@ -205,6 +205,10 @@ func TestPostgresErasureTimestamps(t *testing.T) {
 
 	t.Run("each checkpoint carries the time its step finished", func(t *testing.T) {
 		testCheckpointsCarryTheTimeTheirStepFinished(t, store)
+	})
+
+	t.Run("the token window counts from the stored identity checkpoints", func(t *testing.T) {
+		testTokenWindowCountsFromTheIdentityCheckpoints(t, store)
 	})
 }
 

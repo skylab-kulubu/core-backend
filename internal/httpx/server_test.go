@@ -94,7 +94,12 @@ func memoryDeps() httpx.Deps {
 // memoryDepsOver are memoryDeps over the given directory, with the identity
 // service's options.
 func memoryDepsOver(dir *identity.Memory, options identity.Options) httpx.Deps {
-	az := authz.NewAuthorizer(authz.DefaultPolicy())
+	return memoryDepsDecidedBy(dir, options, authz.NewAuthorizer(authz.DefaultPolicy()))
+}
+
+// memoryDepsDecidedBy are memoryDepsOver with every service deciding with
+// az.
+func memoryDepsDecidedBy(dir *identity.Memory, options identity.Options, az authz.Authorizer) httpx.Deps {
 	users := user.NewMemoryStore()
 	events := event.NewMemoryStore()
 	tickets := ticket.NewMemoryStore()
@@ -120,6 +125,7 @@ func memoryDepsOver(dir *identity.Memory, options identity.Options) httpx.Deps {
 		TrustedProxies: testTrustedProxies(),
 		ServiceClients: clients,
 		Dashboard:      memoryDashboard(events, tickets, users, dir, az),
+		Authz:          az,
 	}
 }
 
@@ -482,6 +488,13 @@ func TestCheckInUsesSessionPathNotEventDay(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusNotFound {
 		t.Fatalf("guest path %d", resp.StatusCode)
+	}
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/sessions/"+id.String()+"/door-qr", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("door qr path %d", resp.StatusCode)
 	}
 	resp, err = app.Test(httptest.NewRequest(fiber.MethodPost, "/v1/sessions/"+id.String()+"/check-in/skypass", strings.NewReader(`{"uid":"04AABBCCDD"}`)))
 	if err != nil {

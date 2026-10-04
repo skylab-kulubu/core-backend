@@ -307,14 +307,14 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 }
 
 func projectPeople(people []Person, full bool) []Person {
-	if full {
-		return people
-	}
 	out := make([]Person, 0, len(people))
 	for _, person := range people {
-		out = append(out, Person{
-			ID: person.ID, Email: person.Email, FirstName: person.FirstName, LastName: person.LastName,
-		})
+		if !full {
+			person = Person{
+				ID: person.ID, Email: person.Email, FirstName: person.FirstName, LastName: person.LastName,
+			}
+		}
+		out = append(out, activePerson(person))
 	}
 	return out
 }
@@ -339,18 +339,46 @@ func safePersonMatches(person Person, query string) bool {
 	return false
 }
 
+// GetUser answers a person who is erased, being erased, or the placeholder
+// subject with erasedPerson, to every caller allowed to read users, whatever
+// Keycloak still holds: core's row (or, after the hard purge, its deletion
+// marker) decides. A caller who may not read users is refused first, so it
+// learns nothing of the id.
 func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error) {
 	if err := s.allowUserRead(p); err != nil {
 		return UserCard{}, err
+	}
+	if id == user.DeletedSubject {
+		return UserCard{Person: erasedPerson(id, user.ReadStatusDeleted)}, nil
+	}
+	shadow, shadowErr := s.users.Get(ctx, id)
+	switch {
+	case shadowErr == nil:
+		if shadow.AccountState != user.AccountActive {
+			return UserCard{Person: erasedPerson(id, shadow.AccountState.ReadStatus())}, nil
+		}
+	case errors.Is(shadowErr, user.ErrNotFound):
+		// No row: a deletion marker means the person was hard-purged.
+		state, err := s.users.AttributionState(ctx, id)
+		if err != nil {
+			return UserCard{}, err
+		}
+		if state == user.AttributionBlocked {
+			return UserCard{Person: erasedPerson(id, user.ReadStatusDeleted)}, nil
+		}
+	default:
+		// Without core's row the answer cannot say whether the person is
+		// erased; it is not guessed from Keycloak.
+		return UserCard{}, shadowErr
 	}
 	person, err := s.dir.GetUser(ctx, id)
 	if err != nil {
 		return UserCard{}, err
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Update) {
-		if got, err := s.users.Get(ctx, id); err == nil {
-			person.FirstName = got.FirstName
-			person.LastName = got.LastName
+		if shadowErr == nil {
+			person.FirstName = shadow.FirstName
+			person.LastName = shadow.LastName
 		}
 		return nameOnlyCard(UserCard{Person: Person{
 			ID:        person.ID,
@@ -359,10 +387,8 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 			LastName:  person.LastName,
 		}}), nil
 	}
-	var shadow user.User
-	if got, err := s.users.Get(ctx, id); err == nil {
-		person = overlayPerson(person, got)
-		shadow = got
+	if shadowErr == nil {
+		person = overlayPerson(person, shadow)
 	}
 	groups, err := s.dir.GroupsForUser(ctx, id)
 	if err != nil {
@@ -399,13 +425,28 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 
 func nameOnlyCard(card UserCard) UserCard {
 	return UserCard{
-		Person: Person{
+		Person: activePerson(Person{
 			ID:        card.ID,
 			Email:     card.Email,
 			FirstName: card.FirstName,
 			LastName:  card.LastName,
-		},
+		}),
 	}
+}
+
+// activePerson marks a person whose account is active.
+func activePerson(person Person) Person {
+	person.Status = user.ReadStatusActive
+	person.DisplayName = strings.TrimSpace(person.FirstName + " " + person.LastName)
+	return person
+}
+
+// erasedPerson is the answer for a person who is erased or being erased
+// (docs/account-erasure-command.md §8): the id, the status, and the fixed
+// name in displayName and firstName, so a client that joins firstName and
+// lastName shows "Silinmiş kullanıcı" too. Nothing else of the person.
+func erasedPerson(id uuid.UUID, status user.ReadStatus) Person {
+	return Person{ID: id, FirstName: user.DeletedDisplayName, Status: status, DisplayName: user.DeletedDisplayName}
 }
 
 func overlayPerson(person Person, shadow user.User) Person {
@@ -422,7 +463,7 @@ func overlayPerson(person Person, shadow user.User) Person {
 
 func userCard(person Person, groups []Group, inherited, extra []ClientRole, shadow user.User) UserCard {
 	return UserCard{
-		Person:         person,
+		Person:         activePerson(person),
 		Linkedin:       shadow.Linkedin,
 		University:     shadow.University,
 		Faculty:        shadow.Faculty,
@@ -841,22 +882,31 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 	}
 }
 
+// overlayShadow puts core's profile over the directory's people and leaves
+// out the people who are erased or being erased: a list is for finding
+// people, and the full list (ListUsers) never had them either.
 func (s *service) overlayShadow(ctx context.Context, people []Person) ([]Person, error) {
-	for i, person := range people {
+	out := make([]Person, 0, len(people))
+	for _, person := range people {
 		shadow, err := s.users.Get(ctx, person.ID)
 		if err != nil {
+			out = append(out, person)
 			continue
 		}
-		people[i].FirstName = shadow.FirstName
-		people[i].LastName = shadow.LastName
+		if shadow.AccountState != user.AccountActive {
+			continue
+		}
+		person.FirstName = shadow.FirstName
+		person.LastName = shadow.LastName
 		if shadow.SchoolEmail != "" {
-			people[i].SchoolEmail = shadow.SchoolEmail
+			person.SchoolEmail = shadow.SchoolEmail
 		}
 		if shadow.SkyNumber != "" {
-			people[i].SkyNumber = shadow.SkyNumber
+			person.SkyNumber = shadow.SkyNumber
 		}
+		out = append(out, person)
 	}
-	return people, nil
+	return out, nil
 }
 
 func (s *service) mergeUserSearch(ctx context.Context, people []Person, q string) ([]Person, error) {

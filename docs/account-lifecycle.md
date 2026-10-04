@@ -14,6 +14,27 @@ Public short-link attribution requires a current active Core identity and perfor
 
 PostgreSQL applies that same lock-and-marker invariant to every durable current-identity link, even when SQL bypasses the Go services. Ticket owners, competitors, media uploaders, certificate owners, URL creators/hit attribution, event door staff and the person a private Media read link is for (`media_read_links.on_behalf_of`, migration `20260926171000`) can reference only an active subject with no deletion marker. Audit actors use the same rule for lifecycle archivers/deleters/withdrawers, certificate template publishers and binding/finalization/batch operations, and deletion-request requesters. A writer that commits first is observed and detached by anonymization; a writer behind the deletion marker is rejected atomically. `NULL` history remains valid and detached competitors cannot be reinstated.
 
+## Reading a person
+
+The reads that answer for another person (`GET /v1/users/{id}`, `GET /v1/users`, the answer of `PATCH /v1/users/{id}`, a ticket's `owner`) carry a `status` and a `displayName` besides the fields they had:
+
+| `status` | When | Answer |
+|---|---|---|
+| `active` | The account is active, or core has no row but Keycloak knows the person | As before; `displayName` is `firstName` and `lastName` joined |
+| `deletion_pending` | The person asked to be erased and the erasure is running | `id`, `status`, `displayName: "Silinmiş kullanıcı"`, `firstName: "Silinmiş kullanıcı"`, `lastName: ""`, `email: ""`; nothing else |
+| `deleted` | The account is anonymized, or hard-purged (no row, a deletion marker), or the id is the placeholder sub `00000000-0000-4000-8000-000000000000` | The same, with `status: "deleted"` |
+
+```json
+{"id": "6f1c…", "email": "", "firstName": "Silinmiş kullanıcı", "lastName": "", "status": "deleted", "displayName": "Silinmiş kullanıcı"}
+```
+
+- **Deletion pending is shown as deleted.** The request cannot be withdrawn, and the person's data is erased within days, so no reader shows it in the meantime. `status` still tells the two apart: a service with `deletion_pending` knows its Erasure command is coming.
+- **`firstName` holds the fixed name** (account-erasure-command.md §8: name columns get `Silinmiş kullanıcı`), so a client that joins `firstName` and `lastName` shows it without reading `status`. Clients should read `status` and `displayName`.
+- **Endpoints.** `GET /v1/users/{id}` (the admin card and the `users:read` card Forms reads) answers the three states above with `200`, whatever Keycloak still holds: core's row, or after the hard purge its deletion marker, decides. An id core has neither a row nor a marker for, and Keycloak does not know, is still `404`. A caller that may not read users is refused (`403`) before any of this, so it learns nothing of the id. When core cannot read its own row (or, with no row, its deletion marker) the answer is `500`; it does not fall back to Keycloak and call the person `active`. `GET /v1/users` (and its `q`/`role` searches) leaves out deletion-pending and erased people, as the admin list already did, and marks the rest `active`. A ticket's embedded `owner` carries `status` and `displayName` the same way; anonymization detaches the ticket (`owner_id` NULL), so only a deletion-pending owner is ever embedded that way.
+- **Exceptions.** These come from Keycloak, which keeps a deletion-pending person (disabled) until `delete_identity`, and carry no `status`; until then they can still show the person by name:
+  - group member lists (`GET /v1/groups/{groupId}/members`) and the public team rosters;
+  - the ticket assignee search (`GET /v1/events/{eventId}/assignable-users`) and the door search's Keycloak fallback. Assigning a ticket to that person is refused by the database (no current-identity link to a person with a deletion marker).
+
 ## Durable erasure flow
 
 `account_deletion_requests` stores queue state without an e-mail, name or other erased profile data. `account_deletion_steps` checkpoints these idempotent steps, in this order (ADR-0051):
@@ -58,7 +79,7 @@ ADR-0051 has this worker send SkyMail, CMS and Forms one Erasure command each, a
 | Step | Service | Internal URL setting | Token scope |
 |---|---|---|---|
 | `erase_skymail` | SkyMail | `ACCOUNT_ERASURE_SKYMAIL_URL` | `account-erase-skymail` |
-| `erase_cms` | CMS | `ACCOUNT_ERASURE_CMS_URL` | `account-erase-cms` |
+| `erase_cms` | CMS (inscribed) | `ACCOUNT_ERASURE_CMS_URL` | `account-erase-cms` |
 | `erase_forms` | Forms | `ACCOUNT_ERASURE_FORMS_URL` | `account-erase-forms` |
 
 **Configuration.** Nothing is read while `ACCOUNT_ERASURE_WORKER_ENABLED` is off, and nothing of the service steps is built. While it is on, startup requires the three URLs (absolute `http`/`https` base URLs without credentials, query or fragment), `ACCOUNT_ERASURE_CLIENT_ID` (`core-erasure`) and `ACCOUNT_ERASURE_CLIENT_SECRET` (an OpenBao reference), and refuses to start with the missing or malformed variable's name only, never its value. `ACCOUNT_ERASURE_ALERT_AFTER` defaults to `480h` (day 20) and `PERIODIC_DESTRUCTION_INTERVAL` to `2160h` (90 days).
@@ -68,6 +89,8 @@ ADR-0051 has this worker send SkyMail, CMS and Forms one Erasure command each, a
 - While Forms has no endpoint, `ACCOUNT_ERASURE_FORMS_URL` has nothing to point at, so the worker cannot be enabled: startup refuses with the variable's name.
 - A URL that points at a Forms without the endpoint gets `404`: `erase_forms_rejected_404`, manual intervention, before core is anonymized.
 - A worker built without a sender for a registry entry refuses the request with `erase_<service>_not_configured` (manual intervention) before it calls any service.
+
+**Services without the access gate.** The CMS is inscribed (ADR-0056), which does not read the account-access marker: an access token issued before the person was disabled keeps working there until it expires. A registry entry says how long its step waits after the identity is closed (`WaitAfterIdentityClosed`); for the CMS it is six minutes, Keycloak's 300-second access token lifespan plus inscribed's 30-second clock skew, rounded up. The identity is closed at the latest of `platform_blocked_at` and the `disable_identity` and `logout_sessions` checkpoints, since Keycloak can still mint tokens between the block and the disable. Before that the step is not called; it is deferred to that moment under `erase_cms_waiting`, without spending an attempt and without reading the addresses for it, while the other services are called as usual. A pass in which every unfinished service only waits is refunded past the deferral horizon too and comes back exactly when the wait ends, since the wait has a known end; it never reaches `manual_intervention`. A close time more than one minute ahead of the worker's clock (clock skew) is capped at one minute ahead and logged once per request; with no close time known the worker takes now. The registry's wait is a floor: a worker built without `NewServiceErasure` still waits at least that long. A shorter Keycloak access token lifespan needs no change here; a longer one needs this wait raised first.
 
 **Addresses.** Read the first time a pass needs them, by a service step or by `anonymize_core`, and handed to both; the next pass reads them again.
 
@@ -83,6 +106,7 @@ ADR-0051 has this worker send SkyMail, CMS and Forms one Erasure command each, a
 - `erase_<service>_failed`: deferred (`202`, `429`, `5xx`, timeout, connection or token-endpoint failure; the attempt is refunded until the deferral horizon) or ordinary (`401`, an unexpected status or an invalid `200` body; spends an attempt);
 - `erase_<service>_rejected_<http>`: `400`, `403`, `404` or `409`; the request goes to `manual_intervention` at once, even while other services in the same pass were deferred;
 - `erase_<service>_not_configured`: no sender for that service; `manual_intervention` at once;
+- `erase_<service>_waiting`: every unfinished service only waits for its token window (above); deferred, the attempt is refunded, past the deferral horizon too. A failure of another service in the same pass names that service instead, and the ordinary rules apply to that pass;
 - `erase_<service>_checkpoint_failed` and `erasure_addresses_failed`: ordinary.
 
 After an operator fixes a rejection, the existing retry path returns the request to `pending`, and checkpointed services are not called again.

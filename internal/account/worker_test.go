@@ -162,7 +162,7 @@ func TestWorkerReassertsPlatformMarkerBeforeFirstErasureSideEffect(t *testing.T)
 	}
 	blocker := &accountBlockWriter{err: errors.New("redis unavailable")}
 	identity := &countingIdentity{}
-	worker := account.NewWorker(store, identity, account.WorkerConfig{
+	worker := account.NewWorkerWithConfiguredWaits(store, identity, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return now }, AccessBlocker: blocker,
 	}, noAccountMedia{})
@@ -200,7 +200,7 @@ func TestWorkerRetriesUncertainExternalEffectWithoutRepeatingCompletedSteps(t *t
 	now := request.NextAttemptAt.Add(time.Minute)
 	confirmDeletionProjection(t, store, request, now)
 	identity := &uncertainIdentity{}
-	worker := account.NewWorker(store, identity, account.WorkerConfig{
+	worker := account.NewWorkerWithConfiguredWaits(store, identity, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return now }, Lease: time.Minute, RetryDelay: 0, MaxAttempts: 3,
 		AccessBlocker: &accountBlockWriter{},
@@ -261,7 +261,7 @@ func TestWorkerSurfacesManualInterventionAfterRetryBudget(t *testing.T) {
 	}
 	now := request.NextAttemptAt
 	confirmDeletionProjection(t, store, request, now)
-	worker := account.NewWorker(store, failingIdentity{}, account.WorkerConfig{
+	worker := account.NewWorkerWithConfiguredWaits(store, failingIdentity{}, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return now }, MaxAttempts: 1, AccessBlocker: &accountBlockWriter{},
 	}, noAccountMedia{})
@@ -298,7 +298,7 @@ func TestWorkerDefersStagedCleanupWithoutExhaustingAttemptBudget(t *testing.T) {
 	firstRetry := now.Add(24 * time.Hour)
 	secondRetry := now.Add(25 * time.Hour)
 	media := &deferredAccountMedia{retryAt: []time.Time{firstRetry, secondRetry}}
-	worker := account.NewWorker(store, successfulIdentity{}, account.WorkerConfig{
+	worker := account.NewWorkerWithConfiguredWaits(store, successfulIdentity{}, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return now }, RetryDelay: 30 * time.Second,
 		MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour, AccessBlocker: &accountBlockWriter{},
@@ -366,7 +366,7 @@ func TestWorkerPreservesFullFailureBudgetAfterManyDeferrals(t *testing.T) {
 	}
 	media := &deferredAccountMedia{retryAt: retries}
 	identity := &deleteFailingIdentity{}
-	worker := account.NewWorker(store, identity, account.WorkerConfig{
+	worker := account.NewWorkerWithConfiguredWaits(store, identity, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return now }, MaxAttempts: 2, DeferredRetryHorizon: 12 * time.Hour,
 		AccessBlocker: &accountBlockWriter{},
@@ -424,7 +424,7 @@ func TestWorkerClampsDeferredRetryToPolicyHorizon(t *testing.T) {
 	confirmDeletionProjection(t, store, request, now)
 	horizon := now.Add(48 * time.Hour)
 	media := &deferredAccountMedia{retryAt: []time.Time{now.Add(7 * 24 * time.Hour)}}
-	worker := account.NewWorker(store, successfulIdentity{}, account.WorkerConfig{
+	worker := account.NewWorkerWithConfiguredWaits(store, successfulIdentity{}, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return now }, MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
 		AccessBlocker: &accountBlockWriter{},
@@ -457,7 +457,7 @@ func TestWorkerAllowsDeferredCleanupToBecomeManualAfterPolicyHorizon(t *testing.
 	now := request.CreatedAt.Add(49 * time.Hour)
 	confirmDeletionProjection(t, store, request, now)
 	media := &deferredAccountMedia{retryAt: []time.Time{now.Add(time.Hour)}}
-	worker := account.NewWorker(store, successfulIdentity{}, account.WorkerConfig{
+	worker := account.NewWorkerWithConfiguredWaits(store, successfulIdentity{}, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return now }, MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
 		AccessBlocker: &accountBlockWriter{},
@@ -535,7 +535,7 @@ func TestWorkerGivesBackAPassThatErasedSomePastTheHorizon(t *testing.T) {
 	store, request := newFewPerPass(t, 50, 7)
 	now := request.CreatedAt.Add(49 * time.Hour)
 	confirmDeletionProjection(t, store, request, now)
-	worker := account.NewWorker(store, successfulIdentity{}, account.WorkerConfig{
+	worker := account.NewWorkerWithConfiguredWaits(store, successfulIdentity{}, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return now }, MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
 		AccessBlocker: &accountBlockWriter{},
@@ -582,7 +582,7 @@ func TestWorkerSpendsTheBudgetOnPassesThatEraseNothing(t *testing.T) {
 	store.broken = store.left[0]
 	now := request.CreatedAt.Add(49 * time.Hour)
 	confirmDeletionProjection(t, store, request, now)
-	worker := account.NewWorker(store, successfulIdentity{}, account.WorkerConfig{
+	worker := account.NewWorkerWithConfiguredWaits(store, successfulIdentity{}, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return now }, MaxAttempts: 8, DeferredRetryHorizon: 48 * time.Hour,
 		AccessBlocker: &accountBlockWriter{},
@@ -636,7 +636,7 @@ func TestWorkerKeepsAPassThatErasedSomeInsideTheHorizonClampedToIt(t *testing.T)
 	horizon := request.CreatedAt.Add(48 * time.Hour)
 	now := horizon.Add(-10 * time.Second)
 	confirmDeletionProjection(t, store, request, now)
-	worker := account.NewWorker(store, successfulIdentity{}, account.WorkerConfig{
+	worker := account.NewWorkerWithConfiguredWaits(store, successfulIdentity{}, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return now }, MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
 		AccessBlocker: &accountBlockWriter{},

@@ -1,6 +1,6 @@
 # Account erasure command
 
-This is the canonical contract of the **Erasure command**: core's instruction to one service to erase one person's data for one deletion request (ADR-0051). SkyMail, CMS and Forms implement it and link here. Core's side (saga order, where the addresses come from, registry, configuration, retries, watchdog, completion proof) is in [`account-lifecycle.md`](account-lifecycle.md#service-erasure-steps).
+This is the canonical contract of the **Erasure command**: core's instruction to one service to erase one person's data for one deletion request (ADR-0051). SkyMail, CMS and Forms implement it and link here. The CMS is inscribed (ADR-0056); it implements a reduced form of the contract, set out in [§9](#9-cms-inscribed). Core's side (saga order, where the addresses come from, registry, configuration, retries, watchdog, completion proof) is in [`account-lifecycle.md`](account-lifecycle.md#service-erasure-steps).
 
 ## 1. Endpoint
 
@@ -73,13 +73,13 @@ Core takes the token from a separate Keycloak client, `core-erasure`.
 | Service | Resource client (`aud` must contain it) | Role (`resource_access.<client>.roles`) | Current check | Added on the erase endpoint |
 |---|---|---|---|---|
 | SkyMail | `skymail` | `skymail:account:erase` | The token is checked with `userinfo`; no `aud`/`azp` check | Local JWKS verification (signature, `iss`, `exp`), then `azp`, `aud` and the role |
-| CMS | `skycms` | `cms:account:erase` | JwtBearer, `Audience=skycms`. Roles are read only from `resource_access[azp]` (ADR-0014) | The role is read from `resource_access.skycms` (not from azp), plus an `azp` check |
+| CMS (inscribed) | `skycms` | `cms:account:erase` | JwtBearer, `Auth__Audience=skycms`, tenant from `azp`, roles from the flat `roles` claim | The role is read from `resource_access.skycms.roles` (not from `roles` or the tenant), plus an `azp` check; the route is not tenant-scoped (§9) |
 | Forms | `forms` | `skyforms:account:erase` | JwtBearer, `aud` ∋ `forms`, `skyforms:*` roles | `azp` and the role |
 
 Rules shared by all three services:
 
 1. `azp` must be exactly `core-erasure`.
-2. The subject must be blocked: the service reads the marker of `subject_id` in the account-access Redis (`SHA-256(issuer + NUL + subject)`, the existing reader ACL `get`/`mget`). No marker: `409 subject_not_blocked`. Redis unreachable: `503`. A compromised caller therefore cannot have the data of someone who never asked for deletion erased.
+2. The subject must be blocked (SkyMail and Forms; not the CMS, §9): the service reads the marker of `subject_id` in the account-access Redis (`SHA-256(issuer + NUL + subject)`, the existing reader ACL `get`/`mget`). No marker: `409 subject_not_blocked`. Redis unreachable: `503`. A compromised caller therefore cannot have the data of someone who never asked for deletion erased.
 3. The existing check on the caller's own marker does not change. The `core-erasure` service account is not blocked.
 
 ## 6. Timeouts
@@ -100,7 +100,8 @@ Rules shared by all three services:
   - Every actor column in a service that names the person takes this value.
   - Nullable columns take it too, because NULL can mean something else. Example: in SkyMail `actor_sub IS NULL` means "SkyMail itself".
   - Name columns get `Silinmiş kullanıcı`. E-mail columns become NULL, or `''` when NOT NULL.
-  - An interface that asks core to resolve a name for this value shows `Silinmiş kullanıcı` instead.
+  - An interface that asks core to resolve a name for this value shows `Silinmiş kullanıcı` instead. Core answers it too: `GET /v1/users/00000000-0000-4000-8000-000000000000` returns `status: "deleted"` and `displayName: "Silinmiş kullanıcı"`, the same answer as for any erased person ([account-lifecycle.md](account-lifecycle.md#reading-a-person)).
+  - A service that still holds an erased person's own sub (it missed the Erasure command, or reads a row it keeps) gets the same answer from core for that sub; it shows `displayName` and does not rely on a `404`.
   - Core keeps its current behaviour (NULL) in its own columns.
 - **Free text and rendered bodies:** a field that contains the person's address, or the full name the service holds for the person, is deleted **whole**; there is no partial masking.
   - The match is a case-insensitive substring search.
@@ -108,3 +109,15 @@ Rules shared by all three services:
   - A text field that cannot be empty gets the fixed `[silindi]`.
 - **Relationship rows** (list membership, collaborator, recipient row) and **transient data** (drafts, tokens, queue residue) are hard-deleted.
 - The records themselves, their dates and their counts stay.
+
+## 9. CMS (inscribed)
+
+The CMS is stock inscribed (ADR-0056) in `Auth__Mode=External`. It keeps no accounts, sessions, addresses or request logs. The one personal datum it holds is the editor's Keycloak `sub` in `UpdatedBy` of `content_blocks`, `collection_items` and `collection_definitions` (account-erasure spec §3.2). The endpoint Fatih adds to inscribed follows this contract with these differences:
+
+- **Path:** `ACCOUNT_ERASURE_CMS_URL` may end in a path prefix, for example `http://<inscribed>:5000/cms`; core appends `/internal/v1/account-erasures/{request_id}` to it.
+- **Work:** one transaction replaces `UpdatedBy = subject_id` in the three tables with `00000000-0000-4000-8000-000000000000`, archived rows included, without changing `Version` or `UpdatedAt`. `emails` is accepted and not used. Content (`Data`, News `author` and `body`) and Redis drafts are left alone; the drafts expire within 7 days.
+- **Idempotency:** the work is idempotent by nature, so a receipt table and an advisory lock are optional. Without a receipt, a repeat answers `200` with the counts of that run (`0`). If the first `200` is lost and core repeats the command, core's proof therefore records the repeat's counts: for the CMS, `actor_columns_replaced` in the proof is a lower bound, not an exact count.
+- **Counts:** `{"actor_columns_replaced": n}`.
+- **No `409 subject_not_blocked`:** inscribed has no access gate and does not read the account-access Redis. Instead core waits (below).
+- **Authentication:** JwtBearer as today (`aud` ∋ `skycms`, issuer, signature, lifetime). The route also requires `azp=core-erasure` and `cms:account:erase` in `resource_access.skycms.roles`. The token's `azp` is not an inscribed client, so the route must not resolve a tenant from it; it changes rows of every client. Missing `azp` or role: `403 erasure_forbidden`.
+- **Token window:** inscribed still accepts an access token issued before Keycloak disabled the person until it expires (Keycloak's 300-second default lifespan plus inscribed's 30-second clock skew). An edit made with it would write the `sub` back. So core sends `erase_cms` no earlier than six minutes after the identity was closed: the latest of the platform block and the `disable_identity` and `logout_sessions` checkpoints. Until then the step is deferred under `erase_cms_waiting` without spending an attempt, also past the deferral horizon, and comes back when the wait ends; the other services are called as usual ([account-lifecycle.md](account-lifecycle.md#service-erasure-steps)).

@@ -13,7 +13,9 @@ import (
 
 type Store interface {
 	ClaimDeletionRequest(context.Context, time.Time, time.Duration) (user.DeletionRequest, bool, error)
-	CompletedDeletionSteps(context.Context, uuid.UUID, uuid.UUID) (map[user.DeletionStep]bool, error)
+	// CompletedDeletionSteps returns each checkpointed step with the time it
+	// was checkpointed.
+	CompletedDeletionSteps(context.Context, uuid.UUID, uuid.UUID) (map[user.DeletionStep]time.Time, error)
 	CompleteDeletionStep(context.Context, uuid.UUID, uuid.UUID, user.DeletionStep, time.Time) error
 	CompleteServiceErasureStep(context.Context, uuid.UUID, uuid.UUID, user.DeletionStep, time.Time, map[string]int64) error
 	RetryDeletionRequest(ctx context.Context, requestID, leaseToken uuid.UUID, at, next time.Time, code string, manual, refundAttempt bool) error
@@ -71,10 +73,12 @@ type sagaStep struct {
 }
 
 // erasurePass is what one pass reads once and keeps for that pass only: the
-// person's addresses, for the service steps and anonymize_core alike.
+// person's addresses, for the service steps and anonymize_core alike, and the
+// time each step was checkpointed, this pass's checkpoints included.
 type erasurePass struct {
-	emails []string
-	read   bool
+	emails      []string
+	read        bool
+	checkpoints map[user.DeletionStep]time.Time
 }
 
 func NewWorker(store Store, identity Identity, config WorkerConfig, media ...MediaEraser) *Worker {
@@ -120,14 +124,18 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	if err := w.config.AccessBlocker.EnsureBlocked(ctx, request.SubjectID.String()); err != nil {
 		return true, w.retry(ctx, request, now, "platform_block_failed", err, false)
 	}
-	completed, err := w.store.CompletedDeletionSteps(ctx, request.ID, leaseToken)
+	checkpoints, err := w.store.CompletedDeletionSteps(ctx, request.ID, leaseToken)
 	if err != nil {
 		return true, w.retry(ctx, request, now, "read_steps_failed", err, false)
+	}
+	completed := make(map[user.DeletionStep]bool, len(checkpoints))
+	for step := range checkpoints {
+		completed[step] = true
 	}
 	// Steps run in order and a failure ends the pass, so a step runs only
 	// after every step before it is checkpointed: anonymize_core waits for
 	// every service, delete_identity for everything.
-	pass := &erasurePass{}
+	pass := &erasurePass{checkpoints: checkpoints}
 	for _, step := range w.saga(request, now) {
 		if step.services != nil {
 			if err := w.runServiceErasure(ctx, request, leaseToken, completed, now, step.services, pass); err != nil {
@@ -154,9 +162,11 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		}
 		// A checkpoint carries the time its step finished, not the start of
 		// the pass: the completion proof lists when each step was done.
-		if err := w.store.CompleteDeletionStep(ctx, request.ID, leaseToken, step.name, w.config.Now()); err != nil {
+		finished := w.config.Now()
+		if err := w.store.CompleteDeletionStep(ctx, request.ID, leaseToken, step.name, finished); err != nil {
 			return true, w.retry(ctx, request, now, string(step.name)+"_checkpoint_failed", err, false)
 		}
+		pass.checkpoints[step.name] = finished
 	}
 	if err := w.store.CompleteDeletionRequest(ctx, request.ID, leaseToken, w.config.Now()); err != nil {
 		return true, w.retry(ctx, request, now, "complete_request_failed", err, false)
@@ -255,13 +265,18 @@ func (w *Worker) retry(ctx context.Context, request user.DeletionRequest, now ti
 	var deferred interface{ RetryAt() time.Time }
 	var progress interface{ Progressed() bool }
 	progressed := errors.As(cause, &progress) && progress.Progressed()
+	// A pure wait for a token window (service erasure, ungated service) ends
+	// at a known time: it is refunded past the horizon too, and comes back
+	// exactly when the window ends.
+	var wait interface{ Waiting() bool }
+	waiting := errors.As(cause, &wait) && wait.Waiting()
 	horizon := request.CreatedAt.Add(w.config.DeferredRetryHorizon)
 	withinHorizon := now.Before(horizon)
-	if !permanent && errors.As(cause, &deferred) && (withinHorizon || progressed) {
+	if !permanent && errors.As(cause, &deferred) && (withinHorizon || progressed || waiting) {
 		if retryAt := deferred.RetryAt(); retryAt.After(next) {
 			next = retryAt
 		}
-		if withinHorizon && next.After(horizon) {
+		if withinHorizon && !waiting && next.After(horizon) {
 			next = horizon
 		}
 		// A staged upload can legitimately retain its pre-publication lease for

@@ -48,3 +48,18 @@ func TestMetricsPublishTheAccountErasureGaugesBesideTheAccessCounters(t *testing
 		t.Fatalf("worker-off metrics status=%d body=\n%s", status, text)
 	}
 }
+
+func TestMetricsPublishTheMediaCDNPurgeCounters(t *testing.T) {
+	t.Parallel()
+
+	counters := fixedGauges("skylab_media_cdn_purge_backlog 3\n")
+	status, text := scrapeMetrics(t, httpx.Deps{MediaCDNPurgeMetrics: counters})
+	if status != fiber.StatusOK || text != string(counters) {
+		t.Fatalf("purge-only metrics status=%d body=\n%s", status, text)
+	}
+
+	status, text = scrapeMetrics(t, httpx.Deps{AccountAccessMetrics: accessgate.NewMetrics()})
+	if status != fiber.StatusOK || strings.Contains(text, "skylab_media_cdn_purge_") {
+		t.Fatalf("purge-off metrics status=%d body=\n%s", status, text)
+	}
+}

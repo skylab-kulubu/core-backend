@@ -67,6 +67,10 @@ type Deps struct {
 	// while the erasure worker is off.
 	AccountErasureMetrics interface{ Prometheus() string }
 
+	// MediaCDNPurgeMetrics are the media CDN purge's counters. Nil while
+	// the purge is off.
+	MediaCDNPurgeMetrics interface{ Prometheus() string }
+
 	// MediaUploadLimiter is each person's single-step upload budget. Nil
 	// uses media.DefaultUploadLimits.
 	MediaUploadLimiter *media.UploadLimiter
@@ -88,6 +92,15 @@ type Deps struct {
 	// when it runs out (GUEST_APPLY_PUBLIC_IP_LIMIT_MODE). Empty enforces.
 	GuestApplyPublicIPLimit handlers.GuestApplyLimitMode
 
+	// GuestCheckInMetrics counts guest self check-ins by door QR presence
+	// and outcome, and serves them on /v1/metrics
+	// (docs/guest-self-check-in.md). Nil leaves them out.
+	GuestCheckInMetrics interface{ Prometheus() string }
+
+	// DoorQRLimits are the door QR routes' budgets. Nil uses
+	// handlers.DefaultDoorQRLimits.
+	DoorQRLimits *handlers.DoorQRLimits
+
 	// GroupOverage reads the Groups of a person whose token carries the
 	// Group overage marker instead of the groups claim (ADR-0059), and
 	// serves its counters on /v1/metrics. Nil refuses every marked token
@@ -97,6 +110,15 @@ type Deps struct {
 	// Dashboard answers the admin panel's summary
 	// (docs/dashboard-summary.md). Nil leaves the route out.
 	Dashboard dashboard.Service
+
+	// Authz is the authorizer every service decides with; the capabilities
+	// route answers from it (docs/authz-roles.md). Nil leaves
+	// /v1/users/me/capabilities unserved: 404.
+	Authz authz.Authorizer
+
+	// AuthzRoleMetrics are the role mode and its disagreements, served on
+	// /v1/metrics. Nil serves nothing.
+	AuthzRoleMetrics *authz.RoleMetrics
 
 	// GithubActivity is the club's GitHub activity for the admin dashboard
 	// (docs/github-activity.md). Nil (its settings unset) leaves
@@ -168,7 +190,8 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil {
+	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
+		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -178,6 +201,13 @@ func New(deps Deps) *fiber.App {
 			}
 			text += deps.GroupOverage.Prometheus()
 			text += deps.GuestApplyMetrics.Prometheus()
+			if deps.GuestCheckInMetrics != nil {
+				text += deps.GuestCheckInMetrics.Prometheus()
+			}
+			if deps.MediaCDNPurgeMetrics != nil {
+				text += deps.MediaCDNPurgeMetrics.Prometheus()
+			}
+			text += deps.AuthzRoleMetrics.Prometheus()
 			return c.SendString(text)
 		})
 	}
@@ -260,6 +290,9 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/users/me", me.GetMe)
 	app.Put("/v1/users/me", me.PutMe)
 	app.Patch("/v1/users/me", me.PatchMe)
+	if deps.Authz != nil {
+		app.Get("/v1/users/me/capabilities", handlers.NewCapabilitiesHandler(deps.Authz).Get)
+	}
 	app.Post("/v1/users/me/profile-picture", limitUploads, me.ProfilePicture)
 	app.Delete("/v1/users/me/profile-picture", me.DeleteProfilePicture)
 	app.Get("/v1/users", ident.ListUsers)
@@ -377,7 +410,15 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/tickets", tickets.List)
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
-	app.Post("/v1/sessions/:sessionId/check-in/guest", tickets.CheckInGuest)
+	// Guest check-in takes no sign-in; failures are budgeted per address, and
+	// the door QR caps how many guests one token lets in
+	// (docs/guest-self-check-in.md).
+	doorQRLimits := handlers.DefaultDoorQRLimits()
+	if deps.DoorQRLimits != nil {
+		doorQRLimits = *deps.DoorQRLimits
+	}
+	app.Post("/v1/sessions/:sessionId/check-in/guest", doorQRLimits.GuestCheckInLimit(trustedProxies), tickets.CheckInGuest)
+	app.Post("/v1/sessions/:sessionId/door-qr", doorQRLimits.MintLimit(), tickets.MintDoorQR)
 	app.Post("/v1/sessions/:sessionId/check-in/resolve", tickets.ResolveAndCheckIn)
 	app.Get("/v1/sessions/:sessionId/check-ins", tickets.DoorActivity)
 	if pass != nil {

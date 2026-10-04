@@ -2,18 +2,34 @@ package authz
 
 import "testing"
 
+// allowCase is one decision of the authorizer under today's Group paths
+// (the groups mode).
+type allowCase struct {
+	name string
+	p    Principal
+	r    Resource
+	a    Action
+	want bool
+}
+
 func TestAuthorizer_Allow(t *testing.T) {
 	t.Parallel()
 
 	auth := NewAuthorizer(DefaultPolicy())
 
-	tests := []struct {
-		name string
-		p    Principal
-		r    Resource
-		a    Action
-		want bool
-	}{
+	for _, tt := range allowCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := auth.Allow(tt.p, tt.r, tt.a)
+			if got != tt.want {
+				t.Fatalf("Allow() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func allowCases() []allowCase {
+	return []allowCase{
 		{
 			name: "event read is public",
 			r:    Resource{Type: TypeEvent},
@@ -683,15 +699,5 @@ func TestAuthorizer_Allow(t *testing.T) {
 			a:    Read,
 			want: false,
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := auth.Allow(tt.p, tt.r, tt.a)
-			if got != tt.want {
-				t.Fatalf("Allow() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }
