@@ -158,22 +158,25 @@ func scanDeletionRequests(rows pgx.Rows) ([]DeletionRequest, error) {
 	return requests, rows.Err()
 }
 
-func (s *PostgresStore) CompletedDeletionSteps(ctx context.Context, requestID, leaseToken uuid.UUID) (map[DeletionStep]bool, error) {
+// CompletedDeletionSteps returns each checkpointed step of the request with
+// the time it was checkpointed.
+func (s *PostgresStore) CompletedDeletionSteps(ctx context.Context, requestID, leaseToken uuid.UUID) (map[DeletionStep]time.Time, error) {
 	if err := s.requireDeletionLease(ctx, requestID, leaseToken); err != nil {
 		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, `SELECT step FROM account_deletion_steps WHERE request_id = $1`, requestID)
+	rows, err := s.pool.Query(ctx, `SELECT step, completed_at FROM account_deletion_steps WHERE request_id = $1`, requestID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make(map[DeletionStep]bool)
+	out := make(map[DeletionStep]time.Time)
 	for rows.Next() {
 		var step DeletionStep
-		if err := rows.Scan(&step); err != nil {
+		var at time.Time
+		if err := rows.Scan(&step, &at); err != nil {
 			return nil, err
 		}
-		out[step] = true
+		out[step] = at.UTC()
 	}
 	return out, rows.Err()
 }

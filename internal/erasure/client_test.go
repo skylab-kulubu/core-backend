@@ -543,3 +543,30 @@ func TestClientUnexpectedStatusIsAnOrdinaryRetry(t *testing.T) {
 		t.Fatalf("418 message = %q", err)
 	}
 }
+
+// inscribed serves the CMS under a path prefix; the operator puts the prefix
+// in ACCOUNT_ERASURE_CMS_URL and the command path follows it.
+func TestClientKeepsThePathPrefixOfTheBaseURL(t *testing.T) {
+	t.Parallel()
+
+	service := newFakeService(t, completed(`{"actor_columns_replaced":2}`))
+	values := map[string]string{
+		"ACCOUNT_ERASURE_CMS_URL":       service.server.URL + "/cms/",
+		"ACCOUNT_ERASURE_CLIENT_ID":     "core-erasure",
+		"ACCOUNT_ERASURE_CLIENT_SECRET": "secret",
+	}
+	cms, _ := erasure.ServiceNamed("cms")
+	client, err := erasure.ClientFromEnv(func(key string) string { return values[key] }, cms, "http://keycloak/token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Tokens = &staticTokens{token: "token-a"}
+	result, err := client.Erase(context.Background(), command())
+	if err != nil || result.Counts["actor_columns_replaced"] != 2 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if len(service.calls) != 1 || service.calls[0].method != http.MethodPut ||
+		service.calls[0].path != "/cms/internal/v1/account-erasures/"+testRequestID.String() {
+		t.Fatalf("calls = %+v", service.calls)
+	}
+}

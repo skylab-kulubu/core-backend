@@ -59,6 +59,13 @@ type Principal struct {
 	// ServiceClients). Empty for a person, whatever client their token was
 	// issued to.
 	Product Product
+	// Client is the Keycloak client the token was issued to (azp). No
+	// decision reads it; it only labels the role mode's disagreement count.
+	Client string
+	// ServiceAccount is true for a client's service account token, never a
+	// person. A service account is never Privileged through a role of the
+	// contract (roles.go), whatever roles it holds.
+	ServiceAccount bool
 }
 
 type Resource struct {
@@ -73,7 +80,13 @@ type Resource struct {
 }
 
 type Policy struct {
+	// PrivilegedGroups are the Groups whose members, and their subgroups'
+	// members, are Privileged. RoleMode says whether a decision still reads
+	// them.
 	PrivilegedGroups []string
+	// RoleMode is where Privileged decisions come from: the Groups, the
+	// roles that stand for them (roles.go), or either. Empty is groups.
+	RoleMode         RoleMode
 	LeaderSubgroups  []string
 	EventPermissions map[string]map[Action][]Level
 }

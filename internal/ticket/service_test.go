@@ -680,18 +680,18 @@ func TestService_CheckInGuestByEmail(t *testing.T) {
 		t.Fatal(err)
 	}
 	created := applied.Ticket
-	ci, err := svc.CheckInGuest(ctx, sess.ID, "ada@example.com")
+	ci, err := svc.CheckInGuest(ctx, sess.ID, ticket.GuestCheckIn{Email: "ada@example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ci.TicketID != created.ID || ci.SessionID != sess.ID {
 		t.Fatalf("guest %+v", ci)
 	}
-	_, err = svc.CheckInGuest(ctx, sess.ID, "ada@example.com")
+	_, err = svc.CheckInGuest(ctx, sess.ID, ticket.GuestCheckIn{Email: "ada@example.com"})
 	if !errors.Is(err, ticket.ErrConflict) {
 		t.Fatalf("dup guest: %v", err)
 	}
-	_, err = svc.CheckInGuest(ctx, sess.ID, "nobody@example.com")
+	_, err = svc.CheckInGuest(ctx, sess.ID, ticket.GuestCheckIn{Email: "nobody@example.com"})
 	if !errors.Is(err, ticket.ErrNotFound) {
 		t.Fatalf("missing guest: %v", err)
 	}

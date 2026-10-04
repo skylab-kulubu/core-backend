@@ -89,7 +89,7 @@ func (f *recordsFixture) requestDeletion(t *testing.T, eraser account.MediaErase
 	}
 	f.request, f.now = request, request.NextAttemptAt
 	confirmDeletionProjection(t, f.users, request, f.now)
-	return account.NewWorker(f.users, successfulIdentity{}, account.WorkerConfig{
+	return account.NewWorkerWithConfiguredWaits(f.users, successfulIdentity{}, account.WorkerConfig{
 		Services: erasedServices(),
 		Now:      func() time.Time { return f.now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
 		StepTimeout: f.stepTimeout,

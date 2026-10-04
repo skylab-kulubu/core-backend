@@ -188,6 +188,14 @@ func (f *sagaFixture) group() account.ServiceErasure {
 func (f *sagaFixture) sagaWith(services account.ServiceErasure) *account.Worker {
 	config := f.config
 	config.Services = services
+	return account.NewWorkerWithConfiguredWaits(sagaStore{erasureTestStore: f.store, events: f.events}, f.identity, config, sagaMedia{events: f.events})
+}
+
+// sagaAsProduction is the worker exactly as NewWorker builds it, the
+// registry's wait for the CMS included.
+func (f *sagaFixture) sagaAsProduction(services account.ServiceErasure) *account.Worker {
+	config := f.config
+	config.Services = services
 	return account.NewWorker(sagaStore{erasureTestStore: f.store, events: f.events}, f.identity, config, sagaMedia{events: f.events})
 }
 
