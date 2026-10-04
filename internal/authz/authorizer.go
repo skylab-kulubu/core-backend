@@ -197,7 +197,7 @@ func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
 			rule = MediaUploaderAuthenticated
 		}
 		decide, ok := mediaUploaders[rule]
-		return ok && decide(a, p)
+		return ok && decide(a, p, r)
 	case Delete:
 		return a.privileged(p, RoleMediaManage)
 	default:
@@ -205,21 +205,26 @@ func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
 	}
 }
 
-// mediaUploaders decides every MediaUploader rule for a signed-in person, and
+// mediaUploaders decides every MediaUploader rule for a signed-in caller, and
 // is the list of rules the Media purpose catalogue may name (Known).
-var mediaUploaders = map[MediaUploader]func(a *authorizer, p Principal) bool{
-	MediaUploaderAuthenticated: func(*authorizer, Principal) bool { return true },
-	MediaUploaderEventEditor: func(a *authorizer, p Principal) bool {
+var mediaUploaders = map[MediaUploader]func(a *authorizer, p Principal, r Resource) bool{
+	MediaUploaderAuthenticated: func(*authorizer, Principal, Resource) bool { return true },
+	MediaUploaderEventEditor: func(a *authorizer, p Principal, _ Resource) bool {
 		return a.forSomeOwnerTeam(p, func(team string) bool {
 			return a.allowEvent(p, Resource{Type: TypeEvent, OwnerTeam: team}, Create)
 		})
 	},
-	MediaUploaderCertificateTemplateEditor: func(a *authorizer, p Principal) bool {
+	MediaUploaderCertificateTemplateEditor: func(a *authorizer, p Principal, _ Resource) bool {
 		return a.forSomeOwnerTeam(p, func(team string) bool {
 			return a.allowCertificateTemplate(p, Resource{Type: TypeCertificateTemplate, OwnerTeam: team}, Create)
 		})
 	},
-	MediaUploaderServiceOnly: func(*authorizer, Principal) bool { return false },
+	// No person, whatever roles they hold: the service account of the
+	// product that owns the purpose, with the role that manages its Media
+	// attachments. Core owns no service account here (ServiceProducts).
+	MediaUploaderServiceOnly: func(_ *authorizer, p Principal, r Resource) bool {
+		return isServiceProduct(p.Product) && p.Product == r.MediaOwner && hasRole(p, "media:attach")
+	},
 }
 
 // forSomeOwnerTeam reports whether allow holds for any Owner team p may act

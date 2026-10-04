@@ -234,7 +234,14 @@ func TestService_ListUsersLeavesOutPeopleBeingOrAlreadyErased(t *testing.T) {
 // failingStore is core's store when the database answers with an error.
 type failingStore struct {
 	*user.MemoryStore
-	getErr, markerErr error
+	getErr, markerErr, accountsErr error
+}
+
+func (s failingStore) Accounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]user.Account, error) {
+	if s.accountsErr != nil {
+		return nil, s.accountsErr
+	}
+	return s.MemoryStore.Accounts(ctx, ids)
 }
 
 func (s failingStore) Get(ctx context.Context, id uuid.UUID) (user.User, error) {

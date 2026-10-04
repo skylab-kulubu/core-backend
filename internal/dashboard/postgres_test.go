@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
 	"github.com/skylab-kulubu/core-backend/internal/user"
@@ -149,6 +150,34 @@ func TestPostgresStoreAccountsFollowErasure(t *testing.T) {
 	exec(t, pool, `UPDATE users SET account_state = 'anonymized' WHERE id = $1`, anonymized)
 	accountsContract(t, store, active, pending, anonymized)
 
+	// The profile picture is read in the same query: the key of the Media
+	// the profile links (user.PostgresStore's rule), with that Media for
+	// its sizes, or the stored address of a picture with no Media.
+	picture, err := media.NewPostgresStore(pool).Create(ctx, media.Media{
+		Name: "ada.jpg", Type: "image/jpeg", Kind: media.KindImage, Key: "images/ada", UploadedBy: active,
+		Purpose: media.PurposeProfilePicture, Width: 1600, Height: 1600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(t, pool, `UPDATE users SET profile_picture_id = $2, profile_picture_url = 'https://old.example.test/ada' WHERE id = $1`, active, picture.ID)
+	legacy := uuid.New()
+	exec(t, pool, `INSERT INTO users (id, email, profile_picture_url) VALUES ($1, 'legacy@example.com', 'https://cdn.example.test/legacy')`, legacy)
+	queries := pool.Stat().AcquireCount()
+	got, err := store.Accounts(ctx, []uuid.UUID{active, legacy, pending})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := pool.Stat().AcquireCount() - queries; n != 1 {
+		t.Fatalf("Accounts took %d queries", n)
+	}
+	if a := got[active]; a.ProfilePictureKey != "images/ada" || a.ProfilePicture.Key() != "images/ada" {
+		t.Fatalf("active %+v", a)
+	}
+	if a := got[legacy]; a.ProfilePictureKey != "https://cdn.example.test/legacy" || a.ProfilePicture != nil {
+		t.Fatalf("legacy %+v", a)
+	}
+
 	// A deletion marker outlives the row it was for.
 	purged := uuid.New()
 	exec(t, pool, `INSERT INTO users (id) VALUES ($1)`, purged)
@@ -156,7 +185,7 @@ func TestPostgresStoreAccountsFollowErasure(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec(t, pool, `DELETE FROM users WHERE id = $1`, purged)
-	got, err := store.Accounts(ctx, []uuid.UUID{purged})
+	got, err = store.Accounts(ctx, []uuid.UUID{purged})
 	if err != nil || !got[purged].Blocked || got[purged].Stored {
 		t.Fatalf("purged %+v %v", got[purged], err)
 	}
@@ -186,4 +215,12 @@ func TestMemoryStoreAccountsFollowErasure(t *testing.T) {
 		t.Fatal(err)
 	}
 	accountsContract(t, dashboard.NewMemoryStore(nil, users), active, pending, anonymized)
+
+	if _, err := user.NewService(users).SetProfilePicture(ctx, active, uuid.New(), "https://cdn.example.test/ada"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := dashboard.NewMemoryStore(nil, users).Accounts(ctx, []uuid.UUID{active})
+	if err != nil || got[active].ProfilePictureKey != "https://cdn.example.test/ada" {
+		t.Fatalf("active %+v %v", got[active], err)
+	}
 }

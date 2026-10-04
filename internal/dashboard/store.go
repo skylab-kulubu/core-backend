@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -48,6 +49,13 @@ type Account struct {
 	Stored    bool
 	FirstName string
 	LastName  string
+	// ProfilePictureKey is the object key of the person's profile picture,
+	// read as user.PostgresStore reads it (the key of the Media the profile
+	// links, or the address stored for a picture with no Media), and
+	// ProfilePicture that Media, which the picture's sizes are built from.
+	// Empty and nil for a profile without a picture.
+	ProfilePictureKey string
+	ProfilePicture    *media.LinkedImage
 }
 
 // accounts is what MemoryStore reads people from: user.MemoryStore.
@@ -127,6 +135,7 @@ func (s *MemoryStore) Accounts(ctx context.Context, ids []uuid.UUID) (map[uuid.U
 		switch {
 		case err == nil:
 			a.Stored, a.FirstName, a.LastName = true, row.FirstName, row.LastName
+			a.ProfilePictureKey, a.ProfilePicture = row.ProfilePictureURL, row.ProfilePicture
 		case !errors.Is(err, user.ErrNotFound):
 			return nil, err
 		}

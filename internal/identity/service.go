@@ -300,6 +300,7 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 			if shadow.SkyNumber != "" {
 				person.SkyNumber = shadow.SkyNumber
 			}
+			person = withProfilePicture(person, shadow)
 		}
 		out = append(out, person)
 	}
@@ -312,6 +313,7 @@ func projectPeople(people []Person, full bool) []Person {
 		if !full {
 			person = Person{
 				ID: person.ID, Email: person.Email, FirstName: person.FirstName, LastName: person.LastName,
+				ProfilePictureURL: person.ProfilePictureURL, ProfilePictureSizes: person.ProfilePictureSizes,
 			}
 		}
 		out = append(out, activePerson(person))
@@ -380,12 +382,12 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 			person.FirstName = shadow.FirstName
 			person.LastName = shadow.LastName
 		}
-		return nameOnlyCard(UserCard{Person: Person{
+		return nameOnlyCard(UserCard{Person: withProfilePicture(Person{
 			ID:        person.ID,
 			Email:     person.Email,
 			FirstName: person.FirstName,
 			LastName:  person.LastName,
-		}}), nil
+		}, shadow)}), nil
 	}
 	if shadowErr == nil {
 		person = overlayPerson(person, shadow)
@@ -426,10 +428,12 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 func nameOnlyCard(card UserCard) UserCard {
 	return UserCard{
 		Person: activePerson(Person{
-			ID:        card.ID,
-			Email:     card.Email,
-			FirstName: card.FirstName,
-			LastName:  card.LastName,
+			ID:                  card.ID,
+			Email:               card.Email,
+			FirstName:           card.FirstName,
+			LastName:            card.LastName,
+			ProfilePictureURL:   card.ProfilePictureURL,
+			ProfilePictureSizes: card.ProfilePictureSizes,
 		}),
 	}
 }
@@ -463,7 +467,7 @@ func overlayPerson(person Person, shadow user.User) Person {
 
 func userCard(person Person, groups []Group, inherited, extra []ClientRole, shadow user.User) UserCard {
 	return UserCard{
-		Person:         activePerson(person),
+		Person:         activePerson(withProfilePicture(person, shadow)),
 		Linkedin:       shadow.Linkedin,
 		University:     shadow.University,
 		Faculty:        shadow.Faculty,
@@ -658,7 +662,7 @@ func (s *service) PublicMembers(ctx context.Context, team string) (Roster, error
 	if err != nil {
 		return Roster{}, err
 	}
-	return s.buildRoster(ctx, g, people, leaders), nil
+	return s.buildRoster(ctx, g, people, leaders)
 }
 
 func (s *service) PublicLeaders(ctx context.Context, team string) (Roster, error) {
@@ -678,7 +682,7 @@ func (s *service) PublicLeaders(ctx context.Context, team string) (Roster, error
 		}
 		people = append(people, p)
 	}
-	return s.buildRoster(ctx, g, people, leaders), nil
+	return s.buildRoster(ctx, g, people, leaders)
 }
 
 func (s *service) publicGroup(ctx context.Context, team string, leaders bool) (Group, error) {
@@ -849,27 +853,42 @@ func description(g Group) *LocalizedText {
 	return &LocalizedText{TR: tr, EN: en}
 }
 
-func (s *service) buildRoster(ctx context.Context, g Group, people []Person, leaders map[uuid.UUID]struct{}) Roster {
-	// A roster has no media dependency to carry a base and mode of its
-	// own: the ones core is configured with.
-	addresses := media.ConfiguredAddresses()
+// buildRoster is the public list of a team's people, read with core's
+// profiles in one query (Store.Accounts). Someone core may no longer show
+// (erased or being erased) is no member of it, nor is the placeholder
+// subject, while Keycloak still holds them in the Group. Without core's
+// rows the list cannot say who that is, and is not answered.
+func (s *service) buildRoster(ctx context.Context, g Group, people []Person, leaders map[uuid.UUID]struct{}) (Roster, error) {
+	ids := make([]uuid.UUID, 0, len(people))
+	for _, p := range people {
+		ids = append(ids, p.ID)
+	}
+	accounts, err := s.users.Accounts(ctx, ids)
+	if err != nil {
+		return Roster{}, err
+	}
 	members := make([]PublicMember, 0, len(people))
 	for _, p := range people {
+		account := accounts[p.ID]
+		if p.ID == user.DeletedSubject || account.Blocked {
+			continue
+		}
 		_, leader := leaders[p.ID]
 		m := PublicMember{
 			FirstName: p.FirstName,
 			LastName:  p.LastName,
 			Leader:    leader,
 		}
-		if shadow, err := s.users.Get(ctx, p.ID); err == nil {
+		if account.Stored {
+			shadow := account.User
 			m.FirstName = shadow.FirstName
 			m.LastName = shadow.LastName
 			m.Linkedin = shadow.Linkedin
 			m.University = shadow.University
 			m.Faculty = shadow.Faculty
 			m.Department = shadow.Department
-			m.ProfilePictureURL = addresses.Object(shadow.ProfilePictureURL)
-			m.ProfilePictureSizes = addresses.LinkedSizes(shadow.ProfilePicture)
+			pictured := withProfilePicture(Person{ID: p.ID}, shadow)
+			m.ProfilePictureURL, m.ProfilePictureSizes = pictured.ProfilePictureURL, pictured.ProfilePictureSizes
 		}
 		members = append(members, m)
 	}
@@ -879,7 +898,7 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 		Description: description(g),
 		Count:       len(members),
 		Members:     members,
-	}
+	}, nil
 }
 
 // overlayShadow puts core's profile over the directory's people and leaves
@@ -904,7 +923,7 @@ func (s *service) overlayShadow(ctx context.Context, people []Person) ([]Person,
 		if shadow.SkyNumber != "" {
 			person.SkyNumber = shadow.SkyNumber
 		}
-		out = append(out, person)
+		out = append(out, withProfilePicture(person, shadow))
 	}
 	return out, nil
 }
@@ -938,6 +957,7 @@ func (s *service) mergeUserSearch(ctx context.Context, people []Person, q string
 			if person.SkyNumber != "" {
 				out[i].SkyNumber = person.SkyNumber
 			}
+			out[i].ProfilePictureURL, out[i].ProfilePictureSizes = person.ProfilePictureURL, person.ProfilePictureSizes
 			continue
 		}
 		seen[u.ID] = len(out)
@@ -960,7 +980,7 @@ func personMatches(p Person, q string) bool {
 }
 
 func personFromUser(u user.User) Person {
-	return Person{
+	return withProfilePicture(Person{
 		ID:          u.ID,
 		Email:       u.Email,
 		FirstName:   u.FirstName,
@@ -968,5 +988,27 @@ func personFromUser(u user.User) Person {
 		Username:    u.Username,
 		SchoolEmail: u.SchoolEmail,
 		SkyNumber:   u.SkyNumber,
+	}, u)
+}
+
+// profilePicture is the profile picture core stores for a person as every
+// people read answers it (the public team list, the user reads): its
+// address and its card and page addresses, from the base and address mode
+// core is configured with (identity has no media dependency to carry its
+// own). Both are empty for a profile without a picture.
+func profilePicture(shadow user.User) (string, map[string]media.ImageAddress) {
+	addresses := media.ConfiguredAddresses()
+	return addresses.Object(shadow.ProfilePictureURL), addresses.LinkedSizes(shadow.ProfilePicture)
+}
+
+// withProfilePicture puts on person the picture of their profile, shadow,
+// read with it: none when shadow is another person's (an e-mail conflict),
+// or a profile core no longer shows (erased or being erased), or for the
+// placeholder subject.
+func withProfilePicture(person Person, shadow user.User) Person {
+	if shadow.ID != person.ID || person.ID == user.DeletedSubject || shadow.AccountState != user.AccountActive {
+		return person
 	}
+	person.ProfilePictureURL, person.ProfilePictureSizes = profilePicture(shadow)
+	return person
 }

@@ -77,6 +77,10 @@ type Resource struct {
 	// MediaUploader is the upload rule of a Media purpose, for Upload on
 	// TypeMedia. Empty is MediaUploaderAuthenticated.
 	MediaUploader MediaUploader
+	// MediaOwner is the product that owns the Media purpose (its
+	// OwningProduct), for Upload on TypeMedia: the one product whose service
+	// account may upload a MediaUploaderServiceOnly purpose.
+	MediaOwner Product
 }
 
 type Policy struct {
@@ -126,7 +130,9 @@ const (
 	// template create decision.
 	MediaUploaderCertificateTemplateEditor MediaUploader = "certificate_template_editor"
 	// MediaUploaderServiceOnly is no person: only the owning product's service
-	// identity may start such an upload.
+	// account, with the media:attach role, may start such an upload (Skyforms
+	// for a guest Answer file). Core's own purposes (a video's frame) are
+	// uploaded by no caller: core stores them itself.
 	MediaUploaderServiceOnly MediaUploader = "service_only"
 )
 

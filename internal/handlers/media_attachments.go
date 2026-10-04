@@ -40,6 +40,9 @@ func (h *MediaHandler) Attach(c fiber.Ctx) error {
 		Owner:      media.Owner{Service: authz.Product(body.Owner.Service), Type: body.Owner.Type, ID: body.Owner.ID},
 		Role:       media.Role(body.Role),
 		OnBehalfOf: parsedID(body.OnBehalfOf),
+		// No onBehalfOf (absent, null or "") is no one; anything else must
+		// be a UUID.
+		Malformed: body.OnBehalfOf != "" && parsedID(body.OnBehalfOf) == uuid.Nil,
 	}
 	attachment, created, err := h.svc.Attach(c.Context(), p, parsedID(c.Params("id")), req)
 	if err != nil {
