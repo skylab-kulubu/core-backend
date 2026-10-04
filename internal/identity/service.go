@@ -662,7 +662,7 @@ func (s *service) PublicMembers(ctx context.Context, team string) (Roster, error
 	if err != nil {
 		return Roster{}, err
 	}
-	return s.buildRoster(ctx, g, people, leaders), nil
+	return s.buildRoster(ctx, g, people, leaders)
 }
 
 func (s *service) PublicLeaders(ctx context.Context, team string) (Roster, error) {
@@ -682,7 +682,7 @@ func (s *service) PublicLeaders(ctx context.Context, team string) (Roster, error
 		}
 		people = append(people, p)
 	}
-	return s.buildRoster(ctx, g, people, leaders), nil
+	return s.buildRoster(ctx, g, people, leaders)
 }
 
 func (s *service) publicGroup(ctx context.Context, team string, leaders bool) (Group, error) {
@@ -853,23 +853,42 @@ func description(g Group) *LocalizedText {
 	return &LocalizedText{TR: tr, EN: en}
 }
 
-func (s *service) buildRoster(ctx context.Context, g Group, people []Person, leaders map[uuid.UUID]struct{}) Roster {
+// buildRoster is the public list of a team's people, read with core's
+// profiles in one query (Store.Accounts). Someone core may no longer show
+// (erased or being erased) is no member of it, nor is the placeholder
+// subject, while Keycloak still holds them in the Group. Without core's
+// rows the list cannot say who that is, and is not answered.
+func (s *service) buildRoster(ctx context.Context, g Group, people []Person, leaders map[uuid.UUID]struct{}) (Roster, error) {
+	ids := make([]uuid.UUID, 0, len(people))
+	for _, p := range people {
+		ids = append(ids, p.ID)
+	}
+	accounts, err := s.users.Accounts(ctx, ids)
+	if err != nil {
+		return Roster{}, err
+	}
 	members := make([]PublicMember, 0, len(people))
 	for _, p := range people {
+		account := accounts[p.ID]
+		if p.ID == user.DeletedSubject || account.Blocked {
+			continue
+		}
 		_, leader := leaders[p.ID]
 		m := PublicMember{
 			FirstName: p.FirstName,
 			LastName:  p.LastName,
 			Leader:    leader,
 		}
-		if shadow, err := s.users.Get(ctx, p.ID); err == nil {
+		if account.Stored {
+			shadow := account.User
 			m.FirstName = shadow.FirstName
 			m.LastName = shadow.LastName
 			m.Linkedin = shadow.Linkedin
 			m.University = shadow.University
 			m.Faculty = shadow.Faculty
 			m.Department = shadow.Department
-			m.ProfilePictureURL, m.ProfilePictureSizes = profilePicture(shadow)
+			pictured := withProfilePicture(Person{ID: p.ID}, shadow)
+			m.ProfilePictureURL, m.ProfilePictureSizes = pictured.ProfilePictureURL, pictured.ProfilePictureSizes
 		}
 		members = append(members, m)
 	}
@@ -879,7 +898,7 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 		Description: description(g),
 		Count:       len(members),
 		Members:     members,
-	}
+	}, nil
 }
 
 // overlayShadow puts core's profile over the directory's people and leaves
