@@ -16,6 +16,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
 func putMember(t *testing.T, dir *identity.Memory, group string, p identity.Person) {
@@ -368,5 +369,58 @@ func TestSummaryWithoutTheDirectoryKeepsTheRest(t *testing.T) {
 	got, err := e.svc.Summary(t.Context(), leader)
 	if err != nil || got.MembersUnavailable {
 		t.Fatalf("unavailable %v err %v", got.MembersUnavailable, err)
+	}
+}
+
+// A joiner carries their profile picture as the public team list and
+// /v1/users/me answer it: its address and its card and page sizes, read
+// with the accounts in the one batch (Store.Accounts). A joiner without a
+// picture answers none; a person core is erasing is no joiner, picture and
+// all.
+func TestSummaryJoinersCarryTheirProfilePictures(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ada, bob, _, _, eda := seedMembers(t, f)
+	picture := func(key string) dashboard.Account {
+		return dashboard.Account{
+			FirstName: "Pictured", LastName: "Person", ProfilePictureKey: key,
+			ProfilePicture: media.LinkedImageOf(media.Media{
+				Key: key, Kind: media.KindImage, Type: "image/jpeg", Purpose: media.PurposeProfilePicture,
+				Visibility: media.VisibilityPublic, Width: 1600, Height: 1600,
+				SizeObjects: map[string]media.SizeObject{
+					media.SizeCard: {ImageSize: media.ImageSize{Width: 400, Height: 400}, Type: "image/jpeg"},
+					media.SizePage: {ImageSize: media.ImageSize{Width: 1200, Height: 1200}, Type: "image/jpeg"},
+				},
+			}),
+		}
+	}
+	f.store.names[ada] = picture("https://cdn.example.test/ada")
+	f.store.names[eda] = picture("https://cdn.example.test/eda")
+	f.store.names[bob] = dashboard.Account{FirstName: "Bob", LastName: "B"}
+	reader := authz.Principal{ID: uuid.NewString(), Roles: []string{"users:read"}}
+	for _, p := range []authz.Principal{privileged, reader} {
+		got, err := f.svc.Summary(t.Context(), p)
+		if err != nil || got.Members == nil {
+			t.Fatalf("members %+v %v", got.Members, err)
+		}
+		joiners := got.Members.RecentJoiners
+		if !slices.Equal(joinerIDs(got.Members), []uuid.UUID{ada, bob, joiners[2].ID}) {
+			t.Fatalf("joiners %+v", joiners)
+		}
+		if j := joiners[0]; j.ProfilePictureURL != "https://cdn.example.test/ada" ||
+			j.ProfilePictureSizes[media.SizeCard] != (media.ImageAddress{URL: "https://cdn.example.test/ada/card.jpg", Width: 400, Height: 400}) ||
+			j.ProfilePictureSizes[media.SizePage] != (media.ImageAddress{URL: "https://cdn.example.test/ada/page.jpg", Width: 1200, Height: 1200}) {
+			t.Fatalf("ada %+v", j)
+		}
+		raw, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "/eda") {
+			t.Fatalf("a person being erased leaks their picture: %s", raw)
+		}
+		if strings.Count(string(raw), `"profilePictureUrl"`) != 1 || strings.Count(string(raw), `"profilePictureSizes"`) != 1 {
+			t.Fatalf("a joiner without a picture answers one: %s", raw)
+		}
 	}
 }

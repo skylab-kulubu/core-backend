@@ -47,7 +47,7 @@ All times are UTC (RFC 3339). Days and months are counted in `Europe/Istanbul`.
     "active": 412,
     "newByMonth": [{ "month": "2025-11", "count": 9 }, "… 12 months, oldest first"],
     "recentJoiners": [
-      { "id": "…", "firstName": "Ada", "lastName": "Lovelace", "teams": ["WEBLAB"], "registeredAt": "2026-10-03T09:12:00Z" }
+      { "id": "…", "firstName": "Ada", "lastName": "Lovelace", "teams": ["WEBLAB"], "registeredAt": "2026-10-03T09:12:00Z", "profilePictureUrl": "https://cdn…/images/…", "profilePictureSizes": { "card": { "url": "https://cdn…/images/…/card.jpg", "width": 400, "height": 400 }, "page": { "url": "…", "width": 1200, "height": 1200 } } }
     ],
     "asOf": "2026-10-03T11:58:00Z"
   }
@@ -66,7 +66,7 @@ Nothing in the answer carries an e-mail, phone or other contact, and no Ticket a
 A Member is a User in the `UYELER` tree (CONTEXT.md, Member). The glossary has no "active Member"; the summary counts as **active** a Member whose Keycloak account is enabled and whose core account is not being erased or erased (no account deletion request, and a row, when core has one, in `account_state = 'active'`; the rule `AttributionState` applies). This definition is a proposal until the glossary takes it or another.
 
 - **`newByMonth`** counts the active Members by the month their Keycloak account was created (`createdTimestamp`), over 12 months. Keycloak keeps no date for joining a Group, so this is registration, not the day someone was put in the tree.
-- **`recentJoiners`** are the 8 active Members who registered last: id, name, the teams they sit in (the last name of each Group under `UYELER`, leadership subgroups counting as their team; see **Who sees what** for which teams a caller sees) and the registration time. The name is the one core stores for the person when core has a row for them, as core's other people reads answer it (`overlayShadow`), and Keycloak's otherwise.
+- **`recentJoiners`** are the 8 active Members who registered last: id, name, the teams they sit in (the last name of each Group under `UYELER`, leadership subgroups counting as their team; see **Who sees what** for which teams a caller sees) and the registration time. The name is the one core stores for the person when core has a row for them, as core's other people reads answer it (`overlayShadow`), and Keycloak's otherwise. `profilePictureUrl` and `profilePictureSizes` are the person's profile picture as the public team roster and `/v1/users/me` answer it (see docs/media-lifecycle.md), read with the names in the same query; both are omitted for a person without a picture.
 - **How fresh.** The erasure check (and the stored names) are read from the database on every request, so a person whose erasure starts disappears at once. Everything read from Keycloak is as old as the last read of the tree: a person disabled in Keycloak, a new Member, a team change or a Keycloak name shows **up to 5 minutes** later, and later still while Keycloak cannot be read (below).
 
 ## Reading the Members tree

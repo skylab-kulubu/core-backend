@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
@@ -75,7 +76,8 @@ func (s *PostgresStore) DailyApplications(ctx context.Context, eventIDs []uuid.U
 	return out, rows.Err()
 }
 
-// Accounts reads the people's rows and deletion markers in one query.
+// Accounts reads the people's rows, deletion markers and profile pictures in
+// one query.
 func (s *PostgresStore) Accounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Account, error) {
 	out := make(map[uuid.UUID]Account)
 	if len(ids) == 0 {
@@ -87,9 +89,12 @@ func (s *PostgresStore) Accounts(ctx context.Context, ids []uuid.UUID) (map[uuid
 		       COALESCE(u.first_name, ''),
 		       COALESCE(u.last_name, ''),
 		       COALESCE(u.account_state <> 'active', false)
-		         OR EXISTS (SELECT 1 FROM account_deletion_requests r WHERE r.subject_id = ids.id)
+		         OR EXISTS (SELECT 1 FROM account_deletion_requests r WHERE r.subject_id = ids.id),
+		       COALESCE(u.profile_picture_url, ''),
+		       `+media.LinkedImageSQL("m")+`
 		FROM unnest($1::uuid[]) AS ids(id)
 		LEFT JOIN users u ON u.id = ids.id
+		LEFT JOIN media m ON m.id = u.profile_picture_id
 	`, ids)
 	if err != nil {
 		return nil, err
@@ -98,8 +103,14 @@ func (s *PostgresStore) Accounts(ctx context.Context, ids []uuid.UUID) (map[uuid
 	for rows.Next() {
 		var id uuid.UUID
 		var a Account
-		if err := rows.Scan(&id, &a.Stored, &a.FirstName, &a.LastName, &a.Blocked); err != nil {
+		if err := rows.Scan(&id, &a.Stored, &a.FirstName, &a.LastName, &a.Blocked, &a.ProfilePictureKey, &a.ProfilePicture); err != nil {
 			return nil, err
+		}
+		// As user.PostgresStore reads a profile: the linked Media's key
+		// wins over the stored address, and a Media held by its malware
+		// scan has none.
+		if a.ProfilePicture != nil {
+			a.ProfilePictureKey = a.ProfilePicture.Key()
 		}
 		if a.Stored || a.Blocked {
 			out[id] = a

@@ -1147,6 +1147,8 @@ a member roster) loads the small image:
 | Event summary (`event.Resource`): `GET /v1/door/events`; the `event` of every ticket answer (`/v1/tickets/me`, `/v1/tickets`, `/v1/tickets/{id}`, `/v1/tickets/user/{userId}/event/{eventId}`, `/v1/events/{eventId}/tickets`, the application answers under `/v1/events/{eventId}/applications/…`); the `event` of every competitor answer (`/v1/competitors…`, `/v1/events/{eventId}/competitors…`; leaderboards have none) | `coverImageUrl` | `coverImageSizes` |
 | The caller's profile (`GET`/`PUT`/`PATCH /v1/users/me`, `POST /v1/users/me/profile-picture`) | `profilePictureUrl` | `profilePictureSizes` |
 | Public team roster (`GET /v1/teams/{team}/members`) | `members[].profilePictureUrl` | `members[].profilePictureSizes` |
+| User reads (`GET /v1/users` list entries, `GET /v1/users/{id}` card) | `profilePictureUrl` | `profilePictureSizes` |
+| Dashboard summary's joiners (`GET /v1/dashboard/summary`) | `members.recentJoiners[].profilePictureUrl` | `members.recentJoiners[].profilePictureSizes` |
 
 ```json
 {
