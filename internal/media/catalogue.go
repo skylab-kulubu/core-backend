@@ -39,6 +39,10 @@ const (
 	PurposeAnswerFile = "answer_file"
 	// PurposeAnswerFileLarge is a large Answer file, sent by Direct upload.
 	PurposeAnswerFileLarge = "answer_file_large"
+	// PurposeAnswerFileGuest is an Answer file sent to a Skyforms form that
+	// takes answers without sign-in. Skyforms' service account uploads it
+	// (service_only): it has no uploader, and belongs to no person.
+	PurposeAnswerFileGuest = "answer_file_guest"
 	// PurposeClubFile is a large club download, sent by Direct upload: the
 	// one public purpose that may accept ZIP (zipPurposes). An Event offers
 	// it as one of its files (RoleEventFile).
@@ -56,8 +60,8 @@ const (
 // lacks one stops core at startup.
 var requiredPurposes = []string{
 	PurposeLegacy, PurposeProfilePicture, PurposeEventCover, PurposeEventGallery, PurposeCertificateAsset,
-	PurposeCMSImage, PurposeCMSFile, PurposeAnswerFile, PurposeAnswerFileLarge, PurposeClubFile, PurposeVideo,
-	PurposeVideoFrame,
+	PurposeCMSImage, PurposeCMSFile, PurposeAnswerFile, PurposeAnswerFileLarge, PurposeAnswerFileGuest, PurposeClubFile,
+	PurposeVideo, PurposeVideoFrame,
 }
 
 // ErrCatalogueInvalid is a catalogue file core cannot read as one: a field it

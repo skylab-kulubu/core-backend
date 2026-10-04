@@ -94,6 +94,9 @@ func (e redactedError) Unwrap() error { return e.cause }
 //     profile) makes it club content;
 //   - every other purpose (event_cover, event_gallery, cms_image, cms_file,
 //     club_file, video, certificate_asset): club content.
+//
+// A guest Answer file (answer_file_guest) and a video's frame have no
+// uploader: no person's erasure records them, so the rule never reads them.
 func personalOnErasureSQL(id string) string {
 	return `(SELECT CASE upload.purpose
 			WHEN '` + PurposeAnswerFile + `' THEN true

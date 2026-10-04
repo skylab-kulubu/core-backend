@@ -260,14 +260,14 @@ func TestServiceAttach_RefusesUnknownRolesAndMalformedRequests(t *testing.T) {
 		}
 	}
 	for name, req := range map[string]media.AttachRequest{
-		"no type":          valid(func(r *media.AttachRequest) { r.Owner.Type = "" }),
-		"type with caps":   valid(func(r *media.AttachRequest) { r.Owner.Type = "Page" }),
-		"type too long":    valid(func(r *media.AttachRequest) { r.Owner.Type = "p" + strings.Repeat("a", 64) }),
-		"no id":            valid(func(r *media.AttachRequest) { r.Owner.ID = "" }),
-		"id with a space":  valid(func(r *media.AttachRequest) { r.Owner.ID = "skylab-site:hakkımızda sayfası" }),
-		"id with a query":  valid(func(r *media.AttachRequest) { r.Owner.ID = "home?draft=1" }),
-		"id too long":      valid(func(r *media.AttachRequest) { r.Owner.ID = strings.Repeat("a", 201) }),
-		"no acting person": valid(func(r *media.AttachRequest) { r.OnBehalfOf = uuid.Nil }),
+		"no type":                  valid(func(r *media.AttachRequest) { r.Owner.Type = "" }),
+		"type with caps":           valid(func(r *media.AttachRequest) { r.Owner.Type = "Page" }),
+		"type too long":            valid(func(r *media.AttachRequest) { r.Owner.Type = "p" + strings.Repeat("a", 64) }),
+		"no id":                    valid(func(r *media.AttachRequest) { r.Owner.ID = "" }),
+		"id with a space":          valid(func(r *media.AttachRequest) { r.Owner.ID = "skylab-site:hakkımızda sayfası" }),
+		"id with a query":          valid(func(r *media.AttachRequest) { r.Owner.ID = "home?draft=1" }),
+		"id too long":              valid(func(r *media.AttachRequest) { r.Owner.ID = strings.Repeat("a", 201) }),
+		"acting person not a UUID": valid(func(r *media.AttachRequest) { r.Malformed = true }),
 	} {
 		_, _, err := f.svc.Attach(ctx, cmsService, m.ID, req)
 		if !errors.Is(err, media.ErrInvalid) || errors.Is(err, media.ErrRoleUnknown) || errors.Is(err, media.ErrNotLinkable) {
@@ -383,5 +383,25 @@ func TestServiceDetach_IsIdempotentAndOnlyForTheOwningProduct(t *testing.T) {
 	}
 	if err := f.svc.Detach(ctx, cmsService, uuid.New(), uuid.New()); err != nil {
 		t.Fatalf("unknown Media attachment: %v", err)
+	}
+}
+
+// onBehalfOf may name no one: a product links its own Media that belong to
+// no person (a CMS image, a guest Answer file) for no one. A personal Media
+// is linked only for its uploader, and a legacy Media for its uploader or
+// by a product already holding it; for no one, both are refused like a
+// Media that does not exist.
+func TestServiceAttach_ForNoOneLinksOnlyMediaOfNoPerson(t *testing.T) {
+	t.Parallel()
+	f := newAttachFixture(t)
+	person := uuid.New()
+
+	if _, created, err := f.attach(cmsService, f.stored(t, "cms_image", person), request(authz.ProductCMS, media.RoleCMSImage, uuid.Nil)); err != nil || !created {
+		t.Errorf("CMS image for no one: created %v, err %v", created, err)
+	}
+	for _, purpose := range []string{"answer_file", "answer_file_large", "legacy"} {
+		m := f.stored(t, purpose, person)
+		_, _, err := f.attach(formsService, m, request(authz.ProductForms, media.RoleFormsAnswer, uuid.Nil))
+		requireNotLinkable(t, err, m, media.RoleFormsAnswer, purpose+" for no one")
 	}
 }

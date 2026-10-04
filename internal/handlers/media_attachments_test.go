@@ -108,7 +108,6 @@ func TestServiceAttachRefusalsHTTP(t *testing.T) {
 	for name, body := range map[string]string{
 		"owner id with a space": attachmentJSON("cms", "page", "skylab-site:hakkımızda sayfası", "file", editor.String()),
 		"owner type missing":    attachmentJSON("cms", "", page, "file", editor.String()),
-		"no acting person":      attachmentJSON("cms", "page", page, "file", ""),
 		"acting person not id":  attachmentJSON("cms", "page", page, "file", "editor"),
 		"not JSON":              `owner=cms`,
 	} {
@@ -142,4 +141,27 @@ func TestServiceAttachRefusesAPersonBeforeReadingTheRequestHTTP(t *testing.T) {
 			t.Errorf("%s: status %d body %v", name, resp.status, resp.body)
 		}
 	}
+}
+
+// A guest Answer file belongs to no person: Skyforms links it to the
+// response without onBehalfOf (absent or null). A personal Answer file
+// without one answers like a Media that does not exist.
+func TestServiceAttachGuestAnswerFileForNoOneHTTP(t *testing.T) {
+	t.Parallel()
+	store := media.NewMemoryStore()
+	app := serviceAttachApp(t, authz.ProductForms, store)
+	guest := storedMedia(t, store, media.PurposeAnswerFileGuest, uuid.Nil)
+	personal := storedMedia(t, store, media.PurposeAnswerFile, uuid.New())
+
+	for name, body := range map[string]string{
+		"absent": `{"owner":{"service":"forms","type":"response","id":"` + uuid.NewString() + `"},"role":"answer"}`,
+		"null":   `{"owner":{"service":"forms","type":"response","id":"` + uuid.NewString() + `"},"role":"answer","onBehalfOf":null}`,
+	} {
+		resp := postAttachment(t, app, guest.ID.String(), body)
+		if resp.status != fiber.StatusCreated || resp.body["mediaId"] != guest.ID.String() {
+			t.Errorf("%s: status %d body %v", name, resp.status, resp.body)
+		}
+	}
+	resp := postAttachment(t, app, personal.ID.String(), attachmentJSON("forms", "response", uuid.NewString(), "answer", ""))
+	requireProblem(t, resp, fiber.StatusUnprocessableEntity, "media_not_linkable")
 }

@@ -53,16 +53,18 @@ func (l *logRecorder) all() string {
 	return strings.Join(l.lines, "\n")
 }
 
-// unscannedCatalogue is the reviewed catalogue with answer_file's malware
-// scan lifted: these tests run without a scanner, where the reviewed
-// answer_file cannot be uploaded at all.
+// unscannedCatalogue is the reviewed catalogue with the malware scan of
+// answer_file and answer_file_guest lifted: these tests run without a
+// scanner, where the reviewed Answer files cannot be uploaded at all.
 func unscannedCatalogue(t testing.TB) media.Catalogue {
 	t.Helper()
 	var file map[string]any
 	if err := json.Unmarshal(config.MediaPurposes, &file); err != nil {
 		t.Fatal(err)
 	}
-	file["purposes"].(map[string]any)["answer_file"].(map[string]any)["scan"] = false
+	for _, name := range []string{media.PurposeAnswerFile, media.PurposeAnswerFileGuest} {
+		file["purposes"].(map[string]any)[name].(map[string]any)["scan"] = false
+	}
 	raw, err := json.Marshal(file)
 	if err != nil {
 		t.Fatal(err)

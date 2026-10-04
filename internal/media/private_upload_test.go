@@ -31,9 +31,10 @@ type privateMedia struct {
 	bao     *transittest.Server
 }
 
-// unscannedCatalogue is the reviewed catalogue with answer_file's malware
-// scan lifted. These tests run without a scanner, where the reviewed
-// answer_file cannot be uploaded at all; they store Answer files as they are
+// unscannedCatalogue is the reviewed catalogue with the malware scan of
+// answer_file and answer_file_guest lifted. These tests run without a
+// scanner, where the reviewed Answer files cannot be uploaded at all; they
+// store Answer files as they are
 // once a scan has passed them (scan_upload_test.go and
 // scan_worker_postgres_test.go have a scanner).
 func unscannedCatalogue(t testing.TB) media.Catalogue {
@@ -42,7 +43,9 @@ func unscannedCatalogue(t testing.TB) media.Catalogue {
 	if err := json.Unmarshal(config.MediaPurposes, &file); err != nil {
 		t.Fatal(err)
 	}
-	file["purposes"].(map[string]any)["answer_file"].(map[string]any)["scan"] = false
+	for _, name := range []string{media.PurposeAnswerFile, media.PurposeAnswerFileGuest} {
+		file["purposes"].(map[string]any)[name].(map[string]any)["scan"] = false
+	}
 	raw, err := json.Marshal(file)
 	if err != nil {
 		t.Fatal(err)

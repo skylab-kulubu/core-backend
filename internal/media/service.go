@@ -236,7 +236,8 @@ func (s *service) UploadForPurpose(ctx context.Context, p authz.Principal, purpo
 // by the transport, nil when none does. Single-step uploads and Direct
 // upload check the same rules in the same order.
 func (s *service) purposeRefusal(p authz.Principal, purpose Purpose, transport Transport) error {
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia, MediaUploader: purpose.Uploader}, authz.Upload) {
+	resource := authz.Resource{Type: authz.TypeMedia, MediaUploader: purpose.Uploader, MediaOwner: purpose.OwningProduct()}
+	if !s.authz.Allow(p, resource, authz.Upload) {
 		return &PurposeRefusal{Err: ErrPurposeForbidden, Purpose: purpose.Name}
 	}
 	private := purpose.Visibility == VisibilityPrivate
@@ -288,9 +289,9 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	if len(file.Data) == 0 {
 		return Media{}, ErrInvalid
 	}
-	uploadedBy, err := uuid.Parse(p.ID)
+	uploadedBy, err := uploaderOf(p, purpose)
 	if err != nil {
-		return Media{}, ErrInvalid
+		return Media{}, err
 	}
 	stored, err := s.storedFile(ctx, purpose, file)
 	if err != nil {
@@ -392,6 +393,22 @@ func (s *service) upload(ctx context.Context, p authz.Principal, purpose Purpose
 	}
 	s.scanStored(created)
 	return s.withURL(created), nil
+}
+
+// uploaderOf is who a single-step upload of the purpose by p is recorded as
+// uploaded by: the person, or no one (uuid.Nil) for a service-only purpose,
+// which only a product's service account uploads. A service account has no
+// core account, and the Media belongs to no person: account erasure never
+// finds it, and it is linked for no one (Attach).
+func uploaderOf(p authz.Principal, purpose Purpose) (uuid.UUID, error) {
+	if purpose.Uploader == authz.MediaUploaderServiceOnly {
+		return uuid.Nil, nil
+	}
+	uploadedBy, err := uuid.Parse(p.ID)
+	if err != nil {
+		return uuid.Nil, ErrInvalid
+	}
+	return uploadedBy, nil
 }
 
 // initialStatus is the status a new Media of the purpose starts with:
