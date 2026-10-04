@@ -6,8 +6,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -172,5 +174,85 @@ func TestService_PublicLeadersOnlyLeaderSubgroups(t *testing.T) {
 	}
 	if strings.Contains(string(raw), leaderID.String()) || strings.Contains(string(raw), "example.com") {
 		t.Fatalf("pii leaked: %s", raw)
+	}
+}
+
+// A person core may no longer show (erased or being erased) is no member of
+// a public team list, nor is the placeholder subject, even while Keycloak
+// still holds them in the team's Group.
+func TestService_PublicRosterLeavesOutErasedPeople(t *testing.T) {
+	t.Parallel()
+	dir, store, svc := setup(t)
+	memberID, leaderID := seedTeam(t, dir)
+	ctx := context.Background()
+	pending, anonymized := uuid.New(), uuid.New()
+	for _, p := range []identity.Person{
+		{ID: pending, Email: "pending@example.com", FirstName: "Pending", LastName: "Person"},
+		{ID: anonymized, Email: "anonymized@example.com", FirstName: "Anonymized", LastName: "Person"},
+		{ID: user.DeletedSubject, FirstName: "Placeholder"},
+	} {
+		dir.PutUser(p)
+		if err := dir.AddMember(ctx, "g-weblab", p.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []uuid.UUID{memberID, leaderID, pending, anonymized} {
+		p, err := dir.GetUser(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := user.NewService(store).Ensure(ctx, id, user.Profile{Email: p.Email, FirstName: p.FirstName, LastName: p.LastName}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []uuid.UUID{pending, anonymized} {
+		if _, err := store.RequestDeletion(ctx, id, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.AnonymizeAccount(ctx, anonymized, time.Now().UTC(), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	roster, err := svc.PublicMembers(ctx, "WEBLAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if roster.Count != 2 || len(roster.Members) != 2 {
+		t.Fatalf("members %+v", roster.Members)
+	}
+	for _, m := range roster.Members {
+		if m.FirstName != "Ada" && m.FirstName != "Grace" {
+			t.Fatalf("members %+v", roster.Members)
+		}
+	}
+
+	// A leader being erased is no leader of the public list either.
+	if _, err := store.RequestDeletion(ctx, leaderID, nil); err != nil {
+		t.Fatal(err)
+	}
+	leaders, err := svc.PublicLeaders(ctx, "WEBLAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leaders.Count != 0 || len(leaders.Members) != 0 {
+		t.Fatalf("leaders %+v", leaders.Members)
+	}
+}
+
+// The list cannot say who is being erased without core's rows: it fails
+// rather than show the Keycloak Group as it is.
+func TestService_PublicRosterFailsWhenCoreCannotSayWhoIsErased(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	down := errors.New("database unavailable")
+	store := failingStore{MemoryStore: user.NewMemoryStore(), accountsErr: down}
+	svc := identity.NewService(dir, store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	seedTeam(t, dir)
+	if _, err := svc.PublicMembers(context.Background(), "WEBLAB"); !errors.Is(err, down) {
+		t.Fatalf("members err = %v", err)
+	}
+	if _, err := svc.PublicLeaders(context.Background(), "WEBLAB"); !errors.Is(err, down) {
+		t.Fatalf("leaders err = %v", err)
 	}
 }

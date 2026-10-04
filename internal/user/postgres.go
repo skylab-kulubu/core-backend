@@ -90,6 +90,56 @@ func (s *PostgresStore) AttributionState(ctx context.Context, id uuid.UUID) (Att
 	return AttributionAnonymous, nil
 }
 
+func (s *PostgresStore) Accounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Account, error) {
+	out := make(map[uuid.UUID]Account)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	// The wanted ids are named subject so that userCols reads the users
+	// row: a person without one is read only for the deletion marker.
+	rows, err := s.pool.Query(ctx, `
+		SELECT wanted.subject,
+		       users.id IS NOT NULL,
+		       COALESCE(users.account_state <> 'active', false)
+		         OR EXISTS (SELECT 1 FROM account_deletion_requests r WHERE r.subject_id = wanted.subject),
+		       `+userCols+`
+		FROM unnest($1::uuid[]) AS wanted(subject)
+		LEFT JOIN users ON users.id = wanted.subject
+	`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var a Account
+		head := []any{&id, &a.Stored, &a.Blocked}
+		if err := rows.Scan(append(head, make([]any, len(rows.FieldDescriptions())-len(head))...)...); err != nil {
+			return nil, err
+		}
+		if a.Stored {
+			if a.User, err = scanUser(prefixedRow{rows: rows, head: head}); err != nil {
+				return nil, err
+			}
+		}
+		if a.Stored || a.Blocked {
+			out[id] = a
+		}
+	}
+	return out, rows.Err()
+}
+
+// prefixedRow scans the columns after head into what Scan is given, as
+// scanUser reads a row that begins with other columns.
+type prefixedRow struct {
+	rows pgx.Rows
+	head []any
+}
+
+func (r prefixedRow) Scan(dest ...any) error {
+	return r.rows.Scan(append(slices.Clone(r.head), dest...)...)
+}
+
 func (s *PostgresStore) Upsert(ctx context.Context, u User) (User, bool, error) {
 	var created bool
 	err := s.pool.QueryRow(ctx, `
