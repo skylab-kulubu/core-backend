@@ -3,6 +3,7 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -414,6 +415,10 @@ func TestOverageGroupsLetACallerLeaveWithoutFailingTheOthers(t *testing.T) {
 		paths, _, _ := groups.Paths(context.Background(), person)
 		staying <- paths
 	}()
+	// Both callers wait on the one read before the first leaves. Otherwise
+	// the second could miss the cache before the read ends and ask after it
+	// has, starting a read of its own.
+	waitForWaitingCallers(t, 2)
 	leave()
 	if err := <-left; err == nil {
 		t.Fatal("a caller that left got an answer")
@@ -529,6 +534,25 @@ func TestServiceForgetsCachedGroupsOnItsOwnWrites(t *testing.T) {
 	if spy.all != 1 {
 		t.Fatalf("a rename forgot everyone %d times, want 1", spy.all)
 	}
+}
+
+// waitForWaitingCallers waits until n calls of Paths are blocked waiting for
+// an answer, that is, have joined a read. Only the goroutine stacks show it:
+// a caller between its cache check and joining the read is not blocked.
+func waitForWaitingCallers(t *testing.T, n int) {
+	t.Helper()
+	waitFor(t, func() bool {
+		buf := make([]byte, 1<<20)
+		buf = buf[:runtime.Stack(buf, true)]
+		waiting := 0
+		for _, stack := range strings.Split(string(buf), "\n\n") {
+			// "Paths(" leaves out the read itself, which runs in Paths.func1.
+			if strings.Contains(stack, " [select") && strings.Contains(stack, "identity.(*OverageGroups).Paths(") {
+				waiting++
+			}
+		}
+		return waiting >= n
+	})
 }
 
 func waitFor(t *testing.T, ok func() bool) {
