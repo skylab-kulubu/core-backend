@@ -273,7 +273,10 @@ unless its product has a service client configured
   it clean once one is ([Malware scan](#malware-scan)). `answer_file_large`
   is a Direct upload purpose no person may start (`service_only`), and a
   private one Direct upload does not take yet (ticket 21, see
-  [Direct upload](#direct-upload));
+  [Direct upload](#direct-upload)). `answer_file_guest` is Skyforms' own
+  upload for a form that takes answers without sign-in (`service_only`),
+  under the same two gates as `answer_file` (see
+  [Guest Answer file](#guest-answer-file));
 - `club_file` and `video` are Direct upload purposes core attaches: an
   Event's files and videos (decision C1, ticket 22, see
   [Event files and videos](#event-files-and-videos)). Being attachable does
@@ -311,6 +314,7 @@ The initial entries:
 | `cms_image` | authenticated | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | cms (no service client yet) |
 | `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms (no service client yet) |
 | `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step | forms |
+| `answer_file_guest` | service_only (Skyforms' service account) | PDF, JPEG, PNG | 10 MiB | private, scanned | single-step | forms |
 | `club_file` | event_editor | PDF, ZIP (download only) | 1 GiB | public, scanned | direct | core (an Event's files) |
 | `answer_file_large` | service_only | ZIP, PDF | 1 GiB | private, scanned | direct | forms |
 | `video` | event_editor | MP4 | 2 GiB | public | direct | core (an Event's videos) |
@@ -339,8 +343,15 @@ rule needs a signed-in caller.
 
 An upload names no Owner team yet, so the candidate teams are the names in
 the person's group paths (leader subgroups aside).
-- `service_only`: no person. Only the owning product's service identity may
-  start such an upload; until that path exists nobody can.
+- `service_only`: no person, whatever roles they hold. Only the service
+  account of the purpose's owning product (its `service`), holding the
+  `media:attach` role on the core client, may start such an upload:
+  Skyforms for `answer_file_guest` (see
+  [Guest Answer file](#guest-answer-file)). A purpose core owns
+  (`video_frame`) has no such account: core stores it itself. The Media of
+  a `service_only` upload has no uploader (`uploadedBy` is the nil UUID,
+  `uploaded_by` NULL): the service account has no core account, and the
+  Media belongs to no person.
 
 CMS editor roles live on the CMS client, which core does not see, so the CMS
 purposes are `authenticated` for now, as Media uploaded without a purpose
@@ -1416,7 +1427,11 @@ A Skyforms answer:
   either; core's own links use their records' UUIDs.
 - `role`: one of the product's roles below.
 - `onBehalfOf`: the id of the person the product acts for: the respondent
-  whose answer it is, the editor saving the page. Required.
+  whose answer it is, the editor saving the page. Left out (or `null`) for
+  no one: a guest's Skyforms answer, which has no person. For no one, a
+  product links only Media that belong to no person (its own purposes but
+  the personal ones); a personal or `legacy` Media is then refused as
+  below. Anything else that is not a UUID is a malformed request.
 
 It answers `201 Created` with the new Media attachment, or `200 OK` with the
 one already there when the same link (Media, owner and role) exists, even if
@@ -1473,7 +1488,7 @@ Core does not set this up; it is a human step in Keycloak, done per realm
 
 | Product | Role | Purposes it accepts |
 |---|---|---|
-| `forms` | `answer` | `answer_file`, `answer_file_large` |
+| `forms` | `answer` | `answer_file`, `answer_file_large`, `answer_file_guest` |
 | `cms` | `image` | `cms_image` |
 | `cms` | `file` | `cms_file` |
 
@@ -1487,6 +1502,8 @@ links and the service attach API share one link check.
 - A Media of one of the product's own purposes (the catalogue's `service`).
   An Answer file (`answer_file`, `answer_file_large`) belongs to the person
   who uploaded it: Skyforms links it only with that person as `onBehalfOf`.
+  A guest Answer file (`answer_file_guest`) belongs to no person: Skyforms
+  links it without `onBehalfOf` (or with any, which is not read).
 - A `legacy` Media, uploaded before purposes, may be anyone's and used by
   anything: a product links one only with its uploader as `onBehalfOf`, or
   once the product already holds a Media attachment to it (a CMS editor
@@ -1507,8 +1524,8 @@ the product nothing about it.
 1. The caller is a configured product's service account with `media:attach`
    (`media_attach_forbidden`). Nothing in the request is read before this: a
    person always gets `403`.
-2. The request is well formed: the path ids, `owner`, `onBehalfOf` (a plain
-   `400`).
+2. The request is well formed: the path ids, `owner`, and `onBehalfOf`
+   when given (a plain `400`).
 3. `owner.service` is the caller (`media_attach_wrong_service`).
 4. The role is one of the product's (`media_role_unknown`).
 5. The same link already exists: answered with `200`, nothing else checked.
@@ -1926,7 +1943,7 @@ clears it otherwise yet; review the report before `-apply`.
 
 ## Private Media
 
-Private purposes (`answer_file`, `certificate_asset`) are stored encrypted in a
+Private purposes (`answer_file`, `answer_file_guest`, `certificate_asset`) are stored encrypted in a
 second, non-public R2 bucket and never get a public address (ADR-0052, media
 redesign ticket 06, decisions Q16, Q18, Q25, Q28, Q29, G1, G2). Everything
 here sits behind `MEDIA_PRIVATE_ENABLED`, which stays `false` in production
@@ -2137,6 +2154,50 @@ stay so: they render as before, and their version copies stay in the public
 bucket. Nothing moves them (decision G1: the certificate feature has not been
 used in production, so there is nothing to move).
 
+
+### Guest Answer file
+
+`answer_file_guest` is an Answer file sent to a Skyforms form that takes
+answers without sign-in (decision of Yusuf and Fatih, 2026-10-04: anonymous
+forms take files, with protections and a malware scan). Core opens no
+endpoint without a token for it: the guest's browser sends the file to
+forms-backend, which checks its guest upload session (Cloudflare Turnstile,
+counts per session, IP and form) and uploads it with Skyforms' own service
+account. Core then treats it as any private, scanned Answer file:
+
+- **Upload.** `POST /v1/media` (multipart, `purpose=answer_file_guest`)
+  with Skyforms' service token: the configured `forms` client
+  (`MEDIA_SERVICE_CLIENTS`), `aud` `core`, the `media:attach` role on the
+  `core` client. PDF, JPEG or PNG (judged by content), at most 10 MiB;
+  images are re-encoded within 2560 px, without their metadata. A person's
+  token, whatever roles it carries, and another product's service account
+  are refused with `403 purpose_forbidden`.
+- **Gates.** As `answer_file`: refused with `422 private_media_disabled`
+  while `MEDIA_PRIVATE_ENABLED` is off and `422 purpose_not_available`
+  while no scanner is configured (`MEDIA_CLAMAV_ADDR`). Nothing is stored.
+  Production has neither today, so the purpose is closed there until both
+  are set up.
+- **No uploader.** The Media is stored for no one: `uploadedBy` is the nil
+  UUID (`uploaded_by` NULL), and its staged upload has no subject
+  (`media_upload_staging.subject_id` NULL, migration 20261004120000), since
+  the service account has no core account. Account erasure never touches
+  it ([Account erasure](#account-erasure)).
+- **Scan.** It starts `scanning`; Skyforms reads `GET /v1/media/{id}` with
+  its service token until it is `pending` (clean) or `rejected`
+  (`scanResult` says why). Skyforms accepts only a `pending` one in a
+  submitted answer.
+- **Attach.** On submission Skyforms links it to the response,
+  `POST /v1/media/{id}/attachments` with role `answer` and no `onBehalfOf`
+  (it belongs to no person). Unattached, it is purged after 24 hours
+  (`pending_ttl`); detached, 30 days later.
+- **Open.** A reviewer Skyforms decides may open it gets a five-minute read
+  link, `POST /v1/media/{id}/links` with `onBehalfOf` naming the reviewer,
+  as for any Answer file ([Read links](#read-links)).
+- **Budget.** Every guest upload is charged to the Skyforms service
+  account's one single-step budget ([Upload limits](#upload-limits): 100
+  uploads per 10 minutes and 2 GiB per day by default, shared by all
+  guests). Skyforms keeps its own, finer limits per session, IP and form.
+
 ### Refusals
 
 | Status | `code` | When |
@@ -2159,8 +2220,8 @@ used in production, so there is nothing to move).
 ## Malware scan
 
 Media redesign ticket 12 (ADR-0052, decision Q17). A purpose whose catalogue
-entry has `scan: true` (`answer_file`, `club_file` and `answer_file_large`
-today) is scanned by ClamAV before any of its Media is opened. ClamAV runs in
+entry has `scan: true` (`answer_file`, `answer_file_guest`, `club_file` and
+`answer_file_large` today) is scanned by ClamAV before any of its Media is opened. ClamAV runs in
 its own container, reachable only on the internal network, and core talks to
 its daemon, clamd, over TCP: `MEDIA_CLAMAV_ADDR` (`host:port`, see
 [Configuration](#configuration)).
@@ -2175,6 +2236,8 @@ that means:
 
 - `answer_file` can be uploaded once private Media is on too
   (`MEDIA_PRIVATE_ENABLED`) and Skyforms has its service client;
+- `answer_file_guest` likewise, by Skyforms' service account alone (see
+  [Guest Answer file](#guest-answer-file));
 - `club_file` stays refused unless `MEDIA_DIRECT_UPLOAD_PURPOSES` names it
   (core attaches it as an Event's file, ticket 22); a file that is a ZIP is
   checked before it is scanned ([The ZIP check](#the-zip-check), ticket
@@ -3373,6 +3436,10 @@ rule is one function, `personalOnErasureSQL` in
 - **Personal** (`answer_file`, `answer_file_large`): purged at once, whatever
   still uses them and whatever their malware scan state (a `scanning` one
   too; a `rejected` one's object is gone already).
+- **No one's** (`answer_file_guest`, `video_frame`): never touched. They have
+  no uploader, so no person's erasure records them. A guest who wants their
+  file gone asks the form's owner, who deletes the response; Skyforms then
+  detaches the file and core purges it 30 days later.
 - **Profile picture** (`profile_picture`): the person's own and purged, unless
   it is someone's current profile picture: a picture belongs to the person it
   shows, not to its uploader, so one the erased person uploaded for someone

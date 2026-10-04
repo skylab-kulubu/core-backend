@@ -76,7 +76,7 @@ var rolePurposes = map[authz.Product]map[Role][]string{
 		RoleEventVideoPoster: {PurposeEventCover, PurposeEventGallery},
 		RoleEventVideoFrame:  {PurposeVideoFrame},
 	},
-	authz.ProductForms: {RoleFormsAnswer: {PurposeAnswerFile, PurposeAnswerFileLarge}},
+	authz.ProductForms: {RoleFormsAnswer: {PurposeAnswerFile, PurposeAnswerFileLarge, PurposeAnswerFileGuest}},
 	authz.ProductCMS:   {RoleCMSImage: {PurposeCMSImage}, RoleCMSFile: {PurposeCMSFile}},
 }
 
