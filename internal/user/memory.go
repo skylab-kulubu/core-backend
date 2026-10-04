@@ -65,6 +65,27 @@ func (s *MemoryStore) AttributionState(_ context.Context, id uuid.UUID) (Attribu
 	return AttributionAllowed, nil
 }
 
+func (s *MemoryStore) Accounts(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[uuid.UUID]Account)
+	for _, id := range ids {
+		var a Account
+		u, stored := s.byID[id]
+		if stored {
+			a.User, a.Stored = withStudentCardStatus(u), true
+			a.Blocked = u.AccountState != AccountActive
+		}
+		if _, marked := s.deletionRequests[id]; marked {
+			a.Blocked = true
+		}
+		if a.Stored || a.Blocked {
+			out[id] = a
+		}
+	}
+	return out, nil
+}
+
 func keepProfile(existing, u User) User {
 	u.AccountState = existing.AccountState
 	u.DeletionRequestedAt = existing.DeletionRequestedAt

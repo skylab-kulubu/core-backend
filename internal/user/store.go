@@ -52,6 +52,20 @@ type Store interface {
 	// marker, a row or not: user reads answer a hard-purged person (no row,
 	// a marker) as deleted from it.
 	AttributionState(ctx context.Context, id uuid.UUID) (AttributionState, error)
+	// Accounts reads the people's rows and whether core may still show
+	// them in one query, for a list of people (the public team list). A
+	// person with neither a row nor a deletion marker is not in the map.
+	Accounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Account, error)
+}
+
+// Account is a person as Store.Accounts reads them: the row core stores
+// (User, when Stored), and Blocked for a person core may no longer show,
+// whose account is not active or who has a deletion marker, a row or not
+// (a hard-purged person).
+type Account struct {
+	User    User
+	Stored  bool
+	Blocked bool
 }
 
 type SkySync interface {

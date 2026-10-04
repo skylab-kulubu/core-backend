@@ -927,3 +927,72 @@ func TestEventDetailAnswersAVideosFrameWhileNoPosterIsUploadedHTTP(t *testing.T)
 		t.Fatalf("a frame being purged answered %+v", got)
 	}
 }
+
+// The admin user list (GET /v1/users) answers each person's picture and its
+// sizes as the public team roster does, from the profile row the list
+// already reads for the person: answering pictures takes no more queries
+// than answering none.
+func TestUserListCarriesEachPersonsPictureSizesWithoutMoreQueriesHTTP(t *testing.T) {
+	restore := media.UsePublicBase(sizesBase)
+	t.Cleanup(restore)
+	f := newImageSizesFixture(t)
+	ctx := context.Background()
+	dir := identity.NewMemory()
+	seedPublicTeam(t, dir)
+	people, err := dir.ListUsers(ctx)
+	if err != nil || len(people) != 2 {
+		t.Fatalf("people %+v %v", people, err)
+	}
+	h := NewIdentityHandler(identity.NewService(dir, f.users, authz.NewAuthorizer(authz.DefaultPolicy())))
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals(authn.LocalsIdentity, authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/YK"}})
+		return c.Next()
+	})
+	app.Get("/v1/users", h.ListUsers)
+	type listed struct {
+		ID                  uuid.UUID                     `json:"id"`
+		ProfilePictureURL   string                        `json:"profilePictureUrl"`
+		ProfilePictureSizes map[string]media.ImageAddress `json:"profilePictureSizes"`
+	}
+	list := func() ([]listed, int64) {
+		var got []listed
+		before := f.queries.n.Load()
+		answer(t, app, httptest.NewRequest(fiber.MethodGet, "/v1/users", nil), &got)
+		return got, f.queries.n.Load() - before
+	}
+	// The first list stores a profile for each person (and their Sky
+	// number): the second is what every later list costs.
+	list()
+	_, unpictured := list()
+
+	ada := people[0]
+	picture := f.image(t, media.PurposeProfilePicture, "images/listed-ada", 1600, 1600, map[string]media.SizeObject{
+		media.SizeCard: jpegSize(400, 400), media.SizePage: jpegSize(1200, 1200),
+	})
+	if _, err := user.NewService(f.users).SetProfilePicture(ctx, ada.ID, picture.ID, picture.Key); err != nil {
+		t.Fatal(err)
+	}
+	got, pictured := list()
+	if pictured != unpictured {
+		t.Fatalf("the list took %d queries with a picture, %d without", pictured, unpictured)
+	}
+	want := bothSizes(
+		media.ImageAddress{URL: sizesBase + "/images/listed-ada/card.jpg", Width: 400, Height: 400},
+		media.ImageAddress{URL: sizesBase + "/images/listed-ada/page.jpg", Width: 1200, Height: 1200},
+	)
+	if len(got) != 2 {
+		t.Fatalf("listed %+v", got)
+	}
+	for _, person := range got {
+		if person.ID != ada.ID {
+			if person.ProfilePictureURL != "" || person.ProfilePictureSizes != nil {
+				t.Fatalf("a person without a picture answers %+v", person)
+			}
+			continue
+		}
+		if person.ProfilePictureURL != sizesBase+"/images/listed-ada" || !reflect.DeepEqual(person.ProfilePictureSizes, want) {
+			t.Fatalf("%q %+v, want sizes %+v", person.ProfilePictureURL, person.ProfilePictureSizes, want)
+		}
+	}
+}

@@ -26,14 +26,17 @@ func deferStagedUpload(cause error, retryAt time.Time) error {
 	return stagedUploadDeferredError{cause: cause, retryAt: retryAt}
 }
 
+// StageUpload registers an object key before its write, for the person
+// uploading it, or for no one (uuid.Nil, a NULL subject) when the upload
+// belongs to no person: a guest Answer file Skyforms' service account sends.
 func (s *PostgresStore) StageUpload(ctx context.Context, key string, subjectID uuid.UUID, cleanupAfter time.Time) error {
-	if key == "" || subjectID == uuid.Nil || cleanupAfter.IsZero() {
+	if key == "" || cleanupAfter.IsZero() {
 		return ErrInvalid
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO media_upload_staging (object_key, subject_id, cleanup_after)
 		VALUES ($1, $2, $3)
-	`, key, subjectID, cleanupAfter)
+	`, key, uploaderColumn(subjectID), cleanupAfter)
 	if subjectlock.IsInactiveAccountReference(err) {
 		return ErrForbidden
 	}
@@ -73,7 +76,7 @@ func (s *PostgresStore) CreateStaged(ctx context.Context, item Media) (Media, er
 // lock, so the object is either published or cleaned up, never both.
 func publishStaged(ctx context.Context, tx pgx.Tx, item Media) (Media, error) {
 	var key string
-	var subjectID uuid.UUID
+	var subjectID *uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		SELECT object_key, subject_id FROM media_upload_staging WHERE object_key=$1 FOR UPDATE
 	`, item.Key).Scan(&key, &subjectID); errors.Is(err, pgx.ErrNoRows) {
@@ -81,7 +84,8 @@ func publishStaged(ctx context.Context, tx pgx.Tx, item Media) (Media, error) {
 	} else if err != nil {
 		return Media{}, err
 	}
-	if subjectID != item.UploadedBy {
+	// A staged upload of no one (NULL) publishes only a Media of no one.
+	if (subjectID == nil && item.UploadedBy != uuid.Nil) || (subjectID != nil && *subjectID != item.UploadedBy) {
 		return Media{}, ErrForbidden
 	}
 	// The id is fixed here: a commit with an unknown outcome is reconciled by it.
