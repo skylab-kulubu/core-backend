@@ -243,7 +243,7 @@ func (m *Metrics) Refresh(ctx context.Context) error {
 
 func relatedTables(c Config) map[string]string {
 	out := map[string]string{}
-	for _, rule := range Rules(c, Schema{}) {
+	for _, rule := range Rules(c, everySchema) {
 		if rule.RelatedTable != "" {
 			out[rule.Name] = rule.RelatedTable
 		}
@@ -268,7 +268,7 @@ func (m *Metrics) attentionOf(s *snapshot, modeSince *time.Time, now time.Time) 
 		out = append(out, Attention{Reason: AttentionRunFailed})
 	}
 	alarms := map[string]bool{}
-	for _, rule := range Rules(m.config, Schema{}) {
+	for _, rule := range Rules(m.config, everySchema) {
 		alarms[rule.Name] = rule.Kind == KindAudit && rule.Alarm
 	}
 	for _, r := range s.latestRules {

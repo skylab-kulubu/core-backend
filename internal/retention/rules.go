@@ -33,6 +33,10 @@ type Schema struct {
 	ContactConsents bool
 }
 
+// everySchema builds every rule there can be: for the names a run may be
+// limited to, and the metrics' lookups, whatever the database holds.
+var everySchema = Schema{ContactConsents: true}
+
 // Rules are every rule of the sweep, in the order a run takes them. A rule
 // is added here and nowhere else; its record, metrics and alarm follow.
 func Rules(c Config, s Schema) []Rule {

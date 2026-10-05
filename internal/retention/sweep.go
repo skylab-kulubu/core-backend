@@ -176,7 +176,7 @@ func (s *Sweeper) Config() Config { return s.config }
 
 // RuleNames are the names a run may be limited to, in run order.
 func RuleNames(c Config) []string {
-	rules := Rules(c, Schema{})
+	rules := Rules(c, everySchema)
 	names := make([]string, len(rules))
 	for i, rule := range rules {
 		names[i] = rule.Name
