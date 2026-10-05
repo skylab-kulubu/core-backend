@@ -109,14 +109,18 @@ func NewMetrics(pool *pgxpool.Pool, config Config, attention func(Attention)) *M
 // SetClock replaces the clock (tests).
 func (m *Metrics) SetClock(now func() time.Time) { m.now = now; m.started = now() }
 
-// Refresh reads the records. A failed read keeps the last values.
+// Refresh reads the records. A failed read keeps the last values. What
+// needs a person is read from the schedule's runs only: a run by hand (a
+// dry run to look, one rule past the brake) is recorded, but it neither
+// hides what the schedule's last run found nor stands in for a run the
+// schedule did not make. The change and failure counters count every run.
 func (m *Metrics) Refresh(ctx context.Context) error {
 	s := &snapshot{lastSuccess: map[Mode]time.Time{}, changed: map[changedKey]int64{}, failures: map[string]int64{}}
 	now := m.now().UTC()
 
 	rows, err := m.pool.Query(ctx, `
 		SELECT mode, max(started_at) FROM retention_runs
-		WHERE full_run AND status IN ('ok', 'partial') GROUP BY mode`)
+		WHERE full_run AND triggered_by = 'schedule' AND status IN ('ok', 'partial') GROUP BY mode`)
 	if err != nil {
 		return err
 	}
@@ -134,13 +138,13 @@ func (m *Metrics) Refresh(ctx context.Context) error {
 		return err
 	}
 
-	// The latest full run that ended (not one still running, skipped or
-	// abandoned by a process that went away).
+	// The schedule's latest run that ended (not one still running, skipped
+	// or abandoned by a process that went away).
 	var latestID *uuid.UUID
 	var latestMode, latestStatus string
 	err = m.pool.QueryRow(ctx, `
 		SELECT id, mode, status FROM retention_runs
-		WHERE full_run AND status IN ('ok', 'partial', 'failed')
+		WHERE full_run AND triggered_by = 'schedule' AND status IN ('ok', 'partial', 'failed')
 		ORDER BY started_at DESC LIMIT 1`).Scan(&latestID, &latestMode, &latestStatus)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
@@ -224,8 +228,8 @@ func (m *Metrics) Refresh(ctx context.Context) error {
 	// switched to, so a switch is not stale before the new mode's first run.
 	var otherMode, firstRun *time.Time
 	if err := m.pool.QueryRow(ctx, `
-		SELECT (SELECT max(started_at) FROM retention_runs WHERE mode <> $1),
-			(SELECT min(started_at) FROM retention_runs)`,
+		SELECT (SELECT max(started_at) FROM retention_runs WHERE triggered_by = 'schedule' AND mode <> $1),
+			(SELECT min(started_at) FROM retention_runs WHERE triggered_by = 'schedule')`,
 		string(m.config.Mode)).Scan(&otherMode, &firstRun); err != nil {
 		return err
 	}

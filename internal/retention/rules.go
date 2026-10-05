@@ -71,15 +71,25 @@ const guestIdentityHeldSQL = `(t.guest_first_name <> '' OR t.guest_last_name <> 
 // apply stores addresses trimmed and lowercased; older rows may not be.
 const guestPersonSQL = `lower(btrim(t.guest_email))`
 
-// guestPeopleSQL groups the guest Tickets with an address by person, with
-// when each of their Events ended. guestPeopleDueSQL keeps the people whose
-// every Event can be dated and whose latest one ended before the cutoff $1;
-// guestPeopleAnchorlessSQL the people with an Event that cannot be dated.
-// Each is computed once per statement, not per Ticket.
-var (
-	guestPeopleSQL = `SELECT lower(btrim(pt.guest_email)) FROM tickets pt JOIN ` + eventEndsSQL + ` pe ON pe.id = pt.event_id
+// personTicketsSQL is every Ticket of a person known by an address, as
+// (person, event_id): the guest Tickets of the address, and the Tickets of
+// the account whose e-mail or school e-mail it is, trimmed and lower-cased
+// alike (a guest who later became a member is one person, ADR-0062).
+const personTicketsSQL = `SELECT lower(btrim(pt.guest_email)) AS person, pt.event_id FROM tickets pt
 		WHERE pt.owner_id IS NULL AND btrim(pt.guest_email) <> ''
-		GROUP BY lower(btrim(pt.guest_email))`
+	UNION ALL SELECT lower(btrim(pu.email)), mt.event_id FROM tickets mt JOIN users pu ON pu.id = mt.owner_id
+		WHERE btrim(pu.email) <> ''
+	UNION ALL SELECT lower(btrim(pu.school_email)), mt.event_id FROM tickets mt JOIN users pu ON pu.id = mt.owner_id
+		WHERE btrim(pu.school_email) <> ''`
+
+// guestPeopleSQL groups those Tickets by person, with when each of their
+// Events ended. guestPeopleDueSQL keeps the people whose every Event can be
+// dated and whose latest one ended before the cutoff $1;
+// guestPeopleAnchorlessSQL the people with an Event that cannot be dated.
+// Each is computed once per statement (a hashed set), not per Ticket.
+var (
+	guestPeopleSQL = `SELECT pp.person FROM (` + personTicketsSQL + `) pp JOIN ` + eventEndsSQL + ` pe ON pe.id = pp.event_id
+		GROUP BY pp.person`
 	guestPeopleDueSQL        = guestPeopleSQL + ` HAVING bool_and(pe.ended IS NOT NULL) AND max(pe.ended) < $1`
 	guestPeopleAnchorlessSQL = guestPeopleSQL + ` HAVING NOT bool_and(pe.ended IS NOT NULL)`
 )
@@ -104,6 +114,22 @@ func refererOriginSQL(col string) string {
 	return `CASE WHEN ` + col + ` ~ '^[A-Za-z][A-Za-z0-9+.-]*://' THEN lower(substring(` + col + ` FROM '^([A-Za-z][A-Za-z0-9+.-]*://)')) || lower(COALESCE(substring(` + col + ` FROM '^[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#]*@)?(\[[^]/?#]*\]|[^/?#:@]*)'), '')) ELSE '' END`
 }
 
+// hitPersonalSQL is a click row that still holds something personal: the
+// address, user agent or account, a free UTM field (campaign, term,
+// content: whatever the link's author or the visitor typed, an e-mail or a
+// student number as easily as a campaign name), or a referer longer than its
+// origin. p is the table alias with its dot, or "" in an index predicate.
+// url_hits_personal_at_idx is built on exactly this predicate
+// (urlHitsIndexMigration): a change here is a new index.
+func hitPersonalSQL(p string) string {
+	return `(` + p + `ip <> '' OR ` + p + `user_agent <> '' OR ` + p + `user_id IS NOT NULL OR ` + p + `utm_campaign <> '' OR ` +
+		p + `utm_term <> '' OR ` + p + `utm_content <> '' OR ` + p + `referer <> ` + refererOriginSQL(p+"referer") + `)`
+}
+
+// urlHitsIndexMigration builds url_hits_personal_at_idx: the click rows
+// hitPersonalSQL selects, by time.
+const urlHitsIndexMigration = "20261005140000_url_hits_personal_at_idx.up.sql"
+
 func sweepRules(s Schema) []Rule {
 	guestIdentityDue := guestTicketSQL + ` AND ` + guestIdentityHeldSQL + `
 	AND NOT ` + guestPendingCertificateSQL + `
@@ -122,7 +148,8 @@ func sweepRules(s Schema) []Rule {
 			anchorless: guestTicketSQL + ` AND t.guest_phone_number <> '' AND ` + ticketEventEndSQL + ` IS NULL`,
 		},
 		{
-			Name: "guest_identity", Version: 1, Kind: KindSweep, Action: ActionScrub,
+			// v2: a member's own Events date their earlier guest Tickets.
+			Name: "guest_identity", Version: 2, Kind: KindSweep, Action: ActionScrub,
 			Table: "tickets", RelatedTable: "certificates", alias: "t", key: "id", Period: GuestIdentityPeriod,
 			where: guestIdentityDue,
 			set:   `guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '', updated_at = now()`,
@@ -141,10 +168,12 @@ func sweepRules(s Schema) []Rule {
 			anchorless: `(SELECT ` + eventEndSQL("se") + ` FROM events se WHERE se.id = s.event_id) IS NULL`,
 		},
 		{
-			Name: "url_hits_scrub", Version: 1, Kind: KindSweep, Action: ActionScrub,
+			// v2: also the free UTM fields; source and medium are the
+			// channel the statistics count.
+			Name: "url_hits_scrub", Version: 2, Kind: KindSweep, Action: ActionScrub,
 			Table: "url_hits", alias: "h", key: "id", Period: HitPersonalFieldsPeriod,
-			where: `h.at < $1 AND (h.ip <> '' OR h.user_agent <> '' OR h.user_id IS NOT NULL OR h.referer <> ` + refererOriginSQL("h.referer") + `)`,
-			set:   `ip = '', user_agent = '', user_id = NULL, referer = ` + refererOriginSQL("h.referer"),
+			where: `h.at < $1 AND ` + hitPersonalSQL("h."),
+			set:   `ip = '', user_agent = '', user_id = NULL, utm_campaign = '', utm_term = '', utm_content = '', referer = ` + refererOriginSQL("h.referer"),
 		},
 		{
 			Name: "read_link_ip", Version: 1, Kind: KindSweep, Action: ActionScrub,

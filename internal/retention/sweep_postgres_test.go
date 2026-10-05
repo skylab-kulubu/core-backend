@@ -1,6 +1,7 @@
 package retention_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/retention"
 	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
@@ -88,7 +90,7 @@ type world struct {
 	gOldOnly, gBackOld, gBackRecent, gNoEmail, gPendingCert  uuid.UUID
 	gCertified, gNoAnchor, gArchived, gMid, gDays, gStart    uuid.UUID
 	gRecent, memberTicket, certificate, checkIn              uuid.UUID
-	hitDue, hitScrubbed, hitYoung, hitFresh                  uuid.UUID
+	hitDue, hitScrubbed, hitYoung, hitFresh, hitUTMOnly      uuid.UUID
 	link                                                     uuid.UUID
 }
 
@@ -98,6 +100,7 @@ var personal = []string{
 	"pending@example.com", "cert@example.com", "Cert Person", "noanchor@example.com", "archived@example.com",
 	"mid@example.com", "days@example.com", "start@example.com", "recent@example.com", "+90555",
 	"203.0.113.", "198.51.100.", "Mozilla/5.0 (Fixture)", "/private/path", "secret-token", "member@example.com",
+	"ada.campaign@example.com", "21011042", "Lovelace UTM",
 }
 
 func seed(t *testing.T, pool *pgxpool.Pool) world {
@@ -182,21 +185,27 @@ func seed(t *testing.T, pool *pgxpool.Pool) world {
 
 	urlID := uuid.New()
 	exec(t, pool, `INSERT INTO urls (id, alias, url) VALUES ($1, 'fixture', 'https://forms.example/f')`, urlID)
-	hit := func(age time.Duration, ip, agent, referer string, member bool) uuid.UUID {
+	// utm_campaign, utm_term and utm_content are whatever the link's author
+	// or the visitor put in the address: an e-mail, a student number, a name.
+	// utm_source and utm_medium are the channel the statistics count.
+	hit := func(age time.Duration, ip, agent, referer string, member bool, campaign, term, content string) uuid.UUID {
 		t.Helper()
 		id := uuid.New()
 		var userID *uuid.UUID
 		if member {
 			userID = &w.member
 		}
-		exec(t, pool, `INSERT INTO url_hits (id, url_id, alias, at, ip, user_agent, referer, user_id, utm_source)
-			VALUES ($1, $2, 'fixture', $3, $4, $5, $6, $7, 'instagram')`, id, urlID, testNow.Add(-age), ip, agent, referer, userID)
+		exec(t, pool, `INSERT INTO url_hits (id, url_id, alias, at, ip, user_agent, referer, user_id, utm_source, utm_medium, utm_campaign, utm_term, utm_content)
+			VALUES ($1, $2, 'fixture', $3, $4, $5, $6, $7, 'instagram', 'qr', $8, $9, $10)`, id, urlID, testNow.Add(-age), ip, agent, referer, userID, campaign, term, content)
 		return id
 	}
-	w.hitDue = hit(400*day, "203.0.113.7", "Mozilla/5.0 (Fixture)", "https://User:Pw@Example.COM:8443/private/path?token=secret-token#x", true)
-	w.hitScrubbed = hit(400*day, "", "", "https://example.com", false)
-	w.hitYoung = hit(100*day, "203.0.113.8", "Mozilla/5.0 (Fixture)", "https://example.com/private/path", true)
-	w.hitFresh = hit(10*day, "203.0.113.9", "Mozilla/5.0 (Fixture)", "", false)
+	w.hitDue = hit(400*day, "203.0.113.7", "Mozilla/5.0 (Fixture)", "https://User:Pw@Example.COM:8443/private/path?token=secret-token#x", true,
+		"ada.campaign@example.com", "21011042", "Ada Lovelace UTM")
+	w.hitScrubbed = hit(400*day, "", "", "https://example.com", false, "", "", "")
+	// Nothing personal but what the visitor typed into the address.
+	w.hitUTMOnly = hit(400*day, "", "", "https://example.com", false, "", "21011042", "")
+	w.hitYoung = hit(100*day, "203.0.113.8", "Mozilla/5.0 (Fixture)", "https://example.com/private/path", true, "", "21011042", "")
+	w.hitFresh = hit(10*day, "203.0.113.9", "Mozilla/5.0 (Fixture)", "", false, "", "", "")
 
 	mediaID := uuid.New()
 	exec(t, pool, `INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind)
@@ -221,7 +230,7 @@ func state(t *testing.T, pool *pgxpool.Pool) string {
 		(SELECT string_agg(concat_ws('|', id, guest_first_name, guest_last_name, guest_email, guest_phone_number, updated_at), E'\n' ORDER BY id) FROM tickets),
 		(SELECT string_agg(concat_ws('|', id, recipient_name, recipient_email, serial), E'\n' ORDER BY id) FROM certificates),
 		(SELECT string_agg(concat_ws('|', event_id, user_id), E'\n' ORDER BY event_id) FROM event_door_staff),
-		(SELECT string_agg(concat_ws('|', id, ip, user_agent, referer, user_id), E'\n' ORDER BY id) FROM url_hits),
+		(SELECT string_agg(concat_ws('|', id, ip, user_agent, referer, user_id, utm_campaign, utm_term, utm_content), E'\n' ORDER BY id) FROM url_hits),
 		(SELECT string_agg(concat_ws('|', link_id, opened_at, client_ip), E'\n' ORDER BY client_ip) FROM media_read_link_opens),
 		(SELECT count(*)::text FROM ticket_checkins))`)
 }
@@ -277,7 +286,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 		t.Fatalf("the dry run changed rows:\n%s\n---\n%s", before, after)
 	}
 	audits := map[string]counts{
-		"url_hits_age":           {3, 0, 0, 3, 0, retention.RuleOK},
+		"url_hits_age":           {4, 0, 0, 4, 0, retention.RuleOK},
 		"read_links_age":         {1, 0, 0, 1, 0, retention.RuleOK},
 		"read_link_opens_age":    {2, 0, 0, 2, 0, retention.RuleOK},
 		"mail_snapshots_age":     {1, 0, 0, 1, 0, retention.RuleOK},
@@ -293,7 +302,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 		// e-mail (its own Event), certified, archived Event.
 		"guest_identity": {4, 0, 0, 4, 1, retention.RuleDryRun},
 		"door_staff":     {2, 0, 0, 2, 1, retention.RuleDryRun},
-		"url_hits_scrub": {1, 0, 0, 1, 0, retention.RuleDryRun},
+		"url_hits_scrub": {2, 0, 0, 2, 0, retention.RuleDryRun},
 		"read_link_ip":   {1, 0, 0, 1, 0, retention.RuleDryRun},
 	}
 	for name, c := range audits {
@@ -312,7 +321,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 		"guest_phone":    {9, 9, 0, 0, 1, retention.RuleOK},
 		"guest_identity": {4, 4, 1, 0, 1, retention.RuleOK},
 		"door_staff":     {2, 2, 0, 0, 1, retention.RuleOK},
-		"url_hits_scrub": {1, 1, 0, 0, 0, retention.RuleOK},
+		"url_hits_scrub": {2, 2, 0, 0, 0, retention.RuleOK},
 		"read_link_ip":   {1, 1, 0, 0, 0, retention.RuleOK},
 	}
 	for name, c := range audits {
@@ -364,17 +373,17 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 		t.Fatalf("door staff left %q", got)
 	}
 	hit := func(id uuid.UUID) string {
-		return scalar[string](t, pool, `SELECT concat_ws('|', ip, user_agent, referer, COALESCE(user_id::text, 'null'), utm_source, alias) FROM url_hits WHERE id = $1`, id)
+		return scalar[string](t, pool, `SELECT concat_ws('|', ip, user_agent, referer, COALESCE(user_id::text, 'null'),
+			utm_source, utm_medium, utm_campaign, utm_term, utm_content, alias) FROM url_hits WHERE id = $1`, id)
 	}
-	// The row stays, with its time, link and channel; the referer keeps its
-	// origin only.
-	if got := hit(w.hitDue); got != "||https://example.com|null|instagram|fixture" {
-		t.Fatalf("scrubbed hit %q", got)
+	// The row stays, with its time, link and channel (source, medium); the
+	// referer keeps its origin only, and the free UTM fields go.
+	for _, id := range []uuid.UUID{w.hitDue, w.hitScrubbed, w.hitUTMOnly} {
+		if got := hit(id); got != "||https://example.com|null|instagram|qr||||fixture" {
+			t.Fatalf("scrubbed hit %q", got)
+		}
 	}
-	if got := hit(w.hitScrubbed); got != "||https://example.com|null|instagram|fixture" {
-		t.Fatalf("already scrubbed hit %q", got)
-	}
-	if got := hit(w.hitYoung); got != "203.0.113.8|Mozilla/5.0 (Fixture)|https://example.com/private/path|"+w.member.String()+"|instagram|fixture" {
+	if got := hit(w.hitYoung); got != "203.0.113.8|Mozilla/5.0 (Fixture)|https://example.com/private/path|"+w.member.String()+"|instagram|qr||21011042||fixture" {
 		t.Fatalf("young hit %q", got)
 	}
 	if got := scalar[string](t, pool, `SELECT string_agg(client_ip, ',') FROM media_read_link_opens`); got != "," {
@@ -413,7 +422,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	if got := scalar[string](t, pool, `SELECT string_agg(mode || ':' || status || ':' || triggered_by, ',' ORDER BY started_at, mode DESC) FROM retention_runs`); got != "dry-run:ok:schedule,apply:ok:schedule,apply:ok:schedule" {
 		t.Fatalf("runs %q", got)
 	}
-	if !strings.Contains(log.text(), "retention_rule rule=guest_identity version=1 mode=apply status=ok cutoff=2024-10-05T12:00:00Z matched=4 changed=4 related=1 overdue=0 anchorless=1 code=-") {
+	if !strings.Contains(log.text(), "retention_rule rule=guest_identity version=2 mode=apply status=ok cutoff=2024-10-05T12:00:00Z matched=4 changed=4 related=1 overdue=0 anchorless=1 code=-") {
 		t.Fatalf("log:\n%s", log.text())
 	}
 }
@@ -665,8 +674,12 @@ func TestBrakeRefusesALargeChangeUntilAllowed(t *testing.T) {
 	if _, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerSchedule, AllowLarge: true}); err == nil {
 		t.Fatal("the schedule passed --allow-large")
 	}
-	if _, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeDryRun, Trigger: retention.TriggerCLI, AllowLarge: true}); err == nil {
+	if _, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeDryRun, Trigger: retention.TriggerCLI, AllowLarge: true, Rule: "url_hits_scrub"}); err == nil {
 		t.Fatal("a dry run passed --allow-large")
+	}
+	// Past the brake one rule at a time: never every rule at once.
+	if _, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerCLI, AllowLarge: true}); err == nil {
+		t.Fatal("--allow-large without a rule")
 	}
 	if r := only(retention.ModeApply, retention.TriggerCLI, true); r.Status != retention.RuleOK || r.Changed != 1201 || r.Overdue != 0 {
 		t.Fatalf("allowed %+v", r)
@@ -783,12 +796,20 @@ func TestScheduleAndPeriodsFollowTheRecords(t *testing.T) {
 	if due, _ := restarted.Due(ctx, retention.ModeApply); !due {
 		t.Fatal("a one-rule run made the full run not due")
 	}
+	// Nor is a full run by hand: the schedule's day is the schedule's.
+	if _, err := restarted.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerCLI}); err != nil {
+		t.Fatal(err)
+	}
+	if due, _ := restarted.Due(ctx, retention.ModeApply); !due {
+		t.Fatal("a run by hand made the scheduled run not due")
+	}
 	if _, err := restarted.Run(ctx, retention.RunOptions{Mode: retention.ModeDryRun, Trigger: retention.TriggerCLI}); err != nil {
 		t.Fatal(err)
 	}
 
-	// 25 days on: the first period closes with its two full runs, the
-	// second (days 10 to 20) closes with none, the third is open.
+	// 25 days on: the first period closes with its one scheduled run (runs
+	// by hand are recorded, not counted), the second (days 10 to 20) closes
+	// with none, the third is open.
 	now = testNow.Add(25 * day)
 	report, err := restarted.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerSchedule})
 	if err != nil || len(report.ClosedPeriods) != 2 {
@@ -796,7 +817,7 @@ func TestScheduleAndPeriodsFollowTheRecords(t *testing.T) {
 	}
 	// Both were apply periods: the first had a scheduled apply run, the
 	// second no scheduled run, and core was in apply mode when it closed.
-	if p := report.ClosedPeriods[0]; p.ID != firstPeriod || p.Mode != retention.ModeApply || p.ApplyRuns != 1 || p.DryRuns != 1 || !p.StartedAt.Equal(testNow) {
+	if p := report.ClosedPeriods[0]; p.ID != firstPeriod || p.Mode != retention.ModeApply || p.ApplyRuns != 1 || p.DryRuns != 0 || !p.StartedAt.Equal(testNow) {
 		t.Fatalf("first period %+v", p)
 	}
 	if p := report.ClosedPeriods[1]; p.Mode != retention.ModeApply || p.ApplyRuns != 0 || p.DryRuns != 0 || !p.StartedAt.Equal(testNow.Add(10*day)) || !p.EndsAt.Equal(testNow.Add(20*day)) {
@@ -814,7 +835,6 @@ func TestScheduleAndPeriodsFollowTheRecords(t *testing.T) {
 		`skylab_retention_mode{mode="apply"} 1`,
 		`skylab_retention_mode{mode="off"} 0`,
 		fmt.Sprintf(`skylab_retention_last_success_timestamp_seconds{mode="apply"} %d`, now.Unix()),
-		fmt.Sprintf(`skylab_retention_last_success_timestamp_seconds{mode="dry-run"} %d`, testNow.Add(24*time.Hour).Unix()),
 		fmt.Sprintf("skylab_retention_period_seconds_left %d", int64(5*day/time.Second)),
 		`skylab_retention_rows_matched{rule="guest_phone"} 0`,
 		`skylab_retention_rule_status{rule="url_hits_age",status="not_applicable"} 1`,
@@ -826,6 +846,9 @@ func TestScheduleAndPeriodsFollowTheRecords(t *testing.T) {
 	}
 	if len(attention) != 1 || attention[0] != (retention.Attention{Reason: retention.AttentionPeriodWithoutRun}) {
 		t.Fatalf("attention %+v", attention)
+	}
+	if strings.Contains(text, `last_success_timestamp_seconds{mode="dry-run"}`) {
+		t.Fatalf("a dry run by hand counted as the schedule's:\n%s", text)
 	}
 
 	// Two days without a successful run in the configured mode alarm.
@@ -883,28 +906,30 @@ func TestPeriodAccountingFollowsTheMode(t *testing.T) {
 		}
 	}
 	// The next period had that scheduled apply run: an apply period, met.
+	// (Closed by a scheduled dry run, as after a switch back to dry-run.)
 	now = testNow.Add(20*day + time.Hour)
-	report = run(apply, retention.ModeDryRun, retention.TriggerCLI)
+	report = run(dry, retention.ModeDryRun, retention.TriggerSchedule)
 	if len(report.ClosedPeriods) != 1 || report.ClosedPeriods[0].Mode != retention.ModeApply || report.ClosedPeriods[0].ApplyRuns != 1 {
 		t.Fatalf("first apply period %+v", report.ClosedPeriods)
 	}
 
-	// Then the scheduled apply run fails (a record as a crash leaves it) and
-	// only dry runs succeed in the period: an apply period, not met.
+	// Then the scheduled apply run fails (a record as a crash leaves it):
+	// the period has a scheduled dry run and a successful apply run by hand,
+	// neither of which is the schedule's apply. An apply period, not met.
 	period := scalar[uuid.UUID](t, pool, `SELECT id FROM retention_periods WHERE closed_at IS NULL`)
 	exec(t, pool, `INSERT INTO retention_runs (id, period_id, mode, triggered_by, full_run, rule_set_version, started_at, finished_at, status, error_code)
 		VALUES ($1, $2, 'apply', 'schedule', true, 1, $3, $3, 'failed', 'sqlstate_57014')`, uuid.New(), period, testNow.Add(22*day))
 	now = testNow.Add(23 * day)
-	run(apply, retention.ModeDryRun, retention.TriggerCLI)
+	run(apply, retention.ModeApply, retention.TriggerCLI)
 	now = testNow.Add(30*day + time.Hour)
-	report = run(apply, retention.ModeDryRun, retention.TriggerCLI)
-	if len(report.ClosedPeriods) != 1 || report.ClosedPeriods[0].Mode != retention.ModeApply || report.ClosedPeriods[0].ApplyRuns != 0 || report.ClosedPeriods[0].DryRuns != 2 {
-		t.Fatalf("apply period with dry runs only %+v", report.ClosedPeriods)
+	report = run(dry, retention.ModeDryRun, retention.TriggerSchedule)
+	if len(report.ClosedPeriods) != 1 || report.ClosedPeriods[0].Mode != retention.ModeApply || report.ClosedPeriods[0].ApplyRuns != 0 || report.ClosedPeriods[0].DryRuns != 1 {
+		t.Fatalf("apply period without the schedule's apply %+v", report.ClosedPeriods)
 	}
 	if got := attention(applyConfig); !strings.Contains(got, "{"+retention.AttentionPeriodWithoutRun+" }") {
-		t.Fatalf("an apply period with dry runs only: %s", got)
+		t.Fatalf("an apply period without the schedule's apply run: %s", got)
 	}
-	if got := scalar[string](t, pool, `SELECT string_agg(mode || ':' || apply_runs || ':' || dry_runs, ',' ORDER BY started_at) FROM retention_periods WHERE closed_at IS NOT NULL`); got != "dry-run:0:1,apply:1:0,apply:0:2" {
+	if got := scalar[string](t, pool, `SELECT string_agg(mode || ':' || apply_runs || ':' || dry_runs, ',' ORDER BY started_at) FROM retention_periods WHERE closed_at IS NOT NULL`); got != "dry-run:0:1,apply:1:0,apply:0:1" {
 		t.Fatalf("periods %q", got)
 	}
 
@@ -912,12 +937,69 @@ func TestPeriodAccountingFollowsTheMode(t *testing.T) {
 	now = testNow.Add(31 * day)
 	run(apply, retention.ModeApply, retention.TriggerSchedule)
 	now = testNow.Add(40*day + time.Hour)
-	report = run(apply, retention.ModeDryRun, retention.TriggerCLI)
+	report = run(apply, retention.ModeApply, retention.TriggerSchedule)
 	if len(report.ClosedPeriods) != 1 || report.ClosedPeriods[0].Mode != retention.ModeApply || report.ClosedPeriods[0].ApplyRuns != 1 {
 		t.Fatalf("next apply period %+v", report.ClosedPeriods)
 	}
 	if got := attention(applyConfig); strings.Contains(got, retention.AttentionPeriodWithoutRun) {
 		t.Fatalf("still alarming: %s", got)
+	}
+}
+
+// What needs a person comes from the schedule's runs only: a dry run or an
+// apply run by hand after a scheduled apply the brake refused neither hides
+// the refusal and the overdue rows nor refreshes the last success, which
+// goes stale two days after the schedule's.
+func TestRunsByHandDoNotMaskTheSchedulesAlarms(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	urlID := uuid.New()
+	exec(t, pool, `INSERT INTO urls (id, alias, url) VALUES ($1, 'many', 'https://forms.example/f')`, urlID)
+	exec(t, pool, `INSERT INTO url_hits (id, url_id, alias, at, ip) SELECT gen_random_uuid(), $1, 'many', $2, '203.0.113.1' FROM generate_series(1, 1201)`,
+		urlID, testNow.Add(-400*day))
+	config := retention.Config{Mode: retention.ModeApply, Period: 90 * day, MediaRecoveryWindow: 30 * day}
+	now := testNow
+	s := sweeper(pool, config, &now, nil)
+	metrics := retention.NewMetrics(pool, config, func(retention.Attention) {})
+	metrics.SetClock(func() time.Time { return now })
+	check := func(label string, want ...string) string {
+		t.Helper()
+		if err := metrics.Refresh(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got := fmt.Sprint(metrics.Attention())
+		for _, w := range want {
+			if !strings.Contains(got, w) {
+				t.Fatalf("%s: attention %s lacks %s", label, got, w)
+			}
+		}
+		return metrics.Prometheus()
+	}
+	if _, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerSchedule}); err != nil {
+		t.Fatal(err)
+	}
+	check("scheduled", "{refused_large url_hits_scrub}", "{overdue url_hits_scrub}")
+
+	now = testNow.Add(3 * day)
+	for _, opts := range []retention.RunOptions{
+		{Mode: retention.ModeDryRun, Trigger: retention.TriggerCLI},
+		{Mode: retention.ModeApply, Trigger: retention.TriggerCLI, Rule: "door_staff"},
+	} {
+		if _, err := s.Run(ctx, opts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	text := check("after runs by hand", "{stale }", "{refused_large url_hits_scrub}", "{overdue url_hits_scrub}")
+	for _, want := range []string{
+		`skylab_retention_rule_status{rule="url_hits_scrub",status="refused_large"} 1`,
+		fmt.Sprintf(`skylab_retention_last_success_timestamp_seconds{mode="apply"} %d`, testNow.Unix()),
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metrics lack %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, `last_success_timestamp_seconds{mode="dry-run"}`) {
+		t.Fatalf("the dry run by hand counted:\n%s", text)
 	}
 }
 
@@ -1026,5 +1108,142 @@ func TestMaintainRunsWhenDue(t *testing.T) {
 	<-done
 	if got := scalar[string](t, pool, `SELECT string_agg(mode || ':' || triggered_by || ':' || status, ',') FROM retention_runs`); got != "dry-run:schedule:ok" {
 		t.Fatalf("runs %q", got)
+	}
+}
+
+// A guest who later became a member is one person: the Tickets of the
+// account whose e-mail or school e-mail is the guest's address count as
+// their Events, so an active member's earlier guest Tickets keep their name
+// and address. A member whose latest Event is two years past, or a guest
+// with no account, is not kept; a member Ticket on an undated Event leaves
+// the person undated.
+func TestGuestWhoBecameAMemberIsDatedByTheirAccountsEvents(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	event := func(end *time.Time) uuid.UUID {
+		id := uuid.New()
+		exec(t, pool, `INSERT INTO events (id, name, location, owner_team, end_date) VALUES ($1, 'e', 'YTÜ', 'SKY LAB', $2)`, id, end)
+		return id
+	}
+	old, recent, undated := event(at(800*day)), event(at(10*day)), event(nil)
+	guest := func(email string) uuid.UUID {
+		id := uuid.New()
+		exec(t, pool, `INSERT INTO tickets (id, event_id, ticket_type, guest_first_name, guest_email) VALUES ($1, $2, 'GUEST', 'Guest', $3)`, id, old, email)
+		return id
+	}
+	member := func(email, school string, eventID uuid.UUID) {
+		id := uuid.New()
+		exec(t, pool, `INSERT INTO users (id, email, school_email) VALUES ($1, $2, $3)`, id, email, school)
+		exec(t, pool, `INSERT INTO tickets (id, event_id, ticket_type, owner_id) VALUES ($1, $2, 'REGISTERED', $3)`, uuid.New(), eventID, id)
+	}
+	byEmail := guest("Now.Member@Example.com ")
+	member("now.member@example.com", "", recent)
+	bySchool := guest("school.member@std.example.edu")
+	member("personal@example.com", " School.Member@std.example.edu", recent)
+	lapsed := guest("lapsed.member@example.com")
+	member("lapsed.member@example.com", "", old)
+	plain := guest("plain@example.com")
+	undatedMember := guest("undated.member@example.com")
+	member("undated.member@example.com", "", undated)
+
+	now := testNow
+	report, err := sweeper(pool, dryRunConfig(), &now, nil).Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerCLI, Rule: "guest_identity"})
+	if err != nil || len(report.Rules) != 1 || report.Rules[0].Changed != 2 || report.Rules[0].Anchorless != 1 {
+		t.Fatalf("%v %+v", err, report.Rules)
+	}
+	for id, kept := range map[uuid.UUID]bool{byEmail: true, bySchool: true, lapsed: false, plain: false, undatedMember: true} {
+		if got := scalar[string](t, pool, `SELECT guest_email FROM tickets WHERE id = $1`, id) != ""; got != kept {
+			t.Errorf("ticket %s kept %v, want %v", id, got, kept)
+		}
+	}
+}
+
+// A renewal question the person answered by coming to an Event is void: once
+// the next three years without attendance pass, the grant is asked again
+// (the audience does not show the old question, and the renewal request
+// records the new one), and the sweep ends it 60 days after the new
+// question, not on the old one. The probe: a 2022 question, an Event after
+// it, three years.
+func TestRenewalAnsweredByAttendanceIsAskedAgainAndThenExpires(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	clock := time.Date(2019, 1, 10, 12, 0, 0, 0, time.UTC)
+	service := consent.NewService(pool, consent.TestConfig(bytes.Repeat([]byte{9}, 32), "https://api.example.test", "place"), nil)
+	service.SetClock(func() time.Time { return clock })
+	service.SetAsync(func(fn func()) { fn() })
+	granted, err := service.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "came.back@example.com",
+		Source: consent.SourcePlace, ClientID: "place", EmailVerified: true})
+	if err != nil || granted.Status != consent.StatusActive {
+		t.Fatalf("grant %+v %v", granted, err)
+	}
+	audience := func() consent.AudienceEntry {
+		t.Helper()
+		entries, _, err := service.Audience(ctx, consent.PurposeEventInvitations, uuid.Nil, 10)
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("audience %+v %v", entries, err)
+		}
+		return entries[0]
+	}
+
+	// March 2022: three years without attendance; SkyMail asks.
+	clock = time.Date(2022, 3, 1, 12, 0, 0, 0, time.UTC)
+	if entry := audience(); !entry.RenewalDue || entry.RenewalRequestedAt != nil {
+		t.Fatalf("2022: %+v", entry)
+	}
+	if asked, err := service.RequestRenewal(ctx, consent.PurposeEventInvitations, []uuid.UUID{granted.ID}); err != nil || asked != 1 {
+		t.Fatalf("2022 request %d %v", asked, err)
+	}
+	// April 2022: the person comes to an Event instead of clicking.
+	eventID, dayID, sessionID, ticketID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	exec(t, pool, `INSERT INTO events (id, name, location, owner_team, end_date) VALUES ($1, 'e', 'YTÜ', 'SKY LAB', '2022-04-01')`, eventID)
+	exec(t, pool, `INSERT INTO event_days (id, event_id, name) VALUES ($1, $2, 'Gün')`, dayID, eventID)
+	exec(t, pool, `INSERT INTO sessions (id, event_day_id, title, session_type) VALUES ($1, $2, 'Açılış', 'TALK')`, sessionID, dayID)
+	exec(t, pool, `INSERT INTO tickets (id, event_id, ticket_type, guest_email) VALUES ($1, $2, 'GUEST', 'came.back@example.com')`, ticketID, eventID)
+	exec(t, pool, `INSERT INTO ticket_checkins (id, ticket_id, event_day_id, session_id, created_at) VALUES ($1, $2, $3, $4, '2022-04-01 10:00:00+00')`,
+		uuid.New(), ticketID, dayID, sessionID)
+
+	expire := func(at time.Time) int64 {
+		t.Helper()
+		now := at
+		report, err := sweeper(pool, dryRunConfig(), &now, nil).Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerCLI, Rule: "consent_renewal_unanswered"})
+		if err != nil || len(report.Rules) != 1 {
+			t.Fatalf("%v %+v", err, report)
+		}
+		return report.Rules[0].Changed
+	}
+	// The old question is void: it neither shows nor ends the grant.
+	clock = time.Date(2022, 7, 1, 12, 0, 0, 0, time.UTC)
+	if entry := audience(); entry.RenewalDue || entry.RenewalRequestedAt != nil {
+		t.Fatalf("after the Event: %+v", entry)
+	}
+	if n := expire(clock); n != 0 {
+		t.Fatalf("expired on the answered question: %d", n)
+	}
+
+	// April 2025 + a day: three years since the Event; asked again.
+	clock = time.Date(2025, 4, 2, 12, 0, 0, 0, time.UTC)
+	if entry := audience(); !entry.RenewalDue || entry.RenewalRequestedAt != nil || entry.RenewURL == "" {
+		t.Fatalf("2025: %+v", entry)
+	}
+	if n := expire(clock); n != 0 {
+		t.Fatalf("expired before the new question: %d", n)
+	}
+	if asked, err := service.RequestRenewal(ctx, consent.PurposeEventInvitations, []uuid.UUID{granted.ID}); err != nil || asked != 1 {
+		t.Fatalf("2025 request %d %v", asked, err)
+	}
+	if entry := audience(); entry.RenewalRequestedAt == nil || !entry.RenewalRequestedAt.Equal(clock) {
+		t.Fatalf("2025 question not shown: %+v", entry)
+	}
+	if asked, _ := service.RequestRenewal(ctx, consent.PurposeEventInvitations, []uuid.UUID{granted.ID}); asked != 0 {
+		t.Fatal("asked twice")
+	}
+	if n := expire(clock.Add(30 * day)); n != 0 {
+		t.Fatalf("expired within the answer window: %d", n)
+	}
+	if n := expire(clock.Add(61 * day)); n != 1 {
+		t.Fatalf("not expired 61 days after the new question: %d", n)
+	}
+	if got := scalar[string](t, pool, `SELECT concat_ws('|', ended_reason, ended_via, COALESCE(email, '-')) FROM contact_consents WHERE id = $1`, granted.ID); got != "expired|renewal_unanswered|-" {
+		t.Fatalf("grant %q", got)
 	}
 }

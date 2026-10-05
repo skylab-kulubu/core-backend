@@ -1184,6 +1184,24 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE schemaname = 'public' AND indexname = 'retention_periods_open_idx'
 			  AND indexdef LIKE 'CREATE UNIQUE INDEX retention_periods_open_idx ON public.retention_periods %WHERE (closed_at IS NULL)'
 		)`,
+	// The retention sweep's click index: present, valid (a concurrent build
+	// that stopped midway leaves an invalid one), partial, on url_hits(at).
+	20261005140000: `
+		SELECT 1 FROM pg_index i
+		WHERE i.indexrelid = to_regclass('public.url_hits_personal_at_idx')
+		  AND i.indrelid = to_regclass('public.url_hits')
+		  AND i.indisvalid AND i.indpred IS NOT NULL
+		  AND pg_get_indexdef(i.indexrelid) LIKE 'CREATE INDEX url_hits_personal_at_idx ON public.url_hits USING btree (at) WHERE %'`,
+}
+
+// concurrentIndexes are the migrations that build one index with CREATE
+// INDEX CONCURRENTLY, by the index's name. Such a statement cannot run in a
+// transaction, so each of their files is that one statement (a single
+// statement of the simple protocol runs outside a transaction block). A
+// build that stopped midway leaves an invalid index that IF NOT EXISTS
+// would keep; Apply drops it, concurrently too, before the build runs again.
+var concurrentIndexes = map[int64]string{
+	20261005140000: "url_hits_personal_at_idx",
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
@@ -1222,6 +1240,11 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 		body, err := fs.ReadFile(db.UpSQL, path.Join("migrations", f.name))
 		if err != nil {
 			return err
+		}
+		if index, ok := concurrentIndexes[f.version]; ok {
+			if err := dropInvalidIndex(ctx, pool, index); err != nil {
+				return fmt.Errorf("migration %d: %w", f.version, err)
+			}
 		}
 		if err := execSQL(ctx, pool, string(body)); err != nil {
 			return fmt.Errorf("migration %d: %w", f.version, err)
@@ -1315,6 +1338,21 @@ func alreadyPresent(ctx context.Context, pool *pgxpool.Pool, version int64) (boo
 		return false, err
 	}
 	return true, nil
+}
+
+// dropInvalidIndex drops index when it exists and is invalid: the remains of
+// a concurrent build that stopped.
+func dropInvalidIndex(ctx context.Context, pool *pgxpool.Pool, index string) error {
+	var invalid bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pg_index WHERE indexrelid = to_regclass('public.' || $1::text) AND NOT indisvalid)`, index).Scan(&invalid); err != nil {
+		return err
+	}
+	if !invalid {
+		return nil
+	}
+	log.Printf("migrate: dropping the invalid index %s a stopped build left", index)
+	return execSQL(ctx, pool, `DROP INDEX CONCURRENTLY IF EXISTS public.`+pgx.Identifier{index}.Sanitize())
 }
 
 func record(ctx context.Context, pool *pgxpool.Pool, version int64) error {

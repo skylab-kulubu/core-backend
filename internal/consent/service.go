@@ -579,6 +579,16 @@ const RenewalAnchorSQL = `GREATEST(c.confirmed_at, c.renewed_at, CASE
 		WHERE t.owner_id = c.user_id)
 	END)`
 
+// RenewalQuestionSQL is a grant's renewal question while it stands, else
+// NULL: asked, and asked no earlier than the anchor (RenewalAnchorSQL). A
+// question older than the last confirmation, renewal or attendance was
+// answered by it: coming to an Event says "keep inviting me" as well as the
+// link does. Confirming or renewing clears the question; attending cannot,
+// so the question is read through this everywhere: a void question is not
+// shown, does not stop a new one once the grant is due again, and never
+// ends the grant (the retention sweep's consent_renewal_unanswered).
+const RenewalQuestionSQL = `CASE WHEN c.renewal_requested_at >= ` + RenewalAnchorSQL + ` THEN c.renewal_requested_at END`
+
 // AudienceEntry is one address SkyMail may send a purpose's mail to.
 type AudienceEntry struct {
 	// ID is the grant: the cursor, and what a renewal request names.
@@ -594,7 +604,10 @@ type AudienceEntry struct {
 	// RenewalDue: nothing showed for RenewalAfter that the person still
 	// wants these mails. SkyMail sends the renewal question with RenewURL
 	// instead of an invitation, then reports it (RequestRenewal).
-	RenewalDue         bool       `json:"renewalDue"`
+	RenewalDue bool `json:"renewalDue"`
+	// RenewalRequestedAt is when the standing renewal question was asked
+	// (RenewalQuestionSQL); absent when none stands, a question the person
+	// answered by attending included.
 	RenewalRequestedAt *time.Time `json:"renewalRequestedAt,omitempty"`
 	RenewURL           string     `json:"renewUrl,omitempty"`
 }
@@ -618,7 +631,7 @@ func (s *Service) Audience(ctx context.Context, purpose Purpose, after uuid.UUID
 	now := s.now()
 	rows, err := s.pool.Query(ctx, `
 		SELECT c.id, COALESCE(c.email, u.email, ''), c.user_id IS NOT NULL, c.confirmed_at,
-			c.renewal_requested_at, `+RenewalAnchorSQL+` < $4
+			`+RenewalQuestionSQL+`, `+RenewalAnchorSQL+` < $4
 		FROM contact_consents c
 		LEFT JOIN users u ON u.id = c.user_id AND u.account_state = 'active'
 		WHERE c.purpose = $1 AND c.ended_at IS NULL AND c.confirmed_at IS NOT NULL AND c.id > $2
@@ -666,9 +679,10 @@ func (s *Service) Audience(ctx context.Context, purpose Purpose, after uuid.UUID
 }
 
 // RequestRenewal records that SkyMail sent the renewal question for the
-// named grants. Only open, confirmed grants of purpose that are due and not
-// already asked change. RenewalAnswerWindow later the retention sweep ends
-// the ones nobody renewed.
+// named grants. Only open, confirmed grants of purpose that are due and have
+// no standing question change (a question answered by attending stands no
+// more, RenewalQuestionSQL). RenewalAnswerWindow later the retention sweep
+// ends the ones nobody renewed.
 func (s *Service) RequestRenewal(ctx context.Context, purpose Purpose, ids []uuid.UUID) (int64, error) {
 	if !s.Enabled() {
 		return 0, ErrDisabled
@@ -680,7 +694,7 @@ func (s *Service) RequestRenewal(ctx context.Context, purpose Purpose, ids []uui
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE contact_consents c SET renewal_requested_at = $3
 		WHERE c.id = ANY($2) AND c.purpose = $1 AND c.ended_at IS NULL AND c.confirmed_at IS NOT NULL
-		  AND c.renewal_requested_at IS NULL AND `+RenewalAnchorSQL+` < $4`,
+		  AND (`+RenewalQuestionSQL+`) IS NULL AND `+RenewalAnchorSQL+` < $4`,
 		purpose, ids, now, now.Add(-RenewalAfter))
 	if err != nil {
 		return 0, err

@@ -55,17 +55,18 @@ const (
 )
 
 // The brake: one run of a rule changes at most BrakeMaxRows rows, and at most
-// BrakeMaxShare of its table once it would change more than BrakeMinRows. A
-// wrong anchor (an Event end gone missing, a clock far off) can then never
-// empty a table at once. The backlog of the first apply is cleared on
-// purpose, from the command line with --allow-large.
+// BrakeMaxShare of its table once it would change more than BrakeShareFloor.
+// A wrong anchor (an Event end gone missing, a clock far off) can then never
+// empty a large table at once, or a fifth of any table in more than a
+// thousand rows. Below the floor the share is not checked: a normal day's
+// work can be most of a small table (one large Event's guests 90 days on,
+// the first expiries of a young consent table), and refusing it would alarm
+// every such day. The backlog of the first apply is cleared on purpose, one
+// rule at a time, from the command line with --allow-large --rule.
 const (
-	BrakeMaxRows  = 50000
-	BrakeMaxShare = 0.20
-	// BrakeMinRows keeps the share from refusing the daily handful of a
-	// small table (an Event's door staff), which would alarm every day and
-	// teach everyone to pass --allow-large.
-	BrakeMinRows = 100
+	BrakeMaxRows    = 50000
+	BrakeMaxShare   = 0.20
+	BrakeShareFloor = 1000
 )
 
 // brakeRefuses reports whether the brake refuses changing matched rows of a
@@ -74,7 +75,7 @@ func brakeRefuses(matched, tableRows int64) bool {
 	if matched > BrakeMaxRows {
 		return true
 	}
-	return matched > BrakeMinRows && float64(matched) > BrakeMaxShare*float64(tableRows)
+	return matched > BrakeShareFloor && float64(matched) > BrakeMaxShare*float64(tableRows)
 }
 
 const (
@@ -110,7 +111,8 @@ type RunOptions struct {
 	// Rule runs only the named rule. Such a run is not a full run: it does
 	// not count as the day's run.
 	Rule string
-	// AllowLarge lets apply past the brake (the command line only).
+	// AllowLarge lets one rule's apply past the brake (the command line
+	// only, with Rule).
 	AllowLarge bool
 	// OnlyIfDue makes the run check, once it holds the lock, that it is
 	// still due (the schedule): two replicas that both found it due run it
@@ -139,7 +141,10 @@ type ClosedPeriod struct {
 	EndsAt    time.Time
 	// Mode is what the period needed (periodModeSQL): an apply period needs
 	// a successful apply run, a dry-run period a successful run of either.
-	Mode        Mode
+	Mode Mode
+	// ApplyRuns and DryRuns are the schedule's successful full runs in the
+	// period; runs by hand are recorded, not counted. RowsChanged counts
+	// every run's changes, by hand too.
 	ApplyRuns   int
 	DryRuns     int
 	RowsChanged int64
@@ -187,9 +192,11 @@ func RuleNames(c Config) []string {
 	return names
 }
 
-// Due reports whether the scheduled run of mode is due: no full run of it
-// has ended ok or partial in the last 23 hours. It reads the database, so a
-// restart does not make a run due.
+// Due reports whether the scheduled run of mode is due: no scheduled full
+// run of it has ended ok or partial in the last 23 hours. It reads the
+// database, so a restart does not make a run due; a run by hand does not
+// count, so it never stands in for the schedule's day (or hides that the
+// schedule stopped).
 func (s *Sweeper) Due(ctx context.Context, mode Mode) (bool, error) {
 	return due(ctx, s.pool, mode, s.now())
 }
@@ -200,7 +207,7 @@ func due(ctx context.Context, db interface {
 	var last *time.Time
 	if err := db.QueryRow(ctx, `
 		SELECT max(started_at) FROM retention_runs
-		WHERE mode = $1 AND full_run AND status IN ('ok', 'partial')`, string(mode)).Scan(&last); err != nil {
+		WHERE mode = $1 AND full_run AND triggered_by = 'schedule' AND status IN ('ok', 'partial')`, string(mode)).Scan(&last); err != nil {
 		return false, err
 	}
 	return last == nil || !now.Before(last.Add(scheduleEvery)), nil
@@ -216,8 +223,8 @@ func (s *Sweeper) Run(ctx context.Context, opts RunOptions) (Report, error) {
 	if opts.Trigger != TriggerSchedule && opts.Trigger != TriggerCLI {
 		return Report{}, fmt.Errorf("retention sweep: unknown trigger %q", opts.Trigger)
 	}
-	if opts.AllowLarge && (opts.Mode != ModeApply || opts.Trigger != TriggerCLI) {
-		return Report{}, errors.New("retention sweep: --allow-large is for an apply run from the command line")
+	if opts.AllowLarge && (opts.Mode != ModeApply || opts.Trigger != TriggerCLI || opts.Rule == "") {
+		return Report{}, errors.New("retention sweep: --allow-large is for an apply run of one rule from the command line")
 	}
 	if opts.Rule != "" && !knownRule(s.config, opts.Rule) {
 		return Report{}, fmt.Errorf("retention sweep: no rule %q", opts.Rule)
@@ -527,9 +534,9 @@ func (s *Sweeper) advancePeriods(ctx context.Context, conn *pgxpool.Conn, now ti
 		if err := tx.QueryRow(ctx, `
 			UPDATE retention_periods p SET closed_at = $2, mode = `+periodModeSQL+`,
 				apply_runs = (SELECT count(*) FROM retention_runs r
-					WHERE r.period_id = p.id AND r.full_run AND r.mode = 'apply' AND r.status IN ('ok', 'partial')),
+					WHERE r.period_id = p.id AND r.full_run AND r.triggered_by = 'schedule' AND r.mode = 'apply' AND r.status IN ('ok', 'partial')),
 				dry_runs = (SELECT count(*) FROM retention_runs r
-					WHERE r.period_id = p.id AND r.full_run AND r.mode = 'dry-run' AND r.status IN ('ok', 'partial')),
+					WHERE r.period_id = p.id AND r.full_run AND r.triggered_by = 'schedule' AND r.mode = 'dry-run' AND r.status IN ('ok', 'partial')),
 				rows_changed = (SELECT COALESCE(sum(rr.changed + rr.related_changed), 0) FROM retention_run_rules rr
 					JOIN retention_runs r ON r.id = rr.run_id WHERE r.period_id = p.id)
 			WHERE p.id = $1

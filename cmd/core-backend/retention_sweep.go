@@ -21,7 +21,7 @@ import (
 //
 //	core-backend retention-sweep [--rule NAME]                  # dry run: counts, changes nothing
 //	core-backend retention-sweep --apply [--rule NAME]          # changes the rows, under the brake
-//	core-backend retention-sweep --apply --allow-large          # past the brake: the first backlog, on purpose
+//	core-backend retention-sweep --apply --allow-large --rule NAME  # one rule past the brake: a backlog, on purpose
 //
 // It runs inside the core container, which has the environment: the rules'
 // windows follow RETENTION_SWEEP_MODE as the server's do, whatever the mode.
@@ -86,14 +86,14 @@ func parseRetentionSweepOptions(args []string, out io.Writer, rules []string) (r
 	flags := flag.NewFlagSet(retentionSweepCommandName, flag.ContinueOnError)
 	flags.SetOutput(out)
 	flags.Usage = func() {
-		fmt.Fprintf(out, "usage: core-backend %s [--apply [--allow-large]] [--rule NAME]\n", retentionSweepCommandName)
+		fmt.Fprintf(out, "usage: core-backend %s [--apply [--allow-large --rule NAME]] [--rule NAME]\n", retentionSweepCommandName)
 		fmt.Fprintln(out, "Without --apply it is a dry run: it counts what apply would change and changes nothing.")
 		fmt.Fprintf(out, "Rules: %s\n", strings.Join(rules, ", "))
 		flags.PrintDefaults()
 	}
 	var options retentionSweepOptions
 	flags.BoolVar(&options.apply, "apply", false, "change the rows; without it the run only counts")
-	flags.BoolVar(&options.allowLarge, "allow-large", false, "with --apply: go past the brake (more than a fifth of a table or 50,000 rows), for the first backlog")
+	flags.BoolVar(&options.allowLarge, "allow-large", false, "with --apply and --rule: take that rule past the brake (more than 50,000 rows, or a fifth of its table above 1,000), for a backlog")
 	flags.StringVar(&options.rule, "rule", "", "run only this rule; such a run is not the day's run")
 	if err := flags.Parse(args); err != nil {
 		return options, 2
@@ -104,6 +104,10 @@ func parseRetentionSweepOptions(args []string, out io.Writer, rules []string) (r
 	}
 	if options.allowLarge && !options.apply {
 		fmt.Fprintln(out, "--allow-large needs --apply")
+		return options, 2
+	}
+	if options.allowLarge && options.rule == "" {
+		fmt.Fprintln(out, "--allow-large needs --rule: one rule at a time")
 		return options, 2
 	}
 	if options.rule != "" {

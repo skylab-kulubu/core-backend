@@ -2,8 +2,13 @@ package retention
 
 import (
 	"context"
+	"io/fs"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/skylab-kulubu/core-backend/db"
+	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
 )
 
@@ -36,6 +41,65 @@ func TestRefererOriginKeepsSchemeAndHostOnly(t *testing.T) {
 		}
 		if once != want || twice != once {
 			t.Errorf("%q: %q then %q, want %q", raw, once, twice, want)
+		}
+	}
+}
+
+// The daily scrub and its count find the click rows that still hold
+// something personal through url_hits_personal_at_idx, whose predicate is
+// the rule's own: rows leave the index as they are scrubbed, so a day's work
+// reads a day's rows, not every click ever kept. The migration's predicate
+// is the one the rule is built from.
+func TestURLHitsScrubReadsItsPartialIndex(t *testing.T) {
+	pool := testpostgres.Start(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	up, err := fs.ReadFile(db.UpSQL, "migrations/"+urlHitsIndexMigration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "CREATE INDEX CONCURRENTLY IF NOT EXISTS url_hits_personal_at_idx ON url_hits (at) WHERE " + hitPersonalSQL("") + ";"; !strings.Contains(string(up), want) {
+		t.Fatalf("the migration's index predicate is not the rule's:\n%s\nwant\n%s", up, want)
+	}
+	var rule Rule
+	for _, r := range Rules(Config{Mode: ModeApply, Period: 90 * day}, Schema{}) {
+		if r.Name == "url_hits_scrub" {
+			rule = r
+		}
+	}
+	batch := "SELECT h.id FROM url_hits h WHERE " + rule.where + " LIMIT $2 FOR UPDATE OF h SKIP LOCKED"
+	for name, query := range map[string]string{"count": rule.countSQL(), "batch": batch} {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// An empty test table: forbid the sequential scan so the plan shows
+		// whether the index can serve the query at all.
+		if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+			t.Fatal(err)
+		}
+		args := []any{time.Now().Add(-365 * day)}
+		if name == "batch" {
+			args = append(args, 500)
+		}
+		rows, err := tx.Query(ctx, "EXPLAIN "+query, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plan strings.Builder
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatal(err)
+			}
+			plan.WriteString(line + "\n")
+		}
+		rows.Close()
+		_ = tx.Rollback(ctx)
+		if !strings.Contains(plan.String(), "url_hits_personal_at_idx") {
+			t.Errorf("%s does not read the index:\n%s", name, plan.String())
 		}
 	}
 }
