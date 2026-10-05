@@ -6,7 +6,16 @@ import (
 	"github.com/google/uuid"
 )
 
+// HitRetention is how long the hourly cleanup keeps a click row before it
+// deletes it, address and all. With the retention sweep in apply mode that
+// cleanup does not run: the row stays and the sweep empties its personal
+// fields after a year (ADR-0062, internal/retention).
 const HitRetention = 90 * 24 * time.Hour
+
+// HitListWindow is how far back the click list and a form's channel
+// statistics look, whatever is kept: 90 days, as before the rows were kept
+// longer.
+const HitListWindow = 90 * 24 * time.Hour
 
 const (
 	SourcePersonal = "personal"

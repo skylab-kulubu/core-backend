@@ -1,0 +1,13 @@
+-- The click rows that still hold something personal, by time: what the
+-- retention sweep's url_hits_scrub counts and empties every day (ADR-0062,
+-- docs/retention-sweep.md). The predicate is the rule's own
+-- (retention.hitPersonalSQL, the test compares them), so a scrubbed row
+-- leaves the index and a day's work reads a day's rows, however many clicks
+-- are kept.
+--
+-- CREATE INDEX CONCURRENTLY: building it never blocks a click (the table
+-- takes SHARE UPDATE EXCLUSIVE, which reads and writes do not wait on). It
+-- cannot run in a transaction, so this file is that one statement; the
+-- migration tool drops an invalid index a stopped build left before it runs
+-- this again (migrate.concurrentIndexes).
+CREATE INDEX CONCURRENTLY IF NOT EXISTS url_hits_personal_at_idx ON url_hits (at) WHERE (ip <> '' OR user_agent <> '' OR user_id IS NOT NULL OR utm_campaign <> '' OR utm_term <> '' OR utm_content <> '' OR referer <> CASE WHEN referer ~ '^[A-Za-z][A-Za-z0-9+.-]*://' THEN lower(substring(referer FROM '^([A-Za-z][A-Za-z0-9+.-]*://)')) || lower(COALESCE(substring(referer FROM '^[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#]*@)?(\[[^]/?#]*\]|[^/?#:@]*)'), '')) ELSE '' END);

@@ -170,7 +170,7 @@ func (s *service) FormStats(ctx context.Context, p authz.Principal, formID uuid.
 	if !s.formsAllowed(p, authz.Read) {
 		return Stats{}, ErrForbidden
 	}
-	since := time.Now().UTC().Add(-HitRetention)
+	since := time.Now().UTC().Add(-HitListWindow)
 	sources, err := s.store.FormSources(ctx, formID, since)
 	if err != nil {
 		return Stats{}, err

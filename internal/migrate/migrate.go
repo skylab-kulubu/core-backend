@@ -1145,6 +1145,63 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE proname = 'media_role_purposes'
 			  AND prosrc LIKE '%(''forms'', ''answer'', ''answer_file_guest'')%'
 		)`,
+	// Contact consents (ADR-0062): the table, its one-open-grant and audience
+	// indexes, and its account reference guard.
+	20261005100000: `
+		SELECT 1
+		WHERE to_regclass('public.contact_consents') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'contact_consents' AND column_name = 'confirmation_mails'
+		)
+		AND to_regclass('public.contact_consents_open_user_idx') IS NOT NULL
+		AND to_regclass('public.contact_consents_open_email_idx') IS NOT NULL
+		AND to_regclass('public.contact_consents_audience_idx') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.contact_consents')
+			  AND tgname = 'contact_consents_require_active_subject'
+		)`,
+	// The account erasure step that deletes a person's contact consents.
+	20261005100100: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.account_deletion_steps')
+		  AND conname = 'account_deletion_steps_step_check'
+		  AND pg_get_constraintdef(oid) LIKE '%''erase_contact_consents''%'`,
+	// The periodic destruction records (ADR-0062): the three tables and the
+	// index that allows one open period.
+	20261005120000: `
+		SELECT 1
+		WHERE to_regclass('public.retention_periods') IS NOT NULL
+		AND to_regclass('public.retention_runs') IS NOT NULL
+		AND to_regclass('public.retention_run_rules') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'retention_periods' AND column_name = 'mode'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'retention_periods_open_idx'
+			  AND indexdef LIKE 'CREATE UNIQUE INDEX retention_periods_open_idx ON public.retention_periods %WHERE (closed_at IS NULL)'
+		)`,
+	// The retention sweep's click index: present, valid (a concurrent build
+	// that stopped midway leaves an invalid one), partial, on url_hits(at).
+	20261005140000: `
+		SELECT 1 FROM pg_index i
+		WHERE i.indexrelid = to_regclass('public.url_hits_personal_at_idx')
+		  AND i.indrelid = to_regclass('public.url_hits')
+		  AND i.indisvalid AND i.indpred IS NOT NULL
+		  AND pg_get_indexdef(i.indexrelid) LIKE 'CREATE INDEX url_hits_personal_at_idx ON public.url_hits USING btree (at) WHERE %'`,
+}
+
+// concurrentIndexes are the migrations that build one index with CREATE
+// INDEX CONCURRENTLY, by the index's name. Such a statement cannot run in a
+// transaction, so each of their files is that one statement (a single
+// statement of the simple protocol runs outside a transaction block). A
+// build that stopped midway leaves an invalid index that IF NOT EXISTS
+// would keep; Apply drops it, concurrently too, before the build runs again.
+var concurrentIndexes = map[int64]string{
+	20261005140000: "url_hits_personal_at_idx",
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
@@ -1183,6 +1240,11 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 		body, err := fs.ReadFile(db.UpSQL, path.Join("migrations", f.name))
 		if err != nil {
 			return err
+		}
+		if index, ok := concurrentIndexes[f.version]; ok {
+			if err := dropInvalidIndex(ctx, pool, index); err != nil {
+				return fmt.Errorf("migration %d: %w", f.version, err)
+			}
 		}
 		if err := execSQL(ctx, pool, string(body)); err != nil {
 			return fmt.Errorf("migration %d: %w", f.version, err)
@@ -1276,6 +1338,21 @@ func alreadyPresent(ctx context.Context, pool *pgxpool.Pool, version int64) (boo
 		return false, err
 	}
 	return true, nil
+}
+
+// dropInvalidIndex drops index when it exists and is invalid: the remains of
+// a concurrent build that stopped.
+func dropInvalidIndex(ctx context.Context, pool *pgxpool.Pool, index string) error {
+	var invalid bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pg_index WHERE indexrelid = to_regclass('public.' || $1::text) AND NOT indisvalid)`, index).Scan(&invalid); err != nil {
+		return err
+	}
+	if !invalid {
+		return nil
+	}
+	log.Printf("migrate: dropping the invalid index %s a stopped build left", index)
+	return execSQL(ctx, pool, `DROP INDEX CONCURRENTLY IF EXISTS public.`+pgx.Identifier{index}.Sanitize())
 }
 
 func record(ctx context.Context, pool *pgxpool.Pool, version int64) error {
