@@ -51,7 +51,11 @@ func runMediaLegacyReport(args []string, getenv func(string) string, out, errOut
 	}
 	defer closeStore()
 	var groups func(context.Context, uuid.UUID) ([]string, error)
-	if config, missing := keycloakFromEnv(getenv); len(missing) == 0 {
+	if config, missing, err := keycloakFromEnv(getenv); len(missing) == 0 {
+		if err != nil {
+			fmt.Fprintf(errOut, "%s: %v\n", mediaLegacyReportCommandName, err)
+			return 2
+		}
 		keycloak := identity.NewKeycloak(config)
 		groups = func(ctx context.Context, id uuid.UUID) ([]string, error) {
 			found, err := keycloak.GroupsForUser(ctx, id)

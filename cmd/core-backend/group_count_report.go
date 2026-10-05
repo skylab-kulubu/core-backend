@@ -32,9 +32,13 @@ const groupOverageThreshold = 30
 // runGroupCountReport wires the report to Keycloak through core's service
 // account (read-only).
 func runGroupCountReport(args []string, getenv func(string) string, out, errOut io.Writer) int {
-	config, missing := keycloakFromEnv(getenv)
+	config, missing, err := keycloakFromEnv(getenv)
 	if len(missing) > 0 {
 		fmt.Fprintf(errOut, "%s needs %s\n", groupCountReportCommandName, strings.Join(missing, ", "))
+		return 2
+	}
+	if err != nil {
+		fmt.Fprintf(errOut, "%s: %v\n", groupCountReportCommandName, err)
 		return 2
 	}
 	ctx, stop := commandContext()
