@@ -9,12 +9,16 @@ last name and e-mail are required.
 ([contact-consents.md](contact-consents.md)): `["event_invitations"]`, or
 `[{"purpose":"event_invitations","textVersion":"davet-v1"}]` to
 name the text shown. Absent or empty, nothing is recorded: the box is
-unticked unless the guest ticked it. A field core cannot read is `400`
-(`consent_invalid`, `consent_text_unknown`) and no Ticket is written. After
-the Ticket each grant is recorded `pending` and core mails the guest a
-confirmation link, whoever called: the answer below does not change. A grant
-that cannot be recorded turns the `201` into `503` (`consent_not_recorded`);
-sending the application again finds the Ticket and records it.
+unticked unless the guest ticked it. The field is judged whole before
+anything is written, the guest's address included: an address a consent
+cannot use, an unknown or not enabled purpose (`purpose_not_enabled`), an
+unknown text, or more entries than purposes is `400` (`consent_invalid`,
+`consent_text_unknown`) and no Ticket is written. After the Ticket each grant
+is recorded `pending` and core mails the guest a confirmation link (no name
+in it), whoever called: the answer below does not change. A grant that cannot
+be recorded for a passing reason turns the `201` into `503`
+(`consent_not_recorded`); sending the application again finds the Ticket and
+records it.
 
 The route is public (`api.` sends it to core) and takes a token without
 requiring one. Event ids are public, so anybody may call it with any e-mail.
