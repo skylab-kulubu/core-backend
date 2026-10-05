@@ -121,6 +121,7 @@ on the newest one of its purpose.
 | 3 years without a confirmation, a renewal or a check-in at an Event | the grant is due its renewal question: the audience marks it `renewalDue` with a `renewUrl` |
 | SkyMail sent the renewal question | `POST /v1/consents/renewal-requests` records it (`renewalRequestedAt`) |
 | 60 days after the question without a renewal or check-in | the retention sweep ends the grant as `expired` |
+| a check-in after the question | answers it as the link would: the question is void (`consent.RenewalQuestionSQL`), the audience no longer shows it, the grant never expires on it, and 3 years after that check-in the grant is due and asked again |
 | ended (withdrawn, expired or superseded) | the address is cleared at once; the retention sweep deletes a grant that was once confirmed 3 years after its end (one never confirmed on the pending schedule, above) |
 | account erasure | every row of the person is deleted, open or ended: their account's and those given for any of their addresses, Keycloak's included (step `erase_contact_consents`, right after the logout and before the services, so no invitation goes out while a service holds the saga); there is no suppression list (ADR-0051 decision 4) |
 
@@ -245,10 +246,12 @@ role of the `core` client, whose client is mapped to a source in
   An item with `renewalDue` gets the renewal question (with `renewUrl` and
   `withdrawUrl`) instead of an invitation, **once**: an item whose
   `renewalRequestedAt` is set has been asked; do not ask again, and send it
-  no invitation while it waits.
+  no invitation while it waits. `renewalRequestedAt` is the standing
+  question only: one the person answered by coming to an Event is no longer
+  shown, and the item is asked again when it is next due.
 - `POST /v1/consents/renewal-requests` `{"purpose", "ids": [≤ 1000]}` →
   `200 {"requested": n}`: the renewal question went to these grants. Only
-  due, not yet asked grants change.
+  due grants without a standing question change.
 
 ### A signed-in person
 

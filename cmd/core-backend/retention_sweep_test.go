@@ -24,6 +24,7 @@ func TestRetentionSweepRefusesBadUsageAndConfiguration(t *testing.T) {
 		want string
 	}{
 		"allow-large without apply": {[]string{"--allow-large"}, nil, "--allow-large needs --apply"},
+		"allow-large without rule":  {[]string{"--apply", "--allow-large"}, nil, "--allow-large needs --rule: one rule at a time"},
 		"unknown rule":              {[]string{"--rule", "guests"}, nil, `no rule "guests"; the rules are guest_phone, guest_identity, door_staff`},
 		"stray argument":            {[]string{"apply"}, nil, "usage: core-backend retention-sweep"},
 		"unknown flag":              {[]string{"--force"}, nil, "flag provided but not defined"},
@@ -68,7 +69,7 @@ func TestRetentionSweepPrintsCountsAndExitsByOutcome(t *testing.T) {
 		t.Fatalf("options %+v", runner.got)
 	}
 	for _, want := range []string{
-		"retention-sweep: dry run, nothing was changed (rule set v1, schedule RETENTION_SWEEP_MODE=dry-run)",
+		"retention-sweep: dry run, nothing was changed (rule set v2, schedule RETENTION_SWEEP_MODE=dry-run)",
 		"guest_phone   1  sweep  scrub   tickets   2026-07-07T12:00:00Z  12       0        0        10       1           5000        dry_run",
 		"url_hits_age: not applicable: click rows are kept in apply mode",
 		"run 6f0b8c4e-2a7d-4d0e-9a51-1f0c2b3d4e5f: ok",
@@ -82,11 +83,11 @@ func TestRetentionSweepPrintsCountsAndExitsByOutcome(t *testing.T) {
 		{Rule: ruleNamed(t, "door_staff"), Cutoff: &cutoff, Status: retention.RuleFailed, ErrorCode: "sqlstate_57014"},
 	}}}
 	out.Reset()
-	if code := retentionSweepCommand(context.Background(), &out, runner, config, retentionSweepOptions{apply: true, allowLarge: true}); code != 1 ||
+	if code := retentionSweepCommand(context.Background(), &out, runner, config, retentionSweepOptions{apply: true, allowLarge: true, rule: "door_staff"}); code != 1 ||
 		!strings.Contains(out.String(), "failed (sqlstate_57014)") || !strings.Contains(out.String(), "partial") {
 		t.Fatalf("partial: exit %d\n%s", code, out.String())
 	}
-	if runner.got != (retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerCLI, AllowLarge: true}) {
+	if runner.got != (retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerCLI, AllowLarge: true, Rule: "door_staff"}) {
 		t.Fatalf("options %+v", runner.got)
 	}
 

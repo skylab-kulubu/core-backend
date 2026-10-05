@@ -606,3 +606,46 @@ func TestLookupCountsTheAccountsOwnGrantForItsAddress(t *testing.T) {
 		t.Fatalf("states of an account being erased %v %v", states, err)
 	}
 }
+
+// A renewal question older than the grant's last renewal or attendance was
+// answered by it: the audience no longer shows it, and once the grant is due
+// again the question can be asked again (renewal_requested_at would
+// otherwise stay set for ever, so the grant would never be asked and, the
+// question being older than the attendance, never expire).
+func TestRenewalQuestionAnsweredByAttendanceIsVoid(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	result, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "came@example.com", Source: consent.SourcePlace, ClientID: "place", EmailVerified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(consent.RenewalAfter + 24*time.Hour)
+	if asked, err := f.svc.RequestRenewal(ctx, consent.PurposeEventInvitations, []uuid.UUID{result.ID}); err != nil || asked != 1 {
+		t.Fatalf("first question %d %v", asked, err)
+	}
+	asked := f.now
+	eventID, dayID, sessionID, ticketID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	f.exec(t, `INSERT INTO events (id, name, location, owner_team) VALUES ($1, 'Hack', 'YTÜ', 'WEBLAB')`, eventID)
+	f.exec(t, `INSERT INTO event_days (id, event_id) VALUES ($1, $2)`, dayID, eventID)
+	f.exec(t, `INSERT INTO sessions (id, event_day_id, title, session_type) VALUES ($1, $2, 'Oturum', 'PRESENTATION')`, sessionID, dayID)
+	f.exec(t, `INSERT INTO tickets (id, event_id, ticket_type, guest_email) VALUES ($1, $2, 'GUEST', 'came@example.com')`, ticketID, eventID)
+	f.exec(t, `INSERT INTO ticket_checkins (id, ticket_id, event_day_id, session_id, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		uuid.New(), ticketID, dayID, sessionID, asked.Add(7*24*time.Hour))
+
+	f.now = asked.Add(30 * 24 * time.Hour)
+	entries, _, err := f.svc.Audience(ctx, consent.PurposeEventInvitations, uuid.Nil, 10)
+	if err != nil || len(entries) != 1 || entries[0].RenewalDue || entries[0].RenewalRequestedAt != nil {
+		t.Fatalf("answered question still shown: %+v %v", entries, err)
+	}
+	if n, _ := f.svc.RequestRenewal(ctx, consent.PurposeEventInvitations, []uuid.UUID{result.ID}); n != 0 {
+		t.Fatal("asked again while not due")
+	}
+	f.now = asked.Add(7*24*time.Hour + consent.RenewalAfter + 24*time.Hour)
+	entries, _, _ = f.svc.Audience(ctx, consent.PurposeEventInvitations, uuid.Nil, 10)
+	if len(entries) != 1 || !entries[0].RenewalDue || entries[0].RenewalRequestedAt != nil {
+		t.Fatalf("due again: %+v", entries)
+	}
+	if n, err := f.svc.RequestRenewal(ctx, consent.PurposeEventInvitations, []uuid.UUID{result.ID}); err != nil || n != 1 {
+		t.Fatalf("second question %d %v", n, err)
+	}
+}

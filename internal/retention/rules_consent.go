@@ -25,9 +25,10 @@ func consentRules(s Schema) []Rule {
 		{
 			Name: "consent_renewal_unanswered", Version: 1, Kind: KindSweep, Action: ActionScrub,
 			Table: "contact_consents", alias: "c", key: "id", Period: consent.RenewalAnswerWindow,
-			where: `c.ended_at IS NULL AND c.confirmed_at IS NOT NULL AND c.renewal_requested_at < $1
-	AND ` + consent.RenewalAnchorSQL + ` < c.renewal_requested_at`,
-			set: `ended_at = now(), ended_reason = 'expired', ended_via = 'renewal_unanswered', email = NULL`,
+			// The standing question only: one the person answered by
+			// attending is void (consent.RenewalQuestionSQL).
+			where: `c.ended_at IS NULL AND c.confirmed_at IS NOT NULL AND (` + consent.RenewalQuestionSQL + `) < $1`,
+			set:   `ended_at = now(), ended_reason = 'expired', ended_via = 'renewal_unanswered', email = NULL`,
 		},
 		{
 			Name: "consent_proof", Version: 1, Kind: KindSweep, Action: ActionDelete,

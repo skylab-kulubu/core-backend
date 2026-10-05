@@ -78,6 +78,10 @@ func TestHourlyCleanupWindowsChangeOnlyInApply(t *testing.T) {
 	}
 }
 
+// The brake refuses more than 50,000 rows, and more than a fifth of a table
+// once a run would change more than 1,000 rows. Below that the share is
+// left alone: one large Event's guests (401 phones of 2,000 Tickets) or a
+// young consent table's first expiries are a normal day's work.
 func TestBrakeRefusesAFifthOfATableOrFiftyThousandRows(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -85,10 +89,13 @@ func TestBrakeRefusesAFifthOfATableOrFiftyThousandRows(t *testing.T) {
 		refuse         bool
 	}{
 		{0, 0, false},
-		{100, 100, false},   // a small table's handful never trips it
-		{101, 505, false},   // exactly a fifth
-		{102, 505, true},    // more than a fifth
-		{101, 10000, false}, // a small share
+		{401, 2000, false},  // one large Event's phones
+		{150, 300, false},   // a young consent table
+		{1000, 1000, false}, // the whole of a small table: the share is not checked
+		{1001, 5005, false}, // exactly a fifth
+		{1002, 5005, true},  // more than a fifth
+		{1500, 2500, true},
+		{1001, 10000, false}, // a small share
 		{50000, 10_000_000, false},
 		{50001, 10_000_000, true},
 		{2001, 10000, true},
@@ -152,12 +159,13 @@ func TestRulePeriodsAreThePolicy(t *testing.T) {
 		action  Action
 		table   string
 		related string
+		version int
 	}{
-		"guest_phone":    {90 * day, ActionScrub, "tickets", ""},
-		"guest_identity": {730 * day, ActionScrub, "tickets", "certificates"},
-		"door_staff":     {90 * day, ActionDelete, "event_door_staff", ""},
-		"url_hits_scrub": {365 * day, ActionScrub, "url_hits", ""},
-		"read_link_ip":   {365 * day, ActionScrub, "media_read_link_opens", ""},
+		"guest_phone":    {90 * day, ActionScrub, "tickets", "", 1},
+		"guest_identity": {730 * day, ActionScrub, "tickets", "certificates", 2},
+		"door_staff":     {90 * day, ActionDelete, "event_door_staff", "", 1},
+		"url_hits_scrub": {365 * day, ActionScrub, "url_hits", "", 2},
+		"read_link_ip":   {365 * day, ActionScrub, "media_read_link_opens", "", 1},
 	}
 	sweeps := 0
 	for _, rule := range Rules(Config{Mode: ModeApply, Period: 90 * day, MediaRecoveryWindow: 30 * day}, Schema{}) {
@@ -166,11 +174,11 @@ func TestRulePeriodsAreThePolicy(t *testing.T) {
 		}
 		sweeps++
 		w, ok := want[rule.Name]
-		if !ok || rule.Period != w.period || rule.Action != w.action || rule.Table != w.table || rule.RelatedTable != w.related || rule.Version != 1 {
+		if !ok || rule.Period != w.period || rule.Action != w.action || rule.Table != w.table || rule.RelatedTable != w.related || rule.Version != w.version {
 			t.Fatalf("%s: %s %s %s %s v%d", rule.Name, rule.Period, rule.Action, rule.Table, rule.RelatedTable, rule.Version)
 		}
 	}
-	if sweeps != len(want) || RuleSetVersion != 1 {
+	if sweeps != len(want) || RuleSetVersion != 2 {
 		t.Fatalf("%d sweep rules, set v%d", sweeps, RuleSetVersion)
 	}
 }
