@@ -66,6 +66,9 @@ type Metrics struct {
 	config    Config
 	now       func() time.Time
 	attention func(Attention)
+	// started is when this process began watching: the staleness reference
+	// only while the records hold no run at all.
+	started time.Time
 
 	mu        sync.Mutex
 	snapshot  *snapshot
@@ -97,11 +100,11 @@ func NewMetrics(pool *pgxpool.Pool, config Config, attention func(Attention)) *M
 	if attention == nil {
 		attention = LogAttention(log.Default())
 	}
-	return &Metrics{pool: pool, config: config, now: time.Now, attention: attention, announced: map[Attention]bool{}}
+	return &Metrics{pool: pool, config: config, now: time.Now, attention: attention, announced: map[Attention]bool{}, started: time.Now()}
 }
 
 // SetClock replaces the clock (tests).
-func (m *Metrics) SetClock(now func() time.Time) { m.now = now }
+func (m *Metrics) SetClock(now func() time.Time) { m.now = now; m.started = now() }
 
 // Refresh reads the records. A failed read keeps the last values.
 func (m *Metrics) Refresh(ctx context.Context) error {
@@ -211,17 +214,16 @@ func (m *Metrics) Refresh(ctx context.Context) error {
 		return err
 	}
 
-	// When the configured mode began: its first run after the latest run
-	// in another mode. Before its first run nothing is stale yet.
-	var modeSince *time.Time
+	// The latest run in another mode: about when the configured mode was
+	// switched to, so a switch is not stale before the new mode's first run.
+	var otherMode, firstRun *time.Time
 	if err := m.pool.QueryRow(ctx, `
-		SELECT min(started_at) FROM retention_runs
-		WHERE mode = $1 AND started_at > COALESCE(
-			(SELECT max(started_at) FROM retention_runs WHERE mode <> $1), '-infinity'::timestamptz)`,
-		string(m.config.Mode)).Scan(&modeSince); err != nil {
+		SELECT (SELECT max(started_at) FROM retention_runs WHERE mode <> $1),
+			(SELECT min(started_at) FROM retention_runs)`,
+		string(m.config.Mode)).Scan(&otherMode, &firstRun); err != nil {
 		return err
 	}
-	s.attention = m.attentionOf(s, modeSince, now)
+	s.attention = m.attentionOf(s, staleSince(s.lastSuccess[m.config.Mode], otherMode, firstRun, m.started), now)
 
 	m.mu.Lock()
 	m.snapshot = s
@@ -251,17 +253,33 @@ func relatedTables(c Config) map[string]string {
 	return out
 }
 
+// staleSince is what the lack of a successful run is measured from: the
+// configured mode's last success; the first run ever, when there was none;
+// the switch to the mode (the latest run in another), when that came later,
+// since a success before the switch says nothing about the new mode. With no
+// record of any run at all, it is when this process began watching. A
+// deploy never resets it while runs are recorded.
+func staleSince(lastSuccess time.Time, otherMode, firstRun *time.Time, started time.Time) time.Time {
+	if firstRun == nil {
+		return started
+	}
+	since := lastSuccess
+	if since.Before(*firstRun) {
+		since = *firstRun
+	}
+	if otherMode != nil && otherMode.After(since) {
+		since = *otherMode
+	}
+	return since
+}
+
 // attentionOf lists the states of s that need a person, in a fixed order.
-func (m *Metrics) attentionOf(s *snapshot, modeSince *time.Time, now time.Time) []Attention {
+func (m *Metrics) attentionOf(s *snapshot, staleFrom time.Time, now time.Time) []Attention {
 	var out []Attention
 	if m.config.Mode == ModeOff {
 		return nil
 	}
-	if last, ok := s.lastSuccess[m.config.Mode]; ok {
-		if now.Sub(last) > staleAfter {
-			out = append(out, Attention{Reason: AttentionStale})
-		}
-	} else if modeSince != nil && now.Sub(*modeSince) > staleAfter {
+	if now.Sub(staleFrom) > staleAfter {
 		out = append(out, Attention{Reason: AttentionStale})
 	}
 	if s.latestStatus == RunFailed {

@@ -156,7 +156,10 @@ an hour:
 Attention (each logged once per state as `retention_attention reason=…
 rule=…`):
 
-- `stale`: no successful full run in the configured mode for 48 hours;
+- `stale`: no successful full run in the configured mode for 48 hours,
+  counted from its last success, from the switch to the mode when that came
+  later, or from the first run when none succeeded (a deploy does not reset
+  it);
 - `run_failed`: the latest run stopped before its end;
 - `rule_failed`, `refused_large`: in the latest run;
 - `overdue`: rows a day past their period remain after an apply run's rule,

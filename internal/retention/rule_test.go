@@ -270,3 +270,28 @@ func TestErrorCodesNeverCarryAMessage(t *testing.T) {
 		}
 	}
 }
+
+// Staleness is two days without a success in the configured mode, measured
+// so that a deploy never hides it and a switch of mode does not raise it
+// before the new mode's first run.
+func TestStaleSinceNeitherResetsOnDeployNorAlarmsOnASwitch(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	ago := func(d time.Duration) *time.Time { at := now.Add(-d); return &at }
+	for name, c := range map[string]struct {
+		lastSuccess         time.Time
+		otherMode, firstRun *time.Time
+		started             time.Time
+		want                time.Time
+	}{
+		"no run recorded: since this process watches": {time.Time{}, nil, nil, now.Add(-time.Hour), now.Add(-time.Hour)},
+		"steady, a deploy an hour ago":                {now.Add(-72 * time.Hour), nil, ago(30 * day), now.Add(-time.Hour), now.Add(-72 * time.Hour)},
+		"never succeeded: since the first run":        {time.Time{}, nil, ago(50 * time.Hour), now, now.Add(-50 * time.Hour)},
+		"switched from dry-run yesterday":             {now.Add(-90 * day), ago(20 * time.Hour), ago(200 * day), now, now.Add(-20 * time.Hour)},
+		"switched long ago, failing since":            {now.Add(-5 * day), ago(40 * day), ago(200 * day), now, now.Add(-5 * day)},
+	} {
+		if got := staleSince(c.lastSuccess, c.otherMode, c.firstRun, c.started); !got.Equal(c.want) {
+			t.Errorf("%s: %s, want %s", name, got, c.want)
+		}
+	}
+}
