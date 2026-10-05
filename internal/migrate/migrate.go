@@ -1176,6 +1176,10 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		AND to_regclass('public.retention_runs') IS NOT NULL
 		AND to_regclass('public.retention_run_rules') IS NOT NULL
 		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'retention_periods' AND column_name = 'mode'
+		)
+		AND EXISTS (
 			SELECT 1 FROM pg_indexes
 			WHERE schemaname = 'public' AND indexname = 'retention_periods_open_idx'
 			  AND indexdef LIKE 'CREATE UNIQUE INDEX retention_periods_open_idx ON public.retention_periods %WHERE (closed_at IS NULL)'

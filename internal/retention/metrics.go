@@ -34,8 +34,9 @@ const (
 	// AttentionOverdue: rows a day past their period remain: after an
 	// apply run's rule, or for an audit whose cleanup should leave none.
 	AttentionOverdue = "overdue"
-	// AttentionPeriodWithoutRun: the last period closed without a
-	// successful full run.
+	// AttentionPeriodWithoutRun: the last period closed without the
+	// successful full run its mode needed: an apply run for an apply
+	// period, a run of either mode for a dry-run period (the rollout).
 	AttentionPeriodWithoutRun = "period_without_run"
 )
 
@@ -83,15 +84,17 @@ type ruleRow struct {
 type changedKey struct{ rule, table string }
 
 type snapshot struct {
-	lastSuccess    map[Mode]time.Time
-	latestMode     Mode
-	latestStatus   RunStatus
-	latestRules    []ruleRow
-	changed        map[changedKey]int64
-	failures       map[string]int64
-	periodEndsAt   *time.Time
-	lastClosedRuns *int64
-	attention      []Attention
+	lastSuccess  map[Mode]time.Time
+	latestMode   Mode
+	latestStatus RunStatus
+	latestRules  []ruleRow
+	changed      map[changedKey]int64
+	failures     map[string]int64
+	periodEndsAt *time.Time
+	// lastClosedMet is whether the latest closed period had the run its
+	// mode needed; nil before one closed.
+	lastClosedMet *bool
+	attention     []Attention
 }
 
 // NewMetrics builds the metrics. attention receives each attention once
@@ -207,10 +210,13 @@ func (m *Metrics) Refresh(ctx context.Context) error {
 		return err
 	}
 
+	// An apply period needs a successful apply run; a dry-run period (the
+	// rollout) a successful run of either mode.
 	if err := m.pool.QueryRow(ctx, `
 		SELECT (SELECT ends_at FROM retention_periods WHERE closed_at IS NULL),
-			(SELECT apply_runs + dry_runs FROM retention_periods WHERE closed_at IS NOT NULL ORDER BY ends_at DESC LIMIT 1)`).
-		Scan(&s.periodEndsAt, &s.lastClosedRuns); err != nil {
+			(SELECT CASE WHEN mode = 'apply' THEN apply_runs > 0 ELSE apply_runs + dry_runs > 0 END
+			 FROM retention_periods WHERE closed_at IS NOT NULL ORDER BY ends_at DESC LIMIT 1)`).
+		Scan(&s.periodEndsAt, &s.lastClosedMet); err != nil {
 		return err
 	}
 
@@ -300,7 +306,7 @@ func (m *Metrics) attentionOf(s *snapshot, staleFrom time.Time, now time.Time) [
 			out = append(out, Attention{Reason: AttentionOverdue, Rule: r.rule})
 		}
 	}
-	if s.lastClosedRuns != nil && *s.lastClosedRuns == 0 {
+	if s.lastClosedMet != nil && !*s.lastClosedMet {
 		out = append(out, Attention{Reason: AttentionPeriodWithoutRun})
 	}
 	return out

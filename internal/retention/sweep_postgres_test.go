@@ -527,11 +527,12 @@ func TestGuestIdentityKeepsActiveInvitationConsentHolders(t *testing.T) {
 }
 
 // The contact consent lifecycle's destruction (docs/contact-consents.md): a
-// pending grant, or a superseded one, goes 30 days after its last
-// confirmation mail; a renewal question unanswered for 60 days (no renewal,
-// no check-in since) ends the grant as expired and clears its address; any
-// other ended grant's proof goes after three years. A second run changes
-// nothing.
+// grant that was never confirmed (pending, or ended as superseded or
+// withdrawn before it was) goes 30 days after its last confirmation mail: it
+// was never consent, so it is no proof. A renewal question unanswered for 60
+// days (no renewal, no check-in since) ends the grant as expired and clears
+// its address. A grant that was once confirmed and ended is proof, kept three
+// years. A second run changes nothing.
 func TestConsentRulesFollowTheConsentLifecycle(t *testing.T) {
 	pool := migrated(t)
 	ctx := context.Background()
@@ -547,6 +548,10 @@ func TestConsentRulesFollowTheConsentLifecycle(t *testing.T) {
 	supersededOld := insertGrant(t, pool, grant{email: "x", granted: at(40 * day), sent: at(40 * day), ended: at(35 * day), endedReason: "superseded"})
 	supersededYoung := insertGrant(t, pool, grant{email: "x", granted: at(12 * day), sent: at(10 * day), ended: at(9 * day), endedReason: "superseded"})
 	supersededAncient := insertGrant(t, pool, grant{email: "x", granted: at(4 * 365 * day), sent: at(4 * 365 * day), ended: at(4*365*day - day), endedReason: "superseded"})
+	// Withdrawn before it was ever confirmed: no proof either.
+	withdrawnPendingOld := insertGrant(t, pool, grant{email: "x", granted: at(40 * day), sent: at(40 * day), ended: at(39 * day)})
+	withdrawnPendingYoung := insertGrant(t, pool, grant{email: "x", granted: at(12 * day), sent: at(12 * day), ended: at(11 * day)})
+	withdrawnPendingAncient := insertGrant(t, pool, grant{email: "x", granted: at(4 * 365 * day), sent: at(4 * 365 * day), ended: at(4 * 365 * day)})
 
 	unanswered := insertGrant(t, pool, grant{email: "unanswered@example.com", confirmed: at(4 * 365 * day), renewalRequested: at(70 * day)})
 	attended := insertGrant(t, pool, grant{email: "attended@example.com", confirmed: at(4 * 365 * day), renewalRequested: at(70 * day)})
@@ -567,8 +572,8 @@ func TestConsentRulesFollowTheConsentLifecycle(t *testing.T) {
 
 	now := testNow
 	s := sweeper(pool, dryRunConfig(), &now, nil)
-	// A superseded row is no proof: the proof rule leaves it to the pending
-	// one, even past three years.
+	// A never-confirmed row is no proof: the proof rule leaves it to the
+	// pending one, even past three years. It takes only the old confirmed one.
 	proof, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerCLI, Rule: "consent_proof"})
 	if err != nil || len(proof.Rules) != 1 || proof.Rules[0].Changed != 1 {
 		t.Fatalf("proof only: %v %+v", err, proof)
@@ -579,7 +584,7 @@ func TestConsentRulesFollowTheConsentLifecycle(t *testing.T) {
 		t.Fatalf("%v %+v", err, report)
 	}
 	got := results(report)
-	for name, changed := range map[string]int64{"consent_pending": 4, "consent_renewal_unanswered": 2, "consent_proof": 0} {
+	for name, changed := range map[string]int64{"consent_pending": 6, "consent_renewal_unanswered": 2, "consent_proof": 0} {
 		if r := got[name]; r.Changed != changed || r.Matched != changed || r.Overdue != 0 || r.Status != retention.RuleOK {
 			t.Errorf("%s: %+v", name, r)
 		}
@@ -602,6 +607,10 @@ func TestConsentRulesFollowTheConsentLifecycle(t *testing.T) {
 		supersededOld:     "deleted",
 		supersededYoung:   "-|superseded|service",
 		supersededAncient: "deleted",
+		// Withdrawn while pending.
+		withdrawnPendingOld:     "deleted",
+		withdrawnPendingYoung:   "-|withdrawn|link",
+		withdrawnPendingAncient: "deleted",
 	} {
 		if got := state(id); got != want {
 			t.Errorf("grant %s: %q, want %q", id, got, want)
@@ -785,10 +794,12 @@ func TestScheduleAndPeriodsFollowTheRecords(t *testing.T) {
 	if err != nil || len(report.ClosedPeriods) != 2 {
 		t.Fatalf("%v %+v", err, report.ClosedPeriods)
 	}
-	if p := report.ClosedPeriods[0]; p.ID != firstPeriod || p.ApplyRuns != 1 || p.DryRuns != 1 || !p.StartedAt.Equal(testNow) {
+	// Both were apply periods: the first had a scheduled apply run, the
+	// second no scheduled run, and core was in apply mode when it closed.
+	if p := report.ClosedPeriods[0]; p.ID != firstPeriod || p.Mode != retention.ModeApply || p.ApplyRuns != 1 || p.DryRuns != 1 || !p.StartedAt.Equal(testNow) {
 		t.Fatalf("first period %+v", p)
 	}
-	if p := report.ClosedPeriods[1]; p.ApplyRuns != 0 || p.DryRuns != 0 || !p.StartedAt.Equal(testNow.Add(10*day)) || !p.EndsAt.Equal(testNow.Add(20*day)) {
+	if p := report.ClosedPeriods[1]; p.Mode != retention.ModeApply || p.ApplyRuns != 0 || p.DryRuns != 0 || !p.StartedAt.Equal(testNow.Add(10*day)) || !p.EndsAt.Equal(testNow.Add(20*day)) {
 		t.Fatalf("second period %+v", p)
 	}
 	if got := scalar[string](t, pool, `SELECT started_at::text || '/' || ends_at::text FROM retention_periods WHERE closed_at IS NULL`); got != fmt.Sprint(testNow.Add(20*day).Format("2006-01-02 15:04:05+00"), "/", testNow.Add(30*day).Format("2006-01-02 15:04:05+00")) {
@@ -824,6 +835,89 @@ func TestScheduleAndPeriodsFollowTheRecords(t *testing.T) {
 	}
 	if got := metrics.Attention(); len(got) != 2 || got[0].Reason != retention.AttentionStale {
 		t.Fatalf("stale attention %+v", got)
+	}
+}
+
+// A period's success depends on its mode. In dry-run mode a successful dry
+// run is the period's run, so the rollout raises no alarm, and switching to
+// apply does not alarm on the dry-run period before it. A period in apply
+// mode needs a successful apply run: dry runs alone (here beside a failed
+// scheduled apply run) alarm, and the next period's apply run clears it.
+func TestPeriodAccountingFollowsTheMode(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	dryConfig := retention.Config{Mode: retention.ModeDryRun, Period: 10 * day, MediaRecoveryWindow: 30 * day}
+	applyConfig := retention.Config{Mode: retention.ModeApply, Period: 10 * day, MediaRecoveryWindow: 30 * day}
+	now := testNow
+	dry, apply := sweeper(pool, dryConfig, &now, nil), sweeper(pool, applyConfig, &now, nil)
+	attention := func(config retention.Config) string {
+		t.Helper()
+		metrics := retention.NewMetrics(pool, config, func(retention.Attention) {})
+		metrics.SetClock(func() time.Time { return now })
+		if err := metrics.Refresh(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprint(metrics.Attention())
+	}
+	run := func(s *retention.Sweeper, mode retention.Mode, trigger retention.Trigger) retention.Report {
+		t.Helper()
+		report, err := s.Run(ctx, retention.RunOptions{Mode: mode, Trigger: trigger})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
+
+	// Rollout: a period of scheduled dry runs is a dry-run period, met by its
+	// dry run, even when apply is switched on before it closes (the closing
+	// run is the first scheduled apply run).
+	run(dry, retention.ModeDryRun, retention.TriggerSchedule)
+	now = testNow.Add(10*day + time.Hour)
+	report := run(apply, retention.ModeApply, retention.TriggerSchedule)
+	if len(report.ClosedPeriods) != 1 || report.ClosedPeriods[0].Mode != retention.ModeDryRun || report.ClosedPeriods[0].DryRuns != 1 || report.ClosedPeriods[0].ApplyRuns != 0 {
+		t.Fatalf("dry-run period %+v", report.ClosedPeriods)
+	}
+	for _, config := range []retention.Config{dryConfig, applyConfig} {
+		if got := attention(config); strings.Contains(got, retention.AttentionPeriodWithoutRun) {
+			t.Fatalf("%s: a dry-run period with its dry run alarms: %s", config.Mode, got)
+		}
+	}
+	// The next period had that scheduled apply run: an apply period, met.
+	now = testNow.Add(20*day + time.Hour)
+	report = run(apply, retention.ModeDryRun, retention.TriggerCLI)
+	if len(report.ClosedPeriods) != 1 || report.ClosedPeriods[0].Mode != retention.ModeApply || report.ClosedPeriods[0].ApplyRuns != 1 {
+		t.Fatalf("first apply period %+v", report.ClosedPeriods)
+	}
+
+	// Then the scheduled apply run fails (a record as a crash leaves it) and
+	// only dry runs succeed in the period: an apply period, not met.
+	period := scalar[uuid.UUID](t, pool, `SELECT id FROM retention_periods WHERE closed_at IS NULL`)
+	exec(t, pool, `INSERT INTO retention_runs (id, period_id, mode, triggered_by, full_run, rule_set_version, started_at, finished_at, status, error_code)
+		VALUES ($1, $2, 'apply', 'schedule', true, 1, $3, $3, 'failed', 'sqlstate_57014')`, uuid.New(), period, testNow.Add(22*day))
+	now = testNow.Add(23 * day)
+	run(apply, retention.ModeDryRun, retention.TriggerCLI)
+	now = testNow.Add(30*day + time.Hour)
+	report = run(apply, retention.ModeDryRun, retention.TriggerCLI)
+	if len(report.ClosedPeriods) != 1 || report.ClosedPeriods[0].Mode != retention.ModeApply || report.ClosedPeriods[0].ApplyRuns != 0 || report.ClosedPeriods[0].DryRuns != 2 {
+		t.Fatalf("apply period with dry runs only %+v", report.ClosedPeriods)
+	}
+	if got := attention(applyConfig); !strings.Contains(got, "{"+retention.AttentionPeriodWithoutRun+" }") {
+		t.Fatalf("an apply period with dry runs only: %s", got)
+	}
+	if got := scalar[string](t, pool, `SELECT string_agg(mode || ':' || apply_runs || ':' || dry_runs, ',' ORDER BY started_at) FROM retention_periods WHERE closed_at IS NOT NULL`); got != "dry-run:0:1,apply:1:0,apply:0:2" {
+		t.Fatalf("periods %q", got)
+	}
+
+	// The next period has its scheduled apply run: the alarm clears.
+	now = testNow.Add(31 * day)
+	run(apply, retention.ModeApply, retention.TriggerSchedule)
+	now = testNow.Add(40*day + time.Hour)
+	report = run(apply, retention.ModeDryRun, retention.TriggerCLI)
+	if len(report.ClosedPeriods) != 1 || report.ClosedPeriods[0].Mode != retention.ModeApply || report.ClosedPeriods[0].ApplyRuns != 1 {
+		t.Fatalf("next apply period %+v", report.ClosedPeriods)
+	}
+	if got := attention(applyConfig); strings.Contains(got, retention.AttentionPeriodWithoutRun) {
+		t.Fatalf("still alarming: %s", got)
 	}
 }
 

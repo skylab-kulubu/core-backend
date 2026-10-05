@@ -17,7 +17,7 @@ const retentionRunsVersion = "20261005120000"
 // these, and none names an address, a person, an IP or a row of another
 // table.
 var retentionRecordColumns = map[string]string{
-	"retention_periods":   "apply_runs,closed_at,dry_runs,ends_at,id,rows_changed,started_at",
+	"retention_periods":   "apply_runs,closed_at,dry_runs,ends_at,id,mode,rows_changed,started_at",
 	"retention_runs":      "allow_large,error_code,finished_at,full_run,id,mode,period_id,rule_set_version,started_at,status,triggered_by",
 	"retention_run_rules": "action,anchorless,changed,cutoff,error_code,finished_at,kind,matched,overdue,related_changed,rule,rule_version,run_id,started_at,status,table_rows,target_table",
 }

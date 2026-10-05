@@ -38,8 +38,12 @@ that empties an address after a year (ADR-0062 consequences):
 Switching apply off brings the old windows back at the next start (the
 hourly cleanup then deletes the kept rows older than 90 days / a year). The
 click list and a form's channel statistics keep looking 90 days back
-(`shorturl.HitListWindow`) in every mode. In apply, `urls.click_count` stops
-going down when old clicks were deleted: it counts every click from then on.
+(`shorturl.HitListWindow`) in every mode.
+
+**Side effect on the click counter:** in apply, `urls.click_count` (the
+"clicks" figure of a short link in the admin panel) no longer drops when
+clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
+from apply on it only grows, counting every click since then.
 
 ## Rules (rule set v1)
 
@@ -80,9 +84,14 @@ consent package's own durations:
 
 | Rule | Selects | Period | Action |
 |---|---|---|---|
-| `consent_pending` | a grant never confirmed, still open or ended as `superseded` (a verified grant replaced it; it was never consent, so it is no proof), counted from its last confirmation mail (its link works that long), else from when it was given | `consent.PendingTTL`, 30 days | row deleted |
+| `consent_pending` | a grant never confirmed: still pending, or ended before it was (`superseded` by a verified grant, or withdrawn while pending). It was never consent, so it is no proof. Counted from its last confirmation mail (its link works that long), else from when it was given | `consent.PendingTTL`, 30 days | row deleted |
 | `consent_renewal_unanswered` | an open, confirmed grant whose renewal question went unanswered: asked before the cutoff, and no renewal and no check-in since (`consent.RenewalAnchorSQL`) | `consent.RenewalAnswerWindow`, 60 days after the question | ended as `expired` (`ended_via=renewal_unanswered`), address cleared; the row stays as proof |
-| `consent_proof` | an ended grant, withdrawn or expired (a superseded one goes with `consent_pending`) | `consent.ProofRetention`, 3 years after its end | row deleted |
+| `consent_proof` | a grant once confirmed that has ended (withdrawn or expired); a never-confirmed one goes with `consent_pending` | `consent.ProofRetention`, 3 years after its end | row deleted |
+
+Once `consent_pending` has deleted a never-confirmed row, the links in its
+confirmation mail find nothing: the confirm link says so, the withdraw link
+has nothing left to end. Every invitation carries the withdraw link of a
+confirmed grant, which stays as long as the grant (and then as proof).
 
 ## Schedule, lock and periods
 
@@ -98,11 +107,20 @@ consent package's own durations:
   process that went away; it is marked `abandoned`.
 - **Periods** are `PERIODIC_DESTRUCTION_INTERVAL` long (default 90 days, at
   most 184; read whether or not the erasure worker is on). The first run opens
-  one. The first run after a period's end closes it, writes its totals
-  (successful full apply and dry runs, rows changed) and opens the next one
-  where it ended; periods with no run in them are closed with zeros. The
-  closed periods are the destruction record (`retention_periods`, with the
-  runs and per-rule counts that point to them).
+  one. The first run after a period's end closes it, writes its mode and
+  totals (successful full apply and dry runs, rows changed) and opens the
+  next one where it ended; periods with no run in them are closed with
+  zeros. The closed periods are the destruction record (`retention_periods`,
+  with the runs and per-rule counts that point to them).
+- **A period's mode decides what meets it.** An *apply period* needs a
+  successful full apply run; a *dry-run period* (the rollout) a successful
+  full run of either mode. A period is an apply period when one of its
+  scheduled runs was an apply run (the schedule runs in the configured mode,
+  failed runs included), or, when the schedule did not run in it at all, when
+  core is in apply mode as it closes; otherwise it is a dry-run period. So the
+  rollout raises no alarm, switching to apply does not alarm on the dry-run
+  period before it, and a period in apply mode with only dry runs (or failed
+  apply runs) alarms.
 
 ## Batches and the brake
 
@@ -167,7 +185,9 @@ rule=…`):
 - `rule_failed`, `refused_large`: in the latest run;
 - `overdue`: rows a day past their period remain after an apply run's rule,
   or an alarming audit counts any (its hourly cleanup is not working);
-- `period_without_run`: the last period closed without a successful full run.
+- `period_without_run`: the last period closed without the run its mode
+  needed (above): an apply run for an apply period, any run for a dry-run
+  period.
 
 The server alarm (`ops/wizards/erasure/erasure-alarm.sh` pattern: read the
 metrics through the container's loopback, mail `/ADMIN` directly over SMTP)

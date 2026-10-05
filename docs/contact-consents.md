@@ -53,9 +53,9 @@ with its own source, client, Event, text and `confirmed_via = service`. The
 pending row's confirm link then says the consent is already recorded; its
 withdraw link still ends the new row (same address). The superseded row was
 never consent, so it is no proof: the retention sweep deletes it on the
-pending schedule (30 days after its last confirmation mail), and from then
-on its links find nothing; every invitation carries the new row's own
-withdraw link.
+pending schedule (30 days after its last confirmation mail), as it does a
+grant withdrawn while still pending, and from then on its links find
+nothing; every invitation carries the new row's own withdraw link.
 
 **The confirmation mail** goes once, when the pending grant is recorded. The
 same grant given again (the same address and purpose, still pending) mails
@@ -117,11 +117,11 @@ on the newest one of its purpose.
 
 | When | What happens |
 |---|---|
-| 30 days after the last confirmation mail of a pending grant, or of a superseded one | the confirm link stops working; the retention sweep deletes the row (neither was ever consent, so neither is proof) |
+| 30 days after the last confirmation mail of a grant never confirmed (pending, superseded, or withdrawn while pending) | the confirm link stops working; the retention sweep deletes the row (it was never consent, so it is no proof) |
 | 3 years without a confirmation, a renewal or a check-in at an Event | the grant is due its renewal question: the audience marks it `renewalDue` with a `renewUrl` |
 | SkyMail sent the renewal question | `POST /v1/consents/renewal-requests` records it (`renewalRequestedAt`) |
 | 60 days after the question without a renewal or check-in | the retention sweep ends the grant as `expired` |
-| ended (withdrawn, expired or superseded) | the address is cleared at once; the retention sweep deletes a withdrawn or expired row 3 years later (a superseded one on the pending schedule, above) |
+| ended (withdrawn, expired or superseded) | the address is cleared at once; the retention sweep deletes a grant that was once confirmed 3 years after its end (one never confirmed on the pending schedule, above) |
 | account erasure | every row of the person is deleted, open or ended: their account's and those given for any of their addresses, Keycloak's included (step `erase_contact_consents`, right after the logout and before the services, so no invitation goes out while a service holds the saga); there is no suppression list (ADR-0051 decision 4) |
 
 The rows marked "retention sweep" are the periodic destruction run's

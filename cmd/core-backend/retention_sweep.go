@@ -163,8 +163,8 @@ func retentionSweepCommand(ctx context.Context, out io.Writer, runner retentionR
 		}
 	}
 	for _, period := range report.ClosedPeriods {
-		fmt.Fprintf(out, "closed period %s: %s to %s, %d apply and %d dry runs, %d rows changed\n", period.ID,
-			period.StartedAt.UTC().Format(time.RFC3339), period.EndsAt.UTC().Format(time.RFC3339), period.ApplyRuns, period.DryRuns, period.RowsChanged)
+		fmt.Fprintf(out, "closed period %s: %s to %s, a %s period, %d apply and %d dry runs, %d rows changed\n", period.ID,
+			period.StartedAt.UTC().Format(time.RFC3339), period.EndsAt.UTC().Format(time.RFC3339), period.Mode, period.ApplyRuns, period.DryRuns, period.RowsChanged)
 	}
 	if err != nil {
 		fmt.Fprintf(out, "run %s failed: %v\n", report.RunID, err)

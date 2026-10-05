@@ -19,14 +19,21 @@ CREATE TABLE IF NOT EXISTS retention_periods (
     started_at TIMESTAMPTZ NOT NULL,
     ends_at TIMESTAMPTZ NOT NULL,
     closed_at TIMESTAMPTZ,
-    -- Written when the period closes: its successful full runs by mode and
-    -- the rows its runs changed.
+    -- Written when the period closes. mode is what the period needed: apply
+    -- when a scheduled run of it was an apply run, or, with no scheduled
+    -- run in it, when core was in apply mode at its close; dry-run
+    -- otherwise. An apply period needs a successful apply run, a dry-run
+    -- period a successful run of either mode. Then its successful full
+    -- runs by mode and the rows its runs changed.
+    mode TEXT,
     apply_runs INTEGER,
     dry_runs INTEGER,
     rows_changed BIGINT,
     CONSTRAINT retention_periods_span_check CHECK (ends_at > started_at),
+    CONSTRAINT retention_periods_mode_check CHECK (mode IS NULL OR mode IN ('dry-run', 'apply')),
     CONSTRAINT retention_periods_closed_check CHECK (
-        (closed_at IS NULL) = (apply_runs IS NULL)
+        (closed_at IS NULL) = (mode IS NULL)
+        AND (closed_at IS NULL) = (apply_runs IS NULL)
         AND (closed_at IS NULL) = (dry_runs IS NULL)
         AND (closed_at IS NULL) = (rows_changed IS NULL)
         AND (apply_runs IS NULL OR apply_runs >= 0)

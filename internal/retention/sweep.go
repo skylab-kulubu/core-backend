@@ -134,9 +134,12 @@ type RuleResult struct {
 
 // ClosedPeriod is a period a run closed: the destruction record's unit.
 type ClosedPeriod struct {
-	ID          uuid.UUID
-	StartedAt   time.Time
-	EndsAt      time.Time
+	ID        uuid.UUID
+	StartedAt time.Time
+	EndsAt    time.Time
+	// Mode is what the period needed (periodModeSQL): an apply period needs
+	// a successful apply run, a dry-run period a successful run of either.
+	Mode        Mode
 	ApplyRuns   int
 	DryRuns     int
 	RowsChanged int64
@@ -272,8 +275,8 @@ func (s *Sweeper) Run(ctx context.Context, opts RunOptions) (Report, error) {
 	}
 	report.ClosedPeriods = closed
 	for _, period := range closed {
-		s.logf("retention_period_closed period=%s started=%s ended=%s apply_runs=%d dry_runs=%d rows_changed=%d",
-			period.ID, period.StartedAt.Format(time.RFC3339), period.EndsAt.Format(time.RFC3339), period.ApplyRuns, period.DryRuns, period.RowsChanged)
+		s.logf("retention_period_closed period=%s started=%s ended=%s mode=%s apply_runs=%d dry_runs=%d rows_changed=%d",
+			period.ID, period.StartedAt.Format(time.RFC3339), period.EndsAt.Format(time.RFC3339), period.Mode, period.ApplyRuns, period.DryRuns, period.RowsChanged)
 	}
 
 	report.RunID = uuid.New()
@@ -480,6 +483,18 @@ func (s *Sweeper) logRule(mode Mode, result RuleResult) {
 		result.Overdue, result.Anchorless, code)
 }
 
+// periodModeSQL is the mode period p needed, with core's configured mode as
+// $3: apply when one of its scheduled runs was an apply run (the schedule
+// runs in the configured mode, failed runs included), or, when the schedule
+// did not run in it at all, when core is in apply mode as it closes; dry-run
+// otherwise. So a rollout period of scheduled dry runs needs a dry run even
+// if apply is switched on before it closes, and a period in apply mode is
+// not met by dry runs.
+const periodModeSQL = `CASE
+	WHEN EXISTS (SELECT 1 FROM retention_runs r WHERE r.period_id = p.id AND r.triggered_by = 'schedule' AND r.mode = 'apply') THEN 'apply'
+	WHEN NOT EXISTS (SELECT 1 FROM retention_runs r WHERE r.period_id = p.id AND r.triggered_by = 'schedule') AND $3 = 'apply' THEN 'apply'
+	ELSE 'dry-run' END`
+
 // advancePeriods returns the open period at now: it opens the first one, and
 // closes every period that ended, each followed by the next where it ended.
 func (s *Sweeper) advancePeriods(ctx context.Context, conn *pgxpool.Conn, now time.Time) (uuid.UUID, []ClosedPeriod, error) {
@@ -508,8 +523,9 @@ func (s *Sweeper) advancePeriods(ctx context.Context, conn *pgxpool.Conn, now ti
 			return uuid.Nil, nil, errors.New("retention sweep: too many periods ended at once")
 		}
 		period := ClosedPeriod{ID: id, StartedAt: startedAt, EndsAt: endAt}
+		var mode string
 		if err := tx.QueryRow(ctx, `
-			UPDATE retention_periods p SET closed_at = $2,
+			UPDATE retention_periods p SET closed_at = $2, mode = `+periodModeSQL+`,
 				apply_runs = (SELECT count(*) FROM retention_runs r
 					WHERE r.period_id = p.id AND r.full_run AND r.mode = 'apply' AND r.status IN ('ok', 'partial')),
 				dry_runs = (SELECT count(*) FROM retention_runs r
@@ -517,9 +533,10 @@ func (s *Sweeper) advancePeriods(ctx context.Context, conn *pgxpool.Conn, now ti
 				rows_changed = (SELECT COALESCE(sum(rr.changed + rr.related_changed), 0) FROM retention_run_rules rr
 					JOIN retention_runs r ON r.id = rr.run_id WHERE r.period_id = p.id)
 			WHERE p.id = $1
-			RETURNING apply_runs, dry_runs, rows_changed`, id, now).Scan(&period.ApplyRuns, &period.DryRuns, &period.RowsChanged); err != nil {
+			RETURNING mode, apply_runs, dry_runs, rows_changed`, id, now, string(s.config.Mode)).Scan(&mode, &period.ApplyRuns, &period.DryRuns, &period.RowsChanged); err != nil {
 			return uuid.Nil, nil, err
 		}
+		period.Mode = Mode(mode)
 		closed = append(closed, period)
 		id, startedAt, endAt = uuid.New(), endAt, endAt.Add(s.config.Period)
 		if _, err := tx.Exec(ctx, `INSERT INTO retention_periods (id, started_at, ends_at) VALUES ($1, $2, $3)`, id, startedAt, endAt); err != nil {
