@@ -177,6 +177,54 @@ func TestService_PublicLeadersOnlyLeaderSubgroups(t *testing.T) {
 	}
 }
 
+// The leaders list comes in one order on every read: the leader subgroups
+// in the policy's order (LIDERLER, then KOORDINATORLER), each by username
+// as /members lists a group (Keycloak answers members by username), then
+// by ID; someone in both subgroups stands once, where first seen.
+func TestService_PublicLeadersInFixedOrder(t *testing.T) {
+	t.Parallel()
+	dir, _, svc := setup(t)
+	seedTeam(t, dir)
+	dir.PutGroup(identity.Group{ID: "g-weblab-k", Name: "KOORDINATORLER", Path: "/UYELER/ARGE/WEBLAB/KOORDINATORLER"})
+	ctx := context.Background()
+	for _, l := range []struct {
+		id, username, name string
+		groups             []string
+	}{
+		{"cccccccc-0000-0000-0000-000000000001", "zeynep", "Zeynep", []string{"g-weblab-l"}},
+		{"cccccccc-0000-0000-0000-000000000002", "cem", "Cem", []string{"g-weblab-k", "g-weblab-l"}},
+		{"cccccccc-0000-0000-0000-000000000003", "ali", "Ali", []string{"g-weblab-l"}},
+		{"cccccccc-0000-0000-0000-000000000004", "deniz", "Deniz", []string{"g-weblab-k"}},
+		{"cccccccc-0000-0000-0000-000000000005", "berk", "Berk", []string{"g-weblab-k"}},
+		{"cccccccc-0000-0000-0000-000000000007", "", "NoUsername2", []string{"g-weblab-k"}},
+		{"cccccccc-0000-0000-0000-000000000006", "", "NoUsername1", []string{"g-weblab-k"}},
+	} {
+		id := uuid.MustParse(l.id)
+		dir.PutUser(identity.Person{ID: id, Username: l.username, FirstName: l.name, LastName: "Leader"})
+		for _, g := range l.groups {
+			if err := dir.AddMember(ctx, g, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// seedTeam's Grace has no username: she sorts first in LIDERLER.
+	want := []string{"Grace", "Ali", "Cem", "Zeynep", "NoUsername1", "NoUsername2", "Berk", "Deniz"}
+
+	for range 50 {
+		roster, err := svc.PublicLeaders(ctx, "WEBLAB")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make([]string, 0, len(roster.Members))
+		for _, m := range roster.Members {
+			got = append(got, m.FirstName)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("leaders %v, want %v", got, want)
+		}
+	}
+}
+
 // A person core may no longer show (erased or being erased) is no member of
 // a public team list, nor is the placeholder subject, even while Keycloak
 // still holds them in the team's Group.
