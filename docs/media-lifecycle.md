@@ -2129,6 +2129,13 @@ account erasure leaves their rows in place until their year is up: they are
 the access audit record, and the erasure steps do not touch them
 ([`data-lifecycle.md`](data-lifecycle.md)).
 
+With the retention sweep in apply mode (`RETENTION_SWEEP_MODE=apply`,
+ADR-0062, [`retention-sweep.md`](retention-sweep.md)) the record is kept
+**three years** and only the open's address goes after one: the sweep's
+`read_link_ip` rule empties `client_ip` of the opens older than a year, and
+the hourly cleanup's window becomes three years. In the other modes nothing
+empties the address, so the one-year deletion stays.
+
 ### Certificate assets
 
 Certificate rendering reads a private asset through decryption, in the draft

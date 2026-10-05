@@ -240,3 +240,27 @@ func TestClientFromEnvNamesTheMissingOrMalformedVariableOnly(t *testing.T) {
 		t.Fatalf("malformed URL error = %v", err)
 	}
 }
+
+// The retention sweep's periods are the periodic destruction interval too,
+// so it is read on its own, with the worker off, under the same rules.
+func TestPeriodicDestructionIntervalIsReadWithoutTheWorker(t *testing.T) {
+	t.Parallel()
+
+	for raw, want := range map[string]time.Duration{"": 2160 * time.Hour, "2160h": 2160 * time.Hour, " 4416h ": 4416 * time.Hour} {
+		got, err := erasure.PeriodicDestructionIntervalFromEnv(func(key string) string {
+			if key == "PERIODIC_DESTRUCTION_INTERVAL" {
+				return raw
+			}
+			return ""
+		})
+		if err != nil || got != want {
+			t.Fatalf("%q: %s %v", raw, got, err)
+		}
+	}
+	for _, bad := range []string{"4417h", "0h", "-1h", "ninety days"} {
+		_, err := erasure.PeriodicDestructionIntervalFromEnv(func(string) string { return bad })
+		if err == nil || !strings.HasPrefix(err.Error(), "PERIODIC_DESTRUCTION_INTERVAL ") || strings.Contains(err.Error(), bad) {
+			t.Fatalf("%q: %v", bad, err)
+		}
+	}
+}

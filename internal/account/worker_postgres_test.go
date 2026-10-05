@@ -38,8 +38,9 @@ func TestPostgresWorkerPersistsProgressAcrossRestart(t *testing.T) {
 	confirmDeletionProjection(t, store, request, now)
 	identity := &uncertainIdentity{}
 	config := account.WorkerConfig{
-		Services: erasedServices(),
-		Now:      func() time.Time { return now }, Lease: time.Minute, MaxAttempts: 3,
+		ContactConsents: consentsErased{},
+		Services:        erasedServices(),
+		Now:             func() time.Time { return now }, Lease: time.Minute, MaxAttempts: 3,
 		AccessBlocker: &accountBlockWriter{},
 	}
 	if worked, err := account.NewWorkerWithConfiguredWaits(store, identity, config, noAccountMedia{}).RunOnce(ctx); !worked || err == nil {
@@ -60,8 +61,8 @@ func TestPostgresWorkerPersistsProgressAcrossRestart(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM account_deletion_steps WHERE request_id = $1`, request.ID).Scan(&stepCount); err != nil {
 		t.Fatal(err)
 	}
-	if stepCount != 9 {
-		t.Fatalf("step count = %d, want 9", stepCount)
+	if stepCount != 10 {
+		t.Fatalf("step count = %d, want 10", stepCount)
 	}
 }
 

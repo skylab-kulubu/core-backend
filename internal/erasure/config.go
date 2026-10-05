@@ -136,10 +136,21 @@ func ConfigFromEnv(getenv func(string) string, enabled bool) (Config, error) {
 	if config.AlertAfter, err = duration(getenv, "ACCOUNT_ERASURE_ALERT_AFTER", DefaultAlertAfter, 0); err != nil {
 		return Config{}, err
 	}
-	if config.PeriodicDestructionInterval, err = duration(getenv, "PERIODIC_DESTRUCTION_INTERVAL", DefaultPeriodicDestructionInterval, MaxPeriodicDestructionInterval); err != nil {
+	if config.PeriodicDestructionInterval, err = PeriodicDestructionIntervalFromEnv(getenv); err != nil {
 		return Config{}, err
 	}
 	return config, nil
+}
+
+// PeriodicDestructionIntervalEnv holds the periodic destruction interval.
+const PeriodicDestructionIntervalEnv = "PERIODIC_DESTRUCTION_INTERVAL"
+
+// PeriodicDestructionIntervalFromEnv reads the periodic destruction interval
+// on its own, whether or not the worker is on: the retention sweep's periods
+// (docs/retention-sweep.md) are this interval too. Unset, it is 90 days; an
+// error names the variable, never its value.
+func PeriodicDestructionIntervalFromEnv(getenv func(string) string) (time.Duration, error) {
+	return duration(getenv, PeriodicDestructionIntervalEnv, DefaultPeriodicDestructionInterval, MaxPeriodicDestructionInterval)
 }
 
 // ClientFromEnv builds the Erasure command client of one service for a

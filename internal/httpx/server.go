@@ -15,6 +15,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
+	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
@@ -66,6 +67,10 @@ type Deps struct {
 	// AccountErasureMetrics are the account erasure watchdog's gauges. Nil
 	// while the erasure worker is off.
 	AccountErasureMetrics interface{ Prometheus() string }
+
+	// RetentionMetrics are the periodic destruction run's metrics
+	// (docs/retention-sweep.md). Nil while RETENTION_SWEEP_MODE is off.
+	RetentionMetrics interface{ Prometheus() string }
 
 	// MediaCDNPurgeMetrics are the media CDN purge's counters. Nil while
 	// the purge is off.
@@ -124,6 +129,11 @@ type Deps struct {
 	// (docs/github-activity.md). Nil (its settings unset) leaves
 	// /v1/dashboard/github-activity unserved: 404.
 	GithubActivity handlers.GithubActivitySource
+
+	// Consents keeps contact consents (docs/contact-consents.md). Nil or
+	// off (CONTACT_CONSENT_KEY unset) answers its routes 503 and records
+	// no Guest apply consent.
+	Consents *consent.Service
 }
 
 func New(deps Deps) *fiber.App {
@@ -191,7 +201,7 @@ func New(deps Deps) *fiber.App {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
-		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil {
+		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -208,6 +218,9 @@ func New(deps Deps) *fiber.App {
 				text += deps.MediaCDNPurgeMetrics.Prometheus()
 			}
 			text += deps.AuthzRoleMetrics.Prometheus()
+			if deps.RetentionMetrics != nil {
+				text += deps.RetentionMetrics.Prometheus()
+			}
 			return c.SendString(text)
 		})
 	}
@@ -261,6 +274,19 @@ func New(deps Deps) *fiber.App {
 	for _, limit := range guestApply.Limits() {
 		guestApplyRoute = append(guestApplyRoute, limit)
 	}
+	// Contact consents (docs/contact-consents.md): the confirm and withdraw
+	// pages need no sign-in, the signed token in the link is the permission.
+	// Their budget follows the opener's address. A withdrawal has a budget
+	// of its own, larger: a mail provider's RFC 8058 one-click POSTs come
+	// from a few of its addresses for all its users, and pages opened from
+	// the same address must not use it up. A forged token costs one HMAC.
+	consents := handlers.NewConsentHandler(deps.Consents)
+	consentPageLimit := perClientLimit(trustedProxies)
+	app.Get(consent.WithdrawPath, consentPageLimit, consents.WithdrawPage)
+	app.Post(consent.WithdrawPath, perClientLimitOf(trustedProxies, consentWithdrawLimit), consents.Withdraw)
+	app.Get(consent.ConfirmPath, consentPageLimit, consents.ConfirmPage)
+	app.Post(consent.ConfirmPath, consentPageLimit, consents.Confirm)
+	guestApplyRoute = append(guestApplyRoute, consents.GuestApplyConsents)
 	app.Post("/v1/events/:eventId/applications/guest", guestApply.Observe, append(guestApplyRoute, tickets.ApplyGuest)...)
 	// A read link opens a private Media without a sign-in: the token in it is
 	// the permission (docs/media-lifecycle.md). The budget follows the
@@ -286,6 +312,17 @@ func New(deps Deps) *fiber.App {
 	if deps.GithubActivity != nil {
 		app.Get("/v1/dashboard/github-activity", handlers.NewGithubActivityHandler(deps.GithubActivity).Get)
 	}
+
+	app.Get("/v1/users/me/consents", consents.Mine)
+	app.Post("/v1/users/me/consents", consents.GrantMine)
+	app.Delete("/v1/users/me/consents/:purpose", consents.WithdrawMine)
+	// A product's service account with consent:record; SkyMail's with
+	// consent:audience:read.
+	app.Post("/v1/consents", consents.Record)
+	app.Post("/v1/consents/withdrawals", consents.WithdrawForAddress)
+	app.Post("/v1/consents/lookup", consents.Lookup)
+	app.Get("/v1/consents/audience", consents.Audience)
+	app.Post("/v1/consents/renewal-requests", consents.RequestRenewal)
 
 	app.Get("/v1/users/me", me.GetMe)
 	app.Put("/v1/users/me", me.PutMe)
@@ -480,8 +517,18 @@ func New(deps Deps) *fiber.App {
 // bucket on purpose: unattributable traffic is limited together rather than
 // exempted.
 func perClientLimit(trustedProxies clientip.Ranges) fiber.Handler {
+	return perClientLimitOf(trustedProxies, 120)
+}
+
+// consentWithdrawLimit is a withdrawal's budget a minute per client address
+// (one-click POSTs of a mail provider share a few addresses).
+const consentWithdrawLimit = 600
+
+// perClientLimitOf is perClientLimit with max requests a minute, in a budget
+// of its own.
+func perClientLimitOf(trustedProxies clientip.Ranges, max int) fiber.Handler {
 	return limiter.New(limiter.Config{
-		Max:        120,
+		Max:        max,
 		Expiration: time.Minute,
 		KeyGenerator: func(c fiber.Ctx) string {
 			return clientip.FromCtx(c, trustedProxies)
