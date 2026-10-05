@@ -27,10 +27,14 @@ func runYTUBackfill(args []string, getenv func(string) string, out io.Writer) in
 	if strings.TrimSpace(getenv("DATABASE_URL")) == "" {
 		missing = append(missing, "DATABASE_URL")
 	}
-	keycloakConfig, keycloakMissing := keycloakFromEnv(getenv)
+	keycloakConfig, keycloakMissing, keycloakErr := keycloakFromEnv(getenv)
 	missing = append(missing, keycloakMissing...)
 	if len(missing) > 0 {
 		fmt.Fprintf(out, "%s needs %s\n", ytuBackfillCommandName, strings.Join(missing, ", "))
+		return 2
+	}
+	if keycloakErr != nil {
+		fmt.Fprintf(out, "%s: %v\n", ytuBackfillCommandName, keycloakErr)
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

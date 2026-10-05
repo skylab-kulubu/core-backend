@@ -2,6 +2,16 @@
 
 Core calls Keycloak Admin REST with the client-credentials token of its own client (`KEYCLOAK_CLIENT_ID`, `core`), i.e. as `service-account-core`. That service account holds `realm-management` roles for users and groups and only **read** roles for clients: `view-clients` and `query-clients`. It does not hold `manage-clients`. ADR-0048 rejected that role for core because it lets core rewrite every client's redirect URIs and secrets.
 
+## Where the calls go (`KEYCLOAK_ADMIN_URL`)
+
+Admin REST and the client-credentials token core sends with it go to `KEYCLOAK_ADMIN_URL` when it is set, and to `KEYCLOAK_URL` when it is not (the behaviour before the variable existed). It is a base URL like `KEYCLOAK_URL`: scheme, host, port and an optional context path, e.g. `http://<keycloak service>:8080` inside the Docker network. Trailing slashes and a `/realms/<realm>` suffix are dropped; a value that is not an absolute `http`/`https` URL, carries credentials, a query or a fragment, or already holds `/admin` or `/realms` stops startup (and the commands below exit 2) with an error that names the variable, not the value. The realm still comes from `KEYCLOAK_REALM` / `KEYCLOAK_URL`.
+
+Everything else stays on `KEYCLOAK_URL`: the issuer every bearer token is checked against, the JWKS (unless `KEYCLOAK_JWKS_URL` says otherwise), the sudo proof's introspection, and the realm tokens for SkyMail and the Erasure command. Keycloak names its public address (`KC_HOSTNAME`) in `iss` whichever address issued a token, so a token fetched through the internal address is the same token; core never verifies the Admin REST token itself, Keycloak does.
+
+It covers every Admin REST call in this table, the server's startup role check, and the commands that run beside the server (`group-count-report`, `ytu-backfill`, `media-legacy-report`). At startup the server logs `keycloak admin REST: KEYCLOAK_ADMIN_URL <base>` when it is set. If the base cannot be reached, the role check right after logs `certificate client roles could not be checked …` and `authz permission roles could not be checked …`.
+
+The point is to let the public edge refuse `/admin` on Keycloak's public name (Keycloak's reverse proxy guide: `/admin/` is not exposed) without breaking core.
+
 ## Calls by resource (`internal/identity/keycloak.go`)
 
 | Resource | Calls | Needs |

@@ -11,7 +11,8 @@
 # jq, psql and redis-cli). Without registry credentials, point DOCKER_CONFIG at a directory
 # holding an empty config.json. Environment: SKYLAB_REPOS (sibling repositories, see build.sh),
 # HARNESS_PROJECT (compose project, default skylab-erasure-harness), HARNESS_ACCOUNT_CENTER=0
-# (skip Account Center). Runs with macOS bash 3.2.
+# (skip Account Center), HARNESS_KEYCLOAK_ADMIN_URL=http://keycloak:8080 (core's and SkyMail's
+# Admin REST past the edge, see compose.yaml). Runs with macOS bash 3.2.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
