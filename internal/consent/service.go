@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -355,10 +356,13 @@ func (s *Service) Confirm(ctx context.Context, token string) (LinkOutcome, error
 	return outcome, err
 }
 
-// Withdraw runs a withdraw link: every open grant (pending or active) of
-// the link's subject for the link's purpose ends. The link names a grant, but
-// it withdraws the subject's current one, so a link from an old invitation
-// still works after the person granted again. Repeating it is harmless.
+// Withdraw runs a withdraw link: every open grant (pending or active) of the
+// link's purpose that mails the same address ends (mailedTo). The link names
+// a grant, but it withdraws what is open now, so a link from an old
+// invitation still works after the person granted again, and the link of an
+// account's grant also ends a grant given for the account's address (and
+// back): one click ends the mails, whichever grant a mail was sent on.
+// Repeating it is harmless.
 func (s *Service) Withdraw(ctx context.Context, token string, via WithdrawVia) (LinkOutcome, error) {
 	if !s.Enabled() {
 		return "", ErrDisabled
@@ -371,22 +375,81 @@ func (s *Service) Withdraw(ctx context.Context, token string, via WithdrawVia) (
 	if via != WithdrawByPage && via != WithdrawByOneClick {
 		return "", fmt.Errorf("%w: withdraw via %q", ErrInvalid, via)
 	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE contact_consents c
-		SET ended_at = $2, ended_reason = 'withdrawn', ended_via = $3,
-			email = CASE WHEN c.user_id IS NULL THEN NULL ELSE c.email END
-		FROM contact_consents link
-		WHERE link.id = $1
-		  AND c.purpose = link.purpose
-		  AND c.ended_at IS NULL
-		  AND (c.user_id = link.user_id OR c.email_hmac = link.email_hmac)`, id, now, string(via))
+	var (
+		purpose   Purpose
+		userID    *uuid.UUID
+		email     *string
+		emailHMAC []byte
+	)
+	err = s.pool.QueryRow(ctx, `SELECT purpose, user_id, email, email_hmac FROM contact_consents WHERE id = $1`, id).
+		Scan(&purpose, &userID, &email, &emailHMAC)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Deleted: erased with the account, or proof past its time.
+		return OutcomeNothingOpen, nil
+	}
 	if err != nil {
 		return "", err
 	}
-	if tag.RowsAffected() == 0 {
+	target := mailedTo{}
+	if userID != nil {
+		if target, err = s.accountTarget(ctx, *userID); err != nil {
+			return "", err
+		}
+	} else {
+		target.hmacs = [][]byte{emailHMAC}
+		if email != nil {
+			target.addresses = []string{*email}
+		}
+	}
+	n, err := s.endOpen(ctx, purpose, target, string(via), now)
+	if err != nil {
+		return "", err
+	}
+	if n == 0 {
 		return OutcomeNothingOpen, nil
 	}
 	return OutcomeWithdrawn, nil
+}
+
+// mailedTo names the grants whose mails go to a person's addresses: the
+// account's own grant (user), the grants given for one of the addresses (by
+// their HMACs, which outlive the address), and the own grants of any active
+// account with one of the addresses.
+type mailedTo struct {
+	user      *uuid.UUID
+	addresses []string
+	hmacs     [][]byte
+}
+
+// mailedToSQL matches c against $2 (user), $3 (addresses) and $4 (HMACs).
+const mailedToSQL = `(c.user_id = $2 OR c.email_hmac = ANY($4) OR c.user_id IN (
+	SELECT u.id FROM users u
+	WHERE lower(btrim(u.email)) = ANY($3) OR lower(btrim(u.school_email)) = ANY($3)))`
+
+func (m mailedTo) args() []any {
+	addresses, hmacs := m.addresses, m.hmacs
+	if addresses == nil {
+		addresses = []string{}
+	}
+	if hmacs == nil {
+		hmacs = [][]byte{}
+	}
+	return []any{m.user, addresses, hmacs}
+}
+
+// endOpen ends the open grants of purpose that target names, as withdrawn
+// by via. An ended grant keeps no address.
+func (s *Service) endOpen(ctx context.Context, purpose Purpose, target mailedTo, via string, now time.Time) (int64, error) {
+	args := append([]any{purpose}, target.args()...)
+	args = append(args, now, via)
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE contact_consents c
+		SET ended_at = $5, ended_reason = 'withdrawn', ended_via = $6, email = NULL
+		WHERE c.purpose = $1 AND c.ended_at IS NULL AND `+mailedToSQL, args...)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 // renewalAnchor is when a grant last showed the person still wants it: its
@@ -510,53 +573,65 @@ func (s *Service) RequestRenewal(ctx context.Context, purpose Purpose, ids []uui
 }
 
 // Lookup tells a product the state of its users' grants for a purpose, by
-// address: active, pending, or absent from the map (none open). Forms reads
-// it to know which rejected applications it may keep.
+// address: active, pending, or absent from the map (none open). It counts
+// every grant that mails the address (mailedTo): one given for it, and the
+// own grant of an active account with it. Forms reads it to know which
+// rejected applications it may keep, Place and Guessr which players'
+// addresses.
 func (s *Service) Lookup(ctx context.Context, purpose Purpose, emails []string) (map[string]Status, error) {
 	if !s.Enabled() {
 		return nil, ErrDisabled
 	}
-	byHMAC := map[string]string{}
+	if _, ok := purposes[purpose]; !ok {
+		return nil, fmt.Errorf("%w: purpose", ErrInvalid)
+	}
+	var addresses []string
 	var hmacs [][]byte
+	seen := map[string]bool{}
 	for _, raw := range emails {
 		email, ok := NormalizeEmail(raw)
 		if !ok {
 			return nil, fmt.Errorf("%w: email", ErrInvalid)
 		}
-		sum := s.config.emailHMAC(email)
-		if _, seen := byHMAC[string(sum)]; !seen {
-			byHMAC[string(sum)] = email
-			hmacs = append(hmacs, sum)
+		if !seen[email] {
+			seen[email] = true
+			addresses = append(addresses, email)
+			hmacs = append(hmacs, s.config.emailHMAC(email))
 		}
 	}
 	out := map[string]Status{}
-	if len(hmacs) == 0 {
+	if len(addresses) == 0 {
 		return out, nil
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT email_hmac, confirmed_at IS NOT NULL FROM contact_consents
-		WHERE purpose = $1 AND email_hmac = ANY($2) AND ended_at IS NULL`, purpose, hmacs)
+		SELECT a.address, bool_or(c.confirmed_at IS NOT NULL)
+		FROM unnest($2::text[], $3::bytea[]) AS a(address, hmac)
+		JOIN contact_consents c ON c.purpose = $1 AND c.ended_at IS NULL AND (
+			c.email_hmac = a.hmac OR c.user_id IN (
+				SELECT u.id FROM users u
+				WHERE u.account_state = 'active'
+				  AND (lower(btrim(u.email)) = a.address OR lower(btrim(u.school_email)) = a.address)))
+		GROUP BY a.address`, purpose, addresses, hmacs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var sum []byte
+		var address string
 		var active bool
-		if err := rows.Scan(&sum, &active); err != nil {
+		if err := rows.Scan(&address, &active); err != nil {
 			return nil, err
 		}
-		status := StatusPending
+		out[address] = StatusPending
 		if active {
-			status = StatusActive
+			out[address] = StatusActive
 		}
-		out[byHMAC[string(sum)]] = status
 	}
 	return out, rows.Err()
 }
 
-// WithdrawForAddress ends the open grant of an address for a purpose on a
-// product's word: the person unticked the box in the product.
+// WithdrawForAddress ends, on a product's word (the person unticked the box
+// in the product), every open grant of a purpose that mails the address.
 func (s *Service) WithdrawForAddress(ctx context.Context, purpose Purpose, rawEmail string) (bool, error) {
 	if !s.Enabled() {
 		return false, ErrDisabled
@@ -568,15 +643,8 @@ func (s *Service) WithdrawForAddress(ctx context.Context, purpose Purpose, rawEm
 	if !ok {
 		return false, fmt.Errorf("%w: email", ErrInvalid)
 	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE contact_consents
-		SET ended_at = $3, ended_reason = 'withdrawn', ended_via = 'service', email = NULL
-		WHERE purpose = $1 AND email_hmac = $2 AND ended_at IS NULL`,
-		purpose, s.config.emailHMAC(email), s.now())
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	n, err := s.endOpen(ctx, purpose, mailedTo{addresses: []string{email}, hmacs: [][]byte{s.config.emailHMAC(email)}}, viaService, s.now())
+	return n > 0, err
 }
 
 // Own is one of a signed-in person's grants.
@@ -596,16 +664,25 @@ type Own struct {
 // grants given for one of their account's addresses.
 const ownSubject = `(c.user_id = $1 OR c.email_hmac = ANY($2))`
 
-func (s *Service) accountHMACs(ctx context.Context, userID uuid.UUID) ([][]byte, error) {
+// accountTarget is what a person's own grant mails: the account and its
+// addresses (users.email and users.school_email).
+func (s *Service) accountTarget(ctx context.Context, userID uuid.UUID) (mailedTo, error) {
+	target := mailedTo{user: &userID}
 	var email, school string
 	err := s.pool.QueryRow(ctx, `SELECT email, school_email FROM users WHERE id = $1`, userID).Scan(&email, &school)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+		return target, nil
 	}
 	if err != nil {
-		return nil, err
+		return mailedTo{}, err
 	}
-	return s.hmacs([]string{email, school}), nil
+	for _, raw := range []string{email, school} {
+		if normalized, ok := NormalizeEmail(raw); ok && !slices.Contains(target.addresses, normalized) {
+			target.addresses = append(target.addresses, normalized)
+			target.hmacs = append(target.hmacs, s.config.emailHMAC(normalized))
+		}
+	}
+	return target, nil
 }
 
 func (s *Service) hmacs(addresses []string) [][]byte {
@@ -625,9 +702,13 @@ func (s *Service) Mine(ctx context.Context, userID uuid.UUID) ([]Own, error) {
 	if !s.Enabled() {
 		return nil, ErrDisabled
 	}
-	hmacs, err := s.accountHMACs(ctx, userID)
+	target, err := s.accountTarget(ctx, userID)
 	if err != nil {
 		return nil, err
+	}
+	hmacs := target.hmacs
+	if hmacs == nil {
+		hmacs = [][]byte{}
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT c.id, c.purpose, c.user_id IS NOT NULL, c.source, c.text_version, c.granted_at, c.confirmed_at,
@@ -668,7 +749,7 @@ func (s *Service) Mine(ctx context.Context, userID uuid.UUID) ([]Own, error) {
 }
 
 // WithdrawMine ends a signed-in person's open grants of a purpose: their
-// account's and their addresses'.
+// account's, and every grant that mails one of their account's addresses.
 func (s *Service) WithdrawMine(ctx context.Context, userID uuid.UUID, purpose Purpose) (int64, error) {
 	if !s.Enabled() {
 		return 0, ErrDisabled
@@ -676,19 +757,11 @@ func (s *Service) WithdrawMine(ctx context.Context, userID uuid.UUID, purpose Pu
 	if _, ok := purposes[purpose]; !ok {
 		return 0, fmt.Errorf("%w: purpose", ErrInvalid)
 	}
-	hmacs, err := s.accountHMACs(ctx, userID)
+	target, err := s.accountTarget(ctx, userID)
 	if err != nil {
 		return 0, err
 	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE contact_consents c
-		SET ended_at = $4, ended_reason = 'withdrawn', ended_via = 'self',
-			email = CASE WHEN c.user_id IS NULL THEN NULL ELSE c.email END
-		WHERE `+ownSubject+` AND c.purpose = $3 AND c.ended_at IS NULL`, userID, hmacs, purpose, s.now())
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
+	return s.endOpen(ctx, purpose, target, viaSelf, s.now())
 }
 
 // EraseSubject deletes every grant of a person, open or ended: their

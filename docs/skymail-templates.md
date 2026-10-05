@@ -35,6 +35,18 @@ fallback: a refused id is never retried with a key.
 The welcome template reads `{{.FirstName}}`. Core sends `FirstName`, `LastName`,
 `Email`, `SkyNumber` and `CreatedAt`, which covers both templates.
 
+A third mail, the contact consent confirmation (double opt-in,
+[contact-consents.md](contact-consents.md)), is sent only while
+`CONTACT_CONSENT_KEY` is set. It is addressed by key alone,
+`SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY` (unset: `core.contact-consent-confirm`),
+with no id fallback, and carries `confirmUrl`, `withdrawUrl` and `purpose`
+(`event_invitations` or `recruitment_pool`). Seed it with
+`PUT /v1/templates/by-key/core.contact-consent-confirm` before the products
+show the consent box; a refused send writes
+`{"event":"skymail_call_failed","kind":"consent_confirmation",…}` and the
+grant stays pending. The mail must carry no sponsor or other commercial
+content (ADR-0062).
+
 ## Configuration
 
 | Variable | Unset | Empty |

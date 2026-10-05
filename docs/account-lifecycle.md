@@ -41,10 +41,10 @@ The reads that answer for another person (`GET /v1/users/{id}`, `GET /v1/users`,
 
 1. `disable_identity`: disable the Keycloak identity;
 2. `logout_sessions`: log out all Keycloak sessions;
-3. `erase_skymail`: send SkyMail the [Erasure command](account-erasure-command.md);
-4. `erase_cms`: send CMS the Erasure command;
-5. `erase_forms`: send Forms the Erasure command (steps 3–5 are the service erasure steps below; every pass tries each unfinished one);
-6. `erase_contact_consents`: delete the person's contact consents, open or ended: their account's and those given for any of the pass's addresses ([contact-consents.md](contact-consents.md), ADR-0062; no suppression list remains);
+3. `erase_contact_consents`: delete the person's contact consents, open or ended: their account's and those given for any of the pass's addresses ([contact-consents.md](contact-consents.md), ADR-0062; no suppression list remains). It is core's own and waits for no service, so it runs before them: a person who asked to be erased gets no further invitation while a service holds the saga (the CMS waits out its token window, a service that is down defers);
+4. `erase_skymail`: send SkyMail the [Erasure command](account-erasure-command.md);
+5. `erase_cms`: send CMS the Erasure command;
+6. `erase_forms`: send Forms the Erasure command (steps 4–6 are the service erasure steps below; every pass tries each unfinished one);
 7. `anonymize_core`: anonymize Core PII, detach historical identity links and clear core's guest data of the person's addresses; before it clears the person's uploader links it records, by id only, every upload of theirs but a current profile picture no one else uses for `erase_profile_media`, and clears the file name of every upload of theirs ([media-lifecycle.md](media-lifecycle.md#account-erasure));
 8. `erase_profile_media`: erase immediately the profile picture (only when nothing else uses it) and the personal-purpose Media recorded by `anonymize_core` (whatever still uses them); the club content it recorded keeps its file, served without the person's file name;
 9. `erase_staged_uploads`: wait for and erase every durable staged upload owned by the subject;
@@ -73,7 +73,7 @@ Before any erasure step can advance, in core or in another service, the shared a
 
 ## Service erasure steps
 
-ADR-0051 has this worker send SkyMail, CMS and Forms one Erasure command each, as steps 3–5 of the saga above; the contract is [`account-erasure-command.md`](account-erasure-command.md).
+ADR-0051 has this worker send SkyMail, CMS and Forms one Erasure command each, as steps 4–6 of the saga above; the contract is [`account-erasure-command.md`](account-erasure-command.md).
 
 **Registry.** A fixed list in code (`internal/erasure`). A new service that stores personal data is not finished until it has an entry here.
 

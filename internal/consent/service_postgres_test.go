@@ -492,3 +492,108 @@ func TestPersonGrantNeedsAnActiveAccount(t *testing.T) {
 		t.Fatal("a grant named an account that is not active")
 	}
 }
+
+// A person's own grant and a grant given for their address both send to the
+// same mailbox. Withdrawing from either's link, from the product, or from the
+// account ends both: one click ends the mails, whichever grant the mail was
+// sent on.
+func TestWithdrawingEndsEveryGrantThatMailsTheSameAddress(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	member, other := uuid.New(), uuid.New()
+	f.exec(t, `INSERT INTO users (id, email, school_email) VALUES ($1, 'm@example.com', 'm@std.yildiz.edu.tr')`, member)
+	f.exec(t, `INSERT INTO users (id, email) VALUES ($1, 'other@example.com')`, other)
+	grantBoth := func() {
+		t.Helper()
+		for _, g := range []consent.Grant{
+			{Purpose: consent.PurposeEventInvitations, UserID: member, Source: consent.SourceSelf},
+			{Purpose: consent.PurposeEventInvitations, Email: "M@example.com", Source: consent.SourcePlace, EmailVerified: true},
+			{Purpose: consent.PurposeEventInvitations, Email: "m@std.yildiz.edu.tr", Source: consent.SourceGuessr, EmailVerified: true},
+			{Purpose: consent.PurposeEventInvitations, UserID: other, Source: consent.SourceSelf},
+		} {
+			if _, err := f.svc.Grant(ctx, g); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	open := func() int { return f.count(t, `ended_at IS NULL`) }
+	entryOf := func(subject, email string) consent.AudienceEntry {
+		t.Helper()
+		entries, _, err := f.svc.Audience(ctx, consent.PurposeEventInvitations, uuid.Nil, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.Subject == subject && entry.Email == email {
+				return entry
+			}
+		}
+		t.Fatalf("no %s entry for %s in %+v", subject, email, entries)
+		return consent.AudienceEntry{}
+	}
+
+	grantBoth()
+	if outcome, err := f.svc.Withdraw(ctx, tokenOf(t, entryOf("account", "m@example.com").WithdrawURL), consent.WithdrawByOneClick); err != nil || outcome != consent.OutcomeWithdrawn {
+		t.Fatalf("account link %v %v", outcome, err)
+	}
+	if open() != 1 || f.count(t, `ended_at IS NULL AND user_id = $1`, other) != 1 {
+		t.Fatal("the account's link left a grant that mails the same person open, or ended someone else's")
+	}
+
+	grantBoth()
+	if outcome, err := f.svc.Withdraw(ctx, tokenOf(t, entryOf("address", "m@example.com").WithdrawURL), consent.WithdrawByPage); err != nil || outcome != consent.OutcomeWithdrawn {
+		t.Fatalf("address link %v %v", outcome, err)
+	}
+	if f.count(t, `ended_at IS NULL AND (user_id = $1 OR email = 'm@example.com')`, member) != 0 {
+		t.Fatal("the address's link left the account's grant open")
+	}
+	// The school address mails another mailbox; its grant is the person's
+	// too, but its own link withdraws it.
+	if f.count(t, `ended_at IS NULL AND email = 'm@std.yildiz.edu.tr'`) != 1 {
+		t.Fatal("the address link ended a grant of another address")
+	}
+	if _, err := f.svc.Withdraw(ctx, tokenOf(t, entryOf("address", "m@std.yildiz.edu.tr").WithdrawURL), consent.WithdrawByPage); err != nil {
+		t.Fatal(err)
+	}
+
+	grantBoth()
+	if ended, err := f.svc.WithdrawForAddress(ctx, consent.PurposeEventInvitations, "m@example.com"); err != nil || !ended {
+		t.Fatalf("withdraw for address %v %v", ended, err)
+	}
+	if f.count(t, `ended_at IS NULL AND (user_id = $1 OR email = 'm@example.com')`, member) != 0 {
+		t.Fatal("a product's withdrawal left the account's grant open")
+	}
+	if _, err := f.svc.WithdrawMine(ctx, member, consent.PurposeEventInvitations); err != nil {
+		t.Fatal(err)
+	}
+	if open() != 1 {
+		t.Fatalf("open grants after the person withdrew everything: %d", open())
+	}
+}
+
+// Lookup answers for the address, whichever grant mails it: Place keeps a
+// player's address while any grant for it is open.
+func TestLookupCountsTheAccountsOwnGrantForItsAddress(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	member := uuid.New()
+	f.exec(t, `INSERT INTO users (id, email) VALUES ($1, 'm@example.com')`, member)
+	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, UserID: member, Source: consent.SourceSelf}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "pending@example.com", Source: consent.SourceGuestApply}); err != nil {
+		t.Fatal(err)
+	}
+	states, err := f.svc.Lookup(ctx, consent.PurposeEventInvitations, []string{"M@Example.com", "pending@example.com", "none@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states["m@example.com"] != consent.StatusActive || states["pending@example.com"] != consent.StatusPending || len(states) != 2 {
+		t.Fatalf("states %v", states)
+	}
+	// An account on its way to erasure no longer counts.
+	f.exec(t, `UPDATE users SET account_state = 'deletion_pending' WHERE id = $1`, member)
+	if states, err := f.svc.Lookup(ctx, consent.PurposeEventInvitations, []string{"m@example.com"}); err != nil || len(states) != 0 {
+		t.Fatalf("states of an account being erased %v %v", states, err)
+	}
+}

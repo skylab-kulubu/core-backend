@@ -1145,6 +1145,25 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE proname = 'media_role_purposes'
 			  AND prosrc LIKE '%(''forms'', ''answer'', ''answer_file_guest'')%'
 		)`,
+	// Contact consents (ADR-0062): the table, its one-open-grant and audience
+	// indexes, and its account reference guard.
+	20261005100000: `
+		SELECT 1
+		WHERE to_regclass('public.contact_consents') IS NOT NULL
+		AND to_regclass('public.contact_consents_open_user_idx') IS NOT NULL
+		AND to_regclass('public.contact_consents_open_email_idx') IS NOT NULL
+		AND to_regclass('public.contact_consents_audience_idx') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.contact_consents')
+			  AND tgname = 'contact_consents_require_active_subject'
+		)`,
+	// The account erasure step that deletes a person's contact consents.
+	20261005100100: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.account_deletion_steps')
+		  AND conname = 'account_deletion_steps_step_check'
+		  AND pg_get_constraintdef(oid) LIKE '%''erase_contact_consents''%'`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

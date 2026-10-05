@@ -184,14 +184,19 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// coreSaga is the erasure order (ADR-0051, spec §4): block the identity, have
-// every service erase the person, erase their contact consents (ADR-0062),
-// core and its guest data, then media, and delete the identity last.
+// coreSaga is the erasure order (ADR-0051, spec §4): block the identity, erase
+// the person's contact consents (ADR-0062), have every service erase the
+// person, erase core and its guest data, then media, and delete the identity
+// last.
+//
+// The consents go before the services: they are core's own and wait for no
+// one, and a service can hold the saga for a long time (the CMS waits out
+// its token window, a service that is down defers for days). A person who
+// asked to be erased gets no further invitation meanwhile.
 func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaStep {
 	return []sagaStep{
 		{name: user.DeletionStepDisableIdentity, run: w.identity.EnsureDisabled},
 		{name: user.DeletionStepLogoutSessions, run: w.identity.EnsureLoggedOut},
-		{services: &w.services},
 		{name: user.DeletionStepEraseContactConsents, withAddresses: func(ctx context.Context, id uuid.UUID, emails []string) error {
 			if w.config.ContactConsents == nil {
 				return errors.New("contact consent eraser unavailable")
@@ -199,6 +204,7 @@ func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaSte
 			_, err := w.config.ContactConsents.EraseSubject(ctx, id, emails)
 			return err
 		}},
+		{services: &w.services},
 		{name: user.DeletionStepAnonymizeCore, withAddresses: func(ctx context.Context, id uuid.UUID, emails []string) error {
 			return w.store.AnonymizeAccount(ctx, id, now, emails)
 		}},

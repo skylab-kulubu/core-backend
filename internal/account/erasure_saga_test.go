@@ -20,13 +20,13 @@ import (
 )
 
 // The whole saga (spec §4): disable_identity → logout_sessions →
-// erase_skymail, erase_cms, erase_forms → erase_contact_consents →
-// anonymize_core →
-// erase_profile_media → erase_staged_uploads → delete_identity.
+// erase_contact_consents → erase_skymail, erase_cms, erase_forms →
+// anonymize_core → erase_profile_media → erase_staged_uploads →
+// delete_identity.
 var sagaSteps = []user.DeletionStep{
 	user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions,
-	user.DeletionStepEraseSkyMail, user.DeletionStepEraseCMS, user.DeletionStepEraseForms,
 	user.DeletionStepEraseContactConsents,
+	user.DeletionStepEraseSkyMail, user.DeletionStepEraseCMS, user.DeletionStepEraseForms,
 	user.DeletionStepAnonymizeCore, user.DeletionStepEraseProfile, user.DeletionStepEraseUploads,
 	user.DeletionStepDeleteIdentity,
 }
@@ -254,8 +254,8 @@ func TestErasureSagaErasesTheServicesAfterLogoutAndBeforeCoreAndTheIdentity(t *t
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
 	want := []string{
-		"disable_identity", "logout_sessions", "read_addresses",
-		"erase_skymail", "erase_cms", "erase_forms", "erase_contact_consents",
+		"disable_identity", "logout_sessions", "read_addresses", "erase_contact_consents",
+		"erase_skymail", "erase_cms", "erase_forms",
 		"anonymize_core", "erase_staged_uploads", "delete_identity",
 	}
 	if got := f.events.list(); !slices.Equal(got, want) {
@@ -360,7 +360,7 @@ func testErasureSagaWaitsForEveryService(t *testing.T, store erasureTestStore) {
 	if row := f.core(); row.AccountState != user.AccountDeletionPending || row.Email != sagaPersonal || row.SchoolEmail != sagaSchool {
 		t.Fatalf("core row changed before the services finished: %+v", row)
 	}
-	want := []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseSkyMail, user.DeletionStepEraseForms}
+	want := []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyMail, user.DeletionStepEraseForms}
 	if got := f.checkpoints(); !slices.Equal(got, want) {
 		t.Fatalf("checkpoints = %v, want %v", got, want)
 	}
@@ -403,8 +403,8 @@ func TestErasureSagaRefusesToPassAServiceItHasNoSenderFor(t *testing.T) {
 			services.Steps = services.Steps[:2]
 			return services
 		}},
-		{name: "nothing configured", code: "erase_skymail_not_configured", services: func(*sagaFixture) account.ServiceErasure {
-			return account.ServiceErasure{}
+		{name: "no sender configured", code: "erase_skymail_not_configured", services: func(f *sagaFixture) account.ServiceErasure {
+			return account.ServiceErasure{Addresses: f.group().Addresses}
 		}},
 	} {
 		f := newSagaFixture(t, user.NewMemoryStore())
@@ -414,10 +414,12 @@ func TestErasureSagaRefusesToPassAServiceItHasNoSenderFor(t *testing.T) {
 		if state := f.state(); state.Status != user.DeletionRequestManualIntervention || state.LastErrorCode != tc.code {
 			t.Fatalf("%s: request = %+v, want manual intervention with %s", tc.name, state, tc.code)
 		}
-		if got := f.events.list(); !slices.Equal(got, []string{"disable_identity", "logout_sessions"}) {
+		// The contact consents are core's own and need no service: they are
+		// already gone. No service is passed over.
+		if got := f.events.list(); !slices.Equal(got, []string{"disable_identity", "logout_sessions", "read_addresses", "erase_contact_consents"}) {
 			t.Fatalf("%s: events = %v", tc.name, got)
 		}
-		if got := f.checkpoints(); !slices.Equal(got, []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions}) {
+		if got := f.checkpoints(); !slices.Equal(got, []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents}) {
 			t.Fatalf("%s: checkpoints = %v", tc.name, got)
 		}
 		f.assertNoPersonalData(f.state().LastErrorCode)

@@ -50,7 +50,10 @@ type consentCalls struct {
 	err       error
 }
 
-func TestErasureSagaErasesContactConsentsWithThePersonsAddressesBeforeCore(t *testing.T) {
+// The consents go first after the logout, before any service: a person who
+// asked for erasure gets no more invitations while a service is late (the CMS
+// waits out its token window, a service may be down for days).
+func TestErasureSagaErasesContactConsentsWithThePersonsAddressesBeforeAnyService(t *testing.T) {
 	t.Parallel()
 
 	f := newSagaFixture(t, user.NewMemoryStore())
@@ -58,9 +61,14 @@ func TestErasureSagaErasesContactConsentsWithThePersonsAddressesBeforeCore(t *te
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
 	events := f.events.list()
-	consents, anonymize := slices.Index(events, "erase_contact_consents"), slices.Index(events, "anonymize_core")
-	if consents < 0 || anonymize < 0 || consents > anonymize || consents < slices.Index(events, "erase_forms") {
+	consents := slices.Index(events, "erase_contact_consents")
+	if consents < 0 || consents < slices.Index(events, "logout_sessions") {
 		t.Fatalf("saga order = %v", events)
+	}
+	for _, later := range []string{"erase_skymail", "erase_cms", "erase_forms", "anonymize_core"} {
+		if at := slices.Index(events, later); at < 0 || at < consents {
+			t.Fatalf("%s before erase_contact_consents: %v", later, events)
+		}
 	}
 	f.consentCalls.mu.Lock()
 	got := f.consentCalls.addresses
@@ -73,7 +81,7 @@ func TestErasureSagaErasesContactConsentsWithThePersonsAddressesBeforeCore(t *te
 	}
 }
 
-func TestErasureSagaStopsBeforeCoreWhenContactConsentsCannotBeErased(t *testing.T) {
+func TestErasureSagaStopsWhenContactConsentsCannotBeErased(t *testing.T) {
 	t.Parallel()
 
 	f := newSagaFixture(t, user.NewMemoryStore())
@@ -82,8 +90,13 @@ func TestErasureSagaStopsBeforeCoreWhenContactConsentsCannotBeErased(t *testing.
 	if !worked || err == nil || !strings.Contains(err.Error(), "erase_contact_consents_failed") {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
-	if f.events.count("anonymize_core") != 0 || f.state().Status == user.DeletionRequestCompleted {
-		t.Fatal("the saga went on past a failed consent erasure")
+	for _, later := range []string{"erase_skymail", "erase_cms", "erase_forms", "anonymize_core"} {
+		if f.events.count(later) != 0 {
+			t.Fatalf("the saga went on to %s past a failed consent erasure: %v", later, f.events.list())
+		}
+	}
+	if state := f.state(); state.Status != user.DeletionRequestPending || state.LastErrorCode != "erase_contact_consents_failed" {
+		t.Fatalf("request = %+v", state)
 	}
 
 	// Without an eraser the step fails too: a person is never reported

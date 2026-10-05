@@ -50,6 +50,21 @@ with it.
   only while the grant is open. `email_hmac`, its keyed HMAC-SHA256, stays
   with the row as the proof key after the address is gone.
 
+The address of an open grant is kept in clear, not encrypted: invitations
+are sent to it, the retention sweep must match it against `tickets.guest_email`
+(which holds the same address in clear for as long as the grant is open), and
+an encryption key lost or rotated would lose the audience. A grant given for
+an address is found by its HMAC, and an ended one keeps only the HMAC: a plain
+hash of an address is reversible by guessing addresses, the keyed one is not
+without `CONTACT_CONSENT_KEY`.
+
+**A mailbox, not a row.** A person's own grant mails their account's address,
+and a grant given for that address mails the same mailbox. Every way of
+withdrawing (a link, the product, the person's account) therefore ends every
+open grant of the purpose that mails the address: the grants given for it and
+the own grant of an account whose `email` or `school_email` it is. One click
+ends the mails, whichever grant a mail was sent on.
+
 **Evidence.** Purpose, channel (`email`), the text version the person was
 shown, the source app (`guest_apply`, `forms`, `place`, `guessr`, `self`), the
 Keycloak client of the app (`client_id`), the Event it was given on (Guest
@@ -80,7 +95,13 @@ The wording is the proposal of `.scratch/data-lifecycle/saklama-sureleri-onerisi
 | SkyMail sent the renewal question | `POST /v1/consents/renewal-requests` records it |
 | 60 days after the question without a renewal or check-in | the grant ends as `expired` (retention sweep) |
 | ended (withdrawn or expired) | the address is cleared at once; the row stays 3 years as proof, then is deleted (retention sweep) |
-| account erasure | every row of the person is deleted: their account's and those given for any of their addresses (step `erase_contact_consents`); there is no suppression list (ADR-0051 decision 4) |
+| account erasure | every row of the person is deleted, open or ended: their account's and those given for any of their addresses, Keycloak's included (step `erase_contact_consents`, right after the logout and before the services, so no invitation goes out while a service holds the saga); there is no suppression list (ADR-0051 decision 4) |
+
+The rows marked "retention sweep" are the periodic destruction run's
+(ADR-0062), a separate change; it reads `consent.RenewalAnchorSQL`,
+`PendingTTL`, `RenewalAnswerWindow` and `ProofRetention`. Until it runs, a
+pending grant whose link has expired stays inert (in no audience, its link
+refused) and an ended grant keeps only its HMAC.
 
 A check-in is the attendance: the person's own Tickets, or the guest Tickets
 of the address.
@@ -92,14 +113,14 @@ HMAC-signed grant id (no address, no person) that only core can read.
 
 | Link | Path | Does | Expires |
 |---|---|---|---|
-| withdraw | `/v1/consents/withdraw?token=…` | ends the subject's open grant for the link's purpose | never |
+| withdraw | `/v1/consents/withdraw?token=…` | ends every open grant of the link's purpose that mails the same address | never |
 | confirm | `/v1/consents/confirm?token=…` | confirms a pending grant, renews an active one; does nothing for an ended one | 30 days (confirmation), 90 days (renewal) |
 
 `GET` shows a page with one button and changes nothing, so a mail scanner that
 opens the link does not act. The button `POST`s the token in the form body.
-A withdraw link withdraws the subject's *current* grant, so a link from an old
-invitation still works after the person granted again. Withdrawing twice
-answers as once.
+A withdraw link withdraws what is open *now* for the mailbox, so a link from
+an old invitation still works after the person granted again. Withdrawing
+twice answers as once.
 
 **One-click unsubscribe (RFC 8058).** Every mail sent on a grant carries:
 
@@ -147,10 +168,14 @@ role of the `core` client, whose client is mapped to a source in
   `name` is only the greeting of the confirmation mail. `recruitment_pool`
   only from Forms.
 - `POST /v1/consents/withdrawals` `{"purpose", "email"}` → `200 {"withdrawn": bool}`:
-  the person unticked the box in the product.
+  the person unticked the box in the product. Every open grant that mails the
+  address ends.
 - `POST /v1/consents/lookup` `{"purpose", "emails": [≤ 500]}` →
-  `200 {"states": {"a@b.c": "active"|"pending"}}`; an address with no open
-  grant is absent.
+  `200 {"states": {"a@b.c": "active"|"pending"}}`, the addresses normalized;
+  an address no open grant mails is absent. It counts the grants given for
+  the address and the own grant of an active account with it. Forms reads it
+  for the recruitment pool, Place and Guessr for whether a player's address
+  may be kept past the event (ADR-0062).
 
 ### SkyMail: role `consent:audience:read`
 
@@ -171,7 +196,8 @@ role of the `core` client, whose client is mapped to a source in
 - `GET /v1/users/me/consents` → `{"items": [{"id", "purpose", "status", "subject", "source", "textVersion", "grantedAt", "confirmedAt"?, "endedAt"?}]}`:
   their account's grants and those given for their account's addresses.
 - `POST /v1/users/me/consents` `{"purpose", "textVersion"?}` → `201`/`200 {"status":"active"}`.
-- `DELETE /v1/users/me/consents/{purpose}` → `200 {"withdrawn": n}`.
+- `DELETE /v1/users/me/consents/{purpose}` → `200 {"withdrawn": n}`: their
+  account's grant and every grant that mails one of the account's addresses.
 
 A service account cannot use these.
 
@@ -190,4 +216,13 @@ core's Keycloak client). Without it a grant stays pending; startup logs
 
 Keycloak (follows in e-skylab-keycloak): the `core` client roles
 `consent:record` (Forms, Place, Guessr service accounts) and
-`consent:audience:read` (SkyMail's service account).
+`consent:audience:read` (SkyMail's service account), each granted to the
+service account only, and each of those clients' tokens must carry core's
+roles (`resource_access.core.roles`, audience `core`), as Forms' does for
+`media:attach`. A person never holds either role; a person's token is refused
+on these routes whatever it carries.
+
+The confirmation mail's template is seeded in SkyMail by key
+([skymail-templates.md](skymail-templates.md)); until it is, SkyMail refuses
+the send (`skymail_call_failed`, `kind=consent_confirmation`) and Guest apply
+grants stay pending.
