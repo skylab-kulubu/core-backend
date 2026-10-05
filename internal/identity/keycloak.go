@@ -20,8 +20,17 @@ import (
 )
 
 type KeycloakConfig struct {
-	URL          string
-	Realm        string
+	// URL is Keycloak's public base (KEYCLOAK_URL), optionally with
+	// /realms/<realm>. The token issuer core checks is derived from it, never
+	// from AdminURL.
+	URL   string
+	Realm string
+	// AdminURL (KEYCLOAK_ADMIN_URL, optional) is the base the Admin REST
+	// calls and the service account's token request for them go to instead
+	// of URL, e.g. Keycloak's address inside the Docker network. Keycloak
+	// names its public address in iss whichever address issued the token.
+	// Empty means URL.
+	AdminURL     string
 	ClientID     string
 	ClientSecret string
 	// Timeout bounds each request to Keycloak, token requests included; zero
@@ -33,8 +42,11 @@ type KeycloakConfig struct {
 const DefaultKeycloakTimeout = 30 * time.Second
 
 type Keycloak struct {
-	gc           *gocloak.GoCloak
-	base         string
+	gc *gocloak.GoCloak
+	// adminBase is where Admin REST (/admin/realms/<realm>/…) and the
+	// service account's token request go: KeycloakConfig.AdminURL, or the
+	// base of KeycloakConfig.URL when that is empty.
+	adminBase    string
 	realm        string
 	clientID     string
 	clientSecret string
@@ -66,10 +78,14 @@ func NewKeycloak(cfg KeycloakConfig) *Keycloak {
 			realm = parts[1]
 		}
 	}
+	if admin := keycloakBase(cfg.AdminURL); admin != "" {
+		base = admin
+	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = DefaultKeycloakTimeout
 	}
+	// gocloak sends the token request and its own Admin REST calls to base.
 	gc := gocloak.NewClient(base)
 	// resty's client, which gocloak sends every request through, has no
 	// timeout of its own.
@@ -78,7 +94,7 @@ func NewKeycloak(cfg KeycloakConfig) *Keycloak {
 		timeout:      timeout,
 		http:         &http.Client{Timeout: timeout},
 		gc:           gc,
-		base:         base,
+		adminBase:    base,
 		realm:        realm,
 		clientID:     cfg.ClientID,
 		clientSecret: cfg.ClientSecret,
@@ -88,6 +104,47 @@ func NewKeycloak(cfg KeycloakConfig) *Keycloak {
 		return k.gc.LoginClient(ctx, k.clientID, k.clientSecret, k.realm)
 	}
 	return k
+}
+
+// keycloakBase is a Keycloak base URL without surrounding blanks, trailing
+// slashes or a /realms/<realm> suffix.
+func keycloakBase(raw string) string {
+	base := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if before, _, found := strings.Cut(base, "/realms/"); found {
+		base = strings.TrimRight(before, "/")
+	}
+	return base
+}
+
+// ParseKeycloakAdminURL checks KEYCLOAK_ADMIN_URL and answers the base core
+// sends Admin REST to: "" when it is unset or blank, otherwise an absolute
+// http(s) URL without trailing slashes or a /realms/<realm> suffix (the
+// shape KEYCLOAK_URL accepts), e.g. http://keycloak:8080. A context path is
+// kept. The errors name the variable, never its value.
+func ParseKeycloakAdminURL(raw string) (string, error) {
+	base := keycloakBase(raw)
+	if base == "" {
+		return "", nil
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", errors.New("KEYCLOAK_ADMIN_URL is not a URL")
+	}
+	if scheme := strings.ToLower(u.Scheme); (scheme != "http" && scheme != "https") || u.Host == "" || u.Opaque != "" {
+		return "", errors.New("KEYCLOAK_ADMIN_URL must be an absolute http or https URL, e.g. http://keycloak:8080")
+	}
+	if u.User != nil {
+		return "", errors.New("KEYCLOAK_ADMIN_URL must not carry credentials")
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return "", errors.New("KEYCLOAK_ADMIN_URL must not have a query or a fragment")
+	}
+	for _, segment := range strings.Split(u.Path, "/") {
+		if segment == "admin" || segment == "realms" {
+			return "", errors.New("KEYCLOAK_ADMIN_URL is Keycloak's base URL; core adds /admin/realms/<realm> itself")
+		}
+	}
+	return base, nil
 }
 
 // accessToken answers the service account's token, asking Keycloak for a new
@@ -238,7 +295,7 @@ func (k *Keycloak) children(ctx context.Context, token, groupID string) ([]*gocl
 				"max":                 strconv.Itoa(pageSize),
 				"briefRepresentation": "false",
 			}).
-			Get(k.base + "/admin/realms/" + k.realm + "/groups/" + groupID + "/children")
+			Get(k.adminBase + "/admin/realms/" + k.realm + "/groups/" + groupID + "/children")
 		if err != nil {
 			return nil, err
 		}
@@ -457,7 +514,7 @@ func (k *Keycloak) ListUsers(ctx context.Context) ([]Person, error) {
 	first := 0
 	const pageSize = 20
 	for {
-		u := k.base + "/admin/realms/" + k.realm + "/users?first=" + strconv.Itoa(first) + "&max=" + strconv.Itoa(pageSize) + "&briefRepresentation=true"
+		u := k.adminBase + "/admin/realms/" + k.realm + "/users?first=" + strconv.Itoa(first) + "&max=" + strconv.Itoa(pageSize) + "&briefRepresentation=true"
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
 			return nil, err
@@ -518,7 +575,7 @@ func (k *Keycloak) YTUAttributes(ctx context.Context) ([]user.YTUAttributes, err
 	out := make([]user.YTUAttributes, 0)
 	const pageSize = 100
 	for first := 0; ; first += pageSize {
-		u := k.base + "/admin/realms/" + url.PathEscape(k.realm) + "/users?first=" + strconv.Itoa(first) +
+		u := k.adminBase + "/admin/realms/" + url.PathEscape(k.realm) + "/users?first=" + strconv.Itoa(first) +
 			"&max=" + strconv.Itoa(pageSize) + "&briefRepresentation=false"
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
@@ -580,7 +637,7 @@ func (k *Keycloak) SearchUsers(ctx context.Context, query string, limit int) ([]
 	params.Set("max", strconv.Itoa(limit))
 	params.Set("briefRepresentation", "true")
 	params.Set("search", strings.TrimSpace(query))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.base+"/admin/realms/"+k.realm+"/users?"+params.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.adminBase+"/admin/realms/"+k.realm+"/users?"+params.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -681,7 +738,7 @@ func (k *Keycloak) UsersWithClientRole(ctx context.Context, clientID, role strin
 }
 
 func (k *Keycloak) clientRoleHolders(ctx context.Context, token, clientUUID, role string) ([]Group, []Person, error) {
-	base := k.base + "/admin/realms/" + k.realm + "/clients/" + clientUUID + "/roles/" + url.PathEscape(role)
+	base := k.adminBase + "/admin/realms/" + k.realm + "/clients/" + clientUUID + "/roles/" + url.PathEscape(role)
 	groups := make([]Group, 0)
 	first := 0
 	const pageSize = 100
@@ -831,7 +888,7 @@ func (k *Keycloak) DisableUser(ctx context.Context, id uuid.UUID) error {
 	}
 	resp, err := k.gc.GetRequestWithBearerAuth(ctx, token).
 		SetBody(map[string]bool{"enabled": false}).
-		Put(k.base + "/admin/realms/" + url.PathEscape(k.realm) + "/users/" + id.String())
+		Put(k.adminBase + "/admin/realms/" + url.PathEscape(k.realm) + "/users/" + id.String())
 	if err != nil {
 		return errors.New("identity: keycloak disable user request failed")
 	}
@@ -884,7 +941,7 @@ func (k *Keycloak) GroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group
 				"max":                 strconv.Itoa(pageSize),
 				"briefRepresentation": "false",
 			}).
-			Get(k.base + "/admin/realms/" + url.PathEscape(k.realm) + "/users/" + userID.String() + "/groups")
+			Get(k.adminBase + "/admin/realms/" + url.PathEscape(k.realm) + "/users/" + userID.String() + "/groups")
 		if err != nil {
 			// The transport error quotes the address; keep only its cause.
 			var addressed *url.Error
@@ -1222,7 +1279,7 @@ func (k *Keycloak) WriteSkyNumber(ctx context.Context, userID uuid.UUID, skyNumb
 			Username: u.Username, Email: u.Email, FirstName: u.FirstName, LastName: u.LastName,
 			Attributes: attrs,
 		}).
-		Put(k.base + "/admin/realms/" + url.PathEscape(k.realm) + "/users/" + userID.String())
+		Put(k.adminBase + "/admin/realms/" + url.PathEscape(k.realm) + "/users/" + userID.String())
 	if err != nil {
 		return errors.New("identity: keycloak sky number write request failed")
 	}

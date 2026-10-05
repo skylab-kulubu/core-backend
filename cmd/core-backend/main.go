@@ -349,9 +349,15 @@ func main() {
 	dir := identity.Directory(identity.NewMemory())
 	keycloakConfigured := strings.TrimSpace(os.Getenv("KEYCLOAK_URL")) != ""
 	if keycloakConfigured {
-		keycloakConfig, missing := keycloakFromEnv(os.Getenv)
+		keycloakConfig, missing, err := keycloakFromEnv(os.Getenv)
 		if len(missing) > 0 {
 			log.Fatalf("%s required with KEYCLOAK_URL", strings.Join(missing, ", "))
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		if keycloakConfig.AdminURL != "" {
+			log.Printf("keycloak admin REST: KEYCLOAK_ADMIN_URL %s (tokens are still verified against KEYCLOAK_URL's issuer)", keycloakConfig.AdminURL)
 		}
 		keycloakDirectory := identity.NewKeycloak(keycloakConfig)
 		// Read-only: core holds no manage-clients; Keycloak's operator script creates the roles.
@@ -391,29 +397,8 @@ func main() {
 	}
 	// Nil until the sudo path is configured: without it there is no replay.
 	var parseSelfDeleteBearer func(string) (authn.Identity, error)
-	jwksURL := os.Getenv("KEYCLOAK_JWKS_URL")
-	base := strings.TrimRight(os.Getenv("KEYCLOAK_URL"), "/")
-	realm := os.Getenv("KEYCLOAK_REALM")
-	if parts := strings.SplitN(base, "/realms/", 2); len(parts) == 2 {
-		base = parts[0]
-		if realm == "" {
-			realm = parts[1]
-		}
-	}
-	if jwksURL == "" && base != "" && realm != "" {
-		jwksURL = base + "/realms/" + realm + "/protocol/openid-connect/certs"
-	}
-	issuer := ""
-	if base != "" && realm != "" {
-		issuer = base + "/realms/" + realm
-	} else if i := strings.Index(jwksURL, "/realms/"); i >= 0 {
-		host := jwksURL[:i]
-		rest := jwksURL[i+len("/realms/"):]
-		realmPart, _, _ := strings.Cut(rest, "/")
-		if host != "" && realmPart != "" {
-			issuer = host + "/realms/" + realmPart
-		}
-	}
+	base, realm := keycloakRealmFromEnv(os.Getenv)
+	jwksURL, issuer := tokenVerificationFromEnv(os.Getenv)
 	if jwksURL != "" && issuer == "" {
 		log.Fatal("cannot derive JWT issuer; set KEYCLOAK_URL and KEYCLOAK_REALM")
 	}
