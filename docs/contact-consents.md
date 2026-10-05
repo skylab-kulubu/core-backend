@@ -109,6 +109,16 @@ refused) and an ended grant keeps only its HMAC.
 A check-in is the attendance: the person's own Tickets, or the guest Tickets
 of the address.
 
+**Against the proposal's column list** (`.scratch/data-lifecycle/saklama-sureleri-onerisi.md`
+§7.2): `email_normalized` is `email` (normalized, open grants only) plus
+`email_hmac`; `given_at` is `granted_at`; `withdrawn_at` is `ended_at` with
+`ended_reason`; `ended_reason` has no `account_erased`, because erasure
+deletes the rows (ADR-0062); `last_event_at` is not stored but read from the
+check-ins when it is needed (`RenewalAnchorSQL`), so it cannot drift; source
+`account_center` is `self` with the app's client in `client_id`. Added:
+`user_id` (a person's own grant), `confirmed_at`/`confirmed_via` (double
+opt-in), `renewed_at`, `renewal_requested_at`, `ended_via`, `event_id`.
+
 ## Links
 
 Two signed links, opened without a sign-in. The token is the permission: an
