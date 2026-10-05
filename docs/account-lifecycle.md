@@ -140,7 +140,7 @@ WHERE request.status = 'completed'
 ORDER BY request.completed_at, request.id, step.completed_at, step.step;
 ```
 
-**Periodic destruction interval.** `PERIODIC_DESTRUCTION_INTERVAL` is the one configured periodic-destruction period (KVKK deletion regulation art. 11): at most six months if the data controller owes a retention and destruction policy, otherwise at most three; 90 days is valid either way. Whether the club or YTÜ is the controller is undecided, so the value is configuration, not code. The backup and log retention caps and every cleanup job this work adds take their period from it. Startup accepts at most 184 days.
+**Periodic destruction interval.** `PERIODIC_DESTRUCTION_INTERVAL` is the one configured periodic-destruction period (KVKK deletion regulation art. 11): at most six months if the data controller owes a retention and destruction policy, otherwise at most three; 90 days is valid either way. Whether the club or YTÜ is the controller is undecided, so the value is configuration, not code. The backup and log retention caps and every cleanup job this work adds take their period from it. Startup accepts at most 184 days. The retention sweep's periods ([`retention-sweep.md`](retention-sweep.md)) are this interval too; it is read for them whether or not the erasure worker is on, and only while `RETENTION_SWEEP_MODE` is on.
 
 ## Replay after a restore (ADR-0053)
 

@@ -1145,6 +1145,18 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE proname = 'media_role_purposes'
 			  AND prosrc LIKE '%(''forms'', ''answer'', ''answer_file_guest'')%'
 		)`,
+	// The periodic destruction records (ADR-0062): the three tables and the
+	// index that allows one open period.
+	20261005120000: `
+		SELECT 1
+		WHERE to_regclass('public.retention_periods') IS NOT NULL
+		AND to_regclass('public.retention_runs') IS NOT NULL
+		AND to_regclass('public.retention_run_rules') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'retention_periods_open_idx'
+			  AND indexdef LIKE 'CREATE UNIQUE INDEX retention_periods_open_idx ON public.retention_periods %WHERE (closed_at IS NULL)'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

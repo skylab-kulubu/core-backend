@@ -8,7 +8,9 @@ import (
 
 // ReadLinkRetention is how long the access log of private Media keeps a read
 // link and its opens (decision G2): one year, whoever the link named, erased
-// accounts included, as an access audit record.
+// accounts included, as an access audit record. With the retention sweep in
+// apply mode the record is kept three years and only the open's address goes
+// after one (ADR-0062, retention.ReadLinkWindow).
 const ReadLinkRetention = 365 * 24 * time.Hour
 
 // ReadLinkPruner deletes the access log rows past their retention
@@ -22,11 +24,12 @@ type ReadLinkPruner interface {
 
 // MaintainReadLinkRetention prunes the access log in the background, first
 // at once and then on every interval, so a large first run never holds up
-// startup. A failed run is reported and the next one tries again; a run that
-// deletes nothing says nothing.
-func MaintainReadLinkRetention(ctx context.Context, pruner ReadLinkPruner, interval time.Duration, onError func(error)) {
+// startup: the links issued, and the opens made, more than window ago go. A
+// failed run is reported and the next one tries again; a run that deletes
+// nothing says nothing.
+func MaintainReadLinkRetention(ctx context.Context, pruner ReadLinkPruner, interval, window time.Duration, onError func(error)) {
 	prune := func() {
-		deleted, err := pruner.PruneReadLinks(ctx, time.Now().UTC().Add(-ReadLinkRetention))
+		deleted, err := pruner.PruneReadLinks(ctx, time.Now().UTC().Add(-window))
 		if err != nil {
 			if onError != nil {
 				onError(err)
@@ -34,7 +37,7 @@ func MaintainReadLinkRetention(ctx context.Context, pruner ReadLinkPruner, inter
 			return
 		}
 		if deleted > 0 {
-			log.Printf("media read link retention: deleted %d read links (and their opens) older than a year", deleted)
+			log.Printf("media read link retention: deleted %d read links (and their opens) older than %s", deleted, window)
 		}
 	}
 	go func() {

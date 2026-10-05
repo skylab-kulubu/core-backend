@@ -79,7 +79,7 @@ func (s *service) ListHits(ctx context.Context, p authz.Principal, id uuid.UUID)
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL}, authz.Read) {
 		return nil, ErrForbidden
 	}
-	return s.store.ListHits(ctx, id, time.Now().UTC().Add(-HitRetention))
+	return s.store.ListHits(ctx, id, time.Now().UTC().Add(-HitListWindow))
 }
 
 func (s *service) Create(ctx context.Context, p authz.Principal, target, alias string) (URL, error) {

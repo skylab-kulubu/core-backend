@@ -37,6 +37,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
 	"github.com/skylab-kulubu/core-backend/internal/mediaframe"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
+	"github.com/skylab-kulubu/core-backend/internal/retention"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
@@ -75,6 +76,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == groupCountReportCommandName {
 		os.Exit(runGroupCountReport(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == retentionSweepCommandName {
+		os.Exit(runRetentionSweep(os.Args[2:], os.Getenv, os.Stdout))
 	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -170,6 +174,14 @@ func main() {
 	publicBlobs := blobs
 	blobs = media.Buckets{Public: publicBlobs, Private: privateStorage}
 	mediaPurgeConfig, err := media.BlobPurgeConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// The periodic destruction run (RETENTION_SWEEP_MODE, ADR-0062,
+	// docs/retention-sweep.md): off unless set. Its mode also decides the
+	// windows of the hourly cleanups of short-link clicks and of the private
+	// Media access log, which only apply makes longer.
+	retentionConfig, err := retention.ConfigFromEnv(os.Getenv, mediaPurgeConfig.RecoveryWindow)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -325,9 +337,11 @@ func main() {
 	}, func(err error) {
 		log.Printf("media legacy purpose backfill: %v", err)
 	})
-	// The access log of private Media is kept a year (decision G2). It runs
-	// with the flag off too: rows written while it was on still age out.
-	media.MaintainReadLinkRetention(mediaPurgeContext, mediaStore, time.Hour, func(err error) {
+	// The access log of private Media is kept a year (decision G2), three
+	// with the retention sweep in apply mode, which empties an open's
+	// address after one (ADR-0062). It runs with the flag off too: rows
+	// written while it was on still age out.
+	media.MaintainReadLinkRetention(mediaPurgeContext, mediaStore, time.Hour, retention.ReadLinkWindow(retentionConfig.Mode), func(err error) {
 		log.Printf("media read link retention: %v", err)
 	})
 
@@ -587,9 +601,14 @@ func main() {
 	}
 
 	urlStore := shorturl.NewPostgresStore(pool)
-	shorturl.MaintainHitRetention(context.Background(), urlStore, time.Hour, func(err error) {
-		log.Printf("short-link hit retention: %v", err)
-	})
+	if retention.HourlyHitDeletion(retentionConfig.Mode) {
+		shorturl.MaintainHitRetention(context.Background(), urlStore, time.Hour, func(err error) {
+			log.Printf("short-link hit retention: %v", err)
+		})
+	} else {
+		log.Printf("short-link hit retention: click rows are kept; the retention sweep empties their personal fields after a year (%s=apply)", retention.ModeEnv)
+	}
+	retentionMetrics := startRetentionSweep(pool, retentionConfig)
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
 
@@ -636,6 +655,7 @@ func main() {
 		AccountAccessMetrics:   accessMetrics,
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
 		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
+		RetentionMetrics:       retentionMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
 		ParseSelfDeleteSudo:    parseSelfDeleteSudo,
@@ -684,6 +704,23 @@ func sudoIntrospection(getenv func(string) string, issuer string) (authn.Introsp
 		HTTP:         &http.Client{Timeout: authn.DefaultIntrospectionTimeout},
 		Timeout:      authn.DefaultIntrospectionTimeout,
 	}, true
+}
+
+// startRetentionSweep starts the periodic destruction run in its mode and
+// returns its metrics; with the mode off it starts nothing, runs no query and
+// returns nil.
+func startRetentionSweep(pool *pgxpool.Pool, config retention.Config) interface{ Prometheus() string } {
+	if config.Mode == retention.ModeOff {
+		log.Printf("retention sweep: off (%s is not dry-run or apply)", retention.ModeEnv)
+		return nil
+	}
+	sweeper := retention.NewSweeper(pool, config, log.Printf)
+	metrics := retention.NewMetrics(pool, config, nil)
+	retention.Maintain(context.Background(), sweeper, metrics, retention.CheckInterval, func(err error) {
+		log.Printf("retention sweep: %v", err)
+	})
+	log.Printf("retention sweep: %s (%s), daily; periods of %s (PERIODIC_DESTRUCTION_INTERVAL)", config.Mode, retention.ModeEnv, config.Period)
+	return metrics
 }
 
 func optionalAccountAccessGate(gate *accessgate.RedisGate) accessgate.Reader {
