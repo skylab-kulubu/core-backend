@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -670,19 +671,19 @@ func (s *service) PublicLeaders(ctx context.Context, team string) (Roster, error
 	if err != nil {
 		return Roster{}, err
 	}
-	leaders, err := s.leaderIDs(ctx, g)
+	order, err := s.leaders(ctx, g)
 	if err != nil {
 		return Roster{}, err
 	}
-	people := make([]Person, 0, len(leaders))
-	for id := range leaders {
+	people := make([]Person, 0, len(order))
+	for _, id := range order {
 		p, err := s.dir.GetUser(ctx, id)
 		if err != nil {
 			continue
 		}
 		people = append(people, p)
 	}
-	return s.buildRoster(ctx, g, people, leaders)
+	return s.buildRoster(ctx, g, people, idSet(order))
 }
 
 func (s *service) publicGroup(ctx context.Context, team string, leaders bool) (Group, error) {
@@ -792,34 +793,61 @@ func (s *service) descendants(ctx context.Context, root Group) ([]Group, error) 
 }
 
 func (s *service) leaderIDs(ctx context.Context, team Group) (map[uuid.UUID]struct{}, error) {
+	order, err := s.leaders(ctx, team)
+	if err != nil {
+		return nil, err
+	}
+	return idSet(order), nil
+}
+
+// leaders are a team's leaders, each once, in one order on every read:
+// the leader subgroups in the policy's order (LIDERLER, then
+// KOORDINATORLER), and in each by username, then by ID, the order /members
+// lists a group in (Keycloak answers a group's members by username).
+// Someone in two leader subgroups stands where first seen.
+func (s *service) leaders(ctx context.Context, team Group) ([]uuid.UUID, error) {
 	children, err := s.dir.Subgroups(ctx, team.ID)
 	if err != nil {
 		return nil, err
 	}
-	ids := make(map[uuid.UUID]struct{})
-	subs := authz.DefaultPolicy().LeaderSubgroups
-	for _, child := range children {
-		if !isLeaderSubgroup(child.Name, subs) {
-			continue
-		}
-		members, err := s.dir.Members(ctx, child.ID)
-		if err != nil {
-			return nil, err
-		}
-		for _, p := range members {
-			ids[p.ID] = struct{}{}
+	seen := make(map[uuid.UUID]struct{})
+	out := make([]uuid.UUID, 0)
+	for _, sub := range authz.DefaultPolicy().LeaderSubgroups {
+		for _, child := range children {
+			if child.Name != sub {
+				continue
+			}
+			members, err := s.dir.Members(ctx, child.ID)
+			if err != nil {
+				return nil, err
+			}
+			slices.SortFunc(members, byUsername)
+			for _, p := range members {
+				if _, ok := seen[p.ID]; ok {
+					continue
+				}
+				seen[p.ID] = struct{}{}
+				out = append(out, p.ID)
+			}
 		}
 	}
-	return ids, nil
+	return out, nil
 }
 
-func isLeaderSubgroup(name string, subs []string) bool {
-	for _, sub := range subs {
-		if name == sub {
-			return true
-		}
+// byUsername orders people by username, then by ID for people without one.
+func byUsername(a, b Person) int {
+	if c := strings.Compare(a.Username, b.Username); c != 0 {
+		return c
 	}
-	return false
+	return bytes.Compare(a.ID[:], b.ID[:])
+}
+
+func idSet(ids []uuid.UUID) map[uuid.UUID]struct{} {
+	set := make(map[uuid.UUID]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	return set
 }
 
 func attrTrue(attrs map[string]string, key string) bool {

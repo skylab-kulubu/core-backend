@@ -136,6 +136,10 @@ services:
       SSL_CERT_FILE: /harness/ca.crt
       KEYCLOAK_URL: https://e.yildizskylab.com
       KEYCLOAK_REALM: e-skylab
+      # Empty: Admin REST goes through the edge, as before KEYCLOAK_ADMIN_URL existed.
+      # HARNESS_KEYCLOAK_ADMIN_URL=http://keycloak:8080 sends it (core's and SkyMail's) past the
+      # edge to Keycloak's own port, as production does once the edge refuses /admin.
+      KEYCLOAK_ADMIN_URL: ${HARNESS_KEYCLOAK_ADMIN_URL:-}
       KEYCLOAK_CLIENT_ID: core
       KEYCLOAK_CLIENT_SECRET: ${CORE_CLIENT_SECRET}
       # core's welcome and certificate mails go to SkyMail; the core client holds no SkyMail
@@ -198,6 +202,7 @@ services:
       KEYCLOAK_CLIENT_ID: skymail
       KEYCLOAK_SERVICE_CLIENT_ID: skymail-backend
       KEYCLOAK_SERVICE_CLIENT_SECRET: ${SKYMAIL_SERVICE_CLIENT_SECRET}
+      KEYCLOAK_ADMIN_URL: ${HARNESS_KEYCLOAK_ADMIN_URL:-}
       APP_PORT: "3000"
       ACCOUNT_ACCESS_GATE_MODE: enforce
       ACCOUNT_ACCESS_REDIS_ADDR: account-access-redis:6379
