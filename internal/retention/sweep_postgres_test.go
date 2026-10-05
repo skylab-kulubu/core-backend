@@ -299,6 +299,9 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	for name, c := range audits {
 		want[name] = c
 	}
+	for _, name := range []string{"consent_pending", "consent_renewal_unanswered", "consent_proof"} {
+		want[name] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
+	}
 	check(t, "dry run", dry, want)
 
 	apply, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerSchedule})
@@ -314,6 +317,9 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	}
 	for name, c := range audits {
 		applied[name] = c
+	}
+	for _, name := range []string{"consent_pending", "consent_renewal_unanswered", "consent_proof"} {
+		applied[name] = counts{0, 0, 0, 0, 0, retention.RuleOK}
 	}
 	check(t, "apply", apply, applied)
 	for name, r := range results(dry) {
@@ -401,7 +407,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 			t.Errorf("row id %s reached a record or a log line", id)
 		}
 	}
-	if got := scalar[int](t, pool, `SELECT count(*) FROM retention_run_rules`); got != 33 {
+	if got := scalar[int](t, pool, `SELECT count(*) FROM retention_run_rules`); got != 42 {
 		t.Fatalf("rule records %d", got)
 	}
 	if got := scalar[string](t, pool, `SELECT string_agg(mode || ':' || status || ':' || triggered_by, ',' ORDER BY started_at, mode DESC) FROM retention_runs`); got != "dry-run:ok:schedule,apply:ok:schedule,apply:ok:schedule" {
@@ -427,16 +433,67 @@ func sortedIDs(ids ...uuid.UUID) []string {
 	return out
 }
 
-// Once contact_consents exists (core-backend #188), a guest whose address
-// holds an active invitation consent keeps their name and address; a
-// pending, ended or account consent keeps nothing.
+// grant is a contact consent row for the tests: an address grant (email set)
+// or an account's own (user set), open or ended, confirmed or pending.
+type grant struct {
+	purpose                  string
+	email                    string
+	user                     *uuid.UUID
+	granted, confirmed, sent *time.Time
+	ended, renewalRequested  *time.Time
+	endedReason              string
+}
+
+func insertGrant(t *testing.T, pool *pgxpool.Pool, g grant) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	var email *string
+	var hmac []byte
+	if g.user == nil {
+		hmac = make([]byte, 32)
+		copy(hmac, id[:])
+		if g.ended == nil {
+			email = &g.email
+		}
+	}
+	var confirmedVia, endedVia, endedReason *string
+	if g.confirmed != nil {
+		via := "link"
+		confirmedVia = &via
+	}
+	if g.ended != nil {
+		reason, via := g.endedReason, "link"
+		if reason == "" {
+			reason = "withdrawn"
+		}
+		if reason == "superseded" {
+			via = "service"
+		}
+		endedReason, endedVia = &reason, &via
+	}
+	granted := testNow.Add(-day)
+	if g.granted != nil {
+		granted = *g.granted
+	}
+	purpose := g.purpose
+	if purpose == "" {
+		purpose = "event_invitations"
+	}
+	exec(t, pool, `INSERT INTO contact_consents (id, purpose, user_id, email, email_hmac, source, text_version, granted_at,
+			confirmed_at, confirmed_via, confirmation_sent_at, renewal_requested_at, ended_at, ended_reason, ended_via)
+		VALUES ($1, $2, $3, $4, $5, 'guest_apply', 'davet-v1', $6, $7, $8, $9, $10, $11, $12, $13)`,
+		id, purpose, g.user, email, hmac, granted, g.confirmed, confirmedVia, g.sent, g.renewalRequested, g.ended, endedReason, endedVia)
+	return id
+}
+
+func at(d time.Duration) *time.Time { v := testNow.Add(-d); return &v }
+
+// A guest whose address holds an active invitation consent keeps their name
+// and address; a pending, ended, other-purpose or account consent keeps
+// nothing.
 func TestGuestIdentityKeepsActiveInvitationConsentHolders(t *testing.T) {
 	pool := migrated(t)
 	ctx := context.Background()
-	// The columns of #188's table the rule reads.
-	exec(t, pool, `CREATE TABLE contact_consents (
-		id UUID PRIMARY KEY, purpose TEXT NOT NULL, user_id UUID, email TEXT,
-		confirmed_at TIMESTAMPTZ, ended_at TIMESTAMPTZ)`)
 	eventID := uuid.New()
 	exec(t, pool, `INSERT INTO events (id, name, location, owner_team, end_date) VALUES ($1, 'old', 'YTÜ', 'SKY LAB', $2)`, eventID, testNow.Add(-800*day))
 	guests := map[string]uuid.UUID{}
@@ -447,13 +504,11 @@ func TestGuestIdentityKeepsActiveInvitationConsentHolders(t *testing.T) {
 	}
 	member := uuid.New()
 	exec(t, pool, `INSERT INTO users (id, email) VALUES ($1, 'account@example.com')`, member)
-	exec(t, pool, `INSERT INTO contact_consents (id, purpose, user_id, email, confirmed_at, ended_at) VALUES
-		($1, 'event_invitations', NULL, 'active@example.com', now(), NULL),
-		($2, 'event_invitations', NULL, 'pending@example.com', NULL, NULL),
-		($3, 'event_invitations', NULL, NULL, now(), now()),
-		($4, 'recruitment_pool', NULL, 'recruit@example.com', now(), NULL),
-		($5, 'event_invitations', $6, NULL, now(), NULL)`,
-		uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), member)
+	insertGrant(t, pool, grant{email: "active@example.com", confirmed: at(day)})
+	insertGrant(t, pool, grant{email: "pending@example.com", sent: at(day)})
+	insertGrant(t, pool, grant{email: "ended@example.com", confirmed: at(10 * day), ended: at(day)})
+	insertGrant(t, pool, grant{purpose: "recruitment_pool", email: "recruit@example.com", confirmed: at(day)})
+	insertGrant(t, pool, grant{user: &member, confirmed: at(day)})
 
 	now := testNow
 	report, err := sweeper(pool, dryRunConfig(), &now, nil).Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerCLI, Rule: "guest_identity"})
@@ -468,6 +523,99 @@ func TestGuestIdentityKeepsActiveInvitationConsentHolders(t *testing.T) {
 	}
 	if full := scalar[bool](t, pool, `SELECT full_run FROM retention_runs`); full {
 		t.Fatal("a one-rule run counted as a full run")
+	}
+}
+
+// The contact consent lifecycle's destruction (docs/contact-consents.md): a
+// pending grant, or a superseded one, goes 30 days after its last
+// confirmation mail; a renewal question unanswered for 60 days (no renewal,
+// no check-in since) ends the grant as expired and clears its address; any
+// other ended grant's proof goes after three years. A second run changes
+// nothing.
+func TestConsentRulesFollowTheConsentLifecycle(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	member := uuid.New()
+	exec(t, pool, `INSERT INTO users (id, email) VALUES ($1, 'member@example.com')`, member)
+
+	pendingOld := insertGrant(t, pool, grant{email: "pending.old@example.com", granted: at(40 * day), sent: at(40 * day)})
+	pendingResent := insertGrant(t, pool, grant{email: "pending.resent@example.com", granted: at(40 * day), sent: at(10 * day)})
+	pendingUnmailed := insertGrant(t, pool, grant{email: "pending.unmailed@example.com", granted: at(31 * day)})
+	pendingFresh := insertGrant(t, pool, grant{email: "pending.fresh@example.com", granted: at(5 * day), sent: at(5 * day)})
+	// A pending grant a verified one replaced was never consent: it goes on
+	// the pending schedule, not after three years.
+	supersededOld := insertGrant(t, pool, grant{email: "x", granted: at(40 * day), sent: at(40 * day), ended: at(35 * day), endedReason: "superseded"})
+	supersededYoung := insertGrant(t, pool, grant{email: "x", granted: at(12 * day), sent: at(10 * day), ended: at(9 * day), endedReason: "superseded"})
+	supersededAncient := insertGrant(t, pool, grant{email: "x", granted: at(4 * 365 * day), sent: at(4 * 365 * day), ended: at(4*365*day - day), endedReason: "superseded"})
+
+	unanswered := insertGrant(t, pool, grant{email: "unanswered@example.com", confirmed: at(4 * 365 * day), renewalRequested: at(70 * day)})
+	attended := insertGrant(t, pool, grant{email: "attended@example.com", confirmed: at(4 * 365 * day), renewalRequested: at(70 * day)})
+	asked := insertGrant(t, pool, grant{email: "asked@example.com", confirmed: at(4 * 365 * day), renewalRequested: at(30 * day)})
+	account := insertGrant(t, pool, grant{user: &member, confirmed: at(4 * 365 * day), renewalRequested: at(70 * day)})
+
+	proofOld := insertGrant(t, pool, grant{email: "x", confirmed: at(5 * 365 * day), ended: at(3*365*day + day)})
+	proofYoung := insertGrant(t, pool, grant{email: "x", confirmed: at(5 * 365 * day), ended: at(2 * 365 * day), endedReason: "expired"})
+
+	// The attended guest checked in after the question: that answers it.
+	eventID, dayID, sessionID, ticketID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	exec(t, pool, `INSERT INTO events (id, name, location, owner_team, end_date) VALUES ($1, 'e', 'YTÜ', 'SKY LAB', $2)`, eventID, testNow.Add(-20*day))
+	exec(t, pool, `INSERT INTO event_days (id, event_id, name) VALUES ($1, $2, 'Gün')`, dayID, eventID)
+	exec(t, pool, `INSERT INTO sessions (id, event_day_id, title, session_type) VALUES ($1, $2, 'Açılış', 'TALK')`, sessionID, dayID)
+	exec(t, pool, `INSERT INTO tickets (id, event_id, ticket_type, guest_email) VALUES ($1, $2, 'GUEST', 'attended@example.com')`, ticketID, eventID)
+	exec(t, pool, `INSERT INTO ticket_checkins (id, ticket_id, event_day_id, session_id, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		uuid.New(), ticketID, dayID, sessionID, testNow.Add(-20*day))
+
+	now := testNow
+	s := sweeper(pool, dryRunConfig(), &now, nil)
+	// A superseded row is no proof: the proof rule leaves it to the pending
+	// one, even past three years.
+	proof, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerCLI, Rule: "consent_proof"})
+	if err != nil || len(proof.Rules) != 1 || proof.Rules[0].Changed != 1 {
+		t.Fatalf("proof only: %v %+v", err, proof)
+	}
+	now = testNow.Add(time.Minute)
+	report, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerSchedule})
+	if err != nil || report.Status != retention.RunOK {
+		t.Fatalf("%v %+v", err, report)
+	}
+	got := results(report)
+	for name, changed := range map[string]int64{"consent_pending": 4, "consent_renewal_unanswered": 2, "consent_proof": 0} {
+		if r := got[name]; r.Changed != changed || r.Matched != changed || r.Overdue != 0 || r.Status != retention.RuleOK {
+			t.Errorf("%s: %+v", name, r)
+		}
+	}
+	state := func(id uuid.UUID) string {
+		return scalar[string](t, pool, `SELECT COALESCE((SELECT concat_ws('|', COALESCE(email, '-'), COALESCE(ended_reason, 'open'), COALESCE(ended_via, '-'))
+			FROM contact_consents WHERE id = $1), 'deleted')`, id)
+	}
+	for id, want := range map[uuid.UUID]string{
+		pendingOld:        "deleted",
+		pendingUnmailed:   "deleted",
+		pendingResent:     "pending.resent@example.com|open|-",
+		pendingFresh:      "pending.fresh@example.com|open|-",
+		unanswered:        "-|expired|renewal_unanswered",
+		account:           "-|expired|renewal_unanswered",
+		attended:          "attended@example.com|open|-",
+		asked:             "asked@example.com|open|-",
+		proofOld:          "deleted",
+		proofYoung:        "-|expired|link",
+		supersededOld:     "deleted",
+		supersededYoung:   "-|superseded|service",
+		supersededAncient: "deleted",
+	} {
+		if got := state(id); got != want {
+			t.Errorf("grant %s: %q, want %q", id, got, want)
+		}
+	}
+	now = testNow.Add(2 * time.Minute)
+	again, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerSchedule})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range again.Rules {
+		if r.Rule.Kind == retention.KindSweep && r.Changed != 0 {
+			t.Errorf("second run %s changed %d", r.Rule.Name, r.Changed)
+		}
 	}
 }
 

@@ -18,9 +18,9 @@ from the aydınlatma text and never a condition of the service; staff never
 tick it for someone else; past guests are not mailed to ask for consent.
 
 **Release:** keep `CONTACT_CONSENT_KEY` unset in production until the
-periodic destruction run (the retention sweep, a separate change) deletes
-unconfirmed, ended and unrenewed grants on time. Without the key nothing is
-recorded.
+periodic destruction run ([`retention-sweep.md`](retention-sweep.md)) runs in
+apply mode, so that it deletes unconfirmed and ended grants and ends
+unrenewed ones on time. Without the key nothing is recorded.
 
 ## Grants
 
@@ -51,7 +51,11 @@ pending row ends as `superseded` (its own source, client, Event and text
 stay as they were, its address goes), and the verified request is a new row
 with its own source, client, Event, text and `confirmed_via = service`. The
 pending row's confirm link then says the consent is already recorded; its
-withdraw link still ends the new row (same address).
+withdraw link still ends the new row (same address). The superseded row was
+never consent, so it is no proof: the retention sweep deletes it on the
+pending schedule (30 days after its last confirmation mail), and from then
+on its links find nothing; every invitation carries the new row's own
+withdraw link.
 
 **The confirmation mail** goes once, when the pending grant is recorded. The
 same grant given again (the same address and purpose, still pending) mails
@@ -113,16 +117,18 @@ on the newest one of its purpose.
 
 | When | What happens |
 |---|---|
-| 30 days pending | the confirm link stops working; the retention sweep deletes the row |
+| 30 days after the last confirmation mail of a pending grant, or of a superseded one | the confirm link stops working; the retention sweep deletes the row (neither was ever consent, so neither is proof) |
 | 3 years without a confirmation, a renewal or a check-in at an Event | the grant is due its renewal question: the audience marks it `renewalDue` with a `renewUrl` |
 | SkyMail sent the renewal question | `POST /v1/consents/renewal-requests` records it (`renewalRequestedAt`) |
 | 60 days after the question without a renewal or check-in | the retention sweep ends the grant as `expired` |
-| ended (withdrawn, expired or superseded) | the address is cleared at once; the retention sweep deletes the row 3 years later |
+| ended (withdrawn, expired or superseded) | the address is cleared at once; the retention sweep deletes a withdrawn or expired row 3 years later (a superseded one on the pending schedule, above) |
 | account erasure | every row of the person is deleted, open or ended: their account's and those given for any of their addresses, Keycloak's included (step `erase_contact_consents`, right after the logout and before the services, so no invitation goes out while a service holds the saga); there is no suppression list (ADR-0051 decision 4) |
 
 The rows marked "retention sweep" are the periodic destruction run's
-(ADR-0062), a separate change; it reads `consent.RenewalAnchorSQL`,
-`PendingTTL`, `RenewalAnswerWindow` and `ProofRetention`. Until it runs, a
+(ADR-0062, [`retention-sweep.md`](retention-sweep.md): `consent_pending`,
+`consent_renewal_unanswered`, `consent_proof`); it reads
+`consent.RenewalAnchorSQL`, `PendingTTL`, `RenewalAnswerWindow` and
+`ProofRetention`. Until it runs, a
 pending grant whose link has expired stays inert (in no audience, its link
 refused) and an ended grant keeps only its HMAC. No page promises a deletion
 before the sweep runs.

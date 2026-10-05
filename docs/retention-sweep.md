@@ -52,7 +52,7 @@ owner, as in account erasure.
 | Rule | Table, columns | Anchor | Period | Action | Kept / left out |
 |---|---|---|---|---|---|
 | `guest_phone` | `tickets.guest_phone_number` | the Ticket's Event end | 90 days | emptied | consent or not (ADR-0062) |
-| `guest_identity` | `tickets.guest_first_name`, `guest_last_name`, `guest_email`, `guest_phone_number`; `certificates.recipient_email` of the Ticket's certificates without an owner, in the same statement | the person's **latest** Event end: every guest Ticket of the same address (trimmed, lower-cased); a Ticket without an address, its own Event | 2 years | emptied; the Ticket, its check-ins and its certificate (name, serial, PDF) stay | a Ticket with a queued or running certificate job; once `contact_consents` exists, an address with an active (confirmed, open) `event_invitations` consent given for the address |
+| `guest_identity` | `tickets.guest_first_name`, `guest_last_name`, `guest_email`, `guest_phone_number`; `certificates.recipient_email` of the Ticket's certificates without an owner, in the same statement | the person's **latest** Event end: every guest Ticket of the same address (trimmed, lower-cased); a Ticket without an address, its own Event | 2 years | emptied; the Ticket, its check-ins and its certificate (name, serial, PDF) stay | a Ticket with a queued or running certificate job; an address with an active (confirmed, open) `event_invitations` consent given for the address |
 | `door_staff` | `event_door_staff` | the Event end | 90 days | row deleted (a relationship row) | |
 | `url_hits_scrub` | `url_hits.ip`, `user_agent`, `user_id`, `referer` | `at` | 1 year | emptied; `referer` keeps its origin (`scheme://host`, lower-case, no user information, port, path, query or fragment); the row (time, link, alias, UTM channel) stays | only does anything in apply (above) |
 | `read_link_ip` | `media_read_link_opens.client_ip` | `opened_at` | 1 year | emptied; the open stays | only does anything in apply (above) |
@@ -75,11 +75,14 @@ change is a new rule version (and `RuleSetVersion`). Rules are added in
 `internal/retention/rules.go` and nowhere else; the record, metrics and alarm
 follow.
 
-**Not here yet:** the contact consent rules (pending grants deleted after 30
-days, unanswered renewals ended as `expired` after 60 days, ended grants'
-proof deleted after 3 years; `docs/contact-consents.md`) need the
-`contact_consents` table, which is not on `main` yet. They are added as rules
-once it is. Until then `CONTACT_CONSENT_KEY` stays unset in production.
+Contact consents ([`contact-consents.md`](contact-consents.md)), from the
+consent package's own durations:
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `consent_pending` | a grant never confirmed, still open or ended as `superseded` (a verified grant replaced it; it was never consent, so it is no proof), counted from its last confirmation mail (its link works that long), else from when it was given | `consent.PendingTTL`, 30 days | row deleted |
+| `consent_renewal_unanswered` | an open, confirmed grant whose renewal question went unanswered: asked before the cutoff, and no renewal and no check-in since (`consent.RenewalAnchorSQL`) | `consent.RenewalAnswerWindow`, 60 days after the question | ended as `expired` (`ended_via=renewal_unanswered`), address cleared; the row stays as proof |
+| `consent_proof` | an ended grant, withdrawn or expired (a superseded one goes with `consent_pending`) | `consent.ProofRetention`, 3 years after its end | row deleted |
 
 ## Schedule, lock and periods
 

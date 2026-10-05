@@ -27,9 +27,10 @@ const (
 
 // Schema is what a run reads from the database before it builds the rules.
 type Schema struct {
-	// ContactConsents is true once contact_consents exists (core-backend
-	// #188). guest_identity then keeps the guests who hold an active
-	// invitation consent; before it, no one can hold one.
+	// ContactConsents is true when contact_consents exists (migration
+	// 20261005100000): the consent rules run, and guest_identity keeps the
+	// guests who hold an active invitation consent. A database from before
+	// it has no consents, and runs the other rules.
 	ContactConsents bool
 }
 
@@ -40,7 +41,8 @@ var everySchema = Schema{ContactConsents: true}
 // Rules are every rule of the sweep, in the order a run takes them. A rule
 // is added here and nowhere else; its record, metrics and alarm follow.
 func Rules(c Config, s Schema) []Rule {
-	return append(sweepRules(s), auditRules(c)...)
+	rules := append(sweepRules(s), consentRules(s)...)
+	return append(rules, auditRules(c)...)
 }
 
 // eventEndSQL is when the Event e ended, the anchor of "Event + N"

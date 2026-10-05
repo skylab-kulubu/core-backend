@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 )
@@ -293,5 +294,43 @@ func TestStaleSinceNeitherResetsOnDeployNorAlarmsOnASwitch(t *testing.T) {
 		if got := staleSince(c.lastSuccess, c.otherMode, c.firstRun, c.started); !got.Equal(c.want) {
 			t.Errorf("%s: %s, want %s", name, got, c.want)
 		}
+	}
+}
+
+// The contact consent rules follow the consent lifecycle
+// (docs/contact-consents.md) and exist once contact_consents does.
+func TestConsentRulesFollowTheConsentLifecycle(t *testing.T) {
+	t.Parallel()
+	want := map[string]struct {
+		period time.Duration
+		action Action
+	}{
+		"consent_pending":            {consent.PendingTTL, ActionDelete},
+		"consent_renewal_unanswered": {consent.RenewalAnswerWindow, ActionScrub},
+		"consent_proof":              {consent.ProofRetention, ActionDelete},
+	}
+	config := Config{Mode: ModeApply, Period: 90 * day, MediaRecoveryWindow: 30 * day}
+	for _, rule := range Rules(config, Schema{}) {
+		if rule.Table == "contact_consents" {
+			t.Fatalf("%s without contact_consents", rule.Name)
+		}
+	}
+	found := 0
+	for _, rule := range Rules(config, Schema{ContactConsents: true}) {
+		if rule.Table != "contact_consents" {
+			continue
+		}
+		found++
+		w, ok := want[rule.Name]
+		if !ok || rule.Period != w.period || rule.Action != w.action || rule.Kind != KindSweep || rule.Version != 1 {
+			t.Fatalf("%s: %s %s", rule.Name, rule.Period, rule.Action)
+		}
+	}
+	if found != len(want) || consent.PendingTTL != 30*day || consent.RenewalAnswerWindow != 60*day || consent.ProofRetention != 3*365*day {
+		t.Fatalf("%d consent rules", found)
+	}
+	names := RuleNames(config)
+	if len(names) != 14 || names[5] != "consent_pending" {
+		t.Fatalf("names %v", names)
 	}
 }
