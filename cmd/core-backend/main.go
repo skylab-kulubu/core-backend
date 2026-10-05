@@ -473,8 +473,14 @@ func main() {
 		log.Fatal(err)
 	}
 	consents := consent.NewService(pool, consentConfig, nil)
+	if keycloakConfigured {
+		// A person's own list and withdrawal cover every address Keycloak
+		// holds for them (Personal e-mail included), as erasure reads them.
+		consents.SetAddresses(account.NewErasureAddresses(identity.NewAccountIdentity(dir), users))
+	}
 	if consentConfig.Enabled {
-		log.Printf("contact consents: on (links at %s, service clients %v)", consentConfig.LinkOrigin, consentConfig.ServiceSources)
+		log.Printf("contact consents: on (links at %s, service clients %v, verified-address clients %v)",
+			consentConfig.LinkOrigin, consentConfig.ServiceSources, consentConfig.VerifiedClients)
 	} else {
 		log.Printf("contact consents: off (%s is not set); none is recorded", consent.KeyEnv)
 	}

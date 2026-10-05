@@ -1,9 +1,10 @@
 -- Contact consents (ADR-0062, docs/contact-consents.md): a person's explicit
 -- consent (KVKK art. 5/1) for one purpose: invitations to future SKY LAB
 -- events, or keeping a team application for future recruitment (Forms).
--- One row is one grant: it is recorded, confirmed, and ends (withdrawn or
--- expired) without ever being reopened; a new grant after an end is a new
--- row, so the history is the proof.
+-- One row is one grant: it is recorded, confirmed, and ends (withdrawn,
+-- expired, or superseded: a pending grant a product's verified grant for
+-- the same address replaced) without ever being reopened; a new grant after
+-- an end is a new row, so the history is the proof.
 --
 -- The subject is exactly one of:
 --   * a core user (user_id): a person who consented for themselves while
@@ -32,6 +33,9 @@ CREATE TABLE IF NOT EXISTS contact_consents (
     confirmed_at TIMESTAMPTZ,
     confirmed_via TEXT,
     confirmation_sent_at TIMESTAMPTZ,
+    -- How many confirmation mails a pending grant got: one when recorded,
+    -- then at most one a day when it is given again, three in all.
+    confirmation_mails SMALLINT NOT NULL DEFAULT 0,
     renewed_at TIMESTAMPTZ,
     renewal_requested_at TIMESTAMPTZ,
     ended_at TIMESTAMPTZ,
@@ -54,9 +58,10 @@ CREATE TABLE IF NOT EXISTS contact_consents (
     CONSTRAINT contact_consents_ended_check CHECK (
         (ended_at IS NULL) = (ended_reason IS NULL)
         AND (ended_at IS NULL) = (ended_via IS NULL)
-        AND (ended_reason IS NULL OR ended_reason IN ('withdrawn', 'expired'))
+        AND (ended_reason IS NULL OR ended_reason IN ('withdrawn', 'expired', 'superseded'))
         AND (ended_via IS NULL OR ended_via IN ('link', 'one_click', 'self', 'service', 'renewal_unanswered'))
     ),
+    CONSTRAINT contact_consents_confirmation_mails_check CHECK (confirmation_mails BETWEEN 0 AND 3),
     -- An open guest grant has its address; an ended one never keeps it.
     CONSTRAINT contact_consents_open_email_check CHECK (
         user_id IS NOT NULL OR (ended_at IS NULL) = (email IS NOT NULL)

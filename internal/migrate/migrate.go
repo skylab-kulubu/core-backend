@@ -1150,6 +1150,10 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 	20261005100000: `
 		SELECT 1
 		WHERE to_regclass('public.contact_consents') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'contact_consents' AND column_name = 'confirmation_mails'
+		)
 		AND to_regclass('public.contact_consents_open_user_idx') IS NOT NULL
 		AND to_regclass('public.contact_consents_open_email_idx') IS NOT NULL
 		AND to_regclass('public.contact_consents_audience_idx') IS NOT NULL

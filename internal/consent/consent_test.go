@@ -21,20 +21,30 @@ func TestConfigFromEnv(t *testing.T) {
 	if err != nil || off.Enabled {
 		t.Fatalf("unset key: %+v %v", off, err)
 	}
-	on, err := ConfigFromEnv(env(map[string]string{KeyEnv: key, "PUBLIC_API_ORIGIN": "https://api.example.test/"}))
+	on, err := ConfigFromEnv(env(map[string]string{KeyEnv: key, "PUBLIC_API_ORIGIN": "https://api.example.test/", TextURLEnv: "https://yildizskylab.com/acik-riza"}))
 	if err != nil || !on.Enabled || on.LinkOrigin != "https://api.example.test" || on.ConfirmTemplateKey != DefaultConfirmTemplateKey {
 		t.Fatalf("on: %+v %v", on, err)
+	}
+	// Nobody may assert a verified address unless named; the aydınlatma
+	// metni defaults to the published one.
+	if len(on.VerifiedClients) != 0 || on.TextURL != "https://yildizskylab.com/acik-riza" || on.NoticeURL != DefaultNoticeURL {
+		t.Fatalf("on: %+v", on)
 	}
 	if on.ServiceSources["forms"] != SourceForms || on.ServiceSources["place"] != SourcePlace || on.ServiceSources["guessr"] != SourceGuessr {
 		t.Fatalf("default sources %v", on.ServiceSources)
 	}
+	text := "https://a.test/acik-riza"
 	for name, values := range map[string]map[string]string{
-		"short key":       {KeyEnv: "abc", "PUBLIC_API_ORIGIN": "https://api.example.test"},
-		"no origin":       {KeyEnv: key},
-		"bad source":      {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", ServiceSourcesEnv: "skymail:skymail"},
-		"source twice":    {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", ServiceSourcesEnv: "forms:a,forms:b"},
-		"client twice":    {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", ServiceSourcesEnv: "forms:a,place:a"},
-		"not source:pair": {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", ServiceSourcesEnv: "forms"},
+		"short key":           {KeyEnv: "abc", "PUBLIC_API_ORIGIN": "https://api.example.test", TextURLEnv: text},
+		"no origin":           {KeyEnv: key, TextURLEnv: text},
+		"bad source":          {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, ServiceSourcesEnv: "skymail:skymail"},
+		"source twice":        {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, ServiceSourcesEnv: "forms:a,forms:b"},
+		"client twice":        {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, ServiceSourcesEnv: "forms:a,place:a"},
+		"not source:pair":     {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, ServiceSourcesEnv: "forms"},
+		"no consent text":     {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test"},
+		"consent text no url": {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: "yildizskylab.com/acik-riza"},
+		"notice no url":       {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, NoticeURLEnv: "javascript:alert(1)"},
+		"verified unknown":    {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, VerifiedClientsEnv: "skymail"},
 	} {
 		if _, err := ConfigFromEnv(env(values)); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -42,9 +52,15 @@ func TestConfigFromEnv(t *testing.T) {
 			t.Errorf("%s: error carries the key", name)
 		}
 	}
-	none, err := ConfigFromEnv(env(map[string]string{KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", ServiceSourcesEnv: "none"}))
+	none, err := ConfigFromEnv(env(map[string]string{KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, ServiceSourcesEnv: "none"}))
 	if err != nil || len(none.ServiceSources) != 0 {
 		t.Fatalf("none: %v %v", none.ServiceSources, err)
+	}
+	verified, err := ConfigFromEnv(env(map[string]string{KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text,
+		VerifiedClientsEnv: " place , guessr", NoticeURLEnv: "https://yildizskylab.com/kvkk"}))
+	if err != nil || !verified.VerifiedClients["place"] || !verified.VerifiedClients["guessr"] || verified.VerifiedClients["forms"] ||
+		verified.NoticeURL != "https://yildizskylab.com/kvkk" {
+		t.Fatalf("verified: %+v %v", verified, err)
 	}
 }
 
@@ -97,13 +113,41 @@ func TestNormalizeEmail(t *testing.T) {
 	}
 }
 
-func TestEveryPurposeHasATextAndASource(t *testing.T) {
-	for purpose := range purposes {
+func TestEveryPurposeHasATextASourceAndALabel(t *testing.T) {
+	for purpose, spec := range purposes {
 		if _, ok := CurrentText(purpose); !ok {
 			t.Errorf("%s has no text", purpose)
 		}
-		if len(purposeSources[purpose]) == 0 {
-			t.Errorf("%s has no source", purpose)
+		for _, version := range spec.texts {
+			if Text(version) == "" {
+				t.Errorf("%s: version %s has no box text", purpose, version)
+			}
 		}
+		if len(spec.sources) == 0 || spec.label == "" {
+			t.Errorf("%s has no source or label", purpose)
+		}
+	}
+}
+
+// The recruitment pool is known (its text is the Açık Rıza Metni's
+// alim-havuzu-v1) but not taken: its scope is not agreed with Forms.
+func TestOnlyTheInvitationsPurposeIsEnabled(t *testing.T) {
+	if p, err := ParsePurpose(" event_invitations "); err != nil || p != PurposeEventInvitations {
+		t.Fatalf("event_invitations: %q %v", p, err)
+	}
+	if _, err := ParsePurpose("recruitment_pool"); !errors.Is(err, ErrPurposeNotEnabled) {
+		t.Fatalf("recruitment_pool: %v", err)
+	}
+	if _, err := ParsePurpose("newsletter"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("newsletter: %v", err)
+	}
+	if EnabledPurposes() != 1 {
+		t.Fatalf("enabled purposes %d", EnabledPurposes())
+	}
+	if v, _ := CurrentText(PurposeRecruitmentPool); v != "alim-havuzu-v1" {
+		t.Fatalf("recruitment pool text %q", v)
+	}
+	if v, _ := CurrentText(PurposeEventInvitations); v != "davet-v1" {
+		t.Fatalf("invitations text %q", v)
 	}
 }

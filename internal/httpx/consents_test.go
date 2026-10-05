@@ -3,6 +3,7 @@ package httpx_test
 import (
 	"bytes"
 	"context"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,7 +33,7 @@ type consentMails struct {
 	vars []map[string]string
 }
 
-func (m *consentMails) ConsentConfirmation(_ context.Context, _, _, _ string, vars map[string]string) {
+func (m *consentMails) ConsentConfirmation(_ context.Context, _, _ string, vars map[string]string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.vars = append(m.vars, vars)
@@ -77,7 +78,8 @@ func newConsentEnv(t *testing.T, enabled bool) consentEnv {
 	deps.Tickets = ticket.NewService(tickets, events, az, users, dir)
 	mails := &consentMails{}
 	if enabled {
-		svc := consent.NewService(pool, consent.TestConfig(bytes.Repeat([]byte{9}, 32), "https://api.example.test"), mails)
+		// Place may assert a verified address here; Forms may not.
+		svc := consent.NewService(pool, consent.TestConfig(bytes.Repeat([]byte{9}, 32), "https://api.example.test", "place"), mails)
 		svc.SetAsync(func(fn func()) { fn() })
 		deps.Consents = svc
 	}
@@ -186,6 +188,25 @@ func TestGuestApplyConsentIsUntickedByDefaultAndConfirmedByLink(t *testing.T) {
 		page.header.Get("Referrer-Policy") != "no-referrer" || page.header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("confirm page %d %v %s", page.status, page.header, page.body)
 	}
+	// The page names exactly what is confirmed: the grant's purpose and the
+	// text of its version, with the Açık Rıza Metni and the aydınlatma
+	// metni; and it promises no deletion it does not do.
+	unescaped := html.UnescapeString(page.body)
+	for _, want := range []string{
+		consent.PurposeEventInvitations.Label(),
+		consent.Text("davet-v1"),
+		`href="https://example.test/acik-riza"`,
+		`href="` + consent.DefaultNoticeURL + `"`,
+	} {
+		if !strings.Contains(unescaped, want) {
+			t.Fatalf("confirm page lacks %q:\n%s", want, unescaped)
+		}
+	}
+	for _, unwanted := range []string{"gün içinde", "silinir", "başvurun", "alımlarda"} {
+		if strings.Contains(unescaped, unwanted) {
+			t.Fatalf("confirm page says %q:\n%s", unwanted, unescaped)
+		}
+	}
 	if env.count(t, `confirmed_at IS NOT NULL`) != 0 {
 		t.Fatal("opening the page confirmed")
 	}
@@ -226,16 +247,16 @@ func TestConsentServiceRoutesNeedTheirRoleAndTheWithdrawLinkIsOneClick(t *testin
 	if got.status != fiber.StatusOK || got.body["status"] != "active" {
 		t.Fatalf("record again %d %v", got.status, got.body)
 	}
-	if got := sendJSON(t, env.app, record, fiber.MethodPost, "/v1/consents", `{"purpose":"recruitment_pool","email":"a@example.com"}`); got.status != fiber.StatusBadRequest {
-		t.Fatalf("place recorded a recruitment pool grant: %d", got.status)
-	}
+	// Forms is not allowed to vouch for addresses: its grant waits for the
+	// person's confirmation whatever it says.
 	forms := env.serviceToken(t, "forms", consent.RoleRecord)
-	if got := sendJSON(t, env.app, forms, fiber.MethodPost, "/v1/consents", `{"purpose":"recruitment_pool","email":"r@example.com","emailVerified":true}`); got.status != fiber.StatusCreated {
-		t.Fatalf("forms recruitment pool grant: %d %v", got.status, got.body)
+	got = sendJSON(t, env.app, forms, fiber.MethodPost, "/v1/consents", `{"purpose":"event_invitations","email":"r@example.com","emailVerified":true}`)
+	if got.status != fiber.StatusCreated || got.body["status"] != "pending" {
+		t.Fatalf("forms' verified grant %d %v", got.status, got.body)
 	}
-	lookup := sendJSON(t, env.app, forms, fiber.MethodPost, "/v1/consents/lookup", `{"purpose":"recruitment_pool","emails":["r@example.com","none@example.com"]}`)
+	lookup := sendJSON(t, env.app, forms, fiber.MethodPost, "/v1/consents/lookup", `{"purpose":"event_invitations","emails":["R@example.com","none@example.com"]}`)
 	states, _ := lookup.body["states"].(map[string]any)
-	if lookup.status != fiber.StatusOK || states["r@example.com"] != "active" || len(states) != 1 {
+	if lookup.status != fiber.StatusOK || states["r@example.com"] != "pending" || len(states) != 1 {
 		t.Fatalf("lookup %d %v", lookup.status, lookup.body)
 	}
 
@@ -277,7 +298,7 @@ func TestConsentServiceRoutesNeedTheirRoleAndTheWithdrawLinkIsOneClick(t *testin
 	if page := env.form(t, fiber.MethodGet, consent.WithdrawPath+"?token=forged", ""); page.status != fiber.StatusBadRequest {
 		t.Fatalf("forged link %d", page.status)
 	}
-	if got := sendJSON(t, env.app, forms, fiber.MethodPost, "/v1/consents/withdrawals", `{"purpose":"recruitment_pool","email":"r@example.com"}`); got.status != fiber.StatusOK || got.body["withdrawn"] != true {
+	if got := sendJSON(t, env.app, forms, fiber.MethodPost, "/v1/consents/withdrawals", `{"purpose":"event_invitations","email":"r@example.com"}`); got.status != fiber.StatusOK || got.body["withdrawn"] != true {
 		t.Fatalf("service withdrawal %d %v", got.status, got.body)
 	}
 }

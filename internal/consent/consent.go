@@ -33,28 +33,59 @@ const (
 	PurposeEventInvitations Purpose = "event_invitations"
 	// PurposeRecruitmentPool is keeping a team application that was not
 	// accepted, to be considered in future recruitment (Forms' second box).
+	// Not enabled: whether it covers an address or one application is not
+	// agreed with Forms yet.
 	PurposeRecruitmentPool Purpose = "recruitment_pool"
 )
 
-// purposes are the consent texts each purpose may be given on: the version
-// ids a client may send, the newest last. A text is identified by its id in
-// docs/contact-consents.md, where its wording is kept, so the proof of a
-// grant can show what the person read. A new wording is a new id here.
-var purposes = map[Purpose][]string{
-	PurposeEventInvitations: {"davet-v1"},
-	PurposeRecruitmentPool:  {"gelecek-alim-v1"},
+// purposeSpec is what core accepts for a purpose.
+type purposeSpec struct {
+	// texts are the consent texts the purpose may be given on: the version
+	// codes a client may send, the newest last. A code is the "Sürüm" of
+	// the Açık Rıza Metni (sky_lab_genel notes/hukuki); a new wording is a
+	// new code here.
+	texts []string
+	// sources are the apps a grant of the purpose may come from.
+	sources []Source
+	// enabled: core records and serves the purpose. A purpose that is not
+	// enabled is refused everywhere (ErrPurposeNotEnabled).
+	enabled bool
+	// label is what the person consents to, in Turkish, as the pages name
+	// it.
+	label string
 }
 
-// purposeSources are the sources each purpose may be given through. A
-// recruitment pool grant is given on a Forms team application only.
-var purposeSources = map[Purpose][]Source{
-	PurposeEventInvitations: {SourceGuestApply, SourceForms, SourcePlace, SourceGuessr, SourceSelf},
-	PurposeRecruitmentPool:  {SourceForms},
+var purposes = map[Purpose]purposeSpec{
+	PurposeEventInvitations: {
+		texts:   []string{"davet-v1"},
+		sources: []Source{SourceGuestApply, SourceForms, SourcePlace, SourceGuessr, SourceSelf},
+		enabled: true,
+		label:   "SKY LAB'ın gelecek etkinliklerine davet e-postaları",
+	},
+	PurposeRecruitmentPool: {
+		texts:   []string{"alim-havuzu-v1"},
+		sources: []Source{SourceForms},
+		enabled: false,
+		label:   "ekip başvurunun gelecek alımlarda değerlendirilmek üzere saklanması",
+	},
 }
+
+// texts are the box texts of every version, as the person read them next to
+// the box (Turkish). The confirm page shows the one the grant was given on.
+var texts = map[string]string{
+	"davet-v1":       "SKY LAB'ın gelecek etkinliklerine davet e-postası almak istiyorum. Bunun için adımı ve e-posta adresimi saklayabilirsiniz. İstediğim zaman her davetteki bağlantıyla vazgeçebilirim.",
+	"alim-havuzu-v1": "Bu dönem kabul edilmezsem başvurumun gelecek alımlarda değerlendirilmek üzere saklanmasını istiyorum. İstediğim zaman vazgeçebilirim.",
+}
+
+// Text is the box text of a version, "" for a version core does not know.
+func Text(version string) string { return texts[version] }
+
+// Label is what a purpose's grant is for, in Turkish.
+func (p Purpose) Label() string { return purposes[p].label }
 
 // Allows reports whether a grant of purpose p may come from source s.
 func (p Purpose) Allows(s Source) bool {
-	for _, allowed := range purposeSources[p] {
+	for _, allowed := range purposes[p].sources {
 		if allowed == s {
 			return true
 		}
@@ -65,8 +96,8 @@ func (p Purpose) Allows(s Source) bool {
 // CurrentText is the newest text version of a purpose: what a grant that
 // names only the purpose was given on.
 func CurrentText(p Purpose) (string, bool) {
-	texts, ok := purposes[p]
-	if !ok || len(texts) == 0 {
+	texts := purposes[p].texts
+	if len(texts) == 0 {
 		return "", false
 	}
 	return texts[len(texts)-1], true
@@ -74,7 +105,7 @@ func CurrentText(p Purpose) (string, bool) {
 
 // KnownText reports whether version is a text of purpose p.
 func KnownText(p Purpose, version string) bool {
-	for _, known := range purposes[p] {
+	for _, known := range purposes[p].texts {
 		if known == version {
 			return true
 		}
@@ -82,11 +113,34 @@ func KnownText(p Purpose, version string) bool {
 	return false
 }
 
-// ParsePurpose reads a purpose a client sent.
-func ParsePurpose(raw string) (Purpose, bool) {
+// ParsePurpose reads a purpose a client sent: ErrInvalid for one core does
+// not know, ErrPurposeNotEnabled for one it knows but does not take yet.
+func ParsePurpose(raw string) (Purpose, error) {
 	p := Purpose(strings.TrimSpace(raw))
-	_, ok := purposes[p]
-	return p, ok
+	return p, p.check()
+}
+
+func (p Purpose) check() error {
+	spec, ok := purposes[p]
+	switch {
+	case !ok:
+		return fmt.Errorf("%w: purpose", ErrInvalid)
+	case !spec.enabled:
+		return ErrPurposeNotEnabled
+	}
+	return nil
+}
+
+// EnabledPurposes is how many purposes core takes: the most a Guest apply
+// consents list may name.
+func EnabledPurposes() int {
+	n := 0
+	for _, spec := range purposes {
+		if spec.enabled {
+			n++
+		}
+	}
+	return n
 }
 
 // Source is the app a grant came from.
@@ -120,6 +174,9 @@ const (
 	// StatusWithdrawn and StatusExpired are ended grants.
 	StatusWithdrawn Status = "withdrawn"
 	StatusExpired   Status = "expired"
+	// StatusSuperseded is a pending grant a product's verified grant for
+	// the same address replaced: the newer row holds the proof.
+	StatusSuperseded Status = "superseded"
 )
 
 // Ways a grant ends (contact_consents.ended_via).
@@ -159,9 +216,19 @@ const (
 	RenewalLinkTTL = 90 * 24 * time.Hour
 	// ProofRetention is how long an ended grant is kept as proof.
 	ProofRetention = 3 * 365 * 24 * time.Hour
-	// confirmationResend is the least time between two confirmation mails
-	// for one pending grant.
-	confirmationResend = 10 * time.Minute
+	// ConfirmationResend is the least time between two confirmation mails
+	// of one pending grant, and MaxConfirmationMails how many it gets in
+	// all: one when it is recorded, then at most one a day when the person
+	// is named again, three in all. Whoever types an address cannot use core
+	// to flood it.
+	ConfirmationResend   = 24 * time.Hour
+	MaxConfirmationMails = 3
+	// lookupTimeout bounds one Lookup; the request's context carries no
+	// deadline of its own.
+	lookupTimeout = 10 * time.Second
+	// grantAttempts is how often Grant tries when a concurrent grant for the
+	// same subject wins the race to the open row.
+	grantAttempts = 5
 )
 
 // Errors.
@@ -171,6 +238,8 @@ var (
 	ErrLink        = errors.New("contact consent: invalid link")
 	ErrLinkExpired = errors.New("contact consent: link expired")
 	ErrNoSubject   = errors.New("contact consent: subject unknown")
+	// ErrPurposeNotEnabled is a purpose core knows but does not take yet.
+	ErrPurposeNotEnabled = errors.New("contact consent: purpose not enabled")
 )
 
 // KeyEnv holds the consent key: 32 random bytes, unpadded base64url, the
@@ -193,6 +262,21 @@ const ConfirmTemplateKeyEnv = "SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY"
 // DefaultConfirmTemplateKey is the confirmation mail's template when
 // ConfirmTemplateKeyEnv is unset.
 const DefaultConfirmTemplateKey = "core.contact-consent-confirm"
+
+// VerifiedClientsEnv lists the service clients whose emailVerified core
+// believes: comma-separated client ids, each one of ServiceSourcesEnv's.
+// Unset or empty: none, so every product's grant waits for the person's
+// confirmation (double opt-in).
+const VerifiedClientsEnv = "CONTACT_CONSENT_VERIFIED_CLIENTS"
+
+// TextURLEnv is the public address of the Açık Rıza Metni, required with
+// KeyEnv: the confirm page links it. NoticeURLEnv is the KVKK aydınlatma
+// metni, DefaultNoticeURL when unset.
+const (
+	TextURLEnv       = "CONTACT_CONSENT_TEXT_URL"
+	NoticeURLEnv     = "CONTACT_CONSENT_NOTICE_URL"
+	DefaultNoticeURL = "https://yildizskylab.com/kvkk-metni.pdf"
+)
 
 // Role names: client roles of core's Keycloak client
 // (resource_access.core.roles), granted to service accounts only.
@@ -218,6 +302,11 @@ type Config struct {
 	ServiceSources map[string]Source
 	// ConfirmTemplateKey is the SkyMail template of the confirmation mail.
 	ConfirmTemplateKey string
+	// VerifiedClients are the service clients whose emailVerified counts.
+	VerifiedClients map[string]bool
+	// TextURL and NoticeURL are the Açık Rıza Metni and the aydınlatma
+	// metni the pages link.
+	TextURL, NoticeURL string
 }
 
 var clientIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$`)
@@ -247,9 +336,50 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if value, ok := lookup(getenv, ConfirmTemplateKeyEnv); ok {
 		template = value
 	}
+	verified, err := parseVerifiedClients(getenv(VerifiedClientsEnv), sources)
+	if err != nil {
+		return Config{}, err
+	}
+	textURL, err := pageURL(getenv(TextURLEnv), "")
+	if err != nil || textURL == "" {
+		return Config{}, fmt.Errorf("%s needs %s, the public address of the Açık Rıza Metni the confirm page links", KeyEnv, TextURLEnv)
+	}
+	noticeURL, err := pageURL(getenv(NoticeURLEnv), DefaultNoticeURL)
+	if err != nil {
+		return Config{}, fmt.Errorf("%s must be an http(s) address", NoticeURLEnv)
+	}
 	return Config{
 		Enabled: true, key: key, LinkOrigin: origin, ServiceSources: sources, ConfirmTemplateKey: template,
+		VerifiedClients: verified, TextURL: textURL, NoticeURL: noticeURL,
 	}, nil
+}
+
+// pageURL reads an absolute http(s) address, fallback when raw is empty.
+func pageURL(raw, fallback string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback, nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", errors.New("not an http(s) address")
+	}
+	return raw, nil
+}
+
+func parseVerifiedClients(raw string, sources map[string]Source) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, entry := range strings.Split(raw, ",") {
+		client := strings.TrimSpace(entry)
+		if client == "" {
+			continue
+		}
+		if _, ok := sources[client]; !ok {
+			return nil, fmt.Errorf("%s: %q is not a client of %s", VerifiedClientsEnv, client, ServiceSourcesEnv)
+		}
+		out[client] = true
+	}
+	return out, nil
 }
 
 func lookup(getenv func(string) string, name string) (string, bool) {
@@ -296,13 +426,21 @@ func isServiceSource(s Source) bool {
 	return false
 }
 
-// TestConfig is a Config for tests and tools: key must be 32 bytes.
-func TestConfig(key []byte, origin string) Config {
-	return Config{
+// TestConfig is a Config for tests and tools: key must be 32 bytes. Only the
+// clients in verified may assert a verified address.
+func TestConfig(key []byte, origin string, verified ...string) Config {
+	config := Config{
 		Enabled: true, key: key, LinkOrigin: strings.TrimRight(origin, "/"),
 		ServiceSources:     map[string]Source{"forms": SourceForms, "place": SourcePlace, "guessr": SourceGuessr},
 		ConfirmTemplateKey: DefaultConfirmTemplateKey,
+		VerifiedClients:    map[string]bool{},
+		TextURL:            "https://example.test/acik-riza",
+		NoticeURL:          DefaultNoticeURL,
 	}
+	for _, client := range verified {
+		config.VerifiedClients[client] = true
+	}
+	return config
 }
 
 func (c Config) derive(label string) []byte {

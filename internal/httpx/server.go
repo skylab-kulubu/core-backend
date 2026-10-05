@@ -269,11 +269,14 @@ func New(deps Deps) *fiber.App {
 	}
 	// Contact consents (docs/contact-consents.md): the confirm and withdraw
 	// pages need no sign-in, the signed token in the link is the permission.
-	// Their budget follows the opener's address.
+	// Their budget follows the opener's address. A withdrawal has a budget
+	// of its own, larger: a mail provider's RFC 8058 one-click POSTs come
+	// from a few of its addresses for all its users, and pages opened from
+	// the same address must not use it up. A forged token costs one HMAC.
 	consents := handlers.NewConsentHandler(deps.Consents)
 	consentPageLimit := perClientLimit(trustedProxies)
 	app.Get(consent.WithdrawPath, consentPageLimit, consents.WithdrawPage)
-	app.Post(consent.WithdrawPath, consentPageLimit, consents.Withdraw)
+	app.Post(consent.WithdrawPath, perClientLimitOf(trustedProxies, consentWithdrawLimit), consents.Withdraw)
 	app.Get(consent.ConfirmPath, consentPageLimit, consents.ConfirmPage)
 	app.Post(consent.ConfirmPath, consentPageLimit, consents.Confirm)
 	guestApplyRoute = append(guestApplyRoute, consents.GuestApplyConsents)
@@ -507,8 +510,18 @@ func New(deps Deps) *fiber.App {
 // bucket on purpose: unattributable traffic is limited together rather than
 // exempted.
 func perClientLimit(trustedProxies clientip.Ranges) fiber.Handler {
+	return perClientLimitOf(trustedProxies, 120)
+}
+
+// consentWithdrawLimit is a withdrawal's budget a minute per client address
+// (one-click POSTs of a mail provider share a few addresses).
+const consentWithdrawLimit = 600
+
+// perClientLimitOf is perClientLimit with max requests a minute, in a budget
+// of its own.
+func perClientLimitOf(trustedProxies clientip.Ranges, max int) fiber.Handler {
 	return limiter.New(limiter.Config{
-		Max:        120,
+		Max:        max,
 		Expiration: time.Minute,
 		KeyGenerator: func(c fiber.Ctx) string {
 			return clientip.FromCtx(c, trustedProxies)

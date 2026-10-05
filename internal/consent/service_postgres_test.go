@@ -20,8 +20,8 @@ import (
 var testKey = bytes.Repeat([]byte{7}, 32)
 
 type sentMail struct {
-	template, recipient, name string
-	vars                      map[string]string
+	template, recipient string
+	vars                map[string]string
 }
 
 type fakeMailer struct {
@@ -29,10 +29,10 @@ type fakeMailer struct {
 	sent []sentMail
 }
 
-func (m *fakeMailer) ConsentConfirmation(_ context.Context, template, recipient, name string, vars map[string]string) {
+func (m *fakeMailer) ConsentConfirmation(_ context.Context, template, recipient string, vars map[string]string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sent = append(m.sent, sentMail{template, recipient, name, vars})
+	m.sent = append(m.sent, sentMail{template, recipient, vars})
 }
 
 func (m *fakeMailer) all() []sentMail {
@@ -55,7 +55,9 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	f := &fixture{pool: pool, mail: &fakeMailer{}, now: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
-	f.svc = consent.NewService(pool, consent.TestConfig(testKey, "https://api.example.test/"), f.mail)
+	// Place, Guessr and Forms may assert a verified address here; in
+	// production nobody may until CONTACT_CONSENT_VERIFIED_CLIENTS names them.
+	f.svc = consent.NewService(pool, consent.TestConfig(testKey, "https://api.example.test/", "place", "guessr", "forms"), f.mail)
 	f.svc.SetClock(func() time.Time { return f.now })
 	f.svc.SetAsync(func(fn func()) { fn() })
 	return f
@@ -94,7 +96,7 @@ func TestGuestGrantWaitsForItsConfirmationAndKeepsNoIP(t *testing.T) {
 
 	result, err := f.svc.Grant(ctx, consent.Grant{
 		Purpose: consent.PurposeEventInvitations, Email: "  Ada@Example.COM ", Source: consent.SourceGuestApply,
-		EventID: &eventID, Name: "Ada Lovelace",
+		EventID: &eventID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +105,7 @@ func TestGuestGrantWaitsForItsConfirmationAndKeepsNoIP(t *testing.T) {
 		t.Fatalf("result %+v", result)
 	}
 	mails := f.mail.all()
-	if len(mails) != 1 || mails[0].recipient != "ada@example.com" || mails[0].template != consent.DefaultConfirmTemplateKey || mails[0].name != "Ada Lovelace" {
+	if len(mails) != 1 || mails[0].recipient != "ada@example.com" || mails[0].template != consent.DefaultConfirmTemplateKey {
 		t.Fatalf("mails %+v", mails)
 	}
 	if !strings.HasPrefix(mails[0].vars["confirmUrl"], "https://api.example.test/v1/consents/confirm?token=") ||
@@ -125,19 +127,13 @@ func TestGuestGrantWaitsForItsConfirmationAndKeepsNoIP(t *testing.T) {
 		t.Fatalf("audience %v %v", entries, err)
 	}
 
-	// The same grant again within ten minutes sends no second mail.
+	// The same grant again within a day sends no second mail (the cap is
+	// TestConfirmationMailIsCappedAtOneADayAndThreeInAll).
 	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "ada@example.com", Source: consent.SourceGuestApply}); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.mail.all()) != 1 || f.count(t, `true`) != 1 {
 		t.Fatal("a repeated grant mailed again or wrote a second row")
-	}
-	f.now = f.now.Add(11 * time.Minute)
-	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "ada@example.com", Source: consent.SourceGuestApply}); err != nil {
-		t.Fatal(err)
-	}
-	if len(f.mail.all()) != 2 {
-		t.Fatal("the confirmation was not sent again after ten minutes")
 	}
 
 	outcome, err := f.svc.Confirm(ctx, tokenOf(t, mails[0].vars["confirmUrl"]))
@@ -175,7 +171,7 @@ func TestConfirmLinkExpiresAndAVerifiedGrantIsActiveAtOnce(t *testing.T) {
 	if _, err := f.svc.Confirm(ctx, link); !errors.Is(err, consent.ErrLinkExpired) {
 		t.Fatalf("expired confirm link: %v", err)
 	}
-	if err := f.svc.CheckConfirmLink(link); !errors.Is(err, consent.ErrLinkExpired) {
+	if _, err := f.svc.ConfirmLinkGrant(ctx, link); !errors.Is(err, consent.ErrLinkExpired) {
 		t.Fatalf("check expired: %v", err)
 	}
 
@@ -189,9 +185,10 @@ func TestConfirmLinkExpiresAndAVerifiedGrantIsActiveAtOnce(t *testing.T) {
 	if len(f.mail.all()) != 1 {
 		t.Fatal("a verified grant was mailed")
 	}
-	// A verified grant confirms a pending one.
-	result, err = f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "a@example.com", Source: consent.SourceForms, EmailVerified: true})
-	if err != nil || result.Status != consent.StatusActive || result.Created {
+	// A verified grant replaces a pending one with a row of its own
+	// (TestVerifiedGrantSupersedesAPendingOneWithItsOwnEvidence).
+	result, err = f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "a@example.com", Source: consent.SourceForms, ClientID: "forms", EmailVerified: true})
+	if err != nil || result.Status != consent.StatusActive || !result.Created {
 		t.Fatalf("verified over pending %+v %v", result, err)
 	}
 	if f.count(t, `confirmed_via = 'service'`) != 2 {
@@ -210,31 +207,45 @@ func TestGrantRefusesWhatItCannotProve(t *testing.T) {
 		"account and address":  {Purpose: consent.PurposeEventInvitations, UserID: uuid.New(), Email: "a@example.com", Source: consent.SourceSelf},
 		"unknown text version": {Purpose: consent.PurposeEventInvitations, TextVersion: "davet-v9", Email: "a@example.com", Source: consent.SourceGuestApply},
 	} {
-		if _, err := f.svc.Grant(ctx, g); !errors.Is(err, consent.ErrInvalid) && !errors.Is(err, consent.ErrUnknownText) {
+		if _, err := f.svc.Grant(ctx, g); !errors.Is(err, consent.ErrInvalid) && !errors.Is(err, consent.ErrUnknownText) &&
+			!errors.Is(err, consent.ErrPurposeNotEnabled) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	if f.count(t, `true`) != 0 {
 		t.Fatal("a refused grant was stored")
 	}
-	result, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeRecruitmentPool, Email: "a@example.com", Source: consent.SourceForms, ClientID: "forms"})
-	if err != nil || result.Status != consent.StatusPending {
-		t.Fatalf("forms recruitment pool grant %+v %v", result, err)
+}
+
+// The recruitment pool is not taken yet, not even from Forms, and nothing
+// reads or withdraws it.
+func TestRecruitmentPoolIsNotEnabled(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	pool := consent.PurposeRecruitmentPool
+	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: pool, TextVersion: "alim-havuzu-v1", Email: "a@example.com",
+		Source: consent.SourceForms, ClientID: "forms", EmailVerified: true}); !errors.Is(err, consent.ErrPurposeNotEnabled) {
+		t.Fatalf("grant: %v", err)
 	}
-	if f.count(t, `purpose = 'recruitment_pool' AND text_version = 'gelecek-alim-v1' AND client_id = 'forms'`) != 1 {
-		t.Fatal("recruitment pool grant not stored")
+	if _, err := f.svc.Lookup(ctx, pool, []string{"a@example.com"}); !errors.Is(err, consent.ErrPurposeNotEnabled) {
+		t.Fatalf("lookup: %v", err)
+	}
+	if _, err := f.svc.WithdrawForAddress(ctx, pool, "a@example.com"); !errors.Is(err, consent.ErrPurposeNotEnabled) {
+		t.Fatalf("withdraw: %v", err)
+	}
+	if _, _, err := f.svc.Audience(ctx, pool, uuid.Nil, 10); !errors.Is(err, consent.ErrPurposeNotEnabled) {
+		t.Fatalf("audience: %v", err)
+	}
+	if f.count(t, `true`) != 0 {
+		t.Fatal("a recruitment pool grant was stored")
 	}
 }
 
 func TestWithdrawLinkEndsTheSubjectsCurrentGrantAndCanBeRepeated(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	grant := consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "a@example.com", Source: consent.SourcePlace, EmailVerified: true}
+	grant := consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "a@example.com", Source: consent.SourcePlace, ClientID: "place", EmailVerified: true}
 	first, err := f.svc.Grant(ctx, grant)
-	if err != nil {
-		t.Fatal(err)
-	}
-	other, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeRecruitmentPool, Email: "a@example.com", Source: consent.SourceForms, EmailVerified: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,10 +254,11 @@ func TestWithdrawLinkEndsTheSubjectsCurrentGrantAndCanBeRepeated(t *testing.T) {
 		t.Fatalf("audience %v %v", entries, err)
 	}
 	withdraw := tokenOf(t, entries[0].WithdrawURL)
-	if err := f.svc.CheckWithdrawLink(withdraw); err != nil {
-		t.Fatal(err)
+	if grant, err := f.svc.WithdrawLinkGrant(ctx, withdraw); err != nil || grant.Purpose != consent.PurposeEventInvitations ||
+		grant.TextVersion != "davet-v1" || grant.Status != consent.StatusActive {
+		t.Fatalf("withdraw link grant %+v %v", grant, err)
 	}
-	if err := f.svc.CheckWithdrawLink(withdraw[:len(withdraw)-2] + "AA"); !errors.Is(err, consent.ErrLink) {
+	if _, err := f.svc.WithdrawLinkGrant(ctx, withdraw[:len(withdraw)-2]+"AA"); !errors.Is(err, consent.ErrLink) {
 		t.Fatalf("tampered link: %v", err)
 	}
 
@@ -260,9 +272,6 @@ func TestWithdrawLinkEndsTheSubjectsCurrentGrantAndCanBeRepeated(t *testing.T) {
 	}
 	if f.count(t, `id = $1 AND ended_reason = 'withdrawn' AND ended_via = 'one_click' AND email IS NULL AND email_hmac IS NOT NULL`, first.ID) != 1 {
 		t.Fatal("withdrawn grant keeps its address or lost its proof key")
-	}
-	if f.count(t, `id = $1 AND ended_at IS NULL`, other.ID) != 1 {
-		t.Fatal("withdrawing invitations ended the recruitment pool grant")
 	}
 
 	// A new grant is a new row; the old invitation's link withdraws it too.
@@ -299,7 +308,7 @@ func TestRenewalIsDueAfterThreeYearsWithoutAttendance(t *testing.T) {
 	f.exec(t, `INSERT INTO sessions (id, event_day_id, title, session_type) VALUES ($1, $2, 'Oturum', 'PRESENTATION')`, sessionID, dayID)
 
 	for _, email := range []string{"idle@example.com", "came@example.com"} {
-		if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: email, Source: consent.SourcePlace, EmailVerified: true}); err != nil {
+		if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: email, Source: consent.SourcePlace, ClientID: "place", EmailVerified: true}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -351,7 +360,7 @@ func TestAudiencePagesAndReadsAMembersCurrentAddress(t *testing.T) {
 	}
 	for i := range 4 {
 		email := string(rune('a'+i)) + "@example.com"
-		if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: email, Source: consent.SourcePlace, EmailVerified: true}); err != nil {
+		if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: email, Source: consent.SourcePlace, ClientID: "place", EmailVerified: true}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -424,24 +433,24 @@ func TestPersonListsAndWithdrawsTheirOwnGrants(t *testing.T) {
 func TestServiceLookupAndWithdrawByAddress(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeRecruitmentPool, Email: "kept@example.com", Source: consent.SourceForms, EmailVerified: true}); err != nil {
+	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "kept@example.com", Source: consent.SourceForms, ClientID: "forms", EmailVerified: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeRecruitmentPool, Email: "waiting@example.com", Source: consent.SourceForms}); err != nil {
+	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "waiting@example.com", Source: consent.SourceForms}); err != nil {
 		t.Fatal(err)
 	}
-	states, err := f.svc.Lookup(ctx, consent.PurposeRecruitmentPool, []string{"KEPT@example.com", "waiting@example.com", "none@example.com"})
+	states, err := f.svc.Lookup(ctx, consent.PurposeEventInvitations, []string{"KEPT@example.com", "waiting@example.com", "none@example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if states["kept@example.com"] != consent.StatusActive || states["waiting@example.com"] != consent.StatusPending || len(states) != 2 {
 		t.Fatalf("states %v", states)
 	}
-	ended, err := f.svc.WithdrawForAddress(ctx, consent.PurposeRecruitmentPool, "kept@example.com")
+	ended, err := f.svc.WithdrawForAddress(ctx, consent.PurposeEventInvitations, "kept@example.com")
 	if err != nil || !ended {
 		t.Fatalf("withdraw for address %v %v", ended, err)
 	}
-	if ended, err := f.svc.WithdrawForAddress(ctx, consent.PurposeRecruitmentPool, "kept@example.com"); err != nil || ended {
+	if ended, err := f.svc.WithdrawForAddress(ctx, consent.PurposeEventInvitations, "kept@example.com"); err != nil || ended {
 		t.Fatalf("withdraw again %v %v", ended, err)
 	}
 	if f.count(t, `ended_via = 'service' AND email IS NULL`) != 1 {
@@ -457,17 +466,17 @@ func TestEraseSubjectDeletesEveryGrantOfThePerson(t *testing.T) {
 	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, UserID: member, Source: consent.SourceSelf}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeRecruitmentPool, Email: "m@example.com", Source: consent.SourceForms, EmailVerified: true}); err != nil {
+	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "m@example.com", Source: consent.SourceForms, ClientID: "forms", EmailVerified: true}); err != nil {
 		t.Fatal(err)
 	}
 	// An ended grant keeps only its proof key; it goes too.
-	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "old@example.com", Source: consent.SourcePlace, EmailVerified: true}); err != nil {
+	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "old@example.com", Source: consent.SourcePlace, ClientID: "place", EmailVerified: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.svc.WithdrawForAddress(ctx, consent.PurposeEventInvitations, "old@example.com"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "other@example.com", Source: consent.SourcePlace, EmailVerified: true}); err != nil {
+	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeEventInvitations, Email: "other@example.com", Source: consent.SourcePlace, ClientID: "place", EmailVerified: true}); err != nil {
 		t.Fatal(err)
 	}
 	n, err := f.svc.EraseSubject(ctx, member, []string{"M@example.com", "old@example.com"})
@@ -507,8 +516,8 @@ func TestWithdrawingEndsEveryGrantThatMailsTheSameAddress(t *testing.T) {
 		t.Helper()
 		for _, g := range []consent.Grant{
 			{Purpose: consent.PurposeEventInvitations, UserID: member, Source: consent.SourceSelf},
-			{Purpose: consent.PurposeEventInvitations, Email: "M@example.com", Source: consent.SourcePlace, EmailVerified: true},
-			{Purpose: consent.PurposeEventInvitations, Email: "m@std.yildiz.edu.tr", Source: consent.SourceGuessr, EmailVerified: true},
+			{Purpose: consent.PurposeEventInvitations, Email: "M@example.com", Source: consent.SourcePlace, ClientID: "place", EmailVerified: true},
+			{Purpose: consent.PurposeEventInvitations, Email: "m@std.yildiz.edu.tr", Source: consent.SourceGuessr, ClientID: "guessr", EmailVerified: true},
 			{Purpose: consent.PurposeEventInvitations, UserID: other, Source: consent.SourceSelf},
 		} {
 			if _, err := f.svc.Grant(ctx, g); err != nil {
