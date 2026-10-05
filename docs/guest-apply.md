@@ -7,7 +7,7 @@ last name and e-mail are required.
 
 `consents` carries the boxes the guest ticked
 ([contact-consents.md](contact-consents.md)): `["event_invitations"]`, or
-`[{"purpose":"event_invitations","textVersion":"event_invitations.v1"}]` to
+`[{"purpose":"event_invitations","textVersion":"davet-v1"}]` to
 name the text shown. Absent or empty, nothing is recorded: the box is
 unticked unless the guest ticked it. A field core cannot read is `400`
 (`consent_invalid`, `consent_text_unknown`) and no Ticket is written. After

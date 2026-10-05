@@ -144,7 +144,7 @@ func TestContactConsentDownMigrationsRefuseToDropProof(t *testing.T) {
 	consentID := uuid.New()
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO contact_consents (id, purpose, email_hmac, source, text_version, granted_at, ended_at, ended_reason, ended_via)
-		VALUES ($1, 'event_invitations', $2, 'guest_apply', 'event_invitations.v1', $3, $3, 'withdrawn', 'link')`,
+		VALUES ($1, 'event_invitations', $2, 'guest_apply', 'davet-v1', $3, $3, 'withdrawn', 'link')`,
 		consentID, bytes.Repeat([]byte{1}, 32), time.Now()); err != nil {
 		t.Fatal(err)
 	}

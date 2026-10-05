@@ -76,15 +76,18 @@ agent or name is kept.
 
 **Texts.** A grant names the text version it was given on. Core accepts only
 the versions below; a new wording is a new version here and in
-`internal/consent` (`purposes`), released before the products show it.
+`internal/consent` (`purposes`), released before the products show it. The
+codes are the versions of the Açık Rıza Metni draft (sky_lab_genel
+`notes/hukuki/acik-riza-metni-davet-TASLAK.md`, "Sürüm"), whose box texts are:
 
-| Version | Text (Turkish, as shown next to the box) |
-|---|---|
-| `event_invitations.v1` | SKY LAB'ın gelecek etkinliklerine davet e-postası almak istiyorum. İstediğim zaman bağlantıyla vazgeçebilirim. |
-| `recruitment_pool.v1` | Bu dönem kabul edilmezsem başvurum gelecek alımlarda değerlendirilmek üzere saklansın. İstediğim zaman bağlantıyla vazgeçebilirim. |
+| Version | Purpose | Box text (Turkish, as shown next to the box, with links to the Açık Rıza Metni and the aydınlatma) |
+|---|---|---|
+| `davet-v1` | `event_invitations` | SKY LAB'ın gelecek etkinliklerine davet e-postası almak istiyorum. Bunun için adımı ve e-posta adresimi saklayabilirsiniz. İstediğim zaman her davetteki bağlantıyla vazgeçebilirim. |
+| `gelecek-alim-v1` | `recruitment_pool` | Bu dönem kabul edilmezsem başvurumun gelecek alımlarda değerlendirilmek üzere saklanmasını istiyorum. İstediğim zaman vazgeçebilirim. |
 
-The wording is the proposal of `.scratch/data-lifecycle/saklama-sureleri-onerisi.md`
-§4; the approved Açık Rıza Metni replaces it as a new version if it differs.
+The draft is not approved yet; if the approved wording differs, it gets a new
+version (`davet-v2`, …) here first. A grant that names no version is recorded
+on the newest one of its purpose.
 
 ## Lifecycle
 

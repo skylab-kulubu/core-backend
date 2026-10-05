@@ -41,8 +41,8 @@ const (
 // docs/contact-consents.md, where its wording is kept, so the proof of a
 // grant can show what the person read. A new wording is a new id here.
 var purposes = map[Purpose][]string{
-	PurposeEventInvitations: {"event_invitations.v1"},
-	PurposeRecruitmentPool:  {"recruitment_pool.v1"},
+	PurposeEventInvitations: {"davet-v1"},
+	PurposeRecruitmentPool:  {"gelecek-alim-v1"},
 }
 
 // purposeSources are the sources each purpose may be given through. A

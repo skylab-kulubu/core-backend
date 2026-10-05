@@ -115,7 +115,7 @@ func TestGuestGrantWaitsForItsConfirmationAndKeepsNoIP(t *testing.T) {
 			t.Fatalf("a link carries the address: %s", link)
 		}
 	}
-	if f.count(t, `email = 'ada@example.com' AND text_version = 'event_invitations.v1' AND event_id = $1 AND confirmed_at IS NULL`, eventID) != 1 {
+	if f.count(t, `email = 'ada@example.com' AND text_version = 'davet-v1' AND event_id = $1 AND confirmed_at IS NULL`, eventID) != 1 {
 		t.Fatal("pending row not stored as expected")
 	}
 
@@ -208,7 +208,7 @@ func TestGrantRefusesWhatItCannotProve(t *testing.T) {
 		"pool through apply":   {Purpose: consent.PurposeRecruitmentPool, Email: "a@example.com", Source: consent.SourceGuestApply},
 		"pool through place":   {Purpose: consent.PurposeRecruitmentPool, Email: "a@example.com", Source: consent.SourcePlace},
 		"account and address":  {Purpose: consent.PurposeEventInvitations, UserID: uuid.New(), Email: "a@example.com", Source: consent.SourceSelf},
-		"unknown text version": {Purpose: consent.PurposeEventInvitations, TextVersion: "event_invitations.v9", Email: "a@example.com", Source: consent.SourceGuestApply},
+		"unknown text version": {Purpose: consent.PurposeEventInvitations, TextVersion: "davet-v9", Email: "a@example.com", Source: consent.SourceGuestApply},
 	} {
 		if _, err := f.svc.Grant(ctx, g); !errors.Is(err, consent.ErrInvalid) && !errors.Is(err, consent.ErrUnknownText) {
 			t.Errorf("%s: %v", name, err)
@@ -221,7 +221,7 @@ func TestGrantRefusesWhatItCannotProve(t *testing.T) {
 	if err != nil || result.Status != consent.StatusPending {
 		t.Fatalf("forms recruitment pool grant %+v %v", result, err)
 	}
-	if f.count(t, `purpose = 'recruitment_pool' AND text_version = 'recruitment_pool.v1' AND client_id = 'forms'`) != 1 {
+	if f.count(t, `purpose = 'recruitment_pool' AND text_version = 'gelecek-alim-v1' AND client_id = 'forms'`) != 1 {
 		t.Fatal("recruitment pool grant not stored")
 	}
 }

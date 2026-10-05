@@ -159,7 +159,7 @@ func TestGuestApplyConsentIsUntickedByDefaultAndConfirmedByLink(t *testing.T) {
 	for _, bad := range []string{
 		`{"firstName":"A","lastName":"B","email":"x@example.com","consents":["newsletter"]}`,
 		`{"firstName":"A","lastName":"B","email":"x@example.com","consents":["recruitment_pool"]}`,
-		`{"firstName":"A","lastName":"B","email":"x@example.com","consents":[{"purpose":"event_invitations","textVersion":"event_invitations.v9"}]}`,
+		`{"firstName":"A","lastName":"B","email":"x@example.com","consents":[{"purpose":"event_invitations","textVersion":"davet-v9"}]}`,
 		`{"firstName":"A","lastName":"B","email":"x@example.com","consents":"event_invitations"}`,
 	} {
 		if got := apply(bad); got.status != fiber.StatusBadRequest {
@@ -215,7 +215,7 @@ func TestConsentServiceRoutesNeedTheirRoleAndTheWithdrawLinkIsOneClick(t *testin
 		}
 	}
 	got := sendJSON(t, env.app, record, fiber.MethodPost, "/v1/consents",
-		`{"purpose":"event_invitations","textVersion":"event_invitations.v1","email":"a@example.com","emailVerified":true}`)
+		`{"purpose":"event_invitations","textVersion":"davet-v1","email":"a@example.com","emailVerified":true}`)
 	if got.status != fiber.StatusCreated || got.body["status"] != "active" {
 		t.Fatalf("record %d %v", got.status, got.body)
 	}
