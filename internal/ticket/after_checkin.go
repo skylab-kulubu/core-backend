@@ -85,8 +85,8 @@ func (a *afterCheckIn) CheckInMe(ctx context.Context, p authz.Principal, session
 	return ci, err
 }
 
-func (a *afterCheckIn) CheckInGuest(ctx context.Context, sessionID uuid.UUID, email string) (CheckIn, error) {
-	ci, err := a.inner.CheckInGuest(ctx, sessionID, email)
+func (a *afterCheckIn) CheckInGuest(ctx context.Context, sessionID uuid.UUID, g GuestCheckIn) (CheckIn, error) {
+	ci, err := a.inner.CheckInGuest(ctx, sessionID, g)
 	if err == nil {
 		a.fire(ctx, ci.TicketID)
 	}
@@ -107,6 +107,10 @@ func (a *afterCheckIn) ResolveAndCheckIn(ctx context.Context, p authz.Principal,
 		a.fire(ctx, ci.TicketID)
 	}
 	return ci, err
+}
+
+func (a *afterCheckIn) MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorQR, error) {
+	return a.inner.MintDoorQR(ctx, p, sessionID)
 }
 
 func (a *afterCheckIn) DoorActivity(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorActivity, error) {

@@ -1,6 +1,9 @@
 package media
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // SizeObject is one of an image's sizes stored as its own object beside
 // it: how large it is, and its type (JPEG or PNG), which names its key.
@@ -55,6 +58,16 @@ func sizeObjectKeys(key string) []string {
 // itself, then its sizes. A failure part way leaves the purge claimed, and
 // its retry deletes them all again (deleting an object that is not there
 // succeeds), so the order only decides what a crash leaves until then: a
+// isSizeObjectKey reports whether key is where one of an image's sizes is
+// stored (sizeObjectKey of an image that canHaveSizeObjects).
+func isSizeObjectKey(key string) bool {
+	slash := strings.LastIndex(key, "/")
+	if slash < 0 || !canHaveSizeObjects(key[:slash]) {
+		return false
+	}
+	return slices.Contains(sizeObjectKeys(key[:slash]), key)
+}
+
 // size, never the image without its purge recorded.
 func purgeObjects(key string, purge func(key string) error) error {
 	if err := purge(key); err != nil {

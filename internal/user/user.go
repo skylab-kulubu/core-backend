@@ -15,6 +15,40 @@ const (
 	AccountAnonymized      AccountState = "anonymized"
 )
 
+// ReadStatus is the `status` a user read answers with: what an API client
+// sees of the account state (docs/account-lifecycle.md#reading-a-person).
+type ReadStatus string
+
+const (
+	ReadStatusActive ReadStatus = "active"
+	// ReadStatusDeletionPending: the person asked to be erased and the
+	// erasure is running. The read already hides their personal data, as
+	// for ReadStatusDeleted; the request cannot be withdrawn.
+	ReadStatusDeletionPending ReadStatus = "deletion_pending"
+	// ReadStatusDeleted: the person is erased (anonymized or hard-purged),
+	// or the id is DeletedSubject.
+	ReadStatusDeleted ReadStatus = "deleted"
+)
+
+// DeletedSubject is the fixed sub the services put where an erased person
+// was named, and DeletedDisplayName its name
+// (docs/account-erasure-command.md §8). It is the same for everyone.
+var DeletedSubject = uuid.MustParse("00000000-0000-4000-8000-000000000000")
+
+const DeletedDisplayName = "Silinmiş kullanıcı"
+
+// ReadStatus is the status a user read answers with for this state.
+func (s AccountState) ReadStatus() ReadStatus {
+	switch s {
+	case AccountDeletionPending:
+		return ReadStatusDeletionPending
+	case AccountAnonymized:
+		return ReadStatusDeleted
+	default:
+		return ReadStatusActive
+	}
+}
+
 type DeletionRequestStatus string
 
 type AttributionState string

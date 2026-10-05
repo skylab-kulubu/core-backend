@@ -1131,6 +1131,20 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		SELECT 1 FROM pg_indexes
 		WHERE schemaname = 'public' AND indexname = 'tickets_event_created_idx'
 		  AND indexdef = 'CREATE INDEX tickets_event_created_idx ON public.tickets USING btree (event_id, created_at)'`,
+	// The guest Answer file: a staged upload of no one, and the purpose in
+	// Skyforms' answer role.
+	20261004120000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'media_upload_staging' AND column_name = 'subject_id'
+			  AND is_nullable = 'YES'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_role_purposes'
+			  AND prosrc LIKE '%(''forms'', ''answer'', ''answer_file_guest'')%'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

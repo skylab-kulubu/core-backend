@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 const (
@@ -64,6 +66,12 @@ type Joiner struct {
 	Teams []string `json:"teams"`
 	// RegisteredAt is when their Keycloak account was created.
 	RegisteredAt time.Time `json:"registeredAt"`
+	// ProfilePictureURL and ProfilePictureSizes are the person's profile
+	// picture as the public team list and /v1/users/me answer it: its
+	// address and its card and page addresses. Omitted for a person without
+	// a picture.
+	ProfilePictureURL   string                        `json:"profilePictureUrl,omitempty"`
+	ProfilePictureSizes map[string]media.ImageAddress `json:"profilePictureSizes,omitempty"`
 }
 
 // GroupDirectory reads the Group tree: identity.Directory.
@@ -314,6 +322,9 @@ func (s *service) memberSummary(ctx context.Context, now time.Time, allTeams boo
 	sort.SliceStable(registered, func(i, j int) bool {
 		return registered[i].registered.After(*registered[j].registered)
 	})
+	// The summary has no media dependency to carry a base and mode of its
+	// own: the ones core is configured with, as the team list's.
+	addresses := media.ConfiguredAddresses()
 	for _, m := range registered[:min(RecentJoiners, len(registered))] {
 		joiner := Joiner{
 			ID: m.id, FirstName: m.firstName, LastName: m.lastName,
@@ -322,6 +333,12 @@ func (s *service) memberSummary(ctx context.Context, now time.Time, allTeams boo
 		// As core's other people reads: the names core stores win.
 		if account := accounts[m.id]; account.Stored {
 			joiner.FirstName, joiner.LastName = account.FirstName, account.LastName
+			// A person core may no longer show (Blocked) is no joiner at
+			// all; the placeholder subject is nobody's picture.
+			if m.id != user.DeletedSubject {
+				joiner.ProfilePictureURL = addresses.Object(account.ProfilePictureKey)
+				joiner.ProfilePictureSizes = addresses.LinkedSizes(account.ProfilePicture)
+			}
 		}
 		for _, team := range m.teams {
 			if allTeams || team.public {

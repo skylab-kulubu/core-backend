@@ -38,8 +38,13 @@ type AttachRequest struct {
 	Owner Owner
 	Role  Role
 	// OnBehalfOf is the person the product acts for: the respondent whose
-	// Skyforms answer it is, the editor saving the CMS page.
+	// Skyforms answer it is, the editor saving the CMS page. uuid.Nil is no
+	// one, as for a guest's Skyforms answer: it links only Media that belong
+	// to no person (mayLink).
 	OnBehalfOf uuid.UUID
+	// Malformed is a request that named onBehalfOf with something that is
+	// not a UUID: refused as malformed, never read as no one.
+	Malformed bool
 }
 
 // personalPurposes are the purposes whose Media belong to the person who
@@ -92,7 +97,7 @@ func (s *service) Attach(ctx context.Context, p authz.Principal, mediaID uuid.UU
 	if err != nil {
 		return Attachment{}, false, err
 	}
-	if mediaID == uuid.Nil || req.OnBehalfOf == uuid.Nil || req.Owner.Service == "" ||
+	if mediaID == uuid.Nil || req.Malformed || req.Owner.Service == "" ||
 		!ownerType.MatchString(req.Owner.Type) || !ownerID.MatchString(req.Owner.ID) {
 		return Attachment{}, false, ErrInvalid
 	}
@@ -144,7 +149,7 @@ func (s *service) attachHeld(ctx context.Context, product authz.Product, link At
 }
 
 // mayLink reports whether the product may link m at all, for the person it
-// acts for:
+// acts for (or for no one, uuid.Nil):
 //   - a Media of one of the product's own purposes; a personal one only for
 //     the person who uploaded it;
 //   - a legacy Media for the person who uploaded it, or one the product

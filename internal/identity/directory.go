@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 var (
@@ -40,6 +42,12 @@ type Person struct {
 	Username    string    `json:"username,omitempty"`
 	SchoolEmail string    `json:"schoolEmail,omitempty"`
 	SkyNumber   string    `json:"skyNumber,omitempty"`
+	// Status and DisplayName are what the user reads (GET /v1/users/{id},
+	// GET /v1/users, PATCH /v1/users/{id}) answer for every person: an erased
+	// or deletion-pending person is answered as erasedPerson. Other answers
+	// leave them empty and omit them.
+	Status      user.ReadStatus `json:"status,omitempty"`
+	DisplayName string          `json:"displayName,omitempty"`
 	// Enabled is Keycloak's enabled flag. The zero value is disabled: only
 	// the directory's reads set it (Keycloak's user and user list; the
 	// memory directory reports a person enabled until its DisableUser).
@@ -53,6 +61,14 @@ type Person struct {
 	// dashboard summary's Members section uses it; it is never part of an
 	// answer as such.
 	CreatedAt *time.Time `json:"-"`
+	// ProfilePictureURL and ProfilePictureSizes are the person's profile
+	// picture as the public team list and /v1/users/me answer it: its
+	// address and its card and page addresses. Only the user reads (GET
+	// /v1/users, GET /v1/users/{id}) set them, from the profile core
+	// stores; they are empty and omitted for a person without a picture and
+	// for one who is erased or being erased.
+	ProfilePictureURL   string                        `json:"profilePictureUrl,omitempty"`
+	ProfilePictureSizes map[string]media.ImageAddress `json:"profilePictureSizes,omitempty"`
 }
 
 type GroupMember struct {
@@ -74,13 +90,12 @@ type UserCard struct {
 	Department string `json:"department,omitempty"`
 	// YTULinked marks university, faculty and department as following the
 	// YTÜ login; an admin edit that changes them is refused.
-	YTULinked         bool         `json:"ytuLinked,omitempty"`
-	Phone             string       `json:"phone,omitempty"`
-	StudentCardUid    string       `json:"studentCardUid,omitempty"`
-	ProfilePictureURL string       `json:"profilePictureUrl,omitempty"`
-	Groups            []Group      `json:"groups,omitempty"`
-	InheritedRoles    []ClientRole `json:"inheritedRoles,omitempty"`
-	ExtraRoles        []ClientRole `json:"extraRoles,omitempty"`
+	YTULinked      bool         `json:"ytuLinked,omitempty"`
+	Phone          string       `json:"phone,omitempty"`
+	StudentCardUid string       `json:"studentCardUid,omitempty"`
+	Groups         []Group      `json:"groups,omitempty"`
+	InheritedRoles []ClientRole `json:"inheritedRoles,omitempty"`
+	ExtraRoles     []ClientRole `json:"extraRoles,omitempty"`
 }
 
 type Directory interface {

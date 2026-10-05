@@ -59,6 +59,13 @@ type Principal struct {
 	// ServiceClients). Empty for a person, whatever client their token was
 	// issued to.
 	Product Product
+	// Client is the Keycloak client the token was issued to (azp). No
+	// decision reads it; it only labels the role mode's disagreement count.
+	Client string
+	// ServiceAccount is true for a client's service account token, never a
+	// person. A service account is never Privileged through a role of the
+	// contract (roles.go), whatever roles it holds.
+	ServiceAccount bool
 }
 
 type Resource struct {
@@ -70,10 +77,20 @@ type Resource struct {
 	// MediaUploader is the upload rule of a Media purpose, for Upload on
 	// TypeMedia. Empty is MediaUploaderAuthenticated.
 	MediaUploader MediaUploader
+	// MediaOwner is the product that owns the Media purpose (its
+	// OwningProduct), for Upload on TypeMedia: the one product whose service
+	// account may upload a MediaUploaderServiceOnly purpose.
+	MediaOwner Product
 }
 
 type Policy struct {
+	// PrivilegedGroups are the Groups whose members, and their subgroups'
+	// members, are Privileged. RoleMode says whether a decision still reads
+	// them.
 	PrivilegedGroups []string
+	// RoleMode is where Privileged decisions come from: the Groups, the
+	// roles that stand for them (roles.go), or either. Empty is groups.
+	RoleMode         RoleMode
 	LeaderSubgroups  []string
 	EventPermissions map[string]map[Action][]Level
 }
@@ -113,7 +130,9 @@ const (
 	// template create decision.
 	MediaUploaderCertificateTemplateEditor MediaUploader = "certificate_template_editor"
 	// MediaUploaderServiceOnly is no person: only the owning product's service
-	// identity may start such an upload.
+	// account, with the media:attach role, may start such an upload (Skyforms
+	// for a guest Answer file). Core's own purposes (a video's frame) are
+	// uploaded by no caller: core stores them itself.
 	MediaUploaderServiceOnly MediaUploader = "service_only"
 )
 

@@ -2,18 +2,34 @@ package authz
 
 import "testing"
 
+// allowCase is one decision of the authorizer under today's Group paths
+// (the groups mode).
+type allowCase struct {
+	name string
+	p    Principal
+	r    Resource
+	a    Action
+	want bool
+}
+
 func TestAuthorizer_Allow(t *testing.T) {
 	t.Parallel()
 
 	auth := NewAuthorizer(DefaultPolicy())
 
-	tests := []struct {
-		name string
-		p    Principal
-		r    Resource
-		a    Action
-		want bool
-	}{
+	for _, tt := range allowCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := auth.Allow(tt.p, tt.r, tt.a)
+			if got != tt.want {
+				t.Fatalf("Allow() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func allowCases() []allowCase {
+	return []allowCase{
 		{
 			name: "event read is public",
 			r:    Resource{Type: TypeEvent},
@@ -516,6 +532,48 @@ func TestAuthorizer_Allow(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "the owning product's service account uploads a service-only purpose",
+			p:    Principal{ID: "svc", ServiceAccount: true, Product: ProductForms, Roles: []string{"media:attach"}},
+			r:    Resource{Type: TypeMedia, MediaUploader: MediaUploaderServiceOnly, MediaOwner: ProductForms},
+			a:    Upload,
+			want: true,
+		},
+		{
+			name: "a service account without media:attach cannot upload a service-only purpose",
+			p:    Principal{ID: "svc", ServiceAccount: true, Product: ProductForms, Roles: []string{"url:forms"}},
+			r:    Resource{Type: TypeMedia, MediaUploader: MediaUploaderServiceOnly, MediaOwner: ProductForms},
+			a:    Upload,
+			want: false,
+		},
+		{
+			name: "another product's service account cannot upload a service-only purpose",
+			p:    Principal{ID: "svc", ServiceAccount: true, Product: ProductCMS, Roles: []string{"media:attach"}},
+			r:    Resource{Type: TypeMedia, MediaUploader: MediaUploaderServiceOnly, MediaOwner: ProductForms},
+			a:    Upload,
+			want: false,
+		},
+		{
+			name: "no service account uploads core's own service-only purpose",
+			p:    Principal{ID: "svc", ServiceAccount: true, Product: ProductForms, Roles: []string{"media:attach"}},
+			r:    Resource{Type: TypeMedia, MediaUploader: MediaUploaderServiceOnly, MediaOwner: ProductCore},
+			a:    Upload,
+			want: false,
+		},
+		{
+			name: "a service account of no product cannot upload a service-only purpose",
+			p:    Principal{ID: "svc", ServiceAccount: true, Roles: []string{"media:attach"}},
+			r:    Resource{Type: TypeMedia, MediaUploader: MediaUploaderServiceOnly},
+			a:    Upload,
+			want: false,
+		},
+		{
+			name: "a privileged person with media:attach cannot upload a service-only purpose",
+			p:    Principal{ID: "u1", Groups: []string{"/UYELER/ADMIN"}, Roles: []string{"media:attach"}},
+			r:    Resource{Type: TypeMedia, MediaUploader: MediaUploaderServiceOnly, MediaOwner: ProductForms},
+			a:    Upload,
+			want: false,
+		},
+		{
 			name: "privileged can delete media",
 			p:    Principal{ID: "u1", Groups: []string{"/UYELER/YK"}},
 			r:    Resource{Type: TypeMedia},
@@ -683,15 +741,5 @@ func TestAuthorizer_Allow(t *testing.T) {
 			a:    Read,
 			want: false,
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := auth.Allow(tt.p, tt.r, tt.a)
-			if got != tt.want {
-				t.Fatalf("Allow() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }

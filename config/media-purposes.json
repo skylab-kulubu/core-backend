@@ -98,6 +98,20 @@
       "service": "forms",
       "image": { "reencode": true, "max_dimension": 2560 }
     },
+    "answer_file_guest": {
+      "description": "A guest Answer file: a file for a Skyforms file question on a form that takes answers without sign-in. Skyforms' service account uploads it after its own checks; no person uploads it and it has no uploader. Skyforms decides who may open it.",
+      "upload": "service_only",
+      "types": ["application/pdf", "image/jpeg", "image/png"],
+      "max_mib": 10,
+      "visibility": "private",
+      "encrypted": true,
+      "scan": true,
+      "pending_ttl": "24h",
+      "transport": "single_step",
+      "attach": "service",
+      "service": "forms",
+      "image": { "reencode": true, "max_dimension": 2560 }
+    },
     "club_file": {
       "description": "A large club download, such as event material or a dataset, that anyone can open: one of an Event's files (decision C1). A ZIP is served only as a download (decision D6).",
       "upload": "event_editor",

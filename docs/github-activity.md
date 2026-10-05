@@ -13,10 +13,11 @@ out while fewer than two private repositories are active.
 
 ## Who may read it
 
-A person in a privileged Group (`ADMIN`, `YK` or `DK`, the same check as the
-other club-wide admin data: `authz.TypeGithubActivity`). Everyone else gets
+A Privileged person (`authz.TypeGithubActivity`): a member of `ADMIN`, `YK`
+or `DK`, or a holder of the `core` role `github:activity:read`, as
+`AUTHZ_ROLE_MODE` says ([authz-roles.md](authz-roles.md)). Everyone else gets
 403, a request without a bearer 401, and a product's service account 403 even
-in such a Group.
+in such a Group or with the role.
 
 Why not every signed-in person: the figures are internal, and the private
 repositories' totals (how many are active, how many commits) are not public.

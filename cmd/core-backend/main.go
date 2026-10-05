@@ -26,6 +26,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
+	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
@@ -70,6 +71,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == mediaFrameSelfTestCommandName {
 		os.Exit(runMediaFrameSelfTest(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == mediaCDNPurgeSelfTestCommandName {
+		os.Exit(runMediaCDNPurgeSelfTest(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == groupCountReportCommandName {
 		os.Exit(runGroupCountReport(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
@@ -100,7 +104,18 @@ func main() {
 		log.Fatal(err)
 	}
 
-	az := authz.NewAuthorizer(authz.DefaultPolicy())
+	// Where Privileged decisions come from while the roles roll out
+	// (docs/authz-roles.md): the Groups by default, so a release changes
+	// nothing until the mode is switched.
+	roleMode, err := authz.ParseRoleMode(os.Getenv(authz.RoleModeEnv))
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("authz role mode: %s (%s)", roleMode, authz.RoleModeEnv)
+	authzPolicy := authz.DefaultPolicy()
+	authzPolicy.RoleMode = roleMode
+	authzRoleMetrics := authz.NewRoleMetrics(log.Default(), time.Now)
+	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics))
 	users := user.NewPostgresStore(pool)
 	events := event.NewPostgresStore(pool)
 	seasons := season.NewPostgresStore(pool)
@@ -195,6 +210,12 @@ func main() {
 	log.Printf("media service attach: products with a service client: %v", serviceClients.Products())
 	mediaPurgeContext, stopMediaPurge := context.WithCancel(context.Background())
 	defer stopMediaPurge()
+	// CDN cache purge (MEDIA_CDN_PURGE_*, docs/media-lifecycle.md): every
+	// object the public bucket deletes, or gives new metadata, is purged
+	// from Cloudflare's cache, so deleted media stops being served within
+	// about a minute. Set before any worker below deletes. Settings it
+	// cannot use turn it off loudly instead of stopping core.
+	_, cdnPurgeMetrics := startCDNPurge(mediaPurgeContext, os.Getenv, publicBlobs, cdnBase, log.Printf)
 	// Malware scan (MEDIA_CLAMAV_ADDR, docs/media-lifecycle.md). Unset, a
 	// purpose that needs a scan is refused, as before. Set, such a purpose's
 	// uploads wait scanning and the scan worker streams each to clamd, a ZIP
@@ -324,6 +345,14 @@ func main() {
 		missingRoles, err := keycloakDirectory.MissingClientRoles(roleContext, os.Getenv("KEYCLOAK_CLIENT_ID"), identity.CertificateClientRoles)
 		cancelRoleCheck()
 		if warning := identity.CertificateRolesWarning(os.Getenv("KEYCLOAK_CLIENT_ID"), missingRoles, err); warning != "" {
+			log.Print(warning)
+		}
+		// The roles live on the client tokens carry them for
+		// (resource_access.core), whichever client core signs in as.
+		roleContext, cancelRoleCheck = context.WithTimeout(context.Background(), 15*time.Second)
+		missingRoles, err = keycloakDirectory.MissingClientRoles(roleContext, authn.ResourceAudience, authz.PermissionRoles())
+		cancelRoleCheck()
+		if warning := identity.PermissionRolesWarning(authn.ResourceAudience, roleMode, missingRoles, err); warning != "" {
 			log.Print(warning)
 		}
 		dir = keycloakDirectory
@@ -547,7 +576,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	ticketSvc := ticket.NewService(tickets, events, az, users, dir)
+	doorQR, err := doorQRGate(os.Getenv, passKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR)
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -619,6 +652,7 @@ func main() {
 		AccountAccessGate:      optionalAccountAccessGate(gate),
 		AccountAccessMetrics:   accessMetrics,
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
+		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
 		ParseSelfDeleteSudo:    parseSelfDeleteSudo,
@@ -631,6 +665,9 @@ func main() {
 		ServiceClients:          serviceClients,
 		GroupOverage:            overageGroups,
 		GuestApplyMetrics:       handlers.NewGuestApplyMetrics(),
+		Authz:                   az,
+		AuthzRoleMetrics:        authzRoleMetrics,
+		GuestCheckInMetrics:     doorQR,
 		GuestApplyPublicIPLimit: guestApplyIPLimit,
 		Dashboard:               dashboardSvc,
 		GithubActivity:          githubActivity,
@@ -786,6 +823,20 @@ func gotenbergURL() string {
 		return explicit
 	}
 	return "http://gotenberg:3000"
+}
+
+// doorQRGate builds guest check-in's door QR (docs/guest-self-check-in.md).
+// Its HMAC key is derived from the SkyPass signing key, so it needs no secret
+// of its own and every replica with the same SkyPass key accepts the same
+// door QR, yet no door QR is ever signed with the SkyPass key itself.
+func doorQRGate(getenv func(string) string, passKey *ecdsa.PrivateKey) (*doorqr.Gate, error) {
+	cfg, err := doorqr.ConfigFromEnv(getenv)
+	if err != nil {
+		return nil, err
+	}
+	gate := doorqr.NewGate(doorqr.DeriveKey(passKey.D.FillBytes(make([]byte, 32))), cfg)
+	log.Printf("guest self check-in: %s=%s", doorqr.ModeEnv, gate.Mode())
+	return gate, nil
 }
 
 func loadSkyPassKey() (*ecdsa.PrivateKey, error) {

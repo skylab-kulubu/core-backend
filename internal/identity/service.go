@@ -300,6 +300,7 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 			if shadow.SkyNumber != "" {
 				person.SkyNumber = shadow.SkyNumber
 			}
+			person = withProfilePicture(person, shadow)
 		}
 		out = append(out, person)
 	}
@@ -307,14 +308,15 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 }
 
 func projectPeople(people []Person, full bool) []Person {
-	if full {
-		return people
-	}
 	out := make([]Person, 0, len(people))
 	for _, person := range people {
-		out = append(out, Person{
-			ID: person.ID, Email: person.Email, FirstName: person.FirstName, LastName: person.LastName,
-		})
+		if !full {
+			person = Person{
+				ID: person.ID, Email: person.Email, FirstName: person.FirstName, LastName: person.LastName,
+				ProfilePictureURL: person.ProfilePictureURL, ProfilePictureSizes: person.ProfilePictureSizes,
+			}
+		}
+		out = append(out, activePerson(person))
 	}
 	return out
 }
@@ -339,30 +341,56 @@ func safePersonMatches(person Person, query string) bool {
 	return false
 }
 
+// GetUser answers a person who is erased, being erased, or the placeholder
+// subject with erasedPerson, to every caller allowed to read users, whatever
+// Keycloak still holds: core's row (or, after the hard purge, its deletion
+// marker) decides. A caller who may not read users is refused first, so it
+// learns nothing of the id.
 func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error) {
 	if err := s.allowUserRead(p); err != nil {
 		return UserCard{}, err
+	}
+	if id == user.DeletedSubject {
+		return UserCard{Person: erasedPerson(id, user.ReadStatusDeleted)}, nil
+	}
+	shadow, shadowErr := s.users.Get(ctx, id)
+	switch {
+	case shadowErr == nil:
+		if shadow.AccountState != user.AccountActive {
+			return UserCard{Person: erasedPerson(id, shadow.AccountState.ReadStatus())}, nil
+		}
+	case errors.Is(shadowErr, user.ErrNotFound):
+		// No row: a deletion marker means the person was hard-purged.
+		state, err := s.users.AttributionState(ctx, id)
+		if err != nil {
+			return UserCard{}, err
+		}
+		if state == user.AttributionBlocked {
+			return UserCard{Person: erasedPerson(id, user.ReadStatusDeleted)}, nil
+		}
+	default:
+		// Without core's row the answer cannot say whether the person is
+		// erased; it is not guessed from Keycloak.
+		return UserCard{}, shadowErr
 	}
 	person, err := s.dir.GetUser(ctx, id)
 	if err != nil {
 		return UserCard{}, err
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Update) {
-		if got, err := s.users.Get(ctx, id); err == nil {
-			person.FirstName = got.FirstName
-			person.LastName = got.LastName
+		if shadowErr == nil {
+			person.FirstName = shadow.FirstName
+			person.LastName = shadow.LastName
 		}
-		return nameOnlyCard(UserCard{Person: Person{
+		return nameOnlyCard(UserCard{Person: withProfilePicture(Person{
 			ID:        person.ID,
 			Email:     person.Email,
 			FirstName: person.FirstName,
 			LastName:  person.LastName,
-		}}), nil
+		}, shadow)}), nil
 	}
-	var shadow user.User
-	if got, err := s.users.Get(ctx, id); err == nil {
-		person = overlayPerson(person, got)
-		shadow = got
+	if shadowErr == nil {
+		person = overlayPerson(person, shadow)
 	}
 	groups, err := s.dir.GroupsForUser(ctx, id)
 	if err != nil {
@@ -399,13 +427,30 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 
 func nameOnlyCard(card UserCard) UserCard {
 	return UserCard{
-		Person: Person{
-			ID:        card.ID,
-			Email:     card.Email,
-			FirstName: card.FirstName,
-			LastName:  card.LastName,
-		},
+		Person: activePerson(Person{
+			ID:                  card.ID,
+			Email:               card.Email,
+			FirstName:           card.FirstName,
+			LastName:            card.LastName,
+			ProfilePictureURL:   card.ProfilePictureURL,
+			ProfilePictureSizes: card.ProfilePictureSizes,
+		}),
 	}
+}
+
+// activePerson marks a person whose account is active.
+func activePerson(person Person) Person {
+	person.Status = user.ReadStatusActive
+	person.DisplayName = strings.TrimSpace(person.FirstName + " " + person.LastName)
+	return person
+}
+
+// erasedPerson is the answer for a person who is erased or being erased
+// (docs/account-erasure-command.md §8): the id, the status, and the fixed
+// name in displayName and firstName, so a client that joins firstName and
+// lastName shows "Silinmiş kullanıcı" too. Nothing else of the person.
+func erasedPerson(id uuid.UUID, status user.ReadStatus) Person {
+	return Person{ID: id, FirstName: user.DeletedDisplayName, Status: status, DisplayName: user.DeletedDisplayName}
 }
 
 func overlayPerson(person Person, shadow user.User) Person {
@@ -422,7 +467,7 @@ func overlayPerson(person Person, shadow user.User) Person {
 
 func userCard(person Person, groups []Group, inherited, extra []ClientRole, shadow user.User) UserCard {
 	return UserCard{
-		Person:         person,
+		Person:         activePerson(withProfilePicture(person, shadow)),
 		Linkedin:       shadow.Linkedin,
 		University:     shadow.University,
 		Faculty:        shadow.Faculty,
@@ -617,7 +662,7 @@ func (s *service) PublicMembers(ctx context.Context, team string) (Roster, error
 	if err != nil {
 		return Roster{}, err
 	}
-	return s.buildRoster(ctx, g, people, leaders), nil
+	return s.buildRoster(ctx, g, people, leaders)
 }
 
 func (s *service) PublicLeaders(ctx context.Context, team string) (Roster, error) {
@@ -637,7 +682,7 @@ func (s *service) PublicLeaders(ctx context.Context, team string) (Roster, error
 		}
 		people = append(people, p)
 	}
-	return s.buildRoster(ctx, g, people, leaders), nil
+	return s.buildRoster(ctx, g, people, leaders)
 }
 
 func (s *service) publicGroup(ctx context.Context, team string, leaders bool) (Group, error) {
@@ -808,27 +853,42 @@ func description(g Group) *LocalizedText {
 	return &LocalizedText{TR: tr, EN: en}
 }
 
-func (s *service) buildRoster(ctx context.Context, g Group, people []Person, leaders map[uuid.UUID]struct{}) Roster {
-	// A roster has no media dependency to carry a base and mode of its
-	// own: the ones core is configured with.
-	addresses := media.ConfiguredAddresses()
+// buildRoster is the public list of a team's people, read with core's
+// profiles in one query (Store.Accounts). Someone core may no longer show
+// (erased or being erased) is no member of it, nor is the placeholder
+// subject, while Keycloak still holds them in the Group. Without core's
+// rows the list cannot say who that is, and is not answered.
+func (s *service) buildRoster(ctx context.Context, g Group, people []Person, leaders map[uuid.UUID]struct{}) (Roster, error) {
+	ids := make([]uuid.UUID, 0, len(people))
+	for _, p := range people {
+		ids = append(ids, p.ID)
+	}
+	accounts, err := s.users.Accounts(ctx, ids)
+	if err != nil {
+		return Roster{}, err
+	}
 	members := make([]PublicMember, 0, len(people))
 	for _, p := range people {
+		account := accounts[p.ID]
+		if p.ID == user.DeletedSubject || account.Blocked {
+			continue
+		}
 		_, leader := leaders[p.ID]
 		m := PublicMember{
 			FirstName: p.FirstName,
 			LastName:  p.LastName,
 			Leader:    leader,
 		}
-		if shadow, err := s.users.Get(ctx, p.ID); err == nil {
+		if account.Stored {
+			shadow := account.User
 			m.FirstName = shadow.FirstName
 			m.LastName = shadow.LastName
 			m.Linkedin = shadow.Linkedin
 			m.University = shadow.University
 			m.Faculty = shadow.Faculty
 			m.Department = shadow.Department
-			m.ProfilePictureURL = addresses.Object(shadow.ProfilePictureURL)
-			m.ProfilePictureSizes = addresses.LinkedSizes(shadow.ProfilePicture)
+			pictured := withProfilePicture(Person{ID: p.ID}, shadow)
+			m.ProfilePictureURL, m.ProfilePictureSizes = pictured.ProfilePictureURL, pictured.ProfilePictureSizes
 		}
 		members = append(members, m)
 	}
@@ -838,25 +898,34 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 		Description: description(g),
 		Count:       len(members),
 		Members:     members,
-	}
+	}, nil
 }
 
+// overlayShadow puts core's profile over the directory's people and leaves
+// out the people who are erased or being erased: a list is for finding
+// people, and the full list (ListUsers) never had them either.
 func (s *service) overlayShadow(ctx context.Context, people []Person) ([]Person, error) {
-	for i, person := range people {
+	out := make([]Person, 0, len(people))
+	for _, person := range people {
 		shadow, err := s.users.Get(ctx, person.ID)
 		if err != nil {
+			out = append(out, person)
 			continue
 		}
-		people[i].FirstName = shadow.FirstName
-		people[i].LastName = shadow.LastName
+		if shadow.AccountState != user.AccountActive {
+			continue
+		}
+		person.FirstName = shadow.FirstName
+		person.LastName = shadow.LastName
 		if shadow.SchoolEmail != "" {
-			people[i].SchoolEmail = shadow.SchoolEmail
+			person.SchoolEmail = shadow.SchoolEmail
 		}
 		if shadow.SkyNumber != "" {
-			people[i].SkyNumber = shadow.SkyNumber
+			person.SkyNumber = shadow.SkyNumber
 		}
+		out = append(out, withProfilePicture(person, shadow))
 	}
-	return people, nil
+	return out, nil
 }
 
 func (s *service) mergeUserSearch(ctx context.Context, people []Person, q string) ([]Person, error) {
@@ -888,6 +957,7 @@ func (s *service) mergeUserSearch(ctx context.Context, people []Person, q string
 			if person.SkyNumber != "" {
 				out[i].SkyNumber = person.SkyNumber
 			}
+			out[i].ProfilePictureURL, out[i].ProfilePictureSizes = person.ProfilePictureURL, person.ProfilePictureSizes
 			continue
 		}
 		seen[u.ID] = len(out)
@@ -910,7 +980,7 @@ func personMatches(p Person, q string) bool {
 }
 
 func personFromUser(u user.User) Person {
-	return Person{
+	return withProfilePicture(Person{
 		ID:          u.ID,
 		Email:       u.Email,
 		FirstName:   u.FirstName,
@@ -918,5 +988,27 @@ func personFromUser(u user.User) Person {
 		Username:    u.Username,
 		SchoolEmail: u.SchoolEmail,
 		SkyNumber:   u.SkyNumber,
+	}, u)
+}
+
+// profilePicture is the profile picture core stores for a person as every
+// people read answers it (the public team list, the user reads): its
+// address and its card and page addresses, from the base and address mode
+// core is configured with (identity has no media dependency to carry its
+// own). Both are empty for a profile without a picture.
+func profilePicture(shadow user.User) (string, map[string]media.ImageAddress) {
+	addresses := media.ConfiguredAddresses()
+	return addresses.Object(shadow.ProfilePictureURL), addresses.LinkedSizes(shadow.ProfilePicture)
+}
+
+// withProfilePicture puts on person the picture of their profile, shadow,
+// read with it: none when shadow is another person's (an e-mail conflict),
+// or a profile core no longer shows (erased or being erased), or for the
+// placeholder subject.
+func withProfilePicture(person Person, shadow user.User) Person {
+	if shadow.ID != person.ID || person.ID == user.DeletedSubject || shadow.AccountState != user.AccountActive {
+		return person
 	}
+	person.ProfilePictureURL, person.ProfilePictureSizes = profilePicture(shadow)
+	return person
 }

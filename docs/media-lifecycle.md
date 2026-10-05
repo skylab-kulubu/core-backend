@@ -122,6 +122,111 @@ it, and the CDN answers Range requests from R2 (checked 2026-09-28: a
 nosniff`). A video plays only with both; check the sandbox CDN the same way
 before its videos open (see [Before Event files open](#before-event-files-open)).
 
+## CDN cache
+
+Cloudflare caches what `cdn.` (and `sandbox-cdn.`) serves from the public
+bucket. Core stores no `Cache-Control` on objects: a zone's Browser Cache TTL
+(4 hours by default) overrides any lower origin `max-age`, so the times are
+set by a Cloudflare Cache Rule on the two CDN hosts instead, which covers
+every object already stored without rewriting one
+(`ops/wizards/cdn-cache-purge-wizard.sh` in the hub sets and checks it):
+
+- Browser: `max-age=3600`, whatever the origin says.
+- Edge: Cloudflare's defaults, left as they are (R2 sends no `Cache-Control`,
+  so a `2xx` is kept about two hours, a `404` a few minutes). The purge makes
+  a longer edge time safe; it is left for later, once purges have run in
+  production for a while.
+- The cache key ignores the query string, so `<address>?x` is the same
+  cached object as `<address>` and a purge by address covers both.
+- Every object on the host is eligible, extensionless `files/<id>` too, so
+  the browser time holds for every object. While a side's core does not run
+  the purge yet, the wizard sets a narrower rule there (only paths with an
+  extension, which Cloudflare caches already), so `files/<id>` is not kept
+  at the edge without a purge; `--kural` widens it once the purge runs.
+
+**Purge on change** (media redesign ticket 29). The public bucket queues the
+CDN address (`<CDN_BASE>/<key>`) of every object it deletes, or whose serving
+metadata it replaces (`R2.PurgeCDNOnChange`), once storage has done it; an
+object already gone is queued too, since the CDN may still hold it. Every path
+that removes a public object goes through that one delete: the archive and
+expiry purges, account erasure (`erase_profile_media`, staged uploads), the
+upload staging sweepers, a refused upload, the scan worker, the faststart
+worker (an original after its hour, stray copies) and the size backfill. So
+every derived object is purged with its Media, each by its own delete: every
+size key (`<key>/{card,page}.{jpg,png}`, see [Deleting sizes](#deleting-sizes)),
+every faststart copy of a video, and a video's poster or frame (Media of their
+own, purged with their own purge). With `MEDIA_IMAGE_ADDRESS_MODE=cloudflare`,
+purging an image's address purges every transformation of it
+(`/cdn-cgi/image/…`), as Cloudflare documents. The private bucket is never
+served by the CDN and queues nothing.
+
+A public key is written once (core writes every object at a fresh key, an
+id), so a write queues nothing, with one exception: an image's size, which the
+size backfill writes again when it runs again. A size written over one
+already stored is queued like a delete (`R2.Put` looks first, for size keys
+alone). Each segment of a key is escaped in its address as a browser asks for
+it.
+
+The queue is the `media_cdn_purges` table, one row per address, so a restart
+loses no purge; queuing an address again makes it due at once. It has two
+database connections of its own, apart from core's pool: a blob purge holds
+one of core's connections in a transaction whose reference check takes SHARE
+locks while it deletes, and requests waiting on those locks could hold every
+other connection of a shared pool, so the delete's insert would wait for the
+purge's timeout with the locks held. The purge
+worker (`media.CDNPurger`) runs at startup, whenever an address is queued and
+every 15 seconds: it leases up to 30 due addresses for two minutes, has
+Cloudflare purge them in one call (`POST /zones/{zone}/purge_cache`;
+Cloudflare takes 100 a call below Enterprise, 30 was its earlier limit), and
+removes them. Each batch reads the clock, so its lease and backoff run from
+when it is sent. A batch Cloudflare refuses (`400`) is tried address by
+address: an address refused alone is dropped and counted as `rejected` (no
+later try would take it), and the others go through. Any other failed call
+puts its batch back, due again after 10 seconds, doubling to 15 minutes; an address still queued 48 hours after it was queued
+is dropped and counted (by then the edge's own copy has long run out). A purge never
+holds up a delete: only a queue that cannot be written (the database) fails
+the delete, which its caller repeats like any failed delete, queuing the
+address again.
+
+Logs and metrics name no address: the worker logs counts and Cloudflare's
+status and error codes, never its messages (which may echo an address) or the
+token. `/v1/metrics` carries `skylab_media_cdn_purge_enabled` and
+`skylab_media_cdn_purge_misconfigured` (0 or 1),
+`skylab_media_cdn_purge_urls_total{outcome}` (`purged`, `failed`,
+`rejected`, `dropped`), `skylab_media_cdn_purge_queue_errors_total`,
+`skylab_media_cdn_purge_backlog` and
+`skylab_media_cdn_purge_oldest_age_seconds` (at the last pass), and
+`skylab_media_cdn_purge_last_success_timestamp_seconds` (0 before the first). An address is
+the CDN base and the key (`images/<uuid>.jpg`, `files/<uuid>`, …): ids, no
+names.
+
+**What it guarantees.** Once an object is deleted, the CDN stops serving it
+within about a minute while Cloudflare answers (the purge is queued with the
+delete and sent at once; Cloudflare's purge itself takes seconds), and a
+browser that fetched it before keeps it at most an hour. Archiving a Media
+(`DELETE /v1/media/{id}`) deletes no object: it stays at its address, at the
+origin as at the edge, until its blob purge after the recovery window, which
+deletes and purges it. Account erasure deletes a personal upload's objects at
+once, so the guarantee holds from that step.
+
+**Self-test.** `core-backend media-cdn-purge-selftest [-wait 90s]`, run inside
+core's container, stores a 1x1 PNG at a fresh
+`selftest/cdn-purge-<unix time>-<uuid>.png`,
+fetches it from the CDN until it is answered from the cache
+(`cf-cache-status: HIT`) and reads its `Cache-Control`, then deletes it through
+the public bucket, which queues its purge in the database, and waits for the
+CDN to answer `404`. The running core's worker does the purge (within its 15
+seconds). It prints `CDN SELFTEST OK` and exits 0 only when the object was
+cached, browsers got `max-age=3600` and the running core's purge took it
+within `-wait`; otherwise it purges the object itself, so no copy is left,
+and exits 1 (`2` without the settings, R2 or `DATABASE_URL`). `browsers got
+max-age=3600` means the header names that directive, among others or alone.
+SIGTERM or SIGINT ends it early and deletes its object; a check killed harder
+leaves its object, and the next check deletes every test object older than an
+hour (newer ones may be a running check's). At its longest it takes about
+`-wait` plus three minutes. The hub's `ops/wizards/cdn-cache-purge-wizard.sh`
+runs it.
+
 ## Media purpose
 
 Every Media has a Media purpose (ADR-0052), stored on the record as
@@ -168,7 +273,10 @@ unless its product has a service client configured
   it clean once one is ([Malware scan](#malware-scan)). `answer_file_large`
   is a Direct upload purpose no person may start (`service_only`), and a
   private one Direct upload does not take yet (ticket 21, see
-  [Direct upload](#direct-upload));
+  [Direct upload](#direct-upload)). `answer_file_guest` is Skyforms' own
+  upload for a form that takes answers without sign-in (`service_only`),
+  under the same two gates as `answer_file` (see
+  [Guest Answer file](#guest-answer-file));
 - `club_file` and `video` are Direct upload purposes core attaches: an
   Event's files and videos (decision C1, ticket 22, see
   [Event files and videos](#event-files-and-videos)). Being attachable does
@@ -206,6 +314,7 @@ The initial entries:
 | `cms_image` | authenticated | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | cms (no service client yet) |
 | `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms (no service client yet) |
 | `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step | forms |
+| `answer_file_guest` | service_only (Skyforms' service account) | PDF, JPEG, PNG | 10 MiB | private, scanned | single-step | forms |
 | `club_file` | event_editor | PDF, ZIP (download only) | 1 GiB | public, scanned | direct | core (an Event's files) |
 | `answer_file_large` | service_only | ZIP, PDF | 1 GiB | private, scanned | direct | forms |
 | `video` | event_editor | MP4 | 2 GiB | public | direct | core (an Event's videos) |
@@ -234,8 +343,15 @@ rule needs a signed-in caller.
 
 An upload names no Owner team yet, so the candidate teams are the names in
 the person's group paths (leader subgroups aside).
-- `service_only`: no person. Only the owning product's service identity may
-  start such an upload; until that path exists nobody can.
+- `service_only`: no person, whatever roles they hold. Only the service
+  account of the purpose's owning product (its `service`), holding the
+  `media:attach` role on the core client, may start such an upload:
+  Skyforms for `answer_file_guest` (see
+  [Guest Answer file](#guest-answer-file)). A purpose core owns
+  (`video_frame`) has no such account: core stores it itself. The Media of
+  a `service_only` upload has no uploader (`uploadedBy` is the nil UUID,
+  `uploaded_by` NULL): the service account has no core account, and the
+  Media belongs to no person.
 
 CMS editor roles live on the CMS client, which core does not see, so the CMS
 purposes are `authenticated` for now, as Media uploaded without a purpose
@@ -1031,6 +1147,8 @@ a member roster) loads the small image:
 | Event summary (`event.Resource`): `GET /v1/door/events`; the `event` of every ticket answer (`/v1/tickets/me`, `/v1/tickets`, `/v1/tickets/{id}`, `/v1/tickets/user/{userId}/event/{eventId}`, `/v1/events/{eventId}/tickets`, the application answers under `/v1/events/{eventId}/applications/…`); the `event` of every competitor answer (`/v1/competitors…`, `/v1/events/{eventId}/competitors…`; leaderboards have none) | `coverImageUrl` | `coverImageSizes` |
 | The caller's profile (`GET`/`PUT`/`PATCH /v1/users/me`, `POST /v1/users/me/profile-picture`) | `profilePictureUrl` | `profilePictureSizes` |
 | Public team roster (`GET /v1/teams/{team}/members`) | `members[].profilePictureUrl` | `members[].profilePictureSizes` |
+| User reads (`GET /v1/users` list entries, `GET /v1/users/{id}` card) | `profilePictureUrl` | `profilePictureSizes` |
+| Dashboard summary's joiners (`GET /v1/dashboard/summary`) | `members.recentJoiners[].profilePictureUrl` | `members.recentJoiners[].profilePictureSizes` |
 
 ```json
 {
@@ -1311,7 +1429,11 @@ A Skyforms answer:
   either; core's own links use their records' UUIDs.
 - `role`: one of the product's roles below.
 - `onBehalfOf`: the id of the person the product acts for: the respondent
-  whose answer it is, the editor saving the page. Required.
+  whose answer it is, the editor saving the page. Left out (or `null`) for
+  no one: a guest's Skyforms answer, which has no person. For no one, a
+  product links only Media that belong to no person (its own purposes but
+  the personal ones); a personal or `legacy` Media is then refused as
+  below. Anything else that is not a UUID is a malformed request.
 
 It answers `201 Created` with the new Media attachment, or `200 OK` with the
 one already there when the same link (Media, owner and role) exists, even if
@@ -1368,7 +1490,7 @@ Core does not set this up; it is a human step in Keycloak, done per realm
 
 | Product | Role | Purposes it accepts |
 |---|---|---|
-| `forms` | `answer` | `answer_file`, `answer_file_large` |
+| `forms` | `answer` | `answer_file`, `answer_file_large`, `answer_file_guest` |
 | `cms` | `image` | `cms_image` |
 | `cms` | `file` | `cms_file` |
 
@@ -1382,6 +1504,8 @@ links and the service attach API share one link check.
 - A Media of one of the product's own purposes (the catalogue's `service`).
   An Answer file (`answer_file`, `answer_file_large`) belongs to the person
   who uploaded it: Skyforms links it only with that person as `onBehalfOf`.
+  A guest Answer file (`answer_file_guest`) belongs to no person: Skyforms
+  links it without `onBehalfOf` (or with any, which is not read).
 - A `legacy` Media, uploaded before purposes, may be anyone's and used by
   anything: a product links one only with its uploader as `onBehalfOf`, or
   once the product already holds a Media attachment to it (a CMS editor
@@ -1402,8 +1526,8 @@ the product nothing about it.
 1. The caller is a configured product's service account with `media:attach`
    (`media_attach_forbidden`). Nothing in the request is read before this: a
    person always gets `403`.
-2. The request is well formed: the path ids, `owner`, `onBehalfOf` (a plain
-   `400`).
+2. The request is well formed: the path ids, `owner`, and `onBehalfOf`
+   when given (a plain `400`).
 3. `owner.service` is the caller (`media_attach_wrong_service`).
 4. The role is one of the product's (`media_role_unknown`).
 5. The same link already exists: answered with `200`, nothing else checked.
@@ -1821,7 +1945,7 @@ clears it otherwise yet; review the report before `-apply`.
 
 ## Private Media
 
-Private purposes (`answer_file`, `certificate_asset`) are stored encrypted in a
+Private purposes (`answer_file`, `answer_file_guest`, `certificate_asset`) are stored encrypted in a
 second, non-public R2 bucket and never get a public address (ADR-0052, media
 redesign ticket 06, decisions Q16, Q18, Q25, Q28, Q29, G1, G2). Everything
 here sits behind `MEDIA_PRIVATE_ENABLED`, which stays `false` in production
@@ -2032,6 +2156,50 @@ stay so: they render as before, and their version copies stay in the public
 bucket. Nothing moves them (decision G1: the certificate feature has not been
 used in production, so there is nothing to move).
 
+
+### Guest Answer file
+
+`answer_file_guest` is an Answer file sent to a Skyforms form that takes
+answers without sign-in (decision of Yusuf and Fatih, 2026-10-04: anonymous
+forms take files, with protections and a malware scan). Core opens no
+endpoint without a token for it: the guest's browser sends the file to
+forms-backend, which checks its guest upload session (Cloudflare Turnstile,
+counts per session, IP and form) and uploads it with Skyforms' own service
+account. Core then treats it as any private, scanned Answer file:
+
+- **Upload.** `POST /v1/media` (multipart, `purpose=answer_file_guest`)
+  with Skyforms' service token: the configured `forms` client
+  (`MEDIA_SERVICE_CLIENTS`), `aud` `core`, the `media:attach` role on the
+  `core` client. PDF, JPEG or PNG (judged by content), at most 10 MiB;
+  images are re-encoded within 2560 px, without their metadata. A person's
+  token, whatever roles it carries, and another product's service account
+  are refused with `403 purpose_forbidden`.
+- **Gates.** As `answer_file`: refused with `422 private_media_disabled`
+  while `MEDIA_PRIVATE_ENABLED` is off and `422 purpose_not_available`
+  while no scanner is configured (`MEDIA_CLAMAV_ADDR`). Nothing is stored.
+  Production has neither today, so the purpose is closed there until both
+  are set up.
+- **No uploader.** The Media is stored for no one: `uploadedBy` is the nil
+  UUID (`uploaded_by` NULL), and its staged upload has no subject
+  (`media_upload_staging.subject_id` NULL, migration 20261004120000), since
+  the service account has no core account. Account erasure never touches
+  it ([Account erasure](#account-erasure)).
+- **Scan.** It starts `scanning`; Skyforms reads `GET /v1/media/{id}` with
+  its service token until it is `pending` (clean) or `rejected`
+  (`scanResult` says why). Skyforms accepts only a `pending` one in a
+  submitted answer.
+- **Attach.** On submission Skyforms links it to the response,
+  `POST /v1/media/{id}/attachments` with role `answer` and no `onBehalfOf`
+  (it belongs to no person). Unattached, it is purged after 24 hours
+  (`pending_ttl`); detached, 30 days later.
+- **Open.** A reviewer Skyforms decides may open it gets a five-minute read
+  link, `POST /v1/media/{id}/links` with `onBehalfOf` naming the reviewer,
+  as for any Answer file ([Read links](#read-links)).
+- **Budget.** Every guest upload is charged to the Skyforms service
+  account's one single-step budget ([Upload limits](#upload-limits): 100
+  uploads per 10 minutes and 2 GiB per day by default, shared by all
+  guests). Skyforms keeps its own, finer limits per session, IP and form.
+
 ### Refusals
 
 | Status | `code` | When |
@@ -2054,8 +2222,8 @@ used in production, so there is nothing to move).
 ## Malware scan
 
 Media redesign ticket 12 (ADR-0052, decision Q17). A purpose whose catalogue
-entry has `scan: true` (`answer_file`, `club_file` and `answer_file_large`
-today) is scanned by ClamAV before any of its Media is opened. ClamAV runs in
+entry has `scan: true` (`answer_file`, `answer_file_guest`, `club_file` and
+`answer_file_large` today) is scanned by ClamAV before any of its Media is opened. ClamAV runs in
 its own container, reachable only on the internal network, and core talks to
 its daemon, clamd, over TCP: `MEDIA_CLAMAV_ADDR` (`host:port`, see
 [Configuration](#configuration)).
@@ -2070,6 +2238,8 @@ that means:
 
 - `answer_file` can be uploaded once private Media is on too
   (`MEDIA_PRIVATE_ENABLED`) and Skyforms has its service client;
+- `answer_file_guest` likewise, by Skyforms' service account alone (see
+  [Guest Answer file](#guest-answer-file));
 - `club_file` stays refused unless `MEDIA_DIRECT_UPLOAD_PURPOSES` names it
   (core attaches it as an Event's file, ticket 22); a file that is a ZIP is
   checked before it is scanned ([The ZIP check](#the-zip-check), ticket
@@ -3268,6 +3438,10 @@ rule is one function, `personalOnErasureSQL` in
 - **Personal** (`answer_file`, `answer_file_large`): purged at once, whatever
   still uses them and whatever their malware scan state (a `scanning` one
   too; a `rejected` one's object is gone already).
+- **No one's** (`answer_file_guest`, `video_frame`): never touched. They have
+  no uploader, so no person's erasure records them. A guest who wants their
+  file gone asks the form's owner, who deletes the response; Skyforms then
+  detaches the file and core purges it 30 days later.
 - **Profile picture** (`profile_picture`): the person's own and purged, unless
   it is someone's current profile picture: a picture belongs to the person it
   shows, not to its uploader, so one the erased person uploaded for someone
@@ -3400,6 +3574,19 @@ What happens to the records when the request completes is in
   fixed in code.
 - `CDN_BASE` (or `R2_PUBLIC_URL`) — the public base of every Media address;
   default `https://cdn.yildizskylab.com`.
+- `MEDIA_CDN_PURGE_ZONE_ID`, `MEDIA_CDN_PURGE_API_TOKEN` — the Cloudflare
+  zone of the CDN's host (32 hex characters) and an API token allowed only
+  Zone → Cache Purge on it (OpenBao references in Dokploy). Both unset turns
+  the [CDN purge](#cdn-cache) off. The purge is not what core is for, so
+  settings it cannot use (one without the other, a zone that is not a zone
+  id) turn it off instead of stopping core: core logs `media CDN purge: OFF,
+  settings are wrong: …` (never naming the token) and `/v1/metrics` shows
+  `skylab_media_cdn_purge_misconfigured 1`. Without R2 it stays off. Core logs
+  `media CDN purge: on (zone …, addresses under …)`, `off (no R2
+  configured)` or `off (MEDIA_CDN_PURGE_ZONE_ID is not set)`. The rest is fixed in code: 30 addresses a call,
+  a pass every 15 seconds and after every delete, a two-minute lease, a retry
+  after 10 seconds doubling to 15 minutes, and an address dropped 48 hours
+  after it was queued.
 - The decode budget (2 images at once, 1 SVG, a 10-second wait) is fixed in
   code (`media.DecodeBudgetConfig`).
 - `MEDIA_IMAGE_ADDRESS_MODE` — where image sizes point, in the Media JSON and
