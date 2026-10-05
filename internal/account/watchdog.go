@@ -25,7 +25,7 @@ const DefaultWatchdogInterval = 5 * time.Minute
 var knownSteps = []user.DeletionStep{
 	user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions,
 	user.DeletionStepEraseSkyMail, user.DeletionStepEraseCMS, user.DeletionStepEraseForms,
-	user.DeletionStepAnonymizeCore, user.DeletionStepEraseProfile, user.DeletionStepEraseUploads,
+	user.DeletionStepEraseContactConsents, user.DeletionStepAnonymizeCore, user.DeletionStepEraseProfile, user.DeletionStepEraseUploads,
 	user.DeletionStepDeleteIdentity,
 }
 

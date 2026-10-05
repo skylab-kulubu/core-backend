@@ -15,6 +15,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
+	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
@@ -102,6 +103,11 @@ type Deps struct {
 	// (docs/github-activity.md). Nil (its settings unset) leaves
 	// /v1/dashboard/github-activity unserved: 404.
 	GithubActivity handlers.GithubActivitySource
+
+	// Consents keeps contact consents (docs/contact-consents.md). Nil or
+	// off (CONTACT_CONSENT_KEY unset) answers its routes 503 and records
+	// no Guest apply consent.
+	Consents *consent.Service
 }
 
 func New(deps Deps) *fiber.App {
@@ -231,6 +237,16 @@ func New(deps Deps) *fiber.App {
 	for _, limit := range guestApply.Limits() {
 		guestApplyRoute = append(guestApplyRoute, limit)
 	}
+	// Contact consents (docs/contact-consents.md): the confirm and withdraw
+	// pages need no sign-in, the signed token in the link is the permission.
+	// Their budget follows the opener's address.
+	consents := handlers.NewConsentHandler(deps.Consents)
+	consentPageLimit := perClientLimit(trustedProxies)
+	app.Get(consent.WithdrawPath, consentPageLimit, consents.WithdrawPage)
+	app.Post(consent.WithdrawPath, consentPageLimit, consents.Withdraw)
+	app.Get(consent.ConfirmPath, consentPageLimit, consents.ConfirmPage)
+	app.Post(consent.ConfirmPath, consentPageLimit, consents.Confirm)
+	guestApplyRoute = append(guestApplyRoute, consents.GuestApplyConsents)
 	app.Post("/v1/events/:eventId/applications/guest", guestApply.Observe, append(guestApplyRoute, tickets.ApplyGuest)...)
 	// A read link opens a private Media without a sign-in: the token in it is
 	// the permission (docs/media-lifecycle.md). The budget follows the
@@ -256,6 +272,17 @@ func New(deps Deps) *fiber.App {
 	if deps.GithubActivity != nil {
 		app.Get("/v1/dashboard/github-activity", handlers.NewGithubActivityHandler(deps.GithubActivity).Get)
 	}
+
+	app.Get("/v1/users/me/consents", consents.Mine)
+	app.Post("/v1/users/me/consents", consents.GrantMine)
+	app.Delete("/v1/users/me/consents/:purpose", consents.WithdrawMine)
+	// A product's service account with consent:record; SkyMail's with
+	// consent:audience:read.
+	app.Post("/v1/consents", consents.Record)
+	app.Post("/v1/consents/withdrawals", consents.WithdrawForAddress)
+	app.Post("/v1/consents/lookup", consents.Lookup)
+	app.Get("/v1/consents/audience", consents.Audience)
+	app.Post("/v1/consents/renewal-requests", consents.RequestRenewal)
 
 	app.Get("/v1/users/me", me.GetMe)
 	app.Put("/v1/users/me", me.PutMe)

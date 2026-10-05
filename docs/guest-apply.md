@@ -2,8 +2,19 @@
 
 `POST /v1/events/{eventId}/applications/guest` writes a guest Ticket for an
 e-mail on an Event, or finds the one already there. Body:
-`{"firstName", "lastName", "email", "phoneNumber"?}`; first name, last name and
-e-mail are required.
+`{"firstName", "lastName", "email", "phoneNumber"?, "consents"?}`; first name,
+last name and e-mail are required.
+
+`consents` carries the boxes the guest ticked
+([contact-consents.md](contact-consents.md)): `["event_invitations"]`, or
+`[{"purpose":"event_invitations","textVersion":"event_invitations.v1"}]` to
+name the text shown. Absent or empty, nothing is recorded: the box is
+unticked unless the guest ticked it. A field core cannot read is `400`
+(`consent_invalid`, `consent_text_unknown`) and no Ticket is written. After
+the Ticket each grant is recorded `pending` and core mails the guest a
+confirmation link, whoever called: the answer below does not change. A grant
+that cannot be recorded turns the `201` into `503` (`consent_not_recorded`);
+sending the application again finds the Ticket and records it.
 
 The route is public (`api.` sends it to core) and takes a token without
 requiring one. Event ids are public, so anybody may call it with any e-mail.

@@ -24,6 +24,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/clamd"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
+	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
@@ -435,6 +436,20 @@ func main() {
 		})
 	}
 
+	// Contact consents (ADR-0062, docs/contact-consents.md). Without
+	// CONTACT_CONSENT_KEY none is recorded and their routes answer 503; the
+	// erasure step still deletes a person's rows by account and address.
+	consentConfig, err := consent.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	consents := consent.NewService(pool, consentConfig, nil)
+	if consentConfig.Enabled {
+		log.Printf("contact consents: on (links at %s, service clients %v)", consentConfig.LinkOrigin, consentConfig.ServiceSources)
+	} else {
+		log.Printf("contact consents: off (%s is not set); none is recorded", consent.KeyEnv)
+	}
+
 	workerEnabled, erasureConfig, err := accountErasureStartup(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -484,6 +499,7 @@ func main() {
 				DeferredRetryHorizon: uploadStagingConfig.Grace + 24*time.Hour,
 				AccessBlocker:        gate,
 				Services:             serviceErasure,
+				ContactConsents:      consents,
 			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
 			2*time.Second,
 			func(err error) { log.Printf("account erasure worker: %v", err) },
@@ -515,6 +531,7 @@ func main() {
 		// Said once, at startup: a kind with neither a key nor an id drops every
 		// mail of that kind, and the send path stays silent by design.
 		sky.WarnUnconfiguredTemplates()
+		consents.SetMailer(sky)
 		if sky.Configured() {
 			mailer = sky
 		}
@@ -617,6 +634,7 @@ func main() {
 		GuestApplyPublicIPLimit: guestApplyIPLimit,
 		Dashboard:               dashboardSvc,
 		GithubActivity:          githubActivity,
+		Consents:                consents,
 	})
 
 	addr := os.Getenv("PORT")

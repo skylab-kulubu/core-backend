@@ -40,6 +40,10 @@ const (
 	DeletionStepEraseUploads    DeletionStep = "erase_staged_uploads"
 	DeletionStepDeleteIdentity  DeletionStep = "delete_identity"
 
+	// DeletionStepEraseContactConsents deletes the person's contact
+	// consents (ADR-0062), just before anonymize_core.
+	DeletionStepEraseContactConsents DeletionStep = "erase_contact_consents"
+
 	// Service erasure steps: one Erasure command each (ADR-0051). Their
 	// checkpoint rows also keep the service's counts as completion proof.
 	DeletionStepEraseSkyMail DeletionStep = "erase_skymail"
