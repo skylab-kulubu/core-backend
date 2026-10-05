@@ -194,7 +194,8 @@ request last changed and is never in the future: a deferred or failed attempt
 stamps the moment it failed, not the time of the next attempt, so a client may
 order the statuses it reads by `updatedAt`.
 
-`completed` means all nine erasure steps are checkpointed: SkyMail, CMS and
+`completed` means all ten erasure steps are checkpointed: the person's contact
+consents are deleted, SkyMail, CMS and
 Forms each confirmed the Erasure command, core is anonymized together with its
 guest data, and the Keycloak identity is deleted last (ADR-0051, the saga in
 [`account-lifecycle.md`](account-lifecycle.md#durable-erasure-flow)). While a

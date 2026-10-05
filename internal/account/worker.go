@@ -30,6 +30,12 @@ type Identity interface {
 	EnsureDeleted(context.Context, uuid.UUID) error
 }
 
+// ContactConsentEraser deletes every contact consent of a person: their
+// account's and those given for any of their addresses (internal/consent).
+type ContactConsentEraser interface {
+	EraseSubject(ctx context.Context, userID uuid.UUID, addresses []string) (int64, error)
+}
+
 type MediaEraser interface {
 	EnsureErased(context.Context, uuid.UUID, time.Time) error
 	EnsureSubjectUploadsErased(context.Context, uuid.UUID, time.Time) error
@@ -49,6 +55,10 @@ type WorkerConfig struct {
 	// the request to manual intervention, so no service is ever passed over
 	// as erased.
 	Services ServiceErasure
+	// ContactConsents erases the person's contact consents in the
+	// erase_contact_consents step. Nil fails the step: a person is never
+	// reported erased while their consents may remain.
+	ContactConsents ContactConsentEraser
 }
 
 type Worker struct {
@@ -174,13 +184,26 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// coreSaga is the erasure order (ADR-0051, spec §4): block the identity, have
-// every service erase the person, erase core and its guest data, then media,
-// and delete the identity last.
+// coreSaga is the erasure order (ADR-0051, spec §4): block the identity, erase
+// the person's contact consents (ADR-0062), have every service erase the
+// person, erase core and its guest data, then media, and delete the identity
+// last.
+//
+// The consents go before the services: they are core's own and wait for no
+// one, and a service can hold the saga for a long time (the CMS waits out
+// its token window, a service that is down defers for days). A person who
+// asked to be erased gets no further invitation meanwhile.
 func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaStep {
 	return []sagaStep{
 		{name: user.DeletionStepDisableIdentity, run: w.identity.EnsureDisabled},
 		{name: user.DeletionStepLogoutSessions, run: w.identity.EnsureLoggedOut},
+		{name: user.DeletionStepEraseContactConsents, withAddresses: func(ctx context.Context, id uuid.UUID, emails []string) error {
+			if w.config.ContactConsents == nil {
+				return errors.New("contact consent eraser unavailable")
+			}
+			_, err := w.config.ContactConsents.EraseSubject(ctx, id, emails)
+			return err
+		}},
 		{services: &w.services},
 		{name: user.DeletionStepAnonymizeCore, withAddresses: func(ctx context.Context, id uuid.UUID, emails []string) error {
 			return w.store.AnonymizeAccount(ctx, id, now, emails)
