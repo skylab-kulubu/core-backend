@@ -68,6 +68,10 @@ type Deps struct {
 	// while the erasure worker is off.
 	AccountErasureMetrics interface{ Prometheus() string }
 
+	// RetentionMetrics are the periodic destruction run's metrics
+	// (docs/retention-sweep.md). Nil while RETENTION_SWEEP_MODE is off.
+	RetentionMetrics interface{ Prometheus() string }
+
 	// MediaCDNPurgeMetrics are the media CDN purge's counters. Nil while
 	// the purge is off.
 	MediaCDNPurgeMetrics interface{ Prometheus() string }
@@ -197,7 +201,7 @@ func New(deps Deps) *fiber.App {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
-		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil {
+		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -214,6 +218,9 @@ func New(deps Deps) *fiber.App {
 				text += deps.MediaCDNPurgeMetrics.Prometheus()
 			}
 			text += deps.AuthzRoleMetrics.Prometheus()
+			if deps.RetentionMetrics != nil {
+				text += deps.RetentionMetrics.Prometheus()
+			}
 			return c.SendString(text)
 		})
 	}

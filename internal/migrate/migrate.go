@@ -1168,6 +1168,22 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		WHERE conrelid = to_regclass('public.account_deletion_steps')
 		  AND conname = 'account_deletion_steps_step_check'
 		  AND pg_get_constraintdef(oid) LIKE '%''erase_contact_consents''%'`,
+	// The periodic destruction records (ADR-0062): the three tables and the
+	// index that allows one open period.
+	20261005120000: `
+		SELECT 1
+		WHERE to_regclass('public.retention_periods') IS NOT NULL
+		AND to_regclass('public.retention_runs') IS NOT NULL
+		AND to_regclass('public.retention_run_rules') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'retention_periods' AND column_name = 'mode'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'retention_periods_open_idx'
+			  AND indexdef LIKE 'CREATE UNIQUE INDEX retention_periods_open_idx ON public.retention_periods %WHERE (closed_at IS NULL)'
+		)`,
 }
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
