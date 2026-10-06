@@ -1,6 +1,6 @@
 # Account erasure command
 
-This is the canonical contract of the **Erasure command**: core's instruction to one service to erase one person's data for one deletion request (ADR-0051). SkyMail, CMS and Forms implement it and link here. The CMS is inscribed (ADR-0056); it implements a reduced form of the contract, set out in [§9](#9-cms-inscribed). Core's side (saga order, where the addresses come from, registry, configuration, retries, watchdog, completion proof) is in [`account-lifecycle.md`](account-lifecycle.md#service-erasure-steps).
+This is the canonical contract of the **Erasure command**: core's instruction to one service to erase one person's data for one deletion request (ADR-0051). SkyMail, CMS and Forms implement it and link here. The CMS is inscribed (ADR-0056); it implements a reduced form of the contract, set out in [§9](#9-cms-inscribed). Forms keeps no receipt either and leaves its short-lived share links to expire ([§10](#10-forms)). Core's side (saga order, where the addresses come from, registry, configuration, retries, watchdog, completion proof) is in [`account-lifecycle.md`](account-lifecycle.md#service-erasure-steps).
 
 ## 1. Endpoint
 
@@ -31,7 +31,7 @@ Headers: `Authorization: Bearer <token>`, `Content-Type: application/json`. Ther
 
 ## 3. Idempotency
 
-- The service keeps a receipt table in its own database: `account_erasure_receipts(request_id UUID PK, completed_at TIMESTAMPTZ, counts JSONB)`. The table holds neither `subject_id` nor any address.
+- The service keeps a receipt table in its own database (optional for the CMS and Forms, §9 and §10): `account_erasure_receipts(request_id UUID PK, completed_at TIMESTAMPTZ, counts JSONB)`. The table holds neither `subject_id` nor any address.
 - If a receipt exists, the service does not repeat the work and returns the stored `200` body unchanged.
 - If there is no receipt, the erasure and the receipt write happen in **one transaction**. The transaction takes an advisory lock on `request_id`, so two concurrent `PUT`s do the work once.
 - Parts outside the transaction, such as Redis (drafts), are deleted before the transaction. That step is idempotent too: when nothing is left to delete, it does nothing.
@@ -108,6 +108,7 @@ Rules shared by all three services:
   - Single-word names are not used for the search. Also deleting the body of a namesake is an accepted over-deletion.
   - A text field that cannot be empty gets the fixed `[silindi]`.
 - **Relationship rows** (list membership, collaborator, recipient row) and **transient data** (drafts, tokens, queue residue) are hard-deleted.
+  - Exception: a token that expires on its own within one hour may be left to expire instead (Forms' response share links, §10).
 - The records themselves, their dates and their counts stay.
 
 ## 9. CMS (inscribed)
@@ -121,3 +122,11 @@ The CMS is stock inscribed (ADR-0056) in `Auth__Mode=External`. It keeps no acco
 - **No `409 subject_not_blocked`:** inscribed has no access gate and does not read the account-access Redis. Instead core waits (below).
 - **Authentication:** JwtBearer as today (`aud` ∋ `skycms`, issuer, signature, lifetime). The route also requires `azp=core-erasure` and `cms:account:erase` in `resource_access.skycms.roles`. The token's `azp` is not an inscribed client, so the route must not resolve a tenant from it; it changes rows of every client. Missing `azp` or role: `403 erasure_forbidden`.
 - **Token window:** inscribed still accepts an access token issued before Keycloak disabled the person until it expires (Keycloak's 300-second default lifespan plus inscribed's 30-second clock skew). An edit made with it would write the `sub` back. So core sends `erase_cms` no earlier than six minutes after the identity was closed: the latest of the platform block and the `disable_identity` and `logout_sessions` checkpoints. Until then the step is deferred under `erase_cms_waiting` without spending an attempt, also past the deferral horizon, and comes back when the wait ends; the other services are called as usual ([account-lifecycle.md](account-lifecycle.md#service-erasure-steps)).
+
+## 10. Forms
+
+Forms follows this contract in full, with two exceptions (Fatih's review of forms-backend#23, 2026-10-06):
+
+- **Idempotency:** as for the CMS (§9), the work is idempotent by nature, so Forms keeps no receipt table and takes no advisory lock. The work and its counts commit in one transaction. A repeat answers `200` with the counts of that run, which are `0` once the first run has committed. If the first `200` is lost (core gave up after 15 seconds, while Forms finished within its own 90-second budget), core's proof records the repeat's zeros: for Forms, the counts in the proof are a lower bound, not an exact count.
+- **Share links:** response share links live for at most one hour, so Forms does not search Redis for the ones the person created; they expire on their own (§8 exception). Response and form drafts live for up to 7 days and are still deleted, before the transaction.
+- **Counts:** there is no `share_links_deleted`. Core expects no fixed keys.
