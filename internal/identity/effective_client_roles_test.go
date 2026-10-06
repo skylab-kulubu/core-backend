@@ -51,7 +51,9 @@ func (f *fakeClientRoles) directory(t *testing.T) *identity.Keycloak {
 		switch {
 		case r.URL.Path == realm+"/clients":
 			if f.clientsStatus != 0 {
+				// Keycloak answers a missing view-clients with a JSON error.
 				w.WriteHeader(f.clientsStatus)
+				_, _ = w.Write([]byte(`{"error":"HTTP 403 Forbidden"}`))
 				return
 			}
 			out := []map[string]string{}
