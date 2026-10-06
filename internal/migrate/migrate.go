@@ -1192,6 +1192,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND i.indrelid = to_regclass('public.url_hits')
 		  AND i.indisvalid AND i.indpred IS NOT NULL
 		  AND pg_get_indexdef(i.indexrelid) LIKE 'CREATE INDEX url_hits_personal_at_idx ON public.url_hits USING btree (at) WHERE %'`,
+	// The certificate layout guard checks only the references a write
+	// introduces: its function compares the row with the one it replaces.
+	20261006120000: `
+		SELECT 1 FROM pg_proc
+		WHERE proname = 'require_current_certificate_layout_media'
+		  AND prosrc LIKE '%old_manifest%'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

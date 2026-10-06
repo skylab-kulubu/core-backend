@@ -1309,7 +1309,11 @@ anonymization and maintenance SQL:
 
 `owner_service` is `core` for all of them. Only a changed link is written: a
 record that still links a Media archived after it was linked can be saved as
-long as the link itself does not change. Replacing a profile picture
+long as the link itself does not change. A certificate layout follows the
+same rule (migration `20261006120000`): its guard checks only the references
+a write adds or swaps in, which must be current Media (not archived, not
+being purged); a reference that leaves the layout and comes back is new.
+Replacing a profile picture
 therefore detaches the previous one, which is purged 30 days later unless
 something attaches it again; removing the picture archives it as before.
 
