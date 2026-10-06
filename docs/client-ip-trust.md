@@ -64,3 +64,12 @@ about them.
 Fiber's `TrustProxy`, `TrustProxyConfig` and `ProxyHeader` are configured from
 the same list, so `c.IP()` and the resolution above can never disagree about
 which peers are proxies.
+
+## What it is not
+
+The resolved address is not an identity. Any peer on `dokploy-network` falls
+inside the default ranges and can write its own `X-Forwarded-For`; Swarm's
+virtual IPs keep Core from telling the proxy apart from another peer by its
+address. The address therefore serves only abuse limits and best-effort records
+(`url_hits.ip`, `media_read_link_opens.client_ip`). No authorization decision
+depends on it: a route that is not deliberately public asks for a token.
