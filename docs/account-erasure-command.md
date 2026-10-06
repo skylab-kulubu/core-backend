@@ -8,7 +8,9 @@ This is the canonical contract of the **Erasure command**: core's instruction to
 
 - **Path:** the same in every service, at the service root, independent of its public API prefix.
 - **Network:** the call comes over the internal Docker DNS (ADR-0016). There is one server, so the traffic is plain HTTP on the internal network.
-- **Public ingress:** a request that arrives through Traefik gets `404`. The service chooses how to tell: the `X-Forwarded-*` headers Traefik adds, or not routing the path in Dokploy. The real security boundary is still the token. Core's calls carry none of `X-Forwarded-*`, `Forwarded` or `X-Real-Ip`.
+- **Public ingress:** a request that arrives through Traefik gets `404`. The service chooses how to tell: the `X-Forwarded-*` headers Traefik adds, or not routing the path in Dokploy. Core's calls carry none of `X-Forwarded-*`, `Forwarded` or `X-Real-Ip`.
+- **Network location is not authorization:** the ingress guard is an optional second layer. Any container on `dokploy-network` reaches the endpoint without passing Traefik, so the absence of proxy headers proves nothing. The token checks of §5 and, where §5 requires it, the blocked-subject check are mandatory on every request.
+- **Acceptance test:** a `PUT` with no proxy header and no token gets `401`. Example: SkyMail's `account_erasure_routes_test.go:274` (`TestErasureRouteRefusesWhoeverIsNotCoreErasure`, subtest "no token is 401").
 - **Why PUT:** the caller chooses the identifier and the operation is idempotent. Repeating the same `PUT` also serves as the status query; there is no separate `GET`.
 
 Headers: `Authorization: Bearer <token>`, `Content-Type: application/json`. There is no `Idempotency-Key` header; the key is `request_id`.
