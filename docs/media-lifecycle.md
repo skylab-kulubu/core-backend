@@ -2951,8 +2951,9 @@ and summaries carry the counts alone, never a poster.
 Media redesign ticket 25 (decision P1). A video its organizers gave no
 poster shows a frame of itself instead, taken at one second. Core runs no
 ffmpeg: a small frame service does, in its own container (`cmd/media-frame`,
-image `ghcr.io/skylab-kulubu/core-backend-media-frame`), on the internal
-network only. Core reaches it at `MEDIA_FRAME_ADDR`; unset, a video without
+image `ghcr.io/skylab-kulubu/core-backend-media-frame`), on a private
+network it shares with core alone (see [its network](#the-frame-service)).
+Core reaches it at `MEDIA_FRAME_ADDR`; unset, a video without
 an uploaded poster has none, as before. An uploaded poster always wins.
 
 The frame is a Media of its own purpose, `video_frame`, which no one
@@ -3129,7 +3130,17 @@ on the server:
   frame goes to a pipe;
 - 1 CPU and 512 MiB of memory at most (the wizard sets them and checks the
   running service), so a runaway ffmpeg takes down only this container;
-- the internal network only, with no published port and no domain.
+- its own network: the frame service takes no token, so the network is
+  what guards it. Each side has a private overlay network,
+  `sky-lab-<env>-frame` (`sky-lab-sandbox-frame`, `sky-lab-production-frame`;
+  ADR-0061's first step), whose only members are the frame service and that
+  side's core. It is not `internal` (the service reads the video from R2) and
+  not attachable, so no other container can join it. The frame service is
+  never on `dokploy-network` (`detachDokployNetwork`): Traefik, the event
+  apps, the other side's core and any other platform container cannot
+  resolve or reach it. Core sits on both networks. No published port and no
+  domain. The frame wizard creates the network, moves the service onto it
+  and checks that isolation.
 
 A read-only root filesystem is **not** enforced: Dokploy (v0.30.7) builds the
 service's container spec itself on every deploy, with no read-only flag and
@@ -3600,9 +3611,10 @@ What happens to the records when the request completes is in
   in Event and User responses alike: `stored` (default) or `cloudflare`. Any
   other value stops core at startup.
 
-- `MEDIA_FRAME_ADDR` — the frame service's `host:port` on the internal
-  network (its Dokploy application's appName and `8080`, printed by the
-  frame wizard). Unset, video frames are off: a video without an uploaded
+- `MEDIA_FRAME_ADDR` — the frame service's `host:port` on the frame network
+  `sky-lab-<env>-frame` (its Dokploy application's appName and `8080`,
+  printed by the frame wizard; see [The frame service](#the-frame-service)).
+  Core must be on that network too. Unset, video frames are off: a video without an uploaded
   poster has none. Anything but `host:port` stops core at startup; without
   R2 it stays off. See [Video frames](#video-frames). The rest is fixed in
   code: a pass every minute, 25 videos a pass, the frame at one second, a
