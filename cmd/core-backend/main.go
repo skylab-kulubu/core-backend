@@ -27,6 +27,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/doorqr"
+	"github.com/skylab-kulubu/core-backend/internal/editablesites"
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
@@ -347,6 +348,8 @@ func main() {
 	})
 
 	dir := identity.Directory(identity.NewMemory())
+	// Reads the editable sites' roles; Keycloak only.
+	var siteRoles editablesites.RoleReader
 	keycloakConfigured := strings.TrimSpace(os.Getenv("KEYCLOAK_URL")) != ""
 	if keycloakConfigured {
 		keycloakConfig, missing, err := keycloakFromEnv(os.Getenv)
@@ -376,6 +379,7 @@ func main() {
 			log.Print(warning)
 		}
 		dir = keycloakDirectory
+		siteRoles = keycloakDirectory
 	}
 	if privateMedia != nil {
 		// A reviewer who never signed in to core gets their row from
@@ -386,6 +390,21 @@ func main() {
 	// person's Groups; core reads them from Keycloak with its own service
 	// account and keeps them a minute.
 	overageGroups := identity.NewOverageGroups(dir, identity.OverageOptions{})
+	// The capabilities route's editableSites: the configured Site clients
+	// a person holds cms:access on, read with core's own service account.
+	// A hint for the admin panel, never an authorization.
+	cmsSites, err := editablesites.SitesFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var editableSites *editablesites.Sites
+	switch {
+	case len(cmsSites) > 0 && siteRoles == nil:
+		log.Printf("%s names %d sites but Keycloak is not configured: editableSites is empty for everyone", editablesites.Env, len(cmsSites))
+	case len(cmsSites) > 0:
+		editableSites = editablesites.New(cmsSites, siteRoles, editablesites.Options{})
+		log.Printf("editable sites: %d sites from %s", len(cmsSites), editablesites.Env)
+	}
 	parse := func(string) (authn.Identity, error) {
 		return authn.Identity{}, authn.ErrInvalidToken
 	}
@@ -677,6 +696,7 @@ func main() {
 		GroupOverage:            overageGroups,
 		GuestApplyMetrics:       handlers.NewGuestApplyMetrics(),
 		Authz:                   az,
+		EditableSites:           editableSites,
 		AuthzRoleMetrics:        authzRoleMetrics,
 		GuestCheckInMetrics:     doorQR,
 		GuestApplyPublicIPLimit: guestApplyIPLimit,
