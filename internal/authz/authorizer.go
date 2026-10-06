@@ -92,6 +92,11 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 			return false
 		}
 		return a.privilegedGroupOnly(p, RoleURLModerator) || hasRole(p, "url:forms", RoleURLModerator)
+	case TypeFormResponse:
+		// Only the forms service reports the answers to its forms, and a
+		// report writes Tickets: no person may send one, whatever roles they
+		// hold.
+		return action == Create && p.Product == ProductForms && hasRole(p, "ticket:forms")
 	case TypeCertificate:
 		return a.allowCertificate(p, r, action)
 	case TypeCertificateTemplate:

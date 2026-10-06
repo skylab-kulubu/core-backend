@@ -65,6 +65,17 @@ func formLinksOf(e Event) []FormLink {
 	return links
 }
 
+// ListsForm reports whether the Event's application form or one of its
+// extra forms is formID, with or without an alias.
+func (e Event) ListsForm(formID uuid.UUID) bool {
+	for _, link := range formLinksOf(e) {
+		if link.FormID == formID {
+			return true
+		}
+	}
+	return false
+}
+
 // FormIDFromURL finds the form in a forms address: the first path segment
 // that parses as a UUID.
 func FormIDFromURL(raw string) (uuid.UUID, bool) {

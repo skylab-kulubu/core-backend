@@ -42,6 +42,9 @@ const (
 	// TypeGithubActivity is the club's GitHub organisation activity on the
 	// admin dashboard, private repositories' totals included.
 	TypeGithubActivity Type = "GITHUB_ACTIVITY"
+	// TypeFormResponse is an answer to a Skyforms form that the forms
+	// service reports, so that core writes the Ticket it earns.
+	TypeFormResponse Type = "FORM_RESPONSE"
 )
 
 type Level string

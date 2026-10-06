@@ -166,6 +166,45 @@ func (h *TicketHandler) ApplyGuest(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(applied.Ticket)
 }
 
+type formResponseBody struct {
+	ResponseID uuid.UUID  `json:"responseId"`
+	Status     string     `json:"status"`
+	UserID     *uuid.UUID `json:"userId"`
+	Guest      *guestBody `json:"guest"`
+}
+
+// RecordFormResponse takes the forms service's report of an answer to one of
+// its forms (docs/form-response-tickets.md). The answer is 204 whether or not
+// an Event lists the form: the forms service only needs to know it may stop
+// sending the report.
+func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	formID, err := uuid.Parse(c.Params("formId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body formResponseBody
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	r := ticket.FormResponse{
+		FormID:     formID,
+		ResponseID: body.ResponseID,
+		Status:     ticket.FormResponseStatus(body.Status),
+		UserID:     body.UserID,
+	}
+	if body.Guest != nil {
+		r.Guest = &ticket.GuestInfo{FirstName: body.Guest.FirstName, LastName: body.Guest.LastName, Email: body.Guest.Email}
+	}
+	if err := h.svc.RecordFormResponse(c.Context(), p, r); err != nil {
+		return ticketError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
 func (h *TicketHandler) Mine(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
