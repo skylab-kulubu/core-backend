@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -120,5 +121,63 @@ func TestServiceRestoresScheduleOnlyUnderCurrentAncestors(t *testing.T) {
 	}
 	if _, err := svc.RestoreDay(ctx, leader, day.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServiceRestoreOfLegacySessionWithInvalidTimingIsConflict(t *testing.T) {
+	t.Parallel()
+	store, svc := setup(t)
+	ctx := context.Background()
+	leader := authz.Principal{
+		ID: uuid.MustParse("33333333-3333-3333-3333-333333333333").String(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"},
+	}
+
+	ev, err := svc.Create(ctx, leader, event.Event{Name: "Program", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := svc.CreateDay(ctx, leader, event.Day{EventID: ev.ID, Name: "Gün 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 10, 6, 14, 0, 0, 0, time.UTC)
+	end := start.Add(-time.Hour)
+	// A Session written before today's timing rule: the store keeps what it is
+	// given, so it ends before it starts.
+	legacy, err := store.CreateSession(ctx, event.Session{
+		EventDayID: day.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION",
+		StartTime: &start, EndTime: &end,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeleteSession(ctx, leader, legacy.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.RestoreSession(ctx, leader, legacy.ID); !errors.Is(err, event.ErrConflict) {
+		t.Fatalf("restore of a legacy session with invalid timing = %v, want ErrConflict", err)
+	}
+	if archived, err := store.GetSessionIncludingArchived(ctx, legacy.ID); err != nil || archived.ArchivedAt == nil {
+		t.Fatalf("refused restore left the session = %+v, err = %v", archived, err)
+	}
+
+	// The same timing sent by a client is still invalid input.
+	if _, err := svc.CreateSession(ctx, leader, event.Session{
+		EventDayID: day.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION",
+		StartTime: &start, EndTime: &end,
+	}); !errors.Is(err, event.ErrInvalid) {
+		t.Fatalf("create with invalid timing = %v, want ErrInvalid", err)
+	}
+	current, err := svc.CreateSession(ctx, leader, event.Session{
+		EventDayID: day.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.UpdateSession(ctx, leader, current.ID, event.Session{
+		Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION", StartTime: &start, EndTime: &end,
+	}); !errors.Is(err, event.ErrInvalid) {
+		t.Fatalf("update with invalid timing = %v, want ErrInvalid", err)
 	}
 }
