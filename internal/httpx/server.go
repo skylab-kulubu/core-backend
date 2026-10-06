@@ -17,6 +17,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
+	"github.com/skylab-kulubu/core-backend/internal/editablesites"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
@@ -120,6 +121,11 @@ type Deps struct {
 	// route answers from it (docs/authz-roles.md). Nil leaves
 	// /v1/users/me/capabilities unserved: 404.
 	Authz authz.Authorizer
+
+	// EditableSites answers the capabilities route's editableSites: the
+	// configured Site clients the caller holds cms:access on, a hint for
+	// the UI (docs/authz-roles.md). Nil answers an empty list.
+	EditableSites *editablesites.Sites
 
 	// AuthzRoleMetrics are the role mode and its disagreements, served on
 	// /v1/metrics. Nil serves nothing.
@@ -328,7 +334,7 @@ func New(deps Deps) *fiber.App {
 	app.Put("/v1/users/me", me.PutMe)
 	app.Patch("/v1/users/me", me.PatchMe)
 	if deps.Authz != nil {
-		app.Get("/v1/users/me/capabilities", handlers.NewCapabilitiesHandler(deps.Authz).Get)
+		app.Get("/v1/users/me/capabilities", handlers.NewCapabilitiesHandler(deps.Authz, editableSitesSource(deps.EditableSites)).Get)
 	}
 	app.Post("/v1/users/me/profile-picture", limitUploads, me.ProfilePicture)
 	app.Delete("/v1/users/me/profile-picture", me.DeleteProfilePicture)
@@ -534,4 +540,13 @@ func perClientLimitOf(trustedProxies clientip.Ranges, max int) fiber.Handler {
 			return clientip.FromCtx(c, trustedProxies)
 		},
 	})
+}
+
+// editableSitesSource keeps an unset Deps.EditableSites a nil interface, so
+// the capabilities handler neither asks it nor logs for it.
+func editableSitesSource(sites *editablesites.Sites) handlers.EditableSitesSource {
+	if sites == nil {
+		return nil
+	}
+	return sites
 }

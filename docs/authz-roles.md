@@ -80,7 +80,10 @@ What the caller may do, for the admin panel (ticket 10) to decide which menus an
     {"team": "WEBLAB", "levels": ["LEADER", "MEMBER"], "can": {"event.create": true, "...": true}}
   ],
   "otherTeams": {"can": {"event.create": true, "...": false}},
-  "noOwnerTeam": {"can": {"event.create": true, "...": false}}
+  "noOwnerTeam": {"can": {"event.create": true, "...": false}},
+  "editableSites": [
+    {"clientId": "frontend-artlab", "name": "ARTLAB", "url": "https://artlab.yildizskylab.com"}
+  ]
 }
 ```
 
@@ -89,6 +92,7 @@ What the caller may do, for the admin panel (ticket 10) to decide which menus an
 - `teams`: the Owner teams the caller is a member or Leader of, by name: every segment of their group paths, `LIDERLER`/`KOORDINATORLER` aside, exactly the teams core's decisions consider (so `UYELER` and `ARGE` appear for `/UYELER/ARGE/WEBLAB`). `levels` are `LEADER` and/or `MEMBER`.
 - `otherTeams`: the decisions for a record of any Owner team not in `teams`. Use it for a record whose team is not listed.
 - `noOwnerTeam`: the decisions for a record without an Owner team.
+- `editableSites`: the sites whose CMS the caller may edit (CONTEXT "Site editor"), for the panel's "Düzenle" links. **A hint for the UI, not an authorization** (ipucu, yetki değil): the CMS decides every edit from the person's own token, and the site shows its editor only to a holder of `cms:access`. See [Editable sites](#editable-sites).
 
 Look-up for a record of Owner team `t`: `teams.find(x => x.team === t)?.can ?? (t ? otherTeams.can : noOwnerTeam.can)`.
 
@@ -97,6 +101,18 @@ Look-up for a record of Owner team `t`: `teams.find(x => x.team === t)?.can ?? (
 Team keys (in `teams[].can`, `otherTeams.can`, `noOwnerTeam.can`): `event.create`, `event.update`, `event.delete`, `event.assignDoorStaff`, `ticket.read` (applicant list), `ticket.assign`, `door.checkIn`, `competitor.read`, `competitor.create`, `competitor.update`, `competitor.delete`, `certificate.read`, `certificate.issue`, `certificate.revoke`, `certificateTemplate.read`, `certificateTemplate.create`, `certificateTemplate.update`, `certificateTemplate.assign` (bindings).
 
 `door.checkIn` is the team's answer without the Event's own door staff and with Team door scan off; a person on an Event's door staff, or a member of a team with Team door scan on, may still check in there (`GET /v1/door/events` lists the caller's Events).
+
+### Editable sites
+
+`editableSites` lists the configured Site clients (`CMS_SITES`) on which the caller holds the client role `cms:access`, in the configured order. Each item is `{"clientId", "name", "url"}`: the site's Keycloak client, the name to show and the site's address without a trailing slash; the editor's sign-in is `<url>/api/signin`. It is always present and is `[]` for a person who edits no site, for a service account, when `CMS_SITES` is unset, and when Keycloak cannot be read.
+
+It is the same rule as the CMS: core reads, with its own service account, the client roles the person holds in effect on each site client (`GET /users/{id}/role-mappings/clients/{client}/composite`: directly, through their Groups and the Groups above them, and through composite roles), which are the roles a token for that site carries. Nothing comes from the caller's token, so Full scope stays off on every client (ADR-0058/0059). Privileged Groups and the Leader groups that ADR-0056 grants `cms:access` get their sites; a plain member gets `[]`.
+
+- **Only a hint.** Never decide anything from it. A site missing from the list may still accept the person (a failed read, a grant made less than a minute ago); a site in it may still refuse (a grant removed less than a minute ago). The CMS answers `403` then.
+- **Cache.** One answer per person (`sub`) is kept 60 s in the core process; requests of one person that arrive together share one read. An answer with a failure is kept 10 s.
+- **Failure.** It never fails the capabilities answer. A site whose roles cannot be read (Keycloak unreachable, a timeout of 3 s for all sites together, any status but success) is left out; when Keycloak is down the list is `[]`. A site client the realm does not have yet is left out quietly.
+- **Logs.** Each read (not a cached answer) writes one JSON line: `{"event":"editable_sites","correlation_id":…,"outcome":"fetched"|"unavailable","sites":N}`, with an `error` that names nobody when some site could not be read. No `sub`, site list or token is logged.
+- **Configuration.** `CMS_SITES` is a JSON list, e.g. `[{"clientId":"frontend-main","name":"Ana site","url":"https://yildizskylab.com"},{"clientId":"frontend-arge","name":"Ar-Ge","url":"https://arge.yildizskylab.com"}]`. Unset or empty: no site, no Keycloak call. A value core cannot read (not a list, unknown field, a bad client id, an empty name, a duplicate client, a URL that is not an absolute http(s) address or carries credentials, a query or a fragment) stops startup with an error that names `CMS_SITES`. Keycloak permissions: [`keycloak-admin-permissions.md`](keycloak-admin-permissions.md#editable-sites).
 
 ### The admin panel's rules today and their answer here
 
