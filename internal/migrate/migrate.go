@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -1221,8 +1222,66 @@ var concurrentIndexes = map[int64]string{
 	20261007120000: "url_hits_personal_at_v3_idx",
 }
 
+// LockName names the advisory lock Apply holds while it migrates. Advisory
+// locks belong to the database, not to the login, so the replicas of a
+// release and the two rotating logins of core's role all wait on the same
+// one.
+const LockName = "core-backend migrations"
+
+// Apply brings the schema up to date. It runs on one connection that holds
+// the session advisory lock LockName from before it reads schema_migrations
+// until it ends, so replicas starting at the same time migrate one after the
+// other: the first applies, the next waits and then finds every version
+// recorded. Nothing else changes on the session (no SET ROLE, no RESET):
+// the migrations run as the login's own session role, as before. The
+// connection leaves the pool and is closed at the end, which releases the
+// lock whatever happened in between.
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, `
+	held, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("migrate: connection: %w", err)
+	}
+	conn := held.Hijack()
+	defer conn.Close(context.Background())
+	if err := lock(ctx, conn); err != nil {
+		return err
+	}
+	return apply(ctx, conn)
+}
+
+// lockRetry is how often a replica that found LockName taken tries again.
+const lockRetry = 500 * time.Millisecond
+
+// lock takes LockName, waiting for another replica's migrations when it is
+// taken. It waits by trying again (pg_try_advisory_lock), never inside
+// pg_advisory_lock: a session blocked there is a transaction still open,
+// and a CREATE INDEX CONCURRENTLY of the replica holding the lock waits for
+// every open transaction to end, so the two would wait on each other
+// (deadlock detected, SQLSTATE 40P01; TestTwoReplicasApplyAtOnce).
+func lock(ctx context.Context, conn *pgx.Conn) error {
+	waiting := false
+	for {
+		var got bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, LockName).Scan(&got); err != nil {
+			return fmt.Errorf("migrate: lock: %w", err)
+		}
+		if got {
+			return nil
+		}
+		if !waiting {
+			log.Printf("migrate: waiting for another replica's migrations")
+			waiting = true
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("migrate: lock: %w", ctx.Err())
+		case <-time.After(lockRetry):
+		}
+	}
+}
+
+func apply(ctx context.Context, conn *pgx.Conn) error {
+	if _, err := conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version BIGINT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1234,7 +1293,7 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 	if err != nil {
 		return err
 	}
-	applied, err := loadApplied(ctx, pool)
+	applied, err := loadApplied(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -1243,12 +1302,12 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 		if applied[f.version] {
 			continue
 		}
-		present, err := alreadyPresent(ctx, pool, f.version)
+		present, err := alreadyPresent(ctx, conn, f.version)
 		if err != nil {
 			return fmt.Errorf("fingerprint %d: %w", f.version, err)
 		}
 		if present {
-			if err := record(ctx, pool, f.version); err != nil {
+			if err := record(ctx, conn, f.version); err != nil {
 				return err
 			}
 			log.Printf("migrate: recorded existing %d", f.version)
@@ -1259,15 +1318,15 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 			return err
 		}
 		if index, ok := concurrentIndexes[f.version]; ok {
-			if err := dropInvalidIndex(ctx, pool, index); err != nil {
+			if err := dropInvalidIndex(ctx, conn, index); err != nil {
 				return fmt.Errorf("migration %d: %w", f.version, err)
 			}
 		}
-		if err := execSQL(ctx, pool, string(body)); err != nil {
+		if err := execSQL(ctx, conn, string(body)); err != nil {
 			return fmt.Errorf("migration %d: %w", f.version, err)
 		}
 		if _, hasFingerprint := fingerprints[f.version]; hasFingerprint {
-			present, err := alreadyPresent(ctx, pool, f.version)
+			present, err := alreadyPresent(ctx, conn, f.version)
 			if err != nil {
 				return fmt.Errorf("migration %d postcondition: %w", f.version, err)
 			}
@@ -1275,7 +1334,7 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 				return fmt.Errorf("migration %d postcondition: schema fingerprint is incomplete", f.version)
 			}
 		}
-		if err := record(ctx, pool, f.version); err != nil {
+		if err := record(ctx, conn, f.version); err != nil {
 			return err
 		}
 		log.Printf("migrate: applied %d", f.version)
@@ -1324,8 +1383,8 @@ func listUp() ([]file, error) {
 	return out, nil
 }
 
-func loadApplied(ctx context.Context, pool *pgxpool.Pool) (map[int64]bool, error) {
-	rows, err := pool.Query(ctx, `SELECT version FROM schema_migrations`)
+func loadApplied(ctx context.Context, conn *pgx.Conn) (map[int64]bool, error) {
+	rows, err := conn.Query(ctx, `SELECT version FROM schema_migrations`)
 	if err != nil {
 		return nil, err
 	}
@@ -1341,13 +1400,13 @@ func loadApplied(ctx context.Context, pool *pgxpool.Pool) (map[int64]bool, error
 	return out, rows.Err()
 }
 
-func alreadyPresent(ctx context.Context, pool *pgxpool.Pool, version int64) (bool, error) {
+func alreadyPresent(ctx context.Context, conn *pgx.Conn, version int64) (bool, error) {
 	q, ok := fingerprints[version]
 	if !ok {
 		return false, nil
 	}
 	var n int
-	err := pool.QueryRow(ctx, q).Scan(&n)
+	err := conn.QueryRow(ctx, q).Scan(&n)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -1359,9 +1418,9 @@ func alreadyPresent(ctx context.Context, pool *pgxpool.Pool, version int64) (boo
 
 // dropInvalidIndex drops index when it exists and is invalid: the remains of
 // a concurrent build that stopped.
-func dropInvalidIndex(ctx context.Context, pool *pgxpool.Pool, index string) error {
+func dropInvalidIndex(ctx context.Context, conn *pgx.Conn, index string) error {
 	var invalid bool
-	if err := pool.QueryRow(ctx, `
+	if err := conn.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM pg_index WHERE indexrelid = to_regclass('public.' || $1::text) AND NOT indisvalid)`, index).Scan(&invalid); err != nil {
 		return err
 	}
@@ -1369,24 +1428,22 @@ func dropInvalidIndex(ctx context.Context, pool *pgxpool.Pool, index string) err
 		return nil
 	}
 	log.Printf("migrate: dropping the invalid index %s a stopped build left", index)
-	return execSQL(ctx, pool, `DROP INDEX CONCURRENTLY IF EXISTS public.`+pgx.Identifier{index}.Sanitize())
+	return execSQL(ctx, conn, `DROP INDEX CONCURRENTLY IF EXISTS public.`+pgx.Identifier{index}.Sanitize())
 }
 
-func record(ctx context.Context, pool *pgxpool.Pool, version int64) error {
-	_, err := pool.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, version)
+func record(ctx context.Context, conn *pgx.Conn, version int64) error {
+	_, err := conn.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, version)
 	return err
 }
 
-func execSQL(ctx context.Context, pool *pgxpool.Pool, sql string) error {
+// execSQL runs sql, which may be several statements, with the simple
+// protocol: a file of several statements runs as one implicit transaction,
+// and a single CREATE INDEX CONCURRENTLY outside any.
+func execSQL(ctx context.Context, conn *pgx.Conn, sql string) error {
 	sql = strings.TrimSpace(sql)
 	if sql == "" {
 		return nil
 	}
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Release()
-	_, err = conn.Conn().PgConn().Exec(ctx, sql).ReadAll()
+	_, err := conn.PgConn().Exec(ctx, sql).ReadAll()
 	return err
 }
