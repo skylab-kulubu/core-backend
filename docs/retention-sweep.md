@@ -45,21 +45,48 @@ click list and a form's channel statistics keep looking 90 days back
 clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
 from apply on it only grows, counting every click since then.
 
-## Rules (rule set v2)
+## Rules (rule set v3)
 
 "Event end" is the Event's `end_date`, else its last day's `end_date`, else
-its `start_date` (ADR-0062). A row whose Event has none of them is never
-changed; it is counted as `anchorless`. Archived Events count like any other:
+its `start_date` (ADR-0062). For `guest_identity`, an Event with none of them
+counts from when the Ticket on it was taken (`tickets.created_at`, the
+registration; v3), so that rule dates every row. For `guest_phone` and
+`door_staff` such a row is never changed; it is counted as `anchorless`: a
+phone 90 days after the registration could go before an undated Event even
+took place, and door staff rows have no date of their own. Archived Events count like any other:
 archiving does not stop the clock (ADR-0042). A guest is a Ticket without an
 owner, as in account erasure.
 
 | Rule | Table, columns | Anchor | Period | Action | Kept / left out |
 |---|---|---|---|---|---|
 | `guest_phone` | `tickets.guest_phone_number` | the Ticket's Event end | 90 days | emptied | consent or not (ADR-0062) |
-| `guest_identity` | `tickets.guest_first_name`, `guest_last_name`, `guest_email`, `guest_phone_number`; `certificates.recipient_email` of the Ticket's certificates without an owner, in the same statement | the person's **latest** Event end: every guest Ticket of the same address (trimmed, lower-cased), and every Ticket of the account whose `email` or `school_email` is that address (a guest who later became a member; v2); a Ticket without an address, its own Event | 2 years | emptied; the Ticket, its check-ins and its certificate (name, serial, PDF) stay | a Ticket with a queued or running certificate job; an address with an active (confirmed, open) `event_invitations` consent given for the address |
+| `guest_identity` | `tickets.guest_first_name`, `guest_last_name`, `guest_email`, `guest_phone_number`; `certificates.recipient_email` of the Ticket's certificates without an owner, in the same statement | the person's **latest** Event end: every guest Ticket of the same address (trimmed, lower-cased), and every Ticket of the account whose `email` or `school_email` is that address (a guest who later became a member; v2); a Ticket without an address, its own Event. An undated Event counts from the Ticket's registration (v3): before v3 one undated Event made the person `anchorless`, and a member who had registered for one kept their old guest Tickets for good | 2 years | emptied; the Ticket, its check-ins and its certificate (name, serial, PDF) stay | a Ticket with a queued or running certificate job; an address with an active (confirmed, open) `event_invitations` consent given for the address |
 | `door_staff` | `event_door_staff` | the Event end | 90 days | row deleted (a relationship row) | |
-| `url_hits_scrub` | `url_hits.ip`, `user_agent`, `user_id`, `utm_campaign`, `utm_term`, `utm_content`, `referer` | `at` | 1 year | emptied; `referer` keeps its origin (`scheme://host`, lower-case, no user information, port, path, query or fragment); the row (time, link, alias, `utm_source`, `utm_medium`: the channel the statistics count) stays. The free UTM fields are whatever the link's author or the visitor typed into the address (an e-mail, a student number), so they go with the address (v2; account erasure already clears them) | only does anything in apply (above) |
+| `url_hits_scrub` | `url_hits.ip`, `user_agent`, `user_id`, `utm_campaign`, `utm_term`, `utm_content`, `referer`; `utm_source`, `utm_medium` | `at` | 1 year | emptied; `referer` keeps its origin (`scheme://host`, lower-case, no user information, port, path, query or fragment); `utm_source` and `utm_medium` keep a known channel and become `other` otherwise (v3, below); the row (time, link, alias, channel) stays. The free UTM fields are whatever the link's author or the visitor typed into the address (an e-mail, a student number), so they go with the address (v2; account erasure already clears them) | only does anything in apply (above) |
 | `read_link_ip` | `media_read_link_opens.client_ip` | `opened_at` | 1 year | emptied; the open stays | only does anything in apply (above) |
+
+**Channels (`url_hits_scrub` v3).** A click's `utm_source` and `utm_medium`
+come from the address too, so a visitor can type anything into them. A year
+on, the rule keeps them only when they name a known channel
+(`shorturl.KnownSources`, `KnownMediums`), lower-cased and in its usual
+spelling, and writes `other` otherwise; an untagged click stays untagged:
+
+| Field | Kept (spellings read as the channel) |
+|---|---|
+| `utm_source` | `instagram` (`ig`, `insta`), `whatsapp` (`wa`, `wp`), `linkedin` (`in`, `li`), `youtube` (`yt`), `email` (`ma`, `mail`, `e-mail`, `e-posta`, `eposta`), `x` (`twitter`), `website` (`web`, `site`), `qr`, `other` |
+| `utm_medium` | `qr`, `referral`, `social`, `messaging`, `email`, `print`, `other` |
+
+These are the channels core writes (the link suffixes, the sources it infers,
+`qr`, `referral`) and the ones Forms offers and derives (its share channels,
+and the spellings its attribution normalizer reads as one channel). Clicks
+are stored as they came, and the rule rewrites them in the sweep, not on
+write: a form's channel statistics and the click list look back 90 days
+(`shorturl.HitListWindow`), so they never see a rewritten click, and a
+channel an organizer named under Forms' "Diğer" keeps its name there; and the
+tag core forwards to the form must stay the one the click was counted under,
+or Forms could not match its answers to the clicks. Free text is kept a year,
+as the free UTM fields are. A new channel is a new spelling in
+`internal/shorturl/utm.go`, a new rule version and a new index (below).
 
 Audits count, in every mode, what an hourly cleanup should already have
 removed, a day past its window (the policy's "at the latest" is a period plus
@@ -151,8 +178,9 @@ confirmed grant, which stays as long as the grant (and then as proof).
   schedule never passes the brake.
 
 **Index for the clicks.** `url_hits` keeps its rows in apply mode, so it
-only grows. `url_hits_personal_at_idx` (migration `20261005140000`) indexes
-by time the rows that still hold something personal, with
+only grows. `url_hits_personal_at_v3_idx` (migration `20261007120000`;
+`20261007120100` drops v2's `url_hits_personal_at_idx` of `20261005140000`)
+indexes by time the rows that still hold something personal, with
 `url_hits_scrub`'s own predicate (`hitPersonalSQL`; a test compares the
 migration with the rule and checks the plans read the index): a scrubbed
 row leaves the index, and a day's count and scrub read a day's rows however
@@ -222,6 +250,28 @@ rule=…`):
 The server alarm (`ops/wizards/erasure/erasure-alarm.sh` pattern: read the
 metrics through the container's loopback, mail `/ADMIN` directly over SMTP)
 reads `skylab_retention_attention`; wiring it is an ops step.
+
+## Known behaviours
+
+- **A run by hand while the mode is `off` opens a period.** The command
+  works in every mode, and its first run opens the first period
+  (`PERIODIC_DESTRUCTION_INTERVAL`, 90 days). If the mode is switched on
+  only after that period ended, the first scheduled run closes it (and any
+  empty period after it) without a scheduled run, and
+  `period_without_run` alarms until the next period closes with its run.
+  That is the record telling the truth: no destruction ran in that period.
+  The rollout does not meet it (the mode is `dry-run` before anyone runs
+  the command, and the first scheduled run opens the first period); to
+  avoid it elsewhere, do not run the command while the mode is `off`, or
+  switch the mode on within 90 days of doing so.
+- **`consent_renewal_unanswered` stayed version 1** when the void question
+  (`consent.RenewalQuestionSQL`) replaced its first condition ("no renewal
+  and no check-in since the question"). The two select different grants
+  only when the question and the last renewal or check-in carry the same
+  timestamp (then the question is void now, and was standing before). No run
+  of the first condition was ever recorded (both shipped in the same
+  release), so no record holds a version 1 count that meant something else.
+  A later change of the rule is version 2.
 
 ## Command
 

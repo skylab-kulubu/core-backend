@@ -39,6 +39,13 @@ func consentError(c fiber.Ctx, err error) error {
 	case errors.Is(err, consent.ErrDisabled):
 		c.Set(fiber.HeaderCacheControl, "no-store")
 		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", "consents_unavailable")
+	case errors.Is(err, consent.ErrAddressesUnavailable):
+		// Keycloak unreachable: a passing failure, not core's fault. The
+		// error carries no address; it says what failed.
+		log.Printf("contact consent: %v", err)
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		c.Set(fiber.HeaderRetryAfter, "30")
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", "consent_addresses_unavailable")
 	case errors.Is(err, consent.ErrUnknownText):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "consent_text_unknown")
 	case errors.Is(err, consent.ErrPurposeNotEnabled):

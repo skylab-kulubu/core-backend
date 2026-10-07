@@ -3,6 +3,7 @@ package httpx_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"html"
 	"io"
 	"net/http"
@@ -54,6 +55,7 @@ type consentEnv struct {
 	keys    *testauth.Bundle
 	pool    *pgxpool.Pool
 	mails   *consentMails
+	svc     *consent.Service
 	eventID string
 }
 
@@ -77,9 +79,10 @@ func newConsentEnv(t *testing.T, enabled bool) consentEnv {
 	deps.Events = event.NewService(events, az)
 	deps.Tickets = ticket.NewService(tickets, events, az, users, dir)
 	mails := &consentMails{}
+	var svc *consent.Service
 	if enabled {
 		// Place may assert a verified address here; Forms may not.
-		svc := consent.NewService(pool, consent.TestConfig(bytes.Repeat([]byte{9}, 32), "https://api.example.test", "place"), mails)
+		svc = consent.NewService(pool, consent.TestConfig(bytes.Repeat([]byte{9}, 32), "https://api.example.test", "place"), mails)
 		svc.SetAsync(func(fn func()) { fn() })
 		deps.Consents = svc
 	}
@@ -89,7 +92,7 @@ func newConsentEnv(t *testing.T, enabled bool) consentEnv {
 	if created.status != fiber.StatusCreated {
 		t.Fatalf("create event %d %v", created.status, created.body)
 	}
-	return consentEnv{app: app, keys: keys, pool: pool, mails: mails, eventID: created.body["id"].(string)}
+	return consentEnv{app: app, keys: keys, pool: pool, mails: mails, svc: svc, eventID: created.body["id"].(string)}
 }
 
 func (e consentEnv) serviceToken(t *testing.T, client string, roles ...string) string {
@@ -327,6 +330,39 @@ func TestPersonManagesTheirOwnConsents(t *testing.T) {
 	}
 	if env.count(t, `ended_via = 'self'`) != 1 {
 		t.Fatal("self withdrawal not recorded")
+	}
+}
+
+// unreachableAddresses is Keycloak down: the person's addresses cannot be
+// read.
+type unreachableAddresses struct{}
+
+func (unreachableAddresses) ErasureAddresses(context.Context, uuid.UUID) ([]string, error) {
+	return nil, errors.New("identity: user address lookup failed with status 503")
+}
+
+// While the person's addresses cannot be read (Keycloak unreachable), their
+// list answers 503 to try again, not 500: a shorter list would hide a grant.
+// Their withdrawal ends at once what core reaches without Keycloak (the
+// account's own grant, and the grants for core's addresses), and answers
+// 503 too, since a grant for another of their addresses may still be open.
+func TestOwnConsentsAnswer503WhileTheAddressesCannotBeRead(t *testing.T) {
+	env := newConsentEnv(t, true)
+	token := groupToken(t, env.keys, memberSub)
+	if got := sendJSON(t, env.app, token, fiber.MethodPost, "/v1/users/me/consents", `{"purpose":"event_invitations"}`); got.status != fiber.StatusCreated {
+		t.Fatalf("grant mine %d %v", got.status, got.body)
+	}
+	env.svc.SetAddresses(unreachableAddresses{})
+	if got := sendJSON(t, env.app, token, fiber.MethodGet, "/v1/users/me/consents", ""); got.status != fiber.StatusServiceUnavailable ||
+		got.body["code"] != "consent_addresses_unavailable" {
+		t.Fatalf("mine %d %v", got.status, got.body)
+	}
+	if got := sendJSON(t, env.app, token, fiber.MethodDelete, "/v1/users/me/consents/event_invitations", ""); got.status != fiber.StatusServiceUnavailable ||
+		got.body["code"] != "consent_addresses_unavailable" {
+		t.Fatalf("withdraw mine %d %v", got.status, got.body)
+	}
+	if env.count(t, `user_id = '`+memberSub+`' AND ended_via = 'self'`) != 1 {
+		t.Fatal("the account's own grant stayed open")
 	}
 }
 

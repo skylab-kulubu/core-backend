@@ -1,0 +1,2 @@
+-- v2's index again (20261005140000), one statement outside a transaction.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS url_hits_personal_at_idx ON url_hits (at) WHERE (ip <> '' OR user_agent <> '' OR user_id IS NOT NULL OR utm_campaign <> '' OR utm_term <> '' OR utm_content <> '' OR referer <> CASE WHEN referer ~ '^[A-Za-z][A-Za-z0-9+.-]*://' THEN lower(substring(referer FROM '^([A-Za-z][A-Za-z0-9+.-]*://)')) || lower(COALESCE(substring(referer FROM '^[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#]*@)?(\[[^]/?#]*\]|[^/?#:@]*)'), '')) ELSE '' END);
