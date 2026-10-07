@@ -157,11 +157,16 @@ func TestRecordFormResponseGivesNoTicketToAPersonCoreBlocks(t *testing.T) {
 	if _, err := f.users.RequestDeletion(ctx, marked, &marked); err != nil {
 		t.Fatal(err)
 	}
-	markedInDirectory := uuid.New()
-	f.dir.PutUser(identity.Person{ID: markedInDirectory, Email: "directory@example.com", FirstName: "Ada", LastName: "Lovelace"})
-	if _, err := f.pool.Exec(ctx, `INSERT INTO account_deletion_requests (id, subject_id) VALUES ($1, $2)`, uuid.New(), markedInDirectory); err != nil {
+	// A deletion marker outlives the core row it was for; the directory
+	// still knows the person.
+	markedInDirectory := f.person(t, "directory@example.com")
+	if _, err := f.users.RequestDeletion(ctx, markedInDirectory, nil); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, markedInDirectory); err != nil {
+		t.Fatal(err)
+	}
+	f.dir.PutUser(identity.Person{ID: markedInDirectory, Email: "directory@example.com", FirstName: "Ada", LastName: "Lovelace"})
 	inactive := f.person(t, "inactive@example.com")
 	if _, err := f.pool.Exec(ctx, `UPDATE users SET account_state = 'anonymized' WHERE id = $1`, inactive); err != nil {
 		t.Fatal(err)
