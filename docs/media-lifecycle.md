@@ -313,8 +313,8 @@ The initial entries:
 | `certificate_asset` | certificate_template_editor | PNG, JPEG, PDF | 20 MiB | private | single-step | core |
 | `cms_image` | authenticated | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | cms (no service client yet) |
 | `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms (no service client yet) |
-| `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step | forms |
-| `answer_file_guest` | service_only (Skyforms' service account) | PDF, JPEG, PNG | 10 MiB | private, scanned | single-step | forms |
+| `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 50 MiB | private, scanned | single-step | forms |
+| `answer_file_guest` | service_only (Skyforms' service account) | PDF, JPEG, PNG | 50 MiB | private, scanned | single-step | forms |
 | `club_file` | event_editor | PDF, ZIP (download only) | 1 GiB | public, scanned | direct | core (an Event's files) |
 | `answer_file_large` | service_only | ZIP, PDF | 1 GiB | private, scanned | direct | forms |
 | `video` | event_editor | MP4 | 2 GiB | public | direct | core (an Event's videos) |
@@ -387,8 +387,9 @@ Core refuses to start with a catalogue that breaks one:
   its name. In code, an SVG is stored only for
   a purpose that lists it, only sanitized, under a key ending in `.svg`, and
   is always served as a download (`Content-Disposition: attachment`);
-- the maximum size stays under 20 MiB for single-step uploads and 2 GiB for
-  Direct upload;
+- the maximum size stays within 50 MiB for single-step uploads
+  (`MaxUploadBytes`, the Answer files' maximum since 2026-10-07) and 2 GiB
+  for Direct upload;
 - the declared image size stays within 2560 px (`image.max_dimension`,
   `image.sizes`), and re-encoding scales a larger image down to it;
 - a private purpose is encrypted, and one that accepts raster images declares
@@ -454,8 +455,17 @@ over their upload budget gets `429` `media_rate_limited`, described under
 | 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types, or starts like one but does not decode or check as it: a broken image, a WebP whose frame is not its canvas, an animated WebP whose structure does not check, a GIF with more than 300 frames or a frame outside its screen, a JPEG with more than 64 scans, an SVG core does not sanitize. |
 | 503 | `media_busy` | `retryAfterSeconds`, `Retry-After` header | The upload waited 10 seconds for a [decoding slot](#decode-budget) while other images were decoded. Nothing is stored and the upload is not charged to the upload budget; retry it. |
 
-A body above the server's limit (20 MiB plus room for the form) is still
-refused by the HTTP server with a bare `413` before any purpose is read.
+A body above the server's limit (50 MiB plus 1 MiB of room for the form) is
+still refused by the HTTP server with a bare `413` before any purpose is
+read.
+
+Core holds a single-step upload in memory whole while it stores it: the
+body the HTTP server read, the form parsed from it, the file read from the
+form and, for a private purpose, its encrypted copy. A 50 MiB Answer file
+takes about 200 MiB for the seconds it is stored; a PDF or DOCX takes no
+[decoding slot](#decode-budget), so only the [upload limits](#upload-limits)
+bound how many are stored at once. Production runs core without a memory
+limit on a 15 GiB host.
 
 ### Upload limits
 
@@ -959,12 +969,13 @@ is sanitized (it also takes one of the 2).
 
 **Worst case on the production host** (15 GiB, no swap), per slot: the decoded
 image at most 256 MiB by the estimate; the upload body and its copies up to
-about 60 MiB (20 MiB, held by the HTTP server, the form and the service);
+about 150 MiB (50 MiB, an Answer file's maximum, held by the HTTP server, the
+form and the service);
 the scaling buffers at most 128 MiB plus the 26 MiB result and its upright
-copy (26 MiB); the encoded image and its sizes under 40 MiB. About 540 MiB
-live per slot, 1.1 GiB for both. Sanitizing an SVG (at most 1 MiB, 10 000
+copy (26 MiB); the encoded image and its sizes under 40 MiB. About 630 MiB
+live per slot, 1.3 GiB for both. Sanitizing an SVG (at most 1 MiB, 10 000
 elements) takes a few tens of MiB at most. Go's collector lets the heap grow to
-about twice what is live before collecting (`GOGC=100`), so allow ~2.5 GiB
+about twice what is live before collecting (`GOGC=100`), so allow ~2.7 GiB
 for image work at its peak.
 
 ### Sizes
@@ -2181,7 +2192,7 @@ account. Core then treats it as any private, scanned Answer file:
 - **Upload.** `POST /v1/media` (multipart, `purpose=answer_file_guest`)
   with Skyforms' service token: the configured `forms` client
   (`MEDIA_SERVICE_CLIENTS`), `aud` `core`, the `media:attach` role on the
-  `core` client. PDF, JPEG or PNG (judged by content), at most 10 MiB;
+  `core` client. PDF, JPEG or PNG (judged by content), at most 50 MiB;
   images are re-encoded within 2560 px, without their metadata. A person's
   token, whatever roles it carries, and another product's service account
   are refused with `403 purpose_forbidden`.
@@ -2209,7 +2220,9 @@ account. Core then treats it as any private, scanned Answer file:
 - **Budget.** Every guest upload is charged to the Skyforms service
   account's one single-step budget ([Upload limits](#upload-limits): 100
   uploads per 10 minutes and 2 GiB per day by default, shared by all
-  guests). Skyforms keeps its own, finer limits per session, IP and form.
+  guests; at 50 MiB a file, 2 GiB is about 40 files a day).
+  `MEDIA_UPLOAD_DAILY_MAX_MIB` raises it, for every account alike. Skyforms
+  keeps its own, finer limits per session, IP and form.
 
 ### Refusals
 
@@ -2439,8 +2452,9 @@ The check runs in the scan worker, under the Media's scan claim, holding no
 database connection. A public held file is read by ranged GETs. A private
 file (an Answer file) is decrypted as it streams, into nothing but memory,
 never to disk; a ZIP is kept in memory to be checked, at most
-`MEDIA_ZIP_CHECK_BUFFER_MIB` (64 MiB), which an Answer file (20 MiB) always
-fits. The extra read of every file is the price of it, and the claim's
+`MEDIA_ZIP_CHECK_BUFFER_MIB` (64 MiB), which an Answer file (50 MiB) always
+fits. Set it no lower than 50: a private DOCX larger than the buffer is never
+scanned and is rejected as `scan_timeout` at its deadline. The extra read of every file is the price of it, and the claim's
 lease allows for it.
 
 A ZIP is checked so:
@@ -3659,7 +3673,8 @@ What happens to the records when the request completes is in
   past a member's first byte), and a private file it decrypts to check.
   Larger inner archives are refused as `archive_nested`; a larger private
   ZIP waits. The check holds at most one such buffer per nesting level
-  (three) at once.
+  (three) at once. Keep it at least `50`, an Answer file's maximum (a DOCX
+  is a ZIP).
 - `MEDIA_SERVICE_CLIENTS` — the products' service clients for the
   [service attach API](#service-attach-api), `product:client` pairs
   separated by commas (products `forms`, `cms`), or `none`; default
