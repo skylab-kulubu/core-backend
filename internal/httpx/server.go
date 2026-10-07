@@ -451,6 +451,10 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/tickets/user/:userId/event/:eventId", tickets.ByUserEvent)
 	app.Get("/v1/tickets/:id", tickets.Get)
 	app.Get("/v1/tickets", tickets.List)
+	// The forms service's account with ticket:forms reports each answer to its
+	// forms; an accepted answer to an Event's form writes its Ticket
+	// (docs/form-response-tickets.md).
+	app.Post("/v1/forms/:formId/responses", tickets.RecordFormResponse)
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
 	// Guest check-in takes no sign-in; failures are budgeted per address, and

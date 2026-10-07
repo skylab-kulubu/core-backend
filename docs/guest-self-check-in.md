@@ -1,6 +1,6 @@
 # Guest self check-in and the door QR
 
-A guest (a Ticket written by Guest apply, no account) checks themselves in to
+A guest (a Ticket written by Guest apply or a form report, no account) checks themselves in to
 a Session with `POST /v1/sessions/{sessionId}/check-in/guest`. The route takes
 no sign-in. Until now it took only an e-mail, and Session ids are public
 (`GET /v1/event-days/{id}/sessions`), so anybody anywhere could write an
