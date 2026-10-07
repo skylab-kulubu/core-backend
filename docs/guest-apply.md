@@ -177,8 +177,8 @@ the request. It never carries an e-mail, a name, a phone number, an address or t
    `ticket:forms` role instead of calling this route
    ([form-response-tickets.md](form-response-tickets.md)), so
    `anonymous_internal` stops counting form answers.
-3. **Enforce:** a setting makes a request without a token `401`, a person who
-   is not an operator `403`, and a service account without the role `403`.
+3. **Enforce:** a setting makes a request without a token `401` and a person
+   who is not an operator `403`.
    It is switched on in sandbox first, then in production once
    `skylab_guest_apply_anonymous_public_total` and
    `skylab_guest_apply_anonymous_internal_total` have stayed unchanged for

@@ -28,7 +28,7 @@ The names are a contract with Keycloak: the table "Sözleşme: core'un kaynak ro
 | `url:moderator` (existed) | `allowURL` (with `url:access`), `TypeFormLink` | everyone's short links; form links |
 | `url:access` (existed) | `allowURL` (with `url:moderator`) | one's own short links |
 
-Short links and form links have no new role: `url:moderator` and `url:access`, read below the Privileged shortcut as before, together allow every short-link action (Create, ReadMe, Read, Update, Delete) and `url:moderator` every form-link action. The shortcut itself is the Privileged Group in the `groups` and `both` modes and nothing in the `roles` mode. The team-bound certificate roles (`certificate:issue`, `certificate:revoke`, `certificate:template:manage`, `certificate:binding:manage`), `url:create`/`url:get`/`url:update`/`url:delete`, `url:forms`, `users:read` and `media:attach` are unchanged and read in every mode.
+Short links and form links have no new role: `url:moderator` and `url:access`, read below the Privileged shortcut as before, together allow every short-link action (Create, ReadMe, Read, Update, Delete) and `url:moderator` every form-link action. The shortcut itself is the Privileged Group in the `groups` and `both` modes and nothing in the `roles` mode. The team-bound certificate roles (`certificate:issue`, `certificate:revoke`, `certificate:template:manage`, `certificate:binding:manage`), `url:create`/`url:get`/`url:update`/`url:delete`, `url:forms`, `users:read`, `media:attach` and `ticket:forms` are unchanged and read in every mode.
 
 `groups:manage` lets its holder change group role mappings, so it can grant every role here. Map it as narrowly as `ADMIN` is today.
 

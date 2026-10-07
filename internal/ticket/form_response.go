@@ -35,6 +35,34 @@ type FormResponse struct {
 	Guest *GuestInfo
 }
 
+// FormResponseOutcome is how recording a report ended, for the report's log
+// line. It names nobody.
+type FormResponseOutcome string
+
+const (
+	// FormResponseNotAccepted is a pending or declined answer: nothing to
+	// write.
+	FormResponseNotAccepted FormResponseOutcome = "not_accepted"
+	// FormResponseNoRespondent is an answer with neither a userId nor a
+	// guest.
+	FormResponseNoRespondent FormResponseOutcome = "no_respondent"
+	// FormResponseNotListed is a form no current Event lists.
+	FormResponseNotListed FormResponseOutcome = "not_listed"
+	// FormResponsePersonUnavailable is a person core cannot find, or whose
+	// account is blocked or no longer active.
+	FormResponsePersonUnavailable FormResponseOutcome = "person_unavailable"
+	// FormResponseRecorded is a report that went through every Event that
+	// lists the form.
+	FormResponseRecorded FormResponseOutcome = "recorded"
+)
+
+// FormResponseResult is what recording a report did.
+type FormResponseResult struct {
+	Outcome FormResponseOutcome
+	// TicketsWritten counts the new Tickets: not the ones already there.
+	TicketsWritten int
+}
+
 // RecordFormResponse writes the Ticket an accepted answer earns on every
 // current Event that lists the form: a REGISTERED one for a person who
 // answered signed in, a guest one for the e-mail a guest typed. An answer
@@ -45,51 +73,74 @@ type FormResponse struct {
 // A guest is written as Guest apply writes one for an untrusted caller: the
 // report carries what an anonymous form filler typed, so it may only fill a
 // detail the stored Ticket lacks and never renames a guest.
-func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r FormResponse) error {
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeFormResponse}, authz.Create) {
-		return ErrForbidden
+func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r FormResponse) (FormResponseResult, error) {
+	if !s.CanRecordFormResponse(p) {
+		return FormResponseResult{}, ErrForbidden
 	}
 	if r.FormID == uuid.Nil {
-		return ErrInvalid
+		return FormResponseResult{}, ErrInvalid
 	}
 	switch r.Status {
 	case FormResponseAccepted:
 	case FormResponsePending, FormResponseDeclined:
-		return nil
+		return FormResponseResult{Outcome: FormResponseNotAccepted}, nil
 	default:
-		return ErrInvalid
+		return FormResponseResult{}, ErrInvalid
 	}
 	var guest GuestInfo
 	switch {
 	case r.UserID != nil:
+		if *r.UserID == uuid.Nil {
+			return FormResponseResult{}, ErrInvalid
+		}
 	case r.Guest != nil:
 		guest = normalizeGuest(*r.Guest)
 		if guest.FirstName == "" || guest.LastName == "" || guest.Email == "" {
-			return ErrInvalid
+			return FormResponseResult{}, ErrInvalid
 		}
 	default:
-		return nil
+		return FormResponseResult{Outcome: FormResponseNoRespondent}, nil
 	}
 	listing, err := s.eventsListingForm(ctx, r.FormID)
-	if err != nil || len(listing) == 0 {
-		return err
+	if err != nil {
+		return FormResponseResult{}, err
+	}
+	if len(listing) == 0 {
+		return FormResponseResult{Outcome: FormResponseNotListed}, nil
 	}
 	if r.UserID != nil {
 		if err := s.resolveApplyTarget(ctx, *r.UserID); err != nil {
-			return settledFormResponse(err)
+			if err := settledFormResponse(err); err != nil {
+				return FormResponseResult{}, err
+			}
+			return FormResponseResult{Outcome: FormResponsePersonUnavailable}, nil
 		}
 	}
+	result := FormResponseResult{Outcome: FormResponseRecorded}
 	for _, eventID := range listing {
+		written := false
 		if r.UserID != nil {
 			_, err = s.applyRegistered(ctx, eventID, *r.UserID)
+			written = err == nil
 		} else {
-			_, err = s.writeGuest(ctx, eventID, guest, false)
+			var applied GuestApplication
+			applied, err = s.writeGuest(ctx, eventID, guest, false)
+			written = err == nil && applied.Result == GuestCreated
 		}
 		if err := settledFormResponse(err); err != nil {
-			return err
+			return FormResponseResult{}, err
+		}
+		if written {
+			result.TicketsWritten++
 		}
 	}
-	return nil
+	return result, nil
+}
+
+// CanRecordFormResponse reports whether p may report form answers: the
+// handler asks before it reads the request.
+func (s *service) CanRecordFormResponse(p authz.Principal) bool {
+	return s.authz.Allow(p, authz.Resource{Type: authz.TypeFormResponse}, authz.Create)
 }
 
 func (s *service) eventsListingForm(ctx context.Context, formID uuid.UUID) ([]uuid.UUID, error) {

@@ -53,7 +53,7 @@ func TestRecordFormResponseWritesTheGuestTicketOfAnAcceptedGuestAnswer(t *testin
 	formID := uuid.New()
 	ev := seedFormEvent(t, events, formAddress(formID))
 
-	if err := svc.RecordFormResponse(context.Background(), formsService, acceptedGuest(formID, " Ada ", "Lovelace", "ADA@Example.com")); err != nil {
+	if _, err := svc.RecordFormResponse(context.Background(), formsService, acceptedGuest(formID, " Ada ", "Lovelace", "ADA@Example.com")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -72,7 +72,7 @@ func TestRecordFormResponseRegistersAPersonWhoAnsweredSignedIn(t *testing.T) {
 	person := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	seedUser(t, users, person)
 
-	if err := svc.RecordFormResponse(ctx, formsService, ticket.FormResponse{
+	if _, err := svc.RecordFormResponse(ctx, formsService, ticket.FormResponse{
 		FormID: formID, ResponseID: uuid.New(), Status: ticket.FormResponseAccepted, UserID: &person,
 	}); err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestRecordFormResponseWritesNothingForAPendingOrDeclinedAnswer(t *testing.T
 	for _, status := range []ticket.FormResponseStatus{ticket.FormResponsePending, ticket.FormResponseDeclined} {
 		report := acceptedGuest(formID, "Ada", "Lovelace", "ada@example.com")
 		report.Status = status
-		if err := svc.RecordFormResponse(context.Background(), formsService, report); err != nil {
+		if _, err := svc.RecordFormResponse(context.Background(), formsService, report); err != nil {
 			t.Fatalf("%s: %v", status, err)
 		}
 	}
@@ -114,7 +114,7 @@ func TestRecordFormResponseTicketsEveryEventThatListsTheForm(t *testing.T) {
 	extra := seedFormEvent(t, events, "", event.EventFormLink{Label: "Başvuru", URL: formAddress(formID) + "?utm_source=site"})
 	other := seedFormEvent(t, events, formAddress(uuid.New()))
 
-	if err := svc.RecordFormResponse(context.Background(), formsService, acceptedGuest(formID, "Ada", "Lovelace", "ada@example.com")); err != nil {
+	if _, err := svc.RecordFormResponse(context.Background(), formsService, acceptedGuest(formID, "Ada", "Lovelace", "ada@example.com")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -138,7 +138,7 @@ func TestRecordFormResponseSentAgainFindsTheTicketsAlreadyThere(t *testing.T) {
 
 	for range 2 {
 		for _, report := range []ticket.FormResponse{member, guest} {
-			if err := svc.RecordFormResponse(ctx, formsService, report); err != nil {
+			if _, err := svc.RecordFormResponse(ctx, formsService, report); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -157,7 +157,7 @@ func TestRecordFormResponseGivesNoTicketToAPersonCoreCannotFind(t *testing.T) {
 	ev := seedFormEvent(t, events, formAddress(formID))
 	unknown := uuid.New()
 
-	if err := svc.RecordFormResponse(context.Background(), formsService, ticket.FormResponse{
+	if _, err := svc.RecordFormResponse(context.Background(), formsService, ticket.FormResponse{
 		FormID: formID, ResponseID: uuid.New(), Status: ticket.FormResponseAccepted, UserID: &unknown,
 	}); err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestRecordFormResponseRegistersAPersonCoreKnowsOnlyFromTheDirectory(t *test
 	person := uuid.New()
 	dir.PutUser(identity.Person{ID: person, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace"})
 
-	if err := svc.RecordFormResponse(ctx, formsService, ticket.FormResponse{
+	if _, err := svc.RecordFormResponse(ctx, formsService, ticket.FormResponse{
 		FormID: formID, ResponseID: uuid.New(), Status: ticket.FormResponseAccepted, UserID: &person,
 	}); err != nil {
 		t.Fatal(err)
@@ -206,7 +206,7 @@ func TestRecordFormResponseNeverRenamesAGuest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.RecordFormResponse(ctx, formsService, acceptedGuest(formID, "Mallory", "Renamed", "ada@example.com")); err != nil {
+	if _, err := svc.RecordFormResponse(ctx, formsService, acceptedGuest(formID, "Mallory", "Renamed", "ada@example.com")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -228,7 +228,7 @@ func TestRecordFormResponseIgnoresAnArchivedEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.RecordFormResponse(ctx, formsService, acceptedGuest(formID, "Ada", "Lovelace", "ada@example.com")); err != nil {
+	if _, err := svc.RecordFormResponse(ctx, formsService, acceptedGuest(formID, "Ada", "Lovelace", "ada@example.com")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -250,7 +250,7 @@ func TestRecordFormResponseNeedsTheFormsServiceWithItsRole(t *testing.T) {
 		"another product with the role":   {ID: "cms-sa", ServiceAccount: true, Product: authz.ProductCMS, Roles: []string{"ticket:forms"}},
 		"anonymous":                       anonymous,
 	} {
-		if err := svc.RecordFormResponse(context.Background(), p, report); !errors.Is(err, ticket.ErrForbidden) {
+		if _, err := svc.RecordFormResponse(context.Background(), p, report); !errors.Is(err, ticket.ErrForbidden) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -265,15 +265,61 @@ func TestRecordFormResponseRefusesAMalformedReport(t *testing.T) {
 	unknownStatus := acceptedGuest(formID, "Ada", "Lovelace", "ada@example.com")
 	unknownStatus.Status = "approved"
 	noForm := acceptedGuest(uuid.Nil, "Ada", "Lovelace", "ada@example.com")
+	zero := uuid.Nil
+	zeroUser := ticket.FormResponse{FormID: formID, ResponseID: uuid.New(), Status: ticket.FormResponseAccepted, UserID: &zero}
 
 	for name, report := range map[string]ticket.FormResponse{
 		"unknown status":       unknownStatus,
 		"no form":              noForm,
+		"zero userId":          zeroUser,
 		"guest without e-mail": acceptedGuest(formID, "Ada", "Lovelace", " "),
 		"guest without name":   acceptedGuest(formID, "", "Lovelace", "ada@example.com"),
 	} {
-		if err := svc.RecordFormResponse(context.Background(), formsService, report); !errors.Is(err, ticket.ErrInvalid) {
+		if _, err := svc.RecordFormResponse(context.Background(), formsService, report); !errors.Is(err, ticket.ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// The result names how a report ended and how many Tickets it wrote, for the
+// report's log line.
+func TestRecordFormResponseSaysHowTheReportEndedAndWhatItWrote(t *testing.T) {
+	t.Parallel()
+	events, users, svc := setupApplyForOther(t)
+	ctx := context.Background()
+	formID := uuid.New()
+	seedFormEvent(t, events, formAddress(formID))
+	seedFormEvent(t, events, "", event.EventFormLink{Label: "Başvuru", URL: formAddress(formID)})
+	person := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+	seedUser(t, users, person)
+	member := ticket.FormResponse{FormID: formID, ResponseID: uuid.New(), Status: ticket.FormResponseAccepted, UserID: &person}
+	guest := acceptedGuest(formID, "Ada", "Lovelace", "ada@example.com")
+	pending := acceptedGuest(formID, "Ada", "Lovelace", "ada@example.com")
+	pending.Status = ticket.FormResponsePending
+	unknown := uuid.New()
+	stranger := ticket.FormResponse{FormID: formID, ResponseID: uuid.New(), Status: ticket.FormResponseAccepted, UserID: &unknown}
+
+	for _, step := range []struct {
+		name    string
+		report  ticket.FormResponse
+		outcome ticket.FormResponseOutcome
+		written int
+	}{
+		{"member", member, ticket.FormResponseRecorded, 2},
+		{"member again", member, ticket.FormResponseRecorded, 0},
+		{"guest", guest, ticket.FormResponseRecorded, 2},
+		{"guest again", guest, ticket.FormResponseRecorded, 0},
+		{"pending", pending, ticket.FormResponseNotAccepted, 0},
+		{"no respondent", ticket.FormResponse{FormID: formID, ResponseID: uuid.New(), Status: ticket.FormResponseAccepted}, ticket.FormResponseNoRespondent, 0},
+		{"unlisted form", acceptedGuest(uuid.New(), "Ada", "Lovelace", "ada@example.com"), ticket.FormResponseNotListed, 0},
+		{"person core cannot find", stranger, ticket.FormResponsePersonUnavailable, 0},
+	} {
+		got, err := svc.RecordFormResponse(ctx, formsService, step.report)
+		if err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		if got.Outcome != step.outcome || got.TicketsWritten != step.written {
+			t.Errorf("%s: %+v, want %s and %d written", step.name, got, step.outcome, step.written)
 		}
 	}
 }
