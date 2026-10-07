@@ -97,3 +97,17 @@ func TestFormIDFromURLFindsTheFormSegment(t *testing.T) {
 		}
 	}
 }
+
+func TestEventListsItsApplicationAndExtraForms(t *testing.T) {
+	t.Parallel()
+	apply, extra, other := uuid.New(), uuid.New(), uuid.New()
+	ev := event.Event{
+		FormURL:       "https://forms.yildizskylab.com/" + apply.String(),
+		ExtraFormURLs: []event.EventFormLink{{Label: "Başvuru", URL: "https://forms.yildizskylab.com/" + extra.String() + "?utm_source=site"}},
+	}
+	for id, want := range map[uuid.UUID]bool{apply: true, extra: true, other: false, uuid.Nil: false} {
+		if got := ev.ListsForm(id); got != want {
+			t.Errorf("%s: %v, want %v", id, got, want)
+		}
+	}
+}

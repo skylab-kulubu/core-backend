@@ -53,6 +53,7 @@ func scheduleApp(t *testing.T, ident authn.Identity, events event.Store, seasons
 	app.Get("/v1/event-days/:id/current-session", sch.CurrentSession)
 	app.Post("/v1/sessions", sch.CreateSession)
 	app.Get("/v1/sessions/:id", sch.GetSession)
+	app.Put("/v1/sessions/:id", sch.UpdateSession)
 	app.Delete("/v1/sessions/:id", sch.DeleteSession)
 	app.Post("/v1/sessions/:id/restore", sch.RestoreSession)
 	app.Get("/v1/sessions/:id/qr", sch.SessionQR)
@@ -368,5 +369,75 @@ func TestSessionQRLogoOverlaysClubMark(t *testing.T) {
 	}
 	if bytes.Equal(plain, withLogo) {
 		t.Fatal("logo overlay should change the png")
+	}
+}
+
+func TestRestoreSessionWithLegacyTimingIsConflictWhileClientTimingIsBadRequest(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	leader := authn.Identity{ID: uuid.MustParse("44444444-4444-4444-4444-444444444444"), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	app := scheduleApp(t, leader, events, season.NewMemoryStore())
+	ctx := context.Background()
+
+	ev, err := events.Create(ctx, event.Event{Name: "Program", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Gün 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 10, 6, 14, 0, 0, 0, time.UTC)
+	end := start.Add(-time.Hour)
+	// Written before today's timing rule: it ends before it starts.
+	legacy, err := events.CreateSession(ctx, event.Session{
+		EventDayID: day.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION",
+		StartTime: &start, EndTime: &end,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := events.ArchiveSession(ctx, legacy.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	send := func(method, path, body string) (int, string) {
+		t.Helper()
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		req := httptest.NewRequest(method, path, reader)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(raw)
+	}
+
+	if status, body := send(fiber.MethodPost, "/v1/sessions/"+legacy.ID.String()+"/restore", ""); status != fiber.StatusConflict {
+		t.Fatalf("restore of a legacy session with invalid timing: status %d body %s, want 409", status, body)
+	}
+
+	badTiming := `"startTime":"` + start.Format(time.RFC3339) + `","endTime":"` + end.Format(time.RFC3339) + `"`
+	if status, body := send(fiber.MethodPost, "/v1/sessions",
+		`{"eventDayId":"`+day.ID.String()+`","title":"Talk","speakerName":"Ada","sessionType":"PRESENTATION",`+badTiming+`}`,
+	); status != fiber.StatusBadRequest {
+		t.Fatalf("create with invalid timing: status %d body %s, want 400", status, body)
+	}
+	current, err := events.CreateSession(ctx, event.Session{
+		EventDayID: day.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, body := send(fiber.MethodPut, "/v1/sessions/"+current.ID.String(),
+		`{"title":"Talk","speakerName":"Ada","sessionType":"PRESENTATION",`+badTiming+`}`,
+	); status != fiber.StatusBadRequest {
+		t.Fatalf("update with invalid timing: status %d body %s, want 400", status, body)
 	}
 }

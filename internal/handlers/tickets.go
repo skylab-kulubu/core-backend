@@ -1,21 +1,25 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
+	"log"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
 type TicketHandler struct {
-	svc ticket.Service
+	svc    ticket.Service
+	logger *log.Logger
 }
 
 func NewTicketHandler(svc ticket.Service) *TicketHandler {
-	return &TicketHandler{svc: svc}
+	return &TicketHandler{svc: svc, logger: log.Default()}
 }
 
 type guestBody struct {
@@ -164,6 +168,86 @@ func (h *TicketHandler) ApplyGuest(c fiber.Ctx) error {
 		return c.Status(fiber.StatusCreated).JSON(guestApplied{Status: "applied"})
 	}
 	return c.Status(fiber.StatusCreated).JSON(applied.Ticket)
+}
+
+type formResponseBody struct {
+	ResponseID uuid.UUID  `json:"responseId"`
+	Status     string     `json:"status"`
+	UserID     *uuid.UUID `json:"userId"`
+	Guest      *guestBody `json:"guest"`
+}
+
+// RecordFormResponse takes the forms service's report of an answer to one of
+// its forms (docs/form-response-tickets.md). The answer is 204 whether or not
+// an Event lists the form: the forms service only needs to know it may stop
+// sending the report. A caller who may not report is refused before the
+// request is read, so a malformed request from them is 403 too.
+func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	if !h.svc.CanRecordFormResponse(p) {
+		return ticketError(c, ticket.ErrForbidden)
+	}
+	formID, err := uuid.Parse(c.Params("formId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body formResponseBody
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	r := ticket.FormResponse{
+		FormID:     formID,
+		ResponseID: body.ResponseID,
+		Status:     ticket.FormResponseStatus(body.Status),
+		UserID:     body.UserID,
+	}
+	if body.Guest != nil {
+		r.Guest = &ticket.GuestInfo{FirstName: body.Guest.FirstName, LastName: body.Guest.LastName, Email: body.Guest.Email}
+	}
+	result, err := h.svc.RecordFormResponse(c.Context(), p, r)
+	h.logFormResponse(c, r, result, err)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// logFormResponse writes one JSON line per report core reads: the request's
+// correlation id, the form, the answer's id in Forms, the reported status,
+// how the report ended and how many Tickets it wrote. Who answered (the
+// userId, a guest's name or e-mail) never appears, nor does err.
+func (h *TicketHandler) logFormResponse(c fiber.Ctx, r ticket.FormResponse, result ticket.FormResponseResult, err error) {
+	if h.logger == nil {
+		return
+	}
+	status := string(r.Status)
+	switch r.Status {
+	case ticket.FormResponsePending, ticket.FormResponseAccepted, ticket.FormResponseDeclined:
+	default:
+		status = "unknown"
+	}
+	outcome := string(result.Outcome)
+	switch {
+	case errors.Is(err, ticket.ErrInvalid):
+		outcome = "invalid"
+	case err != nil:
+		outcome = "failed"
+	}
+	payload, marshalErr := json.Marshal(struct {
+		Event          string `json:"event"`
+		CorrelationID  string `json:"correlation_id"`
+		FormID         string `json:"form_id"`
+		ResponseID     string `json:"response_id"`
+		Status         string `json:"status"`
+		Outcome        string `json:"outcome"`
+		TicketsWritten int    `json:"tickets_written"`
+	}{"form_response", requestid.FromContext(c), r.FormID.String(), r.ResponseID.String(), status, outcome, result.TicketsWritten})
+	if marshalErr == nil {
+		h.logger.Print(string(payload))
+	}
 }
 
 func (h *TicketHandler) Mine(c fiber.Ctx) error {

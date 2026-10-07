@@ -697,8 +697,11 @@ func (s *service) RestoreSession(ctx context.Context, p authz.Principal, id uuid
 	if ev.ArchivedAt != nil || day.ArchivedAt != nil {
 		return Session{}, ErrConflict
 	}
-	if err := validateSession(existing); err != nil {
-		return Session{}, err
+	// The archived row is not the caller's input: a Session written before
+	// today's rules (its end before its start) conflicts with them, as an
+	// archived parent does.
+	if validateSession(existing) != nil {
+		return Session{}, ErrConflict
 	}
 	if err := s.store.RestoreSession(ctx, id); err != nil {
 		return Session{}, err
