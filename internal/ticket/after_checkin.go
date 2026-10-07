@@ -44,8 +44,12 @@ func (a *afterCheckIn) ApplyGuest(ctx context.Context, p authz.Principal, eventI
 	return a.inner.ApplyGuest(ctx, p, eventID, g)
 }
 
-func (a *afterCheckIn) RecordFormResponse(ctx context.Context, p authz.Principal, r FormResponse) error {
+func (a *afterCheckIn) RecordFormResponse(ctx context.Context, p authz.Principal, r FormResponse) (FormResponseResult, error) {
 	return a.inner.RecordFormResponse(ctx, p, r)
+}
+
+func (a *afterCheckIn) CanRecordFormResponse(p authz.Principal) bool {
+	return a.inner.CanRecordFormResponse(p)
 }
 
 func (a *afterCheckIn) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error) {

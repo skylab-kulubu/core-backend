@@ -26,8 +26,17 @@ hold.
 | `guest` | `{ firstName, lastName, email }` a guest typed into the form's identity fields |
 
 The answer is `204` whether or not an Event lists the form. A pending or
-declined report is not read further. `400` is a malformed accepted report: an
-unknown `status`, or a `guest` without a first name, last name or e-mail.
+declined report is not read further. Core neither stores nor logs a report
+that no Event lists: it writes nothing for it, and the report's log line
+(below) carries only ids, the status and the outcome, never who answered.
+
+| Answer | Meaning for Forms |
+|---|---|
+| `204` | done; stop sending the report |
+| `400` | a malformed report: a form id or body core cannot read, an unknown `status`, a zero `userId`, or a `guest` without a first name, last name or e-mail; sending it again will not help |
+| `401` | no valid token |
+| `403` | the token is not the forms service account's with `ticket:forms`; core refuses it before reading the request, so a malformed report from such a caller is `403` too |
+| `5xx` | core could not finish; send the report again |
 
 ## What a report writes
 
@@ -55,6 +64,15 @@ seven days, so reports sent before this route or the role existed arrive once
 they do. For the same reason Forms must drop the queued reports of a person it
 erases: a guest report delivered after account erasure would write the guest
 Ticket again.
+
+## Log
+
+Core writes one JSON line per report it reads (`"event":"form_response"`):
+`correlation_id`, `form_id`, `response_id`, `status` (`unknown` for a value
+other than the three), `outcome` and `tickets_written` (new Tickets only).
+`outcome` is `recorded`, `not_accepted`, `no_respondent`, `not_listed`,
+`person_unavailable`, `invalid` or `failed`. The line never carries the
+`userId`, a name or an e-mail.
 
 ## Setup
 

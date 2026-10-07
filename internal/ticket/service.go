@@ -23,7 +23,8 @@ type Service interface {
 	ListDoorEvents(ctx context.Context, p authz.Principal) ([]event.Resource, error)
 	SearchDoorAttendees(ctx context.Context, p authz.Principal, eventID uuid.UUID, query string) ([]DoorAttendee, error)
 	ApplyGuest(ctx context.Context, p authz.Principal, eventID uuid.UUID, g GuestInfo) (GuestApplication, error)
-	RecordFormResponse(ctx context.Context, p authz.Principal, r FormResponse) error
+	RecordFormResponse(ctx context.Context, p authz.Principal, r FormResponse) (FormResponseResult, error)
+	CanRecordFormResponse(p authz.Principal) bool
 	Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 	ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Ticket, error)
 	Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
