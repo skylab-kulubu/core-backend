@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -1237,21 +1238,35 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 	return apply(ctx, conn)
 }
 
+// lockRetry is how often a replica that found LockName taken tries again.
+const lockRetry = 500 * time.Millisecond
+
 // lock takes LockName, waiting for another replica's migrations when it is
-// taken.
+// taken. It waits by trying again (pg_try_advisory_lock), never inside
+// pg_advisory_lock: a session blocked there is a transaction still open,
+// and a CREATE INDEX CONCURRENTLY of the replica holding the lock waits for
+// every open transaction to end, so the two would wait on each other
+// (deadlock detected, SQLSTATE 40P01; TestTwoReplicasApplyAtOnce).
 func lock(ctx context.Context, conn *pgx.Conn) error {
-	var got bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, LockName).Scan(&got); err != nil {
-		return fmt.Errorf("migrate: lock: %w", err)
+	waiting := false
+	for {
+		var got bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, LockName).Scan(&got); err != nil {
+			return fmt.Errorf("migrate: lock: %w", err)
+		}
+		if got {
+			return nil
+		}
+		if !waiting {
+			log.Printf("migrate: waiting for another replica's migrations")
+			waiting = true
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("migrate: lock: %w", ctx.Err())
+		case <-time.After(lockRetry):
+		}
 	}
-	if got {
-		return nil
-	}
-	log.Printf("migrate: waiting for another replica's migrations")
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, LockName); err != nil {
-		return fmt.Errorf("migrate: lock: %w", err)
-	}
-	return nil
 }
 
 func apply(ctx context.Context, conn *pgx.Conn) error {

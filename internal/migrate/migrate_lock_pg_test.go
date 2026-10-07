@@ -37,27 +37,17 @@ func TestApplyWaitsWhileAnotherReplicaMigrates(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	other := secondPool(t, pool)
 	done := make(chan error, 1)
-	go func() { done <- migrate.Apply(ctx, secondPool(t, pool)) }()
+	go func() { done <- migrate.Apply(ctx, other) }()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var waiting int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting == 1 {
-			break
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("Apply did not wait for the lock: %v", err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Apply never asked for the lock")
-		}
-		time.Sleep(50 * time.Millisecond)
+	// Long enough for an Apply that does not wait to have created
+	// schema_migrations; it waits by trying again, so pg_locks shows no
+	// waiter.
+	select {
+	case err := <-done:
+		t.Fatalf("Apply did not wait for the lock: %v", err)
+	case <-time.After(2 * time.Second):
 	}
 	var table *string
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.schema_migrations')::text`).Scan(&table); err != nil {
@@ -91,7 +81,10 @@ func TestApplyWaitsWhileAnotherReplicaMigrates(t *testing.T) {
 
 // Two replicas starting at once on an empty database both come up: one
 // migrates, the other waits and then finds every version recorded, instead
-// of racing it into a deadlock or a duplicate object and a restart.
+// of racing it into a deadlock or a duplicate object and a restart. The
+// waiters must not sit in pg_advisory_lock meanwhile: the migrating
+// replica's CREATE INDEX CONCURRENTLY would wait for their open
+// transactions and Postgres would report a deadlock.
 func TestTwoReplicasApplyAtOnce(t *testing.T) {
 	pool := postgresPool(t)
 	ctx := context.Background()
