@@ -969,6 +969,57 @@ func (k *Keycloak) GroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group
 	}
 }
 
+// EffectiveClientRoles answers the names of the roles of the Keycloak client
+// clientID that the person holds in effect: directly, through their Groups
+// and the Groups above them, and through composite roles. It is Keycloak's
+// GET /users/{id}/role-mappings/clients/{client}/composite, the roles a token
+// for that client carries. A client the realm does not have, or a person it
+// does not know, is ErrNotFound. Any other failure is an error, never an
+// empty list, and no error names the person.
+//
+// It needs view-clients or query-clients (the client's id) and view-users
+// (the person's role mappings); service-account-core holds them
+// (docs/keycloak-admin-permissions.md). Without them it fails with 403.
+func (k *Keycloak) EffectiveClientRoles(ctx context.Context, userID uuid.UUID, clientID string) ([]string, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	clientUUID, err := k.clientUUID(ctx, token, clientID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("identity: keycloak client lookup failed: %w", err)
+	}
+	var roles []*gocloak.Role
+	resp, err := k.gc.GetRequestWithBearerAuth(ctx, token).
+		SetResult(&roles).
+		Get(k.adminBase + "/admin/realms/" + url.PathEscape(k.realm) + "/users/" + userID.String() +
+			"/role-mappings/clients/" + url.PathEscape(clientUUID) + "/composite")
+	if err != nil {
+		// The transport error quotes the address; keep only its cause.
+		var addressed *url.Error
+		if errors.As(err, &addressed) {
+			err = addressed.Err
+		}
+		return nil, fmt.Errorf("identity: keycloak effective client roles request failed: %w", err)
+	}
+	switch {
+	case resp.StatusCode() == http.StatusNotFound:
+		return nil, ErrNotFound
+	case resp.IsError():
+		return nil, fmt.Errorf("identity: keycloak effective client roles failed with status %d", resp.StatusCode())
+	}
+	out := make([]string, 0, len(roles))
+	for _, role := range roles {
+		if role != nil && role.Name != nil {
+			out = append(out, *role.Name)
+		}
+	}
+	return out, nil
+}
+
 func (k *Keycloak) GroupClientRoles(ctx context.Context, groupID string) ([]ClientRole, error) {
 	token, err := k.accessToken(ctx)
 	if err != nil {

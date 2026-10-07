@@ -33,7 +33,7 @@ func TestCatalogue_GuestAnswerFilesAreSkyformsOwnUploads(t *testing.T) {
 	if guest.Visibility != media.VisibilityPrivate || !guest.Encrypted || !guest.Scan || guest.Transport != media.TransportSingleStep {
 		t.Errorf("visibility %s, encrypted %v, scan %v, transport %s", guest.Visibility, guest.Encrypted, guest.Scan, guest.Transport)
 	}
-	if !slices.Equal(guest.Types, []string{"application/pdf", "image/jpeg", "image/png"}) || guest.MaxBytes != 10<<20 {
+	if !slices.Equal(guest.Types, []string{"application/pdf", "image/jpeg", "image/png"}) || guest.MaxBytes != 50<<20 {
 		t.Errorf("types %v, max %d bytes", guest.Types, guest.MaxBytes)
 	}
 	if !guest.Image.Reencode || guest.Image.MaxDimension != 2560 || guest.PendingTTL.Hours() != 24 {
@@ -78,9 +78,9 @@ func TestService_SkyformsUploadsAGuestAnswerFileWithNoUploader(t *testing.T) {
 	if _, err := pm.svc.UploadForPurpose(ctx, formsService, media.PurposeAnswerFileGuest, uploaded("cv.docx", docxMIME, docxFile(t))); !errors.Is(err, media.ErrTypeNotAllowed) {
 		t.Errorf("DOCX: err = %v, want %v", err, media.ErrTypeNotAllowed)
 	}
-	large := append(pdfFile(), make([]byte, 10<<20)...)
+	large := append(pdfFile(), make([]byte, 50<<20)...)
 	if _, err := pm.svc.UploadForPurpose(ctx, formsService, media.PurposeAnswerFileGuest, uploaded("big.pdf", "application/pdf", large)); !errors.Is(err, media.ErrTooLarge) {
-		t.Errorf("over 10 MiB: err = %v, want %v", err, media.ErrTooLarge)
+		t.Errorf("over 50 MiB: err = %v, want %v", err, media.ErrTooLarge)
 	}
 }
 

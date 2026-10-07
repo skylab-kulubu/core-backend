@@ -18,7 +18,7 @@ The point is to let the public edge refuse `/admin` on Keycloak's public name (K
 | --- | --- | --- |
 | Clients | `GET /clients` (by `clientId` and list), `GET /clients/{id}/roles`, `GET /clients/{id}/roles/{role}/users`, `GET /clients/{id}/roles/{role}/groups` | `view-clients` / `query-clients` (role holders also `query-users` / `query-groups`) |
 | Users | `GET /users`, `GET /users/{id}`, `POST /users`, `PUT /users/{id}`, `DELETE /users/{id}`, `GET /users/{id}/groups`, `PUT`/`DELETE /users/{id}/groups/{group}`, `POST /users/{id}/logout` | `manage-users` |
-| Role mappings | `GET /users/{id}/role-mappings`, `POST`/`DELETE /users/{id}/role-mappings/clients/{client}`, `GET /groups/{id}/role-mappings`, `POST`/`DELETE /groups/{id}/role-mappings/clients/{client}` | `manage-users` |
+| Role mappings | `GET /users/{id}/role-mappings`, `GET /users/{id}/role-mappings/clients/{client}/composite`, `POST`/`DELETE /users/{id}/role-mappings/clients/{client}`, `GET /groups/{id}/role-mappings`, `POST`/`DELETE /groups/{id}/role-mappings/clients/{client}` | `manage-users` |
 | Groups | `GET /groups`, `GET /groups/{id}`, `GET /groups/{id}/children`, `GET /group-by-path/{path}`, `GET /groups/{id}/members`, `POST /groups`, `POST /groups/{id}/children`, `PUT /groups/{id}` | `manage-users` / `query-groups` |
 
 Core never writes under `/clients`.
@@ -36,6 +36,10 @@ The roles that stand for the Privileged Groups (`event:manage`, `season:manage`,
 ## Dashboard summary
 
 The Members section of `GET /v1/dashboard/summary` reads the `UYELER` tree: `GET /group-by-path/UYELER`, then `GET /groups/{id}/children` and `GET /groups/{id}/members` for each Group in it, about `1 + 2 × G` requests for `G` Groups. One read serves every caller for 5 minutes, runs one at a time with a 5 s limit, a failure stops new reads for 30 s, and only people who may read people trigger it. Nothing new is needed: these are the Group reads of the rosters. See [`dashboard-summary.md`](dashboard-summary.md).
+
+## Editable sites
+
+`editableSites` in `GET /v1/users/me/capabilities` ([`authz-roles.md`](authz-roles.md#editable-sites)) reads, for each site of `CMS_SITES`, the client's id (`GET /clients?clientId=`, kept for the life of the process) and the person's effective roles on it (`GET /users/{id}/role-mappings/clients/{client}/composite`): `1 × S` requests per person a minute for `S` sites, plus one `GET /clients` per site once. Keycloak authorizes the first with `view-clients` or `query-clients` and the second with `view-users`; `service-account-core` holds both, so nothing new is needed. If they are ever taken away the calls answer `403`, the sites are left out, the capabilities answer is still `200`, and the log line says `"outcome":"unavailable"` with the status.
 
 ## Group count report
 

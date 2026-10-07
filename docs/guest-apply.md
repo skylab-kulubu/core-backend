@@ -37,6 +37,10 @@ that calls core):
 
 sky-app, the site and the other products do not call it.
 
+The forms row goes away with the Forms version that reports its answers to
+`POST /v1/forms/{formId}/responses`: core then writes a form answer's Ticket
+itself ([form-response-tickets.md](form-response-tickets.md)).
+
 ### Where forms comes from
 
 The forms hop must reach core from inside `TRUSTED_PROXY_RANGES`, or it is
@@ -92,9 +96,10 @@ Two applications for one new e-mail at the same moment (a double submit)
 write one Ticket: the one that loses the race finds the other's and is
 answered as for an existing guest.
 
-Until the forms hop sends its service token (below) it is not trusted, so a
-guest who sends the form again with another name keeps the first name. An
-operator can correct it from the Event hub.
+The forms hop is not trusted, and neither are the form reports that replace it
+([form-response-tickets.md](form-response-tickets.md)), so a guest who sends
+the form again with another name keeps the first name. An operator can correct
+it from the Event hub.
 
 Errors: `400` for a body without the required fields, `404` for an unknown
 Event, `429` (below), for every caller. A token holder can also get `401` (a
@@ -167,12 +172,13 @@ the request. It never carries an e-mail, a name, a phone number, an address or t
 
 1. **Now:** no request is refused for want of a token; the counters show who
    calls.
-2. **Keycloak and forms:** a `core` client role for Guest apply is given to the
-   forms service account, and forms sends its service token on this call as on
-   its other core calls. Forms requests move from `anonymous_internal` to
-   `service`, and forms can correct a guest's name again.
-3. **Enforce:** a setting makes a request without a token `401`, a person who
-   is not an operator `403`, and a service account without the role `403`.
+2. **Forms leaves:** forms reports its answers to
+   `POST /v1/forms/{formId}/responses` with its service token and the
+   `ticket:forms` role instead of calling this route
+   ([form-response-tickets.md](form-response-tickets.md)), so
+   `anonymous_internal` stops counting form answers.
+3. **Enforce:** a setting makes a request without a token `401` and a person
+   who is not an operator `403`.
    It is switched on in sandbox first, then in production once
    `skylab_guest_apply_anonymous_public_total` and
    `skylab_guest_apply_anonymous_internal_total` have stayed unchanged for
