@@ -91,6 +91,7 @@ type world struct {
 	gCertified, gNoAnchor, gArchived, gMid, gDays, gStart    uuid.UUID
 	gRecent, memberTicket, certificate, checkIn              uuid.UUID
 	hitDue, hitScrubbed, hitYoung, hitFresh, hitUTMOnly      uuid.UUID
+	hitChannel, hitChannelYoung                              uuid.UUID
 	link                                                     uuid.UUID
 }
 
@@ -100,7 +101,7 @@ var personal = []string{
 	"pending@example.com", "cert@example.com", "Cert Person", "noanchor@example.com", "archived@example.com",
 	"mid@example.com", "days@example.com", "start@example.com", "recent@example.com", "+90555",
 	"203.0.113.", "198.51.100.", "Mozilla/5.0 (Fixture)", "/private/path", "secret-token", "member@example.com",
-	"ada.campaign@example.com", "21011042", "Lovelace UTM",
+	"ada.campaign@example.com", "21011042", "Lovelace UTM", "ada.source@example.com", "Lovelace Medium",
 }
 
 func seed(t *testing.T, pool *pgxpool.Pool) world {
@@ -206,6 +207,14 @@ func seed(t *testing.T, pool *pgxpool.Pool) world {
 	w.hitUTMOnly = hit(400*day, "", "", "https://example.com", false, "", "21011042", "")
 	w.hitYoung = hit(100*day, "203.0.113.8", "Mozilla/5.0 (Fixture)", "https://example.com/private/path", true, "", "21011042", "")
 	w.hitFresh = hit(10*day, "203.0.113.9", "Mozilla/5.0 (Fixture)", "", false, "", "", "")
+	// A source and medium the visitor typed, no channel the statistics know:
+	// after a year they become "other" (v3); a known one in another spelling
+	// becomes its usual one. A young click keeps what it was given.
+	w.hitChannel = hit(400*day, "", "", "https://example.com", false, "", "", "")
+	exec(t, pool, `UPDATE url_hits SET utm_source = 'ada.source@example.com', utm_medium = 'Lovelace Medium' WHERE id = $1`, w.hitChannel)
+	w.hitChannelYoung = hit(100*day, "", "", "https://example.com", false, "", "", "")
+	exec(t, pool, `UPDATE url_hits SET utm_source = 'ada.source@example.com', utm_medium = 'QR' WHERE id = $1`, w.hitChannelYoung)
+	exec(t, pool, `UPDATE url_hits SET utm_source = 'IG', utm_medium = 'QR' WHERE id = $1`, w.hitUTMOnly)
 
 	mediaID := uuid.New()
 	exec(t, pool, `INSERT INTO media (id, file_name, file_type, file_url, file_size, uploaded_by, kind)
@@ -230,7 +239,7 @@ func state(t *testing.T, pool *pgxpool.Pool) string {
 		(SELECT string_agg(concat_ws('|', id, guest_first_name, guest_last_name, guest_email, guest_phone_number, updated_at), E'\n' ORDER BY id) FROM tickets),
 		(SELECT string_agg(concat_ws('|', id, recipient_name, recipient_email, serial), E'\n' ORDER BY id) FROM certificates),
 		(SELECT string_agg(concat_ws('|', event_id, user_id), E'\n' ORDER BY event_id) FROM event_door_staff),
-		(SELECT string_agg(concat_ws('|', id, ip, user_agent, referer, user_id, utm_campaign, utm_term, utm_content), E'\n' ORDER BY id) FROM url_hits),
+		(SELECT string_agg(concat_ws('|', id, ip, user_agent, referer, user_id, utm_source, utm_medium, utm_campaign, utm_term, utm_content), E'\n' ORDER BY id) FROM url_hits),
 		(SELECT string_agg(concat_ws('|', link_id, opened_at, client_ip), E'\n' ORDER BY client_ip) FROM media_read_link_opens),
 		(SELECT count(*)::text FROM ticket_checkins))`)
 }
@@ -286,7 +295,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 		t.Fatalf("the dry run changed rows:\n%s\n---\n%s", before, after)
 	}
 	audits := map[string]counts{
-		"url_hits_age":           {4, 0, 0, 4, 0, retention.RuleOK},
+		"url_hits_age":           {6, 0, 0, 6, 0, retention.RuleOK},
 		"read_links_age":         {1, 0, 0, 1, 0, retention.RuleOK},
 		"read_link_opens_age":    {2, 0, 0, 2, 0, retention.RuleOK},
 		"mail_snapshots_age":     {1, 0, 0, 1, 0, retention.RuleOK},
@@ -299,10 +308,11 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 		// start. The Event without a date is counted, not changed.
 		"guest_phone": {9, 0, 0, 9, 1, retention.RuleDryRun},
 		// Identities two years past the person's latest Event: old, no
-		// e-mail (its own Event), certified, archived Event.
-		"guest_identity": {4, 0, 0, 4, 1, retention.RuleDryRun},
+		// e-mail (its own Event), certified, archived Event. The Event
+		// without a date is dated by the Ticket, taken today.
+		"guest_identity": {4, 0, 0, 4, 0, retention.RuleDryRun},
 		"door_staff":     {2, 0, 0, 2, 1, retention.RuleDryRun},
-		"url_hits_scrub": {2, 0, 0, 2, 0, retention.RuleDryRun},
+		"url_hits_scrub": {3, 0, 0, 3, 0, retention.RuleDryRun},
 		"read_link_ip":   {1, 0, 0, 1, 0, retention.RuleDryRun},
 	}
 	for name, c := range audits {
@@ -319,9 +329,9 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	}
 	applied := map[string]counts{
 		"guest_phone":    {9, 9, 0, 0, 1, retention.RuleOK},
-		"guest_identity": {4, 4, 1, 0, 1, retention.RuleOK},
+		"guest_identity": {4, 4, 1, 0, 0, retention.RuleOK},
 		"door_staff":     {2, 2, 0, 0, 1, retention.RuleOK},
-		"url_hits_scrub": {2, 2, 0, 0, 0, retention.RuleOK},
+		"url_hits_scrub": {3, 3, 0, 0, 0, retention.RuleOK},
 		"read_link_ip":   {1, 1, 0, 0, 0, retention.RuleOK},
 	}
 	for name, c := range audits {
@@ -383,6 +393,12 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 			t.Fatalf("scrubbed hit %q", got)
 		}
 	}
+	if got := hit(w.hitChannel); got != "||https://example.com|null|other|other||||fixture" {
+		t.Fatalf("scrubbed channel %q", got)
+	}
+	if got := hit(w.hitChannelYoung); got != "||https://example.com|null|ada.source@example.com|QR||||fixture" {
+		t.Fatalf("young channel %q", got)
+	}
 	if got := hit(w.hitYoung); got != "203.0.113.8|Mozilla/5.0 (Fixture)|https://example.com/private/path|"+w.member.String()+"|instagram|qr||21011042||fixture" {
 		t.Fatalf("young hit %q", got)
 	}
@@ -422,7 +438,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	if got := scalar[string](t, pool, `SELECT string_agg(mode || ':' || status || ':' || triggered_by, ',' ORDER BY started_at, mode DESC) FROM retention_runs`); got != "dry-run:ok:schedule,apply:ok:schedule,apply:ok:schedule" {
 		t.Fatalf("runs %q", got)
 	}
-	if !strings.Contains(log.text(), "retention_rule rule=guest_identity version=2 mode=apply status=ok cutoff=2024-10-05T12:00:00Z matched=4 changed=4 related=1 overdue=0 anchorless=1 code=-") {
+	if !strings.Contains(log.text(), "retention_rule rule=guest_identity version=3 mode=apply status=ok cutoff=2024-10-05T12:00:00Z matched=4 changed=4 related=1 overdue=0 anchorless=0 code=-") {
 		t.Fatalf("log:\n%s", log.text())
 	}
 }
@@ -1115,8 +1131,8 @@ func TestMaintainRunsWhenDue(t *testing.T) {
 // account whose e-mail or school e-mail is the guest's address count as
 // their Events, so an active member's earlier guest Tickets keep their name
 // and address. A member whose latest Event is two years past, or a guest
-// with no account, is not kept; a member Ticket on an undated Event leaves
-// the person undated.
+// with no account, is not kept; a member Ticket on an undated Event dates
+// the person by when it was taken (v3), here today.
 func TestGuestWhoBecameAMemberIsDatedByTheirAccountsEvents(t *testing.T) {
 	pool := migrated(t)
 	ctx := context.Background()
@@ -1148,11 +1164,71 @@ func TestGuestWhoBecameAMemberIsDatedByTheirAccountsEvents(t *testing.T) {
 
 	now := testNow
 	report, err := sweeper(pool, dryRunConfig(), &now, nil).Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerCLI, Rule: "guest_identity"})
-	if err != nil || len(report.Rules) != 1 || report.Rules[0].Changed != 2 || report.Rules[0].Anchorless != 1 {
+	if err != nil || len(report.Rules) != 1 || report.Rules[0].Changed != 2 || report.Rules[0].Anchorless != 0 {
 		t.Fatalf("%v %+v", err, report.Rules)
 	}
 	for id, kept := range map[uuid.UUID]bool{byEmail: true, bySchool: true, lapsed: false, plain: false, undatedMember: true} {
 		if got := scalar[string](t, pool, `SELECT guest_email FROM tickets WHERE id = $1`, id) != ""; got != kept {
+			t.Errorf("ticket %s kept %v, want %v", id, got, kept)
+		}
+	}
+}
+
+// An Event without a date (no end, no day, no start) is dated, for a
+// person's identity, by when each Ticket on it was taken (v3). A member who
+// registered for such an Event long ago no longer holds their earlier guest
+// Tickets forever (they were only counted as anchorless before); one who
+// registered recently still does. A guest Ticket on such an Event, with or
+// without an address, goes two years after it was taken. guest_identity has
+// nothing it cannot date any more; guest_phone still counts such phones
+// and leaves them.
+func TestGuestIdentityDatesAnUndatedEventByItsRegistration(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	old, undated := uuid.New(), uuid.New()
+	exec(t, pool, `INSERT INTO events (id, name, location, owner_team, end_date) VALUES ($1, 'old', 'YTÜ', 'SKY LAB', $2)`, old, at(800*day))
+	exec(t, pool, `INSERT INTO events (id, name, location, owner_team) VALUES ($1, 'undated', 'YTÜ', 'SKY LAB')`, undated)
+	guest := func(eventID uuid.UUID, email string, taken *time.Time) uuid.UUID {
+		id := uuid.New()
+		exec(t, pool, `INSERT INTO tickets (id, event_id, ticket_type, guest_first_name, guest_email, guest_phone_number, created_at)
+			VALUES ($1, $2, 'GUEST', 'Guest', $3, '+905551112233', $4)`, id, eventID, email, taken)
+		return id
+	}
+	member := func(email string, taken *time.Time) {
+		id := uuid.New()
+		exec(t, pool, `INSERT INTO users (id, email) VALUES ($1, $2)`, id, email)
+		exec(t, pool, `INSERT INTO tickets (id, event_id, ticket_type, owner_id, created_at) VALUES ($1, $2, 'REGISTERED', $3, $4)`, uuid.New(), undated, id, taken)
+	}
+	longAgo, lately := at(3*365*day), at(10*day)
+	memberLongAgo := guest(old, "long.ago@example.com", at(801*day))
+	member("long.ago@example.com", longAgo)
+	memberLately := guest(old, "lately@example.com", at(801*day))
+	member("lately@example.com", lately)
+	guestLongAgo := guest(undated, "undated.old@example.com", longAgo)
+	guestLately := guest(undated, "undated.new@example.com", lately)
+	noAddressLongAgo := guest(undated, "", longAgo)
+	noAddressLately := guest(undated, "", lately)
+
+	now := testNow
+	s := sweeper(pool, dryRunConfig(), &now, nil)
+	dry, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeDryRun, Trigger: retention.TriggerCLI})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := results(dry)["guest_identity"]; r.Matched != 3 || r.Anchorless != 0 {
+		t.Fatalf("guest_identity %+v", r)
+	}
+	if r := results(dry)["guest_phone"]; r.Anchorless != 4 {
+		t.Fatalf("guest_phone %+v", r)
+	}
+	report, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerCLI, Rule: "guest_identity"})
+	if err != nil || len(report.Rules) != 1 || report.Rules[0].Changed != 3 || report.Rules[0].Anchorless != 0 {
+		t.Fatalf("%v %+v", err, report.Rules)
+	}
+	for id, kept := range map[uuid.UUID]bool{
+		memberLongAgo: false, memberLately: true, guestLongAgo: false, guestLately: true, noAddressLongAgo: false, noAddressLately: true,
+	} {
+		if got := scalar[string](t, pool, `SELECT guest_first_name FROM tickets WHERE id = $1`, id) != ""; got != kept {
 			t.Errorf("ticket %s kept %v, want %v", id, got, kept)
 		}
 	}

@@ -253,14 +253,29 @@ func TestMineAndWithdrawMineCoverTheIdentitysPersonalAddress(t *testing.T) {
 		t.Fatalf("withdraw mine %d %v", n, err)
 	}
 	// Keycloak unreachable: the person's list is refused rather than shown
-	// short, and nothing is withdrawn half-way.
+	// short. Their withdrawal ends what core reaches without Keycloak (the
+	// account's own grant, the grants for core's addresses) and still says
+	// it could not reach the rest, so the person tries again.
 	stranger := uuid.New()
 	f.exec(t, `INSERT INTO users (id, email) VALUES ($1, 's@example.com')`, stranger)
-	if _, err := f.svc.Mine(ctx, stranger); err == nil || strings.Contains(err.Error(), "s@example.com") {
+	if _, err := f.svc.Mine(ctx, stranger); !errors.Is(err, consent.ErrAddressesUnavailable) || strings.Contains(err.Error(), "s@example.com") {
 		t.Fatalf("mine without addresses: %v", err)
 	}
-	if _, err := f.svc.WithdrawMine(ctx, stranger, consent.PurposeEventInvitations); err == nil {
-		t.Fatal("withdraw mine without addresses went on")
+	for _, g := range []consent.Grant{
+		{Purpose: consent.PurposeEventInvitations, UserID: stranger, Source: consent.SourceSelf},
+		{Purpose: consent.PurposeEventInvitations, Email: "s@example.com", Source: consent.SourceGuessr, ClientID: "guessr", EmailVerified: true},
+		{Purpose: consent.PurposeEventInvitations, Email: "s.personal@example.org", Source: consent.SourceGuessr, ClientID: "guessr", EmailVerified: true},
+	} {
+		if _, err := f.svc.Grant(ctx, g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := f.svc.WithdrawMine(ctx, stranger, consent.PurposeEventInvitations)
+	if !errors.Is(err, consent.ErrAddressesUnavailable) || n != 2 {
+		t.Fatalf("withdraw mine without addresses: %d %v", n, err)
+	}
+	if f.count(t, `ended_at IS NULL AND email = 's.personal@example.org'`) != 1 {
+		t.Fatal("a grant core cannot tie to the person without Keycloak was ended")
 	}
 }
 

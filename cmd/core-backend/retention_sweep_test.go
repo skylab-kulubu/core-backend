@@ -69,7 +69,7 @@ func TestRetentionSweepPrintsCountsAndExitsByOutcome(t *testing.T) {
 		t.Fatalf("options %+v", runner.got)
 	}
 	for _, want := range []string{
-		"retention-sweep: dry run, nothing was changed (rule set v2, schedule RETENTION_SWEEP_MODE=dry-run)",
+		"retention-sweep: dry run, nothing was changed (rule set v3, schedule RETENTION_SWEEP_MODE=dry-run)",
 		"guest_phone   1  sweep  scrub   tickets   2026-07-07T12:00:00Z  12       0        0        10       1           5000        dry_run",
 		"url_hits_age: not applicable: click rows are kept in apply mode",
 		"run 6f0b8c4e-2a7d-4d0e-9a51-1f0c2b3d4e5f: ok",

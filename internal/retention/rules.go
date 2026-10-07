@@ -1,6 +1,12 @@
 package retention
 
-import "time"
+import (
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+)
 
 const day = 24 * time.Hour
 
@@ -12,8 +18,9 @@ const (
 	// or not.
 	GuestPhonePeriod = 90 * day
 	// GuestIdentityPeriod: a guest's name and address (with their
-	// certificate's address), the person's latest Event's end + 2 years,
-	// unless they hold an active invitation consent.
+	// certificate's address), the person's latest Event's end + 2 years
+	// (an Event without a date: the Ticket's registration), unless they hold
+	// an active invitation consent.
 	GuestIdentityPeriod = 2 * 365 * day
 	// DoorStaffPeriod: an Event's door staff, its end + 90 days.
 	DoorStaffPeriod = 90 * day
@@ -72,27 +79,26 @@ const guestIdentityHeldSQL = `(t.guest_first_name <> '' OR t.guest_last_name <> 
 const guestPersonSQL = `lower(btrim(t.guest_email))`
 
 // personTicketsSQL is every Ticket of a person known by an address, as
-// (person, event_id): the guest Tickets of the address, and the Tickets of
-// the account whose e-mail or school e-mail it is, trimmed and lower-cased
-// alike (a guest who later became a member is one person, ADR-0062).
-const personTicketsSQL = `SELECT lower(btrim(pt.guest_email)) AS person, pt.event_id FROM tickets pt
+// (person, event_id, registered): the guest Tickets of the address, and the
+// Tickets of the account whose e-mail or school e-mail it is, trimmed and
+// lower-cased alike (a guest who later became a member is one person,
+// ADR-0062), with when each was taken.
+const personTicketsSQL = `SELECT lower(btrim(pt.guest_email)) AS person, pt.event_id, pt.created_at AS registered FROM tickets pt
 		WHERE pt.owner_id IS NULL AND btrim(pt.guest_email) <> ''
-	UNION ALL SELECT lower(btrim(pu.email)), mt.event_id FROM tickets mt JOIN users pu ON pu.id = mt.owner_id
+	UNION ALL SELECT lower(btrim(pu.email)), mt.event_id, mt.created_at FROM tickets mt JOIN users pu ON pu.id = mt.owner_id
 		WHERE btrim(pu.email) <> ''
-	UNION ALL SELECT lower(btrim(pu.school_email)), mt.event_id FROM tickets mt JOIN users pu ON pu.id = mt.owner_id
+	UNION ALL SELECT lower(btrim(pu.school_email)), mt.event_id, mt.created_at FROM tickets mt JOIN users pu ON pu.id = mt.owner_id
 		WHERE btrim(pu.school_email) <> ''`
 
-// guestPeopleSQL groups those Tickets by person, with when each of their
-// Events ended. guestPeopleDueSQL keeps the people whose every Event can be
-// dated and whose latest one ended before the cutoff $1;
-// guestPeopleAnchorlessSQL the people with an Event that cannot be dated.
-// Each is computed once per statement (a hashed set), not per Ticket.
-var (
-	guestPeopleSQL = `SELECT pp.person FROM (` + personTicketsSQL + `) pp JOIN ` + eventEndsSQL + ` pe ON pe.id = pp.event_id
-		GROUP BY pp.person`
-	guestPeopleDueSQL        = guestPeopleSQL + ` HAVING bool_and(pe.ended IS NOT NULL) AND max(pe.ended) < $1`
-	guestPeopleAnchorlessSQL = guestPeopleSQL + ` HAVING NOT bool_and(pe.ended IS NOT NULL)`
-)
+// guestPeopleDueSQL is the people whose latest Event ended before the cutoff
+// $1. An Event without a date counts from when the person's Ticket on it
+// was taken (guest_identity v3): it has no end, and the registration is the
+// last thing known of the person there. Before v3 such a person was never
+// due, only counted, which kept a member's old guest Tickets for good once
+// they had registered for one undated Event. Computed once per statement (a
+// hashed set), not per Ticket.
+var guestPeopleDueSQL = `SELECT pp.person FROM (` + personTicketsSQL + `) pp JOIN ` + eventEndsSQL + ` pe ON pe.id = pp.event_id
+		GROUP BY pp.person HAVING max(COALESCE(pe.ended, pp.registered)) < $1`
 
 // guestPendingCertificateSQL: a certificate is still being issued for the
 // Ticket, from the guest's name; the Ticket waits for it.
@@ -114,26 +120,52 @@ func refererOriginSQL(col string) string {
 	return `CASE WHEN ` + col + ` ~ '^[A-Za-z][A-Za-z0-9+.-]*://' THEN lower(substring(` + col + ` FROM '^([A-Za-z][A-Za-z0-9+.-]*://)')) || lower(COALESCE(substring(` + col + ` FROM '^[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#]*@)?(\[[^]/?#]*\]|[^/?#:@]*)'), '')) ELSE '' END`
 }
 
+// channelSQL is what a year-old click keeps of its source or medium col:
+// the channel of a spelling known (shorturl.KnownSources, KnownMediums),
+// "" for none, shorturl.OtherChannel for anything else (shorturl.KeptSource
+// and KeptMedium; a test holds them to the same answers). Every channel is
+// its own known spelling, so the result is its own fixed point.
+func channelSQL(col string, known map[string]string) string {
+	spellings := make([]string, 0, len(known))
+	for spelling := range known {
+		spellings = append(spellings, spelling)
+	}
+	slices.Sort(spellings)
+	var b strings.Builder
+	b.WriteString(`CASE lower(btrim(` + col + `)) WHEN '' THEN ''`)
+	for _, spelling := range spellings {
+		b.WriteString(` WHEN '` + spelling + `' THEN '` + known[spelling] + `'`)
+	}
+	b.WriteString(` ELSE '` + shorturl.OtherChannel + `' END`)
+	return b.String()
+}
+
 // hitPersonalSQL is a click row that still holds something personal: the
 // address, user agent or account, a free UTM field (campaign, term,
 // content: whatever the link's author or the visitor typed, an e-mail or a
-// student number as easily as a campaign name), or a referer longer than its
-// origin. p is the table alias with its dot, or "" in an index predicate.
-// url_hits_personal_at_idx is built on exactly this predicate
-// (urlHitsIndexMigration): a change here is a new index.
+// student number as easily as a campaign name), a source or medium that is
+// no known channel (v3: the same free text, in the fields the statistics
+// count), or a referer longer than its origin. p is the table alias with its
+// dot, or "" in an index predicate. url_hits_personal_at_v3_idx is built on
+// exactly this predicate (urlHitsIndexMigration): a change here is a new
+// index.
 func hitPersonalSQL(p string) string {
 	return `(` + p + `ip <> '' OR ` + p + `user_agent <> '' OR ` + p + `user_id IS NOT NULL OR ` + p + `utm_campaign <> '' OR ` +
-		p + `utm_term <> '' OR ` + p + `utm_content <> '' OR ` + p + `referer <> ` + refererOriginSQL(p+"referer") + `)`
+		p + `utm_term <> '' OR ` + p + `utm_content <> '' OR ` +
+		p + `utm_source <> ` + channelSQL(p+"utm_source", shorturl.KnownSources) + ` OR ` +
+		p + `utm_medium <> ` + channelSQL(p+"utm_medium", shorturl.KnownMediums) + ` OR ` +
+		p + `referer <> ` + refererOriginSQL(p+"referer") + `)`
 }
 
-// urlHitsIndexMigration builds url_hits_personal_at_idx: the click rows
-// hitPersonalSQL selects, by time.
-const urlHitsIndexMigration = "20261005140000_url_hits_personal_at_idx.up.sql"
+// urlHitsIndexMigration builds url_hits_personal_at_v3_idx: the click rows
+// hitPersonalSQL selects, by time. It replaced url_hits_personal_at_idx
+// (v2's predicate), which the next migration drops.
+const urlHitsIndexMigration = "20261007120000_url_hits_personal_at_v3_idx.up.sql"
 
 func sweepRules(s Schema) []Rule {
 	guestIdentityDue := guestTicketSQL + ` AND ` + guestIdentityHeldSQL + `
 	AND NOT ` + guestPendingCertificateSQL + `
-	AND CASE WHEN btrim(t.guest_email) = '' THEN ` + ticketEventEndSQL + ` < $1
+	AND CASE WHEN btrim(t.guest_email) = '' THEN COALESCE(` + ticketEventEndSQL + `, t.created_at) < $1
 		ELSE ` + guestPersonSQL + ` IN (` + guestPeopleDueSQL + `) END`
 	if s.ContactConsents {
 		guestIdentityDue += `
@@ -149,7 +181,12 @@ func sweepRules(s Schema) []Rule {
 		},
 		{
 			// v2: a member's own Events date their earlier guest Tickets.
-			Name: "guest_identity", Version: 2, Kind: KindSweep, Action: ActionScrub,
+			// v3: an Event without a date counts from the Ticket's
+			// registration, so the rule dates every row (no anchorless).
+			// guest_phone and door_staff still count such rows and leave
+			// them: a phone 90 days after registration could go before an
+			// undated Event even took place, and door staff have no date.
+			Name: "guest_identity", Version: 3, Kind: KindSweep, Action: ActionScrub,
 			Table: "tickets", RelatedTable: "certificates", alias: "t", key: "id", Period: GuestIdentityPeriod,
 			where: guestIdentityDue,
 			set:   `guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '', updated_at = now()`,
@@ -157,9 +194,6 @@ func sweepRules(s Schema) []Rule {
 			// verification record (ADR-0062). Only its address goes.
 			related: `UPDATE certificates gc SET recipient_email = '' FROM batch
 				WHERE gc.ticket_id = batch.k AND gc.owner_id IS NULL AND gc.recipient_email <> ''`,
-			anchorless: guestTicketSQL + ` AND ` + guestIdentityHeldSQL + `
-	AND CASE WHEN btrim(t.guest_email) = '' THEN ` + ticketEventEndSQL + ` IS NULL
-		ELSE ` + guestPersonSQL + ` IN (` + guestPeopleAnchorlessSQL + `) END`,
 		},
 		{
 			Name: "door_staff", Version: 1, Kind: KindSweep, Action: ActionDelete,
@@ -168,12 +202,16 @@ func sweepRules(s Schema) []Rule {
 			anchorless: `(SELECT ` + eventEndSQL("se") + ` FROM events se WHERE se.id = s.event_id) IS NULL`,
 		},
 		{
-			// v2: also the free UTM fields; source and medium are the
-			// channel the statistics count.
-			Name: "url_hits_scrub", Version: 2, Kind: KindSweep, Action: ActionScrub,
+			// v2: also the free UTM fields. v3: source and medium, the
+			// channel the statistics count, keep a known channel and become
+			// "other" otherwise.
+			Name: "url_hits_scrub", Version: 3, Kind: KindSweep, Action: ActionScrub,
 			Table: "url_hits", alias: "h", key: "id", Period: HitPersonalFieldsPeriod,
 			where: `h.at < $1 AND ` + hitPersonalSQL("h."),
-			set:   `ip = '', user_agent = '', user_id = NULL, utm_campaign = '', utm_term = '', utm_content = '', referer = ` + refererOriginSQL("h.referer"),
+			set: `ip = '', user_agent = '', user_id = NULL, utm_campaign = '', utm_term = '', utm_content = '', ` +
+				`utm_source = ` + channelSQL("h.utm_source", shorturl.KnownSources) + `, ` +
+				`utm_medium = ` + channelSQL("h.utm_medium", shorturl.KnownMediums) + `, ` +
+				`referer = ` + refererOriginSQL("h.referer"),
 		},
 		{
 			Name: "read_link_ip", Version: 1, Kind: KindSweep, Action: ActionScrub,

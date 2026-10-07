@@ -25,7 +25,8 @@ type Mailer interface {
 
 // AddressSource reads a person's addresses: what Keycloak holds (Primary,
 // School and Personal e-mail) with core's row, as account erasure reads them
-// (account.NewErasureAddresses). An error carries no address.
+// but without its limit of three (account.NewPersonAddresses). An error
+// carries no address.
 type AddressSource interface {
 	ErasureAddresses(context.Context, uuid.UUID) ([]string, error)
 }
@@ -306,6 +307,11 @@ func (s *Service) sendConfirmation(id uuid.UUID, g Grant) {
 
 // ErrDisabled is any consent operation while KeyEnv is unset.
 var ErrDisabled = errors.New("contact consent: off (" + KeyEnv + " is not set)")
+
+// ErrAddressesUnavailable is a person's own list or withdrawal while their
+// addresses cannot be read (Keycloak unreachable, core's row unreadable):
+// a passing failure, to be tried again.
+var ErrAddressesUnavailable = errors.New("contact consent: the person's addresses cannot be read now")
 
 // LinkOutcome is what a link did.
 type LinkOutcome string
@@ -823,7 +829,7 @@ func (s *Service) accountTarget(ctx context.Context, userID uuid.UUID, identity 
 	if identity && s.addresses != nil {
 		addresses, err := s.addresses.ErasureAddresses(ctx, userID)
 		if err != nil {
-			return mailedTo{}, fmt.Errorf("contact consent: the person's addresses: %w", err)
+			return mailedTo{}, fmt.Errorf("%w: %w", ErrAddressesUnavailable, err)
 		}
 		raw = addresses
 	} else {
@@ -904,7 +910,11 @@ func (s *Service) Mine(ctx context.Context, userID uuid.UUID) ([]Own, error) {
 
 // WithdrawMine ends a signed-in person's open grants of a purpose: their
 // account's, and every grant that mails one of their addresses, Keycloak's
-// Personal e-mail included.
+// Personal e-mail included. While their addresses cannot be read it ends at
+// once what core reaches without them (the account's own grant and the
+// grants for core's row's addresses) and returns how many with
+// ErrAddressesUnavailable: a grant for another of their addresses may still
+// be open, so the person tries again.
 func (s *Service) WithdrawMine(ctx context.Context, userID uuid.UUID, purpose Purpose) (int64, error) {
 	if !s.Enabled() {
 		return 0, ErrDisabled
@@ -913,6 +923,17 @@ func (s *Service) WithdrawMine(ctx context.Context, userID uuid.UUID, purpose Pu
 		return 0, err
 	}
 	target, err := s.accountTarget(ctx, userID, true)
+	if errors.Is(err, ErrAddressesUnavailable) {
+		known, knownErr := s.accountTarget(ctx, userID, false)
+		if knownErr != nil {
+			return 0, knownErr
+		}
+		n, endErr := s.endOpen(ctx, purpose, known, viaSelf, s.now())
+		if endErr != nil {
+			return n, endErr
+		}
+		return n, err
+	}
 	if err != nil {
 		return 0, err
 	}
