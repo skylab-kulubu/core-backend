@@ -254,6 +254,43 @@ func TestEachPersonHasTheirOwnUploadBudget(t *testing.T) {
 	requireRateLimited(t, postPDFAs(t, app, grace, 1024), "uploads", 10*time.Minute)
 }
 
+func TestAProductsServiceAccountIsChargedToTheServicesBudget(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	clock := newManualClock()
+	az := authz.NewAuthorizer(authz.DefaultPolicy())
+	clients := authz.ServiceClients{"forms": authz.ProductForms}
+	app := httpx.New(httpx.Deps{
+		Users: user.NewService(user.NewMemoryStore()),
+		Media: media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), az, "",
+			media.ServiceOptions{ServiceProducts: clients.Products()}),
+		ParseToken:     keys.Parse(),
+		ServiceClients: clients,
+		MediaUploadLimiter: media.NewUploadLimiter(media.UploadLimits{
+			Count: 1, CountWindow: 10 * time.Minute, DailyBytes: 1 << 30,
+		}, clock.Now),
+		MediaServiceUploadLimiter: media.NewUploadLimiter(media.UploadLimits{
+			Count: 3, CountWindow: 10 * time.Minute, DailyBytes: 1 << 30,
+		}, clock.Now),
+		TrustedProxies: testTrustedProxies(),
+	})
+	forms := serviceToken(t, keys, "forms", "media:attach")
+
+	for range 3 {
+		if got := postPDFAs(t, app, forms, 1024); got.status == fiber.StatusTooManyRequests {
+			t.Fatalf("a service upload inside the services' budget was refused: %v", got.body)
+		}
+	}
+	refused := postPDFAs(t, app, forms, 1024)
+	requireRateLimited(t, refused, "uploads", 10*time.Minute)
+	requireUploadBudget(t, refused, 3, 10*time.Minute, 1<<30)
+
+	ada := newPersonBearer(t, keys)
+	requireUploadStatus(t, postPDFAs(t, app, ada, 1024), fiber.StatusCreated)
+	requireRateLimited(t, postPDFAs(t, app, ada, 1024), "uploads", 10*time.Minute)
+	requireUploadBudget(t, postProfilePictureAs(t, app, ada), 1, 10*time.Minute, 1<<30)
+}
+
 func TestAnonymousUploadsAreRefusedAsUnauthorizedNotRateLimited(t *testing.T) {
 	t.Parallel()
 	keys := testauth.New(t)

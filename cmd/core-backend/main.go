@@ -195,6 +195,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	serviceUploadLimits, err := media.ServiceUploadLimitsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	// Direct upload has its own budget, apart from single-step uploads
 	// (decision Q23). It needs R2's multipart upload; a core without R2
 	// answers it with 503 direct_upload_unavailable.
@@ -690,19 +694,20 @@ func main() {
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},
-		TrustedProxies:          trustedProxies,
-		MediaUploadLimiter:      media.NewUploadLimiter(uploadLimits, time.Now),
-		ServiceClients:          serviceClients,
-		GroupOverage:            overageGroups,
-		GuestApplyMetrics:       handlers.NewGuestApplyMetrics(),
-		Authz:                   az,
-		EditableSites:           editableSites,
-		AuthzRoleMetrics:        authzRoleMetrics,
-		GuestCheckInMetrics:     doorQR,
-		GuestApplyPublicIPLimit: guestApplyIPLimit,
-		Dashboard:               dashboardSvc,
-		GithubActivity:          githubActivity,
-		Consents:                consents,
+		TrustedProxies:            trustedProxies,
+		MediaUploadLimiter:        media.NewUploadLimiter(uploadLimits, time.Now),
+		MediaServiceUploadLimiter: media.NewUploadLimiter(serviceUploadLimits, time.Now),
+		ServiceClients:            serviceClients,
+		GroupOverage:              overageGroups,
+		GuestApplyMetrics:         handlers.NewGuestApplyMetrics(),
+		Authz:                     az,
+		EditableSites:             editableSites,
+		AuthzRoleMetrics:          authzRoleMetrics,
+		GuestCheckInMetrics:       doorQR,
+		GuestApplyPublicIPLimit:   guestApplyIPLimit,
+		Dashboard:                 dashboardSvc,
+		GithubActivity:            githubActivity,
+		Consents:                  consents,
 	})
 
 	addr := os.Getenv("PORT")

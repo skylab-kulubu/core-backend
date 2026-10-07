@@ -81,6 +81,8 @@ type Deps struct {
 	// uses media.DefaultUploadLimits.
 	MediaUploadLimiter *media.UploadLimiter
 
+	MediaServiceUploadLimiter *media.UploadLimiter
+
 	// ServiceClients are the products' service clients: a service
 	// account's token of one of them speaks for its product. Nil configures
 	// none.
@@ -190,10 +192,15 @@ func New(deps Deps) *fiber.App {
 	if uploadLimiter == nil {
 		uploadLimiter = media.NewUploadLimiter(media.DefaultUploadLimits(), time.Now)
 	}
-	// One budget per person across every single-step upload route. Direct
-	// upload (/v1/uploads) stays off it: it has its own budget, kept by the
-	// media service (decision Q23), since its bytes never pass through core.
-	limitUploads := handlers.LimitMediaUploads(uploadLimiter)
+	serviceUploadLimiter := deps.MediaServiceUploadLimiter
+	if serviceUploadLimiter == nil {
+		serviceUploadLimiter = media.NewUploadLimiter(media.DefaultServiceUploadLimits(), time.Now)
+	}
+	// One budget per person, and one per product's service account, across
+	// every single-step upload route. Direct upload (/v1/uploads) stays off
+	// them: it has its own budget, kept by the media service (decision Q23),
+	// since its bytes never pass through core.
+	limitUploads := handlers.LimitMediaUploads(uploadLimiter, serviceUploadLimiter)
 	var certs *handlers.CertificateHandler
 	if deps.Certificates != nil {
 		certs = handlers.NewCertificateHandler(deps.Certificates)

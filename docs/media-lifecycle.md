@@ -474,6 +474,17 @@ would use up 500 MB. The budget is there to bound a stolen or misused
 account, and 100 uploads per 10 minutes and 2 GiB a day still do that. Both
 stay configurable (see [Configuration](#configuration)).
 
+A product's service account (a client `MEDIA_SERVICE_CLIENTS` maps to a
+product) has a budget of its own instead, the **services' budget**: at most
+1000 uploads per rolling 10 minutes and 10240 MiB (10 GiB) per rolling 24
+hours by default, each service account counted apart. One service account
+uploads for many people: Skyforms sends every guest's Answer file as itself,
+so a person's budget would let a few dozen guests at one event use up every
+other guest's uploads. The product keeps the finer limits (Skyforms counts per
+upload session, client address and form); this budget bounds a misused
+service account. It is configured apart from a person's (see
+[Configuration](#configuration)).
+
 An upload is charged before the route reads its form, purpose or file. Its
 size is the request body core accepted: the declared `Content-Length`, which is
 exactly what the server read, or, for a chunked body, the bytes that arrived.
@@ -2207,9 +2218,10 @@ account. Core then treats it as any private, scanned Answer file:
   link, `POST /v1/media/{id}/links` with `onBehalfOf` naming the reviewer,
   as for any Answer file ([Read links](#read-links)).
 - **Budget.** Every guest upload is charged to the Skyforms service
-  account's one single-step budget ([Upload limits](#upload-limits): 100
-  uploads per 10 minutes and 2 GiB per day by default, shared by all
-  guests). Skyforms keeps its own, finer limits per session, IP and form.
+  account's single-step budget, the services' budget
+  ([Upload limits](#upload-limits): 1000 uploads per 10 minutes and 10 GiB
+  per day by default, shared by all guests). Skyforms keeps its own, finer
+  limits per session, IP and form.
 
 ### Refusals
 
@@ -3568,6 +3580,12 @@ What happens to the records when the request completes is in
   `10m`.
 - `MEDIA_UPLOAD_DAILY_MAX_MIB` — MiB of upload body per person per rolling
   24 hours; default `2048`.
+- `MEDIA_SERVICE_UPLOAD_RATE_MAX`: single-step uploads per product service
+  account per window, the [services' budget](#upload-limits); default `1000`.
+- `MEDIA_SERVICE_UPLOAD_RATE_WINDOW`: Go duration of that rolling window;
+  default `10m`.
+- `MEDIA_SERVICE_UPLOAD_DAILY_MAX_MIB`: MiB of upload body per product service
+  account per rolling 24 hours; default `10240`.
 - `MEDIA_DIRECT_UPLOAD_MAX_OPEN` — [Direct uploads](#direct-upload-budget) a
   person may have open at once; default `3`.
 - `MEDIA_DIRECT_UPLOAD_DAILY_MAX_MIB` — MiB a person may declare in Direct

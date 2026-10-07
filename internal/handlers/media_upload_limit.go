@@ -10,8 +10,9 @@ import (
 )
 
 // LimitMediaUploads charges each single-step upload to the signed-in
-// person's budget before the route reads the form. Every route that stores a
-// file sent through core shares the one limiter. A Direct upload is not
+// person's budget, or a product's service account's upload to the services'
+// budget, before the route reads the form. Every route that stores a file
+// sent through core shares the two limiters. A Direct upload is not
 // charged here: it has its own budget (media.DirectUploadLimits, decision
 // Q23), kept by the media service since its bytes never pass through core.
 //
@@ -21,11 +22,15 @@ import (
 // An upload that ends in a server error (5xx, a panic included) is refunded:
 // the failure is core's, not the person's. Any other refusal stays charged,
 // since its bytes were received and free refusals would allow endless junk.
-func LimitMediaUploads(limiter *media.UploadLimiter) fiber.Handler {
+func LimitMediaUploads(persons, services *media.UploadLimiter) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		ident, ok := c.Locals(authn.LocalsIdentity).(authn.Identity)
 		if !ok {
 			return c.Next()
+		}
+		limiter := persons
+		if ident.Product != "" {
+			limiter = services
 		}
 		charge, refusal := limiter.Admit(ident.ID, receivedBodyBytes(c))
 		if refusal != nil {
