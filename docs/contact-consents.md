@@ -63,6 +63,17 @@ it again at most once a day and three times in all (`confirmation_mails`):
 whoever types an address cannot use core to flood it. The mail greets nobody
 by name: whoever typed the address may have typed any name with it.
 
+**Known behaviour: the cap is per grant.** Ticking the box, withdrawing,
+and ticking it again in a product records a new pending grant each time,
+since a grant is never reopened, and each new one starts its own three
+mails. Core does not count across grants: a withdrawn pending grant is
+inert (in no audience) and the person may change their mind. What bounds
+the loop is the product that records the grants: its own rate limits and
+sign-in (Guest apply: one Ticket per address and Event, and its request
+limits; Forms, Place and Guessr through their service accounts). A product
+that lets a visitor toggle the box without such limits should not record
+each toggle.
+
 **The subject** is exactly one of:
 
 - a core user (`user_id`): a signed-in person consenting for themselves. The
@@ -129,7 +140,8 @@ The rows marked "retention sweep" are the periodic destruction run's
 (ADR-0062, [`retention-sweep.md`](retention-sweep.md): `consent_pending`,
 `consent_renewal_unanswered`, `consent_proof`); it reads
 `consent.RenewalAnchorSQL`, `PendingTTL`, `RenewalAnswerWindow` and
-`ProofRetention`. Until it runs, a
+`ProofRetention`. A note on `consent_renewal_unanswered`'s version is in
+[`retention-sweep.md`](retention-sweep.md#known-behaviours). Until it runs, a
 pending grant whose link has expired stays inert (in no audience, its link
 refused) and an ended grant keeps only its HMAC. No page promises a deletion
 before the sweep runs.
@@ -258,11 +270,18 @@ role of the `core` client, whose client is mapped to a source in
 - `GET /v1/users/me/consents` → `{"items": [{"id", "purpose", "status", "subject", "source", "textVersion", "grantedAt", "confirmedAt"?, "endedAt"?}]}`:
   their account's grants and those given for any of their addresses: every
   address Keycloak holds (Primary, School and Personal e-mail) with core's
-  row, read as account erasure reads them. Keycloak unreachable is an error,
-  not a shorter list.
+  row, read as account erasure reads them but without erasure's limit of
+  three (core's row may still hold an older Primary). Keycloak unreachable is
+  `503` `consent_addresses_unavailable` with `Retry-After`, not a shorter
+  list.
 - `POST /v1/users/me/consents` `{"purpose", "textVersion"?}` → `201`/`200 {"status":"active"}`.
 - `DELETE /v1/users/me/consents/{purpose}` → `200 {"withdrawn": n}`: their
-  account's grant and every grant that mails one of those addresses.
+  account's grant and every grant that mails one of those addresses. While
+  Keycloak is unreachable it ends at once what core reaches without it (the
+  account's grant and the grants for core's row's addresses) and answers
+  `503` `consent_addresses_unavailable` with `Retry-After`: a grant for
+  another of their addresses (a Personal e-mail) may still be open, so the
+  page asks them to try again.
 
 A service account cannot use these.
 

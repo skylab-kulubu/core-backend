@@ -1199,6 +1199,16 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		SELECT 1 FROM pg_proc
 		WHERE proname = 'require_current_certificate_layout_media'
 		  AND prosrc LIKE '%old_manifest%'`,
+	// url_hits_scrub v3's click index, as 20261005140000's: present, valid,
+	// partial, on url_hits(at), and its predicate names utm_source.
+	20261007120000: `
+		SELECT 1 FROM pg_index i
+		WHERE i.indexrelid = to_regclass('public.url_hits_personal_at_v3_idx')
+		  AND i.indrelid = to_regclass('public.url_hits')
+		  AND i.indisvalid AND i.indpred IS NOT NULL
+		  AND pg_get_indexdef(i.indexrelid) LIKE 'CREATE INDEX url_hits_personal_at_v3_idx ON public.url_hits USING btree (at) WHERE %utm_source%'`,
+	// v2's click index is gone.
+	20261007120100: `SELECT 1 WHERE to_regclass('public.url_hits_personal_at_idx') IS NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
@@ -1209,6 +1219,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 // would keep; Apply drops it, concurrently too, before the build runs again.
 var concurrentIndexes = map[int64]string{
 	20261005140000: "url_hits_personal_at_idx",
+	20261007120000: "url_hits_personal_at_v3_idx",
 }
 
 // LockName names the advisory lock Apply holds while it migrates. Advisory

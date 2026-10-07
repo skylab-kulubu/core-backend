@@ -1,0 +1,14 @@
+-- The click rows that still hold something personal, by time: what the
+-- retention sweep's url_hits_scrub (v3) counts and empties every day
+-- (ADR-0062, docs/retention-sweep.md). v3 adds a utm_source or utm_medium
+-- that is no known channel (shorturl.KnownSources, KnownMediums) to v2's
+-- predicate; it replaces url_hits_personal_at_idx, which the next migration
+-- drops. The predicate is the rule's own (retention.hitPersonalSQL, the test
+-- compares them), so a scrubbed row leaves the index and a day's work reads
+-- a day's rows, however many clicks are kept.
+--
+-- CREATE INDEX CONCURRENTLY: building it never blocks a click. It cannot run
+-- in a transaction, so this file is that one statement; the migration tool
+-- drops an invalid index a stopped build left before it runs this again
+-- (migrate.concurrentIndexes).
+CREATE INDEX CONCURRENTLY IF NOT EXISTS url_hits_personal_at_v3_idx ON url_hits (at) WHERE (ip <> '' OR user_agent <> '' OR user_id IS NOT NULL OR utm_campaign <> '' OR utm_term <> '' OR utm_content <> '' OR utm_source <> CASE lower(btrim(utm_source)) WHEN '' THEN '' WHEN 'e-mail' THEN 'email' WHEN 'e-posta' THEN 'email' WHEN 'email' THEN 'email' WHEN 'eposta' THEN 'email' WHEN 'ig' THEN 'instagram' WHEN 'in' THEN 'linkedin' WHEN 'insta' THEN 'instagram' WHEN 'instagram' THEN 'instagram' WHEN 'li' THEN 'linkedin' WHEN 'linkedin' THEN 'linkedin' WHEN 'ma' THEN 'email' WHEN 'mail' THEN 'email' WHEN 'other' THEN 'other' WHEN 'qr' THEN 'qr' WHEN 'site' THEN 'website' WHEN 'twitter' THEN 'x' WHEN 'wa' THEN 'whatsapp' WHEN 'web' THEN 'website' WHEN 'website' THEN 'website' WHEN 'whatsapp' THEN 'whatsapp' WHEN 'wp' THEN 'whatsapp' WHEN 'x' THEN 'x' WHEN 'youtube' THEN 'youtube' WHEN 'yt' THEN 'youtube' ELSE 'other' END OR utm_medium <> CASE lower(btrim(utm_medium)) WHEN '' THEN '' WHEN 'email' THEN 'email' WHEN 'messaging' THEN 'messaging' WHEN 'other' THEN 'other' WHEN 'print' THEN 'print' WHEN 'qr' THEN 'qr' WHEN 'referral' THEN 'referral' WHEN 'social' THEN 'social' ELSE 'other' END OR referer <> CASE WHEN referer ~ '^[A-Za-z][A-Za-z0-9+.-]*://' THEN lower(substring(referer FROM '^([A-Za-z][A-Za-z0-9+.-]*://)')) || lower(COALESCE(substring(referer FROM '^[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#]*@)?(\[[^]/?#]*\]|[^/?#:@]*)'), '')) ELSE '' END);

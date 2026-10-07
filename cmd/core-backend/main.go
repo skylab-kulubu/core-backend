@@ -493,8 +493,9 @@ func main() {
 	consents := consent.NewService(pool, consentConfig, nil)
 	if keycloakConfigured {
 		// A person's own list and withdrawal cover every address Keycloak
-		// holds for them (Personal e-mail included), as erasure reads them.
-		consents.SetAddresses(account.NewErasureAddresses(identity.NewAccountIdentity(dir), users))
+		// holds for them (Personal e-mail included), as erasure reads them
+		// but without erasure's limit of three.
+		consents.SetAddresses(account.NewPersonAddresses(identity.NewAccountIdentity(dir), users))
 	}
 	if consentConfig.Enabled {
 		log.Printf("contact consents: on (links at %s, service clients %v, verified-address clients %v)",
