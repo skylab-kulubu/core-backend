@@ -98,6 +98,11 @@ type Deps struct {
 	// when it runs out (GUEST_APPLY_PUBLIC_IP_LIMIT_MODE). Empty enforces.
 	GuestApplyPublicIPLimit handlers.GuestApplyLimitMode
 
+	// SkyPassWalletMetrics are SkyPass in Google Wallet's counters
+	// (docs/skypass-google-wallet.md), served on /v1/metrics. Nil leaves
+	// them out.
+	SkyPassWalletMetrics interface{ Prometheus() string }
+
 	// GuestCheckInMetrics counts guest self check-ins by door QR presence
 	// and outcome, and serves them on /v1/metrics
 	// (docs/guest-self-check-in.md). Nil leaves them out.
@@ -207,7 +212,8 @@ func New(deps Deps) *fiber.App {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
-		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil {
+		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
+		deps.SkyPassWalletMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -226,6 +232,9 @@ func New(deps Deps) *fiber.App {
 			text += deps.AuthzRoleMetrics.Prometheus()
 			if deps.RetentionMetrics != nil {
 				text += deps.RetentionMetrics.Prometheus()
+			}
+			if deps.SkyPassWalletMetrics != nil {
+				text += deps.SkyPassWalletMetrics.Prometheus()
 			}
 			return c.SendString(text)
 		})
@@ -313,6 +322,12 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/skypass/card", pass.LookupCard)
 		app.Post("/v1/skypass/qr", pass.Mint)
 		app.Post("/v1/skypass/verify", pass.Verify)
+		// SkyPass in Google Wallet (docs/skypass-google-wallet.md): off
+		// answers the status with available false and the rest 503.
+		app.Get("/v1/skypass/wallet", pass.WalletStatus)
+		walletLimit := handlers.SkyPassWalletLimit()
+		app.Post("/v1/skypass/wallet/google", walletLimit, pass.GoogleWalletLink)
+		app.Delete("/v1/skypass/wallet/google", walletLimit, pass.RevokeGoogleWallet)
 	}
 
 	if deps.GithubActivity != nil {

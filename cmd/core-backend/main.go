@@ -31,6 +31,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/googlewallet"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
@@ -504,6 +505,24 @@ func main() {
 		log.Printf("contact consents: off (%s is not set); none is recorded", consent.KeyEnv)
 	}
 
+	// SkyPass in Google Wallet (SKYPASS_GOOGLE_WALLET_*,
+	// docs/skypass-google-wallet.md). Off unless enabled: the link routes
+	// answer 503 and the door reads no Wallet code. Erasure withdraws a
+	// person's passes either way, and fails while one is left that it
+	// cannot withdraw.
+	walletConfig, err := skypass.GoogleWalletConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var walletAPI skypass.GoogleWalletAPI
+	if walletConfig.Enabled {
+		walletAPI = googlewallet.NewClient(walletConfig.Account, googlewallet.Options{})
+		log.Printf("skypass google wallet: on (class %s, service account %s)", walletConfig.ClassID(), walletConfig.Account.ClientEmail)
+	} else {
+		log.Printf("skypass google wallet: off (%s is not true)", skypass.GoogleWalletEnabledEnv)
+	}
+	wallet := skypass.NewWallet(walletConfig, walletAPI, skypass.NewPostgresWalletStore(pool), users, skypass.WalletOptions{Logf: log.Printf})
+
 	workerEnabled, erasureConfig, err := accountErasureStartup(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -554,6 +573,7 @@ func main() {
 				AccessBlocker:        gate,
 				Services:             serviceErasure,
 				ContactConsents:      consents,
+				SkyPassWallet:        wallet,
 			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
 			2*time.Second,
 			func(err error) { log.Printf("account erasure worker: %v", err) },
@@ -675,7 +695,8 @@ func main() {
 		}),
 		URLs:                   urlSvc,
 		Certificates:           certSvc,
-		SkyPass:                skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
+		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
+		SkyPassWalletMetrics:   wallet,
 		Mail:                   mailer,
 		EventMail:              eventmail.New(events, tickets, users, lists, az, mailSnapshots),
 		ParseToken:             parse,

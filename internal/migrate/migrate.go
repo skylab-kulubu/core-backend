@@ -1209,6 +1209,27 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND pg_get_indexdef(i.indexrelid) LIKE 'CREATE INDEX url_hits_personal_at_v3_idx ON public.url_hits USING btree (at) WHERE %utm_source%'`,
 	// v2's click index is gone.
 	20261007120100: `SELECT 1 WHERE to_regclass('public.url_hits_personal_at_idx') IS NULL`,
+	// SkyPass Google Wallet passes: the table, its one-active-pass index and
+	// its account reference guard.
+	20261008120000: `
+		SELECT 1
+		WHERE to_regclass('public.skypass_google_wallet_passes') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'skypass_google_wallet_passes' AND column_name = 'last_counter'
+		)
+		AND to_regclass('public.skypass_google_wallet_passes_active_user_idx') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.skypass_google_wallet_passes')
+			  AND tgname = 'skypass_google_wallet_passes_require_active_subject'
+		)`,
+	// The account erasure step that withdraws a person's Wallet passes.
+	20261008120100: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.account_deletion_steps')
+		  AND conname = 'account_deletion_steps_step_check'
+		  AND pg_get_constraintdef(oid) LIKE '%''erase_skypass_wallet''%'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

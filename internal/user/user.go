@@ -79,6 +79,11 @@ const (
 	// services.
 	DeletionStepEraseContactConsents DeletionStep = "erase_contact_consents"
 
+	// DeletionStepEraseSkyPassWallet withdraws the person's SkyPass passes
+	// from Google Wallet (docs/skypass-google-wallet.md), right after
+	// erase_contact_consents and before the services.
+	DeletionStepEraseSkyPassWallet DeletionStep = "erase_skypass_wallet"
+
 	// Service erasure steps: one Erasure command each (ADR-0051). Their
 	// checkpoint rows also keep the service's counts as completion proof.
 	DeletionStepEraseSkyMail DeletionStep = "erase_skymail"
