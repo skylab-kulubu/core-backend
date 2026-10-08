@@ -2,9 +2,14 @@ package handlers
 
 import (
 	"errors"
+	"math"
+	"strconv"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/limiter"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
@@ -33,7 +38,27 @@ type settleBody struct {
 }
 
 func skypassError(c fiber.Ctx, err error) error {
+	var limited *skypass.WalletRateLimitError
 	switch {
+	case errors.As(err, &limited):
+		seconds := int(math.Ceil(limited.RetryAfter.Seconds()))
+		if seconds < 1 {
+			seconds = 1
+		}
+		c.Set(fiber.HeaderRetryAfter, strconv.Itoa(seconds))
+		return problemWithFields(c, fiber.StatusTooManyRequests, "Too Many Requests",
+			"Too many wrong codes for this pass; retry after the given seconds.", "skypass_wallet_rate_limited",
+			fiber.Map{"retryAfterSeconds": seconds})
+	case errors.Is(err, skypass.ErrWalletCodeUsed):
+		return problemDetailCode(c, fiber.StatusConflict, "Conflict",
+			"This Wallet code was already used; the pass shows a new one within a minute.", "skypass_wallet_code_used")
+	case errors.Is(err, skypass.ErrWalletOff):
+		return problemDetailCode(c, fiber.StatusServiceUnavailable, "Service Unavailable",
+			"Google Wallet is not set up.", "skypass_google_wallet_off")
+	case errors.Is(err, skypass.ErrWalletUpstream):
+		c.Set(fiber.HeaderRetryAfter, "30")
+		return problemDetailCode(c, fiber.StatusBadGateway, "Bad Gateway",
+			"Google Wallet did not answer; try again.", "skypass_google_wallet_unavailable")
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
 	case errors.Is(err, skypass.ErrForbidden):
@@ -124,7 +149,7 @@ func (h *SkyPassHandler) CheckInSession(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	got, err := h.svc.HolderFrom(c.Context(), body.Token, body.UID)
+	got, err := h.svc.HolderFrom(c.Context(), p, body.Token, body.UID)
 	if err != nil {
 		return skypassError(c, err)
 	}
@@ -136,4 +161,72 @@ func (h *SkyPassHandler) CheckInSession(c fiber.Ctx) error {
 		return ticketError(c, err)
 	}
 	return c.Status(fiber.StatusCreated).JSON(ci)
+}
+
+// WalletStatus tells the caller's app whether to offer "Add to Google
+// Wallet" (docs/skypass-google-wallet.md).
+func (h *SkyPassHandler) WalletStatus(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return skypassError(c, err)
+	}
+	got, err := h.svc.WalletStatus(c.Context(), p)
+	if err != nil {
+		return skypassError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(got)
+}
+
+// GoogleWalletLink answers the caller's "Add to Google Wallet" link.
+func (h *SkyPassHandler) GoogleWalletLink(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return skypassError(c, err)
+	}
+	got, err := h.svc.GoogleWalletLink(c.Context(), p)
+	if err != nil {
+		return skypassError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(got)
+}
+
+// RevokeGoogleWallet ends the caller's Wallet pass.
+func (h *SkyPassHandler) RevokeGoogleWallet(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return skypassError(c, err)
+	}
+	if err := h.svc.RevokeGoogleWallet(c.Context(), p); err != nil {
+		return skypassError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// SkyPassWalletLinksPerMinute is how many save links (and revocations) one
+// person may ask for per minute: each one writes to Google.
+const SkyPassWalletLinksPerMinute = 10
+
+// SkyPassWalletLimit budgets the Wallet writes by the caller's token
+// subject. Requests without an identity pass through to the handler, which
+// answers 401.
+func SkyPassWalletLimit() fiber.Handler {
+	return limiter.New(limiter.Config{
+		Max:        SkyPassWalletLinksPerMinute,
+		Expiration: time.Minute,
+		Next: func(c fiber.Ctx) bool {
+			_, ok := c.Locals(authn.LocalsIdentity).(authn.Identity)
+			return !ok
+		},
+		KeyGenerator: func(c fiber.Ctx) string {
+			ident, _ := c.Locals(authn.LocalsIdentity).(authn.Identity)
+			return ident.ID.String()
+		},
+		LimitReached: func(c fiber.Ctx) error {
+			seconds, _ := strconv.Atoi(string(c.Response().Header.Peek(fiber.HeaderRetryAfter)))
+			return problemWithFields(c, fiber.StatusTooManyRequests, "Too Many Requests",
+				"Too many requests; retry after the given seconds.", "skypass_wallet_link_rate_limited", fiber.Map{"retryAfterSeconds": seconds})
+		},
+	})
 }

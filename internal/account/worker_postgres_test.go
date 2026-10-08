@@ -39,6 +39,7 @@ func TestPostgresWorkerPersistsProgressAcrossRestart(t *testing.T) {
 	identity := &uncertainIdentity{}
 	config := account.WorkerConfig{
 		ContactConsents: consentsErased{},
+		SkyPassWallet:   walletErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, Lease: time.Minute, MaxAttempts: 3,
 		AccessBlocker: &accountBlockWriter{},

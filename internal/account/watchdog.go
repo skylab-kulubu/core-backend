@@ -24,7 +24,7 @@ const DefaultWatchdogInterval = 5 * time.Minute
 // knownSteps lets an attention event name the step from a stored error code.
 var knownSteps = []user.DeletionStep{
 	user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents,
-	user.DeletionStepEraseSkyMail, user.DeletionStepEraseCMS, user.DeletionStepEraseForms,
+	user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseSkyMail, user.DeletionStepEraseCMS, user.DeletionStepEraseForms,
 	user.DeletionStepAnonymizeCore, user.DeletionStepEraseProfile, user.DeletionStepEraseUploads,
 	user.DeletionStepDeleteIdentity,
 }
