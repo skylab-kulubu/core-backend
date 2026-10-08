@@ -36,6 +36,7 @@ Open `saveUrl` in the browser (on Android it hands over to Google Wallet). Ask f
 | 200 | | `saveUrl` |
 | 401 | | no token |
 | 404 | | the person is not active (deletion pending or erased) |
+| 409 | | the pass was ended (a revoke, or the account's deletion) while the link was written; no link. Ask again |
 | 429 | `skypass_wallet_link_rate_limited` | more than 10 link or revoke calls in a minute; `retryAfterSeconds` |
 | 502 | `skypass_google_wallet_unavailable` | Google did not take the write; `Retry-After: 30` |
 | 503 | `skypass_google_wallet_off` | Google Wallet is off |
@@ -91,6 +92,7 @@ A 409 `skypass_wallet_code_used` after a network retry usually means the first r
 - **Lost phone, new phone:** the person revokes (`DELETE /v1/skypass/wallet/google`) and adds the pass again.
 - **Name or skyNumber changed:** the next link rewrites the pass; a saved pass keeps the old face until then.
 - **Deletion pending:** codes are refused from the moment the person asked (the holder is no longer active), and no new pass can be made for them (the table's account reference guard).
+- **A link written while the pass ends:** a revoke or an erasure can withdraw the pass while a link request is writing it to Google, and Google may take the link's write last. The link request reads the pass again after its write; if it has ended, it withdraws it once more and answers `409` without a link.
 - **Erasure:** the `erase_skypass_wallet` step ([account-lifecycle.md](account-lifecycle.md#durable-erasure-flow)), right after `erase_contact_consents` and before the services, withdraws every pass of the person and deletes the rows. Google down or busy (no answer, 429, 5xx) defers the step like a service that is down; a refusal (for example a key Google no longer takes) spends attempts and ends in manual intervention. With Google Wallet switched off while a pass is left, the step revokes it (its codes stop) and fails, so the request goes to manual intervention rather than being reported erased while Google still holds the name: turn Google Wallet back on, or withdraw the object by hand, then retry.
 - **Leaving the club:** nothing is withdrawn. As with the in-app SkyPass, the door decides by the Ticket of the Event, not by the card.
 

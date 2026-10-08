@@ -62,8 +62,8 @@ func TestPostgresWorkerPersistsProgressAcrossRestart(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM account_deletion_steps WHERE request_id = $1`, request.ID).Scan(&stepCount); err != nil {
 		t.Fatal(err)
 	}
-	if stepCount != 10 {
-		t.Fatalf("step count = %d, want 10", stepCount)
+	if stepCount != 11 {
+		t.Fatalf("step count = %d, want 11", stepCount)
 	}
 }
 

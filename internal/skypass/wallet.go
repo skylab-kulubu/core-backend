@@ -196,6 +196,20 @@ func (w *Wallet) googleLink(ctx context.Context, u user.User) (WalletLink, error
 		w.logf("skypass google wallet: writing a pass: %v", err)
 		return WalletLink{}, ErrWalletUpstream
 	}
+	// A revoke or an erasure may have withdrawn the pass while this write
+	// was on its way, and Google may have taken this write last: look
+	// again, and withdraw the pass once more so Google keeps no name.
+	current, found, err := w.store.PassByID(ctx, pass.PassID)
+	if err != nil {
+		return WalletLink{}, err
+	}
+	if !found || current.RevokedAt != nil {
+		if _, err := w.withdrawPasses(ctx, []WalletPass{pass}, "retry"); err != nil {
+			w.logf("skypass google wallet: withdrawing a pass ended while its link was written: %v", err)
+		}
+		w.metrics.links.add("failed")
+		return WalletLink{}, ErrConflict
+	}
 	link, err := w.api.SaveURL(w.config.Origins, []googlewallet.ObjectRef{{ID: object.ID, ClassID: object.ClassID}})
 	if err != nil {
 		w.metrics.links.add("failed")

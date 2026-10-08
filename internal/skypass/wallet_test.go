@@ -33,6 +33,9 @@ type fakeWalletAPI struct {
 	objects   map[string]bool
 	updateErr error
 	insertErr error
+	// beforeInsert runs once, before the next insert reaches Google: a
+	// revoke or an erasure racing the link.
+	beforeInsert func()
 }
 
 func newFakeWalletAPI() *fakeWalletAPI {
@@ -54,6 +57,13 @@ func (f *fakeWalletAPI) EnsureGenericClass(_ context.Context, class googlewallet
 }
 
 func (f *fakeWalletAPI) InsertGenericObject(_ context.Context, object googlewallet.GenericObject) error {
+	f.mu.Lock()
+	hook := f.beforeInsert
+	f.beforeInsert = nil
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.insertErr != nil {
@@ -512,6 +522,43 @@ func TestWalletRevokeWhileGoogleIsDownStillStopsTheCodes(t *testing.T) {
 	}
 	if _, ok, _ := f.store.PassByID(ctx, oldPass); ok {
 		t.Fatal("the old row is left")
+	}
+}
+
+// An erasure (or a revoke) that withdraws the pass while its link is being
+// written must not leave Google with an active object carrying the name: the
+// link looks again after the write and withdraws the pass once more.
+func TestWalletLinkRacingAnErasureLeavesGoogleWithoutTheName(t *testing.T) {
+	t.Parallel()
+	f := newWalletFixture(t, testWalletConfig(), newFakeWalletAPI())
+	ctx := context.Background()
+	ada := f.member("Ada", "Lovelace", "SKY-0000042")
+	adaID := uuid.MustParse(ada.ID)
+	f.api.beforeInsert = func() {
+		// Google has no object yet: the erasure's withdrawal finds none,
+		// counts the pass done and deletes its row.
+		if n, err := f.wallet.EraseSubject(ctx, adaID); err != nil || n != 1 {
+			t.Errorf("erasure during the link: %d %v", n, err)
+		}
+	}
+	if _, err := f.svc.GoogleWalletLink(ctx, ada); !errors.Is(err, ErrConflict) {
+		t.Fatalf("link raced by an erasure: %v", err)
+	}
+	if len(f.api.inserts) != 1 || len(f.api.updates) != 2 {
+		t.Fatalf("inserts %d updates %d", len(f.api.inserts), len(f.api.updates))
+	}
+	last := f.api.updates[len(f.api.updates)-1]
+	if last.ID != f.api.inserts[0].ID || last.State != "INACTIVE" || last.RotatingBarcode != nil {
+		t.Fatalf("Google's last copy %+v", last)
+	}
+	if encoded, _ := json.Marshal(last); strings.Contains(string(encoded), "Ada") || strings.Contains(string(encoded), "SKY-0000042") {
+		t.Fatalf("Google keeps the person: %s", encoded)
+	}
+	if len(f.api.links) != 0 {
+		t.Fatalf("a link was signed: %+v", f.api.links)
+	}
+	if passes, _ := f.store.PassesOf(ctx, adaID); len(passes) != 0 {
+		t.Fatalf("rows left %+v", passes)
 	}
 }
 
