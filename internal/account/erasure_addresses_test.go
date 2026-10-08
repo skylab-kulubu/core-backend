@@ -162,3 +162,26 @@ func mustCoreUser(t *testing.T, primary string) account.CoreUsers {
 type coreUsersFunc func(context.Context, uuid.UUID) (user.User, error)
 
 func (f coreUsersFunc) Get(ctx context.Context, id uuid.UUID) (user.User, error) { return f(ctx, id) }
+
+// A person's own contact consents read the same union without erasure's
+// limit: a fourth address (core's row still holding an older Primary) is
+// one more address to list and withdraw, not a reason to refuse. Keycloak
+// unreachable or core's row unreadable still fails.
+func TestPersonAddressesHaveNoLimit(t *testing.T) {
+	t.Parallel()
+
+	keycloak := &keycloakAddresses{addresses: []string{"ada@example.com", "ada.lovelace@std.yildiz.edu.tr", " Ada.Legacy@example.org"}}
+	got, err := account.NewPersonAddresses(keycloak, mustCoreUser(t, "ada.older@example.net")).ErasureAddresses(context.Background(), uuid.New())
+	want := []string{"ada@example.com", "ada.lovelace@std.yildiz.edu.tr", "ada.legacy@example.org", "ada.older@example.net"}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("addresses = %v err=%v", got, err)
+	}
+	for name, source := range map[string]account.ErasureAddressSource{
+		"keycloak unavailable": account.NewPersonAddresses(&keycloakAddresses{err: errors.New("identity: user address lookup failed")}, mustCoreUser(t, "ada@example.com")),
+		"core row unreadable":  account.NewPersonAddresses(&keycloakAddresses{addresses: []string{"ada@example.com"}}, failingCoreUsers{}),
+	} {
+		if got, err := source.ErasureAddresses(context.Background(), uuid.New()); err == nil || got != nil || strings.Contains(err.Error(), "@") {
+			t.Fatalf("%s: addresses = %v err=%v", name, got, err)
+		}
+	}
+}
