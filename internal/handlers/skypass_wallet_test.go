@@ -319,3 +319,88 @@ func TestSkyPassWalletErrorsHTTP(t *testing.T) {
 		}
 	}
 }
+
+// Only who may take check-ins at a Session's door may spend a code there:
+// a member who photographs the pass in the queue, or another Event's door
+// staff, gets 403 before any code is read, and the holder's code still works
+// at the real door. The answer does not depend on the code either, so it
+// tells nothing about the holder.
+func TestSkyPassCheckInRefusesWhoCannotUseTheDoorBeforeSpendingTheCode(t *testing.T) {
+	t.Parallel()
+	w := newWalletHTTP(t, true)
+	ctx := context.Background()
+	_, _, body := w.do(w.app(w.holder), fiber.MethodPost, "/v1/skypass/wallet/google", "")
+	saveURL, _ := body["saveUrl"].(string)
+	passID := strings.TrimPrefix(saveURL, googlewallet.SaveURLPrefix+"test.3388000000022222222.sp-")
+
+	ev, err := w.events.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{w.staff.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := w.events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opening, err := w.events.CreateSession(ctx, event.Session{EventDayID: day.ID, Title: "Opening", SpeakerName: "Ada", SessionType: "PRESENTATION"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closing, err := w.events.CreateSession(ctx, event.Session{EventDayID: day.ID, Title: "Closing", SpeakerName: "Ada", SessionType: "PRESENTATION"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.tickets.Apply(ctx, authz.Principal{ID: w.holder.ID.String()}, ev.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Another Event, with its own door staff and no Ticket of Ada's.
+	otherStaff := authn.Identity{ID: uuid.MustParse("24242424-2121-2121-2121-212121212121"), Groups: []string{"/UYELER/ARGE/GAMELAB"}}
+	other, err := w.events.Create(ctx, event.Event{Name: "Jam", Location: "YTÜ", OwnerTeam: "GAMELAB", DoorStaffIDs: []uuid.UUID{otherStaff.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.events.CreateDay(ctx, event.Day{EventID: other.ID, Name: "Day 1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	outsider := authn.Identity{ID: uuid.MustParse("25252525-2121-2121-2121-212121212121"), Groups: []string{"/UYELER"}}
+	if _, _, err := user.NewService(w.users).Ensure(ctx, outsider.ID, user.Profile{Email: "mal@example.com", FirstName: "Mal", LastName: "Lory"}); err != nil {
+		t.Fatal(err)
+	}
+	code := walletCode(t, passID, time.Now())
+	wrong := "SPW1:" + passID + ":00000000"
+	if wrong == code {
+		wrong = "SPW1:" + passID + ":00000001"
+	}
+	openingPath := "/v1/sessions/" + opening.ID.String() + "/check-in/skypass"
+	for name, ident := range map[string]authn.Identity{"member": outsider, "other event's door staff": otherStaff} {
+		for _, token := range []string{code, wrong} {
+			status, _, body := w.do(w.app(ident), fiber.MethodPost, openingPath, `{"token":`+jsonString(token)+`}`)
+			if status != fiber.StatusForbidden {
+				t.Fatalf("%s: %d %v", name, status, body)
+			}
+		}
+	}
+	// No such Session: 404, before any code is read.
+	if status, _, body := w.do(w.app(outsider), fiber.MethodPost, "/v1/sessions/"+uuid.NewString()+"/check-in/skypass", `{"token":`+jsonString(code)+`}`); status != fiber.StatusNotFound {
+		t.Fatalf("unknown session: %d %v", status, body)
+	}
+	// An in-app token of someone with no Ticket here: 403 as well, not 404.
+	stranger, err := w.pass.Mint(ctx, authz.Principal{ID: outsider.ID.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _, body := w.do(w.app(outsider), fiber.MethodPost, openingPath, `{"token":`+jsonString(stranger.Value)+`}`); status != fiber.StatusForbidden {
+		t.Fatalf("in-app token: %d %v", status, body)
+	}
+
+	// The real door: the code was not spent, and it checks in once.
+	door := w.app(w.staff)
+	status, _, body := w.do(door, fiber.MethodPost, openingPath, `{"token":`+jsonString(code)+`}`)
+	if status != fiber.StatusCreated || body["sessionId"] != opening.ID.String() {
+		t.Fatalf("door staff %d %v", status, body)
+	}
+	status, _, body = w.do(door, fiber.MethodPost, "/v1/sessions/"+closing.ID.String()+"/check-in/skypass", `{"token":`+jsonString(code)+`}`)
+	if status != fiber.StatusConflict || body["code"] != "skypass_wallet_code_used" {
+		t.Fatalf("second use %d %v", status, body)
+	}
+}

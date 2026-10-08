@@ -149,12 +149,18 @@ func (h *SkyPassHandler) CheckInSession(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
+	if h.tickets == nil {
+		return problem(c, fiber.StatusInternalServerError, "Internal Server Error")
+	}
+	// The door first: reading a Google Wallet code spends it, and the
+	// answer to someone who may not scan here must not depend on whose
+	// credential it is (no Ticket → 404 would tell).
+	if err := h.tickets.AuthorizeSessionDoor(c.Context(), p, sessionID); err != nil {
+		return ticketError(c, err)
+	}
 	got, err := h.svc.HolderFrom(c.Context(), p, body.Token, body.UID)
 	if err != nil {
 		return skypassError(c, err)
-	}
-	if h.tickets == nil {
-		return problem(c, fiber.StatusInternalServerError, "Internal Server Error")
 	}
 	ci, err := h.tickets.CheckInUser(c.Context(), p, sessionID, got.ID)
 	if err != nil {

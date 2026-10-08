@@ -35,6 +35,11 @@ type Service interface {
 	CheckInGuest(ctx context.Context, sessionID uuid.UUID, g GuestCheckIn) (CheckIn, error)
 	MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorQR, error)
 	CheckInUser(ctx context.Context, p authz.Principal, sessionID, userID uuid.UUID) (CheckIn, error)
+	// AuthorizeSessionDoor answers whether p may take check-ins at the
+	// Session's door (canUseDoor): ErrNotFound for no such Session,
+	// ErrForbidden otherwise. A scanner route asks it before it reads (or
+	// spends) a credential, so a refusal says nothing about the holder.
+	AuthorizeSessionDoor(ctx context.Context, p authz.Principal, sessionID uuid.UUID) error
 	ResolveAndCheckIn(ctx context.Context, p authz.Principal, sessionID uuid.UUID, target DoorCheckInTarget) (DoorCheckIn, error)
 	DoorActivity(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorActivity, error)
 }
@@ -1106,6 +1111,11 @@ func (s *service) authorizedDoorEvent(
 		return event.Event{}, ErrForbidden
 	}
 	return ev, nil
+}
+
+func (s *service) AuthorizeSessionDoor(ctx context.Context, p authz.Principal, sessionID uuid.UUID) error {
+	_, err := s.authorizedDoorEvent(ctx, p, sessionID)
+	return err
 }
 
 func (s *service) ResolveAndCheckIn(

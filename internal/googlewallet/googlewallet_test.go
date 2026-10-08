@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -56,7 +57,7 @@ func TestParseServiceAccountTakesJSONOrBase64(t *testing.T) {
 		"json":            raw,
 		"json, spaced":    "  " + raw + "\n",
 		"base64":          base64.StdEncoding.EncodeToString([]byte(raw)),
-		"base64, raw url": base64.RawURLEncoding.EncodeToString([]byte(raw)),
+		"base64, wrapped": wrapLines(base64.StdEncoding.EncodeToString([]byte(raw)), 76),
 	} {
 		account, err := ParseServiceAccount(value)
 		if err != nil {
@@ -69,6 +70,60 @@ func TestParseServiceAccountTakesJSONOrBase64(t *testing.T) {
 			t.Fatalf("%s: token uri %q", name, account.TokenURI)
 		}
 	}
+}
+
+// Standard base64, as `base64` prints it: another alphabet is a value
+// someone did not mean.
+// A link longer than browsers keep would be cut: it is refused instead.
+func TestSaveURLRefusesALinkTooLongForBrowsers(t *testing.T) {
+	t.Parallel()
+	raw, _ := testAccount(t, "https://oauth2.googleapis.com/token")
+	account, err := ParseServiceAccount(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var origins []string
+	for i := range 40 {
+		origins = append(origins, fmt.Sprintf("https://origin-%02d.yildizskylab.com", i))
+	}
+	_, err = NewClient(account, Options{}).SaveURL(origins, []ObjectRef{{
+		ID: "3388000000022222222.sp-ABCDEFGHIJKLMNOPQRSTUVWXYZ", ClassID: "3388000000022222222.skypass-sandbox",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "origins") {
+		t.Fatalf("long link %v", err)
+	}
+}
+
+func TestParseServiceAccountTakesStandardBase64Only(t *testing.T) {
+	t.Parallel()
+	raw, _ := testAccount(t, "https://oauth2.googleapis.com/token")
+	unpadded := raw
+	for len(unpadded)%3 == 0 {
+		// Padding only shows when the length is not a multiple of 3.
+		unpadded += " "
+	}
+	for name, value := range map[string]string{
+		"raw url":  base64.RawURLEncoding.EncodeToString([]byte(raw)),
+		"url":      base64.URLEncoding.EncodeToString([]byte(raw)),
+		"unpadded": base64.RawStdEncoding.EncodeToString([]byte(unpadded)),
+	} {
+		if value == base64.StdEncoding.EncodeToString([]byte(raw)) {
+			continue // no '+' or '/' in this key: the alphabets agree
+		}
+		if _, err := ParseServiceAccount(value); !errors.Is(err, ErrInvalidAccount) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
+
+func wrapLines(s string, width int) string {
+	var out strings.Builder
+	for len(s) > width {
+		out.WriteString(s[:width] + "\n")
+		s = s[width:]
+	}
+	out.WriteString(s)
+	return out.String()
 }
 
 func TestParseServiceAccountRefusesWithoutEchoingTheValue(t *testing.T) {

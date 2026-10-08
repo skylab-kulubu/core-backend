@@ -45,8 +45,8 @@ type WalletStore interface {
 	Delete(ctx context.Context, passID string) error
 }
 
-// MemoryWalletStore is a WalletStore in memory, for tests and for a core
-// without a database.
+// MemoryWalletStore is a WalletStore in memory, for tests (core does not
+// start without DATABASE_URL).
 type MemoryWalletStore struct {
 	mu     sync.Mutex
 	passes map[string]WalletPass

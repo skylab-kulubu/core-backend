@@ -36,6 +36,16 @@ type fakeWalletAPI struct {
 	// beforeInsert runs once, before the next insert reaches Google: a
 	// revoke or an erasure racing the link.
 	beforeInsert func()
+	// insertLost: Google applies the next insert but its answer is lost
+	// (a client-side timeout).
+	insertLost bool
+	// updateFailures is how many of the next updates Google does not
+	// answer (503).
+	updateFailures int
+	// blockInsert holds inserts until the caller's context ends.
+	blockInsert bool
+	// insertDeadline is the deadline of the last insert's context.
+	insertDeadline time.Time
 }
 
 func newFakeWalletAPI() *fakeWalletAPI {
@@ -56,13 +66,22 @@ func (f *fakeWalletAPI) EnsureGenericClass(_ context.Context, class googlewallet
 	return nil
 }
 
-func (f *fakeWalletAPI) InsertGenericObject(_ context.Context, object googlewallet.GenericObject) error {
+func (f *fakeWalletAPI) InsertGenericObject(ctx context.Context, object googlewallet.GenericObject) error {
 	f.mu.Lock()
 	hook := f.beforeInsert
 	f.beforeInsert = nil
 	f.mu.Unlock()
 	if hook != nil {
 		hook()
+	}
+	f.mu.Lock()
+	deadline, _ := ctx.Deadline()
+	f.insertDeadline = deadline
+	block := f.blockInsert
+	f.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return &googlewallet.APIError{Op: "insert object"}
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -74,6 +93,10 @@ func (f *fakeWalletAPI) InsertGenericObject(_ context.Context, object googlewall
 		return &googlewallet.APIError{Op: "insert object", Status: http.StatusConflict}
 	}
 	f.objects[object.ID] = true
+	if f.insertLost {
+		f.insertLost = false
+		return &googlewallet.APIError{Op: "insert object"}
+	}
 	return nil
 }
 
@@ -82,6 +105,10 @@ func (f *fakeWalletAPI) UpdateGenericObject(_ context.Context, object googlewall
 	defer f.mu.Unlock()
 	if f.updateErr != nil {
 		return f.updateErr
+	}
+	if f.updateFailures > 0 {
+		f.updateFailures--
+		return &googlewallet.APIError{Op: "update object", Status: http.StatusServiceUnavailable}
 	}
 	f.updates = append(f.updates, object)
 	if !f.objects[object.ID] {
@@ -380,7 +407,7 @@ func TestWalletCodeChecksInOnce(t *testing.T) {
 	if strings.Contains(f.wallet.Prometheus(), passID) {
 		t.Fatal("metrics name a pass")
 	}
-	if !strings.Contains(f.wallet.Prometheus(), `skylab_skypass_wallet_codes_total{outcome="used"} 3`) {
+	if !strings.Contains(f.wallet.Prometheus(), `skylab_skypass_google_wallet_codes_total{outcome="used"} 3`) {
 		t.Fatalf("metrics %s", f.wallet.Prometheus())
 	}
 }
@@ -562,6 +589,119 @@ func TestWalletLinkRacingAnErasureLeavesGoogleWithoutTheName(t *testing.T) {
 	}
 }
 
+// The write's answer may be lost (a timeout) after Google took it: the link
+// looks again then too, and withdraws a pass an erasure ended meanwhile.
+func TestWalletLinkWhoseWriteAnswerIsLostStillWithdrawsAnErasedPass(t *testing.T) {
+	t.Parallel()
+	f := newWalletFixture(t, testWalletConfig(), newFakeWalletAPI())
+	f.wallet.withdrawBackoff = []time.Duration{0, 0}
+	ctx := context.Background()
+	ada := f.member("Ada", "Lovelace", "SKY-0000042")
+	adaID := uuid.MustParse(ada.ID)
+	f.api.insertLost = true
+	f.api.beforeInsert = func() {
+		if n, err := f.wallet.EraseSubject(ctx, adaID); err != nil || n != 1 {
+			t.Errorf("erasure during the link: %d %v", n, err)
+		}
+	}
+	if _, err := f.svc.GoogleWalletLink(ctx, ada); !errors.Is(err, ErrConflict) {
+		t.Fatalf("link raced by an erasure: %v", err)
+	}
+	if len(f.api.inserts) != 1 || len(f.api.updates) != 2 {
+		t.Fatalf("inserts %d updates %d", len(f.api.inserts), len(f.api.updates))
+	}
+	if last := f.api.updates[len(f.api.updates)-1]; last.ID != f.api.inserts[0].ID || last.State != "INACTIVE" || last.RotatingBarcode != nil {
+		t.Fatalf("Google's last copy %+v", last)
+	}
+	if !strings.Contains(f.wallet.Prometheus(), `skylab_skypass_google_wallet_withdrawals_total{reason="link_race",outcome="done"} 1`) {
+		t.Fatalf("metrics %s", f.wallet.Prometheus())
+	}
+}
+
+// Google not answering the withdrawal of an erased pass would leave the
+// name with it and no row to try again from: the link tries a few times,
+// and counts a final failure for an alert.
+func TestWalletLinkRetriesTheWithdrawalOfAPassAnErasureEnded(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		failures int
+		outcome  string
+		last     string
+	}{
+		{"google answers on the third try", 2, "done", "INACTIVE"},
+		{"google never answers", 10, "failed", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newWalletFixture(t, testWalletConfig(), newFakeWalletAPI())
+			f.wallet.withdrawBackoff = []time.Duration{0, 0}
+			var logged []string
+			f.wallet.logf = func(format string, _ ...any) { logged = append(logged, format) }
+			ctx := context.Background()
+			ada := f.member("Ada", "Lovelace", "SKY-0000042")
+			adaID := uuid.MustParse(ada.ID)
+			f.api.beforeInsert = func() {
+				if n, err := f.wallet.EraseSubject(ctx, adaID); err != nil || n != 1 {
+					t.Errorf("erasure during the link: %d %v", n, err)
+				}
+				f.api.mu.Lock()
+				f.api.updateFailures = tc.failures
+				f.api.mu.Unlock()
+			}
+			if _, err := f.svc.GoogleWalletLink(ctx, ada); !errors.Is(err, ErrConflict) {
+				t.Fatalf("link %v", err)
+			}
+			// The erasure's own update, then the link's withdrawal.
+			got := ""
+			if len(f.api.updates) == 2 {
+				got = f.api.updates[1].State
+			}
+			if got != tc.last {
+				t.Fatalf("updates %+v", f.api.updates)
+			}
+			metrics := f.wallet.Prometheus()
+			want := `skylab_skypass_google_wallet_withdrawals_total{reason="link_race",outcome="` + tc.outcome + `"} 1`
+			if !strings.Contains(metrics, want) {
+				t.Fatalf("want %s in\n%s", want, metrics)
+			}
+			if tc.outcome == "failed" && !strings.Contains(metrics, `{reason="link_race",outcome="done"} 0`) {
+				t.Fatalf("metrics %s", metrics)
+			}
+			if tc.outcome == "failed" && len(logged) == 0 {
+				t.Fatal("a name left at Google was not logged")
+			}
+		})
+	}
+}
+
+// One link is bounded as a whole, however many Google calls it makes.
+func TestWalletLinkHasAnOverallDeadline(t *testing.T) {
+	t.Parallel()
+	f := newWalletFixture(t, testWalletConfig(), newFakeWalletAPI())
+	ctx := context.Background()
+	ada := f.member("Ada", "Lovelace", "SKY-0000042")
+	start := time.Now()
+	if _, err := f.svc.GoogleWalletLink(ctx, ada); err != nil {
+		t.Fatal(err)
+	}
+	if f.api.insertDeadline.IsZero() || f.api.insertDeadline.After(start.Add(DefaultWalletLinkTimeout+time.Second)) {
+		t.Fatalf("insert deadline %v", f.api.insertDeadline)
+	}
+
+	f.wallet.linkTimeout = 50 * time.Millisecond
+	f.api.mu.Lock()
+	f.api.blockInsert = true
+	f.api.mu.Unlock()
+	start = time.Now()
+	if _, err := f.svc.GoogleWalletLink(ctx, ada); !errors.Is(err, ErrWalletUpstream) {
+		t.Fatalf("link past its deadline %v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("took %v", took)
+	}
+}
+
 func TestWalletEraseSubjectWithdrawsEveryPass(t *testing.T) {
 	t.Parallel()
 	f := newWalletFixture(t, testWalletConfig(), newFakeWalletAPI())
@@ -660,7 +800,7 @@ func TestWalletLinkFailsCleanlyWhenGoogleRefuses(t *testing.T) {
 	if len(logged) != 1 {
 		t.Fatalf("logged %v", logged)
 	}
-	if !strings.Contains(f.wallet.Prometheus(), `skylab_skypass_wallet_links_total{outcome="failed"} 1`) {
+	if !strings.Contains(f.wallet.Prometheus(), `skylab_skypass_google_wallet_links_total{outcome="failed"} 1`) {
 		t.Fatalf("metrics %s", f.wallet.Prometheus())
 	}
 }

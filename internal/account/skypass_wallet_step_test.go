@@ -42,7 +42,8 @@ func TestErasureSagaWithdrawsTheWalletPassBeforeAnyService(t *testing.T) {
 	}
 	events := f.events.list()
 	wallet := slices.Index(events, "erase_skypass_wallet")
-	if wallet < 0 || wallet < slices.Index(events, "erase_contact_consents") {
+	consents := slices.Index(events, "erase_contact_consents")
+	if wallet < 0 || consents < 0 || wallet < consents {
 		t.Fatalf("events = %v", events)
 	}
 	for _, later := range []string{"erase_skymail", "erase_cms", "erase_forms", "anonymize_core", "delete_identity"} {

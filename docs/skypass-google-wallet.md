@@ -31,6 +31,8 @@ Writes the person's pass to Google (a new pass the first time, otherwise the sam
 
 Open `saveUrl` in the browser (on Android it hands over to Google Wallet). Ask for a new link each time the button is pressed; do not store, log or share it. The link names the pass only; the pass's secret never travels in it. The first Google account that saves the pass keeps it: a forwarded link cannot put the pass on someone else's account (the class is `ONE_USER_ALL_DEVICES`). Google Wallet asks the phone to be unlocked each time the pass is opened.
 
+**The link does not expire** (Google's save JWT has no `exp`), and whoever saves it first owns the pass with the person's name and working codes. So clients must not put `saveUrl` (or the JWT in it) in a query string, a redirect through another page, an analytics or error event, a log, or storage: open it directly from the `POST` answer, then drop it. A link that leaked before its owner saved it is cured by a revoke (`DELETE`) and a new link.
+
 | Status | `code` | Meaning |
 | --- | --- | --- |
 | 200 | | `saveUrl` |
@@ -38,8 +40,10 @@ Open `saveUrl` in the browser (on Android it hands over to Google Wallet). Ask f
 | 404 | | the person is not active (deletion pending or erased) |
 | 409 | | the pass was ended (a revoke, or the account's deletion) while the link was written; no link. Ask again |
 | 429 | `skypass_wallet_link_rate_limited` | more than 10 link or revoke calls in a minute; `retryAfterSeconds` |
-| 502 | `skypass_google_wallet_unavailable` | Google did not take the write; `Retry-After: 30` |
+| 502 | `skypass_google_wallet_unavailable` | Google did not take the write, or did not answer within the request's 20 seconds; `Retry-After: 30` |
 | 503 | `skypass_google_wallet_off` | Google Wallet is off |
+
+A link request makes several calls to Google (a token, the class the first time, withdrawals of revoked passes, the object); they share one 20-second deadline.
 
 ### `DELETE /v1/skypass/wallet/google`
 
@@ -53,8 +57,10 @@ A Wallet code is the QR value `SPW1:<pass id>:<8 digits>`, for example `SPW1:MKE
 
 | Route | What it does with a Wallet code |
 | --- | --- |
-| `POST /v1/sessions/{sessionId}/check-in/skypass` `{"token": "SPW1:…"}` | Checks the holder in, as for an in-app token. It **spends** the code: the same code, or an older one of the same pass, checks no one in again. |
+| `POST /v1/sessions/{sessionId}/check-in/skypass` `{"token": "SPW1:…"}` | Checks the holder in, as for an in-app token. It **spends** the code: the same code, or an older one of the same pass, checks no one in again. Only who may take check-ins at that Session's door (door staff of its Event, the owning team's leaders, Privileged, team door scan) gets that far: anyone else gets `403` before the code is read, so the code is not spent and the answer does not depend on the code. |
 | `POST /v1/skypass/verify` `{"token": "SPW1:…"}` | Answers the holder (`id`, `skyNumber`, `firstName`, `lastName`) without spending the code. A spent code is refused here too. Same permission as for in-app tokens (`ticket:validate`). |
+
+On the check-in route, the door comes first, for every credential (Wallet code, in-app token, Student card UID): `404` for no such Session, `403` for a caller who may not take check-ins there. Only then is the credential read.
 
 Answers specific to Wallet codes (others as for in-app tokens):
 
@@ -84,7 +90,7 @@ A 409 `skypass_wallet_code_used` after a network retry usually means the first r
 - **TOTP:** RFC 6238 with HMAC-SHA-1 (the only algorithm Google offers), T0 the Unix epoch, 60-second steps, 8 digits.
 - **Window:** the step of core's clock, one before and one after (a phone clock up to a minute off, or a scan that took a while).
 - **One use:** a check-in spends the code's step with one conditional update (`last_counter < step`), so two scans of the same code at once check in at most one. A code of a spent step or an older one is refused (`skypass_wallet_code_used`), also on `verify`. The pass's next code works.
-- **Who:** the pass's holder must be an active User, as for in-app tokens. Whether the scanner may check anyone in at that Event is the check-in route's decision, unchanged.
+- **Who:** the pass's holder must be an active User, as for in-app tokens. The scanner must be allowed to take check-ins at the Session's door; the check-in route asks that before it reads the code, so a member who photographs a pass in the queue cannot spend its code.
 - **Wrong codes:** ten per scanner and pass in ten minutes, then that scanner's codes for that pass wait for the window's end. Keyed by scanner too, so a stranger who saw the pass id cannot lock its holder out. A guess is about one in 33 million (three valid codes of 8 digits), and a right guess only checks the pass's holder in, which door staff can already do by name.
 
 ## Revocation and erasure
@@ -92,7 +98,7 @@ A 409 `skypass_wallet_code_used` after a network retry usually means the first r
 - **Lost phone, new phone:** the person revokes (`DELETE /v1/skypass/wallet/google`) and adds the pass again.
 - **Name or skyNumber changed:** the next link rewrites the pass; a saved pass keeps the old face until then.
 - **Deletion pending:** codes are refused from the moment the person asked (the holder is no longer active), and no new pass can be made for them (the table's account reference guard).
-- **A link written while the pass ends:** a revoke or an erasure can withdraw the pass while a link request is writing it to Google, and Google may take the link's write last. The link request reads the pass again after its write; if it has ended, it withdraws it once more and answers `409` without a link.
+- **A link written while the pass ends:** a revoke or an erasure can withdraw the pass while a link request is writing it to Google, and Google may take the link's write last. The link request reads the pass again after its write, also when the write failed or timed out (Google may have taken it anyway); if the pass has ended, it withdraws it once more and answers `409` without a link. That withdrawal is tried three times (after 0.5 s and 2 s), with its own 15-second bound. If all fail, `skylab_skypass_google_wallet_withdrawals_total{reason="link_race",outcome="failed"}` rises and the log names the object (`… object <issuer>.sp-<pass id> ended while its link was written …`): the erasure may already have deleted the row, so nothing tries again. Alert on that counter; withdraw the object by hand (a PUT of the inactive object, [The pass](#the-pass)).
 - **Erasure:** the `erase_skypass_wallet` step ([account-lifecycle.md](account-lifecycle.md#durable-erasure-flow)), right after `erase_contact_consents` and before the services, withdraws every pass of the person and deletes the rows. Google down or busy (no answer, 429, 5xx) defers the step like a service that is down; a refusal (for example a key Google no longer takes) spends attempts and ends in manual intervention. With Google Wallet switched off while a pass is left, the step revokes it (its codes stop) and fails, so the request goes to manual intervention rather than being reported erased while Google still holds the name: turn Google Wallet back on, or withdraw the object by hand, then retry.
 - **Leaving the club:** nothing is withdrawn. As with the in-app SkyPass, the door decides by the Ticket of the Event, not by the card.
 
@@ -103,7 +109,7 @@ A 409 `skypass_wallet_code_used` after a network retry usually means the first r
 | `SKYPASS_GOOGLE_WALLET_ENABLED` | | `true` or `false` (unset: `false`). `false` reads none of the others. |
 | `SKYPASS_GOOGLE_WALLET_ISSUER_ID` | yes | the issuer's number (Google Pay & Wallet console) |
 | `SKYPASS_GOOGLE_WALLET_CLASS_SUFFIX` | yes | this side's class, for example `skypass-production`, `skypass-sandbox` (letters, digits, `.`, `_`, `-`) |
-| `SKYPASS_GOOGLE_WALLET_SERVICE_ACCOUNT_JSON` | yes | the service account's JSON key, base64-encoded on one line (raw JSON also works). An OpenBao reference in Dokploy (ADR-0049). |
+| `SKYPASS_GOOGLE_WALLET_SERVICE_ACCOUNT_JSON` | yes | the service account's JSON key, standard padded base64 (`base64 < key.json \| tr -d '\n'`; line breaks are ignored), or the raw JSON. An OpenBao reference in Dokploy (ADR-0049). |
 | `SKYPASS_GOOGLE_WALLET_TOTP_KEY` | yes | 32 random bytes, unpadded base64url. An OpenBao reference in Dokploy. Each side its own. |
 | `SKYPASS_GOOGLE_WALLET_ORIGINS` | no | comma-separated web origins allowed to show Google's save button for core's links (the JWT's `origins`); `https`, or `http` on localhost |
 | `SKYPASS_GOOGLE_WALLET_LOGO_URL` | no | an `https` logo for the pass |
@@ -112,17 +118,19 @@ With `true`, a missing or malformed setting stops core at startup; the error nam
 
 **Do not rotate `SKYPASS_GOOGLE_WALLET_TOTP_KEY` while passes are out** unless it leaked: every saved pass stops opening the door until its holder asks for the link again (`POST /v1/skypass/wallet/google` rewrites the pass with the key of the moment, and Google updates the saved pass on the phone). There is no key version in v1.
 
+**Do not roll core back past this release once Google Wallet has been on.** An older image's erasure has no `erase_skypass_wallet` step: it would report a person erased while Google still shows their name, and the later account purge deletes the pass rows with no trace. To go back anyway: set `SKYPASS_GOOGLE_WALLET_ENABLED=false` (no new passes, codes refused), withdraw by hand the Google object of every row left in `skypass_google_wallet_passes` (a PUT of the inactive object, [The pass](#the-pass)) and delete those rows, then roll back.
+
 ## Metrics
 
 On `/v1/metrics` (internal only), without any person, pass or code:
 
 - `skylab_skypass_google_wallet_enabled` (gauge)
-- `skylab_skypass_wallet_codes_total{outcome}`: `accepted`, `malformed`, `unknown_pass`, `revoked`, `wrong_code`, `used`, `inactive_account`, `rate_limited`, `off`
-- `skylab_skypass_wallet_code_skew_total{step}`: `-1`, `0`, `1` for accepted codes; many `-1`/`1` is a clock that is off
-- `skylab_skypass_wallet_links_total{outcome}`: `issued`, `failed`, `off`
-- `skylab_skypass_wallet_withdrawals_total{reason,outcome}`: reasons `member`, `erasure`, `retry`
+- `skylab_skypass_google_wallet_codes_total{outcome}`: `accepted`, `malformed`, `unknown_pass`, `revoked`, `wrong_code`, `used`, `inactive_account`, `rate_limited`, `off`
+- `skylab_skypass_google_wallet_code_skew_total{step}`: `-1`, `0`, `1` for accepted codes; many `-1`/`1` is a clock that is off
+- `skylab_skypass_google_wallet_links_total{outcome}`: `issued`, `failed`, `off`
+- `skylab_skypass_google_wallet_withdrawals_total{reason,outcome}`: reasons `member` (a revoke), `erasure`, `retry` (revoked passes withdrawn at the next link; a failure leaves the row for the next try), `link_race` (a pass that ended while its link was written; **alert on `outcome="failed"` > 0**, see [Revocation and erasure](#revocation-and-erasure))
 
-Logs name the operation, the HTTP status and Google's error status (`INVALID_ARGUMENT`, `PERMISSION_DENIED`, …), never Google's message (it may quote what was sent), a token, a key, a code or a link.
+Logs name the operation, the HTTP status and Google's error status (`INVALID_ARGUMENT`, `PERMISSION_DENIED`, …), never Google's message (it may quote what was sent), a token, a key, a code or a link. The one log that names a Google object (its id holds the pass id, no person) is the `link_race` failure, so the object can be withdrawn by hand.
 
 ## Against the standards
 
@@ -137,8 +145,9 @@ Deviations:
 - **Online only, no Queued check-in (ADR-0022).** ADR-0022 and CONTEXT ("a 60-second Google code … valid at the door if unexpired and signed") assume the scanner checks a Wallet code on the device. A TOTP is not a signature, and sending every pass's secret to staff phones is not acceptable, so the door is fail-closed for Wallet codes when core is down; the Student card and the desk remain. An e-skylab ADR amendment should record this.
 - **One step forward too.** RFC 6238 recommends at most one step backward; core also takes one step ahead, for a phone clock that runs fast.
 - **`verify` does not spend.** A staff check of who the code belongs to leaves the code for the check-in; only the check-in spends it.
-- **A spent code is spent before the check-in is written.** If the check-in then fails (no Ticket, the scanner may not check in at that Event), the code stays spent and the pass's next code (within a minute) is needed.
+- **A spent code is spent before the check-in is written.** If the check-in then fails (the holder has no Ticket for that Event, a duplicate), the code stays spent and the pass's next code (within a minute) is needed. A scanner that may not take check-ins at that Session is refused before the code is read and spends nothing.
 - **Derived, not stored, secrets.** The common pattern stores a random secret per pass, encrypted at rest (core's OpenBao Transit). Here the secret is derived from one key and the public pass id: nothing secret at rest and the door does not depend on OpenBao. The cost: whoever holds the key and has seen a barcode can compute that pass's codes, the same trust the in-app SkyPass signing key carries, and after a key rotation every holder has to ask for the link again.
 - **Unlock to view.** Transit passes usually open without unlocking; a membership credential asks for the unlock, so a lost locked phone does not show it.
 - **No Smart Tap (NFC).** It needs a certified terminal; it is the later slice (CONTEXT: Wallet).
+- **A save link without expiry.** Google's save JWT has no `exp`, so a leaked link stays usable until someone saves it; clients keep it out of URLs, logs and storage, and a revoke ends it.
 - **Withdrawal, not deletion.** Google has no delete for objects; core overwrites the object without the person's data and marks it inactive. Whatever history Google keeps of earlier versions is Google's (Google Wallet API terms).

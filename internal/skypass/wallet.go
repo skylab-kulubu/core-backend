@@ -75,7 +75,20 @@ const (
 	// pass's holder in, which door staff can do by name anyway.
 	DefaultWalletFailureLimit  = 10
 	DefaultWalletFailureWindow = 10 * time.Minute
+	// DefaultWalletLinkTimeout bounds one link or revoke as a whole: the
+	// token, the class, revoked passes, the object, each up to
+	// googlewallet.DefaultTimeout.
+	DefaultWalletLinkTimeout = 20 * time.Second
 )
+
+// walletRaceTimeout bounds the second look after a link's write and the
+// withdrawal of a pass that ended meanwhile. It runs past the link's own
+// deadline, which may be what ended the write.
+const walletRaceTimeout = 15 * time.Second
+
+// walletRaceBackoff is the wait before each further try of that
+// withdrawal.
+var walletRaceBackoff = []time.Duration{500 * time.Millisecond, 2 * time.Second}
 
 type WalletOptions struct {
 	Now           func() time.Time
@@ -99,8 +112,9 @@ type Wallet struct {
 	failures *walletFailures
 	metrics  *walletMetrics
 
-	classMu    sync.Mutex
-	classReady bool
+	linkTimeout     time.Duration
+	withdrawBackoff []time.Duration
+	classReady      atomic.Bool
 }
 
 func NewWallet(config GoogleWalletConfig, api GoogleWalletAPI, store WalletStore, users user.Store, opts WalletOptions) *Wallet {
@@ -119,7 +133,8 @@ func NewWallet(config GoogleWalletConfig, api GoogleWalletAPI, store WalletStore
 	w := &Wallet{
 		config: config, api: api, store: store, users: users,
 		now: opts.Now, logf: opts.Logf,
-		failures: &walletFailures{limit: opts.FailureLimit, window: opts.FailureWindow, entries: map[string]walletFailure{}},
+		failures:    &walletFailures{limit: opts.FailureLimit, window: opts.FailureWindow, entries: map[string]walletFailure{}},
+		linkTimeout: DefaultWalletLinkTimeout, withdrawBackoff: walletRaceBackoff,
 	}
 	w.metrics = newWalletMetrics(w.Enabled())
 	return w
@@ -152,6 +167,8 @@ func (w *Wallet) googleLink(ctx context.Context, u user.User) (WalletLink, error
 		}
 		return WalletLink{}, ErrWalletOff
 	}
+	ctx, cancel := context.WithTimeout(ctx, w.linkTimeout)
+	defer cancel()
 	if err := w.ensureClass(ctx); err != nil {
 		w.metrics.links.add("failed")
 		w.logf("skypass google wallet: class %s: %v", w.config.ClassID(), err)
@@ -186,29 +203,30 @@ func (w *Wallet) googleLink(ctx context.Context, u user.User) (WalletLink, error
 		}
 	}
 	object := w.passObject(pass, u)
-	err = w.api.InsertGenericObject(ctx, object)
-	if errors.Is(err, googlewallet.ErrConflict) {
+	writeErr := w.api.InsertGenericObject(ctx, object)
+	if errors.Is(writeErr, googlewallet.ErrConflict) {
 		// Saved before: the name or skyNumber may have changed since.
-		err = w.api.UpdateGenericObject(ctx, object)
-	}
-	if err != nil {
-		w.metrics.links.add("failed")
-		w.logf("skypass google wallet: writing a pass: %v", err)
-		return WalletLink{}, ErrWalletUpstream
+		writeErr = w.api.UpdateGenericObject(ctx, object)
 	}
 	// A revoke or an erasure may have withdrawn the pass while this write
-	// was on its way, and Google may have taken this write last: look
-	// again, and withdraw the pass once more so Google keeps no name.
-	current, found, err := w.store.PassByID(ctx, pass.PassID)
-	if err != nil {
-		return WalletLink{}, err
-	}
-	if !found || current.RevokedAt != nil {
-		if _, err := w.withdrawPasses(ctx, []WalletPass{pass}, "retry"); err != nil {
-			w.logf("skypass google wallet: withdrawing a pass ended while its link was written: %v", err)
-		}
+	// was on its way, and Google may have taken this write last, even one
+	// whose answer was lost: look again, and withdraw the pass once more so
+	// Google keeps no name.
+	after, cancelAfter := context.WithTimeout(context.WithoutCancel(ctx), walletRaceTimeout)
+	defer cancelAfter()
+	current, found, readErr := w.store.PassByID(after, pass.PassID)
+	if readErr == nil && (!found || current.RevokedAt != nil) {
+		w.withdrawRaced(after, pass)
 		w.metrics.links.add("failed")
 		return WalletLink{}, ErrConflict
+	}
+	if writeErr != nil {
+		w.metrics.links.add("failed")
+		w.logf("skypass google wallet: writing a pass: %v", writeErr)
+		return WalletLink{}, ErrWalletUpstream
+	}
+	if readErr != nil {
+		return WalletLink{}, readErr
 	}
 	link, err := w.api.SaveURL(w.config.Origins, []googlewallet.ObjectRef{{ID: object.ID, ClassID: object.ClassID}})
 	if err != nil {
@@ -220,13 +238,50 @@ func (w *Wallet) googleLink(ctx context.Context, u user.User) (WalletLink, error
 	return WalletLink{SaveURL: link}, nil
 }
 
+// withdrawRaced withdraws a pass a revoke or an erasure ended while its link
+// was being written. Its row may be gone already (an erasure deletes it when
+// Google has no object yet), and then nothing else would try again: it tries
+// a few times now, and a final failure is counted
+// (withdrawals_total{reason="link_race",outcome="failed"}) and logged with
+// the object to withdraw by hand (docs/skypass-google-wallet.md).
+func (w *Wallet) withdrawRaced(ctx context.Context, pass WalletPass) {
+	var err error
+	for attempt := 0; ; attempt++ {
+		if _, err = w.withdrawAll(ctx, []WalletPass{pass}); err == nil {
+			w.metrics.withdrawals.add("link_race,done")
+			return
+		}
+		if attempt >= len(w.withdrawBackoff) || !sleepContext(ctx, w.withdrawBackoff[attempt]) {
+			break
+		}
+	}
+	w.metrics.withdrawals.add("link_race,failed")
+	w.logf("skypass google wallet: object %s ended while its link was written and Google may still show it; withdraw it by hand: %v",
+		w.objectID(pass.PassID), err)
+}
+
+// sleepContext waits d, or less if ctx ends first; it reports whether ctx is
+// still live.
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 // ensureClass writes this environment's class once per process: one user
 // per pass (a forwarded link cannot put the pass on someone else's
-// account), and the phone unlocked to open it.
+// account), and the phone unlocked to open it. No lock is held across the
+// call: two first links may both write the class, which is idempotent.
 func (w *Wallet) ensureClass(ctx context.Context) error {
-	w.classMu.Lock()
-	defer w.classMu.Unlock()
-	if w.classReady {
+	if w.classReady.Load() {
 		return nil
 	}
 	err := w.api.EnsureGenericClass(ctx, googlewallet.GenericClass{
@@ -235,7 +290,7 @@ func (w *Wallet) ensureClass(ctx context.Context) error {
 		ViewUnlockRequirement:                  googlewallet.UnlockRequiredToView,
 	})
 	if err == nil {
-		w.classReady = true
+		w.classReady.Store(true)
 	}
 	return err
 }
@@ -308,6 +363,8 @@ func (w *Wallet) revokeGoogle(ctx context.Context, userID uuid.UUID) error {
 	if !w.Enabled() {
 		return ErrWalletOff
 	}
+	ctx, cancel := context.WithTimeout(ctx, w.linkTimeout)
+	defer cancel()
 	_, err := w.withdraw(ctx, userID, "member")
 	return err
 }
@@ -336,6 +393,17 @@ func (w *Wallet) withdraw(ctx context.Context, userID uuid.UUID, reason string) 
 // does not know is done; one Google did not take stays revoked for the
 // next try.
 func (w *Wallet) withdrawPasses(ctx context.Context, passes []WalletPass, reason string) (int64, error) {
+	done, err := w.withdrawAll(ctx, passes)
+	if err != nil {
+		w.metrics.withdrawals.add(reason + ",failed")
+		return done, err
+	}
+	w.metrics.withdrawals.add(reason + ",done")
+	return done, nil
+}
+
+// withdrawAll is withdrawPasses without counting.
+func (w *Wallet) withdrawAll(ctx context.Context, passes []WalletPass) (int64, error) {
 	now := w.now().UTC()
 	for _, p := range passes {
 		if p.RevokedAt == nil {
@@ -345,7 +413,6 @@ func (w *Wallet) withdrawPasses(ctx context.Context, passes []WalletPass, reason
 		}
 	}
 	if w.api == nil || !w.config.Enabled {
-		w.metrics.withdrawals.add(reason + ",failed")
 		return 0, fmt.Errorf("%w: %d SkyPass wallet passes wait to be withdrawn from Google", ErrWalletOff, len(passes))
 	}
 	var done int64
@@ -367,7 +434,6 @@ func (w *Wallet) withdrawPasses(ctx context.Context, passes []WalletPass, reason
 		done++
 	}
 	if first != nil {
-		w.metrics.withdrawals.add(reason + ",failed")
 		err := fmt.Errorf("%w: %d of %d passes not withdrawn: %v", ErrWalletUpstream, int64(len(passes))-done, len(passes), first)
 		if transientGoogleError(first) {
 			// Google is down or busy: the erasure worker waits for it the
@@ -376,7 +442,6 @@ func (w *Wallet) withdrawPasses(ctx context.Context, passes []WalletPass, reason
 		}
 		return done, err
 	}
-	w.metrics.withdrawals.add(reason + ",done")
 	return done, nil
 }
 
@@ -592,14 +657,15 @@ type walletMetrics struct {
 func newWalletMetrics(enabled bool) *walletMetrics {
 	return &walletMetrics{
 		enabled: enabled,
-		codes: newWalletCounter("skylab_skypass_wallet_codes_total", "outcome",
+		codes: newWalletCounter("skylab_skypass_google_wallet_codes_total", "outcome",
 			"accepted", "malformed", "unknown_pass", "revoked", "wrong_code", "used", "inactive_account", "rate_limited", "off"),
 		// Which step an accepted code was of, against core's clock: many
 		// -1/+1 is a phone or server clock that is off.
-		skew:  newWalletCounter("skylab_skypass_wallet_code_skew_total", "step", "-1", "0", "1"),
-		links: newWalletCounter("skylab_skypass_wallet_links_total", "outcome", "issued", "failed", "off"),
-		withdrawals: newWalletCounter("skylab_skypass_wallet_withdrawals_total", "reason,outcome",
-			"member,done", "member,failed", "erasure,done", "erasure,failed", "retry,done", "retry,failed"),
+		skew:  newWalletCounter("skylab_skypass_google_wallet_code_skew_total", "step", "-1", "0", "1"),
+		links: newWalletCounter("skylab_skypass_google_wallet_links_total", "outcome", "issued", "failed", "off"),
+		withdrawals: newWalletCounter("skylab_skypass_google_wallet_withdrawals_total", "reason,outcome",
+			"member,done", "member,failed", "erasure,done", "erasure,failed", "retry,done", "retry,failed",
+			"link_race,done", "link_race,failed"),
 	}
 }
 

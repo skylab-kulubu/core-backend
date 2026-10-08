@@ -39,7 +39,8 @@ const (
 	// SaveURLPrefix starts every "Add to Google Wallet" link.
 	SaveURLPrefix = "https://pay.google.com/gp/v/save/"
 	// MaxSaveJWTLength is the length Google calls safe for the signed JWT
-	// of a save link; longer links may be cut by browsers.
+	// of a save link; longer links may be cut by browsers, so SaveURL
+	// refuses them.
 	MaxSaveJWTLength = 1800
 
 	// DefaultTimeout bounds each request to Google.
@@ -167,14 +168,10 @@ func parseServiceAccount(raw string, allowHTTPToken bool) (ServiceAccount, error
 	}, nil
 }
 
+// decodeBase64 reads standard, padded base64 as `base64` prints it; line
+// breaks and spaces are ignored.
 func decodeBase64(raw string) ([]byte, error) {
-	compact := strings.Join(strings.Fields(raw), "")
-	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
-		if decoded, err := enc.DecodeString(compact); err == nil {
-			return decoded, nil
-		}
-	}
-	return nil, errors.New("not base64")
+	return base64.StdEncoding.DecodeString(strings.Join(strings.Fields(raw), ""))
 }
 
 func parseRSAKey(pemText string) (*rsa.PrivateKey, error) {
@@ -267,6 +264,10 @@ func (c *Client) SaveURL(origins []string, objects []ObjectRef) (string, error) 
 	signed, err := token.SignedString(c.account.key)
 	if err != nil {
 		return "", errors.New("googlewallet: cannot sign the save link")
+	}
+	if len(signed) > MaxSaveJWTLength {
+		// A browser may cut it: the person would get a broken link.
+		return "", fmt.Errorf("googlewallet: the save link's JWT is %d characters, over %d; name fewer origins", len(signed), MaxSaveJWTLength)
 	}
 	return SaveURLPrefix + signed, nil
 }
