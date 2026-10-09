@@ -60,9 +60,13 @@ The screen encodes `url` in the QR and asks for a new one every
 `url` is `DOOR_QR_GUEST_URL` with `{sessionId}` filled in and `dq=<token>`
 added. Unset, it is the Session's API address, the shape the static Session
 QR already has, so sky-app's Session QR scanner reads it as that Session
-(and ignores `dq`). A guest's phone camera needs a web page instead: it will
-be a page without sign-in in core-frontend; set `DOOR_QR_GUEST_URL` once it
-exists.
+(and ignores `dq`). A guest's phone camera needs a web page instead: the
+guest page lives in skylab-site at `/kapi/{sessionId}?dq=…` (no sign-in,
+skylab-site#40). `DOOR_QR_GUEST_URL`:
+
+- sandbox: `https://sandbox.yildizskylab.com/kapi/{sessionId}` (set);
+- production: `https://yildizskylab.com/kapi/{sessionId}`, set after the
+  skylab-site production release that ships the page (unset until then).
 
 ### `POST /v1/sessions/{sessionId}/check-in/guest`
 
@@ -174,9 +178,11 @@ Requests refused by the per-address budget (429) do not reach the counters.
    nobody calls the route).
 2. `GUEST_SELF_CHECKIN_MODE=qr` right after the release: nobody calls the
    route, so nothing breaks, and guests cannot check themselves in until the
-   door screens exist, which is already the case in practice.
-3. The door screen ships (core-frontend; sky-app staff scanner) and the
-   guest page (core-frontend, no sign-in); then `DOOR_QR_GUEST_URL`.
+   door screens exist, which is already the case in practice. Production
+   has run `qr` since 2026-10-04.
+3. The door screen ships (core-frontend#20; sky-app staff scanner) and the
+   guest page (skylab-site#40, `/kapi/{sessionId}`, no sign-in); then
+   `DOOR_QR_GUEST_URL` (values above).
    Contract: `sky_lab_genel/.scratch/core-internal-auth/door-qr-sozlesme.md`.
 
 Rollback: `GUEST_SELF_CHECKIN_MODE=open`.
