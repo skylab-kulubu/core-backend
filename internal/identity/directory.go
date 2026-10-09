@@ -111,6 +111,10 @@ type Directory interface {
 	SearchUsers(ctx context.Context, query string, limit int) ([]Person, error)
 	ListClientRoles(ctx context.Context) ([]ClientRole, error)
 	UsersWithClientRole(ctx context.Context, clientID, role string) ([]Person, error)
+	// EffectiveClientRoles answers the names of clientID's roles the person
+	// holds in effect: directly, through Groups and the Groups above them,
+	// the default roles and composites. ErrNotFound: no such client or person.
+	EffectiveClientRoles(ctx context.Context, userID uuid.UUID, clientID string) ([]string, error)
 	CreateUser(ctx context.Context, p Person) (Person, error)
 	GetUser(ctx context.Context, id uuid.UUID) (Person, error)
 	DisableUser(ctx context.Context, id uuid.UUID) error
