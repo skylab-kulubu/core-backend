@@ -657,7 +657,7 @@ func main() {
 		render = &certificate.Gotenberg{BaseURL: baseURL}
 	}
 
-	passKey, err := loadSkyPassKey()
+	passKey, err := loadSkyPassKey(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -976,12 +976,41 @@ func doorQRGate(getenv func(string) string, passKey *ecdsa.PrivateKey) (*doorqr.
 	return gate, nil
 }
 
-func loadSkyPassKey() (*ecdsa.PrivateKey, error) {
-	if raw := os.Getenv("SKYPASS_EC_PRIVATE_KEY"); raw != "" {
-		return skypass.ParseSigningKey([]byte(raw))
+// skyPassEphemeralKeyEnv lets core start without a SkyPass key, signing with
+// a random one made at start-up. Development only: every restart then
+// invalidates the SkyPass and door QRs on screen, and replicas disagree.
+const skyPassEphemeralKeyEnv = "SKYPASS_EPHEMERAL_KEY"
+
+// loadSkyPassKey reads the SkyPass signing key (SKYPASS_EC_PRIVATE_KEY, or the
+// legacy SKYPASS_RSA_PRIVATE_KEY): a PEM private key, its line breaks either
+// real or written as \n on one line. Without one core does not start unless
+// SKYPASS_EPHEMERAL_KEY=true asks for a random key. Errors name the variable,
+// never its value.
+func loadSkyPassKey(getenv func(string) string) (*ecdsa.PrivateKey, error) {
+	for _, name := range []string{"SKYPASS_EC_PRIVATE_KEY", "SKYPASS_RSA_PRIVATE_KEY"} {
+		raw := strings.TrimSpace(getenv(name))
+		if raw == "" {
+			continue
+		}
+		if !strings.Contains(raw, "\n") {
+			raw = strings.ReplaceAll(raw, `\n`, "\n")
+		}
+		key, err := skypass.ParseSigningKey([]byte(raw))
+		if err != nil {
+			return nil, fmt.Errorf("%s is not a PEM private key core can use (P-256 EC, or RSA for the legacy variable)", name)
+		}
+		log.Printf("skypass signing key: from %s", name)
+		return key, nil
 	}
-	if raw := os.Getenv("SKYPASS_RSA_PRIVATE_KEY"); raw != "" {
-		return skypass.ParseSigningKey([]byte(raw))
+	switch strings.TrimSpace(getenv(skyPassEphemeralKeyEnv)) {
+	case "true":
+		log.Printf("WARNING: skypass signing key: none set, %s=true: a random key made at start-up. Development only: "+
+			"every restart invalidates the SkyPass and door QRs on screen, and replicas do not accept each other's", skyPassEphemeralKeyEnv)
+		return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	case "", "false":
+		return nil, fmt.Errorf("SKYPASS_EC_PRIVATE_KEY is required (a P-256 PEM private key; docs/guest-self-check-in.md); "+
+			"for development without one, set %s=true", skyPassEphemeralKeyEnv)
+	default:
+		return nil, fmt.Errorf("%s must be true or false", skyPassEphemeralKeyEnv)
 	}
-	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 }

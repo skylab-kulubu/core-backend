@@ -31,10 +31,10 @@ func TestLoadSkyPassKeyPrefersExplicitP256Environment(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	t.Setenv("SKYPASS_EC_PRIVATE_KEY", string(raw))
-	t.Setenv("SKYPASS_RSA_PRIVATE_KEY", "invalid legacy value")
-
-	got, err := loadSkyPassKey()
+	got, err := loadSkyPassKey(envMap(map[string]string{
+		"SKYPASS_EC_PRIVATE_KEY":  string(raw),
+		"SKYPASS_RSA_PRIVATE_KEY": "invalid legacy value",
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,15 +72,112 @@ func TestLoadSkyPassKeyDerivesES256FromLegacyRSAEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(legacy)})
-	t.Setenv("SKYPASS_EC_PRIVATE_KEY", "")
-	t.Setenv("SKYPASS_RSA_PRIVATE_KEY", string(raw))
-
-	key, err := loadSkyPassKey()
+	key, err := loadSkyPassKey(envMap(map[string]string{"SKYPASS_RSA_PRIVATE_KEY": string(raw)}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if key.Curve != elliptic.P256() {
 		t.Fatalf("curve = %v", key.Curve)
+	}
+}
+
+func envMap(env map[string]string) func(string) string {
+	return func(k string) string { return env[k] }
+}
+
+func ecKeyPEM(t *testing.T) (*ecdsa.PrivateKey, string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key, string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}))
+}
+
+// Outside development a missing key stops startup: a random key would change
+// at every restart and differ between replicas, so SkyPass and door QRs
+// issued by one process would fail on the next.
+func TestLoadSkyPassKeyRefusesToStartWithoutAKey(t *testing.T) {
+	t.Parallel()
+
+	for _, flag := range []string{"", "false"} {
+		key, err := loadSkyPassKey(envMap(map[string]string{skyPassEphemeralKeyEnv: flag}))
+		if err == nil || key != nil {
+			t.Fatalf("%s=%q: started without a SkyPass key", skyPassEphemeralKeyEnv, flag)
+		}
+		if !strings.Contains(err.Error(), "SKYPASS_EC_PRIVATE_KEY") || !strings.Contains(err.Error(), skyPassEphemeralKeyEnv) {
+			t.Fatalf("error does not name the variables: %v", err)
+		}
+	}
+}
+
+func TestLoadSkyPassKeyMakesARandomKeyOnlyWhenDevelopmentAsksForIt(t *testing.T) {
+	t.Parallel()
+
+	a, err := loadSkyPassKey(envMap(map[string]string{skyPassEphemeralKeyEnv: "true"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := loadSkyPassKey(envMap(map[string]string{skyPassEphemeralKeyEnv: " true "}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Curve != elliptic.P256() || a.D.Cmp(b.D) == 0 {
+		t.Fatal("development key is not a fresh P-256 key")
+	}
+	if _, err := loadSkyPassKey(envMap(map[string]string{skyPassEphemeralKeyEnv: "yes"})); err == nil ||
+		!strings.Contains(err.Error(), skyPassEphemeralKeyEnv) {
+		t.Fatalf("a flag typo was accepted: %v", err)
+	}
+}
+
+func TestLoadSkyPassKeyPrefersTheConfiguredKeyOverTheDevelopmentFlag(t *testing.T) {
+	t.Parallel()
+
+	want, raw := ecKeyPEM(t)
+	got, err := loadSkyPassKey(envMap(map[string]string{"SKYPASS_EC_PRIVATE_KEY": raw, skyPassEphemeralKeyEnv: "true"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.D.Cmp(want.D) != 0 {
+		t.Fatal("the development flag replaced the configured key")
+	}
+}
+
+// A one-line env file carries the PEM with \n escapes; core reads it the same.
+func TestLoadSkyPassKeyReadsAPEMWithEscapedNewlines(t *testing.T) {
+	t.Parallel()
+
+	want, raw := ecKeyPEM(t)
+	oneLine := strings.ReplaceAll(strings.TrimRight(raw, "\n"), "\n", `\n`)
+	if strings.Contains(oneLine, "\n") {
+		t.Fatal("test value still has a newline")
+	}
+	got, err := loadSkyPassKey(envMap(map[string]string{"SKYPASS_EC_PRIVATE_KEY": oneLine}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.D.Cmp(want.D) != 0 {
+		t.Fatal("escaped PEM loaded another key")
+	}
+}
+
+func TestLoadSkyPassKeyNamesTheBadVariableButNeverItsValue(t *testing.T) {
+	t.Parallel()
+
+	const secretish = "not-a-key-but-must-not-be-logged"
+	for _, name := range []string{"SKYPASS_EC_PRIVATE_KEY", "SKYPASS_RSA_PRIVATE_KEY"} {
+		_, err := loadSkyPassKey(envMap(map[string]string{name: secretish, skyPassEphemeralKeyEnv: "true"}))
+		if err == nil {
+			t.Fatalf("%s: a malformed key was accepted (or replaced by a random one)", name)
+		}
+		if !strings.Contains(err.Error(), name) || strings.Contains(err.Error(), secretish) {
+			t.Fatalf("%s: error %q", name, err)
+		}
 	}
 }
 
