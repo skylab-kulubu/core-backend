@@ -42,15 +42,16 @@ The reads that answer for another person (`GET /v1/users/{id}`, `GET /v1/users`,
 1. `disable_identity`: disable the Keycloak identity;
 2. `logout_sessions`: log out all Keycloak sessions;
 3. `erase_contact_consents`: delete the person's contact consents, open or ended: their account's and those given for any of the pass's addresses ([contact-consents.md](contact-consents.md), ADR-0062; no suppression list remains). It is core's own and waits for no service, so it runs before them: a person who asked to be erased gets no further invitation while a service holds the saga (the CMS waits out its token window, a service that is down defers);
-4. `erase_skymail`: send SkyMail the [Erasure command](account-erasure-command.md);
-5. `erase_cms`: send CMS the Erasure command;
-6. `erase_forms`: send Forms the Erasure command (steps 4–6 are the service erasure steps below; every pass tries each unfinished one);
-7. `anonymize_core`: anonymize Core PII, detach historical identity links and clear core's guest data of the person's addresses; before it clears the person's uploader links it records, by id only, every upload of theirs but a current profile picture no one else uses for `erase_profile_media`, and clears the file name of every upload of theirs ([media-lifecycle.md](media-lifecycle.md#account-erasure));
-8. `erase_profile_media`: erase immediately the profile picture (only when nothing else uses it) and the personal-purpose Media recorded by `anonymize_core` (whatever still uses them); the club content it recorded keeps its file, served without the person's file name;
-9. `erase_staged_uploads`: wait for and erase every durable staged upload owned by the subject;
-10. `delete_identity`: delete the Keycloak identity.
+4. `erase_skypass_wallet`: withdraw the person's SkyPass passes from Google Wallet ([skypass-google-wallet.md](skypass-google-wallet.md)): each pass stops opening the door at once, then Google's copy is replaced by an inactive one without the person's name or skyNumber and core's row is deleted. Core's own like the consents, so it runs before the services. Google being down defers the step like a service that is down; a pass left while Google Wallet is switched off fails it;
+5. `erase_skymail`: send SkyMail the [Erasure command](account-erasure-command.md);
+6. `erase_cms`: send CMS the Erasure command;
+7. `erase_forms`: send Forms the Erasure command (steps 5–7 are the service erasure steps below; every pass tries each unfinished one);
+8. `anonymize_core`: anonymize Core PII, detach historical identity links and clear core's guest data of the person's addresses; before it clears the person's uploader links it records, by id only, every upload of theirs but a current profile picture no one else uses for `erase_profile_media`, and clears the file name of every upload of theirs ([media-lifecycle.md](media-lifecycle.md#account-erasure));
+9. `erase_profile_media`: erase immediately the profile picture (only when nothing else uses it) and the personal-purpose Media recorded by `anonymize_core` (whatever still uses them); the club content it recorded keeps its file, served without the person's file name;
+10. `erase_staged_uploads`: wait for and erase every durable staged upload owned by the subject;
+11. `delete_identity`: delete the Keycloak identity.
 
-Steps run in this order and a failure ends the pass, so a step runs only once every step before it is checkpointed: `anonymize_core` waits for all three services, and `delete_identity` for steps 1–9. While a service is unavailable the person is disabled and logged out and holds no session, core keeps their row and Keycloak keeps the disabled user; only the erasure is late. A request is `completed` only after all ten checkpoints.
+Steps run in this order and a failure ends the pass, so a step runs only once every step before it is checkpointed: `anonymize_core` waits for all three services, and `delete_identity` for steps 1–10. While a service is unavailable the person is disabled and logged out and holds no session, core keeps their row and Keycloak keeps the disabled user; only the erasure is late. A request is `completed` only after all eleven checkpoints.
 
 The worker leases one request at a time. Every claim receives a new random fence token; step checkpoints, retry transitions and request completion succeed only for the current token. An expired worker therefore cannot overwrite a newer claim. A crashed or uncertain external call is safe to retry: completed steps are skipped, Keycloak `404 Not Found` is treated as the desired result, and a service answers a repeated command from its receipt (the CMS and Forms keep none: they do the work again and count `0`). An ordinary failure spends one of the request's eight attempts, 30 seconds apart; a rejection goes to `manual_intervention` at once. A deferred failure (a service that answers late, a staged upload still leased) gives its attempt back until the deferral horizon, the staging grace plus 24 hours from the request's creation; past the horizon it spends one like any other. An `erase_profile_media` pass that erased some of its Media but not all gives its attempt back past the horizon too: every such pass leaves fewer, and a pass that erases none spends its attempt, so a person with many files is not sent to manual intervention because a late service used up the horizon. Exhausting the retry budget changes the request to `manual_intervention`; it is no longer claimed automatically and retains only a stable error code.
 
@@ -73,7 +74,7 @@ Before any erasure step can advance, in core or in another service, the shared a
 
 ## Service erasure steps
 
-ADR-0051 has this worker send SkyMail, CMS and Forms one Erasure command each, as steps 4–6 of the saga above; the contract is [`account-erasure-command.md`](account-erasure-command.md).
+ADR-0051 has this worker send SkyMail, CMS and Forms one Erasure command each, as steps 5–7 of the saga above; the contract is [`account-erasure-command.md`](account-erasure-command.md).
 
 **Registry.** A fixed list in code (`internal/erasure`). A new service that stores personal data is not finished until it has an entry here.
 

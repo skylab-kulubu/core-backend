@@ -91,6 +91,7 @@ func (f *recordsFixture) requestDeletion(t *testing.T, eraser account.MediaErase
 	confirmDeletionProjection(t, f.users, request, f.now)
 	return account.NewWorkerWithConfiguredWaits(f.users, successfulIdentity{}, account.WorkerConfig{
 		ContactConsents: consentsErased{},
+		SkyPassWallet:   walletErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return f.now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
 		StepTimeout: f.stepTimeout,

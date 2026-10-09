@@ -109,6 +109,10 @@ func (a *afterCheckIn) CheckInUser(ctx context.Context, p authz.Principal, sessi
 	return ci, err
 }
 
+func (a *afterCheckIn) AuthorizeSessionDoor(ctx context.Context, p authz.Principal, sessionID uuid.UUID) error {
+	return a.inner.AuthorizeSessionDoor(ctx, p, sessionID)
+}
+
 func (a *afterCheckIn) ResolveAndCheckIn(ctx context.Context, p authz.Principal, sessionID uuid.UUID, target DoorCheckInTarget) (DoorCheckIn, error) {
 	ci, err := a.inner.ResolveAndCheckIn(ctx, p, sessionID, target)
 	if err == nil {

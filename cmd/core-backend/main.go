@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -31,7 +32,9 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/googlewallet"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
+	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
@@ -49,6 +52,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == healthcheckCommandName {
+		os.Exit(runHealthcheck(os.Args[2:], os.Getenv, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == ytuBackfillCommandName {
 		os.Exit(runYTUBackfill(os.Args[2:], os.Getenv, os.Stdout))
 	}
@@ -100,6 +106,26 @@ func main() {
 	}
 	log.Printf("guest apply per-address limit: %s", guestApplyIPLimit)
 
+	// SIGTERM (Docker's stop) and SIGINT end signals; serve then shuts
+	// down in order (serve.go). A signal during startup is acted on once
+	// startup is through: the migrations are not cut off halfway.
+	signals, releaseSignals := stopSignals()
+	defer releaseSignals()
+	go func() {
+		// A second signal kills at once.
+		<-signals.Done()
+		releaseSignals()
+	}()
+	// The background workers' context. It is not the signal's: workers
+	// keep working while requests drain, and serve cancels it after.
+	// workersStopped are what shutdown waits on before the pools close.
+	workers, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+	var workersStopped []stopping
+	worker := func(name string, done <-chan struct{}) {
+		workersStopped = append(workersStopped, stopped(name, done))
+	}
+
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
 		log.Fatal(err)
@@ -108,6 +134,16 @@ func main() {
 	if err := migrate.Apply(context.Background(), pool); err != nil {
 		log.Fatal(err)
 	}
+	// GET /v1/ready and the container's health check (internal/health):
+	// the database answers, on a connection of readiness's own, and the
+	// task is not shutting down. Migrations are done by now: core listens
+	// only after this point.
+	readinessDatabase, err := openReadinessDatabase(databaseURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer readinessDatabase.Close()
+	readiness := health.NewReadiness(readinessDatabase, health.Options{Logf: log.Printf})
 
 	// Where Privileged decisions come from while the roles roll out
 	// (docs/authz-roles.md): the Groups by default, so a release changes
@@ -221,14 +257,13 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("media service attach: products with a service client: %v", serviceClients.Products())
-	mediaPurgeContext, stopMediaPurge := context.WithCancel(context.Background())
-	defer stopMediaPurge()
 	// CDN cache purge (MEDIA_CDN_PURGE_*, docs/media-lifecycle.md): every
 	// object the public bucket deletes, or gives new metadata, is purged
 	// from Cloudflare's cache, so deleted media stops being served within
 	// about a minute. Set before any worker below deletes. Settings it
 	// cannot use turn it off loudly instead of stopping core.
-	_, cdnPurgeMetrics := startCDNPurge(mediaPurgeContext, os.Getenv, publicBlobs, cdnBase, log.Printf)
+	_, cdnPurgeMetrics, cdnPurgeStopped := startCDNPurge(workers, os.Getenv, publicBlobs, cdnBase, log.Printf)
+	worker("media CDN purge", cdnPurgeStopped)
 	// Malware scan (MEDIA_CLAMAV_ADDR, docs/media-lifecycle.md). Unset, a
 	// purpose that needs a scan is refused, as before. Set, such a purpose's
 	// uploads wait scanning and the scan worker streams each to clamd, a ZIP
@@ -258,9 +293,7 @@ func main() {
 		limits := scanConfig.Limits
 		log.Printf("media scan limits (clamd.conf): MaxFileSize %d MiB, MaxScanSize %d MiB, MaxFiles %d, MaxRecursion %d; ZIP check buffer %d MiB",
 			limits.MaxFileSize>>20, limits.MaxScanSize>>20, limits.MaxFiles, limits.MaxRecursion, limits.MaxBuffer>>20)
-		scanContext, stopScan := context.WithCancel(context.Background())
-		defer stopScan()
-		scanWorker.Run(scanContext, log.Printf)
+		worker("media scan", scanWorker.Run(workers, log.Printf))
 		mediaScans = scanWorker
 		log.Printf("media scan: on (clamd at %s)", scanConfig.Addr)
 	} else {
@@ -275,25 +308,25 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		faststartWorker.Run(mediaPurgeContext, log.Printf)
+		worker("media faststart", faststartWorker.Run(workers, log.Printf))
 		directUploads.Faststart = faststartWorker
 		log.Printf("media faststart: on")
 	} else {
 		log.Printf("media faststart: off (no R2 configured); videos are served as they are")
 	}
-	media.MaintainBlobPurge(mediaPurgeContext, mediaStore, blobs, mediaPurgeConfig, func(err error) {
+	worker("media blob purge", media.MaintainBlobPurge(workers, mediaStore, blobs, mediaPurgeConfig, func(err error) {
 		log.Printf("media blob purge: %v", err)
-	})
-	media.MaintainUploadStaging(mediaPurgeContext, mediaStore, blobs, uploadStagingConfig, func(err error) {
+	}))
+	worker("media upload staging cleanup", media.MaintainUploadStaging(workers, mediaStore, blobs, uploadStagingConfig, func(err error) {
 		log.Printf("media upload staging cleanup: %v", err)
-	})
+	}))
 	// One decode budget for everything that decodes an image, so that
 	// together they hold at most its slots of decoded images in memory.
 	decodeBudget := media.NewDecodeBudget(media.DecodeBudgetConfig{})
-	media.MaintainCoverColorBackfill(context.Background(), mediaStore, blobs, decodeBudget, time.Minute, func(err error) {
+	media.MaintainCoverColorBackfill(workers, mediaStore, blobs, decodeBudget, time.Minute, func(err error) {
 		log.Printf("media cover color backfill: %v", err)
 	})
-	media.MaintainServingPolicyBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
+	media.MaintainServingPolicyBackfill(workers, mediaStore, blobs, time.Minute, func(err error) {
 		log.Printf("media serving policy backfill: %v", err)
 	})
 	// Video frames (MEDIA_FRAME_ADDR, docs/media-lifecycle.md): an Event
@@ -316,24 +349,24 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		frameWorker.Run(mediaPurgeContext, log.Printf)
+		worker("media frames", frameWorker.Run(workers, log.Printf))
 		log.Printf("media frames: on (frame service at %s)", frameAddr)
 	} else if frameAddr != "" {
 		log.Printf("media frames: off (no R2 configured); videos without an uploaded poster have none")
 	} else {
 		log.Printf("media frames: off (%s is not set); videos without an uploaded poster have none", media.FrameAddrEnv)
 	}
-	rerunImageSizes := media.MaintainImageSizeBackfill(context.Background(), mediaStore, blobs, mediaPurposes, decodeBudget, time.Minute, func(err error) {
+	rerunImageSizes := media.MaintainImageSizeBackfill(workers, mediaStore, blobs, mediaPurposes, decodeBudget, time.Minute, func(err error) {
 		log.Printf("media image size backfill: %v", err)
 	})
-	certificate.MaintainAssetServingPolicyBackfill(context.Background(), certs, blobs, time.Minute, func(err error) {
+	certificate.MaintainAssetServingPolicyBackfill(workers, certs, blobs, time.Minute, func(err error) {
 		log.Printf("certificate template asset serving policy backfill: %v", err)
 	})
 	// Legacy Media core attaches get the purpose of their use (media redesign
 	// ticket 08). Only the purpose changes; the blobs stay where they are.
 	// The size backfill may have finished its pass before a Media got its
 	// purpose, so each pass that assigns one runs it again.
-	media.MaintainLegacyPurposeBackfill(context.Background(), mediaStore, mediaPurposes, time.Minute, rerunImageSizes, func(report media.LegacyPurposeReport) {
+	media.MaintainLegacyPurposeBackfill(workers, mediaStore, mediaPurposes, time.Minute, rerunImageSizes, func(report media.LegacyPurposeReport) {
 		log.Printf("media legacy purpose backfill: assigned %d, kept legacy %d (their purpose would be private) and %d (mixed uses), skipped %d, failed %d",
 			report.Assigned, report.KeptPrivate, report.KeptMixed, report.Skipped, report.Failed)
 	}, func(err error) {
@@ -343,7 +376,7 @@ func main() {
 	// with the retention sweep in apply mode, which empties an open's
 	// address after one (ADR-0062). It runs with the flag off too: rows
 	// written while it was on still age out.
-	media.MaintainReadLinkRetention(mediaPurgeContext, mediaStore, time.Hour, retention.ReadLinkWindow(retentionConfig.Mode), func(err error) {
+	media.MaintainReadLinkRetention(workers, mediaStore, time.Hour, retention.ReadLinkWindow(retentionConfig.Mode), func(err error) {
 		log.Printf("media read link retention: %v", err)
 	})
 
@@ -364,7 +397,7 @@ func main() {
 		}
 		keycloakDirectory := identity.NewKeycloak(keycloakConfig)
 		// Read-only: core holds no manage-clients; Keycloak's operator script creates the roles.
-		roleContext, cancelRoleCheck := context.WithTimeout(context.Background(), 15*time.Second)
+		roleContext, cancelRoleCheck := context.WithTimeout(signals, 15*time.Second)
 		missingRoles, err := keycloakDirectory.MissingClientRoles(roleContext, os.Getenv("KEYCLOAK_CLIENT_ID"), identity.CertificateClientRoles)
 		cancelRoleCheck()
 		if warning := identity.CertificateRolesWarning(os.Getenv("KEYCLOAK_CLIENT_ID"), missingRoles, err); warning != "" {
@@ -372,7 +405,7 @@ func main() {
 		}
 		// The roles live on the client tokens carry them for
 		// (resource_access.core), whichever client core signs in as.
-		roleContext, cancelRoleCheck = context.WithTimeout(context.Background(), 15*time.Second)
+		roleContext, cancelRoleCheck = context.WithTimeout(signals, 15*time.Second)
 		missingRoles, err = keycloakDirectory.MissingClientRoles(roleContext, authn.ResourceAudience, authz.PermissionRoles())
 		cancelRoleCheck()
 		if warning := identity.PermissionRolesWarning(authn.ResourceAudience, roleMode, missingRoles, err); warning != "" {
@@ -457,6 +490,7 @@ func main() {
 		log.Fatal(err)
 	}
 	var gate *accessgate.RedisGate
+	var gateClose []closing
 	var accessProjector *account.AccessProjector
 	accessMetrics := accessgate.NewMetrics()
 	if gateConfig.Mode == accessgate.ModeEnforce {
@@ -465,20 +499,28 @@ func main() {
 			log.Fatal(err)
 		}
 		defer redisClient.Close()
+		gateClose = []closing{{name: "the access gate's Redis client", close: func() { _ = redisClient.Close() }}}
 		gate = accessgate.NewRedisGate(
 			redisClient, gateConfig.OperationTimeout, gateConfig.RequiredReplicas, gateConfig.WaitTimeout, accessMetrics,
 		)
 		accessProjector = account.NewAccessProjector(users, gate, nil)
 		reconciler := account.NewAccessReconciler(users, gate, nil)
-		bootstrapContext, cancelBootstrap := context.WithTimeout(context.Background(), 30*time.Second)
+		bootstrapContext, cancelBootstrap := context.WithTimeout(signals, 30*time.Second)
 		if err := reconciler.RunOnce(bootstrapContext); err != nil {
 			cancelBootstrap()
+			if signals.Err() != nil {
+				// Stopped while starting: nothing was served yet. The
+				// workers already run; they stop before the deferred
+				// closes take the pools.
+				log.Print("account access: stop signal during the startup reconciliation; exiting")
+				stopWorkers()
+				waitStopped(workersStopped, time.Now().Add(shutdownTimeout), log.Printf)
+				return
+			}
 			log.Fatal(err)
 		}
 		cancelBootstrap()
-		projectionContext, stopProjection := context.WithCancel(context.Background())
-		defer stopProjection()
-		account.MaintainAccessProjection(projectionContext, accessProjector, reconciler, time.Minute, func(err error) {
+		account.MaintainAccessProjection(workers, accessProjector, reconciler, time.Minute, func(err error) {
 			log.Printf("account access projection: %v", err)
 		})
 	}
@@ -504,6 +546,24 @@ func main() {
 		log.Printf("contact consents: off (%s is not set); none is recorded", consent.KeyEnv)
 	}
 
+	// SkyPass in Google Wallet (SKYPASS_GOOGLE_WALLET_*,
+	// docs/skypass-google-wallet.md). Off unless enabled: the link routes
+	// answer 503 and the door reads no Wallet code. Erasure withdraws a
+	// person's passes either way, and fails while one is left that it
+	// cannot withdraw.
+	walletConfig, err := skypass.GoogleWalletConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var walletAPI skypass.GoogleWalletAPI
+	if walletConfig.Enabled {
+		walletAPI = googlewallet.NewClient(walletConfig.Account, googlewallet.Options{})
+		log.Printf("skypass google wallet: on (class %s, service account %s)", walletConfig.ClassID(), walletConfig.Account.ClientEmail)
+	} else {
+		log.Printf("skypass google wallet: off (%s is not true)", skypass.GoogleWalletEnabledEnv)
+	}
+	wallet := skypass.NewWallet(walletConfig, walletAPI, skypass.NewPostgresWalletStore(pool), users, skypass.WalletOptions{Logf: log.Printf})
+
 	workerEnabled, erasureConfig, err := accountErasureStartup(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -526,7 +586,7 @@ func main() {
 		// writes one account_erasure_attention line per request that needs a
 		// person.
 		erasureGauges = account.NewErasureGauges()
-		account.MaintainWatchdog(context.Background(), account.NewWatchdog(users, erasureGauges, account.WatchdogConfig{
+		account.MaintainWatchdog(workers, account.NewWatchdog(users, erasureGauges, account.WatchdogConfig{
 			AlertAfter: erasureConfig.AlertAfter,
 		}), account.DefaultWatchdogInterval, func(err error) {
 			log.Printf("account erasure watchdog: %v", err)
@@ -543,8 +603,8 @@ func main() {
 		serviceErasure := account.NewServiceErasure(erasureConfig,
 			base+"/realms/"+realm+"/protocol/openid-connect/token",
 			account.NewErasureAddresses(accountIdentity, users))
-		account.Maintain(
-			context.Background(),
+		worker("account erasure worker", account.Maintain(
+			workers,
 			account.NewWorker(users, accountIdentity, account.WorkerConfig{
 				Lease:                5 * time.Minute,
 				RetryDelay:           30 * time.Second,
@@ -554,10 +614,11 @@ func main() {
 				AccessBlocker:        gate,
 				Services:             serviceErasure,
 				ContactConsents:      consents,
+				SkyPassWallet:        wallet,
 			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
 			2*time.Second,
 			func(err error) { log.Printf("account erasure worker: %v", err) },
-		)
+		))
 	} else {
 		log.Print("account erasure worker disabled: ACCOUNT_ERASURE_WORKER_ENABLED is not true")
 	}
@@ -616,27 +677,28 @@ func main() {
 		PrivateArtifacts: privateArtifacts,
 		Media:            media.NewLinker(mediaStore),
 	})
-	certificate.MaintainIssuance(context.Background(), certSvc, 2*time.Second, 10, func(err error) {
+	worker("certificate issuance worker", certificate.MaintainIssuance(workers, certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
-	})
+	}))
 	var lists mail.Lists
 	mailSnapshots := eventmail.NewPostgresSnapshotStore(pool)
 	if sky != nil {
 		lists = sky
-		eventmail.MaintainSnapshotRetention(context.Background(), mailSnapshots, sky, time.Hour, func(err error) {
+		eventmail.MaintainSnapshotRetention(workers, mailSnapshots, sky, time.Hour, func(err error) {
 			log.Printf("event mail snapshot retention: %v", err)
 		})
 	}
 
 	urlStore := shorturl.NewPostgresStore(pool)
 	if retention.HourlyHitDeletion(retentionConfig.Mode) {
-		shorturl.MaintainHitRetention(context.Background(), urlStore, time.Hour, func(err error) {
+		shorturl.MaintainHitRetention(workers, urlStore, time.Hour, func(err error) {
 			log.Printf("short-link hit retention: %v", err)
 		})
 	} else {
 		log.Printf("short-link hit retention: click rows are kept; the retention sweep empties their personal fields after a year (%s=apply)", retention.ModeEnv)
 	}
-	retentionMetrics := startRetentionSweep(pool, retentionConfig)
+	retentionMetrics, retentionStopped := startRetentionSweep(workers, pool, retentionConfig)
+	worker("retention sweep", retentionStopped)
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
 
@@ -675,7 +737,8 @@ func main() {
 		}),
 		URLs:                   urlSvc,
 		Certificates:           certSvc,
-		SkyPass:                skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
+		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
+		SkyPassWalletMetrics:   wallet,
 		Mail:                   mailer,
 		EventMail:              eventmail.New(events, tickets, users, lists, az, mailSnapshots),
 		ParseToken:             parse,
@@ -704,15 +767,37 @@ func main() {
 		Dashboard:               dashboardSvc,
 		GithubActivity:          githubActivity,
 		Consents:                consents,
+		Readiness:               readiness,
 	})
 
 	addr := os.Getenv("PORT")
 	if addr == "" {
 		addr = "8080"
 	}
-	if err := app.Listen(":" + addr); err != nil {
+	ln, err := net.Listen("tcp4", ":"+addr)
+	if err != nil {
 		log.Fatal(err)
 	}
+	// Shutdown waits on the confirmation mails of contact consents too:
+	// each goes after its request was answered, its row already saying it
+	// was sent. Idle is asked after the requests have drained.
+	if err := serve(signals, app, ln, shutdownPlan{
+		Readiness:   readiness,
+		HTTPDrain:   httpDrainTimeout,
+		Total:       shutdownTimeout,
+		StopWorkers: stopWorkers,
+		Wait:        append(workersStopped, stopping{name: "contact consent confirmation mails", done: consents.Idle}),
+		Close: append(gateClose,
+			closing{name: "the readiness database pool", close: readinessDatabase.Close},
+			closing{name: "the database pool", close: pool.Close}),
+		Logf: log.Printf,
+	}); err != nil {
+		log.Fatal(err)
+	}
+	// serve closed what it could within the budget. A close still waiting
+	// (a pool with a connection in use) must not hold the process past
+	// Docker's SIGKILL, so the deferred closes do not run again.
+	os.Exit(0)
 }
 
 // sudoIntrospection builds the client Core uses to ask the realm about a
@@ -736,21 +821,24 @@ func sudoIntrospection(getenv func(string) string, issuer string) (authn.Introsp
 	}, true
 }
 
-// startRetentionSweep starts the periodic destruction run in its mode and
-// returns its metrics; with the mode off it starts nothing, runs no query and
-// returns nil.
-func startRetentionSweep(pool *pgxpool.Pool, config retention.Config) interface{ Prometheus() string } {
+// startRetentionSweep starts the periodic destruction run in its mode until
+// ctx is cancelled, and returns its metrics and a channel that closes once
+// it has stopped; with the mode off it starts nothing, runs no query and
+// returns nil metrics and a closed channel.
+func startRetentionSweep(ctx context.Context, pool *pgxpool.Pool, config retention.Config) (interface{ Prometheus() string }, <-chan struct{}) {
 	if config.Mode == retention.ModeOff {
 		log.Printf("retention sweep: off (%s is not dry-run or apply)", retention.ModeEnv)
-		return nil
+		stopped := make(chan struct{})
+		close(stopped)
+		return nil, stopped
 	}
 	sweeper := retention.NewSweeper(pool, config, log.Printf)
 	metrics := retention.NewMetrics(pool, config, nil)
-	retention.Maintain(context.Background(), sweeper, metrics, retention.CheckInterval, func(err error) {
+	stopped := retention.Maintain(ctx, sweeper, metrics, retention.CheckInterval, func(err error) {
 		log.Printf("retention sweep: %v", err)
 	})
 	log.Printf("retention sweep: %s (%s), daily; periods of %s (PERIODIC_DESTRUCTION_INTERVAL)", config.Mode, retention.ModeEnv, config.Period)
-	return metrics
+	return metrics, stopped
 }
 
 func optionalAccountAccessGate(gate *accessgate.RedisGate) accessgate.Reader {
