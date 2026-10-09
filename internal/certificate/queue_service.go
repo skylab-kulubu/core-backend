@@ -336,14 +336,21 @@ func safeErrorCode(err error) string {
 	}
 }
 
-func MaintainIssuance(ctx context.Context, svc Service, interval time.Duration, limit int, onError func(error)) {
+// MaintainIssuance issues claimed certificate jobs in the background until
+// ctx is cancelled. The returned channel closes once the batch in flight
+// has returned after that; shutdown waits on it. A batch cut short leaves
+// its jobs claimed until their lease runs out (two minutes), when a task
+// claims them again.
+func MaintainIssuance(ctx context.Context, svc Service, interval time.Duration, limit int, onError func(error)) <-chan struct{} {
 	if interval <= 0 {
 		interval = 2 * time.Second
 	}
 	if limit <= 0 {
 		limit = 10
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -366,4 +373,5 @@ func MaintainIssuance(ctx context.Context, svc Service, interval time.Duration, 
 			}
 		}
 	}()
+	return done
 }

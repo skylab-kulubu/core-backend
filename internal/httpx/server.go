@@ -21,6 +21,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
+	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -145,6 +146,11 @@ type Deps struct {
 	// off (CONTACT_CONSENT_KEY unset) answers its routes 503 and records
 	// no Guest apply consent.
 	Consents *consent.Service
+
+	// Readiness is GET /v1/ready's database and shutdown check, asked
+	// before the account access gate (internal/health). Nil leaves the
+	// gate's check alone. /v1/health (liveness) asks nothing.
+	Readiness *health.Readiness
 }
 
 func New(deps Deps) *fiber.App {
@@ -213,7 +219,7 @@ func New(deps Deps) *fiber.App {
 	})
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
-		deps.SkyPassWalletMetrics != nil {
+		deps.SkyPassWalletMetrics != nil || deps.Readiness != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -236,11 +242,22 @@ func New(deps Deps) *fiber.App {
 			if deps.SkyPassWalletMetrics != nil {
 				text += deps.SkyPassWalletMetrics.Prometheus()
 			}
+			text += deps.Readiness.Prometheus()
 			return c.SendString(text)
 		})
 	}
 	app.Get("/v1/ready", func(c fiber.Ctx) error {
-		if deps.AccountAccessGate != nil {
+		if err := deps.Readiness.Check(c.Context()); err != nil {
+			c.Set(fiber.HeaderCacheControl, "no-store")
+			c.Set(fiber.HeaderRetryAfter, "1")
+			return fiber.ErrServiceUnavailable
+		}
+		// The container's health check (core-backend healthcheck) asks
+		// with gate=skip: Swarm has one check, which restarts a task that
+		// fails it, and restarting core for a gate Redis that is down fixes
+		// nothing (core cannot start without it) while it takes down the
+		// routes that need no Redis. No route is added for it.
+		if deps.AccountAccessGate != nil && c.Query("gate") != "skip" {
 			if err := deps.AccountAccessGate.Ready(c.Context()); err != nil {
 				deps.AccountAccessMetrics.RecordReadinessFailure()
 				c.Set(fiber.HeaderCacheControl, "no-store")

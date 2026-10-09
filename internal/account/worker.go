@@ -339,11 +339,17 @@ func (w *Worker) retry(ctx context.Context, request user.DeletionRequest, now ti
 	return fmt.Errorf("account erasure %s request_id=%s: %w", code, request.ID, cause)
 }
 
-func Maintain(ctx context.Context, worker *Worker, interval time.Duration, onError func(error)) {
+// Maintain runs the worker in the background until ctx is cancelled. The
+// returned channel closes once the pass in flight has returned after that;
+// shutdown waits on it. A request cut short stays leased until its lease
+// runs out (WorkerConfig.Lease), when a task claims it again.
+func Maintain(ctx context.Context, worker *Worker, interval time.Duration, onError func(error)) <-chan struct{} {
 	if interval <= 0 {
 		interval = 2 * time.Second
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -361,4 +367,5 @@ func Maintain(ctx context.Context, worker *Worker, interval time.Duration, onErr
 			}
 		}
 	}()
+	return done
 }
