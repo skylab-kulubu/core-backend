@@ -33,12 +33,49 @@ func TestService_PrivateMediaMetadataIsHiddenFromAnonymousAndMembers(t *testing.
 	for name, p := range map[string]authz.Principal{
 		"anonymous":       {},
 		"a member":        signedIn("71717171-7171-7171-7171-717171717171"),
-		"the uploader":    respondent,
 		"the CMS service": cmsService,
 	} {
 		if _, err := pm.svc.Get(context.Background(), p, file.ID); !errors.Is(err, media.ErrNotFound) {
 			t.Errorf("%s: err = %v, want %v", name, err, media.ErrNotFound)
 		}
+	}
+}
+
+// The uploader follows their own upload until a record holds it: they see
+// its status and scan result (what the upload answered, nothing more), never
+// an address. Once Skyforms attaches it, Skyforms decides, and the uploader
+// gets 404 like anyone else.
+func TestService_UploaderReadsTheirUnattachedPrivateMetadataWithoutAnAddress(t *testing.T) {
+	t.Parallel()
+	pm, _ := newScannedMedia(t)
+	ctx := context.Background()
+	uploader := "74747474-7474-7474-7474-747474747474"
+	respondent := signedIn(uploader)
+	file := pm.answerFile(t, respondent)
+
+	got, err := pm.svc.Get(ctx, respondent, file.ID)
+	if err != nil || got.ID != file.ID || got.Status != media.StatusScanning || got.URL != "" || got.Sizes != nil {
+		t.Fatalf("uploader read while scanning: %+v, %v", got, err)
+	}
+	for _, scanned := range []struct {
+		status media.Status
+		result media.ScanResult
+	}{{media.StatusPending, media.ScanClean}, {media.StatusRejected, media.ScanInfected}} {
+		pm.store.SetScanned(file.ID, scanned.status, scanned.result)
+		got, err := pm.svc.Get(ctx, respondent, file.ID)
+		if err != nil || got.Status != scanned.status || got.ScanResult != scanned.result || got.URL != "" {
+			t.Fatalf("uploader read when %s: %+v, %v", scanned.status, got, err)
+		}
+	}
+
+	pm.store.SetScanned(file.ID, media.StatusPending, media.ScanClean)
+	if _, _, err := pm.svc.Attach(ctx, formsService, file.ID, media.AttachRequest{
+		Owner: media.Owner{Service: authz.ProductForms, Type: "response", ID: "r1"}, Role: media.RoleFormsAnswer, OnBehalfOf: uuid.MustParse(uploader),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pm.svc.Get(ctx, respondent, file.ID); !errors.Is(err, media.ErrNotFound) {
+		t.Fatalf("uploader read once attached: err = %v, want %v", err, media.ErrNotFound)
 	}
 }
 
