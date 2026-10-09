@@ -13,6 +13,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/user"
+	"golang.org/x/sync/errgroup"
 )
 
 type Service interface {
@@ -230,26 +231,24 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 		if clientID == "" {
 			clientID = "forms"
 		}
-		people, err := s.dir.UsersWithClientRole(ctx, clientID, strings.TrimSpace(seat[0].Role))
+		role := strings.TrimSpace(seat[0].Role)
+		people, err := s.dir.UsersWithClientRole(ctx, clientID, role)
 		if err != nil {
 			return nil, err
 		}
-		people, err = s.overlayShadow(ctx, people)
+		if q == "" {
+			// Without a query the list stays the role's direct holders and
+			// the members of the Groups it is mapped to; finding everyone
+			// who holds it in effect would read the whole realm.
+			people, err = s.overlayShadow(ctx, people)
+			if err != nil {
+				return nil, err
+			}
+			return projectPeople(people, full), nil
+		}
+		people, err = s.seatSearch(ctx, clientID, role, q, full, people)
 		if err != nil {
 			return nil, err
-		}
-		if q != "" {
-			matches := personMatches
-			if !full {
-				matches = safePersonMatches
-			}
-			matched := make([]Person, 0, len(people))
-			for _, person := range people {
-				if matches(person, q) {
-					matched = append(matched, person)
-				}
-			}
-			people = matched
 		}
 		return projectPeople(people, full), nil
 	}
@@ -992,6 +991,133 @@ func (s *service) mergeUserSearch(ctx context.Context, people []Person, q string
 		out = append(out, person)
 	}
 	return out, nil
+}
+
+// seatSearchLimit is how many people a seat search takes from Keycloak's
+// search; each of them not already known as a holder costs one read of
+// their effective roles.
+const seatSearchLimit = 50
+
+// seatSearchConcurrency bounds the effective role reads one search runs at
+// once.
+const seatSearchConcurrency = 8
+
+// seatSearch answers the people matching q who hold clientID's role in
+// effect, as Keycloak puts it in their token: directly, through a Group or
+// a Group above theirs, through the default roles or a composite role at any
+// depth. A skyforms: role is also held through skyforms:*. Keycloak's
+// role/users and role/groups list only direct mappings, so the candidates
+// are the direct holders (holders) plus Keycloak's search for q (and, for a
+// full caller, core's own profile search), and each candidate who is not a
+// direct holder is kept only if Keycloak's effective roles hold the role.
+// People who are erased or being erased are left out. A failed read is an
+// error, never a shorter list.
+func (s *service) seatSearch(ctx context.Context, clientID, role, q string, full bool, holders []Person) ([]Person, error) {
+	matches := personMatches
+	if !full {
+		matches = safePersonMatches
+	}
+	direct := make(map[uuid.UUID]struct{}, len(holders))
+	for _, person := range holders {
+		direct[person.ID] = struct{}{}
+	}
+	candidates := append([]Person(nil), holders...)
+	seen := make(map[uuid.UUID]struct{}, len(holders))
+	for _, person := range holders {
+		seen[person.ID] = struct{}{}
+	}
+	add := func(person Person) {
+		if person.ID == uuid.Nil {
+			return
+		}
+		if _, ok := seen[person.ID]; ok {
+			return
+		}
+		seen[person.ID] = struct{}{}
+		candidates = append(candidates, person)
+	}
+	found, err := s.dir.SearchUsers(ctx, keycloakInfix(q), seatSearchLimit)
+	if err != nil {
+		return nil, err
+	}
+	for _, person := range found {
+		add(person)
+	}
+	if full {
+		shadows, err := s.users.Search(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		for _, u := range shadows {
+			add(personFromUser(u))
+		}
+	}
+	candidates, err = s.overlayShadow(ctx, candidates)
+	if err != nil {
+		return nil, err
+	}
+	matched := make([]Person, 0, len(candidates))
+	for _, person := range candidates {
+		if matches(person, q) {
+			matched = append(matched, person)
+		}
+	}
+	keep := make([]bool, len(matched))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(seatSearchConcurrency)
+	for i, person := range matched {
+		if _, ok := direct[person.ID]; ok {
+			keep[i] = true
+			continue
+		}
+		g.Go(func() error {
+			names, err := s.dir.EffectiveClientRoles(gctx, person.ID, clientID)
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			keep[i] = holdsSeat(names, role)
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	out := make([]Person, 0, len(matched))
+	for i, person := range matched {
+		if keep[i] {
+			out = append(out, person)
+		}
+	}
+	return out, nil
+}
+
+// holdsSeat reports whether the role names include role, or skyforms:* for
+// a skyforms: role.
+func holdsSeat(names []string, role string) bool {
+	for _, name := range names {
+		if name == role || (strings.HasPrefix(role, "skyforms:") && name == "skyforms:*") {
+			return true
+		}
+	}
+	return false
+}
+
+// keycloakInfix is the longest word of q as Keycloak's infix search
+// (*word*): Keycloak's plain search is a prefix search of one string, so
+// "ada love" or "love" would miss Ada Lovelace. The caller matches the whole
+// query afterwards.
+func keycloakInfix(q string) string {
+	longest := ""
+	for _, word := range strings.Fields(q) {
+		word = strings.Trim(word, "*")
+		if len([]rune(word)) > len([]rune(longest)) {
+			longest = word
+		}
+	}
+	return "*" + longest + "*"
 }
 
 func personMatches(p Person, q string) bool {

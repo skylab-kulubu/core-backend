@@ -17,6 +17,11 @@ type Memory struct {
 	groupRoles map[string][]ClientRole
 	userRoles  map[uuid.UUID][]ClientRole
 	catalog    []ClientRole
+	// composites are the roles each role includes, by roleKey; a role with
+	// an empty ClientID is a realm role. defaultRoles every person holds
+	// (Keycloak's default-roles-<realm>).
+	composites   map[string][]ClientRole
+	defaultRoles []ClientRole
 	// disabled are the people DisableUser disabled: Keycloak's
 	// enabled=false. Everyone else is enabled, and PutUser enables again.
 	disabled map[uuid.UUID]struct{}
@@ -30,8 +35,71 @@ func NewMemory() *Memory {
 		members:    make(map[string]map[uuid.UUID]struct{}),
 		groupRoles: make(map[string][]ClientRole),
 		userRoles:  make(map[uuid.UUID][]ClientRole),
+		composites: make(map[string][]ClientRole),
 		disabled:   make(map[uuid.UUID]struct{}),
 	}
+}
+
+func roleKey(r ClientRole) string { return r.ClientID + "\x00" + r.Role }
+
+// PutCompositeRole makes parent include children, as a Keycloak composite
+// role does. A role with an empty ClientID is a realm role.
+func (m *Memory) PutCompositeRole(parent ClientRole, children ...ClientRole) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.composites[roleKey(parent)] = append(m.composites[roleKey(parent)], children...)
+}
+
+// SetDefaultRoles sets the roles every person holds.
+func (m *Memory) SetDefaultRoles(roles ...ClientRole) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.defaultRoles = append([]ClientRole(nil), roles...)
+}
+
+// EffectiveClientRoles answers the names of clientID's roles the person
+// holds in effect, the way Keycloak's role-mappings/clients/{client}/composite
+// does: directly, through their Groups and the Groups above them, through
+// the default roles, and through composites at any depth.
+func (m *Memory) EffectiveClientRoles(_ context.Context, userID uuid.UUID, clientID string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("EffectiveClientRoles")
+	if _, ok := m.people[userID]; !ok {
+		return nil, ErrNotFound
+	}
+	queue := append([]ClientRole(nil), m.userRoles[userID]...)
+	queue = append(queue, m.defaultRoles...)
+	for gid, members := range m.members {
+		if _, ok := members[userID]; !ok {
+			continue
+		}
+		g, ok := m.groups[gid]
+		if !ok {
+			continue
+		}
+		for id, other := range m.groups {
+			if other.Path == g.Path || strings.HasPrefix(g.Path, other.Path+"/") {
+				queue = append(queue, m.groupRoles[id]...)
+			}
+		}
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0)
+	for len(queue) > 0 {
+		r := queue[0]
+		queue = queue[1:]
+		if _, ok := seen[roleKey(r)]; ok {
+			continue
+		}
+		seen[roleKey(r)] = struct{}{}
+		if r.ClientID == clientID {
+			out = append(out, r.Role)
+		}
+		queue = append(queue, m.composites[roleKey(r)]...)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func (m *Memory) PutClientRole(role ClientRole) {
@@ -256,9 +324,12 @@ func (m *Memory) SearchUsers(_ context.Context, query string, limit int) ([]Pers
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.record("SearchUsers")
+	// Keycloak reads *q* as an infix search; the memory directory always
+	// searches infix.
+	query = strings.Trim(strings.TrimSpace(query), "*")
 	out := make([]Person, 0)
 	for _, person := range m.people {
-		if personMatches(person, strings.TrimSpace(query)) {
+		if personMatches(person, query) {
 			out = append(out, m.answerLocked(person))
 		}
 	}
