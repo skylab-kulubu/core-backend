@@ -2077,10 +2077,18 @@ OpenBao's answer (the mount and key when one is missing), never a token.
 ### Metadata
 
 `GET /v1/media/{id}` answers a private Media only to its owning product's
-service account (Skyforms for an Answer file) and to privileged admins, never
-with an address. Anyone else, anonymous or signed in, the uploader included,
-gets `404`. The admin list (`GET /v1/media`) shows private Media without an
-address.
+service account (Skyforms for an Answer file), to privileged admins, and to
+its uploader while it is `pending`, `scanning` or `rejected`, never with an
+address. The uploader so follows the malware scan of what they just uploaded
+(`status`, `scanResult`), as Skyforms' signed-in answer page does. Skyforms
+attaches an Answer file only once it is clean, so in practice this lasts until
+a record holds it; a Media attached while still scanning stays readable to its
+uploader until its scan ends (only their own upload's metadata). Attached or
+detached, the owning product decides and the uploader gets `404` too. The rule
+covers every private purpose a person uploads, so a certificate asset's
+uploader also reads it while it is `pending`. Anyone else, anonymous or signed
+in, gets `404`. The admin list (`GET /v1/media`) shows private Media without
+an address.
 
 ### Read links
 
