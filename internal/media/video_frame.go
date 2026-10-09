@@ -422,9 +422,13 @@ func (j frameJob) discard(ctx context.Context, id uuid.UUID) error {
 // once. It logs what a pass changed and each video that failed (by id;
 // never an address); a pass with nothing to do says nothing. A pass that
 // panics outside a video's step is logged, and the next one comes as
-// usual.
-func (w *FrameWorker) Run(ctx context.Context, logf func(format string, args ...any)) {
+// usual. The returned channel closes once the pass in flight has returned
+// after ctx ends, its claims settled (they are written even then); shutdown
+// waits on it before it closes the pool.
+func (w *FrameWorker) Run(ctx context.Context, logf func(format string, args ...any)) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		timer := time.NewTimer(0)
 		defer timer.Stop()
 		var downWait time.Duration
@@ -439,6 +443,7 @@ func (w *FrameWorker) Run(ctx context.Context, logf func(format string, args ...
 			timer.Reset(next)
 		}
 	}()
+	return done
 }
 
 // runPass makes one pass for Run and says when the next one comes.

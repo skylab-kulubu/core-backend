@@ -12,4 +12,15 @@ WORKDIR /app
 COPY --from=builder /out/core-backend .
 EXPOSE 8080
 ENV PORT=8080
+# The container's health check is core's readiness, asked by the binary
+# itself (no curl or wget needed): GET /v1/ready answers 204 once core
+# listens (migrations done) while its database answers and it is not
+# shutting down (docs/health-and-shutdown.md). Swarm routes to a task only
+# once it is healthy, so a start-first deploy moves traffic over when the
+# new task can serve. start-period covers startup (migrations, the
+# Keycloak role checks, the access gate's reconciliation); 6 retries 10 s
+# apart let a database restart pass without a restart of core. A Health
+# Check set on the Dokploy service replaces this one.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --start-interval=2s --retries=6 \
+  CMD ["/app/core-backend", "healthcheck"]
 CMD ["./core-backend"]

@@ -112,7 +112,8 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/v1/health || exit 1"]
+      # The image's own check (docs/health-and-shutdown.md), more often.
+      test: ["CMD", "/app/core-backend", "healthcheck"]
       interval: 5s
       timeout: 5s
       retries: 12

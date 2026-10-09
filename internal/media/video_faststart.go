@@ -801,9 +801,14 @@ func (o objectRanges) OpenRange(ctx context.Context, off, n int64) (io.ReadClose
 // after a pass that claimed a full batch. It logs what a pass changed and
 // each video that failed or was refused (by id; never a file name); a pass
 // with nothing to do says nothing. A pass that panics outside a video's
-// step is logged, and the next one comes as usual.
-func (w *FaststartWorker) Run(ctx context.Context, logf func(format string, args ...any)) {
+// step is logged, and the next one comes as usual. The returned channel
+// closes once the pass in flight has returned after ctx ends, its claims
+// settled (they are written even then); shutdown waits on it before it
+// closes the pool.
+func (w *FaststartWorker) Run(ctx context.Context, logf func(format string, args ...any)) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		timer := time.NewTimer(0)
 		defer timer.Stop()
 		for {
@@ -816,6 +821,7 @@ func (w *FaststartWorker) Run(ctx context.Context, logf func(format string, args
 			timer.Reset(w.runPass(ctx, logf))
 		}
 	}()
+	return done
 }
 
 // runPass makes one pass for Run and says when the next one comes.

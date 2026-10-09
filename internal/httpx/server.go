@@ -21,6 +21,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
+	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -145,6 +146,11 @@ type Deps struct {
 	// off (CONTACT_CONSENT_KEY unset) answers its routes 503 and records
 	// no Guest apply consent.
 	Consents *consent.Service
+
+	// Readiness is GET /v1/ready's database and shutdown check, asked
+	// before the account access gate (internal/health). Nil leaves the
+	// gate's check alone. /v1/health (liveness) asks nothing.
+	Readiness *health.Readiness
 }
 
 func New(deps Deps) *fiber.App {
@@ -240,6 +246,11 @@ func New(deps Deps) *fiber.App {
 		})
 	}
 	app.Get("/v1/ready", func(c fiber.Ctx) error {
+		if err := deps.Readiness.Check(c.Context()); err != nil {
+			c.Set(fiber.HeaderCacheControl, "no-store")
+			c.Set(fiber.HeaderRetryAfter, "1")
+			return fiber.ErrServiceUnavailable
+		}
 		if deps.AccountAccessGate != nil {
 			if err := deps.AccountAccessGate.Ready(c.Context()); err != nil {
 				deps.AccountAccessMetrics.RecordReadinessFailure()

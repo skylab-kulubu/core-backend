@@ -569,9 +569,13 @@ func (w *ScanWorker) deletePublic(ctx context.Context, key string) error {
 // reached it waits longer between passes (up to scannerDownMax). It logs
 // what a pass changed and each Media that failed, and says once that clamd
 // is down and once that it is back; a pass with nothing to do says
-// nothing.
-func (w *ScanWorker) Run(ctx context.Context, logf func(format string, args ...any)) {
+// nothing. The returned channel closes once the pass in flight has
+// returned after ctx ends, its claims settled (they are written even then);
+// shutdown waits on it before it closes the pool.
+func (w *ScanWorker) Run(ctx context.Context, logf func(format string, args ...any)) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		timer := time.NewTimer(0)
 		defer timer.Stop()
 		var downWait time.Duration
@@ -605,4 +609,5 @@ func (w *ScanWorker) Run(ctx context.Context, logf func(format string, args ...a
 			timer.Reset(next)
 		}
 	}()
+	return done
 }

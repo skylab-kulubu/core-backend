@@ -7,6 +7,7 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,6 +46,12 @@ type Service struct {
 	mailTimeout time.Duration
 	// async runs a confirmation mail; tests replace it to wait for it.
 	async func(func())
+
+	// sending counts the confirmation mails going; idle closes when it
+	// comes back to zero (Idle).
+	mu      sync.Mutex
+	sending int
+	idle    chan struct{}
 }
 
 // NewService builds the consent service. mail may be nil: pending grants
@@ -298,12 +305,53 @@ func (s *Service) sendConfirmation(id uuid.UUID, g Grant) {
 		"purpose":     string(g.Purpose),
 	}
 	recipient, template := g.Email, s.config.ConfirmTemplateKey
+	s.mu.Lock()
+	s.sending++
+	s.mu.Unlock()
 	s.async(func() {
+		defer s.sent()
 		ctx, cancel := context.WithTimeout(context.Background(), s.mailTimeout)
 		defer cancel()
 		s.mail.ConsentConfirmation(ctx, template, recipient, vars)
 	})
 }
+
+func (s *Service) sent() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sending--
+	if s.sending == 0 && s.idle != nil {
+		close(s.idle)
+		s.idle = nil
+	}
+}
+
+// Idle closes when no confirmation mail is going. The grant's row says
+// the mail was sent before it goes (the request is answered first), so
+// shutdown waits on Idle after the last request was answered: a mail that
+// is going is not cut off with the process. A mail cut off all the same
+// (SkyMail slower than the shutdown deadline) leaves the grant pending; the
+// person's next request mails it again after ConfirmationResend.
+func (s *Service) Idle() <-chan struct{} {
+	if s == nil {
+		return closedChannel
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sending == 0 {
+		return closedChannel
+	}
+	if s.idle == nil {
+		s.idle = make(chan struct{})
+	}
+	return s.idle
+}
+
+var closedChannel = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
 
 // ErrDisabled is any consent operation while KeyEnv is unset.
 var ErrDisabled = errors.New("contact consent: off (" + KeyEnv + " is not set)")
