@@ -38,7 +38,7 @@ func TestErasureSagaWaitsForTheTokenWindowBeforeCallingAnUngatedService(t *testi
 	if got := f.services[user.DeletionStepEraseCMS].callCount(); got != 0 {
 		t.Fatalf("cms called %d times inside the token window", got)
 	}
-	want := []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyMail, user.DeletionStepEraseForms}
+	want := []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseSkyMail, user.DeletionStepEraseForms}
 	if got := f.checkpoints(); !slices.Equal(got, want) {
 		t.Fatalf("checkpoints = %v, want %v", got, want)
 	}

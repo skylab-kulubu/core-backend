@@ -21,6 +21,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
+	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -98,6 +99,11 @@ type Deps struct {
 	// when it runs out (GUEST_APPLY_PUBLIC_IP_LIMIT_MODE). Empty enforces.
 	GuestApplyPublicIPLimit handlers.GuestApplyLimitMode
 
+	// SkyPassWalletMetrics are SkyPass in Google Wallet's counters
+	// (docs/skypass-google-wallet.md), served on /v1/metrics. Nil leaves
+	// them out.
+	SkyPassWalletMetrics interface{ Prometheus() string }
+
 	// GuestCheckInMetrics counts guest self check-ins by door QR presence
 	// and outcome, and serves them on /v1/metrics
 	// (docs/guest-self-check-in.md). Nil leaves them out.
@@ -140,6 +146,11 @@ type Deps struct {
 	// off (CONTACT_CONSENT_KEY unset) answers its routes 503 and records
 	// no Guest apply consent.
 	Consents *consent.Service
+
+	// Readiness is GET /v1/ready's database and shutdown check, asked
+	// before the account access gate (internal/health). Nil leaves the
+	// gate's check alone. /v1/health (liveness) asks nothing.
+	Readiness *health.Readiness
 }
 
 func New(deps Deps) *fiber.App {
@@ -207,7 +218,8 @@ func New(deps Deps) *fiber.App {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
-		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil {
+		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
+		deps.SkyPassWalletMetrics != nil || deps.Readiness != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -227,11 +239,25 @@ func New(deps Deps) *fiber.App {
 			if deps.RetentionMetrics != nil {
 				text += deps.RetentionMetrics.Prometheus()
 			}
+			if deps.SkyPassWalletMetrics != nil {
+				text += deps.SkyPassWalletMetrics.Prometheus()
+			}
+			text += deps.Readiness.Prometheus()
 			return c.SendString(text)
 		})
 	}
 	app.Get("/v1/ready", func(c fiber.Ctx) error {
-		if deps.AccountAccessGate != nil {
+		if err := deps.Readiness.Check(c.Context()); err != nil {
+			c.Set(fiber.HeaderCacheControl, "no-store")
+			c.Set(fiber.HeaderRetryAfter, "1")
+			return fiber.ErrServiceUnavailable
+		}
+		// The container's health check (core-backend healthcheck) asks
+		// with gate=skip: Swarm has one check, which restarts a task that
+		// fails it, and restarting core for a gate Redis that is down fixes
+		// nothing (core cannot start without it) while it takes down the
+		// routes that need no Redis. No route is added for it.
+		if deps.AccountAccessGate != nil && c.Query("gate") != "skip" {
 			if err := deps.AccountAccessGate.Ready(c.Context()); err != nil {
 				deps.AccountAccessMetrics.RecordReadinessFailure()
 				c.Set(fiber.HeaderCacheControl, "no-store")
@@ -313,6 +339,12 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/skypass/card", pass.LookupCard)
 		app.Post("/v1/skypass/qr", pass.Mint)
 		app.Post("/v1/skypass/verify", pass.Verify)
+		// SkyPass in Google Wallet (docs/skypass-google-wallet.md): off
+		// answers the status with available false and the rest 503.
+		app.Get("/v1/skypass/wallet", pass.WalletStatus)
+		walletLimit := handlers.SkyPassWalletLimit()
+		app.Post("/v1/skypass/wallet/google", walletLimit, pass.GoogleWalletLink)
+		app.Delete("/v1/skypass/wallet/google", walletLimit, pass.RevokeGoogleWallet)
 	}
 
 	if deps.GithubActivity != nil {

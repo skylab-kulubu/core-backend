@@ -157,6 +157,7 @@ func newErasureFixtureFor(t *testing.T, store erasureTestStore, profile user.Pro
 	f.addresses = &fixedAddresses{emails: erasureTestAddresses}
 	f.config = account.WorkerConfig{
 		ContactConsents: consentsErased{},
+		SkyPassWallet:   walletErased{},
 		Now:             func() time.Time { return f.now }, Lease: 5 * time.Minute, RetryDelay: 30 * time.Second,
 		MaxAttempts: 8, DeferredRetryHorizon: 48 * time.Hour, AccessBlocker: &accountBlockWriter{},
 	}

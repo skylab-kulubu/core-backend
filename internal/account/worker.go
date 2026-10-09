@@ -36,6 +36,13 @@ type ContactConsentEraser interface {
 	EraseSubject(ctx context.Context, userID uuid.UUID, addresses []string) (int64, error)
 }
 
+// SkyPassWalletEraser withdraws every SkyPass Wallet pass of a person: its
+// codes stop and Google's copy loses their name and skyNumber
+// (internal/skypass).
+type SkyPassWalletEraser interface {
+	EraseSubject(ctx context.Context, userID uuid.UUID) (int64, error)
+}
+
 type MediaEraser interface {
 	EnsureErased(context.Context, uuid.UUID, time.Time) error
 	EnsureSubjectUploadsErased(context.Context, uuid.UUID, time.Time) error
@@ -59,6 +66,9 @@ type WorkerConfig struct {
 	// erase_contact_consents step. Nil fails the step: a person is never
 	// reported erased while their consents may remain.
 	ContactConsents ContactConsentEraser
+	// SkyPassWallet withdraws the person's Google Wallet passes in the
+	// erase_skypass_wallet step. Nil fails the step, as above.
+	SkyPassWallet SkyPassWalletEraser
 }
 
 type Worker struct {
@@ -185,9 +195,9 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 }
 
 // coreSaga is the erasure order (ADR-0051, spec §4): block the identity, erase
-// the person's contact consents (ADR-0062), have every service erase the
-// person, erase core and its guest data, then media, and delete the identity
-// last.
+// the person's contact consents (ADR-0062), withdraw their SkyPass from
+// Google Wallet, have every service erase the person, erase core and its
+// guest data, then media, and delete the identity last.
 //
 // The consents go before the services: they are core's own and wait for no
 // one, and a service can hold the saga for a long time (the CMS waits out
@@ -202,6 +212,15 @@ func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaSte
 				return errors.New("contact consent eraser unavailable")
 			}
 			_, err := w.config.ContactConsents.EraseSubject(ctx, id, emails)
+			return err
+		}},
+		// Core's own like the consents: the pass stops opening the door and
+		// Google forgets the name on it before any service holds the saga.
+		{name: user.DeletionStepEraseSkyPassWallet, run: func(ctx context.Context, id uuid.UUID) error {
+			if w.config.SkyPassWallet == nil {
+				return errors.New("skypass wallet eraser unavailable")
+			}
+			_, err := w.config.SkyPassWallet.EraseSubject(ctx, id)
 			return err
 		}},
 		{services: &w.services},
@@ -320,11 +339,17 @@ func (w *Worker) retry(ctx context.Context, request user.DeletionRequest, now ti
 	return fmt.Errorf("account erasure %s request_id=%s: %w", code, request.ID, cause)
 }
 
-func Maintain(ctx context.Context, worker *Worker, interval time.Duration, onError func(error)) {
+// Maintain runs the worker in the background until ctx is cancelled. The
+// returned channel closes once the pass in flight has returned after that;
+// shutdown waits on it. A request cut short stays leased until its lease
+// runs out (WorkerConfig.Lease), when a task claims it again.
+func Maintain(ctx context.Context, worker *Worker, interval time.Duration, onError func(error)) <-chan struct{} {
 	if interval <= 0 {
 		interval = 2 * time.Second
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -342,4 +367,5 @@ func Maintain(ctx context.Context, worker *Worker, interval time.Duration, onErr
 			}
 		}
 	}()
+	return done
 }
