@@ -48,6 +48,7 @@ type service struct {
 	accountErasureEnabled bool
 	accessProjector       DeletionProjector
 	groupCache            GroupCache
+	membership            MembershipNotifier
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer, mailers ...mail.Mailer) Service {
@@ -61,6 +62,33 @@ type Options struct {
 	// overage tokens (OverageGroups). The service's membership writes and
 	// Group renames drop it at once. Nil remembers nothing.
 	GroupCache GroupCache
+	// Membership hears of every person added to or removed from a Group it
+	// Notifies of (the team membership mail, internal/teammail). Nil hears
+	// nothing, and the membership writes read nothing for it.
+	Membership MembershipNotifier
+}
+
+// MembershipNotifier hears of membership changes made through the service.
+type MembershipNotifier interface {
+	// Notifies reports whether changes to g are wanted. It is asked before
+	// the change, so a Group nobody wants costs no extra read.
+	Notifies(g Group) bool
+	// MembershipChanged is told of one change that took place: after the
+	// directory accepted it, and only when the person's membership of the
+	// Group did change. It must not fail or hold up the request.
+	MembershipChanged(ctx context.Context, change MembershipChange)
+}
+
+// MembershipChange is one person added to, or removed from, one Group. The
+// Group is the one the person's membership changed in: on a removal through
+// a parent roster, the subgroup they sat in.
+type MembershipChange struct {
+	UserID uuid.UUID
+	Group  Group
+	Added  bool
+	// ActorID is the caller's subject (authz.Principal.ID), as the token
+	// carried it.
+	ActorID string
 }
 
 type DeletionProjector interface {
@@ -73,6 +101,7 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		accountErasureEnabled: options.AccountErasureEnabled,
 		accessProjector:       options.AccessProjector,
 		groupCache:            options.GroupCache,
+		membership:            options.Membership,
 	}
 	if len(mailers) > 0 {
 		s.mail = mailers[0]
@@ -166,7 +195,39 @@ func (s *service) AddMember(ctx context.Context, p authz.Principal, groupRef str
 	}
 	// Forgotten even when the write fails: it may have reached Keycloak.
 	defer s.forgetGroups(userID)
-	return s.dir.AddMember(ctx, groupRef, userID)
+	g, notify := s.addNotification(ctx, groupRef, userID)
+	if err := s.dir.AddMember(ctx, groupRef, userID); err != nil {
+		return err
+	}
+	if notify {
+		s.membership.MembershipChanged(ctx, MembershipChange{UserID: userID, Group: g, Added: true, ActorID: p.ID})
+	}
+	return nil
+}
+
+// addNotification is the Group an add is about to change and whether the
+// notifier hears of it: a Group it wants, that the person is not yet
+// directly in. Keycloak takes the add of a member again without a word, so
+// this is the only place that can tell a change from a repeat. A read that
+// fails tells nothing; the add itself goes on as before.
+func (s *service) addNotification(ctx context.Context, groupRef string, userID uuid.UUID) (Group, bool) {
+	if s.membership == nil {
+		return Group{}, false
+	}
+	g, err := s.dir.GetGroup(ctx, groupRef)
+	if err != nil || !s.membership.Notifies(g) {
+		return Group{}, false
+	}
+	groups, err := s.dir.GroupsForUser(ctx, userID)
+	if err != nil {
+		return Group{}, false
+	}
+	for _, current := range groups {
+		if current.ID == g.ID {
+			return Group{}, false
+		}
+	}
+	return g, true
 }
 
 func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error {
@@ -184,9 +245,16 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 	}
 	for _, h := range hits {
 		if h.person.ID == userID {
-			return s.dir.RemoveMember(ctx, h.source.ID, userID)
+			if err := s.dir.RemoveMember(ctx, h.source.ID, userID); err != nil {
+				return err
+			}
+			if s.membership != nil && s.membership.Notifies(h.source) {
+				s.membership.MembershipChanged(ctx, MembershipChange{UserID: userID, Group: h.source, Added: false, ActorID: p.ID})
+			}
+			return nil
 		}
 	}
+	// Not on the roster: nothing changes, and nobody is told.
 	return s.dir.RemoveMember(ctx, g.ID, userID)
 }
 

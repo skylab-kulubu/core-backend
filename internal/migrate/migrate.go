@@ -1230,6 +1230,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		WHERE conrelid = to_regclass('public.account_deletion_steps')
 		  AND conname = 'account_deletion_steps_step_check'
 		  AND pg_get_constraintdef(oid) LIKE '%''erase_skypass_wallet''%'`,
+	// The team membership mail queue and its due index.
+	20261009120000: `
+		SELECT 1
+		WHERE to_regclass('public.team_membership_mails') IS NOT NULL
+		  AND to_regclass('public.team_membership_mails_due_idx') IS NOT NULL
+		  AND to_regclass('public.team_membership_mails_subject_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

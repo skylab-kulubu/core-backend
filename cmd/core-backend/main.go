@@ -46,6 +46,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
+	"github.com/skylab-kulubu/core-backend/internal/teammail"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
@@ -629,6 +630,7 @@ func main() {
 		sky = newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout)
 		sky.TemplateKey = templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
 		sky.CertificateTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey)
+		sky.TeamMembershipTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY", mail.DefaultTeamMembershipTemplateKey)
 		if raw := os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"); raw != "" {
 			tid, err := uuid.Parse(raw)
 			if err != nil {
@@ -651,6 +653,14 @@ func main() {
 			mailer = sky
 		}
 	}
+
+	// Team membership mail (docs/team-membership-mail.md): a person added to
+	// a team or removed from one through the membership routes is told by
+	// mail. The change is queued in the database and sent by a worker, so
+	// SkyMail being down delays the mail, never the change.
+	teamMembership, teamMembershipMetrics, teamMembershipStopped := startTeamMembershipMail(
+		workers, teammail.NewPostgresQueue(pool), sky, dir, users, log.Printf)
+	worker("team membership mail", teamMembershipStopped)
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {
@@ -715,6 +725,7 @@ func main() {
 			AccountErasureEnabled: workerEnabled,
 			AccessProjector:       accessProjector,
 			GroupCache:            overageGroups,
+			Membership:            teamMembership,
 		}, mailer),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
@@ -746,6 +757,7 @@ func main() {
 		AccountAccessMetrics:   accessMetrics,
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
 		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
+		TeamMailMetrics:        teamMembershipMetrics,
 		RetentionMetrics:       retentionMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,

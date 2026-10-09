@@ -78,6 +78,10 @@ type Deps struct {
 	// the purge is off.
 	MediaCDNPurgeMetrics interface{ Prometheus() string }
 
+	// TeamMailMetrics are the team membership mail's counters
+	// (docs/team-membership-mail.md). Nil publishes none.
+	TeamMailMetrics interface{ Prometheus() string }
+
 	// MediaUploadLimiter is each person's single-step upload budget. Nil
 	// uses media.DefaultUploadLimits.
 	MediaUploadLimiter *media.UploadLimiter
@@ -219,7 +223,7 @@ func New(deps Deps) *fiber.App {
 	})
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
-		deps.SkyPassWalletMetrics != nil || deps.Readiness != nil {
+		deps.SkyPassWalletMetrics != nil || deps.TeamMailMetrics != nil || deps.Readiness != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -241,6 +245,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.SkyPassWalletMetrics != nil {
 				text += deps.SkyPassWalletMetrics.Prometheus()
+			}
+			if deps.TeamMailMetrics != nil {
+				text += deps.TeamMailMetrics.Prometheus()
 			}
 			text += deps.Readiness.Prometheus()
 			return c.SendString(text)
