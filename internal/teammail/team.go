@@ -29,6 +29,15 @@ var roleNames = map[string]string{
 	"KOORDINATORLER": "Koordinatörler",
 }
 
+// roleValues are the template's Role variable: what the membership is in
+// the team. The template words its text by it (a member gets no
+// management rights; only leaders and coordinators do).
+var roleValues = map[string]string{
+	"":               "member",
+	"LIDERLER":       "leader",
+	"KOORDINATORLER": "coordinator",
+}
+
 // Team is the team a membership Group belongs to.
 type Team struct {
 	// Path is the team's own Group, e.g. /UYELER/ARGE/WEBLAB.
@@ -73,19 +82,22 @@ func TeamOf(path string) (Team, bool) {
 	return team, true
 }
 
-// teamName is how the mail names the team of group: its Turkish display name
-// (display_name_tr, as the public team list shows it) or its own name, and
-// the leader subgroup after it ("ARTLAB · Liderler").
+// teamName is how the mail names the team of group (Yusuf, 2026-10-09):
+// its code (the Group's name) and its Turkish display name
+// (display_name_tr, as the public team list shows it), "WEBLAB · Web
+// Geliştirme"; for a leader subgroup the code and the role, "WEBLAB ·
+// Liderler". Without a Turkish name, or one that is the code itself, the
+// code alone.
 func teamName(group identity.Group, role string) string {
-	name := strings.TrimSpace(group.Attributes["display_name_tr"])
-	if name == "" {
-		name = strings.TrimSpace(group.Name)
-	}
-	if name == "" {
-		name = group.Path[strings.LastIndex(group.Path, "/")+1:]
+	code := strings.TrimSpace(group.Name)
+	if code == "" {
+		code = group.Path[strings.LastIndex(group.Path, "/")+1:]
 	}
 	if label, ok := roleNames[role]; ok {
-		return name + " · " + label
+		return code + " · " + label
 	}
-	return name
+	if turkish := strings.TrimSpace(group.Attributes["display_name_tr"]); turkish != "" && turkish != code {
+		return code + " · " + turkish
+	}
+	return code
 }

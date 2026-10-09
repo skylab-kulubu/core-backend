@@ -23,19 +23,24 @@ const (
 	// GiveUpAfter is how long a change is tried. A mail about a membership
 	// change that is days old is no longer news; it is dropped and counted.
 	GiveUpAfter = 72 * time.Hour
-	// lease is how long a pass holds the changes it took: another pass
-	// (another core) does not take them meanwhile, and a pass that crashed
-	// gives them back when it runs out.
+	// lease is how long a pass holds the change it took: another pass
+	// (another core) does not take it meanwhile, and a pass that crashed
+	// gives it back when it runs out. A pass takes one change at a time, so
+	// the lease only has to outlast one send (sendTimeout); the claim fence
+	// (Change.ClaimedAt) keeps a late core from touching a row taken again.
 	lease = 2 * time.Minute
 	// pollInterval is how often the worker looks at the queue when no
 	// change wakes it: for retries, and for changes another core queued.
 	pollInterval = 15 * time.Second
-	batch        = 20
-	maxBatches   = 50
+	// maxSends bounds one pass.
+	maxSends = 200
 	// sendTimeout bounds one change: the lookups and the SkyMail call.
 	sendTimeout = 45 * time.Second
-	// enqueueTimeout bounds the insert a membership write waits for.
+	// enqueueTimeout bounds the insert a membership write waits for, and
+	// writeTimeout the row's own update after a send, which runs even when
+	// core is stopping: a mail SkyMail took is done with.
 	enqueueTimeout = 5 * time.Second
+	writeTimeout   = 5 * time.Second
 	timeZone       = "Europe/Istanbul"
 	dateLayout     = "02.01.2006"
 )
@@ -48,6 +53,9 @@ const (
 	SkipInactive SkipReason = "inactive"
 	// SkipNoEmail: the account has no primary e-mail.
 	SkipNoEmail SkipReason = "no_email"
+	// SkipNotTeam: the Group is no team by the rule of the core sending it
+	// (queued by a core whose rule was wider).
+	SkipNotTeam SkipReason = "not_team"
 )
 
 // Recipient is who a mail goes to: the primary e-mail and the name.
@@ -101,13 +109,14 @@ type Service struct {
 	location *time.Location
 	wake     chan struct{}
 
-	mu          sync.Mutex
-	enqueued    int64
-	queueErrors int64
-	outcomes    map[string]int64
-	backlog     int
-	oldest      time.Duration
-	lastSuccess time.Time
+	mu             sync.Mutex
+	enqueued       int64
+	queueErrors    int64
+	precheckErrors int64
+	outcomes       map[string]int64
+	backlog        int
+	oldest         time.Duration
+	lastSuccess    time.Time
 }
 
 // NewService checks config.
@@ -181,6 +190,13 @@ func (s *Service) MembershipChanged(ctx context.Context, change identity.Members
 	}
 }
 
+// PrecheckFailed counts an add whose membership could not be read before
+// the write: it went on, and no mail is sent for it. The line names nobody.
+func (s *Service) PrecheckFailed() {
+	s.count(func() { s.precheckErrors++ })
+	s.logger.Printf("team membership mail: the membership could not be read before an add; no mail is sent for it")
+}
+
 // Report counts one pass.
 type Report struct {
 	Sent, Skipped, Rejected, Failed, Expired int
@@ -201,36 +217,44 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 	}
 	report.Expired = expired
 	s.add("expired", expired)
-	for range maxBatches {
-		now := s.now().UTC()
-		changes, err := s.queue.Claim(ctx, now, lease, batch)
+	for range maxSends {
+		changes, err := s.queue.Claim(ctx, s.now().UTC(), lease, 1)
 		if err != nil {
 			return report, err
 		}
-		for _, change := range changes {
-			outcome := s.deliver(ctx, change)
-			s.add(outcome, 1)
-			switch outcome {
-			case "sent":
-				report.Sent++
-			case "rejected":
-				report.Rejected++
-			case "failed":
-				report.Failed++
-			default:
-				report.Skipped++
-			}
-			if outcome == "failed" {
-				err = s.queue.Retry(ctx, change.ID, s.now().UTC().Add(backoff(change.Attempts+1)))
-			} else {
-				err = s.queue.Complete(ctx, change.ID)
-			}
-			if err != nil {
-				return report, err
-			}
-		}
-		if len(changes) < batch {
+		if len(changes) == 0 {
 			break
+		}
+		change := changes[0]
+		outcome := s.deliver(ctx, change)
+		if outcome == outcomeInterrupted {
+			// Core is stopping: the change keeps its attempts and is taken
+			// again once its lease runs out. Nothing failed.
+			return report, ctx.Err()
+		}
+		s.add(outcome, 1)
+		switch outcome {
+		case "sent":
+			report.Sent++
+		case "rejected":
+			report.Rejected++
+		case "failed":
+			report.Failed++
+		default:
+			report.Skipped++
+		}
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
+		if outcome == "failed" {
+			err = s.queue.Retry(writeCtx, change, s.now().UTC().Add(backoff(change.Attempts+1)))
+		} else {
+			err = s.queue.Complete(writeCtx, change)
+		}
+		cancel()
+		if err != nil {
+			return report, err
+		}
+		if ctx.Err() != nil {
+			return report, ctx.Err()
 		}
 	}
 	backlog, oldest, err := s.queue.Backlog(ctx, s.now().UTC())
@@ -241,19 +265,24 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 	return report, nil
 }
 
+// outcomeInterrupted is a send cut short by core stopping: no outcome.
+const outcomeInterrupted = "interrupted"
+
 // deliver sends the mail of one change and names the outcome: sent,
-// skipped_<reason>, rejected (SkyMail refused the body itself) or failed
-// (tried again later).
-func (s *Service) deliver(ctx context.Context, change Change) string {
-	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
+// skipped_<reason>, rejected (SkyMail refused the body itself), failed
+// (tried again later) or interrupted (core is stopping).
+func (s *Service) deliver(parent context.Context, change Change) string {
+	ctx, cancel := context.WithTimeout(parent, sendTimeout)
 	defer cancel()
 	team, ok := TeamOf(change.GroupPath)
 	if !ok {
-		// Queued by a core whose rule was wider; nothing is owed.
-		return "skipped_" + string(SkipInactive)
+		return "skipped_" + string(SkipNotTeam)
 	}
 	recipient, skip, err := s.people.Recipient(ctx, change.SubjectID)
 	if err != nil {
+		if parent.Err() != nil {
+			return outcomeInterrupted
+		}
 		return "failed"
 	}
 	if skip != "" {
@@ -271,6 +300,7 @@ func (s *Service) deliver(ctx context.Context, change Change) string {
 	err = s.mail.TeamMembership(ctx, recipient.Email, recipient.FullName, map[string]string{
 		"TeamName":    teamName(group, team.Role),
 		"Action":      string(change.Action),
+		"Role":        roleValues[team.Role],
 		"EffectiveAt": change.OccurredAt.In(s.location).Format(dateLayout),
 		"LeaderName":  leader,
 	})
@@ -281,6 +311,8 @@ func (s *Service) deliver(ctx context.Context, change Change) string {
 		return "sent"
 	case errors.As(err, &refused) && refused.Permanent():
 		return "rejected"
+	case parent.Err() != nil:
+		return outcomeInterrupted
 	default:
 		return "failed"
 	}
@@ -340,7 +372,7 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 // outcomeNames are the outcomes /v1/metrics always lists.
 var outcomeNames = []string{
 	"sent", "failed", "rejected", "expired",
-	"skipped_" + string(SkipInactive), "skipped_" + string(SkipNoEmail),
+	"skipped_" + string(SkipInactive), "skipped_" + string(SkipNoEmail), "skipped_" + string(SkipNotTeam),
 }
 
 // Prometheus is the mail's counters and its backlog at the last pass, in
@@ -359,6 +391,7 @@ func (s *Service) Prometheus() string {
 	}
 	fmt.Fprintf(&out, "# TYPE skylab_team_membership_mail_enqueued_total counter\nskylab_team_membership_mail_enqueued_total %d\n", s.enqueued)
 	fmt.Fprintf(&out, "# TYPE skylab_team_membership_mail_queue_errors_total counter\nskylab_team_membership_mail_queue_errors_total %d\n", s.queueErrors)
+	fmt.Fprintf(&out, "# TYPE skylab_team_membership_mail_precheck_errors_total counter\nskylab_team_membership_mail_precheck_errors_total %d\n", s.precheckErrors)
 	fmt.Fprintf(&out, "# TYPE skylab_team_membership_mail_backlog gauge\nskylab_team_membership_mail_backlog %d\n", s.backlog)
 	fmt.Fprintf(&out, "# TYPE skylab_team_membership_mail_oldest_age_seconds gauge\nskylab_team_membership_mail_oldest_age_seconds %d\n", int64(s.oldest/time.Second))
 	var last int64

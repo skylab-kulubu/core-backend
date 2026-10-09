@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -77,7 +78,14 @@ type MembershipNotifier interface {
 	// directory accepted it, and only when the person's membership of the
 	// Group did change. It must not fail or hold up the request.
 	MembershipChanged(ctx context.Context, change MembershipChange)
+	// PrecheckFailed is told that the reads that tell a change from a
+	// repeat failed: the write went on, and no change is reported for it.
+	PrecheckFailed()
 }
+
+// membershipReadTimeout bounds the reads an add makes for the notifier, so
+// a slow Keycloak delays the write by at most this much.
+const membershipReadTimeout = 3 * time.Second
 
 // MembershipChange is one person added to, or removed from, one Group. The
 // Group is the one the person's membership changed in: on a removal through
@@ -214,12 +222,26 @@ func (s *service) addNotification(ctx context.Context, groupRef string, userID u
 	if s.membership == nil {
 		return Group{}, false
 	}
+	// A Group named by its path is asked about before anything is read.
+	if strings.HasPrefix(groupRef, "/") && !s.membership.Notifies(Group{Path: groupRef}) {
+		return Group{}, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, membershipReadTimeout)
+	defer cancel()
 	g, err := s.dir.GetGroup(ctx, groupRef)
-	if err != nil || !s.membership.Notifies(g) {
+	if err != nil {
+		// An unknown Group fails the add itself, which says so.
+		if !errors.Is(err, ErrNotFound) {
+			s.membership.PrecheckFailed()
+		}
+		return Group{}, false
+	}
+	if !s.membership.Notifies(g) {
 		return Group{}, false
 	}
 	groups, err := s.dir.GroupsForUser(ctx, userID)
 	if err != nil {
+		s.membership.PrecheckFailed()
 		return Group{}, false
 	}
 	for _, current := range groups {

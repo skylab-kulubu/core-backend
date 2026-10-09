@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -18,21 +17,22 @@ func NewPostgresQueue(pool *pgxpool.Pool) *PostgresQueue { return &PostgresQueue
 func (q *PostgresQueue) Enqueue(ctx context.Context, c Change) error {
 	_, err := q.pool.Exec(ctx, `
 		INSERT INTO team_membership_mails (id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $6)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $6)
+		ON CONFLICT (subject_id, group_path, action) DO NOTHING`,
 		c.ID, c.SubjectID, c.ActorID, c.GroupPath, string(c.Action), c.OccurredAt)
 	return err
 }
 
 func (q *PostgresQueue) Claim(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]Change, error) {
 	rows, err := q.pool.Query(ctx, `
-		UPDATE team_membership_mails SET next_attempt_at = $2
+		UPDATE team_membership_mails SET next_attempt_at = $2, claimed_at = $1
 		WHERE id IN (
 			SELECT id FROM team_membership_mails
 			WHERE next_attempt_at <= $1
 			ORDER BY next_attempt_at, occurred_at, id
 			LIMIT $3
 			FOR UPDATE SKIP LOCKED)
-		RETURNING id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at, attempts`,
+		RETURNING id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at, attempts, claimed_at`,
 		now, now.Add(lease), limit)
 	if err != nil {
 		return nil, err
@@ -42,7 +42,7 @@ func (q *PostgresQueue) Claim(ctx context.Context, now time.Time, lease time.Dur
 	for rows.Next() {
 		var c Change
 		var action string
-		if err := rows.Scan(&c.ID, &c.SubjectID, &c.ActorID, &c.GroupPath, &action, &c.OccurredAt, &c.NextAttemptAt, &c.Attempts); err != nil {
+		if err := rows.Scan(&c.ID, &c.SubjectID, &c.ActorID, &c.GroupPath, &action, &c.OccurredAt, &c.NextAttemptAt, &c.Attempts, &c.ClaimedAt); err != nil {
 			return nil, err
 		}
 		c.Action = Action(action)
@@ -51,13 +51,15 @@ func (q *PostgresQueue) Claim(ctx context.Context, now time.Time, lease time.Dur
 	return out, rows.Err()
 }
 
-func (q *PostgresQueue) Complete(ctx context.Context, id uuid.UUID) error {
-	_, err := q.pool.Exec(ctx, `DELETE FROM team_membership_mails WHERE id = $1`, id)
+func (q *PostgresQueue) Complete(ctx context.Context, claimed Change) error {
+	_, err := q.pool.Exec(ctx, `DELETE FROM team_membership_mails WHERE id = $1 AND claimed_at = $2`, claimed.ID, claimed.ClaimedAt)
 	return err
 }
 
-func (q *PostgresQueue) Retry(ctx context.Context, id uuid.UUID, at time.Time) error {
-	_, err := q.pool.Exec(ctx, `UPDATE team_membership_mails SET attempts = attempts + 1, next_attempt_at = $2 WHERE id = $1`, id, at)
+func (q *PostgresQueue) Retry(ctx context.Context, claimed Change, at time.Time) error {
+	_, err := q.pool.Exec(ctx, `
+		UPDATE team_membership_mails SET attempts = attempts + 1, next_attempt_at = $3
+		WHERE id = $1 AND claimed_at = $2`, claimed.ID, claimed.ClaimedAt, at)
 	return err
 }
 

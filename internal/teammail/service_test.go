@@ -22,9 +22,14 @@ type sent struct {
 type fakeMail struct {
 	sent []sent
 	err  error
+	// during runs inside the send, as SkyMail is answering.
+	during func()
 }
 
 func (m *fakeMail) TeamMembership(_ context.Context, recipient, fullName string, vars map[string]string) error {
+	if m.during != nil {
+		m.during()
+	}
 	if m.err != nil {
 		return m.err
 	}
@@ -92,7 +97,9 @@ func newFixture(t *testing.T) *fixture {
 	}
 	svc, err := NewService(Config{
 		Queue: f.queue, People: f.people, Mail: f.mail, Now: f.clock.Now, Logger: log.New(f.logs, "", 0),
-		Groups: fakeGroups{"/UYELER/ORGANIZASYON/ARTLAB": {Name: "ARTLAB", Path: "/UYELER/ORGANIZASYON/ARTLAB"}},
+		Groups: fakeGroups{"/UYELER/ORGANIZASYON/ARTLAB": {
+			Name: "ARTLAB", Path: "/UYELER/ORGANIZASYON/ARTLAB", Attributes: map[string]string{"display_name_tr": "Tasarım & Sanat"},
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +153,7 @@ func TestServiceQueuesAndSendsTheChange(t *testing.T) {
 		t.Fatalf("recipient %q %q", m.recipient, m.fullName)
 	}
 	want := map[string]string{
-		"TeamName": "ARTLAB · Liderler", "Action": "added",
+		"TeamName": "ARTLAB · Liderler", "Action": "added", "Role": "leader",
 		// 22:30 UTC on the 9th is past midnight in Istanbul.
 		"EffectiveAt": "10.10.2026", "LeaderName": "Fatih Naz",
 	}
@@ -173,7 +180,7 @@ func TestServiceRemovalWithUnknownActorAndGroup(t *testing.T) {
 	}
 	vars := f.mail.sent[0].vars
 	// The Group read failed: its own name stands for it.
-	if vars["TeamName"] != "GAMELAB" || vars["Action"] != "removed" || vars["LeaderName"] != "" {
+	if vars["TeamName"] != "GAMELAB" || vars["Action"] != "removed" || vars["LeaderName"] != "" || vars["Role"] != "member" {
 		t.Fatalf("vars %v", vars)
 	}
 }
@@ -317,5 +324,145 @@ func TestNewServiceNeedsItsParts(t *testing.T) {
 	t.Parallel()
 	if _, err := NewService(Config{}); err == nil {
 		t.Fatal("empty config accepted")
+	}
+}
+
+func TestServiceNamesTheTeamByCodeAndTurkishName(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.change(t, "/UYELER/ORGANIZASYON/ARTLAB", true, "")
+	if _, err := f.svc.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.mail.sent) != 1 || f.mail.sent[0].vars["TeamName"] != "ARTLAB · Tasarım & Sanat" || f.mail.sent[0].vars["Role"] != "member" {
+		t.Fatalf("sent %v", f.mail.sent)
+	}
+}
+
+// limitSpy records how many changes each claim asks for.
+type limitSpy struct {
+	*MemoryQueue
+	limits []int
+}
+
+func (q *limitSpy) Claim(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]Change, error) {
+	q.limits = append(q.limits, limit)
+	return q.MemoryQueue.Claim(ctx, now, lease, limit)
+}
+
+// One change per claim: a lease covers one send, never a batch of them that
+// could outlast it while another core takes the rest.
+func TestServiceClaimsOneChangeAtATime(t *testing.T) {
+	t.Parallel()
+	queue := &limitSpy{MemoryQueue: NewMemoryQueue()}
+	ada := uuid.New()
+	people := &fakePeople{recipients: map[uuid.UUID]Recipient{ada: {Email: "ada@example.test"}}}
+	mailer := &fakeMail{}
+	svc, err := NewService(Config{Queue: queue, People: people, Mail: mailer, Groups: fakeGroups{}, Logger: log.New(&bytes.Buffer{}, "", 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/UYELER/ARGE/WEBLAB", "/UYELER/ARGE/AIRLAB", "/UYELER/ARGE/GAMELAB"} {
+		svc.MembershipChanged(context.Background(), identity.MembershipChange{UserID: ada, Group: identity.Group{Path: path}, Added: true})
+	}
+	report, err := svc.Pass(context.Background())
+	if err != nil || report.Sent != 3 {
+		t.Fatalf("report %+v err %v", report, err)
+	}
+	for _, limit := range queue.limits {
+		if limit != 1 {
+			t.Fatalf("claim limits %v", queue.limits)
+		}
+	}
+	if lease < sendTimeout+30*time.Second {
+		t.Fatalf("lease %s does not cover one send (%s)", lease, sendTimeout)
+	}
+}
+
+// Shutting down mid-send is no failure: the row keeps its attempts and is
+// taken again once its lease runs out, and nothing says it failed.
+func TestServiceShutdownDuringASendIsNotAFailure(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.change(t, "/UYELER/ARGE/WEBLAB", true, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	f.mail.during = cancel
+	f.mail.err = &mail.SendError{}
+	report, err := f.svc.Pass(ctx)
+	if err == nil || report.Failed != 0 {
+		t.Fatalf("report %+v err %v", report, err)
+	}
+	if q := f.queue.Snapshot(); len(q) != 1 || q[0].Attempts != 0 {
+		t.Fatalf("queued %+v", q)
+	}
+	if strings.Contains(f.svc.Prometheus(), `outcome="failed"} 1`) {
+		t.Fatalf("metrics\n%s", f.svc.Prometheus())
+	}
+}
+
+// A mail SkyMail took is done with, even when core is stopping as it
+// answers: the row is deleted so it is not sent twice.
+func TestServiceCompletesASentMailDuringShutdown(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.change(t, "/UYELER/ARGE/WEBLAB", true, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	f.mail.during = cancel
+	report, _ := f.svc.Pass(ctx)
+	if report.Sent != 1 || len(f.queue.Snapshot()) != 0 {
+		t.Fatalf("report %+v queued %+v", report, f.queue.Snapshot())
+	}
+}
+
+func TestServiceCountsPathsThatAreNoLongerTeams(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	if err := f.queue.Enqueue(context.Background(), Change{
+		ID: uuid.New(), SubjectID: f.ada, GroupPath: "/UYELER/YK", Action: ActionAdded, OccurredAt: f.clock.now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.mail.sent) != 0 || !strings.Contains(f.svc.Prometheus(), `skylab_team_membership_mail_total{outcome="skipped_not_team"} 1`) {
+		t.Fatalf("sent %v metrics\n%s", f.mail.sent, f.svc.Prometheus())
+	}
+}
+
+// The same change queued twice while the first waits (a double click) is
+// one mail.
+func TestServiceQueuesAPendingChangeOnce(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.change(t, "/UYELER/ARGE/WEBLAB", true, "")
+	f.change(t, "/UYELER/ARGE/WEBLAB", true, "")
+	f.change(t, "/UYELER/ARGE/WEBLAB", false, "")
+	if q := f.queue.Snapshot(); len(q) != 2 {
+		t.Fatalf("queued %+v", q)
+	}
+}
+
+func TestServiceCountsMembershipReadFailures(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.svc.PrecheckFailed()
+	if !strings.Contains(f.svc.Prometheus(), "skylab_team_membership_mail_precheck_errors_total 1") {
+		t.Fatalf("metrics\n%s", f.svc.Prometheus())
+	}
+	if line := f.logs.String(); !strings.Contains(line, "team membership mail:") {
+		t.Fatalf("log %q", line)
+	}
+}
+
+func TestServiceTellsTheCoordinatorRole(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.change(t, "/UYELER/ORGANIZASYON/ARTLAB/KOORDINATORLER", false, "")
+	if _, err := f.svc.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.mail.sent) != 1 || f.mail.sent[0].vars["Role"] != "coordinator" || f.mail.sent[0].vars["TeamName"] != "ARTLAB · Koordinatörler" {
+		t.Fatalf("sent %v", f.mail.sent)
 	}
 }

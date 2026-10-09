@@ -2,6 +2,7 @@ package identity_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -14,8 +15,11 @@ import (
 
 // membershipSpy hears of membership changes in the Groups under /UYELER/ARGE.
 type membershipSpy struct {
-	changes []identity.MembershipChange
+	changes        []identity.MembershipChange
+	precheckFailed int
 }
+
+func (s *membershipSpy) PrecheckFailed() { s.precheckFailed++ }
 
 func (s *membershipSpy) Notifies(g identity.Group) bool {
 	return strings.HasPrefix(g.Path, "/UYELER/ARGE/")
@@ -102,6 +106,45 @@ func TestAddMemberNotifiesNothingOnFailureOrForOtherGroups(t *testing.T) {
 	// A Group the notifier does not want costs no membership read.
 	if slices.Contains(dir.Ops, "GroupsForUser") {
 		t.Fatalf("ops %v", dir.Ops)
+	}
+	// Named by path, it costs no read at all.
+	dir.Ops = nil
+	if err := svc.AddMember(ctx, actor(), "/UYELER/YK", person); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(dir.Ops, "GetGroup") || slices.Contains(dir.Ops, "GroupsForUser") {
+		t.Fatalf("ops %v", dir.Ops)
+	}
+}
+
+// slowGroups is a directory whose membership read fails, after checking
+// that it was given a deadline of its own.
+type slowGroups struct {
+	*identity.Memory
+	deadline bool
+}
+
+func (d *slowGroups) GroupsForUser(ctx context.Context, _ uuid.UUID) ([]identity.Group, error) {
+	_, d.deadline = ctx.Deadline()
+	return nil, errors.New("keycloak timed out")
+}
+
+func TestAddMemberWhoseMembershipCannotBeReadAddsAndSendsNothing(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mem, _, _, person := membershipSetup(t)
+	dir := &slowGroups{Memory: mem}
+	spy := &membershipSpy{}
+	svc := identity.NewServiceWithOptions(dir, user.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{Membership: spy})
+
+	if err := svc.AddMember(ctx, actor(), "g-weblab", person); err != nil {
+		t.Fatalf("the add failed with the read: %v", err)
+	}
+	if len(spy.changes) != 0 || spy.precheckFailed != 1 || !dir.deadline {
+		t.Fatalf("changes %v precheck failures %d deadline %v", spy.changes, spy.precheckFailed, dir.deadline)
+	}
+	if groups, _ := mem.GroupsForUser(ctx, person); len(groups) != 1 {
+		t.Fatalf("groups %v", groups)
 	}
 }
 

@@ -17,17 +17,19 @@ A change made in Keycloak's own console sends nothing: core does not see it.
 
 | Path | Team? | `TeamName` |
 | --- | --- | --- |
-| `/UYELER/<area>/<team>` (e.g. `/UYELER/ARGE/WEBLAB`) | yes | the team's `display_name_tr`, else its name: `WEBLAB` |
+| `/UYELER/<area>/<team>` (e.g. `/UYELER/ARGE/WEBLAB`) | yes | code · Turkish name: `WEBLAB · Web Geliştirme` |
 | `/UYELER/<area>/<team>/LIDERLER` | yes | `WEBLAB · Liderler` |
-| `/UYELER/<area>/<team>/KOORDINATORLER` | yes | `ARTLAB · Koordinatörler` |
+| `/UYELER/<area>/<team>/KOORDINATORLER` | yes | `WEBLAB · Koordinatörler` |
 | a sub-team below a team (e.g. `/UYELER/ARGE/ALGOLAB/AGC`, and its `LIDERLER`) | yes | `AGC`, `AGC · Liderler` |
 | `/UYELER` (the club), `/UYELER/<area>` (ARGE, ORGANIZASYON, …, and technical Groups such as `ESKI-EDITORLER`), an area's own `LIDERLER` | no | |
 | any Privileged Group and everything under it: `ADMIN`, `YK`, `DK` (`/ADMIN`, `/UYELER/YK/BASKAN`, …) | no | |
 | anything outside `/UYELER` | no | |
 
-The team is read from the directory when the mail is sent, so a team renamed
-in between is mailed under its new display name; one that is gone is mailed
-under the last segment of its path.
+The code is the Group's name and the Turkish name its `display_name_tr` (the
+name the public team list shows); without a Turkish name, or with one equal
+to the code, the code alone (Yusuf, 2026-10-09). The team is read from the
+directory when the mail is sent, so a team renamed in between is mailed under
+its new name; one that is gone is mailed under the last segment of its path.
 
 ## Variables
 
@@ -35,6 +37,7 @@ under the last segment of its path.
 | --- | --- |
 | `TeamName` | as in the table above |
 | `Action` | `added` or `removed` (the template renders "eklendi" / "çıkarıldı") |
+| `Role` | `member` (the team itself), `leader` (`LIDERLER`) or `coordinator` (`KOORDINATORLER`): the template words its text by it, since only leaders and coordinators get management rights |
 | `EffectiveAt` | the day of the change in Europe/Istanbul, `dd.MM.yyyy` |
 | `LeaderName` | the full name of the person who made the change ("İşlemi yapan"); empty, and the line left out, for a service account or someone core may no longer name |
 
@@ -43,16 +46,25 @@ profile name as the recipient name.
 
 ## One mail per change
 
-- **Add:** before the write, core reads the person's direct Groups. Already a
-  direct member: Keycloak takes the add again, nothing changed, no mail.
+- **Add:** before the write, core reads the Group (skipped when the route
+  names it by a path that is no team) and, for a team, the person's direct
+  Groups, together bounded to 3 s. Already a direct member: Keycloak takes the
+  add again, nothing changed, no mail. A read that fails or times out lets the
+  add go on without a mail, and is logged without the person and counted
+  (`skylab_team_membership_mail_precheck_errors_total`).
   Joining a team's `LIDERLER` while a member of the team is a change of its
   own and is mailed.
 - **Remove:** only when the person is on the roster; the mail names the Group
   they were removed from (the subgroup they sat in).
-- A write that fails sends nothing. A Group that is not a team costs no extra
-  read.
-- Delivery is at least once: a core that stops between SkyMail's `201` and
-  the row's deletion sends that mail again after the lease (two minutes).
+- A write that fails sends nothing. A Group that is not a team costs no
+  membership read (and no read at all when named by path).
+- One row waits per person, Group and action: the same change made again
+  before its mail went (a double click on add) is not queued twice. An add,
+  a removal and an add again within one send interval mail "added" and
+  "removed" only.
+- Delivery is at least once: a core that dies between SkyMail's `201` and
+  the row's deletion sends that mail again after the lease (two minutes). A
+  core that is merely stopping deletes the row first.
 
 ## Delivery
 
@@ -65,11 +77,17 @@ membership write ──▶ Keycloak (204) ──▶ INSERT team_membership_mails
 ```
 
 - The queue is `team_membership_mails`: ids, the Group's path, the action and
-  the time, never an address or a name. A pass leases the rows it takes
-  (`FOR UPDATE SKIP LOCKED`), so several cores share it.
-- The insert is the only thing the membership request waits for (at most
-  5 s). If it fails, the change still stands: core logs one line without the
-  person and counts `skylab_team_membership_mail_queue_errors_total`.
+  the time, never an address or a name. A pass takes one row at a time
+  (`FOR UPDATE SKIP LOCKED`), leases it for two minutes (one send is bounded
+  to 45 s) and stamps `claimed_at`; it deletes or retries the row only while
+  `claimed_at` is still its own. Several cores share the queue, and a core
+  whose lease ran out cannot touch a row another core took since.
+- After the write the membership request waits for the insert (at most 5 s),
+  besides the reads above. If it fails, the change still stands: core logs
+  one line without the person and counts
+  `skylab_team_membership_mail_queue_errors_total`.
+- A send cut short by core stopping is no failure: the row keeps its attempts
+  and is taken again once its lease runs out.
 - At send time, the person is skipped — the row deleted, nothing sent — when
   they are erased, being erased (`deletion_pending`), hard-purged, disabled in
   Keycloak or gone (`skipped_inactive`), or have no primary e-mail
@@ -98,9 +116,11 @@ it. There is no template id fallback.
 
 - `skylab_team_membership_mail_enabled` — 1 on, 0 off
 - `skylab_team_membership_mail_total{outcome}` — `sent`, `failed` (retried),
-  `rejected`, `expired`, `skipped_inactive`, `skipped_no_email`
+  `rejected`, `expired`, `skipped_inactive`, `skipped_no_email`,
+  `skipped_not_team` (queued by a core whose rule was wider)
 - `skylab_team_membership_mail_enqueued_total`,
-  `skylab_team_membership_mail_queue_errors_total`
+  `skylab_team_membership_mail_queue_errors_total`,
+  `skylab_team_membership_mail_precheck_errors_total`
 - `skylab_team_membership_mail_backlog`,
   `skylab_team_membership_mail_oldest_age_seconds`,
   `skylab_team_membership_mail_last_success_timestamp_seconds`

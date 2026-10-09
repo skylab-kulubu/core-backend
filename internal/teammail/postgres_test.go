@@ -59,17 +59,18 @@ func TestPostgresQueue(t *testing.T) {
 		t.Fatalf("second claim %+v", again)
 	}
 
-	if err := q.Retry(ctx, first.ID, now.Add(time.Hour)); err != nil {
+	if err := q.Retry(ctx, claimed[0], now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := q.Claim(ctx, now.Add(5*time.Minute), time.Minute, 10); len(got) != 1 || got[0].ID != second.ID {
-		t.Fatalf("after lease %+v", got)
+	reclaimed, _ := q.Claim(ctx, now.Add(5*time.Minute), time.Minute, 10)
+	if len(reclaimed) != 1 || reclaimed[0].ID != second.ID {
+		t.Fatalf("after lease %+v", reclaimed)
 	}
 	count, oldest, err := q.Backlog(ctx, now)
 	if err != nil || count != 2 || oldest != time.Minute {
 		t.Fatalf("backlog %d %s %v", count, oldest, err)
 	}
-	if err := q.Complete(ctx, second.ID); err != nil {
+	if err := q.Complete(ctx, reclaimed[0]); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := q.Claim(ctx, now.Add(time.Hour), time.Minute, 10); len(got) != 1 || got[0].ID != first.ID || got[0].Attempts != 1 {
@@ -119,5 +120,64 @@ func TestAccountErasureForgetsQueuedTeamMails(t *testing.T) {
 	}
 	if len(claimed) != 1 || claimed[0].ID != bySubject.ID || claimed[0].ActorID != nil {
 		t.Fatalf("after erasure %+v", claimed)
+	}
+}
+
+// Two cores: A's lease ran out while it was still sending, and B took the
+// row. Whatever A then writes (done, or failed) must not touch B's claim.
+func TestPostgresQueueFencesAnotherCoresClaim(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	q := teammail.NewPostgresQueue(pool)
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	change := teammail.Change{ID: uuid.New(), SubjectID: uuid.New(), GroupPath: "/UYELER/ARGE/WEBLAB", Action: teammail.ActionAdded, OccurredAt: now}
+	if err := q.Enqueue(ctx, change); err != nil {
+		t.Fatal(err)
+	}
+	a, err := q.Claim(ctx, now, 2*time.Minute, 1)
+	if err != nil || len(a) != 1 {
+		t.Fatalf("A %v %v", a, err)
+	}
+	b, err := q.Claim(ctx, now.Add(3*time.Minute), 2*time.Minute, 1)
+	if err != nil || len(b) != 1 || b[0].ClaimedAt.Equal(a[0].ClaimedAt) {
+		t.Fatalf("B %v %v", b, err)
+	}
+	if err := q.Retry(ctx, a[0], now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Complete(ctx, a[0]); err != nil {
+		t.Fatal(err)
+	}
+	var attempts int
+	var next time.Time
+	if err := pool.QueryRow(ctx, `SELECT attempts, next_attempt_at FROM team_membership_mails WHERE id = $1`, change.ID).Scan(&attempts, &next); err != nil {
+		t.Fatalf("A's write removed B's row: %v", err)
+	}
+	if attempts != 0 || !next.Equal(now.Add(5*time.Minute)) {
+		t.Fatalf("A's retry changed B's claim: attempts %d next %s", attempts, next)
+	}
+	if err := q.Complete(ctx, b[0]); err != nil {
+		t.Fatal(err)
+	}
+	if count, _, _ := q.Backlog(ctx, now); count != 0 {
+		t.Fatalf("B's complete left %d", count)
+	}
+}
+
+func TestPostgresQueueKeepsOnePendingRowPerChange(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	q := teammail.NewPostgresQueue(pool)
+	now := time.Now().UTC()
+	subject := uuid.New()
+	for i, action := range []teammail.Action{teammail.ActionAdded, teammail.ActionAdded, teammail.ActionRemoved} {
+		if err := q.Enqueue(ctx, teammail.Change{
+			ID: uuid.New(), SubjectID: subject, GroupPath: "/UYELER/ARGE/WEBLAB", Action: action, OccurredAt: now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count, _, _ := q.Backlog(ctx, now); count != 2 {
+		t.Fatalf("pending %d, want 2", count)
 	}
 }
