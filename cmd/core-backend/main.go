@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -41,6 +42,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
 	"github.com/skylab-kulubu/core-backend/internal/mediaframe"
+	"github.com/skylab-kulubu/core-backend/internal/memlimit"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/retention"
 	"github.com/skylab-kulubu/core-backend/internal/season"
@@ -88,6 +90,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == retentionSweepCommandName {
 		os.Exit(runRetentionSweep(os.Args[2:], os.Getenv, os.Stdout))
 	}
+	// A soft memory limit under the container's, so the collector works
+	// harder near it instead of the kernel killing core
+	// (docs/memory-limit.md). Set first: startup allocates too.
+	memory := memlimit.Apply(os.Getenv, os.ReadFile, debug.SetMemoryLimit)
+	log.Printf("memory limit: %s", memory)
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")
@@ -322,7 +329,12 @@ func main() {
 	}))
 	// One decode budget for everything that decodes an image, so that
 	// together they hold at most its slots of decoded images in memory.
-	decodeBudget := media.NewDecodeBudget(media.DecodeBudgetConfig{})
+	decodeConfig, err := media.DecodeBudgetConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	decodeBudget := media.NewDecodeBudget(decodeConfig)
+	log.Printf("media decode budget: %s", decodeBudget)
 	media.MaintainCoverColorBackfill(workers, mediaStore, blobs, decodeBudget, time.Minute, func(err error) {
 		log.Printf("media cover color backfill: %v", err)
 	})
@@ -768,6 +780,8 @@ func main() {
 		GithubActivity:          githubActivity,
 		Consents:                consents,
 		Readiness:               readiness,
+		MediaDecodeMetrics:      decodeBudget,
+		MemoryMetrics:           memory,
 	})
 
 	addr := os.Getenv("PORT")

@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"errors"
-	"io"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
@@ -168,7 +167,7 @@ func (h *MeHandler) ProfilePicture(c fiber.Ctx) error {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	defer f.Close()
-	data, err := io.ReadAll(f)
+	data, err := readUploadedFile(f, header.Size)
 	if err != nil {
 		return err
 	}

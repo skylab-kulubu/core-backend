@@ -147,6 +147,16 @@ type Deps struct {
 	// no Guest apply consent.
 	Consents *consent.Service
 
+	// MediaDecodeMetrics are the media decode budget's state and counters
+	// (docs/media-lifecycle.md, "Decode budget"), served on /v1/metrics.
+	// Nil leaves them out.
+	MediaDecodeMetrics interface{ Prometheus() string }
+
+	// MemoryMetrics are core's soft memory limit, its container's limit and
+	// the memory the Go runtime holds (docs/memory-limit.md), served on
+	// /v1/metrics. Nil leaves them out.
+	MemoryMetrics interface{ Prometheus() string }
+
 	// Readiness is GET /v1/ready's database and shutdown check, asked
 	// before the account access gate (internal/health). Nil leaves the
 	// gate's check alone. /v1/health (liveness) asks nothing.
@@ -219,7 +229,7 @@ func New(deps Deps) *fiber.App {
 	})
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
-		deps.SkyPassWalletMetrics != nil || deps.Readiness != nil {
+		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.Readiness != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -241,6 +251,12 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.SkyPassWalletMetrics != nil {
 				text += deps.SkyPassWalletMetrics.Prometheus()
+			}
+			if deps.MediaDecodeMetrics != nil {
+				text += deps.MediaDecodeMetrics.Prometheus()
+			}
+			if deps.MemoryMetrics != nil {
+				text += deps.MemoryMetrics.Prometheus()
 			}
 			text += deps.Readiness.Prometheus()
 			return c.SendString(text)
