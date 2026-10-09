@@ -17,6 +17,7 @@ several.
 |---|---|---|
 | `GET /v1/health` | always `204` | nothing (liveness: the process answers) |
 | `GET /v1/ready` | `204`, or `503` with `Cache-Control: no-store` and `Retry-After: 1` | in order: the task is not shutting down; the database answers a ping; the account access gate's contract sentinel (`ACCOUNT_ACCESS_GATE_MODE=enforce` only, docs/account-access-gate.md) |
+| `GET /v1/ready?gate=skip` | the same | the first two only: the container's health check |
 
 `/v1/ready` keeps answering `204` when all is well, which is what the release
 wizards and their markers read.
@@ -35,23 +36,25 @@ wizards and their markers read.
   same on every task; failing readiness for them would take every task out (or
   get them restarted) and turn a partial outage into a whole one.
 
-The database and, in `enforce` mode, the gate's Redis are what core can
-neither start nor serve signed-in requests without: startup stops without them
-(the migrations, the gate's reconciliation), and a task that has listened once
-has reached both.
-
 Swarm has one health check, not Kubernetes' separate liveness and readiness:
-a task that fails it `retries` times in a row is replaced. Its settings below
-let a database or Redis restart pass (a minute) without a restart of core. An
-outage longer than that restarts core, which then cannot start until the
-database (or the gate's Redis) is back, and comes back on its own after; the
-routes that need neither (certificate verification, anonymous short links)
-are down meanwhile too.
+a task that fails it `retries` times in a row is replaced. So the health check
+asks `/v1/ready?gate=skip`: the task and its database, not the account access
+gate's Redis. Restarting core for a gate Redis that is down fixes nothing
+(core cannot start without it, the gate's reconciliation stops startup) and
+takes down the routes that need no Redis (anonymous short links, certificate
+verification). With the gate down, signed-in requests answer `503` as before,
+and `/v1/ready` itself still says so. A deploy is still gated on the gate: a
+new task that cannot reach it never starts listening.
+
+The database stays in the check: core can serve almost nothing without it.
+The settings below let a database restart pass (a minute) without a restart of
+core. A longer outage restarts core, which cannot start until the database is
+back (the migrations), and comes back on its own after.
 
 ## The health check
 
-`core-backend healthcheck` asks this container's core for `/v1/ready`
-(`http://127.0.0.1:$PORT`, 3 s) and exits 0 on `2xx`, 1 otherwise, saying why
+`core-backend healthcheck` asks this container's core for
+`/v1/ready?gate=skip` (`http://127.0.0.1:$PORT`, 3 s) and exits 0 on `2xx`, 1 otherwise, saying why
 on stderr (kept by Docker: `docker inspect`). The image needs no curl or wget.
 
 The image carries it (`Dockerfile`):

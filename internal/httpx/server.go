@@ -251,7 +251,12 @@ func New(deps Deps) *fiber.App {
 			c.Set(fiber.HeaderRetryAfter, "1")
 			return fiber.ErrServiceUnavailable
 		}
-		if deps.AccountAccessGate != nil {
+		// The container's health check (core-backend healthcheck) asks
+		// with gate=skip: Swarm has one check, which restarts a task that
+		// fails it, and restarting core for a gate Redis that is down fixes
+		// nothing (core cannot start without it) while it takes down the
+		// routes that need no Redis. No route is added for it.
+		if deps.AccountAccessGate != nil && c.Query("gate") != "skip" {
 			if err := deps.AccountAccessGate.Ready(c.Context()); err != nil {
 				deps.AccountAccessMetrics.RecordReadinessFailure()
 				c.Set(fiber.HeaderCacheControl, "no-store")

@@ -100,3 +100,46 @@ func TestReadyAsksTheGateOnlyWhenTheDatabaseAnswers(t *testing.T) {
 		t.Fatalf("status=%d gate calls=%d, want 204 and 1", response.StatusCode, gate.readyCalls)
 	}
 }
+
+// The container's health check asks /v1/ready?gate=skip: the task and its
+// database only. A gate Redis that is down fails /v1/ready, as before, but
+// not the health check, so Swarm does not restart core for it.
+func TestReadyGateSkipAsksTheTaskAndDatabaseOnly(t *testing.T) {
+	t.Parallel()
+	db := &switchableDatabase{}
+	gate := &httpAccessGate{readyErr: errors.New("redis unavailable")}
+	readiness := health.NewReadiness(db, health.Options{MaxAge: 1})
+	deps := memoryDeps()
+	deps.AccountAccessGate = gate
+	deps.Readiness = readiness
+	app := httpx.New(deps)
+	status := func(path string) int {
+		t.Helper()
+		response, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode
+	}
+	if got := status("/v1/ready"); got != fiber.StatusServiceUnavailable {
+		t.Fatalf("/v1/ready with the gate down = %d, want 503", got)
+	}
+	if got := status("/v1/ready?gate=skip"); got != fiber.StatusNoContent || gate.readyCalls != 1 {
+		t.Fatalf("/v1/ready?gate=skip with the gate down = %d (gate asked %d times), want 204 and the gate asked once (by /v1/ready)", got, gate.readyCalls)
+	}
+	db.set(errors.New("down"))
+	if got := status("/v1/ready?gate=skip"); got != fiber.StatusServiceUnavailable {
+		t.Fatalf("/v1/ready?gate=skip with the database down = %d, want 503", got)
+	}
+	db.set(nil)
+	readiness.Drain()
+	if got := status("/v1/ready?gate=skip"); got != fiber.StatusServiceUnavailable {
+		t.Fatalf("/v1/ready?gate=skip while draining = %d, want 503", got)
+	}
+	// Any other value is the full check.
+	deps.Readiness = health.NewReadiness(db, health.Options{MaxAge: 1})
+	app = httpx.New(deps)
+	if got := status("/v1/ready?gate=no"); got != fiber.StatusServiceUnavailable {
+		t.Fatalf("/v1/ready?gate=no = %d, want the full check's 503", got)
+	}
+}

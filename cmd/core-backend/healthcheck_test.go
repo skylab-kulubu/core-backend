@@ -10,14 +10,14 @@ import (
 )
 
 // `core-backend healthcheck` is the container's health check: 0 when this
-// container's core answers /v1/ready with 204, 1 otherwise (Docker reserves
+// container's core answers /v1/ready?gate=skip with 204, 1 otherwise (Docker reserves
 // 2), saying why on stderr.
 func TestHealthcheckCommand(t *testing.T) {
 	t.Parallel()
 	status := http.StatusNoContent
 	var asked string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		asked = r.URL.Path
+		asked = r.URL.RequestURI()
 		w.WriteHeader(status)
 	}))
 	defer server.Close()
@@ -27,8 +27,9 @@ func TestHealthcheckCommand(t *testing.T) {
 	if code := runHealthcheck(nil, env(map[string]string{"PORT": port}), &errOut); code != 0 {
 		t.Fatalf("ready: exit %d %s", code, errOut.String())
 	}
-	if asked != "/v1/ready" {
-		t.Fatalf("asked %q, want /v1/ready", asked)
+	// The task and its database, not the account access gate's Redis.
+	if asked != "/v1/ready?gate=skip" {
+		t.Fatalf("asked %q, want /v1/ready?gate=skip", asked)
 	}
 	status = http.StatusServiceUnavailable
 	errOut.Reset()
