@@ -35,9 +35,18 @@ wizards and their markers read.
   same on every task; failing readiness for them would take every task out (or
   get them restarted) and turn a partial outage into a whole one.
 
+The database and, in `enforce` mode, the gate's Redis are what core can
+neither start nor serve signed-in requests without: startup stops without them
+(the migrations, the gate's reconciliation), and a task that has listened once
+has reached both.
+
 Swarm has one health check, not Kubernetes' separate liveness and readiness:
 a task that fails it `retries` times in a row is replaced. Its settings below
-let a database restart pass (a minute) without a restart of core.
+let a database or Redis restart pass (a minute) without a restart of core. An
+outage longer than that restarts core, which then cannot start until the
+database (or the gate's Redis) is back, and comes back on its own after; the
+routes that need neither (certificate verification, anonymous short links)
+are down meanwhile too.
 
 ## The health check
 
