@@ -73,3 +73,19 @@ func TestMetricsPublishTheTeamMembershipMailCounters(t *testing.T) {
 		t.Fatalf("team mail metrics status=%d body=\n%s", status, text)
 	}
 }
+
+func TestMetricsPublishTheDecodeBudgetAndMemoryLimit(t *testing.T) {
+	t.Parallel()
+
+	decode := fixedGauges("skylab_media_decode_slots 2\n")
+	memory := fixedGauges("skylab_core_go_memory_limit_bytes 966367641\n")
+	status, text := scrapeMetrics(t, httpx.Deps{MediaDecodeMetrics: decode, MemoryMetrics: memory})
+	if status != fiber.StatusOK || text != string(decode)+string(memory) {
+		t.Fatalf("metrics status=%d body=\n%s", status, text)
+	}
+
+	status, text = scrapeMetrics(t, httpx.Deps{AccountAccessMetrics: accessgate.NewMetrics()})
+	if status != fiber.StatusOK || strings.Contains(text, "skylab_media_decode_") || strings.Contains(text, "skylab_core_go_memory") {
+		t.Fatalf("without them status=%d body=\n%s", status, text)
+	}
+}
