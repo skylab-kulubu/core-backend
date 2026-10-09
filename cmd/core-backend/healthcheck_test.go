@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // `core-backend healthcheck` is the container's health check: 0 when this
@@ -14,11 +16,16 @@ import (
 // 2), saying why on stderr.
 func TestHealthcheckCommand(t *testing.T) {
 	t.Parallel()
+	// The handler runs on the server's goroutines.
+	var mu sync.Mutex
 	status := http.StatusNoContent
 	var asked string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		asked = r.URL.RequestURI()
-		w.WriteHeader(status)
+		code := status
+		mu.Unlock()
+		w.WriteHeader(code)
 	}))
 	defer server.Close()
 	_, port, _ := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
@@ -28,10 +35,13 @@ func TestHealthcheckCommand(t *testing.T) {
 		t.Fatalf("ready: exit %d %s", code, errOut.String())
 	}
 	// The task and its database, not the account access gate's Redis.
+	mu.Lock()
 	if asked != "/v1/ready?gate=skip" {
+		mu.Unlock()
 		t.Fatalf("asked %q, want /v1/ready?gate=skip", asked)
 	}
 	status = http.StatusServiceUnavailable
+	mu.Unlock()
 	errOut.Reset()
 	if code := runHealthcheck(nil, env(map[string]string{"PORT": port}), &errOut); code != 1 || !strings.Contains(errOut.String(), "503") {
 		t.Fatalf("not ready: exit %d %q", code, errOut.String())
@@ -50,5 +60,24 @@ func TestHealthcheckCommand(t *testing.T) {
 	}
 	if code := runHealthcheck([]string{"extra"}, env(nil), &errOut); code != 1 {
 		t.Fatalf("an argument: exit %d", code)
+	}
+}
+
+// Readiness's one connection lives long: re-made every hour (pgx's
+// default), it could meet a database at max_connections and fail the health
+// check of a core that is fine. Opening connects nothing.
+func TestReadinessDatabaseKeepsItsConnection(t *testing.T) {
+	t.Parallel()
+	pool, err := openReadinessDatabase("postgres://core:secret@127.0.0.1:1/core?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	config := pool.Config()
+	if config.MaxConns != readinessDatabaseConns || config.MaxConnLifetime < 24*time.Hour || config.MaxConnIdleTime < 24*time.Hour {
+		t.Fatalf("MaxConns %d, MaxConnLifetime %s, MaxConnIdleTime %s", config.MaxConns, config.MaxConnLifetime, config.MaxConnIdleTime)
+	}
+	if _, err := openReadinessDatabase("::not a url"); err == nil || strings.Contains(err.Error(), "not a url") {
+		t.Fatalf("a bad address: %v (must not quote it)", err)
 	}
 }

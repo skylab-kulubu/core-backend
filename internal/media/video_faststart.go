@@ -438,6 +438,13 @@ func (j faststartJob) run(ctx context.Context) {
 		}
 	case panicked:
 		j.failAfterPanic(ctx)
+	case err != nil && ctx.Err() != nil:
+		// Core is stopping (the pass's context ended): no failure of the
+		// video. Its claim is let go with no attempt counted; a copy the
+		// step may have left is swept as a stray one.
+		if releaseErr := j.release(ctx); releaseErr != nil {
+			j.report(&FaststartError{ID: j.claim.Media.ID, Err: releaseErr})
+		}
 	case err != nil:
 		j.report(&FaststartError{ID: j.claim.Media.ID, Err: err})
 		j.putOff(ctx)

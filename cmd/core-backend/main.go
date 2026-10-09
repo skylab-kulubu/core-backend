@@ -490,6 +490,7 @@ func main() {
 		log.Fatal(err)
 	}
 	var gate *accessgate.RedisGate
+	var gateClose []closing
 	var accessProjector *account.AccessProjector
 	accessMetrics := accessgate.NewMetrics()
 	if gateConfig.Mode == accessgate.ModeEnforce {
@@ -498,6 +499,7 @@ func main() {
 			log.Fatal(err)
 		}
 		defer redisClient.Close()
+		gateClose = []closing{{name: "the access gate's Redis client", close: func() { _ = redisClient.Close() }}}
 		gate = accessgate.NewRedisGate(
 			redisClient, gateConfig.OperationTimeout, gateConfig.RequiredReplicas, gateConfig.WaitTimeout, accessMetrics,
 		)
@@ -507,8 +509,12 @@ func main() {
 		if err := reconciler.RunOnce(bootstrapContext); err != nil {
 			cancelBootstrap()
 			if signals.Err() != nil {
-				// Stopped while starting: nothing was served yet.
+				// Stopped while starting: nothing was served yet. The
+				// workers already run; they stop before the deferred
+				// closes take the pools.
 				log.Print("account access: stop signal during the startup reconciliation; exiting")
+				stopWorkers()
+				waitStopped(workersStopped, time.Now().Add(shutdownTimeout), log.Printf)
 				return
 			}
 			log.Fatal(err)
@@ -781,11 +787,17 @@ func main() {
 		Total:       shutdownTimeout,
 		StopWorkers: stopWorkers,
 		Wait:        append(workersStopped, stopping{name: "contact consent confirmation mails", done: consents.Idle}),
-		Logf:        log.Printf,
+		Close: append(gateClose,
+			closing{name: "the readiness database pool", close: readinessDatabase.Close},
+			closing{name: "the database pool", close: pool.Close}),
+		Logf: log.Printf,
 	}); err != nil {
 		log.Fatal(err)
 	}
-	// Then the deferred closes: the gate's Redis client and the pools.
+	// serve closed what it could within the budget. A close still waiting
+	// (a pool with a connection in use) must not hold the process past
+	// Docker's SIGKILL, so the deferred closes do not run again.
+	os.Exit(0)
 }
 
 // sudoIntrospection builds the client Core uses to ask the realm about a

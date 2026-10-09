@@ -188,3 +188,128 @@ func TestReadinessWithoutADatabase(t *testing.T) {
 		t.Fatalf("nil readiness: %v", err)
 	}
 }
+
+// slowDatabase answers each ping after delay, counting them.
+type slowDatabase struct {
+	delay time.Duration
+	mu    sync.Mutex
+	pings int
+}
+
+func (d *slowDatabase) Ping(ctx context.Context) error {
+	d.mu.Lock()
+	d.pings++
+	d.mu.Unlock()
+	select {
+	case <-time.After(d.delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// A database slow under load (1.2 s a ping, over the 1 s max age) and five
+// callers of /v1/ready arriving during one ping: they share that ping, and
+// none waits longer than the health check's own 3 s. (Each ping in turn,
+// as before, took 5 pings and kept the last caller 6 s.)
+func TestReadinessSharesOnePingAmongTheCallersWhileItRuns(t *testing.T) {
+	t.Parallel()
+	db := &slowDatabase{delay: 1200 * time.Millisecond}
+	r := health.NewReadiness(db, health.Options{Logf: discard})
+	var wg sync.WaitGroup
+	waits := make([]time.Duration, 5)
+	errs := make([]error, 5)
+	for i := range waits {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(time.Duration(i) * 200 * time.Millisecond)
+			started := time.Now()
+			errs[i] = r.Check(context.Background())
+			waits[i] = time.Since(started)
+		}()
+	}
+	wg.Wait()
+	for i := range waits {
+		if errs[i] != nil {
+			t.Fatalf("caller %d: %v", i, errs[i])
+		}
+		if waits[i] >= 3*time.Second {
+			t.Fatalf("caller %d waited %s", i, waits[i])
+		}
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.pings != 1 {
+		t.Fatalf("pings=%d for callers arriving during one ping, want 1", db.pings)
+	}
+}
+
+// The answer's age counts from when the ping answered, not from when it
+// began: a ping longer than the max age is still reused by the next caller.
+func TestReadinessAgesTheAnswerFromWhenThePingEnded(t *testing.T) {
+	t.Parallel()
+	c := newClock()
+	db := &advancingDatabase{clock: c, by: 1500 * time.Millisecond}
+	r := health.NewReadiness(db, health.Options{Now: c.Now, Logf: discard})
+	for range 2 {
+		if err := r.Check(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if db.pings != 1 {
+		t.Fatalf("pings=%d, want the second caller to reuse the first answer", db.pings)
+	}
+}
+
+// advancingDatabase moves the test clock by `by` during each ping.
+type advancingDatabase struct {
+	clock *clock
+	by    time.Duration
+	pings int
+}
+
+func (d *advancingDatabase) Ping(context.Context) error {
+	d.pings++
+	d.clock.advance(d.by)
+	return nil
+}
+
+// A caller that joins a ping waits at most the ping timeout.
+func TestReadinessBoundsTheWaitOfACallerThatJoinsAPing(t *testing.T) {
+	t.Parallel()
+	db := &fakeDatabase{block: true}
+	r := health.NewReadiness(db, health.Options{PingTimeout: 200 * time.Millisecond, Logf: discard})
+	go func() { _ = r.Check(context.Background()) }()
+	for db.count() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	started := time.Now()
+	if err := r.Check(context.Background()); err == nil {
+		t.Fatal("a joined ping that timed out answered ready")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("the joining caller waited %s with a 200ms ping timeout", elapsed)
+	}
+}
+
+// /v1/metrics counts the pings that failed.
+func TestReadinessCountsDatabaseFailures(t *testing.T) {
+	t.Parallel()
+	db := &fakeDatabase{}
+	c := newClock()
+	r := readiness(db, c)
+	_ = r.Check(context.Background())
+	db.set(errors.New("down"))
+	for range 3 {
+		c.advance(health.DefaultMaxAge)
+		_ = r.Check(context.Background())
+	}
+	if got := r.Prometheus(); got != "skylab_readiness_database_failures_total 3\n" {
+		t.Fatalf("metrics %q", got)
+	}
+	var none *health.Readiness
+	if none.Prometheus() != "" {
+		t.Fatal("a nil readiness has metrics")
+	}
+}

@@ -3,7 +3,9 @@ package httpx_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -141,5 +143,24 @@ func TestReadyGateSkipAsksTheTaskAndDatabaseOnly(t *testing.T) {
 	app = httpx.New(deps)
 	if got := status("/v1/ready?gate=no"); got != fiber.StatusServiceUnavailable {
 		t.Fatalf("/v1/ready?gate=no = %d, want the full check's 503", got)
+	}
+}
+
+// /v1/metrics carries readiness's failed database pings.
+func TestMetricsCountReadinessDatabaseFailures(t *testing.T) {
+	t.Parallel()
+	deps := memoryDeps()
+	deps.Readiness = health.NewReadiness(&switchableDatabase{err: errors.New("down")}, health.Options{MaxAge: 1})
+	app := httpx.New(deps)
+	if _, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/ready?gate=skip", nil)); err != nil {
+		t.Fatal(err)
+	}
+	response, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/metrics", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != fiber.StatusOK || !strings.Contains(string(body), "skylab_readiness_database_failures_total 1\n") {
+		t.Fatalf("GET /v1/metrics %d:\n%s", response.StatusCode, body)
 	}
 }

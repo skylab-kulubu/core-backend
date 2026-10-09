@@ -25,9 +25,15 @@ wizards and their markers read.
 - **Database.** A ping on readiness's own connection (one per task, never
   the main pool's: a pool whose connections are all busy is a slow moment,
   not an outage, and must not get the task restarted under load), within
-  2 s. The answer is reused for a second, so however often the public route is
-  asked the database sees at most one ping a second. The log says once when
-  the database stops answering and once when it is back.
+  2 s. One ping at a time: a caller arriving while it runs takes its answer
+  (never a ping of its own after it), so no caller waits longer than the ping
+  timeout, however slow the database. The answer is then reused for a second
+  from when it came, so however often the public route is asked the database
+  sees at most one ping a second. The log says once when the database stops
+  answering and once when it is back; `/v1/metrics` counts the failed pings
+  (`skylab_readiness_database_failures_total`). The connection is kept a day,
+  not re-made every hour: re-made at a moment the database is at
+  `max_connections`, it would fail the check of a core that is fine.
 - **Migrations** are done by construction: core starts listening only after
   `migrate.Apply` has returned, so a task that answers at all has its schema.
 - **Shutting down.** From the stop signal on, `/v1/ready` answers `503`.
@@ -102,17 +108,20 @@ On SIGTERM (Docker's stop; SIGINT too, a second one kills at once) core:
    link can be);
 3. stops the background workers and waits for them, and for the contact
    consent confirmation mails going, until **25 s** after the signal;
-4. closes the access gate's Redis client and the database pools, and exits.
+4. closes the access gate's Redis client and the database pools, still within
+   the 25 s, and exits.
 
 Swarm takes a task out of its load balancer (and waits about two seconds)
 before it sends SIGTERM, so step 2 turns away no new connection. Whatever has
-not stopped at 25 s is named in the log and left behind, so the process exits
-before Docker's SIGKILL at 30 s.
+not stopped or closed at 25 s is named in the log and left behind (a pool's
+close waits for every connection in use: a request cut off at 20 s may still
+hold one), and the process exits at once, before Docker's SIGKILL at 30 s.
 
 Workers keep working while requests drain and are stopped after. Shutdown
 waits for those that claim work, so that each settles or releases its claim
-on the open pool: the media scan, faststart and frame workers (they settle
-their claims even when stopped), the CDN purge (its own pool), the blob purge,
+on the open pool: the media scan, faststart and frame workers (a step the
+shutdown cuts short lets its claim go with no attempt counted and no failure
+reported; the next pass takes it at once), the CDN purge (its own pool), the blob purge,
 the upload staging cleanup, the retention sweep, the certificate issuance
 worker and the account erasure worker. A certificate job or an erasure request
 cut short stays claimed until its lease runs out (2 and 5 minutes) and is then
@@ -128,7 +137,7 @@ pending, and the person's next request mails it again after
 
 A stop signal during startup is acted on once startup is through (the
 migrations are not cut off halfway); during the access gate's reconciliation
-core exits at once.
+core stops the workers already running, waits for them, and exits.
 
 ## Migrations: expand, then contract
 

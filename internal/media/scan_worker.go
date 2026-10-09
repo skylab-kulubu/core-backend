@@ -316,6 +316,12 @@ func (w *ScanWorker) Pass(ctx context.Context, onError func(error)) (ScanReport,
 		if errors.Is(err, clamd.ErrUnreachable) {
 			return report, errors.Join(fmt.Errorf("%w: %w", ErrScannerDown, err), w.release(ctx, claim))
 		}
+		if err != nil && ctx.Err() != nil {
+			// Core is stopping (the pass's context, not the step's own
+			// time, ended): no failure of the Media. Its claim is let go
+			// with no attempt counted, and the next pass takes it.
+			return report, errors.Join(ctx.Err(), w.release(ctx, claim))
+		}
 		if err != nil {
 			report.Failed++
 			if onError != nil {

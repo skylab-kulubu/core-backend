@@ -257,6 +257,14 @@ func (j frameJob) run(ctx context.Context) (down error) {
 		j.counts.Panicked++
 		j.report(errors.Join(errFramePanicked, j.settle(ctx, func(ctx context.Context) error { return j.w.store.FailFrame(ctx, j.claim) })))
 	case err == nil:
+	case ctx.Err() != nil:
+		// Core is stopping (the pass's context ended): no failure of the
+		// video. Its claim is let go with no try counted; the pass ends
+		// on the context.
+		j.counts.Released++
+		if releaseErr := j.settle(ctx, func(ctx context.Context) error { return j.w.store.ReleaseFrame(ctx, j.claim) }); releaseErr != nil {
+			j.report(releaseErr)
+		}
 	case errors.Is(err, mediaframe.ErrUnavailable), errors.As(err, &problem) && problem.Status == http.StatusBadRequest:
 		if problem != nil && problem.Status == http.StatusBadRequest {
 			err = fmt.Errorf("%w (%v)", errFrameServiceRefuses, err)

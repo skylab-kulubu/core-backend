@@ -352,3 +352,61 @@ func TestServeAsksWhatItWaitsOnAfterTheDrain(t *testing.T) {
 		t.Fatal("serve asked what it waits on before the request in flight was answered")
 	}
 }
+
+// The pools close after the workers have stopped, within the shutdown's
+// budget: a close that blocks (pgxpool waits for every connection in use)
+// is named in the log and left behind, and serve returns by Total.
+func TestServeClosesAfterTheWorkersAndGivesUpAtTheDeadline(t *testing.T) {
+	t.Parallel()
+	ln := listen(t)
+	signal, stop := context.WithCancel(context.Background())
+	workers, stopWorkers := context.WithCancel(context.Background())
+	settled := worker(workers, 50*time.Millisecond)
+	var closedAfterWorkers, otherClosed bool
+	var log lines
+	served := make(chan error, 1)
+	go func() {
+		served <- serve(signal, fiber.New(), ln, shutdownPlan{
+			HTTPDrain: time.Second, Total: 300 * time.Millisecond, StopWorkers: stopWorkers,
+			Wait: []stopping{stopped("test worker", settled)},
+			Close: []closing{
+				{name: "redis", close: func() {
+					select {
+					case <-settled:
+						closedAfterWorkers = true
+					default:
+					}
+				}},
+				{name: "stuck pool", close: func() { select {} }},
+				{name: "after the stuck one", close: func() { otherClosed = true }},
+			},
+			Logf: log.logf,
+		})
+	}()
+	waitFor(t, "the port to answer", func() bool {
+		conn, err := net.DialTimeout("tcp4", ln.Addr().String(), 200*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		conn.Close()
+		return true
+	})
+	stop()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve waited on a close past its deadline")
+	}
+	if !closedAfterWorkers {
+		t.Fatal("a close ran before the workers had stopped")
+	}
+	if otherClosed {
+		t.Fatal("closes ran past the deadline")
+	}
+	if !log.has("stuck pool") {
+		t.Fatalf("the stuck close is not named: %q", log.text)
+	}
+}

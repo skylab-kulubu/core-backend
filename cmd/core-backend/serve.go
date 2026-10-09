@@ -21,9 +21,9 @@ const (
 	// httpDrainTimeout is how long requests in flight get to finish. A
 	// request still open after it is cut off.
 	httpDrainTimeout = 20 * time.Second
-	// shutdownTimeout is the whole shutdown, from the signal until the
-	// process exits: the drain, then the background workers, the
-	// confirmation mails going and the pools.
+	// shutdownTimeout is the whole shutdown, from the signal until serve
+	// returns and the process exits: the drain, then the background
+	// workers, the confirmation mails going and the pools.
 	shutdownTimeout = 25 * time.Second
 )
 
@@ -49,6 +49,13 @@ func stopped(name string, done <-chan struct{}) stopping {
 	return stopping{name: name, done: func() <-chan struct{} { return done }}
 }
 
+// closing is something shutdown closes once the workers have stopped: the
+// access gate's Redis client, a database pool.
+type closing struct {
+	name  string
+	close func()
+}
+
 // shutdownPlan is what serve does once its context ends.
 type shutdownPlan struct {
 	// Readiness answers 503 from the first moment, so nothing takes this
@@ -63,7 +70,9 @@ type shutdownPlan struct {
 	StopWorkers context.CancelFunc
 	// Wait are waited on after StopWorkers, until Total runs out.
 	Wait []stopping
-	Logf func(format string, args ...any)
+	// Close are closed in order after Wait, until Total runs out.
+	Close []closing
+	Logf  func(format string, args ...any)
 }
 
 // serve answers HTTP on ln until ctx ends, then shuts down in order:
@@ -71,9 +80,10 @@ type shutdownPlan struct {
 // connections are closed and each request in flight is answered with
 // Connection: close, for up to HTTPDrain; the background workers are
 // stopped and waited on, with whatever else is in Wait (a worker settles
-// or releases its claim as it stops); then serve returns and the caller
-// closes the pools. Whatever has not stopped by Total is named in the log
-// and left behind, so the process exits before Docker's SIGKILL. Swarm
+// or releases its claim as it stops); then what is in Close is closed, in
+// order (the pools last). Whatever has not stopped or closed by Total is
+// named in the log and left behind, and serve returns: the caller exits
+// at once (os.Exit), before Docker's SIGKILL. Swarm
 // takes a task out of its load balancer (and waits about two seconds)
 // before it sends SIGTERM, so closing the port turns away no new
 // connection. It returns an error only when serving fails.
@@ -113,15 +123,43 @@ func serve(ctx context.Context, app *fiber.App, ln net.Listener, plan shutdownPl
 	if plan.StopWorkers != nil {
 		plan.StopWorkers()
 	}
+	waitStopped(plan.Wait, deadline, logf)
+	closeBy(plan.Close, deadline, logf)
+	logf("shutdown: done in %s", time.Since(started).Round(time.Millisecond))
+	return nil
+}
+
+// waitStopped waits for each of list until deadline, naming in the log the
+// ones that had not stopped by then.
+func waitStopped(list []stopping, deadline time.Time, logf func(string, ...any)) {
 	wait, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
-	for _, s := range plan.Wait {
+	for _, s := range list {
 		select {
 		case <-s.done():
 		case <-wait.Done():
-			logf("shutdown: %s did not stop within %s; what it held is taken up again when its lease runs out", s.name, plan.Total)
+			logf("shutdown: %s did not stop by the deadline; what it held is taken up again when its lease runs out", s.name)
 		}
 	}
-	logf("shutdown: done in %s", time.Since(started).Round(time.Millisecond))
-	return nil
+}
+
+// closeBy closes each of list in order until deadline. A close still
+// running then (pgxpool's Close waits for every connection in use) is
+// named in the log and left behind with the ones after it.
+func closeBy(list []closing, deadline time.Time, logf func(string, ...any)) {
+	wait, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	for _, c := range list {
+		closed := make(chan struct{})
+		go func() {
+			defer close(closed)
+			c.close()
+		}()
+		select {
+		case <-closed:
+		case <-wait.Done():
+			logf("shutdown: closing %s did not finish by the deadline; exiting without it", c.name)
+			return
+		}
+	}
 }
