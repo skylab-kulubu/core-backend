@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -41,11 +42,13 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
 	"github.com/skylab-kulubu/core-backend/internal/mediaframe"
+	"github.com/skylab-kulubu/core-backend/internal/memlimit"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/retention"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
+	"github.com/skylab-kulubu/core-backend/internal/teammail"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
@@ -88,6 +91,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == retentionSweepCommandName {
 		os.Exit(runRetentionSweep(os.Args[2:], os.Getenv, os.Stdout))
 	}
+	// A soft memory limit under the container's, so the collector works
+	// harder near it instead of the kernel killing core
+	// (docs/memory-limit.md). Set first: startup allocates too.
+	memory := memlimit.Apply(os.Getenv, os.ReadFile, debug.SetMemoryLimit)
+	log.Printf("memory limit: %s", memory)
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")
@@ -322,7 +330,12 @@ func main() {
 	}))
 	// One decode budget for everything that decodes an image, so that
 	// together they hold at most its slots of decoded images in memory.
-	decodeBudget := media.NewDecodeBudget(media.DecodeBudgetConfig{})
+	decodeConfig, err := media.DecodeBudgetConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	decodeBudget := media.NewDecodeBudget(decodeConfig)
+	log.Printf("media decode budget: %s", decodeBudget)
 	media.MaintainCoverColorBackfill(workers, mediaStore, blobs, decodeBudget, time.Minute, func(err error) {
 		log.Printf("media cover color backfill: %v", err)
 	})
@@ -629,6 +642,7 @@ func main() {
 		sky = newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout)
 		sky.TemplateKey = templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
 		sky.CertificateTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey)
+		sky.TeamMembershipTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY", mail.DefaultTeamMembershipTemplateKey)
 		if raw := os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"); raw != "" {
 			tid, err := uuid.Parse(raw)
 			if err != nil {
@@ -651,6 +665,14 @@ func main() {
 			mailer = sky
 		}
 	}
+
+	// Team membership mail (docs/team-membership-mail.md): a person added to
+	// a team or removed from one through the membership routes is told by
+	// mail. The change is queued in the database and sent by a worker, so
+	// SkyMail being down delays the mail, never the change.
+	teamMembership, teamMembershipMetrics, teamMembershipStopped := startTeamMembershipMail(
+		workers, teammail.NewPostgresQueue(pool), sky, dir, users, log.Printf)
+	worker("team membership mail", teamMembershipStopped)
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {
@@ -715,6 +737,7 @@ func main() {
 			AccountErasureEnabled: workerEnabled,
 			AccessProjector:       accessProjector,
 			GroupCache:            overageGroups,
+			Membership:            teamMembership,
 		}, mailer),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
@@ -746,6 +769,7 @@ func main() {
 		AccountAccessMetrics:   accessMetrics,
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
 		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
+		TeamMailMetrics:        teamMembershipMetrics,
 		RetentionMetrics:       retentionMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
@@ -768,6 +792,8 @@ func main() {
 		GithubActivity:          githubActivity,
 		Consents:                consents,
 		Readiness:               readiness,
+		MediaDecodeMetrics:      decodeBudget,
+		MemoryMetrics:           memory,
 	})
 
 	addr := os.Getenv("PORT")
