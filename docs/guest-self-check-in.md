@@ -126,8 +126,11 @@ never published. It is derived from the SkyPass signing key with HKDF-SHA256
 the SkyPass key itself never signs a door QR. The SkyPass key is
 `SKYPASS_EC_PRIVATE_KEY`, or a P-256 key derived from the legacy
 `SKYPASS_RSA_PRIVATE_KEY` when only that is set. If neither is set, core
-makes a random key at start-up, and a restart invalidates the door QRs on
-screen until their next refresh.
+does not start; only `SKYPASS_EPHEMERAL_KEY=true` (development) makes it
+sign with a random key made at start-up, and then a restart invalidates the
+door QRs on screen until their next refresh. Production and sandbox carry the
+key as an OpenBao reference (`ops/wizards/skypass-signing-key-wizard.sh` in
+the platform hub); it is never rotated automatically.
 
 **More than one replica** accepts the same door QR only if every replica has
 the same SkyPass key: set it explicitly wherever core runs more than once.

@@ -70,6 +70,10 @@ services:
       CONTACT_CONSENT_TEXT_URL: ${CONTACT_CONSENT_TEXT_URL:-}
       CONTACT_CONSENT_NOTICE_URL: ${CONTACT_CONSENT_NOTICE_URL:-}
       SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY: ${SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY:-}
+      # The SkyPass signing key: required, except that this local stack falls back to
+      # a random key at start-up (SKYPASS_EPHEMERAL_KEY, development only).
+      SKYPASS_EC_PRIVATE_KEY: ${SKYPASS_EC_PRIVATE_KEY:-}
+      SKYPASS_EPHEMERAL_KEY: ${SKYPASS_EPHEMERAL_KEY:-true}
       # SkyPass in Google Wallet (docs/skypass-google-wallet.md): off unless true.
       SKYPASS_GOOGLE_WALLET_ENABLED: ${SKYPASS_GOOGLE_WALLET_ENABLED:-false}
       SKYPASS_GOOGLE_WALLET_ISSUER_ID: ${SKYPASS_GOOGLE_WALLET_ISSUER_ID:-}
