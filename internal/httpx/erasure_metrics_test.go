@@ -64,6 +64,16 @@ func TestMetricsPublishTheMediaCDNPurgeCounters(t *testing.T) {
 	}
 }
 
+func TestMetricsPublishTheTeamMembershipMailCounters(t *testing.T) {
+	t.Parallel()
+
+	counters := fixedGauges("skylab_team_membership_mail_enabled 1\n")
+	status, text := scrapeMetrics(t, httpx.Deps{TeamMailMetrics: counters})
+	if status != fiber.StatusOK || text != string(counters) {
+		t.Fatalf("team mail metrics status=%d body=\n%s", status, text)
+	}
+}
+
 func TestMetricsPublishTheDecodeBudgetAndMemoryLimit(t *testing.T) {
 	t.Parallel()
 
