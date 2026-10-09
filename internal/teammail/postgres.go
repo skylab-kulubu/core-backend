@@ -14,13 +14,34 @@ type PostgresQueue struct {
 
 func NewPostgresQueue(pool *pgxpool.Pool) *PostgresQueue { return &PostgresQueue{pool: pool} }
 
-func (q *PostgresQueue) Enqueue(ctx context.Context, c Change) error {
-	_, err := q.pool.Exec(ctx, `
-		INSERT INTO team_membership_mails (id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $6)
-		ON CONFLICT (subject_id, group_path, action) DO NOTHING`,
-		c.ID, c.SubjectID, c.ActorID, c.GroupPath, string(c.Action), c.OccurredAt)
-	return err
+func (q *PostgresQueue) Enqueue(ctx context.Context, c Change) (Enqueued, error) {
+	// One statement: the opposite change waiting unclaimed is removed, or
+	// else this one is inserted unless it already waits.
+	var cancelled, inserted int
+	err := q.pool.QueryRow(ctx, `
+		WITH cancelled AS (
+			DELETE FROM team_membership_mails
+			WHERE subject_id = $2 AND group_path = $4 AND action <> $5 AND claimed_at IS NULL
+			RETURNING 1
+		), inserted AS (
+			INSERT INTO team_membership_mails (id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at)
+			SELECT $1, $2, $3, $4, $5, $6, $6
+			WHERE NOT EXISTS (SELECT 1 FROM cancelled)
+			ON CONFLICT (subject_id, group_path, action) DO NOTHING
+			RETURNING 1
+		)
+		SELECT (SELECT count(*) FROM cancelled), (SELECT count(*) FROM inserted)`,
+		c.ID, c.SubjectID, c.ActorID, c.GroupPath, string(c.Action), c.OccurredAt).Scan(&cancelled, &inserted)
+	switch {
+	case err != nil:
+		return "", err
+	case cancelled > 0:
+		return EnqueuedCancelled, nil
+	case inserted > 0:
+		return EnqueuedQueued, nil
+	default:
+		return EnqueuedDuplicate, nil
+	}
 }
 
 func (q *PostgresQueue) Claim(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]Change, error) {
@@ -58,7 +79,7 @@ func (q *PostgresQueue) Complete(ctx context.Context, claimed Change) error {
 
 func (q *PostgresQueue) Retry(ctx context.Context, claimed Change, at time.Time) error {
 	_, err := q.pool.Exec(ctx, `
-		UPDATE team_membership_mails SET attempts = attempts + 1, next_attempt_at = $3
+		UPDATE team_membership_mails SET attempts = attempts + 1, next_attempt_at = $3, claimed_at = NULL
 		WHERE id = $1 AND claimed_at = $2`, claimed.ID, claimed.ClaimedAt, at)
 	return err
 }

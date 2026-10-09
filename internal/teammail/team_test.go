@@ -46,8 +46,9 @@ func TestTeamOf(t *testing.T) {
 }
 
 // Yusuf's decision (2026-10-09): the team is named "CODE · Turkish name",
-// the code being the Group's name and the Turkish name its display_name_tr;
-// a leader subgroup is "CODE · Liderler". Without a Turkish name, the code.
+// the code being the team Group's name and the Turkish name its
+// display_name_tr, for the team and its leader subgroups alike (the role
+// travels in Role). Without a Turkish name, the code.
 func TestTeamName(t *testing.T) {
 	t.Parallel()
 	weblab := identity.Group{Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB", Attributes: map[string]string{"display_name_tr": " Web Geliştirme "}}
@@ -55,20 +56,15 @@ func TestTeamName(t *testing.T) {
 	same := identity.Group{Name: "SKYSEC", Path: "/UYELER/ARGE/SKYSEC", Attributes: map[string]string{"display_name_tr": "SKYSEC"}}
 	for _, tc := range []struct {
 		group identity.Group
-		role  string
 		want  string
 	}{
-		{weblab, "", "WEBLAB · Web Geliştirme"},
-		{weblab, "LIDERLER", "WEBLAB · Liderler"},
-		{weblab, "KOORDINATORLER", "WEBLAB · Koordinatörler"},
-		{artlab, "", "ARTLAB"},
-		{artlab, "LIDERLER", "ARTLAB · Liderler"},
-		{same, "", "SKYSEC"},
-		{identity.Group{Path: "/UYELER/ARGE/GAMELAB"}, "", "GAMELAB"},
-		{identity.Group{Path: "/UYELER/ARGE/GAMELAB"}, "LIDERLER", "GAMELAB · Liderler"},
+		{weblab, "WEBLAB · Web Geliştirme"},
+		{artlab, "ARTLAB"},
+		{same, "SKYSEC"},
+		{identity.Group{Path: "/UYELER/ARGE/GAMELAB"}, "GAMELAB"},
 	} {
-		if got := teamName(tc.group, tc.role); got != tc.want {
-			t.Errorf("teamName(%v, %q) = %q, want %q", tc.group, tc.role, got, tc.want)
+		if got := teamName(tc.group); got != tc.want {
+			t.Errorf("teamName(%v) = %q, want %q", tc.group, got, tc.want)
 		}
 	}
 }

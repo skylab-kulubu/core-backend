@@ -153,7 +153,7 @@ func TestServiceQueuesAndSendsTheChange(t *testing.T) {
 		t.Fatalf("recipient %q %q", m.recipient, m.fullName)
 	}
 	want := map[string]string{
-		"TeamName": "ARTLAB · Liderler", "Action": "added", "Role": "leader",
+		"TeamName": "ARTLAB · Tasarım & Sanat", "Action": "added", "Role": "leader",
 		// 22:30 UTC on the 9th is past midnight in Istanbul.
 		"EffectiveAt": "10.10.2026", "LeaderName": "Fatih Naz",
 	}
@@ -261,8 +261,8 @@ func TestServiceGivesUpOnOldChanges(t *testing.T) {
 
 type brokenQueue struct{ *MemoryQueue }
 
-func (brokenQueue) Enqueue(context.Context, Change) error {
-	return errors.New("database is down")
+func (brokenQueue) Enqueue(context.Context, Change) (Enqueued, error) {
+	return "", errors.New("database is down")
 }
 
 func TestServiceQueueFailureNeverReachesTheCaller(t *testing.T) {
@@ -417,7 +417,7 @@ func TestServiceCompletesASentMailDuringShutdown(t *testing.T) {
 func TestServiceCountsPathsThatAreNoLongerTeams(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	if err := f.queue.Enqueue(context.Background(), Change{
+	if _, err := f.queue.Enqueue(context.Background(), Change{
 		ID: uuid.New(), SubjectID: f.ada, GroupPath: "/UYELER/YK", Action: ActionAdded, OccurredAt: f.clock.now,
 	}); err != nil {
 		t.Fatal(err)
@@ -437,9 +437,77 @@ func TestServiceQueuesAPendingChangeOnce(t *testing.T) {
 	f := newFixture(t)
 	f.change(t, "/UYELER/ARGE/WEBLAB", true, "")
 	f.change(t, "/UYELER/ARGE/WEBLAB", true, "")
-	f.change(t, "/UYELER/ARGE/WEBLAB", false, "")
-	if q := f.queue.Snapshot(); len(q) != 2 {
+	if q := f.queue.Snapshot(); len(q) != 1 {
 		t.Fatalf("queued %+v", q)
+	}
+	text := f.svc.Prometheus()
+	for _, line := range []string{
+		"skylab_team_membership_mail_enqueued_total 1",
+		`skylab_team_membership_mail_coalesced_total{kind="duplicate"} 1`,
+	} {
+		if !strings.Contains(text, line) {
+			t.Fatalf("missing %q in\n%s", line, text)
+		}
+	}
+}
+
+// Add, remove and add again before any mail went: the first two cancel out,
+// and the one mail says what holds now.
+func TestServiceCancelsOppositeChangesBeforeTheyAreSent(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.change(t, "/UYELER/ARGE/WEBLAB", true, "")
+	f.change(t, "/UYELER/ARGE/WEBLAB", false, "")
+	if q := f.queue.Snapshot(); len(q) != 0 {
+		t.Fatalf("queued %+v", q)
+	}
+	f.change(t, "/UYELER/ARGE/WEBLAB", true, "")
+	if _, err := f.svc.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.mail.sent) != 1 || f.mail.sent[0].vars["Action"] != "added" {
+		t.Fatalf("sent %v", f.mail.sent)
+	}
+	text := f.svc.Prometheus()
+	for _, line := range []string{
+		"skylab_team_membership_mail_enqueued_total 2",
+		`skylab_team_membership_mail_coalesced_total{kind="cancelled"} 1`,
+	} {
+		if !strings.Contains(text, line) {
+			t.Fatalf("missing %q in\n%s", line, text)
+		}
+	}
+}
+
+func TestMemoryQueueCancelsOnlyUnclaimedOppositeChanges(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	q := NewMemoryQueue()
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	subject := uuid.New()
+	change := func(action Action) Change {
+		return Change{ID: uuid.New(), SubjectID: subject, GroupPath: "/UYELER/ARGE/WEBLAB", Action: action, OccurredAt: now}
+	}
+	if got, _ := q.Enqueue(ctx, change(ActionAdded)); got != EnqueuedQueued {
+		t.Fatalf("add %v", got)
+	}
+	claimed, _ := q.Claim(ctx, now, time.Minute, 1)
+	if got, _ := q.Enqueue(ctx, change(ActionRemoved)); got != EnqueuedQueued || len(q.Snapshot()) != 2 {
+		t.Fatalf("removal of a claimed add: %v %+v", got, q.Snapshot())
+	}
+	if err := q.Retry(ctx, claimed[0], now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// Both now wait unclaimed (the add in its backoff). Adding again cancels
+	// the waiting removal, which leaves the add; removing then cancels it.
+	if got, _ := q.Enqueue(ctx, change(ActionAdded)); got != EnqueuedCancelled || len(q.Snapshot()) != 1 || q.Snapshot()[0].Action != ActionAdded {
+		t.Fatalf("re-add: %v %+v", got, q.Snapshot())
+	}
+	if got, _ := q.Enqueue(ctx, change(ActionAdded)); got != EnqueuedDuplicate {
+		t.Fatalf("add again: %v", got)
+	}
+	if got, _ := q.Enqueue(ctx, change(ActionRemoved)); got != EnqueuedCancelled || len(q.Snapshot()) != 0 {
+		t.Fatalf("removal: %v %+v", got, q.Snapshot())
 	}
 }
 
@@ -462,7 +530,7 @@ func TestServiceTellsTheCoordinatorRole(t *testing.T) {
 	if _, err := f.svc.Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.mail.sent) != 1 || f.mail.sent[0].vars["Role"] != "coordinator" || f.mail.sent[0].vars["TeamName"] != "ARTLAB · Koordinatörler" {
+	if len(f.mail.sent) != 1 || f.mail.sent[0].vars["Role"] != "coordinator" || f.mail.sent[0].vars["TeamName"] != "ARTLAB · Tasarım & Sanat" {
 		t.Fatalf("sent %v", f.mail.sent)
 	}
 }

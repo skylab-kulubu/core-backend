@@ -37,7 +37,7 @@ func TestPostgresQueue(t *testing.T) {
 		Action: teammail.ActionRemoved, OccurredAt: now,
 	}
 	for _, c := range []teammail.Change{second, first} {
-		if err := q.Enqueue(ctx, c); err != nil {
+		if _, err := q.Enqueue(ctx, c); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -104,7 +104,7 @@ func TestAccountErasureForgetsQueuedTeamMails(t *testing.T) {
 	toSubject := teammail.Change{ID: uuid.New(), SubjectID: subject, ActorID: &other, GroupPath: "/UYELER/ARGE/WEBLAB", Action: teammail.ActionAdded, OccurredAt: now}
 	bySubject := teammail.Change{ID: uuid.New(), SubjectID: other, ActorID: &subject, GroupPath: "/UYELER/ARGE/WEBLAB", Action: teammail.ActionRemoved, OccurredAt: now}
 	for _, c := range []teammail.Change{toSubject, bySubject} {
-		if err := q.Enqueue(ctx, c); err != nil {
+		if _, err := q.Enqueue(ctx, c); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -131,7 +131,7 @@ func TestPostgresQueueFencesAnotherCoresClaim(t *testing.T) {
 	q := teammail.NewPostgresQueue(pool)
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	change := teammail.Change{ID: uuid.New(), SubjectID: uuid.New(), GroupPath: "/UYELER/ARGE/WEBLAB", Action: teammail.ActionAdded, OccurredAt: now}
-	if err := q.Enqueue(ctx, change); err != nil {
+	if _, err := q.Enqueue(ctx, change); err != nil {
 		t.Fatal(err)
 	}
 	a, err := q.Claim(ctx, now, 2*time.Minute, 1)
@@ -170,14 +170,63 @@ func TestPostgresQueueKeepsOnePendingRowPerChange(t *testing.T) {
 	q := teammail.NewPostgresQueue(pool)
 	now := time.Now().UTC()
 	subject := uuid.New()
-	for i, action := range []teammail.Action{teammail.ActionAdded, teammail.ActionAdded, teammail.ActionRemoved} {
-		if err := q.Enqueue(ctx, teammail.Change{
+	for i, action := range []teammail.Action{teammail.ActionAdded, teammail.ActionAdded} {
+		if _, err := q.Enqueue(ctx, teammail.Change{
 			ID: uuid.New(), SubjectID: subject, GroupPath: "/UYELER/ARGE/WEBLAB", Action: action, OccurredAt: now.Add(time.Duration(i) * time.Second),
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if count, _, _ := q.Backlog(ctx, now); count != 1 {
+		t.Fatalf("pending %d, want 1", count)
+	}
+}
+
+// Add, remove (or the other way round) before the first mail went: the two
+// cancel out and nothing is sent. A change already taken by a pass is not
+// cancelled; the new one is queued after it.
+func TestPostgresQueueCancelsAnOppositeUnclaimedChange(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	q := teammail.NewPostgresQueue(pool)
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	subject := uuid.New()
+	change := func(action teammail.Action, at time.Duration) teammail.Change {
+		return teammail.Change{ID: uuid.New(), SubjectID: subject, GroupPath: "/UYELER/ARGE/WEBLAB", Action: action, OccurredAt: now.Add(at)}
+	}
+	for _, step := range []struct {
+		change teammail.Change
+		want   teammail.Enqueued
+		left   int
+	}{
+		{change(teammail.ActionAdded, 0), teammail.EnqueuedQueued, 1},
+		{change(teammail.ActionAdded, time.Second), teammail.EnqueuedDuplicate, 1},
+		{change(teammail.ActionRemoved, 2*time.Second), teammail.EnqueuedCancelled, 0},
+		{change(teammail.ActionAdded, 3*time.Second), teammail.EnqueuedQueued, 1},
+	} {
+		got, err := q.Enqueue(ctx, step.change)
+		if err != nil || got != step.want {
+			t.Fatalf("%s: %v %v, want %v", step.change.Action, got, err, step.want)
+		}
+		if count, _, _ := q.Backlog(ctx, now); count != step.left {
+			t.Fatalf("%s: %d left, want %d", step.change.Action, count, step.left)
+		}
+	}
+
+	// Claimed: being sent now, so the removal is a change of its own.
+	claimed, err := q.Claim(ctx, now.Add(time.Minute), 2*time.Minute, 1)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim %v %v", claimed, err)
+	}
+	if got, err := q.Enqueue(ctx, change(teammail.ActionRemoved, time.Minute)); err != nil || got != teammail.EnqueuedQueued {
+		t.Fatalf("removal after claim: %v %v", got, err)
+	}
+	// After a failed send the row waits for its backoff unclaimed again, and
+	// an opposite change cancels it.
+	if err := q.Retry(ctx, claimed[0], now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	if count, _, _ := q.Backlog(ctx, now); count != 2 {
-		t.Fatalf("pending %d, want 2", count)
+		t.Fatalf("%d left, want 2", count)
 	}
 }

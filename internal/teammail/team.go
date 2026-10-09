@@ -23,12 +23,6 @@ const membersRoot = "UYELER"
 // ORGANIZASYON, …) or a technical Group, none of them a team.
 const minTeamDepth = 3
 
-// roleNames are the leader subgroups as the mail names them.
-var roleNames = map[string]string{
-	"LIDERLER":       "Liderler",
-	"KOORDINATORLER": "Koordinatörler",
-}
-
 // roleValues are the template's Role variable: what the membership is in
 // the team. The template words its text by it (a member gets no
 // management rights; only leaders and coordinators do).
@@ -83,18 +77,15 @@ func TeamOf(path string) (Team, bool) {
 }
 
 // teamName is how the mail names the team of group (Yusuf, 2026-10-09):
-// its code (the Group's name) and its Turkish display name
+// its code (the team Group's name) and its Turkish display name
 // (display_name_tr, as the public team list shows it), "WEBLAB · Web
-// Geliştirme"; for a leader subgroup the code and the role, "WEBLAB ·
-// Liderler". Without a Turkish name, or one that is the code itself, the
-// code alone.
-func teamName(group identity.Group, role string) string {
+// Geliştirme", for the team and its leader subgroups alike: the role
+// travels in the Role variable. Without a Turkish name, or one that is the
+// code itself, the code alone.
+func teamName(group identity.Group) string {
 	code := strings.TrimSpace(group.Name)
 	if code == "" {
 		code = group.Path[strings.LastIndex(group.Path, "/")+1:]
-	}
-	if label, ok := roleNames[role]; ok {
-		return code + " · " + label
 	}
 	if turkish := strings.TrimSpace(group.Attributes["display_name_tr"]); turkish != "" && turkish != code {
 		return code + " · " + turkish

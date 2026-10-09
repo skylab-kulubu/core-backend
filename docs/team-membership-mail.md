@@ -18,16 +18,17 @@ A change made in Keycloak's own console sends nothing: core does not see it.
 | Path | Team? | `TeamName` |
 | --- | --- | --- |
 | `/UYELER/<area>/<team>` (e.g. `/UYELER/ARGE/WEBLAB`) | yes | code · Turkish name: `WEBLAB · Web Geliştirme` |
-| `/UYELER/<area>/<team>/LIDERLER` | yes | `WEBLAB · Liderler` |
-| `/UYELER/<area>/<team>/KOORDINATORLER` | yes | `WEBLAB · Koordinatörler` |
-| a sub-team below a team (e.g. `/UYELER/ARGE/ALGOLAB/AGC`, and its `LIDERLER`) | yes | `AGC`, `AGC · Liderler` |
+| `/UYELER/<area>/<team>/LIDERLER` | yes | the team's: `WEBLAB · Web Geliştirme` (`Role` = `leader`) |
+| `/UYELER/<area>/<team>/KOORDINATORLER` | yes | the team's: `WEBLAB · Web Geliştirme` (`Role` = `coordinator`) |
+| a sub-team below a team (e.g. `/UYELER/ARGE/ALGOLAB/AGC`, and its `LIDERLER`) | yes | the sub-team's: `AGC` |
 | `/UYELER` (the club), `/UYELER/<area>` (ARGE, ORGANIZASYON, …, and technical Groups such as `ESKI-EDITORLER`), an area's own `LIDERLER` | no | |
 | any Privileged Group and everything under it: `ADMIN`, `YK`, `DK` (`/ADMIN`, `/UYELER/YK/BASKAN`, …) | no | |
 | anything outside `/UYELER` | no | |
 
-The code is the Group's name and the Turkish name its `display_name_tr` (the
-name the public team list shows); without a Turkish name, or with one equal
-to the code, the code alone (Yusuf, 2026-10-09). The team is read from the
+The code is the team Group's name and the Turkish name its `display_name_tr`
+(the name the public team list shows); without a Turkish name, or with one
+equal to the code, the code alone (Yusuf, 2026-10-09). A leader subgroup is
+named by its team; the role travels in `Role`. The team is read from the
 directory when the mail is sent, so a team renamed in between is mailed under
 its new name; one that is gone is mailed under the last segment of its path.
 
@@ -59,12 +60,22 @@ profile name as the recipient name.
 - A write that fails sends nothing. A Group that is not a team costs no
   membership read (and no read at all when named by path).
 - One row waits per person, Group and action: the same change made again
-  before its mail went (a double click on add) is not queued twice. An add,
-  a removal and an add again within one send interval mail "added" and
-  "removed" only.
+  before its mail went (a double click on add) is not queued twice
+  (`coalesced_total{kind="duplicate"}`).
+- Opposite changes cancel out while unsent: a removal made while the add's
+  mail still waits unclaimed (not being sent by a pass; one waiting for its
+  retry backoff counts) deletes that row and is not queued
+  (`coalesced_total{kind="cancelled"}`). So add, remove, add again before
+  any mail went sends one "added" mail. A change already being sent is not
+  cancelled; the opposite one is queued after it.
 - Delivery is at least once: a core that dies between SkyMail's `201` and
   the row's deletion sends that mail again after the lease (two minutes). A
-  core that is merely stopping deletes the row first.
+  core that is merely stopping deletes the row first. If SkyMail writes the
+  mail and answers `201` but the answer does not reach core before the send
+  is cancelled or its 45 s run out, core counts the send as failed (or
+  interrupted) and the mail goes a second time. SkyMail's
+  `/v1/mail_tasks/single` takes no idempotency key today, so such a repeat
+  is a real second mail.
 
 ## Delivery
 
@@ -80,7 +91,8 @@ membership write ──▶ Keycloak (204) ──▶ INSERT team_membership_mails
   the time, never an address or a name. A pass takes one row at a time
   (`FOR UPDATE SKIP LOCKED`), leases it for two minutes (one send is bounded
   to 45 s) and stamps `claimed_at`; it deletes or retries the row only while
-  `claimed_at` is still its own. Several cores share the queue, and a core
+  `claimed_at` is still its own. A retry releases the claim, so the row
+  waits for its backoff unclaimed. Several cores share the queue, and a core
   whose lease ran out cannot touch a row another core took since.
 - After the write the membership request waits for the insert (at most 5 s),
   besides the reads above. If it fails, the change still stands: core logs
@@ -121,6 +133,9 @@ it. There is no template id fallback.
 - `skylab_team_membership_mail_enqueued_total`,
   `skylab_team_membership_mail_queue_errors_total`,
   `skylab_team_membership_mail_precheck_errors_total`
+- `skylab_team_membership_mail_coalesced_total{kind}` — `duplicate` (the same
+  change already waited), `cancelled` (an opposite unsent change was
+  removed); neither counts as enqueued
 - `skylab_team_membership_mail_backlog`,
   `skylab_team_membership_mail_oldest_age_seconds`,
   `skylab_team_membership_mail_last_success_timestamp_seconds`

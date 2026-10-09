@@ -111,6 +111,7 @@ type Service struct {
 
 	mu             sync.Mutex
 	enqueued       int64
+	coalesced      map[Enqueued]int64
 	queueErrors    int64
 	precheckErrors int64
 	outcomes       map[string]int64
@@ -146,7 +147,7 @@ func NewService(config Config) (*Service, error) {
 	return &Service{
 		queue: config.Queue, people: config.People, groups: config.Groups, mail: config.Mail,
 		now: now, logger: logger, location: location, wake: make(chan struct{}, 1),
-		outcomes: map[string]int64{},
+		outcomes: map[string]int64{}, coalesced: map[Enqueued]int64{},
 	}, nil
 }
 
@@ -178,9 +179,15 @@ func (s *Service) MembershipChanged(ctx context.Context, change identity.Members
 	// The request may be gone by now; the change still happened.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), enqueueTimeout)
 	defer cancel()
-	if err := s.queue.Enqueue(ctx, queued); err != nil {
+	result, err := s.queue.Enqueue(ctx, queued)
+	if err != nil {
 		s.count(func() { s.queueErrors++ })
 		s.logger.Printf("team membership mail: could not queue the mail of a change (%s): %v", queued.Action, err)
+		return
+	}
+	if result != EnqueuedQueued {
+		// Nothing new waits: no count, and no pass to wake for it.
+		s.count(func() { s.coalesced[result]++ })
 		return
 	}
 	s.count(func() { s.enqueued++ })
@@ -298,7 +305,7 @@ func (s *Service) deliver(parent context.Context, change Change) string {
 		leader = s.people.DisplayName(ctx, *change.ActorID)
 	}
 	err = s.mail.TeamMembership(ctx, recipient.Email, recipient.FullName, map[string]string{
-		"TeamName":    teamName(group, team.Role),
+		"TeamName":    teamName(group),
 		"Action":      string(change.Action),
 		"Role":        roleValues[team.Role],
 		"EffectiveAt": change.OccurredAt.In(s.location).Format(dateLayout),
@@ -390,6 +397,10 @@ func (s *Service) Prometheus() string {
 		fmt.Fprintf(&out, "skylab_team_membership_mail_total{outcome=%q} %d\n", outcome, s.outcomes[outcome])
 	}
 	fmt.Fprintf(&out, "# TYPE skylab_team_membership_mail_enqueued_total counter\nskylab_team_membership_mail_enqueued_total %d\n", s.enqueued)
+	out.WriteString("# TYPE skylab_team_membership_mail_coalesced_total counter\n")
+	for _, kind := range []Enqueued{EnqueuedDuplicate, EnqueuedCancelled} {
+		fmt.Fprintf(&out, "skylab_team_membership_mail_coalesced_total{kind=%q} %d\n", kind, s.coalesced[kind])
+	}
 	fmt.Fprintf(&out, "# TYPE skylab_team_membership_mail_queue_errors_total counter\nskylab_team_membership_mail_queue_errors_total %d\n", s.queueErrors)
 	fmt.Fprintf(&out, "# TYPE skylab_team_membership_mail_precheck_errors_total counter\nskylab_team_membership_mail_precheck_errors_total %d\n", s.precheckErrors)
 	fmt.Fprintf(&out, "# TYPE skylab_team_membership_mail_backlog gauge\nskylab_team_membership_mail_backlog %d\n", s.backlog)

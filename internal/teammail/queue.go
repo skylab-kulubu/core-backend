@@ -42,18 +42,35 @@ type Change struct {
 	ClaimedAt time.Time
 }
 
+// Enqueued is what Enqueue did with a change.
+type Enqueued string
+
+const (
+	// EnqueuedQueued: the change waits for its mail.
+	EnqueuedQueued Enqueued = "queued"
+	// EnqueuedDuplicate: the same change was already waiting; nothing new.
+	EnqueuedDuplicate Enqueued = "duplicate"
+	// EnqueuedCancelled: the opposite change for the same person and Group
+	// was waiting, unclaimed; the two cancel out and neither is mailed.
+	EnqueuedCancelled Enqueued = "cancelled"
+)
+
 // Queue keeps the changes waiting for their mail (PostgresQueue keeps them in
 // team_membership_mails).
 type Queue interface {
 	// Enqueue queues change, due at once. A change already waiting for the
-	// same person, Group and action is not queued again.
-	Enqueue(ctx context.Context, change Change) error
+	// same person, Group and action is not queued again. When the opposite
+	// change for the same person and Group waits unclaimed (no pass is
+	// sending it), it is removed and change is not queued: an add and a
+	// removal before either mail went leave nothing to tell.
+	Enqueue(ctx context.Context, change Change) (Enqueued, error)
 	// Claim takes up to limit due changes, oldest due first, and holds them
 	// for lease: another pass (another core) does not take them meanwhile.
 	Claim(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]Change, error)
 	// Complete removes a claimed change whose mail is done with.
 	Complete(ctx context.Context, claimed Change) error
-	// Retry counts a failure on a claimed change and makes it due at at.
+	// Retry counts a failure on a claimed change, makes it due at at and
+	// releases the claim: it waits unclaimed for its backoff.
 	Retry(ctx context.Context, claimed Change, at time.Time) error
 	// DropBefore removes the changes that happened before occurredBefore.
 	DropBefore(ctx context.Context, occurredBefore time.Time) (int, error)
@@ -76,18 +93,26 @@ func (q *MemoryQueue) Snapshot() []Change {
 	return slices.Clone(q.changes)
 }
 
-func (q *MemoryQueue) Enqueue(_ context.Context, change Change) error {
+func (q *MemoryQueue) Enqueue(_ context.Context, change Change) (Enqueued, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	same := func(c Change) bool { return c.SubjectID == change.SubjectID && c.GroupPath == change.GroupPath }
+	before := len(q.changes)
+	q.changes = slices.DeleteFunc(q.changes, func(c Change) bool {
+		return same(c) && c.Action != change.Action && c.ClaimedAt.IsZero()
+	})
+	if len(q.changes) < before {
+		return EnqueuedCancelled, nil
+	}
 	for _, waiting := range q.changes {
-		if waiting.SubjectID == change.SubjectID && waiting.GroupPath == change.GroupPath && waiting.Action == change.Action {
-			return nil
+		if same(waiting) && waiting.Action == change.Action {
+			return EnqueuedDuplicate, nil
 		}
 	}
 	change.NextAttemptAt = change.OccurredAt
 	change.ClaimedAt = time.Time{}
 	q.changes = append(q.changes, change)
-	return nil
+	return EnqueuedQueued, nil
 }
 
 func (q *MemoryQueue) Claim(_ context.Context, now time.Time, lease time.Duration, limit int) ([]Change, error) {
@@ -123,6 +148,7 @@ func (q *MemoryQueue) Retry(_ context.Context, claimed Change, at time.Time) err
 		if q.changes[i].ID == claimed.ID && q.changes[i].ClaimedAt.Equal(claimed.ClaimedAt) {
 			q.changes[i].Attempts++
 			q.changes[i].NextAttemptAt = at
+			q.changes[i].ClaimedAt = time.Time{}
 		}
 	}
 	return nil
