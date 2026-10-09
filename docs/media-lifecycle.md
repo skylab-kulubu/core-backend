@@ -453,7 +453,7 @@ over their upload budget gets `429` `media_rate_limited`, described under
 | 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum; an SVG above 1 MiB (`maxBytes` is then 1 MiB). |
 | 413 | `media_image_too_large` | `purpose`, `maxPixels` | Decoding the image would take more than core allows, judged from its header before anything is decoded (see [Decode cost](#decode-cost)). `maxPixels` is the most pixels an image of its kind may have: 50 000 000, fewer for costly pixels (16-bit PNG, progressive JPEG, an animation's many frames). An animated GIF or WebP larger than 2560 px on a side is refused this way too. |
 | 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types, or starts like one but does not decode or check as it: a broken image, a WebP whose frame is not its canvas, an animated WebP whose structure does not check, a GIF with more than 300 frames or a frame outside its screen, a JPEG with more than 64 scans, an SVG core does not sanitize. |
-| 503 | `media_busy` | `retryAfterSeconds`, `Retry-After` header | The upload waited 10 seconds for a [decoding slot](#decode-budget) while other images were decoded. Nothing is stored and the upload is not charged to the upload budget; retry it. |
+| 503 | `media_busy` | `retryAfterSeconds`, `Retry-After` header | The upload waited its whole wait (10 seconds by default, `MEDIA_DECODE_WAIT`) for a [decoding slot](#decode-budget) while other images were decoded. Nothing is stored and the upload is not charged to the upload budget; retry it. |
 
 A body above the server's limit (50 MiB plus 1 MiB of room for the form) is
 still refused by the HTTP server with a bare `413` before any purpose is
@@ -951,32 +951,58 @@ estimate is above 256 MiB:
 
 Everything that decodes an image shares one budget per core process
 (`media.DecodeBudget`, made at startup and handed to each): uploads for a
-purpose, SVG sanitizing, cover colours, the cover colour backfill and the
-size backfill. At most **2** images are decoded at once, and at most **1** SVG
-is sanitized (it also takes one of the 2).
+purpose, SVG sanitizing, cover colours, the cover colour backfill, the size
+backfill and video frames. At most **2** images are decoded at once
+(`MEDIA_DECODE_SLOTS`, 1 to 8), and at most **1** SVG is sanitized (it also
+takes one of the shared slots). The startup log names the budget
+(`media decode budget: 2 images at once, …`).
 
-- An upload for a purpose waits at most 10 seconds for a slot, then answers
-  `503 media_busy` with `Retry-After: 5`; nothing is stored, and the 5xx is
-  given back to the person's upload budget.
+- An upload for a purpose waits at most 10 seconds for a slot
+  (`MEDIA_DECODE_WAIT`, up to `1m`), then answers `503 media_busy` with
+  `Retry-After: 5`; nothing is stored, and the 5xx is given back to the
+  person's upload budget. (A caller that hangs up keeps waiting: the
+  request's context ends only when core shuts down.)
 - Cover colours of an image uploaded without a purpose take a slot only when
   one is free; otherwise the image is stored without them and the cover
   colour backfill picks them later. Such an upload never waits and never
   fails for the budget.
-- The backfills wait like an upload; a wait that runs out leaves the image
-  for the next pass.
+- The backfills and video frames wait like an upload; a wait that runs out
+  leaves the image for the next pass.
 - A slot is given back however the decode ends, a panic included. A cover
   colour pick that panics picks none, and the backfill goes on.
 
-**Worst case on the production host** (15 GiB, no swap), per slot: the decoded
-image at most 256 MiB by the estimate; the upload body and its copies up to
-about 150 MiB (50 MiB, an Answer file's maximum, held by the HTTP server, the
-form and the service);
-the scaling buffers at most 128 MiB plus the 26 MiB result and its upright
-copy (26 MiB); the encoded image and its sizes under 40 MiB. About 630 MiB
-live per slot, 1.3 GiB for both. Sanitizing an SVG (at most 1 MiB, 10 000
-elements) takes a few tens of MiB at most. Go's collector lets the heap grow to
-about twice what is live before collecting (`GOGC=100`), so allow ~2.7 GiB
-for image work at its peak.
+A count, not a weight by each image's decode estimate: the estimate
+(`decodeCost`) counts the decoder's buffers, but scaling works in RGBA (4
+bytes a pixel) whatever the source, so a 4:2:0 JPEG (1.5 bytes a pixel to
+decode) needs more than twice its estimate. A budget by estimate would let
+several such photos through where the count bounds them, and would need a
+model of the whole pipeline to be honest.
+
+**Metrics** (`/v1/metrics`, internal only):
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `skylab_media_decode_slots` | gauge | the budget's shared slots |
+| `skylab_media_decode_slots_in_use` | gauge | slots held now |
+| `skylab_media_decode_waiting` | gauge | requests waiting for a slot now |
+| `skylab_media_decode_requests_total{outcome}` | counter | `immediate` (a slot was free), `waited` (got one after waiting), `busy` (waited the whole wait: `media_busy` or a skipped backfill item), `cancelled` (the work's context ended while waiting: a worker at shutdown), `skipped` (cover colours that did not wait) |
+| `skylab_media_decode_wait_seconds_total` | counter | time spent waiting, all requests |
+
+Saturation shows as `waiting` above 0 and `waited`/`busy` growing; the
+average wait is the rise of `wait_seconds_total` over the rise of
+`waited + busy + cancelled`. `busy` growing means people saw `media_busy`:
+raise `MEDIA_DECODE_SLOTS` only together with core's memory limit
+([memory-limit.md](memory-limit.md)).
+
+**Memory per slot** (measured and by the code's own bounds): the decoded
+image at most 256 MiB by the estimate; the scaling buffers at most 128 MiB
+plus the 26 MiB result and its upright copy (26 MiB); the encoded image and
+its sizes under 40 MiB: about **480 MiB** live at most. A 50 MP PNG measured
+191 MiB live and 320 MiB of Go memory with its garbage; a 48 MP JPEG less.
+Sanitizing an SVG (at most 1 MiB, 10 000 elements) takes a few tens of MiB.
+The upload's body is held whether or not it has a slot, so it is counted per
+request, not per slot: [memory-limit.md](memory-limit.md) has the whole
+worst case and the container limit it leads to.
 
 ### Sizes
 
@@ -3582,6 +3608,11 @@ What happens to the records when the request completes is in
   `10m`.
 - `MEDIA_UPLOAD_DAILY_MAX_MIB` — MiB of upload body per person per rolling
   24 hours; default `2048`.
+- `MEDIA_DECODE_SLOTS` — images decoded at once, process-wide
+  ([Decode budget](#decode-budget)); `1` to `8`, default `2`. Raise it only
+  with core's memory limit ([memory-limit.md](memory-limit.md)).
+- `MEDIA_DECODE_WAIT` — Go duration a request waits for a decoding slot
+  before `503 media_busy`; at most `1m`, default `10s`.
 - `MEDIA_DIRECT_UPLOAD_MAX_OPEN` — [Direct uploads](#direct-upload-budget) a
   person may have open at once; default `3`.
 - `MEDIA_DIRECT_UPLOAD_DAILY_MAX_MIB` — MiB a person may declare in Direct

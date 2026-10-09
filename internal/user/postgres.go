@@ -525,6 +525,10 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`UPDATE certificate_event_state SET attendance_finalized_by = NULL WHERE attendance_finalized_by = $1`,
 		`UPDATE certificate_batches SET requested_by = NULL WHERE requested_by = $1`,
 		`UPDATE account_deletion_requests SET requested_by = NULL WHERE requested_by = $1`,
+		// Team membership mails not sent yet: none goes to the person, and
+		// none names them as the one who made the change.
+		`DELETE FROM team_membership_mails WHERE subject_id = $1`,
+		`UPDATE team_membership_mails SET actor_id = NULL WHERE actor_id = $1`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(ctx, statement, id); err != nil {
