@@ -35,7 +35,9 @@ type sessionBody struct {
 	EndTime         *time.Time `json:"endTime"`
 	OrderIndex      int        `json:"orderIndex"`
 	SessionType     string     `json:"sessionType"`
-	Cancelled       bool       `json:"cancelled"`
+	// Cancelled is a pointer so an update that leaves it out keeps the
+	// stored value; an explicit false lifts a cancel.
+	Cancelled *bool `json:"cancelled"`
 }
 
 func (h *ScheduleHandler) ListDays(c fiber.Ctx) error {
@@ -255,7 +257,7 @@ func (h *ScheduleHandler) CreateSession(c fiber.Ctx) error {
 		EventDayID: body.EventDayID, Title: body.Title, SpeakerName: body.SpeakerName,
 		SpeakerLinkedin: body.SpeakerLinkedin, Description: body.Description,
 		StartTime: body.StartTime, EndTime: body.EndTime, OrderIndex: body.OrderIndex, SessionType: body.SessionType,
-		Cancelled: body.Cancelled,
+		Cancelled: body.Cancelled != nil && *body.Cancelled,
 	})
 	if err != nil {
 		return eventError(c, err)
@@ -279,8 +281,8 @@ func (h *ScheduleHandler) UpdateSession(c fiber.Ctx) error {
 	updated, err := h.svc.UpdateSession(c.Context(), p, id, event.Session{
 		Title: body.Title, SpeakerName: body.SpeakerName, SpeakerLinkedin: body.SpeakerLinkedin,
 		Description: body.Description, StartTime: body.StartTime, EndTime: body.EndTime,
-		OrderIndex: body.OrderIndex, SessionType: body.SessionType, Cancelled: body.Cancelled,
-	})
+		OrderIndex: body.OrderIndex, SessionType: body.SessionType,
+	}, body.Cancelled)
 	if err != nil {
 		return eventError(c, err)
 	}
