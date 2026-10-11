@@ -363,14 +363,27 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 	}
 	out := make([]Person, 0, len(people))
 	for _, person := range people {
-		shadow, _, err := s.assign.Ensure(ctx, person.ID, user.Profile{
-			Email:       person.Email,
-			FirstName:   person.FirstName,
-			LastName:    person.LastName,
-			Username:    person.Username,
-			SchoolEmail: person.SchoolEmail,
-			SkyNumber:   person.SkyNumber,
-		})
+		// The list reads core's row and ensures only a person whose row
+		// Ensure would change: it is opened on every visit to several panel
+		// pages, and Ensure's write stamps updated_at even when nothing
+		// changed.
+		shadow, err := s.users.Get(ctx, person.ID)
+		if err != nil && !errors.Is(err, user.ErrNotFound) {
+			return nil, err
+		}
+		if err == nil && shadow.AccountState != user.AccountActive {
+			continue
+		}
+		if err != nil || listChanges(person, shadow) {
+			shadow, _, err = s.assign.Ensure(ctx, person.ID, user.Profile{
+				Email:       person.Email,
+				FirstName:   person.FirstName,
+				LastName:    person.LastName,
+				Username:    person.Username,
+				SchoolEmail: person.SchoolEmail,
+				SkyNumber:   person.SkyNumber,
+			})
+		}
 		if err != nil {
 			if errors.Is(err, user.ErrAccountBlocked) {
 				continue
@@ -395,6 +408,19 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 		out = append(out, person)
 	}
 	return projectPeople(out, full), nil
+}
+
+// listChanges reports whether Ensure would change the active row shadow of
+// a person the full list read from the directory: what user's Upsert takes
+// from the directory (a non-empty e-mail, username or school e-mail that
+// differs; never the names, and a Sky number only where the row has none),
+// and a missing Sky number, which Ensure assigns.
+func listChanges(person Person, shadow user.User) bool {
+	differs := func(directory, stored string) bool { return directory != "" && directory != stored }
+	return shadow.SkyNumber == "" ||
+		differs(person.Email, shadow.Email) ||
+		differs(person.Username, shadow.Username) ||
+		differs(person.SchoolEmail, shadow.SchoolEmail)
 }
 
 func projectPeople(people []Person, full bool) []Person {
