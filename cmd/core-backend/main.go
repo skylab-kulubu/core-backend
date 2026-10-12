@@ -731,8 +731,11 @@ func main() {
 	// mail, worded by the Group's kind (team, Privileged, other). The change
 	// is queued in the database and sent by a worker, so SkyMail being down
 	// delays the mail, never the change.
-	teamMembership, teamMembershipMetrics, teamMembershipStopped := startTeamMembershipMail(
-		workers, teammail.NewPostgresQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
+	// The privilege notice (docs/privilege-change-mail.md) rides the same
+	// worker: a role mapping changed tells ADMIN, a Privileged Group's
+	// membership changed tells ADMIN and that root's members.
+	teamMembership, groupRolesNotice, teamMembershipMetrics, teamMembershipStopped := startTeamMembershipMail(
+		workers, teammail.NewPostgresQueue(pool), teammail.NewPostgresNoticeQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
 	worker("team membership mail", teamMembershipStopped)
 
 	var render certificate.Renderer
@@ -823,6 +826,8 @@ func main() {
 			AccessProjector:       accessProjector,
 			GroupCache:            overageGroups,
 			Membership:            teamMembership,
+			GroupRoles:            groupRolesNotice,
+			PrivilegedRoots:       privilegedRoots,
 			GroupNames:            &groupNames,
 			TeamCodes:             teamcode.NewPostgresLedger(pool),
 			Delegation:            delegation,

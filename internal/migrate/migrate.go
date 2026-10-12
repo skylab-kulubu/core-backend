@@ -1347,6 +1347,16 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		WHERE conrelid = to_regclass('public.account_deletion_steps')
 		  AND conname = 'account_deletion_steps_step_check'
 		  AND pg_get_constraintdef(oid) LIKE '%''erase_communication_preferences''%'`,
+	// The privilege notice queue and its indexes.
+	20261012190000: `
+		SELECT 1
+		WHERE to_regclass('public.privilege_notice_mails') IS NOT NULL
+		  AND to_regclass('public.privilege_notice_mails_due_idx') IS NOT NULL
+		  AND to_regclass('public.privilege_notice_mails_change_idx') IS NOT NULL
+		  AND to_regclass('public.privilege_notice_mails_recipient_idx') IS NOT NULL
+		  AND to_regclass('public.privilege_notice_mails_person_idx') IS NOT NULL
+		  AND to_regclass('public.privilege_notice_mails_subject_idx') IS NOT NULL
+		  AND to_regclass('public.privilege_notice_mails_actor_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

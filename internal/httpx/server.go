@@ -437,6 +437,7 @@ func New(deps Deps) *fiber.App {
 	app.Patch("/v1/groups/:groupId", ident.UpdateGroup)
 	app.Get("/v1/groups/:groupId/members", ident.Members)
 	app.Get("/v1/groups/:groupId/member-candidates", ident.MemberCandidates)
+	app.Get("/v1/groups/:groupId/member-check/:userId", ident.MemberCheck)
 	app.Post("/v1/groups/:groupId/members", ident.AddMember)
 	app.Delete("/v1/groups/:groupId/members/:userId", ident.RemoveMember)
 	app.Get("/v1/groups/:groupId/client-roles", ident.GroupClientRoles)

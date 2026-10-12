@@ -86,6 +86,9 @@ type SkyMail struct {
 	TeamMembershipTemplateKey  string
 	RoleMembershipTemplateKey  string
 	GroupMembershipTemplateKey string
+	// PrivilegeNoticeTemplateKey addresses the privilege notice
+	// (privilege_notice.go); empty turns it off.
+	PrivilegeNoticeTemplateKey string
 	Tokens                     TokenSource
 	HTTP                       *http.Client
 	Logger                     *log.Logger
