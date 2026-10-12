@@ -222,7 +222,9 @@ func (p Policy) leaderLookAlike(g ManagedGroup) bool {
 		if slices.Contains(p.LeaderSubgroups, node.Name) {
 			continue
 		}
-		folded := strings.ToUpper(strings.TrimSpace(node.Name))
+		// Turkish İ and ı fold to I first: Go's ToUpper keeps İ, so LİDERLER
+		// would slip past (review of #235, D8).
+		folded := strings.ToUpper(strings.NewReplacer("İ", "I", "ı", "I", "i̇", "I").Replace(strings.TrimSpace(node.Name)))
 		for _, leader := range p.LeaderSubgroups {
 			if strings.HasPrefix(folded, strings.ToUpper(leader)) {
 				return true

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -135,23 +136,63 @@ func TestMemoryGroupNode(t *testing.T) {
 }
 
 // fakeRoleMappings answers a Group's role mappings, composite roles by id
-// and clients by UUID, as Keycloak 26.x does.
-func fakeRoleMappings(t *testing.T, mappings map[string]any, composites map[string][]map[string]any, clients map[string]string) *identity.Keycloak {
+// and clients by UUID as Keycloak 26.7.4 answers core's service account,
+// which holds no view-realm: /role-mappings leaves the realm mappings out,
+// /role-mappings/realm has the direct ones, /role-mappings/realm/composite
+// the effective ones (through client composites too), and a role's
+// composites leave its realm children out. failing names path suffixes
+// that answer 500.
+func fakeRoleMappings(t *testing.T, mappings map[string]any, composites map[string][]map[string]any, clients map[string]string, failing ...string) *identity.Keycloak {
 	t.Helper()
+	realmDirect, _ := mappings["realmMappings"].([]map[string]any)
+	// effective are the realm roles the Group holds in effect: its own and
+	// every realm role reachable through its composites.
+	effective := []map[string]any{}
+	seen := map[string]bool{}
+	var walk func(role map[string]any)
+	walk = func(role map[string]any) {
+		id, _ := role["id"].(string)
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		if client, _ := role["clientRole"].(bool); !client {
+			effective = append(effective, role)
+		}
+		for _, child := range composites[id] {
+			walk(child)
+		}
+	}
+	for _, r := range realmDirect {
+		walk(r)
+	}
+	if cms, ok := mappings["clientMappings"].(map[string]any); ok {
+		for _, cm := range cms {
+			for _, r := range cm.(map[string]any)["mappings"].([]map[string]any) {
+				r["clientRole"] = true
+				walk(r)
+			}
+		}
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		path := r.URL.Path
+		for _, suffix := range failing {
+			if strings.HasSuffix(path, suffix) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+		}
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(path, "/protocol/openid-connect/token"):
 			_, _ = w.Write([]byte(`{"access_token":"tok","expires_in":300,"token_type":"Bearer"}`))
+		case strings.HasPrefix(path, "/admin/realms/e-skylab/groups/") && strings.HasSuffix(path, "/role-mappings/realm/composite"):
+			_ = json.NewEncoder(w).Encode(effective)
 		case strings.HasPrefix(path, "/admin/realms/e-skylab/groups/") && strings.HasSuffix(path, "/role-mappings/realm"):
-			// Keycloak answers the realm mappings here, and leaves them out
-			// of /role-mappings for a caller without view-realm.
-			realm := mappings["realmMappings"]
-			if realm == nil {
-				realm = []any{}
+			if realmDirect == nil {
+				realmDirect = []map[string]any{}
 			}
-			_ = json.NewEncoder(w).Encode(realm)
+			_ = json.NewEncoder(w).Encode(realmDirect)
 		case strings.HasPrefix(path, "/admin/realms/e-skylab/groups/") && strings.HasSuffix(path, "/role-mappings"):
 			out := map[string]any{}
 			for k, v := range mappings {
@@ -162,7 +203,14 @@ func fakeRoleMappings(t *testing.T, mappings map[string]any, composites map[stri
 			_ = json.NewEncoder(w).Encode(out)
 		case strings.HasPrefix(path, "/admin/realms/e-skylab/roles-by-id/") && strings.HasSuffix(path, "/composites"):
 			id := strings.TrimSuffix(strings.TrimPrefix(path, "/admin/realms/e-skylab/roles-by-id/"), "/composites")
-			_ = json.NewEncoder(w).Encode(composites[id])
+			// The realm children are left out, without an error.
+			visible := []map[string]any{}
+			for _, child := range composites[id] {
+				if client, _ := child["clientRole"].(bool); client {
+					visible = append(visible, child)
+				}
+			}
+			_ = json.NewEncoder(w).Encode(visible)
 		case strings.HasPrefix(path, "/admin/realms/e-skylab/clients/"):
 			id := strings.TrimPrefix(path, "/admin/realms/e-skylab/clients/")
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "clientId": clients[id]})
@@ -179,9 +227,22 @@ func clientMapping(client string, roles ...map[string]any) map[string]any {
 	return map[string]any{"clientMappings": map[string]any{client: map[string]any{"client": client, "mappings": roles}}}
 }
 
-// Keycloak's answer: a realm role, a protected client role, or a composite
-// that holds one (or a realm role) at any depth protects the Group; a
-// composite of harmless roles does not.
+// deepChain is a client composite n levels deep that ends in a harmless
+// role.
+func deepChain(n int) map[string][]map[string]any {
+	out := map[string][]map[string]any{}
+	for i := 0; i < n; i++ {
+		next := "l" + strconv.Itoa(i+1)
+		out["l"+strconv.Itoa(i)] = []map[string]any{{"id": next, "name": next, "clientRole": true, "containerId": "c-forms", "composite": i+1 < n}}
+	}
+	return out
+}
+
+// Keycloak's answer: a realm role (mapped, or inside a client composite,
+// which Keycloak hides from a role's composites), a protected client role,
+// or a composite that holds one at any depth protects the Group; a
+// composite of harmless roles does not; a composite deeper than the limit
+// does.
 func TestKeycloakGroupProtection(t *testing.T) {
 	t.Parallel()
 	clients := map[string]string{"c-core": "core", "c-rm": "realm-management", "c-site": "frontend-main", "c-forms": "forms"}
@@ -202,8 +263,20 @@ func TestKeycloakGroupProtection(t *testing.T) {
 				"outer": {{"id": "inner", "name": "inner", "clientRole": true, "containerId": "c-forms", "composite": true}},
 				"inner": {{"id": "gm", "name": "groups:manage", "clientRole": true, "containerId": "c-core"}},
 			}, true},
-		{"a composite with a realm role", clientMapping("skymail", map[string]any{"id": "outer", "name": "outer", "composite": true}),
+		{"a client composite holding a realm role", clientMapping("skymail", map[string]any{"id": "outer", "name": "outer", "composite": true}),
 			map[string][]map[string]any{"outer": {{"id": "admin", "name": "admin", "clientRole": false, "containerId": "e-skylab"}}}, true},
+		// client → realm → realm-management: the realm role is hidden from
+		// the composite walk; only the Group's effective realm roles show it.
+		{"client, realm, realm-management", clientMapping("skymail", map[string]any{"id": "bridge", "name": "bridge", "composite": true}),
+			map[string][]map[string]any{
+				"bridge":  {{"id": "rmadmin", "name": "rmadmin", "clientRole": false, "composite": true, "containerId": "e-skylab"}},
+				"rmadmin": {{"id": "ra", "name": "realm-admin", "clientRole": true, "containerId": "c-rm"}},
+			}, true},
+		{"a mixed composite", clientMapping("skymail", map[string]any{"id": "mixed", "name": "mixed", "composite": true}),
+			map[string][]map[string]any{"mixed": {
+				{"id": "h", "name": "harmless", "clientRole": true, "containerId": "c-forms"},
+				{"id": "rmadmin", "name": "rmadmin", "clientRole": false, "containerId": "e-skylab"},
+			}}, true},
 		{"cms:access and content roles", clientMapping("frontend-main", map[string]any{"id": "cms", "name": "cms:access", "composite": true}),
 			map[string][]map[string]any{"cms": {
 				{"id": "cr", "name": "content:read", "clientRole": true, "containerId": "c-site"},
@@ -214,10 +287,26 @@ func TestKeycloakGroupProtection(t *testing.T) {
 				"a": {{"id": "b", "name": "b", "clientRole": true, "containerId": "c-forms", "composite": true}},
 				"b": {{"id": "a", "name": "a", "clientRole": true, "containerId": "c-forms", "composite": true}},
 			}, false},
+		{"eight levels, harmless", clientMapping("skymail", map[string]any{"id": "l0", "name": "l0", "composite": true}), deepChain(8), false},
+		{"eleven levels, harmless", clientMapping("skymail", map[string]any{"id": "l0", "name": "l0", "composite": true}), deepChain(11), true},
 	} {
 		got, err := fakeRoleMappings(t, tc.mappings, tc.composites, clients).GroupProtection(context.Background(), uuid.NewString())
 		if err != nil || got.Protected != tc.want || (got.Protected && got.Reason == "") {
 			t.Errorf("%s: %+v %v", tc.name, got, err)
+		}
+	}
+}
+
+// A read that fails is an error, never "not protected": the write it
+// guards is refused.
+func TestKeycloakGroupProtectionFailsClosed(t *testing.T) {
+	t.Parallel()
+	mapping := clientMapping("skymail", map[string]any{"id": "staff", "name": "staff", "composite": true})
+	composites := map[string][]map[string]any{"staff": {{"id": "x", "name": "x", "clientRole": true, "containerId": "c-forms"}}}
+	for _, suffix := range []string{"/role-mappings/realm/composite", "/role-mappings", "/composites", "/clients/c-forms"} {
+		got, err := fakeRoleMappings(t, mapping, composites, map[string]string{"c-forms": "forms"}, suffix).GroupProtection(context.Background(), uuid.NewString())
+		if err == nil {
+			t.Errorf("%s failing: %+v, want an error", suffix, got)
 		}
 	}
 }

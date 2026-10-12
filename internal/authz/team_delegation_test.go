@@ -321,7 +321,8 @@ func TestTeamOf(t *testing.T) {
 func TestManagesRefusesLeaderLookAlikes(t *testing.T) {
 	t.Parallel()
 	p := delegationOn()
-	for _, name := range []string{"LIDERLER-ESKI", "LIDERLER ", " LIDERLER", "liderler", "KOORDINATORLER2", "Liderler-2026"} {
+	for _, name := range []string{"LIDERLER-ESKI", "LIDERLER ", " LIDERLER", "liderler", "KOORDINATORLER2", "Liderler-2026",
+		"LİDERLER", "LİDERLER-ESKİ", "KOORDİNATORLER", "lıderler"} {
 		g := target("wf", false)
 		g.Group.Name, g.Group.Path = name, "/UYELER/ARGE/WEBLAB/"+name
 		g.Group.ParentID = "w"

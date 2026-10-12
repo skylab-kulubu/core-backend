@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
@@ -116,9 +117,10 @@ func identityError(c fiber.Ctx, err error) error {
 
 // delegationTitles are the titles of a delegated refusal's statuses.
 var delegationTitles = map[int]string{
-	fiber.StatusForbidden:       "Forbidden",
-	fiber.StatusConflict:        "Conflict",
-	fiber.StatusTooManyRequests: "Too Many Requests",
+	fiber.StatusForbidden:          "Forbidden",
+	fiber.StatusConflict:           "Conflict",
+	fiber.StatusTooManyRequests:    "Too Many Requests",
+	fiber.StatusServiceUnavailable: "Service Unavailable",
 }
 
 // delegationError answers a delegated request core refused
@@ -128,8 +130,11 @@ func delegationError(c fiber.Ctx, err *identity.DelegationError) error {
 	if !ok {
 		return err
 	}
-	if err.Status == fiber.StatusTooManyRequests {
-		c.Set(fiber.HeaderRetryAfter, "60")
+	if err.RetryAfter > 0 {
+		c.Set(fiber.HeaderRetryAfter, strconv.Itoa(err.RetryAfter))
+	}
+	if err.Status == fiber.StatusServiceUnavailable {
+		c.Set(fiber.HeaderCacheControl, "no-store")
 	}
 	return problemCode(c, err.Status, title, err.Code)
 }

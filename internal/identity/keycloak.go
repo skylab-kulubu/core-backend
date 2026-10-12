@@ -1022,8 +1022,8 @@ func (k *Keycloak) GroupNode(ctx context.Context, id string) (Group, string, err
 const maxCompositeDepth = 8
 
 // GroupProtection reads whether the Group groupID's own role mappings make
-// it a Protected group (GroupProtections): any realm role
-// (GET /groups/{id}/role-mappings/realm), or a client role
+// it a Protected group (GroupProtections): any realm role it holds in
+// effect (GET /groups/{id}/role-mappings/realm/composite), or a client role
 // that is protected (authz.ProtectedRole) or holds, as a composite at any
 // depth, a realm role or a protected client role. Realm roles are not
 // opened: any one counts (Yusuf, 2026-10-12), so core needs no view-realm.
@@ -1039,11 +1039,14 @@ func (k *Keycloak) GroupProtection(ctx context.Context, groupID string) (Protect
 	if err != nil {
 		return Protection{}, mapKCErr(err)
 	}
-	// The realm mappings are read on their own: Keycloak leaves them out of
-	// /role-mappings for a caller without view-realm, which core's service
-	// account does not hold (Keycloak 26.7.4, 2026-10-12), but answers
-	// /role-mappings/realm.
-	realm, err := k.gc.GetRealmRolesByGroupID(ctx, token, k.realm, groupID)
+	// The realm roles are read on their own, in effect: Keycloak leaves them
+	// out of /role-mappings, and out of a client role's composites, for a
+	// caller without view-realm, which core's service account does not hold
+	// (Keycloak 26.7.4, 2026-10-12). /role-mappings/realm/composite answers
+	// every realm role the Group holds, through client composites too, so a
+	// client composite that hides a realm role (client → realm →
+	// realm-management) is seen here.
+	realm, err := k.gc.GetCompositeRealmRolesByGroupID(ctx, token, k.realm, groupID)
 	if err != nil {
 		return Protection{}, mapKCErr(err)
 	}

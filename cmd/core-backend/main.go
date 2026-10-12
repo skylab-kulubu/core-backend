@@ -776,6 +776,18 @@ func main() {
 		teamDelegationOptions.Logf = log.Printf
 		delegation = identity.NewTeamDelegation(authzPolicy, dir, reads, teamDelegationOptions)
 	}
+	// With delegation on, core checks at once that it sees protection at
+	// all (a Privileged root reads as protected); a failure is an ERROR line
+	// and every delegated write is refused until the check passes.
+	if delegation.On() {
+		canaryContext, cancelCanary := context.WithTimeout(signals, 15*time.Second)
+		if root, err := delegation.Canary(canaryContext); err == nil {
+			log.Printf("team delegation: protection canary passed (%s)", root)
+		} else {
+			log.Printf("ERROR team delegation: protection canary failed: %v", err)
+		}
+		cancelCanary()
+	}
 
 	app := httpx.New(httpx.Deps{
 		Users: user.NewService(users, dir),

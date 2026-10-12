@@ -94,15 +94,19 @@ func (s *service) delegatedWrite(ctx context.Context, p authz.Principal, action 
 		return err
 	}
 	if !s.delegation.allowWrite(userID) {
-		return refusedWith(http.StatusTooManyRequests, CodeRateLimited)
+		return &DelegationError{Status: http.StatusTooManyRequests, Code: CodeRateLimited, RetryAfter: 60}
 	}
 	release, ok := s.delegation.beginWrite(userID)
 	if !ok {
-		return refusedWith(http.StatusTooManyRequests, CodeRateLimited)
+		return &DelegationError{Status: http.StatusTooManyRequests, Code: CodeRateLimited, RetryAfter: 1}
 	}
 	defer release()
 	ctx, cancel := context.WithTimeout(ctx, s.delegation.options.WriteTimeout)
 	defer cancel()
+	// No write while core cannot see protection (O3).
+	if _, err := s.delegation.Canary(ctx); err != nil {
+		return err
+	}
 	read := func(ctx context.Context) (authz.TeamManager, authz.ManagedGroup, Group, error) {
 		m, err := s.delegation.manager(ctx, userID, true)
 		if err != nil {
@@ -380,7 +384,7 @@ func (s *service) MemberCandidates(ctx context.Context, p authz.Principal, group
 			return nil, ErrInvalid
 		}
 		if !s.delegation.allowSearch(userID) {
-			return nil, refusedWith(http.StatusTooManyRequests, CodeRateLimited)
+			return nil, &DelegationError{Status: http.StatusTooManyRequests, Code: CodeRateLimited, RetryAfter: 60}
 		}
 	}
 	found, err := s.users.Search(ctx, q)

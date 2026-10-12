@@ -3,6 +3,7 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -164,5 +165,34 @@ func TestMaskEmail(t *testing.T) {
 		if got := identity.MaskEmail(in); got != want {
 			t.Errorf("%q: %q, want %q", in, got, want)
 		}
+	}
+}
+
+// The memory directory's composites are opened as Keycloak's are: eight
+// levels of harmless roles protect nothing, a deeper chain protects (the
+// limit is the safe answer), a realm role inside one protects.
+func TestMemoryGroupProtectionDepth(t *testing.T) {
+	t.Parallel()
+	chain := func(n int) *identity.Memory {
+		m := identity.NewMemory()
+		m.PutGroup(identity.Group{ID: "g", Name: "G", Path: "/G"})
+		for i := 0; i < n; i++ {
+			m.PutCompositeRole(identity.ClientRole{ClientID: "forms", Role: fmt.Sprint("l", i)}, identity.ClientRole{ClientID: "forms", Role: fmt.Sprint("l", i+1)})
+		}
+		if err := m.SetGroupClientRoles(context.Background(), "g", []identity.ClientRole{{ClientID: "forms", Role: "l0"}}); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	for n, want := range map[int]bool{1: false, 8: false, 9: true, 11: true} {
+		got, err := chain(n).GroupProtection(context.Background(), "g")
+		if err != nil || got.Protected != want {
+			t.Errorf("%d levels: %+v %v", n, got, err)
+		}
+	}
+	m := chain(3)
+	m.PutCompositeRole(identity.ClientRole{ClientID: "forms", Role: "l3"}, identity.ClientRole{Role: "admin"})
+	if got, _ := m.GroupProtection(context.Background(), "g"); !got.Protected {
+		t.Error("a realm role three deep")
 	}
 }

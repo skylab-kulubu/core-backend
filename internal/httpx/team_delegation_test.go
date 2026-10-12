@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http/httptest"
 	"slices"
@@ -93,6 +94,11 @@ func newDelegationEnv(t *testing.T, setup delegationSetup) *delegationEnv {
 		g.ID = uuid.NewString()
 		e.ids[g.Path] = g.ID
 		e.dir.PutGroup(g)
+	}
+	// YK, a Privileged root, maps core's roles (ADR-0059): the canary
+	// protection read core checks before any delegated write.
+	if err := e.dir.SetGroupClientRoles(context.Background(), e.ids["/UYELER/YK"], []identity.ClientRole{{ClientID: "core", Role: authz.RoleGroupsManage}}); err != nil {
+		t.Fatal(err)
 	}
 	// SECURE maps one of core's permission roles: a protected Group.
 	if err := e.dir.SetGroupClientRoles(context.Background(), e.ids["/UYELER/ARGE/WEBLAB/SECURE"], []identity.ClientRole{{ClientID: "core", Role: authz.RoleEventManage}}); err != nil {
@@ -934,7 +940,171 @@ func TestTeamDelegationOneWriteAtATime(t *testing.T) {
 	}
 	got := []int{<-statuses, <-statuses}
 	slices.Sort(got)
+	// A write running is no budget spent: try again in a second.
+	if retry := e.retryAfter(token); retry != "" && retry != "1" {
+		t.Errorf("Retry-After %q", retry)
+	}
 	if got[0] != fiber.StatusNoContent || got[1] != fiber.StatusTooManyRequests {
 		t.Fatalf("statuses %v", got)
 	}
+}
+
+// countingLedger is a Team code ledger that counts its lock takings and
+// may run something just before each, as if another request changed
+// Keycloak between a write's first decision and its lock.
+type countingLedger struct {
+	teamcode.Ledger
+	mu     sync.Mutex
+	taken  int
+	before func()
+}
+
+func (l *countingLedger) Locked(ctx context.Context, write func(context.Context, teamcode.Records) error) error {
+	l.mu.Lock()
+	l.taken++
+	before := l.before
+	l.mu.Unlock()
+	if before != nil {
+		before()
+	}
+	return l.Ledger.Locked(ctx, write)
+}
+
+// failingProtection is the memory directory whose protection reads fail
+// for every Group but the Privileged root the canary reads.
+type failingProtection struct {
+	*identity.Memory
+	root string
+}
+
+func (f failingProtection) GroupProtection(ctx context.Context, id string) (identity.Protection, error) {
+	if id == f.root {
+		return f.Memory.GroupProtection(ctx, id)
+	}
+	return identity.Protection{}, errors.New("keycloak: role mappings unavailable")
+}
+
+// appWith is e's app with the delegation reading reads and the service
+// locking with ledger.
+func (e *delegationEnv) appWith(reads identity.TeamReads, ledger teamcode.Ledger) {
+	policy := authz.DefaultPolicy()
+	policy.TeamDelegation = true
+	az := authz.NewAuthorizer(policy)
+	delegation := identity.NewTeamDelegation(policy, e.dir, reads, identity.TeamDelegationOptions{})
+	options := identity.Options{TeamCodes: ledger, TeamAudit: e.audit, Delegation: delegation}
+	deps := memoryDepsDecidedBy(e.dir, options, az)
+	deps.Identity = identity.NewServiceWithOptions(identity.AuditedDirectory(e.dir, e.audit, nil), e.users, az, options)
+	deps.ParseToken = e.keys.Parse()
+	e.app = httpx.New(deps)
+}
+
+// The decision under the lock is made again on fresh reads: a Leader who
+// loses their Leader group between the first decision and the lock writes
+// nothing (review of #235, delta M1).
+func TestTeamDelegationDecidesAgainUnderTheLock(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	ledger := &countingLedger{Ledger: teamcode.NewMemoryLedger()}
+	ledger.before = func() {
+		_ = e.dir.RemoveMember(context.Background(), e.ids["/UYELER/ARGE/WEBLAB/LIDERLER"], e.people["webLeader"])
+	}
+	e.appWith(e.dir, ledger)
+	got := e.send(e.token("webLeader", "/UYELER/ARGE/WEBLAB/LIDERLER"), fiber.MethodPost, e.group("/UYELER/ARGE/WEBLAB")+"/members", `{"userId":"`+e.people["newcomer"].String()+`"}`)
+	wantStatus(t, "leader removed before the lock", got, fiber.StatusForbidden, "")
+	if ledger.taken != 1 || e.directlyIn("newcomer", "/UYELER/ARGE/WEBLAB") {
+		t.Fatalf("lock taken %d times, added %v", ledger.taken, e.directlyIn("newcomer", "/UYELER/ARGE/WEBLAB"))
+	}
+}
+
+// A caller the first decision refuses never takes the lock (review of
+// #235, B2 and delta M6); one it allows takes it once.
+func TestTeamDelegationRefusesBeforeTheLock(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	ledger := &countingLedger{Ledger: teamcode.NewMemoryLedger()}
+	e.appWith(e.dir, ledger)
+	for _, tc := range []struct{ as, path string }{
+		{"outsider", "/UYELER/ARGE/WEBLAB"},
+		{"member", "/UYELER/ARGE/WEBLAB"},
+		{"mobLeader", "/UYELER/ARGE/WEBLAB"},
+		{"webLeader", "/UYELER/ARGE/WEBLAB/LIDERLER"},
+		{"webLeader", "/UYELER/ARGE/WEBLAB/SECURE"},
+	} {
+		if got := e.add(tc.as, tc.path, "newcomer"); got.status != fiber.StatusForbidden {
+			t.Errorf("%s %s: %d", tc.as, tc.path, got.status)
+		}
+	}
+	if ledger.taken != 0 {
+		t.Fatalf("refused writes took the lock %d times", ledger.taken)
+	}
+	wantStatus(t, "allowed", e.add("webLeader", "/UYELER/ARGE/WEBLAB", "newcomer"), fiber.StatusNoContent, "")
+	if ledger.taken != 1 {
+		t.Fatalf("an allowed write took the lock %d times", ledger.taken)
+	}
+}
+
+// A protection that cannot be read refuses the write: never "not
+// protected" (review of #235, delta M4).
+func TestTeamDelegationProtectionReadFailsClosed(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	e.appWith(failingProtection{e.dir, e.ids["/UYELER/YK"]}, teamcode.NewMemoryLedger())
+	got := e.add("webLeader", "/UYELER/ARGE/WEBLAB", "newcomer")
+	if got.status < 500 || e.directlyIn("newcomer", "/UYELER/ARGE/WEBLAB") {
+		t.Fatalf("status %d (%s), added %v", got.status, got.body, e.directlyIn("newcomer", "/UYELER/ARGE/WEBLAB"))
+	}
+}
+
+// The canary (review of #235, O3): when no Privileged root reads as
+// protected (a service account without view-clients reads every mapping
+// as none), every delegated write is 503 and logged; reads go on.
+func TestTeamDelegationCanary(t *testing.T) {
+	t.Parallel()
+	for name, change := range map[string]func(e *delegationEnv){
+		"the root's mappings read as none": func(e *delegationEnv) {
+			_ = e.dir.SetGroupClientRoles(context.Background(), e.ids["/UYELER/YK"], nil)
+		},
+		"no root in the realm": func(e *delegationEnv) {
+			e.dir.PutGroup(identity.Group{ID: e.ids["/UYELER/YK"], Name: "YK-OLD", Path: "/UYELER/YK-OLD"})
+		},
+	} {
+		e := newDelegationEnv(t, delegationSetup{on: true})
+		change(e)
+		got := e.add("webLeader", "/UYELER/ARGE/WEBLAB", "newcomer")
+		wantStatus(t, name, got, fiber.StatusServiceUnavailable, identity.CodeProtectionUnverified)
+		if e.directlyIn("newcomer", "/UYELER/ARGE/WEBLAB") {
+			t.Fatalf("%s: added", name)
+		}
+		if got := e.send(e.token("webLeader"), fiber.MethodGet, e.group("/UYELER/ARGE/WEBLAB")+"/members", ""); got.status != fiber.StatusOK {
+			t.Fatalf("%s: read %d", name, got.status)
+		}
+		// Privileged's writes do not depend on it.
+		yk := e.token("yk", "/UYELER/YK")
+		wantStatus(t, name+", privileged", e.send(yk, fiber.MethodPost, e.group("/UYELER/ARGE/WEBLAB")+"/members", `{"userId":"`+e.people["newcomer"].String()+`"}`), fiber.StatusNoContent, "")
+	}
+}
+
+// retryAfter is the Retry-After of a write sent while another of the same
+// person runs, "" when none ran.
+func (e *delegationEnv) retryAfter(token string) string {
+	e.t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = e.send(token, fiber.MethodPost, e.group("/UYELER/ARGE/WEBLAB/FRONT")+"/members", `{"userId":"`+e.people["newcomer"].String()+`"}`)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	req := httptest.NewRequest(fiber.MethodPost, e.group("/UYELER/ARGE/WEBLAB/FRONT")+"/members", strings.NewReader(`{"userId":"`+e.people["outsider"].String()+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := e.app.Test(req, fiber.TestConfig{Timeout: 0})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	<-done
+	if resp.StatusCode != fiber.StatusTooManyRequests {
+		e.t.Fatalf("second write: %d", resp.StatusCode)
+	}
+	return resp.Header.Get(fiber.HeaderRetryAfter)
 }

@@ -58,15 +58,22 @@ const (
 	// names). Only Privileged writes there until the names are fixed.
 	CodeTeamCodeNotUnique = "team_code_not_unique"
 	// CodeRateLimited: the caller made more delegated writes this minute
-	// than a delegated caller may.
+	// than a delegated caller may, or has one running.
 	CodeRateLimited = "rate_limited"
+	// CodeProtectionUnverified: core cannot see that a Privileged root is
+	// protected, so it cannot trust that it sees any protection (a service
+	// account that lost view-clients reads every role mapping as none,
+	// without an error). Every delegated write is refused until it can.
+	CodeProtectionUnverified = "protection_unverified"
 )
 
 // DelegationError is a delegated request refused with a problem code and
-// the status it is answered with.
+// the status it is answered with; RetryAfter, in seconds, when the caller
+// may try again (0: no Retry-After).
 type DelegationError struct {
-	Status int
-	Code   string
+	Status     int
+	Code       string
+	RetryAfter int
 }
 
 func (e *DelegationError) Error() string {
@@ -168,7 +175,9 @@ type TeamDelegation struct {
 	writes  map[uuid.UUID]writeWindow
 	finds   map[uuid.UUID]writeWindow
 	running map[uuid.UUID]bool
-	flights singleflight.Group
+	// canaryUntil is when the last canary that passed stops counting.
+	canaryUntil time.Time
+	flights     singleflight.Group
 }
 
 type leaderEntry struct {
@@ -327,6 +336,50 @@ func (d *TeamDelegation) beginWrite(userID uuid.UUID) (release func(), ok bool) 
 		defer d.mu.Unlock()
 		delete(d.running, userID)
 	}, true
+}
+
+// Canary checks that core sees protection at all: a Privileged root that
+// exists (its core role mappings, ADR-0059) must read as protected. Keycloak
+// answers a caller without view-clients an empty role mapping, with no
+// error, so without this check a service account that lost a permission
+// would read every Group as unprotected and open them all (review of #235,
+// O3). It fails closed: CodeProtectionUnverified (503), logged as an ERROR.
+// A pass is kept TTL; a failure is checked again on the next write. The
+// second result names the root that passed.
+func (d *TeamDelegation) Canary(ctx context.Context) (string, error) {
+	d.mu.Lock()
+	passed := d.options.Now().Before(d.canaryUntil)
+	d.mu.Unlock()
+	if passed {
+		return "", nil
+	}
+	var seen []string
+	for _, root := range d.policy.PrivilegedRoots {
+		g, err := d.dir.GetGroup(ctx, root)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if g.Path != root || g.ID == "" {
+			continue
+		}
+		seen = append(seen, root)
+		got, err := d.reads.GroupProtection(ctx, g.ID)
+		if err != nil {
+			return "", err
+		}
+		if got.Protected {
+			d.mu.Lock()
+			d.canaryUntil = d.options.Now().Add(d.options.TTL)
+			d.mu.Unlock()
+			return root, nil
+		}
+	}
+	d.options.Logf("ERROR team delegation: protection cannot be verified: no Privileged root reads as protected (found %d of %d: %s); is view-clients still held by core's service account? Every delegated write is refused (503 %s)",
+		len(seen), len(d.policy.PrivilegedRoots), strings.Join(seen, ", "), CodeProtectionUnverified)
+	return "", &DelegationError{Status: http.StatusServiceUnavailable, Code: CodeProtectionUnverified, RetryAfter: 60}
 }
 
 // manager is the caller as a delegated decision reads them: the Leader

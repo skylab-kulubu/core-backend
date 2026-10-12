@@ -43,12 +43,15 @@ stay in Keycloak and in the audit record.
   for a Leader group, refused with `leader_group_needs_parent` when the
   caller manages the Team but not strictly. Nobody makes themselves a
   Leader, names a co-Leader (S2) or leaves their Team without one.
-- **Protected group**: the Group or a Group above it maps **any realm
-  role**, or a client role that is protected (core's permission roles and
+- **Protected group**: the Group or a Group above it holds **any realm
+  role** in effect (mapped, or inside a client composite: Keycloak hides a
+  composite's realm roles from core's service account, so they are read as
+  the Group's effective realm roles), or maps a client role that is protected (core's permission roles and
   `audit:read` on any client, any client's `client:admin`, any role of
   `realm-management`) or holds one, or a realm role, as a composite at any
   depth (8 levels; deeper counts as protected). Only Privileged manages it:
-  `403 protected_group`. No realm role is exempt (Yusuf, 2026-10-12): a
+  `403 protected_group`. A protection that cannot be read refuses the
+write. No realm role is exempt (Yusuf, 2026-10-12): a
   harmless one (`offline_access`) on `/UYELER` or an area makes every Team
   under it Privileged's alone; core logs each protected Group with its
   reason (`team delegation: group <id> is protected (realm role …)`), and
@@ -85,7 +88,15 @@ client-role routes stay Privileged's (Forms reads the list).
 ### Writes
 
 A delegated write has 10 s in all (past that it is 503), one at a time per
-person (a second is `429`). The caller's Groups,
+person (a second is `429` with `Retry-After: 1`; the minute's budget
+answers `Retry-After: 60`). Before anything else it checks the **canary**:
+a Privileged root that exists must read as protected (its core role
+mappings). Keycloak answers a service account without `view-clients` an
+empty role mapping with no error, so without it core would read every Group
+as unprotected. When no root reads as protected, every delegated write is
+`503 protection_unverified` and core logs an `ERROR team delegation:
+protection cannot be verified …` line; a pass is kept 60 s. Core runs the
+check at startup too when delegation is on. The caller's Groups,
 the target and its protection are read fresh and decided first, outside
 any lock: a caller who may not write (most often one who leads no Team of
 the Group, or whose own account is no longer active) is refused there and
