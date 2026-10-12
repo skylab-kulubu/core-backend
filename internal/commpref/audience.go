@@ -71,6 +71,8 @@ const (
 	AudienceSnapshotTTL = 30 * time.Second
 	// audienceReaders bounds the Group member reads in flight.
 	audienceReaders = 4
+	// audienceReadTimeout bounds one shared read of the snapshot.
+	audienceReadTimeout = 30 * time.Second
 )
 
 // AudienceStartupLines are the startup log lines of the News audience: its
@@ -108,13 +110,12 @@ type AudienceRequest struct {
 	VisibilityTeams []string
 }
 
-// AudienceDirectory is the Keycloak reads of the audience: the Group tree,
-// each Group's direct members, and one person outside /UYELER (a follower
-// who is no Member).
+// AudienceDirectory is the Keycloak reads of the audience: the Group tree
+// and each Group's direct members. Nobody outside /UYELER is read: Faz 1
+// mails Members only.
 type AudienceDirectory interface {
 	ListGroups(ctx context.Context) ([]identity.Group, error)
 	AudienceMembers(ctx context.Context, groupID string) ([]identity.AudiencePerson, error)
-	AudiencePerson(ctx context.Context, id uuid.UUID) (identity.AudiencePerson, error)
 }
 
 // AudienceAccounts reads core's accounts: a person being erased or erased
@@ -163,11 +164,13 @@ type AudienceCounts struct {
 // AudienceSkipped are the people left out, each counted once, under the
 // first reason that held, in this order.
 type AudienceSkipped struct {
+	// NotMember: a follower in no /UYELER Group. Faz 1 mails Members only
+	// (SPEC §10.2, §5.8; Karar D7).
+	NotMember int `json:"notMember"`
 	// NotVisible: the record is not visible to them (uyeler: no Member;
 	// ekipler: outside the visibility teams, and every follower).
 	NotVisible int `json:"notVisible"`
-	// Disabled: disabled in Keycloak, gone from it, or being erased or
-	// erased in core.
+	// Disabled: disabled in Keycloak, or being erased or erased in core.
 	Disabled int `json:"disabled"`
 	// NoEmail: no Primary e-mail.
 	NoEmail int `json:"noEmail"`
@@ -241,9 +244,16 @@ func (a *Audience) snapshot(ctx context.Context) (*audienceSnapshot, error) {
 		a.mu.Unlock()
 		return snap, nil
 	}
+	// An expired snapshot (every Member's address) is dropped now, not
+	// kept until the next read succeeds (review F6).
+	a.cached = nil
 	a.mu.Unlock()
 	read, err, _ := a.reads.Do("snapshot", func() (any, error) {
-		snap, err := a.readSnapshot(ctx)
+		// The read is shared: one caller giving up must not fail the
+		// others waiting on it (review F4).
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), audienceReadTimeout)
+		defer cancel()
+		snap, err := a.readSnapshot(readCtx)
 		if err != nil {
 			return nil, err
 		}
@@ -368,14 +378,18 @@ func (r AudienceRequest) check(private bool) (Visibility, error) {
 	if visibility != VisibilityPublic && !private {
 		return "", ErrVisibilityNotEnabled
 	}
+	// Once private records exist, a send that does not say its record's
+	// visibility could open a private one to the followers: the field is
+	// then required (review F2).
+	if private && r.Visibility == "" {
+		return "", ErrInvalid
+	}
 	return visibility, nil
 }
 
 // candidate is a person who may get the send, before the filters.
 type candidate struct {
-	person identity.AudiencePerson
-	// found is false for a follower Keycloak no longer has.
-	found      bool
+	person     identity.AudiencePerson
 	membership Membership
 }
 
@@ -413,6 +427,7 @@ func (a *Audience) Resolve(ctx context.Context, req AudienceRequest, after uuid.
 	// (the team, a team below it, a team above it), and everyone with a
 	// choice on a team of a chain.
 	candidates := map[uuid.UUID]*candidate{}
+	notMember := 0
 	for id, p := range snap.people {
 		m := tree.Membership(snap.paths[id])
 		in := false
@@ -425,7 +440,7 @@ func (a *Audience) Resolve(ctx context.Context, req AudienceRequest, after uuid.
 			}
 		}
 		if in {
-			candidates[id] = &candidate{person: p, found: true, membership: m}
+			candidates[id] = &candidate{person: p, membership: m}
 		}
 	}
 	if req.Type == AudienceTeams {
@@ -448,22 +463,17 @@ func (a *Audience) Resolve(ctx context.Context, req AudienceRequest, after uuid.
 			if p, ok := snap.people[id]; ok {
 				m := tree.Membership(snap.paths[id])
 				if seesAny(tree, m, targets) {
-					candidates[id] = &candidate{person: p, found: true, membership: m}
+					candidates[id] = &candidate{person: p, membership: m}
 				}
 				continue
 			}
-			// Not in any /UYELER Group: no Member, no team.
-			if !seesAny(tree, Membership{}, targets) {
-				continue
-			}
-			p, err := a.dir.AudiencePerson(ctx, id)
-			switch {
-			case errors.Is(err, identity.ErrNotFound):
-				candidates[id] = &candidate{person: identity.AudiencePerson{Person: identity.Person{ID: id}}}
-			case err != nil:
-				return AudiencePage{}, fmt.Errorf("%w: %v", ErrTeamsUnavailable, err)
-			default:
-				candidates[id] = &candidate{person: p, found: true, membership: tree.Membership(nil)}
+			// In no /UYELER Group: no Member. Faz 1 mails Members only
+			// (SPEC §10.2); a follower who is no Member is Faz 2's
+			// subscriber, on a Contact consent (§5.8, K8), not a
+			// preference (Karar D7: a Member follows). Counted, never
+			// read from Keycloak.
+			if seesAny(tree, Membership{}, targets) {
+				notMember++
 			}
 		}
 	}
@@ -488,6 +498,7 @@ func (a *Audience) Resolve(ctx context.Context, req AudienceRequest, after uuid.
 	}
 
 	var page AudiencePage
+	page.Skipped.NotMember = notMember
 	var recipients []Recipient
 	addresses := map[string]bool{}
 	for _, id := range ids {
@@ -506,7 +517,7 @@ func (a *Audience) Resolve(ctx context.Context, req AudienceRequest, after uuid.
 		account, stored := accounts[id]
 		email := strings.TrimSpace(c.person.Email)
 		switch {
-		case !c.found || !c.person.Enabled || id == user.DeletedSubject || (stored && account.Blocked):
+		case !c.person.Enabled || id == user.DeletedSubject || (stored && account.Blocked):
 			page.Skipped.Disabled++
 			continue
 		case email == "":

@@ -41,8 +41,12 @@ Body (JSON, unknown fields refused):
   (`/UYELER/<area>/<team>` or a sub-team below); an area, a leader
   subgroup (`LIDERLER`, `KOORDINATORLER`), a Privileged Group or an unknown
   one is `400 audience_team_unknown`.
-- `visibility`: the News record's. Absent is `herkes` (the field's absence
-  means public, ADR 0067 karar 3).
+- `visibility`: the News record's. In Faz 1 an absent one is `herkes` (the
+  field's absence means public, ADR 0067 karar 3). With
+  `NEWS_AUDIENCE_PRIVATE_VISIBILITY=on` it is **required** (`400
+  audience_invalid` without it): once private records exist, a send that
+  does not say its record's visibility could open a private record to the
+  followers.
 - `visibilityTeams`: only with `ekipler`, 1 to 32 teams, as `teams`.
 
 ### Faz 1: only public records
@@ -79,7 +83,7 @@ error that names the variable.
   ],
   "next": "<userId>" | null,
   "counts": {"members": 0, "followers": 0, "total": 0},
-  "skipped": {"notVisible": 0, "disabled": 0, "noEmail": 0, "unverified": 0, "optedOut": 0, "duplicateEmail": 0}
+  "skipped": {"notMember": 0, "notVisible": 0, "disabled": 0, "noEmail": 0, "unverified": 0, "optedOut": 0, "duplicateEmail": 0}
 }
 ```
 
@@ -115,7 +119,11 @@ whole audience again on the snapshot of the moment (below), so `counts` and
 `skipped` are the whole audience's on every page. Within one snapshot the
 pages neither repeat nor miss anyone; a person who joins or leaves between
 two pages that straddle a new snapshot may be missed or left in, never
-sent twice.
+sent twice. That holds for a **person**, not for an **address**: if two
+accounts share an address, the lower user id keeps it on one page, and a
+later page computed after that person turned the category off (or on a
+new snapshot) may answer the other account with the same address. SkyMail
+checks the address too before sending a News send (bilet 06).
 
 ### Errors
 
@@ -150,8 +158,14 @@ sent twice.
     a WEBLAB member gets the News of WEBLAB's sub-team BACK unless they
     turn BACK off, so the Account center's screen and the mail agree. They
     count as members (`via: member`, reason names the team they are in);
-  - **followers**: everyone with a choice of the kind on T or a team above
-    it (Karar D5, D7), also people in no `/UYELER` Group.
+  - **followers**: the **Members** who turned the kind on, on T or a team
+    above it (Karar D5, D7; an off row follows nothing). Faz 1 mails
+    Members only (SPEC §10.2: "Faz 1 yalnız `/UYELER` ağacına gönderir"):
+    a follower in no `/UYELER` Group (a row left from before core refused
+    it, or a former Member's) is left out and counted `notMember`, and is
+    not read from Keycloak. A subscriber who is no Member is Faz 2's, on a
+    Contact consent (SPEC §5.8, K8), not a preference; core refuses such
+    a follow ([communication-preferences.md](communication-preferences.md#a-signed-in-person)).
   - A **hidden** T (no `public_listing=true` on it or above it, O2) reaches
     its own members only: nobody above it and no follower is a candidate,
     so none is counted either.
@@ -161,7 +175,7 @@ sent twice.
 | `visibility` | Who may get it |
 |---|---|
 | `herkes` | every candidate |
-| `uyeler` | Members only: a follower outside `/UYELER` is `notVisible` |
+| `uyeler` | Members only (every candidate already is one in Faz 1) |
 | `ekipler` | members (as above) who are in a `visibilityTeams` team or a team below one; every follower is `notVisible` (Karar D7: a team-only record never goes to a follower), and so is everyone else outside |
 
 ### Filters
@@ -171,21 +185,24 @@ Each candidate is counted once, under the first of these that holds:
 1. a client's **service account** (Keycloak `serviceAccountClientId`, or a
    username starting `service-account-`): no person, left out and **not
    counted**;
-2. `notVisible`: above;
-3. `disabled`: disabled in Keycloak, gone from it (a follower), or being
-   erased or erased in core (an account deletion request, a non-active
+2. `notMember`: a follower in no `/UYELER` Group (above);
+3. `notVisible`: above;
+4. `disabled`: disabled in Keycloak, or being erased or erased in core (an account deletion request, a non-active
    account or the deletion marker; the placeholder subject);
-4. `noEmail`: no Primary e-mail;
-5. `unverified`: Keycloak `emailVerified` false;
-6. `optedOut`: every category they entered through is off for them
+5. `noEmail`: no Primary e-mail;
+6. `unverified`: Keycloak `emailVerified` false;
+7. `optedOut`: every category they entered through is off for them
    (the channel's master switch, the category, or what it inherits; the
    rules of [communication-preferences.md](communication-preferences.md#values)
    on channel `email`). Entering through several teams, one on is enough;
-7. `duplicateEmail`: an earlier recipient (lower user id) has the same
+8. `duplicateEmail`: an earlier recipient (lower user id) has the same
    address, lower-cased.
 
 Duplicates by person go first: a person who enters through several teams
 and as a follower is one candidate, with every category that is on.
+
+A Keycloak member record core cannot read (no id, not a UUID) is left out
+and counted nowhere; Keycloak does not answer such records for real users.
 
 ## Reads and cost
 
@@ -194,28 +211,39 @@ and as a follower is one candidate, with every category that is on.
   the Group tree (`GET /groups`, `GET /groups/{id}/children`), then the
   direct members of every `/UYELER` Group in full representation (`GET
   /groups/{id}/members?briefRepresentation=false`, 200 a page, four Groups
-  at a time), and `GET /users/{id}` for each follower in no `/UYELER`
-  Group. One such snapshot serves every request for 30 s (concurrent ones
-  share one read): the live counts typed against a form and the pages of
-  one send cost one read.
+  at a time). Nobody is read one by one. One such snapshot serves every
+  request for 30 s (concurrent ones share one read, which runs on its own
+  context with a 30 s limit, so one caller giving up does not fail the
+  others): the live counts typed against a form and the pages of one send
+  cost one read. An expired snapshot (every Member's address and name) is
+  dropped when the next request finds it expired; between requests it
+  stays in the process's memory, at most until then.
 - **Core's database**: the preference rows of every candidate in one query,
-  the people with a choice on the teams' chains in one, and core's account
-  state and names in one.
+  the people who turned the kind on on the teams' chains in one, and
+  core's account state and names in one.
 
 ## Personal data
 
 The answer carries addresses and names, to SkyMail's service account only.
 Core logs one JSON line per request with counts and no person:
-`{"event":"news_audience","client":"skymail","type":"teams","teams":1,"kind":"duyuru","visibility":"","count_only":false,"page":12,"total":12,"members":10,"followers":2,"not_visible":0,"disabled":1,"no_email":0,"unverified":0,"opted_out":3,"duplicate_email":0}`.
+`{"event":"news_audience","client":"skymail","type":"teams","teams":1,"kind":"duyuru","visibility":"","count_only":false,"page":12,"total":12,"members":10,"followers":2,"not_member":0,"not_visible":0,"disabled":1,"no_email":0,"unverified":0,"opted_out":3,"duplicate_email":0}`.
 Keycloak errors name a status, never a person or a Group. The unsubscribe
 links are never logged (see their section).
+
+## Authorization note
+
+The route checks a service account and the role, not which client it is:
+whoever Keycloak maps `audience:read` to may call it, as with
+`consent:audience:read`. The control is the role mapping (bilet 04: only
+SkyMail's service account). A check on the client id would add defence in
+depth; it is not done.
 
 ## Settings
 
 | Variable | |
 |---|---|
 | `COMMUNICATION_PREFERENCE_KEY` | required: without it the route answers `503 audience_unavailable` ([communication-preferences.md](communication-preferences.md#settings)) |
-| `NEWS_AUDIENCE_PRIVATE_VISIBILITY` | `off` (default): only `herkes`. `on`: `uyeler` and `ekipler` too (ADR 0067 karar 3, second step) |
+| `NEWS_AUDIENCE_PRIVATE_VISIBILITY` | `off` (default): only `herkes`, an absent `visibility` is `herkes`. `on`: `uyeler` and `ekipler` too, and `visibility` is required (ADR 0067 karar 3, second step) |
 
 Startup logs `news audience: on|off (private visibility true|false)`, and
 with `on` the warning above.
@@ -274,3 +302,7 @@ Deviations (all):
 7. **Private visibility is refused in Faz 1** although its rules are
    built: ADR 0067 opens private records only after inscribed's
    per-record visibility and the leak tests.
+8. **Following is for Members only in Faz 1**: Ghost and Substack let
+   anyone subscribe with an address. Here a non-Member subscriber needs a
+   Contact consent (SPEC §5.8, Faz 2), so a follow is a Member's
+   preference only.

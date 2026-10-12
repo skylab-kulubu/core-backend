@@ -174,6 +174,9 @@ var (
 	// ErrUnknownTeam is a team that does not exist or that the person may
 	// not follow (a hidden team outside their own teams).
 	ErrUnknownTeam = errors.New("communication preference: unknown team")
+	// ErrFollowMembersOnly is someone in no /UYELER Group turning a team
+	// on: only a Member follows (Karar D7).
+	ErrFollowMembersOnly = errors.New("communication preference: only a Member follows a team")
 	// ErrLink is a link token that does not read.
 	ErrLink = errors.New("communication preference: invalid link")
 	// ErrSubjectInactive is a write for a person being erased or erased.

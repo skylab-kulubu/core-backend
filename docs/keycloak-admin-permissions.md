@@ -82,4 +82,4 @@ Nothing changes until the mapper is switched on for a client whose tokens reach 
 
 ## News audience
 
-`POST /v1/audiences/resolve` ([`news-audience.md`](news-audience.md)) reads the Group tree (`GET /groups`, `GET /groups/{id}/children`), the direct members of every Group under `/UYELER` in full representation (`GET /groups/{id}/members?briefRepresentation=false`, for `emailVerified` and `serviceAccountClientId`) and `GET /users/{id}` for a follower in no `/UYELER` Group. One read serves 30 s. Nothing new is needed: these are the Group and user reads above.
+`POST /v1/audiences/resolve` ([`news-audience.md`](news-audience.md)) reads the Group tree (`GET /groups`, `GET /groups/{id}/children`), the direct members of every Group under `/UYELER` in full representation (`GET /groups/{id}/members?briefRepresentation=false`, for `emailVerified` and `serviceAccountClientId`). Nobody is read one by one. One read serves 30 s. Nothing new is needed: these are the Group and user reads above.

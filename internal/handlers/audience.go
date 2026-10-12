@@ -115,10 +115,10 @@ func (h *AudienceHandler) Resolve(c fiber.Ctx) error {
 	}
 	// Counts only: the answer carries addresses and names, the log never.
 	s := page.Skipped
-	log.Printf(`{"event":"news_audience","client":%q,"type":%q,"teams":%d,"kind":%q,"visibility":%q,"count_only":%t,"page":%d,"total":%d,"members":%d,"followers":%d,"not_visible":%d,"disabled":%d,"no_email":%d,"unverified":%d,"opted_out":%d,"duplicate_email":%d}`,
+	log.Printf(`{"event":"news_audience","client":%q,"type":%q,"teams":%d,"kind":%q,"visibility":%q,"count_only":%t,"page":%d,"total":%d,"members":%d,"followers":%d,"not_member":%d,"not_visible":%d,"disabled":%d,"no_email":%d,"unverified":%d,"opted_out":%d,"duplicate_email":%d}`,
 		ident.Client, body.Type, len(body.Teams), body.NewsKind, body.Visibility, countOnly, len(page.Items),
 		page.Counts.Total, page.Counts.Members, page.Counts.Followers,
-		s.NotVisible, s.Disabled, s.NoEmail, s.Unverified, s.OptedOut, s.DuplicateEmail)
+		s.NotMember, s.NotVisible, s.Disabled, s.NoEmail, s.Unverified, s.OptedOut, s.DuplicateEmail)
 	c.Set(fiber.HeaderCacheControl, "no-store")
 	answer := fiber.Map{"counts": page.Counts, "skipped": page.Skipped}
 	if !countOnly {

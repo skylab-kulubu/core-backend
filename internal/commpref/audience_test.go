@@ -26,7 +26,6 @@ type fakeKeycloak struct {
 	members   map[string][]uuid.UUID
 	people    map[uuid.UUID]identity.AudiencePerson
 	listCalls int
-	personOps int
 	fail      error
 }
 
@@ -50,10 +49,11 @@ func (k *fakeKeycloak) AudienceMembers(_ context.Context, groupID string) ([]ide
 	return out, nil
 }
 
+// AudiencePerson reads one person (GetUser of the preferences'
+// Directory); the audience reads nobody one by one.
 func (k *fakeKeycloak) AudiencePerson(_ context.Context, id uuid.UUID) (identity.AudiencePerson, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.personOps++
 	p, ok := k.people[id]
 	if !ok {
 		return identity.AudiencePerson{}, identity.ErrNotFound
@@ -124,7 +124,8 @@ type audienceFixture struct {
 //	both: in WEBLAB and AIRLAB
 //	follower: in AIRLAB, follows WEBLAB (duyuru)
 //	followerFrontOff: in AIRLAB, follows WEBLAB but turned FRONT off
-//	outsider: in no /UYELER Group, follows WEBLAB
+//	outsider: in no /UYELER Group, follows WEBLAB (a row left from before
+//	  core refused a non-Member's follow, or a former Member's)
 //	projex: in WEBLAB/PROJEX (hidden)
 //	gizliFan: in AIRLAB, a choice on the hidden GIZLI
 //	disabled, unverified, noEmail, erased, service, dup, teamOff, masterOff: in FRONT
@@ -276,28 +277,26 @@ func TestAudienceMembers(t *testing.T) {
 	if back, _ := f.item(page, "back"); back.Name != "KC back" {
 		t.Fatalf("a person core has no row for is named by Keycloak: %+v", back)
 	}
-	if f.kc.personOps != 0 {
-		t.Fatalf("a members send reads no single person: %d", f.kc.personOps)
-	}
 }
 
 // A team's send: its members and its sub-teams' (the hidden PROJEX's
 // own members too, and the leaders), not a Privileged subtree inside it;
-// and its followers, a non-Member one too on a public record. A choice on a
-// sub-team does not touch the team's own mail.
+// and its Member followers. A follower who is no Member is left out and
+// counted (Faz 1 mails Members only: SPEC §10.2, §5.8, Karar D7). A choice
+// on a sub-team does not touch the team's own mail.
 func TestAudienceTeamWithSubTeamsAndFollowers(t *testing.T) {
 	f := newAudienceFixture(t, false)
 	page := f.resolve(duyuruTo("/UYELER/ARGE/WEBLAB"))
 	// teamOff turned FRONT off, which does not reach WEBLAB's own mail.
 	members := []string{"front", "back", "weblab", "leader", "both", "projex", "teamOff"}
-	followers := []string{"follower", "followerFrontOff", "outsider"}
+	followers := []string{"follower", "followerFrontOff"}
 	if got := f.names(page.Items); !slices.Equal(got, sorted(append(slices.Clone(members), followers...)...)) {
 		t.Fatalf("weblab = %v", got)
 	}
 	if page.Counts != (AudienceCounts{Members: len(members), Followers: len(followers), Total: len(members) + len(followers)}) {
 		t.Fatalf("counts = %+v", page.Counts)
 	}
-	if page.Skipped != (AudienceSkipped{Disabled: 2, NoEmail: 1, Unverified: 1, OptedOut: 1, DuplicateEmail: 1}) {
+	if page.Skipped != (AudienceSkipped{NotMember: 1, Disabled: 2, NoEmail: 1, Unverified: 1, OptedOut: 1, DuplicateEmail: 1}) {
 		t.Fatalf("skipped = %+v", page.Skipped)
 	}
 	front, _ := f.item(page, "front")
@@ -305,9 +304,12 @@ func TestAudienceTeamWithSubTeamsAndFollowers(t *testing.T) {
 		front.CategoryLabel != "WEBLAB · Web Geliştirme · Duyurular" || front.Via != ViaMember {
 		t.Fatalf("front = %+v", front)
 	}
-	outsider, _ := f.item(page, "outsider")
-	if outsider.Via != ViaFollower || outsider.Reason != "WEBLAB · Web Geliştirme ekibini takip ettiğin için" {
-		t.Fatalf("outsider = %+v", outsider)
+	if _, ok := f.item(page, "outsider"); ok {
+		t.Fatal("a follower who is no Member is mailed")
+	}
+	follower, _ := f.item(page, "follower")
+	if follower.Via != ViaFollower || follower.Reason != "WEBLAB · Web Geliştirme ekibini takip ettiğin için" {
+		t.Fatalf("follower = %+v", follower)
 	}
 	if _, ok := f.item(page, "weblabYK"); ok {
 		t.Fatal("a Privileged subtree inside the team is no team member")
@@ -320,7 +322,7 @@ func TestAudienceTeamWithSubTeamsAndFollowers(t *testing.T) {
 func TestAudienceSubTeamInheritsFromAbove(t *testing.T) {
 	f := newAudienceFixture(t, false)
 	page := f.resolve(duyuruTo("g-front"))
-	want := sorted("front", "back", "weblab", "leader", "both", "projex", "follower", "outsider")
+	want := sorted("front", "back", "weblab", "leader", "both", "projex", "follower")
 	if got := f.names(page.Items); !slices.Equal(got, want) {
 		t.Fatalf("front = %v, want %v", got, want)
 	}
@@ -352,7 +354,7 @@ func TestAudienceHiddenTeam(t *testing.T) {
 		t.Fatalf("projex = %v %+v", got, page.Skipped)
 	}
 	page = f.resolve(duyuruTo("g-gizli"))
-	if len(page.Items) != 0 || page.Skipped != (AudienceSkipped{}) || f.kc.personOps != 0 {
+	if len(page.Items) != 0 || page.Skipped != (AudienceSkipped{}) {
 		t.Fatalf("gizli = %v %+v", f.names(page.Items), page.Skipped)
 	}
 }
@@ -400,7 +402,7 @@ func TestAudienceFaz1VisibilityIsPublicOnly(t *testing.T) {
 	}
 	public := f.resolve(AudienceRequest{Type: AudienceTeams, Teams: []string{"g-weblab"}, Kind: KindAnnouncement, Visibility: VisibilityPublic})
 	absent := f.resolve(duyuruTo("g-weblab"))
-	if public.Counts != absent.Counts || public.Counts.Followers != 3 {
+	if public.Counts != absent.Counts || public.Skipped != absent.Skipped || public.Counts.Followers != 2 || public.Skipped.NotMember != 1 {
 		t.Fatalf("public %+v absent %+v", public.Counts, absent.Counts)
 	}
 }
@@ -415,10 +417,10 @@ func TestAudiencePrivateVisibility(t *testing.T) {
 	if got := f.names(page.Items); !slices.Equal(got, sorted("front", "teamOff")) {
 		t.Fatalf("ekipler = %v", got)
 	}
-	// back, weblab, leader, both, projex outside FRONT; three followers;
-	// and FRONT's disabled, erased, unverified, address-less (and the rest)
-	// are counted after visibility.
-	if page.Skipped.NotVisible != 8 || page.Counts.Followers != 0 {
+	// back, weblab, leader, both, projex outside FRONT and the two Member
+	// followers; the outsider is no Member; FRONT's disabled, erased,
+	// unverified, address-less (and the rest) are counted after visibility.
+	if page.Skipped.NotVisible != 7 || page.Skipped.NotMember != 1 || page.Counts.Followers != 0 {
 		t.Fatalf("skipped = %+v counts %+v", page.Skipped, page.Counts)
 	}
 	// Club-wide to the AIRLAB team's eyes only: AIRLAB and DRONE members.
@@ -427,11 +429,18 @@ func TestAudiencePrivateVisibility(t *testing.T) {
 		t.Fatalf("members/ekipler = %v", got)
 	}
 	page = f.resolve(AudienceRequest{Type: AudienceTeams, Teams: []string{"g-weblab"}, Kind: KindAnnouncement, Visibility: VisibilityMembers})
-	if _, ok := f.item(page, "outsider"); ok || page.Skipped.NotVisible != 1 || page.Counts.Followers != 2 {
+	if _, ok := f.item(page, "outsider"); ok || page.Skipped.NotMember != 1 || page.Skipped.NotVisible != 0 || page.Counts.Followers != 2 {
 		t.Fatalf("uyeler = %v %+v %+v", f.names(page.Items), page.Skipped, page.Counts)
 	}
 	if _, err := f.audience.Resolve(context.Background(), AudienceRequest{Type: AudienceMembers, Kind: KindAnnouncement, Visibility: VisibilityTeams}, uuid.Nil, 0, true); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("ekipler without teams: %v", err)
+	}
+	// With private records possible the record's visibility must be said:
+	// an absent one could open a private record to the followers (F2).
+	for _, req := range []AudienceRequest{duyuruTo("g-weblab"), {Type: AudienceMembers, Kind: KindNews}} {
+		if _, err := f.audience.Resolve(context.Background(), req, uuid.Nil, 0, true); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("absent visibility with private on: %v", err)
+		}
 	}
 }
 

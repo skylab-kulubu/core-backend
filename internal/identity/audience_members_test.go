@@ -12,13 +12,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 )
 
 // The audience reads a Group's direct members in full representation, page
-// by page, with emailVerified and the service-account mark; one person
-// likewise. Failures name a status, never a person or a Group.
+// by page, with emailVerified and the service-account mark. Failures name a status, never a person or a Group.
 func TestKeycloakAudienceMembers(t *testing.T) {
 	t.Parallel()
 	const members = 205 // more than one page
@@ -50,9 +48,7 @@ func TestKeycloakAudienceMembers(t *testing.T) {
 				out = append(out, u)
 			}
 			_ = json.NewEncoder(w).Encode(out)
-		case r.URL.Path == "/admin/realms/e-skylab/users/"+ids[3]:
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": ids[3], "username": "u3", "enabled": false, "emailVerified": true})
-		case r.URL.Path == "/admin/realms/e-skylab/groups/broken/members", strings.HasPrefix(r.URL.Path, "/admin/realms/e-skylab/users/"+ids[4]):
+		case r.URL.Path == "/admin/realms/e-skylab/groups/broken/members":
 			http.Error(w, "boom "+ids[4], http.StatusInternalServerError)
 		default:
 			http.NotFound(w, r)
@@ -75,15 +71,5 @@ func TestKeycloakAudienceMembers(t *testing.T) {
 	}
 	if _, err := dir.AudienceMembers(ctx, "broken"); err == nil || strings.Contains(err.Error(), ids[4]) || strings.Contains(err.Error(), "broken") {
 		t.Fatalf("broken group: %v", err)
-	}
-	p, err := dir.AudiencePerson(ctx, uuid.MustParse(ids[3]))
-	if err != nil || p.Enabled || !p.EmailVerified {
-		t.Fatalf("person %+v %v", p, err)
-	}
-	if _, err := dir.AudiencePerson(ctx, uuid.New()); !errors.Is(err, identity.ErrNotFound) {
-		t.Fatalf("missing person: %v", err)
-	}
-	if _, err := dir.AudiencePerson(ctx, uuid.MustParse(ids[4])); err == nil || strings.Contains(err.Error(), ids[4]) {
-		t.Fatalf("failing person: %v", err)
 	}
 }

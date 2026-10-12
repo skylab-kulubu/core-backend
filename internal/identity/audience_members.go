@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/Nerzal/gocloak/v13"
-	"github.com/google/uuid"
 )
 
 // AudiencePerson is a person as a News send's audience reads them
@@ -87,27 +86,6 @@ func (k *Keycloak) AudienceMembers(ctx context.Context, groupID string) ([]Audie
 	}
 }
 
-// AudiencePerson reads one person (a follower outside /UYELER). An error
-// names a status, never the person.
-func (k *Keycloak) AudiencePerson(ctx context.Context, id uuid.UUID) (AudiencePerson, error) {
-	token, err := k.accessToken(ctx)
-	if err != nil {
-		return AudiencePerson{}, errors.New("identity: audience person read could not get an admin token")
-	}
-	u, err := k.gc.GetUserByID(ctx, token, k.realm, id.String())
-	if err != nil {
-		if mapKCErr(err) == ErrNotFound {
-			return AudiencePerson{}, ErrNotFound
-		}
-		var api *gocloak.APIError
-		if errors.As(err, &api) && api != nil && api.Code != 0 {
-			return AudiencePerson{}, fmt.Errorf("identity: audience person read failed with status %d", api.Code)
-		}
-		return AudiencePerson{}, errors.New("identity: audience person read failed")
-	}
-	return audiencePersonFrom(u)
-}
-
 // AudienceMembers lists the direct members of the Group: every e-mail
 // verified (the memory directory keeps no flag), a username starting
 // service-account- a service account.
@@ -126,18 +104,6 @@ func (m *Memory) AudienceMembers(_ context.Context, groupID string) ([]AudienceP
 		}
 	}
 	return out, nil
-}
-
-// AudiencePerson reads one person as AudienceMembers does.
-func (m *Memory) AudiencePerson(_ context.Context, id uuid.UUID) (AudiencePerson, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.record("AudiencePerson")
-	p, ok := m.people[id]
-	if !ok {
-		return AudiencePerson{}, ErrNotFound
-	}
-	return memoryAudiencePerson(m.answerLocked(p)), nil
 }
 
 func memoryAudiencePerson(p Person) AudiencePerson {

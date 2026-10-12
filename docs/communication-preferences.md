@@ -129,6 +129,7 @@ All bodies are JSON. Errors are `application/problem+json` with a `code`:
 `communication_preference_team_unknown` (400),
 `communication_preference_person_only` (403),
 `communication_preference_subject_inactive` (403),
+`communication_preference_follow_members_only` (403),
 `communication_preferences_unavailable` (503,
 `COMMUNICATION_PREFERENCE_KEY` unset),
 `communication_preference_teams_unavailable` (503 with `Retry-After`,
@@ -173,7 +174,8 @@ No sudo mode. A service account's token is refused (`403`).
     its switches off and no children, so the choice can be forgotten
     (`enabled: null`) and the screen names nothing.
   - `followable` are the publicly listed teams (`public_listing=true`) in
-    neither list.
+    neither list; `[]` for someone who is no Member (only a Member
+    follows, below).
 - `PUT /v1/users/me/communication-preferences`
   `{"items": [{"category": "team:<groupId>:duyuru", "channel": "email", "enabled": true|false|null}]}`
   (1 to 200 items, each category and channel once) → `200` and the new
@@ -184,8 +186,16 @@ No sudo mode. A service account's token is refused (`403`).
   O2). A hidden team they are not in, a Privileged Group, an area and an id
   that does not exist all answer the same `400
   communication_preference_team_unknown`, so the answer tells nothing of a
-  hidden team (D1). Forgetting is always allowed (a hidden or deleted
-  team's row). All items are written in one transaction or none.
+  hidden team (D1). **Only a Member follows** (Karar D7): someone in no
+  `/UYELER` Group (a guest, a Place user, a former Member) who turns a
+  team **on** gets `403 communication_preference_follow_members_only`
+  (after the unknown-team check, so it tells nothing of a hidden team); a
+  non-Member subscriber is Faz 2's, on a Contact consent (SPEC §5.8, K8).
+  Turning off and forgetting stay allowed. Rows written before this rule,
+  and a former Member's, stay; the News audience leaves every follower who
+  is no Member out ([news-audience.md](news-audience.md#candidates)).
+  Forgetting is always allowed (a hidden or deleted team's row). All items
+  are written in one transaction or none.
 
 ### The unsubscribe link
 

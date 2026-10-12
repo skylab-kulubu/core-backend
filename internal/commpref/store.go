@@ -31,8 +31,9 @@ type Store interface {
 	TeamGroupIDs(ctx context.Context) ([]string, error)
 	// DeleteTeams deletes every row of the teams (deleted teams).
 	DeleteTeams(ctx context.Context, groupIDs []string) (int64, error)
-	// TeamChoosers are the people with a choice of kind k on channel ch on
-	// any of the teams (a News send's possible followers).
+	// TeamChoosers are the people who turned kind k on, on channel ch, on
+	// any of the teams (a News send's possible followers; an off choice
+	// follows nothing).
 	TeamChoosers(ctx context.Context, ch Channel, k Kind, groupIDs []string) ([]uuid.UUID, error)
 	// ListPeople is every explicit choice of each of people, by person.
 	ListPeople(ctx context.Context, people []uuid.UUID) (map[uuid.UUID][]Setting, error)
@@ -144,7 +145,7 @@ func (s *PostgresStore) TeamChoosers(ctx context.Context, ch Channel, k Kind, gr
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT DISTINCT user_id FROM communication_preferences
-		WHERE channel = $1 AND scope = 'team' AND news_kind = $2 AND group_id = ANY($3)
+		WHERE channel = $1 AND scope = 'team' AND news_kind = $2 AND group_id = ANY($3) AND enabled
 		ORDER BY user_id`, string(ch), string(k), groupIDs)
 	if err != nil {
 		return nil, err
@@ -293,8 +294,8 @@ func (m *MemoryStore) TeamChoosers(_ context.Context, ch Channel, k Kind, groupI
 	defer m.mu.Unlock()
 	var out []uuid.UUID
 	for person, rows := range m.rows {
-		for key := range rows {
-			if key.channel == ch && key.category.Scope == ScopeTeam && key.category.Kind == k && slices.Contains(groupIDs, key.category.GroupID) {
+		for key, row := range rows {
+			if row.Enabled && key.channel == ch && key.category.Scope == ScopeTeam && key.category.Kind == k && slices.Contains(groupIDs, key.category.GroupID) {
 				out = append(out, person)
 				break
 			}

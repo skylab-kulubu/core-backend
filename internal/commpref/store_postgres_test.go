@@ -82,7 +82,8 @@ func TestStores(t *testing.T) {
 				want  []uuid.UUID
 			}{
 				{commpref.KindNews, []string{"g-weblab"}, []uuid.UUID{other}},
-				{commpref.KindAnnouncement, []string{"g-weblab"}, []uuid.UUID{person}},
+				// person's WEBLAB duyuru row is off: no follow.
+				{commpref.KindAnnouncement, []string{"g-weblab"}, nil},
 				{commpref.KindNews, []string{"g-airlab", "g-weblab"}, []uuid.UUID{other}},
 				{commpref.KindAnnouncement, []string{"g-airlab"}, nil},
 				{commpref.KindNews, nil, nil},
