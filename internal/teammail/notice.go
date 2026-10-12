@@ -164,20 +164,42 @@ func roleNames(roles []identity.ClientRole) []string {
 	return slices.Compact(out)
 }
 
-// adminRole reports whether a changed role is a management role by authz's
-// rule (authz.ProtectedRole: core's permission roles, audit:read,
-// content:write, any client:admin, realm-management). A role that holds one as a composite is
-// not seen here: the mail says "yes" only when it is sure.
+// adminRole reports whether a changed role is a known admin role by
+// authz's role classes (ADR 0065 decision 10): a client role on
+// authz.AdminRoles (core's permission roles, audit:read, cms:access,
+// content:write, any client:admin, realm-management, …), or a realm role
+// (":ROLE", always an admin role). An app role, or a client role nobody has
+// classified, is not: the mail says "yes" only when it is sure.
 func adminRole(names ...[]string) bool {
 	for _, list := range names {
 		for _, name := range list {
 			client, role, ok := strings.Cut(name, ":")
-			if ok && authz.ProtectedRole(client, role) {
+			if !ok {
+				continue
+			}
+			class := authz.ClassifyRole(client, role)
+			if client == "" {
+				class = authz.ClassifyRealmRole(role)
+			}
+			if class == authz.RoleClassAdmin {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// shownRoles are role names as the mail shows them: a realm role, kept as
+// ":ROLE", reads "realm:ROLE".
+func shownRoles(names []string) string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if strings.HasPrefix(name, ":") {
+			name = "realm" + name
+		}
+		out = append(out, name)
+	}
+	return strings.Join(out, ", ")
 }
 
 // adminRoots are the Privileged roots named ADMIN: whoever sits in their
@@ -263,8 +285,8 @@ func (s *Service) noticeVars(ctx context.Context, n Notice) map[string]string {
 		"SubjectName":  "",
 		"ActorName":    "",
 		"OccurredAt":   n.OccurredAt.In(s.location).Format(dateTimeLayout),
-		"RolesAdded":   strings.Join(n.RolesAdded, ", "),
-		"RolesRemoved": strings.Join(n.RolesRemoved, ", "),
+		"RolesAdded":   shownRoles(n.RolesAdded),
+		"RolesRemoved": shownRoles(n.RolesRemoved),
 		"AdminRole":    "no",
 		"MemberCount":  "",
 	}

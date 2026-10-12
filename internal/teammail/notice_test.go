@@ -221,6 +221,34 @@ func TestNoticeOfARoleMappingGoesToAdminOnly(t *testing.T) {
 	}
 }
 
+// AdminRole follows authz's role classes (#240): a Site's cms:access and a
+// realm role are admin roles; an app role and an unclassified one are not.
+func TestNoticeAdminRoleFollowsTheRoleClasses(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		role  identity.ClientRole
+		want  string
+		shown string
+	}{
+		{identity.ClientRole{ClientID: "frontend-main", Role: "cms:access"}, "yes", "frontend-main:cms:access"},
+		{identity.ClientRole{ClientID: "", Role: "ADMIN"}, "yes", "realm:ADMIN"},
+		{identity.ClientRole{ClientID: "core", Role: "users:manage"}, "yes", "core:users:manage"},
+		{identity.ClientRole{ClientID: "forms", Role: "viewer"}, "no", "forms:viewer"},
+	} {
+		f := newNoticeFixture(t)
+		f.svc.GroupRolesChanged(context.Background(), identity.GroupRolesChange{
+			Group: identity.Group{Path: "/UYELER"}, Removed: []identity.ClientRole{tc.role}, ActorID: f.act.String(),
+		})
+		f.pass(t)
+		if len(f.mail.sent) == 0 {
+			t.Fatalf("%v: nothing sent", tc.role)
+		}
+		if v := f.mail.sent[0].vars; v["AdminRole"] != tc.want || v["RolesRemoved"] != tc.shown {
+			t.Fatalf("%v: AdminRole %q RolesRemoved %q", tc.role, v["AdminRole"], v["RolesRemoved"])
+		}
+	}
+}
+
 func TestNoticeOfAnAppRoleSaysNoAdminRole(t *testing.T) {
 	t.Parallel()
 	f := newNoticeFixture(t)

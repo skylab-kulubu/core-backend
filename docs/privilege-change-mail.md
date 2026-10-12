@@ -42,8 +42,8 @@ moment was held.
 | `SubjectName` | member events: the full name of the person added or removed; empty for someone core may no longer name |
 | `ActorName` | who made the change; empty for a service account or someone core may no longer name |
 | `OccurredAt` | when, in Europe/Istanbul, `dd.MM.yyyy HH:mm` |
-| `RolesAdded`, `RolesRemoved` | role mapping: the roles as `client:role`, sorted, joined by `, `; empty otherwise |
-| `AdminRole` | role mapping: `yes` when a changed role is a management role by authz's rule (`authz.ProtectedRole`: core's permission roles, `audit:read`, `content:write`, any `client:admin`, any `realm-management` role), `no` otherwise. A role that only holds one as a composite (a Site's `cms:access`, which holds `content:write`) reads `no`: the mail says `yes` only when it is sure. Ticket 02's role classes replace this rule when they land |
+| `RolesAdded`, `RolesRemoved` | role mapping: the roles as `client:role` (a realm role as `realm:ROLE`), sorted, joined by `, `; empty otherwise |
+| `AdminRole` | role mapping: `yes` when a changed role is a known admin role by authz's role classes (ADR 0065 decision 10, `authz.ClassifyRole` = `admin`: core's permission roles, `audit:read`, a Site's `cms:access` and `content:write`, any `client:admin`, any `realm-management` role, Forms', SkyMail's and Place's admin roles; see `authz.AdminRoles`), or a realm role (`authz.ClassifyRealmRole`, always admin); `no` for an app role and for a client role nobody has classified (delegation treats that one as protected, but the mail says `yes` only when it is sure) |
 | `MemberCount` | role mapping: how many people sit in the Group's tree when the notice was read for its recipients (they are counted, never told); empty otherwise, and empty when the tree could not be read within 20 s (the count is best effort: the notice goes without it) |
 
 Every key is always sent. No e-mail address is in the mail.
@@ -149,8 +149,8 @@ What matches, and every deviation (benchmarked as the club decided,
 - **Deviation 2:** on by default (Google's rule is off by default), with one
   key to turn it off.
 - **Deviation 3:** a role mapping is told for every Group, ordinary ones
-  too, not only for administrator roles; `AdminRole` says whether a
-  management role changed.
+  too, not only for administrator roles; `AdminRole` says whether a known
+  admin role (Entra's directory role counterpart) changed.
 - **Deviation 4:** the recipients are read when the notice is sent (seconds
   after the change), not frozen at the change.
 - **Deviation 5:** opposite changes do not cancel out (the membership mail's
