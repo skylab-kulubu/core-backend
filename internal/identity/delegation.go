@@ -28,11 +28,30 @@ type GroupNodes interface {
 type Protection struct {
 	Protected bool
 	Reason    string
+	// Unclassified is the client role, "client:role", that protects the
+	// Group because nobody has classified it (authz.RoleClassUnclassified),
+	// "" otherwise: logged and counted so it gets classified.
+	Unclassified string
+}
+
+// clientRoleProtection is the protection a client role gives on its own:
+// none for an app role (authz.DelegableRole), else protected with its
+// class.
+func clientRoleProtection(clientID, role string) Protection {
+	switch authz.ClassifyRole(clientID, role) {
+	case authz.RoleClassApp:
+		return Protection{}
+	case authz.RoleClassAdmin:
+		return Protection{Protected: true, Reason: "admin role " + clientID + ":" + role}
+	default:
+		return Protection{Protected: true, Reason: "unclassified client role " + clientID + ":" + role + " (counts as an admin role)", Unclassified: clientID + ":" + role}
+	}
 }
 
 // GroupProtections reads a Group's own role mappings for protection: any
-// realm role, or a client role that is protected (authz.ProtectedRole) or
-// holds one or a realm role as a composite (Keycloak, Memory).
+// realm role, or a client role that is no app role (authz.DelegableRole),
+// or a composite app role that holds one or a realm role
+// (Keycloak, Memory).
 type GroupProtections interface {
 	GroupProtection(ctx context.Context, groupID string) (Protection, error)
 }
@@ -178,7 +197,15 @@ type TeamDelegation struct {
 	// canaryUntil is when the last canary that passed stops counting.
 	canaryUntil time.Time
 	flights     singleflight.Group
+	// unclassified counts the protection reads that found a client role
+	// nobody has classified ("client:role", at most maxUnclassifiedLabels
+	// of them, the rest as "other"): served on /v1/metrics.
+	unclassified map[string]uint64
 }
+
+// maxUnclassifiedLabels bounds the role label of the unclassified role
+// counter. Its values are Keycloak role names, never a person.
+const maxUnclassifiedLabels = 64
 
 type leaderEntry struct {
 	groups  []authz.LeaderGroup
@@ -250,7 +277,44 @@ func NewTeamDelegation(policy authz.Policy, dir Directory, reads TeamReads, opti
 		writes:  map[uuid.UUID]writeWindow{},
 		finds:   map[uuid.UUID]writeWindow{},
 		running: map[uuid.UUID]bool{},
+
+		unclassified: map[string]uint64{},
 	}
+}
+
+// countUnclassified counts one protection read that found role, a
+// "client:role" nobody has classified.
+func (d *TeamDelegation) countUnclassified(role string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.unclassified[role]; !ok && len(d.unclassified) >= maxUnclassifiedLabels {
+		role = "other"
+	}
+	d.unclassified[role]++
+}
+
+// Prometheus renders, per client role nobody has classified, how many
+// protection reads found it (skylab_team_delegation_unclassified_roles_total
+// {role="client:role"}). Such a role protects its Group as an admin role
+// until it is classified (authz.AppRoles, authz.AdminRoles). Nobody is
+// named. A nil TeamDelegation renders nothing.
+func (d *TeamDelegation) Prometheus() string {
+	if d == nil {
+		return ""
+	}
+	d.mu.Lock()
+	roles := make([]string, 0, len(d.unclassified))
+	for role := range d.unclassified {
+		roles = append(roles, role)
+	}
+	slices.Sort(roles)
+	var out strings.Builder
+	out.WriteString("# TYPE skylab_team_delegation_unclassified_roles_total counter\n")
+	for _, role := range roles {
+		fmt.Fprintf(&out, "skylab_team_delegation_unclassified_roles_total{role=%q} %d\n", role, d.unclassified[role])
+	}
+	d.mu.Unlock()
+	return out.String()
 }
 
 // On reports whether team delegation is switched on.
@@ -509,6 +573,10 @@ func (d *TeamDelegation) protected(ctx context.Context, ids []string, fresh bool
 			d.mu.Unlock()
 			if got.Protected {
 				d.options.Logf("team delegation: group %s is protected (%s): it and every Group under it are managed by Privileged only", id, got.Reason)
+			}
+			if got.Unclassified != "" {
+				d.countUnclassified(got.Unclassified)
+				d.options.Logf("team delegation: client role %s is unclassified and counts as an admin role; classify it in authz.AppRoles or authz.AdminRoles (docs/team-delegation.md)", got.Unclassified)
 			}
 		}
 		if entry.protected {

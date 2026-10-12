@@ -816,11 +816,27 @@ func TestTeamDelegationRealmAndCompositeRolesProtect(t *testing.T) {
 			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
 		{name: "content:read alone", on: "/UYELER/ARGE/WEBLAB",
 			roles: []identity.ClientRole{{ClientID: "frontend-main", Role: "content:read"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
-		{name: "a harmless composite", on: "/UYELER/ARGE/WEBLAB",
-			roles: []identity.ClientRole{{ClientID: "forms", Role: "viewer"}},
+		{name: "a composite app role of app roles", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}},
 			setup: func(m *identity.Memory) {
-				m.PutCompositeRole(identity.ClientRole{ClientID: "forms", Role: "viewer"}, identity.ClientRole{ClientID: "frontend-main", Role: "content:read"})
+				m.PutCompositeRole(identity.ClientRole{ClientID: "core", Role: "certificate:issue"}, identity.ClientRole{ClientID: "frontend-main", Role: "content:read"})
 			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
+		// Role classes (ADR 0065 decision 10, addendum of 2026-10-12): a
+		// role on neither list is an admin role.
+		{name: "an unclassified role on the Sub-team", on: "/UYELER/ARGE/WEBLAB/FRONT",
+			roles: []identity.ClientRole{{ClientID: "forms", Role: "viewer"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "an unclassified role above", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "place", Role: "place:new"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "an admin role of another product", on: "/UYELER/ARGE/WEBLAB/FRONT",
+			roles: []identity.ClientRole{{ClientID: "skymail", Role: "skymail:system-mails:read"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "a composite app role holding an unclassified role", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}},
+			setup: func(m *identity.Memory) {
+				m.PutCompositeRole(identity.ClientRole{ClientID: "core", Role: "certificate:issue"}, identity.ClientRole{ClientID: "forms", Role: "viewer"})
+			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "app roles on the Team and above", on: "/UYELER/ARGE",
+			roles:  []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}, {ClientID: "forms", Role: "skyforms:access"}, {ClientID: "skymail", Role: "skymail:access"}, {ClientID: "core", Role: "url:create"}},
+			target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
 	} {
 		e := newDelegationEnv(t, delegationSetup{on: true})
 		if tc.setup != nil {
@@ -885,6 +901,26 @@ func TestTeamDelegationTopTeamSiteEditorKeepsSubTeams(t *testing.T) {
 	wantStatus(t, "Sub-team", e.add("webLeader", "/UYELER/ARGE/WEBLAB/FRONT", "newcomer"), fiber.StatusNoContent, "")
 	wantStatus(t, "Sub-team's Leader group", e.add("webLeader", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER", "outsider"), fiber.StatusNoContent, "")
 	wantStatus(t, "own Team", e.add("webLeader", "/UYELER/ARGE/WEBLAB", "exLeader"), fiber.StatusNoContent, "")
+}
+
+// Production's Java-era realm roles (measurement of 2026-10-12 22:42): USER
+// on /UYELER, a Team's own name on it, <TEAM>_LEADER on its Leader groups.
+// Realm roles always protect (fail-closed): until the role cleanup's F3
+// takes them off the groups, delegation stays shut under them.
+func TestTeamDelegationJavaEraRealmRolesProtect(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, on, role, target string }{
+		{"USER on /UYELER", "/UYELER", "USER", "/UYELER/ARGE/WEBLAB/FRONT"},
+		{"a Team's own name", "/UYELER/ARGE/WEBLAB", "WEBLAB", "/UYELER/ARGE/WEBLAB"},
+		{"a Leader role on a Sub-team's Leader group", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER", "FRONT_LEADER", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER"},
+		{"ADMIN on the area", "/UYELER/ARGE", "ADMIN", "/UYELER/ARGE/WEBLAB/FRONT"},
+	} {
+		e := newDelegationEnv(t, delegationSetup{on: true})
+		if err := e.dir.SetGroupClientRoles(context.Background(), e.ids[tc.on], []identity.ClientRole{{Role: tc.role}}); err != nil {
+			t.Fatal(err)
+		}
+		wantStatus(t, tc.name, e.add("webLeader", tc.target, "newcomer"), fiber.StatusForbidden, authz.RefusalProtectedGroup)
+	}
 }
 
 // A write reads the Groups' protection fresh: a role mapped in Keycloak
