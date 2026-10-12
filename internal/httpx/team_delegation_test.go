@@ -774,8 +774,9 @@ func TestTeamDelegationManagedGroupsAndCapabilities(t *testing.T) {
 // A realm role, or a composite client role that holds a protected role or
 // a realm role, makes the Group and everything under it protected (review
 // of #235, B1): a Leader can no longer hand out realm-management or core's
-// permission roles through a mapping Privileged made. A composite of
-// harmless roles (cms:access) protects nothing.
+// permission roles through a mapping Privileged made. A Site's cms:access
+// holds content:write and protects (ADR 0065 decision 10, addendum of
+// 2026-10-12); content:read alone protects nothing.
 func TestTeamDelegationRealmAndCompositeRolesProtect(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -812,6 +813,13 @@ func TestTeamDelegationRealmAndCompositeRolesProtect(t *testing.T) {
 			setup: func(m *identity.Memory) {
 				m.PutCompositeRole(identity.ClientRole{ClientID: "frontend-main", Role: "cms:access"},
 					identity.ClientRole{ClientID: "frontend-main", Role: "content:read"}, identity.ClientRole{ClientID: "frontend-main", Role: "content:write"})
+			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "content:read alone", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "frontend-main", Role: "content:read"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
+		{name: "a harmless composite", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "forms", Role: "viewer"}},
+			setup: func(m *identity.Memory) {
+				m.PutCompositeRole(identity.ClientRole{ClientID: "forms", Role: "viewer"}, identity.ClientRole{ClientID: "frontend-main", Role: "content:read"})
 			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
 	} {
 		e := newDelegationEnv(t, delegationSetup{on: true})
@@ -831,6 +839,52 @@ func TestTeamDelegationRealmAndCompositeRolesProtect(t *testing.T) {
 		}
 		wantStatus(t, tc.name, got, fiber.StatusNoContent, "")
 	}
+}
+
+// A Sub-team's Leader group that is a Site editor (cms:access on any Site
+// client, mapped to it or to a Group above it) is Privileged's alone: the
+// Leader of the Team above can neither add a member to it nor take one out,
+// so site-wide write is never handed out by delegation (security review of
+// 2026-10-12, D1; ADR 0065 decision 10). The refusal is the protected
+// Group's. Privileged still manages it.
+func TestTeamDelegationSiteEditorLeaderGroupsProtected(t *testing.T) {
+	t.Parallel()
+	const leaders = "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER"
+	for _, client := range []string{"frontend-main", "frontend-arge", "frontend-artlab"} {
+		for _, on := range []string{leaders, "/UYELER/ARGE/WEBLAB/FRONT", "/UYELER/ARGE/WEBLAB"} {
+			name := client + " cms:access on " + on
+			e := newDelegationEnv(t, delegationSetup{on: true})
+			editor := identity.ClientRole{ClientID: client, Role: "cms:access"}
+			e.dir.PutCompositeRole(editor, identity.ClientRole{ClientID: client, Role: "content:read"}, identity.ClientRole{ClientID: client, Role: "content:write"})
+			wantStatus(t, name+": before the mapping", e.add("webLeader", leaders, "newcomer"), fiber.StatusNoContent, "")
+			if err := e.dir.SetGroupClientRoles(context.Background(), e.ids[on], []identity.ClientRole{editor}); err != nil {
+				t.Fatal(err)
+			}
+			wantStatus(t, name+": add", e.add("webLeader", leaders, "outsider"), fiber.StatusForbidden, authz.RefusalProtectedGroup)
+			wantStatus(t, name+": remove", e.remove("webLeader", leaders, "frontLeader"), fiber.StatusForbidden, authz.RefusalProtectedGroup)
+			if e.directlyIn("outsider", leaders) || !e.directlyIn("frontLeader", leaders) {
+				t.Errorf("%s: membership changed", name)
+			}
+			wantStatus(t, name+": privileged add", e.add("yk", leaders, "outsider"), fiber.StatusNoContent, "")
+			wantStatus(t, name+": privileged remove", e.remove("yk", leaders, "newcomer"), fiber.StatusNoContent, "")
+		}
+	}
+}
+
+// cms:access on a top Team's own Leader group (where the runbook grants
+// it) protects that Leader group only: the Sub-teams under the Team are no
+// children of it, and their Leader stays delegated.
+func TestTeamDelegationTopTeamSiteEditorKeepsSubTeams(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	editor := identity.ClientRole{ClientID: "frontend-main", Role: "cms:access"}
+	e.dir.PutCompositeRole(editor, identity.ClientRole{ClientID: "frontend-main", Role: "content:read"}, identity.ClientRole{ClientID: "frontend-main", Role: "content:write"})
+	if err := e.dir.SetGroupClientRoles(context.Background(), e.ids["/UYELER/ARGE/WEBLAB/LIDERLER"], []identity.ClientRole{editor}); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, "Sub-team", e.add("webLeader", "/UYELER/ARGE/WEBLAB/FRONT", "newcomer"), fiber.StatusNoContent, "")
+	wantStatus(t, "Sub-team's Leader group", e.add("webLeader", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER", "outsider"), fiber.StatusNoContent, "")
+	wantStatus(t, "own Team", e.add("webLeader", "/UYELER/ARGE/WEBLAB", "exLeader"), fiber.StatusNoContent, "")
 }
 
 // A write reads the Groups' protection fresh: a role mapped in Keycloak
