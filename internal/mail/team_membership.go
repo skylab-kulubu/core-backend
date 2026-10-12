@@ -8,10 +8,30 @@ import (
 	"strings"
 )
 
-// DefaultTeamMembershipTemplateKey is the SkyMail template of the mail a
-// person gets when they are added to a team or removed from it
-// (docs/team-membership-mail.md).
-const DefaultTeamMembershipTemplateKey = "club.team-membership"
+// The SkyMail templates of the mail a person gets when they are added to a
+// Group or removed from one (docs/team-membership-mail.md): a team's, a
+// Privileged Group's (YK, DK, ADMIN) and any other Group's.
+const (
+	DefaultTeamMembershipTemplateKey  = "club.team-membership"
+	DefaultRoleMembershipTemplateKey  = "club.role-membership"
+	DefaultGroupMembershipTemplateKey = "club.group-membership"
+)
+
+// MembershipKind is which membership mail a change gets.
+type MembershipKind string
+
+const (
+	// MembershipTeam: a team, or its LIDERLER/KOORDINATORLER.
+	MembershipTeam MembershipKind = "team"
+	// MembershipRole: a Privileged root (AUTHZ_PRIVILEGED_ROOTS) or a Group
+	// under one.
+	MembershipRole MembershipKind = "role"
+	// MembershipGroup: every other Group.
+	MembershipGroup MembershipKind = "group"
+)
+
+// MembershipKinds are the kinds, in the order logs and metrics list them.
+var MembershipKinds = []MembershipKind{MembershipTeam, MembershipRole, MembershipGroup}
 
 const kindTeamMembership = "team_membership"
 
@@ -41,25 +61,59 @@ func (e *SendError) Permanent() bool {
 	return e.Status == http.StatusBadRequest || e.Status == http.StatusUnprocessableEntity
 }
 
+// MembershipTemplateKey is the template key of kind's mail, empty when the
+// kind is off or unknown.
+func (s *SkyMail) MembershipTemplateKey(kind MembershipKind) string {
+	if s == nil {
+		return ""
+	}
+	switch kind {
+	case MembershipTeam:
+		return strings.TrimSpace(s.TeamMembershipTemplateKey)
+	case MembershipRole:
+		return strings.TrimSpace(s.RoleMembershipTemplateKey)
+	case MembershipGroup:
+		return strings.TrimSpace(s.GroupMembershipTemplateKey)
+	}
+	return ""
+}
+
+// MembershipConfigured reports whether kind's mail has a template key.
+func (s *SkyMail) MembershipConfigured(kind MembershipKind) bool {
+	return s.MembershipTemplateKey(kind) != ""
+}
+
 // TeamMembershipConfigured reports whether the team membership mail has a
 // template key.
 func (s *SkyMail) TeamMembershipConfigured() bool {
-	return s != nil && strings.TrimSpace(s.TeamMembershipTemplateKey) != ""
+	return s.MembershipConfigured(MembershipTeam)
 }
 
-// TeamMembership posts the team membership mail by template key. Unlike the
-// other sends it reports what SkyMail answered: the mail waits in core's
-// queue until SkyMail has taken it (internal/teammail). A refusal is also
-// warned about in the log, like every SkyMail call, with no recipient.
+// TeamMembership posts the team membership mail (Membership of
+// MembershipTeam).
 func (s *SkyMail) TeamMembership(ctx context.Context, recipient, fullName string, vars map[string]string) error {
-	if !s.TeamMembershipConfigured() || strings.TrimSpace(s.BaseURL) == "" {
+	return s.Membership(ctx, MembershipTeam, recipient, fullName, vars)
+}
+
+// Membership posts kind's membership mail by template key. Unlike the other
+// sends it reports what SkyMail answered: the mail waits in core's queue
+// until SkyMail has taken it (internal/teammail). A refusal is also warned
+// about in the log, like every SkyMail call, with no recipient; its kind is
+// team_membership, role_membership or group_membership.
+func (s *SkyMail) Membership(ctx context.Context, kind MembershipKind, recipient, fullName string, vars map[string]string) error {
+	key := s.MembershipTemplateKey(kind)
+	if key == "" || strings.TrimSpace(s.BaseURL) == "" {
 		return ErrTemplateUnconfigured
 	}
 	token, err := s.Tokens.Token(ctx)
 	if err != nil || token == "" {
 		return &SendError{}
 	}
-	status := s.post(ctx, kindTeamMembership, token, template{key: strings.TrimSpace(s.TeamMembershipTemplateKey)}.task(recipient, fullName, vars))
+	logKind := kindTeamMembership
+	if kind != MembershipTeam {
+		logKind = string(kind) + "_membership"
+	}
+	status := s.post(ctx, logKind, token, template{key: key}.task(recipient, fullName, vars))
 	if succeeded(status) {
 		return nil
 	}

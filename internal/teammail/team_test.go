@@ -3,6 +3,7 @@ package teammail
 import (
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 )
@@ -62,12 +63,16 @@ func TestTeamOfConfiguredRoots(t *testing.T) {
 	if team, ok := TeamOf("/UYELER/YK/BASKAN", roots); !ok || team.Path != "/UYELER/YK/BASKAN" {
 		t.Errorf("TeamOf(/UYELER/YK/BASKAN) = %+v, %v with YK no root", team, ok)
 	}
-	svc, err := NewService(Config{Queue: NewMemoryQueue(), People: &fakePeople{}, Groups: fakeGroups{}, Mail: &fakeMail{}})
+	queue := NewMemoryQueue()
+	svc, err := NewService(Config{Queue: queue, People: &fakePeople{}, Groups: fakeGroups{}, Mail: &fakeMail{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if svc.Notifies(identity.Group{Path: "/UYELER/YK/BASKAN"}) || !svc.Notifies(identity.Group{Path: "/UYELER/ARGE/YK"}) {
-		t.Error("the default Service does not read the six roots")
+	for _, path := range []string{"/UYELER/YK/BASKAN", "/UYELER/ARGE/YK"} {
+		svc.MembershipChanged(t.Context(), identity.MembershipChange{UserID: uuid.New(), Group: identity.Group{Path: path}, Added: true})
+	}
+	if q := queue.Snapshot(); len(q) != 2 || q[0].Kind != KindRole || q[1].Kind != KindTeam {
+		t.Errorf("the default Service does not read the six roots: %+v", q)
 	}
 }
 
