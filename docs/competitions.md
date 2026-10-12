@@ -71,13 +71,38 @@ Competitions (`404`).
 | `POST /v1/competitions/{id}/archive`, `/restore` | | `204`, `200` |
 | `GET /v1/competitions/{id}/entrants` | | `200` |
 | `POST /v1/competitions/{id}/entrants` | `{ticketIds: [..]}` (1–500) | `201` the new Entrants; all or none: a Ticket already in the Competition is `409 ticket_taken`, a Ticket of another Event `400` |
-| `POST /v1/competitions/{id}/scores` | `{entrantId, points, reason?, stageId?}` | `201` the new Entry. Replacing a live score needs `reason` (`400 reason_required`); the old row is revoked with it |
+| `POST /v1/competitions/{id}/scores` | `{entrantId, points, replacesId?, reason?, stageId?}` | `201` the new Entry. See **Writing a score** below |
 | `POST /v1/competitions/{id}/entries/{entryId}/revoke` | `{reason}` | `200`; already revoked: `409` |
 | `GET /v1/competitions/{id}/entries` | | `200` every row, revoked ones included, oldest first: why a score changed |
-| `GET /v1/competitions/{id}/leaderboard` | | `200` `{competitionId, stageId, strategy, rows: [{rank, entrantId, displayName, members, score}]}` |
+| `GET /v1/competitions/{id}/leaderboard` | | `200` `{competitionId, stageId, strategy, rows: [{rank, entrantId, displayName, members, score, entryId}]}`; `entryId` is the live score's Entry (the `replacesId` of a correction, the target of a revocation), `null` without one |
 
 Errors are RFC 9457 problem details; `400` and `409` carry a `code` where the
 panel can act on it.
+
+### Writing a score
+
+A score write says which live score its writer saw, the way HTTP `If-Match`
+does (optimistic concurrency): two organizers on the same cell never
+overwrite each other unseen.
+
+| Live score now | Body | Answer |
+|---|---|---|
+| none | no `replacesId` | `201` |
+| some | no `replacesId`, no `reason` | `409 score_changed`, nothing written, `current` is the live Entry |
+| some | `replacesId` = its id, `reason` | `201`; the live row is revoked with `reason` and the new row names it |
+| some | `replacesId` = its id, no `reason` | `400 reason_required` |
+| another, or none | `replacesId` = an older id | `409 score_changed` with `current` (`null` when there is none) |
+| some | no `replacesId`, `reason` | `201`, replaces whatever is live (kept for callers without `replacesId`; the panel always sends it) |
+
+Two first writes at once: one lands, the other gets `409 score_changed`. The
+panel shows `current` and lets the organizer decide. Revoking a correction
+does not bring the earlier score back: the Entrant has no score until one is
+written again (with its reason).
+
+Other `400` codes of a score write: `invalid_points`, `missing_field`
+(`entrantId` or `points`), `invalid_body` (not JSON, a bad UUID),
+`unknown_entrant` (not an active Entrant of this Competition),
+`unknown_stage`.
 
 ## Storage
 
@@ -90,8 +115,11 @@ adjustments yet). The database keeps the rules on its own:
 - one live manual score per Entrant and Stage;
 - ledger rows are never deleted or edited; a row is revoked once, with a
   reason; purging an account only clears the actor columns;
+- a Competition stays with its Event (`event_id` cannot change);
 - actor columns follow the account lifecycle guard (no new link to an account
-  being deleted).
+  being deleted), and account anonymization clears them: the ledger keeps
+  every score, revocation and reason without who wrote or revoked it
+  ([account-lifecycle.md](account-lifecycle.md)).
 
 The tables are new and nothing else reads them, so the release is backward
 compatible. The down migration refuses while a Competition exists.

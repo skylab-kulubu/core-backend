@@ -179,6 +179,23 @@ func TestCompetitionSchemaKeepsItsRules(t *testing.T) {
 	}
 }
 
+// A Competition stays with its Event.
+func TestCompetitionStaysWithItsEvent(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	r := seedCompetition(t, ctx, pool)
+	_, err := pool.Exec(ctx, `UPDATE competitions SET event_id = $2 WHERE id = $1`, r.competition, r.otherEvent)
+	if _, c := pgCode(err); c != "competition_event_is_fixed" {
+		t.Fatalf("moved to another event: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE competitions SET event_id = $2, name = 'Aynı' WHERE id = $1`, r.competition, r.event); err != nil {
+		t.Fatalf("same event: %v", err)
+	}
+}
+
 // Rolling back refuses while a Competition exists, and drops everything
 // once there is none.
 func TestCompetitionsDownRefusesWhileCompetitionsExist(t *testing.T) {
@@ -210,7 +227,7 @@ func TestCompetitionsDownRefusesWhileCompetitionsExist(t *testing.T) {
 		t.Fatalf("up again: %v", err)
 	}
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname LIKE 'competition%'`).Scan(&n); err != nil || n != 10 {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname LIKE 'competition%'`).Scan(&n); err != nil || n != 11 {
 		t.Fatalf("triggers after up again = %d, %v", n, err)
 	}
 }

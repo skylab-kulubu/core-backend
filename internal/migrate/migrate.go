@@ -1299,6 +1299,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT count(*) FROM pg_trigger
 			WHERE NOT tgisinternal AND tgname IN (
 				'competition_entrant_members_same_event',
+				'competitions_event_is_fixed',
 				'competition_submissions_append_only',
 				'competition_adjustments_append_only',
 				'competitions_require_active_creator',
@@ -1309,7 +1310,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 				'competition_adjustments_require_active_recorder',
 				'competition_adjustments_require_active_revoker'
 			)
-		  ) = 10`,
+		  ) = 11`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

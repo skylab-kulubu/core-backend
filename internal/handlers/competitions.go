@@ -31,6 +31,13 @@ func competitionError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, competition.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
+	case errors.Is(err, competition.ErrScoreChanged):
+		fields := fiber.Map{}
+		var changed *competition.ScoreChangedError
+		if errors.As(err, &changed) {
+			fields["current"] = changed.Current
+		}
+		return problemWithFields(c, fiber.StatusConflict, "Conflict", "the score changed since it was read", "score_changed", fields)
 	case errors.Is(err, competition.ErrStatus):
 		return problemDetailCode(c, fiber.StatusConflict, "Conflict", "the competition's status does not allow this", "competition_status")
 	case errors.Is(err, competition.ErrTicketTaken):
@@ -39,6 +46,12 @@ func competitionError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusConflict, "Conflict")
 	case errors.Is(err, competition.ErrReasonRequired):
 		return problemDetailCode(c, fiber.StatusBadRequest, "Bad Request", "a reason is required", "reason_required")
+	case errors.Is(err, scoring.ErrInvalidPoints):
+		return problemDetailCode(c, fiber.StatusBadRequest, "Bad Request", scoring.ErrInvalidPoints.Error(), "invalid_points")
+	case errors.Is(err, competition.ErrUnknownEntrant):
+		return problemDetailCode(c, fiber.StatusBadRequest, "Bad Request", "not an active entrant of this competition", "unknown_entrant")
+	case errors.Is(err, competition.ErrUnknownStage):
+		return problemDetailCode(c, fiber.StatusBadRequest, "Bad Request", "not a stage of this competition", "unknown_stage")
 	case errors.Is(err, competition.ErrInvalid):
 		return problemDetail(c, fiber.StatusBadRequest, "Bad Request", strings.TrimPrefix(err.Error(), "competition: invalid: "))
 	default:
@@ -218,23 +231,27 @@ func (h *CompetitionHandler) Entrants(c fiber.Ctx) error {
 }
 
 type scoreBody struct {
-	EntrantID uuid.UUID       `json:"entrantId"`
-	StageID   *uuid.UUID      `json:"stageId"`
-	Points    *scoring.Points `json:"points"`
-	Reason    string          `json:"reason"`
+	EntrantID  uuid.UUID       `json:"entrantId"`
+	StageID    *uuid.UUID      `json:"stageId"`
+	ReplacesID *uuid.UUID      `json:"replacesId"`
+	Points     *scoring.Points `json:"points"`
+	Reason     string          `json:"reason"`
 }
 
 func (h *CompetitionHandler) SetScore(c fiber.Ctx) error {
 	var body scoreBody
 	if err := c.Bind().Body(&body); err != nil {
-		return problemDetailCode(c, fiber.StatusBadRequest, "Bad Request", scoring.ErrInvalidPoints.Error(), "invalid_points")
+		if errors.Is(err, scoring.ErrInvalidPoints) {
+			return competitionError(c, scoring.ErrInvalidPoints)
+		}
+		return problemDetailCode(c, fiber.StatusBadRequest, "Bad Request", "the body is not a score", "invalid_body")
 	}
 	if body.Points == nil || body.EntrantID == uuid.Nil {
-		return problemDetail(c, fiber.StatusBadRequest, "Bad Request", "entrantId and points are required")
+		return problemDetailCode(c, fiber.StatusBadRequest, "Bad Request", "entrantId and points are required", "missing_field")
 	}
 	return h.withCompetition(c, func(p authz.Principal, id uuid.UUID) (any, int, error) {
 		entry, err := h.svc.SetScore(c.Context(), p, id, competition.ScoreInput{
-			EntrantID: body.EntrantID, StageID: body.StageID, Points: *body.Points, Reason: body.Reason,
+			EntrantID: body.EntrantID, StageID: body.StageID, ReplacesID: body.ReplacesID, Points: *body.Points, Reason: body.Reason,
 		})
 		return entry, fiber.StatusCreated, err
 	})

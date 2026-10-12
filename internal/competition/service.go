@@ -364,7 +364,7 @@ func stageOf(c Competition, stageID *uuid.UUID) (Stage, error) {
 			return st, nil
 		}
 	}
-	return Stage{}, fmt.Errorf("%w: not a stage of this competition", ErrInvalid)
+	return Stage{}, ErrUnknownStage
 }
 
 func (s *service) SetScore(ctx context.Context, p authz.Principal, id uuid.UUID, in ScoreInput) (Entry, error) {
@@ -383,7 +383,7 @@ func (s *service) SetScore(ctx context.Context, p authz.Principal, id uuid.UUID,
 		return Entry{}, fmt.Errorf("%w: the stage does not take manual scores", ErrInvalid)
 	}
 	if in.Points > scoring.MaxPoints || in.Points < -scoring.MaxPoints {
-		return Entry{}, fmt.Errorf("%w: %v", ErrInvalid, scoring.ErrInvalidPoints)
+		return Entry{}, fmt.Errorf("%w: %w", ErrInvalid, scoring.ErrInvalidPoints)
 	}
 	entrants, err := s.store.Entrants(ctx, c.ID)
 	if err != nil {
@@ -396,14 +396,14 @@ func (s *service) SetScore(ctx context.Context, p authz.Principal, id uuid.UUID,
 		}
 	}
 	if !active {
-		return Entry{}, fmt.Errorf("%w: not an active entrant of this competition", ErrInvalid)
+		return Entry{}, ErrUnknownEntrant
 	}
 	reason := strings.TrimSpace(in.Reason)
 	if utf8.RuneCountInString(reason) > maxReasonRunes {
 		return Entry{}, fmt.Errorf("%w: reason is at most %d characters", ErrInvalid, maxReasonRunes)
 	}
 	return s.store.SetManualScore(ctx, ManualScore{
-		CompetitionID: c.ID, StageID: stage.ID, EntrantID: in.EntrantID,
+		CompetitionID: c.ID, StageID: stage.ID, EntrantID: in.EntrantID, ReplacesID: in.ReplacesID,
 		Points: in.Points, Reason: reason, Actor: lifecycle.ActorID(p.ID),
 	})
 }
@@ -463,9 +463,13 @@ func (s *service) Leaderboard(ctx context.Context, p authz.Principal, id uuid.UU
 			byID[e.ID] = e
 		}
 	}
+	liveManual := map[uuid.UUID]uuid.UUID{}
 	for _, row := range ledger {
 		if row.StageID != stage.ID || row.RevokedAt != nil || row.Points == nil {
 			continue
+		}
+		if row.Source == scoring.SourceManual {
+			liveManual[row.EntrantID] = row.ID
 		}
 		in.Entries = append(in.Entries, scoring.Entry{
 			EntrantID: row.EntrantID, Source: row.Source, Value: *row.Points, OccurredAt: row.OccurredAt,
@@ -480,9 +484,11 @@ func (s *service) Leaderboard(ctx context.Context, p authz.Principal, id uuid.UU
 	for _, r := range scoring.Rank(standings) {
 		e := byID[r.EntrantID]
 		rank, score := r.Rank, r.Score
-		out.Rows = append(out.Rows, LeaderboardRow{
-			Rank: &rank, EntrantID: e.ID, DisplayName: e.DisplayName, Members: e.Members, Score: &score,
-		})
+		row := LeaderboardRow{Rank: &rank, EntrantID: e.ID, DisplayName: e.DisplayName, Members: e.Members, Score: &score}
+		if id, ok := liveManual[e.ID]; ok {
+			row.EntryID = &id
+		}
+		out.Rows = append(out.Rows, row)
 		ranked[e.ID] = true
 	}
 	for _, e := range entrants {

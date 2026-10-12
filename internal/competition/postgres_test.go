@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -117,5 +118,139 @@ func TestPostgresCompetitionLifecycle(t *testing.T) {
 	restored, err := f.svc.Restore(ctx, agcLeader, c.ID)
 	if err != nil || restored.ArchivedAt != nil || len(restored.Stages) != 1 {
 		t.Fatalf("restore %+v %v", restored, err)
+	}
+}
+
+// Account erasure detaches an organizer from every competition record it
+// acted on, as from every other audit actor (docs/account-lifecycle.md),
+// through the real path: deletion request, then anonymization. The scores
+// stay.
+func TestPostgresAnonymizationDetachesCompetitionActors(t *testing.T) {
+	f, pool := postgresFixture(t)
+	ctx := t.Context()
+	users := user.NewPostgresStore(pool)
+	organizerID := uuid.New()
+	if _, _, err := users.Upsert(ctx, user.User{ID: organizerID, Email: "organizer@example.test", FirstName: "Org"}); err != nil {
+		t.Fatal(err)
+	}
+	organizer := agcLeader
+	organizer.ID = organizerID.String()
+
+	c, err := f.svc.Create(ctx, organizer, f.event.ID, competition.CreateInput{Name: "AGC Hafta 4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived, err := f.svc.Create(ctx, organizer, f.event.ID, competition.CreateInput{Name: "Yanlış açıldı"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Archive(ctx, organizer, archived.ID); err != nil {
+		t.Fatal(err)
+	}
+	added, err := f.svc.AddEntrants(ctx, organizer, c.ID, []uuid.UUID{f.guest(t, "Ada", "Lovelace").ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entrant := added[0].ID
+	first, err := f.svc.SetScore(ctx, organizer, c.ID, competition.ScoreInput{EntrantID: entrant, Points: pts(30)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.SetScore(ctx, organizer, c.ID, competition.ScoreInput{EntrantID: entrant, ReplacesID: &first.ID, Points: pts(60), Reason: "Bonus"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO competition_adjustments (id, competition_id, stage_id, entrant_id, kind, value, reason, recorded_by, revoked_at, revoked_by, revoke_reason)
+		VALUES ($1, $2, $3, $4, 'bonus', 1000, 'Bonus', $5, now(), $5, 'Yanlış')`, uuid.New(), c.ID, c.Stages[0].ID, entrant, organizerID); err != nil {
+		t.Fatal(err)
+	}
+	const references = `SELECT
+		(SELECT count(*) FROM competitions WHERE created_by = $1 OR archived_by = $1)
+		+ (SELECT count(*) FROM competition_entrants WHERE created_by = $1)
+		+ (SELECT count(*) FROM competition_submissions WHERE recorded_by = $1 OR revoked_by = $1)
+		+ (SELECT count(*) FROM competition_adjustments WHERE recorded_by = $1 OR revoked_by = $1)`
+	var before int
+	if err := pool.QueryRow(ctx, references, organizerID).Scan(&before); err != nil || before != 6 {
+		t.Fatalf("rows naming the organizer before = %d, %v", before, err)
+	}
+
+	if _, err := users.RequestDeletion(ctx, organizerID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := users.AnonymizeAccount(ctx, organizerID, time.Now().UTC(), nil); err != nil {
+		t.Fatalf("anonymize: %v", err)
+	}
+	var after int
+	if err := pool.QueryRow(ctx, references, organizerID).Scan(&after); err != nil || after != 0 {
+		t.Fatalf("rows naming the organizer after anonymization = %d, %v", after, err)
+	}
+	entries, err := f.svc.Entries(ctx, ykMember, c.ID)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("entries %+v %v", entries, err)
+	}
+	for _, e := range entries {
+		if e.RecordedBy != nil || e.RevokedBy != nil {
+			t.Errorf("entry still names an actor: %+v", e)
+		}
+	}
+	board, err := f.svc.Leaderboard(ctx, ykMember, c.ID)
+	if err != nil || len(board.Rows) != 1 || board.Rows[0].Score == nil || *board.Rows[0].Score != pts(60) {
+		t.Fatalf("board %+v %v", board, err)
+	}
+}
+
+// Two organizers writing the same cell: exactly one write lands, the others
+// learn the score changed under them; none asks for a reason and overwrites
+// a score its writer never saw.
+func TestPostgresConcurrentScoreWritesOneWins(t *testing.T) {
+	f, pool := postgresFixture(t)
+	ctx := t.Context()
+	c := f.create(t)
+	added, err := f.svc.AddEntrants(ctx, agcLeader, c.ID, []uuid.UUID{f.guest(t, "Ada", "Lovelace").ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entrant := added[0].ID
+	race := func(in competition.ScoreInput) (ok, changed int, written competition.Entry) {
+		t.Helper()
+		const writers = 12
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		for i := range writers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				w := in
+				w.Points = pts(float64(30 + i))
+				e, err := f.svc.SetScore(ctx, agcLeader, c.ID, w)
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case err == nil:
+					ok++
+					written = e
+				case errors.Is(err, competition.ErrScoreChanged):
+					changed++
+				default:
+					t.Errorf("writer %d: %v", i, err)
+				}
+			}()
+		}
+		wg.Wait()
+		return ok, changed, written
+	}
+	live := func() int {
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM competition_submissions WHERE entrant_id = $1 AND revoked_at IS NULL`, entrant).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	ok, changed, first := race(competition.ScoreInput{EntrantID: entrant})
+	if ok != 1 || changed != 11 || live() != 1 {
+		t.Fatalf("first writes: ok=%d changed=%d live=%d", ok, changed, live())
+	}
+	ok, changed, _ = race(competition.ScoreInput{EntrantID: entrant, ReplacesID: &first.ID, Reason: "Düzeltme"})
+	if ok != 1 || changed != 11 || live() != 1 {
+		t.Fatalf("corrections: ok=%d changed=%d live=%d", ok, changed, live())
 	}
 }

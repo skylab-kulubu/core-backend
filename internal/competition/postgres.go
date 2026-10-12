@@ -365,26 +365,28 @@ func deref(s *string) string {
 func (s *PostgresStore) SetManualScore(ctx context.Context, in ManualScore) (Entry, error) {
 	var out Entry
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		var live uuid.UUID
-		err := tx.QueryRow(ctx, `
-			SELECT id FROM competition_submissions
+		live, err := scanEntry(tx.QueryRow(ctx, `
+			SELECT `+entryCols+` FROM competition_submissions
 			WHERE stage_id = $1 AND entrant_id = $2 AND source = 'manual' AND revoked_at IS NULL
-			FOR UPDATE`, in.StageID, in.EntrantID).Scan(&live)
-		var replaces *uuid.UUID
+			FOR UPDATE`, in.StageID, in.EntrantID))
+		hasLive := true
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
+			hasLive = false
 		case err != nil:
 			return err
-		default:
-			if in.Reason == "" {
-				return ErrReasonRequired
-			}
+		}
+		if err := checkLive(in, hasLive, func() *Entry { return &live }); err != nil {
+			return err
+		}
+		var replaces *uuid.UUID
+		if hasLive {
 			if _, err := tx.Exec(ctx, `
 				UPDATE competition_submissions SET revoked_at = now(), revoked_by = $2, revoke_reason = $3
-				WHERE id = $1`, live, in.Actor, in.Reason); err != nil {
+				WHERE id = $1`, live.ID, in.Actor, in.Reason); err != nil {
 				return err
 			}
-			replaces = &live
+			replaces = &live.ID
 		}
 		out, err = scanEntry(tx.QueryRow(ctx, `
 			INSERT INTO competition_submissions (id, competition_id, stage_id, entrant_id, source, value, recorded_by, replaces_id)
@@ -393,10 +395,32 @@ func (s *PostgresStore) SetManualScore(ctx context.Context, in ManualScore) (Ent
 			uuid.New(), in.CompetitionID, in.StageID, in.EntrantID, int64(in.Points), in.Actor, replaces))
 		return err
 	})
+	if isLiveScoreRace(err) {
+		// Another write's score became live after this one looked: the
+		// caller has not seen it.
+		return Entry{}, s.scoreChanged(ctx, in)
+	}
 	if err != nil {
 		return Entry{}, writeErr(err)
 	}
 	return out, nil
+}
+
+func isLiveScoreRace(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "23505" &&
+		(pg.ConstraintName == "competition_submissions_live_manual_idx" || pg.ConstraintName == "competition_submissions_replaces_idx")
+}
+
+// scoreChanged is ScoreChangedError with the live score as it is now.
+func (s *PostgresStore) scoreChanged(ctx context.Context, in ManualScore) error {
+	live, err := scanEntry(s.pool.QueryRow(ctx, `
+		SELECT `+entryCols+` FROM competition_submissions
+		WHERE stage_id = $1 AND entrant_id = $2 AND source = 'manual' AND revoked_at IS NULL`, in.StageID, in.EntrantID))
+	if err != nil {
+		return &ScoreChangedError{}
+	}
+	return &ScoreChangedError{Current: &live}
 }
 
 func (s *PostgresStore) Revoke(ctx context.Context, competitionID, entryID uuid.UUID, actor *uuid.UUID, reason string) (Entry, error) {

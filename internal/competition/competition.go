@@ -137,6 +137,9 @@ type LeaderboardRow struct {
 	DisplayName string          `json:"displayName"`
 	Members     []Member        `json:"members"`
 	Score       *scoring.Points `json:"score"`
+	// EntryID is the Entrant's live manual score in the Stage: what a
+	// correction names as replacesId, and what a revocation revokes.
+	EntryID *uuid.UUID `json:"entryId"`
 }
 
 // CreateInput is a new Competition of an Event.
@@ -153,12 +156,15 @@ type UpdateInput struct {
 }
 
 // ScoreInput sets an Entrant's manual score in a Stage (the first one when
-// StageID is nil). Reason is required when it replaces a score.
+// StageID is nil). ReplacesID is the live score the caller saw and means to
+// correct, with Reason; nil means the caller saw none. When the live score
+// is not the one the caller saw, nothing is written (ErrScoreChanged).
 type ScoreInput struct {
-	EntrantID uuid.UUID
-	StageID   *uuid.UUID
-	Points    scoring.Points
-	Reason    string
+	EntrantID  uuid.UUID
+	StageID    *uuid.UUID
+	ReplacesID *uuid.UUID
+	Points     scoring.Points
+	Reason     string
 }
 
 // ManualScore is what the store writes for a ScoreInput.
@@ -166,6 +172,7 @@ type ManualScore struct {
 	CompetitionID uuid.UUID
 	StageID       uuid.UUID
 	EntrantID     uuid.UUID
+	ReplacesID    *uuid.UUID
 	Points        scoring.Points
 	Reason        string
 	Actor         *uuid.UUID

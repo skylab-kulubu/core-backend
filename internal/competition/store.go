@@ -3,6 +3,7 @@ package competition
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
@@ -20,7 +21,24 @@ var (
 	// ErrTicketTaken is a Ticket that already is in an Entrant of the
 	// Competition.
 	ErrTicketTaken = errors.New("competition: ticket already an entrant")
+	// ErrScoreChanged is a score write whose caller did not see the live
+	// score: another write got in first. Nothing is written.
+	ErrScoreChanged = errors.New("competition: the score changed")
+	// ErrUnknownEntrant and ErrUnknownStage are a score for an Entrant or
+	// Stage that is not an active one of this Competition.
+	ErrUnknownEntrant = fmt.Errorf("%w: not an active entrant of this competition", ErrInvalid)
+	ErrUnknownStage   = fmt.Errorf("%w: not a stage of this competition", ErrInvalid)
 )
+
+// ScoreChangedError is ErrScoreChanged with the live score the write did
+// not expect (nil when there is none).
+type ScoreChangedError struct {
+	Current *Entry
+}
+
+func (e *ScoreChangedError) Error() string { return ErrScoreChanged.Error() }
+
+func (e *ScoreChangedError) Is(target error) bool { return target == ErrScoreChanged }
 
 // Store keeps Competitions and their ledger. A ledger row is never updated
 // but for its revocation, and never deleted.
@@ -49,9 +67,12 @@ type Store interface {
 	// members' names as they are now.
 	Entrants(ctx context.Context, competitionID uuid.UUID) ([]Entrant, error)
 
-	// SetManualScore revokes the Entrant's live manual score in the Stage,
-	// if any, with in.Reason (ErrReasonRequired when empty) and writes the
-	// new one, in one transaction.
+	// SetManualScore writes the Entrant's manual score in the Stage, in one
+	// transaction. With in.ReplacesID it revokes that live score with
+	// in.Reason (ErrReasonRequired when empty); when the live score is
+	// another one, or none, nothing is written (ScoreChangedError). Without
+	// it, a live score is revoked only when in.Reason is given; otherwise
+	// nothing is written (ScoreChangedError).
 	SetManualScore(ctx context.Context, in ManualScore) (Entry, error)
 	// Revoke revokes a live ledger row of the Competition (ErrConflict when
 	// it already is).
@@ -59,4 +80,27 @@ type Store interface {
 	// Entries are the Competition's ledger rows, revoked ones included,
 	// oldest first.
 	Entries(ctx context.Context, competitionID uuid.UUID) ([]Entry, error)
+}
+
+// checkLive is SetManualScore's rule, the same in every store: whether the
+// write may replace the live score it found (hasLive; current reads it).
+func checkLive(in ManualScore, hasLive bool, current func() *Entry) error {
+	changed := func() error {
+		if hasLive {
+			return &ScoreChangedError{Current: current()}
+		}
+		return &ScoreChangedError{}
+	}
+	switch {
+	case in.ReplacesID != nil:
+		if !hasLive || current().ID != *in.ReplacesID {
+			return changed()
+		}
+		if in.Reason == "" {
+			return ErrReasonRequired
+		}
+	case hasLive && in.Reason == "":
+		return changed()
+	}
+	return nil
 }

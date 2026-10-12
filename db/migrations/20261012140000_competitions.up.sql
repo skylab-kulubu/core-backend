@@ -31,6 +31,26 @@ CREATE TABLE IF NOT EXISTS competitions (
 
 CREATE INDEX IF NOT EXISTS competitions_event_idx ON competitions (event_id, created_at);
 
+-- A Competition never moves to another Event: its Entrants are Tickets of
+-- its Event, and its Owner team is that Event's.
+CREATE OR REPLACE FUNCTION public.competition_event_is_fixed()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.event_id IS DISTINCT FROM OLD.event_id THEN
+        RAISE EXCEPTION 'a competition stays with its event'
+            USING ERRCODE = '23514', CONSTRAINT = 'competition_event_is_fixed';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS competitions_event_is_fixed ON competitions;
+CREATE TRIGGER competitions_event_is_fixed
+    BEFORE UPDATE OF event_id ON competitions
+    FOR EACH ROW EXECUTE FUNCTION public.competition_event_is_fixed();
+
 CREATE TABLE IF NOT EXISTS competition_stages (
     id UUID PRIMARY KEY,
     competition_id UUID NOT NULL REFERENCES competitions (id),

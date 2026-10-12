@@ -133,20 +133,37 @@ func TestCompetitionHTTPFlow(t *testing.T) {
 	}
 	entrantID := entrant["id"].(string)
 
-	for _, bad := range []string{`"30"`, `1.2345`, `1e3`, `null`} {
-		got := competitionCall(t, app, fiber.MethodPost, base+"/scores", `{"entrantId":"`+entrantID+`","points":`+bad+`}`)
-		if got.status != fiber.StatusBadRequest {
-			t.Errorf("points %s: %d %s", bad, got.status, got.raw)
+	for bad, code := range map[string]string{
+		`"points":"30"`:                      "invalid_points",
+		`"points":1.2345`:                    "invalid_points",
+		`"points":1e3`:                       "invalid_points",
+		`"points":null`:                      "missing_field",
+		`"points":1000000001`:                "invalid_points",
+		`"points":30,"stageId":"not-a-uuid"`: "invalid_body",
+		`"points":30,"stageId":"` + id + `"`: "unknown_stage",
+	} {
+		got := competitionCall(t, app, fiber.MethodPost, base+"/scores", `{"entrantId":"`+entrantID+`",`+bad+`}`)
+		if got.status != fiber.StatusBadRequest || got.body["code"] != code {
+			t.Errorf("%s: %d %s, want 400 %s", bad, got.status, got.raw, code)
 		}
+	}
+	if got := competitionCall(t, app, fiber.MethodPost, base+"/scores", `{"entrantId":"`+uuid.NewString()+`","points":30}`); got.status != fiber.StatusBadRequest || got.body["code"] != "unknown_entrant" {
+		t.Errorf("unknown entrant: %d %s", got.status, got.raw)
 	}
 	first := competitionCall(t, app, fiber.MethodPost, base+"/scores", `{"entrantId":"`+entrantID+`","points":30.5}`)
 	if first.status != fiber.StatusCreated || first.body["points"] != 30.5 || first.body["source"] != "manual" {
 		t.Fatalf("score %d %s", first.status, first.raw)
 	}
-	if got := competitionCall(t, app, fiber.MethodPost, base+"/scores", `{"entrantId":"`+entrantID+`","points":50}`); got.status != fiber.StatusBadRequest || got.body["code"] != "reason_required" {
+	firstID := first.body["id"].(string)
+	// Writing as if there were no score: 409 with the live one.
+	got := competitionCall(t, app, fiber.MethodPost, base+"/scores", `{"entrantId":"`+entrantID+`","points":50}`)
+	if current, _ := got.body["current"].(map[string]any); got.status != fiber.StatusConflict || got.body["code"] != "score_changed" || current["id"] != firstID {
+		t.Fatalf("write over an unseen score %d %s", got.status, got.raw)
+	}
+	if got := competitionCall(t, app, fiber.MethodPost, base+"/scores", `{"entrantId":"`+entrantID+`","points":50,"replacesId":"`+firstID+`"}`); got.status != fiber.StatusBadRequest || got.body["code"] != "reason_required" {
 		t.Fatalf("correction without reason %d %s", got.status, got.raw)
 	}
-	if got := competitionCall(t, app, fiber.MethodPost, base+"/scores", `{"entrantId":"`+entrantID+`","points":50,"reason":"Yanlış girildi"}`); got.status != fiber.StatusCreated || got.body["replacesId"] != first.body["id"] {
+	if got := competitionCall(t, app, fiber.MethodPost, base+"/scores", `{"entrantId":"`+entrantID+`","points":50,"replacesId":"`+firstID+`","reason":"Yanlış girildi"}`); got.status != fiber.StatusCreated || got.body["replacesId"] != firstID {
 		t.Fatalf("correction %d %s", got.status, got.raw)
 	}
 	if got := competitionCall(t, app, fiber.MethodPost, base+"/close", ""); got.status != fiber.StatusOK || got.body["status"] != "closed" {
@@ -160,7 +177,7 @@ func TestCompetitionHTTPFlow(t *testing.T) {
 	if board.status != fiber.StatusOK || len(rows) != 1 {
 		t.Fatalf("leaderboard %d %s", board.status, board.raw)
 	}
-	if row := rows[0].(map[string]any); row["rank"] != 1.0 || row["score"] != 50.0 || row["displayName"] != "Ada Lovelace" {
+	if row := rows[0].(map[string]any); row["rank"] != 1.0 || row["score"] != 50.0 || row["displayName"] != "Ada Lovelace" || row["entryId"] == nil {
 		t.Fatalf("row %v", row)
 	}
 	entries := competitionCall(t, app, fiber.MethodGet, base+"/entries", "")

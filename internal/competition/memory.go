@@ -255,18 +255,21 @@ func (s *MemoryStore) SetManualScore(_ context.Context, in ManualScore) (Entry, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows := s.entries[in.CompetitionID]
-	now := time.Now().UTC()
-	var replaces *uuid.UUID
+	live := -1
 	for i, row := range rows {
 		if row.StageID == in.StageID && row.EntrantID == in.EntrantID && row.Source == scoring.SourceManual && row.RevokedAt == nil {
-			if in.Reason == "" {
-				return Entry{}, ErrReasonRequired
-			}
-			at := now
-			rows[i].RevokedAt, rows[i].RevokedBy, rows[i].RevokeReason = &at, in.Actor, in.Reason
-			id := row.ID
-			replaces = &id
+			live = i
 		}
+	}
+	if err := checkLive(in, live >= 0, func() *Entry { e := rows[live]; return &e }); err != nil {
+		return Entry{}, err
+	}
+	now := time.Now().UTC()
+	var replaces *uuid.UUID
+	if live >= 0 {
+		rows[live].RevokedAt, rows[live].RevokedBy, rows[live].RevokeReason = &now, in.Actor, in.Reason
+		id := rows[live].ID
+		replaces = &id
 	}
 	points := in.Points
 	entry := Entry{

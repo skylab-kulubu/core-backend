@@ -16,3 +16,4 @@ DROP TABLE IF EXISTS competition_stages;
 DROP TABLE IF EXISTS competitions;
 DROP FUNCTION IF EXISTS public.competition_ledger_append_only();
 DROP FUNCTION IF EXISTS public.competition_entrant_member_same_event();
+DROP FUNCTION IF EXISTS public.competition_event_is_fixed();

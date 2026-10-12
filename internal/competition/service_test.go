@@ -402,13 +402,30 @@ func runManualScores(t *testing.T, f fixture) {
 	set(1, pts(60), "")
 	set(2, pts(50), "")
 	first := set(3, pts(30), "")
-	// A correction needs its reason; then it revokes the old row.
-	if _, err := f.svc.SetScore(ctx, agcLeader, c.ID, competition.ScoreInput{EntrantID: entrants[3].ID, Points: pts(60)}); !errors.Is(err, competition.ErrReasonRequired) {
+	// Writing as if there were no score, while there is one: the caller
+	// has not seen it, so nothing is written (no "reason" prompt that
+	// would let them overwrite it unseen).
+	var changed *competition.ScoreChangedError
+	_, err = f.svc.SetScore(ctx, agcLeader, c.ID, competition.ScoreInput{EntrantID: entrants[3].ID, Points: pts(60)})
+	if !errors.Is(err, competition.ErrScoreChanged) || !errors.As(err, &changed) || changed.Current == nil || changed.Current.ID != first.ID {
+		t.Fatalf("first write over a live score: %v", err)
+	}
+	// Correcting a score that is no longer the live one: nothing written.
+	stale := uuid.New()
+	if _, err := f.svc.SetScore(ctx, agcLeader, c.ID, competition.ScoreInput{EntrantID: entrants[3].ID, ReplacesID: &stale, Points: pts(60), Reason: "x"}); !errors.Is(err, competition.ErrScoreChanged) {
+		t.Fatalf("stale replacesId: %v", err)
+	}
+	// A correction of the live score needs its reason; then it revokes it.
+	if _, err := f.svc.SetScore(ctx, agcLeader, c.ID, competition.ScoreInput{EntrantID: entrants[3].ID, ReplacesID: &first.ID, Points: pts(60)}); !errors.Is(err, competition.ErrReasonRequired) {
 		t.Fatalf("correction without reason: %v", err)
 	}
-	second := set(3, pts(60.125), "Bonus soruyu da çözdü")
-	if second.ReplacesID == nil || *second.ReplacesID != first.ID {
-		t.Fatalf("correction %+v", second)
+	second, err := f.svc.SetScore(ctx, agcLeader, c.ID, competition.ScoreInput{EntrantID: entrants[3].ID, ReplacesID: &first.ID, Points: pts(60.125), Reason: "Bonus soruyu da çözdü"})
+	if err != nil || second.ReplacesID == nil || *second.ReplacesID != first.ID {
+		t.Fatalf("correction %+v %v", second, err)
+	}
+	// A replacesId for an Entrant without a live score: changed too.
+	if _, err := f.svc.SetScore(ctx, agcLeader, c.ID, competition.ScoreInput{EntrantID: entrants[4].ID, ReplacesID: &first.ID, Points: pts(30), Reason: "x"}); !errors.Is(err, competition.ErrScoreChanged) {
+		t.Fatalf("replacesId without a live score: %v", err)
 	}
 	// The first score to Ada is revoked outright: she no longer counts.
 	ada := latest(t, f, c.ID, entrants[0].ID)
@@ -441,9 +458,12 @@ func runManualScores(t *testing.T, f fixture) {
 			t.Errorf("row %d = %+v, want %+v", i, r, w)
 		}
 	}
+	if board.Rows[0].EntryID == nil || *board.Rows[0].EntryID != second.ID {
+		t.Errorf("leaderboard row's live entry = %v, want %s", board.Rows[0].EntryID, second.ID)
+	}
 	// Ada (revoked) and the unscored guest come last, without rank or score.
 	for _, r := range board.Rows[3:] {
-		if r.Rank != nil || r.Score != nil {
+		if r.Rank != nil || r.Score != nil || r.EntryID != nil {
 			t.Errorf("unscored row %+v", r)
 		}
 	}
