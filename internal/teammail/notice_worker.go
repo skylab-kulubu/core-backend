@@ -167,6 +167,7 @@ func (s *Service) noticeMetrics() string {
 	fmt.Fprintf(&out, "# TYPE skylab_privilege_notice_mail_recipients_total counter\nskylab_privilege_notice_mail_recipients_total %d\n", s.notices.recipients)
 	fmt.Fprintf(&out, "# TYPE skylab_privilege_notice_mail_queue_errors_total counter\nskylab_privilege_notice_mail_queue_errors_total %d\n", s.notices.queueErrors)
 	fmt.Fprintf(&out, "# TYPE skylab_privilege_notice_mail_precheck_errors_total counter\nskylab_privilege_notice_mail_precheck_errors_total %d\n", s.notices.precheckErrors)
+	fmt.Fprintf(&out, "# TYPE skylab_privilege_notice_mail_count_errors_total counter\nskylab_privilege_notice_mail_count_errors_total %d\n", s.notices.countErrors)
 	fmt.Fprintf(&out, "# TYPE skylab_privilege_notice_mail_backlog gauge\nskylab_privilege_notice_mail_backlog %d\n", s.notices.backlog)
 	fmt.Fprintf(&out, "# TYPE skylab_privilege_notice_mail_oldest_age_seconds gauge\nskylab_privilege_notice_mail_oldest_age_seconds %d\n", int64(s.notices.oldest.Seconds()))
 	return out.String()

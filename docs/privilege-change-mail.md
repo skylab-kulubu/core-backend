@@ -44,7 +44,7 @@ moment was held.
 | `OccurredAt` | when, in Europe/Istanbul, `dd.MM.yyyy HH:mm` |
 | `RolesAdded`, `RolesRemoved` | role mapping: the roles as `client:role`, sorted, joined by `, `; empty otherwise |
 | `AdminRole` | role mapping: `yes` when a changed role is a management role by authz's rule (`authz.ProtectedRole`: core's permission roles, `audit:read`, `content:write`, any `client:admin`, any `realm-management` role), `no` otherwise. A role that only holds one as a composite (a Site's `cms:access`, which holds `content:write`) reads `no`: the mail says `yes` only when it is sure. Ticket 02's role classes replace this rule when they land |
-| `MemberCount` | role mapping: how many people sit in the Group's tree when the notice was read for its recipients (they are counted, never told); empty otherwise |
+| `MemberCount` | role mapping: how many people sit in the Group's tree when the notice was read for its recipients (they are counted, never told); empty otherwise, and empty when the tree could not be read within 20 s (the count is best effort: the notice goes without it) |
 
 Every key is always sent. No e-mail address is in the mail.
 
@@ -67,7 +67,11 @@ role mapping / Privileged membership write ──▶ Keycloak ──▶ INSERT p
 - A table of its own on purpose: an older core takes every row of
   `team_membership_mails` and would send a notice row's recipient a
   "you were added" mail. An older core never reads this table.
-- A roster that cannot be read leaves the change waiting for a retry.
+- A roster of the recipients (ADMIN's, a root's) that cannot be read leaves
+  the change waiting for a retry. The count of a role mapping's Group is
+  best effort: a tree that cannot be read within 20 s (a large `/UYELER`, a
+  slow Keycloak) leaves `MemberCount` empty and the notice goes at once
+  (`skylab_privilege_notice_mail_count_errors_total`).
 - SkyMail's `404` (the template not seeded yet) retries like any failure, so
   a seed within 72 hours sends every waiting notice; `400`/`422` drops the
   row as `rejected`.
@@ -102,7 +106,9 @@ role mail.
 - `skylab_privilege_notice_mail_recipients_total` — rows made by reading
   changes for their recipients
 - `skylab_privilege_notice_mail_queue_errors_total`,
-  `skylab_privilege_notice_mail_precheck_errors_total`
+  `skylab_privilege_notice_mail_precheck_errors_total`,
+  `skylab_privilege_notice_mail_count_errors_total` (a Group's tree that
+  could not be counted; the notice went without the count)
 - `skylab_privilege_notice_mail_backlog`,
   `skylab_privilege_notice_mail_oldest_age_seconds`
 

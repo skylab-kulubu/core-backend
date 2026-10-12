@@ -44,13 +44,15 @@ func (m *fakeNoticeMail) PrivilegeNotice(_ context.Context, recipient, _ string,
 type fakeRosters struct {
 	trees map[string][]uuid.UUID
 	err   error
-	reads []string
+	// failing are paths whose tree cannot be read.
+	failing map[string]bool
+	reads   []string
 }
 
 func (r *fakeRosters) MemberIDs(_ context.Context, path string) ([]uuid.UUID, error) {
 	r.reads = append(r.reads, path)
-	if r.err != nil {
-		return nil, r.err
+	if r.err != nil || r.failing[path] {
+		return nil, errors.New("keycloak timed out")
 	}
 	return r.trees[path], nil
 }
@@ -293,6 +295,47 @@ func TestNoticeWaitsForAnUnseededTemplate(t *testing.T) {
 	f.pass(t)
 	if got := f.recipients(); !slices.Equal(got, []string{"fatih@example.test", "root@example.test"}) || len(f.queue.Snapshot()) != 0 {
 		t.Fatalf("recipients %v, queue %+v", got, f.queue.Snapshot())
+	}
+}
+
+// The count of a role mapping's Group is best effort (review of #241, F2):
+// a tree that cannot be read leaves MemberCount empty, and ADMIN is told
+// at once.
+func TestNoticeOfARoleMappingGoesWithoutACountItCannotRead(t *testing.T) {
+	t.Parallel()
+	f := newNoticeFixture(t)
+	f.rosters.failing = map[string]bool{"/UYELER": true}
+	f.svc.GroupRolesChanged(context.Background(), identity.GroupRolesChange{
+		Group: identity.Group{Path: "/UYELER"}, Added: []identity.ClientRole{{ClientID: "core", Role: "users:manage"}}, ActorID: f.act.String(),
+	})
+	report := f.pass(t)
+	if got := f.recipients(); !slices.Equal(got, []string{"fatih@example.test", "root@example.test"}) || report.Notices.Failed != 0 {
+		t.Fatalf("recipients %v, report %+v", got, report.Notices)
+	}
+	if v := f.mail.sent[0].vars; v["MemberCount"] != "" || v["AdminRole"] != "yes" {
+		t.Fatalf("vars %v", v)
+	}
+	if len(f.queue.Snapshot()) != 0 {
+		t.Fatalf("left %+v", f.queue.Snapshot())
+	}
+	if !strings.Contains(f.svc.Prometheus(), "skylab_privilege_notice_mail_count_errors_total 1") || strings.Contains(f.logs.String(), "UYELER") {
+		t.Fatalf("metrics:\n%s\nlogs: %s", f.svc.Prometheus(), f.logs.String())
+	}
+}
+
+// ADMIN's own roster, unlike the count, must be read: without it the
+// change waits for a retry.
+func TestNoticeOfARoleMappingWaitsForADMINsRoster(t *testing.T) {
+	t.Parallel()
+	f := newNoticeFixture(t)
+	f.rosters.failing = map[string]bool{"/ADMIN": true}
+	f.svc.GroupRolesChanged(context.Background(), identity.GroupRolesChange{
+		Group: identity.Group{Path: "/UYELER"}, Added: []identity.ClientRole{{ClientID: "forms", Role: "viewer"}}, ActorID: f.act.String(),
+	})
+	report := f.pass(t)
+	queued := f.queue.Snapshot()
+	if report.Notices.Failed != 1 || len(queued) != 1 || queued[0].RecipientID != nil || len(f.mail.sent) != 0 {
+		t.Fatalf("report %+v, queue %+v", report.Notices, queued)
 	}
 }
 

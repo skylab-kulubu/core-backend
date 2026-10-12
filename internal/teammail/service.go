@@ -145,6 +145,7 @@ type noticeCounts struct {
 	enqueued       map[NoticeEvent]int64
 	queueErrors    int64
 	precheckErrors int64
+	countErrors    int64
 	recipients     int64
 	outcomes       map[string]int64
 	backlog        int

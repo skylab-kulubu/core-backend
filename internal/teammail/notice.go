@@ -224,10 +224,16 @@ func (s *Service) noticeRecipients(ctx context.Context, n Notice) ([]uuid.UUID, 
 	}
 	switch n.Event {
 	case NoticeRolesChanged:
-		// The Group's members are counted, never told.
-		ids, err := s.notice.Rosters.MemberIDs(ctx, n.GroupPath)
+		// The Group's members are counted, never told. The count is best
+		// effort: a tree that cannot be read (a large /UYELER, a slow
+		// Keycloak) leaves it out, and ADMIN is told all the same.
+		countCtx, cancel := context.WithTimeout(ctx, countTimeout)
+		ids, err := s.notice.Rosters.MemberIDs(countCtx, n.GroupPath)
+		cancel()
 		if err != nil {
-			return nil, nil, err
+			s.count(func() { s.notices.countErrors++ })
+			s.logger.Printf("privilege notice: a Group's members could not be counted; the notice goes without the count")
+			return out, nil, nil
 		}
 		count := len(ids)
 		return out, &count, nil
@@ -240,6 +246,10 @@ func (s *Service) noticeRecipients(ctx context.Context, n Notice) ([]uuid.UUID, 
 		return out, nil, nil
 	}
 }
+
+// countTimeout bounds the count of a Group's tree, so that a slow one
+// leaves the rest of the send's time (sendTimeout) to the mails.
+const countTimeout = 20 * time.Second
 
 // noticeVars are the template's variables of a notice to one recipient.
 // Every key is always there, empty when it does not apply.
