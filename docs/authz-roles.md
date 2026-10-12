@@ -29,6 +29,7 @@ The names are a contract with Keycloak: the table "Sözleşme: core'un kaynak ro
 | `ticket:manage` | `allowTicket`: Read and Assign | `GET /v1/events/{id}/tickets`, `GET /v1/events/{id}/assignable-users`, `POST …/applications/users/{id}`, dashboard summary scope, Guest apply trust (Ticket assign) |
 | `ticket:validate` | `allowDoorCheckIn` (`Validate`) | door check-in routes, guest door QR (`/v1/sessions/{id}/door-qr`), `POST /v1/skypass/verify`, `GET /v1/skypass/card` |
 | `competitor:manage` | `allowCompetitor`: every action | `/v1/competitors…` |
+| `competition:manage` | `allowCompetition` (`TypeCompetition`): every action for every Owner team and none; `allowCompetitor` too | `/v1/events/{id}/competitions`, `/v1/competitions…` ([competitions.md](competitions.md)) |
 | `media:manage` | `allowMedia`: List, Delete | `GET /v1/media`, `DELETE /v1/media/{id}` |
 | `media:private:read` | `TypeMediaReadLink` Read, people only | a private core Media opened by an admin (certificate assets) |
 | `certificate:manage` | `allowCertificate` (Read; Issue/Revoke), `allowCertificateTemplate` (every action) for every Owner team and none | `/v1/events/{id}/certificates…`, `/v1/certificate-templates…`, `/v1/certificate-template-bindings…`; certificate template media uploads |
@@ -39,6 +40,8 @@ The names are a contract with Keycloak: the table "Sözleşme: core'un kaynak ro
 | `url:access` (existed) | `allowURL` (with `url:moderator`) | one's own short links |
 
 Short links and form links have no new role: `url:moderator` and `url:access`, read below the Privileged shortcut as before, together allow every short-link action (Create, ReadMe, Read, Update, Delete) and `url:moderator` every form-link action. The shortcut itself is the Privileged Group in the `groups` and `both` modes and nothing in the `roles` mode. The team-bound certificate roles (`certificate:issue`, `certificate:revoke`, `certificate:template:manage`, `certificate:binding:manage`), `url:create`/`url:get`/`url:update`/`url:delete`, `url:forms`, `users:read`, `media:attach` and `ticket:forms` are unchanged and read in every mode.
+
+**Renaming `competitor:manage` to `competition:manage`** (ADR-0068). The competition module replaces the old competitors, and its role takes the new name. While Keycloak moves the role (e-skylab-keycloak), core reads either name as both (`renamedRoles` in `roles.go`): a holder of one of them is allowed what both grant, in the `both` and `roles` modes, and is listed with both in `permissions`. Order: release core; Keycloak creates `competition:manage`, maps it where `competitor:manage` is mapped and drops the old one; one release later core drops `competitor:manage` from the table. Until Keycloak has it, the startup check lists `competition:manage` as missing; nobody loses anything meanwhile.
 
 `groups:manage` lets its holder change group role mappings, so it can grant every role here. Map it as narrowly as `ADMIN` is today.
 
@@ -112,7 +115,7 @@ Look-up for a record of Owner team `t`: `teams.find(x => x.team === t)?.can ?? (
 
 `can` keys: `season.write` (Season create/update/delete), `group.read`, `group.write` (Groups, members, group role mappings), `user.read`, `user.write` (full user card, profile, extra roles, logout), `user.create`, `user.delete` (erasure request), `media.list`, `media.delete`, `media.readPrivate`, `media.uploadEventMedia`, `media.uploadCertificateTemplateMedia`, `url.create`, `url.listMine`, `url.moderate` (everyone's links), `formLink.read`, `formLink.write`, `githubActivity.read`, `audit.read` (the Team audit record; the `audit:read` role itself in every mode, so a Privileged Group without the role, DK included, reads `false`: S11).
 
-Team keys (in `teams[].can`, `otherTeams.can`, `noOwnerTeam.can`): `event.create`, `event.update`, `event.delete`, `event.assignDoorStaff`, `ticket.read` (applicant list), `ticket.assign`, `door.checkIn`, `competitor.read`, `competitor.create`, `competitor.update`, `competitor.delete`, `certificate.read`, `certificate.issue`, `certificate.revoke`, `certificateTemplate.read`, `certificateTemplate.create`, `certificateTemplate.update`, `certificateTemplate.assign` (bindings).
+Team keys (in `teams[].can`, `otherTeams.can`, `noOwnerTeam.can`): `event.create`, `event.update`, `event.delete`, `event.assignDoorStaff`, `ticket.read` (applicant list), `ticket.assign`, `door.checkIn`, `competitor.read`, `competitor.create`, `competitor.update`, `competitor.delete`, `competition.manage` (the team's Competitions: a Leader of the team or `competition:manage`; team membership alone gives none), `certificate.read`, `certificate.issue`, `certificate.revoke`, `certificateTemplate.read`, `certificateTemplate.create`, `certificateTemplate.update`, `certificateTemplate.assign` (bindings).
 
 `door.checkIn` is the team's answer without the Event's own door staff and with Team door scan off; a person on an Event's door staff, or a member of a team with Team door scan on, may still check in there (`GET /v1/door/events` lists the caller's Events).
 

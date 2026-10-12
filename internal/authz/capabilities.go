@@ -60,6 +60,7 @@ var teamAbilities = []ability{
 	{"competitor.create", Resource{Type: TypeCompetitor}, Create},
 	{"competitor.update", Resource{Type: TypeCompetitor}, Update},
 	{"competitor.delete", Resource{Type: TypeCompetitor}, Delete},
+	{"competition.manage", Resource{Type: TypeCompetition}, Update},
 	{"certificate.read", Resource{Type: TypeCertificate}, Read},
 	{"certificate.issue", Resource{Type: TypeCertificate}, Issue},
 	{"certificate.revoke", Resource{Type: TypeCertificate}, Revoke},

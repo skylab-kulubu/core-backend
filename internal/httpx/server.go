@@ -14,6 +14,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
+	"github.com/skylab-kulubu/core-backend/internal/competition"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
@@ -40,6 +41,7 @@ type Deps struct {
 	Seasons                season.Service
 	Tickets                ticket.Service
 	Competitors            competitor.Service
+	Competitions           competition.Service
 	Media                  media.Service
 	URLs                   shorturl.Service
 	Certificates           certificate.Service
@@ -550,6 +552,27 @@ func New(deps Deps) *fiber.App {
 	app.Put("/v1/competitors/:id", competitors.Update)
 	app.Delete("/v1/competitors/:id", competitors.Delete)
 	app.Post("/v1/competitors/:id/reinstate", competitors.Reinstate)
+
+	// The competition module (ADR-0068, docs/competitions.md); nil serves
+	// none of its routes.
+	if deps.Competitions != nil {
+		comps := handlers.NewCompetitionHandler(deps.Competitions)
+		app.Get("/v1/events/:eventId/competitions", comps.ListByEvent)
+		app.Post("/v1/events/:eventId/competitions", comps.Create)
+		app.Get("/v1/competitions/:id", comps.Get)
+		app.Patch("/v1/competitions/:id", comps.Update)
+		for _, action := range []string{"open", "start", "close", "reopen", "cancel"} {
+			app.Post("/v1/competitions/:id/"+action, comps.Transition(action))
+		}
+		app.Post("/v1/competitions/:id/archive", comps.Archive)
+		app.Post("/v1/competitions/:id/restore", comps.Restore)
+		app.Get("/v1/competitions/:id/entrants", comps.Entrants)
+		app.Post("/v1/competitions/:id/entrants", comps.AddEntrants)
+		app.Post("/v1/competitions/:id/scores", comps.SetScore)
+		app.Get("/v1/competitions/:id/entries", comps.Entries)
+		app.Post("/v1/competitions/:id/entries/:entryId/revoke", comps.RevokeEntry)
+		app.Get("/v1/competitions/:id/leaderboard", comps.Leaderboard)
+	}
 
 	app.Post("/v1/media", limitUploads, mediaH.Upload)
 	// The address lookup: a product's service account asks which Media the
