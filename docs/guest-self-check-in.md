@@ -91,8 +91,11 @@ route no longer tells a stranger which e-mails are registered.
 **Session window.** Guests check in, and door QRs are minted, only while the
 Session is not cancelled and now is within
 [`startTime` − grace, `endTime` + grace] (`DOOR_QR_SESSION_GRACE`, default
-30 min). A Session without a start or an end is open on that side. This
-applies in both modes.
+and maximum 12 h, so the door screen can be set up well ahead and still works
+after an overrun; a lower value narrows it). Minting and check-in use the
+same window, so the screen never shows a QR the check-in would refuse. A
+Session without a start or an end is open on that side. A cancelled Session
+is closed whatever the time. This applies in both modes.
 
 ## Modes (`GUEST_SELF_CHECKIN_MODE`)
 
@@ -148,7 +151,11 @@ single-use. What bounds a photo of it sent elsewhere:
 
 - it expires after `DOOR_QR_TTL` (60 s), and the screen replaces it every
   quarter of that (15 s);
-- the Session window: outside it nothing is accepted;
+- the Session window: outside it nothing is accepted. At 12 h on each side
+  it bounds the day of the Session rather than the hour, so the lifetime,
+  the use cap and the fact that a QR exists only while door staff keep the
+  screen open do the real work; narrow `DOOR_QR_SESSION_GRACE` if a door
+  screen has to stay up unattended;
 - each token lets at most `DOOR_QR_MAX_USES` (default 20) guests in. Only a
   check-in that happened (or found the guest already checked in) spends a
   use; an e-mail without a Ticket gives its use back, so junk e-mails cannot

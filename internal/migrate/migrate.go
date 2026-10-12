@@ -1284,6 +1284,33 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND tgname IN ('events_require_active_publisher', 'events_require_active_canceller')
 			  AND NOT tgisinternal
 		) = 2`,
+	// Competitions, their Stages, Entrants and append-only ledger
+	// (ADR-0068), with the ledger's triggers and its live-score index.
+	20261012140000: `
+		SELECT 1
+		WHERE to_regclass('public.competitions') IS NOT NULL
+		  AND to_regclass('public.competition_stages') IS NOT NULL
+		  AND to_regclass('public.competition_entrants') IS NOT NULL
+		  AND to_regclass('public.competition_entrant_members') IS NOT NULL
+		  AND to_regclass('public.competition_submissions') IS NOT NULL
+		  AND to_regclass('public.competition_adjustments') IS NOT NULL
+		  AND to_regclass('public.competition_submissions_live_manual_idx') IS NOT NULL
+		  AND (
+			SELECT count(*) FROM pg_trigger
+			WHERE NOT tgisinternal AND tgname IN (
+				'competition_entrant_members_same_event',
+				'competitions_event_is_fixed',
+				'competition_submissions_append_only',
+				'competition_adjustments_append_only',
+				'competitions_require_active_creator',
+				'competitions_require_active_archiver',
+				'competition_entrants_require_active_creator',
+				'competition_submissions_require_active_recorder',
+				'competition_submissions_require_active_revoker',
+				'competition_adjustments_require_active_recorder',
+				'competition_adjustments_require_active_revoker'
+			)
+		  ) = 11`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
