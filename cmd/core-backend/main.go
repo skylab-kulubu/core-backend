@@ -676,7 +676,7 @@ func main() {
 		sky = newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout)
 		sky.TemplateKey = templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
 		sky.CertificateTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey)
-		sky.TeamMembershipTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY", mail.DefaultTeamMembershipTemplateKey)
+		membershipTemplateKeys(sky, os.LookupEnv)
 		if raw := os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"); raw != "" {
 			tid, err := uuid.Parse(raw)
 			if err != nil {
@@ -700,10 +700,11 @@ func main() {
 		}
 	}
 
-	// Team membership mail (docs/team-membership-mail.md): a person added to
-	// a team or removed from one through the membership routes is told by
-	// mail. The change is queued in the database and sent by a worker, so
-	// SkyMail being down delays the mail, never the change.
+	// Membership mail (docs/team-membership-mail.md): a person added to a
+	// Group or removed from one through the membership routes is told by
+	// mail, worded by the Group's kind (team, Privileged, other). The change
+	// is queued in the database and sent by a worker, so SkyMail being down
+	// delays the mail, never the change.
 	teamMembership, teamMembershipMetrics, teamMembershipStopped := startTeamMembershipMail(
 		workers, teammail.NewPostgresQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
 	worker("team membership mail", teamMembershipStopped)

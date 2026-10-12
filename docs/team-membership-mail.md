@@ -1,8 +1,21 @@
-# Team membership mail
+# Membership mail (team, role and group)
 
-A person added to a team, or removed from one, through core's membership
-routes gets the SkyMail template `club.team-membership` ("SKY LAB takım
-üyeliğinde değişiklik"):
+A person added to a Group, or removed from one, through core's membership
+routes gets a mail (Yusuf, 2026-10-12: every Group, no exceptions). The
+Group's kind picks the SkyMail template:
+
+| Kind | Groups | Template | Subject |
+| --- | --- | --- | --- |
+| `team` | a team and its `LIDERLER`/`KOORDINATORLER` (table below) | `club.team-membership` | SKY LAB takım üyeliğinde değişiklik |
+| `role` | a Privileged root (`AUTHZ_PRIVILEGED_ROOTS`; production: `/ADMIN`, `/UYELER/YK`, `/UYELER/DK`) and every Group under one | `club.role-membership` | SKY LAB yönetim yetkilerinde değişiklik |
+| `group` | every other Group: the club (`/UYELER`), an area (`/UYELER/ARGE`), an area's own `LIDERLER`, technical Groups (`ESKI-EDITORLER`), Groups outside `/UYELER` | `club.group-membership` | SKY LAB grup üyeliğinde değişiklik |
+
+`teammail.KindOf` decides, from the path alone: a team first (`TeamOf`), then
+a Privileged root or a Group under one, then anything else. Until 2026-10-12
+only teams were mailed; a person added to `/UYELER/DK` got nothing, which is
+what this change ends.
+
+The routes:
 
 - `POST /v1/groups/:groupId/members` (admin panel: add a person to a Group)
 - `DELETE /v1/groups/:groupId/members/:userId` (remove a person; through a
@@ -13,7 +26,8 @@ A change made in Keycloak's own console sends nothing: core does not see it.
 
 ## Which Groups are teams
 
-`teammail.TeamOf` decides, from the Group's path alone:
+`teammail.TeamOf` decides, from the Group's path alone (`no` rows get the
+role or the group mail, by the table above):
 
 | Path | Team? | `TeamName` |
 | --- | --- | --- |
@@ -21,9 +35,9 @@ A change made in Keycloak's own console sends nothing: core does not see it.
 | `/UYELER/<area>/<team>/LIDERLER` | yes | the team's: `WEBLAB · Web Geliştirme` (`Role` = `leader`) |
 | `/UYELER/<area>/<team>/KOORDINATORLER` | yes | the team's: `WEBLAB · Web Geliştirme` (`Role` = `coordinator`) |
 | a sub-team below a team (e.g. `/UYELER/ARGE/ALGOLAB/AGC`, and its `LIDERLER`) | yes | the sub-team's: `AGC` |
-| `/UYELER` (the club), `/UYELER/<area>` (ARGE, ORGANIZASYON, …, and technical Groups such as `ESKI-EDITORLER`), an area's own `LIDERLER` | no | |
-| a Privileged root and everything under it (`AUTHZ_PRIVILEGED_ROOTS`, by default `/ADMIN`, `/YK`, `/DK`, `/UYELER/ADMIN`, `/UYELER/YK`, `/UYELER/DK`; e.g. `/UYELER/YK/BASKAN`). A Group named `ADMIN`, `YK` or `DK` elsewhere is a team like any other ([authz-roles.md](authz-roles.md#privileged-roots-authz_privileged_roots)) | no | |
-| anything outside `/UYELER` | no | |
+| `/UYELER` (the club), `/UYELER/<area>` (ARGE, ORGANIZASYON, …, and technical Groups such as `ESKI-EDITORLER`), an area's own `LIDERLER` | no: group mail | |
+| a Privileged root and everything under it (`AUTHZ_PRIVILEGED_ROOTS`, by default `/ADMIN`, `/YK`, `/DK`, `/UYELER/ADMIN`, `/UYELER/YK`, `/UYELER/DK`; e.g. `/UYELER/YK/BASKAN`). A Group named `ADMIN`, `YK` or `DK` elsewhere is a team like any other ([authz-roles.md](authz-roles.md#privileged-roots-authz_privileged_roots)) | no: role mail | |
+| anything outside `/UYELER` | no: group mail | |
 
 The code is the team Group's name and the Turkish name its `display_name_tr`
 (the name the public team list shows); without a Turkish name, or with one
@@ -34,6 +48,8 @@ its new name; one that is gone is mailed under the last segment of its path.
 
 ## Variables
 
+### Team mail (`club.team-membership`)
+
 | Variable | Value |
 | --- | --- |
 | `TeamName` | as in the table above |
@@ -42,14 +58,40 @@ its new name; one that is gone is mailed under the last segment of its path.
 | `EffectiveAt` | the day of the change in Europe/Istanbul, `dd.MM.yyyy` |
 | `LeaderName` | the full name of the person who made the change ("İşlemi yapan"); empty, and the line left out, for a service account or someone core may no longer name |
 
+### Role mail (`club.role-membership`)
+
+| Variable | Value |
+| --- | --- |
+| `GroupName` | the changed Group itself, named like a team: code · `display_name_tr` (`YK · Yönetim Kurulu`), the code alone without a Turkish name; a subgroup by its own name (`BASKAN`) |
+| `Role` | the root the Group is or sits under, by its last segment: `board` (YK, Yönetim Kurulu), `audit` (DK, Denetim Kurulu), `admin` (ADMIN), `privileged` (a root the template has no words for) |
+| `Action` | `added` or `removed` |
+| `EffectiveAt` | as in the team mail |
+| `ActorName` | who made the change, as `LeaderName` in the team mail ("İşlemi yapan"); empty for a service account or someone core may no longer name |
+
+The text says what the Group is ("Yönetim Kurulu'na eklendin"), that its
+management rights were added to or taken from the account, and asks the
+person to tell an administrator if they did not expect the change.
+
+### Group mail (`club.group-membership`)
+
+| Variable | Value |
+| --- | --- |
+| `GroupName` | as in the role mail (`ARGE · Ar-Ge`, `ESKI-EDITORLER`) |
+| `Action` | `added` or `removed` |
+| `EffectiveAt` | as in the team mail |
+| `ActorName` | as in the role mail |
+
+The Group is read from the directory when the mail is sent; one that is gone
+by then is named by the last segment of its path.
+
 The mail goes to the person's primary e-mail (Keycloak's `email`), with core's
 profile name as the recipient name.
 
 ## One mail per change
 
 - **Add:** before the write, core reads the Group (skipped when the route
-  names it by a path that is no team) and, for a team, the person's direct
-  Groups, together bounded to 3 s. Already a direct member: Keycloak takes the
+  names it by a path whose kind is off) and the person's direct Groups,
+  together bounded to 3 s. Already a direct member: Keycloak takes the
   add again, nothing changed, no mail. A read that fails or times out lets the
   add go on without a mail, and is logged without the person and counted
   (`skylab_team_membership_mail_precheck_errors_total`).
@@ -57,7 +99,7 @@ profile name as the recipient name.
   own and is mailed.
 - **Remove:** only when the person is on the roster; the mail names the Group
   they were removed from (the subgroup they sat in).
-- A write that fails sends nothing. A Group that is not a team costs no
+- A write that fails sends nothing. A Group whose kind is off costs no
   membership read (and no read at all when named by path).
 - One row waits per person, Group and action: the same change made again
   before its mail went (a double click on add) is not queued twice
@@ -87,8 +129,11 @@ membership write ──▶ Keycloak (204) ──▶ INSERT team_membership_mails
                read person + team + actor ──▶ POST SkyMail /v1/mail_tasks/single
 ```
 
-- The queue is `team_membership_mails`: ids, the Group's path, the action and
-  the time, never an address or a name. A pass takes one row at a time
+- The queue is `team_membership_mails`: ids, the Group's path, the action,
+  the time and the kind it was queued for (`kind`: `team`, `role`, `group`;
+  migration `20261012170000`, default `team`), never an address or a name.
+  The sending core's rule (`KindOf`) picks the mail; the column says what
+  waits. A pass takes one row at a time
   (`FOR UPDATE SKIP LOCKED`), leases it for two minutes (one send is bounded
   to 45 s) and stamps `claimed_at`; it deletes or retries the row only while
   `claimed_at` is still its own. A retry releases the claim, so the row
@@ -100,10 +145,12 @@ membership write ──▶ Keycloak (204) ──▶ INSERT team_membership_mails
   `skylab_team_membership_mail_queue_errors_total`.
 - A send cut short by core stopping is no failure: the row keeps its attempts
   and is taken again once its lease runs out.
-- At send time, the person is skipped — the row deleted, nothing sent — when
-  they are erased, being erased (`deletion_pending`), hard-purged, disabled in
+- At send time a row whose kind has been switched off since it was queued
+  is skipped (`skipped_kind_off`). The person is skipped — the row deleted,
+  nothing sent — when they are erased, being erased (`deletion_pending`), hard-purged, disabled in
   Keycloak or gone (`skipped_inactive`), or have no primary e-mail
-  (`skipped_no_email`).
+  (`skipped_no_email`). A Keycloak service account has no primary e-mail and
+  lands here.
 - SkyMail's answer decides the rest: `2xx` deletes the row; `400`/`422` (the
   body itself is refused) drops it as `rejected`; anything else — `404` (the
   template is not seeded yet), `401`/`403`, `429`, `5xx`, no token, no
@@ -116,21 +163,41 @@ membership write ──▶ Keycloak (204) ──▶ INSERT team_membership_mails
 
 | Variable | Unset | Empty |
 | --- | --- | --- |
-| `SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY` | `club.team-membership` | off |
+| `SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY` | `club.team-membership` | team mail off |
+| `SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY` | `club.role-membership` | role mail off |
+| `SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY` | `club.group-membership` | group mail off |
 
 It needs core's SkyMail client (`KEYCLOAK_URL`, `KEYCLOAK_REALM`,
 `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, `SKYMAIL_URL`). Startup says
-which state it is in: `team membership mail: on (template …)` or
-`team membership mail: off (…)`. Off, the membership routes read nothing for
-it. There is no template id fallback.
+which state it is in: `team membership mail: on (template club.team-membership;
+role club.role-membership; group club.group-membership)` (a kind set empty
+reads `off`), or `team membership mail: off (…)` when SkyMail is not
+configured or all three keys are empty. Off, the membership routes read
+nothing for it. A kind that is off is neither read for nor queued. There is
+no template id fallback.
+
+Before 2026-10-12 `SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY=` (empty) turned the
+whole mail off; now it turns the team mail off only. To turn everything off,
+set all three empty.
 
 ## Metrics (`/v1/metrics`, internal)
 
+The names keep the `team_membership` prefix they had when only teams were
+mailed, so existing readers go on working; they count every kind.
+
 - `skylab_team_membership_mail_enabled` — 1 on, 0 off
+- `skylab_team_membership_mail_kind_enabled{kind}` — `team`, `role`,
+  `group`: 1 when the kind has a template key
 - `skylab_team_membership_mail_total{outcome}` — `sent`, `failed` (retried),
   `rejected`, `expired`, `skipped_inactive`, `skipped_no_email`,
-  `skipped_not_team` (queued by a core whose rule was wider)
+  `skipped_kind_off` (the kind was switched off after the row was queued),
+  `skipped_not_team` (kept for its readers, always 0 since every Group is
+  mailed)
+- `skylab_team_membership_mail_by_kind_total{kind,outcome}` — the same
+  outcomes of a send by kind (`expired` has no kind: rows are dropped by
+  age)
 - `skylab_team_membership_mail_enqueued_total`,
+  `skylab_team_membership_mail_enqueued_by_kind_total{kind}`,
   `skylab_team_membership_mail_queue_errors_total`,
   `skylab_team_membership_mail_precheck_errors_total`
 - `skylab_team_membership_mail_coalesced_total{kind}` — `duplicate` (the same
@@ -141,8 +208,8 @@ it. There is no template id fallback.
   `skylab_team_membership_mail_last_success_timestamp_seconds`
 
 A growing `oldest_age_seconds` with `failed` rising means SkyMail is refusing:
-the `skymail_call_failed` line with `"kind":"team_membership"` carries the
-status ([skymail-templates.md](skymail-templates.md)).
+the `skymail_call_failed` line with `"kind":"team_membership"` (or
+`role_membership`, `group_membership`) carries the status ([skymail-templates.md](skymail-templates.md)).
 
 ## Sending a mail for an earlier change
 
@@ -152,9 +219,46 @@ that is two real changes and sends two mails (removed, then added). To send
 only the "added" mail, queue the row directly (production database, `core`):
 
 ```sql
-INSERT INTO team_membership_mails (id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at)
-VALUES (gen_random_uuid(), '<person id>', '<actor id or NULL>', '/UYELER/<area>/<team>', 'added', '<when>', now());
+INSERT INTO team_membership_mails (id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at, kind)
+VALUES (gen_random_uuid(), '<person id>', '<actor id or NULL>', '/UYELER/<area>/<team>', 'added', '<when>', now(), 'team');
 ```
+
+`kind` is `team`, `role` or `group` by the Group (it only describes the row;
+the worker picks the mail by the path).
 
 `occurred_at` is the day the mail shows; keep it within 72 hours of now or the
 worker drops the row as expired before sending it.
+
+## Rollout
+
+1. SkyMail first: merge the two templates (`club.role-membership`,
+   `club.group-membership`, skymail-frontend) and run the production template
+   seed.
+2. Then core. A core whose template is not seeded yet gets `404` from
+   SkyMail: the row waits and is retried (30 s doubling to 30 min) for 72
+   hours, so a seed that lands within that time sends every waiting mail and
+   nothing is lost. Core does not skip a kind for a missing template, because
+   it cannot tell "not seeded yet" from a short SkyMail outage; to hold a
+   kind back on purpose, set its key empty.
+3. While the old and the new core both run (seconds, during the rollout), an
+   old core may take a role or group row and drop it as `skipped_not_team`;
+   a change made in those seconds may get no mail.
+
+## Compared with other products
+
+What matches and where we differ (Yusuf's decision, 2026-10-12):
+
+- Microsoft 365 Groups send a welcome mail when a member is added (it can be
+  turned off per group); Google Groups can send an optional welcome message;
+  GitHub tells a person of their team and organization membership
+  (the organization invitation mail, team notifications). Our team and
+  group mails follow these.
+- Microsoft Entra ID sends no mail when someone is added to a security group,
+  nor, by default, when an administrator role is assigned (Privileged
+  Identity Management alerts are opt-in). **Deviation:** we mail every Group,
+  the Privileged ones included (`club.role-membership`), with no per-Group
+  switch: membership in YK, DK or ADMIN gives management rights, so the
+  person hears of it, and an unexpected change is noticed by the one it
+  concerns.
+- Microsoft 365 and Google Groups send no mail on a removal by default.
+  **Deviation:** we mail removals too, as the team mail always has.
