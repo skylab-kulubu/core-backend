@@ -31,6 +31,11 @@ type Store interface {
 	TeamGroupIDs(ctx context.Context) ([]string, error)
 	// DeleteTeams deletes every row of the teams (deleted teams).
 	DeleteTeams(ctx context.Context, groupIDs []string) (int64, error)
+	// TeamChoosers are the people with a choice of kind k on channel ch on
+	// any of the teams (a News send's possible followers).
+	TeamChoosers(ctx context.Context, ch Channel, k Kind, groupIDs []string) ([]uuid.UUID, error)
+	// ListPeople is every explicit choice of each of people, by person.
+	ListPeople(ctx context.Context, people []uuid.UUID) (map[uuid.UUID][]Setting, error)
 }
 
 // PostgresStore is the communication_preferences table.
@@ -131,6 +136,45 @@ func (s *PostgresStore) DeleteTeams(ctx context.Context, groupIDs []string) (int
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+func (s *PostgresStore) TeamChoosers(ctx context.Context, ch Channel, k Kind, groupIDs []string) ([]uuid.UUID, error) {
+	if len(groupIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT user_id FROM communication_preferences
+		WHERE channel = $1 AND scope = 'team' AND news_kind = $2 AND group_id = ANY($3)
+		ORDER BY user_id`, string(ch), string(k), groupIDs)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+}
+
+func (s *PostgresStore) ListPeople(ctx context.Context, people []uuid.UUID) (map[uuid.UUID][]Setting, error) {
+	out := map[uuid.UUID][]Setting{}
+	if len(people) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT user_id, channel, scope, coalesce(group_id, ''), coalesce(news_kind, ''), enabled, source, updated_at
+		FROM communication_preferences WHERE user_id = ANY($1)`, people)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var person uuid.UUID
+		var st Setting
+		var channel, scope, kind, source string
+		if err := rows.Scan(&person, &channel, &scope, &st.Category.GroupID, &kind, &st.Enabled, &source, &st.UpdatedAt); err != nil {
+			return nil, err
+		}
+		st.Channel, st.Category.Scope, st.Category.Kind, st.Source = Channel(channel), Scope(scope), Kind(kind), Source(source)
+		out[person] = append(out[person], st)
+	}
+	return out, rows.Err()
 }
 
 // MemoryStore is a Store in memory, for tests and local runs. Inactive
@@ -242,4 +286,32 @@ func (m *MemoryStore) DeleteTeams(_ context.Context, groupIDs []string) (int64, 
 		}
 	}
 	return n, nil
+}
+
+func (m *MemoryStore) TeamChoosers(_ context.Context, ch Channel, k Kind, groupIDs []string) ([]uuid.UUID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []uuid.UUID
+	for person, rows := range m.rows {
+		for key := range rows {
+			if key.channel == ch && key.category.Scope == ScopeTeam && key.category.Kind == k && slices.Contains(groupIDs, key.category.GroupID) {
+				out = append(out, person)
+				break
+			}
+		}
+	}
+	slices.SortFunc(out, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+	return out, nil
+}
+
+func (m *MemoryStore) ListPeople(_ context.Context, people []uuid.UUID) (map[uuid.UUID][]Setting, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[uuid.UUID][]Setting{}
+	for _, person := range people {
+		for _, s := range m.rows[person] {
+			out[person] = append(out[person], s)
+		}
+	}
+	return out, nil
 }

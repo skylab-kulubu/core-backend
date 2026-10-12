@@ -74,6 +74,28 @@ func TestStores(t *testing.T) {
 			if ids, err := store.TeamGroupIDs(ctx); err != nil || !slices.Equal(ids, []string{"g-airlab", "g-weblab"}) {
 				t.Fatalf("ids = %v %v", ids, err)
 			}
+			// The audience's reads (bilet 03): who chose a kind on a team,
+			// and many people's rows at once.
+			for _, c := range []struct {
+				kind  commpref.Kind
+				teams []string
+				want  []uuid.UUID
+			}{
+				{commpref.KindNews, []string{"g-weblab"}, []uuid.UUID{other}},
+				{commpref.KindAnnouncement, []string{"g-weblab"}, []uuid.UUID{person}},
+				{commpref.KindNews, []string{"g-airlab", "g-weblab"}, []uuid.UUID{other}},
+				{commpref.KindAnnouncement, []string{"g-airlab"}, nil},
+				{commpref.KindNews, nil, nil},
+			} {
+				got, err := store.TeamChoosers(ctx, commpref.ChannelEmail, c.kind, c.teams)
+				if err != nil || !slices.Equal(got, c.want) {
+					t.Fatalf("choosers %s %v = %v %v", c.kind, c.teams, got, err)
+				}
+			}
+			byPerson, err := store.ListPeople(ctx, []uuid.UUID{person, other, uuid.New()})
+			if err != nil || len(byPerson) != 2 || len(byPerson[person]) != 2 || len(byPerson[other]) != 2 {
+				t.Fatalf("list people = %+v %v", byPerson, err)
+			}
 			if n, err := store.DeleteTeams(ctx, []string{"g-weblab"}); err != nil || n != 2 {
 				t.Fatalf("delete teams: %d %v", n, err)
 			}

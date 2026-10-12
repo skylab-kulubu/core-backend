@@ -15,7 +15,7 @@ carries a one-click link that turns its own categories off.
 **Transactional messages never read it**, on any channel: sign-in codes,
 tickets, certificates, team membership, Mail onayı and contact consent
 confirmations go whatever the preferences say. Only News sends (bilet 03's
-audience) are filtered by it.
+audience, [`news-audience.md`](news-audience.md)) are filtered by it.
 
 Code: `internal/commpref`. Table: `communication_preferences`.
 

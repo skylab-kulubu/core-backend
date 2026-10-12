@@ -79,3 +79,7 @@ For such a token core reads the person's Groups with `GET /users/{id}/groups`, t
 - **Permissions.** Nothing new: `service-account-core` already holds `view-users` and `manage-users`. Keycloak leaves out of each page the Groups the caller may not view, and these roles view every Group. If they are ever taken away, the call answers `403` and marked tokens get `503`; a narrower fine-grained permission could instead answer fewer Groups than the person has.
 
 Nothing changes until the mapper is switched on for a client whose tokens reach core (the `admin` client first). Until then no token carries the marker.
+
+## News audience
+
+`POST /v1/audiences/resolve` ([`news-audience.md`](news-audience.md)) reads the Group tree (`GET /groups`, `GET /groups/{id}/children`), the direct members of every Group under `/UYELER` in full representation (`GET /groups/{id}/members?briefRepresentation=false`, for `emailVerified` and `serviceAccountClientId`) and `GET /users/{id}` for a follower in no `/UYELER` Group. One read serves 30 s. Nothing new is needed: these are the Group and user reads above.

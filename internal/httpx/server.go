@@ -164,6 +164,11 @@ type Deps struct {
 	// answers its routes 503.
 	CommunicationPreferences *commpref.Service
 
+	// Audience resolves a News send's audience for SkyMail's service account
+	// (docs/news-audience.md). Nil or off answers POST /v1/audiences/resolve
+	// 503.
+	Audience *commpref.Audience
+
 	// MediaDecodeMetrics are the media decode budget's state and counters
 	// (docs/media-lifecycle.md, "Decode budget"), served on /v1/metrics.
 	// Nil leaves them out.
@@ -407,6 +412,8 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/consents/lookup", consents.Lookup)
 	app.Get("/v1/consents/audience", consents.Audience)
 	app.Post("/v1/consents/renewal-requests", consents.RequestRenewal)
+	// SkyMail's service account with audience:read: who a News send goes to.
+	app.Post("/v1/audiences/resolve", handlers.NewAudienceHandler(deps.Audience).Resolve)
 
 	app.Get("/v1/users/me", me.GetMe)
 	app.Put("/v1/users/me", me.PutMe)
