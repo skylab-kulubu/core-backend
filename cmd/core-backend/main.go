@@ -48,6 +48,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
+	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 	"github.com/skylab-kulubu/core-backend/internal/teammail"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
@@ -161,10 +162,22 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("authz role mode: %s (%s)", roleMode, authz.RoleModeEnv)
+	// The Group paths whose members, and their subgroups', are Privileged
+	// (docs/authz-roles.md): the six roots unless set. A list core cannot
+	// read stops startup.
+	privilegedRoots, err := authz.PrivilegedRootsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("authz privileged roots: %s (%s)", strings.Join(privilegedRoots, ", "), authz.PrivilegedRootsEnv)
 	authzPolicy := authz.DefaultPolicy()
 	authzPolicy.RoleMode = roleMode
+	authzPolicy.PrivilegedRoots = privilegedRoots
 	authzRoleMetrics := authz.NewRoleMetrics(log.Default(), time.Now)
 	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics))
+	// The Team code rule every Group create and rename passes
+	// (docs/team-codes.md), over the same roots.
+	groupNames := teamcode.NewRules(authzPolicy)
 	users := user.NewPostgresStore(pool)
 	events := event.NewPostgresStore(pool)
 	seasons := season.NewPostgresStore(pool)
@@ -424,6 +437,11 @@ func main() {
 		if warning := identity.PermissionRolesWarning(authn.ResourceAudience, roleMode, missingRoles, err); warning != "" {
 			log.Print(warning)
 		}
+		// Each Privileged root looked up by its path: found (with its id)
+		// and missing in one line. It does not stop core.
+		rootContext, cancelRootCheck := context.WithTimeout(signals, 15*time.Second)
+		log.Print(identity.PrivilegedRootsLine(rootContext, keycloakDirectory, privilegedRoots))
+		cancelRootCheck()
 		dir = keycloakDirectory
 		siteRoles = keycloakDirectory
 	}
@@ -671,7 +689,7 @@ func main() {
 	// mail. The change is queued in the database and sent by a worker, so
 	// SkyMail being down delays the mail, never the change.
 	teamMembership, teamMembershipMetrics, teamMembershipStopped := startTeamMembershipMail(
-		workers, teammail.NewPostgresQueue(pool), sky, dir, users, log.Printf)
+		workers, teammail.NewPostgresQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
 	worker("team membership mail", teamMembershipStopped)
 
 	var render certificate.Renderer
@@ -738,6 +756,8 @@ func main() {
 			AccessProjector:       accessProjector,
 			GroupCache:            overageGroups,
 			Membership:            teamMembership,
+			GroupNames:            &groupNames,
+			TeamCodes:             teamcode.NewPostgresLedger(pool),
 		}, mailer),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
