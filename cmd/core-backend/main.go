@@ -173,9 +173,22 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("authz privileged roots: %s (%s)", strings.Join(privilegedRoots, ", "), authz.PrivilegedRootsEnv)
+	// Whether Leaders manage their Teams through core
+	// (docs/team-delegation.md): off unless set. A value core cannot read
+	// stops startup.
+	teamDelegation, err := authz.ParseTeamDelegation(os.Getenv(authz.TeamDelegationEnv))
+	if err != nil {
+		log.Fatal(err)
+	}
+	teamDelegationOptions, err := identity.TeamDelegationOptionsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("team delegation: %s (%s)", map[bool]string{false: "off", true: "on"}[teamDelegation], authz.TeamDelegationEnv)
 	authzPolicy := authz.DefaultPolicy()
 	authzPolicy.RoleMode = roleMode
 	authzPolicy.PrivilegedRoots = privilegedRoots
+	authzPolicy.TeamDelegation = teamDelegation
 	authzRoleMetrics := authz.NewRoleMetrics(log.Default(), time.Now)
 	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics))
 	// The Team code rule every Group create and rename passes
@@ -779,7 +792,28 @@ func main() {
 	}
 	// The Group writes of the identity routes go through the Team audit
 	// record (docs/team-audit.md): no row, no change.
-	auditedDir := identity.AuditedDirectory(dir, teamaudit.NewPostgres(pool), log.Printf)
+	teamAudit := teamaudit.NewPostgres(pool)
+	auditedDir := identity.AuditedDirectory(dir, teamAudit, log.Printf)
+	// Team delegation's reads (docs/team-delegation.md) go to the directory
+	// itself: the Group by id with its parent, the caller's Groups, role
+	// mappings. Off, its decisions refuse every Leader.
+	var delegation *identity.TeamDelegation
+	if reads, ok := dir.(identity.TeamReads); ok {
+		teamDelegationOptions.Logf = log.Printf
+		delegation = identity.NewTeamDelegation(authzPolicy, dir, reads, teamDelegationOptions)
+	}
+	// With delegation on, core checks at once that it sees protection at
+	// all (a Privileged root reads as protected); a failure is an ERROR line
+	// and every delegated write is refused until the check passes.
+	if delegation.On() {
+		canaryContext, cancelCanary := context.WithTimeout(signals, 15*time.Second)
+		if root, err := delegation.Canary(canaryContext); err == nil {
+			log.Printf("team delegation: protection canary passed (%s)", root)
+		} else {
+			log.Printf("ERROR team delegation: protection canary failed: %v", err)
+		}
+		cancelCanary()
+	}
 
 	app := httpx.New(httpx.Deps{
 		Users: user.NewService(users, dir),
@@ -790,6 +824,8 @@ func main() {
 			Membership:            teamMembership,
 			GroupNames:            &groupNames,
 			TeamCodes:             teamcode.NewPostgresLedger(pool),
+			Delegation:            delegation,
+			TeamAudit:             teamAudit,
 		}, mailer),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
@@ -838,6 +874,7 @@ func main() {
 		GuestApplyMetrics:        handlers.NewGuestApplyMetrics(),
 		Authz:                    az,
 		EditableSites:            editableSites,
+		ManagedTeams:             delegation,
 		AuthzRoleMetrics:         authzRoleMetrics,
 		GuestCheckInMetrics:      doorQR,
 		GuestApplyPublicIPLimit:  guestApplyIPLimit,

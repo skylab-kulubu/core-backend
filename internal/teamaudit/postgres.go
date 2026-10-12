@@ -47,6 +47,9 @@ func (p *Postgres) Deny(ctx context.Context, r Record, errorCode string) error {
 }
 
 func (p *Postgres) insert(ctx context.Context, r Record, outcome Outcome, errorCode string) (uuid.UUID, error) {
+	if bad := r.checkOutcome(outcome); bad != "" {
+		return uuid.Nil, unavailable(bad)
+	}
 	r, bad := r.normalize()
 	if bad != "" {
 		return uuid.Nil, unavailable(bad)

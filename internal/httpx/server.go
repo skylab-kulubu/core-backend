@@ -140,6 +140,11 @@ type Deps struct {
 	// the UI (docs/authz-roles.md). Nil answers an empty list.
 	EditableSites *editablesites.Sites
 
+	// ManagedTeams answers the capabilities route's managedTeams: the Teams
+	// the caller is a Leader of, read from Keycloak
+	// (docs/team-delegation.md). Nil answers an empty list.
+	ManagedTeams *identity.TeamDelegation
+
 	// AuthzRoleMetrics are the role mode and its disagreements, served on
 	// /v1/metrics. Nil serves nothing.
 	AuthzRoleMetrics *authz.RoleMetrics
@@ -407,8 +412,13 @@ func New(deps Deps) *fiber.App {
 	app.Put("/v1/users/me", me.PutMe)
 	app.Patch("/v1/users/me", me.PatchMe)
 	if deps.Authz != nil {
-		app.Get("/v1/users/me/capabilities", handlers.NewCapabilitiesHandler(deps.Authz, editableSitesSource(deps.EditableSites)).Get)
+		capabilities := handlers.NewCapabilitiesHandler(deps.Authz, editableSitesSource(deps.EditableSites))
+		if deps.ManagedTeams != nil {
+			capabilities.WithManagedTeams(deps.ManagedTeams)
+		}
+		app.Get("/v1/users/me/capabilities", capabilities.Get)
 	}
+	app.Get("/v1/users/me/managed-groups", ident.ManagedGroups)
 	app.Post("/v1/users/me/profile-picture", limitUploads, me.ProfilePicture)
 	app.Delete("/v1/users/me/profile-picture", me.DeleteProfilePicture)
 	app.Get("/v1/users", ident.ListUsers)
@@ -426,6 +436,7 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/groups/:groupId", ident.GetGroup)
 	app.Patch("/v1/groups/:groupId", ident.UpdateGroup)
 	app.Get("/v1/groups/:groupId/members", ident.Members)
+	app.Get("/v1/groups/:groupId/member-candidates", ident.MemberCandidates)
 	app.Post("/v1/groups/:groupId/members", ident.AddMember)
 	app.Delete("/v1/groups/:groupId/members/:userId", ident.RemoveMember)
 	app.Get("/v1/groups/:groupId/client-roles", ident.GroupClientRoles)

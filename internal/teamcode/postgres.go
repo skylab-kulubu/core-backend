@@ -25,9 +25,20 @@ var ErrUnavailable = errors.New("teamcode: database unavailable")
 // connection.
 type PostgresLedger struct {
 	pool *pgxpool.Pool
+	// turn lets one Locked of this process at a time take a connection and
+	// wait for the advisory lock: the others wait here, holding none, so
+	// writes queued behind the lock never use up the pool that the lock
+	// holder and every other route need (review of #235, B2). The advisory
+	// lock still orders the processes.
+	turn chan struct{}
 }
 
-func NewPostgresLedger(pool *pgxpool.Pool) *PostgresLedger { return &PostgresLedger{pool: pool} }
+func NewPostgresLedger(pool *pgxpool.Pool) *PostgresLedger {
+	return &PostgresLedger{pool: pool, turn: make(chan struct{}, 1)}
+}
+
+// lockTimeout bounds the wait for the advisory lock held by another core.
+const lockTimeout = "10s"
 
 // Locked runs write in a transaction that holds LockName. A code write
 // retires is committed with the transaction, after write's Keycloak call has
@@ -35,11 +46,20 @@ func NewPostgresLedger(pool *pgxpool.Pool) *PostgresLedger { return &PostgresLed
 // itself fails after Keycloak took the write, the error says which code was
 // left unretired (a code, never a person).
 func (l *PostgresLedger) Locked(ctx context.Context, write func(ctx context.Context, records Records) error) error {
+	select {
+	case l.turn <- struct{}{}:
+		defer func() { <-l.turn }()
+	case <-ctx.Done():
+		return fmt.Errorf("%w: waiting for the lock: %w", ErrUnavailable, ctx.Err())
+	}
 	tx, err := l.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: begin: %w", ErrUnavailable, err)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '`+lockTimeout+`'`); err != nil {
+		return fmt.Errorf("%w: lock timeout: %w", ErrUnavailable, err)
+	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, LockName); err != nil {
 		return fmt.Errorf("%w: lock: %w", ErrUnavailable, err)
 	}
