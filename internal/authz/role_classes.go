@@ -14,7 +14,10 @@ package authz
 // A role on neither list is unclassified and counts as an admin role
 // (fail-closed): a new role is protected until someone classifies it, and
 // core logs and counts it (TeamDelegation). Realm roles are always
-// protected; they are not classified here. Changing either list is Yusuf's
+// protected; they are not classified here: the Java era's realm roles
+// (USER on /UYELER, a Team's own name, <TEAM>_LEADER) leave the groups in
+// the role cleanup's F3 (.scratch/rol-temizligi), and until then they keep
+// the Groups under them Privileged's alone. Changing either list is Yusuf's
 // decision (docs/team-delegation.md lists both).
 
 // RoleClass is the class of a client role.
@@ -150,4 +153,14 @@ func ClassifyRole(clientID, role string) RoleClass {
 // (the protection read walks it).
 func DelegableRole(clientID, role string) bool {
 	return ClassifyRole(clientID, role) == RoleClassApp
+}
+
+// ProtectedRole reports whether role of clientID is a known admin role
+// (AdminRoles); an app role or a role nobody has classified is not. It is
+// the old name, kept so a caller written against it still builds.
+//
+// Deprecated: use ClassifyRole (== RoleClassAdmin for "surely an admin
+// role", DelegableRole for the delegation's decision).
+func ProtectedRole(clientID, role string) bool {
+	return ClassifyRole(clientID, role) == RoleClassAdmin
 }

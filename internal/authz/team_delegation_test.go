@@ -351,6 +351,27 @@ func TestRoleListsAreDisjoint(t *testing.T) {
 	}
 }
 
+// ProtectedRole, the old name, answers "a known admin role": an app role
+// and a role nobody has classified are not.
+func TestProtectedRoleIsAKnownAdminRole(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		client, role string
+		want         bool
+	}{
+		{"core", RoleGroupsManage, true},
+		{"frontend-main", "cms:access", true},
+		{"skymail", "client:admin", true},
+		{"realm-management", "view-users", true},
+		{"core", "certificate:issue", false},
+		{"forms", "viewer", false},
+	} {
+		if got := ProtectedRole(tc.client, tc.role); got != tc.want {
+			t.Errorf("%s %s: %v", tc.client, tc.role, got)
+		}
+	}
+}
+
 func TestTeamOf(t *testing.T) {
 	t.Parallel()
 	roots, leaders := DefaultPrivilegedRoots(), DefaultPolicy().LeaderSubgroups

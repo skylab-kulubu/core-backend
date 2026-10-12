@@ -903,6 +903,26 @@ func TestTeamDelegationTopTeamSiteEditorKeepsSubTeams(t *testing.T) {
 	wantStatus(t, "own Team", e.add("webLeader", "/UYELER/ARGE/WEBLAB", "exLeader"), fiber.StatusNoContent, "")
 }
 
+// Production's Java-era realm roles (measurement of 2026-10-12 22:42): USER
+// on /UYELER, a Team's own name on it, <TEAM>_LEADER on its Leader groups.
+// Realm roles always protect (fail-closed): until the role cleanup's F3
+// takes them off the groups, delegation stays shut under them.
+func TestTeamDelegationJavaEraRealmRolesProtect(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, on, role, target string }{
+		{"USER on /UYELER", "/UYELER", "USER", "/UYELER/ARGE/WEBLAB/FRONT"},
+		{"a Team's own name", "/UYELER/ARGE/WEBLAB", "WEBLAB", "/UYELER/ARGE/WEBLAB"},
+		{"a Leader role on a Sub-team's Leader group", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER", "FRONT_LEADER", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER"},
+		{"ADMIN on the area", "/UYELER/ARGE", "ADMIN", "/UYELER/ARGE/WEBLAB/FRONT"},
+	} {
+		e := newDelegationEnv(t, delegationSetup{on: true})
+		if err := e.dir.SetGroupClientRoles(context.Background(), e.ids[tc.on], []identity.ClientRole{{Role: tc.role}}); err != nil {
+			t.Fatal(err)
+		}
+		wantStatus(t, tc.name, e.add("webLeader", tc.target, "newcomer"), fiber.StatusForbidden, authz.RefusalProtectedGroup)
+	}
+}
+
 // A write reads the Groups' protection fresh: a role mapped in Keycloak
 // (its console, a script, another core) after a Leader's read is seen at
 // once (review of #235, O1).

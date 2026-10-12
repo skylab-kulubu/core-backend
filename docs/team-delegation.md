@@ -55,7 +55,11 @@ stay in Keycloak and in the audit record.
   (`offline_access`) on `/UYELER` or an area makes every Team under it
   Privileged's alone; core logs each protected Group with its reason
   (`team delegation: group <id> is protected (realm role …)`), and ticket
-  03's report lists the mappings. A write reads protection fresh; a read
+  03's report lists the mappings. Production's Java-era realm roles (`USER`
+  on `/UYELER`, a Team's own name on it, `<TEAM>_LEADER` on its Leader
+  groups; measurement of 2026-10-12) therefore keep delegation shut until
+  the role cleanup's F3 takes them off the groups (hub
+  `.scratch/rol-temizligi`); delegation opens after F3. A write reads protection fresh; a read
   keeps each Group's answer 60 s.
 - **Look-alike names**: a Group whose name, blanks trimmed and case
   folded, starts with `LIDERLER` or `KOORDINATORLER` without being one
