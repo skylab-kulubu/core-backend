@@ -3,6 +3,7 @@ package teammail
 import (
 	"testing"
 
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 )
 
@@ -24,13 +25,18 @@ func TestTeamOf(t *testing.T) {
 		{path: "/UYELER/ARGE"},
 		{path: "/UYELER/ARGE/LIDERLER"},
 		{path: "/UYELER/ESKI-EDITORLER"},
-		// Privileged Groups and anything under them.
+		// Privileged roots and anything under them.
 		{path: "/ADMIN"},
 		{path: "/UYELER/ADMIN"},
 		{path: "/UYELER/YK"},
 		{path: "/UYELER/YK/BASKAN"},
 		{path: "/UYELER/YK/BASKAN/YARDIMCI"},
 		{path: "/UYELER/DK/LIDERLER"},
+		// The same names elsewhere are no Privileged root: plain teams.
+		{path: "/UYELER/ARGE/YK", team: "/UYELER/ARGE/YK", isTeamOK: true},
+		{path: "/UYELER/ARGE/WEBLAB/ADMIN", team: "/UYELER/ARGE/WEBLAB/ADMIN", isTeamOK: true},
+		{path: "/UYELER/ARGE/WEBLAB/ADMIN/LIDERLER", team: "/UYELER/ARGE/WEBLAB/ADMIN", role: "LIDERLER", isTeamOK: true},
+		{path: "/UYELER/YKX/WEBLAB", team: "/UYELER/YKX/WEBLAB", isTeamOK: true},
 		// Outside the members' tree, and malformed paths.
 		{path: "/SERVIS/ARGE/WEBLAB"},
 		{path: ""},
@@ -38,10 +44,30 @@ func TestTeamOf(t *testing.T) {
 		{path: "/UYELER/ARGE/WEBLAB/LIDERLER/X"},
 		{path: "/UYELER//WEBLAB"},
 	} {
-		team, ok := TeamOf(tc.path)
+		team, ok := TeamOf(tc.path, authz.DefaultPrivilegedRoots())
 		if ok != tc.isTeamOK || team.Path != tc.team || team.Role != tc.role {
 			t.Errorf("TeamOf(%q) = %+v, %v; want %q %q %v", tc.path, team, ok, tc.team, tc.role, tc.isTeamOK)
 		}
+	}
+}
+
+// The roots are the configured ones (AUTHZ_PRIVILEGED_ROOTS), and a
+// Service without them takes the six default roots.
+func TestTeamOfConfiguredRoots(t *testing.T) {
+	t.Parallel()
+	roots := []string{"/UYELER/ARGE/SKYSEC"}
+	if _, ok := TeamOf("/UYELER/ARGE/SKYSEC/RED", roots); ok {
+		t.Error("a Group under a configured root is a team")
+	}
+	if team, ok := TeamOf("/UYELER/YK/BASKAN", roots); !ok || team.Path != "/UYELER/YK/BASKAN" {
+		t.Errorf("TeamOf(/UYELER/YK/BASKAN) = %+v, %v with YK no root", team, ok)
+	}
+	svc, err := NewService(Config{Queue: NewMemoryQueue(), People: &fakePeople{}, Groups: fakeGroups{}, Mail: &fakeMail{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.Notifies(identity.Group{Path: "/UYELER/YK/BASKAN"}) || !svc.Notifies(identity.Group{Path: "/UYELER/ARGE/YK"}) {
+		t.Error("the default Service does not read the six roots")
 	}
 }
 

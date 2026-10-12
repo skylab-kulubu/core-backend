@@ -22,7 +22,7 @@ A change made in Keycloak's own console sends nothing: core does not see it.
 | `/UYELER/<area>/<team>/KOORDINATORLER` | yes | the team's: `WEBLAB · Web Geliştirme` (`Role` = `coordinator`) |
 | a sub-team below a team (e.g. `/UYELER/ARGE/ALGOLAB/AGC`, and its `LIDERLER`) | yes | the sub-team's: `AGC` |
 | `/UYELER` (the club), `/UYELER/<area>` (ARGE, ORGANIZASYON, …, and technical Groups such as `ESKI-EDITORLER`), an area's own `LIDERLER` | no | |
-| any Privileged Group and everything under it: `ADMIN`, `YK`, `DK` (`/ADMIN`, `/UYELER/YK/BASKAN`, …) | no | |
+| a Privileged root and everything under it (`AUTHZ_PRIVILEGED_ROOTS`, by default `/ADMIN`, `/YK`, `/DK`, `/UYELER/ADMIN`, `/UYELER/YK`, `/UYELER/DK`; e.g. `/UYELER/YK/BASKAN`). A Group named `ADMIN`, `YK` or `DK` elsewhere is a team like any other ([authz-roles.md](authz-roles.md#privileged-roots-authz_privileged_roots)) | no | |
 | anything outside `/UYELER` | no | |
 
 The code is the team Group's name and the Turkish name its `display_name_tr`

@@ -13,6 +13,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 	"golang.org/x/sync/errgroup"
 )
@@ -51,6 +52,8 @@ type service struct {
 	accessProjector       DeletionProjector
 	groupCache            GroupCache
 	membership            MembershipNotifier
+	names                 teamcode.Rules
+	codes                 teamcode.Ledger
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer, mailers ...mail.Mailer) Service {
@@ -68,6 +71,13 @@ type Options struct {
 	// Notifies of (the team membership mail, internal/teammail). Nil hears
 	// nothing, and the membership writes read nothing for it.
 	Membership MembershipNotifier
+	// GroupNames is the Team code rule every Group create and rename passes
+	// (docs/team-codes.md). Nil is the default policy's.
+	GroupNames *teamcode.Rules
+	// TeamCodes are the codes core's records hold and the lock a create or
+	// rename holds from its check to its write. Nil is a ledger of this
+	// process only, with no records.
+	TeamCodes teamcode.Ledger
 }
 
 // MembershipNotifier hears of membership changes made through the service.
@@ -111,6 +121,15 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		accessProjector:       options.AccessProjector,
 		groupCache:            options.GroupCache,
 		membership:            options.Membership,
+		codes:                 options.TeamCodes,
+	}
+	if options.GroupNames != nil {
+		s.names = *options.GroupNames
+	} else {
+		s.names = teamcode.NewRules(authz.DefaultPolicy())
+	}
+	if s.codes == nil {
+		s.codes = teamcode.NewMemoryLedger()
 	}
 	if len(mailers) > 0 {
 		s.mail = mailers[0]
@@ -151,6 +170,9 @@ func (s *service) GetGroup(ctx context.Context, p authz.Principal, groupRef stri
 	return s.dir.GetGroup(ctx, groupRef)
 }
 
+// CreateGroup creates name under parentRef, or at the realm's top. The name
+// passes the Team code rule (docs/team-codes.md), checked and written under
+// the Team code lock.
 func (s *service) CreateGroup(ctx context.Context, p authz.Principal, parentRef, name string) (Group, error) {
 	if err := s.allow(p, authz.TypeGroup, authz.Create); err != nil {
 		return Group{}, err
@@ -159,9 +181,38 @@ func (s *service) CreateGroup(ctx context.Context, p authz.Principal, parentRef,
 	if name == "" {
 		return Group{}, ErrInvalid
 	}
-	return s.dir.CreateGroup(ctx, parentRef, name)
+	parentPath := ""
+	if parentRef != "" {
+		parent, err := s.dir.GetGroup(ctx, parentRef)
+		if err != nil {
+			return Group{}, err
+		}
+		// The Group the rule was checked under is the one written under.
+		parentRef, parentPath = parent.ID, parent.Path
+	}
+	scope, err := s.names.Create(parentPath, name)
+	if err != nil {
+		return Group{}, err
+	}
+	var created Group
+	err = s.codes.Locked(ctx, func(ctx context.Context, records teamcode.Records) error {
+		if err := s.nameFree(ctx, records, scope, parentPath+"/"+name, name, ""); err != nil {
+			return err
+		}
+		var err error
+		created, err = s.dir.CreateGroup(ctx, parentRef, name)
+		return err
+	})
+	if err != nil {
+		return Group{}, err
+	}
+	return created, nil
 }
 
+// UpdateGroup writes the Group's attributes, and its name when name is a new
+// one. A new name passes the Team code rule as a create's does, and the old
+// one is retired with the write: no new Group takes it again. The same name,
+// blanks aside, is no rename, whatever rule the name predates.
 func (s *service) UpdateGroup(ctx context.Context, p authz.Principal, groupRef, name string, attrs map[string]string) (Group, error) {
 	if err := s.allow(p, authz.TypeGroup, authz.Update); err != nil {
 		return Group{}, err
@@ -170,17 +221,81 @@ func (s *service) UpdateGroup(ctx context.Context, p authz.Principal, groupRef, 
 	if err != nil {
 		return Group{}, err
 	}
-	if name != "" && name != g.Name {
-		// A new name is a new path for the Group and everything under it.
-		defer s.forgetAllGroups()
-	}
-	if name != "" {
-		g.Name = name
-	}
 	if attrs != nil {
 		g.Attributes = attrs
 	}
-	return s.dir.UpdateGroup(ctx, g)
+	name = strings.TrimSpace(name)
+	if name == "" || name == strings.TrimSpace(g.Name) {
+		return s.dir.UpdateGroup(ctx, g)
+	}
+	subgroups, err := s.dir.Subgroups(ctx, g.ID)
+	if err != nil {
+		return Group{}, err
+	}
+	scope, err := s.names.Rename(g.Path, name, len(subgroups) == 0)
+	if err != nil {
+		return Group{}, err
+	}
+	// A new name is a new path for the Group and everything under it;
+	// forgotten even when the write fails: it may have reached Keycloak.
+	defer s.forgetAllGroups()
+	old := g.Name
+	g.Name = name
+	var updated Group
+	err = s.codes.Locked(ctx, func(ctx context.Context, records teamcode.Records) error {
+		// A change of case keeps the code: the records that hold it are
+		// this Group's own, and nothing is retired.
+		sameCode := strings.EqualFold(strings.TrimSpace(old), name)
+		checked := scope
+		if sameCode {
+			checked = teamcode.AtPath
+		}
+		path := g.Path[:strings.LastIndex(g.Path, "/")+1] + name
+		if err := s.nameFree(ctx, records, checked, path, name, g.ID); err != nil {
+			return err
+		}
+		if !sameCode && !s.names.Reserved(old) {
+			if err := records.Retire(ctx, old, g.ID, teamcode.ReasonRenamed); err != nil {
+				return err
+			}
+		}
+		var err error
+		updated, err = s.dir.UpdateGroup(ctx, g)
+		return err
+	})
+	if err != nil {
+		return Group{}, err
+	}
+	return updated, nil
+}
+
+// nameFree checks that no Group of the realm but except sits at path and,
+// for a name that must be free Everywhere, that no other Group, Owner team
+// record or retired code holds name. Names compare without case.
+func (s *service) nameFree(ctx context.Context, records teamcode.Records, scope teamcode.Scope, path, name, except string) error {
+	groups, err := s.dir.ListGroups(ctx)
+	if err != nil {
+		return err
+	}
+	for _, g := range groups {
+		if g.ID == except {
+			continue
+		}
+		if strings.EqualFold(g.Path, path) || (scope == teamcode.Everywhere && strings.EqualFold(strings.TrimSpace(g.Name), name)) {
+			return teamcode.Taken(name)
+		}
+	}
+	if scope != teamcode.Everywhere {
+		return nil
+	}
+	held, err := records.Held(ctx, name)
+	if err != nil {
+		return err
+	}
+	if held {
+		return teamcode.Taken(name)
+	}
+	return nil
 }
 
 func (s *service) Members(ctx context.Context, p authz.Principal, groupRef string) ([]GroupMember, error) {

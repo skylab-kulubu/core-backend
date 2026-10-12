@@ -33,6 +33,8 @@ At startup core only checks them (`MissingClientRoles`, GET only). When a role i
 
 The roles that stand for the Privileged Groups (`event:manage`, `season:manage`, … ; ADR-0059) are also Keycloak's: e-skylab-keycloak creates them and seeds their group mappings once (`KEYCLOAK_RECONCILE_ONLY=core-roles`). At startup core checks them with the same two reads as the certificate roles and logs one line that starts with `authz permission roles` when some are missing. Which mode reads them (`AUTHZ_ROLE_MODE`) and what each grants: [`authz-roles.md`](authz-roles.md).
 
+Right after, core looks up each Privileged root (`AUTHZ_PRIVILEGED_ROOTS`) by its path (`GET /group-by-path/{path}`, the Group read above, nothing new) and logs one line that starts with `authz privileged roots`: the roots found with their Group ids and the missing ones ([`authz-roles.md`](authz-roles.md#privileged-roots-authz_privileged_roots)).
+
 ## Dashboard summary
 
 The Members section of `GET /v1/dashboard/summary` reads the `UYELER` tree: `GET /group-by-path/UYELER`, then `GET /groups/{id}/children` and `GET /groups/{id}/members` for each Group in it, about `1 + 2 × G` requests for `G` Groups. One read serves every caller for 5 minutes, runs one at a time with a 5 s limit, a failure stops new reads for 30 s, and only people who may read people trigger it. Nothing new is needed: these are the Group reads of the rosters. See [`dashboard-summary.md`](dashboard-summary.md).
