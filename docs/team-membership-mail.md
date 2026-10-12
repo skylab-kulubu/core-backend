@@ -27,6 +27,12 @@ The routes:
 
 A change made in Keycloak's own console sends nothing: core does not see it.
 
+A Privileged Group's membership change also tells ADMIN and that root's
+other members, by the privilege notice (`club.privilege-change`,
+[privilege-change-mail.md](privilege-change-mail.md)); the person changed
+gets only the role mail above. While that notice is on, a Privileged Group
+is read for the notice even with the role mail off.
+
 ## Which Groups are teams
 
 `teammail.TeamOf` decides, from the Group's path alone (`no` rows get the

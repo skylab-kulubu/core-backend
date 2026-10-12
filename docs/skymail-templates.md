@@ -58,6 +58,12 @@ of losing it. Each is addressed by key alone,
 and `SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY` (unset: the key above; empty: that
 kind off). See [team-membership-mail.md](team-membership-mail.md).
 
+A fifth, the privilege notice `club.privilege-change`, rides the same worker
+on a queue of its own: a Group's role mapping changed tells ADMIN, and a
+Privileged Group's membership changed tells ADMIN and that root's members.
+`SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY` addresses it the same way. See
+[privilege-change-mail.md](privilege-change-mail.md).
+
 ## Configuration
 
 | Variable | Unset | Empty |

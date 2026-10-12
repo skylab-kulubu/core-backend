@@ -542,6 +542,11 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		// none names them as the one who made the change.
 		`DELETE FROM team_membership_mails WHERE subject_id = $1`,
 		`UPDATE team_membership_mails SET actor_id = NULL WHERE actor_id = $1`,
+		// Privilege notices not sent yet: none goes to the person, and none
+		// names them as the one changed or the one who made the change.
+		`DELETE FROM privilege_notice_mails WHERE recipient_id = $1`,
+		`UPDATE privilege_notice_mails SET subject_id = NULL WHERE subject_id = $1`,
+		`UPDATE privilege_notice_mails SET actor_id = NULL WHERE actor_id = $1`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(ctx, statement, id); err != nil {

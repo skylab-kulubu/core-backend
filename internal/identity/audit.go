@@ -180,6 +180,11 @@ func (d *auditedDirectory) member(ctx context.Context, action teamaudit.Action, 
 		return err
 	}
 	r := teamaudit.Record{Action: action, GroupID: g.ID, GroupPath: g.Path, TargetUserID: userID}
+	if action == teamaudit.ActionMemberAdd {
+		// An add of a person who is not YTÜ-linked to a Privileged Group
+		// carries the caller's confirmation (markUnverified).
+		r.After = auditAfterFrom(ctx)
+	}
 	return d.write(ctx, r, func() (*teamaudit.State, error) {
 		return nil, do(ctx, groupID, userID)
 	})

@@ -30,14 +30,14 @@ func TestStartTeamMembershipMail(t *testing.T) {
 			RoleMembershipTemplateKey: mail.DefaultRoleMembershipTemplateKey, GroupMembershipTemplateKey: mail.DefaultGroupMembershipTemplateKey,
 			Tokens: mail.StaticToken("t"),
 		},
-			on: true, logged: "team membership mail: on (template club.team-membership; role club.role-membership; group club.group-membership)"},
+			on: true, logged: "team membership mail: on (template club.team-membership; role club.role-membership; group club.group-membership; privilege notice off)"},
 		{name: "team only", sky: &mail.SkyMail{BaseURL: "http://127.0.0.1:1", TeamMembershipTemplateKey: mail.DefaultTeamMembershipTemplateKey, Tokens: mail.StaticToken("t")},
-			on: true, logged: "team membership mail: on (template club.team-membership; role off; group off)"},
+			on: true, logged: "team membership mail: on (template club.team-membership; role off; group off; privilege notice off)"},
 		{name: "teams off", sky: &mail.SkyMail{BaseURL: "http://127.0.0.1:1", GroupMembershipTemplateKey: mail.DefaultGroupMembershipTemplateKey, Tokens: mail.StaticToken("t")},
-			on: true, logged: "team membership mail: on (template off; role off; group club.group-membership)"},
+			on: true, logged: "team membership mail: on (template off; role off; group club.group-membership; privilege notice off)"},
 		{name: "no SkyMail", logged: "team membership mail: off (SkyMail is not configured"},
 		{name: "empty keys", sky: &mail.SkyMail{BaseURL: "http://127.0.0.1:1", Tokens: mail.StaticToken("t")},
-			logged: "team membership mail: off (SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY, SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY and SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY are empty)"},
+			logged: "team membership mail: off (SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY, SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY, SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY and SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY are empty)"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -48,7 +48,7 @@ func TestStartTeamMembershipMail(t *testing.T) {
 				fmt.Fprintf(&logs, format+"\n", a...)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
-			notifier, metrics, stopped := startTeamMembershipMail(ctx, teammail.NewMemoryQueue(), test.sky, identity.NewMemory(), user.NewMemoryStore(), nil, logf)
+			notifier, _, metrics, stopped := startTeamMembershipMail(ctx, teammail.NewMemoryQueue(), nil, test.sky, identity.NewMemory(), user.NewMemoryStore(), nil, logf)
 			cancel()
 			select {
 			case <-stopped:
@@ -127,7 +127,7 @@ func TestMembershipMailQueuesEveryGroupThroughTheService(t *testing.T) {
 	membershipTemplateKeys(sky, func(string) (string, bool) { return "", false })
 	queue := teammail.NewMemoryQueue()
 	ctx, cancel := context.WithCancel(context.Background())
-	notifier, _, stopped := startTeamMembershipMail(ctx, queue, sky, dir, user.NewMemoryStore(), []string{"/ADMIN", "/UYELER/YK", "/UYELER/DK"}, func(string, ...any) {})
+	notifier, _, _, stopped := startTeamMembershipMail(ctx, queue, nil, sky, dir, user.NewMemoryStore(), []string{"/ADMIN", "/UYELER/YK", "/UYELER/DK"}, func(string, ...any) {})
 	// The worker stops first, so the queue keeps what the routes wrote.
 	cancel()
 	<-stopped
