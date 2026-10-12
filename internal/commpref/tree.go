@@ -23,6 +23,9 @@ type TeamNode struct {
 	ParentID string
 	// Public is public_listing=true: the team may be followed (Karar D7).
 	Public bool
+	// listing is the team's own public_listing ("true", "false"), "" when
+	// it has none and takes the nearest team above's (listed).
+	listing string
 	// Children are the teams directly below, by path.
 	Children []string
 }
@@ -54,9 +57,13 @@ func NewTree(groups []identity.Group, privilegedRoots []string) *Tree {
 		if display == "" {
 			display = code
 		}
+		listing := strings.ToLower(strings.TrimSpace(g.Attributes["public_listing"]))
+		if listing != "true" && listing != "" {
+			listing = "false"
+		}
 		t.teams[g.ID] = &TeamNode{
 			ID: g.ID, Path: g.Path, Code: code, DisplayName: display,
-			Public: strings.EqualFold(strings.TrimSpace(g.Attributes["public_listing"]), "true"),
+			Public: listing == "true", listing: listing,
 		}
 		t.byPath[g.Path] = g.ID
 	}
@@ -118,15 +125,25 @@ func (t *Tree) root(id string) string {
 	return chain[len(chain)-1]
 }
 
-// visible reports whether id or a team above it is listed publicly: a
-// team that may be followed, with its sub-teams.
-func (t *Tree) visible(id string) bool {
+// listed reports whether team id is publicly listed: its own
+// public_listing, or, when it has none, the nearest team above's that has
+// one. A team without one anywhere above it is hidden. A sub-team of a
+// listed team is listed unless it says public_listing=false itself.
+func (t *Tree) listed(id string) bool {
 	for _, link := range t.chain(id) {
-		if t.teams[link].Public {
-			return true
+		if listing := t.teams[link].listing; listing != "" {
+			return listing == "true"
 		}
 	}
 	return false
+}
+
+// seen reports whether a person with membership m may see team id: they
+// are in it (or in a team below it), or it is listed. A hidden team is
+// neither shown to, nor on by default for, nor turned on or off by anyone
+// else (O2).
+func (t *Tree) seen(m Membership, id string) bool {
+	return m.Teams[id] || t.listed(id)
 }
 
 // Membership is what a person's Groups make them: a Member (in /UYELER),
@@ -213,7 +230,9 @@ type Value struct {
 //     team's subscriber gets its sub-teams' mail too, and may turn a
 //     sub-team off on its own); off otherwise.
 //
-// A team that is no longer in the tree is off.
+// A team that is no longer in the tree is off, and so is a hidden team
+// (not listed, see listed) the person is not in, whatever the choices above
+// it: its News reaches only its own members (O2).
 func (t *Tree) Resolve(e Explicit, m Membership, c Category) Value {
 	master := true
 	if v, ok := e[Master()]; ok {
@@ -237,6 +256,9 @@ func (t *Tree) Resolve(e Explicit, m Membership, c Category) Value {
 		}
 	case ScopeTeam:
 		v = Value{Origin: OriginDefault}
+		if !t.seen(m, c.GroupID) {
+			break
+		}
 		chain := t.chain(c.GroupID)
 		decided := false
 		for i, id := range chain {

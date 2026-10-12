@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,8 @@ type Store interface {
 	Apply(ctx context.Context, person uuid.UUID, changes []Change, source Source, now time.Time) error
 	// EraseSubject deletes every row of person (account erasure).
 	EraseSubject(ctx context.Context, person uuid.UUID) (int64, error)
+	// Subjects are the people rows name.
+	Subjects(ctx context.Context) ([]uuid.UUID, error)
 	// TeamGroupIDs are the Group ids rows name.
 	TeamGroupIDs(ctx context.Context) ([]string, error)
 	// DeleteTeams deletes every row of the teams (deleted teams).
@@ -101,6 +104,14 @@ func (s *PostgresStore) EraseSubject(ctx context.Context, person uuid.UUID) (int
 		return 0, fmt.Errorf("communication preferences: erase: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+func (s *PostgresStore) Subjects(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT user_id FROM communication_preferences ORDER BY user_id`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 }
 
 func (s *PostgresStore) TeamGroupIDs(ctx context.Context) ([]string, error) {
@@ -188,6 +199,19 @@ func (m *MemoryStore) EraseSubject(_ context.Context, person uuid.UUID) (int64, 
 	n := int64(len(m.rows[person]))
 	delete(m.rows, person)
 	return n, nil
+}
+
+func (m *MemoryStore) Subjects(context.Context) ([]uuid.UUID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []uuid.UUID
+	for person, rows := range m.rows {
+		if len(rows) > 0 {
+			out = append(out, person)
+		}
+	}
+	slices.SortFunc(out, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+	return out, nil
 }
 
 func (m *MemoryStore) TeamGroupIDs(context.Context) ([]string, error) {

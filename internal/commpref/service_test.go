@@ -145,24 +145,25 @@ func TestFollowAndInheritance(t *testing.T) {
 	}
 }
 
-// Only a visible team may be followed (D7); a hidden team, a Privileged
-// Group, an area or an unknown id cannot. Turning one off, or forgetting a
-// choice for a deleted team, is allowed.
+// Only a team the person may see can be turned on or off (D7, O2): a hidden
+// team they are not in (also a hidden sub-team of their own team), a
+// Privileged Group, an area and an unknown id all answer the same, so the
+// answer tells nothing of a hidden team (D1). Forgetting a choice is always
+// allowed.
 func TestUpdateRefusesHiddenAndUnknownTeams(t *testing.T) {
 	f := newFixture(t)
-	for _, id := range []string{"g-gizli", "g-yk", "g-yk-alt", "g-arge", "g-uyeler", "g-weblab-l", "nope"} {
-		if _, err := f.update(set(Team(id, KindAnnouncement), true)); !errors.Is(err, ErrUnknownTeam) {
-			t.Fatalf("%s: %v", id, err)
+	for _, id := range []string{"g-gizli", "g-projex", "g-yk", "g-yk-alt", "g-arge", "g-uyeler", "g-weblab-l", "nope"} {
+		for _, v := range []bool{true, false} {
+			if _, err := f.update(set(Team(id, KindAnnouncement), v)); !errors.Is(err, ErrUnknownTeam) {
+				t.Fatalf("%s %v: %v", id, v, err)
+			}
 		}
 	}
-	if _, err := f.update(set(Team("nope", KindAnnouncement), false)); !errors.Is(err, ErrUnknownTeam) {
-		t.Fatalf("off for an unknown team: %v", err)
+	if _, err := f.update(set(Team("g-back", KindNews), false)); err != nil {
+		t.Fatalf("off for a listed sub-team of their own team: %v", err)
 	}
-	if _, err := f.update(set(Team("g-gizli", KindNews), false)); err != nil {
-		t.Fatalf("off for a hidden team: %v", err)
-	}
-	if _, err := f.update(forget(Team("deleted-team", KindNews))); err != nil {
-		t.Fatalf("forget a deleted team: %v", err)
+	if _, err := f.update(forget(Team("deleted-team", KindNews)), forget(Team("g-gizli", KindNews))); err != nil {
+		t.Fatalf("forget a deleted or hidden team: %v", err)
 	}
 	for name, changes := range map[string][]Change{
 		"none":      nil,
@@ -174,8 +175,123 @@ func TestUpdateRefusesHiddenAndUnknownTeams(t *testing.T) {
 		}
 	}
 	rows, _ := f.store.List(context.Background(), f.person)
-	if len(rows) != 1 || rows[0].Category != Team("g-gizli", KindNews) {
+	if len(rows) != 1 || rows[0].Category != Team("g-back", KindNews) {
 		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+// O2 and D1 on the screen: a hidden sub-team of the person's own team is
+// not shown to a non-member; a choice left on a hidden team (an old link,
+// a former membership) shows masked in following, names nothing, and can
+// be forgotten. A member of the hidden team sees it, on by default.
+func TestScreenHidesHiddenTeams(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := f.store.Apply(ctx, f.person, []Change{set(Team("g-gizli", KindNews), false), set(Team("g-projex", KindNews), false)}, SourceUnsubscribeLink, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	s := f.mine()
+	if _, ok := find(s.Teams, "g-projex"); ok {
+		t.Fatalf("hidden sub-team shown: %v", ids(s.Teams))
+	}
+	if len(s.Following) != 2 {
+		t.Fatalf("following = %+v", s.Following)
+	}
+	for _, r := range s.Following {
+		if !r.Hidden || r.Code != "" || r.Path != "" || r.DisplayName != HiddenTeamName || len(r.Children) != 0 || r.Kinds.Haber[ChannelEmail].Effective {
+			t.Fatalf("not masked: %+v", r)
+		}
+	}
+	for _, r := range s.Followable {
+		if r.GroupID == "g-gizli" || r.GroupID == "g-projex" {
+			t.Fatalf("hidden team followable: %+v", s.Followable)
+		}
+	}
+	s, err := f.update(forget(Team("g-gizli", KindNews)), forget(Team("g-projex", KindNews)))
+	if err != nil || len(s.Following) != 0 {
+		t.Fatalf("after forgetting: %+v %v", s.Following, err)
+	}
+
+	if err := f.dir.AddMember(ctx, "g-projex", f.person); err != nil {
+		t.Fatal(err)
+	}
+	projex, ok := find(f.mine().Teams, "g-projex")
+	if !ok || !projex.Member || projex.Hidden || projex.Code != "PROJEX" || !projex.Kinds.Duyuru[ChannelEmail].Effective {
+		t.Fatalf("member's own hidden team: %+v %v", projex, ok)
+	}
+}
+
+// countingDirectory counts the tree reads.
+type countingDirectory struct {
+	*identity.Memory
+	lists int
+}
+
+func (d *countingDirectory) ListGroups(ctx context.Context) ([]identity.Group, error) {
+	d.lists++
+	return d.Memory.ListGroups(ctx)
+}
+
+// O1: the screen, its changes and the public page share one tree read a
+// minute.
+func TestTreeIsReadOnceAMinute(t *testing.T) {
+	f := newFixture(t)
+	dir := &countingDirectory{Memory: f.dir}
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	svc := NewService(f.svc.Config(), f.store, dir, authz.DefaultPrivilegedRoots())
+	svc.SetClock(func() time.Time { return now })
+	ctx := context.Background()
+	for range 3 {
+		if _, err := svc.Mine(ctx, f.person); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := svc.Update(ctx, f.person, []Change{set(Club(KindNews), false)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ReadLink(ctx, token(t, svc, f.person, Club(KindNews))); err != nil {
+		t.Fatal(err)
+	}
+	if dir.lists != 1 {
+		t.Fatalf("tree read %d times", dir.lists)
+	}
+	now = now.Add(TreeTTL)
+	if _, err := svc.Mine(ctx, f.person); err != nil || dir.lists != 2 {
+		t.Fatalf("after a minute: %d reads, %v", dir.lists, err)
+	}
+}
+
+// D2: the rows of a person Keycloak no longer has go; a Keycloak error, or
+// too many people gone at once, removes nothing.
+func TestRemoveDeletedPeople(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	gone := uuid.New()
+	for _, person := range []uuid.UUID{f.person, gone} {
+		if err := f.store.Apply(ctx, person, []Change{set(Club(KindNews), false)}, SourceAccountCenter, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	broken := NewService(f.svc.Config(), f.store, failingDirectory{}, nil)
+	if n, err := broken.RemoveDeletedPeople(ctx); err == nil || n != 0 {
+		t.Fatalf("keycloak down: %d %v", n, err)
+	}
+	if n, err := f.svc.RemoveDeletedPeople(ctx); err != nil || n != 1 {
+		t.Fatalf("removed %d %v", n, err)
+	}
+	if rows := must(f.store.List(ctx, f.person)); len(rows) != 1 {
+		t.Fatalf("a known person lost rows: %v", rows)
+	}
+	for range 6 {
+		if err := f.store.Apply(ctx, uuid.New(), []Change{set(Club(KindNews), false)}, SourceAccountCenter, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := f.svc.RemoveDeletedPeople(ctx); !errors.Is(err, errTooManyGone) || n != 0 {
+		t.Fatalf("too many gone: %d %v", n, err)
+	}
+	if subjects := must(f.store.Subjects(ctx)); len(subjects) != 7 {
+		t.Fatalf("subjects = %d", len(subjects))
 	}
 }
 
@@ -294,6 +410,9 @@ func (failingDirectory) ListGroups(context.Context) ([]identity.Group, error) {
 func (failingDirectory) GroupsForUser(context.Context, uuid.UUID) ([]identity.Group, error) {
 	return nil, errors.New("keycloak down")
 }
+func (failingDirectory) GetUser(context.Context, uuid.UUID) (identity.Person, error) {
+	return identity.Person{}, errors.New("keycloak down")
+}
 
 func TestKeycloakDownIsTeamsUnavailable(t *testing.T) {
 	f := newFixture(t)
@@ -378,6 +497,9 @@ func (rootless) ListGroups(context.Context) ([]identity.Group, error) {
 	return []identity.Group{{ID: "g-x", Name: "X", Path: "/X"}}, nil
 }
 func (rootless) GroupsForUser(context.Context, uuid.UUID) ([]identity.Group, error) { return nil, nil }
+func (rootless) GetUser(context.Context, uuid.UUID) (identity.Person, error) {
+	return identity.Person{}, nil
+}
 
 func must[T any](v T, err error) T {
 	if err != nil {

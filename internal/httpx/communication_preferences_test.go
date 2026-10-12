@@ -166,6 +166,9 @@ func TestCommunicationPreferencesScreenAndChanges(t *testing.T) {
 		`{"items":[{"category":"all","channel":"email","enabled":false}],"x":1}`:         "communication_preference_invalid",
 		`{"items":[{"category":"team:g-gizli:haber","channel":"email","enabled":true}]}`: "communication_preference_team_unknown",
 		`{"items":[{"category":"team:g-arge:haber","channel":"email","enabled":true}]}`:  "communication_preference_team_unknown",
+		// D1: a hidden team answers as one that does not exist, off too.
+		`{"items":[{"category":"team:g-gizli:haber","channel":"email","enabled":false}]}`: "communication_preference_team_unknown",
+		`{"items":[{"category":"team:nope:haber","channel":"email","enabled":false}]}`:    "communication_preference_team_unknown",
 	} {
 		if got := sendJSON(t, e.app, e.token(t), fiber.MethodPut, "/v1/users/me/communication-preferences", body); got.status != fiber.StatusBadRequest || got.body["code"] != code {
 			t.Fatalf("%s: %d %v", body, got.status, got.body)
@@ -190,7 +193,8 @@ func TestUnsubscribeLinkRoutes(t *testing.T) {
 
 	page := e.send(t, httptest.NewRequest(fiber.MethodGet, target, nil))
 	if page.status != fiber.StatusOK || !strings.Contains(page.body, "WEBLAB · Duyurular") || !strings.Contains(page.body, "AIRLAB · Haberler") ||
-		!strings.Contains(page.body, `name="kapsam" value="all"`) || !strings.Contains(page.body, "my.yildizskylab.com") {
+		!strings.Contains(page.body, `name="kapsam" value="all"`) ||
+		!strings.Contains(page.body, `href="https://my.yildizskylab.com?kanal=email&amp;kategori=team%3Ag-airlab%3Ahaber"`) {
 		t.Fatalf("page %d %s", page.status, page.body)
 	}
 	publicPage(t, page)
@@ -211,12 +215,23 @@ func TestUnsubscribeLinkRoutes(t *testing.T) {
 		}
 	}
 
+	// A one-click body that also names a wider reach still turns off only
+	// the link's categories.
+	req := httptest.NewRequest(fiber.MethodPost, target, strings.NewReader("List-Unsubscribe=One-Click&kapsam=all"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if got := e.send(t, req); got.status != fiber.StatusOK || got.body != "ok" {
+		t.Fatalf("one-click with kapsam %d %q", got.status, got.body)
+	}
+	if ex := e.explicit(t); len(ex) != 2 {
+		t.Fatalf("one-click with kapsam reached further: %v", ex)
+	}
+
 	// Multipart, as RFC 8058 allows.
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
 	_ = w.WriteField("List-Unsubscribe", "One-Click")
 	_ = w.Close()
-	req := httptest.NewRequest(fiber.MethodPost, target, &body)
+	req = httptest.NewRequest(fiber.MethodPost, target, &body)
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	if got := e.send(t, req); got.status != fiber.StatusOK || got.body != "ok" {
 		t.Fatalf("multipart %d %q", got.status, got.body)

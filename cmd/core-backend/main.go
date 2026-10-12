@@ -596,12 +596,12 @@ func main() {
 		log.Printf("communication preferences: off (%s is not set)", commpref.KeyEnv)
 	}
 	if keycloakConfigured {
-		worker("communication preference deleted-team cleanup", commpref.MaintainDeletedTeams(workers, communicationPreferences, commpref.CleanupInterval, func(removed int64, err error) {
+		worker("communication preference cleanup", commpref.MaintainCleanup(workers, communicationPreferences, commpref.CleanupInterval, func(what string, removed int64, err error) {
 			if err != nil {
-				log.Printf("communication preferences: deleted-team cleanup: %v", err)
+				log.Printf("communication preferences: %s cleanup: %v", what, err)
 				return
 			}
-			log.Printf("communication preferences: removed %d rows of deleted teams", removed)
+			log.Printf("communication preferences: removed %d rows of %s", removed, what)
 		}))
 	}
 

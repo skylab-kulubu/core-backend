@@ -68,6 +68,9 @@ func TestStores(t *testing.T) {
 			if err := store.Apply(ctx, other, []commpref.Change{{Channel: commpref.ChannelEmail, Category: commpref.Team("g-airlab", commpref.KindNews), Enabled: on(true)}, {Channel: commpref.ChannelEmail, Category: commpref.Team("g-weblab", commpref.KindNews), Enabled: on(true)}}, commpref.SourceAdmin, now); err != nil {
 				t.Fatal(err)
 			}
+			if subjects, err := store.Subjects(ctx); err != nil || len(subjects) != 2 || !slices.Contains(subjects, person) || !slices.Contains(subjects, other) {
+				t.Fatalf("subjects = %v %v", subjects, err)
+			}
 			if ids, err := store.TeamGroupIDs(ctx); err != nil || !slices.Equal(ids, []string{"g-airlab", "g-weblab"}) {
 				t.Fatalf("ids = %v %v", ids, err)
 			}
@@ -86,18 +89,38 @@ func TestStores(t *testing.T) {
 		})
 	}
 
-	// The table refuses a row for a person being erased.
+	// The table refuses a new row for a person being erased, and (D4) the
+	// upsert of a row they already had: ON CONFLICT DO UPDATE runs the
+	// BEFORE INSERT trigger too. Erasure still deletes the row.
 	ctx := context.Background()
 	users := user.NewPostgresStore(pool)
 	holder := uuid.New()
 	if _, _, err := user.NewService(users).Ensure(ctx, holder, user.Profile{Email: "pref-store@example.test"}); err != nil {
 		t.Fatal(err)
 	}
+	prefs := commpref.NewPostgresStore(pool)
+	master := func(v bool) []commpref.Change {
+		return []commpref.Change{{Channel: commpref.ChannelEmail, Category: commpref.Master(), Enabled: on(v)}}
+	}
+	if err := prefs.Apply(ctx, holder, master(true), commpref.SourceAccountCenter, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := users.RequestDeletion(ctx, holder, nil); err != nil {
 		t.Fatal(err)
 	}
-	err := commpref.NewPostgresStore(pool).Apply(ctx, holder, []commpref.Change{{Channel: commpref.ChannelEmail, Category: commpref.Master(), Enabled: on(false)}}, commpref.SourceUnsubscribeLink, time.Now())
-	if !errors.Is(err, commpref.ErrSubjectInactive) {
-		t.Fatalf("err = %v", err)
+	for _, v := range []bool{false, true} {
+		if err := prefs.Apply(ctx, holder, master(v), commpref.SourceUnsubscribeLink, time.Now()); !errors.Is(err, commpref.ErrSubjectInactive) {
+			t.Fatalf("upsert %v of an existing row: %v", v, err)
+		}
+	}
+	news := []commpref.Change{{Channel: commpref.ChannelEmail, Category: commpref.Club(commpref.KindNews), Enabled: on(false)}}
+	if err := prefs.Apply(ctx, holder, news, commpref.SourceUnsubscribeLink, time.Now()); !errors.Is(err, commpref.ErrSubjectInactive) {
+		t.Fatalf("new row: %v", err)
+	}
+	if rows, _ := prefs.List(ctx, holder); len(rows) != 1 || !rows[0].Enabled || rows[0].Source != commpref.SourceAccountCenter {
+		t.Fatalf("the refused upsert changed the row: %+v", rows)
+	}
+	if n, err := prefs.EraseSubject(ctx, holder); err != nil || n != 1 {
+		t.Fatalf("erase: %d %v", n, err)
 	}
 }

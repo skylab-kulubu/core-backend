@@ -252,6 +252,22 @@ func httpURL(raw string) (string, error) {
 	return raw, nil
 }
 
+// AccountCenterLink is the Account center page for the category cat on
+// channel ch: AccountCenterURL with ?kategori=<category>&kanal=<channel>,
+// so the screen can show that row first (bilet 09). No token travels
+// there: the person signs in to the Account center.
+func (c Config) AccountCenterLink(ch Channel, cat Category) string {
+	link, err := url.Parse(c.AccountCenterURL)
+	if err != nil || !cat.Valid() || !ch.valid() {
+		return c.AccountCenterURL
+	}
+	query := link.Query()
+	query.Set("kategori", cat.String())
+	query.Set("kanal", string(ch))
+	link.RawQuery = query.Encode()
+	return link.String()
+}
+
 // TestConfig is a Config for tests and tools: key must be 32 bytes.
 func TestConfig(key []byte, origin string) Config {
 	return Config{

@@ -71,8 +71,23 @@ its sub-team FRONT, gets the News of WEBLAB's sub-team BACK by default
 own. An explicit choice on a team above beats a default below it: turning
 WEBLAB off turns FRONT off too, unless FRONT has its own choice.
 
+**Hidden teams (O2).** A team is *listed* when its own `public_listing` is
+`true`, or, when it has none, when the nearest team above with one says
+`true`; a team with `public_listing=false`, or with none anywhere above it,
+is *hidden*. A hidden team is off for everyone who is not in it (or in a
+team below it), whatever is chosen above it: a WEBLAB member's default, or
+a follower's explicit choice on WEBLAB, does not reach a hidden
+WEBLAB/PROJEX. Its own members get it on by default like any other team.
+It is not shown to anyone else (below), and nobody else can turn it on or
+off.
+
 A team that is no longer in the tree is off. A moved sub-team takes its new
 parent's choices and defaults and keeps its own choices.
+
+**The tree** is read from Keycloak (one admin call per Group) at most once
+a minute and shared by the screen, its changes and the unsubscribe page
+(O1; concurrent reads share one). A renamed, moved, re-listed or deleted
+team shows within that minute. The daily cleanups read Keycloak afresh.
 
 ## Rows
 
@@ -97,6 +112,15 @@ preferences are on or off, and a repeat finds nothing.
 every Group id Keycloak no longer has. A Group list without `/UYELER`
 deletes nothing. Core has no route that deletes a Group, so this is the
 only path.
+
+**Deleted people (D2).** In the same daily run, core asks Keycloak for
+every person who has rows and deletes the rows of those Keycloak answers
+"not found": an account deleted straight from the Keycloak console, outside
+the erasure saga, keeps no preference. Any other Keycloak error stops the
+run with nothing deleted, and so does a run that finds more than a quarter
+of the people (and more than five) gone, which a deletion outside the saga
+does not explain (Keycloak answering for another realm, say). It is one
+Keycloak read per person with rows, once a day.
 
 ## API
 
@@ -138,11 +162,16 @@ No sudo mode. A service account's token is refused (`403`).
     `default` (with `from` when the default comes from the team above the
     person is in: "üst ekipten"), and `effective` whether the message goes.
   - `TeamRow` is `{"groupId", "code", "displayName", "path", "member", "kinds": {"duyuru": {"email": Cell}, "haber": {"email": Cell}}, "children": [TeamRow]}`.
-  - `teams` are the trees of the top teams the person is in, every sub-team
-    included.
+  - `teams` are the trees of the top teams the person is in, with every
+    sub-team they may see: a hidden sub-team they are not in is left out
+    (O2).
   - `following` are the trees of the other teams the person made a choice
-    on (on any channel), from the topmost one; a hidden sub-team (neither it nor a team above
-    it publicly listed) is left out of them.
+    on (on any channel), from the topmost one, hidden sub-teams left out.
+    A hidden team the person is not in but has a choice on (left by an old
+    link or a former membership) is shown **masked** (D1):
+    `{"groupId", "hidden": true, "displayName": "Gizli ekip", "code": "", "path": ""}`,
+    its switches off and no children, so the choice can be forgotten
+    (`enabled: null`) and the screen names nothing.
   - `followable` are the publicly listed teams (`public_listing=true`) in
     neither list.
 - `PUT /v1/users/me/communication-preferences`
@@ -150,11 +179,13 @@ No sudo mode. A service account's token is refused (`403`).
   (1 to 200 items, each category and channel once) → `200` and the new
   screen. `null` forgets the choice (back to what it inherits or its
   default; "unfollow", "reset"). `channel` and `enabled` must be present; a
-  channel core does not keep yet is `400`. Turning a team on needs it to be in
-  the person's own trees or visible (publicly listed, or below a publicly
-  listed team); turning one off needs it to exist; forgetting is always
-  allowed (a deleted team's row). All items are written in one transaction
-  or none.
+  channel core does not keep yet is `400`. Turning a team on **or off**
+  needs the person to see it: they are in it, or it is listed (Karar D7,
+  O2). A hidden team they are not in, a Privileged Group, an area and an id
+  that does not exist all answer the same `400
+  communication_preference_team_unknown`, so the answer tells nothing of a
+  hidden team (D1). Forgetting is always allowed (a hidden or deleted
+  team's row). All items are written in one transaction or none.
 
 ### The unsubscribe link
 
@@ -170,7 +201,11 @@ so SkyMail never holds the key.
   Its three buttons `POST` the token with `kapsam`: `categories` (only
   these), `sources` (both kinds of every source the link names: "bu
   kaynaktan her şeyi kapat"), `all` (the channel's master switch: "tümünden çık").
-  It links to the Account center (`COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL`).
+  It links to the Account center (`COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL`)
+  with the link's first category and channel,
+  `?kanal=email&kategori=team%3A<groupId>%3Aduyuru`, so the screen can show
+  that row first (bilet 09); the token never goes there, the person signs
+  in. The confirmation page links the same way.
   When Keycloak does not answer, or a team is gone, the page names it
   "Bir ekip"; the link works the same.
 - **One-click (RFC 8058).** Every News mail carries

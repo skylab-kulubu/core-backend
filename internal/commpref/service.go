@@ -6,19 +6,32 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"golang.org/x/sync/singleflight"
 )
 
 // Directory is the Keycloak reads the preferences need: the whole Group
-// tree, and a person's Groups.
+// tree, a person's Groups, and whether a person still exists.
 type Directory interface {
 	ListGroups(ctx context.Context) ([]identity.Group, error)
 	GroupsForUser(ctx context.Context, userID uuid.UUID) ([]identity.Group, error)
+	GetUser(ctx context.Context, id uuid.UUID) (identity.Person, error)
 }
+
+// TreeTTL is how long the team tree read from Keycloak is used before it is
+// read again. Reading it is one admin call per Group, so the screen and the
+// public unsubscribe page share one copy (O1); a renamed, moved or deleted
+// team shows within a minute.
+const TreeTTL = time.Minute
+
+// HiddenTeamName is how the screen names a hidden team the person is not
+// in (D1).
+const HiddenTeamName = "Gizli ekip"
 
 // MaxChanges is the most changes one PUT writes.
 const MaxChanges = 200
@@ -30,6 +43,11 @@ type Service struct {
 	dir    Directory
 	roots  []string
 	now    func() time.Time
+
+	treeMu   sync.Mutex
+	cached   *Tree
+	cachedAt time.Time
+	reads    singleflight.Group
 }
 
 // NewService serves the preferences of store, reading the team tree from
@@ -52,12 +70,32 @@ func (s *Service) UnsubscribeURL(person uuid.UUID, ch Channel, cats []Category) 
 	return s.config.UnsubscribeURL(person, ch, cats)
 }
 
-func (s *Service) tree(ctx context.Context) (*Tree, []identity.Group, error) {
-	groups, err := s.dir.ListGroups(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrTeamsUnavailable, err)
+// tree is the team tree, read from Keycloak at most once a TreeTTL;
+// concurrent misses share one read.
+func (s *Service) tree(ctx context.Context) (*Tree, error) {
+	now := s.now()
+	s.treeMu.Lock()
+	if s.cached != nil && now.Sub(s.cachedAt) < TreeTTL {
+		tree := s.cached
+		s.treeMu.Unlock()
+		return tree, nil
 	}
-	return NewTree(groups, s.roots), groups, nil
+	s.treeMu.Unlock()
+	read, err, _ := s.reads.Do("tree", func() (any, error) {
+		groups, err := s.dir.ListGroups(ctx)
+		if err != nil {
+			return nil, err
+		}
+		tree := NewTree(groups, s.roots)
+		s.treeMu.Lock()
+		s.cached, s.cachedAt = tree, now
+		s.treeMu.Unlock()
+		return tree, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrTeamsUnavailable, err)
+	}
+	return read.(*Tree), nil
 }
 
 // Cell is one switch on the screen.
@@ -92,7 +130,11 @@ type TeamRow struct {
 	DisplayName string `json:"displayName"`
 	Path        string `json:"path"`
 	// Member is whether the person is in the team (or a team below it).
-	Member   bool      `json:"member"`
+	Member bool `json:"member"`
+	// Hidden marks a hidden team the person is not in but has a choice on:
+	// its code and path are left out and its name is HiddenTeamName. Its
+	// switches are off; forgetting the choice (null) removes the row.
+	Hidden   bool      `json:"hidden,omitempty"`
 	Kinds    KindCells `json:"kinds"`
 	Children []TeamRow `json:"children"`
 }
@@ -138,7 +180,7 @@ func (s *Service) Mine(ctx context.Context, person uuid.UUID) (Screen, error) {
 	if !s.Enabled() {
 		return Screen{}, ErrDisabled
 	}
-	tree, _, err := s.tree(ctx)
+	tree, err := s.tree(ctx)
 	if err != nil {
 		return Screen{}, err
 	}
@@ -182,48 +224,48 @@ func screen(tree *Tree, m Membership, settings []Setting) Screen {
 			Children: []TeamRow{},
 		}
 		for _, child := range node.Children {
-			// A followed team's hidden sub-team stays hidden; one of the
-			// person's own teams shows every sub-team.
-			if m.Teams[tree.root(id)] || tree.visible(child) {
+			// A hidden sub-team the person is not in stays out (O2).
+			if tree.seen(m, child) {
 				r.Children = append(r.Children, row(child))
 			}
 		}
 		return r
 	}
+	shown := map[string]bool{}
 	// Own trees: the top teams the person is in.
 	for _, root := range tree.roots {
 		if m.Teams[root] {
-			out.Teams = append(out.Teams, row(root))
+			r := row(root)
+			out.Teams = append(out.Teams, r)
+			markShown(r, shown)
 		}
 	}
-	// Following: the topmost teams outside the own trees with a choice on
-	// any channel.
-	chosen := map[string]bool{}
+	// Following: the teams not shown yet with a choice on any channel, as
+	// trees from the topmost one. A hidden team the person is not in (a
+	// choice left from an old link, or written by id) is shown masked, so
+	// the choice can still be forgotten, and names nothing (D1).
+	var chosen []string
 	for _, setting := range settings {
 		c := setting.Category
-		if c.Scope != ScopeTeam {
+		if _, ok := tree.teams[c.GroupID]; ok && c.Scope == ScopeTeam && !shown[c.GroupID] && !slices.Contains(chosen, c.GroupID) {
+			chosen = append(chosen, c.GroupID)
+		}
+	}
+	slices.SortFunc(chosen, func(a, b string) int { return strings.Compare(tree.teams[a].Path, tree.teams[b].Path) })
+	for _, id := range chosen {
+		if shown[id] {
 			continue
 		}
-		if _, ok := tree.teams[c.GroupID]; ok && !m.Teams[tree.root(c.GroupID)] {
-			chosen[c.GroupID] = true
-		}
-	}
-	var followed []string
-	for id := range chosen {
-		covered := false
-		for _, above := range tree.chain(id)[1:] {
-			if chosen[above] {
-				covered = true
-				break
+		if !tree.seen(m, id) {
+			r := TeamRow{
+				GroupID: id, DisplayName: HiddenTeamName, Hidden: true,
+				Kinds:    kinds(Category{Scope: ScopeTeam, GroupID: id}),
+				Children: []TeamRow{},
 			}
+			out.Following = append(out.Following, r)
+			shown[id] = true
+			continue
 		}
-		if !covered {
-			followed = append(followed, id)
-		}
-	}
-	slices.SortFunc(followed, func(a, b string) int { return strings.Compare(tree.teams[a].Path, tree.teams[b].Path) })
-	shown := map[string]bool{}
-	for _, id := range followed {
 		r := row(id)
 		out.Following = append(out.Following, r)
 		markShown(r, shown)
@@ -231,7 +273,7 @@ func screen(tree *Tree, m Membership, settings []Setting) Screen {
 	// Followable: public teams in neither list.
 	var public []string
 	for id, node := range tree.teams {
-		if node.Public && !m.Teams[tree.root(id)] && !shown[id] {
+		if node.Public && !shown[id] {
 			public = append(public, id)
 		}
 	}
@@ -251,10 +293,10 @@ func markShown(r TeamRow, shown map[string]bool) {
 }
 
 // Update writes a person's changes from the Account center and answers the
-// new screen. A team the person turns on must be in their own trees or
-// visible (publicly listed, or below a publicly listed team: Karar D7); a
-// team turned off must exist; forgetting a choice is always allowed, so a
-// deleted team's row can be cleared.
+// new screen. A team the person turns on or off must be one they may see:
+// one they are in, or a listed one (Karar D7, O2); any other, hidden or
+// not there, is ErrUnknownTeam alike. Forgetting a choice is always
+// allowed, so a hidden or deleted team's row can be cleared.
 func (s *Service) Update(ctx context.Context, person uuid.UUID, changes []Change) (Screen, error) {
 	if !s.Enabled() {
 		return Screen{}, ErrDisabled
@@ -274,7 +316,7 @@ func (s *Service) Update(ctx context.Context, person uuid.UUID, changes []Change
 		}
 		seen[k] = true
 	}
-	tree, _, err := s.tree(ctx)
+	tree, err := s.tree(ctx)
 	if err != nil {
 		return Screen{}, err
 	}
@@ -288,10 +330,9 @@ func (s *Service) Update(ctx context.Context, person uuid.UUID, changes []Change
 		if c.Scope != ScopeTeam || change.Enabled == nil {
 			continue
 		}
-		if _, ok := tree.teams[c.GroupID]; !ok {
-			return Screen{}, ErrUnknownTeam
-		}
-		if *change.Enabled && !m.Teams[tree.root(c.GroupID)] && !tree.visible(c.GroupID) {
+		// A hidden team the person is not in answers as one that does not
+		// exist, on or off, so the answer tells nothing of it (D1).
+		if _, ok := tree.teams[c.GroupID]; !ok || !tree.seen(m, c.GroupID) {
 			return Screen{}, ErrUnknownTeam
 		}
 	}
@@ -340,8 +381,8 @@ func (s *Service) ReadLink(ctx context.Context, token string) (Link, error) {
 	}
 	var tree *Tree
 	if s.dir != nil {
-		if groups, err := s.dir.ListGroups(ctx); err == nil {
-			tree = NewTree(groups, s.roots)
+		if read, err := s.tree(ctx); err == nil {
+			tree = read
 		}
 	}
 	link := Link{Person: person, Channel: ch}
@@ -470,17 +511,64 @@ func (s *Service) RemoveDeletedTeams(ctx context.Context) (int64, error) {
 	return s.store.DeleteTeams(ctx, gone)
 }
 
-// CleanupInterval is how often the deleted teams' rows are removed.
+// errTooManyGone is a run that found more people gone than a deletion
+// outside the saga explains: Keycloak answering for the wrong realm, say.
+var errTooManyGone = errors.New("communication preferences: too many people unknown to Keycloak; none removed")
+
+// RemoveDeletedPeople deletes the rows of people Keycloak no longer has: an
+// account deleted outside the erasure saga (straight from the Keycloak
+// console) keeps no preference (D2). The saga deletes its own rows in its
+// step. A Keycloak error other than "not found" stops the run with nothing
+// deleted, and so does a run that finds more than a quarter of the people
+// gone (and more than five).
+func (s *Service) RemoveDeletedPeople(ctx context.Context) (int64, error) {
+	people, err := s.store.Subjects(ctx)
+	if err != nil || len(people) == 0 {
+		return 0, err
+	}
+	var gone []uuid.UUID
+	for _, person := range people {
+		_, err := s.dir.GetUser(ctx, person)
+		switch {
+		case errors.Is(err, identity.ErrNotFound):
+			gone = append(gone, person)
+		case err != nil:
+			return 0, fmt.Errorf("communication preferences: reading a person from Keycloak: %w", err)
+		}
+	}
+	if len(gone) > 5 && len(gone)*4 > len(people) {
+		return 0, errTooManyGone
+	}
+	var removed int64
+	for _, person := range gone {
+		n, err := s.store.EraseSubject(ctx, person)
+		removed += n
+		if err != nil {
+			return removed, err
+		}
+	}
+	return removed, nil
+}
+
+// CleanupInterval is how often the rows of deleted teams and people are
+// removed.
 const CleanupInterval = 24 * time.Hour
 
-// MaintainDeletedTeams removes the deleted teams' rows now and then every
-// interval until ctx ends. The returned channel closes when it has stopped.
-func MaintainDeletedTeams(ctx context.Context, s *Service, interval time.Duration, report func(removed int64, err error)) <-chan struct{} {
+// MaintainCleanup removes the rows of deleted teams and of deleted people
+// now and then every interval until ctx ends. report hears of each part
+// ("deleted teams", "deleted people") that removed rows or failed. The
+// returned channel closes when it has stopped.
+func MaintainCleanup(ctx context.Context, s *Service, interval time.Duration, report func(what string, removed int64, err error)) <-chan struct{} {
 	done := make(chan struct{})
 	run := func() {
-		n, err := s.RemoveDeletedTeams(ctx)
-		if report != nil && (err != nil || n > 0) {
-			report(n, err)
+		for _, part := range []struct {
+			what string
+			run  func(context.Context) (int64, error)
+		}{{"deleted teams", s.RemoveDeletedTeams}, {"deleted people", s.RemoveDeletedPeople}} {
+			n, err := part.run(ctx)
+			if report != nil && (err != nil || n > 0) {
+				report(part.what, n, err)
+			}
 		}
 	}
 	go func() {

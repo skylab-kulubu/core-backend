@@ -16,6 +16,7 @@ import (
 //	/UYELER/ARGE/WEBLAB/FRONT
 //	/UYELER/ARGE/WEBLAB/BACK
 //	/UYELER/ARGE/WEBLAB/LIDERLER   (leader subgroup, not a team)
+//	/UYELER/ARGE/WEBLAB/PROJEX     (hidden: public_listing=false)
 //	/UYELER/ARGE/AIRLAB            (public)
 //	/UYELER/ARGE/AIRLAB/DRONE
 //	/UYELER/ARGE/GIZLI             (hidden)
@@ -30,6 +31,7 @@ func testGroups() []identity.Group {
 		{ID: "g-front", Name: "FRONT", Path: "/UYELER/ARGE/WEBLAB/FRONT"},
 		{ID: "g-back", Name: "BACK", Path: "/UYELER/ARGE/WEBLAB/BACK"},
 		{ID: "g-weblab-l", Name: "LIDERLER", Path: "/UYELER/ARGE/WEBLAB/LIDERLER"},
+		{ID: "g-projex", Name: "PROJEX", Path: "/UYELER/ARGE/WEBLAB/PROJEX", Attributes: map[string]string{"public_listing": "false"}},
 		{ID: "g-airlab", Name: "AIRLAB", Path: "/UYELER/ARGE/AIRLAB", Attributes: public},
 		{ID: "g-drone", Name: "DRONE", Path: "/UYELER/ARGE/AIRLAB/DRONE"},
 		{ID: "g-gizli", Name: "GIZLI", Path: "/UYELER/ARGE/GIZLI"},
@@ -42,7 +44,7 @@ func testTree() *Tree { return NewTree(testGroups(), authz.DefaultPrivilegedRoot
 
 func TestTreeHoldsTeamsOnly(t *testing.T) {
 	tree := testTree()
-	for _, id := range []string{"g-weblab", "g-front", "g-back", "g-airlab", "g-drone", "g-gizli"} {
+	for _, id := range []string{"g-weblab", "g-front", "g-back", "g-projex", "g-airlab", "g-drone", "g-gizli"} {
 		if _, ok := tree.Team(id); !ok {
 			t.Fatalf("%s is not a team", id)
 		}
@@ -57,7 +59,7 @@ func TestTreeHoldsTeamsOnly(t *testing.T) {
 		t.Fatalf("front = %+v", front)
 	}
 	weblab, _ := tree.Team("g-weblab")
-	if weblab.ParentID != "" || !weblab.Public || weblab.DisplayName != "Web Geliştirme" || len(weblab.Children) != 2 {
+	if weblab.ParentID != "" || !weblab.Public || weblab.DisplayName != "Web Geliştirme" || len(weblab.Children) != 3 {
 		t.Fatalf("weblab = %+v", weblab)
 	}
 }
@@ -105,6 +107,7 @@ func TestDefaults(t *testing.T) {
 		{Team("g-front", KindAnnouncement), true, ""},
 		{Team("g-weblab", KindNews), true, ""},
 		{Team("g-back", KindAnnouncement), true, "g-weblab"},
+		{Team("g-projex", KindAnnouncement), false, ""}, // hidden, not in it (O2)
 		{Team("g-airlab", KindAnnouncement), false, ""},
 		{Team("g-drone", KindNews), false, ""},
 		{Team("g-gizli", KindNews), false, ""},
@@ -115,7 +118,7 @@ func TestDefaults(t *testing.T) {
 			t.Fatalf("%s = %+v, want %v from %q", tc.category, v, tc.want, tc.from)
 		}
 	}
-	// A member of the team itself gets every sub-team.
+	// A member of the team itself gets every listed sub-team.
 	weblab := tree.Membership([]string{"/UYELER/ARGE/WEBLAB"})
 	for _, id := range []string{"g-weblab", "g-front", "g-back"} {
 		if v := tree.Resolve(nil, weblab, Team(id, KindAnnouncement)); !v.Effective {
@@ -253,5 +256,33 @@ func TestDefaultSubscriberTurnsOneSubTeamOff(t *testing.T) {
 	}
 	if v := tree.Resolve(explicit, m, Team("g-back", KindNews)); !v.Effective {
 		t.Fatalf("the other kind of BACK = %+v", v)
+	}
+}
+
+// O2: a hidden sub-team is off for anyone not in it, whatever is chosen
+// above it (a follower's or a member's explicit choice on the parent), and
+// on by default for its own members. public_listing is inherited: a
+// sub-team without one takes the nearest team above's, and none anywhere is
+// hidden.
+func TestHiddenSubTeamReachesOnlyItsMembers(t *testing.T) {
+	tree := testTree()
+	front := tree.Membership([]string{"/UYELER/ARGE/WEBLAB/FRONT"})
+	explicit := Explicit{Team("g-weblab", KindNews): true}
+	if v := tree.Resolve(explicit, front, Team("g-projex", KindNews)); v.Enabled || v.Effective {
+		t.Fatalf("non-member, parent on: %+v", v)
+	}
+	follower := tree.Membership(nil)
+	if v := tree.Resolve(Explicit{Team("g-weblab", KindNews): true}, follower, Team("g-projex", KindNews)); v.Enabled {
+		t.Fatalf("follower of the parent: %+v", v)
+	}
+	if v := tree.Resolve(Explicit{Team("g-weblab", KindNews): true}, follower, Team("g-back", KindNews)); !v.Enabled || v.From != "g-weblab" {
+		t.Fatalf("follower, listed sub-team: %+v", v)
+	}
+	projex := tree.Membership([]string{"/UYELER/ARGE/WEBLAB/PROJEX"})
+	if v := tree.Resolve(nil, projex, Team("g-projex", KindAnnouncement)); !v.Effective {
+		t.Fatalf("member of the hidden team: %+v", v)
+	}
+	if !tree.listed("g-back") || tree.listed("g-projex") || tree.listed("g-gizli") || !tree.listed("g-drone") {
+		t.Fatal("listing inheritance")
 	}
 }

@@ -173,7 +173,7 @@ func (h *CommunicationPreferenceHandler) UnsubscribePage(c fiber.Ctx) error {
 			"Bu bağlantı şu postalar için: " + strings.Join(labels, ", ") + ".",
 			"Yalnız bunları kapatabilir, bu kaynaktan gelen her şeyi kapatabilir ya da SKY LAB'ın bütün duyuru ve haber postalarından çıkabilirsin. Giriş kodu, bilet ve sertifika gibi hesap postaların bundan etkilenmez.",
 		},
-		Links:      []pageLink{{Label: "Tercihlerini Hesap Merkezi'nde yönet", URL: h.svc.Config().AccountCenterURL}},
+		Links:      []pageLink{{Label: "Tercihlerini Hesap Merkezi'nde yönet", URL: accountCenterLink(h.svc, link)}},
 		Action:     commpref.UnsubscribePath,
 		Token:      token,
 		TokenField: "t",
@@ -183,6 +183,15 @@ func (h *CommunicationPreferenceHandler) UnsubscribePage(c fiber.Ctx) error {
 			{Name: unsubscribeReachField, Value: string(commpref.ReachAll), Label: "Tümünden çık"},
 		},
 	})
+}
+
+// accountCenterLink is the Account center page of the link's first
+// category, which the screen shows first (bilet 09).
+func accountCenterLink(svc *commpref.Service, link commpref.Link) string {
+	if len(link.Categories) == 0 {
+		return svc.Config().AccountCenterURL
+	}
+	return svc.Config().AccountCenterLink(link.Channel, link.Categories[0].Category)
 }
 
 func containsString(list []string, s string) bool {
@@ -209,11 +218,12 @@ func (h *CommunicationPreferenceHandler) Unsubscribe(c fiber.Ctx) error {
 		}
 		reach = parsed
 	}
+	var done commpref.Link
 	var err error
 	if !h.svc.Enabled() {
 		err = commpref.ErrDisabled
 	} else {
-		_, err = h.svc.Unsubscribe(c.Context(), unsubscribeTokenFrom(c), reach)
+		done, err = h.svc.Unsubscribe(c.Context(), unsubscribeTokenFrom(c), reach)
 	}
 	// A person being erased or erased gets no mail anyway: done.
 	if errors.Is(err, commpref.ErrSubjectInactive) {
@@ -247,7 +257,7 @@ func (h *CommunicationPreferenceHandler) Unsubscribe(c fiber.Ctx) error {
 	return renderPage(c, fiber.StatusOK, page{
 		Title: "Tercihin kaydedildi",
 		Lines: lines,
-		Links: []pageLink{{Label: "Hesap Merkezi", URL: h.svc.Config().AccountCenterURL}},
+		Links: []pageLink{{Label: "Hesap Merkezi", URL: accountCenterLink(h.svc, done)}},
 	})
 }
 

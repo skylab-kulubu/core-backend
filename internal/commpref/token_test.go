@@ -138,3 +138,19 @@ func TestConfigFromEnv(t *testing.T) {
 		t.Fatal("the link key is the raw key")
 	}
 }
+
+// D3: the Account center link names the row to show first, keeps a query
+// the setting already has, and carries no token.
+func TestAccountCenterLink(t *testing.T) {
+	config := TestConfig(testKey(), "https://api.example.test")
+	if got := config.AccountCenterLink(ChannelEmail, Team("g-weblab", KindAnnouncement)); got != "https://my.yildizskylab.com?kanal=email&kategori=team%3Ag-weblab%3Aduyuru" {
+		t.Fatalf("link %q", got)
+	}
+	config.AccountCenterURL = "https://my.example.test/iletisim?sekme=1"
+	if got := config.AccountCenterLink(ChannelEmail, Club(KindNews)); got != "https://my.example.test/iletisim?kanal=email&kategori=club%3Ahaber&sekme=1" {
+		t.Fatalf("link %q", got)
+	}
+	if got := config.AccountCenterLink(Channel("push"), Club(KindNews)); got != config.AccountCenterURL {
+		t.Fatalf("unknown channel %q", got)
+	}
+}
