@@ -135,7 +135,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f.weblabSoon = create(event.Event{Name: "WebLab Bootcamp", OwnerTeam: "WEBLAB", Location: "D-101", Capacity: 50,
 		StartDate: at(now.Add(5 * 24 * time.Hour)), EndDate: at(now.Add(5*24*time.Hour + 3*time.Hour))})
-	// No end date: running for half a day from its start.
+	// No end date: running for 24 hours from its start.
 	f.weblabLive = create(event.Event{Name: "WebLab Meetup", OwnerTeam: "WEBLAB", Location: "D-102",
 		StartDate: at(now.Add(-2 * time.Hour)), FormURL: "https://skyl.app/meetup", CoverImageURL: "events/cover.webp"})
 	f.weblabOld = create(event.Event{Name: "WebLab Spring", OwnerTeam: "WEBLAB",
@@ -279,8 +279,8 @@ func TestSummaryListsRunningComingAndRecentEventsWithTheirApplications(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	// WebLab Spring ended three months ago and Genel Kurul (no end, so half
-	// a day) 40 days ago: both are out; the archived Event never shows.
+	// WebLab Spring ended three months ago and Genel Kurul (no end, so 24
+	// hours) 40 days ago: both are out; the archived Event never shows.
 	if names := eventNames(got.EventStats); !slices.Equal(names, []string{"WebLab Meetup", "WebLab Bootcamp", "Gece Kodu"}) {
 		t.Fatalf("event stats %v", names)
 	}
@@ -334,5 +334,42 @@ func TestSummaryOfNothingIsEmptyLists(t *testing.T) {
 	}
 	if len(got.Applications.Daily) != dashboard.DailyDays || len(got.Events.ByMonth) != dashboard.EventMonths {
 		t.Fatalf("empty summary %+v", got)
+	}
+}
+
+// An Event without an end date runs for 24 hours from its start, the same
+// end active is derived with (ADR 0066): live and active never disagree.
+func TestSummaryLiveEndsWhereActiveDoes(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	if _, err := f.events.Create(t.Context(), event.Event{Name: "Uzun Gece", OwnerTeam: "WEBLAB", Location: "D-103",
+		StartDate: at(now.Add(-18 * time.Hour))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.events.Create(t.Context(), event.Event{Name: "Dünkü", OwnerTeam: "WEBLAB", Location: "D-104",
+		StartDate: at(now.Add(-30 * time.Hour))}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.svc.Summary(t.Context(), privileged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, stat := range got.EventStats {
+		switch stat.Name {
+		case "Uzun Gece":
+			seen++
+			if !stat.Live || !stat.Active {
+				t.Fatalf("18 hours in: live=%v active=%v", stat.Live, stat.Active)
+			}
+		case "Dünkü":
+			seen++
+			if stat.Live || stat.Active {
+				t.Fatalf("30 hours in: live=%v active=%v", stat.Live, stat.Active)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("event stats %v", eventNames(got.EventStats))
 	}
 }

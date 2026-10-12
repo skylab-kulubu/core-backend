@@ -3,6 +3,7 @@ package migrate_test
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -207,5 +208,51 @@ func TestEventStatusMigrationOnAnEmptyDatabase(t *testing.T) {
 	}
 	if !recorded(t, pool, eventStatusVersion) {
 		t.Fatal("not recorded")
+	}
+}
+
+// A transaction holding a lock on events makes the migration give up after
+// its lock_timeout instead of queueing every Event read behind its ALTER:
+// the release does not start, the one before keeps serving, and the next
+// start applies it.
+func TestEventStatusMigrationGivesUpOnAHeldLock(t *testing.T) {
+	pool := postgresPool(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, readDown(t, eventStatusDown)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version = `+eventStatusVersion); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx)
+	if _, err := holder.Exec(ctx, `LOCK TABLE events IN ACCESS SHARE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	err = migrate.Apply(ctx, pool)
+	if err == nil || !strings.Contains(err.Error(), "lock timeout") {
+		t.Fatalf("apply under a held lock = %v", err)
+	}
+	if waited := time.Since(started); waited > 30*time.Second {
+		t.Fatalf("waited %v", waited)
+	}
+	if recorded(t, pool, eventStatusVersion) || eventStatusColumnCount(t, pool) != 0 {
+		t.Fatal("a timed-out migration left something behind")
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if !recorded(t, pool, eventStatusVersion) {
+		t.Fatal("not applied once the lock was gone")
 	}
 }

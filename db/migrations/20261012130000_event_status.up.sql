@@ -16,6 +16,12 @@
 -- The release before this one keeps working on the new schema: its writes
 -- name their columns, so a new Event it creates takes the defaults
 -- (published), and nothing it reads changes.
+-- The file runs as one transaction. Its ALTERs take events' strongest lock;
+-- behind one waiting for a long transaction every Event read would queue.
+-- Waiting at most 5 seconds instead, the migration fails, this release does
+-- not start, the one before keeps serving, and the next start applies it.
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE events
     ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'published',
     ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ,

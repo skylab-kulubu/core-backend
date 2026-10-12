@@ -40,9 +40,6 @@ const (
 	// EventMonths is how many months Events.ByMonth covers, this one
 	// included.
 	EventMonths = 6
-	// undatedEventSpan is how long an Event without an end date counts as
-	// running from its start, as the panel counts it.
-	undatedEventSpan = 12 * time.Hour
 )
 
 // Summary is the answer of GET /v1/dashboard/summary.
@@ -334,18 +331,14 @@ func (s *service) eventCounts(events []event.Event, now time.Time) EventCounts {
 	return out
 }
 
-// span is when the Event runs: from its start to its end, or for half a
-// day when it has no end. dated is false without a start.
+// span is when the Event runs: from its start to its end, the one its
+// derived active uses (Event.EndsAt, ADR 0066: the end date, else 24 hours
+// after the start). dated is false without a start.
 func span(e event.Event) (start, end time.Time, dated bool) {
 	if e.StartDate == nil {
 		return time.Time{}, time.Time{}, false
 	}
-	start = *e.StartDate
-	end = start.Add(undatedEventSpan)
-	if e.EndDate != nil {
-		end = *e.EndDate
-	}
-	return start, end, true
+	return *e.StartDate, *e.EndsAt(), true
 }
 
 func orDefault(d, fallback time.Duration) time.Duration {
