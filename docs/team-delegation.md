@@ -43,11 +43,22 @@ stay in Keycloak and in the audit record.
   for a Leader group, refused with `leader_group_needs_parent` when the
   caller manages the Team but not strictly. Nobody makes themselves a
   Leader, names a co-Leader (S2) or leaves their Team without one.
-- **Protected group**: the Group or a Group above it maps a protected role:
-  core's permission roles and `audit:read` (any client), any client's
-  `client:admin`, any role of `realm-management`. Only Privileged manages
-  it: `403 protected_group`. Role mappings are read per Group and kept 60 s;
-  core's own role mapping writes drop them.
+- **Protected group**: the Group or a Group above it maps **any realm
+  role**, or a client role that is protected (core's permission roles and
+  `audit:read` on any client, any client's `client:admin`, any role of
+  `realm-management`) or holds one, or a realm role, as a composite at any
+  depth (8 levels; deeper counts as protected). Only Privileged manages it:
+  `403 protected_group`. No realm role is exempt (Yusuf, 2026-10-12): a
+  harmless one (`offline_access`) on `/UYELER` or an area makes every Team
+  under it Privileged's alone; core logs each protected Group with its
+  reason (`team delegation: group <id> is protected (realm role …)`), and
+  ticket 03's report lists the realm mappings. A write reads protection
+  fresh; a read keeps each Group's answer 60 s.
+- **Look-alike names**: a Group whose name, blanks trimmed and case
+  folded, starts with `LIDERLER` or `KOORDINATORLER` without being one
+  (`LIDERLER-ESKI`, `LIDERLER `, `liderler`) is managed by Privileged only,
+  as is everything under it: paths read by substring elsewhere could take
+  its members for Leaders.
 
 The target is read by its **Keycloak id** (`GET /groups/{id}` with its
 `parentId`), and every Group above it the same way. The chain must agree
@@ -73,9 +84,17 @@ client-role routes stay Privileged's (Forms reads the list).
 
 ### Writes
 
-A delegated write runs under the Team code lock (`teamcode.Ledger`, the
-advisory lock creates and renames hold), with the caller's Groups and the
-target read fresh from Keycloak inside it. Its refusals (`forbidden`,
+A delegated write has 10 s in all (past that it is 503), one at a time per
+person (a second is `429`). The caller's Groups,
+the target and its protection are read fresh and decided first, outside
+any lock: a caller who may not write (most often one who leads no Team of
+the Group, or whose own account is no longer active) is refused there and
+never waits for the lock or holds a database connection for it. Then the
+write runs under the Team code lock (`teamcode.Ledger`, the advisory lock
+creates and renames hold), with everything read fresh again inside it. A
+core takes the lock for one request at a time: the others wait in the
+process holding no connection, so queued writes never use up the pool;
+the wait for another core's lock is bounded too (`lock_timeout` 10 s). Its refusals (`forbidden`,
 `protected_group`, `leader_group_needs_parent`, `group_limit`,
 `group_tree_mismatch`, `team_code_not_unique`) are recorded as `denied` rows
 ([team-audit.md](team-audit.md)); a change is recorded as Privileged's are,
@@ -101,11 +120,15 @@ is now whoever made the change, a Leader too.
 
 ### Member candidates
 
-`q` is at least 3 characters (400 otherwise). Core's active accounts whose
-e-mail address, first name, last name or full name holds `q` (not the
-school address, Sky number or username), at most 10, ordered by name, with
-the address masked (`a***@example.com`). A `q` that is a whole address
-answers only the accounts with that address, unmasked. Each item is
+`q` is at least 3 characters (400 otherwise, checked after the caller is
+allowed). Core's active accounts whose first name, last name or full name
+holds `q`, at most 10, ordered by name, with the address masked
+(`a***@example.com`). An address matches only whole: a `q` that is a whole
+address answers only the accounts with that address, unmasked, and a part
+of an address matches nothing, so the mask cannot be read back one letter
+at a time. The school address, Sky number and username are never searched.
+A Leader has 30 searches a minute (`429 rate_limited`); Privileged has no
+budget. Each item is
 `{id, firstName, lastName, email, profilePictureUrl?, alreadyMember}`;
 `alreadyMember` is a direct membership of the Group.
 
@@ -125,10 +148,10 @@ core's own membership writes.
 | What | Kept | Dropped by |
 |---|---|---|
 | a caller's Leader groups (reads) | 60 s | core's membership writes of that person, renames, role mapping writes |
-| a Group's protection | 60 s | renames, role mapping writes |
+| a Group's protection (reads only) | 60 s | renames, role mapping writes |
 | the realm's names (`team_code_not_unique`) | 60 s | renames |
 | `managedTeams` | 60 s (a failure 10 s) | core's membership writes of that person |
 | a managed tree | 60 s | every core membership write |
 
-Writes never use a kept caller or target: they read both fresh. A Group's
-protection may be up to 60 s old, unless core itself changed the mappings.
+Writes never use a kept caller, target or protection: they read all three
+fresh.

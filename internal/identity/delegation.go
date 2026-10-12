@@ -23,6 +23,26 @@ type GroupNodes interface {
 	GroupNode(ctx context.Context, id string) (Group, string, error)
 }
 
+// Protection is whether a Group's own role mappings make it a Protected
+// group, and why (a role name, never a person): for the log.
+type Protection struct {
+	Protected bool
+	Reason    string
+}
+
+// GroupProtections reads a Group's own role mappings for protection: any
+// realm role, or a client role that is protected (authz.ProtectedRole) or
+// holds one or a realm role as a composite (Keycloak, Memory).
+type GroupProtections interface {
+	GroupProtection(ctx context.Context, groupID string) (Protection, error)
+}
+
+// TeamReads are the reads of team delegation beside the Directory's.
+type TeamReads interface {
+	GroupNodes
+	GroupProtections
+}
+
 // The problem codes of a delegated request core refuses, beside authz's
 // (authz.RefusalProtectedGroup, authz.RefusalLeaderGroupNeedsParent).
 const (
@@ -62,6 +82,12 @@ const (
 	defaultDelegationTTL       = time.Minute
 	defaultDelegationFailTTL   = 10 * time.Second
 	defaultDelegationTimeout   = 3 * time.Second
+	// DefaultDelegatedWriteTimeout bounds a whole delegated write, lock
+	// wait included.
+	DefaultDelegatedWriteTimeout = 10 * time.Second
+	// DefaultDelegatedSearches is how many candidate searches one caller
+	// may make in a minute (review of #235, O2).
+	DefaultDelegatedSearches = 30
 	// maxGroupDepth bounds the walk up a Group's ancestors: a parent chain
 	// longer than any real tree is a loop or a fault.
 	maxGroupDepth = 32
@@ -76,6 +102,12 @@ type TeamDelegationOptions struct {
 	// WritesPerMinute is how many delegated writes one caller may make in a
 	// minute.
 	WritesPerMinute int
+	// SearchesPerMinute is how many candidate searches one delegated
+	// caller may make in a minute.
+	SearchesPerMinute int
+	// WriteTimeout bounds one delegated write, waiting for the lock
+	// included.
+	WriteTimeout time.Duration
 	// TTL is how long reads that serve reads are kept: a caller's Groups, a
 	// Group's role mappings, the realm's names, a managed tree, the
 	// capabilities' managed Teams. FailureTTL keeps a failed managed Teams
@@ -124,7 +156,7 @@ func TeamDelegationOptionsFromEnv(getenv func(string) string) (TeamDelegationOpt
 type TeamDelegation struct {
 	policy  authz.Policy
 	dir     Directory
-	nodes   GroupNodes
+	reads   TeamReads
 	options TeamDelegationOptions
 
 	mu      sync.Mutex
@@ -134,7 +166,9 @@ type TeamDelegation struct {
 	teams   map[uuid.UUID]teamsEntry
 	trees   map[uuid.UUID]treeEntry
 	writes  map[uuid.UUID]writeWindow
-	reads   singleflight.Group
+	finds   map[uuid.UUID]writeWindow
+	running map[uuid.UUID]bool
+	flights singleflight.Group
 }
 
 type leaderEntry struct {
@@ -169,13 +203,19 @@ type writeWindow struct {
 }
 
 // NewTeamDelegation decides by policy (its TeamDelegation switch, roots and
-// leader subgroups) and reads dir and nodes.
-func NewTeamDelegation(policy authz.Policy, dir Directory, nodes GroupNodes, options TeamDelegationOptions) *TeamDelegation {
+// leader subgroups) and reads dir and reads.
+func NewTeamDelegation(policy authz.Policy, dir Directory, reads TeamReads, options TeamDelegationOptions) *TeamDelegation {
 	if options.GroupLimit <= 0 {
 		options.GroupLimit = DefaultDelegatedGroupLimit
 	}
 	if options.WritesPerMinute <= 0 {
 		options.WritesPerMinute = DefaultDelegatedWrites
+	}
+	if options.SearchesPerMinute <= 0 {
+		options.SearchesPerMinute = DefaultDelegatedSearches
+	}
+	if options.WriteTimeout <= 0 {
+		options.WriteTimeout = DefaultDelegatedWriteTimeout
 	}
 	if options.TTL <= 0 {
 		options.TTL = defaultDelegationTTL
@@ -193,12 +233,14 @@ func NewTeamDelegation(policy authz.Policy, dir Directory, nodes GroupNodes, opt
 		options.Logf = func(string, ...any) {}
 	}
 	return &TeamDelegation{
-		policy: policy, dir: dir, nodes: nodes, options: options,
+		policy: policy, dir: dir, reads: reads, options: options,
 		callers: map[uuid.UUID]leaderEntry{},
 		roles:   map[string]protectedEntry{},
 		teams:   map[uuid.UUID]teamsEntry{},
 		trees:   map[uuid.UUID]treeEntry{},
 		writes:  map[uuid.UUID]writeWindow{},
+		finds:   map[uuid.UUID]writeWindow{},
+		running: map[uuid.UUID]bool{},
 	}
 }
 
@@ -238,26 +280,53 @@ func (d *TeamDelegation) ForgetAll() {
 // allowWrite counts one delegated write of userID and reports whether it
 // is within the minute's budget.
 func (d *TeamDelegation) allowWrite(userID uuid.UUID) bool {
+	return d.spend(d.writes, userID, d.options.WritesPerMinute)
+}
+
+// allowSearch counts one candidate search of userID and reports whether it
+// is within the minute's budget.
+func (d *TeamDelegation) allowSearch(userID uuid.UUID) bool {
+	return d.spend(d.finds, userID, d.options.SearchesPerMinute)
+}
+
+func (d *TeamDelegation) spend(windows map[uuid.UUID]writeWindow, userID uuid.UUID, budget int) bool {
 	now := d.options.Now()
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	w := d.writes[userID]
+	w := windows[userID]
 	if now.Sub(w.start) >= time.Minute || now.Before(w.start) {
 		w = writeWindow{start: now}
 	}
-	if w.count >= d.options.WritesPerMinute {
+	if w.count >= budget {
 		return false
 	}
 	w.count++
-	d.writes[userID] = w
-	if len(d.writes) > 4096 {
-		for id, other := range d.writes {
+	windows[userID] = w
+	if len(windows) > 4096 {
+		for id, other := range windows {
 			if now.Sub(other.start) >= time.Minute {
-				delete(d.writes, id)
+				delete(windows, id)
 			}
 		}
 	}
 	return true
+}
+
+// beginWrite marks a delegated write of userID as running: false when one
+// already is (one at a time per person, review of #235, B2). release ends
+// it.
+func (d *TeamDelegation) beginWrite(userID uuid.UUID) (release func(), ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.running[userID] {
+		return nil, false
+	}
+	d.running[userID] = true
+	return func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		delete(d.running, userID)
+	}, true
 }
 
 // manager is the caller as a delegated decision reads them: the Leader
@@ -298,7 +367,7 @@ func (d *TeamDelegation) leaderGroups(ctx context.Context, userID uuid.UUID) ([]
 		if _, role, ok := authz.TeamOf(g.Path, d.policy.PrivilegedRoots, d.policy.LeaderSubgroups); !ok || role == "" {
 			continue
 		}
-		node, parent, err := d.nodes.GroupNode(ctx, g.ID)
+		node, parent, err := d.reads.GroupNode(ctx, g.ID)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
@@ -316,11 +385,11 @@ func (d *TeamDelegation) leaderGroups(ctx context.Context, userID uuid.UUID) ([]
 }
 
 // target reads the Group id and every Group above it by id, and whether
-// one of them maps a protected role. A chain whose ids and paths disagree
-// is CodeGroupTreeMismatch, logged; an id Keycloak does not know is
-// ErrNotFound.
-func (d *TeamDelegation) target(ctx context.Context, id string) (authz.ManagedGroup, Group, error) {
-	g, parent, err := d.nodes.GroupNode(ctx, id)
+// one of them is protected (read fresh for a write, kept TTL for a read).
+// A chain whose ids and paths disagree is CodeGroupTreeMismatch, logged;
+// an id Keycloak does not know is ErrNotFound.
+func (d *TeamDelegation) target(ctx context.Context, id string, fresh bool) (authz.ManagedGroup, Group, error) {
+	g, parent, err := d.reads.GroupNode(ctx, id)
 	if err != nil {
 		return authz.ManagedGroup{}, Group{}, err
 	}
@@ -329,7 +398,7 @@ func (d *TeamDelegation) target(ctx context.Context, id string) (authz.ManagedGr
 		if len(out.Ancestors) == maxGroupDepth {
 			return d.mismatch(out)
 		}
-		above, aboveParent, err := d.nodes.GroupNode(ctx, next)
+		above, aboveParent, err := d.reads.GroupNode(ctx, next)
 		if errors.Is(err, ErrNotFound) {
 			// Gone between two reads: the tree changed under us.
 			return d.mismatch(out)
@@ -347,7 +416,7 @@ func (d *TeamDelegation) target(ctx context.Context, id string) (authz.ManagedGr
 	for _, a := range out.Ancestors {
 		ids = append(ids, a.ID)
 	}
-	if out.Protected, err = d.protected(ctx, ids); err != nil {
+	if out.Protected, err = d.protected(ctx, ids, fresh); err != nil {
 		return authz.ManagedGroup{}, Group{}, err
 	}
 	return out, g, nil
@@ -365,28 +434,29 @@ func nodeOf(g Group, parent string) authz.GroupNode {
 	return authz.GroupNode{ID: g.ID, Name: g.Name, Path: g.Path, ParentID: parent}
 }
 
-// protected reports whether one of the Groups ids maps a protected role
-// (authz.ProtectedRole). Each Group's answer is kept TTL.
-func (d *TeamDelegation) protected(ctx context.Context, ids []string) (bool, error) {
+// protected reports whether one of the Groups ids is protected by its own
+// role mappings (GroupProtections): any realm role, or a protected client
+// role directly or inside a composite. A write reads each fresh (review of
+// #235, O1); a read keeps each Group's answer TTL. A protected Group is
+// logged with its reason: a realm role mapped high in the tree (on /UYELER,
+// on an area) makes every Team under it Privileged's alone.
+func (d *TeamDelegation) protected(ctx context.Context, ids []string, fresh bool) (bool, error) {
 	for _, id := range ids {
 		d.mu.Lock()
 		entry, ok := d.roles[id]
 		d.mu.Unlock()
-		if !ok || !d.options.Now().Before(entry.expires) {
-			roles, err := d.dir.GroupClientRoles(ctx, id)
+		if fresh || !ok || !d.options.Now().Before(entry.expires) {
+			got, err := d.reads.GroupProtection(ctx, id)
 			if err != nil {
 				return false, err
 			}
-			entry = protectedEntry{expires: d.options.Now().Add(d.options.TTL)}
-			for _, role := range roles {
-				if authz.ProtectedRole(role.ClientID, role.Role) {
-					entry.protected = true
-					break
-				}
-			}
+			entry = protectedEntry{protected: got.Protected, expires: d.options.Now().Add(d.options.TTL)}
 			d.mu.Lock()
 			d.roles[id] = entry
 			d.mu.Unlock()
+			if got.Protected {
+				d.options.Logf("team delegation: group %s is protected (%s): it and every Group under it are managed by Privileged only", id, got.Reason)
+			}
 		}
 		if entry.protected {
 			return true, nil
@@ -420,7 +490,7 @@ func (d *TeamDelegation) nameClash(ctx context.Context, g authz.ManagedGroup) (s
 			continue
 		}
 		for _, other := range entry.groups {
-			if other.ID != node.ID && strings.EqualFold(strings.TrimSpace(other.Name), node.Name) {
+			if other.ID != node.ID && strings.EqualFold(strings.TrimSpace(other.Name), strings.TrimSpace(node.Name)) {
 				return node.Name, nil
 			}
 		}
@@ -457,7 +527,7 @@ func (d *TeamDelegation) ManagedTeams(ctx context.Context, userID uuid.UUID) ([]
 		teams []ManagedTeam
 		err   error
 	}
-	v, _, _ := d.reads.Do("teams:"+userID.String(), func() (any, error) {
+	v, _, _ := d.flights.Do("teams:"+userID.String(), func() (any, error) {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d.options.Timeout)
 		defer cancel()
 		teams, err := d.readManagedTeams(ctx, userID)
@@ -486,7 +556,7 @@ func (d *TeamDelegation) readManagedTeams(ctx context.Context, userID uuid.UUID)
 		if leader.TeamID == "" || seen[leader.TeamID] {
 			continue
 		}
-		team, _, err := d.nodes.GroupNode(ctx, leader.TeamID)
+		team, _, err := d.reads.GroupNode(ctx, leader.TeamID)
 		if err != nil {
 			if !errors.Is(err, ErrNotFound) {
 				failed = err

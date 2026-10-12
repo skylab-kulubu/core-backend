@@ -770,9 +770,9 @@ func main() {
 	// itself: the Group by id with its parent, the caller's Groups, role
 	// mappings. Off, its decisions refuse every Leader.
 	var delegation *identity.TeamDelegation
-	if nodes, ok := dir.(identity.GroupNodes); ok {
+	if reads, ok := dir.(identity.TeamReads); ok {
 		teamDelegationOptions.Logf = log.Printf
-		delegation = identity.NewTeamDelegation(authzPolicy, dir, nodes, teamDelegationOptions)
+		delegation = identity.NewTeamDelegation(authzPolicy, dir, reads, teamDelegationOptions)
 	}
 
 	app := httpx.New(httpx.Deps{

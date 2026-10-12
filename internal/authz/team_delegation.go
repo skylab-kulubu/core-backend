@@ -136,7 +136,7 @@ func (p Policy) Manages(m TeamManager, g ManagedGroup) ManageDecision {
 	if m.Privileged {
 		return privilegedDecision()
 	}
-	if !p.TeamDelegation || !p.chainHolds(g) {
+	if !p.TeamDelegation || !p.chainHolds(g) || p.leaderLookAlike(g) {
 		return ManageDecision{}
 	}
 	team, _, ok := TeamOf(g.Group.Path, p.PrivilegedRoots, p.LeaderSubgroups)
@@ -174,7 +174,7 @@ func (p Policy) ManagesStrict(m TeamManager, g ManagedGroup) ManageDecision {
 	if m.Privileged {
 		return privilegedDecision()
 	}
-	if !p.TeamDelegation || !p.chainHolds(g) || !p.isTeamNode(g.Group) || len(g.Ancestors) == 0 || !p.isTeamNode(g.Ancestors[0]) {
+	if !p.TeamDelegation || !p.chainHolds(g) || p.leaderLookAlike(g) || !p.isTeamNode(g.Group) || len(g.Ancestors) == 0 || !p.isTeamNode(g.Ancestors[0]) {
 		return ManageDecision{}
 	}
 	parent := ManagedGroup{Group: g.Ancestors[0], Ancestors: g.Ancestors[1:], Protected: g.Protected}
@@ -209,6 +209,27 @@ func (p Policy) ManagesMembership(m TeamManager, g ManagedGroup) ManageDecision 
 		return ManageDecision{Basis: ManageBasisLeader, ViaTeamID: plain.ViaTeamID, Refusal: RefusalLeaderGroupNeedsParent}
 	}
 	return ManageDecision{}
+}
+
+// leaderLookAlike reports whether a Group of g's chain has a name that
+// only looks like a leader subgroup's: blanks trimmed and case folded, it
+// starts with one but is not exactly one (LIDERLER-ESKI, "LIDERLER ",
+// liderler). Core's own decisions read whole segments, but a reader of
+// paths by substring (a menu rule, a CMS rule) could take its members for
+// Leaders, so no delegated write puts anyone in or under one.
+func (p Policy) leaderLookAlike(g ManagedGroup) bool {
+	for _, node := range append([]GroupNode{g.Group}, g.Ancestors...) {
+		if slices.Contains(p.LeaderSubgroups, node.Name) {
+			continue
+		}
+		folded := strings.ToUpper(strings.TrimSpace(node.Name))
+		for _, leader := range p.LeaderSubgroups {
+			if strings.HasPrefix(folded, strings.ToUpper(leader)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isTeamNode reports whether node is a Team's own Group (not a Leader

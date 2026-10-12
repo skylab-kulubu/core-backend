@@ -62,7 +62,7 @@ func (s *service) delegatedRead(ctx context.Context, p authz.Principal, groupRef
 	if len(m.LeaderGroups) == 0 {
 		return authz.TeamManager{}, authz.ManagedGroup{}, Group{}, ErrForbidden
 	}
-	target, g, err := s.delegation.target(ctx, groupRef)
+	target, g, err := s.delegation.target(ctx, groupRef, false)
 	if errors.Is(err, ErrNotFound) {
 		return authz.TeamManager{}, authz.ManagedGroup{}, Group{}, ErrForbidden
 	}
@@ -75,13 +75,19 @@ func (s *service) delegatedRead(ctx context.Context, p authz.Principal, groupRef
 	return m, target, g, nil
 }
 
-// delegatedWrite runs write for a delegated write on the Group groupRef:
-// within the caller's budget of writes a minute, and under the Team code
-// lock (no create, rename or move runs between the decision and the write),
-// with the caller's Leader groups and the Group read fresh from Keycloak.
-// A Group that cannot be read is refused as one not managed; one whose
-// ancestors by id and by path disagree is refused with a denied row.
+// delegatedWrite runs write for a delegated write on the Group groupRef.
+// The caller must be within their budget of writes a minute and have no
+// other delegated write running; the whole write has WriteTimeout. Outside
+// the Team code lock, the caller's Leader groups and the Group are read
+// fresh and precheck decides: a caller it refuses (most often one who leads
+// no Team of the Group) is refused with a denied row without ever waiting
+// for the lock or holding a database connection for it (review of #235,
+// B2). Then, under the lock (no create, rename or move runs between the
+// decision and the write), both are read fresh again and write decides and
+// writes. A Group that cannot be read is refused as one not managed; one
+// whose ancestors by id and by path disagree is refused with a denied row.
 func (s *service) delegatedWrite(ctx context.Context, p authz.Principal, action teamaudit.Action, groupRef string, person uuid.UUID,
+	precheck func(p authz.Policy, m authz.TeamManager, target authz.ManagedGroup) authz.ManageDecision,
 	write func(ctx context.Context, m authz.TeamManager, target authz.ManagedGroup, g Group) error) error {
 	userID, err := s.delegatedCaller(p, groupRef)
 	if err != nil {
@@ -90,24 +96,67 @@ func (s *service) delegatedWrite(ctx context.Context, p authz.Principal, action 
 	if !s.delegation.allowWrite(userID) {
 		return refusedWith(http.StatusTooManyRequests, CodeRateLimited)
 	}
-	return s.codes.Locked(ctx, func(ctx context.Context, _ teamcode.Records) error {
+	release, ok := s.delegation.beginWrite(userID)
+	if !ok {
+		return refusedWith(http.StatusTooManyRequests, CodeRateLimited)
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(ctx, s.delegation.options.WriteTimeout)
+	defer cancel()
+	read := func(ctx context.Context) (authz.TeamManager, authz.ManagedGroup, Group, error) {
 		m, err := s.delegation.manager(ctx, userID, true)
 		if err != nil {
-			return err
+			return authz.TeamManager{}, authz.ManagedGroup{}, Group{}, err
 		}
-		target, g, err := s.delegation.target(ctx, groupRef)
+		target, g, err := s.delegation.target(ctx, groupRef, true)
 		var refused *DelegationError
 		switch {
 		case errors.Is(err, ErrNotFound):
-			return ErrForbidden
+			return authz.TeamManager{}, authz.ManagedGroup{}, Group{}, ErrForbidden
 		case errors.As(err, &refused):
 			s.deny(ctx, action, target.Group, person, authz.ManageDecision{}, refused.Code)
-			return err
+			return authz.TeamManager{}, authz.ManagedGroup{}, Group{}, err
 		case err != nil:
+			return authz.TeamManager{}, authz.ManagedGroup{}, Group{}, err
+		}
+		return m, target, g, nil
+	}
+	m, target, _, err := read(ctx)
+	if err != nil {
+		return err
+	}
+	// A caller whose own account is no longer active (closed, being
+	// erased) writes nothing, whatever their token (review of #235, D3).
+	if active, err := s.activeAccount(ctx, userID); err != nil {
+		return err
+	} else if !active {
+		s.deny(ctx, action, target.Group, person, authz.ManageDecision{}, "forbidden")
+		return ErrForbidden
+	}
+	if d := precheck(s.delegation.policy, m, target); !d.Allowed {
+		s.deny(ctx, action, target.Group, person, d, d.Refusal)
+		return decisionError(d)
+	}
+	return s.codes.Locked(ctx, func(ctx context.Context, _ teamcode.Records) error {
+		m, target, g, err := read(ctx)
+		if err != nil {
 			return err
 		}
 		return write(ctx, m, target, g)
 	})
+}
+
+// activeAccount reports whether core's row of the person is an active
+// account (none, or erased or being erased, is not).
+func (s *service) activeAccount(ctx context.Context, id uuid.UUID) (bool, error) {
+	shadow, err := s.users.Get(ctx, id)
+	if errors.Is(err, user.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return shadow.AccountState == user.AccountActive && id != user.DeletedSubject, nil
 }
 
 // deny writes the denied row of a delegated write (docs/team-audit.md):
@@ -154,7 +203,7 @@ func asLeader(ctx context.Context, d authz.ManageDecision) context.Context {
 // another Group, and the add keeps the person within the delegated Group
 // limit. Each refusal is a denied row.
 func (s *service) delegatedAddMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error {
-	return s.delegatedWrite(ctx, p, teamaudit.ActionMemberAdd, groupRef, userID, func(ctx context.Context, m authz.TeamManager, target authz.ManagedGroup, g Group) error {
+	return s.delegatedWrite(ctx, p, teamaudit.ActionMemberAdd, groupRef, userID, authz.Policy.ManagesMembership, func(ctx context.Context, m authz.TeamManager, target authz.ManagedGroup, g Group) error {
 		d := s.delegation.policy.ManagesMembership(m, target)
 		if !d.Allowed {
 			s.deny(ctx, teamaudit.ActionMemberAdd, target.Group, userID, d, d.Refusal)
@@ -201,7 +250,7 @@ func (s *service) delegatedAddMember(ctx context.Context, p authz.Principal, gro
 // (the Source group), which they must manage too, strictly when it is a
 // Leader group (leader_group_needs_parent). Each refusal is a denied row.
 func (s *service) delegatedRemoveMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error {
-	return s.delegatedWrite(ctx, p, teamaudit.ActionMemberRemove, groupRef, userID, func(ctx context.Context, m authz.TeamManager, target authz.ManagedGroup, g Group) error {
+	return s.delegatedWrite(ctx, p, teamaudit.ActionMemberRemove, groupRef, userID, authz.Policy.Manages, func(ctx context.Context, m authz.TeamManager, target authz.ManagedGroup, g Group) error {
 		d := s.delegation.policy.Manages(m, target)
 		if !d.Allowed {
 			s.deny(ctx, teamaudit.ActionMemberRemove, target.Group, userID, d, d.Refusal)
@@ -219,7 +268,7 @@ func (s *service) delegatedRemoveMember(ctx context.Context, p authz.Principal, 
 			source = h.source
 			if source.ID != g.ID {
 				var refused *DelegationError
-				sourceTarget, _, err = s.delegation.target(ctx, source.ID)
+				sourceTarget, _, err = s.delegation.target(ctx, source.ID, true)
 				switch {
 				case errors.Is(err, ErrNotFound):
 					return ErrForbidden
@@ -304,25 +353,34 @@ const (
 
 // MemberCandidates searches the people the caller may add to the Group
 // groupRef: core's active accounts (S4: every active account; nobody erased
-// or being erased) whose name or e-mail address holds q, at most ten, with
-// the address masked. A query that is a whole address answers only the
-// accounts with that address, unmasked. Privileged, or a Leader who manages
-// the Group.
+// or being erased) whose name holds q, at most ten, with the address
+// masked. A query that is a whole address answers only the accounts with
+// that address, unmasked; a part of an address matches nothing. Privileged,
+// or a Leader who manages the Group within their searches a minute.
 func (s *service) MemberCandidates(ctx context.Context, p authz.Principal, groupRef, q string) ([]MemberCandidate, error) {
 	q = strings.TrimSpace(q)
-	if utf8.RuneCountInString(q) < candidateQueryMin {
-		return nil, ErrInvalid
-	}
 	var g Group
 	if s.allow(p, authz.TypeGroup, authz.Read) == nil {
+		if utf8.RuneCountInString(q) < candidateQueryMin {
+			return nil, ErrInvalid
+		}
 		var err error
 		if g, err = s.dir.GetGroup(ctx, groupRef); err != nil {
 			return nil, err
 		}
 	} else {
-		var err error
+		userID, err := s.delegatedCaller(p, groupRef)
+		if err != nil {
+			return nil, err
+		}
 		if _, _, g, err = s.delegatedRead(ctx, p, groupRef); err != nil {
 			return nil, err
+		}
+		if utf8.RuneCountInString(q) < candidateQueryMin {
+			return nil, ErrInvalid
+		}
+		if !s.delegation.allowSearch(userID) {
+			return nil, refusedWith(http.StatusTooManyRequests, CodeRateLimited)
 		}
 	}
 	found, err := s.users.Search(ctx, q)
@@ -340,10 +398,12 @@ func (s *service) MemberCandidates(ctx context.Context, p authz.Principal, group
 			exact = append(exact, u)
 			continue
 		}
-		// Only the name and the address are searched: the other fields the
-		// store searches (school address, Sky number, username) are not a
-		// Leader's to probe.
-		for _, field := range []string{u.Email, u.FirstName, u.LastName, strings.TrimSpace(u.FirstName + " " + u.LastName)} {
+		// Only the names are searched by a part: an address only whole
+		// (above), so that a part of one is no oracle for the masked
+		// address (review of #235, O2). The other fields the store searches
+		// (school address, Sky number, username) are not a Leader's to
+		// probe.
+		for _, field := range []string{u.FirstName, u.LastName, strings.TrimSpace(u.FirstName + " " + u.LastName)} {
 			if strings.Contains(strings.ToLower(field), needle) {
 				matches = append(matches, u)
 				break

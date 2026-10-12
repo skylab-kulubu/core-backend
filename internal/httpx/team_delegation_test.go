@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
@@ -79,6 +80,7 @@ type delegationSetup struct {
 	none      bool // no TeamDelegation at all: the release before ticket 04
 	writes    int
 	groupsCap int
+	searches  int
 }
 
 func newDelegationEnv(t *testing.T, setup delegationSetup) *delegationEnv {
@@ -117,7 +119,7 @@ func newDelegationEnv(t *testing.T, setup delegationSetup) *delegationEnv {
 	var delegation *identity.TeamDelegation
 	if !setup.none {
 		delegation = identity.NewTeamDelegation(policy, e.dir, e.dir, identity.TeamDelegationOptions{
-			WritesPerMinute: setup.writes, GroupLimit: setup.groupsCap,
+			WritesPerMinute: setup.writes, GroupLimit: setup.groupsCap, SearchesPerMinute: setup.searches,
 		})
 		options.Delegation = delegation
 	}
@@ -760,5 +762,179 @@ func TestTeamDelegationManagedGroupsAndCapabilities(t *testing.T) {
 		if teams, _ := capabilities(as); len(teams) != 0 {
 			t.Fatalf("%s: %+v", as, teams)
 		}
+	}
+}
+
+// A realm role, or a composite client role that holds a protected role or
+// a realm role, makes the Group and everything under it protected (review
+// of #235, B1): a Leader can no longer hand out realm-management or core's
+// permission roles through a mapping Privileged made. A composite of
+// harmless roles (cms:access) protects nothing.
+func TestTeamDelegationRealmAndCompositeRolesProtect(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		on      string
+		roles   []identity.ClientRole
+		setup   func(*identity.Memory)
+		target  string
+		refused bool
+	}{
+		{name: "a realm role on the Sub-team", on: "/UYELER/ARGE/WEBLAB/FRONT",
+			roles: []identity.ClientRole{{Role: "offline_access"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "a realm role on the area", on: "/UYELER/ARGE",
+			roles: []identity.ClientRole{{Role: "some-realm-role"}}, target: "/UYELER/ARGE/WEBLAB", refused: true},
+		{name: "a composite holding realm-management on the area", on: "/UYELER/ARGE",
+			roles: []identity.ClientRole{{ClientID: "skymail", Role: "staff"}},
+			setup: func(m *identity.Memory) {
+				m.PutCompositeRole(identity.ClientRole{ClientID: "skymail", Role: "staff"},
+					identity.ClientRole{ClientID: "realm-management", Role: "manage-users"}, identity.ClientRole{ClientID: "core", Role: authz.RoleGroupsManage})
+			}, target: "/UYELER/ARGE/WEBLAB", refused: true},
+		{name: "a composite two deep holding groups:manage", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "skymail", Role: "outer"}},
+			setup: func(m *identity.Memory) {
+				m.PutCompositeRole(identity.ClientRole{ClientID: "skymail", Role: "outer"}, identity.ClientRole{ClientID: "forms", Role: "inner"})
+				m.PutCompositeRole(identity.ClientRole{ClientID: "forms", Role: "inner"}, identity.ClientRole{ClientID: "core", Role: authz.RoleGroupsManage})
+			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "a composite holding a realm role", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "skymail", Role: "outer"}},
+			setup: func(m *identity.Memory) {
+				m.PutCompositeRole(identity.ClientRole{ClientID: "skymail", Role: "outer"}, identity.ClientRole{Role: "admin"})
+			}, target: "/UYELER/ARGE/WEBLAB", refused: true},
+		{name: "cms:access and its content roles", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "frontend-main", Role: "cms:access"}},
+			setup: func(m *identity.Memory) {
+				m.PutCompositeRole(identity.ClientRole{ClientID: "frontend-main", Role: "cms:access"},
+					identity.ClientRole{ClientID: "frontend-main", Role: "content:read"}, identity.ClientRole{ClientID: "frontend-main", Role: "content:write"})
+			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
+	} {
+		e := newDelegationEnv(t, delegationSetup{on: true})
+		if tc.setup != nil {
+			tc.setup(e.dir)
+		}
+		if err := e.dir.SetGroupClientRoles(context.Background(), e.ids[tc.on], tc.roles); err != nil {
+			t.Fatal(err)
+		}
+		got := e.add("webLeader", tc.target, "newcomer")
+		if tc.refused {
+			wantStatus(t, tc.name, got, fiber.StatusForbidden, authz.RefusalProtectedGroup)
+			if e.directlyIn("newcomer", tc.target) {
+				t.Errorf("%s: added", tc.name)
+			}
+			continue
+		}
+		wantStatus(t, tc.name, got, fiber.StatusNoContent, "")
+	}
+}
+
+// A write reads the Groups' protection fresh: a role mapped in Keycloak
+// (its console, a script, another core) after a Leader's read is seen at
+// once (review of #235, O1).
+func TestTeamDelegationWriteReadsProtectionFresh(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	if got := e.send(e.token("webLeader"), fiber.MethodGet, e.group("/UYELER/ARGE/WEBLAB/FRONT")+"/members", ""); got.status != fiber.StatusOK {
+		t.Fatalf("read: %d", got.status)
+	}
+	if err := e.dir.SetGroupClientRoles(context.Background(), e.ids["/UYELER/ARGE/WEBLAB/FRONT"], []identity.ClientRole{{ClientID: "core", Role: authz.RoleUsersManage}}); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, "after the mapping", e.add("webLeader", "/UYELER/ARGE/WEBLAB/FRONT", "newcomer"), fiber.StatusForbidden, authz.RefusalProtectedGroup)
+}
+
+// A Group named like a leader subgroup but not one (LIDERLER-ESKI, a
+// trailing blank) takes no delegated member (review of #235, D1).
+func TestTeamDelegationLeaderLookAlikes(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	for _, name := range []string{"LIDERLER-ESKI", "LIDERLER "} {
+		g := identity.Group{ID: uuid.NewString(), Name: name, Path: "/UYELER/ARGE/WEBLAB/" + name}
+		e.dir.PutGroup(g)
+		got := e.send(e.token("webLeader"), fiber.MethodPost, "/v1/groups/"+g.ID+"/members", `{"userId":"`+e.people["newcomer"].String()+`"}`)
+		wantStatus(t, name, got, fiber.StatusForbidden, "")
+	}
+	if e.directlyIn("newcomer", "/UYELER/ARGE/WEBLAB/LIDERLER-ESKI") {
+		t.Fatal("added to a look-alike")
+	}
+}
+
+// A Leader whose own account is being erased writes nothing (review of
+// #235, D3).
+func TestTeamDelegationInactiveCaller(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	token := e.token("webLeader")
+	if _, err := e.users.RequestDeletion(context.Background(), e.people["webLeader"], nil); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, "being erased", e.send(token, fiber.MethodPost, e.group("/UYELER/ARGE/WEBLAB")+"/members", `{"userId":"`+e.people["newcomer"].String()+`"}`), fiber.StatusForbidden, "")
+	if e.directlyIn("newcomer", "/UYELER/ARGE/WEBLAB") {
+		t.Fatal("added by an inactive caller")
+	}
+}
+
+// The candidate search matches an address only whole: a part of one is no
+// oracle for the masked address (review of #235, O2); and a Leader's
+// searches have a budget.
+func TestTeamDelegationCandidateMaskAndBudget(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true, searches: 3})
+	id := uuid.New()
+	e.dir.PutUser(identity.Person{ID: id, Email: "zeynep.k1907@gmail.test", FirstName: "Ayşe", LastName: "Yılmaz"})
+	if _, _, err := e.users.Upsert(context.Background(), user.User{ID: id, Email: "zeynep.k1907@gmail.test", FirstName: "Ayşe", LastName: "Yılmaz"}); err != nil {
+		t.Fatal(err)
+	}
+	search := func(q string) []identity.MemberCandidate {
+		t.Helper()
+		got := e.send(e.token("webLeader"), fiber.MethodGet, e.group("/UYELER/ARGE/WEBLAB")+"/member-candidates?q="+q, "")
+		var out []identity.MemberCandidate
+		if err := json.Unmarshal(got.body, &out); err != nil || got.status != fiber.StatusOK {
+			t.Fatalf("%s: %d %s", q, got.status, got.body)
+		}
+		return out
+	}
+	for _, q := range []string{"zey", "k1907"} {
+		if found := search(q); len(found) != 0 {
+			t.Errorf("%q matched the address: %+v", q, found)
+		}
+	}
+	if found := search("Yılm"); len(found) != 1 || found[0].Email != "z***@gmail.test" {
+		t.Errorf("by name: %+v", found)
+	}
+	wantStatus(t, "over the budget", e.send(e.token("webLeader"), fiber.MethodGet, e.group("/UYELER/ARGE/WEBLAB")+"/member-candidates?q=zeynep.k1907%40gmail.test", ""), fiber.StatusTooManyRequests, identity.CodeRateLimited)
+	// Privileged has no budget.
+	for range 4 {
+		if got := e.send(e.token("yk"), fiber.MethodGet, e.group("/UYELER/ARGE/WEBLAB")+"/member-candidates?q=zeynep.k1907%40gmail.test", ""); got.status != fiber.StatusOK || !strings.Contains(string(got.body), "zeynep.k1907@gmail.test") {
+			t.Fatalf("privileged exact: %d %s", got.status, got.body)
+		}
+	}
+}
+
+// One delegated write per person at a time (review of #235, B2): a second
+// one while the first runs is 429, and the first goes through.
+func TestTeamDelegationOneWriteAtATime(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	policy := authz.DefaultPolicy()
+	policy.TeamDelegation = true
+	az := authz.NewAuthorizer(policy)
+	delegation := identity.NewTeamDelegation(policy, e.dir, e.dir, identity.TeamDelegationOptions{})
+	options := identity.Options{TeamCodes: teamcode.NewMemoryLedger(), TeamAudit: e.audit, Delegation: delegation}
+	deps := memoryDepsDecidedBy(e.dir, options, az)
+	deps.Identity = identity.NewServiceWithOptions(identity.AuditedDirectory(slowAdds{e.dir, 400 * time.Millisecond}, e.audit, nil), e.users, az, options)
+	deps.ParseToken = e.keys.Parse()
+	e.app = httpx.New(deps)
+	token := e.token("webLeader")
+	statuses := make(chan int, 2)
+	for _, who := range []string{"newcomer", "outsider"} {
+		go func() {
+			statuses <- e.send(token, fiber.MethodPost, e.group("/UYELER/ARGE/WEBLAB")+"/members", `{"userId":"`+e.people[who].String()+`"}`).status
+		}()
+		time.Sleep(100 * time.Millisecond)
+	}
+	got := []int{<-statuses, <-statuses}
+	slices.Sort(got)
+	if got[0] != fiber.StatusNoContent || got[1] != fiber.StatusTooManyRequests {
+		t.Fatalf("statuses %v", got)
 	}
 }

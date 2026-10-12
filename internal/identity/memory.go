@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
 type Memory struct {
@@ -500,6 +501,48 @@ func (m *Memory) GroupsForUser(_ context.Context, userID uuid.UUID) ([]Group, er
 		}
 	}
 	return out, nil
+}
+
+// GroupProtection answers as Keycloak does (Keycloak.GroupProtection): a
+// realm role (a ClientRole with no ClientID) or a protected client role
+// mapped to the Group, or held by a composite it maps at any depth.
+func (m *Memory) GroupProtection(_ context.Context, groupID string) (Protection, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("GroupProtection")
+	g, ok := m.groups[groupID]
+	if !ok {
+		return Protection{}, ErrNotFound
+	}
+	seen := map[string]bool{}
+	var check func(r ClientRole, depth int) Protection
+	check = func(r ClientRole, depth int) Protection {
+		switch {
+		case r.ClientID == "":
+			return Protection{Protected: true, Reason: "realm role " + r.Role}
+		case authz.ProtectedRole(r.ClientID, r.Role):
+			return Protection{Protected: true, Reason: "client role " + r.ClientID + ":" + r.Role}
+		case seen[roleKey(r)]:
+			return Protection{}
+		}
+		seen[roleKey(r)] = true
+		if depth >= maxCompositeDepth && len(m.composites[roleKey(r)]) > 0 {
+			return Protection{Protected: true, Reason: "composite " + r.ClientID + ":" + r.Role + " nested too deep"}
+		}
+		for _, child := range m.composites[roleKey(r)] {
+			if got := check(child, depth+1); got.Protected {
+				got.Reason = "composite " + r.ClientID + ":" + r.Role + " holds " + got.Reason
+				return got
+			}
+		}
+		return Protection{}
+	}
+	for _, r := range m.groupRoles[g.ID] {
+		if got := check(r, 0); got.Protected {
+			return got, nil
+		}
+	}
+	return Protection{}, nil
 }
 
 func (m *Memory) GroupClientRoles(_ context.Context, groupID string) ([]ClientRole, error) {

@@ -313,3 +313,36 @@ func TestTeamOf(t *testing.T) {
 		}
 	}
 }
+
+// A Group whose name only looks like a leader subgroup's (LIDERLER-ESKI,
+// "LIDERLER " with a blank, liderler) is neither a Leader group nor a Team
+// a Leader manages: paths read by substring elsewhere could take its
+// members for Leaders (review of #235, D1). Only Privileged manages it.
+func TestManagesRefusesLeaderLookAlikes(t *testing.T) {
+	t.Parallel()
+	p := delegationOn()
+	for _, name := range []string{"LIDERLER-ESKI", "LIDERLER ", " LIDERLER", "liderler", "KOORDINATORLER2", "Liderler-2026"} {
+		g := target("wf", false)
+		g.Group.Name, g.Group.Path = name, "/UYELER/ARGE/WEBLAB/"+name
+		g.Group.ParentID = "w"
+		for decide, got := range map[string]ManageDecision{
+			"Manages": p.Manages(leaderIn("wl"), g), "ManagesMembership": p.ManagesMembership(leaderIn("wl"), g), "ManagesStrict": p.ManagesStrict(leaderIn("wl"), g),
+		} {
+			if got.Allowed {
+				t.Errorf("%q: %s allowed", name, decide)
+			}
+		}
+		if got := p.Manages(TeamManager{Privileged: true}, g); !got.Allowed {
+			t.Errorf("%q: Privileged refused", name)
+		}
+		// Nor anything below one.
+		below := ManagedGroup{Group: GroupNode{ID: "x", Name: "X", Path: g.Group.Path + "/X", ParentID: g.Group.ID}, Ancestors: append([]GroupNode{g.Group}, g.Ancestors...)}
+		if got := p.Manages(leaderIn("wl"), below); got.Allowed {
+			t.Errorf("under %q: allowed", name)
+		}
+	}
+	// A real Sub-team whose name starts with neither stays managed.
+	if got := p.Manages(leaderIn("wl"), target("wf", false)); !got.Allowed {
+		t.Fatal("FRONT refused")
+	}
+}
