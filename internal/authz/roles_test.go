@@ -83,6 +83,8 @@ var roleChecks = []struct {
 	{RoleTicketValidate, Resource{Type: TypeTicket, OwnerTeam: "WEBLAB"}, Validate},
 	{RoleTicketValidate, Resource{Type: TypeTicket}, Validate},
 	{RoleCompetitorManage, Resource{Type: TypeCompetitor, OwnerTeam: "WEBLAB"}, Update},
+	{RoleCompetitionManage, Resource{Type: TypeCompetition, OwnerTeam: "WEBLAB"}, Update},
+	{RoleCompetitionManage, Resource{Type: TypeCompetition}, Create},
 	{RoleMediaManage, Resource{Type: TypeMedia}, List},
 	{RoleMediaManage, Resource{Type: TypeMedia}, Delete},
 	{RoleMediaPrivateRead, Resource{Type: TypeMediaReadLink}, Read},
@@ -113,7 +115,7 @@ func TestAuthorizer_RolesModeReadsTheRoleNotTheGroup(t *testing.T) {
 			t.Errorf("%s %s: %s holder outside the Privileged Groups allowed in the groups mode", c.r.Type, c.a, c.role)
 		}
 		for _, other := range PermissionRoles() {
-			if other == c.role {
+			if other == c.role || renamedRoles[c.role] == other {
 				continue
 			}
 			if auth.Allow(Principal{ID: "u1", Roles: []string{other}}, c.r, c.a) {
