@@ -28,6 +28,7 @@ const (
 	TypeEventDay            Type = "EVENT_DAY"
 	TypeSession             Type = "SESSION"
 	TypeCompetitor          Type = "COMPETITOR"
+	TypeCompetition         Type = "COMPETITION"
 	TypeMedia               Type = "MEDIA"
 	TypeURL                 Type = "URL"
 	TypeFormLink            Type = "FORM_LINK"

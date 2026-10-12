@@ -25,6 +25,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clamd"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
+	"github.com/skylab-kulubu/core-backend/internal/competition"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
@@ -170,6 +171,7 @@ func main() {
 	seasons := season.NewPostgresStore(pool)
 	tickets := ticket.NewPostgresStore(pool)
 	competitors := competitor.NewPostgresStore(pool)
+	competitions := competition.NewPostgresStore(pool)
 	certs := certificate.NewPostgresStore(pool)
 	mediaStore := media.NewPostgresStore(pool)
 	// A catalogue that breaks a hard ceiling fails the deploy here, not an
@@ -759,6 +761,7 @@ func main() {
 			Scans:              mediaScans,
 		}),
 		URLs:                   urlSvc,
+		Competitions:           competition.NewService(competitions, events, az),
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
 		SkyPassWalletMetrics:   wallet,

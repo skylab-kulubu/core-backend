@@ -21,7 +21,12 @@ const (
 	// RoleTicketValidate: door check-in at every Event, SkyPass included.
 	RoleTicketValidate = "ticket:validate"
 	// RoleCompetitorManage: every competitor action for every Owner team.
+	// Renamed to RoleCompetitionManage; read as that one (renamedRoles)
+	// until Keycloak has renamed it, then removed one release later.
 	RoleCompetitorManage = "competitor:manage"
+	// RoleCompetitionManage: every Competition of every Owner team and of
+	// Events without one (ADR-0068), and the old competitor routes.
+	RoleCompetitionManage = "competition:manage"
 	// RoleMediaManage: the whole Media library (List) and deleting any Media.
 	RoleMediaManage = "media:manage"
 	// RoleMediaPrivateRead: a person opening core's own private Media.
@@ -53,6 +58,7 @@ var permissionRoles = []struct {
 	{RoleTicketManage, false},
 	{RoleTicketValidate, false},
 	{RoleCompetitorManage, false},
+	{RoleCompetitionManage, false},
 	{RoleMediaManage, false},
 	{RoleMediaPrivateRead, false},
 	{RoleCertificateManage, false},
@@ -71,6 +77,23 @@ func PermissionRoles() []string {
 		out[i] = r.name
 	}
 	return out
+}
+
+// renamedRoles pairs a renamed role with its other name. Either name grants
+// what both stand for while Keycloak moves from the old name to the new
+// one; the old name leaves the table one release after Keycloak's rename.
+var renamedRoles = map[string]string{
+	RoleCompetitionManage: RoleCompetitorManage,
+	RoleCompetitorManage:  RoleCompetitionManage,
+}
+
+// roleNames are the names that stand for role: itself and, while it is
+// being renamed, its other name.
+func roleNames(role string) []string {
+	if other, ok := renamedRoles[role]; ok {
+		return []string{role, other}
+	}
+	return []string{role}
 }
 
 func preexistingRole(name string) bool {
