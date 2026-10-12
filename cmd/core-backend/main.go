@@ -49,6 +49,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 	"github.com/skylab-kulubu/core-backend/internal/teammail"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
@@ -750,10 +751,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The Group writes of the identity routes go through the Team audit
+	// record (docs/team-audit.md): no row, no change.
+	auditedDir := identity.AuditedDirectory(dir, teamaudit.NewPostgres(pool), log.Printf)
 
 	app := httpx.New(httpx.Deps{
 		Users: user.NewService(users, dir),
-		Identity: identity.NewServiceWithOptions(dir, users, az, identity.Options{
+		Identity: identity.NewServiceWithOptions(auditedDir, users, az, identity.Options{
 			AccountErasureEnabled: workerEnabled,
 			AccessProjector:       accessProjector,
 			GroupCache:            overageGroups,

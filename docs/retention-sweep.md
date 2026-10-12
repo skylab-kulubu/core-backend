@@ -45,7 +45,7 @@ click list and a form's channel statistics keep looking 90 days back
 clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
 from apply on it only grows, counting every click since then.
 
-## Rules (rule set v3)
+## Rules (rule set v4)
 
 "Event end" is the Event's `end_date`, else its last day's `end_date`, else
 its `start_date` (ADR-0062). For `guest_identity`, an Event with none of them
@@ -119,6 +119,12 @@ Once `consent_pending` has deleted a never-confirmed row, the links in its
 confirmation mail find nothing: the confirm link says so, the withdraw link
 has nothing left to end. Every invitation carries the withdraw link of a
 confirmed grant, which stays as long as the grant (and then as proof).
+
+The Team audit record ([`team-audit.md`](team-audit.md); rule set v4):
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `team_audit_age` | a `team_audit_records` row, whatever its outcome (a `pending` row is as old as its write) | `teamaudit.Retention`, 3 years after `occurred_at` (S6) | row deleted |
 
 ## Schedule, lock and periods
 
