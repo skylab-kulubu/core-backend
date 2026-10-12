@@ -1320,7 +1320,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 	// Communication preferences: the table with its channel, its key (the
 	// channel in it), its Group index and its guard against an erased
 	// subject.
-	20261012160000: `
+	20261012180000: `
 		SELECT 1
 		WHERE to_regclass('public.communication_preferences') IS NOT NULL
 		  AND EXISTS (
@@ -1342,7 +1342,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  )`,
 	// The account erasure step that deletes a person's announcement
 	// preferences.
-	20261012160100: `
+	20261012180100: `
 		SELECT 1 FROM pg_constraint
 		WHERE conrelid = to_regclass('public.account_deletion_steps')
 		  AND conname = 'account_deletion_steps_step_check'

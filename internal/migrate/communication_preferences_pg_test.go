@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	communicationPreferencesVersion     = "20261012160000"
-	communicationPreferencesStepVersion = "20261012160100"
+	communicationPreferencesVersion     = "20261012180000"
+	communicationPreferencesStepVersion = "20261012180100"
 )
 
 func communicationPreferencesHold(t *testing.T, pool *pgxpool.Pool) (table, step bool) {
@@ -40,8 +40,8 @@ func TestCommunicationPreferenceMigrationsComeLastAndKeepTheEarlierSteps(t *test
 		t.Fatal(err)
 	}
 	before := slices.Index(versions, 20261012121000)
-	table := slices.Index(versions, 20261012160000)
-	step := slices.Index(versions, 20261012160100)
+	table := slices.Index(versions, 20261012180000)
+	step := slices.Index(versions, 20261012180100)
 	if before < 0 || table < 0 || step < 0 || !(before < table && table < step) {
 		t.Fatalf("versions %v", versions)
 	}
