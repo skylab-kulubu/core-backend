@@ -25,6 +25,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clamd"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
+	"github.com/skylab-kulubu/core-backend/internal/commpref"
 	"github.com/skylab-kulubu/core-backend/internal/competition"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
@@ -593,6 +594,30 @@ func main() {
 		log.Printf("contact consents: off (%s is not set); none is recorded", consent.KeyEnv)
 	}
 
+	// Communication preferences (ADR 0067, docs/communication-preferences.md).
+	// Without COMMUNICATION_PREFERENCE_KEY their routes answer 503; the erasure step
+	// still deletes a person's rows, and the deleted teams' rows are still
+	// removed once a day.
+	communicationPreferenceConfig, err := commpref.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	communicationPreferences := commpref.NewService(communicationPreferenceConfig, commpref.NewPostgresStore(pool), dir, privilegedRoots)
+	if communicationPreferenceConfig.Enabled {
+		log.Printf("communication preferences: on (links at %s)", communicationPreferenceConfig.LinkOrigin)
+	} else {
+		log.Printf("communication preferences: off (%s is not set)", commpref.KeyEnv)
+	}
+	if keycloakConfigured {
+		worker("communication preference cleanup", commpref.MaintainCleanup(workers, communicationPreferences, commpref.CleanupInterval, func(what string, removed int64, err error) {
+			if err != nil {
+				log.Printf("communication preferences: %s cleanup: %v", what, err)
+				return
+			}
+			log.Printf("communication preferences: removed %d rows of %s", removed, what)
+		}))
+	}
+
 	// SkyPass in Google Wallet (SKYPASS_GOOGLE_WALLET_*,
 	// docs/skypass-google-wallet.md). Off unless enabled: the link routes
 	// answer 503 and the door reads no Wallet code. Erasure withdraws a
@@ -653,15 +678,16 @@ func main() {
 		worker("account erasure worker", account.Maintain(
 			workers,
 			account.NewWorker(users, accountIdentity, account.WorkerConfig{
-				Lease:                5 * time.Minute,
-				RetryDelay:           30 * time.Second,
-				MaxAttempts:          8,
-				StepTimeout:          20 * time.Second,
-				DeferredRetryHorizon: uploadStagingConfig.Grace + 24*time.Hour,
-				AccessBlocker:        gate,
-				Services:             serviceErasure,
-				ContactConsents:      consents,
-				SkyPassWallet:        wallet,
+				Lease:                    5 * time.Minute,
+				RetryDelay:               30 * time.Second,
+				MaxAttempts:              8,
+				StepTimeout:              20 * time.Second,
+				DeferredRetryHorizon:     uploadStagingConfig.Grace + 24*time.Hour,
+				AccessBlocker:            gate,
+				Services:                 serviceErasure,
+				ContactConsents:          consents,
+				SkyPassWallet:            wallet,
+				CommunicationPreferences: communicationPreferences,
 			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
 			2*time.Second,
 			func(err error) { log.Printf("account erasure worker: %v", err) },
@@ -842,23 +868,24 @@ func main() {
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},
-		TrustedProxies:          trustedProxies,
-		MediaUploadLimiter:      media.NewUploadLimiter(uploadLimits, time.Now),
-		ServiceClients:          serviceClients,
-		GroupOverage:            overageGroups,
-		GuestApplyMetrics:       handlers.NewGuestApplyMetrics(),
-		Authz:                   az,
-		EditableSites:           editableSites,
-		ManagedTeams:            delegation,
-		AuthzRoleMetrics:        authzRoleMetrics,
-		GuestCheckInMetrics:     doorQR,
-		GuestApplyPublicIPLimit: guestApplyIPLimit,
-		Dashboard:               dashboardSvc,
-		GithubActivity:          githubActivity,
-		Consents:                consents,
-		Readiness:               readiness,
-		MediaDecodeMetrics:      decodeBudget,
-		MemoryMetrics:           memory,
+		TrustedProxies:           trustedProxies,
+		MediaUploadLimiter:       media.NewUploadLimiter(uploadLimits, time.Now),
+		ServiceClients:           serviceClients,
+		GroupOverage:             overageGroups,
+		GuestApplyMetrics:        handlers.NewGuestApplyMetrics(),
+		Authz:                    az,
+		EditableSites:            editableSites,
+		ManagedTeams:             delegation,
+		AuthzRoleMetrics:         authzRoleMetrics,
+		GuestCheckInMetrics:      doorQR,
+		GuestApplyPublicIPLimit:  guestApplyIPLimit,
+		Dashboard:                dashboardSvc,
+		GithubActivity:           githubActivity,
+		Consents:                 consents,
+		CommunicationPreferences: communicationPreferences,
+		Readiness:                readiness,
+		MediaDecodeMetrics:       decodeBudget,
+		MemoryMetrics:            memory,
 	})
 
 	addr := os.Getenv("PORT")
