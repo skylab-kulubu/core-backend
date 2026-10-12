@@ -101,16 +101,19 @@ type MonthCount struct {
 
 // EventStat is one Event with its applications.
 type EventStat struct {
-	ID            uuid.UUID  `json:"id"`
-	Name          string     `json:"name"`
-	OwnerTeam     string     `json:"ownerTeam"`
-	Location      string     `json:"location"`
-	StartDate     *time.Time `json:"startDate,omitempty"`
-	EndDate       *time.Time `json:"endDate,omitempty"`
-	Active        bool       `json:"active"`
-	Live          bool       `json:"live"`
-	Capacity      int        `json:"capacity"`
-	CoverImageURL string     `json:"coverImageUrl,omitempty"`
+	ID        uuid.UUID  `json:"id"`
+	Name      string     `json:"name"`
+	OwnerTeam string     `json:"ownerTeam"`
+	Location  string     `json:"location"`
+	StartDate *time.Time `json:"startDate,omitempty"`
+	EndDate   *time.Time `json:"endDate,omitempty"`
+	// Active is derived (ADR 0066): published and not ended at the
+	// summary's time. Status is the Event's stored status.
+	Active        bool         `json:"active"`
+	Status        event.Status `json:"status"`
+	Live          bool         `json:"live"`
+	Capacity      int          `json:"capacity"`
+	CoverImageURL string       `json:"coverImageUrl,omitempty"`
 	// HasApplicationForm is false when the Event links no form, main or
 	// extra.
 	HasApplicationForm bool `json:"hasApplicationForm"`
@@ -255,7 +258,7 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 		c := counts[e.ID]
 		stat := EventStat{
 			ID: e.ID, Name: e.Name, OwnerTeam: e.OwnerTeam, Location: e.Location,
-			StartDate: e.StartDate, EndDate: e.EndDate, Active: e.Active,
+			StartDate: e.StartDate, EndDate: e.EndDate, Active: e.ActiveAt(now), Status: e.Status,
 			Live:     !start.After(now) && !now.After(end),
 			Capacity: e.Capacity, CoverImageURL: e.Resource().CoverImageURL,
 			HasApplicationForm: e.FormURL != "" || len(e.ExtraFormURLs) > 0,

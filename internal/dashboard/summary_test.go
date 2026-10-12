@@ -134,13 +134,14 @@ func newFixture(t *testing.T) *fixture {
 		return created
 	}
 	f.weblabSoon = create(event.Event{Name: "WebLab Bootcamp", OwnerTeam: "WEBLAB", Location: "D-101", Capacity: 50,
-		StartDate: at(now.Add(5 * 24 * time.Hour)), EndDate: at(now.Add(5*24*time.Hour + 3*time.Hour)), Active: true})
+		StartDate: at(now.Add(5 * 24 * time.Hour)), EndDate: at(now.Add(5*24*time.Hour + 3*time.Hour))})
 	// No end date: running for half a day from its start.
 	f.weblabLive = create(event.Event{Name: "WebLab Meetup", OwnerTeam: "WEBLAB", Location: "D-102",
 		StartDate: at(now.Add(-2 * time.Hour)), FormURL: "https://skyl.app/meetup", CoverImageURL: "events/cover.webp"})
 	f.weblabOld = create(event.Event{Name: "WebLab Spring", OwnerTeam: "WEBLAB",
 		StartDate: at(now.AddDate(0, -3, 0)), EndDate: at(now.AddDate(0, -3, 0).Add(time.Hour))})
-	f.gecekoduSoon = create(event.Event{Name: "Gece Kodu", OwnerTeam: "GECEKODU",
+	// A draft: the summary covers it like any other, with its status.
+	f.gecekoduSoon = create(event.Event{Name: "Gece Kodu", OwnerTeam: "GECEKODU", Status: event.StatusDraft,
 		StartDate: at(now.Add(10 * 24 * time.Hour)), ExtraFormURLs: []event.EventFormLink{{Label: "Başvuru", URL: "https://skyl.app/gk"}}})
 	f.noTeam = create(event.Event{Name: "Genel Kurul", StartDate: at(now.Add(-40 * 24 * time.Hour))})
 	f.archived = create(event.Event{Name: "Arşiv", OwnerTeam: "WEBLAB", StartDate: at(now.Add(24 * time.Hour))})
@@ -286,6 +287,11 @@ func TestSummaryListsRunningComingAndRecentEventsWithTheirApplications(t *testin
 	live, soon, gk := got.EventStats[0], got.EventStats[1], got.EventStats[2]
 	if !live.Live || soon.Live || gk.Live {
 		t.Fatalf("live %v %v %v", live.Live, soon.Live, gk.Live)
+	}
+	// active is derived at the summary's own time: published and not ended.
+	if live.Status != event.StatusPublished || !live.Active || soon.Status != event.StatusPublished || !soon.Active ||
+		gk.Status != event.StatusDraft || gk.Active {
+		t.Fatalf("status live=%q/%v soon=%q/%v gk=%q/%v", live.Status, live.Active, soon.Status, soon.Active, gk.Status, gk.Active)
 	}
 	if !live.HasApplicationForm || !live.HasCoverImage || live.CoverImageURL == "" || live.CheckedIn != 7 {
 		t.Fatalf("live %+v", live)
