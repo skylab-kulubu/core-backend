@@ -1,10 +1,5 @@
 package authz
 
-import (
-	"slices"
-	"strings"
-)
-
 // Role classes (ADR 0065 decision 10, addendum of 2026-10-12; Yusuf:
 // "sektör nasılsa öyle", Microsoft Entra's model). A Keycloak client role
 // is one of two classes, named by its (client, role) pair, never by its
@@ -60,11 +55,6 @@ func SiteClients() []string {
 //     Teams;
 //   - core's own short link roles: only the holder's own links;
 //   - Forms' seat (skyforms:access): only the forms shared with the holder;
-//     form:manage, response:manage and feedback:manage only open Forms'
-//     screens (forms-backend decides every form by its collaborators or
-//     skyforms:*, which is an admin role);
-//   - the broker's read-token (inside USER): the holder's own identity
-//     provider token;
 //   - SkyMail's access and template reading: opening SkyMail and offering a
 //     mail for approval, which an approver still sends;
 //   - every Site client's content:read: reading.
@@ -82,10 +72,6 @@ func AppRoles() []RoleRef {
 		{Client: "core", Role: "url:delete"},
 		{Client: "core", Role: RoleURLAccess},
 		{Client: "forms", Role: "skyforms:access"},
-		{Client: "forms", Role: "skyforms:form:manage"},
-		{Client: "forms", Role: "skyforms:response:manage"},
-		{Client: "forms", Role: "skyforms:feedback:manage"},
-		{Client: "broker", Role: "read-token"},
 		{Client: "skymail", Role: "skymail:access"},
 		{Client: "skymail", Role: "skymail:templates:read"},
 	}
@@ -94,9 +80,6 @@ func AppRoles() []RoleRef {
 	}
 	return out
 }
-
-// RealmRoleUser is the realm role every member holds through /UYELER.
-const RealmRoleUser = "USER"
 
 // RoleCMSAccess is a Site client's editor role: content:read and
 // content:write together, site-wide write (ADR 0056).
@@ -124,7 +107,7 @@ func AdminRoles() []RoleRef {
 		out = append(out, RoleRef{Role: role})
 	}
 	out = append(out, RoleRef{Client: "realm-management", AnyRole: true})
-	for _, role := range []string{"skyforms:*", "skyforms:feedback:*", "skyforms:account:erase"} {
+	for _, role := range []string{"skyforms:*", "skyforms:form:manage", "skyforms:account:erase"} {
 		out = append(out, RoleRef{Client: "forms", Role: role})
 	}
 	for _, role := range []string{"skymail:templates:write", "skymail:lists:read", "skymail:lists:write",
@@ -167,57 +150,4 @@ func ClassifyRole(clientID, role string) RoleClass {
 // (the protection read walks it).
 func DelegableRole(clientID, role string) bool {
 	return ClassifyRole(clientID, role) == RoleClassApp
-}
-
-// Realm roles are classed by name and by where they sit, since core reads
-// them as the names a Group holds in effect (it holds no view-realm, so a
-// realm role's composites stay closed to it). Production's realm roles
-// (measurement of 2026-10-12 22:42) mirror membership: USER on /UYELER
-// (every member; its composite is broker/read-token), a Team's own name on
-// that Team (WEBLAB on /UYELER/ARGE/WEBLAB) and <TEAM>_LEADER on that
-// Team's Leader groups. Where they sit they grant what membership there
-// already means, so they are app roles there; anywhere else they protect.
-
-// adminRealmRoles are the known admin realm roles (the Java era's
-// Privileged roles); every YK_ role is one too.
-var adminRealmRoles = []string{"ADMIN", "YK", "DK", "Skymail-Admin", "admin"}
-
-// reservedSegments are path names no realm role mirrors.
-var reservedSegments = []string{"UYELER", "ADMIN", "YK", "DK", "USER"}
-
-// ClassifyRealmRole is the class of the realm role role held in effect by
-// the Group at groupPath:
-//   - a known admin realm role (ADMIN, YK, DK, YK_…, Skymail-Admin): admin;
-//   - USER: app (the member role every member holds through /UYELER);
-//   - the name of a Group on groupPath under /UYELER (a Team or an area,
-//     not a reserved or Leader name): app, the role mirrors membership of
-//     that Group, which the holder already has;
-//   - <NAME>_LEADER where groupPath runs through NAME's Leader group
-//     (NAME/LIDERLER, NAME/KOORDINATORLER): app, the Team's Leader role on
-//     its own Leader group;
-//   - anything else: unclassified, protected as an admin role.
-func (p Policy) ClassifyRealmRole(role, groupPath string) RoleClass {
-	if slices.Contains(adminRealmRoles, role) || strings.HasPrefix(role, "YK_") {
-		return RoleClassAdmin
-	}
-	if role == RealmRoleUser {
-		return RoleClassApp
-	}
-	rest, ok := strings.CutPrefix(groupPath, "/UYELER/")
-	if !ok || rest == "" {
-		return RoleClassUnclassified
-	}
-	segments := strings.Split(rest, "/")
-	for i, segment := range segments {
-		if segment == "" || slices.Contains(reservedSegments, segment) || slices.Contains(p.LeaderSubgroups, segment) {
-			continue
-		}
-		if role == segment {
-			return RoleClassApp
-		}
-		if role == segment+"_LEADER" && i+1 < len(segments) && slices.Contains(p.LeaderSubgroups, segments[i+1]) {
-			return RoleClassApp
-		}
-	}
-	return RoleClassUnclassified
 }

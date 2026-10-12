@@ -903,58 +903,6 @@ func TestTeamDelegationTopTeamSiteEditorKeepsSubTeams(t *testing.T) {
 	wantStatus(t, "own Team", e.add("webLeader", "/UYELER/ARGE/WEBLAB", "exLeader"), fiber.StatusNoContent, "")
 }
 
-// Production's realm roles (measurement of 2026-10-12 22:42): USER on
-// /UYELER (every member; its composite is broker/read-token), a Team's own
-// name on each top Team (WEBLAB on /UYELER/ARGE/WEBLAB) and <TEAM>_LEADER on
-// its Leader groups. They mirror membership, so they are app roles where
-// they sit and delegation still works under them; before the role classes
-// any realm role protected, and USER on /UYELER shut delegation everywhere.
-func TestTeamDelegationProductionRealmRolesKeepDelegation(t *testing.T) {
-	t.Parallel()
-	e := newDelegationEnv(t, delegationSetup{on: true})
-	for path, roles := range map[string][]identity.ClientRole{
-		"/UYELER":                            {{Role: authz.RealmRoleUser}},
-		"/UYELER/ARGE/WEBLAB":                {{Role: "WEBLAB"}},
-		"/UYELER/ARGE/WEBLAB/LIDERLER":       {{Role: "WEBLAB_LEADER"}},
-		"/UYELER/ARGE/WEBLAB/KOORDINATORLER": {{Role: "WEBLAB_LEADER"}},
-		"/UYELER/ARGE/MOBILAB":               {{Role: "MOBILAB"}},
-		"/UYELER/ARGE/MOBILAB/LIDERLER":      {{Role: "MOBILAB_LEADER"}},
-		"/UYELER/ARGE/WEBLAB/FRONT/LIDERLER": {{Role: "FRONT_LEADER"}},
-	} {
-		if err := e.dir.SetGroupClientRoles(context.Background(), e.ids[path], roles); err != nil {
-			t.Fatal(err)
-		}
-	}
-	wantStatus(t, "own Team", e.add("webLeader", "/UYELER/ARGE/WEBLAB", "newcomer"), fiber.StatusNoContent, "")
-	wantStatus(t, "Sub-team", e.add("webLeader", "/UYELER/ARGE/WEBLAB/FRONT", "outsider"), fiber.StatusNoContent, "")
-	wantStatus(t, "Sub-team's Leader group", e.add("webLeader", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER", "exLeader"), fiber.StatusNoContent, "")
-	wantStatus(t, "remove from the Sub-team's Leader group", e.remove("webLeader", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER", "frontLeader"), fiber.StatusNoContent, "")
-	wantStatus(t, "another Leader's Team", e.add("mobLeader", "/UYELER/ARGE/MOBILAB", "newcomer"), fiber.StatusNoContent, "")
-}
-
-// A realm role that is no app role where it sits protects: a known admin
-// realm role, another Team's name or Leader role, a <TEAM>_LEADER outside
-// that Team's Leader groups, and any realm role nobody has classified.
-func TestTeamDelegationOtherRealmRolesProtect(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct{ name, on, role, target string }{
-		{"ADMIN on the area", "/UYELER/ARGE", "ADMIN", "/UYELER/ARGE/WEBLAB/FRONT"},
-		{"Skymail-Admin on /UYELER", "/UYELER", "Skymail-Admin", "/UYELER/ARGE/WEBLAB/FRONT"},
-		{"YK_SECRETARY on the Team", "/UYELER/ARGE/WEBLAB", "YK_SECRETARY", "/UYELER/ARGE/WEBLAB/FRONT"},
-		{"another Team's name", "/UYELER/ARGE/WEBLAB/FRONT", "MOBILAB", "/UYELER/ARGE/WEBLAB/FRONT"},
-		{"a Leader role on a Team group", "/UYELER/ARGE/WEBLAB/FRONT", "FRONT_LEADER", "/UYELER/ARGE/WEBLAB/FRONT"},
-		{"another Team's Leader role", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER", "MOBILAB_LEADER", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER"},
-		{"an area's name", "/UYELER/ARGE/WEBLAB/FRONT", "ORGANIZASYON", "/UYELER/ARGE/WEBLAB/FRONT"},
-		{"an unclassified realm role", "/UYELER", "offline_access", "/UYELER/ARGE/WEBLAB/FRONT"},
-	} {
-		e := newDelegationEnv(t, delegationSetup{on: true})
-		if err := e.dir.SetGroupClientRoles(context.Background(), e.ids[tc.on], []identity.ClientRole{{Role: tc.role}}); err != nil {
-			t.Fatal(err)
-		}
-		wantStatus(t, tc.name, e.add("webLeader", tc.target, "newcomer"), fiber.StatusForbidden, authz.RefusalProtectedGroup)
-	}
-}
-
 // A write reads the Groups' protection fresh: a role mapped in Keycloak
 // (its console, a script, another core) after a Leader's read is seen at
 // once (review of #235, O1).

@@ -1021,9 +1021,8 @@ func (k *Keycloak) GroupNode(ctx context.Context, id string) (Group, string, err
 const maxCompositeDepth = 8
 
 // GroupProtection reads whether the Group groupID's own role mappings make
-// it a Protected group (GroupProtections): the realm roles it holds in
-// effect (GET /groups/{id}/role-mappings/realm/composite) come back by name
-// for the delegation to class, and a client role
+// it a Protected group (GroupProtections): any realm role it holds in
+// effect (GET /groups/{id}/role-mappings/realm/composite), or a client role
 // that is no app role (authz.DelegableRole: an admin role or one nobody has
 // classified), or an app role that holds, as a composite at any depth, a
 // realm role or a client role that is no app role. Realm roles are not
@@ -1051,14 +1050,13 @@ func (k *Keycloak) GroupProtection(ctx context.Context, groupID string) (Protect
 	if err != nil {
 		return Protection{}, mapKCErr(err)
 	}
-	var realmRoles []string
 	for _, r := range realm {
 		if r != nil {
-			realmRoles = append(realmRoles, gocloak.PString(r.Name))
+			return Protection{Protected: true, Reason: "realm role " + gocloak.PString(r.Name)}, nil
 		}
 	}
 	if mapping == nil {
-		return Protection{RealmRoles: realmRoles}, nil
+		return Protection{}, nil
 	}
 	seen := map[string]bool{}
 	var check func(r gocloak.Role, clientID string, depth int) (Protection, error)
@@ -1083,10 +1081,7 @@ func (k *Keycloak) GroupProtection(ctx context.Context, groupID string) (Protect
 				continue
 			}
 			if !gocloak.PBool(child.ClientRole) {
-				// A realm role inside a client composite: classed with the
-				// Group's realm roles (/realm/composite answers it too).
-				realmRoles = append(realmRoles, gocloak.PString(child.Name))
-				continue
+				return Protection{Protected: true, Reason: "composite " + clientID + ":" + name + " holds realm role " + gocloak.PString(child.Name)}, nil
 			}
 			childClient, err := k.clientIDOf(ctx, token, gocloak.PString(child.ContainerID))
 			if err != nil {
@@ -1115,7 +1110,7 @@ func (k *Keycloak) GroupProtection(ctx context.Context, groupID string) (Protect
 			}
 		}
 	}
-	return Protection{RealmRoles: realmRoles}, nil
+	return Protection{}, nil
 }
 
 // clientIDOf is the client id of the client whose Keycloak UUID is uuid,

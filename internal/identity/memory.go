@@ -503,10 +503,9 @@ func (m *Memory) GroupsForUser(_ context.Context, userID uuid.UUID) ([]Group, er
 }
 
 // GroupProtection answers as Keycloak does (Keycloak.GroupProtection): a
-// client role that is no app role mapped to the Group, or held by a
-// composite app role it maps at any depth, protects; the realm roles (a
-// ClientRole with no ClientID) it maps, and those inside them or inside
-// its client composites, come back by name.
+// realm role (a ClientRole with no ClientID) or a client role that is no
+// app role mapped to the Group, or held by a composite app role it maps at
+// any depth.
 func (m *Memory) GroupProtection(_ context.Context, groupID string) (Protection, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -516,29 +515,11 @@ func (m *Memory) GroupProtection(_ context.Context, groupID string) (Protection,
 		return Protection{}, ErrNotFound
 	}
 	seen := map[string]bool{}
-	var realmRoles []string
-	// realm notes a realm role and the realm roles inside it, as Keycloak's
-	// /role-mappings/realm/composite answers core: a realm composite's
-	// client roles stay closed to a caller without view-realm.
-	var realm func(r ClientRole)
-	realm = func(r ClientRole) {
-		if seen[roleKey(r)] {
-			return
-		}
-		seen[roleKey(r)] = true
-		realmRoles = append(realmRoles, r.Role)
-		for _, child := range m.composites[roleKey(r)] {
-			if child.ClientID == "" {
-				realm(child)
-			}
-		}
-	}
 	var check func(r ClientRole, depth int) Protection
 	check = func(r ClientRole, depth int) Protection {
 		switch {
 		case r.ClientID == "":
-			realm(r)
-			return Protection{}
+			return Protection{Protected: true, Reason: "realm role " + r.Role}
 		case seen[roleKey(r)]:
 			return Protection{}
 		}
@@ -562,7 +543,7 @@ func (m *Memory) GroupProtection(_ context.Context, groupID string) (Protection,
 			return got, nil
 		}
 	}
-	return Protection{RealmRoles: realmRoles}, nil
+	return Protection{}, nil
 }
 
 func (m *Memory) GroupClientRoles(_ context.Context, groupID string) ([]ClientRole, error) {

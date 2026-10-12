@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -196,12 +195,10 @@ func TestMemoryGroupProtectionDepth(t *testing.T) {
 			t.Errorf("%d levels: %+v %v", n, got, err)
 		}
 	}
-	// A realm role three deep comes back by name for the delegation to
-	// class; it does not protect at this level.
 	m := chain(3)
 	m.PutCompositeRole(level(3), identity.ClientRole{Role: "admin"})
-	if got, _ := m.GroupProtection(context.Background(), "g"); got.Protected || !slices.Contains(got.RealmRoles, "admin") {
-		t.Errorf("a realm role three deep: %+v", got)
+	if got, _ := m.GroupProtection(context.Background(), "g"); !got.Protected {
+		t.Error("a realm role three deep")
 	}
 }
 
@@ -287,18 +284,6 @@ func TestTeamDelegationCountsUnclassifiedRoles(t *testing.T) {
 	}
 	if got := d2.Prometheus(); strings.Contains(got, "{role=") {
 		t.Fatalf("a known admin role counted:\n%s", got)
-	}
-	// A realm role nobody has classified is counted as realm:<name>.
-	realm, leader3, weblab3 := delegationRealm(t)
-	if err := realm.SetGroupClientRoles(context.Background(), weblab3, []identity.ClientRole{{Role: "offline_access"}}); err != nil {
-		t.Fatal(err)
-	}
-	d3 := identity.NewTeamDelegation(onPolicy(), realm, realm, identity.TeamDelegationOptions{})
-	if tree, err := d3.Tree(context.Background(), leader3, false); err != nil || len(tree) != 1 || !tree[0].Protected {
-		t.Fatalf("realm role: %+v %v", tree, err)
-	}
-	if got := d3.Prometheus(); !strings.Contains(got, `skylab_team_delegation_unclassified_roles_total{role="realm:offline_access"} 1`) {
-		t.Fatalf("realm metrics:\n%s", got)
 	}
 	var none *identity.TeamDelegation
 	if none.Prometheus() != "" {

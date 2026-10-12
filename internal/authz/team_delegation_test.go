@@ -291,7 +291,7 @@ func TestClassifyRole(t *testing.T) {
 		{"admin", "content:write", RoleClassAdmin},
 		{"frontend-main", "schema:sync", RoleClassAdmin},
 		{"forms", "skyforms:*", RoleClassAdmin},
-		{"forms", "skyforms:feedback:*", RoleClassAdmin},
+		{"forms", "skyforms:form:manage", RoleClassAdmin},
 		{"skymail", "skymail:templates:write", RoleClassAdmin},
 		{"skymail", "skymail:lists:read", RoleClassAdmin},
 		{"skymail", "skymail:mails:approve", RoleClassAdmin},
@@ -310,11 +310,6 @@ func TestClassifyRole(t *testing.T) {
 		{"core", "url:delete", RoleClassApp},
 		{"core", RoleURLAccess, RoleClassApp},
 		{"forms", "skyforms:access", RoleClassApp},
-		{"forms", "skyforms:form:manage", RoleClassApp},
-		{"forms", "skyforms:response:manage", RoleClassApp},
-		{"forms", "skyforms:feedback:manage", RoleClassApp},
-		{"broker", "read-token", RoleClassApp},
-		{"skycloud", "skycloud:access", RoleClassUnclassified},
 		{"skymail", "skymail:access", RoleClassApp},
 		{"skymail", "skymail:templates:read", RoleClassApp},
 		{"frontend-main", "content:read", RoleClassApp},
@@ -352,48 +347,6 @@ func TestRoleListsAreDisjoint(t *testing.T) {
 		}
 		if got := ClassifyRole(app.Client, app.Role); got != RoleClassApp {
 			t.Errorf("app role %s:%s classifies as %s", app.Client, app.Role, got)
-		}
-	}
-}
-
-// Realm roles are classed by name and by where they sit (production's
-// measurement of 2026-10-12 22:42): USER, a Team's or area's own name on
-// its path and <TEAM>_LEADER on that Team's Leader group are app roles;
-// the Java era's Privileged roles are admin roles; anything else is
-// unclassified.
-func TestClassifyRealmRole(t *testing.T) {
-	t.Parallel()
-	p := DefaultPolicy()
-	for _, tc := range []struct {
-		role, path string
-		want       RoleClass
-	}{
-		{"USER", "/UYELER", RoleClassApp},
-		{"USER", "/UYELER/ARGE/WEBLAB/FRONT", RoleClassApp},
-		{"WEBLAB", "/UYELER/ARGE/WEBLAB", RoleClassApp},
-		{"WEBLAB", "/UYELER/ARGE/WEBLAB/FRONT", RoleClassApp},
-		{"WEBLAB", "/UYELER/ARGE/WEBLAB/LIDERLER", RoleClassApp},
-		{"ARGE", "/UYELER/ARGE/WEBLAB", RoleClassApp},
-		{"WEBLAB_LEADER", "/UYELER/ARGE/WEBLAB/LIDERLER", RoleClassApp},
-		{"WEBLAB_LEADER", "/UYELER/ARGE/WEBLAB/KOORDINATORLER", RoleClassApp},
-		{"FRONT_LEADER", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER", RoleClassApp},
-		{"ADMIN", "/UYELER/ARGE/WEBLAB", RoleClassAdmin},
-		{"YK", "/UYELER", RoleClassAdmin},
-		{"DK", "/UYELER", RoleClassAdmin},
-		{"YK_SECRETARY", "/UYELER/ARGE/WEBLAB", RoleClassAdmin},
-		{"Skymail-Admin", "/UYELER", RoleClassAdmin},
-		{"MOBILAB", "/UYELER/ARGE/WEBLAB", RoleClassUnclassified},
-		{"WEBLAB_LEADER", "/UYELER/ARGE/WEBLAB", RoleClassUnclassified},
-		{"WEBLAB_LEADER", "/UYELER/ARGE/WEBLAB/FRONT", RoleClassUnclassified},
-		{"MOBILAB_LEADER", "/UYELER/ARGE/WEBLAB/LIDERLER", RoleClassUnclassified},
-		{"LIDERLER", "/UYELER/ARGE/WEBLAB/LIDERLER", RoleClassUnclassified},
-		{"UYELER", "/UYELER/ARGE", RoleClassUnclassified},
-		{"WEBLAB", "/WEBLAB", RoleClassUnclassified},
-		{"offline_access", "/UYELER", RoleClassUnclassified},
-		{"weblab", "/UYELER/ARGE/WEBLAB", RoleClassUnclassified},
-	} {
-		if got := p.ClassifyRealmRole(tc.role, tc.path); got != tc.want {
-			t.Errorf("%s at %s: %s, want %s", tc.role, tc.path, got, tc.want)
 		}
 	}
 }

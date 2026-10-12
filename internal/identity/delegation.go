@@ -28,17 +28,10 @@ type GroupNodes interface {
 type Protection struct {
 	Protected bool
 	Reason    string
-	// Unclassified is the role that protects the Group because nobody has
-	// classified it (authz.RoleClassUnclassified): "client:role", or
-	// "realm:role" for a realm role; "" otherwise. Logged and counted so it
-	// gets classified.
+	// Unclassified is the client role, "client:role", that protects the
+	// Group because nobody has classified it (authz.RoleClassUnclassified),
+	// "" otherwise: logged and counted so it gets classified.
 	Unclassified string
-	// RealmRoles are the realm roles the Group holds in effect, by name
-	// (mapped, inherited, or inside a composite), read when its client
-	// roles do not already protect it. Whether one protects depends on
-	// where the Group sits (authz.Policy.ClassifyRealmRole), which the
-	// delegation decides.
-	RealmRoles []string
 }
 
 // clientRoleProtection is the protection a client role gives on its own:
@@ -55,10 +48,10 @@ func clientRoleProtection(clientID, role string) Protection {
 	}
 }
 
-// GroupProtections reads a Group's own role mappings for protection: a
-// client role that is no app role (authz.DelegableRole), or a composite app
-// role that holds one, protects; the realm roles it holds in effect come
-// back by name for the delegation to class (Keycloak, Memory).
+// GroupProtections reads a Group's own role mappings for protection: any
+// realm role, or a client role that is no app role (authz.DelegableRole),
+// or a composite app role that holds one or a realm role
+// (Keycloak, Memory).
 type GroupProtections interface {
 	GroupProtection(ctx context.Context, groupID string) (Protection, error)
 }
@@ -536,31 +529,14 @@ func (d *TeamDelegation) target(ctx context.Context, id string, fresh bool) (aut
 	if !authz.ChainHolds(out.Group, out.Ancestors) {
 		return d.mismatch(out)
 	}
-	chain := append([]authz.GroupNode{out.Group}, out.Ancestors...)
-	if out.Protected, err = d.protected(ctx, chain, fresh); err != nil {
+	ids := []string{out.Group.ID}
+	for _, a := range out.Ancestors {
+		ids = append(ids, a.ID)
+	}
+	if out.Protected, err = d.protected(ctx, ids, fresh); err != nil {
 		return authz.ManagedGroup{}, Group{}, err
 	}
 	return out, g, nil
-}
-
-// classRealmRoles protects got by the first realm role that is no app
-// role where the Group at path sits (authz.Policy.ClassifyRealmRole), when
-// its client roles do not already.
-func (d *TeamDelegation) classRealmRoles(got Protection, path string) Protection {
-	if got.Protected {
-		return got
-	}
-	for _, role := range got.RealmRoles {
-		switch d.policy.ClassifyRealmRole(role, path) {
-		case authz.RoleClassApp:
-			continue
-		case authz.RoleClassAdmin:
-			return Protection{Protected: true, Reason: "admin realm role " + role, RealmRoles: got.RealmRoles}
-		default:
-			return Protection{Protected: true, Reason: "unclassified realm role " + role + " (counts as an admin role)", Unclassified: "realm:" + role, RealmRoles: got.RealmRoles}
-		}
-	}
-	return got
 }
 
 // mismatch refuses g with CodeGroupTreeMismatch and logs it. g, as far as
@@ -575,16 +551,14 @@ func nodeOf(g Group, parent string) authz.GroupNode {
 	return authz.GroupNode{ID: g.ID, Name: g.Name, Path: g.Path, ParentID: parent}
 }
 
-// protected reports whether one of groups is protected by its own role
-// mappings (GroupProtections): a client role that is no app role, directly
-// or inside a composite, or a realm role that is no app role where the
-// Group sits (classRealmRoles). A write reads each fresh (review of #235,
-// O1); a read keeps each Group's answer TTL. A protected Group is logged
-// with its reason: an admin or unclassified role mapped high in the tree
-// (on /UYELER, on an area) makes every Team under it Privileged's alone.
-func (d *TeamDelegation) protected(ctx context.Context, groups []authz.GroupNode, fresh bool) (bool, error) {
-	for _, group := range groups {
-		id := group.ID
+// protected reports whether one of the Groups ids is protected by its own
+// role mappings (GroupProtections): any realm role, or a protected client
+// role directly or inside a composite. A write reads each fresh (review of
+// #235, O1); a read keeps each Group's answer TTL. A protected Group is
+// logged with its reason: a realm role mapped high in the tree (on /UYELER,
+// on an area) makes every Team under it Privileged's alone.
+func (d *TeamDelegation) protected(ctx context.Context, ids []string, fresh bool) (bool, error) {
+	for _, id := range ids {
 		d.mu.Lock()
 		entry, ok := d.roles[id]
 		d.mu.Unlock()
@@ -593,7 +567,6 @@ func (d *TeamDelegation) protected(ctx context.Context, groups []authz.GroupNode
 			if err != nil {
 				return false, err
 			}
-			got = d.classRealmRoles(got, group.Path)
 			entry = protectedEntry{protected: got.Protected, expires: d.options.Now().Add(d.options.TTL)}
 			d.mu.Lock()
 			d.roles[id] = entry
