@@ -70,9 +70,11 @@ const (
 	// per-address budget limits those.
 	DefaultMaxUses = 20
 	// DefaultSessionGrace is how long before a Session's start and after its
-	// end guests may check themselves in.
-	DefaultSessionGrace = 30 * time.Minute
-	MaxSessionGrace     = 12 * time.Hour
+	// end the door QR is minted and guests may check themselves in: the door
+	// screen can be set up well ahead and stays usable after an overrun.
+	// DOOR_QR_SESSION_GRACE may narrow it, never widen it.
+	DefaultSessionGrace = 12 * time.Hour
+	MaxSessionGrace     = DefaultSessionGrace
 
 	// ClockLeeway is how far a token's expiry may lie beyond now + TTL: a
 	// replica whose clock runs slightly ahead still has its tokens accepted.

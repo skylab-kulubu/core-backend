@@ -26,9 +26,14 @@ type doorFixture struct {
 
 func newDoorFixture(t *testing.T, mode doorqr.Mode) doorFixture {
 	t.Helper()
+	return newDoorFixtureWith(t, doorqr.Config{Mode: mode, MaxUses: 3, SessionGrace: 30 * time.Minute})
+}
+
+func newDoorFixtureWith(t *testing.T, cfg doorqr.Config) doorFixture {
+	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, 10, 3, 18, 0, 0, 0, time.UTC)
-	gate := doorqr.NewGate([]byte("door qr test key, door qr test k"), doorqr.Config{Mode: mode, MaxUses: 3, SessionGrace: 30 * time.Minute})
+	gate := doorqr.NewGate([]byte("door qr test key, door qr test k"), cfg)
 	gate.Now = func() time.Time { return now }
 	events := event.NewMemoryStore()
 	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), gate)
@@ -147,6 +152,77 @@ func TestGuestCheckInAndMintOnlyWhileTheSessionIsOpen(t *testing.T) {
 	}
 	if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, guest); err != nil {
 		t.Fatalf("within grace: %v", err)
+	}
+}
+
+// With the deployed defaults the guest door opens 12 hours before a Session
+// starts and stays open until 12 hours after it ends. Minting the door QR and
+// checking in with it answer alike at every point, so the screen never shows
+// a QR the check-in would refuse; a cancelled Session stays closed.
+func TestGuestDoorWindowIsTwelveHoursEachSideForMintAndCheckIn(t *testing.T) {
+	t.Parallel()
+	cfg, err := doorqr.ConfigFromEnv(func(k string) string {
+		if k == doorqr.ModeEnv {
+			return string(doorqr.ModeQR)
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newDoorFixtureWith(t, cfg)
+	ctx := context.Background()
+	at := func(d time.Duration) *time.Time { v := f.minted.Add(d); return &v }
+	cases := []struct {
+		name       string
+		start, end *time.Time
+		cancelled  bool
+		email      string
+		open       bool
+	}{
+		{"11h59m before the start", at(11*time.Hour + 59*time.Minute), at(14 * time.Hour), false, "ada@example.com", true},
+		{"12h01m before the start", at(12*time.Hour + time.Minute), at(14 * time.Hour), false, "", false},
+		{"11h59m after the end", at(-14 * time.Hour), at(-11*time.Hour - 59*time.Minute), false, "grace@example.com", true},
+		{"12h01m after the end", at(-14 * time.Hour), at(-12*time.Hour - time.Minute), false, "", false},
+		{"cancelled, within the window", at(time.Hour), at(2 * time.Hour), true, "", false},
+	}
+	for _, tc := range cases {
+		s := f.sess
+		s.StartTime, s.EndTime, s.Cancelled = tc.start, tc.end, tc.cancelled
+		if _, err := f.events.UpdateSession(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		pass, mintErr := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID)
+		if !tc.open {
+			if !errors.Is(mintErr, ticket.ErrSessionClosed) {
+				t.Fatalf("%s: mint %v", tc.name, mintErr)
+			}
+			// A token minted while the door was open does not reopen it.
+			open := f.sess
+			open.StartTime, open.EndTime, open.Cancelled = at(-time.Hour), at(time.Hour), false
+			if _, err := f.events.UpdateSession(ctx, open); err != nil {
+				t.Fatal(err)
+			}
+			valid, err := f.svc.MintDoorQR(ctx, f.staff, f.sess.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.events.UpdateSession(ctx, s); err != nil {
+				t.Fatal(err)
+			}
+			guest := ticket.GuestCheckIn{Email: "alan@example.com", DoorToken: valid.Token}
+			if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, guest); !errors.Is(err, ticket.ErrSessionClosed) {
+				t.Fatalf("%s: check-in %v", tc.name, err)
+			}
+			continue
+		}
+		if mintErr != nil {
+			t.Fatalf("%s: mint %v", tc.name, mintErr)
+		}
+		guest := ticket.GuestCheckIn{Email: tc.email, DoorToken: pass.Token}
+		if _, err := f.svc.CheckInGuest(ctx, f.sess.ID, guest); err != nil {
+			t.Fatalf("%s: check-in %v", tc.name, err)
+		}
 	}
 }
 
