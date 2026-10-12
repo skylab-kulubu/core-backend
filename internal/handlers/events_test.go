@@ -153,12 +153,17 @@ func TestEventListActiveOnly(t *testing.T) {
 	if resp, err := app.Test(activeReq); err != nil || resp.StatusCode != fiber.StatusCreated {
 		t.Fatalf("active create %v", err)
 	}
-	inactiveReq := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
-		`{"name":"Old","location":"YTÜ","ownerTeam":"WEBLAB","active":false}`,
-	))
-	inactiveReq.Header.Set("Content-Type", "application/json")
-	if resp, err := app.Test(inactiveReq); err != nil || resp.StatusCode != fiber.StatusCreated {
-		t.Fatalf("inactive create %v", err)
+	// active is derived (ADR 0066): an Event that ended and a draft are not
+	// active whatever the body says.
+	for _, body := range []string{
+		`{"name":"Old","location":"YTÜ","ownerTeam":"WEBLAB","active":true,"startDate":"2026-01-10T10:00:00Z","endDate":"2026-01-10T18:00:00Z"}`,
+		`{"name":"Draft","location":"YTÜ","ownerTeam":"WEBLAB","active":true,"status":"draft"}`,
+	} {
+		inactiveReq := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(body))
+		inactiveReq.Header.Set("Content-Type", "application/json")
+		if resp, err := app.Test(inactiveReq); err != nil || resp.StatusCode != fiber.StatusCreated {
+			t.Fatalf("inactive create %v", err)
+		}
 	}
 
 	public := eventApp(t, authn.Identity{}, store)
@@ -385,8 +390,11 @@ func TestEventAnonymousListHidesInactive(t *testing.T) {
 	store := event.NewMemoryStore()
 	app := eventApp(t, weblabLeader(), store)
 	for _, body := range []string{
-		`{"name":"Live","location":"YTÜ","ownerTeam":"WEBLAB","active":true}`,
-		`{"name":"Old","location":"YTÜ","ownerTeam":"WEBLAB","active":false}`,
+		// The flag a client sends is ignored: published and not ended is
+		// active.
+		`{"name":"Live","location":"YTÜ","ownerTeam":"WEBLAB","active":false}`,
+		`{"name":"Old","location":"YTÜ","ownerTeam":"WEBLAB","active":true,"startDate":"2026-01-10T10:00:00Z"}`,
+		`{"name":"Draft","location":"YTÜ","ownerTeam":"WEBLAB","active":true,"status":"draft"}`,
 	} {
 		req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -433,7 +441,7 @@ func TestEventAnonymousListHidesInactive(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 2 {
+	if len(listed) != 3 {
 		t.Fatalf("staff listed %+v", listed)
 	}
 }
