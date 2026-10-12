@@ -9,16 +9,16 @@ import (
 	"time"
 )
 
-// asRoleHolder is the same person as p with the Privileged Group paths
+// asRoleHolder is the same person as p with the Privileged root paths
 // swapped for every role of the contract: what the person's token carries
-// once Keycloak maps the roles to ADMIN, YK and DK and the person leaves
-// those Groups out of the picture.
+// once Keycloak maps the roles to the six roots and the person leaves those
+// Groups out of the picture.
 func asRoleHolder(p Principal) Principal {
 	out := p
 	out.Groups = nil
 	privileged := false
 	for _, g := range p.Groups {
-		if inPrivilegedGroup(DefaultPolicy(), g) != "" {
+		if PrivilegedRoot(DefaultPrivilegedRoots(), g) != "" {
 			privileged = true
 			continue
 		}
@@ -28,15 +28,6 @@ func asRoleHolder(p Principal) Principal {
 		out.Roles = append(slices.Clone(p.Roles), PermissionRoles()...)
 	}
 	return out
-}
-
-func inPrivilegedGroup(policy Policy, g string) string {
-	for _, pg := range policy.PrivilegedGroups {
-		if strings.HasSuffix(g, "/"+pg) || strings.Contains(g, "/"+pg+"/") {
-			return pg
-		}
-	}
-	return ""
 }
 
 func policyIn(mode RoleMode) Policy {

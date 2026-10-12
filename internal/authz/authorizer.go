@@ -251,11 +251,15 @@ func (a *authorizer) forSomeOwnerTeam(p Principal, allow func(team string) bool)
 }
 
 // ownerTeamCandidates are the Owner teams p is a member or Leader of: the
-// names in p's group paths, leader subgroups aside, in path order.
+// names in p's group paths, leader subgroups aside, in path order. A path
+// under a Privileged root names no Owner team (ownerLevels).
 func (a *authorizer) ownerTeamCandidates(p Principal) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, group := range p.Groups {
+		if PrivilegedRoot(a.policy.PrivilegedRoots, group) != "" {
+			continue
+		}
 		for _, team := range strings.Split(strings.Trim(group, "/"), "/") {
 			if team == "" || seen[team] || slices.Contains(a.policy.LeaderSubgroups, team) {
 				continue
@@ -342,7 +346,7 @@ func (a *authorizer) allowCertificateTemplate(p Principal, r Resource, action Ac
 		return true
 	}
 	if r.OwnerTeam == "" {
-		return action == Read && (isAnyLeader(p) || (isAnyTeamMember(p) && hasRole(p, "certificate:template:manage", "certificate:binding:manage")))
+		return action == Read && (a.isAnyLeader(p) || (isAnyTeamMember(p) && hasRole(p, "certificate:template:manage", "certificate:binding:manage")))
 	}
 	levels := a.ownerLevels(p, r.OwnerTeam)
 	if len(levels) == 0 {
@@ -363,23 +367,37 @@ func (a *authorizer) allowCertificateTemplate(p Principal, r Resource, action Ac
 	}
 }
 
-func isAnyLeader(p Principal) bool {
+// isAnyLeader reports whether p is in some Leader group: a Group whose last
+// segment is one of the policy's leader subgroups, under a parent. The whole
+// segment counts: /UYELER/ARGE/WEBLAB/LIDERLER-ESKI is no Leader group.
+func (a *authorizer) isAnyLeader(p Principal) bool {
 	for _, group := range p.Groups {
-		upper := strings.ToUpper(group)
-		if strings.Contains(upper, "/LIDERLER") || strings.Contains(upper, "/KOORDINATORLER") {
+		segments := pathSegments(group)
+		if len(segments) >= 2 && slices.Contains(a.policy.LeaderSubgroups, segments[len(segments)-1]) {
 			return true
 		}
 	}
 	return false
 }
 
+// isAnyTeamMember reports whether p is in some Group of the members' tree
+// (MembersRoot), below the root itself.
 func isAnyTeamMember(p Principal) bool {
 	for _, group := range p.Groups {
-		if strings.Contains(strings.ToUpper(group), "/UYELER/") {
+		if strings.HasPrefix(group, MembersRoot+"/") {
 			return true
 		}
 	}
 	return false
+}
+
+// MembersRoot is the club's members' tree: every Team sits under it
+// (CONTEXT.md "Member").
+const MembersRoot = "/UYELER"
+
+// pathSegments are the names of a Group path, top first.
+func pathSegments(path string) []string {
+	return strings.Split(strings.TrimPrefix(path, "/"), "/")
 }
 
 func (a *authorizer) allowDoorCheckIn(p Principal, r Resource) bool {
@@ -488,19 +506,23 @@ func (a *authorizer) privilegedGroupOnly(p Principal, roles ...string) bool {
 	return group != ""
 }
 
-// privilegedGroup is the Privileged Group (ADMIN, YK or DK) p is in, itself
-// or through a subgroup, or "".
+// privilegedGroup names the Privileged root p is in, itself or through a
+// subgroup: the root's last segment (ADMIN, YK or DK), or "". Only the
+// policy's roots count, anchored at their paths (PrivilegedRoot).
 func (a *authorizer) privilegedGroup(p Principal) string {
 	for _, g := range p.Groups {
-		for _, pg := range a.policy.PrivilegedGroups {
-			if strings.HasSuffix(g, "/"+pg) || strings.Contains(g, "/"+pg+"/") {
-				return pg
-			}
+		if root := PrivilegedRoot(a.policy.PrivilegedRoots, g); root != "" {
+			return RootLabel(root)
 		}
 	}
 	return ""
 }
 
+// ownerLevels are p's levels in the Owner team owner, by whole path
+// segments: a member is in a Group one of whose segments is owner, a Leader
+// in a leader subgroup that is the last segment, right under owner. Paths
+// under a Privileged root name no Owner team: such a member is Privileged,
+// which the decisions read first, or in the roles mode holds roles.
 func (a *authorizer) ownerLevels(p Principal, owner string) []Level {
 	if owner == "" {
 		return nil
@@ -508,13 +530,18 @@ func (a *authorizer) ownerLevels(p Principal, owner string) []Level {
 
 	var leader, member bool
 	for _, g := range p.Groups {
-		for _, sub := range a.policy.LeaderSubgroups {
-			if strings.Contains(g, "/"+owner+"/"+sub) {
+		if PrivilegedRoot(a.policy.PrivilegedRoots, g) != "" {
+			continue
+		}
+		segments := pathSegments(g)
+		for i, segment := range segments {
+			if segment != owner {
+				continue
+			}
+			member = true
+			if i == len(segments)-2 && slices.Contains(a.policy.LeaderSubgroups, segments[i+1]) {
 				leader = true
 			}
-		}
-		if strings.HasSuffix(g, "/"+owner) || strings.Contains(g, "/"+owner+"/") {
-			member = true
 		}
 	}
 

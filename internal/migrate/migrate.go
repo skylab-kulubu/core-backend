@@ -1241,6 +1241,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.team_membership_mails_due_idx') IS NOT NULL
 		  AND to_regclass('public.team_membership_mails_change_idx') IS NOT NULL
 		  AND to_regclass('public.team_membership_mails_actor_idx') IS NOT NULL`,
+	// The retired Team codes.
+	20261012120000: `SELECT 1 WHERE to_regclass('public.retired_team_codes') IS NOT NULL`,
 	// The Event status (ADR 0066): its columns, its check, its index and the
 	// guards of its two actor columns.
 	20261012130000: `

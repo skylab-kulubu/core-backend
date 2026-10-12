@@ -52,7 +52,8 @@ func TestEventStatusMigrationComesLast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := slices.Index(versions, 20261009120000)
+	// The newest migration on main when this one was written.
+	before := slices.Index(versions, 20261012120000)
 	status := slices.Index(versions, 20261012130000)
 	if before < 0 || status < 0 || before >= status {
 		t.Fatalf("versions %v", versions)
