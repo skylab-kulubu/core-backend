@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
 
 const day = 24 * time.Hour
@@ -30,6 +31,9 @@ const (
 	// ReadLinkIPPeriod: the address of an open of a private Media's read
 	// link, one year; the record stays three (ReadLinkRecordRetention).
 	ReadLinkIPPeriod = 365 * day
+	// TeamAuditPeriod: a row of the Team audit record, three years (S6,
+	// docs/team-audit.md); the row goes.
+	TeamAuditPeriod = teamaudit.Retention
 )
 
 // Schema is what a run reads from the database before it builds the rules.
@@ -49,6 +53,7 @@ var everySchema = Schema{ContactConsents: true}
 // is added here and nowhere else; its record, metrics and alarm follow.
 func Rules(c Config, s Schema) []Rule {
 	rules := append(sweepRules(s), consentRules(s)...)
+	rules = append(rules, teamAuditRules()...)
 	return append(rules, auditRules(c)...)
 }
 
@@ -220,6 +225,17 @@ func sweepRules(s Schema) []Rule {
 			set:   `client_ip = ''`,
 		},
 	}
+}
+
+// teamAuditRules delete the Team audit record's rows three years old
+// (docs/team-audit.md), whatever their outcome. A pending row is as old as
+// its write: core stopped before it learnt the outcome.
+func teamAuditRules() []Rule {
+	return []Rule{{
+		Name: "team_audit_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
+		Table: "team_audit_records", alias: "ta", key: "id", Period: TeamAuditPeriod,
+		where: `ta.occurred_at < $1`,
+	}}
 }
 
 // auditRules count what core's hourly cleanups should already have removed,

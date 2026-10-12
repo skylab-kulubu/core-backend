@@ -1241,6 +1241,19 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.team_membership_mails_due_idx') IS NOT NULL
 		  AND to_regclass('public.team_membership_mails_change_idx') IS NOT NULL
 		  AND to_regclass('public.team_membership_mails_actor_idx') IS NOT NULL`,
+	// The Team audit record, its indexes and its finish-only trigger.
+	20261012121000: `
+		SELECT 1
+		WHERE to_regclass('public.team_audit_records') IS NOT NULL
+		  AND to_regclass('public.team_audit_records_group_idx') IS NOT NULL
+		  AND to_regclass('public.team_audit_records_actor_idx') IS NOT NULL
+		  AND to_regclass('public.team_audit_records_target_idx') IS NOT NULL
+		  AND to_regclass('public.team_audit_records_occurred_idx') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.team_audit_records')
+			  AND tgname = 'team_audit_records_finish_only'
+		  )`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
