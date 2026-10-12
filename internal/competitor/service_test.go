@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -19,9 +20,9 @@ func setup(t *testing.T) (event.Store, competitor.Service) {
 	return events, svc
 }
 
-func seedEvent(t *testing.T, events event.Store, owner string, active bool) event.Event {
+func seedEvent(t *testing.T, events event.Store, owner string, status event.Status) event.Event {
 	t.Helper()
-	ev, err := events.Create(context.Background(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: owner, Active: active})
+	ev, err := events.Create(context.Background(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: owner, Status: status})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +33,7 @@ func TestService_SelfRegisterThenListMine(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)
 	ctx := context.Background()
-	ev := seedEvent(t, events, "WEBLAB", true)
+	ev := seedEvent(t, events, "WEBLAB", event.StatusPublished)
 	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	score := 40.0
 	p := authz.Principal{ID: userID.String()}
@@ -63,7 +64,7 @@ func TestService_StaffRegisterOtherAndScore(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)
 	ctx := context.Background()
-	ev := seedEvent(t, events, "WEBLAB", true)
+	ev := seedEvent(t, events, "WEBLAB", event.StatusPublished)
 	userID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	score := 12.5
 	staff := authz.Principal{ID: "staff", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
@@ -88,7 +89,7 @@ func TestService_StaffRegisterOtherAndScore(t *testing.T) {
 func TestService_StrangerCannotRegisterOther(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)
-	ev := seedEvent(t, events, "WEBLAB", true)
+	ev := seedEvent(t, events, "WEBLAB", event.StatusPublished)
 	other := uuid.MustParse("33333333-3333-3333-3333-333333333333")
 	p := authz.Principal{ID: "skysec", Groups: []string{"/UYELER/ARGE/SKYSEC"}}
 	_, err := svc.Create(context.Background(), p, competitor.CreateInput{UserID: other, EventID: ev.ID})
@@ -97,14 +98,63 @@ func TestService_StrangerCannotRegisterOther(t *testing.T) {
 	}
 }
 
-func TestService_InactiveEventRejected(t *testing.T) {
+// A competitor is added to, and reinstated on, a published Event, an ended
+// one too (results come after the Event, ADR 0066); never a draft or a
+// cancelled Event.
+func TestService_CompetitorsFollowTheEventStatus(t *testing.T) {
 	t.Parallel()
-	events, svc := setup(t)
-	ev := seedEvent(t, events, "WEBLAB", false)
-	userID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
-	_, err := svc.Create(context.Background(), authz.Principal{ID: userID.String()}, competitor.CreateInput{UserID: userID, EventID: ev.ID})
-	if !errors.Is(err, competitor.ErrInvalid) {
-		t.Fatalf("got %v", err)
+	ctx := context.Background()
+	cases := []struct {
+		name   string
+		status event.Status
+		ended  bool
+		reason error // nil: allowed
+	}{
+		{"published", event.StatusPublished, false, nil},
+		{"published and ended", event.StatusPublished, true, nil},
+		{"draft", event.StatusDraft, false, event.ErrNotPublished},
+		{"cancelled", event.StatusCancelled, false, event.ErrCancelled},
+	}
+	for _, tc := range cases {
+		events := event.NewMemoryStore()
+		competitors := competitor.NewMemoryStore(events)
+		svc := competitor.NewService(competitors, events, authz.NewAuthorizer(authz.DefaultPolicy()))
+		in := event.Event{Name: tc.name, Location: "YTÜ", OwnerTeam: "WEBLAB", Status: tc.status}
+		if tc.ended {
+			start, end := time.Now().Add(-48*time.Hour), time.Now().Add(-40*time.Hour)
+			in.StartDate, in.EndDate = &start, &end
+		}
+		ev, err := events.Create(ctx, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		userID := uuid.New()
+		p := authz.Principal{ID: userID.String()}
+		// One registered and withdrawn earlier, written to the store as it
+		// was then.
+		withdrawn, err := competitors.Create(ctx, competitor.Competitor{UserID: userID, EventID: ev.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := competitors.Withdraw(ctx, withdrawn.ID, &userID); err != nil {
+			t.Fatal(err)
+		}
+
+		other := uuid.New()
+		_, err = svc.Create(ctx, authz.Principal{ID: other.String()}, competitor.CreateInput{UserID: other, EventID: ev.ID})
+		if tc.reason == nil && err != nil {
+			t.Fatalf("%s: create: %v", tc.name, err)
+		}
+		if tc.reason != nil && (!errors.Is(err, competitor.ErrInvalid) || !errors.Is(err, tc.reason)) {
+			t.Fatalf("%s: create: %v", tc.name, err)
+		}
+		_, err = svc.Reinstate(ctx, p, withdrawn.ID)
+		if tc.reason == nil && err != nil {
+			t.Fatalf("%s: reinstate: %v", tc.name, err)
+		}
+		if tc.reason != nil && (!errors.Is(err, competitor.ErrConflict) || !errors.Is(err, tc.reason)) {
+			t.Fatalf("%s: reinstate: %v", tc.name, err)
+		}
 	}
 }
 
@@ -112,7 +162,7 @@ func TestService_SelfCannotUpdateScore(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)
 	ctx := context.Background()
-	ev := seedEvent(t, events, "WEBLAB", true)
+	ev := seedEvent(t, events, "WEBLAB", event.StatusPublished)
 	userID := uuid.MustParse("55555555-5555-5555-5555-555555555555")
 	p := authz.Principal{ID: userID.String()}
 	created, err := svc.Create(ctx, p, competitor.CreateInput{UserID: userID, EventID: ev.ID})
@@ -129,7 +179,7 @@ func TestService_SelfCanDelete(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)
 	ctx := context.Background()
-	ev := seedEvent(t, events, "WEBLAB", true)
+	ev := seedEvent(t, events, "WEBLAB", event.StatusPublished)
 	userID := uuid.MustParse("66666666-6666-6666-6666-666666666666")
 	p := authz.Principal{ID: userID.String()}
 	created, err := svc.Create(ctx, p, competitor.CreateInput{UserID: userID, EventID: ev.ID})
@@ -151,7 +201,7 @@ func TestService_WithdrawAndReinstateAreIdempotent(t *testing.T) {
 	events := event.NewMemoryStore()
 	competitors := competitor.NewMemoryStore(events)
 	svc := competitor.NewService(competitors, events, authz.NewAuthorizer(authz.DefaultPolicy()))
-	ev := seedEvent(t, events, "WEBLAB", true)
+	ev := seedEvent(t, events, "WEBLAB", event.StatusPublished)
 	userID := uuid.MustParse("99999999-9999-9999-9999-999999999999")
 	p := authz.Principal{ID: userID.String()}
 	created, err := svc.Create(ctx, p, competitor.CreateInput{UserID: userID, EventID: ev.ID})
@@ -195,7 +245,7 @@ func TestService_DefaultListsHideCompetitorsUnderArchivedEvents(t *testing.T) {
 	events := event.NewMemoryStore()
 	competitors := competitor.NewMemoryStore(events)
 	svc := competitor.NewService(competitors, events, authz.NewAuthorizer(authz.DefaultPolicy()))
-	ev := seedEvent(t, events, "WEBLAB", true)
+	ev := seedEvent(t, events, "WEBLAB", event.StatusPublished)
 	userID := uuid.MustParse("99999999-9999-9999-9999-999999999999")
 	user := authz.Principal{ID: userID.String()}
 	created, err := svc.Create(ctx, user, competitor.CreateInput{UserID: userID, EventID: ev.ID})
@@ -237,17 +287,17 @@ func TestService_LeaderboardByOwnerTeamAndSeason(t *testing.T) {
 	ctx := context.Background()
 	seasonA := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	seasonB := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-	web := seedEvent(t, events, "WEBLAB", true)
+	web := seedEvent(t, events, "WEBLAB", event.StatusPublished)
 	web.SeasonID = &seasonA
 	if _, err := events.Update(ctx, web); err != nil {
 		t.Fatal(err)
 	}
-	web2 := seedEvent(t, events, "WEBLAB", true)
+	web2 := seedEvent(t, events, "WEBLAB", event.StatusPublished)
 	web2.SeasonID = &seasonB
 	if _, err := events.Update(ctx, web2); err != nil {
 		t.Fatal(err)
 	}
-	sky := seedEvent(t, events, "SKYSEC", true)
+	sky := seedEvent(t, events, "SKYSEC", event.StatusPublished)
 
 	ada := uuid.MustParse("77777777-7777-7777-7777-777777777777")
 	bob := uuid.MustParse("88888888-8888-8888-8888-888888888888")

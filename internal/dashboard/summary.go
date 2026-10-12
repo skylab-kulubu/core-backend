@@ -40,9 +40,6 @@ const (
 	// EventMonths is how many months Events.ByMonth covers, this one
 	// included.
 	EventMonths = 6
-	// undatedEventSpan is how long an Event without an end date counts as
-	// running from its start, as the panel counts it.
-	undatedEventSpan = 12 * time.Hour
 )
 
 // Summary is the answer of GET /v1/dashboard/summary.
@@ -101,16 +98,19 @@ type MonthCount struct {
 
 // EventStat is one Event with its applications.
 type EventStat struct {
-	ID            uuid.UUID  `json:"id"`
-	Name          string     `json:"name"`
-	OwnerTeam     string     `json:"ownerTeam"`
-	Location      string     `json:"location"`
-	StartDate     *time.Time `json:"startDate,omitempty"`
-	EndDate       *time.Time `json:"endDate,omitempty"`
-	Active        bool       `json:"active"`
-	Live          bool       `json:"live"`
-	Capacity      int        `json:"capacity"`
-	CoverImageURL string     `json:"coverImageUrl,omitempty"`
+	ID        uuid.UUID  `json:"id"`
+	Name      string     `json:"name"`
+	OwnerTeam string     `json:"ownerTeam"`
+	Location  string     `json:"location"`
+	StartDate *time.Time `json:"startDate,omitempty"`
+	EndDate   *time.Time `json:"endDate,omitempty"`
+	// Active is derived (ADR 0066): published and not ended at the
+	// summary's time. Status is the Event's stored status.
+	Active        bool         `json:"active"`
+	Status        event.Status `json:"status"`
+	Live          bool         `json:"live"`
+	Capacity      int          `json:"capacity"`
+	CoverImageURL string       `json:"coverImageUrl,omitempty"`
 	// HasApplicationForm is false when the Event links no form, main or
 	// extra.
 	HasApplicationForm bool `json:"hasApplicationForm"`
@@ -255,7 +255,7 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 		c := counts[e.ID]
 		stat := EventStat{
 			ID: e.ID, Name: e.Name, OwnerTeam: e.OwnerTeam, Location: e.Location,
-			StartDate: e.StartDate, EndDate: e.EndDate, Active: e.Active,
+			StartDate: e.StartDate, EndDate: e.EndDate, Active: e.ActiveAt(now), Status: e.Status,
 			Live:     !start.After(now) && !now.After(end),
 			Capacity: e.Capacity, CoverImageURL: e.Resource().CoverImageURL,
 			HasApplicationForm: e.FormURL != "" || len(e.ExtraFormURLs) > 0,
@@ -331,18 +331,14 @@ func (s *service) eventCounts(events []event.Event, now time.Time) EventCounts {
 	return out
 }
 
-// span is when the Event runs: from its start to its end, or for half a
-// day when it has no end. dated is false without a start.
+// span is when the Event runs: from its start to its end, the one its
+// derived active uses (Event.EndsAt, ADR 0066: the end date, else 24 hours
+// after the start). dated is false without a start.
 func span(e event.Event) (start, end time.Time, dated bool) {
 	if e.StartDate == nil {
 		return time.Time{}, time.Time{}, false
 	}
-	start = *e.StartDate
-	end = start.Add(undatedEventSpan)
-	if e.EndDate != nil {
-		end = *e.EndDate
-	}
-	return start, end, true
+	return *e.StartDate, *e.EndsAt(), true
 }
 
 func orDefault(d, fallback time.Duration) time.Duration {

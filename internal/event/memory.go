@@ -66,7 +66,7 @@ func (s *MemoryStore) list(ownerTeam string, activeOnly bool, visibility lifecyc
 		if ownerTeam != "" && e.OwnerTeam != ownerTeam {
 			continue
 		}
-		if activeOnly && !e.Active {
+		if activeOnly && !e.ActiveAt(time.Now()) {
 			continue
 		}
 		out = append(out, s.listed(e))
@@ -86,6 +86,7 @@ func (s *MemoryStore) listed(e Event) Event {
 // listed as the database reads them (empty lists, never nil), and counted.
 func (s *MemoryStore) detailed(e Event) Event {
 	e = emptyGallery(e)
+	e.Active = e.ActiveAt(time.Now())
 	e.Files, e.Videos = s.shown(e.Files), s.shown(e.Videos)
 	e.FileCount, e.VideoCount = len(servableItems(e.Files)), len(servableItems(e.Videos))
 	return e
@@ -155,7 +156,13 @@ func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
 	if e.AttendanceRule == "" {
 		e.AttendanceRule = "none"
 	}
+	if e.Status == "" {
+		e.Status = StatusPublished
+	}
 	now := time.Now().UTC()
+	if e.Status == StatusPublished && e.PublishedAt == nil {
+		e.PublishedAt = &now
+	}
 	e.CreatedAt = now
 	e.UpdatedAt = now
 	e = emptyGallery(e)
@@ -172,6 +179,10 @@ func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
 	}
 	e.CreatedAt = existing.CreatedAt
 	e.UpdatedAt = time.Now().UTC()
+	// An update writes neither the status nor what goes with it.
+	e.Status, e.PublishedAt, e.PublishedBy = existing.Status, existing.PublishedAt, existing.PublishedBy
+	e.CancelledAt, e.CancelledBy, e.CancelReason = existing.CancelledAt, existing.CancelledBy, existing.CancelReason
+	e.CopiedFromEventID = existing.CopiedFromEventID
 	e.Images = existing.Images
 	e.ImageURLs = existing.ImageURLs
 	e.Files, e.Videos = existing.Files, existing.Videos

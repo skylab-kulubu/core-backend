@@ -6,12 +6,27 @@ import (
 	"log"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 func lifecycleVisibility(c fiber.Ctx) (lifecycle.Visibility, error) {
 	return lifecycle.ParseVisibility(c.Query("lifecycle"))
+}
+
+// eventStatusCode names why an Event's status refused the request (ADR
+// 0066): event_not_published for a draft, event_cancelled for a cancelled
+// Event, "" for anything else.
+func eventStatusCode(err error) string {
+	switch {
+	case errors.Is(err, event.ErrNotPublished):
+		return "event_not_published"
+	case errors.Is(err, event.ErrCancelled):
+		return "event_cancelled"
+	default:
+		return ""
+	}
 }
 
 func problem(c fiber.Ctx, status int, title string) error {
