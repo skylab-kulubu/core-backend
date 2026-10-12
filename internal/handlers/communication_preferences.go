@@ -38,6 +38,8 @@ func communicationPreferenceError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "communication_preference_team_unknown")
 	case errors.Is(err, commpref.ErrInvalid):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "communication_preference_invalid")
+	case errors.Is(err, commpref.ErrFollowMembersOnly):
+		return problemCode(c, fiber.StatusForbidden, "Forbidden", "communication_preference_follow_members_only")
 	case errors.Is(err, commpref.ErrSubjectInactive):
 		return problemCode(c, fiber.StatusForbidden, "Forbidden", "communication_preference_subject_inactive")
 	}

@@ -608,6 +608,21 @@ func main() {
 	} else {
 		log.Printf("communication preferences: off (%s is not set)", commpref.KeyEnv)
 	}
+	// The News audience (docs/news-audience.md): SkyMail's service account
+	// asks who a send goes to. Off with the preferences (every recipient
+	// gets a signed link); private visibilities only with
+	// NEWS_AUDIENCE_PRIVATE_VISIBILITY=on (ADR 0067 karar 3, second step).
+	privateVisibility, err := commpref.PrivateVisibilityFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var newsAudience *commpref.Audience
+	if audienceDirectory, ok := dir.(commpref.AudienceDirectory); ok {
+		newsAudience = commpref.NewAudience(communicationPreferences, audienceDirectory, users, privateVisibility)
+	}
+	for _, line := range commpref.AudienceStartupLines(newsAudience.Enabled(), privateVisibility) {
+		log.Print(line)
+	}
 	if keycloakConfigured {
 		worker("communication preference cleanup", commpref.MaintainCleanup(workers, communicationPreferences, commpref.CleanupInterval, func(what string, removed int64, err error) {
 			if err != nil {
@@ -890,6 +905,7 @@ func main() {
 		GithubActivity:           githubActivity,
 		Consents:                 consents,
 		CommunicationPreferences: communicationPreferences,
+		Audience:                 newsAudience,
 		Readiness:                readiness,
 		MediaDecodeMetrics:       decodeBudget,
 		MemoryMetrics:            memory,

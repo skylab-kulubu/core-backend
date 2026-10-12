@@ -293,3 +293,38 @@ func TestUnsubscribeLinkRefusesAChangedToken(t *testing.T) {
 		t.Fatalf("wrote %v", ex)
 	}
 }
+
+// Only a Member follows (Karar D7): someone in no /UYELER Group (a guest,
+// a Place user, a former Member) cannot turn a team on, is offered no team
+// to follow, and may still turn one off or forget a choice. A hidden or
+// unknown team still answers as unknown first.
+func TestCommunicationPreferencesFollowIsMembersOnly(t *testing.T) {
+	e := newPrefEnv(t, true)
+	outsider := groupToken(t, e.keys, uuid.NewString())
+	put := func(body string) jsonResponse {
+		return sendJSON(t, e.app, outsider, fiber.MethodPut, "/v1/users/me/communication-preferences", body)
+	}
+	if got := put(`{"items":[{"category":"team:g-airlab:duyuru","channel":"email","enabled":true}]}`); got.status != fiber.StatusForbidden || got.body["code"] != "communication_preference_follow_members_only" {
+		t.Fatalf("follow %d %v", got.status, got.body)
+	}
+	if got := put(`{"items":[{"category":"team:g-gizli:duyuru","channel":"email","enabled":true}]}`); got.status != fiber.StatusBadRequest || got.body["code"] != "communication_preference_team_unknown" {
+		t.Fatalf("hidden %d %v", got.status, got.body)
+	}
+	for _, body := range []string{
+		`{"items":[{"category":"team:g-airlab:duyuru","channel":"email","enabled":false}]}`,
+		`{"items":[{"category":"team:g-airlab:duyuru","channel":"email","enabled":null}]}`,
+	} {
+		got := put(body)
+		if got.status != fiber.StatusOK {
+			t.Fatalf("%s: %d %v", body, got.status, got.body)
+		}
+		if followable, _ := got.body["followable"].([]any); len(followable) != 0 {
+			t.Fatalf("followable offered to someone who is no Member: %v", got.body["followable"])
+		}
+	}
+	// A Member follows as before.
+	if got := sendJSON(t, e.app, e.token(t), fiber.MethodPut, "/v1/users/me/communication-preferences",
+		`{"items":[{"category":"team:g-airlab:duyuru","channel":"email","enabled":true}]}`); got.status != fiber.StatusOK {
+		t.Fatalf("member %d %v", got.status, got.body)
+	}
+}

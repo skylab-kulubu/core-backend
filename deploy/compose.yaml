@@ -78,6 +78,8 @@ services:
       # Communication preferences (docs/communication-preferences.md): off while the key is unset.
       COMMUNICATION_PREFERENCE_KEY: ${COMMUNICATION_PREFERENCE_KEY:-}
       COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL: ${COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL:-}
+      # The News audience (docs/news-audience.md): only public records unless on.
+      NEWS_AUDIENCE_PRIVATE_VISIBILITY: ${NEWS_AUDIENCE_PRIVATE_VISIBILITY:-}
       # The SkyPass signing key: required, except that this local stack falls back to
       # a random key at start-up (SKYPASS_EPHEMERAL_KEY, development only).
       SKYPASS_EC_PRIVATE_KEY: ${SKYPASS_EC_PRIVATE_KEY:-}

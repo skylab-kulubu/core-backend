@@ -270,10 +270,11 @@ func screen(tree *Tree, m Membership, settings []Setting) Screen {
 		out.Following = append(out.Following, r)
 		markShown(r, shown)
 	}
-	// Followable: public teams in neither list.
+	// Followable: public teams in neither list; none for someone who is no
+	// Member (only a Member follows, Karar D7).
 	var public []string
 	for id, node := range tree.teams {
-		if node.Public && !shown[id] {
+		if m.Member && node.Public && !shown[id] {
 			public = append(public, id)
 		}
 	}
@@ -334,6 +335,13 @@ func (s *Service) Update(ctx context.Context, person uuid.UUID, changes []Change
 		// exist, on or off, so the answer tells nothing of it (D1).
 		if _, ok := tree.teams[c.GroupID]; !ok || !tree.seen(m, c.GroupID) {
 			return Screen{}, ErrUnknownTeam
+		}
+		// Following is a Member's (Karar D7): someone in no /UYELER
+		// Group cannot turn a team on. A follower who is no Member would
+		// be Faz 2's subscriber, on a Contact consent (SPEC §5.8, K8).
+		// Turning off and forgetting stay allowed.
+		if *change.Enabled && !m.Member {
+			return Screen{}, ErrFollowMembersOnly
 		}
 	}
 	if err := s.store.Apply(ctx, person, changes, SourceAccountCenter, s.now().UTC()); err != nil {
