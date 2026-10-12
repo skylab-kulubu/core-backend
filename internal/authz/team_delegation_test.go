@@ -278,7 +278,15 @@ func TestProtectedRole(t *testing.T) {
 		{"realm-management", "view-users", true},
 		{"realm-management", "anything", true},
 		{"core", "certificate:issue", false},
-		{"site-main", "cms:access", false},
+		// Site-wide write on a Site (inscribed's content:write, on any
+		// client): cms:access holds it as a composite, which the protection
+		// read walks. Reading alone is not protected.
+		{"frontend-main", "content:write", true},
+		{"frontend-arge", "content:write", true},
+		{"frontend-artlab", "content:write", true},
+		{"admin", "content:write", true},
+		{"frontend-main", "content:read", false},
+		{"frontend-main", "cms:access", false},
 		{"forms", "forms:editor", false},
 	} {
 		if got := ProtectedRole(tc.client, tc.role); got != tc.want {

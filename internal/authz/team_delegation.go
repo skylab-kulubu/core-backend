@@ -46,16 +46,24 @@ const (
 // read the record).
 const RoleAuditRead = "audit:read"
 
-// protectedCoreRoles are the roles of core's client whose holders a Leader
-// must not make: the contract's (PermissionRoles) and the audit reader's.
-var protectedCoreRoles = append(PermissionRoles(), RoleAuditRead)
+// RoleContentWrite is inscribed's site-wide write on a Site (ADR 0056): a
+// Site client's cms:access holds it as a composite. A Site editor's Group
+// is Privileged's alone (ADR 0065 decision 10, addendum of 2026-10-12).
+const RoleContentWrite = "content:write"
+
+// protectedCoreRoles are the roles whose holders a Leader must not make,
+// whatever client carries them: core's contract roles (PermissionRoles),
+// the audit reader's, and a Site's site-wide write.
+var protectedCoreRoles = append(PermissionRoles(), RoleAuditRead, RoleContentWrite)
 
 // ProtectedRole reports whether a Group that maps role of clientID (a
 // Keycloak client id) is a Protected group: managed only by Privileged,
 // because a member added to it, or to a Group under it, would hold the
-// role. They are core's permission roles and audit:read (whatever client
-// carries a role of that name), any client's client:admin, and every role
-// of realm-management.
+// role. They are core's permission roles, audit:read and content:write
+// (whatever client carries a role of that name, so a Site's cms:access,
+// which holds content:write, is caught by the composite walk), any
+// client's client:admin, and every role of realm-management.
+// content:read alone is not protected.
 func ProtectedRole(clientID, role string) bool {
 	return slices.Contains(protectedCoreRoles, role) || role == "client:admin" || clientID == "realm-management"
 }

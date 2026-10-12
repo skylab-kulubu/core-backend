@@ -281,6 +281,15 @@ func TestKeycloakGroupProtection(t *testing.T) {
 			map[string][]map[string]any{"cms": {
 				{"id": "cr", "name": "content:read", "clientRole": true, "containerId": "c-site"},
 				{"id": "cw", "name": "content:write", "clientRole": true, "containerId": "c-site"},
+			}}, true},
+		// A Site editor's write (ADR 0065 decision 10, addendum of
+		// 2026-10-12): content:write, mapped or inside cms:access, on any
+		// Site client; content:read alone is reading.
+		{"content:write", clientMapping("frontend-arge", map[string]any{"id": "cw", "name": "content:write"}), nil, true},
+		{"content:read alone", clientMapping("frontend-main", map[string]any{"id": "cr", "name": "content:read"}), nil, false},
+		{"cms:access with content:read only", clientMapping("frontend-main", map[string]any{"id": "cms", "name": "cms:access", "composite": true}),
+			map[string][]map[string]any{"cms": {
+				{"id": "cr", "name": "content:read", "clientRole": true, "containerId": "c-site"},
 			}}, false},
 		{"a composite loop", clientMapping("skymail", map[string]any{"id": "a", "name": "a", "composite": true}),
 			map[string][]map[string]any{
