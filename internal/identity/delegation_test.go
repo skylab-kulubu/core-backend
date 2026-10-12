@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -169,17 +170,21 @@ func TestMaskEmail(t *testing.T) {
 }
 
 // The memory directory's composites are opened as Keycloak's are: eight
-// levels of harmless roles protect nothing, a deeper chain protects (the
-// limit is the safe answer), a realm role inside one protects.
+// levels of app roles protect nothing, a deeper chain protects (the limit
+// is the safe answer), a realm role inside one protects.
 func TestMemoryGroupProtectionDepth(t *testing.T) {
 	t.Parallel()
+	app := authz.AppRoles()
+	level := func(i int) identity.ClientRole {
+		return identity.ClientRole{ClientID: app[i].Client, Role: app[i].Role}
+	}
 	chain := func(n int) *identity.Memory {
 		m := identity.NewMemory()
 		m.PutGroup(identity.Group{ID: "g", Name: "G", Path: "/G"})
 		for i := 0; i < n; i++ {
-			m.PutCompositeRole(identity.ClientRole{ClientID: "forms", Role: fmt.Sprint("l", i)}, identity.ClientRole{ClientID: "forms", Role: fmt.Sprint("l", i+1)})
+			m.PutCompositeRole(level(i), level(i+1))
 		}
-		if err := m.SetGroupClientRoles(context.Background(), "g", []identity.ClientRole{{ClientID: "forms", Role: "l0"}}); err != nil {
+		if err := m.SetGroupClientRoles(context.Background(), "g", []identity.ClientRole{level(0)}); err != nil {
 			t.Fatal(err)
 		}
 		return m
@@ -191,8 +196,97 @@ func TestMemoryGroupProtectionDepth(t *testing.T) {
 		}
 	}
 	m := chain(3)
-	m.PutCompositeRole(identity.ClientRole{ClientID: "forms", Role: "l3"}, identity.ClientRole{Role: "admin"})
+	m.PutCompositeRole(level(3), identity.ClientRole{Role: "admin"})
 	if got, _ := m.GroupProtection(context.Background(), "g"); !got.Protected {
 		t.Error("a realm role three deep")
+	}
+}
+
+// Roles are classed by their (client, role) pair (ADR 0065 decision 10,
+// addendum of 2026-10-12): an app role protects nothing, an admin role and
+// a role nobody has classified protect, a composite app role protects when
+// one role inside it is no app role.
+func TestMemoryGroupProtectionRoleClasses(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		roles        []identity.ClientRole
+		composites   map[identity.ClientRole][]identity.ClientRole
+		want         bool
+		unclassified string
+	}{
+		{name: "an app role", roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}}},
+		{name: "app roles of three clients", roles: []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}, {ClientID: "skymail", Role: "skymail:access"}, {ClientID: "frontend-arge", Role: "content:read"}}},
+		{name: "an admin role", roles: []identity.ClientRole{{ClientID: "skymail", Role: "skymail:system-mails:read"}}, want: true},
+		{name: "cms:access by its name", roles: []identity.ClientRole{{ClientID: "frontend-main", Role: "cms:access"}}, want: true},
+		{name: "an unclassified role", roles: []identity.ClientRole{{ClientID: "forms", Role: "forms:editor"}}, want: true, unclassified: "forms:forms:editor"},
+		{name: "an app role's name on another client", roles: []identity.ClientRole{{ClientID: "skymail", Role: "certificate:issue"}}, want: true, unclassified: "skymail:certificate:issue"},
+		{name: "a composite app role holding an admin role", roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}},
+			composites: map[identity.ClientRole][]identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}: {{ClientID: "core", Role: "users:read"}}}, want: true},
+		{name: "a composite app role holding an unclassified role", roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}},
+			composites: map[identity.ClientRole][]identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}: {{ClientID: "place", Role: "place:new"}}}, want: true, unclassified: "place:place:new"},
+		{name: "a composite app role holding app roles", roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}},
+			composites: map[identity.ClientRole][]identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}: {{ClientID: "core", Role: "certificate:revoke"}, {ClientID: "frontend-main", Role: "content:read"}}}},
+	} {
+		m := identity.NewMemory()
+		m.PutGroup(identity.Group{ID: "g", Name: "G", Path: "/G"})
+		for parent, children := range tc.composites {
+			m.PutCompositeRole(parent, children...)
+		}
+		if err := m.SetGroupClientRoles(context.Background(), "g", tc.roles); err != nil {
+			t.Fatal(err)
+		}
+		got, err := m.GroupProtection(context.Background(), "g")
+		if err != nil || got.Protected != tc.want || got.Unclassified != tc.unclassified || (got.Protected && got.Reason == "") {
+			t.Errorf("%s: %+v %v", tc.name, got, err)
+		}
+	}
+}
+
+// A protection read that finds a role nobody has classified logs it and
+// counts it on /v1/metrics by its (client, role) pair, never naming a
+// person; a known admin role is neither logged as unclassified nor counted.
+func TestTeamDelegationCountsUnclassifiedRoles(t *testing.T) {
+	t.Parallel()
+	m, leader, weblab := delegationRealm(t)
+	if err := m.SetGroupClientRoles(context.Background(), weblab, []identity.ClientRole{{ClientID: "forms", Role: "forms:editor"}}); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var lines []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	d := identity.NewTeamDelegation(onPolicy(), m, m, identity.TeamDelegationOptions{Logf: logf})
+	tree, err := d.Tree(context.Background(), leader, false)
+	if err != nil || len(tree) != 1 || !tree[0].Protected {
+		t.Fatalf("tree %+v %v", tree, err)
+	}
+	if got := d.Prometheus(); !strings.Contains(got, `skylab_team_delegation_unclassified_roles_total{role="forms:forms:editor"} 1`) {
+		t.Fatalf("metrics:\n%s", got)
+	}
+	mu.Lock()
+	logged := strings.Join(lines, "\n")
+	mu.Unlock()
+	if !strings.Contains(logged, "client role forms:forms:editor is unclassified") || strings.Contains(logged, "l@example.test") || strings.Contains(logged, leader.String()) {
+		t.Fatalf("log:\n%s", logged)
+	}
+
+	known, leader2, weblab2 := delegationRealm(t)
+	if err := known.SetGroupClientRoles(context.Background(), weblab2, []identity.ClientRole{{ClientID: "skymail", Role: "skymail:lists:read"}}); err != nil {
+		t.Fatal(err)
+	}
+	d2 := identity.NewTeamDelegation(onPolicy(), known, known, identity.TeamDelegationOptions{})
+	if tree, err := d2.Tree(context.Background(), leader2, false); err != nil || len(tree) != 1 || !tree[0].Protected {
+		t.Fatalf("admin role: %+v %v", tree, err)
+	}
+	if got := d2.Prometheus(); strings.Contains(got, "{role=") {
+		t.Fatalf("a known admin role counted:\n%s", got)
+	}
+	var none *identity.TeamDelegation
+	if none.Prometheus() != "" {
+		t.Fatal("a nil delegation renders metrics")
 	}
 }

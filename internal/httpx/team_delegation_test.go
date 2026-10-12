@@ -816,11 +816,27 @@ func TestTeamDelegationRealmAndCompositeRolesProtect(t *testing.T) {
 			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
 		{name: "content:read alone", on: "/UYELER/ARGE/WEBLAB",
 			roles: []identity.ClientRole{{ClientID: "frontend-main", Role: "content:read"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
-		{name: "a harmless composite", on: "/UYELER/ARGE/WEBLAB",
-			roles: []identity.ClientRole{{ClientID: "forms", Role: "viewer"}},
+		{name: "a composite app role of app roles", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}},
 			setup: func(m *identity.Memory) {
-				m.PutCompositeRole(identity.ClientRole{ClientID: "forms", Role: "viewer"}, identity.ClientRole{ClientID: "frontend-main", Role: "content:read"})
+				m.PutCompositeRole(identity.ClientRole{ClientID: "core", Role: "certificate:issue"}, identity.ClientRole{ClientID: "frontend-main", Role: "content:read"})
 			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
+		// Role classes (ADR 0065 decision 10, addendum of 2026-10-12): a
+		// role on neither list is an admin role.
+		{name: "an unclassified role on the Sub-team", on: "/UYELER/ARGE/WEBLAB/FRONT",
+			roles: []identity.ClientRole{{ClientID: "forms", Role: "viewer"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "an unclassified role above", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "place", Role: "place:new"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "an admin role of another product", on: "/UYELER/ARGE/WEBLAB/FRONT",
+			roles: []identity.ClientRole{{ClientID: "skymail", Role: "skymail:system-mails:read"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "a composite app role holding an unclassified role", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}},
+			setup: func(m *identity.Memory) {
+				m.PutCompositeRole(identity.ClientRole{ClientID: "core", Role: "certificate:issue"}, identity.ClientRole{ClientID: "forms", Role: "viewer"})
+			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "app roles on the Team and above", on: "/UYELER/ARGE",
+			roles:  []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}, {ClientID: "forms", Role: "skyforms:access"}, {ClientID: "skymail", Role: "skymail:access"}, {ClientID: "core", Role: "url:create"}},
+			target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
 	} {
 		e := newDelegationEnv(t, delegationSetup{on: true})
 		if tc.setup != nil {
