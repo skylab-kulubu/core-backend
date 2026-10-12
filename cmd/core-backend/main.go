@@ -39,6 +39,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
+	"github.com/skylab-kulubu/core-backend/internal/mailpref"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
 	"github.com/skylab-kulubu/core-backend/internal/mediaframe"
@@ -578,6 +579,30 @@ func main() {
 		log.Printf("contact consents: off (%s is not set); none is recorded", consent.KeyEnv)
 	}
 
+	// Announcement preferences (ADR 0067, docs/mail-preferences.md).
+	// Without MAIL_PREFERENCE_KEY their routes answer 503; the erasure step
+	// still deletes a person's rows, and the deleted teams' rows are still
+	// removed once a day.
+	mailPreferenceConfig, err := mailpref.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	mailPreferences := mailpref.NewService(mailPreferenceConfig, mailpref.NewPostgresStore(pool), dir, privilegedRoots)
+	if mailPreferenceConfig.Enabled {
+		log.Printf("mail preferences: on (links at %s)", mailPreferenceConfig.LinkOrigin)
+	} else {
+		log.Printf("mail preferences: off (%s is not set)", mailpref.KeyEnv)
+	}
+	if keycloakConfigured {
+		worker("mail preference deleted-team cleanup", mailpref.MaintainDeletedTeams(workers, mailPreferences, mailpref.CleanupInterval, func(removed int64, err error) {
+			if err != nil {
+				log.Printf("mail preferences: deleted-team cleanup: %v", err)
+				return
+			}
+			log.Printf("mail preferences: removed %d rows of deleted teams", removed)
+		}))
+	}
+
 	// SkyPass in Google Wallet (SKYPASS_GOOGLE_WALLET_*,
 	// docs/skypass-google-wallet.md). Off unless enabled: the link routes
 	// answer 503 and the door reads no Wallet code. Erasure withdraws a
@@ -647,6 +672,7 @@ func main() {
 				Services:             serviceErasure,
 				ContactConsents:      consents,
 				SkyPassWallet:        wallet,
+				MailPreferences:      mailPreferences,
 			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
 			2*time.Second,
 			func(err error) { log.Printf("account erasure worker: %v", err) },
@@ -815,6 +841,7 @@ func main() {
 		Dashboard:               dashboardSvc,
 		GithubActivity:          githubActivity,
 		Consents:                consents,
+		MailPreferences:         mailPreferences,
 		Readiness:               readiness,
 		MediaDecodeMetrics:      decodeBudget,
 		MemoryMetrics:           memory,

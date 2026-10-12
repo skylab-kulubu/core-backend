@@ -131,6 +131,7 @@ func TestWorkerImmediatelyErasesUnreferencedProfileBlobAndSanitizesSharedMedia(t
 		worker := account.NewWorkerWithConfiguredWaits(users, successfulIdentity{}, account.WorkerConfig{
 			ContactConsents: consentsErased{},
 			SkyPassWallet:   walletErased{},
+			MailPreferences: mailPreferencesErased{},
 			Services:        erasedServices(),
 			Now:             func() time.Time { return now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
 		}, media.NewImmediateBlobEraser(mediaStore, blobs))
@@ -211,6 +212,7 @@ func TestWorkerRetriesWhenProfileMediaIsRestoredBeforeBlobErase(t *testing.T) {
 	worker := account.NewWorkerWithConfiguredWaits(users, successfulIdentity{}, account.WorkerConfig{
 		ContactConsents: consentsErased{},
 		SkyPassWallet:   walletErased{},
+		MailPreferences: mailPreferencesErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
 	}, eraser)
@@ -304,6 +306,7 @@ func TestDeletionCannotCompleteWhileJITAuthorizedUploadNeedsDurableCleanup(t *te
 	worker := account.NewWorkerWithConfiguredWaits(users, successfulIdentity{}, account.WorkerConfig{
 		ContactConsents: consentsErased{},
 		SkyPassWallet:   walletErased{},
+		MailPreferences: mailPreferencesErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, Lease: time.Minute, RetryDelay: 0, MaxAttempts: 1,
 		AccessBlocker: &accountBlockWriter{},

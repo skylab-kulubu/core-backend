@@ -11,7 +11,8 @@ person's explicit, optional consent (KVKK art. 5/1) for one purpose:
 Core keeps the single record (`contact_consents`). The products write to it;
 SkyMail reads its invitation list only from it. Member and alumni
 announcements are not contact consents: they run on legitimate interest with
-their own opt-out.
+their own opt-out, the announcement preference
+([`mail-preferences.md`](mail-preferences.md)).
 
 The rules every product follows (ADR-0062): the box is **unticked**, separate
 from the aydınlatma text and never a condition of the service; staff never

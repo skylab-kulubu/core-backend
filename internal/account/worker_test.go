@@ -165,6 +165,7 @@ func TestWorkerReassertsPlatformMarkerBeforeFirstErasureSideEffect(t *testing.T)
 	worker := account.NewWorkerWithConfiguredWaits(store, identity, account.WorkerConfig{
 		ContactConsents: consentsErased{},
 		SkyPassWallet:   walletErased{},
+		MailPreferences: mailPreferencesErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, AccessBlocker: blocker,
 	}, noAccountMedia{})
@@ -205,6 +206,7 @@ func TestWorkerRetriesUncertainExternalEffectWithoutRepeatingCompletedSteps(t *t
 	worker := account.NewWorkerWithConfiguredWaits(store, identity, account.WorkerConfig{
 		ContactConsents: consentsErased{},
 		SkyPassWallet:   walletErased{},
+		MailPreferences: mailPreferencesErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, Lease: time.Minute, RetryDelay: 0, MaxAttempts: 3,
 		AccessBlocker: &accountBlockWriter{},
@@ -268,6 +270,7 @@ func TestWorkerSurfacesManualInterventionAfterRetryBudget(t *testing.T) {
 	worker := account.NewWorkerWithConfiguredWaits(store, failingIdentity{}, account.WorkerConfig{
 		ContactConsents: consentsErased{},
 		SkyPassWallet:   walletErased{},
+		MailPreferences: mailPreferencesErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, MaxAttempts: 1, AccessBlocker: &accountBlockWriter{},
 	}, noAccountMedia{})
@@ -307,6 +310,7 @@ func TestWorkerDefersStagedCleanupWithoutExhaustingAttemptBudget(t *testing.T) {
 	worker := account.NewWorkerWithConfiguredWaits(store, successfulIdentity{}, account.WorkerConfig{
 		ContactConsents: consentsErased{},
 		SkyPassWallet:   walletErased{},
+		MailPreferences: mailPreferencesErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, RetryDelay: 30 * time.Second,
 		MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour, AccessBlocker: &accountBlockWriter{},
@@ -377,6 +381,7 @@ func TestWorkerPreservesFullFailureBudgetAfterManyDeferrals(t *testing.T) {
 	worker := account.NewWorkerWithConfiguredWaits(store, identity, account.WorkerConfig{
 		ContactConsents: consentsErased{},
 		SkyPassWallet:   walletErased{},
+		MailPreferences: mailPreferencesErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, MaxAttempts: 2, DeferredRetryHorizon: 12 * time.Hour,
 		AccessBlocker: &accountBlockWriter{},
@@ -437,6 +442,7 @@ func TestWorkerClampsDeferredRetryToPolicyHorizon(t *testing.T) {
 	worker := account.NewWorkerWithConfiguredWaits(store, successfulIdentity{}, account.WorkerConfig{
 		ContactConsents: consentsErased{},
 		SkyPassWallet:   walletErased{},
+		MailPreferences: mailPreferencesErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
 		AccessBlocker: &accountBlockWriter{},
@@ -472,6 +478,7 @@ func TestWorkerAllowsDeferredCleanupToBecomeManualAfterPolicyHorizon(t *testing.
 	worker := account.NewWorkerWithConfiguredWaits(store, successfulIdentity{}, account.WorkerConfig{
 		ContactConsents: consentsErased{},
 		SkyPassWallet:   walletErased{},
+		MailPreferences: mailPreferencesErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
 		AccessBlocker: &accountBlockWriter{},
@@ -552,6 +559,7 @@ func TestWorkerGivesBackAPassThatErasedSomePastTheHorizon(t *testing.T) {
 	worker := account.NewWorkerWithConfiguredWaits(store, successfulIdentity{}, account.WorkerConfig{
 		ContactConsents: consentsErased{},
 		SkyPassWallet:   walletErased{},
+		MailPreferences: mailPreferencesErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
 		AccessBlocker: &accountBlockWriter{},
@@ -601,6 +609,7 @@ func TestWorkerSpendsTheBudgetOnPassesThatEraseNothing(t *testing.T) {
 	worker := account.NewWorkerWithConfiguredWaits(store, successfulIdentity{}, account.WorkerConfig{
 		ContactConsents: consentsErased{},
 		SkyPassWallet:   walletErased{},
+		MailPreferences: mailPreferencesErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, MaxAttempts: 8, DeferredRetryHorizon: 48 * time.Hour,
 		AccessBlocker: &accountBlockWriter{},
@@ -657,6 +666,7 @@ func TestWorkerKeepsAPassThatErasedSomeInsideTheHorizonClampedToIt(t *testing.T)
 	worker := account.NewWorkerWithConfiguredWaits(store, successfulIdentity{}, account.WorkerConfig{
 		ContactConsents: consentsErased{},
 		SkyPassWallet:   walletErased{},
+		MailPreferences: mailPreferencesErased{},
 		Services:        erasedServices(),
 		Now:             func() time.Time { return now }, MaxAttempts: 1, DeferredRetryHorizon: 48 * time.Hour,
 		AccessBlocker: &accountBlockWriter{},

@@ -73,6 +73,9 @@ services:
       CONTACT_CONSENT_TEXT_URL: ${CONTACT_CONSENT_TEXT_URL:-}
       CONTACT_CONSENT_NOTICE_URL: ${CONTACT_CONSENT_NOTICE_URL:-}
       SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY: ${SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY:-}
+      # Announcement preferences (docs/mail-preferences.md): off while the key is unset.
+      MAIL_PREFERENCE_KEY: ${MAIL_PREFERENCE_KEY:-}
+      MAIL_PREFERENCE_ACCOUNT_CENTER_URL: ${MAIL_PREFERENCE_ACCOUNT_CENTER_URL:-}
       # The SkyPass signing key: required, except that this local stack falls back to
       # a random key at start-up (SKYPASS_EPHEMERAL_KEY, development only).
       SKYPASS_EC_PRIVATE_KEY: ${SKYPASS_EC_PRIVATE_KEY:-}

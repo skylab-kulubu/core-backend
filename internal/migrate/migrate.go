@@ -1256,6 +1256,29 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE tgrelid = to_regclass('public.team_audit_records')
 			  AND tgname = 'team_audit_records_finish_only'
 		  )`,
+	// Announcement preferences: the table, its key, its Group index and
+	// its guard against an erased subject.
+	20261012160000: `
+		SELECT 1
+		WHERE to_regclass('public.mail_preferences') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.mail_preferences')
+			  AND conname = 'mail_preferences_key'
+		  )
+		  AND to_regclass('public.mail_preferences_group_idx') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.mail_preferences')
+			  AND tgname = 'mail_preferences_require_active_subject'
+		  )`,
+	// The account erasure step that deletes a person's announcement
+	// preferences.
+	20261012160100: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.account_deletion_steps')
+		  AND conname = 'account_deletion_steps_step_check'
+		  AND pg_get_constraintdef(oid) LIKE '%''erase_mail_preferences''%'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

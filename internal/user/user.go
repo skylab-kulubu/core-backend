@@ -84,6 +84,11 @@ const (
 	// erase_contact_consents and before the services.
 	DeletionStepEraseSkyPassWallet DeletionStep = "erase_skypass_wallet"
 
+	// DeletionStepEraseMailPreferences deletes the person's announcement
+	// preferences (docs/mail-preferences.md), right after
+	// erase_skypass_wallet and before the services.
+	DeletionStepEraseMailPreferences DeletionStep = "erase_mail_preferences"
+
 	// Service erasure steps: one Erasure command each (ADR-0051). Their
 	// checkpoint rows also keep the service's counts as completion proof.
 	DeletionStepEraseSkyMail DeletionStep = "erase_skymail"
