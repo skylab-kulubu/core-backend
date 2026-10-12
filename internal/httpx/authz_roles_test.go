@@ -146,6 +146,8 @@ func privilegedRequests(eventID string) []privilegedRequest {
 		{authz.RoleMediaManage, fiber.MethodGet, "/v1/media", "", fiber.StatusOK},
 		{authz.RoleGithubActivityRead, fiber.MethodGet, "/v1/dashboard/github-activity", "", fiber.StatusOK},
 		{authz.RoleCompetitorManage, fiber.MethodGet, "/v1/competitors", "", fiber.StatusOK},
+		{authz.RoleCompetitionManage, fiber.MethodGet, "/v1/events/" + eventID + "/competitions", "", fiber.StatusOK},
+		{authz.RoleCompetitionManage, fiber.MethodPost, "/v1/events/" + eventID + "/competitions", `{"name":"AGC Hafta 1"}`, fiber.StatusCreated},
 		{authz.RoleCertificateManage, fiber.MethodGet, "/v1/events/" + eventID + "/certificates", "", fiber.StatusOK},
 	}
 }

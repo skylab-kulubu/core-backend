@@ -43,9 +43,62 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{Mode: ModeOpen, TTL: 60 * time.Second, MaxUses: 20, SessionGrace: 30 * time.Minute}
+	want := Config{Mode: ModeOpen, TTL: 60 * time.Second, MaxUses: 20, SessionGrace: 12 * time.Hour}
 	if cfg != want {
 		t.Fatalf("defaults %+v", cfg)
+	}
+}
+
+// The door opens 12 hours before a Session starts and closes 12 hours after
+// it ends, unless the deployment narrows it; a cancelled Session never opens.
+func TestSessionOpenDefaultWindowIsTwelveHoursEachSide(t *testing.T) {
+	cfg, err := ConfigFromEnv(func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, c := newGate(t, cfg)
+	at := func(d time.Duration) *time.Time { v := c.now.Add(d); return &v }
+	cases := []struct {
+		name       string
+		start, end *time.Time
+		cancelled  bool
+		want       bool
+	}{
+		{"starts in 11h59m", at(11*time.Hour + 59*time.Minute), at(14 * time.Hour), false, true},
+		{"starts in exactly 12h", at(12 * time.Hour), at(14 * time.Hour), false, true},
+		{"starts in 12h01m", at(12*time.Hour + time.Minute), at(14 * time.Hour), false, false},
+		{"ended 11h59m ago", at(-14 * time.Hour), at(-11*time.Hour - 59*time.Minute), false, true},
+		{"ended exactly 12h ago", at(-14 * time.Hour), at(-12 * time.Hour), false, true},
+		{"ended 12h01m ago", at(-14 * time.Hour), at(-12*time.Hour - time.Minute), false, false},
+		{"cancelled within the window", at(time.Hour), at(2 * time.Hour), true, false},
+	}
+	for _, tc := range cases {
+		if got := g.SessionOpen(tc.start, tc.end, tc.cancelled); got != tc.want {
+			t.Errorf("%s: %v", tc.name, got)
+		}
+	}
+}
+
+// A deployment may narrow the window, never widen it past 12 hours.
+func TestConfigFromEnvSessionGraceOnlyNarrows(t *testing.T) {
+	for raw, want := range map[string]time.Duration{"30m": 30 * time.Minute, "12h": 12 * time.Hour} {
+		cfg, err := ConfigFromEnv(func(k string) string {
+			if k == SessionGraceEnv {
+				return raw
+			}
+			return ""
+		})
+		if err != nil || cfg.SessionGrace != want {
+			t.Fatalf("%s: %v %v", raw, cfg.SessionGrace, err)
+		}
+	}
+	if _, err := ConfigFromEnv(func(k string) string {
+		if k == SessionGraceEnv {
+			return "12h1m"
+		}
+		return ""
+	}); err == nil {
+		t.Fatal("accepted a window wider than 12h")
 	}
 }
 

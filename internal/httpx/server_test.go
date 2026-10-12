@@ -22,6 +22,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
+	"github.com/skylab-kulubu/core-backend/internal/competition"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/event"
@@ -114,7 +115,8 @@ func memoryDepsDecidedBy(dir *identity.Memory, options identity.Options, az auth
 		Competitors: competitor.NewService(competitor.NewMemoryStore(events), events, az),
 		Media: media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), az, "",
 			media.ServiceOptions{ServiceProducts: clients.Products()}),
-		URLs: shorturl.NewService(shorturl.NewMemoryStore(), az),
+		URLs:         shorturl.NewService(shorturl.NewMemoryStore(), az),
+		Competitions: competition.NewService(competition.NewMemoryStore(tickets, users), events, az),
 		Certificates: certificate.NewService(
 			certificate.NewMemoryStore(), tickets, events, users, az, nil, nil, "https://api.example.test",
 		),
