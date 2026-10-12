@@ -46,10 +46,14 @@ stay in Keycloak and in the audit record.
 - **Protected group**: the Group or a Group above it holds **any realm
   role** in effect (mapped, or inside a client composite: Keycloak hides a
   composite's realm roles from core's service account, so they are read as
-  the Group's effective realm roles), or maps a client role that is protected (core's permission roles and
-  `audit:read` on any client, any client's `client:admin`, any role of
-  `realm-management`) or holds one, or a realm role, as a composite at any
-  depth (8 levels; deeper counts as protected). Only Privileged manages it:
+  the Group's effective realm roles), or maps a client role that is protected (core's permission roles,
+  `audit:read` and `content:write` on any client, any client's
+  `client:admin`, any role of `realm-management`) or holds one, or a realm
+  role, as a composite at any depth (8 levels; deeper counts as protected).
+  `content:write` is a Site's site-wide write (inscribed): a Site client's
+  `cms:access` holds it, so a Site editor's Group, and every Group under it,
+  is never delegated (ADR 0065 decision 10, addendum of 2026-10-12);
+  `content:read` alone is not protected. Only Privileged manages it:
   `403 protected_group`. A protection that cannot be read refuses the
 write. No realm role is exempt (Yusuf, 2026-10-12): a
   harmless one (`offline_access`) on `/UYELER` or an area makes every Team
