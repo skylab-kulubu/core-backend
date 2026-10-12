@@ -160,9 +160,9 @@ func TestServiceLeavesAKindThatIsOffAlone(t *testing.T) {
 	}
 	text := f.svc.Prometheus()
 	for _, line := range []string{
-		`skylab_team_membership_mail_kind_enabled{kind="team"} 1`,
-		`skylab_team_membership_mail_kind_enabled{kind="role"} 1`,
-		`skylab_team_membership_mail_kind_enabled{kind="group"} 0`,
+		`skylab_team_membership_mail_kind_enabled{mail_kind="team"} 1`,
+		`skylab_team_membership_mail_kind_enabled{mail_kind="role"} 1`,
+		`skylab_team_membership_mail_kind_enabled{mail_kind="group"} 0`,
 	} {
 		if !strings.Contains(text, line) {
 			t.Fatalf("missing %q in\n%s", line, text)
@@ -199,10 +199,10 @@ func TestServiceSendsTheRoleMail(t *testing.T) {
 	text := f.svc.Prometheus()
 	for _, line := range []string{
 		`skylab_team_membership_mail_total{outcome="sent"} 1`,
-		`skylab_team_membership_mail_by_kind_total{kind="role",outcome="sent"} 1`,
-		`skylab_team_membership_mail_by_kind_total{kind="team",outcome="sent"} 0`,
+		`skylab_team_membership_mail_by_kind_total{mail_kind="role",outcome="sent"} 1`,
+		`skylab_team_membership_mail_by_kind_total{mail_kind="team",outcome="sent"} 0`,
 		`skylab_team_membership_mail_enqueued_total 1`,
-		`skylab_team_membership_mail_enqueued_by_kind_total{kind="role"} 1`,
+		`skylab_team_membership_mail_enqueued_by_kind_total{mail_kind="role"} 1`,
 		// Kept for dashboards that read it; nothing is skipped as no team now.
 		`skylab_team_membership_mail_total{outcome="skipped_not_team"} 0`,
 	} {
@@ -236,7 +236,7 @@ func TestServiceSendsTheGroupMail(t *testing.T) {
 	if role.kind != KindRole || role.vars["GroupName"] != "UYE" || role.vars["Role"] != "audit" || role.vars["Action"] != "added" {
 		t.Fatalf("role mail %+v", role)
 	}
-	if !strings.Contains(f.svc.Prometheus(), `skylab_team_membership_mail_by_kind_total{kind="group",outcome="sent"} 1`) {
+	if !strings.Contains(f.svc.Prometheus(), `skylab_team_membership_mail_by_kind_total{mail_kind="group",outcome="sent"} 1`) {
 		t.Fatalf("metrics\n%s", f.svc.Prometheus())
 	}
 }
@@ -553,7 +553,7 @@ func TestServiceSendsAQueuedRowByTheCurrentRule(t *testing.T) {
 	text := f.svc.Prometheus()
 	for _, line := range []string{
 		`skylab_team_membership_mail_total{outcome="skipped_kind_off"} 1`,
-		`skylab_team_membership_mail_by_kind_total{kind="group",outcome="skipped_kind_off"} 1`,
+		`skylab_team_membership_mail_by_kind_total{mail_kind="group",outcome="skipped_kind_off"} 1`,
 	} {
 		if !strings.Contains(text, line) {
 			t.Fatalf("missing %q in\n%s", line, text)

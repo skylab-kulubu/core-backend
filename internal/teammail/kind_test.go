@@ -50,8 +50,9 @@ func TestKindOf(t *testing.T) {
 	}
 }
 
-// The roots production names (AUTHZ_PRIVILEGED_ROOTS) decide, not the
-// default six.
+// A narrowed AUTHZ_PRIVILEGED_ROOTS decides, not the default six: a Group at
+// a default root left out of it (/UYELER/ADMIN) is then no Privileged Group
+// and gets the group mail, as authz no longer counts it Privileged either.
 func TestKindOfFollowsTheConfiguredRoots(t *testing.T) {
 	t.Parallel()
 	roots := []string{"/ADMIN", "/UYELER/YK", "/UYELER/DK"}

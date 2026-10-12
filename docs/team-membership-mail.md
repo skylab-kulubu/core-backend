@@ -7,11 +7,14 @@ Group's kind picks the SkyMail template:
 | Kind | Groups | Template | Subject |
 | --- | --- | --- | --- |
 | `team` | a team and its `LIDERLER`/`KOORDINATORLER` (table below) | `club.team-membership` | SKY LAB takım üyeliğinde değişiklik |
-| `role` | a Privileged root (`AUTHZ_PRIVILEGED_ROOTS`; production: `/ADMIN`, `/UYELER/YK`, `/UYELER/DK`) and every Group under one | `club.role-membership` | SKY LAB yönetim yetkilerinde değişiklik |
+| `role` | a Privileged root and every Group under one (`AUTHZ_PRIVILEGED_ROOTS`; unset, as in production, the six defaults `/ADMIN`, `/YK`, `/DK`, `/UYELER/ADMIN`, `/UYELER/YK`, `/UYELER/DK`, of which production's Keycloak has `/ADMIN`, `/UYELER/YK` and `/UYELER/DK`) | `club.role-membership` | SKY LAB yönetim yetkilerinde değişiklik |
 | `group` | every other Group: the club (`/UYELER`), an area (`/UYELER/ARGE`), an area's own `LIDERLER`, technical Groups (`ESKI-EDITORLER`), Groups outside `/UYELER` | `club.group-membership` | SKY LAB grup üyeliğinde değişiklik |
 
 `teammail.KindOf` decides, from the path alone: a team first (`TeamOf`), then
-a Privileged root or a Group under one, then anything else. Until 2026-10-12
+a Privileged root or a Group under one, then anything else. With the default
+roots a `/UYELER/ADMIN` created later gets the role mail (`Role` = `admin`);
+only an `AUTHZ_PRIVILEGED_ROOTS` that leaves it out makes it a plain Group,
+with the group mail, as authz then counts it no Privileged Group either. Until 2026-10-12
 only teams were mailed; a person added to `/UYELER/DK` got nothing, which is
 what this change ends.
 
@@ -186,23 +189,25 @@ The names keep the `team_membership` prefix they had when only teams were
 mailed, so existing readers go on working; they count every kind.
 
 - `skylab_team_membership_mail_enabled` — 1 on, 0 off
-- `skylab_team_membership_mail_kind_enabled{kind}` — `team`, `role`,
+- `skylab_team_membership_mail_kind_enabled{mail_kind}` — `team`, `role`,
   `group`: 1 when the kind has a template key
 - `skylab_team_membership_mail_total{outcome}` — `sent`, `failed` (retried),
   `rejected`, `expired`, `skipped_inactive`, `skipped_no_email`,
   `skipped_kind_off` (the kind was switched off after the row was queued),
   `skipped_not_team` (kept for its readers, always 0 since every Group is
   mailed)
-- `skylab_team_membership_mail_by_kind_total{kind,outcome}` — the same
+- `skylab_team_membership_mail_by_kind_total{mail_kind,outcome}` — the same
   outcomes of a send by kind (`expired` has no kind: rows are dropped by
   age)
 - `skylab_team_membership_mail_enqueued_total`,
-  `skylab_team_membership_mail_enqueued_by_kind_total{kind}`,
+  `skylab_team_membership_mail_enqueued_by_kind_total{mail_kind}`,
   `skylab_team_membership_mail_queue_errors_total`,
   `skylab_team_membership_mail_precheck_errors_total`
 - `skylab_team_membership_mail_coalesced_total{kind}` — `duplicate` (the same
   change already waited), `cancelled` (an opposite unsent change was
-  removed); neither counts as enqueued
+  removed); neither counts as enqueued. Its `kind` label is older and means
+  how a change was coalesced; the mail's kind is the `mail_kind` label of the
+  series above.
 - `skylab_team_membership_mail_backlog`,
   `skylab_team_membership_mail_oldest_age_seconds`,
   `skylab_team_membership_mail_last_success_timestamp_seconds`
@@ -243,6 +248,20 @@ worker drops the row as expired before sending it.
 3. While the old and the new core both run (seconds, during the rollout), an
    old core may take a role or group row and drop it as `skipped_not_team`;
    a change made in those seconds may get no mail.
+
+## Rollback
+
+An older core image (before 2026-10-12) mails teams only. Its worker takes
+every row and drops a role or group row as `skipped_not_team`, deleting it
+without a mail. Rolling core back therefore loses the role and group mails
+still waiting, for example ones retried because SkyMail answered `404` or
+was down. Before rolling back, wait until
+`skylab_team_membership_mail_backlog` is 0 (or accept that loss). To stop
+new role and group mails without a rollback, set
+`SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY=` and
+`SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY=` (empty) instead. The migration
+needs no rollback: the older core writes rows without `kind` and they take
+the default `team`.
 
 ## Compared with other products
 

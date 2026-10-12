@@ -481,13 +481,13 @@ func (s *Service) Prometheus() string {
 	out.WriteString("# TYPE skylab_team_membership_mail_by_kind_total counter\n")
 	for _, kind := range mail.MembershipKinds {
 		for _, outcome := range kindOutcomeNames {
-			fmt.Fprintf(&out, "skylab_team_membership_mail_by_kind_total{kind=%q,outcome=%q} %d\n", kind, outcome, s.byKind[kind][outcome])
+			fmt.Fprintf(&out, "skylab_team_membership_mail_by_kind_total{mail_kind=%q,outcome=%q} %d\n", kind, outcome, s.byKind[kind][outcome])
 		}
 	}
 	fmt.Fprintf(&out, "# TYPE skylab_team_membership_mail_enqueued_total counter\nskylab_team_membership_mail_enqueued_total %d\n", s.enqueued)
 	out.WriteString("# TYPE skylab_team_membership_mail_enqueued_by_kind_total counter\n")
 	for _, kind := range mail.MembershipKinds {
-		fmt.Fprintf(&out, "skylab_team_membership_mail_enqueued_by_kind_total{kind=%q} %d\n", kind, s.enqueuedByKind[kind])
+		fmt.Fprintf(&out, "skylab_team_membership_mail_enqueued_by_kind_total{mail_kind=%q} %d\n", kind, s.enqueuedByKind[kind])
 	}
 	out.WriteString("# TYPE skylab_team_membership_mail_coalesced_total counter\n")
 	for _, kind := range []Enqueued{EnqueuedDuplicate, EnqueuedCancelled} {
@@ -531,7 +531,7 @@ func kindEnabledMetric(on func(Kind) bool) string {
 		if on(kind) {
 			value = 1
 		}
-		fmt.Fprintf(&out, "skylab_team_membership_mail_kind_enabled{kind=%q} %d\n", kind, value)
+		fmt.Fprintf(&out, "skylab_team_membership_mail_kind_enabled{mail_kind=%q} %d\n", kind, value)
 	}
 	return out.String()
 }
