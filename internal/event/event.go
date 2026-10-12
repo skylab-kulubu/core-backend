@@ -20,12 +20,25 @@ type Event struct {
 	StartDate     *time.Time      `json:"startDate,omitempty"`
 	EndDate       *time.Time      `json:"endDate,omitempty"`
 	Linkedin      string          `json:"linkedin,omitempty"`
-	Active        bool            `json:"active"`
-	Ranked        bool            `json:"ranked"`
-	PrizeInfo     string          `json:"prizeInfo,omitempty"`
-	SeasonID      *uuid.UUID      `json:"seasonId,omitempty"`
-	CoverImageID  *uuid.UUID      `json:"coverImageId,omitempty"`
-	CoverImageURL string          `json:"coverImageUrl,omitempty"`
+	// Active is derived (ADR 0066): published and not ended (ActiveAt).
+	// The store answers it; a write never sets it.
+	Active bool `json:"active"`
+	// Status is the stored status; only the status endpoints change it.
+	Status      Status     `json:"status"`
+	PublishedAt *time.Time `json:"publishedAt,omitempty"`
+	// PublishedBy and CancelledBy name who did it, for the record; they
+	// are not answered.
+	PublishedBy  *uuid.UUID `json:"-"`
+	CancelledAt  *time.Time `json:"cancelledAt,omitempty"`
+	CancelledBy  *uuid.UUID `json:"-"`
+	CancelReason string     `json:"cancelReason,omitempty"`
+	// CopiedFromEventID is the Event this one was copied from.
+	CopiedFromEventID *uuid.UUID `json:"copiedFromEventId,omitempty"`
+	Ranked            bool       `json:"ranked"`
+	PrizeInfo         string     `json:"prizeInfo,omitempty"`
+	SeasonID          *uuid.UUID `json:"seasonId,omitempty"`
+	CoverImageID      *uuid.UUID `json:"coverImageId,omitempty"`
+	CoverImageURL     string     `json:"coverImageUrl,omitempty"`
 	// CoverImageSizes are the cover's card and page addresses, built like
 	// the Media JSON's sizes.
 	CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes,omitempty"`
@@ -82,7 +95,13 @@ type Resource struct {
 	CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes,omitempty"`
 	CoverColors     []string                      `json:"coverColors"`
 	Active          bool                          `json:"active"`
-	Ranked          bool                          `json:"ranked"`
+	Status          Status                        `json:"status"`
+	PublishedAt     *time.Time                    `json:"publishedAt,omitempty"`
+	CancelledAt     *time.Time                    `json:"cancelledAt,omitempty"`
+	CancelReason    string                        `json:"cancelReason,omitempty"`
+	// CopiedFromEventID is the Event this one was copied from.
+	CopiedFromEventID *uuid.UUID `json:"copiedFromEventId,omitempty"`
+	Ranked            bool       `json:"ranked"`
 
 	// FileCount and VideoCount count the Event's files and videos anyone
 	// can see; the Event's detail lists them.
@@ -96,19 +115,24 @@ type Resource struct {
 func (e Event) Resource() Resource {
 	addresses := media.ConfiguredAddresses()
 	return Resource{
-		ID:              e.ID,
-		Name:            e.Name,
-		StartDate:       e.StartDate,
-		EndDate:         e.EndDate,
-		Location:        e.Location,
-		OwnerTeam:       e.OwnerTeam,
-		CoverImageURL:   addresses.Object(e.CoverImageURL),
-		CoverImageSizes: addresses.LinkedSizes(e.coverImage),
-		CoverColors:     append([]string{}, e.CoverColors...),
-		Active:          e.Active,
-		Ranked:          e.Ranked,
-		FileCount:       e.FileCount,
-		VideoCount:      e.VideoCount,
+		ID:                e.ID,
+		Name:              e.Name,
+		StartDate:         e.StartDate,
+		EndDate:           e.EndDate,
+		Location:          e.Location,
+		OwnerTeam:         e.OwnerTeam,
+		CoverImageURL:     addresses.Object(e.CoverImageURL),
+		CoverImageSizes:   addresses.LinkedSizes(e.coverImage),
+		CoverColors:       append([]string{}, e.CoverColors...),
+		Active:            e.Active,
+		Status:            e.Status,
+		PublishedAt:       e.PublishedAt,
+		CancelledAt:       e.CancelledAt,
+		CancelReason:      e.CancelReason,
+		CopiedFromEventID: e.CopiedFromEventID,
+		Ranked:            e.Ranked,
+		FileCount:         e.FileCount,
+		VideoCount:        e.VideoCount,
 	}
 }
 

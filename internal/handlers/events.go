@@ -20,25 +20,29 @@ func NewEventHandler(svc event.Service) *EventHandler {
 }
 
 type eventBody struct {
-	ID              *uuid.UUID             `json:"id"`
-	Name            string                 `json:"name"`
-	Description     string                 `json:"description"`
-	Location        string                 `json:"location"`
-	OwnerTeam       string                 `json:"ownerTeam"`
-	FormURL         string                 `json:"formUrl"`
-	FormAlias       *string                `json:"formAlias"`
-	ExtraFormURLs   *[]event.EventFormLink `json:"extraFormUrls"`
-	Capacity        int                    `json:"capacity"`
-	StartDate       *time.Time             `json:"startDate"`
-	EndDate         *time.Time             `json:"endDate"`
-	Linkedin        string                 `json:"linkedin"`
-	Active          bool                   `json:"active"`
-	Ranked          bool                   `json:"ranked"`
-	PrizeInfo       string                 `json:"prizeInfo"`
-	CoverImageID    *uuid.UUID             `json:"coverImageId"`
-	AttendanceRule  string                 `json:"attendanceRule"`
-	AttendanceRatio *float64               `json:"attendanceRatio"`
-	DoorStaffIDs    *[]uuid.UUID           `json:"doorStaffIds"`
+	ID            *uuid.UUID             `json:"id"`
+	Name          string                 `json:"name"`
+	Description   string                 `json:"description"`
+	Location      string                 `json:"location"`
+	OwnerTeam     string                 `json:"ownerTeam"`
+	FormURL       string                 `json:"formUrl"`
+	FormAlias     *string                `json:"formAlias"`
+	ExtraFormURLs *[]event.EventFormLink `json:"extraFormUrls"`
+	Capacity      int                    `json:"capacity"`
+	StartDate     *time.Time             `json:"startDate"`
+	EndDate       *time.Time             `json:"endDate"`
+	Linkedin      string                 `json:"linkedin"`
+	// Status is read on create alone (draft or published; none is
+	// published). An update ignores it, and every write ignores active,
+	// which is derived (ADR 0066): a client that sends the whole Event
+	// back cannot change the status with it.
+	Status          string       `json:"status"`
+	Ranked          bool         `json:"ranked"`
+	PrizeInfo       string       `json:"prizeInfo"`
+	CoverImageID    *uuid.UUID   `json:"coverImageId"`
+	AttendanceRule  string       `json:"attendanceRule"`
+	AttendanceRatio *float64     `json:"attendanceRatio"`
+	DoorStaffIDs    *[]uuid.UUID `json:"doorStaffIds"`
 }
 
 func eventError(c fiber.Ctx, err error) error {
@@ -53,7 +57,7 @@ func eventError(c fiber.Ctx, err error) error {
 	case errors.Is(err, event.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
 	case errors.Is(err, event.ErrConflict):
-		return problem(c, fiber.StatusConflict, "Conflict")
+		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
 	case errors.Is(err, event.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	default:
@@ -72,7 +76,7 @@ func (b eventBody) asEvent() event.Event {
 		StartDate:       b.StartDate,
 		EndDate:         b.EndDate,
 		Linkedin:        b.Linkedin,
-		Active:          b.Active,
+		Status:          event.Status(b.Status),
 		Ranked:          b.Ranked,
 		PrizeInfo:       b.PrizeInfo,
 		CoverImageID:    b.CoverImageID,
@@ -194,7 +198,9 @@ func (h *EventHandler) Update(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	updated, err := h.svc.Update(c.Context(), p, id, body.asEvent())
+	in := body.asEvent()
+	in.Status = ""
+	updated, err := h.svc.Update(c.Context(), p, id, in)
 	if err != nil {
 		return eventError(c, err)
 	}

@@ -191,6 +191,21 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
 	}
+	// A client that sends no status (sky-app, the panel before ADR 0066)
+	// creates a published Event, as it did before there was a status.
+	if in.Status == "" {
+		in.Status = StatusPublished
+	}
+	if !creatable(in.Status) {
+		return Event{}, ErrInvalid
+	}
+	// What only the status endpoints write.
+	in.PublishedAt, in.PublishedBy = nil, nil
+	in.CancelledAt, in.CancelledBy, in.CancelReason = nil, nil, ""
+	in.CopiedFromEventID = nil
+	if in.Status == StatusPublished {
+		in.PublishedBy = lifecycle.ActorID(p.ID)
+	}
 	in, err := normalizeAttendance(in)
 	if err != nil {
 		return Event{}, err
