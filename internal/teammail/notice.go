@@ -165,8 +165,8 @@ func roleNames(roles []identity.ClientRole) []string {
 }
 
 // adminRole reports whether a changed role is a management role by authz's
-// rule (authz.ProtectedRole: core's permission roles, audit:read, any
-// client:admin, realm-management). A role that holds one as a composite is
+// rule (authz.ProtectedRole: core's permission roles, audit:read,
+// content:write, any client:admin, realm-management). A role that holds one as a composite is
 // not seen here: the mail says "yes" only when it is sure.
 func adminRole(names ...[]string) bool {
 	for _, list := range names {

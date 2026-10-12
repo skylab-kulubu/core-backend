@@ -43,7 +43,7 @@ moment was held.
 | `ActorName` | who made the change; empty for a service account or someone core may no longer name |
 | `OccurredAt` | when, in Europe/Istanbul, `dd.MM.yyyy HH:mm` |
 | `RolesAdded`, `RolesRemoved` | role mapping: the roles as `client:role`, sorted, joined by `, `; empty otherwise |
-| `AdminRole` | role mapping: `yes` when a changed role is a management role by authz's rule (`authz.ProtectedRole`: core's permission roles, `audit:read`, any `client:admin`, any `realm-management` role), `no` otherwise. A role that only holds one as a composite (a Site's `cms:access`) reads `no`: the mail says `yes` only when it is sure. Ticket 02's role classes replace this rule when they land |
+| `AdminRole` | role mapping: `yes` when a changed role is a management role by authz's rule (`authz.ProtectedRole`: core's permission roles, `audit:read`, `content:write`, any `client:admin`, any `realm-management` role), `no` otherwise. A role that only holds one as a composite (a Site's `cms:access`, which holds `content:write`) reads `no`: the mail says `yes` only when it is sure. Ticket 02's role classes replace this rule when they land |
 | `MemberCount` | role mapping: how many people sit in the Group's tree when the notice was read for its recipients (they are counted, never told); empty otherwise |
 
 Every key is always sent. No e-mail address is in the mail.
