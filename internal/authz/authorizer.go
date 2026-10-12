@@ -59,6 +59,8 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		return a.allowTicket(p, r, action)
 	case TypeCompetitor:
 		return a.allowCompetitor(p, r, action)
+	case TypeCompetition:
+		return a.allowCompetition(p, r, action)
 	case TypeMedia:
 		return a.allowMedia(p, r, action)
 	case TypeMediaAttachment:
@@ -181,6 +183,23 @@ func (a *authorizer) allowCompetitor(p Principal, r Resource, action Action) boo
 	default:
 		return false
 	}
+}
+
+// allowCompetition is the organizer of a Competition: competition:manage,
+// or a Leader of the Event's Owner team (spec §8). Membership of the team
+// alone manages nothing. An Event without an Owner team is Privileged only
+// (ADR-0018). Who the Leaders are is ownerLevels' answer, so the team
+// authority handover changes it for competitions with everything else.
+func (a *authorizer) allowCompetition(p Principal, r Resource, action Action) bool {
+	switch action {
+	case Read, Create, Update, Delete:
+	default:
+		return false
+	}
+	if a.privileged(p, RoleCompetitionManage) {
+		return true
+	}
+	return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
 }
 
 func (a *authorizer) isOwnerMember(p Principal, r Resource) bool {
@@ -468,10 +487,11 @@ func (a *authorizer) Permitted(p Principal, role string) bool {
 // mode, either in the both mode, which counts every check where the two
 // disagree. A role that existed before the contract (url:moderator,
 // url:access) counts in every mode, as it always has, and holding it
-// outside the Privileged Groups is no disagreement. A service account
-// never holds a role here: no role makes it Privileged.
+// outside the Privileged Groups is no disagreement. A role being renamed
+// is held under either name (renamedRoles). A service account never holds
+// a role here: no role makes it Privileged.
 func (a *authorizer) privileged(p Principal, role string) bool {
-	byRole := hasRole(p, role) && !p.ServiceAccount
+	byRole := hasRole(p, roleNames(role)...) && !p.ServiceAccount
 	switch a.mode {
 	case RoleModeRoles:
 		return byRole
