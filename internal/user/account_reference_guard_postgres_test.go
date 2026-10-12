@@ -304,6 +304,8 @@ func TestActorReferenceGuardsAreInstalledAndSerializeWithDeletion(t *testing.T) 
 	}
 	expectedTriggers := []string{
 		"events_require_active_archiver",
+		"events_require_active_publisher",
+		"events_require_active_canceller",
 		"event_days_require_active_archiver",
 		"sessions_require_active_archiver",
 		"seasons_require_active_archiver",

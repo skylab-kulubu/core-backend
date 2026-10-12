@@ -1256,6 +1256,34 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE tgrelid = to_regclass('public.team_audit_records')
 			  AND tgname = 'team_audit_records_finish_only'
 		  )`,
+	// The Event status (ADR 0066): its columns, its check, its index and the
+	// guards of its two actor columns.
+	20261012130000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*)
+			FROM (VALUES
+				('status'), ('published_at'), ('published_by'), ('cancelled_at'),
+				('cancelled_by'), ('cancel_reason'), ('copied_from_event_id')
+			) AS expected(column_name)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'events'
+			 AND actual.column_name = expected.column_name
+		) = 7
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events')
+			  AND conname = 'events_status_check'
+			  AND pg_get_constraintdef(oid) LIKE '%draft%published%cancelled%'
+		)
+		AND to_regclass('public.events_current_status_idx') IS NOT NULL
+		AND (
+			SELECT count(*) FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.events')
+			  AND tgname IN ('events_require_active_publisher', 'events_require_active_canceller')
+			  AND NOT tgisinternal
+		) = 2`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

@@ -134,13 +134,14 @@ func newFixture(t *testing.T) *fixture {
 		return created
 	}
 	f.weblabSoon = create(event.Event{Name: "WebLab Bootcamp", OwnerTeam: "WEBLAB", Location: "D-101", Capacity: 50,
-		StartDate: at(now.Add(5 * 24 * time.Hour)), EndDate: at(now.Add(5*24*time.Hour + 3*time.Hour)), Active: true})
-	// No end date: running for half a day from its start.
+		StartDate: at(now.Add(5 * 24 * time.Hour)), EndDate: at(now.Add(5*24*time.Hour + 3*time.Hour))})
+	// No end date: running for 24 hours from its start.
 	f.weblabLive = create(event.Event{Name: "WebLab Meetup", OwnerTeam: "WEBLAB", Location: "D-102",
 		StartDate: at(now.Add(-2 * time.Hour)), FormURL: "https://skyl.app/meetup", CoverImageURL: "events/cover.webp"})
 	f.weblabOld = create(event.Event{Name: "WebLab Spring", OwnerTeam: "WEBLAB",
 		StartDate: at(now.AddDate(0, -3, 0)), EndDate: at(now.AddDate(0, -3, 0).Add(time.Hour))})
-	f.gecekoduSoon = create(event.Event{Name: "Gece Kodu", OwnerTeam: "GECEKODU",
+	// A draft: the summary covers it like any other, with its status.
+	f.gecekoduSoon = create(event.Event{Name: "Gece Kodu", OwnerTeam: "GECEKODU", Status: event.StatusDraft,
 		StartDate: at(now.Add(10 * 24 * time.Hour)), ExtraFormURLs: []event.EventFormLink{{Label: "Başvuru", URL: "https://skyl.app/gk"}}})
 	f.noTeam = create(event.Event{Name: "Genel Kurul", StartDate: at(now.Add(-40 * 24 * time.Hour))})
 	f.archived = create(event.Event{Name: "Arşiv", OwnerTeam: "WEBLAB", StartDate: at(now.Add(24 * time.Hour))})
@@ -278,14 +279,19 @@ func TestSummaryListsRunningComingAndRecentEventsWithTheirApplications(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	// WebLab Spring ended three months ago and Genel Kurul (no end, so half
-	// a day) 40 days ago: both are out; the archived Event never shows.
+	// WebLab Spring ended three months ago and Genel Kurul (no end, so 24
+	// hours) 40 days ago: both are out; the archived Event never shows.
 	if names := eventNames(got.EventStats); !slices.Equal(names, []string{"WebLab Meetup", "WebLab Bootcamp", "Gece Kodu"}) {
 		t.Fatalf("event stats %v", names)
 	}
 	live, soon, gk := got.EventStats[0], got.EventStats[1], got.EventStats[2]
 	if !live.Live || soon.Live || gk.Live {
 		t.Fatalf("live %v %v %v", live.Live, soon.Live, gk.Live)
+	}
+	// active is derived at the summary's own time: published and not ended.
+	if live.Status != event.StatusPublished || !live.Active || soon.Status != event.StatusPublished || !soon.Active ||
+		gk.Status != event.StatusDraft || gk.Active {
+		t.Fatalf("status live=%q/%v soon=%q/%v gk=%q/%v", live.Status, live.Active, soon.Status, soon.Active, gk.Status, gk.Active)
 	}
 	if !live.HasApplicationForm || !live.HasCoverImage || live.CoverImageURL == "" || live.CheckedIn != 7 {
 		t.Fatalf("live %+v", live)
@@ -328,5 +334,42 @@ func TestSummaryOfNothingIsEmptyLists(t *testing.T) {
 	}
 	if len(got.Applications.Daily) != dashboard.DailyDays || len(got.Events.ByMonth) != dashboard.EventMonths {
 		t.Fatalf("empty summary %+v", got)
+	}
+}
+
+// An Event without an end date runs for 24 hours from its start, the same
+// end active is derived with (ADR 0066): live and active never disagree.
+func TestSummaryLiveEndsWhereActiveDoes(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	if _, err := f.events.Create(t.Context(), event.Event{Name: "Uzun Gece", OwnerTeam: "WEBLAB", Location: "D-103",
+		StartDate: at(now.Add(-18 * time.Hour))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.events.Create(t.Context(), event.Event{Name: "Dünkü", OwnerTeam: "WEBLAB", Location: "D-104",
+		StartDate: at(now.Add(-30 * time.Hour))}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.svc.Summary(t.Context(), privileged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, stat := range got.EventStats {
+		switch stat.Name {
+		case "Uzun Gece":
+			seen++
+			if !stat.Live || !stat.Active {
+				t.Fatalf("18 hours in: live=%v active=%v", stat.Live, stat.Active)
+			}
+		case "Dünkü":
+			seen++
+			if stat.Live || stat.Active {
+				t.Fatalf("30 hours in: live=%v active=%v", stat.Live, stat.Active)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("event stats %v", eventNames(got.EventStats))
 	}
 }
