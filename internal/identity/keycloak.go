@@ -1026,7 +1026,8 @@ const maxCompositeDepth = 8
 // that is no app role (authz.DelegableRole: an admin role or one nobody has
 // classified), or an app role that holds, as a composite at any depth, a
 // realm role or a client role that is no app role. Realm roles are not
-// opened: any one counts (Yusuf, 2026-10-12), so core needs no view-realm.
+// opened: any one counts (authz.ClassifyRealmRole; the Java era's realm
+// roles leave in the role cleanup's F3), so core needs no view-realm.
 // A client role's composites are read by id (GET /roles-by-id/{id}/
 // composites, view-clients) and their clients by UUID (GET /clients/{id},
 // kept for the process).

@@ -291,7 +291,7 @@ func TestClassifyRole(t *testing.T) {
 		{"admin", "content:write", RoleClassAdmin},
 		{"frontend-main", "schema:sync", RoleClassAdmin},
 		{"forms", "skyforms:*", RoleClassAdmin},
-		{"forms", "skyforms:form:manage", RoleClassAdmin},
+		{"forms", "skyforms:feedback:*", RoleClassAdmin},
 		{"skymail", "skymail:templates:write", RoleClassAdmin},
 		{"skymail", "skymail:lists:read", RoleClassAdmin},
 		{"skymail", "skymail:mails:approve", RoleClassAdmin},
@@ -310,6 +310,11 @@ func TestClassifyRole(t *testing.T) {
 		{"core", "url:delete", RoleClassApp},
 		{"core", RoleURLAccess, RoleClassApp},
 		{"forms", "skyforms:access", RoleClassApp},
+		{"forms", "skyforms:form:manage", RoleClassApp},
+		{"forms", "skyforms:response:manage", RoleClassApp},
+		{"forms", "skyforms:feedback:manage", RoleClassApp},
+		{"broker", "read-token", RoleClassApp},
+		{"skycloud", "skycloud:access", RoleClassUnclassified},
 		{"skymail", "skymail:access", RoleClassApp},
 		{"skymail", "skymail:templates:read", RoleClassApp},
 		{"frontend-main", "content:read", RoleClassApp},
@@ -347,6 +352,16 @@ func TestRoleListsAreDisjoint(t *testing.T) {
 		}
 		if got := ClassifyRole(app.Client, app.Role); got != RoleClassApp {
 			t.Errorf("app role %s:%s classifies as %s", app.Client, app.Role, got)
+		}
+	}
+}
+
+// Every realm role is an admin role: none is classified (fail-closed).
+func TestClassifyRealmRoleIsAlwaysAdmin(t *testing.T) {
+	t.Parallel()
+	for _, role := range []string{"USER", "WEBLAB", "WEBLAB_LEADER", "ADMIN", "offline_access", ""} {
+		if got := ClassifyRealmRole(role); got != RoleClassAdmin {
+			t.Errorf("%q: %s", role, got)
 		}
 	}
 }

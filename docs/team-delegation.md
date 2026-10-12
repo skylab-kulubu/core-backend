@@ -59,7 +59,9 @@ stay in Keycloak and in the audit record.
   on `/UYELER`, a Team's own name on it, `<TEAM>_LEADER` on its Leader
   groups; measurement of 2026-10-12) therefore keep delegation shut until
   the role cleanup's F3 takes them off the groups (hub
-  `.scratch/rol-temizligi`); delegation opens after F3. A write reads protection fresh; a read
+  `.scratch/rol-temizligi`). **Prerequisite for switching delegation on:
+  the role cleanup's F3** (no realm role mapped to `/UYELER`, an area or a
+  Team). A write reads protection fresh; a read
   keeps each Group's answer 60 s.
 - **Look-alike names**: a Group whose name, blanks trimmed and case
   folded, starts with `LIDERLER` or `KOORDINATORLER` without being one
@@ -88,7 +90,8 @@ its name alone (`authz.ClassifyRole`):
   |---|---|
   | `core` | `certificate:issue`, `certificate:revoke`, `certificate:template:manage`, `certificate:binding:manage` |
   | `core` | `url:create`, `url:get`, `url:update`, `url:delete`, `url:access` |
-  | `forms` | `skyforms:access` |
+  | `forms` | `skyforms:access`, `skyforms:form:manage`, `skyforms:response:manage`, `skyforms:feedback:manage` (screens only: forms-backend decides each form by its collaborators or `skyforms:*`) |
+  | `broker` | `read-token` (one's own identity provider token) |
   | `skymail` | `skymail:access`, `skymail:templates:read` |
   | `frontend-main`, `frontend-arge`, `frontend-artlab`, `frontend-yildizjam`, `frontend-skydays` (the Site clients) | `content:read` |
 
@@ -98,7 +101,7 @@ its name alone (`authz.ClassifyRole`):
   `url:access`, `audit:read`, `users:read` and its service roles;
   `client:admin`, `content:write`, `cms:access` and `schema:sync` on any
   client; every role of `realm-management`; Forms' `skyforms:*`,
-  `skyforms:form:manage`, `skyforms:account:erase`; SkyMail's
+  `skyforms:feedback:*`, `skyforms:account:erase`; SkyMail's
   `templates:write`, `lists:*`, `mails:*`, `system-mails:read`,
   `announcements:send`, `account:erase`; Place's `place:admin` and
   `place:moderator`; `skycms`'s `cms:account:erase`. A pair on both lists
@@ -111,6 +114,10 @@ its name alone (`authz.ClassifyRole`):
   as an admin role …` and counts it on `/v1/metrics` as
   `skylab_team_delegation_unclassified_roles_total{role="<client>:<role>"}`
   (role names only, at most 64, the rest as `other`).
+
+**Realm roles** are never classified: every one protects, and
+`authz.ClassifyRealmRole` answers `admin` for each (for callers that name a
+role's class, such as the membership notice).
 
 A composite app role is delegable only when every role it holds is too.
 The same role name on another client is another pair: `content:read` on

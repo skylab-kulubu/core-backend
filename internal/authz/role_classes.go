@@ -20,6 +20,13 @@ package authz
 // the Groups under them Privileged's alone. Changing either list is Yusuf's
 // decision (docs/team-delegation.md lists both).
 
+// ClassifyRealmRole is the class of a realm role: always an admin role.
+// Realm roles are not classified (fail-closed); the Java era's realm roles
+// leave in the role cleanup's F3. It is the realm counterpart of
+// ClassifyRole for a caller that names a role's class (the membership
+// notice's AdminRole).
+func ClassifyRealmRole(string) RoleClass { return RoleClassAdmin }
+
 // RoleClass is the class of a client role.
 type RoleClass string
 
@@ -58,6 +65,10 @@ func SiteClients() []string {
 //     Teams;
 //   - core's own short link roles: only the holder's own links;
 //   - Forms' seat (skyforms:access): only the forms shared with the holder;
+//     form:manage, response:manage and feedback:manage only open Forms'
+//     screens (forms-backend decides every form by its collaborators or
+//     skyforms:*, which is an admin role);
+//   - the broker's read-token: the holder's own identity provider token;
 //   - SkyMail's access and template reading: opening SkyMail and offering a
 //     mail for approval, which an approver still sends;
 //   - every Site client's content:read: reading.
@@ -75,6 +86,10 @@ func AppRoles() []RoleRef {
 		{Client: "core", Role: "url:delete"},
 		{Client: "core", Role: RoleURLAccess},
 		{Client: "forms", Role: "skyforms:access"},
+		{Client: "forms", Role: "skyforms:form:manage"},
+		{Client: "forms", Role: "skyforms:response:manage"},
+		{Client: "forms", Role: "skyforms:feedback:manage"},
+		{Client: "broker", Role: "read-token"},
 		{Client: "skymail", Role: "skymail:access"},
 		{Client: "skymail", Role: "skymail:templates:read"},
 	}
@@ -110,7 +125,7 @@ func AdminRoles() []RoleRef {
 		out = append(out, RoleRef{Role: role})
 	}
 	out = append(out, RoleRef{Client: "realm-management", AnyRole: true})
-	for _, role := range []string{"skyforms:*", "skyforms:form:manage", "skyforms:account:erase"} {
+	for _, role := range []string{"skyforms:*", "skyforms:feedback:*", "skyforms:account:erase"} {
 		out = append(out, RoleRef{Client: "forms", Role: role})
 	}
 	for _, role := range []string{"skymail:templates:write", "skymail:lists:read", "skymail:lists:write",
