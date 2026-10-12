@@ -84,7 +84,7 @@ func (d *TeamDelegation) privilegedTree(ctx context.Context) ([]ManagedNode, err
 				continue
 			}
 			above := authz.ManagedGroup{Group: area, Ancestors: []authz.GroupNode{top}}
-			above.Protected, err = d.protected(ctx, []string{area.ID, top.ID}, false)
+			above.Protected, err = d.protected(ctx, []authz.GroupNode{area, top}, false)
 			if err != nil {
 				return nil, err
 			}
@@ -147,7 +147,7 @@ func (d *TeamDelegation) leaderTree(ctx context.Context, userID uuid.UUID) ([]Ma
 // ancestors and whether one of them is protected), and of the Teams below
 // it.
 func (d *TeamDelegation) subtree(ctx context.Context, manager authz.TeamManager, team authz.GroupNode, above authz.ManagedGroup, depth int) (ManagedNode, error) {
-	own, err := d.protected(ctx, []string{team.ID}, false)
+	own, err := d.protected(ctx, []authz.GroupNode{team}, false)
 	if err != nil {
 		return ManagedNode{}, err
 	}

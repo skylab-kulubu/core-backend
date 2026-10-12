@@ -43,20 +43,19 @@ stay in Keycloak and in the audit record.
   for a Leader group, refused with `leader_group_needs_parent` when the
   caller manages the Team but not strictly. Nobody makes themselves a
   Leader, names a co-Leader (S2) or leaves their Team without one.
-- **Protected group**: the Group or a Group above it holds **any realm
-  role** in effect (mapped, or inside a client composite: Keycloak hides a
-  composite's realm roles from core's service account, so they are read as
-  the Group's effective realm roles), or maps a client role that is **no
-  app role** (see [Role classes](#role-classes)), or a composite app role
-  that holds, at any depth (8 levels; deeper counts as protected), a realm
-  role or a client role that is no app role. Only Privileged manages it:
+- **Protected group**: the Group or a Group above it holds a realm role
+  that is **no app role where the Group sits** (read in effect: mapped,
+  inherited, or inside a composite: Keycloak hides a composite's realm
+  roles from core's service account, so they are read as the Group's
+  effective realm roles), or maps a client role that is **no app role**,
+  or a composite app role that holds, at any depth (8 levels; deeper counts
+  as protected), a client role that is no app role (see
+  [Role classes](#role-classes)). Only Privileged manages it:
   `403 protected_group`. A protection that cannot be read refuses the
-  write. No realm role is exempt (Yusuf, 2026-10-12): a harmless one
-  (`offline_access`) on `/UYELER` or an area makes every Team under it
-  Privileged's alone; core logs each protected Group with its reason
-  (`team delegation: group <id> is protected (realm role …)`), and ticket
-  03's report lists the mappings. A write reads protection fresh; a read
-  keeps each Group's answer 60 s.
+  write. Core logs each protected Group with its reason
+  (`team delegation: group <id> is protected (…)`), and ticket 03's report
+  lists the mappings. A write reads protection fresh; a read keeps each
+  Group's answer 60 s.
 - **Look-alike names**: a Group whose name, blanks trimmed and case
   folded, starts with `LIDERLER` or `KOORDINATORLER` without being one
   (`LIDERLER-ESKI`, `LIDERLER `, `liderler`) is managed by Privileged only,
@@ -84,7 +83,8 @@ its name alone (`authz.ClassifyRole`):
   |---|---|
   | `core` | `certificate:issue`, `certificate:revoke`, `certificate:template:manage`, `certificate:binding:manage` |
   | `core` | `url:create`, `url:get`, `url:update`, `url:delete`, `url:access` |
-  | `forms` | `skyforms:access` |
+  | `forms` | `skyforms:access`, `skyforms:form:manage`, `skyforms:response:manage`, `skyforms:feedback:manage` (screens only: forms-backend decides each form by its collaborators or `skyforms:*`) |
+  | `broker` | `read-token` (inside `USER`: one's own identity provider token) |
   | `skymail` | `skymail:access`, `skymail:templates:read` |
   | `frontend-main`, `frontend-arge`, `frontend-artlab`, `frontend-yildizjam`, `frontend-skydays` (the Site clients) | `content:read` |
 
@@ -94,7 +94,7 @@ its name alone (`authz.ClassifyRole`):
   `url:access`, `audit:read`, `users:read` and its service roles;
   `client:admin`, `content:write`, `cms:access` and `schema:sync` on any
   client; every role of `realm-management`; Forms' `skyforms:*`,
-  `skyforms:form:manage`, `skyforms:account:erase`; SkyMail's
+  `skyforms:feedback:*`, `skyforms:account:erase`; SkyMail's
   `templates:write`, `lists:*`, `mails:*`, `system-mails:read`,
   `announcements:send`, `account:erase`; Place's `place:admin` and
   `place:moderator`; `skycms`'s `cms:account:erase`. A pair on both lists
@@ -107,6 +107,25 @@ its name alone (`authz.ClassifyRole`):
   as an admin role …` and counts it on `/v1/metrics` as
   `skylab_team_delegation_unclassified_roles_total{role="<client>:<role>"}`
   (role names only, at most 64, the rest as `other`).
+
+**Realm roles** are classed by name and by where the Group sits
+(`authz.Policy.ClassifyRealmRole`), because core reads them as the names a
+Group holds in effect and, without `view-realm`, cannot open a realm
+role's composites. Production's realm roles (measurement of 2026-10-12)
+mirror membership, so they are app roles where they sit:
+
+| Realm role | App role on | Composite (production) |
+|---|---|---|
+| `USER` | any Group | `broker` `read-token` |
+| a Group's own name (`WEBLAB`, `ARGE`) | that Group and the Groups under it | — |
+| `<TEAM>_LEADER` | `<TEAM>/LIDERLER`, `<TEAM>/KOORDINATORLER` | Forms `skyforms:access`, `form:manage`, `response:manage`, `feedback:manage`; `skycloud` `skycloud:access` |
+
+`ADMIN`, `YK`, `DK`, `YK_…`, `Skymail-Admin` and `admin` are admin realm
+roles. Any other realm role, or one of the above elsewhere (another Team's
+name, a Leader role on a Team group), is unclassified and protects; it is
+counted as `role="realm:<name>"`. Known gap: a realm role's client
+composites are not read, so a client role added inside `USER` or a
+`_LEADER` role would not be seen; ticket 03's report shows the composites.
 
 A composite app role is delegable only when every role it holds is too.
 The same role name on another client is another pair: `content:read` on

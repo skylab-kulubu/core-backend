@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -253,7 +254,6 @@ func TestKeycloakGroupProtection(t *testing.T) {
 		want       bool
 	}{
 		{"nothing", map[string]any{}, nil, false},
-		{"a realm role", map[string]any{"realmMappings": []map[string]any{{"id": "r1", "name": "offline_access"}}}, nil, true},
 		{"a protected client role", clientMapping("core", map[string]any{"id": "x", "name": "groups:manage"}), nil, true},
 		{"client:admin", clientMapping("skymail", map[string]any{"id": "x", "name": "client:admin"}), nil, true},
 		{"a composite with realm-management", clientMapping("skymail", map[string]any{"id": "staff", "name": "staff", "composite": true}),
@@ -263,20 +263,6 @@ func TestKeycloakGroupProtection(t *testing.T) {
 				"outer": {{"id": "inner", "name": "inner", "clientRole": true, "containerId": "c-forms", "composite": true}},
 				"inner": {{"id": "gm", "name": "groups:manage", "clientRole": true, "containerId": "c-core"}},
 			}, true},
-		{"a client composite holding a realm role", clientMapping("skymail", map[string]any{"id": "outer", "name": "outer", "composite": true}),
-			map[string][]map[string]any{"outer": {{"id": "admin", "name": "admin", "clientRole": false, "containerId": "e-skylab"}}}, true},
-		// client → realm → realm-management: the realm role is hidden from
-		// the composite walk; only the Group's effective realm roles show it.
-		{"client, realm, realm-management", clientMapping("skymail", map[string]any{"id": "bridge", "name": "bridge", "composite": true}),
-			map[string][]map[string]any{
-				"bridge":  {{"id": "rmadmin", "name": "rmadmin", "clientRole": false, "composite": true, "containerId": "e-skylab"}},
-				"rmadmin": {{"id": "ra", "name": "realm-admin", "clientRole": true, "containerId": "c-rm"}},
-			}, true},
-		{"a mixed composite", clientMapping("skymail", map[string]any{"id": "mixed", "name": "mixed", "composite": true}),
-			map[string][]map[string]any{"mixed": {
-				{"id": "h", "name": "harmless", "clientRole": true, "containerId": "c-forms"},
-				{"id": "rmadmin", "name": "rmadmin", "clientRole": false, "containerId": "e-skylab"},
-			}}, true},
 		{"cms:access and content roles", clientMapping("frontend-main", map[string]any{"id": "cms", "name": "cms:access", "composite": true}),
 			map[string][]map[string]any{"cms": {
 				{"id": "cr", "name": "content:read", "clientRole": true, "containerId": "c-site"},
@@ -315,6 +301,53 @@ func TestKeycloakGroupProtection(t *testing.T) {
 		got, err := fakeRoleMappings(t, tc.mappings, tc.composites, clients).GroupProtection(context.Background(), uuid.NewString())
 		if err != nil || got.Protected != tc.want || (got.Protected && got.Reason == "") {
 			t.Errorf("%s: %+v %v", tc.name, got, err)
+		}
+	}
+}
+
+// The realm roles a Group holds in effect come back by name, for the
+// delegation to class where the Group sits (authz.Policy.ClassifyRealmRole):
+// mapped, inside a realm composite, or inside a client composite (hidden
+// from the composite walk, answered by /role-mappings/realm/composite).
+// They do not protect at this level; a client role still does.
+func TestKeycloakGroupProtectionRealmRoles(t *testing.T) {
+	t.Parallel()
+	clients := map[string]string{"c-core": "core", "c-rm": "realm-management", "c-forms": "forms"}
+	for _, tc := range []struct {
+		name       string
+		mappings   map[string]any
+		composites map[string][]map[string]any
+		protected  bool
+		realm      []string
+	}{
+		{"a realm role", map[string]any{"realmMappings": []map[string]any{{"id": "r1", "name": "offline_access"}}}, nil, false, []string{"offline_access"}},
+		{"USER and its composite", map[string]any{"realmMappings": []map[string]any{{"id": "u", "name": "USER", "composite": true}}},
+			map[string][]map[string]any{"u": {{"id": "rt", "name": "read-token", "clientRole": true, "containerId": "c-broker"}}}, false, []string{"USER"}},
+		{"a realm composite holding a realm role", map[string]any{"realmMappings": []map[string]any{{"id": "wl", "name": "WEBLAB_LEADER", "composite": true}}},
+			map[string][]map[string]any{"wl": {{"id": "w", "name": "WEBLAB", "clientRole": false, "containerId": "e-skylab"}}}, false, []string{"WEBLAB", "WEBLAB_LEADER"}},
+		{"an app composite holding a realm role", clientMapping("core", map[string]any{"id": "outer", "name": "certificate:issue", "composite": true}),
+			map[string][]map[string]any{"outer": {{"id": "admin", "name": "admin", "clientRole": false, "containerId": "e-skylab"}}}, false, []string{"admin"}},
+		// client → realm → realm-management: the realm role is hidden from
+		// the composite walk; the Group's effective realm roles show it,
+		// and the unclassified client role protects anyway.
+		{"client, realm, realm-management", clientMapping("skymail", map[string]any{"id": "bridge", "name": "bridge", "composite": true}),
+			map[string][]map[string]any{
+				"bridge":  {{"id": "rmadmin", "name": "rmadmin", "clientRole": false, "composite": true, "containerId": "e-skylab"}},
+				"rmadmin": {{"id": "ra", "name": "realm-admin", "clientRole": true, "containerId": "c-rm"}},
+			}, true, nil},
+	} {
+		got, err := fakeRoleMappings(t, tc.mappings, tc.composites, clients).GroupProtection(context.Background(), uuid.NewString())
+		if err != nil || got.Protected != tc.protected {
+			t.Errorf("%s: %+v %v", tc.name, got, err)
+			continue
+		}
+		if tc.realm != nil {
+			have := slices.Clone(got.RealmRoles)
+			slices.Sort(have)
+			have = slices.Compact(have)
+			if !slices.Equal(have, tc.realm) {
+				t.Errorf("%s: realm roles %v, want %v", tc.name, have, tc.realm)
+			}
 		}
 	}
 }
