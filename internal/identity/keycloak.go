@@ -15,7 +15,6 @@ import (
 
 	"github.com/Nerzal/gocloak/v13"
 	"github.com/google/uuid"
-	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 	"golang.org/x/sync/singleflight"
 )
@@ -1024,9 +1023,11 @@ const maxCompositeDepth = 8
 // GroupProtection reads whether the Group groupID's own role mappings make
 // it a Protected group (GroupProtections): any realm role it holds in
 // effect (GET /groups/{id}/role-mappings/realm/composite), or a client role
-// that is protected (authz.ProtectedRole) or holds, as a composite at any
-// depth, a realm role or a protected client role. Realm roles are not
-// opened: any one counts (Yusuf, 2026-10-12), so core needs no view-realm.
+// that is no app role (authz.DelegableRole: an admin role or one nobody has
+// classified), or an app role that holds, as a composite at any depth, a
+// realm role or a client role that is no app role. Realm roles are not
+// opened: any one counts (authz.ClassifyRealmRole; the Java era's realm
+// roles leave in the role cleanup's F3), so core needs no view-realm.
 // A client role's composites are read by id (GET /roles-by-id/{id}/
 // composites, view-clients) and their clients by UUID (GET /clients/{id},
 // kept for the process).
@@ -1062,8 +1063,8 @@ func (k *Keycloak) GroupProtection(ctx context.Context, groupID string) (Protect
 	var check func(r gocloak.Role, clientID string, depth int) (Protection, error)
 	check = func(r gocloak.Role, clientID string, depth int) (Protection, error) {
 		name := gocloak.PString(r.Name)
-		if authz.ProtectedRole(clientID, name) {
-			return Protection{Protected: true, Reason: "client role " + clientID + ":" + name}, nil
+		if got := clientRoleProtection(clientID, name); got.Protected {
+			return got, nil
 		}
 		if !gocloak.PBool(r.Composite) || r.ID == nil || seen[*r.ID] {
 			return Protection{}, nil

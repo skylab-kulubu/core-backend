@@ -227,13 +227,13 @@ func clientMapping(client string, roles ...map[string]any) map[string]any {
 	return map[string]any{"clientMappings": map[string]any{client: map[string]any{"client": client, "mappings": roles}}}
 }
 
-// deepChain is a client composite n levels deep that ends in a harmless
-// role.
+// deepChain is a composite app role n levels deep (core's
+// certificate:issue, a new id at each level) that ends in an app role.
 func deepChain(n int) map[string][]map[string]any {
 	out := map[string][]map[string]any{}
 	for i := 0; i < n; i++ {
 		next := "l" + strconv.Itoa(i+1)
-		out["l"+strconv.Itoa(i)] = []map[string]any{{"id": next, "name": next, "clientRole": true, "containerId": "c-forms", "composite": i+1 < n}}
+		out["l"+strconv.Itoa(i)] = []map[string]any{{"id": next, "name": "certificate:issue", "clientRole": true, "containerId": "c-core", "composite": i+1 < n}}
 	}
 	return out
 }
@@ -287,17 +287,30 @@ func TestKeycloakGroupProtection(t *testing.T) {
 		// Site client; content:read alone is reading.
 		{"content:write", clientMapping("frontend-arge", map[string]any{"id": "cw", "name": "content:write"}), nil, true},
 		{"content:read alone", clientMapping("frontend-main", map[string]any{"id": "cr", "name": "content:read"}), nil, false},
+		// cms:access is an admin role by its own name: protected even if
+		// Keycloak answered its composites without content:write.
 		{"cms:access with content:read only", clientMapping("frontend-main", map[string]any{"id": "cms", "name": "cms:access", "composite": true}),
 			map[string][]map[string]any{"cms": {
 				{"id": "cr", "name": "content:read", "clientRole": true, "containerId": "c-site"},
+			}}, true},
+		// Role classes (ADR 0065 decision 10, addendum of 2026-10-12).
+		{"an app role", clientMapping("core", map[string]any{"id": "ci", "name": "certificate:issue"}), nil, false},
+		{"an unclassified role", clientMapping("forms", map[string]any{"id": "fe", "name": "forms:editor"}), nil, true},
+		{"an app role's name on another client", clientMapping("forms", map[string]any{"id": "ci", "name": "certificate:issue"}), nil, true},
+		{"a composite app role holding an unclassified role", clientMapping("core", map[string]any{"id": "ci", "name": "certificate:issue", "composite": true}),
+			map[string][]map[string]any{"ci": {{"id": "fe", "name": "forms:editor", "clientRole": true, "containerId": "c-forms"}}}, true},
+		{"a composite app role holding app roles", clientMapping("core", map[string]any{"id": "ci", "name": "certificate:issue", "composite": true}),
+			map[string][]map[string]any{"ci": {
+				{"id": "cr", "name": "content:read", "clientRole": true, "containerId": "c-site"},
+				{"id": "cv", "name": "certificate:revoke", "clientRole": true, "containerId": "c-core"},
 			}}, false},
-		{"a composite loop", clientMapping("skymail", map[string]any{"id": "a", "name": "a", "composite": true}),
+		{"a composite loop", clientMapping("core", map[string]any{"id": "a", "name": "certificate:issue", "composite": true}),
 			map[string][]map[string]any{
-				"a": {{"id": "b", "name": "b", "clientRole": true, "containerId": "c-forms", "composite": true}},
-				"b": {{"id": "a", "name": "a", "clientRole": true, "containerId": "c-forms", "composite": true}},
+				"a": {{"id": "b", "name": "certificate:revoke", "clientRole": true, "containerId": "c-core", "composite": true}},
+				"b": {{"id": "a", "name": "certificate:issue", "clientRole": true, "containerId": "c-core", "composite": true}},
 			}, false},
-		{"eight levels, harmless", clientMapping("skymail", map[string]any{"id": "l0", "name": "l0", "composite": true}), deepChain(8), false},
-		{"eleven levels, harmless", clientMapping("skymail", map[string]any{"id": "l0", "name": "l0", "composite": true}), deepChain(11), true},
+		{"eight levels, app roles", clientMapping("core", map[string]any{"id": "l0", "name": "certificate:issue", "composite": true}), deepChain(8), false},
+		{"eleven levels, app roles", clientMapping("core", map[string]any{"id": "l0", "name": "certificate:issue", "composite": true}), deepChain(11), true},
 	} {
 		got, err := fakeRoleMappings(t, tc.mappings, tc.composites, clients).GroupProtection(context.Background(), uuid.NewString())
 		if err != nil || got.Protected != tc.want || (got.Protected && got.Reason == "") {
@@ -310,8 +323,8 @@ func TestKeycloakGroupProtection(t *testing.T) {
 // guards is refused.
 func TestKeycloakGroupProtectionFailsClosed(t *testing.T) {
 	t.Parallel()
-	mapping := clientMapping("skymail", map[string]any{"id": "staff", "name": "staff", "composite": true})
-	composites := map[string][]map[string]any{"staff": {{"id": "x", "name": "x", "clientRole": true, "containerId": "c-forms"}}}
+	mapping := clientMapping("core", map[string]any{"id": "staff", "name": "certificate:issue", "composite": true})
+	composites := map[string][]map[string]any{"staff": {{"id": "x", "name": "skyforms:access", "clientRole": true, "containerId": "c-forms"}}}
 	for _, suffix := range []string{"/role-mappings/realm/composite", "/role-mappings", "/composites", "/clients/c-forms"} {
 		got, err := fakeRoleMappings(t, mapping, composites, map[string]string{"c-forms": "forms"}, suffix).GroupProtection(context.Background(), uuid.NewString())
 		if err == nil {

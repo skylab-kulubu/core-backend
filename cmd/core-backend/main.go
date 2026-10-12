@@ -806,6 +806,12 @@ func main() {
 		teamDelegationOptions.Logf = log.Printf
 		delegation = identity.NewTeamDelegation(authzPolicy, dir, reads, teamDelegationOptions)
 	}
+	// The client roles nobody has classified that protection reads found,
+	// on /v1/metrics (an interface holding a nil pointer is not nil).
+	var delegationMetrics interface{ Prometheus() string }
+	if delegation != nil {
+		delegationMetrics = delegation
+	}
 	// With delegation on, core checks at once that it sees protection at
 	// all (a Privileged root reads as protected); a failure is an ERROR line
 	// and every delegated write is refused until the check passes.
@@ -865,6 +871,7 @@ func main() {
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
 		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
 		TeamMailMetrics:        teamMembershipMetrics,
+		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,

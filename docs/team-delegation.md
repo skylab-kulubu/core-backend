@@ -46,21 +46,23 @@ stay in Keycloak and in the audit record.
 - **Protected group**: the Group or a Group above it holds **any realm
   role** in effect (mapped, or inside a client composite: Keycloak hides a
   composite's realm roles from core's service account, so they are read as
-  the Group's effective realm roles), or maps a client role that is protected (core's permission roles,
-  `audit:read` and `content:write` on any client, any client's
-  `client:admin`, any role of `realm-management`) or holds one, or a realm
-  role, as a composite at any depth (8 levels; deeper counts as protected).
-  `content:write` is a Site's site-wide write (inscribed): a Site client's
-  `cms:access` holds it, so a Site editor's Group, and every Group under it,
-  is never delegated (ADR 0065 decision 10, addendum of 2026-10-12);
-  `content:read` alone is not protected. Only Privileged manages it:
+  the Group's effective realm roles), or maps a client role that is **no
+  app role** (see [Role classes](#role-classes)), or a composite app role
+  that holds, at any depth (8 levels; deeper counts as protected), a realm
+  role or a client role that is no app role. Only Privileged manages it:
   `403 protected_group`. A protection that cannot be read refuses the
-write. No realm role is exempt (Yusuf, 2026-10-12): a
-  harmless one (`offline_access`) on `/UYELER` or an area makes every Team
-  under it Privileged's alone; core logs each protected Group with its
-  reason (`team delegation: group <id> is protected (realm role …)`), and
-  ticket 03's report lists the realm mappings. A write reads protection
-  fresh; a read keeps each Group's answer 60 s.
+  write. No realm role is exempt (Yusuf, 2026-10-12): a harmless one
+  (`offline_access`) on `/UYELER` or an area makes every Team under it
+  Privileged's alone; core logs each protected Group with its reason
+  (`team delegation: group <id> is protected (realm role …)`), and ticket
+  03's report lists the mappings. Production's Java-era realm roles (`USER`
+  on `/UYELER`, a Team's own name on it, `<TEAM>_LEADER` on its Leader
+  groups; measurement of 2026-10-12) therefore keep delegation shut until
+  the role cleanup's F3 takes them off the groups (hub
+  `.scratch/rol-temizligi`). **Prerequisite for switching delegation on:
+  the role cleanup's F3** (no realm role mapped to `/UYELER`, an area or a
+  Team). A write reads protection fresh; a read
+  keeps each Group's answer 60 s.
 - **Look-alike names**: a Group whose name, blanks trimmed and case
   folded, starts with `LIDERLER` or `KOORDINATORLER` without being one
   (`LIDERLER-ESKI`, `LIDERLER `, `liderler`) is managed by Privileged only,
@@ -73,6 +75,57 @@ with the paths: each path is its parent's plus its own name, and no name
 holds a `/`. Otherwise the request is `409 group_tree_mismatch` and logged
 (ids and depth only). A Group named by its path or name is the Privileged
 tool's shortcut: delegated, it is 403.
+
+### Role classes
+
+ADR 0065 decision 10, addendum of 2026-10-12 (Yusuf: Microsoft Entra's
+model). A client role is classed by its **(client, role) pair**, never by
+its name alone (`authz.ClassifyRole`):
+
+- **App roles** (Entra's app roles): what they grant is bound to the
+  holder or to the holder's Teams, so a Leader may hand them out by
+  changing a Group's membership. The list (`authz.AppRoles`):
+
+  | Client | Roles |
+  |---|---|
+  | `core` | `certificate:issue`, `certificate:revoke`, `certificate:template:manage`, `certificate:binding:manage` |
+  | `core` | `url:create`, `url:get`, `url:update`, `url:delete`, `url:access` |
+  | `forms` | `skyforms:access`, `skyforms:form:manage`, `skyforms:response:manage`, `skyforms:feedback:manage` (screens only: forms-backend decides each form by its collaborators or `skyforms:*`) |
+  | `broker` | `read-token` (one's own identity provider token) |
+  | `skymail` | `skymail:access`, `skymail:templates:read` |
+  | `frontend-main`, `frontend-arge`, `frontend-artlab`, `frontend-yildizjam`, `frontend-skydays` (the Site clients) | `content:read` |
+
+- **Admin roles** (Entra's directory roles): every other client role. A
+  Group that maps one, or under a Group that does, is a Protected group.
+  The known ones (`authz.AdminRoles`): core's permission roles but
+  `url:access`, `audit:read`, `users:read` and its service roles;
+  `client:admin`, `content:write`, `cms:access` and `schema:sync` on any
+  client; every role of `realm-management`; Forms' `skyforms:*`,
+  `skyforms:feedback:*`, `skyforms:account:erase`; SkyMail's
+  `templates:write`, `lists:*`, `mails:*`, `system-mails:read`,
+  `announcements:send`, `account:erase`; Place's `place:admin` and
+  `place:moderator`; `skycms`'s `cms:account:erase`. A pair on both lists
+  is an admin role. `cms:access` is named on its own, so a Site editor's
+  Group stays protected even if Keycloak answered its composites without
+  `content:write`.
+- **Unclassified**: a role on neither list counts as an admin role
+  (fail-closed). Each protection read that meets one logs
+  `team delegation: client role <client>:<role> is unclassified and counts
+  as an admin role …` and counts it on `/v1/metrics` as
+  `skylab_team_delegation_unclassified_roles_total{role="<client>:<role>"}`
+  (role names only, at most 64, the rest as `other`).
+
+**Realm roles** are never classified: every one protects, and
+`authz.ClassifyRealmRole` answers `admin` for each (for callers that name a
+role's class, such as the membership notice).
+
+A composite app role is delegable only when every role it holds is too.
+The same role name on another client is another pair: `content:read` on
+the panel's `admin` client, or `skyforms:access` on the old `dotnet`
+client, is unclassified. Changing either list is Yusuf's decision; a new
+role stays protected until then. Keycloak roles flow down to subgroups
+(Entra's app roles do not), so an ancestor's mapping protects the Groups
+under it.
 
 ## Routes
 
