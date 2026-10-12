@@ -32,6 +32,7 @@ func TestRecordNormalizeRefusesWhatTheTableRefuses(t *testing.T) {
 		"no basis":                       {func(r *Record) { r.Actor.Basis = "" }, "invalid_basis"},
 		"privileged through a team":      {func(r *Record) { r.Actor.ViaGroupID = uuid.NewString() }, "invalid_basis"},
 		"leader without a team":          {func(r *Record) { r.Actor.Basis = BasisLeader }, "invalid_basis"},
+		"no basis through a team":        {func(r *Record) { r.Actor.Basis, r.Actor.ViaGroupID = BasisNone, uuid.NewString() }, "invalid_basis"},
 		"unknown action":                 {func(r *Record) { r.Action = "member.promote" }, "invalid_action"},
 		"no group":                       {func(r *Record) { r.GroupID = "" }, "no_group"},
 		"group id not a uuid":            {func(r *Record) { r.GroupID = "g-uyeler" }, "invalid_group"},
@@ -167,5 +168,23 @@ func TestActorTravelsInTheContext(t *testing.T) {
 	got, ok := ActorFrom(WithActor(context.Background(), a))
 	if !ok || got != a {
 		t.Fatalf("actor %+v", got)
+	}
+}
+
+// A caller with no basis for the change appears only in a denied row: a
+// change that is made always has one (ticket 04).
+func TestBasisNoneOnlyDenied(t *testing.T) {
+	t.Parallel()
+	m := NewMemory()
+	r := validRecord()
+	r.Actor.Basis = BasisNone
+	if _, err := m.Begin(context.Background(), r); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("begun without a basis: %v", err)
+	}
+	if err := m.Deny(context.Background(), r, "forbidden"); err != nil {
+		t.Fatalf("denied without a basis: %v", err)
+	}
+	if rows := m.Rows(); len(rows) != 1 || rows[0].Outcome != OutcomeDenied || rows[0].Actor.Basis != BasisNone {
+		t.Fatalf("rows %+v", rows)
 	}
 }
