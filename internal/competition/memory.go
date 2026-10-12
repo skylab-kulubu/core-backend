@@ -169,7 +169,7 @@ func (s *MemoryStore) Tickets(ctx context.Context, ids []uuid.UUID) ([]TicketRef
 	return out, nil
 }
 
-func (s *MemoryStore) AddIndividuals(_ context.Context, competitionID uuid.UUID, ticketIDs []uuid.UUID, actor *uuid.UUID) ([]uuid.UUID, error) {
+func (s *MemoryStore) AddIndividuals(_ context.Context, competitionID uuid.UUID, ticketIDs []uuid.UUID, _ *uuid.UUID) ([]uuid.UUID, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.competitions[competitionID]; !ok {
@@ -182,7 +182,6 @@ func (s *MemoryStore) AddIndividuals(_ context.Context, competitionID uuid.UUID,
 			}
 		}
 	}
-	_ = actor
 	now := time.Now().UTC()
 	out := make([]uuid.UUID, 0, len(ticketIDs))
 	for i, tid := range ticketIDs {
