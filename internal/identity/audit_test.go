@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Nerzal/gocloak/v13"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
@@ -91,17 +92,72 @@ func TestAuditedDirectoryFailsOnAnUnknownGroup(t *testing.T) {
 	}
 }
 
-func TestDirectoryErrorCodes(t *testing.T) {
+// A refusal Keycloak answered is a failed row; anything that may have come
+// after Keycloak made the change is no refusal.
+func TestRefusalTellsKnownFailuresFromUnknownOutcomes(t *testing.T) {
 	t.Parallel()
-	for err, want := range map[error]string{
-		ErrNotFound:                         "not_found",
-		fmt.Errorf("x: %w", ErrInvalid):     "invalid",
-		ErrForbidden:                        "forbidden",
-		context.DeadlineExceeded:            "timeout",
-		errors.New("keycloak 500 ada@x.io"): "directory_error",
+	for err, want := range map[error]struct {
+		code    string
+		refused bool
+	}{
+		ErrNotFound:                     {"not_found", true},
+		fmt.Errorf("x: %w", ErrInvalid): {"invalid", true},
+		ErrForbidden:                    {"forbidden", true},
+		&gocloak.APIError{Code: 400, Message: "x"}: {"keycloak_400", true},
+		gocloak.APIError{Code: 403}:                {"keycloak_403", true},
+		&gocloak.APIError{Code: 502}:               {"keycloak_502", false},
+		context.DeadlineExceeded:                   {"timeout", false},
+		fmt.Errorf("put: %w", context.Canceled):    {"canceled", false},
+		errors.New("dial tcp: connection reset"):   {"directory_error", false},
 	} {
-		if got := directoryErrorCode(err); got != want || !teamaudit.ValidErrorCode(got) {
-			t.Errorf("%v: %q", err, got)
+		code, refused := refusal(err)
+		if code != want.code || refused != want.refused || !teamaudit.ValidErrorCode(code) {
+			t.Errorf("%v: %q %v", err, code, refused)
 		}
+	}
+}
+
+// slowDirectory is a directory whose member writes fail with err after
+// they may have reached Keycloak.
+type slowDirectory struct {
+	*Memory
+	err error
+}
+
+func (d slowDirectory) AddMember(ctx context.Context, groupID string, userID uuid.UUID) error {
+	_ = d.Memory.AddMember(ctx, groupID, userID)
+	return d.err
+}
+
+// A timeout, a request given up or a lost connection leaves the row
+// pending: Keycloak may have made the change, so the outcome is unknown.
+// The caller gets the error.
+func TestAuditedDirectoryLeavesAnUnknownOutcomePending(t *testing.T) {
+	t.Parallel()
+	for _, cause := range []error{context.DeadlineExceeded, context.Canceled, errors.New("connection reset"), &gocloak.APIError{Code: 503}} {
+		dir, g, person := auditedMemory(t)
+		memory := teamaudit.NewMemory()
+		var lines []string
+		audited := AuditedDirectory(slowDirectory{dir, cause}, memory, func(format string, args ...any) {
+			lines = append(lines, fmt.Sprintf(format, args...))
+		})
+		if err := audited.AddMember(actorContext(), g.ID, person); !errors.Is(err, cause) && err != cause {
+			t.Fatalf("%v: err %v", cause, err)
+		}
+		rows := memory.Rows()
+		if len(rows) != 1 || rows[0].Outcome != teamaudit.OutcomePending || rows[0].ErrorCode != "" {
+			t.Fatalf("%v: rows %+v", cause, rows)
+		}
+		if len(lines) != 1 || !strings.Contains(lines[0], "outcome unknown") || !strings.Contains(lines[0], rows[0].ID.String()) {
+			t.Fatalf("%v: log %q", cause, lines)
+		}
+	}
+	// A refusal finishes the row as failed.
+	dir, g, person := auditedMemory(t)
+	memory := teamaudit.NewMemory()
+	audited := AuditedDirectory(slowDirectory{dir, &gocloak.APIError{Code: 400}}, memory, nil)
+	_ = audited.AddMember(actorContext(), g.ID, person)
+	if rows := memory.Rows(); len(rows) != 1 || rows[0].Outcome != teamaudit.OutcomeFailed || rows[0].ErrorCode != "keycloak_400" {
+		t.Fatalf("refused: %+v", rows)
 	}
 }

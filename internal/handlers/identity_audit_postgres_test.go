@@ -2,17 +2,22 @@ package handlers
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
+	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
 )
 
-// Over the real table: every Group write of Privileged leaves one ok row;
-// with the database gone every write answers 503 audit_unavailable and
-// none reaches the directory.
+// Over the real table and main's Team code ledger, on the same database:
+// every Group write of Privileged leaves one ok row; with the database gone
+// every write answers 503 audit_unavailable, a create and a rename too
+// (their Team code lock asks the database first), and none reaches the
+// directory.
 func TestGroupWritesOverThePostgresAuditRecord(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
@@ -20,7 +25,10 @@ func TestGroupWritesOverThePostgresAuditRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := auditTree()
-	app := auditedApp(t, ykIdent(), f.dir, teamaudit.NewPostgres(pool))
+	production := func(f auditFixture) *fiber.App {
+		return auditedAppWith(t, ykIdent(), f.dir, teamaudit.NewPostgres(pool), identity.Options{TeamCodes: teamcode.NewPostgresLedger(pool)})
+	}
+	app := production(f)
 	writes := auditWrites(f)
 	for _, w := range writes {
 		if resp, body := auditRequest(t, app, w.method, w.target, w.body); resp.StatusCode != w.want {
@@ -37,10 +45,11 @@ func TestGroupWritesOverThePostgresAuditRecord(t *testing.T) {
 
 	pool.Close()
 	f = auditTree()
-	app = auditedApp(t, ykIdent(), f.dir, teamaudit.NewPostgres(pool))
+	app = production(f)
 	for _, w := range auditWrites(f) {
-		if resp, body := auditRequest(t, app, w.method, w.target, w.body); resp.StatusCode != fiber.StatusServiceUnavailable {
-			t.Fatalf("%s with the database gone: status %d %s", w.name, resp.StatusCode, body)
+		resp, body := auditRequest(t, app, w.method, w.target, w.body)
+		if resp.StatusCode != fiber.StatusServiceUnavailable || !strings.Contains(body, `"code":"audit_unavailable"`) {
+			t.Errorf("%s with the database gone: status %d %s", w.name, resp.StatusCode, body)
 		}
 	}
 	if ops := writeOps(f.dir); len(ops) != 0 {

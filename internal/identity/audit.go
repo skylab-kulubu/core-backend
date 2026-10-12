@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 
+	"github.com/Nerzal/gocloak/v13"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
@@ -19,9 +21,9 @@ import (
 // (503 audit_unavailable). The actor is the one ctx carries
 // (teamaudit.WithActor); a write without one is refused the same way.
 //
-// An outcome that cannot be written leaves the row pending ("outcome
-// unknown") and is logged; the write's own result stands. Reads pass
-// through.
+// A failure that does not tell whether Keycloak made the change, and an
+// outcome that cannot be written, leave the row pending ("outcome unknown")
+// and are logged; the write's own result stands. Reads pass through.
 func AuditedDirectory(dir Directory, audit teamaudit.Writer, logf func(string, ...any)) Directory {
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -36,7 +38,9 @@ type auditedDirectory struct {
 }
 
 // write records do as r: a pending row, then do, then its outcome. do's
-// State, when not nil, is the row's after.
+// State, when not nil, is the row's after. A failure that does not tell
+// whether Keycloak made the change (a timeout, a request given up, a lost
+// connection, a 5xx) leaves the row pending: its outcome is unknown.
 func (d *auditedDirectory) write(ctx context.Context, r teamaudit.Record, do func() (*teamaudit.State, error)) error {
 	actor, ok := teamaudit.ActorFrom(ctx)
 	if !ok {
@@ -50,7 +54,12 @@ func (d *auditedDirectory) write(ctx context.Context, r teamaudit.Record, do fun
 	after, err := do()
 	outcome, code := teamaudit.OutcomeOK, ""
 	if err != nil {
-		outcome, code = teamaudit.OutcomeFailed, directoryErrorCode(err)
+		var refused bool
+		if code, refused = refusal(err); !refused {
+			d.logf("team audit: record %s stays pending: outcome unknown (%s)", id, code)
+			return err
+		}
+		outcome = teamaudit.OutcomeFailed
 	}
 	if finishErr := d.audit.Finish(ctx, id, outcome, code, after); finishErr != nil {
 		d.logf("team audit: record %s stays pending: %v", id, finishErr)
@@ -58,21 +67,39 @@ func (d *auditedDirectory) write(ctx context.Context, r teamaudit.Record, do fun
 	return err
 }
 
-// directoryErrorCode is the code a failed write's row keeps.
-func directoryErrorCode(err error) string {
+// refusal is the code a failed write's row keeps, and whether the failure
+// says Keycloak made no change: it answered and refused (a 4xx, an unknown
+// Group or person, an invalid write). Anything else (a timeout, a request
+// given up, a lost connection, a 5xx) may have come after Keycloak made the
+// change, so its outcome is unknown.
+func refusal(err error) (string, bool) {
 	switch {
 	case errors.Is(err, ErrNotFound):
-		return "not_found"
+		return "not_found", true
 	case errors.Is(err, ErrForbidden):
-		return "forbidden"
+		return "forbidden", true
 	case errors.Is(err, ErrInvalid):
-		return "invalid"
+		return "invalid", true
 	case errors.Is(err, context.DeadlineExceeded):
-		return "timeout"
+		return "timeout", false
 	case errors.Is(err, context.Canceled):
-		return "canceled"
+		return "canceled", false
 	}
-	return "directory_error"
+	status := 0
+	var api *gocloak.APIError
+	var value gocloak.APIError
+	if errors.As(err, &api) && api != nil {
+		status = api.Code
+	} else if errors.As(err, &value) {
+		status = value.Code
+	}
+	if status >= 400 && status < 500 {
+		return "keycloak_" + strconv.Itoa(status), true
+	}
+	if status != 0 {
+		return "keycloak_" + strconv.Itoa(status), false
+	}
+	return "directory_error", false
 }
 
 func (d *auditedDirectory) CreateGroup(ctx context.Context, parentRef, name string) (Group, error) {

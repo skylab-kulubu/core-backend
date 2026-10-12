@@ -100,7 +100,7 @@ func identityError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusConflict, "Conflict", ytuManagedCode)
 	case errors.Is(err, user.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
-	case errors.Is(err, teamaudit.ErrUnavailable):
+	case errors.Is(err, teamaudit.ErrUnavailable), errors.Is(err, teamcode.ErrUnavailable):
 		// The change was not made: without its audit row there is none.
 		c.Set(fiber.HeaderCacheControl, "no-store")
 		c.Set(fiber.HeaderRetryAfter, "1")

@@ -24,8 +24,15 @@ import (
 // front of its writes, as main wires them.
 func auditedApp(t *testing.T, ident authn.Identity, dir *identity.Memory, audit teamaudit.Writer) *fiber.App {
 	t.Helper()
+	return auditedAppWith(t, ident, dir, audit, identity.Options{})
+}
+
+// auditedAppWith is auditedApp with the service's options: main's Team code
+// ledger, for one.
+func auditedAppWith(t *testing.T, ident authn.Identity, dir *identity.Memory, audit teamaudit.Writer, options identity.Options) *fiber.App {
+	t.Helper()
 	svc := identity.NewServiceWithOptions(identity.AuditedDirectory(dir, audit, t.Logf), user.NewMemoryStore(),
-		authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{})
+		authz.NewAuthorizer(authz.DefaultPolicy()), options)
 	h := NewIdentityHandler(svc)
 	app := fiber.New()
 	app.Use(requestid.New())

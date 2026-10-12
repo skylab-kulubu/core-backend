@@ -14,6 +14,11 @@ import (
 // holds, on every core, from its name check to its Keycloak write.
 const LockName = "core.group_names"
 
+// ErrUnavailable is a lock or a check the database could not give: the
+// Group write was not made, Keycloak was not asked. Callers answer it as
+// the Team audit record's 503 (audit_unavailable): no record, no change.
+var ErrUnavailable = errors.New("teamcode: database unavailable")
+
 // PostgresLedger keeps the retired codes in retired_team_codes, reads the
 // Owner team records from their tables, and locks with a transaction-scoped
 // advisory lock, which a core that dies mid-write gives back with its
@@ -32,11 +37,11 @@ func NewPostgresLedger(pool *pgxpool.Pool) *PostgresLedger { return &PostgresLed
 func (l *PostgresLedger) Locked(ctx context.Context, write func(ctx context.Context, records Records) error) error {
 	tx, err := l.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("teamcode: begin: %w", err)
+		return fmt.Errorf("%w: begin: %w", ErrUnavailable, err)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, LockName); err != nil {
-		return fmt.Errorf("teamcode: lock: %w", err)
+		return fmt.Errorf("%w: lock: %w", ErrUnavailable, err)
 	}
 	records := &postgresRecords{tx: tx}
 	if err := write(ctx, records); err != nil {
@@ -65,7 +70,7 @@ func (r *postgresRecords) Held(ctx context.Context, code string) (bool, error) {
 			OR EXISTS (SELECT 1 FROM certificate_template_bindings WHERE scope = 'ownerTeam' AND lower(scope_key) = lower($1))
 			OR EXISTS (SELECT 1 FROM retired_team_codes WHERE lower(code) = lower($1))`, code).Scan(&held)
 	if err != nil {
-		return false, fmt.Errorf("teamcode: held: %w", err)
+		return false, fmt.Errorf("%w: held: %w", ErrUnavailable, err)
 	}
 	return held, nil
 }
