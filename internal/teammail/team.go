@@ -7,21 +7,12 @@
 package teammail
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 )
-
-// membersRoot is the first segment of every team's path: the club's members
-// tree (CONTEXT.md "Member").
-const membersRoot = "UYELER"
-
-// minTeamDepth is the depth of a team's own Group: /UYELER/<area>/<team>.
-// /UYELER itself is the club and /UYELER/<area> an area (ARGE,
-// ORGANIZASYON, …) or a technical Group, none of them a team.
-const minTeamDepth = 3
 
 // roleValues are the template's Role variable: what the membership is in
 // the team. The template words its text by it (a member gets no
@@ -42,38 +33,18 @@ type Team struct {
 }
 
 // TeamOf reports whether a membership of the Group at path is a team
-// membership, and of which team. A team is a Group at least three deep under
-// /UYELER (/UYELER/<area>/<team>, or a sub-team below one), or one of the
-// policy's leader subgroups directly under such a team. Privileged Groups
-// (ADMIN, YK, DK) and everything under them are not teams, wherever they
-// sit; nor are the club root, the areas or Groups outside /UYELER.
-func TeamOf(path string) (Team, bool) {
-	if !strings.HasPrefix(path, "/") {
+// membership, and of which team (teamcode.TeamOf): a Group at least three
+// deep under /UYELER (/UYELER/<area>/<team>, or a sub-team below one), or
+// one of the policy's leader subgroups directly under such a team. A
+// Privileged root of privilegedRoots and everything under it is not a team;
+// nor are the club root, the areas or Groups outside /UYELER. A Group named
+// ADMIN, YK or DK elsewhere is a team like any other.
+func TeamOf(path string, privilegedRoots []string) (Team, bool) {
+	team, role, ok := teamcode.TeamOf(path, privilegedRoots, authz.DefaultPolicy().LeaderSubgroups)
+	if !ok {
 		return Team{}, false
 	}
-	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	if segments[0] != membersRoot {
-		return Team{}, false
-	}
-	policy := authz.DefaultPolicy()
-	for i, segment := range segments {
-		if segment == "" || slices.Contains(policy.PrivilegedGroups, segment) {
-			return Team{}, false
-		}
-		// A leader subgroup ends a path: nothing sits under one.
-		if slices.Contains(policy.LeaderSubgroups, segment) && i != len(segments)-1 {
-			return Team{}, false
-		}
-	}
-	team := Team{Path: path}
-	if last := segments[len(segments)-1]; slices.Contains(policy.LeaderSubgroups, last) {
-		segments = segments[:len(segments)-1]
-		team = Team{Path: "/" + strings.Join(segments, "/"), Role: last}
-	}
-	if len(segments) < minTeamDepth {
-		return Team{}, false
-	}
-	return team, true
+	return Team{Path: team, Role: role}, true
 }
 
 // teamName is how the mail names the team of group (Yusuf, 2026-10-09):

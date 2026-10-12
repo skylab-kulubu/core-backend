@@ -1241,6 +1241,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.team_membership_mails_due_idx') IS NOT NULL
 		  AND to_regclass('public.team_membership_mails_change_idx') IS NOT NULL
 		  AND to_regclass('public.team_membership_mails_actor_idx') IS NOT NULL`,
+	// The retired Team codes.
+	20261012120000: `SELECT 1 WHERE to_regclass('public.retired_team_codes') IS NOT NULL`,
 	// Competitions, their Stages, Entrants and append-only ledger
 	// (ADR-0068), with the ledger's triggers and its live-score index.
 	20261012140000: `

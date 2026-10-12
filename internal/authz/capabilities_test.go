@@ -165,6 +165,7 @@ func TestCapabilities_MatchAllow(t *testing.T) {
 		{ID: "u2", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER", "/UYELER/ORGANIZASYON/GECEKODU"}, Roles: []string{"certificate:binding:manage"}},
 		{ID: "u3", Roles: []string{"users:read", "url:moderator"}},
 		{ID: "u4", Roles: []string{RoleEventManage, RoleTicketValidate}},
+		{ID: "u5", Groups: []string{"/UYELER/YK/BASKAN", "/UYELER/ARGE/WEBLAB/ADMIN"}},
 	}
 	for _, mode := range []RoleMode{RoleModeGroups, RoleModeBoth, RoleModeRoles} {
 		auth := NewAuthorizer(policyIn(mode))
@@ -175,7 +176,7 @@ func TestCapabilities_MatchAllow(t *testing.T) {
 					t.Errorf("%s %s: can[%s] differs from Allow", mode, p.ID, ab.key)
 				}
 			}
-			for _, team := range []string{"WEBLAB", "GECEKODU", "SKYSEC", ""} {
+			for _, team := range []string{"WEBLAB", "GECEKODU", "SKYSEC", "YK", "UYELER", "BASKAN", "ADMIN", ""} {
 				can := scopeFor(c, team)
 				if team == "" {
 					can = c.NoOwnerTeam.Can

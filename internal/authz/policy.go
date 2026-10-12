@@ -88,10 +88,12 @@ type Resource struct {
 }
 
 type Policy struct {
-	// PrivilegedGroups are the Groups whose members, and their subgroups'
-	// members, are Privileged. RoleMode says whether a decision still reads
-	// them.
-	PrivilegedGroups []string
+	// PrivilegedRoots are the Group paths whose members, and their
+	// subgroups' members, are Privileged (AUTHZ_PRIVILEGED_ROOTS). The match
+	// is anchored at these paths: a Group named ADMIN, YK or DK elsewhere in
+	// the tree is not Privileged. RoleMode says whether a decision still
+	// reads them.
+	PrivilegedRoots []string
 	// RoleMode is where Privileged decisions come from: the Groups, the
 	// roles that stand for them (roles.go), or either. Empty is groups.
 	RoleMode         RoleMode
@@ -101,8 +103,8 @@ type Policy struct {
 
 func DefaultPolicy() Policy {
 	return Policy{
-		PrivilegedGroups: []string{"ADMIN", "YK", "DK"},
-		LeaderSubgroups:  []string{"LIDERLER", "KOORDINATORLER"},
+		PrivilegedRoots: DefaultPrivilegedRoots(),
+		LeaderSubgroups: []string{"LIDERLER", "KOORDINATORLER"},
 		EventPermissions: map[string]map[Action][]Level{
 			"_default": {
 				Create: {LevelLeader},
