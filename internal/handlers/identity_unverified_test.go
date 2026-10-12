@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
@@ -27,6 +28,12 @@ type unverifiedFixture struct {
 }
 
 func newUnverifiedFixture(t *testing.T) unverifiedFixture {
+	t.Helper()
+	return newUnverifiedFixtureAs(t, ykIdent())
+}
+
+// newUnverifiedFixtureAs is the fixture with the routes called as caller.
+func newUnverifiedFixtureAs(t *testing.T, caller authn.Identity) unverifiedFixture {
 	t.Helper()
 	f := unverifiedFixture{dir: identity.NewMemory(), audit: teamaudit.NewMemory()}
 	f.yk = identity.Group{ID: uuid.NewString(), Name: "YK", Path: "/UYELER/YK"}
@@ -55,7 +62,7 @@ func newUnverifiedFixture(t *testing.T) unverifiedFixture {
 	f.app = fiber.New()
 	f.app.Use(requestid.New())
 	f.app.Use(func(c fiber.Ctx) error {
-		c.Locals(authn.LocalsIdentity, ykIdent())
+		c.Locals(authn.LocalsIdentity, caller)
 		return c.Next()
 	})
 	f.app.Post("/v1/groups/:groupId/members", h.AddMember)
@@ -71,6 +78,28 @@ func (f unverifiedFixture) add(t *testing.T, group string, person uuid.UUID, ext
 	}
 	rows := f.audit.Rows()
 	return rows[len(rows)-1]
+}
+
+// The check answers only whoever may read the Group (review of #241, F3):
+// an ordinary member, or a caller with no subject, learns nothing of the
+// person and the Group, and nothing is written.
+func TestMemberCheckRefusesWhoMayNotReadTheGroup(t *testing.T) {
+	t.Parallel()
+	for _, caller := range []authn.Identity{
+		{ID: uuid.New(), Groups: []string{"/UYELER/ARGE/WEBLAB"}},
+		{ID: uuid.New()},
+	} {
+		f := newUnverifiedFixtureAs(t, caller)
+		for _, group := range []string{f.yk.ID, f.weblab.ID} {
+			resp, body := auditRequest(t, f.app, fiber.MethodGet, "/v1/groups/"+group+"/member-check/"+f.unlinked.String(), "")
+			if resp.StatusCode != fiber.StatusForbidden || strings.Contains(body, "ytuLinked") || strings.Contains(body, "warnings") {
+				t.Fatalf("caller %v group %s: %d %s", caller.Groups, group, resp.StatusCode, body)
+			}
+		}
+		if rows := f.audit.Rows(); len(rows) != 0 {
+			t.Fatalf("rows %+v", rows)
+		}
+	}
 }
 
 // grup-yonetimi 07: adding someone who is not YTÜ-linked to a Privileged
