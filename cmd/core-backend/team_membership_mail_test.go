@@ -38,7 +38,7 @@ func TestStartTeamMembershipMail(t *testing.T) {
 				fmt.Fprintf(&logs, format+"\n", a...)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
-			notifier, metrics, stopped := startTeamMembershipMail(ctx, teammail.NewMemoryQueue(), test.sky, identity.NewMemory(), user.NewMemoryStore(), logf)
+			notifier, metrics, stopped := startTeamMembershipMail(ctx, teammail.NewMemoryQueue(), test.sky, identity.NewMemory(), user.NewMemoryStore(), nil, logf)
 			cancel()
 			select {
 			case <-stopped:

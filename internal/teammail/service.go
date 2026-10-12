@@ -11,6 +11,7 @@ import (
 	_ "time/tzdata" // EffectiveAt is Istanbul's date whatever the image carries.
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 )
@@ -95,6 +96,9 @@ type Config struct {
 	Now func() time.Time
 	// Logger hears counts and failures, never a person; nil is log.Default.
 	Logger *log.Logger
+	// PrivilegedRoots are the Privileged roots (AUTHZ_PRIVILEGED_ROOTS), no
+	// team, nor anything under them; nil is authz.DefaultPrivilegedRoots.
+	PrivilegedRoots []string
 }
 
 // Service queues team membership changes (identity.MembershipNotifier) and
@@ -108,6 +112,7 @@ type Service struct {
 	logger   *log.Logger
 	location *time.Location
 	wake     chan struct{}
+	roots    []string
 
 	mu             sync.Mutex
 	enqueued       int64
@@ -144,23 +149,27 @@ func NewService(config Config) (*Service, error) {
 	if logger == nil {
 		logger = log.Default()
 	}
+	roots := config.PrivilegedRoots
+	if roots == nil {
+		roots = authz.DefaultPrivilegedRoots()
+	}
 	return &Service{
 		queue: config.Queue, people: config.People, groups: config.Groups, mail: config.Mail,
-		now: now, logger: logger, location: location, wake: make(chan struct{}, 1),
+		now: now, logger: logger, location: location, wake: make(chan struct{}, 1), roots: roots,
 		outcomes: map[string]int64{}, coalesced: map[Enqueued]int64{},
 	}, nil
 }
 
 // Notifies reports whether g is a team's Group (TeamOf).
 func (s *Service) Notifies(g identity.Group) bool {
-	_, ok := TeamOf(g.Path)
+	_, ok := TeamOf(g.Path, s.roots)
 	return ok
 }
 
 // MembershipChanged queues the mail of change. It never fails the write that
 // made it: a queue that refuses is counted and logged, without the person.
 func (s *Service) MembershipChanged(ctx context.Context, change identity.MembershipChange) {
-	if _, ok := TeamOf(change.Group.Path); !ok {
+	if _, ok := TeamOf(change.Group.Path, s.roots); !ok {
 		return
 	}
 	queued := Change{
@@ -281,7 +290,7 @@ const outcomeInterrupted = "interrupted"
 func (s *Service) deliver(parent context.Context, change Change) string {
 	ctx, cancel := context.WithTimeout(parent, sendTimeout)
 	defer cancel()
-	team, ok := TeamOf(change.GroupPath)
+	team, ok := TeamOf(change.GroupPath, s.roots)
 	if !ok {
 		return "skipped_" + string(SkipNotTeam)
 	}

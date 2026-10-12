@@ -14,7 +14,7 @@ import (
 // closes once its worker has stopped. Without SkyMail or with
 // SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY set empty it is off: a nil notifier,
 // so membership writes read nothing for it, and a closed channel.
-func startTeamMembershipMail(ctx context.Context, queue teammail.Queue, sky *mail.SkyMail, dir identity.Directory, accounts teammail.Accounts, logf func(string, ...any)) (identity.MembershipNotifier, interface{ Prometheus() string }, <-chan struct{}) {
+func startTeamMembershipMail(ctx context.Context, queue teammail.Queue, sky *mail.SkyMail, dir identity.Directory, accounts teammail.Accounts, privilegedRoots []string, logf func(string, ...any)) (identity.MembershipNotifier, interface{ Prometheus() string }, <-chan struct{}) {
 	off := make(chan struct{})
 	close(off)
 	switch {
@@ -30,6 +30,8 @@ func startTeamMembershipMail(ctx context.Context, queue teammail.Queue, sky *mai
 		People: teammail.DirectoryPeople{Directory: dir, Accounts: accounts},
 		Groups: dir,
 		Mail:   sky,
+		// No team sits under a Privileged root (AUTHZ_PRIVILEGED_ROOTS).
+		PrivilegedRoots: privilegedRoots,
 	})
 	if err != nil {
 		logf("team membership mail: OFF, %v", err)
