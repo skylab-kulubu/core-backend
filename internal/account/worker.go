@@ -43,9 +43,9 @@ type SkyPassWalletEraser interface {
 	EraseSubject(ctx context.Context, userID uuid.UUID) (int64, error)
 }
 
-// MailPreferenceEraser deletes every announcement preference of a person
-// (internal/mailpref).
-type MailPreferenceEraser interface {
+// CommunicationPreferenceEraser deletes every communication preference of a person
+// (internal/commpref).
+type CommunicationPreferenceEraser interface {
 	EraseSubject(ctx context.Context, userID uuid.UUID) (int64, error)
 }
 
@@ -75,9 +75,9 @@ type WorkerConfig struct {
 	// SkyPassWallet withdraws the person's Google Wallet passes in the
 	// erase_skypass_wallet step. Nil fails the step, as above.
 	SkyPassWallet SkyPassWalletEraser
-	// MailPreferences deletes the person's announcement preferences in the
-	// erase_mail_preferences step. Nil fails the step, as above.
-	MailPreferences MailPreferenceEraser
+	// CommunicationPreferences deletes the person's communication preferences in the
+	// erase_communication_preferences step. Nil fails the step, as above.
+	CommunicationPreferences CommunicationPreferenceEraser
 }
 
 type Worker struct {
@@ -205,7 +205,7 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 
 // coreSaga is the erasure order (ADR-0051, spec §4): block the identity, erase
 // the person's contact consents (ADR-0062), withdraw their SkyPass from
-// Google Wallet, delete their announcement preferences (ADR 0067), have
+// Google Wallet, delete their communication preferences (ADR 0067), have
 // every service erase the person, erase core and its guest data, then
 // media, and delete the identity last.
 //
@@ -236,11 +236,11 @@ func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaSte
 		// Core's own too: the person's choices of which News mail to get
 		// go before any service holds the saga. The account is disabled
 		// already, so the defaults that come back mail no one.
-		{name: user.DeletionStepEraseMailPreferences, run: func(ctx context.Context, id uuid.UUID) error {
-			if w.config.MailPreferences == nil {
-				return errors.New("mail preference eraser unavailable")
+		{name: user.DeletionStepEraseCommunicationPreferences, run: func(ctx context.Context, id uuid.UUID) error {
+			if w.config.CommunicationPreferences == nil {
+				return errors.New("communication preference eraser unavailable")
 			}
-			_, err := w.config.MailPreferences.EraseSubject(ctx, id)
+			_, err := w.config.CommunicationPreferences.EraseSubject(ctx, id)
 			return err
 		}},
 		{services: &w.services},

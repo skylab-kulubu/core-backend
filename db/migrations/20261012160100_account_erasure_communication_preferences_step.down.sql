@@ -4,8 +4,8 @@ LOCK TABLE account_deletion_steps IN ACCESS EXCLUSIVE MODE;
 
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM account_deletion_steps WHERE step = 'erase_mail_preferences') THEN
-        RAISE EXCEPTION 'erase_mail_preferences checkpoints are completion proof; ship a forward repair instead';
+    IF EXISTS (SELECT 1 FROM account_deletion_steps WHERE step = 'erase_communication_preferences') THEN
+        RAISE EXCEPTION 'erase_communication_preferences checkpoints are completion proof; ship a forward repair instead';
     END IF;
 END
 $$;

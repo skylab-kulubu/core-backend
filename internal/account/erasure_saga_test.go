@@ -20,13 +20,13 @@ import (
 )
 
 // The whole saga (spec §4): disable_identity → logout_sessions →
-// erase_contact_consents → erase_skypass_wallet → erase_mail_preferences →
+// erase_contact_consents → erase_skypass_wallet → erase_communication_preferences →
 // erase_skymail, erase_cms, erase_forms →
 // anonymize_core → erase_profile_media → erase_staged_uploads →
 // delete_identity.
 var sagaSteps = []user.DeletionStep{
 	user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions,
-	user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseMailPreferences,
+	user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseCommunicationPreferences,
 	user.DeletionStepEraseSkyMail, user.DeletionStepEraseCMS, user.DeletionStepEraseForms,
 	user.DeletionStepAnonymizeCore, user.DeletionStepEraseProfile, user.DeletionStepEraseUploads,
 	user.DeletionStepDeleteIdentity,
@@ -194,7 +194,7 @@ func (f *sagaFixture) sagaWith(services account.ServiceErasure) *account.Worker 
 	config.Services = services
 	config.ContactConsents = f.consents()
 	config.SkyPassWallet = sagaWallet{events: f.events}
-	config.MailPreferences = sagaMailPreferences{events: f.events}
+	config.CommunicationPreferences = sagaCommunicationPreferences{events: f.events}
 	return account.NewWorkerWithConfiguredWaits(sagaStore{erasureTestStore: f.store, events: f.events}, f.identity, config, sagaMedia{events: f.events})
 }
 
@@ -205,7 +205,7 @@ func (f *sagaFixture) sagaAsProduction(services account.ServiceErasure) *account
 	config.Services = services
 	config.ContactConsents = f.consents()
 	config.SkyPassWallet = sagaWallet{events: f.events}
-	config.MailPreferences = sagaMailPreferences{events: f.events}
+	config.CommunicationPreferences = sagaCommunicationPreferences{events: f.events}
 	return account.NewWorker(sagaStore{erasureTestStore: f.store, events: f.events}, f.identity, config, sagaMedia{events: f.events})
 }
 
@@ -260,7 +260,7 @@ func TestErasureSagaErasesTheServicesAfterLogoutAndBeforeCoreAndTheIdentity(t *t
 	}
 	want := []string{
 		"disable_identity", "logout_sessions", "read_addresses", "erase_contact_consents", "erase_skypass_wallet",
-		"erase_mail_preferences", "erase_skymail", "erase_cms", "erase_forms",
+		"erase_communication_preferences", "erase_skymail", "erase_cms", "erase_forms",
 		"anonymize_core", "erase_staged_uploads", "delete_identity",
 	}
 	if got := f.events.list(); !slices.Equal(got, want) {
@@ -365,7 +365,7 @@ func testErasureSagaWaitsForEveryService(t *testing.T, store erasureTestStore) {
 	if row := f.core(); row.AccountState != user.AccountDeletionPending || row.Email != sagaPersonal || row.SchoolEmail != sagaSchool {
 		t.Fatalf("core row changed before the services finished: %+v", row)
 	}
-	want := []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseMailPreferences, user.DeletionStepEraseSkyMail, user.DeletionStepEraseForms}
+	want := []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseCommunicationPreferences, user.DeletionStepEraseSkyMail, user.DeletionStepEraseForms}
 	if got := f.checkpoints(); !slices.Equal(got, want) {
 		t.Fatalf("checkpoints = %v, want %v", got, want)
 	}
@@ -421,10 +421,10 @@ func TestErasureSagaRefusesToPassAServiceItHasNoSenderFor(t *testing.T) {
 		}
 		// The contact consents are core's own and need no service: they are
 		// already gone. No service is passed over.
-		if got := f.events.list(); !slices.Equal(got, []string{"disable_identity", "logout_sessions", "read_addresses", "erase_contact_consents", "erase_skypass_wallet", "erase_mail_preferences"}) {
+		if got := f.events.list(); !slices.Equal(got, []string{"disable_identity", "logout_sessions", "read_addresses", "erase_contact_consents", "erase_skypass_wallet", "erase_communication_preferences"}) {
 			t.Fatalf("%s: events = %v", tc.name, got)
 		}
-		if got := f.checkpoints(); !slices.Equal(got, []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseMailPreferences}) {
+		if got := f.checkpoints(); !slices.Equal(got, []user.DeletionStep{user.DeletionStepDisableIdentity, user.DeletionStepLogoutSessions, user.DeletionStepEraseContactConsents, user.DeletionStepEraseSkyPassWallet, user.DeletionStepEraseCommunicationPreferences}) {
 			t.Fatalf("%s: checkpoints = %v", tc.name, got)
 		}
 		f.assertNoPersonalData(f.state().LastErrorCode)

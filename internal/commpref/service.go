@@ -1,4 +1,4 @@
-package mailpref
+package commpref
 
 import (
 	"context"
@@ -48,8 +48,8 @@ func (s *Service) Enabled() bool { return s != nil && s.config.Enabled }
 func (s *Service) Config() Config { return s.config }
 
 // UnsubscribeURL is Config.UnsubscribeURL.
-func (s *Service) UnsubscribeURL(person uuid.UUID, cats []Category) (string, error) {
-	return s.config.UnsubscribeURL(person, cats)
+func (s *Service) UnsubscribeURL(person uuid.UUID, ch Channel, cats []Category) (string, error) {
+	return s.config.UnsubscribeURL(person, ch, cats)
 }
 
 func (s *Service) tree(ctx context.Context) (*Tree, []identity.Group, error) {
@@ -67,16 +67,22 @@ type Cell struct {
 	// Enabled is the switch's value, the master switch not applied.
 	Enabled bool   `json:"enabled"`
 	Origin  Origin `json:"origin"`
-	// From is the team an inherited value comes from (Karar D5).
+	// From is the team the value comes from when it is not the switch's
+	// own: an explicit choice above it (Karar D5) or, for a default, the
+	// team above the person is in (Y1).
 	From string `json:"from,omitempty"`
-	// Effective is whether the mail goes: enabled and the master switch on.
+	// Effective is whether the message goes: enabled and the channel's
+	// master switch on.
 	Effective bool `json:"effective"`
 }
 
-// KindCells is a source's two switches (Karar D6).
+// ChannelCells is one category's switch on every channel ({"email": …}).
+type ChannelCells map[Channel]Cell
+
+// KindCells is a source's two categories (Karar D6).
 type KindCells struct {
-	Duyuru Cell `json:"duyuru"`
-	Haber  Cell `json:"haber"`
+	Duyuru ChannelCells `json:"duyuru"`
+	Haber  ChannelCells `json:"haber"`
 }
 
 // TeamRow is a team on the screen, with its sub-teams.
@@ -99,10 +105,14 @@ type TeamRef struct {
 	Path        string `json:"path"`
 }
 
-// Screen is the Account center's "İletişim tercihleri" model.
+// Screen is the Account center's "İletişim tercihleri" model. Every
+// switch is given per channel, so the screen can show categories times
+// channels; today e-mail is the only channel.
 type Screen struct {
-	// Master is the master switch ("all").
-	Master Cell `json:"master"`
+	// Channels are the channels of every switch below, in order.
+	Channels []Channel `json:"channels"`
+	// Master is each channel's master switch ("all").
+	Master ChannelCells `json:"master"`
 	// Club is club-wide mail.
 	Club KindCells `json:"club"`
 	// Teams are the person's teams, as trees from their top teams, every
@@ -140,26 +150,35 @@ func (s *Service) Mine(ctx context.Context, person uuid.UUID) (Screen, error) {
 	if err != nil {
 		return Screen{}, err
 	}
-	return screen(tree, tree.Membership(identity.GroupPaths(groups)), ExplicitOf(settings)), nil
+	return screen(tree, tree.Membership(identity.GroupPaths(groups)), settings), nil
 }
 
-func screen(tree *Tree, m Membership, e Explicit) Screen {
-	out := Screen{Teams: []TeamRow{}, Following: []TeamRow{}, Followable: []TeamRef{}}
-	out.Master = cell(e, tree.Resolve(e, m, Master()), Master())
-	out.Club = KindCells{
-		Duyuru: cell(e, tree.Resolve(e, m, Club(KindAnnouncement)), Club(KindAnnouncement)),
-		Haber:  cell(e, tree.Resolve(e, m, Club(KindNews)), Club(KindNews)),
+func screen(tree *Tree, m Membership, settings []Setting) Screen {
+	out := Screen{Channels: slices.Clone(Channels), Teams: []TeamRow{}, Following: []TeamRow{}, Followable: []TeamRef{}}
+	explicit := map[Channel]Explicit{}
+	for _, ch := range Channels {
+		explicit[ch] = ExplicitOf(settings, ch)
 	}
+	cells := func(c Category) ChannelCells {
+		out := ChannelCells{}
+		for _, ch := range Channels {
+			out[ch] = cell(explicit[ch], tree.Resolve(explicit[ch], m, c), c)
+		}
+		return out
+	}
+	kinds := func(source Category) KindCells {
+		duyuru, haber := source, source
+		duyuru.Kind, haber.Kind = KindAnnouncement, KindNews
+		return KindCells{Duyuru: cells(duyuru), Haber: cells(haber)}
+	}
+	out.Master = cells(Master())
+	out.Club = kinds(Category{Scope: ScopeClub})
 	var row func(id string) TeamRow
 	row = func(id string) TeamRow {
 		node := tree.teams[id]
-		duyuru, haber := Team(id, KindAnnouncement), Team(id, KindNews)
 		r := TeamRow{
 			GroupID: id, Code: node.Code, DisplayName: node.DisplayName, Path: node.Path, Member: m.Teams[id],
-			Kinds: KindCells{
-				Duyuru: cell(e, tree.Resolve(e, m, duyuru), duyuru),
-				Haber:  cell(e, tree.Resolve(e, m, haber), haber),
-			},
+			Kinds:    kinds(Category{Scope: ScopeTeam, GroupID: id}),
 			Children: []TeamRow{},
 		}
 		for _, child := range node.Children {
@@ -177,9 +196,11 @@ func screen(tree *Tree, m Membership, e Explicit) Screen {
 			out.Teams = append(out.Teams, row(root))
 		}
 	}
-	// Following: the topmost teams outside the own trees with a choice.
+	// Following: the topmost teams outside the own trees with a choice on
+	// any channel.
 	chosen := map[string]bool{}
-	for c := range e {
+	for _, setting := range settings {
+		c := setting.Category
 		if c.Scope != ScopeTeam {
 			continue
 		}
@@ -241,12 +262,17 @@ func (s *Service) Update(ctx context.Context, person uuid.UUID, changes []Change
 	if len(changes) == 0 || len(changes) > MaxChanges {
 		return Screen{}, ErrInvalid
 	}
-	seen := map[Category]bool{}
+	type key struct {
+		ch Channel
+		c  Category
+	}
+	seen := map[key]bool{}
 	for _, change := range changes {
-		if !change.Category.Valid() || seen[change.Category] {
+		k := key{change.Channel, change.Category}
+		if !change.Channel.valid() || !change.Category.Valid() || seen[k] {
 			return Screen{}, ErrInvalid
 		}
-		seen[change.Category] = true
+		seen[k] = true
 	}
 	tree, _, err := s.tree(ctx)
 	if err != nil {
@@ -276,7 +302,7 @@ func (s *Service) Update(ctx context.Context, person uuid.UUID, changes []Change
 	if err != nil {
 		return Screen{}, err
 	}
-	return screen(tree, m, ExplicitOf(settings)), nil
+	return screen(tree, m, settings), nil
 }
 
 // LinkCategory is one category a link names, with how the page shows it.
@@ -291,6 +317,7 @@ type LinkCategory struct {
 // Link is what an unsubscribe link names.
 type Link struct {
 	Person     uuid.UUID
+	Channel    Channel
 	Categories []LinkCategory
 }
 
@@ -307,7 +334,7 @@ func kindLabel(k Kind) string {
 // still works with a general name: the link turns off what it carries
 // whatever the names.
 func (s *Service) ReadLink(ctx context.Context, token string) (Link, error) {
-	person, cats, err := s.config.readToken(token)
+	person, ch, cats, err := s.config.readToken(token)
 	if err != nil {
 		return Link{}, err
 	}
@@ -317,7 +344,7 @@ func (s *Service) ReadLink(ctx context.Context, token string) (Link, error) {
 			tree = NewTree(groups, s.roots)
 		}
 	}
-	link := Link{Person: person}
+	link := Link{Person: person, Channel: ch}
 	for _, c := range cats {
 		source := "Kulüp geneli"
 		if c.Scope == ScopeTeam {
@@ -343,7 +370,8 @@ const (
 	// ReachSources turns off both kinds of every source the link names
 	// ("bu kaynaktan her şeyi kapat").
 	ReachSources Reach = "sources"
-	// ReachAll turns the master switch off ("tümünden çık").
+	// ReachAll turns the link channel's master switch off ("tümünden
+	// çık").
 	ReachAll Reach = "all"
 )
 
@@ -364,7 +392,7 @@ func ParseReach(raw string) (Reach, error) {
 // erased or erased is ErrSubjectInactive: nothing is written, and nothing
 // will be mailed to them either.
 func (s *Service) Unsubscribe(ctx context.Context, token string, reach Reach) (Link, error) {
-	person, cats, err := s.config.readToken(token)
+	person, ch, cats, err := s.config.readToken(token)
 	if err != nil {
 		return Link{}, err
 	}
@@ -372,7 +400,7 @@ func (s *Service) Unsubscribe(ctx context.Context, token string, reach Reach) (L
 	var changes []Change
 	switch reach {
 	case ReachAll:
-		changes = []Change{{Category: Master(), Enabled: &off}}
+		changes = []Change{{Channel: ch, Category: Master(), Enabled: &off}}
 	case ReachSources:
 		seen := map[Category]bool{}
 		for _, c := range cats {
@@ -381,13 +409,13 @@ func (s *Service) Unsubscribe(ctx context.Context, token string, reach Reach) (L
 				wide.Kind = k
 				if !seen[wide] {
 					seen[wide] = true
-					changes = append(changes, Change{Category: wide, Enabled: &off})
+					changes = append(changes, Change{Channel: ch, Category: wide, Enabled: &off})
 				}
 			}
 		}
 	case ReachCategories:
 		for _, c := range cats {
-			changes = append(changes, Change{Category: c, Enabled: &off})
+			changes = append(changes, Change{Channel: ch, Category: c, Enabled: &off})
 		}
 	default:
 		return Link{}, ErrInvalid
@@ -395,7 +423,7 @@ func (s *Service) Unsubscribe(ctx context.Context, token string, reach Reach) (L
 	if err := s.store.Apply(ctx, person, changes, SourceUnsubscribeLink, s.now().UTC()); err != nil {
 		return Link{}, err
 	}
-	link := Link{Person: person}
+	link := Link{Person: person, Channel: ch}
 	for _, c := range cats {
 		link.Categories = append(link.Categories, LinkCategory{Category: c})
 	}
@@ -403,7 +431,7 @@ func (s *Service) Unsubscribe(ctx context.Context, token string, reach Reach) (L
 }
 
 // EraseSubject deletes every preference of person: account erasure's
-// erase_mail_preferences step. It works whether preferences are on or off,
+// erase_communication_preferences step. It works whether preferences are on or off,
 // and a second call finds nothing.
 func (s *Service) EraseSubject(ctx context.Context, person uuid.UUID) (int64, error) {
 	return s.store.EraseSubject(ctx, person)
@@ -411,7 +439,7 @@ func (s *Service) EraseSubject(ctx context.Context, person uuid.UUID) (int64, er
 
 // errIncompleteTree is a Group list without the members' root: Keycloak
 // answered, but not the tree core knows, so nothing is deleted on it.
-var errIncompleteTree = errors.New("mail preferences: the Group list has no " + authz.MembersRoot + "; no deleted team removed")
+var errIncompleteTree = errors.New("communication preferences: the Group list has no " + authz.MembersRoot + "; no deleted team removed")
 
 // RemoveDeletedTeams deletes the rows of teams whose Group is gone from
 // Keycloak. A Group list without /UYELER deletes nothing.

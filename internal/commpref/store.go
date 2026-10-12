@@ -1,4 +1,4 @@
-package mailpref
+package commpref
 
 import (
 	"context"
@@ -30,7 +30,7 @@ type Store interface {
 	DeleteTeams(ctx context.Context, groupIDs []string) (int64, error)
 }
 
-// PostgresStore is the mail_preferences table.
+// PostgresStore is the communication_preferences table.
 type PostgresStore struct{ pool *pgxpool.Pool }
 
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore { return &PostgresStore{pool: pool} }
@@ -44,8 +44,8 @@ func nullable(s string) *string {
 
 func (s *PostgresStore) List(ctx context.Context, person uuid.UUID) ([]Setting, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT scope, coalesce(group_id, ''), coalesce(news_kind, ''), enabled, source, updated_at
-		FROM mail_preferences WHERE user_id = $1`, person)
+		SELECT channel, scope, coalesce(group_id, ''), coalesce(news_kind, ''), enabled, source, updated_at
+		FROM communication_preferences WHERE user_id = $1`, person)
 	if err != nil {
 		return nil, err
 	}
@@ -53,11 +53,11 @@ func (s *PostgresStore) List(ctx context.Context, person uuid.UUID) ([]Setting, 
 	var out []Setting
 	for rows.Next() {
 		var st Setting
-		var scope, kind, source string
-		if err := rows.Scan(&scope, &st.Category.GroupID, &kind, &st.Enabled, &source, &st.UpdatedAt); err != nil {
+		var channel, scope, kind, source string
+		if err := rows.Scan(&channel, &scope, &st.Category.GroupID, &kind, &st.Enabled, &source, &st.UpdatedAt); err != nil {
 			return nil, err
 		}
-		st.Category.Scope, st.Category.Kind, st.Source = Scope(scope), Kind(kind), Source(source)
+		st.Channel, st.Category.Scope, st.Category.Kind, st.Source = Channel(channel), Scope(scope), Kind(kind), Source(source)
 		out = append(out, st)
 	}
 	return out, rows.Err()
@@ -69,20 +69,20 @@ func (s *PostgresStore) Apply(ctx context.Context, person uuid.UUID, changes []C
 			c := change.Category
 			if change.Enabled == nil {
 				if _, err := tx.Exec(ctx, `
-					DELETE FROM mail_preferences
-					WHERE user_id = $1 AND scope = $2
-					  AND group_id IS NOT DISTINCT FROM $3 AND news_kind IS NOT DISTINCT FROM $4`,
-					person, string(c.Scope), nullable(c.GroupID), nullable(string(c.Kind))); err != nil {
+					DELETE FROM communication_preferences
+					WHERE user_id = $1 AND channel = $2 AND scope = $3
+					  AND group_id IS NOT DISTINCT FROM $4 AND news_kind IS NOT DISTINCT FROM $5`,
+					person, string(change.Channel), string(c.Scope), nullable(c.GroupID), nullable(string(c.Kind))); err != nil {
 					return err
 				}
 				continue
 			}
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO mail_preferences (user_id, scope, group_id, news_kind, enabled, source, updated_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7)
-				ON CONFLICT ON CONSTRAINT mail_preferences_key
+				INSERT INTO communication_preferences (user_id, channel, scope, group_id, news_kind, enabled, source, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+				ON CONFLICT ON CONSTRAINT communication_preferences_key
 				DO UPDATE SET enabled = EXCLUDED.enabled, source = EXCLUDED.source, updated_at = EXCLUDED.updated_at`,
-				person, string(c.Scope), nullable(c.GroupID), nullable(string(c.Kind)), *change.Enabled, string(source), now); err != nil {
+				person, string(change.Channel), string(c.Scope), nullable(c.GroupID), nullable(string(c.Kind)), *change.Enabled, string(source), now); err != nil {
 				return err
 			}
 		}
@@ -96,15 +96,15 @@ func (s *PostgresStore) Apply(ctx context.Context, person uuid.UUID, changes []C
 }
 
 func (s *PostgresStore) EraseSubject(ctx context.Context, person uuid.UUID) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM mail_preferences WHERE user_id = $1`, person)
+	tag, err := s.pool.Exec(ctx, `DELETE FROM communication_preferences WHERE user_id = $1`, person)
 	if err != nil {
-		return 0, fmt.Errorf("mail preferences: erase: %w", err)
+		return 0, fmt.Errorf("communication preferences: erase: %w", err)
 	}
 	return tag.RowsAffected(), nil
 }
 
 func (s *PostgresStore) TeamGroupIDs(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT DISTINCT group_id FROM mail_preferences WHERE group_id IS NOT NULL ORDER BY group_id`)
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT group_id FROM communication_preferences WHERE group_id IS NOT NULL ORDER BY group_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +115,7 @@ func (s *PostgresStore) DeleteTeams(ctx context.Context, groupIDs []string) (int
 	if len(groupIDs) == 0 {
 		return 0, nil
 	}
-	tag, err := s.pool.Exec(ctx, `DELETE FROM mail_preferences WHERE group_id = ANY($1)`, groupIDs)
+	tag, err := s.pool.Exec(ctx, `DELETE FROM communication_preferences WHERE group_id = ANY($1)`, groupIDs)
 	if err != nil {
 		return 0, err
 	}
@@ -126,12 +126,17 @@ func (s *PostgresStore) DeleteTeams(ctx context.Context, groupIDs []string) (int
 // marks the people the database would refuse.
 type MemoryStore struct {
 	mu       sync.Mutex
-	rows     map[uuid.UUID]map[Category]Setting
+	rows     map[uuid.UUID]map[memoryKey]Setting
 	inactive map[uuid.UUID]bool
 }
 
+type memoryKey struct {
+	channel  Channel
+	category Category
+}
+
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{rows: map[uuid.UUID]map[Category]Setting{}, inactive: map[uuid.UUID]bool{}}
+	return &MemoryStore{rows: map[uuid.UUID]map[memoryKey]Setting{}, inactive: map[uuid.UUID]bool{}}
 }
 
 // MarkInactive makes writes for person fail as for a person being erased.
@@ -163,15 +168,16 @@ func (m *MemoryStore) Apply(_ context.Context, person uuid.UUID, changes []Chang
 	}
 	rows := m.rows[person]
 	if rows == nil {
-		rows = map[Category]Setting{}
+		rows = map[memoryKey]Setting{}
 		m.rows[person] = rows
 	}
 	for _, c := range changes {
+		key := memoryKey{c.Channel, c.Category}
 		if c.Enabled == nil {
-			delete(rows, c.Category)
+			delete(rows, key)
 			continue
 		}
-		rows[c.Category] = Setting{Category: c.Category, Enabled: *c.Enabled, Source: source, UpdatedAt: now}
+		rows[key] = Setting{Channel: c.Channel, Category: c.Category, Enabled: *c.Enabled, Source: source, UpdatedAt: now}
 	}
 	return nil
 }
@@ -189,9 +195,9 @@ func (m *MemoryStore) TeamGroupIDs(context.Context) ([]string, error) {
 	defer m.mu.Unlock()
 	var out []string
 	for _, rows := range m.rows {
-		for c := range rows {
-			if c.GroupID != "" && !slices.Contains(out, c.GroupID) {
-				out = append(out, c.GroupID)
+		for k := range rows {
+			if id := k.category.GroupID; id != "" && !slices.Contains(out, id) {
+				out = append(out, id)
 			}
 		}
 	}
@@ -204,9 +210,9 @@ func (m *MemoryStore) DeleteTeams(_ context.Context, groupIDs []string) (int64, 
 	defer m.mu.Unlock()
 	var n int64
 	for _, rows := range m.rows {
-		for c := range rows {
-			if slices.Contains(groupIDs, c.GroupID) && c.GroupID != "" {
-				delete(rows, c)
+		for k := range rows {
+			if id := k.category.GroupID; id != "" && slices.Contains(groupIDs, id) {
+				delete(rows, k)
 				n++
 			}
 		}

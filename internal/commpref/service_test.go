@@ -1,4 +1,4 @@
-package mailpref
+package commpref
 
 import (
 	"context"
@@ -50,8 +50,8 @@ func (f *fixture) update(changes ...Change) (Screen, error) {
 	return f.svc.Update(context.Background(), f.person, changes)
 }
 
-func set(c Category, v bool) Change { return Change{Category: c, Enabled: &v} }
-func forget(c Category) Change      { return Change{Category: c} }
+func set(c Category, v bool) Change { return Change{Channel: ChannelEmail, Category: c, Enabled: &v} }
+func forget(c Category) Change      { return Change{Channel: ChannelEmail, Category: c} }
 
 func ids(rows []TeamRow) []string {
 	var out []string
@@ -75,12 +75,13 @@ func find(rows []TeamRow, id string) (TeamRow, bool) {
 }
 
 // A Member's screen by default: master and club on, their team tree with
-// every sub-team (own ones on, the others off), the public teams outside it
-// to follow, and no hidden or Privileged team anywhere.
+// every sub-team, all on (a sub-team they are not in from the team above,
+// Y1), the public teams outside it to follow, and no hidden or Privileged
+// team anywhere. Every switch is given per channel.
 func TestScreenDefaults(t *testing.T) {
 	f := newFixture(t)
 	s := f.mine()
-	if !s.Master.Effective || s.Master.Explicit != nil || !s.Club.Duyuru.Effective || !s.Club.Haber.Effective {
+	if !s.Master[ChannelEmail].Effective || s.Master[ChannelEmail].Explicit != nil || !s.Club.Duyuru[ChannelEmail].Effective || !s.Club.Haber[ChannelEmail].Effective {
 		t.Fatalf("master/club = %+v %+v", s.Master, s.Club)
 	}
 	if got := ids(s.Teams); !slices.Equal(got, []string{"g-weblab", "g-back", "g-front"}) {
@@ -89,9 +90,11 @@ func TestScreenDefaults(t *testing.T) {
 	weblab, _ := find(s.Teams, "g-weblab")
 	front, _ := find(s.Teams, "g-front")
 	back, _ := find(s.Teams, "g-back")
-	if !weblab.Member || !weblab.Kinds.Duyuru.Effective || weblab.DisplayName != "Web Geliştirme" ||
-		!front.Member || !front.Kinds.Haber.Effective ||
-		back.Member || back.Kinds.Duyuru.Effective || back.Kinds.Duyuru.Origin != OriginDefault {
+	if !weblab.Member || !weblab.Kinds.Duyuru[ChannelEmail].Effective || weblab.DisplayName != "Web Geliştirme" ||
+		!front.Member || !front.Kinds.Haber[ChannelEmail].Effective ||
+		back.Member || !back.Kinds.Duyuru[ChannelEmail].Effective || back.Kinds.Duyuru[ChannelEmail].Origin != OriginDefault ||
+		back.Kinds.Duyuru[ChannelEmail].From != "g-weblab" || len(back.Kinds.Duyuru) != 1 || len(s.Master) != 1 ||
+		len(s.Channels) != 1 || s.Channels[0] != ChannelEmail {
 		t.Fatalf("weblab=%+v front=%+v back=%+v", weblab, front, back)
 	}
 	if len(s.Following) != 0 {
@@ -119,12 +122,12 @@ func TestFollowAndInheritance(t *testing.T) {
 		t.Fatalf("following=%v followable=%v", got, s.Followable)
 	}
 	drone, _ := find(s.Following, "g-drone")
-	if !drone.Kinds.Duyuru.Effective || drone.Kinds.Duyuru.Origin != OriginInherited || drone.Kinds.Duyuru.From != "g-airlab" || drone.Kinds.Haber.Effective {
+	if !drone.Kinds.Duyuru[ChannelEmail].Effective || drone.Kinds.Duyuru[ChannelEmail].Origin != OriginInherited || drone.Kinds.Duyuru[ChannelEmail].From != "g-airlab" || drone.Kinds.Haber[ChannelEmail].Effective {
 		t.Fatalf("drone = %+v", drone.Kinds)
 	}
 	back, _ := find(s.Teams, "g-back")
 	front, _ := find(s.Teams, "g-front")
-	if !back.Kinds.Haber.Effective || back.Kinds.Haber.From != "g-weblab" || front.Kinds.Haber.Effective || front.Kinds.Haber.Explicit == nil || *front.Kinds.Haber.Explicit {
+	if !back.Kinds.Haber[ChannelEmail].Effective || back.Kinds.Haber[ChannelEmail].From != "g-weblab" || front.Kinds.Haber[ChannelEmail].Effective || front.Kinds.Haber[ChannelEmail].Explicit == nil || *front.Kinds.Haber[ChannelEmail].Explicit {
 		t.Fatalf("back=%+v front=%+v", back.Kinds, front.Kinds)
 	}
 	s, err = f.update(forget(Team("g-airlab", KindAnnouncement)))
@@ -189,8 +192,8 @@ func TestMasterSwitchKeepsTheSettings(t *testing.T) {
 	}
 	airlab, _ := find(s.Following, "g-airlab")
 	weblab, _ := find(s.Teams, "g-weblab")
-	if s.Master.Effective || s.Club.Haber.Effective || !s.Club.Haber.Enabled || s.Club.Duyuru.Enabled ||
-		airlab.Kinds.Haber.Effective || !airlab.Kinds.Haber.Enabled || weblab.Kinds.Duyuru.Effective || !weblab.Kinds.Duyuru.Enabled {
+	if s.Master[ChannelEmail].Effective || s.Club.Haber[ChannelEmail].Effective || !s.Club.Haber[ChannelEmail].Enabled || s.Club.Duyuru[ChannelEmail].Enabled ||
+		airlab.Kinds.Haber[ChannelEmail].Effective || !airlab.Kinds.Haber[ChannelEmail].Enabled || weblab.Kinds.Duyuru[ChannelEmail].Effective || !weblab.Kinds.Duyuru[ChannelEmail].Enabled {
 		t.Fatalf("master off: %+v %+v %+v %+v", s.Master, s.Club, airlab.Kinds, weblab.Kinds)
 	}
 	s, err = f.update(set(Master(), true))
@@ -198,14 +201,14 @@ func TestMasterSwitchKeepsTheSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	airlab, _ = find(s.Following, "g-airlab")
-	if !s.Club.Haber.Effective || s.Club.Duyuru.Effective || !airlab.Kinds.Haber.Effective {
+	if !s.Club.Haber[ChannelEmail].Effective || s.Club.Duyuru[ChannelEmail].Effective || !airlab.Kinds.Haber[ChannelEmail].Effective {
 		t.Fatalf("master on: %+v %+v", s.Club, airlab.Kinds)
 	}
 }
 
 func token(t *testing.T, svc *Service, person uuid.UUID, cats ...Category) string {
 	t.Helper()
-	link, err := svc.UnsubscribeURL(person, cats)
+	link, err := svc.UnsubscribeURL(person, ChannelEmail, cats)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +235,7 @@ func TestUnsubscribeLink(t *testing.T) {
 		if _, err := f.svc.Unsubscribe(ctx, tok, ReachCategories); err != nil {
 			t.Fatal(err)
 		}
-		e := ExplicitOf(must(f.store.List(ctx, f.person)))
+		e := ExplicitOf(must(f.store.List(ctx, f.person)), ChannelEmail)
 		if len(e) != 2 || e[Team("g-weblab", KindAnnouncement)] || e[Team("g-airlab", KindAnnouncement)] {
 			t.Fatalf("explicit = %v", e)
 		}
@@ -240,7 +243,7 @@ func TestUnsubscribeLink(t *testing.T) {
 	s := f.mine()
 	weblab, _ := find(s.Teams, "g-weblab")
 	back, _ := find(s.Teams, "g-back")
-	if weblab.Kinds.Duyuru.Effective || !weblab.Kinds.Haber.Effective || back.Kinds.Duyuru.Effective || !s.Club.Duyuru.Effective {
+	if weblab.Kinds.Duyuru[ChannelEmail].Effective || !weblab.Kinds.Haber[ChannelEmail].Effective || back.Kinds.Duyuru[ChannelEmail].Effective || !s.Club.Duyuru[ChannelEmail].Effective {
 		t.Fatalf("after one click: %+v %+v %+v", weblab.Kinds, back.Kinds, s.Club)
 	}
 	rows := must(f.store.List(ctx, f.person))
@@ -251,14 +254,14 @@ func TestUnsubscribeLink(t *testing.T) {
 	if _, err := f.svc.Unsubscribe(ctx, tok, ReachSources); err != nil {
 		t.Fatal(err)
 	}
-	e := ExplicitOf(must(f.store.List(ctx, f.person)))
+	e := ExplicitOf(must(f.store.List(ctx, f.person)), ChannelEmail)
 	if len(e) != 4 || e[Team("g-weblab", KindNews)] || e[Team("g-airlab", KindNews)] {
 		t.Fatalf("sources = %v", e)
 	}
 	if _, err := f.svc.Unsubscribe(ctx, tok, ReachAll); err != nil {
 		t.Fatal(err)
 	}
-	if s := f.mine(); s.Master.Effective || s.Club.Duyuru.Effective {
+	if s := f.mine(); s.Master[ChannelEmail].Effective || s.Club.Duyuru[ChannelEmail].Effective {
 		t.Fatalf("all: %+v", s.Master)
 	}
 
@@ -324,7 +327,7 @@ func TestDisabledServiceRefusesButErases(t *testing.T) {
 	if _, err := off.Unsubscribe(ctx, tok, ReachCategories); !errors.Is(err, ErrDisabled) {
 		t.Fatal(err)
 	}
-	if _, err := off.UnsubscribeURL(f.person, []Category{Club(KindNews)}); !errors.Is(err, ErrDisabled) {
+	if _, err := off.UnsubscribeURL(f.person, ChannelEmail, []Category{Club(KindNews)}); !errors.Is(err, ErrDisabled) {
 		t.Fatal(err)
 	}
 	if n, err := off.EraseSubject(ctx, f.person); err != nil || n != 1 {
@@ -361,7 +364,7 @@ func TestRemoveDeletedTeams(t *testing.T) {
 	if n, err := f.svc.RemoveDeletedTeams(ctx); err != nil || n != 2 {
 		t.Fatalf("removed %d %v", n, err)
 	}
-	if e := ExplicitOf(must(f.store.List(ctx, other))); len(e) != 2 || !e[Team("g-airlab", KindNews)] {
+	if e := ExplicitOf(must(f.store.List(ctx, other)), ChannelEmail); len(e) != 2 || !e[Team("g-airlab", KindNews)] {
 		t.Fatalf("other = %v", e)
 	}
 	if rows := must(f.store.List(ctx, f.person)); len(rows) != 0 {

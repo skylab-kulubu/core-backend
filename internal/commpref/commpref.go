@@ -1,10 +1,12 @@
-// Package mailpref keeps the Announcement preference (Duyuru tercihi, ADR
-// 0067): which News mail (duyuru, haber) a person wants, per source
-// (club-wide or one team), with one master switch, and the signed one-click
-// link of every such mail that turns its categories off. Only explicit
-// choices are stored; everything else is computed from the current Keycloak
-// team tree. See docs/mail-preferences.md.
-package mailpref
+// Package commpref keeps the communication preferences: for each channel
+// (e-mail today; the in-app inbox, push and SMS later), which News
+// (duyuru, haber) a person wants, per source (club-wide or one team), with
+// one master switch per channel (the Duyuru tercihi of ADR 0067), and the
+// signed one-click link of every such mail that turns its categories off.
+// Only explicit choices are stored; everything else is computed from the
+// current Keycloak team tree. Transactional messages never read them. See
+// docs/communication-preferences.md.
+package commpref
 
 import (
 	"crypto/hmac"
@@ -14,6 +16,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -112,6 +115,30 @@ func ParseCategory(raw string) (Category, error) {
 	return c, nil
 }
 
+// Channel is how a message reaches a person. A preference is kept per
+// channel, so a person may keep a category on one channel and turn it off
+// on another.
+type Channel string
+
+const (
+	ChannelEmail Channel = "email"
+)
+
+// Channels are the channels core keeps preferences for, in the order
+// screens show them. A new one (inbox, push, sms) is added here and to the
+// table's channel CHECK together.
+var Channels = []Channel{ChannelEmail}
+
+func (c Channel) valid() bool { return slices.Contains(Channels, c) }
+
+// ParseChannel reads a channel's name.
+func ParseChannel(raw string) (Channel, error) {
+	if c := Channel(raw); c.valid() {
+		return c, nil
+	}
+	return "", ErrInvalid
+}
+
 // Source is where an explicit choice was made.
 type Source string
 
@@ -123,6 +150,7 @@ const (
 
 // Setting is one explicit choice: a row.
 type Setting struct {
+	Channel   Channel
 	Category  Category
 	Enabled   bool
 	Source    Source
@@ -133,24 +161,25 @@ type Setting struct {
 // explicit choice: the category goes back to what it inherits or its
 // default (a team no longer followed).
 type Change struct {
+	Channel  Channel
 	Category Category
 	Enabled  *bool
 }
 
 var (
 	// ErrDisabled is any preference route while KeyEnv is unset.
-	ErrDisabled = errors.New("mail preference: off")
+	ErrDisabled = errors.New("communication preference: off")
 	// ErrInvalid is a request core cannot read.
-	ErrInvalid = errors.New("mail preference: invalid")
+	ErrInvalid = errors.New("communication preference: invalid")
 	// ErrUnknownTeam is a team that does not exist or that the person may
 	// not follow (a hidden team outside their own teams).
-	ErrUnknownTeam = errors.New("mail preference: unknown team")
+	ErrUnknownTeam = errors.New("communication preference: unknown team")
 	// ErrLink is a link token that does not read.
-	ErrLink = errors.New("mail preference: invalid link")
+	ErrLink = errors.New("communication preference: invalid link")
 	// ErrSubjectInactive is a write for a person being erased or erased.
-	ErrSubjectInactive = errors.New("mail preference: account subject is not active")
+	ErrSubjectInactive = errors.New("communication preference: account subject is not active")
 	// ErrTeamsUnavailable is Keycloak not answering the team tree.
-	ErrTeamsUnavailable = errors.New("mail preference: teams unavailable")
+	ErrTeamsUnavailable = errors.New("communication preference: teams unavailable")
 )
 
 // KeyEnv holds the link key: 32 random bytes, unpadded base64url (an OpenBao
@@ -159,17 +188,17 @@ var (
 // off in production until the retention sweep runs, and a preference link
 // must not depend on that. Do not rotate it: every link already mailed
 // stops working.
-const KeyEnv = "MAIL_PREFERENCE_KEY"
+const KeyEnv = "COMMUNICATION_PREFERENCE_KEY"
 
 // AccountCenterURLEnv is the Account center page the unsubscribe page links
 // to; DefaultAccountCenterURL when unset.
 const (
-	AccountCenterURLEnv     = "MAIL_PREFERENCE_ACCOUNT_CENTER_URL"
+	AccountCenterURLEnv     = "COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL"
 	DefaultAccountCenterURL = "https://my.yildizskylab.com"
 )
 
 // linkPurpose is the derivation purpose of the link MAC key.
-const linkPurpose = "mail-preference unsubscribe link v1"
+const linkPurpose = "communication-preference unsubscribe link v1"
 
 // Config is the preference settings.
 type Config struct {

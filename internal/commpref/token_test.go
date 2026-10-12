@@ -1,4 +1,4 @@
-package mailpref
+package commpref
 
 import (
 	"encoding/base64"
@@ -21,7 +21,7 @@ func TestUnsubscribeTokenCarriesThePersonAndTheCategories(t *testing.T) {
 	config := TestConfig(testKey(), "https://api.example.test/")
 	person := uuid.New()
 	cats := []Category{Team("2b0f8a4e-0f4c-4a43-9b0b-1d1e2f3a4b5c", KindAnnouncement), Club(KindNews), Team("g-weblab", KindAnnouncement), Club(KindNews)}
-	link, err := config.UnsubscribeURL(person, cats)
+	link, err := config.UnsubscribeURL(person, ChannelEmail, cats)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,8 +32,8 @@ func TestUnsubscribeTokenCarriesThePersonAndTheCategories(t *testing.T) {
 	if strings.Contains(link, person.String()) || strings.Contains(link, "weblab") {
 		t.Fatalf("the link shows what it carries in clear: %q", link)
 	}
-	id, got, err := config.readToken(parsed.Query().Get("t"))
-	if err != nil || id != person {
+	id, ch, got, err := config.readToken(parsed.Query().Get("t"))
+	if err != nil || id != person || ch != ChannelEmail {
 		t.Fatalf("read: %v %v", id, err)
 	}
 	want := []Category{Club(KindNews), Team("2b0f8a4e-0f4c-4a43-9b0b-1d1e2f3a4b5c", KindAnnouncement), Team("g-weblab", KindAnnouncement)}
@@ -50,7 +50,7 @@ func TestUnsubscribeTokenCarriesThePersonAndTheCategories(t *testing.T) {
 func TestUnsubscribeTokenRefusesForgeryAndOtherKeys(t *testing.T) {
 	config := TestConfig(testKey(), "https://api.example.test")
 	person := uuid.New()
-	link, err := config.UnsubscribeURL(person, []Category{Club(KindAnnouncement)})
+	link, err := config.UnsubscribeURL(person, ChannelEmail, []Category{Club(KindAnnouncement)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,17 +63,17 @@ func TestUnsubscribeTokenRefusesForgeryAndOtherKeys(t *testing.T) {
 	for i := range raw {
 		changed := append([]byte(nil), raw...)
 		changed[i] ^= 0x01
-		if _, _, err := config.readToken(base64.RawURLEncoding.EncodeToString(changed)); err == nil {
+		if _, _, _, err := config.readToken(base64.RawURLEncoding.EncodeToString(changed)); err == nil {
 			t.Fatalf("byte %d changed and the token still reads", i)
 		}
 	}
 	other := testKey()
 	other[0] ^= 0xff
-	if _, _, err := TestConfig(other, "https://api.example.test").readToken(token); err == nil {
+	if _, _, _, err := TestConfig(other, "https://api.example.test").readToken(token); err == nil {
 		t.Fatal("a token of another key reads")
 	}
 	for _, bad := range []string{"", "x", token + "A", token[:len(token)-2], strings.Repeat("A", 4000)} {
-		if _, _, err := config.readToken(bad); err == nil {
+		if _, _, _, err := config.readToken(bad); err == nil {
 			t.Fatalf("%q reads", bad)
 		}
 	}
@@ -81,23 +81,26 @@ func TestUnsubscribeTokenRefusesForgeryAndOtherKeys(t *testing.T) {
 
 func TestUnsubscribeURLRefusesWhatALinkCannotCarry(t *testing.T) {
 	config := TestConfig(testKey(), "https://api.example.test")
-	if _, err := config.UnsubscribeURL(uuid.New(), nil); err == nil {
+	if _, err := config.UnsubscribeURL(uuid.New(), ChannelEmail, nil); err == nil {
 		t.Fatal("no category")
 	}
-	if _, err := config.UnsubscribeURL(uuid.New(), []Category{Master()}); err == nil {
+	if _, err := config.UnsubscribeURL(uuid.New(), ChannelEmail, []Category{Master()}); err == nil {
 		t.Fatal("the master switch is no mail's category")
 	}
-	if _, err := config.UnsubscribeURL(uuid.Nil, []Category{Club(KindNews)}); err == nil {
+	if _, err := config.UnsubscribeURL(uuid.Nil, ChannelEmail, []Category{Club(KindNews)}); err == nil {
 		t.Fatal("no person")
+	}
+	if _, err := config.UnsubscribeURL(uuid.New(), Channel("push"), []Category{Club(KindNews)}); err == nil {
+		t.Fatal("a channel core does not keep")
 	}
 	many := make([]Category, 0, MaxLinkCategories+1)
 	for i := 0; i <= MaxLinkCategories; i++ {
 		many = append(many, Team(uuid.NewString(), KindNews))
 	}
-	if _, err := config.UnsubscribeURL(uuid.New(), many); err == nil {
+	if _, err := config.UnsubscribeURL(uuid.New(), ChannelEmail, many); err == nil {
 		t.Fatal("too many categories")
 	}
-	if _, err := (Config{}).UnsubscribeURL(uuid.New(), []Category{Club(KindNews)}); err == nil {
+	if _, err := (Config{}).UnsubscribeURL(uuid.New(), ChannelEmail, []Category{Club(KindNews)}); err == nil {
 		t.Fatal("disabled config signs")
 	}
 }

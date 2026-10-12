@@ -1,4 +1,4 @@
-package mailpref
+package commpref
 
 import (
 	"slices"
@@ -160,14 +160,16 @@ func (t *Tree) Membership(groupPaths []string) Membership {
 	return m
 }
 
-// Explicit is a person's explicit choices.
+// Explicit is a person's explicit choices on one channel.
 type Explicit map[Category]bool
 
-// ExplicitOf indexes settings.
-func ExplicitOf(settings []Setting) Explicit {
+// ExplicitOf indexes the settings of channel ch.
+func ExplicitOf(settings []Setting, ch Channel) Explicit {
 	out := Explicit{}
 	for _, s := range settings {
-		out[s.Category] = s.Enabled
+		if s.Channel == ch {
+			out[s.Category] = s.Enabled
+		}
 	}
 	return out
 }
@@ -180,7 +182,8 @@ const (
 	OriginExplicit Origin = "explicit"
 	// OriginInherited is the person's choice on a team above (Karar D5).
 	OriginInherited Origin = "inherited"
-	// OriginDefault is the default: club and own teams on, others off.
+	// OriginDefault is the default: club and own teams (with every team
+	// below them) on, others off.
 	OriginDefault Origin = "default"
 )
 
@@ -190,7 +193,9 @@ type Value struct {
 	// what the screen shows, greyed out while the master switch is off.
 	Enabled bool
 	Origin  Origin
-	// From is the team the inherited value comes from.
+	// From is the team the value comes from when it is not the category's
+	// own: the team above whose explicit choice it inherits, or, for a
+	// default, the team above the person is in.
 	From string
 	// Effective is whether the mail goes: Enabled and the master switch
 	// on.
@@ -198,13 +203,15 @@ type Value struct {
 }
 
 // Resolve is the value of category c for a person with explicit choices e
-// and membership m:
+// (of one channel) and membership m:
 //
 //  1. the master switch off turns everything off (the choices stay);
 //  2. else, for a team, the most specific explicit choice of the kind from
 //     the team up through the teams above it wins;
-//  3. else the default: club-wide on for a Member, a team on when the
-//     person is in it (or in a team below it), off otherwise.
+//  3. else the default: club-wide on for a Member; a team on when the
+//     person is in it, in a team below it, or in a team above it (Y1: a
+//     team's subscriber gets its sub-teams' mail too, and may turn a
+//     sub-team off on its own); off otherwise.
 //
 // A team that is no longer in the tree is off.
 func (t *Tree) Resolve(e Explicit, m Membership, c Category) Value {
@@ -242,8 +249,18 @@ func (t *Tree) Resolve(e Explicit, m Membership, c Category) Value {
 				break
 			}
 		}
-		if !decided && len(chain) > 0 {
-			v.Enabled = m.Teams[c.GroupID]
+		if !decided {
+			// The nearest team of the chain the person is in: the team
+			// itself, or one above it.
+			for i, id := range chain {
+				if m.Teams[id] {
+					v.Enabled = true
+					if i > 0 {
+						v.From = id
+					}
+					break
+				}
+			}
 		}
 	}
 	v.Effective = master && v.Enabled

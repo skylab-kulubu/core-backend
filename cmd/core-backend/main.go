@@ -25,6 +25,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clamd"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
+	"github.com/skylab-kulubu/core-backend/internal/commpref"
 	"github.com/skylab-kulubu/core-backend/internal/competition"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
@@ -40,7 +41,6 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
-	"github.com/skylab-kulubu/core-backend/internal/mailpref"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
 	"github.com/skylab-kulubu/core-backend/internal/mediaframe"
@@ -581,27 +581,27 @@ func main() {
 		log.Printf("contact consents: off (%s is not set); none is recorded", consent.KeyEnv)
 	}
 
-	// Announcement preferences (ADR 0067, docs/mail-preferences.md).
-	// Without MAIL_PREFERENCE_KEY their routes answer 503; the erasure step
+	// Communication preferences (ADR 0067, docs/communication-preferences.md).
+	// Without COMMUNICATION_PREFERENCE_KEY their routes answer 503; the erasure step
 	// still deletes a person's rows, and the deleted teams' rows are still
 	// removed once a day.
-	mailPreferenceConfig, err := mailpref.ConfigFromEnv(os.Getenv)
+	communicationPreferenceConfig, err := commpref.ConfigFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
-	mailPreferences := mailpref.NewService(mailPreferenceConfig, mailpref.NewPostgresStore(pool), dir, privilegedRoots)
-	if mailPreferenceConfig.Enabled {
-		log.Printf("mail preferences: on (links at %s)", mailPreferenceConfig.LinkOrigin)
+	communicationPreferences := commpref.NewService(communicationPreferenceConfig, commpref.NewPostgresStore(pool), dir, privilegedRoots)
+	if communicationPreferenceConfig.Enabled {
+		log.Printf("communication preferences: on (links at %s)", communicationPreferenceConfig.LinkOrigin)
 	} else {
-		log.Printf("mail preferences: off (%s is not set)", mailpref.KeyEnv)
+		log.Printf("communication preferences: off (%s is not set)", commpref.KeyEnv)
 	}
 	if keycloakConfigured {
-		worker("mail preference deleted-team cleanup", mailpref.MaintainDeletedTeams(workers, mailPreferences, mailpref.CleanupInterval, func(removed int64, err error) {
+		worker("communication preference deleted-team cleanup", commpref.MaintainDeletedTeams(workers, communicationPreferences, commpref.CleanupInterval, func(removed int64, err error) {
 			if err != nil {
-				log.Printf("mail preferences: deleted-team cleanup: %v", err)
+				log.Printf("communication preferences: deleted-team cleanup: %v", err)
 				return
 			}
-			log.Printf("mail preferences: removed %d rows of deleted teams", removed)
+			log.Printf("communication preferences: removed %d rows of deleted teams", removed)
 		}))
 	}
 
@@ -665,16 +665,16 @@ func main() {
 		worker("account erasure worker", account.Maintain(
 			workers,
 			account.NewWorker(users, accountIdentity, account.WorkerConfig{
-				Lease:                5 * time.Minute,
-				RetryDelay:           30 * time.Second,
-				MaxAttempts:          8,
-				StepTimeout:          20 * time.Second,
-				DeferredRetryHorizon: uploadStagingConfig.Grace + 24*time.Hour,
-				AccessBlocker:        gate,
-				Services:             serviceErasure,
-				ContactConsents:      consents,
-				SkyPassWallet:        wallet,
-				MailPreferences:      mailPreferences,
+				Lease:                    5 * time.Minute,
+				RetryDelay:               30 * time.Second,
+				MaxAttempts:              8,
+				StepTimeout:              20 * time.Second,
+				DeferredRetryHorizon:     uploadStagingConfig.Grace + 24*time.Hour,
+				AccessBlocker:            gate,
+				Services:                 serviceErasure,
+				ContactConsents:          consents,
+				SkyPassWallet:            wallet,
+				CommunicationPreferences: communicationPreferences,
 			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
 			2*time.Second,
 			func(err error) { log.Printf("account erasure worker: %v", err) },
@@ -831,23 +831,23 @@ func main() {
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},
-		TrustedProxies:          trustedProxies,
-		MediaUploadLimiter:      media.NewUploadLimiter(uploadLimits, time.Now),
-		ServiceClients:          serviceClients,
-		GroupOverage:            overageGroups,
-		GuestApplyMetrics:       handlers.NewGuestApplyMetrics(),
-		Authz:                   az,
-		EditableSites:           editableSites,
-		AuthzRoleMetrics:        authzRoleMetrics,
-		GuestCheckInMetrics:     doorQR,
-		GuestApplyPublicIPLimit: guestApplyIPLimit,
-		Dashboard:               dashboardSvc,
-		GithubActivity:          githubActivity,
-		Consents:                consents,
-		MailPreferences:         mailPreferences,
-		Readiness:               readiness,
-		MediaDecodeMetrics:      decodeBudget,
-		MemoryMetrics:           memory,
+		TrustedProxies:           trustedProxies,
+		MediaUploadLimiter:       media.NewUploadLimiter(uploadLimits, time.Now),
+		ServiceClients:           serviceClients,
+		GroupOverage:             overageGroups,
+		GuestApplyMetrics:        handlers.NewGuestApplyMetrics(),
+		Authz:                    az,
+		EditableSites:            editableSites,
+		AuthzRoleMetrics:         authzRoleMetrics,
+		GuestCheckInMetrics:      doorQR,
+		GuestApplyPublicIPLimit:  guestApplyIPLimit,
+		Dashboard:                dashboardSvc,
+		GithubActivity:           githubActivity,
+		Consents:                 consents,
+		CommunicationPreferences: communicationPreferences,
+		Readiness:                readiness,
+		MediaDecodeMetrics:       decodeBudget,
+		MemoryMetrics:            memory,
 	})
 
 	addr := os.Getenv("PORT")

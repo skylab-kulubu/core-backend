@@ -1311,21 +1311,28 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 				'competition_adjustments_require_active_revoker'
 			)
 		  ) = 11`,
-	// Announcement preferences: the table, its key, its Group index and
-	// its guard against an erased subject.
+	// Communication preferences: the table with its channel, its key (the
+	// channel in it), its Group index and its guard against an erased
+	// subject.
 	20261012160000: `
 		SELECT 1
-		WHERE to_regclass('public.mail_preferences') IS NOT NULL
+		WHERE to_regclass('public.communication_preferences') IS NOT NULL
 		  AND EXISTS (
 			SELECT 1 FROM pg_constraint
-			WHERE conrelid = to_regclass('public.mail_preferences')
-			  AND conname = 'mail_preferences_key'
+			WHERE conrelid = to_regclass('public.communication_preferences')
+			  AND conname = 'communication_preferences_channel_check'
 		  )
-		  AND to_regclass('public.mail_preferences_group_idx') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.communication_preferences')
+			  AND conname = 'communication_preferences_key'
+			  AND pg_get_constraintdef(oid) LIKE '%(user_id, channel, scope, group_id, news_kind)%'
+		  )
+		  AND to_regclass('public.communication_preferences_group_idx') IS NOT NULL
 		  AND EXISTS (
 			SELECT 1 FROM pg_trigger
-			WHERE tgrelid = to_regclass('public.mail_preferences')
-			  AND tgname = 'mail_preferences_require_active_subject'
+			WHERE tgrelid = to_regclass('public.communication_preferences')
+			  AND tgname = 'communication_preferences_require_active_subject'
 		  )`,
 	// The account erasure step that deletes a person's announcement
 	// preferences.
@@ -1333,7 +1340,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		SELECT 1 FROM pg_constraint
 		WHERE conrelid = to_regclass('public.account_deletion_steps')
 		  AND conname = 'account_deletion_steps_step_check'
-		  AND pg_get_constraintdef(oid) LIKE '%''erase_mail_preferences''%'`,
+		  AND pg_get_constraintdef(oid) LIKE '%''erase_communication_preferences''%'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

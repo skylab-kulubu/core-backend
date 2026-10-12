@@ -38,11 +38,11 @@ func TestPostgresWorkerPersistsProgressAcrossRestart(t *testing.T) {
 	confirmDeletionProjection(t, store, request, now)
 	identity := &uncertainIdentity{}
 	config := account.WorkerConfig{
-		ContactConsents: consentsErased{},
-		SkyPassWallet:   walletErased{},
-		MailPreferences: mailPreferencesErased{},
-		Services:        erasedServices(),
-		Now:             func() time.Time { return now }, Lease: time.Minute, MaxAttempts: 3,
+		ContactConsents:          consentsErased{},
+		SkyPassWallet:            walletErased{},
+		CommunicationPreferences: communicationPreferencesErased{},
+		Services:                 erasedServices(),
+		Now:                      func() time.Time { return now }, Lease: time.Minute, MaxAttempts: 3,
 		AccessBlocker: &accountBlockWriter{},
 	}
 	if worked, err := account.NewWorkerWithConfiguredWaits(store, identity, config, noAccountMedia{}).RunOnce(ctx); !worked || err == nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
+	"github.com/skylab-kulubu/core-backend/internal/commpref"
 	"github.com/skylab-kulubu/core-backend/internal/competition"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
@@ -25,7 +26,6 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
-	"github.com/skylab-kulubu/core-backend/internal/mailpref"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
 	"github.com/skylab-kulubu/core-backend/internal/season"
@@ -154,10 +154,10 @@ type Deps struct {
 	// no Guest apply consent.
 	Consents *consent.Service
 
-	// MailPreferences keeps the Announcement preference
-	// (docs/mail-preferences.md). Nil or off (MAIL_PREFERENCE_KEY unset)
+	// CommunicationPreferences keeps the Announcement preference
+	// (docs/communication-preferences.md). Nil or off (COMMUNICATION_PREFERENCE_KEY unset)
 	// answers its routes 503.
-	MailPreferences *mailpref.Service
+	CommunicationPreferences *commpref.Service
 
 	// MediaDecodeMetrics are the media decode budget's state and counters
 	// (docs/media-lifecycle.md, "Decode budget"), served on /v1/metrics.
@@ -351,13 +351,13 @@ func New(deps Deps) *fiber.App {
 	app.Get(consent.ConfirmPath, consentPageLimit, consents.ConfirmPage)
 	app.Post(consent.ConfirmPath, consentPageLimit, consents.Confirm)
 	guestApplyRoute = append(guestApplyRoute, consents.GuestApplyConsents)
-	// The unsubscribe link of every News mail (docs/mail-preferences.md):
+	// The unsubscribe link of every News mail (docs/communication-preferences.md):
 	// no sign-in, the signed token in the link is the permission. The same
 	// budgets as the consent pages, for the same reasons (a mail provider's
 	// one-click POSTs come from a few of its addresses).
-	mailPreferences := handlers.NewMailPreferenceHandler(deps.MailPreferences)
-	app.Get(mailpref.UnsubscribePath, perClientLimit(trustedProxies), mailPreferences.UnsubscribePage)
-	app.Post(mailpref.UnsubscribePath, perClientLimitOf(trustedProxies, consentWithdrawLimit), mailPreferences.Unsubscribe)
+	communicationPreferences := handlers.NewCommunicationPreferenceHandler(deps.CommunicationPreferences)
+	app.Get(commpref.UnsubscribePath, perClientLimit(trustedProxies), communicationPreferences.UnsubscribePage)
+	app.Post(commpref.UnsubscribePath, perClientLimitOf(trustedProxies, consentWithdrawLimit), communicationPreferences.Unsubscribe)
 	app.Post("/v1/events/:eventId/applications/guest", guestApply.Observe, append(guestApplyRoute, tickets.ApplyGuest)...)
 	// A read link opens a private Media without a sign-in: the token in it is
 	// the permission (docs/media-lifecycle.md). The budget follows the
@@ -393,8 +393,8 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/users/me/consents", consents.Mine)
 	app.Post("/v1/users/me/consents", consents.GrantMine)
 	app.Delete("/v1/users/me/consents/:purpose", consents.WithdrawMine)
-	app.Get("/v1/users/me/mail-preferences", mailPreferences.Mine)
-	app.Put("/v1/users/me/mail-preferences", mailPreferences.Update)
+	app.Get("/v1/users/me/communication-preferences", communicationPreferences.Mine)
+	app.Put("/v1/users/me/communication-preferences", communicationPreferences.Update)
 	// A product's service account with consent:record; SkyMail's with
 	// consent:audience:read.
 	app.Post("/v1/consents", consents.Record)

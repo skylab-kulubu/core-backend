@@ -1,4 +1,4 @@
-package mailpref
+package commpref
 
 import (
 	"crypto/hmac"
@@ -13,7 +13,7 @@ import (
 )
 
 // UnsubscribePath is the public page of the link in every News mail.
-const UnsubscribePath = "/v1/mail-preferences/unsubscribe"
+const UnsubscribePath = "/v1/communication-preferences/unsubscribe"
 
 // MaxLinkCategories is the most categories one link carries: a person may
 // enter one send's audience through several teams, and one click turns
@@ -23,7 +23,7 @@ const MaxLinkCategories = 32
 const (
 	tokenVersion = 1
 	tokenKind    = 'u'
-	headerSize   = 1 + 1 + 16 + 1
+	headerSize   = 1 + 1 + 1 + 16 + 1
 	macSize      = 16
 	// maxTokenSize bounds what verify reads before the MAC.
 	maxTokenSize = headerSize + MaxLinkCategories*(1+1+64) + macSize
@@ -37,29 +37,33 @@ const (
 	tagTeamNews         byte = 4
 )
 
-// UnsubscribeURL is the link that turns exactly cats off for person: what a
-// News mail's footer links to and its List-Unsubscribe header names (RFC
-// 8058). It does not expire: a mail may be opened years later. The token is
-// the permission; it carries the person's id and the categories, signed,
-// and no address. Never log it.
-func (c Config) UnsubscribeURL(person uuid.UUID, cats []Category) (string, error) {
-	token, err := c.sign(person, cats)
+// channelTags are the channels' bytes in a token. A tag is never reused.
+var channelTags = map[Channel]byte{ChannelEmail: 1}
+
+// UnsubscribeURL is the link that turns exactly cats off on channel ch for
+// person: what a News mail's footer links to and its List-Unsubscribe
+// header names (RFC 8058). It does not expire: a mail may be opened years
+// later. The token is the permission; it carries the person's id, the
+// channel and the categories, signed, and no address. Never log it.
+func (c Config) UnsubscribeURL(person uuid.UUID, ch Channel, cats []Category) (string, error) {
+	token, err := c.sign(person, ch, cats)
 	if err != nil {
 		return "", err
 	}
 	return c.LinkOrigin + UnsubscribePath + "?t=" + url.QueryEscape(token), nil
 }
 
-func (c Config) sign(person uuid.UUID, cats []Category) (string, error) {
+func (c Config) sign(person uuid.UUID, ch Channel, cats []Category) (string, error) {
 	if !c.Enabled {
 		return "", ErrDisabled
 	}
 	cats = normalize(cats)
-	if person == uuid.Nil || len(cats) == 0 || len(cats) > MaxLinkCategories {
+	chTag, ok := channelTags[ch]
+	if person == uuid.Nil || !ok || len(cats) == 0 || len(cats) > MaxLinkCategories {
 		return "", ErrInvalid
 	}
 	payload := make([]byte, 0, maxTokenSize)
-	payload = append(payload, tokenVersion, tokenKind)
+	payload = append(payload, tokenVersion, tokenKind, chTag)
 	payload = append(payload, person[:]...)
 	payload = append(payload, byte(len(cats)))
 	for _, cat := range cats {
@@ -100,42 +104,49 @@ func (c Config) linkMAC(payload []byte) []byte {
 	return mac.Sum(nil)[:macSize]
 }
 
-// readToken reads a link token: the person and the categories it turns off.
-func (c Config) readToken(token string) (uuid.UUID, []Category, error) {
+// readToken reads a link token: the person, the channel and the
+// categories it turns off.
+func (c Config) readToken(token string) (uuid.UUID, Channel, []Category, error) {
 	if !c.Enabled {
-		return uuid.Nil, nil, ErrDisabled
+		return uuid.Nil, "", nil, ErrDisabled
 	}
 	if token == "" || base64.RawURLEncoding.DecodedLen(len(token)) > maxTokenSize {
-		return uuid.Nil, nil, ErrLink
+		return uuid.Nil, "", nil, ErrLink
 	}
 	// Strict: one spelling per token, no stray padding bits.
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(token)
 	if err != nil || len(raw) < headerSize+macSize {
-		return uuid.Nil, nil, ErrLink
+		return uuid.Nil, "", nil, ErrLink
 	}
 	payload, sum := raw[:len(raw)-macSize], raw[len(raw)-macSize:]
 	if !hmac.Equal(sum, c.linkMAC(payload)) || payload[0] != tokenVersion || payload[1] != tokenKind {
-		return uuid.Nil, nil, ErrLink
+		return uuid.Nil, "", nil, ErrLink
 	}
-	person, err := uuid.FromBytes(payload[2:18])
-	if err != nil || person == uuid.Nil {
-		return uuid.Nil, nil, ErrLink
+	var ch Channel
+	for channel, tag := range channelTags {
+		if tag == payload[2] {
+			ch = channel
+		}
 	}
-	n := int(payload[18])
+	person, err := uuid.FromBytes(payload[3:19])
+	if ch == "" || err != nil || person == uuid.Nil {
+		return uuid.Nil, "", nil, ErrLink
+	}
+	n := int(payload[19])
 	rest := payload[headerSize:]
 	cats := make([]Category, 0, n)
 	for range n {
 		cat, tail, err := readCategory(rest)
 		if err != nil {
-			return uuid.Nil, nil, ErrLink
+			return uuid.Nil, "", nil, ErrLink
 		}
 		cats = append(cats, cat)
 		rest = tail
 	}
 	if n == 0 || n > MaxLinkCategories || len(rest) != 0 {
-		return uuid.Nil, nil, ErrLink
+		return uuid.Nil, "", nil, ErrLink
 	}
-	return person, cats, nil
+	return person, ch, cats, nil
 }
 
 var errShort = errors.New("short")

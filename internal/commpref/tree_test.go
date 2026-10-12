@@ -1,4 +1,4 @@
-package mailpref
+package commpref
 
 import (
 	"testing"
@@ -87,28 +87,39 @@ func TestMembershipFollowsTeamOf(t *testing.T) {
 
 func on(v bool) *bool { return &v }
 
-// Defaults: club on for a Member, own teams and the teams above them on,
-// any other team off; nothing at all for someone outside /UYELER.
+// Defaults: club on for a Member; own teams, the teams above them and
+// every team below those on (Y1: a WEBLAB member, by FRONT, gets BACK's
+// mail too); any other team off; nothing at all for someone outside
+// /UYELER.
 func TestDefaults(t *testing.T) {
 	tree := testTree()
 	m := tree.Membership([]string{"/UYELER/ARGE/WEBLAB/FRONT"})
 	for _, tc := range []struct {
 		category Category
 		want     bool
+		from     string
 	}{
-		{Master(), true},
-		{Club(KindAnnouncement), true},
-		{Club(KindNews), true},
-		{Team("g-front", KindAnnouncement), true},
-		{Team("g-weblab", KindNews), true},
-		{Team("g-back", KindAnnouncement), false},
-		{Team("g-airlab", KindAnnouncement), false},
-		{Team("g-drone", KindNews), false},
-		{Team("g-deleted", KindNews), false},
+		{Master(), true, ""},
+		{Club(KindAnnouncement), true, ""},
+		{Club(KindNews), true, ""},
+		{Team("g-front", KindAnnouncement), true, ""},
+		{Team("g-weblab", KindNews), true, ""},
+		{Team("g-back", KindAnnouncement), true, "g-weblab"},
+		{Team("g-airlab", KindAnnouncement), false, ""},
+		{Team("g-drone", KindNews), false, ""},
+		{Team("g-gizli", KindNews), false, ""},
+		{Team("g-deleted", KindNews), false, ""},
 	} {
 		v := tree.Resolve(nil, m, tc.category)
-		if v.Enabled != tc.want || v.Effective != tc.want || v.Origin != OriginDefault {
-			t.Fatalf("%s = %+v, want %v", tc.category, v, tc.want)
+		if v.Enabled != tc.want || v.Effective != tc.want || v.Origin != OriginDefault || v.From != tc.from {
+			t.Fatalf("%s = %+v, want %v from %q", tc.category, v, tc.want, tc.from)
+		}
+	}
+	// A member of the team itself gets every sub-team.
+	weblab := tree.Membership([]string{"/UYELER/ARGE/WEBLAB"})
+	for _, id := range []string{"g-weblab", "g-front", "g-back"} {
+		if v := tree.Resolve(nil, weblab, Team(id, KindAnnouncement)); !v.Effective {
+			t.Fatalf("WEBLAB member, %s = %+v", id, v)
 		}
 	}
 	outsider := tree.Membership(nil)
@@ -117,8 +128,9 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
-// D5: a setting on a team covers its sub-teams; the most specific one wins.
-// A sub-team turned off stays off while its siblings follow the parent.
+// D5: a setting on a team covers its sub-teams; the most specific one wins,
+// and an explicit choice above beats a default. A sub-team turned off
+// stays off while its siblings follow the parent.
 func TestInheritanceMostSpecificWins(t *testing.T) {
 	tree := testTree()
 	m := tree.Membership([]string{"/UYELER/ARGE/WEBLAB/FRONT"})
@@ -139,6 +151,7 @@ func TestInheritanceMostSpecificWins(t *testing.T) {
 		{Team("g-drone", KindAnnouncement), true, OriginInherited, "g-airlab"},
 		{Team("g-drone", KindNews), false, OriginDefault, ""}, // the kinds are separate (D6)
 		{Team("g-front", KindNews), true, OriginDefault, ""},
+		{Team("g-back", KindNews), true, OriginDefault, "g-weblab"},
 	}
 	for _, tc := range cases {
 		v := tree.Resolve(explicit, m, tc.category)
@@ -224,5 +237,21 @@ func TestCategoryStringsRoundTrip(t *testing.T) {
 		if _, err := ParseCategory(bad); err == nil {
 			t.Fatalf("%q parsed", bad)
 		}
+	}
+}
+
+// Y1: a member subscribed to their team by default gets its sub-teams too
+// and may turn one off on its own; the others and the team stay on.
+func TestDefaultSubscriberTurnsOneSubTeamOff(t *testing.T) {
+	tree := testTree()
+	m := tree.Membership([]string{"/UYELER/ARGE/WEBLAB"})
+	explicit := Explicit{Team("g-back", KindAnnouncement): false}
+	for id, want := range map[string]bool{"g-back": false, "g-front": true, "g-weblab": true} {
+		if v := tree.Resolve(explicit, m, Team(id, KindAnnouncement)); v.Effective != want {
+			t.Fatalf("%s = %+v, want %v", id, v, want)
+		}
+	}
+	if v := tree.Resolve(explicit, m, Team("g-back", KindNews)); !v.Effective {
+		t.Fatalf("the other kind of BACK = %+v", v)
 	}
 }
