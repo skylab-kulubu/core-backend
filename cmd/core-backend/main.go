@@ -620,7 +620,9 @@ func main() {
 	if audienceDirectory, ok := dir.(commpref.AudienceDirectory); ok {
 		newsAudience = commpref.NewAudience(communicationPreferences, audienceDirectory, users, privateVisibility)
 	}
-	log.Printf("news audience: %s (private visibility %t)", map[bool]string{true: "on", false: "off"}[newsAudience.Enabled()], privateVisibility)
+	for _, line := range commpref.AudienceStartupLines(newsAudience.Enabled(), privateVisibility) {
+		log.Print(line)
+	}
 	if keycloakConfigured {
 		worker("communication preference cleanup", commpref.MaintainCleanup(workers, communicationPreferences, commpref.CleanupInterval, func(what string, removed int64, err error) {
 			if err != nil {

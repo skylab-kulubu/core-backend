@@ -48,12 +48,18 @@ Body (JSON, unknown fields refused):
 ### Faz 1: only public records
 
 ADR 0067 karar 3 opens private records in a second step. Until then
-(`NEWS_AUDIENCE_PRIVATE_VISIBILITY` unset or `off`) only `herkes` is
-accepted; `uyeler` and `ekipler` answer `400
+(`NEWS_AUDIENCE_PRIVATE_VISIBILITY` unset or `off`, the default) only
+`herkes` is accepted; `uyeler` and `ekipler` answer `400
 audience_visibility_not_enabled`. The rules below for them are built and
-tested already; the second step is setting the variable to `on` (after
-inscribed's per-record visibility and the leak tests, karar 3). Any other
-value stops startup with an error that names the variable.
+tested already; the second step is setting the variable to `on`.
+
+**It is turned on only after** inscribed's per-record visibility (Fatih's
+F2) is in production **and** the leak tests (duyuru-haber bilet 21) are
+green: before that a private record does not exist on the web, and a send
+to `uyeler` or `ekipler` would promise a privacy the record does not have.
+While it is on, startup logs a `WARNING news audience: …` line naming
+both conditions. Any value other than `on`/`off` stops startup with an
+error that names the variable.
 
 ### Answer
 
@@ -66,8 +72,8 @@ value stops startup with an error that names the variable.
       "name": "Ad Soyad",
       "categories": ["team:<groupId>:duyuru"],
       "via": "member" | "follower",
-      "reason": "AIRLAB ekibinde olduğun için",
-      "categoryLabel": "AIRLAB · Duyurular",
+      "reason": "WEBLAB · Web Geliştirme ekibinde olduğun için",
+      "categoryLabel": "WEBLAB · Web Geliştirme · Duyurular",
       "unsubscribeUrl": "https://api.yildizskylab.com/v1/communication-preferences/unsubscribe?t=…"
     }
   ],
@@ -85,12 +91,15 @@ value stops startup with an error that names the variable.
   off (one-click, RFC 8058; [communication-preferences.md](communication-preferences.md#the-unsubscribe-link)).
 - `via`: `member` when at least one category comes through membership,
   else `follower`. `reason` is the first category's: "SKY LAB üyesi
-  olduğun için" (members), "<KOD> ekibinde olduğun için" (the team the
-  person is in: the named one or one above it), "<KOD> ekibini takip
+  olduğun için" (members), "<ekip> ekibinde olduğun için" (the team the
+  person is in: the named one or one above it), "<ekip> ekibini takip
   ettiğin için" (the team whose choice they follow: the named one or one
-  above it). The team is named by its Group name (code).
-- `categoryLabel`: "Kulüp geneli · Duyurular", or the codes of the
-  categories' teams, "WEBLAB, AIRLAB · Haberler".
+  above it).
+- A team is named as the membership mail names a Group (`teammail`'s
+  GroupName, #238): "KOD · display_name_tr", the code alone when it has no
+  Turkish name (or the same one): "WEBLAB · Web Geliştirme", "AIRLAB".
+- `categoryLabel`: "Kulüp geneli · Duyurular", or the categories' teams
+  named so, "WEBLAB · Web Geliştirme, AIRLAB · Haberler".
 - `counts.total` = `members` + `followers` = the number of recipients over
   all pages.
 - `?countOnly=true` answers `counts` and `skipped` only (no `items`, no
@@ -133,10 +142,14 @@ sent twice.
   - **members**: everyone in T or a team below it (leaders included). A
     Privileged root inside T (`AUTHZ_PRIVILEGED_ROOTS`) holds no team, so
     its members are not T's;
-  - everyone in a team above T: the default reaches sub-teams (Y1, the
-    same rule as the Account center's screen: a WEBLAB member gets the News
-    of WEBLAB's sub-team BACK unless they turn BACK off). They count as
-    members (`via: member`, reason names the team they are in);
+  - everyone in a team above T: the default reaches sub-teams. This is
+    Yusuf's Y1 decision (2026-10-12: a sub-team's announcement goes to the
+    team above's subscribers; Karar D5, "üst ekibe abonelik alt ekipleri
+    kapsar") and the inheritance of the preferences (#232,
+    [communication-preferences.md](communication-preferences.md#values)):
+    a WEBLAB member gets the News of WEBLAB's sub-team BACK unless they
+    turn BACK off, so the Account center's screen and the mail agree. They
+    count as members (`via: member`, reason names the team they are in);
   - **followers**: everyone with a choice of the kind on T or a team above
     it (Karar D5, D7), also people in no `/UYELER` Group.
   - A **hidden** T (no `public_listing=true` on it or above it, O2) reaches
@@ -204,7 +217,8 @@ links are never logged (see their section).
 | `COMMUNICATION_PREFERENCE_KEY` | required: without it the route answers `503 audience_unavailable` ([communication-preferences.md](communication-preferences.md#settings)) |
 | `NEWS_AUDIENCE_PRIVATE_VISIBILITY` | `off` (default): only `herkes`. `on`: `uyeler` and `ekipler` too (ADR 0067 karar 3, second step) |
 
-Startup logs `news audience: on|off (private visibility true|false)`.
+Startup logs `news audience: on|off (private visibility true|false)`, and
+with `on` the warning above.
 
 ## Compared with the industry
 
@@ -239,7 +253,8 @@ Deviations (all):
    in Mailchimp and Ghost the mail system itself holds the subscription
    and the link. Here the preference lives in core (Karar D3) and SkyMail
    must not hold its key.
-2. **Default inheritance down the team tree** (Y1, D5): a team's member
+2. **Default inheritance down the team tree** (Y1, D5, approved for the
+   audience 2026-10-12): a team's member
    gets its sub-teams' News by default. None of the products above has a
    subscription tree; it follows the club's team tree.
 3. **`emailVerified` is required.** Ghost and Mailchimp send to whoever is

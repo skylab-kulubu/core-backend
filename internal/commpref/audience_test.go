@@ -301,12 +301,12 @@ func TestAudienceTeamWithSubTeamsAndFollowers(t *testing.T) {
 		t.Fatalf("skipped = %+v", page.Skipped)
 	}
 	front, _ := f.item(page, "front")
-	if !slices.Equal(front.Categories, []string{"team:g-weblab:duyuru"}) || front.Reason != "WEBLAB ekibinde olduğun için" ||
-		front.CategoryLabel != "WEBLAB · Duyurular" || front.Via != ViaMember {
+	if !slices.Equal(front.Categories, []string{"team:g-weblab:duyuru"}) || front.Reason != "WEBLAB · Web Geliştirme ekibinde olduğun için" ||
+		front.CategoryLabel != "WEBLAB · Web Geliştirme · Duyurular" || front.Via != ViaMember {
 		t.Fatalf("front = %+v", front)
 	}
 	outsider, _ := f.item(page, "outsider")
-	if outsider.Via != ViaFollower || outsider.Reason != "WEBLAB ekibini takip ettiğin için" {
+	if outsider.Via != ViaFollower || outsider.Reason != "WEBLAB · Web Geliştirme ekibini takip ettiğin için" {
 		t.Fatalf("outsider = %+v", outsider)
 	}
 	if _, ok := f.item(page, "weblabYK"); ok {
@@ -325,11 +325,11 @@ func TestAudienceSubTeamInheritsFromAbove(t *testing.T) {
 		t.Fatalf("front = %v, want %v", got, want)
 	}
 	follower, _ := f.item(page, "follower")
-	if follower.Via != ViaFollower || follower.Reason != "WEBLAB ekibini takip ettiğin için" || !slices.Equal(follower.Categories, []string{"team:g-front:duyuru"}) {
+	if follower.Via != ViaFollower || follower.Reason != "WEBLAB · Web Geliştirme ekibini takip ettiğin için" || !slices.Equal(follower.Categories, []string{"team:g-front:duyuru"}) {
 		t.Fatalf("follower = %+v", follower)
 	}
 	back, _ := f.item(page, "back")
-	if back.Via != ViaMember || back.Reason != "WEBLAB ekibinde olduğun için" {
+	if back.Via != ViaMember || back.Reason != "WEBLAB · Web Geliştirme ekibinde olduğun için" {
 		t.Fatalf("back = %+v", back)
 	}
 	if _, ok := f.item(page, "followerFrontOff"); ok {
@@ -364,7 +364,7 @@ func TestAudienceTwoTeamsOnce(t *testing.T) {
 	f := newAudienceFixture(t, false)
 	page := f.resolve(duyuruTo("g-weblab", "g-airlab"))
 	both, _ := f.item(page, "both")
-	if !slices.Equal(both.Categories, []string{"team:g-weblab:duyuru", "team:g-airlab:duyuru"}) || both.CategoryLabel != "WEBLAB, AIRLAB · Duyurular" {
+	if !slices.Equal(both.Categories, []string{"team:g-weblab:duyuru", "team:g-airlab:duyuru"}) || both.CategoryLabel != "WEBLAB · Web Geliştirme, AIRLAB · Duyurular" {
 		t.Fatalf("both = %+v", both)
 	}
 	follower, _ := f.item(page, "follower")
@@ -577,6 +577,18 @@ func TestPrivateVisibilityFromEnv(t *testing.T) {
 	}
 	if _, err := PrivateVisibilityFromEnv(func(string) string { return "yes" }); err == nil || strings.Contains(err.Error(), "yes") {
 		t.Fatalf("bad value: %v", err)
+	}
+}
+
+// Turning the private visibilities on is said loudly at startup.
+func TestAudienceStartupLines(t *testing.T) {
+	if lines := AudienceStartupLines(true, false); len(lines) != 1 || lines[0] != "news audience: on (private visibility false)" {
+		t.Fatalf("off: %q", lines)
+	}
+	lines := AudienceStartupLines(true, true)
+	if len(lines) != 2 || !strings.HasPrefix(lines[1], "WARNING news audience: "+PrivateVisibilityEnv+"=on") ||
+		!strings.Contains(lines[1], "F2") || !strings.Contains(lines[1], "bilet 21") {
+		t.Fatalf("on: %q", lines)
 	}
 }
 

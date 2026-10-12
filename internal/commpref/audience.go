@@ -73,6 +73,23 @@ const (
 	audienceReaders = 4
 )
 
+// AudienceStartupLines are the startup log lines of the News audience: its
+// state, and a warning while the private visibilities are on, which is
+// meant only after inscribed's per-record visibility (F2) and the leak
+// tests (duyuru-haber bilet 21) are green.
+func AudienceStartupLines(enabled, private bool) []string {
+	state := "off"
+	if enabled {
+		state = "on"
+	}
+	lines := []string{fmt.Sprintf("news audience: %s (private visibility %t)", state, private)}
+	if private {
+		lines = append(lines, "WARNING news audience: "+PrivateVisibilityEnv+"=on accepts uyeler and ekipler records; "+
+			"turn it on only after inscribed's per-record visibility (F2) is in production and the leak tests (duyuru-haber bilet 21) are green (ADR 0067 karar 3)")
+	}
+	return lines
+}
+
 // ErrVisibilityNotEnabled is uyeler or ekipler while PrivateVisibilityEnv
 // is off.
 var ErrVisibilityNotEnabled = errors.New("communication preference: private visibility is not enabled")
@@ -620,7 +637,7 @@ func (a *Audience) recipient(tree *Tree, req AudienceRequest, targets []string, 
 			continue
 		}
 		if via := memberVia(tree, m, target); via != "" {
-			entries = append(entries, entry{team: target, member: true, reason: tree.teams[via].Code + " ekibinde olduğun için"})
+			entries = append(entries, entry{team: target, member: true, reason: tree.teams[via].label() + " ekibinde olduğun için"})
 			continue
 		}
 		if visibility == VisibilityTeams {
@@ -630,7 +647,7 @@ func (a *Audience) recipient(tree *Tree, req AudienceRequest, targets []string, 
 		if v.From != "" {
 			followed = v.From
 		}
-		entries = append(entries, entry{team: target, reason: tree.teams[followed].Code + " ekibini takip ettiğin için"})
+		entries = append(entries, entry{team: target, reason: tree.teams[followed].label() + " ekibini takip ettiğin için"})
 	}
 	if len(entries) == 0 {
 		return Recipient{}, false
@@ -648,7 +665,7 @@ func (a *Audience) recipient(tree *Tree, req AudienceRequest, targets []string, 
 	var sources []string
 	for _, en := range entries {
 		r.Categories = append(r.Categories, Team(en.team, req.Kind).String())
-		sources = append(sources, tree.teams[en.team].Code)
+		sources = append(sources, tree.teams[en.team].label())
 	}
 	r.Via, r.Reason = ViaFollower, entries[0].reason
 	if entries[0].member {
@@ -656,6 +673,16 @@ func (a *Audience) recipient(tree *Tree, req AudienceRequest, targets []string, 
 	}
 	r.CategoryLabel = strings.Join(sources, ", ") + " · " + kindLabel(req.Kind)
 	return r, true
+}
+
+// label is how a News mail names the team: "KOD · display_name_tr", the
+// code alone without a Turkish name (the membership mail's GroupName,
+// teammail).
+func (n *TeamNode) label() string {
+	if n.DisplayName != "" && n.DisplayName != n.Code {
+		return n.Code + " · " + n.DisplayName
+	}
+	return n.Code
 }
 
 // recipientName is core's profile name, Keycloak's when core has none.
