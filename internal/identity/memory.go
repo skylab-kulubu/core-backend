@@ -25,7 +25,10 @@ type Memory struct {
 	// disabled are the people DisableUser disabled: Keycloak's
 	// enabled=false. Everyone else is enabled, and PutUser enables again.
 	disabled map[uuid.UUID]struct{}
-	Ops      []string
+	// parents are the parent ids SetGroupParent set; a Group without one
+	// has the parent its path says.
+	parents map[string]string
+	Ops     []string
 }
 
 func NewMemory() *Memory {
@@ -37,6 +40,7 @@ func NewMemory() *Memory {
 		userRoles:  make(map[uuid.UUID][]ClientRole),
 		composites: make(map[string][]ClientRole),
 		disabled:   make(map[uuid.UUID]struct{}),
+		parents:    make(map[string]string),
 	}
 }
 
@@ -147,6 +151,40 @@ func (m *Memory) resolveLocked(idOrPath string) (Group, bool) {
 		}
 	}
 	return Group{}, false
+}
+
+// SetGroupParent makes parentID the id GroupNode answers above the Group
+// id, whatever the paths say ("" for none): a Keycloak whose names hold a
+// "/".
+func (m *Memory) SetGroupParent(id, parentID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.parents[id] = parentID
+}
+
+// GroupNode answers the Group id, by its id alone, with the id of the Group
+// above it: the one SetGroupParent set, or the Group at the path above.
+func (m *Memory) GroupNode(_ context.Context, id string) (Group, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("GroupNode")
+	g, ok := m.groups[id]
+	if !ok {
+		return Group{}, "", ErrNotFound
+	}
+	if parent, set := m.parents[id]; set {
+		return g, parent, nil
+	}
+	cut := strings.LastIndex(g.Path, "/")
+	if cut <= 0 {
+		return g, "", nil
+	}
+	for _, other := range m.groups {
+		if other.Path == g.Path[:cut] {
+			return g, other.ID, nil
+		}
+	}
+	return g, "", nil
 }
 
 func (m *Memory) ListGroups(_ context.Context) ([]Group, error) {

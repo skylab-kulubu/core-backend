@@ -63,6 +63,9 @@ func (m *Memory) insert(r Record, outcome Outcome, errorCode string) (uuid.UUID,
 	if m.down {
 		return uuid.Nil, unavailable("down")
 	}
+	if bad := r.checkOutcome(outcome); bad != "" {
+		return uuid.Nil, unavailable(bad)
+	}
 	r, bad := r.normalize()
 	if bad != "" {
 		return uuid.Nil, unavailable(bad)

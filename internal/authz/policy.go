@@ -45,6 +45,8 @@ const (
 	// TypeFormResponse is an answer to a Skyforms form that the forms
 	// service reports, so that core writes the Ticket it earns.
 	TypeFormResponse Type = "FORM_RESPONSE"
+	// TypeTeamAudit is the Team audit record (docs/team-audit.md).
+	TypeTeamAudit Type = "TEAM_AUDIT"
 )
 
 type Level string
@@ -95,8 +97,12 @@ type Policy struct {
 	PrivilegedRoots []string
 	// RoleMode is where Privileged decisions come from: the Groups, the
 	// roles that stand for them (roles.go), or either. Empty is groups.
-	RoleMode         RoleMode
-	LeaderSubgroups  []string
+	RoleMode        RoleMode
+	LeaderSubgroups []string
+	// TeamDelegation is whether Leaders manage their Teams through core
+	// (TEAM_DELEGATION, team_delegation.go). Off, only Privileged manages
+	// Groups, as before.
+	TeamDelegation   bool
 	EventPermissions map[string]map[Action][]Level
 }
 

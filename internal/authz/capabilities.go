@@ -89,6 +89,7 @@ var appAbilities = []ability{
 	{"formLink.read", Resource{Type: TypeFormLink}, Read},
 	{"formLink.write", Resource{Type: TypeFormLink}, Update},
 	{"githubActivity.read", Resource{Type: TypeGithubActivity}, Read},
+	{"audit.read", Resource{Type: TypeTeamAudit}, Read},
 }
 
 // TeamAbilities are the keys of every team scope's Can, in order.

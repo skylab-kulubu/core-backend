@@ -182,3 +182,53 @@ func TestCapabilitiesEditableSitesOfServiceAccountsAndWithoutSites(t *testing.T)
 		t.Fatalf("without sites: %v", got)
 	}
 }
+
+// managedTeamsFake answers a person's managed Teams, or fails with the
+// Teams it could read.
+type managedTeamsFake struct {
+	teams []identity.ManagedTeam
+	err   error
+}
+
+func (f managedTeamsFake) ManagedTeams(context.Context, uuid.UUID) ([]identity.ManagedTeam, bool, error) {
+	return f.teams, false, f.err
+}
+
+// managedTeams is the Teams the caller leads; a Keycloak that cannot be
+// read answers what was read (none) and the route still succeeds, logged
+// without the person.
+func TestCapabilitiesManagedTeams(t *testing.T) {
+	t.Parallel()
+	ident := authn.Identity{ID: uuid.New()}
+	web := identity.ManagedTeam{ID: uuid.NewString(), Path: "/UYELER/ARGE/WEBLAB", Code: "WEBLAB", DisplayName: identity.LocalizedText{TR: "Web"}}
+	for _, tc := range []struct {
+		name   string
+		source ManagedTeamsSource
+		want   string
+		log    string
+	}{
+		{"no source", nil, `[]`, ""},
+		{"a Leader", managedTeamsFake{teams: []identity.ManagedTeam{web}}, `[{"id":"` + web.ID + `","path":"/UYELER/ARGE/WEBLAB","code":"WEBLAB","displayName":{"tr":"Web"}}]`, `"outcome":"fetched","teams":1`},
+		{"Keycloak down", managedTeamsFake{err: errors.New("identity: keycloak user groups request failed: connection refused")}, `[]`, `"outcome":"unavailable","teams":0`},
+	} {
+		var logs bytes.Buffer
+		h := NewCapabilitiesHandler(authz.NewAuthorizer(authz.DefaultPolicy()), nil)
+		if tc.source != nil {
+			h.WithManagedTeams(tc.source)
+		}
+		h.logger = log.New(&logs, "", 0)
+		app := fiber.New(fiber.Config{ErrorHandler: ErrorHandler})
+		app.Use(func(c fiber.Ctx) error {
+			c.Locals(authn.LocalsIdentity, ident)
+			return c.Next()
+		})
+		app.Get("/v1/users/me/capabilities", h.Get)
+		got := getCapabilities(t, app)
+		if string(got["managedTeams"]) != tc.want {
+			t.Errorf("%s: managedTeams %s, want %s", tc.name, got["managedTeams"], tc.want)
+		}
+		if line := logs.String(); !strings.Contains(line, tc.log) || strings.Contains(line, ident.ID.String()) || (tc.log == "" && line != "") {
+			t.Errorf("%s: log %q", tc.name, line)
+		}
+	}
+}

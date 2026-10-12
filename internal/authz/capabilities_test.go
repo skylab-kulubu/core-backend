@@ -63,7 +63,9 @@ func TestCapabilities_Privileged(t *testing.T) {
 			t.Errorf("%s: permissions = %v", tc.mode, c.Permissions)
 		}
 		for _, key := range AppAbilities() {
-			if !c.Can[key] {
+			// audit.read is the audit:read role alone, never Privileged's
+			// (S11; TestCapabilities_AuditRead).
+			if !c.Can[key] && key != "audit.read" {
 				t.Errorf("%s: can[%s] = false", tc.mode, key)
 			}
 		}
@@ -188,6 +190,31 @@ func TestCapabilities_MatchAllow(t *testing.T) {
 						t.Errorf("%s %s %q: %s differs from Allow", mode, p.ID, team, ab.key)
 					}
 				}
+			}
+		}
+	}
+}
+
+// can["audit.read"] is the audit:read role itself in every role mode: a
+// Privileged Group without it does not read the Team audit record (S11),
+// nor does a service account that holds it.
+func TestCapabilities_AuditRead(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []RoleMode{RoleModeGroups, RoleModeBoth, RoleModeRoles} {
+		az := NewAuthorizer(policyIn(mode))
+		for _, tc := range []struct {
+			name string
+			p    Principal
+			want bool
+		}{
+			{"YK without the role", Principal{ID: "u1", Groups: []string{"/UYELER/YK"}, Roles: PermissionRoles()}, false},
+			{"DK without the role", Principal{ID: "u1", Groups: []string{"/UYELER/DK"}}, false},
+			{"the role", Principal{ID: "u1", Roles: []string{RoleAuditRead}}, true},
+			{"a service account with the role", Principal{ID: "u1", Roles: []string{RoleAuditRead}, ServiceAccount: true}, false},
+			{"a product with the role", Principal{ID: "u1", Roles: []string{RoleAuditRead}, Product: ProductForms}, false},
+		} {
+			if got := az.Capabilities(tc.p).Can["audit.read"]; got != tc.want {
+				t.Errorf("%s, %s: audit.read = %v", mode, tc.name, got)
 			}
 		}
 	}

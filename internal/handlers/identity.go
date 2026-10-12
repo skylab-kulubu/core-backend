@@ -51,8 +51,9 @@ const auditUnavailableCode = "audit_unavailable"
 
 // auditContext carries the caller of a Group write to the Team audit record
 // (docs/team-audit.md): their subject, the client their token was issued to
-// and the request's id. The Group routes are Privileged's. A caller whose
-// subject is not an id carries no actor, and the write is refused (503).
+// and the request's id, as Privileged; a delegated write names its Leader
+// basis itself (docs/team-delegation.md). A caller whose subject is not an
+// id carries no actor, and the write is refused (503).
 func auditContext(c fiber.Ctx, p authz.Principal) context.Context {
 	id, err := uuid.Parse(p.ID)
 	if err != nil {
@@ -75,9 +76,12 @@ func optionalCaller(c fiber.Ctx) authz.Principal {
 
 func identityError(c fiber.Ctx, err error) error {
 	var name *teamcode.Error
+	var refused *identity.DelegationError
 	switch {
 	case errors.As(err, &name):
 		return groupNameError(c, name)
+	case errors.As(err, &refused):
+		return delegationError(c, refused)
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
 	case errors.Is(err, identity.ErrForbidden):
@@ -108,6 +112,26 @@ func identityError(c fiber.Ctx, err error) error {
 	default:
 		return err
 	}
+}
+
+// delegationTitles are the titles of a delegated refusal's statuses.
+var delegationTitles = map[int]string{
+	fiber.StatusForbidden:       "Forbidden",
+	fiber.StatusConflict:        "Conflict",
+	fiber.StatusTooManyRequests: "Too Many Requests",
+}
+
+// delegationError answers a delegated request core refused
+// (docs/team-delegation.md) with its status and problem code.
+func delegationError(c fiber.Ctx, err *identity.DelegationError) error {
+	title, ok := delegationTitles[err.Status]
+	if !ok {
+		return err
+	}
+	if err.Status == fiber.StatusTooManyRequests {
+		c.Set(fiber.HeaderRetryAfter, "60")
+	}
+	return problemCode(c, err.Status, title, err.Code)
 }
 
 // groupNameError answers a Group name the Team code rule refused
@@ -198,6 +222,35 @@ func (h *IdentityHandler) Members(c fiber.Ctx) error {
 		members = []identity.GroupMember{}
 	}
 	return c.JSON(members)
+}
+
+// ManagedGroups answers GET /v1/users/me/managed-groups: the Teams the
+// caller manages, as a tree (docs/team-delegation.md).
+func (h *IdentityHandler) ManagedGroups(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	nodes, err := h.svc.ManagedGroups(c.Context(), p)
+	if err != nil {
+		return identityError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(nodes)
+}
+
+// MemberCandidates answers GET /v1/groups/{id}/member-candidates?q=.
+func (h *IdentityHandler) MemberCandidates(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	found, err := h.svc.MemberCandidates(c.Context(), p, c.Params("groupId"), c.Query("q"))
+	if err != nil {
+		return identityError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(found)
 }
 
 func (h *IdentityHandler) AddMember(c fiber.Ctx) error {

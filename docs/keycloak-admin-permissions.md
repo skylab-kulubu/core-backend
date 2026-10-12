@@ -43,6 +43,10 @@ The Members section of `GET /v1/dashboard/summary` reads the `UYELER` tree: `GET
 
 `editableSites` in `GET /v1/users/me/capabilities` ([`authz-roles.md`](authz-roles.md#editable-sites)) reads, for each site of `CMS_SITES`, the client's id (`GET /clients?clientId=`, kept for the life of the process) and the person's effective roles on it (`GET /users/{id}/role-mappings/clients/{client}/composite`): `1 × S` requests per person a minute for `S` sites, plus one `GET /clients` per site once. Keycloak authorizes the first with `view-clients` or `query-clients` and the second with `view-users`; `service-account-core` holds both, so nothing new is needed. If they are ever taken away the calls answer `403`, the sites are left out, the capabilities answer is still `200`, and the log line says `"outcome":"unavailable"` with the status.
 
+## Team delegation
+
+With `TEAM_DELEGATION=on` ([`team-delegation.md`](team-delegation.md)) core reads, for a Leader's request: the person's Groups (`GET /users/{id}/groups`), each of their Leader groups and the target Group with every Group above it by id (`GET /groups/{id}`, whose `parentId` gocloak does not carry, so core reads the representation itself), the role mappings of those Groups (`GET /groups/{id}/role-mappings`), the realm's Groups for the duplicate-name check (`GET /groups` and children, once a minute) and, for the managed tree, `GET /groups/{id}/children` and `GET /groups/{id}/members`. Writes are the member routes' `PUT`/`DELETE /users/{id}/groups/{group}`. All are the calls above: nothing new is needed. With `off` none of them is made for a Leader.
+
 ## Group count report
 
 `core-backend group-count-report` measures how many Group paths each user carries in a token, for the Group overage threshold of ADR-0059 (30 paths). It runs instead of the server, inside the running core container, whose environment already holds core's service account. It only reads: `GET /users`, then `GET /users/{id}/groups` for every enabled user. Disabled users get no token and are only counted.

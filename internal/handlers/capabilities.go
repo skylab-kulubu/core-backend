@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/editablesites"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
 )
 
 // EditableSitesSource answers the sites a person may edit in the CMS and
@@ -20,12 +21,21 @@ type EditableSitesSource interface {
 	For(ctx context.Context, userID uuid.UUID) ([]editablesites.Site, bool, error)
 }
 
+// ManagedTeamsSource answers the Teams a person is a Leader of, read from
+// Keycloak (identity.TeamDelegation), and whether the answer was
+// remembered. A non-nil error says some could not be read; the list is
+// still the answer. Empty with team delegation off.
+type ManagedTeamsSource interface {
+	ManagedTeams(ctx context.Context, userID uuid.UUID) ([]identity.ManagedTeam, bool, error)
+}
+
 // CapabilitiesHandler answers what the caller may do, from the authorizer
 // that decides their requests (docs/authz-roles.md), and which sites they
 // may edit in the CMS, a hint for the UI that decides nothing.
 type CapabilitiesHandler struct {
 	az     authz.Authorizer
 	sites  EditableSitesSource
+	teams  ManagedTeamsSource
 	logger *log.Logger
 }
 
@@ -35,9 +45,23 @@ func NewCapabilitiesHandler(az authz.Authorizer, sites EditableSitesSource) *Cap
 	return &CapabilitiesHandler{az: az, sites: sites, logger: log.Default()}
 }
 
-// capabilitiesAnswer is authz.Capabilities with the editable sites.
+// WithManagedTeams answers managedTeams from teams; without it every
+// caller's list is empty.
+func (h *CapabilitiesHandler) WithManagedTeams(teams ManagedTeamsSource) *CapabilitiesHandler {
+	h.teams = teams
+	return h
+}
+
+// capabilitiesAnswer is authz.Capabilities with the editable sites and the
+// managed Teams.
 type capabilitiesAnswer struct {
 	authz.Capabilities
+	// ManagedTeams are the Teams the caller is a Leader of, read from
+	// Keycloak's current membership with core's service account
+	// (docs/team-delegation.md), in path order. A hint for the admin
+	// panel's "Ekiplerim" menu: core decides every request. Empty with
+	// team delegation off, and when Keycloak cannot be read.
+	ManagedTeams []identity.ManagedTeam `json:"managedTeams"`
 	// EditableSites are the Site clients the caller holds cms:access on, in
 	// the configured order. Only a hint for which "Düzenle" links to show:
 	// the CMS decides every edit. Empty when Keycloak cannot be read.
@@ -55,7 +79,30 @@ func (h *CapabilitiesHandler) Get(c fiber.Ctx) error {
 		return err
 	}
 	c.Set(fiber.HeaderCacheControl, "no-store")
-	return c.JSON(capabilitiesAnswer{Capabilities: h.az.Capabilities(p), EditableSites: h.editableSites(c, p)})
+	return c.JSON(capabilitiesAnswer{
+		Capabilities: h.az.Capabilities(p), EditableSites: h.editableSites(c, p), ManagedTeams: h.managedTeams(c, p),
+	})
+}
+
+// managedTeams never fails the answer: Teams that cannot be read are left
+// out and the read is logged, as editableSites is. A service account
+// leads no Team.
+func (h *CapabilitiesHandler) managedTeams(c fiber.Ctx, p authz.Principal) []identity.ManagedTeam {
+	if h.teams == nil || p.ServiceAccount || p.Product != "" {
+		return []identity.ManagedTeam{}
+	}
+	userID, err := uuid.Parse(p.ID)
+	if err != nil {
+		return []identity.ManagedTeam{}
+	}
+	teams, cached, err := h.teams.ManagedTeams(c.Context(), userID)
+	if teams == nil {
+		teams = []identity.ManagedTeam{}
+	}
+	if err != nil || !cached {
+		h.logRead(c, "managed_teams", "teams", len(teams), err)
+	}
+	return teams
 }
 
 // editableSites never fails the answer: a site that cannot be read is left
@@ -73,15 +120,16 @@ func (h *CapabilitiesHandler) editableSites(c fiber.Ctx, p authz.Principal) []ed
 		sites = []editablesites.Site{}
 	}
 	if err != nil || !cached {
-		h.logEditableSites(c, len(sites), err)
+		h.logRead(c, "editable_sites", "sites", len(sites), err)
 	}
 	return sites
 }
 
-// logEditableSites writes one JSON line per read of a person's sites: the
-// request's correlation id, the outcome and how many sites came back. The
-// person and their sites never appear; err names nobody.
-func (h *CapabilitiesHandler) logEditableSites(c fiber.Ctx, sites int, err error) {
+// logRead writes one JSON line per read of a person's sites or Teams: the
+// event, the request's correlation id, the outcome and how many came back
+// (under countKey). The person and what came back never appear; err names
+// nobody.
+func (h *CapabilitiesHandler) logRead(c fiber.Ctx, eventName, countKey string, count int, err error) {
 	if h.logger == nil {
 		return
 	}
@@ -89,9 +137,15 @@ func (h *CapabilitiesHandler) logEditableSites(c fiber.Ctx, sites int, err error
 		Event         string `json:"event"`
 		CorrelationID string `json:"correlation_id"`
 		Outcome       string `json:"outcome"`
-		Sites         int    `json:"sites"`
+		Sites         *int   `json:"sites,omitempty"`
+		Teams         *int   `json:"teams,omitempty"`
 		Error         string `json:"error,omitempty"`
-	}{Event: "editable_sites", CorrelationID: requestid.FromContext(c), Outcome: "fetched", Sites: sites}
+	}{Event: eventName, CorrelationID: requestid.FromContext(c), Outcome: "fetched"}
+	if countKey == "teams" {
+		event.Teams = &count
+	} else {
+		event.Sites = &count
+	}
 	if err != nil {
 		event.Outcome = "unavailable"
 		event.Error = err.Error()

@@ -969,6 +969,49 @@ func (k *Keycloak) GroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group
 	}
 }
 
+// GroupNode reads the Group id (a Keycloak id; anything else is not looked
+// up and is ErrNotFound) with the id of the Group above it, "" for a Group
+// at the realm's top (GroupNodes). gocloak's Group has no parentId, so the
+// representation is read here.
+func (k *Keycloak) GroupNode(ctx context.Context, id string) (Group, string, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return Group{}, "", ErrNotFound
+	}
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return Group{}, "", err
+	}
+	var rep struct {
+		gocloak.Group
+		ParentID *string `json:"parentId,omitempty"`
+	}
+	resp, err := k.gc.GetRequestWithBearerAuth(ctx, token).
+		SetResult(&rep).
+		Get(k.adminBase + "/admin/realms/" + url.PathEscape(k.realm) + "/groups/" + url.PathEscape(id))
+	if err != nil {
+		var addressed *url.Error
+		if errors.As(err, &addressed) {
+			err = addressed.Err
+		}
+		return Group{}, "", fmt.Errorf("identity: keycloak group request failed: %w", err)
+	}
+	switch {
+	case resp.StatusCode() == http.StatusNotFound:
+		return Group{}, "", ErrNotFound
+	case resp.IsError():
+		return Group{}, "", fmt.Errorf("identity: keycloak group read failed with status %d", resp.StatusCode())
+	}
+	g := groupFrom(&rep.Group)
+	if g.ID != id {
+		return Group{}, "", fmt.Errorf("identity: keycloak answered another group")
+	}
+	parent := ""
+	if rep.ParentID != nil {
+		parent = *rep.ParentID
+	}
+	return g, parent, nil
+}
+
 // EffectiveClientRoles answers the names of the roles of the Keycloak client
 // clientID that the person holds in effect: directly, through their Groups
 // and the Groups above them, and through composite roles. It is Keycloak's

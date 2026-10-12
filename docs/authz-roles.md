@@ -93,6 +93,9 @@ What the caller may do, for the admin panel (ticket 10) to decide which menus an
   "noOwnerTeam": {"can": {"event.create": true, "...": false}},
   "editableSites": [
     {"clientId": "frontend-artlab", "name": "ARTLAB", "url": "https://artlab.yildizskylab.com"}
+  ],
+  "managedTeams": [
+    {"id": "7d1c…", "path": "/UYELER/ARGE/WEBLAB", "code": "WEBLAB", "displayName": {"tr": "Web Geliştirme"}}
   ]
 }
 ```
@@ -103,10 +106,11 @@ What the caller may do, for the admin panel (ticket 10) to decide which menus an
 - `otherTeams`: the decisions for a record of any Owner team not in `teams`. Use it for a record whose team is not listed.
 - `noOwnerTeam`: the decisions for a record without an Owner team.
 - `editableSites`: the sites whose CMS the caller may edit (CONTEXT "Site editor"), for the panel's "Düzenle" links. **A hint for the UI, not an authorization** (ipucu, yetki değil): the CMS decides every edit from the person's own token, and the site shows its editor only to a holder of `cms:access`. See [Editable sites](#editable-sites).
+- `managedTeams`: the Teams the caller is a Leader of (directly in their `LIDERLER` or `KOORDINATORLER`), for the panel's "Ekiplerim" menu. Read from Keycloak's current membership with core's service account, by Group id, never from the token; in path order. `[]` with `TEAM_DELEGATION=off`, for a service account and when Keycloak cannot be read. Kept 60 s per person, a failed read 10 s, a read waits 3 s at most, as `editableSites`; each read logs `{"event":"managed_teams",…,"teams":N}`. **A hint**: core decides every Group request. See [team-delegation.md](team-delegation.md).
 
 Look-up for a record of Owner team `t`: `teams.find(x => x.team === t)?.can ?? (t ? otherTeams.can : noOwnerTeam.can)`.
 
-`can` keys: `season.write` (Season create/update/delete), `group.read`, `group.write` (Groups, members, group role mappings), `user.read`, `user.write` (full user card, profile, extra roles, logout), `user.create`, `user.delete` (erasure request), `media.list`, `media.delete`, `media.readPrivate`, `media.uploadEventMedia`, `media.uploadCertificateTemplateMedia`, `url.create`, `url.listMine`, `url.moderate` (everyone's links), `formLink.read`, `formLink.write`, `githubActivity.read`.
+`can` keys: `season.write` (Season create/update/delete), `group.read`, `group.write` (Groups, members, group role mappings), `user.read`, `user.write` (full user card, profile, extra roles, logout), `user.create`, `user.delete` (erasure request), `media.list`, `media.delete`, `media.readPrivate`, `media.uploadEventMedia`, `media.uploadCertificateTemplateMedia`, `url.create`, `url.listMine`, `url.moderate` (everyone's links), `formLink.read`, `formLink.write`, `githubActivity.read`, `audit.read` (the Team audit record; the `audit:read` role itself in every mode, so a Privileged Group without the role, DK included, reads `false`: S11).
 
 Team keys (in `teams[].can`, `otherTeams.can`, `noOwnerTeam.can`): `event.create`, `event.update`, `event.delete`, `event.assignDoorStaff`, `ticket.read` (applicant list), `ticket.assign`, `door.checkIn`, `competitor.read`, `competitor.create`, `competitor.update`, `competitor.delete`, `certificate.read`, `certificate.issue`, `certificate.revoke`, `certificateTemplate.read`, `certificateTemplate.create`, `certificateTemplate.update`, `certificateTemplate.assign` (bindings).
 

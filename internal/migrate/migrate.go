@@ -1256,6 +1256,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE tgrelid = to_regclass('public.team_audit_records')
 			  AND tgname = 'team_audit_records_finish_only'
 		  )`,
+	// A denied row may carry no basis.
+	20261012150000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.team_audit_records')
+		  AND conname = 'team_audit_records_actor_basis_check'
+		  AND pg_get_constraintdef(oid) LIKE '%''none''%'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
