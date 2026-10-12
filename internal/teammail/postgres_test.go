@@ -89,6 +89,35 @@ func TestPostgresQueue(t *testing.T) {
 	}
 }
 
+// A row carries the mail it was queued for; a row written without one (an
+// older core) is a team's, and only the three kinds are taken.
+func TestPostgresQueueKeepsTheKind(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	q := teammail.NewPostgresQueue(pool)
+	now := time.Date(2026, 10, 12, 18, 0, 0, 0, time.UTC)
+	role := teammail.Change{ID: uuid.New(), SubjectID: uuid.New(), GroupPath: "/UYELER/DK", Action: teammail.ActionAdded, OccurredAt: now.Add(-2 * time.Minute), Kind: teammail.KindRole}
+	unset := teammail.Change{ID: uuid.New(), SubjectID: uuid.New(), GroupPath: "/UYELER/ARGE/WEBLAB", Action: teammail.ActionAdded, OccurredAt: now.Add(-time.Minute)}
+	for _, c := range []teammail.Change{role, unset} {
+		if _, err := q.Enqueue(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO team_membership_mails (id, subject_id, group_path, action, occurred_at, next_attempt_at) VALUES ($1, $2, '/UYELER/ARGE', 'added', $3, $3)`, uuid.New(), uuid.New(), now); err != nil {
+		t.Fatalf("an older core's insert: %v", err)
+	}
+	claimed, err := q.Claim(ctx, now, time.Minute, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 3 || claimed[0].Kind != teammail.KindRole || claimed[1].Kind != teammail.KindTeam || claimed[2].Kind != teammail.KindTeam {
+		t.Fatalf("claimed %+v", claimed)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO team_membership_mails (id, subject_id, group_path, action, occurred_at, next_attempt_at, kind) VALUES ($1, $2, '/x', 'added', now(), now(), 'other')`, uuid.New(), uuid.New()); err == nil {
+		t.Fatal("unknown kind accepted")
+	}
+}
+
 func TestAccountErasureForgetsQueuedTeamMails(t *testing.T) {
 	pool := migrated(t)
 	ctx := context.Background()

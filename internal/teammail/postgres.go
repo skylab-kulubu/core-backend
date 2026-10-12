@@ -14,6 +14,15 @@ type PostgresQueue struct {
 
 func NewPostgresQueue(pool *pgxpool.Pool) *PostgresQueue { return &PostgresQueue{pool: pool} }
 
+// queuedKind is the kind a row is written with: a change without one is a
+// team's, as the column's default says for rows an older core writes.
+func queuedKind(kind Kind) Kind {
+	if kind == "" {
+		return KindTeam
+	}
+	return kind
+}
+
 func (q *PostgresQueue) Enqueue(ctx context.Context, c Change) (Enqueued, error) {
 	// One statement: the opposite change waiting unclaimed is removed, or
 	// else this one is inserted unless it already waits.
@@ -24,14 +33,14 @@ func (q *PostgresQueue) Enqueue(ctx context.Context, c Change) (Enqueued, error)
 			WHERE subject_id = $2 AND group_path = $4 AND action <> $5 AND claimed_at IS NULL
 			RETURNING 1
 		), inserted AS (
-			INSERT INTO team_membership_mails (id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at)
-			SELECT $1, $2, $3, $4, $5, $6, $6
+			INSERT INTO team_membership_mails (id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at, kind)
+			SELECT $1, $2, $3, $4, $5, $6, $6, $7
 			WHERE NOT EXISTS (SELECT 1 FROM cancelled)
 			ON CONFLICT (subject_id, group_path, action) DO NOTHING
 			RETURNING 1
 		)
 		SELECT (SELECT count(*) FROM cancelled), (SELECT count(*) FROM inserted)`,
-		c.ID, c.SubjectID, c.ActorID, c.GroupPath, string(c.Action), c.OccurredAt).Scan(&cancelled, &inserted)
+		c.ID, c.SubjectID, c.ActorID, c.GroupPath, string(c.Action), c.OccurredAt, string(queuedKind(c.Kind))).Scan(&cancelled, &inserted)
 	switch {
 	case err != nil:
 		return "", err
@@ -53,7 +62,7 @@ func (q *PostgresQueue) Claim(ctx context.Context, now time.Time, lease time.Dur
 			ORDER BY next_attempt_at, occurred_at, id
 			LIMIT $3
 			FOR UPDATE SKIP LOCKED)
-		RETURNING id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at, attempts, claimed_at`,
+		RETURNING id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at, attempts, claimed_at, kind`,
 		now, now.Add(lease), limit)
 	if err != nil {
 		return nil, err
@@ -62,11 +71,12 @@ func (q *PostgresQueue) Claim(ctx context.Context, now time.Time, lease time.Dur
 	var out []Change
 	for rows.Next() {
 		var c Change
-		var action string
-		if err := rows.Scan(&c.ID, &c.SubjectID, &c.ActorID, &c.GroupPath, &action, &c.OccurredAt, &c.NextAttemptAt, &c.Attempts, &c.ClaimedAt); err != nil {
+		var action, kind string
+		if err := rows.Scan(&c.ID, &c.SubjectID, &c.ActorID, &c.GroupPath, &action, &c.OccurredAt, &c.NextAttemptAt, &c.Attempts, &c.ClaimedAt, &kind); err != nil {
 			return nil, err
 		}
 		c.Action = Action(action)
+		c.Kind = Kind(kind)
 		out = append(out, c)
 	}
 	return out, rows.Err()
