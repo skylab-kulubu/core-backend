@@ -1,14 +1,17 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -40,6 +43,24 @@ func caller(c fiber.Ctx) (authz.Principal, error) {
 		ID: ident.ID.String(), Groups: ident.Groups, Roles: ident.Roles,
 		Product: ident.Product, Client: ident.Client, ServiceAccount: ident.ServiceAccount,
 	}, nil
+}
+
+// auditUnavailableCode answers a Group write whose audit row could not be
+// opened: the change was not made (docs/team-audit.md).
+const auditUnavailableCode = "audit_unavailable"
+
+// auditContext carries the caller of a Group write to the Team audit record
+// (docs/team-audit.md): their subject, the client their token was issued to
+// and the request's id. The Group routes are Privileged's. A caller whose
+// subject is not an id carries no actor, and the write is refused (503).
+func auditContext(c fiber.Ctx, p authz.Principal) context.Context {
+	id, err := uuid.Parse(p.ID)
+	if err != nil {
+		return c.Context()
+	}
+	return teamaudit.WithActor(c.Context(), teamaudit.Actor{
+		ID: id, Basis: teamaudit.BasisPrivileged, Client: p.Client, CorrelationID: requestid.FromContext(c),
+	})
 }
 
 // optionalCaller is the signed-in caller, or the zero Principal when the
@@ -79,6 +100,11 @@ func identityError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusConflict, "Conflict", ytuManagedCode)
 	case errors.Is(err, user.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
+	case errors.Is(err, teamaudit.ErrUnavailable), errors.Is(err, teamcode.ErrUnavailable):
+		// The change was not made: without its audit row there is none.
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		c.Set(fiber.HeaderRetryAfter, "1")
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", auditUnavailableCode)
 	default:
 		return err
 	}
@@ -133,7 +159,7 @@ func (h *IdentityHandler) CreateGroup(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	created, err := h.svc.CreateGroup(c.Context(), p, body.ParentID, body.Name)
+	created, err := h.svc.CreateGroup(auditContext(c, p), p, body.ParentID, body.Name)
 	if err != nil {
 		return identityError(c, err)
 	}
@@ -152,7 +178,7 @@ func (h *IdentityHandler) UpdateGroup(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	updated, err := h.svc.UpdateGroup(c.Context(), p, c.Params("groupId"), body.Name, body.Attributes)
+	updated, err := h.svc.UpdateGroup(auditContext(c, p), p, c.Params("groupId"), body.Name, body.Attributes)
 	if err != nil {
 		return identityError(c, err)
 	}
@@ -186,7 +212,7 @@ func (h *IdentityHandler) AddMember(c fiber.Ctx) error {
 	if body.UserID == uuid.Nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	if err := h.svc.AddMember(c.Context(), p, c.Params("groupId"), body.UserID); err != nil {
+	if err := h.svc.AddMember(auditContext(c, p), p, c.Params("groupId"), body.UserID); err != nil {
 		return identityError(c, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)
@@ -201,7 +227,7 @@ func (h *IdentityHandler) RemoveMember(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	if err := h.svc.RemoveMember(c.Context(), p, c.Params("groupId"), userID); err != nil {
+	if err := h.svc.RemoveMember(auditContext(c, p), p, c.Params("groupId"), userID); err != nil {
 		return identityError(c, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)
@@ -314,7 +340,7 @@ func (h *IdentityHandler) SetGroupClientRoles(c fiber.Ctx) error {
 	if err := c.Bind().Body(&roles); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	if err := h.svc.SetGroupClientRoles(c.Context(), p, c.Params("groupId"), roles); err != nil {
+	if err := h.svc.SetGroupClientRoles(auditContext(c, p), p, c.Params("groupId"), roles); err != nil {
 		return identityError(c, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)

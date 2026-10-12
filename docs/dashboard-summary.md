@@ -36,7 +36,7 @@ All times are UTC (RFC 3339). Days and months are counted in `Europe/Istanbul`.
     {
       "id": "…", "name": "WebLab Bootcamp", "ownerTeam": "WEBLAB", "location": "D-101",
       "startDate": "2026-10-08T12:00:00Z", "endDate": "2026-10-08T15:00:00Z",
-      "active": true, "live": false, "capacity": 50,
+      "active": true, "status": "published", "live": false, "capacity": 50,
       "coverImageUrl": "https://…",
       "hasApplicationForm": true, "hasCoverImage": true,
       "applications": 46, "members": 30, "guests": 16, "checkedIn": 0,
@@ -54,9 +54,9 @@ All times are UTC (RFC 3339). Days and months are counted in `Europe/Istanbul`.
 }
 ```
 
-- **`events`**: the covered Events. `upcoming` have not started; `live` are running now. An Event without an end date runs for 12 hours from its start, as the panel counts it. Events without a start date count in `total` only.
+- **`events`**: the covered Events. `upcoming` have not started; `live` are running now. An Event without an end date runs for 24 hours from its start, the end its derived `active` uses (ADR 0066). Events without a start date count in `total` only.
 - **`applications`**: every Ticket of the covered Events, all time. `members` are Member apply Tickets (`REGISTERED`), `guests` the rest (Guest apply, Walk-in). `checkedIn` are Tickets with at least one check-in (archiving a day or session keeps its check-ins, as the applicant list does). `daily` counts the Tickets created on each of the last 30 days.
-- **`eventStats`**: the covered Events that are running, still to come, or ended within the last 30 days, by start date. The figures are the Event's own; `dailyApplications` are its last 14 days. `hasApplicationForm` is false when the Event links no form, main or extra; `hasCoverImage` when it has no cover.
+- **`eventStats`**: the covered Events that are running, still to come, or ended within the last 30 days, by start date. The figures are the Event's own; `dailyApplications` are its last 14 days. `hasApplicationForm` is false when the Event links no form, main or extra; `hasCoverImage` when it has no cover. `status` is the Event's stored status (`draft`, `published`, `cancelled`; ADR 0066) and `active` is derived from it at the summary's time: published and not ended (the end date, else 24 hours after the start; an undated Event never ends), the same end `live` uses.
 - **`members`** (or `null`): see below. `membersUnavailable: true` (and `members: null`) means the caller may see the section but Keycloak could not be read; the rest of the answer stands.
 
 Nothing in the answer carries an e-mail, phone or other contact, and no Ticket appears one by one.

@@ -240,3 +240,29 @@ func TestServiceNamesWithPostgres(t *testing.T) {
 		t.Fatalf("create the retired WEBLAB: %v", err)
 	}
 }
+
+// A database that gives no lock, or no check, is ErrUnavailable and the
+// write is never run: no Group is written.
+func TestPostgresLedgerUnavailable(t *testing.T) {
+	pool := migrated(t)
+	ledger := teamcode.NewPostgresLedger(pool)
+	if _, err := pool.Exec(context.Background(), `ALTER TABLE retired_team_codes RENAME TO retired_team_codes_gone`); err != nil {
+		t.Fatal(err)
+	}
+	err := ledger.Locked(context.Background(), func(ctx context.Context, records teamcode.Records) error {
+		_, err := records.Held(ctx, "WEBLAB")
+		return err
+	})
+	if !errors.Is(err, teamcode.ErrUnavailable) {
+		t.Fatalf("check: %v", err)
+	}
+	pool.Close()
+	ran := false
+	err = ledger.Locked(context.Background(), func(context.Context, teamcode.Records) error {
+		ran = true
+		return nil
+	})
+	if !errors.Is(err, teamcode.ErrUnavailable) || ran {
+		t.Fatalf("closed pool: %v, write ran %v", err, ran)
+	}
+}

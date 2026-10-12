@@ -28,7 +28,7 @@ A rename that only changes case (`artlab` → `ARTLAB`) keeps the code: only the
 
 Every create and rename runs its check and its Keycloak write in one transaction holding the Postgres advisory lock `core.group_names` (`pg_advisory_xact_lock`). Two creates of one name, on one core or two, cannot both pass the check; the second sees the first's Group. A core that dies mid-write gives the lock back with its connection.
 
-The check reads every Group of the realm (`GET /groups` and `GET /groups/{id}/children`, the Group reads core already does) and the record tables above. A write that Keycloak took but whose commit failed answers 500 and its error names the code left unretired.
+The check reads every Group of the realm (`GET /groups` and `GET /groups/{id}/children`, the Group reads core already does) and the record tables above. A write that Keycloak took but whose commit failed answers 500 and its error names the code left unretired. When the database cannot give the lock or the check (`teamcode.ErrUnavailable`), Keycloak is not asked and the route answers 503 `audit_unavailable`, as the Team audit record does when it cannot open its row ([`team-audit.md`](team-audit.md)).
 
 ## Answers
 

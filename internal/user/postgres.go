@@ -513,6 +513,8 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 			utm_source = '', utm_medium = '', utm_campaign = '', utm_term = '', utm_content = ''
 		WHERE user_id = $1`,
 		`UPDATE events SET archived_by = NULL WHERE archived_by = $1`,
+		`UPDATE events SET published_by = NULL WHERE published_by = $1`,
+		`UPDATE events SET cancelled_by = NULL WHERE cancelled_by = $1`,
 		`UPDATE event_days SET archived_by = NULL WHERE archived_by = $1`,
 		`UPDATE sessions SET archived_by = NULL WHERE archived_by = $1`,
 		`UPDATE seasons SET archived_by = NULL WHERE archived_by = $1`,

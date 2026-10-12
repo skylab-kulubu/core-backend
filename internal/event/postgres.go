@@ -23,7 +23,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, e.active, e.ranked, e.prize_info, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at, ` +
+var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, ` + activeSQL + `, e.status, e.published_at, e.published_by, e.cancelled_at, e.cancelled_by, e.cancel_reason, e.copied_from_event_id, e.ranked, e.prize_info, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at, ` +
 	servableCountSQL(Files) + `, ` + servableCountSQL(Videos)
 
 // servableCountSQL counts the Event's items of the list anyone can see: a
@@ -57,7 +57,7 @@ func (s *PostgresStore) list(ctx context.Context, ownerTeam string, activeOnly b
 		args = append(args, ownerTeam)
 	}
 	if activeOnly {
-		where = append(where, `e.active = true`)
+		where = append(where, activeSQL)
 	}
 	if len(where) > 0 {
 		q += ` WHERE ` + strings.Join(where, ` AND `)
@@ -225,17 +225,33 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 		return Event{}, err
 	}
 	defer tx.Rollback(ctx)
+	if e.Status == "" {
+		e.Status = StatusPublished
+	}
+	// active is no longer read (ADR 0066): it is written once, as the
+	// status, so that an older release rolled back to shows a published
+	// Event as it did and keeps a draft hidden. published_by names the
+	// actor only when they have an account row: the attribution never
+	// fails a create, and the row's guard still refuses one being erased.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO events (
 			id, name, description, location, owner_team, form_url, capacity,
 			start_date, end_date, linkedin, active, ranked, prize_info, season_id, cover_image_id,
-			attendance_rule, attendance_ratio, extra_form_urls
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+			attendance_rule, attendance_ratio, extra_form_urls,
+			status, published_at, published_by
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$18 = 'published',$11,$12,$13,$14,$15,$16,$17,
+			$18,
+			CASE WHEN $18 = 'published' THEN now() END,
+			CASE WHEN $18 = 'published' THEN (SELECT id FROM users WHERE id = $19) END)`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
-		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
-		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e))
+		e.StartDate, e.EndDate, e.Linkedin, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
+		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e),
+		string(e.Status), e.PublishedBy)
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
+	}
+	if subjectlock.IsInactiveAccountReference(err) {
+		return Event{}, ErrForbidden
 	}
 	if err != nil {
 		return Event{}, err
@@ -261,12 +277,12 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 	tag, err := tx.Exec(ctx, `
 		UPDATE events SET
 			name = $2, description = $3, location = $4, owner_team = $5, form_url = $6,
-			capacity = $7, start_date = $8, end_date = $9, linkedin = $10, active = $11,
-			ranked = $12, prize_info = $13, season_id = $14, cover_image_id = $15,
-			attendance_rule = $16, attendance_ratio = $17, extra_form_urls = $18, updated_at = now()
+			capacity = $7, start_date = $8, end_date = $9, linkedin = $10,
+			ranked = $11, prize_info = $12, season_id = $13, cover_image_id = $14,
+			attendance_rule = $15, attendance_ratio = $16, extra_form_urls = $17, updated_at = now()
 		WHERE id = $1 AND archived_at IS NULL`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
-		e.StartDate, e.EndDate, e.Linkedin, e.Active, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
+		e.StartDate, e.EndDate, e.Linkedin, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
 		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e))
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
@@ -892,7 +908,8 @@ func scanEvent(row rowScanner) (Event, error) {
 	var extraRaw []byte
 	err := row.Scan(
 		&e.ID, &e.Name, &e.Description, &e.Location, &e.OwnerTeam, &e.FormURL, &e.Capacity,
-		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Ranked, &e.PrizeInfo, &e.SeasonID,
+		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Status, &e.PublishedAt, &e.PublishedBy,
+		&e.CancelledAt, &e.CancelledBy, &e.CancelReason, &e.CopiedFromEventID, &e.Ranked, &e.PrizeInfo, &e.SeasonID,
 		&e.CoverImageID, &coverURL, &e.coverImage, &e.CoverColors, &e.AttendanceRule, &e.AttendanceRatio, &extraRaw, &e.MailListID, &e.ArchivedAt, &e.ArchivedBy, &e.CreatedAt, &e.UpdatedAt,
 		&e.FileCount, &e.VideoCount,
 	)

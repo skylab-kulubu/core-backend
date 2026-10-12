@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -78,7 +79,13 @@ func (s *service) Finalize(ctx context.Context, p authz.Principal, eventID uuid.
 	if !s.canIssue(p, ev.OwnerTeam) {
 		return Batch{}, ErrForbidden
 	}
-	if ev.Active {
+	// Attendance finalization opens when the Event is published and has
+	// ended, or is undated (ADR 0066); a draft and a cancelled Event refuse
+	// it with their reason.
+	if err := ev.StatusError(); err != nil {
+		return Batch{}, fmt.Errorf("%w: %w", ErrConflict, err)
+	}
+	if !ev.FinalizeOpenAt(time.Now()) {
 		return Batch{}, ErrConflict
 	}
 	if ev.AttendanceRule == RuleNone {
