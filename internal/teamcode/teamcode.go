@@ -155,41 +155,11 @@ func (r Rules) isTeam(path string) bool {
 }
 
 // TeamOf reports whether the Group at path is a Team or one of its Leader
-// groups, and which: the Team's path and, for a Leader group, its name
-// (role). A Team is a Group at least three deep in the members' tree
-// (/UYELER/<area>/<team>, or a Sub-team below one); a Leader group is one of
-// leaders right under a Team, with nothing under it. A Group under a
-// Privileged root of roots is neither, nor are the members' tree itself,
-// its areas, or Groups outside it.
+// groups, and which (authz.TeamOf): the Team's path and, for a Leader group,
+// its name (role).
 func TeamOf(path string, roots, leaders []string) (team, role string, ok bool) {
-	if !strings.HasPrefix(path, authz.MembersRoot+"/") || authz.PrivilegedRoot(roots, path) != "" {
-		return "", "", false
-	}
-	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	for i, segment := range segments {
-		if segment == "" {
-			return "", "", false
-		}
-		// A leader subgroup ends a path: nothing sits under one.
-		if slices.Contains(leaders, segment) && i != len(segments)-1 {
-			return "", "", false
-		}
-	}
-	team = path
-	if last := segments[len(segments)-1]; slices.Contains(leaders, last) {
-		segments = segments[:len(segments)-1]
-		team, role = "/"+strings.Join(segments, "/"), last
-	}
-	if len(segments) < minTeamDepth {
-		return "", "", false
-	}
-	return team, role, true
+	return authz.TeamOf(path, roots, leaders)
 }
-
-// minTeamDepth is the depth of a Team's own Group: /UYELER/<area>/<team>.
-// /UYELER itself is the club and /UYELER/<area> an area (ARGE,
-// ORGANIZASYON, …) or a technical Group, none of them a Team.
-const minTeamDepth = 3
 
 // parentOf is the path of the Group above the one at path, "" for a Group at
 // the realm's top.

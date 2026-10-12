@@ -17,11 +17,14 @@ Keycloak's own admin events show every such change as made by
 | `DELETE /v1/groups/:groupId/members/:userId` | `member.remove` | the Group the membership is removed from: through a parent roster, the Source group the person sits in | none; `target_user_id` is the person |
 | `PUT /v1/groups/:groupId/client-roles` | `group.roles` | the Group | the role mappings before and after, as `client:role` |
 
-All of these are Privileged's routes: `actor_basis` is `privileged`. The
-other actions the table accepts (`leader.add`, `leader.remove`,
-`team.profile`, `team.move`, `team.delete`) and the `leader` basis are for
-the delegated routes (SPEC tickets 04–08). Reads are not recorded. A change
-made in Keycloak's own console is not recorded either: core does not see it.
+Privileged's writes carry `actor_basis` `privileged`. With team delegation
+on ([team-delegation.md](team-delegation.md)), a Leader's member add and
+remove carry `leader` and, in `actor_via_group_id`, the Team whose Leader
+group grants it (the nearest one at or above the Group). The other actions
+the table accepts (`leader.add`, `leader.remove`, `team.profile`,
+`team.move`, `team.delete`) are for the delegated routes of tickets 05–08.
+Reads are not recorded. A change made in Keycloak's own console is not
+recorded either: core does not see it.
 
 ## Fields
 
@@ -29,7 +32,7 @@ made in Keycloak's own console is not recorded either: core does not see it.
 |---|---|
 | `id`, `occurred_at` | the row; when the write began |
 | `actor_id` | the caller's Keycloak subject (`sub`). No name, no e-mail |
-| `actor_basis`, `actor_via_group_id` | `privileged`; or `leader` with the Team whose Leader group grants the change |
+| `actor_basis`, `actor_via_group_id` | `privileged`; or `leader` with the Team whose Leader group grants the change; or, on a `denied` row only, `none` (the caller leads no Team of the Group) |
 | `action` | one of the eleven above (CHECK) |
 | `group_id`, `group_path` | the target Group's Keycloak id and its path at the time. A `team.create` has no id until Keycloak answers |
 | `target_user_id` | the person of a member or leader action, as a subject; set exactly for those (CHECK) |
@@ -90,7 +93,16 @@ A row changes once: a database trigger lets only a `pending` row turn into
 its outcome (and a create get its Group id); nothing else updates a row.
 
 `denied` rows (a write that delegation refuses) are written by
-`teamaudit.Writer.Deny`; the delegated routes use it (ticket 04).
+`teamaudit.Writer.Deny` from the delegated member routes (ticket 04), one
+per refused write, with the refusal's code: `forbidden`, `protected_group`,
+`leader_group_needs_parent`, `group_limit`, `group_tree_mismatch`,
+`team_code_not_unique`. A Leader refused for a Group of their own Teams
+(protected, a Leader group) keeps `leader` and their Team; anyone else is
+`none` (migration `20261012150000`). Not recorded: a refusal with
+delegation off (the route is Privileged's as before), a Group id Keycloak
+does not know, a person who is no active account (404) and a write over
+the minute's budget (429), which reads nothing. A denied row that cannot
+be written is logged and the request is still refused.
 
 ## Who sees it
 

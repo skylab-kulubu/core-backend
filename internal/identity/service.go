@@ -13,6 +13,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 	"golang.org/x/sync/errgroup"
@@ -40,6 +41,10 @@ type Service interface {
 	ListPublicTeams(ctx context.Context) ([]PublicTeam, error)
 	PublicMembers(ctx context.Context, team string) (Roster, error)
 	PublicLeaders(ctx context.Context, team string) (Roster, error)
+	// ManagedGroups is the caller's managed tree (docs/team-delegation.md).
+	ManagedGroups(ctx context.Context, p authz.Principal) ([]ManagedNode, error)
+	// MemberCandidates searches the people the caller may add to a Group.
+	MemberCandidates(ctx context.Context, p authz.Principal, groupRef, q string) ([]MemberCandidate, error)
 }
 
 type service struct {
@@ -54,6 +59,8 @@ type service struct {
 	membership            MembershipNotifier
 	names                 teamcode.Rules
 	codes                 teamcode.Ledger
+	delegation            *TeamDelegation
+	audit                 teamaudit.Writer
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer, mailers ...mail.Mailer) Service {
@@ -78,6 +85,14 @@ type Options struct {
 	// rename holds from its check to its write. Nil is a ledger of this
 	// process only, with no records.
 	TeamCodes teamcode.Ledger
+	// Delegation decides and reads for team delegation
+	// (docs/team-delegation.md): the Group routes' delegated way, the
+	// managed tree. Nil, or switched off, leaves the Group routes
+	// Privileged's alone, as before.
+	Delegation *TeamDelegation
+	// TeamAudit receives the denied rows of delegated writes (the changes
+	// themselves are recorded by AuditedDirectory). Nil records none.
+	TeamAudit teamaudit.Writer
 }
 
 // MembershipNotifier hears of membership changes made through the service.
@@ -122,6 +137,8 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		groupCache:            options.GroupCache,
 		membership:            options.Membership,
 		codes:                 options.TeamCodes,
+		delegation:            options.Delegation,
+		audit:                 options.TeamAudit,
 	}
 	if options.GroupNames != nil {
 		s.names = *options.GroupNames
@@ -165,7 +182,8 @@ func (s *service) ListGroups(ctx context.Context, p authz.Principal) ([]Group, e
 
 func (s *service) GetGroup(ctx context.Context, p authz.Principal, groupRef string) (Group, error) {
 	if err := s.allow(p, authz.TypeGroup, authz.Read); err != nil {
-		return Group{}, err
+		_, _, g, err := s.delegatedRead(ctx, p, groupRef)
+		return g, err
 	}
 	return s.dir.GetGroup(ctx, groupRef)
 }
@@ -300,7 +318,7 @@ func (s *service) nameFree(ctx context.Context, records teamcode.Records, scope 
 
 func (s *service) Members(ctx context.Context, p authz.Principal, groupRef string) ([]GroupMember, error) {
 	if err := s.allow(p, authz.TypeGroup, authz.Read); err != nil {
-		return nil, err
+		return s.delegatedMembers(ctx, p, groupRef)
 	}
 	g, err := s.dir.GetGroup(ctx, groupRef)
 	if err != nil {
@@ -315,7 +333,7 @@ func (s *service) Members(ctx context.Context, p authz.Principal, groupRef strin
 
 func (s *service) AddMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error {
 	if err := s.allow(p, authz.TypeGroup, authz.Update); err != nil {
-		return err
+		return s.delegatedAddMember(ctx, p, groupRef, userID)
 	}
 	// Forgotten even when the write fails: it may have reached Keycloak.
 	defer s.forgetGroups(userID)
@@ -370,7 +388,7 @@ func (s *service) addNotification(ctx context.Context, groupRef string, userID u
 
 func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error {
 	if err := s.allow(p, authz.TypeGroup, authz.Update); err != nil {
-		return err
+		return s.delegatedRemoveMember(ctx, p, groupRef, userID)
 	}
 	defer s.forgetGroups(userID)
 	g, err := s.dir.GetGroup(ctx, groupRef)
@@ -396,16 +414,20 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 	return s.dir.RemoveMember(ctx, g.ID, userID)
 }
 
+// forgetGroups drops what core remembers of userID's Groups: for Group
+// overage tokens and for team delegation.
 func (s *service) forgetGroups(userID uuid.UUID) {
 	if s.groupCache != nil {
 		s.groupCache.Forget(userID)
 	}
+	s.delegation.Forget(userID)
 }
 
 func (s *service) forgetAllGroups() {
 	if s.groupCache != nil {
 		s.groupCache.ForgetAll()
 	}
+	s.delegation.ForgetAll()
 }
 
 func (s *service) ListClientRoles(ctx context.Context, p authz.Principal) ([]ClientRole, error) {
@@ -759,6 +781,9 @@ func (s *service) SetGroupClientRoles(ctx context.Context, p authz.Principal, gr
 	if err != nil {
 		return err
 	}
+	// A Group's role mappings decide whether it is protected: forgotten
+	// even when the write fails, since it may have reached Keycloak.
+	defer s.delegation.ForgetAll()
 	return s.dir.SetGroupClientRoles(ctx, g.ID, roles)
 }
 

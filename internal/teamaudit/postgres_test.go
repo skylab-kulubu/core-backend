@@ -118,6 +118,19 @@ func TestPostgresWriterPendingThenOutcome(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM team_audit_records WHERE outcome = 'denied' AND error_code = 'leader_group_needs_parent' AND actor_basis = 'leader'`).Scan(&denied); err != nil || denied != 1 {
 		t.Fatalf("denied %d %v", denied, err)
 	}
+
+	// A caller with no basis for the change: denied only (ticket 04).
+	nobody := memberAdd(uuid.New(), uuid.New())
+	nobody.Actor.Basis = teamaudit.BasisNone
+	if err := w.Deny(ctx, nobody, "forbidden"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM team_audit_records WHERE outcome = 'denied' AND error_code = 'forbidden' AND actor_basis = 'none' AND actor_via_group_id IS NULL`).Scan(&denied); err != nil || denied != 1 {
+		t.Fatalf("denied without a basis %d %v", denied, err)
+	}
+	if _, err := w.Begin(ctx, nobody); !errors.Is(err, teamaudit.ErrUnavailable) {
+		t.Fatalf("begun without a basis: %v", err)
+	}
 }
 
 // The table refuses what the writer never writes, and a finished row
@@ -137,6 +150,9 @@ func TestTeamAuditRecordsChecksAndFinishOnly(t *testing.T) {
 		"unknown action":         {"privileged", "member.promote", group, "/UYELER", target, "ok", nil},
 		"unknown outcome":        {"privileged", "member.add", group, "/UYELER", target, "done", nil},
 		"leader without a team":  {"leader", "member.add", group, "/UYELER", target, "ok", nil},
+		"no basis, not denied":   {"none", "member.add", group, "/UYELER", target, "pending", nil},
+		"no basis, ok":           {"none", "member.add", group, "/UYELER", target, "ok", nil},
+		"unknown basis":          {"member", "member.add", group, "/UYELER", target, "denied", "forbidden"},
 		"member without person":  {"privileged", "member.add", group, "/UYELER", nil, "ok", nil},
 		"roles with a person":    {"privileged", "group.roles", group, "/UYELER", target, "ok", nil},
 		"no group":               {"privileged", "member.add", nil, "/UYELER", target, "ok", nil},

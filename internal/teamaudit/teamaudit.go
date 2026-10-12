@@ -86,6 +86,9 @@ const (
 	// BasisLeader: the actor is a Leader of a Team the target sits in or
 	// under (ticket 04); Actor.ViaGroupID names that Team.
 	BasisLeader Basis = "leader"
+	// BasisNone: the actor has no basis for the change. Only a denied row
+	// (Writer.Deny) carries it: a write that is made always has one.
+	BasisNone Basis = "none"
 )
 
 // Actor is who makes the change, as the request carries them.
@@ -201,6 +204,15 @@ type Writer interface {
 	Deny(ctx context.Context, r Record, errorCode string) error
 }
 
+// checkOutcome refuses a row opened as outcome that its basis cannot have:
+// BasisNone is for denied rows only.
+func (r Record) checkOutcome(outcome Outcome) string {
+	if r.Actor.Basis == BasisNone && outcome != OutcomeDenied {
+		return "invalid_basis"
+	}
+	return ""
+}
+
 // normalize checks r and cuts its texts to their limits. The error is a
 // short code.
 func (r Record) normalize() (Record, string) {
@@ -214,6 +226,10 @@ func (r Record) normalize() (Record, string) {
 		}
 	case BasisLeader:
 		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil {
+			return r, "invalid_basis"
+		}
+	case BasisNone:
+		if r.Actor.ViaGroupID != "" {
 			return r, "invalid_basis"
 		}
 	default:
