@@ -1241,6 +1241,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.team_membership_mails_due_idx') IS NOT NULL
 		  AND to_regclass('public.team_membership_mails_change_idx') IS NOT NULL
 		  AND to_regclass('public.team_membership_mails_actor_idx') IS NOT NULL`,
+	// The retired Team codes.
+	20261012120000: `SELECT 1 WHERE to_regclass('public.retired_team_codes') IS NOT NULL`,
 	// The Team audit record, its indexes and its finish-only trigger.
 	20261012121000: `
 		SELECT 1

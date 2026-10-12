@@ -13,8 +13,9 @@ out while fewer than two private repositories are active.
 
 ## Who may read it
 
-A Privileged person (`authz.TypeGithubActivity`): a member of `ADMIN`, `YK`
-or `DK`, or a holder of the `core` role `github:activity:read`, as
+A Privileged person (`authz.TypeGithubActivity`): a member of a Privileged
+root (`ADMIN`, `YK` or `DK`; `AUTHZ_PRIVILEGED_ROOTS`) or of a Group under
+one, or a holder of the `core` role `github:activity:read`, as
 `AUTHZ_ROLE_MODE` says ([authz-roles.md](authz-roles.md)). Everyone else gets
 403, a request without a bearer 401, and a product's service account 403 even
 in such a Group or with the role.

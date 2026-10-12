@@ -12,6 +12,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
+	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -73,7 +74,10 @@ func optionalCaller(c fiber.Ctx) authz.Principal {
 }
 
 func identityError(c fiber.Ctx, err error) error {
+	var name *teamcode.Error
 	switch {
+	case errors.As(err, &name):
+		return groupNameError(c, name)
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
 	case errors.Is(err, identity.ErrForbidden):
@@ -103,6 +107,19 @@ func identityError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", auditUnavailableCode)
 	default:
 		return err
+	}
+}
+
+// groupNameError answers a Group name the Team code rule refused
+// (docs/team-codes.md): a name that is not a code or is reserved cannot be
+// processed (422), one that is taken or would move a Privileged root
+// conflicts with what exists (409).
+func groupNameError(c fiber.Ctx, err *teamcode.Error) error {
+	switch err.Code {
+	case teamcode.NameTaken, teamcode.PrivilegedRoot:
+		return problemDetailCode(c, fiber.StatusConflict, "Conflict", err.Detail, err.Code)
+	default:
+		return problemDetailCode(c, fiber.StatusUnprocessableEntity, "Unprocessable Content", err.Detail, err.Code)
 	}
 }
 
