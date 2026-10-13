@@ -1144,6 +1144,62 @@ func (k *Keycloak) KeycloakAdminRole(ctx context.Context, groupID string) (strin
 	return "", nil
 }
 
+// RoleHoldsKeycloakAdmin is the realm-management role role is or holds as
+// a composite at any depth (maxCompositeDepth; deeper counts as one), ""
+// for none (KeycloakAdminGroups). A realm role inside the composite answers
+// that role: its own composites are not readable without view-realm, so
+// it counts as one that may hold administration (fail-closed). The
+// composites are read by id (GET /roles-by-id/{id}/composites) and their
+// clients by UUID, as GroupProtection reads them.
+func (k *Keycloak) RoleHoldsKeycloakAdmin(ctx context.Context, role ClientRole) (string, error) {
+	if role.ClientID == KeycloakAdminClient {
+		return role.Role, nil
+	}
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	r, err := k.lookupRole(ctx, token, role.ClientID, role.Role)
+	if err != nil {
+		return "", err
+	}
+	seen := map[string]bool{}
+	var find func(r gocloak.Role, depth int) (string, error)
+	find = func(r gocloak.Role, depth int) (string, error) {
+		if !gocloak.PBool(r.Composite) || r.ID == nil || seen[*r.ID] {
+			return "", nil
+		}
+		seen[*r.ID] = true
+		if depth >= maxCompositeDepth {
+			return "composite nested too deep", nil
+		}
+		children, err := k.gc.GetCompositeRolesByRoleID(ctx, token, k.realm, *r.ID)
+		if err != nil {
+			return "", mapKCErr(err)
+		}
+		for _, child := range children {
+			if child == nil {
+				continue
+			}
+			if !gocloak.PBool(child.ClientRole) {
+				return "realm role " + gocloak.PString(child.Name), nil
+			}
+			client, err := k.clientIDOf(ctx, token, gocloak.PString(child.ContainerID))
+			if err != nil {
+				return "", err
+			}
+			if client == KeycloakAdminClient {
+				return gocloak.PString(child.Name), nil
+			}
+			if got, err := find(*child, depth+1); err != nil || got != "" {
+				return got, err
+			}
+		}
+		return "", nil
+	}
+	return find(r, 0)
+}
+
 // clientIDOf is the client id of the client whose Keycloak UUID is uuid,
 // kept for the process.
 func (k *Keycloak) clientIDOf(ctx context.Context, token, uuid string) (string, error) {
@@ -1268,6 +1324,11 @@ func (k *Keycloak) SetGroupClientRoles(ctx context.Context, groupID string, role
 			if _, ok := haveKeys[key]; ok {
 				continue
 			}
+			// Keycloak administration is never given through core (K3);
+			// the service refuses it first with keycloak_admin_role.
+			if clientID == KeycloakAdminClient {
+				return ErrForbidden
+			}
 			role, err := k.lookupRole(ctx, token, clientID, r.Role)
 			if err != nil {
 				return err
@@ -1318,6 +1379,11 @@ func (k *Keycloak) UserExtraRoles(ctx context.Context, userID uuid.UUID) ([]Clie
 }
 
 func (k *Keycloak) AddUserExtraRole(ctx context.Context, userID uuid.UUID, role ClientRole) error {
+	// Keycloak administration is never given through core (K3); the
+	// service refuses it first with keycloak_admin_role.
+	if role.ClientID == KeycloakAdminClient {
+		return ErrForbidden
+	}
 	token, err := k.accessToken(ctx)
 	if err != nil {
 		return err

@@ -61,6 +61,8 @@ func newRoleRulesEnv(t *testing.T, options identity.Options) roleRulesEnv {
 	app.Post("/v1/users/:id/client-roles", h.AddUserExtraRole)
 	app.Delete("/v1/users/:id/client-roles", h.RemoveUserExtraRole)
 	app.Put("/v1/groups/:groupId/client-roles", h.SetGroupClientRoles)
+	app.Post("/v1/groups", h.CreateGroup)
+	app.Patch("/v1/groups/:groupId", h.UpdateGroup)
 	app.Post("/v1/groups/:groupId/members", h.AddMember)
 	app.Delete("/v1/groups/:groupId/members/:userId", h.RemoveMember)
 	return roleRulesEnv{t: t, dir: dir, app: app}
@@ -244,5 +246,87 @@ func TestNoMembershipChangeInAKeycloakAdminGroup(t *testing.T) {
 	// Any other Group: as before.
 	if got := e.send(fiber.MethodPost, "/v1/groups/g-weblab/members", add); got.status != fiber.StatusNoContent {
 		t.Errorf("weblab: %d %v", got.status, got.body)
+	}
+}
+
+// Keycloak administration is never mapped through core (K3; review of #245,
+// B1): a realm-management role, or a composite that holds one at any depth
+// or holds a realm role core cannot see into, is refused on a Group and on
+// a person, a service account included; nothing reaches the directory.
+func TestKeycloakAdminRoleIsNeverMapped(t *testing.T) {
+	t.Parallel()
+	e := newRoleRulesEnv(t, identity.Options{})
+	ctx := context.Background()
+	manage := identity.ClientRole{ClientID: identity.KeycloakAdminClient, Role: "manage-users"}
+	deep := identity.ClientRole{ClientID: "skymail", Role: "skymail:access"}
+	middle := identity.ClientRole{ClientID: "forms", Role: "skyforms:access"}
+	e.dir.PutCompositeRole(deep, middle)
+	e.dir.PutCompositeRole(middle, manage)
+	realmHolder := identity.ClientRole{ClientID: "core", Role: "url:access"}
+	e.dir.PutCompositeRole(realmHolder, identity.ClientRole{Role: "SOME_REALM_ROLE"})
+	service := uuid.New()
+	e.dir.PutUser(identity.Person{ID: service, Username: "service-account-x", ServiceAccount: true})
+
+	for _, body := range []string{
+		`[{"clientId":"realm-management","role":"manage-users"}]`,
+		`[{"clientId":"skymail","role":"skymail:access"}]`,
+		`[{"clientId":"forms","role":"skyforms:access"}]`,
+		`[{"clientId":"core","role":"url:access"}]`,
+	} {
+		for _, group := range []string{"g-yk", "g-forms-access", "g-weblab-leaders"} {
+			got := e.send(fiber.MethodPut, "/v1/groups/"+group+"/client-roles", body)
+			if got.status != fiber.StatusForbidden || got.body["code"] != identity.CodeKeycloakAdminRole {
+				t.Errorf("%s %s: %d %v", group, body, got.status, got.body)
+			}
+			if len(e.roles(group)) != 0 {
+				t.Errorf("%s %s: written", group, body)
+			}
+		}
+		one := strings.TrimSuffix(strings.TrimPrefix(body, "["), "]")
+		got := e.send(fiber.MethodPost, "/v1/users/"+service.String()+"/client-roles", one)
+		if got.status != fiber.StatusForbidden || got.body["code"] != identity.CodeKeycloakAdminRole {
+			t.Errorf("service account %s: %d %v", one, got.status, got.body)
+		}
+		if roles, _ := e.dir.UserExtraRoles(ctx, service); len(roles) != 0 {
+			t.Errorf("service account %s: written %v", one, roles)
+		}
+	}
+	// A role that holds no administration still maps.
+	if got := e.send(fiber.MethodPut, "/v1/groups/g-yk/client-roles", `[{"clientId":"core","role":"events:manage"}]`); got.status != fiber.StatusNoContent {
+		t.Errorf("plain role: %d %v", got.status, got.body)
+	}
+}
+
+// The placement rule's structural holes (review of #245): no Group under a
+// role group, and a role-bearing top Leader group is not renamed into a
+// Team.
+func TestRolePlacementCreateAndRename(t *testing.T) {
+	t.Parallel()
+	e := newRoleRulesEnv(t, identity.Options{})
+	ctx := context.Background()
+	got := e.send(fiber.MethodPost, "/v1/groups", `{"name":"ALT","parentId":"g-forms-access"}`)
+	if got.status != fiber.StatusConflict || got.body["code"] != identity.CodeRolePlacement || got.body["reason"] != authz.PlacementRolesGroupNotLeaf {
+		t.Errorf("create under a role group: %d %v", got.status, got.body)
+	}
+	if got := e.send(fiber.MethodPost, "/v1/groups", `{"name":"SKYMAIL-ACCESS","parentId":"g-roller"}`); got.status != fiber.StatusCreated {
+		t.Errorf("a new role group: %d %v", got.status, got.body)
+	}
+
+	if err := e.dir.SetGroupClientRoles(ctx, "g-weblab-leaders", []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}}); err != nil {
+		t.Fatal(err)
+	}
+	got = e.send(fiber.MethodPatch, "/v1/groups/g-weblab-leaders", `{"name":"ESKI-LIDERLER"}`)
+	if got.status != fiber.StatusConflict || got.body["reason"] != authz.PlacementTeam {
+		t.Errorf("rename a role-bearing top Leader group: %d %v", got.status, got.body)
+	}
+	// Without roles it renames as before; a Team mapped before the rule too.
+	if got := e.send(fiber.MethodPatch, "/v1/groups/g-front-leaders", `{"name":"KOORDINATORLER"}`); got.status != fiber.StatusOK {
+		t.Errorf("rename a Leader group without roles: %d %v", got.status, got.body)
+	}
+	if err := e.dir.SetGroupClientRoles(ctx, "g-front", []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.send(fiber.MethodPatch, "/v1/groups/g-front", `{"name":"FRONTEND"}`); got.status != fiber.StatusOK {
+		t.Errorf("rename a Team mapped before the rule: %d %v", got.status, got.body)
 	}
 }

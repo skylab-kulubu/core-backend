@@ -263,6 +263,9 @@ func (s *service) CreateGroup(ctx context.Context, p authz.Principal, parentRef,
 		// The Group the rule was checked under is the one written under.
 		parentRef, parentPath = parent.ID, parent.Path
 	}
+	if err := roleGroupStaysLeaf(parentPath); err != nil {
+		return Group{}, err
+	}
 	scope, err := s.names.Create(parentPath, name)
 	if err != nil {
 		return Group{}, err
@@ -307,6 +310,9 @@ func (s *service) UpdateGroup(ctx context.Context, p authz.Principal, groupRef, 
 	}
 	scope, err := s.names.Rename(g.Path, name, len(subgroups) == 0)
 	if err != nil {
+		return Group{}, err
+	}
+	if err := s.renameKeepsPlacement(ctx, g, name, len(subgroups) > 0); err != nil {
 		return Group{}, err
 	}
 	// A new name is a new path for the Group and everything under it;
@@ -846,7 +852,11 @@ func (s *service) SetGroupClientRoles(ctx context.Context, p authz.Principal, gr
 	if err != nil {
 		return err
 	}
-	if err := s.placementAllows(ctx, g, roles); err != nil {
+	added := s.addedRoles(ctx, g, roles)
+	if err := s.noKeycloakAdminRole(ctx, added); err != nil {
+		return err
+	}
+	if err := s.placementAllows(ctx, g, added); err != nil {
 		return err
 	}
 	// A Group's role mappings decide whether it is protected: forgotten
@@ -936,6 +946,9 @@ func (s *service) AddUserExtraRole(ctx context.Context, p authz.Principal, id uu
 	}
 	if !s.directUserRoles && !person.ServiceAccount {
 		return directRoleRefused()
+	}
+	if err := s.noKeycloakAdminRole(ctx, []ClientRole{role}); err != nil {
+		return err
 	}
 	return s.dir.AddUserExtraRole(ctx, id, role)
 }
