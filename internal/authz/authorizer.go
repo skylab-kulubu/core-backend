@@ -93,6 +93,14 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		if action != Read && action != Create && action != Update {
 			return false
 		}
+		if action == Read && a.globalReader(p) {
+			return true
+		}
+		// A Privileged reader (DK) changes no form link, whatever roles
+		// its token carries (review of #244, A2).
+		if action != Read && a.readerOnly(p) {
+			return false
+		}
 		return a.privilegedGroupOnly(p, action == Read, RoleURLModerator) || hasRole(p, "url:forms", RoleURLModerator)
 	case TypeFormResponse:
 		// Only the forms service reports the answers to its forms, and a
@@ -463,6 +471,13 @@ func (a *authorizer) allowURL(p Principal, r Resource, action Action) bool {
 	if a.privilegedGroupOnly(p, action == Read || action == ReadMe, RoleURLModerator, RoleURLAccess) {
 		return true
 	}
+	if (action == Read || action == ReadMe) && a.globalReader(p) {
+		return true
+	}
+	// url:moderator changes everyone's links; a Privileged reader (DK)
+	// keeps only what is their own (url:create, url:access on their own
+	// links), whatever roles its token carries (review of #244, A2).
+	moderator := hasRole(p, "url:moderator") && !a.readerOnly(p)
 	switch action {
 	case Create:
 		return p.ID != "" && hasRole(p, "url:create", "url:access")
@@ -471,7 +486,7 @@ func (a *authorizer) allowURL(p Principal, r Resource, action Action) bool {
 	case Read:
 		return hasRole(p, "url:moderator")
 	case Update:
-		if hasRole(p, "url:moderator") {
+		if moderator {
 			return true
 		}
 		if r.OwnerID == "" || r.OwnerID != p.ID {
@@ -479,7 +494,7 @@ func (a *authorizer) allowURL(p Principal, r Resource, action Action) bool {
 		}
 		return hasRole(p, "url:update", "url:access")
 	case Delete:
-		if hasRole(p, "url:moderator") {
+		if moderator {
 			return true
 		}
 		if r.OwnerID == "" || r.OwnerID != p.ID {
@@ -504,9 +519,27 @@ func hasRole(p Principal, names ...string) bool {
 
 func (a *authorizer) Permitted(p Principal, role string) bool {
 	if role == RoleGlobalRead {
-		return a.privilegedRead(p, RoleGlobalRead)
+		// A reader: in a reader root and no writer root (where the mode
+		// reads Groups), or holding the role (where it reads roles).
+		// ADMIN and YK read everything too, but are no readers.
+		return (a.mode != RoleModeRoles && a.readerOnly(p)) || a.globalReader(p)
 	}
 	return a.privileged(p, role)
+}
+
+// readerOnly reports whether p is in a Privileged reader root (DK) and in
+// no other Privileged root: such a person changes nothing a Privileged
+// check stands for, in any mode, whatever roles the token carries
+// (defence in depth: Keycloak may still map write roles to DK; review of
+// #244, A2). Read from the token's Groups, which every mode carries.
+func (a *authorizer) readerOnly(p Principal) bool {
+	return a.privilegedGroup(p, true) != "" && a.privilegedGroup(p, false) == ""
+}
+
+// globalReader reports whether p holds global:read where the mode reads
+// roles: a person, never a service account.
+func (a *authorizer) globalReader(p Principal) bool {
+	return a.mode != RoleModeGroups && !p.ServiceAccount && hasRole(p, RoleGlobalRead)
 }
 
 // privileged is the Privileged answer of a check that role stands for
@@ -531,6 +564,9 @@ func (a *authorizer) privilegedRead(p Principal, role string) bool {
 }
 
 func (a *authorizer) decide(p Principal, role string, read bool) bool {
+	if !read && a.readerOnly(p) {
+		return false
+	}
 	names := roleNames(role)
 	if read {
 		names = append(names, RoleGlobalRead)

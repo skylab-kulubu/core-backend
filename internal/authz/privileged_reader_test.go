@@ -20,6 +20,10 @@ func TestPrivilegedReaderRootsFromEnv(t *testing.T) {
 		}
 	}
 	roots := DefaultPrivilegedRoots()
+	// Every root a reader: nobody would write.
+	if got, err := PrivilegedReaderRootsFromEnv(env("/DK"), []string{"/DK"}); err == nil {
+		t.Errorf("only root a reader: %v, want an error", got)
+	}
 	for _, tc := range []struct {
 		raw   string
 		roots []string
@@ -45,6 +49,8 @@ func TestPrivilegedReaderRootsFromEnv(t *testing.T) {
 		"/DK,,/UYELER/DK", // an empty entry
 		"/DK,/DK",         // named twice
 		"DK",              // no leading slash, no root
+		"/ADMIN",          // ADMIN never reads only
+		"/DK,/UYELER/ADMIN",
 	} {
 		got, err := PrivilegedReaderRootsFromEnv(env(raw), roots)
 		if err == nil {
@@ -121,9 +127,9 @@ var readerReads = []decision{
 	{"audit record", Resource{Type: TypeTeamAudit}, Read},
 }
 
-// readerShortcutReads are reads through the Privileged Group shortcut alone
-// (short links, form links): nothing in the roles mode, where url:moderator
-// decides.
+// readerShortcutReads are the short-link and form-link reads: the Group
+// shortcut in the groups and both modes, global:read in the both and roles
+// modes (Yusuf, 2026-10-13: DK reads them in every mode).
 var readerShortcutReads = []decision{
 	{"everyone's short links", Resource{Type: TypeURL}, Read},
 	{"my short links", Resource{Type: TypeURL}, ReadMe},
@@ -184,8 +190,8 @@ func TestPrivilegedReader_ReadsEverythingChangesNothing(t *testing.T) {
 			}
 		}
 		for _, d := range readerShortcutReads {
-			if got := az.Allow(dk, d.r, d.a); got != (mode != RoleModeRoles) {
-				t.Errorf("%s: DK %s = %v", mode, d.name, got)
+			if !az.Allow(dk, d.r, d.a) {
+				t.Errorf("%s: DK %s = false", mode, d.name)
 			}
 		}
 		for _, d := range readerWrites {
@@ -277,10 +283,7 @@ func TestCapabilities_PrivilegedReader(t *testing.T) {
 		if !slices.Equal(c.Permissions, []string{RoleGlobalRead}) {
 			t.Errorf("%s: permissions = %v", mode, c.Permissions)
 		}
-		want := slices.Clone(reads)
-		if mode != RoleModeRoles {
-			want = append(want, shortcut...)
-		}
+		want := append(slices.Clone(reads), shortcut...)
 		slices.Sort(want)
 		if got := trueKeys(c.Can); !slices.Equal(got, want) {
 			t.Errorf("%s: can = %v, want %v", mode, got, want)
@@ -291,6 +294,82 @@ func TestCapabilities_PrivilegedReader(t *testing.T) {
 			if got := trueKeys(scope); !slices.Equal(got, want) {
 				t.Errorf("%s: team scope = %v, want %v", mode, got, want)
 			}
+		}
+	}
+}
+
+// DK's token as production's Keycloak seeds it today: every role of the
+// contract (CORE_PRIVILEGED_NAMES=(ADMIN YK DK)), url:moderator and
+// url:access included. In every mode DK still changes nothing a Privileged
+// member or a moderator changes; only what is its own (review of #244, A2:
+// defence in depth, the code does not rely on Keycloak removing them).
+func TestPrivilegedReader_WriteRolesInTheTokenChangeNothing(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []RoleMode{RoleModeGroups, RoleModeBoth, RoleModeRoles} {
+		az := NewAuthorizer(policyIn(mode))
+		dk := Principal{ID: "dk", Groups: []string{"/UYELER/DK"}, Roles: append(PermissionRoles(), RoleAuditRead, "url:forms", "url:update", "url:delete")}
+		for _, d := range readerWrites {
+			if d.r.Type == TypeURL && d.r.OwnerID == "" && d.a == Create {
+				continue // creating one's own link: below
+			}
+			if az.Allow(dk, d.r, d.a) {
+				t.Errorf("%s: DK with write roles: %s = true", mode, d.name)
+			}
+		}
+		for _, d := range readerReads {
+			if !az.Allow(dk, d.r, d.a) {
+				t.Errorf("%s: DK with write roles: %s = false", mode, d.name)
+			}
+		}
+		c := az.Capabilities(dk)
+		for _, key := range []string{"group.write", "user.write", "season.write", "url.moderate", "formLink.write"} {
+			if key == "url.moderate" {
+				if !c.Can[key] { // reading everyone's links
+					t.Errorf("%s: can[%s] = false", mode, key)
+				}
+				continue
+			}
+			if c.Can[key] {
+				t.Errorf("%s: can[%s] = true", mode, key)
+			}
+		}
+		if slices.ContainsFunc(c.Permissions, func(r string) bool { return r != RoleGlobalRead }) {
+			t.Errorf("%s: permissions = %v", mode, c.Permissions)
+		}
+
+		// url:moderator: reads everyone's links, changes none of them.
+		mod := Principal{ID: "dk", Groups: []string{"/UYELER/DK"}, Roles: []string{RoleURLModerator}}
+		other := Resource{Type: TypeURL, OwnerID: "someone"}
+		if !az.Allow(mod, Resource{Type: TypeURL}, Read) {
+			t.Errorf("%s: DK url:moderator does not read everyone's links", mode)
+		}
+		for _, a := range []Action{Update, Delete} {
+			if az.Allow(mod, other, a) {
+				t.Errorf("%s: DK url:moderator %s someone's link", mode, a)
+			}
+		}
+		for _, a := range []Action{Create, Update} {
+			if az.Allow(mod, Resource{Type: TypeFormLink}, a) {
+				t.Errorf("%s: DK url:moderator %s a form link", mode, a)
+			}
+		}
+		// url:access: one's own links stay.
+		own := Principal{ID: "dk", Groups: []string{"/UYELER/DK"}, Roles: []string{RoleURLAccess}}
+		mine := Resource{Type: TypeURL, OwnerID: "dk"}
+		for _, a := range []Action{Update, Delete} {
+			if !az.Allow(own, mine, a) {
+				t.Errorf("%s: DK url:access %s own link = false", mode, a)
+			}
+			if az.Allow(own, other, a) {
+				t.Errorf("%s: DK url:access %s someone's link", mode, a)
+			}
+		}
+		if !az.Allow(own, Resource{Type: TypeURL}, Create) || !az.Allow(own, Resource{Type: TypeURL}, ReadMe) {
+			t.Errorf("%s: DK url:access cannot create or list own links", mode)
+		}
+		// A moderator outside DK still moderates.
+		if !az.Allow(Principal{ID: "m", Roles: []string{RoleURLModerator}}, other, Delete) {
+			t.Errorf("%s: a moderator outside DK lost moderation", mode)
 		}
 	}
 }

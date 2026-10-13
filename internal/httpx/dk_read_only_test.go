@@ -30,8 +30,11 @@ func (e *delegationEnv) withBoards() {
 
 // boardToken is name's token as the mode reads it: the groups claim from
 // the directory, and from the both mode on the roles Keycloak maps to the
-// person's board (DK: global:read and audit:read; ADMIN and YK: the
-// contract's roles and audit:read).
+// person's board (ADMIN and YK: the contract's roles and audit:read). DK's
+// token carries, in every mode, what production's Keycloak seeds today
+// (every role of the contract, url:moderator and url:access included) and
+// the new global:read and audit:read: the code must not rely on Keycloak
+// taking DK's write roles off (review of #244, A2).
 func (e *delegationEnv) boardToken(name string, mode authz.RoleMode) string {
 	e.t.Helper()
 	mine, err := e.dir.GroupsForUser(context.Background(), e.people[name])
@@ -44,9 +47,10 @@ func (e *delegationEnv) boardToken(name string, mode authz.RoleMode) string {
 	}
 	roles := []string{authz.RoleAuditRead}
 	switch {
-	case mode == authz.RoleModeGroups:
 	case name == "dk":
 		roles = append(roles, authz.RoleGlobalRead)
+		roles = append(roles, authz.PermissionRoles()...)
+	case mode == authz.RoleModeGroups:
 	default:
 		roles = append(roles, authz.PermissionRoles()...)
 	}
@@ -112,7 +116,7 @@ func TestDKReadsEverythingChangesNothing(t *testing.T) {
 			if err := json.Unmarshal(e.send(dk, fiber.MethodGet, "/v1/users/me/capabilities", "").body, &caps); err != nil {
 				t.Fatal(err)
 			}
-			for _, key := range []string{"season.write", "group.write", "user.write", "user.create", "user.delete", "media.delete", "url.create", "formLink.write"} {
+			for _, key := range []string{"season.write", "group.write", "user.write", "user.create", "user.delete", "media.delete", "formLink.write"} { // url.create is its own links (url:access)
 				if caps.Can[key] {
 					t.Errorf("DK capabilities %s = true", key)
 				}
@@ -126,6 +130,33 @@ func TestDKReadsEverythingChangesNothing(t *testing.T) {
 				if caps.OtherTeams.Can[key] || caps.NoOwnerTeam.Can[key] {
 					t.Errorf("DK capabilities team %s = true", key)
 				}
+			}
+
+			// Short links: DK reads everyone's, changes none but its own
+			// (url:moderator in the token changes nothing).
+			yk := e.boardToken("yk", mode)
+			theirs := e.send(yk, fiber.MethodPost, "/v1/urls", `{"url":"https://example.test/yk","alias":"yk-link-`+string(mode)+`"}`)
+			if theirs.status != fiber.StatusCreated {
+				t.Fatalf("YK link: %d %s", theirs.status, theirs.body)
+			}
+			var link struct {
+				ID string `json:"id"`
+			}
+			_ = json.Unmarshal(theirs.body, &link)
+			wantStatus(t, "DK reads every link", e.send(dk, fiber.MethodGet, "/v1/urls/all", ""), fiber.StatusOK, "")
+			if got := e.send(dk, fiber.MethodPatch, "/v1/urls/"+link.ID, `{"url":"https://evil.test"}`); got.status != fiber.StatusForbidden {
+				t.Errorf("DK changes YK's link: %d %s", got.status, got.body)
+			}
+			if got := e.send(dk, fiber.MethodDelete, "/v1/urls/"+link.ID, ""); got.status != fiber.StatusForbidden {
+				t.Errorf("DK deletes YK's link: %d %s", got.status, got.body)
+			}
+			mine := e.send(dk, fiber.MethodPost, "/v1/urls", `{"url":"https://example.test/dk","alias":"dk-link-`+string(mode)+`"}`)
+			if mine.status != fiber.StatusCreated {
+				t.Errorf("DK's own link: %d %s", mine.status, mine.body)
+			}
+			_ = json.Unmarshal(mine.body, &link)
+			if got := e.send(dk, fiber.MethodDelete, "/v1/urls/"+link.ID, ""); got.status/100 != 2 {
+				t.Errorf("DK deletes its own link: %d %s", got.status, got.body)
 			}
 
 			// The managed tree: every Team to read, none to change.

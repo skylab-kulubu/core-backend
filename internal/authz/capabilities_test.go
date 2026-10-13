@@ -59,7 +59,13 @@ func TestCapabilities_Privileged(t *testing.T) {
 		{RoleModeRoles, Principal{ID: "u1", Roles: PermissionRoles()}},
 	} {
 		c := NewAuthorizer(policyIn(tc.mode)).Capabilities(tc.p)
-		if !slices.Equal(c.Permissions, PermissionRoles()) {
+		want := PermissionRoles()
+		if tc.mode == RoleModeGroups {
+			// YK reads everything but is no reader: global:read is DK's
+			// (review of #244).
+			want = slices.DeleteFunc(want, func(r string) bool { return r == RoleGlobalRead })
+		}
+		if !slices.Equal(c.Permissions, want) {
 			t.Errorf("%s: permissions = %v", tc.mode, c.Permissions)
 		}
 		for _, key := range AppAbilities() {

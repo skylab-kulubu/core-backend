@@ -61,8 +61,9 @@ func DefaultPrivilegedReaderRoots() []string {
 // Privileged roots: paths separated by commas, blanks around each ignored.
 // Unset or blank is those of DefaultPrivilegedReaderRoots that are roots;
 // "none" is no reader root (DK writes again, the way back). Each path set
-// must be one of roots and named once; anything else is an error that
-// names the variable.
+// must be one of roots and named once, no ADMIN root may be one, and at
+// least one root must stay a writer; anything else is an error that names
+// the variable.
 func PrivilegedReaderRootsFromEnv(getenv func(string) string, roots []string) ([]string, error) {
 	raw := strings.TrimSpace(getenv(PrivilegedReaderRootsEnv))
 	switch raw {
@@ -87,8 +88,14 @@ func PrivilegedReaderRootsFromEnv(getenv func(string) string, roots []string) ([
 			return nil, fmt.Errorf("%s: %q is not one of %s", PrivilegedReaderRootsEnv, root, PrivilegedRootsEnv)
 		case slices.Contains(out, root):
 			return nil, fmt.Errorf("%s: %q is named twice", PrivilegedReaderRootsEnv, root)
+		case RootLabel(root) == "ADMIN":
+			// ADMIN reading only would leave nobody to fix a mistake.
+			return nil, fmt.Errorf("%s: %q is an ADMIN root and is never read-only", PrivilegedReaderRootsEnv, root)
 		}
 		out = append(out, root)
+	}
+	if len(out) == len(roots) {
+		return nil, fmt.Errorf("%s: every root of %s would read only; nobody would change anything", PrivilegedReaderRootsEnv, PrivilegedRootsEnv)
 	}
 	return out, nil
 }
