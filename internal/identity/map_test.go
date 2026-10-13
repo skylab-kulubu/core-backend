@@ -122,3 +122,19 @@ func TestPersonFromReadsCreatedTimestamp(t *testing.T) {
 		}
 	}
 }
+
+// A client's service account reads as one (Keycloak's
+// serviceAccountClientId); a person does not (DIRECT_USER_ROLES).
+func TestPersonFromServiceAccount(t *testing.T) {
+	t.Parallel()
+	id, client, empty := uuid.NewString(), "forms", ""
+	for _, tc := range []struct {
+		link *string
+		want bool
+	}{{&client, true}, {&empty, false}, {nil, false}} {
+		p, err := identity.PersonFromForTest(&gocloak.User{ID: &id, ServiceAccountClientID: tc.link})
+		if err != nil || p.ServiceAccount != tc.want {
+			t.Errorf("link %v: %+v %v", tc.link, p.ServiceAccount, err)
+		}
+	}
+}

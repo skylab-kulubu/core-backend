@@ -44,24 +44,24 @@ func TestSetGroupClientRolesReportsTheChange(t *testing.T) {
 	viewer := identity.ClientRole{ClientID: "forms", Role: "viewer"}
 	users := identity.ClientRole{ClientID: "core", Role: "users:manage"}
 
-	if err := svc.SetGroupClientRoles(ctx, actor(), "g-uyeler", []identity.ClientRole{viewer, users, viewer}); err != nil {
+	if err := svc.SetGroupClientRoles(ctx, actor(), "g-yk", []identity.ClientRole{viewer, users, viewer}); err != nil {
 		t.Fatal(err)
 	}
 	if len(spy.changes) != 1 {
 		t.Fatalf("changes %+v", spy.changes)
 	}
 	got := spy.changes[0]
-	if got.Group.Path != "/UYELER" || got.ActorID != actor().ID || len(got.Added) != 2 || len(got.Removed) != 0 {
+	if got.Group.Path != "/UYELER/YK" || got.ActorID != actor().ID || len(got.Added) != 2 || len(got.Removed) != 0 {
 		t.Fatalf("change %+v", got)
 	}
 	// The same mappings again: nothing changed.
-	if err := svc.SetGroupClientRoles(ctx, actor(), "/UYELER", []identity.ClientRole{users, viewer}); err != nil {
+	if err := svc.SetGroupClientRoles(ctx, actor(), "/UYELER/YK", []identity.ClientRole{users, viewer}); err != nil {
 		t.Fatal(err)
 	}
 	if len(spy.changes) != 1 {
 		t.Fatalf("unchanged write reported: %+v", spy.changes)
 	}
-	if err := svc.SetGroupClientRoles(ctx, actor(), "g-uyeler", []identity.ClientRole{users}); err != nil {
+	if err := svc.SetGroupClientRoles(ctx, actor(), "g-yk", []identity.ClientRole{users}); err != nil {
 		t.Fatal(err)
 	}
 	if len(spy.changes) != 2 || len(spy.changes[1].Added) != 0 || len(spy.changes[1].Removed) != 1 || spy.changes[1].Removed[0] != viewer {
@@ -88,13 +88,13 @@ func TestSetGroupClientRolesWhoseMappingsCannotBeReadWritesAndTellsNothing(t *te
 	ctx := context.Background()
 	mem := uyeler()
 	spy, svc := rolesSetup(t, rolesReadFails{mem})
-	if err := svc.SetGroupClientRoles(ctx, actor(), "g-uyeler", []identity.ClientRole{{ClientID: "forms", Role: "viewer"}}); err != nil {
+	if err := svc.SetGroupClientRoles(ctx, actor(), "g-yk", []identity.ClientRole{{ClientID: "forms", Role: "viewer"}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(spy.changes) != 0 || spy.precheckFailed != 1 {
 		t.Fatalf("changes %+v failures %d", spy.changes, spy.precheckFailed)
 	}
-	if roles, _ := mem.GroupClientRoles(ctx, "g-uyeler"); len(roles) != 1 {
+	if roles, _ := mem.GroupClientRoles(ctx, "g-yk"); len(roles) != 1 {
 		t.Fatalf("not written: %v", roles)
 	}
 }

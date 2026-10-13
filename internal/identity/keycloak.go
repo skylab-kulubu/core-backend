@@ -1114,6 +1114,36 @@ func (k *Keycloak) GroupProtection(ctx context.Context, groupID string) (Protect
 	return Protection{}, nil
 }
 
+// KeycloakAdminRole is a realm-management role the Group groupID holds in
+// effect, "" for none (KeycloakAdminGroups): Keycloak's GET
+// /groups/{id}/role-mappings/clients/{realm-management}/composite, which
+// expands composite roles, a realm role's included. It needs what
+// GroupProtection needs (view-clients for the client's id, the Group's role
+// mappings); a realm without the client answers "".
+func (k *Keycloak) KeycloakAdminRole(ctx context.Context, groupID string) (string, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	client, err := k.clientUUID(ctx, token, KeycloakAdminClient)
+	if errors.Is(err, ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	roles, err := k.gc.GetCompositeClientRolesByGroupID(ctx, token, k.realm, client, groupID)
+	if err != nil {
+		return "", mapKCErr(err)
+	}
+	for _, r := range roles {
+		if r != nil && gocloak.PString(r.Name) != "" {
+			return gocloak.PString(r.Name), nil
+		}
+	}
+	return "", nil
+}
+
 // clientIDOf is the client id of the client whose Keycloak UUID is uuid,
 // kept for the process.
 func (k *Keycloak) clientIDOf(ctx context.Context, token, uuid string) (string, error) {

@@ -49,6 +49,10 @@ With `TEAM_DELEGATION=on` ([`team-delegation.md`](team-delegation.md)) core read
 
 **`view-clients` is load-bearing.** Without it Keycloak answers `/groups/{id}/role-mappings` with no client mappings and no error, so every Group would read as unprotected. Core does not trust that silently: before a delegated write it checks that a Privileged root reads as protected (the canary, [`team-delegation.md`](team-delegation.md)); if none does, every delegated write is `503 protection_unverified` and an `ERROR` line is logged. Removing `view-clients` from `service-account-core` therefore switches delegation off in effect.
 
+## Role rules
+
+Before a Privileged member add or remove ([`team-delegation.md`](team-delegation.md#role-rules)), core reads, for the Group and every Group above it by path (`GET /group-by-path/{path}`), the `realm-management` roles it holds in effect: `GET /groups/{id}/role-mappings/clients/{realm-management}/composite`, which expands composite roles, a realm role's included; the client's id comes from `GET /clients?clientId=realm-management`, kept for the process. Before a role mapping write it reads the Group's client role mappings (`GET /groups/{id}/role-mappings`) and children (`GET /groups/{id}/children`). The user read core already does (`GET /users/{id}`) carries `serviceAccountClientId`. `view-clients`, `query-groups` and `view-users` cover them all: nothing new is needed.
+
 ## Group count report
 
 `core-backend group-count-report` measures how many Group paths each user carries in a token, for the Group overage threshold of ADR-0059 (30 paths). It runs instead of the server, inside the running core container, whose environment already holds core's service account. It only reads: `GET /users`, then `GET /users/{id}/groups` for every enabled user. Disabled users get no token and are only counted.

@@ -52,9 +52,10 @@ var Pattern = regexp.MustCompile(`^[A-Z][A-Z0-9-]{1,23}$`)
 func Valid(name string) bool { return Pattern.MatchString(name) }
 
 // fixedReserved are reserved whatever the policy says: the Privileged
-// names, the members' tree, the leader subgroups, the teams' old area and
-// the Event permission table's fallback.
-var fixedReserved = []string{"ADMIN", "YK", "DK", "UYELER", "LIDERLER", "KOORDINATORLER", "TAKIMLAR", "_DEFAULT"}
+// names, the members' tree, the leader subgroups, the teams' old area, the
+// Event permission table's fallback and the role groups' root (ROLLER,
+// rol-temizligi S4: no Team is opened under /ROLLER, nor anywhere named so).
+var fixedReserved = []string{"ADMIN", "YK", "DK", "UYELER", "LIDERLER", "KOORDINATORLER", "TAKIMLAR", "_DEFAULT", "ROLLER"}
 
 // Scope is what a name that passed the rule must still be free of.
 type Scope int
@@ -106,7 +107,7 @@ func (r Rules) Reserved(name string) bool {
 // still be free of.
 //
 // A reserved name is refused, except a root's name (ADMIN, YK, DK) for a
-// Group that is itself a Privileged root, and a leader subgroup's name
+// Group that is itself a Privileged root, ROLLER for /ROLLER itself, and a leader subgroup's name
 // (LIDERLER, KOORDINATORLER) for a Group right under a Team; a new Group is
 // a leaf.
 func (r Rules) Create(parentPath, name string) (Scope, error) {
@@ -134,7 +135,7 @@ func (r Rules) check(parentPath, name string, leaf bool) (Scope, error) {
 	}
 	path := parentPath + "/" + name
 	switch {
-	case authz.PrivilegedRoot(r.roots, path) == path:
+	case authz.PrivilegedRoot(r.roots, path) == path, path == authz.RolesRoot:
 		return AtPath, nil
 	case slices.Contains(r.leaders, name) && leaf && r.isTeam(parentPath):
 		return AtPath, nil

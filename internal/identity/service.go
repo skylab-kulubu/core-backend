@@ -66,6 +66,8 @@ type service struct {
 	codes                 teamcode.Ledger
 	delegation            *TeamDelegation
 	audit                 teamaudit.Writer
+	directUserRoles       bool
+	adminGroups           KeycloakAdminGroups
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer, mailers ...mail.Mailer) Service {
@@ -108,6 +110,15 @@ type Options struct {
 	// TeamAudit receives the denied rows of delegated writes (the changes
 	// themselves are recorded by AuditedDirectory). Nil records none.
 	TeamAudit teamaudit.Writer
+	// DirectUserRoles lets a client role be given to a person directly
+	// (DIRECT_USER_ROLES=on). Off, the default (rol-temizligi K1), a role
+	// reaches a person only through a Group; a client's service account
+	// still takes one. Taking a role off a person is always allowed.
+	DirectUserRoles bool
+	// AdminGroups reads whether a Group holds a Keycloak administration
+	// role (realm-management): core changes no membership there. Nil reads
+	// nothing and refuses nothing (memory setups).
+	AdminGroups KeycloakAdminGroups
 }
 
 // MembershipNotifier hears of membership changes made through the service.
@@ -178,6 +189,8 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		codes:                 options.TeamCodes,
 		delegation:            options.Delegation,
 		audit:                 options.TeamAudit,
+		directUserRoles:       options.DirectUserRoles,
+		adminGroups:           options.AdminGroups,
 	}
 	if options.GroupNames != nil {
 		s.names = *options.GroupNames
@@ -377,6 +390,9 @@ func (s *service) AddMember(ctx context.Context, p authz.Principal, groupRef str
 	if err := s.allow(p, authz.TypeGroup, authz.Update); err != nil {
 		return s.delegatedAddMember(ctx, p, groupRef, userID)
 	}
+	if err := s.notKeycloakAdminGroup(ctx, groupRef); err != nil {
+		return err
+	}
 	// Forgotten even when the write fails: it may have reached Keycloak.
 	defer s.forgetGroups(userID)
 	ctx = s.markUnverified(ctx, groupRef, userID)
@@ -444,6 +460,9 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 	}
 	for _, h := range hits {
 		if h.person.ID == userID {
+			if err := s.notKeycloakAdminGroup(ctx, h.source.ID); err != nil {
+				return err
+			}
 			if err := s.dir.RemoveMember(ctx, h.source.ID, userID); err != nil {
 				return err
 			}
@@ -454,6 +473,9 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 		}
 	}
 	// Not on the roster: nothing changes, and nobody is told.
+	if err := s.notKeycloakAdminGroup(ctx, g.ID); err != nil {
+		return err
+	}
 	return s.dir.RemoveMember(ctx, g.ID, userID)
 }
 
@@ -824,6 +846,9 @@ func (s *service) SetGroupClientRoles(ctx context.Context, p authz.Principal, gr
 	if err != nil {
 		return err
 	}
+	if err := s.placementAllows(ctx, g, roles); err != nil {
+		return err
+	}
 	// A Group's role mappings decide whether it is protected: forgotten
 	// even when the write fails, since it may have reached Keycloak.
 	defer s.delegation.ForgetAll()
@@ -905,8 +930,12 @@ func (s *service) AddUserExtraRole(ctx context.Context, p authz.Principal, id uu
 	if role.ClientID == "" || role.Role == "" {
 		return ErrInvalid
 	}
-	if _, err := s.dir.GetUser(ctx, id); err != nil {
+	person, err := s.dir.GetUser(ctx, id)
+	if err != nil {
 		return err
+	}
+	if !s.directUserRoles && !person.ServiceAccount {
+		return directRoleRefused()
 	}
 	return s.dir.AddUserExtraRole(ctx, id, role)
 }

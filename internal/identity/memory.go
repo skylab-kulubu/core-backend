@@ -546,6 +546,41 @@ func (m *Memory) GroupProtection(_ context.Context, groupID string) (Protection,
 	return Protection{}, nil
 }
 
+// KeycloakAdminRole is a realm-management role the Group groupID maps,
+// directly or inside a composite, "" for none (KeycloakAdminGroups).
+func (m *Memory) KeycloakAdminRole(_ context.Context, groupID string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("KeycloakAdminRole")
+	g, ok := m.groups[groupID]
+	if !ok {
+		return "", ErrNotFound
+	}
+	seen := map[string]bool{}
+	var find func(r ClientRole) string
+	find = func(r ClientRole) string {
+		if r.ClientID == KeycloakAdminClient {
+			return r.Role
+		}
+		if seen[roleKey(r)] {
+			return ""
+		}
+		seen[roleKey(r)] = true
+		for _, child := range m.composites[roleKey(r)] {
+			if got := find(child); got != "" {
+				return got
+			}
+		}
+		return ""
+	}
+	for _, r := range m.groupRoles[g.ID] {
+		if got := find(r); got != "" {
+			return got, nil
+		}
+	}
+	return "", nil
+}
+
 func (m *Memory) GroupClientRoles(_ context.Context, groupID string) ([]ClientRole, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

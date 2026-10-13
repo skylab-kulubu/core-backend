@@ -81,7 +81,10 @@ func optionalCaller(c fiber.Ctx) authz.Principal {
 func identityError(c fiber.Ctx, err error) error {
 	var name *teamcode.Error
 	var refused *identity.DelegationError
+	var rule *identity.RoleRuleError
 	switch {
+	case errors.As(err, &rule):
+		return roleRuleError(c, rule)
 	case errors.As(err, &name):
 		return groupNameError(c, name)
 	case errors.As(err, &refused):
@@ -140,6 +143,21 @@ func delegationError(c fiber.Ctx, err *identity.DelegationError) error {
 		c.Set(fiber.HeaderCacheControl, "no-store")
 	}
 	return problemCode(c, err.Status, title, err.Code)
+}
+
+// roleRuleError answers a request a role rule refused (docs/team-delegation.md,
+// "Role rules"): 403 direct_role_not_allowed or keycloak_admin_group, 409
+// role_placement with the placement's reason.
+func roleRuleError(c fiber.Ctx, err *identity.RoleRuleError) error {
+	title, ok := delegationTitles[err.Status]
+	if !ok {
+		return err
+	}
+	var fields fiber.Map
+	if err.Reason != "" {
+		fields = fiber.Map{"reason": err.Reason}
+	}
+	return problemWithFields(c, err.Status, title, err.Detail, err.Code, fields)
 }
 
 // groupNameError answers a Group name the Team code rule refused
