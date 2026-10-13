@@ -60,7 +60,7 @@ func TestValid(t *testing.T) {
 func TestReserved(t *testing.T) {
 	t.Parallel()
 	rules := NewRules(authz.DefaultPolicy())
-	for _, name := range []string{"ADMIN", "YK", "DK", "UYELER", "LIDERLER", "KOORDINATORLER", "TAKIMLAR", "_DEFAULT", "_default", "GECEKODU", "gecekodu", "admin"} {
+	for _, name := range []string{"ADMIN", "YK", "DK", "UYELER", "LIDERLER", "KOORDINATORLER", "TAKIMLAR", "_DEFAULT", "_default", "GECEKODU", "gecekodu", "admin", "ROLLER", "roller"} {
 		if !rules.Reserved(name) {
 			t.Errorf("%s is not reserved", name)
 		}
@@ -74,6 +74,18 @@ func TestReserved(t *testing.T) {
 	policy.PrivilegedRoots = []string{"/STAFF"}
 	if !NewRules(policy).Reserved("STAFF") {
 		t.Error("a configured root's name is not reserved")
+	}
+}
+
+// The role groups under /ROLLER are no Team and no Leader group: TeamOf
+// answers nothing for them (rol-temizligi S4).
+func TestRoleGroupsAreNoTeam(t *testing.T) {
+	t.Parallel()
+	policy := authz.DefaultPolicy()
+	for _, path := range []string{"/ROLLER", "/ROLLER/FORMS-ACCESS", "/ROLLER/FORMS-ACCESS/LIDERLER", "/ROLLER/A/B/C"} {
+		if team, role, ok := TeamOf(path, policy.PrivilegedRoots, policy.LeaderSubgroups); ok || team != "" || role != "" {
+			t.Errorf("TeamOf(%s) = %q, %q, %v", path, team, role, ok)
+		}
 	}
 }
 
@@ -120,6 +132,13 @@ func TestCreate(t *testing.T) {
 		{"/UYELER/YK", "LIDERLER", ReservedName, Everywhere},
 		{"/UYELER/YK/BASKAN", "LIDERLER", ReservedName, Everywhere},
 		{"/DIS/ARGE/WEBLAB", "LIDERLER", ReservedName, Everywhere},
+		// ROLLER only at /ROLLER (rol-temizligi S4): no Team named so.
+		{"", "ROLLER", "", AtPath},
+		{"/UYELER/ARGE", "ROLLER", ReservedName, Everywhere},
+		{"/UYELER/ARGE/WEBLAB", "ROLLER", ReservedName, Everywhere},
+		{"/ROLLER", "ROLLER", ReservedName, Everywhere},
+		{"/ROLLER", "LIDERLER", ReservedName, Everywhere},
+		{"/ROLLER", "FORMS-ACCESS", "", Everywhere},
 		// The others never.
 		{"", "UYELER", ReservedName, Everywhere},
 		{"/UYELER/ARGE", "UYELER", ReservedName, Everywhere},

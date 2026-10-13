@@ -302,7 +302,9 @@ func TestCapabilitiesRoute(t *testing.T) {
 		}
 		switch name {
 		case "privileged":
-			if !slices.Equal(c.Permissions, authz.PermissionRoles()) {
+			// global:read is a reader's (DK) alone, not YK's.
+			want := slices.DeleteFunc(authz.PermissionRoles(), func(r string) bool { return r == authz.RoleGlobalRead })
+			if !slices.Equal(c.Permissions, want) {
 				t.Errorf("privileged permissions %v", c.Permissions)
 			}
 		case "leader":

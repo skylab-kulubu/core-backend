@@ -56,6 +56,11 @@ type Person struct {
 	// users who get no token. Nothing else branches on it, and it is never
 	// part of an answer.
 	Enabled bool `json:"-"`
+	// ServiceAccount is whether the account is a client's service account
+	// (Keycloak's serviceAccountClientId), not a person. Only the direct
+	// role rule reads it (DirectUserRolesEnv); it is never part of an
+	// answer.
+	ServiceAccount bool `json:"-"`
 	// CreatedAt is when the Keycloak account was created (Keycloak's
 	// createdTimestamp), nil when the read did not carry it. Only the
 	// dashboard summary's Members section uses it; it is never part of an

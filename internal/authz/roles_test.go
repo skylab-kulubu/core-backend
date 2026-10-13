@@ -16,16 +16,24 @@ import (
 func asRoleHolder(p Principal) Principal {
 	out := p
 	out.Groups = nil
-	privileged := false
+	privileged, reader := false, false
 	for _, g := range p.Groups {
+		if PrivilegedRoot(DefaultPrivilegedReaderRoots(), g) != "" {
+			reader = true
+			continue
+		}
 		if PrivilegedRoot(DefaultPrivilegedRoots(), g) != "" {
 			privileged = true
 			continue
 		}
 		out.Groups = append(out.Groups, g)
 	}
-	if privileged {
+	switch {
+	case privileged:
 		out.Roles = append(slices.Clone(p.Roles), PermissionRoles()...)
+	case reader:
+		// DK's roles (grup-yonetimi GY1): reading only.
+		out.Roles = append(slices.Clone(p.Roles), RoleGlobalRead)
 	}
 	return out
 }
@@ -116,6 +124,10 @@ func TestAuthorizer_RolesModeReadsTheRoleNotTheGroup(t *testing.T) {
 		}
 		for _, other := range PermissionRoles() {
 			if other == c.role || renamedRoles[c.role] == other {
+				continue
+			}
+			// global:read stands for every read (grup-yonetimi GY1).
+			if other == RoleGlobalRead && (c.a == Read || c.a == List) {
 				continue
 			}
 			if auth.Allow(Principal{ID: "u1", Roles: []string{other}}, c.r, c.a) {

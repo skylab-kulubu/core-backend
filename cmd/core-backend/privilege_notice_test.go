@@ -111,15 +111,20 @@ func TestPrivilegeNoticeThroughTheService(t *testing.T) {
 		t.Fatalf("YK add sent %v", got)
 	}
 
-	// A role mapped to /UYELER: ADMIN alone, none of the club's members.
-	if err := svc.SetGroupClientRoles(ctx, actor, "g-uyeler", []identity.ClientRole{{ClientID: "forms", Role: "viewer"}}); err != nil {
+	// A role taken off /UYELER (mapped there before the placement rule,
+	// rol-temizligi S5, which allows no new one): ADMIN alone, none of the
+	// club's members.
+	if err := dir.SetGroupClientRoles(ctx, "g-uyeler", []identity.ClientRole{{ClientID: "forms", Role: "viewer"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SetGroupClientRoles(ctx, actor, "g-uyeler", nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := drain(); len(got) != 1 || !slices.Equal(got["club.privilege-change"], []string{"root@example.test"}) {
 		t.Fatalf("role mapping sent %v", got)
 	}
-	// The same mapping again changes nothing and sends nothing.
-	if err := svc.SetGroupClientRoles(ctx, actor, "g-uyeler", []identity.ClientRole{{ClientID: "forms", Role: "viewer"}}); err != nil {
+	// The same mappings again change nothing and send nothing.
+	if err := svc.SetGroupClientRoles(ctx, actor, "g-uyeler", nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := drain(); len(got) != 0 {

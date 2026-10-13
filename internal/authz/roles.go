@@ -40,6 +40,10 @@ const (
 	RoleGroupsManage = "groups:manage"
 	// RoleGithubActivityRead: the club's GitHub activity, people only.
 	RoleGithubActivityRead = "github:activity:read"
+	// RoleGlobalRead: every read a Privileged check stands for, and no
+	// write (grup-yonetimi GY1; Entra's Global Reader). Keycloak maps it to
+	// DK. The Team audit record is audit:read's alone.
+	RoleGlobalRead = "global:read"
 	// RoleURLModerator existed before: everyone's short links and form links.
 	RoleURLModerator = "url:moderator"
 	// RoleURLAccess existed before: one's own short links.
@@ -65,6 +69,7 @@ var permissionRoles = []struct {
 	{RoleUsersManage, false},
 	{RoleGroupsManage, false},
 	{RoleGithubActivityRead, false},
+	{RoleGlobalRead, false},
 	{RoleURLModerator, true},
 	{RoleURLAccess, true},
 }
