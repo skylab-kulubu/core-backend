@@ -100,11 +100,16 @@ func TestAuthorizer_PrivilegedOnlyUnderTheRoots(t *testing.T) {
 		for _, path := range privilegedPaths {
 			p := Principal{ID: "u1", Groups: []string{path}}
 			want := mode != RoleModeRoles
-			if got := auth.Permitted(p, RoleGroupsManage); got != want {
-				t.Errorf("%s %s: Permitted(groups:manage) = %v, want %v", mode, path, got, want)
+			// A DK path reads and changes nothing (grup-yonetimi GY1).
+			write := want && PrivilegedRoot(DefaultPrivilegedReaderRoots(), path) == ""
+			if got := auth.Permitted(p, RoleGroupsManage); got != write {
+				t.Errorf("%s %s: Permitted(groups:manage) = %v, want %v", mode, path, got, write)
 			}
-			if got := auth.Allow(p, Resource{Type: TypeGroup}, Create); got != want {
-				t.Errorf("%s %s: group create = %v, want %v", mode, path, got, want)
+			if got := auth.Allow(p, Resource{Type: TypeGroup}, Create); got != write {
+				t.Errorf("%s %s: group create = %v, want %v", mode, path, got, write)
+			}
+			if got := auth.Allow(p, Resource{Type: TypeGroup}, Read); got != want {
+				t.Errorf("%s %s: group read = %v, want %v", mode, path, got, want)
 			}
 			if got := auth.Allow(p, Resource{Type: TypeURL}, Read); got != want {
 				t.Errorf("%s %s: short link moderation = %v, want %v", mode, path, got, want)

@@ -49,8 +49,11 @@ func auditedAppWith(t *testing.T, ident authn.Identity, dir *identity.Memory, au
 }
 
 type auditFixture struct {
-	dir                   *identity.Memory
-	uyeler, weblab, agc   identity.Group
+	dir                 *identity.Memory
+	uyeler, weblab, agc identity.Group
+	// leaders is WEBLAB's Leader group: the role mapping write's target
+	// (a top Team's Leader group takes roles, rol-temizligi S5).
+	leaders               identity.Group
 	member, sub, newcomer uuid.UUID
 }
 
@@ -63,7 +66,8 @@ func auditTree() auditFixture {
 	f.weblab = identity.Group{ID: uuid.NewString(), Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB",
 		Attributes: map[string]string{"display_name_tr": "Web", "public_listing": "true", "note": "x"}}
 	f.agc = identity.Group{ID: uuid.NewString(), Name: "AGC", Path: "/UYELER/ARGE/WEBLAB/AGC"}
-	for _, g := range []identity.Group{f.uyeler, arge, f.weblab, f.agc} {
+	f.leaders = identity.Group{ID: uuid.NewString(), Name: "LIDERLER", Path: "/UYELER/ARGE/WEBLAB/LIDERLER"}
+	for _, g := range []identity.Group{f.uyeler, arge, f.weblab, f.agc, f.leaders} {
 		f.dir.PutGroup(g)
 	}
 	f.member, f.sub, f.newcomer = uuid.New(), uuid.New(), uuid.New()
@@ -74,6 +78,7 @@ func auditTree() auditFixture {
 	_ = f.dir.AddMember(ctx, f.weblab.ID, f.member)
 	_ = f.dir.AddMember(ctx, f.agc.ID, f.sub)
 	_ = f.dir.SetGroupClientRoles(ctx, f.weblab.ID, []identity.ClientRole{{ClientID: "core", Role: "events:manage"}})
+	_ = f.dir.SetGroupClientRoles(ctx, f.leaders.ID, []identity.ClientRole{{ClientID: "core", Role: "events:manage"}})
 	f.dir.Ops = nil
 	return f
 }
@@ -150,9 +155,9 @@ func auditWrites(f auditFixture) []auditWrite {
 					t.Fatalf("remove row %+v", row)
 				}
 			}},
-		{"roles", fiber.MethodPut, "/v1/groups/" + f.weblab.ID + "/client-roles", `[{"clientId":"core","role":"media:attach"},{"clientId":"cms","role":"access"}]`, fiber.StatusNoContent,
+		{"roles", fiber.MethodPut, "/v1/groups/" + f.leaders.ID + "/client-roles", `[{"clientId":"core","role":"media:attach"},{"clientId":"cms","role":"access"}]`, fiber.StatusNoContent,
 			func(t *testing.T, f auditFixture, row teamaudit.Row) {
-				if row.Action != teamaudit.ActionGroupRoles || row.GroupID != f.weblab.ID ||
+				if row.Action != teamaudit.ActionGroupRoles || row.GroupID != f.leaders.ID ||
 					!slices.Equal(row.Before.Roles, []string{"core:events:manage"}) ||
 					!slices.Equal(row.After.Roles, []string{"cms:access", "core:media:attach"}) {
 					t.Fatalf("roles row before %+v after %+v", row.Before, row.After)

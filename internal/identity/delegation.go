@@ -230,6 +230,7 @@ type teamsEntry struct {
 type treeEntry struct {
 	nodes      []ManagedNode
 	privileged bool
+	write      bool
 	expires    time.Time
 }
 

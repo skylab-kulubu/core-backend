@@ -76,6 +76,7 @@ var appAbilities = []ability{
 	{"group.read", Resource{Type: TypeGroup}, Read},
 	{"group.write", Resource{Type: TypeGroup}, Update},
 	{"user.read", Resource{Type: TypeUser}, Read},
+	{"user.readFull", Resource{Type: TypeUser}, ReadFull},
 	{"user.write", Resource{Type: TypeUser}, Update},
 	{"user.create", Resource{Type: TypeUser}, Create},
 	{"user.delete", Resource{Type: TypeUser}, Delete},

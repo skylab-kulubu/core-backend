@@ -275,7 +275,7 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 	// The Members section is for people: a product's service account gets
 	// none, whatever roles it holds.
 	if s.members != nil && p.Product == "" && s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Read) {
-		allTeams := s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Update)
+		allTeams := s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.ReadFull)
 		members, err := s.memberSummary(ctx, now, allTeams)
 		if err != nil {
 			out.MembersUnavailable = true

@@ -7,8 +7,9 @@ Routes: `POST /v1/groups` (`name`, `parentId`) and `PATCH /v1/groups/{id}` when 
 ## The rule
 
 1. **Form.** `^[A-Z][A-Z0-9-]{1,23}$`: 2 to 24 ASCII capital letters, digits and hyphens, starting with a letter. No Turkish letters (`İ`, `Ş`, …), no look-alikes, no `/`, `_`, `~` or blanks. The team's Turkish name is its display name (`display_name_tr`).
-2. **Reserved names**, compared without case: `ADMIN`, `YK`, `DK`, `UYELER`, `LIDERLER`, `KOORDINATORLER`, `TAKIMLAR`, `_DEFAULT`, the last segment of every Privileged root, and every Owner team the Event permission table names (`GECEKODU`). Two of them have one place where they are allowed:
+2. **Reserved names**, compared without case: `ADMIN`, `YK`, `DK`, `UYELER`, `LIDERLER`, `KOORDINATORLER`, `TAKIMLAR`, `_DEFAULT`, `ROLLER`, the last segment of every Privileged root, and every Owner team the Event permission table names (`GECEKODU`). Three of them have one place where they are allowed:
    - a Privileged root's name, for the Group **at** that root (`/ADMIN`, `/UYELER/YK`, …, as `AUTHZ_PRIVILEGED_ROOTS` says);
+   - `ROLLER`, for `/ROLLER` itself: the root of the role groups `/ROLLER/<APP>-<ROLE>` (sky_lab_genel `.scratch/rol-temizligi`, S4). No Team is named `ROLLER`, and nothing under `/ROLLER` is a Team (`TeamOf` answers nothing there: it is outside `/UYELER`), so no Leader group or delegation reaches it. Role mappings go only to its leaves ([team-delegation.md](team-delegation.md#role-rules));
    - `LIDERLER` and `KOORDINATORLER`, for a Group right under a **Team** (a Group at least three deep under `/UYELER` and not under a Privileged root, `teamcode.TeamOf`), with no Group under it. Until delegated Leader management (ticket 06) only a Privileged caller creates one.
 
    There the name only has to be free at that path: `/UYELER/ADMIN` sits beside `/ADMIN`, every Team has its own `LIDERLER`.

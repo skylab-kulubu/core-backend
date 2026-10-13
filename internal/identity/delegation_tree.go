@@ -19,13 +19,23 @@ import (
 // is walked down by id from the Teams it starts at; an answer is kept TTL
 // and dropped by core's own Group writes.
 func (d *TeamDelegation) Tree(ctx context.Context, userID uuid.UUID, privileged bool) ([]ManagedNode, error) {
+	return d.TreeFor(ctx, userID, privileged, privileged)
+}
+
+// TreeFor is Tree for a caller who is Privileged for reading Groups
+// (privileged) and for changing them (write). A Privileged reader (DK,
+// grup-yonetimi GY1) gets every Team with group.read and nothing to
+// change: the tree of a Privileged member whose write decisions are all
+// false.
+func (d *TeamDelegation) TreeFor(ctx context.Context, userID uuid.UUID, privileged, write bool) ([]ManagedNode, error) {
+	write = write && privileged
 	if d == nil || (!privileged && !d.On()) {
 		return []ManagedNode{}, nil
 	}
 	d.mu.Lock()
 	entry, ok := d.trees[userID]
 	d.mu.Unlock()
-	if ok && entry.privileged == privileged && d.options.Now().Before(entry.expires) {
+	if ok && entry.privileged == privileged && entry.write == write && d.options.Now().Before(entry.expires) {
 		return entry.nodes, nil
 	}
 	var (
@@ -33,7 +43,7 @@ func (d *TeamDelegation) Tree(ctx context.Context, userID uuid.UUID, privileged 
 		err   error
 	)
 	if privileged {
-		nodes, err = d.privilegedTree(ctx)
+		nodes, err = d.privilegedTree(ctx, userID, write)
 	} else {
 		nodes, err = d.leaderTree(ctx, userID)
 	}
@@ -41,15 +51,17 @@ func (d *TeamDelegation) Tree(ctx context.Context, userID uuid.UUID, privileged 
 		return nil, err
 	}
 	d.mu.Lock()
-	d.trees[userID] = treeEntry{nodes: nodes, privileged: privileged, expires: d.options.Now().Add(d.options.TTL)}
+	d.trees[userID] = treeEntry{nodes: nodes, privileged: privileged, write: write, expires: d.options.Now().Add(d.options.TTL)}
 	d.mu.Unlock()
 	return nodes, nil
 }
 
 // privilegedTree is every top Team (/UYELER/<area>/<team>) with what is
 // below it. The members' tree is found by its path, everything under it
-// by id; a Privileged root is no area.
-func (d *TeamDelegation) privilegedTree(ctx context.Context) ([]ManagedNode, error) {
+// by id; a Privileged root is no area. Without write (a Privileged
+// reader), every node reads, and the caller changes only what they lead
+// with delegation on, as a Leader outside the Privileged roots would.
+func (d *TeamDelegation) privilegedTree(ctx context.Context, userID uuid.UUID, write bool) ([]ManagedNode, error) {
 	root, err := d.dir.GetGroup(ctx, authz.MembersRoot)
 	if errors.Is(err, ErrNotFound) {
 		return []ManagedNode{}, nil
@@ -66,6 +78,14 @@ func (d *TeamDelegation) privilegedTree(ctx context.Context) ([]ManagedNode, err
 		return []ManagedNode{}, nil
 	}
 	manager := authz.TeamManager{Privileged: true}
+	if !write {
+		manager = authz.TeamManager{}
+		if d.On() {
+			if manager, err = d.manager(ctx, userID, false); err != nil {
+				return nil, err
+			}
+		}
+	}
 	out := make([]ManagedNode, 0)
 	areas, err := d.children(ctx, top)
 	if err != nil {
@@ -88,7 +108,7 @@ func (d *TeamDelegation) privilegedTree(ctx context.Context) ([]ManagedNode, err
 			if err != nil {
 				return nil, err
 			}
-			node, err := d.subtree(ctx, manager, team, above, 0)
+			node, err := d.subtree(ctx, manager, true, team, above, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -133,7 +153,7 @@ func (d *TeamDelegation) leaderTree(ctx context.Context, userID uuid.UUID) ([]Ma
 		if len(team.Ancestors) > 0 {
 			above.Group, above.Ancestors = team.Ancestors[0], team.Ancestors[1:]
 		}
-		node, err := d.subtree(ctx, manager, team.Group, above, 0)
+		node, err := d.subtree(ctx, manager, false, team.Group, above, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -145,8 +165,9 @@ func (d *TeamDelegation) leaderTree(ctx context.Context, userID uuid.UUID) ([]Ma
 
 // subtree is the node of team, whose parent above is (above.Group, with its
 // ancestors and whether one of them is protected), and of the Teams below
-// it.
-func (d *TeamDelegation) subtree(ctx context.Context, manager authz.TeamManager, team authz.GroupNode, above authz.ManagedGroup, depth int) (ManagedNode, error) {
+// it. readAll is a Privileged caller's group.read on every node, whether
+// or not manager may change it.
+func (d *TeamDelegation) subtree(ctx context.Context, manager authz.TeamManager, readAll bool, team authz.GroupNode, above authz.ManagedGroup, depth int) (ManagedNode, error) {
 	own, err := d.protected(ctx, []string{team.ID}, false)
 	if err != nil {
 		return ManagedNode{}, err
@@ -167,7 +188,7 @@ func (d *TeamDelegation) subtree(ctx context.Context, manager authz.TeamManager,
 		ID: team.ID, Code: team.Name, Path: team.Path, DisplayName: displayName(full),
 		MemberCount: len(members), Protected: target.Protected,
 		Can: map[string]bool{
-			"group.read":    d.policy.Manages(manager, target).Allowed,
+			"group.read":    readAll || d.policy.Manages(manager, target).Allowed,
 			"members.write": d.policy.ManagesMembership(manager, target).Allowed,
 			"leaders.write": d.policy.ManagesStrict(manager, target).Allowed,
 		},
@@ -189,7 +210,7 @@ func (d *TeamDelegation) subtree(ctx context.Context, manager authz.TeamManager,
 				leaders[p.ID] = true
 			}
 		case d.isTeam(child) && depth < maxGroupDepth:
-			sub, err := d.subtree(ctx, manager, child, target, depth+1)
+			sub, err := d.subtree(ctx, manager, readAll, child, target, depth+1)
 			if err != nil {
 				return ManagedNode{}, err
 			}
