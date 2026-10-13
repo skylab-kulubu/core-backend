@@ -434,6 +434,9 @@ func main() {
 	dir := identity.Directory(identity.NewMemory())
 	// Reads the editable sites' roles; Keycloak only.
 	var siteRoles editablesites.RoleReader
+	// Reads whether a Group holds a realm-management role (core changes no
+	// membership there, docs/team-delegation.md "Role rules"); Keycloak only.
+	var adminGroups identity.KeycloakAdminGroups
 	keycloakConfigured := strings.TrimSpace(os.Getenv("KEYCLOAK_URL")) != ""
 	if keycloakConfigured {
 		keycloakConfig, missing, err := keycloakFromEnv(os.Getenv)
@@ -469,7 +472,16 @@ func main() {
 		cancelRootCheck()
 		dir = keycloakDirectory
 		siteRoles = keycloakDirectory
+		adminGroups = keycloakDirectory
 	}
+	// Whether a person may be given a client role directly
+	// (docs/team-delegation.md "Role rules"): off unless set. A value core
+	// cannot read stops startup.
+	directUserRoles, err := identity.DirectUserRolesFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("direct user roles: %s (%s)", map[bool]string{false: "off", true: "on"}[directUserRoles], identity.DirectUserRolesEnv)
 	if privateMedia != nil {
 		// A reviewer who never signed in to core gets their row from
 		// Keycloak when a product asks for a read link for them.
@@ -861,6 +873,8 @@ func main() {
 			TeamCodes:             teamcode.NewPostgresLedger(pool),
 			Delegation:            delegation,
 			TeamAudit:             teamAudit,
+			DirectUserRoles:       directUserRoles,
+			AdminGroups:           adminGroups,
 		}, mailer),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
