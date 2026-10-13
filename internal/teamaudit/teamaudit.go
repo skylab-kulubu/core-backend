@@ -141,6 +141,10 @@ type State struct {
 	OtherAttributes []string `json:"otherAttributes,omitempty"`
 	// Roles are client roles as "client:role".
 	Roles []string `json:"roles,omitempty"`
+	// UnverifiedAck is set on a member.add to a Privileged Group of a
+	// person who is not YTÜ-linked (grup-yonetimi 07): whether the caller
+	// confirmed the panel's warning. Absent on every other row.
+	UnverifiedAck *bool `json:"unverifiedAck,omitempty"`
 }
 
 // Limits of what a row holds. A longer text is cut, so a long value never
@@ -271,6 +275,10 @@ func (s *State) normalize() *State {
 		Path:     cut(s.Path, MaxPath),
 		ParentID: cut(s.ParentID, MaxIdentifier),
 		Code:     cut(s.Code, MaxIdentifier),
+	}
+	if s.UnverifiedAck != nil {
+		ack := *s.UnverifiedAck
+		out.UnverifiedAck = &ack
 	}
 	for _, name := range RecordedAttributes {
 		if v, ok := s.Attributes[name]; ok {

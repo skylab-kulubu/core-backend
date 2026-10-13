@@ -347,6 +347,11 @@ type MemberCandidate struct {
 	ProfilePictureURL string    `json:"profilePictureUrl,omitempty"`
 	// AlreadyMember: the person is directly in the Group already.
 	AlreadyMember bool `json:"alreadyMember"`
+	// YTULinked: the person is YTÜ-linked (users.ytu_linked).
+	YTULinked bool `json:"ytuLinked"`
+	// Warnings are WarningNotYTUVerified when the Group is Privileged and
+	// the person is not YTÜ-linked (grup-yonetimi 07); empty otherwise.
+	Warnings []string `json:"warnings"`
 }
 
 // Candidate search limits (SPEC §6.2).
@@ -428,6 +433,7 @@ func (s *service) MemberCandidates(ctx context.Context, p authz.Principal, group
 	if err != nil {
 		return nil, err
 	}
+	privileged := s.privilegedPath(g.Path)
 	out := make([]MemberCandidate, 0, len(shown))
 	for _, u := range shown {
 		c := MemberCandidate{ID: u.ID, FirstName: u.FirstName, LastName: u.LastName, Email: u.Email}
@@ -436,6 +442,8 @@ func (s *service) MemberCandidates(ctx context.Context, p authz.Principal, group
 		}
 		c.ProfilePictureURL, _ = profilePicture(u)
 		c.AlreadyMember = slices.ContainsFunc(direct, func(m Person) bool { return m.ID == u.ID })
+		c.YTULinked = u.YTULinked
+		c.Warnings = warnings(privileged, c.YTULinked)
 		out = append(out, c)
 	}
 	return out, nil

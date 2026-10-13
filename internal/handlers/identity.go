@@ -27,6 +27,9 @@ func NewIdentityHandler(svc identity.Service) *IdentityHandler {
 
 type addMemberBody struct {
 	UserID uuid.UUID `json:"userId"`
+	// UnverifiedAck: the caller confirmed the warning that the person is not
+	// YTÜ-linked (grup-yonetimi 07). Optional; it never decides the add.
+	UnverifiedAck bool `json:"unverifiedAck"`
 }
 
 type createUserBody struct {
@@ -258,6 +261,25 @@ func (h *IdentityHandler) MemberCandidates(c fiber.Ctx) error {
 	return c.JSON(found)
 }
 
+// MemberCheck answers GET /v1/groups/{id}/member-check/{userId}: what adding
+// the person to the Group would warn of (grup-yonetimi 07).
+func (h *IdentityHandler) MemberCheck(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	userID, err := uuid.Parse(c.Params("userId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	check, err := h.svc.MemberCheck(c.Context(), p, c.Params("groupId"), userID)
+	if err != nil {
+		return identityError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(check)
+}
+
 func (h *IdentityHandler) AddMember(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
@@ -270,7 +292,8 @@ func (h *IdentityHandler) AddMember(c fiber.Ctx) error {
 	if body.UserID == uuid.Nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	if err := h.svc.AddMember(auditContext(c, p), p, c.Params("groupId"), body.UserID); err != nil {
+	ctx := identity.WithUnverifiedAck(auditContext(c, p), body.UnverifiedAck)
+	if err := h.svc.AddMember(ctx, p, c.Params("groupId"), body.UserID); err != nil {
 		return identityError(c, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)

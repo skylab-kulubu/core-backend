@@ -121,3 +121,80 @@ func TestSkyMailTeamMembershipOffWithoutKey(t *testing.T) {
 type failingToken struct{}
 
 func (failingToken) Token(context.Context) (string, error) { return "", errors.New("no token") }
+
+// Each kind of membership mail (docs/team-membership-mail.md) posts its own
+// template key and names its own kind in a refusal's log line.
+func TestSkyMailMembershipKindsPostTheirOwnTemplate(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		kind    MembershipKind
+		key     string
+		logKind string
+	}{
+		{MembershipTeam, "club.team-membership", "team_membership"},
+		{MembershipRole, "club.role-membership", "role_membership"},
+		{MembershipGroup, "club.group-membership", "group_membership"},
+	} {
+		var payload map[string]any
+		status := http.StatusCreated
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &payload)
+			w.WriteHeader(status)
+		}))
+		var logs bytes.Buffer
+		sky := &SkyMail{
+			BaseURL:                    srv.URL,
+			TeamMembershipTemplateKey:  DefaultTeamMembershipTemplateKey,
+			RoleMembershipTemplateKey:  DefaultRoleMembershipTemplateKey,
+			GroupMembershipTemplateKey: DefaultGroupMembershipTemplateKey,
+			Tokens:                     StaticToken("tok"), HTTP: srv.Client(), Logger: log.New(&logs, "", 0),
+		}
+		if !sky.MembershipConfigured(tc.kind) {
+			t.Fatalf("%s: not configured", tc.kind)
+		}
+		if err := sky.Membership(t.Context(), tc.kind, "ada@example.test", "Ada Lovelace", map[string]string{"GroupName": "YK"}); err != nil {
+			t.Fatalf("%s: %v", tc.kind, err)
+		}
+		if payload["template_key"] != tc.key {
+			t.Fatalf("%s: key %v", tc.kind, payload["template_key"])
+		}
+		status = http.StatusNotFound
+		err := sky.Membership(t.Context(), tc.kind, "ada@example.test", "Ada Lovelace", nil)
+		srv.Close()
+		var refused *SendError
+		if !errors.As(err, &refused) || refused.Status != http.StatusNotFound || refused.Permanent() {
+			t.Fatalf("%s: refusal %v", tc.kind, err)
+		}
+		if !strings.Contains(logs.String(), `"kind":"`+tc.logKind+`"`) || strings.Contains(logs.String(), "ada@") {
+			t.Fatalf("%s: log %q", tc.kind, logs.String())
+		}
+	}
+}
+
+// A kind without a key is off on its own: the others still send.
+func TestSkyMailMembershipKindOffWithoutItsKey(t *testing.T) {
+	t.Parallel()
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(srv.Close)
+	sky := &SkyMail{BaseURL: srv.URL, TeamMembershipTemplateKey: DefaultTeamMembershipTemplateKey, GroupMembershipTemplateKey: " ", Tokens: StaticToken("tok"), HTTP: srv.Client()}
+	for _, kind := range []MembershipKind{MembershipRole, MembershipGroup, MembershipKind("other")} {
+		if sky.MembershipConfigured(kind) {
+			t.Fatalf("%s configured", kind)
+		}
+		if err := sky.Membership(t.Context(), kind, "ada@example.test", "", nil); !errors.Is(err, ErrTemplateUnconfigured) || called {
+			t.Fatalf("%s: err %v called %v", kind, err, called)
+		}
+	}
+	if !sky.MembershipConfigured(MembershipTeam) {
+		t.Fatal("team off")
+	}
+	var nilSky *SkyMail
+	if nilSky.MembershipConfigured(MembershipTeam) {
+		t.Fatal("nil SkyMail configured")
+	}
+}

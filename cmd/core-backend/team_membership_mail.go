@@ -2,41 +2,77 @@ package main
 
 import (
 	"context"
+	"slices"
 
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/teammail"
 )
 
-// startTeamMembershipMail starts the team membership mail
-// (docs/team-membership-mail.md) until ctx is cancelled: the notifier the
-// membership routes tell of each change, its metrics, and a channel that
-// closes once its worker has stopped. Without SkyMail or with
-// SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY set empty it is off: a nil notifier,
-// so membership writes read nothing for it, and a closed channel.
-func startTeamMembershipMail(ctx context.Context, queue teammail.Queue, sky *mail.SkyMail, dir identity.Directory, accounts teammail.Accounts, privilegedRoots []string, logf func(string, ...any)) (identity.MembershipNotifier, interface{ Prometheus() string }, <-chan struct{}) {
+// membershipTemplateKeys reads the membership mails' template keys
+// (docs/team-membership-mail.md): unset takes the seeded key, empty turns
+// that kind off.
+func membershipTemplateKeys(sky *mail.SkyMail, lookup func(string) (string, bool)) {
+	sky.TeamMembershipTemplateKey = templateKey(lookup, "SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY", mail.DefaultTeamMembershipTemplateKey)
+	sky.RoleMembershipTemplateKey = templateKey(lookup, "SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY", mail.DefaultRoleMembershipTemplateKey)
+	sky.GroupMembershipTemplateKey = templateKey(lookup, "SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY", mail.DefaultGroupMembershipTemplateKey)
+	// The privilege notice (docs/privilege-change-mail.md) the same way.
+	sky.PrivilegeNoticeTemplateKey = templateKey(lookup, "SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY", mail.DefaultPrivilegeNoticeTemplateKey)
+}
+
+// startTeamMembershipMail starts the membership mail
+// (docs/team-membership-mail.md) and the privilege notice
+// (docs/privilege-change-mail.md) until ctx is cancelled: the notifiers the
+// membership and role mapping routes tell of each change, the metrics, and
+// a channel that closes once the worker has stopped. Without SkyMail, or
+// with all three SKYMAIL_*_MEMBERSHIP_TEMPLATE_KEY and
+// SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY set empty, it is off: nil
+// notifiers, so the writes read nothing for them, and a closed channel. A
+// kind whose key alone is empty is off on its own; so is the notice
+// without a notice queue.
+func startTeamMembershipMail(ctx context.Context, queue teammail.Queue, notices teammail.NoticeQueue, sky *mail.SkyMail, dir identity.Directory, accounts teammail.Accounts, privilegedRoots []string, logf func(string, ...any)) (identity.MembershipNotifier, identity.GroupRolesNotifier, interface{ Prometheus() string }, <-chan struct{}) {
 	off := make(chan struct{})
 	close(off)
-	switch {
-	case sky == nil:
+	if sky == nil {
 		logf("team membership mail: off (SkyMail is not configured: KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET)")
-		return nil, teammail.Off{}, off
-	case !sky.TeamMembershipConfigured():
-		logf("team membership mail: off (SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY is empty)")
-		return nil, teammail.Off{}, off
+		return nil, nil, teammail.Off{}, off
 	}
-	svc, err := teammail.NewService(teammail.Config{
+	noticeOn := notices != nil && sky.PrivilegeNoticeConfigured()
+	if !slices.ContainsFunc(mail.MembershipKinds, sky.MembershipConfigured) && !noticeOn {
+		logf("team membership mail: off (SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY, SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY, SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY and SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY are empty)")
+		return nil, nil, teammail.Off{}, off
+	}
+	config := teammail.Config{
 		Queue:  queue,
 		People: teammail.DirectoryPeople{Directory: dir, Accounts: accounts},
 		Groups: dir,
 		Mail:   sky,
-		// No team sits under a Privileged root (AUTHZ_PRIVILEGED_ROOTS).
+		// The Privileged roots (AUTHZ_PRIVILEGED_ROOTS) get the role mail,
+		// and the privilege notice tells the trees of those named ADMIN.
 		PrivilegedRoots: privilegedRoots,
-	})
+	}
+	if notices != nil {
+		config.Notice = &teammail.NoticeConfig{Queue: notices, Rosters: teammail.DirectoryRosters{Directory: dir}, Mail: sky}
+	}
+	svc, err := teammail.NewService(config)
 	if err != nil {
 		logf("team membership mail: OFF, %v", err)
-		return nil, teammail.Off{}, off
+		return nil, nil, teammail.Off{}, off
 	}
-	logf("team membership mail: on (template %s)", sky.TeamMembershipTemplateKey)
-	return svc, svc, svc.Run(ctx, logf)
+	keyOr := func(kind mail.MembershipKind) string {
+		if key := sky.MembershipTemplateKey(kind); key != "" {
+			return key
+		}
+		return "off"
+	}
+	notice := "off"
+	if noticeOn {
+		notice = sky.PrivilegeNoticeTemplateKey
+	}
+	logf("team membership mail: on (template %s; role %s; group %s; privilege notice %s)", keyOr(mail.MembershipTeam), keyOr(mail.MembershipRole), keyOr(mail.MembershipGroup), notice)
+	var groupRoles identity.GroupRolesNotifier
+	if noticeOn {
+		groupRoles = svc
+	}
+	return svc, groupRoles, svc, svc.Run(ctx, logf)
 }

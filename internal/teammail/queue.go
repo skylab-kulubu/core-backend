@@ -18,9 +18,9 @@ const (
 	ActionRemoved Action = "removed"
 )
 
-// Change is one queued team membership mail. It holds ids and the Group's
-// path, never an address or a name: those are read when the mail is sent,
-// so a person erased meanwhile gets nothing.
+// Change is one queued membership mail. It holds ids and the Group's path,
+// never an address or a name: those are read when the mail is sent, so a
+// person erased meanwhile gets nothing.
 type Change struct {
 	ID        uuid.UUID
 	SubjectID uuid.UUID
@@ -31,6 +31,11 @@ type Change struct {
 	GroupPath  string
 	Action     Action
 	OccurredAt time.Time
+	// Kind is the mail the change was queued for (KindOf when it was
+	// made). The sending core's rule decides the mail it gets; this says
+	// what waits, for whoever reads the queue. A row an older core queued
+	// reads KindTeam.
+	Kind Kind
 	// NextAttemptAt is when the change is due; Attempts counts its failed
 	// sends in a row.
 	NextAttemptAt time.Time

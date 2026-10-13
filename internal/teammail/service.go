@@ -54,9 +54,13 @@ const (
 	SkipInactive SkipReason = "inactive"
 	// SkipNoEmail: the account has no primary e-mail.
 	SkipNoEmail SkipReason = "no_email"
-	// SkipNotTeam: the Group is no team by the rule of the core sending it
-	// (queued by a core whose rule was wider).
+	// SkipNotTeam was a Group that is no team by the rule of the core
+	// sending it. Every Group is mailed since 2026-10-12, so nothing is
+	// skipped for it; its counter stays, at 0, for whoever reads it.
 	SkipNotTeam SkipReason = "not_team"
+	// SkipKindOff: the change's kind has no template key now (its
+	// SKYMAIL_*_MEMBERSHIP_TEMPLATE_KEY set empty since it was queued).
+	SkipKindOff SkipReason = "kind_off"
 )
 
 // Recipient is who a mail goes to: the primary e-mail and the name.
@@ -76,14 +80,17 @@ type People interface {
 	DisplayName(ctx context.Context, id uuid.UUID) string
 }
 
-// GroupReader reads the team's Group for its display name.
+// GroupReader reads the Group (a team's) for its display name.
 type GroupReader interface {
 	GetGroup(ctx context.Context, idOrPath string) (identity.Group, error)
 }
 
 // Mailer sends the mail and says whether SkyMail took it (mail.SkyMail).
 type Mailer interface {
-	TeamMembership(ctx context.Context, recipient, fullName string, vars map[string]string) error
+	// MembershipConfigured reports whether kind's mail has a template; a
+	// kind without one is off.
+	MembershipConfigured(kind Kind) bool
+	Membership(ctx context.Context, kind Kind, recipient, fullName string, vars map[string]string) error
 }
 
 // Config is what a Service takes.
@@ -96,9 +103,13 @@ type Config struct {
 	Now func() time.Time
 	// Logger hears counts and failures, never a person; nil is log.Default.
 	Logger *log.Logger
-	// PrivilegedRoots are the Privileged roots (AUTHZ_PRIVILEGED_ROOTS), no
-	// team, nor anything under them; nil is authz.DefaultPrivilegedRoots.
+	// PrivilegedRoots are the Privileged roots (AUTHZ_PRIVILEGED_ROOTS):
+	// they and everything under them get the role mail, never the team
+	// mail; nil is authz.DefaultPrivilegedRoots.
 	PrivilegedRoots []string
+	// Notice turns the privilege notice on (notice.go,
+	// docs/privilege-change-mail.md); nil leaves it off.
+	Notice *NoticeConfig
 }
 
 // Service queues team membership changes (identity.MembershipNotifier) and
@@ -113,16 +124,32 @@ type Service struct {
 	location *time.Location
 	wake     chan struct{}
 	roots    []string
+	notice   *NoticeConfig
 
 	mu             sync.Mutex
 	enqueued       int64
+	enqueuedByKind map[Kind]int64
 	coalesced      map[Enqueued]int64
 	queueErrors    int64
 	precheckErrors int64
 	outcomes       map[string]int64
+	byKind         map[Kind]map[string]int64
 	backlog        int
 	oldest         time.Duration
 	lastSuccess    time.Time
+	notices        noticeCounts
+}
+
+// noticeCounts are the privilege notice's counters.
+type noticeCounts struct {
+	enqueued       map[NoticeEvent]int64
+	queueErrors    int64
+	precheckErrors int64
+	countErrors    int64
+	recipients     int64
+	outcomes       map[string]int64
+	backlog        int
+	oldest         time.Duration
 }
 
 // NewService checks config.
@@ -136,6 +163,8 @@ func NewService(config Config) (*Service, error) {
 		return nil, errors.New("teammail: no group reader")
 	case config.Mail == nil:
 		return nil, errors.New("teammail: no mailer")
+	case config.Notice != nil && (config.Notice.Queue == nil || config.Notice.Rosters == nil || config.Notice.Mail == nil):
+		return nil, errors.New("teammail: the privilege notice needs a queue, a roster reader and a mailer")
 	}
 	location, err := time.LoadLocation(timeZone)
 	if err != nil {
@@ -155,21 +184,54 @@ func NewService(config Config) (*Service, error) {
 	}
 	return &Service{
 		queue: config.Queue, people: config.People, groups: config.Groups, mail: config.Mail,
-		now: now, logger: logger, location: location, wake: make(chan struct{}, 1), roots: roots,
+		now: now, logger: logger, location: location, wake: make(chan struct{}, 1), roots: roots, notice: config.Notice,
 		outcomes: map[string]int64{}, coalesced: map[Enqueued]int64{},
+		enqueuedByKind: map[Kind]int64{}, byKind: map[Kind]map[string]int64{},
+		notices: noticeCounts{enqueued: map[NoticeEvent]int64{}, outcomes: map[string]int64{}},
 	}, nil
 }
 
-// Notifies reports whether g is a team's Group (TeamOf).
-func (s *Service) Notifies(g identity.Group) bool {
-	_, ok := TeamOf(g.Path, s.roots)
-	return ok
+// kindOf is the kind of the Group at path and whether its mail is on: a
+// Group path whose kind has a template.
+func (s *Service) kindOf(path string) (Kind, bool) {
+	kind, ok := KindOf(path, s.roots)
+	return kind, ok && s.mail.MembershipConfigured(kind)
 }
 
-// MembershipChanged queues the mail of change. It never fails the write that
-// made it: a queue that refuses is counted and logged, without the person.
+// noticeOn reports whether the privilege notice has a template.
+func (s *Service) noticeOn() bool {
+	return s.notice != nil && s.notice.Mail.PrivilegeNoticeConfigured()
+}
+
+// noticed reports whether a membership of the Group at path gets a
+// privilege notice: a Privileged Group, with the notice on.
+func (s *Service) noticed(path string) bool {
+	return s.noticeOn() && authz.PrivilegedRoot(s.roots, path) != ""
+}
+
+// Notifies reports whether changes to g are mailed: every Group whose kind
+// (KindOf) has a template, and every Privileged Group while the privilege
+// notice is on.
+func (s *Service) Notifies(g identity.Group) bool {
+	_, ok := s.kindOf(g.Path)
+	return ok || s.noticed(g.Path)
+}
+
+// MembershipChanged queues the mails of change: the person's own membership
+// mail and, for a Privileged Group, the privilege notice. It never fails
+// the write that made it: a queue that refuses is counted and logged,
+// without the person.
 func (s *Service) MembershipChanged(ctx context.Context, change identity.MembershipChange) {
-	if _, ok := TeamOf(change.Group.Path, s.roots); !ok {
+	if s.noticed(change.Group.Path) {
+		event := NoticeMemberRemoved
+		if change.Added {
+			event = NoticeMemberAdded
+		}
+		subject := change.UserID
+		s.queueNotice(ctx, Notice{Event: event, GroupPath: change.Group.Path, SubjectID: &subject}, change.ActorID)
+	}
+	kind, ok := s.kindOf(change.Group.Path)
+	if !ok {
 		return
 	}
 	queued := Change{
@@ -178,6 +240,7 @@ func (s *Service) MembershipChanged(ctx context.Context, change identity.Members
 		GroupPath:  change.Group.Path,
 		Action:     ActionRemoved,
 		OccurredAt: s.now().UTC(),
+		Kind:       kind,
 	}
 	if change.Added {
 		queued.Action = ActionAdded
@@ -199,7 +262,52 @@ func (s *Service) MembershipChanged(ctx context.Context, change identity.Members
 		s.count(func() { s.coalesced[result]++ })
 		return
 	}
-	s.count(func() { s.enqueued++ })
+	s.count(func() {
+		s.enqueued++
+		s.enqueuedByKind[kind]++
+	})
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+// GroupRolesChanged queues the privilege notice of a Group's role mappings
+// changed (rule 1: ADMIN alone is told). It never fails the write.
+func (s *Service) GroupRolesChanged(ctx context.Context, change identity.GroupRolesChange) {
+	if !s.noticeOn() || !strings.HasPrefix(change.Group.Path, "/") {
+		return
+	}
+	added, removed := roleNames(change.Added), roleNames(change.Removed)
+	if len(added)+len(removed) == 0 {
+		return
+	}
+	s.queueNotice(ctx, Notice{Event: NoticeRolesChanged, GroupPath: change.Group.Path, RolesAdded: added, RolesRemoved: removed}, change.ActorID)
+}
+
+// RolesPrecheckFailed counts a role mapping write whose mappings could not
+// be read before it: it went on, and no notice is sent for it.
+func (s *Service) RolesPrecheckFailed() {
+	s.count(func() { s.notices.precheckErrors++ })
+	s.logger.Printf("privilege notice: a Group's role mappings could not be read around a write; no notice is sent for it")
+}
+
+// queueNotice queues the change n, without a recipient: the worker reads
+// who gets it.
+func (s *Service) queueNotice(ctx context.Context, n Notice, actorID string) {
+	n.ID, n.ChangeID = uuid.New(), uuid.New()
+	n.OccurredAt = s.now().UTC()
+	if actor, err := uuid.Parse(actorID); err == nil {
+		n.ActorID = &actor
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), enqueueTimeout)
+	defer cancel()
+	if err := s.notice.Queue.Enqueue(ctx, n); err != nil {
+		s.count(func() { s.notices.queueErrors++ })
+		s.logger.Printf("privilege notice: could not queue the notice of a change (%s): %v", n.Event, err)
+		return
+	}
+	s.count(func() { s.notices.enqueued[n.Event]++ })
 	select {
 	case s.wake <- struct{}{}:
 	default:
@@ -216,6 +324,18 @@ func (s *Service) PrecheckFailed() {
 // Report counts one pass.
 type Report struct {
 	Sent, Skipped, Rejected, Failed, Expired int
+	// Notices counts the privilege notices of the pass.
+	Notices NoticeReport
+}
+
+// NoticeReport counts the privilege notices of one pass: Read are changes
+// read for their recipients, Sent and the rest are mails to one recipient.
+type NoticeReport struct {
+	Read, Sent, Skipped, Rejected, Failed, Expired int
+}
+
+func (r NoticeReport) any() bool {
+	return r.Read+r.Sent+r.Skipped+r.Rejected+r.Failed+r.Expired > 0
 }
 
 func (r Report) any() bool {
@@ -223,9 +343,18 @@ func (r Report) any() bool {
 }
 
 // Pass drops the changes past GiveUpAfter, then sends the due ones until
-// none is due. A failed send waits for its backoff; its error is the
-// queue's (the database's).
+// none is due: the membership mails, then the privilege notices. A failed
+// send waits for its backoff; its error is the queue's (the database's).
 func (s *Service) Pass(ctx context.Context) (Report, error) {
+	report, err := s.membershipPass(ctx)
+	if err != nil || s.notice == nil {
+		return report, err
+	}
+	report.Notices, err = s.noticePass(ctx)
+	return report, err
+}
+
+func (s *Service) membershipPass(ctx context.Context) (Report, error) {
 	var report Report
 	expired, err := s.queue.DropBefore(ctx, s.now().UTC().Add(-GiveUpAfter))
 	if err != nil {
@@ -242,13 +371,19 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 			break
 		}
 		change := changes[0]
-		outcome := s.deliver(ctx, change)
+		kind, outcome := s.deliver(ctx, change)
 		if outcome == outcomeInterrupted {
 			// Core is stopping: the change keeps its attempts and is taken
 			// again once its lease runs out. Nothing failed.
 			return report, ctx.Err()
 		}
 		s.add(outcome, 1)
+		s.count(func() {
+			if s.byKind[kind] == nil {
+				s.byKind[kind] = map[string]int64{}
+			}
+			s.byKind[kind][outcome]++
+		})
 		switch outcome {
 		case "sent":
 			report.Sent++
@@ -284,54 +419,88 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 // outcomeInterrupted is a send cut short by core stopping: no outcome.
 const outcomeInterrupted = "interrupted"
 
-// deliver sends the mail of one change and names the outcome: sent,
-// skipped_<reason>, rejected (SkyMail refused the body itself), failed
-// (tried again later) or interrupted (core is stopping).
-func (s *Service) deliver(parent context.Context, change Change) string {
+// deliver sends the mail of one change and names its kind and the outcome:
+// sent, skipped_<reason>, rejected (SkyMail refused the body itself), failed
+// (tried again later) or interrupted (core is stopping). The kind is this
+// core's (KindOf), whatever the row was queued for.
+func (s *Service) deliver(parent context.Context, change Change) (Kind, string) {
 	ctx, cancel := context.WithTimeout(parent, sendTimeout)
 	defer cancel()
-	team, ok := TeamOf(change.GroupPath, s.roots)
+	kind, ok := KindOf(change.GroupPath, s.roots)
 	if !ok {
-		return "skipped_" + string(SkipNotTeam)
+		// The table holds Group paths only; nothing to name the mail by.
+		return change.Kind, "skipped_" + string(SkipNotTeam)
+	}
+	if !s.mail.MembershipConfigured(kind) {
+		return kind, "skipped_" + string(SkipKindOff)
 	}
 	recipient, skip, err := s.people.Recipient(ctx, change.SubjectID)
 	if err != nil {
 		if parent.Err() != nil {
-			return outcomeInterrupted
+			return kind, outcomeInterrupted
 		}
-		return "failed"
+		return kind, "failed"
 	}
 	if skip != "" {
-		return "skipped_" + string(skip)
+		return kind, "skipped_" + string(skip)
 	}
-	group, err := s.groups.GetGroup(ctx, team.Path)
-	if err != nil {
-		// Renamed or gone since: the name it had stands for it.
-		group = identity.Group{Path: team.Path}
-	}
-	leader := ""
+	actor := ""
 	if change.ActorID != nil {
-		leader = s.people.DisplayName(ctx, *change.ActorID)
+		actor = s.people.DisplayName(ctx, *change.ActorID)
 	}
-	err = s.mail.TeamMembership(ctx, recipient.Email, recipient.FullName, map[string]string{
-		"TeamName":    teamName(group),
-		"Action":      string(change.Action),
-		"Role":        roleValues[team.Role],
-		"EffectiveAt": change.OccurredAt.In(s.location).Format(dateLayout),
-		"LeaderName":  leader,
-	})
+	effectiveAt := change.OccurredAt.In(s.location).Format(dateLayout)
+	var vars map[string]string
+	switch kind {
+	case KindTeam:
+		team, _ := TeamOf(change.GroupPath, s.roots)
+		vars = map[string]string{
+			"TeamName":    teamName(s.group(ctx, team.Path)),
+			"Action":      string(change.Action),
+			"Role":        roleValues[team.Role],
+			"EffectiveAt": effectiveAt,
+			"LeaderName":  actor,
+		}
+	case KindRole:
+		vars = map[string]string{
+			"GroupName":   groupName(s.group(ctx, change.GroupPath)),
+			"Role":        privilegedRole(change.GroupPath, s.roots),
+			"Action":      string(change.Action),
+			"EffectiveAt": effectiveAt,
+			"ActorName":   actor,
+		}
+	default:
+		vars = map[string]string{
+			"GroupName":   groupName(s.group(ctx, change.GroupPath)),
+			"Action":      string(change.Action),
+			"EffectiveAt": effectiveAt,
+			"ActorName":   actor,
+		}
+	}
+	err = s.mail.Membership(ctx, kind, recipient.Email, recipient.FullName, vars)
 	var refused *mail.SendError
 	switch {
 	case err == nil:
 		s.count(func() { s.lastSuccess = s.now().UTC() })
-		return "sent"
+		return kind, "sent"
+	case errors.Is(err, mail.ErrTemplateUnconfigured):
+		return kind, "skipped_" + string(SkipKindOff)
 	case errors.As(err, &refused) && refused.Permanent():
-		return "rejected"
+		return kind, "rejected"
 	case parent.Err() != nil:
-		return outcomeInterrupted
+		return kind, outcomeInterrupted
 	default:
-		return "failed"
+		return kind, "failed"
 	}
+}
+
+// group reads the Group at path for its name. One renamed or gone since is
+// named by the last segment of its path.
+func (s *Service) group(ctx context.Context, path string) identity.Group {
+	group, err := s.groups.GetGroup(ctx, path)
+	if err != nil {
+		return identity.Group{Path: path}
+	}
+	return group
 }
 
 // backoff is the wait after the nth failure in a row.
@@ -370,9 +539,15 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 			switch {
 			case err != nil && ctx.Err() == nil:
 				logf("team membership mail: queue: %v", err)
-			case report.any():
-				logf("team membership mail: %d sent, %d skipped, %d refused by SkyMail, %d failed and retried later, %d expired",
-					report.Sent, report.Skipped, report.Rejected, report.Failed, report.Expired)
+			default:
+				if report.any() {
+					logf("team membership mail: %d sent, %d skipped, %d refused by SkyMail, %d failed and retried later, %d expired",
+						report.Sent, report.Skipped, report.Rejected, report.Failed, report.Expired)
+				}
+				if n := report.Notices; n.any() {
+					logf("privilege notice: %d changes read for recipients, %d sent, %d skipped, %d refused by SkyMail, %d failed and retried later, %d expired",
+						n.Read, n.Sent, n.Skipped, n.Rejected, n.Failed, n.Expired)
+				}
 			}
 			select {
 			case <-ctx.Done():
@@ -389,6 +564,14 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 var outcomeNames = []string{
 	"sent", "failed", "rejected", "expired",
 	"skipped_" + string(SkipInactive), "skipped_" + string(SkipNoEmail), "skipped_" + string(SkipNotTeam),
+	"skipped_" + string(SkipKindOff),
+}
+
+// kindOutcomeNames are the outcomes /v1/metrics lists by kind: those of a
+// send (expired rows are dropped by age, without their kind).
+var kindOutcomeNames = []string{
+	"sent", "failed", "rejected",
+	"skipped_" + string(SkipInactive), "skipped_" + string(SkipNoEmail), "skipped_" + string(SkipKindOff),
 }
 
 // Prometheus is the mail's counters and its backlog at the last pass, in
@@ -401,11 +584,22 @@ func (s *Service) Prometheus() string {
 	defer s.mu.Unlock()
 	var out strings.Builder
 	out.WriteString(enabledMetric(true))
+	out.WriteString(kindEnabledMetric(s.mail.MembershipConfigured))
 	out.WriteString("# TYPE skylab_team_membership_mail_total counter\n")
 	for _, outcome := range outcomeNames {
 		fmt.Fprintf(&out, "skylab_team_membership_mail_total{outcome=%q} %d\n", outcome, s.outcomes[outcome])
 	}
+	out.WriteString("# TYPE skylab_team_membership_mail_by_kind_total counter\n")
+	for _, kind := range mail.MembershipKinds {
+		for _, outcome := range kindOutcomeNames {
+			fmt.Fprintf(&out, "skylab_team_membership_mail_by_kind_total{mail_kind=%q,outcome=%q} %d\n", kind, outcome, s.byKind[kind][outcome])
+		}
+	}
 	fmt.Fprintf(&out, "# TYPE skylab_team_membership_mail_enqueued_total counter\nskylab_team_membership_mail_enqueued_total %d\n", s.enqueued)
+	out.WriteString("# TYPE skylab_team_membership_mail_enqueued_by_kind_total counter\n")
+	for _, kind := range mail.MembershipKinds {
+		fmt.Fprintf(&out, "skylab_team_membership_mail_enqueued_by_kind_total{mail_kind=%q} %d\n", kind, s.enqueuedByKind[kind])
+	}
 	out.WriteString("# TYPE skylab_team_membership_mail_coalesced_total counter\n")
 	for _, kind := range []Enqueued{EnqueuedDuplicate, EnqueuedCancelled} {
 		fmt.Fprintf(&out, "skylab_team_membership_mail_coalesced_total{kind=%q} %d\n", kind, s.coalesced[kind])
@@ -419,13 +613,16 @@ func (s *Service) Prometheus() string {
 		last = s.lastSuccess.Unix()
 	}
 	fmt.Fprintf(&out, "# TYPE skylab_team_membership_mail_last_success_timestamp_seconds gauge\nskylab_team_membership_mail_last_success_timestamp_seconds %d\n", last)
+	out.WriteString(s.noticeMetrics())
 	return out.String()
 }
 
 // Off is /v1/metrics for a core whose team membership mail is off.
 type Off struct{}
 
-func (Off) Prometheus() string { return enabledMetric(false) }
+func (Off) Prometheus() string {
+	return enabledMetric(false) + kindEnabledMetric(func(Kind) bool { return false }) + noticeEnabledMetric(false)
+}
 
 func enabledMetric(on bool) string {
 	value := 0
@@ -436,3 +633,17 @@ func enabledMetric(on bool) string {
 }
 
 var _ identity.MembershipNotifier = (*Service)(nil)
+
+// kindEnabledMetric says which kinds are on: 1 for a kind with a template.
+func kindEnabledMetric(on func(Kind) bool) string {
+	var out strings.Builder
+	out.WriteString("# TYPE skylab_team_membership_mail_kind_enabled gauge\n")
+	for _, kind := range mail.MembershipKinds {
+		value := 0
+		if on(kind) {
+			value = 1
+		}
+		fmt.Fprintf(&out, "skylab_team_membership_mail_kind_enabled{mail_kind=%q} %d\n", kind, value)
+	}
+	return out.String()
+}

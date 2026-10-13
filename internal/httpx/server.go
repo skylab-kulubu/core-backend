@@ -14,6 +14,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
+	"github.com/skylab-kulubu/core-backend/internal/commpref"
 	"github.com/skylab-kulubu/core-backend/internal/competition"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
@@ -83,6 +84,11 @@ type Deps struct {
 	// TeamMailMetrics are the team membership mail's counters
 	// (docs/team-membership-mail.md). Nil publishes none.
 	TeamMailMetrics interface{ Prometheus() string }
+
+	// TeamDelegationMetrics count the client roles nobody has classified
+	// that team delegation's protection reads found
+	// (docs/team-delegation.md). Nil publishes none.
+	TeamDelegationMetrics interface{ Prometheus() string }
 
 	// MediaUploadLimiter is each person's single-step upload budget. Nil
 	// uses media.DefaultUploadLimits.
@@ -157,6 +163,16 @@ type Deps struct {
 	// off (CONTACT_CONSENT_KEY unset) answers its routes 503 and records
 	// no Guest apply consent.
 	Consents *consent.Service
+
+	// CommunicationPreferences keeps the Announcement preference
+	// (docs/communication-preferences.md). Nil or off (COMMUNICATION_PREFERENCE_KEY unset)
+	// answers its routes 503.
+	CommunicationPreferences *commpref.Service
+
+	// Audience resolves a News send's audience for SkyMail's service account
+	// (docs/news-audience.md). Nil or off answers POST /v1/audiences/resolve
+	// 503.
+	Audience *commpref.Audience
 
 	// MediaDecodeMetrics are the media decode budget's state and counters
 	// (docs/media-lifecycle.md, "Decode budget"), served on /v1/metrics.
@@ -241,7 +257,7 @@ func New(deps Deps) *fiber.App {
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
-		deps.Readiness != nil {
+		deps.TeamDelegationMetrics != nil || deps.Readiness != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -272,6 +288,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.TeamMailMetrics != nil {
 				text += deps.TeamMailMetrics.Prometheus()
+			}
+			if deps.TeamDelegationMetrics != nil {
+				text += deps.TeamDelegationMetrics.Prometheus()
 			}
 			text += deps.Readiness.Prometheus()
 			return c.SendString(text)
@@ -350,6 +369,13 @@ func New(deps Deps) *fiber.App {
 	app.Get(consent.ConfirmPath, consentPageLimit, consents.ConfirmPage)
 	app.Post(consent.ConfirmPath, consentPageLimit, consents.Confirm)
 	guestApplyRoute = append(guestApplyRoute, consents.GuestApplyConsents)
+	// The unsubscribe link of every News mail (docs/communication-preferences.md):
+	// no sign-in, the signed token in the link is the permission. The same
+	// budgets as the consent pages, for the same reasons (a mail provider's
+	// one-click POSTs come from a few of its addresses).
+	communicationPreferences := handlers.NewCommunicationPreferenceHandler(deps.CommunicationPreferences)
+	app.Get(commpref.UnsubscribePath, perClientLimit(trustedProxies), communicationPreferences.UnsubscribePage)
+	app.Post(commpref.UnsubscribePath, perClientLimitOf(trustedProxies, consentWithdrawLimit), communicationPreferences.Unsubscribe)
 	app.Post("/v1/events/:eventId/applications/guest", guestApply.Observe, append(guestApplyRoute, tickets.ApplyGuest)...)
 	// A read link opens a private Media without a sign-in: the token in it is
 	// the permission (docs/media-lifecycle.md). The budget follows the
@@ -385,6 +411,8 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/users/me/consents", consents.Mine)
 	app.Post("/v1/users/me/consents", consents.GrantMine)
 	app.Delete("/v1/users/me/consents/:purpose", consents.WithdrawMine)
+	app.Get("/v1/users/me/communication-preferences", communicationPreferences.Mine)
+	app.Put("/v1/users/me/communication-preferences", communicationPreferences.Update)
 	// A product's service account with consent:record; SkyMail's with
 	// consent:audience:read.
 	app.Post("/v1/consents", consents.Record)
@@ -392,6 +420,8 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/consents/lookup", consents.Lookup)
 	app.Get("/v1/consents/audience", consents.Audience)
 	app.Post("/v1/consents/renewal-requests", consents.RequestRenewal)
+	// SkyMail's service account with audience:read: who a News send goes to.
+	app.Post("/v1/audiences/resolve", handlers.NewAudienceHandler(deps.Audience).Resolve)
 
 	app.Get("/v1/users/me", me.GetMe)
 	app.Put("/v1/users/me", me.PutMe)
@@ -422,6 +452,7 @@ func New(deps Deps) *fiber.App {
 	app.Patch("/v1/groups/:groupId", ident.UpdateGroup)
 	app.Get("/v1/groups/:groupId/members", ident.Members)
 	app.Get("/v1/groups/:groupId/member-candidates", ident.MemberCandidates)
+	app.Get("/v1/groups/:groupId/member-check/:userId", ident.MemberCheck)
 	app.Post("/v1/groups/:groupId/members", ident.AddMember)
 	app.Delete("/v1/groups/:groupId/members/:userId", ident.RemoveMember)
 	app.Get("/v1/groups/:groupId/client-roles", ident.GroupClientRoles)

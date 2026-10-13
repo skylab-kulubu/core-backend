@@ -1,14 +1,13 @@
-// Package teammail sends the team membership mail (SkyMail template
-// club.team-membership): a person added to a team, or removed from one,
-// through core's membership routes is told so by mail. The change is queued
-// in the database with the membership write and sent by a worker, so a
-// SkyMail that is down delays the mail and never the write. See
-// docs/team-membership-mail.md.
+// Package teammail sends the membership mail: a person added to a Group, or
+// removed from one, through core's membership routes is told so by mail. A
+// team's change gets club.team-membership, a Privileged Group's (YK, DK,
+// ADMIN) club.role-membership and any other Group's club.group-membership
+// (KindOf). The change is queued in the database with the membership write
+// and sent by a worker, so a SkyMail that is down delays the mail and never
+// the write. See docs/team-membership-mail.md.
 package teammail
 
 import (
-	"strings"
-
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/teamcode"
@@ -47,19 +46,7 @@ func TeamOf(path string, privilegedRoots []string) (Team, bool) {
 	return Team{Path: team, Role: role}, true
 }
 
-// teamName is how the mail names the team of group (Yusuf, 2026-10-09):
-// its code (the team Group's name) and its Turkish display name
-// (display_name_tr, as the public team list shows it), "WEBLAB · Web
-// Geliştirme", for the team and its leader subgroups alike: the role
-// travels in the Role variable. Without a Turkish name, or one that is the
-// code itself, the code alone.
-func teamName(group identity.Group) string {
-	code := strings.TrimSpace(group.Name)
-	if code == "" {
-		code = group.Path[strings.LastIndex(group.Path, "/")+1:]
-	}
-	if turkish := strings.TrimSpace(group.Attributes["display_name_tr"]); turkish != "" && turkish != code {
-		return code + " · " + turkish
-	}
-	return code
-}
+// teamName is how the team mail names the team of group: groupName, for the
+// team and its leader subgroups alike (the role travels in the Role
+// variable).
+func teamName(group identity.Group) string { return groupName(group) }
