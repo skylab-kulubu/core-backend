@@ -15,6 +15,7 @@ import (
 )
 
 type sent struct {
+	kind                Kind
 	recipient, fullName string
 	vars                map[string]string
 }
@@ -24,16 +25,23 @@ type fakeMail struct {
 	err  error
 	// during runs inside the send, as SkyMail is answering.
 	during func()
+	// off are the kinds without a template key.
+	off map[Kind]bool
 }
 
-func (m *fakeMail) TeamMembership(_ context.Context, recipient, fullName string, vars map[string]string) error {
+func (m *fakeMail) MembershipConfigured(kind Kind) bool { return !m.off[kind] }
+
+func (m *fakeMail) Membership(_ context.Context, kind Kind, recipient, fullName string, vars map[string]string) error {
 	if m.during != nil {
 		m.during()
+	}
+	if m.off[kind] {
+		return mail.ErrTemplateUnconfigured
 	}
 	if m.err != nil {
 		return m.err
 	}
-	m.sent = append(m.sent, sent{recipient, fullName, vars})
+	m.sent = append(m.sent, sent{kind, recipient, fullName, vars})
 	return nil
 }
 
@@ -97,9 +105,13 @@ func newFixture(t *testing.T) *fixture {
 	}
 	svc, err := NewService(Config{
 		Queue: f.queue, People: f.people, Mail: f.mail, Now: f.clock.Now, Logger: log.New(f.logs, "", 0),
-		Groups: fakeGroups{"/UYELER/ORGANIZASYON/ARTLAB": {
-			Name: "ARTLAB", Path: "/UYELER/ORGANIZASYON/ARTLAB", Attributes: map[string]string{"display_name_tr": "Tasarım & Sanat"},
-		}},
+		Groups: fakeGroups{
+			"/UYELER/ORGANIZASYON/ARTLAB": {
+				Name: "ARTLAB", Path: "/UYELER/ORGANIZASYON/ARTLAB", Attributes: map[string]string{"display_name_tr": "Tasarım & Sanat"},
+			},
+			"/UYELER/YK":   {Name: "YK", Path: "/UYELER/YK", Attributes: map[string]string{"display_name_tr": "Yönetim Kurulu"}},
+			"/UYELER/ARGE": {Name: "ARGE", Path: "/UYELER/ARGE", Attributes: map[string]string{"display_name_tr": "Ar-Ge"}},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -115,14 +127,117 @@ func (f *fixture) change(t *testing.T, path string, added bool, actor string) {
 	})
 }
 
-func TestServiceNotifiesTeamsOnly(t *testing.T) {
+// Every Group's membership is mailed (Yusuf, 2026-10-12): teams, the
+// Privileged Groups and every other Group.
+func TestServiceNotifiesEveryGroup(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	if !f.svc.Notifies(identity.Group{Path: "/UYELER/ARGE/WEBLAB/LIDERLER"}) {
-		t.Fatal("team leaders not notified")
+	for _, path := range []string{"/UYELER/ARGE/WEBLAB/LIDERLER", "/UYELER/YK", "/UYELER/DK/UYE", "/ADMIN", "/UYELER/ARGE", "/UYELER", "/UYELER/ESKI-EDITORLER"} {
+		if !f.svc.Notifies(identity.Group{Path: path}) {
+			t.Errorf("%s not notified", path)
+		}
 	}
-	if f.svc.Notifies(identity.Group{Path: "/UYELER/YK"}) || f.svc.Notifies(identity.Group{Path: "/UYELER/ARGE"}) {
-		t.Fatal("non-team notified")
+	if f.svc.Notifies(identity.Group{}) {
+		t.Fatal("a Group without a path notified")
+	}
+}
+
+// A kind whose template key is empty is off on its own: its changes are
+// neither read for nor queued, and the other kinds go on.
+func TestServiceLeavesAKindThatIsOffAlone(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.mail.off = map[Kind]bool{KindGroup: true}
+	if f.svc.Notifies(identity.Group{Path: "/UYELER/ARGE"}) {
+		t.Fatal("an area notified with the group mail off")
+	}
+	if !f.svc.Notifies(identity.Group{Path: "/UYELER/YK"}) || !f.svc.Notifies(identity.Group{Path: "/UYELER/ARGE/WEBLAB"}) {
+		t.Fatal("the other kinds stopped")
+	}
+	f.change(t, "/UYELER/ARGE", true, "")
+	if q := f.queue.Snapshot(); len(q) != 0 {
+		t.Fatalf("queued %+v", q)
+	}
+	text := f.svc.Prometheus()
+	for _, line := range []string{
+		`skylab_team_membership_mail_kind_enabled{mail_kind="team"} 1`,
+		`skylab_team_membership_mail_kind_enabled{mail_kind="role"} 1`,
+		`skylab_team_membership_mail_kind_enabled{mail_kind="group"} 0`,
+	} {
+		if !strings.Contains(text, line) {
+			t.Fatalf("missing %q in\n%s", line, text)
+		}
+	}
+}
+
+// A Privileged Group's change gets the role mail: the Group's name, which
+// root it is (Role) and who made it.
+func TestServiceSendsTheRoleMail(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.change(t, "/UYELER/YK", true, f.fatih.String())
+	if q := f.queue.Snapshot(); len(q) != 1 || q[0].Kind != KindRole {
+		t.Fatalf("queued %+v", q)
+	}
+	report, err := f.svc.Pass(context.Background())
+	if err != nil || report.Sent != 1 || len(f.mail.sent) != 1 {
+		t.Fatalf("report %+v err %v sent %v", report, err, f.mail.sent)
+	}
+	m := f.mail.sent[0]
+	want := map[string]string{
+		"GroupName": "YK · Yönetim Kurulu", "Role": "board", "Action": "added",
+		"EffectiveAt": "10.10.2026", "ActorName": "Fatih Naz",
+	}
+	if m.kind != KindRole || m.recipient != "ada@example.test" || len(m.vars) != len(want) {
+		t.Fatalf("sent %+v", m)
+	}
+	for k, v := range want {
+		if m.vars[k] != v {
+			t.Fatalf("%s = %q, want %q (vars %v)", k, m.vars[k], v, m.vars)
+		}
+	}
+	text := f.svc.Prometheus()
+	for _, line := range []string{
+		`skylab_team_membership_mail_total{outcome="sent"} 1`,
+		`skylab_team_membership_mail_by_kind_total{mail_kind="role",outcome="sent"} 1`,
+		`skylab_team_membership_mail_by_kind_total{mail_kind="team",outcome="sent"} 0`,
+		`skylab_team_membership_mail_enqueued_total 1`,
+		`skylab_team_membership_mail_enqueued_by_kind_total{mail_kind="role"} 1`,
+		// Kept for dashboards that read it; nothing is skipped as no team now.
+		`skylab_team_membership_mail_total{outcome="skipped_not_team"} 0`,
+	} {
+		if !strings.Contains(text, line) {
+			t.Fatalf("missing %q in\n%s", line, text)
+		}
+	}
+	if strings.Contains(text, "YK") || strings.Contains(f.logs.String(), "YK") {
+		t.Fatalf("a Group named in\n%s%s", text, f.logs.String())
+	}
+}
+
+// Any other Group's change gets the group mail. A subgroup under a root is
+// still the role mail, named by its own Group.
+func TestServiceSendsTheGroupMail(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.change(t, "/UYELER/ARGE", false, "")
+	f.svc.MembershipChanged(context.Background(), identity.MembershipChange{
+		UserID: f.ada, Group: identity.Group{Path: "/UYELER/DK/UYE"}, Added: true,
+	})
+	if _, err := f.svc.Pass(context.Background()); err != nil || len(f.mail.sent) != 2 {
+		t.Fatalf("err %v sent %v", err, f.mail.sent)
+	}
+	group, role := f.mail.sent[0], f.mail.sent[1]
+	if group.kind != KindGroup || group.vars["GroupName"] != "ARGE · Ar-Ge" || group.vars["Action"] != "removed" ||
+		group.vars["ActorName"] != "" || group.vars["EffectiveAt"] != "10.10.2026" || len(group.vars) != 4 {
+		t.Fatalf("group mail %+v", group)
+	}
+	// The Group read failed: the last segment of its path stands for it.
+	if role.kind != KindRole || role.vars["GroupName"] != "UYE" || role.vars["Role"] != "audit" || role.vars["Action"] != "added" {
+		t.Fatalf("role mail %+v", role)
+	}
+	if !strings.Contains(f.svc.Prometheus(), `skylab_team_membership_mail_by_kind_total{mail_kind="group",outcome="sent"} 1`) {
+		t.Fatalf("metrics\n%s", f.svc.Prometheus())
 	}
 }
 
@@ -414,19 +529,35 @@ func TestServiceCompletesASentMailDuringShutdown(t *testing.T) {
 	}
 }
 
-func TestServiceCountsPathsThatAreNoLongerTeams(t *testing.T) {
+// A row an older core queued carries no kind (the column's default says
+// team): the sending core's rule decides its mail. A kind switched off since
+// the row was queued skips it.
+func TestServiceSendsAQueuedRowByTheCurrentRule(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	if _, err := f.queue.Enqueue(context.Background(), Change{
-		ID: uuid.New(), SubjectID: f.ada, GroupPath: "/UYELER/YK", Action: ActionAdded, OccurredAt: f.clock.now,
-	}); err != nil {
+	for _, path := range []string{"/UYELER/YK", "/UYELER/ARGE"} {
+		if _, err := f.queue.Enqueue(context.Background(), Change{
+			ID: uuid.New(), SubjectID: f.ada, GroupPath: path, Action: ActionAdded, OccurredAt: f.clock.now, Kind: KindTeam,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.mail.off = map[Kind]bool{KindGroup: true}
+	report, err := f.svc.Pass(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.Pass(context.Background()); err != nil {
-		t.Fatal(err)
+	if report.Sent != 1 || report.Skipped != 1 || len(f.mail.sent) != 1 || f.mail.sent[0].kind != KindRole || len(f.queue.Snapshot()) != 0 {
+		t.Fatalf("report %+v sent %+v", report, f.mail.sent)
 	}
-	if len(f.mail.sent) != 0 || !strings.Contains(f.svc.Prometheus(), `skylab_team_membership_mail_total{outcome="skipped_not_team"} 1`) {
-		t.Fatalf("sent %v metrics\n%s", f.mail.sent, f.svc.Prometheus())
+	text := f.svc.Prometheus()
+	for _, line := range []string{
+		`skylab_team_membership_mail_total{outcome="skipped_kind_off"} 1`,
+		`skylab_team_membership_mail_by_kind_total{mail_kind="group",outcome="skipped_kind_off"} 1`,
+	} {
+		if !strings.Contains(text, line) {
+			t.Fatalf("missing %q in\n%s", line, text)
+		}
 	}
 }
 

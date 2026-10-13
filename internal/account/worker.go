@@ -43,6 +43,12 @@ type SkyPassWalletEraser interface {
 	EraseSubject(ctx context.Context, userID uuid.UUID) (int64, error)
 }
 
+// CommunicationPreferenceEraser deletes every communication preference of a person
+// (internal/commpref).
+type CommunicationPreferenceEraser interface {
+	EraseSubject(ctx context.Context, userID uuid.UUID) (int64, error)
+}
+
 type MediaEraser interface {
 	EnsureErased(context.Context, uuid.UUID, time.Time) error
 	EnsureSubjectUploadsErased(context.Context, uuid.UUID, time.Time) error
@@ -69,6 +75,9 @@ type WorkerConfig struct {
 	// SkyPassWallet withdraws the person's Google Wallet passes in the
 	// erase_skypass_wallet step. Nil fails the step, as above.
 	SkyPassWallet SkyPassWalletEraser
+	// CommunicationPreferences deletes the person's communication preferences in the
+	// erase_communication_preferences step. Nil fails the step, as above.
+	CommunicationPreferences CommunicationPreferenceEraser
 }
 
 type Worker struct {
@@ -196,8 +205,9 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 
 // coreSaga is the erasure order (ADR-0051, spec §4): block the identity, erase
 // the person's contact consents (ADR-0062), withdraw their SkyPass from
-// Google Wallet, have every service erase the person, erase core and its
-// guest data, then media, and delete the identity last.
+// Google Wallet, delete their communication preferences (ADR 0067), have
+// every service erase the person, erase core and its guest data, then
+// media, and delete the identity last.
 //
 // The consents go before the services: they are core's own and wait for no
 // one, and a service can hold the saga for a long time (the CMS waits out
@@ -221,6 +231,16 @@ func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaSte
 				return errors.New("skypass wallet eraser unavailable")
 			}
 			_, err := w.config.SkyPassWallet.EraseSubject(ctx, id)
+			return err
+		}},
+		// Core's own too: the person's choices of which News mail to get
+		// go before any service holds the saga. The account is disabled
+		// already, so the defaults that come back mail no one.
+		{name: user.DeletionStepEraseCommunicationPreferences, run: func(ctx context.Context, id uuid.UUID) error {
+			if w.config.CommunicationPreferences == nil {
+				return errors.New("communication preference eraser unavailable")
+			}
+			_, err := w.config.CommunicationPreferences.EraseSubject(ctx, id)
 			return err
 		}},
 		{services: &w.services},

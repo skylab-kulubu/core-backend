@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
 type Memory struct {
@@ -504,8 +503,9 @@ func (m *Memory) GroupsForUser(_ context.Context, userID uuid.UUID) ([]Group, er
 }
 
 // GroupProtection answers as Keycloak does (Keycloak.GroupProtection): a
-// realm role (a ClientRole with no ClientID) or a protected client role
-// mapped to the Group, or held by a composite it maps at any depth.
+// realm role (a ClientRole with no ClientID) or a client role that is no
+// app role mapped to the Group, or held by a composite app role it maps at
+// any depth.
 func (m *Memory) GroupProtection(_ context.Context, groupID string) (Protection, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -520,10 +520,11 @@ func (m *Memory) GroupProtection(_ context.Context, groupID string) (Protection,
 		switch {
 		case r.ClientID == "":
 			return Protection{Protected: true, Reason: "realm role " + r.Role}
-		case authz.ProtectedRole(r.ClientID, r.Role):
-			return Protection{Protected: true, Reason: "client role " + r.ClientID + ":" + r.Role}
 		case seen[roleKey(r)]:
 			return Protection{}
+		}
+		if got := clientRoleProtection(r.ClientID, r.Role); got.Protected {
+			return got
 		}
 		seen[roleKey(r)] = true
 		if depth >= maxCompositeDepth && len(m.composites[roleKey(r)]) > 0 {

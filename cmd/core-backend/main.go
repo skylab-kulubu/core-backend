@@ -25,6 +25,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clamd"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
+	"github.com/skylab-kulubu/core-backend/internal/commpref"
 	"github.com/skylab-kulubu/core-backend/internal/competition"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
@@ -593,6 +594,45 @@ func main() {
 		log.Printf("contact consents: off (%s is not set); none is recorded", consent.KeyEnv)
 	}
 
+	// Communication preferences (ADR 0067, docs/communication-preferences.md).
+	// Without COMMUNICATION_PREFERENCE_KEY their routes answer 503; the erasure step
+	// still deletes a person's rows, and the deleted teams' rows are still
+	// removed once a day.
+	communicationPreferenceConfig, err := commpref.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	communicationPreferences := commpref.NewService(communicationPreferenceConfig, commpref.NewPostgresStore(pool), dir, privilegedRoots)
+	if communicationPreferenceConfig.Enabled {
+		log.Printf("communication preferences: on (links at %s)", communicationPreferenceConfig.LinkOrigin)
+	} else {
+		log.Printf("communication preferences: off (%s is not set)", commpref.KeyEnv)
+	}
+	// The News audience (docs/news-audience.md): SkyMail's service account
+	// asks who a send goes to. Off with the preferences (every recipient
+	// gets a signed link); private visibilities only with
+	// NEWS_AUDIENCE_PRIVATE_VISIBILITY=on (ADR 0067 karar 3, second step).
+	privateVisibility, err := commpref.PrivateVisibilityFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var newsAudience *commpref.Audience
+	if audienceDirectory, ok := dir.(commpref.AudienceDirectory); ok {
+		newsAudience = commpref.NewAudience(communicationPreferences, audienceDirectory, users, privateVisibility)
+	}
+	for _, line := range commpref.AudienceStartupLines(newsAudience.Enabled(), privateVisibility) {
+		log.Print(line)
+	}
+	if keycloakConfigured {
+		worker("communication preference cleanup", commpref.MaintainCleanup(workers, communicationPreferences, commpref.CleanupInterval, func(what string, removed int64, err error) {
+			if err != nil {
+				log.Printf("communication preferences: %s cleanup: %v", what, err)
+				return
+			}
+			log.Printf("communication preferences: removed %d rows of %s", removed, what)
+		}))
+	}
+
 	// SkyPass in Google Wallet (SKYPASS_GOOGLE_WALLET_*,
 	// docs/skypass-google-wallet.md). Off unless enabled: the link routes
 	// answer 503 and the door reads no Wallet code. Erasure withdraws a
@@ -653,15 +693,16 @@ func main() {
 		worker("account erasure worker", account.Maintain(
 			workers,
 			account.NewWorker(users, accountIdentity, account.WorkerConfig{
-				Lease:                5 * time.Minute,
-				RetryDelay:           30 * time.Second,
-				MaxAttempts:          8,
-				StepTimeout:          20 * time.Second,
-				DeferredRetryHorizon: uploadStagingConfig.Grace + 24*time.Hour,
-				AccessBlocker:        gate,
-				Services:             serviceErasure,
-				ContactConsents:      consents,
-				SkyPassWallet:        wallet,
+				Lease:                    5 * time.Minute,
+				RetryDelay:               30 * time.Second,
+				MaxAttempts:              8,
+				StepTimeout:              20 * time.Second,
+				DeferredRetryHorizon:     uploadStagingConfig.Grace + 24*time.Hour,
+				AccessBlocker:            gate,
+				Services:                 serviceErasure,
+				ContactConsents:          consents,
+				SkyPassWallet:            wallet,
+				CommunicationPreferences: communicationPreferences,
 			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
 			2*time.Second,
 			func(err error) { log.Printf("account erasure worker: %v", err) },
@@ -676,7 +717,7 @@ func main() {
 		sky = newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout)
 		sky.TemplateKey = templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
 		sky.CertificateTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey)
-		sky.TeamMembershipTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY", mail.DefaultTeamMembershipTemplateKey)
+		membershipTemplateKeys(sky, os.LookupEnv)
 		if raw := os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"); raw != "" {
 			tid, err := uuid.Parse(raw)
 			if err != nil {
@@ -700,12 +741,16 @@ func main() {
 		}
 	}
 
-	// Team membership mail (docs/team-membership-mail.md): a person added to
-	// a team or removed from one through the membership routes is told by
-	// mail. The change is queued in the database and sent by a worker, so
-	// SkyMail being down delays the mail, never the change.
-	teamMembership, teamMembershipMetrics, teamMembershipStopped := startTeamMembershipMail(
-		workers, teammail.NewPostgresQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
+	// Membership mail (docs/team-membership-mail.md): a person added to a
+	// Group or removed from one through the membership routes is told by
+	// mail, worded by the Group's kind (team, Privileged, other). The change
+	// is queued in the database and sent by a worker, so SkyMail being down
+	// delays the mail, never the change.
+	// The privilege notice (docs/privilege-change-mail.md) rides the same
+	// worker: a role mapping changed tells ADMIN, a Privileged Group's
+	// membership changed tells ADMIN and that root's members.
+	teamMembership, groupRolesNotice, teamMembershipMetrics, teamMembershipStopped := startTeamMembershipMail(
+		workers, teammail.NewPostgresQueue(pool), teammail.NewPostgresNoticeQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
 	worker("team membership mail", teamMembershipStopped)
 
 	var render certificate.Renderer
@@ -776,6 +821,12 @@ func main() {
 		teamDelegationOptions.Logf = log.Printf
 		delegation = identity.NewTeamDelegation(authzPolicy, dir, reads, teamDelegationOptions)
 	}
+	// The client roles nobody has classified that protection reads found,
+	// on /v1/metrics (an interface holding a nil pointer is not nil).
+	var delegationMetrics interface{ Prometheus() string }
+	if delegation != nil {
+		delegationMetrics = delegation
+	}
 	// With delegation on, core checks at once that it sees protection at
 	// all (a Privileged root reads as protected); a failure is an ERROR line
 	// and every delegated write is refused until the check passes.
@@ -796,6 +847,8 @@ func main() {
 			AccessProjector:       accessProjector,
 			GroupCache:            overageGroups,
 			Membership:            teamMembership,
+			GroupRoles:            groupRolesNotice,
+			PrivilegedRoots:       privilegedRoots,
 			GroupNames:            &groupNames,
 			TeamCodes:             teamcode.NewPostgresLedger(pool),
 			Delegation:            delegation,
@@ -833,6 +886,7 @@ func main() {
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
 		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
 		TeamMailMetrics:        teamMembershipMetrics,
+		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
@@ -841,23 +895,25 @@ func main() {
 		URLAttributionGuard: func(ctx context.Context, id uuid.UUID) (user.AttributionState, error) {
 			return users.AttributionState(ctx, id)
 		},
-		TrustedProxies:          trustedProxies,
-		MediaUploadLimiter:      media.NewUploadLimiter(uploadLimits, time.Now),
-		ServiceClients:          serviceClients,
-		GroupOverage:            overageGroups,
-		GuestApplyMetrics:       handlers.NewGuestApplyMetrics(),
-		Authz:                   az,
-		EditableSites:           editableSites,
-		ManagedTeams:            delegation,
-		AuthzRoleMetrics:        authzRoleMetrics,
-		GuestCheckInMetrics:     doorQR,
-		GuestApplyPublicIPLimit: guestApplyIPLimit,
-		Dashboard:               dashboardSvc,
-		GithubActivity:          githubActivity,
-		Consents:                consents,
-		Readiness:               readiness,
-		MediaDecodeMetrics:      decodeBudget,
-		MemoryMetrics:           memory,
+		TrustedProxies:           trustedProxies,
+		MediaUploadLimiter:       media.NewUploadLimiter(uploadLimits, time.Now),
+		ServiceClients:           serviceClients,
+		GroupOverage:             overageGroups,
+		GuestApplyMetrics:        handlers.NewGuestApplyMetrics(),
+		Authz:                    az,
+		EditableSites:            editableSites,
+		ManagedTeams:             delegation,
+		AuthzRoleMetrics:         authzRoleMetrics,
+		GuestCheckInMetrics:      doorQR,
+		GuestApplyPublicIPLimit:  guestApplyIPLimit,
+		Dashboard:                dashboardSvc,
+		GithubActivity:           githubActivity,
+		Consents:                 consents,
+		CommunicationPreferences: communicationPreferences,
+		Audience:                 newsAudience,
+		Readiness:                readiness,
+		MediaDecodeMetrics:       decodeBudget,
+		MemoryMetrics:            memory,
 	})
 
 	addr := os.Getenv("PORT")

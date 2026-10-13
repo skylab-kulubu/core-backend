@@ -79,12 +79,19 @@ type SkyMail struct {
 	TemplateKey            string
 	CertificateTemplateID  uuid.UUID
 	CertificateTemplateKey string
-	// TeamMembershipTemplateKey addresses the team membership mail
-	// (team_membership.go). It has no id fallback: empty turns the mail off.
-	TeamMembershipTemplateKey string
-	Tokens                    TokenSource
-	HTTP                      *http.Client
-	Logger                    *log.Logger
+	// TeamMembershipTemplateKey, RoleMembershipTemplateKey and
+	// GroupMembershipTemplateKey address the membership mails
+	// (team_membership.go): a team's, a Privileged Group's and any other
+	// Group's. They have no id fallback: an empty key turns its kind off.
+	TeamMembershipTemplateKey  string
+	RoleMembershipTemplateKey  string
+	GroupMembershipTemplateKey string
+	// PrivilegeNoticeTemplateKey addresses the privilege notice
+	// (privilege_notice.go); empty turns it off.
+	PrivilegeNoticeTemplateKey string
+	Tokens                     TokenSource
+	HTTP                       *http.Client
+	Logger                     *log.Logger
 }
 
 // template says which SkyMail template a send is aimed at. Only one of the two

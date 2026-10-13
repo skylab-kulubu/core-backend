@@ -31,8 +31,9 @@ func ParseTeamDelegation(raw string) (bool, error) {
 
 // The problem codes (RFC 7807 code member) of a delegated refusal.
 const (
-	// RefusalProtectedGroup: the Group, or one above it, maps a protected
-	// role (ProtectedRole); only Privileged manages it.
+	// RefusalProtectedGroup: the Group, or one above it, maps a realm role
+	// or a client role that is no app role (DelegableRole); only Privileged
+	// manages it.
 	RefusalProtectedGroup = "protected_group"
 	// RefusalLeaderGroupNeedsParent: a Leader group's membership is
 	// changed only by whoever manages the Team above its Team
@@ -46,19 +47,10 @@ const (
 // read the record).
 const RoleAuditRead = "audit:read"
 
-// protectedCoreRoles are the roles of core's client whose holders a Leader
-// must not make: the contract's (PermissionRoles) and the audit reader's.
-var protectedCoreRoles = append(PermissionRoles(), RoleAuditRead)
-
-// ProtectedRole reports whether a Group that maps role of clientID (a
-// Keycloak client id) is a Protected group: managed only by Privileged,
-// because a member added to it, or to a Group under it, would hold the
-// role. They are core's permission roles and audit:read (whatever client
-// carries a role of that name), any client's client:admin, and every role
-// of realm-management.
-func ProtectedRole(clientID, role string) bool {
-	return slices.Contains(protectedCoreRoles, role) || role == "client:admin" || clientID == "realm-management"
-}
+// RoleContentWrite is inscribed's site-wide write on a Site (ADR 0056): a
+// Site client's cms:access holds it as a composite. It is an admin role on
+// every client (AdminRoles).
+const RoleContentWrite = "content:write"
 
 // GroupNode is one Group as Keycloak answers it by id: its name, its path
 // and the id of the Group above it ("" at the realm's top).
@@ -75,8 +67,8 @@ type ManagedGroup struct {
 	// Ancestors are the Groups above Group, its parent first and the
 	// realm's top Group last, each read by the id its child named.
 	Ancestors []GroupNode
-	// Protected is whether Group or one of Ancestors maps a protected role
-	// (ProtectedRole).
+	// Protected is whether Group or one of Ancestors maps a realm role or
+	// a client role that is no app role (DelegableRole).
 	Protected bool
 }
 

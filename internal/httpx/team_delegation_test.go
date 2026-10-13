@@ -774,8 +774,9 @@ func TestTeamDelegationManagedGroupsAndCapabilities(t *testing.T) {
 // A realm role, or a composite client role that holds a protected role or
 // a realm role, makes the Group and everything under it protected (review
 // of #235, B1): a Leader can no longer hand out realm-management or core's
-// permission roles through a mapping Privileged made. A composite of
-// harmless roles (cms:access) protects nothing.
+// permission roles through a mapping Privileged made. A Site's cms:access
+// holds content:write and protects (ADR 0065 decision 10, addendum of
+// 2026-10-12); content:read alone protects nothing.
 func TestTeamDelegationRealmAndCompositeRolesProtect(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -812,7 +813,30 @@ func TestTeamDelegationRealmAndCompositeRolesProtect(t *testing.T) {
 			setup: func(m *identity.Memory) {
 				m.PutCompositeRole(identity.ClientRole{ClientID: "frontend-main", Role: "cms:access"},
 					identity.ClientRole{ClientID: "frontend-main", Role: "content:read"}, identity.ClientRole{ClientID: "frontend-main", Role: "content:write"})
+			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "content:read alone", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "frontend-main", Role: "content:read"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
+		{name: "a composite app role of app roles", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}},
+			setup: func(m *identity.Memory) {
+				m.PutCompositeRole(identity.ClientRole{ClientID: "core", Role: "certificate:issue"}, identity.ClientRole{ClientID: "frontend-main", Role: "content:read"})
 			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
+		// Role classes (ADR 0065 decision 10, addendum of 2026-10-12): a
+		// role on neither list is an admin role.
+		{name: "an unclassified role on the Sub-team", on: "/UYELER/ARGE/WEBLAB/FRONT",
+			roles: []identity.ClientRole{{ClientID: "forms", Role: "viewer"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "an unclassified role above", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "place", Role: "place:new"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "an admin role of another product", on: "/UYELER/ARGE/WEBLAB/FRONT",
+			roles: []identity.ClientRole{{ClientID: "skymail", Role: "skymail:system-mails:read"}}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "a composite app role holding an unclassified role", on: "/UYELER/ARGE/WEBLAB",
+			roles: []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}},
+			setup: func(m *identity.Memory) {
+				m.PutCompositeRole(identity.ClientRole{ClientID: "core", Role: "certificate:issue"}, identity.ClientRole{ClientID: "forms", Role: "viewer"})
+			}, target: "/UYELER/ARGE/WEBLAB/FRONT", refused: true},
+		{name: "app roles on the Team and above", on: "/UYELER/ARGE",
+			roles:  []identity.ClientRole{{ClientID: "core", Role: "certificate:issue"}, {ClientID: "forms", Role: "skyforms:access"}, {ClientID: "skymail", Role: "skymail:access"}, {ClientID: "core", Role: "url:create"}},
+			target: "/UYELER/ARGE/WEBLAB/FRONT", refused: false},
 	} {
 		e := newDelegationEnv(t, delegationSetup{on: true})
 		if tc.setup != nil {
@@ -830,6 +854,72 @@ func TestTeamDelegationRealmAndCompositeRolesProtect(t *testing.T) {
 			continue
 		}
 		wantStatus(t, tc.name, got, fiber.StatusNoContent, "")
+	}
+}
+
+// A Sub-team's Leader group that is a Site editor (cms:access on any Site
+// client, mapped to it or to a Group above it) is Privileged's alone: the
+// Leader of the Team above can neither add a member to it nor take one out,
+// so site-wide write is never handed out by delegation (security review of
+// 2026-10-12, D1; ADR 0065 decision 10). The refusal is the protected
+// Group's. Privileged still manages it.
+func TestTeamDelegationSiteEditorLeaderGroupsProtected(t *testing.T) {
+	t.Parallel()
+	const leaders = "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER"
+	for _, client := range []string{"frontend-main", "frontend-arge", "frontend-artlab"} {
+		for _, on := range []string{leaders, "/UYELER/ARGE/WEBLAB/FRONT", "/UYELER/ARGE/WEBLAB"} {
+			name := client + " cms:access on " + on
+			e := newDelegationEnv(t, delegationSetup{on: true})
+			editor := identity.ClientRole{ClientID: client, Role: "cms:access"}
+			e.dir.PutCompositeRole(editor, identity.ClientRole{ClientID: client, Role: "content:read"}, identity.ClientRole{ClientID: client, Role: "content:write"})
+			wantStatus(t, name+": before the mapping", e.add("webLeader", leaders, "newcomer"), fiber.StatusNoContent, "")
+			if err := e.dir.SetGroupClientRoles(context.Background(), e.ids[on], []identity.ClientRole{editor}); err != nil {
+				t.Fatal(err)
+			}
+			wantStatus(t, name+": add", e.add("webLeader", leaders, "outsider"), fiber.StatusForbidden, authz.RefusalProtectedGroup)
+			wantStatus(t, name+": remove", e.remove("webLeader", leaders, "frontLeader"), fiber.StatusForbidden, authz.RefusalProtectedGroup)
+			if e.directlyIn("outsider", leaders) || !e.directlyIn("frontLeader", leaders) {
+				t.Errorf("%s: membership changed", name)
+			}
+			wantStatus(t, name+": privileged add", e.add("yk", leaders, "outsider"), fiber.StatusNoContent, "")
+			wantStatus(t, name+": privileged remove", e.remove("yk", leaders, "newcomer"), fiber.StatusNoContent, "")
+		}
+	}
+}
+
+// cms:access on a top Team's own Leader group (where the runbook grants
+// it) protects that Leader group only: the Sub-teams under the Team are no
+// children of it, and their Leader stays delegated.
+func TestTeamDelegationTopTeamSiteEditorKeepsSubTeams(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	editor := identity.ClientRole{ClientID: "frontend-main", Role: "cms:access"}
+	e.dir.PutCompositeRole(editor, identity.ClientRole{ClientID: "frontend-main", Role: "content:read"}, identity.ClientRole{ClientID: "frontend-main", Role: "content:write"})
+	if err := e.dir.SetGroupClientRoles(context.Background(), e.ids["/UYELER/ARGE/WEBLAB/LIDERLER"], []identity.ClientRole{editor}); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, "Sub-team", e.add("webLeader", "/UYELER/ARGE/WEBLAB/FRONT", "newcomer"), fiber.StatusNoContent, "")
+	wantStatus(t, "Sub-team's Leader group", e.add("webLeader", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER", "outsider"), fiber.StatusNoContent, "")
+	wantStatus(t, "own Team", e.add("webLeader", "/UYELER/ARGE/WEBLAB", "exLeader"), fiber.StatusNoContent, "")
+}
+
+// Production's Java-era realm roles (measurement of 2026-10-12 22:42): USER
+// on /UYELER, a Team's own name on it, <TEAM>_LEADER on its Leader groups.
+// Realm roles always protect (fail-closed): until the role cleanup's F3
+// takes them off the groups, delegation stays shut under them.
+func TestTeamDelegationJavaEraRealmRolesProtect(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, on, role, target string }{
+		{"USER on /UYELER", "/UYELER", "USER", "/UYELER/ARGE/WEBLAB/FRONT"},
+		{"a Team's own name", "/UYELER/ARGE/WEBLAB", "WEBLAB", "/UYELER/ARGE/WEBLAB"},
+		{"a Leader role on a Sub-team's Leader group", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER", "FRONT_LEADER", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER"},
+		{"ADMIN on the area", "/UYELER/ARGE", "ADMIN", "/UYELER/ARGE/WEBLAB/FRONT"},
+	} {
+		e := newDelegationEnv(t, delegationSetup{on: true})
+		if err := e.dir.SetGroupClientRoles(context.Background(), e.ids[tc.on], []identity.ClientRole{{Role: tc.role}}); err != nil {
+			t.Fatal(err)
+		}
+		wantStatus(t, tc.name, e.add("webLeader", tc.target, "newcomer"), fiber.StatusForbidden, authz.RefusalProtectedGroup)
 	}
 }
 

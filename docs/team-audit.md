@@ -13,7 +13,7 @@ Keycloak's own admin events show every such change as made by
 | `POST /v1/groups` | `team.create` | the new Group (its id once Keycloak answers) | after: path, parent id, code |
 | `PATCH /v1/groups/:groupId` with a new name | `team.code` | the Group | code and path; the attributes that differ |
 | `PATCH /v1/groups/:groupId` otherwise | `group.attributes` | the Group | the attributes that differ |
-| `POST /v1/groups/:groupId/members` | `member.add` | the Group | none; `target_user_id` is the person |
+| `POST /v1/groups/:groupId/members` | `member.add` | the Group | none; `target_user_id` is the person. An add to a Privileged Group of someone not YTÜ-linked: after `{"unverifiedAck": true\|false}` (below) |
 | `DELETE /v1/groups/:groupId/members/:userId` | `member.remove` | the Group the membership is removed from: through a parent roster, the Source group the person sits in | none; `target_user_id` is the person |
 | `PUT /v1/groups/:groupId/client-roles` | `group.roles` | the Group | the role mappings before and after, as `client:role` |
 
@@ -42,7 +42,8 @@ recorded either: core does not see it.
 | `client` | the client the caller's token was issued to (`azp`) |
 
 `before` and `after` hold only a Group's id, path, parent id, code (its
-Keycloak name), role names, and the values of the recorded attributes:
+Keycloak name), role names, the `unverifiedAck` of an unverified add
+(below), and the values of the recorded attributes:
 `display_name_tr/en`, `description_tr/en`, `logo_media_id`,
 `public_listing`, `public_leaders`, `team_door_scan`. Of any other attribute
 that changed only the name is kept (`otherAttributes`). Texts are cut to 280
@@ -57,6 +58,38 @@ does not look into them.
 lock of a create and a rename: when two people change the same Group's
 attributes, members or roles at the same moment, a row's `before` may
 already be out of date.
+
+## Unverified account (grup-yonetimi 07)
+
+Adding a person who is not YTÜ-linked (`users.ytu_linked`, CONTEXT
+"YTÜ-linked"; a person core has no account of is not) to a Privileged root
+or a Group under one (`AUTHZ_PRIVILEGED_ROOTS`) is **never refused**: a
+graduate on the board may have no YTÜ account any more (GY9). The panel
+warns instead, and the row keeps what the caller confirmed:
+
+- `POST /v1/groups/:groupId/members` takes an optional `unverifiedAck`
+  beside `userId`. For such an add, the row's `after` is
+  `{"unverifiedAck": true}` when the request said so and
+  `{"unverifiedAck": false}` when it did not. Any other add (a YTÜ-linked
+  person, an ordinary Group) has no `after`, whatever the request says.
+- `GET /v1/groups/:groupId/member-check/:userId` answers, for whoever may
+  read the Group (Privileged, or a Leader who manages it), what the add
+  would warn of, and writes nothing:
+
+  ```json
+  {"privileged": true, "ytuLinked": false, "warnings": ["not_ytu_verified"]}
+  ```
+
+  `warnings` is always an array: `["not_ytu_verified"]` exactly when the
+  Group is Privileged and the person is not YTÜ-linked, `[]` otherwise.
+  The panel learns from `privileged` whether a Group is Privileged, never
+  from its name.
+- `GET /v1/groups/:groupId/member-candidates` gives each candidate
+  `ytuLinked` and the same `warnings`.
+
+The mark is a decision on core's own flag, not on Keycloak's federated link
+to YTÜ (CONTEXT "Verified YTÜ account"); in practice they are the same
+people.
 
 ## Writing
 

@@ -262,24 +262,124 @@ func TestManagesLeaderGroupMustAgree(t *testing.T) {
 	}
 }
 
-func TestProtectedRole(t *testing.T) {
+// A client role is delegable only when it is an app role, named by its
+// (client, role) pair; a known admin role and a role nobody has classified
+// protect (ADR 0065 decision 10, addendum of 2026-10-12).
+func TestClassifyRole(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		client, role string
+		want         RoleClass
+	}{
+		{"core", RoleEventManage, RoleClassAdmin},
+		{"core", RoleGroupsManage, RoleClassAdmin},
+		{"core", RoleUsersManage, RoleClassAdmin},
+		{"core", RoleURLModerator, RoleClassAdmin},
+		{"core", RoleAuditRead, RoleClassAdmin},
+		{"core", "users:read", RoleClassAdmin},
+		{"core", "media:attach", RoleClassAdmin},
+		{"skymail", "client:admin", RoleClassAdmin},
+		{"forms", "client:admin", RoleClassAdmin},
+		{"realm-management", "view-users", RoleClassAdmin},
+		{"realm-management", "anything", RoleClassAdmin},
+		// A Site editor, by its own name and by its write, on any client.
+		{"frontend-main", "cms:access", RoleClassAdmin},
+		{"frontend-arge", "cms:access", RoleClassAdmin},
+		{"skyapp", "cms:access", RoleClassAdmin},
+		{"frontend-main", "content:write", RoleClassAdmin},
+		{"frontend-artlab", "content:write", RoleClassAdmin},
+		{"admin", "content:write", RoleClassAdmin},
+		{"frontend-main", "schema:sync", RoleClassAdmin},
+		{"forms", "skyforms:*", RoleClassAdmin},
+		{"forms", "skyforms:feedback:*", RoleClassAdmin},
+		{"skymail", "skymail:templates:write", RoleClassAdmin},
+		{"skymail", "skymail:lists:read", RoleClassAdmin},
+		{"skymail", "skymail:mails:approve", RoleClassAdmin},
+		{"skymail", "skymail:system-mails:read", RoleClassAdmin},
+		{"place", "place:admin", RoleClassAdmin},
+		{"place", "place:moderator", RoleClassAdmin},
+		{"core", RoleCompetitionManage, RoleClassAdmin},
+		// The app roles.
+		{"core", "certificate:issue", RoleClassApp},
+		{"core", "certificate:revoke", RoleClassApp},
+		{"core", "certificate:template:manage", RoleClassApp},
+		{"core", "certificate:binding:manage", RoleClassApp},
+		{"core", "url:create", RoleClassApp},
+		{"core", "url:get", RoleClassApp},
+		{"core", "url:update", RoleClassApp},
+		{"core", "url:delete", RoleClassApp},
+		{"core", RoleURLAccess, RoleClassApp},
+		{"forms", "skyforms:access", RoleClassApp},
+		{"forms", "skyforms:form:manage", RoleClassApp},
+		{"forms", "skyforms:response:manage", RoleClassApp},
+		{"forms", "skyforms:feedback:manage", RoleClassApp},
+		{"broker", "read-token", RoleClassApp},
+		{"skycloud", "skycloud:access", RoleClassUnclassified},
+		{"skymail", "skymail:access", RoleClassApp},
+		{"skymail", "skymail:templates:read", RoleClassApp},
+		{"frontend-main", "content:read", RoleClassApp},
+		{"frontend-arge", "content:read", RoleClassApp},
+		{"frontend-artlab", "content:read", RoleClassApp},
+		{"frontend-yildizjam", "content:read", RoleClassApp},
+		{"frontend-skydays", "content:read", RoleClassApp},
+		// The pair, not the name: an app role's name on another client is
+		// unclassified, so protected.
+		{"skymail", "certificate:issue", RoleClassUnclassified},
+		{"dotnet", "skyforms:access", RoleClassUnclassified},
+		{"admin", "content:read", RoleClassUnclassified},
+		{"skyapp", "content:read", RoleClassUnclassified},
+		{"frontend-newsite", "content:read", RoleClassUnclassified},
+		{"forms", "forms:editor", RoleClassUnclassified},
+		{"core", "news:read", RoleClassUnclassified},
+		{"core", "", RoleClassUnclassified},
+	} {
+		if got := ClassifyRole(tc.client, tc.role); got != tc.want {
+			t.Errorf("%s %s: %s, want %s", tc.client, tc.role, got, tc.want)
+		}
+		if got := DelegableRole(tc.client, tc.role); got != (tc.want == RoleClassApp) {
+			t.Errorf("%s %s: delegable %v", tc.client, tc.role, got)
+		}
+	}
+}
+
+// No app role is also an admin role: the admin list would win and quietly
+// take it off the delegable list.
+func TestRoleListsAreDisjoint(t *testing.T) {
+	t.Parallel()
+	for _, app := range AppRoles() {
+		if app.Client == "" || app.AnyRole {
+			t.Errorf("app role %+v names more than one (client, role) pair", app)
+		}
+		if got := ClassifyRole(app.Client, app.Role); got != RoleClassApp {
+			t.Errorf("app role %s:%s classifies as %s", app.Client, app.Role, got)
+		}
+	}
+}
+
+// Every realm role is an admin role: none is classified (fail-closed).
+func TestClassifyRealmRoleIsAlwaysAdmin(t *testing.T) {
+	t.Parallel()
+	for _, role := range []string{"USER", "WEBLAB", "WEBLAB_LEADER", "ADMIN", "offline_access", ""} {
+		if got := ClassifyRealmRole(role); got != RoleClassAdmin {
+			t.Errorf("%q: %s", role, got)
+		}
+	}
+}
+
+// ProtectedRole, the old name, answers "a known admin role": an app role
+// and a role nobody has classified are not.
+func TestProtectedRoleIsAKnownAdminRole(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		client, role string
 		want         bool
 	}{
-		{"core", RoleEventManage, true},
 		{"core", RoleGroupsManage, true},
-		{"core", RoleUsersManage, true},
-		{"core", RoleURLModerator, true},
-		{"core", RoleAuditRead, true},
+		{"frontend-main", "cms:access", true},
 		{"skymail", "client:admin", true},
-		{"forms", "client:admin", true},
 		{"realm-management", "view-users", true},
-		{"realm-management", "anything", true},
 		{"core", "certificate:issue", false},
-		{"site-main", "cms:access", false},
-		{"forms", "forms:editor", false},
+		{"forms", "viewer", false},
 	} {
 		if got := ProtectedRole(tc.client, tc.role); got != tc.want {
 			t.Errorf("%s %s: %v", tc.client, tc.role, got)

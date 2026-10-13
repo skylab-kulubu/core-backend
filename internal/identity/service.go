@@ -45,6 +45,9 @@ type Service interface {
 	ManagedGroups(ctx context.Context, p authz.Principal) ([]ManagedNode, error)
 	// MemberCandidates searches the people the caller may add to a Group.
 	MemberCandidates(ctx context.Context, p authz.Principal, groupRef, q string) ([]MemberCandidate, error)
+	// MemberCheck is what adding a person to a Group would warn of
+	// (grup-yonetimi 07); it never refuses the add.
+	MemberCheck(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) (MemberCheck, error)
 }
 
 type service struct {
@@ -57,6 +60,8 @@ type service struct {
 	accessProjector       DeletionProjector
 	groupCache            GroupCache
 	membership            MembershipNotifier
+	groupRoles            GroupRolesNotifier
+	privilegedRoots       []string
 	names                 teamcode.Rules
 	codes                 teamcode.Ledger
 	delegation            *TeamDelegation
@@ -78,6 +83,16 @@ type Options struct {
 	// Notifies of (the team membership mail, internal/teammail). Nil hears
 	// nothing, and the membership writes read nothing for it.
 	Membership MembershipNotifier
+	// GroupRoles hears of every change to a Group's role mappings made
+	// through SetGroupClientRoles (the privilege notice,
+	// docs/privilege-change-mail.md). Nil hears nothing, and the write
+	// reads nothing for it.
+	GroupRoles GroupRolesNotifier
+	// PrivilegedRoots are the Privileged roots (AUTHZ_PRIVILEGED_ROOTS):
+	// adding someone who is not YTÜ-linked to one, or under one, is flagged
+	// (docs/team-audit.md, "Unverified account"). Nil is
+	// authz.DefaultPrivilegedRoots.
+	PrivilegedRoots []string
 	// GroupNames is the Team code rule every Group create and rename passes
 	// (docs/team-codes.md). Nil is the default policy's.
 	GroupNames *teamcode.Rules
@@ -109,6 +124,28 @@ type MembershipNotifier interface {
 	PrecheckFailed()
 }
 
+// GroupRolesNotifier hears of role mapping changes made through the service.
+type GroupRolesNotifier interface {
+	// GroupRolesChanged is told of one write that changed a Group's role
+	// mappings: after the directory took it, with the roles it added and
+	// removed. It must not fail or hold up the request.
+	GroupRolesChanged(ctx context.Context, change GroupRolesChange)
+	// RolesPrecheckFailed is told that the Group's role mappings could not
+	// be read before a write: the write went on, and no change is reported
+	// for it.
+	RolesPrecheckFailed()
+}
+
+// GroupRolesChange is one write of a Group's role mappings that changed
+// them.
+type GroupRolesChange struct {
+	Group   Group
+	Added   []ClientRole
+	Removed []ClientRole
+	// ActorID is the caller's subject (authz.Principal.ID).
+	ActorID string
+}
+
 // membershipReadTimeout bounds the reads an add makes for the notifier, so
 // a slow Keycloak delays the write by at most this much.
 const membershipReadTimeout = 3 * time.Second
@@ -136,6 +173,8 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		accessProjector:       options.AccessProjector,
 		groupCache:            options.GroupCache,
 		membership:            options.Membership,
+		groupRoles:            options.GroupRoles,
+		privilegedRoots:       options.PrivilegedRoots,
 		codes:                 options.TeamCodes,
 		delegation:            options.Delegation,
 		audit:                 options.TeamAudit,
@@ -147,6 +186,9 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 	}
 	if s.codes == nil {
 		s.codes = teamcode.NewMemoryLedger()
+	}
+	if s.privilegedRoots == nil {
+		s.privilegedRoots = authz.DefaultPrivilegedRoots()
 	}
 	if len(mailers) > 0 {
 		s.mail = mailers[0]
@@ -337,6 +379,7 @@ func (s *service) AddMember(ctx context.Context, p authz.Principal, groupRef str
 	}
 	// Forgotten even when the write fails: it may have reached Keycloak.
 	defer s.forgetGroups(userID)
+	ctx = s.markUnverified(ctx, groupRef, userID)
 	g, notify := s.addNotification(ctx, groupRef, userID)
 	if err := s.dir.AddMember(ctx, groupRef, userID); err != nil {
 		return err
@@ -784,7 +827,75 @@ func (s *service) SetGroupClientRoles(ctx context.Context, p authz.Principal, gr
 	// A Group's role mappings decide whether it is protected: forgotten
 	// even when the write fails, since it may have reached Keycloak.
 	defer s.delegation.ForgetAll()
-	return s.dir.SetGroupClientRoles(ctx, g.ID, roles)
+	before, known := s.rolesBefore(ctx, g)
+	err = s.dir.SetGroupClientRoles(ctx, g.ID, roles)
+	if known {
+		s.reportRoles(ctx, p, g, before, roles, err)
+	}
+	return err
+}
+
+// rolesBefore reads the Group's role mappings before a write, for the
+// notifier: nothing without one. A read that fails is counted and reports
+// nothing; the write goes on.
+func (s *service) rolesBefore(ctx context.Context, g Group) ([]ClientRole, bool) {
+	if s.groupRoles == nil {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, membershipReadTimeout)
+	defer cancel()
+	before, err := s.dir.GroupClientRoles(ctx, g.ID)
+	if err != nil {
+		s.groupRoles.RolesPrecheckFailed()
+		return nil, false
+	}
+	return before, true
+}
+
+// reportRoles tells the notifier what a role mapping write changed. A write
+// that failed may still have reached Keycloak in part (it writes client by
+// client), so the mappings are read again and whatever did change is told.
+func (s *service) reportRoles(ctx context.Context, p authz.Principal, g Group, before, want []ClientRole, writeErr error) {
+	after := want
+	if writeErr != nil {
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), membershipReadTimeout)
+		defer cancel()
+		var err error
+		if after, err = s.dir.GroupClientRoles(readCtx, g.ID); err != nil {
+			s.groupRoles.RolesPrecheckFailed()
+			return
+		}
+	}
+	added, removed := roleDiff(before, after)
+	if len(added)+len(removed) == 0 {
+		return
+	}
+	s.groupRoles.GroupRolesChanged(ctx, GroupRolesChange{Group: g, Added: added, Removed: removed, ActorID: p.ID})
+}
+
+// roleDiff is what going from before to after adds and removes, each role
+// once, in after's and before's order.
+func roleDiff(before, after []ClientRole) (added, removed []ClientRole) {
+	key := func(r ClientRole) string { return r.ClientID + "\x00" + r.Role }
+	had := map[string]bool{}
+	for _, r := range before {
+		had[key(r)] = true
+	}
+	has := map[string]bool{}
+	for _, r := range after {
+		if !has[key(r)] && !had[key(r)] {
+			added = append(added, r)
+		}
+		has[key(r)] = true
+	}
+	seen := map[string]bool{}
+	for _, r := range before {
+		if !has[key(r)] && !seen[key(r)] {
+			removed = append(removed, r)
+		}
+		seen[key(r)] = true
+	}
+	return added, removed
 }
 
 func (s *service) AddUserExtraRole(ctx context.Context, p authz.Principal, id uuid.UUID, role ClientRole) error {
