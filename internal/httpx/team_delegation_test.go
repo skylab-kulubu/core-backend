@@ -82,6 +82,7 @@ type delegationSetup struct {
 	writes    int
 	groupsCap int
 	searches  int
+	mode      authz.RoleMode // AUTHZ_ROLE_MODE; empty is groups
 }
 
 func newDelegationEnv(t *testing.T, setup delegationSetup) *delegationEnv {
@@ -120,6 +121,9 @@ func newDelegationEnv(t *testing.T, setup delegationSetup) *delegationEnv {
 	}
 	policy := authz.DefaultPolicy()
 	policy.TeamDelegation = setup.on
+	if setup.mode != "" {
+		policy.RoleMode = setup.mode
+	}
 	az := authz.NewAuthorizer(policy)
 	options := identity.Options{TeamCodes: teamcode.NewMemoryLedger(), TeamAudit: e.audit, Membership: e.heard}
 	var delegation *identity.TeamDelegation

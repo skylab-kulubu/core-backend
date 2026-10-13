@@ -2,6 +2,7 @@ package authz
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -45,6 +46,51 @@ func PrivilegedRootsFromEnv(getenv func(string) string) ([]string, error) {
 		roots = append(roots, root)
 	}
 	return roots, nil
+}
+
+// PrivilegedReaderRootsEnv names the Privileged reader roots.
+const PrivilegedReaderRootsEnv = "AUTHZ_PRIVILEGED_READER_ROOTS"
+
+// DefaultPrivilegedReaderRoots are DK's two roots (grup-yonetimi GY1: DK
+// reads everything and changes nothing).
+func DefaultPrivilegedReaderRoots() []string {
+	return []string{"/DK", "/UYELER/DK"}
+}
+
+// PrivilegedReaderRootsFromEnv reads PrivilegedReaderRootsEnv against the
+// Privileged roots: paths separated by commas, blanks around each ignored.
+// Unset or blank is those of DefaultPrivilegedReaderRoots that are roots;
+// "none" is no reader root (DK writes again, the way back). Each path set
+// must be one of roots and named once; anything else is an error that
+// names the variable.
+func PrivilegedReaderRootsFromEnv(getenv func(string) string, roots []string) ([]string, error) {
+	raw := strings.TrimSpace(getenv(PrivilegedReaderRootsEnv))
+	switch raw {
+	case "":
+		out := []string{}
+		for _, root := range DefaultPrivilegedReaderRoots() {
+			if slices.Contains(roots, root) {
+				out = append(out, root)
+			}
+		}
+		return out, nil
+	case "none":
+		return []string{}, nil
+	}
+	out := []string{}
+	for _, entry := range strings.Split(raw, ",") {
+		root := strings.TrimSpace(entry)
+		switch {
+		case root == "":
+			return nil, fmt.Errorf("%s: an empty path in %q", PrivilegedReaderRootsEnv, raw)
+		case !slices.Contains(roots, root):
+			return nil, fmt.Errorf("%s: %q is not one of %s", PrivilegedReaderRootsEnv, root, PrivilegedRootsEnv)
+		case slices.Contains(out, root):
+			return nil, fmt.Errorf("%s: %q is named twice", PrivilegedReaderRootsEnv, root)
+		}
+		out = append(out, root)
+	}
+	return out, nil
 }
 
 // PrivilegedRoot is the root of roots that path is, or is under, or "". The

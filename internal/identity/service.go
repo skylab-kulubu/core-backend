@@ -494,7 +494,7 @@ func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, se
 	if err := s.allow(p, authz.TypeUser, authz.Read); err != nil {
 		return nil, err
 	}
-	full := s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Update)
+	full := s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.ReadFull)
 	q = strings.TrimSpace(q)
 	if len(seat) > 0 && strings.TrimSpace(seat[0].Role) != "" {
 		clientID := strings.TrimSpace(seat[0].ClientID)
@@ -673,7 +673,7 @@ func (s *service) GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if err != nil {
 		return UserCard{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Update) {
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.ReadFull) {
 		if shadowErr == nil {
 			person.FirstName = shadow.FirstName
 			person.LastName = shadow.LastName
