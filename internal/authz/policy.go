@@ -14,6 +14,11 @@ const (
 	Issue    Action = "ISSUE"
 	Revoke   Action = "REVOKE"
 	Assign   Action = "ASSIGN"
+	// ReadFull is reading a record whole, beyond what a limited reader
+	// sees: a User's full card (profile, Groups, roles) and every Team's
+	// members on the dashboard. Privileged readers (DK, global:read) and
+	// users:manage holders; users:read alone reads the limited card.
+	ReadFull Action = "READ_FULL"
 )
 
 type Type string
@@ -96,6 +101,13 @@ type Policy struct {
 	// the tree is not Privileged. RoleMode says whether a decision still
 	// reads them.
 	PrivilegedRoots []string
+	// PrivilegedReaderRoots are the Privileged roots whose members only
+	// read (AUTHZ_PRIVILEGED_READER_ROOTS, grup-yonetimi GY1): each one of
+	// PrivilegedRoots. Their members stay Privileged for everything that
+	// names a Privileged Group (Protected group, role mail, reserved
+	// names), but the Privileged shortcut allows them only reads (Read,
+	// List, ReadFull). DK by default.
+	PrivilegedReaderRoots []string
 	// RoleMode is where Privileged decisions come from: the Groups, the
 	// roles that stand for them (roles.go), or either. Empty is groups.
 	RoleMode        RoleMode
@@ -109,8 +121,9 @@ type Policy struct {
 
 func DefaultPolicy() Policy {
 	return Policy{
-		PrivilegedRoots: DefaultPrivilegedRoots(),
-		LeaderSubgroups: []string{"LIDERLER", "KOORDINATORLER"},
+		PrivilegedRoots:       DefaultPrivilegedRoots(),
+		PrivilegedReaderRoots: DefaultPrivilegedReaderRoots(),
+		LeaderSubgroups:       []string{"LIDERLER", "KOORDINATORLER"},
 		EventPermissions: map[string]map[Action][]Level{
 			"_default": {
 				Create: {LevelLeader},

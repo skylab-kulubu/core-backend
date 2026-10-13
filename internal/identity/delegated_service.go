@@ -333,7 +333,8 @@ func (s *service) ManagedGroups(ctx context.Context, p authz.Principal) ([]Manag
 		return []ManagedNode{}, nil
 	}
 	privileged := s.allow(p, authz.TypeGroup, authz.Read) == nil
-	return s.delegation.Tree(ctx, userID, privileged)
+	write := s.allow(p, authz.TypeGroup, authz.Update) == nil
+	return s.delegation.TreeFor(ctx, userID, privileged, write)
 }
 
 // MemberCandidate is a person a Group's manager may add (GET

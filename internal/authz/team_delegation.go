@@ -43,8 +43,9 @@ const (
 )
 
 // RoleAuditRead reads the Team audit record. It is read as the role alone,
-// in every role mode: no Privileged Group stands for it (S11: DK does not
-// read the record).
+// in every role mode: no Privileged Group stands for it, global:read
+// neither. Keycloak maps it to ADMIN, YK and DK (grup-yonetimi GY1, which
+// replaced S11's "DK does not read the record").
 const RoleAuditRead = "audit:read"
 
 // RoleContentWrite is inscribed's site-wide write on a Site (ADR 0056): a

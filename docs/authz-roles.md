@@ -16,7 +16,35 @@ A path under a root names no Owner team either: its members are Privileged, whic
 
 At startup core logs `authz privileged roots: <roots> (AUTHZ_PRIVILEGED_ROOTS)` and, with Keycloak configured, looks each root up by its path with core's service account (`GET /group-by-path/{path}`, a Group read it already does) and logs one line: `authz privileged roots (AUTHZ_PRIVILEGED_ROOTS) on Keycloak: found /ADMIN (<group id>), …; missing /YK, …`. It never stops core: a missing root makes nobody Privileged through it until a Group is created at its path. If Keycloak cannot be read the line says `could not be checked` and why. Paths and Group ids only, nobody named.
 
-A member of a Group outside the roots that used to be Privileged by its name loses that. Before the release, list such Groups (ticket 03's report) and either rename them or map them the roles in the admin UI.
+A member of a Group outside the roots that used to be Privileged by its name loses that.
+
+## Privileged readers (DK)
+
+grup-yonetimi GY1 (Yusuf, 2026-10-12): DK, the supervisory board, reads everything in the panel and the Team audit record and **changes nothing**. Before, the three roots were equal and DK could do whatever ADMIN and YK could.
+
+**`AUTHZ_PRIVILEGED_READER_ROOTS`** names the reader roots: a comma-separated list, each one of `AUTHZ_PRIVILEGED_ROOTS` and named once, never an `ADMIN` root, and not every root (someone must still write); anything else stops startup with an error that names the variable. Unset or blank is those of `/DK` and `/UYELER/DK` that are roots; `none` is no reader root, so DK writes again (the way back; redeploy). Core logs `authz privileged reader roots: … (AUTHZ_PRIVILEGED_READER_ROOTS)` at startup.
+
+A reader root's members, and its subgroups', stay Privileged for everything that names a Privileged Group: a Group under it is a Protected group, gets the `role` membership mail and the privilege-change mail, and its name is reserved. Only the decisions change:
+
+- **Reads** (`Read`, `List`, `ReadFull`) of every check below take the reader as Privileged: Groups and their members and role mappings, Users with the full card (phone and student card UID included: "DK reads everything", Yusuf, 2026-10-13), every Team's applicants, competitors, competitions, certificates and templates, the Media library, core's private Media, GitHub activity, everyone's short links and form links (the Group shortcut in the `groups` and `both` modes, `global:read` in the `both` and `roles` modes).
+- **Reads that write** need a write decision: `POST /v1/events/{id}/mail-list` (it creates the Event's SkyMail list and puts the applicants on it) needs reading the applicants **and** updating the Event or assigning its Tickets, so DK and `global:read` get 403.
+- **Writes** (every other action) never, **whatever roles the token carries, in every mode**: a person in a reader root and in no writer root ("reader only", read from the token's Groups, which every mode carries) is refused every Privileged write even when Keycloak still maps them the write roles, `url:moderator` included (defence in depth: the code does not rely on Keycloak taking DK's roles off). What is the person's own stays: their own short links (`url:create`, `url:access`), their profile, a Leader's Team. Group create/update/delete, members, role mappings, user create/update/erasure/extra roles/logout, Events, Seasons, Ticket assignment, door check-in, Media delete and uploads, certificates, templates, competitors, competitions, short links and form links answer 403.
+- **Team delegation:** a reader manages no Team as Privileged. Their managed tree (`GET /v1/users/me/managed-groups`) lists every Team with `group.read` and no write; a DK member who also leads a Team keeps that Team's Leader decisions, as anyone outside the roots would.
+- **DK's membership** is changed by ADMIN and YK (`groups:manage`); no DK member changes DK or any Group. Each change mails ADMIN and DK's members (privilege-change mail, rule 2).
+- A person in DK and in YK writes through YK.
+
+**`global:read`** (core client role, Entra's Global Reader): in the `both` and `roles` modes, every Privileged check that only reads also accepts it, whatever role it stands for. It never allows a write, a service account never holds it, and in the `groups` mode it allows nothing (as every new role). Keycloak maps it, with `audit:read`, to DK; in the `roles` mode DK's reads come from it alone. It is not `audit:read`: the Team audit record stays that role's.
+
+`GET /v1/users/me/capabilities` answers a reader every write key `false` and every read key `true` (`url.create` follows the person's own `url:access`), and `permissions` is `["global:read"]`: in the `groups` mode the reader root stands for it, and only a reader holds it (ADMIN and YK read everything too but are no readers, so it is not in theirs).
+
+**Microsoft Entra.** DK is Global Reader ("can read everything that a Global Administrator can, but not update anything") plus Reports Reader (audit and sign-in reports): here `global:read` plus `audit:read`. Matches: a read-only directory role, reads every admin surface, and audit reading as a separate role. Deviations:
+
+1. **DK's membership is changed by YK too** (Yusuf, 2026-10-12 22:15). In Entra only a Privileged Role Administrator or Global Administrator assigns Global Reader; a supervised board does not choose its supervisors. Here the supervised board (YK) may change the supervisor's (DK) membership. Every change is visible: the privilege-change mail to ADMIN and DK's members, and the membership mail to the person.
+2. **DK is a governing body** ("above YK"); Entra's reader has no standing above anyone. Core only decides what it may read and change.
+3. **Not a separate account or a separate role assignment:** DK's read-only standing comes from its Group root (and the role Keycloak maps to it), not from an assignment per person.
+4. **Forms:** DK reads every form and answer in Forms (Global Reader's scope). That is forms-backend's decision (a read-only `forms` role, Fatih's), not core's; see grup-yonetimi ticket 08.
+
+Keycloak (e-skylab-keycloak, not this release): map `global:read` and `audit:read` to `/DK` and `/UYELER/DK`, and take DK's write roles (the 12 write roles of the table, `url:moderator` and `url:access`) off once, with Yusuf's approval (role cleanup). Core no longer relies on it: a reader writes nothing whatever its token carries. Until then the `both` mode's counter may show DK's roles as disagreements; they decide nothing. Before the release, list such Groups (ticket 03's report) and either rename them or map them the roles in the admin UI.
 
 ## Roles
 
@@ -33,9 +61,10 @@ The names are a contract with Keycloak: the table "Sözleşme: core'un kaynak ro
 | `media:manage` | `allowMedia`: List, Delete | `GET /v1/media`, `DELETE /v1/media/{id}` |
 | `media:private:read` | `TypeMediaReadLink` Read, people only | a private core Media opened by an admin (certificate assets) |
 | `certificate:manage` | `allowCertificate` (Read; Issue/Revoke), `allowCertificateTemplate` (every action) for every Owner team and none | `/v1/events/{id}/certificates…`, `/v1/certificate-templates…`, `/v1/certificate-template-bindings…`; certificate template media uploads |
-| `users:manage` | `TypeUser`: every action (`users:read` still reads) | `/v1/users…` incl. `DELETE /v1/users/{id}` (account erasure request), user client roles; dashboard Members with every team |
+| `users:manage` | `TypeUser`: every action (`users:read` still reads the limited card; `ReadFull`, the full card, is this role's or a reader's) | `/v1/users…` incl. `DELETE /v1/users/{id}` (account erasure request), user client roles; dashboard Members with every team |
 | `groups:manage` | `TypeGroup`: every action | `/v1/groups…` incl. group members and group client-role mappings |
 | `github:activity:read` | `TypeGithubActivity` Read, people only | `GET /v1/dashboard/github-activity` |
+| `global:read` | every check above that only reads (Read, List, ReadFull); never a write; not the Team audit record | DK's reads ([Privileged readers](#privileged-readers-dk)) |
 | `url:moderator` (existed) | `allowURL` (with `url:access`), `TypeFormLink` | everyone's short links; form links |
 | `url:access` (existed) | `allowURL` (with `url:moderator`) | one's own short links |
 
@@ -113,7 +142,7 @@ What the caller may do, for the admin panel (ticket 10) to decide which menus an
 
 Look-up for a record of Owner team `t`: `teams.find(x => x.team === t)?.can ?? (t ? otherTeams.can : noOwnerTeam.can)`.
 
-`can` keys: `season.write` (Season create/update/delete), `group.read`, `group.write` (Groups, members, group role mappings), `user.read`, `user.write` (full user card, profile, extra roles, logout), `user.create`, `user.delete` (erasure request), `media.list`, `media.delete`, `media.readPrivate`, `media.uploadEventMedia`, `media.uploadCertificateTemplateMedia`, `url.create`, `url.listMine`, `url.moderate` (everyone's links), `formLink.read`, `formLink.write`, `githubActivity.read`, `audit.read` (the Team audit record; the `audit:read` role itself in every mode, so a Privileged Group without the role, DK included, reads `false`: S11).
+`can` keys: `season.write` (Season create/update/delete), `group.read`, `group.write` (Groups, members, group role mappings), `user.read`, `user.readFull` (the full user card and every Team's members on the dashboard: Privileged, a reader included), `user.write` (profile, extra roles, logout), `user.create`, `user.delete` (erasure request), `media.list`, `media.delete`, `media.readPrivate`, `media.uploadEventMedia`, `media.uploadCertificateTemplateMedia`, `url.create`, `url.listMine`, `url.moderate` (everyone's links), `formLink.read`, `formLink.write`, `githubActivity.read`, `audit.read` (the Team audit record; the `audit:read` role itself in every mode, so a Privileged Group without the role reads `false`; Keycloak maps it to ADMIN, YK and DK, grup-yonetimi GY1).
 
 Team keys (in `teams[].can`, `otherTeams.can`, `noOwnerTeam.can`): `event.create`, `event.update`, `event.delete`, `event.assignDoorStaff`, `ticket.read` (applicant list), `ticket.assign`, `door.checkIn`, `competitor.read`, `competitor.create`, `competitor.update`, `competitor.delete`, `competition.manage` (the team's Competitions: a Leader of the team or `competition:manage`; team membership alone gives none), `certificate.read`, `certificate.issue`, `certificate.revoke`, `certificateTemplate.read`, `certificateTemplate.create`, `certificateTemplate.update`, `certificateTemplate.assign` (bindings).
 
@@ -137,7 +166,7 @@ From core-frontend `src/lib/auth/groups.ts` and its callers (origin/main, 2026-1
 
 | Panel rule today | Answer |
 |---|---|
-| `isPrivileged` → Users page / user card editing, add user, roles | `can["user.write"]`, `can["user.create"]`, `can["user.delete"]` |
+| `isPrivileged` → Users page / user card (full card shown with `user.readFull`, editing with `user.write`), add user, roles | `can["user.readFull"]`, `can["user.write"]`, `can["user.create"]`, `can["user.delete"]` |
 | `isPrivileged` → Groups, Teams menu | `can["group.read"]`, `can["group.write"]` |
 | `isPrivileged` → Seasons (`canWriteSeason`) | `can["season.write"]` |
 | `isPrivileged` → Event form `showSeason` | `scope(t).can["event.update"]` (core lets whoever may update the Event assign its Season, Leaders too) |

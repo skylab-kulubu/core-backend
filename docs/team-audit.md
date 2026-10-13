@@ -141,8 +141,11 @@ be written is logged and the request is still refused.
 
 The record has no reading route yet. `GET /v1/team-audit-records` (ticket
 10) opens it to the `audit:read` role of core's client, which Keycloak maps
-to the ADMIN and YK roots (ticket 09). The role is read directly in every
-authorization mode, so DK and Leaders do not see the record. Names are read
+to the ADMIN, YK and DK roots (ticket 09; DK since grup-yonetimi GY1, which
+replaced S11's "not DK": DK reads and changes nothing,
+[authz-roles.md](authz-roles.md#privileged-readers-dk)). The role is read
+directly in every authorization mode: a Privileged Group without it does
+not see the record, nor does `global:read`, nor do Leaders. Names are read
 from core's `users` when a row is shown; an erased person shows as
 "Silinmiş kullanıcı".
 

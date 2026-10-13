@@ -127,11 +127,11 @@ func allowCases() []allowCase {
 			want: true,
 		},
 		{
-			name: "DK is privileged",
+			name: "DK reads but creates no Event (grup-yonetimi GY1)",
 			p:    Principal{ID: "u1", Groups: []string{"/UYELER/DK"}},
 			r:    Resource{Type: TypeEvent, OwnerTeam: "ARTLAB"},
 			a:    Create,
-			want: true,
+			want: false,
 		},
 		{
 			name: "owner team leader can update",

@@ -173,6 +173,13 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("authz privileged roots: %s (%s)", strings.Join(privilegedRoots, ", "), authz.PrivilegedRootsEnv)
+	// The Privileged roots whose members only read (docs/authz-roles.md,
+	// grup-yonetimi GY1): DK's unless set; "none" lets them write again.
+	privilegedReaderRoots, err := authz.PrivilegedReaderRootsFromEnv(os.Getenv, privilegedRoots)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("authz privileged reader roots: %s (%s)", strings.Join(privilegedReaderRoots, ", "), authz.PrivilegedReaderRootsEnv)
 	// Whether Leaders manage their Teams through core
 	// (docs/team-delegation.md): off unless set. A value core cannot read
 	// stops startup.
@@ -188,6 +195,7 @@ func main() {
 	authzPolicy := authz.DefaultPolicy()
 	authzPolicy.RoleMode = roleMode
 	authzPolicy.PrivilegedRoots = privilegedRoots
+	authzPolicy.PrivilegedReaderRoots = privilegedReaderRoots
 	authzPolicy.TeamDelegation = teamDelegation
 	authzRoleMetrics := authz.NewRoleMetrics(log.Default(), time.Now)
 	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics))
