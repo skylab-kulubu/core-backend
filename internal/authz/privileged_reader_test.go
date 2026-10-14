@@ -322,7 +322,7 @@ func TestPrivilegedReader_WriteRolesInTheTokenChangeNothing(t *testing.T) {
 			}
 		}
 		c := az.Capabilities(dk)
-		for _, key := range []string{"group.write", "user.write", "season.write", "url.moderate", "formLink.write"} {
+		for _, key := range []string{"group.write", "user.write", "season.write", "url.moderate", "url.moderateWrite", "formLink.write"} {
 			if key == "url.moderate" {
 				if !c.Can[key] { // reading everyone's links
 					t.Errorf("%s: can[%s] = false", mode, key)
