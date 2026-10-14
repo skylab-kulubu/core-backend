@@ -179,7 +179,12 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL, OwnerID: owner}, authz.Delete) {
 		return ErrForbidden
 	}
-	if existing.FormID != nil && !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL}, authz.Read) {
+	// A form's or an event's link (an event's link carries its form) is
+	// deleted here only by whoever may delete a link without being its
+	// creator: the url.moderateWrite decision, which a Privileged reader
+	// (DK) never holds, though it reads every link. Its creator manages it
+	// in Forms or on the Event.
+	if existing.FormID != nil && !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL}, authz.Delete) {
 		return ErrManaged
 	}
 	return s.store.Disable(ctx, id, lifecycle.ActorID(p.ID))
