@@ -101,7 +101,8 @@ its name alone (`authz.ClassifyRole`):
   `url:access`, `audit:read`, `users:read` and its service roles;
   `client:admin`, `content:write`, `cms:access` and `schema:sync` on any
   client; every role of `realm-management`; Forms' `skyforms:*`,
-  `skyforms:feedback:*`, `skyforms:account:erase`; SkyMail's
+  `skyforms:feedback:*`, `skyforms:read-all` (DK's read-only role: every
+  form and answer), `skyforms:account:erase`; SkyMail's
   `templates:write`, `lists:*`, `mails:*`, `system-mails:read`,
   `announcements:send`, `account:erase`; Place's `place:admin` and
   `place:moderator`; `skycms`'s `cms:account:erase`. A pair on both lists
