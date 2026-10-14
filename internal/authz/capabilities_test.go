@@ -225,3 +225,42 @@ func TestCapabilities_AuditRead(t *testing.T) {
 		}
 	}
 }
+
+// can["url.moderateWrite"] is the answer core gives when the caller updates
+// or deletes someone else's short link: ADMIN and YK yes, DK (a Privileged
+// reader, who still reads everyone's links) and an ordinary member no, in
+// every role mode (grup-yonetimi 08).
+func TestCapabilities_URLModerateWrite(t *testing.T) {
+	t.Parallel()
+	dkRoles := []string{RoleGlobalRead, "url:moderator", "url:access"}
+	for _, mode := range []RoleMode{RoleModeGroups, RoleModeBoth, RoleModeRoles} {
+		az := NewAuthorizer(policyIn(mode))
+		for _, tc := range []struct {
+			name          string
+			p             Principal
+			moderate      bool
+			moderateWrite bool
+		}{
+			{"ADMIN", Principal{ID: "u1", Groups: []string{"/UYELER/ADMIN"}, Roles: PermissionRoles()}, true, true},
+			{"YK", Principal{ID: "u1", Groups: []string{"/UYELER/YK"}, Roles: PermissionRoles()}, true, true},
+			{"DK", Principal{ID: "u1", Groups: []string{"/UYELER/DK"}, Roles: dkRoles}, true, false},
+			{"an ordinary member", Principal{ID: "u1", Roles: []string{"url:access"}}, false, false},
+		} {
+			c := az.Capabilities(tc.p)
+			if got := c.Can["url.moderate"]; got != tc.moderate {
+				t.Errorf("%s, %s: url.moderate = %v", mode, tc.name, got)
+			}
+			if got := c.Can["url.moderateWrite"]; got != tc.moderateWrite {
+				t.Errorf("%s, %s: url.moderateWrite = %v", mode, tc.name, got)
+			}
+			// The key is the decision on someone else's link, for an update
+			// and a delete alike.
+			other := Resource{Type: TypeURL, OwnerID: "someone-else"}
+			for _, action := range []Action{Update, Delete} {
+				if got := az.Allow(tc.p, other, action); got != tc.moderateWrite {
+					t.Errorf("%s, %s: %v on someone else's link = %v", mode, tc.name, action, got)
+				}
+			}
+		}
+	}
+}

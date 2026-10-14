@@ -88,6 +88,12 @@ var appAbilities = []ability{
 	{"url.create", Resource{Type: TypeURL}, Create},
 	{"url.listMine", Resource{Type: TypeURL}, ReadMe},
 	{"url.moderate", Resource{Type: TypeURL}, Read},
+	// Update on someone else's link: the decision core makes when the
+	// caller edits or deletes (disables, restores) a link they did not
+	// create, which allowURL answers alike for Update and Delete. A
+	// Privileged reader (DK) reads everyone's links (url.moderate) but
+	// changes none (grup-yonetimi 08).
+	{"url.moderateWrite", Resource{Type: TypeURL, OwnerID: otherOwner}, Update},
 	{"formLink.read", Resource{Type: TypeFormLink}, Read},
 	{"formLink.write", Resource{Type: TypeFormLink}, Update},
 	{"githubActivity.read", Resource{Type: TypeGithubActivity}, Read},
@@ -111,6 +117,10 @@ func abilityKeys(list []ability) []string {
 // otherTeam is an Owner team name no Group path can hold: a path segment
 // never contains a NUL.
 const otherTeam = "\x00other"
+
+// otherOwner is a short link's creator that is never the caller: a user ID
+// never contains a NUL.
+const otherOwner = "\x00other"
 
 func (a *authorizer) Capabilities(p Principal) Capabilities {
 	// The same decisions without the disagreement count: one answer checks
