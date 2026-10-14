@@ -590,13 +590,16 @@ func (a *authorizer) decide(p Principal, role string, read bool) bool {
 // roles are read on their own after it (short links, form links): p's
 // Privileged Group in the groups and both modes, nothing in the roles mode.
 // A reader root counts only when read. The both mode counts a Privileged
-// member who lacks one of roles, as privileged does.
+// member who lacks one of roles, as privileged does, except on a read by a
+// holder of global:read, which allows every such read in the roles mode
+// (grup-yonetimi 08: DK's reads would otherwise cloud the both → roles
+// gate). Counting only: the decision is the same.
 func (a *authorizer) privilegedGroupOnly(p Principal, read bool, roles ...string) bool {
 	if a.mode == RoleModeRoles {
 		return false
 	}
 	group := a.privilegedGroup(p, read)
-	if group != "" && a.mode == RoleModeBoth {
+	if group != "" && a.mode == RoleModeBoth && !(read && a.globalReader(p)) {
 		for _, role := range roles {
 			if !hasRole(p, role) || p.ServiceAccount {
 				a.metrics.record(role, group, p.Client)
