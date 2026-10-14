@@ -125,7 +125,9 @@ func AdminRoles() []RoleRef {
 		out = append(out, RoleRef{Role: role})
 	}
 	out = append(out, RoleRef{Client: "realm-management", AnyRole: true})
-	for _, role := range []string{"skyforms:*", "skyforms:feedback:*", "skyforms:account:erase"} {
+	// skyforms:read-all: DK's read-only Forms role (grup-yonetimi 08), every
+	// form and answer, so club-wide personal data.
+	for _, role := range []string{"skyforms:*", "skyforms:feedback:*", "skyforms:read-all", "skyforms:account:erase"} {
 		out = append(out, RoleRef{Client: "forms", Role: role})
 	}
 	for _, role := range []string{"skymail:templates:write", "skymail:lists:read", "skymail:lists:write",

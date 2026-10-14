@@ -292,6 +292,9 @@ func TestClassifyRole(t *testing.T) {
 		{"frontend-main", "schema:sync", RoleClassAdmin},
 		{"forms", "skyforms:*", RoleClassAdmin},
 		{"forms", "skyforms:feedback:*", RoleClassAdmin},
+		// DK's read-only Forms role (grup-yonetimi 08): every form and answer,
+		// club-wide personal data, so an admin role (not unclassified).
+		{"forms", "skyforms:read-all", RoleClassAdmin},
 		{"skymail", "skymail:templates:write", RoleClassAdmin},
 		{"skymail", "skymail:lists:read", RoleClassAdmin},
 		{"skymail", "skymail:mails:approve", RoleClassAdmin},
