@@ -72,13 +72,13 @@ func receivedBodyBytes(c fiber.Ctx) int64 {
 	return int64(len(c.Request().Body()))
 }
 
-// uploadRateLimited answers 429 with the limit hit and the person's whole
+// uploadRateLimited answers 429 with the limit hit and the account's whole
 // budget, each maximum under its own member.
 func uploadRateLimited(c fiber.Ctx, refusal media.UploadLimitRefusal) error {
 	seconds := int64(refusal.RetryAfter / time.Second)
 	c.Set(fiber.HeaderRetryAfter, strconv.FormatInt(seconds, 10))
 	return problemWithFields(c, fiber.StatusTooManyRequests, "Too Many Requests",
-		"The person's upload limit is reached; retry after the given seconds.", "media_rate_limited", fiber.Map{
+		"The account's upload limit is reached; retry after the given seconds.", "media_rate_limited", fiber.Map{
 			"limit":               string(refusal.Limit),
 			"maxUploads":          refusal.Budget.Count,
 			"uploadWindowSeconds": int64(refusal.Budget.CountWindow / time.Second),
