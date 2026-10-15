@@ -9,34 +9,33 @@ import (
 	"time"
 )
 
-// asRoleHolder is the same person as p with the Privileged Group paths
+// asRoleHolder is the same person as p with the Privileged root paths
 // swapped for every role of the contract: what the person's token carries
-// once Keycloak maps the roles to ADMIN, YK and DK and the person leaves
-// those Groups out of the picture.
+// once Keycloak maps the roles to the six roots and the person leaves those
+// Groups out of the picture.
 func asRoleHolder(p Principal) Principal {
 	out := p
 	out.Groups = nil
-	privileged := false
+	privileged, reader := false, false
 	for _, g := range p.Groups {
-		if inPrivilegedGroup(DefaultPolicy(), g) != "" {
+		if PrivilegedRoot(DefaultPrivilegedReaderRoots(), g) != "" {
+			reader = true
+			continue
+		}
+		if PrivilegedRoot(DefaultPrivilegedRoots(), g) != "" {
 			privileged = true
 			continue
 		}
 		out.Groups = append(out.Groups, g)
 	}
-	if privileged {
+	switch {
+	case privileged:
 		out.Roles = append(slices.Clone(p.Roles), PermissionRoles()...)
+	case reader:
+		// DK's roles (grup-yonetimi GY1): reading only.
+		out.Roles = append(slices.Clone(p.Roles), RoleGlobalRead)
 	}
 	return out
-}
-
-func inPrivilegedGroup(policy Policy, g string) string {
-	for _, pg := range policy.PrivilegedGroups {
-		if strings.HasSuffix(g, "/"+pg) || strings.Contains(g, "/"+pg+"/") {
-			return pg
-		}
-	}
-	return ""
 }
 
 func policyIn(mode RoleMode) Policy {
@@ -92,6 +91,8 @@ var roleChecks = []struct {
 	{RoleTicketValidate, Resource{Type: TypeTicket, OwnerTeam: "WEBLAB"}, Validate},
 	{RoleTicketValidate, Resource{Type: TypeTicket}, Validate},
 	{RoleCompetitorManage, Resource{Type: TypeCompetitor, OwnerTeam: "WEBLAB"}, Update},
+	{RoleCompetitionManage, Resource{Type: TypeCompetition, OwnerTeam: "WEBLAB"}, Update},
+	{RoleCompetitionManage, Resource{Type: TypeCompetition}, Create},
 	{RoleMediaManage, Resource{Type: TypeMedia}, List},
 	{RoleMediaManage, Resource{Type: TypeMedia}, Delete},
 	{RoleMediaPrivateRead, Resource{Type: TypeMediaReadLink}, Read},
@@ -122,7 +123,11 @@ func TestAuthorizer_RolesModeReadsTheRoleNotTheGroup(t *testing.T) {
 			t.Errorf("%s %s: %s holder outside the Privileged Groups allowed in the groups mode", c.r.Type, c.a, c.role)
 		}
 		for _, other := range PermissionRoles() {
-			if other == c.role {
+			if other == c.role || renamedRoles[c.role] == other {
+				continue
+			}
+			// global:read stands for every read (grup-yonetimi GY1).
+			if other == RoleGlobalRead && (c.a == Read || c.a == List) {
 				continue
 			}
 			if auth.Allow(Principal{ID: "u1", Roles: []string{other}}, c.r, c.a) {

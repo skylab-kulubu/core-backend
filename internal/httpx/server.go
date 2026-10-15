@@ -14,6 +14,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
+	"github.com/skylab-kulubu/core-backend/internal/commpref"
+	"github.com/skylab-kulubu/core-backend/internal/competition"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
@@ -21,6 +23,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
+	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -39,6 +42,7 @@ type Deps struct {
 	Seasons                season.Service
 	Tickets                ticket.Service
 	Competitors            competitor.Service
+	Competitions           competition.Service
 	Media                  media.Service
 	URLs                   shorturl.Service
 	Certificates           certificate.Service
@@ -77,6 +81,15 @@ type Deps struct {
 	// the purge is off.
 	MediaCDNPurgeMetrics interface{ Prometheus() string }
 
+	// TeamMailMetrics are the team membership mail's counters
+	// (docs/team-membership-mail.md). Nil publishes none.
+	TeamMailMetrics interface{ Prometheus() string }
+
+	// TeamDelegationMetrics count the client roles nobody has classified
+	// that team delegation's protection reads found
+	// (docs/team-delegation.md). Nil publishes none.
+	TeamDelegationMetrics interface{ Prometheus() string }
+
 	// MediaUploadLimiter is each person's single-step upload budget. Nil
 	// uses media.DefaultUploadLimits.
 	MediaUploadLimiter *media.UploadLimiter
@@ -99,6 +112,11 @@ type Deps struct {
 	// GuestApplyPublicIPLimit is what Guest apply's per-address budget does
 	// when it runs out (GUEST_APPLY_PUBLIC_IP_LIMIT_MODE). Empty enforces.
 	GuestApplyPublicIPLimit handlers.GuestApplyLimitMode
+
+	// SkyPassWalletMetrics are SkyPass in Google Wallet's counters
+	// (docs/skypass-google-wallet.md), served on /v1/metrics. Nil leaves
+	// them out.
+	SkyPassWalletMetrics interface{ Prometheus() string }
 
 	// GuestCheckInMetrics counts guest self check-ins by door QR presence
 	// and outcome, and serves them on /v1/metrics
@@ -129,6 +147,11 @@ type Deps struct {
 	// the UI (docs/authz-roles.md). Nil answers an empty list.
 	EditableSites *editablesites.Sites
 
+	// ManagedTeams answers the capabilities route's managedTeams: the Teams
+	// the caller is a Leader of, read from Keycloak
+	// (docs/team-delegation.md). Nil answers an empty list.
+	ManagedTeams *identity.TeamDelegation
+
 	// AuthzRoleMetrics are the role mode and its disagreements, served on
 	// /v1/metrics. Nil serves nothing.
 	AuthzRoleMetrics *authz.RoleMetrics
@@ -142,6 +165,31 @@ type Deps struct {
 	// off (CONTACT_CONSENT_KEY unset) answers its routes 503 and records
 	// no Guest apply consent.
 	Consents *consent.Service
+
+	// CommunicationPreferences keeps the Announcement preference
+	// (docs/communication-preferences.md). Nil or off (COMMUNICATION_PREFERENCE_KEY unset)
+	// answers its routes 503.
+	CommunicationPreferences *commpref.Service
+
+	// Audience resolves a News send's audience for SkyMail's service account
+	// (docs/news-audience.md). Nil or off answers POST /v1/audiences/resolve
+	// 503.
+	Audience *commpref.Audience
+
+	// MediaDecodeMetrics are the media decode budget's state and counters
+	// (docs/media-lifecycle.md, "Decode budget"), served on /v1/metrics.
+	// Nil leaves them out.
+	MediaDecodeMetrics interface{ Prometheus() string }
+
+	// MemoryMetrics are core's soft memory limit, its container's limit and
+	// the memory the Go runtime holds (docs/memory-limit.md), served on
+	// /v1/metrics. Nil leaves them out.
+	MemoryMetrics interface{ Prometheus() string }
+
+	// Readiness is GET /v1/ready's database and shutdown check, asked
+	// before the account access gate (internal/health). Nil leaves the
+	// gate's check alone. /v1/health (liveness) asks nothing.
+	Readiness *health.Readiness
 }
 
 func New(deps Deps) *fiber.App {
@@ -214,7 +262,9 @@ func New(deps Deps) *fiber.App {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
-		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil {
+		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
+		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
+		deps.TeamDelegationMetrics != nil || deps.Readiness != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -234,11 +284,37 @@ func New(deps Deps) *fiber.App {
 			if deps.RetentionMetrics != nil {
 				text += deps.RetentionMetrics.Prometheus()
 			}
+			if deps.SkyPassWalletMetrics != nil {
+				text += deps.SkyPassWalletMetrics.Prometheus()
+			}
+			if deps.MediaDecodeMetrics != nil {
+				text += deps.MediaDecodeMetrics.Prometheus()
+			}
+			if deps.MemoryMetrics != nil {
+				text += deps.MemoryMetrics.Prometheus()
+			}
+			if deps.TeamMailMetrics != nil {
+				text += deps.TeamMailMetrics.Prometheus()
+			}
+			if deps.TeamDelegationMetrics != nil {
+				text += deps.TeamDelegationMetrics.Prometheus()
+			}
+			text += deps.Readiness.Prometheus()
 			return c.SendString(text)
 		})
 	}
 	app.Get("/v1/ready", func(c fiber.Ctx) error {
-		if deps.AccountAccessGate != nil {
+		if err := deps.Readiness.Check(c.Context()); err != nil {
+			c.Set(fiber.HeaderCacheControl, "no-store")
+			c.Set(fiber.HeaderRetryAfter, "1")
+			return fiber.ErrServiceUnavailable
+		}
+		// The container's health check (core-backend healthcheck) asks
+		// with gate=skip: Swarm has one check, which restarts a task that
+		// fails it, and restarting core for a gate Redis that is down fixes
+		// nothing (core cannot start without it) while it takes down the
+		// routes that need no Redis. No route is added for it.
+		if deps.AccountAccessGate != nil && c.Query("gate") != "skip" {
 			if err := deps.AccountAccessGate.Ready(c.Context()); err != nil {
 				deps.AccountAccessMetrics.RecordReadinessFailure()
 				c.Set(fiber.HeaderCacheControl, "no-store")
@@ -300,6 +376,13 @@ func New(deps Deps) *fiber.App {
 	app.Get(consent.ConfirmPath, consentPageLimit, consents.ConfirmPage)
 	app.Post(consent.ConfirmPath, consentPageLimit, consents.Confirm)
 	guestApplyRoute = append(guestApplyRoute, consents.GuestApplyConsents)
+	// The unsubscribe link of every News mail (docs/communication-preferences.md):
+	// no sign-in, the signed token in the link is the permission. The same
+	// budgets as the consent pages, for the same reasons (a mail provider's
+	// one-click POSTs come from a few of its addresses).
+	communicationPreferences := handlers.NewCommunicationPreferenceHandler(deps.CommunicationPreferences)
+	app.Get(commpref.UnsubscribePath, perClientLimit(trustedProxies), communicationPreferences.UnsubscribePage)
+	app.Post(commpref.UnsubscribePath, perClientLimitOf(trustedProxies, consentWithdrawLimit), communicationPreferences.Unsubscribe)
 	app.Post("/v1/events/:eventId/applications/guest", guestApply.Observe, append(guestApplyRoute, tickets.ApplyGuest)...)
 	// A read link opens a private Media without a sign-in: the token in it is
 	// the permission (docs/media-lifecycle.md). The budget follows the
@@ -320,6 +403,12 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/skypass/card", pass.LookupCard)
 		app.Post("/v1/skypass/qr", pass.Mint)
 		app.Post("/v1/skypass/verify", pass.Verify)
+		// SkyPass in Google Wallet (docs/skypass-google-wallet.md): off
+		// answers the status with available false and the rest 503.
+		app.Get("/v1/skypass/wallet", pass.WalletStatus)
+		walletLimit := handlers.SkyPassWalletLimit()
+		app.Post("/v1/skypass/wallet/google", walletLimit, pass.GoogleWalletLink)
+		app.Delete("/v1/skypass/wallet/google", walletLimit, pass.RevokeGoogleWallet)
 	}
 
 	if deps.GithubActivity != nil {
@@ -329,6 +418,8 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/users/me/consents", consents.Mine)
 	app.Post("/v1/users/me/consents", consents.GrantMine)
 	app.Delete("/v1/users/me/consents/:purpose", consents.WithdrawMine)
+	app.Get("/v1/users/me/communication-preferences", communicationPreferences.Mine)
+	app.Put("/v1/users/me/communication-preferences", communicationPreferences.Update)
 	// A product's service account with consent:record; SkyMail's with
 	// consent:audience:read.
 	app.Post("/v1/consents", consents.Record)
@@ -336,13 +427,20 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/consents/lookup", consents.Lookup)
 	app.Get("/v1/consents/audience", consents.Audience)
 	app.Post("/v1/consents/renewal-requests", consents.RequestRenewal)
+	// SkyMail's service account with audience:read: who a News send goes to.
+	app.Post("/v1/audiences/resolve", handlers.NewAudienceHandler(deps.Audience).Resolve)
 
 	app.Get("/v1/users/me", me.GetMe)
 	app.Put("/v1/users/me", me.PutMe)
 	app.Patch("/v1/users/me", me.PatchMe)
 	if deps.Authz != nil {
-		app.Get("/v1/users/me/capabilities", handlers.NewCapabilitiesHandler(deps.Authz, editableSitesSource(deps.EditableSites)).Get)
+		capabilities := handlers.NewCapabilitiesHandler(deps.Authz, editableSitesSource(deps.EditableSites))
+		if deps.ManagedTeams != nil {
+			capabilities.WithManagedTeams(deps.ManagedTeams)
+		}
+		app.Get("/v1/users/me/capabilities", capabilities.Get)
 	}
+	app.Get("/v1/users/me/managed-groups", ident.ManagedGroups)
 	app.Post("/v1/users/me/profile-picture", limitUploads, me.ProfilePicture)
 	app.Delete("/v1/users/me/profile-picture", me.DeleteProfilePicture)
 	app.Get("/v1/users", ident.ListUsers)
@@ -360,6 +458,8 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/groups/:groupId", ident.GetGroup)
 	app.Patch("/v1/groups/:groupId", ident.UpdateGroup)
 	app.Get("/v1/groups/:groupId/members", ident.Members)
+	app.Get("/v1/groups/:groupId/member-candidates", ident.MemberCandidates)
+	app.Get("/v1/groups/:groupId/member-check/:userId", ident.MemberCheck)
 	app.Post("/v1/groups/:groupId/members", ident.AddMember)
 	app.Delete("/v1/groups/:groupId/members/:userId", ident.RemoveMember)
 	app.Get("/v1/groups/:groupId/client-roles", ident.GroupClientRoles)
@@ -458,6 +558,10 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/tickets/user/:userId/event/:eventId", tickets.ByUserEvent)
 	app.Get("/v1/tickets/:id", tickets.Get)
 	app.Get("/v1/tickets", tickets.List)
+	// The forms service's account with ticket:forms reports each answer to its
+	// forms; an accepted answer to an Event's form writes its Ticket
+	// (docs/form-response-tickets.md).
+	app.Post("/v1/forms/:formId/responses", tickets.RecordFormResponse)
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
 	// Guest check-in takes no sign-in; failures are budgeted per address, and
@@ -486,6 +590,27 @@ func New(deps Deps) *fiber.App {
 	app.Put("/v1/competitors/:id", competitors.Update)
 	app.Delete("/v1/competitors/:id", competitors.Delete)
 	app.Post("/v1/competitors/:id/reinstate", competitors.Reinstate)
+
+	// The competition module (ADR-0068, docs/competitions.md); nil serves
+	// none of its routes.
+	if deps.Competitions != nil {
+		comps := handlers.NewCompetitionHandler(deps.Competitions)
+		app.Get("/v1/events/:eventId/competitions", comps.ListByEvent)
+		app.Post("/v1/events/:eventId/competitions", comps.Create)
+		app.Get("/v1/competitions/:id", comps.Get)
+		app.Patch("/v1/competitions/:id", comps.Update)
+		for _, action := range []string{"open", "start", "close", "reopen", "cancel"} {
+			app.Post("/v1/competitions/:id/"+action, comps.Transition(action))
+		}
+		app.Post("/v1/competitions/:id/archive", comps.Archive)
+		app.Post("/v1/competitions/:id/restore", comps.Restore)
+		app.Get("/v1/competitions/:id/entrants", comps.Entrants)
+		app.Post("/v1/competitions/:id/entrants", comps.AddEntrants)
+		app.Post("/v1/competitions/:id/scores", comps.SetScore)
+		app.Get("/v1/competitions/:id/entries", comps.Entries)
+		app.Post("/v1/competitions/:id/entries/:entryId/revoke", comps.RevokeEntry)
+		app.Get("/v1/competitions/:id/leaderboard", comps.Leaderboard)
+	}
 
 	app.Post("/v1/media", limitUploads, mediaH.Upload)
 	// The address lookup: a product's service account asks which Media the

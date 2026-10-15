@@ -9,7 +9,7 @@ The endpoint makes no permission decision of its own; it reuses the ones core al
 - **Signed in.** No bearer, `401` problem+json. Anyone signed in gets `200`; what it covers depends on them.
 - **Events and applications.** The summary covers the current (not archived) Events whose applicant list the caller may read: the `authz` Ticket read decision of `GET /v1/events/{id}/tickets`, taken once per Owner team. Today that is Privileged people (every Event, those without an Owner team too), Leaders of the Event's Owner team, members of an Owner team whose members may edit its Events (GECEKODU), and Owner-team members holding `certificate:issue`. Anyone else gets a summary of nothing (zeros, empty lists). `ownerTeams` names the Owner teams covered.
 - **Members.** Only for a person who may read people: the `authz` User read decision of `GET /v1/users` (Privileged, or the `users:read` role). A product's service account (a token `authz.ServiceClients` maps to a product) is not a person and never gets the section, whatever its roles. Anyone else gets `"members": null`.
-- **Joiners' teams.** A caller who may also manage people (the User update decision: Privileged) sees every team a joiner sits in. A caller who may only read people (`users:read`) sees the teams with Public listing (`public_listing=true`) alone, as visitors of the public rosters do.
+- **Joiners' teams.** A caller who may read people whole (the User `ReadFull` decision: Privileged, a Privileged reader such as DK included) sees every team a joiner sits in. A caller who may only read people (`users:read`) sees the teams with Public listing (`public_listing=true`) alone, as visitors of the public rosters do.
 - **Group overage.** A token with the Group overage marker gets its Groups from Keycloak before the route, as for every route ([`keycloak-admin-permissions.md`](keycloak-admin-permissions.md#group-overage)).
 - **Privileged as roles (admin-token-authz ticket 04).** The decisions above come from `authz.Authorizer.Allow`, so they follow `AUTHZ_ROLE_MODE` ([authz-roles.md](authz-roles.md)) without a change here. In the `roles` mode the Events come with `ticket:manage`, the Members section with `users:read` or `users:manage`, and every joiner's team with `users:manage`; a Privileged member without those roles sees only their Leader/Owner-team scope. Leader and Owner-team decisions stay on group paths.
 
@@ -36,7 +36,7 @@ All times are UTC (RFC 3339). Days and months are counted in `Europe/Istanbul`.
     {
       "id": "…", "name": "WebLab Bootcamp", "ownerTeam": "WEBLAB", "location": "D-101",
       "startDate": "2026-10-08T12:00:00Z", "endDate": "2026-10-08T15:00:00Z",
-      "active": true, "live": false, "capacity": 50,
+      "active": true, "status": "published", "live": false, "capacity": 50,
       "coverImageUrl": "https://…",
       "hasApplicationForm": true, "hasCoverImage": true,
       "applications": 46, "members": 30, "guests": 16, "checkedIn": 0,
@@ -54,9 +54,9 @@ All times are UTC (RFC 3339). Days and months are counted in `Europe/Istanbul`.
 }
 ```
 
-- **`events`**: the covered Events. `upcoming` have not started; `live` are running now. An Event without an end date runs for 12 hours from its start, as the panel counts it. Events without a start date count in `total` only.
+- **`events`**: the covered Events. `upcoming` have not started; `live` are running now. An Event without an end date runs for 24 hours from its start, the end its derived `active` uses (ADR 0066). Events without a start date count in `total` only.
 - **`applications`**: every Ticket of the covered Events, all time. `members` are Member apply Tickets (`REGISTERED`), `guests` the rest (Guest apply, Walk-in). `checkedIn` are Tickets with at least one check-in (archiving a day or session keeps its check-ins, as the applicant list does). `daily` counts the Tickets created on each of the last 30 days.
-- **`eventStats`**: the covered Events that are running, still to come, or ended within the last 30 days, by start date. The figures are the Event's own; `dailyApplications` are its last 14 days. `hasApplicationForm` is false when the Event links no form, main or extra; `hasCoverImage` when it has no cover.
+- **`eventStats`**: the covered Events that are running, still to come, or ended within the last 30 days, by start date. The figures are the Event's own; `dailyApplications` are its last 14 days. `hasApplicationForm` is false when the Event links no form, main or extra; `hasCoverImage` when it has no cover. `status` is the Event's stored status (`draft`, `published`, `cancelled`; ADR 0066) and `active` is derived from it at the summary's time: published and not ended (the end date, else 24 hours after the start; an undated Event never ends), the same end `live` uses.
 - **`members`** (or `null`): see below. `membersUnavailable: true` (and `members: null`) means the caller may see the section but Keycloak could not be read; the rest of the answer stands.
 
 Nothing in the answer carries an e-mail, phone or other contact, and no Ticket appears one by one.

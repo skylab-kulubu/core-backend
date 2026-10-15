@@ -441,3 +441,66 @@ func TestRestoreSessionWithLegacyTimingIsConflictWhileClientTimingIsBadRequest(t
 		t.Fatalf("update with invalid timing: status %d body %s, want 400", status, body)
 	}
 }
+
+func TestUpdateSessionKeepsCancelledWhenBodyOmitsIt(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	leader := authn.Identity{ID: uuid.MustParse("44444444-4444-4444-4444-444444444444"), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	app := scheduleApp(t, leader, events, season.NewMemoryStore())
+	ctx := context.Background()
+
+	ev, err := events.Create(ctx, event.Event{Name: "Program", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Gün 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := events.CreateSession(ctx, event.Session{
+		EventDayID: day.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION", Cancelled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	update := func(extra string) event.Session {
+		t.Helper()
+		req := httptest.NewRequest(fiber.MethodPut, "/v1/sessions/"+sess.ID.String(),
+			strings.NewReader(`{"title":"Talk 2","speakerName":"Ada","sessionType":"PRESENTATION"`+extra+`}`))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != fiber.StatusOK {
+			t.Fatalf("update%s: status %d body %s", extra, resp.StatusCode, raw)
+		}
+		var got event.Session
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := events.GetSession(ctx, sess.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Cancelled != got.Cancelled {
+			t.Fatalf("response cancelled=%v, stored cancelled=%v", got.Cancelled, stored.Cancelled)
+		}
+		return got
+	}
+
+	if got := update(""); !got.Cancelled || got.Title != "Talk 2" {
+		t.Fatalf("update without cancelled: got cancelled=%v title=%q, want the cancel kept and the title changed", got.Cancelled, got.Title)
+	}
+	if got := update(`,"cancelled":false`); got.Cancelled {
+		t.Fatal("update with cancelled=false kept the cancel")
+	}
+	if got := update(""); got.Cancelled {
+		t.Fatal("update without cancelled cancelled an active session")
+	}
+	if got := update(`,"cancelled":true`); !got.Cancelled {
+		t.Fatal("update with cancelled=true did not cancel")
+	}
+}

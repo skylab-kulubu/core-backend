@@ -44,6 +44,14 @@ func (a *afterCheckIn) ApplyGuest(ctx context.Context, p authz.Principal, eventI
 	return a.inner.ApplyGuest(ctx, p, eventID, g)
 }
 
+func (a *afterCheckIn) RecordFormResponse(ctx context.Context, p authz.Principal, r FormResponse) (FormResponseResult, error) {
+	return a.inner.RecordFormResponse(ctx, p, r)
+}
+
+func (a *afterCheckIn) CanRecordFormResponse(p authz.Principal) bool {
+	return a.inner.CanRecordFormResponse(p)
+}
+
 func (a *afterCheckIn) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error) {
 	return a.inner.Mine(ctx, p)
 }
@@ -99,6 +107,10 @@ func (a *afterCheckIn) CheckInUser(ctx context.Context, p authz.Principal, sessi
 		a.fire(ctx, ci.TicketID)
 	}
 	return ci, err
+}
+
+func (a *afterCheckIn) AuthorizeSessionDoor(ctx context.Context, p authz.Principal, sessionID uuid.UUID) error {
+	return a.inner.AuthorizeSessionDoor(ctx, p, sessionID)
 }
 
 func (a *afterCheckIn) ResolveAndCheckIn(ctx context.Context, p authz.Principal, sessionID uuid.UUID, target DoorCheckInTarget) (DoorCheckIn, error) {

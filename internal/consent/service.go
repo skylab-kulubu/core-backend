@@ -7,6 +7,7 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,7 +26,8 @@ type Mailer interface {
 
 // AddressSource reads a person's addresses: what Keycloak holds (Primary,
 // School and Personal e-mail) with core's row, as account erasure reads them
-// (account.NewErasureAddresses). An error carries no address.
+// but without its limit of three (account.NewPersonAddresses). An error
+// carries no address.
 type AddressSource interface {
 	ErasureAddresses(context.Context, uuid.UUID) ([]string, error)
 }
@@ -44,6 +46,12 @@ type Service struct {
 	mailTimeout time.Duration
 	// async runs a confirmation mail; tests replace it to wait for it.
 	async func(func())
+
+	// sending counts the confirmation mails going; idle closes when it
+	// comes back to zero (Idle).
+	mu      sync.Mutex
+	sending int
+	idle    chan struct{}
 }
 
 // NewService builds the consent service. mail may be nil: pending grants
@@ -297,15 +305,61 @@ func (s *Service) sendConfirmation(id uuid.UUID, g Grant) {
 		"purpose":     string(g.Purpose),
 	}
 	recipient, template := g.Email, s.config.ConfirmTemplateKey
+	s.mu.Lock()
+	s.sending++
+	s.mu.Unlock()
 	s.async(func() {
+		defer s.sent()
 		ctx, cancel := context.WithTimeout(context.Background(), s.mailTimeout)
 		defer cancel()
 		s.mail.ConsentConfirmation(ctx, template, recipient, vars)
 	})
 }
 
+func (s *Service) sent() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sending--
+	if s.sending == 0 && s.idle != nil {
+		close(s.idle)
+		s.idle = nil
+	}
+}
+
+// Idle closes when no confirmation mail is going. The grant's row says
+// the mail was sent before it goes (the request is answered first), so
+// shutdown waits on Idle after the last request was answered: a mail that
+// is going is not cut off with the process. A mail cut off all the same
+// (SkyMail slower than the shutdown deadline) leaves the grant pending; the
+// person's next request mails it again after ConfirmationResend.
+func (s *Service) Idle() <-chan struct{} {
+	if s == nil {
+		return closedChannel
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sending == 0 {
+		return closedChannel
+	}
+	if s.idle == nil {
+		s.idle = make(chan struct{})
+	}
+	return s.idle
+}
+
+var closedChannel = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
 // ErrDisabled is any consent operation while KeyEnv is unset.
 var ErrDisabled = errors.New("contact consent: off (" + KeyEnv + " is not set)")
+
+// ErrAddressesUnavailable is a person's own list or withdrawal while their
+// addresses cannot be read (Keycloak unreachable, core's row unreadable):
+// a passing failure, to be tried again.
+var ErrAddressesUnavailable = errors.New("contact consent: the person's addresses cannot be read now")
 
 // LinkOutcome is what a link did.
 type LinkOutcome string
@@ -823,7 +877,7 @@ func (s *Service) accountTarget(ctx context.Context, userID uuid.UUID, identity 
 	if identity && s.addresses != nil {
 		addresses, err := s.addresses.ErasureAddresses(ctx, userID)
 		if err != nil {
-			return mailedTo{}, fmt.Errorf("contact consent: the person's addresses: %w", err)
+			return mailedTo{}, fmt.Errorf("%w: %w", ErrAddressesUnavailable, err)
 		}
 		raw = addresses
 	} else {
@@ -904,7 +958,11 @@ func (s *Service) Mine(ctx context.Context, userID uuid.UUID) ([]Own, error) {
 
 // WithdrawMine ends a signed-in person's open grants of a purpose: their
 // account's, and every grant that mails one of their addresses, Keycloak's
-// Personal e-mail included.
+// Personal e-mail included. While their addresses cannot be read it ends at
+// once what core reaches without them (the account's own grant and the
+// grants for core's row's addresses) and returns how many with
+// ErrAddressesUnavailable: a grant for another of their addresses may still
+// be open, so the person tries again.
 func (s *Service) WithdrawMine(ctx context.Context, userID uuid.UUID, purpose Purpose) (int64, error) {
 	if !s.Enabled() {
 		return 0, ErrDisabled
@@ -913,6 +971,17 @@ func (s *Service) WithdrawMine(ctx context.Context, userID uuid.UUID, purpose Pu
 		return 0, err
 	}
 	target, err := s.accountTarget(ctx, userID, true)
+	if errors.Is(err, ErrAddressesUnavailable) {
+		known, knownErr := s.accountTarget(ctx, userID, false)
+		if knownErr != nil {
+			return 0, knownErr
+		}
+		n, endErr := s.endOpen(ctx, purpose, known, viaSelf, s.now())
+		if endErr != nil {
+			return n, endErr
+		}
+		return n, err
+	}
 	if err != nil {
 		return 0, err
 	}

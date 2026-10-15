@@ -69,6 +69,13 @@ suffix. Both are recorded as the same `utm_source`:
 The suffix wins over a `utm_source` in the query. An unknown suffix redirects
 without a tag, so a mistyped printed link still reaches the form.
 
+A click is stored with the `utm_source` and `utm_medium` it came with, so a
+channel named under Forms' "Diğer" shows under its own name in the
+statistics (which look back 90 days). A year after the click, the retention
+sweep keeps them only when they are a known channel and writes `other`
+otherwise ([`retention-sweep.md`](retention-sweep.md#rules-rule-set-v3) lists
+the channels).
+
 **Untagged hops are recognised where they can be.** When a hop carries no
 `utm_source`, Core names the channel from the browser that made it:
 Instagram's and LinkedIn's in-app browsers identify themselves, and YouTube

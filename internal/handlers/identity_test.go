@@ -248,15 +248,16 @@ func TestUserCardAndGroupRolesHTTP(t *testing.T) {
 	dir := identity.NewMemory()
 	store := user.NewMemoryStore()
 	dir.PutGroup(identity.Group{ID: "g-weblab", Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"})
+	dir.PutGroup(identity.Group{ID: "g-leaders", Name: "LIDERLER", Path: "/UYELER/ARGE/WEBLAB/LIDERLER"})
 	id := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	dir.PutUser(identity.Person{ID: id, Email: "ada@example.com", FirstName: "Ada"})
-	if err := dir.AddMember(t.Context(), "g-weblab", id); err != nil {
+	if err := dir.AddMember(t.Context(), "g-leaders", id); err != nil {
 		t.Fatal(err)
 	}
 	app := identityApp(t, ykIdent(), dir, store)
 
 	body := `[{"clientId":"skyforms","role":"skyforms:access"}]`
-	req := httptest.NewRequest(fiber.MethodPut, "/v1/groups/g-weblab/client-roles", strings.NewReader(body))
+	req := httptest.NewRequest(fiber.MethodPut, "/v1/groups/g-leaders/client-roles", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
 	if err != nil {
@@ -274,9 +275,13 @@ func TestUserCardAndGroupRolesHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != fiber.StatusNoContent {
-		b, _ := io.ReadAll(resp.Body)
+	// A role is not given to a person directly (rol-temizligi K1): the
+	// card still shows one given before.
+	if b, _ := io.ReadAll(resp.Body); resp.StatusCode != fiber.StatusForbidden || !strings.Contains(string(b), `"code":"direct_role_not_allowed"`) {
 		t.Fatalf("extra status %d body %s", resp.StatusCode, b)
+	}
+	if err := dir.AddUserExtraRole(t.Context(), id, identity.ClientRole{ClientID: "skyforms", Role: "skyforms:form:manage"}); err != nil {
+		t.Fatal(err)
 	}
 
 	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users/"+id.String(), nil))

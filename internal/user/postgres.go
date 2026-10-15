@@ -513,6 +513,8 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 			utm_source = '', utm_medium = '', utm_campaign = '', utm_term = '', utm_content = ''
 		WHERE user_id = $1`,
 		`UPDATE events SET archived_by = NULL WHERE archived_by = $1`,
+		`UPDATE events SET published_by = NULL WHERE published_by = $1`,
+		`UPDATE events SET cancelled_by = NULL WHERE cancelled_by = $1`,
 		`UPDATE event_days SET archived_by = NULL WHERE archived_by = $1`,
 		`UPDATE sessions SET archived_by = NULL WHERE archived_by = $1`,
 		`UPDATE seasons SET archived_by = NULL WHERE archived_by = $1`,
@@ -525,6 +527,26 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`UPDATE certificate_event_state SET attendance_finalized_by = NULL WHERE attendance_finalized_by = $1`,
 		`UPDATE certificate_batches SET requested_by = NULL WHERE requested_by = $1`,
 		`UPDATE account_deletion_requests SET requested_by = NULL WHERE requested_by = $1`,
+		// Competition actors (ADR-0068): the ledger keeps every score and
+		// reason, without who wrote or revoked it. Its append-only trigger
+		// lets an actor column go NULL, and each actor column has its own
+		// guard, so clearing one does not check the other again.
+		`UPDATE competitions SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE competitions SET archived_by = NULL WHERE archived_by = $1`,
+		`UPDATE competition_entrants SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE competition_submissions SET recorded_by = NULL WHERE recorded_by = $1`,
+		`UPDATE competition_submissions SET revoked_by = NULL WHERE revoked_by = $1`,
+		`UPDATE competition_adjustments SET recorded_by = NULL WHERE recorded_by = $1`,
+		`UPDATE competition_adjustments SET revoked_by = NULL WHERE revoked_by = $1`,
+		// Team membership mails not sent yet: none goes to the person, and
+		// none names them as the one who made the change.
+		`DELETE FROM team_membership_mails WHERE subject_id = $1`,
+		`UPDATE team_membership_mails SET actor_id = NULL WHERE actor_id = $1`,
+		// Privilege notices not sent yet: none goes to the person, and none
+		// names them as the one changed or the one who made the change.
+		`DELETE FROM privilege_notice_mails WHERE recipient_id = $1`,
+		`UPDATE privilege_notice_mails SET subject_id = NULL WHERE subject_id = $1`,
+		`UPDATE privilege_notice_mails SET actor_id = NULL WHERE actor_id = $1`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(ctx, statement, id); err != nil {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -78,7 +79,13 @@ func (s *service) Finalize(ctx context.Context, p authz.Principal, eventID uuid.
 	if !s.canIssue(p, ev.OwnerTeam) {
 		return Batch{}, ErrForbidden
 	}
-	if ev.Active {
+	// Attendance finalization opens when the Event is published and has
+	// ended, or is undated (ADR 0066); a draft and a cancelled Event refuse
+	// it with their reason.
+	if err := ev.StatusError(); err != nil {
+		return Batch{}, fmt.Errorf("%w: %w", ErrConflict, err)
+	}
+	if !ev.FinalizeOpenAt(time.Now()) {
 		return Batch{}, ErrConflict
 	}
 	if ev.AttendanceRule == RuleNone {
@@ -336,14 +343,21 @@ func safeErrorCode(err error) string {
 	}
 }
 
-func MaintainIssuance(ctx context.Context, svc Service, interval time.Duration, limit int, onError func(error)) {
+// MaintainIssuance issues claimed certificate jobs in the background until
+// ctx is cancelled. The returned channel closes once the batch in flight
+// has returned after that; shutdown waits on it. A batch cut short leaves
+// its jobs claimed until their lease runs out (two minutes), when a task
+// claims them again.
+func MaintainIssuance(ctx context.Context, svc Service, interval time.Duration, limit int, onError func(error)) <-chan struct{} {
 	if interval <= 0 {
 		interval = 2 * time.Second
 	}
 	if limit <= 0 {
 		limit = 10
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -366,4 +380,5 @@ func MaintainIssuance(ctx context.Context, svc Service, interval time.Duration, 
 			}
 		}
 	}()
+	return done
 }

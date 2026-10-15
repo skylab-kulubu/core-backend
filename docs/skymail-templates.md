@@ -48,6 +48,22 @@ show the consent box; a refused send writes
 grant stays pending. The mail must carry no sponsor or other commercial
 content (ADR-0062).
 
+A fourth, the membership mail, goes to a person added to a Group or removed
+from one: `club.team-membership` for a team, `club.role-membership` for a
+Privileged Group (YK, DK, ADMIN) and `club.group-membership` for any other
+Group. Unlike the others it is queued in core's database and sent by a worker
+that reads SkyMail's answer and retries, so a SkyMail outage delays it instead
+of losing it. Each is addressed by key alone,
+`SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY`, `SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY`
+and `SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY` (unset: the key above; empty: that
+kind off). See [team-membership-mail.md](team-membership-mail.md).
+
+A fifth, the privilege notice `club.privilege-change`, rides the same worker
+on a queue of its own: a Group's role mapping changed tells ADMIN, and a
+Privileged Group's membership changed tells ADMIN and that root's members.
+`SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY` addresses it the same way. See
+[privilege-change-mail.md](privilege-change-mail.md).
+
 ## Configuration
 
 | Variable | Unset | Empty |
@@ -74,7 +90,8 @@ checks the response status. Anything outside `2xx` writes one line:
 {"event":"skymail_call_failed","level":"warn","kind":"welcome","status":404,"reason":"template_missing","code":"template_not_found"}
 ```
 
-- `kind` — `welcome`, `certificate`, `token`, or the list call (`list_create`,
+- `kind` — `welcome`, `certificate`, `team_membership`, `role_membership`,
+  `group_membership`, `token`, or the list call (`list_create`,
   `list_delete`, `list_read`, `list_recipients`, `list_recipient_add`,
   `list_recipient_remove`).
 - `status` — the raw status SkyMail answered with. Nothing is inferred from it

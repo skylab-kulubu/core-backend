@@ -17,10 +17,18 @@ type Memory struct {
 	groupRoles map[string][]ClientRole
 	userRoles  map[uuid.UUID][]ClientRole
 	catalog    []ClientRole
+	// composites are the roles each role includes, by roleKey; a role with
+	// an empty ClientID is a realm role. defaultRoles every person holds
+	// (Keycloak's default-roles-<realm>).
+	composites   map[string][]ClientRole
+	defaultRoles []ClientRole
 	// disabled are the people DisableUser disabled: Keycloak's
 	// enabled=false. Everyone else is enabled, and PutUser enables again.
 	disabled map[uuid.UUID]struct{}
-	Ops      []string
+	// parents are the parent ids SetGroupParent set; a Group without one
+	// has the parent its path says.
+	parents map[string]string
+	Ops     []string
 }
 
 func NewMemory() *Memory {
@@ -30,8 +38,72 @@ func NewMemory() *Memory {
 		members:    make(map[string]map[uuid.UUID]struct{}),
 		groupRoles: make(map[string][]ClientRole),
 		userRoles:  make(map[uuid.UUID][]ClientRole),
+		composites: make(map[string][]ClientRole),
 		disabled:   make(map[uuid.UUID]struct{}),
+		parents:    make(map[string]string),
 	}
+}
+
+func roleKey(r ClientRole) string { return r.ClientID + "\x00" + r.Role }
+
+// PutCompositeRole makes parent include children, as a Keycloak composite
+// role does. A role with an empty ClientID is a realm role.
+func (m *Memory) PutCompositeRole(parent ClientRole, children ...ClientRole) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.composites[roleKey(parent)] = append(m.composites[roleKey(parent)], children...)
+}
+
+// SetDefaultRoles sets the roles every person holds.
+func (m *Memory) SetDefaultRoles(roles ...ClientRole) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.defaultRoles = append([]ClientRole(nil), roles...)
+}
+
+// EffectiveClientRoles answers the names of clientID's roles the person
+// holds in effect, the way Keycloak's role-mappings/clients/{client}/composite
+// does: directly, through their Groups and the Groups above them, through
+// the default roles, and through composites at any depth.
+func (m *Memory) EffectiveClientRoles(_ context.Context, userID uuid.UUID, clientID string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("EffectiveClientRoles")
+	if _, ok := m.people[userID]; !ok {
+		return nil, ErrNotFound
+	}
+	queue := append([]ClientRole(nil), m.userRoles[userID]...)
+	queue = append(queue, m.defaultRoles...)
+	for gid, members := range m.members {
+		if _, ok := members[userID]; !ok {
+			continue
+		}
+		g, ok := m.groups[gid]
+		if !ok {
+			continue
+		}
+		for id, other := range m.groups {
+			if other.Path == g.Path || strings.HasPrefix(g.Path, other.Path+"/") {
+				queue = append(queue, m.groupRoles[id]...)
+			}
+		}
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0)
+	for len(queue) > 0 {
+		r := queue[0]
+		queue = queue[1:]
+		if _, ok := seen[roleKey(r)]; ok {
+			continue
+		}
+		seen[roleKey(r)] = struct{}{}
+		if r.ClientID == clientID {
+			out = append(out, r.Role)
+		}
+		queue = append(queue, m.composites[roleKey(r)]...)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func (m *Memory) PutClientRole(role ClientRole) {
@@ -79,6 +151,40 @@ func (m *Memory) resolveLocked(idOrPath string) (Group, bool) {
 		}
 	}
 	return Group{}, false
+}
+
+// SetGroupParent makes parentID the id GroupNode answers above the Group
+// id, whatever the paths say ("" for none): a Keycloak whose names hold a
+// "/".
+func (m *Memory) SetGroupParent(id, parentID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.parents[id] = parentID
+}
+
+// GroupNode answers the Group id, by its id alone, with the id of the Group
+// above it: the one SetGroupParent set, or the Group at the path above.
+func (m *Memory) GroupNode(_ context.Context, id string) (Group, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("GroupNode")
+	g, ok := m.groups[id]
+	if !ok {
+		return Group{}, "", ErrNotFound
+	}
+	if parent, set := m.parents[id]; set {
+		return g, parent, nil
+	}
+	cut := strings.LastIndex(g.Path, "/")
+	if cut <= 0 {
+		return g, "", nil
+	}
+	for _, other := range m.groups {
+		if other.Path == g.Path[:cut] {
+			return g, other.ID, nil
+		}
+	}
+	return g, "", nil
 }
 
 func (m *Memory) ListGroups(_ context.Context) ([]Group, error) {
@@ -256,9 +362,12 @@ func (m *Memory) SearchUsers(_ context.Context, query string, limit int) ([]Pers
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.record("SearchUsers")
+	// Keycloak reads *q* as an infix search; the memory directory always
+	// searches infix.
+	query = strings.Trim(strings.TrimSpace(query), "*")
 	out := make([]Person, 0)
 	for _, person := range m.people {
-		if personMatches(person, strings.TrimSpace(query)) {
+		if personMatches(person, query) {
 			out = append(out, m.answerLocked(person))
 		}
 	}
@@ -391,6 +500,115 @@ func (m *Memory) GroupsForUser(_ context.Context, userID uuid.UUID) ([]Group, er
 		}
 	}
 	return out, nil
+}
+
+// GroupProtection answers as Keycloak does (Keycloak.GroupProtection): a
+// realm role (a ClientRole with no ClientID) or a client role that is no
+// app role mapped to the Group, or held by a composite app role it maps at
+// any depth.
+func (m *Memory) GroupProtection(_ context.Context, groupID string) (Protection, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("GroupProtection")
+	g, ok := m.groups[groupID]
+	if !ok {
+		return Protection{}, ErrNotFound
+	}
+	seen := map[string]bool{}
+	var check func(r ClientRole, depth int) Protection
+	check = func(r ClientRole, depth int) Protection {
+		switch {
+		case r.ClientID == "":
+			return Protection{Protected: true, Reason: "realm role " + r.Role}
+		case seen[roleKey(r)]:
+			return Protection{}
+		}
+		if got := clientRoleProtection(r.ClientID, r.Role); got.Protected {
+			return got
+		}
+		seen[roleKey(r)] = true
+		if depth >= maxCompositeDepth && len(m.composites[roleKey(r)]) > 0 {
+			return Protection{Protected: true, Reason: "composite " + r.ClientID + ":" + r.Role + " nested too deep"}
+		}
+		for _, child := range m.composites[roleKey(r)] {
+			if got := check(child, depth+1); got.Protected {
+				got.Reason = "composite " + r.ClientID + ":" + r.Role + " holds " + got.Reason
+				return got
+			}
+		}
+		return Protection{}
+	}
+	for _, r := range m.groupRoles[g.ID] {
+		if got := check(r, 0); got.Protected {
+			return got, nil
+		}
+	}
+	return Protection{}, nil
+}
+
+// KeycloakAdminRole is a realm-management role the Group groupID maps,
+// directly or inside a composite, "" for none (KeycloakAdminGroups).
+func (m *Memory) KeycloakAdminRole(_ context.Context, groupID string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("KeycloakAdminRole")
+	g, ok := m.groups[groupID]
+	if !ok {
+		return "", ErrNotFound
+	}
+	seen := map[string]bool{}
+	var find func(r ClientRole) string
+	find = func(r ClientRole) string {
+		if r.ClientID == KeycloakAdminClient {
+			return r.Role
+		}
+		if seen[roleKey(r)] {
+			return ""
+		}
+		seen[roleKey(r)] = true
+		for _, child := range m.composites[roleKey(r)] {
+			if got := find(child); got != "" {
+				return got
+			}
+		}
+		return ""
+	}
+	for _, r := range m.groupRoles[g.ID] {
+		if got := find(r); got != "" {
+			return got, nil
+		}
+	}
+	return "", nil
+}
+
+// RoleHoldsKeycloakAdmin is the realm-management role role is or holds
+// as a composite, "" for none; a realm role inside counts as one
+// (KeycloakAdminGroups).
+func (m *Memory) RoleHoldsKeycloakAdmin(_ context.Context, role ClientRole) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("RoleHoldsKeycloakAdmin")
+	seen := map[string]bool{}
+	var find func(r ClientRole) string
+	find = func(r ClientRole) string {
+		switch {
+		case r.ClientID == KeycloakAdminClient:
+			return r.Role
+		case seen[roleKey(r)]:
+			return ""
+		}
+		seen[roleKey(r)] = true
+		for _, child := range m.composites[roleKey(r)] {
+			if child.ClientID == "" {
+				return "realm role " + child.Role
+			}
+			if got := find(child); got != "" {
+				return got
+			}
+		}
+		return ""
+	}
+	return find(role), nil
 }
 
 func (m *Memory) GroupClientRoles(_ context.Context, groupID string) ([]ClientRole, error) {

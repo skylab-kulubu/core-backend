@@ -60,7 +60,15 @@ func (s *service) Sync(ctx context.Context, p authz.Principal, eventID uuid.UUID
 		}
 		return Result{}, err
 	}
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+	// A sync writes: it creates the Event's SkyMail list and puts the
+	// applicants' names and addresses on it. Reading the applicants is not
+	// enough (a Privileged reader such as DK reads them, grup-yonetimi
+	// GY1); the caller must also operate the Event: update it or assign its
+	// Tickets, as for a guest application (review of #244, A1).
+	owner := ev.OwnerTeam
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: owner}, authz.Read) ||
+		!(s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: owner}, authz.Update) ||
+			s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: owner}, authz.Assign)) {
 		return Result{}, ErrForbidden
 	}
 	rows, err := s.tickets.ListByEvent(ctx, eventID)

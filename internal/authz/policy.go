@@ -14,6 +14,11 @@ const (
 	Issue    Action = "ISSUE"
 	Revoke   Action = "REVOKE"
 	Assign   Action = "ASSIGN"
+	// ReadFull is reading a record whole, beyond what a limited reader
+	// sees: a User's full card (profile, Groups, roles) and every Team's
+	// members on the dashboard. Privileged readers (DK, global:read) and
+	// users:manage holders; users:read alone reads the limited card.
+	ReadFull Action = "READ_FULL"
 )
 
 type Type string
@@ -28,6 +33,7 @@ const (
 	TypeEventDay            Type = "EVENT_DAY"
 	TypeSession             Type = "SESSION"
 	TypeCompetitor          Type = "COMPETITOR"
+	TypeCompetition         Type = "COMPETITION"
 	TypeMedia               Type = "MEDIA"
 	TypeURL                 Type = "URL"
 	TypeFormLink            Type = "FORM_LINK"
@@ -42,6 +48,11 @@ const (
 	// TypeGithubActivity is the club's GitHub organisation activity on the
 	// admin dashboard, private repositories' totals included.
 	TypeGithubActivity Type = "GITHUB_ACTIVITY"
+	// TypeFormResponse is an answer to a Skyforms form that the forms
+	// service reports, so that core writes the Ticket it earns.
+	TypeFormResponse Type = "FORM_RESPONSE"
+	// TypeTeamAudit is the Team audit record (docs/team-audit.md).
+	TypeTeamAudit Type = "TEAM_AUDIT"
 )
 
 type Level string
@@ -84,21 +95,35 @@ type Resource struct {
 }
 
 type Policy struct {
-	// PrivilegedGroups are the Groups whose members, and their subgroups'
-	// members, are Privileged. RoleMode says whether a decision still reads
-	// them.
-	PrivilegedGroups []string
+	// PrivilegedRoots are the Group paths whose members, and their
+	// subgroups' members, are Privileged (AUTHZ_PRIVILEGED_ROOTS). The match
+	// is anchored at these paths: a Group named ADMIN, YK or DK elsewhere in
+	// the tree is not Privileged. RoleMode says whether a decision still
+	// reads them.
+	PrivilegedRoots []string
+	// PrivilegedReaderRoots are the Privileged roots whose members only
+	// read (AUTHZ_PRIVILEGED_READER_ROOTS, grup-yonetimi GY1): each one of
+	// PrivilegedRoots. Their members stay Privileged for everything that
+	// names a Privileged Group (Protected group, role mail, reserved
+	// names), but the Privileged shortcut allows them only reads (Read,
+	// List, ReadFull). DK by default.
+	PrivilegedReaderRoots []string
 	// RoleMode is where Privileged decisions come from: the Groups, the
 	// roles that stand for them (roles.go), or either. Empty is groups.
-	RoleMode         RoleMode
-	LeaderSubgroups  []string
+	RoleMode        RoleMode
+	LeaderSubgroups []string
+	// TeamDelegation is whether Leaders manage their Teams through core
+	// (TEAM_DELEGATION, team_delegation.go). Off, only Privileged manages
+	// Groups, as before.
+	TeamDelegation   bool
 	EventPermissions map[string]map[Action][]Level
 }
 
 func DefaultPolicy() Policy {
 	return Policy{
-		PrivilegedGroups: []string{"ADMIN", "YK", "DK"},
-		LeaderSubgroups:  []string{"LIDERLER", "KOORDINATORLER"},
+		PrivilegedRoots:       DefaultPrivilegedRoots(),
+		PrivilegedReaderRoots: DefaultPrivilegedReaderRoots(),
+		LeaderSubgroups:       []string{"LIDERLER", "KOORDINATORLER"},
 		EventPermissions: map[string]map[Action][]Level{
 			"_default": {
 				Create: {LevelLeader},

@@ -445,19 +445,19 @@ func TestService_HolderFromTokenOrUIDWithoutStaffGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fromToken, err := svc.HolderFrom(context.Background(), tok.Value, "")
+	fromToken, err := svc.HolderFrom(context.Background(), authz.Principal{}, tok.Value, "")
 	if err != nil || fromToken.ID != id {
 		t.Fatalf("token %v %+v", err, fromToken)
 	}
-	fromUID, err := svc.HolderFrom(context.Background(), "", "04aa:bb:cc:dd")
+	fromUID, err := svc.HolderFrom(context.Background(), authz.Principal{}, "", "04aa:bb:cc:dd")
 	if err != nil || fromUID.ID != id {
 		t.Fatalf("uid %v %+v", err, fromUID)
 	}
-	if _, err := svc.HolderFrom(context.Background(), "", ""); !errors.Is(err, ErrInvalid) {
+	if _, err := svc.HolderFrom(context.Background(), authz.Principal{}, "", ""); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("empty %v", err)
 	}
 	plain := "SKYPASS:SKY-1:Ada Lovelace"
-	if _, err := svc.HolderFrom(context.Background(), plain, ""); !errors.Is(err, ErrInvalid) {
+	if _, err := svc.HolderFrom(context.Background(), authz.Principal{}, plain, ""); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("plaintext %v", err)
 	}
 }

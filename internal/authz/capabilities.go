@@ -60,6 +60,7 @@ var teamAbilities = []ability{
 	{"competitor.create", Resource{Type: TypeCompetitor}, Create},
 	{"competitor.update", Resource{Type: TypeCompetitor}, Update},
 	{"competitor.delete", Resource{Type: TypeCompetitor}, Delete},
+	{"competition.manage", Resource{Type: TypeCompetition}, Update},
 	{"certificate.read", Resource{Type: TypeCertificate}, Read},
 	{"certificate.issue", Resource{Type: TypeCertificate}, Issue},
 	{"certificate.revoke", Resource{Type: TypeCertificate}, Revoke},
@@ -75,6 +76,7 @@ var appAbilities = []ability{
 	{"group.read", Resource{Type: TypeGroup}, Read},
 	{"group.write", Resource{Type: TypeGroup}, Update},
 	{"user.read", Resource{Type: TypeUser}, Read},
+	{"user.readFull", Resource{Type: TypeUser}, ReadFull},
 	{"user.write", Resource{Type: TypeUser}, Update},
 	{"user.create", Resource{Type: TypeUser}, Create},
 	{"user.delete", Resource{Type: TypeUser}, Delete},
@@ -86,9 +88,16 @@ var appAbilities = []ability{
 	{"url.create", Resource{Type: TypeURL}, Create},
 	{"url.listMine", Resource{Type: TypeURL}, ReadMe},
 	{"url.moderate", Resource{Type: TypeURL}, Read},
+	// Update on someone else's link: the decision core makes when the
+	// caller edits or deletes (disables, restores) a link they did not
+	// create, which allowURL answers alike for Update and Delete. A
+	// Privileged reader (DK) reads everyone's links (url.moderate) but
+	// changes none (grup-yonetimi 08).
+	{"url.moderateWrite", Resource{Type: TypeURL, OwnerID: otherOwner}, Update},
 	{"formLink.read", Resource{Type: TypeFormLink}, Read},
 	{"formLink.write", Resource{Type: TypeFormLink}, Update},
 	{"githubActivity.read", Resource{Type: TypeGithubActivity}, Read},
+	{"audit.read", Resource{Type: TypeTeamAudit}, Read},
 }
 
 // TeamAbilities are the keys of every team scope's Can, in order.
@@ -108,6 +117,10 @@ func abilityKeys(list []ability) []string {
 // otherTeam is an Owner team name no Group path can hold: a path segment
 // never contains a NUL.
 const otherTeam = "\x00other"
+
+// otherOwner is a short link's creator that is never the caller: a user ID
+// never contains a NUL.
+const otherOwner = "\x00other"
 
 func (a *authorizer) Capabilities(p Principal) Capabilities {
 	// The same decisions without the disagreement count: one answer checks

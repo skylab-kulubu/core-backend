@@ -1,6 +1,7 @@
 package shorturl
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -94,6 +95,58 @@ func TestChannelCodeIsTheSuffixOfAKnownSource(t *testing.T) {
 	} {
 		if got := ChannelCode(source); got != want {
 			t.Errorf("%q: %q, want %q", source, got, want)
+		}
+	}
+}
+
+// A year-old click keeps its channel only when it is one the statistics
+// know (the retention sweep's url_hits_scrub, v3): the channels core and
+// Forms tag links with, under any of the spellings Forms reads as the same
+// channel. Anything else the visitor or the link's author typed (an
+// address, a student number, a name) becomes "other".
+func TestKeptChannelKeepsKnownChannelsAndCallsTheRestOther(t *testing.T) {
+	t.Parallel()
+	for raw, want := range map[string]string{
+		"instagram": "instagram", " Instagram ": "instagram", "IG": "instagram", "insta": "instagram",
+		"wa": "whatsapp", "in": "linkedin", "yt": "youtube", "mail": "email", "E-Posta": "email",
+		"twitter": "x", "web": "website", "qr": "qr", "other": "other", "": "",
+		"ada@example.com": "other", "21011042": "other", "Ada Lovelace": "other", "discord": "other",
+	} {
+		if got := KeptSource(raw); got != want {
+			t.Errorf("source %q: %q, want %q", raw, got, want)
+		}
+	}
+	for raw, want := range map[string]string{
+		"qr": "qr", "QR": "qr", MediumReferral: "referral", "social": "social", "messaging": "messaging",
+		"email": "email", "print": "print", "other": "other", "": "", "ada@example.com": "other", "cpc": "other",
+	} {
+		if got := KeptMedium(raw); got != want {
+			t.Errorf("medium %q: %q, want %q", raw, got, want)
+		}
+	}
+	// What core itself writes is known, so a click core tagged keeps its tag.
+	for _, source := range channelSources {
+		if KeptSource(source) != source {
+			t.Errorf("channel source %q is not known", source)
+		}
+	}
+	for _, source := range []string{InferSource("Instagram 300", ""), InferSource("LinkedInApp", ""), InferSource("", "https://youtu.be/x")} {
+		if KeptSource(source) != source {
+			t.Errorf("inferred source %q is not known", source)
+		}
+	}
+	// The lists are SQL literals in the sweep and its index: plain lower-case
+	// words, each channel its own fixed point, so a kept click is never
+	// changed again.
+	word := regexp.MustCompile(`^[a-z0-9-]+$`)
+	for _, known := range []map[string]string{KnownSources, KnownMediums} {
+		for spelling, channel := range known {
+			if !word.MatchString(spelling) || known[channel] != channel {
+				t.Errorf("%q → %q", spelling, channel)
+			}
+		}
+		if known[OtherChannel] != OtherChannel {
+			t.Errorf("%q is not its own channel", OtherChannel)
 		}
 	}
 }

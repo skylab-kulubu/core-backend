@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -1198,6 +1199,164 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		SELECT 1 FROM pg_proc
 		WHERE proname = 'require_current_certificate_layout_media'
 		  AND prosrc LIKE '%old_manifest%'`,
+	// url_hits_scrub v3's click index, as 20261005140000's: present, valid,
+	// partial, on url_hits(at), and its predicate names utm_source.
+	20261007120000: `
+		SELECT 1 FROM pg_index i
+		WHERE i.indexrelid = to_regclass('public.url_hits_personal_at_v3_idx')
+		  AND i.indrelid = to_regclass('public.url_hits')
+		  AND i.indisvalid AND i.indpred IS NOT NULL
+		  AND pg_get_indexdef(i.indexrelid) LIKE 'CREATE INDEX url_hits_personal_at_v3_idx ON public.url_hits USING btree (at) WHERE %utm_source%'`,
+	// v2's click index is gone.
+	20261007120100: `SELECT 1 WHERE to_regclass('public.url_hits_personal_at_idx') IS NULL`,
+	// SkyPass Google Wallet passes: the table, its one-active-pass index and
+	// its account reference guard.
+	20261008120000: `
+		SELECT 1
+		WHERE to_regclass('public.skypass_google_wallet_passes') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'skypass_google_wallet_passes' AND column_name = 'last_counter'
+		)
+		AND to_regclass('public.skypass_google_wallet_passes_active_user_idx') IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.skypass_google_wallet_passes')
+			  AND tgname = 'skypass_google_wallet_passes_require_active_subject'
+		)`,
+	// The account erasure step that withdraws a person's Wallet passes.
+	20261008120100: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.account_deletion_steps')
+		  AND conname = 'account_deletion_steps_step_check'
+		  AND pg_get_constraintdef(oid) LIKE '%''erase_skypass_wallet''%'`,
+	// The team membership mail queue, its claim fence and its indexes.
+	20261009120000: `
+		SELECT 1
+		WHERE to_regclass('public.team_membership_mails') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'team_membership_mails' AND column_name = 'claimed_at'
+		  )
+		  AND to_regclass('public.team_membership_mails_due_idx') IS NOT NULL
+		  AND to_regclass('public.team_membership_mails_change_idx') IS NOT NULL
+		  AND to_regclass('public.team_membership_mails_actor_idx') IS NOT NULL`,
+	// The retired Team codes.
+	20261012120000: `SELECT 1 WHERE to_regclass('public.retired_team_codes') IS NOT NULL`,
+	// The Team audit record, its indexes and its finish-only trigger.
+	20261012121000: `
+		SELECT 1
+		WHERE to_regclass('public.team_audit_records') IS NOT NULL
+		  AND to_regclass('public.team_audit_records_group_idx') IS NOT NULL
+		  AND to_regclass('public.team_audit_records_actor_idx') IS NOT NULL
+		  AND to_regclass('public.team_audit_records_target_idx') IS NOT NULL
+		  AND to_regclass('public.team_audit_records_occurred_idx') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.team_audit_records')
+			  AND tgname = 'team_audit_records_finish_only'
+		  )`,
+	// The Event status (ADR 0066): its columns, its check, its index and the
+	// guards of its two actor columns.
+	20261012130000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*)
+			FROM (VALUES
+				('status'), ('published_at'), ('published_by'), ('cancelled_at'),
+				('cancelled_by'), ('cancel_reason'), ('copied_from_event_id')
+			) AS expected(column_name)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public'
+			 AND actual.table_name = 'events'
+			 AND actual.column_name = expected.column_name
+		) = 7
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events')
+			  AND conname = 'events_status_check'
+			  AND pg_get_constraintdef(oid) LIKE '%draft%published%cancelled%'
+		)
+		AND to_regclass('public.events_current_status_idx') IS NOT NULL
+		AND (
+			SELECT count(*) FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.events')
+			  AND tgname IN ('events_require_active_publisher', 'events_require_active_canceller')
+			  AND NOT tgisinternal
+		) = 2`,
+	// Competitions, their Stages, Entrants and append-only ledger
+	// (ADR-0068), with the ledger's triggers and its live-score index.
+	20261012140000: `
+		SELECT 1
+		WHERE to_regclass('public.competitions') IS NOT NULL
+		  AND to_regclass('public.competition_stages') IS NOT NULL
+		  AND to_regclass('public.competition_entrants') IS NOT NULL
+		  AND to_regclass('public.competition_entrant_members') IS NOT NULL
+		  AND to_regclass('public.competition_submissions') IS NOT NULL
+		  AND to_regclass('public.competition_adjustments') IS NOT NULL
+		  AND to_regclass('public.competition_submissions_live_manual_idx') IS NOT NULL
+		  AND (
+			SELECT count(*) FROM pg_trigger
+			WHERE NOT tgisinternal AND tgname IN (
+				'competition_entrant_members_same_event',
+				'competitions_event_is_fixed',
+				'competition_submissions_append_only',
+				'competition_adjustments_append_only',
+				'competitions_require_active_creator',
+				'competitions_require_active_archiver',
+				'competition_entrants_require_active_creator',
+				'competition_submissions_require_active_recorder',
+				'competition_submissions_require_active_revoker',
+				'competition_adjustments_require_active_recorder',
+				'competition_adjustments_require_active_revoker'
+			)
+		  ) = 11`,
+	// A denied row may carry no basis.
+	20261012150000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.team_audit_records')
+		  AND conname = 'team_audit_records_actor_basis_check'
+		  AND pg_get_constraintdef(oid) LIKE '%''none''%'`,
+	// Communication preferences: the table with its channel, its key (the
+	// channel in it), its Group index and its guard against an erased
+	// subject.
+	20261012180000: `
+		SELECT 1
+		WHERE to_regclass('public.communication_preferences') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.communication_preferences')
+			  AND conname = 'communication_preferences_channel_check'
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.communication_preferences')
+			  AND conname = 'communication_preferences_key'
+			  AND pg_get_constraintdef(oid) LIKE '%(user_id, channel, scope, group_id, news_kind)%'
+		  )
+		  AND to_regclass('public.communication_preferences_group_idx') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.communication_preferences')
+			  AND tgname = 'communication_preferences_require_active_subject'
+		  )`,
+	// The account erasure step that deletes a person's announcement
+	// preferences.
+	20261012180100: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.account_deletion_steps')
+		  AND conname = 'account_deletion_steps_step_check'
+		  AND pg_get_constraintdef(oid) LIKE '%''erase_communication_preferences''%'`,
+	// The privilege notice queue and its indexes.
+	20261012190000: `
+		SELECT 1
+		WHERE to_regclass('public.privilege_notice_mails') IS NOT NULL
+		  AND to_regclass('public.privilege_notice_mails_due_idx') IS NOT NULL
+		  AND to_regclass('public.privilege_notice_mails_change_idx') IS NOT NULL
+		  AND to_regclass('public.privilege_notice_mails_recipient_idx') IS NOT NULL
+		  AND to_regclass('public.privilege_notice_mails_person_idx') IS NOT NULL
+		  AND to_regclass('public.privilege_notice_mails_subject_idx') IS NOT NULL
+		  AND to_regclass('public.privilege_notice_mails_actor_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
@@ -1208,10 +1367,69 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 // would keep; Apply drops it, concurrently too, before the build runs again.
 var concurrentIndexes = map[int64]string{
 	20261005140000: "url_hits_personal_at_idx",
+	20261007120000: "url_hits_personal_at_v3_idx",
 }
 
+// LockName names the advisory lock Apply holds while it migrates. Advisory
+// locks belong to the database, not to the login, so the replicas of a
+// release and the two rotating logins of core's role all wait on the same
+// one.
+const LockName = "core-backend migrations"
+
+// Apply brings the schema up to date. It runs on one connection that holds
+// the session advisory lock LockName from before it reads schema_migrations
+// until it ends, so replicas starting at the same time migrate one after the
+// other: the first applies, the next waits and then finds every version
+// recorded. Nothing else changes on the session (no SET ROLE, no RESET):
+// the migrations run as the login's own session role, as before. The
+// connection leaves the pool and is closed at the end, which releases the
+// lock whatever happened in between.
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, `
+	held, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("migrate: connection: %w", err)
+	}
+	conn := held.Hijack()
+	defer conn.Close(context.Background())
+	if err := lock(ctx, conn); err != nil {
+		return err
+	}
+	return apply(ctx, conn)
+}
+
+// lockRetry is how often a replica that found LockName taken tries again.
+const lockRetry = 500 * time.Millisecond
+
+// lock takes LockName, waiting for another replica's migrations when it is
+// taken. It waits by trying again (pg_try_advisory_lock), never inside
+// pg_advisory_lock: a session blocked there is a transaction still open,
+// and a CREATE INDEX CONCURRENTLY of the replica holding the lock waits for
+// every open transaction to end, so the two would wait on each other
+// (deadlock detected, SQLSTATE 40P01; TestTwoReplicasApplyAtOnce).
+func lock(ctx context.Context, conn *pgx.Conn) error {
+	waiting := false
+	for {
+		var got bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, LockName).Scan(&got); err != nil {
+			return fmt.Errorf("migrate: lock: %w", err)
+		}
+		if got {
+			return nil
+		}
+		if !waiting {
+			log.Printf("migrate: waiting for another replica's migrations")
+			waiting = true
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("migrate: lock: %w", ctx.Err())
+		case <-time.After(lockRetry):
+		}
+	}
+}
+
+func apply(ctx context.Context, conn *pgx.Conn) error {
+	if _, err := conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version BIGINT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1223,7 +1441,7 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 	if err != nil {
 		return err
 	}
-	applied, err := loadApplied(ctx, pool)
+	applied, err := loadApplied(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -1232,12 +1450,12 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 		if applied[f.version] {
 			continue
 		}
-		present, err := alreadyPresent(ctx, pool, f.version)
+		present, err := alreadyPresent(ctx, conn, f.version)
 		if err != nil {
 			return fmt.Errorf("fingerprint %d: %w", f.version, err)
 		}
 		if present {
-			if err := record(ctx, pool, f.version); err != nil {
+			if err := record(ctx, conn, f.version); err != nil {
 				return err
 			}
 			log.Printf("migrate: recorded existing %d", f.version)
@@ -1248,15 +1466,15 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 			return err
 		}
 		if index, ok := concurrentIndexes[f.version]; ok {
-			if err := dropInvalidIndex(ctx, pool, index); err != nil {
+			if err := dropInvalidIndex(ctx, conn, index); err != nil {
 				return fmt.Errorf("migration %d: %w", f.version, err)
 			}
 		}
-		if err := execSQL(ctx, pool, string(body)); err != nil {
+		if err := execSQL(ctx, conn, string(body)); err != nil {
 			return fmt.Errorf("migration %d: %w", f.version, err)
 		}
 		if _, hasFingerprint := fingerprints[f.version]; hasFingerprint {
-			present, err := alreadyPresent(ctx, pool, f.version)
+			present, err := alreadyPresent(ctx, conn, f.version)
 			if err != nil {
 				return fmt.Errorf("migration %d postcondition: %w", f.version, err)
 			}
@@ -1264,7 +1482,7 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 				return fmt.Errorf("migration %d postcondition: schema fingerprint is incomplete", f.version)
 			}
 		}
-		if err := record(ctx, pool, f.version); err != nil {
+		if err := record(ctx, conn, f.version); err != nil {
 			return err
 		}
 		log.Printf("migrate: applied %d", f.version)
@@ -1313,8 +1531,8 @@ func listUp() ([]file, error) {
 	return out, nil
 }
 
-func loadApplied(ctx context.Context, pool *pgxpool.Pool) (map[int64]bool, error) {
-	rows, err := pool.Query(ctx, `SELECT version FROM schema_migrations`)
+func loadApplied(ctx context.Context, conn *pgx.Conn) (map[int64]bool, error) {
+	rows, err := conn.Query(ctx, `SELECT version FROM schema_migrations`)
 	if err != nil {
 		return nil, err
 	}
@@ -1330,13 +1548,13 @@ func loadApplied(ctx context.Context, pool *pgxpool.Pool) (map[int64]bool, error
 	return out, rows.Err()
 }
 
-func alreadyPresent(ctx context.Context, pool *pgxpool.Pool, version int64) (bool, error) {
+func alreadyPresent(ctx context.Context, conn *pgx.Conn, version int64) (bool, error) {
 	q, ok := fingerprints[version]
 	if !ok {
 		return false, nil
 	}
 	var n int
-	err := pool.QueryRow(ctx, q).Scan(&n)
+	err := conn.QueryRow(ctx, q).Scan(&n)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -1348,9 +1566,9 @@ func alreadyPresent(ctx context.Context, pool *pgxpool.Pool, version int64) (boo
 
 // dropInvalidIndex drops index when it exists and is invalid: the remains of
 // a concurrent build that stopped.
-func dropInvalidIndex(ctx context.Context, pool *pgxpool.Pool, index string) error {
+func dropInvalidIndex(ctx context.Context, conn *pgx.Conn, index string) error {
 	var invalid bool
-	if err := pool.QueryRow(ctx, `
+	if err := conn.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM pg_index WHERE indexrelid = to_regclass('public.' || $1::text) AND NOT indisvalid)`, index).Scan(&invalid); err != nil {
 		return err
 	}
@@ -1358,24 +1576,22 @@ func dropInvalidIndex(ctx context.Context, pool *pgxpool.Pool, index string) err
 		return nil
 	}
 	log.Printf("migrate: dropping the invalid index %s a stopped build left", index)
-	return execSQL(ctx, pool, `DROP INDEX CONCURRENTLY IF EXISTS public.`+pgx.Identifier{index}.Sanitize())
+	return execSQL(ctx, conn, `DROP INDEX CONCURRENTLY IF EXISTS public.`+pgx.Identifier{index}.Sanitize())
 }
 
-func record(ctx context.Context, pool *pgxpool.Pool, version int64) error {
-	_, err := pool.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, version)
+func record(ctx context.Context, conn *pgx.Conn, version int64) error {
+	_, err := conn.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, version)
 	return err
 }
 
-func execSQL(ctx context.Context, pool *pgxpool.Pool, sql string) error {
+// execSQL runs sql, which may be several statements, with the simple
+// protocol: a file of several statements runs as one implicit transaction,
+// and a single CREATE INDEX CONCURRENTLY outside any.
+func execSQL(ctx context.Context, conn *pgx.Conn, sql string) error {
 	sql = strings.TrimSpace(sql)
 	if sql == "" {
 		return nil
 	}
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Release()
-	_, err = conn.Conn().PgConn().Exec(ctx, sql).ReadAll()
+	_, err := conn.PgConn().Exec(ctx, sql).ReadAll()
 	return err
 }

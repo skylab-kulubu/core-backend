@@ -313,8 +313,8 @@ The initial entries:
 | `certificate_asset` | certificate_template_editor | PNG, JPEG, PDF | 20 MiB | private | single-step | core |
 | `cms_image` | authenticated | JPEG, PNG, WebP, GIF, SVG | 10 MiB | public | single-step | cms (no service client yet) |
 | `cms_file` | authenticated | PDF | 20 MiB | public | single-step | cms (no service client yet) |
-| `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 20 MiB | private, scanned | single-step | forms |
-| `answer_file_guest` | service_only (Skyforms' service account) | PDF, JPEG, PNG | 10 MiB | private, scanned | single-step | forms |
+| `answer_file` | authenticated | PDF, JPEG, PNG, DOCX | 50 MiB | private, scanned | single-step | forms |
+| `answer_file_guest` | service_only (Skyforms' service account) | PDF, JPEG, PNG | 50 MiB | private, scanned | single-step | forms |
 | `club_file` | event_editor | PDF, ZIP (download only) | 1 GiB | public, scanned | direct | core (an Event's files) |
 | `answer_file_large` | service_only | ZIP, PDF | 1 GiB | private, scanned | direct | forms |
 | `video` | event_editor | MP4 | 2 GiB | public | direct | core (an Event's videos) |
@@ -387,8 +387,9 @@ Core refuses to start with a catalogue that breaks one:
   its name. In code, an SVG is stored only for
   a purpose that lists it, only sanitized, under a key ending in `.svg`, and
   is always served as a download (`Content-Disposition: attachment`);
-- the maximum size stays under 20 MiB for single-step uploads and 2 GiB for
-  Direct upload;
+- the maximum size stays within 50 MiB for single-step uploads
+  (`MaxUploadBytes`, the Answer files' maximum since 2026-10-07) and 2 GiB
+  for Direct upload;
 - the declared image size stays within 2560 px (`image.max_dimension`,
   `image.sizes`), and re-encoding scales a larger image down to it;
 - a private purpose is encrypted, and one that accepts raster images declares
@@ -452,10 +453,19 @@ over their upload budget gets `429` `media_rate_limited`, described under
 | 413 | `media_too_large` | `purpose`, `maxBytes` | Above the purpose's maximum; an SVG above 1 MiB (`maxBytes` is then 1 MiB). |
 | 413 | `media_image_too_large` | `purpose`, `maxPixels` | Decoding the image would take more than core allows, judged from its header before anything is decoded (see [Decode cost](#decode-cost)). `maxPixels` is the most pixels an image of its kind may have: 50 000 000, fewer for costly pixels (16-bit PNG, progressive JPEG, an animation's many frames). An animated GIF or WebP larger than 2560 px on a side is refused this way too. |
 | 415 | `media_type_not_allowed` | `purpose`, `allowedTypes` | The content is not one of the purpose's types, or starts like one but does not decode or check as it: a broken image, a WebP whose frame is not its canvas, an animated WebP whose structure does not check, a GIF with more than 300 frames or a frame outside its screen, a JPEG with more than 64 scans, an SVG core does not sanitize. |
-| 503 | `media_busy` | `retryAfterSeconds`, `Retry-After` header | The upload waited 10 seconds for a [decoding slot](#decode-budget) while other images were decoded. Nothing is stored and the upload is not charged to the upload budget; retry it. |
+| 503 | `media_busy` | `retryAfterSeconds`, `Retry-After` header | The upload waited its whole wait (10 seconds by default, `MEDIA_DECODE_WAIT`) for a [decoding slot](#decode-budget) while other images were decoded. Nothing is stored and the upload is not charged to the upload budget; retry it. |
 
-A body above the server's limit (20 MiB plus room for the form) is still
-refused by the HTTP server with a bare `413` before any purpose is read.
+A body above the server's limit (50 MiB plus 1 MiB of room for the form) is
+still refused by the HTTP server with a bare `413` before any purpose is
+read.
+
+Core holds a single-step upload in memory whole while it stores it: the
+body the HTTP server read, the form parsed from it, the file read from the
+form and, for a private purpose, its encrypted copy. A 50 MiB Answer file
+takes about 200 MiB for the seconds it is stored; a PDF or DOCX takes no
+[decoding slot](#decode-budget), so only the [upload limits](#upload-limits)
+bound how many are stored at once. Production runs core without a memory
+limit on a 15 GiB host.
 
 ### Upload limits
 
@@ -952,31 +962,58 @@ estimate is above 256 MiB:
 
 Everything that decodes an image shares one budget per core process
 (`media.DecodeBudget`, made at startup and handed to each): uploads for a
-purpose, SVG sanitizing, cover colours, the cover colour backfill and the
-size backfill. At most **2** images are decoded at once, and at most **1** SVG
-is sanitized (it also takes one of the 2).
+purpose, SVG sanitizing, cover colours, the cover colour backfill, the size
+backfill and video frames. At most **2** images are decoded at once
+(`MEDIA_DECODE_SLOTS`, 1 to 8), and at most **1** SVG is sanitized (it also
+takes one of the shared slots). The startup log names the budget
+(`media decode budget: 2 images at once, …`).
 
-- An upload for a purpose waits at most 10 seconds for a slot, then answers
-  `503 media_busy` with `Retry-After: 5`; nothing is stored, and the 5xx is
-  given back to the person's upload budget.
+- An upload for a purpose waits at most 10 seconds for a slot
+  (`MEDIA_DECODE_WAIT`, up to `1m`), then answers `503 media_busy` with
+  `Retry-After: 5`; nothing is stored, and the 5xx is given back to the
+  person's upload budget. (A caller that hangs up keeps waiting: the
+  request's context ends only when core shuts down.)
 - Cover colours of an image uploaded without a purpose take a slot only when
   one is free; otherwise the image is stored without them and the cover
   colour backfill picks them later. Such an upload never waits and never
   fails for the budget.
-- The backfills wait like an upload; a wait that runs out leaves the image
-  for the next pass.
+- The backfills and video frames wait like an upload; a wait that runs out
+  leaves the image for the next pass.
 - A slot is given back however the decode ends, a panic included. A cover
   colour pick that panics picks none, and the backfill goes on.
 
-**Worst case on the production host** (15 GiB, no swap), per slot: the decoded
-image at most 256 MiB by the estimate; the upload body and its copies up to
-about 60 MiB (20 MiB, held by the HTTP server, the form and the service);
-the scaling buffers at most 128 MiB plus the 26 MiB result and its upright
-copy (26 MiB); the encoded image and its sizes under 40 MiB. About 540 MiB
-live per slot, 1.1 GiB for both. Sanitizing an SVG (at most 1 MiB, 10 000
-elements) takes a few tens of MiB at most. Go's collector lets the heap grow to
-about twice what is live before collecting (`GOGC=100`), so allow ~2.5 GiB
-for image work at its peak.
+A count, not a weight by each image's decode estimate: the estimate
+(`decodeCost`) counts the decoder's buffers, but scaling works in RGBA (4
+bytes a pixel) whatever the source, so a 4:2:0 JPEG (1.5 bytes a pixel to
+decode) needs more than twice its estimate. A budget by estimate would let
+several such photos through where the count bounds them, and would need a
+model of the whole pipeline to be honest.
+
+**Metrics** (`/v1/metrics`, internal only):
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `skylab_media_decode_slots` | gauge | the budget's shared slots |
+| `skylab_media_decode_slots_in_use` | gauge | slots held now |
+| `skylab_media_decode_waiting` | gauge | requests waiting for a slot now |
+| `skylab_media_decode_requests_total{outcome}` | counter | `immediate` (a slot was free), `waited` (got one after waiting), `busy` (waited the whole wait: `media_busy` or a skipped backfill item), `cancelled` (the work's context ended while waiting: a worker at shutdown), `skipped` (cover colours that did not wait) |
+| `skylab_media_decode_wait_seconds_total` | counter | time spent waiting, all requests |
+
+Saturation shows as `waiting` above 0 and `waited`/`busy` growing; the
+average wait is the rise of `wait_seconds_total` over the rise of
+`waited + busy + cancelled`. `busy` growing means people saw `media_busy`:
+raise `MEDIA_DECODE_SLOTS` only together with core's memory limit
+([memory-limit.md](memory-limit.md)).
+
+**Memory per slot** (measured and by the code's own bounds): the decoded
+image at most 256 MiB by the estimate; the scaling buffers at most 128 MiB
+plus the 26 MiB result and its upright copy (26 MiB); the encoded image and
+its sizes under 40 MiB: about **480 MiB** live at most. A 50 MP PNG measured
+191 MiB live and 320 MiB of Go memory with its garbage; a 48 MP JPEG less.
+Sanitizing an SVG (at most 1 MiB, 10 000 elements) takes a few tens of MiB.
+The upload's body is held whether or not it has a slot, so it is counted per
+request, not per slot: [memory-limit.md](memory-limit.md) has the whole
+worst case and the container limit it leads to.
 
 ### Sizes
 
@@ -2051,10 +2088,18 @@ OpenBao's answer (the mount and key when one is missing), never a token.
 ### Metadata
 
 `GET /v1/media/{id}` answers a private Media only to its owning product's
-service account (Skyforms for an Answer file) and to privileged admins, never
-with an address. Anyone else, anonymous or signed in, the uploader included,
-gets `404`. The admin list (`GET /v1/media`) shows private Media without an
-address.
+service account (Skyforms for an Answer file), to privileged admins, and to
+its uploader while it is `pending`, `scanning` or `rejected`, never with an
+address. The uploader so follows the malware scan of what they just uploaded
+(`status`, `scanResult`), as Skyforms' signed-in answer page does. Skyforms
+attaches an Answer file only once it is clean, so in practice this lasts until
+a record holds it; a Media attached while still scanning stays readable to its
+uploader until its scan ends (only their own upload's metadata). Attached or
+detached, the owning product decides and the uploader gets `404` too. The rule
+covers every private purpose a person uploads, so a certificate asset's
+uploader also reads it while it is `pending`. Anyone else, anonymous or signed
+in, gets `404`. The admin list (`GET /v1/media`) shows private Media without
+an address.
 
 ### Read links
 
@@ -2192,7 +2237,7 @@ account. Core then treats it as any private, scanned Answer file:
 - **Upload.** `POST /v1/media` (multipart, `purpose=answer_file_guest`)
   with Skyforms' service token: the configured `forms` client
   (`MEDIA_SERVICE_CLIENTS`), `aud` `core`, the `media:attach` role on the
-  `core` client. PDF, JPEG or PNG (judged by content), at most 10 MiB;
+  `core` client. PDF, JPEG or PNG (judged by content), at most 50 MiB;
   images are re-encoded within 2560 px, without their metadata. A person's
   token, whatever roles it carries, and another product's service account
   are refused with `403 purpose_forbidden`.
@@ -2220,8 +2265,10 @@ account. Core then treats it as any private, scanned Answer file:
 - **Budget.** Every guest upload is charged to the Skyforms service
   account's single-step budget, the services' budget
   ([Upload limits](#upload-limits): 1000 uploads per 10 minutes and 10 GiB
-  per day by default, shared by all guests). Skyforms keeps its own, finer
-  limits per session, IP and form.
+  per day by default, shared by all guests; at 50 MiB a file, 10 GiB is
+  about 200 files a day). `MEDIA_SERVICE_UPLOAD_DAILY_MAX_MIB` raises it,
+  for service accounts only. Skyforms keeps its own, finer limits per
+  session, IP and form.
 
 ### Refusals
 
@@ -2451,8 +2498,9 @@ The check runs in the scan worker, under the Media's scan claim, holding no
 database connection. A public held file is read by ranged GETs. A private
 file (an Answer file) is decrypted as it streams, into nothing but memory,
 never to disk; a ZIP is kept in memory to be checked, at most
-`MEDIA_ZIP_CHECK_BUFFER_MIB` (64 MiB), which an Answer file (20 MiB) always
-fits. The extra read of every file is the price of it, and the claim's
+`MEDIA_ZIP_CHECK_BUFFER_MIB` (64 MiB), which an Answer file (50 MiB) always
+fits. Set it no lower than 50: a private DOCX larger than the buffer is never
+scanned and is rejected as `scan_timeout` at its deadline. The extra read of every file is the price of it, and the claim's
 lease allows for it.
 
 A ZIP is checked so:
@@ -3586,6 +3634,11 @@ What happens to the records when the request completes is in
   default `10m`.
 - `MEDIA_SERVICE_UPLOAD_DAILY_MAX_MIB`: MiB of upload body per product service
   account per rolling 24 hours; default `10240`.
+- `MEDIA_DECODE_SLOTS` — images decoded at once, process-wide
+  ([Decode budget](#decode-budget)); `1` to `8`, default `2`. Raise it only
+  with core's memory limit ([memory-limit.md](memory-limit.md)).
+- `MEDIA_DECODE_WAIT` — Go duration a request waits for a decoding slot
+  before `503 media_busy`; at most `1m`, default `10s`.
 - `MEDIA_DIRECT_UPLOAD_MAX_OPEN` — [Direct uploads](#direct-upload-budget) a
   person may have open at once; default `3`.
 - `MEDIA_DIRECT_UPLOAD_DAILY_MAX_MIB` — MiB a person may declare in Direct
@@ -3677,7 +3730,8 @@ What happens to the records when the request completes is in
   past a member's first byte), and a private file it decrypts to check.
   Larger inner archives are refused as `archive_nested`; a larger private
   ZIP waits. The check holds at most one such buffer per nesting level
-  (three) at once.
+  (three) at once. Keep it at least `50`, an Answer file's maximum (a DOCX
+  is a ZIP).
 - `MEDIA_SERVICE_CLIENTS` — the products' service clients for the
   [service attach API](#service-attach-api), `product:client` pairs
   separated by commas (products `forms`, `cms`), or `none`; default

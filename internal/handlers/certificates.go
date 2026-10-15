@@ -29,7 +29,7 @@ func certError(c fiber.Ctx, err error) error {
 	case errors.Is(err, certificate.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
 	case errors.Is(err, certificate.ErrConflict):
-		return problem(c, fiber.StatusConflict, "Conflict")
+		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
 	case errors.Is(err, certificate.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	default:

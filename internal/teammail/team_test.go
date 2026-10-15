@@ -1,0 +1,101 @@
+package teammail
+
+import (
+	"testing"
+
+	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
+)
+
+func TestTeamOf(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		path     string
+		team     string
+		role     string
+		isTeamOK bool
+	}{
+		{path: "/UYELER/ARGE/WEBLAB", team: "/UYELER/ARGE/WEBLAB", isTeamOK: true},
+		{path: "/UYELER/ARGE/WEBLAB/LIDERLER", team: "/UYELER/ARGE/WEBLAB", role: "LIDERLER", isTeamOK: true},
+		{path: "/UYELER/ORGANIZASYON/ARTLAB/KOORDINATORLER", team: "/UYELER/ORGANIZASYON/ARTLAB", role: "KOORDINATORLER", isTeamOK: true},
+		{path: "/UYELER/ARGE/ALGOLAB/AGC", team: "/UYELER/ARGE/ALGOLAB/AGC", isTeamOK: true},
+		{path: "/UYELER/ARGE/ALGOLAB/AGC/LIDERLER", team: "/UYELER/ARGE/ALGOLAB/AGC", role: "LIDERLER", isTeamOK: true},
+		// Not a team: the club itself, an area, an area's own leaders.
+		{path: "/UYELER"},
+		{path: "/UYELER/ARGE"},
+		{path: "/UYELER/ARGE/LIDERLER"},
+		{path: "/UYELER/ESKI-EDITORLER"},
+		// Privileged roots and anything under them.
+		{path: "/ADMIN"},
+		{path: "/UYELER/ADMIN"},
+		{path: "/UYELER/YK"},
+		{path: "/UYELER/YK/BASKAN"},
+		{path: "/UYELER/YK/BASKAN/YARDIMCI"},
+		{path: "/UYELER/DK/LIDERLER"},
+		// The same names elsewhere are no Privileged root: plain teams.
+		{path: "/UYELER/ARGE/YK", team: "/UYELER/ARGE/YK", isTeamOK: true},
+		{path: "/UYELER/ARGE/WEBLAB/ADMIN", team: "/UYELER/ARGE/WEBLAB/ADMIN", isTeamOK: true},
+		{path: "/UYELER/ARGE/WEBLAB/ADMIN/LIDERLER", team: "/UYELER/ARGE/WEBLAB/ADMIN", role: "LIDERLER", isTeamOK: true},
+		{path: "/UYELER/YKX/WEBLAB", team: "/UYELER/YKX/WEBLAB", isTeamOK: true},
+		// Outside the members' tree, and malformed paths.
+		{path: "/SERVIS/ARGE/WEBLAB"},
+		{path: ""},
+		{path: "UYELER/ARGE/WEBLAB"},
+		{path: "/UYELER/ARGE/WEBLAB/LIDERLER/X"},
+		{path: "/UYELER//WEBLAB"},
+	} {
+		team, ok := TeamOf(tc.path, authz.DefaultPrivilegedRoots())
+		if ok != tc.isTeamOK || team.Path != tc.team || team.Role != tc.role {
+			t.Errorf("TeamOf(%q) = %+v, %v; want %q %q %v", tc.path, team, ok, tc.team, tc.role, tc.isTeamOK)
+		}
+	}
+}
+
+// The roots are the configured ones (AUTHZ_PRIVILEGED_ROOTS), and a
+// Service without them takes the six default roots.
+func TestTeamOfConfiguredRoots(t *testing.T) {
+	t.Parallel()
+	roots := []string{"/UYELER/ARGE/SKYSEC"}
+	if _, ok := TeamOf("/UYELER/ARGE/SKYSEC/RED", roots); ok {
+		t.Error("a Group under a configured root is a team")
+	}
+	if team, ok := TeamOf("/UYELER/YK/BASKAN", roots); !ok || team.Path != "/UYELER/YK/BASKAN" {
+		t.Errorf("TeamOf(/UYELER/YK/BASKAN) = %+v, %v with YK no root", team, ok)
+	}
+	queue := NewMemoryQueue()
+	svc, err := NewService(Config{Queue: queue, People: &fakePeople{}, Groups: fakeGroups{}, Mail: &fakeMail{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/UYELER/YK/BASKAN", "/UYELER/ARGE/YK"} {
+		svc.MembershipChanged(t.Context(), identity.MembershipChange{UserID: uuid.New(), Group: identity.Group{Path: path}, Added: true})
+	}
+	if q := queue.Snapshot(); len(q) != 2 || q[0].Kind != KindRole || q[1].Kind != KindTeam {
+		t.Errorf("the default Service does not read the six roots: %+v", q)
+	}
+}
+
+// Yusuf's decision (2026-10-09): the team is named "CODE · Turkish name",
+// the code being the team Group's name and the Turkish name its
+// display_name_tr, for the team and its leader subgroups alike (the role
+// travels in Role). Without a Turkish name, the code.
+func TestTeamName(t *testing.T) {
+	t.Parallel()
+	weblab := identity.Group{Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB", Attributes: map[string]string{"display_name_tr": " Web Geliştirme "}}
+	artlab := identity.Group{Name: "ARTLAB", Path: "/UYELER/ORGANIZASYON/ARTLAB"}
+	same := identity.Group{Name: "SKYSEC", Path: "/UYELER/ARGE/SKYSEC", Attributes: map[string]string{"display_name_tr": "SKYSEC"}}
+	for _, tc := range []struct {
+		group identity.Group
+		want  string
+	}{
+		{weblab, "WEBLAB · Web Geliştirme"},
+		{artlab, "ARTLAB"},
+		{same, "SKYSEC"},
+		{identity.Group{Path: "/UYELER/ARGE/GAMELAB"}, "GAMELAB"},
+	} {
+		if got := teamName(tc.group); got != tc.want {
+			t.Errorf("teamName(%v) = %q, want %q", tc.group, got, tc.want)
+		}
+	}
+}

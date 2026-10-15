@@ -242,20 +242,25 @@ func TestPrivateMediaReadLinkIsRefusedToPeopleHTTP(t *testing.T) {
 	}
 }
 
-func TestPrivateMediaMetadataIsNotFoundForAnonymousAndMembersHTTP(t *testing.T) {
+func TestPrivateMediaMetadataIsNotFoundForAnonymousAndOtherMembersHTTP(t *testing.T) {
 	t.Parallel()
 	h := newPrivateMediaHTTP(t)
 	file := h.uploadAnswerFile(t, "cv.pdf")
 
-	for name, ident := range map[string]authn.Identity{"anonymous": {}, "the uploader": respondentHTTP} {
+	member := authn.Identity{ID: uuid.MustParse("92929292-9292-9292-9292-929292929292")}
+	for name, ident := range map[string]authn.Identity{"anonymous": {}, "a member": member} {
 		resp, raw := do(t, h.app(t, ident), httptest.NewRequest(fiber.MethodGet, "/v1/media/"+file.ID.String(), nil))
 		if resp.StatusCode != fiber.StatusNotFound {
 			t.Errorf("%s: status %d body %s", name, resp.StatusCode, raw)
 		}
 	}
-	resp, raw := do(t, h.app(t, formsHTTP), httptest.NewRequest(fiber.MethodGet, "/v1/media/"+file.ID.String(), nil))
-	if resp.StatusCode != fiber.StatusOK || bytes.Contains(raw, []byte("private/")) {
-		t.Fatalf("Skyforms: status %d body %s", resp.StatusCode, raw)
+	// Skyforms, and the uploader while no record holds the file (to follow
+	// its scan): metadata, never an address.
+	for name, ident := range map[string]authn.Identity{"Skyforms": formsHTTP, "the uploader": respondentHTTP} {
+		resp, raw := do(t, h.app(t, ident), httptest.NewRequest(fiber.MethodGet, "/v1/media/"+file.ID.String(), nil))
+		if resp.StatusCode != fiber.StatusOK || bytes.Contains(raw, []byte("private/")) || !bytes.Contains(raw, []byte(`"url":""`)) {
+			t.Errorf("%s: status %d body %s", name, resp.StatusCode, raw)
+		}
 	}
 }
 

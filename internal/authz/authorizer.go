@@ -59,6 +59,8 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		return a.allowTicket(p, r, action)
 	case TypeCompetitor:
 		return a.allowCompetitor(p, r, action)
+	case TypeCompetition:
+		return a.allowCompetition(p, r, action)
 	case TypeMedia:
 		return a.allowMedia(p, r, action)
 	case TypeMediaAttachment:
@@ -78,7 +80,7 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		case Read:
 			// A privileged admin opens core's own private Media (a
 			// certificate asset in the template editor) for themselves.
-			return p.Product == "" && a.privileged(p, RoleMediaPrivateRead)
+			return p.Product == "" && a.privilegedRead(p, RoleMediaPrivateRead)
 		default:
 			return false
 		}
@@ -91,7 +93,20 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		if action != Read && action != Create && action != Update {
 			return false
 		}
-		return a.privilegedGroupOnly(p, RoleURLModerator) || hasRole(p, "url:forms", RoleURLModerator)
+		if action == Read && a.globalReader(p) {
+			return true
+		}
+		// A Privileged reader (DK) changes no form link, whatever roles
+		// its token carries (review of #244, A2).
+		if action != Read && a.readerOnly(p) {
+			return false
+		}
+		return a.privilegedGroupOnly(p, action == Read, RoleURLModerator) || hasRole(p, "url:forms", RoleURLModerator)
+	case TypeFormResponse:
+		// Only the forms service reports the answers to its forms, and a
+		// report writes Tickets: no person may send one, whatever roles they
+		// hold.
+		return action == Create && p.Product == ProductForms && hasRole(p, "ticket:forms")
 	case TypeCertificate:
 		return a.allowCertificate(p, r, action)
 	case TypeCertificateTemplate:
@@ -99,14 +114,26 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 	case TypeGithubActivity:
 		// Internal club data whose private repositories' totals are not
 		// public: privileged people only, never a product's service account.
-		return action == Read && p.Product == "" && a.privileged(p, RoleGithubActivityRead)
+		return action == Read && p.Product == "" && a.privilegedRead(p, RoleGithubActivityRead)
+	case TypeTeamAudit:
+		// The audit:read role alone, in every role mode: no Privileged
+		// Group stands for it, global:read neither, and no service account
+		// reads it. Keycloak maps it to ADMIN, YK and DK (grup-yonetimi
+		// GY1, which replaced S11's "not DK").
+		return action == Read && p.Product == "" && !p.ServiceAccount && hasRole(p, RoleAuditRead)
 	case TypeTeam:
 		return action == Read
 	case TypeGroup:
+		if action == Read || action == List {
+			return a.privilegedRead(p, RoleGroupsManage)
+		}
 		return a.privileged(p, RoleGroupsManage)
 	case TypeUser:
-		if action == Read && hasRole(p, "users:read") {
-			return true
+		switch action {
+		case Read:
+			return hasRole(p, "users:read") || a.privilegedRead(p, RoleUsersManage)
+		case ReadFull:
+			return a.privilegedRead(p, RoleUsersManage)
 		}
 		return a.privileged(p, RoleUsersManage)
 	default:
@@ -140,9 +167,13 @@ func (a *authorizer) allowEvent(p Principal, r Resource, action Action) bool {
 }
 
 func (a *authorizer) allowCompetitor(p Principal, r Resource, action Action) bool {
-	if a.privileged(p, RoleCompetitorManage) {
-		switch action {
-		case Read, ReadMe, Create, Update, Delete:
+	switch action {
+	case Read, ReadMe:
+		if a.privilegedRead(p, RoleCompetitorManage) {
+			return true
+		}
+	case Create, Update, Delete:
+		if a.privileged(p, RoleCompetitorManage) {
 			return true
 		}
 	}
@@ -178,6 +209,27 @@ func (a *authorizer) allowCompetitor(p Principal, r Resource, action Action) boo
 	}
 }
 
+// allowCompetition is the organizer of a Competition: competition:manage,
+// or a Leader of the Event's Owner team (spec §8). Membership of the team
+// alone manages nothing. An Event without an Owner team is Privileged only
+// (ADR-0018). Who the Leaders are is ownerLevels' answer, so the team
+// authority handover changes it for competitions with everything else.
+func (a *authorizer) allowCompetition(p Principal, r Resource, action Action) bool {
+	switch action {
+	case Read:
+		if a.privilegedRead(p, RoleCompetitionManage) {
+			return true
+		}
+	case Create, Update, Delete:
+		if a.privileged(p, RoleCompetitionManage) {
+			return true
+		}
+	default:
+		return false
+	}
+	return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
+}
+
 func (a *authorizer) isOwnerMember(p Principal, r Resource) bool {
 	return len(a.ownerLevels(p, r.OwnerTeam)) > 0
 }
@@ -187,7 +239,7 @@ func (a *authorizer) allowMedia(p Principal, r Resource, action Action) bool {
 	case Read:
 		return true
 	case List:
-		return a.privileged(p, RoleMediaManage)
+		return a.privilegedRead(p, RoleMediaManage)
 	case Upload:
 		if p.ID == "" {
 			return false
@@ -246,11 +298,15 @@ func (a *authorizer) forSomeOwnerTeam(p Principal, allow func(team string) bool)
 }
 
 // ownerTeamCandidates are the Owner teams p is a member or Leader of: the
-// names in p's group paths, leader subgroups aside, in path order.
+// names in p's group paths, leader subgroups aside, in path order. A path
+// under a Privileged root names no Owner team (ownerLevels).
 func (a *authorizer) ownerTeamCandidates(p Principal) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, group := range p.Groups {
+		if PrivilegedRoot(a.policy.PrivilegedRoots, group) != "" {
+			continue
+		}
 		for _, team := range strings.Split(strings.Trim(group, "/"), "/") {
 			if team == "" || seen[team] || slices.Contains(a.policy.LeaderSubgroups, team) {
 				continue
@@ -268,7 +324,7 @@ func (a *authorizer) allowTicket(p Principal, r Resource, action Action) bool {
 	case Create, ReadMe:
 		return authenticated
 	case Read:
-		if a.privileged(p, RoleTicketManage) {
+		if a.privilegedRead(p, RoleTicketManage) {
 			return true
 		}
 		if len(a.ownerLevels(p, r.OwnerTeam)) > 0 && hasRole(p, "certificate:issue") {
@@ -301,7 +357,7 @@ func (a *authorizer) allowCertificate(p Principal, r Resource, action Action) bo
 		return false
 	}
 	if action == Read {
-		if a.privileged(p, RoleCertificateManage) {
+		if a.privilegedRead(p, RoleCertificateManage) {
 			return true
 		}
 		if r.OwnerID != "" && r.OwnerID == p.ID {
@@ -333,11 +389,14 @@ func (a *authorizer) allowCertificate(p Principal, r Resource, action Action) bo
 }
 
 func (a *authorizer) allowCertificateTemplate(p Principal, r Resource, action Action) bool {
-	if a.privileged(p, RoleCertificateManage) {
+	if action == Read && a.privilegedRead(p, RoleCertificateManage) {
+		return true
+	}
+	if action != Read && a.privileged(p, RoleCertificateManage) {
 		return true
 	}
 	if r.OwnerTeam == "" {
-		return action == Read && (isAnyLeader(p) || (isAnyTeamMember(p) && hasRole(p, "certificate:template:manage", "certificate:binding:manage")))
+		return action == Read && (a.isAnyLeader(p) || (isAnyTeamMember(p) && hasRole(p, "certificate:template:manage", "certificate:binding:manage")))
 	}
 	levels := a.ownerLevels(p, r.OwnerTeam)
 	if len(levels) == 0 {
@@ -358,23 +417,37 @@ func (a *authorizer) allowCertificateTemplate(p Principal, r Resource, action Ac
 	}
 }
 
-func isAnyLeader(p Principal) bool {
+// isAnyLeader reports whether p is in some Leader group: a Group whose last
+// segment is one of the policy's leader subgroups, under a parent. The whole
+// segment counts: /UYELER/ARGE/WEBLAB/LIDERLER-ESKI is no Leader group.
+func (a *authorizer) isAnyLeader(p Principal) bool {
 	for _, group := range p.Groups {
-		upper := strings.ToUpper(group)
-		if strings.Contains(upper, "/LIDERLER") || strings.Contains(upper, "/KOORDINATORLER") {
+		segments := pathSegments(group)
+		if len(segments) >= 2 && slices.Contains(a.policy.LeaderSubgroups, segments[len(segments)-1]) {
 			return true
 		}
 	}
 	return false
 }
 
+// isAnyTeamMember reports whether p is in some Group of the members' tree
+// (MembersRoot), below the root itself.
 func isAnyTeamMember(p Principal) bool {
 	for _, group := range p.Groups {
-		if strings.Contains(strings.ToUpper(group), "/UYELER/") {
+		if strings.HasPrefix(group, MembersRoot+"/") {
 			return true
 		}
 	}
 	return false
+}
+
+// MembersRoot is the club's members' tree: every Team sits under it
+// (CONTEXT.md "Member").
+const MembersRoot = "/UYELER"
+
+// pathSegments are the names of a Group path, top first.
+func pathSegments(path string) []string {
+	return strings.Split(strings.TrimPrefix(path, "/"), "/")
 }
 
 func (a *authorizer) allowDoorCheckIn(p Principal, r Resource) bool {
@@ -393,10 +466,18 @@ func (a *authorizer) allowDoorCheckIn(p Principal, r Resource) bool {
 
 func (a *authorizer) allowURL(p Principal, r Resource, action Action) bool {
 	// url:moderator and url:access, read below as before, together grant
-	// every short-link action a Privileged member has.
-	if a.privilegedGroupOnly(p, RoleURLModerator, RoleURLAccess) {
+	// every short-link action a Privileged member has; a Privileged reader
+	// only reads (Read, ReadMe).
+	if a.privilegedGroupOnly(p, action == Read || action == ReadMe, RoleURLModerator, RoleURLAccess) {
 		return true
 	}
+	if (action == Read || action == ReadMe) && a.globalReader(p) {
+		return true
+	}
+	// url:moderator changes everyone's links; a Privileged reader (DK)
+	// keeps only what is their own (url:create, url:access on their own
+	// links), whatever roles its token carries (review of #244, A2).
+	moderator := hasRole(p, "url:moderator") && !a.readerOnly(p)
 	switch action {
 	case Create:
 		return p.ID != "" && hasRole(p, "url:create", "url:access")
@@ -405,7 +486,7 @@ func (a *authorizer) allowURL(p Principal, r Resource, action Action) bool {
 	case Read:
 		return hasRole(p, "url:moderator")
 	case Update:
-		if hasRole(p, "url:moderator") {
+		if moderator {
 			return true
 		}
 		if r.OwnerID == "" || r.OwnerID != p.ID {
@@ -413,7 +494,7 @@ func (a *authorizer) allowURL(p Principal, r Resource, action Action) bool {
 		}
 		return hasRole(p, "url:update", "url:access")
 	case Delete:
-		if hasRole(p, "url:moderator") {
+		if moderator {
 			return true
 		}
 		if r.OwnerID == "" || r.OwnerID != p.ID {
@@ -437,43 +518,88 @@ func hasRole(p Principal, names ...string) bool {
 }
 
 func (a *authorizer) Permitted(p Principal, role string) bool {
+	if role == RoleGlobalRead {
+		// A reader: in a reader root and no writer root (where the mode
+		// reads Groups), or holding the role (where it reads roles).
+		// ADMIN and YK read everything too, but are no readers.
+		return (a.mode != RoleModeRoles && a.readerOnly(p)) || a.globalReader(p)
+	}
 	return a.privileged(p, role)
 }
 
+// readerOnly reports whether p is in a Privileged reader root (DK) and in
+// no other Privileged root: such a person changes nothing a Privileged
+// check stands for, in any mode, whatever roles the token carries
+// (defence in depth: Keycloak may still map write roles to DK; review of
+// #244, A2). Read from the token's Groups, which every mode carries.
+func (a *authorizer) readerOnly(p Principal) bool {
+	return a.privilegedGroup(p, true) != "" && a.privilegedGroup(p, false) == ""
+}
+
+// globalReader reports whether p holds global:read where the mode reads
+// roles: a person, never a service account.
+func (a *authorizer) globalReader(p Principal) bool {
+	return a.mode != RoleModeGroups && !p.ServiceAccount && hasRole(p, RoleGlobalRead)
+}
+
 // privileged is the Privileged answer of a check that role stands for
-// (roles.go): p's Privileged Group in the groups mode, role in the roles
-// mode, either in the both mode, which counts every check where the two
-// disagree. A role that existed before the contract (url:moderator,
-// url:access) counts in every mode, as it always has, and holding it
-// outside the Privileged Groups is no disagreement. A service account
-// never holds a role here: no role makes it Privileged.
+// (roles.go) when the check changes something: p's Privileged Group in the
+// groups mode, role in the roles mode, either in the both mode, which
+// counts every check where the two disagree. A Privileged reader root (DK,
+// AUTHZ_PRIVILEGED_READER_ROOTS) and global:read never allow here. A role
+// that existed before the contract (url:moderator, url:access) counts in
+// every mode, as it always has, and holding it outside the Privileged
+// Groups is no disagreement. A role being renamed is held under either name
+// (renamedRoles). A service account never holds a role here: no role makes
+// it Privileged.
 func (a *authorizer) privileged(p Principal, role string) bool {
-	byRole := hasRole(p, role) && !p.ServiceAccount
+	return a.decide(p, role, false)
+}
+
+// privilegedRead is privileged for a check that only reads (Read, List):
+// a Privileged reader root's member and a holder of global:read are
+// allowed too, as Entra's Global Reader reads what a Global Admin reads.
+func (a *authorizer) privilegedRead(p Principal, role string) bool {
+	return a.decide(p, role, true)
+}
+
+func (a *authorizer) decide(p Principal, role string, read bool) bool {
+	if !read && a.readerOnly(p) {
+		return false
+	}
+	names := roleNames(role)
+	if read {
+		names = append(names, RoleGlobalRead)
+	}
+	byRole := hasRole(p, names...) && !p.ServiceAccount
 	switch a.mode {
 	case RoleModeRoles:
 		return byRole
 	case RoleModeBoth:
-		group := a.privilegedGroup(p)
+		group := a.privilegedGroup(p, read)
 		if (group != "") != byRole && (group != "" || !preexistingRole(role)) {
 			a.metrics.record(role, group, p.Client)
 		}
 		return group != "" || byRole
 	default:
-		return a.privilegedGroup(p) != "" || (byRole && preexistingRole(role))
+		return a.privilegedGroup(p, read) != "" || (hasRole(p, roleNames(role)...) && !p.ServiceAccount && preexistingRole(role))
 	}
 }
 
 // privilegedGroupOnly is the Privileged Group shortcut of a check whose
 // roles are read on their own after it (short links, form links): p's
 // Privileged Group in the groups and both modes, nothing in the roles mode.
-// The both mode counts a Privileged member who lacks one of roles, as
-// privileged does.
-func (a *authorizer) privilegedGroupOnly(p Principal, roles ...string) bool {
+// A reader root counts only when read. The both mode counts a Privileged
+// member who lacks one of roles, as privileged does, except on a read by a
+// holder of global:read, which allows every such read in the roles mode
+// (grup-yonetimi 08: DK's reads would otherwise cloud the both → roles
+// gate). Counting only: the decision is the same.
+func (a *authorizer) privilegedGroupOnly(p Principal, read bool, roles ...string) bool {
 	if a.mode == RoleModeRoles {
 		return false
 	}
-	group := a.privilegedGroup(p)
-	if group != "" && a.mode == RoleModeBoth {
+	group := a.privilegedGroup(p, read)
+	if group != "" && a.mode == RoleModeBoth && !(read && a.globalReader(p)) {
 		for _, role := range roles {
 			if !hasRole(p, role) || p.ServiceAccount {
 				a.metrics.record(role, group, p.Client)
@@ -483,19 +609,29 @@ func (a *authorizer) privilegedGroupOnly(p Principal, roles ...string) bool {
 	return group != ""
 }
 
-// privilegedGroup is the Privileged Group (ADMIN, YK or DK) p is in, itself
-// or through a subgroup, or "".
-func (a *authorizer) privilegedGroup(p Principal) string {
+// privilegedGroup names the Privileged root p is in, itself or through a
+// subgroup: the root's last segment (ADMIN, YK or DK), or "". Only the
+// policy's roots count, anchored at their paths (PrivilegedRoot). A Group
+// under a reader root (PrivilegedReaderRoots) counts only for a read.
+func (a *authorizer) privilegedGroup(p Principal, read bool) string {
 	for _, g := range p.Groups {
-		for _, pg := range a.policy.PrivilegedGroups {
-			if strings.HasSuffix(g, "/"+pg) || strings.Contains(g, "/"+pg+"/") {
-				return pg
-			}
+		root := PrivilegedRoot(a.policy.PrivilegedRoots, g)
+		if root == "" {
+			continue
 		}
+		if !read && PrivilegedRoot(a.policy.PrivilegedReaderRoots, g) != "" {
+			continue
+		}
+		return RootLabel(root)
 	}
 	return ""
 }
 
+// ownerLevels are p's levels in the Owner team owner, by whole path
+// segments: a member is in a Group one of whose segments is owner, a Leader
+// in a leader subgroup that is the last segment, right under owner. Paths
+// under a Privileged root name no Owner team: such a member is Privileged,
+// which the decisions read first, or in the roles mode holds roles.
 func (a *authorizer) ownerLevels(p Principal, owner string) []Level {
 	if owner == "" {
 		return nil
@@ -503,13 +639,18 @@ func (a *authorizer) ownerLevels(p Principal, owner string) []Level {
 
 	var leader, member bool
 	for _, g := range p.Groups {
-		for _, sub := range a.policy.LeaderSubgroups {
-			if strings.Contains(g, "/"+owner+"/"+sub) {
+		if PrivilegedRoot(a.policy.PrivilegedRoots, g) != "" {
+			continue
+		}
+		segments := pathSegments(g)
+		for i, segment := range segments {
+			if segment != owner {
+				continue
+			}
+			member = true
+			if i == len(segments)-2 && slices.Contains(a.policy.LeaderSubgroups, segments[i+1]) {
 				leader = true
 			}
-		}
-		if strings.HasSuffix(g, "/"+owner) || strings.Contains(g, "/"+owner+"/") {
-			member = true
 		}
 	}
 

@@ -39,6 +39,13 @@ func consentError(c fiber.Ctx, err error) error {
 	case errors.Is(err, consent.ErrDisabled):
 		c.Set(fiber.HeaderCacheControl, "no-store")
 		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", "consents_unavailable")
+	case errors.Is(err, consent.ErrAddressesUnavailable):
+		// Keycloak unreachable: a passing failure, not core's fault. The
+		// error carries no address; it says what failed.
+		log.Printf("contact consent: %v", err)
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		c.Set(fiber.HeaderRetryAfter, "30")
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", "consent_addresses_unavailable")
 	case errors.Is(err, consent.ErrUnknownText):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "consent_text_unknown")
 	case errors.Is(err, consent.ErrPurposeNotEnabled):
@@ -658,10 +665,25 @@ type page struct {
 	Quote string
 	After []string
 	Links []pageLink
-	// Action, Token and Button make the one form of the page.
-	Action string
-	Token  string
-	Button string
+	// Action, Token and Button make the one form of the page. TokenField
+	// names the token's field ("token" when empty). Choices replace Button
+	// with one submit button each, sending Name=Value with the token.
+	Action     string
+	Token      string
+	TokenField string
+	Button     string
+	Choices    []pageChoice
+}
+
+type pageChoice struct {
+	Name, Value, Label string
+}
+
+func (p page) TokenName() string {
+	if p.TokenField == "" {
+		return "token"
+	}
+	return p.TokenField
 }
 
 type pageLink struct {
@@ -694,9 +716,10 @@ button{font:inherit;padding:.7rem 1.4rem;border:0;border-radius:8px;background:#
 {{end}}{{range .After}}<p>{{.}}</p>
 {{end}}{{if .Links}}<p>{{range $i, $l := .Links}}{{if $i}} · {{end}}<a href="{{$l.URL}}" rel="noopener noreferrer">{{$l.Label}}</a>{{end}}</p>
 {{end}}{{if .Action}}<form method="post" action="{{.Action}}">
-<input type="hidden" name="token" value="{{.Token}}">
-<button type="submit">{{.Button}}</button>
-</form>
+<input type="hidden" name="{{.TokenName}}" value="{{.Token}}">
+{{if .Choices}}{{range .Choices}}<p><button type="submit" name="{{.Name}}" value="{{.Value}}">{{.Label}}</button></p>
+{{end}}{{else}}<button type="submit">{{.Button}}</button>
+{{end}}</form>
 {{end}}<p><small>SKY LAB · Yıldız Teknik Üniversitesi</small></p>
 </main>
 </body>

@@ -88,7 +88,7 @@
         "image/png",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
       ],
-      "max_mib": 20,
+      "max_mib": 50,
       "visibility": "private",
       "encrypted": true,
       "scan": true,
@@ -102,7 +102,7 @@
       "description": "A guest Answer file: a file for a Skyforms file question on a form that takes answers without sign-in. Skyforms' service account uploads it after its own checks; no person uploads it and it has no uploader. Skyforms decides who may open it.",
       "upload": "service_only",
       "types": ["application/pdf", "image/jpeg", "image/png"],
-      "max_mib": 10,
+      "max_mib": 50,
       "visibility": "private",
       "encrypted": true,
       "scan": true,

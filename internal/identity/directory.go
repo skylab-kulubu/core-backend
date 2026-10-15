@@ -56,6 +56,11 @@ type Person struct {
 	// users who get no token. Nothing else branches on it, and it is never
 	// part of an answer.
 	Enabled bool `json:"-"`
+	// ServiceAccount is whether the account is a client's service account
+	// (Keycloak's serviceAccountClientId), not a person. Only the direct
+	// role rule reads it (DirectUserRolesEnv); it is never part of an
+	// answer.
+	ServiceAccount bool `json:"-"`
 	// CreatedAt is when the Keycloak account was created (Keycloak's
 	// createdTimestamp), nil when the read did not carry it. Only the
 	// dashboard summary's Members section uses it; it is never part of an
@@ -111,6 +116,10 @@ type Directory interface {
 	SearchUsers(ctx context.Context, query string, limit int) ([]Person, error)
 	ListClientRoles(ctx context.Context) ([]ClientRole, error)
 	UsersWithClientRole(ctx context.Context, clientID, role string) ([]Person, error)
+	// EffectiveClientRoles answers the names of clientID's roles the person
+	// holds in effect: directly, through Groups and the Groups above them,
+	// the default roles and composites. ErrNotFound: no such client or person.
+	EffectiveClientRoles(ctx context.Context, userID uuid.UUID, clientID string) ([]string, error)
 	CreateUser(ctx context.Context, p Person) (Person, error)
 	GetUser(ctx context.Context, id uuid.UUID) (Person, error)
 	DisableUser(ctx context.Context, id uuid.UUID) error

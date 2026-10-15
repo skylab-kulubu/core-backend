@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -40,7 +41,9 @@ func TestQueuedIssuancePinsVersionAndKeepsPublicDTOPrivate(t *testing.T) {
 		PublicAPIOrigin: "https://api.example.test", VerifyOrigin: "https://skyl.app/c", Templates: store, Jobs: store,
 	})
 
-	ev, err := events.Create(ctx, event.Event{Name: "Gelecek Zirvesi", Location: "YTÜ", OwnerTeam: "ARTLAB", AttendanceRule: certificate.RuleOnce, Active: true})
+	// Still running: it ends tomorrow.
+	start, end := time.Now().Add(-time.Hour), time.Now().Add(24*time.Hour)
+	ev, err := events.Create(ctx, event.Event{Name: "Gelecek Zirvesi", Location: "YTÜ", OwnerTeam: "ARTLAB", AttendanceRule: certificate.RuleOnce, StartDate: &start, EndDate: &end})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +79,9 @@ func TestQueuedIssuancePinsVersionAndKeepsPublicDTOPrivate(t *testing.T) {
 	if _, err := service.Finalize(ctx, leader, ev.ID); !errors.Is(err, certificate.ErrConflict) {
 		t.Fatalf("active event finalization: %v", err)
 	}
-	ev.Active = false
+	// The Event ends: Attendance finalization opens (no Pasif step).
+	ended := time.Now().Add(-time.Minute)
+	ev.EndDate = &ended
 	ev, err = events.Update(ctx, ev)
 	if err != nil {
 		t.Fatal(err)

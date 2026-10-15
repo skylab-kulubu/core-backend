@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
@@ -25,6 +27,8 @@ type CoreUsers interface {
 type erasureAddresses struct {
 	identity IdentityAddresses
 	users    CoreUsers
+	// unlimited leaves out erasure's limits (NewPersonAddresses).
+	unlimited bool
 }
 
 // NewErasureAddresses is the address source of the erasure saga (ADR-0051):
@@ -39,6 +43,15 @@ type erasureAddresses struct {
 // since any address left out would keep its data.
 func NewErasureAddresses(identity IdentityAddresses, users CoreUsers) ErasureAddressSource {
 	return erasureAddresses{identity: identity, users: users}
+}
+
+// NewPersonAddresses is NewErasureAddresses without its limits: a person's
+// own contact consents (their list and withdrawal, docs/contact-consents.md)
+// cover every address the person holds, however many, and the consent
+// package decides which of them is an address at all. Keycloak unreachable
+// is an error here too.
+func NewPersonAddresses(identity IdentityAddresses, users CoreUsers) ErasureAddressSource {
+	return erasureAddresses{identity: identity, users: users, unlimited: true}
 }
 
 func (a erasureAddresses) ErasureAddresses(ctx context.Context, subjectID uuid.UUID) ([]string, error) {
@@ -59,9 +72,25 @@ func (a erasureAddresses) ErasureAddresses(ctx context.Context, subjectID uuid.U
 	default:
 		addresses = append(addresses, row.Email, row.SchoolEmail)
 	}
+	if a.unlimited {
+		return uniqueAddresses(addresses), nil
+	}
 	emails, err := erasure.NormalizeEmails(addresses)
 	if err != nil {
 		return nil, fmt.Errorf("erasure addresses: %w", err)
 	}
 	return emails, nil
+}
+
+// uniqueAddresses trims and lower-cases the addresses and drops blanks and
+// repeats, as erasure.NormalizeEmails does, without its limits.
+func uniqueAddresses(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		email := strings.ToLower(strings.TrimSpace(raw))
+		if email != "" && !slices.Contains(out, email) {
+			out = append(out, email)
+		}
+	}
+	return out
 }

@@ -62,7 +62,7 @@ type Joiner struct {
 	LastName  string    `json:"lastName"`
 	// Teams are the names of the teams under UYELER the person sits in
 	// (leadership subgroups count as their team), sorted. A caller who may
-	// not manage people (User Update) gets the publicly listed ones only.
+	// not read people whole (User ReadFull) gets the publicly listed ones only.
 	Teams []string `json:"teams"`
 	// RegisteredAt is when their Keycloak account was created.
 	RegisteredAt time.Time `json:"registeredAt"`

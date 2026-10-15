@@ -269,7 +269,7 @@ func TestCatalogue_SizesStayUnderTheGlobalMaximums(t *testing.T) {
 		purpose string
 		maxMiB  int
 	}{
-		{"cms_file", 21}, // single-step: 20 MiB
+		{"cms_file", 51}, // single-step: 50 MiB
 		{"video", 2049},  // Direct upload: 2 GiB
 	} {
 		data := reviewedCatalogueWith(t, func(purposes purposeEntries) {
@@ -278,6 +278,59 @@ func TestCatalogue_SizesStayUnderTheGlobalMaximums(t *testing.T) {
 		if _, err := media.ParseCatalogue(data); !errors.Is(err, media.ErrCeilingSize) {
 			t.Errorf("%s at %d MiB: err = %v, want %v", tc.purpose, tc.maxMiB, err, media.ErrCeilingSize)
 		}
+	}
+}
+
+// Answer files take up to 50 MiB, signed in or as a guest (Yusuf and Fatih,
+// 2026-10-07): the largest a single-step upload may be.
+func TestCatalogue_AnswerFilesTakeUpTo50MiB(t *testing.T) {
+	t.Parallel()
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if media.MaxUploadBytes != 50<<20 {
+		t.Fatalf("single-step maximum %d bytes, want 50 MiB", media.MaxUploadBytes)
+	}
+	for _, name := range []string{media.PurposeAnswerFile, media.PurposeAnswerFileGuest} {
+		purpose, ok := catalogue.Lookup(name)
+		if !ok || purpose.MaxBytes != 50<<20 || purpose.Transport != media.TransportSingleStep {
+			t.Errorf("%s: found %v, max %d bytes, transport %s", name, ok, purpose.MaxBytes, purpose.Transport)
+		}
+	}
+}
+
+// The scan's ZIP check decrypts a private file into memory and keeps a ZIP
+// (a DOCX is one) there whole, at most MEDIA_ZIP_CHECK_BUFFER_MIB: a larger
+// one is never scanned (ErrPrivateZIPUnchecked) and is rejected at its scan
+// deadline. So every private, scanned single-step purpose that accepts a ZIP
+// fits the default buffer.
+func TestCatalogue_PrivateScannedZIPsFitTheZIPCheckBuffer(t *testing.T) {
+	t.Parallel()
+	catalogue, err := media.LoadCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, name := range []string{
+		"profile_picture", "event_cover", "event_gallery", "certificate_asset", "cms_image", "cms_file",
+		"answer_file", "answer_file_guest", "club_file", "answer_file_large", "video", "video_frame",
+	} {
+		purpose, ok := catalogue.Lookup(name)
+		if !ok {
+			t.Fatalf("no %s purpose", name)
+		}
+		if purpose.Visibility != media.VisibilityPrivate || !purpose.Scan || purpose.Transport != media.TransportSingleStep ||
+			!slices.ContainsFunc(purpose.Types, func(ct string) bool { return ct == docxType || ct == "application/zip" }) {
+			continue
+		}
+		checked++
+		if purpose.MaxBytes > media.DefaultScanLimits.MaxBuffer {
+			t.Errorf("%s allows %d bytes, over the ZIP check's %d", name, purpose.MaxBytes, media.DefaultScanLimits.MaxBuffer)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no private, scanned single-step purpose accepts a ZIP: answer_file (DOCX) should")
 	}
 }
 

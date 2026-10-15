@@ -64,12 +64,14 @@ func uploadPDF(t *testing.T, app *fiber.App, keys *testauth.Bundle, size int) (i
 
 // Fiber's default body limit is 4 MiB; a form file between that and the media
 // service's own limit has to reach the handler instead of dying with a 413.
+// A PDF uploaded without a purpose keeps its own 20 MiB limit (the largest
+// purposes take 50 MiB: media_answer_file_size_test.go).
 func TestMediaUploadAcceptsFilesAboveFiberDefaultBodyLimit(t *testing.T) {
 	t.Parallel()
 	keys := testauth.New(t)
 	app := memoryApp(keys.Parse())
 
-	for _, size := range []int{6 << 20, media.MaxUploadBytes} {
+	for _, size := range []int{6 << 20, 20 << 20} {
 		got, err := uploadPDF(t, app, keys, size)
 		if err != nil || got != fiber.StatusCreated {
 			t.Fatalf("%d byte PDF upload = %d, %v; want %d", size, got, err, fiber.StatusCreated)

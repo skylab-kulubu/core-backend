@@ -9,6 +9,7 @@ import (
 
 	"github.com/skylab-kulubu/core-backend/db"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
+	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
 )
 
@@ -45,8 +46,33 @@ func TestRefererOriginKeepsSchemeAndHostOnly(t *testing.T) {
 	}
 }
 
+// What the sweep keeps of a year-old click's source and medium is what
+// shorturl says it keeps: a known channel in its usual spelling, nothing for
+// nothing, "other" for anything else, and a second pass changes nothing.
+func TestChannelSQLKeepsWhatShorturlKeeps(t *testing.T) {
+	pool := testpostgres.Start(t)
+	ctx := context.Background()
+	inputs := []string{"", "instagram", "Instagram", "IG", "insta", "wa", "in", "yt", "mail", "E-Posta", "twitter", "web",
+		"qr", "QR", "referral", "social", "print", "other", "ada@example.com", "21011042", "Ada Lovelace", "discord", "cpc"}
+	for _, c := range []struct {
+		known map[string]string
+		kept  func(string) string
+	}{{shorturl.KnownSources, shorturl.KeptSource}, {shorturl.KnownMediums, shorturl.KeptMedium}} {
+		for _, raw := range inputs {
+			var once, twice string
+			if err := pool.QueryRow(ctx, `SELECT `+channelSQL("v", c.known)+`, `+channelSQL(channelSQL("v", c.known), c.known)+` FROM (SELECT $1::text AS v) x`, raw).
+				Scan(&once, &twice); err != nil {
+				t.Fatal(err)
+			}
+			if want := c.kept(raw); once != want || twice != once {
+				t.Errorf("%q: %q then %q, want %q", raw, once, twice, want)
+			}
+		}
+	}
+}
+
 // The daily scrub and its count find the click rows that still hold
-// something personal through url_hits_personal_at_idx, whose predicate is
+// something personal through url_hits_personal_at_v3_idx, whose predicate is
 // the rule's own: rows leave the index as they are scrubbed, so a day's work
 // reads a day's rows, not every click ever kept. The migration's predicate
 // is the one the rule is built from.
@@ -60,7 +86,7 @@ func TestURLHitsScrubReadsItsPartialIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "CREATE INDEX CONCURRENTLY IF NOT EXISTS url_hits_personal_at_idx ON url_hits (at) WHERE " + hitPersonalSQL("") + ";"; !strings.Contains(string(up), want) {
+	if want := "CREATE INDEX CONCURRENTLY IF NOT EXISTS url_hits_personal_at_v3_idx ON url_hits (at) WHERE " + hitPersonalSQL("") + ";"; !strings.Contains(string(up), want) {
 		t.Fatalf("the migration's index predicate is not the rule's:\n%s\nwant\n%s", up, want)
 	}
 	var rule Rule
@@ -98,7 +124,7 @@ func TestURLHitsScrubReadsItsPartialIndex(t *testing.T) {
 		}
 		rows.Close()
 		_ = tx.Rollback(ctx)
-		if !strings.Contains(plan.String(), "url_hits_personal_at_idx") {
+		if !strings.Contains(plan.String(), "url_hits_personal_at_v3_idx") {
 			t.Errorf("%s does not read the index:\n%s", name, plan.String())
 		}
 	}

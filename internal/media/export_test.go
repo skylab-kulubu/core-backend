@@ -34,3 +34,13 @@ func BackfillOneLegacyPurpose(ctx context.Context, store *PostgresStore, catalog
 
 // PartSizeFor is the part size the worker writes a copy of size bytes in.
 func (w *FaststartWorker) PartSizeFor(size int64) int64 { return w.partSizeFor(size) }
+
+// SetScanned ends a Media's malware scan in the memory store, as the scan
+// worker does in PostgreSQL: status pending (clean) or rejected, with result.
+func (s *MemoryStore) SetScanned(id uuid.UUID, status Status, result ScanResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := s.byID[id]
+	m.Status, m.ScanResult = status, result
+	s.byID[id] = m
+}

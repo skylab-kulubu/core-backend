@@ -196,3 +196,36 @@ func TestSyncForbiddenForMember(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+// A sync writes (a SkyMail list with the applicants on it): DK, who reads
+// the applicants (grup-yonetimi GY1), and global:read may not run one; YK
+// may (review of #244, A1).
+func TestSyncNeedsAWriteDecision(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	events := event.NewMemoryStore()
+	ev, err := events.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []authz.RoleMode{authz.RoleModeGroups, authz.RoleModeBoth, authz.RoleModeRoles} {
+		policy := authz.DefaultPolicy()
+		policy.RoleMode = mode
+		lists := newMemoryLists()
+		svc := New(events, ticket.NewMemoryStore(), user.NewMemoryStore(), lists, authz.NewAuthorizer(policy))
+		dk := authz.Principal{ID: "dk", Groups: []string{"/UYELER/DK"}, Roles: []string{authz.RoleGlobalRead, "url:moderator"}}
+		reader := authz.Principal{ID: "gr", Roles: []string{authz.RoleGlobalRead}}
+		for name, p := range map[string]authz.Principal{"DK": dk, "global:read": reader} {
+			if _, err := svc.Sync(ctx, p, ev.ID, nil); !errors.Is(err, ErrForbidden) {
+				t.Errorf("%s: %s synced: %v", mode, name, err)
+			}
+		}
+		if len(lists.names) != 0 {
+			t.Fatalf("%s: a list was created: %v", mode, lists.names)
+		}
+		yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}, Roles: authz.PermissionRoles()}
+		if _, err := svc.Sync(ctx, yk, ev.ID, nil); err != nil {
+			t.Errorf("%s: YK: %v", mode, err)
+		}
+	}
+}

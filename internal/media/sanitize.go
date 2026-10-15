@@ -13,11 +13,17 @@ const (
 	KindImage = "IMAGE"
 	KindFile  = "FILE"
 
+	// maxImageBytes and maxFileBytes are the limits of Media uploaded
+	// without a purpose (legacyFile).
 	maxImageBytes = 10 * 1024 * 1024
 	maxFileBytes  = 20 * 1024 * 1024
 
-	// MaxUploadBytes is the largest file Upload accepts of any kind.
-	MaxUploadBytes = maxFileBytes
+	// MaxUploadBytes is the largest file a single-step upload carries, of
+	// any purpose: the HTTP server's body limit is set from it, and no
+	// single-step purpose may allow more (ErrCeilingSize). It is the Answer
+	// files' maximum, 50 MiB (answer_file, answer_file_guest; Yusuf and
+	// Fatih, 2026-10-07).
+	MaxUploadBytes = 50 * 1024 * 1024
 )
 
 var pngKeepAncillary = map[string]struct{}{

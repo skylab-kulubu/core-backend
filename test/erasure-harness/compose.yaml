@@ -133,6 +133,8 @@ services:
     environment:
       DATABASE_URL: postgres://super_skylab:${CORE_DB_PASSWORD}@postgres:5432/super_skylab?sslmode=disable
       PORT: "8080"
+      # No SkyPass key here: core makes a random one at start-up (development only).
+      SKYPASS_EPHEMERAL_KEY: "true"
       SSL_CERT_FILE: /harness/ca.crt
       KEYCLOAK_URL: https://e.yildizskylab.com
       KEYCLOAK_REALM: e-skylab

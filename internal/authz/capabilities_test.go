@@ -59,11 +59,19 @@ func TestCapabilities_Privileged(t *testing.T) {
 		{RoleModeRoles, Principal{ID: "u1", Roles: PermissionRoles()}},
 	} {
 		c := NewAuthorizer(policyIn(tc.mode)).Capabilities(tc.p)
-		if !slices.Equal(c.Permissions, PermissionRoles()) {
+		want := PermissionRoles()
+		if tc.mode == RoleModeGroups {
+			// YK reads everything but is no reader: global:read is DK's
+			// (review of #244).
+			want = slices.DeleteFunc(want, func(r string) bool { return r == RoleGlobalRead })
+		}
+		if !slices.Equal(c.Permissions, want) {
 			t.Errorf("%s: permissions = %v", tc.mode, c.Permissions)
 		}
 		for _, key := range AppAbilities() {
-			if !c.Can[key] {
+			// audit.read is the audit:read role alone, never Privileged's
+			// (S11; TestCapabilities_AuditRead).
+			if !c.Can[key] && key != "audit.read" {
 				t.Errorf("%s: can[%s] = false", tc.mode, key)
 			}
 		}
@@ -113,7 +121,7 @@ func TestCapabilities_Leader(t *testing.T) {
 	want := []string{
 		"certificate.issue", "certificate.read", "certificate.revoke",
 		"certificateTemplate.assign", "certificateTemplate.create", "certificateTemplate.read", "certificateTemplate.update",
-		"competitor.create", "competitor.delete", "competitor.read", "competitor.update",
+		"competition.manage", "competitor.create", "competitor.delete", "competitor.read", "competitor.update",
 		"door.checkIn", "event.create", "event.delete", "event.update", "ticket.assign", "ticket.read",
 	}
 	if got := trueKeys(weblab.Can); !slices.Equal(got, want) {
@@ -165,6 +173,7 @@ func TestCapabilities_MatchAllow(t *testing.T) {
 		{ID: "u2", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER", "/UYELER/ORGANIZASYON/GECEKODU"}, Roles: []string{"certificate:binding:manage"}},
 		{ID: "u3", Roles: []string{"users:read", "url:moderator"}},
 		{ID: "u4", Roles: []string{RoleEventManage, RoleTicketValidate}},
+		{ID: "u5", Groups: []string{"/UYELER/YK/BASKAN", "/UYELER/ARGE/WEBLAB/ADMIN"}},
 	}
 	for _, mode := range []RoleMode{RoleModeGroups, RoleModeBoth, RoleModeRoles} {
 		auth := NewAuthorizer(policyIn(mode))
@@ -175,7 +184,7 @@ func TestCapabilities_MatchAllow(t *testing.T) {
 					t.Errorf("%s %s: can[%s] differs from Allow", mode, p.ID, ab.key)
 				}
 			}
-			for _, team := range []string{"WEBLAB", "GECEKODU", "SKYSEC", ""} {
+			for _, team := range []string{"WEBLAB", "GECEKODU", "SKYSEC", "YK", "UYELER", "BASKAN", "ADMIN", ""} {
 				can := scopeFor(c, team)
 				if team == "" {
 					can = c.NoOwnerTeam.Can
@@ -186,6 +195,70 @@ func TestCapabilities_MatchAllow(t *testing.T) {
 					if can[ab.key] != auth.Allow(p, r, ab.action) {
 						t.Errorf("%s %s %q: %s differs from Allow", mode, p.ID, team, ab.key)
 					}
+				}
+			}
+		}
+	}
+}
+
+// can["audit.read"] is the audit:read role itself in every role mode: a
+// Privileged Group without it does not read the Team audit record (S11),
+// nor does a service account that holds it.
+func TestCapabilities_AuditRead(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []RoleMode{RoleModeGroups, RoleModeBoth, RoleModeRoles} {
+		az := NewAuthorizer(policyIn(mode))
+		for _, tc := range []struct {
+			name string
+			p    Principal
+			want bool
+		}{
+			{"YK without the role", Principal{ID: "u1", Groups: []string{"/UYELER/YK"}, Roles: PermissionRoles()}, false},
+			{"DK without the role", Principal{ID: "u1", Groups: []string{"/UYELER/DK"}}, false},
+			{"the role", Principal{ID: "u1", Roles: []string{RoleAuditRead}}, true},
+			{"a service account with the role", Principal{ID: "u1", Roles: []string{RoleAuditRead}, ServiceAccount: true}, false},
+			{"a product with the role", Principal{ID: "u1", Roles: []string{RoleAuditRead}, Product: ProductForms}, false},
+		} {
+			if got := az.Capabilities(tc.p).Can["audit.read"]; got != tc.want {
+				t.Errorf("%s, %s: audit.read = %v", mode, tc.name, got)
+			}
+		}
+	}
+}
+
+// can["url.moderateWrite"] is the answer core gives when the caller updates
+// or deletes someone else's short link: ADMIN and YK yes, DK (a Privileged
+// reader, who still reads everyone's links) and an ordinary member no, in
+// every role mode (grup-yonetimi 08).
+func TestCapabilities_URLModerateWrite(t *testing.T) {
+	t.Parallel()
+	dkRoles := []string{RoleGlobalRead, "url:moderator", "url:access"}
+	for _, mode := range []RoleMode{RoleModeGroups, RoleModeBoth, RoleModeRoles} {
+		az := NewAuthorizer(policyIn(mode))
+		for _, tc := range []struct {
+			name          string
+			p             Principal
+			moderate      bool
+			moderateWrite bool
+		}{
+			{"ADMIN", Principal{ID: "u1", Groups: []string{"/UYELER/ADMIN"}, Roles: PermissionRoles()}, true, true},
+			{"YK", Principal{ID: "u1", Groups: []string{"/UYELER/YK"}, Roles: PermissionRoles()}, true, true},
+			{"DK", Principal{ID: "u1", Groups: []string{"/UYELER/DK"}, Roles: dkRoles}, true, false},
+			{"an ordinary member", Principal{ID: "u1", Roles: []string{"url:access"}}, false, false},
+		} {
+			c := az.Capabilities(tc.p)
+			if got := c.Can["url.moderate"]; got != tc.moderate {
+				t.Errorf("%s, %s: url.moderate = %v", mode, tc.name, got)
+			}
+			if got := c.Can["url.moderateWrite"]; got != tc.moderateWrite {
+				t.Errorf("%s, %s: url.moderateWrite = %v", mode, tc.name, got)
+			}
+			// The key is the decision on someone else's link, for an update
+			// and a delete alike.
+			other := Resource{Type: TypeURL, OwnerID: "someone-else"}
+			for _, action := range []Action{Update, Delete} {
+				if got := az.Allow(tc.p, other, action); got != tc.moderateWrite {
+					t.Errorf("%s, %s: %v on someone else's link = %v", mode, tc.name, action, got)
 				}
 			}
 		}

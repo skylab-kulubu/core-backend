@@ -3,6 +3,7 @@ package competitor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 
 	"github.com/google/uuid"
@@ -123,8 +124,9 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in CreateInput)
 		}
 		return Competitor{}, err
 	}
-	if !ev.Active {
-		return Competitor{}, ErrInvalid
+	// A published Event, ended or not: results come after it (ADR 0066).
+	if err := ev.StatusError(); err != nil {
+		return Competitor{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: in.UserID.String()}
 	if !s.authz.Allow(p, res, authz.Create) {
@@ -230,8 +232,11 @@ func (s *service) Reinstate(ctx context.Context, p authz.Principal, id uuid.UUID
 	if !s.authz.Allow(p, res, authz.Delete) {
 		return Competitor{}, ErrForbidden
 	}
-	if ev.ArchivedAt != nil || !ev.Active {
+	if ev.ArchivedAt != nil {
 		return Competitor{}, ErrConflict
+	}
+	if err := ev.StatusError(); err != nil {
+		return Competitor{}, fmt.Errorf("%w: %w", ErrConflict, err)
 	}
 	if err := s.competitors.Reinstate(ctx, id); err != nil {
 		return Competitor{}, err

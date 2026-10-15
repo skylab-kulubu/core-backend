@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -23,6 +25,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/clamd"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
+	"github.com/skylab-kulubu/core-backend/internal/commpref"
+	"github.com/skylab-kulubu/core-backend/internal/competition"
 	"github.com/skylab-kulubu/core-backend/internal/competitor"
 	"github.com/skylab-kulubu/core-backend/internal/consent"
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
@@ -31,24 +35,33 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/googlewallet"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
+	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
 	"github.com/skylab-kulubu/core-backend/internal/mediaframe"
+	"github.com/skylab-kulubu/core-backend/internal/memlimit"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/retention"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
+	"github.com/skylab-kulubu/core-backend/internal/teamcode"
+	"github.com/skylab-kulubu/core-backend/internal/teammail"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == healthcheckCommandName {
+		os.Exit(runHealthcheck(os.Args[2:], os.Getenv, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == ytuBackfillCommandName {
 		os.Exit(runYTUBackfill(os.Args[2:], os.Getenv, os.Stdout))
 	}
@@ -82,6 +95,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == retentionSweepCommandName {
 		os.Exit(runRetentionSweep(os.Args[2:], os.Getenv, os.Stdout))
 	}
+	// A soft memory limit under the container's, so the collector works
+	// harder near it instead of the kernel killing core
+	// (docs/memory-limit.md). Set first: startup allocates too.
+	memory := memlimit.Apply(os.Getenv, os.ReadFile, debug.SetMemoryLimit)
+	log.Printf("memory limit: %s", memory)
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")
@@ -100,6 +118,26 @@ func main() {
 	}
 	log.Printf("guest apply per-address limit: %s", guestApplyIPLimit)
 
+	// SIGTERM (Docker's stop) and SIGINT end signals; serve then shuts
+	// down in order (serve.go). A signal during startup is acted on once
+	// startup is through: the migrations are not cut off halfway.
+	signals, releaseSignals := stopSignals()
+	defer releaseSignals()
+	go func() {
+		// A second signal kills at once.
+		<-signals.Done()
+		releaseSignals()
+	}()
+	// The background workers' context. It is not the signal's: workers
+	// keep working while requests drain, and serve cancels it after.
+	// workersStopped are what shutdown waits on before the pools close.
+	workers, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+	var workersStopped []stopping
+	worker := func(name string, done <-chan struct{}) {
+		workersStopped = append(workersStopped, stopped(name, done))
+	}
+
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
 		log.Fatal(err)
@@ -108,6 +146,16 @@ func main() {
 	if err := migrate.Apply(context.Background(), pool); err != nil {
 		log.Fatal(err)
 	}
+	// GET /v1/ready and the container's health check (internal/health):
+	// the database answers, on a connection of readiness's own, and the
+	// task is not shutting down. Migrations are done by now: core listens
+	// only after this point.
+	readinessDatabase, err := openReadinessDatabase(databaseURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer readinessDatabase.Close()
+	readiness := health.NewReadiness(readinessDatabase, health.Options{Logf: log.Printf})
 
 	// Where Privileged decisions come from while the roles roll out
 	// (docs/authz-roles.md): the Groups by default, so a release changes
@@ -117,15 +165,49 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("authz role mode: %s (%s)", roleMode, authz.RoleModeEnv)
+	// The Group paths whose members, and their subgroups', are Privileged
+	// (docs/authz-roles.md): the six roots unless set. A list core cannot
+	// read stops startup.
+	privilegedRoots, err := authz.PrivilegedRootsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("authz privileged roots: %s (%s)", strings.Join(privilegedRoots, ", "), authz.PrivilegedRootsEnv)
+	// The Privileged roots whose members only read (docs/authz-roles.md,
+	// grup-yonetimi GY1): DK's unless set; "none" lets them write again.
+	privilegedReaderRoots, err := authz.PrivilegedReaderRootsFromEnv(os.Getenv, privilegedRoots)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("authz privileged reader roots: %s (%s)", strings.Join(privilegedReaderRoots, ", "), authz.PrivilegedReaderRootsEnv)
+	// Whether Leaders manage their Teams through core
+	// (docs/team-delegation.md): off unless set. A value core cannot read
+	// stops startup.
+	teamDelegation, err := authz.ParseTeamDelegation(os.Getenv(authz.TeamDelegationEnv))
+	if err != nil {
+		log.Fatal(err)
+	}
+	teamDelegationOptions, err := identity.TeamDelegationOptionsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("team delegation: %s (%s)", map[bool]string{false: "off", true: "on"}[teamDelegation], authz.TeamDelegationEnv)
 	authzPolicy := authz.DefaultPolicy()
 	authzPolicy.RoleMode = roleMode
+	authzPolicy.PrivilegedRoots = privilegedRoots
+	authzPolicy.PrivilegedReaderRoots = privilegedReaderRoots
+	authzPolicy.TeamDelegation = teamDelegation
 	authzRoleMetrics := authz.NewRoleMetrics(log.Default(), time.Now)
 	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics))
+	// The Team code rule every Group create and rename passes
+	// (docs/team-codes.md), over the same roots.
+	groupNames := teamcode.NewRules(authzPolicy)
 	users := user.NewPostgresStore(pool)
 	events := event.NewPostgresStore(pool)
 	seasons := season.NewPostgresStore(pool)
 	tickets := ticket.NewPostgresStore(pool)
 	competitors := competitor.NewPostgresStore(pool)
+	competitions := competition.NewPostgresStore(pool)
 	certs := certificate.NewPostgresStore(pool)
 	mediaStore := media.NewPostgresStore(pool)
 	// A catalogue that breaks a hard ceiling fails the deploy here, not an
@@ -225,14 +307,13 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("media service attach: products with a service client: %v", serviceClients.Products())
-	mediaPurgeContext, stopMediaPurge := context.WithCancel(context.Background())
-	defer stopMediaPurge()
 	// CDN cache purge (MEDIA_CDN_PURGE_*, docs/media-lifecycle.md): every
 	// object the public bucket deletes, or gives new metadata, is purged
 	// from Cloudflare's cache, so deleted media stops being served within
 	// about a minute. Set before any worker below deletes. Settings it
 	// cannot use turn it off loudly instead of stopping core.
-	_, cdnPurgeMetrics := startCDNPurge(mediaPurgeContext, os.Getenv, publicBlobs, cdnBase, log.Printf)
+	_, cdnPurgeMetrics, cdnPurgeStopped := startCDNPurge(workers, os.Getenv, publicBlobs, cdnBase, log.Printf)
+	worker("media CDN purge", cdnPurgeStopped)
 	// Malware scan (MEDIA_CLAMAV_ADDR, docs/media-lifecycle.md). Unset, a
 	// purpose that needs a scan is refused, as before. Set, such a purpose's
 	// uploads wait scanning and the scan worker streams each to clamd, a ZIP
@@ -262,9 +343,7 @@ func main() {
 		limits := scanConfig.Limits
 		log.Printf("media scan limits (clamd.conf): MaxFileSize %d MiB, MaxScanSize %d MiB, MaxFiles %d, MaxRecursion %d; ZIP check buffer %d MiB",
 			limits.MaxFileSize>>20, limits.MaxScanSize>>20, limits.MaxFiles, limits.MaxRecursion, limits.MaxBuffer>>20)
-		scanContext, stopScan := context.WithCancel(context.Background())
-		defer stopScan()
-		scanWorker.Run(scanContext, log.Printf)
+		worker("media scan", scanWorker.Run(workers, log.Printf))
 		mediaScans = scanWorker
 		log.Printf("media scan: on (clamd at %s)", scanConfig.Addr)
 	} else {
@@ -279,25 +358,30 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		faststartWorker.Run(mediaPurgeContext, log.Printf)
+		worker("media faststart", faststartWorker.Run(workers, log.Printf))
 		directUploads.Faststart = faststartWorker
 		log.Printf("media faststart: on")
 	} else {
 		log.Printf("media faststart: off (no R2 configured); videos are served as they are")
 	}
-	media.MaintainBlobPurge(mediaPurgeContext, mediaStore, blobs, mediaPurgeConfig, func(err error) {
+	worker("media blob purge", media.MaintainBlobPurge(workers, mediaStore, blobs, mediaPurgeConfig, func(err error) {
 		log.Printf("media blob purge: %v", err)
-	})
-	media.MaintainUploadStaging(mediaPurgeContext, mediaStore, blobs, uploadStagingConfig, func(err error) {
+	}))
+	worker("media upload staging cleanup", media.MaintainUploadStaging(workers, mediaStore, blobs, uploadStagingConfig, func(err error) {
 		log.Printf("media upload staging cleanup: %v", err)
-	})
+	}))
 	// One decode budget for everything that decodes an image, so that
 	// together they hold at most its slots of decoded images in memory.
-	decodeBudget := media.NewDecodeBudget(media.DecodeBudgetConfig{})
-	media.MaintainCoverColorBackfill(context.Background(), mediaStore, blobs, decodeBudget, time.Minute, func(err error) {
+	decodeConfig, err := media.DecodeBudgetConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	decodeBudget := media.NewDecodeBudget(decodeConfig)
+	log.Printf("media decode budget: %s", decodeBudget)
+	media.MaintainCoverColorBackfill(workers, mediaStore, blobs, decodeBudget, time.Minute, func(err error) {
 		log.Printf("media cover color backfill: %v", err)
 	})
-	media.MaintainServingPolicyBackfill(context.Background(), mediaStore, blobs, time.Minute, func(err error) {
+	media.MaintainServingPolicyBackfill(workers, mediaStore, blobs, time.Minute, func(err error) {
 		log.Printf("media serving policy backfill: %v", err)
 	})
 	// Video frames (MEDIA_FRAME_ADDR, docs/media-lifecycle.md): an Event
@@ -320,24 +404,24 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		frameWorker.Run(mediaPurgeContext, log.Printf)
+		worker("media frames", frameWorker.Run(workers, log.Printf))
 		log.Printf("media frames: on (frame service at %s)", frameAddr)
 	} else if frameAddr != "" {
 		log.Printf("media frames: off (no R2 configured); videos without an uploaded poster have none")
 	} else {
 		log.Printf("media frames: off (%s is not set); videos without an uploaded poster have none", media.FrameAddrEnv)
 	}
-	rerunImageSizes := media.MaintainImageSizeBackfill(context.Background(), mediaStore, blobs, mediaPurposes, decodeBudget, time.Minute, func(err error) {
+	rerunImageSizes := media.MaintainImageSizeBackfill(workers, mediaStore, blobs, mediaPurposes, decodeBudget, time.Minute, func(err error) {
 		log.Printf("media image size backfill: %v", err)
 	})
-	certificate.MaintainAssetServingPolicyBackfill(context.Background(), certs, blobs, time.Minute, func(err error) {
+	certificate.MaintainAssetServingPolicyBackfill(workers, certs, blobs, time.Minute, func(err error) {
 		log.Printf("certificate template asset serving policy backfill: %v", err)
 	})
 	// Legacy Media core attaches get the purpose of their use (media redesign
 	// ticket 08). Only the purpose changes; the blobs stay where they are.
 	// The size backfill may have finished its pass before a Media got its
 	// purpose, so each pass that assigns one runs it again.
-	media.MaintainLegacyPurposeBackfill(context.Background(), mediaStore, mediaPurposes, time.Minute, rerunImageSizes, func(report media.LegacyPurposeReport) {
+	media.MaintainLegacyPurposeBackfill(workers, mediaStore, mediaPurposes, time.Minute, rerunImageSizes, func(report media.LegacyPurposeReport) {
 		log.Printf("media legacy purpose backfill: assigned %d, kept legacy %d (their purpose would be private) and %d (mixed uses), skipped %d, failed %d",
 			report.Assigned, report.KeptPrivate, report.KeptMixed, report.Skipped, report.Failed)
 	}, func(err error) {
@@ -347,13 +431,16 @@ func main() {
 	// with the retention sweep in apply mode, which empties an open's
 	// address after one (ADR-0062). It runs with the flag off too: rows
 	// written while it was on still age out.
-	media.MaintainReadLinkRetention(mediaPurgeContext, mediaStore, time.Hour, retention.ReadLinkWindow(retentionConfig.Mode), func(err error) {
+	media.MaintainReadLinkRetention(workers, mediaStore, time.Hour, retention.ReadLinkWindow(retentionConfig.Mode), func(err error) {
 		log.Printf("media read link retention: %v", err)
 	})
 
 	dir := identity.Directory(identity.NewMemory())
 	// Reads the editable sites' roles; Keycloak only.
 	var siteRoles editablesites.RoleReader
+	// Reads whether a Group holds a realm-management role (core changes no
+	// membership there, docs/team-delegation.md "Role rules"); Keycloak only.
+	var adminGroups identity.KeycloakAdminGroups
 	keycloakConfigured := strings.TrimSpace(os.Getenv("KEYCLOAK_URL")) != ""
 	if keycloakConfigured {
 		keycloakConfig, missing, err := keycloakFromEnv(os.Getenv)
@@ -368,7 +455,7 @@ func main() {
 		}
 		keycloakDirectory := identity.NewKeycloak(keycloakConfig)
 		// Read-only: core holds no manage-clients; Keycloak's operator script creates the roles.
-		roleContext, cancelRoleCheck := context.WithTimeout(context.Background(), 15*time.Second)
+		roleContext, cancelRoleCheck := context.WithTimeout(signals, 15*time.Second)
 		missingRoles, err := keycloakDirectory.MissingClientRoles(roleContext, os.Getenv("KEYCLOAK_CLIENT_ID"), identity.CertificateClientRoles)
 		cancelRoleCheck()
 		if warning := identity.CertificateRolesWarning(os.Getenv("KEYCLOAK_CLIENT_ID"), missingRoles, err); warning != "" {
@@ -376,15 +463,29 @@ func main() {
 		}
 		// The roles live on the client tokens carry them for
 		// (resource_access.core), whichever client core signs in as.
-		roleContext, cancelRoleCheck = context.WithTimeout(context.Background(), 15*time.Second)
+		roleContext, cancelRoleCheck = context.WithTimeout(signals, 15*time.Second)
 		missingRoles, err = keycloakDirectory.MissingClientRoles(roleContext, authn.ResourceAudience, authz.PermissionRoles())
 		cancelRoleCheck()
 		if warning := identity.PermissionRolesWarning(authn.ResourceAudience, roleMode, missingRoles, err); warning != "" {
 			log.Print(warning)
 		}
+		// Each Privileged root looked up by its path: found (with its id)
+		// and missing in one line. It does not stop core.
+		rootContext, cancelRootCheck := context.WithTimeout(signals, 15*time.Second)
+		log.Print(identity.PrivilegedRootsLine(rootContext, keycloakDirectory, privilegedRoots))
+		cancelRootCheck()
 		dir = keycloakDirectory
 		siteRoles = keycloakDirectory
+		adminGroups = keycloakDirectory
 	}
+	// Whether a person may be given a client role directly
+	// (docs/team-delegation.md "Role rules"): off unless set. A value core
+	// cannot read stops startup.
+	directUserRoles, err := identity.DirectUserRolesFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("direct user roles: %s (%s)", map[bool]string{false: "off", true: "on"}[directUserRoles], identity.DirectUserRolesEnv)
 	if privateMedia != nil {
 		// A reviewer who never signed in to core gets their row from
 		// Keycloak when a product asks for a read link for them.
@@ -461,6 +562,7 @@ func main() {
 		log.Fatal(err)
 	}
 	var gate *accessgate.RedisGate
+	var gateClose []closing
 	var accessProjector *account.AccessProjector
 	accessMetrics := accessgate.NewMetrics()
 	if gateConfig.Mode == accessgate.ModeEnforce {
@@ -469,20 +571,28 @@ func main() {
 			log.Fatal(err)
 		}
 		defer redisClient.Close()
+		gateClose = []closing{{name: "the access gate's Redis client", close: func() { _ = redisClient.Close() }}}
 		gate = accessgate.NewRedisGate(
 			redisClient, gateConfig.OperationTimeout, gateConfig.RequiredReplicas, gateConfig.WaitTimeout, accessMetrics,
 		)
 		accessProjector = account.NewAccessProjector(users, gate, nil)
 		reconciler := account.NewAccessReconciler(users, gate, nil)
-		bootstrapContext, cancelBootstrap := context.WithTimeout(context.Background(), 30*time.Second)
+		bootstrapContext, cancelBootstrap := context.WithTimeout(signals, 30*time.Second)
 		if err := reconciler.RunOnce(bootstrapContext); err != nil {
 			cancelBootstrap()
+			if signals.Err() != nil {
+				// Stopped while starting: nothing was served yet. The
+				// workers already run; they stop before the deferred
+				// closes take the pools.
+				log.Print("account access: stop signal during the startup reconciliation; exiting")
+				stopWorkers()
+				waitStopped(workersStopped, time.Now().Add(shutdownTimeout), log.Printf)
+				return
+			}
 			log.Fatal(err)
 		}
 		cancelBootstrap()
-		projectionContext, stopProjection := context.WithCancel(context.Background())
-		defer stopProjection()
-		account.MaintainAccessProjection(projectionContext, accessProjector, reconciler, time.Minute, func(err error) {
+		account.MaintainAccessProjection(workers, accessProjector, reconciler, time.Minute, func(err error) {
 			log.Printf("account access projection: %v", err)
 		})
 	}
@@ -497,8 +607,9 @@ func main() {
 	consents := consent.NewService(pool, consentConfig, nil)
 	if keycloakConfigured {
 		// A person's own list and withdrawal cover every address Keycloak
-		// holds for them (Personal e-mail included), as erasure reads them.
-		consents.SetAddresses(account.NewErasureAddresses(identity.NewAccountIdentity(dir), users))
+		// holds for them (Personal e-mail included), as erasure reads them
+		// but without erasure's limit of three.
+		consents.SetAddresses(account.NewPersonAddresses(identity.NewAccountIdentity(dir), users))
 	}
 	if consentConfig.Enabled {
 		log.Printf("contact consents: on (links at %s, service clients %v, verified-address clients %v)",
@@ -506,6 +617,63 @@ func main() {
 	} else {
 		log.Printf("contact consents: off (%s is not set); none is recorded", consent.KeyEnv)
 	}
+
+	// Communication preferences (ADR 0067, docs/communication-preferences.md).
+	// Without COMMUNICATION_PREFERENCE_KEY their routes answer 503; the erasure step
+	// still deletes a person's rows, and the deleted teams' rows are still
+	// removed once a day.
+	communicationPreferenceConfig, err := commpref.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	communicationPreferences := commpref.NewService(communicationPreferenceConfig, commpref.NewPostgresStore(pool), dir, privilegedRoots)
+	if communicationPreferenceConfig.Enabled {
+		log.Printf("communication preferences: on (links at %s)", communicationPreferenceConfig.LinkOrigin)
+	} else {
+		log.Printf("communication preferences: off (%s is not set)", commpref.KeyEnv)
+	}
+	// The News audience (docs/news-audience.md): SkyMail's service account
+	// asks who a send goes to. Off with the preferences (every recipient
+	// gets a signed link); private visibilities only with
+	// NEWS_AUDIENCE_PRIVATE_VISIBILITY=on (ADR 0067 karar 3, second step).
+	privateVisibility, err := commpref.PrivateVisibilityFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var newsAudience *commpref.Audience
+	if audienceDirectory, ok := dir.(commpref.AudienceDirectory); ok {
+		newsAudience = commpref.NewAudience(communicationPreferences, audienceDirectory, users, privateVisibility)
+	}
+	for _, line := range commpref.AudienceStartupLines(newsAudience.Enabled(), privateVisibility) {
+		log.Print(line)
+	}
+	if keycloakConfigured {
+		worker("communication preference cleanup", commpref.MaintainCleanup(workers, communicationPreferences, commpref.CleanupInterval, func(what string, removed int64, err error) {
+			if err != nil {
+				log.Printf("communication preferences: %s cleanup: %v", what, err)
+				return
+			}
+			log.Printf("communication preferences: removed %d rows of %s", removed, what)
+		}))
+	}
+
+	// SkyPass in Google Wallet (SKYPASS_GOOGLE_WALLET_*,
+	// docs/skypass-google-wallet.md). Off unless enabled: the link routes
+	// answer 503 and the door reads no Wallet code. Erasure withdraws a
+	// person's passes either way, and fails while one is left that it
+	// cannot withdraw.
+	walletConfig, err := skypass.GoogleWalletConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var walletAPI skypass.GoogleWalletAPI
+	if walletConfig.Enabled {
+		walletAPI = googlewallet.NewClient(walletConfig.Account, googlewallet.Options{})
+		log.Printf("skypass google wallet: on (class %s, service account %s)", walletConfig.ClassID(), walletConfig.Account.ClientEmail)
+	} else {
+		log.Printf("skypass google wallet: off (%s is not true)", skypass.GoogleWalletEnabledEnv)
+	}
+	wallet := skypass.NewWallet(walletConfig, walletAPI, skypass.NewPostgresWalletStore(pool), users, skypass.WalletOptions{Logf: log.Printf})
 
 	workerEnabled, erasureConfig, err := accountErasureStartup(os.Getenv)
 	if err != nil {
@@ -529,7 +697,7 @@ func main() {
 		// writes one account_erasure_attention line per request that needs a
 		// person.
 		erasureGauges = account.NewErasureGauges()
-		account.MaintainWatchdog(context.Background(), account.NewWatchdog(users, erasureGauges, account.WatchdogConfig{
+		account.MaintainWatchdog(workers, account.NewWatchdog(users, erasureGauges, account.WatchdogConfig{
 			AlertAfter: erasureConfig.AlertAfter,
 		}), account.DefaultWatchdogInterval, func(err error) {
 			log.Printf("account erasure watchdog: %v", err)
@@ -546,21 +714,23 @@ func main() {
 		serviceErasure := account.NewServiceErasure(erasureConfig,
 			base+"/realms/"+realm+"/protocol/openid-connect/token",
 			account.NewErasureAddresses(accountIdentity, users))
-		account.Maintain(
-			context.Background(),
+		worker("account erasure worker", account.Maintain(
+			workers,
 			account.NewWorker(users, accountIdentity, account.WorkerConfig{
-				Lease:                5 * time.Minute,
-				RetryDelay:           30 * time.Second,
-				MaxAttempts:          8,
-				StepTimeout:          20 * time.Second,
-				DeferredRetryHorizon: uploadStagingConfig.Grace + 24*time.Hour,
-				AccessBlocker:        gate,
-				Services:             serviceErasure,
-				ContactConsents:      consents,
+				Lease:                    5 * time.Minute,
+				RetryDelay:               30 * time.Second,
+				MaxAttempts:              8,
+				StepTimeout:              20 * time.Second,
+				DeferredRetryHorizon:     uploadStagingConfig.Grace + 24*time.Hour,
+				AccessBlocker:            gate,
+				Services:                 serviceErasure,
+				ContactConsents:          consents,
+				SkyPassWallet:            wallet,
+				CommunicationPreferences: communicationPreferences,
 			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
 			2*time.Second,
 			func(err error) { log.Printf("account erasure worker: %v", err) },
-		)
+		))
 	} else {
 		log.Print("account erasure worker disabled: ACCOUNT_ERASURE_WORKER_ENABLED is not true")
 	}
@@ -571,6 +741,7 @@ func main() {
 		sky = newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout)
 		sky.TemplateKey = templateKey(os.LookupEnv, "SKYMAIL_WELCOME_TEMPLATE_KEY", mail.DefaultWelcomeTemplateKey)
 		sky.CertificateTemplateKey = templateKey(os.LookupEnv, "SKYMAIL_CERTIFICATE_TEMPLATE_KEY", mail.DefaultCertificateTemplateKey)
+		membershipTemplateKeys(sky, os.LookupEnv)
 		if raw := os.Getenv("SKYMAIL_WELCOME_TEMPLATE_ID"); raw != "" {
 			tid, err := uuid.Parse(raw)
 			if err != nil {
@@ -594,12 +765,24 @@ func main() {
 		}
 	}
 
+	// Membership mail (docs/team-membership-mail.md): a person added to a
+	// Group or removed from one through the membership routes is told by
+	// mail, worded by the Group's kind (team, Privileged, other). The change
+	// is queued in the database and sent by a worker, so SkyMail being down
+	// delays the mail, never the change.
+	// The privilege notice (docs/privilege-change-mail.md) rides the same
+	// worker: a role mapping changed tells ADMIN, a Privileged Group's
+	// membership changed tells ADMIN and that root's members.
+	teamMembership, groupRolesNotice, teamMembershipMetrics, teamMembershipStopped := startTeamMembershipMail(
+		workers, teammail.NewPostgresQueue(pool), teammail.NewPostgresNoticeQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
+	worker("team membership mail", teamMembershipStopped)
+
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {
 		render = &certificate.Gotenberg{BaseURL: baseURL}
 	}
 
-	passKey, err := loadSkyPassKey()
+	passKey, err := loadSkyPassKey(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -619,27 +802,28 @@ func main() {
 		PrivateArtifacts: privateArtifacts,
 		Media:            media.NewLinker(mediaStore),
 	})
-	certificate.MaintainIssuance(context.Background(), certSvc, 2*time.Second, 10, func(err error) {
+	worker("certificate issuance worker", certificate.MaintainIssuance(workers, certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
-	})
+	}))
 	var lists mail.Lists
 	mailSnapshots := eventmail.NewPostgresSnapshotStore(pool)
 	if sky != nil {
 		lists = sky
-		eventmail.MaintainSnapshotRetention(context.Background(), mailSnapshots, sky, time.Hour, func(err error) {
+		eventmail.MaintainSnapshotRetention(workers, mailSnapshots, sky, time.Hour, func(err error) {
 			log.Printf("event mail snapshot retention: %v", err)
 		})
 	}
 
 	urlStore := shorturl.NewPostgresStore(pool)
 	if retention.HourlyHitDeletion(retentionConfig.Mode) {
-		shorturl.MaintainHitRetention(context.Background(), urlStore, time.Hour, func(err error) {
+		shorturl.MaintainHitRetention(workers, urlStore, time.Hour, func(err error) {
 			log.Printf("short-link hit retention: %v", err)
 		})
 	} else {
 		log.Printf("short-link hit retention: click rows are kept; the retention sweep empties their personal fields after a year (%s=apply)", retention.ModeEnv)
 	}
-	retentionMetrics := startRetentionSweep(pool, retentionConfig)
+	retentionMetrics, retentionStopped := startRetentionSweep(workers, pool, retentionConfig)
+	worker("retention sweep", retentionStopped)
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
 
@@ -649,13 +833,52 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The Group writes of the identity routes go through the Team audit
+	// record (docs/team-audit.md): no row, no change.
+	teamAudit := teamaudit.NewPostgres(pool)
+	auditedDir := identity.AuditedDirectory(dir, teamAudit, log.Printf)
+	// Team delegation's reads (docs/team-delegation.md) go to the directory
+	// itself: the Group by id with its parent, the caller's Groups, role
+	// mappings. Off, its decisions refuse every Leader.
+	var delegation *identity.TeamDelegation
+	if reads, ok := dir.(identity.TeamReads); ok {
+		teamDelegationOptions.Logf = log.Printf
+		delegation = identity.NewTeamDelegation(authzPolicy, dir, reads, teamDelegationOptions)
+	}
+	// The client roles nobody has classified that protection reads found,
+	// on /v1/metrics (an interface holding a nil pointer is not nil).
+	var delegationMetrics interface{ Prometheus() string }
+	if delegation != nil {
+		delegationMetrics = delegation
+	}
+	// With delegation on, core checks at once that it sees protection at
+	// all (a Privileged root reads as protected); a failure is an ERROR line
+	// and every delegated write is refused until the check passes.
+	if delegation.On() {
+		canaryContext, cancelCanary := context.WithTimeout(signals, 15*time.Second)
+		if root, err := delegation.Canary(canaryContext); err == nil {
+			log.Printf("team delegation: protection canary passed (%s)", root)
+		} else {
+			log.Printf("ERROR team delegation: protection canary failed: %v", err)
+		}
+		cancelCanary()
+	}
 
 	app := httpx.New(httpx.Deps{
 		Users: user.NewService(users, dir),
-		Identity: identity.NewServiceWithOptions(dir, users, az, identity.Options{
+		Identity: identity.NewServiceWithOptions(auditedDir, users, az, identity.Options{
 			AccountErasureEnabled: workerEnabled,
 			AccessProjector:       accessProjector,
 			GroupCache:            overageGroups,
+			Membership:            teamMembership,
+			GroupRoles:            groupRolesNotice,
+			PrivilegedRoots:       privilegedRoots,
+			GroupNames:            &groupNames,
+			TeamCodes:             teamcode.NewPostgresLedger(pool),
+			Delegation:            delegation,
+			TeamAudit:             teamAudit,
+			DirectUserRoles:       directUserRoles,
+			AdminGroups:           adminGroups,
 		}, mailer),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
@@ -677,8 +900,10 @@ func main() {
 			Scans:              mediaScans,
 		}),
 		URLs:                   urlSvc,
+		Competitions:           competition.NewService(competitions, events, az),
 		Certificates:           certSvc,
-		SkyPass:                skypass.NewService(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL)),
+		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
+		SkyPassWalletMetrics:   wallet,
 		Mail:                   mailer,
 		EventMail:              eventmail.New(events, tickets, users, lists, az, mailSnapshots),
 		ParseToken:             parse,
@@ -686,6 +911,8 @@ func main() {
 		AccountAccessMetrics:   accessMetrics,
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
 		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
+		TeamMailMetrics:        teamMembershipMetrics,
+		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
@@ -702,21 +929,48 @@ func main() {
 		GuestApplyMetrics:         handlers.NewGuestApplyMetrics(),
 		Authz:                     az,
 		EditableSites:             editableSites,
+		ManagedTeams:              delegation,
 		AuthzRoleMetrics:          authzRoleMetrics,
 		GuestCheckInMetrics:       doorQR,
 		GuestApplyPublicIPLimit:   guestApplyIPLimit,
 		Dashboard:                 dashboardSvc,
 		GithubActivity:            githubActivity,
 		Consents:                  consents,
+		CommunicationPreferences:  communicationPreferences,
+		Audience:                  newsAudience,
+		Readiness:                 readiness,
+		MediaDecodeMetrics:        decodeBudget,
+		MemoryMetrics:             memory,
 	})
 
 	addr := os.Getenv("PORT")
 	if addr == "" {
 		addr = "8080"
 	}
-	if err := app.Listen(":" + addr); err != nil {
+	ln, err := net.Listen("tcp4", ":"+addr)
+	if err != nil {
 		log.Fatal(err)
 	}
+	// Shutdown waits on the confirmation mails of contact consents too:
+	// each goes after its request was answered, its row already saying it
+	// was sent. Idle is asked after the requests have drained.
+	if err := serve(signals, app, ln, shutdownPlan{
+		Readiness:   readiness,
+		HTTPDrain:   httpDrainTimeout,
+		Total:       shutdownTimeout,
+		StopWorkers: stopWorkers,
+		Wait:        append(workersStopped, stopping{name: "contact consent confirmation mails", done: consents.Idle}),
+		Close: append(gateClose,
+			closing{name: "the readiness database pool", close: readinessDatabase.Close},
+			closing{name: "the database pool", close: pool.Close}),
+		Logf: log.Printf,
+	}); err != nil {
+		log.Fatal(err)
+	}
+	// serve closed what it could within the budget. A close still waiting
+	// (a pool with a connection in use) must not hold the process past
+	// Docker's SIGKILL, so the deferred closes do not run again.
+	os.Exit(0)
 }
 
 // sudoIntrospection builds the client Core uses to ask the realm about a
@@ -740,21 +994,24 @@ func sudoIntrospection(getenv func(string) string, issuer string) (authn.Introsp
 	}, true
 }
 
-// startRetentionSweep starts the periodic destruction run in its mode and
-// returns its metrics; with the mode off it starts nothing, runs no query and
-// returns nil.
-func startRetentionSweep(pool *pgxpool.Pool, config retention.Config) interface{ Prometheus() string } {
+// startRetentionSweep starts the periodic destruction run in its mode until
+// ctx is cancelled, and returns its metrics and a channel that closes once
+// it has stopped; with the mode off it starts nothing, runs no query and
+// returns nil metrics and a closed channel.
+func startRetentionSweep(ctx context.Context, pool *pgxpool.Pool, config retention.Config) (interface{ Prometheus() string }, <-chan struct{}) {
 	if config.Mode == retention.ModeOff {
 		log.Printf("retention sweep: off (%s is not dry-run or apply)", retention.ModeEnv)
-		return nil
+		stopped := make(chan struct{})
+		close(stopped)
+		return nil, stopped
 	}
 	sweeper := retention.NewSweeper(pool, config, log.Printf)
 	metrics := retention.NewMetrics(pool, config, nil)
-	retention.Maintain(context.Background(), sweeper, metrics, retention.CheckInterval, func(err error) {
+	stopped := retention.Maintain(ctx, sweeper, metrics, retention.CheckInterval, func(err error) {
 		log.Printf("retention sweep: %v", err)
 	})
 	log.Printf("retention sweep: %s (%s), daily; periods of %s (PERIODIC_DESTRUCTION_INTERVAL)", config.Mode, retention.ModeEnv, config.Period)
-	return metrics
+	return metrics, stopped
 }
 
 func optionalAccountAccessGate(gate *accessgate.RedisGate) accessgate.Reader {
@@ -892,12 +1149,41 @@ func doorQRGate(getenv func(string) string, passKey *ecdsa.PrivateKey) (*doorqr.
 	return gate, nil
 }
 
-func loadSkyPassKey() (*ecdsa.PrivateKey, error) {
-	if raw := os.Getenv("SKYPASS_EC_PRIVATE_KEY"); raw != "" {
-		return skypass.ParseSigningKey([]byte(raw))
+// skyPassEphemeralKeyEnv lets core start without a SkyPass key, signing with
+// a random one made at start-up. Development only: every restart then
+// invalidates the SkyPass and door QRs on screen, and replicas disagree.
+const skyPassEphemeralKeyEnv = "SKYPASS_EPHEMERAL_KEY"
+
+// loadSkyPassKey reads the SkyPass signing key (SKYPASS_EC_PRIVATE_KEY, or the
+// legacy SKYPASS_RSA_PRIVATE_KEY): a PEM private key, its line breaks either
+// real or written as \n on one line. Without one core does not start unless
+// SKYPASS_EPHEMERAL_KEY=true asks for a random key. Errors name the variable,
+// never its value.
+func loadSkyPassKey(getenv func(string) string) (*ecdsa.PrivateKey, error) {
+	for _, name := range []string{"SKYPASS_EC_PRIVATE_KEY", "SKYPASS_RSA_PRIVATE_KEY"} {
+		raw := strings.TrimSpace(getenv(name))
+		if raw == "" {
+			continue
+		}
+		if !strings.Contains(raw, "\n") {
+			raw = strings.ReplaceAll(raw, `\n`, "\n")
+		}
+		key, err := skypass.ParseSigningKey([]byte(raw))
+		if err != nil {
+			return nil, fmt.Errorf("%s is not a PEM private key core can use (P-256 EC, or RSA for the legacy variable)", name)
+		}
+		log.Printf("skypass signing key: from %s", name)
+		return key, nil
 	}
-	if raw := os.Getenv("SKYPASS_RSA_PRIVATE_KEY"); raw != "" {
-		return skypass.ParseSigningKey([]byte(raw))
+	switch strings.TrimSpace(getenv(skyPassEphemeralKeyEnv)) {
+	case "true":
+		log.Printf("WARNING: skypass signing key: none set, %s=true: a random key made at start-up. Development only: "+
+			"every restart invalidates the SkyPass and door QRs on screen, and replicas do not accept each other's", skyPassEphemeralKeyEnv)
+		return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	case "", "false":
+		return nil, fmt.Errorf("SKYPASS_EC_PRIVATE_KEY is required (a P-256 PEM private key; docs/guest-self-check-in.md); "+
+			"for development without one, set %s=true", skyPassEphemeralKeyEnv)
+	default:
+		return nil, fmt.Errorf("%s must be true or false", skyPassEphemeralKeyEnv)
 	}
-	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 }

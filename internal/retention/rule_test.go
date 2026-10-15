@@ -162,10 +162,11 @@ func TestRulePeriodsAreThePolicy(t *testing.T) {
 		version int
 	}{
 		"guest_phone":    {90 * day, ActionScrub, "tickets", "", 1},
-		"guest_identity": {730 * day, ActionScrub, "tickets", "certificates", 2},
+		"guest_identity": {730 * day, ActionScrub, "tickets", "certificates", 3},
 		"door_staff":     {90 * day, ActionDelete, "event_door_staff", "", 1},
-		"url_hits_scrub": {365 * day, ActionScrub, "url_hits", "", 2},
+		"url_hits_scrub": {365 * day, ActionScrub, "url_hits", "", 3},
 		"read_link_ip":   {365 * day, ActionScrub, "media_read_link_opens", "", 1},
+		"team_audit_age": {3 * 365 * day, ActionDelete, "team_audit_records", "", 1},
 	}
 	sweeps := 0
 	for _, rule := range Rules(Config{Mode: ModeApply, Period: 90 * day, MediaRecoveryWindow: 30 * day}, Schema{}) {
@@ -178,7 +179,7 @@ func TestRulePeriodsAreThePolicy(t *testing.T) {
 			t.Fatalf("%s: %s %s %s %s v%d", rule.Name, rule.Period, rule.Action, rule.Table, rule.RelatedTable, rule.Version)
 		}
 	}
-	if sweeps != len(want) || RuleSetVersion != 2 {
+	if sweeps != len(want) || RuleSetVersion != 4 {
 		t.Fatalf("%d sweep rules, set v%d", sweeps, RuleSetVersion)
 	}
 }
@@ -338,7 +339,7 @@ func TestConsentRulesFollowTheConsentLifecycle(t *testing.T) {
 		t.Fatalf("%d consent rules", found)
 	}
 	names := RuleNames(config)
-	if len(names) != 14 || names[5] != "consent_pending" {
+	if len(names) != 15 || names[5] != "consent_pending" || names[8] != "team_audit_age" {
 		t.Fatalf("names %v", names)
 	}
 }

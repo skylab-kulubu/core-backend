@@ -448,7 +448,9 @@ func TestService_UserCardInheritedVsExtraRoles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.AddUserExtraRole(ctx, privileged(), id, identity.ClientRole{ClientID: "skyforms", Role: "skyforms:form:manage"}); err != nil {
+	// A direct role from before the role cleanup (core gives none now:
+	// DIRECT_USER_ROLES).
+	if err := dir.AddUserExtraRole(ctx, id, identity.ClientRole{ClientID: "skyforms", Role: "skyforms:form:manage"}); err != nil {
 		t.Fatal(err)
 	}
 

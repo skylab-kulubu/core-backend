@@ -53,7 +53,9 @@ type Service interface {
 	GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 	CurrentSession(ctx context.Context, eventDayID uuid.UUID, at time.Time) (Current, error)
 	CreateSession(ctx context.Context, p authz.Principal, sess Session) (Session, error)
-	UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session) (Session, error)
+	// UpdateSession overwrites the Session's fields; a nil cancelled keeps
+	// the stored cancel.
+	UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session, cancelled *bool) (Session, error)
 	DeleteSession(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	RestoreSession(ctx context.Context, p authz.Principal, id uuid.UUID) (Session, error)
 	ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error)
@@ -188,6 +190,21 @@ func normalizeAttendance(in Event) (Event, error) {
 func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Event, error) {
 	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
+	}
+	// A client that sends no status (sky-app, the panel before ADR 0066)
+	// creates a published Event, as it did before there was a status.
+	if in.Status == "" {
+		in.Status = StatusPublished
+	}
+	if !creatable(in.Status) {
+		return Event{}, ErrInvalid
+	}
+	// What only the status endpoints write.
+	in.PublishedAt, in.PublishedBy = nil, nil
+	in.CancelledAt, in.CancelledBy, in.CancelReason = nil, nil, ""
+	in.CopiedFromEventID = nil
+	if in.Status == StatusPublished {
+		in.PublishedBy = lifecycle.ActorID(p.ID)
 	}
 	in, err := normalizeAttendance(in)
 	if err != nil {
@@ -639,7 +656,7 @@ func (s *service) CreateSession(ctx context.Context, p authz.Principal, sess Ses
 	return s.store.CreateSession(ctx, sess)
 }
 
-func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session) (Session, error) {
+func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session, cancelled *bool) (Session, error) {
 	existing, err := s.store.GetSession(ctx, id)
 	if err != nil {
 		return Session{}, err
@@ -653,6 +670,10 @@ func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.
 	}
 	sess.ID = existing.ID
 	sess.EventDayID = existing.EventDayID
+	sess.Cancelled = existing.Cancelled
+	if cancelled != nil {
+		sess.Cancelled = *cancelled
+	}
 	if err := validateSession(sess); err != nil {
 		return Session{}, ErrInvalid
 	}

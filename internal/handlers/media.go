@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"errors"
-	"io"
 	"log"
 	"strconv"
 	"time"
@@ -149,7 +148,7 @@ func (h *MediaHandler) Upload(c fiber.Ctx) error {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	defer f.Close()
-	data, err := io.ReadAll(f)
+	data, err := readUploadedFile(f, header.Size)
 	if err != nil {
 		return err
 	}

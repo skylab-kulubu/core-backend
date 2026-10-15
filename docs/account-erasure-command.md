@@ -127,8 +127,12 @@ The CMS is stock inscribed (ADR-0056) in `Auth__Mode=External`. It keeps no acco
 
 ## 10. Forms
 
-Forms follows this contract in full, with two exceptions (Fatih's review of forms-backend#23, 2026-10-06):
+Forms follows this contract in full, with these exceptions (Fatih's reviews of forms-backend#23, 2026-10-06 and 2026-10-09):
 
 - **Idempotency:** as for the CMS (§9), the work is idempotent by nature, so Forms keeps no receipt table and takes no advisory lock. The work and its counts commit in one transaction. A repeat answers `200` with the counts of that run, which are `0` once the first run has committed. If the first `200` is lost (core gave up after 15 seconds, while Forms finished within its own 90-second budget), core's proof records the repeat's zeros: for Forms, the counts in the proof are a lower bound, not an exact count.
 - **Share links:** response share links live for at most one hour, so Forms does not search Redis for the ones the person created; they expire on their own (§8 exception). Response and form drafts live for up to 7 days and are still deleted, before the transaction.
+- **No name search:** Forms deletes free text only for the addresses in `emails`; it does not search for the person's full name (§8 exception).
+- **Guest records:** Forms does not tie a guest record to the account. A guest address is not verified, so nobody knows who typed it. Forms only removes the verified addresses core sends, wherever they appear; the rest of a guest record stays.
 - **Counts:** there is no `share_links_deleted`. Core expects no fixed keys.
+
+**Forms obligation (forms-backend#23): queued form-response reports.** The Erasure command also deletes the person's form-response reports that Forms' outbox still holds for `POST /v1/forms/{formId}/responses` ([form-response-tickets.md](form-response-tickets.md)) and counts them as `notifications_cleared`. For a guest report it only removes a verified address (above). Why: `erase_forms` (step 8) runs before `anonymize_core` (step 9), which clears core's guest data of the person's addresses ([account-lifecycle.md](account-lifecycle.md)). A report still queued after step 8 could arrive after step 9 and write the guest Ticket again, with the name and e-mail the person typed; core cannot tell it from a new answer. After step 8, no report that still arrives carries a verified address.

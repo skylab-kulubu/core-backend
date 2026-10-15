@@ -60,6 +60,13 @@ services:
       SKYMAIL_CERTIFICATE_TEMPLATE_KEY: ${SKYMAIL_CERTIFICATE_TEMPLATE_KEY-core.certificate}
       SKYMAIL_WELCOME_TEMPLATE_ID: ${SKYMAIL_WELCOME_TEMPLATE_ID:-}
       SKYMAIL_CERTIFICATE_TEMPLATE_ID: ${SKYMAIL_CERTIFICATE_TEMPLATE_ID:-}
+      # Membership mail (docs/team-membership-mail.md): unset takes the
+      # seeded key, an empty value turns that kind off.
+      SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY: ${SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY-club.team-membership}
+      SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY: ${SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY-club.role-membership}
+      SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY: ${SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY-club.group-membership}
+      # Privilege notice (docs/privilege-change-mail.md), the same way.
+      SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY: ${SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY-club.privilege-change}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
       PUBLIC_API_ORIGIN: ${PUBLIC_API_ORIGIN:-}
       PUBLIC_VERIFY_ORIGIN: ${PUBLIC_VERIFY_ORIGIN:-https://skyl.app/c}
@@ -70,6 +77,23 @@ services:
       CONTACT_CONSENT_TEXT_URL: ${CONTACT_CONSENT_TEXT_URL:-}
       CONTACT_CONSENT_NOTICE_URL: ${CONTACT_CONSENT_NOTICE_URL:-}
       SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY: ${SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY:-}
+      # Communication preferences (docs/communication-preferences.md): off while the key is unset.
+      COMMUNICATION_PREFERENCE_KEY: ${COMMUNICATION_PREFERENCE_KEY:-}
+      COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL: ${COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL:-}
+      # The News audience (docs/news-audience.md): only public records unless on.
+      NEWS_AUDIENCE_PRIVATE_VISIBILITY: ${NEWS_AUDIENCE_PRIVATE_VISIBILITY:-}
+      # The SkyPass signing key: required, except that this local stack falls back to
+      # a random key at start-up (SKYPASS_EPHEMERAL_KEY, development only).
+      SKYPASS_EC_PRIVATE_KEY: ${SKYPASS_EC_PRIVATE_KEY:-}
+      SKYPASS_EPHEMERAL_KEY: ${SKYPASS_EPHEMERAL_KEY:-true}
+      # SkyPass in Google Wallet (docs/skypass-google-wallet.md): off unless true.
+      SKYPASS_GOOGLE_WALLET_ENABLED: ${SKYPASS_GOOGLE_WALLET_ENABLED:-false}
+      SKYPASS_GOOGLE_WALLET_ISSUER_ID: ${SKYPASS_GOOGLE_WALLET_ISSUER_ID:-}
+      SKYPASS_GOOGLE_WALLET_CLASS_SUFFIX: ${SKYPASS_GOOGLE_WALLET_CLASS_SUFFIX:-}
+      SKYPASS_GOOGLE_WALLET_SERVICE_ACCOUNT_JSON: ${SKYPASS_GOOGLE_WALLET_SERVICE_ACCOUNT_JSON:-}
+      SKYPASS_GOOGLE_WALLET_TOTP_KEY: ${SKYPASS_GOOGLE_WALLET_TOTP_KEY:-}
+      SKYPASS_GOOGLE_WALLET_ORIGINS: ${SKYPASS_GOOGLE_WALLET_ORIGINS:-}
+      SKYPASS_GOOGLE_WALLET_LOGO_URL: ${SKYPASS_GOOGLE_WALLET_LOGO_URL:-}
       ACCOUNT_ACCESS_GATE_MODE: ${ACCOUNT_ACCESS_GATE_MODE:-off}
       ACCOUNT_ACCESS_REDIS_ADDR: ${ACCOUNT_ACCESS_REDIS_ADDR:-}
       ACCOUNT_ACCESS_REDIS_USERNAME: ${ACCOUNT_ACCESS_REDIS_USERNAME:-}
@@ -104,7 +128,8 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/v1/health || exit 1"]
+      # The image's own check (docs/health-and-shutdown.md), more often.
+      test: ["CMD", "/app/core-backend", "healthcheck"]
       interval: 5s
       timeout: 5s
       retries: 12

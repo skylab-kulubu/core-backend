@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/media/s3test"
@@ -45,8 +46,15 @@ func TestStartCDNPurgeTurnsOffInsteadOfStoppingCore(t *testing.T) {
 				fmt.Fprintf(&logs, format+"\n", a...)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
-			purger, metrics := startCDNPurge(ctx, env(test.env), test.blobs, "https://cdn.example.com", logf)
+			purger, metrics, stopped := startCDNPurge(ctx, env(test.env), test.blobs, "https://cdn.example.com", logf)
 			cancel()
+			// Shutdown waits on it: it closes once the worker has stopped
+			// and its connections are closed, at once when off.
+			select {
+			case <-stopped:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the purge did not stop after cancel")
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			if (purger != nil) != test.on || !strings.Contains(logs.String(), test.logged) {

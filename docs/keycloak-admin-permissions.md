@@ -33,6 +33,8 @@ At startup core only checks them (`MissingClientRoles`, GET only). When a role i
 
 The roles that stand for the Privileged Groups (`event:manage`, `season:manage`, … ; ADR-0059) are also Keycloak's: e-skylab-keycloak creates them and seeds their group mappings once (`KEYCLOAK_RECONCILE_ONLY=core-roles`). At startup core checks them with the same two reads as the certificate roles and logs one line that starts with `authz permission roles` when some are missing. Which mode reads them (`AUTHZ_ROLE_MODE`) and what each grants: [`authz-roles.md`](authz-roles.md).
 
+Right after, core looks up each Privileged root (`AUTHZ_PRIVILEGED_ROOTS`) by its path (`GET /group-by-path/{path}`, the Group read above, nothing new) and logs one line that starts with `authz privileged roots`: the roots found with their Group ids and the missing ones ([`authz-roles.md`](authz-roles.md#privileged-roots-authz_privileged_roots)).
+
 ## Dashboard summary
 
 The Members section of `GET /v1/dashboard/summary` reads the `UYELER` tree: `GET /group-by-path/UYELER`, then `GET /groups/{id}/children` and `GET /groups/{id}/members` for each Group in it, about `1 + 2 × G` requests for `G` Groups. One read serves every caller for 5 minutes, runs one at a time with a 5 s limit, a failure stops new reads for 30 s, and only people who may read people trigger it. Nothing new is needed: these are the Group reads of the rosters. See [`dashboard-summary.md`](dashboard-summary.md).
@@ -40,6 +42,16 @@ The Members section of `GET /v1/dashboard/summary` reads the `UYELER` tree: `GET
 ## Editable sites
 
 `editableSites` in `GET /v1/users/me/capabilities` ([`authz-roles.md`](authz-roles.md#editable-sites)) reads, for each site of `CMS_SITES`, the client's id (`GET /clients?clientId=`, kept for the life of the process) and the person's effective roles on it (`GET /users/{id}/role-mappings/clients/{client}/composite`): `1 × S` requests per person a minute for `S` sites, plus one `GET /clients` per site once. Keycloak authorizes the first with `view-clients` or `query-clients` and the second with `view-users`; `service-account-core` holds both, so nothing new is needed. If they are ever taken away the calls answer `403`, the sites are left out, the capabilities answer is still `200`, and the log line says `"outcome":"unavailable"` with the status.
+
+## Team delegation
+
+With `TEAM_DELEGATION=on` ([`team-delegation.md`](team-delegation.md)) core reads, for a Leader's request: the person's Groups (`GET /users/{id}/groups`), each of their Leader groups and the target Group with every Group above it by id (`GET /groups/{id}`, whose `parentId` gocloak does not carry, so core reads the representation itself), the role mappings of those Groups (`GET /groups/{id}/role-mappings` and `GET /groups/{id}/role-mappings/realm/composite`: Keycloak leaves realm roles out of the first, and out of a role's composites, for a caller without `view-realm`, which `service-account-core` does not hold; the second answers the Group's effective realm roles, those inside client composites too), the composites of each mapped client role (`GET /roles-by-id/{id}/composites`) and the clients they belong to (`GET /clients/{id}`, kept for the process), the realm's Groups for the duplicate-name check (`GET /groups` and children, once a minute) and, for the managed tree, `GET /groups/{id}/children` and `GET /groups/{id}/members`. Writes are the member routes' `PUT`/`DELETE /users/{id}/groups/{group}`. `view-clients`, `query-groups` and `view-users` cover them all: nothing new is needed (checked on Keycloak 26.7.4 with exactly production's six `realm-management` roles, 2026-10-12). With `off` none of them is made for a Leader.
+
+**`view-clients` is load-bearing.** Without it Keycloak answers `/groups/{id}/role-mappings` with no client mappings and no error, so every Group would read as unprotected. Core does not trust that silently: before a delegated write it checks that a Privileged root reads as protected (the canary, [`team-delegation.md`](team-delegation.md)); if none does, every delegated write is `503 protection_unverified` and an `ERROR` line is logged. Removing `view-clients` from `service-account-core` therefore switches delegation off in effect.
+
+## Role rules
+
+Before a Privileged member add or remove ([`team-delegation.md`](team-delegation.md#role-rules)), core reads, for the Group and every Group above it by path (`GET /group-by-path/{path}`), the `realm-management` roles it holds in effect: `GET /groups/{id}/role-mappings/clients/{realm-management}/composite`, which expands composite roles, a realm role's included; the client's id comes from `GET /clients?clientId=realm-management`, kept for the process. Before a role mapping write it reads the Group's client role mappings (`GET /groups/{id}/role-mappings`) and children (`GET /groups/{id}/children`), and for each role it adds (and a direct role) the role (`GET /clients/{id}/roles`) and its composites at any depth (`GET /roles-by-id/{id}/composites`, `GET /clients/{id}` for their clients), as the protection read does. A rename of a Group with client roles reads its mappings. The user read core already does (`GET /users/{id}`) carries `serviceAccountClientId`. `view-clients`, `query-groups` and `view-users` cover them all: nothing new is needed.
 
 ## Group count report
 
@@ -71,3 +83,7 @@ For such a token core reads the person's Groups with `GET /users/{id}/groups`, t
 - **Permissions.** Nothing new: `service-account-core` already holds `view-users` and `manage-users`. Keycloak leaves out of each page the Groups the caller may not view, and these roles view every Group. If they are ever taken away, the call answers `403` and marked tokens get `503`; a narrower fine-grained permission could instead answer fewer Groups than the person has.
 
 Nothing changes until the mapper is switched on for a client whose tokens reach core (the `admin` client first). Until then no token carries the marker.
+
+## News audience
+
+`POST /v1/audiences/resolve` ([`news-audience.md`](news-audience.md)) reads the Group tree (`GET /groups`, `GET /groups/{id}/children`), the direct members of every Group under `/UYELER` in full representation (`GET /groups/{id}/members?briefRepresentation=false`, for `emailVerified` and `serviceAccountClientId`). Nobody is read one by one. One read serves 30 s. Nothing new is needed: these are the Group and user reads above.

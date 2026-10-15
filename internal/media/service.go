@@ -640,10 +640,20 @@ func (s *service) Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Med
 }
 
 // mayReadPrivate reports whether p may see a private Media's metadata: a
-// privileged admin (who may list all Media), or the service account of the
-// product whose records use the Media's purpose.
+// privileged admin (who may list all Media), the service account of the
+// product whose records use the Media's purpose, or its uploader while it is
+// pending, scanning or rejected, so they learn how its scan ended (ADR 0052:
+// the uploader is told). Skyforms attaches an Answer file only once it is
+// clean, so for Answer files that ends when a record holds it; a Media
+// attached while scanning stays readable to its uploader until its scan
+// ends, which shows them only their own upload. Attached or detached, the
+// owning product decides. A certificate asset's uploader is covered too.
 func (s *service) mayReadPrivate(p authz.Principal, m Media) bool {
 	if s.authz.Allow(p, authz.Resource{Type: authz.TypeMedia}, authz.List) {
+		return true
+	}
+	if uploader, err := uuid.Parse(p.ID); err == nil && uploader != uuid.Nil && uploader == m.UploadedBy &&
+		(m.Status == StatusPending || m.Status == StatusScanning || m.Status == StatusRejected) {
 		return true
 	}
 	purpose, known := s.addresses.Catalogue.Lookup(m.Purpose)

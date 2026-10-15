@@ -1,6 +1,6 @@
 # Guest self check-in and the door QR
 
-A guest (a Ticket written by Guest apply, no account) checks themselves in to
+A guest (a Ticket written by Guest apply or a form report, no account) checks themselves in to
 a Session with `POST /v1/sessions/{sessionId}/check-in/guest`. The route takes
 no sign-in. Until now it took only an e-mail, and Session ids are public
 (`GET /v1/event-days/{id}/sessions`), so anybody anywhere could write an
@@ -60,9 +60,13 @@ The screen encodes `url` in the QR and asks for a new one every
 `url` is `DOOR_QR_GUEST_URL` with `{sessionId}` filled in and `dq=<token>`
 added. Unset, it is the Session's API address, the shape the static Session
 QR already has, so sky-app's Session QR scanner reads it as that Session
-(and ignores `dq`). A guest's phone camera needs a web page instead: it will
-be a page without sign-in in core-frontend; set `DOOR_QR_GUEST_URL` once it
-exists.
+(and ignores `dq`). A guest's phone camera needs a web page instead: the
+guest page lives in skylab-site at `/kapi/{sessionId}?dq=…` (no sign-in,
+skylab-site#40). `DOOR_QR_GUEST_URL`:
+
+- sandbox: `https://sandbox.yildizskylab.com/kapi/{sessionId}` (set);
+- production: `https://yildizskylab.com/kapi/{sessionId}`, set after the
+  skylab-site production release that ships the page (unset until then).
 
 ### `POST /v1/sessions/{sessionId}/check-in/guest`
 
@@ -87,8 +91,11 @@ route no longer tells a stranger which e-mails are registered.
 **Session window.** Guests check in, and door QRs are minted, only while the
 Session is not cancelled and now is within
 [`startTime` − grace, `endTime` + grace] (`DOOR_QR_SESSION_GRACE`, default
-30 min). A Session without a start or an end is open on that side. This
-applies in both modes.
+and maximum 12 h, so the door screen can be set up well ahead and still works
+after an overrun; a lower value narrows it). Minting and check-in use the
+same window, so the screen never shows a QR the check-in would refuse. A
+Session without a start or an end is open on that side. A cancelled Session
+is closed whatever the time. This applies in both modes.
 
 ## Modes (`GUEST_SELF_CHECKIN_MODE`)
 
@@ -126,8 +133,11 @@ never published. It is derived from the SkyPass signing key with HKDF-SHA256
 the SkyPass key itself never signs a door QR. The SkyPass key is
 `SKYPASS_EC_PRIVATE_KEY`, or a P-256 key derived from the legacy
 `SKYPASS_RSA_PRIVATE_KEY` when only that is set. If neither is set, core
-makes a random key at start-up, and a restart invalidates the door QRs on
-screen until their next refresh.
+does not start; only `SKYPASS_EPHEMERAL_KEY=true` (development) makes it
+sign with a random key made at start-up, and then a restart invalidates the
+door QRs on screen until their next refresh. Production and sandbox carry the
+key as an OpenBao reference (`ops/wizards/skypass-signing-key-wizard.sh` in
+the platform hub); it is never rotated automatically.
 
 **More than one replica** accepts the same door QR only if every replica has
 the same SkyPass key: set it explicitly wherever core runs more than once.
@@ -141,7 +151,11 @@ single-use. What bounds a photo of it sent elsewhere:
 
 - it expires after `DOOR_QR_TTL` (60 s), and the screen replaces it every
   quarter of that (15 s);
-- the Session window: outside it nothing is accepted;
+- the Session window: outside it nothing is accepted. At 12 h on each side
+  it bounds the day of the Session rather than the hour, so the lifetime,
+  the use cap and the fact that a QR exists only while door staff keep the
+  screen open do the real work; narrow `DOOR_QR_SESSION_GRACE` if a door
+  screen has to stay up unattended;
 - each token lets at most `DOOR_QR_MAX_USES` (default 20) guests in. Only a
   check-in that happened (or found the guest already checked in) spends a
   use; an e-mail without a Ticket gives its use back, so junk e-mails cannot
@@ -174,9 +188,11 @@ Requests refused by the per-address budget (429) do not reach the counters.
    nobody calls the route).
 2. `GUEST_SELF_CHECKIN_MODE=qr` right after the release: nobody calls the
    route, so nothing breaks, and guests cannot check themselves in until the
-   door screens exist, which is already the case in practice.
-3. The door screen ships (core-frontend; sky-app staff scanner) and the
-   guest page (core-frontend, no sign-in); then `DOOR_QR_GUEST_URL`.
+   door screens exist, which is already the case in practice. Production
+   has run `qr` since 2026-10-04.
+3. The door screen ships (core-frontend#20; sky-app staff scanner) and the
+   guest page (skylab-site#40, `/kapi/{sessionId}`, no sign-in); then
+   `DOOR_QR_GUEST_URL` (values above).
    Contract: `sky_lab_genel/.scratch/core-internal-auth/door-qr-sozlesme.md`.
 
 Rollback: `GUEST_SELF_CHECKIN_MODE=open`.
