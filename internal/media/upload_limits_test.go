@@ -1,6 +1,7 @@
 package media_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +47,48 @@ func TestUploadLimitsFromEnv(t *testing.T) {
 		values := map[string]string{key: bad}
 		if _, err := media.UploadLimitsFromEnv(func(key string) string { return values[key] }); err == nil {
 			t.Fatalf("%s=%s must be rejected", key, bad)
+		}
+	}
+}
+
+func TestServiceUploadLimitsDefaultTo1000Per10MinutesAnd10GiBPerDay(t *testing.T) {
+	t.Parallel()
+	limits, err := media.ServiceUploadLimitsFromEnv(func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := media.UploadLimits{Count: 1000, CountWindow: 10 * time.Minute, DailyBytes: 10240 << 20}
+	if limits != want {
+		t.Fatalf("limits %+v; want %+v", limits, want)
+	}
+}
+
+func TestServiceUploadLimitsFromEnv(t *testing.T) {
+	t.Parallel()
+	values := map[string]string{
+		"MEDIA_SERVICE_UPLOAD_RATE_MAX":      "300",
+		"MEDIA_SERVICE_UPLOAD_RATE_WINDOW":   "1m",
+		"MEDIA_SERVICE_UPLOAD_DAILY_MAX_MIB": "4096",
+		"MEDIA_UPLOAD_RATE_MAX":              "7",
+	}
+	limits, err := media.ServiceUploadLimitsFromEnv(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := media.UploadLimits{Count: 300, CountWindow: time.Minute, DailyBytes: 4 << 30}
+	if limits != want {
+		t.Fatalf("limits %+v; want %+v", limits, want)
+	}
+
+	for key, bad := range map[string]string{
+		"MEDIA_SERVICE_UPLOAD_RATE_MAX":      "0",
+		"MEDIA_SERVICE_UPLOAD_RATE_WINDOW":   "10",
+		"MEDIA_SERVICE_UPLOAD_DAILY_MAX_MIB": "-1",
+	} {
+		values := map[string]string{key: bad}
+		_, err := media.ServiceUploadLimitsFromEnv(func(key string) string { return values[key] })
+		if err == nil || !strings.HasPrefix(err.Error(), key+" ") {
+			t.Fatalf("%s=%s must be rejected naming the variable, got %v", key, bad, err)
 		}
 	}
 }

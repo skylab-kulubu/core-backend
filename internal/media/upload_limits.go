@@ -29,28 +29,45 @@ func DefaultUploadLimits() UploadLimits {
 	return UploadLimits{Count: 100, CountWindow: 10 * time.Minute, DailyBytes: 2048 << 20}
 }
 
+// DefaultServiceUploadLimits are 1000 uploads per 10 minutes and 10 GiB per
+// rolling day for each product's service account, which uploads for many
+// people: Skyforms sends every guest's Answer file as itself.
+func DefaultServiceUploadLimits() UploadLimits {
+	return UploadLimits{Count: 1000, CountWindow: 10 * time.Minute, DailyBytes: 10240 << 20}
+}
+
 // UploadLimitsFromEnv reads MEDIA_UPLOAD_RATE_MAX, MEDIA_UPLOAD_RATE_WINDOW
 // and MEDIA_UPLOAD_DAILY_MAX_MIB; each one unset keeps its default.
 func UploadLimitsFromEnv(getenv func(string) string) (UploadLimits, error) {
-	limits := DefaultUploadLimits()
-	if raw := strings.TrimSpace(getenv("MEDIA_UPLOAD_RATE_MAX")); raw != "" {
+	return uploadLimitsFromEnv(getenv, "MEDIA_UPLOAD_", DefaultUploadLimits())
+}
+
+// ServiceUploadLimitsFromEnv reads MEDIA_SERVICE_UPLOAD_RATE_MAX,
+// MEDIA_SERVICE_UPLOAD_RATE_WINDOW and MEDIA_SERVICE_UPLOAD_DAILY_MAX_MIB;
+// each one unset keeps its default.
+func ServiceUploadLimitsFromEnv(getenv func(string) string) (UploadLimits, error) {
+	return uploadLimitsFromEnv(getenv, "MEDIA_SERVICE_UPLOAD_", DefaultServiceUploadLimits())
+}
+
+func uploadLimitsFromEnv(getenv func(string) string, prefix string, limits UploadLimits) (UploadLimits, error) {
+	if raw := strings.TrimSpace(getenv(prefix + "RATE_MAX")); raw != "" {
 		count, err := strconv.Atoi(raw)
 		if err != nil || count <= 0 {
-			return UploadLimits{}, fmt.Errorf("MEDIA_UPLOAD_RATE_MAX must be a positive integer")
+			return UploadLimits{}, fmt.Errorf("%sRATE_MAX must be a positive integer", prefix)
 		}
 		limits.Count = count
 	}
-	if raw := strings.TrimSpace(getenv("MEDIA_UPLOAD_RATE_WINDOW")); raw != "" {
+	if raw := strings.TrimSpace(getenv(prefix + "RATE_WINDOW")); raw != "" {
 		window, err := time.ParseDuration(raw)
 		if err != nil || window <= 0 {
-			return UploadLimits{}, fmt.Errorf("MEDIA_UPLOAD_RATE_WINDOW must be a positive duration")
+			return UploadLimits{}, fmt.Errorf("%sRATE_WINDOW must be a positive duration", prefix)
 		}
 		limits.CountWindow = window
 	}
-	if raw := strings.TrimSpace(getenv("MEDIA_UPLOAD_DAILY_MAX_MIB")); raw != "" {
+	if raw := strings.TrimSpace(getenv(prefix + "DAILY_MAX_MIB")); raw != "" {
 		mib, err := strconv.ParseInt(raw, 10, 32)
 		if err != nil || mib <= 0 {
-			return UploadLimits{}, fmt.Errorf("MEDIA_UPLOAD_DAILY_MAX_MIB must be a positive integer")
+			return UploadLimits{}, fmt.Errorf("%sDAILY_MAX_MIB must be a positive integer", prefix)
 		}
 		limits.DailyBytes = mib << 20
 	}

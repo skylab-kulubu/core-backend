@@ -101,7 +101,8 @@ core. After setting it, check inside the container:
 ## What is not bounded
 
 `U`, the uploads in flight, is bounded only by how many people upload at
-once (the per-person upload budget limits rate and volume, not concurrency).
+once (the upload budgets, per person and per product service account, limit
+rate and volume, not concurrency).
 Streaming the request body instead of holding it is not a small change in
 core: fasthttp's `StreamRequestBody` applies to every route and streams a
 body above the body limit instead of refusing it, and the media service
