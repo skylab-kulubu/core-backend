@@ -164,7 +164,7 @@ func requireRateLimited(t *testing.T, resp limitedUploadResponse, limit string, 
 	}
 }
 
-// requireUploadBudget checks that a 429 states the person's whole budget,
+// requireUploadBudget checks that a 429 states the account's whole budget,
 // each maximum under its own member.
 func requireUploadBudget(t *testing.T, resp limitedUploadResponse, maxUploads int, window time.Duration, maxDailyBytes int64) {
 	t.Helper()
@@ -254,13 +254,13 @@ func TestEachPersonHasTheirOwnUploadBudget(t *testing.T) {
 	requireRateLimited(t, postPDFAs(t, app, grace, 1024), "uploads", 10*time.Minute)
 }
 
-func TestAProductsServiceAccountIsChargedToTheServicesBudget(t *testing.T) {
-	t.Parallel()
-	keys := testauth.New(t)
+// servicesBudgetApp gives each person 1 upload and the forms client's service
+// account 3 uploads per 10 minutes.
+func servicesBudgetApp(keys *testauth.Bundle) *fiber.App {
 	clock := newManualClock()
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
 	clients := authz.ServiceClients{"forms": authz.ProductForms}
-	app := httpx.New(httpx.Deps{
+	return httpx.New(httpx.Deps{
 		Users: user.NewService(user.NewMemoryStore()),
 		Media: media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), az, "",
 			media.ServiceOptions{ServiceProducts: clients.Products()}),
@@ -274,6 +274,12 @@ func TestAProductsServiceAccountIsChargedToTheServicesBudget(t *testing.T) {
 		}, clock.Now),
 		TrustedProxies: testTrustedProxies(),
 	})
+}
+
+func TestAProductsServiceAccountIsChargedToTheServicesBudget(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	app := servicesBudgetApp(keys)
 	forms := serviceToken(t, keys, "forms", "media:attach")
 
 	for range 3 {
@@ -289,6 +295,29 @@ func TestAProductsServiceAccountIsChargedToTheServicesBudget(t *testing.T) {
 	requireUploadStatus(t, postPDFAs(t, app, ada, 1024), fiber.StatusCreated)
 	requireRateLimited(t, postPDFAs(t, app, ada, 1024), "uploads", 10*time.Minute)
 	requireUploadBudget(t, postProfilePictureAs(t, app, ada), 1, 10*time.Minute, 1<<30)
+}
+
+// Only a listed client's service account leaves the person budget: a person
+// signed in through that client, or a service account of a client no product
+// claims, is charged like anyone else.
+func TestPeopleAndUnlistedServiceAccountsStayOnThePersonBudget(t *testing.T) {
+	t.Parallel()
+	keys := testauth.New(t)
+	app := servicesBudgetApp(keys)
+
+	for name, bearer := range map[string]string{
+		"a person signed in through the forms client": personToken(t, keys, uuid.NewString(), "forms"),
+		"a service account of an unlisted client":     serviceToken(t, keys, "unlisted", "media:attach"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := postPDFAs(t, app, bearer, 1024); got.status == fiber.StatusTooManyRequests {
+				t.Fatalf("the first upload was refused: %v", got.body)
+			}
+			refused := postPDFAs(t, app, bearer, 1024)
+			requireRateLimited(t, refused, "uploads", 10*time.Minute)
+			requireUploadBudget(t, refused, 1, 10*time.Minute, 1<<30)
+		})
+	}
 }
 
 func TestAnonymousUploadsAreRefusedAsUnauthorizedNotRateLimited(t *testing.T) {
