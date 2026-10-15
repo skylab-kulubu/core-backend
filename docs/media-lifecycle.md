@@ -464,8 +464,8 @@ body the HTTP server read, the form parsed from it, the file read from the
 form and, for a private purpose, its encrypted copy. A 50 MiB Answer file
 takes about 200 MiB for the seconds it is stored; a PDF or DOCX takes no
 [decoding slot](#decode-budget), so only the [upload limits](#upload-limits)
-bound how many are stored at once. Production runs core without a memory
-limit on a 15 GiB host.
+(each person's budget and the services' budget) bound how many are stored
+at once. Production runs core without a memory limit on a 15 GiB host.
 
 ### Upload limits
 

@@ -94,6 +94,9 @@ type Deps struct {
 	// uses media.DefaultUploadLimits.
 	MediaUploadLimiter *media.UploadLimiter
 
+	// MediaServiceUploadLimiter is each product service account's single-step
+	// upload budget, charged instead of a person's. Nil uses
+	// media.DefaultServiceUploadLimits.
 	MediaServiceUploadLimiter *media.UploadLimiter
 
 	// ServiceClients are the products' service clients: a service

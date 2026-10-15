@@ -29,6 +29,9 @@ func DefaultUploadLimits() UploadLimits {
 	return UploadLimits{Count: 100, CountWindow: 10 * time.Minute, DailyBytes: 2048 << 20}
 }
 
+// DefaultServiceUploadLimits are 1000 uploads per 10 minutes and 10 GiB per
+// rolling day for each product's service account, which uploads for many
+// people: Skyforms sends every guest's Answer file as itself.
 func DefaultServiceUploadLimits() UploadLimits {
 	return UploadLimits{Count: 1000, CountWindow: 10 * time.Minute, DailyBytes: 10240 << 20}
 }
@@ -39,6 +42,9 @@ func UploadLimitsFromEnv(getenv func(string) string) (UploadLimits, error) {
 	return uploadLimitsFromEnv(getenv, "MEDIA_UPLOAD_", DefaultUploadLimits())
 }
 
+// ServiceUploadLimitsFromEnv reads MEDIA_SERVICE_UPLOAD_RATE_MAX,
+// MEDIA_SERVICE_UPLOAD_RATE_WINDOW and MEDIA_SERVICE_UPLOAD_DAILY_MAX_MIB;
+// each one unset keeps its default.
 func ServiceUploadLimitsFromEnv(getenv func(string) string) (UploadLimits, error) {
 	return uploadLimitsFromEnv(getenv, "MEDIA_SERVICE_UPLOAD_", DefaultServiceUploadLimits())
 }
