@@ -179,7 +179,7 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL, OwnerID: owner}, authz.Delete) {
 		return ErrForbidden
 	}
-	if existing.FormID != nil && !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL}, authz.Read) {
+	if !s.mayDisableOrRestore(p, existing) {
 		return ErrManaged
 	}
 	return s.store.Disable(ctx, id, lifecycle.ActorID(p.ID))
@@ -197,10 +197,23 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeURL, OwnerID: owner}, authz.Delete) {
 		return URL{}, ErrForbidden
 	}
+	if !s.mayDisableOrRestore(p, existing) {
+		return URL{}, ErrManaged
+	}
 	if err := s.store.Restore(ctx, id); err != nil {
 		return URL{}, err
 	}
 	return s.store.Get(ctx, id)
+}
+
+// mayDisableOrRestore reports whether p may delete (disable) or restore the
+// link through the generic URL endpoints, past the owner check. A form's or
+// an event's link (an event's link carries its form) takes the decision on a
+// link one did not create: the url.moderateWrite decision, which a Privileged
+// reader (DK) never holds, though it reads every link. Its creator manages
+// it in Forms or on the Event. A personal link needs nothing more.
+func (s *service) mayDisableOrRestore(p authz.Principal, u URL) bool {
+	return u.FormID == nil || s.authz.Allow(p, authz.Resource{Type: authz.TypeURL}, authz.Delete)
 }
 
 func (s *service) ensureAlias(ctx context.Context, alias string) (string, error) {
