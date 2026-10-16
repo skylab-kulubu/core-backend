@@ -78,6 +78,43 @@ func TestSkyMailWelcomeNoopsWithoutTemplate(t *testing.T) {
 	}
 }
 
+func TestSkyMailWelcomeCarriesIdentity(t *testing.T) {
+	t.Parallel()
+	for _, schoolEmail := range []string{"", "ada@std.yildiz.edu.tr"} {
+		t.Run("school="+schoolEmail, func(t *testing.T) {
+			t.Parallel()
+			var task struct {
+				Variables map[string]string `json:"body_variables"`
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+					t.Error(err)
+				}
+				w.WriteHeader(http.StatusCreated)
+			}))
+			t.Cleanup(srv.Close)
+			mailer := &SkyMail{BaseURL: srv.URL, TemplateKey: DefaultWelcomeTemplateKey, Tokens: StaticToken("tok"), HTTP: srv.Client()}
+			u := testUser()
+			u.Username = "ada.lovelace2"
+			u.SchoolEmail = schoolEmail
+			mailer.Welcome(t.Context(), u)
+			want := map[string]string{
+				"FirstName": u.FirstName, "LastName": u.LastName, "Email": u.Email,
+				"Username": u.Username, "SchoolEmail": schoolEmail,
+				"SkyNumber": u.SkyNumber, "CreatedAt": u.CreatedAt.UTC().Format(time.RFC3339),
+			}
+			if len(task.Variables) != len(want) {
+				t.Fatalf("variable count = %d, want %d", len(task.Variables), len(want))
+			}
+			for name, value := range want {
+				if got, present := task.Variables[name]; !present || got != value {
+					t.Errorf("%s = %q (present=%t), want %q", name, got, present, value)
+				}
+			}
+		})
+	}
+}
+
 func TestSkyMailCertificatePostsSingleTask(t *testing.T) {
 	t.Parallel()
 	templateID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
@@ -156,6 +193,8 @@ func assertNoMailMaterial(t *testing.T, got string) {
 	t.Helper()
 	for _, material := range []string{
 		testRecipient,
+		"ada@std.yildiz.edu.tr",
+		"ada.lovelace2",
 		testAccessToken,
 		testSecret,
 		welcomeTemplateID.String(),
@@ -178,11 +217,13 @@ func assertContainsAll(t *testing.T, got string, want []string) {
 
 func testUser() user.User {
 	return user.User{
-		Email:     testRecipient,
-		FirstName: "Ada",
-		LastName:  "Lovelace",
-		SkyNumber: "SKY-1",
-		CreatedAt: time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC),
+		Email:       testRecipient,
+		FirstName:   "Ada",
+		LastName:    "Lovelace",
+		Username:    "ada.lovelace2",
+		SchoolEmail: "ada@std.yildiz.edu.tr",
+		SkyNumber:   "SKY-1",
+		CreatedAt:   time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC),
 	}
 }
 
