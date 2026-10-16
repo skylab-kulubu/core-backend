@@ -32,8 +32,12 @@ One exception runs in the other direction. If the key is set and SkyMail answers
 template id, if one is configured, and says so in the log. There is no reverse
 fallback: a refused id is never retried with a key.
 
-The welcome template reads `{{.FirstName}}`. Core sends `FirstName`, `LastName`,
-`Email`, `SkyNumber` and `CreatedAt`, which covers both templates.
+The welcome mail sends `FirstName`, `LastName`, `Email`, `Username`,
+`SchoolEmail`, `SkyNumber` and `CreatedAt`. `Username` and `SchoolEmail` come
+from the JIT User's identity profile and can be empty; neither is derived from
+the primary e-mail. The welcome template shows the username when present and
+offers YTÜ linking only when `SchoolEmail` is empty. Deploy this additive sender
+change before seeding that template; older templates ignore the extra values.
 
 A third mail, the contact consent confirmation (double opt-in,
 [contact-consents.md](contact-consents.md)), is sent only while

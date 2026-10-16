@@ -167,11 +167,13 @@ func (s *SkyMail) WarnUnconfiguredTemplates() {
 func (s *SkyMail) Welcome(ctx context.Context, u user.User) {
 	fullName := strings.TrimSpace(u.FirstName + " " + u.LastName)
 	s.send(ctx, kindWelcome, s.welcomeTemplate(), u.Email, fullName, map[string]string{
-		"FirstName": u.FirstName,
-		"LastName":  u.LastName,
-		"Email":     u.Email,
-		"SkyNumber": u.SkyNumber,
-		"CreatedAt": u.CreatedAt.UTC().Format(time.RFC3339),
+		"FirstName":   u.FirstName,
+		"LastName":    u.LastName,
+		"Email":       u.Email,
+		"Username":    u.Username,
+		"SchoolEmail": u.SchoolEmail,
+		"SkyNumber":   u.SkyNumber,
+		"CreatedAt":   u.CreatedAt.UTC().Format(time.RFC3339),
 	})
 }
 

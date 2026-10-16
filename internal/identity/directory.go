@@ -104,10 +104,13 @@ type UserCard struct {
 }
 
 type Directory interface {
+	GroupNodes
+	GroupProtections
 	ListGroups(ctx context.Context) ([]Group, error)
 	GetGroup(ctx context.Context, idOrPath string) (Group, error)
 	CreateGroup(ctx context.Context, parentRef, name string) (Group, error)
 	UpdateGroup(ctx context.Context, g Group) (Group, error)
+	DeleteGroup(ctx context.Context, groupID string) error
 	Subgroups(ctx context.Context, groupID string) ([]Group, error)
 	Members(ctx context.Context, groupID string) ([]Person, error)
 	AddMember(ctx context.Context, groupID string, userID uuid.UUID) error

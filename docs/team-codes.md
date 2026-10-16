@@ -23,7 +23,7 @@ A rename that only changes case (`artlab` → `ARTLAB`) keeps the code: only the
 
 ## Retired codes
 
-`retired_team_codes(code, retired_at, group_id, reason)`. A rename writes the Group's old name there (`reason = 'renamed'`, with the Group's Keycloak id), in the same transaction as the check, committed only once Keycloak took the rename. A reserved old name (`LIDERLER`) is not written. A retired code is never given to a new Group, nor back to the Group that gave it up. Codes and Group ids only, no person, so the table has no retention limit and account erasure does not touch it. Later tickets add `deleted` (a Sub-team deleted) and seed the codes core's records name without a Group (ticket 03's report).
+`retired_team_codes(code, retired_at, group_id, reason)`. A rename writes the Group's old name there (`reason = 'renamed'`, with the Group's Keycloak id), in the same transaction as the check, committed only once Keycloak took the rename. A reserved old name (`LIDERLER`) is not written. A retired code is never given to a new Group, nor back to the Group that gave it up. Codes and Group ids only, no person, so the table has no retention limit and account erasure does not touch it. An empty-leaf deletion durably retires the code with reason `deleted` before asking Keycloak; a failed deletion can be retried but never frees the code ([group-deletion.md](group-deletion.md)). Ticket 03's report seeds the codes core's records name without a Group.
 
 ## The lock
 
@@ -43,3 +43,5 @@ RFC 7807 problems with a `code` member and a `detail` saying why:
 | 409 | `privileged_root` | a rename would move or make a Privileged root (rule 4) |
 
 A caller who may not manage Groups gets 403 first, whatever the name.
+
+Empty-leaf deletion uses the same lock in two transactions: durable retirement first, then fresh checks and DELETE. Privileged member adds and Group role writes also take it, as delegated membership already does. This prevents a core write from populating a checked empty Group just before its deletion; see [group-deletion.md](group-deletion.md) for the failure and external-writer limits.

@@ -16,7 +16,8 @@ import (
 // (docs/team-audit.md): a create, a rename or change of attributes, a member
 // added or removed and a Group's role mappings. Each write reads what the
 // row needs (the Group's path, its old name, attributes or roles), opens a
-// pending row, asks dir, and writes the outcome. A row that cannot be opened
+// pending row, asks dir, and writes the outcome. Empty-leaf deletion also
+// opens it before durable code retirement. A row that cannot be opened
 // stops the write before dir is asked: the error is teamaudit.ErrUnavailable
 // (503 audit_unavailable). The actor is the one ctx carries
 // (teamaudit.WithActor); a write without one is refused the same way.
@@ -73,6 +74,10 @@ func (d *auditedDirectory) write(ctx context.Context, r teamaudit.Record, do fun
 // given up, a lost connection, a 5xx) may have come after Keycloak made the
 // change, so its outcome is unknown.
 func refusal(err error) (string, bool) {
+	var deletion *GroupDeleteError
+	if errors.As(err, &deletion) {
+		return deletion.Code, true
+	}
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return "not_found", true
@@ -160,6 +165,23 @@ func (d *auditedDirectory) UpdateGroup(ctx context.Context, g Group) (Group, err
 		return nil, err
 	})
 	return updated, err
+}
+
+func (d *auditedDirectory) DeleteGroup(ctx context.Context, groupID string) error {
+	g, err := d.Directory.GetGroup(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	return d.deleteGroupWith(ctx, g, func() error { return d.Directory.DeleteGroup(ctx, g.ID) })
+}
+
+// deleteGroupWith opens the audit row before the durable retirement and
+// keeps it pending through both ledger transactions and the Keycloak call.
+func (d *auditedDirectory) deleteGroupWith(ctx context.Context, g Group, do func() error) error {
+	return d.write(ctx, teamaudit.Record{
+		Action: teamaudit.ActionTeamDelete, GroupID: g.ID, GroupPath: g.Path,
+		Before: &teamaudit.State{ID: g.ID, Path: g.Path, Code: g.Name},
+	}, func() (*teamaudit.State, error) { return nil, do() })
 }
 
 func (d *auditedDirectory) AddMember(ctx context.Context, groupID string, userID uuid.UUID) error {

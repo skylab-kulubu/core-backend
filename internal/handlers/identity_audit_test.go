@@ -42,6 +42,7 @@ func auditedAppWith(t *testing.T, ident authn.Identity, dir *identity.Memory, au
 	})
 	app.Post("/v1/groups", h.CreateGroup)
 	app.Patch("/v1/groups/:groupId", h.UpdateGroup)
+	app.Delete("/v1/groups/:groupId", h.DeleteGroup)
 	app.Post("/v1/groups/:groupId/members", h.AddMember)
 	app.Delete("/v1/groups/:groupId/members/:userId", h.RemoveMember)
 	app.Put("/v1/groups/:groupId/client-roles", h.SetGroupClientRoles)
