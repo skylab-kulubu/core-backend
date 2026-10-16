@@ -247,6 +247,27 @@ func (m *Memory) CreateGroup(_ context.Context, parentRef, name string) (Group, 
 	return g, nil
 }
 
+// DeleteGroup mirrors Keycloak's recursive delete. The service refuses
+// non-leaves before reaching this directory operation.
+func (m *Memory) DeleteGroup(_ context.Context, groupID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("DeleteGroup")
+	g, ok := m.groups[groupID]
+	if !ok {
+		return ErrNotFound
+	}
+	for id, child := range m.groups {
+		if id == groupID || strings.HasPrefix(child.Path, g.Path+"/") {
+			delete(m.groups, id)
+			delete(m.members, id)
+			delete(m.groupRoles, id)
+			delete(m.parents, id)
+		}
+	}
+	return nil
+}
+
 func (m *Memory) Subgroups(_ context.Context, groupID string) ([]Group, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

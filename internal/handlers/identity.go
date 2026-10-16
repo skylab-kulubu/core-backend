@@ -79,10 +79,18 @@ func optionalCaller(c fiber.Ctx) authz.Principal {
 }
 
 func identityError(c fiber.Ctx, err error) error {
+	var deletion *identity.GroupDeleteError
 	var name *teamcode.Error
 	var refused *identity.DelegationError
 	var rule *identity.RoleRuleError
 	switch {
+	case errors.As(err, &deletion):
+		if deletion.Status == fiber.StatusServiceUnavailable {
+			c.Set(fiber.HeaderCacheControl, "no-store")
+			c.Set(fiber.HeaderRetryAfter, "1")
+		}
+		return problemWithFields(c, deletion.Status, delegationTitles[deletion.Status], deletion.Detail, deletion.Code,
+			fiber.Map{"members": deletion.Members, "children": deletion.Children})
 	case errors.As(err, &rule):
 		return roleRuleError(c, rule)
 	case errors.As(err, &name):
@@ -233,6 +241,17 @@ func (h *IdentityHandler) UpdateGroup(c fiber.Ctx) error {
 		return identityError(c, err)
 	}
 	return c.JSON(updated)
+}
+
+func (h *IdentityHandler) DeleteGroup(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	if err := h.svc.DeleteGroup(auditContext(c, p), p, c.Params("groupId")); err != nil {
+		return identityError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 func (h *IdentityHandler) Members(c fiber.Ctx) error {

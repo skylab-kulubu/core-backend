@@ -165,7 +165,10 @@ Errors are RFC 9457 problems with `code` (and `reason` for placement). The panel
 | `DELETE /v1/groups/{id}/members/{userId}` | `Manages` of the Group, membership of the Source group | the person leaves the Group they sit in |
 
 `GET /v1/groups`, `POST /v1/groups`, `PATCH /v1/groups/{id}` and the
-client-role routes stay Privileged's (Forms reads the list).
+client-role routes stay Privileged's (Forms reads the list). So does
+`DELETE /v1/groups/{id}`, which removes only an empty leaf under the stricter
+[Group deletion guards](group-deletion.md); delegated subtree deletion remains
+ticket 05.
 
 ### Writes
 
