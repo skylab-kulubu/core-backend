@@ -24,6 +24,7 @@ type Service interface {
 	GetGroup(ctx context.Context, p authz.Principal, groupRef string) (Group, error)
 	CreateGroup(ctx context.Context, p authz.Principal, parentRef, name string) (Group, error)
 	UpdateGroup(ctx context.Context, p authz.Principal, groupRef, name string, attrs map[string]string) (Group, error)
+	DeleteGroup(ctx context.Context, p authz.Principal, groupID string) error
 	Members(ctx context.Context, p authz.Principal, groupRef string) ([]GroupMember, error)
 	AddMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
 	RemoveMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
@@ -396,6 +397,12 @@ func (s *service) AddMember(ctx context.Context, p authz.Principal, groupRef str
 	if err := s.allow(p, authz.TypeGroup, authz.Update); err != nil {
 		return s.delegatedAddMember(ctx, p, groupRef, userID)
 	}
+	return s.codes.Locked(ctx, func(ctx context.Context, _ teamcode.Records) error {
+		return s.addMember(ctx, p, groupRef, userID)
+	})
+}
+
+func (s *service) addMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error {
 	if err := s.notKeycloakAdminGroup(ctx, groupRef); err != nil {
 		return err
 	}
@@ -848,6 +855,12 @@ func (s *service) SetGroupClientRoles(ctx context.Context, p authz.Principal, gr
 	if err := s.allow(p, authz.TypeGroup, authz.Update); err != nil {
 		return err
 	}
+	return s.codes.Locked(ctx, func(ctx context.Context, _ teamcode.Records) error {
+		return s.setGroupClientRoles(ctx, p, groupRef, roles)
+	})
+}
+
+func (s *service) setGroupClientRoles(ctx context.Context, p authz.Principal, groupRef string, roles []ClientRole) error {
 	g, err := s.dir.GetGroup(ctx, groupRef)
 	if err != nil {
 		return err

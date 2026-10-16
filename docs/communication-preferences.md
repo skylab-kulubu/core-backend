@@ -110,8 +110,9 @@ preferences are on or off, and a repeat finds nothing.
 
 **Deleted teams.** Once a day (and at startup), core deletes the rows of
 every Group id Keycloak no longer has. A Group list without `/UYELER`
-deletes nothing. Core has no route that deletes a Group, so this is the
-only path.
+deletes nothing. Core’s [empty-leaf Group deletion](group-deletion.md) also
+leaves preference cleanup to this job; the tree stops offering a deleted Group
+within its existing one-minute cache lifetime.
 
 **Deleted people (D2).** In the same daily run, core asks Keycloak for
 every person who has rows and deletes the rows of those Keycloak answers
