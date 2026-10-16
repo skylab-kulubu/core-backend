@@ -95,6 +95,19 @@ func (r *postgresRecords) Held(ctx context.Context, code string) (bool, error) {
 	return held, nil
 }
 
+func (r *postgresRecords) Referenced(ctx context.Context, code string) (bool, error) {
+	var held bool
+	err := r.tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM events WHERE lower(owner_team) = lower($1))
+			OR EXISTS (SELECT 1 FROM certificates WHERE lower(owner_team) = lower($1))
+			OR EXISTS (SELECT 1 FROM certificate_templates WHERE lower(owner_team) = lower($1))
+			OR EXISTS (SELECT 1 FROM certificate_template_bindings WHERE scope = 'ownerTeam' AND lower(scope_key) = lower($1))`, code).Scan(&held)
+	if err != nil {
+		return false, fmt.Errorf("%w: referenced: %w", ErrUnavailable, err)
+	}
+	return held, nil
+}
+
 func (r *postgresRecords) Retire(ctx context.Context, code, groupID, reason string) error {
 	var group *uuid.UUID
 	if id, err := uuid.Parse(groupID); err == nil {

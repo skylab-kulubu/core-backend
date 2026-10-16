@@ -10,6 +10,8 @@ import (
 const (
 	// ReasonRenamed: the Group that held the code was renamed.
 	ReasonRenamed = "renamed"
+	// ReasonDeleted: an empty Group was deleted. Its code is never reused.
+	ReasonDeleted = "deleted"
 )
 
 // Ledger is what core knows of codes outside Keycloak, and the lock that
@@ -28,6 +30,9 @@ type Records interface {
 	// certificate, a certificate template or its Owner team binding) or a
 	// retired code holds code, compared without case.
 	Held(ctx context.Context, code string) (bool, error)
+	// Referenced excludes retired codes: deleting a Group may be retried
+	// after its code was durably retired.
+	Referenced(ctx context.Context, code string) (bool, error)
 	// Retire records code as given up by the Group groupID for reason: no
 	// new Group gets it again. groupID is the Keycloak id, recorded only
 	// when it is a UUID. Retiring a retired code again changes nothing.
@@ -110,6 +115,12 @@ func (r *memoryRecords) Held(_ context.Context, code string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func (r *memoryRecords) Referenced(_ context.Context, code string) (bool, error) {
+	r.ledger.mu.Lock()
+	defer r.ledger.mu.Unlock()
+	return r.ledger.held[strings.ToLower(code)], nil
 }
 
 func (r *memoryRecords) Retire(_ context.Context, code, _, reason string) error {

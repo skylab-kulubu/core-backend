@@ -102,6 +102,17 @@ func (r Rules) Reserved(name string) bool {
 	return slices.ContainsFunc(r.reserved, func(reserved string) bool { return strings.EqualFold(reserved, name) })
 }
 
+// Structural reports system/Leader names whose descendants the empty-leaf
+// deletion route also protects. Policy-specific Team codes such as GECEKODU
+// are reserved for creation but are not structural containers.
+func (r Rules) Structural(name string) bool {
+	name = strings.ToUpper(strings.TrimSpace(name))
+	if slices.ContainsFunc(fixedReserved, func(fixed string) bool { return strings.EqualFold(fixed, name) }) {
+		return true
+	}
+	return slices.ContainsFunc(r.leaders, func(leader string) bool { return strings.EqualFold(name, leader) })
+}
+
 // Create checks name for a new Group under parentPath ("" for the realm's
 // top), apart from whether the name is taken: the Scope says what it must
 // still be free of.

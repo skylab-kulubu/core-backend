@@ -435,6 +435,15 @@ func (k *Keycloak) UpdateGroup(ctx context.Context, g Group) (Group, error) {
 	return groupFrom(fresh), nil
 }
 
+// DeleteGroup uses an exact id: destructive writes never resolve a name or path.
+func (k *Keycloak) DeleteGroup(ctx context.Context, groupID string) error {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	return mapKCErr(k.gc.DeleteGroup(ctx, token, k.realm, groupID))
+}
+
 func (k *Keycloak) Subgroups(ctx context.Context, groupID string) ([]Group, error) {
 	token, err := k.accessToken(ctx)
 	if err != nil {
