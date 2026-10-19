@@ -127,6 +127,10 @@ func BackfillPass[T any](ctx context.Context, kind string, list func(ctx context
 				return report, err
 			}
 			if err := apply(ctx, item); err != nil {
+				// Stopped meanwhile: the item did not fail, the pass ends.
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return report, ctxErr
+				}
 				report.Failed++
 				if onError != nil {
 					onError(&BackfillError{Kind: kind, ID: id(item), Err: err})
@@ -187,6 +191,10 @@ func maintainBackfill(ctx context.Context, pass func(context.Context) (BackfillR
 	go func() {
 		for {
 			report, err := pass(ctx)
+			// Stopped: a pass the stop cut short is not a failure.
+			if ctx.Err() != nil {
+				return
+			}
 			if err == nil && report.Failed == 0 {
 				if again == nil {
 					return
