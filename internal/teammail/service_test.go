@@ -630,15 +630,22 @@ func TestMemoryQueueCancelsOnlyUnclaimedOppositeChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Both now wait unclaimed (the add in its backoff). Adding again cancels
-	// the waiting removal, which leaves the add; removing then cancels it.
+	// the waiting removal, which leaves the add.
 	if got, _ := q.Enqueue(ctx, change(ActionAdded)); got != EnqueuedCancelled || len(q.Snapshot()) != 1 || q.Snapshot()[0].Action != ActionAdded {
 		t.Fatalf("re-add: %v %+v", got, q.Snapshot())
 	}
 	if got, _ := q.Enqueue(ctx, change(ActionAdded)); got != EnqueuedDuplicate {
 		t.Fatalf("add again: %v", got)
 	}
-	if got, _ := q.Enqueue(ctx, change(ActionRemoved)); got != EnqueuedCancelled || len(q.Snapshot()) != 0 {
+	// The add failed once and SkyMail may have taken it: a removal does not
+	// cancel it but is queued, and the next claim drops the add for it.
+	removal := change(ActionRemoved)
+	removal.OccurredAt = now.Add(time.Second)
+	if got, _ := q.Enqueue(ctx, removal); got != EnqueuedQueued || len(q.Snapshot()) != 2 {
 		t.Fatalf("removal: %v %+v", got, q.Snapshot())
+	}
+	if got, _ := q.Claim(ctx, now.Add(2*time.Second), time.Minute, 10); len(got) != 1 || got[0].ID != removal.ID || len(q.Snapshot()) != 1 {
+		t.Fatalf("claimed %+v left %+v", got, q.Snapshot())
 	}
 }
 
