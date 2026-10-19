@@ -147,7 +147,7 @@ jobs:
     timeout-minutes: 15
     env:
       # main's pushes and the nightly run save the caches every job restores.
-      SAVE_CACHE: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+      SAVE_CACHE: true # GEÇİCİ: ölçüm için, geri alınacak
     steps:
       - uses: actions/checkout@v7
 
