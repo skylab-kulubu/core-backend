@@ -250,12 +250,20 @@ func TestPostgresQueueCancelsAnOppositeUnclaimedChange(t *testing.T) {
 	if got, err := q.Enqueue(ctx, change(teammail.ActionRemoved, time.Minute)); err != nil || got != teammail.EnqueuedQueued {
 		t.Fatalf("removal after claim: %v %v", got, err)
 	}
-	// After a failed send the row waits for its backoff unclaimed again, and
-	// an opposite change cancels it.
+	// After a failed send the row waits for its backoff unclaimed again; the
+	// later removal supersedes it, so the next claim drops it and takes the
+	// removal alone.
 	if err := q.Retry(ctx, claimed[0], now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if count, _, _ := q.Backlog(ctx, now); count != 2 {
 		t.Fatalf("%d left, want 2", count)
+	}
+	got, err := q.Claim(ctx, now.Add(2*time.Minute), 2*time.Minute, 10)
+	if err != nil || len(got) != 1 || got[0].Action != teammail.ActionRemoved {
+		t.Fatalf("after the retry: %+v %v", got, err)
+	}
+	if count, _, _ := q.Backlog(ctx, now); count != 1 {
+		t.Fatalf("%d left, want the removal alone", count)
 	}
 }
