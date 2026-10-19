@@ -22,6 +22,9 @@ type MemoryStore struct {
 	// hasTickets answers whether an Event has a Ticket, what Unpublish
 	// refuses on; nil is none.
 	hasTickets func(eventID uuid.UUID) bool
+	// hasCompetitors answers whether an Event has a current Competitor,
+	// what Unpublish refuses on too; nil is none.
+	hasCompetitors func(eventID uuid.UUID) bool
 }
 
 // ReadTicketsFrom makes Unpublish ask hasTickets whether an Event has a
@@ -30,6 +33,15 @@ func (s *MemoryStore) ReadTicketsFrom(hasTickets func(eventID uuid.UUID) bool) *
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.hasTickets = hasTickets
+	return s
+}
+
+// ReadCompetitorsFrom makes Unpublish ask hasCompetitors whether an Event
+// has a current Competitor, as the database looks at its competitors table.
+func (s *MemoryStore) ReadCompetitorsFrom(hasCompetitors func(eventID uuid.UUID) bool) *MemoryStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hasCompetitors = hasCompetitors
 	return s
 }
 
@@ -742,8 +754,10 @@ func (s *MemoryStore) Unpublish(_ context.Context, id uuid.UUID) (bool, error) {
 	if !ok || e.ArchivedAt != nil || e.Status != StatusPublished {
 		return false, nil
 	}
-	if s.hasTickets != nil && s.hasTickets(id) {
-		return false, nil
+	tickets := s.hasTickets != nil && s.hasTickets(id)
+	competitors := s.hasCompetitors != nil && s.hasCompetitors(id)
+	if err := unpublishRefusal(true, tickets, competitors); err != nil {
+		return false, err
 	}
 	e.Status, e.UpdatedAt = StatusDraft, time.Now().UTC()
 	s.byID[id] = e

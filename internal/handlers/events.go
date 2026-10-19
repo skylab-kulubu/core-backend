@@ -116,6 +116,22 @@ func draftsQuery(c fiber.Ctx) (bool, error) {
 	}
 }
 
+// withoutCurrentDrafts leaves out the drafts that are not archived:
+// lifecycle=all is the current list and the archive together, and the
+// current list carries a draft only with ?drafts=include (ADR 0066). An
+// archived draft stays: the archive (lifecycle=inactive) is where a deleted
+// draft is restored from.
+func withoutCurrentDrafts(events []event.Event) []event.Event {
+	out := make([]event.Event, 0, len(events))
+	for _, e := range events {
+		if e.Status == event.StatusDraft && e.ArchivedAt == nil {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 func (h *EventHandler) List(c fiber.Ctx) error {
 	visibility, err := lifecycleVisibility(c)
 	if err != nil {
@@ -135,6 +151,9 @@ func (h *EventHandler) List(c fiber.Ctx) error {
 		events, err := h.svc.ListLifecycle(c.Context(), p, owner, visibility)
 		if err != nil {
 			return eventError(c, err)
+		}
+		if visibility == lifecycle.All && !drafts {
+			events = withoutCurrentDrafts(events)
 		}
 		return c.JSON(h.svc.ProjectAllFor(&p, events))
 	}

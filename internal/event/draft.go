@@ -10,9 +10,15 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
 )
 
-// ErrHasTickets refuses to make a published Event a draft again once it has
-// a Ticket or a check-in (problem code event_has_tickets).
-var ErrHasTickets = fmt.Errorf("event: has tickets: %w", ErrConflict)
+var (
+	// ErrHasTickets refuses to make a published Event a draft again once it
+	// has a Ticket or a check-in (problem code event_has_tickets).
+	ErrHasTickets = fmt.Errorf("event: has tickets: %w", ErrConflict)
+	// ErrHasCompetitors refuses to make a published Event a draft again once
+	// it has a current Competitor (problem code event_has_competitors): their
+	// reads would otherwise carry a draft's summary.
+	ErrHasCompetitors = fmt.Errorf("event: has competitors: %w", ErrConflict)
+)
 
 // IncompleteError refuses to publish a draft that lacks what a published
 // Event must have: a name, a location and a start date. Missing names the
@@ -40,6 +46,21 @@ func (e Event) missing() []string {
 		out = append(out, "startDate")
 	}
 	return out
+}
+
+// unpublishRefusal is why a published Event may not become a draft again:
+// nil when it is not published or has nobody.
+func unpublishRefusal(published, tickets, competitors bool) error {
+	switch {
+	case !published:
+		return nil
+	case tickets:
+		return ErrHasTickets
+	case competitors:
+		return ErrHasCompetitors
+	default:
+		return nil
+	}
 }
 
 func (e Event) publishable() bool {
@@ -140,8 +161,9 @@ func (s *service) Publish(ctx context.Context, p authz.Principal, id uuid.UUID) 
 }
 
 // Unpublish makes a published Event a draft again, only while it has no
-// Ticket (ErrHasTickets). Unpublishing a draft answers it as it is; a
-// cancelled Event is refused (ErrCancelled).
+// Ticket (ErrHasTickets) and no current Competitor (ErrHasCompetitors).
+// Unpublishing a draft answers it as it is; a cancelled Event is refused
+// (ErrCancelled).
 func (s *service) Unpublish(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error) {
 	e, err := s.statusChange(ctx, p, id)
 	if err != nil {

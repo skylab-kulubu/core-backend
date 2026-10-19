@@ -99,8 +99,8 @@ func TestService_StrangerCannotRegisterOther(t *testing.T) {
 }
 
 // A competitor is added to, and reinstated on, a published Event, an ended
-// one too (results come after the Event, ADR 0066); never a draft or a
-// cancelled Event.
+// one too (results come after the Event, ADR 0066); never a draft (404 to
+// who may not see it) or a cancelled Event.
 func TestService_CompetitorsFollowTheEventStatus(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -141,6 +141,25 @@ func TestService_CompetitorsFollowTheEventStatus(t *testing.T) {
 		}
 
 		other := uuid.New()
+		if tc.status == event.StatusDraft {
+			// A draft does not exist for who may not see it (ADR 0066);
+			// its editor is refused for its status.
+			if _, err := svc.Create(ctx, authz.Principal{ID: other.String()}, competitor.CreateInput{UserID: other, EventID: ev.ID}); !errors.Is(err, competitor.ErrNotFound) {
+				t.Fatalf("draft: create by a member: %v", err)
+			}
+			if _, err := svc.Reinstate(ctx, p, withdrawn.ID); !errors.Is(err, competitor.ErrNotFound) {
+				t.Fatalf("draft: reinstate by a member: %v", err)
+			}
+			editor := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+			_, err := svc.Create(ctx, editor, competitor.CreateInput{UserID: other, EventID: ev.ID})
+			if !errors.Is(err, competitor.ErrInvalid) || !errors.Is(err, tc.reason) {
+				t.Fatalf("draft: create by its editor: %v", err)
+			}
+			if _, err := svc.Reinstate(ctx, editor, withdrawn.ID); !errors.Is(err, competitor.ErrConflict) || !errors.Is(err, tc.reason) {
+				t.Fatalf("draft: reinstate by its editor: %v", err)
+			}
+			continue
+		}
 		_, err = svc.Create(ctx, authz.Principal{ID: other.String()}, competitor.CreateInput{UserID: other, EventID: ev.ID})
 		if tc.reason == nil && err != nil {
 			t.Fatalf("%s: create: %v", tc.name, err)
