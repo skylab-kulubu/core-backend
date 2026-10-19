@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -1432,8 +1434,10 @@ const seatSearchConcurrency = 8
 // are the direct holders (holders) plus Keycloak's search for q (and, for a
 // full caller, core's own profile search), and each candidate who is not a
 // direct holder is kept only if Keycloak's effective roles hold the role.
-// People who are erased or being erased are left out. A failed read is an
-// error, never a shorter list.
+// People who are erased or being erased are left out, and so are those
+// Keycloak's search finds disabled (they get no token). A realm without
+// clientID holds nobody; core logs that once per search, naming the client
+// alone. A failed read is an error, never a shorter list.
 func (s *service) seatSearch(ctx context.Context, clientID, role, q string, full bool, holders []Person) ([]Person, error) {
 	matches := personMatches
 	if !full {
@@ -1463,6 +1467,11 @@ func (s *service) seatSearch(ctx context.Context, clientID, role, q string, full
 		return nil, err
 	}
 	for _, person := range found {
+		if !person.Enabled && person.ID != uuid.Nil {
+			// Disabled: seen, so core's own search does not bring them back.
+			seen[person.ID] = struct{}{}
+			continue
+		}
 		add(person)
 	}
 	if full {
@@ -1485,6 +1494,7 @@ func (s *service) seatSearch(ctx context.Context, clientID, role, q string, full
 		}
 	}
 	keep := make([]bool, len(matched))
+	var noClient atomic.Bool
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(seatSearchConcurrency)
 	for i, person := range matched {
@@ -1494,6 +1504,10 @@ func (s *service) seatSearch(ctx context.Context, clientID, role, q string, full
 		}
 		g.Go(func() error {
 			names, err := s.dir.EffectiveClientRoles(gctx, person.ID, clientID)
+			if errors.Is(err, ErrClientNotFound) {
+				noClient.Store(true)
+				return nil
+			}
 			if errors.Is(err, ErrNotFound) {
 				return nil
 			}
@@ -1506,6 +1520,9 @@ func (s *service) seatSearch(ctx context.Context, clientID, role, q string, full
 	}
 	if err := g.Wait(); err != nil {
 		return nil, err
+	}
+	if noClient.Load() {
+		log.Printf("identity: seat search: Keycloak has no client %q; nobody holds %q", clientID, role)
 	}
 	out := make([]Person, 0, len(matched))
 	for i, person := range matched {
