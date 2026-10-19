@@ -118,6 +118,8 @@ jobs:
           go run ./scripts/ci/testplan affected <<<"$changed" > packages.txt
           echo "fast run: the tests of $(wc -l < packages.txt) packages"
 
+      # At most six shards: the organisation's runners (20 jobs at once) are
+      # shared with every other repository's CI.
       - name: Plan the shards
         id: plan
         run: |
@@ -126,7 +128,7 @@ jobs:
             exit 0
           fi
           touch test-timings.tsv
-          matrix=$(go run ./scripts/ci/testplan plan -packages packages.txt -timings test-timings.tsv -out testplan.json)
+          matrix=$(go run ./scripts/ci/testplan plan -packages packages.txt -timings test-timings.tsv -max-shards 6 -out testplan.json)
           printf 'tests=true\nmatrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
