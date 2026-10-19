@@ -118,6 +118,7 @@ var readerReads = []decision{
 	{"applicants without a team", Resource{Type: TypeTicket}, Read},
 	{"competitors", Resource{Type: TypeCompetitor, OwnerTeam: "WEBLAB"}, Read},
 	{"competitions", Resource{Type: TypeCompetition, OwnerTeam: "WEBLAB"}, Read},
+	{"event drafts", Resource{Type: TypeEvent, OwnerTeam: "WEBLAB"}, ReadFull},
 	{"media library", Resource{Type: TypeMedia}, List},
 	{"private media", Resource{Type: TypeMediaReadLink}, Read},
 	{"certificates", Resource{Type: TypeCertificate, OwnerTeam: "WEBLAB"}, Read},

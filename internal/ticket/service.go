@@ -123,6 +123,9 @@ func (s *service) ListAssignableUsers(ctx context.Context, p authz.Principal, ev
 		}
 		return nil, err
 	}
+	if err := s.seen(&p, ev); err != nil {
+		return nil, err
+	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign) {
 		return nil, ErrForbidden
 	}
@@ -240,6 +243,7 @@ func (s *service) withEvents(ctx context.Context, tickets []Ticket) []Ticket {
 	return out
 }
 
+// ListDoorEvents lists no draft: events.List leaves them out.
 func (s *service) ListDoorEvents(ctx context.Context, p authz.Principal) ([]event.Resource, error) {
 	events, err := s.events.List(ctx, "", false)
 	if err != nil {
@@ -278,6 +282,9 @@ func (s *service) SearchDoorAttendees(
 		if errors.Is(err, event.ErrNotFound) {
 			return nil, ErrNotFound
 		}
+		return nil, err
+	}
+	if err := s.seen(&p, ev); err != nil {
 		return nil, err
 	}
 	if !s.canUseDoor(ctx, p, ev) {
@@ -433,10 +440,14 @@ func (s *service) Apply(ctx context.Context, p authz.Principal, eventID uuid.UUI
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket}, authz.Create) {
 		return Ticket{}, ErrForbidden
 	}
-	if _, err := s.events.Get(ctx, eventID); err != nil {
+	ev, err := s.events.Get(ctx, eventID)
+	if err != nil {
 		if errors.Is(err, event.ErrNotFound) {
 			return Ticket{}, ErrNotFound
 		}
+		return Ticket{}, err
+	}
+	if err := s.openForRegistration(&p, ev); err != nil {
 		return Ticket{}, err
 	}
 	ownerID, err := uuid.Parse(p.ID)
@@ -452,6 +463,11 @@ func (s *service) ApplyForOther(ctx context.Context, p authz.Principal, eventID,
 		if errors.Is(err, event.ErrNotFound) {
 			return Ticket{}, ErrNotFound
 		}
+		return Ticket{}, err
+	}
+	// Adding a person from the panel works on a draft too (speakers, the
+	// team): only for who may see it.
+	if err := s.seen(&p, ev); err != nil {
 		return Ticket{}, err
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign) {
@@ -550,6 +566,9 @@ func (s *service) ApplyGuest(ctx context.Context, p authz.Principal, eventID uui
 		if errors.Is(err, event.ErrNotFound) {
 			return GuestApplication{}, ErrNotFound
 		}
+		return GuestApplication{}, err
+	}
+	if err := s.openForRegistration(&p, ev); err != nil {
 		return GuestApplication{}, err
 	}
 	trusted := s.guestApplyTrusted(p, ev)
@@ -670,6 +689,9 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 		if errors.Is(err, event.ErrNotFound) {
 			return nil, ErrNotFound
 		}
+		return nil, err
+	}
+	if err := s.seen(&p, ev); err != nil {
 		return nil, err
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
@@ -823,10 +845,22 @@ func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, sess
 		}
 		return CheckIn{}, err
 	}
+	if err := s.openForCheckIn(&p, ev); err != nil {
+		return CheckIn{}, err
+	}
 	if !s.canUseDoor(ctx, p, ev) {
 		return CheckIn{}, ErrForbidden
 	}
 	return s.addSessionCheckIn(ctx, t, sessionID)
+}
+
+// eventOf is the current Event id names.
+func (s *service) eventOf(ctx context.Context, id uuid.UUID) (event.Event, error) {
+	ev, err := s.events.Get(ctx, id)
+	if errors.Is(err, event.ErrNotFound) {
+		return event.Event{}, ErrNotFound
+	}
+	return ev, err
 }
 
 func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uuid.UUID) (CheckIn, error) {
@@ -890,6 +924,13 @@ func (s *service) CheckInMe(ctx context.Context, p authz.Principal, sessionID uu
 	if err != nil {
 		return CheckIn{}, err
 	}
+	ev, err := s.eventOf(ctx, eventID)
+	if err != nil {
+		return CheckIn{}, err
+	}
+	if err := s.openForCheckIn(&p, ev); err != nil {
+		return CheckIn{}, err
+	}
 	t, err := s.tickets.GetByOwnerEvent(ctx, ownerID, eventID)
 	if err != nil {
 		return CheckIn{}, err
@@ -911,6 +952,14 @@ func (s *service) checkInGuest(ctx context.Context, sessionID uuid.UUID, g Guest
 	}
 	sess, eventID, err := s.sessionAndEvent(ctx, sessionID)
 	if err != nil {
+		return CheckIn{}, err
+	}
+	// A guest is signed out: a draft does not exist for them.
+	ev, err := s.eventOf(ctx, eventID)
+	if err != nil {
+		return CheckIn{}, err
+	}
+	if err := s.openForCheckIn(nil, ev); err != nil {
 		return CheckIn{}, err
 	}
 	if !s.door.SessionOpen(sess.StartTime, sess.EndTime, sess.Cancelled) {
@@ -997,7 +1046,7 @@ func guestCheckInOutcome(err error) doorqr.Outcome {
 // Event's door may show one (canUseDoor: door staff, the owning team's
 // leaders, Privileged, team door scan).
 func (s *service) MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorQR, error) {
-	ev, err := s.authorizedDoorEvent(ctx, p, sessionID)
+	ev, err := s.authorizedDoorEvent(ctx, p, sessionID, true)
 	if err != nil {
 		return DoorQR{}, err
 	}
@@ -1091,20 +1140,28 @@ func (s *service) doorTicketIdentity(ctx context.Context, t Ticket) (string, []s
 	})
 }
 
+// authorizedDoorEvent is the Event of the Session whose door p is about to
+// use: to take a check-in (checkIn, which a draft refuses: openForCheckIn)
+// or to read it (a draft only for who may see it).
 func (s *service) authorizedDoorEvent(
 	ctx context.Context,
 	p authz.Principal,
 	sessionID uuid.UUID,
+	checkIn bool,
 ) (event.Event, error) {
 	eventID, err := s.ticketEventID(ctx, sessionID)
 	if err != nil {
 		return event.Event{}, err
 	}
-	ev, err := s.events.Get(ctx, eventID)
+	ev, err := s.eventOf(ctx, eventID)
 	if err != nil {
-		if errors.Is(err, event.ErrNotFound) {
-			return event.Event{}, ErrNotFound
-		}
+		return event.Event{}, err
+	}
+	gate := s.seen
+	if checkIn {
+		gate = s.openForCheckIn
+	}
+	if err := gate(&p, ev); err != nil {
 		return event.Event{}, err
 	}
 	if !s.canUseDoor(ctx, p, ev) {
@@ -1114,7 +1171,7 @@ func (s *service) authorizedDoorEvent(
 }
 
 func (s *service) AuthorizeSessionDoor(ctx context.Context, p authz.Principal, sessionID uuid.UUID) error {
-	_, err := s.authorizedDoorEvent(ctx, p, sessionID)
+	_, err := s.authorizedDoorEvent(ctx, p, sessionID, true)
 	return err
 }
 
@@ -1124,7 +1181,7 @@ func (s *service) ResolveAndCheckIn(
 	sessionID uuid.UUID,
 	target DoorCheckInTarget,
 ) (DoorCheckIn, error) {
-	ev, err := s.authorizedDoorEvent(ctx, p, sessionID)
+	ev, err := s.authorizedDoorEvent(ctx, p, sessionID, true)
 	if err != nil {
 		return DoorCheckIn{}, err
 	}
@@ -1290,7 +1347,7 @@ func (s *service) DoorActivity(
 	p authz.Principal,
 	sessionID uuid.UUID,
 ) (DoorActivity, error) {
-	ev, err := s.authorizedDoorEvent(ctx, p, sessionID)
+	ev, err := s.authorizedDoorEvent(ctx, p, sessionID, false)
 	if err != nil {
 		return DoorActivity{}, err
 	}

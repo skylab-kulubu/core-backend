@@ -38,19 +38,26 @@ func servableCountSQL(list MediaList) string {
 const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id AND m.deleted_at IS NULL`
 
 func (s *PostgresStore) List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
-	return s.list(ctx, ownerTeam, activeOnly, lifecycle.CurrentOnly)
+	return s.list(ctx, ownerTeam, activeOnly, false, lifecycle.CurrentOnly)
+}
+
+func (s *PostgresStore) ListIncludingDrafts(ctx context.Context, ownerTeam string) ([]Event, error) {
+	return s.list(ctx, ownerTeam, false, true, lifecycle.CurrentOnly)
 }
 
 func (s *PostgresStore) ListLifecycle(ctx context.Context, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error) {
-	return s.list(ctx, ownerTeam, false, visibility)
+	return s.list(ctx, ownerTeam, false, true, visibility)
 }
 
-func (s *PostgresStore) list(ctx context.Context, ownerTeam string, activeOnly bool, visibility lifecycle.Visibility) ([]Event, error) {
+func (s *PostgresStore) list(ctx context.Context, ownerTeam string, activeOnly, drafts bool, visibility lifecycle.Visibility) ([]Event, error) {
 	q := `SELECT ` + eventCols + ` FROM ` + eventFrom
 	args := []any{}
-	where := make([]string, 0, 3)
+	where := make([]string, 0, 4)
 	if condition := visibility.SQLCondition("e.archived_at"); condition != "" {
 		where = append(where, condition)
+	}
+	if !drafts {
+		where = append(where, notDraftSQL)
 	}
 	if ownerTeam != "" {
 		where = append(where, `e.owner_team = $1`)
@@ -734,7 +741,7 @@ func (s *PostgresStore) RestoreDay(ctx context.Context, id uuid.UUID) error {
 }
 
 func (s *PostgresStore) ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+eventCols+` FROM `+eventFrom+` WHERE e.season_id = $1 AND e.archived_at IS NULL ORDER BY e.start_date NULLS LAST, e.created_at`, seasonID)
+	rows, err := s.pool.Query(ctx, `SELECT `+eventCols+` FROM `+eventFrom+` WHERE e.season_id = $1 AND e.archived_at IS NULL AND `+notDraftSQL+` ORDER BY e.start_date NULLS LAST, e.created_at`, seasonID)
 	if err != nil {
 		return nil, err
 	}
@@ -945,4 +952,34 @@ func attendanceRule(rule string) string {
 		return "none"
 	}
 	return rule
+}
+
+// Publish and Unpublish write the legacy active column as Create does, so
+// that a release rolled back to shows a published Event and hides a draft.
+// published_by names the actor only when they have an account row, as on
+// create.
+func (s *PostgresStore) Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE events SET status = 'published', active = true, published_at = now(),
+			published_by = (SELECT id FROM users WHERE id = $2), updated_at = now()
+		WHERE id = $1 AND archived_at IS NULL AND status = 'draft'
+			AND btrim(name) <> '' AND btrim(location) <> '' AND start_date IS NOT NULL`, id, by)
+	if subjectlock.IsInactiveAccountReference(err) {
+		return false, ErrForbidden
+	}
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (s *PostgresStore) Unpublish(ctx context.Context, id uuid.UUID) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE events e SET status = 'draft', active = false, updated_at = now()
+		WHERE e.id = $1 AND e.archived_at IS NULL AND e.status = 'published'
+			AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.event_id = e.id)`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }

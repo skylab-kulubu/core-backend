@@ -144,7 +144,9 @@ func (s *service) CanRecordFormResponse(p authz.Principal) bool {
 }
 
 func (s *service) eventsListingForm(ctx context.Context, formID uuid.UUID) ([]uuid.UUID, error) {
-	events, err := s.events.List(ctx, "", false)
+	// A draft's form writes Tickets too (ADR 0066): its editors linked the
+	// form and shared it; an answer not written now would be lost.
+	events, err := s.events.ListIncludingDrafts(ctx, "")
 	if err != nil {
 		return nil, err
 	}
