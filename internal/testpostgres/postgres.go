@@ -4,12 +4,15 @@ package testpostgres
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -21,6 +24,14 @@ const DefaultImage = "postgres:17-alpine"
 // major version production runs (18), so the tests run against that.
 const ImageEnv = "CORE_TEST_POSTGRES_IMAGE"
 
+// ServerEnv names a running PostgreSQL server, as a URL whose user may
+// create databases (postgres://postgres:postgres@127.0.0.1:5432/postgres).
+// When it is set, Start gives each test a new database of its own on that
+// server instead of a container of its own: CI runs one server per job, so a
+// test pays for a CREATE DATABASE instead of a container start. Unset (the
+// default), every test gets its own container.
+const ServerEnv = "CORE_TEST_POSTGRES_URL"
+
 func image() string {
 	if image := os.Getenv(ImageEnv); image != "" {
 		return image
@@ -29,9 +40,13 @@ func image() string {
 }
 
 // Start launches a disposable PostgreSQL container and registers all cleanup
-// with t. Tests are skipped when Docker is unavailable.
+// with t. Tests are skipped when Docker is unavailable. With ServerEnv set it
+// creates a disposable database on that server instead (see ServerEnv).
 func Start(t testing.TB) *pgxpool.Pool {
 	t.Helper()
+	if server := os.Getenv(ServerEnv); server != "" {
+		return startDatabase(t, server)
+	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker not available")
 	}
@@ -89,6 +104,53 @@ func Start(t testing.TB) *pgxpool.Pool {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// databases numbers the databases this test process created, so that their
+// names, with the process id, are unique on a server several test processes
+// share.
+var databases atomic.Int64
+
+// startDatabase creates a new database on the server at serverURL and opens
+// it; Cleanup closes the pool and drops the database, ending any connection
+// the test left open. A server that cannot be reached fails the test: the
+// environment asked for it.
+func startDatabase(t testing.TB, serverURL string) *pgxpool.Pool {
+	t.Helper()
+	ctx := context.Background()
+	name := fmt.Sprintf("coretest_%d_%d", os.Getpid(), databases.Add(1))
+	admin := func(sql string) error {
+		conn, err := pgx.Connect(ctx, serverURL)
+		if err != nil {
+			return fmt.Errorf("connect to %s: %w", ServerEnv, err)
+		}
+		defer conn.Close(ctx)
+		_, err = conn.Exec(ctx, sql)
+		return err
+	}
+	if err := admin("CREATE DATABASE " + pgx.Identifier{name}.Sanitize()); err != nil {
+		t.Fatalf("create test database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := admin("DROP DATABASE IF EXISTS " + pgx.Identifier{name}.Sanitize() + " WITH (FORCE)"); err != nil {
+			t.Errorf("drop test database: %v", err)
+		}
+	})
+
+	dsn, err := url.Parse(serverURL)
+	if err != nil {
+		t.Fatalf("%s: %v", ServerEnv, err)
+	}
+	dsn.Path = "/" + name
+	pool, err := pgxpool.New(ctx, dsn.String())
+	if err == nil {
+		err = pool.Ping(ctx)
+	}
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }
 
 // WaitForBlockedQuery waits until another connection is blocked on a lock
