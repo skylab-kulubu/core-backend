@@ -71,7 +71,8 @@ func TestApplyWaitsWhileAnotherReplicaMigrates(t *testing.T) {
 	assertEveryVersionRecordedOnce(t, pool)
 	// The lock goes with Apply's session: nothing holds it afterwards.
 	var held int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'`).Scan(&held); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'
+		AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&held); err != nil {
 		t.Fatal(err)
 	}
 	if held != 0 {

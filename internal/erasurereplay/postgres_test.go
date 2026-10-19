@@ -53,9 +53,13 @@ INSERT INTO realm (id, name) VALUES ('3a4d7c1e-0000-4000-8000-00000000e5k1', 'e-
 func database(t *testing.T, server *pgxpool.Pool, name string) (*pgxpool.Pool, string) {
 	t.Helper()
 	ctx := context.Background()
+	// Named after the test's own database: the server may be shared with
+	// other tests (testpostgres.ServerEnv).
+	name = server.Config().ConnConfig.Database + "_" + name
 	if _, err := server.Exec(ctx, `CREATE DATABASE `+name); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _, _ = server.Exec(ctx, `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`) })
 	dsn, err := url.Parse(server.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
