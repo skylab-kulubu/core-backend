@@ -269,11 +269,10 @@ func TestRecordFormResponseRefusesAMalformedReport(t *testing.T) {
 	zeroUser := ticket.FormResponse{FormID: formID, ResponseID: uuid.New(), Status: ticket.FormResponseAccepted, UserID: &zero}
 
 	for name, report := range map[string]ticket.FormResponse{
-		"unknown status":       unknownStatus,
-		"no form":              noForm,
-		"zero userId":          zeroUser,
-		"guest without e-mail": acceptedGuest(formID, "Ada", "Lovelace", " "),
-		"guest without name":   acceptedGuest(formID, "", "Lovelace", "ada@example.com"),
+		"unknown status":     unknownStatus,
+		"no form":            noForm,
+		"zero userId":        zeroUser,
+		"guest without name": acceptedGuest(formID, "", "Lovelace", "ada@example.com"),
 	} {
 		if _, err := svc.RecordFormResponse(context.Background(), formsService, report); !errors.Is(err, ticket.ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
@@ -321,5 +320,26 @@ func TestRecordFormResponseSaysHowTheReportEndedAndWhatItWrote(t *testing.T) {
 		if got.Outcome != step.outcome || got.TicketsWritten != step.written {
 			t.Errorf("%s: %+v, want %s and %d written", step.name, got, step.outcome, step.written)
 		}
+	}
+}
+
+// Account erasure (Forms, docs/account-erasure-command.md §10) removes the
+// verified address from a guest report Forms still holds, and leaves the
+// name. Such a report names nobody core can ticket: it answers like a report
+// without a respondent, so Forms stops sending it, and writes nothing.
+func TestRecordFormResponseTakesAGuestWithoutAnAddressAsNoRespondent(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	formID := uuid.New()
+	ev := seedFormEvent(t, events, formAddress(formID))
+
+	for _, email := range []string{"", " "} {
+		got, err := svc.RecordFormResponse(context.Background(), formsService, acceptedGuest(formID, "Ada", "Lovelace", email))
+		if err != nil || got.Outcome != ticket.FormResponseNoRespondent || got.TicketsWritten != 0 {
+			t.Fatalf("e-mail %q: %+v %v", email, got, err)
+		}
+	}
+	if listed := ticketsOf(t, svc, ev); len(listed) != 0 {
+		t.Fatalf("tickets %+v", listed)
 	}
 }

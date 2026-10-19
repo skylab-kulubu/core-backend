@@ -2,7 +2,7 @@
 # Seeds every person's data in every service, the way the product would have written it:
 # core's user row by JIT (the person's own token), then tickets, check-ins and certificates;
 # SkyMail recipients, sends, queue rows, templates and a Mail onayı; CMS items, blocks and
-# drafts; Forms forms, responses and collaborators. Each row that names the person is one the
+# drafts; Forms forms, responses (a guest one too), queued form-response reports and collaborators. Each row that names the person is one the
 # erasure must change; the bystander p8 gets the same rows and must keep them.
 # Sourced by main.sh.
 
@@ -159,9 +159,13 @@ seed_forms_person() {
   pg forms_db "
     INSERT INTO forms (id, title, owned_by) VALUES ('$(uuid_of "$p-form")', 'Harness formu $p', '$subject');
     INSERT INTO forms (id, title, owned_by) VALUES ('$(uuid_of shared-form)', 'Ortak form', '${P_ID[p8]}') ON CONFLICT DO NOTHING;
-    INSERT INTO responses (id, form_id, user_id, data, review_note) VALUES
-      ('$(uuid_of "$p-response")', '$(uuid_of shared-form)', '$subject', jsonb_build_object('ad', $name, 'eposta', $school), 'Not: ' || $name),
-      ('$(uuid_of "$p-guest-response")', '$(uuid_of shared-form)', NULL, jsonb_build_object('eposta', $personal, 'ad', $name), NULL);
+    INSERT INTO responses (id, form_id, user_id, data, review_note, guest_email) VALUES
+      ('$(uuid_of "$p-response")', '$(uuid_of shared-form)', '$subject', jsonb_build_object('ad', $name, 'eposta', $school), 'Not: ' || $name, NULL),
+      ('$(uuid_of "$p-guest-response")', '$(uuid_of shared-form)', NULL, jsonb_build_object('eposta', $personal, 'ad', $name), NULL, lower($personal));
+    INSERT INTO response_notifications (id, payload) VALUES
+      ('$(uuid_of "$p-report")', jsonb_build_object('formId', '$(uuid_of shared-form)', 'status', 'accepted', 'userId', '$subject')),
+      ('$(uuid_of "$p-guest-report")', jsonb_build_object('formId', '$(uuid_of shared-form)', 'status', 'accepted',
+        'guest', jsonb_build_object('firstName', $(sql_quote "${P_FIRST[$p]}"), 'lastName', $(sql_quote "${P_LAST[$p]}"), 'email', lower($personal))));
     INSERT INTO responses (id, form_id, user_id, data, reviewed_by) VALUES
       ('$(uuid_of "$p-reviewed")', '$(uuid_of "$p-form")', '${P_ID[p8]}', jsonb_build_object('ad', 'Bora Korunanoğlu'), '$subject');
     INSERT INTO collaborators (form_id, user_id, role) VALUES

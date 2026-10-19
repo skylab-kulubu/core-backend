@@ -85,9 +85,18 @@ scenario_1() {
   check "core: no row names p1 outside certificates ($(count_lines "$hits") hits: $(sort -u <<<"$hits" | paste -sd, -))" test -z "$hits"
   check 'core: the certificates keep only the name, never an address' \
     eq "$(pg super_skylab "SELECT count(*) FROM certificates WHERE lower(recipient_email) IN ('${P_SCHOOL[$person]}','${P_PERSONAL[$person]}')")" 0
+  hits=$(pii_hits skymail "$person")
+  check "skymail: no row names p1 ($(count_lines "$hits") hits: $(sort -u <<<"$hits" | paste -sd, -))" test -z "$hits"
+  # Forms keeps a guest record and its queued report (contract §10): only the verified addresses
+  # go, so the name stays there and nowhere else.
+  hits=$(address_hits forms_db "$person")
+  check "forms_db: no row holds an address of p1 ($(count_lines "$hits") hits: $(sort -u <<<"$hits" | paste -sd, -))" test -z "$hits"
+  hits=$(pii_hits forms_db "$person" '^public\.(responses|response_notifications)$')
+  check "forms_db: no row names p1 outside the guest records ($(count_lines "$hits") hits: $(sort -u <<<"$hits" | paste -sd, -))" test -z "$hits"
+  check 'forms_db: of the responses, only the guest one still names p1' \
+    eq "$(pg forms_db "SELECT string_agg(id::text, ',') FROM responses WHERE (data::text || ' ' || coalesce(review_note, '')) ILIKE $(sql_quote "%${P_LAST[$person]}%")")" \
+    "$(uuid_of "$person-guest-response")"
   for db in skymail forms_db; do
-    hits=$(pii_hits "$db" "$person")
-    check "$db: no row names p1 ($(count_lines "$hits") hits: $(sort -u <<<"$hits" | paste -sd, -))" test -z "$hits"
     hits=$(subject_hits "$db" "$subject")
     check "$db: no row carries p1's subject ($(count_lines "$hits") hits)" test -z "$hits"
   done
@@ -150,6 +159,13 @@ check_preserved_records() {
   check 'Forms: the response stays, redacted and detached; the form stays with Silinmiş kullanıcı as owner' \
     eq "$(pg forms_db "SELECT r.user_id IS NULL, r.data::text, f.owned_by FROM responses r, forms f
           WHERE r.id = '$(uuid_of "$p-response")' AND f.id = '$(uuid_of "$p-form")'" | tr '\t' '|')" "t|{}|$DELETED_SUBJECT"
+  check 'Forms: the guest response stays with its name; the address answer and the guest e-mail are cleared' \
+    eq "$(pg forms_db "SELECT data->>'ad', data->>'eposta', guest_email IS NULL FROM responses WHERE id = '$(uuid_of "$p-guest-response")'" | tr '\t' '|')" \
+    "$name||t"
+  check "Forms: the person's queued report is gone; the guest report stays without the address" \
+    eq "$(pg forms_db "SELECT (SELECT count(*) FROM response_notifications WHERE id = '$(uuid_of "$p-report")'),
+          (SELECT payload->'guest'->>'lastName' || '/' || coalesce(payload->'guest'->>'email', 'null') FROM response_notifications WHERE id = '$(uuid_of "$p-guest-report")')" | tr '\t' '|')" \
+    "0|${P_LAST[$p]}/null"
 }
 
 # check_media_before PERSON: the uploads seed_core_media made, as the erasure will find them:
