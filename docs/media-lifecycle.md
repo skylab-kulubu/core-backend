@@ -464,8 +464,8 @@ body the HTTP server read, the form parsed from it, the file read from the
 form and, for a private purpose, its encrypted copy. A 50 MiB Answer file
 takes about 200 MiB for the seconds it is stored; a PDF or DOCX takes no
 [decoding slot](#decode-budget), so only the [upload limits](#upload-limits)
-bound how many are stored at once. Production runs core without a memory
-limit on a 15 GiB host.
+(each person's budget and the services' budget) bound how many are stored
+at once. Production runs core without a memory limit on a 15 GiB host.
 
 ### Upload limits
 
@@ -483,6 +483,17 @@ retry, and leave the uploads before it unattached; a normal event photo day
 would use up 500 MB. The budget is there to bound a stolen or misused
 account, and 100 uploads per 10 minutes and 2 GiB a day still do that. Both
 stay configurable (see [Configuration](#configuration)).
+
+A product's service account (a client `MEDIA_SERVICE_CLIENTS` maps to a
+product) has a budget of its own instead, the **services' budget**: at most
+1000 uploads per rolling 10 minutes and 10240 MiB (10 GiB) per rolling 24
+hours by default, each service account counted apart. One service account
+uploads for many people: Skyforms sends every guest's Answer file as itself,
+so a person's budget would let a few dozen guests at one event use up every
+other guest's uploads. The product keeps the finer limits (Skyforms counts per
+upload session, client address and form); this budget bounds a misused
+service account. It is configured apart from a person's (see
+[Configuration](#configuration)).
 
 An upload is charged before the route reads its form, purpose or file. Its
 size is the request body core accepted: the declared `Content-Length`, which is
@@ -2252,11 +2263,12 @@ account. Core then treats it as any private, scanned Answer file:
   link, `POST /v1/media/{id}/links` with `onBehalfOf` naming the reviewer,
   as for any Answer file ([Read links](#read-links)).
 - **Budget.** Every guest upload is charged to the Skyforms service
-  account's one single-step budget ([Upload limits](#upload-limits): 100
-  uploads per 10 minutes and 2 GiB per day by default, shared by all
-  guests; at 50 MiB a file, 2 GiB is about 40 files a day).
-  `MEDIA_UPLOAD_DAILY_MAX_MIB` raises it, for every account alike. Skyforms
-  keeps its own, finer limits per session, IP and form.
+  account's single-step budget, the services' budget
+  ([Upload limits](#upload-limits): 1000 uploads per 10 minutes and 10 GiB
+  per day by default, shared by all guests; at 50 MiB a file, 10 GiB is
+  about 200 files a day). `MEDIA_SERVICE_UPLOAD_DAILY_MAX_MIB` raises it,
+  for service accounts only. Skyforms keeps its own, finer limits per
+  session, IP and form.
 
 ### Refusals
 
@@ -3616,6 +3628,12 @@ What happens to the records when the request completes is in
   `10m`.
 - `MEDIA_UPLOAD_DAILY_MAX_MIB` — MiB of upload body per person per rolling
   24 hours; default `2048`.
+- `MEDIA_SERVICE_UPLOAD_RATE_MAX`: single-step uploads per product service
+  account per window, the [services' budget](#upload-limits); default `1000`.
+- `MEDIA_SERVICE_UPLOAD_RATE_WINDOW`: Go duration of that rolling window;
+  default `10m`.
+- `MEDIA_SERVICE_UPLOAD_DAILY_MAX_MIB`: MiB of upload body per product service
+  account per rolling 24 hours; default `10240`.
 - `MEDIA_DECODE_SLOTS` — images decoded at once, process-wide
   ([Decode budget](#decode-budget)); `1` to `8`, default `2`. Raise it only
   with core's memory limit ([memory-limit.md](memory-limit.md)).
