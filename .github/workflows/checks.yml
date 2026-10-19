@@ -315,12 +315,14 @@ jobs:
           retention-days: 7
 
   # The shards' timings, merged into the last ones, for the next plan. Not a
-  # check: the gate does not wait for it.
+  # check: the gate does not wait for it, and its failure does not fail the
+  # run (a run's success is what scripts/ci/tested-tree.sh looks for).
   timings:
     needs: [scope, test]
     if: needs.test.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    continue-on-error: true
     steps:
       - uses: actions/download-artifact@v8
         with:
