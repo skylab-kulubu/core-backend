@@ -80,6 +80,9 @@ services:
       # Communication preferences (docs/communication-preferences.md): off while the key is unset.
       COMMUNICATION_PREFERENCE_KEY: ${COMMUNICATION_PREFERENCE_KEY:-}
       COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL: ${COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL:-}
+      # Open and click tracking: opt_out unless set; the withdrawal's SkyMail address.
+      COMMUNICATION_TRACKING_MODE: ${COMMUNICATION_TRACKING_MODE:-}
+      COMMUNICATION_TRACKING_WITHDRAWAL_URL: ${COMMUNICATION_TRACKING_WITHDRAWAL_URL:-}
       # The News audience (docs/news-audience.md): only public records unless on.
       NEWS_AUDIENCE_PRIVATE_VISIBILITY: ${NEWS_AUDIENCE_PRIVATE_VISIBILITY:-}
       # The SkyPass signing key: required, except that this local stack falls back to
