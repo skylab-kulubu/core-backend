@@ -180,8 +180,8 @@ No sudo mode. A service account's token is refused (`403`).
     follows, below).
 - `PUT /v1/users/me/communication-preferences`
   `{"items": [{"category": "team:<groupId>:duyuru", "channel": "email", "enabled": true|false|null}], "tracking": {"enabled": true|false}}`
-  (0 to 200 items, each category and channel once; `items`, `tracking` or
-  both) → `200` and the new screen. `tracking` is the open and click
+  (0 to 200 items, each category and channel once, with `tracking` on top
+  of the 200; `items`, `tracking` or both) → `200` and the new screen. `tracking` is the open and click
   tracking switch ([Tracking](#tracking)): only `true` or `false`, no
   `null`; `"tracking"` is no category of `items`. `null` forgets the choice (back to what it inherits or its
   default; "unfollow", "reset"). `channel` and `enabled` must be present; a
@@ -286,7 +286,12 @@ track them now (enabled and a Member: someone in no `/UYELER` Group is
 never tracked); `mode` the mode. The Account center shows the switch
 reversed: "Postalarımın açılmasını ve tıklamalarımı izleme" checked is
 `enabled: false`. Like every route above, it needs
-`COMMUNICATION_PREFERENCE_KEY` (else `503`).
+`COMMUNICATION_PREFERENCE_KEY` (else `503`). A `PUT` that changes only
+`tracking` reads nothing from Keycloak before it writes, so an objection is
+kept while Keycloak is down: it answers `200` with `"partial": true`, the
+switch as written (`effective` false until the screen is read again) and no
+team or News switch. A `PUT` with `items` still needs the tree (`503
+communication_preference_teams_unavailable`).
 
 **Turning it off** writes, in one transaction: the row, a row of the audit
 trail (below) when the value changes, and a withdrawal in the outbox
@@ -379,7 +384,7 @@ alarm.
 | `PUBLIC_API_ORIGIN` | required with the key: where the links point |
 | `COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL` | the Account center page the unsubscribe page links to; unset: `https://my.yildizskylab.com` |
 | `COMMUNICATION_TRACKING_MODE` | `opt_out` (unset) or `opt_in` ([Tracking](#tracking)); anything else stops core |
-| `COMMUNICATION_TRACKING_WITHDRAWAL_URL` | SkyMail's address on the internal network for the withdrawal (not the public one: `/internal` answers the edge `404`); unset: `ACCOUNT_ERASURE_SKYMAIL_URL`. Neither set (or no `KEYCLOAK_*` client credentials): withdrawals wait in the outbox, startup warns |
+| `COMMUNICATION_TRACKING_WITHDRAWAL_URL` | SkyMail's address on the internal network for the withdrawal (not the public one: `/internal` answers the edge `404`); unset: `ACCOUNT_ERASURE_SKYMAIL_URL`. Neither set (or no `KEYCLOAK_*` client credentials): withdrawals wait in the outbox, startup warns. A value that does not read (either variable) does not stop core: startup warns and the withdrawals wait; the erasure worker still checks `ACCOUNT_ERASURE_SKYMAIL_URL` for itself |
 
 Startup logs `communication preferences: on|off`, `communication tracking:
 mode …` and whether withdrawals reach SkyMail.

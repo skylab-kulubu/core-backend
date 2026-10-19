@@ -1130,12 +1130,17 @@ func newSkyMail(base, realm, clientID, clientSecret, skyMailURL string, timeout 
 // newTrackingWithdrawals is the worker that tells SkyMail of tracking
 // withdrawals, with core's own service account (KEYCLOAK_CLIENT_ID, client
 // core) and SkyMail's internal address. Without the address or the client
-// credentials it sends nothing and keeps the queue's gauges. It names the
-// variable the address came from.
+// credentials it sends nothing and keeps the queue's gauges. An address
+// that does not read does not stop core either (ACCOUNT_ERASURE_SKYMAIL_URL
+// is read here even while the erasure worker, which checks it for itself,
+// is off): startup warns and the withdrawals wait. It names the variable the
+// address came from.
 func newTrackingWithdrawals(getenv func(string) string, base, realm string, queue commpref.WithdrawalQueue) (*commpref.Withdrawals, string) {
 	address, from, err := commpref.WithdrawalURLFromEnv(getenv)
 	if err != nil {
-		log.Fatal(err)
+		// The error names the variable, never its value.
+		log.Printf("WARNING communication tracking: %v; withdrawals to SkyMail off", err)
+		return commpref.NewWithdrawals(queue, nil), from
 	}
 	clientID := strings.TrimSpace(getenv("KEYCLOAK_CLIENT_ID"))
 	if address == "" || base == "" || realm == "" || clientID == "" || strings.TrimSpace(getenv("KEYCLOAK_CLIENT_SECRET")) == "" {

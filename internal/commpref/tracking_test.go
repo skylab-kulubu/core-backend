@@ -3,14 +3,17 @@ package commpref
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
 func TestTrackingModeFromEnv(t *testing.T) {
@@ -425,5 +428,52 @@ func TestWithdrawalURLFromEnv(t *testing.T) {
 	lines := strings.Join(TrackingStartupLines(TrackingOptOut, false, ""), "\n")
 	if !strings.Contains(lines, "mode opt_out") || !strings.Contains(lines, "WARNING") {
 		t.Fatalf("startup lines %s", lines)
+	}
+}
+
+// An objection is written while Keycloak is down: a tracking-only change
+// reads no team, writes the row and the withdrawal, and answers a partial
+// screen. A change with News items still needs the tree.
+func TestTrackingSwitchWhileKeycloakIsDown(t *testing.T) {
+	f := newFixture(t)
+	svc := NewService(f.svc.Config(), f.store, failingDirectory{}, nil)
+	screen, err := svc.Update(context.Background(), f.person, []Change{set(Tracking(), false)})
+	if err != nil || !screen.Partial || screen.Tracking != (TrackingState{Enabled: false, Effective: false, Mode: TrackingOptOut}) ||
+		screen.Teams == nil || screen.Followable == nil || len(screen.Channels) != 1 {
+		t.Fatalf("partial %+v %v", screen, err)
+	}
+	if w := f.store.Withdrawals(); len(w) != 1 || w[0].Subject != f.person {
+		t.Fatalf("withdrawals %+v", w)
+	}
+	if _, err := svc.Update(context.Background(), f.person, []Change{set(Tracking(), true), set(Club(KindNews), false)}); !errors.Is(err, ErrTeamsUnavailable) {
+		t.Fatalf("with an item: %v", err)
+	}
+	// With Keycloak answering, a tracking-only change gets the full screen.
+	if screen, err := f.update(set(Tracking(), true)); err != nil || screen.Partial || !screen.Tracking.Effective || len(screen.Teams) != 1 {
+		t.Fatalf("full %+v %v", screen, err)
+	}
+}
+
+// MaxChanges bounds the News items; the tracking switch comes on top.
+func TestTrackingSwitchOnTopOfMaxChanges(t *testing.T) {
+	f := newFixture(t)
+	items := make([]Change, 0, MaxChanges+1)
+	for i := range MaxChanges {
+		items = append(items, forget(Team(fmt.Sprintf("g-gone-%d", i), KindAnnouncement)))
+	}
+	if _, err := f.update(append(slices.Clone(items), set(Tracking(), false))...); err != nil {
+		t.Fatalf("%d items and tracking: %v", MaxChanges, err)
+	}
+	items = append(items, forget(Team("g-gone-last", KindAnnouncement)))
+	if _, err := f.update(items...); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("%d items: %v", len(items), err)
+	}
+}
+
+// The resolver's role is a known service account role (never an
+// unclassified one in the role log).
+func TestTrackingResolveRoleIsAKnownServiceRole(t *testing.T) {
+	if !slices.Contains(authz.AdminRoles(), authz.RoleRef{Client: "core", Role: TrackingResolveRole}) {
+		t.Fatal("communication-preferences:read is not in authz.AdminRoles")
 	}
 }
