@@ -32,7 +32,7 @@ func TestService_CreateThenPublicGet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := svc.Get(ctx, created.ID)
+	got, err := svc.Get(ctx, nil, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestService_CreateThenPublicGet(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 
-	listed, err := svc.List(ctx, "", false)
+	listed, err := svc.List(ctx, nil, "", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestService_PrivilegedCanDeleteAny(t *testing.T) {
 	if err := svc.Delete(ctx, yk, created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Get(ctx, created.ID); !errors.Is(err, event.ErrNotFound) {
+	if _, err := svc.Get(ctx, nil, created.ID); !errors.Is(err, event.ErrNotFound) {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -165,7 +165,7 @@ func TestService_LeaderCannotTransferEventToOtherTeam(t *testing.T) {
 	if !errors.Is(err, event.ErrForbidden) {
 		t.Fatalf("transfer: %v", err)
 	}
-	stored, err := svc.Get(ctx, created.ID)
+	stored, err := svc.Get(ctx, nil, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +372,7 @@ func TestService_PublicMediaURLsDoNotRewriteStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := svc.Get(ctx, created.ID)
+	got, err := svc.Get(ctx, nil, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

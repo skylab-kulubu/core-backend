@@ -148,6 +148,11 @@ func (a *authorizer) allowEvent(p Principal, r Resource, action Action) bool {
 	if action == Assign {
 		return a.privileged(p, RoleEventManage)
 	}
+	if action == ReadFull {
+		// Reading a draft (ADR 0066): who may edit the Event, and a
+		// Privileged reader (DK, global:read), who only reads it.
+		return a.privilegedRead(p, RoleEventManage) || a.allowEvent(p, r, Update)
+	}
 	if action != Create && action != Update && action != Delete {
 		return false
 	}

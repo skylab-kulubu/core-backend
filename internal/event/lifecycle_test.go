@@ -30,7 +30,7 @@ func TestServiceArchivesAndRestoresEventIdempotently(t *testing.T) {
 	if err := svc.Delete(ctx, leader, created.ID); err != nil {
 		t.Fatalf("second archive: %v", err)
 	}
-	if _, err := svc.Get(ctx, created.ID); !errors.Is(err, event.ErrNotFound) {
+	if _, err := svc.Get(ctx, nil, created.ID); !errors.Is(err, event.ErrNotFound) {
 		t.Fatalf("archived event Get error = %v", err)
 	}
 
@@ -60,7 +60,7 @@ func TestServiceArchivesAndRestoresEventIdempotently(t *testing.T) {
 	if _, err := svc.Restore(ctx, leader, created.ID); err != nil {
 		t.Fatalf("second restore: %v", err)
 	}
-	if _, err := svc.Get(ctx, created.ID); err != nil {
+	if _, err := svc.Get(ctx, nil, created.ID); err != nil {
 		t.Fatal(err)
 	}
 }

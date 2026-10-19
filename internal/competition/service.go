@@ -70,8 +70,9 @@ func NewService(store Store, events event.Store, az authz.Authorizer) Service {
 }
 
 // eventFor is the Competition's Event; an archived Event hides its
-// Competitions (spec §7).
-func (s *service) eventFor(ctx context.Context, eventID uuid.UUID) (event.Event, error) {
+// Competitions (spec §7), and so does a draft from whoever may not see it
+// (ADR 0066, event.VisibleTo).
+func (s *service) eventFor(ctx context.Context, p authz.Principal, eventID uuid.UUID) (event.Event, error) {
 	if eventID == uuid.Nil {
 		return event.Event{}, ErrNotFound
 	}
@@ -79,7 +80,13 @@ func (s *service) eventFor(ctx context.Context, eventID uuid.UUID) (event.Event,
 	if errors.Is(err, event.ErrNotFound) {
 		return event.Event{}, ErrNotFound
 	}
-	return ev, err
+	if err != nil {
+		return event.Event{}, err
+	}
+	if !event.VisibleTo(s.authz, &p, ev) {
+		return event.Event{}, ErrNotFound
+	}
+	return ev, nil
 }
 
 func (s *service) allow(p authz.Principal, ev event.Event, action authz.Action) error {
@@ -99,7 +106,7 @@ func (s *service) load(ctx context.Context, p authz.Principal, id uuid.UUID, act
 	if err != nil {
 		return Competition{}, err
 	}
-	ev, err := s.eventFor(ctx, c.EventID)
+	ev, err := s.eventFor(ctx, p, c.EventID)
 	if err != nil {
 		return Competition{}, err
 	}
@@ -148,7 +155,7 @@ func cleanReason(raw string) (string, error) {
 }
 
 func (s *service) Create(ctx context.Context, p authz.Principal, eventID uuid.UUID, in CreateInput) (Competition, error) {
-	ev, err := s.eventFor(ctx, eventID)
+	ev, err := s.eventFor(ctx, p, eventID)
 	if err != nil {
 		return Competition{}, err
 	}
@@ -183,7 +190,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, eventID uuid.UU
 }
 
 func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID, visibility lifecycle.Visibility) ([]Competition, error) {
-	ev, err := s.eventFor(ctx, eventID)
+	ev, err := s.eventFor(ctx, p, eventID)
 	if err != nil {
 		return nil, err
 	}

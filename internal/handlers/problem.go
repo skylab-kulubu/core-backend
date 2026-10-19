@@ -17,13 +17,16 @@ func lifecycleVisibility(c fiber.Ctx) (lifecycle.Visibility, error) {
 
 // eventStatusCode names why an Event's status refused the request (ADR
 // 0066): event_not_published for a draft, event_cancelled for a cancelled
-// Event, "" for anything else.
+// Event, event_has_tickets for one that cannot become a draft again, ""
+// for anything else.
 func eventStatusCode(err error) string {
 	switch {
 	case errors.Is(err, event.ErrNotPublished):
 		return "event_not_published"
 	case errors.Is(err, event.ErrCancelled):
 		return "event_cancelled"
+	case errors.Is(err, event.ErrHasTickets):
+		return "event_has_tickets"
 	default:
 		return ""
 	}

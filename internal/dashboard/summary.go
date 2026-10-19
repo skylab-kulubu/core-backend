@@ -124,9 +124,10 @@ type EventStat struct {
 	DailyApplications []int `json:"dailyApplications"`
 }
 
-// EventLister reads the current (not archived) Events: event.Store.
+// EventLister reads the current (not archived) Events in every status:
+// event.Store.
 type EventLister interface {
-	List(ctx context.Context, ownerTeam string, activeOnly bool) ([]event.Event, error)
+	ListIncludingDrafts(ctx context.Context, ownerTeam string) ([]event.Event, error)
 }
 
 type Service interface {
@@ -194,7 +195,7 @@ func NewService(o Options) (Service, error) {
 
 func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, error) {
 	now := s.now()
-	all, err := s.events.List(ctx, "", false)
+	all, err := s.events.ListIncludingDrafts(ctx, "")
 	if err != nil {
 		return Summary{}, err
 	}
@@ -256,7 +257,7 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 		stat := EventStat{
 			ID: e.ID, Name: e.Name, OwnerTeam: e.OwnerTeam, Location: e.Location,
 			StartDate: e.StartDate, EndDate: e.EndDate, Active: e.ActiveAt(now), Status: e.Status,
-			Live:     !start.After(now) && !now.After(end),
+			Live:     e.Status == event.StatusPublished && !start.After(now) && !now.After(end),
 			Capacity: e.Capacity, CoverImageURL: e.Resource().CoverImageURL,
 			HasApplicationForm: e.FormURL != "" || len(e.ExtraFormURLs) > 0,
 			HasCoverImage:      e.CoverImageID != nil || e.CoverImageURL != "",
@@ -287,23 +288,30 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 }
 
 // covered are the Events whose applications p may read: the decision of
-// GET /v1/events/{id}/tickets, taken once per Owner team.
+// GET /v1/events/{id}/tickets, taken once per Owner team, and of a draft
+// only the ones p may see (event.VisibleTo, ADR 0066).
 func (s *service) covered(p authz.Principal, events []event.Event) []event.Event {
-	allowed := make(map[string]bool)
+	type decision struct{ read, draft bool }
+	allowed := make(map[string]decision)
 	out := make([]event.Event, 0, len(events))
 	for _, e := range events {
-		ok, seen := allowed[e.OwnerTeam]
+		d, seen := allowed[e.OwnerTeam]
 		if !seen {
-			ok = s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: e.OwnerTeam}, authz.Read)
-			allowed[e.OwnerTeam] = ok
+			d.read = s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: e.OwnerTeam}, authz.Read)
+			d.draft = event.VisibleTo(s.authz, &p, event.Event{OwnerTeam: e.OwnerTeam, Status: event.StatusDraft})
+			allowed[e.OwnerTeam] = d
 		}
-		if ok {
+		if d.read && (e.Status != event.StatusDraft || d.draft) {
 			out = append(out, e)
 		}
 	}
 	return out
 }
 
+// eventCounts counts every covered Event in total and by month; upcoming
+// and live only the published ones: a draft is not to come and a cancelled
+// Event will not run (PR #231 review B3). eventStats lists them with their
+// status.
 func (s *service) eventCounts(events []event.Event, now time.Time) EventCounts {
 	out := EventCounts{Total: len(events), ByMonth: make([]MonthCount, EventMonths)}
 	this := time.Date(now.In(s.loc).Year(), now.In(s.loc).Month(), 1, 0, 0, 0, 0, s.loc)
@@ -319,6 +327,7 @@ func (s *service) eventCounts(events []event.Event, now time.Time) EventCounts {
 			continue
 		}
 		switch {
+		case e.Status != event.StatusPublished:
 		case start.After(now):
 			out.Upcoming++
 		case !now.After(end):
