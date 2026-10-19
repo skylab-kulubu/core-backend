@@ -17,6 +17,14 @@ on:
 permissions:
   contents: read
 
+# production's pushes one after the other: an older push (a hotfix still
+# waiting for its tests) never ends after a newer one and puts its image back
+# on :production. A newer push waiting in line replaces an older one that has
+# not started.
+concurrency:
+  group: ghcr-${{ github.ref == 'refs/heads/production' && 'production' || github.run_id }}
+  cancel-in-progress: false
+
 jobs:
   # main's push run of Checks, or for a hotfix this push's own Checks run,
   # which this waits for.
@@ -51,7 +59,7 @@ jobs:
               echo "No fully green full Checks run of tree $tree after 50 minutes." >&2
               exit 1
             fi
-            sleep 30
+            sleep 60
           done
 
   image:

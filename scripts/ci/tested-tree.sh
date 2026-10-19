@@ -11,20 +11,19 @@
 # which only records how long the tests took.
 #
 # Needs GH_TOKEN (actions: read) and GITHUB_REPOSITORY; reads 21 days back.
+# A call lists the runs (a page per 100) and reads the jobs of a run of the
+# tree only: the run's own head_commit.tree_id names its tree, so polling it
+# stays far below the token's 1,000 requests an hour.
 set -euo pipefail
 
 tree=${1:?usage: tested-tree.sh TREE}
 since=$(date -u -d '21 days ago' +%Y-%m-%d)
 runs=$(gh api --paginate -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/checks.yml/runs" \
   -f status=success -f "created=>=$since" -f per_page=100 \
-  --jq '.workflow_runs[] | select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch") | "\(.id) \(.head_sha)"')
-declare -A tree_of=()
-while read -r run_id head_sha; do
+  --jq '.workflow_runs[] | select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch") | "\(.id) \(.head_sha) \(.head_commit.tree_id)"')
+while read -r run_id head_sha run_tree; do
   [[ $run_id =~ ^[0-9]+$ && $head_sha =~ ^[0-9a-f]{40}$ ]] || continue
-  if [[ -z ${tree_of[$head_sha]+set} ]]; then
-    tree_of[$head_sha]=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$head_sha" --jq .tree.sha)
-  fi
-  [[ ${tree_of[$head_sha]} == "$tree" ]] || continue
+  [[ $run_tree == "$tree" ]] || continue
   jobs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" \
     --jq '.jobs[] | select(.name != "timings") | "\(.conclusion) \(.name)"')
   if grep -qxF 'success scope (full)' <<<"$jobs" && grep -q '^success test (' <<<"$jobs" && ! grep -qv '^success ' <<<"$jobs"; then

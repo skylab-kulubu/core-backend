@@ -194,7 +194,10 @@ func runUnit(i int, u Unit, goFlags []string, dir string) (string, bool, []strin
 	for _, test := range result.Skipped {
 		skipped = append(skipped, u.Package+" "+test)
 	}
-	unitFailed := runErr != nil || len(result.Failed) > 0
+	// A unit that ran no test (its tests excluded by a build tag, or a -run
+	// that matched nothing) would pass without testing anything.
+	ranNothing := runErr == nil && len(result.Timings) == 0 && len(result.Skipped) == 0
+	unitFailed := runErr != nil || len(result.Failed) > 0 || ranNothing
 	status := "ok  "
 	if unitFailed {
 		status = "FAIL"
@@ -210,6 +213,9 @@ func runUnit(i int, u Unit, goFlags []string, dir string) (string, bool, []strin
 			report.WriteString(output.String())
 		}
 		report.Write(stderr.Bytes())
+		if ranNothing {
+			report.WriteString("no test ran\n")
+		}
 		if runErr != nil && len(result.Failed) == 0 {
 			fmt.Fprintf(&report, "go test: %v\n", runErr)
 		}
