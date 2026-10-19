@@ -426,14 +426,28 @@ func (s *service) searchStoredDoorAttendees(
 }
 
 func (s *service) canRead(ctx context.Context, p authz.Principal, t Ticket) bool {
+	return s.readable(ctx, p, t) == nil
+}
+
+// readable is nil when p may read t: their own Ticket always (its holder sees
+// a draft's summary, decision of 2026-10-19), anyone else's only on an Event
+// p may see, ErrNotFound on a draft p may not see (ADR 0066) and
+// ErrForbidden without the Ticket read right.
+func (s *service) readable(ctx context.Context, p authz.Principal, t Ticket) error {
 	if t.OwnerID != nil && p.ID == t.OwnerID.String() {
-		return true
+		return nil
 	}
 	ev, err := s.events.Get(ctx, t.EventID)
 	if err != nil {
-		return false
+		return ErrForbidden
 	}
-	return s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read)
+	if err := s.seen(&p, ev); err != nil {
+		return err
+	}
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Read) {
+		return ErrForbidden
+	}
+	return nil
 }
 
 func (s *service) Apply(ctx context.Context, p authz.Principal, eventID uuid.UUID) (Ticket, error) {
@@ -709,8 +723,8 @@ func (s *service) Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Tic
 	if err != nil {
 		return Ticket{}, err
 	}
-	if !s.canRead(ctx, p, t) {
-		return Ticket{}, ErrForbidden
+	if err := s.readable(ctx, p, t); err != nil {
+		return Ticket{}, err
 	}
 	return s.withEvent(ctx, t), nil
 }
@@ -720,8 +734,8 @@ func (s *service) GetByUserEvent(ctx context.Context, p authz.Principal, userID,
 	if err != nil {
 		return Ticket{}, err
 	}
-	if !s.canRead(ctx, p, t) {
-		return Ticket{}, ErrForbidden
+	if err := s.readable(ctx, p, t); err != nil {
+		return Ticket{}, err
 	}
 	return s.withEvent(ctx, t), nil
 }

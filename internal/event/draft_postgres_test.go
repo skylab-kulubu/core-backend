@@ -2,6 +2,7 @@ package event_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"testing"
@@ -134,7 +135,7 @@ func TestPostgresStorePublishAndUnpublish(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO tickets (id, event_id, ticket_type, guest_email) VALUES ($1, $2, 'GUEST', 'ada@example.com')`, uuid.New(), draft.ID); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := store.Unpublish(ctx, draft.ID); err != nil || changed {
+	if changed, err := store.Unpublish(ctx, draft.ID); !errors.Is(err, event.ErrHasTickets) || changed {
 		t.Fatalf("unpublish with a Ticket: %v %v", changed, err)
 	}
 	if _, status, _ := stored(draft.ID); status != "published" {
@@ -150,5 +151,41 @@ func TestPostgresStorePublishAndUnpublish(t *testing.T) {
 	}
 	if changed, err := store.Publish(ctx, archived.ID, nil); err != nil || changed {
 		t.Fatalf("publish archived: %v %v", changed, err)
+	}
+}
+
+// A published Event with a current Competitor stays published: their reads
+// would otherwise carry a draft's summary. A withdrawn one does not hold it.
+func TestPostgresStoreUnpublishRefusesCompetitors(t *testing.T) {
+	pool := testpostgres.Start(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	store := event.NewPostgresStore(pool)
+	person := uuid.New()
+	if _, _, err := user.NewService(user.NewPostgresStore(pool)).Ensure(ctx, person, user.Profile{Email: "competitor@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now().Add(time.Hour)
+	ev, err := store.Create(ctx, event.Event{Name: "Yarışma Günü", Location: "YTÜ", OwnerTeam: "WEBLAB", Status: event.StatusPublished, StartDate: &start})
+	if err != nil {
+		t.Fatal(err)
+	}
+	competitor := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO competitors (id, user_id, event_id) VALUES ($1, $2, $3)`, competitor, person, ev.ID); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := store.Unpublish(ctx, ev.ID); !errors.Is(err, event.ErrHasCompetitors) || changed {
+		t.Fatalf("unpublish with a Competitor: %v %v", changed, err)
+	}
+	if got, err := store.Get(ctx, ev.ID); err != nil || got.Status != event.StatusPublished {
+		t.Fatalf("after refusal %q %v", got.Status, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE competitors SET withdrawn_at = now() WHERE id = $1`, competitor); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := store.Unpublish(ctx, ev.ID); err != nil || !changed {
+		t.Fatalf("unpublish after the withdrawal: %v %v", changed, err)
 	}
 }

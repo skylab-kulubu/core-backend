@@ -977,9 +977,26 @@ func (s *PostgresStore) Unpublish(ctx context.Context, id uuid.UUID) (bool, erro
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE events e SET status = 'draft', active = false, updated_at = now()
 		WHERE e.id = $1 AND e.archived_at IS NULL AND e.status = 'published'
-			AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.event_id = e.id)`, id)
+			AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.event_id = e.id)
+			AND NOT EXISTS (SELECT 1 FROM competitors c WHERE c.event_id = e.id AND c.withdrawn_at IS NULL)`, id)
 	if err != nil {
 		return false, err
 	}
-	return tag.RowsAffected() == 1, nil
+	if tag.RowsAffected() == 1 {
+		return true, nil
+	}
+	// Nothing changed: say why when it is still a current published Event.
+	var published, tickets, competitors bool
+	err = s.pool.QueryRow(ctx, `
+		SELECT e.status = 'published',
+			EXISTS (SELECT 1 FROM tickets t WHERE t.event_id = e.id),
+			EXISTS (SELECT 1 FROM competitors c WHERE c.event_id = e.id AND c.withdrawn_at IS NULL)
+		FROM events e WHERE e.id = $1 AND e.archived_at IS NULL`, id).Scan(&published, &tickets, &competitors)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, unpublishRefusal(published, tickets, competitors)
 }

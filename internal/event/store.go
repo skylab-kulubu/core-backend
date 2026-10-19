@@ -76,8 +76,10 @@ type Store interface {
 	// name, a location and a start date. False when it changed nothing.
 	Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID) (bool, error)
 	// Unpublish makes the published Event a draft again: one UPDATE that
-	// changes it only while it is current, published and has no Ticket
-	// (check-ins hang off Tickets). False when it changed nothing.
+	// changes it only while it is current, published, and has no Ticket
+	// (check-ins hang off Tickets) and no current Competitor. When it is
+	// still current and published it says why: ErrHasTickets or
+	// ErrHasCompetitors. False when it changed nothing.
 	Unpublish(ctx context.Context, id uuid.UUID) (bool, error)
 	SetSeason(ctx context.Context, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
 	SetMailListID(ctx context.Context, eventID, listID uuid.UUID) (Event, error)

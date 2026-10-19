@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -243,6 +244,9 @@ func (s *service) RecomputeTicket(ctx context.Context, ticketID uuid.UUID) (*Cer
 	if err != nil {
 		return nil, mapEventError(err)
 	}
+	if ev.Status != event.StatusPublished {
+		return nil, nil
+	}
 	ok, err := s.eligible(ctx, ev, t)
 	if err != nil || !ok {
 		return nil, err
@@ -264,12 +268,15 @@ func (s *service) RecomputeEvent(ctx context.Context, p authz.Principal, eventID
 		_, err := s.Finalize(ctx, p, eventID)
 		return []Certificate{}, err
 	}
-	ev, err := s.events.Get(ctx, eventID)
+	ev, err := s.visibleEvent(ctx, p, eventID)
 	if err != nil {
-		return nil, mapEventError(err)
+		return nil, err
 	}
 	if !s.canIssue(p, ev.OwnerTeam) {
 		return nil, ErrForbidden
+	}
+	if err := issuable(ev); err != nil {
+		return nil, err
 	}
 	tickets, err := s.tickets.ListByEvent(ctx, eventID)
 	if err != nil {
@@ -292,12 +299,15 @@ func (s *service) Issue(ctx context.Context, p authz.Principal, eventID, ticketI
 	if !s.legacyImmediate {
 		return Certificate{}, ErrInvalid
 	}
-	ev, err := s.events.Get(ctx, eventID)
+	ev, err := s.visibleEvent(ctx, p, eventID)
 	if err != nil {
-		return Certificate{}, mapEventError(err)
+		return Certificate{}, err
 	}
 	if !s.canIssue(p, ev.OwnerTeam) {
 		return Certificate{}, ErrForbidden
+	}
+	if err := issuable(ev); err != nil {
+		return Certificate{}, err
 	}
 	t, err := s.tickets.Get(ctx, ticketID)
 	if err != nil {
@@ -379,14 +389,37 @@ func (s *service) Mine(ctx context.Context, p authz.Principal) ([]MineCertificat
 }
 
 func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Certificate, error) {
-	ev, err := s.events.Get(ctx, eventID)
+	ev, err := s.visibleEvent(ctx, p, eventID)
 	if err != nil {
-		return nil, mapEventError(err)
+		return nil, err
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: ev.OwnerTeam}, authz.Read) {
 		return nil, ErrForbidden
 	}
 	return s.store.ListByEvent(ctx, eventID)
+}
+
+// visibleEvent is the current Event id names, ErrNotFound when p may not see
+// it: a draft's certificates do not exist for who may not see the draft
+// (event.VisibleTo, ADR 0066).
+func (s *service) visibleEvent(ctx context.Context, p authz.Principal, id uuid.UUID) (event.Event, error) {
+	ev, err := s.events.Get(ctx, id)
+	if err != nil {
+		return event.Event{}, mapEventError(err)
+	}
+	if !event.VisibleTo(s.authz, &p, ev) {
+		return event.Event{}, ErrNotFound
+	}
+	return ev, nil
+}
+
+// issuable refuses a certificate on an Event that is not published (ADR
+// 0066): a draft and a cancelled Event issue none.
+func issuable(ev event.Event) error {
+	if err := ev.StatusError(); err != nil {
+		return fmt.Errorf("%w: %w", ErrConflict, err)
+	}
+	return nil
 }
 
 func mapEventError(err error) error {
