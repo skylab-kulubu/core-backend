@@ -32,8 +32,8 @@
 # step 5 (its procedure says so), and the "emails": [] replay only afterwards, answered from the
 # replay's receipts. CMS and Forms get the "emails": [] replay first, as before, and
 # replay-from-backup after it answers 200 and changes nothing there: CMS holds no e-mail-keyed
-# data, and the Forms stub's guest responses of the erased people stay; the latter is printed
-# as KNOWN GAP with counts, never as a failure.
+# data, and the addresses of the erased people in the Forms stub's guest responses and queued
+# reports stay; the latter is printed as KNOWN GAP with counts, never as a failure.
 
 RESTORE_NOT_SENT='restore: gönderilmedi'
 S11_CONTROL_TO=after-restore@harness.invalid
@@ -648,7 +648,7 @@ scenario_11() {
   local forms_rows
   forms_rows=$(rows_holding_erased forms_db)
   if [[ $forms_rows != 0 ]]; then
-    known_gap 18 "Forms (stub) got the emails [] replay before replay-from-backup, which then only got those receipts back: $forms_rows forms_db row(s) still hold addresses of the $completed people erased after the dump (guest responses). A restored service must get replay-from-backup instead of the emails [] replay, as SkyMail does here."
+    known_gap 18 "Forms (stub) got the emails [] replay before replay-from-backup, which then only got those receipts back: $forms_rows forms_db row(s) still hold addresses of the $completed people erased after the dump (guest responses and queued reports). A restored service must get replay-from-backup instead of the emails [] replay, as SkyMail does here."
   fi
   scenario_end
 }

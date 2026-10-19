@@ -308,6 +308,12 @@ pii_hits() {
   lines=$(db_lines "$db") || { echo "dump-of-$db-failed"; return 0; }
   grep -iF -f <(printf '%s\n' "$needles") <<<"$lines" | cut -f1 | grep -Ev "$allowed" || true
 }
+# address_hits DB PERSON: rows of DB holding one of the person's addresses. Prints "table" per hit.
+address_hits() {
+  local lines
+  lines=$(db_lines "$1") || { echo "dump-of-$1-failed"; return 0; }
+  grep -iF -f <(printf '%s\n' "${P_SCHOOL[$2]}" "${P_PERSONAL[$2]}") <<<"$lines" | cut -f1 || true
+}
 # subject_hits DB SUBJECT [ALLOWED_TABLE_REGEX]: rows of DB carrying the subject id.
 subject_hits() {
   local db=$1 subject=$2 allowed=${3:-'^$'} lines
