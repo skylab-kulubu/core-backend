@@ -235,6 +235,9 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 		return Event{}, err
 	}
 	defer tx.Rollback(ctx)
+	if err := lockFormPlaces(ctx, tx, e.formGuard); err != nil {
+		return Event{}, err
+	}
 	if e.Status == "" {
 		e.Status = StatusPublished
 	}
@@ -288,6 +291,9 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 		return Event{}, err
 	}
 	defer tx.Rollback(ctx)
+	if err := lockFormPlaces(ctx, tx, e.formGuard); err != nil {
+		return Event{}, err
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE events SET
 			name = $2, description = $3, location = $4, owner_team = $5, form_url = $6,
@@ -864,7 +870,40 @@ func (s *PostgresStore) CreateSession(ctx context.Context, sess Session) (Sessio
 	if sess.ID == uuid.Nil {
 		sess.ID = uuid.New()
 	}
-	return scanSession(s.pool.QueryRow(ctx, `
+	return withFormGuard(ctx, s, sess.formGuard, func(q querier) (Session, error) {
+		return createSession(ctx, q, sess)
+	})
+}
+
+// querier is the pool or a transaction.
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// withFormGuard runs write in a transaction that first takes the guard's
+// form locks and applies its check; without a guard, on the pool.
+func withFormGuard[T any](ctx context.Context, s *PostgresStore, g *formGuard, write func(q querier) (T, error)) (T, error) {
+	var zero T
+	if g == nil {
+		return write(s.pool)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return zero, err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockFormPlaces(ctx, tx, g); err != nil {
+		return zero, err
+	}
+	out, err := write(tx)
+	if err != nil {
+		return zero, err
+	}
+	return out, tx.Commit(ctx)
+}
+
+func createSession(ctx context.Context, q querier, sess Session) (Session, error) {
+	return scanSession(q.QueryRow(ctx, `
 		INSERT INTO sessions (
 			id, event_day_id, title, speaker_name, speaker_linkedin, description,
 			start_time, end_time, order_index, session_type, cancelled,
@@ -876,7 +915,13 @@ func (s *PostgresStore) CreateSession(ctx context.Context, sess Session) (Sessio
 }
 
 func (s *PostgresStore) UpdateSession(ctx context.Context, sess Session) (Session, error) {
-	got, err := scanSession(s.pool.QueryRow(ctx, `
+	return withFormGuard(ctx, s, sess.formGuard, func(q querier) (Session, error) {
+		return updateSession(ctx, q, sess)
+	})
+}
+
+func updateSession(ctx context.Context, q querier, sess Session) (Session, error) {
+	got, err := scanSession(q.QueryRow(ctx, `
 		UPDATE sessions SET
 			title = $2, speaker_name = $3, speaker_linkedin = $4, description = $5,
 			start_time = $6, end_time = $7, order_index = $8, session_type = $9, cancelled = $10,
