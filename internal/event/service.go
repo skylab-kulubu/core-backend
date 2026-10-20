@@ -39,6 +39,10 @@ type Service interface {
 	// published again; idempotent, refused on a draft (ErrNotCancelled).
 	Uncancel(ctx context.Context, p authz.Principal, id uuid.UUID, notify bool) (Event, error)
 	Create(ctx context.Context, p authz.Principal, in Event) (Event, error)
+	// Copy copies an Event's structure into a new draft (ticket 06): fresh
+	// is false when the same id from the same source answers the copy made
+	// already.
+	Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUID, in CopyInput) (copied Copied, fresh bool, err error)
 	// Update overwrites the Event's fields with in's; a nil season, door
 	// staff, extra forms or mail list keeps the stored one.
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Event) (Event, error)

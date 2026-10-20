@@ -507,6 +507,7 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/events/:id/unpublish", events.Unpublish)
 	app.Post("/v1/events/:id/cancel", events.Cancel)
 	app.Post("/v1/events/:id/uncancel", events.Uncancel)
+	app.Post("/v1/events/:id/copy", events.Copy)
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)
 	app.Post("/v1/events/:id/files", events.AddFiles(event.Files))
