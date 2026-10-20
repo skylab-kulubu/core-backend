@@ -44,7 +44,11 @@ type Service interface {
 	ListLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]Season, error)
 	Get(ctx context.Context, id uuid.UUID) (Season, error)
 	Create(ctx context.Context, p authz.Principal, in Season) (Season, error)
+	// Update overwrites the Season's fields with in's.
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Season) (Season, error)
+	// Patch writes the fields patch sent and keeps every other (PUT and
+	// PATCH /v1/seasons/{id}, ticket 13).
+	Patch(ctx context.Context, p authz.Principal, id uuid.UUID, patch Patch) (Season, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Season, error)
 }
