@@ -226,11 +226,22 @@ func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
 }
 
 func (s *MemoryStore) Archive(_ context.Context, id uuid.UUID, actorID *uuid.UUID) error {
+	return s.archive(id, actorID, false)
+}
+
+func (s *MemoryStore) ArchiveDraft(_ context.Context, id uuid.UUID, actorID *uuid.UUID) error {
+	return s.archive(id, actorID, true)
+}
+
+func (s *MemoryStore) archive(id uuid.UUID, actorID *uuid.UUID, draftOnly bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.byID[id]
 	if !ok {
 		return ErrNotFound
+	}
+	if draftOnly && e.ArchivedAt == nil && e.Status != StatusDraft {
+		return ErrNotDraft
 	}
 	if e.ArchivedAt == nil {
 		now := time.Now().UTC()

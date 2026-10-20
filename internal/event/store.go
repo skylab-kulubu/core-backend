@@ -33,6 +33,10 @@ type Store interface {
 	Create(ctx context.Context, e Event) (Event, error)
 	Update(ctx context.Context, e Event) (Event, error)
 	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
+	// ArchiveDraft archives the Event only while it is a draft, in one
+	// conditional write: ErrNotDraft when it is published or cancelled (an
+	// Event archived already stays as it is, as with Archive).
+	ArchiveDraft(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	Restore(ctx context.Context, id uuid.UUID) error
 	AddImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
 	RemoveImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)

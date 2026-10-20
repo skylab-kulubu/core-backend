@@ -28,8 +28,9 @@ func requireStatus(t *testing.T, app *fiber.App, method, path string, want int) 
 func TestEventLifecycleHTTP(t *testing.T) {
 	t.Parallel()
 	store := event.NewMemoryStore()
+	// A Leader deletes a draft only (ticket 05).
 	created, err := store.Create(t.Context(), event.Event{
-		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", Active: true,
+		Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", Status: event.StatusDraft,
 	})
 	if err != nil {
 		t.Fatal(err)
