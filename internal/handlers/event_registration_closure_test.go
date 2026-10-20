@@ -277,6 +277,32 @@ func TestFormsAnswerToAClosedRegistration(t *testing.T) {
 			t.Errorf("%s: %d %v, %d Tickets", tc.name, status, body, wrote)
 		}
 	}
+	// submittedAt Forms sends wrong is left out, never refused (review R1):
+	// no zone, not a string. A time to come counts as now: the deadline an
+	// hour away has not passed.
+	soon := now.Add(time.Hour)
+	soonForm := uuid.New()
+	soonEvent := env.create(t, "Son tarih yakın", event.StatusPublished, false, false, &soon, soonForm)
+	raw := func(formID uuid.UUID, value string) (int, map[string]any) {
+		return sendEventJSON(t, forms, fiber.MethodPost, "/v1/forms/"+formID.String()+"/responses",
+			`{"responseId":"`+uuid.NewString()+`","status":"accepted","guest":{"firstName":"Ada","lastName":"Lovelace","email":"`+uuid.NewString()+`@example.com"},"submittedAt":`+value+`}`)
+	}
+	for _, tc := range []struct {
+		name, value string
+		form        uuid.UUID
+		ev          event.Event
+	}{
+		{"no zone", `"` + after.UTC().Format("2006-01-02T15:04:05") + `"`, closedForm, closed},
+		{"not a string", `5`, deadlineForm, deadline},
+		{"not a time", `"dün"`, closedForm, closed},
+		{"a day to come", `"` + now.Add(24*time.Hour).UTC().Format(time.RFC3339) + `"`, soonForm, soonEvent},
+	} {
+		count := env.ticketCount(t, tc.ev.ID)
+		if status, body := raw(tc.form, tc.value); status != fiber.StatusNoContent || env.ticketCount(t, tc.ev.ID) != count+1 {
+			t.Errorf("submittedAt %s: %d %v", tc.name, status, body)
+		}
+	}
+
 	// A form two Events list: an answer sent after one closed writes the
 	// other's Ticket alone.
 	if status, body := report(sharedForm, &after); status != fiber.StatusNoContent {

@@ -35,9 +35,10 @@ type FormResponse struct {
 	UserID *uuid.UUID
 	// Guest is what a guest typed into the form's identity fields.
 	Guest *GuestInfo
-	// SubmittedAt is when the person sent the answer, when the forms
-	// service says: an answer sent after its Event closed applying earns no
-	// Ticket. Without it closing applying refuses no answer (ticket 12).
+	// SubmittedAt is when the forms service first took the answer, when it
+	// says: an answer sent after its Event closed applying earns no Ticket.
+	// Without it closing applying refuses no answer (ticket 12); a time to
+	// come counts as now.
 	SubmittedAt *time.Time
 }
 
@@ -139,7 +140,9 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		return FormResponseResult{Outcome: FormResponseEventCancelled}, nil
 	}
 	if r.SubmittedAt != nil {
-		listing = openWhenSubmitted(listing, *r.SubmittedAt)
+		// A time to come is taken as now: an answer is not sent later than
+		// it is reported.
+		listing = openWhenSubmitted(listing, earlier(*r.SubmittedAt, time.Now()))
 		if len(listing) == 0 {
 			return FormResponseResult{Outcome: FormResponseRegistrationClosed}, nil
 		}
@@ -223,6 +226,13 @@ func openWhenSubmitted(listing []event.Event, submitted time.Time) []event.Event
 		}
 	}
 	return out
+}
+
+func earlier(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }
 
 // settledFormResponse treats as done what sending the report again would not

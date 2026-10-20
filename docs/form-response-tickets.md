@@ -24,7 +24,7 @@ hold.
 | `status` | `pending` (waits for review), `accepted` (needs no review, or approved), `declined` |
 | `userId` | the person who answered signed in; wins over `guest` |
 | `guest` | `{ firstName, lastName, email }` a guest typed into the form's identity fields; a guest without an e-mail counts as no respondent |
-| `submittedAt` | optional: when the person sent the answer (RFC 3339); judged against the Event's registration closure, see below |
+| `submittedAt` | optional: the moment Forms first took the answer, in UTC as RFC 3339 with `Z` (`2026-10-20T09:15:00Z`); judged against the Event's registration closure, see below. A value that is not such a time (no zone, not a string) is ignored as if not sent, with a warning line that names the form only (`form_response_submitted_at_ignored`); the report is never refused for it. A time later than core's now counts as now |
 
 The answer is `204` whether or not an Event lists the form. A pending or
 declined report is not read further. Core neither stores nor logs a report
@@ -51,7 +51,7 @@ and the answer is `200` with `outcome: "event_cancelled"` (checked first).
 sent in time and approved after the organizer closed applying, or reported
 late by Forms, still earns its Ticket, as an approved application does on
 Luma or Eventbrite. Only a report that says when the answer was sent, with
-the optional `submittedAt` (RFC 3339), is judged by it: an Event whose
+the optional `submittedAt` (above), is judged by it: an Event whose
 organizer had closed applying by then, by hand (`registrationClosedAt`) or by
 its deadline (`registrationClosesAt`), gets no Ticket, and when no Event is
 left the answer is `200` with `outcome: "registration_closed"`. Forms sends

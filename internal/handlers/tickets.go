@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"log"
@@ -182,8 +183,10 @@ type formResponseBody struct {
 	Status     string     `json:"status"`
 	UserID     *uuid.UUID `json:"userId"`
 	Guest      *guestBody `json:"guest"`
-	// SubmittedAt is when the person sent the answer, optional (ticket 12).
-	SubmittedAt *time.Time `json:"submittedAt"`
+	// SubmittedAt is when the forms service first took the answer,
+	// optional (ticket 12): read by submittedAt, which never refuses the
+	// report for it.
+	SubmittedAt json.RawMessage `json:"submittedAt"`
 }
 
 // RecordFormResponse takes the forms service's report of an answer to one of
@@ -217,7 +220,7 @@ func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
 		ResponseID:  body.ResponseID,
 		Status:      ticket.FormResponseStatus(body.Status),
 		UserID:      body.UserID,
-		SubmittedAt: body.SubmittedAt,
+		SubmittedAt: h.submittedAt(formID, body.SubmittedAt),
 	}
 	if body.Guest != nil {
 		r.Guest = &ticket.GuestInfo{FirstName: body.Guest.FirstName, LastName: body.Guest.LastName, Email: body.Guest.Email}
@@ -231,6 +234,37 @@ func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"outcome": result.Outcome})
 	}
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// submittedAt reads a report's submittedAt: an RFC 3339 time with its zone
+// (Forms sends UTC, with Z). A value that is not one (no zone, not a
+// string) is left out, as if not sent, and the report is not refused for it:
+// the answer then earns its Ticket. The warning names the form, never who
+// answered.
+func (h *TicketHandler) submittedAt(formID uuid.UUID, raw json.RawMessage) *time.Time {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		if at, err := time.Parse(time.RFC3339Nano, text); err == nil {
+			return &at
+		}
+	}
+	logger := h.logger
+	if logger == nil {
+		logger = log.Default()
+	}
+	payload, err := json.Marshal(struct {
+		Event  string `json:"event"`
+		Level  string `json:"level"`
+		FormID string `json:"form_id"`
+		Reason string `json:"reason"`
+	}{"form_response_submitted_at_ignored", "warn", formID.String(), "not an RFC 3339 time with a zone"})
+	if err == nil {
+		logger.Print(string(payload))
+	}
+	return nil
 }
 
 // logFormResponse writes one JSON line per report core reads: the request's
