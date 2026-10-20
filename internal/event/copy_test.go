@@ -343,3 +343,65 @@ func TestCopySkipsWhatItMayNotWrite(t *testing.T) {
 		t.Fatalf("not asked: %v %v", got.Skipped, err)
 	}
 }
+
+// Into another Owner team (ticket 16): who may edit the source and create
+// Events in the target; each part is decided for the target.
+func TestCopyIntoAnotherTeam(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := event.NewMemoryStore()
+	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	source := copySource(t, store)
+	both := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER", "/UYELER/ARGE/ARTLAB/LIDERLER"}}
+	readsSource := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB", "/UYELER/ARGE/ARTLAB/LIDERLER"}}
+	start := "2027-01-01T10:00:00+03:00"
+	into := func(team string) event.CopyInput {
+		in := copyIn("Kopya", start)
+		in.OwnerTeam = team
+		return in
+	}
+	for _, tc := range []struct {
+		name string
+		p    authz.Principal
+		in   event.CopyInput
+	}{
+		{"source read only", readsSource, into("ARTLAB")},
+		{"no right in the target", copyLeader, into("ARTLAB")},
+		{"DK", copyDK, into("ARTLAB")},
+	} {
+		if _, _, err := svc.Copy(ctx, tc.p, source.ID, tc.in); !errors.Is(err, event.ErrForbidden) {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+	// The source's own team named is the same as none.
+	if got, _, err := svc.Copy(ctx, copyLeader, source.ID, into("WEBLAB")); err != nil || got.Event.OwnerTeam != "WEBLAB" {
+		t.Fatalf("own team: %+v %v", got.Event.OwnerTeam, err)
+	}
+	in := into(" ARTLAB ")
+	in.IncludeDoorStaff = true
+	got, fresh, err := svc.Copy(ctx, both, source.ID, in)
+	if err != nil || !fresh {
+		t.Fatalf("both: %v %v", fresh, err)
+	}
+	// The cover is WEBLAB's Event's: the Team media library keeps it out of
+	// ARTLAB; door staff need event:manage in ARTLAB.
+	if got.Event.OwnerTeam != "ARTLAB" || got.Event.Status != event.StatusDraft || got.Event.CoverImageID != nil ||
+		!slices.Equal(got.Skipped, []string{event.SkippedDoorStaff, event.SkippedCover}) {
+		t.Fatalf("into ARTLAB: %s %v %v", got.Event.OwnerTeam, got.Event.CoverImageID, got.Skipped)
+	}
+	// Retried into the same team: the same copy; into another: a conflict.
+	if again, fresh, err := svc.Copy(ctx, both, source.ID, in); err != nil || fresh || again.Event.ID != got.Event.ID {
+		t.Fatalf("again: %v %v", fresh, err)
+	}
+	other := in
+	other.OwnerTeam = "WEBLAB"
+	if _, _, err := svc.Copy(ctx, both, source.ID, other); !errors.Is(err, event.ErrConflict) {
+		t.Fatalf("same id, another team: %v", err)
+	}
+	// YK copies into any team, door staff too.
+	yk := into("GECEKODU")
+	yk.IncludeDoorStaff = true
+	if got, _, err := svc.Copy(ctx, copyYK, source.ID, yk); err != nil || got.Event.OwnerTeam != "GECEKODU" || len(got.Event.DoorStaffIDs) != 1 {
+		t.Fatalf("yk: %+v %v", got, err)
+	}
+}

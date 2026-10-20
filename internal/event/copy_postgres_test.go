@@ -255,3 +255,29 @@ func TestPostgresCopyIsOneTransaction(t *testing.T) {
 		t.Fatalf("sessions %d", n)
 	}
 }
+
+// Into another Owner team (ticket 16) the template binding follows the
+// binding rule for that team: a template of the source's team stays
+// behind, one of no team comes along.
+func TestPostgresCopyIntoAnotherTeam(t *testing.T) {
+	d := newCopyDatabase(t)
+	ctx := context.Background()
+	in := copyIn("ArtLab kopyası", "2027-03-13T19:00:00+03:00")
+	in.OwnerTeam, in.IncludeDoorStaff, in.IncludeCompetitions = "ARTLAB", true, true
+	got, _, err := d.svc.Copy(ctx, d.yk, d.source.ID, in)
+	if err != nil || got.Event.OwnerTeam != "ARTLAB" || !slices.Equal(got.Skipped, []string{event.SkippedCertificateTemplate}) {
+		t.Fatalf("copy: %s %v %v", got.Event.OwnerTeam, got.Skipped, err)
+	}
+	if n := d.count(t, `SELECT count(*) FROM competitions WHERE event_id = $1`, got.Event.ID); n != 2 {
+		t.Fatalf("competitions %d", n)
+	}
+	if _, err := d.pool.Exec(ctx, `UPDATE certificate_templates SET owner_team = '' WHERE id = $1`, d.template); err != nil {
+		t.Fatal(err)
+	}
+	in = copyIn("İkinci", "2027-03-13T19:00:00+03:00")
+	in.OwnerTeam = "ARTLAB"
+	got, _, err = d.svc.Copy(ctx, d.yk, d.source.ID, in)
+	if err != nil || len(got.Skipped) != 0 || d.count(t, `SELECT count(*) FROM certificate_template_bindings WHERE scope_key = $1`, got.Event.ID.String()) != 1 {
+		t.Fatalf("no-team template: %v %v", got.Skipped, err)
+	}
+}

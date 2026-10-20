@@ -300,6 +300,9 @@ type copyBody struct {
 	StartDate           *time.Time `json:"startDate"`
 	IncludeDoorStaff    bool       `json:"includeDoorStaff"`
 	IncludeCompetitions bool       `json:"includeCompetitions"`
+	// OwnerTeam is the copy's Owner team (ticket 16); none is the
+	// source's.
+	OwnerTeam string `json:"ownerTeam"`
 }
 
 // Copy copies an Event's structure into a new draft: POST
@@ -325,6 +328,7 @@ func (h *EventHandler) Copy(c fiber.Ctx) error {
 		StartDate:           body.StartDate,
 		IncludeDoorStaff:    body.IncludeDoorStaff,
 		IncludeCompetitions: body.IncludeCompetitions,
+		OwnerTeam:           body.OwnerTeam,
 	})
 	if err != nil {
 		return eventError(c, err)

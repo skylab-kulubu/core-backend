@@ -10,21 +10,24 @@ ADR 0066 and its 2026-10-19 addendum (e-skylab), ticket 06. A copy takes the sou
   "name": "Gecekodu 2027",
   "startDate": "2027-03-14T19:00:00+03:00",
   "includeDoorStaff": false,
-  "includeCompetitions": false
+  "includeCompetitions": false,
+  "ownerTeam": "ALGOLAB"
 }
 ```
 
-`id`, `name` (trimmed) and `startDate` are required (`400` otherwise).
+`id`, `name` (trimmed) and `startDate` are required (`400` otherwise). `ownerTeam` is optional: none (or the source's own) keeps the source's Owner team.
 
 | Answer | When |
 |---|---|
 | `201 {"event": Event, "skipped": [...]}` | the copy was made; `skipped` names the parts left out (below), `[]` when none |
-| `200 {"event": Event, "skipped": []}` | the same `id` from the same source made the copy already (a retried request): nothing is written again |
-| `409` | the `id` is another Event's (or a copy that was deleted since) |
+| `200 {"event": Event, "skipped": []}` | the same `id` from the same source into the same Owner team made the copy already (a retried request): nothing is written again |
+| `409` | the `id` is another Event's, the same copy in another Owner team, or a copy that was deleted since |
 | `404` | the source does not exist, is archived, or is a draft the caller may not see |
-| `403` | the caller sees the source but may not create Events in its Owner team (a team member, DK, another team's Leader) |
+| `403` | the caller sees the source but may not create Events in the copy's Owner team (a team member, DK, another team's Leader); into another team, also when the caller may not edit the source |
 
 Who: whoever may see the source (a draft: who may edit it, ADR 0066) and create Events in its Owner team (`authz.Create`, the team authority handover included). Any source status is copied: draft, published, cancelled or ended.
+
+**Into another Owner team** (ticket 16, ADR 0066 addendum 2026-10-19): `ownerTeam` names it. The caller must be able to edit the source (`authz.Update`: who only reads it, DK or a signed-in member, may not) and create Events in the target (`authz.Create`); either missing is `403`. Every part is then decided for the target team: the cover by the Team media library (the source's team uses it, so it is left out, `cover`), the template binding by the binding rule (a template of another team is left out), door staff by `authz.Assign` and Competitions by the right to manage them in the target. The Season rule is the same. Which teams the caller may copy into is in `GET /v1/users/me/capabilities` (`teams[].can["event.create"]`, and `otherTeams.can["event.create"]` for every other team).
 
 ## What is copied
 
@@ -32,7 +35,7 @@ Who: whoever may see the source (a draft: who may edit it, ADR 0066) and create 
 |---|---|---|
 | Name | the new one | |
 | Description, location, capacity, `ranked`, prize text | yes | |
-| Owner team | the source's | another team: ticket 16 |
+| Owner team | the source's, or `ownerTeam` | see **Into another Owner team** |
 | Start | the new one | |
 | End, days, Sessions, applying deadline | moved | see **Dates** |
 | Season | the current Season the new start falls in, the narrowest when several do (a Season without an end runs on; one without a start covers nothing); none when none | not the source's: a copy is usually for the next term |

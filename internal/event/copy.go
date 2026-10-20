@@ -33,6 +33,9 @@ type CopyInput struct {
 	StartDate           *time.Time
 	IncludeDoorStaff    bool
 	IncludeCompetitions bool
+	// OwnerTeam is the copy's Owner team (ticket 16); empty is the
+	// source's.
+	OwnerTeam string
 }
 
 // Copied is a copy and the parts of its source it left out.
@@ -177,10 +180,12 @@ func earliest(a, b *time.Time) *time.Time {
 // certificates, Competitors, the mail list), the gallery, files and videos,
 // the forms and their short links are never copied. The dates move with the
 // new start (Shift). Whoever may see the source and create Events in its
-// Owner team may; a part the copier may not write, or a rule refuses, is
-// left out and named in Skipped. The same id from the same source answers
-// the copy made already (fresh false); an id another Event has is
-// ErrConflict.
+// Owner team may; into another Owner team (ticket 16), whoever may edit the
+// source and create Events in that team, and each part is decided for that
+// team. A part the copier may not write, or a rule refuses, is left out and
+// named in Skipped. The same id from the same source into the same team
+// answers the copy made already (fresh false); an id another Event has, or
+// that copy in another team, is ErrConflict.
 func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUID, in CopyInput) (Copied, bool, error) {
 	in.Name = strings.TrimSpace(in.Name)
 	if in.ID == uuid.Nil || in.Name == "" || in.StartDate == nil {
@@ -191,10 +196,18 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 		return Copied{}, false, err
 	}
 	team := source.OwnerTeam
+	if target := strings.TrimSpace(in.OwnerTeam); target != "" && target != team {
+		// Into another team (ticket 16): who may edit the source, not who
+		// only reads it, and may create Events in the target.
+		if !s.authz.Allow(p, resource(team), authz.Update) {
+			return Copied{}, false, ErrForbidden
+		}
+		team = target
+	}
 	if !s.authz.Allow(p, resource(team), authz.Create) {
 		return Copied{}, false, ErrForbidden
 	}
-	if made, ok, err := s.madeCopy(ctx, &p, in.ID, source.ID); ok || err != nil {
+	if made, ok, err := s.madeCopy(ctx, &p, in.ID, source.ID, team); ok || err != nil {
 		return made, false, err
 	}
 	anchor, err := s.anchor(ctx, source)
@@ -257,7 +270,7 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 	created, parts, err := s.store.Copy(ctx, plan)
 	if errors.Is(err, ErrConflict) {
 		// Another request took the id meanwhile: the same copy, or not.
-		made, ok, err := s.madeCopy(ctx, &p, in.ID, source.ID)
+		made, ok, err := s.madeCopy(ctx, &p, in.ID, source.ID, team)
 		if ok || err != nil {
 			return made, false, err
 		}
@@ -271,9 +284,9 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 }
 
 // madeCopy finds the copy a request with the id made already: ok when the
-// id is a current Event copied from source that p may see, ErrConflict when
-// it is any other Event, nothing when the id is free.
-func (s *service) madeCopy(ctx context.Context, p *authz.Principal, id, source uuid.UUID) (Copied, bool, error) {
+// id is a current Event of team copied from source that p may see,
+// ErrConflict when it is any other Event, nothing when the id is free.
+func (s *service) madeCopy(ctx context.Context, p *authz.Principal, id, source uuid.UUID, team string) (Copied, bool, error) {
 	existing, err := s.store.GetIncludingArchived(ctx, id)
 	if errors.Is(err, ErrNotFound) {
 		return Copied{}, false, nil
@@ -281,7 +294,8 @@ func (s *service) madeCopy(ctx context.Context, p *authz.Principal, id, source u
 	if err != nil {
 		return Copied{}, false, err
 	}
-	if existing.ArchivedAt != nil || existing.CopiedFromEventID == nil || *existing.CopiedFromEventID != source || !s.VisibleTo(p, existing) {
+	if existing.ArchivedAt != nil || existing.CopiedFromEventID == nil || *existing.CopiedFromEventID != source ||
+		existing.OwnerTeam != team || !s.VisibleTo(p, existing) {
 		return Copied{}, false, ErrConflict
 	}
 	existing, err = s.detail(ctx, existing, nil)
