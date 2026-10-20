@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +74,9 @@ const (
 	maxWelcomesPerPass = 25
 	// wakeGap is the least time between two passes a wake asks for.
 	wakeGap = 30 * time.Second
+	// sendTimeout bounds one Welcome post (its token request and its post
+	// each have core's SkyMail client timeout as well).
+	sendTimeout = 20 * time.Second
 )
 
 // Report is what one pass did. It names nobody.
@@ -109,8 +114,8 @@ type Worker struct {
 	logf     func(string, ...any)
 	wake     chan struct{}
 	// pageDelay, opDelay and wakeGap are the package's; tests shorten them.
-	pageDelay, opDelay, wakeGap time.Duration
-	now                         func() time.Time
+	pageDelay, opDelay, wakeGap, sendTimeout time.Duration
+	now                                      func() time.Time
 
 	mu          sync.Mutex
 	passes      map[string]int64
@@ -130,7 +135,7 @@ func New(dir Directory, accounts Accounts, rows Rows, mailer Mailer, config Conf
 	return &Worker{
 		dir: dir, accounts: accounts, rows: rows, mailer: mailer, config: config, logf: logf,
 		wake:      make(chan struct{}, 1),
-		pageDelay: pageDelay, opDelay: opDelay, wakeGap: wakeGap, now: time.Now,
+		pageDelay: pageDelay, opDelay: opDelay, wakeGap: wakeGap, sendTimeout: sendTimeout, now: time.Now,
 		passes:  map[string]int64{},
 		changes: map[string]int64{},
 		welcome: map[mail.WelcomeOutcome]int64{},
@@ -189,9 +194,9 @@ func (w *Worker) pass(ctx context.Context) {
 	case err != nil:
 		w.logf(`{"event":"user_sync_failed","level":"warn","stage":%q,"seen":%d,"errors":%d}`, stageOf(err), report.Seen, report.Errors)
 	case report.changed():
-		w.logf(`{"event":"user_sync_pass","seen":%d,"created":%d,"sky_number_assigned":%d,"profile_filled":%d,"welcome_sent":%d,"welcome_refused":%d,"welcome_not_sent":%d,"welcome_unknown":%d,"deferred":%d,"errors":%d}`,
+		w.logf(`{"event":"user_sync_pass","seen":%d,"created":%d,"sky_number_assigned":%d,"profile_filled":%d,"welcome_sent":%d,"welcome_refused":%d,"welcome_deferred":%d,"welcome_not_sent":%d,"welcome_unknown":%d,"deferred":%d,"errors":%d}`,
 			report.Seen, report.Created, report.Assigned, report.Filled,
-			report.Welcome[mail.WelcomeSent], report.Welcome[mail.WelcomeRefused], report.Welcome[mail.WelcomeNotSent], report.Welcome[mail.WelcomeUnknown],
+			report.Welcome[mail.WelcomeSent], report.Welcome[mail.WelcomeRefused], report.Welcome[mail.WelcomeDeferred], report.Welcome[mail.WelcomeNotSent], report.Welcome[mail.WelcomeUnknown],
 			report.Deferred, report.Errors)
 	}
 }
@@ -213,12 +218,13 @@ func stageOf(err error) string {
 	return "unknown"
 }
 
-// Pass runs one pass: it pages through Keycloak, and for every enabled
-// person (service accounts left out) opens a missing row and gives a Sky
-// number (Ensure), fills blanks from Keycloak, and sends the Welcome mail
-// when the person is owed one. A failed page read stops the pass; a failure
-// on one person is counted and the pass goes on. The next pass picks up
-// whatever was left.
+// Pass runs one pass. It reads all of Keycloak's accounts first (a page that
+// cannot be read stops the pass before anything is written), leaves out
+// service accounts, and takes the people in the order Keycloak created them,
+// so Sky numbers follow sign-up order. For every enabled person it opens a
+// missing row and gives a Sky number (Ensure), fills blanks from Keycloak, and
+// sends the Welcome mail when the person is owed one. A failure on one person
+// is counted and the pass goes on. The next pass picks up whatever was left.
 func (w *Worker) Pass(ctx context.Context) (Report, error) {
 	report := Report{Welcome: map[mail.WelcomeOutcome]int{}}
 	release, ok, err := w.rows.Lock(ctx)
@@ -230,90 +236,122 @@ func (w *Worker) Pass(ctx context.Context) (Report, error) {
 		return report, nil
 	}
 	defer release()
+	people, err := w.readAll(ctx)
+	if err != nil {
+		return report, err
+	}
+	states := make(map[uuid.UUID]State, len(people))
+	for from := 0; from < len(people); from += pageSize {
+		ids := make([]uuid.UUID, 0, pageSize)
+		for _, p := range people[from:min(from+pageSize, len(people))] {
+			ids = append(ids, p.ID)
+		}
+		got, err := w.rows.States(ctx, ids)
+		if err != nil {
+			return report, &stageError{"database", err}
+		}
+		maps.Copy(states, got)
+	}
 	welcomes := 0
+	for _, p := range people {
+		if ctx.Err() != nil {
+			return report, &stageError{"stopped", ctx.Err()}
+		}
+		report.Seen++
+		if !p.Enabled {
+			continue
+		}
+		st, has := states[p.ID]
+		if has && !st.Active {
+			continue
+		}
+		if !has || st.SkyNumber == "" {
+			if report.Created+report.Assigned >= maxEnsuresPerPass {
+				report.Deferred++
+				continue
+			}
+			u, _, err := w.accounts.Ensure(ctx, p.ID, user.Profile{
+				Email: p.Email, FirstName: p.FirstName, LastName: p.LastName, Username: p.Username,
+			})
+			w.sleep(ctx, w.opDelay)
+			if errors.Is(err, user.ErrAccountBlocked) {
+				continue
+			}
+			if err != nil || u.ID != p.ID {
+				report.Errors++
+				continue
+			}
+			if has {
+				report.Assigned++
+			} else {
+				report.Created++
+			}
+			st = State{Email: u.Email, FirstName: u.FirstName, LastName: u.LastName, SkyNumber: u.SkyNumber, Active: true, Welcomed: st.Welcomed}
+		}
+		if (st.Email == "" && p.Email != "") || (st.FirstName == "" && p.FirstName != "") || (st.LastName == "" && p.LastName != "") {
+			filled, err := w.rows.FillMissing(ctx, p.ID, p.Email, p.FirstName, p.LastName)
+			if err != nil {
+				report.Errors++
+				continue
+			}
+			if filled {
+				report.Filled++
+				if st.Email == "" {
+					st.Email = p.Email
+				}
+			}
+		}
+		if !w.owed(p, st) {
+			continue
+		}
+		if welcomes >= maxWelcomesPerPass {
+			report.Deferred++
+			continue
+		}
+		welcomes++
+		if err := w.sendWelcome(ctx, p.ID, &report); err != nil {
+			report.Errors++
+		}
+	}
+	return report, nil
+}
+
+// readAll pages through Keycloak, without service accounts, ordered by when
+// Keycloak created each account: an account without a creation time first
+// (it is the oldest), ties by id.
+func (w *Worker) readAll(ctx context.Context) ([]identity.Person, error) {
+	var people []identity.Person
 	for first := 0; ; first += pageSize {
 		page, err := w.dir.UsersPage(ctx, first, pageSize)
 		if err != nil {
-			return report, &stageError{"keycloak", err}
+			return nil, &stageError{"keycloak", err}
 		}
-		people := make([]identity.Person, 0, len(page))
-		ids := make([]uuid.UUID, 0, len(page))
 		for _, p := range page {
 			if p.ServiceAccount || strings.HasPrefix(p.Username, "service-account-") {
 				continue
 			}
 			people = append(people, p)
-			ids = append(ids, p.ID)
-		}
-		states, err := w.rows.States(ctx, ids)
-		if err != nil {
-			return report, &stageError{"database", err}
-		}
-		for _, p := range people {
-			if ctx.Err() != nil {
-				return report, &stageError{"stopped", ctx.Err()}
-			}
-			report.Seen++
-			if !p.Enabled {
-				continue
-			}
-			st, has := states[p.ID]
-			if has && !st.Active {
-				continue
-			}
-			if !has || st.SkyNumber == "" {
-				if report.Created+report.Assigned >= maxEnsuresPerPass {
-					report.Deferred++
-					continue
-				}
-				u, _, err := w.accounts.Ensure(ctx, p.ID, user.Profile{
-					Email: p.Email, FirstName: p.FirstName, LastName: p.LastName, Username: p.Username,
-				})
-				w.sleep(ctx, w.opDelay)
-				if errors.Is(err, user.ErrAccountBlocked) {
-					continue
-				}
-				if err != nil || u.ID != p.ID {
-					report.Errors++
-					continue
-				}
-				if has {
-					report.Assigned++
-				} else {
-					report.Created++
-				}
-				st = State{Email: u.Email, FirstName: u.FirstName, LastName: u.LastName, SkyNumber: u.SkyNumber, Active: true, Welcomed: st.Welcomed}
-			}
-			if (st.Email == "" && p.Email != "") || (st.FirstName == "" && p.FirstName != "") || (st.LastName == "" && p.LastName != "") {
-				filled, err := w.rows.FillMissing(ctx, p.ID, p.Email, p.FirstName, p.LastName)
-				if err != nil {
-					report.Errors++
-					continue
-				}
-				if filled {
-					report.Filled++
-					if st.Email == "" {
-						st.Email = p.Email
-					}
-				}
-			}
-			if !w.owed(p, st) {
-				continue
-			}
-			if welcomes >= maxWelcomesPerPass {
-				report.Deferred++
-				continue
-			}
-			welcomes++
-			if err := w.sendWelcome(ctx, p.ID, &report); err != nil {
-				report.Errors++
-			}
 		}
 		if len(page) < pageSize {
-			return report, nil
+			break
 		}
 		w.sleep(ctx, w.pageDelay)
 	}
+	slices.SortStableFunc(people, func(a, b identity.Person) int {
+		switch {
+		case a.CreatedAt == nil && b.CreatedAt == nil:
+		case a.CreatedAt == nil:
+			return -1
+		case b.CreatedAt == nil:
+			return 1
+		default:
+			if c := a.CreatedAt.Compare(*b.CreatedAt); c != 0 {
+				return c
+			}
+		}
+		return strings.Compare(a.ID.String(), b.ID.String())
+	})
+	return people, nil
 }
 
 // owed: a mailer is configured, the row is not marked and has an e-mail,
@@ -326,22 +364,38 @@ func (w *Worker) owed(p identity.Person, st State) bool {
 }
 
 // sendWelcome marks the row, then sends. The mark goes first so a crash
-// between the two loses a mail rather than sending it twice; it is taken
-// back only when the outcome says no mail task can exist.
+// between the two loses a mail rather than sending it twice. It is taken back
+// only when no mail task can exist and a later try may succeed (deferred,
+// not_sent), or when the pass is stopped between the mark and the post. A
+// mail SkyMail refused for good keeps its mark: it was tried, and warned
+// about once.
+//
+// The post does not end with the pass: a shutdown would otherwise cut a
+// request in flight and leave its outcome unknown. It has its own bound.
 func (w *Worker) sendWelcome(ctx context.Context, id uuid.UUID, report *Report) error {
 	u, at, ok, err := w.rows.ClaimWelcome(ctx, id)
 	if err != nil || !ok {
 		return err
 	}
-	outcome := w.mailer.Welcome(ctx, u)
+	if ctx.Err() != nil {
+		return w.releaseWelcome(ctx, id, at)
+	}
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.sendTimeout)
+	outcome := w.mailer.Welcome(sendCtx, u)
+	cancel()
 	report.Welcome[outcome]++
-	if outcome == mail.WelcomeRefused || outcome == mail.WelcomeNotSent {
-		// Not with ctx: a pass cut short still takes its mark back.
-		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		return w.rows.ReleaseWelcome(releaseCtx, id, at)
+	if outcome == mail.WelcomeDeferred || outcome == mail.WelcomeNotSent {
+		return w.releaseWelcome(ctx, id, at)
 	}
 	return nil
+}
+
+// releaseWelcome takes the mark back. Not with ctx: a pass cut short still
+// takes its mark back.
+func (w *Worker) releaseWelcome(ctx context.Context, id uuid.UUID, at time.Time) error {
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return w.rows.ReleaseWelcome(releaseCtx, id, at)
 }
 
 func (w *Worker) sleep(ctx context.Context, d time.Duration) {

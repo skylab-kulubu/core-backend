@@ -17,17 +17,24 @@ Every `USER_SYNC_INTERVAL` (5 minutes), and soon after a wake, one core replica:
 
 1. takes the session advisory lock `core-backend user sync` without waiting. A
    replica that finds it taken skips the pass (`passes_total{result="locked"}`).
-2. pages through Keycloak's accounts (`GET /admin/realms/{realm}/users`, brief
-   form, 100 a page, 200 ms between pages). Service accounts
-   (`service-account-*`) and disabled accounts are left alone.
+2. reads all of Keycloak's accounts (`GET /admin/realms/{realm}/users`, brief
+   form, 100 a page, 200 ms between pages) before it writes anything: a page
+   that fails stops the pass with nothing written. Service accounts
+   (`service-account-*`) are left out and disabled accounts are left alone.
+   Keycloak lists by username; the pass takes the people in the order Keycloak
+   created them (`createdTimestamp`, an account without one first), so Sky
+   numbers follow sign-up order. A first request (JIT) in between still takes
+   the next number at once.
 3. for a person core has no row for, or whose row has no Sky number, runs the
    same upsert as JIT (`user.Service.Ensure`): it opens the row from Keycloak's
    e-mail, names and username, assigns the next Sky number and writes it to
-   Keycloak's `skyNumber` attribute. A person with a deletion request or a row
-   that is being erased or is erased is not opened again (the upsert refuses).
-   At most 100 such writes per pass, 50 ms apart.
-4. fills a row's empty e-mail, first name and last name from Keycloak. A value
-   the row has is never overwritten. (The Account Center's token carries no
+   Keycloak's `skyNumber` attribute. On a row that exists without a Sky number
+   the upsert also takes Keycloak's e-mail and username over the row's (names
+   stay), as JIT does with the token's. A person with a deletion request or a
+   row that is being erased or is erased is not opened again (the upsert
+   refuses). At most 100 such writes per pass, 50 ms apart.
+4. fills a row's empty e-mail, first name and last name from Keycloak. In this
+   step a value the row has is never overwritten. (The Account Center's token carries no
    e-mail or name, so a row its first request opened is blank until this
    step.)
 5. sends the Welcome mail to a person who is owed one (below). At most 25 mails
@@ -63,20 +70,27 @@ The sync marks the row (`welcome_sent_at`) before it posts, in one conditional
 | Outcome (`mail.WelcomeOutcome`) | Meaning | The mark |
 | --- | --- | --- |
 | `sent` | SkyMail took the mail task (2xx) | kept |
-| `refused` | SkyMail answered with another status: no mail task was written | taken back, the next pass sends again |
+| `refused` | SkyMail refused it for good (a 4xx other than 404, 408, 429: an address or body it will not take) | kept: the mail was tried and warned about once; trying every pass would repeat the refusal |
+| `deferred` | SkyMail refused it for now (404: template not seeded; 408, 429, 5xx) | taken back, the next pass sends again |
 | `not_sent` | nothing left core: no token, SkyMail could not be connected to | taken back |
 | `unknown` | the request went out and no answer came: SkyMail may have taken it | kept, so nobody gets the mail twice |
 
-A crash between the mark and the post loses that one mail rather than sending
-it twice.
+The post has its own 20-second bound and does not end with the pass: a
+shutdown during a post lets it finish instead of leaving its outcome unknown.
+A pass stopped between the mark and the post takes the mark back. A crash
+between the two loses that one mail rather than sending it twice.
 
 When the migration `20261020180000` added the column it marked every row that
 had an e-mail with its `created_at`: until then the Welcome mail went out when
 such a row was opened. A row without an e-mail cannot have received one and
 was left unmarked, so the sync sends it once Keycloak gives the address and the
 account is recent enough. A row with an e-mail that was opened after
-`WELCOME_MAIL_SINCE` by a path that sent no mail (the admin list) counts as
-welcomed; nothing in core tells it apart.
+`WELCOME_MAIL_SINCE` by a path that sent no mail (the admin list, a ticket
+application, a read link) counts as welcomed; nothing in core tells it apart.
+SkyMail does: the one-time operator step
+`ops/wizards/core-welcome-isaret-duzelt-20261020.sh` (hub repository) takes
+back the mark of such rows whose address has no `core.welcome` mail in
+SkyMail since the cutoff, and the sync then sends.
 
 ## Settings
 
@@ -101,7 +115,7 @@ One log line per pass that changed something, and one per failed pass. They
 carry counts and a stage, never a person:
 
 ```json
-{"event":"user_sync_pass","seen":312,"created":4,"sky_number_assigned":0,"profile_filled":1,"welcome_sent":3,"welcome_refused":0,"welcome_not_sent":0,"welcome_unknown":0,"deferred":0,"errors":0}
+{"event":"user_sync_pass","seen":312,"created":4,"sky_number_assigned":0,"profile_filled":1,"welcome_sent":3,"welcome_refused":0,"welcome_deferred":0,"welcome_not_sent":0,"welcome_unknown":0,"deferred":0,"errors":0}
 {"event":"user_sync_failed","level":"warn","stage":"keycloak","seen":0,"errors":0}
 ```
 
@@ -115,7 +129,7 @@ SkyMail's status, `token_unavailable`, `unreachable`, `no_answer`
 - `skylab_user_sync_enabled`, `skylab_user_sync_welcome_enabled`
 - `skylab_user_sync_passes_total{result="ok|locked|failed"}`
 - `skylab_user_sync_accounts_total{change="created|sky_number_assigned|profile_filled"}`
-- `skylab_user_sync_welcome_total{outcome="sent|refused|not_sent|unknown"}`
+- `skylab_user_sync_welcome_total{outcome="sent|refused|deferred|not_sent|unknown"}`
 - `skylab_user_sync_errors_total`, `skylab_user_sync_deferred_total`
 - `skylab_user_sync_last_success_timestamp_seconds`
 

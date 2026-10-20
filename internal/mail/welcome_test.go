@@ -53,6 +53,22 @@ func TestWelcomeOutcomes(t *testing.T) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusUnprocessableEntity })
 			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
+		{name: "refused 400", want: WelcomeRefused, wantPosts: 1, wantLog: `"status":400,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+			srv, posts := welcomeServer(t, func(int) int { return http.StatusBadRequest })
+			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+		}},
+		{name: "deferred 503", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":503,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+			srv, posts := welcomeServer(t, func(int) int { return http.StatusServiceUnavailable })
+			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+		}},
+		{name: "deferred 429", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":429,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+			srv, posts := welcomeServer(t, func(int) int { return http.StatusTooManyRequests })
+			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+		}},
+		{name: "template not seeded", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":404,"reason":"template_missing"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+			srv, posts := welcomeServer(t, func(int) int { return http.StatusNotFound })
+			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+		}},
 		{name: "unknown key falls back to the id", want: WelcomeSent, wantPosts: 2, wantLog: `"reason":"template_key_missing_fallback_to_id"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(n int) int {
 				if n == 1 {

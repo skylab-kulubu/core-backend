@@ -18,8 +18,14 @@ type WelcomeOutcome string
 const (
 	// WelcomeSent: SkyMail took the mail task (2xx).
 	WelcomeSent WelcomeOutcome = "sent"
-	// WelcomeRefused: SkyMail answered and wrote no mail task (not 2xx).
+	// WelcomeRefused: SkyMail refused the mail for good (a 4xx other than
+	// those below: an address or body it will not take). No mail task was
+	// written, and sending the same mail again would be refused again.
 	WelcomeRefused WelcomeOutcome = "refused"
+	// WelcomeDeferred: SkyMail refused the mail for now (404: the template is
+	// not seeded yet; 408, 429, 5xx). No mail task was written; a later try
+	// may succeed.
+	WelcomeDeferred WelcomeOutcome = "deferred"
 	// WelcomeNotSent: nothing left core: no template is configured, no token
 	// came, or SkyMail could not be connected to.
 	WelcomeNotSent WelcomeOutcome = "not_sent"
@@ -29,7 +35,7 @@ const (
 )
 
 // WelcomeOutcomes lists every outcome, in the order metrics print them.
-var WelcomeOutcomes = []WelcomeOutcome{WelcomeSent, WelcomeRefused, WelcomeNotSent, WelcomeUnknown}
+var WelcomeOutcomes = []WelcomeOutcome{WelcomeSent, WelcomeRefused, WelcomeDeferred, WelcomeNotSent, WelcomeUnknown}
 
 // Diagnostic reasons only the Welcome mail logs (the other kinds stay silent
 // about them, as they always have).
@@ -75,6 +81,8 @@ func (s *SkyMail) Welcome(ctx context.Context, u user.User) WelcomeOutcome {
 		switch {
 		case succeeded(status):
 			return status, WelcomeSent
+		case status != 0 && temporaryRefusal(status):
+			return status, WelcomeDeferred
 		case status != 0:
 			return status, WelcomeRefused
 		case !reached:
@@ -96,4 +104,12 @@ func (s *SkyMail) Welcome(ctx context.Context, u user.User) WelcomeOutcome {
 	}
 	_, outcome := attempt(template{id: tpl.id})
 	return outcome
+}
+
+// temporaryRefusal reports a refusal a later try may get past: the template
+// is not seeded yet (404), SkyMail timed out or is rate limiting (408, 429),
+// or it failed (5xx). Any other 4xx is about the mail itself.
+func temporaryRefusal(status int) bool {
+	return status == http.StatusNotFound || status == http.StatusRequestTimeout ||
+		status == http.StatusTooManyRequests || status >= 500
 }

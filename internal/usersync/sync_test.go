@@ -47,6 +47,8 @@ type fakeRows struct {
 	next     int
 	ensures  int
 	ensureFn func(id uuid.UUID) error
+	// afterClaim runs as a claim returns.
+	afterClaim func()
 }
 
 type row struct {
@@ -94,6 +96,9 @@ func (r *fakeRows) FillMissing(_ context.Context, id uuid.UUID, email, first, la
 }
 
 func (r *fakeRows) ClaimWelcome(_ context.Context, id uuid.UUID) (user.User, time.Time, bool, error) {
+	if r.afterClaim != nil {
+		defer r.afterClaim()
+	}
 	got, ok := r.rows[id]
 	if !ok || !got.Active || got.Welcomed || got.Email == "" {
 		return user.User{}, time.Time{}, false, nil
@@ -133,9 +138,14 @@ func (r *fakeRows) Ensure(_ context.Context, id uuid.UUID, p user.Profile) (user
 type fakeMailer struct {
 	outcome mail.WelcomeOutcome
 	sent    []user.User
+	// during runs inside the send, with the send's context.
+	during func(ctx context.Context)
 }
 
-func (m *fakeMailer) Welcome(_ context.Context, u user.User) mail.WelcomeOutcome {
+func (m *fakeMailer) Welcome(ctx context.Context, u user.User) mail.WelcomeOutcome {
+	if m.during != nil {
+		m.during(ctx)
+	}
 	m.sent = append(m.sent, u)
 	if m.outcome == "" {
 		return mail.WelcomeSent
@@ -274,12 +284,15 @@ func TestPassLeavesOthersAlone(t *testing.T) {
 	}
 }
 
-// A mail that surely did not go takes its mark back for the next pass; one
-// that may have gone keeps it, so nobody gets it twice.
-func TestPassReleasesTheMarkOnlyWhenNoMailCanExist(t *testing.T) {
+// A mail that surely did not go and may go later (deferred, not sent) takes
+// its mark back for the next pass. One that may have gone keeps it, so nobody
+// gets it twice, and so does one SkyMail refused for good: it was tried, and
+// trying every pass would only repeat the refusal.
+func TestPassReleasesTheMarkOnlyWhenARetryCanHelp(t *testing.T) {
 	t.Parallel()
 	for outcome, keep := range map[mail.WelcomeOutcome]bool{
-		mail.WelcomeSent: true, mail.WelcomeUnknown: true, mail.WelcomeRefused: false, mail.WelcomeNotSent: false,
+		mail.WelcomeSent: true, mail.WelcomeUnknown: true, mail.WelcomeRefused: true,
+		mail.WelcomeDeferred: false, mail.WelcomeNotSent: false,
 	} {
 		p := person(at(cutoff.Add(time.Hour)))
 		rows := newFakeRows()
@@ -397,7 +410,7 @@ func TestLogsAndMetricsNameNobody(t *testing.T) {
 			t.Fatalf("%q names %q", text, personal)
 		}
 	}
-	for _, want := range []string{`"event":"user_sync_pass"`, `"welcome_sent":1`, `"stage":"keycloak"`,
+	for _, want := range []string{`"event":"user_sync_pass"`, `"welcome_sent":1`, `"welcome_deferred":0`, `"stage":"keycloak"`,
 		`skylab_user_sync_passes_total{result="ok"} 1`, `skylab_user_sync_passes_total{result="failed"} 1`,
 		`skylab_user_sync_accounts_total{change="created"} 1`, `skylab_user_sync_welcome_total{outcome="sent"} 1`} {
 		if !strings.Contains(text, want) {
@@ -447,4 +460,87 @@ type countingDir struct {
 func (d *countingDir) UsersPage(ctx context.Context, first, max int) ([]identity.Person, error) {
 	d.passes <- struct{}{}
 	return d.fakeDir.UsersPage(ctx, first, max)
+}
+
+// A pass stopped between the mark and the post takes the mark back: no
+// mail went. A pass stopped while the post is in flight does not cut it.
+func TestPassStoppedAroundTheSend(t *testing.T) {
+	t.Parallel()
+	p := person(at(cutoff.Add(time.Hour)))
+	rows := newFakeRows()
+	mailer := &fakeMailer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	rows.afterClaim = cancel
+	if _, err := worker(&fakeDir{people: []identity.Person{p}}, rows, mailer).Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(mailer.sent) != 0 || rows.rows[p.ID].Welcomed {
+		t.Fatalf("stopped before the post: sent %d, welcomed %v", len(mailer.sent), rows.rows[p.ID].Welcomed)
+	}
+
+	rows.afterClaim = nil
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	var sendErr error
+	mailer.during = func(sendCtx context.Context) {
+		cancel()
+		sendErr = sendCtx.Err()
+	}
+	if _, err := worker(&fakeDir{people: []identity.Person{p}}, rows, mailer).Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if sendErr != nil || len(mailer.sent) != 1 || !rows.rows[p.ID].Welcomed {
+		t.Fatalf("stopped during the post: send ctx %v, sent %d, welcomed %v", sendErr, len(mailer.sent), rows.rows[p.ID].Welcomed)
+	}
+}
+
+// Sky numbers follow the order Keycloak created the accounts in, not the
+// order it lists them (by username); an account without a creation time is
+// the oldest.
+func TestPassAssignsSkyNumbersInSignUpOrder(t *testing.T) {
+	t.Parallel()
+	third := person(at(cutoff.Add(3 * time.Hour)))
+	first := person(at(cutoff.Add(time.Hour)))
+	undated := person(nil)
+	second := person(at(cutoff.Add(2 * time.Hour)))
+	rows := newFakeRows()
+	if _, err := worker(&fakeDir{people: []identity.Person{third, first, undated, second}}, rows, nil).Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for i, p := range []identity.Person{undated, first, second, third} {
+		if want := fmt.Sprintf("SKY-%07d", i+1); rows.rows[p.ID].SkyNumber != want {
+			t.Fatalf("person %d: %s, want %s", i, rows.rows[p.ID].SkyNumber, want)
+		}
+	}
+}
+
+// A page that cannot be read stops the pass before anything is written.
+func TestPassWritesNothingWhenAPageFails(t *testing.T) {
+	t.Parallel()
+	var people []identity.Person
+	for range pageSize + 5 {
+		people = append(people, person(nil))
+	}
+	rows := newFakeRows()
+	dir := &secondPageFails{fakeDir: &fakeDir{people: people}}
+	if _, err := worker(nil, rows, nil).withDir(dir).Pass(context.Background()); stageOf(err) != "keycloak" {
+		t.Fatalf("err %v", err)
+	}
+	if rows.ensures != 0 {
+		t.Fatalf("%d rows opened before the failed page", rows.ensures)
+	}
+}
+
+type secondPageFails struct{ *fakeDir }
+
+func (d *secondPageFails) UsersPage(ctx context.Context, first, max int) ([]identity.Person, error) {
+	if first > 0 {
+		return nil, errors.New("keycloak 503")
+	}
+	return d.fakeDir.UsersPage(ctx, first, max)
+}
+
+func (w *Worker) withDir(dir Directory) *Worker {
+	w.dir = dir
+	return w
 }
