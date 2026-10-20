@@ -35,7 +35,7 @@ type eventBody struct {
 	EndDate       *time.Time             `json:"endDate"`
 	Linkedin      string                 `json:"linkedin"`
 	// Status is read on create alone (draft or published; none is
-	// published). An update ignores it, and every write ignores active,
+	// published). An update (event.Patch) reads neither it nor active,
 	// which is derived (ADR 0066): a client that sends the whole Event
 	// back cannot change the status with it.
 	Status          string       `json:"status"`
@@ -327,13 +327,12 @@ func (h *EventHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	var body eventBody
+	// PUT and PATCH alike write only the fields the body sends (ticket 13).
+	var body event.Patch
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	in := body.asEvent()
-	in.Status = ""
-	updated, err := h.svc.Update(c.Context(), p, id, in)
+	updated, err := h.svc.Patch(c.Context(), p, id, body)
 	if err != nil {
 		return eventError(c, err)
 	}

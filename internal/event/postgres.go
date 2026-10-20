@@ -286,11 +286,13 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 			name = $2, description = $3, location = $4, owner_team = $5, form_url = $6,
 			capacity = $7, start_date = $8, end_date = $9, linkedin = $10,
 			ranked = $11, prize_info = $12, season_id = $13, cover_image_id = $14,
-			attendance_rule = $15, attendance_ratio = $16, extra_form_urls = $17, updated_at = now()
+			attendance_rule = $15, attendance_ratio = $16, extra_form_urls = $17,
+			cancel_reason = CASE WHEN $18::text IS NOT NULL AND status = 'cancelled' THEN $18::text ELSE cancel_reason END,
+			updated_at = now()
 		WHERE id = $1 AND archived_at IS NULL`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
-		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e))
+		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e), sentCancelReason(e))
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
 	}
@@ -907,6 +909,15 @@ func extraFormBytes(e Event) []byte {
 		return []byte(`[]`)
 	}
 	return raw
+}
+
+// sentCancelReason is the cancel reason an update writes: none (nil) unless
+// the body sent one.
+func sentCancelReason(e Event) *string {
+	if !e.cancelReasonSent {
+		return nil
+	}
+	return &e.CancelReason
 }
 
 func scanEvent(row rowScanner) (Event, error) {

@@ -2,10 +2,12 @@ package event_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
@@ -105,6 +107,21 @@ func TestPostgresStoreCancel(t *testing.T) {
 		if changed, err := store.Cancel(ctx, ev.ID, nil, "x"); err != nil || changed {
 			t.Fatalf("%s: %v %v", ev.Name, changed, err)
 		}
+	}
+
+	// The reason is edited by PATCH while cancelled, and only then.
+	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	leader := authz.Principal{ID: actor.String(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	var reasonPatch event.Patch
+	if err := json.Unmarshal([]byte(`{"cancelReason":"Ertelendi"}`), &reasonPatch); err != nil {
+		t.Fatal(err)
+	}
+	if edited, err := svc.Patch(ctx, leader, published.ID, reasonPatch); err != nil || edited.CancelReason != "Ertelendi" {
+		t.Fatalf("edit reason: %+v %v", edited.CancelReason, err)
+	}
+	open := create("Açık", event.StatusPublished, &future)
+	if edited, err := svc.Patch(ctx, leader, open.ID, reasonPatch); err != nil || edited.CancelReason != "" {
+		t.Fatalf("reason on a published Event: %q %v", edited.CancelReason, err)
 	}
 
 	// A reason goes to the Competitions too.

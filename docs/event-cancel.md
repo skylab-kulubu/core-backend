@@ -12,7 +12,7 @@ Body (optional, both fields too): `{"reason": "Hava koşulları nedeniyle", "not
 | Event | Answer |
 |---|---|
 | published, not ended (an undated one never ends) | `200`, the Event: `status: "cancelled"`, `active: false`, `cancelledAt`, `cancelReason` |
-| cancelled already | `200`, the Event as it is (the first reason stays) |
+| cancelled already | `200`, the Event as it is (the first reason stays; edit it with `PATCH`, below) |
 | a draft | `409`, `code: "event_not_published"` (a draft is deleted, not cancelled); `404` to who may not see it |
 | ended | `409`, `code: "event_ended"`: cancelling it would blur its certificate history |
 
@@ -31,6 +31,8 @@ Who: whoever may edit the Event (`authz.Update`); DK and anyone else `403`. The 
 | Tickets, applies, check-ins, door staff, Competitors | stay as they are; nothing is deleted or changes status |
 | Form short links | keep working: the panel offers "SkyForms'ta formu kapat"; nothing closes the form by itself |
 | Dashboard | not counted as upcoming or live |
+
+**Editing the reason:** `PATCH /v1/events/{id}` with `cancelReason` (trimmed, at most 500 characters; `null` or `""` clears it) while the Event is cancelled. On an Event that is not cancelled the field is ignored, as `status` and `active` are; the write applies it only while the Event is cancelled, in the same `UPDATE`.
 
 Publishing or unpublishing a cancelled Event is `409 event_cancelled`, as before. Deleting it is ticket 05's rule.
 

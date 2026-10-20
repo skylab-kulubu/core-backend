@@ -547,6 +547,7 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/seasons", seasons.Create)
 	app.Get("/v1/seasons/:id", seasons.Get)
 	app.Put("/v1/seasons/:id", seasons.Update)
+	app.Patch("/v1/seasons/:id", seasons.Update)
 	app.Delete("/v1/seasons/:id", seasons.Delete)
 	app.Post("/v1/seasons/:id/restore", seasons.Restore)
 	app.Get("/v1/seasons/:id/events", seasons.ListEvents)

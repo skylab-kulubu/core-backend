@@ -217,3 +217,62 @@ func TestFormsAnswerToACancelledEventWritesNoTicket(t *testing.T) {
 		t.Fatalf("shared: %d %v, open %d cancelled %d", status, body, count(sharedOpen.ID), count(sharedCancelled.ID))
 	}
 }
+
+// A cancelled Event's reason is edited with PATCH (orchestrator,
+// 2026-10-20); on an Event that is not cancelled the field is ignored, as
+// the status is. A second cancel keeps the first reason.
+func TestCancelReasonIsEditedByPatch(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	start := time.Now().Add(48 * time.Hour)
+	ev, err := store.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", StartDate: &start, Ranked: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	az := authz.NewAuthorizer(authz.DefaultPolicy())
+	h := NewEventHandler(event.NewService(store, az))
+	app := func(ident authn.Identity) *fiber.App {
+		a := fiber.New()
+		a.Use(func(c fiber.Ctx) error {
+			c.Locals(authn.LocalsIdentity, ident)
+			return c.Next()
+		})
+		a.Patch("/v1/events/:id", h.Update)
+		a.Post("/v1/events/:id/cancel", h.Cancel)
+		return a
+	}
+	leader, member := app(weblabLeader()), app(draftMember)
+	path := "/v1/events/" + ev.ID.String()
+
+	if status, got := sendEventJSON(t, leader, fiber.MethodPatch, path, `{"cancelReason":"Erken"}`); status != fiber.StatusOK || got["cancelReason"] != nil {
+		t.Fatalf("published: %d %v", status, got)
+	}
+	if status, got := sendEventJSON(t, leader, fiber.MethodPost, path+"/cancel", `{"reason":"Hava"}`); status != fiber.StatusOK || got["cancelReason"] != "Hava" {
+		t.Fatalf("cancel: %d %v", status, got)
+	}
+	for _, step := range []struct {
+		body   string
+		status int
+		reason any
+	}{
+		{`{"cancelReason":"  Hava koşulları nedeniyle  "}`, fiber.StatusOK, "Hava koşulları nedeniyle"},
+		{`{"name":"Hack 2"}`, fiber.StatusOK, "Hava koşulları nedeniyle"},
+		{`{"cancelReason":"` + strings.Repeat("a", event.CancelReasonMax+1) + `"}`, fiber.StatusBadRequest, nil},
+		{`{"cancelReason":null}`, fiber.StatusOK, nil},
+		{`{"cancelReason":"Ertelendi"}`, fiber.StatusOK, "Ertelendi"},
+	} {
+		status, got := sendEventJSON(t, leader, fiber.MethodPatch, path, step.body)
+		if status != step.status {
+			t.Fatalf("%s: %d %v", step.body, status, got)
+		}
+		if status == fiber.StatusOK && (got["cancelReason"] != step.reason || got["status"] != "cancelled" || got["ranked"] != true) {
+			t.Fatalf("%s: %v", step.body, got)
+		}
+	}
+	if status, got := sendEventJSON(t, leader, fiber.MethodPost, path+"/cancel", `{"reason":"Başka"}`); status != fiber.StatusOK || got["cancelReason"] != "Ertelendi" {
+		t.Fatalf("second cancel: %d %v", status, got)
+	}
+	if status, got := sendEventJSON(t, member, fiber.MethodPatch, path, `{"cancelReason":"x"}`); status != fiber.StatusForbidden {
+		t.Fatalf("member: %d %v", status, got)
+	}
+}
