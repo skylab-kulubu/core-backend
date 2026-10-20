@@ -186,7 +186,10 @@ type formResponseBody struct {
 // RecordFormResponse takes the forms service's report of an answer to one of
 // its forms (docs/form-response-tickets.md). The answer is 204 whether or not
 // an Event lists the form: the forms service only needs to know it may stop
-// sending the report. A caller who may not report is refused before the
+// sending the report. An answer refused because every Event of the form has
+// closed applying is 200 with {"outcome": "registration_closed"}: still a
+// 2xx, which the forms service takes as done, until it knows a refusal of
+// its own (ticket 12). A caller who may not report is refused before the
 // request is read, so a malformed request from them is 403 too.
 func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
 	p, err := caller(c)
@@ -217,6 +220,9 @@ func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
 	h.logFormResponse(c, r, result, err)
 	if err != nil {
 		return ticketError(c, err)
+	}
+	if result.Outcome == ticket.FormResponseRegistrationClosed {
+		return c.JSON(fiber.Map{"outcome": result.Outcome})
 	}
 	return c.SendStatus(fiber.StatusNoContent)
 }

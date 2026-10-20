@@ -44,6 +44,9 @@ type eventBody struct {
 	AttendanceRule  string       `json:"attendanceRule"`
 	AttendanceRatio *float64     `json:"attendanceRatio"`
 	DoorStaffIDs    *[]uuid.UUID `json:"doorStaffIds"`
+	// Registration closure on create (ticket 12); none is open.
+	RegistrationClosed   bool       `json:"registrationClosed"`
+	RegistrationClosesAt *time.Time `json:"registrationClosesAt"`
 }
 
 func eventError(c fiber.Ctx, err error) error {
@@ -87,6 +90,9 @@ func (b eventBody) asEvent() event.Event {
 		CoverImageID:    b.CoverImageID,
 		AttendanceRule:  b.AttendanceRule,
 		AttendanceRatio: b.AttendanceRatio,
+
+		RegistrationClosed:   b.RegistrationClosed,
+		RegistrationClosesAt: b.RegistrationClosesAt,
 	}
 	if b.FormAlias != nil {
 		e.FormAlias = *b.FormAlias

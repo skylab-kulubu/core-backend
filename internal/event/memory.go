@@ -117,7 +117,9 @@ func (s *MemoryStore) listed(e Event) Event {
 // listed as the database reads them (empty lists, never nil), and counted.
 func (s *MemoryStore) detailed(e Event) Event {
 	e = emptyGallery(e)
-	e.Active = e.ActiveAt(time.Now())
+	now := time.Now()
+	e.Active = e.ActiveAt(now)
+	e.RegistrationOpen = e.RegistrationOpenAt(now)
 	e.Files, e.Videos = s.shown(e.Files), s.shown(e.Videos)
 	e.FileCount, e.VideoCount = len(servableItems(e.Files)), len(servableItems(e.Videos))
 	return e

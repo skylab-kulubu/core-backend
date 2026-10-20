@@ -23,6 +23,9 @@ var (
 	// ErrCancelled refuses what a cancelled Event no longer allows (problem
 	// code event_cancelled).
 	ErrCancelled = fmt.Errorf("event: cancelled: %w", ErrConflict)
+	// ErrRegistrationClosed refuses a self application while applying is
+	// not open (RegistrationOpenAt): problem code registration_closed.
+	ErrRegistrationClosed = fmt.Errorf("event: registration closed: %w", ErrConflict)
 )
 
 // undatedEndsAfter is how long after its start an Event without an end date
@@ -36,6 +39,8 @@ const undatedEndsAfter = 24 * time.Hour
 const (
 	endsAtSQL = `COALESCE(e.end_date, e.start_date + interval '24 hours')`
 	activeSQL = `(e.status = 'published' AND (` + endsAtSQL + ` IS NULL OR ` + endsAtSQL + ` > now()))`
+	// registrationOpenSQL is RegistrationOpenAt in SQL, as activeSQL.
+	registrationOpenSQL = `(` + activeSQL + ` AND NOT e.registration_closed AND (e.registration_closes_at IS NULL OR e.registration_closes_at > now()))`
 	// notDraftSQL is what a list that shows no draft filters with.
 	notDraftSQL = `e.status <> 'draft'`
 )
@@ -73,6 +78,20 @@ func (e Event) EndedAt(now time.Time) bool {
 // active.
 func (e Event) ActiveAt(now time.Time) bool {
 	return e.Status == StatusPublished && !e.EndedAt(now)
+}
+
+// RegistrationClosedAt reports whether the organizer has closed applying at
+// now, by hand or by the deadline, whatever the status and the dates
+// (Registration closure, ticket 12).
+func (e Event) RegistrationClosedAt(now time.Time) bool {
+	return e.RegistrationClosed || (e.RegistrationClosesAt != nil && !e.RegistrationClosesAt.After(now))
+}
+
+// RegistrationOpenAt reports whether people may apply themselves at now:
+// the Event is active (published, not ended) and its organizer has not
+// closed applying (RegistrationClosedAt). Derived, never stored.
+func (e Event) RegistrationOpenAt(now time.Time) bool {
+	return e.ActiveAt(now) && !e.RegistrationClosedAt(now)
 }
 
 // FinalizeOpenAt reports whether Attendance finalization may run at now: the

@@ -33,6 +33,7 @@ that no Event lists: it writes nothing for it, and the report's log line
 | Answer | Meaning for Forms |
 |---|---|
 | `204` | done; stop sending the report |
+| `200` `{"outcome": "registration_closed"}` | done, and no Ticket was written: every Event that lists the form has closed applying ([event-registration-closure.md](event-registration-closure.md)); stop sending the report |
 | `400` | a malformed report: a form id or body core cannot read, an unknown `status`, a zero `userId`, or a `guest` with an e-mail but without a first name or last name; sending it again will not help |
 | `401` | no valid token |
 | `403` | the token is not the forms service account's with `ticket:forms`; core refuses it before reading the request, so a malformed report from such a caller is `403` too |
@@ -40,7 +41,12 @@ that no Event lists: it writes nothing for it, and the report's log line
 
 ## What a report writes
 
-Only an `accepted` answer writes, on every current Event that lists the form:
+Only an `accepted` answer writes, on every current Event that lists the form
+and whose organizer has not closed applying, by hand or by its deadline
+([event-registration-closure.md](event-registration-closure.md)). When every
+such Event has closed it, nothing is written and the answer is `200` with
+`outcome: "registration_closed"`. A draft takes the form's answers like a
+published Event (its editors linked the form), unless closed so.
 
 | Answer from | Ticket |
 |---|---|
@@ -74,7 +80,7 @@ Core writes one JSON line per report it reads (`"event":"form_response"`):
 `correlation_id`, `form_id`, `response_id`, `status` (`unknown` for a value
 other than the three), `outcome` and `tickets_written` (new Tickets only).
 `outcome` is `recorded`, `not_accepted`, `no_respondent`, `not_listed`,
-`person_unavailable`, `invalid` or `failed`. The line never carries the
+`registration_closed`, `person_unavailable`, `invalid` or `failed`. The line never carries the
 `userId`, a name or an e-mail.
 
 ## Setup

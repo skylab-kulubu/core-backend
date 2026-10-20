@@ -13,9 +13,9 @@ import (
 // Patch is the body of PUT and PATCH /v1/events/{id}: a field left out
 // keeps the Event's value, null (or "" for text) clears a field that may be
 // empty (ADR 0066 addendum, ticket 13). Name, location and the Owner team
-// may not be cleared, nor ranked set null: that is ErrInvalid. The body's
-// id, status and active are not read: the status changes only through its
-// endpoints, and active is derived.
+// may not be cleared, nor ranked or registrationClosed set null: that is
+// ErrInvalid. The body's id, status and active are not read: the status
+// changes only through its endpoints, and active is derived.
 type Patch struct {
 	Name            optional.Field[string]          `json:"name"`
 	Description     optional.Field[string]          `json:"description"`
@@ -34,6 +34,11 @@ type Patch struct {
 	AttendanceRule  optional.Field[string]          `json:"attendanceRule"`
 	AttendanceRatio optional.Field[*float64]        `json:"attendanceRatio"`
 	DoorStaffIDs    optional.Field[[]uuid.UUID]     `json:"doorStaffIds"`
+	// RegistrationClosed closes or opens applying by hand (null is
+	// ErrInvalid); RegistrationClosesAt sets the deadline, null clears it
+	// (ticket 12).
+	RegistrationClosed   optional.Field[bool]       `json:"registrationClosed"`
+	RegistrationClosesAt optional.Field[*time.Time] `json:"registrationClosesAt"`
 }
 
 // required is the value of a field that may not be emptied: sent, it must
@@ -58,7 +63,7 @@ func (p Patch) apply(existing Event) (Event, error) {
 	if e.OwnerTeam, err = required(p.OwnerTeam, existing.OwnerTeam); err != nil {
 		return Event{}, err
 	}
-	if p.Ranked.Null {
+	if p.Ranked.Null || p.RegistrationClosed.Null {
 		return Event{}, ErrInvalid
 	}
 	e.Description = p.Description.Or(existing.Description)
@@ -79,6 +84,8 @@ func (p Patch) apply(existing Event) (Event, error) {
 	if p.DoorStaffIDs.Set {
 		e.DoorStaffIDs = append([]uuid.UUID{}, p.DoorStaffIDs.Value...)
 	}
+	e.RegistrationClosed = p.RegistrationClosed.Or(existing.RegistrationClosed)
+	e.RegistrationClosesAt = p.RegistrationClosesAt.Or(existing.RegistrationClosesAt)
 	return e, nil
 }
 

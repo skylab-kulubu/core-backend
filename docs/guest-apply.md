@@ -3,7 +3,10 @@
 `POST /v1/events/{eventId}/applications/guest` writes a guest Ticket for an
 e-mail on an Event, or finds the one already there. Body:
 `{"firstName", "lastName", "email", "phoneNumber"?, "consents"?}`; first name,
-last name and e-mail are required.
+last name and e-mail are required. While the Event's applying is not open
+(closed by its organizer, past its deadline, ended or cancelled) the answer is
+`409`, `code: "registration_closed"`, for every caller
+([event-registration-closure.md](event-registration-closure.md)).
 
 `consents` carries the boxes the guest ticked
 ([contact-consents.md](contact-consents.md)): `["event_invitations"]`, or

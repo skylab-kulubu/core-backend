@@ -36,9 +36,17 @@ type Event struct {
 	CopiedFromEventID *uuid.UUID `json:"copiedFromEventId,omitempty"`
 	Ranked            bool       `json:"ranked"`
 	PrizeInfo         string     `json:"prizeInfo,omitempty"`
-	SeasonID          *uuid.UUID `json:"seasonId,omitempty"`
-	CoverImageID      *uuid.UUID `json:"coverImageId,omitempty"`
-	CoverImageURL     string     `json:"coverImageUrl,omitempty"`
+	// RegistrationClosed is applying closed by hand, RegistrationClosesAt
+	// the deadline: Registration closure, apart from the status (ADR 0066
+	// addendum, ticket 12).
+	RegistrationClosed   bool       `json:"registrationClosed"`
+	RegistrationClosesAt *time.Time `json:"registrationClosesAt,omitempty"`
+	// RegistrationOpen is derived like Active (RegistrationOpenAt): the
+	// store answers it; a write never sets it.
+	RegistrationOpen bool       `json:"registrationOpen"`
+	SeasonID         *uuid.UUID `json:"seasonId,omitempty"`
+	CoverImageID     *uuid.UUID `json:"coverImageId,omitempty"`
+	CoverImageURL    string     `json:"coverImageUrl,omitempty"`
 	// CoverImageSizes are the cover's card and page addresses, built like
 	// the Media JSON's sizes.
 	CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes,omitempty"`

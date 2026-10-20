@@ -1371,6 +1371,14 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND conname = 'communication_preferences_category_check'
 			  AND pg_get_constraintdef(oid) LIKE '%''tracking''%'
 		  )`,
+	// Registration closure (ADR 0066 addendum, ticket 12): the two columns.
+	20261020120000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events'
+			  AND column_name IN ('registration_closed', 'registration_closes_at')
+		) = 2`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

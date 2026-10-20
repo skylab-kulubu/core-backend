@@ -18,7 +18,8 @@ ADR 0066 addendum (2026-10-19), ticket 13. `PUT` and `PATCH` on `/v1/events/{id}
 | `startDate`, `endDate`, `coverImageId`, `attendanceRatio` | none |
 | `attendanceRule` | `none` |
 | `name`, `location`, `ownerTeam` | may not be cleared: `400` |
-| `ranked` | `null` is `400` (send `false`) |
+| `ranked`, `registrationClosed` | `null` is `400` (send `false`) |
+| `registrationClosesAt` | no deadline ([event-registration-closure.md](event-registration-closure.md)) |
 
 - `id`, `status` and `active` in the body are not read: the status changes only through its endpoints (`publish`, `unpublish`, …) and `active` is derived.
 - A value of the wrong type is `400`; so is `attendanceRule: "ratio"` without a ratio (sent or stored). Rights are checked before the body: who may not edit the Event gets `403` whatever it sends.

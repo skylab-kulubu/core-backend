@@ -23,7 +23,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, ` + activeSQL + `, e.status, e.published_at, e.published_by, e.cancelled_at, e.cancelled_by, e.cancel_reason, e.copied_from_event_id, e.ranked, e.prize_info, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at, ` +
+var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, ` + activeSQL + `, e.status, e.published_at, e.published_by, e.cancelled_at, e.cancelled_by, e.cancel_reason, e.copied_from_event_id, e.ranked, e.prize_info, e.registration_closed, e.registration_closes_at, ` + registrationOpenSQL + `, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at, ` +
 	servableCountSQL(Files) + `, ` + servableCountSQL(Videos)
 
 // servableCountSQL counts the Event's items of the list anyone can see: a
@@ -245,15 +245,16 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 			id, name, description, location, owner_team, form_url, capacity,
 			start_date, end_date, linkedin, active, ranked, prize_info, season_id, cover_image_id,
 			attendance_rule, attendance_ratio, extra_form_urls,
-			status, published_at, published_by
+			status, published_at, published_by, registration_closed, registration_closes_at
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$18 = 'published',$11,$12,$13,$14,$15,$16,$17,
 			$18,
 			CASE WHEN $18 = 'published' THEN now() END,
-			CASE WHEN $18 = 'published' THEN (SELECT id FROM users WHERE id = $19) END)`,
+			CASE WHEN $18 = 'published' THEN (SELECT id FROM users WHERE id = $19) END,
+			$20, $21)`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
 		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e),
-		string(e.Status), e.PublishedBy)
+		string(e.Status), e.PublishedBy, e.RegistrationClosed, e.RegistrationClosesAt)
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
 	}
@@ -286,11 +287,13 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 			name = $2, description = $3, location = $4, owner_team = $5, form_url = $6,
 			capacity = $7, start_date = $8, end_date = $9, linkedin = $10,
 			ranked = $11, prize_info = $12, season_id = $13, cover_image_id = $14,
-			attendance_rule = $15, attendance_ratio = $16, extra_form_urls = $17, updated_at = now()
+			attendance_rule = $15, attendance_ratio = $16, extra_form_urls = $17,
+			registration_closed = $18, registration_closes_at = $19, updated_at = now()
 		WHERE id = $1 AND archived_at IS NULL`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
-		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e))
+		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e),
+		e.RegistrationClosed, e.RegistrationClosesAt)
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
 	}
@@ -916,7 +919,8 @@ func scanEvent(row rowScanner) (Event, error) {
 	err := row.Scan(
 		&e.ID, &e.Name, &e.Description, &e.Location, &e.OwnerTeam, &e.FormURL, &e.Capacity,
 		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Status, &e.PublishedAt, &e.PublishedBy,
-		&e.CancelledAt, &e.CancelledBy, &e.CancelReason, &e.CopiedFromEventID, &e.Ranked, &e.PrizeInfo, &e.SeasonID,
+		&e.CancelledAt, &e.CancelledBy, &e.CancelReason, &e.CopiedFromEventID, &e.Ranked, &e.PrizeInfo,
+		&e.RegistrationClosed, &e.RegistrationClosesAt, &e.RegistrationOpen, &e.SeasonID,
 		&e.CoverImageID, &coverURL, &e.coverImage, &e.CoverColors, &e.AttendanceRule, &e.AttendanceRatio, &extraRaw, &e.MailListID, &e.ArchivedAt, &e.ArchivedBy, &e.CreatedAt, &e.UpdatedAt,
 		&e.FileCount, &e.VideoCount,
 	)
