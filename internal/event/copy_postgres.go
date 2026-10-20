@@ -62,13 +62,13 @@ func (s *PostgresStore) Copy(ctx context.Context, plan CopyPlan) (Event, []strin
 			id, name, description, location, owner_team, capacity,
 			start_date, end_date, active, ranked, prize_info, season_id,
 			attendance_rule, attendance_ratio, status, copied_from_event_id,
-			registration_closes_at, feedback_mode
+			registration_closes_at, feedback_mode, feedback_auto_send
 		) VALUES ($2, $3, $4, $5, $6, $7, $1, $8, false, $9, $10, `+copySeasonSQL+`,
-			$11, $12, 'draft', $13, $14, $15)
+			$11, $12, 'draft', $13, $14, $15, $16)
 		ON CONFLICT (id) DO NOTHING`,
 		e.StartDate, e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.Capacity,
 		e.EndDate, e.Ranked, e.PrizeInfo, attendanceRule(e.AttendanceRule), e.AttendanceRatio,
-		plan.Source, e.RegistrationClosesAt, string(feedbackMode(e.FeedbackMode)))
+		plan.Source, e.RegistrationClosesAt, string(feedbackMode(e.FeedbackMode)), e.FeedbackAutoSend)
 	if err != nil {
 		return Event{}, nil, err
 	}

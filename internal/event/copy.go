@@ -234,11 +234,12 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 			RegistrationClosesAt: shift.At(source.RegistrationClosesAt),
 			AttendanceRule:       source.AttendanceRule,
 			AttendanceRatio:      source.AttendanceRatio,
-			// The feedback mode comes along; the feedback form does not
-			// (a form is in one place only), and the copy is mailed its
-			// new one by default (etkinlik geri bildirim formu §2.1).
+			// The feedback mode and whether the form is mailed when the
+			// Event ends come along (the organizer's choices); the feedback
+			// form does not (a form is in one place only; etkinlik geri
+			// bildirim formu §2.1).
 			FeedbackMode:     source.FeedbackMode,
-			FeedbackAutoSend: true,
+			FeedbackAutoSend: source.FeedbackAutoSend,
 		},
 		Shift:               shift,
 		By:                  lifecycle.ActorID(p.ID),

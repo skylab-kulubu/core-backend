@@ -17,7 +17,7 @@ On `GET /v1/events/{id}` and every Event JSON; read as the application form is (
 
 `POST /v1/events` takes all four (no `feedbackMode` is `event`, no `feedbackAutoSend` is `true`). `PUT`/`PATCH` keep what the body leaves out ([event-updates.md](event-updates.md)): `feedbackFormUrl` and `feedbackFormAlias` are cleared with `null` or `""`; `feedbackMode` and `feedbackAutoSend` may not be `null`; an unknown mode is `400`.
 
-A copy ([event-copy.md](event-copy.md)) takes `feedbackMode`, not the form (a form is in one place only): its `feedbackAutoSend` is `true`, and the panel offers "Geçen seferin formundan yeni form".
+A copy ([event-copy.md](event-copy.md)) takes `feedbackMode` and `feedbackAutoSend` (the organizer's choices), not the form (a form is in one place only): the panel offers "Geçen seferin formundan yeni form".
 
 ### A Session's form
 

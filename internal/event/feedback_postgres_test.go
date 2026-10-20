@@ -12,7 +12,8 @@ import (
 )
 
 // The store writes and reads the feedback fields; an update writes them
-// as given; a copy takes the mode alone.
+// as given; a copy takes the mode and the "send when it ends" choice, not
+// the form.
 func TestPostgresStoreFeedbackFields(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
@@ -43,7 +44,15 @@ func TestPostgresStoreFeedbackFields(t *testing.T) {
 	}
 	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()))
 	copied, _, err := svc.Copy(ctx, copyLeader, updated.ID, copyIn("Kopya", "2027-01-01T10:00:00+03:00"))
-	if err != nil || copied.Event.FeedbackMode != event.FeedbackEventWithSessions || copied.Event.FeedbackFormURL != "" || !copied.Event.FeedbackAutoSend {
+	if err != nil || copied.Event.FeedbackMode != event.FeedbackEventWithSessions || copied.Event.FeedbackFormURL != "" || copied.Event.FeedbackAutoSend {
 		t.Fatalf("copy %+v %v", copied.Event, err)
+	}
+	mailed, err := store.Create(ctx, event.Event{Name: "Postalı", Location: "YTÜ", OwnerTeam: "WEBLAB", FeedbackAutoSend: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied, _, err = svc.Copy(ctx, copyLeader, mailed.ID, copyIn("Kopya 2", "2027-01-01T10:00:00+03:00"))
+	if err != nil || !copied.Event.FeedbackAutoSend {
+		t.Fatalf("copy of auto send %+v %v", copied.Event, err)
 	}
 }
