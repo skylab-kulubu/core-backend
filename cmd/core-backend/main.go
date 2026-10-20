@@ -56,6 +56,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
+	"github.com/skylab-kulubu/core-backend/internal/usersync"
 )
 
 func main() {
@@ -437,6 +438,9 @@ func main() {
 	// Reads whether a Group holds a realm-management role (core changes no
 	// membership there, docs/team-delegation.md "Role rules"); Keycloak only.
 	var adminGroups identity.KeycloakAdminGroups
+	// Keycloak's account list, which the user sync pages through; Keycloak
+	// only.
+	var userSyncDir usersync.Directory
 	keycloakConfigured := strings.TrimSpace(os.Getenv("KEYCLOAK_URL")) != ""
 	if keycloakConfigured {
 		keycloakConfig, missing, err := keycloakFromEnv(os.Getenv)
@@ -473,6 +477,7 @@ func main() {
 		dir = keycloakDirectory
 		siteRoles = keycloakDirectory
 		adminGroups = keycloakDirectory
+		userSyncDir = keycloakDirectory
 	}
 	// Whether a person may be given a client role directly
 	// (docs/team-delegation.md "Role rules"): off unless set. A value core
@@ -746,7 +751,7 @@ func main() {
 		log.Print("account erasure worker disabled: ACCOUNT_ERASURE_WORKER_ENABLED is not true")
 	}
 
-	var mailer mail.Mailer
+	var welcomeMailer usersync.Mailer
 	var sky *mail.SkyMail
 	if base != "" && realm != "" && os.Getenv("KEYCLOAK_CLIENT_ID") != "" && os.Getenv("KEYCLOAK_CLIENT_SECRET") != "" {
 		sky = newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout)
@@ -771,8 +776,36 @@ func main() {
 		// mail of that kind, and the send path stays silent by design.
 		sky.WarnUnconfiguredTemplates()
 		consents.SetMailer(sky)
-		if sky.Configured() {
-			mailer = sky
+		if sky.WelcomeConfigured() {
+			welcomeMailer = sky
+		}
+	}
+
+	// The user sync (docs/user-sync.md): every few minutes it pages through
+	// Keycloak's accounts, opens the core row and Sky number of anyone core
+	// has none for, fills a row's blank e-mail and names from Keycloak, and
+	// sends the Welcome mail once to accounts created since
+	// WELCOME_MAIL_SINCE. It is the only sender of the Welcome mail; a first
+	// request (JIT) and an admin's new user wake it. One pass at a time across
+	// replicas (a database advisory lock).
+	userSyncConfig, err := usersync.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var userSync httpx.UserSync
+	switch {
+	case userSyncDir == nil:
+		log.Print("user sync: off (no Keycloak); no Welcome mail is sent")
+	case !userSyncConfig.Enabled:
+		log.Printf("user sync: %s; no Welcome mail is sent", userSyncConfig)
+	default:
+		syncWorker := usersync.New(userSyncDir, user.NewService(users, dir), usersync.NewPostgres(pool), welcomeMailer, userSyncConfig, log.Printf)
+		worker("user sync", syncWorker.Run(workers))
+		userSync = syncWorker
+		if welcomeMailer == nil {
+			log.Printf("user sync: %s; Welcome mail off (no SkyMail welcome template)", userSyncConfig)
+		} else {
+			log.Printf("user sync: %s", userSyncConfig)
 		}
 	}
 
@@ -891,7 +924,8 @@ func main() {
 			TeamAudit:             teamAudit,
 			DirectUserRoles:       directUserRoles,
 			AdminGroups:           adminGroups,
-		}, mailer),
+			UserSync:              userSync,
+		}),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
 			ImageAddressMode: imageAddressMode,
@@ -916,7 +950,7 @@ func main() {
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
 		SkyPassWalletMetrics:   wallet,
-		Mail:                   mailer,
+		UserSync:               userSync,
 		EventMail:              eventmail.New(events, tickets, users, lists, az, mailSnapshots),
 		ParseToken:             parse,
 		AccountAccessGate:      optionalAccountAccessGate(gate),
@@ -1112,8 +1146,8 @@ const skyMailTimeout = 15 * time.Second
 // newSkyMail is core's SkyMail client, which asks the realm at base for its
 // token with core's own service account. The token request uses the same
 // client as the post: without one, mail.ClientCredentials falls back to
-// http.DefaultClient, which never gives up, and the Welcome mail of a first
-// login runs inside that login's request.
+// http.DefaultClient, which never gives up, and a hung mail would hold the
+// user sync's pass (and so its lock) or the request that sent it.
 func newSkyMail(base, realm, clientID, clientSecret, skyMailURL string, timeout time.Duration) *mail.SkyMail {
 	client := &http.Client{Timeout: timeout}
 	return &mail.SkyMail{

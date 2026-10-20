@@ -1407,6 +1407,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'cancel_notified_at'
 		  )`,
+	// The Welcome mail's mark on users (docs/user-sync.md).
+	20261020180000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'welcome_sent_at'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

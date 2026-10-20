@@ -2,8 +2,10 @@
 
 Core sends two mails through SkyMail: the welcome mail a new account receives
 and the certificate mail that follows an issued certificate. Both are posted to
-`/v1/mail_tasks/single` and neither is awaited. A mail must not fail the request
-that produced it, so the caller is told nothing.
+`/v1/mail_tasks/single`. The certificate mail is not awaited: a mail must not
+fail the request that produced it, so the caller is told nothing. The welcome
+mail is sent by the user sync, which reads what became of it and marks the
+person welcomed ([user-sync.md](user-sync.md)).
 
 That is also how these mails used to disappear. SkyMail refuses a send whose
 template is archived or unknown, and writes no `mail_tasks` row at all. Core
@@ -34,7 +36,7 @@ fallback: a refused id is never retried with a key.
 
 The welcome mail sends `FirstName`, `LastName`, `Email`, `Username`,
 `SchoolEmail`, `SkyNumber` and `CreatedAt`. `Username` and `SchoolEmail` come
-from the JIT User's identity profile and can be empty; neither is derived from
+from the User row and can be empty; neither is derived from
 the primary e-mail. The welcome template shows the username when present and
 offers YTÜ linking only when `SchoolEmail` is empty. Deploy this additive sender
 change before seeding that template; older templates ignore the extra values.
@@ -110,7 +112,11 @@ checks the response status. Anything outside `2xx` writes one line:
   often enough to promise it is always a `404`.
 - `reason` — `template_missing` for a `404` to a send,
   `template_key_missing_fallback_to_id` for the line that precedes the one
-  retry, and `upstream_error` for everything else.
+  retry, and `upstream_error` for everything else. The welcome mail also
+  writes a line, with no `status`, when it never got an answer:
+  `token_unavailable` (no token from Keycloak), `unreachable` (SkyMail could not
+  be connected to) and `no_answer` (the request went out and nothing came back;
+  SkyMail may have taken it).
 - `code` — the `error` or `message` field of a small JSON body, and only when it
   is a bare code: short, and made of letters, digits, `_`, `-` and `.`. Prose,
   mail addresses and identifiers are dropped. The line carries no recipient, no
