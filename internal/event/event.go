@@ -67,6 +67,10 @@ type Event struct {
 	// coverImage is the cover Media as the store read it with the Event,
 	// what CoverImageSizes is built from.
 	coverImage *media.LinkedImage
+	// cancelReasonSent makes the store's Update write CancelReason, which
+	// it does only while the Event is cancelled: an update body that sends
+	// cancelReason (Patch) sets it.
+	cancelReasonSent bool
 }
 
 type GalleryImage struct {

@@ -31,6 +31,10 @@ type Service interface {
 	// idempotent and one conditional UPDATE.
 	Publish(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
 	Unpublish(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
+	// Cancel cancels a published Event that has not ended (ticket 04);
+	// idempotent, refused on a draft (ErrNotPublished) and once ended
+	// (ErrEnded). The reason is optional and public.
+	Cancel(ctx context.Context, p authz.Principal, id uuid.UUID, reason string) (Event, error)
 	Create(ctx context.Context, p authz.Principal, in Event) (Event, error)
 	// Update overwrites the Event's fields with in's; a nil season, door
 	// staff, extra forms or mail list keeps the stored one.

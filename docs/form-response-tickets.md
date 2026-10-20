@@ -33,6 +33,7 @@ that no Event lists: it writes nothing for it, and the report's log line
 | Answer | Meaning for Forms |
 |---|---|
 | `204` | done; stop sending the report |
+| `200` `{"outcome": "event_cancelled"}` | done, and no Ticket was written: every Event that lists the form is cancelled ([event-cancel.md](event-cancel.md)); stop sending the report |
 | `400` | a malformed report: a form id or body core cannot read, an unknown `status`, a zero `userId`, or a `guest` with an e-mail but without a first name or last name; sending it again will not help |
 | `401` | no valid token |
 | `403` | the token is not the forms service account's with `ticket:forms`; core refuses it before reading the request, so a malformed report from such a caller is `403` too |
@@ -40,7 +41,9 @@ that no Event lists: it writes nothing for it, and the report's log line
 
 ## What a report writes
 
-Only an `accepted` answer writes, on every current Event that lists the form:
+Only an `accepted` answer writes, on every current Event that lists the form
+and is not cancelled. When every such Event is cancelled, nothing is written
+and the answer is `200` with `outcome: "event_cancelled"`.
 
 | Answer from | Ticket |
 |---|---|
@@ -74,7 +77,7 @@ Core writes one JSON line per report it reads (`"event":"form_response"`):
 `correlation_id`, `form_id`, `response_id`, `status` (`unknown` for a value
 other than the three), `outcome` and `tickets_written` (new Tickets only).
 `outcome` is `recorded`, `not_accepted`, `no_respondent`, `not_listed`,
-`person_unavailable`, `invalid` or `failed`. The line never carries the
+`event_cancelled`, `person_unavailable`, `invalid` or `failed`. The line never carries the
 `userId`, a name or an e-mail.
 
 ## Setup

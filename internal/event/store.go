@@ -81,6 +81,12 @@ type Store interface {
 	// still current and published it says why: ErrHasTickets or
 	// ErrHasCompetitors. False when it changed nothing.
 	Unpublish(ctx context.Context, id uuid.UUID) (bool, error)
+	// Cancel cancels the published Event (cancelled_at/by, by nil when
+	// unknown, and the reason): one UPDATE that changes it only while it is
+	// current, published and not ended, and in the same transaction cancels
+	// its current Competitions not cancelled already, keeping their earlier
+	// status. False when it changed nothing.
+	Cancel(ctx context.Context, id uuid.UUID, by *uuid.UUID, reason string) (bool, error)
 	SetSeason(ctx context.Context, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
 	SetMailListID(ctx context.Context, eventID, listID uuid.UUID) (Event, error)
 	GetSession(ctx context.Context, id uuid.UUID) (Session, error)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -52,8 +53,13 @@ const (
 	// account is blocked or no longer active.
 	FormResponsePersonUnavailable FormResponseOutcome = "person_unavailable"
 	// FormResponseRecorded is a report that went through every Event that
-	// lists the form.
+	// lists the form and is not cancelled.
 	FormResponseRecorded FormResponseOutcome = "recorded"
+	// FormResponseEventCancelled is an answer to a form whose every Event
+	// is cancelled (ticket 04): no Ticket is written. The forms service is
+	// told so in the answer, still a 2xx, so that it does not send the
+	// report again.
+	FormResponseEventCancelled FormResponseOutcome = "event_cancelled"
 )
 
 // FormResponseResult is what recording a report did.
@@ -64,7 +70,8 @@ type FormResponseResult struct {
 }
 
 // RecordFormResponse writes the Ticket an accepted answer earns on every
-// current Event that lists the form: a REGISTERED one for a person who
+// current Event that lists the form and is not cancelled (when every one
+// is, the outcome is FormResponseEventCancelled): a REGISTERED one for a person who
 // answered signed in, a guest one for the e-mail a guest typed. An answer
 // that is pending or declined, or that carries neither (a guest without an
 // e-mail counts as neither), writes nothing, and
@@ -114,6 +121,10 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	if len(listing) == 0 {
 		return FormResponseResult{Outcome: FormResponseNotListed}, nil
 	}
+	listing = notCancelled(listing)
+	if len(listing) == 0 {
+		return FormResponseResult{Outcome: FormResponseEventCancelled}, nil
+	}
 	if r.UserID != nil {
 		if err := s.resolveApplyTarget(ctx, *r.UserID); err != nil {
 			if err := settledFormResponse(err); err != nil {
@@ -123,7 +134,8 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		}
 	}
 	result := FormResponseResult{Outcome: FormResponseRecorded}
-	for _, eventID := range listing {
+	for _, ev := range listing {
+		eventID := ev.ID
 		written := false
 		if r.UserID != nil {
 			_, err = s.applyRegistered(ctx, eventID, *r.UserID)
@@ -149,20 +161,32 @@ func (s *service) CanRecordFormResponse(p authz.Principal) bool {
 	return s.authz.Allow(p, authz.Resource{Type: authz.TypeFormResponse}, authz.Create)
 }
 
-func (s *service) eventsListingForm(ctx context.Context, formID uuid.UUID) ([]uuid.UUID, error) {
+func (s *service) eventsListingForm(ctx context.Context, formID uuid.UUID) ([]event.Event, error) {
 	// A draft's form writes Tickets too (ADR 0066): its editors linked the
 	// form and shared it; an answer not written now would be lost.
 	events, err := s.events.ListIncludingDrafts(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-	var listing []uuid.UUID
+	var listing []event.Event
 	for _, ev := range events {
 		if ev.ListsForm(formID) {
-			listing = append(listing, ev.ID)
+			listing = append(listing, ev)
 		}
 	}
 	return listing, nil
+}
+
+// notCancelled leaves out the cancelled Events: an answer to their form
+// writes them no Ticket (ticket 04).
+func notCancelled(listing []event.Event) []event.Event {
+	out := listing[:0:0]
+	for _, ev := range listing {
+		if ev.Status != event.StatusCancelled {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 // settledFormResponse treats as done what sending the report again would not

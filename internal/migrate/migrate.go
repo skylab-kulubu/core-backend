@@ -1371,6 +1371,20 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND conname = 'communication_preferences_category_check'
 			  AND pg_get_constraintdef(oid) LIKE '%''tracking''%'
 		  )`,
+	// The Competitions an Event's cancellation cancelled (ADR 0066
+	// addendum, ticket 04): the two columns and their check.
+	20261020130000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'competitions'
+			  AND column_name IN ('cancelled_with_event_at', 'status_before_event_cancel')
+		) = 2
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.competitions')
+			  AND conname = 'competitions_status_before_event_cancel_check'
+		)`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

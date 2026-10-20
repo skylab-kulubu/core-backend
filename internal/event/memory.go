@@ -212,7 +212,11 @@ func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
 	e.UpdatedAt = time.Now().UTC()
 	// An update writes neither the status nor what goes with it.
 	e.Status, e.PublishedAt, e.PublishedBy = existing.Status, existing.PublishedAt, existing.PublishedBy
-	e.CancelledAt, e.CancelledBy, e.CancelReason = existing.CancelledAt, existing.CancelledBy, existing.CancelReason
+	reason := existing.CancelReason
+	if e.cancelReasonSent && existing.Status == StatusCancelled {
+		reason = e.CancelReason
+	}
+	e.CancelledAt, e.CancelledBy, e.CancelReason, e.cancelReasonSent = existing.CancelledAt, existing.CancelledBy, reason, false
 	e.CopiedFromEventID = existing.CopiedFromEventID
 	e.Images = existing.Images
 	e.ImageURLs = existing.ImageURLs
@@ -743,6 +747,19 @@ func (s *MemoryStore) Publish(_ context.Context, id uuid.UUID, by *uuid.UUID) (b
 	}
 	now := time.Now().UTC()
 	e.Status, e.PublishedAt, e.PublishedBy, e.UpdatedAt = StatusPublished, &now, by, now
+	s.byID[id] = e
+	return true, nil
+}
+
+func (s *MemoryStore) Cancel(_ context.Context, id uuid.UUID, by *uuid.UUID, reason string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[id]
+	now := time.Now().UTC()
+	if !ok || e.ArchivedAt != nil || e.Status != StatusPublished || e.EndedAt(now) {
+		return false, nil
+	}
+	e.Status, e.CancelledAt, e.CancelledBy, e.CancelReason, e.UpdatedAt = StatusCancelled, &now, by, reason, now
 	s.byID[id] = e
 	return true, nil
 }
