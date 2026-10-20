@@ -114,7 +114,9 @@ without trouble.
 ## Events
 
 Saving, archiving and restoring an event syncs the links of the forms it names
-in `formUrl` and `extraFormUrls`:
+in `formUrl`, `extraFormUrls` and `feedbackFormUrl` (its feedback form, alias
+`feedbackFormAlias`, label "<event> · Geri bildirim";
+[event-feedback.md](event-feedback.md)):
 
 1. If the form's link already has the alias the event names, it becomes
    event-managed.

@@ -19,7 +19,9 @@ const partialFull = `{
 	"linkedin":"https://linkedin.com/x","ranked":true,"prizeInfo":"Ödül",
 	"coverImageId":"cccccccc-cccc-cccc-cccc-cccccccccccc",
 	"attendanceRule":"ratio","attendanceRatio":0.5,
-	"doorStaffIds":["dddddddd-dddd-dddd-dddd-dddddddddddd"]}`
+	"doorStaffIds":["dddddddd-dddd-dddd-dddd-dddddddddddd"],
+	"feedbackMode":"per_session","feedbackFormUrl":"https://forms.yildizskylab.com/f/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+	"feedbackFormAlias":"gecekodu-geri-bildirim","feedbackAutoSend":false}`
 
 // updatedFields are the fields an update itself changes.
 var updatedFields = []string{"updatedAt"}
@@ -104,6 +106,9 @@ func TestEventUpdateWritesSentValuesAndClearsNull(t *testing.T) {
 		{"attendance ratio", `{"attendanceRatio":0.75}`, map[string]any{"attendanceRule": "ratio", "attendanceRatio": 0.75}},
 		{"door staff cleared", `{"doorStaffIds":null}`, map[string]any{"doorStaffIds": nil}},
 		{"door staff", `{"doorStaffIds":["ffffffff-ffff-ffff-ffff-ffffffffffff"]}`, map[string]any{"doorStaffIds": []any{"ffffffff-ffff-ffff-ffff-ffffffffffff"}}},
+		{"feedback mode", `{"feedbackMode":"event_with_sessions"}`, map[string]any{"feedbackMode": "event_with_sessions"}},
+		{"feedback form cleared", `{"feedbackFormUrl":null,"feedbackFormAlias":null}`, map[string]any{"feedbackFormUrl": nil, "feedbackFormAlias": nil}},
+		{"feedback sent automatically", `{"feedbackAutoSend":true}`, map[string]any{"feedbackAutoSend": true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,6 +147,7 @@ func TestEventUpdateRefusesClearingARequiredField(t *testing.T) {
 		`{"location":""}`, `{"location":null}`,
 		`{"ownerTeam":""}`, `{"ownerTeam":null}`,
 		`{"ranked":null}`,
+		`{"feedbackMode":null}`, `{"feedbackMode":"herkes"}`, `{"feedbackAutoSend":null}`,
 		`{"attendanceRule":"ratio","attendanceRatio":null}`,
 		`{"capacity":"çok"}`,
 	} {

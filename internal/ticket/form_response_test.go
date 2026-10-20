@@ -343,3 +343,52 @@ func TestRecordFormResponseTakesAGuestWithoutAnAddressAsNoRespondent(t *testing.
 		t.Fatalf("tickets %+v", listed)
 	}
 }
+
+// An answer to a feedback form writes no Ticket, whatever its status and
+// whoever answered, on a draft, a cancelled Event or one closed to
+// applications too: 204 with outcome feedback, as before any of them
+// (etkinlik geri bildirim formu, ticket 02).
+func TestRecordFormResponseWritesNoTicketForAFeedbackForm(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	feedback := uuid.New()
+	for _, in := range []event.Event{
+		{Status: event.StatusPublished},
+		{Status: event.StatusDraft},
+		{Status: event.StatusCancelled},
+		{Status: event.StatusPublished, RegistrationClosed: true},
+	} {
+		status := in.Status
+		in.Name, in.Location, in.OwnerTeam, in.FeedbackFormURL = "Hack", "YTÜ", "WEBLAB", formAddress(feedback)
+		ev, err := events.Create(ctx, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		member := uuid.New()
+		for _, r := range []ticket.FormResponse{
+			acceptedGuest(feedback, "Ada", "Lovelace", "ada@example.com"),
+			{FormID: feedback, ResponseID: uuid.New(), Status: ticket.FormResponseAccepted, UserID: &member},
+			{FormID: feedback, ResponseID: uuid.New(), Status: ticket.FormResponsePending, UserID: &member},
+			{FormID: feedback, ResponseID: uuid.New(), Status: ticket.FormResponseDeclined},
+			// A feedback form asks for no identity: an answer without a
+			// guest's name is not refused.
+			{FormID: feedback, ResponseID: uuid.New(), Status: ticket.FormResponseAccepted, Guest: &ticket.GuestInfo{Email: "x@example.com"}},
+		} {
+			got, err := svc.RecordFormResponse(ctx, formsService, r)
+			if err != nil || got.Outcome != ticket.FormResponseFeedback || got.TicketsWritten != 0 {
+				t.Fatalf("%s %+v: %+v %v", status, r, got, err)
+			}
+		}
+		if listed := ticketsOf(t, svc, ev); len(listed) != 0 {
+			t.Fatalf("%s: tickets %+v", status, listed)
+		}
+		if err := events.Archive(ctx, ev.ID, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An unknown status is still refused.
+	if _, err := svc.RecordFormResponse(ctx, formsService, ticket.FormResponse{FormID: feedback, Status: "x"}); !errors.Is(err, ticket.ErrInvalid) {
+		t.Fatalf("unknown status: %v", err)
+	}
+}

@@ -194,6 +194,7 @@ func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
 	if e.Status == "" {
 		e.Status = StatusPublished
 	}
+	e.FeedbackMode = feedbackMode(e.FeedbackMode)
 	now := time.Now().UTC()
 	e.RegistrationClosedAt = nil
 	if e.RegistrationClosed {

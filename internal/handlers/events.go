@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -48,6 +49,12 @@ type eventBody struct {
 	// Registration closure on create (ticket 12); none is open.
 	RegistrationClosed   bool       `json:"registrationClosed"`
 	RegistrationClosesAt *time.Time `json:"registrationClosesAt"`
+	// The Event's feedback on create (etkinlik geri bildirim formu, ticket
+	// 02): no mode is event, no feedbackAutoSend is true.
+	FeedbackMode      string `json:"feedbackMode"`
+	FeedbackFormURL   string `json:"feedbackFormUrl"`
+	FeedbackFormAlias string `json:"feedbackFormAlias"`
+	FeedbackAutoSend  *bool  `json:"feedbackAutoSend"`
 }
 
 func eventError(c fiber.Ctx, err error) error {
@@ -94,6 +101,11 @@ func (b eventBody) asEvent() event.Event {
 
 		RegistrationClosed:   b.RegistrationClosed,
 		RegistrationClosesAt: b.RegistrationClosesAt,
+
+		FeedbackMode:      event.FeedbackMode(b.FeedbackMode),
+		FeedbackFormURL:   strings.TrimSpace(b.FeedbackFormURL),
+		FeedbackFormAlias: strings.TrimSpace(b.FeedbackFormAlias),
+		FeedbackAutoSend:  b.FeedbackAutoSend == nil || *b.FeedbackAutoSend,
 	}
 	if b.FormAlias != nil {
 		e.FormAlias = *b.FormAlias
