@@ -277,6 +277,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	if err := s.checkFormPlaces(ctx, in); err != nil {
 		return Event{}, err
 	}
+	s.guardForms(&in)
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Assign) {
 		in.DoorStaffIDs = nil
 	}
@@ -345,10 +346,12 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 		return Event{}, ErrInvalid
 	}
 	in.ID = existing.ID
+	in.formGuard = nil
 	if syncForms {
 		if err := s.checkFormPlaces(ctx, in); err != nil {
 			return Event{}, err
 		}
+		s.guardForms(&in)
 	}
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Assign) {
 		in.DoorStaffIDs = existing.DoorStaffIDs

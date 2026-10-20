@@ -182,7 +182,15 @@ func (s *MemoryStore) GetIncludingArchived(_ context.Context, id uuid.UUID) (Eve
 	return s.detailed(e), nil
 }
 
-func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
+func (s *MemoryStore) Create(ctx context.Context, e Event) (Event, error) {
+	// The one-place rule again, before the store's lock: its check reads
+	// the store.
+	if e.formGuard != nil {
+		if err := e.formGuard.check(ctx); err != nil {
+			return Event{}, err
+		}
+		e.formGuard = nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e.ID == uuid.Nil {
@@ -210,7 +218,13 @@ func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
 	return s.detailed(e), nil
 }
 
-func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
+func (s *MemoryStore) Update(ctx context.Context, e Event) (Event, error) {
+	if e.formGuard != nil {
+		if err := e.formGuard.check(ctx); err != nil {
+			return Event{}, err
+		}
+		e.formGuard = nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, ok := s.byID[e.ID]

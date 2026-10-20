@@ -235,6 +235,9 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 		return Event{}, err
 	}
 	defer tx.Rollback(ctx)
+	if err := lockFormPlaces(ctx, tx, e.formGuard); err != nil {
+		return Event{}, err
+	}
 	if e.Status == "" {
 		e.Status = StatusPublished
 	}
@@ -288,6 +291,9 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 		return Event{}, err
 	}
 	defer tx.Rollback(ctx)
+	if err := lockFormPlaces(ctx, tx, e.formGuard); err != nil {
+		return Event{}, err
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE events SET
 			name = $2, description = $3, location = $4, owner_team = $5, form_url = $6,

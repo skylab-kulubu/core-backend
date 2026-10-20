@@ -27,7 +27,7 @@ A feedback form is in one place only. Creating or updating an Event (an update t
 - its feedback form is an application, extra or feedback form of another current Event (a draft too);
 - one of its application or extra forms is another current Event's feedback form.
 
-Application and extra forms may still be shared between Events, as before. An archived Event holds no form: its forms are free once it is archived, and restoring it while one of them is in another place is `409 form_in_use`. The check reads the current Events when the Event is written; two writes racing for the same form are not serialized (an organizer's slip, which the panel's link step also catches).
+Application and extra forms may still be shared between Events, as before. An archived Event holds no form: its forms are free once it is archived, and restoring it while one of them is in another place is `409 form_in_use`. The write applies the rule again inside its own transaction, after a transaction-scoped advisory lock on each of its forms (`pg_advisory_xact_lock`, in a fixed order): two writes naming the same form are decided one after the other, and the second sees the first. Restoring an archived Event checks without that lock (rare, by hand).
 
 ## Short link
 
