@@ -19,5 +19,6 @@ ALTER TABLE competitions
     ADD CONSTRAINT competitions_status_before_event_cancel_check CHECK (
         (cancelled_with_event_at IS NULL AND status_before_event_cancel IS NULL)
         OR (cancelled_with_event_at IS NOT NULL
+            AND status_before_event_cancel IS NOT NULL
             AND status_before_event_cancel IN ('draft', 'open', 'running', 'closed'))
     );
