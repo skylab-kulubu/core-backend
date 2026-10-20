@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/skylab-kulubu/core-backend/internal/optional"
 )
 
@@ -253,4 +255,66 @@ func (f SessionFeedback) apply(sess, existing Session) (Session, error) {
 // WithFeedback is sess with what f sends of its feedback form.
 func (sess Session) WithFeedback(f SessionFeedback) (Session, error) {
 	return f.apply(sess, sess)
+}
+
+// formGuard is the one-place rule a write applies again inside its own
+// transaction: the store takes a transaction-scoped advisory lock on each
+// of ids (in order) and runs check before it writes. Two writes that name
+// the same form are thus decided one after the other, the second seeing the
+// first committed (decision of the 2026-10-20 review, B1).
+type formGuard struct {
+	ids   []uuid.UUID
+	check func(ctx context.Context) error
+}
+
+// guardForms sets e's guard: its application, extra and feedback forms,
+// checked as checkFormPlaces does.
+func (s *service) guardForms(e *Event) {
+	ids := make([]uuid.UUID, 0, len(e.ExtraFormURLs)+2)
+	for _, link := range applicationLinksOf(*e) {
+		ids = append(ids, link.FormID)
+	}
+	if id, ok := e.FeedbackFormID(); ok {
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		e.formGuard = nil
+		return
+	}
+	checked := *e
+	checked.formGuard = nil
+	e.formGuard = &formGuard{ids: ids, check: func(ctx context.Context) error {
+		return s.checkFormPlaces(ctx, checked, false)
+	}}
+}
+
+// lockFormPlaces takes the guard's locks inside tx, in a fixed order, and
+// applies its check; a nil guard does nothing.
+func lockFormPlaces(ctx context.Context, tx pgx.Tx, g *formGuard) error {
+	if g == nil {
+		return nil
+	}
+	ids := slices.Clone(g.ids)
+	slices.SortFunc(ids, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+	ids = slices.Compact(ids)
+	for _, id := range ids {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('form-place:' || $1::text, 0))`, id); err != nil {
+			return err
+		}
+	}
+	return g.check(ctx)
+}
+
+// guardSessionForm sets sess's guard: its feedback form, checked as
+// checkSessionFormPlace does.
+func (s *service) guardSessionForm(sess *Session) {
+	sess.formGuard = nil
+	id, ok := FormIDFromURL(sess.FeedbackFormURL)
+	if sess.FeedbackFormURL == "" || !ok {
+		return
+	}
+	checked := *sess
+	sess.formGuard = &formGuard{ids: []uuid.UUID{id}, check: func(ctx context.Context) error {
+		return s.checkSessionFormPlace(ctx, checked)
+	}}
 }

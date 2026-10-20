@@ -277,6 +277,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	if err := s.checkFormPlaces(ctx, in, false); err != nil {
 		return Event{}, err
 	}
+	s.guardForms(&in)
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Assign) {
 		in.DoorStaffIDs = nil
 	}
@@ -345,10 +346,12 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 		return Event{}, ErrInvalid
 	}
 	in.ID = existing.ID
+	in.formGuard = nil
 	if syncForms {
 		if err := s.checkFormPlaces(ctx, in, false); err != nil {
 			return Event{}, err
 		}
+		s.guardForms(&in)
 	}
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Assign) {
 		in.DoorStaffIDs = existing.DoorStaffIDs
@@ -812,6 +815,7 @@ func (s *service) CreateSession(ctx context.Context, p authz.Principal, sess Ses
 	if err := s.checkSessionFormPlace(ctx, sess); err != nil {
 		return Session{}, err
 	}
+	s.guardSessionForm(&sess)
 	created, err := s.store.CreateSession(ctx, sess)
 	if err == nil && created.FeedbackFormURL != "" {
 		s.syncSessionForms(ctx, created.EventDayID)
@@ -853,10 +857,12 @@ func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.
 		return Session{}, ErrInvalid
 	}
 	formChanged := sess.FeedbackFormURL != existing.FeedbackFormURL || sess.FeedbackFormAlias != existing.FeedbackFormAlias
+	sess.formGuard = nil
 	if formChanged {
 		if err := s.checkSessionFormPlace(ctx, sess); err != nil {
 			return Session{}, err
 		}
+		s.guardSessionForm(&sess)
 	}
 	updated, err := s.store.UpdateSession(ctx, sess)
 	// The title labels the Session's link.

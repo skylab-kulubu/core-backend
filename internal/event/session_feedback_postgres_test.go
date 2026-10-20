@@ -83,6 +83,10 @@ func TestPostgresStoreSessionFeedbackForms(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	// The box comes along (review B4): Formsuz is not mailed, Açılış is.
+	if _, err := pool.Exec(ctx, `UPDATE sessions SET feedback_auto_send = false WHERE id = $1`, sessions["Formsuz"].ID); err != nil {
+		t.Fatal(err)
+	}
 	copied, _, err := svc.Copy(ctx, copyLeader, ev.ID, copyIn("Kopya", "2027-11-01T10:00:00+03:00"))
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +95,7 @@ func TestPostgresStoreSessionFeedbackForms(t *testing.T) {
 		t.Fatalf("copy has forms %+v %v", got, err)
 	}
 	var autoSend int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sessions s JOIN event_days d ON d.id = s.event_day_id WHERE d.event_id = $1 AND s.feedback_auto_send`, copied.Event.ID).Scan(&autoSend); err != nil || autoSend != 2 {
-		t.Fatalf("copied sessions mailed by default: %d %v", autoSend, err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sessions s JOIN event_days d ON d.id = s.event_day_id WHERE d.event_id = $1 AND s.feedback_auto_send`, copied.Event.ID).Scan(&autoSend); err != nil || autoSend != 1 {
+		t.Fatalf("copied sessions mailed: %d %v", autoSend, err)
 	}
 }

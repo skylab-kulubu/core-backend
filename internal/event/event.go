@@ -92,6 +92,10 @@ type Event struct {
 	// coverImage is the cover Media as the store read it with the Event,
 	// what CoverImageSizes is built from.
 	coverImage *media.LinkedImage
+	// formGuard makes the store's Create and Update apply the one-place
+	// rule of feedback forms again inside their write, under a lock per
+	// form (feedback.go).
+	formGuard *formGuard
 	// cancelReasonSent makes the store's Update write CancelReason, which
 	// it does only while the Event is cancelled: an update body that sends
 	// cancelReason (Patch) sets it.
@@ -205,6 +209,10 @@ type Session struct {
 	FeedbackAutoSend  bool       `json:"feedbackAutoSend"`
 	ArchivedAt        *time.Time `json:"archivedAt,omitempty"`
 	ArchivedBy        *uuid.UUID `json:"archivedBy,omitempty"`
+
+	// formGuard makes the store's CreateSession and UpdateSession apply the
+	// one-place rule again inside their write (feedback.go).
+	formGuard *formGuard
 }
 
 type Day struct {
