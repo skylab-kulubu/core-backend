@@ -47,7 +47,7 @@ func TestPostgresClaimHoldsACancelledEventsJobs(t *testing.T) {
 	}
 	cancelled, held := job("iptal")
 	_, open := job("acik")
-	if changed, err := events.Cancel(ctx, cancelled, nil, ""); err != nil || !changed {
+	if changed, err := events.Cancel(ctx, cancelled, nil, "", false); err != nil || !changed {
 		t.Fatalf("cancel %v %v", changed, err)
 	}
 
@@ -67,7 +67,7 @@ func TestPostgresClaimHoldsACancelledEventsJobs(t *testing.T) {
 	if status != "queued" || attempts != 0 {
 		t.Fatalf("held job %s %d", status, attempts)
 	}
-	if changed, err := events.Uncancel(ctx, cancelled); err != nil || !changed {
+	if changed, err := events.Uncancel(ctx, cancelled, false); err != nil || !changed {
 		t.Fatalf("uncancel %v %v", changed, err)
 	}
 	if claimed, err = store.ClaimJobs(ctx, 10, time.Minute); err != nil || len(claimed) != 1 || claimed[0].ID != held {

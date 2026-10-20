@@ -89,6 +89,11 @@ type SkyMail struct {
 	// PrivilegeNoticeTemplateKey addresses the privilege notice
 	// (privilege_notice.go); empty turns it off.
 	PrivilegeNoticeTemplateKey string
+	// EventCancelledTemplateKey and EventReinstatedTemplateKey address the
+	// Event status mails (docs/event-cancel.md, ticket 14); empty turns
+	// that mail off.
+	EventCancelledTemplateKey  string
+	EventReinstatedTemplateKey string
 	Tokens                     TokenSource
 	HTTP                       *http.Client
 	Logger                     *log.Logger

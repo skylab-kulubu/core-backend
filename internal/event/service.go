@@ -34,10 +34,10 @@ type Service interface {
 	// Cancel cancels a published Event that has not ended (ticket 04);
 	// idempotent, refused on a draft (ErrNotPublished) and once ended
 	// (ErrEnded). The reason is optional and public.
-	Cancel(ctx context.Context, p authz.Principal, id uuid.UUID, reason string) (Event, error)
+	Cancel(ctx context.Context, p authz.Principal, id uuid.UUID, reason string, notify bool) (Event, error)
 	// Uncancel undoes a cancellation, always (ticket 15): the Event is
 	// published again; idempotent, refused on a draft (ErrNotCancelled).
-	Uncancel(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
+	Uncancel(ctx context.Context, p authz.Principal, id uuid.UUID, notify bool) (Event, error)
 	Create(ctx context.Context, p authz.Principal, in Event) (Event, error)
 	// Update overwrites the Event's fields with in's; a nil season, door
 	// staff, extra forms or mail list keeps the stored one.

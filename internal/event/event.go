@@ -32,6 +32,10 @@ type Event struct {
 	CancelledAt  *time.Time `json:"cancelledAt,omitempty"`
 	CancelledBy  *uuid.UUID `json:"-"`
 	CancelReason string     `json:"cancelReason,omitempty"`
+	// CancelNotifiedAt is when the current cancellation's mail to the
+	// Ticket holders was queued (ticket 14): undoing it offers to tell them
+	// again.
+	CancelNotifiedAt *time.Time `json:"cancelNotifiedAt,omitempty"`
 	// CopiedFromEventID is the Event this one was copied from.
 	CopiedFromEventID *uuid.UUID `json:"copiedFromEventId,omitempty"`
 	Ranked            bool       `json:"ranked"`

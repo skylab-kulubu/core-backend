@@ -55,7 +55,7 @@ func TestPostgresStoreCancel(t *testing.T) {
 		}
 	}
 
-	changed, err := store.Cancel(ctx, published.ID, &actor, "")
+	changed, err := store.Cancel(ctx, published.ID, &actor, "", false)
 	if err != nil || !changed {
 		t.Fatalf("cancel: %v %v", changed, err)
 	}
@@ -104,7 +104,7 @@ func TestPostgresStoreCancel(t *testing.T) {
 	// Once cancelled, again changes nothing; so do a draft and an ended
 	// Event.
 	for _, ev := range []event.Event{published, create("Taslak", event.StatusDraft, &future), create("Bitti", event.StatusPublished, &past)} {
-		if changed, err := store.Cancel(ctx, ev.ID, nil, "x"); err != nil || changed {
+		if changed, err := store.Cancel(ctx, ev.ID, nil, "x", false); err != nil || changed {
 			t.Fatalf("%s: %v %v", ev.Name, changed, err)
 		}
 	}
@@ -130,7 +130,7 @@ func TestPostgresStoreCancel(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO competitions (id, event_id, name) VALUES ($1, $2, 'yarışma')`, competition, withReason.ID); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := store.Cancel(ctx, withReason.ID, nil, "Hava koşulları"); err != nil || !changed {
+	if changed, err := store.Cancel(ctx, withReason.ID, nil, "Hava koşulları", false); err != nil || !changed {
 		t.Fatalf("undated: %v %v", changed, err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT cancel_reason FROM competitions WHERE id = $1`, competition).Scan(&reason); err != nil || reason != "Hava koşulları" {

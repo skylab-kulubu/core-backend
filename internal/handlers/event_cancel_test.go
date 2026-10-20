@@ -51,12 +51,15 @@ func TestEventCancelWhoAndWhen(t *testing.T) {
 	editor := e.app(t, draftEditor)
 	first := draftCall(t, editor, fiber.MethodPost, "/v1/events/"+pub+"/cancel", `{"reason":"  Hava koşulları nedeniyle  ","notifyTicketHolders":true}`)
 	if first.status != fiber.StatusOK || first.body["status"] != "cancelled" || first.body["active"] != false ||
-		first.body["cancelReason"] != "Hava koşulları nedeniyle" || first.body["cancelledAt"] == nil {
+		first.body["cancelReason"] != "Hava koşulları nedeniyle" || first.body["cancelledAt"] == nil || first.body["cancelNotifiedAt"] == nil {
 		t.Fatalf("cancel %d %s", first.status, first.raw)
 	}
 	again := draftCall(t, editor, fiber.MethodPost, "/v1/events/"+pub+"/cancel", "")
 	if again.status != fiber.StatusOK || again.body["cancelledAt"] != first.body["cancelledAt"] || again.body["cancelReason"] != first.body["cancelReason"] {
 		t.Fatalf("idempotent %d %s", again.status, again.raw)
+	}
+	if mails := e.events.StatusMails(e.published.ID); len(mails) != 1 || mails[0].Kind != event.StatusMailCancelled {
+		t.Fatalf("queued mails %+v", mails)
 	}
 	// Publish and unpublish refuse a cancelled Event, as before.
 	for _, change := range []string{"publish", "unpublish"} {
@@ -79,8 +82,12 @@ func TestEventCancelWhoAndWhen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := draftCall(t, editor, fiber.MethodPost, "/v1/events/"+undated.ID.String()+"/cancel", ""); got.status != fiber.StatusOK || got.body["cancelReason"] != nil {
+	// No body: an older client starts no mail.
+	if got := draftCall(t, editor, fiber.MethodPost, "/v1/events/"+undated.ID.String()+"/cancel", ""); got.status != fiber.StatusOK || got.body["cancelReason"] != nil || got.body["cancelNotifiedAt"] != nil {
 		t.Fatalf("undated %d %s", got.status, got.raw)
+	}
+	if mails := e.events.StatusMails(undated.ID); len(mails) != 0 {
+		t.Fatalf("queued without notify %+v", mails)
 	}
 }
 
@@ -182,7 +189,7 @@ func TestFormsAnswerToACancelledEventWritesNoTicket(t *testing.T) {
 			t.Fatal(err)
 		}
 		if cancel {
-			if _, err := events.Cancel(t.Context(), created.ID, nil, ""); err != nil {
+			if _, err := events.Cancel(t.Context(), created.ID, nil, "", false); err != nil {
 				t.Fatal(err)
 			}
 		}
