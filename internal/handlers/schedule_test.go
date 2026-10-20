@@ -40,6 +40,8 @@ func scheduleApp(t *testing.T, ident authn.Identity, events event.Store, seasons
 	app.Get("/v1/seasons", sh.List)
 	app.Post("/v1/seasons", sh.Create)
 	app.Get("/v1/seasons/:id", sh.Get)
+	app.Put("/v1/seasons/:id", sh.Update)
+	app.Patch("/v1/seasons/:id", sh.Update)
 	app.Delete("/v1/seasons/:id", sh.Delete)
 	app.Post("/v1/seasons/:id/restore", sh.Restore)
 	app.Get("/v1/seasons/:id/events", sh.ListEvents)

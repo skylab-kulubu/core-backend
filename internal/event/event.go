@@ -32,13 +32,29 @@ type Event struct {
 	CancelledAt  *time.Time `json:"cancelledAt,omitempty"`
 	CancelledBy  *uuid.UUID `json:"-"`
 	CancelReason string     `json:"cancelReason,omitempty"`
+	// CancelNotifiedAt is when the current cancellation's mail to the
+	// Ticket holders was queued (ticket 14): undoing it offers to tell them
+	// again.
+	CancelNotifiedAt *time.Time `json:"cancelNotifiedAt,omitempty"`
 	// CopiedFromEventID is the Event this one was copied from.
 	CopiedFromEventID *uuid.UUID `json:"copiedFromEventId,omitempty"`
 	Ranked            bool       `json:"ranked"`
 	PrizeInfo         string     `json:"prizeInfo,omitempty"`
-	SeasonID          *uuid.UUID `json:"seasonId,omitempty"`
-	CoverImageID      *uuid.UUID `json:"coverImageId,omitempty"`
-	CoverImageURL     string     `json:"coverImageUrl,omitempty"`
+	// RegistrationClosed is applying closed by hand, RegistrationClosesAt
+	// the deadline: Registration closure, apart from the status (ADR 0066
+	// addendum, ticket 12).
+	RegistrationClosed   bool       `json:"registrationClosed"`
+	RegistrationClosesAt *time.Time `json:"registrationClosesAt,omitempty"`
+	// RegistrationClosedAt is when applying was closed by hand: set when
+	// RegistrationClosed turns on, cleared when it turns off (the store
+	// writes it). A forms answer sent after it earns no Ticket.
+	RegistrationClosedAt *time.Time `json:"registrationClosedAt,omitempty"`
+	// RegistrationOpen is derived like Active (RegistrationOpenAt): the
+	// store answers it; a write never sets it.
+	RegistrationOpen bool       `json:"registrationOpen"`
+	SeasonID         *uuid.UUID `json:"seasonId,omitempty"`
+	CoverImageID     *uuid.UUID `json:"coverImageId,omitempty"`
+	CoverImageURL    string     `json:"coverImageUrl,omitempty"`
 	// CoverImageSizes are the cover's card and page addresses, built like
 	// the Media JSON's sizes.
 	CoverImageSizes map[string]media.ImageAddress `json:"coverImageSizes,omitempty"`
@@ -67,6 +83,10 @@ type Event struct {
 	// coverImage is the cover Media as the store read it with the Event,
 	// what CoverImageSizes is built from.
 	coverImage *media.LinkedImage
+	// cancelReasonSent makes the store's Update write CancelReason, which
+	// it does only while the Event is cancelled: an update body that sends
+	// cancelReason (Patch) sets it.
+	cancelReasonSent bool
 }
 
 type GalleryImage struct {

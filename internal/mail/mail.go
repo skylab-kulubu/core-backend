@@ -4,16 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
-	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 const DefaultAPIOrigin = "https://api.yildizskylab.com/api/skymail"
@@ -52,10 +52,6 @@ const (
 	maxDiagnosticCode = 64
 )
 
-type Mailer interface {
-	Welcome(ctx context.Context, u user.User)
-}
-
 func APIOrigin(raw string) string {
 	if u := strings.TrimSpace(raw); u != "" {
 		return strings.TrimRight(u, "/")
@@ -89,6 +85,11 @@ type SkyMail struct {
 	// PrivilegeNoticeTemplateKey addresses the privilege notice
 	// (privilege_notice.go); empty turns it off.
 	PrivilegeNoticeTemplateKey string
+	// EventCancelledTemplateKey and EventReinstatedTemplateKey address the
+	// Event status mails (docs/event-cancel.md, ticket 14); empty turns
+	// that mail off.
+	EventCancelledTemplateKey  string
+	EventReinstatedTemplateKey string
 	Tokens                     TokenSource
 	HTTP                       *http.Client
 	Logger                     *log.Logger
@@ -164,19 +165,6 @@ func (s *SkyMail) WarnUnconfiguredTemplates() {
 	}
 }
 
-func (s *SkyMail) Welcome(ctx context.Context, u user.User) {
-	fullName := strings.TrimSpace(u.FirstName + " " + u.LastName)
-	s.send(ctx, kindWelcome, s.welcomeTemplate(), u.Email, fullName, map[string]string{
-		"FirstName":   u.FirstName,
-		"LastName":    u.LastName,
-		"Email":       u.Email,
-		"Username":    u.Username,
-		"SchoolEmail": u.SchoolEmail,
-		"SkyNumber":   u.SkyNumber,
-		"CreatedAt":   u.CreatedAt.UTC().Format(time.RFC3339),
-	})
-}
-
 // send posts one mail task and tells its caller nothing: a mail SkyMail refuses
 // must not fail the request that triggered it. The refusal goes to the log
 // instead of being dropped, which is the whole point of this path.
@@ -205,16 +193,25 @@ func (s *SkyMail) send(ctx context.Context, kind string, tpl template, recipient
 }
 
 // post sends one mail task and returns the status SkyMail answered with, or 0
-// when the request never reached it. A refusal is warned about here so that
-// every send shares one rule.
+// when no answer came. A refusal is warned about here so that every send
+// shares one rule.
 func (s *SkyMail) post(ctx context.Context, kind, token string, task map[string]any) int {
+	status, _ := s.postReached(ctx, kind, token, task)
+	return status
+}
+
+// postReached is post that also says whether the request may have reached
+// SkyMail: false only when it surely did not (it could not be built, or the
+// connection was never made), so the caller knows no mail task was written.
+// A request that went out and got no answer may have been taken.
+func (s *SkyMail) postReached(ctx context.Context, kind, token string, task map[string]any) (int, bool) {
 	body, err := json.Marshal(task)
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.BaseURL, "/")+"/v1/mail_tasks/single", bytes.NewReader(body))
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -224,15 +221,27 @@ func (s *SkyMail) post(ctx context.Context, kind, token string, task map[string]
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0
+		return 0, !neverConnected(err)
 	}
 	defer resp.Body.Close()
 	if succeeded(resp.StatusCode) {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return resp.StatusCode
+		return resp.StatusCode, true
 	}
 	warn(s.Logger, eventCallFailed, kind, resp.StatusCode, sendReason(resp.StatusCode), diagnosticCode(diagnosticBody(resp.Body)))
-	return resp.StatusCode
+	return resp.StatusCode, true
+}
+
+// neverConnected reports a request that failed before a connection to SkyMail
+// existed (the name did not resolve, the connection was refused), so nothing
+// of it reached SkyMail.
+func neverConnected(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" {
+		return true
+	}
+	var dns *net.DNSError
+	return errors.As(err, &dns)
 }
 
 // succeeded holds the only definition of a delivered call: SkyMail answers 201

@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
-	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/teamcode"
@@ -58,7 +57,7 @@ type service struct {
 	users                 user.Store
 	assign                user.Service
 	authz                 authz.Authorizer
-	mail                  mail.Mailer
+	userSync              interface{ Wake() }
 	accountErasureEnabled bool
 	accessProjector       DeletionProjector
 	groupCache            GroupCache
@@ -73,8 +72,8 @@ type service struct {
 	adminGroups           KeycloakAdminGroups
 }
 
-func NewService(dir Directory, users user.Store, az authz.Authorizer, mailers ...mail.Mailer) Service {
-	return NewServiceWithOptions(dir, users, az, Options{}, mailers...)
+func NewService(dir Directory, users user.Store, az authz.Authorizer) Service {
+	return NewServiceWithOptions(dir, users, az, Options{})
 }
 
 type Options struct {
@@ -122,6 +121,10 @@ type Options struct {
 	// role (realm-management): core changes no membership there. Nil reads
 	// nothing and refuses nothing (memory setups).
 	AdminGroups KeycloakAdminGroups
+	// UserSync is woken when an admin creates a user, so the user sync
+	// (docs/user-sync.md) sends the Welcome mail soon rather than at its next
+	// tick. Nil: the mail waits for the tick.
+	UserSync interface{ Wake() }
 }
 
 // MembershipNotifier hears of membership changes made through the service.
@@ -180,7 +183,7 @@ type DeletionProjector interface {
 	Project(context.Context, user.DeletionRequest) error
 }
 
-func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer, options Options, mailers ...mail.Mailer) Service {
+func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer, options Options) Service {
 	s := &service{
 		dir: dir, users: users, assign: user.NewService(users, dir), authz: az,
 		accountErasureEnabled: options.AccountErasureEnabled,
@@ -194,6 +197,7 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		audit:                 options.TeamAudit,
 		directUserRoles:       options.DirectUserRoles,
 		adminGroups:           options.AdminGroups,
+		userSync:              options.UserSync,
 	}
 	if options.GroupNames != nil {
 		s.names = *options.GroupNames
@@ -205,9 +209,6 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 	}
 	if s.privilegedRoots == nil {
 		s.privilegedRoots = authz.DefaultPrivilegedRoots()
-	}
-	if len(mailers) > 0 {
-		s.mail = mailers[0]
 	}
 	return s
 }
@@ -998,8 +999,9 @@ func (s *service) CreateUser(ctx context.Context, p authz.Principal, in Person) 
 		return Person{}, err
 	}
 	created.SkyNumber = shadow.SkyNumber
-	if s.mail != nil {
-		s.mail.Welcome(ctx, shadow)
+	// The Welcome mail is the user sync's: it marks the row when it sends.
+	if s.userSync != nil {
+		s.userSync.Wake()
 	}
 	return created, nil
 }
