@@ -132,6 +132,7 @@ func (e *draftEnv) app(t *testing.T, ident authn.Identity) *fiber.App {
 	app.Post("/v1/events/:id/publish", eh.Publish)
 	app.Post("/v1/events/:id/unpublish", eh.Unpublish)
 	app.Post("/v1/events/:id/cancel", eh.Cancel)
+	app.Post("/v1/events/:id/uncancel", eh.Uncancel)
 	app.Get("/v1/seasons/:id/events", sh.ListEvents)
 	app.Get("/v1/events/:eventId/days", sch.ListDays)
 	app.Get("/v1/event-days/:id", sch.GetDay)

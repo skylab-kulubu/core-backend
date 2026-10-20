@@ -70,3 +70,41 @@ func (s *service) Cancel(ctx context.Context, p authz.Principal, id uuid.UUID, r
 	e, err = s.store.Get(ctx, id)
 	return s.detail(ctx, e, err)
 }
+
+// ErrNotCancelled refuses to undo the cancellation of a draft (problem code
+// event_not_cancelled).
+var ErrNotCancelled = fmt.Errorf("event: not cancelled: %w", ErrConflict)
+
+// Uncancel undoes a cancellation, always (ADR 0066 addendum 2026-10-19;
+// ticket 15): the Event is published again, an ended one too, and works as
+// before it was cancelled, since the cancellation deleted and closed
+// nothing. Its Competitions cancelled with it go back to their earlier
+// status; held certificate jobs go on by themselves. The cancellation's
+// time, actor and reason are cleared; the publication's stay. Undoing on a
+// published Event answers it as it is; a draft is refused
+// (ErrNotCancelled).
+func (s *service) Uncancel(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error) {
+	e, err := s.statusChange(ctx, p, id)
+	if err != nil {
+		return Event{}, err
+	}
+	if e.Status == StatusCancelled {
+		changed, err := s.store.Uncancel(ctx, id)
+		if err != nil {
+			return Event{}, err
+		}
+		if !changed {
+			if e, err = s.store.Get(ctx, id); err != nil {
+				return Event{}, err
+			}
+			if e.Status == StatusCancelled {
+				return Event{}, ErrConflict
+			}
+		}
+	}
+	if e.Status == StatusDraft {
+		return Event{}, ErrNotCancelled
+	}
+	e, err = s.store.Get(ctx, id)
+	return s.detail(ctx, e, err)
+}

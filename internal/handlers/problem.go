@@ -31,6 +31,8 @@ func eventStatusCode(err error) string {
 		return "event_has_competitors"
 	case errors.Is(err, event.ErrEnded):
 		return "event_ended"
+	case errors.Is(err, event.ErrNotCancelled):
+		return "event_not_cancelled"
 	default:
 		return ""
 	}

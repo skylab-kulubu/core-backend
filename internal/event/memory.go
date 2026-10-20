@@ -764,6 +764,18 @@ func (s *MemoryStore) Cancel(_ context.Context, id uuid.UUID, by *uuid.UUID, rea
 	return true, nil
 }
 
+func (s *MemoryStore) Uncancel(_ context.Context, id uuid.UUID) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[id]
+	if !ok || e.ArchivedAt != nil || e.Status != StatusCancelled {
+		return false, nil
+	}
+	e.Status, e.CancelledAt, e.CancelledBy, e.CancelReason, e.UpdatedAt = StatusPublished, nil, nil, "", time.Now().UTC()
+	s.byID[id] = e
+	return true, nil
+}
+
 func (s *MemoryStore) Unpublish(_ context.Context, id uuid.UUID) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

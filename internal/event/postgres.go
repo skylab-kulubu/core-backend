@@ -1026,6 +1026,37 @@ func (s *PostgresStore) Cancel(ctx context.Context, id uuid.UUID, by *uuid.UUID,
 	return true, nil
 }
 
+// Uncancel writes the legacy active column as the Event's derived active,
+// the reverse of Cancel's false, for a release rolled back to.
+func (s *PostgresStore) Uncancel(ctx context.Context, id uuid.UUID) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
+		UPDATE events e SET status = 'published',
+			active = (`+endsAtSQL+` IS NULL OR `+endsAtSQL+` > now()),
+			cancelled_at = NULL, cancelled_by = NULL, cancel_reason = '', updated_at = now()
+		WHERE e.id = $1 AND e.archived_at IS NULL AND e.status = 'cancelled'`, id)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE competitions SET status = status_before_event_cancel, cancel_reason = '',
+			status_before_event_cancel = NULL, cancelled_with_event_at = NULL, updated_at = now()
+		WHERE event_id = $1 AND cancelled_with_event_at IS NOT NULL`, id); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *PostgresStore) Unpublish(ctx context.Context, id uuid.UUID) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE events e SET status = 'draft', active = false, updated_at = now()
