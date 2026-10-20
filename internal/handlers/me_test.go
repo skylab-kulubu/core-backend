@@ -152,19 +152,21 @@ func TestGetMeReturnsSchoolEmail(t *testing.T) {
 	}
 }
 
-type recMail struct {
+type recWake struct {
 	n int
 }
 
-func (r *recMail) Welcome(_ context.Context, _ user.User) {
+func (r *recWake) Wake() {
 	r.n++
 }
 
-func TestGetMeWelcomeOnlyOnCreate(t *testing.T) {
+// JIT sends no Welcome mail: it wakes the user sync once, when it opens the
+// person's row, and the sync decides on the mail (docs/user-sync.md).
+func TestGetMeWakesTheUserSyncOnlyOnCreate(t *testing.T) {
 	t.Parallel()
 	store := user.NewMemoryStore()
 	svc := user.NewService(store)
-	rec := &recMail{}
+	rec := &recWake{}
 	jit := middlewares.NewJIT(svc, rec)
 	me := NewMeHandler(svc, nil)
 	id := uuid.MustParse("55555555-5555-5555-5555-555555555555")
@@ -189,7 +191,7 @@ func TestGetMeWelcomeOnlyOnCreate(t *testing.T) {
 		}
 	}
 	if rec.n != 1 {
-		t.Fatalf("welcome count %d", rec.n)
+		t.Fatalf("wake count %d", rec.n)
 	}
 }
 
