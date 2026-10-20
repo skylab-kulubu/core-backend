@@ -212,7 +212,11 @@ func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
 	e.UpdatedAt = time.Now().UTC()
 	// An update writes neither the status nor what goes with it.
 	e.Status, e.PublishedAt, e.PublishedBy = existing.Status, existing.PublishedAt, existing.PublishedBy
-	e.CancelledAt, e.CancelledBy, e.CancelReason = existing.CancelledAt, existing.CancelledBy, existing.CancelReason
+	reason := existing.CancelReason
+	if e.cancelReasonSent && existing.Status == StatusCancelled {
+		reason = e.CancelReason
+	}
+	e.CancelledAt, e.CancelledBy, e.CancelReason, e.cancelReasonSent = existing.CancelledAt, existing.CancelledBy, reason, false
 	e.CopiedFromEventID = existing.CopiedFromEventID
 	e.Images = existing.Images
 	e.ImageURLs = existing.ImageURLs

@@ -20,6 +20,7 @@ ADR 0066 addendum (2026-10-19), ticket 13. `PUT` and `PATCH` on `/v1/events/{id}
 | `name`, `location`, `ownerTeam` | may not be cleared: `400` |
 | `ranked` | `null` is `400` (send `false`) |
 
+- `cancelReason` edits a cancelled Event's public reason; on any other Event it is ignored ([event-cancel.md](event-cancel.md)).
 - `id`, `status` and `active` in the body are not read: the status changes only through its endpoints (`publish`, `unpublish`, …) and `active` is derived.
 - A value of the wrong type is `400`; so is `attendanceRule: "ratio"` without a ratio (sent or stored). Rights are checked before the body: who may not edit the Event gets `403` whatever it sends.
 - The season is not in the body: `POST /v1/seasons/{id}/events/{eventId}` and `DELETE /v1/events/{id}/season` set it.
