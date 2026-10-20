@@ -36,7 +36,13 @@ type Service interface {
 	// (ErrEnded). The reason is optional and public.
 	Cancel(ctx context.Context, p authz.Principal, id uuid.UUID, reason string) (Event, error)
 	Create(ctx context.Context, p authz.Principal, in Event) (Event, error)
+	// Update overwrites the Event's fields with in's; a nil season, door
+	// staff, extra forms or mail list keeps the stored one.
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Event) (Event, error)
+	// Patch writes the fields patch sent and keeps every other (PUT and
+	// PATCH /v1/events/{id}, ticket 13). Its form short links are bound
+	// again only when it sends a form, an alias or the name.
+	Patch(ctx context.Context, p authz.Principal, id uuid.UUID, patch Patch) (Event, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
 	AddImages(ctx context.Context, p authz.Principal, id uuid.UUID, ids []uuid.UUID) (Event, error)
@@ -274,12 +280,39 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 }
 
 func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Event) (Event, error) {
+	return s.update(ctx, p, id, func(existing Event) (Event, error) {
+		if in.SeasonID == nil {
+			in.SeasonID = existing.SeasonID
+		}
+		if in.DoorStaffIDs == nil {
+			in.DoorStaffIDs = existing.DoorStaffIDs
+		}
+		if in.ExtraFormURLs == nil {
+			in.ExtraFormURLs = existing.ExtraFormURLs
+			if in.FormAlias == "" {
+				in.FormAlias = existing.FormAlias
+			}
+		}
+		if in.MailListID == nil {
+			in.MailListID = existing.MailListID
+		}
+		return in, nil
+	}, true)
+}
+
+// update writes the Event build makes of the stored one, once p may edit
+// it. syncForms re-binds the Event's form short links after the write.
+func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, build func(existing Event) (Event, error), syncForms bool) (Event, error) {
 	existing, err := s.store.Get(ctx, id)
 	if err != nil {
 		return Event{}, err
 	}
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Update) {
 		return Event{}, ErrForbidden
+	}
+	in, err := build(existing)
+	if err != nil {
+		return Event{}, err
 	}
 	if in.OwnerTeam != existing.OwnerTeam && !s.authz.Allow(p, resource(in.OwnerTeam), authz.Update) {
 		return Event{}, ErrForbidden
@@ -292,20 +325,8 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 		return Event{}, err
 	}
 	in.ID = existing.ID
-	if in.SeasonID == nil {
-		in.SeasonID = existing.SeasonID
-	}
-	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Assign) || in.DoorStaffIDs == nil {
+	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Assign) {
 		in.DoorStaffIDs = existing.DoorStaffIDs
-	}
-	if in.ExtraFormURLs == nil {
-		in.ExtraFormURLs = existing.ExtraFormURLs
-		if in.FormAlias == "" {
-			in.FormAlias = existing.FormAlias
-		}
-	}
-	if in.MailListID == nil {
-		in.MailListID = existing.MailListID
 	}
 	newCover := in.CoverImageID != nil && (existing.CoverImageID == nil || *existing.CoverImageID != *in.CoverImageID)
 	if newCover {
@@ -340,7 +361,7 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 		}
 	}
 	updated, err := s.store.Update(ctx, in)
-	if err == nil {
+	if err == nil && syncForms {
 		s.syncFormLinks(ctx, updated.ID, formLinksOf(updated))
 	}
 	return s.detail(ctx, updated, err)
