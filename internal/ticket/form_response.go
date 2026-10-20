@@ -66,7 +66,8 @@ type FormResponseResult struct {
 // RecordFormResponse writes the Ticket an accepted answer earns on every
 // current Event that lists the form: a REGISTERED one for a person who
 // answered signed in, a guest one for the e-mail a guest typed. An answer
-// that is pending or declined, or that carries neither, writes nothing, and
+// that is pending or declined, or that carries neither (a guest without an
+// e-mail counts as neither), writes nothing, and
 // a report sent again finds the Tickets already there. A declined answer
 // does not take back a Ticket written earlier: Tickets cannot be cancelled.
 //
@@ -95,7 +96,12 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		}
 	case r.Guest != nil:
 		guest = normalizeGuest(*r.Guest)
-		if guest.FirstName == "" || guest.LastName == "" || guest.Email == "" {
+		if guest.Email == "" {
+			// Account erasure removed the address from a report Forms still
+			// held (docs/account-erasure-command.md §10): nobody to ticket.
+			return FormResponseResult{Outcome: FormResponseNoRespondent}, nil
+		}
+		if guest.FirstName == "" || guest.LastName == "" {
 			return FormResponseResult{}, ErrInvalid
 		}
 	default:
@@ -144,7 +150,9 @@ func (s *service) CanRecordFormResponse(p authz.Principal) bool {
 }
 
 func (s *service) eventsListingForm(ctx context.Context, formID uuid.UUID) ([]uuid.UUID, error) {
-	events, err := s.events.List(ctx, "", false)
+	// A draft's form writes Tickets too (ADR 0066): its editors linked the
+	// form and shared it; an answer not written now would be lost.
+	events, err := s.events.ListIncludingDrafts(ctx, "")
 	if err != nil {
 		return nil, err
 	}

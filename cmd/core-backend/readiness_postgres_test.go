@@ -45,27 +45,32 @@ func TestHealthcheckFollowsThePostgresDatabase(t *testing.T) {
 	}
 	waitFor(t, "the first healthy check", func() bool { code, _ := check(); return code == 0 })
 
-	admin, err := pgx.Connect(context.Background(), strings.Replace(url, "/coretest?", "/postgres?", 1))
+	// The test's own database, by whatever name the fixture gave it.
+	name := pool.Config().ConnConfig.Database
+	quoted := pgx.Identifier{name}.Sanitize()
+	adminConfig := pool.Config().ConnConfig.Copy()
+	adminConfig.Database = "postgres"
+	admin, err := pgx.ConnectConfig(context.Background(), adminConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer admin.Close(context.Background())
-	exec := func(sql string) {
+	exec := func(sql string, args ...any) {
 		t.Helper()
-		if _, err := admin.Exec(context.Background(), sql); err != nil {
+		if _, err := admin.Exec(context.Background(), sql, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// The database goes away for core: no new connection, the open ones
 	// ended.
-	exec(`ALTER DATABASE coretest ALLOW_CONNECTIONS false`)
-	exec(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'coretest'`)
+	exec(`ALTER DATABASE ` + quoted + ` ALLOW_CONNECTIONS false`)
+	exec(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1`, name)
 	code, why := check()
 	if code != 1 || !strings.Contains(why, "503") {
 		t.Fatalf("database away: exit %d %q, want 1 and a 503", code, why)
 	}
 
-	exec(`ALTER DATABASE coretest ALLOW_CONNECTIONS true`)
+	exec(`ALTER DATABASE ` + quoted + ` ALLOW_CONNECTIONS true`)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		code, why = check()

@@ -1,9 +1,11 @@
 package identity_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -198,9 +200,12 @@ type seatKeycloak struct {
 	effective       map[string][]string // user id → forms role names
 	people          []map[string]any
 	compositeStatus int
+	// noClient is a realm without the forms client.
+	noClient bool
 
-	mu       sync.Mutex
-	searches []string
+	mu        sync.Mutex
+	searches  []string
+	roleReads int
 }
 
 func (f *seatKeycloak) directory(t *testing.T) *identity.Keycloak {
@@ -215,6 +220,10 @@ func (f *seatKeycloak) directory(t *testing.T) *identity.Keycloak {
 		path := r.URL.EscapedPath()
 		switch {
 		case path == realm+"/clients" && r.URL.Query().Get("clientId") == "forms":
+			if f.noClient {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
 			_, _ = w.Write([]byte(`[{"id":"c-forms","clientId":"forms"}]`))
 		case strings.HasPrefix(path, realm+"/clients/c-forms/roles/"):
 			// role/groups and role/users: direct mappings only, none here.
@@ -230,6 +239,9 @@ func (f *seatKeycloak) directory(t *testing.T) *identity.Keycloak {
 				_, _ = w.Write([]byte(`{"error":"unknown_error"}`))
 				return
 			}
+			f.mu.Lock()
+			f.roleReads++
+			f.mu.Unlock()
 			id := strings.TrimSuffix(strings.TrimPrefix(path, realm+"/users/"), "/role-mappings/clients/c-forms/composite")
 			out := []map[string]any{}
 			for _, name := range f.effective[id] {
@@ -284,5 +296,85 @@ func TestKeycloakSeatSearchFailsWhenTheRoleReadFails(t *testing.T) {
 	svc := identity.NewService(fake.directory(t), user.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()))
 	if got, err := svc.ListUsers(context.Background(), privileged(), "seat", seat); err == nil {
 		t.Fatalf("seat search = %+v, want an error", got)
+	}
+}
+
+// A person disabled in Keycloak gets no token, so holds no seat: Keycloak's
+// search finds them, but they are left out without a role read, and core's
+// own profile search does not bring them back.
+func TestKeycloakSeatSearchLeavesOutDisabledPeople(t *testing.T) {
+	fake, holder, _ := newSeatKeycloak()
+	disabled := uuid.New()
+	fake.effective[disabled.String()] = []string{"skyforms:access"}
+	fake.people = append(fake.people, map[string]any{"id": disabled.String(), "username": "gone", "email": "gone@example.test", "firstName": "Seat", "lastName": "Gone", "enabled": false})
+	store := user.NewMemoryStore()
+	if _, _, err := store.Upsert(context.Background(), user.User{ID: disabled, Email: "gone@example.test", FirstName: "Seat", LastName: "Gone"}); err != nil {
+		t.Fatal(err)
+	}
+	svc := identity.NewService(fake.directory(t), store, authz.NewAuthorizer(authz.DefaultPolicy()))
+	got, err := svc.ListUsers(context.Background(), privileged(), "seat", seat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != holder {
+		t.Fatalf("seat search = %+v, want the enabled holder only", got)
+	}
+	if fake.roleReads != 2 {
+		t.Fatalf("role reads = %d, want 2 (none for the disabled person)", fake.roleReads)
+	}
+}
+
+func TestService_ListUsersSeatSearchLeavesOutDisabledPeople(t *testing.T) {
+	t.Parallel()
+	r := newSeatRealm(t)
+	if err := r.dir.DisableUser(context.Background(), r.ids["subgroup"]); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.svc.ListUsers(context.Background(), privileged(), "seat", seat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"clientcomposite", "direct", "group", "realmcomposite", "star"}
+	if names := r.names(t, got); !slices.Equal(names, want) {
+		t.Fatalf("seat holders = %v, want %v", names, want)
+	}
+}
+
+// A realm without the client: nobody holds its roles, so the answer is
+// empty, but that is a configuration fault, not people missing, and core
+// says so in its log (naming the client, never a person).
+func TestKeycloakSeatSearchWarnsWhenTheClientIsMissing(t *testing.T) {
+	fake, _, _ := newSeatKeycloak()
+	fake.noClient = true
+	dir := fake.directory(t)
+	if _, err := dir.EffectiveClientRoles(context.Background(), uuid.New(), "forms"); !errors.Is(err, identity.ErrClientNotFound) || !errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("missing client: %v, want ErrClientNotFound (an ErrNotFound)", err)
+	}
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	svc := identity.NewService(dir, user.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()))
+	got, err := svc.ListUsers(context.Background(), privileged(), "seat", seat)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("seat search = %+v %v, want none", got, err)
+	}
+	if line := logs.String(); strings.Count(line, `no client "forms"`) != 1 || strings.Contains(line, "@example.test") {
+		t.Fatalf("log %q, want one warning naming the client", line)
+	}
+}
+
+// A query of "*" alone names nobody: Keycloak's search is not read as
+// "everyone", and no one's roles are read.
+func TestKeycloakSeatSearchStarAloneFindsNobody(t *testing.T) {
+	t.Parallel()
+	fake, _, _ := newSeatKeycloak()
+	svc := identity.NewService(fake.directory(t), user.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()))
+	got, err := svc.ListUsers(context.Background(), privileged(), "*", seat)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("seat search = %+v %v, want none", got, err)
+	}
+	if fake.roleReads != 0 {
+		t.Fatalf("role reads = %d, want 0", fake.roleReads)
 	}
 }

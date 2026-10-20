@@ -65,12 +65,19 @@ const (
 type Queue interface {
 	// Enqueue queues change, due at once. A change already waiting for the
 	// same person, Group and action is not queued again. When the opposite
-	// change for the same person and Group waits unclaimed (no pass is
-	// sending it), it is removed and change is not queued: an add and a
-	// removal before either mail went leave nothing to tell.
+	// change for the same person and Group waits unsent (never claimed,
+	// never failed), it is removed and change is not queued: an add and a
+	// removal before either mail went leave nothing to tell. An opposite
+	// change that may have reached the person (being sent, failed once, or
+	// left by a core that stopped mid-send) stays, and change is queued
+	// after it.
 	Enqueue(ctx context.Context, change Change) (Enqueued, error)
 	// Claim takes up to limit due changes, oldest due first, and holds them
 	// for lease: another pass (another core) does not take them meanwhile.
+	// For one person and Group the later change wins: a change a later
+	// opposite one supersedes is dropped once no pass is sending it, and a
+	// change is not taken while its opposite waits. So the last mail tells
+	// the current state.
 	Claim(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]Change, error)
 	// Complete removes a claimed change whose mail is done with.
 	Complete(ctx context.Context, claimed Change) error
@@ -104,7 +111,7 @@ func (q *MemoryQueue) Enqueue(_ context.Context, change Change) (Enqueued, error
 	same := func(c Change) bool { return c.SubjectID == change.SubjectID && c.GroupPath == change.GroupPath }
 	before := len(q.changes)
 	q.changes = slices.DeleteFunc(q.changes, func(c Change) bool {
-		return same(c) && c.Action != change.Action && c.ClaimedAt.IsZero()
+		return same(c) && c.Action != change.Action && c.ClaimedAt.IsZero() && c.Attempts == 0
 	})
 	if len(q.changes) < before {
 		return EnqueuedCancelled, nil
@@ -123,9 +130,27 @@ func (q *MemoryQueue) Enqueue(_ context.Context, change Change) (Enqueued, error
 func (q *MemoryQueue) Claim(_ context.Context, now time.Time, lease time.Duration, limit int) ([]Change, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	opposite := func(a, b Change) bool {
+		return a.SubjectID == b.SubjectID && a.GroupPath == b.GroupPath && a.Action != b.Action
+	}
+	later := func(a, b Change) bool {
+		if c := a.OccurredAt.Compare(b.OccurredAt); c != 0 {
+			return c > 0
+		}
+		return a.ID.String() > b.ID.String()
+	}
+	kept := q.changes[:0:0]
+	for _, c := range q.changes {
+		sending := !c.ClaimedAt.IsZero() && c.NextAttemptAt.After(now)
+		superseded := slices.ContainsFunc(q.changes, func(o Change) bool { return opposite(o, c) && later(o, c) })
+		if !superseded || sending {
+			kept = append(kept, c)
+		}
+	}
+	q.changes = kept
 	due := make([]int, 0)
 	for i, c := range q.changes {
-		if !c.NextAttemptAt.After(now) {
+		if !c.NextAttemptAt.After(now) && !slices.ContainsFunc(q.changes, func(o Change) bool { return opposite(o, c) }) {
 			due = append(due, i)
 		}
 	}

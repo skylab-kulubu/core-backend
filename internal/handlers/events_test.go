@@ -39,6 +39,8 @@ func eventServiceApp(t *testing.T, ident authn.Identity, svc event.Service) *fib
 	app.Patch("/v1/events/:id", h.Update)
 	app.Delete("/v1/events/:id", h.Delete)
 	app.Post("/v1/events/:id/restore", h.Restore)
+	app.Post("/v1/events/:id/publish", h.Publish)
+	app.Post("/v1/events/:id/unpublish", h.Unpublish)
 	app.Post("/v1/events/:id/images", h.AddImages)
 	app.Delete("/v1/events/:id/images", h.RemoveImages)
 	return app
@@ -441,8 +443,20 @@ func TestEventAnonymousListHidesInactive(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 3 {
+	// Without ?drafts=include the draft stays out for its editors too
+	// (ADR 0066): an older client would show it as a plain Event.
+	if len(listed) != 2 {
 		t.Fatalf("staff listed %+v", listed)
+	}
+	resp, err = staff.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events?drafts=include", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 3 {
+		t.Fatalf("staff listed with drafts %+v", listed)
 	}
 }
 

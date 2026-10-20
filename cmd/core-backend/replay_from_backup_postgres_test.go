@@ -95,9 +95,13 @@ func (s *replayService) reset(pending ...string) {
 func replayDatabase(t *testing.T, server *pgxpool.Pool, name string) (*pgxpool.Pool, string) {
 	t.Helper()
 	ctx := context.Background()
+	// Named after the test's own database: the server may be shared with
+	// other tests (testpostgres.ServerEnv).
+	name = server.Config().ConnConfig.Database + "_" + name
 	if _, err := server.Exec(ctx, `CREATE DATABASE `+name); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _, _ = server.Exec(ctx, `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`) })
 	dsn, err := url.Parse(server.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
@@ -317,7 +321,7 @@ func TestPostgresReplayFromBackupSendsTheSnapshotsAddressesToTheRestoredService(
 	}
 	forbidden := []string{"@example.com", "@example.org", "yildiz.edu.tr", "lovelace", "turing", "hopper", "early.bird",
 		"postgres:postgres", "s3cr3t", "replay-token",
-		serverAddress.Host, "127.0.0.1", "user=postgres", "coretest", "core_at_t", "keycloak_at_t", "missing_db"}
+		serverAddress.Host, "127.0.0.1", "user=postgres", server.Config().ConnConfig.Database, "core_at_t", "keycloak_at_t", "missing_db"}
 	for _, p := range people {
 		forbidden = append(forbidden, p.subject.String())
 	}

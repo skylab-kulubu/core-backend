@@ -55,6 +55,8 @@ func TestFormResponseLogsTheReportButNotWhoAnswered(t *testing.T) {
 		{`{"responseId":"` + uuid.NewString() + `","status":"accepted","userId":"` + member.String() + `"}`, fiber.StatusNoContent},
 		{`{"responseId":"` + uuid.NewString() + `","status":"pending","guest":{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com"}}`, fiber.StatusNoContent},
 		{`{"responseId":"` + uuid.NewString() + `","status":"ada@example.com","guest":{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com"}}`, fiber.StatusBadRequest},
+		// A guest report whose address account erasure removed (Forms §10).
+		{`{"responseId":"` + uuid.NewString() + `","status":"accepted","guest":{"firstName":"Ada","lastName":"Lovelace","email":null}}`, fiber.StatusNoContent},
 	} {
 		req := httptest.NewRequest(fiber.MethodPost, "/v1/forms/"+formID.String()+"/responses", strings.NewReader(step.body))
 		req.Header.Set("Content-Type", "application/json")
@@ -74,7 +76,7 @@ func TestFormResponseLogsTheReportButNotWhoAnswered(t *testing.T) {
 		}
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 4 {
+	if len(lines) != 5 {
 		t.Fatalf("log lines %q", lines)
 	}
 	type line struct {
@@ -91,6 +93,7 @@ func TestFormResponseLogsTheReportButNotWhoAnswered(t *testing.T) {
 		{Status: "accepted", Outcome: "recorded", TicketsWritten: 1},
 		{Status: "pending", Outcome: "not_accepted"},
 		{Status: "unknown", Outcome: "invalid"},
+		{Status: "accepted", Outcome: "no_respondent"},
 	}
 	for i, raw := range lines {
 		var got line

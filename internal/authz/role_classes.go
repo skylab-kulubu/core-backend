@@ -118,7 +118,8 @@ func AdminRoles() []RoleRef {
 	}
 	for _, role := range []string{RoleAuditRead, "users:read",
 		// Service accounts' roles: never mapped to a Group.
-		"media:attach", "ticket:forms", "url:forms", "consent:record", "consent:audience:read", "audience:read"} {
+		"media:attach", "ticket:forms", "url:forms", "consent:record", "consent:audience:read", "audience:read",
+		"communication-preferences:read"} {
 		out = append(out, RoleRef{Client: "core", Role: role})
 	}
 	for _, role := range []string{"client:admin", RoleContentWrite, RoleCMSAccess, "schema:sync"} {

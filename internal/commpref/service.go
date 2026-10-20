@@ -44,6 +44,11 @@ type Service struct {
 	roots  []string
 	now    func() time.Time
 
+	// trackingMode is TrackingMode's; onWithdrawn hears of a write that
+	// queued a tracking withdrawal.
+	trackingMode TrackingMode
+	onWithdrawn  func()
+
 	treeMu   sync.Mutex
 	cached   *Tree
 	cachedAt time.Time
@@ -165,6 +170,13 @@ type Screen struct {
 	Following []TeamRow `json:"following"`
 	// Followable are the publicly listed teams outside both lists.
 	Followable []TeamRef `json:"followable"`
+	// Tracking is the open and click tracking switch (hub ticket 16): no
+	// channel, no category of the lists above.
+	Tracking TrackingState `json:"tracking"`
+	// Partial marks a tracking-only change written while Keycloak did not
+	// answer: only tracking.enabled and tracking.mode are read, the rest is
+	// empty; read the screen again.
+	Partial bool `json:"partial,omitempty"`
 }
 
 func cell(e Explicit, v Value, c Category) Cell {
@@ -192,7 +204,14 @@ func (s *Service) Mine(ctx context.Context, person uuid.UUID) (Screen, error) {
 	if err != nil {
 		return Screen{}, err
 	}
-	return screen(tree, tree.Membership(identity.GroupPaths(groups)), settings), nil
+	return s.screen(tree, tree.Membership(identity.GroupPaths(groups)), settings), nil
+}
+
+// screen is the screen with its tracking switch.
+func (s *Service) screen(tree *Tree, m Membership, settings []Setting) Screen {
+	out := screen(tree, m, settings)
+	out.Tracking = trackingState(settings, s.TrackingMode(), m.Member)
+	return out
 }
 
 func screen(tree *Tree, m Membership, settings []Setting) Screen {
@@ -294,7 +313,9 @@ func markShown(r TeamRow, shown map[string]bool) {
 }
 
 // Update writes a person's changes from the Account center and answers the
-// new screen. A team the person turns on or off must be one they may see:
+// new screen. A change of Tracking() (e-mail channel, true or false, never
+// forgotten) is the tracking switch; turning it off queues the withdrawal
+// SkyMail must hear of, in the same transaction. A team the person turns on or off must be one they may see:
 // one they are in, or a listed one (Karar D7, O2); any other, hidden or
 // not there, is ErrUnknownTeam alike. Forgetting a choice is always
 // allowed, so a hidden or deleted team's row can be cleared.
@@ -302,7 +323,7 @@ func (s *Service) Update(ctx context.Context, person uuid.UUID, changes []Change
 	if !s.Enabled() {
 		return Screen{}, ErrDisabled
 	}
-	if len(changes) == 0 || len(changes) > MaxChanges {
+	if len(changes) == 0 {
 		return Screen{}, ErrInvalid
 	}
 	type key struct {
@@ -310,12 +331,30 @@ func (s *Service) Update(ctx context.Context, person uuid.UUID, changes []Change
 		c  Category
 	}
 	seen := map[key]bool{}
+	withdrawn := false
+	news := 0
 	for _, change := range changes {
 		k := key{change.Channel, change.Category}
+		if change.Category == Tracking() {
+			if change.Channel != ChannelEmail || change.Enabled == nil || seen[k] {
+				return Screen{}, ErrInvalid
+			}
+			seen[k] = true
+			withdrawn = withdrawn || !*change.Enabled
+			continue
+		}
 		if !change.Channel.valid() || !change.Category.Valid() || seen[k] {
 			return Screen{}, ErrInvalid
 		}
 		seen[k] = true
+		news++
+	}
+	// MaxChanges bounds the News items; the tracking switch comes on top.
+	if news > MaxChanges {
+		return Screen{}, ErrInvalid
+	}
+	if news == 0 {
+		return s.updateTracking(ctx, person, changes, withdrawn)
 	}
 	tree, err := s.tree(ctx)
 	if err != nil {
@@ -347,11 +386,54 @@ func (s *Service) Update(ctx context.Context, person uuid.UUID, changes []Change
 	if err := s.store.Apply(ctx, person, changes, SourceAccountCenter, s.now().UTC()); err != nil {
 		return Screen{}, err
 	}
+	if withdrawn && s.onWithdrawn != nil {
+		s.onWithdrawn()
+	}
 	settings, err := s.store.List(ctx, person)
 	if err != nil {
 		return Screen{}, err
 	}
-	return screen(tree, m, settings), nil
+	return s.screen(tree, m, settings), nil
+}
+
+// updateTracking writes a change of the tracking switch alone. It needs no
+// Keycloak read (nothing about a team is checked), so a person's objection
+// is written while Keycloak is down; the screen is then answered partial.
+func (s *Service) updateTracking(ctx context.Context, person uuid.UUID, changes []Change, withdrawn bool) (Screen, error) {
+	if err := s.store.Apply(ctx, person, changes, SourceAccountCenter, s.now().UTC()); err != nil {
+		return Screen{}, err
+	}
+	if withdrawn && s.onWithdrawn != nil {
+		s.onWithdrawn()
+	}
+	settings, err := s.store.List(ctx, person)
+	if err != nil {
+		return Screen{}, err
+	}
+	tree, err := s.tree(ctx)
+	if err == nil {
+		var groups []identity.Group
+		if groups, err = s.dir.GroupsForUser(ctx, person); err == nil {
+			return s.screen(tree, tree.Membership(identity.GroupPaths(groups)), settings), nil
+		}
+	}
+	return partialScreen(settings, s.TrackingMode()), nil
+}
+
+// partialScreen is the answer to a tracking change written while Keycloak
+// did not answer: the switch as written, no team and no News switch. Its
+// effective is false until the screen is read again (membership unknown).
+func partialScreen(settings []Setting, mode TrackingMode) Screen {
+	return Screen{
+		Channels:   slices.Clone(Channels),
+		Master:     ChannelCells{},
+		Club:       KindCells{Duyuru: ChannelCells{}, Haber: ChannelCells{}},
+		Teams:      []TeamRow{},
+		Following:  []TeamRow{},
+		Followable: []TeamRef{},
+		Tracking:   trackingState(settings, mode, false),
+		Partial:    true,
+	}
 }
 
 // LinkCategory is one category a link names, with how the page shows it.

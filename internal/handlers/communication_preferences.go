@@ -82,13 +82,20 @@ type communicationPreferenceItem struct {
 	Enabled  json.RawMessage `json:"enabled"`
 }
 
+type communicationTrackingItem struct {
+	Enabled json.RawMessage `json:"enabled"`
+}
+
 type communicationPreferenceBody struct {
-	Items []communicationPreferenceItem `json:"items"`
+	Items    []communicationPreferenceItem `json:"items"`
+	Tracking *communicationTrackingItem    `json:"tracking"`
 }
 
 // Update is PUT /v1/users/me/communication-preferences: {"items":
-// [{"category", "channel", "enabled": true|false|null}]}, null forgetting
-// the choice. It answers the new screen.
+// [{"category", "channel", "enabled": true|false|null}], "tracking":
+// {"enabled": true|false}}, null forgetting the choice, either part
+// optional but not both. "tracking" is the open and click tracking switch
+// (false turns it off and tells SkyMail). It answers the new screen.
 func (h *CommunicationPreferenceHandler) Update(c fiber.Ctx) error {
 	if !h.svc.Enabled() {
 		return communicationPreferenceError(c, commpref.ErrDisabled)
@@ -100,10 +107,22 @@ func (h *CommunicationPreferenceHandler) Update(c fiber.Ctx) error {
 	var body communicationPreferenceBody
 	decoder := json.NewDecoder(bytes.NewReader(c.Body()))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&body); err != nil || len(body.Items) == 0 || len(body.Items) > commpref.MaxChanges {
+	if err := decoder.Decode(&body); err != nil || (len(body.Items) == 0 && body.Tracking == nil) || len(body.Items) > commpref.MaxChanges {
 		return communicationPreferenceError(c, commpref.ErrInvalid)
 	}
-	changes := make([]commpref.Change, 0, len(body.Items))
+	changes := make([]commpref.Change, 0, len(body.Items)+1)
+	if body.Tracking != nil {
+		var on bool
+		switch strings.TrimSpace(string(body.Tracking.Enabled)) {
+		case "true":
+			on = true
+		case "false":
+		default:
+			// Absent, null or anything else: the switch has no "forget".
+			return communicationPreferenceError(c, commpref.ErrInvalid)
+		}
+		changes = append(changes, commpref.Change{Channel: commpref.ChannelEmail, Category: commpref.Tracking(), Enabled: &on})
+	}
 	for _, item := range body.Items {
 		category, err := commpref.ParseCategory(item.Category)
 		if err != nil {

@@ -174,6 +174,11 @@ type Deps struct {
 	// 503.
 	Audience *commpref.Audience
 
+	// TrackingWithdrawalMetrics are the tracking withdrawals' counters and
+	// backlog (docs/communication-preferences.md, "Tracking"), served on
+	// /v1/metrics. Nil leaves them out.
+	TrackingWithdrawalMetrics interface{ Prometheus() string }
+
 	// MediaDecodeMetrics are the media decode budget's state and counters
 	// (docs/media-lifecycle.md, "Decode budget"), served on /v1/metrics.
 	// Nil leaves them out.
@@ -257,7 +262,7 @@ func New(deps Deps) *fiber.App {
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
-		deps.TeamDelegationMetrics != nil || deps.Readiness != nil {
+		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.Readiness != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -291,6 +296,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.TeamDelegationMetrics != nil {
 				text += deps.TeamDelegationMetrics.Prometheus()
+			}
+			if deps.TrackingWithdrawalMetrics != nil {
+				text += deps.TrackingWithdrawalMetrics.Prometheus()
 			}
 			text += deps.Readiness.Prometheus()
 			return c.SendString(text)
@@ -381,8 +389,15 @@ func New(deps Deps) *fiber.App {
 	// the permission (docs/media-lifecycle.md). The budget follows the
 	// opener's address, like the public certificate routes.
 	app.Get("/v1/media/:id/content", perClientLimit(trustedProxies), mediaH.Content)
+	// The internal routes answer the public edge 404 before any token is
+	// read (ADR-0016); the token checks behind stay the boundary.
+	app.Use(middlewares.InternalRoutePrefix, middlewares.InternalRouteGuard())
 	app.Use(middlewares.Bearer(parseToken))
 	app.Use(middlewares.AccountAccessGate(deps.AccountAccessGate, deps.AccountAccessMetrics))
+	// SkyMail's service account with communication-preferences:read: whom a
+	// send may track (docs/communication-preferences.md, "Tracking"). Before
+	// the Group overage step and JIT: a service account has neither.
+	app.Post(handlers.TrackingResolvePath, handlers.NewTrackingResolveHandler(deps.Audience).Resolve)
 	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Get("/v1/go/:alias/:channel", urls.RedirectChannel)
 	// Before JIT and every product route: a Group overage token gets its
@@ -475,6 +490,8 @@ func New(deps Deps) *fiber.App {
 	app.Patch("/v1/events/:id", events.Update)
 	app.Delete("/v1/events/:id", events.Delete)
 	app.Post("/v1/events/:id/restore", events.Restore)
+	app.Post("/v1/events/:id/publish", events.Publish)
+	app.Post("/v1/events/:id/unpublish", events.Unpublish)
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)
 	app.Post("/v1/events/:id/files", events.AddFiles(event.Files))

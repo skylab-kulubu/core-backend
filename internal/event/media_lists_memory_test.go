@@ -82,7 +82,7 @@ func TestMemoryStoreListsAndCountsTheFilesItCanServe(t *testing.T) {
 	}
 
 	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()))
-	detail, err := svc.Get(ctx, created.ID)
+	detail, err := svc.Get(ctx, nil, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestMemoryStoreAnswersAVideosPoster(t *testing.T) {
 	}
 
 	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()), "https://cdn.example.test")
-	detail, err := svc.Get(ctx, created.ID)
+	detail, err := svc.Get(ctx, nil, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestMemoryStoreAnswersAVideosPoster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if published, _ := svc.Get(ctx, cleared.ID); published.Videos[1].Poster != nil {
+	if published, _ := svc.Get(ctx, nil, cleared.ID); published.Videos[1].Poster != nil {
 		t.Fatalf("a cleared poster is still answered: %+v", published.Videos[1].Poster)
 	}
 }
@@ -259,7 +259,7 @@ func TestAPosterRacingAReplaceIsCheckedAsANewLink(t *testing.T) {
 	if !errors.As(err, &refusal) || !errors.Is(err, event.ErrMediaTeamMismatch) || refusal.MediaID != shared.ID || refusal.Role != media.RoleEventVideoPoster {
 		t.Fatalf("setting the poster back after a racing replace: %v, want the Team media library's refusal", err)
 	}
-	detail, err := event.NewService(memory, az).Get(ctx, mine.ID)
+	detail, err := event.NewService(memory, az).Get(ctx, nil, mine.ID)
 	if err != nil || detail.Videos[0].Poster == nil || detail.Videos[0].Poster.ID != other.ID {
 		t.Fatalf("after the refusal the video's poster is %+v (err %v), want the racing one %s", detail.Videos[0].Poster, err, other.ID)
 	}

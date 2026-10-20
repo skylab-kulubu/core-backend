@@ -99,7 +99,7 @@ func TestMemoryStoreDerivesActive(t *testing.T) {
 		}
 		want[created.ID] = tc
 	}
-	all, err := store.List(ctx, "", false)
+	all, err := store.ListIncludingDrafts(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}

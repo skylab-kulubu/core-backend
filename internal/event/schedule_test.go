@@ -25,7 +25,7 @@ func TestService_DayAndSessionOwnerRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	days, err := svc.ListDays(ctx, ev.ID)
+	days, err := svc.ListDays(ctx, nil, ev.ID)
 	if err != nil || len(days) != 1 {
 		t.Fatalf("days %+v %v", days, err)
 	}
@@ -39,7 +39,7 @@ func TestService_DayAndSessionOwnerRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listed, err := svc.ListSessions(ctx, day.ID)
+	listed, err := svc.ListSessions(ctx, nil, day.ID)
 	if err != nil || len(listed) != 1 || listed[0].ID != sess.ID {
 		t.Fatalf("sessions %+v %v", listed, err)
 	}

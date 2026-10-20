@@ -21,9 +21,13 @@ type Store interface {
 	List(ctx context.Context, person uuid.UUID) ([]Setting, error)
 	// Apply writes changes in one transaction: a value replaces the
 	// category's row (or makes one), nil deletes it. Writing a person being
-	// erased or erased is ErrSubjectInactive.
+	// erased or erased is ErrSubjectInactive. A change of Tracking() also
+	// keeps its audit trail (a row when the value changes) and, when it
+	// turns tracking off, queues the withdrawal SkyMail must hear of.
 	Apply(ctx context.Context, person uuid.UUID, changes []Change, source Source, now time.Time) error
-	// EraseSubject deletes every row of person (account erasure).
+	// EraseSubject deletes every row of person (account erasure): the
+	// choices, a waiting tracking withdrawal and the tracking audit trail.
+	// It counts the choices.
 	EraseSubject(ctx context.Context, person uuid.UUID) (int64, error)
 	// Subjects are the people rows name.
 	Subjects(ctx context.Context) ([]uuid.UUID, error)
@@ -76,6 +80,12 @@ func (s *PostgresStore) Apply(ctx context.Context, person uuid.UUID, changes []C
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		for _, change := range changes {
 			c := change.Category
+			if c.Scope == ScopeTracking {
+				if err := applyTracking(ctx, tx, person, change, source, now); err != nil {
+					return err
+				}
+				continue
+			}
 			if change.Enabled == nil {
 				if _, err := tx.Exec(ctx, `
 					DELETE FROM communication_preferences
@@ -105,11 +115,23 @@ func (s *PostgresStore) Apply(ctx context.Context, person uuid.UUID, changes []C
 }
 
 func (s *PostgresStore) EraseSubject(ctx context.Context, person uuid.UUID) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM communication_preferences WHERE user_id = $1`, person)
+	var erased int64
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `DELETE FROM communication_preferences WHERE user_id = $1`, person)
+		if err != nil {
+			return err
+		}
+		erased = tag.RowsAffected()
+		if _, err := tx.Exec(ctx, `DELETE FROM communication_tracking_withdrawals WHERE user_id = $1`, person); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM communication_tracking_changes WHERE user_id = $1`, person)
+		return err
+	})
 	if err != nil {
 		return 0, fmt.Errorf("communication preferences: erase: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	return erased, nil
 }
 
 func (s *PostgresStore) Subjects(ctx context.Context) ([]uuid.UUID, error) {
@@ -184,6 +206,9 @@ type MemoryStore struct {
 	mu       sync.Mutex
 	rows     map[uuid.UUID]map[memoryKey]Setting
 	inactive map[uuid.UUID]bool
+	// withdrawals and audit are the tracking outbox and audit trail.
+	withdrawals map[uuid.UUID]Withdrawal
+	audit       []TrackingChange
 }
 
 type memoryKey struct {
@@ -192,7 +217,7 @@ type memoryKey struct {
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{rows: map[uuid.UUID]map[memoryKey]Setting{}, inactive: map[uuid.UUID]bool{}}
+	return &MemoryStore{rows: map[uuid.UUID]map[memoryKey]Setting{}, inactive: map[uuid.UUID]bool{}, withdrawals: map[uuid.UUID]Withdrawal{}}
 }
 
 // MarkInactive makes writes for person fail as for a person being erased.
@@ -229,11 +254,26 @@ func (m *MemoryStore) Apply(_ context.Context, person uuid.UUID, changes []Chang
 	}
 	for _, c := range changes {
 		key := memoryKey{c.Channel, c.Category}
+		previous, had := rows[key]
 		if c.Enabled == nil {
 			delete(rows, key)
 			continue
 		}
 		rows[key] = Setting{Channel: c.Channel, Category: c.Category, Enabled: *c.Enabled, Source: source, UpdatedAt: now}
+		if c.Category.Scope != ScopeTracking {
+			continue
+		}
+		if !had || previous.Enabled != *c.Enabled {
+			change := TrackingChange{Subject: person, Enabled: *c.Enabled, Source: source, ChangedAt: now}
+			if had {
+				was := previous.Enabled
+				change.Previous = &was
+			}
+			m.audit = append(m.audit, change)
+		}
+		if !*c.Enabled {
+			m.withdrawals[person] = Withdrawal{Subject: person, RequestedAt: now, NextAttemptAt: now}
+		}
 	}
 	return nil
 }
@@ -243,6 +283,8 @@ func (m *MemoryStore) EraseSubject(_ context.Context, person uuid.UUID) (int64, 
 	defer m.mu.Unlock()
 	n := int64(len(m.rows[person]))
 	delete(m.rows, person)
+	delete(m.withdrawals, person)
+	m.audit = slices.DeleteFunc(m.audit, func(c TrackingChange) bool { return c.Subject == person })
 	return n, nil
 }
 

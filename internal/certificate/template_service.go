@@ -196,9 +196,9 @@ func (s *service) PreviewTemplate(ctx context.Context, p authz.Principal, id uui
 }
 
 func (s *service) PreviewEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]byte, error) {
-	ev, err := s.events.Get(ctx, eventID)
+	ev, err := s.visibleEvent(ctx, p, eventID)
 	if err != nil {
-		return nil, mapEventError(err)
+		return nil, err
 	}
 	if !s.canReadWorkspace(p, ev.OwnerTeam) {
 		return nil, ErrForbidden
@@ -222,9 +222,9 @@ func (s *service) PreviewEvent(ctx context.Context, p authz.Principal, eventID u
 }
 
 func (s *service) ResolveTemplate(ctx context.Context, p authz.Principal, eventID uuid.UUID) (ResolvedTemplate, error) {
-	ev, err := s.events.Get(ctx, eventID)
+	ev, err := s.visibleEvent(ctx, p, eventID)
 	if err != nil {
-		return ResolvedTemplate{}, mapEventError(err)
+		return ResolvedTemplate{}, err
 	}
 	if !s.canReadWorkspace(p, ev.OwnerTeam) {
 		return ResolvedTemplate{}, ErrForbidden
@@ -268,7 +268,7 @@ func (s *service) ListBindings(ctx context.Context, p authz.Principal) ([]Bindin
 	}
 	out := make([]Binding, 0, len(bindings))
 	for _, binding := range bindings {
-		owner, _, err := s.bindingOwner(ctx, binding.Scope, binding.ScopeKey)
+		owner, _, err := s.bindingOwner(ctx, p, binding.Scope, binding.ScopeKey)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
@@ -323,7 +323,7 @@ func (s *service) SetBinding(ctx context.Context, p authz.Principal, in Binding)
 	if err != nil {
 		return Binding{}, err
 	}
-	owner, key, err := s.bindingOwner(ctx, in.Scope, in.ScopeKey)
+	owner, key, err := s.bindingOwner(ctx, p, in.Scope, in.ScopeKey)
 	if err != nil {
 		return Binding{}, err
 	}
@@ -346,7 +346,7 @@ func (s *service) ClearBinding(ctx context.Context, p authz.Principal, scope, sc
 	if s.templates == nil || !validScope(scope) || scope == ScopeClub {
 		return ErrInvalid
 	}
-	owner, key, err := s.bindingOwner(ctx, scope, scopeKey)
+	owner, key, err := s.bindingOwner(ctx, p, scope, scopeKey)
 	if err != nil {
 		return err
 	}
@@ -356,7 +356,10 @@ func (s *service) ClearBinding(ctx context.Context, p authz.Principal, scope, sc
 	return s.templates.DeleteBinding(ctx, scope, key)
 }
 
-func (s *service) bindingOwner(ctx context.Context, scope, key string) (string, string, error) {
+// bindingOwner is the Owner team and the stored key of a binding's scope. An
+// Event scope names a current Event p may see: a draft p may not see is
+// ErrNotFound, like its other certificate paths.
+func (s *service) bindingOwner(ctx context.Context, p authz.Principal, scope, key string) (string, string, error) {
 	switch scope {
 	case ScopeClub:
 		return "", "SKY_LAB", nil
@@ -371,9 +374,9 @@ func (s *service) bindingOwner(ctx context.Context, scope, key string) (string, 
 		if err != nil {
 			return "", "", ErrInvalid
 		}
-		ev, err := s.events.Get(ctx, id)
+		ev, err := s.visibleEvent(ctx, p, id)
 		if err != nil {
-			return "", "", mapEventError(err)
+			return "", "", err
 		}
 		return ev.OwnerTeam, id.String(), nil
 	default:

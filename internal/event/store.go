@@ -20,7 +20,13 @@ var (
 )
 
 type Store interface {
+	// List reads the current Events, drafts left out (ADR 0066): a list
+	// that may show a draft reads ListIncludingDrafts and decides who sees
+	// each one (VisibleTo).
 	List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error)
+	// ListIncludingDrafts reads the current Events in every status.
+	ListIncludingDrafts(ctx context.Context, ownerTeam string) ([]Event, error)
+	// ListLifecycle reads Events by their lifecycle, in every status.
 	ListLifecycle(ctx context.Context, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error)
 	Get(ctx context.Context, id uuid.UUID) (Event, error)
 	GetIncludingArchived(ctx context.Context, id uuid.UUID) (Event, error)
@@ -63,7 +69,18 @@ type Store interface {
 	UpdateDay(ctx context.Context, d Day) (Day, error)
 	ArchiveDay(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	RestoreDay(ctx context.Context, id uuid.UUID) error
+	// ListBySeason reads the Season's current Events, drafts left out.
 	ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error)
+	// Publish publishes the draft (published_at/by, by nil when unknown):
+	// one UPDATE that changes it only while it is a current draft with a
+	// name, a location and a start date. False when it changed nothing.
+	Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID) (bool, error)
+	// Unpublish makes the published Event a draft again: one UPDATE that
+	// changes it only while it is current, published, and has no Ticket
+	// (check-ins hang off Tickets) and no current Competitor. When it is
+	// still current and published it says why: ErrHasTickets or
+	// ErrHasCompetitors. False when it changed nothing.
+	Unpublish(ctx context.Context, id uuid.UUID) (bool, error)
 	SetSeason(ctx context.Context, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
 	SetMailListID(ctx context.Context, eventID, listID uuid.UUID) (Event, error)
 	GetSession(ctx context.Context, id uuid.UUID) (Session, error)

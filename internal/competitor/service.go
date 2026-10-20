@@ -38,6 +38,23 @@ func NewService(competitors Store, events event.Store, az authz.Authorizer) Serv
 	return &service{competitors: competitors, events: events, authz: az}
 }
 
+// visibleEvent is the current Event id names, ErrNotFound when p may not see
+// it: a draft does not exist for who may not see it (event.VisibleTo, ADR
+// 0066), and neither do its Competitors.
+func (s *service) visibleEvent(ctx context.Context, p authz.Principal, id uuid.UUID) (event.Event, error) {
+	ev, err := s.events.Get(ctx, id)
+	if err != nil {
+		if errors.Is(err, event.ErrNotFound) {
+			return event.Event{}, ErrNotFound
+		}
+		return event.Event{}, err
+	}
+	if !event.VisibleTo(s.authz, &p, ev) {
+		return event.Event{}, ErrNotFound
+	}
+	return ev, nil
+}
+
 func (s *service) withEvent(ctx context.Context, c Competitor) Competitor {
 	ev, err := s.events.Get(ctx, c.EventID)
 	if err != nil {
@@ -48,11 +65,13 @@ func (s *service) withEvent(ctx context.Context, c Competitor) Competitor {
 	return c
 }
 
-func (s *service) withEvents(ctx context.Context, comps []Competitor) []Competitor {
+// withEvents adds each Competitor's Event, leaving out those whose Event p
+// may not see (a draft) or that is gone.
+func (s *service) withEvents(ctx context.Context, p authz.Principal, comps []Competitor) []Competitor {
 	out := make([]Competitor, 0, len(comps))
 	for _, c := range comps {
 		ev, err := s.events.Get(ctx, c.EventID)
-		if err != nil {
+		if err != nil || !event.VisibleTo(s.authz, &p, ev) {
 			continue
 		}
 		res := ev.Resource()
@@ -70,7 +89,7 @@ func (s *service) List(ctx context.Context, p authz.Principal) ([]Competitor, er
 	if err != nil {
 		return nil, err
 	}
-	return s.withEvents(ctx, comps), nil
+	return s.withEvents(ctx, p, comps), nil
 }
 
 func (s *service) ListLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]Competitor, error) {
@@ -81,7 +100,7 @@ func (s *service) ListLifecycle(ctx context.Context, p authz.Principal, visibili
 	visible := make([]Competitor, 0, len(items))
 	for _, item := range items {
 		ev, err := s.events.GetIncludingArchived(ctx, item.EventID)
-		if err != nil {
+		if err != nil || !event.VisibleTo(s.authz, &p, ev) {
 			continue
 		}
 		res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: item.UserID.String()}
@@ -99,11 +118,8 @@ func (s *service) Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Com
 	if err != nil {
 		return Competitor{}, err
 	}
-	ev, err := s.events.Get(ctx, got.EventID)
+	ev, err := s.visibleEvent(ctx, p, got.EventID)
 	if err != nil {
-		if errors.Is(err, event.ErrNotFound) {
-			return Competitor{}, ErrNotFound
-		}
 		return Competitor{}, err
 	}
 	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: got.UserID.String()}
@@ -117,11 +133,8 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in CreateInput)
 	if in.UserID == uuid.Nil || in.EventID == uuid.Nil {
 		return Competitor{}, ErrInvalid
 	}
-	ev, err := s.events.Get(ctx, in.EventID)
+	ev, err := s.visibleEvent(ctx, p, in.EventID)
 	if err != nil {
-		if errors.Is(err, event.ErrNotFound) {
-			return Competitor{}, ErrNotFound
-		}
 		return Competitor{}, err
 	}
 	// A published Event, ended or not: results come after it (ADR 0066).
@@ -166,11 +179,8 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	if in.EventID == uuid.Nil {
 		in.EventID = existing.EventID
 	}
-	ev, err := s.events.Get(ctx, in.EventID)
+	ev, err := s.visibleEvent(ctx, p, in.EventID)
 	if err != nil {
-		if errors.Is(err, event.ErrNotFound) {
-			return Competitor{}, ErrNotFound
-		}
 		return Competitor{}, err
 	}
 	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: existing.UserID.String()}
@@ -209,6 +219,9 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 		}
 		return err
 	}
+	if !event.VisibleTo(s.authz, &p, ev) {
+		return ErrNotFound
+	}
 	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: existing.UserID.String()}
 	if !s.authz.Allow(p, res, authz.Delete) {
 		return ErrForbidden
@@ -227,6 +240,9 @@ func (s *service) Reinstate(ctx context.Context, p authz.Principal, id uuid.UUID
 			return Competitor{}, ErrNotFound
 		}
 		return Competitor{}, err
+	}
+	if !event.VisibleTo(s.authz, &p, ev) {
+		return Competitor{}, ErrNotFound
 	}
 	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: existing.UserID.String()}
 	if !s.authz.Allow(p, res, authz.Delete) {
@@ -260,15 +276,12 @@ func (s *service) Mine(ctx context.Context, p authz.Principal) ([]Competitor, er
 	if err != nil {
 		return nil, err
 	}
-	return s.withEvents(ctx, comps), nil
+	return s.withEvents(ctx, p, comps), nil
 }
 
 func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Competitor, error) {
-	ev, err := s.events.Get(ctx, eventID)
+	ev, err := s.visibleEvent(ctx, p, eventID)
 	if err != nil {
-		if errors.Is(err, event.ErrNotFound) {
-			return nil, ErrNotFound
-		}
 		return nil, err
 	}
 	comps, err := s.competitors.ListByEvent(ctx, eventID)
@@ -277,7 +290,7 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 	}
 	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam}
 	if s.authz.Allow(p, res, authz.Read) {
-		return s.withEvents(ctx, comps), nil
+		return s.withEvents(ctx, p, comps), nil
 	}
 	own := make([]Competitor, 0)
 	for _, c := range comps {
@@ -288,7 +301,7 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 	if len(own) == 0 {
 		return nil, ErrForbidden
 	}
-	return s.withEvents(ctx, own), nil
+	return s.withEvents(ctx, p, own), nil
 }
 
 func (s *service) ListByUser(ctx context.Context, p authz.Principal, userID uuid.UUID) ([]Competitor, error) {
@@ -299,7 +312,7 @@ func (s *service) ListByUser(ctx context.Context, p authz.Principal, userID uuid
 	if err != nil {
 		return nil, err
 	}
-	return s.withEvents(ctx, comps), nil
+	return s.withEvents(ctx, p, comps), nil
 }
 
 func (s *service) ListByOwnerTeam(ctx context.Context, p authz.Principal, ownerTeam string) ([]Competitor, error) {
@@ -313,15 +326,12 @@ func (s *service) ListByOwnerTeam(ctx context.Context, p authz.Principal, ownerT
 	if err != nil {
 		return nil, err
 	}
-	return s.withEvents(ctx, comps), nil
+	return s.withEvents(ctx, p, comps), nil
 }
 
 func (s *service) Winner(ctx context.Context, p authz.Principal, eventID uuid.UUID) (Competitor, error) {
-	ev, err := s.events.Get(ctx, eventID)
+	ev, err := s.visibleEvent(ctx, p, eventID)
 	if err != nil {
-		if errors.Is(err, event.ErrNotFound) {
-			return Competitor{}, ErrNotFound
-		}
 		return Competitor{}, err
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam}, authz.Read) {
@@ -353,7 +363,7 @@ func (s *service) Leaderboard(ctx context.Context, p authz.Principal, ownerTeam 
 	byUser := map[uuid.UUID]agg{}
 	for _, c := range comps {
 		ev, err := s.events.Get(ctx, c.EventID)
-		if err != nil {
+		if err != nil || !event.VisibleTo(s.authz, &p, ev) {
 			continue
 		}
 		if seasonID != nil && (ev.SeasonID == nil || *ev.SeasonID != *seasonID) {
