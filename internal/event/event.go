@@ -40,6 +40,15 @@ type Event struct {
 	CopiedFromEventID *uuid.UUID `json:"copiedFromEventId,omitempty"`
 	Ranked            bool       `json:"ranked"`
 	PrizeInfo         string     `json:"prizeInfo,omitempty"`
+	// FeedbackMode is where the Event asks for feedback; FeedbackFormURL
+	// and FeedbackFormAlias are its feedback form and the short link alias
+	// it gives it, a form whose answers write no Ticket; FeedbackAutoSend
+	// mails the form when the Event ends (etkinlik geri bildirim formu,
+	// ticket 02; docs/event-feedback.md).
+	FeedbackMode      FeedbackMode `json:"feedbackMode"`
+	FeedbackFormURL   string       `json:"feedbackFormUrl,omitempty"`
+	FeedbackFormAlias string       `json:"feedbackFormAlias,omitempty"`
+	FeedbackAutoSend  bool         `json:"feedbackAutoSend"`
 	// RegistrationClosed is applying closed by hand, RegistrationClosesAt
 	// the deadline: Registration closure, apart from the status (ADR 0066
 	// addendum, ticket 12).
@@ -83,6 +92,10 @@ type Event struct {
 	// coverImage is the cover Media as the store read it with the Event,
 	// what CoverImageSizes is built from.
 	coverImage *media.LinkedImage
+	// formGuard makes the store's Create and Update apply the one-place
+	// rule of feedback forms again inside their write, under a lock per
+	// form (feedback.go).
+	formGuard *formGuard
 	// cancelReasonSent makes the store's Update write CancelReason, which
 	// it does only while the Event is cancelled: an update body that sends
 	// cancelReason (Patch) sets it.

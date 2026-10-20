@@ -268,9 +268,16 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	if err != nil {
 		return Event{}, err
 	}
+	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() {
+		return Event{}, ErrInvalid
+	}
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Create) {
 		return Event{}, ErrForbidden
 	}
+	if err := s.checkFormPlaces(ctx, in); err != nil {
+		return Event{}, err
+	}
+	s.guardForms(&in)
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Assign) {
 		in.DoorStaffIDs = nil
 	}
@@ -303,6 +310,10 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 		if in.MailListID == nil {
 			in.MailListID = existing.MailListID
 		}
+		if in.FeedbackMode == "" {
+			in.FeedbackMode, in.FeedbackFormURL = existing.FeedbackMode, existing.FeedbackFormURL
+			in.FeedbackFormAlias, in.FeedbackAutoSend = existing.FeedbackFormAlias, existing.FeedbackAutoSend
+		}
 		return in, nil
 	}, true)
 }
@@ -331,7 +342,17 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	if err != nil {
 		return Event{}, err
 	}
+	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() {
+		return Event{}, ErrInvalid
+	}
 	in.ID = existing.ID
+	in.formGuard = nil
+	if syncForms {
+		if err := s.checkFormPlaces(ctx, in); err != nil {
+			return Event{}, err
+		}
+		s.guardForms(&in)
+	}
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Assign) {
 		in.DoorStaffIDs = existing.DoorStaffIDs
 	}
@@ -396,6 +417,11 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	}
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Delete) {
 		return Event{}, ErrForbidden
+	}
+	// Its forms were released when it was archived: one taken since by
+	// another place keeps it archived (one place per feedback form).
+	if err := s.checkFormPlaces(ctx, existing); err != nil {
+		return Event{}, err
 	}
 	if err := s.store.Restore(ctx, id); err != nil {
 		return Event{}, err

@@ -44,6 +44,14 @@ type Patch struct {
 	// clears it). On an Event that is not cancelled it is ignored, as the
 	// status is: the write applies it only while the Event is cancelled.
 	CancelReason optional.Field[string] `json:"cancelReason"`
+	// FeedbackMode, FeedbackFormURL, FeedbackFormAlias and FeedbackAutoSend
+	// are the Event's feedback (etkinlik geri bildirim formu, ticket 02):
+	// the mode and the box may not be null; the form and its alias are
+	// cleared with null or "".
+	FeedbackMode      optional.Field[FeedbackMode] `json:"feedbackMode"`
+	FeedbackFormURL   optional.Field[string]       `json:"feedbackFormUrl"`
+	FeedbackFormAlias optional.Field[string]       `json:"feedbackFormAlias"`
+	FeedbackAutoSend  optional.Field[bool]         `json:"feedbackAutoSend"`
 }
 
 // required is the value of a field that may not be emptied: sent, it must
@@ -68,9 +76,15 @@ func (p Patch) apply(existing Event) (Event, error) {
 	if e.OwnerTeam, err = required(p.OwnerTeam, existing.OwnerTeam); err != nil {
 		return Event{}, err
 	}
-	if p.Ranked.Null || p.RegistrationClosed.Null {
+	if p.Ranked.Null || p.RegistrationClosed.Null || p.FeedbackMode.Null || p.FeedbackAutoSend.Null {
 		return Event{}, ErrInvalid
 	}
+	if e.FeedbackMode = p.FeedbackMode.Or(existing.FeedbackMode); !e.FeedbackMode.Valid() {
+		return Event{}, ErrInvalid
+	}
+	e.FeedbackFormURL = strings.TrimSpace(p.FeedbackFormURL.Or(existing.FeedbackFormURL))
+	e.FeedbackFormAlias = strings.TrimSpace(p.FeedbackFormAlias.Or(existing.FeedbackFormAlias))
+	e.FeedbackAutoSend = p.FeedbackAutoSend.Or(existing.FeedbackAutoSend)
 	e.Description = p.Description.Or(existing.Description)
 	e.FormURL = p.FormURL.Or(existing.FormURL)
 	e.FormAlias = p.FormAlias.Or(existing.FormAlias)
@@ -105,7 +119,8 @@ func (p Patch) apply(existing Event) (Event, error) {
 // short links are built from: its forms, their aliases, or the name that
 // labels them. A body that sends none of them leaves the links alone.
 func (p Patch) touchesFormLinks() bool {
-	return p.FormURL.Set || p.FormAlias.Set || p.ExtraFormURLs.Set || p.Name.Set
+	return p.FormURL.Set || p.FormAlias.Set || p.ExtraFormURLs.Set || p.Name.Set ||
+		p.FeedbackFormURL.Set || p.FeedbackFormAlias.Set
 }
 
 // Patch updates the fields the body sent and keeps the others.

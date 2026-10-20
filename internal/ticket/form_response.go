@@ -72,6 +72,10 @@ const (
 	// cancelled had closed applying, by hand or by the deadline (ticket
 	// 12): no Ticket is written; a 2xx too.
 	FormResponseRegistrationClosed FormResponseOutcome = "registration_closed"
+	// FormResponseFeedback is an answer to a feedback form (etkinlik geri
+	// bildirim formu, ticket 02): it writes no Ticket, whatever its status
+	// and whoever answered.
+	FormResponseFeedback FormResponseOutcome = "feedback"
 )
 
 // FormResponseResult is what recording a report did.
@@ -81,7 +85,9 @@ type FormResponseResult struct {
 	TicketsWritten int
 }
 
-// RecordFormResponse writes the Ticket an accepted answer earns on every
+// RecordFormResponse writes nothing for an answer to a feedback form
+// (FormResponseFeedback). Otherwise it writes the Ticket an accepted answer
+// earns on every
 // current Event that lists the form and is not cancelled (when every one
 // is, the outcome is FormResponseEventCancelled), and, when the report says
 // when the answer was sent, had not closed applying by then (when every one
@@ -103,11 +109,23 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		return FormResponseResult{}, ErrInvalid
 	}
 	switch r.Status {
-	case FormResponseAccepted:
-	case FormResponsePending, FormResponseDeclined:
-		return FormResponseResult{Outcome: FormResponseNotAccepted}, nil
+	case FormResponseAccepted, FormResponsePending, FormResponseDeclined:
 	default:
 		return FormResponseResult{}, ErrInvalid
+	}
+	// A draft's form writes Tickets too (ADR 0066): its editors linked the
+	// form and shared it; an answer not written now would be lost.
+	events, err := s.events.ListIncludingDrafts(ctx, "")
+	if err != nil {
+		return FormResponseResult{}, err
+	}
+	for _, ev := range events {
+		if ev.HasFeedbackForm(r.FormID) {
+			return FormResponseResult{Outcome: FormResponseFeedback}, nil
+		}
+	}
+	if r.Status != FormResponseAccepted {
+		return FormResponseResult{Outcome: FormResponseNotAccepted}, nil
 	}
 	var guest GuestInfo
 	switch {
@@ -128,10 +146,7 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	default:
 		return FormResponseResult{Outcome: FormResponseNoRespondent}, nil
 	}
-	listing, err := s.eventsListingForm(ctx, r.FormID)
-	if err != nil {
-		return FormResponseResult{}, err
-	}
+	listing := listingForm(events, r.FormID)
 	if len(listing) == 0 {
 		return FormResponseResult{Outcome: FormResponseNotListed}, nil
 	}
@@ -183,20 +198,16 @@ func (s *service) CanRecordFormResponse(p authz.Principal) bool {
 	return s.authz.Allow(p, authz.Resource{Type: authz.TypeFormResponse}, authz.Create)
 }
 
-func (s *service) eventsListingForm(ctx context.Context, formID uuid.UUID) ([]event.Event, error) {
-	// A draft's form writes Tickets too (ADR 0066): its editors linked the
-	// form and shared it; an answer not written now would be lost.
-	events, err := s.events.ListIncludingDrafts(ctx, "")
-	if err != nil {
-		return nil, err
-	}
+// listingForm are the events that list the form as an application or extra
+// form.
+func listingForm(events []event.Event, formID uuid.UUID) []event.Event {
 	var listing []event.Event
 	for _, ev := range events {
 		if ev.ListsForm(formID) {
 			listing = append(listing, ev)
 		}
 	}
-	return listing, nil
+	return listing
 }
 
 // notCancelled leaves out the cancelled Events: an answer to their form

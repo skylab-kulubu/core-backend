@@ -7,7 +7,9 @@ applications.
 
 An Event lists a form through `formUrl` or one of its `extraFormUrls`: the
 form is the first UUID path segment of the address (`event.FormIDFromURL`),
-with or without an alias. Archived Events list nothing. A form an older Event
+with or without an alias. An Event's feedback form (`feedbackFormUrl`) is
+not listed: its answers write no Ticket ([event-feedback.md](event-feedback.md)).
+Archived Events list nothing. A form an older Event
 still lists keeps writing that Event's Tickets, so remove it from the older
 Event when the form is reused.
 
@@ -33,7 +35,7 @@ that no Event lists: it writes nothing for it, and the report's log line
 
 | Answer | Meaning for Forms |
 |---|---|
-| `204` | done; stop sending the report |
+| `204` | done; stop sending the report. A report to a current Event's feedback form is `204` too, whatever its status and whoever answered: no Ticket is written (logged as `outcome: feedback`) |
 | `200` `{"outcome": "event_cancelled"}` | done, and no Ticket was written: every Event that lists the form is cancelled ([event-cancel.md](event-cancel.md)); stop sending the report |
 | `200` `{"outcome": "registration_closed"}` | done, and no Ticket was written: the report said when the answer was sent (`submittedAt`), and by then every Event of the form not cancelled had closed applying ([event-registration-closure.md](event-registration-closure.md)); stop sending the report |
 | `400` | a malformed report: a form id or body core cannot read, an unknown `status`, a zero `userId`, or a `guest` with an e-mail but without a first name or last name; sending it again will not help |
@@ -43,7 +45,9 @@ that no Event lists: it writes nothing for it, and the report's log line
 
 ## What a report writes
 
-Only an `accepted` answer writes, on every current Event that lists the form
+A report to a feedback form writes no Ticket (checked before anything
+else, after the status is read). Otherwise only an `accepted` answer writes,
+on every current Event that lists the form
 and is not cancelled. When every such Event is cancelled, nothing is written
 and the answer is `200` with `outcome: "event_cancelled"` (checked first).
 

@@ -35,6 +35,8 @@ func eventStatusCode(err error) string {
 		return "event_ended"
 	case errors.Is(err, event.ErrNotCancelled):
 		return "event_not_cancelled"
+	case errors.Is(err, event.ErrFormInUse):
+		return "form_in_use"
 	default:
 		return ""
 	}
