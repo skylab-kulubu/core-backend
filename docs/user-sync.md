@@ -70,8 +70,8 @@ The sync marks the row (`welcome_sent_at`) before it posts, in one conditional
 | Outcome (`mail.WelcomeOutcome`) | Meaning | The mark |
 | --- | --- | --- |
 | `sent` | SkyMail took the mail task (2xx) | kept |
-| `refused` | SkyMail refused it for good (a 4xx other than 404, 408, 429: an address or body it will not take) | kept: the mail was tried and warned about once; trying every pass would repeat the refusal |
-| `deferred` | SkyMail refused it for now (404: template not seeded; 408, 429, 5xx) | taken back, the next pass sends again |
+| `refused` | SkyMail refused the mail itself for good (400, 413, 422: an address or body it will not take) | kept: the mail was tried and warned about once; trying every pass would repeat the refusal |
+| `deferred` | SkyMail refused it for a reason about core's setup or its own state, which a fix can clear (401, 403: token, role or audience; 404: template not seeded; 409: template not publishable; 408, 429, 5xx; any other status) | taken back, the next pass sends again |
 | `not_sent` | nothing left core: no token, SkyMail could not be connected to | taken back |
 | `unknown` | the request went out and no answer came: SkyMail may have taken it | kept, so nobody gets the mail twice |
 

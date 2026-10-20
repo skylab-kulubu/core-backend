@@ -18,13 +18,15 @@ type WelcomeOutcome string
 const (
 	// WelcomeSent: SkyMail took the mail task (2xx).
 	WelcomeSent WelcomeOutcome = "sent"
-	// WelcomeRefused: SkyMail refused the mail for good (a 4xx other than
-	// those below: an address or body it will not take). No mail task was
-	// written, and sending the same mail again would be refused again.
+	// WelcomeRefused: SkyMail refused the mail itself for good (400, 413,
+	// 422: an address or body it will not take). No mail task was written,
+	// and sending the same mail again would be refused again.
 	WelcomeRefused WelcomeOutcome = "refused"
-	// WelcomeDeferred: SkyMail refused the mail for now (404: the template is
-	// not seeded yet; 408, 429, 5xx). No mail task was written; a later try
-	// may succeed.
+	// WelcomeDeferred: SkyMail refused the mail for now: any other status,
+	// which is about core's setup or SkyMail's state rather than the mail
+	// (401, 403: token, role or audience; 404: template not seeded; 409:
+	// template not publishable; 408, 429, 5xx). No mail task was written; a
+	// later try may succeed.
 	WelcomeDeferred WelcomeOutcome = "deferred"
 	// WelcomeNotSent: nothing left core: no template is configured, no token
 	// came, or SkyMail could not be connected to.
@@ -81,10 +83,10 @@ func (s *SkyMail) Welcome(ctx context.Context, u user.User) WelcomeOutcome {
 		switch {
 		case succeeded(status):
 			return status, WelcomeSent
-		case status != 0 && temporaryRefusal(status):
-			return status, WelcomeDeferred
-		case status != 0:
+		case status != 0 && permanentRefusal(status):
 			return status, WelcomeRefused
+		case status != 0:
+			return status, WelcomeDeferred
 		case !reached:
 			warn(s.Logger, eventCallFailed, kindWelcome, 0, reasonUnreachable, "")
 			return 0, WelcomeNotSent
@@ -106,10 +108,11 @@ func (s *SkyMail) Welcome(ctx context.Context, u user.User) WelcomeOutcome {
 	return outcome
 }
 
-// temporaryRefusal reports a refusal a later try may get past: the template
-// is not seeded yet (404), SkyMail timed out or is rate limiting (408, 429),
-// or it failed (5xx). Any other 4xx is about the mail itself.
-func temporaryRefusal(status int) bool {
-	return status == http.StatusNotFound || status == http.StatusRequestTimeout ||
-		status == http.StatusTooManyRequests || status >= 500
+// permanentRefusal reports a refusal of the mail itself, which sending it
+// again cannot get past: a body SkyMail will not take (400), one too large
+// (413), or an address or variables it cannot use (422). Every other refusal
+// is about core's setup or SkyMail's state (a token, a role, a template) and
+// may pass once that is fixed.
+func permanentRefusal(status int) bool {
+	return status == http.StatusBadRequest || status == http.StatusRequestEntityTooLarge || status == http.StatusUnprocessableEntity
 }

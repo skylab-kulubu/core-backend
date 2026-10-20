@@ -57,6 +57,22 @@ func TestWelcomeOutcomes(t *testing.T) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusBadRequest })
 			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
 		}},
+		{name: "deferred 401", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":401,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+			srv, posts := welcomeServer(t, func(int) int { return http.StatusUnauthorized })
+			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+		}},
+		{name: "deferred 403", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":403,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+			srv, posts := welcomeServer(t, func(int) int { return http.StatusForbidden })
+			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+		}},
+		{name: "deferred 409", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":409,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+			srv, posts := welcomeServer(t, func(int) int { return http.StatusConflict })
+			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+		}},
+		{name: "refused 413", want: WelcomeRefused, wantPosts: 1, wantLog: `"status":413,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
+			srv, posts := welcomeServer(t, func(int) int { return http.StatusRequestEntityTooLarge })
+			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
+		}},
 		{name: "deferred 503", want: WelcomeDeferred, wantPosts: 1, wantLog: `"status":503,"reason":"upstream_error"`, mailer: func(t *testing.T) (*SkyMail, *atomic.Int32) {
 			srv, posts := welcomeServer(t, func(int) int { return http.StatusServiceUnavailable })
 			return &SkyMail{BaseURL: srv.URL, TemplateKey: "core.welcome", Tokens: StaticToken("tok"), HTTP: srv.Client()}, posts
