@@ -291,6 +291,52 @@ func (h *EventHandler) Uncancel(c fiber.Ctx) error {
 	return c.JSON(h.svc.ProjectFor(&p, uncancelled))
 }
 
+// copyBody is the body of POST /v1/events/{id}/copy (ticket 06).
+type copyBody struct {
+	// ID is the copy's id, which the client makes: a retried request
+	// answers the copy it made.
+	ID                  *uuid.UUID `json:"id"`
+	Name                string     `json:"name"`
+	StartDate           *time.Time `json:"startDate"`
+	IncludeDoorStaff    bool       `json:"includeDoorStaff"`
+	IncludeCompetitions bool       `json:"includeCompetitions"`
+}
+
+// Copy copies an Event's structure into a new draft: POST
+// /v1/events/{id}/copy (ADR 0066, ticket 06). 201 with the copy and the
+// parts left out; 200 when the same id from the same source made it
+// already.
+func (h *EventHandler) Copy(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body copyBody
+	if err := c.Bind().Body(&body); err != nil || body.ID == nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	copied, fresh, err := h.svc.Copy(c.Context(), p, id, event.CopyInput{
+		ID:                  *body.ID,
+		Name:                body.Name,
+		StartDate:           body.StartDate,
+		IncludeDoorStaff:    body.IncludeDoorStaff,
+		IncludeCompetitions: body.IncludeCompetitions,
+	})
+	if err != nil {
+		return eventError(c, err)
+	}
+	copied.Event = h.svc.ProjectFor(&p, copied.Event)
+	status := fiber.StatusOK
+	if fresh {
+		status = fiber.StatusCreated
+	}
+	return c.Status(status).JSON(copied)
+}
+
 func (h *EventHandler) statusChange(c fiber.Ctx, change func(ctx context.Context, p authz.Principal, id uuid.UUID) (event.Event, error)) error {
 	p, err := caller(c)
 	if err != nil {

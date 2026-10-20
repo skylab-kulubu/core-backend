@@ -32,6 +32,11 @@ type Store interface {
 	GetIncludingArchived(ctx context.Context, id uuid.UUID) (Event, error)
 	Create(ctx context.Context, e Event) (Event, error)
 	Update(ctx context.Context, e Event) (Event, error)
+	// Copy writes the plan's copy in one transaction: the Event, its door
+	// staff, days, Sessions, Event template binding and Competitions, and
+	// its cover. It answers the parts it left out (skipped). ErrConflict
+	// when the copy's id is taken.
+	Copy(ctx context.Context, plan CopyPlan) (Event, []string, error)
 	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	Restore(ctx context.Context, id uuid.UUID) error
 	AddImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)

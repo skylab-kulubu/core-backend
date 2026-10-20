@@ -827,3 +827,58 @@ func (s *MemoryStore) Unpublish(_ context.Context, id uuid.UUID) (bool, error) {
 	s.byID[id] = e
 	return true, nil
 }
+
+// Copy writes the plan's copy as the database does, without what the memory
+// store does not hold: Seasons, template bindings and Competitions (a copy
+// asked to bring Competitions brings none). Door staff are copied all.
+func (s *MemoryStore) Copy(_ context.Context, plan CopyPlan) (Event, []string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	source, ok := s.byID[plan.Source]
+	if !ok || source.ArchivedAt != nil {
+		return Event{}, nil, ErrNotFound
+	}
+	if _, taken := s.byID[plan.Event.ID]; taken {
+		return Event{}, nil, ErrConflict
+	}
+	skippedParts := map[string]bool{}
+	e := plan.Event
+	e.Status, e.PublishedAt, e.PublishedBy = StatusDraft, nil, nil
+	e.SeasonID, e.DoorStaffIDs = nil, nil
+	if e.AttendanceRule == "" {
+		e.AttendanceRule = "none"
+	}
+	switch plan.Cover {
+	case CopyRefused:
+		skippedParts[SkippedCover] = true
+	case CopyWrite:
+	default:
+		e.CoverImageID = nil
+	}
+	switch plan.DoorStaff {
+	case CopyRefused:
+		skippedParts[SkippedDoorStaff] = len(source.DoorStaffIDs) > 0
+	case CopyWrite:
+		e.DoorStaffIDs = slices.Clone(source.DoorStaffIDs)
+	}
+	now := time.Now().UTC()
+	e.CreatedAt, e.UpdatedAt = now, now
+	e = emptyGallery(e)
+	for _, day := range s.days {
+		if day.EventID != source.ID || day.ArchivedAt != nil {
+			continue
+		}
+		copied := Day{ID: uuid.New(), EventID: e.ID, Name: day.Name, StartDate: plan.Shift.At(day.StartDate), EndDate: plan.Shift.At(day.EndDate)}
+		s.days[copied.ID] = copied
+		for _, sess := range s.sessions {
+			if sess.EventDayID != day.ID || sess.ArchivedAt != nil {
+				continue
+			}
+			sess.ID, sess.EventDayID, sess.Cancelled = uuid.New(), copied.ID, false
+			sess.StartTime, sess.EndTime = plan.Shift.At(sess.StartTime), plan.Shift.At(sess.EndTime)
+			s.sessions[sess.ID] = sess
+		}
+	}
+	s.byID[e.ID] = e
+	return s.detailed(e), skipped(skippedParts), nil
+}

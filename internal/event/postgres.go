@@ -17,6 +17,9 @@ import (
 
 type PostgresStore struct {
 	pool *pgxpool.Pool
+	// copyCompetitions copies an Event's Competitions into its copy
+	// (CopyCompetitionsWith).
+	copyCompetitions CompetitionCopier
 }
 
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {

@@ -204,7 +204,7 @@ func main() {
 	// (docs/team-codes.md), over the same roots.
 	groupNames := teamcode.NewRules(authzPolicy)
 	users := user.NewPostgresStore(pool)
-	events := event.NewPostgresStore(pool)
+	events := event.NewPostgresStore(pool).CopyCompetitionsWith(competition.CopyForEvent)
 	seasons := season.NewPostgresStore(pool)
 	tickets := ticket.NewPostgresStore(pool)
 	competitors := competitor.NewPostgresStore(pool)
