@@ -133,8 +133,8 @@ func TestFeedbackFormOnePlace(t *testing.T) {
 	}
 }
 
-// A copy keeps the feedback mode, not the form (one place), and is mailed
-// its new one by default.
+// A copy keeps the feedback mode and the "send when it ends" choice, not
+// the form (one place).
 func TestCopyKeepsFeedbackModeNotForm(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -152,7 +152,16 @@ func TestCopyKeepsFeedbackModeNotForm(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := got.Event
-	if c.FeedbackMode != event.FeedbackEventWithSessions || c.FeedbackFormURL != "" || c.FeedbackFormAlias != "" || !c.FeedbackAutoSend {
+	if c.FeedbackMode != event.FeedbackEventWithSessions || c.FeedbackFormURL != "" || c.FeedbackFormAlias != "" || c.FeedbackAutoSend {
 		t.Fatalf("copy %+v", c)
+	}
+	// A source mailed automatically gives a copy mailed automatically.
+	on, err := svc.Create(ctx, copyLeader, event.Event{Name: "Açık", Location: "YTÜ", OwnerTeam: "WEBLAB", FeedbackAutoSend: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _, err = svc.Copy(ctx, copyLeader, on.ID, copyIn("Kopya 2", "2027-01-01T10:00:00+03:00"))
+	if err != nil || !got.Event.FeedbackAutoSend {
+		t.Fatalf("copy of auto send %+v %v", got.Event, err)
 	}
 }

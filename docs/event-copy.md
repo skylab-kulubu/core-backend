@@ -47,7 +47,7 @@ Who: whoever may see the source (a draft: who may edit it, ADR 0066) and create 
 | Competitions and their stages | only with `includeCompetitions`; the current ones, each a `draft` with its name, description and entrant mode; stages with position, name, strategy, config and config version, dates moved | left out (`competitions`) when the caller may not manage Competitions in the team; never copied: entrants, members, submissions, adjustments, results, cancel reasons, archived Competitions |
 | LinkedIn link, gallery, files, videos, mail list | no | |
 | Application and extra forms, their short links | no | |
-| Feedback mode (`feedbackMode`) | yes | the feedback form and its alias are not copied (one place per form); `feedbackAutoSend` is `true` ([event-feedback.md](event-feedback.md)) |
+| Feedback mode (`feedbackMode`), `feedbackAutoSend` | yes | the feedback form and its alias are not copied (one place per form; [event-feedback.md](event-feedback.md)) |
 | Applying closed by hand | no: the copy's applying is open | |
 | Tickets, check-ins, certificates, batches, jobs, attendance finalization, Competitors | never | |
 | Status | always `draft` (publish it with `POST …/publish`) | |
