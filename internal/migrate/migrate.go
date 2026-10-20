@@ -1422,6 +1422,15 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.events') AND conname = 'events_feedback_mode_check'
 		  )`,
+	// A Session's feedback form (etkinlik geri bildirim formu, ticket 03):
+	// the three columns.
+	20261020190100: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'sessions'
+			  AND column_name IN ('feedback_form_url', 'feedback_form_alias', 'feedback_auto_send')
+		) = 3`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

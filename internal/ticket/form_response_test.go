@@ -392,3 +392,26 @@ func TestRecordFormResponseWritesNoTicketForAFeedbackForm(t *testing.T) {
 		t.Fatalf("unknown status: %v", err)
 	}
 }
+
+// An answer to a Session's feedback form writes no Ticket either (ticket 03).
+func TestRecordFormResponseWritesNoTicketForASessionFeedbackForm(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	form := uuid.New()
+	ev, err := events.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.CreateSession(ctx, event.Session{EventDayID: day.ID, Title: "Açılış", SpeakerName: "Ada", SessionType: "talk", FeedbackFormURL: formAddress(form)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.RecordFormResponse(ctx, formsService, acceptedGuest(form, "Ada", "Lovelace", "ada@example.com"))
+	if err != nil || got.Outcome != ticket.FormResponseFeedback || len(ticketsOf(t, svc, ev)) != 0 {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
