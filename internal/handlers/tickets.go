@@ -187,6 +187,10 @@ type formResponseBody struct {
 	// optional (ticket 12): read by submittedAt, which never refuses the
 	// report for it.
 	SubmittedAt json.RawMessage `json:"submittedAt"`
+	// Invite is the feedback invite's code the answer came with, optional
+	// (etkinlik geri bildirim formu, ticket 04): an unknown one, another
+	// form's or one longer than 64 characters is ignored. Never logged.
+	Invite string `json:"invite"`
 }
 
 // RecordFormResponse takes the forms service's report of an answer to one of
@@ -221,6 +225,7 @@ func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
 		Status:      ticket.FormResponseStatus(body.Status),
 		UserID:      body.UserID,
 		SubmittedAt: h.submittedAt(formID, body.SubmittedAt),
+		Invite:      body.Invite,
 	}
 	if body.Guest != nil {
 		r.Guest = &ticket.GuestInfo{FirstName: body.Guest.FirstName, LastName: body.Guest.LastName, Email: body.Guest.Email}

@@ -34,6 +34,9 @@ const (
 	// TeamAuditPeriod: a row of the Team audit record, three years (S6,
 	// docs/team-audit.md); the row goes.
 	TeamAuditPeriod = teamaudit.Retention
+	// FeedbackInvitePeriod: a feedback invite, 90 days after it was sent
+	// (docs/event-feedback.md); the row goes, its target's counts stay.
+	FeedbackInvitePeriod = 90 * day
 )
 
 // Schema is what a run reads from the database before it builds the rules.
@@ -54,6 +57,7 @@ var everySchema = Schema{ContactConsents: true}
 func Rules(c Config, s Schema) []Rule {
 	rules := append(sweepRules(s), consentRules(s)...)
 	rules = append(rules, teamAuditRules()...)
+	rules = append(rules, feedbackRules()...)
 	return append(rules, auditRules(c)...)
 }
 
@@ -235,6 +239,17 @@ func teamAuditRules() []Rule {
 		Name: "team_audit_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
 		Table: "team_audit_records", alias: "ta", key: "id", Period: TeamAuditPeriod,
 		where: `ta.occurred_at < $1`,
+	}}
+}
+
+// feedbackRules delete the feedback invites 90 days after they were sent
+// (etkinlik geri bildirim formu, ticket 04): the reminder went at three
+// days; what stays of them is their target's counts.
+func feedbackRules() []Rule {
+	return []Rule{{
+		Name: "feedback_invites_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
+		Table: "feedback_invites", alias: "fi", key: "id", Period: FeedbackInvitePeriod,
+		where: `fi.sent_at < $1`,
 	}}
 }
 

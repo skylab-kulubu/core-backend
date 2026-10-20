@@ -45,7 +45,7 @@ click list and a form's channel statistics keep looking 90 days back
 clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
 from apply on it only grows, counting every click since then.
 
-## Rules (rule set v4)
+## Rules (rule set v5)
 
 "Event end" is the Event's `end_date`, else its last day's `end_date`, else
 its `start_date` (ADR-0062). For `guest_identity`, an Event with none of them
@@ -125,6 +125,12 @@ The Team audit record ([`team-audit.md`](team-audit.md); rule set v4):
 | Rule | Selects | Period | Action |
 |---|---|---|---|
 | `team_audit_age` | a `team_audit_records` row, whatever its outcome (a `pending` row is as old as its write) | `teamaudit.Retention`, 3 years after `occurred_at` (S6) | row deleted |
+
+The feedback invites ([`event-feedback.md`](event-feedback.md); rule set v5):
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `feedback_invites_age` | a `feedback_invites` row, answered or not | `FeedbackInvitePeriod`, 90 days after `sent_at` | row deleted; the target's `feedback_invite_counts` stay |
 
 ## Schedule, lock and periods
 

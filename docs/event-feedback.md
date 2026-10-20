@@ -2,7 +2,7 @@
 
 Etkinlik geri bildirim formu (spec `.scratch/etkinlik-geri-bildirim-formu/SPEC.md` in the hub; Yusuf's decisions of 2026-10-20). An Event names its feedback form apart from its application and extra forms: **an answer to a feedback form writes no Ticket.**
 
-This page is tickets 02 and 03: the Event's and the Sessions' fields, the one-place rule, the short links and the forms report. The invite record and who answered (04), the mails (06) and the reminder (07) come after them.
+This page is tickets 02 to 04: the Event's and the Sessions' fields, the one-place rule, the short links, the forms report, the invites and who answered. The mails (06) and the reminder (07) come after them.
 
 ## Fields
 
@@ -48,4 +48,22 @@ The feedback forms' links are the Event's to manage, as its application forms' l
 
 ## Forms report
 
-`POST /v1/forms/{formId}/responses` for a current Event's or Session's feedback form answers `204` and writes nothing, whatever the status (`pending`, `accepted`, `declined`) and whoever answered (a guest needs no name: a feedback form asks for none). The log line says `outcome: feedback`. Forms sees a `2xx` and does not send the report again. Drafts, cancelled Events and Events closed to applications behave the same ([form-response-tickets.md](form-response-tickets.md)).
+`POST /v1/forms/{formId}/responses` for a current Event's or Session's feedback form answers `204` and writes no Ticket, whatever the status (`pending`, `accepted`, `declined`) and whoever answered (a guest needs no name: a feedback form asks for none). The log line says `outcome: feedback`. Forms sees a `2xx` and does not send the report again. Drafts, cancelled Events and Events closed to applications behave the same ([form-response-tickets.md](form-response-tickets.md)). A `pending` or `accepted` answer marks its invite answered (below); a `declined` one changes nothing and does not take back an earlier mark.
+
+## Invites and who answered
+
+Each mail of a feedback form (ticket 06) writes one `feedback_invites` row per Ticket and target (the Event, or one Session; a second for the same pair is refused): the form, a code of its own (128 random bits, base64url, 22 characters), `sent_at`, and later `reminded_at`, `answered_at` and `reminder_cancelled_at` (the form closed, ticket 07; set once). The mail's link is the form's own address with the code alone, `https://forms.yildizskylab.com/<formId>?davet=<code>` (`feedback.Link`): not the short link, whose clicks are recorded with their query, and nothing else, not the Sessions attended (decision S1).
+
+The code is stored plain: the reminder sends the same link again, and all a code can do is mark its invite answered (someone the mail was forwarded to can at most keep the reminder from going).
+
+A forms report for a feedback form marks, in this order:
+
+1. the invite whose code the report's `invite` carries, when it is this form's;
+2. otherwise, for an answer given signed in (`userId`), this form's invites of that person's Tickets (no Forms change needed);
+3. otherwise nothing.
+
+An unknown code, another form's, or one longer than 64 characters is ignored. A guest is matched by the code alone: until Forms carries `invite` in its report (Fatih, ticket 11) a guest never counts as answered and gets the reminder, which is why it says "henüz doldurmadıysan". A report sent again changes nothing.
+
+**Counts.** `GET /v1/events/{id}/feedback` answers `{"event": {"sent": 12, "answered": 5}, "sessions": [{"sessionId": "…", "sent": 4, "answered": 1}]}`: how many invites each target's form went out in and how many were answered. Who may read the Event in full may (its editors, DK); a member `403`, a draft the caller may not see `404`. The counts live in `feedback_invite_counts`, kept by a trigger on the invites, and stay when the invites go.
+
+**Retention and erasure.** An invite is deleted 90 days after it was sent (retention rule `feedback_invites_age`, [retention-sweep.md](retention-sweep.md)). Account erasure deletes the invites of the person's Tickets and of their addresses' guest Tickets ([account-lifecycle.md](account-lifecycle.md)); a Ticket is never deleted, so its invite does not go with it. The counts stay in both cases: they name nobody.
