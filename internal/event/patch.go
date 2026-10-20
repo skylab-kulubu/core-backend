@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -39,6 +40,10 @@ type Patch struct {
 	// (ticket 12).
 	RegistrationClosed   optional.Field[bool]       `json:"registrationClosed"`
 	RegistrationClosesAt optional.Field[*time.Time] `json:"registrationClosesAt"`
+	// CancelReason edits a cancelled Event's public reason (null or ""
+	// clears it). On an Event that is not cancelled it is ignored, as the
+	// status is: the write applies it only while the Event is cancelled.
+	CancelReason optional.Field[string] `json:"cancelReason"`
 }
 
 // required is the value of a field that may not be emptied: sent, it must
@@ -86,6 +91,13 @@ func (p Patch) apply(existing Event) (Event, error) {
 	}
 	e.RegistrationClosed = p.RegistrationClosed.Or(existing.RegistrationClosed)
 	e.RegistrationClosesAt = p.RegistrationClosesAt.Or(existing.RegistrationClosesAt)
+	if p.CancelReason.Set {
+		reason := strings.TrimSpace(p.CancelReason.Value)
+		if utf8.RuneCountInString(reason) > CancelReasonMax {
+			return Event{}, ErrInvalid
+		}
+		e.CancelReason, e.cancelReasonSent = reason, true
+	}
 	return e, nil
 }
 

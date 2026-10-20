@@ -25,6 +25,8 @@ type MemoryStore struct {
 	// hasCompetitors answers whether an Event has a current Competitor,
 	// what Unpublish refuses on too; nil is none.
 	hasCompetitors func(eventID uuid.UUID) bool
+	// statusMails are the queued status mails (status_mail.go).
+	statusMails []*memoryStatusMail
 }
 
 // ReadTicketsFrom makes Unpublish ask hasTickets whether an Event has a
@@ -193,6 +195,10 @@ func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
 		e.Status = StatusPublished
 	}
 	now := time.Now().UTC()
+	e.RegistrationClosedAt = nil
+	if e.RegistrationClosed {
+		e.RegistrationClosedAt = &now
+	}
 	if e.Status == StatusPublished && e.PublishedAt == nil {
 		e.PublishedAt = &now
 	}
@@ -214,8 +220,22 @@ func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
 	e.UpdatedAt = time.Now().UTC()
 	// An update writes neither the status nor what goes with it.
 	e.Status, e.PublishedAt, e.PublishedBy = existing.Status, existing.PublishedAt, existing.PublishedBy
-	e.CancelledAt, e.CancelledBy, e.CancelReason = existing.CancelledAt, existing.CancelledBy, existing.CancelReason
-	e.CopiedFromEventID = existing.CopiedFromEventID
+	reason := existing.CancelReason
+	if e.cancelReasonSent && existing.Status == StatusCancelled {
+		reason = e.CancelReason
+	}
+	e.CancelledAt, e.CancelledBy, e.CancelReason, e.cancelReasonSent = existing.CancelledAt, existing.CancelledBy, reason, false
+	e.CopiedFromEventID, e.CancelNotifiedAt = existing.CopiedFromEventID, existing.CancelNotifiedAt
+	// When applying was closed by hand, as the database writes it.
+	switch {
+	case !e.RegistrationClosed:
+		e.RegistrationClosedAt = nil
+	case existing.RegistrationClosed:
+		e.RegistrationClosedAt = existing.RegistrationClosedAt
+	default:
+		at := e.UpdatedAt
+		e.RegistrationClosedAt = &at
+	}
 	e.Images = existing.Images
 	e.ImageURLs = existing.ImageURLs
 	e.Files, e.Videos = existing.Files, existing.Videos
@@ -745,6 +765,48 @@ func (s *MemoryStore) Publish(_ context.Context, id uuid.UUID, by *uuid.UUID) (b
 	}
 	now := time.Now().UTC()
 	e.Status, e.PublishedAt, e.PublishedBy, e.UpdatedAt = StatusPublished, &now, by, now
+	s.byID[id] = e
+	return true, nil
+}
+
+func (s *MemoryStore) Cancel(_ context.Context, id uuid.UUID, by *uuid.UUID, reason string, notify bool) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[id]
+	now := time.Now().UTC()
+	if !ok || e.ArchivedAt != nil || e.Status != StatusPublished || e.EndedAt(now) {
+		return false, nil
+	}
+	e.Status, e.CancelledAt, e.CancelledBy, e.CancelReason, e.UpdatedAt = StatusCancelled, &now, by, reason, now
+	if notify {
+		s.queueStatusMail(id, StatusMailCancelled, nil, now)
+		e.CancelNotifiedAt = &now
+	}
+	s.byID[id] = e
+	return true, nil
+}
+
+func (s *MemoryStore) Uncancel(_ context.Context, id uuid.UUID, notify bool) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[id]
+	if !ok || e.ArchivedAt != nil || e.Status != StatusCancelled {
+		return false, nil
+	}
+	now := time.Now().UTC()
+	if notify && e.CancelNotifiedAt != nil {
+		var follows *memoryStatusMail
+		for _, m := range s.statusMails {
+			if m.EventID == id && m.Kind == StatusMailCancelled && (follows == nil || !m.CreatedAt.Before(follows.CreatedAt)) {
+				follows = m
+			}
+		}
+		if follows != nil {
+			s.queueStatusMail(id, StatusMailReinstated, &follows.ID, now)
+		}
+	}
+	e.CancelNotifiedAt = nil
+	e.Status, e.CancelledAt, e.CancelledBy, e.CancelReason, e.UpdatedAt = StatusPublished, nil, nil, "", now
 	s.byID[id] = e
 	return true, nil
 }

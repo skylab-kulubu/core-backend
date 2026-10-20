@@ -63,13 +63,33 @@ func TestRegistrationOpenIsDerived(t *testing.T) {
 		if got := e.RegistrationOpenAt(now); got != tc.open {
 			t.Errorf("%s: open = %v, want %v", tc.name, got, tc.open)
 		}
-		if got := e.RegistrationClosedAt(now); got != tc.closedAt {
+		if got := e.ApplyingClosedAt(now); got != tc.closedAt {
 			t.Errorf("%s: closed = %v, want %v", tc.name, got, tc.closedAt)
 		}
 	}
 	// The deadline itself is closed.
 	e := event.Event{Status: event.StatusPublished, RegistrationClosesAt: at(now)}
-	if e.RegistrationOpenAt(now) || !e.RegistrationClosedAt(now) {
+	if e.RegistrationOpenAt(now) || !e.ApplyingClosedAt(now) {
 		t.Fatal("open at the deadline")
+	}
+}
+
+// At an answer's sending, applying closed by hand counts from when it was
+// closed; with no time known, from ever.
+func TestApplyingClosedAtAnAnswersSending(t *testing.T) {
+	t.Parallel()
+	closedAt := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	e := event.Event{Status: event.StatusPublished, RegistrationClosed: true, RegistrationClosedAt: &closedAt}
+	if e.ApplyingClosedAt(closedAt.Add(-time.Second)) || !e.ApplyingClosedAt(closedAt) || !e.ApplyingClosedAt(closedAt.Add(time.Hour)) {
+		t.Fatal("by hand")
+	}
+	e.RegistrationClosedAt = nil
+	if !e.ApplyingClosedAt(closedAt.Add(-time.Hour)) {
+		t.Fatal("closed by hand at an unknown time")
+	}
+	deadline := closedAt
+	e = event.Event{Status: event.StatusPublished, RegistrationClosesAt: &deadline}
+	if e.ApplyingClosedAt(deadline.Add(-time.Second)) || !e.ApplyingClosedAt(deadline) {
+		t.Fatal("deadline")
 	}
 }

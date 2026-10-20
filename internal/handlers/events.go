@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"time"
@@ -223,6 +224,71 @@ func (h *EventHandler) Publish(c fiber.Ctx) error {
 // /v1/events/{id}/unpublish.
 func (h *EventHandler) Unpublish(c fiber.Ctx) error {
 	return h.statusChange(c, h.svc.Unpublish)
+}
+
+// cancelBody is the body of POST /v1/events/{id}/cancel, both fields
+// optional; no body is none of them.
+type cancelBody struct {
+	Reason string `json:"reason"`
+	// NotifyTicketHolders queues the cancellation mail to the Ticket
+	// holders (ADR 0066 addendum 2026-10-19; ticket 14). A body without it
+	// mails nobody: an older client does not start a mail.
+	NotifyTicketHolders bool `json:"notifyTicketHolders"`
+}
+
+// Cancel cancels a published Event that has not ended: POST
+// /v1/events/{id}/cancel (ADR 0066, ticket 04).
+func (h *EventHandler) Cancel(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body cancelBody
+	if len(bytes.TrimSpace(c.Body())) > 0 {
+		if err := c.Bind().Body(&body); err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+	}
+	cancelled, err := h.svc.Cancel(c.Context(), p, id, body.Reason, body.NotifyTicketHolders)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(h.svc.ProjectFor(&p, cancelled))
+}
+
+// uncancelBody is the body of POST /v1/events/{id}/uncancel, optional.
+type uncancelBody struct {
+	// NotifyTicketHolders queues the mail that the Event is back to whom
+	// the cancellation mail reached (ticket 14); without a cancellation
+	// mail it does nothing.
+	NotifyTicketHolders bool `json:"notifyTicketHolders"`
+}
+
+// Uncancel undoes a cancellation: POST /v1/events/{id}/uncancel (ticket 15).
+func (h *EventHandler) Uncancel(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body uncancelBody
+	if len(bytes.TrimSpace(c.Body())) > 0 {
+		if err := c.Bind().Body(&body); err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+	}
+	uncancelled, err := h.svc.Uncancel(c.Context(), p, id, body.NotifyTicketHolders)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(h.svc.ProjectFor(&p, uncancelled))
 }
 
 func (h *EventHandler) statusChange(c fiber.Ctx, change func(ctx context.Context, p authz.Principal, id uuid.UUID) (event.Event, error)) error {

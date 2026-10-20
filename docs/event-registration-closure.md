@@ -8,6 +8,7 @@ ADR 0066 addendum (2026-10-19, decision 10), ticket 12. The organizer closes or 
 |---|---|---|
 | `registrationClosed` | `POST /v1/events`, `PUT`/`PATCH /v1/events/{id}` | closed by hand; default `false` |
 | `registrationClosesAt` | the same | the deadline: applying closes at this moment; none: no deadline |
+| `registrationClosedAt` | the store, never the body | when applying was closed by hand: set when `registrationClosed` turns on, kept while it stays on, cleared when it turns off |
 | `registrationOpen` | derived, never written | `status = published`, not ended (as `active`), not closed by hand, and before the deadline |
 
 Writing either needs what any other field of the Event needs (`authz.Update`: the editors; DK `403`). An update that leaves them out keeps them ([event-updates.md](event-updates.md)); `registrationClosed: null` is `400`, `registrationClosesAt: null` removes the deadline. The body's `active` is still ignored: the legacy "Başvurular açık" switch of sky-app can be bound to `registrationClosed` instead.
@@ -18,13 +19,13 @@ Writing either needs what any other field of the Event needs (`authz.Update`: th
 |---|---|
 | `POST /v1/events/{id}/applications/me`, `…/applications/guest` (a person's own application, the editor's own too) | `409`, `code: "registration_closed"` (a draft still answers `event_not_published` to who may see it, `404` to anyone else) |
 | `POST /v1/events/{id}/applications/users/{userId}`, and `…/applications/guest` called by an operator (who may update the Event or assign its Tickets: the panel's "Katılımcı ekle") | allowed: the editor's call (Yusuf, 2026-10-20) |
-| `POST /v1/forms/{formId}/responses` (Forms' report) | no Ticket on an Event whose organizer closed applying, by hand or by the deadline; when every Event of the form has, `200` with `outcome: "registration_closed"` ([form-response-tickets.md](form-response-tickets.md)) |
+| `POST /v1/forms/{formId}/responses` (Forms' report) | **not refused by the closure**: the Ticket is written. Only a report carrying the optional `submittedAt` is judged by it: an answer sent at or after `registrationClosedAt` or `registrationClosesAt` gets no Ticket on that Event; when no Event is left, `200` with `outcome: "registration_closed"` ([form-response-tickets.md](form-response-tickets.md)) |
 
 Self-apply is refused whenever `registrationOpen` is false: on an Event closed by hand or past its deadline, and also on an ended or cancelled one.
 
-**The Forms report does not follow `registrationOpen`** (Yusuf, 2026-10-20). It is refused only by the organizer's closure, by hand or by the deadline (and, with ticket 04, by a cancellation). An ended Event keeps taking its forms' answers and writes their Tickets: feedback forms are filled in after the Event. So an ended Event answers `registrationOpen: false` and still accepts a Forms answer; a draft (ADR 0066) does too, unless closed. CONTEXT's "an ended Event is closed anyway" is about applying, not about the forms' answers.
+**The Forms report does not follow `registrationOpen`, and closing applying does not refuse it** (Yusuf, 2026-10-20; review B1). Forms reports an answer when it is accepted, and an approval can come after the closure for an answer sent in time; Forms also retries for days. Refusing on arrival would lose those answers silently, and Luma and Eventbrite give a Ticket to an application approved after registration closed. So the closure stops a person's own application only. Once Forms sends `submittedAt` (when the person sent the answer), core refuses an answer sent after the closure: by hand (`registrationClosedAt`, stored for that) or by the deadline. A report without it is not judged. A cancelled Event refuses Forms' answers first, as ticket 04 says. An ended Event keeps taking its forms' answers (feedback forms are filled in after the Event): it answers `registrationOpen: false` and still writes the Ticket; a draft (ADR 0066) does too.
 
-Forms' worker sends a report again for seven days on any answer that is not `2xx`, and the answer was already accepted in Forms. So core answers the refusal `200`, which Forms takes as done, until Forms treats a lasting refusal of its own (proposed: `409`, `code: "registration_closed"`) and shows it to the form's owner and the person who answered; core moves to that answer in a separate change after that Forms version is live. That part is Fatih's call.
+Forms' worker sends a report again for seven days on any answer that is not `2xx`, and the answer was already accepted in Forms. So core answers a refusal by `submittedAt` with `200`, which Forms takes as done, until Forms treats a lasting refusal of its own (proposed: `409`, `code: "registration_closed"`) and shows it to the form's owner and the person who answered. Sending `submittedAt` and that answer are Fatih's call; core moves to the `409` in a separate change after that Forms version is live.
 
 ## Clients
 

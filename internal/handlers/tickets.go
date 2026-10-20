@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
@@ -181,16 +182,20 @@ type formResponseBody struct {
 	Status     string     `json:"status"`
 	UserID     *uuid.UUID `json:"userId"`
 	Guest      *guestBody `json:"guest"`
+	// SubmittedAt is when the person sent the answer, optional (ticket 12).
+	SubmittedAt *time.Time `json:"submittedAt"`
 }
 
 // RecordFormResponse takes the forms service's report of an answer to one of
 // its forms (docs/form-response-tickets.md). The answer is 204 whether or not
 // an Event lists the form: the forms service only needs to know it may stop
-// sending the report. An answer refused because every Event of the form has
-// closed applying is 200 with {"outcome": "registration_closed"}: still a
-// 2xx, which the forms service takes as done, until it knows a refusal of
-// its own (ticket 12). A caller who may not report is refused before the
-// request is read, so a malformed request from them is 403 too.
+// sending the report. An answer that writes no Ticket because every Event of
+// the form is cancelled (ticket 04), or, for an answer whose submittedAt the
+// forms service sent, closed to applications by then (ticket 12), is 200
+// with {"outcome": "event_cancelled"} or {"outcome": "registration_closed"}:
+// still a 2xx, which the forms service takes as done. A caller who may not
+// report is refused before the request is read, so a malformed request from
+// them is 403 too.
 func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
@@ -208,10 +213,11 @@ func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	r := ticket.FormResponse{
-		FormID:     formID,
-		ResponseID: body.ResponseID,
-		Status:     ticket.FormResponseStatus(body.Status),
-		UserID:     body.UserID,
+		FormID:      formID,
+		ResponseID:  body.ResponseID,
+		Status:      ticket.FormResponseStatus(body.Status),
+		UserID:      body.UserID,
+		SubmittedAt: body.SubmittedAt,
 	}
 	if body.Guest != nil {
 		r.Guest = &ticket.GuestInfo{FirstName: body.Guest.FirstName, LastName: body.Guest.LastName, Email: body.Guest.Email}
@@ -221,7 +227,7 @@ func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
 	if err != nil {
 		return ticketError(c, err)
 	}
-	if result.Outcome == ticket.FormResponseRegistrationClosed {
+	if result.Outcome == ticket.FormResponseEventCancelled || result.Outcome == ticket.FormResponseRegistrationClosed {
 		return c.JSON(fiber.Map{"outcome": result.Outcome})
 	}
 	return c.SendStatus(fiber.StatusNoContent)

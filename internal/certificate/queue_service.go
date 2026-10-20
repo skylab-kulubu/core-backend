@@ -264,6 +264,12 @@ func (s *service) processJob(ctx context.Context, job Job) error {
 	if err != nil {
 		return mapEventError(err)
 	}
+	if ev.Status == event.StatusCancelled {
+		// Cancelled since the claim: issue nothing and leave the job as it
+		// is. Its lease runs out, and the claim takes it again once the
+		// cancellation is undone (ticket 04).
+		return nil
+	}
 	item, err := s.tickets.Get(ctx, job.TicketID)
 	if err != nil {
 		return mapTicketError(err)

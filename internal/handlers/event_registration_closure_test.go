@@ -121,6 +121,10 @@ func TestRegistrationClosureRefusesSelfApplyOnly(t *testing.T) {
 		if !tc.open {
 			wantStatus, wantCode = fiber.StatusConflict, "registration_closed"
 		}
+		// A cancelled Event says so first, to everyone (ticket 04).
+		if tc.ev.Status == event.StatusCancelled {
+			wantCode = "event_cancelled"
+		}
 		for who, call := range map[string]func() (int, map[string]any){
 			"me": func() (int, map[string]any) {
 				return sendEventJSON(t, member, fiber.MethodPost, path+"/applications/me", "")
@@ -142,6 +146,13 @@ func TestRegistrationClosureRefusesSelfApplyOnly(t *testing.T) {
 		// own one too, but not adding a person or a guest from the panel.
 		if status, body := sendEventJSON(t, leader, fiber.MethodPost, path+"/applications/me", ""); status != wantStatus || (wantCode != "" && body["code"] != wantCode) {
 			t.Errorf("%s editor's own: %d %v", tc.name, status, body)
+		}
+		// The operator of a cancelled Event adds nobody, not a guest either
+		// (review B2).
+		if tc.ev.Status == event.StatusCancelled {
+			if status, body := sendEventJSON(t, leader, fiber.MethodPost, path+"/applications/guest", closureGuestBody("panel-misafir@example.com")); status != fiber.StatusConflict || body["code"] != "event_cancelled" {
+				t.Errorf("%s panel guest: %d %v", tc.name, status, body)
+			}
 		}
 		if tc.ev.Status == event.StatusPublished {
 			if status, body := sendEventJSON(t, leader, fiber.MethodPost, path+"/applications/users/"+closureTarget.String(), ""); status != fiber.StatusCreated {
@@ -166,6 +177,7 @@ func TestRegistrationClosureIsWrittenByPatch(t *testing.T) {
 	path := "/v1/events/" + created["id"].(string)
 	member := env.app(t, closureMember)
 	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	var closedAt any
 	for _, step := range []struct {
 		body   string
 		status int
@@ -190,6 +202,17 @@ func TestRegistrationClosureIsWrittenByPatch(t *testing.T) {
 		if got["registrationOpen"] != step.open || got["registrationClosed"] != step.closed || got["ranked"] != true {
 			t.Fatalf("%s: %v", step.body, got)
 		}
+		// When applying was closed by hand is kept while it stays closed.
+		if _, at := got["registrationClosedAt"]; at != (step.closed == true) {
+			t.Fatalf("%s: registrationClosedAt %v", step.body, got["registrationClosedAt"])
+		}
+		if step.closed == true {
+			if closedAt == nil {
+				closedAt = got["registrationClosedAt"]
+			} else if got["registrationClosedAt"] != closedAt {
+				t.Fatalf("%s: registrationClosedAt moved %v → %v", step.body, closedAt, got["registrationClosedAt"])
+			}
+		}
 		if _, present := got["registrationClosesAt"]; present != (step.body == `{"registrationClosesAt":"`+past+`"}`) {
 			t.Fatalf("%s: registrationClosesAt %v", step.body, got["registrationClosesAt"])
 		}
@@ -200,48 +223,66 @@ func TestRegistrationClosureIsWrittenByPatch(t *testing.T) {
 	}
 }
 
-func TestFormsAnswerToAClosedRegistrationWritesNoTicket(t *testing.T) {
+// Closing applying does not refuse a Forms report (Yusuf, 2026-10-20,
+// review B1): an answer sent in time and approved later, or reported late,
+// earns its Ticket. Only a report that says when the answer was sent
+// (submittedAt) is judged by it, against when applying was closed by hand
+// or by the deadline. A cancelled Event is refused first, as before.
+func TestFormsAnswerToAClosedRegistration(t *testing.T) {
 	t.Parallel()
 	env := newClosureEnv(t)
-	past := time.Now().Add(-time.Hour)
-	closedForm, deadlineForm, sharedForm, draftForm, endedForm := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	now := time.Now()
+	past := now.Add(-time.Hour)
+	closedForm, deadlineForm, sharedForm, cancelledForm, endedForm := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	closed := env.create(t, "Elle kapalı", event.StatusPublished, false, true, nil, closedForm)
 	deadline := env.create(t, "Son tarih geçti", event.StatusPublished, false, false, &past, deadlineForm)
 	sharedClosed := env.create(t, "Ortak kapalı", event.StatusPublished, false, true, nil, sharedForm)
 	sharedOpen := env.create(t, "Ortak açık", event.StatusPublished, false, false, nil, sharedForm)
-	draft := env.create(t, "Taslak kapalı", event.StatusDraft, false, true, nil, draftForm)
+	cancelled := env.create(t, "İptal ve kapalı", event.StatusCancelled, false, true, nil, cancelledForm)
 	ended := env.create(t, "Bitti", event.StatusPublished, true, false, nil, endedForm)
 	forms := env.app(t, closureForms)
-	report := func(formID uuid.UUID) (int, map[string]any) {
+	report := func(formID uuid.UUID, submitted *time.Time) (int, map[string]any) {
+		at := ""
+		if submitted != nil {
+			at = `,"submittedAt":"` + submitted.UTC().Format(time.RFC3339Nano) + `"`
+		}
 		return sendEventJSON(t, forms, fiber.MethodPost, "/v1/forms/"+formID.String()+"/responses",
-			`{"responseId":"`+uuid.NewString()+`","status":"accepted","userId":"`+closureTarget.String()+`"}`)
+			`{"responseId":"`+uuid.NewString()+`","status":"accepted","guest":{"firstName":"Ada","lastName":"Lovelace","email":"`+uuid.NewString()+`@example.com"}`+at+`}`)
 	}
+	before, after := now.Add(-2*time.Hour), now.Add(time.Minute)
 	for _, tc := range []struct {
-		name string
-		form uuid.UUID
-		ev   event.Event
+		name      string
+		form      uuid.UUID
+		ev        event.Event
+		submitted *time.Time
+		outcome   string // "" writes the Ticket (204)
 	}{
-		{"closed by hand", closedForm, closed},
-		{"deadline gone", deadlineForm, deadline},
-		{"draft closed by hand", draftForm, draft},
+		{"closed by hand, no submittedAt", closedForm, closed, nil, ""},
+		{"closed by hand, sent before", closedForm, closed, &before, ""},
+		{"closed by hand, sent after", closedForm, closed, &after, "registration_closed"},
+		{"deadline gone, no submittedAt", deadlineForm, deadline, nil, ""},
+		{"deadline gone, sent before", deadlineForm, deadline, &before, ""},
+		{"deadline gone, sent after", deadlineForm, deadline, &after, "registration_closed"},
+		{"cancelled", cancelledForm, cancelled, nil, "event_cancelled"},
+		{"cancelled, sent after closing", cancelledForm, cancelled, &after, "event_cancelled"},
+		{"ended", endedForm, ended, &after, ""},
 	} {
-		status, body := report(tc.form)
-		if status != fiber.StatusOK || body["outcome"] != "registration_closed" {
-			t.Errorf("%s: %d %v", tc.name, status, body)
-		}
-		if n := env.ticketCount(t, tc.ev.ID); n != 0 {
-			t.Errorf("%s: %d Tickets", tc.name, n)
+		count := env.ticketCount(t, tc.ev.ID)
+		status, body := report(tc.form, tc.submitted)
+		wrote := env.ticketCount(t, tc.ev.ID) - count
+		switch {
+		case tc.outcome == "" && (status != fiber.StatusNoContent || wrote != 1):
+			t.Errorf("%s: %d %v, %d Tickets", tc.name, status, body, wrote)
+		case tc.outcome != "" && (status != fiber.StatusOK || body["outcome"] != tc.outcome || wrote != 0):
+			t.Errorf("%s: %d %v, %d Tickets", tc.name, status, body, wrote)
 		}
 	}
-	// A form two Events list writes the open one's Ticket alone.
-	if status, body := report(sharedForm); status != fiber.StatusNoContent {
+	// A form two Events list: an answer sent after one closed writes the
+	// other's Ticket alone.
+	if status, body := report(sharedForm, &after); status != fiber.StatusNoContent {
 		t.Fatalf("shared: %d %v", status, body)
 	}
 	if env.ticketCount(t, sharedOpen.ID) != 1 || env.ticketCount(t, sharedClosed.ID) != 0 {
 		t.Fatalf("shared: open %d closed %d", env.ticketCount(t, sharedOpen.ID), env.ticketCount(t, sharedClosed.ID))
-	}
-	// An ended Event the organizer did not close takes the answer as before.
-	if status, body := report(endedForm); status != fiber.StatusNoContent || env.ticketCount(t, ended.ID) != 1 {
-		t.Fatalf("ended: %d %v, %d Tickets", status, body, env.ticketCount(t, ended.ID))
 	}
 }

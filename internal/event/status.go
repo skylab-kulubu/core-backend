@@ -80,18 +80,21 @@ func (e Event) ActiveAt(now time.Time) bool {
 	return e.Status == StatusPublished && !e.EndedAt(now)
 }
 
-// RegistrationClosedAt reports whether the organizer has closed applying at
-// now, by hand or by the deadline, whatever the status and the dates
-// (Registration closure, ticket 12).
-func (e Event) RegistrationClosedAt(now time.Time) bool {
-	return e.RegistrationClosed || (e.RegistrationClosesAt != nil && !e.RegistrationClosesAt.After(now))
+// ApplyingClosedAt reports whether the organizer had closed applying at t,
+// by hand (closed now, since RegistrationClosedAt; since ever when that is
+// not known) or by the deadline, whatever the status and the dates
+// (Registration closure, ticket 12). At the present it is whether applying
+// is closed; at an answer's sending, whether it was sent too late.
+func (e Event) ApplyingClosedAt(t time.Time) bool {
+	byHand := e.RegistrationClosed && (e.RegistrationClosedAt == nil || !t.Before(*e.RegistrationClosedAt))
+	return byHand || (e.RegistrationClosesAt != nil && !e.RegistrationClosesAt.After(t))
 }
 
 // RegistrationOpenAt reports whether people may apply themselves at now:
 // the Event is active (published, not ended) and its organizer has not
-// closed applying (RegistrationClosedAt). Derived, never stored.
+// closed applying (ApplyingClosedAt). Derived, never stored.
 func (e Event) RegistrationOpenAt(now time.Time) bool {
-	return e.ActiveAt(now) && !e.RegistrationClosedAt(now)
+	return e.ActiveAt(now) && !e.ApplyingClosedAt(now)
 }
 
 // FinalizeOpenAt reports whether Attendance finalization may run at now: the

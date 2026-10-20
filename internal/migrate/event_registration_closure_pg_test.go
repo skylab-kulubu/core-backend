@@ -22,7 +22,7 @@ func registrationClosureColumns(t *testing.T, pool *pgxpool.Pool) int {
 	if err := pool.QueryRow(context.Background(), `
 		SELECT count(*) FROM information_schema.columns
 		WHERE table_schema = 'public' AND table_name = 'events'
-		  AND column_name IN ('registration_closed', 'registration_closes_at')`).Scan(&n); err != nil {
+		  AND column_name IN ('registration_closed', 'registration_closes_at', 'registration_closed_at')`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
@@ -52,7 +52,7 @@ func TestRegistrationClosureMigrationOnExistingEvents(t *testing.T) {
 	if err := migrate.Apply(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	if n := registrationClosureColumns(t, pool); n != 2 {
+	if n := registrationClosureColumns(t, pool); n != 3 {
 		t.Fatalf("fresh database: %d columns", n)
 	}
 	if _, err := pool.Exec(ctx, readDown(t, registrationClosureDown)); err != nil {

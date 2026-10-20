@@ -58,4 +58,22 @@ func TestPostgresStoreDerivesRegistrationOpen(t *testing.T) {
 	if !updated.RegistrationClosed || updated.RegistrationClosesAt == nil || !updated.RegistrationClosesAt.Equal(deadline) || updated.RegistrationOpen {
 		t.Fatalf("updated %+v", updated)
 	}
+	// Closed by hand: when is written, kept while closed, cleared when
+	// opened again.
+	if updated.RegistrationClosedAt == nil {
+		t.Fatal("registration_closed_at not written")
+	}
+	again, err := store.Update(ctx, updated)
+	if err != nil || again.RegistrationClosedAt == nil || !again.RegistrationClosedAt.Equal(*updated.RegistrationClosedAt) {
+		t.Fatalf("kept %+v %v", again.RegistrationClosedAt, err)
+	}
+	again.RegistrationClosed = false
+	reopened, err := store.Update(ctx, again)
+	if err != nil || reopened.RegistrationClosedAt != nil {
+		t.Fatalf("reopened %+v %v", reopened.RegistrationClosedAt, err)
+	}
+	closedOnCreate, err := store.Create(ctx, event.Event{Name: "Kapalı", Location: "YTÜ", OwnerTeam: "WEBLAB", RegistrationClosed: true})
+	if err != nil || closedOnCreate.RegistrationClosedAt == nil {
+		t.Fatalf("closed on create %+v %v", closedOnCreate.RegistrationClosedAt, err)
+	}
 }

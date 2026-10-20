@@ -109,10 +109,15 @@ func (s *PostgresStore) ClaimJobs(ctx context.Context, limit int, lease time.Dur
 	if lease <= 0 {
 		lease = 2 * time.Minute
 	}
+	// A cancelled Event's jobs wait, untouched, until its cancellation is
+	// undone (ADR 0066 addendum 2026-10-19; ticket 04).
 	rows, err := s.pool.Query(ctx, `
 		WITH picked AS (
 			SELECT id FROM certificate_jobs
 			WHERE ((status='queued' AND next_attempt_at<=now()) OR (status='running' AND lease_until<now()))
+			  AND NOT EXISTS (
+				SELECT 1 FROM events e WHERE e.id = certificate_jobs.event_id AND e.status = 'cancelled'
+			  )
 			ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT $1
 		)
 		UPDATE certificate_jobs j SET status='running',attempt_count=attempt_count+1,

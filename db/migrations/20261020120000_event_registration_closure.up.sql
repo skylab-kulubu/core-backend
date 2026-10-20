@@ -4,6 +4,8 @@
 --   * registration_closed: the organizer closed applying by hand.
 --   * registration_closes_at: applying closes at this moment (none: no
 --     deadline).
+--   * registration_closed_at: when it was closed by hand, so that a forms
+--     answer can be judged by when it was sent (Yusuf, 2026-10-20).
 --
 -- Whether applying is open is derived (internal/event/status.go): published,
 -- not ended, not closed by hand and before the deadline. Every existing
@@ -16,4 +18,5 @@ SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE events
     ADD COLUMN IF NOT EXISTS registration_closed BOOLEAN NOT NULL DEFAULT false,
-    ADD COLUMN IF NOT EXISTS registration_closes_at TIMESTAMPTZ;
+    ADD COLUMN IF NOT EXISTS registration_closes_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS registration_closed_at TIMESTAMPTZ;

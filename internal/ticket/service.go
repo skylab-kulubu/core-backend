@@ -251,7 +251,8 @@ func (s *service) ListDoorEvents(ctx context.Context, p authz.Principal) ([]even
 	}
 	out := make([]event.Resource, 0)
 	for _, ev := range events {
-		if s.canUseDoor(ctx, p, ev) {
+		// A cancelled Event's door is closed: the door apps leave it out.
+		if ev.Status == event.StatusPublished && s.canUseDoor(ctx, p, ev) {
 			out = append(out, ev.Resource())
 		}
 	}
@@ -480,12 +481,15 @@ func (s *service) ApplyForOther(ctx context.Context, p authz.Principal, eventID,
 		return Ticket{}, err
 	}
 	// Adding a person from the panel works on a draft too (speakers, the
-	// team): only for who may see it.
+	// team): only for who may see it. A cancelled Event takes nobody new.
 	if err := s.seen(&p, ev); err != nil {
 		return Ticket{}, err
 	}
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign) {
 		return Ticket{}, ErrForbidden
+	}
+	if ev.Status == event.StatusCancelled {
+		return Ticket{}, ErrEventCancelled
 	}
 	if userID == uuid.Nil {
 		return Ticket{}, ErrInvalid

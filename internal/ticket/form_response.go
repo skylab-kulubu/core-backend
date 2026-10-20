@@ -35,6 +35,10 @@ type FormResponse struct {
 	UserID *uuid.UUID
 	// Guest is what a guest typed into the form's identity fields.
 	Guest *GuestInfo
+	// SubmittedAt is when the person sent the answer, when the forms
+	// service says: an answer sent after its Event closed applying earns no
+	// Ticket. Without it closing applying refuses no answer (ticket 12).
+	SubmittedAt *time.Time
 }
 
 // FormResponseOutcome is how recording a report ended, for the report's log
@@ -54,12 +58,18 @@ const (
 	// account is blocked or no longer active.
 	FormResponsePersonUnavailable FormResponseOutcome = "person_unavailable"
 	// FormResponseRecorded is a report that went through every Event that
-	// lists the form and takes applications.
+	// lists the form and is neither cancelled nor, for an answer sent after
+	// it, closed to applications.
 	FormResponseRecorded FormResponseOutcome = "recorded"
-	// FormResponseRegistrationClosed is an answer to a form every Event of
-	// which has closed applying (Registration closure, ticket 12): no Ticket
-	// is written. The forms service is told so in the answer, still a 2xx,
-	// so that it does not send the report again.
+	// FormResponseEventCancelled is an answer to a form whose every Event
+	// is cancelled (ticket 04): no Ticket is written. The forms service is
+	// told so in the answer, still a 2xx, so that it does not send the
+	// report again.
+	FormResponseEventCancelled FormResponseOutcome = "event_cancelled"
+	// FormResponseRegistrationClosed is an answer the forms service says
+	// was sent (submittedAt) once every Event of the form left that was not
+	// cancelled had closed applying, by hand or by the deadline (ticket
+	// 12): no Ticket is written; a 2xx too.
 	FormResponseRegistrationClosed FormResponseOutcome = "registration_closed"
 )
 
@@ -71,8 +81,10 @@ type FormResponseResult struct {
 }
 
 // RecordFormResponse writes the Ticket an accepted answer earns on every
-// current Event that lists the form and has not closed applying (when every
-// one has, the outcome is FormResponseRegistrationClosed): a REGISTERED one for a person who
+// current Event that lists the form and is not cancelled (when every one
+// is, the outcome is FormResponseEventCancelled), and, when the report says
+// when the answer was sent, had not closed applying by then (when every one
+// left had, FormResponseRegistrationClosed): a REGISTERED one for a person who
 // answered signed in, a guest one for the e-mail a guest typed. An answer
 // that is pending or declined, or that carries neither (a guest without an
 // e-mail counts as neither), writes nothing, and
@@ -122,9 +134,15 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	if len(listing) == 0 {
 		return FormResponseResult{Outcome: FormResponseNotListed}, nil
 	}
-	listing = openListing(listing, time.Now())
+	listing = notCancelled(listing)
 	if len(listing) == 0 {
-		return FormResponseResult{Outcome: FormResponseRegistrationClosed}, nil
+		return FormResponseResult{Outcome: FormResponseEventCancelled}, nil
+	}
+	if r.SubmittedAt != nil {
+		listing = openWhenSubmitted(listing, *r.SubmittedAt)
+		if len(listing) == 0 {
+			return FormResponseResult{Outcome: FormResponseRegistrationClosed}, nil
+		}
 	}
 	if r.UserID != nil {
 		if err := s.resolveApplyTarget(ctx, *r.UserID); err != nil {
@@ -178,19 +196,33 @@ func (s *service) eventsListingForm(ctx context.Context, formID uuid.UUID) ([]ev
 	return listing, nil
 }
 
-// openListing leaves out the Events whose organizer closed applying, by
-// hand or by the deadline (event.RegistrationClosedAt): an answer to their
-// form writes them no Ticket (ADR 0066 addendum 2026-10-19, decision 10).
-// A draft keeps taking the form's answers unless closed so; whether an
-// ended or cancelled Event does is left as it was.
-func openListing(listing []event.Event, now time.Time) []event.Event {
-	open := listing[:0:0]
+// notCancelled leaves out the cancelled Events: an answer to their form
+// writes them no Ticket (ticket 04).
+func notCancelled(listing []event.Event) []event.Event {
+	out := listing[:0:0]
 	for _, ev := range listing {
-		if !ev.RegistrationClosedAt(now) {
-			open = append(open, ev)
+		if ev.Status != event.StatusCancelled {
+			out = append(out, ev)
 		}
 	}
-	return open
+	return out
+}
+
+// openWhenSubmitted leaves out the Events whose organizer had closed
+// applying, by hand or by the deadline, when the answer was sent
+// (event.ApplyingClosedAt): Yusuf, 2026-10-20. Closing applying never
+// refuses an answer whose report does not say when it was sent: an answer
+// sent in time and approved after the closure still earns its Ticket, and
+// one the forms service reports late still does. An ended Event takes its
+// forms' answers (feedback forms come after it).
+func openWhenSubmitted(listing []event.Event, submitted time.Time) []event.Event {
+	out := listing[:0:0]
+	for _, ev := range listing {
+		if !ev.ApplyingClosedAt(submitted) {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 // settledFormResponse treats as done what sending the report again would not
