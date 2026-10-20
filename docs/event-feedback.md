@@ -2,7 +2,7 @@
 
 Etkinlik geri bildirim formu (spec `.scratch/etkinlik-geri-bildirim-formu/SPEC.md` in the hub; Yusuf's decisions of 2026-10-20). An Event names its feedback form apart from its application and extra forms: **an answer to a feedback form writes no Ticket.**
 
-This page is tickets 02 to 04: the Event's and the Sessions' fields, the one-place rule, the short links, the forms report, the invites and who answered. The mails (06) and the reminder (07) come after them.
+This page is tickets 02 to 04 and 06: the Event's and the Sessions' fields, the one-place rule, the short links, the forms report, the invites and who answered, and the mails. The reminder (07) comes after them.
 
 ## Fields
 
@@ -71,3 +71,16 @@ An unknown code, another form's, or one longer than 64 characters is ignored. A 
 **Counts.** `GET /v1/events/{id}/feedback` answers `{"event": {"sent": 12, "answered": 5}, "sessions": [{"sessionId": "…", "sent": 4, "answered": 1}]}`: how many invites each target's form went out in and how many were answered. Who may read the Event in full may (its editors, DK); a member `403`, a draft the caller may not see `404`. The counts live in `feedback_invite_counts`, kept by a trigger on the invites, and stay when the invites go.
 
 **Retention and erasure.** An invite is deleted 90 days after it was sent (retention rule `feedback_invites_age`, [retention-sweep.md](retention-sweep.md)). Account erasure deletes the invites of the person's Tickets and of their addresses' guest Tickets ([account-lifecycle.md](account-lifecycle.md)); a Ticket is never deleted, so its invite does not go with it. The counts stay in both cases: they name nobody.
+
+## Mails (ticket 06)
+
+**Which targets, when.** A target is the Event's form (any mode) or, in the `per_session` mode, a Session's form. The schedule (`internal/feedbackmail`, every minute, one replica at a time under an advisory lock) finds the targets that ended `feedback.SendDelay` (2 hours) ago: the Event's end (`endDate`, else a day after `startDate`), a Session's `endTime`, else its day's end, else the Event's. Only with a form and `feedbackAutoSend` on, the Event published and current, a Session not cancelled or archived, and not sent before. A target with no end is never sent by itself. A target that ended more than `feedback.AutoWindow` (7 days) ago is not sent by itself either: a form added to an old Event does not mail its people out of the blue (open question for Yusuf).
+
+**Whom.** The Tickets that checked in: to the Session, or, for the Event's form, to any of its Sessions; guests too. The address is read when the mail goes, as for the Event status mails: a member whose account is erased, being erased or blocked, or a guest without an address, gets none.
+
+**One mail a person a day (S2).** A target taken by the schedule is recorded once (`feedback_mail_targets`) and put into each such Ticket's mail of its EventDay (the Session's day; the Event's form joins the Event's last day). That mail goes `SendDelay` (plus a 5-minute grace, so that targets of the same minute join it) after the last Session the person checked in to that day ends. One mail, all that day's forms: `core.feedback-request` with `FirstName` (may be empty), `EventName` and `Items`, one `{Title, URL}` per form; `Title` the Session's title or the Event's name, `URL` the form's own address with the person's invite code (`feedback.Link`), never a short link. A person who left after the morning gets their mail before the Event's form is due; the Event's form then goes in a mail of its own (open question for Yusuf).
+
+**"Şimdi gönder".** `POST /v1/events/{id}/feedback/send` (the Event's form) and `POST /v1/sessions/{id}/feedback/send` (a Session's): whoever may edit the Event. `202 {"sent": true, "recipients": n}`: a mail of its own to each Ticket that checked in, at once, not waiting for the day's others; the target counts as sent and the schedule never sends it again. `200 {"sent": false}` when it was sent already. `409 feedback_form_missing` without a form; `409 feedback_not_sendable` for a draft, a cancelled or archived Event, a cancelled or archived Session. The box (`feedbackAutoSend`) does not stop it.
+
+**When it goes.** Before each mail the worker reads its targets again: one whose Event is no longer published (cancelled, back to draft) or archived, whose Session was cancelled or archived, whose form changed, or (the schedule's mail) whose box was turned off or whose Session is no longer in the `per_session` mode, is left out; a mail with nothing left is dropped. The invites are written as the mail is built, one per Ticket and target; a mail tried again (SkyMail down) sends the same links, nothing twice. A refusal by SkyMail (`400`, `422`) is done with; any other failure is tried again with a doubling wait, up to 72 hours. With `SKYMAIL_FEEDBACK_REQUEST_TEMPLATE_KEY` empty the mails wait in the queue. Without SkyMail the worker is off and nothing is planned.
+
