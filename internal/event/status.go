@@ -36,6 +36,8 @@ const undatedEndsAfter = 24 * time.Hour
 const (
 	endsAtSQL = `COALESCE(e.end_date, e.start_date + interval '24 hours')`
 	activeSQL = `(e.status = 'published' AND (` + endsAtSQL + ` IS NULL OR ` + endsAtSQL + ` > now()))`
+	// notDraftSQL is what a list that shows no draft filters with.
+	notDraftSQL = `e.status <> 'draft'`
 )
 
 // creatable reports whether an Event may be created with the status: a new

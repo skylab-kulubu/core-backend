@@ -22,7 +22,8 @@ const tokenRefreshMargin = 30 * time.Second
 type SecretSource func() (string, error)
 
 // ClientCredentials fetches the `core-erasure` client's token for one
-// service's erase scope and keeps it until 30 seconds before it expires. It
+// service's erase scope (or, with no Scope, another client's token: core's
+// own for the tracking withdrawal, commpref.SkyMailWithdrawals) and keeps it until 30 seconds before it expires. It
 // keeps nothing beyond that: a token whose lifetime is 30 seconds or less is
 // not cached, a failure caches nothing, and Invalidate forgets the token when a
 // service rejects it.
@@ -91,7 +92,7 @@ func (c *ClientCredentials) fetch(ctx context.Context) (string, time.Duration, e
 	form.Set("grant_type", "client_credentials")
 	form.Set("client_id", c.ClientID)
 	form.Set("client_secret", secret)
-	form.Set("scope", "openid "+c.Scope)
+	form.Set("scope", strings.TrimSpace("openid "+c.Scope))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", 0, errors.New("token request could not be built")

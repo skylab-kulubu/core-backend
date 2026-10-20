@@ -64,7 +64,7 @@ func TestPostgresStoreDerivesActive(t *testing.T) {
 			t.Errorf("%s listed as active", e.Name)
 		}
 	}
-	all, err := store.List(ctx, "", false)
+	all, err := store.ListIncludingDrafts(ctx, "")
 	if err != nil || len(all) != len(want) {
 		t.Fatalf("all %d %v", len(all), err)
 	}

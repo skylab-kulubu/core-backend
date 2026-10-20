@@ -679,6 +679,7 @@ func (k *Keycloak) SearchUsers(ctx context.Context, query string, limit int) ([]
 			FirstName string `json:"firstName"`
 			LastName  string `json:"lastName"`
 			Username  string `json:"username"`
+			Enabled   bool   `json:"enabled"`
 		}
 		if err := json.Unmarshal(chunk, &row); err != nil {
 			continue
@@ -689,7 +690,7 @@ func (k *Keycloak) SearchUsers(ctx context.Context, query string, limit int) ([]
 		}
 		out = append(out, Person{
 			ID: id, Email: row.Email, FirstName: row.FirstName,
-			LastName: row.LastName, Username: row.Username,
+			LastName: row.LastName, Username: row.Username, Enabled: row.Enabled,
 		})
 	}
 	return out, nil
@@ -1235,9 +1236,10 @@ func (k *Keycloak) clientIDOf(ctx context.Context, token, uuid string) (string, 
 // clientID that the person holds in effect: directly, through their Groups
 // and the Groups above them, and through composite roles. It is Keycloak's
 // GET /users/{id}/role-mappings/clients/{client}/composite, the roles a token
-// for that client carries. A client the realm does not have, or a person it
-// does not know, is ErrNotFound. Any other failure is an error, never an
-// empty list, and no error names the person.
+// for that client carries. A client the realm does not have is
+// ErrClientNotFound, a person it does not know ErrNotFound (both are
+// ErrNotFound). Any other failure is an error, never an empty list, and no
+// error names the person.
 //
 // It needs view-clients or query-clients (the client's id) and view-users
 // (the person's role mappings); service-account-core holds them
@@ -1250,7 +1252,7 @@ func (k *Keycloak) EffectiveClientRoles(ctx context.Context, userID uuid.UUID, c
 	clientUUID, err := k.clientUUID(ctx, token, clientID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return nil, ErrNotFound
+			return nil, ErrClientNotFound
 		}
 		return nil, fmt.Errorf("identity: keycloak client lookup failed: %w", err)
 	}

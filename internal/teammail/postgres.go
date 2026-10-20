@@ -24,13 +24,15 @@ func queuedKind(kind Kind) Kind {
 }
 
 func (q *PostgresQueue) Enqueue(ctx context.Context, c Change) (Enqueued, error) {
-	// One statement: the opposite change waiting unclaimed is removed, or
-	// else this one is inserted unless it already waits.
+	// One statement: the opposite change waiting unsent (never claimed, never
+	// failed) is removed, or else this one is inserted unless it already
+	// waits. An opposite change that may have reached the person stays; Claim
+	// drops it once this later one supersedes it.
 	var cancelled, inserted int
 	err := q.pool.QueryRow(ctx, `
 		WITH cancelled AS (
 			DELETE FROM team_membership_mails
-			WHERE subject_id = $2 AND group_path = $4 AND action <> $5 AND claimed_at IS NULL
+			WHERE subject_id = $2 AND group_path = $4 AND action <> $5 AND claimed_at IS NULL AND attempts = 0
 			RETURNING 1
 		), inserted AS (
 			INSERT INTO team_membership_mails (id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at, kind)
@@ -54,11 +56,27 @@ func (q *PostgresQueue) Enqueue(ctx context.Context, c Change) (Enqueued, error)
 }
 
 func (q *PostgresQueue) Claim(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]Change, error) {
+	// A change a later opposite change supersedes is dropped unless a pass
+	// is sending it now (its lease has not run out).
+	if _, err := q.pool.Exec(ctx, `
+		DELETE FROM team_membership_mails r
+		WHERE (r.claimed_at IS NULL OR r.next_attempt_at <= $1)
+		  AND EXISTS (
+			SELECT 1 FROM team_membership_mails o
+			WHERE o.subject_id = r.subject_id AND o.group_path = r.group_path AND o.action <> r.action
+			  AND (o.occurred_at, o.id) > (r.occurred_at, r.id))`, now); err != nil {
+		return nil, err
+	}
+	// A change whose opposite still waits is not taken: the opposite is
+	// being sent, or is a later one that drops it on the next claim.
 	rows, err := q.pool.Query(ctx, `
 		UPDATE team_membership_mails SET next_attempt_at = $2, claimed_at = $1
 		WHERE id IN (
-			SELECT id FROM team_membership_mails
+			SELECT id FROM team_membership_mails r
 			WHERE next_attempt_at <= $1
+			  AND NOT EXISTS (
+				SELECT 1 FROM team_membership_mails o
+				WHERE o.subject_id = r.subject_id AND o.group_path = r.group_path AND o.action <> r.action)
 			ORDER BY next_attempt_at, occurred_at, id
 			LIMIT $3
 			FOR UPDATE SKIP LOCKED)

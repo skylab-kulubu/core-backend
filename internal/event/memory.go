@@ -19,6 +19,30 @@ type MemoryStore struct {
 	// media is where an Event's files and videos are read from; nil keeps
 	// each item its id alone.
 	media MediaReader
+	// hasTickets answers whether an Event has a Ticket, what Unpublish
+	// refuses on; nil is none.
+	hasTickets func(eventID uuid.UUID) bool
+	// hasCompetitors answers whether an Event has a current Competitor,
+	// what Unpublish refuses on too; nil is none.
+	hasCompetitors func(eventID uuid.UUID) bool
+}
+
+// ReadTicketsFrom makes Unpublish ask hasTickets whether an Event has a
+// Ticket, as the database looks at its tickets table.
+func (s *MemoryStore) ReadTicketsFrom(hasTickets func(eventID uuid.UUID) bool) *MemoryStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hasTickets = hasTickets
+	return s
+}
+
+// ReadCompetitorsFrom makes Unpublish ask hasCompetitors whether an Event
+// has a current Competitor, as the database looks at its competitors table.
+func (s *MemoryStore) ReadCompetitorsFrom(hasCompetitors func(eventID uuid.UUID) bool) *MemoryStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hasCompetitors = hasCompetitors
+	return s
 }
 
 // MediaReader reads the Media an Event's files and videos link: the Media
@@ -48,19 +72,26 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (s *MemoryStore) List(_ context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
-	return s.list(ownerTeam, activeOnly, lifecycle.CurrentOnly), nil
+	return s.list(ownerTeam, activeOnly, false, lifecycle.CurrentOnly), nil
+}
+
+func (s *MemoryStore) ListIncludingDrafts(_ context.Context, ownerTeam string) ([]Event, error) {
+	return s.list(ownerTeam, false, true, lifecycle.CurrentOnly), nil
 }
 
 func (s *MemoryStore) ListLifecycle(_ context.Context, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error) {
-	return s.list(ownerTeam, false, visibility), nil
+	return s.list(ownerTeam, false, true, visibility), nil
 }
 
-func (s *MemoryStore) list(ownerTeam string, activeOnly bool, visibility lifecycle.Visibility) []Event {
+func (s *MemoryStore) list(ownerTeam string, activeOnly, drafts bool, visibility lifecycle.Visibility) []Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Event, 0, len(s.byID))
 	for _, e := range s.byID {
 		if !visibility.Matches(e.ArchivedAt != nil) {
+			continue
+		}
+		if !drafts && e.Status == StatusDraft {
 			continue
 		}
 		if ownerTeam != "" && e.OwnerTeam != ownerTeam {
@@ -556,7 +587,7 @@ func (s *MemoryStore) ListBySeason(_ context.Context, seasonID uuid.UUID) ([]Eve
 	defer s.mu.Unlock()
 	out := make([]Event, 0)
 	for _, e := range s.byID {
-		if e.ArchivedAt == nil && e.SeasonID != nil && *e.SeasonID == seasonID {
+		if e.ArchivedAt == nil && e.Status != StatusDraft && e.SeasonID != nil && *e.SeasonID == seasonID {
 			out = append(out, s.listed(e))
 		}
 	}
@@ -701,4 +732,34 @@ func (s *MemoryStore) RestoreSession(_ context.Context, id uuid.UUID) error {
 		s.sessions[id] = sess
 	}
 	return nil
+}
+
+func (s *MemoryStore) Publish(_ context.Context, id uuid.UUID, by *uuid.UUID) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[id]
+	if !ok || e.ArchivedAt != nil || e.Status != StatusDraft || !e.publishable() {
+		return false, nil
+	}
+	now := time.Now().UTC()
+	e.Status, e.PublishedAt, e.PublishedBy, e.UpdatedAt = StatusPublished, &now, by, now
+	s.byID[id] = e
+	return true, nil
+}
+
+func (s *MemoryStore) Unpublish(_ context.Context, id uuid.UUID) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[id]
+	if !ok || e.ArchivedAt != nil || e.Status != StatusPublished {
+		return false, nil
+	}
+	tickets := s.hasTickets != nil && s.hasTickets(id)
+	competitors := s.hasCompetitors != nil && s.hasCompetitors(id)
+	if err := unpublishRefusal(true, tickets, competitors); err != nil {
+		return false, err
+	}
+	e.Status, e.UpdatedAt = StatusDraft, time.Now().UTC()
+	s.byID[id] = e
+	return true, nil
 }

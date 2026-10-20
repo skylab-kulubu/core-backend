@@ -60,6 +60,11 @@ func (s *service) Sync(ctx context.Context, p authz.Principal, eventID uuid.UUID
 		}
 		return Result{}, err
 	}
+	// A draft does not exist for who may not see it (ADR 0066); who may
+	// see it syncs its list as on a published Event.
+	if !event.VisibleTo(s.authz, &p, ev) {
+		return Result{}, ErrNotFound
+	}
 	// A sync writes: it creates the Event's SkyMail list and puts the
 	// applicants' names and addresses on it. Reading the applicants is not
 	// enough (a Privileged reader such as DK reads them, grup-yonetimi

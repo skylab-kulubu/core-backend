@@ -51,7 +51,7 @@ func (h *ScheduleHandler) ListDays(c fiber.Ctx) error {
 	}
 	var days []event.Day
 	if visibility == lifecycle.CurrentOnly {
-		days, err = h.svc.ListDays(c.Context(), eventID)
+		days, err = h.svc.ListDays(c.Context(), callerOrNil(c), eventID)
 	} else {
 		p, callerErr := caller(c)
 		if callerErr != nil {
@@ -86,7 +86,7 @@ func (h *ScheduleHandler) GetDay(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	day, err := h.svc.GetDay(c.Context(), id)
+	day, err := h.svc.GetDay(c.Context(), callerOrNil(c), id)
 	if err != nil {
 		return eventError(c, err)
 	}
@@ -159,7 +159,7 @@ func (h *ScheduleHandler) ListSessions(c fiber.Ctx) error {
 	}
 	var sessions []event.Session
 	if visibility == lifecycle.CurrentOnly {
-		sessions, err = h.svc.ListSessions(c.Context(), dayID)
+		sessions, err = h.svc.ListSessions(c.Context(), callerOrNil(c), dayID)
 	} else {
 		p, callerErr := caller(c)
 		if callerErr != nil {
@@ -202,7 +202,7 @@ func (h *ScheduleHandler) CurrentSession(c fiber.Ctx) error {
 		}
 		at = parsed
 	}
-	cur, err := h.svc.CurrentSession(c.Context(), dayID, at)
+	cur, err := h.svc.CurrentSession(c.Context(), callerOrNil(c), dayID, at)
 	if err != nil {
 		return eventError(c, err)
 	}
@@ -214,7 +214,7 @@ func (h *ScheduleHandler) GetSession(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	sess, err := h.svc.GetSession(c.Context(), id)
+	sess, err := h.svc.GetSession(c.Context(), callerOrNil(c), id)
 	if err != nil {
 		return eventError(c, err)
 	}
@@ -226,7 +226,7 @@ func (h *ScheduleHandler) SessionQR(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	if _, err := h.svc.GetSession(c.Context(), id); err != nil {
+	if _, err := h.svc.GetSession(c.Context(), callerOrNil(c), id); err != nil {
 		return eventError(c, err)
 	}
 	size := qr.SizeFromQuery(c.Query("size"))

@@ -1,55 +1,173 @@
 name: Checks
 
+# Two sizes of one workflow; the job "scope (full|fast)" says which a run is
+# (docs/ci.md).
+# - full: every package's tests. Pushes to main and production, pull requests
+#   into anything but main (release PRs into production), the nightly
+#   schedule, a manual run (gh workflow run checks.yml --ref <branch>) and
+#   pull requests into main labelled full-ci (read when the PR is opened or
+#   pushed to).
+# - fast: pull requests into main. The tests of the packages the change can
+#   affect (scripts/ci/testplan affected: the imports of each package's test
+#   binary); for a change to Markdown only, just the tests that read docs/.
+# A tree that a fully green full run of a push, the schedule or a manual run
+# has tested is not tested again (scripts/ci/tested-tree.sh): the release PR
+# into production and the push to production promote it.
+# The tests run in shards (test (N)), split by the last runs' timings, a long
+# package by its test names (scripts/ci/testplan plan); each shard runs one
+# PostgreSQL server and each test a database of its own on it.
+# One required check: gate.
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, production]
+  schedule:
+    # Every night at 02:17 UTC, on main.
+    - cron: '17 2 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# A newer push to the same pull request makes the older run pointless.
+# A newer push to a pull request cancels its older run; pushes, the schedule
+# and manual runs are never cancelled (each main and production commit keeps
+# its own run).
 concurrency:
-  group: checks-${{ github.ref }}
+  group: checks-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # The newest 1.25 patch release, which is what the Dockerfiles build with
+  # (golang:1.25-alpine). go.mod's `go 1.25.0` is only the minimum.
+  GO_VERSION: "1.25"
+
 jobs:
-  # The job's name is the check's name, which is what a branch protection rule
-  # asks for.
-  checks:
+  scope:
+    name: scope (${{ (github.event_name != 'pull_request' || github.base_ref != 'main' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'fast' }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      # The integration tests start their own throwaway containers through the
-      # runner's Docker (internal/testpostgres, testredis, clamdtest and the
-      # OpenBao test), so there is no `services:` database to configure. The
-      # database fixture defaults to the version deploy/compose.yaml runs (17);
-      # production runs PostgreSQL 18, so CI tests against that.
-      CORE_TEST_POSTGRES_IMAGE: postgres:18-alpine
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Earlier runs of this workflow: whether this tree was tested.
+      actions: read
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+      promoted: ${{ steps.scope.outputs.promoted }}
+      lint: ${{ steps.scope.outputs.lint }}
+      tests: ${{ steps.plan.outputs.tests }}
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      # The tests pull what they need on first use. Starting the pulls now,
-      # while Go downloads and builds, keeps the large ClamAV image off the
-      # tests' clock. ffmpeg and ffprobe are for the tests that run the real
-      # tools (they skip themselves without); the install leaves
-      # ffmpeg.ok behind, which a later step waits for. A failed image pull
-      # is not fatal here; the last step catches any test that then skipped
-      # for it.
-      - name: Start fetching what the integration tests use
-        run: |
-          for image in "$CORE_TEST_POSTGRES_IMAGE" redis:7-alpine openbao/openbao:2.7.0 clamav/clamav:1.5.4-debian; do
-            nohup docker pull --quiet "$image" >/dev/null 2>&1 &
-          done
-          nohup sh -c "sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg && touch $RUNNER_TEMP/ffmpeg.ok" >"$RUNNER_TEMP/ffmpeg-install.log" 2>&1 &
-
       - uses: actions/checkout@v7
+        with:
+          # A pull request checks out GitHub's merge commit: HEAD^1 is the
+          # base it merges into.
+          fetch-depth: 2
 
-      # The newest 1.25 patch release, which is what the Dockerfiles build with
-      # (golang:1.25-alpine). go.mod's `go 1.25.0` is only the minimum.
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: ${{ env.GO_VERSION }}
           check-latest: true
-          cache: true
+          cache: false
+
+      # go list needs the modules; the go.sum's module cache, saved by lint.
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+
+      # The timings of the latest run that saved them (this branch's, else
+      # main's); none is fine, the plan then guesses.
+      - uses: actions/cache/restore@v6
+        with:
+          path: test-timings.tsv
+          key: test-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: test-timings-
+
+      - name: Choose what to check
+        id: scope
+        env:
+          FULL: ${{ (github.event_name != 'pull_request' || github.base_ref != 'main' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'true' || 'false' }}
+          # Only what goes to production is promoted.
+          PROMOTABLE: ${{ github.ref == 'refs/heads/production' || github.base_ref == 'production' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          out() { printf '%s\n' "$@" >> "$GITHUB_OUTPUT"; }
+          out "full=$FULL"
+          if [[ $FULL == true && $PROMOTABLE == true ]] && bash scripts/ci/tested-tree.sh "$(git rev-parse 'HEAD^{tree}')"; then
+            echo 'promoted: this tree passed a full run already; nothing to test again'
+            out promoted=true lint=false
+            : > packages.txt
+            exit 0
+          fi
+          out promoted=false
+          if [[ $FULL == true ]]; then
+            echo 'full run: every package'
+            out lint=true
+            go run ./scripts/ci/testplan affected -all > packages.txt
+            exit 0
+          fi
+          if ! changed=$(git diff --name-only --no-renames HEAD^1 HEAD) || [[ -z $changed ]]; then
+            echo 'the PR diff could not be read: every package' >&2
+            out lint=true
+            go run ./scripts/ci/testplan affected -all > packages.txt
+            exit 0
+          fi
+          # Markdown only: no Go changed, nothing to format, vet or build.
+          if grep -qv '\.md$' <<<"$changed"; then out lint=true; else out lint=false; fi
+          go run ./scripts/ci/testplan affected <<<"$changed" > packages.txt
+          echo "fast run: the tests of $(wc -l < packages.txt) packages"
+
+      # At most six shards: the organisation's runners (20 jobs at once) are
+      # shared with every other repository's CI.
+      - name: Plan the shards
+        id: plan
+        run: |
+          if [[ ! -s packages.txt ]]; then
+            echo tests=false >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          touch test-timings.tsv
+          matrix=$(go run ./scripts/ci/testplan plan -packages packages.txt -timings test-timings.tsv -max-shards 6 -out testplan.json)
+          printf 'tests=true\nmatrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        if: steps.plan.outputs.tests == 'true'
+        with:
+          name: testplan
+          path: |
+            testplan.json
+            test-timings.tsv
+          retention-days: 3
+
+  lint:
+    needs: scope
+    if: needs.scope.outputs.lint == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # main's pushes and the nightly run save the caches every job restores.
+      SAVE_CACHE: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: false
+
+      - id: mod-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: go-build-${{ runner.os }}-
 
       - name: gofmt
         run: |
@@ -74,8 +192,99 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bin"
           go build -o "$RUNNER_TEMP/bin/" ./cmd/core-backend ./cmd/media-frame
 
-      - name: Wait for ffmpeg
+      # What the shards compile (the -race test binaries), so the saved build
+      # cache spares them that.
+      - name: Build the tests with -race
+        if: env.SAVE_CACHE == 'true'
+        run: go test -race -count=1 -run '^$' ./... > /dev/null
+
+      - if: env.SAVE_CACHE == 'true' && steps.mod-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+
+      - if: env.SAVE_CACHE == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ github.run_id }}
+
+  test:
+    name: test (${{ matrix.shard }})
+    needs: scope
+    if: needs.scope.outputs.tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.scope.outputs.matrix) }}
+    env:
+      # The integration tests start their own throwaway containers through the
+      # runner's Docker (testredis, clamdtest and the OpenBao test); the
+      # database tests each get a database of their own on the shard's
+      # PostgreSQL server (internal/testpostgres). Production runs PostgreSQL
+      # 18, so CI tests against that.
+      CORE_TEST_POSTGRES_IMAGE: postgres:18-alpine
+      CORE_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+    steps:
+      # The tests pull what they need on first use. Starting the pulls now,
+      # while Go builds, keeps the large ClamAV image off the tests' clock.
+      # ffmpeg and ffprobe are for the tests that run the real tools (they
+      # skip themselves without); the install leaves ffmpeg.ok behind, which a
+      # later step waits for. A failed pull is not fatal here; a test that
+      # then skipped fails the run.
+      - name: Start fetching what the integration tests use
         run: |
+          for image in redis:7-alpine openbao/openbao:2.7.0 clamav/clamav:1.5.4-debian; do
+            nohup docker pull --quiet "$image" >/dev/null 2>&1 &
+          done
+          nohup sh -c "sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg && touch $RUNNER_TEMP/ffmpeg.ok" >"$RUNNER_TEMP/ffmpeg-install.log" 2>&1 &
+
+      # The shard's PostgreSQL server, its data in memory. Every test creates
+      # its own database on it and drops it after.
+      - name: Start PostgreSQL
+        run: |
+          nohup docker run -d --name core-test-postgres \
+            --tmpfs /var/lib/postgresql --tmpfs /var/lib/postgresql/data \
+            -e PGDATA=/var/lib/postgresql/data -e POSTGRES_PASSWORD=postgres \
+            -p 127.0.0.1:5432:5432 "$CORE_TEST_POSTGRES_IMAGE" -c max_connections=500 \
+            >"$RUNNER_TEMP/postgres-start.log" 2>&1 &
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: false
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: go-build-${{ runner.os }}-
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: testplan
+
+      - name: Wait for PostgreSQL and ffmpeg
+        run: |
+          for _ in $(seq 1 60); do
+            docker exec core-test-postgres pg_isready -h 127.0.0.1 -U postgres -q 2>/dev/null && break
+            sleep 1
+          done
+          if ! docker exec core-test-postgres pg_isready -h 127.0.0.1 -U postgres; then
+            cat "$RUNNER_TEMP/postgres-start.log"
+            docker logs core-test-postgres
+            exit 1
+          fi
           for _ in $(seq 1 90); do
             [ -f "$RUNNER_TEMP/ffmpeg.ok" ] && exit 0
             sleep 2
@@ -84,18 +293,89 @@ jobs:
           cat "$RUNNER_TEMP/ffmpeg-install.log"
           exit 1
 
-      # -timeout: the default of ten minutes per package is close to what
-      # internal/media takes under -race.
+      # Each unit is a `go test -race` of one package or of a part of one;
+      # four at a time. A failed test's output is printed; a test that skips
+      # (often for want of Docker or ffmpeg) fails the shard, as no test here
+      # skips on purpose. -timeout: per unit.
       - name: go test -race
-        shell: bash
-        run: go test -race -count=1 -timeout 20m -v ./... 2>&1 | tee "$RUNNER_TEMP/test.log"
+        run: go run ./scripts/ci/testplan run -plan testplan.json -shard ${{ matrix.shard }} -dir "$RUNNER_TEMP/test-results" -- -race -count=1 -timeout 20m
 
-      # A test that cannot reach Docker or ffmpeg skips itself and the run
-      # stays green, which would mean the database or media tests did not
-      # run. No test here skips on purpose, so any skip fails the job.
-      - name: No test may skip
+      - uses: actions/upload-artifact@v7
+        if: success()
+        with:
+          name: timings-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test-results/timings.tsv
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: test-results-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test-results/
+          retention-days: 7
+
+  # The shards' timings, merged into the last ones, for the next plan. Not a
+  # check: the gate does not wait for it, and its failure does not fail the
+  # run (a run's success is what scripts/ci/tested-tree.sh looks for).
+  timings:
+    needs: [scope, test]
+    if: needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: testplan
+          path: artifacts/testplan
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: timings-*
+          path: artifacts
+
+      - name: Merge the timings
         run: |
-          if grep -E '^\s*--- SKIP' "$RUNNER_TEMP/test.log"; then
-            echo "A test was skipped (often for want of Docker or ffmpeg); see above."
+          # The plan's input first, so each test's newest timing wins.
+          awk -F '\t' 'NF == 3 { t[$1 FS $2] = $3 } END { for (k in t) print k FS t[k] }' \
+            artifacts/testplan/test-timings.tsv artifacts/timings-*/timings.tsv | sort > test-timings.tsv
+          wc -l < test-timings.tsv
+
+      - uses: actions/cache/save@v6
+        with:
+          path: test-timings.tsv
+          key: test-timings-${{ github.run_id }}-${{ github.run_attempt }}
+
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    needs: [scope, lint, test]
+    steps:
+      - name: Every selected job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          # The same expression as scope's, not scope's output.
+          FULL: ${{ (github.event_name != 'pull_request' || github.base_ref != 'main' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'true' || 'false' }}
+          PROMOTABLE: ${{ github.ref == 'refs/heads/production' || github.base_ref == 'production' }}
+          SCOPE_FULL: ${{ needs.scope.outputs.full }}
+          PROMOTED: ${{ needs.scope.outputs.promoted }}
+        run: |
+          jq -r 'to_entries[] | "\(.key)=\(.value.result)"' <<<"$NEEDS"
+          echo "full=$FULL promoted=$PROMOTED"
+          test "$(jq -r '.scope.result' <<<"$NEEDS")" = success
+          test "$SCOPE_FULL" = "$FULL"
+          if [[ $PROMOTED == true ]]; then
+            test "$FULL" = true
+            test "$PROMOTABLE" = true
+          fi
+          # A full run that tested runs every job; otherwise a job may skip.
+          strict=false
+          if [[ $FULL == true && $PROMOTED != true ]]; then strict=true; fi
+          bad=$(jq -r --arg strict "$strict" \
+            'to_entries[] | select(.value.result != "success" and ($strict == "true" or .value.result != "skipped")) | .key' \
+            <<<"$NEEDS")
+          if [[ -n $bad ]]; then
+            echo "not passed (strict: $strict): $bad" >&2
             exit 1
           fi

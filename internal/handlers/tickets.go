@@ -38,7 +38,7 @@ func ticketError(c fiber.Ctx, err error) error {
 	case errors.Is(err, ticket.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
 	case errors.Is(err, ticket.ErrConflict):
-		return problem(c, fiber.StatusConflict, "Conflict")
+		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
 	case errors.Is(err, ticket.ErrAmbiguous):
 		return problem(c, fiber.StatusConflict, "Ambiguous Match")
 	case errors.Is(err, ticket.ErrInvalid):
@@ -52,7 +52,13 @@ func ticketError(c fiber.Ctx, err error) error {
 	case errors.Is(err, ticket.ErrDoorQRUsedUp):
 		return problemCode(c, fiber.StatusForbidden, "Door QR Used Up", "door_qr_used_up")
 	case errors.Is(err, ticket.ErrSessionClosed):
-		return problemCode(c, fiber.StatusForbidden, "Session Not Open", "session_closed")
+		// The door's "session not open"; reason says why when the Event's
+		// status is (event_not_published), for a client that knows it.
+		var fields fiber.Map
+		if reason := eventStatusCode(err); reason != "" {
+			fields = fiber.Map{"reason": reason}
+		}
+		return problemWithFields(c, fiber.StatusForbidden, "Session Not Open", "Session Not Open", "session_closed", fields)
 	default:
 		return err
 	}

@@ -16,9 +16,21 @@ type Service interface {
 	CanAssign(p authz.Principal, ownerTeam string) bool
 	ProjectFor(p *authz.Principal, in Event) Event
 	ProjectAllFor(p *authz.Principal, in []Event) []Event
-	List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error)
+	// VisibleTo reports whether p (nil when signed out) may see e: a draft
+	// only its editors and Privileged readers (ADR 0066).
+	VisibleTo(p *authz.Principal, e Event) bool
+	// List reads the current Events, drafts left out. With drafts it adds
+	// the drafts p may see (VisibleTo), every team's or ownerTeam's.
+	List(ctx context.Context, p *authz.Principal, ownerTeam string, activeOnly, drafts bool) ([]Event, error)
 	ListLifecycle(ctx context.Context, p authz.Principal, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error)
-	Get(ctx context.Context, id uuid.UUID) (Event, error)
+	// Get reads the Event p may see: a draft that p may not see is
+	// ErrNotFound, as are the reads of its days and Sessions below.
+	Get(ctx context.Context, p *authz.Principal, id uuid.UUID) (Event, error)
+	// Publish publishes a draft; Unpublish makes a published Event without
+	// Tickets a draft again. Whoever may edit the Event may; each is
+	// idempotent and one conditional UPDATE.
+	Publish(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
+	Unpublish(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
 	Create(ctx context.Context, p authz.Principal, in Event) (Event, error)
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Event) (Event, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
@@ -41,23 +53,24 @@ type Service interface {
 	// Whoever may edit the Event may; ErrNotFound when the Event does not
 	// list the video.
 	SetVideoPoster(ctx context.Context, p authz.Principal, id, videoID uuid.UUID, posterID *uuid.UUID) (Event, error)
-	ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error)
+	ListDays(ctx context.Context, p *authz.Principal, eventID uuid.UUID) ([]Day, error)
 	ListDaysLifecycle(ctx context.Context, p authz.Principal, eventID uuid.UUID, visibility lifecycle.Visibility) ([]Day, error)
-	GetDay(ctx context.Context, id uuid.UUID) (Day, error)
+	GetDay(ctx context.Context, p *authz.Principal, id uuid.UUID) (Day, error)
 	CreateDay(ctx context.Context, p authz.Principal, d Day) (Day, error)
 	UpdateDay(ctx context.Context, p authz.Principal, id uuid.UUID, d Day) (Day, error)
 	DeleteDay(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	RestoreDay(ctx context.Context, p authz.Principal, id uuid.UUID) (Day, error)
-	ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Session, error)
+	ListSessions(ctx context.Context, p *authz.Principal, eventDayID uuid.UUID) ([]Session, error)
 	ListSessionsLifecycle(ctx context.Context, p authz.Principal, eventDayID uuid.UUID, visibility lifecycle.Visibility) ([]Session, error)
-	GetSession(ctx context.Context, id uuid.UUID) (Session, error)
-	CurrentSession(ctx context.Context, eventDayID uuid.UUID, at time.Time) (Current, error)
+	GetSession(ctx context.Context, p *authz.Principal, id uuid.UUID) (Session, error)
+	CurrentSession(ctx context.Context, p *authz.Principal, eventDayID uuid.UUID, at time.Time) (Current, error)
 	CreateSession(ctx context.Context, p authz.Principal, sess Session) (Session, error)
 	// UpdateSession overwrites the Session's fields; a nil cancelled keeps
 	// the stored cancel.
 	UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session, cancelled *bool) (Session, error)
 	DeleteSession(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	RestoreSession(ctx context.Context, p authz.Principal, id uuid.UUID) (Session, error)
+	// ListBySeason reads the Season's Events, drafts left out.
 	ListBySeason(ctx context.Context, seasonID uuid.UUID) ([]Event, error)
 	AssignSeason(ctx context.Context, p authz.Principal, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
 }
@@ -137,12 +150,40 @@ func (s *service) detail(ctx context.Context, e Event, err error) (Event, error)
 	return s.publish(e), nil
 }
 
-func (s *service) List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
-	events, err := s.store.List(ctx, ownerTeam, activeOnly)
+func (s *service) List(ctx context.Context, p *authz.Principal, ownerTeam string, activeOnly, drafts bool) ([]Event, error) {
+	// A draft is never active: an active list has none to add.
+	if !drafts || activeOnly || p == nil {
+		events, err := s.store.List(ctx, ownerTeam, activeOnly)
+		if err != nil {
+			return nil, err
+		}
+		return s.publishAll(events), nil
+	}
+	events, err := s.store.ListIncludingDrafts(ctx, ownerTeam)
 	if err != nil {
 		return nil, err
 	}
-	return s.publishAll(events), nil
+	return s.publishAll(s.visibleOnly(p, events)), nil
+}
+
+// visibleOnly are the events p may see, decided once per Owner team.
+func (s *service) visibleOnly(p *authz.Principal, events []Event) []Event {
+	drafts := make(map[string]bool)
+	out := make([]Event, 0, len(events))
+	for _, e := range events {
+		if e.Status == StatusDraft {
+			ok, seen := drafts[e.OwnerTeam]
+			if !seen {
+				ok = s.VisibleTo(p, e)
+				drafts[e.OwnerTeam] = ok
+			}
+			if !ok {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func (s *service) ListLifecycle(ctx context.Context, p authz.Principal, ownerTeam string, visibility lifecycle.Visibility) ([]Event, error) {
@@ -159,11 +200,11 @@ func (s *service) ListLifecycle(ctx context.Context, p authz.Principal, ownerTea
 			visible = append(visible, item)
 		}
 	}
-	return s.publishAll(visible), nil
+	return s.publishAll(s.visibleOnly(&p, visible)), nil
 }
 
-func (s *service) Get(ctx context.Context, id uuid.UUID) (Event, error) {
-	e, err := s.store.Get(ctx, id)
+func (s *service) Get(ctx context.Context, p *authz.Principal, id uuid.UUID) (Event, error) {
+	e, err := s.visible(ctx, p, id)
 	return s.detail(ctx, e, err)
 }
 
@@ -327,7 +368,7 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if err := s.store.Restore(ctx, id); err != nil {
 		return Event{}, err
 	}
-	restored, err := s.Get(ctx, id)
+	restored, err := s.Get(ctx, &p, id)
 	if err == nil {
 		s.syncFormLinks(ctx, restored.ID, formLinksOf(restored))
 	}
@@ -508,8 +549,8 @@ func (s *service) eventOwner(ctx context.Context, eventID uuid.UUID) (string, er
 	return ev.OwnerTeam, nil
 }
 
-func (s *service) ListDays(ctx context.Context, eventID uuid.UUID) ([]Day, error) {
-	if _, err := s.store.Get(ctx, eventID); err != nil {
+func (s *service) ListDays(ctx context.Context, p *authz.Principal, eventID uuid.UUID) ([]Day, error) {
+	if _, err := s.visible(ctx, p, eventID); err != nil {
 		return nil, err
 	}
 	return s.store.ListDays(ctx, eventID)
@@ -526,8 +567,15 @@ func (s *service) ListDaysLifecycle(ctx context.Context, p authz.Principal, even
 	return s.store.ListDaysLifecycle(ctx, eventID, visibility)
 }
 
-func (s *service) GetDay(ctx context.Context, id uuid.UUID) (Day, error) {
-	return s.store.GetDay(ctx, id)
+func (s *service) GetDay(ctx context.Context, p *authz.Principal, id uuid.UUID) (Day, error) {
+	day, err := s.store.GetDay(ctx, id)
+	if err != nil {
+		return Day{}, err
+	}
+	if err := s.parentVisible(ctx, p, day.EventID); err != nil {
+		return Day{}, err
+	}
+	return day, nil
 }
 
 func (s *service) CreateDay(ctx context.Context, p authz.Principal, d Day) (Day, error) {
@@ -597,8 +645,8 @@ func (s *service) RestoreDay(ctx context.Context, p authz.Principal, id uuid.UUI
 	return s.store.GetDay(ctx, id)
 }
 
-func (s *service) ListSessions(ctx context.Context, eventDayID uuid.UUID) ([]Session, error) {
-	if _, err := s.store.GetDay(ctx, eventDayID); err != nil {
+func (s *service) ListSessions(ctx context.Context, p *authz.Principal, eventDayID uuid.UUID) ([]Session, error) {
+	if _, err := s.GetDay(ctx, p, eventDayID); err != nil {
 		return nil, err
 	}
 	return s.store.ListSessions(ctx, eventDayID)
@@ -619,12 +667,23 @@ func (s *service) ListSessionsLifecycle(ctx context.Context, p authz.Principal, 
 	return s.store.ListSessionsLifecycle(ctx, eventDayID, visibility)
 }
 
-func (s *service) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
-	return s.store.GetSession(ctx, id)
+func (s *service) GetSession(ctx context.Context, p *authz.Principal, id uuid.UUID) (Session, error) {
+	sess, err := s.store.GetSession(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	day, err := s.store.GetDayIncludingArchived(ctx, sess.EventDayID)
+	if err != nil {
+		return Session{}, err
+	}
+	if err := s.parentVisible(ctx, p, day.EventID); err != nil {
+		return Session{}, err
+	}
+	return sess, nil
 }
 
-func (s *service) CurrentSession(ctx context.Context, eventDayID uuid.UUID, at time.Time) (Current, error) {
-	if _, err := s.store.GetDay(ctx, eventDayID); err != nil {
+func (s *service) CurrentSession(ctx context.Context, p *authz.Principal, eventDayID uuid.UUID, at time.Time) (Current, error) {
+	if _, err := s.GetDay(ctx, p, eventDayID); err != nil {
 		return Current{}, err
 	}
 	sessions, err := s.store.ListSessions(ctx, eventDayID)

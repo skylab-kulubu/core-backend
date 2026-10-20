@@ -17,7 +17,9 @@ const (
 	// ReadFull is reading a record whole, beyond what a limited reader
 	// sees: a User's full card (profile, Groups, roles) and every Team's
 	// members on the dashboard. Privileged readers (DK, global:read) and
-	// users:manage holders; users:read alone reads the limited card.
+	// users:manage holders; users:read alone reads the limited card. On an
+	// Event it is reading a draft: whoever may update the Event, and
+	// Privileged readers.
 	ReadFull Action = "READ_FULL"
 )
 

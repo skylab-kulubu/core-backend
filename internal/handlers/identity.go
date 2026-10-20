@@ -68,6 +68,16 @@ func auditContext(c fiber.Ctx, p authz.Principal) context.Context {
 	})
 }
 
+// callerOrNil is the signed-in caller, nil when signed out: who a read that
+// hides drafts answers.
+func callerOrNil(c fiber.Ctx) *authz.Principal {
+	p, err := caller(c)
+	if err != nil {
+		return nil
+	}
+	return &p
+}
+
 // optionalCaller is the signed-in caller, or the zero Principal when the
 // request carries no identity.
 func optionalCaller(c fiber.Ctx) authz.Principal {

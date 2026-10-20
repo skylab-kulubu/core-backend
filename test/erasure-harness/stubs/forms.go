@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS responses (
   data jsonb NOT NULL,
   review_note text NULL,
   reviewed_by text NULL,
+  guest_email text NULL,
   status text NOT NULL DEFAULT 'submitted',
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -215,6 +216,12 @@ CREATE TABLE IF NOT EXISTS collaborators (
   user_id text NOT NULL,
   role text NOT NULL,
   PRIMARY KEY (form_id, user_id)
+);
+-- Forms' outbox of form-response reports to core (docs/form-response-tickets.md): a signed-in
+-- answer's payload carries userId, a guest's carries guest {firstName, lastName, email}.
+CREATE TABLE IF NOT EXISTS response_notifications (
+  id uuid PRIMARY KEY,
+  payload jsonb NOT NULL
 );
 -- Harness evidence only: one row per erasure the stub actually ran, written in the same
 -- transaction as the receipt. It holds no subject and no address.
@@ -437,6 +444,11 @@ func parseCommand(r *http.Request) (command, bool) {
 	return command{requestID: requestID, subjectID: subject.String(), emails: emails}, true
 }
 
+// mentions is the SQL test that text names one of the addresses in $1, ignoring case.
+func mentions(text string) string {
+	return "(" + text + " IS NOT NULL AND EXISTS (SELECT 1 FROM unnest($1::text[]) address WHERE strpos(lower(" + text + "), address) > 0))"
+}
+
 type querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
@@ -457,8 +469,11 @@ func (s *formsServer) findReceipt(ctx context.Context, q querier, requestID uuid
 	return rc, true, nil
 }
 
-// eraseInTransaction applies spec §3.3's proposal to the stub's tables and writes the receipt in
-// the same transaction, under an advisory lock on the request id.
+// eraseInTransaction applies what Forms does (forms-backend 0689083, contract §10) to the stub's
+// tables and writes the receipt in the same transaction, under an advisory lock on the request
+// id. A guest record is not tied to the account and stays: only the verified addresses in
+// emails are removed, wherever they appear (answers, review notes, the guest e-mail, queued
+// reports). The person's queued signed-in reports are deleted.
 func (s *formsServer) eraseInTransaction(ctx context.Context, requestID uuid.UUID, cmd command) (receipt, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -486,13 +501,21 @@ func (s *formsServer) eraseInTransaction(ctx context.Context, requestID uuid.UUI
 		args []any
 	}{
 		{"responses_redacted", `UPDATE responses SET user_id = NULL, data = '{}'::jsonb, review_note = NULL WHERE user_id = $1`, []any{cmd.subjectID}},
-		{"guest_responses_redacted", `UPDATE responses SET data = '{}'::jsonb, review_note = NULL
-		   WHERE user_id IS NULL AND cardinality($1::text[]) > 0
-		     AND EXISTS (SELECT 1 FROM jsonb_each_text(data) answer WHERE lower(btrim(answer.value)) = ANY ($1::text[]))`, []any{cmd.emails}},
+		// An answer that mentions an address becomes ""; the other answers stay.
+		{"answer_rows_cleared", `UPDATE responses SET data = (
+		     SELECT jsonb_object_agg(answer.key, CASE WHEN ` + mentions("answer.value") + ` THEN '' ELSE answer.value END)
+		     FROM jsonb_each_text(data) answer)
+		   WHERE data <> '{}'::jsonb AND EXISTS (SELECT 1 FROM jsonb_each_text(data) answer WHERE ` + mentions("answer.value") + `)`, []any{cmd.emails}},
+		{"review_notes_cleared", `UPDATE responses SET review_note = NULL WHERE ` + mentions("review_note"), []any{cmd.emails}},
+		// Forms writes the guest e-mail in lower case; core sends the addresses in lower case.
+		{"guest_emails_cleared", `UPDATE responses SET guest_email = NULL WHERE guest_email = ANY ($1::text[])`, []any{cmd.emails}},
 		{"actor_columns_replaced", `UPDATE responses SET reviewed_by = $2 WHERE reviewed_by = $1`, []any{cmd.subjectID, deletedSubject}},
 		{"collaborators_deleted", `DELETE FROM collaborators WHERE user_id = $1 AND role <> 'Owner'`, []any{cmd.subjectID}},
 		{"actor_columns_replaced", `UPDATE collaborators SET user_id = $2 WHERE user_id = $1 AND role = 'Owner'`, []any{cmd.subjectID, deletedSubject}},
-		{"actor_columns_replaced", `UPDATE forms SET owned_by = $2 WHERE owned_by = $1`, []any{cmd.subjectID, deletedSubject}},
+		{"form_owners_replaced", `UPDATE forms SET owned_by = $2 WHERE owned_by = $1`, []any{cmd.subjectID, deletedSubject}},
+		{"notifications_cleared", `DELETE FROM response_notifications WHERE payload ->> 'userId' = $1`, []any{cmd.subjectID}},
+		{"notifications_cleared", `UPDATE response_notifications SET payload = jsonb_set(payload, '{guest,email}', 'null')
+		   WHERE payload -> 'guest' ->> 'email' = ANY ($1::text[])`, []any{cmd.emails}},
 	}
 	for _, step := range steps {
 		if err := exec(step.key, step.sql, step.args...); err != nil {

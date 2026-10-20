@@ -114,11 +114,18 @@ profile name as the recipient name.
   before its mail went (a double click on add) is not queued twice
   (`coalesced_total{kind="duplicate"}`).
 - Opposite changes cancel out while unsent: a removal made while the add's
-  mail still waits unclaimed (not being sent by a pass; one waiting for its
-  retry backoff counts) deletes that row and is not queued
-  (`coalesced_total{kind="cancelled"}`). So add, remove, add again before
-  any mail went sends one "added" mail. A change already being sent is not
-  cancelled; the opposite one is queued after it.
+  mail still waits, never taken by a pass and never failed, deletes that
+  row and is not queued (`coalesced_total{kind="cancelled"}`). So add,
+  remove, add again before any mail went sends one "added" mail.
+- The later change wins. A change that may already have reached the person
+  (being sent now, failed once after SkyMail may have taken it, or left by
+  a core that stopped mid-send) is not cancelled; the opposite one is
+  queued after it. That one is not taken while the first is being sent (at
+  most its two-minute lease), and once the first is no longer being sent
+  it is dropped unsent and the later one goes. So the last mail always
+  tells the current state: a person removed while their "added" mail
+  failed gets "removed" alone, never "added" after it, and one whose
+  "added" went but was retried still gets "removed".
 - Delivery is at least once: a core that dies between SkyMail's `201` and
   the row's deletion sends that mail again after the lease (two minutes). A
   core that is merely stopping deletes the row first. If SkyMail writes the

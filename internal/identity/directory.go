@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,9 @@ var (
 	ErrInvalid                  = errors.New("identity: invalid")
 	ErrAccountErasureDisabled   = errors.New("identity: account erasure disabled")
 	ErrAccountAccessUnavailable = errors.New("identity: account access projection unavailable")
+	// ErrClientNotFound is an ErrNotFound for a client the realm does not
+	// have, told apart from a person it does not know.
+	ErrClientNotFound = fmt.Errorf("identity: client not found: %w", ErrNotFound)
 )
 
 type Group struct {
@@ -121,7 +125,8 @@ type Directory interface {
 	UsersWithClientRole(ctx context.Context, clientID, role string) ([]Person, error)
 	// EffectiveClientRoles answers the names of clientID's roles the person
 	// holds in effect: directly, through Groups and the Groups above them,
-	// the default roles and composites. ErrNotFound: no such client or person.
+	// the default roles and composites. ErrNotFound: no such person;
+	// ErrClientNotFound (an ErrNotFound too): no such client.
 	EffectiveClientRoles(ctx context.Context, userID uuid.UUID, clientID string) ([]string, error)
 	CreateUser(ctx context.Context, p Person) (Person, error)
 	GetUser(ctx context.Context, id uuid.UUID) (Person, error)

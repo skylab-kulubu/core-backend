@@ -49,7 +49,7 @@ func TestPostgresRecordsBuildNoAddressForAScanningMedia(t *testing.T) {
 	if _, err := d.events().AddImages(ctx, d.organizer, created.ID, []uuid.UUID{photo.ID}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := d.events().Get(ctx, created.ID)
+	got, err := d.events().Get(ctx, nil, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

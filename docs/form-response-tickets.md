@@ -23,7 +23,7 @@ hold.
 | `responseId` | the answer's id in Forms, for tracing only |
 | `status` | `pending` (waits for review), `accepted` (needs no review, or approved), `declined` |
 | `userId` | the person who answered signed in; wins over `guest` |
-| `guest` | `{ firstName, lastName, email }` a guest typed into the form's identity fields |
+| `guest` | `{ firstName, lastName, email }` a guest typed into the form's identity fields; a guest without an e-mail counts as no respondent |
 
 The answer is `204` whether or not an Event lists the form. A pending or
 declined report is not read further. Core neither stores nor logs a report
@@ -33,7 +33,7 @@ that no Event lists: it writes nothing for it, and the report's log line
 | Answer | Meaning for Forms |
 |---|---|
 | `204` | done; stop sending the report |
-| `400` | a malformed report: a form id or body core cannot read, an unknown `status`, a zero `userId`, or a `guest` without a first name, last name or e-mail; sending it again will not help |
+| `400` | a malformed report: a form id or body core cannot read, an unknown `status`, a zero `userId`, or a `guest` with an e-mail but without a first name or last name; sending it again will not help |
 | `401` | no valid token |
 | `403` | the token is not the forms service account's with `ticket:forms`; core refuses it before reading the request, so a malformed report from such a caller is `403` too |
 | `5xx` | core could not finish; send the report again |
@@ -46,7 +46,7 @@ Only an `accepted` answer writes, on every current Event that lists the form:
 |---|---|
 | a person signed in (`userId`) | REGISTERED, as `POST /v1/events/{id}/applications/users/{userId}` writes it |
 | a guest (`guest`) | GUEST under the e-mail, as Guest apply writes it for an untrusted caller |
-| neither | none |
+| neither, or a guest without an e-mail | none (`no_respondent`) |
 
 A report carries what an anonymous form filler typed, so like the forms hop it
 replaces it fills only a detail the guest Ticket lacks and never renames a
@@ -63,7 +63,10 @@ Forms keeps a report in its outbox until core answers `2xx` and retries it for
 seven days, so reports sent before this route or the role existed arrive once
 they do. For the same reason Forms must drop the queued reports of a person it
 erases: a guest report delivered after account erasure would write the guest
-Ticket again.
+Ticket again. Forms removes only the verified address from a guest report
+([account-erasure-command.md §10](account-erasure-command.md#10-forms)), so
+such a report arrives with the name and `email: null`; core answers it `204`
+as a report without a respondent and writes nothing.
 
 ## Log
 

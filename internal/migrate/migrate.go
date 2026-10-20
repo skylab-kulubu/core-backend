@@ -1357,6 +1357,20 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.privilege_notice_mails_person_idx') IS NOT NULL
 		  AND to_regclass('public.privilege_notice_mails_subject_idx') IS NOT NULL
 		  AND to_regclass('public.privilege_notice_mails_actor_idx') IS NOT NULL`,
+	// The tracking preference: the category CHECK takes scope 'tracking',
+	// the withdrawal outbox and the audit trail with their indexes.
+	20261019120000: `
+		SELECT 1
+		WHERE to_regclass('public.communication_tracking_withdrawals') IS NOT NULL
+		  AND to_regclass('public.communication_tracking_withdrawals_due_idx') IS NOT NULL
+		  AND to_regclass('public.communication_tracking_changes') IS NOT NULL
+		  AND to_regclass('public.communication_tracking_changes_user_idx') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.communication_preferences')
+			  AND conname = 'communication_preferences_category_check'
+			  AND pg_get_constraintdef(oid) LIKE '%''tracking''%'
+		  )`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -49,7 +50,11 @@ func eventError(c fiber.Ctx, err error) error {
 	if handled, problemErr := linkProblem(c, err); handled {
 		return problemErr
 	}
+	var incomplete *event.IncompleteError
 	switch {
+	case errors.As(err, &incomplete):
+		return problemWithFields(c, fiber.StatusBadRequest, "Bad Request", "Bad Request", "event_incomplete",
+			fiber.Map{"missing": incomplete.Missing})
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
 	case errors.Is(err, event.ErrForbidden):
@@ -98,8 +103,41 @@ func (b eventBody) asEvent() event.Event {
 	return e
 }
 
+// draftsQuery reads ?drafts=: include adds the drafts the caller may see
+// (ADR 0066); none or exclude leaves them out.
+func draftsQuery(c fiber.Ctx) (bool, error) {
+	switch c.Query("drafts") {
+	case "", "exclude":
+		return false, nil
+	case "include":
+		return true, nil
+	default:
+		return false, event.ErrInvalid
+	}
+}
+
+// withoutCurrentDrafts leaves out the drafts that are not archived:
+// lifecycle=all is the current list and the archive together, and the
+// current list carries a draft only with ?drafts=include (ADR 0066). An
+// archived draft stays: the archive (lifecycle=inactive) is where a deleted
+// draft is restored from.
+func withoutCurrentDrafts(events []event.Event) []event.Event {
+	out := make([]event.Event, 0, len(events))
+	for _, e := range events {
+		if e.Status == event.StatusDraft && e.ArchivedAt == nil {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 func (h *EventHandler) List(c fiber.Ctx) error {
 	visibility, err := lifecycleVisibility(c)
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	drafts, err := draftsQuery(c)
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
@@ -114,17 +152,21 @@ func (h *EventHandler) List(c fiber.Ctx) error {
 		if err != nil {
 			return eventError(c, err)
 		}
+		if visibility == lifecycle.All && !drafts {
+			events = withoutCurrentDrafts(events)
+		}
 		return c.JSON(h.svc.ProjectAllFor(&p, events))
 	}
 	if callerErr != nil {
-		activeOnly = true
+		events, err := h.svc.List(c.Context(), nil, owner, true, false)
+		if err != nil {
+			return eventError(c, err)
+		}
+		return c.JSON(h.svc.ProjectAllFor(nil, events))
 	}
-	events, err := h.svc.List(c.Context(), owner, activeOnly)
+	events, err := h.svc.List(c.Context(), &p, owner, activeOnly, drafts)
 	if err != nil {
 		return eventError(c, err)
-	}
-	if callerErr != nil {
-		return c.JSON(h.svc.ProjectAllFor(nil, events))
 	}
 	return c.JSON(h.svc.ProjectAllFor(&p, events))
 }
@@ -146,7 +188,7 @@ func (h *EventHandler) Restore(c fiber.Ctx) error {
 }
 
 func (h *EventHandler) ListActive(c fiber.Ctx) error {
-	events, err := h.svc.List(c.Context(), "", true)
+	events, err := h.svc.List(c.Context(), nil, "", true, false)
 	if err != nil {
 		return eventError(c, err)
 	}
@@ -158,15 +200,39 @@ func (h *EventHandler) Get(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	ev, err := h.svc.Get(c.Context(), id)
+	p := callerOrNil(c)
+	ev, err := h.svc.Get(c.Context(), p, id)
 	if err != nil {
 		return eventError(c, err)
 	}
-	p, callerErr := caller(c)
-	if callerErr != nil {
-		return c.JSON(h.svc.ProjectFor(nil, ev))
+	return c.JSON(h.svc.ProjectFor(p, ev))
+}
+
+// Publish publishes a draft: POST /v1/events/{id}/publish (ADR 0066).
+func (h *EventHandler) Publish(c fiber.Ctx) error {
+	return h.statusChange(c, h.svc.Publish)
+}
+
+// Unpublish makes a published Event without Tickets a draft again: POST
+// /v1/events/{id}/unpublish.
+func (h *EventHandler) Unpublish(c fiber.Ctx) error {
+	return h.statusChange(c, h.svc.Unpublish)
+}
+
+func (h *EventHandler) statusChange(c fiber.Ctx, change func(ctx context.Context, p authz.Principal, id uuid.UUID) (event.Event, error)) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
 	}
-	return c.JSON(h.svc.ProjectFor(&p, ev))
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	changed, err := change(c.Context(), p, id)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(h.svc.ProjectFor(&p, changed))
 }
 
 func (h *EventHandler) Create(c fiber.Ctx) error {
