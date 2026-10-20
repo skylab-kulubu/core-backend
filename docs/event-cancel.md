@@ -7,7 +7,7 @@ ADR 0066 and its 2026-10-19 addendum (e-skylab), ticket 04. A cancelled Event st
 Body (optional, both fields too): `{"reason": "Hava koşulları nedeniyle", "notifyTicketHolders": true}`.
 
 - `reason`: a short public text, trimmed, at most 500 characters (`400` beyond). Answered as `cancelReason`.
-- `notifyTicketHolders`: whether core mails the Ticket holders. Read and, until the cancellation mail lands (ticket 14), does nothing: the organizer announces it through "Katılımcılara mail".
+- `notifyTicketHolders`: whether core mails the Ticket holders (the panel's "Bilet sahiplerine bildir" box, ticked by default). `true` queues the cancellation mail in the same write and answers `cancelNotifiedAt`; left out or `false`, nothing is mailed (an older client starts no mail) and the organizer announces it through "Katılımcılara mail". See **Mails** below.
 
 | Event | Answer |
 |---|---|
@@ -38,7 +38,7 @@ Publishing or unpublishing a cancelled Event is `409 event_cancelled`, as before
 
 ## `POST /v1/events/{id}/uncancel`
 
-Undoes the cancellation, always (ADR 0066 addendum 2026-10-19, decision 2; ticket 15). Body (optional): `{"notifyTicketHolders": true}`, whether core mails who got the cancellation mail that the Event is back; both mails are ticket 14, so until then no cancellation mail went out and the field is read and does nothing.
+Undoes the cancellation, always (ADR 0066 addendum 2026-10-19, decision 2; ticket 15). Body (optional): `{"notifyTicketHolders": true}`, whether core mails who got the cancellation mail that the Event is back (the panel offers "Katılımcılara tekrar bildir", ticked by default, only while `cancelNotifiedAt` is set). Without a cancellation mail it does nothing; the undo always clears `cancelNotifiedAt`.
 
 | Event | Answer |
 |---|---|
@@ -49,3 +49,20 @@ Undoes the cancellation, always (ADR 0066 addendum 2026-10-19, decision 2; ticke
 Who: whoever may edit the Event (`authz.Update`); DK and anyone else `403`. One `UPDATE … WHERE status = 'cancelled'`: `cancelledAt`, the actor and `cancelReason` are cleared (an old client does not show a reason on a published Event), `publishedAt` stays, the legacy `events.active` column gets the derived value. In the same transaction the Competitions the cancellation cancelled go back to their earlier status; one cancelled on its own stays cancelled.
 
 Nothing else is written: since the cancellation deleted and closed nothing, registration, check-in and certificates work as before it, and the held certificate jobs are taken by the worker again by themselves.
+
+## Mails
+
+Ticket 14 (ADR 0066 addendum 2026-10-19, decision 1). Two SkyMail system templates, addressed by key:
+
+| Mail | Key (`SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY`, `SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY`; unset: the key, empty: off) | Variables |
+|---|---|---|
+| The Event is cancelled | `core.event-cancelled` | `EventName`, `EventStart` (`02.01.2006 15:04`, Europe/Istanbul; empty when undated), `CancelReason` (may be empty), `FirstName` |
+| The cancellation is undone | `core.event-reinstated` | `EventName`, `EventStart`, `FirstName` |
+
+- **Queued, never sent inline.** The cancellation with `notifyTicketHolders` writes one row in `event_status_mails` in its own transaction and sets `events.cancel_notified_at`; a second cancel queues nothing. The undo with `notifyTicketHolders`, while the cancellation was mailed, queues one reinstated row that follows the cancellation's. Neither request waits for SkyMail or fails for it.
+- **The worker** (`internal/eventstatusmail`, every 15 seconds) reads the Event again when it sends: a cancellation mail whose cancellation was undone meanwhile is dropped unsent, and a reinstated mail goes only while the Event is published.
+- **Recipients**, read when the mail is sent: every Ticket of the Event, registered and guest, one mail per address. A registered holder gets core's primary e-mail of their account, not when it is erased, being erased or gone; a guest the address on the Ticket. The reinstated mail goes only to the Tickets the cancellation mail reached.
+- **Once per person.** Each Ticket a mail reached is recorded (`event_status_mail_sends`, ids only), so a retry never writes twice. A send SkyMail may take later (404 template not seeded yet, 401/403, 5xx, unreachable) keeps the mail for a backoff (30 seconds, doubling to 30 minutes); a refusal of the address itself (400, 422) is counted and the others go on. A mail is given up after 72 hours. A template key set empty finishes the mail unsent.
+- **No personal data** in the queue: ids and times only, so account erasure has nothing to do there; a Ticket deleted takes its record with it.
+- **Seeding order:** seed `core.event-cancelled` and `core.event-reinstated` (skymail-frontend `emails/`) before the panel shows the box; a mail queued before then waits on SkyMail's 404 and goes once the template is there (within 72 hours).
+

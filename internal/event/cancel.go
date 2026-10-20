@@ -33,8 +33,9 @@ const CompetitionCancelReason = "Etkinlik iptal edildi."
 // status kept. Cancelling a cancelled Event answers it as it is; a draft is
 // refused (ErrNotPublished; a draft is deleted, not cancelled), an ended
 // Event too (ErrEnded). reason is optional, at most CancelReasonMax
-// characters.
-func (s *service) Cancel(ctx context.Context, p authz.Principal, id uuid.UUID, reason string) (Event, error) {
+// characters. With notify the Ticket holders' mail is queued in the same
+// write (ticket 14); an Event cancelled already queues nothing again.
+func (s *service) Cancel(ctx context.Context, p authz.Principal, id uuid.UUID, reason string, notify bool) (Event, error) {
 	e, err := s.statusChange(ctx, p, id)
 	if err != nil {
 		return Event{}, err
@@ -47,7 +48,7 @@ func (s *service) Cancel(ctx context.Context, p authz.Principal, id uuid.UUID, r
 		if e.EndedAt(time.Now()) {
 			return Event{}, ErrEnded
 		}
-		changed, err := s.store.Cancel(ctx, id, lifecycle.ActorID(p.ID), reason)
+		changed, err := s.store.Cancel(ctx, id, lifecycle.ActorID(p.ID), reason, notify)
 		if err != nil {
 			return Event{}, err
 		}
@@ -82,14 +83,16 @@ var ErrNotCancelled = fmt.Errorf("event: not cancelled: %w", ErrConflict)
 // status; held certificate jobs go on by themselves. The cancellation's
 // time, actor and reason are cleared; the publication's stay. Undoing on a
 // published Event answers it as it is; a draft is refused
-// (ErrNotCancelled).
-func (s *service) Uncancel(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error) {
+// (ErrNotCancelled). With notify, when the cancellation was mailed, the
+// mail that the Event is back is queued for whom that mail reached
+// (ticket 14); otherwise notify does nothing.
+func (s *service) Uncancel(ctx context.Context, p authz.Principal, id uuid.UUID, notify bool) (Event, error) {
 	e, err := s.statusChange(ctx, p, id)
 	if err != nil {
 		return Event{}, err
 	}
 	if e.Status == StatusCancelled {
-		changed, err := s.store.Uncancel(ctx, id)
+		changed, err := s.store.Uncancel(ctx, id, notify)
 		if err != nil {
 			return Event{}, err
 		}

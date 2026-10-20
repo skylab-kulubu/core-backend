@@ -86,13 +86,18 @@ type Store interface {
 	// current, published and not ended, and in the same transaction cancels
 	// its current Competitions not cancelled already, keeping their earlier
 	// status. False when it changed nothing.
-	Cancel(ctx context.Context, id uuid.UUID, by *uuid.UUID, reason string) (bool, error)
+	// With notify it queues the Ticket holders' mail in the same
+	// transaction and marks the cancellation notified (ticket 14).
+	Cancel(ctx context.Context, id uuid.UUID, by *uuid.UUID, reason string, notify bool) (bool, error)
 	// Uncancel publishes the cancelled Event again: one UPDATE that changes
 	// it only while it is current and cancelled, clears the cancellation,
 	// and in the same transaction brings back the Competitions its
 	// cancellation cancelled to their earlier status. False when it changed
 	// nothing.
-	Uncancel(ctx context.Context, id uuid.UUID) (bool, error)
+	// With notify, and only when the cancellation was mailed, it queues
+	// the reinstated mail after the cancellation's; it always clears the
+	// mark (ticket 14).
+	Uncancel(ctx context.Context, id uuid.UUID, notify bool) (bool, error)
 	SetSeason(ctx context.Context, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
 	SetMailListID(ctx context.Context, eventID, listID uuid.UUID) (Event, error)
 	GetSession(ctx context.Context, id uuid.UUID) (Session, error)

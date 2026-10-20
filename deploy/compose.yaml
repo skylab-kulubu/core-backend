@@ -67,6 +67,9 @@ services:
       SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY: ${SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY-club.group-membership}
       # Privilege notice (docs/privilege-change-mail.md), the same way.
       SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY: ${SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY-club.privilege-change}
+      # Event status mails (docs/event-cancel.md), the same way.
+      SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY: ${SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY-core.event-cancelled}
+      SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY: ${SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY-core.event-reinstated}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
       PUBLIC_API_ORIGIN: ${PUBLIC_API_ORIGIN:-}
       PUBLIC_VERIFY_ORIGIN: ${PUBLIC_VERIFY_ORIGIN:-https://skyl.app/c}

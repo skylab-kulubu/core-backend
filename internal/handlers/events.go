@@ -224,9 +224,9 @@ func (h *EventHandler) Unpublish(c fiber.Ctx) error {
 // optional; no body is none of them.
 type cancelBody struct {
 	Reason string `json:"reason"`
-	// NotifyTicketHolders asks core to mail the Ticket holders (ADR 0066
-	// addendum 2026-10-19). The cancellation mail is ticket 14: until it
-	// lands the field is read and does nothing.
+	// NotifyTicketHolders queues the cancellation mail to the Ticket
+	// holders (ADR 0066 addendum 2026-10-19; ticket 14). A body without it
+	// mails nobody: an older client does not start a mail.
 	NotifyTicketHolders bool `json:"notifyTicketHolders"`
 }
 
@@ -247,7 +247,7 @@ func (h *EventHandler) Cancel(c fiber.Ctx) error {
 			return problem(c, fiber.StatusBadRequest, "Bad Request")
 		}
 	}
-	cancelled, err := h.svc.Cancel(c.Context(), p, id, body.Reason)
+	cancelled, err := h.svc.Cancel(c.Context(), p, id, body.Reason, body.NotifyTicketHolders)
 	if err != nil {
 		return eventError(c, err)
 	}
@@ -256,10 +256,9 @@ func (h *EventHandler) Cancel(c fiber.Ctx) error {
 
 // uncancelBody is the body of POST /v1/events/{id}/uncancel, optional.
 type uncancelBody struct {
-	// NotifyTicketHolders asks core to mail who got the cancellation mail
-	// that the Event is back (ADR 0066 addendum 2026-10-19). Both mails are
-	// ticket 14: until it lands no cancellation mail went out, so the field
-	// is read and does nothing.
+	// NotifyTicketHolders queues the mail that the Event is back to whom
+	// the cancellation mail reached (ticket 14); without a cancellation
+	// mail it does nothing.
 	NotifyTicketHolders bool `json:"notifyTicketHolders"`
 }
 
@@ -279,7 +278,7 @@ func (h *EventHandler) Uncancel(c fiber.Ctx) error {
 			return problem(c, fiber.StatusBadRequest, "Bad Request")
 		}
 	}
-	uncancelled, err := h.svc.Uncancel(c.Context(), p, id)
+	uncancelled, err := h.svc.Uncancel(c.Context(), p, id, body.NotifyTicketHolders)
 	if err != nil {
 		return eventError(c, err)
 	}

@@ -38,13 +38,13 @@ func TestPostgresStoreUncancel(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if changed, err := store.Uncancel(ctx, ev.ID); err != nil || changed {
+	if changed, err := store.Uncancel(ctx, ev.ID, false); err != nil || changed {
 		t.Fatalf("uncancel a published Event: %v %v", changed, err)
 	}
-	if changed, err := store.Cancel(ctx, ev.ID, nil, "Ertelendi"); err != nil || !changed {
+	if changed, err := store.Cancel(ctx, ev.ID, nil, "Ertelendi", false); err != nil || !changed {
 		t.Fatalf("cancel: %v %v", changed, err)
 	}
-	if changed, err := store.Uncancel(ctx, ev.ID); err != nil || !changed {
+	if changed, err := store.Uncancel(ctx, ev.ID, false); err != nil || !changed {
 		t.Fatalf("uncancel: %v %v", changed, err)
 	}
 	var status, reason string
@@ -79,7 +79,7 @@ func TestPostgresStoreUncancel(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE events SET status = 'cancelled', start_date = $2, cancelled_at = now() WHERE id = $1`, ev.ID, past); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := store.Uncancel(ctx, ev.ID); err != nil || !changed {
+	if changed, err := store.Uncancel(ctx, ev.ID, false); err != nil || !changed {
 		t.Fatalf("uncancel ended: %v %v", changed, err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT status, active FROM events WHERE id = $1`, ev.ID).Scan(&status, &active); err != nil || status != "published" || active {

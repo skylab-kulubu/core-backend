@@ -1385,6 +1385,19 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.competitions')
 			  AND conname = 'competitions_status_before_event_cancel_check'
 		)`,
+	// The Event status mails (ticket 14): the queue, its record of sends,
+	// their indexes and the cancellation's mark.
+	20261020140000: `
+		SELECT 1
+		WHERE to_regclass('public.event_status_mails') IS NOT NULL
+		  AND to_regclass('public.event_status_mail_sends') IS NOT NULL
+		  AND to_regclass('public.event_status_mails_due_idx') IS NOT NULL
+		  AND to_regclass('public.event_status_mails_event_idx') IS NOT NULL
+		  AND to_regclass('public.event_status_mail_sends_ticket_idx') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'cancel_notified_at'
+		  )`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
