@@ -518,6 +518,53 @@ func (k *Keycloak) RemoveMember(ctx context.Context, groupID string, userID uuid
 	return mapKCErr(k.gc.DeleteUserFromGroup(ctx, token, k.realm, userID.String(), *g.ID))
 }
 
+// UsersPage reads one page of the realm's accounts, Keycloak's brief form
+// (no attributes), from first for at most max. Each Person carries Enabled,
+// ServiceAccount and CreatedAt as Keycloak gives them; a row that is not a
+// user (no id) is left out. A page shorter than max is the last. The user
+// sync (docs/user-sync.md) pages through the realm with it.
+func (k *Keycloak) UsersPage(ctx context.Context, first, max int) ([]Person, error) {
+	if first < 0 || max <= 0 {
+		return nil, ErrInvalid
+	}
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	u := k.adminBase + "/admin/realms/" + url.PathEscape(k.realm) + "/users?first=" + strconv.Itoa(first) +
+		"&max=" + strconv.Itoa(max) + "&briefRepresentation=true"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := k.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, mapKCErr(&gocloak.APIError{Code: resp.StatusCode, Message: http.StatusText(resp.StatusCode)})
+	}
+	var rows []*gocloak.User
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, err
+	}
+	out := make([]Person, 0, len(rows))
+	for _, row := range rows {
+		p, err := personFrom(row)
+		if err != nil {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 func (k *Keycloak) ListUsers(ctx context.Context) ([]Person, error) {
 	token, err := k.accessToken(ctx)
 	if err != nil {

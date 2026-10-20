@@ -18,6 +18,9 @@ func membershipTemplateKeys(sky *mail.SkyMail, lookup func(string) (string, bool
 	sky.GroupMembershipTemplateKey = templateKey(lookup, "SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY", mail.DefaultGroupMembershipTemplateKey)
 	// The privilege notice (docs/privilege-change-mail.md) the same way.
 	sky.PrivilegeNoticeTemplateKey = templateKey(lookup, "SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY", mail.DefaultPrivilegeNoticeTemplateKey)
+	// The Event status mails (docs/event-cancel.md, ticket 14) the same way.
+	sky.EventCancelledTemplateKey = templateKey(lookup, "SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY", mail.DefaultEventCancelledTemplateKey)
+	sky.EventReinstatedTemplateKey = templateKey(lookup, "SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY", mail.DefaultEventReinstatedTemplateKey)
 }
 
 // startTeamMembershipMail starts the membership mail

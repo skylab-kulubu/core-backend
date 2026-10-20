@@ -25,7 +25,6 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
-	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
 	"github.com/skylab-kulubu/core-backend/internal/season"
@@ -34,6 +33,13 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
+
+// UserSync is the user sync (docs/user-sync.md): JIT wakes it when it opens a
+// row, and /v1/metrics carries its counters.
+type UserSync interface {
+	Wake()
+	Prometheus() string
+}
 
 type Deps struct {
 	Users                  user.Service
@@ -47,7 +53,7 @@ type Deps struct {
 	URLs                   shorturl.Service
 	Certificates           certificate.Service
 	SkyPass                skypass.Service
-	Mail                   mail.Mailer
+	UserSync               UserSync
 	EventMail              eventmail.Service
 	ParseToken             func(string) (authn.Identity, error)
 	URLAttributionGuard    handlers.URLAttributionGuard
@@ -238,7 +244,11 @@ func New(deps Deps) *fiber.App {
 	competitors := handlers.NewCompetitorHandler(deps.Competitors)
 	mediaH := handlers.NewMediaHandler(deps.Media).TrustProxies(trustedProxies)
 	urls := handlers.NewURLHandler(deps.URLs, deps.ParseToken, deps.URLAttributionGuard).TrustProxies(trustedProxies)
-	jit := middlewares.NewJIT(deps.Users, deps.Mail)
+	var wakeUserSync middlewares.Waker
+	if deps.UserSync != nil {
+		wakeUserSync = deps.UserSync
+	}
+	jit := middlewares.NewJIT(deps.Users, wakeUserSync)
 	uploadLimiter := deps.MediaUploadLimiter
 	if uploadLimiter == nil {
 		uploadLimiter = media.NewUploadLimiter(media.DefaultUploadLimits(), time.Now)
@@ -262,7 +272,7 @@ func New(deps Deps) *fiber.App {
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
-		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.Readiness != nil {
+		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -299,6 +309,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.TrackingWithdrawalMetrics != nil {
 				text += deps.TrackingWithdrawalMetrics.Prometheus()
+			}
+			if deps.UserSync != nil {
+				text += deps.UserSync.Prometheus()
 			}
 			text += deps.Readiness.Prometheus()
 			return c.SendString(text)
@@ -492,6 +505,8 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/events/:id/restore", events.Restore)
 	app.Post("/v1/events/:id/publish", events.Publish)
 	app.Post("/v1/events/:id/unpublish", events.Unpublish)
+	app.Post("/v1/events/:id/cancel", events.Cancel)
+	app.Post("/v1/events/:id/uncancel", events.Uncancel)
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)
 	app.Post("/v1/events/:id/files", events.AddFiles(event.Files))
@@ -545,6 +560,7 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/seasons", seasons.Create)
 	app.Get("/v1/seasons/:id", seasons.Get)
 	app.Put("/v1/seasons/:id", seasons.Update)
+	app.Patch("/v1/seasons/:id", seasons.Update)
 	app.Delete("/v1/seasons/:id", seasons.Delete)
 	app.Post("/v1/seasons/:id/restore", seasons.Restore)
 	app.Get("/v1/seasons/:id/events", seasons.ListEvents)
