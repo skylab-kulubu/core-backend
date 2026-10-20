@@ -35,6 +35,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/feedback"
 	"github.com/skylab-kulubu/core-backend/internal/googlewallet"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/health"
@@ -836,7 +837,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR)
+	feedbackInvites := feedback.NewPostgresStore(pool)
+	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites)
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -947,6 +949,7 @@ func main() {
 		}),
 		URLs:                   urlSvc,
 		Competitions:           competition.NewService(competitions, events, az),
+		FeedbackInvites:        feedbackInvites,
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
 		SkyPassWalletMetrics:   wallet,

@@ -42,13 +42,16 @@ type UserSync interface {
 }
 
 type Deps struct {
-	Users                  user.Service
-	Identity               identity.Service
-	Events                 event.Service
-	Seasons                season.Service
-	Tickets                ticket.Service
-	Competitors            competitor.Service
-	Competitions           competition.Service
+	Users        user.Service
+	Identity     identity.Service
+	Events       event.Service
+	Seasons      season.Service
+	Tickets      ticket.Service
+	Competitors  competitor.Service
+	Competitions competition.Service
+	// FeedbackInvites reads the Events' feedback invite counts; nil leaves
+	// GET /v1/events/{id}/feedback out.
+	FeedbackInvites        handlers.FeedbackCounter
 	Media                  media.Service
 	URLs                   shorturl.Service
 	Certificates           certificate.Service
@@ -508,6 +511,9 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/events/:id/cancel", events.Cancel)
 	app.Post("/v1/events/:id/uncancel", events.Uncancel)
 	app.Post("/v1/events/:id/copy", events.Copy)
+	if deps.FeedbackInvites != nil && deps.Authz != nil {
+		app.Get("/v1/events/:id/feedback", handlers.NewFeedbackHandler(deps.Events, deps.Authz, deps.FeedbackInvites).Counts)
+	}
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)
 	app.Post("/v1/events/:id/files", events.AddFiles(event.Files))
