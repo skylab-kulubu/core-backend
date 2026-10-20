@@ -46,9 +46,12 @@ type Target struct {
 
 // Mail is one queued feedback mail of a Ticket.
 type Mail struct {
-	ID            uuid.UUID
-	EventID       uuid.UUID
-	TicketID      uuid.UUID
+	ID       uuid.UUID
+	EventID  uuid.UUID
+	TicketID uuid.UUID
+	// EventDayID is the day the schedule's mail gathers (nil for a manual
+	// mail, or the Event's form of an Event without a day).
+	EventDayID    *uuid.UUID
 	Manual        bool
 	CreatedAt     time.Time
 	NextAttemptAt time.Time
@@ -323,8 +326,7 @@ func (s *PostgresStore) SendNow(ctx context.Context, t Target, now time.Time) (b
 // ClaimMail takes the mail due first and holds it for lease; false when
 // none is due.
 func (s *PostgresStore) ClaimMail(ctx context.Context, now time.Time, lease time.Duration) (Mail, bool, error) {
-	var m Mail
-	err := s.pool.QueryRow(ctx, `
+	m, err := scanMail(s.pool.QueryRow(ctx, `
 		UPDATE feedback_mails SET next_attempt_at = $2, claimed_at = $1
 		WHERE id = (
 			SELECT id FROM feedback_mails
@@ -332,12 +334,61 @@ func (s *PostgresStore) ClaimMail(ctx context.Context, now time.Time, lease time
 			ORDER BY next_attempt_at, created_at, id
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED)
-		RETURNING id, event_id, ticket_id, manual, created_at, next_attempt_at, attempts, claimed_at`,
-		now, now.Add(lease)).Scan(&m.ID, &m.EventID, &m.TicketID, &m.Manual, &m.CreatedAt, &m.NextAttemptAt, &m.Attempts, &m.ClaimedAt)
+		RETURNING `+mailCols,
+		now, now.Add(lease)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Mail{}, false, nil
 	}
 	return m, err == nil, err
+}
+
+const mailCols = `id, event_id, ticket_id, event_day_id, manual, created_at, next_attempt_at, attempts, claimed_at`
+
+func scanMail(row pgx.Row) (Mail, error) {
+	var m Mail
+	var claimed *time.Time
+	err := row.Scan(&m.ID, &m.EventID, &m.TicketID, &m.EventDayID, &m.Manual, &m.CreatedAt, &m.NextAttemptAt, &m.Attempts, &claimed)
+	if claimed != nil {
+		m.ClaimedAt = *claimed
+	}
+	return m, err
+}
+
+// Siblings are the other open mails of the claimed one's Event, day and
+// kind (scheduled or manual), not held by another pass: the mails one
+// address may share (decision of 2026-10-20: a person with a member and a
+// guest Ticket gets one mail a day).
+func (s *PostgresStore) Siblings(ctx context.Context, claimed Mail, now time.Time) ([]Mail, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+mailCols+` FROM feedback_mails
+		WHERE done_at IS NULL AND id <> $1 AND event_id = $2 AND event_day_id IS NOT DISTINCT FROM $3 AND manual = $4
+		  AND (claimed_at IS NULL OR next_attempt_at <= $5)
+		ORDER BY created_at, id`, claimed.ID, claimed.EventID, claimed.EventDayID, claimed.Manual, now)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Mail, error) { return scanMail(row) })
+}
+
+// ClaimSibling takes a sibling for the pass that holds the mail it joins:
+// false when another pass took it, or it was done with, meanwhile.
+func (s *PostgresStore) ClaimSibling(ctx context.Context, id uuid.UUID, now time.Time, lease time.Duration) (Mail, bool, error) {
+	m, err := scanMail(s.pool.QueryRow(ctx, `
+		UPDATE feedback_mails SET claimed_at = $2, next_attempt_at = $3
+		WHERE id = $1 AND done_at IS NULL AND (claimed_at IS NULL OR next_attempt_at <= $2)
+		RETURNING `+mailCols, id, now, now.Add(lease)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Mail{}, false, nil
+	}
+	return m, err == nil, err
+}
+
+// PostponeMail makes the claimed mail due at at, without counting a
+// failure, and releases the claim: it waits for a sibling due later.
+func (s *PostgresStore) PostponeMail(ctx context.Context, claimed Mail, at time.Time) error {
+	_, err := s.pool.Exec(ctx, `UPDATE feedback_mails SET next_attempt_at = $3, claimed_at = NULL WHERE id = $1 AND claimed_at = $2`,
+		claimed.ID, claimed.ClaimedAt, at)
+	return err
 }
 
 // MailItems are the targets the mail carries, as they are now.
@@ -414,4 +465,25 @@ func formIDFromURL(raw string) (uuid.UUID, bool) {
 		}
 	}
 	return uuid.Nil, false
+}
+
+// DayDue is when the day's mail of the Tickets goes (S2): SendDelay plus the
+// grace after the last of the day's current Sessions any of them checked in
+// to ends; nil when they checked in to none that has an end. The worker
+// asks it for the Tickets of one address, so that a person with a member
+// and a guest Ticket gets their one mail after the last Session of either.
+func (s *PostgresStore) DayDue(ctx context.Context, ticketIDs []uuid.UUID, day uuid.UUID) (*time.Time, error) {
+	var latest *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT max(`+sessionEndsSQL+`)
+		FROM ticket_checkins c
+		JOIN sessions s ON s.id = c.session_id AND s.archived_at IS NULL AND NOT s.cancelled
+		JOIN event_days d ON d.id = s.event_day_id
+		JOIN events e ON e.id = d.event_id
+		WHERE c.ticket_id = ANY($1) AND d.id = $2`, ticketIDs, day).Scan(&latest)
+	if err != nil || latest == nil {
+		return nil, err
+	}
+	due := latest.Add(SendDelay + dayGrace)
+	return &due, nil
 }

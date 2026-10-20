@@ -304,3 +304,87 @@ func TestRetrySendsTheSameLink(t *testing.T) {
 		t.Fatalf("after refusal %+v", r)
 	}
 }
+
+// adaAsGuest gives Ada a guest Ticket too, under the same address in
+// another spelling, checked in to Session A.
+func (f *fixture) adaAsGuest(t *testing.T) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	ctx := context.Background()
+	if _, err := f.pool.Exec(ctx, `INSERT INTO tickets (id, event_id, ticket_type, guest_first_name, guest_last_name, guest_email) VALUES ($1, $2, 'GUEST', 'Ada', 'L.', ' ADA@example.test ')`, id, f.event); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `INSERT INTO ticket_checkins (id, ticket_id, event_day_id, session_id) SELECT $1, $2, event_day_id, id FROM sessions WHERE id = $3`, uuid.New(), id, f.sessionA); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func to(mails []sent, address string) []sent {
+	var out []sent
+	for _, m := range mails {
+		if m.to == address {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// One address, one mail a day (decision of 2026-10-20): Ada's guest Ticket
+// waits for the last Session her member Ticket checked in to, and both go
+// in one mail, each Ticket with its own invite links.
+func TestOneMailAnAddressADay(t *testing.T) {
+	f := newFixture(t)
+	guest := f.adaAsGuest(t)
+	f.pass(t, at(13, 1))
+	if r := f.pass(t, at(13, 6)); r.Sent != 1 {
+		t.Fatalf("13:06 %+v", r)
+	}
+	if m := f.mail.take(); len(m) != 1 || m[0].to != "grace@example.test" {
+		t.Fatalf("only Grace at 13:06: %+v", m)
+	}
+	f.pass(t, at(17, 1))
+	f.pass(t, at(17, 6))
+	all := f.mail.take()
+	ada := to(all, "ada@example.test")
+	if len(ada) != 1 {
+		t.Fatalf("Ada's mails %+v", all)
+	}
+	got := titles(ada[0].items)
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"Açılış", "Açılış", "Gecekodu", "Gecekodu", "Go atölyesi"}) {
+		t.Fatalf("Ada's items %v", got)
+	}
+	codes := map[string]bool{}
+	for _, it := range ada[0].items {
+		codes[it.URL] = true
+	}
+	var invites int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM feedback_invites WHERE ticket_id = ANY($1)`, []uuid.UUID{f.adaTicket, guest}).Scan(&invites); err != nil || invites != 5 || len(codes) != 5 {
+		t.Fatalf("invites %d links %d %v", invites, len(codes), err)
+	}
+	var open int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM feedback_mails WHERE done_at IS NULL`).Scan(&open); err != nil || open != 0 {
+		t.Fatalf("open mails %d %v", open, err)
+	}
+	if r := f.pass(t, at(23, 0)); r.Sent != 0 {
+		t.Fatalf("again %+v", r)
+	}
+}
+
+// "Şimdi gönder" too: one mail an address, two links for two Tickets.
+func TestSendNowOneMailAnAddress(t *testing.T) {
+	f := newFixture(t)
+	f.adaAsGuest(t)
+	if ok, n, err := f.store.SendNow(context.Background(), feedback.Target{EventID: f.event, SessionID: &f.sessionA}, at(12, 0)); err != nil || !ok || n != 3 {
+		t.Fatalf("send now %v %d %v", ok, n, err)
+	}
+	if r := f.pass(t, at(12, 1)); r.Sent != 2 {
+		t.Fatalf("pass %+v", r)
+	}
+	all := f.mail.take()
+	ada := to(all, "ada@example.test")
+	if len(all) != 2 || len(ada) != 1 || !slices.Equal(titles(ada[0].items), []string{"Açılış", "Açılış"}) || ada[0].items[0].URL == ada[0].items[1].URL {
+		t.Fatalf("mails %+v", all)
+	}
+}

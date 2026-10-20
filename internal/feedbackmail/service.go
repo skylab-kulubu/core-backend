@@ -42,6 +42,10 @@ const (
 type Queue interface {
 	Plan(ctx context.Context, now time.Time) (int, error)
 	ClaimMail(ctx context.Context, now time.Time, lease time.Duration) (feedback.Mail, bool, error)
+	Siblings(ctx context.Context, claimed feedback.Mail, now time.Time) ([]feedback.Mail, error)
+	ClaimSibling(ctx context.Context, id uuid.UUID, now time.Time, lease time.Duration) (feedback.Mail, bool, error)
+	PostponeMail(ctx context.Context, claimed feedback.Mail, at time.Time) error
+	DayDue(ctx context.Context, ticketIDs []uuid.UUID, day uuid.UUID) (*time.Time, error)
 	MailItems(ctx context.Context, mailID uuid.UUID) ([]feedback.MailItem, error)
 	Invite(ctx context.Context, ticketID uuid.UUID, t feedback.Target, formID uuid.UUID) (feedback.Invite, error)
 	FinishMail(ctx context.Context, claimed feedback.Mail, at time.Time) error
@@ -118,18 +122,29 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 		if err != nil || !ok {
 			return report, err
 		}
-		err = s.deliver(ctx, claimed, &report)
+		out, err := s.deliver(ctx, claimed, &report)
 		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 		switch {
 		case err != nil && ctx.Err() != nil:
 			cancel()
 			return report, ctx.Err()
+		case out.postpone != nil:
+			err = s.config.Queue.PostponeMail(writeCtx, claimed, *out.postpone)
 		case err != nil:
 			report.Retried++
 			s.logger.Printf("feedback mail: a mail failed and is tried again: %v", err)
-			err = s.config.Queue.RetryMail(writeCtx, claimed, s.now().UTC().Add(backoff(claimed.Attempts+1)))
+			at := s.now().UTC().Add(backoff(claimed.Attempts + 1))
+			for _, m := range out.group {
+				if err = s.config.Queue.RetryMail(writeCtx, m, at); err != nil {
+					break
+				}
+			}
 		default:
-			err = s.config.Queue.FinishMail(writeCtx, claimed, s.now().UTC())
+			for _, m := range out.group {
+				if err = s.config.Queue.FinishMail(writeCtx, m, s.now().UTC()); err != nil {
+					break
+				}
+			}
 		}
 		cancel()
 		if err != nil {
@@ -139,74 +154,166 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 	return report, nil
 }
 
-// deliver sends the claimed mail: nil when it is done with (sent, or no
-// longer to be sent), an error when a later try may pass.
-func (s *Service) deliver(ctx context.Context, claimed feedback.Mail, report *Report) error {
+// outcome is what became of a claimed mail: the mails sent (or dropped)
+// together with it, all finished or all retried; or a time to wait for.
+type outcome struct {
+	group    []feedback.Mail
+	postpone *time.Time
+}
+
+// recipient is a mail's Ticket's holder.
+type recipient struct {
+	email, first, full string
+}
+
+// deliver sends the claimed mail, with the open mails of the same Event and
+// day that go to the same address (a person with a member and a guest
+// Ticket gets one mail; each Ticket keeps its own invite links). It waits
+// when such a mail is not due yet. nil error when the group is done with
+// (sent, or no longer to be sent), an error when a later try may pass.
+func (s *Service) deliver(ctx context.Context, claimed feedback.Mail, report *Report) (outcome, error) {
+	out := outcome{group: []feedback.Mail{claimed}}
 	if s.now().Sub(claimed.CreatedAt) > GiveUpAfter && claimed.Attempts > 0 {
 		report.Expired++
-		return nil
+		return out, nil
 	}
-	items, err := s.config.Queue.MailItems(ctx, claimed.ID)
+	to, ok, err := s.recipientOf(ctx, claimed.TicketID)
 	if err != nil {
-		return err
+		return out, err
 	}
-	var send []feedback.MailItem
-	for _, it := range items {
-		if goes(it, claimed.Manual) {
-			send = append(send, it)
-		}
-	}
-	if len(send) == 0 {
-		report.Dropped++
-		return nil
-	}
-	t, err := s.config.Tickets.Get(ctx, claimed.TicketID)
-	if errors.Is(err, ticket.ErrNotFound) {
-		report.Dropped++
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	email, first, full, err := s.holder(ctx, t)
-	if err != nil {
-		return err
-	}
-	if email == "" {
+	if !ok {
 		report.Skipped++
-		return nil
+		return out, nil
 	}
-	links := make([]mail.FeedbackItem, 0, len(send))
-	for _, it := range send {
-		inv, err := s.config.Queue.Invite(ctx, claimed.TicketID, it.Target, it.FormID)
+	if !claimed.Manual && claimed.EventDayID != nil {
+		// The address's day ends with the last Session any of its Tickets
+		// checked in to: wait for it.
+		due, err := s.addressDayDue(ctx, claimed, to.email)
 		if err != nil {
-			return err
+			return out, err
 		}
-		link, err := feedback.Link(it.FormURL, inv.Code)
-		if err != nil {
-			report.Dropped++
-			return nil
+		if due != nil && due.After(s.now()) {
+			out.postpone = due
+			return out, nil
 		}
-		title := it.SessionTitle
-		if it.SessionID == nil {
-			title = it.EventName
-		}
-		links = append(links, mail.FeedbackItem{Title: title, URL: link})
 	}
-	err = s.config.Mail.Feedback(ctx, mail.FeedbackRequest, email, full, first, send[0].EventName, links)
+	siblings, err := s.config.Queue.Siblings(ctx, claimed, s.now().UTC())
+	if err != nil {
+		return out, err
+	}
+	var same []feedback.Mail
+	for _, m := range siblings {
+		r, ok, err := s.recipientOf(ctx, m.TicketID)
+		if err != nil {
+			return out, err
+		}
+		if !ok || r.email != to.email {
+			continue
+		}
+		if m.NextAttemptAt.After(s.now()) && m.ClaimedAt.IsZero() {
+			// One mail, when the last of them is due.
+			if out.postpone == nil || m.NextAttemptAt.After(*out.postpone) {
+				at := m.NextAttemptAt
+				out.postpone = &at
+			}
+			continue
+		}
+		same = append(same, m)
+	}
+	if out.postpone != nil {
+		return out, nil
+	}
+	for _, m := range same {
+		taken, ok, err := s.config.Queue.ClaimSibling(ctx, m.ID, s.now().UTC(), lease)
+		if err != nil {
+			return out, err
+		}
+		if ok {
+			out.group = append(out.group, taken)
+		}
+	}
+	var links []mail.FeedbackItem
+	eventName := ""
+	for _, m := range out.group {
+		items, err := s.config.Queue.MailItems(ctx, m.ID)
+		if err != nil {
+			return out, err
+		}
+		for _, it := range items {
+			if !goes(it, m.Manual) {
+				continue
+			}
+			inv, err := s.config.Queue.Invite(ctx, m.TicketID, it.Target, it.FormID)
+			if err != nil {
+				return out, err
+			}
+			link, err := feedback.Link(it.FormURL, inv.Code)
+			if err != nil {
+				continue
+			}
+			title := it.SessionTitle
+			if it.SessionID == nil {
+				title = it.EventName
+			}
+			eventName = it.EventName
+			links = append(links, mail.FeedbackItem{Title: title, URL: link})
+		}
+	}
+	if len(links) == 0 {
+		report.Dropped++
+		return out, nil
+	}
+	err = s.config.Mail.Feedback(ctx, mail.FeedbackRequest, to.email, to.full, to.first, eventName, links)
 	var refused *mail.SendError
 	switch {
 	case errors.Is(err, mail.ErrTemplateUnconfigured):
 		report.Off++
-		return errors.New("feedback mail: template not configured")
+		return out, errors.New("feedback mail: template not configured")
 	case errors.As(err, &refused) && refused.Permanent():
 		report.Rejected++
-		return nil
+		return out, nil
 	case err != nil:
-		return err
+		return out, err
 	}
 	report.Sent++
-	return nil
+	return out, nil
+}
+
+// addressDayDue is when the day's mail of every Ticket of the Event held
+// under email goes (feedback.PostgresStore.DayDue).
+func (s *Service) addressDayDue(ctx context.Context, claimed feedback.Mail, email string) (*time.Time, error) {
+	tickets, err := s.config.Tickets.ListByEvent(ctx, claimed.EventID)
+	if err != nil {
+		return nil, err
+	}
+	ids := []uuid.UUID{claimed.TicketID}
+	for _, t := range tickets {
+		if t.ID == claimed.TicketID {
+			continue
+		}
+		holder, _, _, err := s.holder(ctx, t)
+		if err != nil {
+			return nil, err
+		}
+		if holder == email {
+			ids = append(ids, t.ID)
+		}
+	}
+	return s.config.Queue.DayDue(ctx, ids, *claimed.EventDayID)
+}
+
+// recipientOf is the Ticket's holder; false when there is nobody to write
+// to (no Ticket, an erased or blocked account, no address).
+func (s *Service) recipientOf(ctx context.Context, ticketID uuid.UUID) (recipient, bool, error) {
+	t, err := s.config.Tickets.Get(ctx, ticketID)
+	if errors.Is(err, ticket.ErrNotFound) {
+		return recipient{}, false, nil
+	}
+	if err != nil {
+		return recipient{}, false, err
+	}
+	email, first, full, err := s.holder(ctx, t)
+	return recipient{email: email, first: first, full: full}, err == nil && email != "", err
 }
 
 // goes reports whether the target still goes: its Event published and
