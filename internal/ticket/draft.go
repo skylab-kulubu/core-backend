@@ -34,17 +34,18 @@ func (s *service) seen(p *authz.Principal, ev event.Event) error {
 // a draft takes no self registration (ErrEventNotPublished to who may see
 // it, ErrNotFound to anyone else), and nor does an Event whose applying is
 // not open: cancelled, ended, or closed by its organizer by hand or by the
-// deadline (ErrRegistrationClosed). Adding a person from the panel writes
-// Tickets all the same; the forms service's report on a draft too, and
-// while applying is closed it writes none (formResponseClosed).
-func (s *service) openForRegistration(p *authz.Principal, ev event.Event) error {
+// deadline (ErrRegistrationClosed). The closure stops a person's own
+// application only: fromPanel is an operator adding a guest from the panel
+// (operatorOf), which passes it, as adding a person does; the forms
+// service's report has its own rule (openListing).
+func (s *service) openForRegistration(p *authz.Principal, ev event.Event, fromPanel bool) error {
 	if ev.Status == event.StatusDraft {
 		if err := s.seen(p, ev); err != nil {
 			return err
 		}
 		return ErrEventNotPublished
 	}
-	if !ev.RegistrationOpenAt(time.Now()) {
+	if !ev.RegistrationOpenAt(time.Now()) && !fromPanel {
 		return ErrRegistrationClosed
 	}
 	return nil

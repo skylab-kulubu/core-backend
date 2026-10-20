@@ -16,11 +16,13 @@ Writing either needs what any other field of the Event needs (`authz.Update`: th
 
 | Path | Applying not open |
 |---|---|
-| `POST /v1/events/{id}/applications/me`, `…/applications/guest` | `409`, `code: "registration_closed"` (a draft still answers `event_not_published` to who may see it, `404` to anyone else) |
-| `POST /v1/events/{id}/applications/users/{userId}` (adding a person from the panel) | allowed: the editor's call |
+| `POST /v1/events/{id}/applications/me`, `…/applications/guest` (a person's own application, the editor's own too) | `409`, `code: "registration_closed"` (a draft still answers `event_not_published` to who may see it, `404` to anyone else) |
+| `POST /v1/events/{id}/applications/users/{userId}`, and `…/applications/guest` called by an operator (who may update the Event or assign its Tickets: the panel's "Katılımcı ekle") | allowed: the editor's call (Yusuf, 2026-10-20) |
 | `POST /v1/forms/{formId}/responses` (Forms' report) | no Ticket on an Event whose organizer closed applying, by hand or by the deadline; when every Event of the form has, `200` with `outcome: "registration_closed"` ([form-response-tickets.md](form-response-tickets.md)) |
 
-Self-apply is refused whenever `registrationOpen` is false: on an Event closed by hand or past its deadline, and also on an ended or cancelled one. The Forms report looks at the organizer's closure alone: a draft (ADR 0066), an ended Event and a cancelled one take a form's answers as before, unless closed by hand or by the deadline.
+Self-apply is refused whenever `registrationOpen` is false: on an Event closed by hand or past its deadline, and also on an ended or cancelled one.
+
+**The Forms report does not follow `registrationOpen`** (Yusuf, 2026-10-20). It is refused only by the organizer's closure, by hand or by the deadline (and, with ticket 04, by a cancellation). An ended Event keeps taking its forms' answers and writes their Tickets: feedback forms are filled in after the Event. So an ended Event answers `registrationOpen: false` and still accepts a Forms answer; a draft (ADR 0066) does too, unless closed. CONTEXT's "an ended Event is closed anyway" is about applying, not about the forms' answers.
 
 Forms' worker sends a report again for seven days on any answer that is not `2xx`, and the answer was already accepted in Forms. So core answers the refusal `200`, which Forms takes as done, until Forms treats a lasting refusal of its own (proposed: `409`, `code: "registration_closed"`) and shows it to the form's owner and the person who answered; core moves to that answer in a separate change after that Forms version is live. That part is Fatih's call.
 

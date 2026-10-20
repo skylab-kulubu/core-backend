@@ -134,10 +134,21 @@ func TestRegistrationClosureRefusesSelfApplyOnly(t *testing.T) {
 				t.Errorf("%s %s: %d %v, want %d %s", tc.name, who, status, body, wantStatus, wantCode)
 			}
 		}
-		// The panel adds people whatever the closure (the editor's call).
+		// A member's own guest application is refused like any other.
+		if status, body := sendEventJSON(t, member, fiber.MethodPost, path+"/applications/guest", closureGuestBody("uye-misafir@example.com")); status != wantStatus || (wantCode != "" && body["code"] != wantCode) {
+			t.Errorf("%s member's guest: %d %v", tc.name, status, body)
+		}
+		// The closure stops a person's own application only: the editor's
+		// own one too, but not adding a person or a guest from the panel.
+		if status, body := sendEventJSON(t, leader, fiber.MethodPost, path+"/applications/me", ""); status != wantStatus || (wantCode != "" && body["code"] != wantCode) {
+			t.Errorf("%s editor's own: %d %v", tc.name, status, body)
+		}
 		if tc.ev.Status == event.StatusPublished {
 			if status, body := sendEventJSON(t, leader, fiber.MethodPost, path+"/applications/users/"+closureTarget.String(), ""); status != fiber.StatusCreated {
 				t.Errorf("%s panel add: %d %v", tc.name, status, body)
+			}
+			if status, body := sendEventJSON(t, leader, fiber.MethodPost, path+"/applications/guest", closureGuestBody("panel-misafir@example.com")); status != fiber.StatusCreated {
+				t.Errorf("%s panel guest: %d %v", tc.name, status, body)
 			}
 		}
 	}

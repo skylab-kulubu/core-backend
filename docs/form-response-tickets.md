@@ -46,7 +46,9 @@ and whose organizer has not closed applying, by hand or by its deadline
 ([event-registration-closure.md](event-registration-closure.md)). When every
 such Event has closed it, nothing is written and the answer is `200` with
 `outcome: "registration_closed"`. A draft takes the form's answers like a
-published Event (its editors linked the form), unless closed so.
+published Event (its editors linked the form), unless closed so, and so does
+an ended Event (feedback forms are answered after it), although its
+`registrationOpen` is `false`.
 
 | Answer from | Ticket |
 |---|---|
