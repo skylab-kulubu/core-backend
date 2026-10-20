@@ -1,6 +1,6 @@
 # Cancelling an Event
 
-ADR 0066 and its 2026-10-19 addendum (e-skylab), ticket 04. A cancelled Event stays visible with `status: "cancelled"`; nobody new registers or checks in and no certificate is issued, but **nothing is deleted or closed for good**: the cancellation can always be undone (ticket 15).
+ADR 0066 and its 2026-10-19 addendum (e-skylab), ticket 04. A cancelled Event stays visible with `status: "cancelled"`; nobody new registers or checks in and no certificate is issued, but **nothing is deleted or closed for good**: the cancellation can always be undone (`POST …/uncancel`, below).
 
 ## `POST /v1/events/{id}/cancel`
 
@@ -33,3 +33,17 @@ Who: whoever may edit the Event (`authz.Update`); DK and anyone else `403`. The 
 | Dashboard | not counted as upcoming or live |
 
 Publishing or unpublishing a cancelled Event is `409 event_cancelled`, as before. Deleting it is ticket 05's rule.
+
+## `POST /v1/events/{id}/uncancel`
+
+Undoes the cancellation, always (ADR 0066 addendum 2026-10-19, decision 2; ticket 15). Body (optional): `{"notifyTicketHolders": true}`, whether core mails who got the cancellation mail that the Event is back; both mails are ticket 14, so until then no cancellation mail went out and the field is read and does nothing.
+
+| Event | Answer |
+|---|---|
+| cancelled | `200`, the Event published again; an ended one too (it shows as ended, `active: false`) |
+| published | `200`, the Event as it is |
+| a draft | `409`, `code: "event_not_cancelled"`; `404` to who may not see it |
+
+Who: whoever may edit the Event (`authz.Update`); DK and anyone else `403`. One `UPDATE … WHERE status = 'cancelled'`: `cancelledAt`, the actor and `cancelReason` are cleared (an old client does not show a reason on a published Event), `publishedAt` stays, the legacy `events.active` column gets the derived value. In the same transaction the Competitions the cancellation cancelled go back to their earlier status; one cancelled on its own stays cancelled.
+
+Nothing else is written: since the cancellation deleted and closed nothing, registration, check-in and certificates work as before it, and the held certificate jobs are taken by the worker again by themselves.

@@ -254,6 +254,38 @@ func (h *EventHandler) Cancel(c fiber.Ctx) error {
 	return c.JSON(h.svc.ProjectFor(&p, cancelled))
 }
 
+// uncancelBody is the body of POST /v1/events/{id}/uncancel, optional.
+type uncancelBody struct {
+	// NotifyTicketHolders asks core to mail who got the cancellation mail
+	// that the Event is back (ADR 0066 addendum 2026-10-19). Both mails are
+	// ticket 14: until it lands no cancellation mail went out, so the field
+	// is read and does nothing.
+	NotifyTicketHolders bool `json:"notifyTicketHolders"`
+}
+
+// Uncancel undoes a cancellation: POST /v1/events/{id}/uncancel (ticket 15).
+func (h *EventHandler) Uncancel(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body uncancelBody
+	if len(bytes.TrimSpace(c.Body())) > 0 {
+		if err := c.Bind().Body(&body); err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+	}
+	uncancelled, err := h.svc.Uncancel(c.Context(), p, id)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(h.svc.ProjectFor(&p, uncancelled))
+}
+
 func (h *EventHandler) statusChange(c fiber.Ctx, change func(ctx context.Context, p authz.Principal, id uuid.UUID) (event.Event, error)) error {
 	p, err := caller(c)
 	if err != nil {

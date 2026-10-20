@@ -35,6 +35,9 @@ type Service interface {
 	// idempotent, refused on a draft (ErrNotPublished) and once ended
 	// (ErrEnded). The reason is optional and public.
 	Cancel(ctx context.Context, p authz.Principal, id uuid.UUID, reason string) (Event, error)
+	// Uncancel undoes a cancellation, always (ticket 15): the Event is
+	// published again; idempotent, refused on a draft (ErrNotCancelled).
+	Uncancel(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
 	Create(ctx context.Context, p authz.Principal, in Event) (Event, error)
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, in Event) (Event, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error

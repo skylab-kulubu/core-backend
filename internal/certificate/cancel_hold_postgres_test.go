@@ -13,8 +13,7 @@ import (
 )
 
 // The claim leaves a cancelled Event's jobs waiting, untouched, and takes
-// them again once the Event is published again (ticket 04; undoing is
-// ticket 15).
+// them again once the cancellation is undone (tickets 04 and 15).
 func TestPostgresClaimHoldsACancelledEventsJobs(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
@@ -68,8 +67,8 @@ func TestPostgresClaimHoldsACancelledEventsJobs(t *testing.T) {
 	if status != "queued" || attempts != 0 {
 		t.Fatalf("held job %s %d", status, attempts)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE events SET status = 'published' WHERE id = $1`, cancelled); err != nil {
-		t.Fatal(err)
+	if changed, err := events.Uncancel(ctx, cancelled); err != nil || !changed {
+		t.Fatalf("uncancel %v %v", changed, err)
 	}
 	if claimed, err = store.ClaimJobs(ctx, 10, time.Minute); err != nil || len(claimed) != 1 || claimed[0].ID != held {
 		t.Fatalf("after the Event is back %+v %v", claimed, err)
