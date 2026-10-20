@@ -42,7 +42,7 @@ Who: whoever may see the source (a draft: who may edit it, ADR 0066) and create 
 | Cover | yes, the same Media | left out (`cover`) when the Media's rules or the Team media library refuse it |
 | Certificate rule (`attendanceRule`, ratio) | yes | |
 | Event template binding (`scope=event`) | yes | left out (`certificateTemplate`) when the caller may not bind templates for the team (`certificate:binding:manage` or the team's Leader) or the template is archived or another team's |
-| Days, Sessions | the current ones | archived ones are not; a Session is never cancelled in the copy; Sessions get new ids, so old Session QR codes do not check anyone in to the copy |
+| Days, Sessions | the current ones | archived ones are not; a Session is never cancelled in the copy, and has no feedback form (`feedbackAutoSend` `true`); Sessions get new ids, so old Session QR codes do not check anyone in to the copy |
 | Door staff | only with `includeDoorStaff`, and only those whose accounts are active | left out (`doorStaff`) when the caller may not assign them (`event:manage`) |
 | Competitions and their stages | only with `includeCompetitions`; the current ones, each a `draft` with its name, description and entrant mode; stages with position, name, strategy, config and config version, dates moved | left out (`competitions`) when the caller may not manage Competitions in the team; never copied: entrants, members, submissions, adjustments, results, cancel reasons, archived Competitions |
 | LinkedIn link, gallery, files, videos, mail list | no | |

@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -876,10 +877,35 @@ func (s *MemoryStore) Copy(_ context.Context, plan CopyPlan) (Event, []string, e
 				continue
 			}
 			sess.ID, sess.EventDayID, sess.Cancelled = uuid.New(), copied.ID, false
+			sess.FeedbackFormURL, sess.FeedbackFormAlias, sess.FeedbackAutoSend = "", "", true
 			sess.StartTime, sess.EndTime = plan.Shift.At(sess.StartTime), plan.Shift.At(sess.EndTime)
 			s.sessions[sess.ID] = sess
 		}
 	}
 	s.byID[e.ID] = e
 	return s.detailed(e), skipped(skippedParts), nil
+}
+
+func (s *MemoryStore) ListSessionFeedbackForms(_ context.Context, eventID uuid.UUID) ([]SessionFeedbackForm, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]SessionFeedbackForm, 0)
+	for _, sess := range s.sessions {
+		if sess.ArchivedAt != nil || sess.FeedbackFormURL == "" {
+			continue
+		}
+		day, ok := s.days[sess.EventDayID]
+		if !ok || day.ArchivedAt != nil {
+			continue
+		}
+		e, ok := s.byID[day.EventID]
+		if !ok || (eventID == uuid.Nil && e.ArchivedAt != nil) || (eventID != uuid.Nil && e.ID != eventID) {
+			continue
+		}
+		out = append(out, SessionFeedbackForm{EventID: e.ID, SessionID: sess.ID, Title: sess.Title, URL: sess.FeedbackFormURL, Alias: sess.FeedbackFormAlias})
+	}
+	slices.SortFunc(out, func(a, b SessionFeedbackForm) int {
+		return strings.Compare(a.SessionID.String(), b.SessionID.String())
+	})
+	return out, nil
 }

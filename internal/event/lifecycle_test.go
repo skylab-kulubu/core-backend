@@ -177,7 +177,7 @@ func TestServiceRestoreOfLegacySessionWithInvalidTimingIsConflict(t *testing.T) 
 	}
 	if _, err := svc.UpdateSession(ctx, leader, current.ID, event.Session{
 		Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION", StartTime: &start, EndTime: &end,
-	}, nil); !errors.Is(err, event.ErrInvalid) {
+	}, nil, event.SessionFeedback{}); !errors.Is(err, event.ErrInvalid) {
 		t.Fatalf("update with invalid timing = %v, want ErrInvalid", err)
 	}
 }

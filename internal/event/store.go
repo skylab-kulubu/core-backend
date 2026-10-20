@@ -111,6 +111,10 @@ type Store interface {
 	ListSessionsLifecycle(ctx context.Context, eventDayID uuid.UUID, visibility lifecycle.Visibility) ([]Session, error)
 	CreateSession(ctx context.Context, s Session) (Session, error)
 	UpdateSession(ctx context.Context, s Session) (Session, error)
+	// ListSessionFeedbackForms reads the Session feedback forms of the
+	// Event's current days' current Sessions (the Event archived or not),
+	// or, for uuid.Nil, of every current Event's.
+	ListSessionFeedbackForms(ctx context.Context, eventID uuid.UUID) ([]SessionFeedbackForm, error)
 	ArchiveSession(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	RestoreSession(ctx context.Context, id uuid.UUID) error
 }

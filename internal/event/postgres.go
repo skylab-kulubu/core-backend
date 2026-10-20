@@ -790,7 +790,7 @@ func (s *PostgresStore) SetMailListID(ctx context.Context, eventID, listID uuid.
 	return s.Get(ctx, eventID)
 }
 
-const sessionCols = `id, event_day_id, title, speaker_name, speaker_linkedin, description, start_time, end_time, order_index, session_type, cancelled, archived_at, archived_by`
+const sessionCols = `id, event_day_id, title, speaker_name, speaker_linkedin, description, start_time, end_time, order_index, session_type, cancelled, feedback_form_url, feedback_form_alias, feedback_auto_send, archived_at, archived_by`
 
 func (s *PostgresStore) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
 	return s.getSession(ctx, id, false)
@@ -867,20 +867,24 @@ func (s *PostgresStore) CreateSession(ctx context.Context, sess Session) (Sessio
 	return scanSession(s.pool.QueryRow(ctx, `
 		INSERT INTO sessions (
 			id, event_day_id, title, speaker_name, speaker_linkedin, description,
-			start_time, end_time, order_index, session_type, cancelled
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			start_time, end_time, order_index, session_type, cancelled,
+			feedback_form_url, feedback_form_alias, feedback_auto_send
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		RETURNING `+sessionCols, sess.ID, sess.EventDayID, sess.Title, sess.SpeakerName, sess.SpeakerLinkedin, sess.Description,
-		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType, sess.Cancelled))
+		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType, sess.Cancelled,
+		sess.FeedbackFormURL, sess.FeedbackFormAlias, sess.FeedbackAutoSend))
 }
 
 func (s *PostgresStore) UpdateSession(ctx context.Context, sess Session) (Session, error) {
 	got, err := scanSession(s.pool.QueryRow(ctx, `
 		UPDATE sessions SET
 			title = $2, speaker_name = $3, speaker_linkedin = $4, description = $5,
-			start_time = $6, end_time = $7, order_index = $8, session_type = $9, cancelled = $10
+			start_time = $6, end_time = $7, order_index = $8, session_type = $9, cancelled = $10,
+			feedback_form_url = $11, feedback_form_alias = $12, feedback_auto_send = $13
 		WHERE id = $1 AND archived_at IS NULL
 		RETURNING `+sessionCols, sess.ID, sess.Title, sess.SpeakerName, sess.SpeakerLinkedin, sess.Description,
-		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType, sess.Cancelled))
+		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType, sess.Cancelled,
+		sess.FeedbackFormURL, sess.FeedbackFormAlias, sess.FeedbackAutoSend))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -973,7 +977,8 @@ func scanSession(row rowScanner) (Session, error) {
 	var sess Session
 	err := row.Scan(
 		&sess.ID, &sess.EventDayID, &sess.Title, &sess.SpeakerName, &sess.SpeakerLinkedin, &sess.Description,
-		&sess.StartTime, &sess.EndTime, &sess.OrderIndex, &sess.SessionType, &sess.Cancelled, &sess.ArchivedAt, &sess.ArchivedBy,
+		&sess.StartTime, &sess.EndTime, &sess.OrderIndex, &sess.SessionType, &sess.Cancelled,
+		&sess.FeedbackFormURL, &sess.FeedbackFormAlias, &sess.FeedbackAutoSend, &sess.ArchivedAt, &sess.ArchivedBy,
 	)
 	return sess, err
 }
@@ -1132,4 +1137,26 @@ func (s *PostgresStore) Unpublish(ctx context.Context, id uuid.UUID) (bool, erro
 		return false, err
 	}
 	return false, unpublishRefusal(published, tickets, competitors)
+}
+
+// ListSessionFeedbackForms reads the Session feedback forms: of the Event
+// (its current days' current Sessions, the Event archived or not), or, for
+// uuid.Nil, of every current Event.
+func (s *PostgresStore) ListSessionFeedbackForms(ctx context.Context, eventID uuid.UUID) ([]SessionFeedbackForm, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT e.id, s.id, s.title, s.feedback_form_url, s.feedback_form_alias
+		FROM sessions s
+		JOIN event_days d ON d.id = s.event_day_id AND d.archived_at IS NULL
+		JOIN events e ON e.id = d.event_id
+		WHERE s.archived_at IS NULL AND s.feedback_form_url <> ''
+		  AND CASE WHEN $1 = '00000000-0000-0000-0000-000000000000'::uuid THEN e.archived_at IS NULL ELSE e.id = $1 END
+		ORDER BY e.id, s.order_index, s.id`, eventID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (SessionFeedbackForm, error) {
+		var f SessionFeedbackForm
+		err := row.Scan(&f.EventID, &f.SessionID, &f.Title, &f.URL, &f.Alias)
+		return f, err
+	})
 }

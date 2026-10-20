@@ -72,9 +72,9 @@ const (
 	// cancelled had closed applying, by hand or by the deadline (ticket
 	// 12): no Ticket is written; a 2xx too.
 	FormResponseRegistrationClosed FormResponseOutcome = "registration_closed"
-	// FormResponseFeedback is an answer to a feedback form (etkinlik geri
-	// bildirim formu, ticket 02): it writes no Ticket, whatever its status
-	// and whoever answered.
+	// FormResponseFeedback is an answer to a feedback form, an Event's or a
+	// Session's (etkinlik geri bildirim formu, tickets 02 and 03): it writes
+	// no Ticket, whatever its status and whoever answered.
 	FormResponseFeedback FormResponseOutcome = "feedback"
 )
 
@@ -121,6 +121,15 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	}
 	for _, ev := range events {
 		if ev.HasFeedbackForm(r.FormID) {
+			return FormResponseResult{Outcome: FormResponseFeedback}, nil
+		}
+	}
+	sessionForms, err := s.events.ListSessionFeedbackForms(ctx, uuid.Nil)
+	if err != nil {
+		return FormResponseResult{}, err
+	}
+	for _, f := range sessionForms {
+		if id, ok := event.FormIDFromURL(f.URL); ok && id == r.FormID {
 			return FormResponseResult{Outcome: FormResponseFeedback}, nil
 		}
 	}
