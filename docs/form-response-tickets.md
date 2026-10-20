@@ -26,6 +26,7 @@ hold.
 | `status` | `pending` (waits for review), `accepted` (needs no review, or approved), `declined` |
 | `userId` | the person who answered signed in; wins over `guest` |
 | `guest` | `{ firstName, lastName, email }` a guest typed into the form's identity fields; a guest without an e-mail counts as no respondent |
+| `invite` | optional: the feedback invite's code the answer came with (the `?davet=` of the mail's link), for a feedback form only; an unknown one, another form's, or one longer than 64 characters is ignored; never logged ([event-feedback.md](event-feedback.md)) |
 | `submittedAt` | optional: the moment Forms first took the answer, in UTC as RFC 3339 with `Z` (`2026-10-20T09:15:00Z`); judged against the Event's registration closure, see below. A value that is not such a time (no zone, not a string) is ignored as if not sent, with a warning line that names the form only (`form_response_submitted_at_ignored`); the report is never refused for it. A time later than core's now counts as now |
 
 The answer is `204` whether or not an Event lists the form. A pending or

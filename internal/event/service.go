@@ -83,8 +83,8 @@ type Service interface {
 	CurrentSession(ctx context.Context, p *authz.Principal, eventDayID uuid.UUID, at time.Time) (Current, error)
 	CreateSession(ctx context.Context, p authz.Principal, sess Session) (Session, error)
 	// UpdateSession overwrites the Session's fields; a nil cancelled keeps
-	// the stored cancel.
-	UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session, cancelled *bool) (Session, error)
+	// the stored cancel, and each nil field of feedback the stored one.
+	UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session, cancelled *bool, feedback SessionFeedback) (Session, error)
 	DeleteSession(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	RestoreSession(ctx context.Context, p authz.Principal, id uuid.UUID) (Session, error)
 	// ListBySeason reads the Season's Events, drafts left out.
@@ -274,7 +274,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Create) {
 		return Event{}, ErrForbidden
 	}
-	if err := s.checkFormPlaces(ctx, in); err != nil {
+	if err := s.checkFormPlaces(ctx, in, false); err != nil {
 		return Event{}, err
 	}
 	s.guardForms(&in)
@@ -288,7 +288,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	}
 	created, err := s.store.Create(ctx, in)
 	if err == nil {
-		s.syncFormLinks(ctx, created.ID, formLinksOf(created))
+		s.syncEventForms(ctx, created)
 	}
 	return s.detail(ctx, created, err)
 }
@@ -348,7 +348,7 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	in.ID = existing.ID
 	in.formGuard = nil
 	if syncForms {
-		if err := s.checkFormPlaces(ctx, in); err != nil {
+		if err := s.checkFormPlaces(ctx, in, false); err != nil {
 			return Event{}, err
 		}
 		s.guardForms(&in)
@@ -390,7 +390,7 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	}
 	updated, err := s.store.Update(ctx, in)
 	if err == nil && syncForms {
-		s.syncFormLinks(ctx, updated.ID, formLinksOf(updated))
+		s.syncEventForms(ctx, updated)
 	}
 	return s.detail(ctx, updated, err)
 }
@@ -420,7 +420,7 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	}
 	// Its forms were released when it was archived: one taken since by
 	// another place keeps it archived (one place per feedback form).
-	if err := s.checkFormPlaces(ctx, existing); err != nil {
+	if err := s.checkFormPlaces(ctx, existing, true); err != nil {
 		return Event{}, err
 	}
 	if err := s.store.Restore(ctx, id); err != nil {
@@ -428,7 +428,7 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	}
 	restored, err := s.Get(ctx, &p, id)
 	if err == nil {
-		s.syncFormLinks(ctx, restored.ID, formLinksOf(restored))
+		s.syncEventForms(ctx, restored)
 	}
 	return restored, err
 }
@@ -679,7 +679,34 @@ func (s *service) DeleteDay(ctx context.Context, p authz.Principal, id uuid.UUID
 	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeEventDay), authz.Delete) {
 		return ErrForbidden
 	}
-	return s.store.ArchiveDay(ctx, id, lifecycle.ActorID(p.ID))
+	withForms, err := s.daySessionForms(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.store.ArchiveDay(ctx, id, lifecycle.ActorID(p.ID)); err != nil {
+		return err
+	}
+	// The day's Sessions release their forms' links with it.
+	if existing.ArchivedAt == nil && len(withForms) > 0 {
+		s.syncEventFormsOf(ctx, ev.ID)
+	}
+	return nil
+}
+
+// daySessionForms are the day's current Sessions that have a feedback
+// form, the day archived or not.
+func (s *service) daySessionForms(ctx context.Context, dayID uuid.UUID) ([]Session, error) {
+	sessions, err := s.store.ListSessionsLifecycle(ctx, dayID, lifecycle.CurrentOnly)
+	if err != nil {
+		return nil, err
+	}
+	out := sessions[:0:0]
+	for _, sess := range sessions {
+		if sess.FeedbackFormURL != "" {
+			out = append(out, sess)
+		}
+	}
+	return out, nil
 }
 
 func (s *service) RestoreDay(ctx context.Context, p authz.Principal, id uuid.UUID) (Day, error) {
@@ -697,8 +724,22 @@ func (s *service) RestoreDay(ctx context.Context, p authz.Principal, id uuid.UUI
 	if ev.ArchivedAt != nil {
 		return Day{}, ErrConflict
 	}
+	withForms, err := s.daySessionForms(ctx, id)
+	if err != nil {
+		return Day{}, err
+	}
+	if existing.ArchivedAt != nil {
+		for _, sess := range withForms {
+			if err := s.checkSessionFormPlace(ctx, sess); err != nil {
+				return Day{}, err
+			}
+		}
+	}
 	if err := s.store.RestoreDay(ctx, id); err != nil {
 		return Day{}, err
+	}
+	if len(withForms) > 0 {
+		s.syncEventFormsOf(ctx, ev.ID)
 	}
 	return s.store.GetDay(ctx, id)
 }
@@ -770,10 +811,28 @@ func (s *service) CreateSession(ctx context.Context, p authz.Principal, sess Ses
 	if !s.authz.Allow(p, s.ownerResource(owner, authz.TypeSession), authz.Create) {
 		return Session{}, ErrForbidden
 	}
-	return s.store.CreateSession(ctx, sess)
+	sess.FeedbackFormURL, sess.FeedbackFormAlias = strings.TrimSpace(sess.FeedbackFormURL), strings.TrimSpace(sess.FeedbackFormAlias)
+	if err := s.checkSessionFormPlace(ctx, sess); err != nil {
+		return Session{}, err
+	}
+	s.guardSessionForm(&sess)
+	created, err := s.store.CreateSession(ctx, sess)
+	if err == nil && created.FeedbackFormURL != "" {
+		s.syncSessionForms(ctx, created.EventDayID)
+	}
+	return created, err
 }
 
-func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session, cancelled *bool) (Session, error) {
+// syncSessionForms syncs the form links of the Event the day belongs to.
+func (s *service) syncSessionForms(ctx context.Context, eventDayID uuid.UUID) {
+	day, err := s.store.GetDayIncludingArchived(ctx, eventDayID)
+	if err != nil {
+		return
+	}
+	s.syncEventFormsOf(ctx, day.EventID)
+}
+
+func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session, cancelled *bool, feedback SessionFeedback) (Session, error) {
 	existing, err := s.store.GetSession(ctx, id)
 	if err != nil {
 		return Session{}, err
@@ -791,10 +850,26 @@ func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.
 	if cancelled != nil {
 		sess.Cancelled = *cancelled
 	}
+	if sess, err = feedback.apply(sess, existing); err != nil {
+		return Session{}, err
+	}
 	if err := validateSession(sess); err != nil {
 		return Session{}, ErrInvalid
 	}
-	return s.store.UpdateSession(ctx, sess)
+	formChanged := sess.FeedbackFormURL != existing.FeedbackFormURL || sess.FeedbackFormAlias != existing.FeedbackFormAlias
+	sess.formGuard = nil
+	if formChanged {
+		if err := s.checkSessionFormPlace(ctx, sess); err != nil {
+			return Session{}, err
+		}
+		s.guardSessionForm(&sess)
+	}
+	updated, err := s.store.UpdateSession(ctx, sess)
+	// The title labels the Session's link.
+	if err == nil && (formChanged || (sess.FeedbackFormURL != "" && sess.Title != existing.Title)) {
+		s.syncSessionForms(ctx, updated.EventDayID)
+	}
+	return updated, err
 }
 
 func (s *service) DeleteSession(ctx context.Context, p authz.Principal, id uuid.UUID) error {
@@ -813,7 +888,14 @@ func (s *service) DeleteSession(ctx context.Context, p authz.Principal, id uuid.
 	if !s.authz.Allow(p, s.ownerResource(ev.OwnerTeam, authz.TypeSession), authz.Delete) {
 		return ErrForbidden
 	}
-	return s.store.ArchiveSession(ctx, id, lifecycle.ActorID(p.ID))
+	if err := s.store.ArchiveSession(ctx, id, lifecycle.ActorID(p.ID)); err != nil {
+		return err
+	}
+	// An archived Session releases its form's link.
+	if existing.FeedbackFormURL != "" && existing.ArchivedAt == nil {
+		s.syncEventFormsOf(ctx, ev.ID)
+	}
+	return nil
 }
 
 func (s *service) RestoreSession(ctx context.Context, p authz.Principal, id uuid.UUID) (Session, error) {
@@ -841,8 +923,18 @@ func (s *service) RestoreSession(ctx context.Context, p authz.Principal, id uuid
 	if validateSession(existing) != nil {
 		return Session{}, ErrConflict
 	}
+	// Its form was released when it was archived: one taken since by
+	// another place keeps it archived.
+	if existing.ArchivedAt != nil {
+		if err := s.checkSessionFormPlace(ctx, existing); err != nil {
+			return Session{}, err
+		}
+	}
 	if err := s.store.RestoreSession(ctx, id); err != nil {
 		return Session{}, err
+	}
+	if existing.FeedbackFormURL != "" {
+		s.syncEventFormsOf(ctx, ev.ID)
 	}
 	return s.store.GetSession(ctx, id)
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/feedback"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -40,6 +41,17 @@ type FormResponse struct {
 	// Without it closing applying refuses no answer (ticket 12); a time to
 	// come counts as now.
 	SubmittedAt *time.Time
+	// Invite is the feedback invite's code the answer came with (the
+	// ?davet= of the mail's link), when Forms reports it: it marks that
+	// invite answered (etkinlik geri bildirim formu, ticket 04).
+	Invite string
+}
+
+// FeedbackAnswers marks who answered a feedback form: the invite the code
+// names when it is the form's, else the form's invites of the signed-in
+// answerer's Tickets (feedback.PostgresStore).
+type FeedbackAnswers interface {
+	MarkAnswered(ctx context.Context, formID uuid.UUID, code string, userID *uuid.UUID) (bool, error)
 }
 
 // FormResponseOutcome is how recording a report ended, for the report's log
@@ -72,9 +84,9 @@ const (
 	// cancelled had closed applying, by hand or by the deadline (ticket
 	// 12): no Ticket is written; a 2xx too.
 	FormResponseRegistrationClosed FormResponseOutcome = "registration_closed"
-	// FormResponseFeedback is an answer to a feedback form (etkinlik geri
-	// bildirim formu, ticket 02): it writes no Ticket, whatever its status
-	// and whoever answered.
+	// FormResponseFeedback is an answer to a feedback form, an Event's or a
+	// Session's (etkinlik geri bildirim formu, tickets 02 and 03): it writes
+	// no Ticket, whatever its status and whoever answered.
 	FormResponseFeedback FormResponseOutcome = "feedback"
 )
 
@@ -119,10 +131,23 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 	if err != nil {
 		return FormResponseResult{}, err
 	}
+	isFeedback := false
 	for _, ev := range events {
-		if ev.HasFeedbackForm(r.FormID) {
-			return FormResponseResult{Outcome: FormResponseFeedback}, nil
+		isFeedback = isFeedback || ev.HasFeedbackForm(r.FormID)
+	}
+	if !isFeedback {
+		sessionForms, err := s.events.ListSessionFeedbackForms(ctx, uuid.Nil)
+		if err != nil {
+			return FormResponseResult{}, err
 		}
+		for _, f := range sessionForms {
+			if id, ok := event.FormIDFromURL(f.URL); ok && id == r.FormID {
+				isFeedback = true
+			}
+		}
+	}
+	if isFeedback {
+		return s.recordFeedbackAnswer(ctx, r)
 	}
 	if r.Status != FormResponseAccepted {
 		return FormResponseResult{Outcome: FormResponseNotAccepted}, nil
@@ -254,4 +279,22 @@ func settledFormResponse(err error) error {
 		return nil
 	}
 	return err
+}
+
+// recordFeedbackAnswer marks the invite a feedback answer answers (ticket
+// 04): a pending or accepted answer counts, a declined one changes nothing
+// (and does not take back an earlier mark). Nothing matched is no error.
+func (s *service) recordFeedbackAnswer(ctx context.Context, r FormResponse) (FormResponseResult, error) {
+	result := FormResponseResult{Outcome: FormResponseFeedback}
+	if s.feedback == nil || r.Status == FormResponseDeclined {
+		return result, nil
+	}
+	code := r.Invite
+	if len(code) > feedback.MaxReportedInvite {
+		code = ""
+	}
+	if _, err := s.feedback.MarkAnswered(ctx, r.FormID, code, r.UserID); err != nil {
+		return FormResponseResult{}, err
+	}
+	return result, nil
 }

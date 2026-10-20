@@ -90,9 +90,14 @@ type SkyMail struct {
 	// that mail off.
 	EventCancelledTemplateKey  string
 	EventReinstatedTemplateKey string
-	Tokens                     TokenSource
-	HTTP                       *http.Client
-	Logger                     *log.Logger
+	// FeedbackRequestTemplateKey and FeedbackReminderTemplateKey address
+	// the feedback mails (docs/event-feedback.md); empty turns that mail
+	// off.
+	FeedbackRequestTemplateKey  string
+	FeedbackReminderTemplateKey string
+	Tokens                      TokenSource
+	HTTP                        *http.Client
+	Logger                      *log.Logger
 }
 
 // template says which SkyMail template a send is aimed at. Only one of the two

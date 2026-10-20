@@ -3,6 +3,7 @@ package ticket_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -390,5 +391,83 @@ func TestRecordFormResponseWritesNoTicketForAFeedbackForm(t *testing.T) {
 	// An unknown status is still refused.
 	if _, err := svc.RecordFormResponse(ctx, formsService, ticket.FormResponse{FormID: feedback, Status: "x"}); !errors.Is(err, ticket.ErrInvalid) {
 		t.Fatalf("unknown status: %v", err)
+	}
+}
+
+// An answer to a Session's feedback form writes no Ticket either (ticket 03).
+func TestRecordFormResponseWritesNoTicketForASessionFeedbackForm(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	form := uuid.New()
+	ev, err := events.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(ctx, event.Day{EventID: ev.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.CreateSession(ctx, event.Session{EventDayID: day.ID, Title: "Açılış", SpeakerName: "Ada", SessionType: "talk", FeedbackFormURL: formAddress(form)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.RecordFormResponse(ctx, formsService, acceptedGuest(form, "Ada", "Lovelace", "ada@example.com"))
+	if err != nil || got.Outcome != ticket.FormResponseFeedback || len(ticketsOf(t, svc, ev)) != 0 {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+type markedAnswer struct {
+	formID uuid.UUID
+	code   string
+	userID *uuid.UUID
+}
+
+type recordedAnswers struct{ marks []markedAnswer }
+
+func (r *recordedAnswers) MarkAnswered(_ context.Context, formID uuid.UUID, code string, userID *uuid.UUID) (bool, error) {
+	r.marks = append(r.marks, markedAnswer{formID, code, userID})
+	return true, nil
+}
+
+// A pending or accepted feedback answer marks its invite, by its code or
+// the signed-in answerer; a declined one marks nothing; a code longer than
+// 64 characters is not passed on (ticket 04).
+func TestRecordFormResponseMarksTheFeedbackInvite(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	answers := &recordedAnswers{}
+	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), answers)
+	form := uuid.New()
+	if _, err := events.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", FeedbackFormURL: formAddress(form)}); err != nil {
+		t.Fatal(err)
+	}
+	member := uuid.New()
+	long := strings.Repeat("a", 65)
+	for _, r := range []ticket.FormResponse{
+		{FormID: form, Status: ticket.FormResponseAccepted, Invite: "AAAAAAAAAAAAAAAAAAAAAA"},
+		{FormID: form, Status: ticket.FormResponsePending, UserID: &member},
+		{FormID: form, Status: ticket.FormResponseDeclined, Invite: "BBBBBBBBBBBBBBBBBBBBBB"},
+		{FormID: form, Status: ticket.FormResponseAccepted, Invite: long, UserID: &member},
+	} {
+		if got, err := svc.RecordFormResponse(ctx, formsService, r); err != nil || got.Outcome != ticket.FormResponseFeedback {
+			t.Fatalf("%+v: %+v %v", r, got, err)
+		}
+	}
+	want := []markedAnswer{{form, "AAAAAAAAAAAAAAAAAAAAAA", nil}, {form, "", &member}, {form, "", &member}}
+	if len(answers.marks) != len(want) {
+		t.Fatalf("marks %+v", answers.marks)
+	}
+	for i, m := range answers.marks {
+		if m.formID != want[i].formID || m.code != want[i].code || (m.userID == nil) != (want[i].userID == nil) {
+			t.Errorf("mark %d %+v, want %+v", i, m, want[i])
+		}
+	}
+	// An application form's answer marks nothing.
+	apply := uuid.New()
+	seedFormEvent(t, events, formAddress(apply))
+	if _, err := svc.RecordFormResponse(ctx, formsService, acceptedGuest(apply, "Ada", "Lovelace", "ada@example.com")); err != nil || len(answers.marks) != 3 {
+		t.Fatalf("application form: %v %d", err, len(answers.marks))
 	}
 }

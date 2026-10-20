@@ -200,8 +200,19 @@ type Session struct {
 	OrderIndex      int        `json:"orderIndex"`
 	SessionType     string     `json:"sessionType"`
 	Cancelled       bool       `json:"cancelled"`
-	ArchivedAt      *time.Time `json:"archivedAt,omitempty"`
-	ArchivedBy      *uuid.UUID `json:"archivedBy,omitempty"`
+	// FeedbackFormURL and FeedbackFormAlias are the Session's own feedback
+	// form and its short link alias, used in the per_session mode;
+	// FeedbackAutoSend mails it when the Session ends (etkinlik geri
+	// bildirim formu, ticket 03; docs/event-feedback.md).
+	FeedbackFormURL   string     `json:"feedbackFormUrl,omitempty"`
+	FeedbackFormAlias string     `json:"feedbackFormAlias,omitempty"`
+	FeedbackAutoSend  bool       `json:"feedbackAutoSend"`
+	ArchivedAt        *time.Time `json:"archivedAt,omitempty"`
+	ArchivedBy        *uuid.UUID `json:"archivedBy,omitempty"`
+
+	// formGuard makes the store's CreateSession and UpdateSession apply the
+	// one-place rule again inside their write (feedback.go).
+	formGuard *formGuard
 }
 
 type Day struct {

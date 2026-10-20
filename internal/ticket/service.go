@@ -70,6 +70,9 @@ type service struct {
 	teams     TeamReader
 	authz     authz.Authorizer
 	door      *doorqr.Gate
+	// feedback marks who answered a feedback form (FeedbackAnswers); nil
+	// marks nobody.
+	feedback FeedbackAnswers
 }
 
 func NewService(tickets Store, events event.Store, az authz.Authorizer, extras ...any) Service {
@@ -91,6 +94,9 @@ func NewService(tickets Store, events event.Store, az authz.Authorizer, extras .
 		}
 		if v, ok := extra.(*doorqr.Gate); ok && v != nil {
 			s.door = v
+		}
+		if v, ok := extra.(FeedbackAnswers); ok && v != nil {
+			s.feedback = v
 		}
 	}
 	if s.door == nil {
