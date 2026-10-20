@@ -190,7 +190,8 @@ func TestSessionFeedbackFormOnePlace(t *testing.T) {
 	}
 }
 
-// A copied Session starts without a feedback form, mailed by default.
+// A copied Session starts without a feedback form; its box comes along
+// (review B4).
 func TestCopyResetsSessionFeedback(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -206,7 +207,7 @@ func TestCopyResetsSessionFeedback(t *testing.T) {
 	}
 	days, _ := env.store.ListDays(ctx, got.Event.ID)
 	sessions, _ := env.store.ListSessions(ctx, days[0].ID)
-	if len(sessions) != 1 || sessions[0].FeedbackFormURL != "" || sessions[0].FeedbackFormAlias != "" || !sessions[0].FeedbackAutoSend {
+	if len(sessions) != 1 || sessions[0].FeedbackFormURL != "" || sessions[0].FeedbackFormAlias != "" || sessions[0].FeedbackAutoSend {
 		t.Fatalf("copied sessions %+v", sessions)
 	}
 }

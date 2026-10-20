@@ -183,7 +183,15 @@ func (s *MemoryStore) GetIncludingArchived(_ context.Context, id uuid.UUID) (Eve
 	return s.detailed(e), nil
 }
 
-func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
+func (s *MemoryStore) Create(ctx context.Context, e Event) (Event, error) {
+	// The one-place rule again, before the store's lock: its check reads
+	// the store.
+	if e.formGuard != nil {
+		if err := e.formGuard.check(ctx); err != nil {
+			return Event{}, err
+		}
+		e.formGuard = nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e.ID == uuid.Nil {
@@ -211,7 +219,13 @@ func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
 	return s.detailed(e), nil
 }
 
-func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
+func (s *MemoryStore) Update(ctx context.Context, e Event) (Event, error) {
+	if e.formGuard != nil {
+		if err := e.formGuard.check(ctx); err != nil {
+			return Event{}, err
+		}
+		e.formGuard = nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, ok := s.byID[e.ID]
@@ -706,7 +720,10 @@ func (s *MemoryStore) listSessions(eventDayID uuid.UUID, visibility lifecycle.Vi
 	return out
 }
 
-func (s *MemoryStore) CreateSession(_ context.Context, sess Session) (Session, error) {
+func (s *MemoryStore) CreateSession(ctx context.Context, sess Session) (Session, error) {
+	if err := memoryFormGuard(ctx, &sess); err != nil {
+		return Session{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sess.ID == uuid.Nil {
@@ -716,7 +733,10 @@ func (s *MemoryStore) CreateSession(_ context.Context, sess Session) (Session, e
 	return sess, nil
 }
 
-func (s *MemoryStore) UpdateSession(_ context.Context, sess Session) (Session, error) {
+func (s *MemoryStore) UpdateSession(ctx context.Context, sess Session) (Session, error) {
+	if err := memoryFormGuard(ctx, &sess); err != nil {
+		return Session{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, ok := s.sessions[sess.ID]
@@ -877,7 +897,7 @@ func (s *MemoryStore) Copy(_ context.Context, plan CopyPlan) (Event, []string, e
 				continue
 			}
 			sess.ID, sess.EventDayID, sess.Cancelled = uuid.New(), copied.ID, false
-			sess.FeedbackFormURL, sess.FeedbackFormAlias, sess.FeedbackAutoSend = "", "", true
+			sess.FeedbackFormURL, sess.FeedbackFormAlias = "", ""
 			sess.StartTime, sess.EndTime = plan.Shift.At(sess.StartTime), plan.Shift.At(sess.EndTime)
 			s.sessions[sess.ID] = sess
 		}
@@ -908,4 +928,15 @@ func (s *MemoryStore) ListSessionFeedbackForms(_ context.Context, eventID uuid.U
 		return strings.Compare(a.SessionID.String(), b.SessionID.String())
 	})
 	return out, nil
+}
+
+// memoryFormGuard applies the Session's one-place guard before the store's
+// lock (its check reads the store) and clears it.
+func memoryFormGuard(ctx context.Context, sess *Session) error {
+	if sess.formGuard == nil {
+		return nil
+	}
+	err := sess.formGuard.check(ctx)
+	sess.formGuard = nil
+	return err
 }

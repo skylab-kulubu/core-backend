@@ -28,7 +28,7 @@ In the `per_session` mode each Session may have its own form, on the Session JSO
 | `feedbackFormUrl`, `feedbackFormAlias` | the Session's form and its short link alias; left out when none |
 | `feedbackAutoSend` | mail it when the Session ends; default `true` |
 
-`POST /v1/sessions` takes them (no `feedbackAutoSend` is `true`). `PUT /v1/sessions/{id}` stays a whole-body update for the Session's other fields, but these three are kept when the body leaves them out (sky-app and the panel before this send none), as `cancelled` is: `null` or `""` clears the form or the alias, `feedbackAutoSend: null` is `400`. The fields stay when the mode is not `per_session` (no mail goes for them then; the panel shows them in that mode only). A copied Session starts without a form, `feedbackAutoSend` `true`.
+`POST /v1/sessions` takes them (no `feedbackAutoSend` is `true`). `PUT /v1/sessions/{id}` stays a whole-body update for the Session's other fields, but these three are kept when the body leaves them out (sky-app and the panel before this send none), as `cancelled` is: `null` or `""` clears the form or the alias, `feedbackAutoSend: null` is `400`. The fields stay when the mode is not `per_session` (no mail goes for them then; the panel shows them in that mode only). A copied Session starts without a form; its `feedbackAutoSend` comes along.
 
 ## One place per feedback form
 
@@ -38,9 +38,13 @@ A feedback form is in one place only. Creating or updating an Event (an update t
 - its feedback form is an application, extra or feedback form of another current Event (a draft too), or a Session's feedback form;
 - one of its application or extra forms is another current Event's feedback form or a Session's feedback form (its own Sessions' too).
 
+<<<<<<< HEAD
 Creating or updating a Session with a form is `409 form_in_use` when the form is any form of a current Event (its own included) or another current Session's feedback form.
 
 Application and extra forms may still be shared between Events, as before. An archived Event, day or Session holds no form: its forms are free once it is archived, and restoring it while one of them is in another place is `409 form_in_use`. The check reads the current Events when the Event is written; two writes racing for the same form are not serialized (an organizer's slip, which the panel's link step also catches).
+=======
+Application and extra forms may still be shared between Events, as before. An archived Event holds no form: its forms are free once it is archived, and restoring it while one of them is in another place is `409 form_in_use`. The write applies the rule again inside its own transaction, after a transaction-scoped advisory lock on each of its forms (`pg_advisory_xact_lock`, in a fixed order): two writes naming the same form are decided one after the other, and the second sees the first. Restoring an archived Event checks without that lock (rare, by hand).
+>>>>>>> feat/event-feedback-form
 
 ## Short link
 
