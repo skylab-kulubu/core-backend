@@ -28,10 +28,12 @@ type sent struct {
 
 // fakeMail records each send; fail answers an error for an address.
 type fakeMail struct {
-	mu   sync.Mutex
-	off  map[mail.EventStatusKind]bool
-	fail map[string]error
-	sent []sent
+	// onSend runs after each send, outside the lock.
+	onSend func()
+	mu     sync.Mutex
+	off    map[mail.EventStatusKind]bool
+	fail   map[string]error
+	sent   []sent
 }
 
 func (m *fakeMail) EventStatusConfigured(kind mail.EventStatusKind) bool { return !m.off[kind] }
@@ -43,6 +45,11 @@ func (m *fakeMail) EventStatus(_ context.Context, kind mail.EventStatusKind, to,
 		return err
 	}
 	m.sent = append(m.sent, sent{kind, to, name, vars})
+	if hook := m.onSend; hook != nil {
+		m.mu.Unlock()
+		hook()
+		m.mu.Lock()
+	}
 	return nil
 }
 
@@ -308,5 +315,64 @@ func TestNewServiceNeedsItsParts(t *testing.T) {
 	t.Parallel()
 	if _, err := eventstatusmail.NewService(eventstatusmail.Config{}); err == nil {
 		t.Fatal("an empty config was accepted")
+	}
+}
+
+// Cancelled, undone before its mail went, and cancelled again: the first
+// cancellation's mail is dropped, so each holder gets one cancellation mail
+// (review B6). A reinstated mail queued in between is dropped too: a later
+// cancellation was mailed.
+func TestRecancellationMailsOnce(t *testing.T) {
+	t.Parallel()
+	for _, notifyUndo := range []bool{false, true} {
+		e := newEnv(t)
+		e.member(t, "ada@example.com", "Ada")
+		e.guest(t, "grace@example.com", "Grace")
+		if _, err := e.svc.Cancel(t.Context(), e.leader, e.ev.ID, "Birinci", true); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.svc.Uncancel(t.Context(), e.leader, e.ev.ID, notifyUndo); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond)
+		if _, err := e.svc.Cancel(t.Context(), e.leader, e.ev.ID, "İkinci", true); err != nil {
+			t.Fatal(err)
+		}
+		for range 3 {
+			e.pass(t)
+		}
+		if got := e.mail.to(mail.EventStatusCancelled); !slices.Equal(got, []string{"ada@example.com", "grace@example.com"}) {
+			t.Fatalf("notifyUndo=%v: cancellation mails to %v", notifyUndo, got)
+		}
+		if got := e.mail.to(mail.EventStatusReinstated); len(got) != 0 {
+			t.Fatalf("notifyUndo=%v: reinstated mails to %v", notifyUndo, got)
+		}
+		for _, s := range e.mail.sent {
+			if s.vars["CancelReason"] != "İkinci" {
+				t.Fatalf("an old cancellation's mail went: %+v", s.vars)
+			}
+		}
+	}
+}
+
+// Undone while its mail is going, the cancellation mail stops where it is.
+func TestCancellationMailStopsWhenUndoneMidway(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	for _, email := range []string{"a@example.com", "b@example.com", "c@example.com"} {
+		e.guest(t, email, "Misafir")
+	}
+	if _, err := e.svc.Cancel(t.Context(), e.leader, e.ev.ID, "", true); err != nil {
+		t.Fatal(err)
+	}
+	e.mail.onSend = func() {
+		e.mail.onSend = nil
+		if _, err := e.svc.Uncancel(t.Context(), e.leader, e.ev.ID, false); err != nil {
+			t.Error(err)
+		}
+	}
+	e.pass(t)
+	if got := e.mail.to(mail.EventStatusCancelled); len(got) != 1 {
+		t.Fatalf("sent after the undo: %v", got)
 	}
 }

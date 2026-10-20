@@ -36,7 +36,10 @@ const (
 	lease        = 10 * time.Minute
 	pollInterval = 15 * time.Second
 	// maxMails bounds one pass.
-	maxMails     = 20
+	maxMails = 20
+	// renewEvery is how many sends a pass makes between two renewals of
+	// its claim.
+	renewEvery   = 20
 	writeTimeout = 5 * time.Second
 	timeZone     = "Europe/Istanbul"
 	dateLayout   = "02.01.2006 15:04"
@@ -148,14 +151,12 @@ func (s *Service) deliver(ctx context.Context, claimed event.StatusMail, report 
 		return false, err
 	}
 	kind := mail.EventStatusKind(claimed.Kind)
-	// The Event is read again now: a cancellation undone since drops its
-	// mail, and a reinstated mail goes only while the Event is published.
-	want := event.StatusCancelled
-	if claimed.Kind == event.StatusMailReinstated {
-		want = event.StatusPublished
+	current, err := s.current(ctx, claimed, ev)
+	if err != nil {
+		return false, err
 	}
 	switch {
-	case ev.ArchivedAt != nil || ev.Status != want:
+	case !current:
 		report.Dropped++
 		return true, nil
 	case !s.config.Mail.EventStatusConfigured(kind):
@@ -170,6 +171,7 @@ func (s *Service) deliver(ctx context.Context, claimed event.StatusMail, report 
 		return false, err
 	}
 	vars := s.vars(ev, claimed.Kind)
+	sends := 0
 	for _, r := range recipients {
 		if r.sent {
 			continue
@@ -178,6 +180,25 @@ func (s *Service) deliver(ctx context.Context, claimed event.StatusMail, report 
 			report.Skipped++
 			continue
 		}
+		// The Event is read again before each send, and the claim renewed
+		// every renewEvery sends: a cancellation undone (or made again)
+		// while a long mail goes stops it where it is.
+		if sends > 0 && sends%renewEvery == 0 {
+			if err := s.config.Queue.RenewStatusMail(ctx, claimed, s.now().UTC().Add(lease)); err != nil {
+				return false, err
+			}
+		}
+		if ev, err = s.config.Events.GetIncludingArchived(ctx, claimed.EventID); err != nil {
+			return false, err
+		}
+		if current, err = s.current(ctx, claimed, ev); err != nil {
+			return false, err
+		}
+		if !current {
+			report.Dropped++
+			return true, nil
+		}
+		sends++
 		mailVars := make(map[string]string, len(vars)+1)
 		for k, v := range vars {
 			mailVars[k] = v
@@ -204,6 +225,30 @@ func (s *Service) deliver(ctx context.Context, claimed event.StatusMail, report 
 		}
 	}
 	return true, nil
+}
+
+// current reports whether claimed still tells what the Event is: a
+// cancellation mail only while the Event is cancelled by the cancellation
+// that queued it (not by a later one, after an undo: that one has its own
+// mail, or none), a reinstated mail only while the Event is published and
+// no later cancellation was mailed.
+func (s *Service) current(ctx context.Context, claimed event.StatusMail, ev event.Event) (bool, error) {
+	if ev.ArchivedAt != nil {
+		return false, nil
+	}
+	switch claimed.Kind {
+	case event.StatusMailCancelled:
+		// The row and cancelled_at take the same now() in one transaction.
+		return ev.Status == event.StatusCancelled && ev.CancelledAt != nil && !claimed.CreatedAt.Before(*ev.CancelledAt), nil
+	case event.StatusMailReinstated:
+		if ev.Status != event.StatusPublished {
+			return false, nil
+		}
+		newer, err := s.config.Queue.NewerCancellationMail(ctx, claimed.EventID, claimed.CreatedAt)
+		return !newer, err
+	default:
+		return false, nil
+	}
 }
 
 // recipient is one address a mail goes to, with every Ticket of the Event

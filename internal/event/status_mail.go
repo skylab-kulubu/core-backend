@@ -42,8 +42,15 @@ type StatusMail struct {
 // their own write, a worker (internal/eventstatusmail) sends them.
 type StatusMailQueue interface {
 	// ClaimStatusMail takes the mail due first and holds it for lease;
-	// false when none is due.
+	// false when none is due. A reinstated mail waits until the
+	// cancellation mail it follows is done, so it never overtakes it.
 	ClaimStatusMail(ctx context.Context, now time.Time, lease time.Duration) (StatusMail, bool, error)
+	// RenewStatusMail holds the claimed mail until until, while its pass
+	// still holds it.
+	RenewStatusMail(ctx context.Context, claimed StatusMail, until time.Time) error
+	// NewerCancellationMail reports whether the Event has a cancellation
+	// mail queued after after: a later cancellation's.
+	NewerCancellationMail(ctx context.Context, eventID uuid.UUID, after time.Time) (bool, error)
 	// StatusMailSends are the Tickets mail reached.
 	StatusMailSends(ctx context.Context, mailID uuid.UUID) ([]uuid.UUID, error)
 	// RecordStatusMailSend records that mail reached the Ticket.
@@ -62,8 +69,10 @@ func (s *PostgresStore) ClaimStatusMail(ctx context.Context, now time.Time, leas
 	err := s.pool.QueryRow(ctx, `
 		UPDATE event_status_mails SET next_attempt_at = $2, claimed_at = $1
 		WHERE id = (
-			SELECT id FROM event_status_mails
+			SELECT id FROM event_status_mails m
 			WHERE done_at IS NULL AND next_attempt_at <= $1
+			  AND (follows_mail_id IS NULL OR EXISTS (
+				SELECT 1 FROM event_status_mails f WHERE f.id = m.follows_mail_id AND f.done_at IS NOT NULL))
 			ORDER BY next_attempt_at, created_at, id
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED)
@@ -77,6 +86,20 @@ func (s *PostgresStore) ClaimStatusMail(ctx context.Context, now time.Time, leas
 	}
 	m.Kind = StatusMailKind(kind)
 	return m, true, nil
+}
+
+func (s *PostgresStore) RenewStatusMail(ctx context.Context, claimed StatusMail, until time.Time) error {
+	_, err := s.pool.Exec(ctx, `UPDATE event_status_mails SET next_attempt_at = $3 WHERE id = $1 AND claimed_at = $2`,
+		claimed.ID, claimed.ClaimedAt, until)
+	return err
+}
+
+func (s *PostgresStore) NewerCancellationMail(ctx context.Context, eventID uuid.UUID, after time.Time) (bool, error) {
+	var newer bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM event_status_mails WHERE event_id = $1 AND kind = 'cancelled' AND created_at > $2)`,
+		eventID, after).Scan(&newer)
+	return newer, err
 }
 
 func (s *PostgresStore) StatusMailSends(ctx context.Context, mailID uuid.UUID) ([]uuid.UUID, error) {
@@ -146,9 +169,17 @@ func (s *MemoryStore) StatusMails(eventID uuid.UUID) []StatusMail {
 func (s *MemoryStore) ClaimStatusMail(_ context.Context, now time.Time, lease time.Duration) (StatusMail, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	done := func(id *uuid.UUID) bool {
+		for _, m := range s.statusMails {
+			if id != nil && m.ID == *id {
+				return m.done
+			}
+		}
+		return true
+	}
 	var due *memoryStatusMail
 	for _, m := range s.statusMails {
-		if !m.done && !m.NextAttemptAt.After(now) && (due == nil || m.NextAttemptAt.Before(due.NextAttemptAt)) {
+		if !m.done && !m.NextAttemptAt.After(now) && done(m.Follows) && (due == nil || m.NextAttemptAt.Before(due.NextAttemptAt)) {
 			due = m
 		}
 	}
@@ -157,6 +188,28 @@ func (s *MemoryStore) ClaimStatusMail(_ context.Context, now time.Time, lease ti
 	}
 	due.NextAttemptAt, due.ClaimedAt = now.Add(lease), now
 	return due.StatusMail, true, nil
+}
+
+func (s *MemoryStore) RenewStatusMail(_ context.Context, claimed StatusMail, until time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, m := range s.statusMails {
+		if m.ID == claimed.ID && m.ClaimedAt.Equal(claimed.ClaimedAt) {
+			m.NextAttemptAt = until
+		}
+	}
+	return nil
+}
+
+func (s *MemoryStore) NewerCancellationMail(_ context.Context, eventID uuid.UUID, after time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, m := range s.statusMails {
+		if m.EventID == eventID && m.Kind == StatusMailCancelled && m.CreatedAt.After(after) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *MemoryStore) StatusMailSends(_ context.Context, mailID uuid.UUID) ([]uuid.UUID, error) {

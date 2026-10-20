@@ -86,4 +86,44 @@ func TestPostgresStatusMailQueue(t *testing.T) {
 	if err != nil || !ok || reinstated.Kind != event.StatusMailReinstated || reinstated.Follows == nil || *reinstated.Follows != claimed.ID {
 		t.Fatalf("reinstated %+v %v %v", reinstated, ok, err)
 	}
+	if err := store.RenewStatusMail(ctx, reinstated, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.ClaimStatusMail(ctx, time.Now().Add(30*time.Minute), time.Minute); err != nil || ok {
+		t.Fatalf("renewed claim taken: %v %v", ok, err)
+	}
+	if newer, err := store.NewerCancellationMail(ctx, ev.ID, reinstated.CreatedAt); err != nil || newer {
+		t.Fatalf("no later cancellation yet: %v %v", newer, err)
+	}
+	if changed, err := store.Cancel(ctx, ev.ID, nil, "", true); err != nil || !changed {
+		t.Fatalf("cancel again: %v %v", changed, err)
+	}
+	if newer, err := store.NewerCancellationMail(ctx, ev.ID, reinstated.CreatedAt); err != nil || !newer {
+		t.Fatalf("a later cancellation: %v %v", newer, err)
+	}
+	read, err = store.Get(ctx, ev.ID)
+	if err != nil || read.CancelledAt == nil {
+		t.Fatal(err)
+	}
+	latest, ok, err := store.ClaimStatusMail(ctx, time.Now().Add(time.Second), time.Minute)
+	if err != nil || !ok || latest.Kind != event.StatusMailCancelled || !latest.CreatedAt.Equal(*read.CancelledAt) {
+		t.Fatalf("the later cancellation's mail %+v (cancelled at %v) %v %v", latest, read.CancelledAt, ok, err)
+	}
+
+	// A reinstated mail waits for the cancellation mail it follows.
+	if err := store.FinishStatusMail(ctx, reinstated, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := store.Uncancel(ctx, ev.ID, true); err != nil || !changed {
+		t.Fatalf("uncancel: %v %v", changed, err)
+	}
+	// Its lease run out, the cancellation mail is taken again; the
+	// reinstated mail is not.
+	again, ok, err := store.ClaimStatusMail(ctx, time.Now().Add(time.Hour), time.Minute)
+	if err != nil || !ok || again.ID != latest.ID {
+		t.Fatalf("reinstated before its cancellation mail is done: %+v %v %v", again, ok, err)
+	}
+	if _, ok, err := store.ClaimStatusMail(ctx, time.Now().Add(time.Hour), time.Minute); err != nil || ok {
+		t.Fatalf("reinstated taken: %v %v", ok, err)
+	}
 }
