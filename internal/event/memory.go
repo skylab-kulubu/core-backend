@@ -119,7 +119,9 @@ func (s *MemoryStore) listed(e Event) Event {
 // listed as the database reads them (empty lists, never nil), and counted.
 func (s *MemoryStore) detailed(e Event) Event {
 	e = emptyGallery(e)
-	e.Active = e.ActiveAt(time.Now())
+	now := time.Now()
+	e.Active = e.ActiveAt(now)
+	e.RegistrationOpen = e.RegistrationOpenAt(now)
 	e.Files, e.Videos = s.shown(e.Files), s.shown(e.Videos)
 	e.FileCount, e.VideoCount = len(servableItems(e.Files)), len(servableItems(e.Videos))
 	return e
@@ -193,6 +195,10 @@ func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
 		e.Status = StatusPublished
 	}
 	now := time.Now().UTC()
+	e.RegistrationClosedAt = nil
+	if e.RegistrationClosed {
+		e.RegistrationClosedAt = &now
+	}
 	if e.Status == StatusPublished && e.PublishedAt == nil {
 		e.PublishedAt = &now
 	}
@@ -220,6 +226,16 @@ func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
 	}
 	e.CancelledAt, e.CancelledBy, e.CancelReason, e.cancelReasonSent = existing.CancelledAt, existing.CancelledBy, reason, false
 	e.CopiedFromEventID, e.CancelNotifiedAt = existing.CopiedFromEventID, existing.CancelNotifiedAt
+	// When applying was closed by hand, as the database writes it.
+	switch {
+	case !e.RegistrationClosed:
+		e.RegistrationClosedAt = nil
+	case existing.RegistrationClosed:
+		e.RegistrationClosedAt = existing.RegistrationClosedAt
+	default:
+		at := e.UpdatedAt
+		e.RegistrationClosedAt = &at
+	}
 	e.Images = existing.Images
 	e.ImageURLs = existing.ImageURLs
 	e.Files, e.Videos = existing.Files, existing.Videos

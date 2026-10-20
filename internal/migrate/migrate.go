@@ -1371,6 +1371,15 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND conname = 'communication_preferences_category_check'
 			  AND pg_get_constraintdef(oid) LIKE '%''tracking''%'
 		  )`,
+	// Registration closure (ADR 0066 addendum, ticket 12): the three
+	// columns.
+	20261020120000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events'
+			  AND column_name IN ('registration_closed', 'registration_closes_at', 'registration_closed_at')
+		) = 3`,
 	// The Competitions an Event's cancellation cancelled (ADR 0066
 	// addendum, ticket 04): the two columns and their check.
 	20261020130000: `

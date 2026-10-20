@@ -462,7 +462,7 @@ func (s *service) Apply(ctx context.Context, p authz.Principal, eventID uuid.UUI
 		}
 		return Ticket{}, err
 	}
-	if err := s.openForRegistration(&p, ev); err != nil {
+	if err := s.openForRegistration(&p, ev, false); err != nil {
 		return Ticket{}, err
 	}
 	ownerID, err := uuid.Parse(p.ID)
@@ -586,7 +586,7 @@ func (s *service) ApplyGuest(ctx context.Context, p authz.Principal, eventID uui
 		}
 		return GuestApplication{}, err
 	}
-	if err := s.openForRegistration(&p, ev); err != nil {
+	if err := s.openForRegistration(&p, ev, s.operatorOf(p, ev)); err != nil {
 		return GuestApplication{}, err
 	}
 	trusted := s.guestApplyTrusted(p, ev)
@@ -601,6 +601,15 @@ func (s *service) ApplyGuest(ctx context.Context, p authz.Principal, eventID uui
 		applied.Ticket = Ticket{}
 	}
 	return applied, nil
+}
+
+// operatorOf reports whether p is a person who runs ev from the panel: who
+// may update the Event or assign its Tickets, the people "Katılımcı ekle"
+// is offered to. A product's service identity is not one.
+func (s *service) operatorOf(p authz.Principal, ev event.Event) bool {
+	return p.Product == "" && p.ID != "" &&
+		(s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update) ||
+			s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign))
 }
 
 // guestApplyTrusted reports whether p may see the Ticket a Guest apply wrote
