@@ -58,3 +58,33 @@ func TestEventCopyEndpoint(t *testing.T) {
 		t.Fatalf("member reads the copy: %d", got.status)
 	}
 }
+
+// Into another Owner team (ticket 16): both teams' rights.
+func TestEventCopyIntoAnotherTeam(t *testing.T) {
+	t.Parallel()
+	e := newDraftEnv(t)
+	pub := e.published.ID.String()
+	body := func(id uuid.UUID) string {
+		return fmt.Sprintf(`{"id":%q,"name":"Kopya","startDate":"2027-03-14T19:00:00+03:00","ownerTeam":"ARTLAB"}`, id)
+	}
+	both := authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER", "/UYELER/ARGE/ARTLAB/LIDERLER"}}
+	for _, tc := range []struct {
+		name   string
+		ident  authn.Identity
+		status int
+	}{
+		{"WEBLAB Leader, no right in ARTLAB", draftEditor, fiber.StatusForbidden},
+		{"ARTLAB Leader, reads WEBLAB's Event only", draftOtherLeader, fiber.StatusForbidden},
+		{"DK", draftDK, fiber.StatusForbidden},
+		{"Leader of both", both, fiber.StatusCreated},
+	} {
+		got := draftCall(t, e.app(t, tc.ident), fiber.MethodPost, "/v1/events/"+pub+"/copy", body(uuid.New()))
+		if got.status != tc.status {
+			t.Errorf("%s: %d, want %d %s", tc.name, got.status, tc.status, got.raw)
+			continue
+		}
+		if got.status == fiber.StatusCreated && got.body["event"].(map[string]any)["ownerTeam"] != "ARTLAB" {
+			t.Errorf("%s: %s", tc.name, got.raw)
+		}
+	}
+}
