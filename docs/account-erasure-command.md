@@ -53,7 +53,7 @@ Errors use RFC 7807 (ADR-0010) and carry a fixed `code`. No response writes back
 | Permanent failure | `400 invalid_erasure_command`, `403 erasure_forbidden`, `404` (no endpoint), `409 subject_not_blocked` | problem | The request goes to `manual_intervention` at once. The error code is `erase_<service>_rejected_<http>`, for example `erase_cms_rejected_403`. A `403` also drops the cached token, so the retry after the fix uses a new one |
 
 - **`counts`:** keys the service chooses, snake_case, non-negative integers, at most 32 keys. For example `{"recipients_deleted":1,"queue_rows_cleared":12,"actor_columns_replaced":3}`. No personal data.
-  SkyMail's include `tracking_events_deleted` and `tracking_links_cleared` (open and click tracking, 14 keys in all; [communication-preferences.md](communication-preferences.md#tracking)).
+  SkyMail's include `tracking_events_deleted` and `tracking_links_cleared` (open and click tracking; [communication-preferences.md](communication-preferences.md#tracking)) and `suppressions_deleted` (the person's addresses on the suppression list), 15 keys in all. SkyMail's in-app inbox (skymail-backend #88, not merged yet) adds `inbox_items_deleted` and `inbox_items_naming_deleted` (17 keys).
 - **Deferred retry:** core's existing `RetryAt` path (`internal/account/worker.go`). The attempt is refunded.
   - The wait comes from `Retry-After` and is clamped between 30 seconds and 15 minutes. Without the header it is 5 minutes.
   - The horizon is the existing `DeferredRetryHorizon` (48 hours by default, counted from the request's creation). After the horizon the ordinary budget applies: 8 attempts × 30 seconds, then `manual_intervention` and the alarm.
