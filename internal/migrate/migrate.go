@@ -1443,6 +1443,15 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_trigger
 			WHERE tgrelid = to_regclass('public.feedback_invites') AND tgname = 'feedback_invites_count'
 		  )`,
+	// Feedback mail (etkinlik geri bildirim formu, ticket 06): the three
+	// tables and the queue's indexes.
+	20261020190300: `
+		SELECT 1
+		WHERE to_regclass('public.feedback_mail_targets') IS NOT NULL
+		  AND to_regclass('public.feedback_mails') IS NOT NULL
+		  AND to_regclass('public.feedback_mail_items') IS NOT NULL
+		  AND to_regclass('public.feedback_mails_due_idx') IS NOT NULL
+		  AND to_regclass('public.feedback_mails_ticket_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
