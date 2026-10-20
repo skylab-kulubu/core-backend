@@ -973,6 +973,48 @@ func (s *PostgresStore) Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID
 	return tag.RowsAffected() == 1, nil
 }
 
+// Cancel writes the legacy active column false, as Unpublish does, so that
+// a release rolled back to hides the cancelled Event. cancelled_by names the
+// actor only when they have an account row, as published_by does.
+func (s *PostgresStore) Cancel(ctx context.Context, id uuid.UUID, by *uuid.UUID, reason string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
+		UPDATE events e SET status = 'cancelled', active = false, cancelled_at = now(),
+			cancelled_by = (SELECT id FROM users WHERE id = $2), cancel_reason = $3, updated_at = now()
+		WHERE e.id = $1 AND e.archived_at IS NULL AND e.status = 'published'
+			AND (`+endsAtSQL+` IS NULL OR `+endsAtSQL+` > now())`, id, by, reason)
+	if subjectlock.IsInactiveAccountReference(err) {
+		return false, ErrForbidden
+	}
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	// Its Competitions, each with its earlier status (the right-hand
+	// status is the row's before this UPDATE), so that undoing the
+	// cancellation brings back these alone.
+	competitionReason := reason
+	if competitionReason == "" {
+		competitionReason = CompetitionCancelReason
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE competitions SET status = 'cancelled', cancel_reason = $2,
+			status_before_event_cancel = status, cancelled_with_event_at = now(), updated_at = now()
+		WHERE event_id = $1 AND archived_at IS NULL AND status <> 'cancelled'`, id, competitionReason); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *PostgresStore) Unpublish(ctx context.Context, id uuid.UUID) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE events e SET status = 'draft', active = false, updated_at = now()

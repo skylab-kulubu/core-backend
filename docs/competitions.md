@@ -54,6 +54,13 @@ archive / restore: hidden from reads, status kept
 | `closed` | no (`reopen` first) | yes: results are mostly typed in after the Event |
 | `cancelled` | no | no |
 
+Cancelling the Event cancels its current Competitions that are not cancelled
+already, in the same write, with the Event's reason (or "Etkinlik iptal
+edildi."); each keeps the status it had (`status_before_event_cancel`,
+`cancelled_with_event_at`) so that undoing the Event's cancellation brings
+back these, and only these ([event-cancel.md](event-cancel.md)). A
+Competition cancelled on its own stays cancelled.
+
 Adding Entrants no longer depends on the Event being active. A wrong status is
 `409` with `code: competition_status`. An archived Event hides its
 Competitions (`404`).
