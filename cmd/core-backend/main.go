@@ -820,6 +820,7 @@ func main() {
 	teamMembership, groupRolesNotice, teamMembershipMetrics, teamMembershipStopped := startTeamMembershipMail(
 		workers, teammail.NewPostgresQueue(pool), teammail.NewPostgresNoticeQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
 	worker("team membership mail", teamMembershipStopped)
+	worker("event status mail", startEventStatusMail(workers, events, tickets, users, sky, log.Printf))
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {

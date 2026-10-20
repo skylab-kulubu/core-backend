@@ -119,13 +119,12 @@ func (h *SeasonHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	var body seasonBody
+	// PUT and PATCH alike write only the fields the body sends (ticket 13).
+	var body season.Patch
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	updated, err := h.seasons.Update(c.Context(), p, id, season.Season{
-		Name: body.Name, StartDate: body.StartDate, EndDate: body.EndDate, Active: body.Active,
-	})
+	updated, err := h.seasons.Patch(c.Context(), p, id, body)
 	if err != nil {
 		return seasonError(c, err)
 	}

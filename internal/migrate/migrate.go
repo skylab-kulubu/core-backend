@@ -1371,6 +1371,42 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND conname = 'communication_preferences_category_check'
 			  AND pg_get_constraintdef(oid) LIKE '%''tracking''%'
 		  )`,
+	// Registration closure (ADR 0066 addendum, ticket 12): the three
+	// columns.
+	20261020120000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events'
+			  AND column_name IN ('registration_closed', 'registration_closes_at', 'registration_closed_at')
+		) = 3`,
+	// The Competitions an Event's cancellation cancelled (ADR 0066
+	// addendum, ticket 04): the two columns and their check.
+	20261020130000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'competitions'
+			  AND column_name IN ('cancelled_with_event_at', 'status_before_event_cancel')
+		) = 2
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.competitions')
+			  AND conname = 'competitions_status_before_event_cancel_check'
+		)`,
+	// The Event status mails (ticket 14): the queue, its record of sends,
+	// their indexes and the cancellation's mark.
+	20261020140000: `
+		SELECT 1
+		WHERE to_regclass('public.event_status_mails') IS NOT NULL
+		  AND to_regclass('public.event_status_mail_sends') IS NOT NULL
+		  AND to_regclass('public.event_status_mails_due_idx') IS NOT NULL
+		  AND to_regclass('public.event_status_mails_event_idx') IS NOT NULL
+		  AND to_regclass('public.event_status_mail_sends_ticket_idx') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'cancel_notified_at'
+		  )`,
 	// The Welcome mail's mark on users (docs/user-sync.md).
 	20261020180000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'welcome_sent_at'`,
 }

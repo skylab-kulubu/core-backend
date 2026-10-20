@@ -70,6 +70,13 @@ Privileged Group's membership changed tells ADMIN and that root's members.
 `SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY` addresses it the same way. See
 [privilege-change-mail.md](privilege-change-mail.md).
 
+A sixth and a seventh, the Event status mails `core.event-cancelled` and
+`core.event-reinstated`, ride a queue of their own the same way: a cancelled
+Event's Ticket holders are told when the organizer asks, and told again when
+the cancellation is undone. `SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY` and
+`SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY` address them (unset: the key above;
+empty: off). See [event-cancel.md](event-cancel.md#mails).
+
 ## Configuration
 
 | Variable | Unset | Empty |
