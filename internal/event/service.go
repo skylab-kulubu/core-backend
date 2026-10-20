@@ -350,7 +350,15 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Delete) {
 		return ErrForbidden
 	}
-	if err := s.store.Archive(ctx, id, lifecycle.ActorID(p.ID)); err != nil {
+	// Only a draft is deleted (ADR 0066, decision 3); a published or
+	// cancelled Event only by who holds event:manage (YK, ADMIN). The
+	// draft check is the write's own, so a publish racing the delete is
+	// not archived.
+	archive := s.store.ArchiveDraft
+	if s.authz.Permitted(p, authz.RoleEventManage) {
+		archive = s.store.Archive
+	}
+	if err := archive(ctx, id, lifecycle.ActorID(p.ID)); err != nil {
 		return err
 	}
 	s.syncFormLinks(ctx, id, nil)

@@ -18,6 +18,10 @@ var (
 	// it has a current Competitor (problem code event_has_competitors): their
 	// reads would otherwise carry a draft's summary.
 	ErrHasCompetitors = fmt.Errorf("event: has competitors: %w", ErrConflict)
+	// ErrNotDraft refuses to delete (archive) a published or cancelled
+	// Event for who does not hold event:manage (problem code
+	// event_not_draft; ADR 0066, decision 3).
+	ErrNotDraft = fmt.Errorf("event: not a draft: %w", ErrConflict)
 )
 
 // IncompleteError refuses to publish a draft that lacks what a published

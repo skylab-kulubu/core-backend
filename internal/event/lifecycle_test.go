@@ -20,7 +20,8 @@ func TestServiceArchivesAndRestoresEventIdempotently(t *testing.T) {
 	leader := authz.Principal{ID: leaderID.String(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
 	stranger := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/SKYSEC/LIDERLER"}}
 
-	created, err := svc.Create(ctx, leader, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	// A Leader deletes a draft only (ticket 05).
+	created, err := svc.Create(ctx, leader, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", Status: event.StatusDraft})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +61,7 @@ func TestServiceArchivesAndRestoresEventIdempotently(t *testing.T) {
 	if _, err := svc.Restore(ctx, leader, created.ID); err != nil {
 		t.Fatalf("second restore: %v", err)
 	}
-	if _, err := svc.Get(ctx, nil, created.ID); err != nil {
+	if _, err := svc.Get(ctx, &leader, created.ID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -73,7 +74,7 @@ func TestServiceRestoresScheduleOnlyUnderCurrentAncestors(t *testing.T) {
 		ID: uuid.MustParse("22222222-2222-2222-2222-222222222222").String(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"},
 	}
 
-	ev, err := svc.Create(ctx, leader, event.Event{Name: "Program", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	ev, err := svc.Create(ctx, leader, event.Event{Name: "Program", Location: "YTÜ", OwnerTeam: "WEBLAB", Status: event.StatusDraft})
 	if err != nil {
 		t.Fatal(err)
 	}
