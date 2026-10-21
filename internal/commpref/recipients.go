@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
@@ -177,6 +178,7 @@ type Recipients struct {
 	ytuAlias string
 	pageSize int
 	now      func() time.Time
+	logf     func(string, ...any)
 
 	mu       sync.Mutex
 	current  *addressIndex
@@ -196,8 +198,11 @@ type addressRead struct {
 // verified addresses from dir and the School e-mail's link from the
 // identity provider ytuAlias.
 func NewRecipients(prefs *Service, dir AddressDirectory, accounts AudienceAccounts, ytuAlias string) *Recipients {
-	return &Recipients{prefs: prefs, dir: dir, accounts: accounts, ytuAlias: ytuAlias, pageSize: AddressDirectoryPage, now: time.Now}
+	return &Recipients{prefs: prefs, dir: dir, accounts: accounts, ytuAlias: ytuAlias, pageSize: AddressDirectoryPage, now: time.Now, logf: log.Printf}
 }
+
+// SetLogf replaces where a directory read is logged (tests).
+func (r *Recipients) SetLogf(logf func(string, ...any)) { r.logf = logf }
 
 // SetClock replaces the clock (tests).
 func (r *Recipients) SetClock(now func() time.Time) { r.now = now }
@@ -263,8 +268,10 @@ func (r *Recipients) startRead(now time.Time) *addressRead {
 	r.inflight = read
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), addressDirectoryReadTimeout)
-		index, err := r.readIndex(ctx)
+		began := time.Now()
+		index, counts, err := r.readIndex(ctx)
 		cancel()
+		r.logRead(counts, time.Since(began), err)
 		r.mu.Lock()
 		if err == nil {
 			// Only a complete read replaces the directory, at once; a
@@ -281,18 +288,45 @@ func (r *Recipients) startRead(now time.Time) *addressRead {
 	return read
 }
 
+// addressDirectoryCounts are the counts of one directory read: the
+// accounts read (service accounts left out), the accounts linked to the YTÜ
+// identity provider, the accounts holding a School e-mail, and those whose
+// Primary e-mail is not verified (so not matched).
+type addressDirectoryCounts struct {
+	accounts, linked, schoolEmail, primaryUnverified int
+}
+
+// logRead logs one line per directory read, counts only: never an address
+// or a subject. Errors of the directory carry no person
+// (identity.adminUsersPage keeps only the status). No account linked to
+// the identity provider while some hold a School e-mail matches no School
+// e-mail, and says so: the alias is probably wrong.
+func (r *Recipients) logRead(c addressDirectoryCounts, took time.Duration, err error) {
+	if err != nil {
+		r.logf(`{"event":"recipients_directory_read","level":"warn","ok":false,"ms":%d,"error":%q}`, took.Milliseconds(), err.Error())
+		return
+	}
+	r.logf(`{"event":"recipients_directory_read","ok":true,"ms":%d,"accounts":%d,"linked":%d,"school_email":%d,"primary_unverified":%d}`,
+		took.Milliseconds(), c.accounts, c.linked, c.schoolEmail, c.primaryUnverified)
+	if c.linked == 0 && c.schoolEmail > 0 {
+		r.logf(`{"event":"recipients_directory_alias_suspect","level":"warn","alias":%q,"linked":0,"school_email":%d,"hint":%q}`,
+			r.ytuAlias, c.schoolEmail, "no account is linked to the identity provider but accounts hold a School e-mail: "+YTUIdentityProviderEnv+" may be wrong")
+	}
+}
+
 // readIndex reads the whole directory: the accounts linked to the YTÜ
 // identity provider, then every account page by page. Either read failing
 // fails it.
-func (r *Recipients) readIndex(ctx context.Context) (*addressIndex, error) {
+func (r *Recipients) readIndex(ctx context.Context) (*addressIndex, addressDirectoryCounts, error) {
+	var counts addressDirectoryCounts
 	linked := map[uuid.UUID]bool{}
 	for first := 0; ; first += r.pageSize {
 		if first > maxAddressDirectoryRows {
-			return nil, errors.New("identity provider link read does not end")
+			return nil, counts, errors.New("identity provider link read does not end")
 		}
 		page, err := r.dir.IdentityProviderLinkedPage(ctx, r.ytuAlias, first, r.pageSize)
 		if err != nil {
-			return nil, err
+			return nil, counts, err
 		}
 		for _, id := range page.IDs {
 			linked[id] = true
@@ -301,14 +335,15 @@ func (r *Recipients) readIndex(ctx context.Context) (*addressIndex, error) {
 			break
 		}
 	}
+	counts.linked = len(linked)
 	index := &addressIndex{byAddress: map[string][]uuid.UUID{}, enabled: map[uuid.UUID]bool{}}
 	for first := 0; ; first += r.pageSize {
 		if first > maxAddressDirectoryRows {
-			return nil, errors.New("address directory read does not end")
+			return nil, counts, errors.New("address directory read does not end")
 		}
 		page, err := r.dir.AddressHoldersPage(ctx, first, r.pageSize)
 		if err != nil {
-			return nil, err
+			return nil, counts, err
 		}
 		for _, h := range page.Holders {
 			// A client's service account is no person: never matched.
@@ -316,11 +351,19 @@ func (r *Recipients) readIndex(ctx context.Context) (*addressIndex, error) {
 				continue
 			}
 			index.enabled[h.ID] = h.Enabled
-			// The identifiers the login form takes (ADR-0044): the
-			// verified Primary e-mail, the School e-mail of an account
-			// linked to YTÜ, the Personal e-mail with its proof stamp.
+			counts.accounts++
+			if normalizeAddress(h.SchoolEmail) != "" {
+				counts.schoolEmail++
+			}
+			// The verified ones of the identifiers the login form takes
+			// (ADR-0044): the Primary e-mail only while verified (the
+			// form takes it unverified too, and the username, never
+			// matched here), the School e-mail of an account linked to
+			// YTÜ, the Personal e-mail with its proof stamp.
 			if h.EmailVerified {
 				index.add(h.Email, h.ID)
+			} else if normalizeAddress(h.Email) != "" {
+				counts.primaryUnverified++
 			}
 			if linked[h.ID] {
 				index.add(h.SchoolEmail, h.ID)
@@ -330,7 +373,7 @@ func (r *Recipients) readIndex(ctx context.Context) (*addressIndex, error) {
 			}
 		}
 		if page.Rows < r.pageSize {
-			return index, nil
+			return index, counts, nil
 		}
 	}
 }

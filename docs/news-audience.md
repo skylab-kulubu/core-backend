@@ -391,9 +391,13 @@ Answer, one result per recipient in the order asked:
 
 ### Matching: verified addresses (ADR-0044)
 
-An address is a person's when it is one of the identifiers the Keycloak
-login form (`sky-username-password-form`, e-skylab-keycloak
-`LoginIdentifiers`) takes, compared trimmed and lower case:
+An address is a person's when it is one of the verified identifiers the
+Keycloak login form (`sky-username-password-form`, e-skylab-keycloak
+`LoginIdentifiers`) takes, compared trimmed and lower case. This is
+stricter than the login form, which also takes the username and the
+Primary e-mail unverified: mapping an unverified address to an account
+would hand its link, which turns the account holder's category off, to
+whoever owns that address. The addresses matched:
 
 - the Primary e-mail (`email`) while `emailVerified` is true;
 - the School e-mail (`schoolEmail`) only while the account is linked to
@@ -462,7 +466,11 @@ whole realm in bulk and keeps them in memory:
 - **A set per address.** Each address holds the set of accounts it
   belongs to: offset paging may answer an account twice when the realm
   changes during the read, and a list would then call its address
-  ambiguous.
+  ambiguous. The other way round, an account deleted during the read
+  moves the rows after it back by one, so the account at the next page
+  boundary may be missed in that read and count as no account until the
+  next one (ADR 0072 deviation 1; unlikely: production's 186 accounts are
+  read in about 0.3 s).
 - **Only a complete read replaces the directory**, at once. A read that
   fails halfway is dropped: a half directory would call people
   account-less and break the `ambiguous` decisions. The old one stays as
@@ -488,6 +496,18 @@ whole realm in bulk and keeps them in memory:
   counts only:
   `{"event":"recipients_resolve","client":"skymail","scope":"team","kind":"duyuru","asked":1000,"matched":12,"allowed":10,"inactive":1,"opted_out":1,"ambiguous":0}`.
   No address, sub or link is logged; Keycloak errors name a status only.
+- **One line per directory read**, counts only, from the read itself (so
+  a refresh that fails in the background is seen too):
+  `{"event":"recipients_directory_read","ok":true,"ms":310,"accounts":186,"linked":120,"school_email":130,"primary_unverified":4}`:
+  the accounts read (service accounts left out), those linked to the YTÜ
+  identity provider, those holding a School e-mail, and those whose
+  Primary e-mail is unverified and so not matched. A failed read logs
+  `{"event":"recipients_directory_read","level":"warn","ok":false,"ms":…,"error":"identity: address directory read failed with status 502"}`.
+  Keycloak answers an unknown `idpAlias` with an empty list, so a wrong
+  `KEYCLOAK_YTU_IDP_ALIAS` would silently match no School e-mail: when no
+  account is linked but some hold a School e-mail, a second line
+  `{"event":"recipients_directory_alias_suspect","level":"warn","alias":"OBS","linked":0,"school_email":130,"hint":"… KEYCLOAK_YTU_IDP_ALIAS may be wrong"}`
+  says so. Opening the route expects `linked > 0` on the first read.
 
 ### Measurements
 
@@ -552,5 +572,7 @@ Deviations (all):
    answer): the price of not asking Keycloak per address. The preference
    and the erasure state are never stale.
 3. **The School e-mail counts only while linked to YTÜ** and the Personal
-   e-mail only while proven: the login form's rule, stricter than an
+   e-mail only while proven, and the Primary e-mail only while verified:
+   the login form's verified identifiers (the form also takes the
+   username and an unverified Primary e-mail), stricter than an
    address-keyed product, which takes any address on its list.

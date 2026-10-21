@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -629,5 +630,89 @@ func TestYTUIdentityProviderFromEnv(t *testing.T) {
 		if _, err := YTUIdentityProviderFromEnv(func(string) string { return raw }); err == nil {
 			t.Fatalf("%q accepted", raw)
 		}
+	}
+}
+
+// logLines collects what the directory logs.
+type logLines struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *logLines) logf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+func (l *logLines) take() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := l.lines
+	l.lines = nil
+	return out
+}
+
+// Every directory read logs one line of counts, never an address or a
+// subject; a failed read in the background logs its error.
+func TestRecipientsDirectoryReadLogsCounts(t *testing.T) {
+	f := newRecipientsFixture(t)
+	var logs logLines
+	f.recipients.SetLogf(logs.logf)
+	f.one(Club(KindAnnouncement), email("member@example.test"))
+	lines := logs.take()
+	if len(lines) != 1 {
+		t.Fatalf("lines: %q", lines)
+	}
+	want := `{"event":"recipients_directory_read","ok":true,"ms":`
+	if !strings.HasPrefix(lines[0], want) ||
+		!strings.HasSuffix(lines[0], `,"accounts":12,"linked":1,"school_email":2,"primary_unverified":1}`) {
+		t.Fatalf("line: %s", lines[0])
+	}
+	for _, name := range []string{"member", "ytu", "unlinked"} {
+		if strings.Contains(lines[0], name) || strings.Contains(lines[0], f.p[name].String()) {
+			t.Fatalf("names a person: %s", lines[0])
+		}
+	}
+
+	// The refresh in the background fails: logged, the old directory
+	// answers.
+	f.book.set(func(b *fakeAddressBook) { b.failAt = 3 })
+	f.advance(AddressDirectoryFresh)
+	f.wantAllowed(f.one(Club(KindAnnouncement), email("member@example.test")), "member")
+	waitRead(f.recipients)
+	lines = logs.take()
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], `{"event":"recipients_directory_read","level":"warn","ok":false,"ms":`) ||
+		!strings.HasSuffix(lines[0], `,"error":"keycloak: status 502"}`) {
+		t.Fatalf("failed read: %q", lines)
+	}
+}
+
+// No account linked to the identity provider while accounts hold a
+// School e-mail: the alias is probably wrong, and it is said.
+func TestRecipientsDirectoryWarnsOfAnUnlinkedAlias(t *testing.T) {
+	f := newRecipientsFixture(t)
+	f.recipients = NewRecipients(f.prefs, f.book, f.accounts, "OBS-typo")
+	f.recipients.SetClock(f.now)
+	f.recipients.SetPageSize(3)
+	var logs logLines
+	f.recipients.SetLogf(logs.logf)
+	wantUnmatched(t, "school e-mail without link", f.one(Club(KindAnnouncement), email("okul.adi@std.yildiz.edu.tr")))
+	lines := logs.take()
+	if len(lines) != 2 || !strings.Contains(lines[0], `"linked":0,"school_email":2`) ||
+		lines[1] != `{"event":"recipients_directory_alias_suspect","level":"warn","alias":"OBS-typo","linked":0,"school_email":2,"hint":"no account is linked to the identity provider but accounts hold a School e-mail: KEYCLOAK_YTU_IDP_ALIAS may be wrong"}` {
+		t.Fatalf("lines: %q", lines)
+	}
+
+	// Nobody holds a School e-mail: no warning.
+	none := newRecipientsFixture(t)
+	none.book.linked = nil
+	for _, name := range []string{"ytu", "unlinked"} {
+		none.edit(name, func(h *identity.AddressHolder) { h.SchoolEmail = "" })
+	}
+	none.recipients.SetLogf(logs.logf)
+	none.one(Club(KindAnnouncement), email("member@example.test"))
+	if lines := logs.take(); len(lines) != 1 {
+		t.Fatalf("lines: %q", lines)
 	}
 }
