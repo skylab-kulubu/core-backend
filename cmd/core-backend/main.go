@@ -664,6 +664,23 @@ func main() {
 	for _, line := range commpref.AudienceStartupLines(newsAudience.Enabled(), privateVisibility) {
 		log.Print(line)
 	}
+	// The recipient question (ADR 0072 karar 3, docs/news-audience.md
+	// "Recipients"): SkyMail asks, for the recipients a sender chose, which
+	// are a person and whether the mail may go to each. The verified
+	// addresses are read from Keycloak in bulk on demand, never per address.
+	ytuIdentityProvider, err := commpref.YTUIdentityProviderFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var recipients *commpref.Recipients
+	if addressDirectory, ok := dir.(commpref.AddressDirectory); ok {
+		recipients = commpref.NewRecipients(communicationPreferences, addressDirectory, users, ytuIdentityProvider)
+	}
+	recipientsState := "off"
+	if recipients.Enabled() {
+		recipientsState = "on"
+	}
+	log.Printf("recipient question: %s (YTÜ identity provider %s)", recipientsState, ytuIdentityProvider)
 	if keycloakConfigured {
 		worker("communication preference cleanup", commpref.MaintainCleanup(workers, communicationPreferences, commpref.CleanupInterval, func(what string, removed int64, err error) {
 			if err != nil {
@@ -989,6 +1006,7 @@ func main() {
 		Consents:                  consents,
 		CommunicationPreferences:  communicationPreferences,
 		Audience:                  newsAudience,
+		Recipients:                recipients,
 		TrackingWithdrawalMetrics: trackingWithdrawals,
 		Readiness:                 readiness,
 		MediaDecodeMetrics:        decodeBudget,

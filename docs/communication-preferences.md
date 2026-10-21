@@ -15,7 +15,11 @@ carries a one-click link that turns its own categories off.
 **Transactional messages never read it**, on any channel: sign-in codes,
 tickets, certificates, team membership, Mail onayı and contact consent
 confirmations go whatever the preferences say. Only News sends (bilet 03's
-audience, [`news-audience.md`](news-audience.md)) are filtered by it.
+audience, [`news-audience.md`](news-audience.md)) and, since ADR 0072, every
+duyuru-stream mail SkyMail sends to recipients a sender chose (the recipient
+question, [`news-audience.md`](news-audience.md#recipients)) are filtered by
+it. The recipient question counts every default as on: only the person's
+own "off" holds such a mail back.
 
 Code: `internal/commpref`. Table: `communication_preferences`. The open and
 click tracking switch lives in the same table ([Tracking](#tracking)).
@@ -207,8 +211,10 @@ No sudo mode. A service account's token is refused (`403`).
 redirect: the token is the permission. `internal/commpref`
 (`Service.UnsubscribeURL`) makes it for a person, the channel (`email`) and
 the categories a mail was sent on, and every POST writes on that channel
-only; the audience route (bilet 03) gives every recipient their own,
-so SkyMail never holds the key.
+only; the audience route (bilet 03) gives every recipient their own, and
+the recipient question (`POST /internal/v1/audiences/recipients:resolve`,
+ADR 0072, [news-audience.md](news-audience.md#recipients)) every allowed
+person theirs for the one category asked, so SkyMail never holds the key.
 
 - `GET` shows a page naming the categories ("AIRLAB · Duyurular") and
   changes nothing, so a mail scanner that opens the link turns nothing off.
