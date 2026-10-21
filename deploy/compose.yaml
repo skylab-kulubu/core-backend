@@ -99,6 +99,8 @@ services:
       COMMUNICATION_TRACKING_WITHDRAWAL_URL: ${COMMUNICATION_TRACKING_WITHDRAWAL_URL:-}
       # The News audience (docs/news-audience.md): only public records unless on.
       NEWS_AUDIENCE_PRIVATE_VISIBILITY: ${NEWS_AUDIENCE_PRIVATE_VISIBILITY:-}
+      # The recipient question (docs/news-audience.md): the YTÜ identity provider, OBS unless set.
+      KEYCLOAK_YTU_IDP_ALIAS: ${KEYCLOAK_YTU_IDP_ALIAS:-}
       # The SkyPass signing key: required, except that this local stack falls back to
       # a random key at start-up (SKYPASS_EPHEMERAL_KEY, development only).
       SKYPASS_EC_PRIVATE_KEY: ${SKYPASS_EC_PRIVATE_KEY:-}

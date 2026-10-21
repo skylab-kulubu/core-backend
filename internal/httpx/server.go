@@ -188,6 +188,12 @@ type Deps struct {
 	// 503.
 	Audience *commpref.Audience
 
+	// Recipients answers SkyMail's service account, for the recipients a
+	// sender chose, which are a person and whether the mail may go to each
+	// (docs/news-audience.md, "Recipients"). Nil or off answers POST
+	// /internal/v1/audiences/recipients:resolve 503.
+	Recipients *commpref.Recipients
+
 	// TrackingWithdrawalMetrics are the tracking withdrawals' counters and
 	// backlog (docs/communication-preferences.md, "Tracking"), served on
 	// /v1/metrics. Nil leaves them out.
@@ -423,6 +429,10 @@ func New(deps Deps) *fiber.App {
 	// send may track (docs/communication-preferences.md, "Tracking"). Before
 	// the Group overage step and JIT: a service account has neither.
 	app.Post(handlers.TrackingResolvePath, handlers.NewTrackingResolveHandler(deps.Audience).Resolve)
+	// SkyMail's service account with audience:read: which recipients a
+	// sender chose are a person, and whether the mail may go to each (ADR
+	// 0072 karar 3). Here for the same reason.
+	app.Post(handlers.RecipientsResolvePath, handlers.NewRecipientsResolveHandler(deps.Recipients).Resolve)
 	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Get("/v1/go/:alias/:channel", urls.RedirectChannel)
 	// Before JIT and every product route: a Group overage token gets its

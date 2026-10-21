@@ -87,3 +87,7 @@ Nothing changes until the mapper is switched on for a client whose tokens reach 
 ## News audience
 
 `POST /v1/audiences/resolve` ([`news-audience.md`](news-audience.md)) reads the Group tree (`GET /groups`, `GET /groups/{id}/children`), the direct members of every Group under `/UYELER` in full representation (`GET /groups/{id}/members?briefRepresentation=false`, for `emailVerified` and `serviceAccountClientId`). Nobody is read one by one. One read serves 30 s. Nothing new is needed: these are the Group and user reads above.
+
+## Recipients
+
+`POST /internal/v1/audiences/recipients:resolve` ([`news-audience.md`](news-audience.md#recipients)) reads the realm's accounts page by page in full representation (`GET /users?briefRepresentation=false&first=…&max=500`, the read `YTUAttributes` already makes) and the accounts linked to the YTÜ identity provider (`GET /users?idpAlias=<KEYCLOAK_YTU_IDP_ALIAS>&briefRepresentation=true`), one read at a time, at most once in 5 minutes and only when a question comes. Nobody is read one by one. Nothing new is needed: `view-users` covers both.
