@@ -86,6 +86,11 @@ type Deps struct {
 	// (docs/retention-sweep.md). Nil while RETENTION_SWEEP_MODE is off.
 	RetentionMetrics interface{ Prometheus() string }
 
+	// EventsMetrics are the Integration events consumer's state and
+	// counters and its records' cleanup (docs/integration-events.md),
+	// served on /v1/metrics. Nil leaves them out.
+	EventsMetrics interface{ Prometheus() string }
+
 	// MediaCDNPurgeMetrics are the media CDN purge's counters. Nil while
 	// the purge is off.
 	MediaCDNPurgeMetrics interface{ Prometheus() string }
@@ -275,7 +280,8 @@ func New(deps Deps) *fiber.App {
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
-		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil {
+		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil ||
+		deps.EventsMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -315,6 +321,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.UserSync != nil {
 				text += deps.UserSync.Prometheus()
+			}
+			if deps.EventsMetrics != nil {
+				text += deps.EventsMetrics.Prometheus()
 			}
 			text += deps.Readiness.Prometheus()
 			return c.SendString(text)
