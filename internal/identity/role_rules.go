@@ -183,10 +183,10 @@ func roleGroupStaysLeaf(parentPath string) error {
 }
 
 // renameKeepsPlacement refuses renaming a Group that maps client roles in
-// an allowed place (a top Team's Leader group, a role group) to a name
-// that puts them where the placement rule allows none (a top LIDERLER
-// renamed into a Team: review of #245). A Group mapped against the rule
-// already, from before it, renames as before.
+// an allowed place (a top Team's Leader group, a role group, a top Team
+// with app roles) to a name that puts them where the placement rule allows
+// none (a top LIDERLER renamed into a Team: review of #245). A Group mapped
+// against the rule already, from before it, renames as before.
 func (s *service) renameKeepsPlacement(ctx context.Context, g Group, name string, hasSubgroups bool) error {
 	roles, err := s.dir.GroupClientRoles(ctx, g.ID)
 	if err != nil {
@@ -195,12 +195,11 @@ func (s *service) renameKeepsPlacement(ctx context.Context, g Group, name string
 	if len(roles) == 0 {
 		return nil
 	}
-	leaders := authz.DefaultPolicy().LeaderSubgroups
-	if authz.RolePlacement(g.Path, s.privilegedRoots, leaders, hasSubgroups) != "" {
+	if s.placementOf(g.Path, hasSubgroups, roles) != "" {
 		return nil
 	}
 	path := g.Path[:strings.LastIndex(g.Path, "/")+1] + name
-	reason := authz.RolePlacement(path, s.privilegedRoots, leaders, hasSubgroups)
+	reason := s.placementOf(path, hasSubgroups, roles)
 	if reason == "" {
 		return nil
 	}
@@ -208,9 +207,21 @@ func (s *service) renameKeepsPlacement(ctx context.Context, g Group, name string
 		Detail: "The Group maps roles; under the new name they would sit where no role is mapped. " + authz.PlacementDetail(reason)}
 }
 
+// placementOf is the first reason the placement rule (authz.RolePlacementOf)
+// refuses one of roles at path, "" when it allows them all.
+func (s *service) placementOf(path string, hasSubgroups bool, roles []ClientRole) string {
+	leaders := authz.DefaultPolicy().LeaderSubgroups
+	for _, r := range roles {
+		if reason := authz.RolePlacementOf(path, s.privilegedRoots, leaders, hasSubgroups, r.ClientID, r.Role); reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
 // placementAllows refuses a role mapping write that adds a role to a Group
-// the placement rule (authz.RolePlacement) does not allow. Keeping or
-// taking off an existing mapping is always allowed, so a Group mapped
+// the placement rule (authz.RolePlacementOf) does not allow it on. Keeping
+// or taking off an existing mapping is always allowed, so a Group mapped
 // against the rule today can be cleaned. Mappings that cannot be read count
 // as none: then every role is an add, and only an allowed Group is written.
 func (s *service) placementAllows(ctx context.Context, g Group, added []ClientRole) error {
@@ -221,7 +232,7 @@ func (s *service) placementAllows(ctx context.Context, g Group, added []ClientRo
 	if err != nil {
 		return err
 	}
-	reason := authz.RolePlacement(g.Path, s.privilegedRoots, authz.DefaultPolicy().LeaderSubgroups, len(subgroups) > 0)
+	reason := s.placementOf(g.Path, len(subgroups) > 0, added)
 	if reason == "" {
 		return nil
 	}
