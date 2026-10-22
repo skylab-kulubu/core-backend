@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -28,7 +29,12 @@ type Memory struct {
 	// parents are the parent ids SetGroupParent set; a Group without one
 	// has the parent its path says.
 	parents map[string]string
-	Ops     []string
+	// idpLinks are the people LinkIdentityProvider linked, by alias;
+	// personalEmails the Personal e-mail and its proof stamp
+	// SetPersonalEmail gave a person (address_directory.go).
+	idpLinks       map[string]map[uuid.UUID]struct{}
+	personalEmails map[uuid.UUID][2]string
+	Ops            []string
 }
 
 func NewMemory() *Memory {
@@ -454,6 +460,29 @@ func (m *Memory) UsersWithClientRole(_ context.Context, clientID, role string) (
 		}
 	}
 	return out, nil
+}
+
+func (m *Memory) ClientRoleHolders(_ context.Context, clientID, role string) ([]Group, []Person, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("ClientRoleHolders")
+	holds := func(roles []ClientRole) bool {
+		return slices.ContainsFunc(roles, func(r ClientRole) bool { return holdsClientRole(r, clientID, role) })
+	}
+	groups, people := make([]Group, 0), make([]Person, 0)
+	for gid, roles := range m.groupRoles {
+		if g, ok := m.groups[gid]; ok && holds(roles) {
+			groups = append(groups, g)
+		}
+	}
+	for id, roles := range m.userRoles {
+		if p, ok := m.people[id]; ok && holds(roles) {
+			people = append(people, m.answerLocked(p))
+		}
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].Path < groups[j].Path })
+	sort.Slice(people, func(i, j int) bool { return people[i].ID.String() < people[j].ID.String() })
+	return groups, people, nil
 }
 
 func (m *Memory) CreateUser(_ context.Context, p Person) (Person, error) {

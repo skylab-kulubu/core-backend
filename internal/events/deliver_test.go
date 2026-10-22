@@ -1,0 +1,258 @@
+package events
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	amqp "github.com/rabbitmq/amqp091-go"
+)
+
+// memoryStore is Store in memory: a record is kept only when fn succeeds.
+type memoryStore struct {
+	mu      sync.Mutex
+	records map[string]bool
+}
+
+func (s *memoryStore) Consume(_ context.Context, consumer, source, id string, fn func(pgx.Tx) error) (bool, error) {
+	key := consumer + "\x00" + source + "\x00" + id
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.records == nil {
+		s.records = map[string]bool{}
+	}
+	if s.records[key] {
+		return true, nil
+	}
+	if err := fn(nil); err != nil {
+		return false, err
+	}
+	s.records[key] = true
+	return false, nil
+}
+
+func (s *memoryStore) DeleteBefore(context.Context, time.Time) (int64, error) { return 0, nil }
+
+// settlement is what a delivery was answered with.
+type settlement struct {
+	mu      sync.Mutex
+	answers []string
+}
+
+func (a *settlement) Ack(uint64, bool) error { a.add("ack"); return nil }
+func (a *settlement) Nack(_ uint64, _ bool, requeue bool) error {
+	a.add(fmt.Sprintf("nack requeue=%v", requeue))
+	return nil
+}
+func (a *settlement) Reject(_ uint64, requeue bool) error {
+	a.add(fmt.Sprintf("reject requeue=%v", requeue))
+	return nil
+}
+func (a *settlement) add(s string) { a.mu.Lock(); a.answers = append(a.answers, s); a.mu.Unlock() }
+func (a *settlement) got() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return strings.Join(a.answers, ",")
+}
+
+func delivery(body string, redelivered bool) (amqp.Delivery, *settlement) {
+	s := &settlement{}
+	return amqp.Delivery{Acknowledger: s, Body: []byte(body), ContentType: CloudEventsContentType, Redelivered: redelivered}, s
+}
+
+func event(id string) string {
+	return `{"specversion":"1.0","id":"` + id + `","source":"/forms","type":"forms.form.updated","data":{"formId":"f"}}`
+}
+
+func testConsumer(t *testing.T, store Store, handle Handler) (*Consumer, *subscription, *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var logs []string
+	c := NewConsumer(Config{Enabled: true, Host: "h", Port: 5672, Vhost: "v", Username: "u", Password: "the-password"}, store, Options{
+		RetryDelays: []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond},
+		Logf: func(format string, args ...any) {
+			mu.Lock()
+			logs = append(logs, fmt.Sprintf(format, args...))
+			mu.Unlock()
+		},
+	})
+	if err := c.Subscribe(Subscription{Queue: "core.test", Handle: handle}); err != nil {
+		t.Fatal(err)
+	}
+	return c, c.subs[0], &logs
+}
+
+func TestDeliverOutcomes(t *testing.T) {
+	transient := errors.New("database is down")
+	for name, tc := range map[string]struct {
+		body    string
+		handle  func(calls int) error
+		answer  string
+		calls   int
+		metrics []string
+	}{
+		"processed": {
+			body: event("1"), handle: func(int) error { return nil }, answer: "ack", calls: 1,
+			metrics: []string{`skylab_events_consumed_total{queue="core.test",outcome="processed"} 1`},
+		},
+		"unrelated": {
+			body: event("1"), handle: func(int) error { return fmt.Errorf("form f: %w", ErrUnrelated) }, answer: "ack", calls: 1,
+			metrics: []string{`skylab_events_consumed_total{queue="core.test",outcome="unrelated"} 1`},
+		},
+		"invalid envelope": {
+			body: `{"id":"1"}`, handle: func(int) error { return nil }, answer: "reject requeue=false", calls: 0,
+			metrics: []string{
+				`skylab_events_consumed_total{queue="core.test",outcome="dead_lettered"} 1`,
+				`skylab_events_dlq_total{queue="core.test",reason="invalid_envelope"} 1`,
+			},
+		},
+		"permanent": {
+			body: event("1"), handle: func(int) error { return Permanent(errors.New("unknown schema version")) }, answer: "nack requeue=false", calls: 1,
+			metrics: []string{`skylab_events_dlq_total{queue="core.test",reason="permanent"} 1`, `skylab_events_retries_total{queue="core.test"} 0`},
+		},
+		"transient, then fine": {
+			body: event("1"),
+			handle: func(calls int) error {
+				if calls < 3 {
+					return transient
+				}
+				return nil
+			},
+			answer: "ack", calls: 3,
+			metrics: []string{`skylab_events_consumed_total{queue="core.test",outcome="processed"} 1`, `skylab_events_retries_total{queue="core.test"} 2`},
+		},
+		"retries exhausted": {
+			body: event("1"), handle: func(int) error { return transient }, answer: "nack requeue=false", calls: 4,
+			metrics: []string{`skylab_events_dlq_total{queue="core.test",reason="retries_exhausted"} 1`, `skylab_events_retries_total{queue="core.test"} 3`},
+		},
+		"panic": {
+			body: event("1"), handle: func(int) error { panic("index out of range") }, answer: "nack requeue=false", calls: 1,
+			metrics: []string{`skylab_events_dlq_total{queue="core.test",reason="handler_panic"} 1`},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			store := &memoryStore{}
+			c, s, _ := testConsumer(t, store, func(_ context.Context, _ pgx.Tx, e Event) error {
+				calls++
+				if e.Queue != "core.test" || e.Source != "/forms" {
+					t.Errorf("event = %+v", e)
+				}
+				return tc.handle(calls)
+			})
+			d, answers := delivery(tc.body, false)
+			c.deliver(context.Background(), s, d)
+			if answers.got() != tc.answer || calls != tc.calls {
+				t.Fatalf("answer %q after %d calls, want %q after %d", answers.got(), calls, tc.answer, tc.calls)
+			}
+			text := c.Prometheus()
+			for _, line := range tc.metrics {
+				if !strings.Contains(text, line+"\n") {
+					t.Fatalf("metrics lack %s:\n%s", line, text)
+				}
+			}
+			// A failed or unrelated event leaves no record: a later
+			// delivery of it is handled again.
+			if tc.answer != "ack" || name == "unrelated" {
+				if len(store.records) != 0 {
+					t.Fatalf("records = %v", store.records)
+				}
+			}
+		})
+	}
+}
+
+// The same source and id a second time is acked as a duplicate and not
+// handled again.
+func TestDeliverDuplicate(t *testing.T) {
+	calls := 0
+	c, s, _ := testConsumer(t, &memoryStore{}, func(context.Context, pgx.Tx, Event) error { calls++; return nil })
+	first, a1 := delivery(event("same"), false)
+	again, a2 := delivery(event("same"), true)
+	c.deliver(context.Background(), s, first)
+	c.deliver(context.Background(), s, again)
+	if calls != 1 || a1.got() != "ack" || a2.got() != "ack" {
+		t.Fatalf("calls %d, answers %q %q", calls, a1.got(), a2.got())
+	}
+	text := c.Prometheus()
+	for _, line := range []string{
+		`skylab_events_consumed_total{queue="core.test",outcome="processed"} 1`,
+		`skylab_events_consumed_total{queue="core.test",outcome="duplicate"} 1`,
+		`skylab_events_redelivered_total{queue="core.test"} 1`,
+	} {
+		if !strings.Contains(text, line+"\n") {
+			t.Fatalf("metrics lack %s:\n%s", line, text)
+		}
+	}
+}
+
+// A shutdown during the retries leaves the delivery unsettled: the closing
+// channel returns it to the queue, and it is not sent to the DLQ.
+func TestDeliverStopsWithoutSettlingOnShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	c, s, _ := testConsumer(t, &memoryStore{}, func(context.Context, pgx.Tx, Event) error {
+		cancel()
+		return errors.New("canceled")
+	})
+	c.retryDelays = []time.Duration{time.Hour}
+	d, answers := delivery(event("1"), false)
+	done := make(chan struct{})
+	go func() { c.deliver(ctx, s, d); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deliver did not stop with its context")
+	}
+	if answers.got() != "" {
+		t.Fatalf("settled with %q", answers.got())
+	}
+}
+
+// Log lines name the queue, the type and the id, never the password, and
+// the event's data does not reach them.
+func TestDeliverLogsNoData(t *testing.T) {
+	c, s, logs := testConsumer(t, &memoryStore{}, func(context.Context, pgx.Tx, Event) error {
+		return Permanent(errors.New("bad"))
+	})
+	d, _ := delivery(`{"specversion":"1.0","id":"1","source":"/forms","type":"t","data":{"email":"someone@example.com"}}`, false)
+	c.deliver(context.Background(), s, d)
+	if len(*logs) == 0 {
+		t.Fatal("no log line")
+	}
+	for _, line := range *logs {
+		if strings.Contains(line, "someone@example.com") || strings.Contains(line, "the-password") {
+			t.Fatalf("log line carries data: %s", line)
+		}
+	}
+}
+
+func TestSubscribeRules(t *testing.T) {
+	c := NewConsumer(Config{}, &memoryStore{}, Options{})
+	ok := func(context.Context, pgx.Tx, Event) error { return nil }
+	if err := c.Subscribe(Subscription{Queue: "core.forms"}); err == nil {
+		t.Fatal("accepted a subscription without a handler")
+	}
+	if err := c.Subscribe(Subscription{Handle: ok}); err == nil {
+		t.Fatal("accepted a subscription without a queue")
+	}
+	if err := c.Subscribe(Subscription{Queue: "core.forms", Handle: ok}); err != nil {
+		t.Fatal(err)
+	}
+	if c.subs[0].Consumer != "core.forms" || c.subs[0].Decode == nil {
+		t.Fatalf("defaults = %+v", c.subs[0])
+	}
+	if err := c.Subscribe(Subscription{Queue: "core.forms", Handle: ok}); err == nil {
+		t.Fatal("accepted a queue twice")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	<-c.Run(ctx)
+	if err := c.Subscribe(Subscription{Queue: "core.keycloak", Handle: ok}); err == nil {
+		t.Fatal("accepted a subscription after Run")
+	}
+}

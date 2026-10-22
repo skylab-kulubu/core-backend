@@ -38,6 +38,10 @@ type sessionBody struct {
 	// Cancelled is a pointer so an update that leaves it out keeps the
 	// stored value; an explicit false lifts a cancel.
 	Cancelled *bool `json:"cancelled"`
+	// The Session's feedback form (etkinlik geri bildirim formu, ticket
+	// 03): an update that leaves it out (sky-app, the panel before it)
+	// keeps it; feedbackAutoSend is true on create when left out.
+	event.SessionFeedback
 }
 
 func (h *ScheduleHandler) ListDays(c fiber.Ctx) error {
@@ -253,12 +257,17 @@ func (h *ScheduleHandler) CreateSession(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	created, err := h.svc.CreateSession(c.Context(), p, event.Session{
+	sess, err := event.Session{
 		EventDayID: body.EventDayID, Title: body.Title, SpeakerName: body.SpeakerName,
 		SpeakerLinkedin: body.SpeakerLinkedin, Description: body.Description,
 		StartTime: body.StartTime, EndTime: body.EndTime, OrderIndex: body.OrderIndex, SessionType: body.SessionType,
-		Cancelled: body.Cancelled != nil && *body.Cancelled,
-	})
+		Cancelled:        body.Cancelled != nil && *body.Cancelled,
+		FeedbackAutoSend: true,
+	}.WithFeedback(body.SessionFeedback)
+	if err != nil {
+		return eventError(c, err)
+	}
+	created, err := h.svc.CreateSession(c.Context(), p, sess)
 	if err != nil {
 		return eventError(c, err)
 	}
@@ -282,7 +291,7 @@ func (h *ScheduleHandler) UpdateSession(c fiber.Ctx) error {
 		Title: body.Title, SpeakerName: body.SpeakerName, SpeakerLinkedin: body.SpeakerLinkedin,
 		Description: body.Description, StartTime: body.StartTime, EndTime: body.EndTime,
 		OrderIndex: body.OrderIndex, SessionType: body.SessionType,
-	}, body.Cancelled)
+	}, body.Cancelled, body.SessionFeedback)
 	if err != nil {
 		return eventError(c, err)
 	}

@@ -17,13 +17,16 @@ import (
 
 type PostgresStore struct {
 	pool *pgxpool.Pool
+	// copyCompetitions copies an Event's Competitions into its copy
+	// (CopyCompetitionsWith).
+	copyCompetitions CompetitionCopier
 }
 
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, ` + activeSQL + `, e.status, e.published_at, e.published_by, e.cancelled_at, e.cancelled_by, e.cancel_reason, e.cancel_notified_at, e.copied_from_event_id, e.ranked, e.prize_info, e.registration_closed, e.registration_closes_at, e.registration_closed_at, ` + registrationOpenSQL + `, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at, ` +
+var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, ` + activeSQL + `, e.status, e.published_at, e.published_by, e.cancelled_at, e.cancelled_by, e.cancel_reason, e.cancel_notified_at, e.copied_from_event_id, e.ranked, e.prize_info, e.feedback_mode, e.feedback_form_url, e.feedback_form_alias, e.feedback_auto_send, e.registration_closed, e.registration_closes_at, e.registration_closed_at, ` + registrationOpenSQL + `, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at, ` +
 	servableCountSQL(Files) + `, ` + servableCountSQL(Videos)
 
 // servableCountSQL counts the Event's items of the list anyone can see: a
@@ -232,6 +235,9 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 		return Event{}, err
 	}
 	defer tx.Rollback(ctx)
+	if err := lockFormPlaces(ctx, tx, e.formGuard); err != nil {
+		return Event{}, err
+	}
 	if e.Status == "" {
 		e.Status = StatusPublished
 	}
@@ -245,16 +251,19 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 			id, name, description, location, owner_team, form_url, capacity,
 			start_date, end_date, linkedin, active, ranked, prize_info, season_id, cover_image_id,
 			attendance_rule, attendance_ratio, extra_form_urls,
-			status, published_at, published_by, registration_closed, registration_closes_at, registration_closed_at
+			status, published_at, published_by, registration_closed, registration_closes_at, registration_closed_at,
+			feedback_mode, feedback_form_url, feedback_form_alias, feedback_auto_send
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$18 = 'published',$11,$12,$13,$14,$15,$16,$17,
 			$18,
 			CASE WHEN $18 = 'published' THEN now() END,
 			CASE WHEN $18 = 'published' THEN (SELECT id FROM users WHERE id = $19) END,
-			$20::boolean, $21, CASE WHEN $20::boolean THEN now() END)`,
+			$20::boolean, $21, CASE WHEN $20::boolean THEN now() END,
+			$22, $23, $24, $25)`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
 		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e),
-		string(e.Status), e.PublishedBy, e.RegistrationClosed, e.RegistrationClosesAt)
+		string(e.Status), e.PublishedBy, e.RegistrationClosed, e.RegistrationClosesAt,
+		string(feedbackMode(e.FeedbackMode)), e.FeedbackFormURL, e.FeedbackFormAlias, e.FeedbackAutoSend)
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
 	}
@@ -282,6 +291,9 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 		return Event{}, err
 	}
 	defer tx.Rollback(ctx)
+	if err := lockFormPlaces(ctx, tx, e.formGuard); err != nil {
+		return Event{}, err
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE events SET
 			name = $2, description = $3, location = $4, owner_team = $5, form_url = $6,
@@ -297,12 +309,14 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 			END,
 			registration_closed = $18::boolean, registration_closes_at = $19,
 			cancel_reason = CASE WHEN $20::text IS NOT NULL AND status = 'cancelled' THEN $20::text ELSE cancel_reason END,
+			feedback_mode = $21, feedback_form_url = $22, feedback_form_alias = $23, feedback_auto_send = $24,
 			updated_at = now()
 		WHERE id = $1 AND archived_at IS NULL`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
 		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e),
-		e.RegistrationClosed, e.RegistrationClosesAt, sentCancelReason(e))
+		e.RegistrationClosed, e.RegistrationClosesAt, sentCancelReason(e),
+		string(feedbackMode(e.FeedbackMode)), e.FeedbackFormURL, e.FeedbackFormAlias, e.FeedbackAutoSend)
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
 	}
@@ -782,7 +796,7 @@ func (s *PostgresStore) SetMailListID(ctx context.Context, eventID, listID uuid.
 	return s.Get(ctx, eventID)
 }
 
-const sessionCols = `id, event_day_id, title, speaker_name, speaker_linkedin, description, start_time, end_time, order_index, session_type, cancelled, archived_at, archived_by`
+const sessionCols = `id, event_day_id, title, speaker_name, speaker_linkedin, description, start_time, end_time, order_index, session_type, cancelled, feedback_form_url, feedback_form_alias, feedback_auto_send, archived_at, archived_by`
 
 func (s *PostgresStore) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
 	return s.getSession(ctx, id, false)
@@ -856,23 +870,66 @@ func (s *PostgresStore) CreateSession(ctx context.Context, sess Session) (Sessio
 	if sess.ID == uuid.Nil {
 		sess.ID = uuid.New()
 	}
-	return scanSession(s.pool.QueryRow(ctx, `
+	return withFormGuard(ctx, s, sess.formGuard, func(q querier) (Session, error) {
+		return createSession(ctx, q, sess)
+	})
+}
+
+// querier is the pool or a transaction.
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// withFormGuard runs write in a transaction that first takes the guard's
+// form locks and applies its check; without a guard, on the pool.
+func withFormGuard[T any](ctx context.Context, s *PostgresStore, g *formGuard, write func(q querier) (T, error)) (T, error) {
+	var zero T
+	if g == nil {
+		return write(s.pool)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return zero, err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockFormPlaces(ctx, tx, g); err != nil {
+		return zero, err
+	}
+	out, err := write(tx)
+	if err != nil {
+		return zero, err
+	}
+	return out, tx.Commit(ctx)
+}
+
+func createSession(ctx context.Context, q querier, sess Session) (Session, error) {
+	return scanSession(q.QueryRow(ctx, `
 		INSERT INTO sessions (
 			id, event_day_id, title, speaker_name, speaker_linkedin, description,
-			start_time, end_time, order_index, session_type, cancelled
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			start_time, end_time, order_index, session_type, cancelled,
+			feedback_form_url, feedback_form_alias, feedback_auto_send
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		RETURNING `+sessionCols, sess.ID, sess.EventDayID, sess.Title, sess.SpeakerName, sess.SpeakerLinkedin, sess.Description,
-		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType, sess.Cancelled))
+		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType, sess.Cancelled,
+		sess.FeedbackFormURL, sess.FeedbackFormAlias, sess.FeedbackAutoSend))
 }
 
 func (s *PostgresStore) UpdateSession(ctx context.Context, sess Session) (Session, error) {
-	got, err := scanSession(s.pool.QueryRow(ctx, `
+	return withFormGuard(ctx, s, sess.formGuard, func(q querier) (Session, error) {
+		return updateSession(ctx, q, sess)
+	})
+}
+
+func updateSession(ctx context.Context, q querier, sess Session) (Session, error) {
+	got, err := scanSession(q.QueryRow(ctx, `
 		UPDATE sessions SET
 			title = $2, speaker_name = $3, speaker_linkedin = $4, description = $5,
-			start_time = $6, end_time = $7, order_index = $8, session_type = $9, cancelled = $10
+			start_time = $6, end_time = $7, order_index = $8, session_type = $9, cancelled = $10,
+			feedback_form_url = $11, feedback_form_alias = $12, feedback_auto_send = $13
 		WHERE id = $1 AND archived_at IS NULL
 		RETURNING `+sessionCols, sess.ID, sess.Title, sess.SpeakerName, sess.SpeakerLinkedin, sess.Description,
-		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType, sess.Cancelled))
+		sess.StartTime, sess.EndTime, sess.OrderIndex, sess.SessionType, sess.Cancelled,
+		sess.FeedbackFormURL, sess.FeedbackFormAlias, sess.FeedbackAutoSend))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -938,6 +995,7 @@ func scanEvent(row rowScanner) (Event, error) {
 		&e.ID, &e.Name, &e.Description, &e.Location, &e.OwnerTeam, &e.FormURL, &e.Capacity,
 		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Status, &e.PublishedAt, &e.PublishedBy,
 		&e.CancelledAt, &e.CancelledBy, &e.CancelReason, &e.CancelNotifiedAt, &e.CopiedFromEventID, &e.Ranked, &e.PrizeInfo,
+		&e.FeedbackMode, &e.FeedbackFormURL, &e.FeedbackFormAlias, &e.FeedbackAutoSend,
 		&e.RegistrationClosed, &e.RegistrationClosesAt, &e.RegistrationClosedAt, &e.RegistrationOpen, &e.SeasonID,
 		&e.CoverImageID, &coverURL, &e.coverImage, &e.CoverColors, &e.AttendanceRule, &e.AttendanceRatio, &extraRaw, &e.MailListID, &e.ArchivedAt, &e.ArchivedBy, &e.CreatedAt, &e.UpdatedAt,
 		&e.FileCount, &e.VideoCount,
@@ -964,7 +1022,8 @@ func scanSession(row rowScanner) (Session, error) {
 	var sess Session
 	err := row.Scan(
 		&sess.ID, &sess.EventDayID, &sess.Title, &sess.SpeakerName, &sess.SpeakerLinkedin, &sess.Description,
-		&sess.StartTime, &sess.EndTime, &sess.OrderIndex, &sess.SessionType, &sess.Cancelled, &sess.ArchivedAt, &sess.ArchivedBy,
+		&sess.StartTime, &sess.EndTime, &sess.OrderIndex, &sess.SessionType, &sess.Cancelled,
+		&sess.FeedbackFormURL, &sess.FeedbackFormAlias, &sess.FeedbackAutoSend, &sess.ArchivedAt, &sess.ArchivedBy,
 	)
 	return sess, err
 }
@@ -1123,4 +1182,26 @@ func (s *PostgresStore) Unpublish(ctx context.Context, id uuid.UUID) (bool, erro
 		return false, err
 	}
 	return false, unpublishRefusal(published, tickets, competitors)
+}
+
+// ListSessionFeedbackForms reads the Session feedback forms: of the Event
+// (its current days' current Sessions, the Event archived or not), or, for
+// uuid.Nil, of every current Event.
+func (s *PostgresStore) ListSessionFeedbackForms(ctx context.Context, eventID uuid.UUID) ([]SessionFeedbackForm, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT e.id, s.id, s.title, s.feedback_form_url, s.feedback_form_alias
+		FROM sessions s
+		JOIN event_days d ON d.id = s.event_day_id AND d.archived_at IS NULL
+		JOIN events e ON e.id = d.event_id
+		WHERE s.archived_at IS NULL AND s.feedback_form_url <> ''
+		  AND CASE WHEN $1 = '00000000-0000-0000-0000-000000000000'::uuid THEN e.archived_at IS NULL ELSE e.id = $1 END
+		ORDER BY e.id, s.order_index, s.id`, eventID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (SessionFeedbackForm, error) {
+		var f SessionFeedbackForm
+		err := row.Scan(&f.EventID, &f.SessionID, &f.Title, &f.URL, &f.Alias)
+		return f, err
+	})
 }

@@ -61,6 +61,10 @@ edildi."); each keeps the status it had (`status_before_event_cancel`,
 back these, and only these ([event-cancel.md](event-cancel.md)). A
 Competition cancelled on its own stays cancelled.
 
+Copying the Event with `includeCompetitions` copies its current Competitions
+and their stages as drafts, stage dates moved, without Entrants, scores or
+results (`competition.CopyForEvent`, [event-copy.md](event-copy.md)).
+
 Adding Entrants no longer depends on the Event being active. A wrong status is
 `409` with `code: competition_status`. An archived Event hides its
 Competitions (`404`).

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -48,6 +49,12 @@ type eventBody struct {
 	// Registration closure on create (ticket 12); none is open.
 	RegistrationClosed   bool       `json:"registrationClosed"`
 	RegistrationClosesAt *time.Time `json:"registrationClosesAt"`
+	// The Event's feedback on create (etkinlik geri bildirim formu, ticket
+	// 02): no mode is event, no feedbackAutoSend is true.
+	FeedbackMode      string `json:"feedbackMode"`
+	FeedbackFormURL   string `json:"feedbackFormUrl"`
+	FeedbackFormAlias string `json:"feedbackFormAlias"`
+	FeedbackAutoSend  *bool  `json:"feedbackAutoSend"`
 }
 
 func eventError(c fiber.Ctx, err error) error {
@@ -94,6 +101,11 @@ func (b eventBody) asEvent() event.Event {
 
 		RegistrationClosed:   b.RegistrationClosed,
 		RegistrationClosesAt: b.RegistrationClosesAt,
+
+		FeedbackMode:      event.FeedbackMode(b.FeedbackMode),
+		FeedbackFormURL:   strings.TrimSpace(b.FeedbackFormURL),
+		FeedbackFormAlias: strings.TrimSpace(b.FeedbackFormAlias),
+		FeedbackAutoSend:  b.FeedbackAutoSend == nil || *b.FeedbackAutoSend,
 	}
 	if b.FormAlias != nil {
 		e.FormAlias = *b.FormAlias
@@ -289,6 +301,56 @@ func (h *EventHandler) Uncancel(c fiber.Ctx) error {
 		return eventError(c, err)
 	}
 	return c.JSON(h.svc.ProjectFor(&p, uncancelled))
+}
+
+// copyBody is the body of POST /v1/events/{id}/copy (ticket 06).
+type copyBody struct {
+	// ID is the copy's id, which the client makes: a retried request
+	// answers the copy it made.
+	ID                  *uuid.UUID `json:"id"`
+	Name                string     `json:"name"`
+	StartDate           *time.Time `json:"startDate"`
+	IncludeDoorStaff    bool       `json:"includeDoorStaff"`
+	IncludeCompetitions bool       `json:"includeCompetitions"`
+	// OwnerTeam is the copy's Owner team (ticket 16); none is the
+	// source's.
+	OwnerTeam string `json:"ownerTeam"`
+}
+
+// Copy copies an Event's structure into a new draft: POST
+// /v1/events/{id}/copy (ADR 0066, ticket 06). 201 with the copy and the
+// parts left out; 200 when the same id from the same source made it
+// already.
+func (h *EventHandler) Copy(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body copyBody
+	if err := c.Bind().Body(&body); err != nil || body.ID == nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	copied, fresh, err := h.svc.Copy(c.Context(), p, id, event.CopyInput{
+		ID:                  *body.ID,
+		Name:                body.Name,
+		StartDate:           body.StartDate,
+		IncludeDoorStaff:    body.IncludeDoorStaff,
+		IncludeCompetitions: body.IncludeCompetitions,
+		OwnerTeam:           body.OwnerTeam,
+	})
+	if err != nil {
+		return eventError(c, err)
+	}
+	copied.Event = h.svc.ProjectFor(&p, copied.Event)
+	status := fiber.StatusOK
+	if fresh {
+		status = fiber.StatusCreated
+	}
+	return c.Status(status).JSON(copied)
 }
 
 func (h *EventHandler) statusChange(c fiber.Ctx, change func(ctx context.Context, p authz.Principal, id uuid.UUID) (event.Event, error)) error {

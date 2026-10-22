@@ -7,7 +7,9 @@ applications.
 
 An Event lists a form through `formUrl` or one of its `extraFormUrls`: the
 form is the first UUID path segment of the address (`event.FormIDFromURL`),
-with or without an alias. Archived Events list nothing. A form an older Event
+with or without an alias. An Event's feedback form (`feedbackFormUrl`) is
+not listed: its answers write no Ticket ([event-feedback.md](event-feedback.md)).
+Archived Events list nothing. A form an older Event
 still lists keeps writing that Event's Tickets, so remove it from the older
 Event when the form is reused.
 
@@ -24,6 +26,7 @@ hold.
 | `status` | `pending` (waits for review), `accepted` (needs no review, or approved), `declined` |
 | `userId` | the person who answered signed in; wins over `guest` |
 | `guest` | `{ firstName, lastName, email }` a guest typed into the form's identity fields; a guest without an e-mail counts as no respondent |
+| `invite` | optional: the feedback invite's code the answer came with (the `?davet=` of the mail's link), for a feedback form only; an unknown one, another form's, or one longer than 64 characters is ignored; never logged ([event-feedback.md](event-feedback.md)) |
 | `submittedAt` | optional: the moment Forms first took the answer, in UTC as RFC 3339 with `Z` (`2026-10-20T09:15:00Z`); judged against the Event's registration closure, see below. A value that is not such a time (no zone, not a string) is ignored as if not sent, with a warning line that names the form only (`form_response_submitted_at_ignored`); the report is never refused for it. A time later than core's now counts as now |
 
 The answer is `204` whether or not an Event lists the form. A pending or
@@ -33,7 +36,7 @@ that no Event lists: it writes nothing for it, and the report's log line
 
 | Answer | Meaning for Forms |
 |---|---|
-| `204` | done; stop sending the report |
+| `204` | done; stop sending the report. A report to a current Event's feedback form is `204` too, whatever its status and whoever answered: no Ticket is written (logged as `outcome: feedback`) |
 | `200` `{"outcome": "event_cancelled"}` | done, and no Ticket was written: every Event that lists the form is cancelled ([event-cancel.md](event-cancel.md)); stop sending the report |
 | `200` `{"outcome": "registration_closed"}` | done, and no Ticket was written: the report said when the answer was sent (`submittedAt`), and by then every Event of the form not cancelled had closed applying ([event-registration-closure.md](event-registration-closure.md)); stop sending the report |
 | `400` | a malformed report: a form id or body core cannot read, an unknown `status`, a zero `userId`, or a `guest` with an e-mail but without a first name or last name; sending it again will not help |
@@ -43,7 +46,9 @@ that no Event lists: it writes nothing for it, and the report's log line
 
 ## What a report writes
 
-Only an `accepted` answer writes, on every current Event that lists the form
+A report to a feedback form writes no Ticket (checked before anything
+else, after the status is read). Otherwise only an `accepted` answer writes,
+on every current Event that lists the form
 and is not cancelled. When every such Event is cancelled, nothing is written
 and the answer is `200` with `outcome: "event_cancelled"` (checked first).
 
