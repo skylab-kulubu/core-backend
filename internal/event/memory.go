@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -182,7 +183,15 @@ func (s *MemoryStore) GetIncludingArchived(_ context.Context, id uuid.UUID) (Eve
 	return s.detailed(e), nil
 }
 
-func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
+func (s *MemoryStore) Create(ctx context.Context, e Event) (Event, error) {
+	// The one-place rule again, before the store's lock: its check reads
+	// the store.
+	if e.formGuard != nil {
+		if err := e.formGuard.check(ctx); err != nil {
+			return Event{}, err
+		}
+		e.formGuard = nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e.ID == uuid.Nil {
@@ -194,6 +203,7 @@ func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
 	if e.Status == "" {
 		e.Status = StatusPublished
 	}
+	e.FeedbackMode = feedbackMode(e.FeedbackMode)
 	now := time.Now().UTC()
 	e.RegistrationClosedAt = nil
 	if e.RegistrationClosed {
@@ -209,7 +219,13 @@ func (s *MemoryStore) Create(_ context.Context, e Event) (Event, error) {
 	return s.detailed(e), nil
 }
 
-func (s *MemoryStore) Update(_ context.Context, e Event) (Event, error) {
+func (s *MemoryStore) Update(ctx context.Context, e Event) (Event, error) {
+	if e.formGuard != nil {
+		if err := e.formGuard.check(ctx); err != nil {
+			return Event{}, err
+		}
+		e.formGuard = nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, ok := s.byID[e.ID]
@@ -704,7 +720,10 @@ func (s *MemoryStore) listSessions(eventDayID uuid.UUID, visibility lifecycle.Vi
 	return out
 }
 
-func (s *MemoryStore) CreateSession(_ context.Context, sess Session) (Session, error) {
+func (s *MemoryStore) CreateSession(ctx context.Context, sess Session) (Session, error) {
+	if err := memoryFormGuard(ctx, &sess); err != nil {
+		return Session{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sess.ID == uuid.Nil {
@@ -714,7 +733,10 @@ func (s *MemoryStore) CreateSession(_ context.Context, sess Session) (Session, e
 	return sess, nil
 }
 
-func (s *MemoryStore) UpdateSession(_ context.Context, sess Session) (Session, error) {
+func (s *MemoryStore) UpdateSession(ctx context.Context, sess Session) (Session, error) {
+	if err := memoryFormGuard(ctx, &sess); err != nil {
+		return Session{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, ok := s.sessions[sess.ID]
@@ -826,4 +848,95 @@ func (s *MemoryStore) Unpublish(_ context.Context, id uuid.UUID) (bool, error) {
 	e.Status, e.UpdatedAt = StatusDraft, time.Now().UTC()
 	s.byID[id] = e
 	return true, nil
+}
+
+// Copy writes the plan's copy as the database does, without what the memory
+// store does not hold: Seasons, template bindings and Competitions (a copy
+// asked to bring Competitions brings none). Door staff are copied all.
+func (s *MemoryStore) Copy(_ context.Context, plan CopyPlan) (Event, []string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	source, ok := s.byID[plan.Source]
+	if !ok || source.ArchivedAt != nil {
+		return Event{}, nil, ErrNotFound
+	}
+	if _, taken := s.byID[plan.Event.ID]; taken {
+		return Event{}, nil, ErrConflict
+	}
+	skippedParts := map[string]bool{}
+	e := plan.Event
+	e.Status, e.PublishedAt, e.PublishedBy = StatusDraft, nil, nil
+	e.SeasonID, e.DoorStaffIDs = nil, nil
+	if e.AttendanceRule == "" {
+		e.AttendanceRule = "none"
+	}
+	switch plan.Cover {
+	case CopyRefused:
+		skippedParts[SkippedCover] = true
+	case CopyWrite:
+	default:
+		e.CoverImageID = nil
+	}
+	switch plan.DoorStaff {
+	case CopyRefused:
+		skippedParts[SkippedDoorStaff] = len(source.DoorStaffIDs) > 0
+	case CopyWrite:
+		e.DoorStaffIDs = slices.Clone(source.DoorStaffIDs)
+	}
+	now := time.Now().UTC()
+	e.CreatedAt, e.UpdatedAt = now, now
+	e = emptyGallery(e)
+	for _, day := range s.days {
+		if day.EventID != source.ID || day.ArchivedAt != nil {
+			continue
+		}
+		copied := Day{ID: uuid.New(), EventID: e.ID, Name: day.Name, StartDate: plan.Shift.At(day.StartDate), EndDate: plan.Shift.At(day.EndDate)}
+		s.days[copied.ID] = copied
+		for _, sess := range s.sessions {
+			if sess.EventDayID != day.ID || sess.ArchivedAt != nil {
+				continue
+			}
+			sess.ID, sess.EventDayID, sess.Cancelled = uuid.New(), copied.ID, false
+			sess.FeedbackFormURL, sess.FeedbackFormAlias = "", ""
+			sess.StartTime, sess.EndTime = plan.Shift.At(sess.StartTime), plan.Shift.At(sess.EndTime)
+			s.sessions[sess.ID] = sess
+		}
+	}
+	s.byID[e.ID] = e
+	return s.detailed(e), skipped(skippedParts), nil
+}
+
+func (s *MemoryStore) ListSessionFeedbackForms(_ context.Context, eventID uuid.UUID) ([]SessionFeedbackForm, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]SessionFeedbackForm, 0)
+	for _, sess := range s.sessions {
+		if sess.ArchivedAt != nil || sess.FeedbackFormURL == "" {
+			continue
+		}
+		day, ok := s.days[sess.EventDayID]
+		if !ok || day.ArchivedAt != nil {
+			continue
+		}
+		e, ok := s.byID[day.EventID]
+		if !ok || (eventID == uuid.Nil && e.ArchivedAt != nil) || (eventID != uuid.Nil && e.ID != eventID) {
+			continue
+		}
+		out = append(out, SessionFeedbackForm{EventID: e.ID, SessionID: sess.ID, Title: sess.Title, URL: sess.FeedbackFormURL, Alias: sess.FeedbackFormAlias})
+	}
+	slices.SortFunc(out, func(a, b SessionFeedbackForm) int {
+		return strings.Compare(a.SessionID.String(), b.SessionID.String())
+	})
+	return out, nil
+}
+
+// memoryFormGuard applies the Session's one-place guard before the store's
+// lock (its check reads the store) and clears it.
+func memoryFormGuard(ctx context.Context, sess *Session) error {
+	if sess.formGuard == nil {
+		return nil
+	}
+	err := sess.formGuard.check(ctx)
+	sess.formGuard = nil
+	return err
 }

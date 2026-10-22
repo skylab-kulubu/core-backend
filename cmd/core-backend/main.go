@@ -35,6 +35,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/feedback"
 	"github.com/skylab-kulubu/core-backend/internal/googlewallet"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/health"
@@ -204,7 +205,7 @@ func main() {
 	// (docs/team-codes.md), over the same roots.
 	groupNames := teamcode.NewRules(authzPolicy)
 	users := user.NewPostgresStore(pool)
-	events := event.NewPostgresStore(pool)
+	events := event.NewPostgresStore(pool).CopyCompetitionsWith(competition.CopyForEvent)
 	seasons := season.NewPostgresStore(pool)
 	tickets := ticket.NewPostgresStore(pool)
 	competitors := competitor.NewPostgresStore(pool)
@@ -487,6 +488,15 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("direct user roles: %s (%s)", map[bool]string{false: "off", true: "on"}[directUserRoles], identity.DirectUserRolesEnv)
+	// Whether a member without users:read may find Forms' seat holders
+	// (GET /v1/users?role=skyforms:access, docs/team-delegation.md "Forms'
+	// people picker"): on unless set off. A value core cannot read stops
+	// startup.
+	memberSeatSearch, err := identity.MemberSeatSearchFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("members' seat search: %s (%s)", map[bool]string{false: "off", true: "on"}[memberSeatSearch], identity.MemberSeatSearchEnv)
 	if privateMedia != nil {
 		// A reviewer who never signed in to core gets their row from
 		// Keycloak when a product asks for a read link for them.
@@ -663,6 +673,23 @@ func main() {
 	for _, line := range commpref.AudienceStartupLines(newsAudience.Enabled(), privateVisibility) {
 		log.Print(line)
 	}
+	// The recipient question (ADR 0072 karar 3, docs/news-audience.md
+	// "Recipients"): SkyMail asks, for the recipients a sender chose, which
+	// are a person and whether the mail may go to each. The verified
+	// addresses are read from Keycloak in bulk on demand, never per address.
+	ytuIdentityProvider, err := commpref.YTUIdentityProviderFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var recipients *commpref.Recipients
+	if addressDirectory, ok := dir.(commpref.AddressDirectory); ok {
+		recipients = commpref.NewRecipients(communicationPreferences, addressDirectory, users, ytuIdentityProvider)
+	}
+	recipientsState := "off"
+	if recipients.Enabled() {
+		recipientsState = "on"
+	}
+	log.Printf("recipient question: %s (YTÜ identity provider %s)", recipientsState, ytuIdentityProvider)
 	if keycloakConfigured {
 		worker("communication preference cleanup", commpref.MaintainCleanup(workers, communicationPreferences, commpref.CleanupInterval, func(what string, removed int64, err error) {
 			if err != nil {
@@ -836,7 +863,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR)
+	feedbackInvites := feedback.NewPostgresStore(pool)
+	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites)
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -869,6 +897,8 @@ func main() {
 	}
 	retentionMetrics, retentionStopped := startRetentionSweep(workers, pool, retentionConfig)
 	worker("retention sweep", retentionStopped)
+	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv)
+	worker("integration events", eventsStopped)
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
 
@@ -925,6 +955,7 @@ func main() {
 			DirectUserRoles:       directUserRoles,
 			AdminGroups:           adminGroups,
 			UserSync:              userSync,
+			NoMemberSeatSearch:    !memberSeatSearch,
 		}),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
@@ -947,6 +978,7 @@ func main() {
 		}),
 		URLs:                   urlSvc,
 		Competitions:           competition.NewService(competitions, events, az),
+		FeedbackInvites:        feedbackInvites,
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
 		SkyPassWalletMetrics:   wallet,
@@ -960,6 +992,7 @@ func main() {
 		TeamMailMetrics:        teamMembershipMetrics,
 		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,
+		EventsMetrics:          eventsMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
 		ParseSelfDeleteSudo:    parseSelfDeleteSudo,
@@ -983,6 +1016,7 @@ func main() {
 		Consents:                  consents,
 		CommunicationPreferences:  communicationPreferences,
 		Audience:                  newsAudience,
+		Recipients:                recipients,
 		TrackingWithdrawalMetrics: trackingWithdrawals,
 		Readiness:                 readiness,
 		MediaDecodeMetrics:        decodeBudget,

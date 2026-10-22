@@ -148,9 +148,9 @@ func TestRolePlacementHTTP(t *testing.T) {
 		{"g-yk", ""},
 		{"g-weblab-leaders", ""},
 		{"g-forms-access", ""},
+		{"g-weblab", ""}, // a top Team takes an app role (ekip-yetkileri 04)
 		{"g-uyeler", authz.PlacementMembersRoot},
 		{"g-arge", authz.PlacementArea},
-		{"g-weblab", authz.PlacementTeam},
 		{"g-front", authz.PlacementTeam},
 		{"g-front-leaders", authz.PlacementSubTeamLeaderGroup},
 		{"g-yk-duty", authz.PlacementPrivilegedSubgroup},
@@ -171,6 +171,24 @@ func TestRolePlacementHTTP(t *testing.T) {
 			t.Errorf("%s: a refused mapping was written", tc.group)
 		}
 	}
+	// A top Team takes app roles only: an admin role is refused there, and
+	// nothing of the write is kept, the app role beside it included.
+	for _, body := range []string{
+		`[{"clientId":"frontend-main","role":"cms:access"}]`,
+		`[{"clientId":"skymail","role":"skymail:mails:write"}]`,
+		`[{"clientId":"forms","role":"skyforms:access"},{"clientId":"skymail","role":"skymail:mails:write"}]`,
+	} {
+		got := e.send(fiber.MethodPut, "/v1/groups/g-weblab/client-roles", body)
+		if got.status != fiber.StatusConflict || got.body["code"] != identity.CodeRolePlacement || got.body["reason"] != authz.PlacementTopTeamAdminRole || got.body["detail"] == "" {
+			t.Errorf("top Team %s: %d %v, want 409 %s", body, got.status, got.body, authz.PlacementTopTeamAdminRole)
+		}
+	}
+	if roles := e.roles("g-weblab"); len(roles) != 1 || roles[0].Role != "skyforms:access" {
+		t.Errorf("top Team roles after refused writes = %v, want the seat alone", roles)
+	}
+	if got := e.send(fiber.MethodPut, "/v1/groups/g-weblab/client-roles", `[{"clientId":"forms","role":"skyforms:access"},{"clientId":"skymail","role":"skymail:access"},{"clientId":"skymail","role":"skymail:templates:read"}]`); got.status != fiber.StatusNoContent || len(e.roles("g-weblab")) != 3 {
+		t.Errorf("top Team app roles: %d %v", got.status, got.body)
+	}
 	// A role group with a Group under it takes no role.
 	e.dir.PutGroup(identity.Group{ID: "g-forms-sub", Name: "ALT", Path: "/ROLLER/FORMS-ACCESS/ALT"})
 	e.dir.PutGroup(identity.Group{ID: "g-mail", Name: "SKYMAIL-ACCESS", Path: "/ROLLER/SKYMAIL-ACCESS"})
@@ -181,25 +199,25 @@ func TestRolePlacementHTTP(t *testing.T) {
 		t.Errorf("nested role group: %d %v", got.status, got.body)
 	}
 
-	// A mapping made before the rule: kept as it is, taken off, never added
-	// to.
+	// A mapping made before the rule (on a Sub-team, which takes none):
+	// kept as it is, taken off, never added to.
 	old := []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}, {ClientID: "skymail", Role: "skymail:access"}}
-	if err := e.dir.SetGroupClientRoles(context.Background(), "g-weblab", old); err != nil {
+	if err := e.dir.SetGroupClientRoles(context.Background(), "g-front", old); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.send(fiber.MethodPut, "/v1/groups/g-weblab/client-roles", `[{"clientId":"skymail","role":"skymail:access"},{"clientId":"forms","role":"skyforms:access"}]`); got.status != fiber.StatusNoContent {
+	if got := e.send(fiber.MethodPut, "/v1/groups/g-front/client-roles", `[{"clientId":"skymail","role":"skymail:access"},{"clientId":"forms","role":"skyforms:access"}]`); got.status != fiber.StatusNoContent {
 		t.Errorf("same mappings: %d %v", got.status, got.body)
 	}
-	if got := e.send(fiber.MethodPut, "/v1/groups/g-weblab/client-roles", `[{"clientId":"skymail","role":"skymail:access"},{"clientId":"core","role":"url:access"}]`); got.status != fiber.StatusConflict {
+	if got := e.send(fiber.MethodPut, "/v1/groups/g-front/client-roles", `[{"clientId":"skymail","role":"skymail:access"},{"clientId":"core","role":"url:access"}]`); got.status != fiber.StatusConflict {
 		t.Errorf("swap in a new role: %d %v", got.status, got.body)
 	}
-	if got := e.send(fiber.MethodPut, "/v1/groups/g-weblab/client-roles", `[{"clientId":"skymail","role":"skymail:access"}]`); got.status != fiber.StatusNoContent {
+	if got := e.send(fiber.MethodPut, "/v1/groups/g-front/client-roles", `[{"clientId":"skymail","role":"skymail:access"}]`); got.status != fiber.StatusNoContent {
 		t.Errorf("take one off: %d %v", got.status, got.body)
 	}
-	if got := e.roles("g-weblab"); !slices.Equal(got, []identity.ClientRole{{ClientID: "skymail", Role: "skymail:access"}}) {
+	if got := e.roles("g-front"); !slices.Equal(got, []identity.ClientRole{{ClientID: "skymail", Role: "skymail:access"}}) {
 		t.Errorf("after taking one off: %v", got)
 	}
-	if got := e.send(fiber.MethodPut, "/v1/groups/g-weblab/client-roles", `[]`); got.status != fiber.StatusNoContent || len(e.roles("g-weblab")) != 0 {
+	if got := e.send(fiber.MethodPut, "/v1/groups/g-front/client-roles", `[]`); got.status != fiber.StatusNoContent || len(e.roles("g-front")) != 0 {
 		t.Errorf("take all off: %d %v", got.status, got.body)
 	}
 }

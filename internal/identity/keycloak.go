@@ -798,6 +798,36 @@ func (k *Keycloak) UsersWithClientRole(ctx context.Context, clientID, role strin
 	return out, nil
 }
 
+func (k *Keycloak) ClientRoleHolders(ctx context.Context, clientID, role string) ([]Group, []Person, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	clientUUID, err := k.clientUUID(ctx, token, clientID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return []Group{}, []Person{}, nil
+		}
+		return nil, nil, err
+	}
+	roles := []string{role}
+	if strings.HasPrefix(role, "skyforms:") && role != "skyforms:*" {
+		roles = append(roles, "skyforms:*")
+	}
+	groups, users := make([]Group, 0), make([]Person, 0)
+	for _, name := range roles {
+		g, u, err := k.clientRoleHolders(ctx, token, clientUUID, name)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return nil, nil, err
+		}
+		groups, users = append(groups, g...), append(users, u...)
+	}
+	return groups, users, nil
+}
+
 func (k *Keycloak) clientRoleHolders(ctx context.Context, token, clientUUID, role string) ([]Group, []Person, error) {
 	base := k.adminBase + "/admin/realms/" + k.realm + "/clients/" + clientUUID + "/roles/" + url.PathEscape(role)
 	groups := make([]Group, 0)

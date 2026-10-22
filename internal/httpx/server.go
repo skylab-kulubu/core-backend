@@ -42,13 +42,16 @@ type UserSync interface {
 }
 
 type Deps struct {
-	Users                  user.Service
-	Identity               identity.Service
-	Events                 event.Service
-	Seasons                season.Service
-	Tickets                ticket.Service
-	Competitors            competitor.Service
-	Competitions           competition.Service
+	Users        user.Service
+	Identity     identity.Service
+	Events       event.Service
+	Seasons      season.Service
+	Tickets      ticket.Service
+	Competitors  competitor.Service
+	Competitions competition.Service
+	// FeedbackInvites reads the Events' feedback invite counts; nil leaves
+	// GET /v1/events/{id}/feedback out.
+	FeedbackInvites        handlers.FeedbackCounter
 	Media                  media.Service
 	URLs                   shorturl.Service
 	Certificates           certificate.Service
@@ -82,6 +85,11 @@ type Deps struct {
 	// RetentionMetrics are the periodic destruction run's metrics
 	// (docs/retention-sweep.md). Nil while RETENTION_SWEEP_MODE is off.
 	RetentionMetrics interface{ Prometheus() string }
+
+	// EventsMetrics are the Integration events consumer's state and
+	// counters and its records' cleanup (docs/integration-events.md),
+	// served on /v1/metrics. Nil leaves them out.
+	EventsMetrics interface{ Prometheus() string }
 
 	// MediaCDNPurgeMetrics are the media CDN purge's counters. Nil while
 	// the purge is off.
@@ -180,6 +188,12 @@ type Deps struct {
 	// 503.
 	Audience *commpref.Audience
 
+	// Recipients answers SkyMail's service account, for the recipients a
+	// sender chose, which are a person and whether the mail may go to each
+	// (docs/news-audience.md, "Recipients"). Nil or off answers POST
+	// /internal/v1/audiences/recipients:resolve 503.
+	Recipients *commpref.Recipients
+
 	// TrackingWithdrawalMetrics are the tracking withdrawals' counters and
 	// backlog (docs/communication-preferences.md, "Tracking"), served on
 	// /v1/metrics. Nil leaves them out.
@@ -272,7 +286,8 @@ func New(deps Deps) *fiber.App {
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
-		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil {
+		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil ||
+		deps.EventsMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -312,6 +327,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.UserSync != nil {
 				text += deps.UserSync.Prometheus()
+			}
+			if deps.EventsMetrics != nil {
+				text += deps.EventsMetrics.Prometheus()
 			}
 			text += deps.Readiness.Prometheus()
 			return c.SendString(text)
@@ -411,6 +429,10 @@ func New(deps Deps) *fiber.App {
 	// send may track (docs/communication-preferences.md, "Tracking"). Before
 	// the Group overage step and JIT: a service account has neither.
 	app.Post(handlers.TrackingResolvePath, handlers.NewTrackingResolveHandler(deps.Audience).Resolve)
+	// SkyMail's service account with audience:read: which recipients a
+	// sender chose are a person, and whether the mail may go to each (ADR
+	// 0072 karar 3). Here for the same reason.
+	app.Post(handlers.RecipientsResolvePath, handlers.NewRecipientsResolveHandler(deps.Recipients).Resolve)
 	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Get("/v1/go/:alias/:channel", urls.RedirectChannel)
 	// Before JIT and every product route: a Group overage token gets its
@@ -507,6 +529,10 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/events/:id/unpublish", events.Unpublish)
 	app.Post("/v1/events/:id/cancel", events.Cancel)
 	app.Post("/v1/events/:id/uncancel", events.Uncancel)
+	app.Post("/v1/events/:id/copy", events.Copy)
+	if deps.FeedbackInvites != nil && deps.Authz != nil {
+		app.Get("/v1/events/:id/feedback", handlers.NewFeedbackHandler(deps.Events, deps.Authz, deps.FeedbackInvites).Counts)
+	}
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)
 	app.Post("/v1/events/:id/files", events.AddFiles(event.Files))

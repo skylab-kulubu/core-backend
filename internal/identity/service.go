@@ -70,6 +70,8 @@ type service struct {
 	audit                 teamaudit.Writer
 	directUserRoles       bool
 	adminGroups           KeycloakAdminGroups
+	memberSeats           bool
+	seats                 *seatCache
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer) Service {
@@ -121,6 +123,15 @@ type Options struct {
 	// role (realm-management): core changes no membership there. Nil reads
 	// nothing and refuses nothing (memory setups).
 	AdminGroups KeycloakAdminGroups
+	// NoMemberSeatSearch switches the members' seat search off
+	// (SEAT_SEARCH_MEMBERS=off): a member without users:read gets 403 from
+	// GET /v1/users?role=skyforms:access, as before ekip-yetkileri ticket
+	// 04. The zero value, on, lets a member find Forms' seat holders
+	// (memberSeatSearch).
+	NoMemberSeatSearch bool
+	// Now is the clock of the seat search's minute (what it keeps and the
+	// members' search budget). Nil is time.Now.
+	Now func() time.Time
 	// UserSync is woken when an admin creates a user, so the user sync
 	// (docs/user-sync.md) sends the Welcome mail soon rather than at its next
 	// tick. Nil: the mail waits for the tick.
@@ -198,6 +209,8 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		directUserRoles:       options.DirectUserRoles,
 		adminGroups:           options.AdminGroups,
 		userSync:              options.UserSync,
+		memberSeats:           !options.NoMemberSeatSearch,
+		seats:                 newSeatCache(options.Now),
 	}
 	if options.GroupNames != nil {
 		s.names = *options.GroupNames
@@ -502,6 +515,7 @@ func (s *service) forgetGroups(userID uuid.UUID) {
 		s.groupCache.Forget(userID)
 	}
 	s.delegation.Forget(userID)
+	s.seats.forget()
 }
 
 func (s *service) forgetAllGroups() {
@@ -509,6 +523,7 @@ func (s *service) forgetAllGroups() {
 		s.groupCache.ForgetAll()
 	}
 	s.delegation.ForgetAll()
+	s.seats.forget()
 }
 
 func (s *service) ListClientRoles(ctx context.Context, p authz.Principal) ([]ClientRole, error) {
@@ -529,32 +544,45 @@ func (s *service) ListClientRoles(ctx context.Context, p authz.Principal) ([]Cli
 }
 
 func (s *service) ListUsers(ctx context.Context, p authz.Principal, q string, seat ...ClientRole) ([]Person, error) {
-	if err := s.allow(p, authz.TypeUser, authz.Read); err != nil {
-		return nil, err
-	}
-	full := s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.ReadFull)
 	q = strings.TrimSpace(q)
-	if len(seat) > 0 && strings.TrimSpace(seat[0].Role) != "" {
-		clientID := strings.TrimSpace(seat[0].ClientID)
+	seated := len(seat) > 0 && strings.TrimSpace(seat[0].Role) != ""
+	clientID, role := "", ""
+	if seated {
+		clientID = strings.TrimSpace(seat[0].ClientID)
 		if clientID == "" {
 			clientID = "forms"
 		}
-		role := strings.TrimSpace(seat[0].Role)
+		role = strings.TrimSpace(seat[0].Role)
+	}
+	if err := s.allow(p, authz.TypeUser, authz.Read); err != nil {
+		if !seated {
+			return nil, err
+		}
+		// No users:read: a member may still find Forms' seat holders,
+		// narrowly (ekip-yetkileri ticket 04).
+		return s.memberSeatSearch(ctx, p, clientID, role, q)
+	}
+	full := s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.ReadFull)
+	if seated && q == "" {
+		// Without a query the list stays the role's direct holders and the
+		// members of the Groups it is mapped to; finding everyone who holds
+		// it in effect would read the whole realm.
 		people, err := s.dir.UsersWithClientRole(ctx, clientID, role)
 		if err != nil {
 			return nil, err
 		}
-		if q == "" {
-			// Without a query the list stays the role's direct holders and
-			// the members of the Groups it is mapped to; finding everyone
-			// who holds it in effect would read the whole realm.
-			people, err = s.overlayShadow(ctx, people)
-			if err != nil {
-				return nil, err
-			}
-			return projectPeople(people, full), nil
+		people, err = s.overlayShadow(ctx, people)
+		if err != nil {
+			return nil, err
 		}
-		people, err = s.seatSearch(ctx, clientID, role, q, full, people)
+		return projectPeople(people, full), nil
+	}
+	if seated {
+		matches := func(person Person) bool { return safePersonMatches(person, q) }
+		if full {
+			matches = func(person Person) bool { return personMatches(person, q) }
+		}
+		people, err := s.seatSearch(ctx, clientID, role, q, matches, false)
 		if err != nil {
 			return nil, err
 		}
@@ -666,9 +694,9 @@ func safePeopleSearch(people []Person, query string) []Person {
 }
 
 func safePersonMatches(person Person, query string) bool {
-	needle := strings.ToLower(strings.TrimSpace(query))
+	needle := foldSearch(strings.TrimSpace(query))
 	for _, field := range []string{person.Email, person.FirstName, person.LastName, strings.TrimSpace(person.FirstName + " " + person.LastName)} {
-		if strings.Contains(strings.ToLower(field), needle) {
+		if strings.Contains(foldSearch(field), needle) {
 			return true
 		}
 	}
@@ -878,6 +906,7 @@ func (s *service) setGroupClientRoles(ctx context.Context, p authz.Principal, gr
 	// A Group's role mappings decide whether it is protected: forgotten
 	// even when the write fails, since it may have reached Keycloak.
 	defer s.delegation.ForgetAll()
+	defer s.seats.forget()
 	before, known := s.rolesBefore(ctx, g)
 	err = s.dir.SetGroupClientRoles(ctx, g.ID, roles)
 	if known {
@@ -1420,40 +1449,62 @@ func (s *service) mergeUserSearch(ctx context.Context, people []Person, q string
 }
 
 // seatSearchLimit is how many people a seat search takes from Keycloak's
-// search; each of them not already known as a holder costs one read of
-// their effective roles.
+// search, and how many of the people found by search (not as a holder
+// through a direct mapping) it reads the effective roles of.
 const seatSearchLimit = 50
 
 // seatSearchConcurrency bounds the effective role reads one search runs at
 // once.
 const seatSearchConcurrency = 8
 
-// seatSearch answers the people matching q who hold clientID's role in
-// effect, as Keycloak puts it in their token: directly, through a Group or
-// a Group above theirs, through the default roles or a composite role at any
-// depth. A skyforms: role is also held through skyforms:*. Keycloak's
-// role/users and role/groups list only direct mappings, so the candidates
-// are the direct holders (holders) plus Keycloak's search for q (and, for a
-// full caller, core's own profile search), and each candidate who is not a
-// direct holder is kept only if Keycloak's effective roles hold the role.
-// People who are erased or being erased are left out, and so are those
-// Keycloak's search finds disabled (they get no token). A realm without
-// clientID holds nobody; core logs that once per search, naming the client
-// alone. A failed read is an error, never a shorter list.
-func (s *service) seatSearch(ctx context.Context, clientID, role, q string, full bool, holders []Person) ([]Person, error) {
-	matches := personMatches
-	if !full {
-		matches = safePersonMatches
+// seatSearch answers the people matching (matches) who hold clientID's role
+// in effect, as Keycloak puts it in their token: directly, through a Group
+// or a Group above theirs, through the default roles or a composite role at
+// any depth. A skyforms: role is also held through skyforms:*.
+//
+// The holders through a direct mapping (on a person, or on a Group and so
+// every Group under it) are read whole and kept a minute (seatHolders), so
+// a short query finds every one of them, matched by core's profile names,
+// Turkish letters folded (foldSearch). Keycloak's role/groups and
+// role/users see no composite and no default role, so Keycloak's search for
+// q (its first seatSearchLimit) and core's own profile search add the
+// people who may hold it that way, and of those matching, the first
+// seatSearchLimit are kept only if Keycloak's effective roles hold the role
+// (kept a minute too).
+//
+// membersOnly (the members' search, memberSeatSearch) keeps only members:
+// a holder through a member's Group or a role group, else a person whose
+// Groups make them one (isMember). People who are erased or being erased
+// are left out, and so are those Keycloak finds disabled (they get no
+// token). A realm without clientID holds nobody; core logs that once per
+// search, naming the client alone. A failed read is an error, never a
+// shorter list.
+func (s *service) seatSearch(ctx context.Context, clientID, role, q string, matches func(Person) bool, membersOnly bool) ([]Person, error) {
+	holders, err := s.seatHolders(ctx, clientID, role)
+	if err != nil {
+		return nil, err
 	}
-	direct := make(map[uuid.UUID]struct{}, len(holders))
-	for _, person := range holders {
-		direct[person.ID] = struct{}{}
-	}
-	candidates := append([]Person(nil), holders...)
 	seen := make(map[uuid.UUID]struct{}, len(holders))
-	for _, person := range holders {
-		seen[person.ID] = struct{}{}
+	out := make([]Person, 0)
+	// check are the people whose membership is still to be read (and, for
+	// those not among the holders, their seat).
+	type check struct {
+		person Person
+		seat   bool
 	}
+	var checks []check
+	for _, h := range holders {
+		seen[h.ID] = struct{}{}
+		if !matches(h.Person) {
+			continue
+		}
+		if membersOnly && !h.member {
+			checks = append(checks, check{person: h.Person})
+			continue
+		}
+		out = append(out, h.Person)
+	}
+	var candidates []Person
 	add := func(person Person) {
 		if person.ID == uuid.Nil {
 			return
@@ -1476,47 +1527,50 @@ func (s *service) seatSearch(ctx context.Context, clientID, role, q string, full
 		}
 		add(person)
 	}
-	if full {
-		shadows, err := s.users.Search(ctx, q)
-		if err != nil {
-			return nil, err
-		}
-		for _, u := range shadows {
-			add(personFromUser(u))
-		}
+	shadows, err := s.users.Search(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range shadows {
+		add(personFromUser(u))
 	}
 	candidates, err = s.overlayShadow(ctx, candidates)
 	if err != nil {
 		return nil, err
 	}
-	matched := make([]Person, 0, len(candidates))
+	extra := 0
 	for _, person := range candidates {
-		if matches(person, q) {
-			matched = append(matched, person)
+		if extra == seatSearchLimit {
+			break
+		}
+		if matches(person) {
+			checks = append(checks, check{person: person, seat: true})
+			extra++
 		}
 	}
-	keep := make([]bool, len(matched))
+	keep := make([]bool, len(checks))
 	var noClient atomic.Bool
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(seatSearchConcurrency)
-	for i, person := range matched {
-		if _, ok := direct[person.ID]; ok {
-			keep[i] = true
-			continue
-		}
+	for i, c := range checks {
 		g.Go(func() error {
-			names, err := s.dir.EffectiveClientRoles(gctx, person.ID, clientID)
-			if errors.Is(err, ErrClientNotFound) {
-				noClient.Store(true)
-				return nil
+			if c.seat {
+				holds, err := s.holdsSeatInEffect(gctx, clientID, role, c.person.ID)
+				if errors.Is(err, ErrClientNotFound) {
+					noClient.Store(true)
+					return nil
+				}
+				if err != nil || !holds {
+					return err
+				}
 			}
-			if errors.Is(err, ErrNotFound) {
-				return nil
+			if membersOnly {
+				member, err := s.isMember(gctx, c.person.ID)
+				if err != nil || !member {
+					return err
+				}
 			}
-			if err != nil {
-				return err
-			}
-			keep[i] = holdsSeat(names, role)
+			keep[i] = true
 			return nil
 		})
 	}
@@ -1526,10 +1580,9 @@ func (s *service) seatSearch(ctx context.Context, clientID, role, q string, full
 	if noClient.Load() {
 		log.Printf("identity: seat search: Keycloak has no client %q; nobody holds %q", clientID, role)
 	}
-	out := make([]Person, 0, len(matched))
-	for i, person := range matched {
+	for i, c := range checks {
 		if keep[i] {
-			out = append(out, person)
+			out = append(out, c.person)
 		}
 	}
 	return out, nil
@@ -1562,12 +1615,12 @@ func keycloakInfix(q string) string {
 }
 
 func personMatches(p Person, q string) bool {
-	n := strings.ToLower(q)
+	n := foldSearch(q)
 	for _, f := range []string{
 		p.Email, p.FirstName, p.LastName, p.Username, p.SchoolEmail, p.SkyNumber,
 		strings.TrimSpace(p.FirstName + " " + p.LastName),
 	} {
-		if strings.Contains(strings.ToLower(f), n) {
+		if strings.Contains(foldSearch(f), n) {
 			return true
 		}
 	}
