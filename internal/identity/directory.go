@@ -123,6 +123,13 @@ type Directory interface {
 	SearchUsers(ctx context.Context, query string, limit int) ([]Person, error)
 	ListClientRoles(ctx context.Context) ([]ClientRole, error)
 	UsersWithClientRole(ctx context.Context, clientID, role string) ([]Person, error)
+	// ClientRoleHolders answers the direct mappings of clientID's role (and
+	// of skyforms:* for a skyforms: role): the Groups it is mapped to and
+	// the people it is mapped to. Like Keycloak's role/groups and
+	// role/users, it sees no Group above or below them, no composite and
+	// no default role. A realm without clientID, or a client without the
+	// role, holds nobody: empty, no error.
+	ClientRoleHolders(ctx context.Context, clientID, role string) ([]Group, []Person, error)
 	// EffectiveClientRoles answers the names of clientID's roles the person
 	// holds in effect: directly, through Groups and the Groups above them,
 	// the default roles and composites. ErrNotFound: no such person;

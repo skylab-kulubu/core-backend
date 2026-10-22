@@ -488,6 +488,15 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("direct user roles: %s (%s)", map[bool]string{false: "off", true: "on"}[directUserRoles], identity.DirectUserRolesEnv)
+	// Whether a member without users:read may find Forms' seat holders
+	// (GET /v1/users?role=skyforms:access, docs/team-delegation.md "Forms'
+	// people picker"): on unless set off. A value core cannot read stops
+	// startup.
+	memberSeatSearch, err := identity.MemberSeatSearchFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("members' seat search: %s (%s)", map[bool]string{false: "off", true: "on"}[memberSeatSearch], identity.MemberSeatSearchEnv)
 	if privateMedia != nil {
 		// A reviewer who never signed in to core gets their row from
 		// Keycloak when a product asks for a read link for them.
@@ -946,6 +955,7 @@ func main() {
 			DirectUserRoles:       directUserRoles,
 			AdminGroups:           adminGroups,
 			UserSync:              userSync,
+			NoMemberSeatSearch:    !memberSeatSearch,
 		}),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
