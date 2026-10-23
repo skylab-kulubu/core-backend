@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -228,6 +229,66 @@ func TestDeliverLogsNoData(t *testing.T) {
 		if strings.Contains(line, "someone@example.com") || strings.Contains(line, "the-password") {
 			t.Fatalf("log line carries data: %s", line)
 		}
+	}
+}
+
+// A handler's error reaches the log line without the personal data it may
+// quote: a PostgreSQL message or detail, an e-mail or IP address in the
+// handler's own text, a panic's value. The ids the handler wrapped stay.
+func TestDeliverLogsNoPersonalDataFromHandlerErrors(t *testing.T) {
+	for name, tc := range map[string]struct {
+		fail func() error
+		want string
+	}{
+		"a PostgreSQL message": {
+			fail: func() error {
+				return Permanent(fmt.Errorf("ticket for response r-1: %w", &pgconn.PgError{
+					Severity: "ERROR", Code: "22P02", Message: `invalid input syntax for type uuid: "ayse@example.com"`,
+				}))
+			},
+			want: `ticket for response r-1: PostgreSQL error (SQLSTATE 22P02)`,
+		},
+		"a PostgreSQL key detail": {
+			fail: func() error {
+				return Permanent(&pgconn.PgError{
+					Severity: "ERROR", Code: "23505", Message: "duplicate key value violates unique constraint \"users_email_key\"",
+					Detail: "Key (email)=(ayse@example.com) already exists.", ConstraintName: "users_email_key",
+				})
+			},
+			want: `PostgreSQL error (SQLSTATE 23505, constraint users_email_key)`,
+		},
+		"the handler's own text": {
+			fail: func() error { return Permanent(fmt.Errorf("guest ayse@example.com from 203.0.113.7: refused")) },
+			want: `guest [e-mail] from [ip]: refused`,
+		},
+		"a panic": {
+			fail: func() error { panic("no ticket for ayse@example.com") },
+			want: `handler panicked with a string`,
+		},
+		"a runtime panic": {
+			fail: func() error { var m map[string]int; m["x"]++; return nil },
+			want: `handler panicked: assignment to entry in nil map`,
+		},
+		"a retry": {
+			fail: func() error { return errors.New("peer 203.0.113.7 answered 503") },
+			want: `peer [ip] answered 503`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, s, logs := testConsumer(t, &memoryStore{}, func(context.Context, pgx.Tx, Event) error { return tc.fail() })
+			d, _ := delivery(event("1"), false)
+			c.deliver(context.Background(), s, d)
+			found := false
+			for _, line := range *logs {
+				if strings.Contains(line, "ayse") || strings.Contains(line, "203.0.113.7") {
+					t.Fatalf("log line carries personal data: %s", line)
+				}
+				found = found || strings.Contains(line, tc.want)
+			}
+			if !found {
+				t.Fatalf("no log line says %q: %v", tc.want, *logs)
+			}
+		})
 	}
 }
 
