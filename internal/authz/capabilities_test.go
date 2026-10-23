@@ -70,8 +70,9 @@ func TestCapabilities_Privileged(t *testing.T) {
 		}
 		for _, key := range AppAbilities() {
 			// audit.read is the audit:read role alone, never Privileged's
-			// (S11; TestCapabilities_AuditRead).
-			if !c.Can[key] && key != "audit.read" {
+			// (S11; TestCapabilities_AuditRead); the app assignment keys
+			// are false while their routes are off (TestAllowAppAssignment).
+			if !c.Can[key] && key != "audit.read" && key != "apps.read" && key != "apps.assign" {
 				t.Errorf("%s: can[%s] = false", tc.mode, key)
 			}
 		}
