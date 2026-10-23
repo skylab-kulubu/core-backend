@@ -289,6 +289,9 @@ func (h *ConsentHandler) RequestRenewal(c fiber.Ctx) error {
 type ownGrantBody struct {
 	Purpose     string `json:"purpose"`
 	TextVersion string `json:"textVersion"`
+	// Source is where the person ticked the box: self (unset) or signup,
+	// the first Account Center screen after the account was opened.
+	Source string `json:"source"`
 }
 
 // GrantMine is POST /v1/users/me/consents: a signed-in person consents for
@@ -309,9 +312,13 @@ func (h *ConsentHandler) GrantMine(c fiber.Ctx) error {
 	if err != nil {
 		return consentError(c, err)
 	}
+	source, ok := consent.PersonSource(body.Source)
+	if !ok {
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "consent_invalid")
+	}
 	result, err := h.svc.Grant(c.Context(), consent.Grant{
 		Purpose: purpose, TextVersion: strings.TrimSpace(body.TextVersion), UserID: ident.ID,
-		Source: consent.SourceSelf, ClientID: ident.Client,
+		Source: source, ClientID: ident.Client,
 	})
 	if err != nil {
 		return consentError(c, err)
@@ -408,7 +415,7 @@ func (h *ConsentHandler) GuestApplyConsents(c fiber.Ctx) error {
 	if len(body.Consents) == 0 {
 		return c.Next()
 	}
-	if len(body.Consents) > consent.EnabledPurposes() {
+	if len(body.Consents) > consent.GuestApplyPurposes() {
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "consent_invalid")
 	}
 	source, client := consent.SourceGuestApply, ""
