@@ -81,6 +81,8 @@ type service struct {
 	seats                 *seatCache
 	apps                  []authz.App
 	appAudit              teamaudit.AppReader
+	appAssignments        bool
+	appStats              *appStatsCache
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer) Service {
@@ -149,6 +151,12 @@ type Options struct {
 	// app's audit tab, who assigned what when). Nil reads none: the list
 	// says no row for any assignment.
 	AppAudit teamaudit.AppReader
+	// AppAssignments is APP_ASSIGNMENTS: on, the app roles of a Team, a
+	// Sub-team and a Leader group are the panel's (POST and DELETE
+	// /v1/apps/{clientId}/assignments), and SetGroupClientRoles refuses to
+	// change them (authz.PlacementUseAppAssignments). Off, it changes them
+	// as before.
+	AppAssignments bool
 	// UserSync is woken when an admin creates a user, so the user sync
 	// (docs/user-sync.md) sends the Welcome mail soon rather than at its next
 	// tick. Nil: the mail waits for the tick.
@@ -230,6 +238,8 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		seats:                 newSeatCache(options.Now),
 		apps:                  options.Apps,
 		appAudit:              options.AppAudit,
+		appAssignments:        options.AppAssignments,
+		appStats:              newAppStatsCache(options.Now),
 	}
 	if s.apps == nil {
 		// The catalogue core carries passed its checks in its tests
@@ -541,6 +551,7 @@ func (s *service) forgetGroups(userID uuid.UUID) {
 	}
 	s.delegation.Forget(userID)
 	s.seats.forget()
+	s.appStats.forget()
 }
 
 func (s *service) forgetAllGroups() {
@@ -549,6 +560,7 @@ func (s *service) forgetAllGroups() {
 	}
 	s.delegation.ForgetAll()
 	s.seats.forget()
+	s.appStats.forget()
 }
 
 func (s *service) ListClientRoles(ctx context.Context, p authz.Principal) ([]ClientRole, error) {
@@ -921,6 +933,9 @@ func (s *service) setGroupClientRoles(ctx context.Context, p authz.Principal, gr
 	if err != nil {
 		return err
 	}
+	if err := s.appRolesStayOnThePanel(ctx, g, roles); err != nil {
+		return err
+	}
 	added := s.addedRoles(ctx, g, roles)
 	if err := s.noKeycloakAdminRole(ctx, added); err != nil {
 		return err
@@ -932,6 +947,7 @@ func (s *service) setGroupClientRoles(ctx context.Context, p authz.Principal, gr
 	// even when the write fails, since it may have reached Keycloak.
 	defer s.delegation.ForgetAll()
 	defer s.seats.forget()
+	defer s.appStats.forget()
 	before, known := s.rolesBefore(ctx, g)
 	err = s.dir.SetGroupClientRoles(ctx, g.ID, roles)
 	if known {

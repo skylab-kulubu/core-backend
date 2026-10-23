@@ -117,13 +117,13 @@ type AppAssignmentFilter struct {
 	Role string
 }
 
-// AppAssignmentInput is one change: the target's kind and id, the role,
-// and an optional note (at most teamaudit.MaxNote runes).
+// AppAssignmentInput is one change: the target's kind and id, and the
+// role. There is no free text: Entra's app role assignment has none, and
+// the audit record keeps no free personal data (ADR 0065).
 type AppAssignmentInput struct {
 	Type string `json:"type"`
 	ID   string `json:"id"`
 	Role string `json:"role"`
-	Note string `json:"note"`
 }
 
 // AppAuditEntry is one app row of the Team audit record.
@@ -139,7 +139,6 @@ type AppAuditEntry struct {
 	Path       string    `json:"path,omitempty"`
 	Name       string    `json:"name,omitempty"`
 	Role       string    `json:"role"`
-	Note       string    `json:"note,omitempty"`
 }
 
 // AppTarget is a Group or a person an app role may be assigned to, with
@@ -405,8 +404,14 @@ func (r *appReads) person(ctx context.Context, id uuid.UUID) (Person, error) {
 }
 
 // stats are how many Groups are below g and how many enabled people g and
-// they hold, each once; at most seatGroupLimit Groups are walked.
+// they hold, each once; at most seatGroupLimit Groups are walked. They are
+// kept for a minute (appStatsCache).
 func (r *appReads) stats(ctx context.Context, g Group) (int, int, error) {
+	return r.s.appStats.of(g.ID, func() (int, int, error) { return r.walk(ctx, g) })
+}
+
+// walk reads stats from Keycloak.
+func (r *appReads) walk(ctx context.Context, g Group) (int, int, error) {
 	queue, seen := []Group{g}, map[string]bool{g.ID: true}
 	people := map[uuid.UUID]bool{}
 	for len(queue) > 0 && len(seen) <= seatGroupLimit {
@@ -501,8 +506,8 @@ func (s *service) checkAppChange(ctx context.Context, p authz.Principal, clientI
 	if err := s.allow(p, authz.TypeAppAssignment, authz.Read); err != nil {
 		return appChange{}, err
 	}
-	in.Type, in.ID, in.Role, in.Note = strings.TrimSpace(in.Type), strings.TrimSpace(in.ID), strings.TrimSpace(in.Role), strings.TrimSpace(in.Note)
-	if in.Role == "" || utf8.RuneCountInString(in.Note) > teamaudit.MaxNote || !utf8.ValidString(in.Note) {
+	in.Type, in.ID, in.Role = strings.TrimSpace(in.Type), strings.TrimSpace(in.ID), strings.TrimSpace(in.Role)
+	if in.Role == "" {
 		return appChange{}, ErrInvalid
 	}
 	id, err := uuid.Parse(in.ID)
@@ -514,7 +519,7 @@ func (s *service) checkAppChange(ctx context.Context, p authz.Principal, clientI
 		return appChange{}, err
 	}
 	c := appChange{role: ClientRole{ClientID: app.Client, Role: in.Role}}
-	after := &teamaudit.State{Client: app.Client, Role: in.Role, Note: in.Note}
+	after := &teamaudit.State{Client: app.Client, Role: in.Role}
 	switch in.Type {
 	case AppTargetGroup:
 		if c.group, err = s.dir.GetGroup(ctx, id.String()); err != nil {
@@ -547,6 +552,18 @@ func (s *service) checkAppChange(ctx context.Context, p authz.Principal, clientI
 			return refuse(rule)
 		} else if err != nil {
 			return appChange{}, err
+		}
+		// An app role that holds, as a composite, an admin role (another
+		// app's, say) or a realm role would hand that to the target: to a
+		// person directly (K1), or to a whole Team tree.
+		held, err := s.dir.RoleProtection(ctx, c.role)
+		if err != nil {
+			return appChange{}, err
+		}
+		if held.Protected {
+			refusal := placementRefused(authz.PlacementAdminRole)
+			refusal.Detail += " The role holds one as a composite: " + held.Reason + "."
+			return refuse(refusal)
 		}
 	}
 	if in.Type == AppTargetGroup {
@@ -633,6 +650,7 @@ func (s *service) writeApp(ctx context.Context, c appChange, add bool) error {
 	}
 	defer s.delegation.ForgetAll()
 	defer s.seats.forget()
+	defer s.appStats.forget()
 	return recordWrite(ctx, s.audit, log.Printf, c.record, func() (*teamaudit.State, error) {
 		switch {
 		case c.record.TargetUserID != uuid.Nil && add:
@@ -768,7 +786,7 @@ func (s *service) AppAudit(ctx context.Context, p authz.Principal, clientID stri
 			e.Type, e.TargetID, e.Name = AppTargetUser, r.TargetUserID.String(), names[r.TargetUserID]
 		}
 		if r.After != nil {
-			e.Role, e.Note = r.After.Role, r.After.Note
+			e.Role = r.After.Role
 		}
 		out = append(out, e)
 	}

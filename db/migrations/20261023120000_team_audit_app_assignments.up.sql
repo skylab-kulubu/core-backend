@@ -2,9 +2,10 @@
 -- panel gives an app role to a Group or a person and takes it off, and each
 -- change is a row: app.assign or app.unassign. Its target is a Group
 -- (group_id, group_path) or a person (target_user_id, group_path empty),
--- never both; after names the client and the role, and the caller's
--- optional note (at most 200 characters; the panel asks for no personal
--- data in it). Kept as every row is (team_audit_age).
+-- never both; after names the client and the role, and no free text
+-- (ticket 15 follow-up: the note was taken out before the production
+-- release; only this comment changed, the statements are as first
+-- applied). Kept as every row is (team_audit_age).
 ALTER TABLE team_audit_records DROP CONSTRAINT IF EXISTS team_audit_records_action_check;
 ALTER TABLE team_audit_records ADD CONSTRAINT team_audit_records_action_check CHECK (action IN (
     'member.add', 'member.remove', 'leader.add', 'leader.remove',

@@ -166,9 +166,6 @@ type State struct {
 	// row; absent on every other row.
 	Client string `json:"client,omitempty"`
 	Role   string `json:"role,omitempty"`
-	// Note is the caller's optional reason for an app assignment change,
-	// at most MaxNote runes. The panel asks for no personal data in it.
-	Note string `json:"note,omitempty"`
 }
 
 // Limits of what a row holds. A longer text is cut, so a long value never
@@ -182,8 +179,6 @@ const (
 	MaxAttributes    = 32
 	MaxRoles         = 256
 	MaxCorrelationID = 128
-	// MaxNote is the longest note of an app assignment change.
-	MaxNote = 200
 )
 
 // Record is one row as a write opens it.
@@ -342,7 +337,6 @@ func (s *State) normalize() *State {
 		Code:     cut(s.Code, MaxIdentifier),
 		Client:   cut(s.Client, MaxIdentifier),
 		Role:     cut(s.Role, MaxIdentifier),
-		Note:     cut(s.Note, MaxNote),
 	}
 	if s.UnverifiedAck != nil {
 		ack := *s.UnverifiedAck

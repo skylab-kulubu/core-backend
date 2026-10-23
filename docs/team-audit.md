@@ -17,7 +17,7 @@ Keycloak's own admin events show every such change as made by
 | `POST /v1/groups/:groupId/members` | `member.add` | the Group | none; `target_user_id` is the person. An add to a Privileged Group of someone not YTÜ-linked: after `{"unverifiedAck": true\|false}` (below) |
 | `DELETE /v1/groups/:groupId/members/:userId` | `member.remove` | the Group the membership is removed from: through a parent roster, the Source group the person sits in | none; `target_user_id` is the person |
 | `PUT /v1/groups/:groupId/client-roles` | `group.roles` | the Group | the role mappings before and after, as `client:role` |
-| `POST /v1/apps/:clientId/assignments` ([app-assignments.md](app-assignments.md)) | `app.assign` | the Group, or none for a person (`target_user_id`, empty `group_path`) | after: the Group's id and path, `client`, `role`, the optional `note` |
+| `POST /v1/apps/:clientId/assignments` ([app-assignments.md](app-assignments.md)) | `app.assign` | the Group, or none for a person (`target_user_id`, empty `group_path`) | after: the Group's id and path, `client`, `role` |
 | `DELETE /v1/apps/:clientId/assignments` | `app.unassign` | as `app.assign` | as `app.assign` |
 
 Privileged's writes carry `actor_basis` `privileged`. With team delegation
@@ -56,9 +56,8 @@ address, phone number, IP address or other personal field is written; the
 column comments say so. A Team's display names and descriptions are free
 text its administrators typed, and are kept as typed: they are Team fields,
 not a person's, but one may happen to mention someone, and account erasure
-does not look into them. The same holds for the optional `note` of an
-`app.*` row (at most 200 characters), which the panel asks to keep free of
-personal data.
+does not look into them. An `app.*` row has no free text: the client and
+the role only.
 
 `before` is read just before the write, outside any lock but the Team code
 lock of a create and a rename: when two people change the same Group's

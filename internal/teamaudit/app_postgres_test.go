@@ -19,7 +19,7 @@ func TestPostgresAppRows(t *testing.T) {
 	groupID, person := uuid.NewString(), uuid.New()
 	group := teamaudit.Record{
 		Actor: actor, Action: teamaudit.ActionAppAssign, GroupID: groupID, GroupPath: "/UYELER/ARGE/WEBLAB",
-		After: &teamaudit.State{ID: groupID, Path: "/UYELER/ARGE/WEBLAB", Client: "forms", Role: "skyforms:access", Note: "ekip talebi"},
+		After: &teamaudit.State{ID: groupID, Path: "/UYELER/ARGE/WEBLAB", Client: "forms", Role: "skyforms:access"},
 	}
 	user := teamaudit.Record{
 		Actor: actor, Action: teamaudit.ActionAppAssign, TargetUserID: person,
@@ -59,7 +59,7 @@ func TestPostgresAppRows(t *testing.T) {
 		t.Fatalf("rows %+v", rows)
 	}
 	if got := rows[4]; got.GroupID != groupID || got.GroupPath != "/UYELER/ARGE/WEBLAB" || got.After == nil ||
-		got.After.Note != "ekip talebi" || got.Actor.ID != actor.ID || got.TargetUserID != uuid.Nil {
+		got.After.Role != "skyforms:access" || got.Actor.ID != actor.ID || got.TargetUserID != uuid.Nil {
 		t.Errorf("group row %+v", got)
 	}
 	if got := rows[0]; got.TargetUserID != person || got.GroupPath != "" || got.GroupID != "" || got.Actor.Basis != teamaudit.BasisNone {

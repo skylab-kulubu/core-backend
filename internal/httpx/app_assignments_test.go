@@ -60,7 +60,7 @@ func newAppsEnv(t *testing.T, on bool) *delegationEnv {
 	policy := authz.DefaultPolicy()
 	policy.AppAssignments = on
 	az := authz.NewAuthorizer(policy)
-	options := identity.Options{TeamCodes: teamcode.NewMemoryLedger(), TeamAudit: e.audit, AppAudit: e.audit, AdminGroups: e.dir}
+	options := identity.Options{TeamCodes: teamcode.NewMemoryLedger(), TeamAudit: e.audit, AppAudit: e.audit, AdminGroups: e.dir, AppAssignments: on}
 	deps := memoryDepsDecidedBy(e.dir, options, az)
 	deps.Identity = identity.NewServiceWithOptions(identity.AuditedDirectory(e.dir, e.audit, nil), e.users, az, options)
 	deps.ParseToken = e.keys.Parse()
@@ -87,8 +87,8 @@ func (e *delegationEnv) appToken(name string) string {
 	return e.keys.Token(e.t, claims)
 }
 
-func groupTarget(e *delegationEnv, path, role, note string) string {
-	return `{"type":"group","id":"` + e.ids[path] + `","role":"` + role + `","note":"` + note + `"}`
+func groupTarget(e *delegationEnv, path, role string) string {
+	return `{"type":"group","id":"` + e.ids[path] + `","role":"` + role + `"}`
 }
 
 func userTarget(e *delegationEnv, who, role string) string {
@@ -132,7 +132,7 @@ func TestAppAssignmentsOffAreNotServed(t *testing.T) {
 	for _, path := range []string{"/v1/apps", "/v1/apps/forms/assignments", "/v1/apps/forms/audit", "/v1/apps/forms/targets?type=group"} {
 		wantStatus(t, "GET "+path, e.send(admin, fiber.MethodGet, path, ""), fiber.StatusNotFound, "")
 	}
-	wantStatus(t, "POST", e.send(admin, fiber.MethodPost, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access", "")), fiber.StatusNotFound, "")
+	wantStatus(t, "POST", e.send(admin, fiber.MethodPost, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access")), fiber.StatusNotFound, "")
 	var caps authz.Capabilities
 	if err := json.Unmarshal(e.send(admin, fiber.MethodGet, "/v1/users/me/capabilities", "").body, &caps); err != nil {
 		t.Fatal(err)
@@ -152,7 +152,9 @@ func TestAppAssignmentsYKAndADMINAssignAndRemove(t *testing.T) {
 	e := newAppsEnv(t, true)
 	yk, admin := e.appToken("yk"), e.appToken("admin")
 
-	got := e.send(yk, fiber.MethodPost, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access", "ekip talebi"))
+	// An older panel's note is ignored: the change keeps no free text.
+	withNote := `{"type":"group","id":"` + e.ids["/UYELER/ARGE/WEBLAB"] + `","role":"skyforms:access","note":"ekip talebi"}`
+	got := e.send(yk, fiber.MethodPost, "/v1/apps/forms/assignments", withNote)
 	wantStatus(t, "YK assigns WEBLAB", got, fiber.StatusCreated, "")
 	var row identity.AppAssignment
 	if err := json.Unmarshal(got.body, &row); err != nil {
@@ -170,17 +172,17 @@ func TestAppAssignmentsYKAndADMINAssignAndRemove(t *testing.T) {
 	rows := e.appRows()
 	if len(rows) != 1 || rows[0].Action != teamaudit.ActionAppAssign || rows[0].Outcome != teamaudit.OutcomeOK ||
 		rows[0].Actor.Basis != teamaudit.BasisPrivileged || rows[0].GroupID != e.ids["/UYELER/ARGE/WEBLAB"] ||
-		rows[0].After.Client != "forms" || rows[0].After.Role != "skyforms:access" || rows[0].After.Note != "ekip talebi" {
+		rows[0].After.Client != "forms" || rows[0].After.Role != "skyforms:access" {
 		t.Fatalf("rows %+v", rows)
 	}
 
-	wantStatus(t, "again", e.send(yk, fiber.MethodPost, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access", "")), fiber.StatusOK, "")
+	wantStatus(t, "again", e.send(yk, fiber.MethodPost, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access")), fiber.StatusOK, "")
 	if len(e.appRows()) != 1 {
 		t.Fatal("a repeat wrote a row")
 	}
 
 	for _, path := range []string{"/UYELER/ARGE/WEBLAB/FRONT", "/UYELER/ARGE/WEBLAB/FRONT/LIDERLER", "/UYELER/ARGE/MOBILAB/LIDERLER"} {
-		wantStatus(t, "YK assigns "+path, e.send(yk, fiber.MethodPost, "/v1/apps/skymail/assignments", groupTarget(e, path, "skymail:access", "")), fiber.StatusCreated, "")
+		wantStatus(t, "YK assigns "+path, e.send(yk, fiber.MethodPost, "/v1/apps/skymail/assignments", groupTarget(e, path, "skymail:access")), fiber.StatusCreated, "")
 	}
 	got = e.send(admin, fiber.MethodPost, "/v1/apps/forms/assignments", userTarget(e, "mobMember", "skyforms:access"))
 	wantStatus(t, "ADMIN assigns a person", got, fiber.StatusCreated, "")
@@ -217,16 +219,16 @@ func TestAppAssignmentsYKAndADMINAssignAndRemove(t *testing.T) {
 		t.Fatalf("apps %+v", apps)
 	}
 
-	wantStatus(t, "YK removes WEBLAB", e.send(yk, fiber.MethodDelete, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access", "sezon sonu")), fiber.StatusNoContent, "")
+	wantStatus(t, "YK removes WEBLAB", e.send(yk, fiber.MethodDelete, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access")), fiber.StatusNoContent, "")
 	wantStatus(t, "ADMIN removes the person", e.send(admin, fiber.MethodDelete, "/v1/apps/forms/assignments", userTarget(e, "mobMember", "skyforms:access")), fiber.StatusNoContent, "")
 	if e.groupMaps("/UYELER/ARGE/WEBLAB", formsSeat) || e.userMaps("mobMember", formsSeat) {
 		t.Fatal("still mapped")
 	}
 	rows = e.appRows()
-	if len(rows) != 7 || rows[5].Action != teamaudit.ActionAppUnassign || rows[5].After.Note != "sezon sonu" || rows[6].TargetUserID != e.people["mobMember"] || rows[6].GroupPath != "" {
+	if len(rows) != 7 || rows[5].Action != teamaudit.ActionAppUnassign || rows[6].TargetUserID != e.people["mobMember"] || rows[6].GroupPath != "" {
 		t.Fatalf("rows %+v", rows)
 	}
-	wantStatus(t, "remove again", e.send(yk, fiber.MethodDelete, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access", "")), fiber.StatusNotFound, "not_assigned")
+	wantStatus(t, "remove again", e.send(yk, fiber.MethodDelete, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access")), fiber.StatusNotFound, "not_assigned")
 	if len(e.appRows()) != 7 {
 		t.Fatal("a removal of nothing wrote a row")
 	}
@@ -237,8 +239,13 @@ func TestAppAssignmentsYKAndADMINAssignAndRemove(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(audit) != 4 || audit[0].Action != "app.unassign" || audit[0].Type != "user" || audit[0].Name != "mobMember Kişi" || audit[0].Actor.Name != "admin Kişi" ||
-		audit[3].Note != "ekip talebi" || audit[3].Path != "/UYELER/ARGE/WEBLAB" {
+		audit[3].Role != "skyforms:access" || audit[3].Path != "/UYELER/ARGE/WEBLAB" {
 		t.Fatalf("audit %s", got.body)
+	}
+	// No free text is kept or shown (T2): a client's old note field is
+	// ignored.
+	if strings.Contains(string(got.body), `"note"`) || strings.Contains(string(got.body), "ekip talebi") {
+		t.Errorf("a note reached the audit record: %s", got.body)
 	}
 }
 
@@ -250,7 +257,7 @@ func TestAppAssignmentsRefusals(t *testing.T) {
 	t.Parallel()
 	e := newAppsEnv(t, true)
 	yk, dk := e.appToken("yk"), e.appToken("dk")
-	weblab := groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access", "")
+	weblab := groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access")
 
 	wantStatus(t, "DK reads", e.send(dk, fiber.MethodGet, "/v1/apps/forms/assignments", ""), fiber.StatusOK, "")
 	wantStatus(t, "DK assigns", e.send(dk, fiber.MethodPost, "/v1/apps/forms/assignments", weblab), fiber.StatusForbidden, "")
@@ -277,17 +284,17 @@ func TestAppAssignmentsRefusals(t *testing.T) {
 		status             int
 		code, reason       string
 	}{
-		{"admin role", "forms", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:*", ""), fiber.StatusConflict, "role_placement", authz.PlacementAdminRole},
-		{"another app's role", "forms", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skymail:access", ""), fiber.StatusConflict, "role_placement", authz.PlacementAdminRole},
-		{"unknown role", "forms", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:nothing", ""), fiber.StatusConflict, "role_placement", authz.PlacementAdminRole},
-		{"keycloak composite", "skymail", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skymail:templates:read", ""), fiber.StatusForbidden, "keycloak_admin_role", ""},
-		{"YK root", "forms", groupTarget(e, "/UYELER/YK", "skyforms:access", ""), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
-		{"YK duty group", "forms", groupTarget(e, "/UYELER/YK/BASKAN", "skyforms:access", ""), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
-		{"ADMIN", "forms", groupTarget(e, "/ADMIN", "skyforms:access", ""), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
-		{"role group", "forms", groupTarget(e, "/ROLLER/FORMS-ACCESS", "skyforms:access", ""), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
-		{"ROLLER", "forms", groupTarget(e, "/ROLLER", "skyforms:access", ""), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
-		{"every member", "forms", groupTarget(e, "/UYELER", "skyforms:access", ""), fiber.StatusConflict, "role_placement", authz.PlacementMembersRoot},
-		{"an area", "forms", groupTarget(e, "/UYELER/ARGE", "skyforms:access", ""), fiber.StatusConflict, "role_placement", authz.PlacementArea},
+		{"admin role", "forms", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:*"), fiber.StatusConflict, "role_placement", authz.PlacementAdminRole},
+		{"another app's role", "forms", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skymail:access"), fiber.StatusConflict, "role_placement", authz.PlacementAdminRole},
+		{"unknown role", "forms", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:nothing"), fiber.StatusConflict, "role_placement", authz.PlacementAdminRole},
+		{"keycloak composite", "skymail", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skymail:templates:read"), fiber.StatusForbidden, "keycloak_admin_role", ""},
+		{"YK root", "forms", groupTarget(e, "/UYELER/YK", "skyforms:access"), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
+		{"YK duty group", "forms", groupTarget(e, "/UYELER/YK/BASKAN", "skyforms:access"), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
+		{"ADMIN", "forms", groupTarget(e, "/ADMIN", "skyforms:access"), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
+		{"role group", "forms", groupTarget(e, "/ROLLER/FORMS-ACCESS", "skyforms:access"), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
+		{"ROLLER", "forms", groupTarget(e, "/ROLLER", "skyforms:access"), fiber.StatusConflict, "role_placement", authz.PlacementCodeArea},
+		{"every member", "forms", groupTarget(e, "/UYELER", "skyforms:access"), fiber.StatusConflict, "role_placement", authz.PlacementMembersRoot},
+		{"an area", "forms", groupTarget(e, "/UYELER/ARGE", "skyforms:access"), fiber.StatusConflict, "role_placement", authz.PlacementArea},
 		{"a service account", "forms", userTarget(e, "service", "skyforms:access"), fiber.StatusConflict, "role_placement", authz.PlacementServiceAccount},
 		{"a disabled person", "forms", userTarget(e, "disabled", "skyforms:access"), fiber.StatusConflict, "role_placement", authz.PlacementInactiveUser},
 	} {
@@ -315,12 +322,11 @@ func TestAppAssignmentsRefusals(t *testing.T) {
 		name, client, body string
 		status             int
 	}{
-		{"unknown app", "broker", groupTarget(e, "/UYELER/ARGE/WEBLAB", "read-token", ""), fiber.StatusNotFound},
+		{"unknown app", "broker", groupTarget(e, "/UYELER/ARGE/WEBLAB", "read-token"), fiber.StatusNotFound},
 		{"unknown Group", "forms", `{"type":"group","id":"` + uuid.NewString() + `","role":"skyforms:access"}`, fiber.StatusNotFound},
 		{"unknown kind", "forms", `{"type":"team","id":"` + e.ids["/UYELER/ARGE/WEBLAB"] + `","role":"skyforms:access"}`, fiber.StatusBadRequest},
 		{"no role", "forms", `{"type":"group","id":"` + e.ids["/UYELER/ARGE/WEBLAB"] + `"}`, fiber.StatusBadRequest},
 		{"id not an id", "forms", `{"type":"group","id":"WEBLAB","role":"skyforms:access"}`, fiber.StatusBadRequest},
-		{"note too long", "forms", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access", strings.Repeat("n", teamaudit.MaxNote+1)), fiber.StatusBadRequest},
 		{"no body", "forms", ``, fiber.StatusBadRequest},
 	} {
 		wantStatus(t, tc.name, e.send(yk, fiber.MethodPost, "/v1/apps/"+tc.client+"/assignments", tc.body), tc.status, "")
@@ -362,8 +368,8 @@ func TestAppAssignmentsCodeRowsAreLocked(t *testing.T) {
 		}
 	}
 	yk := e.appToken("yk")
-	wantStatus(t, "remove YK's", e.send(yk, fiber.MethodDelete, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/YK", "skyforms:access", "")), fiber.StatusConflict, "role_placement")
-	wantStatus(t, "remove a role group's", e.send(yk, fiber.MethodDelete, "/v1/apps/forms/assignments", groupTarget(e, "/ROLLER/FORMS-ACCESS", "skyforms:access", "")), fiber.StatusConflict, "role_placement")
+	wantStatus(t, "remove YK's", e.send(yk, fiber.MethodDelete, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/YK", "skyforms:access")), fiber.StatusConflict, "role_placement")
+	wantStatus(t, "remove a role group's", e.send(yk, fiber.MethodDelete, "/v1/apps/forms/assignments", groupTarget(e, "/ROLLER/FORMS-ACCESS", "skyforms:access")), fiber.StatusConflict, "role_placement")
 	wantStatus(t, "remove a service account's", e.send(yk, fiber.MethodDelete, "/v1/apps/forms/assignments", userTarget(e, "service", "skyforms:access")), fiber.StatusConflict, "role_placement")
 	if !e.groupMaps("/UYELER/YK", formsSeat) || !e.userMaps("service", formsSeat) {
 		t.Fatal("a code mapping was taken off")
@@ -412,7 +418,7 @@ func TestAppAssignmentTargets(t *testing.T) {
 	t.Parallel()
 	e := newAppsEnv(t, true)
 	yk := e.appToken("yk")
-	wantStatus(t, "assign", e.send(yk, fiber.MethodPost, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB/FRONT", "skyforms:access", "")), fiber.StatusCreated, "")
+	wantStatus(t, "assign", e.send(yk, fiber.MethodPost, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB/FRONT", "skyforms:access")), fiber.StatusCreated, "")
 	var targets []identity.AppTarget
 	got := e.send(yk, fiber.MethodGet, "/v1/apps/forms/targets?type=group&q=weblab", "")
 	if err := json.Unmarshal(got.body, &targets); err != nil {
@@ -447,9 +453,166 @@ func TestAppAssignmentsAuditUnavailable(t *testing.T) {
 	t.Parallel()
 	e := newAppsEnv(t, true)
 	e.audit.SetUnavailable(true)
-	wantStatus(t, "audit down", e.send(e.appToken("yk"), fiber.MethodPost, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access", "")),
+	wantStatus(t, "audit down", e.send(e.appToken("yk"), fiber.MethodPost, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access")),
 		fiber.StatusServiceUnavailable, "audit_unavailable")
 	if e.groupMaps("/UYELER/ARGE/WEBLAB", formsSeat) || slices.Contains(e.dir.Ops, "AddGroupClientRole") {
 		t.Fatal("mapped without an audit row")
+	}
+}
+
+// An app role that holds, as a composite at any depth, an admin role (its
+// own app's or another's) or a role nobody has classified is refused with
+// a denied row, to a Group and to a person (K1); one that holds app roles
+// only is assigned (ticket 15, T1).
+func TestAppAssignmentsRefuseACompositeAdminRole(t *testing.T) {
+	t.Parallel()
+	e := newAppsEnv(t, true)
+	yk := e.appToken("yk")
+	role := func(client, name string) identity.ClientRole { return identity.ClientRole{ClientID: client, Role: name} }
+	// url:access holds url:get, which holds Forms' skyforms:*.
+	e.dir.PutCompositeRole(role("core", "url:access"), role("core", "url:get"))
+	e.dir.PutCompositeRole(role("core", "url:get"), role("forms", "skyforms:*"))
+	e.dir.PutCompositeRole(role("skymail", "skymail:access"), role("skymail", "skymail:mails:send"))
+	e.dir.PutCompositeRole(role("core", "url:create"), role("forms", "forms:editor"))
+	e.dir.PutCompositeRole(role("core", "certificate:issue"), role("core", "certificate:revoke"), role("frontend-main", "content:read"))
+	for _, tc := range []struct{ name, client, body string }{
+		{"another app's admin role, two deep", "core", groupTarget(e, "/UYELER/ARGE/WEBLAB", "url:access")},
+		{"its own app's admin role", "skymail", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skymail:access")},
+		{"an unclassified role", "core", groupTarget(e, "/UYELER/ARGE/WEBLAB", "url:create")},
+		{"to a person", "core", userTarget(e, "mobMember", "url:access")},
+	} {
+		got := e.send(yk, fiber.MethodPost, "/v1/apps/"+tc.client+"/assignments", tc.body)
+		wantStatus(t, tc.name, got, fiber.StatusConflict, "role_placement")
+		if reason, _ := got.problem()["reason"].(string); reason != authz.PlacementAdminRole {
+			t.Errorf("%s: reason %q (%s)", tc.name, reason, got.body)
+		}
+		last := e.appRows()[len(e.appRows())-1]
+		if last.Outcome != teamaudit.OutcomeDenied || last.ErrorCode != "role_placement" {
+			t.Errorf("%s: row %+v", tc.name, last)
+		}
+	}
+	roles, _ := e.dir.GroupClientRoles(context.Background(), e.ids["/UYELER/ARGE/WEBLAB"])
+	if len(roles) != 0 || e.userMaps("mobMember", role("core", "url:access")) {
+		t.Fatalf("a composite admin role was mapped: %v", roles)
+	}
+	wantStatus(t, "app roles only", e.send(yk, fiber.MethodPost, "/v1/apps/core/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "certificate:issue")), fiber.StatusCreated, "")
+	// Taking one off is never refused for what it holds.
+	if err := e.dir.AddGroupClientRole(context.Background(), e.ids["/UYELER/ARGE/WEBLAB"], role("skymail", "skymail:access")); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, "remove", e.send(yk, fiber.MethodDelete, "/v1/apps/skymail/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skymail:access")), fiber.StatusNoContent, "")
+}
+
+// A person whose account core is erasing (Keycloak still enabled) is given
+// no app role; one they hold is taken off.
+func TestAppAssignmentsAPersonBeingErased(t *testing.T) {
+	t.Parallel()
+	e := newAppsEnv(t, true)
+	ctx := context.Background()
+	e.person("erasing", "/UYELER/ARGE/MOBILAB")
+	if err := e.dir.AddUserExtraRole(ctx, e.people["erasing"], formsSeat); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.users.RequestDeletion(ctx, e.people["erasing"], nil); err != nil {
+		t.Fatal(err)
+	}
+	yk := e.appToken("yk")
+	got := e.send(yk, fiber.MethodPost, "/v1/apps/skymail/assignments", userTarget(e, "erasing", "skymail:access"))
+	wantStatus(t, "assign", got, fiber.StatusConflict, "role_placement")
+	if reason, _ := got.problem()["reason"].(string); reason != authz.PlacementInactiveUser {
+		t.Errorf("reason %q", reason)
+	}
+	if e.userMaps("erasing", identity.ClientRole{ClientID: "skymail", Role: "skymail:access"}) {
+		t.Fatal("mapped")
+	}
+	wantStatus(t, "remove", e.send(yk, fiber.MethodDelete, "/v1/apps/forms/assignments", userTarget(e, "erasing", "skyforms:access")), fiber.StatusNoContent, "")
+	if e.userMaps("erasing", formsSeat) {
+		t.Fatal("still mapped")
+	}
+}
+
+// With the app assignments on, the old Group role mapping write changes no
+// app role of a Team, a Sub-team or a Leader group (409 role_placement
+// use_app_assignments): adding one or taking one off. Their other roles and
+// the code's places stay on it. Off, it writes them as before (T3).
+func TestAppAssignmentsOldGroupRolesRoute(t *testing.T) {
+	t.Parallel()
+	put := func(e *delegationEnv, path, body string) rawResponse {
+		return e.send(e.appToken("admin"), fiber.MethodPut, "/v1/groups/"+e.ids[path]+"/client-roles", body)
+	}
+	const seat = `{"clientId":"forms","role":"skyforms:access"}`
+	const cms = `{"clientId":"frontend-main","role":"cms:access"}`
+	const mail = `{"clientId":"skymail","role":"skymail:access"}`
+
+	off := newAppsEnv(t, false)
+	wantStatus(t, "off: a Team's app role", put(off, "/UYELER/ARGE/WEBLAB", `[`+seat+`]`), fiber.StatusNoContent, "")
+	if !off.groupMaps("/UYELER/ARGE/WEBLAB", formsSeat) {
+		t.Fatal("off: not mapped")
+	}
+
+	e := newAppsEnv(t, true)
+	wantReason := func(name string, got rawResponse) {
+		t.Helper()
+		wantStatus(t, name, got, fiber.StatusConflict, "role_placement")
+		if reason, _ := got.problem()["reason"].(string); reason != authz.PlacementUseAppAssignments {
+			t.Errorf("%s: reason %q (%s)", name, reason, got.body)
+		}
+	}
+	wantReason("a Team's app role", put(e, "/UYELER/ARGE/WEBLAB", `[`+seat+`]`))
+	wantReason("a Sub-team's app role", put(e, "/UYELER/ARGE/WEBLAB/FRONT", `[`+seat+`]`))
+	if e.groupMaps("/UYELER/ARGE/WEBLAB", formsSeat) || e.groupMaps("/UYELER/ARGE/WEBLAB/FRONT", formsSeat) {
+		t.Fatal("mapped")
+	}
+	yk := e.appToken("yk")
+	wantStatus(t, "panel", e.send(yk, fiber.MethodPost, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access")), fiber.StatusCreated, "")
+	wantReason("taking it off", put(e, "/UYELER/ARGE/WEBLAB", `[]`))
+	if !e.groupMaps("/UYELER/ARGE/WEBLAB", formsSeat) {
+		t.Fatal("the old route took a panel assignment off")
+	}
+	wantStatus(t, "unchanged", put(e, "/UYELER/ARGE/WEBLAB", `[`+seat+`]`), fiber.StatusNoContent, "")
+
+	wantStatus(t, "a Leader group's admin role", put(e, "/UYELER/ARGE/WEBLAB/LIDERLER", `[`+cms+`]`), fiber.StatusNoContent, "")
+	wantStatus(t, "panel, Leader group", e.send(yk, fiber.MethodPost, "/v1/apps/skymail/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB/LIDERLER", "skymail:access")), fiber.StatusCreated, "")
+	wantStatus(t, "its admin role off, the app role kept", put(e, "/UYELER/ARGE/WEBLAB/LIDERLER", `[`+mail+`]`), fiber.StatusNoContent, "")
+	wantReason("its app role off", put(e, "/UYELER/ARGE/WEBLAB/LIDERLER", `[`+cms+`]`))
+	if !e.groupMaps("/UYELER/ARGE/WEBLAB/LIDERLER", identity.ClientRole{ClientID: "skymail", Role: "skymail:access"}) ||
+		e.groupMaps("/UYELER/ARGE/WEBLAB/LIDERLER", identity.ClientRole{ClientID: "frontend-main", Role: "cms:access"}) {
+		t.Fatal("Leader group's mappings")
+	}
+
+	wantStatus(t, "a role group", put(e, "/ROLLER/FORMS-ACCESS", `[`+seat+`]`), fiber.StatusNoContent, "")
+	wantStatus(t, "a Privileged root", put(e, "/UYELER/YK", `[`+seat+`]`), fiber.StatusNoContent, "")
+}
+
+// The list keeps a Group's counts for a minute: a second opening walks no
+// subtree; an assignment drops them (T4).
+func TestAppAssignmentListKeepsTheCounts(t *testing.T) {
+	t.Parallel()
+	e := newAppsEnv(t, true)
+	yk := e.appToken("yk")
+	wantStatus(t, "assign", e.send(yk, fiber.MethodPost, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB", "skyforms:access")), fiber.StatusCreated, "")
+	walks := func() int {
+		t.Helper()
+		from := len(e.dir.Ops)
+		var list identity.AppAssignments
+		got := e.send(yk, fiber.MethodGet, "/v1/apps/forms/assignments", "")
+		if err := json.Unmarshal(got.body, &list); err != nil || len(list.Assignments) == 0 || list.Assignments[0].Members == 0 {
+			t.Fatalf("%d %s", got.status, got.body)
+		}
+		n := 0
+		for _, op := range e.dir.Ops[from:] {
+			if op == "Members" || op == "Subgroups" {
+				n++
+			}
+		}
+		return n
+	}
+	walks()
+	if n := walks(); n != 0 {
+		t.Errorf("the second opening walked the tree again: %d reads", n)
+	}
+	wantStatus(t, "assign FRONT", e.send(yk, fiber.MethodPost, "/v1/apps/forms/assignments", groupTarget(e, "/UYELER/ARGE/WEBLAB/FRONT", "skyforms:access")), fiber.StatusCreated, "")
+	if n := walks(); n == 0 {
+		t.Error("an assignment did not drop the counts")
 	}
 }
