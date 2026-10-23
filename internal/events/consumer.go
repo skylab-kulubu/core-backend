@@ -311,20 +311,24 @@ func (c *Consumer) consumeChannel(ctx context.Context, conn *amqp.Connection, s 
 		case <-ctx.Done():
 			return true, nil
 		case amqpErr, ok := <-closed:
-			if ok && amqpErr != nil {
-				return true, amqpErr
-			}
-			return true, errors.New("channel closed")
+			return true, channelClosed(amqpErr, ok)
 		case <-cancelled:
-			return true, errors.New("the broker cancelled the consumer")
+			return true, errConsumerCancelled
 		case d, ok := <-deliveries:
 			if !ok {
 				return true, errors.New("deliveries ended")
 			}
+			// Both slots may be busy for a while (a handler retrying
+			// for 36 seconds): a channel that closes in between stops
+			// them now, and d, unsettled, goes back with the rest.
 			select {
 			case slots <- struct{}{}:
 			case <-ctx.Done():
 				return true, nil
+			case amqpErr, ok := <-closed:
+				return true, channelClosed(amqpErr, ok)
+			case <-cancelled:
+				return true, errConsumerCancelled
 			}
 			handlers.Go(func() {
 				defer func() { <-slots }()
@@ -332,6 +336,16 @@ func (c *Consumer) consumeChannel(ctx context.Context, conn *amqp.Connection, s 
 			})
 		}
 	}
+}
+
+var errConsumerCancelled = errors.New("the broker cancelled the consumer")
+
+// channelClosed is the error of a channel's close notification.
+func channelClosed(amqpErr *amqp.Error, ok bool) error {
+	if ok && amqpErr != nil {
+		return amqpErr
+	}
+	return errors.New("channel closed")
 }
 
 // redact keeps the password out of an error's text, whatever produced it.

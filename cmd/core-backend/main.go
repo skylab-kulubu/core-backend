@@ -910,7 +910,11 @@ func main() {
 	}
 	retentionMetrics, retentionStopped := startRetentionSweep(workers, pool, retentionConfig)
 	worker("retention sweep", retentionStopped)
-	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv)
+	var wakeUserSync func()
+	if userSync != nil {
+		wakeUserSync = userSync.Wake
+	}
+	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, wakeUserSync)
 	worker("integration events", eventsStopped)
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
