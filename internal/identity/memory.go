@@ -661,6 +661,55 @@ func (m *Memory) RoleHoldsKeycloakAdmin(_ context.Context, role ClientRole) (str
 	return find(role), nil
 }
 
+func (m *Memory) ClientRoleMappings(_ context.Context, clientID, role string) ([]Group, []Person, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("ClientRoleMappings")
+	holds := func(roles []ClientRole) bool {
+		return slices.ContainsFunc(roles, func(r ClientRole) bool { return r.ClientID == clientID && r.Role == role })
+	}
+	groups, people := make([]Group, 0), make([]Person, 0)
+	for gid, roles := range m.groupRoles {
+		if g, ok := m.groups[gid]; ok && holds(roles) {
+			groups = append(groups, g)
+		}
+	}
+	for id, roles := range m.userRoles {
+		if p, ok := m.people[id]; ok && holds(roles) {
+			people = append(people, m.answerLocked(p))
+		}
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].Path < groups[j].Path })
+	sort.Slice(people, func(i, j int) bool { return people[i].ID.String() < people[j].ID.String() })
+	return groups, people, nil
+}
+
+func (m *Memory) AddGroupClientRole(_ context.Context, groupID string, role ClientRole) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("AddGroupClientRole")
+	g, ok := m.resolveLocked(groupID)
+	if !ok {
+		return ErrNotFound
+	}
+	if !slices.Contains(m.groupRoles[g.ID], role) {
+		m.groupRoles[g.ID] = append(slices.Clone(m.groupRoles[g.ID]), role)
+	}
+	return nil
+}
+
+func (m *Memory) RemoveGroupClientRole(_ context.Context, groupID string, role ClientRole) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("RemoveGroupClientRole")
+	g, ok := m.resolveLocked(groupID)
+	if !ok {
+		return ErrNotFound
+	}
+	m.groupRoles[g.ID] = slices.DeleteFunc(slices.Clone(m.groupRoles[g.ID]), func(r ClientRole) bool { return r == role })
+	return nil
+}
+
 func (m *Memory) GroupClientRoles(_ context.Context, groupID string) ([]ClientRole, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

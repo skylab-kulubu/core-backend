@@ -91,9 +91,14 @@ its name alone (`authz.ClassifyRole`):
   | `core` | `certificate:issue`, `certificate:revoke`, `certificate:template:manage`, `certificate:binding:manage` |
   | `core` | `url:create`, `url:get`, `url:update`, `url:delete`, `url:access` |
   | `forms` | `skyforms:access`, `skyforms:form:manage`, `skyforms:response:manage`, `skyforms:feedback:manage` (screens only: forms-backend decides each form by its collaborators or `skyforms:*`) |
-  | `broker` | `read-token` (one's own identity provider token) |
   | `skymail` | `skymail:access`, `skymail:templates:read` |
   | `frontend-main`, `frontend-arge`, `frontend-artlab`, `frontend-yildizjam`, `frontend-skydays` (the Site clients) | `content:read` |
+
+  The broker's `read-token` left the list (ekip-yetkileri ticket 15,
+  YETKI-MATRISI §6.4): no app reads it. `skycloud:access` stays
+  unclassified until it is known whether it opens other people's files.
+  The admin panel assigns exactly these roles from Uygulamalar
+  ([app-assignments.md](app-assignments.md)).
 
 - **Admin roles** (Entra's directory roles): every other client role. A
   Group that maps one, or under a Group that does, is a Protected group.
@@ -148,7 +153,7 @@ Errors are RFC 9457 problems with `code` (and `reason` for placement). The panel
 
 **Microsoft Entra.** Matches: access through groups (group-based assignment), administrative roles only on dedicated groups (role-assignable groups), app roles handed out by group membership, and a directory's admin roles kept off ordinary groups. Deviations:
 
-1. **No direct app role on a person at all.** Entra lets an app role be assigned to a user or a group; here only to a Group (a service account aside), so every grant has a Group, a membership mail and a review.
+1. **No direct app role on a person through these routes.** Entra lets an app role be assigned to a user or a group; here only to a Group (a service account aside). Since ekip-yetkileri ticket 15 the panel's app assignments ([app-assignments.md](app-assignments.md), `APP_ASSIGNMENTS`) give an app role, and only an app role, to a Team, a Sub-team, a Leader group or a person, with an audit row each, as Entra's "Users and groups" does; these routes and their rules stay as they are.
 2. **Placement is by place in the tree, not by a group flag.** Entra marks a group role-assignable when it is created (`isAssignableToRole`) and the mark cannot change; here the rule reads the Group's path (Privileged root, top Leader group, `/ROLLER` leaf). A Group moved or renamed into a place gets its rights; core's name rule ([team-codes.md](team-codes.md)) reserves `ROLLER` for `/ROLLER` itself and keeps the roots from being moved or made by a rename.
 3. **Keycloak roles flow down to subgroups** (Entra's do not), so a role on a Group with Groups under it is refused, and a Leader group takes roles only at the top Team. A top Team takes app roles on purpose: one mapping reaches the whole Team tree (Entra's nested groups would not get it).
 4. **The administration blocks are ours.** Entra keeps directory roles off non-role-assignable groups by itself; Keycloak does not, so core refuses mapping administration roles and changing membership where they are, and the console's writers keep them.

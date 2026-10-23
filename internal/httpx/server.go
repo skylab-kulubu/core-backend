@@ -164,6 +164,10 @@ type Deps struct {
 	// (docs/team-delegation.md). Nil answers an empty list.
 	ManagedTeams *identity.TeamDelegation
 
+	// AppAssignments mounts the app assignment routes (APP_ASSIGNMENTS=on,
+	// docs/app-assignments.md). Off they are not served: 404.
+	AppAssignments bool
+
 	// AuthzRoleMetrics are the role mode and its disagreements, served on
 	// /v1/metrics. Nil serves nothing.
 	AuthzRoleMetrics *authz.RoleMetrics
@@ -508,6 +512,16 @@ func New(deps Deps) *fiber.App {
 	app.Delete("/v1/groups/:groupId/members/:userId", ident.RemoveMember)
 	app.Get("/v1/groups/:groupId/client-roles", ident.GroupClientRoles)
 	app.Put("/v1/groups/:groupId/client-roles", ident.SetGroupClientRoles)
+
+	if deps.AppAssignments {
+		apps := handlers.NewAppsHandler(deps.Identity)
+		app.Get("/v1/apps", apps.List)
+		app.Get("/v1/apps/:clientId/assignments", apps.Assignments)
+		app.Post("/v1/apps/:clientId/assignments", apps.Assign)
+		app.Delete("/v1/apps/:clientId/assignments", apps.Unassign)
+		app.Get("/v1/apps/:clientId/audit", apps.Audit)
+		app.Get("/v1/apps/:clientId/targets", apps.Targets)
+	}
 
 	if deps.Dashboard != nil {
 		app.Get("/v1/dashboard/summary", handlers.NewDashboardHandler(deps.Dashboard).Summary)

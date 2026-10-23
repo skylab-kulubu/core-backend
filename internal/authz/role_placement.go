@@ -57,6 +57,11 @@ var placementDetails = map[string]string{
 	PlacementRolesNested:        "A role group sits right under /ROLLER: /ROLLER/<APP>-<ROLE>.",
 	PlacementOutside:            "Roles are mapped only to a Privileged root, a top Team (an app role), a top Team's Leader group or a role group under /ROLLER.",
 	PlacementTopTeamAdminRole:   "A top Team takes app roles only (such as Forms' seat or SkyMail's access): an admin role, or one nobody has classified, would make the Team Protected. Map it to the Team's Leader group or a role group under /ROLLER.",
+	// App assignments (app_assignments.go).
+	PlacementAdminRole:      "Only an app role is assigned from the panel; an admin role, or one nobody has classified, is mapped in code (a Privileged root or a role group under /ROLLER).",
+	PlacementCodeArea:       "A Privileged root, /ROLLER and the Groups under them are mapped in code (Keycloak's reconciler), not from the panel.",
+	PlacementServiceAccount: "A service account's roles are mapped in code.",
+	PlacementInactiveUser:   "The account is disabled, erased or being erased.",
 }
 
 // PlacementDetail is the sentence that explains a refusal's reason.

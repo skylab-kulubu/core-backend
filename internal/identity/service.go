@@ -50,6 +50,13 @@ type Service interface {
 	// MemberCheck is what adding a person to a Group would warn of
 	// (grup-yonetimi 07); it never refuses the add.
 	MemberCheck(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) (MemberCheck, error)
+	// The app assignments (docs/app-assignments.md).
+	Apps(ctx context.Context, p authz.Principal) ([]AppSummary, error)
+	AppAssignments(ctx context.Context, p authz.Principal, clientID string, filter AppAssignmentFilter) (AppAssignments, error)
+	AssignApp(ctx context.Context, p authz.Principal, clientID string, in AppAssignmentInput) (AppAssignment, bool, error)
+	UnassignApp(ctx context.Context, p authz.Principal, clientID string, in AppAssignmentInput) error
+	AppAudit(ctx context.Context, p authz.Principal, clientID string) ([]AppAuditEntry, error)
+	AppTargets(ctx context.Context, p authz.Principal, clientID, kind, q string) ([]AppTarget, error)
 }
 
 type service struct {
@@ -72,6 +79,8 @@ type service struct {
 	adminGroups           KeycloakAdminGroups
 	memberSeats           bool
 	seats                 *seatCache
+	apps                  []authz.App
+	appAudit              teamaudit.AppReader
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer) Service {
@@ -132,6 +141,14 @@ type Options struct {
 	// Now is the clock of the seat search's minute (what it keeps and the
 	// members' search budget). Nil is time.Now.
 	Now func() time.Time
+	// Apps is the app catalogue of the app assignments
+	// (docs/app-assignments.md). Nil is the one core carries
+	// (authz.LoadApps).
+	Apps []authz.App
+	// AppAudit reads the app assignment rows of the Team audit record (the
+	// app's audit tab, who assigned what when). Nil reads none: the list
+	// says no row for any assignment.
+	AppAudit teamaudit.AppReader
 	// UserSync is woken when an admin creates a user, so the user sync
 	// (docs/user-sync.md) sends the Welcome mail soon rather than at its next
 	// tick. Nil: the mail waits for the tick.
@@ -211,6 +228,14 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		userSync:              options.UserSync,
 		memberSeats:           !options.NoMemberSeatSearch,
 		seats:                 newSeatCache(options.Now),
+		apps:                  options.Apps,
+		appAudit:              options.AppAudit,
+	}
+	if s.apps == nil {
+		// The catalogue core carries passed its checks in its tests
+		// (TestAppCatalogueIsAppRoles); main loads it itself and stops on
+		// an error.
+		s.apps, _ = authz.LoadApps()
 	}
 	if options.GroupNames != nil {
 		s.names = *options.GroupNames

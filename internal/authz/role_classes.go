@@ -68,12 +68,16 @@ func SiteClients() []string {
 //     form:manage, response:manage and feedback:manage only open Forms'
 //     screens (forms-backend decides every form by its collaborators or
 //     skyforms:*, which is an admin role);
-//   - the broker's read-token: the holder's own identity provider token;
 //   - SkyMail's access and template reading: opening SkyMail and offering a
 //     mail for approval, which an approver still sends;
 //   - every Site client's content:read: reading.
 //
-// news:read, planned for /UYELER (duyuru-haber), joins when it exists.
+// news:read, planned for /UYELER (duyuru-haber), joins when it exists. The
+// broker's read-token left the list (ekip-yetkileri ticket 15, YETKI-MATRISI
+// §6.4): no app reads it, and it lets its holder read the identity provider
+// token Keycloak stored for them. skycloud:access stays unclassified until
+// it is known whether it opens other people's files (ticket 15). The panel
+// assigns exactly these roles (config/app-assignments.json, LoadApps).
 func AppRoles() []RoleRef {
 	out := []RoleRef{
 		{Client: "core", Role: "certificate:issue"},
@@ -89,7 +93,6 @@ func AppRoles() []RoleRef {
 		{Client: "forms", Role: "skyforms:form:manage"},
 		{Client: "forms", Role: "skyforms:response:manage"},
 		{Client: "forms", Role: "skyforms:feedback:manage"},
-		{Client: "broker", Role: "read-token"},
 		{Client: "skymail", Role: "skymail:access"},
 		{Client: "skymail", Role: "skymail:templates:read"},
 	}

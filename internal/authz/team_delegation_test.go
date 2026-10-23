@@ -316,7 +316,7 @@ func TestClassifyRole(t *testing.T) {
 		{"forms", "skyforms:form:manage", RoleClassApp},
 		{"forms", "skyforms:response:manage", RoleClassApp},
 		{"forms", "skyforms:feedback:manage", RoleClassApp},
-		{"broker", "read-token", RoleClassApp},
+		{"broker", "read-token", RoleClassUnclassified},
 		{"skycloud", "skycloud:access", RoleClassUnclassified},
 		{"skymail", "skymail:access", RoleClassApp},
 		{"skymail", "skymail:templates:read", RoleClassApp},

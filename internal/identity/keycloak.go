@@ -828,6 +828,25 @@ func (k *Keycloak) ClientRoleHolders(ctx context.Context, clientID, role string)
 	return groups, users, nil
 }
 
+func (k *Keycloak) ClientRoleMappings(ctx context.Context, clientID, role string) ([]Group, []Person, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	clientUUID, err := k.clientUUID(ctx, token, clientID)
+	if errors.Is(err, ErrNotFound) {
+		return []Group{}, []Person{}, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	groups, users, err := k.clientRoleHolders(ctx, token, clientUUID, role)
+	if errors.Is(err, ErrNotFound) {
+		return []Group{}, []Person{}, nil
+	}
+	return groups, users, err
+}
+
 func (k *Keycloak) clientRoleHolders(ctx context.Context, token, clientUUID, role string) ([]Group, []Person, error) {
 	base := k.adminBase + "/admin/realms/" + k.realm + "/clients/" + clientUUID + "/roles/" + url.PathEscape(role)
 	groups := make([]Group, 0)
@@ -1452,6 +1471,43 @@ func (k *Keycloak) SetGroupClientRoles(ctx context.Context, groupID string, role
 		}
 	}
 	return nil
+}
+
+func (k *Keycloak) AddGroupClientRole(ctx context.Context, groupID string, role ClientRole) error {
+	return k.groupClientRole(ctx, groupID, role, true)
+}
+
+func (k *Keycloak) RemoveGroupClientRole(ctx context.Context, groupID string, role ClientRole) error {
+	return k.groupClientRole(ctx, groupID, role, false)
+}
+
+// groupClientRole maps role to the Group by its id (add) or takes it off.
+func (k *Keycloak) groupClientRole(ctx context.Context, groupID string, role ClientRole, add bool) error {
+	// Keycloak administration is never given through core (K3); the
+	// service refuses it first with keycloak_admin_role.
+	if add && role.ClientID == KeycloakAdminClient {
+		return ErrForbidden
+	}
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	g, err := k.fetchGroup(ctx, token, groupID)
+	if err != nil {
+		return mapKCErr(err)
+	}
+	resolved, err := k.lookupRole(ctx, token, role.ClientID, role.Role)
+	if err != nil {
+		return err
+	}
+	clientUUID, err := k.clientUUID(ctx, token, role.ClientID)
+	if err != nil {
+		return err
+	}
+	if add {
+		return mapKCErr(k.gc.AddClientRoleToGroup(ctx, token, k.realm, clientUUID, *g.ID, []gocloak.Role{resolved}))
+	}
+	return mapKCErr(k.gc.DeleteClientRoleFromGroup(ctx, token, k.realm, clientUUID, *g.ID, []gocloak.Role{resolved}))
 }
 
 func (k *Keycloak) UserExtraRoles(ctx context.Context, userID uuid.UUID) ([]ClientRole, error) {
