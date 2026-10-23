@@ -227,20 +227,44 @@ jobs:
       # PostgreSQL 18, so CI tests against that.
       CORE_TEST_POSTGRES_IMAGE: postgres:18-alpine
       CORE_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+      # ffmpeg and ffprobe for the tests that run the real tools
+      # (internal/mediaframe, internal/faststart): static builds copied out of
+      # this image, pinned by digest. 6.1, as production's frame service
+      # (Alpine 3.22's ffmpeg 6.1.2, Dockerfile.frame). Not apt: its index
+      # update hung often enough to fail shards.
+      FFMPEG_IMAGE: mwader/static-ffmpeg:6.1.1@sha256:a44cd22b260c527f54e99517186a209b805d0a2319e0886d356e840f62a72132
     steps:
       # The tests pull what they need on first use. Starting the pulls now,
       # while Go builds, keeps the large ClamAV image off the tests' clock.
-      # ffmpeg and ffprobe are for the tests that run the real tools (they
-      # skip themselves without); the install leaves ffmpeg.ok behind, which a
-      # later step waits for. A failed pull is not fatal here; a test that
-      # then skipped fails the run.
+      # ffmpeg and ffprobe (the tests that need them skip themselves without)
+      # are copied out of FFMPEG_IMAGE into ffmpeg-bin, on the PATH; that
+      # leaves ffmpeg.ok behind, which a later step waits for. A failed pull
+      # of the other images is not fatal here; a test that then skipped fails
+      # the run.
       - name: Start fetching what the integration tests use
         run: |
           for image in redis:7-alpine openbao/openbao:2.7.0 clamav/clamav:1.5.4-debian \
             rabbitmq:4.2-management-alpine@sha256:643139a7e9b4d7e2c1d6a06295d0296c3c58e5de7666a09630b4564a15c951cd; do
             nohup docker pull --quiet "$image" >/dev/null 2>&1 &
           done
-          nohup sh -c "sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg && touch $RUNNER_TEMP/ffmpeg.ok" >"$RUNNER_TEMP/ffmpeg-install.log" 2>&1 &
+          bin="$RUNNER_TEMP/ffmpeg-bin"
+          mkdir -p "$bin"
+          echo "$bin" >> "$GITHUB_PATH"
+          nohup bash -c '
+            set -eu
+            for try in 1 2 3; do
+              docker pull --quiet "$FFMPEG_IMAGE" && break
+              [ "$try" = 3 ] && exit 1
+              sleep 5
+            done
+            id=$(docker create "$FFMPEG_IMAGE")
+            docker cp "$id:/ffmpeg" "$1/ffmpeg"
+            docker cp "$id:/ffprobe" "$1/ffprobe"
+            docker rm -f "$id" >/dev/null
+            "$1/ffmpeg" -hide_banner -version | head -1
+            "$1/ffprobe" -hide_banner -version | head -1
+            touch "$RUNNER_TEMP/ffmpeg.ok"
+          ' _ "$bin" >"$RUNNER_TEMP/ffmpeg-install.log" 2>&1 &
 
       # The shard's PostgreSQL server, its data in memory. Every test creates
       # its own database on it and drops it after.
@@ -287,7 +311,11 @@ jobs:
             exit 1
           fi
           for _ in $(seq 1 90); do
-            [ -f "$RUNNER_TEMP/ffmpeg.ok" ] && exit 0
+            if [ -f "$RUNNER_TEMP/ffmpeg.ok" ]; then
+              cat "$RUNNER_TEMP/ffmpeg-install.log"
+              command -v ffmpeg ffprobe
+              exit 0
+            fi
             sleep 2
           done
           echo "ffmpeg was not installed within 3 minutes; install log:"
