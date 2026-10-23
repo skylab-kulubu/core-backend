@@ -468,7 +468,9 @@ func TestAppAssignmentsRefuseACompositeAdminRole(t *testing.T) {
 	t.Parallel()
 	e := newAppsEnv(t, true)
 	yk := e.appToken("yk")
-	role := func(client, name string) identity.ClientRole { return identity.ClientRole{ClientID: client, Role: name} }
+	role := func(client, name string) identity.ClientRole {
+		return identity.ClientRole{ClientID: client, Role: name}
+	}
 	// url:access holds url:get, which holds Forms' skyforms:*.
 	e.dir.PutCompositeRole(role("core", "url:access"), role("core", "url:get"))
 	e.dir.PutCompositeRole(role("core", "url:get"), role("forms", "skyforms:*"))
