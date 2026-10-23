@@ -110,6 +110,11 @@ type UserCard struct {
 type Directory interface {
 	GroupNodes
 	GroupProtections
+	// RoleProtection is the protection one client role gives where it is
+	// mapped (GroupProtection's answer for that one mapping): an app role
+	// that holds, as a composite, a realm role or a role that is no app
+	// role is protected. The app assignments refuse it (ticket 15, T1).
+	RoleProtection(ctx context.Context, role ClientRole) (Protection, error)
 	ListGroups(ctx context.Context) ([]Group, error)
 	GetGroup(ctx context.Context, idOrPath string) (Group, error)
 	CreateGroup(ctx context.Context, parentRef, name string) (Group, error)

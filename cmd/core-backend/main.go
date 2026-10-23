@@ -971,6 +971,7 @@ func main() {
 			NoMemberSeatSearch:    !memberSeatSearch,
 			Apps:                  apps,
 			AppAudit:              teamAudit,
+			AppAssignments:        appAssignments,
 		}),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,

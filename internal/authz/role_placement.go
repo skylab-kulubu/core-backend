@@ -62,6 +62,8 @@ var placementDetails = map[string]string{
 	PlacementCodeArea:       "A Privileged root, /ROLLER and the Groups under them are mapped in code (Keycloak's reconciler), not from the panel.",
 	PlacementServiceAccount: "A service account's roles are mapped in code.",
 	PlacementInactiveUser:   "The account is disabled, erased or being erased.",
+	PlacementUseAppAssignments: "With the app assignments on, a Team's, a Sub-team's or a Leader group's app roles are assigned and taken off on the Uygulamalar page " +
+		"(POST and DELETE /v1/apps/{clientId}/assignments), each with its audit row; this route changes their other roles only.",
 }
 
 // PlacementDetail is the sentence that explains a refusal's reason.

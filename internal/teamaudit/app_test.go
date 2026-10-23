@@ -17,7 +17,7 @@ func appRecord(action Action, client, role string) Record {
 }
 
 // An app row names one target, a Group by id and path or a person without a
-// path, and its app role; its note is cut to MaxNote.
+// path, and its app role; nothing else of the change is kept.
 func TestAppRecordNormalize(t *testing.T) {
 	t.Parallel()
 	for name, c := range map[string]struct {
@@ -42,13 +42,13 @@ func TestAppRecordNormalize(t *testing.T) {
 	}
 	person := appRecord(ActionAppUnassign, "forms", "skyforms:access")
 	person.GroupID, person.GroupPath, person.TargetUserID = "", "", uuid.New()
-	person.After.Note = strings.Repeat("ş", MaxNote+20)
+	person.After.Role = strings.Repeat("ş", MaxIdentifier+20)
 	got, bad := person.normalize()
 	if bad != "" {
 		t.Fatalf("person: %s", bad)
 	}
-	if n := len([]rune(got.After.Note)); n != MaxNote {
-		t.Errorf("note of %d runes", n)
+	if n := len([]rune(got.After.Role)); n != MaxIdentifier {
+		t.Errorf("role of %d runes", n)
 	}
 	if _, bad := appRecord(ActionAppAssign, "forms", "skyforms:access").normalize(); bad != "" {
 		t.Errorf("group: %s", bad)

@@ -565,35 +565,45 @@ func (m *Memory) GroupProtection(_ context.Context, groupID string) (Protection,
 		return Protection{}, ErrNotFound
 	}
 	seen := map[string]bool{}
-	var check func(r ClientRole, depth int) Protection
-	check = func(r ClientRole, depth int) Protection {
-		switch {
-		case r.ClientID == "":
-			return Protection{Protected: true, Reason: "realm role " + r.Role}
-		case seen[roleKey(r)]:
-			return Protection{}
-		}
-		if got := clientRoleProtection(r.ClientID, r.Role); got.Protected {
-			return got
-		}
-		seen[roleKey(r)] = true
-		if depth >= maxCompositeDepth && len(m.composites[roleKey(r)]) > 0 {
-			return Protection{Protected: true, Reason: "composite " + r.ClientID + ":" + r.Role + " nested too deep"}
-		}
-		for _, child := range m.composites[roleKey(r)] {
-			if got := check(child, depth+1); got.Protected {
-				got.Reason = "composite " + r.ClientID + ":" + r.Role + " holds " + got.Reason
-				return got
-			}
-		}
-		return Protection{}
-	}
 	for _, r := range m.groupRoles[g.ID] {
-		if got := check(r, 0); got.Protected {
+		if got := m.roleProtection(r, 0, seen); got.Protected {
 			return got, nil
 		}
 	}
 	return Protection{}, nil
+}
+
+// roleProtection is the protection r gives with its composites at any
+// depth, as Keycloak.roleProtection answers it; m.mu is held.
+func (m *Memory) roleProtection(r ClientRole, depth int, seen map[string]bool) Protection {
+	switch {
+	case r.ClientID == "":
+		return Protection{Protected: true, Reason: "realm role " + r.Role}
+	case seen[roleKey(r)]:
+		return Protection{}
+	}
+	if got := clientRoleProtection(r.ClientID, r.Role); got.Protected {
+		return got
+	}
+	seen[roleKey(r)] = true
+	if depth >= maxCompositeDepth && len(m.composites[roleKey(r)]) > 0 {
+		return Protection{Protected: true, Reason: "composite " + r.ClientID + ":" + r.Role + " nested too deep"}
+	}
+	for _, child := range m.composites[roleKey(r)] {
+		if got := m.roleProtection(child, depth+1, seen); got.Protected {
+			got.Reason = "composite " + r.ClientID + ":" + r.Role + " holds " + got.Reason
+			return got
+		}
+	}
+	return Protection{}
+}
+
+// RoleProtection answers as Keycloak does (Keycloak.RoleProtection).
+func (m *Memory) RoleProtection(_ context.Context, role ClientRole) (Protection, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("RoleProtection")
+	return m.roleProtection(role, 0, map[string]bool{}), nil
 }
 
 // KeycloakAdminRole is a realm-management role the Group groupID maps,

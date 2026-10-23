@@ -134,6 +134,11 @@ const (
 	// PlacementInactiveUser: a person whose account is disabled, erased or
 	// being erased.
 	PlacementInactiveUser = "inactive_user"
+	// PlacementUseAppAssignments: with the app assignments on, the Group
+	// role mapping write (PUT /v1/groups/{id}/client-roles) changes no app
+	// role of a Group the panel assigns to (AppAssignmentTarget ""): that
+	// is POST and DELETE /v1/apps/{clientId}/assignments, with its row.
+	PlacementUseAppAssignments = "use_app_assignments"
 )
 
 // AppAssignmentTarget is "" when an app role may be assigned from the panel
