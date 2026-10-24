@@ -147,6 +147,69 @@ func (k *Keycloak) AddressHoldersPage(ctx context.Context, first, max int) (Addr
 	return page, nil
 }
 
+// maxPersonalEmailHolders bounds the accounts one Personal e-mail search
+// reads: one person's address, held by a few accounts at most.
+const maxPersonalEmailHolders = 20
+
+// PersonalEmailHolders reads, without changing anything, the accounts whose
+// Personal e-mail attribute is email (`GET /users?q=personalEmail:<email>`,
+// full representation, view-users). Keycloak compares an attribute
+// lower-cased; only the rows whose attribute, trimmed and lower-cased, is
+// email are kept, whatever the search matched. email is expected normalized
+// (trimmed, lower-cased); one with a space or a colon, which the search
+// syntax would split, finds nobody. No error names the address.
+func (k *Keycloak) PersonalEmailHolders(ctx context.Context, email string) ([]uuid.UUID, error) {
+	if email == "" || strings.ContainsAny(email, " \t\r\n:") {
+		return nil, nil
+	}
+	query := pageQuery(0, maxPersonalEmailHolders, false)
+	query.Set("q", personalEmailAttribute+":"+email)
+	rows, err := k.adminUsersPage(ctx, "personal e-mail search", query)
+	if err != nil {
+		return nil, err
+	}
+	return personalEmailMatches(rows, email), nil
+}
+
+func personalEmailMatches(rows []json.RawMessage, email string) []uuid.UUID {
+	var out []uuid.UUID
+	for _, raw := range rows {
+		var row struct {
+			ID         string              `json:"id"`
+			Attributes map[string][]string `json:"attributes"`
+		}
+		if err := json.Unmarshal(raw, &row); err != nil {
+			continue
+		}
+		id, err := uuid.Parse(row.ID)
+		if err != nil {
+			continue
+		}
+		for _, value := range row.Attributes[personalEmailAttribute] {
+			if strings.ToLower(strings.TrimSpace(value)) == email && !slices.Contains(out, id) {
+				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
+
+// PersonalEmailHolders finds the people SetPersonalEmail gave email,
+// trimmed and lower-cased, by id.
+func (m *Memory) PersonalEmailHolders(_ context.Context, email string) ([]uuid.UUID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("PersonalEmailHolders")
+	var out []uuid.UUID
+	for id, personal := range m.personalEmails {
+		if email != "" && strings.ToLower(strings.TrimSpace(personal[0])) == email {
+			out = append(out, id)
+		}
+	}
+	slices.SortFunc(out, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+	return out, nil
+}
+
 // IdentityProviderLinkedPage reads one page of the accounts linked to the
 // identity provider alias (`GET /users?idpAlias=<alias>`, brief: only the id
 // is read), from first for at most max.
