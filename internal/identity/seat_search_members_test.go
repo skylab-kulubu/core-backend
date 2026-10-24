@@ -233,6 +233,66 @@ func TestMemberSeatSearchRefusesWhoIsNoMember(t *testing.T) {
 	}
 }
 
+// A person whose token names /UYELER and /ROLLER/FORMS-ACCESS only is no
+// member, but holds the seat in effect: they search as a member does
+// (ekip-yetkileri ticket 16). Without the seat, or as a service account or
+// a product, they are refused.
+func TestMemberSeatSearchSeatHolderSearchesAsAMember(t *testing.T) {
+	t.Parallel()
+	r := newMemberRealm(t, identity.Options{})
+	for i := range 12 {
+		r.person(t, fmt.Sprintf("holder%02d", i), "Ayşe", fmt.Sprintf("Kaya%02d", i), "g-weblab")
+	}
+	groups := []string{"/UYELER", "/ROLLER/FORMS-ACCESS"}
+	seated := r.person(t, "seated", "Zeynep", "Koltuk", "g-uyeler", "g-forms-access")
+	caller := authz.Principal{ID: seated.String(), Groups: groups, Client: "skyforms"}
+	got, err := r.svc.ListUsers(context.Background(), caller, "ayse", formsSeat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 10 {
+		t.Fatalf("answer has %d people, want 10: %v", len(got), r.names(t, got))
+	}
+	for _, p := range got {
+		if p.Email != "h***@example.test" {
+			t.Errorf("e-mail %q, want it masked", p.Email)
+		}
+	}
+	if got, err := r.svc.ListUsers(context.Background(), caller, "ay", formsSeat); err != nil || len(got) != 0 {
+		t.Fatalf("two letters: %v %v, want an empty list", got, err)
+	}
+	// The seat is read once a minute.
+	reads := r.ops("EffectiveClientRoles")
+	if _, err := r.svc.ListUsers(context.Background(), caller, "ayse", formsSeat); err != nil {
+		t.Fatal(err)
+	}
+	if n := r.ops("EffectiveClientRoles"); n != reads {
+		t.Fatalf("the caller's seat read again within the minute: %d, then %d", reads, n)
+	}
+
+	// The same token, the seat gone: refused.
+	unseated := r.person(t, "unseated", "Zeynep", "Koltuksuz", "g-uyeler")
+	for name, p := range map[string]authz.Principal{
+		"no seat":           {ID: unseated.String(), Groups: groups, Client: "skyforms"},
+		"a service account": {ID: seated.String(), Groups: groups, ServiceAccount: true},
+		"a product":         {ID: seated.String(), Groups: groups, Product: authz.ProductForms},
+		"not a uuid":        {ID: "seated", Groups: groups},
+	} {
+		if got, err := r.svc.ListUsers(context.Background(), p, "ayse", formsSeat); !errors.Is(err, identity.ErrForbidden) {
+			t.Errorf("%s: %v %v, want ErrForbidden", name, got, err)
+		}
+	}
+	// Only Forms' seat, and the switch still turns it off.
+	if got, err := r.svc.ListUsers(context.Background(), caller, "ayse", identity.ClientRole{ClientID: "forms", Role: "skyforms:read-all"}); !errors.Is(err, identity.ErrForbidden) {
+		t.Errorf("another seat: %v %v, want ErrForbidden", got, err)
+	}
+	off := newMemberRealm(t, identity.Options{NoMemberSeatSearch: true})
+	offSeated := off.person(t, "seated", "Zeynep", "Koltuk", "g-uyeler", "g-forms-access")
+	if got, err := off.svc.ListUsers(context.Background(), authz.Principal{ID: offSeated.String(), Groups: groups}, "ayse", formsSeat); !errors.Is(err, identity.ErrForbidden) {
+		t.Errorf("switched off: %v %v, want ErrForbidden", got, err)
+	}
+}
+
 func TestMemberSeatSearchSwitchedOffAnswersForbidden(t *testing.T) {
 	t.Parallel()
 	r := newMemberRealm(t, identity.Options{NoMemberSeatSearch: true})
