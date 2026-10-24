@@ -509,10 +509,11 @@ func (s *Service) Confirm(ctx context.Context, token string) (LinkOutcome, error
 //   - the link of an account's own grant ends it and every grant given for
 //     one of the account's addresses, Keycloak's Personal e-mail included
 //     (accountTarget with identity);
-//   - the link of a grant given for an address ends it, and the own grant of
-//     every account holding the address (core's email or school_email, or
-//     Keycloak's Personal e-mail) with the grants for those accounts'
-//     addresses (personTarget). Once the address grant has ended it keeps
+//   - the link of a grant given for an address ends every grant given for
+//     that address and the own grant of every account holding it (core's
+//     email or school_email, or Keycloak's Personal e-mail: personTarget). A
+//     grant for another of those accounts' addresses mails another mailbox
+//     and is left to its own link. Once the address grant has ended it keeps
 //     only its HMAC, so its link then reaches the accounts by core's row
 //     alone.
 //
@@ -556,7 +557,7 @@ func (s *Service) Withdraw(ctx context.Context, token string, via WithdrawVia) (
 			target, err = s.accountTarget(ctx, *userID, false)
 		}
 	case email != nil:
-		target, err = s.personTarget(ctx, *email)
+		target, err = s.personTarget(ctx, *email, false)
 		if errors.Is(err, ErrAddressesUnavailable) {
 			log.Printf("contact consent: withdraw link: %v; ending what core's row reaches", err)
 			target, err = mailedTo{addresses: []string{*email}, hmacs: [][]byte{emailHMAC}}, nil
@@ -949,12 +950,13 @@ func (s *Service) accountTarget(ctx context.Context, userID uuid.UUID, identity 
 	return target, nil
 }
 
-// personTarget is everything that mails the person holding an address: the
-// address, and every account holding it (core's email or school_email, or
-// Keycloak's Personal e-mail through holders) with all of that account's
-// addresses (accountTarget with identity). email is normalized. Keycloak
+// personTarget is the grants of the person holding an address: those given
+// for the address, and the own grant of every account holding it (core's
+// email or school_email, or Keycloak's Personal e-mail through holders);
+// with wholePerson, also the grants for every other address of those
+// accounts (accountTarget with identity). email is normalized. Keycloak
 // unreachable is ErrAddressesUnavailable, with nothing read in part.
-func (s *Service) personTarget(ctx context.Context, email string) (mailedTo, error) {
+func (s *Service) personTarget(ctx context.Context, email string, wholePerson bool) (mailedTo, error) {
 	target := mailedTo{addresses: []string{email}, hmacs: [][]byte{s.config.emailHMAC(email)}}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id FROM users WHERE lower(btrim(email)) = $1
@@ -976,6 +978,10 @@ func (s *Service) personTarget(ctx context.Context, email string) (mailedTo, err
 	}
 	for _, account := range accounts {
 		if slices.Contains(target.users, account) {
+			continue
+		}
+		if !wholePerson {
+			target.users = append(target.users, account)
 			continue
 		}
 		own, err := s.accountTarget(ctx, account, true)

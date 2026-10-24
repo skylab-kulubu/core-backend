@@ -110,11 +110,13 @@ only Keycloak holds. A withdraw link therefore ends all of them:
 - the link of an account's own grant ends it and every grant given for one
   of the account's addresses, Keycloak's Primary, School and Personal e-mail
   with core's row (as their own list reads them);
-- the link of a grant given for an address ends it, and the own grant of
-  every account holding the address (core's `email` or `school_email`, or
-  Keycloak's Personal e-mail, `GET /users?q=personalEmail:…`) with the
-  grants for that account's addresses. An ended address grant keeps only its
-  HMAC, so its link then reaches accounts by core's row alone.
+- the link of a grant given for an address ends every grant given for that
+  address and the own grant of every account holding it (core's `email` or
+  `school_email`, or Keycloak's Personal e-mail,
+  `GET /users?q=personalEmail:…`). A grant for another address of that
+  account mails another mailbox and is left to its own link. An ended
+  address grant keeps only its HMAC, so its link then reaches accounts by
+  core's row alone.
 
 Keycloak unreachable never stops a withdrawal: the link ends what core
 reaches without it (the grant's own subject and core's row) and logs the
