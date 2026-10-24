@@ -55,6 +55,9 @@ const (
 	TypeFormResponse Type = "FORM_RESPONSE"
 	// TypeTeamAudit is the Team audit record (docs/team-audit.md).
 	TypeTeamAudit Type = "TEAM_AUDIT"
+	// TypeAppAssignment is an app's assignments to Groups and people
+	// (docs/app-assignments.md): Read lists them, Update changes them.
+	TypeAppAssignment Type = "APP_ASSIGNMENT"
 )
 
 type Level string
@@ -117,7 +120,11 @@ type Policy struct {
 	// TeamDelegation is whether Leaders manage their Teams through core
 	// (TEAM_DELEGATION, team_delegation.go). Off, only Privileged manages
 	// Groups, as before.
-	TeamDelegation   bool
+	TeamDelegation bool
+	// AppAssignments is whether the app assignment routes are on
+	// (APP_ASSIGNMENTS, app_assignments.go). Off, TypeAppAssignment allows
+	// nothing.
+	AppAssignments   bool
 	EventPermissions map[string]map[Action][]Level
 }
 

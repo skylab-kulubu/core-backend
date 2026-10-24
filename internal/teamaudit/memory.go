@@ -75,6 +75,40 @@ func (m *Memory) insert(r Record, outcome Outcome, errorCode string) (uuid.UUID,
 	return row.ID, nil
 }
 
+func (m *Memory) AppRows(_ context.Context, client string, limit int) ([]Row, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.down {
+		return nil, unavailable("down")
+	}
+	out := []Row{}
+	for i := len(m.rows) - 1; i >= 0 && len(out) < limit; i-- {
+		if row := m.rows[i]; row.Action.IsApp() && row.After != nil && row.After.Client == client {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
+func (m *Memory) LatestAppRows(_ context.Context, client string) ([]Row, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.down {
+		return nil, unavailable("down")
+	}
+	seen := map[string]bool{}
+	out := []Row{}
+	for i := len(m.rows) - 1; i >= 0; i-- {
+		row := m.rows[i]
+		if !row.Action.IsApp() || row.Outcome != OutcomeOK || row.After == nil || row.After.Client != client || seen[row.AppKey()] {
+			continue
+		}
+		seen[row.AppKey()] = true
+		out = append(out, row)
+	}
+	return out, nil
+}
+
 // ErrNotPending is a Finish of a row that is not pending (or not there).
 var ErrNotPending = errors.New("teamaudit: no pending row")
 

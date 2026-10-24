@@ -194,11 +194,24 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("team delegation: %s (%s)", map[bool]string{false: "off", true: "on"}[teamDelegation], authz.TeamDelegationEnv)
+	// The panel's app assignments (docs/app-assignments.md): off unless
+	// set. A value core cannot read, or an app catalogue that names
+	// anything but app roles, stops startup.
+	appAssignments, err := authz.ParseAppAssignments(os.Getenv(authz.AppAssignmentsEnv))
+	if err != nil {
+		log.Fatal(err)
+	}
+	apps, err := authz.LoadApps()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("app assignments: %s (%s), %d apps", map[bool]string{false: "off", true: "on"}[appAssignments], authz.AppAssignmentsEnv, len(apps))
 	authzPolicy := authz.DefaultPolicy()
 	authzPolicy.RoleMode = roleMode
 	authzPolicy.PrivilegedRoots = privilegedRoots
 	authzPolicy.PrivilegedReaderRoots = privilegedReaderRoots
 	authzPolicy.TeamDelegation = teamDelegation
+	authzPolicy.AppAssignments = appAssignments
 	authzRoleMetrics := authz.NewRoleMetrics(log.Default(), time.Now)
 	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics))
 	// The Team code rule every Group create and rename passes
@@ -897,7 +910,11 @@ func main() {
 	}
 	retentionMetrics, retentionStopped := startRetentionSweep(workers, pool, retentionConfig)
 	worker("retention sweep", retentionStopped)
-	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv)
+	var wakeUserSync func()
+	if userSync != nil {
+		wakeUserSync = userSync.Wake
+	}
+	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, wakeUserSync)
 	worker("integration events", eventsStopped)
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
@@ -956,6 +973,9 @@ func main() {
 			AdminGroups:           adminGroups,
 			UserSync:              userSync,
 			NoMemberSeatSearch:    !memberSeatSearch,
+			Apps:                  apps,
+			AppAudit:              teamAudit,
+			AppAssignments:        appAssignments,
 		}),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
@@ -1008,6 +1028,7 @@ func main() {
 		Authz:                     az,
 		EditableSites:             editableSites,
 		ManagedTeams:              delegation,
+		AppAssignments:            appAssignments,
 		AuthzRoleMetrics:          authzRoleMetrics,
 		GuestCheckInMetrics:       doorQR,
 		GuestApplyPublicIPLimit:   guestApplyIPLimit,

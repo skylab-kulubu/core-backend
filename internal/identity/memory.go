@@ -565,35 +565,45 @@ func (m *Memory) GroupProtection(_ context.Context, groupID string) (Protection,
 		return Protection{}, ErrNotFound
 	}
 	seen := map[string]bool{}
-	var check func(r ClientRole, depth int) Protection
-	check = func(r ClientRole, depth int) Protection {
-		switch {
-		case r.ClientID == "":
-			return Protection{Protected: true, Reason: "realm role " + r.Role}
-		case seen[roleKey(r)]:
-			return Protection{}
-		}
-		if got := clientRoleProtection(r.ClientID, r.Role); got.Protected {
-			return got
-		}
-		seen[roleKey(r)] = true
-		if depth >= maxCompositeDepth && len(m.composites[roleKey(r)]) > 0 {
-			return Protection{Protected: true, Reason: "composite " + r.ClientID + ":" + r.Role + " nested too deep"}
-		}
-		for _, child := range m.composites[roleKey(r)] {
-			if got := check(child, depth+1); got.Protected {
-				got.Reason = "composite " + r.ClientID + ":" + r.Role + " holds " + got.Reason
-				return got
-			}
-		}
-		return Protection{}
-	}
 	for _, r := range m.groupRoles[g.ID] {
-		if got := check(r, 0); got.Protected {
+		if got := m.roleProtection(r, 0, seen); got.Protected {
 			return got, nil
 		}
 	}
 	return Protection{}, nil
+}
+
+// roleProtection is the protection r gives with its composites at any
+// depth, as Keycloak.roleProtection answers it; m.mu is held.
+func (m *Memory) roleProtection(r ClientRole, depth int, seen map[string]bool) Protection {
+	switch {
+	case r.ClientID == "":
+		return Protection{Protected: true, Reason: "realm role " + r.Role}
+	case seen[roleKey(r)]:
+		return Protection{}
+	}
+	if got := clientRoleProtection(r.ClientID, r.Role); got.Protected {
+		return got
+	}
+	seen[roleKey(r)] = true
+	if depth >= maxCompositeDepth && len(m.composites[roleKey(r)]) > 0 {
+		return Protection{Protected: true, Reason: "composite " + r.ClientID + ":" + r.Role + " nested too deep"}
+	}
+	for _, child := range m.composites[roleKey(r)] {
+		if got := m.roleProtection(child, depth+1, seen); got.Protected {
+			got.Reason = "composite " + r.ClientID + ":" + r.Role + " holds " + got.Reason
+			return got
+		}
+	}
+	return Protection{}
+}
+
+// RoleProtection answers as Keycloak does (Keycloak.RoleProtection).
+func (m *Memory) RoleProtection(_ context.Context, role ClientRole) (Protection, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("RoleProtection")
+	return m.roleProtection(role, 0, map[string]bool{}), nil
 }
 
 // KeycloakAdminRole is a realm-management role the Group groupID maps,
@@ -659,6 +669,55 @@ func (m *Memory) RoleHoldsKeycloakAdmin(_ context.Context, role ClientRole) (str
 		return ""
 	}
 	return find(role), nil
+}
+
+func (m *Memory) ClientRoleMappings(_ context.Context, clientID, role string) ([]Group, []Person, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("ClientRoleMappings")
+	holds := func(roles []ClientRole) bool {
+		return slices.ContainsFunc(roles, func(r ClientRole) bool { return r.ClientID == clientID && r.Role == role })
+	}
+	groups, people := make([]Group, 0), make([]Person, 0)
+	for gid, roles := range m.groupRoles {
+		if g, ok := m.groups[gid]; ok && holds(roles) {
+			groups = append(groups, g)
+		}
+	}
+	for id, roles := range m.userRoles {
+		if p, ok := m.people[id]; ok && holds(roles) {
+			people = append(people, m.answerLocked(p))
+		}
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].Path < groups[j].Path })
+	sort.Slice(people, func(i, j int) bool { return people[i].ID.String() < people[j].ID.String() })
+	return groups, people, nil
+}
+
+func (m *Memory) AddGroupClientRole(_ context.Context, groupID string, role ClientRole) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("AddGroupClientRole")
+	g, ok := m.resolveLocked(groupID)
+	if !ok {
+		return ErrNotFound
+	}
+	if !slices.Contains(m.groupRoles[g.ID], role) {
+		m.groupRoles[g.ID] = append(slices.Clone(m.groupRoles[g.ID]), role)
+	}
+	return nil
+}
+
+func (m *Memory) RemoveGroupClientRole(_ context.Context, groupID string, role ClientRole) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("RemoveGroupClientRole")
+	g, ok := m.resolveLocked(groupID)
+	if !ok {
+		return ErrNotFound
+	}
+	m.groupRoles[g.ID] = slices.DeleteFunc(slices.Clone(m.groupRoles[g.ID]), func(r ClientRole) bool { return r == role })
+	return nil
 }
 
 func (m *Memory) GroupClientRoles(_ context.Context, groupID string) ([]ClientRole, error) {

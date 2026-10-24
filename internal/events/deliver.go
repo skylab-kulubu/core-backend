@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"runtime"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -35,6 +39,16 @@ type panicError struct{ value any }
 
 func (e panicError) Error() string { return fmt.Sprintf("handler panicked: %v", e.value) }
 
+// logText is the panic as a log line carries it: a runtime error's text
+// (an index out of range, a nil pointer), any other value's type only, as
+// it may hold the event's data.
+func (e panicError) logText() string {
+	if r, ok := e.value.(runtime.Error); ok {
+		return "handler panicked: " + r.Error()
+	}
+	return fmt.Sprintf("handler panicked with a %T", e.value)
+}
+
 // deliver decodes and handles one delivery and settles it: ack, or nack
 // without requeue to the queue's dead-letter exchange. Nothing requeues at
 // once (a quorum queue does not count an explicit requeue against its
@@ -49,7 +63,7 @@ func (c *Consumer) deliver(ctx context.Context, s *subscription, d amqp.Delivery
 		Type: d.Type, AppID: d.AppId, Headers: d.Headers,
 	})
 	if err != nil {
-		c.logf(`{"event":"events_dead_lettered","level":"warn","queue":%q,"reason":%q,"error":%q}`, s.Queue, ReasonInvalidEnvelope, err.Error())
+		c.logf(`{"event":"events_dead_lettered","level":"warn","queue":%q,"reason":%q,"error":%q}`, s.Queue, ReasonInvalidEnvelope, c.errorText(err))
 		if err := d.Reject(false); err != nil {
 			c.ackFailed(s, err)
 			return
@@ -93,7 +107,7 @@ func (c *Consumer) deliver(ctx context.Context, s *subscription, d amqp.Delivery
 		}
 		if reason != "" {
 			c.logf(`{"event":"events_dead_lettered","level":"warn","queue":%q,"type":%q,"id":%q,"reason":%q,"attempts":%d,"error":%q}`,
-				s.Queue, event.Type, event.ID, reason, attempt+1, err.Error())
+				s.Queue, event.Type, event.ID, reason, attempt+1, c.errorText(err))
 			if err := d.Nack(false, false); err != nil {
 				c.ackFailed(s, err)
 				return
@@ -103,7 +117,7 @@ func (c *Consumer) deliver(ctx context.Context, s *subscription, d amqp.Delivery
 		}
 		c.metrics.retried(s.Queue)
 		c.logf(`{"event":"events_retry","level":"warn","queue":%q,"type":%q,"id":%q,"attempt":%d,"error":%q}`,
-			s.Queue, event.Type, event.ID, attempt+1, err.Error())
+			s.Queue, event.Type, event.ID, attempt+1, c.errorText(err))
 		if !sleep(ctx, c.retryDelays[attempt]) {
 			return
 		}
@@ -125,4 +139,37 @@ func (c *Consumer) attempt(ctx context.Context, s *subscription, event Event) (d
 
 func (c *Consumer) ackFailed(s *subscription, err error) {
 	c.logf(`{"event":"events_settle_failed","level":"warn","queue":%q,"error":%q}`, s.Queue, c.redact(err))
+}
+
+var (
+	emailLike = regexp.MustCompile(`[^\s@"'<>(),;:]+@[^\s@"'<>(),;:]+\.[A-Za-z]{2,}`)
+	ipv4Like  = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b`)
+)
+
+// errorText is a handler's error as its log line carries it. Handlers wrap
+// their errors with ids, but what they wrap can quote personal data: a
+// PostgreSQL error's message (invalid input syntax for type uuid: "…") gives
+// way to its SQLSTATE and constraint, a panic's value to its type (a runtime
+// error keeps its text), e-mail and IPv4 addresses to a placeholder, and the
+// password to [redacted].
+func (c *Consumer) errorText(err error) string {
+	text := c.redact(err)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		safe := "PostgreSQL error (SQLSTATE " + pgErr.Code + ")"
+		if pgErr.ConstraintName != "" {
+			safe = "PostgreSQL error (SQLSTATE " + pgErr.Code + ", constraint " + pgErr.ConstraintName + ")"
+		}
+		if inner := pgErr.Error(); strings.Contains(text, inner) {
+			text = strings.ReplaceAll(text, inner, safe)
+		} else {
+			text = safe
+		}
+	}
+	var p panicError
+	if errors.As(err, &p) {
+		text = p.logText()
+	}
+	text = emailLike.ReplaceAllString(text, "[e-mail]")
+	return ipv4Like.ReplaceAllString(text, "[ip]")
 }
