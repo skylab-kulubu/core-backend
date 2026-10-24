@@ -200,13 +200,12 @@ func (s *PostgresStore) UpdateProfile(ctx context.Context, u User) (User, error)
 			faculty = CASE WHEN ytu_linked THEN faculty ELSE $6 END,
 			department = CASE WHEN ytu_linked THEN department ELSE $7 END,
 			phone = $8,
-			student_card_uid = $9,
-			profile_picture_id = $10,
-			profile_picture_url = $11,
+			profile_picture_id = $9,
+			profile_picture_url = $10,
 			updated_at = now()
 		WHERE id = $1 AND account_state = 'active'
 		RETURNING `+userCols,
-		u.ID, u.FirstName, u.LastName, u.Linkedin, u.University, u.Faculty, u.Department, u.Phone, u.StudentCardUID,
+		u.ID, u.FirstName, u.LastName, u.Linkedin, u.University, u.Faculty, u.Department, u.Phone,
 		u.ProfilePictureID, u.ProfilePictureURL,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {

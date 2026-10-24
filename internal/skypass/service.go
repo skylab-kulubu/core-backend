@@ -12,6 +12,9 @@ import (
 
 type Service interface {
 	BindCard(ctx context.Context, p authz.Principal, uid string, target *uuid.UUID) (user.User, error)
+	// UnbindCard clears the caller's own bound card UID. No bound card is
+	// not an error.
+	UnbindCard(ctx context.Context, p authz.Principal) error
 	Lookup(ctx context.Context, p authz.Principal, uid string) (Holder, error)
 	Mint(ctx context.Context, p authz.Principal) (Token, error)
 	Verify(ctx context.Context, p authz.Principal, token string) (Holder, error)
@@ -79,6 +82,18 @@ func (s *service) BindCard(ctx context.Context, p authz.Principal, uid string, t
 		return user.User{}, ErrNotFound
 	}
 	return got, err
+}
+
+func (s *service) UnbindCard(ctx context.Context, p authz.Principal) error {
+	u, err := s.caller(ctx, p)
+	if err != nil {
+		return err
+	}
+	_, err = s.users.SetStudentCardUID(ctx, u.ID, "")
+	if errors.Is(err, user.ErrNotFound) || errors.Is(err, user.ErrAccountBlocked) {
+		return ErrNotFound
+	}
+	return err
 }
 
 func (s *service) Lookup(ctx context.Context, p authz.Principal, uid string) (Holder, error) {

@@ -447,6 +447,7 @@ func New(deps Deps) *fiber.App {
 
 	if pass != nil {
 		app.Post("/v1/skypass/card-bind", pass.BindCard)
+		app.Delete("/v1/skypass/card-bind", pass.UnbindCard)
 		app.Get("/v1/skypass/card", pass.LookupCard)
 		app.Post("/v1/skypass/qr", pass.Mint)
 		app.Post("/v1/skypass/verify", pass.Verify)
