@@ -900,6 +900,47 @@ func (s *Service) WithdrawForAddress(ctx context.Context, purpose Purpose, rawEm
 	return n > 0, err
 }
 
+// WithdrawByStaff ends, on a request the person sent the club by mail
+// (info@yildizskylab.com, aydınlatma s6 §6), every open grant of each of
+// purposes of the person holding the address (personTarget: the grants
+// given for it, and the own grant of every account holding it with the
+// grants for that account's addresses), as ended by staff (ended_via staff:
+// the row is the record of it). Unlike a link it reads everything before it
+// ends anything: Keycloak unreachable is ErrAddressesUnavailable and nothing
+// changes, so the operator runs it again. It answers how many grants ended
+// for each purpose; running it again ends none.
+func (s *Service) WithdrawByStaff(ctx context.Context, purposes []Purpose, rawEmail string) (map[Purpose]int64, error) {
+	if !s.Enabled() {
+		return nil, ErrDisabled
+	}
+	if len(purposes) == 0 {
+		return nil, fmt.Errorf("%w: no purpose", ErrInvalid)
+	}
+	for _, purpose := range purposes {
+		if err := purpose.check(); err != nil {
+			return nil, err
+		}
+	}
+	email, ok := NormalizeEmail(rawEmail)
+	if !ok {
+		return nil, fmt.Errorf("%w: email", ErrInvalid)
+	}
+	target, err := s.personTarget(ctx, email, true)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now()
+	ended := map[Purpose]int64{}
+	for _, purpose := range purposes {
+		n, err := s.endOpen(ctx, purpose, target, viaStaff, now)
+		if err != nil {
+			return ended, err
+		}
+		ended[purpose] += n
+	}
+	return ended, nil
+}
+
 // Own is one of a signed-in person's grants.
 type Own struct {
 	ID          uuid.UUID  `json:"id"`
