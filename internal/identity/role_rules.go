@@ -238,3 +238,37 @@ func (s *service) placementAllows(ctx context.Context, g Group, added []ClientRo
 	}
 	return &RoleRuleError{Status: http.StatusConflict, Code: CodeRolePlacement, Reason: reason, Detail: authz.PlacementDetail(reason)}
 }
+
+// appRolesStayOnThePanel refuses, with the app assignments on, a Group role
+// mapping write that adds or takes off an app role (authz.ClassifyRole) of a
+// Group the panel assigns to (a Team, a Sub-team, a Leader group of either:
+// authz.AppAssignmentTarget ""): those are POST and DELETE
+// /v1/apps/{clientId}/assignments, each with its app.assign or app.unassign
+// row (ekip-yetkileri ticket 15, T3). The write would otherwise record a
+// group.roles row the Uygulamalar page does not read, and a full list sent
+// from an old tab could take a panel assignment off unrecorded. The Group's
+// other roles, and the code's places (a Privileged root, /ROLLER), stay on
+// this route. Off, nothing changes. A mapping read that fails refuses the
+// write.
+func (s *service) appRolesStayOnThePanel(ctx context.Context, g Group, roles []ClientRole) error {
+	if !s.appAssignments || authz.AppAssignmentTarget(g.Path, s.privilegedRoots, authz.DefaultPolicy().LeaderSubgroups) != "" {
+		return nil
+	}
+	before, err := s.dir.GroupClientRoles(ctx, g.ID)
+	if err != nil {
+		return err
+	}
+	changes := func(from, to []ClientRole) bool {
+		for _, r := range from {
+			if authz.ClassifyRole(r.ClientID, r.Role) == authz.RoleClassApp && !slices.Contains(to, r) {
+				return true
+			}
+		}
+		return false
+	}
+	if changes(roles, before) || changes(before, roles) {
+		return &RoleRuleError{Status: http.StatusConflict, Code: CodeRolePlacement, Reason: authz.PlacementUseAppAssignments,
+			Detail: authz.PlacementDetail(authz.PlacementUseAppAssignments)}
+	}
+	return nil
+}

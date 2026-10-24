@@ -47,9 +47,12 @@ counted and the pass goes on.
 
 ## The Welcome mail
 
-The sync is the only sender of the Welcome mail. JIT and an admin's new user
-(`POST /v1/users`) only wake it, so the mail goes within seconds of a first
-request, and at worst at the next tick. A wake never starts a pass sooner than
+The sync is the only sender of the Welcome mail. JIT, an admin's new user
+(`POST /v1/users`) and, with `EVENTS_ENABLED=true`, Keycloak's events on
+`core.keycloak` (a sign-up, a change of e-mail or profile, an admin's change
+to a user; [integration-events.md](integration-events.md)) only wake it, so
+the mail goes within seconds of a sign-up or a first request, and at worst at
+the next tick. A wake never starts a pass sooner than
 30 seconds after the previous one.
 
 A person is owed the mail when all of these hold:

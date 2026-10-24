@@ -200,6 +200,90 @@ func TestBroker(t *testing.T) {
 			t.Fatalf("effects = %d", n)
 		}
 	})
+
+	t.Run("Keycloak's provider format", func(t *testing.T) {
+		queue := declare(t, broker, "core.keycloak")
+		var woken atomic.Int64
+		c := events.NewConsumer(config, events.NewPostgres(pool), events.Options{Logf: t.Logf})
+		if err := c.Subscribe(events.Subscription{Queue: queue, Decode: events.DecodeKeycloak, Handle: func(_ context.Context, _ pgx.Tx, e events.Event) error {
+			if e.Type != "keycloak.register" {
+				return events.ErrUnrelated
+			}
+			woken.Add(1)
+			return nil
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		run(t, c)
+		waitFor(t, c, fmt.Sprintf(`skylab_events_consuming{queue=%q} 1`, queue))
+		// As keycloak-to-rabbitmq publishes: Keycloak's JSON, no id, no
+		// message-id. The same body twice is the same event.
+		body := []byte(`{"@class":"com.github.aznamier.keycloak.event.provider.EventClientNotificationMqMsg","id":null,` +
+			`"time":1761213600123,"type":"REGISTER","realmId":"e-skylab","clientId":"account","userId":"u-1",` +
+			`"ipAddress":"203.0.113.7","details":{"email":"someone@example.com"}}`)
+		for range 2 {
+			publishMessage(t, broker, queue, amqp.Publishing{
+				ContentType: "application/json", DeliveryMode: amqp.Persistent, AppId: "Keycloak",
+				Headers: amqp.Table{"__TypeId__": "com.github.aznamier.keycloak.event.provider.EventClientNotificationMqMsg"},
+				Body:    body,
+			})
+		}
+		waitFor(t, c,
+			fmt.Sprintf(`skylab_events_consumed_total{queue=%q,outcome="processed"} 1`, queue),
+			fmt.Sprintf(`skylab_events_consumed_total{queue=%q,outcome="duplicate"} 1`, queue))
+		if woken.Load() != 1 {
+			t.Fatalf("woken %d times", woken.Load())
+		}
+		if n := count(t, pool, `SELECT count(*) FROM consumed_events WHERE consumer = $1 AND source = '/keycloak' AND event_id LIKE 'sha256:%'`, queue); n != 1 {
+			t.Fatalf("records = %d", n)
+		}
+		emptyQueue(t, broker, queue)
+		emptyQueue(t, broker, queue+".dlq")
+	})
+
+	t.Run("a cancelled consumer stops its handlers while every slot is busy", func(t *testing.T) {
+		queue := declare(t, broker, "core.busy")
+		inside := make(chan struct{}, 3)
+		stopped := make(chan struct{}, 3)
+		c := events.NewConsumer(config, events.NewPostgres(pool), events.Options{
+			RetryDelays: []time.Duration{time.Hour},
+			MinBackoff:  50 * time.Millisecond, MaxBackoff: 200 * time.Millisecond,
+			Logf: t.Logf,
+		})
+		if err := c.Subscribe(events.Subscription{Queue: queue, Handle: func(ctx context.Context, _ pgx.Tx, _ events.Event) error {
+			inside <- struct{}{}
+			<-ctx.Done()
+			stopped <- struct{}{}
+			return ctx.Err()
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		run(t, c)
+		waitFor(t, c, fmt.Sprintf(`skylab_events_consuming{queue=%q} 1`, queue))
+		for _, id := range []string{"b1", "b2", "b3"} {
+			publish(t, broker, queue, id, cloudEvent(id))
+		}
+		for range events.DefaultConcurrency {
+			select {
+			case <-inside:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the handlers never ran")
+			}
+		}
+		// The third delivery is in hand, waiting for a slot. Deleting the
+		// queue makes the broker cancel the consumer.
+		time.Sleep(300 * time.Millisecond)
+		if _, err := broker.Admin(t).QueueDelete(queue, false, false, false); err != nil {
+			t.Fatal(err)
+		}
+		for range events.DefaultConcurrency {
+			select {
+			case <-stopped:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the handlers kept running after the broker cancelled the consumer")
+			}
+		}
+	})
 }
 
 // declare sets up a consumer queue as ops' topology does (SPEC §2.4), bound
@@ -267,16 +351,22 @@ func cloudEvent(id string) []byte {
 // CloudEvents content type, the event id as message-id, with confirms.
 func publish(t *testing.T, broker *testrabbitmq.Broker, key, id string, body []byte) {
 	t.Helper()
+	publishMessage(t, broker, key, amqp.Publishing{
+		ContentType: events.CloudEventsContentType, DeliveryMode: amqp.Persistent,
+		MessageId: id, Type: "forms.response.created", AppId: "forms", Body: body,
+	})
+}
+
+// publishMessage sends message to test.events with key, with confirms.
+func publishMessage(t *testing.T, broker *testrabbitmq.Broker, key string, message amqp.Publishing) {
+	t.Helper()
 	admin := broker.Admin(t)
 	if err := admin.Confirm(false); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	confirm, err := admin.PublishWithDeferredConfirmWithContext(ctx, "test.events", key, false, false, amqp.Publishing{
-		ContentType: events.CloudEventsContentType, DeliveryMode: amqp.Persistent,
-		MessageId: id, Type: "forms.response.created", AppId: "forms", Body: body,
-	})
+	confirm, err := admin.PublishWithDeferredConfirmWithContext(ctx, "test.events", key, false, false, message)
 	if err != nil {
 		t.Fatal(err)
 	}

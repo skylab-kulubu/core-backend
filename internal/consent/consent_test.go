@@ -130,10 +130,15 @@ func TestEveryPurposeHasATextASourceAndALabel(t *testing.T) {
 }
 
 // The recruitment pool is known (its text is the Açık Rıza Metni's
-// alim-havuzu-v1) but not taken: its scope is not agreed with Forms.
-func TestOnlyTheInvitationsPurposeIsEnabled(t *testing.T) {
+// alim-havuzu-v1) but not taken: its scope is not agreed with Forms. The
+// invitations and the promotional consent are taken; Guest apply takes the
+// invitations alone.
+func TestTheInvitationsAndThePromotionalPurposesAreEnabled(t *testing.T) {
 	if p, err := ParsePurpose(" event_invitations "); err != nil || p != PurposeEventInvitations {
 		t.Fatalf("event_invitations: %q %v", p, err)
+	}
+	if p, err := ParsePurpose("promotional"); err != nil || p != PurposePromotional {
+		t.Fatalf("promotional: %q %v", p, err)
 	}
 	if _, err := ParsePurpose("recruitment_pool"); !errors.Is(err, ErrPurposeNotEnabled) {
 		t.Fatalf("recruitment_pool: %v", err)
@@ -141,13 +146,50 @@ func TestOnlyTheInvitationsPurposeIsEnabled(t *testing.T) {
 	if _, err := ParsePurpose("newsletter"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("newsletter: %v", err)
 	}
-	if EnabledPurposes() != 1 {
-		t.Fatalf("enabled purposes %d", EnabledPurposes())
+	if GuestApplyPurposes() != 1 {
+		t.Fatalf("guest apply purposes %d", GuestApplyPurposes())
 	}
 	if v, _ := CurrentText(PurposeRecruitmentPool); v != "alim-havuzu-v1" {
 		t.Fatalf("recruitment pool text %q", v)
 	}
-	if v, _ := CurrentText(PurposeEventInvitations); v != "davet-v1" {
+	// davet-v2 widens the invitations to the Club's announcements; a grant
+	// that names no version is recorded on it, and one on davet-v1 is still
+	// taken.
+	if v, _ := CurrentText(PurposeEventInvitations); v != "davet-v2" || !KnownText(PurposeEventInvitations, "davet-v1") {
 		t.Fatalf("invitations text %q", v)
+	}
+	if v, _ := CurrentText(PurposePromotional); v != "tanitim-v1" || KnownText(PurposePromotional, "davet-v2") {
+		t.Fatalf("promotional text %q", v)
+	}
+}
+
+// The promotional consent comes from Forms, the first Account Center screen
+// after signup, or the person's communication preferences; never from Guest
+// apply, Place or Guessr. It lasts until it is withdrawn: no renewal
+// question.
+func TestThePromotionalConsentHasItsSourcesAndNoRenewal(t *testing.T) {
+	for source, want := range map[Source]bool{
+		SourceForms: true, SourceSignup: true, SourceSelf: true,
+		SourceGuestApply: false, SourcePlace: false, SourceGuessr: false,
+	} {
+		if PurposePromotional.Allows(source) != want {
+			t.Errorf("promotional from %s: want %v", source, want)
+		}
+	}
+	if PurposeEventInvitations.Allows(SourceSignup) {
+		t.Error("invitations from signup")
+	}
+	if PurposePromotional.Renews() || !PurposeEventInvitations.Renews() {
+		t.Fatalf("renews: promotional %v, invitations %v", PurposePromotional.Renews(), PurposeEventInvitations.Renews())
+	}
+	for raw, want := range map[string]Source{"": SourceSelf, " self ": SourceSelf, "signup": SourceSignup} {
+		if got, ok := PersonSource(raw); !ok || got != want {
+			t.Errorf("person source %q: %q %v", raw, got, ok)
+		}
+	}
+	for _, raw := range []string{"forms", "guest_apply", "place", "Signup"} {
+		if _, ok := PersonSource(raw); ok {
+			t.Errorf("person source %q accepted", raw)
+		}
 	}
 }

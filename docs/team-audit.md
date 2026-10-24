@@ -17,6 +17,8 @@ Keycloak's own admin events show every such change as made by
 | `POST /v1/groups/:groupId/members` | `member.add` | the Group | none; `target_user_id` is the person. An add to a Privileged Group of someone not YTÜ-linked: after `{"unverifiedAck": true\|false}` (below) |
 | `DELETE /v1/groups/:groupId/members/:userId` | `member.remove` | the Group the membership is removed from: through a parent roster, the Source group the person sits in | none; `target_user_id` is the person |
 | `PUT /v1/groups/:groupId/client-roles` | `group.roles` | the Group | the role mappings before and after, as `client:role` |
+| `POST /v1/apps/:clientId/assignments` ([app-assignments.md](app-assignments.md)) | `app.assign` | the Group, or none for a person (`target_user_id`, empty `group_path`) | after: the Group's id and path, `client`, `role` |
+| `DELETE /v1/apps/:clientId/assignments` | `app.unassign` | as `app.assign` | as `app.assign` |
 
 Privileged's writes carry `actor_basis` `privileged`. With team delegation
 on ([team-delegation.md](team-delegation.md)), a Leader's member add and
@@ -35,9 +37,9 @@ recorded either: core does not see it.
 | `id`, `occurred_at` | the row; when the write began |
 | `actor_id` | the caller's Keycloak subject (`sub`). No name, no e-mail |
 | `actor_basis`, `actor_via_group_id` | `privileged`; or `leader` with the Team whose Leader group grants the change; or, on a `denied` row only, `none` (the caller leads no Team of the Group) |
-| `action` | one of the eleven above (CHECK) |
-| `group_id`, `group_path` | the target Group's Keycloak id and its path at the time. A `team.create` has no id until Keycloak answers |
-| `target_user_id` | the person of a member or leader action, as a subject; set exactly for those (CHECK) |
+| `action` | one of the thirteen above (CHECK) |
+| `group_id`, `group_path` | the target Group's Keycloak id and its path at the time. A `team.create` has no id until Keycloak answers; an `app.*` row for a person has neither (empty path) |
+| `target_user_id` | the person of a member or leader action, as a subject; set exactly for those, and on an `app.*` row exactly when it has no Group (CHECK, migration `20261023120000`) |
 | `before`, `after` | the Group's side of the change (below) |
 | `outcome`, `error_code` | `pending`, `ok`, `failed` or `denied`; a code exactly for `failed` (`not_found`, `invalid`, `forbidden`, `keycloak_<4xx status>`) and `denied` |
 | `correlation_id` | the request's id (`X-Request-ID`); empty when the caller sent one that is not a plain token |
@@ -54,7 +56,8 @@ address, phone number, IP address or other personal field is written; the
 column comments say so. A Team's display names and descriptions are free
 text its administrators typed, and are kept as typed: they are Team fields,
 not a person's, but one may happen to mention someone, and account erasure
-does not look into them.
+does not look into them. An `app.*` row has no free text: the client and
+the role only.
 
 `before` is read just before the write, outside any lock but the Team code
 lock of a create and a rename: when two people change the same Group's
@@ -141,7 +144,11 @@ be written is logged and the request is still refused.
 
 ## Who sees it
 
-The record has no reading route yet. `GET /v1/team-audit-records` (ticket
+The app assignments read their own rows: `GET /v1/apps/:clientId/audit`
+(the app's last hundred) and the "who, when" of each assignment, both only
+for a caller who also holds `audit:read`
+([app-assignments.md](app-assignments.md)). The record has no general
+reading route yet. `GET /v1/team-audit-records` (ticket
 10) opens it to the `audit:read` role of core's client, which Keycloak maps
 to the ADMIN, YK and DK roots (ticket 09; DK since grup-yonetimi GY1, which
 replaced S11's "not DK": DK reads and changes nothing,

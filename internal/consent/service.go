@@ -652,12 +652,16 @@ type AudienceEntry struct {
 	// account's, read now), "address" for a grant given for an address.
 	Subject     string    `json:"subject"`
 	ConfirmedAt time.Time `json:"confirmedAt"`
+	// TextVersion is the text the grant was given on: event_invitations'
+	// davet-v1 named the invitations alone, davet-v2 the announcements too.
+	TextVersion string `json:"textVersion"`
 	// WithdrawURL goes in the mail's footer and in its List-Unsubscribe
 	// header, with List-Unsubscribe-Post: List-Unsubscribe=One-Click.
 	WithdrawURL string `json:"withdrawUrl"`
 	// RenewalDue: nothing showed for RenewalAfter that the person still
 	// wants these mails. SkyMail sends the renewal question with RenewURL
-	// instead of an invitation, then reports it (RequestRenewal).
+	// instead of an invitation, then reports it (RequestRenewal). Always
+	// false for a purpose that does not renew (promotional).
 	RenewalDue bool `json:"renewalDue"`
 	// RenewalRequestedAt is when the standing renewal question was asked
 	// (RenewalQuestionSQL); absent when none stands, a question the person
@@ -684,7 +688,7 @@ func (s *Service) Audience(ctx context.Context, purpose Purpose, after uuid.UUID
 	}
 	now := s.now()
 	rows, err := s.pool.Query(ctx, `
-		SELECT c.id, COALESCE(c.email, u.email, ''), c.user_id IS NOT NULL, c.confirmed_at,
+		SELECT c.id, COALESCE(c.email, u.email, ''), c.user_id IS NOT NULL, c.confirmed_at, c.text_version,
 			`+RenewalQuestionSQL+`, `+RenewalAnchorSQL+` < $4
 		FROM contact_consents c
 		LEFT JOIN users u ON u.id = c.user_id AND u.account_state = 'active'
@@ -705,8 +709,11 @@ func (s *Service) Audience(ctx context.Context, purpose Purpose, after uuid.UUID
 		}
 		var entry AudienceEntry
 		var member bool
-		if err := rows.Scan(&entry.ID, &entry.Email, &member, &entry.ConfirmedAt, &entry.RenewalRequestedAt, &entry.RenewalDue); err != nil {
+		if err := rows.Scan(&entry.ID, &entry.Email, &member, &entry.ConfirmedAt, &entry.TextVersion, &entry.RenewalRequestedAt, &entry.RenewalDue); err != nil {
 			return nil, uuid.Nil, err
+		}
+		if !purpose.Renews() {
+			entry.RenewalDue, entry.RenewalRequestedAt = false, nil
 		}
 		last = entry.ID
 		if strings.TrimSpace(entry.Email) == "" {
@@ -736,13 +743,17 @@ func (s *Service) Audience(ctx context.Context, purpose Purpose, after uuid.UUID
 // named grants. Only open, confirmed grants of purpose that are due and have
 // no standing question change (a question answered by attending stands no
 // more, RenewalQuestionSQL). RenewalAnswerWindow later the retention sweep
-// ends the ones nobody renewed.
+// ends the ones nobody renewed. A purpose that does not renew changes
+// nothing, so none of its grants is ever ended for an unanswered question.
 func (s *Service) RequestRenewal(ctx context.Context, purpose Purpose, ids []uuid.UUID) (int64, error) {
 	if !s.Enabled() {
 		return 0, ErrDisabled
 	}
 	if err := purpose.check(); err != nil {
 		return 0, err
+	}
+	if !purpose.Renews() {
+		return 0, nil
 	}
 	now := s.now()
 	tag, err := s.pool.Exec(ctx, `

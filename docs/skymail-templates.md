@@ -46,8 +46,8 @@ A third mail, the contact consent confirmation (double opt-in,
 `CONTACT_CONSENT_KEY` is set. It is addressed by key alone,
 `SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY` (unset: `core.contact-consent-confirm`),
 with no id fallback, and carries `confirmUrl`, `withdrawUrl` and `purpose`
-(`event_invitations`; `recruitment_pool` once it is taken) and no recipient
-name: whoever typed the address may have typed any name. Seed it with
+(`event_invitations`, `promotional`; `recruitment_pool` once it is taken) and
+no recipient name: whoever typed the address may have typed any name. Seed it with
 `PUT /v1/templates/by-key/core.contact-consent-confirm` before the products
 show the consent box; a refused send writes
 `{"event":"skymail_call_failed","kind":"consent_confirmation",…}` and the

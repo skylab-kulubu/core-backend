@@ -98,6 +98,10 @@ var appAbilities = []ability{
 	{"formLink.write", Resource{Type: TypeFormLink}, Update},
 	{"githubActivity.read", Resource{Type: TypeGithubActivity}, Read},
 	{"audit.read", Resource{Type: TypeTeamAudit}, Read},
+	// App assignments (docs/app-assignments.md): false while the routes
+	// are off (APP_ASSIGNMENTS).
+	{"apps.read", Resource{Type: TypeAppAssignment}, Read},
+	{"apps.assign", Resource{Type: TypeAppAssignment}, Update},
 }
 
 // TeamAbilities are the keys of every team scope's Can, in order.

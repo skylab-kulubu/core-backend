@@ -166,6 +166,10 @@ func TestGuestApplyConsentIsUntickedByDefaultAndConfirmedByLink(t *testing.T) {
 		`{"firstName":"A","lastName":"B","email":"x@example.com","consents":["recruitment_pool"]}`,
 		`{"firstName":"A","lastName":"B","email":"x@example.com","consents":[{"purpose":"event_invitations","textVersion":"davet-v9"}]}`,
 		`{"firstName":"A","lastName":"B","email":"x@example.com","consents":"event_invitations"}`,
+		// The promotional consent is not Guest apply's to take, alone or
+		// beside the invitations.
+		`{"firstName":"A","lastName":"B","email":"x@example.com","consents":["promotional"]}`,
+		`{"firstName":"A","lastName":"B","email":"x@example.com","consents":["event_invitations","promotional"]}`,
 	} {
 		if got := apply(bad); got.status != fiber.StatusBadRequest {
 			t.Fatalf("%s: %d %v", bad, got.status, got.body)
@@ -197,7 +201,7 @@ func TestGuestApplyConsentIsUntickedByDefaultAndConfirmedByLink(t *testing.T) {
 	unescaped := html.UnescapeString(page.body)
 	for _, want := range []string{
 		consent.PurposeEventInvitations.Label(),
-		consent.Text("davet-v1"),
+		consent.Text("davet-v2"),
 		`href="https://example.test/acik-riza"`,
 		`href="` + consent.DefaultNoticeURL + `"`,
 	} {
@@ -324,11 +328,32 @@ func TestPersonManagesTheirOwnConsents(t *testing.T) {
 	if got := sendJSON(t, env.app, env.serviceToken(t, "place", consent.RoleRecord), fiber.MethodPost, "/v1/users/me/consents", `{"purpose":"event_invitations"}`); got.status != fiber.StatusForbidden {
 		t.Fatalf("a service account consented for itself: %d", got.status)
 	}
+	// The promotional consent keeps where the person gave it: the first
+	// screen after signup, or their preferences (self).
+	if got := sendJSON(t, env.app, token, fiber.MethodPost, "/v1/users/me/consents", `{"purpose":"promotional","textVersion":"tanitim-v1","source":"signup"}`); got.status != fiber.StatusCreated || got.body["status"] != "active" {
+		t.Fatalf("promotional at signup %d %v", got.status, got.body)
+	}
+	if env.count(t, `user_id = '`+memberSub+`' AND purpose = 'promotional' AND source = 'signup' AND text_version = 'tanitim-v1'`) != 1 {
+		t.Fatal("signup grant not recorded")
+	}
+	for _, bad := range []string{
+		`{"purpose":"promotional","source":"forms"}`,
+		`{"purpose":"event_invitations","source":"signup"}`,
+		`{"purpose":"promotional","textVersion":"davet-v2"}`,
+	} {
+		if got := sendJSON(t, env.app, token, fiber.MethodPost, "/v1/users/me/consents", bad); got.status != fiber.StatusBadRequest {
+			t.Errorf("%s: %d %v", bad, got.status, got.body)
+		}
+	}
+	if withdrawn := sendJSON(t, env.app, token, fiber.MethodDelete, "/v1/users/me/consents/promotional", ""); withdrawn.status != fiber.StatusOK || withdrawn.body["withdrawn"] != float64(1) {
+		t.Fatalf("withdraw promotional %d %v", withdrawn.status, withdrawn.body)
+	}
 	withdrawn := sendJSON(t, env.app, token, fiber.MethodDelete, "/v1/users/me/consents/event_invitations", "")
 	if withdrawn.status != fiber.StatusOK || withdrawn.body["withdrawn"] != float64(1) {
 		t.Fatalf("withdraw mine %d %v", withdrawn.status, withdrawn.body)
 	}
-	if env.count(t, `ended_via = 'self'`) != 1 {
+	if env.count(t, `purpose = 'event_invitations' AND ended_via = 'self'`) != 1 ||
+		env.count(t, `purpose = 'promotional' AND ended_via = 'self'`) != 1 {
 		t.Fatal("self withdrawal not recorded")
 	}
 }

@@ -5,11 +5,12 @@ person's explicit, optional consent (KVKK art. 5/1) for one purpose:
 
 | Purpose | What it allows | Given through | Taken |
 |---|---|---|---|
-| `event_invitations` | invitations to SKY LAB's future events by e-mail | Guest apply, Forms, Place, Guessr, a signed-in person | yes |
+| `event_invitations` | invitations to SKY LAB's other events and its announcements by e-mail (aydınlatma s6 row 14, §5.14; `davet-v1` named the invitations alone) | Guest apply, Forms, Place, Guessr, a signed-in person | yes |
+| `promotional` | mails whose main purpose is promoting a product or a service: a discount code, a company's job posting, a sale, a raffle (aydınlatma s6 row 13 b, §5.8, §5.10). A short sponsor thank-you or logo in an announcement is not promotional and needs no consent | SkyForms forms (`forms`), the first Account Center screen after signup (`signup`), Account Center's communication preferences (`self`) | yes |
 | `recruitment_pool` | keeping a team application that was not accepted, to be considered in future recruitment | Forms only | **no**: every route answers `400 purpose_not_enabled` until its scope (an address, or one application) is agreed with Forms. The table already allows the value |
 
 Core keeps the single record (`contact_consents`). The products write to it;
-SkyMail reads its invitation list only from it. Member and alumni
+SkyMail reads its invitation and promotional lists only from it. Member and alumni
 announcements are not contact consents: they run on legitimate interest with
 their own opt-out, the communication preference
 ([`communication-preferences.md`](communication-preferences.md)).
@@ -102,7 +103,8 @@ and kept only its HMAC. One click ends the mails, whichever grant a mail was
 sent on.
 
 **Evidence.** Purpose, channel (`email`), the text version the person was
-shown, the source app (`guest_apply`, `forms`, `place`, `guessr`, `self`), the
+shown, the source app (`guest_apply`, `forms`, `place`, `guessr`, `self`,
+`signup`), the
 Keycloak client of the app (`client_id`), the Event it was given on (Guest
 apply), how the address was shown to be the person's (`confirmed_via`:
 `account`, `service`, `link`), and the times: granted, confirmed, renewed,
@@ -119,13 +121,41 @@ it. The codes are the versions ("Sürüm") of the Açık Rıza Metni draft
 | Version | Purpose | Box text (Turkish, as shown next to the box, with links to the Açık Rıza Metni and the aydınlatma) |
 |---|---|---|
 | `davet-v1` | `event_invitations` | SKY LAB'ın gelecek etkinliklerine davet e-postası almak istiyorum. Bunun için adımı ve e-posta adresimi saklayabilirsiniz. İstediğim zaman her davetteki bağlantıyla vazgeçebilirim. |
+| `davet-v2` | `event_invitations` | Diğer etkinlik ve duyurulardan haberdar olmak istiyorum. |
+| `tanitim-v1` | `promotional` | SKY LAB'dan tanıtım içerikli e-postalar (indirim kodu, şirket iş ilanı, çekiliş gibi) almak istiyorum. |
 | `alim-havuzu-v1` | `recruitment_pool` (not taken yet) | Bu dönem kabul edilmezsem başvurumun gelecek alımlarda değerlendirilmek üzere saklanmasını istiyorum. İstediğim zaman vazgeçebilirim. |
 
 The draft is not approved yet; if the approved wording differs, it gets a new
-version (`davet-v2`, …) here first. A grant that names no version is recorded
-on the newest one of its purpose.
+version here first. `davet-v2` and `tanitim-v1` are the wordings of the
+aydınlatma s6 draft; while `CONTACT_CONSENT_KEY` is unset in production no
+grant names them, so they may still be reworded in place until it is set. A
+grant that names no version is recorded on the newest one of its purpose.
+SkyMail reads the version of each grant in the audience (`textVersion`): a
+`davet-v1` grant was given for invitations, not for announcements.
+
+**The promotional consent (aydınlatma s6 §5.8).** One grant per person
+and mailbox, whichever box gave it: the form, the signup screen or the
+preferences. A product shows the box only while `lookup` (or the person's
+own list) has no open grant for the address, and an unticked box records
+nothing and withdraws nothing. A grant given in a form without an account is
+bound to the address typed there and is `pending` until the person confirms
+it from the mail core sends (double opt-in); once the person opens an
+account with that address the grant is the account's, as the mailbox rule
+above says: their own list shows it, `lookup` counts it, and withdrawing
+from their account, a promotional mail's withdraw link or the product ends
+it. The row is not rewritten to the account: it stays the proof of what the
+form recorded. Core has no staff route for a withdrawal asked by mail to
+info@yildizskylab.com: it goes through `POST /v1/consents/withdrawals`, which
+needs a service account of `CONTACT_CONSENT_SERVICE_CLIENTS` holding
+`consent:record`. An ended grant is kept 3 years as proof (`consent_proof`),
+then deleted.
 
 ## Lifecycle
+
+The renewal rows apply to `event_invitations` only. A `promotional` grant
+lasts until it is withdrawn: it is never due a renewal question, its
+audience items never carry `renewalDue`, and a renewal request for it changes
+nothing, so it never ends as `expired`.
 
 | When | What happens |
 |---|---|
@@ -250,9 +280,9 @@ role of the `core` client, whose client is mapped to a source in
 
 ### SkyMail: role `consent:audience:read`
 
-- `GET /v1/consents/audience?purpose=event_invitations&after={id}&limit={1..1000}` →
+- `GET /v1/consents/audience?purpose=event_invitations|promotional&after={id}&limit={1..1000}` →
   `200 {"items": [...], "next": "{id}"|null}`. Each item:
-  `{"id", "email", "subject": "account"|"address", "confirmedAt", "withdrawUrl", "renewalDue", "renewalRequestedAt"?, "renewUrl"?}`.
+  `{"id", "email", "subject": "account"|"address", "confirmedAt", "textVersion", "withdrawUrl", "renewalDue", "renewalRequestedAt"?, "renewUrl"?}`.
   Only confirmed, open grants, in id order. The same address can appear twice
   (a member's own grant and one given for the address): send one mail per
   address. Put `withdrawUrl` in the footer and the `List-Unsubscribe` header.
@@ -275,7 +305,11 @@ role of the `core` client, whose client is mapped to a source in
   three (core's row may still hold an older Primary). Keycloak unreachable is
   `503` `consent_addresses_unavailable` with `Retry-After`, not a shorter
   list.
-- `POST /v1/users/me/consents` `{"purpose", "textVersion"?}` → `201`/`200 {"status":"active"}`.
+- `POST /v1/users/me/consents` `{"purpose", "textVersion"?, "source"?}` → `201`/`200 {"status":"active"}`.
+  `source` is where the person ticked the box: `self` (unset: Account
+  Center's preferences, Place, Guessr) or `signup` (the first Account Center
+  screen after the account was opened; `promotional` only). Anything else is
+  `400 consent_invalid`.
 - `DELETE /v1/users/me/consents/{purpose}` → `200 {"withdrawn": n}`: their
   account's grant and every grant that mails one of those addresses. While
   Keycloak is unreachable it ends at once what core reaches without it (the

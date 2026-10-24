@@ -5,10 +5,9 @@ another service publishes through RabbitMQ ("a response was created", "a form
 closed") without knowing who reads them. Code: `internal/events`, wired in
 `cmd/core-backend/integration_events.go`.
 
-This is the infrastructure only. The queues' handlers come with their own
-changes: `core.keycloak` wakes the user sync, `core.forms` writes Tickets and
-feedback (RabbitMQ tickets R09 and R13 in the hub). Until they are registered
-core consumes nothing, even when on.
+Queues core reads: `core.keycloak`, whose events wake the user sync (below;
+hub ticket R09). `core.forms`, which writes Tickets and feedback, comes with
+hub ticket R13.
 
 ## Off by default
 
@@ -64,7 +63,9 @@ experimental recovery is left off), so core does:
   closes is opened again with the same growing wait while the connection
   stays;
 - each queue's deliveries are handled two at a time (a database transaction
-  each; core's pool is small); the rest wait in the prefetch.
+  each; core's pool is small); the rest wait in the prefetch. A channel that
+  closes, or a consumer the broker cancels, while both are busy (two handlers
+  in their 36 seconds of retries) stops them at once, not after their retries.
 
 When a connection or a channel is lost, the handlers running on it are
 stopped: their transactions roll back, their deliveries were not acked, and
@@ -81,8 +82,9 @@ consumer after the HTTP drain and before the database pool closes
    `application/json`), the AMQP content type absent or
    `application/cloudevents+json`, the body at most 64 KiB. Attributes core
    does not know are ignored. A queue whose publisher has its own format
-   (Keycloak's provider) registers its own decoder. A message that does not
-   decode is rejected without requeue, to the queue's DLQ.
+   (Keycloak's provider, `core.keycloak` below) registers its own decoder. A
+   message that does not decode is rejected without requeue, to the queue's
+   DLQ.
 2. **Claim and handle, in one transaction.** Core inserts
    `(consumer, source, event_id)` into `consumed_events` and runs the handler
    with the same transaction. The consumer is the queue's name unless the
@@ -112,10 +114,52 @@ consumer after the HTTP drain and before the database pool closes
 
 A handler that calls another service must be idempotent by itself as well: a
 rollback does not take back a call that went out. Its errors reach the log
-line, so they carry ids, never personal data.
+line, so they carry ids, never personal data. Core masks what a handler may
+wrap without meaning to: a PostgreSQL error is written as its SQLSTATE and
+constraint (its message and detail can quote a value), a panic as its type (a
+Go runtime error keeps its text), e-mail and IPv4 addresses as `[e-mail]` and
+`[ip]`, the password as `[redacted]`.
 
 DLQ messages are put back by an ops command (hub ticket R06); nothing does it
 automatically.
+
+## `core.keycloak`: Keycloak's events wake the user sync
+
+Keycloak's RabbitMQ provider (keycloak-to-rabbitmq, on `keycloak.events`)
+publishes Keycloak's own event JSON, not CloudEvents (ADR-0071 §5). Ops binds
+`core.keycloak` to the `e-skylab` realm's successful `REGISTER`,
+`UPDATE_EMAIL`, `UPDATE_PROFILE` and `DELETE_ACCOUNT` user events and to every
+admin event on a `USER`.
+
+Its decoder (`events.DecodeKeycloak`) reads:
+
+- an admin event (an `operationType` and a `resourceType`) or a user event (a
+  `type`), each an upper-case Keycloak name; anything else goes to the DLQ;
+- the id: Keycloak's event id, else the message-id, else the body's SHA-256
+  (the provider before SKY LAB's fork, hub ticket R07, sends none; the same
+  body is the same event). The source is `/keycloak`;
+- the type as `keycloak.register`, `keycloak.admin.user.update`;
+- `realmId`, `clientId`, `userId`, whether Keycloak sent an `error`, and
+  `time` when it is Keycloak's milliseconds;
+- the AMQP content type absent or `application/json`, the body at most
+  64 KiB.
+
+It keeps nothing else: the IP address, the details (a sign-up's e-mail, a
+change's old and new address), the session, an admin event's representation
+and auth details are dropped when the provider still sends them, and fields
+it does not know are ignored.
+
+The handler does one thing: it wakes the user sync
+([user-sync.md](user-sync.md)), which reads Keycloak and brings core's row in
+line, a pass at most every 30 seconds. The event writes nothing itself, so the
+order of events does not matter, and an event that was lost (Keycloak
+publishes after its commit, without an outbox) is caught by the next
+`USER_SYNC_INTERVAL` pass. A `DELETE_ACCOUNT` (deletion from Keycloak's
+account console, off in our realm) is logged as a warning,
+`keycloak_account_deleted_by_user` with the event id. Another event (a
+sign-in, an admin's `ACTION` e-mail, a failed event) is acked unrecorded;
+with the user sync off (`USER_SYNC_ENABLED=false` or no Keycloak) every event
+is, and the startup log says so.
 
 ## `consumed_events`
 
@@ -142,11 +186,12 @@ and id, and the error, never the event's data or the password:
 `events_connected`, `events_connect_failed`, `events_connection_lost`,
 `events_consuming`, `events_channel_closed`, `events_retry`,
 `events_dead_lettered`, `events_settle_failed`,
-`events_record_cleanup_failed`.
+`events_record_cleanup_failed`, `keycloak_account_deleted_by_user`.
 
 `/v1/metrics` (internal):
 
-- `skylab_events_enabled` (0 when off; nothing else is reported then)
+- `skylab_events_enabled` (0 when off; the consumer has no other series then,
+  the cleanup's two counters at the end stay)
 - `skylab_events_connected`, `skylab_events_connect_failures_total`
 - `skylab_events_consuming{queue}`
 - `skylab_events_consumed_total{queue,outcome="processed|duplicate|unrelated|dead_lettered"}`
@@ -156,17 +201,19 @@ and id, and the error, never the event's data or the password:
 
 ## Tests
 
-`internal/events` has unit tests for the settings, the envelope, every
-outcome of a delivery, the reconnection wait and a broker that cannot be
-reached, and integration tests against PostgreSQL and a real RabbitMQ 4.2
+`internal/events` has unit tests for the settings, the envelope, Keycloak's
+format, every outcome of a delivery, the masking of a handler's error in the
+log, the reconnection wait and a broker that cannot be reached, and integration tests against PostgreSQL and a real RabbitMQ 4.2
 (`internal/testrabbitmq`, the image e-skylab-keycloak's tests run). The broker
 test sets up ADR-0071's topology (quorum queue, `delivery-limit`,
 at-least-once dead-lettering to a DLQ) and a core user without `configure`
 or `write`, and checks: an event handled once however often it comes, the four
 ways to the DLQ with nothing written, unrelated events, a reconnection after
 the broker drops the connection, a missing queue that leaves the others alone
-and is picked up once declared, and a shutdown that returns the delivery in
-hand to its queue.
+and is picked up once declared, a shutdown that returns the delivery in
+hand to its queue, Keycloak's provider format (no id; the same body twice is
+one event), and a consumer the broker cancels while both handlers are busy.
+`cmd/core-backend` tests which Keycloak events wake the user sync.
 
 ## Against the standard
 
@@ -174,8 +221,10 @@ What matches: RabbitMQ's data safety guidance (manual acknowledgements after
 the work is committed, a bounded prefetch, an idempotent consumer, no
 immediate requeue on a quorum queue), the idempotent consumer pattern
 (microservices.io: the message id recorded in the same transaction as the
-business change), CloudEvents' `source` + `id` uniqueness, and Azure Service
-Bus' model of a bounded delivery count with a dead-letter queue.
+business change), CloudEvents' `source` + `id` uniqueness, Azure Service
+Bus' model of a bounded delivery count with a dead-letter queue, and for
+`core.keycloak` Microsoft Entra provisioning's model: a periodic sync is the
+truth, a change notification only brings the next pass forward.
 
 Deviations: the retries are in the process, not a delayed redelivery (no TTL
 and DLX ring, no delayed-message plugin; ADR-0071 deviation 6); dropping

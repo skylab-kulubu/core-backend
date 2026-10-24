@@ -29,6 +29,10 @@ Two workflows: **Checks** (`.github/workflows/checks.yml`) tests, **GHCR**
   `testplan run` runs four units at a time, each `go test -race -count=1`,
   prints the output of what failed and fails on any skipped test (a test that
   cannot reach Docker or ffmpeg skips itself; none skips on purpose).
+- The shards' ffmpeg and ffprobe (for `internal/mediaframe` and
+  `internal/faststart`) are the static builds in `FFMPEG_IMAGE`, pinned by
+  digest and copied out of it while Go builds; 6.1, as the frame service's
+  Alpine ffmpeg. Not apt: `apt-get update` hung often enough to fail shards.
 - Each shard runs one PostgreSQL 18 server; with `CORE_TEST_POSTGRES_URL` set,
   `testpostgres.Start` gives each test a database of its own on it (created,
   then dropped with its connections), instead of a container of its own.

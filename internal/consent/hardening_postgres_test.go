@@ -109,7 +109,7 @@ func TestVerifiedGrantSupersedesAPendingOneWithItsOwnEvidence(t *testing.T) {
 		AND confirmed_at IS NULL AND email IS NULL AND email_hmac IS NOT NULL`, pending.ID, eventID) != 1 {
 		t.Fatal("the pending row did not end as superseded with its own evidence")
 	}
-	if f.count(t, `id = $1 AND source = 'place' AND client_id = 'place' AND event_id IS NULL AND text_version = 'davet-v1'
+	if f.count(t, `id = $1 AND source = 'place' AND client_id = 'place' AND event_id IS NULL AND text_version = 'davet-v2'
 		AND confirmed_via = 'service' AND ended_at IS NULL AND email = 'v@example.com'`, verified.ID) != 1 {
 		t.Fatal("the verified grant is not a row of its own evidence")
 	}
