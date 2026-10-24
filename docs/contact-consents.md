@@ -164,11 +164,11 @@ from their account, a promotional mail's withdraw link or the product ends
 it. The row is not rewritten to the account: it stays the proof of what the
 form recorded. A box ticked all the same (the person's Personal e-mail in a
 form, which `lookup` does not see; the signup screen after a form grant)
-records a second row; any withdrawal still ends both. Core has no staff route for a withdrawal asked by mail to
-info@yildizskylab.com: it goes through `POST /v1/consents/withdrawals`, which
-needs a service account of `CONTACT_CONSENT_SERVICE_CLIENTS` holding
-`consent:record`. An ended grant is kept 3 years as proof (`consent_proof`),
-then deleted.
+records a second row; any withdrawal still ends both. Core has no staff
+route for a withdrawal asked by mail to info@yildizskylab.com: it goes
+through `POST /v1/consents/withdrawals`, which needs a service account of
+`CONTACT_CONSENT_SERVICE_CLIENTS` holding `consent:record`. An ended grant is
+kept 3 years as proof (`consent_proof`), then deleted.
 
 ## Lifecycle
 
