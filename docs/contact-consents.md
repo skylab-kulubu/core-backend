@@ -102,6 +102,26 @@ for a link from an old invitation too, whose address grant has since ended
 and kept only its HMAC. One click ends the mails, whichever grant a mail was
 sent on.
 
+**A person, not a row (withdraw links).** A person holds one grant of a
+purpose, even when two rows record it: their account's own and one a product
+recorded for another of their addresses, such as the Personal e-mail that
+only Keycloak holds. A withdraw link therefore ends all of them:
+
+- the link of an account's own grant ends it and every grant given for one
+  of the account's addresses, Keycloak's Primary, School and Personal e-mail
+  with core's row (as their own list reads them);
+- the link of a grant given for an address ends every grant given for that
+  address and the own grant of every account holding it (core's `email` or
+  `school_email`, or Keycloak's Personal e-mail,
+  `GET /users?q=personalEmail:…`). A grant for another address of that
+  account mails another mailbox and is left to its own link. An ended
+  address grant keeps only its HMAC, so its link then reaches accounts by
+  core's row alone.
+
+Keycloak unreachable never stops a withdrawal: the link ends what core
+reaches without it (the grant's own subject and core's row) and logs the
+rest without an address; the person's account (below) reaches the others.
+
 **Evidence.** Purpose, channel (`email`), the text version the person was
 shown, the source app (`guest_apply`, `forms`, `place`, `guessr`, `self`,
 `signup`), the
@@ -144,11 +164,13 @@ account with that address the grant is the account's, as the mailbox rule
 above says: their own list shows it, `lookup` counts it, and withdrawing
 from their account, a promotional mail's withdraw link or the product ends
 it. The row is not rewritten to the account: it stays the proof of what the
-form recorded. Core has no staff route for a withdrawal asked by mail to
-info@yildizskylab.com: it goes through `POST /v1/consents/withdrawals`, which
-needs a service account of `CONTACT_CONSENT_SERVICE_CLIENTS` holding
-`consent:record`. An ended grant is kept 3 years as proof (`consent_proof`),
-then deleted.
+form recorded. A box ticked all the same (the person's Personal e-mail in a
+form, which `lookup` does not see; the signup screen after a form grant)
+records a second row; any withdrawal still ends both. Core has no staff
+route for a withdrawal asked by mail to info@yildizskylab.com: it goes
+through `POST /v1/consents/withdrawals`, which needs a service account of
+`CONTACT_CONSENT_SERVICE_CLIENTS` holding `consent:record`. An ended grant is
+kept 3 years as proof (`consent_proof`), then deleted.
 
 ## Lifecycle
 
@@ -199,7 +221,7 @@ HMAC-signed grant id (no address, no person) that only core can read.
 
 | Link | Path | Does | Expires |
 |---|---|---|---|
-| withdraw | `/v1/consents/withdraw?token=…` | ends every open grant of the link's purpose that mails the same address | never |
+| withdraw | `/v1/consents/withdraw?token=…` | ends every open grant of the link's purpose of the person the grant mails (above) | never |
 | confirm | `/v1/consents/confirm?token=…` | confirms a pending grant, renews an active one; does nothing for an ended one | 30 days (confirmation), 90 days (renewal) |
 
 `GET` shows a page with one button and changes nothing, so a mail scanner that
