@@ -406,3 +406,61 @@ func TestService_LeaderboardByOwnerTeamAndSeason(t *testing.T) {
 func ptr(v float64) *float64 {
 	return &v
 }
+
+// keptToLeaders answers MembersManageCompetitors: false for the Teams whose
+// Leader kept the competitors to the Leaders.
+type keptToLeaders map[string]bool
+
+func (k keptToLeaders) MembersManageCompetitors(team string) bool { return !k[team] }
+
+// Moving a competitor to another Event takes it out of the Event it is in:
+// who moves it writes the competitors of both. A writer of team B does not
+// move team A's competitor to B's Event, with A's setting on or off; A's
+// Leader and Privileged do. An edit that keeps the Event is decided as
+// before, on that Event alone.
+func TestService_MovingACompetitorTakesTheWriteOfBothEvents(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, aKeptToLeaders := range []bool{false, true} {
+		events := event.NewMemoryStore()
+		az := authz.NewAuthorizer(authz.DefaultPolicy(), authz.WithTeamSettings(keptToLeaders{"WEBLAB": aKeptToLeaders}))
+		svc := competitor.NewService(competitor.NewMemoryStore(events), events, az)
+		a := seedEvent(t, events, "WEBLAB", event.StatusPublished)
+		a2 := seedEvent(t, events, "WEBLAB", event.StatusPublished)
+		b := seedEvent(t, events, "SKYSEC", event.StatusPublished)
+		yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+		aLeader := authz.Principal{ID: "a-leader", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+		bWriter := authz.Principal{ID: "b-writer", Groups: []string{"/UYELER/ARGE/SKYSEC"}}
+
+		inA, err := svc.Create(ctx, yk, competitor.CreateInput{UserID: uuid.New(), EventID: a.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = svc.Update(ctx, bWriter, inA.ID, competitor.UpdateInput{EventID: b.ID, Score: ptr(1)})
+		if !errors.Is(err, competitor.ErrForbidden) {
+			t.Fatalf("A kept to Leaders %v: B's writer moved A's competitor to B's Event: %v", aKeptToLeaders, err)
+		}
+		if got, err := svc.Get(ctx, yk, inA.ID); err != nil || got.EventID != a.ID || got.Score != nil {
+			t.Fatalf("A's competitor after the refused move %+v %v", got, err)
+		}
+
+		moved, err := svc.Update(ctx, aLeader, inA.ID, competitor.UpdateInput{EventID: a2.ID})
+		if err != nil || moved.EventID != a2.ID {
+			t.Fatalf("A's Leader moving within A %+v %v", moved, err)
+		}
+		moved, err = svc.Update(ctx, yk, inA.ID, competitor.UpdateInput{EventID: b.ID})
+		if err != nil || moved.EventID != b.ID {
+			t.Fatalf("Privileged moving A's competitor to B %+v %v", moved, err)
+		}
+
+		// Kept in its Event, B's writer edits B's competitor as before.
+		scored, err := svc.Update(ctx, bWriter, inA.ID, competitor.UpdateInput{Score: ptr(7), IsWinner: true})
+		if err != nil || scored.EventID != b.ID || scored.Score == nil || *scored.Score != 7 || !scored.IsWinner {
+			t.Fatalf("B's writer editing in place %+v %v", scored, err)
+		}
+		scored, err = svc.Update(ctx, bWriter, inA.ID, competitor.UpdateInput{EventID: b.ID, Score: ptr(8)})
+		if err != nil || scored.Score == nil || *scored.Score != 8 {
+			t.Fatalf("B's writer naming the same Event %+v %v", scored, err)
+		}
+	}
+}
