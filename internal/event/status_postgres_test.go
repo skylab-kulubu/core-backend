@@ -71,8 +71,7 @@ func TestPostgresStoreDerivesActive(t *testing.T) {
 }
 
 // Create writes the status (published when none is given, with when and by
-// whom), and mirrors it into the legacy active column for a release rolled
-// back to; Update writes neither.
+// whom); Update does not.
 func TestPostgresStoreWritesStatusOnCreateOnly(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
@@ -84,12 +83,12 @@ func TestPostgresStoreWritesStatusOnCreateOnly(t *testing.T) {
 	if _, _, err := user.NewService(user.NewPostgresStore(pool)).Ensure(ctx, actor, user.Profile{Email: "publisher@example.test"}); err != nil {
 		t.Fatal(err)
 	}
-	stored := func(id uuid.UUID) (active bool, status string, publishedBy *uuid.UUID) {
+	stored := func(id uuid.UUID) (status string, publishedBy *uuid.UUID) {
 		t.Helper()
-		if err := pool.QueryRow(ctx, `SELECT active, status, published_by FROM events WHERE id = $1`, id).Scan(&active, &status, &publishedBy); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT status, published_by FROM events WHERE id = $1`, id).Scan(&status, &publishedBy); err != nil {
 			t.Fatal(err)
 		}
-		return active, status, publishedBy
+		return status, publishedBy
 	}
 
 	published, err := store.Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", PublishedBy: &actor})
@@ -99,8 +98,8 @@ func TestPostgresStoreWritesStatusOnCreateOnly(t *testing.T) {
 	if published.Status != event.StatusPublished || !published.Active || published.PublishedAt == nil || published.PublishedBy == nil || *published.PublishedBy != actor {
 		t.Fatalf("published %+v", published)
 	}
-	if active, status, _ := stored(published.ID); !active || status != "published" {
-		t.Fatalf("stored active=%v status=%q", active, status)
+	if status, _ := stored(published.ID); status != "published" {
+		t.Fatalf("stored status=%q", status)
 	}
 
 	draft, err := store.Create(ctx, event.Event{Name: "Taslak", Location: "YTÜ", OwnerTeam: "WEBLAB", Status: event.StatusDraft, PublishedBy: &actor})
@@ -110,8 +109,8 @@ func TestPostgresStoreWritesStatusOnCreateOnly(t *testing.T) {
 	if draft.Status != event.StatusDraft || draft.Active || draft.PublishedAt != nil {
 		t.Fatalf("draft %+v", draft)
 	}
-	if active, status, by := stored(draft.ID); active || status != "draft" || by != nil {
-		t.Fatalf("stored draft active=%v status=%q by=%v", active, status, by)
+	if status, by := stored(draft.ID); status != "draft" || by != nil {
+		t.Fatalf("stored draft status=%q by=%v", status, by)
 	}
 
 	// An actor with no account row (a client without one) does not fail
@@ -125,8 +124,7 @@ func TestPostgresStoreWritesStatusOnCreateOnly(t *testing.T) {
 		t.Fatalf("unnamed %+v", unnamed)
 	}
 
-	// An update, whatever it carries, leaves the status and the legacy
-	// column alone.
+	// An update, whatever it carries, leaves the status alone.
 	published.Name = "Hack 2"
 	published.Active = false
 	published.Status = event.StatusCancelled
@@ -137,8 +135,8 @@ func TestPostgresStoreWritesStatusOnCreateOnly(t *testing.T) {
 	if updated.Name != "Hack 2" || updated.Status != event.StatusPublished || !updated.Active {
 		t.Fatalf("updated %+v", updated)
 	}
-	if active, status, _ := stored(published.ID); !active || status != "published" {
-		t.Fatalf("stored after update active=%v status=%q", active, status)
+	if status, _ := stored(published.ID); status != "published" {
+		t.Fatalf("stored after update status=%q", status)
 	}
 }
 

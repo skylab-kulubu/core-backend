@@ -12,7 +12,7 @@ import (
 )
 
 // Uncancel publishes the Event again with the cancellation cleared and its
-// publication kept, writes the legacy active as the derived one, and brings
+// publication kept, and brings
 // back the Competitions its cancellation cancelled, and only those (ticket
 // 15).
 func TestPostgresStoreUncancel(t *testing.T) {
@@ -48,15 +48,17 @@ func TestPostgresStoreUncancel(t *testing.T) {
 		t.Fatalf("uncancel: %v %v", changed, err)
 	}
 	var status, reason string
-	var active bool
 	var cancelledAt, publishedAt *time.Time
 	var cancelledBy *uuid.UUID
-	if err := pool.QueryRow(ctx, `SELECT status, active, cancelled_at, cancelled_by, cancel_reason, published_at FROM events WHERE id = $1`, ev.ID).
-		Scan(&status, &active, &cancelledAt, &cancelledBy, &reason, &publishedAt); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT status, cancelled_at, cancelled_by, cancel_reason, published_at FROM events WHERE id = $1`, ev.ID).
+		Scan(&status, &cancelledAt, &cancelledBy, &reason, &publishedAt); err != nil {
 		t.Fatal(err)
 	}
-	if status != "published" || !active || cancelledAt != nil || cancelledBy != nil || reason != "" || publishedAt == nil || !publishedAt.Equal(*ev.PublishedAt) {
-		t.Fatalf("event: %s active=%v cancelled=%v/%v %q published=%v", status, active, cancelledAt, cancelledBy, reason, publishedAt)
+	if got, err := store.Get(ctx, ev.ID); err != nil || !got.Active {
+		t.Fatalf("uncancelled not active: %+v %v", got, err)
+	}
+	if status != "published" || cancelledAt != nil || cancelledBy != nil || reason != "" || publishedAt == nil || !publishedAt.Equal(*ev.PublishedAt) {
+		t.Fatalf("event: %s cancelled=%v/%v %q published=%v", status, cancelledAt, cancelledBy, reason, publishedAt)
 	}
 	for name, want := range map[string]struct{ status, reason string }{
 		"açık": {"open", ""}, "kapandı": {"closed", ""}, "kendi iptali": {"cancelled", "Kendi gerekçesi"},
@@ -74,7 +76,7 @@ func TestPostgresStoreUncancel(t *testing.T) {
 	}
 
 	// An Event that ended while cancelled comes back published and not
-	// active, in the legacy column too.
+	// active.
 	past := time.Now().Add(-72 * time.Hour)
 	if _, err := pool.Exec(ctx, `UPDATE events SET status = 'cancelled', start_date = $2, cancelled_at = now() WHERE id = $1`, ev.ID, past); err != nil {
 		t.Fatal(err)
@@ -82,7 +84,7 @@ func TestPostgresStoreUncancel(t *testing.T) {
 	if changed, err := store.Uncancel(ctx, ev.ID, false); err != nil || !changed {
 		t.Fatalf("uncancel ended: %v %v", changed, err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT status, active FROM events WHERE id = $1`, ev.ID).Scan(&status, &active); err != nil || status != "published" || active {
-		t.Fatalf("ended: %s %v %v", status, active, err)
+	if got, err := store.Get(ctx, ev.ID); err != nil || got.Status != event.StatusPublished || got.Active {
+		t.Fatalf("ended: %+v %v", got, err)
 	}
 }
