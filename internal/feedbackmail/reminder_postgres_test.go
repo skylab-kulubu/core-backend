@@ -258,6 +258,9 @@ func TestRequestTemplateOff(t *testing.T) {
 // after it was queued it expires, tried or not.
 func TestQueuedMailExpiresUntried(t *testing.T) {
 	f := newFixture(t)
+	// Only the mails of Şimdi gönder: the schedule sends nothing by itself
+	f.exec(t, `UPDATE events SET feedback_auto_send = false WHERE id = $1`, f.event)
+	f.exec(t, `UPDATE sessions SET feedback_auto_send = false`)
 	if ok, n, err := f.store.SendNow(context.Background(), feedback.Target{EventID: f.event, SessionID: &f.sessionA}, at(12, 0)); err != nil || !ok || n != 2 {
 		t.Fatalf("send now %v %d %v", ok, n, err)
 	}
