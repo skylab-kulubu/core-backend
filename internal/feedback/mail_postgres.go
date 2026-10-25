@@ -49,6 +49,8 @@ type Mail struct {
 	ID       uuid.UUID
 	EventID  uuid.UUID
 	TicketID uuid.UUID
+	// Kind is KindRequest, the form's mail, or KindReminder (ticket 07).
+	Kind string
 	// EventDayID is the day the schedule's mail gathers (nil for a manual
 	// mail, or the Event's form of an Event without a day).
 	EventDayID    *uuid.UUID
@@ -60,6 +62,12 @@ type Mail struct {
 	// only while the row still carries it.
 	ClaimedAt time.Time
 }
+
+// The kinds of feedback mail.
+const (
+	KindRequest  = "request"
+	KindReminder = "reminder"
+)
 
 // MailItem is one target a mail carries, as it is now: what the worker
 // decides with whether the target still goes.
@@ -323,47 +331,48 @@ func (s *PostgresStore) SendNow(ctx context.Context, t Target, now time.Time) (b
 	return true, len(tickets), tx.Commit(ctx)
 }
 
-// ClaimMail takes the mail due first and holds it for lease; false when
-// none is due.
-func (s *PostgresStore) ClaimMail(ctx context.Context, now time.Time, lease time.Duration) (Mail, bool, error) {
+// ClaimMail takes the mail of one of kinds due first and holds it for
+// lease; false when none is due.
+func (s *PostgresStore) ClaimMail(ctx context.Context, now time.Time, lease time.Duration, kinds []string) (Mail, bool, error) {
 	m, err := scanMail(s.pool.QueryRow(ctx, `
 		UPDATE feedback_mails SET next_attempt_at = $2, claimed_at = $1
 		WHERE id = (
 			SELECT id FROM feedback_mails
-			WHERE done_at IS NULL AND next_attempt_at <= $1
+			WHERE done_at IS NULL AND next_attempt_at <= $1 AND kind = ANY($3)
 			ORDER BY next_attempt_at, created_at, id
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED)
 		RETURNING `+mailCols,
-		now, now.Add(lease)))
+		now, now.Add(lease), kinds))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Mail{}, false, nil
 	}
 	return m, err == nil, err
 }
 
-const mailCols = `id, event_id, ticket_id, event_day_id, manual, created_at, next_attempt_at, attempts, claimed_at`
+const mailCols = `id, event_id, ticket_id, kind, event_day_id, manual, created_at, next_attempt_at, attempts, claimed_at`
 
 func scanMail(row pgx.Row) (Mail, error) {
 	var m Mail
 	var claimed *time.Time
-	err := row.Scan(&m.ID, &m.EventID, &m.TicketID, &m.EventDayID, &m.Manual, &m.CreatedAt, &m.NextAttemptAt, &m.Attempts, &claimed)
+	err := row.Scan(&m.ID, &m.EventID, &m.TicketID, &m.Kind, &m.EventDayID, &m.Manual, &m.CreatedAt, &m.NextAttemptAt, &m.Attempts, &claimed)
 	if claimed != nil {
 		m.ClaimedAt = *claimed
 	}
 	return m, err
 }
 
-// Siblings are the other open mails of the claimed one's Event, day and
-// kind (scheduled or manual), not held by another pass: the mails one
+// Siblings are the other open mails of the claimed one's Event, day, kind
+// (request or reminder) and trigger (scheduled or manual), not held by
+// another pass: the mails one
 // address may share (decision of 2026-10-20: a person with a member and a
 // guest Ticket gets one mail a day).
 func (s *PostgresStore) Siblings(ctx context.Context, claimed Mail, now time.Time) ([]Mail, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+mailCols+` FROM feedback_mails
 		WHERE done_at IS NULL AND id <> $1 AND event_id = $2 AND event_day_id IS NOT DISTINCT FROM $3 AND manual = $4
-		  AND (claimed_at IS NULL OR next_attempt_at <= $5)
-		ORDER BY created_at, id`, claimed.ID, claimed.EventID, claimed.EventDayID, claimed.Manual, now)
+		  AND kind = $6 AND (claimed_at IS NULL OR next_attempt_at <= $5)
+		ORDER BY created_at, id`, claimed.ID, claimed.EventID, claimed.EventDayID, claimed.Manual, now, claimed.Kind)
 	if err != nil {
 		return nil, err
 	}
@@ -437,9 +446,11 @@ func (s *PostgresStore) RenewMail(ctx context.Context, claimed Mail, until time.
 	return err
 }
 
-// FinishMail marks the claimed mail done (sent, or no longer to be sent).
-func (s *PostgresStore) FinishMail(ctx context.Context, claimed Mail, at time.Time) error {
-	_, err := s.pool.Exec(ctx, `UPDATE feedback_mails SET done_at = $3, claimed_at = NULL WHERE id = $1 AND claimed_at = $2`, claimed.ID, claimed.ClaimedAt, at)
+// FinishMail marks the claimed mail done: sent (SkyMail took it; a request
+// sent gets its reminder), or no longer to be sent.
+func (s *PostgresStore) FinishMail(ctx context.Context, claimed Mail, at time.Time, sent bool) error {
+	_, err := s.pool.Exec(ctx, `UPDATE feedback_mails SET done_at = $3, sent = $4, claimed_at = NULL WHERE id = $1 AND claimed_at = $2`,
+		claimed.ID, claimed.ClaimedAt, at, sent)
 	return err
 }
 
