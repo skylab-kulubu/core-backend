@@ -55,8 +55,8 @@ type Deps struct {
 	// FeedbackSender sends a feedback form at once ("Şimdi gönder"); nil
 	// leaves its two routes out.
 	FeedbackSender handlers.FeedbackSender
-	// FeedbackReminders cancels the reminders of a closed feedback form;
-	// nil leaves its three routes out.
+	// FeedbackReminders cancels the reminders of a feedback form the panel
+	// closed; nil leaves its two routes out.
 	FeedbackReminders      handlers.FeedbackReminders
 	Media                  media.Service
 	URLs                   shorturl.Service
@@ -563,9 +563,6 @@ func New(deps Deps) *fiber.App {
 			feedbackH.RemindWith(deps.FeedbackReminders)
 			app.Post("/v1/events/:id/feedback/close", feedbackH.CloseEvent)
 			app.Post("/v1/sessions/:id/feedback/close", feedbackH.CloseSession)
-			// The forms service tells core a form opened or closed
-			// (docs/event-feedback.md "Reminder").
-			app.Put("/v1/forms/:formId/state", feedbackH.FormState)
 		}
 	}
 	app.Post("/v1/events/:id/images", events.AddImages)

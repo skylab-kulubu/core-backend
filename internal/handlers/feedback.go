@@ -23,11 +23,10 @@ type FeedbackSender interface {
 	SendNow(ctx context.Context, t feedback.Target, now time.Time) (sent bool, recipients int, err error)
 }
 
-// FeedbackReminders cancels the feedback reminders of a closed form (ticket
-// 07; feedback.PostgresStore).
+// FeedbackReminders cancels the feedback reminders of a form the panel
+// closed (ticket 07; feedback.PostgresStore).
 type FeedbackReminders interface {
 	CancelReminders(ctx context.Context, t feedback.Target, at time.Time) (int, error)
-	ReportFormState(ctx context.Context, formID uuid.UUID, open bool, closesAt *time.Time, now time.Time) (int, error)
 }
 
 // FeedbackHandler answers an Event's feedback counts (etkinlik geri bildirim
@@ -87,46 +86,6 @@ func (h *FeedbackHandler) close(c fiber.Ctx, p authz.Principal, ev event.Event, 
 		return err
 	}
 	return c.JSON(fiber.Map{"cancelled": n})
-}
-
-type formStateBody struct {
-	Open     *bool      `json:"open"`
-	ClosesAt *time.Time `json:"closesAt"`
-}
-
-// FormState is PUT /v1/forms/{formId}/state: the forms service tells core
-// that a form opened or closed (decision S3). {"open": false} closed it now;
-// {"open": true, "closesAt": t} closes it at t (an RFC 3339 time with its
-// zone); {"open": true, "closesAt": null} has it open with no closing time.
-// For a feedback form, the reminders of its invites still to go are
-// cancelled for good from its closing time on; any other form's state is
-// not kept. Only the forms service's account with ticket:forms may, as it
-// reports answers: whoever else is refused before the request is read.
-// 204 in every case it may.
-func (h *FeedbackHandler) FormState(c fiber.Ctx) error {
-	p, err := caller(c)
-	if err != nil {
-		return eventError(c, err)
-	}
-	if !h.authz.Allow(p, authz.Resource{Type: authz.TypeFormResponse}, authz.Create) {
-		return eventError(c, event.ErrForbidden)
-	}
-	formID, err := uuid.Parse(c.Params("formId"))
-	if err != nil || formID == uuid.Nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
-	}
-	var body formStateBody
-	if err := c.Bind().Body(&body); err != nil || body.Open == nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
-	}
-	closesAt := body.ClosesAt
-	if !*body.Open {
-		closesAt = nil
-	}
-	if _, err := h.reminders.ReportFormState(c.Context(), formID, *body.Open, closesAt, time.Now().UTC()); err != nil {
-		return err
-	}
-	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // SendWith gives the handler its "Şimdi gönder".

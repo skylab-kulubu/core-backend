@@ -131,14 +131,17 @@ func (s *PostgresStore) CancelReminders(ctx context.Context, t Target, at time.T
 	return int(tag.RowsAffected()), err
 }
 
-// ReportFormState takes the forms service's word that a form opened or
-// closed: closed (open false) now; open, closing at closesAt; or open with
-// no closing time. Only a feedback form's state is kept: a current Event's
-// or Session's feedback form, or a form invites went out for. From its
-// closing time on, its invites' reminders are cancelled for good (at once
-// when that time has come, else by the next PlanReminders after it). An
-// open form with no closing time deletes its closing; a reminder cancelled
-// already stays cancelled. Answers how many reminders it cancelled now.
+// ReportFormState takes Forms' word that a form opened or closed: closed
+// (open false; a deleted form too) now; open, closing at closesAt; or open
+// with no closing time. The word comes as the forms.form.updated event
+// (ADR 0071; core's core.forms consumer, RabbitMQ ticket R13, calls this),
+// not as a call from Forms. Only a feedback form's state is kept: a current
+// Event's or Session's feedback form, or a form invites went out for. From
+// its closing time on, its invites' reminders are cancelled for good (at
+// once when that time has come, else by the next PlanReminders after it).
+// An open form with no closing time deletes its closing; a reminder
+// cancelled already stays cancelled. Answers how many reminders it
+// cancelled now. The event's version order is the consumer's to keep.
 func (s *PostgresStore) ReportFormState(ctx context.Context, formID uuid.UUID, open bool, closesAt *time.Time, now time.Time) (int, error) {
 	if formID == uuid.Nil {
 		return 0, ErrInvalid

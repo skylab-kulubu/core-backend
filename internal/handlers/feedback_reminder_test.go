@@ -16,23 +16,11 @@ import (
 // reminders records what the handler asked.
 type reminders struct {
 	cancelled []feedback.Target
-	states    []formState
-}
-
-type formState struct {
-	form     uuid.UUID
-	open     bool
-	closesAt *time.Time
 }
 
 func (r *reminders) CancelReminders(_ context.Context, t feedback.Target, _ time.Time) (int, error) {
 	r.cancelled = append(r.cancelled, t)
 	return 2, nil
-}
-
-func (r *reminders) ReportFormState(_ context.Context, form uuid.UUID, open bool, closesAt *time.Time, _ time.Time) (int, error) {
-	r.states = append(r.states, formState{form, open, closesAt})
-	return 0, nil
 }
 
 var reminderForms = authn.Identity{ID: uuid.New(), Client: "forms", ServiceAccount: true, Product: authz.ProductForms, Roles: []string{"ticket:forms"}}
@@ -49,7 +37,6 @@ func reminderApp(e *draftEnv, rem *reminders, ident authn.Identity) *fiber.App {
 	})
 	a.Post("/v1/events/:id/feedback/close", h.CloseEvent)
 	a.Post("/v1/sessions/:id/feedback/close", h.CloseSession)
-	a.Put("/v1/forms/:formId/state", h.FormState)
 	return a
 }
 
@@ -86,45 +73,5 @@ func TestFeedbackCloseEndpoints(t *testing.T) {
 	}
 	if got := draftCall(t, reminderApp(e, rem, draftOtherLeader), fiber.MethodPost, "/v1/events/"+e.draft.ID.String()+"/feedback/close", ""); got.status != fiber.StatusNotFound {
 		t.Fatalf("another team's draft %d", got.status)
-	}
-}
-
-// The forms service's report (ticket 07, S3): only it may; open is
-// required, closesAt an RFC 3339 time with its zone or null; a closed form
-// takes no closing time.
-func TestFeedbackFormStateEndpoint(t *testing.T) {
-	t.Parallel()
-	e := newDraftEnv(t)
-	rem := &reminders{}
-	form := uuid.New()
-	path := "/v1/forms/" + form.String() + "/state"
-	for _, tc := range []struct {
-		name   string
-		ident  authn.Identity
-		body   string
-		status int
-	}{
-		{"signed out", draftAnon, `{"open":false}`, fiber.StatusUnauthorized},
-		{"an editor", draftEditor, `{"open":false}`, fiber.StatusForbidden},
-		{"DK", draftDK, `{"open":false}`, fiber.StatusForbidden},
-		{"an editor, malformed", draftEditor, `{`, fiber.StatusForbidden},
-		{"no open", reminderForms, `{"closesAt":null}`, fiber.StatusBadRequest},
-		{"a time without a zone", reminderForms, `{"open":true,"closesAt":"2026-11-10T18:00:00"}`, fiber.StatusBadRequest},
-		{"closed", reminderForms, `{"open":false,"closesAt":"2026-11-10T18:00:00Z"}`, fiber.StatusNoContent},
-		{"closing", reminderForms, `{"open":true,"closesAt":"2026-11-10T21:00:00+03:00"}`, fiber.StatusNoContent},
-		{"open", reminderForms, `{"open":true,"closesAt":null}`, fiber.StatusNoContent},
-	} {
-		if got := draftCall(t, reminderApp(e, rem, tc.ident), fiber.MethodPut, path, tc.body); got.status != tc.status {
-			t.Errorf("%s: %d %s", tc.name, got.status, got.raw)
-		}
-	}
-	if got := draftCall(t, reminderApp(e, rem, reminderForms), fiber.MethodPut, "/v1/forms/x/state", `{"open":false}`); got.status != fiber.StatusBadRequest {
-		t.Errorf("not a form id: %d", got.status)
-	}
-	closing := time.Date(2026, 11, 10, 18, 0, 0, 0, time.UTC)
-	if len(rem.states) != 3 || rem.states[0] != (formState{form, false, nil}) ||
-		rem.states[1].form != form || !rem.states[1].open || rem.states[1].closesAt == nil || !rem.states[1].closesAt.Equal(closing) ||
-		rem.states[2] != (formState{form, true, nil}) {
-		t.Fatalf("states %+v", rem.states)
 	}
 }
