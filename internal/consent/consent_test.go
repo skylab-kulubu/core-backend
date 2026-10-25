@@ -153,9 +153,10 @@ func TestTheInvitationsAndThePromotionalPurposesAreEnabled(t *testing.T) {
 		t.Fatalf("recruitment pool text %q", v)
 	}
 	// davet-v2 widens the invitations to the Club's announcements; a grant
-	// that names no version is recorded on it, and one on davet-v1 is still
-	// taken.
-	if v, _ := CurrentText(PurposeEventInvitations); v != "davet-v2" || !KnownText(PurposeEventInvitations, "davet-v1") {
+	// that names no version is recorded on it. davet-v1 is not in the
+	// published Açık Rıza Metni, so a new grant cannot name it; its box text
+	// stays for a grant stored on it.
+	if v, _ := CurrentText(PurposeEventInvitations); v != "davet-v2" || KnownText(PurposeEventInvitations, "davet-v1") || Text("davet-v1") == "" {
 		t.Fatalf("invitations text %q", v)
 	}
 	if v, _ := CurrentText(PurposePromotional); v != "tanitim-v1" || KnownText(PurposePromotional, "davet-v2") {
