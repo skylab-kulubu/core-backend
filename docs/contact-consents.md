@@ -34,7 +34,7 @@ and the proof.
 |---|---|
 | `pending` | recorded for an address nobody has shown to be the person's; waits for the person to confirm it from the link core mails (double opt-in). In no audience |
 | `active` | confirmed: the person may be contacted for the purpose |
-| `withdrawn` | the person withdrew it (a link, their account, or the product on their word) |
+| `withdrawn` | the person withdrew it (a link, their account, the product on their word, or staff on their mail) |
 | `expired` | the renewal question went unanswered |
 | `superseded` | a pending grant that a verified grant for the same address replaced (below) |
 
@@ -102,6 +102,26 @@ for a link from an old invitation too, whose address grant has since ended
 and kept only its HMAC. One click ends the mails, whichever grant a mail was
 sent on.
 
+**A person, not a row (withdraw links).** A person holds one grant of a
+purpose, even when two rows record it: their account's own and one a product
+recorded for another of their addresses, such as the Personal e-mail that
+only Keycloak holds. A withdraw link therefore ends all of them:
+
+- the link of an account's own grant ends it and every grant given for one
+  of the account's addresses, Keycloak's Primary, School and Personal e-mail
+  with core's row (as their own list reads them);
+- the link of a grant given for an address ends every grant given for that
+  address and the own grant of every account holding it (core's `email` or
+  `school_email`, or Keycloak's Personal e-mail,
+  `GET /users?q=personalEmail:…`). A grant for another address of that
+  account mails another mailbox and is left to its own link. An ended
+  address grant keeps only its HMAC, so its link then reaches accounts by
+  core's row alone.
+
+Keycloak unreachable never stops a withdrawal: the link ends what core
+reaches without it (the grant's own subject and core's row) and logs the
+rest without an address; the person's account (below) reaches the others.
+
 **Evidence.** Purpose, channel (`email`), the text version the person was
 shown, the source app (`guest_apply`, `forms`, `place`, `guessr`, `self`,
 `signup`), the
@@ -109,7 +129,7 @@ Keycloak client of the app (`client_id`), the Event it was given on (Guest
 apply), how the address was shown to be the person's (`confirmed_via`:
 `account`, `service`, `link`), and the times: granted, confirmed, renewed,
 renewal asked, ended, with the end's reason and way (`ended_via`: `link`,
-`one_click`, `self`, `service`, `renewal_unanswered`). No IP address, user
+`one_click`, `self`, `service`, `renewal_unanswered`, `staff`). No IP address, user
 agent or name is kept.
 
 **Texts.** A grant names the text version it was given on. Core accepts only
@@ -144,11 +164,35 @@ account with that address the grant is the account's, as the mailbox rule
 above says: their own list shows it, `lookup` counts it, and withdrawing
 from their account, a promotional mail's withdraw link or the product ends
 it. The row is not rewritten to the account: it stays the proof of what the
-form recorded. Core has no staff route for a withdrawal asked by mail to
-info@yildizskylab.com: it goes through `POST /v1/consents/withdrawals`, which
-needs a service account of `CONTACT_CONSENT_SERVICE_CLIENTS` holding
-`consent:record`. An ended grant is kept 3 years as proof (`consent_proof`),
-then deleted.
+form recorded. A box ticked all the same (the person's Personal e-mail in a
+form, which `lookup` does not see; the signup screen after a form grant)
+records a second row; any withdrawal still ends both. A withdrawal asked by
+mail to info@yildizskylab.com is staff's ("Withdrawal by mail", below). An
+ended grant is kept 3 years as proof (`consent_proof`), then deleted.
+
+**Withdrawal by mail (aydınlatma s6 §6).** Every consent may also be
+withdrawn by writing to info@yildizskylab.com. Staff carry it out on the
+server, inside the core container, with the address on standard input so
+that it is in no argument, process list, shell history or log:
+
+```
+printf '%s\n' "$address" | docker exec -i <core> ./core-backend consent-withdraw -purpose promotional,event_invitations
+```
+
+sky_lab_genel `ops/wizards/kvkk-riza-geri-alma-wizard.sh` runs it from the
+Mac (the address typed hidden, sent over SSH's standard input). It ends, for
+the purposes named, every open grant of the person holding the address: the
+grants given for the address, and the own grant of every account holding it
+(core's row, or Keycloak's Personal e-mail) with the grants for every other
+address of that account, which a withdraw link leaves to their own links. Unlike a link it
+reads every address first: Keycloak unreachable ends nothing and exits 1, to
+be run again. Each grant it ends says so (`ended_via` `staff`); that row,
+kept as proof like any ended grant, is the record of the request. The
+command prints the time and how many grants ended per purpose, never the
+address; running it again ends none. Exit codes: `0` done, `1` core or
+Keycloak failed (run it again; what ended stays ended), `2` usage or
+configuration, `3` consents off (`CONTACT_CONSENT_KEY` unset: none is
+recorded).
 
 ## Lifecycle
 
@@ -199,7 +243,7 @@ HMAC-signed grant id (no address, no person) that only core can read.
 
 | Link | Path | Does | Expires |
 |---|---|---|---|
-| withdraw | `/v1/consents/withdraw?token=…` | ends every open grant of the link's purpose that mails the same address | never |
+| withdraw | `/v1/consents/withdraw?token=…` | ends every open grant of the link's purpose of the person the grant mails (above) | never |
 | confirm | `/v1/consents/confirm?token=…` | confirms a pending grant, renews an active one; does nothing for an ended one | 30 days (confirmation), 90 days (renewal) |
 
 `GET` shows a page with one button and changes nothing, so a mail scanner that

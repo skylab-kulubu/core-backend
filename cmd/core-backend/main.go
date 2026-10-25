@@ -94,6 +94,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == groupCountReportCommandName {
 		os.Exit(runGroupCountReport(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == consentWithdrawCommandName {
+		os.Exit(runConsentWithdraw(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == retentionSweepCommandName {
 		os.Exit(runRetentionSweep(os.Args[2:], os.Getenv, os.Stdout))
 	}
@@ -634,6 +637,11 @@ func main() {
 		// holds for them (Personal e-mail included), as erasure reads them
 		// but without erasure's limit of three.
 		consents.SetAddresses(account.NewPersonAddresses(identity.NewAccountIdentity(dir), users))
+		// A withdrawal by address (a mail's link) also reaches the member
+		// whose Personal e-mail it is: one grant per person (s6 §5.8).
+		if holders, ok := dir.(consent.PersonalEmailHolders); ok {
+			consents.SetPersonalEmailHolders(holders)
+		}
 	}
 	if consentConfig.Enabled {
 		log.Printf("contact consents: on (links at %s, service clients %v, verified-address clients %v)",

@@ -33,7 +33,9 @@ type Store interface {
 	Upsert(ctx context.Context, u User) (User, bool, error)
 	// UpdateProfile writes the editable profile. For a YTÜ-linked person it
 	// keeps the stored university, faculty and department whatever u holds;
-	// only SetYTUProfile writes those.
+	// only SetYTUProfile writes those. It never writes the card UID: only
+	// SetStudentCardUID and anonymization do, so a profile write that read
+	// the row before a card removal cannot bring the card back.
 	UpdateProfile(ctx context.Context, u User) (User, error)
 	// SetYTUProfile stores what the YTÜ Microsoft login says and marks the
 	// person YTÜ-linked. It refuses an account that is not active.
