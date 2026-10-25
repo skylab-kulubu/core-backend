@@ -243,7 +243,7 @@ func TestConsentServiceRoutesNeedTheirRoleAndTheWithdrawLinkIsOneClick(t *testin
 		}
 	}
 	got := sendJSON(t, env.app, record, fiber.MethodPost, "/v1/consents",
-		`{"purpose":"event_invitations","textVersion":"davet-v1","email":"a@example.com","emailVerified":true}`)
+		`{"purpose":"event_invitations","textVersion":"davet-v2","email":"a@example.com","emailVerified":true}`)
 	if got.status != fiber.StatusCreated || got.body["status"] != "active" {
 		t.Fatalf("record %d %v", got.status, got.body)
 	}
