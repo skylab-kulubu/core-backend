@@ -20,6 +20,8 @@ type authorizer struct {
 	policy  Policy
 	mode    RoleMode
 	metrics *RoleMetrics
+	// teams is where Owner teams sit (WithTeamTree), nil without it.
+	teams TeamTree
 }
 
 // Option configures an Authorizer.
@@ -636,9 +638,11 @@ func (a *authorizer) privilegedGroup(p Principal, read bool) string {
 
 // ownerLevels are p's levels in the Owner team owner, by whole path
 // segments: a member is in a Group one of whose segments is owner, a Leader
-// in a leader subgroup that is the last segment, right under owner. Paths
-// under a Privileged root name no Owner team: such a member is Privileged,
-// which the decisions read first, or in the roles mode holds roles.
+// in a leader subgroup that is the last segment, right under owner. With
+// the Team tree and delegation on, a Leader of a Team above owner is its
+// Leader too (ADR-0065 decision 2), not its member. Paths under a Privileged
+// root name no Owner team: such a member is Privileged, which the decisions
+// read first, or in the roles mode holds roles.
 func (a *authorizer) ownerLevels(p Principal, owner string) []Level {
 	if owner == "" {
 		return nil
@@ -659,6 +663,10 @@ func (a *authorizer) ownerLevels(p Principal, owner string) []Level {
 				leader = true
 			}
 		}
+	}
+
+	if !leader && a.inheritsFromAbove(p, owner) {
+		leader = true
 	}
 
 	out := make([]Level, 0, 2)
