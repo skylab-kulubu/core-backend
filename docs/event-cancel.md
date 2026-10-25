@@ -16,7 +16,7 @@ Body (optional, both fields too): `{"reason": "Hava koşulları nedeniyle", "not
 | a draft | `409`, `code: "event_not_published"` (a draft is deleted, not cancelled); `404` to who may not see it |
 | ended | `409`, `code: "event_ended"`: cancelling it would blur its certificate history |
 
-Who: whoever may edit the Event (`authz.Update`); DK and anyone else `403`. The write is one `UPDATE … WHERE status = 'published'` and not ended; a cancellation racing a change is decided again on what the Event is now. It writes the legacy `events.active` column `false`, so a release rolled back to hides the cancelled Event.
+Who: whoever may edit the Event (`authz.Update`); DK and anyone else `403`. The write is one `UPDATE … WHERE status = 'published'` and not ended; a cancellation racing a change is decided again on what the Event is now.
 
 ## What a cancelled Event does
 
@@ -46,7 +46,7 @@ Undoes the cancellation, always (ADR 0066 addendum 2026-10-19, decision 2; ticke
 | published | `200`, the Event as it is |
 | a draft | `409`, `code: "event_not_cancelled"`; `404` to who may not see it |
 
-Who: whoever may edit the Event (`authz.Update`); DK and anyone else `403`. One `UPDATE … WHERE status = 'cancelled'`: `cancelledAt`, the actor and `cancelReason` are cleared (an old client does not show a reason on a published Event), `publishedAt` stays, the legacy `events.active` column gets the derived value. In the same transaction the Competitions the cancellation cancelled go back to their earlier status; one cancelled on its own stays cancelled.
+Who: whoever may edit the Event (`authz.Update`); DK and anyone else `403`. One `UPDATE … WHERE status = 'cancelled'`: `cancelledAt`, the actor and `cancelReason` are cleared (an old client does not show a reason on a published Event), `publishedAt` stays. In the same transaction the Competitions the cancellation cancelled go back to their earlier status; one cancelled on its own stays cancelled.
 
 Nothing else is written: since the cancellation deleted and closed nothing, registration, check-in and certificates work as before it, and the held certificate jobs are taken by the worker again by themselves.
 
