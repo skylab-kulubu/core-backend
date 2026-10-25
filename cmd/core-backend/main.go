@@ -938,11 +938,20 @@ func main() {
 	}
 	retentionMetrics, retentionStopped := startRetentionSweep(workers, pool, retentionConfig)
 	worker("retention sweep", retentionStopped)
-	var wakeUserSync func()
+	// core.keycloak's events (docs/integration-events.md): they wake the
+	// user sync, and with Keycloak they remove a person deleted outside the
+	// erasure saga and wake the deleted teams cleanup.
+	keycloakEventHandling := &keycloakHandling{realm: keycloakRoutingRealm(realm), logf: log.Printf}
 	if userSync != nil {
-		wakeUserSync = userSync.Wake
+		keycloakEventHandling.wakeUserSync = userSync.Wake
 	}
-	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, wakeUserSync)
+	if keycloakConfigured {
+		keycloakEventHandling.people = dir
+		keycloakEventHandling.requested = erasureRequested
+		keycloakEventHandling.erase = commpref.EraseSubjectIn
+		keycloakEventHandling.wakeTeams = communicationPreferences.WakeTeamCleanup
+	}
+	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling)
 	worker("integration events", eventsStopped)
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)

@@ -3,8 +3,10 @@ package commpref
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -506,4 +508,102 @@ func must[T any](v T, err error) T {
 		panic(err)
 	}
 	return v
+}
+
+// countedGroups counts the Group list reads (one per run of the deleted
+// teams part) and when each came.
+type countedGroups struct {
+	Directory
+	mu    sync.Mutex
+	reads []time.Time
+}
+
+func (c *countedGroups) ListGroups(ctx context.Context) ([]identity.Group, error) {
+	c.mu.Lock()
+	c.reads = append(c.reads, time.Now())
+	c.mu.Unlock()
+	return c.Directory.ListGroups(ctx)
+}
+
+func (c *countedGroups) runs() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.reads)
+}
+
+func waitRuns(t *testing.T, c *countedGroups, n int) []time.Time {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if runs := c.runs(); len(runs) >= n {
+			return runs
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("%d runs, want %d", len(c.runs()), n)
+	return nil
+}
+
+// A wake runs the deleted teams part soon, outside the interval: wakes that
+// come before it runs make one run, and a run comes no sooner than the gap
+// after the last.
+func TestWakeTeamCleanup(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	other := uuid.New()
+	gone := func() {
+		t.Helper()
+		if err := f.store.Apply(ctx, other, []Change{set(Team("g-gone", KindNews), true)}, SourceAccountCenter, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gone()
+	groups := &countedGroups{Directory: f.dir}
+	svc := NewService(f.svc.Config(), f.store, groups, authz.DefaultPrivilegedRoots())
+	const gap = 150 * time.Millisecond
+	svc.SetTeamCleanupGap(gap)
+	var mu sync.Mutex
+	var reports []string
+	done := MaintainCleanup(ctx, svc, time.Hour, func(what string, removed int64, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		reports = append(reports, fmt.Sprintf("%s %d %v", what, removed, err))
+	})
+	defer func() {
+		cancel()
+		<-done
+	}()
+	first := waitRuns(t, groups, 1)[0]
+
+	// A Group is deleted in Keycloak: two events, one run, the gap after
+	// the first.
+	gone()
+	svc.WakeTeamCleanup()
+	svc.WakeTeamCleanup()
+	second := waitRuns(t, groups, 2)[1]
+	if second.Sub(first) < gap {
+		t.Fatalf("second run %v after the first, want at least %v", second.Sub(first), gap)
+	}
+	time.Sleep(3 * gap)
+	if runs := groups.runs(); len(runs) != 2 {
+		t.Fatalf("%d runs, want 2 (the wakes make one)", len(runs))
+	}
+	if rows := must(f.store.List(ctx, other)); len(rows) != 0 {
+		t.Fatalf("the deleted team's rows stay: %v", rows)
+	}
+	mu.Lock()
+	if !slices.Equal(reports, []string{"deleted teams 1 <nil>", "deleted teams 1 <nil>"}) {
+		t.Fatalf("reports = %v", reports)
+	}
+	mu.Unlock()
+}
+
+// A wake never blocks: without a running cleanup, or on a nil service.
+func TestWakeTeamCleanupNeverBlocks(t *testing.T) {
+	f := newFixture(t)
+	for range 3 {
+		f.svc.WakeTeamCleanup()
+	}
+	var none *Service
+	none.WakeTeamCleanup()
 }

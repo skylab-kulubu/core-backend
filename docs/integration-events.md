@@ -123,13 +123,15 @@ Go runtime error keeps its text), e-mail and IPv4 addresses as `[e-mail]` and
 DLQ messages are put back by an ops command (hub ticket R06); nothing does it
 automatically.
 
-## `core.keycloak`: Keycloak's events wake the user sync
+## `core.keycloak`: Keycloak's events
 
 Keycloak's RabbitMQ provider (keycloak-to-rabbitmq, on `keycloak.events`)
 publishes Keycloak's own event JSON, not CloudEvents (ADR-0071 §5). Ops binds
 `core.keycloak` to the `e-skylab` realm's successful `REGISTER`,
-`UPDATE_EMAIL`, `UPDATE_PROFILE` and `DELETE_ACCOUNT` user events and to every
-admin event on a `USER`.
+`UPDATE_EMAIL`, `UPDATE_PROFILE` and `DELETE_ACCOUNT` user events, to every
+admin event on a `USER`, and to the admin `GROUP DELETE`
+(`KK.EVENT.ADMIN.e-skylab.SUCCESS.GROUP.DELETE`; the provider publishes no
+other `GROUP` event).
 
 Its decoder (`events.DecodeKeycloak`) reads:
 
@@ -141,6 +143,11 @@ Its decoder (`events.DecodeKeycloak`) reads:
 - the type as `keycloak.register`, `keycloak.admin.user.update`;
 - `realmId`, `clientId`, `userId`, whether Keycloak sent an `error`, and
   `time` when it is Keycloak's milliseconds;
+- an admin event's `resourcePath` when it is `users/<id>` or `groups/<id>`
+  (any other path is left out; the event is still read);
+- the realm's name from the routing key's fourth word
+  (`KK.EVENT.ADMIN.<realm>.…`, `KK.EVENT.CLIENT.<realm>.…`): `realmId` is
+  Keycloak's internal id of the realm, which core does not know;
 - the AMQP content type absent or `application/json`, the body at most
   64 KiB.
 
@@ -149,17 +156,43 @@ change's old and new address), the session, an admin event's representation
 and auth details are dropped when the provider still sends them, and fields
 it does not know are ignored.
 
-The handler does one thing: it wakes the user sync
-([user-sync.md](user-sync.md)), which reads Keycloak and brings core's row in
-line, a pass at most every 30 seconds. The event writes nothing itself, so the
-order of events does not matter, and an event that was lost (Keycloak
-publishes after its commit, without an outbox) is caught by the next
-`USER_SYNC_INTERVAL` pass. A `DELETE_ACCOUNT` (deletion from Keycloak's
-account console, off in our realm) is logged as a warning,
-`keycloak_account_deleted_by_user` with the event id. Another event (a
-sign-in, an admin's `ACTION` e-mail, a failed event) is acked unrecorded;
-with the user sync off (`USER_SYNC_ENABLED=false` or no Keycloak) every event
-is, and the startup log says so.
+An event only wakes something: what changes is decided on a fresh read of
+Keycloak, the order of events does not matter, and an event that was lost
+(Keycloak publishes after its commit, without an outbox; ADR-0071 sapma 4) is
+caught by the periodic passes, which stay. The handler:
+
+- **Wakes the user sync** ([user-sync.md](user-sync.md)) on the user events
+  above and an admin's `USER` `CREATE`, `UPDATE` or `DELETE`: it reads
+  Keycloak and brings core's row in line, a pass at most every 30 seconds;
+  the `USER_SYNC_INTERVAL` pass catches the rest.
+- **Removes a person deleted outside the erasure saga.** On an admin's
+  `USER DELETE` (the person from `resourcePath`) or a `DELETE_ACCOUNT` (from
+  `userId`): when core has an erasure request for the person
+  (`account_deletion_requests`, any state), it is the saga's and nothing else
+  is done. Otherwise core reads the person from Keycloak: still there, nothing
+  is deleted; "not found", their communication preferences go in the event's
+  transaction (the same rows as the saga's `erase_communication_preferences`
+  step and the daily deleted people cleanup), with the warning
+  `keycloak_user_deleted_outside_erasure` (the event id and the person's id,
+  no address) and a count: a deletion from the Keycloak console skips the
+  saga, and should be seen. Any other Keycloak error is transient (tried
+  again, then the DLQ).
+- **Wakes the deleted teams cleanup** on a `GROUP DELETE`
+  ([communication-preferences.md](communication-preferences.md)): it reads
+  the whole Group list, so a deleted Group's sub-Groups, which get no event,
+  go too; events within 30 seconds make one run, and the handler does not
+  wait for it. Core's in-process Group caches are not emptied: the event
+  reaches one replica of competing consumers, and the caches refresh within a
+  minute. What else a deleted Group leaves in core is in
+  [group-deletion.md](group-deletion.md#what-a-deletion-leaves-in-core).
+
+A `DELETE_ACCOUNT` (deletion from Keycloak's account console, off in our
+realm) is also logged as a warning, `keycloak_account_deleted_by_user` with
+the event id. An event of another realm, a failed event and any other event
+(a sign-in, an admin's `ACTION` e-mail, a `GROUP` `UPDATE`) are acked
+unrecorded. So is an event whose part is off: the user sync's with
+`USER_SYNC_ENABLED=false`, the deletions' without Keycloak. The startup log
+says which parts are on.
 
 ## `consumed_events`
 
@@ -186,7 +219,8 @@ and id, and the error, never the event's data or the password:
 `events_connected`, `events_connect_failed`, `events_connection_lost`,
 `events_consuming`, `events_channel_closed`, `events_retry`,
 `events_dead_lettered`, `events_settle_failed`,
-`events_record_cleanup_failed`, `keycloak_account_deleted_by_user`.
+`events_record_cleanup_failed`, `keycloak_account_deleted_by_user`,
+`keycloak_user_deleted_outside_erasure`.
 
 `/v1/metrics` (internal):
 
@@ -198,6 +232,7 @@ and id, and the error, never the event's data or the password:
 - `skylab_events_redelivered_total{queue}`, `skylab_events_retries_total{queue}`
 - `skylab_events_dlq_total{queue,reason="invalid_envelope|permanent|retries_exhausted|handler_panic"}`
 - `skylab_events_records_deleted_total`, `skylab_events_record_cleanup_failures_total`
+- `skylab_keycloak_users_deleted_outside_erasure_total` (with the consumer on)
 
 ## Tests
 

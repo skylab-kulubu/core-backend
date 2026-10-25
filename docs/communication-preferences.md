@@ -117,7 +117,14 @@ preferences are on or off, and a repeat finds nothing.
 every Group id Keycloak no longer has. A Group list without `/UYELER`
 deletes nothing. Core’s [empty-leaf Group deletion](group-deletion.md) also
 leaves preference cleanup to this job; the tree stops offering a deleted Group
-within its existing one-minute cache lifetime.
+within its existing one-minute cache lifetime. With Integration events on
+(`EVENTS_ENABLED=true`), Keycloak's admin `GROUP DELETE` on `core.keycloak`
+wakes this part of the job at once
+([integration-events.md](integration-events.md#corekeycloak-keycloaks-events)):
+it reads the whole Group list as the daily run does, so a deleted Group's
+sub-Groups, which get no event of their own, go too. Events that come before
+the run make one run, and two such runs are at least 30 seconds apart. The
+daily run stays.
 
 **Deleted people (D2).** In the same daily run, core asks Keycloak for
 every person who has rows and deletes the rows of those Keycloak answers
@@ -126,7 +133,13 @@ the erasure saga, keeps no preference. Any other Keycloak error stops the
 run with nothing deleted, and so does a run that finds more than a quarter
 of the people (and more than five) gone, which a deletion outside the saga
 does not explain (Keycloak answering for another realm, say). It is one
-Keycloak read per person with rows, once a day.
+Keycloak read per person with rows, once a day. With Integration events on,
+Keycloak's admin `USER DELETE` and account-console `DELETE_ACCOUNT` remove a
+person's rows within seconds instead: when core has no erasure request for
+the person (that is the saga's, which deletes them in its own step) and
+Keycloak answers "not found" for them, the rows (choices, a waiting tracking
+withdrawal, the tracking audit trail) go in the event's transaction, with the
+warning `keycloak_user_deleted_outside_erasure`. The daily run stays.
 
 ## API
 

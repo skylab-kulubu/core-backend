@@ -31,6 +31,8 @@ type Message struct {
 	Type        string
 	AppID       string
 	Headers     map[string]any
+	// RoutingKey is the key it was published with.
+	RoutingKey string
 }
 
 // Event is one Integration event, decoded. Source and ID together name it

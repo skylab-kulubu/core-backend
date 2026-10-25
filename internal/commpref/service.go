@@ -49,6 +49,11 @@ type Service struct {
 	trackingMode TrackingMode
 	onWithdrawn  func()
 
+	// teamCleanupWake asks MaintainCleanup for a run of its deleted teams
+	// part; teamCleanupGap is the least time between two such runs.
+	teamCleanupWake chan struct{}
+	teamCleanupGap  time.Duration
+
 	treeMu   sync.Mutex
 	cached   *Tree
 	cachedAt time.Time
@@ -58,11 +63,16 @@ type Service struct {
 // NewService serves the preferences of store, reading the team tree from
 // dir; privilegedRoots hold no team.
 func NewService(config Config, store Store, dir Directory, privilegedRoots []string) *Service {
-	return &Service{config: config, store: store, dir: dir, roots: privilegedRoots, now: time.Now}
+	return &Service{config: config, store: store, dir: dir, roots: privilegedRoots, now: time.Now,
+		teamCleanupWake: make(chan struct{}, 1), teamCleanupGap: TeamCleanupGap}
 }
 
 // SetClock replaces the clock (tests).
 func (s *Service) SetClock(now func() time.Time) { s.now = now }
+
+// SetTeamCleanupGap replaces TeamCleanupGap (tests); call it before
+// MaintainCleanup.
+func (s *Service) SetTeamCleanupGap(gap time.Duration) { s.teamCleanupGap = gap }
 
 // Enabled reports whether KeyEnv is set.
 func (s *Service) Enabled() bool { return s != nil && s.config.Enabled }
@@ -644,26 +654,52 @@ func (s *Service) RemoveDeletedPeople(ctx context.Context) (int64, error) {
 // removed.
 const CleanupInterval = 24 * time.Hour
 
+// TeamCleanupGap is the least time between two runs of the deleted teams
+// part that a wake asks for.
+const TeamCleanupGap = 30 * time.Second
+
+// WakeTeamCleanup asks MaintainCleanup for a run of its deleted teams part
+// soon: Keycloak said a Group was deleted (an Integration event, ADR-0071).
+// The event only wakes it; the run reads the Group list from Keycloak as the
+// daily one does, so it also finds the deleted Group's sub-teams, which get
+// no event of their own. Wakes that come before the run make one run, and a
+// run comes no sooner than TeamCleanupGap after the last. It never blocks;
+// without a running MaintainCleanup, or on a nil Service, it does nothing.
+func (s *Service) WakeTeamCleanup() {
+	if s == nil || s.teamCleanupWake == nil {
+		return
+	}
+	select {
+	case s.teamCleanupWake <- struct{}{}:
+	default:
+	}
+}
+
 // MaintainCleanup removes the rows of deleted teams and of deleted people
-// now and then every interval until ctx ends. report hears of each part
-// ("deleted teams", "deleted people") that removed rows or failed. The
-// returned channel closes when it has stopped.
+// now and then every interval until ctx ends, and the rows of deleted teams
+// on a WakeTeamCleanup. report hears of each part ("deleted teams",
+// "deleted people") that removed rows or failed. The returned channel closes
+// when it has stopped.
 func MaintainCleanup(ctx context.Context, s *Service, interval time.Duration, report func(what string, removed int64, err error)) <-chan struct{} {
 	done := make(chan struct{})
-	run := func() {
-		for _, part := range []struct {
-			what string
-			run  func(context.Context) (int64, error)
-		}{{"deleted teams", s.RemoveDeletedTeams}, {"deleted people", s.RemoveDeletedPeople}} {
-			n, err := part.run(ctx)
-			if report != nil && (err != nil || n > 0) {
-				report(part.what, n, err)
-			}
+	var teamsRan time.Time
+	part := func(what string, run func(context.Context) (int64, error)) {
+		n, err := run(ctx)
+		if report != nil && (err != nil || n > 0) {
+			report(what, n, err)
 		}
+	}
+	teams := func() {
+		teamsRan = time.Now()
+		part("deleted teams", s.RemoveDeletedTeams)
+	}
+	all := func() {
+		teams()
+		part("deleted people", s.RemoveDeletedPeople)
 	}
 	go func() {
 		defer close(done)
-		run()
+		all()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -671,7 +707,21 @@ func MaintainCleanup(ctx context.Context, s *Service, interval time.Duration, re
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				run()
+				all()
+			case <-s.teamCleanupWake:
+				if wait := s.teamCleanupGap - time.Since(teamsRan); wait > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(wait):
+					}
+				}
+				// The wakes that came while it waited are this run's.
+				select {
+				case <-s.teamCleanupWake:
+				default:
+				}
+				teams()
 			}
 		}
 	}()
