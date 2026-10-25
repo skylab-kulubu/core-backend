@@ -66,6 +66,11 @@ Ticket insert ──(same statement)──▶ ticket_notifications ──▶ wor
 
 - Same key on every try: a retry after a lost answer is SkyMail's
   `Idempotent-Replayed`, never a second Notification.
+- A guest's mail has no key (`/v1/mail_tasks/single` reads none). When it
+  went out and no answer came (a timeout, a dropped connection), SkyMail may
+  have taken it, so it is **not** tried again: the row is done with, counted
+  as "unanswered". A send that never connected, or that SkyMail answered with
+  an error, is tried again as above.
 - `400` and `422` are permanent (the same body would be refused again): the
   row is done with, counted as refused. Anything else (SkyMail down, `401`,
   `403` before Keycloak gives core `skymail:notifications:send`, `409` before
@@ -78,7 +83,7 @@ Ticket insert ──(same statement)──▶ ticket_notifications ──▶ wor
 Each pass that did something logs one line of counts, never a person:
 
 ```text
-ticket notification: 3 sent, 1 dropped, 0 refused by SkyMail, 0 given up, 0 tried again later
+ticket notification: 3 sent, 1 dropped, 0 refused by SkyMail, 0 given up, 0 tried again later, 0 guest mails unanswered and not tried again
 ```
 
 ## Erasure

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -31,12 +32,19 @@ type Notification struct {
 }
 
 // NotificationRecipient is one person, by Keycloak subject. AllowedChannels
-// is what their preferences allow; a required type does not read it, so it
-// is left out there.
+// is what their preferences allow: nil leaves it out (a required type does
+// not read it), a pointer to an empty list sends [] (an optional type the
+// person allows no channel of; SkyMail refuses an optional type without the
+// field).
 type NotificationRecipient struct {
 	Sub             uuid.UUID `json:"sub"`
-	AllowedChannels []string  `json:"allowed_channels,omitempty"`
+	AllowedChannels *[]string `json:"allowed_channels,omitempty"`
 }
+
+// ErrMaybeDelivered is a send that went out and got no answer: SkyMail may
+// have taken it. The guest's mail has no idempotency key (/single reads none),
+// so it is not tried again: a second try could mail the guest twice.
+var ErrMaybeDelivered = errors.New("mail: SkyMail may have taken the mail; no answer came")
 
 // NotificationSource is where the notification came from.
 type NotificationSource struct {
@@ -108,9 +116,12 @@ func (s *SkyMail) TicketCreated(ctx context.Context, idempotencyKey string, hold
 	if err != nil || token == "" {
 		return &SendError{}
 	}
-	status := s.post(ctx, kindTicketCreated, token, template{key: TicketCreatedType}.task(holder.Email, holder.FullName, vars))
-	if succeeded(status) {
+	status, reached := s.postReached(ctx, kindTicketCreated, token, template{key: TicketCreatedType}.task(holder.Email, holder.FullName, vars))
+	switch {
+	case succeeded(status):
 		return nil
+	case status == 0 && reached:
+		return ErrMaybeDelivered
 	}
 	return &SendError{Status: status}
 }
