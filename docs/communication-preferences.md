@@ -261,13 +261,16 @@ query strings of this path either.
 
 ## Tracking
 
-SkyMail can record whether a person opened a News mail and which link they
-clicked (open and click tracking, skymail-backend README "Açılma ve
-tıklama takibi"; hub tickets iletisim-servisi 14 and 16). Core decides whom
-it may track. The basis is legitimate interest with an opt-out (decision
-T1): a Member is tracked until they turn it off on the Account center, the
-only way to (T8: no mail carries a "stop tracking" link). Transactional
-mail is never tracked.
+SkyMail can record whether a person opened a mail and which link they
+clicked (open and click tracking, ADR-0074; skymail-backend README "Açılma
+ve tıklama takibi"; hub tickets iletisim-servisi 14 and 16). Core decides
+whom it may track, for every mail SkyMail tracks: panel sends
+(`SKYMAIL_TRACKING_OPERATOR`) and the services' account and transactional
+mail (`SKYMAIL_TRACKING_SYSTEM`) alike; SkyMail's flags decide which mail
+is tracked, and they all start off. The basis is legitimate interest with
+an opt-out (decision T1): a Member is tracked until they turn it off on the
+Account center (T8: no mail carries a "stop tracking" link). The objection
+covers account and transactional mail too; the mail keeps coming.
 
 **The row.** `scope = 'tracking'`, `channel = 'email'`, no `group_id`, no
 `news_kind`; one per person. `source` is `account_center` (or `admin`).
@@ -368,7 +371,11 @@ Traefik, so the token checks stay the boundary.
 
 **The audit trail.** `communication_tracking_changes(user_id, enabled,
 previous, source, changed_at)`: a row whenever the value changes
-(`previous` null when there was no row). No address, no IP.
+(`previous` null when there was no row). No address, no IP. A row is kept
+3 years after its change (ADR-0062 addendum of 2026-10-25), then the
+retention sweep's `tracking_changes_age` deletes it
+([retention-sweep.md](retention-sweep.md)); the preference row itself
+stays.
 
 **Erasure.** The step `erase_communication_preferences` deletes the
 person's row, their waiting withdrawal and their audit trail; SkyMail

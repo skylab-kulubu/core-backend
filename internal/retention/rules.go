@@ -37,6 +37,10 @@ const (
 	// FeedbackInvitePeriod: a feedback invite, 90 days after it was sent
 	// (docs/event-feedback.md); the row goes, its target's counts stay.
 	FeedbackInvitePeriod = 90 * day
+	// TrackingChangesPeriod: a row of the tracking preference's audit trail
+	// (communication_tracking_changes, docs/communication-preferences.md),
+	// three years after the change; the row goes, the preference stays.
+	TrackingChangesPeriod = 3 * 365 * day
 )
 
 // Schema is what a run reads from the database before it builds the rules.
@@ -58,6 +62,7 @@ func Rules(c Config, s Schema) []Rule {
 	rules := append(sweepRules(s), consentRules(s)...)
 	rules = append(rules, teamAuditRules()...)
 	rules = append(rules, feedbackRules()...)
+	rules = append(rules, trackingRules()...)
 	return append(rules, auditRules(c)...)
 }
 
@@ -245,6 +250,14 @@ func teamAuditRules() []Rule {
 // feedbackRules delete the feedback invites 90 days after they were sent
 // (etkinlik geri bildirim formu, ticket 04): the reminder went at three
 // days; what stays of them is their target's counts.
+func trackingRules() []Rule {
+	return []Rule{{
+		Name: "tracking_changes_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
+		Table: "communication_tracking_changes", alias: "ct", key: "id", Period: TrackingChangesPeriod,
+		where: `ct.changed_at < $1`,
+	}}
+}
+
 func feedbackRules() []Rule {
 	return []Rule{{
 		Name: "feedback_invites_age", Version: 1, Kind: KindSweep, Action: ActionDelete,

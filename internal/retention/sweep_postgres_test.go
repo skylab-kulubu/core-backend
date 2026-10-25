@@ -321,10 +321,12 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	for _, name := range []string{"consent_pending", "consent_renewal_unanswered", "consent_proof"} {
 		want[name] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	}
-	// team_audit_age and feedback_invites_age have their own tests
-	// (team_audit_postgres_test.go, feedback_invites_postgres_test.go).
+	// team_audit_age, feedback_invites_age and tracking_changes_age have
+	// their own tests (team_audit_postgres_test.go,
+	// feedback_invites_postgres_test.go, tracking_changes_postgres_test.go).
 	want["team_audit_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	want["feedback_invites_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
+	want["tracking_changes_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	check(t, "dry run", dry, want)
 
 	apply, err := s.Run(ctx, retention.RunOptions{Mode: retention.ModeApply, Trigger: retention.TriggerSchedule})
@@ -346,6 +348,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	}
 	applied["team_audit_age"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
 	applied["feedback_invites_age"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
+	applied["tracking_changes_age"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
 	check(t, "apply", apply, applied)
 	for name, r := range results(dry) {
 		if r.Rule.Kind == retention.KindSweep && results(apply)[name].Changed != r.Matched {
