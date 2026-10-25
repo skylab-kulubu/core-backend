@@ -46,3 +46,9 @@ Writes on the Event itself (update, delete, days, Sessions, media) keep their ru
 - `POST /v1/events/{id}/publish`: draft → published, with `publishedAt` and the publisher. Needs a name, a location and a start date: otherwise `400`, `code: "event_incomplete"`, `missing: ["startDate", …]`. Publishing a published Event answers it unchanged; a cancelled one is `409 event_cancelled`.
 - `POST /v1/events/{id}/unpublish`: published → draft, only while the Event has no Ticket (a check-in needs one) and no current Competitor: otherwise `409 event_has_tickets` or `409 event_has_competitors` (a withdrawn Competitor does not hold it). Unpublishing a draft answers it unchanged; a cancelled one is `409 event_cancelled`. `publishedAt` keeps the last publication.
 - Both: whoever may edit the Event (`authz.Update`); DK `403`; anyone who may not see the Event `404`. Each is one `UPDATE … WHERE status = <expected>` (the publish also checks the three fields there), so two at once change the row once; the answer is the Event (`200`). The legacy `events.active` column is written with the status, as on create, for a rollback.
+
+## Delete
+
+`DELETE /v1/events/{id}` archives the Event (Deletion lifecycle; `POST …/restore` brings it back) **only while it is a draft** (ADR 0066, decision 3; ticket 05). On a published or cancelled Event it is `409`, `code: "event_not_draft"`, unless the caller holds `event:manage` (YK, ADMIN), who archive any Event, as before. Rights come first: who may not delete the Event gets `403` (DK too). The draft check is part of the archiving `UPDATE … WHERE status = 'draft'`, so a publish racing the delete is not archived. Deleting an Event already archived answers `204` and changes nothing. Restore does not change.
+
+Clients that delete a published Event (sky-app, today's panel) get the `409`; cancelling it is ticket 04.

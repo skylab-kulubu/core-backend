@@ -45,6 +45,7 @@ func TestServiceSyncsFormLinksWhenAnEventIsSavedArchivedAndRestored(t *testing.T
 		Name:      "Yaz Kampı",
 		Location:  "YTÜ",
 		OwnerTeam: "WEBLAB",
+		Status:    event.StatusDraft, // a Leader deletes a draft only
 		FormURL:   "https://forms.yildizskylab.com/" + apply.String(),
 		FormAlias: "yazkampi",
 		ExtraFormURLs: []event.EventFormLink{

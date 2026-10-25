@@ -6,7 +6,7 @@ Normal and public reads return only current records. Management list routes acce
 
 | Record | Operator action | Compatibility route | Restore route |
 | --- | --- | --- | --- |
-| Event | Arşivle | `DELETE /v1/events/{id}` | `POST /v1/events/{id}/restore` |
+| Event (a draft; any Event with `event:manage`, [event-drafts.md](event-drafts.md#delete)) | Arşivle | `DELETE /v1/events/{id}` | `POST /v1/events/{id}/restore` |
 | Event day | Arşivle | `DELETE /v1/event-days/{id}` | `POST /v1/event-days/{id}/restore` |
 | Session draft | Arşivle | `DELETE /v1/sessions/{id}` | `POST /v1/sessions/{id}/restore` |
 | Season | Arşivle | `DELETE /v1/seasons/{id}` | `POST /v1/seasons/{id}/restore` |
