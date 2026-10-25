@@ -171,6 +171,22 @@ func TestAPIOriginDefaultsToPublicSkymailAPI(t *testing.T) {
 	}
 }
 
+// An unset SKYMAIL_URL falls back to production's SkyMail, where a
+// non-production core's token is refused: startup says so (ticket
+// post-cutover 19). A set one says nothing.
+func TestDefaultOriginNotice(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{"", "  "} {
+		got := DefaultOriginNotice(raw)
+		if !strings.Contains(got, "SKYMAIL_URL") || !strings.Contains(got, DefaultAPIOrigin) {
+			t.Fatalf("%q: notice %q", raw, got)
+		}
+	}
+	if got := DefaultOriginNotice("https://sandbox-api.example.test/api/skymail"); got != "" {
+		t.Fatalf("set: notice %q", got)
+	}
+}
+
 const (
 	testRecipient   = "ada@example.com"
 	testAccessToken = "test-access-token-value"
