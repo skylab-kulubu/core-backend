@@ -228,6 +228,7 @@ const (
 	viaOneClick          = "one_click"
 	viaSelf              = "self"
 	viaService           = "service"
+	viaStaff             = "staff"
 	viaRenewalUnanswered = "renewal_unanswered"
 )
 

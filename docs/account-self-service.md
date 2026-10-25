@@ -22,7 +22,8 @@ verification exists it is written only through the privileged user card
 field of the `/me` view alone. The privileged admin card is the only other
 payload that carries a phone; `users:read` cards, public team rosters, user
 search, tickets, competitors and SkyPass lookups never do. The bound
-Student-card UID is likewise reported here only as `studentCardLinked`.
+Student-card UID is likewise reported here only as `studentCardLinked`;
+`DELETE /v1/skypass/card-bind` removes it ([skypass-card.md](skypass-card.md)).
 
 `PUT` and `PATCH /v1/users/me` accept `firstName`, `lastName`, `linkedin`,
 `university`, `faculty` and `department` and answer with the same view.

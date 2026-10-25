@@ -32,6 +32,14 @@ type AddressSource interface {
 	ErasureAddresses(context.Context, uuid.UUID) ([]string, error)
 }
 
+// PersonalEmailHolders finds the accounts whose Personal e-mail in Keycloak
+// is an address: core's row does not keep it, so without this a grant given
+// for a member's Personal e-mail is not tied to the member. email is
+// normalized (NormalizeEmail). An error carries no address.
+type PersonalEmailHolders interface {
+	PersonalEmailHolders(ctx context.Context, email string) ([]uuid.UUID, error)
+}
+
 // Service keeps contact consents in PostgreSQL.
 type Service struct {
 	pool   *pgxpool.Pool
@@ -40,7 +48,11 @@ type Service struct {
 	// addresses reads a person's addresses for their own list and
 	// withdrawal; nil reads core's row alone.
 	addresses AddressSource
-	now       func() time.Time
+	// holders finds the accounts holding an address as their Personal
+	// e-mail, for a withdrawal by address; nil finds them by core's row
+	// alone.
+	holders PersonalEmailHolders
+	now     func() time.Time
 	// mailTimeout bounds a confirmation mail, which is sent after the
 	// request that asked for it has been answered.
 	mailTimeout time.Duration
@@ -81,6 +93,11 @@ func (s *Service) SetMailer(mail Mailer) { s.mail = mail }
 // SetAddresses sets where a person's addresses are read for their own list
 // and withdrawal (Keycloak with core's row). Without it core's row alone.
 func (s *Service) SetAddresses(addresses AddressSource) { s.addresses = addresses }
+
+// SetPersonalEmailHolders sets where the accounts holding an address as
+// their Personal e-mail are found (Keycloak), so that a withdrawal by address
+// reaches the person's own grant too. Without it core's row alone.
+func (s *Service) SetPersonalEmailHolders(holders PersonalEmailHolders) { s.holders = holders }
 
 // SetAsync replaces how a confirmation mail is run (tests).
 func (s *Service) SetAsync(async func(func())) { s.async = async }
@@ -483,13 +500,27 @@ func (s *Service) Confirm(ctx context.Context, token string) (LinkOutcome, error
 }
 
 // Withdraw runs a withdraw link: every open grant (pending or active) of the
-// link's purpose that mails the same address ends (mailedTo). The link names
-// a grant, but it withdraws what is open now, so a link from an old
-// invitation still works after the person granted again, and the link of an
-// account's grant also ends a grant given for the account's address (and
-// back, even once the address grant has ended and kept only its HMAC): one
-// click ends the mails, whichever grant a mail was sent on. Repeating it is
-// harmless.
+// link's purpose of the person the link's grant mails ends. The link names a
+// grant, but it withdraws what is open now, so a link from an old invitation
+// still works after the person granted again. A person holds one grant of a
+// purpose (s6 §5.8), even when two rows record it, so one click ends all of
+// them, whichever grant a mail was sent on:
+//
+//   - the link of an account's own grant ends it and every grant given for
+//     one of the account's addresses, Keycloak's Personal e-mail included
+//     (accountTarget with identity);
+//   - the link of a grant given for an address ends every grant given for
+//     that address and the own grant of every account holding it (core's
+//     email or school_email, or Keycloak's Personal e-mail: personTarget). A
+//     grant for another of those accounts' addresses mails another mailbox
+//     and is left to its own link. Once the address grant has ended it keeps
+//     only its HMAC, so its link then reaches the accounts by core's row
+//     alone.
+//
+// Keycloak unreachable does not stop a withdrawal: the link then ends what
+// core reaches without it (the grant's own subject and core's row), as the
+// stream the person clicked on must stop, and the rest is logged without an
+// address. Repeating it is harmless.
 func (s *Service) Withdraw(ctx context.Context, token string, via WithdrawVia) (LinkOutcome, error) {
 	if !s.Enabled() {
 		return "", ErrDisabled
@@ -518,16 +549,24 @@ func (s *Service) Withdraw(ctx context.Context, token string, via WithdrawVia) (
 		return "", err
 	}
 	var target mailedTo
-	if userID != nil {
-		// The account's own grant mails the account's address in core.
-		if target, err = s.accountTarget(ctx, *userID, false); err != nil {
-			return "", err
+	switch {
+	case userID != nil:
+		target, err = s.accountTarget(ctx, *userID, true)
+		if errors.Is(err, ErrAddressesUnavailable) {
+			log.Printf("contact consent: withdraw link: %v; ending what core's row reaches", err)
+			target, err = s.accountTarget(ctx, *userID, false)
 		}
-	} else {
+	case email != nil:
+		target, err = s.personTarget(ctx, *email, false)
+		if errors.Is(err, ErrAddressesUnavailable) {
+			log.Printf("contact consent: withdraw link: %v; ending what core's row reaches", err)
+			target, err = mailedTo{addresses: []string{*email}, hmacs: [][]byte{emailHMAC}}, nil
+		}
+	default:
 		target.hmacs = [][]byte{emailHMAC}
-		if email != nil {
-			target.addresses = []string{*email}
-		}
+	}
+	if err != nil {
+		return "", err
 	}
 	n, err := s.endOpen(ctx, purpose, target, string(via), now)
 	if err != nil {
@@ -861,6 +900,47 @@ func (s *Service) WithdrawForAddress(ctx context.Context, purpose Purpose, rawEm
 	return n > 0, err
 }
 
+// WithdrawByStaff ends, on a request the person sent the club by mail
+// (info@yildizskylab.com, aydınlatma s6 §6), every open grant of each of
+// purposes of the person holding the address (personTarget: the grants
+// given for it, and the own grant of every account holding it with the
+// grants for that account's addresses), as ended by staff (ended_via staff:
+// the row is the record of it). Unlike a link it reads everything before it
+// ends anything: Keycloak unreachable is ErrAddressesUnavailable and nothing
+// changes, so the operator runs it again. It answers how many grants ended
+// for each purpose; running it again ends none.
+func (s *Service) WithdrawByStaff(ctx context.Context, purposes []Purpose, rawEmail string) (map[Purpose]int64, error) {
+	if !s.Enabled() {
+		return nil, ErrDisabled
+	}
+	if len(purposes) == 0 {
+		return nil, fmt.Errorf("%w: no purpose", ErrInvalid)
+	}
+	for _, purpose := range purposes {
+		if err := purpose.check(); err != nil {
+			return nil, err
+		}
+	}
+	email, ok := NormalizeEmail(rawEmail)
+	if !ok {
+		return nil, fmt.Errorf("%w: email", ErrInvalid)
+	}
+	target, err := s.personTarget(ctx, email, true)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now()
+	ended := map[Purpose]int64{}
+	for _, purpose := range purposes {
+		n, err := s.endOpen(ctx, purpose, target, viaStaff, now)
+		if err != nil {
+			return ended, err
+		}
+		ended[purpose] += n
+	}
+	return ended, nil
+}
+
 // Own is one of a signed-in person's grants.
 type Own struct {
 	ID          uuid.UUID  `json:"id"`
@@ -909,6 +989,68 @@ func (s *Service) accountTarget(ctx context.Context, userID uuid.UUID, identity 
 		}
 	}
 	return target, nil
+}
+
+// personTarget is the grants of the person holding an address: those given
+// for the address, and the own grant of every account holding it (core's
+// email or school_email, or Keycloak's Personal e-mail through holders);
+// with wholePerson, also the grants for every other address of those
+// accounts (accountTarget with identity). email is normalized. Keycloak
+// unreachable is ErrAddressesUnavailable, with nothing read in part.
+func (s *Service) personTarget(ctx context.Context, email string, wholePerson bool) (mailedTo, error) {
+	target := mailedTo{addresses: []string{email}, hmacs: [][]byte{s.config.emailHMAC(email)}}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id FROM users WHERE lower(btrim(email)) = $1
+		UNION
+		SELECT id FROM users WHERE lower(btrim(school_email)) = $1`, email)
+	if err != nil {
+		return mailedTo{}, err
+	}
+	accounts, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return mailedTo{}, err
+	}
+	if s.holders != nil {
+		held, err := s.holders.PersonalEmailHolders(ctx, email)
+		if err != nil {
+			return mailedTo{}, fmt.Errorf("%w: %w", ErrAddressesUnavailable, err)
+		}
+		accounts = append(accounts, held...)
+	}
+	for _, account := range accounts {
+		if slices.Contains(target.users, account) {
+			continue
+		}
+		if !wholePerson {
+			target.users = append(target.users, account)
+			continue
+		}
+		own, err := s.accountTarget(ctx, account, true)
+		if err != nil {
+			return mailedTo{}, err
+		}
+		target.add(own)
+	}
+	return target, nil
+}
+
+// add puts other's accounts, addresses and HMACs into t, without repeats.
+func (t *mailedTo) add(other mailedTo) {
+	for _, user := range other.users {
+		if !slices.Contains(t.users, user) {
+			t.users = append(t.users, user)
+		}
+	}
+	for _, address := range other.addresses {
+		if !slices.Contains(t.addresses, address) {
+			t.addresses = append(t.addresses, address)
+		}
+	}
+	for _, sum := range other.hmacs {
+		if !slices.ContainsFunc(t.hmacs, func(have []byte) bool { return string(have) == string(sum) }) {
+			t.hmacs = append(t.hmacs, sum)
+		}
+	}
 }
 
 func (s *Service) hmacs(addresses []string) [][]byte {

@@ -196,7 +196,6 @@ func (s *MemoryStore) UpdateProfile(_ context.Context, u User) (User, error) {
 		existing.Department = u.Department
 	}
 	existing.Phone = u.Phone
-	existing.StudentCardUID = u.StudentCardUID
 	existing.ProfilePictureID = u.ProfilePictureID
 	existing.ProfilePictureURL = u.ProfilePictureURL
 	existing.UpdatedAt = time.Now().UTC()

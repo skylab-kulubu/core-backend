@@ -129,6 +129,41 @@ func TestKeycloakAddressReadsFail(t *testing.T) {
 	}
 }
 
+// The Personal e-mail search asks Keycloak by attribute, in full
+// representation, and keeps only the rows whose Personal e-mail is the
+// address, whatever else Keycloak matched; an address the search syntax
+// would split asks nothing; a failure names the status, not the address.
+func TestKeycloakPersonalEmailHolders(t *testing.T) {
+	t.Parallel()
+	holder, other := uuid.New(), uuid.New()
+	dir, queries := addressKeycloak(t, http.StatusOK, []map[string]any{
+		{"id": holder.String(), "attributes": map[string][]string{"personalEmail": {" Ada@Example.ORG "}}},
+		{"id": other.String(), "attributes": map[string][]string{"personalEmail": {"ada@example.org.tr"}}},
+		{"id": "not-a-uuid", "attributes": map[string][]string{"personalEmail": {"ada@example.org"}}},
+	})
+	ids, err := dir.PersonalEmailHolders(context.Background(), "ada@example.org")
+	if err != nil || len(ids) != 1 || ids[0] != holder {
+		t.Fatalf("holders %v %v", ids, err)
+	}
+	q := queries()
+	if len(q) != 1 || q[0].Get("q") != "personalEmail:ada@example.org" || q[0].Get("briefRepresentation") != "false" || q[0].Get("max") == "" {
+		t.Fatalf("queries %v", q)
+	}
+	for _, email := range []string{"", "a b@example.org", "a:b@example.org"} {
+		if ids, err := dir.PersonalEmailHolders(context.Background(), email); err != nil || ids != nil {
+			t.Fatalf("%q: %v %v", email, ids, err)
+		}
+	}
+	if len(queries()) != 1 {
+		t.Fatal("an address the search would split was asked")
+	}
+	failing, _ := addressKeycloak(t, http.StatusServiceUnavailable, nil)
+	if _, err := failing.PersonalEmailHolders(context.Background(), "ada@example.org"); err == nil ||
+		!strings.Contains(err.Error(), "503") || strings.Contains(err.Error(), "ada@") {
+		t.Fatalf("failure: %v", err)
+	}
+}
+
 func TestMemoryAddressDirectory(t *testing.T) {
 	t.Parallel()
 	m := identity.NewMemory()
@@ -157,5 +192,11 @@ func TestMemoryAddressDirectory(t *testing.T) {
 	}
 	if other, _ := m.IdentityProviderLinkedPage(context.Background(), "OTHER", 0, 10); other.Rows != 0 {
 		t.Fatalf("other %+v", other)
+	}
+	if held, err := m.PersonalEmailHolders(context.Background(), "c@example.org"); err != nil || len(held) != 1 || held[0] != c {
+		t.Fatalf("personal holders %v %v", held, err)
+	}
+	if held, _ := m.PersonalEmailHolders(context.Background(), "a@example.test"); len(held) != 0 {
+		t.Fatalf("a Primary e-mail found as Personal: %v", held)
 	}
 }

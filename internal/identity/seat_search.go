@@ -371,15 +371,46 @@ func (s *service) memberCaller(p authz.Principal) bool {
 	return slices.ContainsFunc(p.Groups, s.memberPath)
 }
 
+// seatCaller reports whether p may make the members' seat search: a member
+// (memberCaller), or a person (not a product's or a client's service
+// account) who holds the seat in effect, e.g. through /ROLLER/FORMS-ACCESS
+// only (ekip-yetkileri ticket 16). The seat is read as holdsSeatInEffect
+// reads it, kept seatCacheTTL; a realm without the client is no holder.
+func (s *service) seatCaller(ctx context.Context, p authz.Principal, clientID, role string) (bool, error) {
+	if s.memberCaller(p) {
+		return true, nil
+	}
+	if p.Product != "" || p.ServiceAccount {
+		return false, nil
+	}
+	id, err := uuid.Parse(p.ID)
+	if err != nil {
+		return false, nil
+	}
+	holds, err := s.holdsSeatInEffect(ctx, clientID, role, id)
+	if errors.Is(err, ErrClientNotFound) {
+		return false, nil
+	}
+	return holds, err
+}
+
 // memberSeatSearch is the seat search of a member who may not read people
-// (ekip-yetkileri ticket 04): Forms' seat (skyforms:access) only, a query of
+// (ekip-yetkileri ticket 04), or of a person who holds the seat
+// (seatCaller, ticket 16): Forms' seat (skyforms:access) only, a query of
 // at least three letters (shorter answers no one), thirty searches a
 // minute. It answers at most ten people who hold the seat and are members
 // (or hold it through a role group), by the names only, e-mail masked; a
 // query that is a whole address answers only that address's holder,
 // unmasked, as the candidate search does (MemberCandidates).
 func (s *service) memberSeatSearch(ctx context.Context, p authz.Principal, clientID, role, q string) ([]Person, error) {
-	if !s.memberSeats || clientID != "forms" || role != "skyforms:access" || !s.memberCaller(p) {
+	if !s.memberSeats || clientID != "forms" || role != "skyforms:access" {
+		return nil, ErrForbidden
+	}
+	ok, err := s.seatCaller(ctx, p, clientID, role)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return nil, ErrForbidden
 	}
 	if utf8.RuneCountInString(q) < memberSeatQueryMin {
