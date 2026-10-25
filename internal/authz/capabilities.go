@@ -1,6 +1,9 @@
 package authz
 
-import "sort"
+import (
+	"slices"
+	"sort"
+)
 
 // Capabilities is what a caller may do, for the admin panel to decide which
 // menus and buttons to show (ADR-0059: the panel does not read the token).
@@ -16,7 +19,8 @@ type Capabilities struct {
 	// AppAbilities present.
 	Can map[string]bool `json:"can"`
 	// Teams are the Owner teams the caller is a member or Leader of, by
-	// name, with the decisions for a record of that team.
+	// name, with the decisions for a record of that team: the Sub-teams a
+	// Leader leads from above too (WithTeamTree).
 	Teams []TeamCapabilities `json:"teams"`
 	// OtherTeams are the decisions for a record of an Owner team the caller
 	// is in no Group of.
@@ -151,6 +155,11 @@ func (a *authorizer) capabilities(p Principal) Capabilities {
 		out.Can[ab.key] = a.Allow(p, ab.r, ab.action)
 	}
 	teams := a.ownerTeamCandidates(p)
+	for _, team := range a.subTeamCandidates(p) {
+		if !slices.Contains(teams, team) {
+			teams = append(teams, team)
+		}
+	}
 	sort.Strings(teams)
 	for _, team := range teams {
 		out.Teams = append(out.Teams, TeamCapabilities{

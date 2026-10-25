@@ -55,6 +55,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 	"github.com/skylab-kulubu/core-backend/internal/teammail"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/ticketnotify"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 	"github.com/skylab-kulubu/core-backend/internal/usersync"
@@ -216,7 +217,6 @@ func main() {
 	authzPolicy.TeamDelegation = teamDelegation
 	authzPolicy.AppAssignments = appAssignments
 	authzRoleMetrics := authz.NewRoleMetrics(log.Default(), time.Now)
-	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics))
 	// The Team code rule every Group create and rename passes
 	// (docs/team-codes.md), over the same roots.
 	groupNames := teamcode.NewRules(authzPolicy)
@@ -524,6 +524,11 @@ func main() {
 	// person's Groups; core reads them from Keycloak with its own service
 	// account and keeps them a minute.
 	overageGroups := identity.NewOverageGroups(dir, identity.OverageOptions{})
+	// Where Owner teams sit: with team delegation on, a Leader of a Team
+	// above an Event's Owner team leads it too (ADR-0065 decision 2,
+	// ekip-yetkileri ticket 12). The realm's Groups are kept a minute.
+	teamTree := identity.NewTeamTree(dir, identity.TeamTreeOptions{Logf: log.Printf})
+	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics), authz.WithTeamTree(teamTree))
 	// The capabilities route's editableSites: the configured Site clients
 	// a person holds cms:access on, read with core's own service account.
 	// A hint for the admin panel, never an authorization.
@@ -872,6 +877,13 @@ func main() {
 	worker("team membership mail", teamMembershipStopped)
 	worker("event status mail", startEventStatusMail(workers, events, tickets, users, sky, log.Printf))
 	worker("feedback mail", startFeedbackMail(workers, feedbackInvites, tickets, users, sky, log.Printf))
+	// The new Ticket's Notification (docs/ticket-created-notification.md):
+	// SkyMail tells the holder by inbox and e-mail.
+	ticketNotificationOn, err := ticketCreatedNotificationOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky, log.Printf))
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {

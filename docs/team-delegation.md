@@ -19,6 +19,7 @@ caller's token.
   `[]` to everyone but Privileged.
 - **on**: a person who is not Privileged for Groups reaches the routes
   below for a Group they manage.
+  It also turns on the Owner team inheritance below.
 
 Turn it on only after ticket 01 is in production and the tree report
 (ticket 03) shows no duplicate codes and no names with a `/` (security
@@ -132,6 +133,34 @@ client, is unclassified. Changing either list is Yusuf's decision; a new
 role stays protected until then. Keycloak roles flow down to subgroups
 (Entra's app roles do not), so an ancestor's mapping protects the Groups
 under it.
+
+## Owner team inheritance (Events)
+
+ADR-0065 decision 2 (ekip-yetkileri ticket 12): with `TEAM_DELEGATION=on`,
+a person directly in a Team's Leader group is a Leader (`LEADER`, not
+`MEMBER`) of every Owner team below that Team. Every Owner team decision
+reads it from `ownerLevels`: Events, Event days and Sessions, drafts, the
+applications and tickets of the Event, door check-in, competitions,
+competitors, certificates and certificate templates. With delegation off
+nothing changes.
+
+- The token names the caller's Groups, not where the Owner team sits, so
+  core reads the realm's Groups with its service account
+  (`identity.TeamTree`, `ListGroups`) and finds the one Group named after
+  the Owner team, compared without case; the decision then matches the
+  name exactly, as before. No Group or more than one: no inheritance.
+- Both ends are Teams as delegation reads them (`authz.TeamOf`): an area's
+  `KOORDINATORLER`, `/UYELER`'s Leaders and a Group under a Privileged root
+  lead nothing below them. A Sub-team's Leader stays a `MEMBER` of the Team
+  above; a sibling Team's Leader gets nothing.
+- The tree is read only for a caller in some Team's Leader group whose own
+  Team is not the Owner team. A failed read (Keycloak down, 5 s) answers no
+  inheritance for 10 s: the Leader leads only their own Team, as before.
+- `GET /v1/users/me/capabilities` lists those Sub-teams in `teams` with
+  `levels: ["LEADER"]`, so the panel finds their decisions.
+- More people read an Event's applicants (participants' personal data).
+  The Team audit record does not cover Event decisions; whether it should
+  is open (ADR-0065 "Açık").
 
 ## Role rules
 
@@ -271,6 +300,7 @@ core's own membership writes.
 | the realm's names (`team_code_not_unique`) | 60 s | renames |
 | `managedTeams` | 60 s (a failure 10 s) | core's membership writes of that person |
 | a managed tree | 60 s | every core membership write |
+| the realm's Groups (Owner team inheritance) | 60 s (a failure 10 s) | nothing: a move or rename is seen within the minute |
 
 Writes never use a kept caller, target or protection: they read all three
 fresh.

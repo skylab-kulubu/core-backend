@@ -277,6 +277,13 @@ func TestAudienceMembers(t *testing.T) {
 	if back, _ := f.item(page, "back"); back.Name != "KC back" {
 		t.Fatalf("a person core has no row for is named by Keycloak: %+v", back)
 	}
+	// Every recipient passed the e-mail preference (masterOff and clubOff
+	// are left out): the channels SkyMail may use are e-mail (ticket 06).
+	for _, r := range page.Items {
+		if !slices.Equal(r.AllowedChannels, []Channel{ChannelEmail}) {
+			t.Fatalf("%s allowedChannels = %v, want [email]", r.UserID, r.AllowedChannels)
+		}
+	}
 }
 
 // A team's send: its members and its sub-teams' (the hidden PROJEX's
