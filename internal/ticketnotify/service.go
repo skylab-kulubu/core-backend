@@ -129,11 +129,13 @@ type Report struct {
 	// more (the Ticket, its Event or its holder is gone, the Event is not
 	// published, or is over). Rejected: SkyMail refused the request itself.
 	// Expired: tried for GiveUpAfter. Retried: tried again later.
-	Sent, Dropped, Rejected, Expired, Retried int
+	// Uncertain: a guest's mail went out and no answer came; it is not
+	// tried again, so the guest is not mailed twice.
+	Sent, Dropped, Rejected, Expired, Retried, Uncertain int
 }
 
 func (r Report) any() bool {
-	return r.Sent+r.Dropped+r.Rejected+r.Expired+r.Retried > 0
+	return r.Sent+r.Dropped+r.Rejected+r.Expired+r.Retried+r.Uncertain > 0
 }
 
 // IdempotencyKey is the key of a Ticket's Notification: the type, the
@@ -182,6 +184,8 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 				report.Dropped++
 			case rejected:
 				report.Rejected++
+			case uncertain:
+				report.Uncertain++
 			}
 			err = s.config.Queue.Complete(writeCtx, q)
 		}
@@ -199,6 +203,7 @@ const (
 	sent outcome = iota
 	dropped
 	rejected
+	uncertain
 )
 
 // deliver posts q's Notification; an error when a later try may pass.
@@ -233,6 +238,8 @@ func (s *Service) deliver(ctx context.Context, q Queued) (outcome, error) {
 	err = s.config.Mail.TicketCreated(ctx, IdempotencyKey(t.ID), holder, s.vars(ev), mail.NotificationSource{Kind: "ticket", Ref: t.ID.String()}, ev.EndDate)
 	var refused *mail.SendError
 	switch {
+	case errors.Is(err, mail.ErrMaybeDelivered):
+		return uncertain, nil
 	case errors.As(err, &refused) && refused.Permanent():
 		// SkyMail refuses this body itself (400, 422): the same body would be
 		// refused again.
@@ -313,8 +320,8 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 			case err != nil && ctx.Err() == nil:
 				logf("ticket notification: queue: %v", err)
 			case report.any():
-				logf("ticket notification: %d sent, %d dropped, %d refused by SkyMail, %d given up, %d tried again later",
-					report.Sent, report.Dropped, report.Rejected, report.Expired, report.Retried)
+				logf("ticket notification: %d sent, %d dropped, %d refused by SkyMail, %d given up, %d tried again later, %d guest mails unanswered and not tried again",
+					report.Sent, report.Dropped, report.Rejected, report.Expired, report.Retried, report.Uncertain)
 			}
 			select {
 			case <-ctx.Done():

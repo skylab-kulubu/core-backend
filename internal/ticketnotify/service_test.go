@@ -313,3 +313,19 @@ func TestRefusalIsPermanentAndOldFailureGivesUp(t *testing.T) {
 		t.Fatalf("report %+v, rows %d, calls %d: a day-old row is given up unsent", r, e.queue.len(), len(e.mail.calls))
 	}
 }
+
+// A guest's mail that went out without an answer is not tried again: /single
+// reads no idempotency key, and a second try could mail the guest twice.
+func TestUnansweredGuestMailIsNotTriedAgain(t *testing.T) {
+	e := newEnv(t)
+	e.guest("can@example.com")
+	e.mail.err = mail.ErrMaybeDelivered
+	if r := e.pass(t); r.Uncertain != 1 || r.Retried != 0 || e.queue.len() != 0 {
+		t.Fatalf("report %+v, rows %d", r, e.queue.len())
+	}
+	e.now = e.now.Add(time.Hour)
+	e.pass(t)
+	if len(e.mail.calls) != 1 {
+		t.Fatalf("calls %d, want one", len(e.mail.calls))
+	}
+}

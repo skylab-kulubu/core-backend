@@ -124,3 +124,50 @@ func TestNotifyWithoutSkyMailIsUnconfigured(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+func TestTicketCreatedForAGuestIsNotTriedAgainWhenNoAnswerCame(t *testing.T) {
+	// The request reaches SkyMail, which closes the connection without an answer: it may have taken the mail.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), Logger: log.New(io.Discard, "", 0)}
+	err := sky.TicketCreated(context.Background(), "k", TicketHolder{Email: "can@example.com"}, nil, NotificationSource{Kind: "ticket", Ref: "x"}, nil)
+	if !errors.Is(err, ErrMaybeDelivered) {
+		t.Fatalf("err %v, want ErrMaybeDelivered", err)
+	}
+
+	// Never connected: nothing reached SkyMail, a later try is safe.
+	closed := httptest.NewServer(http.NotFoundHandler())
+	url := closed.URL
+	closed.Close()
+	sky = &SkyMail{BaseURL: url, Tokens: StaticToken("tok"), Logger: log.New(io.Discard, "", 0)}
+	err = sky.TicketCreated(context.Background(), "k", TicketHolder{Email: "can@example.com"}, nil, NotificationSource{Kind: "ticket", Ref: "x"}, nil)
+	var refused *SendError
+	if errors.Is(err, ErrMaybeDelivered) || !errors.As(err, &refused) || refused.Status != 0 {
+		t.Fatalf("err %v, want a SendError that may be tried again", err)
+	}
+}
+
+func TestNotifySendsAnEmptyChannelListAndLeavesANilOneOut(t *testing.T) {
+	srv, got := notificationServer(t, http.StatusCreated, `{}`)
+	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+	none := []string{}
+	if err := sky.Notify(context.Background(), "k", "k", Notification{Type: "event.reminder", Recipients: []NotificationRecipient{
+		{Sub: uuid.New(), AllowedChannels: &none},
+		{Sub: uuid.New()},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	recipients := (*got)[0].body["recipients"].([]any)
+	first, second := recipients[0].(map[string]any), recipients[1].(map[string]any)
+	if channels, ok := first["allowed_channels"].([]any); !ok || len(channels) != 0 {
+		t.Fatalf("first %v: an empty list must travel as []", first)
+	}
+	if _, ok := second["allowed_channels"]; ok {
+		t.Fatalf("second %v: a nil list must be left out", second)
+	}
+}
