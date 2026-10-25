@@ -464,3 +464,108 @@ func TestService_MovingACompetitorTakesTheWriteOfBothEvents(t *testing.T) {
 		}
 	}
 }
+
+// A member of both Teams writes B's competitors but not A's while A's Leader
+// keeps them to the Leaders: they do not move A's competitor to B's Event.
+// With A's setting on, they write both and move it.
+func TestService_AMemberOfBothTeamsMovesOnlyWhatTheSourceTeamLets(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, aKeptToLeaders := range []bool{false, true} {
+		events := event.NewMemoryStore()
+		competitors := competitor.NewMemoryStore(events)
+		az := authz.NewAuthorizer(authz.DefaultPolicy(), authz.WithTeamSettings(keptToLeaders{"WEBLAB": aKeptToLeaders}))
+		svc := competitor.NewService(competitors, events, az)
+		a := seedEvent(t, events, "WEBLAB", event.StatusPublished)
+		b := seedEvent(t, events, "SKYSEC", event.StatusPublished)
+		bothMember := authz.Principal{ID: "both-member", Groups: []string{"/UYELER/ARGE/WEBLAB", "/UYELER/ARGE/SKYSEC"}}
+
+		inA, err := competitors.Create(ctx, competitor.Competitor{UserID: uuid.New(), EventID: a.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		moved, err := svc.Update(ctx, bothMember, inA.ID, competitor.UpdateInput{EventID: b.ID, Score: ptr(1)})
+		if aKeptToLeaders {
+			if !errors.Is(err, competitor.ErrForbidden) {
+				t.Fatalf("A kept to Leaders: a member of both moved A's competitor to B: %+v %v", moved, err)
+			}
+			if got, err := competitors.Get(ctx, inA.ID); err != nil || got.EventID != a.ID || got.Score != nil {
+				t.Fatalf("A's competitor after the refused move %+v %v", got, err)
+			}
+			continue
+		}
+		if err != nil || moved.EventID != b.ID || moved.Score == nil || *moved.Score != 1 {
+			t.Fatalf("A open to members: a member of both moving A's competitor to B %+v %v", moved, err)
+		}
+	}
+}
+
+// The Event a competitor is moved out of is read as Delete reads it: a draft
+// its mover may not see does not exist for them (404); a draft they see but
+// whose competitors they do not write refuses them (403). An archived Event
+// still asks for its write: its Leader moves the competitor out, B's writer
+// does not.
+func TestService_MovingOutOfADraftOrArchivedEvent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	competitors := competitor.NewMemoryStore(events)
+	az := authz.NewAuthorizer(authz.DefaultPolicy(), authz.WithTeamSettings(keptToLeaders{"GECEKODU": true}))
+	svc := competitor.NewService(competitors, events, az)
+	b := seedEvent(t, events, "SKYSEC", event.StatusPublished)
+	bWriter := authz.Principal{ID: "b-writer", Groups: []string{"/UYELER/ARGE/SKYSEC"}}
+
+	unchanged := func(t *testing.T, id, eventID uuid.UUID) {
+		t.Helper()
+		if got, err := competitors.Get(ctx, id); err != nil || got.EventID != eventID || got.Score != nil {
+			t.Fatalf("competitor after the refused move %+v %v", got, err)
+		}
+	}
+
+	// A WEBLAB draft: B's writer does not see it.
+	draft := seedEvent(t, events, "WEBLAB", event.StatusDraft)
+	inDraft, err := competitors.Create(ctx, competitor.Competitor{UserID: uuid.New(), EventID: draft.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(ctx, bWriter, inDraft.ID, competitor.UpdateInput{EventID: b.ID, Score: ptr(1)}); !errors.Is(err, competitor.ErrNotFound) {
+		t.Fatalf("moving out of a draft its mover does not see: %v", err)
+	}
+	unchanged(t, inDraft.ID, draft.ID)
+
+	// A GECEKODU draft: its members edit GECEKODU's Events and see it, but
+	// its Leader kept the competitors to the Leaders.
+	seenDraft := seedEvent(t, events, "GECEKODU", event.StatusDraft)
+	inSeenDraft, err := competitors.Create(ctx, competitor.Competitor{UserID: uuid.New(), EventID: seenDraft.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	draftReader := authz.Principal{ID: "draft-reader", Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU", "/UYELER/ARGE/SKYSEC"}}
+	if !event.VisibleTo(az, &draftReader, seenDraft) {
+		t.Fatal("the GECEKODU member does not see GECEKODU's draft")
+	}
+	if _, err := svc.Update(ctx, draftReader, inSeenDraft.ID, competitor.UpdateInput{EventID: b.ID, Score: ptr(1)}); !errors.Is(err, competitor.ErrForbidden) {
+		t.Fatalf("moving out of a draft its mover sees but does not write: %v", err)
+	}
+	unchanged(t, inSeenDraft.ID, seenDraft.ID)
+
+	// An archived WEBLAB Event.
+	archived := seedEvent(t, events, "WEBLAB", event.StatusPublished)
+	a2 := seedEvent(t, events, "WEBLAB", event.StatusPublished)
+	inArchived, err := competitors.Create(ctx, competitor.Competitor{UserID: uuid.New(), EventID: archived.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := events.Archive(ctx, archived.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(ctx, bWriter, inArchived.ID, competitor.UpdateInput{EventID: b.ID, Score: ptr(1)}); !errors.Is(err, competitor.ErrForbidden) {
+		t.Fatalf("B's writer moving out of an archived Event: %v", err)
+	}
+	unchanged(t, inArchived.ID, archived.ID)
+	aLeader := authz.Principal{ID: "a-leader", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	moved, err := svc.Update(ctx, aLeader, inArchived.ID, competitor.UpdateInput{EventID: a2.ID})
+	if err != nil || moved.EventID != a2.ID {
+		t.Fatalf("A's Leader moving out of an archived Event %+v %v", moved, err)
+	}
+}
