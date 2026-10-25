@@ -5,7 +5,7 @@ person's explicit, optional consent (KVKK art. 5/1) for one purpose:
 
 | Purpose | What it allows | Given through | Taken |
 |---|---|---|---|
-| `event_invitations` | invitations to SKY LAB's other events and its announcements by e-mail (aydınlatma s6 row 14, §5.14; `davet-v1` named the invitations alone) | Guest apply, Forms, Place, Guessr, a signed-in person | yes |
+| `event_invitations` | invitations to SKY LAB's other events and its announcements by e-mail (aydınlatma s6 row 14, §5.14; `davet-v2`) | Guest apply, Forms, Place, Guessr, a signed-in person | yes |
 | `promotional` | mails whose main purpose is promoting a product or a service: a discount code, a company's job posting, a sale, a raffle (aydınlatma s6 row 13 b, §5.8, §5.10). A short sponsor thank-you or logo in an announcement is not promotional and needs no consent | SkyForms forms (`forms`), the first Account Center screen after signup (`signup`), Account Center's communication preferences (`self`) | yes |
 | `recruitment_pool` | keeping a team application that was not accepted, to be considered in future recruitment | Forms only | **no**: every route answers `400 purpose_not_enabled` until its scope (an address, or one application) is agreed with Forms. The table already allows the value |
 
@@ -135,23 +135,27 @@ agent or name is kept.
 **Texts.** A grant names the text version it was given on. Core accepts only
 the versions below; a new wording is a new version here and in
 `internal/consent` (`purposes`, `texts`), released before the products show
-it. The codes are the versions ("Sürüm") of the Açık Rıza Metni draft
-(sky_lab_genel `notes/hukuki/acik-riza-metni-davet-TASLAK.md`):
+it. The codes are the versions ("Sürüm") of the Açık Rıza Metni, published
+at <https://yildizskylab.com/acik-riza-metni.pdf> (source: sky_lab_genel
+`notes/hukuki/acik-riza-metni-YAYIN-2026-10-25.md`, from the approved draft
+`notes/hukuki/acik-riza-metni-20261024-taslak.md`):
 
 | Version | Purpose | Box text (Turkish, as shown next to the box, with links to the Açık Rıza Metni and the aydınlatma) |
 |---|---|---|
-| `davet-v1` | `event_invitations` | SKY LAB'ın gelecek etkinliklerine davet e-postası almak istiyorum. Bunun için adımı ve e-posta adresimi saklayabilirsiniz. İstediğim zaman her davetteki bağlantıyla vazgeçebilirim. |
 | `davet-v2` | `event_invitations` | Diğer etkinlik ve duyurulardan haberdar olmak istiyorum. |
 | `tanitim-v1` | `promotional` | SKY LAB'dan tanıtım içerikli e-postalar (indirim kodu, şirket iş ilanı, çekiliş gibi) almak istiyorum. |
 | `alim-havuzu-v1` | `recruitment_pool` (not taken yet) | Bu dönem kabul edilmezsem başvurumun gelecek alımlarda değerlendirilmek üzere saklanmasını istiyorum. İstediğim zaman vazgeçebilirim. |
 
-The draft is not approved yet; if the approved wording differs, it gets a new
-version here first. `davet-v2` and `tanitim-v1` are the wordings of the
-aydınlatma s6 draft; while `CONTACT_CONSENT_KEY` is unset in production no
-grant names them, so they may still be reworded in place until it is set. A
-grant that names no version is recorded on the newest one of its purpose.
-SkyMail reads the version of each grant in the audience (`textVersion`): a
-`davet-v1` grant was given for invitations, not for announcements.
+A changed wording is a new version here and in a new edition of the
+published text. `alim-havuzu-v1` is not in the published text; it gets there
+before its purpose is enabled. A grant that names no version is recorded on
+the newest one of its purpose. `davet-v1` (the invitations alone, from an
+earlier draft that was never published) is no longer taken: a grant naming it
+answers `400`. No production grant names it (`CONTACT_CONSENT_KEY` is unset
+there and the table is empty); core keeps its box text so a grant stored on it elsewhere
+still shows it, and SkyMail reads the version of each grant in the audience
+(`textVersion`): a `davet-v1` grant is for invitations, not for
+announcements.
 
 **The promotional consent (aydınlatma s6 §5.8).** One grant per person
 and mailbox, whichever box gave it: the form, the signup screen or the
@@ -370,7 +374,7 @@ A service account cannot use these.
 |---|---|
 | `CONTACT_CONSENT_KEY` | 32 random bytes, unpadded base64url (OpenBao reference). Unset: off. Keep it unset in production until the retention sweep ships. Never rotate: mailed links and proof keys depend on it |
 | `PUBLIC_API_ORIGIN` | required with the key: where the links point |
-| `CONTACT_CONSENT_TEXT_URL` | required with the key: the published Açık Rıza Metni the confirm page links. There is no published one yet (the draft is under legal review), so the key cannot be set before it is |
+| `CONTACT_CONSENT_TEXT_URL` | required with the key: the published Açık Rıza Metni the confirm page links: `https://yildizskylab.com/acik-riza-metni.pdf`. The key is not set before that address answers 200 |
 | `CONTACT_CONSENT_NOTICE_URL` | the KVKK aydınlatma metni the pages link; unset: `https://yildizskylab.com/kvkk-metni.pdf` (the published one) |
 | `CONTACT_CONSENT_SERVICE_CLIENTS` | `source:client` pairs; `none` for none |
 | `CONTACT_CONSENT_VERIFIED_CLIENTS` | clients of the line above whose `emailVerified` core believes; unset: none |
