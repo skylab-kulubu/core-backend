@@ -29,6 +29,8 @@ func eventStatusCode(err error) string {
 		return "event_has_tickets"
 	case errors.Is(err, event.ErrHasCompetitors):
 		return "event_has_competitors"
+	case errors.Is(err, event.ErrNotDraft):
+		return "event_not_draft"
 	case errors.Is(err, event.ErrRegistrationClosed):
 		return "registration_closed"
 	case errors.Is(err, event.ErrEnded):

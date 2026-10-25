@@ -357,6 +357,32 @@ func (s *PostgresStore) Archive(ctx context.Context, id uuid.UUID, actorID *uuid
 	return nil
 }
 
+func (s *PostgresStore) ArchiveDraft(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE events
+		SET archived_at = COALESCE(archived_at, now()),
+			archived_by = CASE WHEN archived_at IS NULL THEN $2 ELSE archived_by END,
+			updated_at = CASE WHEN archived_at IS NULL THEN now() ELSE updated_at END
+		WHERE id = $1 AND (status = 'draft' OR archived_at IS NOT NULL)`, id, actorID)
+	if err != nil {
+		if subjectlock.IsInactiveAccountReference(err) {
+			return ErrForbidden
+		}
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM events WHERE id = $1)`, id).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return ErrNotDraft
+	}
+	return ErrNotFound
+}
+
 func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE events
