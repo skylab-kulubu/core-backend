@@ -226,6 +226,8 @@ func main() {
 	tickets := ticket.NewPostgresStore(pool)
 	competitors := competitor.NewPostgresStore(pool)
 	competitions := competition.NewPostgresStore(pool)
+	// Feedback invites and mails (docs/event-feedback.md).
+	feedbackInvites := feedback.NewPostgresStore(pool)
 	certs := certificate.NewPostgresStore(pool)
 	mediaStore := media.NewPostgresStore(pool)
 	// A catalogue that breaks a hard ceiling fails the deploy here, not an
@@ -875,6 +877,7 @@ func main() {
 		workers, teammail.NewPostgresQueue(pool), teammail.NewPostgresNoticeQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
 	worker("team membership mail", teamMembershipStopped)
 	worker("event status mail", startEventStatusMail(workers, events, tickets, users, sky, log.Printf))
+	worker("feedback mail", startFeedbackMail(workers, feedbackInvites, tickets, users, sky, log.Printf))
 	// The new Ticket's Notification (docs/ticket-created-notification.md):
 	// SkyMail tells the holder by inbox and e-mail.
 	ticketNotificationOn, err := ticketCreatedNotificationOn(os.Getenv)
@@ -897,7 +900,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	feedbackInvites := feedback.NewPostgresStore(pool)
 	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites)
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
@@ -1020,6 +1022,8 @@ func main() {
 		URLs:                   urlSvc,
 		Competitions:           competition.NewService(competitions, events, az),
 		FeedbackInvites:        feedbackInvites,
+		FeedbackSender:         feedbackInvites,
+		FeedbackReminders:      feedbackInvites,
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
 		SkyPassWalletMetrics:   wallet,

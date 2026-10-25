@@ -168,6 +168,7 @@ func TestRulePeriodsAreThePolicy(t *testing.T) {
 		"read_link_ip":         {365 * day, ActionScrub, "media_read_link_opens", "", 1},
 		"team_audit_age":       {3 * 365 * day, ActionDelete, "team_audit_records", "", 1},
 		"feedback_invites_age": {90 * day, ActionDelete, "feedback_invites", "", 1},
+		"feedback_mails_age":   {90 * day, ActionDelete, "feedback_mails", "", 1},
 		"tracking_changes_age": {3 * 365 * day, ActionDelete, "communication_tracking_changes", "", 1},
 	}
 	sweeps := 0
@@ -181,7 +182,7 @@ func TestRulePeriodsAreThePolicy(t *testing.T) {
 			t.Fatalf("%s: %s %s %s %s v%d", rule.Name, rule.Period, rule.Action, rule.Table, rule.RelatedTable, rule.Version)
 		}
 	}
-	if sweeps != len(want) || RuleSetVersion != 6 {
+	if sweeps != len(want) || RuleSetVersion != 7 {
 		t.Fatalf("%d sweep rules, set v%d", sweeps, RuleSetVersion)
 	}
 }
@@ -341,7 +342,7 @@ func TestConsentRulesFollowTheConsentLifecycle(t *testing.T) {
 		t.Fatalf("%d consent rules", found)
 	}
 	names := RuleNames(config)
-	if len(names) != 17 || names[5] != "consent_pending" || names[8] != "team_audit_age" || names[9] != "feedback_invites_age" || names[10] != "tracking_changes_age" {
+	if len(names) != 18 || names[5] != "consent_pending" || names[8] != "team_audit_age" || names[9] != "feedback_invites_age" || names[10] != "feedback_mails_age" || names[11] != "tracking_changes_age" {
 		t.Fatalf("names %v", names)
 	}
 }

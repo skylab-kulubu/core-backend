@@ -321,11 +321,12 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	for _, name := range []string{"consent_pending", "consent_renewal_unanswered", "consent_proof"} {
 		want[name] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	}
-	// team_audit_age, feedback_invites_age and tracking_changes_age have
-	// their own tests (team_audit_postgres_test.go,
+	// team_audit_age, feedback_invites_age, feedback_mails_age and
+	// tracking_changes_age have their own tests (team_audit_postgres_test.go,
 	// feedback_invites_postgres_test.go, tracking_changes_postgres_test.go).
 	want["team_audit_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	want["feedback_invites_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
+	want["feedback_mails_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	want["tracking_changes_age"] = counts{0, 0, 0, 0, 0, retention.RuleDryRun}
 	check(t, "dry run", dry, want)
 
@@ -348,6 +349,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 	}
 	applied["team_audit_age"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
 	applied["feedback_invites_age"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
+	applied["feedback_mails_age"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
 	applied["tracking_changes_age"] = counts{0, 0, 0, 0, 0, retention.RuleOK}
 	check(t, "apply", apply, applied)
 	for name, r := range results(dry) {
@@ -441,7 +443,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 			t.Errorf("row id %s reached a record or a log line", id)
 		}
 	}
-	if got := scalar[int](t, pool, `SELECT count(*) FROM retention_run_rules`); got != 51 {
+	if got := scalar[int](t, pool, `SELECT count(*) FROM retention_run_rules`); got != 54 {
 		t.Fatalf("rule records %d", got)
 	}
 	if got := scalar[string](t, pool, `SELECT string_agg(mode || ':' || status || ':' || triggered_by, ',' ORDER BY started_at, mode DESC) FROM retention_runs`); got != "dry-run:ok:schedule,apply:ok:schedule,apply:ok:schedule" {
