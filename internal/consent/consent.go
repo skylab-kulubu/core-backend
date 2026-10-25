@@ -1,7 +1,7 @@
 // Package consent keeps contact consents (ADR-0062, Davet onayı): a person's
-// explicit consent (KVKK art. 5/1) for one purpose: invitations to future SKY
-// LAB events, or keeping a team application for future recruitment
-// (docs/contact-consents.md).
+// explicit consent (KVKK art. 5/1) for one purpose: invitations to SKY LAB's
+// other events and announcements, promotional mails, or keeping a team
+// application for future recruitment (docs/contact-consents.md).
 //
 // A grant is recorded, confirmed and ended; it is never reopened. A grant for
 // an address nobody has shown to be the person's waits for the person to
@@ -28,9 +28,16 @@ type Purpose string
 // Purposes (ADR-0062). A new one needs its own text, a migration widening
 // contact_consents_purpose_check and an entry in purposes.
 const (
-	// PurposeEventInvitations is invitations to SKY LAB's future events by
-	// e-mail.
+	// PurposeEventInvitations is invitations to SKY LAB's other events and
+	// its announcements by e-mail (davet-v2; davet-v1 named the invitations
+	// alone).
 	PurposeEventInvitations Purpose = "event_invitations"
+	// PurposePromotional is mails whose main purpose is promoting a product
+	// or a service (a discount code, a company's job posting, a raffle): one
+	// grant per person, which lasts until it is withdrawn (no renewal
+	// question). A short sponsor thank-you in an announcement is not
+	// promotional.
+	PurposePromotional Purpose = "promotional"
 	// PurposeRecruitmentPool is keeping a team application that was not
 	// accepted, to be considered in future recruitment (Forms' second box).
 	// Not enabled: whether it covers an address or one application is not
@@ -50,6 +57,11 @@ type purposeSpec struct {
 	// enabled: core records and serves the purpose. A purpose that is not
 	// enabled is refused everywhere (ErrPurposeNotEnabled).
 	enabled bool
+	// renews: a grant is due its renewal question after RenewalAfter
+	// without a sign that the person still wants the mails, and ends when
+	// nobody answers it. A grant of a purpose that does not renew lasts
+	// until it is withdrawn.
+	renews bool
 	// label is what the person consents to, in Turkish, as the pages name
 	// it.
 	label string
@@ -57,10 +69,17 @@ type purposeSpec struct {
 
 var purposes = map[Purpose]purposeSpec{
 	PurposeEventInvitations: {
-		texts:   []string{"davet-v1"},
+		texts:   []string{"davet-v1", "davet-v2"},
 		sources: []Source{SourceGuestApply, SourceForms, SourcePlace, SourceGuessr, SourceSelf},
 		enabled: true,
-		label:   "SKY LAB'ın gelecek etkinliklerine davet e-postaları",
+		renews:  true,
+		label:   "SKY LAB'ın diğer etkinlikleri ve duyuruları hakkında e-postalar",
+	},
+	PurposePromotional: {
+		texts:   []string{"tanitim-v1"},
+		sources: []Source{SourceForms, SourceSignup, SourceSelf},
+		enabled: true,
+		label:   "SKY LAB'dan tanıtım içerikli e-postalar",
 	},
 	PurposeRecruitmentPool: {
 		texts:   []string{"alim-havuzu-v1"},
@@ -74,6 +93,8 @@ var purposes = map[Purpose]purposeSpec{
 // the box (Turkish). The confirm page shows the one the grant was given on.
 var texts = map[string]string{
 	"davet-v1":       "SKY LAB'ın gelecek etkinliklerine davet e-postası almak istiyorum. Bunun için adımı ve e-posta adresimi saklayabilirsiniz. İstediğim zaman her davetteki bağlantıyla vazgeçebilirim.",
+	"davet-v2":       "Diğer etkinlik ve duyurulardan haberdar olmak istiyorum.",
+	"tanitim-v1":     "SKY LAB'dan tanıtım içerikli e-postalar (indirim kodu, şirket iş ilanı, çekiliş gibi) almak istiyorum.",
 	"alim-havuzu-v1": "Bu dönem kabul edilmezsem başvurumun gelecek alımlarda değerlendirilmek üzere saklanmasını istiyorum. İstediğim zaman vazgeçebilirim.",
 }
 
@@ -82,6 +103,11 @@ func Text(version string) string { return texts[version] }
 
 // Label is what a purpose's grant is for, in Turkish.
 func (p Purpose) Label() string { return purposes[p].label }
+
+// Renews reports whether a grant of purpose p is asked to renew after
+// RenewalAfter (event_invitations) or lasts until it is withdrawn
+// (promotional).
+func (p Purpose) Renews() bool { return purposes[p].renews }
 
 // Allows reports whether a grant of purpose p may come from source s.
 func (p Purpose) Allows(s Source) bool {
@@ -131,12 +157,12 @@ func (p Purpose) check() error {
 	return nil
 }
 
-// EnabledPurposes is how many purposes core takes: the most a Guest apply
+// GuestApplyPurposes is how many purposes Guest apply takes: the most its
 // consents list may name.
-func EnabledPurposes() int {
+func GuestApplyPurposes() int {
 	n := 0
-	for _, spec := range purposes {
-		if spec.enabled {
+	for purpose, spec := range purposes {
+		if spec.enabled && purpose.Allows(SourceGuestApply) {
 			n++
 		}
 	}
@@ -156,9 +182,26 @@ const (
 	SourcePlace  Source = "place"
 	SourceGuessr Source = "guessr"
 	// SourceSelf is a signed-in person consenting for themselves through
-	// core's API, from whichever app (the client is kept beside it).
+	// core's API, from whichever app (the client is kept beside it): Account
+	// Center's communication preferences, Place, Guessr.
 	SourceSelf Source = "self"
+	// SourceSignup is a signed-in person consenting for themselves on the
+	// first Account Center screen after they opened their account (the app
+	// says so; the client is kept beside it).
+	SourceSignup Source = "signup"
 )
+
+// PersonSource reads the source a signed-in person's own grant names: self
+// when it names none, else self or signup.
+func PersonSource(raw string) (Source, bool) {
+	switch source := Source(strings.TrimSpace(raw)); source {
+	case "":
+		return SourceSelf, true
+	case SourceSelf, SourceSignup:
+		return source, true
+	}
+	return "", false
+}
 
 // serviceSources are the sources a service account may speak for.
 var serviceSources = []Source{SourceForms, SourcePlace, SourceGuessr}
@@ -185,6 +228,7 @@ const (
 	viaOneClick          = "one_click"
 	viaSelf              = "self"
 	viaService           = "service"
+	viaStaff             = "staff"
 	viaRenewalUnanswered = "renewal_unanswered"
 )
 

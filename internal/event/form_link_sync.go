@@ -46,7 +46,19 @@ func NewServiceWithOptions(store Store, az authz.Authorizer, options ServiceOpti
 	}
 }
 
+// formLinksOf are the forms whose short links the Event manages: its
+// application and extra forms and its feedback form.
 func formLinksOf(e Event) []FormLink {
+	links := applicationLinksOf(e)
+	if feedback, ok := feedbackLink(e); ok {
+		links = append(links, feedback)
+	}
+	return links
+}
+
+// applicationLinksOf are the Event's application and extra forms: the forms
+// whose answers write Tickets.
+func applicationLinksOf(e Event) []FormLink {
 	links := make([]FormLink, 0, len(e.ExtraFormURLs)+1)
 	if id, ok := FormIDFromURL(e.FormURL); ok {
 		links = append(links, FormLink{FormID: id, URL: e.FormURL, Alias: e.FormAlias, Label: e.Name})
@@ -66,9 +78,10 @@ func formLinksOf(e Event) []FormLink {
 }
 
 // ListsForm reports whether the Event's application form or one of its
-// extra forms is formID, with or without an alias.
+// extra forms is formID, with or without an alias. Its feedback form is not
+// listed: its answers write no Ticket.
 func (e Event) ListsForm(formID uuid.UUID) bool {
-	for _, link := range formLinksOf(e) {
+	for _, link := range applicationLinksOf(e) {
 		if link.FormID == formID {
 			return true
 		}

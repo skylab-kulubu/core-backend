@@ -518,6 +518,53 @@ func (k *Keycloak) RemoveMember(ctx context.Context, groupID string, userID uuid
 	return mapKCErr(k.gc.DeleteUserFromGroup(ctx, token, k.realm, userID.String(), *g.ID))
 }
 
+// UsersPage reads one page of the realm's accounts, Keycloak's brief form
+// (no attributes), from first for at most max. Each Person carries Enabled,
+// ServiceAccount and CreatedAt as Keycloak gives them; a row that is not a
+// user (no id) is left out. A page shorter than max is the last. The user
+// sync (docs/user-sync.md) pages through the realm with it.
+func (k *Keycloak) UsersPage(ctx context.Context, first, max int) ([]Person, error) {
+	if first < 0 || max <= 0 {
+		return nil, ErrInvalid
+	}
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	u := k.adminBase + "/admin/realms/" + url.PathEscape(k.realm) + "/users?first=" + strconv.Itoa(first) +
+		"&max=" + strconv.Itoa(max) + "&briefRepresentation=true"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := k.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, mapKCErr(&gocloak.APIError{Code: resp.StatusCode, Message: http.StatusText(resp.StatusCode)})
+	}
+	var rows []*gocloak.User
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, err
+	}
+	out := make([]Person, 0, len(rows))
+	for _, row := range rows {
+		p, err := personFrom(row)
+		if err != nil {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 func (k *Keycloak) ListUsers(ctx context.Context) ([]Person, error) {
 	token, err := k.accessToken(ctx)
 	if err != nil {
@@ -749,6 +796,55 @@ func (k *Keycloak) UsersWithClientRole(ctx context.Context, clientID, role strin
 		}
 	}
 	return out, nil
+}
+
+func (k *Keycloak) ClientRoleHolders(ctx context.Context, clientID, role string) ([]Group, []Person, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	clientUUID, err := k.clientUUID(ctx, token, clientID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return []Group{}, []Person{}, nil
+		}
+		return nil, nil, err
+	}
+	roles := []string{role}
+	if strings.HasPrefix(role, "skyforms:") && role != "skyforms:*" {
+		roles = append(roles, "skyforms:*")
+	}
+	groups, users := make([]Group, 0), make([]Person, 0)
+	for _, name := range roles {
+		g, u, err := k.clientRoleHolders(ctx, token, clientUUID, name)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return nil, nil, err
+		}
+		groups, users = append(groups, g...), append(users, u...)
+	}
+	return groups, users, nil
+}
+
+func (k *Keycloak) ClientRoleMappings(ctx context.Context, clientID, role string) ([]Group, []Person, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	clientUUID, err := k.clientUUID(ctx, token, clientID)
+	if errors.Is(err, ErrNotFound) {
+		return []Group{}, []Person{}, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	groups, users, err := k.clientRoleHolders(ctx, token, clientUUID, role)
+	if errors.Is(err, ErrNotFound) {
+		return []Group{}, []Person{}, nil
+	}
+	return groups, users, err
 }
 
 func (k *Keycloak) clientRoleHolders(ctx context.Context, token, clientUUID, role string) ([]Group, []Person, error) {
@@ -1070,43 +1166,6 @@ func (k *Keycloak) GroupProtection(ctx context.Context, groupID string) (Protect
 		return Protection{}, nil
 	}
 	seen := map[string]bool{}
-	var check func(r gocloak.Role, clientID string, depth int) (Protection, error)
-	check = func(r gocloak.Role, clientID string, depth int) (Protection, error) {
-		name := gocloak.PString(r.Name)
-		if got := clientRoleProtection(clientID, name); got.Protected {
-			return got, nil
-		}
-		if !gocloak.PBool(r.Composite) || r.ID == nil || seen[*r.ID] {
-			return Protection{}, nil
-		}
-		seen[*r.ID] = true
-		if depth >= maxCompositeDepth {
-			return Protection{Protected: true, Reason: "composite " + clientID + ":" + name + " nested too deep"}, nil
-		}
-		children, err := k.gc.GetCompositeRolesByRoleID(ctx, token, k.realm, *r.ID)
-		if err != nil {
-			return Protection{}, mapKCErr(err)
-		}
-		for _, child := range children {
-			if child == nil {
-				continue
-			}
-			if !gocloak.PBool(child.ClientRole) {
-				return Protection{Protected: true, Reason: "composite " + clientID + ":" + name + " holds realm role " + gocloak.PString(child.Name)}, nil
-			}
-			childClient, err := k.clientIDOf(ctx, token, gocloak.PString(child.ContainerID))
-			if err != nil {
-				return Protection{}, err
-			}
-			if got, err := check(*child, childClient, depth+1); err != nil || got.Protected {
-				if got.Protected {
-					got.Reason = "composite " + clientID + ":" + name + " holds " + got.Reason
-				}
-				return got, err
-			}
-		}
-		return Protection{}, nil
-	}
 	for key, cm := range mapping.ClientMappings {
 		if cm == nil || cm.Mappings == nil {
 			continue
@@ -1116,12 +1175,71 @@ func (k *Keycloak) GroupProtection(ctx context.Context, groupID string) (Protect
 			clientID = *cm.Client
 		}
 		for _, r := range *cm.Mappings {
-			if got, err := check(r, clientID, 0); err != nil || got.Protected {
+			if got, err := k.roleProtection(ctx, token, r, clientID, 0, seen); err != nil || got.Protected {
 				return got, err
 			}
 		}
 	}
 	return Protection{}, nil
+}
+
+// roleProtection is the protection the client role r of clientID gives:
+// its own (clientRoleProtection), or that of a realm role or a client role
+// that is no app role it holds as a composite at any depth
+// (maxCompositeDepth; deeper counts as protected). seen are the composites
+// already opened.
+func (k *Keycloak) roleProtection(ctx context.Context, token string, r gocloak.Role, clientID string, depth int, seen map[string]bool) (Protection, error) {
+	name := gocloak.PString(r.Name)
+	if got := clientRoleProtection(clientID, name); got.Protected {
+		return got, nil
+	}
+	if !gocloak.PBool(r.Composite) || r.ID == nil || seen[*r.ID] {
+		return Protection{}, nil
+	}
+	seen[*r.ID] = true
+	if depth >= maxCompositeDepth {
+		return Protection{Protected: true, Reason: "composite " + clientID + ":" + name + " nested too deep"}, nil
+	}
+	children, err := k.gc.GetCompositeRolesByRoleID(ctx, token, k.realm, *r.ID)
+	if err != nil {
+		return Protection{}, mapKCErr(err)
+	}
+	for _, child := range children {
+		if child == nil {
+			continue
+		}
+		if !gocloak.PBool(child.ClientRole) {
+			return Protection{Protected: true, Reason: "composite " + clientID + ":" + name + " holds realm role " + gocloak.PString(child.Name)}, nil
+		}
+		childClient, err := k.clientIDOf(ctx, token, gocloak.PString(child.ContainerID))
+		if err != nil {
+			return Protection{}, err
+		}
+		if got, err := k.roleProtection(ctx, token, *child, childClient, depth+1, seen); err != nil || got.Protected {
+			if got.Protected {
+				got.Reason = "composite " + clientID + ":" + name + " holds " + got.Reason
+			}
+			return got, err
+		}
+	}
+	return Protection{}, nil
+}
+
+// RoleProtection is the protection the client role role gives where it is
+// mapped, as GroupProtection reads one of a Group's mappings: an app role
+// that holds, as a composite at any depth, a realm role or a client role
+// that is no app role (another app's admin role, say) is protected. The
+// role is read from its client's roles (view-clients).
+func (k *Keycloak) RoleProtection(ctx context.Context, role ClientRole) (Protection, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return Protection{}, err
+	}
+	r, err := k.lookupRole(ctx, token, role.ClientID, role.Role)
+	if err != nil {
+		return Protection{}, err
+	}
+	return k.roleProtection(ctx, token, r, role.ClientID, 0, map[string]bool{})
 }
 
 // KeycloakAdminRole is a realm-management role the Group groupID holds in
@@ -1375,6 +1493,43 @@ func (k *Keycloak) SetGroupClientRoles(ctx context.Context, groupID string, role
 		}
 	}
 	return nil
+}
+
+func (k *Keycloak) AddGroupClientRole(ctx context.Context, groupID string, role ClientRole) error {
+	return k.groupClientRole(ctx, groupID, role, true)
+}
+
+func (k *Keycloak) RemoveGroupClientRole(ctx context.Context, groupID string, role ClientRole) error {
+	return k.groupClientRole(ctx, groupID, role, false)
+}
+
+// groupClientRole maps role to the Group by its id (add) or takes it off.
+func (k *Keycloak) groupClientRole(ctx context.Context, groupID string, role ClientRole, add bool) error {
+	// Keycloak administration is never given through core (K3); the
+	// service refuses it first with keycloak_admin_role.
+	if add && role.ClientID == KeycloakAdminClient {
+		return ErrForbidden
+	}
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	g, err := k.fetchGroup(ctx, token, groupID)
+	if err != nil {
+		return mapKCErr(err)
+	}
+	resolved, err := k.lookupRole(ctx, token, role.ClientID, role.Role)
+	if err != nil {
+		return err
+	}
+	clientUUID, err := k.clientUUID(ctx, token, role.ClientID)
+	if err != nil {
+		return err
+	}
+	if add {
+		return mapKCErr(k.gc.AddClientRoleToGroup(ctx, token, k.realm, clientUUID, *g.ID, []gocloak.Role{resolved}))
+	}
+	return mapKCErr(k.gc.DeleteClientRoleFromGroup(ctx, token, k.realm, clientUUID, *g.ID, []gocloak.Role{resolved}))
 }
 
 func (k *Keycloak) UserExtraRoles(ctx context.Context, userID uuid.UUID) ([]ClientRole, error) {

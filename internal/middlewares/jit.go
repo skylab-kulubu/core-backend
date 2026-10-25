@@ -2,21 +2,28 @@ package middlewares
 
 import (
 	"errors"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
-	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-type JIT struct {
-	users user.Service
-	mail  mail.Mailer
+// Waker is told when JIT opened a person's row: the user sync
+// (docs/user-sync.md) then runs soon instead of at its next tick, and sends
+// the Welcome mail if the person is owed one. JIT itself sends no mail.
+type Waker interface {
+	Wake()
 }
 
-func NewJIT(users user.Service, mailers ...mail.Mailer) *JIT {
+type JIT struct {
+	users user.Service
+	wake  Waker
+}
+
+func NewJIT(users user.Service, wakers ...Waker) *JIT {
 	j := &JIT{users: users}
-	if len(mailers) > 0 {
-		j.mail = mailers[0]
+	if len(wakers) > 0 {
+		j.wake = wakers[0]
 	}
 	return j
 }
@@ -36,8 +43,8 @@ func (j *JIT) Handle(c fiber.Ctx) error {
 		}
 		return err
 	}
-	if created && j.mail != nil {
-		j.mail.Welcome(c.Context(), u)
+	if created && j.wake != nil {
+		j.wake.Wake()
 	}
 	// The user carries its profile picture as stored; the handlers that
 	// answer with it build its address from the configured base.

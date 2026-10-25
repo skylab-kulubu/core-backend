@@ -121,6 +121,8 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		// reads it. Keycloak maps it to ADMIN, YK and DK (grup-yonetimi
 		// GY1, which replaced S11's "not DK").
 		return action == Read && p.Product == "" && !p.ServiceAccount && hasRole(p, RoleAuditRead)
+	case TypeAppAssignment:
+		return a.allowAppAssignment(p, action)
 	case TypeTeam:
 		return action == Read
 	case TypeGroup:

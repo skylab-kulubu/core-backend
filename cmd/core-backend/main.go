@@ -35,6 +35,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/eventmail"
+	"github.com/skylab-kulubu/core-backend/internal/feedback"
 	"github.com/skylab-kulubu/core-backend/internal/googlewallet"
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/health"
@@ -56,6 +57,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
+	"github.com/skylab-kulubu/core-backend/internal/usersync"
 )
 
 func main() {
@@ -91,6 +93,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == groupCountReportCommandName {
 		os.Exit(runGroupCountReport(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == consentWithdrawCommandName {
+		os.Exit(runConsentWithdraw(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}
 	if len(os.Args) > 1 && os.Args[1] == retentionSweepCommandName {
 		os.Exit(runRetentionSweep(os.Args[2:], os.Getenv, os.Stdout))
@@ -192,18 +197,31 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("team delegation: %s (%s)", map[bool]string{false: "off", true: "on"}[teamDelegation], authz.TeamDelegationEnv)
+	// The panel's app assignments (docs/app-assignments.md): off unless
+	// set. A value core cannot read, or an app catalogue that names
+	// anything but app roles, stops startup.
+	appAssignments, err := authz.ParseAppAssignments(os.Getenv(authz.AppAssignmentsEnv))
+	if err != nil {
+		log.Fatal(err)
+	}
+	apps, err := authz.LoadApps()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("app assignments: %s (%s), %d apps", map[bool]string{false: "off", true: "on"}[appAssignments], authz.AppAssignmentsEnv, len(apps))
 	authzPolicy := authz.DefaultPolicy()
 	authzPolicy.RoleMode = roleMode
 	authzPolicy.PrivilegedRoots = privilegedRoots
 	authzPolicy.PrivilegedReaderRoots = privilegedReaderRoots
 	authzPolicy.TeamDelegation = teamDelegation
+	authzPolicy.AppAssignments = appAssignments
 	authzRoleMetrics := authz.NewRoleMetrics(log.Default(), time.Now)
 	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics))
 	// The Team code rule every Group create and rename passes
 	// (docs/team-codes.md), over the same roots.
 	groupNames := teamcode.NewRules(authzPolicy)
 	users := user.NewPostgresStore(pool)
-	events := event.NewPostgresStore(pool)
+	events := event.NewPostgresStore(pool).CopyCompetitionsWith(competition.CopyForEvent)
 	seasons := season.NewPostgresStore(pool)
 	tickets := ticket.NewPostgresStore(pool)
 	competitors := competitor.NewPostgresStore(pool)
@@ -437,6 +455,9 @@ func main() {
 	// Reads whether a Group holds a realm-management role (core changes no
 	// membership there, docs/team-delegation.md "Role rules"); Keycloak only.
 	var adminGroups identity.KeycloakAdminGroups
+	// Keycloak's account list, which the user sync pages through; Keycloak
+	// only.
+	var userSyncDir usersync.Directory
 	keycloakConfigured := strings.TrimSpace(os.Getenv("KEYCLOAK_URL")) != ""
 	if keycloakConfigured {
 		keycloakConfig, missing, err := keycloakFromEnv(os.Getenv)
@@ -473,6 +494,7 @@ func main() {
 		dir = keycloakDirectory
 		siteRoles = keycloakDirectory
 		adminGroups = keycloakDirectory
+		userSyncDir = keycloakDirectory
 	}
 	// Whether a person may be given a client role directly
 	// (docs/team-delegation.md "Role rules"): off unless set. A value core
@@ -482,6 +504,15 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("direct user roles: %s (%s)", map[bool]string{false: "off", true: "on"}[directUserRoles], identity.DirectUserRolesEnv)
+	// Whether a member without users:read may find Forms' seat holders
+	// (GET /v1/users?role=skyforms:access, docs/team-delegation.md "Forms'
+	// people picker"): on unless set off. A value core cannot read stops
+	// startup.
+	memberSeatSearch, err := identity.MemberSeatSearchFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("members' seat search: %s (%s)", map[bool]string{false: "off", true: "on"}[memberSeatSearch], identity.MemberSeatSearchEnv)
 	if privateMedia != nil {
 		// A reviewer who never signed in to core gets their row from
 		// Keycloak when a product asks for a read link for them.
@@ -606,6 +637,11 @@ func main() {
 		// holds for them (Personal e-mail included), as erasure reads them
 		// but without erasure's limit of three.
 		consents.SetAddresses(account.NewPersonAddresses(identity.NewAccountIdentity(dir), users))
+		// A withdrawal by address (a mail's link) also reaches the member
+		// whose Personal e-mail it is: one grant per person (s6 §5.8).
+		if holders, ok := dir.(consent.PersonalEmailHolders); ok {
+			consents.SetPersonalEmailHolders(holders)
+		}
 	}
 	if consentConfig.Enabled {
 		log.Printf("contact consents: on (links at %s, service clients %v, verified-address clients %v)",
@@ -658,6 +694,23 @@ func main() {
 	for _, line := range commpref.AudienceStartupLines(newsAudience.Enabled(), privateVisibility) {
 		log.Print(line)
 	}
+	// The recipient question (ADR 0072 karar 3, docs/news-audience.md
+	// "Recipients"): SkyMail asks, for the recipients a sender chose, which
+	// are a person and whether the mail may go to each. The verified
+	// addresses are read from Keycloak in bulk on demand, never per address.
+	ytuIdentityProvider, err := commpref.YTUIdentityProviderFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var recipients *commpref.Recipients
+	if addressDirectory, ok := dir.(commpref.AddressDirectory); ok {
+		recipients = commpref.NewRecipients(communicationPreferences, addressDirectory, users, ytuIdentityProvider)
+	}
+	recipientsState := "off"
+	if recipients.Enabled() {
+		recipientsState = "on"
+	}
+	log.Printf("recipient question: %s (YTÜ identity provider %s)", recipientsState, ytuIdentityProvider)
 	if keycloakConfigured {
 		worker("communication preference cleanup", commpref.MaintainCleanup(workers, communicationPreferences, commpref.CleanupInterval, func(what string, removed int64, err error) {
 			if err != nil {
@@ -746,7 +799,7 @@ func main() {
 		log.Print("account erasure worker disabled: ACCOUNT_ERASURE_WORKER_ENABLED is not true")
 	}
 
-	var mailer mail.Mailer
+	var welcomeMailer usersync.Mailer
 	var sky *mail.SkyMail
 	if base != "" && realm != "" && os.Getenv("KEYCLOAK_CLIENT_ID") != "" && os.Getenv("KEYCLOAK_CLIENT_SECRET") != "" {
 		sky = newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout)
@@ -771,8 +824,36 @@ func main() {
 		// mail of that kind, and the send path stays silent by design.
 		sky.WarnUnconfiguredTemplates()
 		consents.SetMailer(sky)
-		if sky.Configured() {
-			mailer = sky
+		if sky.WelcomeConfigured() {
+			welcomeMailer = sky
+		}
+	}
+
+	// The user sync (docs/user-sync.md): every few minutes it pages through
+	// Keycloak's accounts, opens the core row and Sky number of anyone core
+	// has none for, fills a row's blank e-mail and names from Keycloak, and
+	// sends the Welcome mail once to accounts created since
+	// WELCOME_MAIL_SINCE. It is the only sender of the Welcome mail; a first
+	// request (JIT) and an admin's new user wake it. One pass at a time across
+	// replicas (a database advisory lock).
+	userSyncConfig, err := usersync.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var userSync httpx.UserSync
+	switch {
+	case userSyncDir == nil:
+		log.Print("user sync: off (no Keycloak); no Welcome mail is sent")
+	case !userSyncConfig.Enabled:
+		log.Printf("user sync: %s; no Welcome mail is sent", userSyncConfig)
+	default:
+		syncWorker := usersync.New(userSyncDir, user.NewService(users, dir), usersync.NewPostgres(pool), welcomeMailer, userSyncConfig, log.Printf)
+		worker("user sync", syncWorker.Run(workers))
+		userSync = syncWorker
+		if welcomeMailer == nil {
+			log.Printf("user sync: %s; Welcome mail off (no SkyMail welcome template)", userSyncConfig)
+		} else {
+			log.Printf("user sync: %s", userSyncConfig)
 		}
 	}
 
@@ -787,6 +868,7 @@ func main() {
 	teamMembership, groupRolesNotice, teamMembershipMetrics, teamMembershipStopped := startTeamMembershipMail(
 		workers, teammail.NewPostgresQueue(pool), teammail.NewPostgresNoticeQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
 	worker("team membership mail", teamMembershipStopped)
+	worker("event status mail", startEventStatusMail(workers, events, tickets, users, sky, log.Printf))
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {
@@ -802,7 +884,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR)
+	feedbackInvites := feedback.NewPostgresStore(pool)
+	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites)
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -835,6 +918,12 @@ func main() {
 	}
 	retentionMetrics, retentionStopped := startRetentionSweep(workers, pool, retentionConfig)
 	worker("retention sweep", retentionStopped)
+	var wakeUserSync func()
+	if userSync != nil {
+		wakeUserSync = userSync.Wake
+	}
+	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, wakeUserSync)
+	worker("integration events", eventsStopped)
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
 
@@ -890,7 +979,12 @@ func main() {
 			TeamAudit:             teamAudit,
 			DirectUserRoles:       directUserRoles,
 			AdminGroups:           adminGroups,
-		}, mailer),
+			UserSync:              userSync,
+			NoMemberSeatSearch:    !memberSeatSearch,
+			Apps:                  apps,
+			AppAudit:              teamAudit,
+			AppAssignments:        appAssignments,
+		}),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
 			ImageAddressMode: imageAddressMode,
@@ -912,10 +1006,11 @@ func main() {
 		}),
 		URLs:                   urlSvc,
 		Competitions:           competition.NewService(competitions, events, az),
+		FeedbackInvites:        feedbackInvites,
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
 		SkyPassWalletMetrics:   wallet,
-		Mail:                   mailer,
+		UserSync:               userSync,
 		EventMail:              eventmail.New(events, tickets, users, lists, az, mailSnapshots),
 		ParseToken:             parse,
 		AccountAccessGate:      optionalAccountAccessGate(gate),
@@ -925,6 +1020,7 @@ func main() {
 		TeamMailMetrics:        teamMembershipMetrics,
 		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,
+		EventsMetrics:          eventsMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
 		ParseSelfDeleteSudo:    parseSelfDeleteSudo,
@@ -940,6 +1036,7 @@ func main() {
 		Authz:                     az,
 		EditableSites:             editableSites,
 		ManagedTeams:              delegation,
+		AppAssignments:            appAssignments,
 		AuthzRoleMetrics:          authzRoleMetrics,
 		GuestCheckInMetrics:       doorQR,
 		GuestApplyPublicIPLimit:   guestApplyIPLimit,
@@ -948,6 +1045,7 @@ func main() {
 		Consents:                  consents,
 		CommunicationPreferences:  communicationPreferences,
 		Audience:                  newsAudience,
+		Recipients:                recipients,
 		TrackingWithdrawalMetrics: trackingWithdrawals,
 		Readiness:                 readiness,
 		MediaDecodeMetrics:        decodeBudget,
@@ -1111,8 +1209,8 @@ const skyMailTimeout = 15 * time.Second
 // newSkyMail is core's SkyMail client, which asks the realm at base for its
 // token with core's own service account. The token request uses the same
 // client as the post: without one, mail.ClientCredentials falls back to
-// http.DefaultClient, which never gives up, and the Welcome mail of a first
-// login runs inside that login's request.
+// http.DefaultClient, which never gives up, and a hung mail would hold the
+// user sync's pass (and so its lock) or the request that sent it.
 func newSkyMail(base, realm, clientID, clientSecret, skyMailURL string, timeout time.Duration) *mail.SkyMail {
 	client := &http.Client{Timeout: timeout}
 	return &mail.SkyMail{

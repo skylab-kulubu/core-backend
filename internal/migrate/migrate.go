@@ -1371,6 +1371,78 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND conname = 'communication_preferences_category_check'
 			  AND pg_get_constraintdef(oid) LIKE '%''tracking''%'
 		  )`,
+	// Registration closure (ADR 0066 addendum, ticket 12): the three
+	// columns.
+	20261020120000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events'
+			  AND column_name IN ('registration_closed', 'registration_closes_at', 'registration_closed_at')
+		) = 3`,
+	// The Competitions an Event's cancellation cancelled (ADR 0066
+	// addendum, ticket 04): the two columns and their check.
+	20261020130000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'competitions'
+			  AND column_name IN ('cancelled_with_event_at', 'status_before_event_cancel')
+		) = 2
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.competitions')
+			  AND conname = 'competitions_status_before_event_cancel_check'
+		)`,
+	// The Event status mails (ticket 14): the queue, its record of sends,
+	// their indexes and the cancellation's mark.
+	20261020140000: `
+		SELECT 1
+		WHERE to_regclass('public.event_status_mails') IS NOT NULL
+		  AND to_regclass('public.event_status_mail_sends') IS NOT NULL
+		  AND to_regclass('public.event_status_mails_due_idx') IS NOT NULL
+		  AND to_regclass('public.event_status_mails_event_idx') IS NOT NULL
+		  AND to_regclass('public.event_status_mail_sends_ticket_idx') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'cancel_notified_at'
+		  )`,
+	// The Welcome mail's mark on users (docs/user-sync.md).
+	20261020180000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'welcome_sent_at'`,
+	// The Event's feedback form (etkinlik geri bildirim formu, ticket 02):
+	// the four columns and the mode's check.
+	20261020190000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events'
+			  AND column_name IN ('feedback_mode', 'feedback_form_url', 'feedback_form_alias', 'feedback_auto_send')
+		) = 4
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events') AND conname = 'events_feedback_mode_check'
+		  )`,
+	// A Session's feedback form (etkinlik geri bildirim formu, ticket 03):
+	// the three columns.
+	20261020190100: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'sessions'
+			  AND column_name IN ('feedback_form_url', 'feedback_form_alias', 'feedback_auto_send')
+		) = 3`,
+	// Feedback invites (etkinlik geri bildirim formu, ticket 04): the two
+	// tables, their indexes and the counting trigger.
+	20261020190200: `
+		SELECT 1
+		WHERE to_regclass('public.feedback_invites') IS NOT NULL
+		  AND to_regclass('public.feedback_invite_counts') IS NOT NULL
+		  AND to_regclass('public.feedback_invites_form_idx') IS NOT NULL
+		  AND to_regclass('public.feedback_invites_sent_idx') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.feedback_invites') AND tgname = 'feedback_invites_count'
+		  )`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

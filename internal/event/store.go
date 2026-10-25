@@ -32,6 +32,11 @@ type Store interface {
 	GetIncludingArchived(ctx context.Context, id uuid.UUID) (Event, error)
 	Create(ctx context.Context, e Event) (Event, error)
 	Update(ctx context.Context, e Event) (Event, error)
+	// Copy writes the plan's copy in one transaction: the Event, its door
+	// staff, days, Sessions, Event template binding and Competitions, and
+	// its cover. It answers the parts it left out (skipped). ErrConflict
+	// when the copy's id is taken.
+	Copy(ctx context.Context, plan CopyPlan) (Event, []string, error)
 	Archive(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	// ArchiveDraft archives the Event only while it is a draft, in one
 	// conditional write: ErrNotDraft when it is published or cancelled (an
@@ -85,6 +90,23 @@ type Store interface {
 	// still current and published it says why: ErrHasTickets or
 	// ErrHasCompetitors. False when it changed nothing.
 	Unpublish(ctx context.Context, id uuid.UUID) (bool, error)
+	// Cancel cancels the published Event (cancelled_at/by, by nil when
+	// unknown, and the reason): one UPDATE that changes it only while it is
+	// current, published and not ended, and in the same transaction cancels
+	// its current Competitions not cancelled already, keeping their earlier
+	// status. False when it changed nothing.
+	// With notify it queues the Ticket holders' mail in the same
+	// transaction and marks the cancellation notified (ticket 14).
+	Cancel(ctx context.Context, id uuid.UUID, by *uuid.UUID, reason string, notify bool) (bool, error)
+	// Uncancel publishes the cancelled Event again: one UPDATE that changes
+	// it only while it is current and cancelled, clears the cancellation,
+	// and in the same transaction brings back the Competitions its
+	// cancellation cancelled to their earlier status. False when it changed
+	// nothing.
+	// With notify, and only when the cancellation was mailed, it queues
+	// the reinstated mail after the cancellation's; it always clears the
+	// mark (ticket 14).
+	Uncancel(ctx context.Context, id uuid.UUID, notify bool) (bool, error)
 	SetSeason(ctx context.Context, eventID uuid.UUID, seasonID *uuid.UUID) (Event, error)
 	SetMailListID(ctx context.Context, eventID, listID uuid.UUID) (Event, error)
 	GetSession(ctx context.Context, id uuid.UUID) (Session, error)
@@ -93,6 +115,10 @@ type Store interface {
 	ListSessionsLifecycle(ctx context.Context, eventDayID uuid.UUID, visibility lifecycle.Visibility) ([]Session, error)
 	CreateSession(ctx context.Context, s Session) (Session, error)
 	UpdateSession(ctx context.Context, s Session) (Session, error)
+	// ListSessionFeedbackForms reads the Session feedback forms of the
+	// Event's current days' current Sessions (the Event archived or not),
+	// or, for uuid.Nil, of every current Event's.
+	ListSessionFeedbackForms(ctx context.Context, eventID uuid.UUID) ([]SessionFeedbackForm, error)
 	ArchiveSession(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	RestoreSession(ctx context.Context, id uuid.UUID) error
 }

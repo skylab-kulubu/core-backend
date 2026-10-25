@@ -96,6 +96,18 @@ func (h *SkyPassHandler) BindCard(c fiber.Ctx) error {
 	return c.JSON(got)
 }
 
+// UnbindCard removes the caller's own bound card (docs/skypass-card.md).
+func (h *SkyPassHandler) UnbindCard(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return skypassError(c, err)
+	}
+	if err := h.svc.UnbindCard(c.Context(), p); err != nil {
+		return skypassError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
 func (h *SkyPassHandler) LookupCard(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {

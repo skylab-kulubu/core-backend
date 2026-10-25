@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -34,7 +36,7 @@ type eventBody struct {
 	EndDate       *time.Time             `json:"endDate"`
 	Linkedin      string                 `json:"linkedin"`
 	// Status is read on create alone (draft or published; none is
-	// published). An update ignores it, and every write ignores active,
+	// published). An update (event.Patch) reads neither it nor active,
 	// which is derived (ADR 0066): a client that sends the whole Event
 	// back cannot change the status with it.
 	Status          string       `json:"status"`
@@ -44,6 +46,15 @@ type eventBody struct {
 	AttendanceRule  string       `json:"attendanceRule"`
 	AttendanceRatio *float64     `json:"attendanceRatio"`
 	DoorStaffIDs    *[]uuid.UUID `json:"doorStaffIds"`
+	// Registration closure on create (ticket 12); none is open.
+	RegistrationClosed   bool       `json:"registrationClosed"`
+	RegistrationClosesAt *time.Time `json:"registrationClosesAt"`
+	// The Event's feedback on create (etkinlik geri bildirim formu, ticket
+	// 02): no mode is event, no feedbackAutoSend is true.
+	FeedbackMode      string `json:"feedbackMode"`
+	FeedbackFormURL   string `json:"feedbackFormUrl"`
+	FeedbackFormAlias string `json:"feedbackFormAlias"`
+	FeedbackAutoSend  *bool  `json:"feedbackAutoSend"`
 }
 
 func eventError(c fiber.Ctx, err error) error {
@@ -87,6 +98,14 @@ func (b eventBody) asEvent() event.Event {
 		CoverImageID:    b.CoverImageID,
 		AttendanceRule:  b.AttendanceRule,
 		AttendanceRatio: b.AttendanceRatio,
+
+		RegistrationClosed:   b.RegistrationClosed,
+		RegistrationClosesAt: b.RegistrationClosesAt,
+
+		FeedbackMode:      event.FeedbackMode(b.FeedbackMode),
+		FeedbackFormURL:   strings.TrimSpace(b.FeedbackFormURL),
+		FeedbackFormAlias: strings.TrimSpace(b.FeedbackFormAlias),
+		FeedbackAutoSend:  b.FeedbackAutoSend == nil || *b.FeedbackAutoSend,
 	}
 	if b.FormAlias != nil {
 		e.FormAlias = *b.FormAlias
@@ -219,6 +238,121 @@ func (h *EventHandler) Unpublish(c fiber.Ctx) error {
 	return h.statusChange(c, h.svc.Unpublish)
 }
 
+// cancelBody is the body of POST /v1/events/{id}/cancel, both fields
+// optional; no body is none of them.
+type cancelBody struct {
+	Reason string `json:"reason"`
+	// NotifyTicketHolders queues the cancellation mail to the Ticket
+	// holders (ADR 0066 addendum 2026-10-19; ticket 14). A body without it
+	// mails nobody: an older client does not start a mail.
+	NotifyTicketHolders bool `json:"notifyTicketHolders"`
+}
+
+// Cancel cancels a published Event that has not ended: POST
+// /v1/events/{id}/cancel (ADR 0066, ticket 04).
+func (h *EventHandler) Cancel(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body cancelBody
+	if len(bytes.TrimSpace(c.Body())) > 0 {
+		if err := c.Bind().Body(&body); err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+	}
+	cancelled, err := h.svc.Cancel(c.Context(), p, id, body.Reason, body.NotifyTicketHolders)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(h.svc.ProjectFor(&p, cancelled))
+}
+
+// uncancelBody is the body of POST /v1/events/{id}/uncancel, optional.
+type uncancelBody struct {
+	// NotifyTicketHolders queues the mail that the Event is back to whom
+	// the cancellation mail reached (ticket 14); without a cancellation
+	// mail it does nothing.
+	NotifyTicketHolders bool `json:"notifyTicketHolders"`
+}
+
+// Uncancel undoes a cancellation: POST /v1/events/{id}/uncancel (ticket 15).
+func (h *EventHandler) Uncancel(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body uncancelBody
+	if len(bytes.TrimSpace(c.Body())) > 0 {
+		if err := c.Bind().Body(&body); err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+	}
+	uncancelled, err := h.svc.Uncancel(c.Context(), p, id, body.NotifyTicketHolders)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(h.svc.ProjectFor(&p, uncancelled))
+}
+
+// copyBody is the body of POST /v1/events/{id}/copy (ticket 06).
+type copyBody struct {
+	// ID is the copy's id, which the client makes: a retried request
+	// answers the copy it made.
+	ID                  *uuid.UUID `json:"id"`
+	Name                string     `json:"name"`
+	StartDate           *time.Time `json:"startDate"`
+	IncludeDoorStaff    bool       `json:"includeDoorStaff"`
+	IncludeCompetitions bool       `json:"includeCompetitions"`
+	// OwnerTeam is the copy's Owner team (ticket 16); none is the
+	// source's.
+	OwnerTeam string `json:"ownerTeam"`
+}
+
+// Copy copies an Event's structure into a new draft: POST
+// /v1/events/{id}/copy (ADR 0066, ticket 06). 201 with the copy and the
+// parts left out; 200 when the same id from the same source made it
+// already.
+func (h *EventHandler) Copy(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body copyBody
+	if err := c.Bind().Body(&body); err != nil || body.ID == nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	copied, fresh, err := h.svc.Copy(c.Context(), p, id, event.CopyInput{
+		ID:                  *body.ID,
+		Name:                body.Name,
+		StartDate:           body.StartDate,
+		IncludeDoorStaff:    body.IncludeDoorStaff,
+		IncludeCompetitions: body.IncludeCompetitions,
+		OwnerTeam:           body.OwnerTeam,
+	})
+	if err != nil {
+		return eventError(c, err)
+	}
+	copied.Event = h.svc.ProjectFor(&p, copied.Event)
+	status := fiber.StatusOK
+	if fresh {
+		status = fiber.StatusCreated
+	}
+	return c.Status(status).JSON(copied)
+}
+
 func (h *EventHandler) statusChange(c fiber.Ctx, change func(ctx context.Context, p authz.Principal, id uuid.UUID) (event.Event, error)) error {
 	p, err := caller(c)
 	if err != nil {
@@ -260,13 +394,12 @@ func (h *EventHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	var body eventBody
+	// PUT and PATCH alike write only the fields the body sends (ticket 13).
+	var body event.Patch
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	in := body.asEvent()
-	in.Status = ""
-	updated, err := h.svc.Update(c.Context(), p, id, in)
+	updated, err := h.svc.Patch(c.Context(), p, id, body)
 	if err != nil {
 		return eventError(c, err)
 	}
