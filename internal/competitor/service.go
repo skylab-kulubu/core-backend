@@ -152,15 +152,17 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in CreateInput)
 	if exists {
 		return Competitor{}, ErrConflict
 	}
-	score := in.Score
+	// Who enters themselves gives themselves no score and no win: the
+	// Event's organizers set both (Update).
+	score, winner := in.Score, in.IsWinner
 	if p.ID == in.UserID.String() {
-		score = nil
+		score, winner = nil, false
 	}
 	created, err := s.competitors.Create(ctx, Competitor{
 		UserID:   in.UserID,
 		EventID:  in.EventID,
 		Score:    score,
-		IsWinner: in.IsWinner,
+		IsWinner: winner,
 	})
 	if err != nil {
 		return Competitor{}, err

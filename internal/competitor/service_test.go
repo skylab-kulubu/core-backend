@@ -177,6 +177,34 @@ func TestService_CompetitorsFollowTheEventStatus(t *testing.T) {
 	}
 }
 
+// A person who enters themselves is never the winner on entry, as they
+// give themselves no score: before, anyone signed in could enter a
+// published Event as its winner.
+func TestService_SelfRegisterIsNoWinner(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB", event.StatusPublished)
+	userID := uuid.MustParse("66666666-6666-6666-6666-666666666666")
+	created, err := svc.Create(ctx, authz.Principal{ID: userID.String()}, competitor.CreateInput{UserID: userID, EventID: ev.ID, IsWinner: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.IsWinner || created.Score != nil {
+		t.Fatalf("created %+v, want no score and no win", created)
+	}
+	// The Event's Leader still enters someone else as its winner.
+	leader := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	other := uuid.MustParse("77777777-7777-7777-7777-777777777777")
+	won, err := svc.Create(ctx, leader, competitor.CreateInput{UserID: other, EventID: ev.ID, IsWinner: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !won.IsWinner {
+		t.Fatalf("the Leader's winner %+v", won)
+	}
+}
+
 func TestService_SelfCannotUpdateScore(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)
