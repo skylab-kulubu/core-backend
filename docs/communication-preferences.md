@@ -137,7 +137,7 @@ All bodies are JSON. Errors are `application/problem+json` with a `code`:
 `communication_preference_subject_inactive` (403),
 `communication_preference_follow_members_only` (403),
 `communication_preferences_unavailable` (503,
-`COMMUNICATION_PREFERENCE_KEY` unset),
+no link key set),
 `communication_preference_teams_unavailable` (503 with `Retry-After`,
 Keycloak did not answer the tree).
 
@@ -241,23 +241,54 @@ person theirs for the one category asked, so SkyMail never holds the key.
   `no-store`. Both headers must be covered by the mail's DKIM signature.
 - Repeating a POST answers as the first and leaves the same rows. A person
   being erased or erased writes nothing and is answered as done.
-- A token that does not read (changed, cut, another key) is `400` (page:
-  "Bağlantı geçersiz"; one-click: `invalid link`). The key unset is `503`.
+- A token that does not read (changed, cut, another key, a key version not
+  in the ring) is `400` (page: "Bağlantı geçersiz"; one-click:
+  `invalid link`). No key set is `503`.
 - The pages answer with `Cache-Control: no-store`,
   `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and a CSP without
   scripts, as the consent pages do. Each client address may open the page
   120 times a minute and POST 600 times a minute (one-click POSTs of a mail
   provider share a few addresses).
 
-**The token.** Unpadded base64url of: version (1), kind (`u`), the channel
-(a tag; `email` is 1, a tag is never reused), the person's id (16 bytes), the number of categories (1 to 32) and each category (a tag;
-a team's Group id with its length), then the first 16 bytes of an
-HMAC-SHA256 over all of it under a key derived from `COMMUNICATION_PREFERENCE_KEY`
-for this purpose only. It carries no address and does not expire (a mail
-may be opened years later). Core never logs it: the error handler logs the
-path without the query, and these routes answer pages, not problem
-documents (which echo the query). The edge proxy's access log must not keep
-query strings of this path either.
+**The token.** Unpadded base64url of: the format and, from format 2, the
+key version (below), kind (`u`), the channel (a tag; `email` is 1, a tag is
+never reused), the person's id (16 bytes), the number of categories (1 to
+32) and each category (a tag; a team's Group id with its length), then the
+first 16 bytes of an HMAC-SHA256 over all of it under a key derived, for
+this purpose only, from the key version that signed it. It carries no
+address and does not expire (a mail may be opened years later). Core never
+logs it: the error handler logs the path without the query, and these
+routes answer pages, not problem documents (which echo the query). The
+edge proxy's access log must not keep query strings of this path either.
+
+**The key ring** (ADR 0072 Consequences; hub ticket abonelik-cikisi 13, the
+same rules as SkyMail's unsubscribe key ring). A link names the key version
+that signed it, so a new key does not break the links already mailed:
+
+| Format | Starts with | Signed by |
+|---|---|---|
+| 1 | `1` | version 1, `COMMUNICATION_PREFERENCE_KEY`. Every link mailed before the ring is one |
+| 2 | `2`, then the version (2–255) | `COMMUNICATION_PREFERENCE_KEY_V<n>` |
+
+- New links are signed with `COMMUNICATION_PREFERENCE_KEY_CURRENT`. Unset
+  or `1`, core signs format 1, as before the ring: an image from before the
+  ring (which reads only format 1) can be rolled back without breaking a
+  link. Format 2 appears only after the first new version.
+- Every version set reads its own links; the ring is exactly the versions
+  set. Format 2 never names version 1.
+- **Planned change:** a new `V<n>` is added and `CURRENT` moves to it. The
+  old version stays in the ring **for good**: its links keep working (RFC
+  8058; CAN-SPAM's at least 30 days).
+- **Leak:** the leaked version's variable is removed **at once**, a new
+  version becomes `CURRENT`, and core is deployed. Links of that version no
+  longer read (`400`); the person turns the category off on the Account
+  center instead. Whoever holds a leaked key could otherwise sign a link
+  that turns off someone else's categories. Version 1 leaked is
+  `COMMUNICATION_PREFERENCE_KEY` removed.
+- A version number is never given to another key, and two versions never
+  hold the same key.
+- The nightly secret rotator never turns these keys: a new version is
+  written only by the hub's key wizard, the old ones kept.
 
 ## Tracking
 
@@ -393,11 +424,20 @@ alarm.
 
 | Variable | |
 |---|---|
-| `COMMUNICATION_PREFERENCE_KEY` | 32 random bytes, unpadded base64url (OpenBao reference, set by a wizard). Unset: off, every route above `503`. Its own key, not `CONTACT_CONSENT_KEY` (which stays unset in production until the retention sweep runs). Never rotate: every mailed link depends on it |
+| `COMMUNICATION_PREFERENCE_KEY` | key version 1: 32 random bytes, unpadded base64url (OpenBao reference, set by a wizard). Its own key, not `CONTACT_CONSENT_KEY` (which stays unset in production until the retention sweep runs). Never changed in place: a new key is a new version ([the key ring](#the-unsubscribe-link)) |
+| `COMMUNICATION_PREFERENCE_KEY_V<n>` | key version `n` (2–255), the same form, each its own OpenBao reference. `COMMUNICATION_PREFERENCE_KEY_V1` is not read: version 1 is the variable above. No version set at all: off, every route above `503` |
+| `COMMUNICATION_PREFERENCE_KEY_CURRENT` | the version new links are signed with, 1–255; unset: 1. It must name a version that is set |
 | `PUBLIC_API_ORIGIN` | required with the key: where the links point |
 | `COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL` | the Account center page the unsubscribe page links to; unset: `https://my.yildizskylab.com` |
 | `COMMUNICATION_TRACKING_MODE` | `opt_out` (unset) or `opt_in` ([Tracking](#tracking)); anything else stops core |
 | `COMMUNICATION_TRACKING_WITHDRAWAL_URL` | SkyMail's address on the internal network for the withdrawal (not the public one: `/internal` answers the edge `404`); unset: `ACCOUNT_ERASURE_SKYMAIL_URL`. Neither set (or no `KEYCLOAK_*` client credentials): withdrawals wait in the outbox, startup warns. A value that does not read (either variable) does not stop core: startup warns and the withdrawals wait; the erasure worker still checks `ACCOUNT_ERASURE_SKYMAIL_URL` for itself |
 
-Startup logs `communication preferences: on|off`, `communication tracking:
+A current version that is not set, a newer version without `CURRENT`, a key
+that is not 32 bytes, `_V1`, or two versions holding the same key stop core
+at startup (all of core, not only the preferences: a configuration error,
+fail fast); the error names the variable, never a value. Core never falls
+back to another version.
+
+Startup logs `communication preferences: on|off` with the key versions and
+the current one (never a key), `communication tracking:
 mode …` and whether withdrawals reach SkyMail.
