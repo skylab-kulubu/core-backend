@@ -23,13 +23,110 @@ type FeedbackSender interface {
 	SendNow(ctx context.Context, t feedback.Target, now time.Time) (sent bool, recipients int, err error)
 }
 
+// FeedbackReminders cancels the feedback reminders of a closed form (ticket
+// 07; feedback.PostgresStore).
+type FeedbackReminders interface {
+	CancelReminders(ctx context.Context, t feedback.Target, at time.Time) (int, error)
+	ReportFormState(ctx context.Context, formID uuid.UUID, open bool, closesAt *time.Time, now time.Time) (int, error)
+}
+
 // FeedbackHandler answers an Event's feedback counts (etkinlik geri bildirim
-// formu, ticket 04) and sends a form at once (ticket 06).
+// formu, ticket 04), sends a form at once (ticket 06) and cancels the
+// reminders of a closed form (ticket 07).
 type FeedbackHandler struct {
-	events event.Service
-	authz  authz.Authorizer
-	counts FeedbackCounter
-	sender FeedbackSender
+	events    event.Service
+	authz     authz.Authorizer
+	counts    FeedbackCounter
+	sender    FeedbackSender
+	reminders FeedbackReminders
+}
+
+// RemindWith gives the handler the reminders' cancelling.
+func (h *FeedbackHandler) RemindWith(reminders FeedbackReminders) *FeedbackHandler {
+	h.reminders = reminders
+	return h
+}
+
+// CloseEvent is POST /v1/events/{id}/feedback/close: the panel closed the
+// Event's own feedback form (its "Form açık/kapalı" switch, in Forms), and
+// tells core so. The reminders still to go of the form's invites are
+// cancelled for good: opening the form again does not bring them back.
+// Whoever may edit the Event may; 200 {"cancelled": n}.
+func (h *FeedbackHandler) CloseEvent(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	ev, err := h.events.Get(c.Context(), &p, id)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return h.close(c, p, ev, feedback.Target{EventID: ev.ID})
+}
+
+// CloseSession is POST /v1/sessions/{id}/feedback/close: the same for the
+// Session's form.
+func (h *FeedbackHandler) CloseSession(c fiber.Ctx) error {
+	p, ev, t, done, err := h.sessionTarget(c)
+	if done {
+		return err
+	}
+	return h.close(c, p, ev, t)
+}
+
+func (h *FeedbackHandler) close(c fiber.Ctx, p authz.Principal, ev event.Event, t feedback.Target) error {
+	if !h.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update) {
+		return eventError(c, event.ErrForbidden)
+	}
+	n, err := h.reminders.CancelReminders(c.Context(), t, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"cancelled": n})
+}
+
+type formStateBody struct {
+	Open     *bool      `json:"open"`
+	ClosesAt *time.Time `json:"closesAt"`
+}
+
+// FormState is PUT /v1/forms/{formId}/state: the forms service tells core
+// that a form opened or closed (decision S3). {"open": false} closed it now;
+// {"open": true, "closesAt": t} closes it at t (an RFC 3339 time with its
+// zone); {"open": true, "closesAt": null} has it open with no closing time.
+// For a feedback form, the reminders of its invites still to go are
+// cancelled for good from its closing time on; any other form's state is
+// not kept. Only the forms service's account with ticket:forms may, as it
+// reports answers: whoever else is refused before the request is read.
+// 204 in every case it may.
+func (h *FeedbackHandler) FormState(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	if !h.authz.Allow(p, authz.Resource{Type: authz.TypeFormResponse}, authz.Create) {
+		return eventError(c, event.ErrForbidden)
+	}
+	formID, err := uuid.Parse(c.Params("formId"))
+	if err != nil || formID == uuid.Nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body formStateBody
+	if err := c.Bind().Body(&body); err != nil || body.Open == nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	closesAt := body.ClosesAt
+	if !*body.Open {
+		closesAt = nil
+	}
+	if _, err := h.reminders.ReportFormState(c.Context(), formID, *body.Open, closesAt, time.Now().UTC()); err != nil {
+		return err
+	}
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // SendWith gives the handler its "Şimdi gönder".
@@ -58,27 +155,38 @@ func (h *FeedbackHandler) SendEventNow(c fiber.Ctx) error {
 // SendSessionNow is POST /v1/sessions/{id}/feedback/send: the Session's
 // form.
 func (h *FeedbackHandler) SendSessionNow(c fiber.Ctx) error {
-	p, err := caller(c)
+	p, ev, t, done, err := h.sessionTarget(c)
+	if done {
+		return err
+	}
+	return h.sendNow(c, p, ev, t)
+}
+
+// sessionTarget reads the Session of the path's id, its Event and the
+// target. When it fails, done is true and err is what writing the answer
+// to c returned.
+func (h *FeedbackHandler) sessionTarget(c fiber.Ctx) (p authz.Principal, ev event.Event, t feedback.Target, done bool, err error) {
+	p, err = caller(c)
 	if err != nil {
-		return eventError(c, err)
+		return p, ev, t, true, eventError(c, err)
 	}
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return problem(c, fiber.StatusBadRequest, "Bad Request")
+		return p, ev, t, true, problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	sess, err := h.events.GetSession(c.Context(), &p, id)
 	if err != nil {
-		return eventError(c, err)
+		return p, ev, t, true, eventError(c, err)
 	}
 	day, err := h.events.GetDay(c.Context(), &p, sess.EventDayID)
 	if err != nil {
-		return eventError(c, err)
+		return p, ev, t, true, eventError(c, err)
 	}
-	ev, err := h.events.Get(c.Context(), &p, day.EventID)
+	ev, err = h.events.Get(c.Context(), &p, day.EventID)
 	if err != nil {
-		return eventError(c, err)
+		return p, ev, t, true, eventError(c, err)
 	}
-	return h.sendNow(c, p, ev, feedback.Target{EventID: ev.ID, SessionID: &sess.ID})
+	return p, ev, feedback.Target{EventID: ev.ID, SessionID: &sess.ID}, false, nil
 }
 
 // sendNow sends the target's form once whoever may edit the Event asks:

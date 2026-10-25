@@ -25,18 +25,25 @@ type sent struct {
 	firstName string
 	eventName string
 	items     []mail.FeedbackItem
+	kind      mail.FeedbackKind
 }
 
-// mailer records the mails; fail makes the next sends fail with it.
+// mailer records the mails; fail makes the next sends fail with it; off
+// turns a kind's template off.
 type mailer struct {
 	mu   sync.Mutex
 	sent []sent
 	fail []error
+	off  map[mail.FeedbackKind]bool
 }
 
-func (m *mailer) FeedbackConfigured(mail.FeedbackKind) bool { return true }
+func (m *mailer) FeedbackConfigured(kind mail.FeedbackKind) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.off[kind]
+}
 
-func (m *mailer) Feedback(_ context.Context, _ mail.FeedbackKind, to, _, first, eventName string, items []mail.FeedbackItem) error {
+func (m *mailer) Feedback(_ context.Context, kind mail.FeedbackKind, to, _, first, eventName string, items []mail.FeedbackItem) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.fail) > 0 {
@@ -44,7 +51,7 @@ func (m *mailer) Feedback(_ context.Context, _ mail.FeedbackKind, to, _, first, 
 		m.fail = m.fail[1:]
 		return err
 	}
-	m.sent = append(m.sent, sent{to, first, eventName, items})
+	m.sent = append(m.sent, sent{to: to, firstName: first, eventName: eventName, items: items, kind: kind})
 	return nil
 }
 

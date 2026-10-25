@@ -2,7 +2,8 @@
 // formu, ticket 06; docs/event-feedback.md): an Event's or Session's
 // feedback form, with each person's own invite link, to whom checked in,
 // two hours after it ends (one mail a person a day) or at once with
-// "Şimdi gönder". It follows the Event status mail worker
+// "Şimdi gönder", and their one reminder three days later (ticket 07). It
+// follows the Event status mail worker
 // (internal/eventstatusmail): the queue holds ids, the address is read when
 // the mail goes, a pass holds a mail under a lease and a failure is tried
 // again later.
@@ -41,14 +42,17 @@ const (
 // Queue is the feedback mail queue (feedback.PostgresStore).
 type Queue interface {
 	Plan(ctx context.Context, now time.Time) (int, error)
-	ClaimMail(ctx context.Context, now time.Time, lease time.Duration) (feedback.Mail, bool, error)
+	PlanReminders(ctx context.Context, now time.Time) (int, error)
+	ClaimMail(ctx context.Context, now time.Time, lease time.Duration, kinds []string) (feedback.Mail, bool, error)
 	Siblings(ctx context.Context, claimed feedback.Mail, now time.Time) ([]feedback.Mail, error)
 	ClaimSibling(ctx context.Context, id uuid.UUID, now time.Time, lease time.Duration) (feedback.Mail, bool, error)
 	PostponeMail(ctx context.Context, claimed feedback.Mail, at time.Time) error
 	DayDue(ctx context.Context, ticketIDs []uuid.UUID, day uuid.UUID) (*time.Time, error)
 	MailItems(ctx context.Context, mailID uuid.UUID) ([]feedback.MailItem, error)
 	Invite(ctx context.Context, ticketID uuid.UUID, t feedback.Target, formID uuid.UUID) (feedback.Invite, error)
-	FinishMail(ctx context.Context, claimed feedback.Mail, at time.Time) error
+	ReminderInvite(ctx context.Context, ticketID uuid.UUID, t feedback.Target, now time.Time) (feedback.Invite, bool, error)
+	MarkReminded(ctx context.Context, ids []uuid.UUID, at time.Time) error
+	FinishMail(ctx context.Context, claimed feedback.Mail, at time.Time, sent bool) error
 	RetryMail(ctx context.Context, claimed feedback.Mail, at time.Time) error
 }
 
@@ -92,20 +96,22 @@ func NewService(config Config) (*Service, error) {
 	return &Service{config: config, now: now, logger: logger}, nil
 }
 
-// Report counts one pass: Planned targets, and mails Sent, Dropped (no
-// target left to send), Skipped (no address), Rejected by SkyMail,
-// Expired, Off (no template key) and Retried later.
+// Report counts one pass: Planned targets and Reminders, and mails Sent
+// (Reminded of them reminders), Dropped (no target left to send), Skipped
+// (no address), Rejected by SkyMail, Expired, Off (no template key) and
+// Retried later.
 type Report struct {
-	Planned                                                 int
-	Sent, Dropped, Skipped, Rejected, Expired, Off, Retried int
+	Planned, Reminders                                int
+	Sent, Reminded                                    int
+	Dropped, Skipped, Rejected, Expired, Off, Retried int
 }
 
 func (r Report) any() bool {
-	return r.Planned+r.Sent+r.Dropped+r.Skipped+r.Rejected+r.Expired+r.Off+r.Retried > 0
+	return r.Planned+r.Reminders+r.Sent+r.Dropped+r.Skipped+r.Rejected+r.Expired+r.Off+r.Retried > 0
 }
 
-// Pass plans the due targets, then sends the due mails until none is due
-// (or maxMails).
+// Pass plans the due targets and reminders, then sends the due mails until
+// none is due (or maxMails).
 func (s *Service) Pass(ctx context.Context) (Report, error) {
 	var report Report
 	planned, err := s.config.Queue.Plan(ctx, s.now().UTC())
@@ -113,12 +119,25 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 		return report, fmt.Errorf("plan: %w", err)
 	}
 	report.Planned = planned
-	if !s.config.Mail.FeedbackConfigured(mail.FeedbackRequest) {
-		// Off: the mails wait in the queue until a template key is set.
+	reminders, err := s.config.Queue.PlanReminders(ctx, s.now().UTC())
+	if err != nil {
+		return report, fmt.Errorf("plan reminders: %w", err)
+	}
+	report.Reminders = reminders
+	// A kind without a template key is off: its mails wait in the queue
+	// until a key is set.
+	var kinds []string
+	if s.config.Mail.FeedbackConfigured(mail.FeedbackRequest) {
+		kinds = append(kinds, feedback.KindRequest)
+	}
+	if s.config.Mail.FeedbackConfigured(mail.FeedbackReminder) {
+		kinds = append(kinds, feedback.KindReminder)
+	}
+	if len(kinds) == 0 {
 		return report, nil
 	}
 	for range maxMails {
-		claimed, ok, err := s.config.Queue.ClaimMail(ctx, s.now().UTC(), lease)
+		claimed, ok, err := s.config.Queue.ClaimMail(ctx, s.now().UTC(), lease, kinds)
 		if err != nil || !ok {
 			return report, err
 		}
@@ -141,7 +160,7 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 			}
 		default:
 			for _, m := range out.group {
-				if err = s.config.Queue.FinishMail(writeCtx, m, s.now().UTC()); err != nil {
+				if err = s.config.Queue.FinishMail(writeCtx, m, s.now().UTC(), out.sent); err != nil {
 					break
 				}
 			}
@@ -156,9 +175,11 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 
 // outcome is what became of a claimed mail: the mails sent (or dropped)
 // together with it, all finished or all retried; or a time to wait for.
+// sent is true when SkyMail took the mail.
 type outcome struct {
 	group    []feedback.Mail
 	postpone *time.Time
+	sent     bool
 }
 
 // recipient is a mail's Ticket's holder.
@@ -185,7 +206,8 @@ func (s *Service) deliver(ctx context.Context, claimed feedback.Mail, report *Re
 		report.Skipped++
 		return out, nil
 	}
-	if !claimed.Manual && claimed.EventDayID != nil {
+	reminder := claimed.Kind == feedback.KindReminder
+	if !reminder && !claimed.Manual && claimed.EventDayID != nil {
 		// The address's day ends with the last Session any of its Tickets
 		// checked in to: wait for it.
 		due, err := s.addressDayDue(ctx, claimed, to.email)
@@ -233,6 +255,7 @@ func (s *Service) deliver(ctx context.Context, claimed feedback.Mail, report *Re
 		}
 	}
 	var links []mail.FeedbackItem
+	var reminded []uuid.UUID
 	eventName := ""
 	for _, m := range out.group {
 		items, err := s.config.Queue.MailItems(ctx, m.ID)
@@ -240,12 +263,27 @@ func (s *Service) deliver(ctx context.Context, claimed feedback.Mail, report *Re
 			return out, err
 		}
 		for _, it := range items {
-			if !goes(it, m.Manual) {
+			// A reminder goes on the schedule's terms whoever sent the form
+			// (ticket 07: not with the box off).
+			if !goes(it, m.Manual && !reminder) {
 				continue
 			}
-			inv, err := s.config.Queue.Invite(ctx, m.TicketID, it.Target, it.FormID)
-			if err != nil {
-				return out, err
+			var inv feedback.Invite
+			if reminder {
+				var ok bool
+				inv, ok, err = s.config.Queue.ReminderInvite(ctx, m.TicketID, it.Target, s.now().UTC())
+				if err != nil {
+					return out, err
+				}
+				if !ok {
+					continue
+				}
+				reminded = append(reminded, inv.ID)
+			} else {
+				inv, err = s.config.Queue.Invite(ctx, m.TicketID, it.Target, it.FormID)
+				if err != nil {
+					return out, err
+				}
 			}
 			link, err := feedback.Link(it.FormURL, inv.Code)
 			if err != nil {
@@ -263,7 +301,11 @@ func (s *Service) deliver(ctx context.Context, claimed feedback.Mail, report *Re
 		report.Dropped++
 		return out, nil
 	}
-	err = s.config.Mail.Feedback(ctx, mail.FeedbackRequest, to.email, to.full, to.first, eventName, links)
+	kind := mail.FeedbackRequest
+	if reminder {
+		kind = mail.FeedbackReminder
+	}
+	err = s.config.Mail.Feedback(ctx, kind, to.email, to.full, to.first, eventName, links)
 	var refused *mail.SendError
 	switch {
 	case errors.Is(err, mail.ErrTemplateUnconfigured):
@@ -276,6 +318,17 @@ func (s *Service) deliver(ctx context.Context, claimed feedback.Mail, report *Re
 		return out, err
 	}
 	report.Sent++
+	out.sent = true
+	if reminder {
+		report.Reminded++
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
+		defer cancel()
+		if err := s.config.Queue.MarkReminded(writeCtx, reminded, s.now().UTC()); err != nil {
+			// The mail went: it is finished all the same, and its request
+			// is never reminded again.
+			s.logger.Printf("feedback mail: a reminder went but its invites were not marked: %v", err)
+		}
+	}
 	return out, nil
 }
 
@@ -385,8 +438,8 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 			case err != nil && ctx.Err() == nil:
 				logf("feedback mail: %v", err)
 			case report.any():
-				logf("feedback mail: %d targets planned; %d sent, %d dropped, %d skipped, %d refused by SkyMail, %d expired, %d retried later",
-					report.Planned, report.Sent, report.Dropped, report.Skipped, report.Rejected, report.Expired, report.Retried)
+				logf("feedback mail: %d targets and %d reminders planned; %d sent (%d reminders), %d dropped, %d skipped, %d refused by SkyMail, %d expired, %d retried later",
+					report.Planned, report.Reminders, report.Sent, report.Reminded, report.Dropped, report.Skipped, report.Rejected, report.Expired, report.Retried)
 			}
 			select {
 			case <-ctx.Done():

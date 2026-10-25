@@ -1010,6 +1010,7 @@ func main() {
 		Competitions:           competition.NewService(competitions, events, az),
 		FeedbackInvites:        feedbackInvites,
 		FeedbackSender:         feedbackInvites,
+		FeedbackReminders:      feedbackInvites,
 		Certificates:           certSvc,
 		SkyPass:                skypass.NewServiceWithWallet(users, az, skypass.NewSigner(passKey, skypass.DefaultTTL), wallet),
 		SkyPassWalletMetrics:   wallet,
