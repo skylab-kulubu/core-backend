@@ -1445,7 +1445,7 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  )`,
 	// Feedback mail (etkinlik geri bildirim formu, ticket 06): the three
 	// tables and the queue's indexes.
-	20261020190300: `
+	20261025180000: `
 		SELECT 1
 		WHERE to_regclass('public.feedback_mail_targets') IS NOT NULL
 		  AND to_regclass('public.feedback_mails') IS NOT NULL

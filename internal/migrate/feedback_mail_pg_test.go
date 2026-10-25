@@ -8,7 +8,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 )
 
-const feedbackMailVersion = "20261020190300"
+const feedbackMailVersion = "20261025180000"
 
 func TestFeedbackMailMigrationComesLast(t *testing.T) {
 	t.Parallel()
@@ -16,9 +16,12 @@ func TestFeedbackMailMigrationComesLast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := slices.Index(versions, 20261020190200)
-	mails := slices.Index(versions, 20261020190300)
-	if before < 0 || mails < 0 || before >= mails {
+	// The invites table it refers to, and production's newest migration
+	// when this one was renumbered (2026-10-25).
+	invites := slices.Index(versions, 20261020190200)
+	productionHead := slices.Index(versions, 20261024190000)
+	mails := slices.Index(versions, 20261025180000)
+	if invites < 0 || productionHead < 0 || mails < 0 || invites >= mails || productionHead >= mails {
 		t.Fatalf("versions %v", versions)
 	}
 }
