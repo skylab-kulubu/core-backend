@@ -294,7 +294,6 @@ func (h *IdentityHandler) ManagedGroups(c fiber.Ctx) error {
 	return c.JSON(nodes)
 }
 
-// MemberCandidates answers GET /v1/groups/{id}/member-candidates?q=.
 // SetTeamSettings answers PUT /v1/groups/{id}/settings: a Team's own
 // settings, written by its manager or Privileged (docs/team-delegation.md
 // "Team settings"). Every field is required.
@@ -318,6 +317,7 @@ func (h *IdentityHandler) SetTeamSettings(c fiber.Ctx) error {
 	return c.JSON(settings)
 }
 
+// MemberCandidates answers GET /v1/groups/{id}/member-candidates?q=.
 func (h *IdentityHandler) MemberCandidates(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {

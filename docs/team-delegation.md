@@ -181,9 +181,13 @@ attributes (`GET /v1/groups/{id}`).
   person still enters or leaves as a competitor themselves. The decision
   (`competitor.create/update/delete` in the capabilities too) reads the
   Owner team's own Group from the realm's Groups kept a minute
-  (`identity.TeamTree`); core's own write forgets them, a write elsewhere
-  (another core, the Keycloak console) is seen within the minute. A tree
-  that cannot be read is the default, `true`. The setting does not depend on
+  (`identity.TeamTree`); core's own write forgets them (a read already
+  running then is not kept, and the next decision reads again), a write
+  elsewhere (another core, the Keycloak console) is seen within the minute.
+  A tree that cannot be read is the default, `true`. Since the setting, a
+  member's capabilities and competitor writes read the tree too, with
+  delegation off as well: at most one realm Group read a minute, and the
+  first request after the minute waits for it (5 s at most). The setting does not depend on
   `TEAM_DELEGATION`; with it off only Privileged writes it.
 
 ## Role rules

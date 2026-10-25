@@ -22,8 +22,9 @@ type TeamSettings struct {
 
 // TeamSettingsOf are the settings g's attributes hold.
 func TeamSettingsOf(g Group) TeamSettings {
-	v, err := strconv.ParseBool(g.Attributes[authz.TeamAttrMembersManageCompetitors])
-	return TeamSettings{MembersManageCompetitors: err != nil || v}
+	return TeamSettings{
+		MembersManageCompetitors: authz.MembersManageCompetitorsValue(g.Attributes[authz.TeamAttrMembersManageCompetitors]),
+	}
 }
 
 // SetTeamSettings writes a Team's settings: Privileged on any Team, a

@@ -2,6 +2,7 @@ package httpx_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
@@ -74,4 +75,51 @@ func TestTeamSettingsDelegationOff(t *testing.T) {
 		t.Errorf("attribute %q written with delegation off", v)
 	}
 	wantStatus(t, "YK", e.setting("yk", "/UYELER/ARGE/WEBLAB", `{"membersManageCompetitors":false}`), fiber.StatusOK, "")
+}
+
+// A protected Group (one that maps an admin role) is Privileged's: its
+// Leader gets 403 protected_group there too.
+func TestTeamSettingsProtectedGroup(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	wantStatus(t, "a Leader above a protected Team", e.setting("webLeader", "/UYELER/ARGE/WEBLAB/SECURE", `{"membersManageCompetitors":false}`),
+		fiber.StatusForbidden, "protected_group")
+	if v := e.attribute("/UYELER/ARGE/WEBLAB/SECURE", "members_manage_competitors"); v != "" {
+		t.Errorf("attribute %q written on a protected Group", v)
+	}
+}
+
+// End to end, as main wires it: the Leader turns it off, a member's
+// competitor add is 403 at once (the write forgot the kept tree), the
+// Leader's goes through; on again, the member adds.
+func TestTeamSettingsDecideCompetitorWrites(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true, teamTree: true})
+	yk := e.token("yk")
+	created := e.send(yk, fiber.MethodPost, "/v1/events", `{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB"}`)
+	wantStatus(t, "event", created, fiber.StatusCreated, "")
+	var ev struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.body, &ev); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, "publish", e.send(yk, fiber.MethodPost, "/v1/events/"+ev.ID+"/publish", ""), fiber.StatusOK, "")
+	add := func(as, who string) rawResponse {
+		return e.send(e.token(as), fiber.MethodPost, "/v1/competitors",
+			`{"eventId":"`+ev.ID+`","userId":"`+e.people[who].String()+`"}`)
+	}
+	// Read the tree once, so a kept answer is there to forget.
+	wantStatus(t, "a member, the setting unset", add("member", "outsider"), fiber.StatusCreated, "")
+
+	forgets := e.tree.forgotten()
+	wantStatus(t, "off", e.setting("webLeader", "/UYELER/ARGE/WEBLAB", `{"membersManageCompetitors":false}`), fiber.StatusOK, "")
+	if e.tree.forgotten() == forgets {
+		t.Error("the settings write did not forget the kept tree")
+	}
+	wantStatus(t, "a member, the setting off", add("member", "newcomer"), fiber.StatusForbidden, "")
+	wantStatus(t, "the Leader, the setting off", add("webLeader", "newcomer"), fiber.StatusCreated, "")
+
+	wantStatus(t, "on", e.setting("webLeader", "/UYELER/ARGE/WEBLAB", `{"membersManageCompetitors":true}`), fiber.StatusOK, "")
+	wantStatus(t, "a member, the setting on again", add("member", "exLeader"), fiber.StatusCreated, "")
 }

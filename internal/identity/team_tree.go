@@ -51,9 +51,12 @@ type TeamTree struct {
 	groups  GroupLister
 	options TeamTreeOptions
 
-	mu      sync.Mutex
-	entry   teamTreeEntry
-	flights singleflight.Group
+	mu    sync.Mutex
+	entry teamTreeEntry
+	// generation counts ForgetAll: a read keeps its answer only if no
+	// ForgetAll happened while it ran.
+	generation uint64
+	flights    singleflight.Group
 }
 
 type teamTreeEntry struct {
@@ -117,15 +120,19 @@ func (t *TeamTree) MembersManageCompetitors(team string) bool {
 	if !ok {
 		return true
 	}
-	return !strings.EqualFold(strings.TrimSpace(g.Attributes[authz.TeamAttrMembersManageCompetitors]), "false")
+	return authz.MembersManageCompetitorsValue(g.Attributes[authz.TeamAttrMembersManageCompetitors])
 }
 
 // ForgetAll drops the kept tree: core's own write of a Team's setting or
-// name is seen at the next decision. A read running meanwhile keeps its
-// answer.
+// name is seen at the next decision. A read already running when it is
+// called may have read Keycloak before the write: its answer goes only to
+// the decisions that were waiting for it, is not kept, and a decision after
+// ForgetAll starts a read of its own.
 func (t *TeamTree) ForgetAll() {
 	t.mu.Lock()
 	t.entry = teamTreeEntry{}
+	t.generation++
+	t.flights.Forget("tree")
 	t.mu.Unlock()
 }
 
@@ -154,17 +161,22 @@ func (t *TeamTree) read() ([]Group, bool) {
 	if !entry.expires.IsZero() && t.options.Now().Before(entry.expires) {
 		return entry.groups, entry.read
 	}
+	t.mu.Lock()
+	generation := t.generation
+	t.mu.Unlock()
 	v, _, _ := t.flights.Do("tree", func() (any, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), t.options.Timeout)
 		defer cancel()
 		groups, err := t.groups.ListGroups(ctx)
 		entry := teamTreeEntry{groups: groups, read: true, expires: t.options.Now().Add(t.options.TTL)}
 		if err != nil {
-			t.options.Logf("owner team tree: Keycloak's Groups could not be read, Leaders lead only their own Teams for %s: %v", t.options.FailureTTL, err)
+			t.options.Logf("owner team tree: Keycloak's Groups could not be read; for %s Leaders lead only their own Teams and every Team has the default settings: %v", t.options.FailureTTL, err)
 			entry = teamTreeEntry{expires: t.options.Now().Add(t.options.FailureTTL)}
 		}
 		t.mu.Lock()
-		t.entry = entry
+		if t.generation == generation {
+			t.entry = entry
+		}
 		t.mu.Unlock()
 		return entry, nil
 	})

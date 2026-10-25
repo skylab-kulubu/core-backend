@@ -26,6 +26,13 @@ type TeamTree interface {
 // them to the Leaders; anything else, or none, is today's rule.
 const TeamAttrMembersManageCompetitors = "members_manage_competitors"
 
+// MembersManageCompetitorsValue reads TeamAttrMembersManageCompetitors'
+// value: false only for "false" (case and blanks aside), true for anything
+// else or none. The decision and the settings route's answer both read it.
+func MembersManageCompetitorsValue(v string) bool {
+	return !strings.EqualFold(strings.TrimSpace(v), "false")
+}
+
 // TeamSettings reads a Team's own settings by its Team code
 // (identity.TeamTree, kept a minute).
 type TeamSettings interface {
