@@ -56,8 +56,8 @@ func (s *PostgresStore) PlanReminders(ctx context.Context, now time.Time) (int, 
 	rows, err := tx.Query(ctx, `
 		SELECT `+mailCols+` FROM feedback_mails
 		WHERE kind = 'request' AND sent AND reminder_planned_at IS NULL
-		  AND done_at <= $1 - $2::float8 * interval '1 second'
-		  AND done_at > $1 - $3::float8 * interval '1 second'
+		  AND done_at <= $1::timestamptz - $2::float8 * interval '1 second'
+		  AND done_at > $1::timestamptz - $3::float8 * interval '1 second'
 		ORDER BY done_at, id
 		LIMIT $4
 		FOR UPDATE`, now, ReminderDelay.Seconds(), (ReminderDelay + ReminderWindow).Seconds(), maxRemindersPlanned)
