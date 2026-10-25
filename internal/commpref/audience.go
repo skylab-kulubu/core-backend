@@ -152,6 +152,12 @@ type Recipient struct {
 	// ("AIRLAB · Duyurular").
 	CategoryLabel  string `json:"categoryLabel"`
 	UnsubscribeURL string `json:"unsubscribeUrl"`
+	// AllowedChannels are the channels the person's preferences allow for
+	// the send (iletişim-servisi 06): what SkyMail's POST /v1/notifications
+	// takes as allowed_channels. Core keeps preferences for e-mail alone
+	// today, and a person whose e-mail is off is not a recipient, so it is
+	// ["email"]. The in-app inbox does not look at preferences.
+	AllowedChannels []Channel `json:"allowedChannels"`
 }
 
 // AudienceCounts are the recipients by how they entered.
@@ -575,6 +581,7 @@ func (a *Audience) Resolve(ctx context.Context, req AudienceRequest, after uuid.
 			return AudiencePage{}, err
 		}
 		r.UnsubscribeURL = link
+		r.AllowedChannels = []Channel{ChannelEmail}
 		page.Items = append(page.Items, r)
 	}
 	if end < len(recipients) {

@@ -81,6 +81,8 @@ services:
       # Event status mails (docs/event-cancel.md), the same way.
       SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY: ${SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY-core.event-cancelled}
       SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY: ${SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY-core.event-reinstated}
+      # The new Ticket's Notification (docs/ticket-created-notification.md).
+      TICKET_CREATED_NOTIFICATION: ${TICKET_CREATED_NOTIFICATION:-off}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
       PUBLIC_API_ORIGIN: ${PUBLIC_API_ORIGIN:-}
       PUBLIC_VERIFY_ORIGIN: ${PUBLIC_VERIFY_ORIGIN:-https://skyl.app/c}

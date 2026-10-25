@@ -55,6 +55,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 	"github.com/skylab-kulubu/core-backend/internal/teammail"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/ticketnotify"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 	"github.com/skylab-kulubu/core-backend/internal/usersync"
@@ -873,6 +874,13 @@ func main() {
 		workers, teammail.NewPostgresQueue(pool), teammail.NewPostgresNoticeQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
 	worker("team membership mail", teamMembershipStopped)
 	worker("event status mail", startEventStatusMail(workers, events, tickets, users, sky, log.Printf))
+	// The new Ticket's Notification (docs/ticket-created-notification.md):
+	// SkyMail tells the holder by inbox and e-mail.
+	ticketNotificationOn, err := ticketCreatedNotificationOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky, log.Printf))
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {

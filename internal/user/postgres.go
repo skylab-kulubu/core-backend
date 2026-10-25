@@ -506,6 +506,8 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		// Feedback invites (docs/event-feedback.md): the person's Tickets'
 		// go before the Tickets lose their owner; the counts stay.
 		`DELETE FROM feedback_invites WHERE ticket_id IN (SELECT id FROM tickets WHERE owner_id = $1)`,
+		// The Tickets' Notifications not sent yet (docs/ticket-created-notification.md).
+		`DELETE FROM ticket_notifications WHERE ticket_id IN (SELECT id FROM tickets WHERE owner_id = $1)`,
 		`UPDATE tickets SET owner_id = NULL WHERE owner_id = $1`,
 		`UPDATE certificates SET owner_id = NULL, recipient_email = '' WHERE owner_id = $1`,
 		`DELETE FROM event_door_staff WHERE user_id = $1`,
@@ -632,12 +634,15 @@ func clearGuestData(ctx context.Context, tx pgx.Tx, addresses []string, at time.
 	if len(emails) == 0 {
 		return nil
 	}
-	// The guest Tickets' feedback invites go with their identity.
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM feedback_invites WHERE ticket_id IN (
-			SELECT id FROM tickets WHERE owner_id IS NULL AND guest_email <> '' AND lower(btrim(guest_email)) = ANY($1))
-	`, emails); err != nil {
-		return err
+	// The guest Tickets' feedback invites and unsent Notifications go with
+	// their identity.
+	for _, table := range []string{"feedback_invites", "ticket_notifications"} {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM `+table+` WHERE ticket_id IN (
+				SELECT id FROM tickets WHERE owner_id IS NULL AND guest_email <> '' AND lower(btrim(guest_email)) = ANY($1))
+		`, emails); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE tickets

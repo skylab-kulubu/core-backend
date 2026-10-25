@@ -77,6 +77,14 @@ the cancellation is undone. `SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY` and
 `SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY` address them (unset: the key above;
 empty: off). See [event-cancel.md](event-cancel.md#mails).
 
+An eighth, `event.ticket-created`, is no mail of core's own but a
+Notification (ADR 0070): core posts `POST /v1/notifications` with the
+Ticket holder's subject and SkyMail picks the channels (inbox and e-mail)
+and the text; a guest, who has no subject, gets the type's e-mail template
+by address through `/v1/mail_tasks/single`. It rides a queue of its own and is
+off until `TICKET_CREATED_NOTIFICATION=on`. See
+[ticket-created-notification.md](ticket-created-notification.md).
+
 ## Configuration
 
 | Variable | Unset | Empty |
