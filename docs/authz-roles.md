@@ -179,7 +179,7 @@ From core-frontend `src/lib/auth/groups.ts` and its callers (origin/main, 2026-1
 | `isLeader`, `leaderOwnerTeams`, `ownerLevels` | `teams[].levels` |
 | `canWriteEvent(t, action)`; "Yeni etkinlik" | `scope(t).can["event.<action>"]`; any of `teams[].can`, `noOwnerTeam.can` `event.create` |
 | `canCheckInForTeam(t)`, `canCheckInForEvent`, `canDeskCheckIn` | `scope(t).can["door.checkIn"]`, or the caller on the Event's door staff |
-| `canManageCompetitors(t)` | `scope(t).can["competitor.update"]` (core also lets Owner team members, not only Leaders: the panel showed less than core allows) |
+| `canManageCompetitors(t)` | `scope(t).can["competitor.update"]` (core also lets Owner team members, not only Leaders, unless the Team's Leader turned `membersManageCompetitors` off: [team-delegation.md](team-delegation.md) "Team settings") |
 | `canListEventTickets(t)`, `canAssignEventTicket(t)` | `scope(t).can["ticket.read"]`, `scope(t).can["ticket.assign"]` |
 | `canReadCertificates`, `canIssueCertificates`, `canRevokeCertificates` (t) | `scope(t).can["certificate.read" / "certificate.issue" / "certificate.revoke"]` |
 | `canBindCertificateTemplates(t)` | `scope(t).can["certificateTemplate.assign"]` |

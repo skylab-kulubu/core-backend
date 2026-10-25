@@ -159,3 +159,92 @@ func (l *blockingLister) ListGroups(ctx context.Context) ([]Group, error) {
 	<-l.release
 	return l.countingLister.ListGroups(ctx)
 }
+
+func TestTeamTree_MembersManageCompetitors(t *testing.T) {
+	t.Parallel()
+	groups := treeGroups()
+	groups[4].Attributes = map[string]string{"members_manage_competitors": "FALSE"} // MOBIL
+	groups[2].Attributes = map[string]string{"members_manage_competitors": "true"}  // WEBLAB
+	lister := &countingLister{groups: groups}
+	tree := NewTeamTree(lister, TeamTreeOptions{})
+	if tree.MembersManageCompetitors("MOBIL") {
+		t.Error("MOBIL's Leader turned it off")
+	}
+	if !tree.MembersManageCompetitors("WEBLAB") || !tree.MembersManageCompetitors("GAMELAB") {
+		t.Error("a Team that kept it, or never chose, refuses its members")
+	}
+	if !tree.MembersManageCompetitors("LIDERLER") || !tree.MembersManageCompetitors("NOPE") {
+		t.Error("a name that is not one Group's is not the default")
+	}
+	down := NewTeamTree(&countingLister{err: errors.New("down")}, TeamTreeOptions{})
+	if !down.MembersManageCompetitors("MOBIL") {
+		t.Error("an unread tree is not the default")
+	}
+	// A write through core forgets the tree: the next decision reads it again.
+	lister.mu.Lock()
+	lister.groups[4].Attributes = map[string]string{"members_manage_competitors": "true"}
+	lister.mu.Unlock()
+	if tree.MembersManageCompetitors("MOBIL") {
+		t.Error("the minute's answer was not kept")
+	}
+	tree.ForgetAll()
+	if !tree.MembersManageCompetitors("MOBIL") {
+		t.Error("ForgetAll kept the old answer")
+	}
+	if lister.count() != 2 {
+		t.Errorf("reads = %d, want 2", lister.count())
+	}
+}
+
+// snapshotThenBlock reads the groups first, then waits: a Keycloak answer
+// that left before a write and arrives after it.
+type snapshotThenBlock struct {
+	mu      sync.Mutex
+	groups  []Group
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (l *snapshotThenBlock) ListGroups(context.Context) ([]Group, error) {
+	l.mu.Lock()
+	snap := slices.Clone(l.groups)
+	l.mu.Unlock()
+	first := false
+	l.once.Do(func() { first = true; close(l.started) })
+	if first {
+		<-l.release
+	}
+	return snap, nil
+}
+
+// A read in flight across a write and ForgetAll (review of #305): it may
+// have read Keycloak before the write, so the decision after the write
+// reads again and the old answer is not kept.
+func TestTeamTree_ForgetAllDuringInFlightRead(t *testing.T) {
+	t.Parallel()
+	groups := treeGroups()
+	groups[4].Attributes = map[string]string{"members_manage_competitors": "true"} // MOBIL
+	l := &snapshotThenBlock{groups: groups, started: make(chan struct{}), release: make(chan struct{})}
+	tree := NewTeamTree(l, TeamTreeOptions{})
+	done := make(chan struct{})
+	go func() { tree.MembersManageCompetitors("MOBIL"); close(done) }()
+	<-l.started
+	// core writes false to Keycloak, then forgets the tree
+	l.mu.Lock()
+	l.groups[4].Attributes = map[string]string{"members_manage_competitors": "false"}
+	l.mu.Unlock()
+	tree.ForgetAll()
+	// a decision right after the write joins the old flight
+	after := make(chan bool)
+	go func() { after <- tree.MembersManageCompetitors("MOBIL") }()
+	time.Sleep(50 * time.Millisecond)
+	close(l.release)
+	<-done
+	if got := <-after; got {
+		t.Error("the decision right after the write joined the read that started before it")
+	}
+	if tree.MembersManageCompetitors("MOBIL") {
+		t.Errorf("after ForgetAll and the in-flight read, the stale tree is kept for the TTL")
+	}
+}
