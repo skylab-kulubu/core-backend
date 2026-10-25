@@ -64,6 +64,13 @@ services:
       USER_SYNC_ENABLED: ${USER_SYNC_ENABLED:-}
       USER_SYNC_INTERVAL: ${USER_SYNC_INTERVAL:-}
       WELCOME_MAIL_SINCE: ${WELCOME_MAIL_SINCE:-}
+      # Integration events (docs/integration-events.md): off unless set.
+      EVENTS_ENABLED: ${EVENTS_ENABLED:-}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-}
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-}
       # Membership mail (docs/team-membership-mail.md): unset takes the
       # seeded key, an empty value turns that kind off.
       SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY: ${SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY-club.team-membership}
@@ -95,6 +102,8 @@ services:
       COMMUNICATION_TRACKING_WITHDRAWAL_URL: ${COMMUNICATION_TRACKING_WITHDRAWAL_URL:-}
       # The News audience (docs/news-audience.md): only public records unless on.
       NEWS_AUDIENCE_PRIVATE_VISIBILITY: ${NEWS_AUDIENCE_PRIVATE_VISIBILITY:-}
+      # The recipient question (docs/news-audience.md): the YTÜ identity provider, OBS unless set.
+      KEYCLOAK_YTU_IDP_ALIAS: ${KEYCLOAK_YTU_IDP_ALIAS:-}
       # The SkyPass signing key: required, except that this local stack falls back to
       # a random key at start-up (SKYPASS_EPHEMERAL_KEY, development only).
       SKYPASS_EC_PRIVATE_KEY: ${SKYPASS_EC_PRIVATE_KEY:-}

@@ -493,3 +493,34 @@ func TestService_EnsureKeepsUsername(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+func TestMemoryProfileWriteDoesNotRestoreARemovedCard(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	ctx := context.Background()
+	id := uuid.MustParse("17171717-1717-1717-1717-171717171717")
+	if _, _, err := NewService(store).Ensure(ctx, id, Profile{Email: "card@example.com", FirstName: "Ada", LastName: "Lovelace"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetStudentCardUID(ctx, id, "04AABBCCDD"); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetStudentCardUID(ctx, id, ""); err != nil {
+		t.Fatal(err)
+	}
+	stale.Phone = "+905551112233"
+	got, err := store.UpdateProfile(ctx, stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.StudentCardUID != "" || got.StudentCardLinked {
+		t.Fatal("profile write brought the removed card back")
+	}
+	if _, err := store.FindByStudentCardUID(ctx, "04AABBCCDD"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("removed card still finds its holder: %v", err)
+	}
+}

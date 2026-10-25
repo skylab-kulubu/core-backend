@@ -234,6 +234,24 @@ type Value struct {
 // (not listed, see listed) the person is not in, whatever the choices above
 // it: its News reaches only its own members (O2).
 func (t *Tree) Resolve(e Explicit, m Membership, c Category) Value {
+	return t.resolve(e, m, c, false)
+}
+
+// ResolveChosen is the value of category c for a recipient the sender chose
+// (ADR 0072 karar 3, Dynamics' nonrestrictive purpose): only the person's
+// own "off" holds a mail back. The master switch and the explicit choices
+// are read as Resolve reads them (the most specific choice of the kind from
+// the team up through the teams above it wins), but every default counts
+// as on: club-wide for someone who is no Member, a team the person is not
+// in, and a hidden team they are not in (O2 decides whom a News send
+// reaches by default, not whom a sender writes to). Membership plays no
+// part, so none is asked.
+func (t *Tree) ResolveChosen(e Explicit, c Category) Value {
+	return t.resolve(e, Membership{}, c, true)
+}
+
+// resolve is Resolve; defaultsOn turns every default on (ResolveChosen).
+func (t *Tree) resolve(e Explicit, m Membership, c Category, defaultsOn bool) Value {
 	master := true
 	if v, ok := e[Master()]; ok {
 		master = v
@@ -252,11 +270,11 @@ func (t *Tree) Resolve(e Explicit, m Membership, c Category) Value {
 		if on, ok := e[c]; ok {
 			v = Value{Enabled: on, Origin: OriginExplicit}
 		} else {
-			v = Value{Enabled: m.Member, Origin: OriginDefault}
+			v = Value{Enabled: m.Member || defaultsOn, Origin: OriginDefault}
 		}
 	case ScopeTeam:
 		v = Value{Origin: OriginDefault}
-		if !t.seen(m, c.GroupID) {
+		if !defaultsOn && !t.seen(m, c.GroupID) {
 			break
 		}
 		chain := t.chain(c.GroupID)
@@ -271,7 +289,9 @@ func (t *Tree) Resolve(e Explicit, m Membership, c Category) Value {
 				break
 			}
 		}
-		if !decided {
+		if !decided && defaultsOn {
+			v.Enabled = true
+		} else if !decided {
 			// The nearest team of the chain the person is in: the team
 			// itself, or one above it.
 			for i, id := range chain {

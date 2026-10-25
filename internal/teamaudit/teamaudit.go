@@ -5,7 +5,9 @@
 // without a record there is no change.
 //
 // A row holds ids, Group paths and codes, never a name, an e-mail address or
-// other free personal data. Account erasure leaves the rows as they are; the
+// other personal field; the only free texts are a Team's own fields and the
+// short note of an app assignment change, which the panel asks to keep free
+// of personal data. Account erasure leaves the rows as they are; the
 // retention sweep deletes them three years on (retention rule
 // team_audit_age).
 package teamaudit
@@ -43,13 +45,22 @@ const (
 	ActionTeamDelete      Action = "team.delete"
 	ActionGroupRoles      Action = "group.roles"
 	ActionGroupAttributes Action = "group.attributes"
+	// ActionAppAssign and ActionAppUnassign are an app role given to, or
+	// taken from, a Group or a person from the panel's app assignments
+	// (docs/app-assignments.md; Entra's "Add app role assignment to
+	// group" and "Remove app role assignment from user"). The row's after
+	// names the client and the role (State.Client, State.Role) and the
+	// optional note; the target is the Group (GroupID, GroupPath) or the
+	// person (TargetUserID, GroupPath empty), never both.
+	ActionAppAssign   Action = "app.assign"
+	ActionAppUnassign Action = "app.unassign"
 )
 
 // Actions are every action the table's check accepts.
 var Actions = []Action{
 	ActionMemberAdd, ActionMemberRemove, ActionLeaderAdd, ActionLeaderRemove,
 	ActionTeamCreate, ActionTeamCode, ActionTeamProfile, ActionTeamMove, ActionTeamDelete,
-	ActionGroupRoles, ActionGroupAttributes,
+	ActionGroupRoles, ActionGroupAttributes, ActionAppAssign, ActionAppUnassign,
 }
 
 // targetsPerson reports whether the action is about one person: they, and
@@ -60,6 +71,12 @@ func (a Action) targetsPerson() bool {
 		return true
 	}
 	return false
+}
+
+// IsApp reports whether the action is an app assignment's: its target is a
+// Group or a person.
+func (a Action) IsApp() bool {
+	return a == ActionAppAssign || a == ActionAppUnassign
 }
 
 // Outcome is how the write ended.
@@ -145,6 +162,10 @@ type State struct {
 	// person who is not YTÜ-linked (grup-yonetimi 07): whether the caller
 	// confirmed the panel's warning. Absent on every other row.
 	UnverifiedAck *bool `json:"unverifiedAck,omitempty"`
+	// Client and Role are the app role of an app.assign or app.unassign
+	// row; absent on every other row.
+	Client string `json:"client,omitempty"`
+	Role   string `json:"role,omitempty"`
 }
 
 // Limits of what a row holds. A longer text is cut, so a long value never
@@ -208,6 +229,31 @@ type Writer interface {
 	Deny(ctx context.Context, r Record, errorCode string) error
 }
 
+// AppReader reads the app assignment rows of one client (the panel's
+// "Denetim" tab and the assignments' "who, when"; docs/app-assignments.md).
+type AppReader interface {
+	// AppRows are the client's app.assign and app.unassign rows, every
+	// outcome, newest first, at most limit.
+	AppRows(ctx context.Context, client string, limit int) ([]Row, error)
+	// LatestAppRows are, for each target and role of the client, the
+	// newest app.assign or app.unassign row that ended ok.
+	LatestAppRows(ctx context.Context, client string) ([]Row, error)
+}
+
+// AppKey is what an app row is about: its target (a Group's id or a
+// person's) and its role. LatestAppRows answers one row per key.
+func (r Row) AppKey() string {
+	target := r.GroupID
+	if r.TargetUserID != uuid.Nil {
+		target = r.TargetUserID.String()
+	}
+	role := ""
+	if r.After != nil {
+		role = r.After.Role
+	}
+	return target + "\x00" + role
+}
+
 // checkOutcome refuses a row opened as outcome that its basis cannot have:
 // BasisNone is for denied rows only.
 func (r Record) checkOutcome(outcome Outcome) string {
@@ -242,17 +288,31 @@ func (r Record) normalize() (Record, string) {
 	if !slices.Contains(Actions, r.Action) {
 		return r, "invalid_action"
 	}
-	if r.GroupID == "" {
-		if r.Action != ActionTeamCreate {
-			return r, "no_group"
+	if r.Action.IsApp() {
+		// One target: a Group, by id and path, or a person, without a path.
+		switch {
+		case r.GroupID != "" && r.TargetUserID != uuid.Nil, r.GroupID == "" && r.TargetUserID == uuid.Nil:
+			return r, "invalid_target"
+		case r.TargetUserID != uuid.Nil && r.GroupPath != "":
+			return r, "invalid_path"
 		}
-	} else if _, err := uuid.Parse(r.GroupID); err != nil {
-		return r, "invalid_group"
+		if r.After == nil || r.After.Client == "" || r.After.Role == "" {
+			return r, "no_app_role"
+		}
+	} else if r.GroupID == "" && r.Action != ActionTeamCreate {
+		return r, "no_group"
 	}
-	if !strings.HasPrefix(r.GroupPath, "/") || utf8.RuneCountInString(r.GroupPath) > MaxPath || !utf8.ValidString(r.GroupPath) {
-		return r, "invalid_path"
+	if r.GroupID != "" {
+		if _, err := uuid.Parse(r.GroupID); err != nil {
+			return r, "invalid_group"
+		}
 	}
-	if r.Action.targetsPerson() != (r.TargetUserID != uuid.Nil) {
+	if r.GroupID != "" || !r.Action.IsApp() {
+		if !strings.HasPrefix(r.GroupPath, "/") || utf8.RuneCountInString(r.GroupPath) > MaxPath || !utf8.ValidString(r.GroupPath) {
+			return r, "invalid_path"
+		}
+	}
+	if !r.Action.IsApp() && r.Action.targetsPerson() != (r.TargetUserID != uuid.Nil) {
 		return r, "invalid_target"
 	}
 	r.Actor.Client = cut(r.Actor.Client, MaxIdentifier)
@@ -275,6 +335,8 @@ func (s *State) normalize() *State {
 		Path:     cut(s.Path, MaxPath),
 		ParentID: cut(s.ParentID, MaxIdentifier),
 		Code:     cut(s.Code, MaxIdentifier),
+		Client:   cut(s.Client, MaxIdentifier),
+		Role:     cut(s.Role, MaxIdentifier),
 	}
 	if s.UnverifiedAck != nil {
 		ack := *s.UnverifiedAck

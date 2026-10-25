@@ -117,7 +117,7 @@ func TestGuestGrantWaitsForItsConfirmationAndKeepsNoIP(t *testing.T) {
 			t.Fatalf("a link carries the address: %s", link)
 		}
 	}
-	if f.count(t, `email = 'ada@example.com' AND text_version = 'davet-v1' AND event_id = $1 AND confirmed_at IS NULL`, eventID) != 1 {
+	if f.count(t, `email = 'ada@example.com' AND text_version = 'davet-v2' AND event_id = $1 AND confirmed_at IS NULL`, eventID) != 1 {
 		t.Fatal("pending row not stored as expected")
 	}
 
@@ -255,7 +255,7 @@ func TestWithdrawLinkEndsTheSubjectsCurrentGrantAndCanBeRepeated(t *testing.T) {
 	}
 	withdraw := tokenOf(t, entries[0].WithdrawURL)
 	if grant, err := f.svc.WithdrawLinkGrant(ctx, withdraw); err != nil || grant.Purpose != consent.PurposeEventInvitations ||
-		grant.TextVersion != "davet-v1" || grant.Status != consent.StatusActive {
+		grant.TextVersion != "davet-v2" || grant.Status != consent.StatusActive {
 		t.Fatalf("withdraw link grant %+v %v", grant, err)
 	}
 	if _, err := f.svc.WithdrawLinkGrant(ctx, withdraw[:len(withdraw)-2]+"AA"); !errors.Is(err, consent.ErrLink) {

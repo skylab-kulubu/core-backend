@@ -5,11 +5,12 @@ person's explicit, optional consent (KVKK art. 5/1) for one purpose:
 
 | Purpose | What it allows | Given through | Taken |
 |---|---|---|---|
-| `event_invitations` | invitations to SKY LAB's future events by e-mail | Guest apply, Forms, Place, Guessr, a signed-in person | yes |
+| `event_invitations` | invitations to SKY LAB's other events and its announcements by e-mail (aydınlatma s6 row 14, §5.14; `davet-v2`) | Guest apply, Forms, Place, Guessr, a signed-in person | yes |
+| `promotional` | mails whose main purpose is promoting a product or a service: a discount code, a company's job posting, a sale, a raffle (aydınlatma s6 row 13 b, §5.8, §5.10). A short sponsor thank-you or logo in an announcement is not promotional and needs no consent | SkyForms forms (`forms`), the first Account Center screen after signup (`signup`), Account Center's communication preferences (`self`) | yes |
 | `recruitment_pool` | keeping a team application that was not accepted, to be considered in future recruitment | Forms only | **no**: every route answers `400 purpose_not_enabled` until its scope (an address, or one application) is agreed with Forms. The table already allows the value |
 
 Core keeps the single record (`contact_consents`). The products write to it;
-SkyMail reads its invitation list only from it. Member and alumni
+SkyMail reads its invitation and promotional lists only from it. Member and alumni
 announcements are not contact consents: they run on legitimate interest with
 their own opt-out, the communication preference
 ([`communication-preferences.md`](communication-preferences.md)).
@@ -33,7 +34,7 @@ and the proof.
 |---|---|
 | `pending` | recorded for an address nobody has shown to be the person's; waits for the person to confirm it from the link core mails (double opt-in). In no audience |
 | `active` | confirmed: the person may be contacted for the purpose |
-| `withdrawn` | the person withdrew it (a link, their account, or the product on their word) |
+| `withdrawn` | the person withdrew it (a link, their account, the product on their word, or staff on their mail) |
 | `expired` | the renewal question went unanswered |
 | `superseded` | a pending grant that a verified grant for the same address replaced (below) |
 
@@ -101,31 +102,108 @@ for a link from an old invitation too, whose address grant has since ended
 and kept only its HMAC. One click ends the mails, whichever grant a mail was
 sent on.
 
+**A person, not a row (withdraw links).** A person holds one grant of a
+purpose, even when two rows record it: their account's own and one a product
+recorded for another of their addresses, such as the Personal e-mail that
+only Keycloak holds. A withdraw link therefore ends all of them:
+
+- the link of an account's own grant ends it and every grant given for one
+  of the account's addresses, Keycloak's Primary, School and Personal e-mail
+  with core's row (as their own list reads them);
+- the link of a grant given for an address ends every grant given for that
+  address and the own grant of every account holding it (core's `email` or
+  `school_email`, or Keycloak's Personal e-mail,
+  `GET /users?q=personalEmail:…`). A grant for another address of that
+  account mails another mailbox and is left to its own link. An ended
+  address grant keeps only its HMAC, so its link then reaches accounts by
+  core's row alone.
+
+Keycloak unreachable never stops a withdrawal: the link ends what core
+reaches without it (the grant's own subject and core's row) and logs the
+rest without an address; the person's account (below) reaches the others.
+
 **Evidence.** Purpose, channel (`email`), the text version the person was
-shown, the source app (`guest_apply`, `forms`, `place`, `guessr`, `self`), the
+shown, the source app (`guest_apply`, `forms`, `place`, `guessr`, `self`,
+`signup`), the
 Keycloak client of the app (`client_id`), the Event it was given on (Guest
 apply), how the address was shown to be the person's (`confirmed_via`:
 `account`, `service`, `link`), and the times: granted, confirmed, renewed,
 renewal asked, ended, with the end's reason and way (`ended_via`: `link`,
-`one_click`, `self`, `service`, `renewal_unanswered`). No IP address, user
+`one_click`, `self`, `service`, `renewal_unanswered`, `staff`). No IP address, user
 agent or name is kept.
 
 **Texts.** A grant names the text version it was given on. Core accepts only
 the versions below; a new wording is a new version here and in
 `internal/consent` (`purposes`, `texts`), released before the products show
-it. The codes are the versions ("Sürüm") of the Açık Rıza Metni draft
-(sky_lab_genel `notes/hukuki/acik-riza-metni-davet-TASLAK.md`):
+it. The codes are the versions ("Sürüm") of the Açık Rıza Metni, published
+at <https://yildizskylab.com/acik-riza-metni.pdf> (source: sky_lab_genel
+`notes/hukuki/acik-riza-metni-YAYIN-2026-10-25.md`, from the approved draft
+`notes/hukuki/acik-riza-metni-20261024-taslak.md`):
 
 | Version | Purpose | Box text (Turkish, as shown next to the box, with links to the Açık Rıza Metni and the aydınlatma) |
 |---|---|---|
-| `davet-v1` | `event_invitations` | SKY LAB'ın gelecek etkinliklerine davet e-postası almak istiyorum. Bunun için adımı ve e-posta adresimi saklayabilirsiniz. İstediğim zaman her davetteki bağlantıyla vazgeçebilirim. |
+| `davet-v2` | `event_invitations` | Diğer etkinlik ve duyurulardan haberdar olmak istiyorum. |
+| `tanitim-v1` | `promotional` | SKY LAB'dan tanıtım içerikli e-postalar (indirim kodu, şirket iş ilanı, çekiliş gibi) almak istiyorum. |
 | `alim-havuzu-v1` | `recruitment_pool` (not taken yet) | Bu dönem kabul edilmezsem başvurumun gelecek alımlarda değerlendirilmek üzere saklanmasını istiyorum. İstediğim zaman vazgeçebilirim. |
 
-The draft is not approved yet; if the approved wording differs, it gets a new
-version (`davet-v2`, …) here first. A grant that names no version is recorded
-on the newest one of its purpose.
+A changed wording is a new version here and in a new edition of the
+published text. `alim-havuzu-v1` is not in the published text; it gets there
+before its purpose is enabled. A grant that names no version is recorded on
+the newest one of its purpose. `davet-v1` (the invitations alone, from an
+earlier draft that was never published) is no longer taken: a grant naming it
+answers `400`. No production grant names it (`CONTACT_CONSENT_KEY` is unset
+there and the table is empty); core keeps its box text so a grant stored on it elsewhere
+still shows it, and SkyMail reads the version of each grant in the audience
+(`textVersion`): a `davet-v1` grant is for invitations, not for
+announcements.
+
+**The promotional consent (aydınlatma s6 §5.8).** One grant per person
+and mailbox, whichever box gave it: the form, the signup screen or the
+preferences. A product shows the box only while `lookup` (or the person's
+own list) has no open grant for the address, and an unticked box records
+nothing and withdraws nothing. A grant given in a form without an account is
+bound to the address typed there and is `pending` until the person confirms
+it from the mail core sends (double opt-in); once the person opens an
+account with that address the grant is the account's, as the mailbox rule
+above says: their own list shows it, `lookup` counts it, and withdrawing
+from their account, a promotional mail's withdraw link or the product ends
+it. The row is not rewritten to the account: it stays the proof of what the
+form recorded. A box ticked all the same (the person's Personal e-mail in a
+form, which `lookup` does not see; the signup screen after a form grant)
+records a second row; any withdrawal still ends both. A withdrawal asked by
+mail to info@yildizskylab.com is staff's ("Withdrawal by mail", below). An
+ended grant is kept 3 years as proof (`consent_proof`), then deleted.
+
+**Withdrawal by mail (aydınlatma s6 §6).** Every consent may also be
+withdrawn by writing to info@yildizskylab.com. Staff carry it out on the
+server, inside the core container, with the address on standard input so
+that it is in no argument, process list, shell history or log:
+
+```
+printf '%s\n' "$address" | docker exec -i <core> ./core-backend consent-withdraw -purpose promotional,event_invitations
+```
+
+sky_lab_genel `ops/wizards/kvkk-riza-geri-alma-wizard.sh` runs it from the
+Mac (the address typed hidden, sent over SSH's standard input). It ends, for
+the purposes named, every open grant of the person holding the address: the
+grants given for the address, and the own grant of every account holding it
+(core's row, or Keycloak's Personal e-mail) with the grants for every other
+address of that account, which a withdraw link leaves to their own links. Unlike a link it
+reads every address first: Keycloak unreachable ends nothing and exits 1, to
+be run again. Each grant it ends says so (`ended_via` `staff`); that row,
+kept as proof like any ended grant, is the record of the request. The
+command prints the time and how many grants ended per purpose, never the
+address; running it again ends none. Exit codes: `0` done, `1` core or
+Keycloak failed (run it again; what ended stays ended), `2` usage or
+configuration, `3` consents off (`CONTACT_CONSENT_KEY` unset: none is
+recorded).
 
 ## Lifecycle
+
+The renewal rows apply to `event_invitations` only. A `promotional` grant
+lasts until it is withdrawn: it is never due a renewal question, its
+audience items never carry `renewalDue`, and a renewal request for it changes
+nothing, so it never ends as `expired`.
 
 | When | What happens |
 |---|---|
@@ -169,7 +247,7 @@ HMAC-signed grant id (no address, no person) that only core can read.
 
 | Link | Path | Does | Expires |
 |---|---|---|---|
-| withdraw | `/v1/consents/withdraw?token=…` | ends every open grant of the link's purpose that mails the same address | never |
+| withdraw | `/v1/consents/withdraw?token=…` | ends every open grant of the link's purpose of the person the grant mails (above) | never |
 | confirm | `/v1/consents/confirm?token=…` | confirms a pending grant, renews an active one; does nothing for an ended one | 30 days (confirmation), 90 days (renewal) |
 
 `GET` shows a page with one button and changes nothing, so a mail scanner that
@@ -250,9 +328,9 @@ role of the `core` client, whose client is mapped to a source in
 
 ### SkyMail: role `consent:audience:read`
 
-- `GET /v1/consents/audience?purpose=event_invitations&after={id}&limit={1..1000}` →
+- `GET /v1/consents/audience?purpose=event_invitations|promotional&after={id}&limit={1..1000}` →
   `200 {"items": [...], "next": "{id}"|null}`. Each item:
-  `{"id", "email", "subject": "account"|"address", "confirmedAt", "withdrawUrl", "renewalDue", "renewalRequestedAt"?, "renewUrl"?}`.
+  `{"id", "email", "subject": "account"|"address", "confirmedAt", "textVersion", "withdrawUrl", "renewalDue", "renewalRequestedAt"?, "renewUrl"?}`.
   Only confirmed, open grants, in id order. The same address can appear twice
   (a member's own grant and one given for the address): send one mail per
   address. Put `withdrawUrl` in the footer and the `List-Unsubscribe` header.
@@ -275,7 +353,11 @@ role of the `core` client, whose client is mapped to a source in
   three (core's row may still hold an older Primary). Keycloak unreachable is
   `503` `consent_addresses_unavailable` with `Retry-After`, not a shorter
   list.
-- `POST /v1/users/me/consents` `{"purpose", "textVersion"?}` → `201`/`200 {"status":"active"}`.
+- `POST /v1/users/me/consents` `{"purpose", "textVersion"?, "source"?}` → `201`/`200 {"status":"active"}`.
+  `source` is where the person ticked the box: `self` (unset: Account
+  Center's preferences, Place, Guessr) or `signup` (the first Account Center
+  screen after the account was opened; `promotional` only). Anything else is
+  `400 consent_invalid`.
 - `DELETE /v1/users/me/consents/{purpose}` → `200 {"withdrawn": n}`: their
   account's grant and every grant that mails one of those addresses. While
   Keycloak is unreachable it ends at once what core reaches without it (the
@@ -292,7 +374,7 @@ A service account cannot use these.
 |---|---|
 | `CONTACT_CONSENT_KEY` | 32 random bytes, unpadded base64url (OpenBao reference). Unset: off. Keep it unset in production until the retention sweep ships. Never rotate: mailed links and proof keys depend on it |
 | `PUBLIC_API_ORIGIN` | required with the key: where the links point |
-| `CONTACT_CONSENT_TEXT_URL` | required with the key: the published Açık Rıza Metni the confirm page links. There is no published one yet (the draft is under legal review), so the key cannot be set before it is |
+| `CONTACT_CONSENT_TEXT_URL` | required with the key: the published Açık Rıza Metni the confirm page links: `https://yildizskylab.com/acik-riza-metni.pdf`. The key is not set before that address answers 200 |
 | `CONTACT_CONSENT_NOTICE_URL` | the KVKK aydınlatma metni the pages link; unset: `https://yildizskylab.com/kvkk-metni.pdf` (the published one) |
 | `CONTACT_CONSENT_SERVICE_CLIENTS` | `source:client` pairs; `none` for none |
 | `CONTACT_CONSENT_VERIFIED_CLIENTS` | clients of the line above whose `emailVerified` core believes; unset: none |

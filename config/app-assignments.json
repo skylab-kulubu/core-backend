@@ -1,0 +1,71 @@
+{
+  "_comment": "The apps the admin panel's Uygulamalar page assigns (ekip-yetkileri ticket 15, docs/app-assignments.md). roles are exactly core's app roles (internal/authz/role_classes.go AppRoles; TestAppCatalogueIsAppRoles); assignmentRequired is shown read-only and enforced by the app itself. Until ticket 03 writes e-skylab-keycloak config/app-assignments.json this is core's own copy; then it is copied from there and the two are compared.",
+  "apps": [
+    {
+      "client": "forms",
+      "name": "SkyForms",
+      "assignmentRequired": true,
+      "roles": ["skyforms:access", "skyforms:form:manage", "skyforms:response:manage", "skyforms:feedback:manage"],
+      "suggestedRoles": ["skyforms:access"]
+    },
+    {
+      "client": "skymail",
+      "name": "SkyMail",
+      "assignmentRequired": true,
+      "roles": ["skymail:access", "skymail:templates:read"],
+      "suggestedRoles": ["skymail:access", "skymail:templates:read"]
+    },
+    {
+      "client": "core",
+      "name": "Panel: kısa link ve sertifika",
+      "assignmentRequired": false,
+      "roles": [
+        "url:access",
+        "url:create",
+        "url:get",
+        "url:update",
+        "url:delete",
+        "certificate:issue",
+        "certificate:revoke",
+        "certificate:template:manage",
+        "certificate:binding:manage"
+      ],
+      "suggestedRoles": []
+    },
+    {
+      "client": "frontend-main",
+      "name": "Ana site: içerik okuma",
+      "assignmentRequired": false,
+      "roles": ["content:read"],
+      "suggestedRoles": ["content:read"]
+    },
+    {
+      "client": "frontend-arge",
+      "name": "AR-GE sitesi: içerik okuma",
+      "assignmentRequired": false,
+      "roles": ["content:read"],
+      "suggestedRoles": ["content:read"]
+    },
+    {
+      "client": "frontend-artlab",
+      "name": "ARTLAB sitesi: içerik okuma",
+      "assignmentRequired": false,
+      "roles": ["content:read"],
+      "suggestedRoles": ["content:read"]
+    },
+    {
+      "client": "frontend-yildizjam",
+      "name": "Yıldız Jam sitesi: içerik okuma",
+      "assignmentRequired": false,
+      "roles": ["content:read"],
+      "suggestedRoles": ["content:read"]
+    },
+    {
+      "client": "frontend-skydays",
+      "name": "SKYDAYS sitesi: içerik okuma",
+      "assignmentRequired": false,
+      "roles": ["content:read"],
+      "suggestedRoles": ["content:read"]
+    }
+  ]
+}

@@ -89,6 +89,11 @@ type Deps struct {
 	// (docs/retention-sweep.md). Nil while RETENTION_SWEEP_MODE is off.
 	RetentionMetrics interface{ Prometheus() string }
 
+	// EventsMetrics are the Integration events consumer's state and
+	// counters and its records' cleanup (docs/integration-events.md),
+	// served on /v1/metrics. Nil leaves them out.
+	EventsMetrics interface{ Prometheus() string }
+
 	// MediaCDNPurgeMetrics are the media CDN purge's counters. Nil while
 	// the purge is off.
 	MediaCDNPurgeMetrics interface{ Prometheus() string }
@@ -162,6 +167,10 @@ type Deps struct {
 	// (docs/team-delegation.md). Nil answers an empty list.
 	ManagedTeams *identity.TeamDelegation
 
+	// AppAssignments mounts the app assignment routes (APP_ASSIGNMENTS=on,
+	// docs/app-assignments.md). Off they are not served: 404.
+	AppAssignments bool
+
 	// AuthzRoleMetrics are the role mode and its disagreements, served on
 	// /v1/metrics. Nil serves nothing.
 	AuthzRoleMetrics *authz.RoleMetrics
@@ -185,6 +194,12 @@ type Deps struct {
 	// (docs/news-audience.md). Nil or off answers POST /v1/audiences/resolve
 	// 503.
 	Audience *commpref.Audience
+
+	// Recipients answers SkyMail's service account, for the recipients a
+	// sender chose, which are a person and whether the mail may go to each
+	// (docs/news-audience.md, "Recipients"). Nil or off answers POST
+	// /internal/v1/audiences/recipients:resolve 503.
+	Recipients *commpref.Recipients
 
 	// TrackingWithdrawalMetrics are the tracking withdrawals' counters and
 	// backlog (docs/communication-preferences.md, "Tracking"), served on
@@ -278,7 +293,8 @@ func New(deps Deps) *fiber.App {
 	if deps.AccountAccessMetrics != nil || deps.AccountErasureMetrics != nil || deps.GroupOverage != nil || deps.GuestApplyMetrics != nil ||
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
-		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil {
+		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil ||
+		deps.EventsMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -318,6 +334,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.UserSync != nil {
 				text += deps.UserSync.Prometheus()
+			}
+			if deps.EventsMetrics != nil {
+				text += deps.EventsMetrics.Prometheus()
 			}
 			text += deps.Readiness.Prometheus()
 			return c.SendString(text)
@@ -417,6 +436,10 @@ func New(deps Deps) *fiber.App {
 	// send may track (docs/communication-preferences.md, "Tracking"). Before
 	// the Group overage step and JIT: a service account has neither.
 	app.Post(handlers.TrackingResolvePath, handlers.NewTrackingResolveHandler(deps.Audience).Resolve)
+	// SkyMail's service account with audience:read: which recipients a
+	// sender chose are a person, and whether the mail may go to each (ADR
+	// 0072 karar 3). Here for the same reason.
+	app.Post(handlers.RecipientsResolvePath, handlers.NewRecipientsResolveHandler(deps.Recipients).Resolve)
 	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Get("/v1/go/:alias/:channel", urls.RedirectChannel)
 	// Before JIT and every product route: a Group overage token gets its
@@ -427,6 +450,7 @@ func New(deps Deps) *fiber.App {
 
 	if pass != nil {
 		app.Post("/v1/skypass/card-bind", pass.BindCard)
+		app.Delete("/v1/skypass/card-bind", pass.UnbindCard)
 		app.Get("/v1/skypass/card", pass.LookupCard)
 		app.Post("/v1/skypass/qr", pass.Mint)
 		app.Post("/v1/skypass/verify", pass.Verify)
@@ -492,6 +516,16 @@ func New(deps Deps) *fiber.App {
 	app.Delete("/v1/groups/:groupId/members/:userId", ident.RemoveMember)
 	app.Get("/v1/groups/:groupId/client-roles", ident.GroupClientRoles)
 	app.Put("/v1/groups/:groupId/client-roles", ident.SetGroupClientRoles)
+
+	if deps.AppAssignments {
+		apps := handlers.NewAppsHandler(deps.Identity)
+		app.Get("/v1/apps", apps.List)
+		app.Get("/v1/apps/:clientId/assignments", apps.Assignments)
+		app.Post("/v1/apps/:clientId/assignments", apps.Assign)
+		app.Delete("/v1/apps/:clientId/assignments", apps.Unassign)
+		app.Get("/v1/apps/:clientId/audit", apps.Audit)
+		app.Get("/v1/apps/:clientId/targets", apps.Targets)
+	}
 
 	if deps.Dashboard != nil {
 		app.Get("/v1/dashboard/summary", handlers.NewDashboardHandler(deps.Dashboard).Summary)

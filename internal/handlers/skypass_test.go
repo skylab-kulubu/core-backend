@@ -48,6 +48,7 @@ func skypassApp(t *testing.T, ident authn.Identity, store user.Store, signer *sk
 	})
 	app.Use(jit.Handle)
 	app.Post("/v1/skypass/card-bind", h.BindCard)
+	app.Delete("/v1/skypass/card-bind", h.UnbindCard)
 	app.Get("/v1/skypass/card", h.LookupCard)
 	app.Post("/v1/skypass/qr", h.Mint)
 	app.Post("/v1/skypass/verify", h.Verify)
@@ -458,5 +459,64 @@ func TestSkyPassCheckInSessionHTTP(t *testing.T) {
 	if resp.StatusCode != fiber.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("member %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestSkyPassSelfUnbindHTTP(t *testing.T) {
+	t.Parallel()
+	store := user.NewMemoryStore()
+	aliceID := uuid.MustParse("14141414-1414-1414-1414-141414141414")
+	bobID := uuid.MustParse("15151515-1515-1515-1515-151515151515")
+	alice := authn.Identity{ID: aliceID, Profile: user.Profile{Email: "alice@example.com", FirstName: "Alice", LastName: "A"}}
+	bob := authn.Identity{ID: bobID, Profile: user.Profile{Email: "bob@example.com", FirstName: "Bob", LastName: "B"}}
+	bind := func(ident authn.Identity, uid string) {
+		t.Helper()
+		req := httptest.NewRequest(fiber.MethodPost, "/v1/skypass/card-bind", strings.NewReader(`{"uid":"`+uid+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := skypassApp(t, ident, store, nil).Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != fiber.StatusOK {
+			t.Fatalf("bind %d", resp.StatusCode)
+		}
+	}
+	unbind := func(ident authn.Identity) int {
+		t.Helper()
+		resp, err := skypassApp(t, ident, store, nil).Test(httptest.NewRequest(fiber.MethodDelete, "/v1/skypass/card-bind", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode
+	}
+	bind(alice, "04A1A1A1A1")
+	bind(bob, "04B2B2B2B2")
+
+	if got := unbind(alice); got != fiber.StatusNoContent {
+		t.Fatalf("unbind %d", got)
+	}
+	u, err := store.Get(t.Context(), aliceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.StudentCardUID != "" || u.StudentCardLinked {
+		t.Fatalf("card still bound: linked=%v", u.StudentCardLinked)
+	}
+	if _, err := store.FindByStudentCardUID(t.Context(), "04A1A1A1A1"); err == nil {
+		t.Fatal("removed card still finds its holder")
+	}
+	// Bob's card is untouched.
+	if got, err := store.FindByStudentCardUID(t.Context(), "04B2B2B2B2"); err != nil || got.ID != bobID {
+		t.Fatalf("bob's card: %v %v", got.ID, err)
+	}
+	// Again, with no card bound: still 204.
+	if got := unbind(alice); got != fiber.StatusNoContent {
+		t.Fatalf("second unbind %d", got)
+	}
+	// The removed card can be bound again, by anyone.
+	bind(bob, "04A1A1A1A1")
+
+	if got := unbind(authn.Identity{}); got != fiber.StatusUnauthorized {
+		t.Fatalf("anonymous unbind %d", got)
 	}
 }

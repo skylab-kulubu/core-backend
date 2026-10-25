@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -510,5 +511,66 @@ func TestListClientRolesHTTP(t *testing.T) {
 	}
 	if len(roles) != 1 || roles[0].Role != "skyforms:access" {
 		t.Fatalf("roles %+v", roles)
+	}
+}
+
+// ekip-yetkileri ticket 04: a member without users:read finds Forms' seat
+// holders through the same route and answer shape (a plain array), masked;
+// a short query is an empty array, someone who is no member is 403, and
+// the 31st search in a minute 429 with Retry-After.
+func TestListUsersSeatForAMemberHTTP(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	store := user.NewMemoryStore()
+	dir.PutGroup(identity.Group{ID: "g-weblab", Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"})
+	seated := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	dir.PutUser(identity.Person{ID: seated, Email: "ada@example.com", FirstName: "Ada", LastName: "Lovelace", Username: "ada", SkyNumber: "SKY1"})
+	if err := dir.AddMember(t.Context(), "g-weblab", seated); err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.SetGroupClientRoles(t.Context(), "g-weblab", []identity.ClientRole{{ClientID: "forms", Role: "skyforms:access"}}); err != nil {
+		t.Fatal(err)
+	}
+	get := func(app *fiber.App, q string) (*http.Response, string) {
+		t.Helper()
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/users?q="+q+"&clientId=forms&role=skyforms:access", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, string(body)
+	}
+	member := identityApp(t, authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/ARGE/WEBLAB/FRONT"}, Client: "skyforms"}, dir, store)
+	resp, body := get(member, "ada")
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("member: %d %s", resp.StatusCode, body)
+	}
+	var found []map[string]any
+	if err := json.Unmarshal([]byte(body), &found); err != nil {
+		t.Fatalf("answer is no plain array: %s", body)
+	}
+	if len(found) != 1 || found[0]["id"] != seated.String() || found[0]["email"] != "a***@example.com" || found[0]["firstName"] != "Ada" || found[0]["lastName"] != "Lovelace" {
+		t.Fatalf("member answer %s", body)
+	}
+	for _, field := range []string{"username", "skyNumber", "schoolEmail"} {
+		if _, ok := found[0][field]; ok {
+			t.Errorf("member answer carries %s: %s", field, body)
+		}
+	}
+	if resp, body := get(member, "ad"); resp.StatusCode != fiber.StatusOK || strings.TrimSpace(body) != "[]" {
+		t.Fatalf("short query: %d %s, want 200 []", resp.StatusCode, body)
+	}
+	signedUp := identityApp(t, authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER"}}, dir, store)
+	if resp, body := get(signedUp, "ada"); resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("no member: %d %s, want 403", resp.StatusCode, body)
+	}
+	for range 29 {
+		if resp, body := get(member, "ada"); resp.StatusCode != fiber.StatusOK {
+			t.Fatalf("within the budget: %d %s", resp.StatusCode, body)
+		}
+	}
+	resp, body = get(member, "ada")
+	if resp.StatusCode != fiber.StatusTooManyRequests || resp.Header.Get(fiber.HeaderRetryAfter) != "60" || !strings.Contains(body, "rate_limited") {
+		t.Fatalf("31st search: %d %q %s, want 429 rate_limited Retry-After 60", resp.StatusCode, resp.Header.Get(fiber.HeaderRetryAfter), body)
 	}
 }

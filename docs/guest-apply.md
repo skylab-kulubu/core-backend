@@ -11,7 +11,7 @@ from the panel (who may update the Event or assign its Tickets)
 
 `consents` carries the boxes the guest ticked
 ([contact-consents.md](contact-consents.md)): `["event_invitations"]`, or
-`[{"purpose":"event_invitations","textVersion":"davet-v1"}]` to
+`[{"purpose":"event_invitations","textVersion":"davet-v2"}]` to
 name the text shown. Absent or empty, nothing is recorded: the box is
 unticked unless the guest ticked it. The field is judged whole before
 anything is written, the guest's address included: an address a consent

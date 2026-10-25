@@ -37,10 +37,11 @@ wizards and their markers read.
 - **Migrations** are done by construction: core starts listening only after
   `migrate.Apply` has returned, so a task that answers at all has its schema.
 - **Shutting down.** From the stop signal on, `/v1/ready` answers `503`.
-- **Not asked:** Keycloak, SkyMail, Gotenberg, ClamAV, the frame service, R2,
-  OpenBao, Cloudflare. Their outage fails only the requests that need them, the
-  same on every task; failing readiness for them would take every task out (or
-  get them restarted) and turn a partial outage into a whole one.
+- **Not asked:** Keycloak, RabbitMQ ([integration-events.md](integration-events.md)),
+  SkyMail, Gotenberg, ClamAV, the frame service, R2, OpenBao, Cloudflare. Their
+  outage fails only the requests that need them, the same on every task;
+  failing readiness for them would take every task out (or get them
+  restarted) and turn a partial outage into a whole one.
 
 Swarm has one health check, not Kubernetes' separate liveness and readiness:
 a task that fails it `retries` times in a row is replaced. So the health check

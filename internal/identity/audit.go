@@ -43,12 +43,18 @@ type auditedDirectory struct {
 // whether Keycloak made the change (a timeout, a request given up, a lost
 // connection, a 5xx) leaves the row pending: its outcome is unknown.
 func (d *auditedDirectory) write(ctx context.Context, r teamaudit.Record, do func() (*teamaudit.State, error)) error {
+	return recordWrite(ctx, d.audit, d.logf, r, do)
+}
+
+// recordWrite records do as r in audit: a pending row, then do, then its
+// outcome (auditedDirectory.write, which the app assignments share).
+func recordWrite(ctx context.Context, audit teamaudit.Writer, logf func(string, ...any), r teamaudit.Record, do func() (*teamaudit.State, error)) error {
 	actor, ok := teamaudit.ActorFrom(ctx)
 	if !ok {
 		return teamaudit.ErrUnavailable
 	}
 	r.Actor = actor
-	id, err := d.audit.Begin(ctx, r)
+	id, err := audit.Begin(ctx, r)
 	if err != nil {
 		return err
 	}
@@ -57,13 +63,13 @@ func (d *auditedDirectory) write(ctx context.Context, r teamaudit.Record, do fun
 	if err != nil {
 		var refused bool
 		if code, refused = refusal(err); !refused {
-			d.logf("team audit: record %s stays pending: outcome unknown (%s)", id, code)
+			logf("team audit: record %s stays pending: outcome unknown (%s)", id, code)
 			return err
 		}
 		outcome = teamaudit.OutcomeFailed
 	}
-	if finishErr := d.audit.Finish(ctx, id, outcome, code, after); finishErr != nil {
-		d.logf("team audit: record %s stays pending: %v", id, finishErr)
+	if finishErr := audit.Finish(ctx, id, outcome, code, after); finishErr != nil {
+		logf("team audit: record %s stays pending: %v", id, finishErr)
 	}
 	return err
 }

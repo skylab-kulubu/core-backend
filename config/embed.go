@@ -9,3 +9,10 @@ import _ "embed"
 //
 //go:embed media-purposes.json
 var MediaPurposes []byte
+
+// AppAssignments is the app catalogue of the admin panel's app assignments
+// (app-assignments.json, docs/app-assignments.md). Core checks it against
+// its app roles at startup (authz.LoadApps).
+//
+//go:embed app-assignments.json
+var AppAssignments []byte

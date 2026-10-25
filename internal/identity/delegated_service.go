@@ -393,9 +393,38 @@ func (s *service) MemberCandidates(ctx context.Context, p authz.Principal, group
 			return nil, &DelegationError{Status: http.StatusTooManyRequests, Code: CodeRateLimited, RetryAfter: 60}
 		}
 	}
-	found, err := s.users.Search(ctx, q)
+	shown, masked, err := s.candidateUsers(ctx, q)
 	if err != nil {
 		return nil, err
+	}
+	direct, err := s.dir.Members(ctx, g.ID)
+	if err != nil {
+		return nil, err
+	}
+	privileged := s.privilegedPath(g.Path)
+	out := make([]MemberCandidate, 0, len(shown))
+	for _, u := range shown {
+		c := MemberCandidate{ID: u.ID, FirstName: u.FirstName, LastName: u.LastName, Email: u.Email}
+		if masked {
+			c.Email = MaskEmail(u.Email)
+		}
+		c.ProfilePictureURL, _ = profilePicture(u)
+		c.AlreadyMember = slices.ContainsFunc(direct, func(m Person) bool { return m.ID == u.ID })
+		c.YTULinked = u.YTULinked
+		c.Warnings = warnings(privileged, c.YTULinked)
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// candidateUsers are the people a search for q finds (MemberCandidates'
+// rule): core's active accounts whose name holds q, at most ten, the
+// address to be masked; or, for a whole address, the accounts with it,
+// unmasked.
+func (s *service) candidateUsers(ctx context.Context, q string) ([]user.User, bool, error) {
+	found, err := s.users.Search(ctx, q)
+	if err != nil {
+		return nil, false, err
 	}
 	needle := strings.ToLower(q)
 	matches := make([]user.User, 0, len(found))
@@ -430,24 +459,7 @@ func (s *service) MemberCandidates(ctx context.Context, p authz.Principal, group
 	if len(shown) > candidateLimit {
 		shown = shown[:candidateLimit]
 	}
-	direct, err := s.dir.Members(ctx, g.ID)
-	if err != nil {
-		return nil, err
-	}
-	privileged := s.privilegedPath(g.Path)
-	out := make([]MemberCandidate, 0, len(shown))
-	for _, u := range shown {
-		c := MemberCandidate{ID: u.ID, FirstName: u.FirstName, LastName: u.LastName, Email: u.Email}
-		if masked {
-			c.Email = MaskEmail(u.Email)
-		}
-		c.ProfilePictureURL, _ = profilePicture(u)
-		c.AlreadyMember = slices.ContainsFunc(direct, func(m Person) bool { return m.ID == u.ID })
-		c.YTULinked = u.YTULinked
-		c.Warnings = warnings(privileged, c.YTULinked)
-		out = append(out, c)
-	}
-	return out, nil
+	return shown, masked, nil
 }
 
 // MaskEmail is address with its local part hidden but for its first

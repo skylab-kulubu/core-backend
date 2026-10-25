@@ -110,6 +110,11 @@ type UserCard struct {
 type Directory interface {
 	GroupNodes
 	GroupProtections
+	// RoleProtection is the protection one client role gives where it is
+	// mapped (GroupProtection's answer for that one mapping): an app role
+	// that holds, as a composite, a realm role or a role that is no app
+	// role is protected. The app assignments refuse it (ticket 15, T1).
+	RoleProtection(ctx context.Context, role ClientRole) (Protection, error)
 	ListGroups(ctx context.Context) ([]Group, error)
 	GetGroup(ctx context.Context, idOrPath string) (Group, error)
 	CreateGroup(ctx context.Context, parentRef, name string) (Group, error)
@@ -123,6 +128,19 @@ type Directory interface {
 	SearchUsers(ctx context.Context, query string, limit int) ([]Person, error)
 	ListClientRoles(ctx context.Context) ([]ClientRole, error)
 	UsersWithClientRole(ctx context.Context, clientID, role string) ([]Person, error)
+	// ClientRoleHolders answers the direct mappings of clientID's role (and
+	// of skyforms:* for a skyforms: role): the Groups it is mapped to and
+	// the people it is mapped to. Like Keycloak's role/groups and
+	// role/users, it sees no Group above or below them, no composite and
+	// no default role. A realm without clientID, or a client without the
+	// role, holds nobody: empty, no error.
+	ClientRoleHolders(ctx context.Context, clientID, role string) ([]Group, []Person, error)
+	// ClientRoleMappings answers the direct mappings of exactly clientID's
+	// role: the Groups and the people it is mapped to, as ClientRoleHolders
+	// does but without skyforms:* (the app assignments, Entra's "Users and
+	// groups"). A realm without clientID, or a client without the role,
+	// maps it to nobody: empty, no error.
+	ClientRoleMappings(ctx context.Context, clientID, role string) ([]Group, []Person, error)
 	// EffectiveClientRoles answers the names of clientID's roles the person
 	// holds in effect: directly, through Groups and the Groups above them,
 	// the default roles and composites. ErrNotFound: no such person;
@@ -135,6 +153,11 @@ type Directory interface {
 	GroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group, error)
 	GroupClientRoles(ctx context.Context, groupID string) ([]ClientRole, error)
 	SetGroupClientRoles(ctx context.Context, groupID string, roles []ClientRole) error
+	// AddGroupClientRole maps role to the Group and RemoveGroupClientRole
+	// takes it off, leaving its other mappings as they are (an app
+	// assignment).
+	AddGroupClientRole(ctx context.Context, groupID string, role ClientRole) error
+	RemoveGroupClientRole(ctx context.Context, groupID string, role ClientRole) error
 	UserExtraRoles(ctx context.Context, userID uuid.UUID) ([]ClientRole, error)
 	AddUserExtraRole(ctx context.Context, userID uuid.UUID, role ClientRole) error
 	RemoveUserExtraRole(ctx context.Context, userID uuid.UUID, role ClientRole) error

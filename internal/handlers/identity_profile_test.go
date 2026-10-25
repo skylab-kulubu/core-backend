@@ -380,12 +380,7 @@ func TestPrivilegedGetUserIncludesStudentCardUidHTTP(t *testing.T) {
 	id := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb6")
 	seedShadowUser(t, dir, store, id)
 	uid := "AABBCCDDEEFF"
-	existing, err := store.Get(t.Context(), id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	existing.StudentCardUID = uid
-	if _, err := store.UpdateProfile(t.Context(), existing); err != nil {
+	if _, err := store.SetStudentCardUID(t.Context(), id, uid); err != nil {
 		t.Fatal(err)
 	}
 

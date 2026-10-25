@@ -94,6 +94,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == groupCountReportCommandName {
 		os.Exit(runGroupCountReport(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == consentWithdrawCommandName {
+		os.Exit(runConsentWithdraw(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == retentionSweepCommandName {
 		os.Exit(runRetentionSweep(os.Args[2:], os.Getenv, os.Stdout))
 	}
@@ -194,11 +197,24 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("team delegation: %s (%s)", map[bool]string{false: "off", true: "on"}[teamDelegation], authz.TeamDelegationEnv)
+	// The panel's app assignments (docs/app-assignments.md): off unless
+	// set. A value core cannot read, or an app catalogue that names
+	// anything but app roles, stops startup.
+	appAssignments, err := authz.ParseAppAssignments(os.Getenv(authz.AppAssignmentsEnv))
+	if err != nil {
+		log.Fatal(err)
+	}
+	apps, err := authz.LoadApps()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("app assignments: %s (%s), %d apps", map[bool]string{false: "off", true: "on"}[appAssignments], authz.AppAssignmentsEnv, len(apps))
 	authzPolicy := authz.DefaultPolicy()
 	authzPolicy.RoleMode = roleMode
 	authzPolicy.PrivilegedRoots = privilegedRoots
 	authzPolicy.PrivilegedReaderRoots = privilegedReaderRoots
 	authzPolicy.TeamDelegation = teamDelegation
+	authzPolicy.AppAssignments = appAssignments
 	authzRoleMetrics := authz.NewRoleMetrics(log.Default(), time.Now)
 	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics))
 	// The Team code rule every Group create and rename passes
@@ -490,6 +506,15 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("direct user roles: %s (%s)", map[bool]string{false: "off", true: "on"}[directUserRoles], identity.DirectUserRolesEnv)
+	// Whether a member without users:read may find Forms' seat holders
+	// (GET /v1/users?role=skyforms:access, docs/team-delegation.md "Forms'
+	// people picker"): on unless set off. A value core cannot read stops
+	// startup.
+	memberSeatSearch, err := identity.MemberSeatSearchFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("members' seat search: %s (%s)", map[bool]string{false: "off", true: "on"}[memberSeatSearch], identity.MemberSeatSearchEnv)
 	if privateMedia != nil {
 		// A reviewer who never signed in to core gets their row from
 		// Keycloak when a product asks for a read link for them.
@@ -614,6 +639,11 @@ func main() {
 		// holds for them (Personal e-mail included), as erasure reads them
 		// but without erasure's limit of three.
 		consents.SetAddresses(account.NewPersonAddresses(identity.NewAccountIdentity(dir), users))
+		// A withdrawal by address (a mail's link) also reaches the member
+		// whose Personal e-mail it is: one grant per person (s6 §5.8).
+		if holders, ok := dir.(consent.PersonalEmailHolders); ok {
+			consents.SetPersonalEmailHolders(holders)
+		}
 	}
 	if consentConfig.Enabled {
 		log.Printf("contact consents: on (links at %s, service clients %v, verified-address clients %v)",
@@ -666,6 +696,23 @@ func main() {
 	for _, line := range commpref.AudienceStartupLines(newsAudience.Enabled(), privateVisibility) {
 		log.Print(line)
 	}
+	// The recipient question (ADR 0072 karar 3, docs/news-audience.md
+	// "Recipients"): SkyMail asks, for the recipients a sender chose, which
+	// are a person and whether the mail may go to each. The verified
+	// addresses are read from Keycloak in bulk on demand, never per address.
+	ytuIdentityProvider, err := commpref.YTUIdentityProviderFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var recipients *commpref.Recipients
+	if addressDirectory, ok := dir.(commpref.AddressDirectory); ok {
+		recipients = commpref.NewRecipients(communicationPreferences, addressDirectory, users, ytuIdentityProvider)
+	}
+	recipientsState := "off"
+	if recipients.Enabled() {
+		recipientsState = "on"
+	}
+	log.Printf("recipient question: %s (YTÜ identity provider %s)", recipientsState, ytuIdentityProvider)
 	if keycloakConfigured {
 		worker("communication preference cleanup", commpref.MaintainCleanup(workers, communicationPreferences, commpref.CleanupInterval, func(what string, removed int64, err error) {
 			if err != nil {
@@ -873,6 +920,12 @@ func main() {
 	}
 	retentionMetrics, retentionStopped := startRetentionSweep(workers, pool, retentionConfig)
 	worker("retention sweep", retentionStopped)
+	var wakeUserSync func()
+	if userSync != nil {
+		wakeUserSync = userSync.Wake
+	}
+	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, wakeUserSync)
+	worker("integration events", eventsStopped)
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
 
@@ -929,6 +982,10 @@ func main() {
 			DirectUserRoles:       directUserRoles,
 			AdminGroups:           adminGroups,
 			UserSync:              userSync,
+			NoMemberSeatSearch:    !memberSeatSearch,
+			Apps:                  apps,
+			AppAudit:              teamAudit,
+			AppAssignments:        appAssignments,
 		}),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
@@ -966,6 +1023,7 @@ func main() {
 		TeamMailMetrics:        teamMembershipMetrics,
 		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,
+		EventsMetrics:          eventsMetrics,
 		SelfDeletion:           selfDeletion,
 		ParseSelfDeleteContext: parseSelfDelete,
 		ParseSelfDeleteSudo:    parseSelfDeleteSudo,
@@ -981,6 +1039,7 @@ func main() {
 		Authz:                     az,
 		EditableSites:             editableSites,
 		ManagedTeams:              delegation,
+		AppAssignments:            appAssignments,
 		AuthzRoleMetrics:          authzRoleMetrics,
 		GuestCheckInMetrics:       doorQR,
 		GuestApplyPublicIPLimit:   guestApplyIPLimit,
@@ -989,6 +1048,7 @@ func main() {
 		Consents:                  consents,
 		CommunicationPreferences:  communicationPreferences,
 		Audience:                  newsAudience,
+		Recipients:                recipients,
 		TrackingWithdrawalMetrics: trackingWithdrawals,
 		Readiness:                 readiness,
 		MediaDecodeMetrics:        decodeBudget,
