@@ -22,6 +22,8 @@ type authorizer struct {
 	metrics *RoleMetrics
 	// teams is where Owner teams sit (WithTeamTree), nil without it.
 	teams TeamTree
+	// settings are the Teams' own settings (WithTeamSettings), nil without.
+	settings TeamSettings
 }
 
 // Option configures an Authorizer.
@@ -205,14 +207,14 @@ func (a *authorizer) allowCompetitor(p Principal, r Resource, action Action) boo
 		if authenticated && r.OwnerID != "" && r.OwnerID == p.ID {
 			return true
 		}
-		return a.isOwnerMember(p, r)
+		return a.competitorWriter(p, r)
 	case Update:
-		return a.isOwnerMember(p, r)
+		return a.competitorWriter(p, r)
 	case Delete:
 		if authenticated && r.OwnerID != "" && r.OwnerID == p.ID {
 			return true
 		}
-		return a.isOwnerMember(p, r)
+		return a.competitorWriter(p, r)
 	default:
 		return false
 	}
@@ -237,6 +239,20 @@ func (a *authorizer) allowCompetition(p Principal, r Resource, action Action) bo
 		return false
 	}
 	return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
+}
+
+// competitorWriter is who adds, edits and removes an Event's competitors: a
+// Leader of the Owner team (or of a Team above it), and its members unless
+// the Team's Leader kept it to the Leaders (TeamAttrMembersManageCompetitors).
+func (a *authorizer) competitorWriter(p Principal, r Resource) bool {
+	levels := a.ownerLevels(p, r.OwnerTeam)
+	if slices.Contains(levels, LevelLeader) {
+		return true
+	}
+	if len(levels) == 0 {
+		return false
+	}
+	return a.settings == nil || a.settings.MembersManageCompetitors(r.OwnerTeam)
 }
 
 func (a *authorizer) isOwnerMember(p Principal, r Resource) bool {

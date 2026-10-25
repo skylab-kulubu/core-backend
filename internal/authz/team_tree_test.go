@@ -252,3 +252,60 @@ func levelsOf(c Capabilities, team string) []Level {
 	}
 	return nil
 }
+
+// fakeTeamSettings answers MembersManageCompetitors from a set of the Teams
+// whose Leader turned it off.
+type fakeTeamSettings map[string]bool
+
+func (f fakeTeamSettings) MembersManageCompetitors(team string) bool { return !f[team] }
+
+// A Team's Leader may keep its competitors to the Leaders (Yusuf, B1 of
+// 2026-10-25): its members then only read them; Leaders, a Leader of a Team
+// above and Privileged keep every action, and a person still enters as a
+// competitor themselves.
+func TestCompetitors_TeamSettingKeepsWritesToLeaders(t *testing.T) {
+	t.Parallel()
+	policy := DefaultPolicy()
+	policy.TeamDelegation = true
+	auth := NewAuthorizer(policy, WithTeamTree(realmTree()), WithTeamSettings(fakeTeamSettings{"WEBLAB": true, "MOBIL": true}))
+	member := Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	weblab := Resource{Type: TypeCompetitor, OwnerTeam: "WEBLAB"}
+	for _, action := range []Action{Create, Update, Delete} {
+		if auth.Allow(member, weblab, action) {
+			t.Errorf("a member may %s a competitor with the setting off", action)
+		}
+	}
+	if !auth.Allow(member, weblab, Read) {
+		t.Error("a member no longer reads the competitors")
+	}
+	own := weblab
+	own.OwnerID = "u1"
+	if !auth.Allow(member, own, Create) || !auth.Allow(member, own, Delete) {
+		t.Error("a member no longer enters or leaves as a competitor themselves")
+	}
+	leader := Principal{ID: "u2", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	yk := Principal{ID: "u3", Groups: []string{"/UYELER/YK"}}
+	mobil := Resource{Type: TypeCompetitor, OwnerTeam: "MOBIL"}
+	for _, action := range []Action{Create, Update, Delete} {
+		if !auth.Allow(leader, weblab, action) || !auth.Allow(leader, mobil, action) || !auth.Allow(yk, weblab, action) {
+			t.Errorf("a Leader, a Leader from above or YK may not %s a competitor", action)
+		}
+	}
+	// Another Team keeps today's rule: its members manage its competitors.
+	gecekodu := Principal{ID: "u4", Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}}
+	if !auth.Allow(gecekodu, Resource{Type: TypeCompetitor, OwnerTeam: "GECEKODU"}, Update) {
+		t.Error("a Team with the setting on refuses its members")
+	}
+	// The capabilities say so.
+	c := auth.Capabilities(member)
+	if scopeFor(c, "WEBLAB")["competitor.update"] || scopeFor(c, "WEBLAB")["competitor.create"] {
+		t.Error("capabilities offer a member the competitor writes with the setting off")
+	}
+	if !scopeFor(c, "WEBLAB")["competitor.read"] {
+		t.Error("capabilities take the competitor read from a member")
+	}
+	// Without settings (or before a Leader chose), members manage them as today.
+	if !NewAuthorizer(DefaultPolicy()).Allow(member, weblab, Update) {
+		t.Error("without team settings a member may not update a competitor")
+	}
+}

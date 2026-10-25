@@ -162,6 +162,30 @@ nothing changes.
   The Team audit record does not cover Event decisions; whether it should
   is open (ADR-0065 "Açık").
 
+## Team settings
+
+`PUT /v1/groups/{id}/settings` `{"membersManageCompetitors": bool}` writes a
+Team's own settings as its Group's attributes and answers them. The Team's
+Leader, a Leader of a Team above (delegation on, `Manages`) and Privileged
+write them; a protected Group is Privileged's; only a Team takes them (a
+Leader group, an area or a root: `400`). Each change is a
+`group.attributes` row with the old and new value, a refusal a `denied`
+row, as every delegated write. The panel reads the values from the Group's
+attributes (`GET /v1/groups/{id}`).
+
+- `membersManageCompetitors` (`members_manage_competitors`, Yusuf
+  2026-10-25): whether the Team's members add, edit and remove its Events'
+  competitors. Unset or anything but `false` is `true`, the rule before;
+  `false` keeps them to the Team's Leaders (and Leaders of a Team above,
+  "Owner team inheritance") and Privileged. Members still read them, and a
+  person still enters or leaves as a competitor themselves. The decision
+  (`competitor.create/update/delete` in the capabilities too) reads the
+  Owner team's own Group from the realm's Groups kept a minute
+  (`identity.TeamTree`); core's own write forgets them, a write elsewhere
+  (another core, the Keycloak console) is seen within the minute. A tree
+  that cannot be read is the default, `true`. The setting does not depend on
+  `TEAM_DELEGATION`; with it off only Privileged writes it.
+
 ## Role rules
 
 The role cleanup (sky_lab_genel `.scratch/rol-temizligi`, ticket 06; Yusuf, 2026-10-12: "Microsoft gibi"): access comes through Groups, and a role is mapped only where the rule allows it. These hold for every caller, Privileged included.
@@ -215,6 +239,7 @@ Errors are RFC 9457 problems with `code` (and `reason` for placement). The panel
 | `GET /v1/groups/{id}/member-candidates?q=` | `Manages` | below |
 | `POST /v1/groups/{id}/members` `{userId}` | membership of the Group | an active account (S4); limits below |
 | `DELETE /v1/groups/{id}/members/{userId}` | `Manages` of the Group, membership of the Source group | the person leaves the Group they sit in |
+| `PUT /v1/groups/{id}/settings` | `Manages` (a Team only) | the Team's own settings, below |
 
 `GET /v1/groups`, `POST /v1/groups`, `PATCH /v1/groups/{id}` and the
 client-role routes stay Privileged's (Forms reads the list). So does
@@ -300,7 +325,7 @@ core's own membership writes.
 | the realm's names (`team_code_not_unique`) | 60 s | renames |
 | `managedTeams` | 60 s (a failure 10 s) | core's membership writes of that person |
 | a managed tree | 60 s | every core membership write |
-| the realm's Groups (Owner team inheritance) | 60 s (a failure 10 s) | nothing: a move or rename is seen within the minute |
+| the realm's Groups (Owner team inheritance, Team settings) | 60 s (a failure 10 s) | core's renames, attribute writes and Team settings writes |
 
 Writes never use a kept caller, target or protection: they read all three
 fresh.

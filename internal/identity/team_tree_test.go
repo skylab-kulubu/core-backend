@@ -159,3 +159,39 @@ func (l *blockingLister) ListGroups(ctx context.Context) ([]Group, error) {
 	<-l.release
 	return l.countingLister.ListGroups(ctx)
 }
+
+func TestTeamTree_MembersManageCompetitors(t *testing.T) {
+	t.Parallel()
+	groups := treeGroups()
+	groups[4].Attributes = map[string]string{"members_manage_competitors": "FALSE"} // MOBIL
+	groups[2].Attributes = map[string]string{"members_manage_competitors": "true"}  // WEBLAB
+	lister := &countingLister{groups: groups}
+	tree := NewTeamTree(lister, TeamTreeOptions{})
+	if tree.MembersManageCompetitors("MOBIL") {
+		t.Error("MOBIL's Leader turned it off")
+	}
+	if !tree.MembersManageCompetitors("WEBLAB") || !tree.MembersManageCompetitors("GAMELAB") {
+		t.Error("a Team that kept it, or never chose, refuses its members")
+	}
+	if !tree.MembersManageCompetitors("LIDERLER") || !tree.MembersManageCompetitors("NOPE") {
+		t.Error("a name that is not one Group's is not the default")
+	}
+	down := NewTeamTree(&countingLister{err: errors.New("down")}, TeamTreeOptions{})
+	if !down.MembersManageCompetitors("MOBIL") {
+		t.Error("an unread tree is not the default")
+	}
+	// A write through core forgets the tree: the next decision reads it again.
+	lister.mu.Lock()
+	lister.groups[4].Attributes = map[string]string{"members_manage_competitors": "true"}
+	lister.mu.Unlock()
+	if tree.MembersManageCompetitors("MOBIL") {
+		t.Error("the minute's answer was not kept")
+	}
+	tree.ForgetAll()
+	if !tree.MembersManageCompetitors("MOBIL") {
+		t.Error("ForgetAll kept the old answer")
+	}
+	if lister.count() != 2 {
+		t.Errorf("reads = %d, want 2", lister.count())
+	}
+}

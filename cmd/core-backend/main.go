@@ -526,7 +526,9 @@ func main() {
 	// above an Event's Owner team leads it too (ADR-0065 decision 2,
 	// ekip-yetkileri ticket 12). The realm's Groups are kept a minute.
 	teamTree := identity.NewTeamTree(dir, identity.TeamTreeOptions{Logf: log.Printf})
-	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics), authz.WithTeamTree(teamTree))
+	// The same Groups carry the Teams' own settings (members_manage_competitors).
+	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics), authz.WithTeamTree(teamTree),
+		authz.WithTeamSettings(teamTree))
 	// The capabilities route's editableSites: the configured Site clients
 	// a person holds cms:access on, read with core's own service account.
 	// A hint for the admin panel, never an authorization.
@@ -983,6 +985,7 @@ func main() {
 			AccountErasureEnabled: workerEnabled,
 			AccessProjector:       accessProjector,
 			GroupCache:            overageGroups,
+			TeamTree:              teamTree,
 			Membership:            teamMembership,
 			GroupRoles:            groupRolesNotice,
 			PrivilegedRoots:       privilegedRoots,

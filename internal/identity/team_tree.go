@@ -10,7 +10,10 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-var _ authz.TeamTree = (*TeamTree)(nil)
+var (
+	_ authz.TeamTree     = (*TeamTree)(nil)
+	_ authz.TeamSettings = (*TeamTree)(nil)
+)
 
 const (
 	// DefaultTeamTreeTTL is how long core keeps the realm's Groups for the
@@ -82,22 +85,11 @@ func NewTeamTree(groups GroupLister, options TeamTreeOptions) *TeamTree {
 // and blanks: no answer when no Group or more than one has the name, or
 // the Groups could not be read.
 func (t *TeamTree) TeamPath(team string) (string, bool) {
-	groups, ok := t.read()
+	g, ok := t.only(team)
 	if !ok {
 		return "", false
 	}
-	team = strings.TrimSpace(team)
-	path, found := "", 0
-	for _, g := range groups {
-		if strings.EqualFold(strings.TrimSpace(g.Name), team) {
-			path = g.Path
-			found++
-		}
-	}
-	if found != 1 {
-		return "", false
-	}
-	return path, true
+	return g.Path, true
 }
 
 // SubTeams are the names of the Groups below path, in the order Keycloak
@@ -114,6 +106,45 @@ func (t *TeamTree) SubTeams(path string) []string {
 		}
 	}
 	return out
+}
+
+// MembersManageCompetitors is the Team setting of the one Group named team
+// (authz.TeamAttrMembersManageCompetitors): false only when it says
+// "false"; true when it says anything else, or the Group cannot be found or
+// the tree read (the default, today's rule).
+func (t *TeamTree) MembersManageCompetitors(team string) bool {
+	g, ok := t.only(team)
+	if !ok {
+		return true
+	}
+	return !strings.EqualFold(strings.TrimSpace(g.Attributes[authz.TeamAttrMembersManageCompetitors]), "false")
+}
+
+// ForgetAll drops the kept tree: core's own write of a Team's setting or
+// name is seen at the next decision. A read running meanwhile keeps its
+// answer.
+func (t *TeamTree) ForgetAll() {
+	t.mu.Lock()
+	t.entry = teamTreeEntry{}
+	t.mu.Unlock()
+}
+
+// only is the one Group named team, compared without case and blanks.
+func (t *TeamTree) only(team string) (Group, bool) {
+	groups, ok := t.read()
+	if !ok {
+		return Group{}, false
+	}
+	team = strings.TrimSpace(team)
+	var found Group
+	n := 0
+	for _, g := range groups {
+		if strings.EqualFold(strings.TrimSpace(g.Name), team) {
+			found = g
+			n++
+		}
+	}
+	return found, n == 1
 }
 
 func (t *TeamTree) read() ([]Group, bool) {
