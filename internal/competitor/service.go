@@ -181,6 +181,24 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	if in.EventID == uuid.Nil {
 		in.EventID = existing.EventID
 	}
+	// Moving it to another Event takes it out of the one it is in: who
+	// moves it writes that Event's competitors too.
+	if in.EventID != existing.EventID {
+		from, err := s.events.GetIncludingArchived(ctx, existing.EventID)
+		if err != nil {
+			if errors.Is(err, event.ErrNotFound) {
+				return Competitor{}, ErrNotFound
+			}
+			return Competitor{}, err
+		}
+		if !event.VisibleTo(s.authz, &p, from) {
+			return Competitor{}, ErrNotFound
+		}
+		res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: from.OwnerTeam, OwnerID: existing.UserID.String()}
+		if !s.authz.Allow(p, res, authz.Update) {
+			return Competitor{}, ErrForbidden
+		}
+	}
 	ev, err := s.visibleEvent(ctx, p, in.EventID)
 	if err != nil {
 		return Competitor{}, err
