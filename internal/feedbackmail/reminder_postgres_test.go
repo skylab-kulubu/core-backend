@@ -14,7 +14,8 @@ import (
 const days3 = 3 * 24 * time.Hour
 
 // sendDay runs the day of the fixture: Grace's mail (A) at 13:06, Ada's
-// (A, B, the Event) at 17:06.
+// (A, B, the Event) at 17:06, and Grace's second (the Event's form, once the
+// Event ended) at 17:06 too. It answers Grace's first and Ada's.
 func (f *fixture) sendDay(t *testing.T) (grace, ada sent) {
 	t.Helper()
 	f.pass(t, at(13, 1))
@@ -24,7 +25,9 @@ func (f *fixture) sendDay(t *testing.T) (grace, ada sent) {
 	for _, m := range f.mail.take() {
 		switch m.to {
 		case "grace@example.test":
-			grace = m
+			if grace.items == nil {
+				grace = m
+			}
 		case "ada@example.test":
 			ada = m
 		}
@@ -61,13 +64,13 @@ func TestReminderOnceWithTheSameLinks(t *testing.T) {
 		t.Fatalf("Grace's reminder %+v %+v", r, m)
 	}
 	f.pass(t, at(17, 7).Add(days3))
-	m = f.mail.take()
-	if len(m) != 1 || m[0].to != "ada@example.test" || !slices.Equal(titles(m[0].items), []string{"Açılış", "Gecekodu"}) ||
+	m = to(f.mail.take(), "ada@example.test")
+	if len(m) != 1 || !slices.Equal(titles(m[0].items), []string{"Açılış", "Gecekodu"}) ||
 		m[0].items[0].URL != ada.items[0].URL || m[0].items[1].URL != ada.items[2].URL {
 		t.Fatalf("Ada's reminder %+v", m)
 	}
 	var reminded int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM feedback_invites WHERE reminded_at IS NOT NULL`).Scan(&reminded); err != nil || reminded != 3 {
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM feedback_invites WHERE reminded_at IS NOT NULL`).Scan(&reminded); err != nil || reminded != 4 {
 		t.Fatalf("reminded %d %v", reminded, err)
 	}
 	if r := f.pass(t, at(23, 0).Add(days3+24*time.Hour)); r.Reminders != 0 || r.Sent != 0 {
@@ -116,7 +119,7 @@ func TestReminderCancelled(t *testing.T) {
 	f := newFixture(t)
 	f.sendDay(t)
 	// The panel closes the Event's form; Forms closes B, then opens it again.
-	if n, err := f.store.CancelReminders(ctx, feedback.Target{EventID: f.event}, at(18, 0)); err != nil || n != 1 {
+	if n, err := f.store.CancelReminders(ctx, feedback.Target{EventID: f.event}, at(18, 0)); err != nil || n != 2 {
 		t.Fatalf("panel %d %v", n, err)
 	}
 	if _, err := f.store.ReportFormState(ctx, f.formB, false, nil, at(18, 0)); err != nil {
@@ -132,7 +135,7 @@ func TestReminderCancelled(t *testing.T) {
 	}
 	f.pass(t, closes.Add(time.Minute))
 	var cancelled int
-	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM feedback_invites WHERE reminder_cancelled_at IS NOT NULL`).Scan(&cancelled); err != nil || cancelled != 4 {
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM feedback_invites WHERE reminder_cancelled_at IS NOT NULL`).Scan(&cancelled); err != nil || cancelled != 5 {
 		t.Fatalf("cancelled at A's closing: %d %v", cancelled, err)
 	}
 	if r := f.pass(t, at(23, 0).Add(days3)); r.Reminders != 0 || len(f.mail.take()) != 0 {
@@ -211,12 +214,14 @@ func TestReminderTemplateOff(t *testing.T) {
 	f := newFixture(t)
 	f.mail.off = map[mail.FeedbackKind]bool{mail.FeedbackReminder: true}
 	f.sendDay(t)
-	if r := f.pass(t, at(17, 7).Add(days3)); r.Reminders != 2 || r.Sent != 0 {
+	// Grace's two mails and Ada's
+	if r := f.pass(t, at(17, 7).Add(days3)); r.Reminders != 3 || r.Sent != 0 {
 		t.Fatalf("off %+v", r)
 	}
 	f.mail.mu.Lock()
 	f.mail.off = nil
 	f.mail.mu.Unlock()
+	// Grace's two in one mail (one address, one day), and Ada's
 	if r := f.pass(t, at(17, 8).Add(days3)); r.Reminded != 2 {
 		t.Fatalf("on %+v", r)
 	}
