@@ -30,7 +30,7 @@ type Purpose string
 const (
 	// PurposeEventInvitations is invitations to SKY LAB's other events and
 	// its announcements by e-mail (davet-v2; davet-v1 named the invitations
-	// alone).
+	// alone and is no longer taken).
 	PurposeEventInvitations Purpose = "event_invitations"
 	// PurposePromotional is mails whose main purpose is promoting a product
 	// or a service (a discount code, a company's job posting, a raffle): one
@@ -69,7 +69,7 @@ type purposeSpec struct {
 
 var purposes = map[Purpose]purposeSpec{
 	PurposeEventInvitations: {
-		texts:   []string{"davet-v1", "davet-v2"},
+		texts:   []string{"davet-v2"},
 		sources: []Source{SourceGuestApply, SourceForms, SourcePlace, SourceGuessr, SourceSelf},
 		enabled: true,
 		renews:  true,
@@ -90,7 +90,8 @@ var purposes = map[Purpose]purposeSpec{
 }
 
 // texts are the box texts of every version, as the person read them next to
-// the box (Turkish). The confirm page shows the one the grant was given on.
+// the box (Turkish). The confirm page shows the one the grant was given on;
+// davet-v1 is no longer taken but stays for a grant stored on it.
 var texts = map[string]string{
 	"davet-v1":       "SKY LAB'ın gelecek etkinliklerine davet e-postası almak istiyorum. Bunun için adımı ve e-posta adresimi saklayabilirsiniz. İstediğim zaman her davetteki bağlantıyla vazgeçebilirim.",
 	"davet-v2":       "Diğer etkinlik ve duyurulardan haberdar olmak istiyorum.",
