@@ -1472,6 +1472,14 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.feedback_mails') AND conname = 'feedback_mails_kind_check'
 			  AND pg_get_constraintdef(oid) LIKE '%reminder%'
 		  )`,
+	// events.active dropped (ADR 0066: active is derived).
+	20261025200000: `
+		SELECT 1
+		WHERE to_regclass('public.events') IS NOT NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'active'
+		  )`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

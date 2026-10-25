@@ -14,8 +14,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-// Cancel changes only a current, published Event that has not ended, writes
-// the legacy active false, and cancels its Competitions with it, each with
+// Cancel changes only a current, published Event that has not ended, and
+// cancels its Competitions with it, each with
 // its earlier status; a Competition cancelled on its own or archived is
 // left as it is (tickets 04 and 15).
 func TestPostgresStoreCancel(t *testing.T) {
@@ -60,15 +60,14 @@ func TestPostgresStoreCancel(t *testing.T) {
 		t.Fatalf("cancel: %v %v", changed, err)
 	}
 	var status, reason string
-	var active bool
 	var cancelledAt *time.Time
 	var cancelledBy *uuid.UUID
-	if err := pool.QueryRow(ctx, `SELECT status, active, cancelled_at, cancelled_by, cancel_reason FROM events WHERE id = $1`, published.ID).
-		Scan(&status, &active, &cancelledAt, &cancelledBy, &reason); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT status, cancelled_at, cancelled_by, cancel_reason FROM events WHERE id = $1`, published.ID).
+		Scan(&status, &cancelledAt, &cancelledBy, &reason); err != nil {
 		t.Fatal(err)
 	}
-	if status != "cancelled" || active || cancelledAt == nil || cancelledBy == nil || *cancelledBy != actor || reason != "" {
-		t.Fatalf("event: %s active=%v at=%v by=%v %q", status, active, cancelledAt, cancelledBy, reason)
+	if status != "cancelled" || cancelledAt == nil || cancelledBy == nil || *cancelledBy != actor || reason != "" {
+		t.Fatalf("event: %s at=%v by=%v %q", status, cancelledAt, cancelledBy, reason)
 	}
 	read, err := store.Get(ctx, published.ID)
 	if err != nil || read.Status != event.StatusCancelled || read.Active || read.CancelledAt == nil {
