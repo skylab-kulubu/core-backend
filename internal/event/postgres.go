@@ -241,19 +241,17 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 	if e.Status == "" {
 		e.Status = StatusPublished
 	}
-	// active is no longer read (ADR 0066): it is written once, as the
-	// status, so that an older release rolled back to shows a published
-	// Event as it did and keeps a draft hidden. published_by names the
+	// active is derived (ADR 0066), never stored. published_by names the
 	// actor only when they have an account row: the attribution never
 	// fails a create, and the row's guard still refuses one being erased.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO events (
 			id, name, description, location, owner_team, form_url, capacity,
-			start_date, end_date, linkedin, active, ranked, prize_info, season_id, cover_image_id,
+			start_date, end_date, linkedin, ranked, prize_info, season_id, cover_image_id,
 			attendance_rule, attendance_ratio, extra_form_urls,
 			status, published_at, published_by, registration_closed, registration_closes_at, registration_closed_at,
 			feedback_mode, feedback_form_url, feedback_form_alias, feedback_auto_send
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$18 = 'published',$11,$12,$13,$14,$15,$16,$17,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
 			$18,
 			CASE WHEN $18 = 'published' THEN now() END,
 			CASE WHEN $18 = 'published' THEN (SELECT id FROM users WHERE id = $19) END,
@@ -1061,13 +1059,11 @@ func attendanceRule(rule string) string {
 	return rule
 }
 
-// Publish and Unpublish write the legacy active column as Create does, so
-// that a release rolled back to shows a published Event and hides a draft.
-// published_by names the actor only when they have an account row, as on
-// create.
+// Publish: published_by names the actor only when they have an account
+// row, as on create.
 func (s *PostgresStore) Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE events SET status = 'published', active = true, published_at = now(),
+		UPDATE events SET status = 'published', published_at = now(),
 			published_by = (SELECT id FROM users WHERE id = $2), updated_at = now()
 		WHERE id = $1 AND archived_at IS NULL AND status = 'draft'
 			AND btrim(name) <> '' AND btrim(location) <> '' AND start_date IS NOT NULL`, id, by)
@@ -1080,9 +1076,8 @@ func (s *PostgresStore) Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID
 	return tag.RowsAffected() == 1, nil
 }
 
-// Cancel writes the legacy active column false, as Unpublish does, so that
-// a release rolled back to hides the cancelled Event. cancelled_by names the
-// actor only when they have an account row, as published_by does.
+// Cancel: cancelled_by names the actor only when they have an account row,
+// as published_by does.
 func (s *PostgresStore) Cancel(ctx context.Context, id uuid.UUID, by *uuid.UUID, reason string, notify bool) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -1090,7 +1085,7 @@ func (s *PostgresStore) Cancel(ctx context.Context, id uuid.UUID, by *uuid.UUID,
 	}
 	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx, `
-		UPDATE events e SET status = 'cancelled', active = false, cancelled_at = now(),
+		UPDATE events e SET status = 'cancelled', cancelled_at = now(),
 			cancelled_by = (SELECT id FROM users WHERE id = $2), cancel_reason = $3,
 			cancel_notified_at = CASE WHEN $4 THEN now() END, updated_at = now()
 		WHERE e.id = $1 AND e.archived_at IS NULL AND e.status = 'published'
@@ -1129,8 +1124,6 @@ func (s *PostgresStore) Cancel(ctx context.Context, id uuid.UUID, by *uuid.UUID,
 	return true, nil
 }
 
-// Uncancel writes the legacy active column as the Event's derived active,
-// the reverse of Cancel's false, for a release rolled back to.
 func (s *PostgresStore) Uncancel(ctx context.Context, id uuid.UUID, notify bool) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -1152,7 +1145,6 @@ func (s *PostgresStore) Uncancel(ctx context.Context, id uuid.UUID, notify bool)
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE events e SET status = 'published',
-			active = (`+endsAtSQL+` IS NULL OR `+endsAtSQL+` > now()),
 			cancelled_at = NULL, cancelled_by = NULL, cancel_reason = '', cancel_notified_at = NULL, updated_at = now()
 		WHERE e.id = $1 AND e.archived_at IS NULL AND e.status = 'cancelled'`, id)
 	if err != nil {
@@ -1184,7 +1176,7 @@ func (s *PostgresStore) Uncancel(ctx context.Context, id uuid.UUID, notify bool)
 
 func (s *PostgresStore) Unpublish(ctx context.Context, id uuid.UUID) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE events e SET status = 'draft', active = false, updated_at = now()
+		UPDATE events e SET status = 'draft', updated_at = now()
 		WHERE e.id = $1 AND e.archived_at IS NULL AND e.status = 'published'
 			AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.event_id = e.id)
 			AND NOT EXISTS (SELECT 1 FROM competitors c WHERE c.event_id = e.id AND c.withdrawn_at IS NULL)`, id)

@@ -55,15 +55,14 @@ func (s *PostgresStore) Copy(ctx context.Context, plan CopyPlan) (Event, []strin
 	if err != nil {
 		return Event{}, nil, err
 	}
-	// A draft, never shown as active (active is still written for an
-	// older release rolled back to).
+	// A draft, never shown as active.
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO events (
 			id, name, description, location, owner_team, capacity,
-			start_date, end_date, active, ranked, prize_info, season_id,
+			start_date, end_date, ranked, prize_info, season_id,
 			attendance_rule, attendance_ratio, status, copied_from_event_id,
 			registration_closes_at, feedback_mode, feedback_auto_send
-		) VALUES ($2, $3, $4, $5, $6, $7, $1, $8, false, $9, $10, `+copySeasonSQL+`,
+		) VALUES ($2, $3, $4, $5, $6, $7, $1, $8, $9, $10, `+copySeasonSQL+`,
 			$11, $12, 'draft', $13, $14, $15, $16)
 		ON CONFLICT (id) DO NOTHING`,
 		e.StartDate, e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.Capacity,

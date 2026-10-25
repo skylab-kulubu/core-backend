@@ -66,7 +66,7 @@ func TestPostgresStoreListsLeaveDraftsOut(t *testing.T) {
 
 // Publish and Unpublish are one conditional UPDATE each: publish only a
 // current draft with a name, a location and a start date; unpublish only a
-// published Event without a Ticket. Both write the legacy active column.
+// published Event without a Ticket.
 func TestPostgresStorePublishAndUnpublish(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
@@ -78,12 +78,12 @@ func TestPostgresStorePublishAndUnpublish(t *testing.T) {
 	if _, _, err := user.NewService(user.NewPostgresStore(pool)).Ensure(ctx, actor, user.Profile{Email: "publisher@example.test"}); err != nil {
 		t.Fatal(err)
 	}
-	stored := func(id uuid.UUID) (active bool, status string, by *uuid.UUID) {
+	stored := func(id uuid.UUID) (status string, by *uuid.UUID) {
 		t.Helper()
-		if err := pool.QueryRow(ctx, `SELECT active, status, published_by FROM events WHERE id = $1`, id).Scan(&active, &status, &by); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT status, published_by FROM events WHERE id = $1`, id).Scan(&status, &by); err != nil {
 			t.Fatal(err)
 		}
-		return active, status, by
+		return status, by
 	}
 	start := time.Now().Add(time.Hour)
 	undated, err := store.Create(ctx, event.Event{Name: "Tarihsiz", Location: "YTÜ", OwnerTeam: "WEBLAB", Status: event.StatusDraft})
@@ -113,8 +113,8 @@ func TestPostgresStorePublishAndUnpublish(t *testing.T) {
 	if results[0] == results[1] {
 		t.Fatalf("concurrent publishes changed %v", results)
 	}
-	if active, status, by := stored(draft.ID); !active || status != "published" || by == nil || *by != actor {
-		t.Fatalf("published row active=%v status=%q by=%v", active, status, by)
+	if status, by := stored(draft.ID); status != "published" || by == nil || *by != actor {
+		t.Fatalf("published row status=%q by=%v", status, by)
 	}
 	got, err := store.Get(ctx, draft.ID)
 	if err != nil || got.Status != event.StatusPublished || !got.Active || got.PublishedAt == nil {
@@ -123,8 +123,8 @@ func TestPostgresStorePublishAndUnpublish(t *testing.T) {
 	if changed, err := store.Unpublish(ctx, draft.ID); err != nil || !changed {
 		t.Fatalf("unpublish: %v %v", changed, err)
 	}
-	if active, status, _ := stored(draft.ID); active || status != "draft" {
-		t.Fatalf("unpublished row active=%v status=%q", active, status)
+	if got, err := store.Get(ctx, draft.ID); err != nil || got.Status != event.StatusDraft || got.Active {
+		t.Fatalf("unpublished %+v %v", got, err)
 	}
 	if changed, err := store.Unpublish(ctx, draft.ID); err != nil || changed {
 		t.Fatalf("unpublish a draft: %v %v", changed, err)
@@ -138,7 +138,7 @@ func TestPostgresStorePublishAndUnpublish(t *testing.T) {
 	if changed, err := store.Unpublish(ctx, draft.ID); !errors.Is(err, event.ErrHasTickets) || changed {
 		t.Fatalf("unpublish with a Ticket: %v %v", changed, err)
 	}
-	if _, status, _ := stored(draft.ID); status != "published" {
+	if status, _ := stored(draft.ID); status != "published" {
 		t.Fatalf("status %q", status)
 	}
 	// An archived draft is not published.
