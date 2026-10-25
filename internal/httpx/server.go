@@ -51,7 +51,13 @@ type Deps struct {
 	Competitions competition.Service
 	// FeedbackInvites reads the Events' feedback invite counts; nil leaves
 	// GET /v1/events/{id}/feedback out.
-	FeedbackInvites        handlers.FeedbackCounter
+	FeedbackInvites handlers.FeedbackCounter
+	// FeedbackSender sends a feedback form at once ("Şimdi gönder"); nil
+	// leaves its two routes out.
+	FeedbackSender handlers.FeedbackSender
+	// FeedbackReminders cancels the reminders of a feedback form the panel
+	// closed; nil leaves its two routes out.
+	FeedbackReminders      handlers.FeedbackReminders
 	Media                  media.Service
 	URLs                   shorturl.Service
 	Certificates           certificate.Service
@@ -547,7 +553,18 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/events/:id/uncancel", events.Uncancel)
 	app.Post("/v1/events/:id/copy", events.Copy)
 	if deps.FeedbackInvites != nil && deps.Authz != nil {
-		app.Get("/v1/events/:id/feedback", handlers.NewFeedbackHandler(deps.Events, deps.Authz, deps.FeedbackInvites).Counts)
+		feedbackH := handlers.NewFeedbackHandler(deps.Events, deps.Authz, deps.FeedbackInvites)
+		app.Get("/v1/events/:id/feedback", feedbackH.Counts)
+		if deps.FeedbackSender != nil {
+			feedbackH.SendWith(deps.FeedbackSender)
+			app.Post("/v1/events/:id/feedback/send", feedbackH.SendEventNow)
+			app.Post("/v1/sessions/:id/feedback/send", feedbackH.SendSessionNow)
+		}
+		if deps.FeedbackReminders != nil {
+			feedbackH.RemindWith(deps.FeedbackReminders)
+			app.Post("/v1/events/:id/feedback/close", feedbackH.CloseEvent)
+			app.Post("/v1/sessions/:id/feedback/close", feedbackH.CloseSession)
+		}
 	}
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)
