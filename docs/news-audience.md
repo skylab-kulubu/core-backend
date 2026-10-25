@@ -136,7 +136,7 @@ checks the address too before sending a News send (bilet 06).
 | 400 | `audience_visibility_not_enabled` | `uyeler` or `ekipler` in Faz 1 |
 | 403 | `audience_service_only` | a person's token |
 | 403 | `audience_role_missing` | a service account without `audience:read` |
-| 503 | `audience_unavailable` | `COMMUNICATION_PREFERENCE_KEY` unset: no link can be signed |
+| 503 | `audience_unavailable` | no link key set (`COMMUNICATION_PREFERENCE_KEY` or a newer version): no link can be signed |
 | 503 | `audience_directory_unavailable` (`Retry-After: 30`) | Keycloak did not answer, or its Group list has no `/UYELER` |
 
 ## Who is in it
@@ -242,7 +242,7 @@ depth; it is not done.
 
 | Variable | |
 |---|---|
-| `COMMUNICATION_PREFERENCE_KEY` | required: without it the route answers `503 audience_unavailable` ([communication-preferences.md](communication-preferences.md#settings)) |
+| `COMMUNICATION_PREFERENCE_KEY` (or its key ring) | required: without a key version the route answers `503 audience_unavailable` ([communication-preferences.md](communication-preferences.md#settings)) |
 | `NEWS_AUDIENCE_PRIVATE_VISIBILITY` | `off` (default): only `herkes`, an absent `visibility` is `herkes`. `on`: `uyeler` and `ekipler` too, and `visibility` is required (ADR 0067 karar 3, second step) |
 
 Startup logs `news audience: on|off (private visibility true|false)`, and
@@ -386,7 +386,7 @@ Answer, one result per recipient in the order asked:
 | 403 | `recipients_resolve_service_only` | a person's token |
 | 403 | `recipients_resolve_role_missing` | a service account without `audience:read` |
 | 404 | (bare) | through the public edge |
-| 503 | `communication_preferences_unavailable` | `COMMUNICATION_PREFERENCE_KEY` unset: no link can be signed |
+| 503 | `communication_preferences_unavailable` | no link key set (`COMMUNICATION_PREFERENCE_KEY` or a newer version): no link can be signed |
 | 503 | `recipients_resolve_directory_unavailable` (`Retry-After: 30`) | the verified-address directory was never read, or is older than 15 minutes and Keycloak does not answer; or Keycloak's Group list does not answer a team category. SkyMail then writes no send (fail closed, ADR 0072) |
 
 ### Matching: verified addresses (ADR-0044)
@@ -539,7 +539,7 @@ are the directory's pages, whatever the number of addresses.
 
 | Variable | |
 |---|---|
-| `COMMUNICATION_PREFERENCE_KEY` | required: without it `503 communication_preferences_unavailable` |
+| `COMMUNICATION_PREFERENCE_KEY` (or its key ring) | required: without a key version `503 communication_preferences_unavailable` |
 | `KEYCLOAK_YTU_IDP_ALIAS` | the YTÜ Microsoft identity provider's alias (e-skylab-keycloak's `ytuIdpAlias`); unset: `OBS`. A value that is no alias stops startup with an error that names the variable. A wrong alias reads no link, and no School e-mail matches |
 
 Startup logs `recipient question: on|off (YTÜ identity provider OBS)`.

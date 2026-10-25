@@ -651,7 +651,7 @@ func main() {
 	}
 
 	// Communication preferences (ADR 0067, docs/communication-preferences.md).
-	// Without COMMUNICATION_PREFERENCE_KEY their routes answer 503; the erasure step
+	// Without a link key version their routes answer 503; the erasure step
 	// still deletes a person's rows, and the deleted teams' rows are still
 	// removed once a day.
 	communicationPreferenceConfig, err := commpref.ConfigFromEnv(os.Getenv)
@@ -675,9 +675,10 @@ func main() {
 	}
 	worker("tracking withdrawals", trackingWithdrawals.Run(workers, log.Printf))
 	if communicationPreferenceConfig.Enabled {
-		log.Printf("communication preferences: on (links at %s)", communicationPreferenceConfig.LinkOrigin)
+		log.Printf("communication preferences: on (links at %s, key versions %v, current %d)",
+			communicationPreferenceConfig.LinkOrigin, communicationPreferenceConfig.KeyVersions(), communicationPreferenceConfig.CurrentKeyVersion())
 	} else {
-		log.Printf("communication preferences: off (%s is not set)", commpref.KeyEnv)
+		log.Printf("communication preferences: off (neither %s nor %s<n> is set)", commpref.KeyEnv, commpref.KeyVersionEnvPrefix)
 	}
 	// The News audience (docs/news-audience.md): SkyMail's service account
 	// asks who a send goes to. Off with the preferences (every recipient
