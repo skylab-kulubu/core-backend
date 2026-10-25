@@ -10,16 +10,12 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/testpostgres"
 )
 
-// No write names the legacy events.active column any more (ADR 0066): with
-// the column gone, every write of an Event still works and every read still
-// answers the derived active. The column is dropped by the next release.
+// events.active is gone (ADR 0066): every write of an Event works without
+// it and every read answers the derived active.
 func TestPostgresStoreWritesWithoutLegacyActive(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
 	if err := migrate.Apply(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `ALTER TABLE events DROP COLUMN active`); err != nil {
 		t.Fatal(err)
 	}
 	store := event.NewPostgresStore(pool)

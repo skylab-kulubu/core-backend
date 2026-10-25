@@ -74,6 +74,11 @@ func TestEventStatusMigrationOnExistingEvents(t *testing.T) {
 	if n := eventStatusColumnCount(t, pool); n != len(eventStatusColumns) {
 		t.Fatalf("fresh database: %d status columns", n)
 	}
+	// The legacy active column back, as it was when the status came; the
+	// drop stays recorded, so the Apply calls below leave it.
+	if _, err := pool.Exec(ctx, readDown(t, dropEventsActiveDown)); err != nil {
+		t.Fatal(err)
+	}
 	// Back to the schema before the status.
 	if _, err := pool.Exec(ctx, readDown(t, eventStatusDown)); err != nil {
 		t.Fatal(err)

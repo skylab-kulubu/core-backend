@@ -39,8 +39,8 @@ func TestEventCancelCompetitionsMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventID := uuid.New()
-	if _, err := pool.Exec(ctx, `INSERT INTO events (id, name, description, location, owner_team, form_url, capacity, linkedin, active, ranked, prize_info, attendance_rule, extra_form_urls)
-		VALUES ($1, 'Etkinlik', '', 'YTÜ', 'WEBLAB', '', 0, '', true, false, '', 'none', '{}')`, eventID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO events (id, name, description, location, owner_team, form_url, capacity, linkedin, ranked, prize_info, attendance_rule, extra_form_urls)
+		VALUES ($1, 'Etkinlik', '', 'YTÜ', 'WEBLAB', '', 0, '', false, '', 'none', '{}')`, eventID); err != nil {
 		t.Fatal(err)
 	}
 	insert := func(status, reason, before string, withEvent bool) error {
