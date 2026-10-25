@@ -78,7 +78,8 @@ error that names the variable.
       "via": "member" | "follower",
       "reason": "WEBLAB · Web Geliştirme ekibinde olduğun için",
       "categoryLabel": "WEBLAB · Web Geliştirme · Duyurular",
-      "unsubscribeUrl": "https://api.yildizskylab.com/v1/communication-preferences/unsubscribe?t=…"
+      "unsubscribeUrl": "https://api.yildizskylab.com/v1/communication-preferences/unsubscribe?t=…",
+      "allowedChannels": ["email"]
     }
   ],
   "next": "<userId>" | null,
@@ -104,6 +105,12 @@ error that names the variable.
   Turkish name (or the same one): "WEBLAB · Web Geliştirme", "AIRLAB".
 - `categoryLabel`: "Kulüp geneli · Duyurular", or the categories' teams
   named so, "WEBLAB · Web Geliştirme, AIRLAB · Haberler".
+- `allowedChannels`: the channels the person's preferences allow for this
+  send, what SkyMail passes on as `allowed_channels` to
+  `POST /v1/notifications` (iletişim-servisi 06). Core keeps preferences for
+  `email` alone today and leaves out whoever turned it off (`optedOut`), so
+  it is `["email"]`; a channel joins when core keeps its preferences. The
+  in-app inbox is not one: it does not look at preferences.
 - `counts.total` = `members` + `followers` = the number of recipients over
   all pages.
 - `?countOnly=true` answers `counts` and `skipped` only (no `items`, no
