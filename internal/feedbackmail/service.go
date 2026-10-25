@@ -30,7 +30,9 @@ const (
 	// doubles with each failure in a row, up to retryMax.
 	RetryFirst = 30 * time.Second
 	retryMax   = 30 * time.Minute
-	// GiveUpAfter is how long past its due time a mail is tried.
+	// GiveUpAfter is how long after it was queued a mail is tried, whether
+	// it was tried yet or not (a mail left over from a template key turned
+	// off does not go weeks late).
 	GiveUpAfter = 72 * time.Hour
 	lease       = 5 * time.Minute
 	// pollInterval is the schedule's minute (ticket 06).
@@ -114,24 +116,27 @@ func (r Report) any() bool {
 // none is due (or maxMails).
 func (s *Service) Pass(ctx context.Context) (Report, error) {
 	var report Report
-	planned, err := s.config.Queue.Plan(ctx, s.now().UTC())
-	if err != nil {
-		return report, fmt.Errorf("plan: %w", err)
-	}
-	report.Planned = planned
-	reminders, err := s.config.Queue.PlanReminders(ctx, s.now().UTC())
-	if err != nil {
-		return report, fmt.Errorf("plan reminders: %w", err)
-	}
-	report.Reminders = reminders
-	// A kind without a template key is off: its mails wait in the queue
-	// until a key is set.
+	// A kind without a template key is off: nothing of it is planned, so no
+	// target is used up and nothing piles up. Set again, the schedule takes
+	// the targets still within feedback.AutoWindow and the reminders within
+	// feedback.ReminderWindow, as after SkyMail was down. A mail queued
+	// before the key went off expires GiveUpAfter after it was queued.
 	var kinds []string
 	if s.config.Mail.FeedbackConfigured(mail.FeedbackRequest) {
 		kinds = append(kinds, feedback.KindRequest)
+		planned, err := s.config.Queue.Plan(ctx, s.now().UTC())
+		if err != nil {
+			return report, fmt.Errorf("plan: %w", err)
+		}
+		report.Planned = planned
 	}
 	if s.config.Mail.FeedbackConfigured(mail.FeedbackReminder) {
 		kinds = append(kinds, feedback.KindReminder)
+		reminders, err := s.config.Queue.PlanReminders(ctx, s.now().UTC())
+		if err != nil {
+			return report, fmt.Errorf("plan reminders: %w", err)
+		}
+		report.Reminders = reminders
 	}
 	if len(kinds) == 0 {
 		return report, nil
@@ -194,7 +199,7 @@ type recipient struct {
 // (sent, or no longer to be sent), an error when a later try may pass.
 func (s *Service) deliver(ctx context.Context, claimed feedback.Mail, report *Report) (outcome, error) {
 	out := outcome{group: []feedback.Mail{claimed}}
-	if s.now().Sub(claimed.CreatedAt) > GiveUpAfter && claimed.Attempts > 0 {
+	if s.now().Sub(claimed.CreatedAt) > GiveUpAfter {
 		report.Expired++
 		return out, nil
 	}

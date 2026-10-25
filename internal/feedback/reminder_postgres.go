@@ -30,13 +30,16 @@ const (
 
 // PlanReminders first cancels for good the reminders of the forms whose
 // closing time came (a closed form's invites are never reminded, even if it
-// opens again). Then it queues the reminders that are due at now: for each
-// feedback mail that went ReminderDelay ago (within ReminderWindow), one
-// reminder of the same Ticket, day and trigger, with those of its targets
-// whose invite is neither answered, reminded nor cancelled. A mail none of
-// whose invites is left gets no reminder. Each mail is planned once. One
-// replica plans at a time; another one skips. Answers how many reminders it
-// queued.
+// opens again). Then it queues the reminders that are due at now: one
+// reminder a Ticket a day (ADR 0069 decision 9: the reminder is one mail
+// too), ReminderDelay after the day's last feedback mail went (within
+// ReminderWindow), with the targets of all that day's mails whose invite is
+// neither answered, reminded nor cancelled. A person who got the morning's
+// Session forms and, in a second mail, the Event's form gets one reminder,
+// three days after the second. While a mail of the day is still to go, the
+// day waits for it. A day none of whose invites is left gets no reminder.
+// Each mail is planned once. One replica plans at a time; another one
+// skips. Answers how many reminders it queued.
 func (s *PostgresStore) PlanReminders(ctx context.Context, now time.Time) (int, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -54,10 +57,17 @@ func (s *PostgresStore) PlanReminders(ctx context.Context, now time.Time) (int, 
 		return 0, err
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT `+mailCols+` FROM feedback_mails
+		SELECT `+mailCols+` FROM feedback_mails m
 		WHERE kind = 'request' AND sent AND reminder_planned_at IS NULL
 		  AND done_at <= $1::timestamptz - $2::float8 * interval '1 second'
 		  AND done_at > $1::timestamptz - $3::float8 * interval '1 second'
+		  -- the day's last mail: no other of the Ticket's that day is still
+		  -- to go, or went later
+		  AND NOT EXISTS (
+			SELECT 1 FROM feedback_mails o
+			WHERE o.id <> m.id AND o.kind = 'request' AND o.ticket_id = m.ticket_id AND o.event_id = m.event_id
+			  AND o.event_day_id IS NOT DISTINCT FROM m.event_day_id AND o.reminder_planned_at IS NULL
+			  AND (o.done_at IS NULL OR (o.sent AND (o.done_at > m.done_at OR (o.done_at = m.done_at AND o.id > m.id)))))
 		ORDER BY done_at, id
 		LIMIT $4
 		FOR UPDATE`, now, ReminderDelay.Seconds(), (ReminderDelay + ReminderWindow).Seconds(), maxRemindersPlanned)
@@ -70,15 +80,21 @@ func (s *PostgresStore) PlanReminders(ctx context.Context, now time.Time) (int, 
 	}
 	queued := 0
 	for _, m := range sentMails {
-		if _, err := tx.Exec(ctx, `UPDATE feedback_mails SET reminder_planned_at = $2 WHERE id = $1`, m.ID, now); err != nil {
-			return 0, err
-		}
 		reminderID := uuid.New()
+		// The day's mails: this one and the Ticket's earlier ones of the day
+		// that went and were not planned yet; they are planned with it.
 		tag, err := tx.Exec(ctx, `
-			WITH left_over AS (
-				SELECT i.event_id, i.session_id FROM feedback_mail_items i
+			WITH day AS (
+				UPDATE feedback_mails SET reminder_planned_at = $7
+				WHERE kind = 'request' AND sent AND reminder_planned_at IS NULL
+				  AND ticket_id = $2 AND event_id = $4 AND event_day_id IS NOT DISTINCT FROM $5::uuid
+				  AND (id = $1 OR done_at <= (SELECT done_at FROM feedback_mails WHERE id = $1))
+				RETURNING id
+			), left_over AS (
+				SELECT DISTINCT i.event_id, i.session_id FROM feedback_mail_items i
+				JOIN day ON day.id = i.mail_id
 				JOIN feedback_invites fi ON fi.ticket_id = $2 AND fi.event_id = i.event_id AND fi.session_id IS NOT DISTINCT FROM i.session_id
-				WHERE i.mail_id = $1 AND `+reminderPendingSQL+`
+				WHERE `+reminderPendingSQL+`
 			), reminder AS (
 				INSERT INTO feedback_mails (id, event_id, ticket_id, kind, event_day_id, manual, next_attempt_at, created_at)
 				SELECT $3, $4, $2, 'reminder', $5, $6, $7, $7 WHERE EXISTS (SELECT 1 FROM left_over)

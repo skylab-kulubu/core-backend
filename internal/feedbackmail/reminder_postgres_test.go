@@ -45,29 +45,35 @@ func (f *fixture) exec(t *testing.T, sql string, args ...any) {
 	}
 }
 
-// Three days after each mail, one reminder with the same links, of the
-// forms not answered; never twice.
-func TestReminderOnceWithTheSameLinks(t *testing.T) {
+// Three days after a person's last mail of the day, one reminder (ADR 0069
+// decision 9) with the same links, of the forms not answered; never twice.
+// Grace got A at 13:06 and the Event's form at 17:06: one reminder, after
+// the second.
+func TestReminderOnceADayWithTheSameLinks(t *testing.T) {
 	f := newFixture(t)
 	grace, ada := f.sendDay(t)
 	// Ada answers B with her link.
 	if ok, err := f.store.MarkAnswered(context.Background(), f.formB, codeOf(t, ada.items[1].URL, f.formB), nil); err != nil || !ok {
 		t.Fatalf("mark %v %v", ok, err)
 	}
-	if r := f.pass(t, at(13, 5).Add(days3)); r.Reminders != 0 || len(f.mail.take()) != 0 {
-		t.Fatalf("before three days %+v", r)
+	if r := f.pass(t, at(13, 7).Add(days3)); r.Reminders != 0 || len(f.mail.take()) != 0 {
+		t.Fatalf("Grace's day waits for her second mail %+v", r)
 	}
-	r := f.pass(t, at(13, 7).Add(days3))
-	m := f.mail.take()
-	if r.Reminders != 1 || r.Reminded != 1 || len(m) != 1 || m[0].kind != mail.FeedbackReminder || m[0].to != "grace@example.test" ||
-		!slices.Equal(titles(m[0].items), []string{"Açılış"}) || m[0].items[0].URL != grace.items[0].URL {
-		t.Fatalf("Grace's reminder %+v %+v", r, m)
+	r := f.pass(t, at(17, 7).Add(days3))
+	all := f.mail.take()
+	if r.Reminders != 2 || r.Reminded != 2 || len(all) != 2 {
+		t.Fatalf("reminders %+v %+v", r, all)
 	}
-	f.pass(t, at(17, 7).Add(days3))
-	m = to(f.mail.take(), "ada@example.test")
-	if len(m) != 1 || !slices.Equal(titles(m[0].items), []string{"Açılış", "Gecekodu"}) ||
-		m[0].items[0].URL != ada.items[0].URL || m[0].items[1].URL != ada.items[2].URL {
-		t.Fatalf("Ada's reminder %+v", m)
+	g := to(all, "grace@example.test")
+	if len(g) != 1 || g[0].kind != mail.FeedbackReminder || !slices.Equal(titles(g[0].items), []string{"Açılış", "Gecekodu"}) ||
+		g[0].items[0].URL != grace.items[0].URL {
+		t.Fatalf("Grace's reminder %+v", g)
+	}
+	codeOf(t, g[0].items[1].URL, f.formEvent)
+	a := to(all, "ada@example.test")
+	if len(a) != 1 || !slices.Equal(titles(a[0].items), []string{"Açılış", "Gecekodu"}) ||
+		a[0].items[0].URL != ada.items[0].URL || a[0].items[1].URL != ada.items[2].URL {
+		t.Fatalf("Ada's reminder %+v", a)
 	}
 	var reminded int
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM feedback_invites WHERE reminded_at IS NOT NULL`).Scan(&reminded); err != nil || reminded != 4 {
@@ -214,16 +220,54 @@ func TestReminderTemplateOff(t *testing.T) {
 	f := newFixture(t)
 	f.mail.off = map[mail.FeedbackKind]bool{mail.FeedbackReminder: true}
 	f.sendDay(t)
-	// Grace's two mails and Ada's
-	if r := f.pass(t, at(17, 7).Add(days3)); r.Reminders != 3 || r.Sent != 0 {
+	// Off: nothing planned, nothing piles up
+	if r := f.pass(t, at(17, 7).Add(days3)); r.Reminders != 0 || r.Sent != 0 {
 		t.Fatalf("off %+v", r)
 	}
 	f.mail.mu.Lock()
 	f.mail.off = nil
 	f.mail.mu.Unlock()
-	// Grace's two in one mail (one address, one day), and Ada's
-	if r := f.pass(t, at(17, 8).Add(days3)); r.Reminded != 2 {
+	// On again within the window: Grace's and Ada's
+	if r := f.pass(t, at(17, 8).Add(days3)); r.Reminders != 2 || r.Reminded != 2 {
 		t.Fatalf("on %+v", r)
+	}
+}
+
+// With the request's template key empty no target is used up and no mail
+// is queued; set again, the schedule takes the targets still due.
+func TestRequestTemplateOff(t *testing.T) {
+	f := newFixture(t)
+	f.mail.off = map[mail.FeedbackKind]bool{mail.FeedbackRequest: true}
+	f.pass(t, at(13, 1))
+	if r := f.pass(t, at(17, 1)); r.Planned != 0 || r.Sent != 0 {
+		t.Fatalf("off %+v", r)
+	}
+	var targets, mails int
+	if err := f.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM feedback_mail_targets), (SELECT count(*) FROM feedback_mails)`).Scan(&targets, &mails); err != nil || targets != 0 || mails != 0 {
+		t.Fatalf("targets %d mails %d %v", targets, mails, err)
+	}
+	f.mail.mu.Lock()
+	f.mail.off = nil
+	f.mail.mu.Unlock()
+	if r := f.pass(t, at(17, 10)); r.Planned != 3 || r.Sent != 2 {
+		t.Fatalf("on %+v", r)
+	}
+}
+
+// A mail queued before the key went off does not go weeks late: 72 hours
+// after it was queued it expires, tried or not.
+func TestQueuedMailExpiresUntried(t *testing.T) {
+	f := newFixture(t)
+	if ok, n, err := f.store.SendNow(context.Background(), feedback.Target{EventID: f.event, SessionID: &f.sessionA}, at(12, 0)); err != nil || !ok || n != 2 {
+		t.Fatalf("send now %v %d %v", ok, n, err)
+	}
+	f.mail.off = map[mail.FeedbackKind]bool{mail.FeedbackRequest: true}
+	f.pass(t, at(12, 1))
+	f.mail.mu.Lock()
+	f.mail.off = nil
+	f.mail.mu.Unlock()
+	if r := f.pass(t, at(12, 1).Add(73*time.Hour)); r.Expired != 2 || r.Sent != 0 || len(f.mail.take()) != 0 {
+		t.Fatalf("expired %+v", r)
 	}
 }
 

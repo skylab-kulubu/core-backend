@@ -1452,8 +1452,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.feedback_mail_items') IS NOT NULL
 		  AND to_regclass('public.feedback_mails_due_idx') IS NOT NULL
 		  AND to_regclass('public.feedback_mails_ticket_idx') IS NOT NULL`,
-	// Feedback reminder (ticket 07): the reminder kind, the two columns,
-	// the closings table and the two indexes.
+	// Feedback reminder (ticket 07): the reminder kind, the two columns
+	// (sent, reminder_planned_at), the closings table and the two indexes.
 	20261025180100: `
 		SELECT 1
 		WHERE to_regclass('public.feedback_form_closings') IS NOT NULL
@@ -1462,6 +1462,10 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND EXISTS (
 			SELECT 1 FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'feedback_mails' AND column_name = 'reminder_planned_at'
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'feedback_mails' AND column_name = 'sent'
 		  )
 		  AND EXISTS (
 			SELECT 1 FROM pg_constraint

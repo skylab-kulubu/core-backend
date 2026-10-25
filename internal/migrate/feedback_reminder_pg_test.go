@@ -55,4 +55,22 @@ func TestFeedbackReminderMigration(t *testing.T) {
 		WHERE conrelid = 'feedback_mails'::regclass AND conname = 'feedback_mails_kind_check'`).Scan(&ok); err != nil || !ok {
 		t.Fatalf("kind check %v %v", ok, err)
 	}
+	// A schema without the sent column is not taken for this one: the
+	// migration runs again and adds it.
+	// (the index that reads it is made again without it, so only the column
+	// is missing)
+	if _, err := pool.Exec(ctx, `ALTER TABLE feedback_mails DROP COLUMN sent CASCADE;
+		CREATE INDEX feedback_mails_remind_idx ON feedback_mails (done_at) WHERE kind = 'request' AND reminder_planned_at IS NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version = `+feedbackReminderVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'feedback_mails' AND column_name = 'sent')`).Scan(&ok); err != nil || !ok {
+		t.Fatalf("sent column %v %v", ok, err)
+	}
 }
