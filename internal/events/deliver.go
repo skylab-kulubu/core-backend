@@ -60,7 +60,7 @@ func (c *Consumer) deliver(ctx context.Context, s *subscription, d amqp.Delivery
 	}
 	event, err := s.Decode(Message{
 		Body: d.Body, ContentType: d.ContentType, MessageID: d.MessageId,
-		Type: d.Type, AppID: d.AppId, Headers: d.Headers,
+		Type: d.Type, AppID: d.AppId, Headers: d.Headers, RoutingKey: d.RoutingKey,
 	})
 	if err != nil {
 		c.logf(`{"event":"events_dead_lettered","level":"warn","queue":%q,"reason":%q,"error":%q}`, s.Queue, ReasonInvalidEnvelope, c.errorText(err))

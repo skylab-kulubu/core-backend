@@ -321,3 +321,34 @@ func TestCertificateRolesWarningNamesTheRolesAndTheOperatorScript(t *testing.T) 
 		t.Fatalf("read failure warning %q", got)
 	}
 }
+
+// A Group whose children answer 404 while the list is read (a proxy's 404
+// while Keycloak restarts, a Group moved away mid-read): ListGroups leaves
+// its branch out as before, ListGroupsComplete says the list is incomplete.
+func TestKeycloakListGroupsCompleteRefusesAMissingBranch(t *testing.T) {
+	t.Parallel()
+	root := map[string]any{"id": "p1", "name": "UYELER", "path": "/UYELER"}
+	team := map[string]any{"id": "c1", "name": "WEBLAB", "path": "/UYELER/WEBLAB"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/protocol/openid-connect/token"):
+			_, _ = w.Write([]byte(`{"access_token":"tok","expires_in":300,"token_type":"Bearer"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/realms/e-skylab/groups":
+			_ = json.NewEncoder(w).Encode([]any{root})
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/realms/e-skylab/groups/p1/children":
+			_ = json.NewEncoder(w).Encode([]any{team})
+		default: // c1's children: 404
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	dir := identity.NewKeycloak(identity.KeycloakConfig{URL: srv.URL, Realm: "e-skylab", ClientID: "core", ClientSecret: "secret"})
+	ctx := context.Background()
+	if groups, err := dir.ListGroups(ctx); err != nil || len(groups) != 2 {
+		t.Fatalf("ListGroups = %+v %v", groups, err)
+	}
+	if groups, err := dir.ListGroupsComplete(ctx); !errors.Is(err, identity.ErrIncompleteGroups) || groups != nil {
+		t.Fatalf("ListGroupsComplete = %+v %v", groups, err)
+	}
+}
