@@ -37,6 +37,15 @@ const (
 	// FeedbackInvitePeriod: a feedback invite, 90 days after it was sent
 	// (docs/event-feedback.md); the row goes, its target's counts stay.
 	FeedbackInvitePeriod = 90 * day
+	// FeedbackMailPeriod: a feedback mail of the queue (which Ticket was
+	// mailed which feedback form, ticket 06), 90 days after it was done with
+	// (or queued, when it never was), as the invites; the row goes with its
+	// items.
+	FeedbackMailPeriod = 90 * day
+	// TrackingChangesPeriod: a row of the tracking preference's audit trail
+	// (communication_tracking_changes, docs/communication-preferences.md),
+	// three years after the change; the row goes, the preference stays.
+	TrackingChangesPeriod = 3 * 365 * day
 )
 
 // Schema is what a run reads from the database before it builds the rules.
@@ -58,6 +67,7 @@ func Rules(c Config, s Schema) []Rule {
 	rules := append(sweepRules(s), consentRules(s)...)
 	rules = append(rules, teamAuditRules()...)
 	rules = append(rules, feedbackRules()...)
+	rules = append(rules, trackingRules()...)
 	return append(rules, auditRules(c)...)
 }
 
@@ -243,13 +253,29 @@ func teamAuditRules() []Rule {
 }
 
 // feedbackRules delete the feedback invites 90 days after they were sent
-// (etkinlik geri bildirim formu, ticket 04): the reminder went at three
-// days; what stays of them is their target's counts.
+// (etkinlik geri bildirim formu, ticket 04), and the feedback mails 90 days
+// after they were done with (ticket 06): the reminder went at three days;
+// what stays is the targets' counts.
+func trackingRules() []Rule {
+	return []Rule{{
+		Name: "tracking_changes_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
+		Table: "communication_tracking_changes", alias: "ct", key: "id", Period: TrackingChangesPeriod,
+		where: `ct.changed_at < $1`,
+	}}
+}
+
 func feedbackRules() []Rule {
 	return []Rule{{
 		Name: "feedback_invites_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
 		Table: "feedback_invites", alias: "fi", key: "id", Period: FeedbackInvitePeriod,
 		where: `fi.sent_at < $1`,
+	}, {
+		// The mail queue's rows name a Ticket and its targets: they go as
+		// the invites do (feedback_mail_items with them, ON DELETE CASCADE).
+		// A reminder is planned at three days, so nothing waits on them.
+		Name: "feedback_mails_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
+		Table: "feedback_mails", alias: "fm", key: "id", Period: FeedbackMailPeriod,
+		where: `COALESCE(fm.done_at, fm.created_at) < $1`,
 	}}
 }
 

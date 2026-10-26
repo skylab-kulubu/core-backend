@@ -86,6 +86,22 @@ are transferred to another Group and no account is erased. Since deletion
 requires no members and changes no role mappings, it sends no membership or
 privilege-change mail. Existing queued notices retain their existing contract.
 
+## What a deletion leaves in core
+
+A Group deleted in Keycloak, by core or from the Keycloak console, leaves
+these behind (Keycloak's admin `GROUP DELETE` event, when Integration events
+are on, is heard only by the preference cleanup):
+
+| Data | Keyed by | When the Group is gone | On the event |
+|---|---|---|---|
+| `communication_preferences` (team scope) | `group_id` | orphan rows; the daily cleanup deletes them | the cleanup's deleted teams part runs at once |
+| `events`, `certificates`, `certificate_templates` `owner_team`; template bindings | team code | business records, kept; core refuses its own deletion while they refer to it; a console deletion leaves them without owner, the code kept by [team-codes.md](team-codes.md) rule 3 | untouched |
+| `retired_team_codes` | code, `group_id` | retired (`deleted`) by core's deletion; not by a console deletion (the event carries no name) | untouched |
+| `team_audit_records` | `group_id`, `group_path` | audit trail | untouched |
+| `team_membership_mails`, `privilege_notice_mails` | `group_path` | pending notices (at most 72 hours), their contract above | untouched |
+| `TeamTree`, `OverageGroups`, `TeamDelegation` caches | in process | refreshed within a minute | not emptied: competing consumers give the event to one replica only |
+| Delegation (ADR 0065): Leader sub-Groups, app role mappings, team profile attributes | Keycloak | gone with the Group | nothing in core |
+
 ## Validation and local operation
 
 The tests cover authorization, structural and role protections, member/child/

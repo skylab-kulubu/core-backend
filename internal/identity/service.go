@@ -47,6 +47,10 @@ type Service interface {
 	ManagedGroups(ctx context.Context, p authz.Principal) ([]ManagedNode, error)
 	// MemberCandidates searches the people the caller may add to a Group.
 	MemberCandidates(ctx context.Context, p authz.Principal, groupRef, q string) ([]MemberCandidate, error)
+	// SetTeamSettings writes a Team's own settings (PUT
+	// /v1/groups/{id}/settings): its manager (a Leader of it or of a Team
+	// above, delegation on) or Privileged.
+	SetTeamSettings(ctx context.Context, p authz.Principal, groupRef string, settings TeamSettings) (TeamSettings, error)
 	// MemberCheck is what adding a person to a Group would warn of
 	// (grup-yonetimi 07); it never refuses the add.
 	MemberCheck(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) (MemberCheck, error)
@@ -68,6 +72,7 @@ type service struct {
 	accountErasureEnabled bool
 	accessProjector       DeletionProjector
 	groupCache            GroupCache
+	teamTree              interface{ ForgetAll() }
 	membership            MembershipNotifier
 	groupRoles            GroupRolesNotifier
 	privilegedRoots       []string
@@ -91,7 +96,10 @@ func NewService(dir Directory, users user.Store, az authz.Authorizer) Service {
 
 type Options struct {
 	AccountErasureEnabled bool
-	AccessProjector       DeletionProjector
+	// TeamTree is the realm's Groups kept for the Owner team decisions
+	// (TeamTree): forgotten when core writes a Team's name or settings.
+	TeamTree        interface{ ForgetAll() }
+	AccessProjector DeletionProjector
 	// GroupCache is what core remembers of people's Groups for Group
 	// overage tokens (OverageGroups). The service's membership writes and
 	// Group renames drop it at once. Nil remembers nothing.
@@ -225,6 +233,7 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		accountErasureEnabled: options.AccountErasureEnabled,
 		accessProjector:       options.AccessProjector,
 		groupCache:            options.GroupCache,
+		teamTree:              options.TeamTree,
 		membership:            options.Membership,
 		groupRoles:            options.GroupRoles,
 		privilegedRoots:       options.PrivilegedRoots,
@@ -350,6 +359,8 @@ func (s *service) UpdateGroup(ctx context.Context, p authz.Principal, groupRef, 
 		return Group{}, err
 	}
 	if attrs != nil {
+		// A Team's settings are attributes too (team_settings.go)
+		defer s.forgetTeamTree()
 		g.Attributes = attrs
 	}
 	name = strings.TrimSpace(name)
@@ -557,6 +568,9 @@ func (s *service) forgetGroups(userID uuid.UUID) {
 func (s *service) forgetAllGroups() {
 	if s.groupCache != nil {
 		s.groupCache.ForgetAll()
+	}
+	if s.teamTree != nil {
+		s.teamTree.ForgetAll()
 	}
 	s.delegation.ForgetAll()
 	s.seats.forget()

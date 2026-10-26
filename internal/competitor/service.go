@@ -152,15 +152,17 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in CreateInput)
 	if exists {
 		return Competitor{}, ErrConflict
 	}
-	score := in.Score
+	// Who enters themselves gives themselves no score and no win: the
+	// Event's organizers set both (Update).
+	score, winner := in.Score, in.IsWinner
 	if p.ID == in.UserID.String() {
-		score = nil
+		score, winner = nil, false
 	}
 	created, err := s.competitors.Create(ctx, Competitor{
 		UserID:   in.UserID,
 		EventID:  in.EventID,
 		Score:    score,
-		IsWinner: in.IsWinner,
+		IsWinner: winner,
 	})
 	if err != nil {
 		return Competitor{}, err
@@ -178,6 +180,24 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	}
 	if in.EventID == uuid.Nil {
 		in.EventID = existing.EventID
+	}
+	// Moving it to another Event takes it out of the one it is in: who
+	// moves it writes that Event's competitors too.
+	if in.EventID != existing.EventID {
+		from, err := s.events.GetIncludingArchived(ctx, existing.EventID)
+		if err != nil {
+			if errors.Is(err, event.ErrNotFound) {
+				return Competitor{}, ErrNotFound
+			}
+			return Competitor{}, err
+		}
+		if !event.VisibleTo(s.authz, &p, from) {
+			return Competitor{}, ErrNotFound
+		}
+		res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: from.OwnerTeam, OwnerID: existing.UserID.String()}
+		if !s.authz.Allow(p, res, authz.Update) {
+			return Competitor{}, ErrForbidden
+		}
 	}
 	ev, err := s.visibleEvent(ctx, p, in.EventID)
 	if err != nil {

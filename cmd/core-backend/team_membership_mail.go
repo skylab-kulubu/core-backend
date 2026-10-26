@@ -21,6 +21,9 @@ func membershipTemplateKeys(sky *mail.SkyMail, lookup func(string) (string, bool
 	// The Event status mails (docs/event-cancel.md, ticket 14) the same way.
 	sky.EventCancelledTemplateKey = templateKey(lookup, "SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY", mail.DefaultEventCancelledTemplateKey)
 	sky.EventReinstatedTemplateKey = templateKey(lookup, "SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY", mail.DefaultEventReinstatedTemplateKey)
+	// The feedback mails (docs/event-feedback.md, ticket 06) the same way.
+	sky.FeedbackRequestTemplateKey = templateKey(lookup, "SKYMAIL_FEEDBACK_REQUEST_TEMPLATE_KEY", mail.DefaultFeedbackRequestTemplateKey)
+	sky.FeedbackReminderTemplateKey = templateKey(lookup, "SKYMAIL_FEEDBACK_REMINDER_TEMPLATE_KEY", mail.DefaultFeedbackReminderTemplateKey)
 }
 
 // startTeamMembershipMail starts the membership mail

@@ -3,6 +3,7 @@ package httpx_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -35,6 +36,17 @@ type prefEnv struct {
 // the preferences off (no key).
 func newPrefEnv(t *testing.T, enabled bool) prefEnv {
 	t.Helper()
+	if !enabled {
+		return newPrefEnvWith(t, nil)
+	}
+	config := commpref.TestConfig(bytes.Repeat([]byte{5}, 32), "https://api.example.test")
+	return newPrefEnvWith(t, &config)
+}
+
+// newPrefEnvWith is newPrefEnv with the preferences of config; nil leaves
+// them off.
+func newPrefEnvWith(t *testing.T, config *commpref.Config) prefEnv {
+	t.Helper()
 	keys := testauth.New(t)
 	dir := identity.NewMemory()
 	public := map[string]string{"public_listing": "true"}
@@ -56,8 +68,8 @@ func newPrefEnv(t *testing.T, enabled bool) prefEnv {
 	deps := memoryDepsOver(dir, identity.Options{})
 	deps.ParseToken = keys.Parse()
 	env := prefEnv{keys: keys, store: commpref.NewMemoryStore(), person: person}
-	if enabled {
-		env.svc = commpref.NewService(commpref.TestConfig(bytes.Repeat([]byte{5}, 32), "https://api.example.test"), env.store, dir, authz.DefaultPrivilegedRoots())
+	if config != nil {
+		env.svc = commpref.NewService(*config, env.store, dir, authz.DefaultPrivilegedRoots())
 		deps.CommunicationPreferences = env.svc
 	}
 	env.app = httpx.New(deps)
@@ -290,6 +302,49 @@ func TestUnsubscribeLinkRefusesAChangedToken(t *testing.T) {
 		t.Fatalf("one-click %d %q", got.status, got.body)
 	}
 	if ex := e.explicit(t); len(ex) != 0 {
+		t.Fatalf("wrote %v", ex)
+	}
+}
+
+// The key ring (abonelik-cikisi 13): after a planned new version a link of
+// the old one still answers, and after a leak the removed version's link is
+// 400 on the page and on one-click, and writes nothing.
+func TestUnsubscribeLinkAcrossKeyVersions(t *testing.T) {
+	key := func(b byte) string { return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32)) }
+	ring := func(values map[string]string) *commpref.Config {
+		values["PUBLIC_API_ORIGIN"] = "https://api.example.test"
+		config, err := commpref.ConfigFromEnv(func(name string) string { return values[name] })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &config
+	}
+	before := newPrefEnvWith(t, ring(map[string]string{commpref.KeyEnv: key(5)}))
+	mailed := before.link(t, commpref.Club(commpref.KindAnnouncement))
+
+	planned := newPrefEnvWith(t, ring(map[string]string{commpref.KeyEnv: key(5), commpref.KeyVersionEnvPrefix + "2": key(6), commpref.CurrentKeyEnv: "2"}))
+	planned.person = before.person
+	if page := planned.send(t, httptest.NewRequest(fiber.MethodGet, mailed, nil)); page.status != fiber.StatusOK {
+		t.Fatalf("an old link after a planned version: %d", page.status)
+	}
+	fresh := planned.link(t, commpref.Club(commpref.KindAnnouncement))
+
+	leaked := newPrefEnvWith(t, ring(map[string]string{commpref.KeyVersionEnvPrefix + "2": key(6), commpref.KeyVersionEnvPrefix + "3": key(7), commpref.CurrentKeyEnv: "3"}))
+	if page := leaked.send(t, httptest.NewRequest(fiber.MethodGet, fresh, nil)); page.status != fiber.StatusOK {
+		t.Fatalf("a version 2 link after version 1 leaked: %d", page.status)
+	}
+	page := leaked.send(t, httptest.NewRequest(fiber.MethodGet, mailed, nil))
+	if page.status != fiber.StatusBadRequest {
+		t.Fatalf("a link of the removed version: page %d", page.status)
+	}
+	publicPage(t, page)
+	req := httptest.NewRequest(fiber.MethodPost, mailed, strings.NewReader("List-Unsubscribe=One-Click"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if got := leaked.send(t, req); got.status != fiber.StatusBadRequest || got.body != "invalid link" {
+		t.Fatalf("a link of the removed version: one-click %d %q", got.status, got.body)
+	}
+	leaked.person = before.person
+	if ex := leaked.explicit(t); len(ex) != 0 {
 		t.Fatalf("wrote %v", ex)
 	}
 }
