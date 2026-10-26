@@ -90,3 +90,49 @@ func TestSchemaVersion(t *testing.T) {
 		}
 	}
 }
+
+// traceparent (CloudEvents Distributed Tracing, W3C Trace Context) is read
+// when it is valid and left empty otherwise: the extension is optional and a
+// bad value never refuses the event.
+func TestDecodeCloudEventTraceParent(t *testing.T) {
+	const valid = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	with := func(value string) Message {
+		return Message{Body: []byte(`{"specversion":"1.0","id":"1","source":"/forms","type":"t","traceparent":` + value + `}`)}
+	}
+	event, err := DecodeCloudEvent(with(`"` + valid + `"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.TraceParent != valid || event.TraceID() != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Fatalf("traceparent %q, trace id %q", event.TraceParent, event.TraceID())
+	}
+	for name, value := range map[string]string{
+		"upper case":      `"00-4BF92F3577B34DA6A3CE929D0E0E4736-00F067AA0BA902B7-01"`,
+		"short trace id":  `"00-4bf92f3577b34da6a3ce929d0e0e473-00f067aa0ba902b7-01"`,
+		"long parent id":  `"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b70-01"`,
+		"zero trace id":   `"00-00000000000000000000000000000000-00f067aa0ba902b7-01"`,
+		"zero parent id":  `"00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01"`,
+		"version ff":      `"ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"`,
+		"other version":   `"01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"`,
+		"trailing data":   `"` + valid + `-x"`,
+		"surrounding ws":  `" ` + valid + `"`,
+		"empty":           `""`,
+		"not a string":    `42`,
+		"an object":       `{"traceparent":"` + valid + `"}`,
+		"null":            `null`,
+		"request id only": `"0HN7P2D3K4L5M"`,
+	} {
+		event, err := DecodeCloudEvent(with(value))
+		if err != nil {
+			t.Fatalf("%s: refused: %v", name, err)
+		}
+		if event.TraceParent != "" || event.TraceID() != "" {
+			t.Fatalf("%s: traceparent %q, trace id %q", name, event.TraceParent, event.TraceID())
+		}
+	}
+	// An event without the extension decodes as before.
+	event, err = DecodeCloudEvent(Message{Body: []byte(validEvent), ContentType: CloudEventsContentType})
+	if err != nil || event.TraceParent != "" || event.TraceID() != "" {
+		t.Fatalf("event %+v, err %v", event, err)
+	}
+}

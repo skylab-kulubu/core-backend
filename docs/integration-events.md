@@ -81,8 +81,10 @@ consumer after the HTTP drain and before the database pool closes
    present, JSON `data` (no `data_base64`, `datacontenttype` absent or
    `application/json`), the AMQP content type absent or
    `application/cloudevents+json`, the body at most 64 KiB. Attributes core
-   does not know are ignored. A queue whose publisher has its own format
-   (Keycloak's provider, `core.keycloak` below) registers its own decoder. A
+   does not know are ignored. The optional `traceparent` extension is read
+   (below); an invalid one is ignored, never a reason to refuse. A queue
+   whose publisher has its own format (Keycloak's provider, `core.keycloak`
+   below) registers its own decoder. A
    message that does not decode is rejected without requeue, to the queue's
    DLQ.
 2. **Claim and handle, in one transaction.** Core inserts
@@ -122,6 +124,18 @@ Go runtime error keeps its text), e-mail and IPv4 addresses as `[e-mail]` and
 
 DLQ messages are put back by an ops command (hub ticket R06); nothing does it
 automatically.
+
+### Envelope extension: `traceparent`
+
+| Attribute | Required | Format | Core |
+| --- | --- | --- | --- |
+| `traceparent` | no | W3C Trace Context version `00`: `00-<32 hex>-<16 hex>-<2 hex>`, lower case, trace id and parent id not all zeros (CloudEvents Distributed Tracing extension) | Its trace id goes into the event's log lines as `trace_id`. Missing, invalid (upper case, wrong length, all-zero ids, another version, not a string): empty, the event is handled as before. Not stored in `consumed_events`, not a metric label. |
+
+The publisher sets it from the request that caused the event (Forms: .NET's
+`Activity.Current` when its id is W3C), and leaves it out in background work;
+`tracestate` is not used. Keycloak's events (`core.keycloak`) never carry it:
+the provider's format is not CloudEvents. Passing it on as a `traceparent`
+header when a handler calls another service is not done yet.
 
 ## `core.keycloak`: Keycloak's events
 
@@ -217,9 +231,11 @@ a statement.
 ## What it tells
 
 Log lines are JSON with an `event` name and carry the queue, the event's type
-and id, and the error, never the event's data or the password:
+and id, the error, and `trace_id` when the event has a valid `traceparent`,
+never the event's data or the password:
 `events_connected`, `events_connect_failed`, `events_connection_lost`,
-`events_consuming`, `events_channel_closed`, `events_retry`,
+`events_consuming`, `events_channel_closed`, `events_handled` (with its
+outcome: processed, duplicate or unrelated), `events_retry`,
 `events_dead_lettered`, `events_settle_failed`,
 `events_record_cleanup_failed`, `keycloak_account_deleted_by_user`,
 `keycloak_user_deleted_outside_erasure`.
@@ -238,7 +254,8 @@ and id, and the error, never the event's data or the password:
 
 ## Tests
 
-`internal/events` has unit tests for the settings, the envelope, Keycloak's
+`internal/events` has unit tests for the settings, the envelope and its
+`traceparent`, Keycloak's
 format, every outcome of a delivery, the masking of a handler's error in the
 log, the reconnection wait and a broker that cannot be reached, and integration tests against PostgreSQL and a real RabbitMQ 4.2
 (`internal/testrabbitmq`, the image e-skylab-keycloak's tests run). The broker
@@ -267,7 +284,9 @@ Deviations: the retries are in the process, not a delayed redelivery (no TTL
 and DLX ring, no delayed-message plugin; ADR-0071 deviation 6); dropping
 repeats is the consumer's, the broker has no duplicate detection window
 (deviation 7); prefetch 20 is under RabbitMQ's suggested 100 to 300, for a
-low volume with a database write each.
+low volume with a database write each; `traceparent` follows CloudEvents'
+Distributed Tracing extension, but core has no tracing (no OpenTelemetry
+spans or collector): the trace id only joins log lines.
 
 ## Rolling back
 
