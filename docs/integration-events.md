@@ -180,8 +180,10 @@ caught by the periodic passes, which stay. The handler:
 - **Wakes the deleted teams cleanup** on a `GROUP DELETE`
   ([communication-preferences.md](communication-preferences.md)): it reads
   the whole Group list, so a deleted Group's sub-Groups, which get no event,
-  go too; events within 30 seconds make one run, and the handler does not
-  wait for it. Core's in-process Group caches are not emptied: the event
+  go too. The first event runs it at once; events that come within 30
+  seconds of a run make one more run when the 30 seconds are up (that run
+  sees a deletion the first one may have read before). The handler does not
+  wait for either. Core's in-process Group caches are not emptied: the event
   reaches one replica of competing consumers, and the caches refresh within a
   minute. What else a deleted Group leaves in core is in
   [group-deletion.md](group-deletion.md#what-a-deletion-leaves-in-core).

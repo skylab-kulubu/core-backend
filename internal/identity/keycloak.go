@@ -245,26 +245,54 @@ func mapKCErr(err error) error {
 	return err
 }
 
+// ErrIncompleteGroups is a Group list that may miss a branch: a Group's
+// children answered 404 while the list was read.
+var ErrIncompleteGroups = errors.New("identity: the Group list is incomplete (a Group's children answered 404)")
+
+// ListGroups is the realm's whole Group tree. A Group whose children answer
+// 404 (deleted while the list is read) has its branch left out.
 func (k *Keycloak) ListGroups(ctx context.Context) ([]Group, error) {
-	token, err := k.accessToken(ctx)
+	groups, _, err := k.listGroups(ctx)
+	return groups, err
+}
+
+// ListGroupsComplete is ListGroups for a caller that deletes what the list
+// does not hold: a branch left out is ErrIncompleteGroups, since the 404 may
+// be a proxy's (Keycloak restarting) or a Group moved mid-read rather than a
+// deletion.
+func (k *Keycloak) ListGroupsComplete(ctx context.Context) ([]Group, error) {
+	groups, skipped, err := k.listGroups(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if skipped > 0 {
+		return nil, ErrIncompleteGroups
+	}
+	return groups, nil
+}
+
+// listGroups reads the tree and counts the branches it left out.
+func (k *Keycloak) listGroups(ctx context.Context) ([]Group, int, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, 0, err
 	}
 	tops, err := k.gc.GetGroups(ctx, token, k.realm, gocloak.GetGroupsParams{
 		Full: gocloak.BoolP(true),
 		Max:  gocloak.IntP(1000),
 	})
 	if err != nil {
-		return nil, mapKCErr(err)
+		return nil, 0, mapKCErr(err)
 	}
-	out, err := k.collectGroups(ctx, token, tops)
+	skipped := 0
+	out, err := k.collectGroups(ctx, token, tops, &skipped)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return dedupGroups(out), nil
+	return dedupGroups(out), skipped, nil
 }
 
-func (k *Keycloak) collectGroups(ctx context.Context, token string, gs []*gocloak.Group) ([]Group, error) {
+func (k *Keycloak) collectGroups(ctx context.Context, token string, gs []*gocloak.Group, skipped *int) ([]Group, error) {
 	out := flattenGroups(gs)
 	for _, g := range gs {
 		if g == nil || g.ID == nil {
@@ -273,11 +301,12 @@ func (k *Keycloak) collectGroups(ctx context.Context, token string, gs []*gocloa
 		kids, err := k.children(ctx, token, *g.ID)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
+				*skipped++
 				continue
 			}
 			return nil, err
 		}
-		nested, err := k.collectGroups(ctx, token, kids)
+		nested, err := k.collectGroups(ctx, token, kids, skipped)
 		if err != nil {
 			return nil, err
 		}

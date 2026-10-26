@@ -1078,7 +1078,7 @@ func main() {
 		CommunicationPreferences:  communicationPreferences,
 		Audience:                  newsAudience,
 		Recipients:                recipients,
-		TrackingWithdrawalMetrics: trackingWithdrawals,
+		TrackingWithdrawalMetrics: communicationPreferenceMetrics{trackingWithdrawals, communicationPreferences},
 		Readiness:                 readiness,
 		MediaDecodeMetrics:        decodeBudget,
 		MemoryMetrics:             memory,
@@ -1203,6 +1203,17 @@ func accountErasureStartup(getenv func(string) string) (bool, erasure.Config, er
 }
 
 // optionalErasureMetrics keeps a worker that is off from publishing gauges.
+// communicationPreferenceMetrics is the tracking withdrawals' metrics and
+// the deleted teams cleanup's refused runs.
+type communicationPreferenceMetrics struct {
+	withdrawals *commpref.Withdrawals
+	preferences *commpref.Service
+}
+
+func (m communicationPreferenceMetrics) Prometheus() string {
+	return m.withdrawals.Prometheus() + m.preferences.CleanupPrometheus()
+}
+
 func optionalErasureMetrics(gauges *account.ErasureGauges) interface{ Prometheus() string } {
 	if gauges == nil {
 		return nil

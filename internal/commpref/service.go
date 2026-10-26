@@ -16,9 +16,10 @@ import (
 )
 
 // Directory is the Keycloak reads the preferences need: the whole Group
-// tree, a person's Groups, and whether a person still exists.
+// tree, a person's Groups, and whether a Group or a person still exists.
 type Directory interface {
 	ListGroups(ctx context.Context) ([]identity.Group, error)
+	GetGroup(ctx context.Context, idOrPath string) (identity.Group, error)
 	GroupsForUser(ctx context.Context, userID uuid.UUID) ([]identity.Group, error)
 	GetUser(ctx context.Context, id uuid.UUID) (identity.Person, error)
 }
@@ -53,6 +54,11 @@ type Service struct {
 	// part; teamCleanupGap is the least time between two such runs.
 	teamCleanupWake chan struct{}
 	teamCleanupGap  time.Duration
+
+	// teamCleanupRefused counts the deleted teams runs that deleted nothing
+	// on a list they could not trust, by reason.
+	refusedMu          sync.Mutex
+	teamCleanupRefused map[string]int64
 
 	treeMu   sync.Mutex
 	cached   *Tree
@@ -582,14 +588,42 @@ func (s *Service) EraseSubject(ctx context.Context, person uuid.UUID) (int64, er
 // answered, but not the tree core knows, so nothing is deleted on it.
 var errIncompleteTree = errors.New("communication preferences: the Group list has no " + authz.MembersRoot + "; no deleted team removed")
 
+// errIncompleteGroupList is a Group list that missed a Group: Keycloak
+// said a branch's children answered 404 while it was read, or a team the
+// list did not hold is still there when read by its id.
+var errIncompleteGroupList = errors.New("communication preferences: the Group list is incomplete; no deleted team removed")
+
+// errTooManyTeamsGone is a run that found more teams gone than deletions
+// explain: a Group list that missed a branch.
+var errTooManyTeamsGone = errors.New("communication preferences: too many teams unknown to Keycloak; none removed")
+
+// groupListerComplete is a Directory that says when its Group list may miss
+// a branch (identity.Keycloak).
+type groupListerComplete interface {
+	ListGroupsComplete(ctx context.Context) ([]identity.Group, error)
+}
+
 // RemoveDeletedTeams deletes the rows of teams whose Group is gone from
-// Keycloak. A Group list without /UYELER deletes nothing.
+// Keycloak. It deletes nothing, and says why, on a list it cannot trust: a
+// list without /UYELER, a list Keycloak read with a branch missing, more
+// teams gone than a quarter of those with rows (and more than five), or a
+// team the list missed that Keycloak still has. Each team it deletes is one
+// Keycloak answered "not found" for, read by its id; any other answer stops
+// the run with nothing deleted.
 func (s *Service) RemoveDeletedTeams(ctx context.Context) (int64, error) {
 	ids, err := s.store.TeamGroupIDs(ctx)
 	if err != nil || len(ids) == 0 {
 		return 0, err
 	}
-	groups, err := s.dir.ListGroups(ctx)
+	var groups []identity.Group
+	if complete, ok := s.dir.(groupListerComplete); ok {
+		groups, err = complete.ListGroupsComplete(ctx)
+	} else {
+		groups, err = s.dir.ListGroups(ctx)
+	}
+	if errors.Is(err, identity.ErrIncompleteGroups) {
+		return 0, s.refuseTeamCleanup("incomplete_list", errIncompleteGroupList)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("%w: %v", ErrTeamsUnavailable, err)
 	}
@@ -600,7 +634,7 @@ func (s *Service) RemoveDeletedTeams(ctx context.Context) (int64, error) {
 		rooted = rooted || g.Path == authz.MembersRoot
 	}
 	if !rooted {
-		return 0, errIncompleteTree
+		return 0, s.refuseTeamCleanup("incomplete_list", errIncompleteTree)
 	}
 	var gone []string
 	for _, id := range ids {
@@ -608,7 +642,45 @@ func (s *Service) RemoveDeletedTeams(ctx context.Context) (int64, error) {
 			gone = append(gone, id)
 		}
 	}
+	if len(gone) > 5 && len(gone)*4 > len(ids) {
+		return 0, s.refuseTeamCleanup("too_many_gone", errTooManyTeamsGone)
+	}
+	for _, id := range gone {
+		switch _, err := s.dir.GetGroup(ctx, id); {
+		case errors.Is(err, identity.ErrNotFound):
+		case err == nil:
+			return 0, s.refuseTeamCleanup("incomplete_list", errIncompleteGroupList)
+		default:
+			return 0, fmt.Errorf("%w: reading a team's Group: %v", ErrTeamsUnavailable, err)
+		}
+	}
 	return s.store.DeleteTeams(ctx, gone)
+}
+
+// refuseTeamCleanup counts a deleted teams run that deleted nothing, and
+// returns its error.
+func (s *Service) refuseTeamCleanup(reason string, err error) error {
+	s.refusedMu.Lock()
+	defer s.refusedMu.Unlock()
+	if s.teamCleanupRefused == nil {
+		s.teamCleanupRefused = map[string]int64{}
+	}
+	s.teamCleanupRefused[reason]++
+	return err
+}
+
+// CleanupPrometheus is the count of deleted teams runs that deleted nothing
+// on a list they could not trust, by reason (incomplete_list,
+// too_many_gone).
+func (s *Service) CleanupPrometheus() string {
+	s.refusedMu.Lock()
+	defer s.refusedMu.Unlock()
+	var out strings.Builder
+	out.WriteString("# TYPE skylab_communication_preference_team_cleanup_refused_total counter\n")
+	for _, reason := range []string{"incomplete_list", "too_many_gone"} {
+		fmt.Fprintf(&out, "skylab_communication_preference_team_cleanup_refused_total{reason=%q} %d\n", reason, s.teamCleanupRefused[reason])
+	}
+	return out.String()
 }
 
 // errTooManyGone is a run that found more people gone than a deletion

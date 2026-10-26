@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -412,6 +413,9 @@ func (failingDirectory) ListGroups(context.Context) ([]identity.Group, error) {
 func (failingDirectory) GroupsForUser(context.Context, uuid.UUID) ([]identity.Group, error) {
 	return nil, errors.New("keycloak down")
 }
+func (failingDirectory) GetGroup(context.Context, string) (identity.Group, error) {
+	return identity.Group{}, errors.New("keycloak down")
+}
 func (failingDirectory) GetUser(context.Context, uuid.UUID) (identity.Person, error) {
 	return identity.Person{}, errors.New("keycloak down")
 }
@@ -499,6 +503,9 @@ func (rootless) ListGroups(context.Context) ([]identity.Group, error) {
 	return []identity.Group{{ID: "g-x", Name: "X", Path: "/X"}}, nil
 }
 func (rootless) GroupsForUser(context.Context, uuid.UUID) ([]identity.Group, error) { return nil, nil }
+func (rootless) GetGroup(context.Context, string) (identity.Group, error) {
+	return identity.Group{}, identity.ErrNotFound
+}
 func (rootless) GetUser(context.Context, uuid.UUID) (identity.Person, error) {
 	return identity.Person{}, nil
 }
@@ -606,4 +613,128 @@ func TestWakeTeamCleanupNeverBlocks(t *testing.T) {
 	}
 	var none *Service
 	none.WakeTeamCleanup()
+}
+
+// teamRows gives a person a News row on each of teams.
+func (f *fixture) teamRows(person uuid.UUID, teams ...string) {
+	f.t.Helper()
+	var changes []Change
+	for _, team := range teams {
+		changes = append(changes, set(Team(team, KindNews), true))
+	}
+	if err := f.store.Apply(context.Background(), person, changes, SourceAccountCenter, time.Now()); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *fixture) teamRowCount() int {
+	f.t.Helper()
+	ids, err := f.store.TeamGroupIDs(context.Background())
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return len(ids)
+}
+
+// Many teams gone at once (more than five and more than a quarter of the
+// teams with rows) is a list Keycloak got wrong, not deletions: none goes,
+// the run says so and counts it.
+func TestRemoveDeletedTeamsRefusesTooManyGone(t *testing.T) {
+	f := newFixture(t)
+	f.teamRows(uuid.New(), "g-weblab", "g-airlab", "x-1", "x-2", "x-3", "x-4", "x-5", "x-6")
+	if n, err := f.svc.RemoveDeletedTeams(context.Background()); !errors.Is(err, errTooManyTeamsGone) || n != 0 {
+		t.Fatalf("removed %d %v", n, err)
+	}
+	if f.teamRowCount() != 8 {
+		t.Fatalf("teams with rows = %d", f.teamRowCount())
+	}
+	if m := f.svc.CleanupPrometheus(); !strings.Contains(m, `skylab_communication_preference_team_cleanup_refused_total{reason="too_many_gone"} 1`) {
+		t.Fatalf("metrics = %s", m)
+	}
+	// Five gone is not too many.
+	f2 := newFixture(t)
+	f2.teamRows(uuid.New(), "g-weblab", "x-1", "x-2", "x-3", "x-4", "x-5")
+	if n, err := f2.svc.RemoveDeletedTeams(context.Background()); err != nil || n != 5 {
+		t.Fatalf("removed %d %v", n, err)
+	}
+}
+
+// listedAs is a Directory whose Group list is lists's, and whose Group reads
+// and complete list answer as told.
+type listedAs struct {
+	*identity.Memory
+	list     []identity.Group
+	readErr  error
+	complete error
+}
+
+func (l listedAs) ListGroups(context.Context) ([]identity.Group, error) { return l.list, nil }
+func (l listedAs) GetGroup(ctx context.Context, id string) (identity.Group, error) {
+	if l.readErr != nil {
+		return identity.Group{}, l.readErr
+	}
+	return l.Memory.GetGroup(ctx, id)
+}
+
+// completeListedAs adds ListGroupsComplete, which Keycloak has.
+type completeListedAs struct{ listedAs }
+
+func (l completeListedAs) ListGroupsComplete(context.Context) ([]identity.Group, error) {
+	if l.complete != nil {
+		return nil, l.complete
+	}
+	return l.list, nil
+}
+
+// A team missing from the list goes only when Keycloak answers 404 for its
+// Group: a Group the list missed but Keycloak still has means the list is
+// incomplete (nothing goes this run); any other error is transient (nothing
+// goes). A list Keycloak says is incomplete (a branch's children answered
+// 404) deletes nothing.
+func TestRemoveDeletedTeamsConfirmsEachGroup(t *testing.T) {
+	withoutAirlab := slices.DeleteFunc(testGroups(), func(g identity.Group) bool { return g.ID == "g-airlab" })
+	for name, tc := range map[string]struct {
+		dir    func(*identity.Memory) Directory
+		want   error
+		reason string
+	}{
+		"the list missed a Group Keycloak has": {
+			dir:  func(m *identity.Memory) Directory { return listedAs{Memory: m, list: withoutAirlab} },
+			want: errIncompleteGroupList, reason: "incomplete_list",
+		},
+		"reading the Group fails": {
+			dir: func(m *identity.Memory) Directory {
+				return listedAs{Memory: m, list: withoutAirlab, readErr: errors.New("keycloak: 503")}
+			},
+			want: ErrTeamsUnavailable,
+		},
+		"Keycloak says the list is incomplete": {
+			dir: func(m *identity.Memory) Directory {
+				return completeListedAs{listedAs{Memory: m, list: testGroups(), complete: identity.ErrIncompleteGroups}}
+			},
+			want: errIncompleteGroupList, reason: "incomplete_list",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.teamRows(uuid.New(), "g-weblab", "g-airlab", "g-gone")
+			svc := NewService(f.svc.Config(), f.store, tc.dir(f.dir), nil)
+			if n, err := svc.RemoveDeletedTeams(context.Background()); !errors.Is(err, tc.want) || n != 0 {
+				t.Fatalf("removed %d %v, want %v", n, err, tc.want)
+			}
+			if f.teamRowCount() != 3 {
+				t.Fatalf("teams with rows = %d", f.teamRowCount())
+			}
+			if m := svc.CleanupPrometheus(); tc.reason != "" && !strings.Contains(m, `{reason="`+tc.reason+`"} 1`) {
+				t.Fatalf("metrics = %s", m)
+			}
+		})
+	}
+	// A complete list and a 404: only the gone team's rows go.
+	f := newFixture(t)
+	f.teamRows(uuid.New(), "g-weblab", "g-airlab", "g-gone")
+	svc := NewService(f.svc.Config(), f.store, completeListedAs{listedAs{Memory: f.dir, list: testGroups()}}, nil)
+	if n, err := svc.RemoveDeletedTeams(context.Background()); err != nil || n != 1 || f.teamRowCount() != 2 {
+		t.Fatalf("removed %d %v, %d teams left", n, err, f.teamRowCount())
+	}
 }
