@@ -127,7 +127,8 @@ func TestAudienceRouteAuthorization(t *testing.T) {
 	}
 	if len(answer.Items) != 1 || answer.Next != nil || answer.Counts.Total != 1 || answer.Items[0].UserID != env.person ||
 		answer.Items[0].Email != "uye@example.test" || answer.Items[0].Name != "Ad Soyad" ||
-		!strings.HasPrefix(answer.Items[0].UnsubscribeURL, "https://api.example.test/v1/communication-preferences/unsubscribe?t=") {
+		!strings.HasPrefix(answer.Items[0].UnsubscribeURL, "https://api.example.test/v1/communication-preferences/unsubscribe?t=") ||
+		!strings.Contains(string(got.raw), `"allowedChannels":["email"]`) {
 		t.Fatalf("answer %s", got.raw)
 	}
 

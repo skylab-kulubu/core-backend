@@ -3,8 +3,11 @@ package commpref
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -410,6 +413,9 @@ func (failingDirectory) ListGroups(context.Context) ([]identity.Group, error) {
 func (failingDirectory) GroupsForUser(context.Context, uuid.UUID) ([]identity.Group, error) {
 	return nil, errors.New("keycloak down")
 }
+func (failingDirectory) GetGroup(context.Context, string) (identity.Group, error) {
+	return identity.Group{}, errors.New("keycloak down")
+}
 func (failingDirectory) GetUser(context.Context, uuid.UUID) (identity.Person, error) {
 	return identity.Person{}, errors.New("keycloak down")
 }
@@ -497,6 +503,9 @@ func (rootless) ListGroups(context.Context) ([]identity.Group, error) {
 	return []identity.Group{{ID: "g-x", Name: "X", Path: "/X"}}, nil
 }
 func (rootless) GroupsForUser(context.Context, uuid.UUID) ([]identity.Group, error) { return nil, nil }
+func (rootless) GetGroup(context.Context, string) (identity.Group, error) {
+	return identity.Group{}, identity.ErrNotFound
+}
 func (rootless) GetUser(context.Context, uuid.UUID) (identity.Person, error) {
 	return identity.Person{}, nil
 }
@@ -506,4 +515,226 @@ func must[T any](v T, err error) T {
 		panic(err)
 	}
 	return v
+}
+
+// countedGroups counts the Group list reads (one per run of the deleted
+// teams part) and when each came.
+type countedGroups struct {
+	Directory
+	mu    sync.Mutex
+	reads []time.Time
+}
+
+func (c *countedGroups) ListGroups(ctx context.Context) ([]identity.Group, error) {
+	c.mu.Lock()
+	c.reads = append(c.reads, time.Now())
+	c.mu.Unlock()
+	return c.Directory.ListGroups(ctx)
+}
+
+func (c *countedGroups) runs() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.reads)
+}
+
+func waitRuns(t *testing.T, c *countedGroups, n int) []time.Time {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if runs := c.runs(); len(runs) >= n {
+			return runs
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("%d runs, want %d", len(c.runs()), n)
+	return nil
+}
+
+// A wake runs the deleted teams part soon, outside the interval: wakes that
+// come before it runs make one run, and a run comes no sooner than the gap
+// after the last.
+func TestWakeTeamCleanup(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	other := uuid.New()
+	gone := func() {
+		t.Helper()
+		if err := f.store.Apply(ctx, other, []Change{set(Team("g-gone", KindNews), true)}, SourceAccountCenter, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gone()
+	groups := &countedGroups{Directory: f.dir}
+	svc := NewService(f.svc.Config(), f.store, groups, authz.DefaultPrivilegedRoots())
+	const gap = 150 * time.Millisecond
+	svc.SetTeamCleanupGap(gap)
+	var mu sync.Mutex
+	var reports []string
+	done := MaintainCleanup(ctx, svc, time.Hour, func(what string, removed int64, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		reports = append(reports, fmt.Sprintf("%s %d %v", what, removed, err))
+	})
+	defer func() {
+		cancel()
+		<-done
+	}()
+	first := waitRuns(t, groups, 1)[0]
+
+	// A Group is deleted in Keycloak: two events, one run, the gap after
+	// the first.
+	gone()
+	svc.WakeTeamCleanup()
+	svc.WakeTeamCleanup()
+	second := waitRuns(t, groups, 2)[1]
+	if second.Sub(first) < gap {
+		t.Fatalf("second run %v after the first, want at least %v", second.Sub(first), gap)
+	}
+	time.Sleep(3 * gap)
+	if runs := groups.runs(); len(runs) != 2 {
+		t.Fatalf("%d runs, want 2 (the wakes make one)", len(runs))
+	}
+	if rows := must(f.store.List(ctx, other)); len(rows) != 0 {
+		t.Fatalf("the deleted team's rows stay: %v", rows)
+	}
+	mu.Lock()
+	if !slices.Equal(reports, []string{"deleted teams 1 <nil>", "deleted teams 1 <nil>"}) {
+		t.Fatalf("reports = %v", reports)
+	}
+	mu.Unlock()
+}
+
+// A wake never blocks: without a running cleanup, or on a nil service.
+func TestWakeTeamCleanupNeverBlocks(t *testing.T) {
+	f := newFixture(t)
+	for range 3 {
+		f.svc.WakeTeamCleanup()
+	}
+	var none *Service
+	none.WakeTeamCleanup()
+}
+
+// teamRows gives a person a News row on each of teams.
+func (f *fixture) teamRows(person uuid.UUID, teams ...string) {
+	f.t.Helper()
+	var changes []Change
+	for _, team := range teams {
+		changes = append(changes, set(Team(team, KindNews), true))
+	}
+	if err := f.store.Apply(context.Background(), person, changes, SourceAccountCenter, time.Now()); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *fixture) teamRowCount() int {
+	f.t.Helper()
+	ids, err := f.store.TeamGroupIDs(context.Background())
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return len(ids)
+}
+
+// Many teams gone at once (more than five and more than a quarter of the
+// teams with rows) is a list Keycloak got wrong, not deletions: none goes,
+// the run says so and counts it.
+func TestRemoveDeletedTeamsRefusesTooManyGone(t *testing.T) {
+	f := newFixture(t)
+	f.teamRows(uuid.New(), "g-weblab", "g-airlab", "x-1", "x-2", "x-3", "x-4", "x-5", "x-6")
+	if n, err := f.svc.RemoveDeletedTeams(context.Background()); !errors.Is(err, errTooManyTeamsGone) || n != 0 {
+		t.Fatalf("removed %d %v", n, err)
+	}
+	if f.teamRowCount() != 8 {
+		t.Fatalf("teams with rows = %d", f.teamRowCount())
+	}
+	if m := f.svc.CleanupPrometheus(); !strings.Contains(m, `skylab_communication_preference_team_cleanup_refused_total{reason="too_many_gone"} 1`) {
+		t.Fatalf("metrics = %s", m)
+	}
+	// Five gone is not too many.
+	f2 := newFixture(t)
+	f2.teamRows(uuid.New(), "g-weblab", "x-1", "x-2", "x-3", "x-4", "x-5")
+	if n, err := f2.svc.RemoveDeletedTeams(context.Background()); err != nil || n != 5 {
+		t.Fatalf("removed %d %v", n, err)
+	}
+}
+
+// listedAs is a Directory whose Group list is lists's, and whose Group reads
+// and complete list answer as told.
+type listedAs struct {
+	*identity.Memory
+	list     []identity.Group
+	readErr  error
+	complete error
+}
+
+func (l listedAs) ListGroups(context.Context) ([]identity.Group, error) { return l.list, nil }
+func (l listedAs) GetGroup(ctx context.Context, id string) (identity.Group, error) {
+	if l.readErr != nil {
+		return identity.Group{}, l.readErr
+	}
+	return l.Memory.GetGroup(ctx, id)
+}
+
+// completeListedAs adds ListGroupsComplete, which Keycloak has.
+type completeListedAs struct{ listedAs }
+
+func (l completeListedAs) ListGroupsComplete(context.Context) ([]identity.Group, error) {
+	if l.complete != nil {
+		return nil, l.complete
+	}
+	return l.list, nil
+}
+
+// A team missing from the list goes only when Keycloak answers 404 for its
+// Group: a Group the list missed but Keycloak still has means the list is
+// incomplete (nothing goes this run); any other error is transient (nothing
+// goes). A list Keycloak says is incomplete (a branch's children answered
+// 404) deletes nothing.
+func TestRemoveDeletedTeamsConfirmsEachGroup(t *testing.T) {
+	withoutAirlab := slices.DeleteFunc(testGroups(), func(g identity.Group) bool { return g.ID == "g-airlab" })
+	for name, tc := range map[string]struct {
+		dir    func(*identity.Memory) Directory
+		want   error
+		reason string
+	}{
+		"the list missed a Group Keycloak has": {
+			dir:  func(m *identity.Memory) Directory { return listedAs{Memory: m, list: withoutAirlab} },
+			want: errIncompleteGroupList, reason: "incomplete_list",
+		},
+		"reading the Group fails": {
+			dir: func(m *identity.Memory) Directory {
+				return listedAs{Memory: m, list: withoutAirlab, readErr: errors.New("keycloak: 503")}
+			},
+			want: ErrTeamsUnavailable,
+		},
+		"Keycloak says the list is incomplete": {
+			dir: func(m *identity.Memory) Directory {
+				return completeListedAs{listedAs{Memory: m, list: testGroups(), complete: identity.ErrIncompleteGroups}}
+			},
+			want: errIncompleteGroupList, reason: "incomplete_list",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.teamRows(uuid.New(), "g-weblab", "g-airlab", "g-gone")
+			svc := NewService(f.svc.Config(), f.store, tc.dir(f.dir), nil)
+			if n, err := svc.RemoveDeletedTeams(context.Background()); !errors.Is(err, tc.want) || n != 0 {
+				t.Fatalf("removed %d %v, want %v", n, err, tc.want)
+			}
+			if f.teamRowCount() != 3 {
+				t.Fatalf("teams with rows = %d", f.teamRowCount())
+			}
+			if m := svc.CleanupPrometheus(); tc.reason != "" && !strings.Contains(m, `{reason="`+tc.reason+`"} 1`) {
+				t.Fatalf("metrics = %s", m)
+			}
+		})
+	}
+	// A complete list and a 404: only the gone team's rows go.
+	f := newFixture(t)
+	f.teamRows(uuid.New(), "g-weblab", "g-airlab", "g-gone")
+	svc := NewService(f.svc.Config(), f.store, completeListedAs{listedAs{Memory: f.dir, list: testGroups()}}, nil)
+	if n, err := svc.RemoveDeletedTeams(context.Background()); err != nil || n != 1 || f.teamRowCount() != 2 {
+		t.Fatalf("removed %d %v, %d teams left", n, err, f.teamRowCount())
+	}
 }

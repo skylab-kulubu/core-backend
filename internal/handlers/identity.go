@@ -294,6 +294,29 @@ func (h *IdentityHandler) ManagedGroups(c fiber.Ctx) error {
 	return c.JSON(nodes)
 }
 
+// SetTeamSettings answers PUT /v1/groups/{id}/settings: a Team's own
+// settings, written by its manager or Privileged (docs/team-delegation.md
+// "Team settings"). Every field is required.
+func (h *IdentityHandler) SetTeamSettings(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	var body struct {
+		MembersManageCompetitors *bool `json:"membersManageCompetitors"`
+	}
+	if err := c.Bind().Body(&body); err != nil || body.MembersManageCompetitors == nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	settings, err := h.svc.SetTeamSettings(auditContext(c, p), p, c.Params("groupId"), identity.TeamSettings{
+		MembersManageCompetitors: *body.MembersManageCompetitors,
+	})
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(settings)
+}
+
 // MemberCandidates answers GET /v1/groups/{id}/member-candidates?q=.
 func (h *IdentityHandler) MemberCandidates(c fiber.Ctx) error {
 	p, err := caller(c)

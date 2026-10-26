@@ -19,6 +19,7 @@ caller's token.
   `[]` to everyone but Privileged.
 - **on**: a person who is not Privileged for Groups reaches the routes
   below for a Group they manage.
+  It also turns on the Owner team inheritance below.
 
 Turn it on only after ticket 01 is in production and the tree report
 (ticket 03) shows no duplicate codes and no names with a `/` (security
@@ -133,6 +134,62 @@ role stays protected until then. Keycloak roles flow down to subgroups
 (Entra's app roles do not), so an ancestor's mapping protects the Groups
 under it.
 
+## Owner team inheritance (Events)
+
+ADR-0065 decision 2 (ekip-yetkileri ticket 12): with `TEAM_DELEGATION=on`,
+a person directly in a Team's Leader group is a Leader (`LEADER`, not
+`MEMBER`) of every Owner team below that Team. Every Owner team decision
+reads it from `ownerLevels`: Events, Event days and Sessions, drafts, the
+applications and tickets of the Event, door check-in, competitions,
+competitors, certificates and certificate templates. With delegation off
+nothing changes.
+
+- The token names the caller's Groups, not where the Owner team sits, so
+  core reads the realm's Groups with its service account
+  (`identity.TeamTree`, `ListGroups`) and finds the one Group named after
+  the Owner team, compared without case; the decision then matches the
+  name exactly, as before. No Group or more than one: no inheritance.
+- Both ends are Teams as delegation reads them (`authz.TeamOf`): an area's
+  `KOORDINATORLER`, `/UYELER`'s Leaders and a Group under a Privileged root
+  lead nothing below them. A Sub-team's Leader stays a `MEMBER` of the Team
+  above; a sibling Team's Leader gets nothing.
+- The tree is read only for a caller in some Team's Leader group whose own
+  Team is not the Owner team. A failed read (Keycloak down, 5 s) answers no
+  inheritance for 10 s: the Leader leads only their own Team, as before.
+- `GET /v1/users/me/capabilities` lists those Sub-teams in `teams` with
+  `levels: ["LEADER"]`, so the panel finds their decisions.
+- More people read an Event's applicants (participants' personal data).
+  The Team audit record does not cover Event decisions; whether it should
+  is open (ADR-0065 "Açık").
+
+## Team settings
+
+`PUT /v1/groups/{id}/settings` `{"membersManageCompetitors": bool}` writes a
+Team's own settings as its Group's attributes and answers them. The Team's
+Leader, a Leader of a Team above (delegation on, `Manages`) and Privileged
+write them; a protected Group is Privileged's; only a Team takes them (a
+Leader group, an area or a root: `400`). Each change is a
+`group.attributes` row with the old and new value, a refusal a `denied`
+row, as every delegated write. The panel reads the values from the Group's
+attributes (`GET /v1/groups/{id}`).
+
+- `membersManageCompetitors` (`members_manage_competitors`, Yusuf
+  2026-10-25): whether the Team's members add, edit and remove its Events'
+  competitors. Unset or anything but `false` is `true`, the rule before;
+  `false` keeps them to the Team's Leaders (and Leaders of a Team above,
+  "Owner team inheritance") and Privileged. Members still read them, and a
+  person still enters or leaves as a competitor themselves. The decision
+  (`competitor.create/update/delete` in the capabilities too) reads the
+  Owner team's own Group from the realm's Groups kept a minute
+  (`identity.TeamTree`); core's own write forgets them (a read already
+  running then is not kept, and the next decision reads again), a write
+  elsewhere (another core, the Keycloak console) is seen within the minute.
+  A tree that cannot be read is the default, `true`. Since the setting, a
+  member's capabilities and competitor writes read the tree too, with
+  delegation off as well: at most one realm Group read a minute, and the
+  first request after the minute waits for it (5 s at most). The setting does not depend on
+  `TEAM_DELEGATION`; with it off only Privileged writes it.
+
 ## Role rules
 
 The role cleanup (sky_lab_genel `.scratch/rol-temizligi`, ticket 06; Yusuf, 2026-10-12: "Microsoft gibi"): access comes through Groups, and a role is mapped only where the rule allows it. These hold for every caller, Privileged included.
@@ -186,6 +243,7 @@ Errors are RFC 9457 problems with `code` (and `reason` for placement). The panel
 | `GET /v1/groups/{id}/member-candidates?q=` | `Manages` | below |
 | `POST /v1/groups/{id}/members` `{userId}` | membership of the Group | an active account (S4); limits below |
 | `DELETE /v1/groups/{id}/members/{userId}` | `Manages` of the Group, membership of the Source group | the person leaves the Group they sit in |
+| `PUT /v1/groups/{id}/settings` | `Manages` (a Team only) | the Team's own settings, below |
 
 `GET /v1/groups`, `POST /v1/groups`, `PATCH /v1/groups/{id}` and the
 client-role routes stay Privileged's (Forms reads the list). So does
@@ -271,6 +329,7 @@ core's own membership writes.
 | the realm's names (`team_code_not_unique`) | 60 s | renames |
 | `managedTeams` | 60 s (a failure 10 s) | core's membership writes of that person |
 | a managed tree | 60 s | every core membership write |
+| the realm's Groups (Owner team inheritance, Team settings) | 60 s (a failure 10 s) | core's renames, attribute writes and Team settings writes |
 
 Writes never use a kept caller, target or protection: they read all three
 fresh.

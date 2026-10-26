@@ -20,6 +20,10 @@ type authorizer struct {
 	policy  Policy
 	mode    RoleMode
 	metrics *RoleMetrics
+	// teams is where Owner teams sit (WithTeamTree), nil without it.
+	teams TeamTree
+	// settings are the Teams' own settings (WithTeamSettings), nil without.
+	settings TeamSettings
 }
 
 // Option configures an Authorizer.
@@ -203,14 +207,14 @@ func (a *authorizer) allowCompetitor(p Principal, r Resource, action Action) boo
 		if authenticated && r.OwnerID != "" && r.OwnerID == p.ID {
 			return true
 		}
-		return a.isOwnerMember(p, r)
+		return a.competitorWriter(p, r)
 	case Update:
-		return a.isOwnerMember(p, r)
+		return a.competitorWriter(p, r)
 	case Delete:
 		if authenticated && r.OwnerID != "" && r.OwnerID == p.ID {
 			return true
 		}
-		return a.isOwnerMember(p, r)
+		return a.competitorWriter(p, r)
 	default:
 		return false
 	}
@@ -235,6 +239,20 @@ func (a *authorizer) allowCompetition(p Principal, r Resource, action Action) bo
 		return false
 	}
 	return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
+}
+
+// competitorWriter is who adds, edits and removes an Event's competitors: a
+// Leader of the Owner team (or of a Team above it), and its members unless
+// the Team's Leader kept it to the Leaders (TeamAttrMembersManageCompetitors).
+func (a *authorizer) competitorWriter(p Principal, r Resource) bool {
+	levels := a.ownerLevels(p, r.OwnerTeam)
+	if slices.Contains(levels, LevelLeader) {
+		return true
+	}
+	if len(levels) == 0 {
+		return false
+	}
+	return a.settings == nil || a.settings.MembersManageCompetitors(r.OwnerTeam)
 }
 
 func (a *authorizer) isOwnerMember(p Principal, r Resource) bool {
@@ -636,9 +654,11 @@ func (a *authorizer) privilegedGroup(p Principal, read bool) string {
 
 // ownerLevels are p's levels in the Owner team owner, by whole path
 // segments: a member is in a Group one of whose segments is owner, a Leader
-// in a leader subgroup that is the last segment, right under owner. Paths
-// under a Privileged root name no Owner team: such a member is Privileged,
-// which the decisions read first, or in the roles mode holds roles.
+// in a leader subgroup that is the last segment, right under owner. With
+// the Team tree and delegation on, a Leader of a Team above owner is its
+// Leader too (ADR-0065 decision 2), not its member. Paths under a Privileged
+// root name no Owner team: such a member is Privileged, which the decisions
+// read first, or in the roles mode holds roles.
 func (a *authorizer) ownerLevels(p Principal, owner string) []Level {
 	if owner == "" {
 		return nil
@@ -659,6 +679,10 @@ func (a *authorizer) ownerLevels(p Principal, owner string) []Level {
 				leader = true
 			}
 		}
+	}
+
+	if !leader && a.inheritsFromAbove(p, owner) {
+		leader = true
 	}
 
 	out := make([]Level, 0, 2)

@@ -45,7 +45,7 @@ Writes on the Event itself (update, delete, days, Sessions, media) keep their ru
 
 - `POST /v1/events/{id}/publish`: draft → published, with `publishedAt` and the publisher. Needs a name, a location and a start date: otherwise `400`, `code: "event_incomplete"`, `missing: ["startDate", …]`. Publishing a published Event answers it unchanged; a cancelled one is `409 event_cancelled`.
 - `POST /v1/events/{id}/unpublish`: published → draft, only while the Event has no Ticket (a check-in needs one) and no current Competitor: otherwise `409 event_has_tickets` or `409 event_has_competitors` (a withdrawn Competitor does not hold it). Unpublishing a draft answers it unchanged; a cancelled one is `409 event_cancelled`. `publishedAt` keeps the last publication.
-- Both: whoever may edit the Event (`authz.Update`); DK `403`; anyone who may not see the Event `404`. Each is one `UPDATE … WHERE status = <expected>` (the publish also checks the three fields there), so two at once change the row once; the answer is the Event (`200`). The legacy `events.active` column is written with the status, as on create, for a rollback.
+- Both: whoever may edit the Event (`authz.Update`); DK `403`; anyone who may not see the Event `404`. Each is one `UPDATE … WHERE status = <expected>` (the publish also checks the three fields there), so two at once change the row once; the answer is the Event (`200`).
 
 ## Delete
 

@@ -81,6 +81,11 @@ services:
       # Event status mails (docs/event-cancel.md), the same way.
       SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY: ${SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY-core.event-cancelled}
       SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY: ${SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY-core.event-reinstated}
+      # Feedback mails (docs/event-feedback.md), the same way.
+      SKYMAIL_FEEDBACK_REQUEST_TEMPLATE_KEY: ${SKYMAIL_FEEDBACK_REQUEST_TEMPLATE_KEY-core.feedback-request}
+      SKYMAIL_FEEDBACK_REMINDER_TEMPLATE_KEY: ${SKYMAIL_FEEDBACK_REMINDER_TEMPLATE_KEY-core.feedback-reminder}
+      # The new Ticket's Notification (docs/ticket-created-notification.md).
+      TICKET_CREATED_NOTIFICATION: ${TICKET_CREATED_NOTIFICATION:-off}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
       PUBLIC_API_ORIGIN: ${PUBLIC_API_ORIGIN:-}
       PUBLIC_VERIFY_ORIGIN: ${PUBLIC_VERIFY_ORIGIN:-https://skyl.app/c}
@@ -93,6 +98,8 @@ services:
       SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY: ${SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY:-}
       # Communication preferences (docs/communication-preferences.md): off while the key is unset.
       COMMUNICATION_PREFERENCE_KEY: ${COMMUNICATION_PREFERENCE_KEY:-}
+      COMMUNICATION_PREFERENCE_KEY_V2: ${COMMUNICATION_PREFERENCE_KEY_V2:-}
+      COMMUNICATION_PREFERENCE_KEY_CURRENT: ${COMMUNICATION_PREFERENCE_KEY_CURRENT:-}
       COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL: ${COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL:-}
       # Open and click tracking: opt_out unless set; the withdrawal's SkyMail address.
       COMMUNICATION_TRACKING_MODE: ${COMMUNICATION_TRACKING_MODE:-}

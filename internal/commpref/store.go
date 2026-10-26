@@ -117,21 +117,31 @@ func (s *PostgresStore) Apply(ctx context.Context, person uuid.UUID, changes []C
 func (s *PostgresStore) EraseSubject(ctx context.Context, person uuid.UUID) (int64, error) {
 	var erased int64
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `DELETE FROM communication_preferences WHERE user_id = $1`, person)
-		if err != nil {
-			return err
-		}
-		erased = tag.RowsAffected()
-		if _, err := tx.Exec(ctx, `DELETE FROM communication_tracking_withdrawals WHERE user_id = $1`, person); err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `DELETE FROM communication_tracking_changes WHERE user_id = $1`, person)
+		var err error
+		erased, err = EraseSubjectIn(ctx, tx, person)
 		return err
 	})
 	if err != nil {
 		return 0, fmt.Errorf("communication preferences: erase: %w", err)
 	}
 	return erased, nil
+}
+
+// EraseSubjectIn is PostgresStore.EraseSubject in tx, a transaction the
+// caller commits: an Integration event's handler deletes a person Keycloak
+// no longer has with the record of the event.
+func EraseSubjectIn(ctx context.Context, tx pgx.Tx, person uuid.UUID) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM communication_preferences WHERE user_id = $1`, person)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM communication_tracking_withdrawals WHERE user_id = $1`, person); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM communication_tracking_changes WHERE user_id = $1`, person); err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (s *PostgresStore) Subjects(ctx context.Context) ([]uuid.UUID, error) {

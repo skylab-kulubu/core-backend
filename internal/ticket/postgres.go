@@ -3,6 +3,7 @@ package ticket
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,7 +15,17 @@ import (
 
 type PostgresStore struct {
 	pool *pgxpool.Pool
+	// notifyCreated queues each new Ticket's Notification
+	// (ticket_notifications, docs/ticket-created-notification.md) in the
+	// statement that writes the Ticket. Set at startup, read by every
+	// request: atomic.
+	notifyCreated atomic.Bool
 }
+
+// NotifyCreated turns the new Ticket's Notification on or off: while on,
+// Create also queues the Ticket in ticket_notifications, in the same
+// statement, for the worker (internal/ticketnotify) to send.
+func (s *PostgresStore) NotifyCreated(on bool) { s.notifyCreated.Store(on) }
 
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
@@ -46,12 +57,20 @@ func (s *PostgresStore) Create(ctx context.Context, t Ticket) (Ticket, error) {
 	if t.ID == uuid.Nil {
 		t.ID = uuid.New()
 	}
-	row := s.pool.QueryRow(ctx, `
+	insert := `
 		INSERT INTO tickets (
 			id, event_id, ticket_type, owner_id,
 			guest_first_name, guest_last_name, guest_email, guest_phone_number
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-		RETURNING `+ticketCols,
+		RETURNING ` + ticketCols
+	if s.notifyCreated.Load() {
+		// One statement writes the Ticket and queues its Notification:
+		// neither is there without the other.
+		insert = `WITH created AS (` + insert + `), queued AS (
+			INSERT INTO ticket_notifications (ticket_id) SELECT id FROM created
+		) SELECT ` + ticketCols + ` FROM created`
+	}
+	row := s.pool.QueryRow(ctx, insert,
 		t.ID, t.EventID, t.TicketType, t.OwnerID,
 		t.GuestFirstName, t.GuestLastName, t.GuestEmail, t.GuestPhoneNumber)
 	got, err := scanTicket(row)

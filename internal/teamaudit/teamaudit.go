@@ -136,11 +136,12 @@ func ActorFrom(ctx context.Context) (Actor, bool) {
 }
 
 // RecordedAttributes are the Group attributes whose values a row keeps: a
-// Team's names, descriptions and logo, and its public and door flags. Of
+// Team's names, descriptions and logo, its public and door flags and its
+// settings (members_manage_competitors). Of
 // any other attribute only the name is kept (State.OtherAttributes).
 var RecordedAttributes = []string{
 	"display_name_tr", "display_name_en", "description_tr", "description_en", "logo_media_id",
-	"public_listing", "public_leaders", "team_door_scan",
+	"public_listing", "public_leaders", "team_door_scan", "members_manage_competitors",
 }
 
 // State is a Group's side of a change: what it was (Record.Before) or is to

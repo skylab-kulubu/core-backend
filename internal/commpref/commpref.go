@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -185,13 +186,28 @@ var (
 	ErrTeamsUnavailable = errors.New("communication preference: teams unavailable")
 )
 
-// KeyEnv holds the link key: 32 random bytes, unpadded base64url (an OpenBao
-// reference in production). Unset: preferences are off and their routes
-// answer 503. It is its own key, not CONTACT_CONSENT_KEY: the consents stay
-// off in production until the retention sweep runs, and a preference link
-// must not depend on that. Do not rotate it: every link already mailed
-// stops working.
+// KeyEnv holds version 1 of the link key: 32 random bytes, unpadded
+// base64url (an OpenBao reference in production). It is its own key, not
+// CONTACT_CONSENT_KEY: the consents stay off in production until the
+// retention sweep runs, and a preference link must not depend on that.
+// Newer versions are KeyVersionEnvPrefix<n>; with no version set at all
+// preferences are off and their routes answer 503.
 const KeyEnv = "COMMUNICATION_PREFERENCE_KEY"
+
+// The key ring (abonelik-cikisi 13, ADR 0072 Consequences): a link carries
+// the version of the key that signed it, so a new key does not break the
+// links already mailed.
+const (
+	// KeyVersionEnvPrefix and a version from 2 to 255 name each newer key:
+	// COMMUNICATION_PREFERENCE_KEY_V2, … Version 1 is KeyEnv, never
+	// COMMUNICATION_PREFERENCE_KEY_V1.
+	KeyVersionEnvPrefix = "COMMUNICATION_PREFERENCE_KEY_V"
+	// CurrentKeyEnv is the version new links are signed with (1–255).
+	// Unset: 1. Version 1 signs format 1 links, which carry no version, so
+	// an image from before the ring reads them; a newer version signs
+	// format 2.
+	CurrentKeyEnv = "COMMUNICATION_PREFERENCE_KEY_CURRENT"
+)
 
 // AccountCenterURLEnv is the Account center page the unsubscribe page links
 // to; DefaultAccountCenterURL when unset.
@@ -205,9 +221,13 @@ const linkPurpose = "communication-preference unsubscribe link v1"
 
 // Config is the preference settings.
 type Config struct {
-	// Enabled is false when KeyEnv is unset.
+	// Enabled is false when no key version is set.
 	Enabled bool
-	key     []byte
+	// keys are the ring: every version set, by version. A version whose
+	// variable is gone (a leaked key) reads no link from the next start.
+	keys map[byte][]byte
+	// current signs new links.
+	current byte
 	// LinkOrigin is core's public address, where the links point
 	// (PUBLIC_API_ORIGIN).
 	LinkOrigin string
@@ -216,20 +236,17 @@ type Config struct {
 	AccountCenterURL string
 }
 
-// ConfigFromEnv reads the preference settings. Without KeyEnv preferences
-// are off and nothing else is read. Errors name variables, never values.
+// ConfigFromEnv reads the preference settings. With no key version set
+// preferences are off and nothing else is read. Errors name variables,
+// never values; any error stops core.
 func ConfigFromEnv(getenv func(string) string) (Config, error) {
-	raw := strings.TrimSpace(getenv(KeyEnv))
-	if raw == "" {
-		return Config{}, nil
-	}
-	key, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil || len(key) != 32 {
-		return Config{}, fmt.Errorf("%s must be an unpadded base64url-encoded 32-byte key", KeyEnv)
+	keys, current, err := keyRingFromEnv(getenv)
+	if err != nil || len(keys) == 0 {
+		return Config{}, err
 	}
 	origin, err := httpURL(getenv("PUBLIC_API_ORIGIN"))
 	if err != nil || origin == "" {
-		return Config{}, fmt.Errorf("%s needs PUBLIC_API_ORIGIN, core's public http(s) address, for its links", KeyEnv)
+		return Config{}, fmt.Errorf("%s needs PUBLIC_API_ORIGIN, core's public http(s) address, for its links", keyEnvOf(current))
 	}
 	center, err := httpURL(getenv(AccountCenterURLEnv))
 	if err != nil {
@@ -238,8 +255,75 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if center == "" {
 		center = DefaultAccountCenterURL
 	}
-	return Config{Enabled: true, key: key, LinkOrigin: origin, AccountCenterURL: center}, nil
+	return Config{Enabled: true, keys: keys, current: current, LinkOrigin: origin, AccountCenterURL: center}, nil
 }
+
+// keyRingFromEnv reads KeyEnv (version 1), every KeyVersionEnvPrefix<n>
+// and CurrentKeyEnv: the ring is exactly the versions set. A current
+// version without its key (fail fast: core does not start, it never falls
+// back to another version), a newer version without a current one, a key
+// that is not 32 bytes, version 1 under the _V1 name, or two versions
+// holding the same key is an error. Nothing set is an empty ring.
+func keyRingFromEnv(getenv func(string) string) (map[byte][]byte, byte, error) {
+	keys := map[byte][]byte{}
+	if strings.TrimSpace(getenv(KeyVersionEnvPrefix+"1")) != "" {
+		return nil, 0, fmt.Errorf("%s1 is not read: version 1 is %s", KeyVersionEnvPrefix, KeyEnv)
+	}
+	for version := 1; version <= 255; version++ {
+		name := keyEnvOf(byte(version))
+		raw := strings.TrimSpace(getenv(name))
+		if raw == "" {
+			continue
+		}
+		key, err := base64.RawURLEncoding.DecodeString(raw)
+		if err != nil || len(key) != 32 {
+			return nil, 0, fmt.Errorf("%s must be an unpadded base64url-encoded 32-byte key", name)
+		}
+		for other, held := range keys {
+			if hmac.Equal(held, key) {
+				return nil, 0, fmt.Errorf("%s and %s hold the same key; every version needs its own", name, keyEnvOf(other))
+			}
+		}
+		keys[byte(version)] = key
+	}
+	raw := strings.TrimSpace(getenv(CurrentKeyEnv))
+	if raw == "" {
+		if len(keys) > 0 && keys[1] == nil {
+			return nil, 0, fmt.Errorf("%s must name the version new links are signed with", CurrentKeyEnv)
+		}
+		return keys, 1, nil
+	}
+	current, err := strconv.Atoi(raw)
+	if err != nil || current < 1 || current > 255 {
+		return nil, 0, fmt.Errorf("%s must be a version from 1 to 255", CurrentKeyEnv)
+	}
+	if keys[byte(current)] == nil {
+		return nil, 0, fmt.Errorf("%s is %d but %s is not set", CurrentKeyEnv, current, keyEnvOf(byte(current)))
+	}
+	return keys, byte(current), nil
+}
+
+// keyEnvOf is the variable of a key version.
+func keyEnvOf(version byte) string {
+	if version == 1 {
+		return KeyEnv
+	}
+	return KeyVersionEnvPrefix + strconv.Itoa(int(version))
+}
+
+// KeyVersions are the versions in the ring, for the startup log; never a
+// key.
+func (c Config) KeyVersions() []int {
+	versions := make([]int, 0, len(c.keys))
+	for version := range c.keys {
+		versions = append(versions, int(version))
+	}
+	slices.Sort(versions)
+	return versions
+}
+
+// CurrentKeyVersion is the version new links are signed with; 0 when off.
+func (c Config) CurrentKeyVersion() int { return int(c.current) }
 
 // httpURL reads an absolute http(s) address without its trailing slash; ""
 // when raw is blank.
@@ -271,16 +355,18 @@ func (c Config) AccountCenterLink(ch Channel, cat Category) string {
 	return link.String()
 }
 
-// TestConfig is a Config for tests and tools: key must be 32 bytes.
+// TestConfig is a Config for tests and tools: key, 32 bytes, is version 1
+// and current.
 func TestConfig(key []byte, origin string) Config {
 	return Config{
-		Enabled: true, key: key, LinkOrigin: strings.TrimRight(origin, "/"),
+		Enabled: true, keys: map[byte][]byte{1: key}, current: 1, LinkOrigin: strings.TrimRight(origin, "/"),
 		AccountCenterURL: DefaultAccountCenterURL,
 	}
 }
 
-func (c Config) derive(purpose string) []byte {
-	mac := hmac.New(sha256.New, c.key)
+// derive is the key of one purpose under a ring key.
+func derive(key []byte, purpose string) []byte {
+	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(purpose))
 	return mac.Sum(nil)
 }

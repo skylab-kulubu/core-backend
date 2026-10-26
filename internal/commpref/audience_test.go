@@ -74,6 +74,17 @@ func (k *fakeKeycloak) GroupsForUser(_ context.Context, id uuid.UUID) ([]identit
 	return out, nil
 }
 
+func (k *fakeKeycloak) GetGroup(_ context.Context, id string) (identity.Group, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for _, g := range k.groups {
+		if g.ID == id {
+			return g, nil
+		}
+	}
+	return identity.Group{}, identity.ErrNotFound
+}
+
 func (k *fakeKeycloak) GetUser(ctx context.Context, id uuid.UUID) (identity.Person, error) {
 	p, err := k.AudiencePerson(ctx, id)
 	return p.Person, err
@@ -276,6 +287,13 @@ func TestAudienceMembers(t *testing.T) {
 	}
 	if back, _ := f.item(page, "back"); back.Name != "KC back" {
 		t.Fatalf("a person core has no row for is named by Keycloak: %+v", back)
+	}
+	// Every recipient passed the e-mail preference (masterOff and clubOff
+	// are left out): the channels SkyMail may use are e-mail (ticket 06).
+	for _, r := range page.Items {
+		if !slices.Equal(r.AllowedChannels, []Channel{ChannelEmail}) {
+			t.Fatalf("%s allowedChannels = %v, want [email]", r.UserID, r.AllowedChannels)
+		}
 	}
 }
 

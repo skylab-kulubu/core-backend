@@ -114,10 +114,25 @@ No suppression list is kept (ADR-0051 decision 4). The step runs whether
 preferences are on or off, and a repeat finds nothing.
 
 **Deleted teams.** Once a day (and at startup), core deletes the rows of
-every Group id Keycloak no longer has. A Group list without `/UYELER`
-deletes nothing. Core’s [empty-leaf Group deletion](group-deletion.md) also
+every Group id Keycloak no longer has. Each such Group is read again by its
+id, and only a "not found" deletes its rows; any other answer stops the run
+with nothing deleted. A run deletes nothing, and counts it in
+`skylab_communication_preference_team_cleanup_refused_total{reason}`, on a
+list it cannot trust: a list without `/UYELER` or one that missed a branch
+(a Group's children answered 404 while it was read, or a Group the list did
+not hold is still there by its id: `incomplete_list`), or more teams gone
+than a quarter of those with rows, and more than five (`too_many_gone`, as
+for deleted people below). The next run tries again. Core’s [empty-leaf Group deletion](group-deletion.md) also
 leaves preference cleanup to this job; the tree stops offering a deleted Group
-within its existing one-minute cache lifetime.
+within its existing one-minute cache lifetime. With Integration events on
+(`EVENTS_ENABLED=true`), Keycloak's admin `GROUP DELETE` on `core.keycloak`
+wakes this part of the job at once
+([integration-events.md](integration-events.md#corekeycloak-keycloaks-events)):
+it reads the whole Group list as the daily run does, with the same checks,
+so a deleted Group's sub-Groups, which get no event of their own, go too.
+The first event runs it at once; events that come before the next run make
+one run, and two runs are at least 30 seconds apart. The
+daily run stays.
 
 **Deleted people (D2).** In the same daily run, core asks Keycloak for
 every person who has rows and deletes the rows of those Keycloak answers
@@ -126,7 +141,13 @@ the erasure saga, keeps no preference. Any other Keycloak error stops the
 run with nothing deleted, and so does a run that finds more than a quarter
 of the people (and more than five) gone, which a deletion outside the saga
 does not explain (Keycloak answering for another realm, say). It is one
-Keycloak read per person with rows, once a day.
+Keycloak read per person with rows, once a day. With Integration events on,
+Keycloak's admin `USER DELETE` and account-console `DELETE_ACCOUNT` remove a
+person's rows within seconds instead: when core has no erasure request for
+the person (that is the saga's, which deletes them in its own step) and
+Keycloak answers "not found" for them, the rows (choices, a waiting tracking
+withdrawal, the tracking audit trail) go in the event's transaction, with the
+warning `keycloak_user_deleted_outside_erasure`. The daily run stays.
 
 ## API
 
@@ -137,7 +158,7 @@ All bodies are JSON. Errors are `application/problem+json` with a `code`:
 `communication_preference_subject_inactive` (403),
 `communication_preference_follow_members_only` (403),
 `communication_preferences_unavailable` (503,
-`COMMUNICATION_PREFERENCE_KEY` unset),
+no link key set),
 `communication_preference_teams_unavailable` (503 with `Retry-After`,
 Keycloak did not answer the tree).
 
@@ -241,33 +262,67 @@ person theirs for the one category asked, so SkyMail never holds the key.
   `no-store`. Both headers must be covered by the mail's DKIM signature.
 - Repeating a POST answers as the first and leaves the same rows. A person
   being erased or erased writes nothing and is answered as done.
-- A token that does not read (changed, cut, another key) is `400` (page:
-  "Bağlantı geçersiz"; one-click: `invalid link`). The key unset is `503`.
+- A token that does not read (changed, cut, another key, a key version not
+  in the ring) is `400` (page: "Bağlantı geçersiz"; one-click:
+  `invalid link`). No key set is `503`.
 - The pages answer with `Cache-Control: no-store`,
   `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and a CSP without
   scripts, as the consent pages do. Each client address may open the page
   120 times a minute and POST 600 times a minute (one-click POSTs of a mail
   provider share a few addresses).
 
-**The token.** Unpadded base64url of: version (1), kind (`u`), the channel
-(a tag; `email` is 1, a tag is never reused), the person's id (16 bytes), the number of categories (1 to 32) and each category (a tag;
-a team's Group id with its length), then the first 16 bytes of an
-HMAC-SHA256 over all of it under a key derived from `COMMUNICATION_PREFERENCE_KEY`
-for this purpose only. It carries no address and does not expire (a mail
-may be opened years later). Core never logs it: the error handler logs the
-path without the query, and these routes answer pages, not problem
-documents (which echo the query). The edge proxy's access log must not keep
-query strings of this path either.
+**The token.** Unpadded base64url of: the format and, from format 2, the
+key version (below), kind (`u`), the channel (a tag; `email` is 1, a tag is
+never reused), the person's id (16 bytes), the number of categories (1 to
+32) and each category (a tag; a team's Group id with its length), then the
+first 16 bytes of an HMAC-SHA256 over all of it under a key derived, for
+this purpose only, from the key version that signed it. It carries no
+address and does not expire (a mail may be opened years later). Core never
+logs it: the error handler logs the path without the query, and these
+routes answer pages, not problem documents (which echo the query). The
+edge proxy's access log must not keep query strings of this path either.
+
+**The key ring** (ADR 0072 Consequences; hub ticket abonelik-cikisi 13, the
+same rules as SkyMail's unsubscribe key ring). A link names the key version
+that signed it, so a new key does not break the links already mailed:
+
+| Format | Starts with | Signed by |
+|---|---|---|
+| 1 | `1` | version 1, `COMMUNICATION_PREFERENCE_KEY`. Every link mailed before the ring is one |
+| 2 | `2`, then the version (2–255) | `COMMUNICATION_PREFERENCE_KEY_V<n>` |
+
+- New links are signed with `COMMUNICATION_PREFERENCE_KEY_CURRENT`. Unset
+  or `1`, core signs format 1, as before the ring: an image from before the
+  ring (which reads only format 1) can be rolled back without breaking a
+  link. Format 2 appears only after the first new version.
+- Every version set reads its own links; the ring is exactly the versions
+  set. Format 2 never names version 1.
+- **Planned change:** a new `V<n>` is added and `CURRENT` moves to it. The
+  old version stays in the ring **for good**: its links keep working (RFC
+  8058; CAN-SPAM's at least 30 days).
+- **Leak:** the leaked version's variable is removed **at once**, a new
+  version becomes `CURRENT`, and core is deployed. Links of that version no
+  longer read (`400`); the person turns the category off on the Account
+  center instead. Whoever holds a leaked key could otherwise sign a link
+  that turns off someone else's categories. Version 1 leaked is
+  `COMMUNICATION_PREFERENCE_KEY` removed.
+- A version number is never given to another key, and two versions never
+  hold the same key.
+- The nightly secret rotator never turns these keys: a new version is
+  written only by the hub's key wizard, the old ones kept.
 
 ## Tracking
 
-SkyMail can record whether a person opened a News mail and which link they
-clicked (open and click tracking, skymail-backend README "Açılma ve
-tıklama takibi"; hub tickets iletisim-servisi 14 and 16). Core decides whom
-it may track. The basis is legitimate interest with an opt-out (decision
-T1): a Member is tracked until they turn it off on the Account center, the
-only way to (T8: no mail carries a "stop tracking" link). Transactional
-mail is never tracked.
+SkyMail can record whether a person opened a mail and which link they
+clicked (open and click tracking, ADR-0074; skymail-backend README "Açılma
+ve tıklama takibi"; hub tickets iletisim-servisi 14 and 16). Core decides
+whom it may track, for every mail SkyMail tracks: panel sends
+(`SKYMAIL_TRACKING_OPERATOR`) and the services' account and transactional
+mail (`SKYMAIL_TRACKING_SYSTEM`) alike; SkyMail's flags decide which mail
+is tracked, and they all start off. The basis is legitimate interest with
+an opt-out (decision T1): a Member is tracked until they turn it off on the
+Account center (T8: no mail carries a "stop tracking" link). The objection
+covers account and transactional mail too; the mail keeps coming.
 
 **The row.** `scope = 'tracking'`, `channel = 'email'`, no `group_id`, no
 `news_kind`; one per person. `source` is `account_center` (or `admin`).
@@ -368,7 +423,11 @@ Traefik, so the token checks stay the boundary.
 
 **The audit trail.** `communication_tracking_changes(user_id, enabled,
 previous, source, changed_at)`: a row whenever the value changes
-(`previous` null when there was no row). No address, no IP.
+(`previous` null when there was no row). No address, no IP. A row is kept
+3 years after its change (ADR-0062 addendum of 2026-10-25), then the
+retention sweep's `tracking_changes_age` deletes it
+([retention-sweep.md](retention-sweep.md)); the preference row itself
+stays.
 
 **Erasure.** The step `erase_communication_preferences` deletes the
 person's row, their waiting withdrawal and their audit trail; SkyMail
@@ -386,11 +445,20 @@ alarm.
 
 | Variable | |
 |---|---|
-| `COMMUNICATION_PREFERENCE_KEY` | 32 random bytes, unpadded base64url (OpenBao reference, set by a wizard). Unset: off, every route above `503`. Its own key, not `CONTACT_CONSENT_KEY` (which stays unset in production until the retention sweep runs). Never rotate: every mailed link depends on it |
+| `COMMUNICATION_PREFERENCE_KEY` | key version 1: 32 random bytes, unpadded base64url (OpenBao reference, set by a wizard). Its own key, not `CONTACT_CONSENT_KEY` (which stays unset in production until the retention sweep runs). Never changed in place: a new key is a new version ([the key ring](#the-unsubscribe-link)) |
+| `COMMUNICATION_PREFERENCE_KEY_V<n>` | key version `n` (2–255), the same form, each its own OpenBao reference. `COMMUNICATION_PREFERENCE_KEY_V1` is not read: version 1 is the variable above. No version set at all: off, every route above `503` |
+| `COMMUNICATION_PREFERENCE_KEY_CURRENT` | the version new links are signed with, 1–255; unset: 1. It must name a version that is set |
 | `PUBLIC_API_ORIGIN` | required with the key: where the links point |
 | `COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL` | the Account center page the unsubscribe page links to; unset: `https://my.yildizskylab.com` |
 | `COMMUNICATION_TRACKING_MODE` | `opt_out` (unset) or `opt_in` ([Tracking](#tracking)); anything else stops core |
 | `COMMUNICATION_TRACKING_WITHDRAWAL_URL` | SkyMail's address on the internal network for the withdrawal (not the public one: `/internal` answers the edge `404`); unset: `ACCOUNT_ERASURE_SKYMAIL_URL`. Neither set (or no `KEYCLOAK_*` client credentials): withdrawals wait in the outbox, startup warns. A value that does not read (either variable) does not stop core: startup warns and the withdrawals wait; the erasure worker still checks `ACCOUNT_ERASURE_SKYMAIL_URL` for itself |
 
-Startup logs `communication preferences: on|off`, `communication tracking:
+A current version that is not set, a newer version without `CURRENT`, a key
+that is not 32 bytes, `_V1`, or two versions holding the same key stop core
+at startup (all of core, not only the preferences: a configuration error,
+fail fast); the error names the variable, never a value. Core never falls
+back to another version.
+
+Startup logs `communication preferences: on|off` with the key versions and
+the current one (never a key), `communication tracking:
 mode …` and whether withdrawals reach SkyMail.

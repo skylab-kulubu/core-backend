@@ -59,6 +59,18 @@ func APIOrigin(raw string) string {
 	return DefaultAPIOrigin
 }
 
+// DefaultOriginNotice is the startup line for an unset SKYMAIL_URL, empty
+// when it is set. The default is production's SkyMail: a core of another
+// realm (sandbox) has its token refused there and its mails are lost with
+// no other trace. Unset is not refused, so a production that relies on the
+// default keeps starting.
+func DefaultOriginNotice(raw string) string {
+	if strings.TrimSpace(raw) != "" {
+		return ""
+	}
+	return "SKYMAIL_URL is not set: mail goes to " + DefaultAPIOrigin + " (production SkyMail); outside production set SKYMAIL_URL, or that SkyMail refuses this core's token"
+}
+
 type TokenSource interface {
 	Token(ctx context.Context) (string, error)
 }
@@ -90,9 +102,14 @@ type SkyMail struct {
 	// that mail off.
 	EventCancelledTemplateKey  string
 	EventReinstatedTemplateKey string
-	Tokens                     TokenSource
-	HTTP                       *http.Client
-	Logger                     *log.Logger
+	// FeedbackRequestTemplateKey and FeedbackReminderTemplateKey address
+	// the feedback mails (docs/event-feedback.md); empty turns that mail
+	// off.
+	FeedbackRequestTemplateKey  string
+	FeedbackReminderTemplateKey string
+	Tokens                      TokenSource
+	HTTP                        *http.Client
+	Logger                      *log.Logger
 }
 
 // template says which SkyMail template a send is aimed at. Only one of the two

@@ -143,10 +143,6 @@ func TestPostgresCopy(t *testing.T) {
 		!slices.Equal(c.DoorStaffIDs, []uuid.UUID{d.staff}) {
 		t.Fatalf("copy %+v", c)
 	}
-	var active bool
-	if err := d.pool.QueryRow(ctx, `SELECT active FROM events WHERE id = $1`, c.ID).Scan(&active); err != nil || active {
-		t.Fatalf("legacy active %v %v", active, err)
-	}
 	if n := d.count(t, `SELECT count(*) FROM sessions s JOIN event_days d ON d.id = s.event_day_id
 		WHERE d.event_id = $1 AND NOT s.cancelled AND s.start_time = $2`, c.ID, stamp("2027-03-13T20:00:00+03:00")); n != 2 {
 		t.Fatalf("sessions %d", n)

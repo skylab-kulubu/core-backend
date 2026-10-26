@@ -21,12 +21,18 @@ const UnsubscribePath = "/v1/communication-preferences/unsubscribe"
 const MaxLinkCategories = 32
 
 const (
-	tokenVersion = 1
-	tokenKind    = 'u'
-	headerSize   = 1 + 1 + 1 + 16 + 1
-	macSize      = 16
+	// formatOne is a token of key version 1: no key id follows. Every link
+	// mailed before the key ring is one, and version 1 still signs them.
+	formatOne = 1
+	// formatTwo is a token of a newer key version: its key id follows.
+	formatTwo = 2
+	tokenKind = 'u'
+	// fieldsSize is what follows the format (and key id): the kind, the
+	// channel, the person and the number of categories.
+	fieldsSize = 1 + 1 + 16 + 1
+	macSize    = 16
 	// maxTokenSize bounds what verify reads before the MAC.
-	maxTokenSize = headerSize + MaxLinkCategories*(1+1+64) + macSize
+	maxTokenSize = 2 + fieldsSize + MaxLinkCategories*(1+1+64) + macSize
 )
 
 // The tag of a category in a token.
@@ -44,7 +50,8 @@ var channelTags = map[Channel]byte{ChannelEmail: 1}
 // person: what a News mail's footer links to and its List-Unsubscribe
 // header names (RFC 8058). It does not expire: a mail may be opened years
 // later. The token is the permission; it carries the person's id, the
-// channel and the categories, signed, and no address. Never log it.
+// channel and the categories, signed with the current key version (and
+// that version, from version 2), and no address. Never log it.
 func (c Config) UnsubscribeURL(person uuid.UUID, ch Channel, cats []Category) (string, error) {
 	token, err := c.sign(person, ch, cats)
 	if err != nil {
@@ -63,7 +70,12 @@ func (c Config) sign(person uuid.UUID, ch Channel, cats []Category) (string, err
 		return "", ErrInvalid
 	}
 	payload := make([]byte, 0, maxTokenSize)
-	payload = append(payload, tokenVersion, tokenKind, chTag)
+	if c.current == 1 {
+		payload = append(payload, formatOne)
+	} else {
+		payload = append(payload, formatTwo, c.current)
+	}
+	payload = append(payload, tokenKind, chTag)
 	payload = append(payload, person[:]...)
 	payload = append(payload, byte(len(cats)))
 	for _, cat := range cats {
@@ -76,7 +88,7 @@ func (c Config) sign(person uuid.UUID, ch Channel, cats []Category) (string, err
 			payload = append(payload, cat.GroupID...)
 		}
 	}
-	return base64.RawURLEncoding.EncodeToString(append(payload, c.linkMAC(payload)...)), nil
+	return base64.RawURLEncoding.EncodeToString(append(payload, linkMAC(c.keys[c.current], payload)...)), nil
 }
 
 // normalize sorts cats and drops repeats.
@@ -98,8 +110,11 @@ func tag(c Category) byte {
 	return tagTeamNews
 }
 
-func (c Config) linkMAC(payload []byte) []byte {
-	mac := hmac.New(sha256.New, c.derive(linkPurpose))
+// linkMAC is the MAC of payload under one ring key. The key is the
+// version's own, so the purpose stays the same in every version; the MAC
+// covers the format and the key id.
+func linkMAC(key []byte, payload []byte) []byte {
+	mac := hmac.New(sha256.New, derive(key, linkPurpose))
 	mac.Write(payload)
 	return mac.Sum(nil)[:macSize]
 }
@@ -115,25 +130,42 @@ func (c Config) readToken(token string) (uuid.UUID, Channel, []Category, error) 
 	}
 	// Strict: one spelling per token, no stray padding bits.
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(token)
-	if err != nil || len(raw) < headerSize+macSize {
+	if err != nil || len(raw) < 1+fieldsSize+macSize {
+		return uuid.Nil, "", nil, ErrLink
+	}
+	// The format and the key id pick the ring key; the MAC then covers
+	// both. Format 2 never names version 1: a token has one spelling.
+	var key []byte
+	start := 1
+	switch raw[0] {
+	case formatOne:
+		key = c.keys[1]
+	case formatTwo:
+		if raw[1] > 1 {
+			key = c.keys[raw[1]]
+		}
+		start = 2
+	}
+	if key == nil || len(raw) < start+fieldsSize+macSize {
 		return uuid.Nil, "", nil, ErrLink
 	}
 	payload, sum := raw[:len(raw)-macSize], raw[len(raw)-macSize:]
-	if !hmac.Equal(sum, c.linkMAC(payload)) || payload[0] != tokenVersion || payload[1] != tokenKind {
+	if !hmac.Equal(sum, linkMAC(key, payload)) || payload[start] != tokenKind {
 		return uuid.Nil, "", nil, ErrLink
 	}
+	fields := payload[start:]
 	var ch Channel
 	for channel, tag := range channelTags {
-		if tag == payload[2] {
+		if tag == fields[1] {
 			ch = channel
 		}
 	}
-	person, err := uuid.FromBytes(payload[3:19])
+	person, err := uuid.FromBytes(fields[2:18])
 	if ch == "" || err != nil || person == uuid.Nil {
 		return uuid.Nil, "", nil, ErrLink
 	}
-	n := int(payload[19])
-	rest := payload[headerSize:]
+	n := int(fields[18])
+	rest := fields[fieldsSize:]
 	cats := make([]Category, 0, n)
 	for range n {
 		cat, tail, err := readCategory(rest)

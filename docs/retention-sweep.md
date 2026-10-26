@@ -45,7 +45,7 @@ click list and a form's channel statistics keep looking 90 days back
 clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
 from apply on it only grows, counting every click since then.
 
-## Rules (rule set v5)
+## Rules (rule set v7)
 
 "Event end" is the Event's `end_date`, else its last day's `end_date`, else
 its `start_date` (ADR-0062). For `guest_identity`, an Event with none of them
@@ -126,11 +126,18 @@ The Team audit record ([`team-audit.md`](team-audit.md); rule set v4):
 |---|---|---|---|
 | `team_audit_age` | a `team_audit_records` row, whatever its outcome (a `pending` row is as old as its write) | `teamaudit.Retention`, 3 years after `occurred_at` (S6) | row deleted |
 
-The feedback invites ([`event-feedback.md`](event-feedback.md); rule set v5):
+The feedback invites and mails ([`event-feedback.md`](event-feedback.md); rule set v5, `feedback_mails_age` v7):
 
 | Rule | Selects | Period | Action |
 |---|---|---|---|
 | `feedback_invites_age` | a `feedback_invites` row, answered or not | `FeedbackInvitePeriod`, 90 days after `sent_at` | row deleted; the target's `feedback_invite_counts` stay |
+| `feedback_mails_age` | a `feedback_mails` row (a request or a reminder, sent or not) | `FeedbackMailPeriod`, 90 days after `done_at`, or `created_at` for one never done with | row deleted with its `feedback_mail_items`; `feedback_mail_targets` (no person) stay |
+
+The tracking preference's audit trail ([`communication-preferences.md`](communication-preferences.md#tracking); rule set v6):
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `tracking_changes_age` | a `communication_tracking_changes` row, on or off | `TrackingChangesPeriod`, 3 years after `changed_at` | row deleted; the person's tracking preference stays |
 
 ## Schedule, lock and periods
 
