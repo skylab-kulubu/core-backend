@@ -113,7 +113,6 @@ func TestDecodeCloudEventTraceParent(t *testing.T) {
 		"zero trace id":   `"00-00000000000000000000000000000000-00f067aa0ba902b7-01"`,
 		"zero parent id":  `"00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01"`,
 		"version ff":      `"ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"`,
-		"other version":   `"01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"`,
 		"trailing data":   `"` + valid + `-x"`,
 		"surrounding ws":  `" ` + valid + `"`,
 		"empty":           `""`,
@@ -134,5 +133,64 @@ func TestDecodeCloudEventTraceParent(t *testing.T) {
 	event, err = DecodeCloudEvent(Message{Body: []byte(validEvent), ContentType: CloudEventsContentType})
 	if err != nil || event.TraceParent != "" || event.TraceID() != "" {
 		t.Fatalf("event %+v, err %v", event, err)
+	}
+}
+
+// A later version (01..fe) is read by its first 55 characters, version 00's
+// fields (W3C Trace Context, versioning of traceparent): what follows them
+// must start with "-" and is dropped. Version ff and a bad prefix stay empty.
+func TestDecodeCloudEventTraceParentLaterVersion(t *testing.T) {
+	const ids = "4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7"
+	with := func(value string) Message {
+		return Message{Body: []byte(`{"specversion":"1.0","id":"1","source":"/forms","type":"t","traceparent":"` + value + `"}`)}
+	}
+	for value, want := range map[string]string{
+		"01-" + ids + "-01":                  "01-" + ids + "-01",
+		"cc-" + ids + "-09":                  "cc-" + ids + "-09",
+		"fe-" + ids + "-01-what-comes-next":  "fe-" + ids + "-01",
+		"01-" + ids + "-01-":                 "01-" + ids + "-01",
+		"01-" + ids + "-01x":                 "",
+		"01-" + ids + "-0":                   "",
+		"01-" + ids:                          "",
+		"ff-" + ids + "-01-what-comes-next":  "",
+		"0g-" + ids + "-01":                  "",
+		"01-" + strings.ToUpper(ids) + "-01": "",
+		"01-00000000000000000000000000000000-00f067aa0ba902b7-01": "",
+		"01-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01": "",
+		"00-" + ids + "-01-what-comes-next":                       "",
+	} {
+		event, err := DecodeCloudEvent(with(value))
+		if err != nil {
+			t.Fatalf("%s: refused: %v", value, err)
+		}
+		if event.TraceParent != want {
+			t.Fatalf("%s: traceparent %q, want %q", value, event.TraceParent, want)
+		}
+		wantID := ""
+		if want != "" {
+			wantID = "4bf92f3577b34da6a3ce929d0e0e4736"
+		}
+		if event.TraceID() != wantID {
+			t.Fatalf("%s: trace id %q", value, event.TraceID())
+		}
+	}
+}
+
+// TraceID never panics and never returns anything but 32 lower-case hex
+// digits, even when TraceParent was set by hand rather than by the decoder.
+func TestEventTraceIDHandSet(t *testing.T) {
+	for value, want := range map[string]string{
+		"":                                    "",
+		"0":                                   "",
+		"00-4bf92f3577b34da6a3ce929d0e0e473":  "",
+		"00-4bf92f3577b34da6a3ce929d0e0e4736": "4bf92f3577b34da6a3ce929d0e0e4736",
+		"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01": "4bf92f3577b34da6a3ce929d0e0e4736",
+		"00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01": "",
+		`00-4bf92f3577b34da6a3ce929d0e0e47"}-00f067aa0ba902b7-01`: "",
+		"00x4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01": "",
+	} {
+		if got := (Event{TraceParent: value}).TraceID(); got != want {
+			t.Fatalf("%q: trace id %q, want %q", value, got, want)
+		}
 	}
 }

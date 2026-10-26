@@ -129,7 +129,7 @@ automatically.
 
 | Attribute | Required | Format | Core |
 | --- | --- | --- | --- |
-| `traceparent` | no | W3C Trace Context version `00`: `00-<32 hex>-<16 hex>-<2 hex>`, lower case, trace id and parent id not all zeros (CloudEvents Distributed Tracing extension) | Its trace id goes into the event's log lines as `trace_id`. Missing, invalid (upper case, wrong length, all-zero ids, another version, not a string): empty, the event is handled as before. Not stored in `consumed_events`, not a metric label. |
+| `traceparent` | no | W3C Trace Context version `00`: `00-<32 hex>-<16 hex>-<2 hex>`, lower case, trace id and parent id not all zeros (CloudEvents Distributed Tracing extension). A later version (`01`..`fe`) is read by its first 55 characters in version `00`'s layout, followed by nothing or `-`; the rest is dropped | Its trace id goes into the event's log lines as `trace_id`. Missing, invalid (upper case, wrong length, all-zero ids, version `ff`, version `00` with more after it, not a string): empty, the event is handled as before. Not stored in `consumed_events`, not a metric label. |
 
 The publisher sets it from the request that caused the event (Forms: .NET's
 `Activity.Current` when its id is W3C), and leaves it out in background work;

@@ -60,30 +60,44 @@ type Event struct {
 	Redelivered bool
 }
 
-// TraceID is TraceParent's trace id, 32 hex digits; empty without one.
+// TraceID is TraceParent's trace id, 32 hex digits; empty without one, or
+// when TraceParent was set by hand to something that is not one.
 func (e Event) TraceID() string {
-	if e.TraceParent == "" {
+	if len(e.TraceParent) < 35 || e.TraceParent[2] != '-' || !traceIDFormat.MatchString(e.TraceParent[3:35]) {
 		return ""
 	}
 	return e.TraceParent[3:35]
 }
 
-// traceParentFormat is W3C Trace Context version 00: version, trace id,
-// parent id and flags, lower-case hex.
-var traceParentFormat = regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
+// traceIDFormat is a trace id: 32 lower-case hex digits.
+var traceIDFormat = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// traceParentFormat is W3C Trace Context version 00's fields: version, trace
+// id, parent id and flags, lower-case hex.
+var traceParentFormat = regexp.MustCompile(`^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
 
 // traceParent is the extension's value when it is a valid traceparent with
 // a non-zero trace id and parent id, otherwise empty: the extension is
-// optional, so a bad one is ignored and the event is not refused.
+// optional, so a bad one is ignored and the event is not refused. Version 00
+// is exactly 55 characters; a later version (01..fe) is read by its first 55,
+// which must be followed by nothing or a "-", and only those are kept (W3C
+// Trace Context, versioning of traceparent). Version ff is invalid.
 func traceParent(raw json.RawMessage) string {
 	var value string
-	if json.Unmarshal(raw, &value) != nil || !traceParentFormat.MatchString(value) {
+	if json.Unmarshal(raw, &value) != nil || len(value) < 55 {
 		return ""
 	}
-	if value[3:35] == strings.Repeat("0", 32) || value[36:52] == strings.Repeat("0", 16) {
+	head := value[:55]
+	if !traceParentFormat.MatchString(head) || head[:2] == "ff" {
 		return ""
 	}
-	return value
+	if len(value) > 55 && (head[:2] == "00" || value[55] != '-') {
+		return ""
+	}
+	if head[3:35] == strings.Repeat("0", 32) || head[36:52] == strings.Repeat("0", 16) {
+		return ""
+	}
+	return head
 }
 
 // SchemaVersion is the number after DataSchema's last colon, false when
