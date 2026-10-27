@@ -136,3 +136,21 @@ func TestPublicLeadersEndpoint(t *testing.T) {
 		t.Fatalf("leaders %+v", roster)
 	}
 }
+
+// The public rosters are never cached: a withdrawn consent hides the person
+// from the next answer.
+func TestPublicRostersAreNotCached(t *testing.T) {
+	t.Parallel()
+	dir := identity.NewMemory()
+	seedPublicTeam(t, dir)
+	app := teamApp(t, dir)
+	for _, path := range []string{"/v1/teams/WEBLAB/members", "/v1/teams/WEBLAB/leaders", "/v1/teams/MISSING/members"} {
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := resp.Header.Get(fiber.HeaderCacheControl); got != "no-store" {
+			t.Errorf("%s: Cache-Control %q", path, got)
+		}
+	}
+}

@@ -100,6 +100,7 @@ type service struct {
 	appAudit              teamaudit.AppReader
 	appAssignments        bool
 	appStats              *appStatsCache
+	teamPage              *TeamPageVisibility
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer) Service {
@@ -181,6 +182,10 @@ type Options struct {
 	// (docs/user-sync.md) sends the Welcome mail soon rather than at its next
 	// tick. Nil: the mail waits for the tick.
 	UserSync interface{ Wake() }
+	// TeamPage is who the public rosters show (TeamPageVisibility). Nil
+	// shows everyone, as before the team page consent: tests and tools
+	// only; production always sets it.
+	TeamPage *TeamPageVisibility
 }
 
 // MembershipNotifier hears of membership changes made through the service.
@@ -261,6 +266,7 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		appAudit:              options.AppAudit,
 		appAssignments:        options.AppAssignments,
 		appStats:              newAppStatsCache(options.Now),
+		teamPage:              options.TeamPage,
 	}
 	if s.apps == nil {
 		// The catalogue core carries passed its checks in its tests
@@ -1425,22 +1431,35 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 	if err != nil {
 		return Roster{}, err
 	}
+	listed := make([]uuid.UUID, 0, len(people))
+	for _, p := range people {
+		if p.ID != user.DeletedSubject && !accounts[p.ID].Blocked {
+			listed = append(listed, p.ID)
+		}
+	}
+	visible, err := s.teamPageShown(ctx, g, listed)
+	if err != nil {
+		return Roster{}, err
+	}
 	members := make([]PublicMember, 0, len(people))
 	for _, p := range people {
 		account := accounts[p.ID]
-		if p.ID == user.DeletedSubject || account.Blocked {
+		if p.ID == user.DeletedSubject || account.Blocked || visible[p.ID] == shownNot {
 			continue
 		}
 		_, leader := leaders[p.ID]
 		m := PublicMember{
 			FirstName: p.FirstName,
 			LastName:  p.LastName,
-			Leader:    leader,
+			Leader:    leader && visible[p.ID] == shownFull,
 		}
 		if account.Stored {
 			shadow := account.User
 			m.FirstName = shadow.FirstName
 			m.LastName = shadow.LastName
+		}
+		if account.Stored && visible[p.ID] == shownFull {
+			shadow := account.User
 			m.Linkedin = shadow.Linkedin
 			m.University = shadow.University
 			m.Faculty = shadow.Faculty
