@@ -39,7 +39,9 @@ func TestSubjectRequestsAgeDeletesRequestsThreeYearsAfterTheAnswer(t *testing.T)
 	}
 	ago := func(d time.Duration) *time.Duration { return &d }
 	old := request(3*365*day+40*day, ago(3*365*day+3*day))
-	oldEdge := request(3*365*day+20*day, ago(3*365*day+12*time.Hour))
+	// A day: due once it lies before the cutoff's day, so the edge is a
+	// day and a half back, and not yet overdue.
+	oldEdge := request(3*365*day+20*day, ago(3*365*day+day+12*time.Hour))
 	young := request(3*365*day, ago(3*365*day-2*day))
 	openOld := request(5*365*day, nil)
 	recent := request(10*day, ago(day))

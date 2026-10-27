@@ -272,12 +272,13 @@ func trackingRules() []Rule {
 // subjectRequestRules delete a data subject request three years after its
 // answer (ADR-0062, "KVKK md. 11 başvuruları"); subject_request_events go
 // with it (ON DELETE CASCADE). An open request has no answer date and is
-// never due.
+// never due. The answer date is a day: it is due once it lies before the
+// cutoff's day (UTC), at most a day after three years to the hour.
 func subjectRequestRules() []Rule {
 	return []Rule{{
 		Name: "subject_requests_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
 		Table: "subject_requests", alias: "sr", key: "id", Period: SubjectRequestPeriod,
-		where: `sr.answered_on < $1`,
+		where: `sr.answered_on < $1::date`,
 	}}
 }
 

@@ -143,7 +143,7 @@ The KVKK md. 11 data subject requests ([`subject-requests.md`](subject-requests.
 
 | Rule | Selects | Period | Action |
 |---|---|---|---|
-| `subject_requests_age` | a `subject_requests` row answered or rejected | `SubjectRequestPeriod`, 3 years after `answered_on` | row deleted with its `subject_request_events`; an open request is never selected |
+| `subject_requests_age` | a `subject_requests` row answered or rejected | `SubjectRequestPeriod`, 3 years after `answered_on` (a day: due once it lies before the cutoff's day) | row deleted with its `subject_request_events`; an open request is never selected |
 
 ## Schedule, lock and periods
 
