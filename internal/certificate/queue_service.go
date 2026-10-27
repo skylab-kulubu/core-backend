@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -240,6 +241,9 @@ func (s *service) ProcessNext(ctx context.Context, limit int) (int, error) {
 		// The claim's one lease covers the whole batch; each job starts with a
 		// fresh one. A job whose lease already ran out belongs to another claim.
 		if err := s.jobs.RenewJobLease(ctx, job.ID, job.LeaseToken, jobLease); err != nil {
+			if !errors.Is(err, ErrLeaseLost) {
+				log.Printf("ERROR certificate job %s: lease not renewed, the job waits for its lease to run out: %v", job.ID, err)
+			}
 			continue
 		}
 		if err := s.processJob(ctx, job); err != nil {
@@ -248,7 +252,9 @@ func (s *service) ProcessNext(ctx context.Context, limit int) (int, error) {
 			}
 			terminal := job.AttemptCount >= 5 || errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound)
 			delay := time.Duration(1<<min(job.AttemptCount, 6)) * time.Minute
-			_ = s.jobs.FailJob(ctx, job.ID, job.LeaseToken, safeErrorCode(err), time.Now().UTC().Add(delay), terminal)
+			if err := s.jobs.FailJob(ctx, job.ID, job.LeaseToken, safeErrorCode(err), time.Now().UTC().Add(delay), terminal); err != nil && !errors.Is(err, ErrLeaseLost) {
+				log.Printf("ERROR certificate job %s: not put back, the job waits for its lease to run out: %v", job.ID, err)
+			}
 		}
 	}
 	return len(claimed), nil
@@ -261,6 +267,16 @@ func (s *service) processJob(ctx context.Context, job Job) error {
 	}
 	replaceSerial := ""
 	if active, err := s.store.GetActive(ctx, job.EventID, job.TicketID); err == nil {
+		// An earlier claim of this job wrote the certificate and lost its
+		// lease before it could complete the job: complete it now and send the
+		// e-mail it never sent, issuing nothing again (ticket 25, review B2).
+		if active.JobID != nil && *active.JobID == job.ID {
+			if err := s.jobs.CompleteJob(ctx, job.ID, job.LeaseToken, active.ID); err != nil {
+				return err
+			}
+			s.sendMail(ctx, active)
+			return nil
+		}
 		if batch.Reason != "reissue" {
 			return s.jobs.CompleteJob(ctx, job.ID, job.LeaseToken, active.ID)
 		}

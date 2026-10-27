@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // GroupsChangedChannel is the Postgres channel core's processes tell each
@@ -19,10 +21,25 @@ const GroupsChangedChannel = "identity_groups_changed"
 const (
 	// groupsNotifyTimeout bounds telling the other processes of one write.
 	groupsNotifyTimeout = 2 * time.Second
-	// defaultGroupsListenRetry is the pause before listening again after the
-	// listening connection broke.
+	// defaultGroupsListenRetry is the first pause before listening again
+	// after the listening connection broke; it doubles while listening keeps
+	// failing, up to maxGroupsListenRetry.
 	defaultGroupsListenRetry = 5 * time.Second
+	maxGroupsListenRetry     = time.Minute
+	// groupsListenIdle is how long the listener waits for a notification
+	// before it pings, so a dead connection is noticed within a minute.
+	groupsListenIdle = time.Minute
 )
+
+// ListenConnect opens the listening connection with the pool's own
+// connection settings. Parsing DATABASE_URL again with pgx.ParseConfig would
+// send the pool's settings (pool_max_conns…) to Postgres as runtime
+// parameters, which it refuses.
+func ListenConnect(pool *pgxpool.Pool) func(context.Context) (*pgx.Conn, error) {
+	return func(ctx context.Context) (*pgx.Conn, error) {
+		return pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
+	}
+}
 
 // Notifier sends one statement: the shared pool, in core.
 type Notifier interface {
@@ -36,7 +53,8 @@ type SharedGroupCacheOptions struct {
 	// Origin names this process in what it says; it ignores its own words.
 	// Empty: a random one.
 	Origin string
-	// Retry is the pause before listening again. Zero: 5 s.
+	// Retry is the first pause before listening again; it doubles while
+	// listening keeps failing, up to a minute (or Retry, if longer). Zero: 5 s.
 	Retry time.Duration
 	// Listening is told each time the process listens again (tests wait on
 	// it). Nil: nobody.
@@ -105,26 +123,34 @@ func (c *SharedGroupCache) Run(ctx context.Context) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		pause := c.retry
 		for {
-			err := c.listen(ctx)
+			listened, err := c.listen(ctx)
 			if ctx.Err() != nil {
 				return
 			}
-			c.logf("ERROR group cache: not listening for other core processes' Group changes, again in %s: %v", c.retry, err)
+			if listened {
+				pause = c.retry
+			}
+			// The class only: pgx's connection errors name the user, the
+			// database and the address.
+			c.logf("ERROR group cache: not listening for other core processes' Group changes (%s), again in %s", listenErrorClass(err), pause)
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(c.retry):
+			case <-time.After(pause):
 			}
+			pause = min(2*pause, max(maxGroupsListenRetry, c.retry))
 		}
 	}()
 	return done
 }
 
-func (c *SharedGroupCache) listen(ctx context.Context) error {
+// listen reports whether it got as far as listening, and why it stopped.
+func (c *SharedGroupCache) listen(ctx context.Context) (bool, error) {
 	conn, err := c.connect(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() {
 		closing, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -132,18 +158,44 @@ func (c *SharedGroupCache) listen(ctx context.Context) error {
 		_ = conn.Close(closing)
 	}()
 	if _, err := conn.Exec(ctx, "LISTEN "+GroupsChangedChannel); err != nil {
-		return err
+		return false, err
 	}
 	c.local.ForgetAll()
 	if c.listening != nil {
 		c.listening()
 	}
 	for {
-		notification, err := conn.WaitForNotification(ctx)
+		wait, cancel := context.WithTimeout(ctx, groupsListenIdle)
+		notification, err := conn.WaitForNotification(wait)
+		cancel()
+		if err != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+			// Quiet for a minute: make sure the connection is still there.
+			if err := conn.Ping(ctx); err != nil {
+				return true, err
+			}
+			continue
+		}
 		if err != nil {
-			return err
+			return true, err
 		}
 		c.apply(notification.Payload)
+	}
+}
+
+func listenErrorClass(err error) string {
+	var pgErr *pgconn.PgError
+	var connectErr *pgconn.ConnectError
+	switch {
+	case err == nil:
+		return "closed"
+	case errors.As(err, &pgErr):
+		return "postgres error " + pgErr.Code
+	case errors.As(err, &connectErr):
+		return "could not connect"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed out"
+	default:
+		return "connection lost"
 	}
 }
 
