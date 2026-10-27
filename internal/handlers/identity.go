@@ -93,14 +93,24 @@ func identityError(c fiber.Ctx, err error) error {
 	var name *teamcode.Error
 	var refused *identity.DelegationError
 	var rule *identity.RoleRuleError
+	var structure *identity.TeamStructureError
 	switch {
 	case errors.As(err, &deletion):
 		if deletion.Status == fiber.StatusServiceUnavailable {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderRetryAfter, "1")
 		}
-		return problemWithFields(c, deletion.Status, delegationTitles[deletion.Status], deletion.Detail, deletion.Code,
-			fiber.Map{"members": deletion.Members, "children": deletion.Children})
+		fields := fiber.Map{"members": deletion.Members, "children": deletion.Children}
+		if len(deletion.Records) > 0 {
+			fields["records"] = deletion.Records
+		}
+		return problemWithFields(c, deletion.Status, delegationTitles[deletion.Status], deletion.Detail, deletion.Code, fields)
+	case errors.As(err, &structure):
+		var fields fiber.Map
+		if len(structure.Records) > 0 {
+			fields = fiber.Map{"records": structure.Records}
+		}
+		return problemWithFields(c, structure.Status, delegationTitles[structure.Status], structure.Detail, structure.Code, fields)
 	case errors.As(err, &rule):
 		return roleRuleError(c, rule)
 	case errors.As(err, &name):
@@ -262,6 +272,51 @@ func (h *IdentityHandler) DeleteGroup(c fiber.Ctx) error {
 		return identityError(c, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// CreateSubTeam answers POST /v1/groups/{id}/children: a Sub-team under
+// the Team, with its display names (docs/team-delegation.md "Team
+// structure").
+func (h *IdentityHandler) CreateSubTeam(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	var body struct {
+		Code          string `json:"code"`
+		DisplayNameTr string `json:"displayNameTr"`
+		DisplayNameEn string `json:"displayNameEn"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	created, err := h.svc.CreateSubTeam(auditContext(c, p), p, c.Params("groupId"), identity.NewSubTeam{
+		Code: body.Code, DisplayNameTr: body.DisplayNameTr, DisplayNameEn: body.DisplayNameEn,
+	})
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(created)
+}
+
+// ChangeTeamCode answers PUT /v1/groups/{id}/code: the Team's new code
+// (docs/team-delegation.md "Team structure").
+func (h *IdentityHandler) ChangeTeamCode(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	updated, err := h.svc.ChangeTeamCode(auditContext(c, p), p, c.Params("groupId"), body.Code)
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(updated)
 }
 
 func (h *IdentityHandler) Members(c fiber.Ctx) error {

@@ -117,6 +117,12 @@ const (
 	// maxGroupDepth bounds the walk up a Group's ancestors: a parent chain
 	// longer than any real tree is a loop or a fault.
 	maxGroupDepth = 32
+	// The Team structure limits (SPEC §4.5, token size): how many levels of
+	// Sub-teams a top Team may have below it, how long a Team's path may
+	// be, and how many Sub-teams one Team may have.
+	DefaultSubTeamDepth = 2
+	DefaultTeamPathLen  = 128
+	DefaultSubTeams     = 20
 )
 
 // TeamDelegationOptions tune a TeamDelegation. Zero values take the
@@ -134,6 +140,12 @@ type TeamDelegationOptions struct {
 	// WriteTimeout bounds one delegated write, waiting for the lock
 	// included.
 	WriteTimeout time.Duration
+	// SubTeamDepth, TeamPathLen and SubTeams are the Team structure
+	// limits a create and a move keep to, for every caller
+	// (DefaultSubTeamDepth, …).
+	SubTeamDepth int
+	TeamPathLen  int
+	SubTeams     int
 	// TTL is how long reads that serve reads are kept: a caller's Groups, a
 	// Group's role mappings, the realm's names, a managed tree, the
 	// capabilities' managed Teams. FailureTTL keeps a failed managed Teams
@@ -150,16 +162,21 @@ type TeamDelegationOptions struct {
 const (
 	DelegatedGroupLimitEnv = "TEAM_DELEGATION_GROUP_LIMIT"
 	DelegatedWritesEnv     = "TEAM_DELEGATION_WRITES_PER_MINUTE"
+	SubTeamDepthEnv        = "TEAM_SUBTEAM_DEPTH_LIMIT"
+	TeamPathLenEnv         = "TEAM_PATH_LENGTH_LIMIT"
+	SubTeamsEnv            = "TEAM_SUBTEAMS_LIMIT"
 )
 
-// TeamDelegationOptionsFromEnv reads DelegatedGroupLimitEnv and
-// DelegatedWritesEnv.
+// TeamDelegationOptionsFromEnv reads DelegatedGroupLimitEnv,
+// DelegatedWritesEnv and the Team structure limits (SubTeamDepthEnv,
+// TeamPathLenEnv, SubTeamsEnv).
 func TeamDelegationOptionsFromEnv(getenv func(string) string) (TeamDelegationOptions, error) {
 	var out TeamDelegationOptions
 	for _, v := range []struct {
 		name string
 		into *int
-	}{{DelegatedGroupLimitEnv, &out.GroupLimit}, {DelegatedWritesEnv, &out.WritesPerMinute}} {
+	}{{DelegatedGroupLimitEnv, &out.GroupLimit}, {DelegatedWritesEnv, &out.WritesPerMinute},
+		{SubTeamDepthEnv, &out.SubTeamDepth}, {TeamPathLenEnv, &out.TeamPathLen}, {SubTeamsEnv, &out.SubTeams}} {
 		raw := strings.TrimSpace(getenv(v.name))
 		if raw == "" {
 			continue
@@ -254,6 +271,7 @@ func NewTeamDelegation(policy authz.Policy, dir Directory, reads TeamReads, opti
 	if options.WriteTimeout <= 0 {
 		options.WriteTimeout = DefaultDelegatedWriteTimeout
 	}
+	options.SubTeamDepth, options.TeamPathLen, options.SubTeams = structureLimits(options)
 	if options.TTL <= 0 {
 		options.TTL = defaultDelegationTTL
 	}
@@ -718,4 +736,20 @@ type ManagedNode struct {
 	// Leaders' (leaders.write).
 	Can      map[string]bool `json:"can"`
 	Children []ManagedNode   `json:"children"`
+}
+
+// structureLimits are options' Team structure limits, a default for each
+// one unset.
+func structureLimits(options TeamDelegationOptions) (depth, pathLen, subTeams int) {
+	depth, pathLen, subTeams = options.SubTeamDepth, options.TeamPathLen, options.SubTeams
+	if depth <= 0 {
+		depth = DefaultSubTeamDepth
+	}
+	if pathLen <= 0 {
+		pathLen = DefaultTeamPathLen
+	}
+	if subTeams <= 0 {
+		subTeams = DefaultSubTeams
+	}
+	return depth, pathLen, subTeams
 }

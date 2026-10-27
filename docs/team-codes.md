@@ -2,7 +2,7 @@
 
 A Group's Keycloak name is its **Team code** (`WEBLAB`). Core uses it as a key: an Event's, a certificate's and a certificate template's Owner team, a template's Owner team binding, the CMS's Teams record and Forms' template match all name the code, and core's Leader and Owner team decisions read it from the group paths in the token. Whoever could give a Group any name could take another team's records, make themselves its Leader, or (before the Privileged roots, [authz-roles.md](authz-roles.md#privileged-roots-authz_privileged_roots)) make themselves Privileged. So every Group core creates or renames passes one rule, for every caller, Privileged included (`internal/teamcode`; spec: sky_lab_genel `.scratch/ekip-yetki-devri` §4.4, ticket 01).
 
-Routes: `POST /v1/groups` (`name`, `parentId`) and `PATCH /v1/groups/{id}` when `name` is a new name. A `PATCH` whose `name` is the Group's own name, blanks aside, is no rename: the panel sends it with every save, and a name from before the rule stays as it is. Only a rename follows the rule.
+Routes: `POST /v1/groups` (`name`, `parentId`) and `PATCH /v1/groups/{id}` when `name` is a new name; `POST /v1/groups/{id}/children` (`code`) and `PUT /v1/groups/{id}/code` (`code`), the Team structure routes a Leader reaches too ([team-delegation.md](team-delegation.md#team-structure)), which also refuse a leader subgroup's name and every name that starts like one (`LIDERLER-ESKI`), and refuse changing a code core's records still name (`409 code_in_use`). A `PATCH` whose `name` is the Group's own name, blanks aside, is no rename: the panel sends it with every save, and a name from before the rule stays as it is. Only a rename follows the rule.
 
 ## The rule
 
@@ -17,13 +17,15 @@ Routes: `POST /v1/groups` (`name`, `parentId`) and `PATCH /v1/groups/{id}` when 
    - the name of any other Group in the realm;
    - `events.owner_team`, `certificates.owner_team`, `certificate_templates.owner_team`, or `certificate_template_bindings.scope_key` with `scope = 'ownerTeam'`, archived and deleted rows included;
    - `retired_team_codes`.
+
+   Core reads neither the CMS's Teams, nor Forms' templates, nor the sites' `TEAM_META`: a code only they name is taken once ticket 03's report has written it to `retired_team_codes` (`--seed-retired`), which is a condition for switching team delegation on (review of #227, Y2).
 4. **Privileged roots stay put.** A rename of a Privileged root, of a Group above one (`/UYELER`), or to a root's path is refused: its members would gain or lose Privileged with a name.
 
 A rename that only changes case (`artlab` → `ARTLAB`) keeps the code: only the path must be free, and nothing is retired.
 
 ## Retired codes
 
-`retired_team_codes(code, retired_at, group_id, reason)`. A rename writes the Group's old name there (`reason = 'renamed'`, with the Group's Keycloak id), in the same transaction as the check, committed only once Keycloak took the rename. A reserved old name (`LIDERLER`) is not written. A retired code is never given to a new Group, nor back to the Group that gave it up. Codes and Group ids only, no person, so the table has no retention limit and account erasure does not touch it. An empty-leaf deletion durably retires the code with reason `deleted` before asking Keycloak; a failed deletion can be retried but never frees the code ([group-deletion.md](group-deletion.md)). Ticket 03's report seeds the codes core's records name without a Group.
+`retired_team_codes(code, retired_at, group_id, reason)`. A rename writes the Group's old name there (`reason = 'renamed'`, with the Group's Keycloak id), in the same transaction as the check, committed only once Keycloak took the rename. A reserved old name (`LIDERLER`) is not written. A retired code is never given to a new Group, nor back to the Group that gave it up. Codes and Group ids only, no person, so the table has no retention limit and account erasure does not touch it. An empty-leaf deletion durably retires the code with reason `deleted` before asking Keycloak; a failed deletion can be retried but never frees the code ([group-deletion.md](group-deletion.md)). Ticket 03's report seeds the codes core's records, the CMS, Forms and the sites name without a Group. Deleting a Team retires its code and every Sub-team's under it (`deleted`).
 
 ## The lock
 

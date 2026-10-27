@@ -1,10 +1,10 @@
 # Team delegation
 
 A Leader manages their Team and every Sub-team below it through core: they
-read its Groups and rosters, and add and remove members (SPEC
-`.scratch/ekip-yetki-devri`, ADR 0065, ticket 04). Creating, renaming,
-moving and deleting Sub-teams and naming their Leaders come in tickets
-05–08. Keycloak is only ever called by core's service account; the decision
+read its Groups and rosters, add and remove members (SPEC
+`.scratch/ekip-yetki-devri`, ADR 0065, ticket 04), and open Sub-teams,
+change their codes and delete them (ticket 05, [Team structure](#team-structure)).
+Moving Sub-teams and naming their Leaders come in tickets 06–08. Keycloak is only ever called by core's service account; the decision
 is made in `internal/authz` (`Policy.Manages`, `ManagesStrict`,
 `ManagesMembership`), from what core reads from Keycloak, never from the
 caller's token.
@@ -23,7 +23,11 @@ caller's token.
 
 Turn it on only after ticket 01 is in production and the tree report
 (ticket 03) shows no duplicate codes and no names with a `/` (security
-review of #227, Y3). Roll back with `off` and a redeploy; the changes made
+review of #227, Y3), and after the report's `--seed-retired` has written to
+`retired_team_codes` the codes the CMS's Teams, Forms' templates and the
+sites' `TEAM_META` name without a Group (review of #227, Y2): core reads
+none of those systems, so a Sub-team code is checked against them only
+through that table ([team-codes.md](team-codes.md) rule 3). Roll back with `off` and a redeploy; the changes made
 stay in Keycloak and in the audit record.
 
 ## Who manages what
@@ -244,12 +248,12 @@ Errors are RFC 9457 problems with `code` (and `reason` for placement). The panel
 | `POST /v1/groups/{id}/members` `{userId}` | membership of the Group | an active account (S4); limits below |
 | `DELETE /v1/groups/{id}/members/{userId}` | `Manages` of the Group, membership of the Source group | the person leaves the Group they sit in |
 | `PUT /v1/groups/{id}/settings` | `Manages` (a Team only) | the Team's own settings, below |
+| `POST /v1/groups/{id}/children` `{code, displayNameTr, displayNameEn?}` | `Manages` of the Team | a Sub-team ([Team structure](#team-structure)) |
+| `PUT /v1/groups/{id}/code` `{code}` | `ManagesStrict` | the Sub-team's code |
+| `DELETE /v1/groups/{id}` | `ManagesStrict` | the Sub-team and every Group under it, all empty |
 
 `GET /v1/groups`, `POST /v1/groups`, `PATCH /v1/groups/{id}` and the
-client-role routes stay Privileged's (Forms reads the list). So does
-`DELETE /v1/groups/{id}`, which removes only an empty leaf under the stricter
-[Group deletion guards](group-deletion.md); delegated subtree deletion remains
-ticket 05.
+client-role routes stay Privileged's (Forms reads the list).
 
 ### Writes
 
@@ -295,6 +299,51 @@ with `actor_basis` `leader` and the Team that grants it. No row, no change:
 The team membership mail goes as before; its `LeaderName` ("İşlemi yapan")
 is now whoever made the change, a Leader too.
 
+### Team structure
+
+ADR 0065 ticket 05 (S9, S10). The same three routes serve Privileged on
+every Team (top Teams included) and a Leader with delegation on; every
+check and the Keycloak write run under the Team code lock, the Groups read
+again **by id** inside it (a Group named by a path or a name is 404 for
+Privileged, 403 for a Leader). A refusal of a Leader is a `denied` row with
+its code; a change is a `team.create`, `team.code` or `team.delete` row.
+
+- **Open a Sub-team**: `POST /v1/groups/{id}/children`
+  `{code, displayNameTr, displayNameEn?}` under a Team (an area, a root, a
+  Leader group or a Group outside `/UYELER` is `400`). The code passes the
+  name rule ([team-codes.md](team-codes.md)) and must be free everywhere;
+  `LIDERLER`, `KOORDINATORLER` and every name that starts like them
+  (`LIDERLER-ESKI`) are `422 reserved_name` here for everyone: a Leader
+  group is made only by naming a Leader (ticket 06; review of #227, Y1).
+  The display names (Turkish required, at most 80 characters each) are
+  written as `display_name_tr`/`display_name_en` in the same Keycloak write.
+  Answers `201` with the Group.
+- **Change a code**: `PUT /v1/groups/{id}/code` `{code}`, a Team only
+  (`400` otherwise). The same name rules; a Leader only on a Sub-team they
+  manage strictly, never their own Team or a top Team. While core's
+  records name the old code it is `409 code_in_use` with `records`, the
+  kinds (`event`, `certificate`, `certificate_template`,
+  `certificate_template_binding`), never a record. The old code is retired
+  (`renamed`); every Group under the Team moves with it; every kept Group
+  read (Group overage, delegation, the Owner team tree) is forgotten. The
+  same code is a no-op `200`.
+- **Delete**: `DELETE /v1/groups/{id}`, for a Team, takes every Group under
+  it too, once all of them are Sub-teams or Leader groups, nobody is in any
+  of them (Leader groups included: `409 not_empty` with `members` and
+  `children`), none maps a role (`403 group_delete_protected`) or is
+  protected, and core's records name none of their codes
+  (`409 code_in_use` with `records`). Every code given up is retired
+  (`deleted`), Leader groups' aside. The rest is [group-deletion.md](group-deletion.md).
+- **Limits** (SPEC §4.5, every caller, Privileged too): at most
+  `TEAM_SUBTEAM_DEPTH_LIMIT` (2) levels of Sub-teams below a top Team and
+  paths of at most `TEAM_PATH_LENGTH_LIMIT` (128) characters, a code
+  change's longer paths below included (`409 depth_limit`); at most
+  `TEAM_SUBTEAMS_LIMIT` (20) Sub-teams per Team, Leader groups aside
+  (`409 children_limit`).
+
+The managed tree's `can` says it per Team: `subteams.write` (`Manages`),
+`code.write` and `team.delete` (`ManagesStrict`).
+
 ### Member candidates
 
 `q` is at least 3 characters (400 otherwise, checked after the caller is
@@ -313,8 +362,9 @@ budget. Each item is
 
 `GET /v1/users/me/managed-groups` answers a list of Team nodes:
 `{id, code, path, displayName, memberCount, leaderCount, protected, can,
-children}`. `can` has `group.read`, `members.write` and `leaders.write`
-(`ManagesStrict`: the Team's Leader groups). Privileged gets every top Team
+children}`. `can` has `group.read`, `members.write`, `leaders.write`
+(`ManagesStrict`: the Team's Leader groups), `subteams.write`, `code.write`
+and `team.delete` ([Team structure](#team-structure)). Privileged gets every top Team
 of every area with everything below; a Leader (delegation on) the Teams
 they lead, each once (a Sub-team they also lead sits under the Team above);
 anyone else `[]`. Walked down by id; kept 60 s per person and dropped by
@@ -326,7 +376,7 @@ core's own membership writes.
 |---|---|---|
 | a caller's Leader groups (reads) | 60 s | core's membership writes of that person, renames, role mapping writes |
 | a Group's protection (reads only) | 60 s | renames, role mapping writes |
-| the realm's names (`team_code_not_unique`) | 60 s | renames |
+| the realm's names (`team_code_not_unique`) | 60 s | renames, Sub-team creates, code changes, deletions |
 | `managedTeams` | 60 s (a failure 10 s) | core's membership writes of that person |
 | a managed tree | 60 s | every core membership write |
 | the realm's Groups (Owner team inheritance, Team settings) | 60 s (a failure 10 s) | core's renames, attribute writes and Team settings writes |

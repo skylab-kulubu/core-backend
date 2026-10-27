@@ -89,6 +89,42 @@ func (s *service) delegatedRead(ctx context.Context, p authz.Principal, groupRef
 func (s *service) delegatedWrite(ctx context.Context, p authz.Principal, action teamaudit.Action, groupRef string, person uuid.UUID,
 	precheck func(p authz.Policy, m authz.TeamManager, target authz.ManagedGroup) authz.ManageDecision,
 	write func(ctx context.Context, m authz.TeamManager, target authz.ManagedGroup, g Group) error) error {
+	return s.delegatedRecordsWrite(ctx, p, action, groupRef, person, precheck,
+		func(ctx context.Context, _ teamcode.Records, m authz.TeamManager, target authz.ManagedGroup, g Group) error {
+			return write(ctx, m, target, g)
+		})
+}
+
+// delegatedRecordsWrite is delegatedWrite whose write also gets the Team
+// code Records as seen inside the lock (a create or a rename checks and
+// retires codes there).
+func (s *service) delegatedRecordsWrite(ctx context.Context, p authz.Principal, action teamaudit.Action, groupRef string, person uuid.UUID,
+	precheck func(p authz.Policy, m authz.TeamManager, target authz.ManagedGroup) authz.ManageDecision,
+	write func(ctx context.Context, records teamcode.Records, m authz.TeamManager, target authz.ManagedGroup, g Group) error) error {
+	return s.delegatedTurns(ctx, p, action, groupRef, person, precheck,
+		func(ctx context.Context, _ authz.ManageDecision, read delegatedReader) error {
+			return s.codes.Locked(ctx, func(ctx context.Context, records teamcode.Records) error {
+				m, target, g, err := read(ctx)
+				if err != nil {
+					return err
+				}
+				return write(ctx, records, m, target, g)
+			})
+		})
+}
+
+// delegatedReader reads the caller's Leader groups and the target fresh,
+// as delegatedWrite does inside the lock.
+type delegatedReader func(ctx context.Context) (authz.TeamManager, authz.ManagedGroup, Group, error)
+
+// delegatedTurns is delegatedWrite up to and including the precheck,
+// outside any lock; run then takes the Team code lock itself, as often as
+// it needs (a deletion takes it twice), and reads fresh with read inside
+// each turn. d is the precheck's decision, for the audit row opened before
+// the first turn.
+func (s *service) delegatedTurns(ctx context.Context, p authz.Principal, action teamaudit.Action, groupRef string, person uuid.UUID,
+	precheck func(p authz.Policy, m authz.TeamManager, target authz.ManagedGroup) authz.ManageDecision,
+	run func(ctx context.Context, d authz.ManageDecision, read delegatedReader) error) error {
 	userID, err := s.delegatedCaller(p, groupRef)
 	if err != nil {
 		return err
@@ -137,17 +173,12 @@ func (s *service) delegatedWrite(ctx context.Context, p authz.Principal, action 
 		s.deny(ctx, action, target.Group, person, authz.ManageDecision{}, "forbidden")
 		return ErrForbidden
 	}
-	if d := precheck(s.delegation.policy, m, target); !d.Allowed {
+	d := precheck(s.delegation.policy, m, target)
+	if !d.Allowed {
 		s.deny(ctx, action, target.Group, person, d, d.Refusal)
 		return decisionError(d)
 	}
-	return s.codes.Locked(ctx, func(ctx context.Context, _ teamcode.Records) error {
-		m, target, g, err := read(ctx)
-		if err != nil {
-			return err
-		}
-		return write(ctx, m, target, g)
-	})
+	return run(ctx, d, read)
 }
 
 // activeAccount reports whether core's row of the person is an active

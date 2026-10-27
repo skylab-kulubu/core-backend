@@ -30,14 +30,28 @@ type Records interface {
 	// certificate, a certificate template or its Owner team binding) or a
 	// retired code holds code, compared without case.
 	Held(ctx context.Context, code string) (bool, error)
-	// Referenced excludes retired codes: deleting a Group may be retried
-	// after its code was durably retired.
-	Referenced(ctx context.Context, code string) (bool, error)
+	// References are the kinds of Owner team record of core that hold
+	// code (RecordEvent, …, in that order), compared without case; none is
+	// nil. Retired codes are left out: deleting a Group may be retried
+	// after its code was durably retired. A kind, never a record's id.
+	References(ctx context.Context, code string) ([]string, error)
 	// Retire records code as given up by the Group groupID for reason: no
 	// new Group gets it again. groupID is the Keycloak id, recorded only
 	// when it is a UUID. Retiring a retired code again changes nothing.
 	Retire(ctx context.Context, code, groupID, reason string) error
 }
+
+// The kinds of Owner team record (Records.References), as a refusal names
+// them (code_in_use): which records still name a code, never which one.
+const (
+	RecordEvent               = "event"
+	RecordCertificate         = "certificate"
+	RecordCertificateTemplate = "certificate_template"
+	RecordTemplateBinding     = "certificate_template_binding"
+)
+
+// recordKinds are the kinds in the order References answers them.
+var recordKinds = []string{RecordEvent, RecordCertificate, RecordCertificateTemplate, RecordTemplateBinding}
 
 // MemoryLedger is a Ledger in this process only: a lock no other core sees
 // and the codes Hold gave it. For tests and for a service without a
@@ -45,21 +59,29 @@ type Records interface {
 type MemoryLedger struct {
 	lock sync.Mutex
 
-	mu      sync.Mutex
-	held    map[string]bool
+	mu sync.Mutex
+	// held are the kinds of record that hold each code, by its lower case.
+	held    map[string]map[string]bool
 	retired map[string]string
 }
 
 func NewMemoryLedger() *MemoryLedger {
-	return &MemoryLedger{held: map[string]bool{}, retired: map[string]string{}}
+	return &MemoryLedger{held: map[string]map[string]bool{}, retired: map[string]string{}}
 }
 
-// Hold makes codes held, as an Owner team record would.
-func (l *MemoryLedger) Hold(codes ...string) {
+// Hold makes codes held, as an Event's Owner team would.
+func (l *MemoryLedger) Hold(codes ...string) { l.HoldAs(RecordEvent, codes...) }
+
+// HoldAs makes codes held by a record of kind (RecordEvent, …).
+func (l *MemoryLedger) HoldAs(kind string, codes ...string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, code := range codes {
-		l.held[strings.ToLower(code)] = true
+		key := strings.ToLower(code)
+		if l.held[key] == nil {
+			l.held[key] = map[string]bool{}
+		}
+		l.held[key][kind] = true
 	}
 }
 
@@ -101,7 +123,7 @@ type memoryRecords struct {
 func (r *memoryRecords) Held(_ context.Context, code string) (bool, error) {
 	r.ledger.mu.Lock()
 	defer r.ledger.mu.Unlock()
-	if r.ledger.held[strings.ToLower(code)] {
+	if len(r.ledger.held[strings.ToLower(code)]) > 0 {
 		return true, nil
 	}
 	for retired := range r.ledger.retired {
@@ -117,10 +139,16 @@ func (r *memoryRecords) Held(_ context.Context, code string) (bool, error) {
 	return false, nil
 }
 
-func (r *memoryRecords) Referenced(_ context.Context, code string) (bool, error) {
+func (r *memoryRecords) References(_ context.Context, code string) ([]string, error) {
 	r.ledger.mu.Lock()
 	defer r.ledger.mu.Unlock()
-	return r.ledger.held[strings.ToLower(code)], nil
+	var out []string
+	for _, kind := range recordKinds {
+		if r.ledger.held[strings.ToLower(code)][kind] {
+			out = append(out, kind)
+		}
+	}
+	return out, nil
 }
 
 func (r *memoryRecords) Retire(_ context.Context, code, _, reason string) error {

@@ -137,6 +137,27 @@ func (d *auditedDirectory) CreateGroup(ctx context.Context, parentRef, name stri
 	return created, err
 }
 
+// CreateSubgroup records a team.create with the new Group's place, code
+// and recorded attributes (its display names).
+func (d *auditedDirectory) CreateSubgroup(ctx context.Context, parentID, name string, attributes map[string]string) (Group, error) {
+	parent, _, err := d.Directory.GroupNode(ctx, parentID)
+	if err != nil {
+		return Group{}, err
+	}
+	_, recorded, others := teamaudit.AttributeChange(nil, attributes)
+	after := &teamaudit.State{Path: parent.Path + "/" + name, ParentID: parent.ID, Code: name, Attributes: recorded, OtherAttributes: others}
+	r := teamaudit.Record{Action: teamaudit.ActionTeamCreate, GroupPath: after.Path, After: after}
+	var created Group
+	err = d.write(ctx, r, func() (*teamaudit.State, error) {
+		var err error
+		if created, err = d.Directory.CreateSubgroup(ctx, parentID, name, attributes); err != nil {
+			return nil, err
+		}
+		return &teamaudit.State{ID: created.ID, Path: created.Path, ParentID: parent.ID, Code: created.Name, Attributes: recorded, OtherAttributes: others}, nil
+	})
+	return created, err
+}
+
 // UpdateGroup records a rename as team.code and anything else as
 // group.attributes, with the name and the attributes that differ.
 func (d *auditedDirectory) UpdateGroup(ctx context.Context, g Group) (Group, error) {

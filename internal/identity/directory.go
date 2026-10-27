@@ -118,6 +118,10 @@ type Directory interface {
 	ListGroups(ctx context.Context) ([]Group, error)
 	GetGroup(ctx context.Context, idOrPath string) (Group, error)
 	CreateGroup(ctx context.Context, parentRef, name string) (Group, error)
+	// CreateSubgroup creates name, with attributes, right under the Group
+	// parentID (a Keycloak id, never a name or path) in one write: a
+	// Sub-team and its display names (docs/team-delegation.md).
+	CreateSubgroup(ctx context.Context, parentID, name string, attributes map[string]string) (Group, error)
 	UpdateGroup(ctx context.Context, g Group) (Group, error)
 	DeleteGroup(ctx context.Context, groupID string) error
 	Subgroups(ctx context.Context, groupID string) ([]Group, error)

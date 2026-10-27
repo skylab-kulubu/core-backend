@@ -400,3 +400,31 @@ func TestGroupDeleteAllowsLeaderPrefixCustomAncestor(t *testing.T) {
 		t.Fatalf("valid custom name treated as a Leader group: %v", err)
 	}
 }
+
+// A Team is deleted with the Groups under it only when they are the ones
+// whose codes the first turn retired: a Sub-team added between the turns
+// (its code not retired) refuses the deletion.
+func TestGroupDeleteTeamSubtreeChangedBetweenTransactions(t *testing.T) {
+	dir, _, ledger, audit := deleteTree(t)
+	for _, g := range []Group{
+		{ID: uuid.NewString(), Name: "UYELER", Path: "/UYELER"},
+		{ID: uuid.NewString(), Name: "ARGE", Path: "/UYELER/ARGE"},
+		{ID: uuid.NewString(), Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"},
+	} {
+		dir.PutGroup(g)
+	}
+	team := Group{ID: uuid.NewString(), Name: "FRONT", Path: "/UYELER/ARGE/WEBLAB/FRONT"}
+	dir.PutGroup(team)
+	dir.PutGroup(Group{ID: uuid.NewString(), Name: "LIDERLER", Path: team.Path + "/LIDERLER"})
+	between := &betweenDeleteLedger{Ledger: ledger, after: func() {
+		dir.PutGroup(Group{ID: uuid.NewString(), Name: "LATE", Path: team.Path + "/LATE"})
+	}}
+	p := deletePrincipal()
+	err := deleteService(dir, between, audit).DeleteGroup(deleteContext(p), p, team.ID)
+	if deleteCode(err) != CodeGroupTreeMismatch || slices.Contains(dir.Ops, "DeleteGroup") {
+		t.Fatalf("a Sub-team added between the turns: %v %v", err, dir.Ops)
+	}
+	if r := ledger.Retired(); r["FRONT"] != teamcode.ReasonDeleted || r["LATE"] != "" || r["LIDERLER"] != "" {
+		t.Fatalf("retired %v", r)
+	}
+}
