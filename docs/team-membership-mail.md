@@ -54,6 +54,11 @@ equal to the code, the code alone (Yusuf, 2026-10-09). A leader subgroup is
 named by its team; the role travels in `Role`. The team is read from the
 directory when the mail is sent, so a team renamed in between is mailed under
 its new name; one that is gone is mailed under the last segment of its path.
+A row keeps the Group's Keycloak id too (`group_id`, migration
+`20261027190000`; ADR 0065 ticket 07): the Group is found by it first, so a
+Team moved or given a new code within the 72 hours is mailed by where it is
+now (its kind, team and role read from the new path). A row without one (an
+older core's) or whose id is gone is read by its path as before.
 
 ## Variables
 
@@ -145,7 +150,7 @@ membership write ──▶ Keycloak (204) ──▶ INSERT team_membership_mails
                read person + team + actor ──▶ POST SkyMail /v1/mail_tasks/single
 ```
 
-- The queue is `team_membership_mails`: ids, the Group's path, the action,
+- The queue is `team_membership_mails`: ids (the Group's too), the Group's path, the action,
   the time and the kind it was queued for (`kind`: `team`, `role`, `group`;
   migration `20261012170000`, default `team`), never an address or a name.
   The sending core's rule (`KindOf`) picks the mail; the column says what

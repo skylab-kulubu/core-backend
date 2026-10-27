@@ -371,6 +371,40 @@ func (h *IdentityHandler) RemoveTeamLeader(c fiber.Ctx) error {
 	return c.JSON(removal)
 }
 
+// MoveTeam answers POST /v1/groups/{id}/move {parentId} (docs/team-delegation.md
+// "Moving a Team").
+func (h *IdentityHandler) MoveTeam(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	var body struct {
+		ParentID string `json:"parentId"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	moved, err := h.svc.MoveTeam(auditContext(c, p), p, c.Params("groupId"), body.ParentID)
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(moved)
+}
+
+// MoveTeamPreview answers GET /v1/groups/{id}/move-preview?parentId=.
+func (h *IdentityHandler) MoveTeamPreview(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	preview, err := h.svc.MoveTeamPreview(c.Context(), p, c.Params("groupId"), c.Query("parentId"))
+	if err != nil {
+		return identityError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(preview)
+}
+
 func (h *IdentityHandler) Members(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {

@@ -158,6 +158,35 @@ func (d *auditedDirectory) CreateSubgroup(ctx context.Context, parentID, name st
 	return created, err
 }
 
+// MoveGroup records a team.move with the Group's path and parent before
+// and after.
+func (d *auditedDirectory) MoveGroup(ctx context.Context, id, parentID string) (Group, error) {
+	g, oldParent, err := d.Directory.GroupNode(ctx, id)
+	if err != nil {
+		return Group{}, err
+	}
+	path := "/" + g.Name
+	if parentID != "" {
+		parent, _, err := d.Directory.GroupNode(ctx, parentID)
+		if err != nil {
+			return Group{}, err
+		}
+		path = parent.Path + "/" + g.Name
+	}
+	r := teamaudit.Record{
+		Action: teamaudit.ActionTeamMove, GroupID: g.ID, GroupPath: g.Path,
+		Before: &teamaudit.State{ID: g.ID, Path: g.Path, ParentID: oldParent, Code: g.Name},
+		After:  &teamaudit.State{ID: g.ID, Path: path, ParentID: parentID, Code: g.Name},
+	}
+	var moved Group
+	err = d.write(ctx, r, func() (*teamaudit.State, error) {
+		var err error
+		moved, err = d.Directory.MoveGroup(ctx, id, parentID)
+		return nil, err
+	})
+	return moved, err
+}
+
 // UpdateGroup records a rename as team.code and anything else as
 // group.attributes, with the name and the attributes that differ.
 func (d *auditedDirectory) UpdateGroup(ctx context.Context, g Group) (Group, error) {

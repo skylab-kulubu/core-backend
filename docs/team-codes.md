@@ -47,3 +47,25 @@ RFC 7807 problems with a `code` member and a `detail` saying why:
 A caller who may not manage Groups gets 403 first, whatever the name.
 
 Empty-leaf deletion uses the same lock in two transactions: durable retirement first, then fresh checks and DELETE. Privileged member adds and Group role writes also take it, as delegated membership already does. This prevents a core write from populating a checked empty Group just before its deletion; see [group-deletion.md](group-deletion.md) for the failure and external-writer limits.
+
+## When a path or a code changes
+
+A move ([team-delegation.md](team-delegation.md#moving-a-team)) changes a Team's path and every path under it; a code change does too, and changes the key other systems hold (SPEC `.scratch/ekip-yetki-devri` §7). Hence a code changes only while core's records name none of it.
+
+| What | On a move | On a code change |
+|---|---|---|
+| `events.owner_team`, certificates, templates, bindings | kept (they hold the code) | would break: refused while they name it (`code_in_use`) |
+| Owner team decisions (token paths) | the members count in the new ancestors, not the old, once their token is refreshed | break for the old code |
+| Delegation (who manages) | at once: the new parent's Leaders | unchanged |
+| The token's `groups` | the old path until the access token is refreshed | the same |
+| Keycloak role mappings | the Team's own stay (by id); the inherited ones change (the move preview lists them) | stay |
+| `cms:access` (site editors) | the Leader groups keep their mappings; `site-editor-grants.sh` names top Teams only, which only Privileged moves | the script's path of a top Team breaks |
+| The CMS's Teams record and rule, sites' `TEAM_META`, the theme's team strip | kept (the last segments) | break (the slug is the code) |
+| Forms (`/v1/groups` by name, template match) | kept | break |
+| `team_door_scan` (`GetGroup(name)`) | kept | breaks |
+| Team membership mail queue (72 hours) | the Group is found by its id (`group_id`), named where it is now; a row without one by its path | the same |
+| `/v1/teams/:team` | by name: kept; by path: breaks (no site uses it) | breaks |
+| Short links, form short links, SkyMail lists | kept (owned by a person, a form, a Group id) | kept |
+| Group overage cache | forgotten | forgotten |
+| Account Center "Yetkilerim" | the new path once the token is refreshed | the same |
+

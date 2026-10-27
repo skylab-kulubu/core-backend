@@ -63,6 +63,12 @@ type Service interface {
 	TeamLeaders(ctx context.Context, p authz.Principal, groupRef string) ([]TeamLeader, error)
 	AddTeamLeader(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID, kind string) error
 	RemoveTeamLeader(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) (LeaderRemoval, error)
+	// MoveTeam and MoveTeamPreview move a Team under another (POST
+	// /v1/groups/{id}/move, GET /v1/groups/{id}/move-preview):
+	// Privileged, or a Leader who manages both sides (docs/team-delegation.md
+	// "Moving a Team").
+	MoveTeam(ctx context.Context, p authz.Principal, groupRef, parentRef string) (Group, error)
+	MoveTeamPreview(ctx context.Context, p authz.Principal, groupRef, parentRef string) (MovePreview, error)
 	// MemberCheck is what adding a person to a Group would warn of
 	// (grup-yonetimi 07); it never refuses the add.
 	MemberCheck(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) (MemberCheck, error)

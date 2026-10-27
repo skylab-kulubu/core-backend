@@ -4,9 +4,10 @@ A Leader manages their Team and every Sub-team below it through core: they
 read its Groups and rosters, add and remove members (SPEC
 `.scratch/ekip-yetki-devri`, ADR 0065, ticket 04), and open Sub-teams,
 change their codes and delete them (ticket 05, [Team structure](#team-structure)).
-and name the Leaders of the Sub-teams below theirs (ticket 06,
-[Leaders](#leaders)). Moving Sub-teams and editing a Team's profile come in
-tickets 07–08. Keycloak is only ever called by core's service account; the decision
+name the Leaders of the Sub-teams below theirs (ticket 06,
+[Leaders](#leaders)) and move Sub-teams between the Teams they manage
+(ticket 07, [Moving a Team](#moving-a-team)). Editing a Team's profile
+comes in ticket 08. Keycloak is only ever called by core's service account; the decision
 is made in `internal/authz` (`Policy.Manages`, `ManagesStrict`,
 `ManagesMembership`), from what core reads from Keycloak, never from the
 caller's token.
@@ -256,6 +257,8 @@ Errors are RFC 9457 problems with `code` (and `reason` for placement). The panel
 | `GET /v1/groups/{id}/leaders` | `Manages` | the Team's Leaders and Coordinators ([Leaders](#leaders)) |
 | `POST /v1/groups/{id}/leaders` `{userId, kind?}` | `ManagesStrict` | names a Leader; opens the Leader group |
 | `DELETE /v1/groups/{id}/leaders/{userId}` | `ManagesStrict` | `{lastLeader}` |
+| `GET /v1/groups/{id}/move-preview?parentId=` | as the move | what the move would do ([Moving a Team](#moving-a-team)) |
+| `POST /v1/groups/{id}/move` `{parentId}` | `ManagesStrict` of the Team, `Manages` of the new parent | the Team with everything under it |
 
 `GET /v1/groups`, `POST /v1/groups`, `PATCH /v1/groups/{id}` and the
 client-role routes stay Privileged's (Forms reads the list).
@@ -382,6 +385,40 @@ and path) with the person and `kind` in `after` or `before`; a refusal of a
 Leader is a `denied` row. The team membership mail goes as for a member
 (`Role` `leader` or `coordinator`, from the Leader group).
 
+### Moving a Team
+
+ADR 0065 ticket 07 (K4; GitHub's "maintainer of both teams" rule). A Leader
+moves a Sub-team they manage strictly under a Team they manage: in effect
+under their common upper Leader. Privileged moves any Team, a top Team to
+another area too. `parentId` is a Keycloak id only (a name or path is
+`400`). Every rule is checked under the Team code lock, both Groups and
+the Groups above them read again by id; each refusal has its own code:
+
+| Code | When |
+|---|---|
+| `403` (`protected_group`) | a Leader who does not manage both sides; a protected new parent |
+| `409 privileged_root` | a Privileged root, a Group under one or above one moves, the new parent is one or under one, or the move would make one (a Group named `ADMIN` moved under `/UYELER`): **for every caller** (review of #227, Y4) |
+| `409 invalid_move_source` | the Group is no Team (an area, `/UYELER`, a Leader group, a Group outside `/UYELER`); a Leader moves Sub-teams only |
+| `409 cycle` | the new parent is the Group or under it (by path and by the parent ids) |
+| `409 leader_group_target` | the new parent is a Leader group |
+| `409 invalid_move_target` | the new parent is no Team (Privileged: nor an area) |
+| `409 same_parent` | the Group is right under it already |
+| `409 depth_limit`, `409 children_limit` | the Team or a Group under it would break the structure limits |
+
+The move is Keycloak's own (`POST /groups/{parentId}/children` with the
+existing Group's id; its id, members and role mappings stay), a `team.move`
+row with the path and parent id before and after; every kept Group read is
+forgotten. Delegation follows at once: the new parent's Leaders manage the
+Team, the old ones no longer do.
+
+`GET /v1/groups/{id}/move-preview?parentId=` takes the same decision and
+answers, without a change: `allowed` and the `refusal` code of a rule the
+move breaks; `oldPath`, `newPath`; `members`, the people in the Team and
+every Group under it, each once; `rolesGained` and `rolesLost`, the client
+roles (`client:role`) the Groups above give it after and before the move;
+`newParentLeaders`. What else a move changes is in
+[team-codes.md](team-codes.md#when-a-path-or-a-code-changes).
+
 ### Member candidates
 
 `q` is at least 3 characters (400 otherwise, checked after the caller is
@@ -402,7 +439,8 @@ budget. Each item is
 `{id, code, path, displayName, memberCount, leaderCount, protected, can,
 children}`. `can` has `group.read`, `members.write`, `leaders.write`
 (`ManagesStrict`: the Team's Leader groups), `subteams.write`, `code.write`
-and `team.delete` ([Team structure](#team-structure)). Privileged gets every top Team
+`team.delete` ([Team structure](#team-structure)) and `team.move` (the
+Team's side of a move). Privileged gets every top Team
 of every area with everything below; a Leader (delegation on) the Teams
 they lead, each once (a Sub-team they also lead sits under the Team above);
 anyone else `[]`. Walked down by id; kept 60 s per person and dropped by

@@ -1481,6 +1481,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.subject_requests_open_idx') IS NOT NULL
 		  AND to_regclass('public.subject_requests_answered_idx') IS NOT NULL
 		  AND to_regclass('public.subject_request_events_request_idx') IS NOT NULL`,
+	// The Group of a queued membership mail by its id (ADR 0065 ticket 07).
+	20261027190000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'team_membership_mails' AND column_name = 'group_id'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
