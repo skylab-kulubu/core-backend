@@ -187,3 +187,25 @@ func TestTeamMoveDelegationOff(t *testing.T) {
 	}
 	wantStatus(t, "YK", e.move("yk", "/UYELER/ARGE/WEBLAB/FRONT", "/UYELER/ARGE/MOBILAB"), fiber.StatusOK, "")
 }
+
+// A move forgets every kept Group read: the Owner team tree too, so the
+// decisions follow the new paths at once.
+func TestTeamMoveForgetsKeptReads(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true, teamTree: true})
+	forgets := e.tree.forgotten()
+	wantStatus(t, "YK", e.move("yk", "/UYELER/ARGE/WEBLAB/FRONT", "/UYELER/ARGE/MOBILAB"), fiber.StatusOK, "")
+	if e.tree.forgotten() == forgets {
+		t.Error("the move did not forget the kept Group reads")
+	}
+}
+
+// A Sub-team's own Leader is no source of a preview either, even to a Team
+// they manage (one under their own).
+func TestTeamMovePreviewNeedsTheSourceStrictly(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	wantStatus(t, "open FRONT-UI", e.createSub("frontLeader", "/UYELER/ARGE/WEBLAB/FRONT", "FRONT-UI"), fiber.StatusCreated, "")
+	got, _ := e.preview("frontLeader", "/UYELER/ARGE/WEBLAB/FRONT", "/UYELER/ARGE/WEBLAB/FRONT/FRONT-UI")
+	wantStatus(t, "their own Team", got, fiber.StatusForbidden, "")
+}
