@@ -119,6 +119,11 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		// Internal club data whose private repositories' totals are not
 		// public: privileged people only, never a product's service account.
 		return action == Read && p.Product == "" && a.privilegedRead(p, RoleGithubActivityRead)
+	case TypeSubjectRequest:
+		// Personal data only the board handles (docs/subject-requests.md):
+		// every action, a read too, is decided as a write, so a Privileged
+		// reader (DK) and global:read are refused; a service account never.
+		return p.Product == "" && a.privileged(p, RoleSubjectRequestManage)
 	case TypeTeamAudit:
 		// The audit:read role alone, in every role mode: no Privileged
 		// Group stands for it, global:read neither, and no service account

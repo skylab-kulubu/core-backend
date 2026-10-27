@@ -103,6 +103,9 @@ var roleChecks = []struct {
 	{RoleUsersManage, Resource{Type: TypeUser}, Delete},
 	{RoleGroupsManage, Resource{Type: TypeGroup}, Update},
 	{RoleGithubActivityRead, Resource{Type: TypeGithubActivity}, Read},
+	{RoleSubjectRequestManage, Resource{Type: TypeSubjectRequest}, Create},
+	{RoleSubjectRequestManage, Resource{Type: TypeSubjectRequest}, Update},
+	{RoleSubjectRequestManage, Resource{Type: TypeSubjectRequest}, Read},
 	{RoleURLModerator, Resource{Type: TypeFormLink}, Update},
 }
 
