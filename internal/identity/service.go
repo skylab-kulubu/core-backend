@@ -57,6 +57,12 @@ type Service interface {
 	// (docs/team-delegation.md "Team structure").
 	CreateSubTeam(ctx context.Context, p authz.Principal, parentRef string, in NewSubTeam) (Group, error)
 	ChangeTeamCode(ctx context.Context, p authz.Principal, groupRef, code string) (Group, error)
+	// TeamLeaders, AddTeamLeader and RemoveTeamLeader are a Team's Leaders
+	// (GET, POST and DELETE /v1/groups/{id}/leaders): Privileged, or a
+	// Leader with delegation on (docs/team-delegation.md "Leaders").
+	TeamLeaders(ctx context.Context, p authz.Principal, groupRef string) ([]TeamLeader, error)
+	AddTeamLeader(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID, kind string) error
+	RemoveTeamLeader(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) (LeaderRemoval, error)
 	// MemberCheck is what adding a person to a Group would warn of
 	// (grup-yonetimi 07); it never refuses the add.
 	MemberCheck(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) (MemberCheck, error)
@@ -337,6 +343,12 @@ func (s *service) CreateGroup(ctx context.Context, p authz.Principal, parentRef,
 	if err != nil {
 		return Group{}, err
 	}
+	if err := s.leaderGroupsByLeadersRoute(name); err != nil {
+		return Group{}, err
+	}
+	if err := s.nothingUnderLeaderGroups(parentPath); err != nil {
+		return Group{}, err
+	}
 	var created Group
 	err = s.codes.Locked(ctx, func(ctx context.Context, records teamcode.Records) error {
 		if err := s.nameFree(ctx, records, scope, parentPath+"/"+name, name, ""); err != nil {
@@ -379,6 +391,9 @@ func (s *service) UpdateGroup(ctx context.Context, p authz.Principal, groupRef, 
 	}
 	scope, err := s.names.Rename(g.Path, name, len(subgroups) == 0)
 	if err != nil {
+		return Group{}, err
+	}
+	if err := s.leaderGroupsByLeadersRoute(name); err != nil {
 		return Group{}, err
 	}
 	if err := s.renameKeepsPlacement(ctx, g, name, len(subgroups) > 0); err != nil {

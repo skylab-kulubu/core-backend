@@ -167,6 +167,9 @@ type State struct {
 	// row; absent on every other row.
 	Client string `json:"client,omitempty"`
 	Role   string `json:"role,omitempty"`
+	// Kind is the Leader group of a leader.add or leader.remove row
+	// (LIDERLER or KOORDINATORLER); absent on every other row.
+	Kind string `json:"kind,omitempty"`
 }
 
 // Limits of what a row holds. A longer text is cut, so a long value never
@@ -338,6 +341,7 @@ func (s *State) normalize() *State {
 		Code:     cut(s.Code, MaxIdentifier),
 		Client:   cut(s.Client, MaxIdentifier),
 		Role:     cut(s.Role, MaxIdentifier),
+		Kind:     cut(s.Kind, MaxIdentifier),
 	}
 	if s.UnverifiedAck != nil {
 		ack := *s.UnverifiedAck

@@ -319,6 +319,58 @@ func (h *IdentityHandler) ChangeTeamCode(c fiber.Ctx) error {
 	return c.JSON(updated)
 }
 
+// TeamLeaders answers GET /v1/groups/{id}/leaders (docs/team-delegation.md
+// "Leaders").
+func (h *IdentityHandler) TeamLeaders(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	leaders, err := h.svc.TeamLeaders(c.Context(), p, c.Params("groupId"))
+	if err != nil {
+		return identityError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(leaders)
+}
+
+// AddTeamLeader answers POST /v1/groups/{id}/leaders {userId, kind?}.
+func (h *IdentityHandler) AddTeamLeader(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	var body struct {
+		UserID uuid.UUID `json:"userId"`
+		Kind   string    `json:"kind"`
+	}
+	if err := c.Bind().Body(&body); err != nil || body.UserID == uuid.Nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if err := h.svc.AddTeamLeader(auditContext(c, p), p, c.Params("groupId"), body.UserID, body.Kind); err != nil {
+		return identityError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// RemoveTeamLeader answers DELETE /v1/groups/{id}/leaders/{userId} with
+// whether the Team has no Leader left.
+func (h *IdentityHandler) RemoveTeamLeader(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	userID, err := uuid.Parse(c.Params("userId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	removal, err := h.svc.RemoveTeamLeader(auditContext(c, p), p, c.Params("groupId"), userID)
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(removal)
+}
+
 func (h *IdentityHandler) Members(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {

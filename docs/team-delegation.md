@@ -4,7 +4,9 @@ A Leader manages their Team and every Sub-team below it through core: they
 read its Groups and rosters, add and remove members (SPEC
 `.scratch/ekip-yetki-devri`, ADR 0065, ticket 04), and open Sub-teams,
 change their codes and delete them (ticket 05, [Team structure](#team-structure)).
-Moving Sub-teams and naming their Leaders come in tickets 06–08. Keycloak is only ever called by core's service account; the decision
+and name the Leaders of the Sub-teams below theirs (ticket 06,
+[Leaders](#leaders)). Moving Sub-teams and editing a Team's profile come in
+tickets 07–08. Keycloak is only ever called by core's service account; the decision
 is made in `internal/authz` (`Policy.Manages`, `ManagesStrict`,
 `ManagesMembership`), from what core reads from Keycloak, never from the
 caller's token.
@@ -251,6 +253,9 @@ Errors are RFC 9457 problems with `code` (and `reason` for placement). The panel
 | `POST /v1/groups/{id}/children` `{code, displayNameTr, displayNameEn?}` | `Manages` of the Team | a Sub-team ([Team structure](#team-structure)) |
 | `PUT /v1/groups/{id}/code` `{code}` | `ManagesStrict` | the Sub-team's code |
 | `DELETE /v1/groups/{id}` | `ManagesStrict` | the Sub-team and every Group under it, all empty |
+| `GET /v1/groups/{id}/leaders` | `Manages` | the Team's Leaders and Coordinators ([Leaders](#leaders)) |
+| `POST /v1/groups/{id}/leaders` `{userId, kind?}` | `ManagesStrict` | names a Leader; opens the Leader group |
+| `DELETE /v1/groups/{id}/leaders/{userId}` | `ManagesStrict` | `{lastLeader}` |
 
 `GET /v1/groups`, `POST /v1/groups`, `PATCH /v1/groups/{id}` and the
 client-role routes stay Privileged's (Forms reads the list).
@@ -343,6 +348,39 @@ its code; a change is a `team.create`, `team.code` or `team.delete` row.
 
 The managed tree's `can` says it per Team: `subteams.write` (`Manages`),
 `code.write` and `team.delete` (`ManagesStrict`).
+
+### Leaders
+
+ADR 0065 ticket 06 (S2: a Leader names no co-Leader of their own Team).
+Privileged on every Team, a Leader (delegation on) on a Team they manage
+strictly: the Leaders of the Sub-teams below their own. A top Team's
+Leaders are Privileged's alone, and nobody changes the Leaders of their own
+Team (adds a co-Leader, makes themselves one, leaves).
+
+- `GET /v1/groups/{id}/leaders` (`Manages`): `[{…person, kind, groupId}]`,
+  `LIDERLER` first, then `KOORDINATORLER`, each by username. A Leader sees
+  the person's id, names, e-mail address and profile picture (SPEC §6.4).
+- `POST /v1/groups/{id}/leaders` `{userId, kind?}`, `kind` `LIDERLER` (the
+  default) or `KOORDINATORLER` (anything else `400`), a Team only (`400`
+  otherwise). When the Team has no such Leader group, core opens it right
+  under the Team, under the Team code lock (a `team.create` row): **the only
+  way a Leader group is made once delegation is on**. With delegation on,
+  `POST /v1/groups` and a rename through `PATCH /v1/groups/{id}` refuse a
+  leader subgroup's name (`422 reserved_name`), Privileged's too, and no
+  Group is created under a Leader group (`400`); off, they work as before
+  (ticket 01's exception). The person is an active account (`404`
+  otherwise); a delegated add keeps them within `TEAM_DELEGATION_GROUP_LIMIT`
+  (`409 group_limit`) and never reaches a protected Leader group
+  (`403 protected_group`). A repeat add changes nothing. `204`.
+- `DELETE /v1/groups/{id}/leaders/{userId}`: the person leaves every Leader
+  group of the Team they are directly in (`404` when none). Answers
+  `{"lastLeader": true}` when the Team has no Leader or Coordinator left;
+  the panel warns, and the Team stays managed by the Team above.
+
+Each change is a `leader.add` or `leader.remove` row on the **Team** (its id
+and path) with the person and `kind` in `after` or `before`; a refusal of a
+Leader is a `denied` row. The team membership mail goes as for a member
+(`Role` `leader` or `coordinator`, from the Leader group).
 
 ### Member candidates
 
