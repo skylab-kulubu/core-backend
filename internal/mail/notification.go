@@ -24,8 +24,10 @@ const kindTicketCreated = "ticket_created"
 type Notification struct {
 	Type       string                  `json:"type"`
 	Recipients []NotificationRecipient `json:"recipients"`
-	Variables  map[string]string       `json:"variables,omitempty"`
-	Source     *NotificationSource     `json:"source,omitempty"`
+	// Variables are the same for every recipient; a feedback mail's Items is
+	// a list, the rest are text.
+	Variables map[string]any      `json:"variables,omitempty"`
+	Source    *NotificationSource `json:"source,omitempty"`
 	// ExpiresAt is when what the notification is about ends: its inbox
 	// items go then. Nil, or not in the future, leaves it out.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
@@ -37,7 +39,11 @@ type Notification struct {
 // person allows no channel of; SkyMail refuses an optional type without the
 // field).
 type NotificationRecipient struct {
-	Sub             uuid.UUID `json:"sub"`
+	Sub uuid.UUID `json:"sub"`
+	// Email and Name, when given, are the address and name core read for the
+	// person (SkyMail then does not look them up in Keycloak).
+	Email           string    `json:"email,omitempty"`
+	Name            string    `json:"name,omitempty"`
 	AllowedChannels *[]string `json:"allowed_channels,omitempty"`
 }
 
@@ -101,10 +107,14 @@ func (s *SkyMail) Notify(ctx context.Context, kind, idempotencyKey string, n Not
 // take, by the type's e-mail template alone (/v1/mail_tasks/single).
 func (s *SkyMail) TicketCreated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
 	if holder.Sub != uuid.Nil {
+		variables := make(map[string]any, len(vars))
+		for name, value := range vars {
+			variables[name] = value
+		}
 		return s.Notify(ctx, kindTicketCreated, idempotencyKey, Notification{
 			Type:       TicketCreatedType,
 			Recipients: []NotificationRecipient{{Sub: holder.Sub}},
-			Variables:  vars,
+			Variables:  variables,
 			Source:     &source,
 			ExpiresAt:  expiresAt,
 		})

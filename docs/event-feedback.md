@@ -83,6 +83,25 @@ An unknown code, another form's, or one longer than 64 characters is ignored. A 
 **When it goes.** Before each mail the worker reads its targets again: one whose Event is no longer published (cancelled, back to draft) or archived, whose Session was cancelled or archived, whose form changed, or (the schedule's mail) whose box was turned off or whose Session is no longer in the `per_session` mode, is left out; a mail with nothing left is dropped. The invites are written as the mail is built, one per Ticket and target; a mail tried again (SkyMail down) sends the same links, nothing twice. A refusal by SkyMail (`400`, `422`) is done with; any other failure is tried again with a doubling wait; a mail not sent 72 hours after it was queued (`feedbackmail.GiveUpAfter`) is dropped, tried or not. With `SKYMAIL_FEEDBACK_REQUEST_TEMPLATE_KEY` empty nothing is planned: no target is used up and no mail piles up; set again, the schedule takes the targets still within `AutoWindow`, as after SkyMail was down, and a mail queued before the key went off expires as above. Without SkyMail the worker is off and nothing is planned.
 
 
+## To the inbox (ticket 13)
+
+With `FEEDBACK_NOTIFICATION=on` a member's feedback mail, request or reminder, is a Notification (ADR 0070; SkyMail `docs/notifications.md`), so it also lands in the member's inbox (Hesap Merkezi "Bildirimlerim", sky-app):
+
+```http
+POST /v1/notifications
+Idempotency-Key: core:feedback-request:<hash of the mail>
+
+{"type": "core.feedback-request",
+ "recipients": [{"sub": "<ownerId>", "email": "<the address core read>", "name": "Ada Lovelace"}],
+ "variables": {"FirstName": "Ada", "EventName": "Gecekodu", "EventId": "…", "Items": [{"Title": "Açılış", "URL": "https://forms.yildizskylab.com/<formId>?davet=<code>"}]},
+ "source": {"kind": "event", "ref": "<eventId>"}}
+```
+
+- **The type is the template's key** (`SKYMAIL_FEEDBACK_REQUEST_TEMPLATE_KEY`, `SKYMAIL_FEEDBACK_REMINDER_TEMPLATE_KEY`): a type's e-mail text is the template of the same key. skymail-frontend's seed writes both types: required (a service mail about an Event the person attended, not an announcement), `system` lane, e-mail and inbox. The inbox item names the Event and lists the forms' titles; its link is `/events/{{.EventId}}`: the personal links stay in the mail.
+- **Who.** A mail whose address is a member's (the member's own Ticket, or the member's and a guest Ticket under the same address, joined as above) goes to that member's subject, with the address and name core read, so SkyMail does not look them up. A guest-only address has no subject SkyMail could take: it stays the template by address (`/v1/mail_tasks/single`), as every mail does while the switch is off. `EventId` is sent either way.
+- **Retries.** The key is a hash of the mail's queue rows, its recipient and its links: the same on every try (the invite codes do not change), so a try after a lost answer is SkyMail's replay. A mail whose links changed meanwhile (a target dropped) is another body under another key, since SkyMail refuses another body under a key it has seen. `400` and `422` are done with, unsent (a type SkyMail does not know is one: seed the types first); anything else (SkyMail down, `403` before Keycloak gives core `skymail:notifications:send`) is tried again as before.
+- **Before turning it on:** skymail-frontend's seed has written the two types, and core's service account has `skymail:access` and `skymail:notifications:send` (iletişim-servisi 04).
+
 ## Reminder (ticket 07)
 
 **Once, three days later (K4).** One reminder a Ticket a day (ADR 0069 decision 9: the reminder is one mail too). `feedback.ReminderDelay` (3 days) after the Ticket's last feedback mail of the day went (SkyMail took it; a mail it refused, or one dropped, gets none), the same worker queues one reminder with the targets of all that day's mails whose invite is not answered, reminded or cancelled. A person who got the morning's Session forms and the Event's form in a second mail gets one reminder, three days after the second; while a mail of the day is still to go, the day waits for it. It goes as `core.feedback-reminder` with the same variables and the **same links** (the same invite codes), joined into one mail an address as the first one. Each mail is planned once (`feedback_mails.reminder_planned_at`), each invite once (`reminded_at`). A reminder that fell due more than `feedback.ReminderWindow` (7 days) ago (core was off meanwhile) is not sent. A guest is reminded until Forms reports the invite code with their answer (ticket 11): until then a guest never counts as having answered, so the text says "if you have not filled it in yet".

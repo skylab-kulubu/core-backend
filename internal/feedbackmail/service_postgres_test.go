@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +22,9 @@ import (
 )
 
 type sent struct {
+	key       string
+	sub       uuid.UUID
+	eventID   uuid.UUID
 	to        string
 	firstName string
 	eventName string
@@ -35,6 +39,8 @@ type mailer struct {
 	sent []sent
 	fail []error
 	off  map[mail.FeedbackKind]bool
+	// keys is every try's idempotency key, failed ones too.
+	keys []string
 }
 
 func (m *mailer) FeedbackConfigured(kind mail.FeedbackKind) bool {
@@ -43,15 +49,16 @@ func (m *mailer) FeedbackConfigured(kind mail.FeedbackKind) bool {
 	return !m.off[kind]
 }
 
-func (m *mailer) Feedback(_ context.Context, kind mail.FeedbackKind, to, _, first, eventName string, items []mail.FeedbackItem) error {
+func (m *mailer) Feedback(_ context.Context, kind mail.FeedbackKind, key string, to mail.FeedbackRecipient, eventID uuid.UUID, eventName string, items []mail.FeedbackItem) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.keys = append(m.keys, key)
 	if len(m.fail) > 0 {
 		err := m.fail[0]
 		m.fail = m.fail[1:]
 		return err
 	}
-	m.sent = append(m.sent, sent{to: to, firstName: first, eventName: eventName, items: items, kind: kind})
+	m.sent = append(m.sent, sent{key: key, sub: to.Sub, eventID: eventID, to: to.Email, firstName: to.FirstName, eventName: eventName, items: items, kind: kind})
 	return nil
 }
 
@@ -175,6 +182,10 @@ func TestScheduleOneMailAPersonADay(t *testing.T) {
 		t.Fatalf("Grace %+v", grace)
 	}
 	codeOf(t, grace[0].items[0].URL, f.formA)
+	// A guest has no subject: the mail goes by address alone (ticket 13)
+	if grace[0].sub != uuid.Nil || grace[0].eventID != f.event {
+		t.Fatalf("Grace's mail %+v", grace[0])
+	}
 	// B and the Event's form are due at 17:00; Ada's mail at 17:05 carries
 	// all three.
 	if r := f.pass(t, at(17, 1)); r.Planned != 2 || r.Sent != 0 {
@@ -191,6 +202,10 @@ func TestScheduleOneMailAPersonADay(t *testing.T) {
 	}
 	if len(ada) != 1 || !slices.Equal(titles(ada[0].items), []string{"Açılış", "Go atölyesi", "Gecekodu"}) {
 		t.Fatalf("Ada %+v", ada)
+	}
+	// A member's mail names her subject: it goes to her inbox too (ticket 13)
+	if ada[0].sub != f.ada || ada[0].eventID != f.event || ada[0].key == grace[0].key {
+		t.Fatalf("Ada's mail %+v", ada[0])
 	}
 	code := codeOf(t, ada[0].items[1].URL, f.formB)
 	// The answer by Ada's code marks her B invite.
@@ -300,6 +315,10 @@ func TestRetrySendsTheSameLink(t *testing.T) {
 	if len(m) != 1 || codeOf(t, m[0].items[0].URL, f.formA) != code {
 		t.Fatalf("retried mail %+v", m)
 	}
+	// The retry is the same Notification: the same idempotency key
+	if len(f.mail.keys) != 2 || f.mail.keys[0] != f.mail.keys[1] || !strings.HasPrefix(f.mail.keys[0], "core:feedback-request:") {
+		t.Fatalf("keys %v", f.mail.keys)
+	}
 	// A refusal (422) is done with, not tried again.
 	f2 := newFixture(t)
 	f2.mail.fail = []error{&mail.SendError{Status: 422}}
@@ -356,6 +375,10 @@ func TestOneMailAnAddressADay(t *testing.T) {
 	ada := to(all, "ada@example.test")
 	if len(ada) != 1 {
 		t.Fatalf("Ada's mails %+v", all)
+	}
+	// Her member and guest Tickets' mail is hers: her subject, whichever came first
+	if ada[0].sub != f.ada {
+		t.Fatalf("Ada's mail sub %v", ada[0].sub)
 	}
 	got := titles(ada[0].items)
 	slices.Sort(got)
