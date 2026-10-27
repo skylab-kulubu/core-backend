@@ -11,11 +11,12 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 )
 
-// TeamPageConsents answers which people hold an open team page consent
-// (consent.Service.TeamPageAccounts; aydınlatma s6 row 4 b): only they are
-// shown on their teams' public pages in full.
+// TeamPageConsents answers what people decided about the team page
+// consent (consent.Service.TeamPageDecisions; aydınlatma s6 row 4 b): true
+// for an open grant, false for one who withdrew it, absent for one who never
+// gave it.
 type TeamPageConsents interface {
-	TeamPageAccounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error)
+	TeamPageDecisions(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error)
 }
 
 // TeamPageVisibility is who the public rosters (GET /v1/teams/{team}/members
@@ -23,16 +24,19 @@ type TeamPageConsents interface {
 // (docs/team-page-consent.md):
 //
 //   - a person with an open team page consent, in full;
-//   - a Board (YK) member without one, by first and last name and the leader
-//     flag only: their name and role are public on the club's legitimate
-//     interest (s6 row 4 a, KVKK art. 5/2-f); their picture, LinkedIn and
-//     school follow the consent like everyone's;
+//   - on the Board's own roster (a team in or under a YK Privileged root),
+//     a Board member without one by first and last name only: the Board's
+//     names and roles are public on the club's legitimate interest (s6 row
+//     4 a, KVKK art. 5/2-f; Yusuf, 2026-10-27). Their picture, LinkedIn,
+//     school and leader flag follow the consent like everyone's, and on
+//     every other team's roster they are shown only with it;
 //   - nobody else.
 //
-// Until GraceUntil the rosters still show everyone in full, as before the
-// consent (the transition Yusuf chose on 2026-10-27: the members listed then
-// stay listed for 14 days while they are told, then those who did not
-// consent are hidden).
+// Until GraceUntil the rosters still show in full everyone who has not
+// decided, as before the consent (the transition Yusuf chose on 2026-10-27:
+// the members listed then stay listed for 14 days while they are told, then
+// those who did not consent are hidden). Who withdrew is hidden at once,
+// during the transition too.
 type TeamPageVisibility struct {
 	Consents TeamPageConsents
 	// GraceUntil is the end of the transition; zero: none, the rule
@@ -74,13 +78,13 @@ const (
 	shownFull
 )
 
-// teamPageShown decides how each of ids is shown on a public roster. Without
-// a TeamPageVisibility (tests and tools built with NewService) everyone is
-// shown in full, as before the rule; production always sets one.
-func (s *service) teamPageShown(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]shown, error) {
+// teamPageShown decides how each of ids is shown on team's public roster.
+// Without a TeamPageVisibility (tests and tools built with NewService)
+// everyone is shown in full, as before the rule; production always sets one.
+func (s *service) teamPageShown(ctx context.Context, team Group, ids []uuid.UUID) (map[uuid.UUID]shown, error) {
 	out := make(map[uuid.UUID]shown, len(ids))
 	rule := s.teamPage
-	if rule == nil || (!rule.GraceUntil.IsZero() && rule.now().Before(rule.GraceUntil)) {
+	if rule == nil {
 		for _, id := range ids {
 			out[id] = shownFull
 		}
@@ -89,27 +93,18 @@ func (s *service) teamPageShown(ctx context.Context, ids []uuid.UUID) (map[uuid.
 	if rule.Consents == nil {
 		return nil, errNoTeamPageConsents
 	}
-	consented, err := rule.Consents.TeamPageAccounts(ctx, ids)
+	grace := !rule.GraceUntil.IsZero() && rule.now().Before(rule.GraceUntil)
+	decisions, err := rule.Consents.TeamPageDecisions(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	var rest []uuid.UUID
+	board := s.boardRoster(team)
 	for _, id := range ids {
-		if consented[id] {
+		open, decided := decisions[id]
+		switch {
+		case open, grace && !decided:
 			out[id] = shownFull
-		} else {
-			rest = append(rest, id)
-		}
-	}
-	if len(rest) == 0 {
-		return out, nil
-	}
-	board, err := s.boardMembers(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, id := range rest {
-		if board[id] {
+		case board:
 			out[id] = shownName
 		}
 	}
@@ -123,32 +118,9 @@ func (r *TeamPageVisibility) now() time.Time {
 	return time.Now()
 }
 
-// boardMembers is everyone in a YK Privileged root (/YK, /UYELER/YK) or in
-// a Group under one.
-func (s *service) boardMembers(ctx context.Context) (map[uuid.UUID]bool, error) {
-	out := map[uuid.UUID]bool{}
-	for _, root := range s.privilegedRoots {
-		if authz.RootLabel(root) != "YK" {
-			continue
-		}
-		g, err := s.dir.GetGroup(ctx, root)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if g.Path != root {
-			// A search found a Group of that name elsewhere in the tree.
-			continue
-		}
-		hits, err := s.memberHits(ctx, g)
-		if err != nil {
-			return nil, err
-		}
-		for _, h := range hits {
-			out[h.person.ID] = true
-		}
-	}
-	return out, nil
+// boardRoster reports whether team is the Board's own: a YK Privileged root
+// (/YK, /UYELER/YK) or a Group under one.
+func (s *service) boardRoster(team Group) bool {
+	root := authz.PrivilegedRoot(s.privilegedRoots, team.Path)
+	return root != "" && authz.RootLabel(root) == "YK"
 }

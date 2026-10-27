@@ -548,9 +548,12 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/dashboard/summary", handlers.NewDashboardHandler(deps.Dashboard).Summary)
 	}
 
-	app.Get("/v1/teams", teams.List)
-	app.Get("/v1/teams/:team/members", teams.Members)
-	app.Get("/v1/teams/:team/leaders", teams.Leaders)
+	// The team routes are public and each read reaches Keycloak: one budget
+	// per client address for the three (perClientLimit).
+	teamsLimit := perClientLimit(trustedProxies)
+	app.Get("/v1/teams", teamsLimit, teams.List)
+	app.Get("/v1/teams/:team/members", teamsLimit, teams.Members)
+	app.Get("/v1/teams/:team/leaders", teamsLimit, teams.Leaders)
 
 	app.Get("/v1/events", events.List)
 	app.Get("/v1/events/active", events.ListActive)

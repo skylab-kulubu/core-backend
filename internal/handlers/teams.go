@@ -22,6 +22,9 @@ func (h *TeamHandler) List(c fiber.Ctx) error {
 }
 
 func (h *TeamHandler) Members(c fiber.Ctx) error {
+	// A person who withdraws their team page consent is gone from the next
+	// answer: no cache keeps the roster (docs/team-page-consent.md).
+	c.Set(fiber.HeaderCacheControl, "no-store")
 	roster, err := h.svc.PublicMembers(c.Context(), c.Params("team"))
 	if err != nil {
 		return identityError(c, err)
@@ -30,6 +33,9 @@ func (h *TeamHandler) Members(c fiber.Ctx) error {
 }
 
 func (h *TeamHandler) Leaders(c fiber.Ctx) error {
+	// A person who withdraws their team page consent is gone from the next
+	// answer: no cache keeps the roster (docs/team-page-consent.md).
+	c.Set(fiber.HeaderCacheControl, "no-store")
 	roster, err := h.svc.PublicLeaders(c.Context(), c.Params("team"))
 	if err != nil {
 		return identityError(c, err)

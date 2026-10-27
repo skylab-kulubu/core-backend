@@ -1145,10 +1145,12 @@ func (s *Service) WithdrawMine(ctx context.Context, userID uuid.UUID, purpose Pu
 	return s.endOpen(ctx, purpose, target, viaSelf, s.now())
 }
 
-// ActiveAccounts is which of ids hold an open, confirmed own grant of
-// purpose: the public team rosters read it for team_page. With consents off
-// nobody holds one: a grant the person could not withdraw is not acted on.
-func (s *Service) ActiveAccounts(ctx context.Context, purpose Purpose, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+// Decisions is what each of ids decided about purpose, by their own grants:
+// true for an open, confirmed grant, false for a person whose grants have
+// all ended (they withdrew), absent for one who never gave it. The public
+// team rosters read it for team_page. With consents off nobody holds one: a
+// grant the person could not withdraw is not acted on.
+func (s *Service) Decisions(ctx context.Context, purpose Purpose, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
 	out := map[uuid.UUID]bool{}
 	if !s.Enabled() || len(ids) == 0 {
 		return out, nil
@@ -1157,9 +1159,11 @@ func (s *Service) ActiveAccounts(ctx context.Context, purpose Purpose, ids []uui
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT c.user_id FROM contact_consents c
+		SELECT c.user_id, bool_or(c.ended_at IS NULL AND c.confirmed_at IS NOT NULL)
+		FROM contact_consents c
 		JOIN users u ON u.id = c.user_id AND u.account_state = 'active'
-		WHERE c.purpose = $1 AND c.user_id = ANY($2) AND c.ended_at IS NULL AND c.confirmed_at IS NOT NULL`,
+		WHERE c.purpose = $1 AND c.user_id = ANY($2)
+		GROUP BY c.user_id`,
 		purpose, ids)
 	if err != nil {
 		return nil, err
@@ -1167,18 +1171,19 @@ func (s *Service) ActiveAccounts(ctx context.Context, purpose Purpose, ids []uui
 	defer rows.Close()
 	for rows.Next() {
 		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
+		var open bool
+		if err := rows.Scan(&id, &open); err != nil {
 			return nil, err
 		}
-		out[id] = true
+		out[id] = open
 	}
 	return out, rows.Err()
 }
 
-// TeamPageAccounts is ActiveAccounts of team_page: which of ids may be shown
-// on their teams' public pages (identity.TeamPageConsents).
-func (s *Service) TeamPageAccounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
-	return s.ActiveAccounts(ctx, PurposeTeamPage, ids)
+// TeamPageDecisions is Decisions of team_page: who may be shown on their
+// teams' public pages, and who withdrew (identity.TeamPageConsents).
+func (s *Service) TeamPageDecisions(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+	return s.Decisions(ctx, PurposeTeamPage, ids)
 }
 
 // EraseSubject deletes every grant of a person, open or ended: their

@@ -11,7 +11,7 @@ import (
 
 // A member's team page consent (s6 row 4 b, docs/team-page-consent.md) is
 // their account's own: active at once, recorded for the web with its text
-// and source, read by the public rosters (TeamPageAccounts), ended by the
+// and source, read by the public rosters (TeamPageDecisions), ended by the
 // person without Keycloak and by staff on their mail, and kept as proof
 // without being read any more. No mail route serves it.
 func TestTeamPageConsentIsTheAccountsOwnAndTheRostersReadIt(t *testing.T) {
@@ -39,9 +39,9 @@ func TestTeamPageConsentIsTheAccountsOwnAndTheRostersReadIt(t *testing.T) {
 	}
 	f.exec(t, `UPDATE users SET account_state = 'deletion_pending', deletion_requested_at = now() WHERE id = $1`, erased)
 
-	shown, err := f.svc.TeamPageAccounts(ctx, []uuid.UUID{member, other, erased})
-	if err != nil || !shown[member] || shown[other] || shown[erased] || len(shown) != 1 {
-		t.Fatalf("shown %v %v", shown, err)
+	shown, err := f.svc.TeamPageDecisions(ctx, []uuid.UUID{member, other, erased})
+	if err != nil || !shown[member] || len(shown) != 1 {
+		t.Fatalf("decisions %v %v", shown, err)
 	}
 
 	for name, call := range map[string]func() error{
@@ -71,11 +71,25 @@ func TestTeamPageConsentIsTheAccountsOwnAndTheRostersReadIt(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("withdraw %d %v", n, err)
 	}
-	if shown, err := f.svc.TeamPageAccounts(ctx, []uuid.UUID{member}); err != nil || shown[member] {
-		t.Fatalf("shown after withdrawal %v %v", shown, err)
+	// Withdrawn is a decision of its own: false, not absent.
+	if shown, err := f.svc.TeamPageDecisions(ctx, []uuid.UUID{member, other}); err != nil || len(shown) != 1 {
+		t.Fatalf("decisions after withdrawal %v %v", shown, err)
+	} else if open, decided := shown[member]; !decided || open {
+		t.Fatalf("withdrawn member %v %v", open, decided)
 	}
 	if f.count(t, `id = $1 AND ended_reason = 'withdrawn' AND ended_via = 'self'`, result.ID) != 1 {
 		t.Fatal("the withdrawn grant is not kept as proof")
+	}
+
+	// Given again: open again, the ended row stays as proof.
+	if _, err := f.svc.Grant(ctx, consent.Grant{Purpose: consent.PurposeTeamPage, UserID: member, Source: consent.SourceSelf}); err != nil {
+		t.Fatal(err)
+	}
+	if shown, err := f.svc.TeamPageDecisions(ctx, []uuid.UUID{member}); err != nil || !shown[member] {
+		t.Fatalf("given again %v %v", shown, err)
+	}
+	if _, err := f.svc.WithdrawMine(ctx, member, consent.PurposeTeamPage); err != nil {
+		t.Fatal(err)
 	}
 
 	// Given again, then withdrawn by mail to info@ (s6 §6).
@@ -101,7 +115,7 @@ func TestTeamPageAccountsWithConsentsOffIsNobody(t *testing.T) {
 		t.Fatal(err)
 	}
 	off := consent.NewService(f.pool, consent.Config{}, nil)
-	shown, err := off.TeamPageAccounts(ctx, []uuid.UUID{member})
+	shown, err := off.TeamPageDecisions(ctx, []uuid.UUID{member})
 	if err != nil || len(shown) != 0 {
 		t.Fatalf("off %v %v", shown, err)
 	}

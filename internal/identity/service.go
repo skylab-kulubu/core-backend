@@ -1416,7 +1416,7 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 			listed = append(listed, p.ID)
 		}
 	}
-	visible, err := s.teamPageShown(ctx, listed)
+	visible, err := s.teamPageShown(ctx, g, listed)
 	if err != nil {
 		return Roster{}, err
 	}
@@ -1430,7 +1430,7 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 		m := PublicMember{
 			FirstName: p.FirstName,
 			LastName:  p.LastName,
-			Leader:    leader,
+			Leader:    leader && visible[p.ID] == shownFull,
 		}
 		if account.Stored {
 			shadow := account.User

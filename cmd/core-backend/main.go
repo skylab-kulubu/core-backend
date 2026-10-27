@@ -653,8 +653,8 @@ func main() {
 			consents.SetPersonalEmailHolders(holders)
 		}
 	}
-	// The public team rosters show only who consented (team_page) and the
-	// Board's names, after the transition TEAM_PAGE_CONSENT_GRACE_UNTIL
+	// The public team rosters show only who consented (team_page), and the
+	// Board's names on its own roster, after the transition TEAM_PAGE_CONSENT_GRACE_UNTIL
 	// (docs/team-page-consent.md).
 	teamPageGraceUntil, err := identity.TeamPageGraceUntilFromEnv(os.Getenv)
 	if err != nil {
@@ -663,7 +663,7 @@ func main() {
 	if teamPageGraceUntil.IsZero() {
 		log.Printf("team pages: only members who consented are listed")
 	} else {
-		log.Printf("team pages: every member is listed until %s, then only members who consented", teamPageGraceUntil.UTC().Format(time.RFC3339))
+		log.Printf("team pages: members who have not decided are listed until %s, then only members who consented", teamPageGraceUntil.UTC().Format(time.RFC3339))
 	}
 	if consentConfig.Enabled {
 		log.Printf("contact consents: on (links at %s, service clients %v, verified-address clients %v)",
