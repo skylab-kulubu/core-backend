@@ -51,6 +51,10 @@ type Service interface {
 	// /v1/groups/{id}/settings): its manager (a Leader of it or of a Team
 	// above, delegation on) or Privileged.
 	SetTeamSettings(ctx context.Context, p authz.Principal, groupRef string, settings TeamSettings) (TeamSettings, error)
+	// MembershipWriteDecision is whether the caller may change the Group's
+	// membership, as AddMember decides, without writing
+	// (membership_decision.go).
+	MembershipWriteDecision(ctx context.Context, p authz.Principal, groupRef string) (MembershipDecision, error)
 	// MemberCheck is what adding a person to a Group would warn of
 	// (grup-yonetimi 07); it never refuses the add.
 	MemberCheck(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) (MemberCheck, error)

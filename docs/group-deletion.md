@@ -99,6 +99,7 @@ are on, is heard only by the preference cleanup):
 | `retired_team_codes` | code, `group_id` | retired (`deleted`) by core's deletion; not by a console deletion (the event carries no name) | untouched |
 | `team_audit_records` | `group_id`, `group_path` | audit trail | untouched |
 | `team_membership_mails`, `privilege_notice_mails` | `group_path` | pending notices (at most 72 hours), their contract above | untouched |
+| `management_membership_terms`, `management_term_mails` | `group_id`, `group_path` | open terms are ended by the next daily run ([management-membership-terms.md](management-membership-terms.md)); pending term mails (at most 72 hours) name the Group by its path | untouched |
 | `TeamTree`, `OverageGroups`, `TeamDelegation` caches | in process | refreshed within a minute | not emptied: competing consumers give the event to one replica only |
 | Delegation (ADR 0065): Leader sub-Groups, app role mappings, team profile attributes | Keycloak | gone with the Group | nothing in core |
 

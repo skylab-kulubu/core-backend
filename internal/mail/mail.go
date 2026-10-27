@@ -107,9 +107,13 @@ type SkyMail struct {
 	// off.
 	FeedbackRequestTemplateKey  string
 	FeedbackReminderTemplateKey string
-	Tokens                      TokenSource
-	HTTP                        *http.Client
-	Logger                      *log.Logger
+	// ManagementTermTemplateKey addresses the management term mails
+	// (management_term.go, docs/management-membership-terms.md); empty
+	// turns them off.
+	ManagementTermTemplateKey string
+	Tokens                    TokenSource
+	HTTP                      *http.Client
+	Logger                    *log.Logger
 }
 
 // template says which SkyMail template a send is aimed at. Only one of the two

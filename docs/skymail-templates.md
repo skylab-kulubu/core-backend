@@ -85,6 +85,14 @@ by address through `/v1/mail_tasks/single`. It rides a queue of its own and is
 off until `TICKET_CREATED_NOTIFICATION=on`. See
 [ticket-created-notification.md](ticket-created-notification.md).
 
+A ninth, `club.management-term`, rides a queue of its own the same way: the
+warning 14 days and 1 day before a YK, DK or Team Leader membership's term
+ends (to the holder and those over them), the list of terms marked expired
+that day and the weekly summary (both to ADMIN). One template; its `Notice`
+variable says which. `SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY` addresses it
+(unset: the key above; empty: off). See
+[management-membership-terms.md](management-membership-terms.md#mails).
+
 ## Configuration
 
 | Variable | Unset | Empty |

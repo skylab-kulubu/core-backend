@@ -45,6 +45,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
 	"github.com/skylab-kulubu/core-backend/internal/mediaframe"
+	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
 	"github.com/skylab-kulubu/core-backend/internal/memlimit"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/retention"
@@ -97,6 +98,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == consentWithdrawCommandName {
 		os.Exit(runConsentWithdraw(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == managementTermsCommandName {
+		os.Exit(runManagementTerms(os.Args[2:], os.Getenv, os.Stdout))
 	}
 	if len(os.Args) > 1 && os.Args[1] == retentionSweepCommandName {
 		os.Exit(runRetentionSweep(os.Args[2:], os.Getenv, os.Stdout))
@@ -993,28 +997,41 @@ func main() {
 		cancelCanary()
 	}
 
+	// Management membership terms (docs/management-membership-terms.md,
+	// grup-yonetimi 11): YK, DK and Team Leader memberships end with the
+	// season; core warns, marks and lists, and never takes anyone out.
+	terms, err := startManagementTerms(workers, os.Getenv, managementTermsDeps{
+		pool: pool, dir: dir, seasons: seasons, users: users, sky: sky, audit: teamAudit, az: az,
+		rules: membershipterm.Rules{PrivilegedRoots: privilegedRoots, LeaderSubgroups: authzPolicy.LeaderSubgroups},
+	}, worker, log.Printf)
+	if err != nil {
+		log.Fatal(err)
+	}
+	identityService := identity.NewServiceWithOptions(auditedDir, users, az, identity.Options{
+		AccountErasureEnabled: workerEnabled,
+		AccessProjector:       accessProjector,
+		GroupCache:            overageGroups,
+		TeamTree:              teamTree,
+		Membership:            identity.JoinMembershipNotifiers(teamMembership, terms),
+		GroupRoles:            groupRolesNotice,
+		PrivilegedRoots:       privilegedRoots,
+		GroupNames:            &groupNames,
+		TeamCodes:             teamcode.NewPostgresLedger(pool),
+		Delegation:            delegation,
+		TeamAudit:             teamAudit,
+		DirectUserRoles:       directUserRoles,
+		AdminGroups:           adminGroups,
+		UserSync:              userSync,
+		NoMemberSeatSearch:    !memberSeatSearch,
+		Apps:                  apps,
+		AppAudit:              teamAudit,
+		AppAssignments:        appAssignments,
+	})
+	terms.UseMemberships(identityService)
+
 	app := httpx.New(httpx.Deps{
-		Users: user.NewService(users, dir),
-		Identity: identity.NewServiceWithOptions(auditedDir, users, az, identity.Options{
-			AccountErasureEnabled: workerEnabled,
-			AccessProjector:       accessProjector,
-			GroupCache:            overageGroups,
-			TeamTree:              teamTree,
-			Membership:            teamMembership,
-			GroupRoles:            groupRolesNotice,
-			PrivilegedRoots:       privilegedRoots,
-			GroupNames:            &groupNames,
-			TeamCodes:             teamcode.NewPostgresLedger(pool),
-			Delegation:            delegation,
-			TeamAudit:             teamAudit,
-			DirectUserRoles:       directUserRoles,
-			AdminGroups:           adminGroups,
-			UserSync:              userSync,
-			NoMemberSeatSearch:    !memberSeatSearch,
-			Apps:                  apps,
-			AppAudit:              teamAudit,
-			AppAssignments:        appAssignments,
-		}),
+		Users:    user.NewService(users, dir),
+		Identity: identityService,
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
 			ImageAddressMode: imageAddressMode,
@@ -1050,6 +1067,7 @@ func main() {
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
 		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
 		TeamMailMetrics:        teamMembershipMetrics,
+		ManagementTerms:        terms,
 		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,
 		EventsMetrics:          eventsMetrics,

@@ -54,6 +54,15 @@ const (
 	// person (TargetUserID, GroupPath empty), never both.
 	ActionAppAssign   Action = "app.assign"
 	ActionAppUnassign Action = "app.unassign"
+	// ActionTermExtend, ActionTermHandover and ActionTermExpired are a
+	// management membership term's (docs/management-membership-terms.md,
+	// grup-yonetimi 11): its end moved, its holder handed it over, and the
+	// daily job marking it expired (BasisSystem). The target is the
+	// holder; before and after carry the end (State.EndsAt) and, for a
+	// handover, the successor and how (State.SuccessorID, State.Handover).
+	ActionTermExtend   Action = "membership.term.extend"
+	ActionTermHandover Action = "membership.term.handover"
+	ActionTermExpired  Action = "membership.term.expired"
 )
 
 // Actions are every action the table's check accepts.
@@ -61,13 +70,15 @@ var Actions = []Action{
 	ActionMemberAdd, ActionMemberRemove, ActionLeaderAdd, ActionLeaderRemove,
 	ActionTeamCreate, ActionTeamCode, ActionTeamProfile, ActionTeamMove, ActionTeamDelete,
 	ActionGroupRoles, ActionGroupAttributes, ActionAppAssign, ActionAppUnassign,
+	ActionTermExtend, ActionTermHandover, ActionTermExpired,
 }
 
 // targetsPerson reports whether the action is about one person: they, and
 // only they, carry a target user.
 func (a Action) targetsPerson() bool {
 	switch a {
-	case ActionMemberAdd, ActionMemberRemove, ActionLeaderAdd, ActionLeaderRemove:
+	case ActionMemberAdd, ActionMemberRemove, ActionLeaderAdd, ActionLeaderRemove,
+		ActionTermExtend, ActionTermHandover, ActionTermExpired:
 		return true
 	}
 	return false
@@ -106,7 +117,15 @@ const (
 	// BasisNone: the actor has no basis for the change. Only a denied row
 	// (Writer.Deny) carries it: a write that is made always has one.
 	BasisNone Basis = "none"
+	// BasisSystem: core's own job made the change, no person
+	// (membership.term.expired only). Its actor is the nil subject, and
+	// Actor.Client names the job (SystemTermExpiry).
+	BasisSystem Basis = "system"
 )
+
+// SystemTermExpiry is the Client of the rows the management term job
+// writes (BasisSystem): the "aktör system:term-expiry" of grup-yonetimi 11.
+const SystemTermExpiry = "system:term-expiry"
 
 // Actor is who makes the change, as the request carries them.
 type Actor struct {
@@ -167,6 +186,14 @@ type State struct {
 	// row; absent on every other row.
 	Client string `json:"client,omitempty"`
 	Role   string `json:"role,omitempty"`
+	// EndsAt is a management membership term's end (RFC 3339), on a
+	// membership.term.* row; absent on every other row.
+	EndsAt string `json:"endsAt,omitempty"`
+	// SuccessorID and Handover are a membership.term.handover's: who the
+	// term was handed to (a subject) and how ("immediate": the holder was
+	// taken out at once; "at_term_end": marked at their own end).
+	SuccessorID string `json:"successorId,omitempty"`
+	Handover    string `json:"handover,omitempty"`
 }
 
 // Limits of what a row holds. A longer text is cut, so a long value never
@@ -267,7 +294,7 @@ func (r Record) checkOutcome(outcome Outcome) string {
 // normalize checks r and cuts its texts to their limits. The error is a
 // short code.
 func (r Record) normalize() (Record, string) {
-	if r.Actor.ID == uuid.Nil {
+	if r.Actor.ID == uuid.Nil && r.Actor.Basis != BasisSystem {
 		return r, "no_actor"
 	}
 	switch r.Actor.Basis {
@@ -281,6 +308,10 @@ func (r Record) normalize() (Record, string) {
 		}
 	case BasisNone:
 		if r.Actor.ViaGroupID != "" {
+			return r, "invalid_basis"
+		}
+	case BasisSystem:
+		if r.Actor.ID != uuid.Nil || r.Actor.ViaGroupID != "" || r.Action != ActionTermExpired {
 			return r, "invalid_basis"
 		}
 	default:
@@ -338,6 +369,11 @@ func (s *State) normalize() *State {
 		Code:     cut(s.Code, MaxIdentifier),
 		Client:   cut(s.Client, MaxIdentifier),
 		Role:     cut(s.Role, MaxIdentifier),
+		EndsAt:   cut(s.EndsAt, MaxIdentifier),
+		Handover: cut(s.Handover, MaxIdentifier),
+	}
+	if _, err := uuid.Parse(s.SuccessorID); err == nil {
+		out.SuccessorID = s.SuccessorID
 	}
 	if s.UnverifiedAck != nil {
 		ack := *s.UnverifiedAck

@@ -84,6 +84,10 @@ services:
       # Feedback mails (docs/event-feedback.md), the same way.
       SKYMAIL_FEEDBACK_REQUEST_TEMPLATE_KEY: ${SKYMAIL_FEEDBACK_REQUEST_TEMPLATE_KEY-core.feedback-request}
       SKYMAIL_FEEDBACK_REMINDER_TEMPLATE_KEY: ${SKYMAIL_FEEDBACK_REMINDER_TEMPLATE_KEY-core.feedback-reminder}
+      # Management membership terms (docs/management-membership-terms.md).
+      MANAGEMENT_TERMS_MODE: ${MANAGEMENT_TERMS_MODE:-off}
+      MANAGEMENT_TERMS_WEEKLY_SUMMARY: ${MANAGEMENT_TERMS_WEEKLY_SUMMARY:-on}
+      SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY: ${SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY-club.management-term}
       # The new Ticket's Notification (docs/ticket-created-notification.md).
       TICKET_CREATED_NOTIFICATION: ${TICKET_CREATED_NOTIFICATION:-off}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}

@@ -26,6 +26,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
@@ -104,6 +105,12 @@ type Deps struct {
 	// TeamMailMetrics are the team membership mail's counters
 	// (docs/team-membership-mail.md). Nil publishes none.
 	TeamMailMetrics interface{ Prometheus() string }
+
+	// ManagementTerms keeps the management membership terms
+	// (docs/management-membership-terms.md): its metrics on /v1/metrics,
+	// the capabilities' expiredManagementMemberships and, in apply mode,
+	// the /v1/management-memberships routes. Nil serves none of them.
+	ManagementTerms *membershipterm.Service
 
 	// TeamDelegationMetrics count the client roles nobody has classified
 	// that team delegation's protection reads found
@@ -297,7 +304,7 @@ func New(deps Deps) *fiber.App {
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
 		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil ||
-		deps.EventsMetrics != nil {
+		deps.EventsMetrics != nil || deps.ManagementTerms != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -328,6 +335,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.TeamMailMetrics != nil {
 				text += deps.TeamMailMetrics.Prometheus()
+			}
+			if deps.ManagementTerms != nil {
+				text += deps.ManagementTerms.Prometheus()
 			}
 			if deps.TeamDelegationMetrics != nil {
 				text += deps.TeamDelegationMetrics.Prometheus()
@@ -492,6 +502,9 @@ func New(deps Deps) *fiber.App {
 		if deps.ManagedTeams != nil {
 			capabilities.WithManagedTeams(deps.ManagedTeams)
 		}
+		if deps.ManagementTerms != nil {
+			capabilities.WithExpiredMemberships(deps.ManagementTerms)
+		}
 		app.Get("/v1/users/me/capabilities", capabilities.Get)
 	}
 	app.Get("/v1/users/me/managed-groups", ident.ManagedGroups)
@@ -520,6 +533,16 @@ func New(deps Deps) *fiber.App {
 	app.Delete("/v1/groups/:groupId/members/:userId", ident.RemoveMember)
 	app.Get("/v1/groups/:groupId/client-roles", ident.GroupClientRoles)
 	app.Put("/v1/groups/:groupId/client-roles", ident.SetGroupClientRoles)
+
+	// Management membership terms (docs/management-membership-terms.md):
+	// served only while they are kept (MANAGEMENT_TERMS_MODE=apply).
+	if deps.ManagementTerms != nil && deps.ManagementTerms.Mode() == membershipterm.ModeApply {
+		terms := handlers.NewManagementTermsHandler(deps.ManagementTerms)
+		app.Get("/v1/management-memberships", terms.List)
+		app.Post("/v1/management-memberships/:termId/extend", terms.Extend)
+		app.Post("/v1/management-memberships/:termId/handover", terms.Handover)
+		app.Delete("/v1/management-memberships/:termId", terms.Remove)
+	}
 
 	if deps.AppAssignments {
 		apps := handlers.NewAppsHandler(deps.Identity)

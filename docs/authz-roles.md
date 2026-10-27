@@ -128,6 +128,9 @@ What the caller may do, for the admin panel (ticket 10) to decide which menus an
   ],
   "managedTeams": [
     {"id": "7d1c…", "path": "/UYELER/ARGE/WEBLAB", "code": "WEBLAB", "displayName": {"tr": "Web Geliştirme"}}
+  ],
+  "expiredManagementMemberships": [
+    {"termId": "3b9e…", "groupId": "a2f0…", "groupPath": "/UYELER/YK", "role": "board", "endsAt": "2027-05-31T20:59:59Z", "expiredAt": "2027-06-01T06:12:00Z"}
   ]
 }
 ```
@@ -139,6 +142,7 @@ What the caller may do, for the admin panel (ticket 10) to decide which menus an
 - `noOwnerTeam`: the decisions for a record without an Owner team.
 - `editableSites`: the sites whose CMS the caller may edit (CONTEXT "Site editor"), for the panel's "Düzenle" links. **A hint for the UI, not an authorization** (ipucu, yetki değil): the CMS decides every edit from the person's own token, and the site shows its editor only to a holder of `cms:access`. See [Editable sites](#editable-sites).
 - `managedTeams`: the Teams the caller is a Leader of (directly in their `LIDERLER` or `KOORDINATORLER`), for the panel's "Ekiplerim" menu. Read from Keycloak's current membership with core's service account, by Group id, never from the token; in path order. `[]` with `TEAM_DELEGATION=off`, for a service account and when Keycloak cannot be read. Kept 60 s per person, a failed read 10 s, a read waits 3 s at most, as `editableSites`; each read logs `{"event":"managed_teams",…,"teams":N}`. **A hint**: core decides every Group request. See [team-delegation.md](team-delegation.md).
+- `expiredManagementMemberships`: the caller's YK, DK and Team Leader memberships whose term has expired while they are still in the Group, for the panel's banner ([management-membership-terms.md](management-membership-terms.md)). `[]` unless `MANAGEMENT_TERMS_MODE=apply`, for a service account and when the terms cannot be read. **A hint**: an expired term changes no decision; the person keeps the Group's rights until someone removes them.
 
 Look-up for a record of Owner team `t`: `teams.find(x => x.team === t)?.can ?? (t ? otherTeams.can : noOwnerTeam.can)`.
 
