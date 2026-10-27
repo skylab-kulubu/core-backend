@@ -3,12 +3,14 @@ package user
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // DeletionStepRecord is one checkpoint of the completion proof. Counts is set
@@ -51,6 +53,74 @@ func (s *PostgresStore) CompleteServiceErasureStep(ctx context.Context, requestI
 		return ErrLeaseLost
 	}
 	return nil
+}
+
+// OperatorRecordedCount is the counts key RecordOperatorErasureStep adds, set
+// to 1: the proof tells a step an operator carried out by hand from one the
+// service confirmed.
+const OperatorRecordedCount = "operator_recorded"
+
+// RecordOperatorErasureStep checkpoints a service erasure step an operator
+// carried out by hand, for a service that has no erase endpoint yet: the
+// worker's call got 404 and sent the request to manual intervention under
+// `<step>_…`. counts are what the operator's change reported;
+// OperatorRecordedCount is added to them. The request goes back to pending,
+// as the person's retry does (RetrySelfDeletion), and the worker goes on with
+// the saga. Only SkyMail's, the CMS's and Forms' steps are recorded this way;
+// a request that does not wait on that step, or has it checkpointed, is
+// refused with ErrOperatorStepRefused and nothing changes.
+func (s *PostgresStore) RecordOperatorErasureStep(ctx context.Context, requestID uuid.UUID, step DeletionStep, at time.Time, counts map[string]int64) error {
+	if step != DeletionStepEraseSkyMail && step != DeletionStepEraseCMS && step != DeletionStepEraseForms {
+		return ErrOperatorStepRefused
+	}
+	recorded := maps.Clone(counts)
+	if recorded == nil {
+		recorded = map[string]int64{}
+	}
+	recorded[OperatorRecordedCount] = 1
+	raw, err := json.Marshal(recorded)
+	if err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var status DeletionRequestStatus
+	var code string
+	err = tx.QueryRow(ctx, `
+		SELECT status, last_error_code FROM account_deletion_requests WHERE id = $1 FOR UPDATE
+	`, requestID).Scan(&status, &code)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if status != DeletionRequestManualIntervention || !strings.HasPrefix(code, string(step)+"_") {
+		return ErrOperatorStepRefused
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO account_deletion_steps (request_id, step, completed_at, counts)
+		VALUES ($1, $2, $3, $4::jsonb)
+		ON CONFLICT (request_id, step) DO NOTHING
+	`, requestID, step, at, string(raw))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrOperatorStepRefused
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE account_deletion_requests
+		SET status = 'pending', attempt_count = 0, next_attempt_at = $2,
+			lease_until = NULL, lease_token = NULL, last_error_code = '', updated_at = $2
+		WHERE id = $1
+	`, requestID, at); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // DeletionStepRecords returns a request's checkpoints, oldest first.

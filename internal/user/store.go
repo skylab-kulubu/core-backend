@@ -18,6 +18,10 @@ var (
 	ErrAccountBlocked                  = errors.New("user account blocked")
 	ErrLeaseLost                       = errors.New("account deletion lease lost")
 	ErrSelfDeletionIdempotencyConflict = errors.New("self deletion idempotency conflict")
+	// ErrOperatorStepRefused is RecordOperatorErasureStep refusing: the
+	// request is not in manual intervention under that service step's code,
+	// or that step is checkpointed already.
+	ErrOperatorStepRefused = errors.New("account deletion request does not wait on that service step")
 	// ErrYTUManaged refuses an edit that would change the university,
 	// faculty or department of a YTÜ-linked person: those follow the YTÜ
 	// Microsoft login, which would overwrite the edit anyway.
