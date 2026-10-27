@@ -8,6 +8,7 @@ person's explicit, optional consent (KVKK art. 5/1) for one purpose:
 | `event_invitations` | invitations to SKY LAB's other events and its announcements by e-mail (aydınlatma s6 row 14, §5.14; `davet-v2`) | Guest apply, Forms, Place, Guessr, a signed-in person | yes |
 | `promotional` | mails whose main purpose is promoting a product or a service: a discount code, a company's job posting, a sale, a raffle (aydınlatma s6 row 13 b, §5.8, §5.10). A short sponsor thank-you or logo in an announcement is not promotional and needs no consent | SkyForms forms (`forms`), the first Account Center screen after signup (`signup`), Account Center's communication preferences (`self`) | yes |
 | `recruitment_pool` | keeping a team application that was not accepted, to be considered in future recruitment | Forms only | **no**: every route answers `400 purpose_not_enabled` until its scope (an address, or one application) is agreed with Forms. The table already allows the value |
+| `team_page` | being shown on one's teams' public pages (aydınlatma s6 row 4 b; [`team-page-consent.md`](team-page-consent.md)). Not a contact consent: channel `web`, no mail route serves it | the person, for their own account, in Account Center (`self`) | yes |
 
 Core keeps the single record (`contact_consents`). The products write to it;
 SkyMail reads its invitation and promotional lists only from it. Member and alumni
@@ -144,11 +145,14 @@ at <https://yildizskylab.com/acik-riza-metni.pdf> (source: sky_lab_genel
 |---|---|---|
 | `davet-v2` | `event_invitations` | Diğer etkinlik ve duyurulardan haberdar olmak istiyorum. |
 | `tanitim-v1` | `promotional` | SKY LAB'dan tanıtım içerikli e-postalar (indirim kodu, şirket iş ilanı, çekiliş gibi) almak istiyorum. |
+| `ekip-sayfasi-v1` | `team_page` | Ekip sayfalarında görüneyim: adım, soyadım, profil fotoğrafım, LinkedIn adresim, üniversitem, fakültem, bölümüm ve ekip liderliğim ekibimin sitedeki ve SKY LAB uygulamasındaki sayfasında yayımlansın. |
 | `alim-havuzu-v1` | `recruitment_pool` (not taken yet) | Bu dönem kabul edilmezsem başvurumun gelecek alımlarda değerlendirilmek üzere saklanmasını istiyorum. İstediğim zaman vazgeçebilirim. |
 
 A changed wording is a new version here and in a new edition of the
 published text. `alim-havuzu-v1` is not in the published text; it gets there
-before its purpose is enabled. A grant that names no version is recorded on
+before its purpose is enabled. `ekip-sayfasi-v1` is not in it either: the
+switch shows the whole text where the consent is taken (aydınlatma s6 §6),
+and a new edition of the published text may add it. A grant that names no version is recorded on
 the newest one of its purpose. `davet-v1` (the invitations alone, from an
 earlier draft that was never published) is no longer taken: a grant naming it
 answers `400`. No production grant names it (`CONTACT_CONSENT_KEY` is unset
