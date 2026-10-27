@@ -142,6 +142,9 @@ func TestCreateRefusesWhatThePolicyKeepsOut(t *testing.T) {
 		"answered tomorrow": {func(in *subjectrequest.Input) { in.Status, in.AnsweredOn = subjectrequest.StatusAnswered, &tomorrow }, "answered_on_invalid"},
 		"long summary":      {func(in *subjectrequest.Input) { in.AnswerSummary = long(2001) }, "answer_summary_invalid"},
 		"long responder":    {func(in *subjectrequest.Input) { in.Responder = long(101) }, "responder_invalid"},
+		"year before":       {func(in *subjectrequest.Input) { in.ReceivedOn = "2025-10-26" }, "received_on_invalid"},
+		"bad account":       {func(in *subjectrequest.Input) { bad := "ada"; in.UserID = &bad }, "user_invalid"},
+		"nil account":       {func(in *subjectrequest.Input) { nilID := uuid.Nil.String(); in.UserID = &nilID }, "user_invalid"},
 	}
 	for name, tc := range cases {
 		in := valid()
@@ -150,8 +153,14 @@ func TestCreateRefusesWhatThePolicyKeepsOut(t *testing.T) {
 			t.Errorf("%s: %v (%q)", name, err, code(err))
 		}
 	}
-	// Today in Istanbul is the 27th, whatever UTC says.
+	// A year back is the earliest day taken.
 	in := valid()
+	in.ReceivedOn = "2025-10-27"
+	if _, err := svc.Create(ctx, yk, in); err != nil {
+		t.Fatalf("a year back: %v", err)
+	}
+	// Today in Istanbul is the 27th, whatever UTC says.
+	in = valid()
 	in.ReceivedOn = "2026-10-27"
 	if _, err := svc.Create(ctx, yk, in); err != nil {
 		t.Fatalf("today: %v", err)
@@ -222,6 +231,59 @@ func TestUpdateClosesAndReopensWithTheTrail(t *testing.T) {
 	}
 }
 
+// An emptied responder is the default again, on change as on create.
+func TestUpdateEmptyResponderIsTheDefault(t *testing.T) {
+	t.Parallel()
+	svc, _ := newService(t)
+	ctx := context.Background()
+	in := valid()
+	in.Responder = "YK Başkan Yardımcısı"
+	created, err := svc.Create(ctx, yk, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []optional.Field[string]{{Set: true, Value: "  "}, {Set: true, Null: true}} {
+		got, err := svc.Update(ctx, yk, created.ID, subjectrequest.Patch{Responder: f})
+		if err != nil || got.Responder != subjectrequest.DefaultResponder {
+			t.Fatalf("%+v: %q %v", f, got.Responder, err)
+		}
+		if _, err := svc.Update(ctx, yk, created.ID, subjectrequest.Patch{Responder: optional.Field[string]{Set: true, Value: "X"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A change that names the version it read is refused once someone else
+// changed the request since; without one it is written as before.
+func TestUpdateRefusesAStaleVersion(t *testing.T) {
+	t.Parallel()
+	store := subjectrequest.NewMemoryStore()
+	clock := now
+	svc := subjectrequest.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()), func() time.Time { return clock })
+	ctx := context.Background()
+	created, err := svc.Create(ctx, yk, valid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := created.UpdatedAt
+	clock = now.Add(time.Minute)
+	name := func(n string) optional.Field[string] { return optional.Field[string]{Set: true, Value: n} }
+	first, err := svc.Update(ctx, admin, created.ID, subjectrequest.Patch{RequesterName: name("Ada K."), UpdatedAt: &read})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock = now.Add(2 * time.Minute)
+	if _, err := svc.Update(ctx, yk, created.ID, subjectrequest.Patch{RequesterName: name("Ada L."), UpdatedAt: &read}); !errors.Is(err, subjectrequest.ErrConflict) {
+		t.Fatalf("stale: %v", err)
+	}
+	if _, err := svc.Update(ctx, yk, created.ID, subjectrequest.Patch{RequesterName: name("Ada L."), UpdatedAt: &first.UpdatedAt}); err != nil {
+		t.Fatalf("fresh: %v", err)
+	}
+	if _, err := svc.Update(ctx, yk, created.ID, subjectrequest.Patch{RequesterName: name("Ada M.")}); err != nil {
+		t.Fatalf("no version: %v", err)
+	}
+}
+
 // The list puts open requests first, soonest due first, then the closed,
 // latest answered first.
 func TestListOpenFirstByDueDate(t *testing.T) {
@@ -270,4 +332,29 @@ func join(fields []string) string {
 		out += f
 	}
 	return out
+}
+
+// The year's bound is on the day as entered: a request older than a year
+// can still be closed, but not moved to another day that old.
+func TestAnOldRequestStaysOpenToChange(t *testing.T) {
+	t.Parallel()
+	clock := now
+	svc := subjectrequest.NewService(subjectrequest.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()),
+		func() time.Time { return clock })
+	ctx := context.Background()
+	created, err := svc.Create(ctx, yk, valid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock = now.AddDate(2, 0, 0)
+	answered := "2026-11-01"
+	if _, err := svc.Update(ctx, yk, created.ID, subjectrequest.Patch{
+		Status:     optional.Field[subjectrequest.Status]{Set: true, Value: subjectrequest.StatusAnswered},
+		AnsweredOn: optional.Field[*string]{Set: true, Value: &answered},
+	}); err != nil {
+		t.Fatalf("closing an old request: %v", err)
+	}
+	if _, err := svc.Update(ctx, yk, created.ID, subjectrequest.Patch{ReceivedOn: optional.Field[string]{Set: true, Value: "2026-10-19"}}); code(err) != "received_on_invalid" {
+		t.Fatalf("moving it to another old day: %v", err)
+	}
 }

@@ -27,6 +27,9 @@ var (
 	ErrNotFound  = errors.New("subjectrequest: not found")
 	ErrForbidden = errors.New("subjectrequest: forbidden")
 	ErrInvalid   = errors.New("subjectrequest: invalid")
+	// ErrConflict: the change named a version (updatedAt) someone else has
+	// changed since.
+	ErrConflict = errors.New("subjectrequest: changed since read")
 )
 
 // InvalidError is a refused field, with the problem code the API answers.
@@ -102,6 +105,11 @@ const DefaultResponder = "YK Başkanı"
 // DueDays is the answer's deadline (KVKK md. 13/2).
 const DueDays = 30
 
+// MaxAgeYears is how far back a request's day may lie: a mistyped year
+// would otherwise date it, and its answer, early enough for the retention
+// sweep to delete it.
+const MaxAgeYears = 1
+
 // DateLayout is how dates travel: a calendar day, no time.
 const DateLayout = "2006-01-02"
 
@@ -153,16 +161,17 @@ type Event struct {
 // Input is a new request (POST /v1/subject-requests). An empty status is
 // received; an empty responder is DefaultResponder.
 type Input struct {
-	ReceivedOn       string     `json:"receivedOn"`
-	Channel          Channel    `json:"channel"`
-	RequesterName    string     `json:"requesterName"`
-	RequesterContact string     `json:"requesterContact"`
-	UserID           *uuid.UUID `json:"userId"`
-	RequestTypes     []Type     `json:"requestTypes"`
-	Status           Status     `json:"status"`
-	AnsweredOn       *string    `json:"answeredOn"`
-	AnswerSummary    string     `json:"answerSummary"`
-	Responder        string     `json:"responder"`
+	ReceivedOn       string  `json:"receivedOn"`
+	Channel          Channel `json:"channel"`
+	RequesterName    string  `json:"requesterName"`
+	RequesterContact string  `json:"requesterContact"`
+	// UserID is the account's id as text: anything but one is user_invalid.
+	UserID        *string `json:"userId"`
+	RequestTypes  []Type  `json:"requestTypes"`
+	Status        Status  `json:"status"`
+	AnsweredOn    *string `json:"answeredOn"`
+	AnswerSummary string  `json:"answerSummary"`
+	Responder     string  `json:"responder"`
 }
 
 // Patch is a change (PATCH /v1/subject-requests/{id}): a field left out
@@ -171,16 +180,20 @@ type Input struct {
 // status clears the answer's date unless the patch sends one (and is
 // refused then).
 type Patch struct {
-	ReceivedOn       optional.Field[string]     `json:"receivedOn"`
-	Channel          optional.Field[Channel]    `json:"channel"`
-	RequesterName    optional.Field[string]     `json:"requesterName"`
-	RequesterContact optional.Field[string]     `json:"requesterContact"`
-	UserID           optional.Field[*uuid.UUID] `json:"userId"`
-	RequestTypes     optional.Field[[]Type]     `json:"requestTypes"`
-	Status           optional.Field[Status]     `json:"status"`
-	AnsweredOn       optional.Field[*string]    `json:"answeredOn"`
-	AnswerSummary    optional.Field[string]     `json:"answerSummary"`
-	Responder        optional.Field[string]     `json:"responder"`
+	ReceivedOn       optional.Field[string]  `json:"receivedOn"`
+	Channel          optional.Field[Channel] `json:"channel"`
+	RequesterName    optional.Field[string]  `json:"requesterName"`
+	RequesterContact optional.Field[string]  `json:"requesterContact"`
+	UserID           optional.Field[*string] `json:"userId"`
+	RequestTypes     optional.Field[[]Type]  `json:"requestTypes"`
+	Status           optional.Field[Status]  `json:"status"`
+	AnsweredOn       optional.Field[*string] `json:"answeredOn"`
+	AnswerSummary    optional.Field[string]  `json:"answerSummary"`
+	Responder        optional.Field[string]  `json:"responder"`
+	// UpdatedAt, when sent, is the version the change was made on: the
+	// request's updatedAt as last read. Someone else's change since refuses
+	// it (ErrConflict). Left out, the change is written as before.
+	UpdatedAt *time.Time `json:"updatedAt"`
 }
 
 // Store keeps the register. Create and Update write the request and its
@@ -248,22 +261,22 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Input) (Requ
 	if err := s.allow(p, authz.Create); err != nil {
 		return Request{}, err
 	}
+	userID, err := parseUserID(in.UserID)
+	if err != nil {
+		return Request{}, err
+	}
 	r := Request{
 		ID: uuid.New(), ReceivedOn: in.ReceivedOn, Channel: in.Channel, RequesterName: in.RequesterName,
-		RequesterContact: in.RequesterContact, UserID: in.UserID, RequestTypes: in.RequestTypes, Status: in.Status,
+		RequesterContact: in.RequesterContact, UserID: userID, RequestTypes: in.RequestTypes, Status: in.Status,
 		AnsweredOn: in.AnsweredOn, AnswerSummary: in.AnswerSummary, Responder: in.Responder,
 	}
 	if r.Status == "" {
 		r.Status = StatusReceived
 	}
-	if strings.TrimSpace(r.Responder) == "" {
-		r.Responder = DefaultResponder
-	}
-	r, err := s.normalize(r)
-	if err != nil {
+	if r, err = s.normalize(r, true); err != nil {
 		return Request{}, err
 	}
-	now := s.now()
+	now := s.stamp()
 	actor := lifecycle.ActorID(p.ID)
 	r.CreatedAt, r.CreatedBy, r.UpdatedAt, r.UpdatedBy = now, actor, now, actor
 	return s.store.Create(ctx, r, Event{At: now, ActorID: actor, Action: ActionCreate, Fields: changed(Request{}, r), Status: r.Status})
@@ -277,21 +290,43 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, p
 	if err != nil {
 		return Request{}, err
 	}
+	if patch.UpdatedAt != nil && !patch.UpdatedAt.Equal(existing.UpdatedAt) {
+		return Request{}, ErrConflict
+	}
 	next, err := patch.apply(existing)
 	if err != nil {
 		return Request{}, err
 	}
-	if next, err = s.normalize(next); err != nil {
+	// The year's bound is on the day as entered: an old request stays
+	// open to change (closing it, mainly) once its day is past it.
+	if next, err = s.normalize(next, next.ReceivedOn != existing.ReceivedOn); err != nil {
 		return Request{}, err
 	}
 	fields := changed(existing, next)
 	if len(fields) == 0 {
 		return existing, nil
 	}
-	now := s.now()
+	now := s.stamp()
 	actor := lifecycle.ActorID(p.ID)
 	next.UpdatedAt, next.UpdatedBy = now, actor
 	return s.store.Update(ctx, next, Event{At: now, ActorID: actor, Action: ActionUpdate, Fields: fields, Status: next.Status})
+}
+
+// stamp is now as the database keeps it (microseconds), so a version read
+// back compares equal to the one written.
+func (s *service) stamp() time.Time { return s.now().Truncate(time.Microsecond) }
+
+// parseUserID reads an account id: nil stays nil, anything but a UUID other
+// than the nil one is user_invalid.
+func parseUserID(raw *string) (*uuid.UUID, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	id, err := uuid.Parse(strings.TrimSpace(*raw))
+	if err != nil || id == uuid.Nil {
+		return nil, invalid("user_invalid")
+	}
+	return &id, nil
 }
 
 func (patch Patch) apply(r Request) (Request, error) {
@@ -318,7 +353,13 @@ func (patch Patch) apply(r Request) (Request, error) {
 	out.Channel = patch.Channel.Or(r.Channel)
 	out.RequesterName = patch.RequesterName.Or(r.RequesterName)
 	out.RequesterContact = patch.RequesterContact.Or(r.RequesterContact)
-	out.UserID = patch.UserID.Or(r.UserID)
+	if patch.UserID.Set {
+		userID, err := parseUserID(patch.UserID.Value)
+		if err != nil {
+			return Request{}, err
+		}
+		out.UserID = userID
+	}
 	out.RequestTypes = patch.RequestTypes.Or(r.RequestTypes)
 	out.Status = patch.Status.Or(r.Status)
 	out.AnsweredOn = patch.AnsweredOn.Or(r.AnsweredOn)
@@ -331,16 +372,21 @@ func (patch Patch) apply(r Request) (Request, error) {
 }
 
 // normalize trims the free fields, keeps the types once each in the law's
-// order and checks everything the table checks, with "today" in Turkey.
-func (s *service) normalize(r Request) (Request, error) {
+// order and checks everything the table checks, with "today" in Turkey;
+// entered, the received day may lie at most MaxAgeYears back.
+func (s *service) normalize(r Request, entered bool) (Request, error) {
 	today := s.now().In(turkey).Format(DateLayout)
 	r.RequesterName = strings.TrimSpace(r.RequesterName)
 	r.RequesterContact = strings.TrimSpace(r.RequesterContact)
 	r.AnswerSummary = strings.TrimSpace(r.AnswerSummary)
 	r.Responder = strings.TrimSpace(r.Responder)
+	if r.Responder == "" {
+		r.Responder = DefaultResponder
+	}
 	received, ok := parseDate(r.ReceivedOn)
+	earliest := s.now().In(turkey).AddDate(-MaxAgeYears, 0, 0).Format(DateLayout)
 	switch {
-	case !ok || r.ReceivedOn > today:
+	case !ok || r.ReceivedOn > today || (entered && r.ReceivedOn < earliest):
 		return Request{}, invalid("received_on_invalid")
 	case r.Channel != ChannelEmail && r.Channel != ChannelPost && r.Channel != ChannelInPerson:
 		return Request{}, invalid("channel_invalid")
@@ -348,8 +394,6 @@ func (s *service) normalize(r Request) (Request, error) {
 		return Request{}, invalid("requester_name_invalid")
 	case r.RequesterContact == "" || utf8.RuneCountInString(r.RequesterContact) > MaxContactLength:
 		return Request{}, invalid("requester_contact_invalid")
-	case r.UserID != nil && *r.UserID == uuid.Nil:
-		return Request{}, invalid("user_invalid")
 	case !r.Status.known():
 		return Request{}, invalid("status_invalid")
 	case utf8.RuneCountInString(r.AnswerSummary) > MaxSummaryLength:

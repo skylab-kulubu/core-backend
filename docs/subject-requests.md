@@ -8,17 +8,17 @@ The least data that proves the request and its answer. **Never** an ID number (T
 
 | Field | |
 |---|---|
-| `receivedOn` | the day it reached the club (`YYYY-MM-DD`), not after today in Turkey |
+| `receivedOn` | the day it reached the club (`YYYY-MM-DD`), not after today in Turkey; when entered or changed, not more than a year before today (a mistyped year would otherwise let the sweep delete a request too early). An older request can still be closed |
 | `channel` | `email` (info@), `post`, `in_person` |
 | `requesterName` | the requester's name, 1–200 characters |
 | `requesterContact` | where the answer goes (an e-mail or a postal address), 1–320 characters |
-| `userId` | the account, when the requester has one; `null` otherwise. Deleting the account empties it and keeps the request |
+| `userId` | the account, when the requester has one; `null` otherwise. Account erasure anonymizes the account's row, so `userId` then names the anonymized row (no personal data in it); a row deleted outright would empty it. The request stays either way. A request may name an account that is being erased (its erasure request is itself one) |
 | `requestTypes` | at least one, kept once each in the law's order: `learn` (md. 11/1-a), `info` (b), `purpose` (c), `recipients` (ç), `rectify` (d), `erase` (e), `notify_recipients` (f), `object_automated` (g), `compensation` (ğ), `other` (a consent withdrawal or a photo objection that came the same way) |
 | `status` | `received`, `awaiting_verification` (a person without an account has not yet confirmed the address), `answered`, `rejected` (a reasoned refusal). The last two are concluded |
 | `dueOn` | `receivedOn` + 30 days, computed by the database |
 | `answeredOn` | the day the answer went; required when concluded, empty otherwise, not before `receivedOn`, not after today. Moving a request back to an open status empties it |
 | `answerSummary` | a short summary of the answer, at most 2,000 characters |
-| `responder` | who answered for the club, by title; `YK Başkanı` when left empty, at most 100 characters |
+| `responder` | who answered for the club, by title; `YK Başkanı` when left empty (on create and on change), at most 100 characters |
 | `createdAt`, `createdBy`, `updatedAt`, `updatedBy` | when and by whom (Keycloak subject) |
 
 There are no attachments and no correspondence store: the mail stays in info@.
@@ -32,9 +32,9 @@ All four need `subject-request:manage` as the role mode reads it ([authz-roles.m
 | `GET /v1/subject-requests` | the requests: open ones first, soonest due first; then the concluded, latest answered first; at most 500 |
 | `POST /v1/subject-requests` | records one; `201` with it. `status` defaults to `received` |
 | `GET /v1/subject-requests/{id}` | one request with its `events` (the trail, oldest first) |
-| `PATCH /v1/subject-requests/{id}` | writes the fields the body sends; a field left out keeps its value, `null` empties `userId` and `answeredOn` |
+| `PATCH /v1/subject-requests/{id}` | writes the fields the body sends; a field left out keeps its value, `null` empties `userId` and `answeredOn`. With `updatedAt` (the value last read) it is refused with `409` `subject_request_changed` when someone changed the request since |
 
-`401` without a bearer, `403` for anyone else, `404` for an unknown id. A refused field is `400` with a `code`: `received_on_invalid`, `channel_invalid`, `requester_name_invalid`, `requester_contact_invalid`, `user_invalid`, `user_unknown` (no such account), `request_types_invalid`, `status_invalid`, `answered_on_required`, `answered_on_invalid`, `answer_summary_invalid`, `responder_invalid`. There is no delete route: a request leaves the register only through the retention sweep.
+`401` without a bearer, `403` for anyone else, `404` for an unknown id. A refused field is `400` with a `code`: `received_on_invalid`, `channel_invalid`, `requester_name_invalid`, `requester_contact_invalid`, `user_invalid` (not an account id), `user_unknown` (no such account), `request_types_invalid`, `status_invalid`, `answered_on_required`, `answered_on_invalid`, `answer_summary_invalid`, `responder_invalid`. There is no delete route: a request leaves the register only through the retention sweep.
 
 The panel shows `can["subjectRequest.manage"]` of `GET /v1/users/me/capabilities` as its menu; the deadline badge ("N gün kaldı" within 7 days, "Süre geçti" past it) is the panel's, computed from `dueOn`. No mail is sent.
 

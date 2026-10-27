@@ -32,7 +32,8 @@ func TestPostgresStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := valid()
-	in.UserID = &account
+	accountID := account.String()
+	in.UserID = &accountID
 	created, err := svc.Create(ctx, yk, in)
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +44,7 @@ func TestPostgresStore(t *testing.T) {
 		t.Fatalf("created %+v", created)
 	}
 
-	unknown := uuid.New()
+	unknown := uuid.NewString()
 	in.UserID = &unknown
 	if _, err := svc.Create(ctx, yk, in); code(err) != "user_unknown" {
 		t.Fatalf("unknown account: %v", err)
@@ -54,7 +55,7 @@ func TestPostgresStore(t *testing.T) {
 	closed, err := svc.Update(ctx, admin, created.ID, subjectrequest.Patch{
 		Status:     optional.Field[subjectrequest.Status]{Set: true, Value: subjectrequest.StatusRejected},
 		AnsweredOn: optional.Field[*string]{Set: true, Value: &answered},
-		UserID:     optional.Field[*uuid.UUID]{Set: true, Null: true},
+		UserID:     optional.Field[*string]{Set: true, Null: true},
 	})
 	if err != nil || closed.AnsweredOn == nil || *closed.AnsweredOn != answered || closed.UserID != nil ||
 		closed.UpdatedBy.String() != admin.ID || !closed.UpdatedAt.Equal(clock) || closed.CreatedBy.String() != yk.ID {
@@ -93,7 +94,7 @@ func TestPostgresStore(t *testing.T) {
 	}
 
 	// The account goes, its request stays.
-	in.UserID = &account
+	in.UserID = &accountID
 	kept, err := svc.Create(ctx, yk, in)
 	if err != nil {
 		t.Fatal(err)

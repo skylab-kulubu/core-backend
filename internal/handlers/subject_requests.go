@@ -28,6 +28,8 @@ func subjectRequestError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, subjectrequest.ErrNotFound):
 		return problem(c, fiber.StatusNotFound, "Not Found")
+	case errors.Is(err, subjectrequest.ErrConflict):
+		return problemCode(c, fiber.StatusConflict, "Conflict", "subject_request_changed")
 	case errors.As(err, &refused):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", refused.Code)
 	default:

@@ -6,14 +6,22 @@
 -- residence, a verification code or a document. No attachments.
 --
 --   * due_on is received_on + 30 days, computed here, never entered.
---   * user_id names the account when there is one; deleting the account
---     empties it and keeps the request (the proof outlives the account).
+--   * user_id names the account when there is one. Account erasure
+--     anonymizes the users row, so user_id then names the anonymized row;
+--     a users row deleted outright empties it. The request stays either way
+--     (the proof outlives the account).
 --   * subject_request_events is the audit trail: who created or changed a
 --     request, when, which fields and the status after; never a value.
 --
 -- The periodic destruction run deletes a request three years after it was
 -- answered or rejected (rule subject_requests_age, ADR-0062), its trail
 -- with it. An open request is never deleted.
+--
+-- New tables only; the reference to users takes a short lock on it, so a
+-- long users transaction makes the migration fail fast instead of queueing
+-- every users write behind it.
+SET LOCAL lock_timeout = '5s';
+
 CREATE TABLE IF NOT EXISTS subject_requests (
     id UUID PRIMARY KEY,
     received_on DATE NOT NULL,
