@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 	"github.com/skylab-kulubu/core-backend/internal/account"
@@ -524,6 +525,13 @@ func main() {
 	// person's Groups; core reads them from Keycloak with its own service
 	// account and keeps them a minute.
 	overageGroups := identity.NewOverageGroups(dir, identity.OverageOptions{})
+	// A Group write through one core process reaches the others' caches
+	// through Postgres NOTIFY; each process listens on a connection of its
+	// own (horizontal-scale ticket 26).
+	groupCache := identity.NewSharedGroupCache(overageGroups, pool, func(ctx context.Context) (*pgx.Conn, error) {
+		return pgx.Connect(ctx, databaseURL)
+	}, identity.SharedGroupCacheOptions{Logf: log.Printf})
+	worker("group cache invalidation", groupCache.Run(workers))
 	// Where Owner teams sit: with team delegation on, a Leader of a Team
 	// above an Event's Owner team leads it too (ADR-0065 decision 2,
 	// ekip-yetkileri ticket 12). The realm's Groups are kept a minute.
@@ -998,7 +1006,7 @@ func main() {
 		Identity: identity.NewServiceWithOptions(auditedDir, users, az, identity.Options{
 			AccountErasureEnabled: workerEnabled,
 			AccessProjector:       accessProjector,
-			GroupCache:            overageGroups,
+			GroupCache:            groupCache,
 			TeamTree:              teamTree,
 			Membership:            teamMembership,
 			GroupRoles:            groupRolesNotice,
