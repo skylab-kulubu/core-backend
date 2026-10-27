@@ -32,8 +32,8 @@ import (
 // record: request id, step, time and counts.
 const erasureManualStepCommandName = "erasure-manual-step"
 
-// Exit codes beyond 0 (recorded), 1 (the database failed; nothing changed)
-// and 2 (usage or configuration).
+// Exit codes beyond 0 (recorded), 1 (the database failed; most likely nothing
+// changed) and 2 (usage or configuration).
 const erasureManualStepExitRefused = 3
 
 type erasureManualStepOptions struct {
@@ -113,11 +113,11 @@ func erasureManualStepCommand(ctx context.Context, out, errOut io.Writer, now ti
 		fmt.Fprintf(errOut, "no deletion request with request_id=%s; nothing changed\n", options.requestID)
 		return erasureManualStepExitRefused
 	case errors.Is(err, user.ErrOperatorStepRefused):
-		fmt.Fprintf(errOut, "request_id=%s is not in manual_intervention under a %s_… code, or %s is checkpointed already; nothing changed\n",
-			options.requestID, step, step)
+		fmt.Fprintf(errOut, "request_id=%s is not in manual_intervention under %s, or %s is checkpointed already; nothing changed\n",
+			options.requestID, user.OperatorStepErrorCode(step), step)
 		return erasureManualStepExitRefused
 	case err != nil:
-		fmt.Fprintf(errOut, "database: %v; nothing changed, run it again\n", err)
+		fmt.Fprintf(errOut, "database: %v; most likely nothing changed: run it again (exit 3 then means it was recorded)\n", err)
 		return 1
 	}
 	recorded := maps.Clone(options.counts)

@@ -60,15 +60,24 @@ func (s *PostgresStore) CompleteServiceErasureStep(ctx context.Context, requestI
 // service confirmed.
 const OperatorRecordedCount = "operator_recorded"
 
+// OperatorStepErrorCode is the only last_error_code under which
+// RecordOperatorErasureStep records step: the service answered 404, it has no
+// erase endpoint yet.
+func OperatorStepErrorCode(step DeletionStep) string {
+	return string(step) + "_rejected_404"
+}
+
 // RecordOperatorErasureStep checkpoints a service erasure step an operator
 // carried out by hand, for a service that has no erase endpoint yet: the
 // worker's call got 404 and sent the request to manual intervention under
-// `<step>_…`. counts are what the operator's change reported;
+// `<step>_rejected_404`. counts are what the operator's change reported;
 // OperatorRecordedCount is added to them. The request goes back to pending,
 // as the person's retry does (RetrySelfDeletion), and the worker goes on with
-// the saga. Only SkyMail's, the CMS's and Forms' steps are recorded this way;
-// a request that does not wait on that step, or has it checkpointed, is
-// refused with ErrOperatorStepRefused and nothing changes.
+// the saga. Only SkyMail's, the CMS's and Forms' steps are recorded this way,
+// and only under that 404 code: any other failure (a refused token, a 409, an
+// unreachable service) is the operator's to fix and retry, never to record by
+// hand. A request that does not wait on that step's 404, or has the step
+// checkpointed, is refused with ErrOperatorStepRefused and nothing changes.
 func (s *PostgresStore) RecordOperatorErasureStep(ctx context.Context, requestID uuid.UUID, step DeletionStep, at time.Time, counts map[string]int64) error {
 	if step != DeletionStepEraseSkyMail && step != DeletionStepEraseCMS && step != DeletionStepEraseForms {
 		return ErrOperatorStepRefused
@@ -98,7 +107,7 @@ func (s *PostgresStore) RecordOperatorErasureStep(ctx context.Context, requestID
 	if err != nil {
 		return err
 	}
-	if status != DeletionRequestManualIntervention || !strings.HasPrefix(code, string(step)+"_") {
+	if status != DeletionRequestManualIntervention || code != OperatorStepErrorCode(step) {
 		return ErrOperatorStepRefused
 	}
 	tag, err := tx.Exec(ctx, `

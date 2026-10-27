@@ -209,6 +209,24 @@ func TestPostgresRecordOperatorErasureStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	refused("a code that only starts like the step", request.ID, user.DeletionStepEraseCMS, user.ErrOperatorStepRefused)
+	// Only "no endpoint" (404) is the operator's to record: a failure an
+	// operator fixes and retries is never recorded by hand, for a service
+	// whose endpoint is live either.
+	for _, waiting := range []struct {
+		code string
+		step user.DeletionStep
+	}{
+		{"erase_cms_failed", user.DeletionStepEraseCMS},
+		{"erase_cms_rejected_403", user.DeletionStepEraseCMS},
+		{"erase_cms_not_configured", user.DeletionStepEraseCMS},
+		{"erase_cms_rejected_404x", user.DeletionStepEraseCMS},
+		{"erase_skymail_rejected_409", user.DeletionStepEraseSkyMail},
+	} {
+		if _, err := pool.Exec(ctx, `UPDATE account_deletion_requests SET last_error_code = $2 WHERE id = $1`, request.ID, waiting.code); err != nil {
+			t.Fatal(err)
+		}
+		refused(waiting.code, request.ID, waiting.step, user.ErrOperatorStepRefused)
+	}
 	if _, err := pool.Exec(ctx, `UPDATE account_deletion_requests SET last_error_code = 'erase_cms_rejected_404', attempt_count = 3 WHERE id = $1`, request.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +300,7 @@ func TestPostgresRecordOperatorErasureStepKeepsAnExistingCheckpoint(t *testing.T
 	if err := store.CompleteServiceErasureStep(ctx, request.ID, *claimed.LeaseToken, user.DeletionStepEraseCMS, now, map[string]int64{"actor_columns_replaced": 5}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RetryDeletionRequest(ctx, request.ID, *claimed.LeaseToken, now, now, "erase_cms_checkpoint_failed", true, false); err != nil {
+	if err := store.RetryDeletionRequest(ctx, request.ID, *claimed.LeaseToken, now, now, "erase_cms_rejected_404", true, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RecordOperatorErasureStep(ctx, request.ID, user.DeletionStepEraseCMS, now.Add(time.Hour), map[string]int64{}); !errors.Is(err, user.ErrOperatorStepRefused) {
