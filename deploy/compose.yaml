@@ -96,6 +96,9 @@ services:
       CONTACT_CONSENT_TEXT_URL: ${CONTACT_CONSENT_TEXT_URL:-}
       CONTACT_CONSENT_NOTICE_URL: ${CONTACT_CONSENT_NOTICE_URL:-}
       SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY: ${SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY:-}
+      # Team pages (docs/team-page-consent.md): every member listed until this
+      # RFC 3339 time, then only those who consented. Unset: no transition.
+      TEAM_PAGE_CONSENT_GRACE_UNTIL: ${TEAM_PAGE_CONSENT_GRACE_UNTIL:-}
       # Communication preferences (docs/communication-preferences.md): off while the key is unset.
       COMMUNICATION_PREFERENCE_KEY: ${COMMUNICATION_PREFERENCE_KEY:-}
       COMMUNICATION_PREFERENCE_KEY_V2: ${COMMUNICATION_PREFERENCE_KEY_V2:-}

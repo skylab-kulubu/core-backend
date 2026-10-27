@@ -291,10 +291,10 @@ func (s *Service) grantOnce(ctx context.Context, g Grant, verified bool) (GrantR
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO contact_consents (
-			id, purpose, user_id, email, email_hmac, source, client_id, text_version, event_id,
+			id, purpose, channel, user_id, email, email_hmac, source, client_id, text_version, event_id,
 			granted_at, confirmed_at, confirmed_via, confirmation_sent_at, confirmation_mails
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-		id, g.Purpose, userID, email, emailHMAC, g.Source, g.ClientID, g.TextVersion, g.EventID,
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		id, g.Purpose, g.Purpose.Channel(), userID, email, emailHMAC, g.Source, g.ClientID, g.TextVersion, g.EventID,
 		now, confirmed, confirmedVia, sent, mails,
 	); err != nil {
 		return GrantResult{}, false, err
@@ -719,7 +719,7 @@ func (s *Service) Audience(ctx context.Context, purpose Purpose, after uuid.UUID
 	if !s.Enabled() {
 		return nil, uuid.Nil, ErrDisabled
 	}
-	if err := purpose.check(); err != nil {
+	if err := purpose.mailedCheck(); err != nil {
 		return nil, uuid.Nil, err
 	}
 	if limit <= 0 || limit > MaxAudiencePage {
@@ -788,7 +788,7 @@ func (s *Service) RequestRenewal(ctx context.Context, purpose Purpose, ids []uui
 	if !s.Enabled() {
 		return 0, ErrDisabled
 	}
-	if err := purpose.check(); err != nil {
+	if err := purpose.mailedCheck(); err != nil {
 		return 0, err
 	}
 	if !purpose.Renews() {
@@ -820,7 +820,7 @@ func (s *Service) Lookup(ctx context.Context, purpose Purpose, emails []string) 
 	if !s.Enabled() {
 		return nil, ErrDisabled
 	}
-	if err := purpose.check(); err != nil {
+	if err := purpose.mailedCheck(); err != nil {
 		return nil, err
 	}
 	var addresses []string
@@ -889,7 +889,7 @@ func (s *Service) WithdrawForAddress(ctx context.Context, purpose Purpose, rawEm
 	if !s.Enabled() {
 		return false, ErrDisabled
 	}
-	if err := purpose.check(); err != nil {
+	if err := purpose.mailedCheck(); err != nil {
 		return false, err
 	}
 	email, ok := NormalizeEmail(rawEmail)
@@ -1123,6 +1123,10 @@ func (s *Service) WithdrawMine(ctx context.Context, userID uuid.UUID, purpose Pu
 	if err := purpose.check(); err != nil {
 		return 0, err
 	}
+	if !purpose.Mailed() {
+		// Only the account gives it (team_page): no address grant to reach.
+		return s.endOpen(ctx, purpose, mailedTo{users: []uuid.UUID{userID}}, viaSelf, s.now())
+	}
 	target, err := s.accountTarget(ctx, userID, true)
 	if errors.Is(err, ErrAddressesUnavailable) {
 		known, knownErr := s.accountTarget(ctx, userID, false)
@@ -1139,6 +1143,42 @@ func (s *Service) WithdrawMine(ctx context.Context, userID uuid.UUID, purpose Pu
 		return 0, err
 	}
 	return s.endOpen(ctx, purpose, target, viaSelf, s.now())
+}
+
+// ActiveAccounts is which of ids hold an open, confirmed own grant of
+// purpose: the public team rosters read it for team_page. With consents off
+// nobody holds one: a grant the person could not withdraw is not acted on.
+func (s *Service) ActiveAccounts(ctx context.Context, purpose Purpose, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+	out := map[uuid.UUID]bool{}
+	if !s.Enabled() || len(ids) == 0 {
+		return out, nil
+	}
+	if err := purpose.check(); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT c.user_id FROM contact_consents c
+		JOIN users u ON u.id = c.user_id AND u.account_state = 'active'
+		WHERE c.purpose = $1 AND c.user_id = ANY($2) AND c.ended_at IS NULL AND c.confirmed_at IS NOT NULL`,
+		purpose, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// TeamPageAccounts is ActiveAccounts of team_page: which of ids may be shown
+// on their teams' public pages (identity.TeamPageConsents).
+func (s *Service) TeamPageAccounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+	return s.ActiveAccounts(ctx, PurposeTeamPage, ids)
 }
 
 // EraseSubject deletes every grant of a person, open or ended: their
