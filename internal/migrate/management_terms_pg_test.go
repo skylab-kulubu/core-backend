@@ -22,7 +22,7 @@ func TestManagementTermMigrationsComeLast(t *testing.T) {
 	// The audit record they extend, and main's newest migration when they
 	// were written (2026-10-27).
 	audit := slices.Index(versions, 20261023120000)
-	head := slices.Index(versions, 20261025180100)
+	head := slices.Index(versions, 20261027120000)
 	terms := slices.Index(versions, 20261027140000)
 	actions := slices.Index(versions, 20261027140100)
 	if audit < 0 || head < 0 || terms < 0 || actions < 0 || audit >= actions || head >= terms || terms >= actions {

@@ -1472,6 +1472,15 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.feedback_mails') AND conname = 'feedback_mails_kind_check'
 			  AND pg_get_constraintdef(oid) LIKE '%reminder%'
 		  )`,
+	// KVKK md. 11 data subject requests (docs/subject-requests.md): the
+	// register, its audit trail and their indexes.
+	20261027120000: `
+		SELECT 1
+		WHERE to_regclass('public.subject_requests') IS NOT NULL
+		  AND to_regclass('public.subject_request_events') IS NOT NULL
+		  AND to_regclass('public.subject_requests_open_idx') IS NOT NULL
+		  AND to_regclass('public.subject_requests_answered_idx') IS NOT NULL
+		  AND to_regclass('public.subject_request_events_request_idx') IS NOT NULL`,
 	// Management membership terms (grup-yonetimi 11): the terms, their
 	// mails and the job's runs, with the indexes.
 	20261027140000: `
