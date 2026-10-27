@@ -102,6 +102,10 @@ func TestDKReadsEverythingChangesNothing(t *testing.T) {
 				{fiber.MethodPost, "/v1/users/" + member + "/logout", ""},
 				{fiber.MethodPost, "/v1/users/" + member + "/client-roles", `{"clientId":"core","role":"url:access"}`},
 				{fiber.MethodPost, "/v1/seasons", `{"name":"2027"}`},
+				// The KVKK md. 11 register: personal data the board alone
+				// handles; DK neither reads nor records it.
+				{fiber.MethodGet, "/v1/subject-requests", ""},
+				{fiber.MethodPost, "/v1/subject-requests", subjectRequestBody},
 			} {
 				got := e.send(dk, w.method, w.path, w.body)
 				if got.status != fiber.StatusForbidden {
@@ -116,7 +120,7 @@ func TestDKReadsEverythingChangesNothing(t *testing.T) {
 			if err := json.Unmarshal(e.send(dk, fiber.MethodGet, "/v1/users/me/capabilities", "").body, &caps); err != nil {
 				t.Fatal(err)
 			}
-			for _, key := range []string{"season.write", "group.write", "user.write", "user.create", "user.delete", "media.delete", "formLink.write", "url.moderateWrite"} { // url.create is its own links (url:access)
+			for _, key := range []string{"season.write", "group.write", "user.write", "user.create", "user.delete", "media.delete", "formLink.write", "url.moderateWrite", "subjectRequest.manage"} { // url.create is its own links (url:access)
 				if caps.Can[key] {
 					t.Errorf("DK capabilities %s = true", key)
 				}
