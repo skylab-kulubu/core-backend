@@ -45,7 +45,7 @@ click list and a form's channel statistics keep looking 90 days back
 clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
 from apply on it only grows, counting every click since then.
 
-## Rules (rule set v7)
+## Rules (rule set v8)
 
 "Event end" is the Event's `end_date`, else its last day's `end_date`, else
 its `start_date` (ADR-0062). For `guest_identity`, an Event with none of them
@@ -138,6 +138,12 @@ The tracking preference's audit trail ([`communication-preferences.md`](communic
 | Rule | Selects | Period | Action |
 |---|---|---|---|
 | `tracking_changes_age` | a `communication_tracking_changes` row, on or off | `TrackingChangesPeriod`, 3 years after `changed_at` | row deleted; the person's tracking preference stays |
+
+The KVKK md. 11 data subject requests ([`subject-requests.md`](subject-requests.md); rule set v8):
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `subject_requests_age` | a `subject_requests` row answered or rejected | `SubjectRequestPeriod`, 3 years after `answered_on` | row deleted with its `subject_request_events`; an open request is never selected |
 
 ## Schedule, lock and periods
 

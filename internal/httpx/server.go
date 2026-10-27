@@ -30,6 +30,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
+	"github.com/skylab-kulubu/core-backend/internal/subjectrequest"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -182,6 +183,10 @@ type Deps struct {
 	// (docs/github-activity.md). Nil (its settings unset) leaves
 	// /v1/dashboard/github-activity unserved: 404.
 	GithubActivity handlers.GithubActivitySource
+
+	// SubjectRequests is the register of KVKK md. 11 data subject requests
+	// (docs/subject-requests.md). Nil leaves /v1/subject-requests unserved.
+	SubjectRequests subjectrequest.Service
 
 	// Consents keeps contact consents (docs/contact-consents.md). Nil or
 	// off (CONTACT_CONSENT_KEY unset) answers its routes 503 and records
@@ -467,6 +472,14 @@ func New(deps Deps) *fiber.App {
 
 	if deps.GithubActivity != nil {
 		app.Get("/v1/dashboard/github-activity", handlers.NewGithubActivityHandler(deps.GithubActivity).Get)
+	}
+
+	if deps.SubjectRequests != nil {
+		requests := handlers.NewSubjectRequestHandler(deps.SubjectRequests)
+		app.Get("/v1/subject-requests", requests.List)
+		app.Post("/v1/subject-requests", requests.Create)
+		app.Get("/v1/subject-requests/:id", requests.Get)
+		app.Patch("/v1/subject-requests/:id", requests.Update)
 	}
 
 	app.Get("/v1/users/me/consents", consents.Mine)

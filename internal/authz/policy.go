@@ -53,6 +53,9 @@ const (
 	// TypeFormResponse is an answer to a Skyforms form that the forms
 	// service reports, so that core writes the Ticket it earns.
 	TypeFormResponse Type = "FORM_RESPONSE"
+	// TypeSubjectRequest is the register of KVKK md. 11 data subject
+	// requests (docs/subject-requests.md).
+	TypeSubjectRequest Type = "SUBJECT_REQUEST"
 	// TypeTeamAudit is the Team audit record (docs/team-audit.md).
 	TypeTeamAudit Type = "TEAM_AUDIT"
 	// TypeAppAssignment is an app's assignments to Groups and people

@@ -46,6 +46,10 @@ const (
 	// (communication_tracking_changes, docs/communication-preferences.md),
 	// three years after the change; the row goes, the preference stays.
 	TrackingChangesPeriod = 3 * 365 * day
+	// SubjectRequestPeriod: a KVKK md. 11 data subject request
+	// (docs/subject-requests.md), three years after it was answered or
+	// rejected; the row goes with its trail. An open request stays.
+	SubjectRequestPeriod = 3 * 365 * day
 )
 
 // Schema is what a run reads from the database before it builds the rules.
@@ -68,6 +72,7 @@ func Rules(c Config, s Schema) []Rule {
 	rules = append(rules, teamAuditRules()...)
 	rules = append(rules, feedbackRules()...)
 	rules = append(rules, trackingRules()...)
+	rules = append(rules, subjectRequestRules()...)
 	return append(rules, auditRules(c)...)
 }
 
@@ -261,6 +266,18 @@ func trackingRules() []Rule {
 		Name: "tracking_changes_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
 		Table: "communication_tracking_changes", alias: "ct", key: "id", Period: TrackingChangesPeriod,
 		where: `ct.changed_at < $1`,
+	}}
+}
+
+// subjectRequestRules delete a data subject request three years after its
+// answer (ADR-0062, "KVKK md. 11 başvuruları"); subject_request_events go
+// with it (ON DELETE CASCADE). An open request has no answer date and is
+// never due.
+func subjectRequestRules() []Rule {
+	return []Rule{{
+		Name: "subject_requests_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
+		Table: "subject_requests", alias: "sr", key: "id", Period: SubjectRequestPeriod,
+		where: `sr.answered_on < $1`,
 	}}
 }
 
