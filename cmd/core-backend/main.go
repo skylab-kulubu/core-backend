@@ -52,6 +52,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
+	"github.com/skylab-kulubu/core-backend/internal/subjectrequest"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 	"github.com/skylab-kulubu/core-backend/internal/teammail"
@@ -660,6 +661,18 @@ func main() {
 			consents.SetPersonalEmailHolders(holders)
 		}
 	}
+	// The public team rosters show only who consented (team_page), and the
+	// Board's names on its own roster, after the transition TEAM_PAGE_CONSENT_GRACE_UNTIL
+	// (docs/team-page-consent.md).
+	teamPageGraceUntil, err := identity.TeamPageGraceUntilFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if teamPageGraceUntil.IsZero() {
+		log.Printf("team pages: only members who consented are listed")
+	} else {
+		log.Printf("team pages: members who have not decided are listed until %s, then only members who consented", teamPageGraceUntil.UTC().Format(time.RFC3339))
+	}
 	if consentConfig.Enabled {
 		log.Printf("contact consents: on (links at %s, service clients %v, verified-address clients %v)",
 			consentConfig.LinkOrigin, consentConfig.ServiceSources, consentConfig.VerifiedClients)
@@ -1022,6 +1035,7 @@ func main() {
 			Apps:                  apps,
 			AppAudit:              teamAudit,
 			AppAssignments:        appAssignments,
+			TeamPage:              &identity.TeamPageVisibility{Consents: consents, GraceUntil: teamPageGraceUntil},
 		}),
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
@@ -1029,9 +1043,10 @@ func main() {
 			FormLinks:        eventFormLinks{urls: urlSvc},
 			Media:            media.NewLinker(mediaStore),
 		}),
-		Seasons:     season.NewService(seasons, az),
-		Tickets:     ticketSvc,
-		Competitors: competitor.NewService(competitors, events, az),
+		Seasons:         season.NewService(seasons, az),
+		SubjectRequests: subjectrequest.NewService(subjectrequest.NewPostgresStore(pool), az, nil),
+		Tickets:         ticketSvc,
+		Competitors:     competitor.NewService(competitors, events, az),
 		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
 			UploadStagingGrace: uploadStagingConfig.Grace,
 			Catalogue:          mediaPurposes,

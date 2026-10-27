@@ -1472,8 +1472,17 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.feedback_mails') AND conname = 'feedback_mails_kind_check'
 			  AND pg_get_constraintdef(oid) LIKE '%reminder%'
 		  )`,
+	// KVKK md. 11 data subject requests (docs/subject-requests.md): the
+	// register, its audit trail and their indexes.
+	20261027120000: `
+		SELECT 1
+		WHERE to_regclass('public.subject_requests') IS NOT NULL
+		  AND to_regclass('public.subject_request_events') IS NOT NULL
+		  AND to_regclass('public.subject_requests_open_idx') IS NOT NULL
+		  AND to_regclass('public.subject_requests_answered_idx') IS NOT NULL
+		  AND to_regclass('public.subject_request_events_request_idx') IS NOT NULL`,
 	// The claim holding a certificate job (horizontal-scale ticket 25).
-	20261027120000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'certificate_jobs' AND column_name = 'lease_token'`,
+	20261027140000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'certificate_jobs' AND column_name = 'lease_token'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

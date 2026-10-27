@@ -102,6 +102,9 @@ var appAbilities = []ability{
 	{"formLink.write", Resource{Type: TypeFormLink}, Update},
 	{"githubActivity.read", Resource{Type: TypeGithubActivity}, Read},
 	{"audit.read", Resource{Type: TypeTeamAudit}, Read},
+	// The KVKK md. 11 register (docs/subject-requests.md): ADMIN and YK,
+	// never a Privileged reader.
+	{"subjectRequest.manage", Resource{Type: TypeSubjectRequest}, Update},
 	// App assignments (docs/app-assignments.md): false while the routes
 	// are off (APP_ASSIGNMENTS).
 	{"apps.read", Resource{Type: TypeAppAssignment}, Read},
