@@ -109,6 +109,9 @@ func (s *PostgresStore) ClaimJobs(ctx context.Context, limit int, lease time.Dur
 	if lease <= 0 {
 		lease = 2 * time.Minute
 	}
+	// Each claim gets its own lease token: once the lease runs out and another
+	// claim takes the job, the earlier holder can no longer finish it.
+	leaseToken := uuid.New()
 	// A cancelled Event's jobs wait, untouched, until its cancellation is
 	// undone (ADR 0066 addendum 2026-10-19; ticket 04).
 	rows, err := s.pool.Query(ctx, `
@@ -121,8 +124,8 @@ func (s *PostgresStore) ClaimJobs(ctx context.Context, limit int, lease time.Dur
 			ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT $1
 		)
 		UPDATE certificate_jobs j SET status='running',attempt_count=attempt_count+1,
-			lease_until=now()+$2::interval,started_at=COALESCE(started_at,now()),error_code=''
-		FROM picked WHERE j.id=picked.id RETURNING `+claimedJobCols, limit, lease.String())
+			lease_until=now()+$2::interval,lease_token=$3,started_at=COALESCE(started_at,now()),error_code=''
+		FROM picked WHERE j.id=picked.id RETURNING `+claimedJobCols+`,j.lease_token`, limit, lease.String(), leaseToken)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +133,7 @@ func (s *PostgresStore) ClaimJobs(ctx context.Context, limit int, lease time.Dur
 	out := make([]Job, 0)
 	for rows.Next() {
 		var j Job
-		if err := rows.Scan(jobScan(&j)...); err != nil {
+		if err := rows.Scan(append(jobScan(&j), &j.LeaseToken)...); err != nil {
 			return nil, err
 		}
 		out = append(out, j)
@@ -141,11 +144,25 @@ func (s *PostgresStore) ClaimJobs(ctx context.Context, limit int, lease time.Dur
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) CompleteJob(ctx context.Context, jobID, certificateID uuid.UUID) error {
+func (s *PostgresStore) RenewJobLease(ctx context.Context, jobID, leaseToken uuid.UUID, lease time.Duration) error {
+	if lease <= 0 {
+		lease = 2 * time.Minute
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE certificate_jobs SET lease_until=now()+$3::interval WHERE id=$1 AND status='running' AND lease_token=$2`, jobID, leaseToken, lease.String())
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
+func (s *PostgresStore) CompleteJob(ctx context.Context, jobID, leaseToken, certificateID uuid.UUID) error {
 	var batchID uuid.UUID
-	err := s.pool.QueryRow(ctx, `UPDATE certificate_jobs SET status='issued',certificate_id=$2,lease_until=NULL,completed_at=now() WHERE id=$1 RETURNING batch_id`, jobID, certificateID).Scan(&batchID)
+	err := s.pool.QueryRow(ctx, `UPDATE certificate_jobs SET status='issued',certificate_id=$3,lease_until=NULL,lease_token=NULL,completed_at=now() WHERE id=$1 AND status='running' AND lease_token=$2 RETURNING batch_id`, jobID, leaseToken, certificateID).Scan(&batchID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
+		return ErrLeaseLost
 	}
 	if err != nil {
 		return err
@@ -153,7 +170,7 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, jobID, certificateID uu
 	return s.refreshBatch(ctx, batchID)
 }
 
-func (s *PostgresStore) FailJob(ctx context.Context, jobID uuid.UUID, errorCode string, retryAt time.Time, terminal bool) error {
+func (s *PostgresStore) FailJob(ctx context.Context, jobID, leaseToken uuid.UUID, errorCode string, retryAt time.Time, terminal bool) error {
 	status := "queued"
 	completed := false
 	if terminal {
@@ -161,9 +178,9 @@ func (s *PostgresStore) FailJob(ctx context.Context, jobID uuid.UUID, errorCode 
 		completed = true
 	}
 	var batchID uuid.UUID
-	err := s.pool.QueryRow(ctx, `UPDATE certificate_jobs SET status=$2,error_code=$3,next_attempt_at=$4,lease_until=NULL,completed_at=CASE WHEN $5 THEN now() ELSE NULL END WHERE id=$1 RETURNING batch_id`, jobID, status, errorCode, retryAt, completed).Scan(&batchID)
+	err := s.pool.QueryRow(ctx, `UPDATE certificate_jobs SET status=$2,error_code=$3,next_attempt_at=$4,lease_until=NULL,lease_token=NULL,completed_at=CASE WHEN $5 THEN now() ELSE NULL END WHERE id=$1 AND status='running' AND lease_token=$6 RETURNING batch_id`, jobID, status, errorCode, retryAt, completed, leaseToken).Scan(&batchID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
+		return ErrLeaseLost
 	}
 	if err != nil {
 		return err

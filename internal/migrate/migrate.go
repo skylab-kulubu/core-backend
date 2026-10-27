@@ -1472,6 +1472,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.feedback_mails') AND conname = 'feedback_mails_kind_check'
 			  AND pg_get_constraintdef(oid) LIKE '%reminder%'
 		  )`,
+	// The claim holding a certificate job (horizontal-scale ticket 25).
+	20261027120000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'certificate_jobs' AND column_name = 'lease_token'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

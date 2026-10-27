@@ -224,19 +224,31 @@ func (s *service) RetryBatch(ctx context.Context, p authz.Principal, id uuid.UUI
 	return s.jobs.GetBatch(ctx, id)
 }
 
+// jobLease is how long one claimed certificate job is held. Past it another
+// claim may take the job; the holder then may not finish it (ticket 25).
+const jobLease = 2 * time.Minute
+
 func (s *service) ProcessNext(ctx context.Context, limit int) (int, error) {
 	if s.jobs == nil || s.templates == nil {
 		return 0, ErrInvalid
 	}
-	claimed, err := s.jobs.ClaimJobs(ctx, limit, 2*time.Minute)
+	claimed, err := s.jobs.ClaimJobs(ctx, limit, jobLease)
 	if err != nil {
 		return 0, err
 	}
 	for _, job := range claimed {
+		// The claim's one lease covers the whole batch; each job starts with a
+		// fresh one. A job whose lease already ran out belongs to another claim.
+		if err := s.jobs.RenewJobLease(ctx, job.ID, job.LeaseToken, jobLease); err != nil {
+			continue
+		}
 		if err := s.processJob(ctx, job); err != nil {
+			if errors.Is(err, ErrLeaseLost) {
+				continue
+			}
 			terminal := job.AttemptCount >= 5 || errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound)
 			delay := time.Duration(1<<min(job.AttemptCount, 6)) * time.Minute
-			_ = s.jobs.FailJob(ctx, job.ID, safeErrorCode(err), time.Now().UTC().Add(delay), terminal)
+			_ = s.jobs.FailJob(ctx, job.ID, job.LeaseToken, safeErrorCode(err), time.Now().UTC().Add(delay), terminal)
 		}
 	}
 	return len(claimed), nil
@@ -250,7 +262,7 @@ func (s *service) processJob(ctx context.Context, job Job) error {
 	replaceSerial := ""
 	if active, err := s.store.GetActive(ctx, job.EventID, job.TicketID); err == nil {
 		if batch.Reason != "reissue" {
-			return s.jobs.CompleteJob(ctx, job.ID, active.ID)
+			return s.jobs.CompleteJob(ctx, job.ID, job.LeaseToken, active.ID)
 		}
 		replaceSerial = active.Serial
 	} else if !errors.Is(err, ErrNotFound) {
@@ -278,7 +290,9 @@ func (s *service) processJob(ctx context.Context, job Job) error {
 	if err != nil {
 		return err
 	}
-	if err := s.jobs.CompleteJob(ctx, job.ID, created.ID); err != nil {
+	// Only the lease holder's completion sends the e-mail: a holder whose lease
+	// ran out may have rendered a certificate, but another claim owns the job.
+	if err := s.jobs.CompleteJob(ctx, job.ID, job.LeaseToken, created.ID); err != nil {
 		return err
 	}
 	s.sendMail(ctx, created)
