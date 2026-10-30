@@ -81,6 +81,8 @@ type postgresRecords struct {
 	retired []string
 }
 
+// Held's last lookup reads retired_team_codes through its unique
+// lower(code) index.
 func (r *postgresRecords) Held(ctx context.Context, code string) (bool, error) {
 	var held bool
 	err := r.tx.QueryRow(ctx, `
@@ -115,6 +117,8 @@ func (r *postgresRecords) References(ctx context.Context, code string) ([]string
 	return out, nil
 }
 
+// Retire keeps the first row of a code: retiring it again, in any case, is
+// stopped by the unique lower(code) index and changes nothing.
 func (r *postgresRecords) Retire(ctx context.Context, code, groupID, reason string) error {
 	var group *uuid.UUID
 	if id, err := uuid.Parse(groupID); err == nil {
@@ -125,7 +129,7 @@ func (r *postgresRecords) Retire(ctx context.Context, code, groupID, reason stri
 	}
 	if _, err := r.tx.Exec(ctx, `
 		INSERT INTO retired_team_codes (code, group_id, reason) VALUES ($1, $2, $3)
-		ON CONFLICT (code) DO NOTHING`, code, group, reason); err != nil {
+		ON CONFLICT (lower(code)) DO NOTHING`, code, group, reason); err != nil {
 		return fmt.Errorf("teamcode: retire: %w", err)
 	}
 	r.retired = append(r.retired, code)
