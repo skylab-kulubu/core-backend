@@ -51,6 +51,10 @@ type Service interface {
 	// /v1/groups/{id}/settings): its manager (a Leader of it or of a Team
 	// above, delegation on) or Privileged.
 	SetTeamSettings(ctx context.Context, p authz.Principal, groupRef string, settings TeamSettings) (TeamSettings, error)
+	// MembershipWriteDecision is whether the caller may change the Group's
+	// membership, as AddMember decides, without writing
+	// (membership_decision.go).
+	MembershipWriteDecision(ctx context.Context, p authz.Principal, groupRef string) (MembershipDecision, error)
 	// CreateSubTeam opens a Sub-team under a Team (POST
 	// /v1/groups/{id}/children) and ChangeTeamCode changes a Team's code
 	// (PUT /v1/groups/{id}/code): Privileged, or a Leader with delegation on

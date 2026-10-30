@@ -1481,6 +1481,38 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.subject_requests_open_idx') IS NOT NULL
 		  AND to_regclass('public.subject_requests_answered_idx') IS NOT NULL
 		  AND to_regclass('public.subject_request_events_request_idx') IS NOT NULL`,
+	// Management membership terms (grup-yonetimi 11): the terms, their
+	// mails and the job's runs, with the indexes.
+	20261027140000: `
+		SELECT 1
+		WHERE to_regclass('public.management_membership_terms') IS NOT NULL
+		  AND to_regclass('public.management_membership_terms_open_idx') IS NOT NULL
+		  AND to_regclass('public.management_membership_terms_ends_idx') IS NOT NULL
+		  AND to_regclass('public.management_membership_terms_granted_idx') IS NOT NULL
+		  AND to_regclass('public.management_term_mails') IS NOT NULL
+		  AND to_regclass('public.management_term_mails_due_idx') IS NOT NULL
+		  AND to_regclass('public.management_term_mails_recipient_idx') IS NOT NULL
+		  AND to_regclass('public.management_term_mails_subject_idx') IS NOT NULL
+		  AND to_regclass('public.management_term_runs') IS NOT NULL
+		  AND to_regclass('public.management_term_runs_started_idx') IS NOT NULL`,
+	// The Team audit record takes the term actions and the system basis.
+	20261027140100: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%membership.term.expired%'
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%system%'
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_target_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%membership.term.extend%'
+		  )`,
 	// The claim holding a certificate job (horizontal-scale ticket 25).
 	20261027150000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'certificate_jobs' AND column_name = 'lease_token'`,
 	// The Group of a queued membership mail by its id (ADR 0065 ticket 07).

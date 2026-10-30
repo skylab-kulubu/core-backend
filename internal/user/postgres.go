@@ -551,6 +551,12 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`DELETE FROM privilege_notice_mails WHERE recipient_id = $1`,
 		`UPDATE privilege_notice_mails SET subject_id = NULL WHERE subject_id = $1`,
 		`UPDATE privilege_notice_mails SET actor_id = NULL WHERE actor_id = $1`,
+		// Management membership terms (docs/management-membership-terms.md):
+		// the person's terms and the mails that go to them or name them go;
+		// a term they granted forgets who granted it.
+		`DELETE FROM management_term_mails WHERE recipient_id = $1 OR subject_id = $1`,
+		`DELETE FROM management_membership_terms WHERE user_id = $1`,
+		`UPDATE management_membership_terms SET granted_by = NULL WHERE granted_by = $1`,
 		// The team page notice's ledger (docs/team-page-consent.md).
 		`DELETE FROM team_page_notices WHERE user_id = $1`,
 	}

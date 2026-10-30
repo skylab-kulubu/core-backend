@@ -107,6 +107,10 @@ type SkyMail struct {
 	// off.
 	FeedbackRequestTemplateKey  string
 	FeedbackReminderTemplateKey string
+	// ManagementTermTemplateKey addresses the management term mails
+	// (management_term.go, docs/management-membership-terms.md); empty
+	// turns them off.
+	ManagementTermTemplateKey string
 	// FeedbackNotification sends a member's feedback mail as a Notification
 	// of the template's type (FEEDBACK_NOTIFICATION, ticket 13): SkyMail
 	// sends it by e-mail and to the inbox. Off, it goes by address alone.

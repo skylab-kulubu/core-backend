@@ -24,6 +24,9 @@ Keycloak's own admin events show every such change as made by
 | `PUT /v1/groups/:groupId/client-roles` | `group.roles` | the Group | the role mappings before and after, as `client:role` |
 | `POST /v1/apps/:clientId/assignments` ([app-assignments.md](app-assignments.md)) | `app.assign` | the Group, or none for a person (`target_user_id`, empty `group_path`) | after: the Group's id and path, `client`, `role` |
 | `DELETE /v1/apps/:clientId/assignments` | `app.unassign` | as `app.assign` | as `app.assign` |
+| `POST /v1/management-memberships/:termId/extend` ([management-membership-terms.md](management-membership-terms.md)) | `membership.term.extend` | the term's Group | before and after: `endsAt`; `target_user_id` is the holder |
+| `POST /v1/management-memberships/:termId/handover` | `membership.term.handover` | the term's Group | before: the holder's `endsAt`; after: the successor's `endsAt`, `successorId` and `handover` (`immediate` or `at_term_end`); `target_user_id` is the holder. The add and the removal it makes write their own `member.add` and `member.remove` rows |
+| the daily term job | `membership.term.expired` | the term's Group | after: `endsAt`; `target_user_id` is the holder; actor `system` (below) |
 
 Privileged's writes carry `actor_basis` `privileged`. With team delegation
 on ([team-delegation.md](team-delegation.md)), a Leader's member add and
@@ -42,8 +45,8 @@ recorded either: core does not see it.
 |---|---|
 | `id`, `occurred_at` | the row; when the write began |
 | `actor_id` | the caller's Keycloak subject (`sub`). No name, no e-mail |
-| `actor_basis`, `actor_via_group_id` | `privileged`; or `leader` with the Team whose Leader group grants the change; or, on a `denied` row only, `none` (the caller leads no Team of the Group) |
-| `action` | one of the thirteen above (CHECK) |
+| `actor_basis`, `actor_via_group_id` | `privileged`; or `leader` with the Team whose Leader group grants the change; or, on a `denied` row only, `none` (the caller leads no Team of the Group); or, on a `membership.term.expired` row only, `system`: core's daily job, with the nil subject (`00000000-…`) as `actor_id` and `system:term-expiry` as `client` (migration `20261027140100`) |
+| `action` | one of the sixteen above (CHECK) |
 | `group_id`, `group_path` | the target Group's Keycloak id and its path at the time. A `team.create` has no id until Keycloak answers; an `app.*` row for a person has neither (empty path) |
 | `target_user_id` | the person of a member or leader action, as a subject; set exactly for those, and on an `app.*` row exactly when it has no Group (CHECK, migration `20261023120000`) |
 | `before`, `after` | the Group's side of the change (below) |
