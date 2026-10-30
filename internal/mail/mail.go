@@ -111,9 +111,12 @@ type SkyMail struct {
 	// of the template's type (FEEDBACK_NOTIFICATION, ticket 13): SkyMail
 	// sends it by e-mail and to the inbox. Off, it goes by address alone.
 	FeedbackNotification bool
-	Tokens               TokenSource
-	HTTP                 *http.Client
-	Logger               *log.Logger
+	// TeamPageNoticeTemplateKey addresses the team page notice
+	// (team_page_notice.go); empty turns it off.
+	TeamPageNoticeTemplateKey string
+	Tokens                    TokenSource
+	HTTP                      *http.Client
+	Logger                    *log.Logger
 }
 
 // template says which SkyMail template a send is aimed at. Only one of the two
