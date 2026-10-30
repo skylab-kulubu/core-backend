@@ -102,6 +102,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == consentWithdrawCommandName {
 		os.Exit(runConsentWithdraw(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == teamPageNoticeCommandName {
+		os.Exit(runTeamPageNotice(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == retentionSweepCommandName {
 		os.Exit(runRetentionSweep(os.Args[2:], os.Getenv, os.Stdout))
 	}

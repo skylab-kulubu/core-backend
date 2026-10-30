@@ -1485,6 +1485,9 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 	20261027150000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'certificate_jobs' AND column_name = 'lease_token'`,
 	// The Group of a queued membership mail by its id (ADR 0065 ticket 07).
 	20261027190000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'team_membership_mails' AND column_name = 'group_id'`,
+	// The team page notice's ledger (docs/team-page-consent.md,
+	// ekip-yetki-devri 21).
+	20261030100000: `SELECT 1 WHERE to_regclass('public.team_page_notices') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
