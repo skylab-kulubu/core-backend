@@ -258,6 +258,7 @@ func (s *MemoryStore) ClaimJobs(_ context.Context, limit int, lease time.Duratio
 		limit = 10
 	}
 	now := time.Now().UTC()
+	leaseToken := uuid.New()
 	out := make([]Job, 0, limit)
 	for id, job := range s.jobs {
 		claimable := job.Status == "queued" && !job.NextAttemptAt.After(now)
@@ -266,7 +267,7 @@ func (s *MemoryStore) ClaimJobs(_ context.Context, limit int, lease time.Duratio
 			continue
 		}
 		until := now.Add(lease)
-		job.Status, job.LeaseUntil = "running", &until
+		job.Status, job.LeaseUntil, job.LeaseToken = "running", &until, leaseToken
 		job.AttemptCount++
 		if job.StartedAt == nil {
 			job.StartedAt = &now
@@ -286,28 +287,53 @@ func (s *MemoryStore) ClaimJobs(_ context.Context, limit int, lease time.Duratio
 	return out, nil
 }
 
-func (s *MemoryStore) CompleteJob(_ context.Context, jobID, certificateID uuid.UUID) error {
+// heldLocked returns the job when it is still running under leaseToken.
+func (s *MemoryStore) heldLocked(jobID, leaseToken uuid.UUID) (Job, error) {
+	job, ok := s.jobs[jobID]
+	if !ok || job.Status != "running" || job.LeaseToken != leaseToken {
+		return Job{}, ErrLeaseLost
+	}
+	return job, nil
+}
+
+func (s *MemoryStore) RenewJobLease(_ context.Context, jobID, leaseToken uuid.UUID, lease time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	job, ok := s.jobs[jobID]
-	if !ok {
-		return ErrNotFound
+	job, err := s.heldLocked(jobID, leaseToken)
+	if err != nil {
+		return err
+	}
+	if lease <= 0 {
+		lease = 2 * time.Minute
+	}
+	until := time.Now().UTC().Add(lease)
+	job.LeaseUntil = &until
+	s.jobs[jobID] = job
+	return nil
+}
+
+func (s *MemoryStore) CompleteJob(_ context.Context, jobID, leaseToken, certificateID uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, err := s.heldLocked(jobID, leaseToken)
+	if err != nil {
+		return err
 	}
 	now := time.Now().UTC()
-	job.Status, job.CertificateID, job.CompletedAt, job.LeaseUntil = "issued", &certificateID, &now, nil
+	job.Status, job.CertificateID, job.CompletedAt, job.LeaseUntil, job.LeaseToken = "issued", &certificateID, &now, nil, uuid.Nil
 	s.jobs[jobID] = job
 	s.refreshBatchLocked(job.BatchID)
 	return nil
 }
 
-func (s *MemoryStore) FailJob(_ context.Context, jobID uuid.UUID, errorCode string, retryAt time.Time, terminal bool) error {
+func (s *MemoryStore) FailJob(_ context.Context, jobID, leaseToken uuid.UUID, errorCode string, retryAt time.Time, terminal bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	job, ok := s.jobs[jobID]
-	if !ok {
-		return ErrNotFound
+	job, err := s.heldLocked(jobID, leaseToken)
+	if err != nil {
+		return err
 	}
-	job.Status, job.ErrorCode, job.NextAttemptAt, job.LeaseUntil = "queued", errorCode, retryAt, nil
+	job.Status, job.ErrorCode, job.NextAttemptAt, job.LeaseUntil, job.LeaseToken = "queued", errorCode, retryAt, nil, uuid.Nil
 	if terminal {
 		now := time.Now().UTC()
 		job.Status, job.CompletedAt = "failed", &now

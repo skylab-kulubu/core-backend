@@ -107,6 +107,10 @@ type SkyMail struct {
 	// off.
 	FeedbackRequestTemplateKey  string
 	FeedbackReminderTemplateKey string
+	// FeedbackNotification sends a member's feedback mail as a Notification
+	// of the template's type (FEEDBACK_NOTIFICATION, ticket 13): SkyMail
+	// sends it by e-mail and to the inbox. Off, it goes by address alone.
+	FeedbackNotification bool
 	// TeamPageNoticeTemplateKey addresses the team page notice
 	// (team_page_notice.go); empty turns it off.
 	TeamPageNoticeTemplateKey string

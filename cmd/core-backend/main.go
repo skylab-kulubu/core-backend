@@ -531,6 +531,12 @@ func main() {
 	// person's Groups; core reads them from Keycloak with its own service
 	// account and keeps them a minute.
 	overageGroups := identity.NewOverageGroups(dir, identity.OverageOptions{})
+	// A Group write through one core process reaches the others' caches
+	// through Postgres NOTIFY; each process listens on a connection of its
+	// own (horizontal-scale ticket 26).
+	groupCache := identity.NewSharedGroupCache(overageGroups, pool, identity.ListenConnect(pool),
+		identity.SharedGroupCacheOptions{Logf: log.Printf})
+	worker("group cache invalidation", groupCache.Run(workers))
 	// Where Owner teams sit: with team delegation on, a Leader of a Team
 	// above an Event's Owner team leads it too (ADR-0065 decision 2,
 	// ekip-yetkileri ticket 12). The realm's Groups are kept a minute.
@@ -901,7 +907,12 @@ func main() {
 		workers, teammail.NewPostgresQueue(pool), teammail.NewPostgresNoticeQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
 	worker("team membership mail", teamMembershipStopped)
 	worker("event status mail", startEventStatusMail(workers, events, tickets, users, sky, log.Printf))
-	worker("feedback mail", startFeedbackMail(workers, feedbackInvites, tickets, users, sky, log.Printf))
+	// A member's feedback mail as a Notification (inbox and e-mail), ticket 13.
+	feedbackNotification, err := feedbackNotificationOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("feedback mail", startFeedbackMail(workers, feedbackNotification, feedbackInvites, tickets, users, sky, log.Printf))
 	// The new Ticket's Notification (docs/ticket-created-notification.md):
 	// SkyMail tells the holder by inbox and e-mail.
 	ticketNotificationOn, err := ticketCreatedNotificationOn(os.Getenv)
@@ -1017,7 +1028,7 @@ func main() {
 		Identity: identity.NewServiceWithOptions(auditedDir, users, az, identity.Options{
 			AccountErasureEnabled: workerEnabled,
 			AccessProjector:       accessProjector,
-			GroupCache:            overageGroups,
+			GroupCache:            groupCache,
 			TeamTree:              teamTree,
 			Membership:            teamMembership,
 			GroupRoles:            groupRolesNotice,
