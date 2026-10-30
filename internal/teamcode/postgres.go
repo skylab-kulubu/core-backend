@@ -95,17 +95,24 @@ func (r *postgresRecords) Held(ctx context.Context, code string) (bool, error) {
 	return held, nil
 }
 
-func (r *postgresRecords) Referenced(ctx context.Context, code string) (bool, error) {
-	var held bool
+func (r *postgresRecords) References(ctx context.Context, code string) ([]string, error) {
+	var event, certificate, template, binding bool
 	err := r.tx.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM events WHERE lower(owner_team) = lower($1))
-			OR EXISTS (SELECT 1 FROM certificates WHERE lower(owner_team) = lower($1))
-			OR EXISTS (SELECT 1 FROM certificate_templates WHERE lower(owner_team) = lower($1))
-			OR EXISTS (SELECT 1 FROM certificate_template_bindings WHERE scope = 'ownerTeam' AND lower(scope_key) = lower($1))`, code).Scan(&held)
+		SELECT EXISTS (SELECT 1 FROM events WHERE lower(owner_team) = lower($1)),
+			EXISTS (SELECT 1 FROM certificates WHERE lower(owner_team) = lower($1)),
+			EXISTS (SELECT 1 FROM certificate_templates WHERE lower(owner_team) = lower($1)),
+			EXISTS (SELECT 1 FROM certificate_template_bindings WHERE scope = 'ownerTeam' AND lower(scope_key) = lower($1))`, code).
+		Scan(&event, &certificate, &template, &binding)
 	if err != nil {
-		return false, fmt.Errorf("%w: referenced: %w", ErrUnavailable, err)
+		return nil, fmt.Errorf("%w: references: %w", ErrUnavailable, err)
 	}
-	return held, nil
+	var out []string
+	for i, held := range []bool{event, certificate, template, binding} {
+		if held {
+			out = append(out, recordKinds[i])
+		}
+	}
+	return out, nil
 }
 
 func (r *postgresRecords) Retire(ctx context.Context, code, groupID, reason string) error {

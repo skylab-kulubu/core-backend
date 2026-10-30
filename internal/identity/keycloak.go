@@ -432,6 +432,27 @@ func (k *Keycloak) CreateGroup(ctx context.Context, parentRef, name string) (Gro
 	return groupFrom(fresh), nil
 }
 
+// CreateSubgroup is POST /groups/{parentID}/children with the name and
+// the attributes, then the new Group read by the id Keycloak answered.
+func (k *Keycloak) CreateSubgroup(ctx context.Context, parentID, name string, attributes map[string]string) (Group, error) {
+	if _, err := uuid.Parse(parentID); err != nil {
+		return Group{}, ErrNotFound
+	}
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return Group{}, err
+	}
+	id, err := k.gc.CreateChildGroup(ctx, token, k.realm, parentID, gocloak.Group{Name: &name, Attributes: attrsToKC(attributes)})
+	if err != nil {
+		return Group{}, mapKCErr(err)
+	}
+	fresh, err := k.gc.GetGroup(ctx, token, k.realm, id)
+	if err != nil {
+		return Group{}, mapKCErr(err)
+	}
+	return groupFrom(fresh), nil
+}
+
 func (k *Keycloak) UpdateGroup(ctx context.Context, g Group) (Group, error) {
 	token, err := k.accessToken(ctx)
 	if err != nil {
