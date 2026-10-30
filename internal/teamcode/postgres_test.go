@@ -3,6 +3,7 @@ package teamcode_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -72,6 +73,34 @@ func TestPostgresLedgerHeld(t *testing.T) {
 			t.Errorf("%s is held", code)
 		}
 	}
+	// References names the kinds of record that hold a code, never a
+	// record's id, and leaves retired codes out.
+	exec(t, pool, `INSERT INTO events (id, name, location, owner_team) VALUES ($1, 'Jam', 'YTÜ', 'templateteam')`, uuid.New())
+	for code, want := range map[string][]string{
+		"EVENTTEAM":    {teamcode.RecordEvent},
+		"certteam":     {teamcode.RecordCertificate},
+		"TEMPLATETEAM": {teamcode.RecordEvent, teamcode.RecordCertificateTemplate},
+		"BOUNDTEAM":    {teamcode.RecordTemplateBinding},
+		"OLDTEAM":      nil,
+		"EVENTSCOPE":   nil,
+	} {
+		if got := references(t, ledger, code); !slices.Equal(got, want) {
+			t.Errorf("References(%s) = %v, want %v", code, got, want)
+		}
+	}
+}
+
+func references(t *testing.T, ledger teamcode.Ledger, code string) []string {
+	t.Helper()
+	var got []string
+	if err := ledger.Locked(context.Background(), func(ctx context.Context, records teamcode.Records) error {
+		var err error
+		got, err = records.References(ctx, code)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return got
 }
 
 // A retired code is kept once the write succeeds, idempotently, with the
@@ -264,5 +293,57 @@ func TestPostgresLedgerUnavailable(t *testing.T) {
 	})
 	if !errors.Is(err, teamcode.ErrUnavailable) || ran {
 		t.Fatalf("closed pool: %v, write ran %v", err, ran)
+	}
+}
+
+// Through the service with the database (ADR 0065 ticket 05): a Team whose
+// code an Event names keeps it (code_in_use, naming the kind), a Team whose
+// Sub-team's code an Event names is not deleted, and a deletion retires the
+// codes of the Team and of every Sub-team under it.
+func TestTeamStructureWithPostgres(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	dir := identity.NewMemory()
+	root := uuid.NewString()
+	dir.PutGroup(identity.Group{ID: root, Name: "YK", Path: "/UYELER/YK"})
+	if err := dir.SetGroupClientRoles(ctx, root, []identity.ClientRole{{ClientID: "core", Role: authz.RoleGroupsManage}}); err != nil {
+		t.Fatal(err)
+	}
+	dir.PutGroup(identity.Group{ID: uuid.NewString(), Name: "UYELER", Path: "/UYELER"})
+	dir.PutGroup(identity.Group{ID: uuid.NewString(), Name: "ARGE", Path: "/UYELER/ARGE"})
+	weblab, front, inner := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	dir.PutGroup(identity.Group{ID: weblab, Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"})
+	dir.PutGroup(identity.Group{ID: front, Name: "FRONT", Path: "/UYELER/ARGE/WEBLAB/FRONT"})
+	dir.PutGroup(identity.Group{ID: inner, Name: "INNER", Path: "/UYELER/ARGE/WEBLAB/FRONT/INNER"})
+	exec(t, pool, `INSERT INTO events (id, name, location, owner_team) VALUES ($1, 'Hack', 'YTÜ', 'inner')`, uuid.New())
+	// A Team goes with its Sub-teams only with Team delegation on.
+	policy := authz.DefaultPolicy()
+	policy.TeamDelegation = true
+	svc := identity.NewServiceWithOptions(dir, user.NewMemoryStore(), authz.NewAuthorizer(policy),
+		identity.Options{TeamCodes: teamcode.NewPostgresLedger(pool), Delegation: identity.NewTeamDelegation(policy, dir, dir, identity.TeamDelegationOptions{})})
+	yk := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}}
+
+	_, err := svc.ChangeTeamCode(ctx, yk, inner, "INNER2")
+	var structure *identity.TeamStructureError
+	if !errors.As(err, &structure) || structure.Code != identity.CodeCodeInUse || !slices.Equal(structure.Records, []string{teamcode.RecordEvent}) {
+		t.Fatalf("change a code an Event names: %v", err)
+	}
+	err = svc.DeleteGroup(ctx, yk, front)
+	var deletion *identity.GroupDeleteError
+	if !errors.As(err, &deletion) || deletion.Code != identity.CodeCodeInUse || !slices.Equal(deletion.Records, []string{teamcode.RecordEvent}) {
+		t.Fatalf("delete a Team whose Sub-team's code an Event names: %v", err)
+	}
+	exec(t, pool, `DELETE FROM events WHERE owner_team = 'inner'`)
+	if err := svc.DeleteGroup(ctx, yk, front); err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{"FRONT", "INNER"} {
+		var reason string
+		if err := pool.QueryRow(ctx, `SELECT reason FROM retired_team_codes WHERE code = $1`, code).Scan(&reason); err != nil || reason != teamcode.ReasonDeleted {
+			t.Errorf("%s: %q %v", code, reason, err)
+		}
+	}
+	if _, err := dir.GetGroup(ctx, inner); !errors.Is(err, identity.ErrNotFound) {
+		t.Errorf("INNER remains: %v", err)
 	}
 }

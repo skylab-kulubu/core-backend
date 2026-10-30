@@ -55,6 +55,12 @@ type Service interface {
 	// membership, as AddMember decides, without writing
 	// (membership_decision.go).
 	MembershipWriteDecision(ctx context.Context, p authz.Principal, groupRef string) (MembershipDecision, error)
+	// CreateSubTeam opens a Sub-team under a Team (POST
+	// /v1/groups/{id}/children) and ChangeTeamCode changes a Team's code
+	// (PUT /v1/groups/{id}/code): Privileged, or a Leader with delegation on
+	// (docs/team-delegation.md "Team structure").
+	CreateSubTeam(ctx context.Context, p authz.Principal, parentRef string, in NewSubTeam) (Group, error)
+	ChangeTeamCode(ctx context.Context, p authz.Principal, groupRef, code string) (Group, error)
 	// MemberCheck is what adding a person to a Group would warn of
 	// (grup-yonetimi 07); it never refuses the add.
 	MemberCheck(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) (MemberCheck, error)

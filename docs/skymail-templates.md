@@ -93,6 +93,11 @@ variable says which. `SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY` addresses it
 (unset: the key above; empty: off). See
 [management-membership-terms.md](management-membership-terms.md#mails).
 
+The feedback mails (`core.feedback-request`, `core.feedback-reminder`) go the
+same way to a member once `FEEDBACK_NOTIFICATION=on`: a Notification whose
+type is the template's key, so it lands in the inbox too; a guest's stays an
+e-mail. See [event-feedback.md](event-feedback.md#to-the-inbox-ticket-13).
+
 ## Configuration
 
 | Variable | Unset | Empty |

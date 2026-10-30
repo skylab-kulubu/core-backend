@@ -1513,6 +1513,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_target_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%membership.term.extend%'
 		  )`,
+	// The claim holding a certificate job (horizontal-scale ticket 25).
+	20261027150000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'certificate_jobs' AND column_name = 'lease_token'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
@@ -1667,20 +1669,33 @@ func ExtraFormSQL() (string, error) {
 }
 
 func listUp() ([]file, error) {
-	entries, err := fs.ReadDir(db.UpSQL, "migrations")
+	return list(db.UpSQL, ".up.sql")
+}
+
+// list returns the files of fsys's migrations directory whose names end in
+// suffix, by version. Two files of one version are an error that names both:
+// the second would otherwise fail the first one's fingerprint (core does not
+// start) or never run on a database that has the version recorded.
+func list(fsys fs.FS, suffix string) ([]file, error) {
+	entries, err := fs.ReadDir(fsys, "migrations")
 	if err != nil {
 		return nil, err
 	}
 	out := make([]file, 0, len(entries))
+	seen := map[int64]string{}
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".up.sql") {
+		if e.IsDir() || !strings.HasSuffix(name, suffix) {
 			continue
 		}
 		v, err := strconv.ParseInt(strings.TrimSuffix(name, path.Ext(name))[:14], 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("migration name %s: %w", name, err)
 		}
+		if other, ok := seen[v]; ok {
+			return nil, fmt.Errorf("migration version %d is used twice: %s and %s", v, other, name)
+		}
+		seen[v] = name
 		out = append(out, file{version: v, name: name})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })

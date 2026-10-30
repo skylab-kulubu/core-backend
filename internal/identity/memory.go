@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -226,11 +227,21 @@ func (m *Memory) UpdateGroup(_ context.Context, g Group) (Group, error) {
 	if !ok {
 		return Group{}, ErrNotFound
 	}
-	if g.Name != "" {
-		existing.Name = g.Name
-	}
 	if g.Attributes != nil {
 		existing.Attributes = g.Attributes
+	}
+	if g.Name != "" && g.Name != existing.Name {
+		// A rename moves the Group's path and every path under it, as
+		// Keycloak's does.
+		old := existing.Path
+		existing.Name = g.Name
+		existing.Path = old[:strings.LastIndex(old, "/")+1] + g.Name
+		for id, child := range m.groups {
+			if strings.HasPrefix(child.Path, old+"/") {
+				child.Path = existing.Path + strings.TrimPrefix(child.Path, old)
+				m.groups[id] = child
+			}
+		}
 	}
 	m.groups[existing.ID] = existing
 	return existing, nil
@@ -249,6 +260,21 @@ func (m *Memory) CreateGroup(_ context.Context, parentRef, name string) (Group, 
 		path = parent.Path + "/" + name
 	}
 	g := Group{ID: uuid.New().String(), Name: name, Path: path}
+	m.groups[g.ID] = g
+	return g, nil
+}
+
+// CreateSubgroup creates name with attributes under the Group parentID,
+// found by its id alone.
+func (m *Memory) CreateSubgroup(_ context.Context, parentID, name string, attributes map[string]string) (Group, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("CreateSubgroup")
+	parent, ok := m.groups[parentID]
+	if !ok {
+		return Group{}, ErrNotFound
+	}
+	g := Group{ID: uuid.New().String(), Name: name, Path: parent.Path + "/" + name, Attributes: maps.Clone(attributes)}
 	m.groups[g.ID] = g
 	return g, nil
 }
