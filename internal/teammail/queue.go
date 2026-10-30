@@ -27,8 +27,12 @@ type Change struct {
 	// ActorID is who made the change, nil when the caller's subject was not
 	// a UUID. A service account's subject is one too; it has no name to
 	// show, so its mail leaves LeaderName empty all the same.
-	ActorID    *uuid.UUID
-	GroupPath  string
+	ActorID   *uuid.UUID
+	GroupPath string
+	// GroupID is the Group's Keycloak id, "" for a row queued without one
+	// (an older core): the mail finds the Group by it first, so a Team
+	// moved or given a new code meanwhile is still named.
+	GroupID    string
 	Action     Action
 	OccurredAt time.Time
 	// Kind is the mail the change was queued for (KindOf when it was

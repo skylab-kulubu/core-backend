@@ -531,6 +531,8 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/groups/:groupId/leaders", ident.TeamLeaders)
 	app.Post("/v1/groups/:groupId/leaders", ident.AddTeamLeader)
 	app.Delete("/v1/groups/:groupId/leaders/:userId", ident.RemoveTeamLeader)
+	app.Post("/v1/groups/:groupId/move", ident.MoveTeam)
+	app.Get("/v1/groups/:groupId/move-preview", ident.MoveTeamPreview)
 	app.Get("/v1/groups/:groupId/members", ident.Members)
 	app.Get("/v1/groups/:groupId/member-candidates", ident.MemberCandidates)
 	app.Get("/v1/groups/:groupId/member-check/:userId", ident.MemberCheck)
