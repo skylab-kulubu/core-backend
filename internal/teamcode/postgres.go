@@ -131,3 +131,93 @@ func (r *postgresRecords) Retire(ctx context.Context, code, groupID, reason stri
 	r.retired = append(r.retired, code)
 	return nil
 }
+
+// RecordCodes are the codes core's Owner team records name (Records.Held's
+// tables, archived and deleted rows included), blanks around each trimmed,
+// each with the kinds of record that name it (RecordEvent, …, in that
+// order). Blank codes are left out. Codes and kinds, never a record's id.
+func (l *PostgresLedger) RecordCodes(ctx context.Context) (map[string][]string, error) {
+	rows, err := l.pool.Query(ctx, `
+		SELECT DISTINCT code, kind FROM (
+			SELECT btrim(owner_team) AS code, 0 AS kind FROM events
+			UNION ALL SELECT btrim(owner_team), 1 FROM certificates
+			UNION ALL SELECT btrim(owner_team), 2 FROM certificate_templates
+			UNION ALL SELECT btrim(scope_key), 3 FROM certificate_template_bindings WHERE scope = 'ownerTeam'
+		) AS named
+		WHERE code IS NOT NULL AND code <> ''
+		ORDER BY code, kind`)
+	if err != nil {
+		return nil, fmt.Errorf("%w: record codes: %w", ErrUnavailable, err)
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var (
+			code string
+			kind int
+		)
+		if err := rows.Scan(&code, &kind); err != nil {
+			return nil, fmt.Errorf("%w: record codes: %w", ErrUnavailable, err)
+		}
+		out[code] = append(out[code], recordKinds[kind])
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: record codes: %w", ErrUnavailable, err)
+	}
+	return out, nil
+}
+
+// RetiredCodes are the codes retired_team_codes holds, as written.
+func (l *PostgresLedger) RetiredCodes(ctx context.Context) ([]string, error) {
+	rows, err := l.pool.Query(ctx, `SELECT code FROM retired_team_codes ORDER BY code`)
+	if err != nil {
+		return nil, fmt.Errorf("%w: retired codes: %w", ErrUnavailable, err)
+	}
+	codes, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("%w: retired codes: %w", ErrUnavailable, err)
+	}
+	return codes, nil
+}
+
+// SeedRetired retires, with ReasonSeeded and no Group id, every code that
+// codes answers and no retired code holds yet (compared without case), in
+// one transaction holding LockName. codes runs inside the lock, so it sees
+// every Group a create or a rename made before it, and none is made while it
+// runs: it answers the codes that still have no Group. It answers the codes
+// written, in codes' order; a second run writes nothing new. On an error
+// nothing is written.
+func (l *PostgresLedger) SeedRetired(ctx context.Context, codes func(ctx context.Context) ([]string, error)) ([]string, error) {
+	var written []string
+	err := l.Locked(ctx, func(ctx context.Context, records Records) error {
+		r, ok := records.(*postgresRecords)
+		if !ok {
+			return errors.New("teamcode: seed: not a Postgres transaction")
+		}
+		want, err := codes(ctx)
+		if err != nil {
+			return err
+		}
+		for _, code := range want {
+			if code == "" {
+				continue
+			}
+			var retired bool
+			if err := r.tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM retired_team_codes WHERE lower(code) = lower($1))`, code).Scan(&retired); err != nil {
+				return fmt.Errorf("%w: seed: %w", ErrUnavailable, err)
+			}
+			if retired {
+				continue
+			}
+			if err := r.Retire(ctx, code, "", ReasonSeeded); err != nil {
+				return err
+			}
+			written = append(written, code)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return written, nil
+}

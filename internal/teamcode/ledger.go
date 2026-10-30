@@ -12,6 +12,10 @@ const (
 	ReasonRenamed = "renamed"
 	// ReasonDeleted: an empty Group was deleted. Its code is never reused.
 	ReasonDeleted = "deleted"
+	// ReasonSeeded: core's records or another system (the CMS, Forms, the
+	// sites) name the code and no Group holds it; the team structure
+	// report wrote it (core-backend team-structure-report -seed-retired).
+	ReasonSeeded = "seeded"
 )
 
 // Ledger is what core knows of codes outside Keycloak, and the lock that

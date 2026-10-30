@@ -8,7 +8,7 @@ Admin REST and the client-credentials token core sends with it go to `KEYCLOAK_A
 
 Everything else stays on `KEYCLOAK_URL`: the issuer every bearer token is checked against, the JWKS (unless `KEYCLOAK_JWKS_URL` says otherwise), the sudo proof's introspection, and the realm tokens for SkyMail and the Erasure command. Keycloak names its public address (`KC_HOSTNAME`) in `iss` whichever address issued a token, so a token fetched through the internal address is the same token; core never verifies the Admin REST token itself, Keycloak does.
 
-It covers every Admin REST call in this table, the server's startup role check, and the commands that run beside the server (`group-count-report`, `ytu-backfill`, `media-legacy-report`). At startup the server logs `keycloak admin REST: KEYCLOAK_ADMIN_URL <base>` when it is set. If the base cannot be reached, the role check right after logs `certificate client roles could not be checked …` and `authz permission roles could not be checked …`.
+It covers every Admin REST call in this table, the server's startup role check, and the commands that run beside the server (`group-count-report`, `team-structure-report` ([team-structure-report.md](team-structure-report.md)), `ytu-backfill`, `media-legacy-report`). At startup the server logs `keycloak admin REST: KEYCLOAK_ADMIN_URL <base>` when it is set. If the base cannot be reached, the role check right after logs `certificate client roles could not be checked …` and `authz permission roles could not be checked …`.
 
 The point is to let the public edge refuse `/admin` on Keycloak's public name (Keycloak's reverse proxy guide: `/admin/` is not exposed) without breaking core.
 
