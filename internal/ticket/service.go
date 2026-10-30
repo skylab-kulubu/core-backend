@@ -855,15 +855,11 @@ func intersectTickets(a, b []Ticket) []Ticket {
 	return out
 }
 
-// hasLeaderGroup reports whether p leads some team. The Privileged answer is
-// the authorizer's: the Ticket read check next to every use.
+// hasLeaderGroup reports whether p leads some team, by whole path segment
+// (authz.IsAnyLeader). The Privileged answer is the authorizer's: the Ticket
+// read check next to every use.
 func hasLeaderGroup(p authz.Principal) bool {
-	for _, g := range p.Groups {
-		if strings.Contains(g, "/LIDERLER") || strings.Contains(g, "/KOORDINATORLER") {
-			return true
-		}
-	}
-	return false
+	return authz.IsAnyLeader(p, authz.DefaultPolicy().LeaderSubgroups)
 }
 
 func (s *service) CheckIn(ctx context.Context, p authz.Principal, ticketID, sessionID uuid.UUID) (CheckIn, error) {
