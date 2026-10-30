@@ -1028,7 +1028,7 @@ func main() {
 		AccessProjector:       accessProjector,
 		GroupCache:            overageGroups,
 		TeamTree:              teamTree,
-		Membership:            identity.JoinMembershipNotifiers(teamMembership, terms),
+		Membership:            identity.JoinMembershipNotifiers(teamMembership, managementTermsNotifier(terms)),
 		GroupRoles:            groupRolesNotice,
 		PrivilegedRoots:       privilegedRoots,
 		GroupNames:            &groupNames,

@@ -2,6 +2,7 @@ package membershipterm_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -240,4 +241,113 @@ func TestOnlyApplyKeepsTerms(t *testing.T) {
 			t.Fatalf("%s expired %v %v", mode, got, err)
 		}
 	}
+}
+
+// A Group list Keycloak read with a branch missing (a children call that
+// answered 404: a Group deleted mid-read, or a proxy while Keycloak
+// restarts) ends no term: the run fails and the next one reads again.
+func TestAnIncompleteGroupListEndsNoTerm(t *testing.T) {
+	f := newFixture(t, membershipterm.ModeApply)
+	f.run(t, membershipterm.ModeApply)
+	before := len(f.open(t))
+
+	svc := f.serviceReading(t, incompleteGroups{Memory: f.dir, missing: "/UYELER/ARGE/WEBLAB"})
+	run, err := svc.Run(context.Background(), membershipterm.RunOptions{Mode: membershipterm.ModeApply, Trigger: membershipterm.TriggerCLI})
+	if err == nil || run.Status != "failed" || run.ErrorCode != "reconcile_failed" || run.Ended != 0 {
+		t.Fatalf("run %+v %v", run, err)
+	}
+	if after := len(f.open(t)); after != before {
+		t.Fatalf("%d open terms, want %d", after, before)
+	}
+}
+
+// A failed run that queued the weekly summary counts as its week: the
+// summary does not go again at the next hourly check.
+func TestAFailedRunsWeeklySummaryIsNotSentAgain(t *testing.T) {
+	f := newFixture(t, membershipterm.ModeApply)
+	f.run(t, membershipterm.ModeApply)
+
+	// DK cannot be read: every run fails at reconcile, the rest goes on.
+	svc := f.serviceReading(t, unreadGroup{Memory: f.dir, id: gDK})
+	f.setNow(termEnd.Add(time.Second))
+	run, err := svc.Run(context.Background(), membershipterm.RunOptions{Mode: membershipterm.ModeApply, Trigger: membershipterm.TriggerSchedule})
+	if err == nil || run.Status != "failed" || run.Expired != 5 || run.Weekly != membershipterm.WeeklySent {
+		t.Fatalf("failed run %+v %v", run, err)
+	}
+	f.setNow(termEnd.Add(time.Hour + time.Second))
+	again, err := svc.Run(context.Background(), membershipterm.RunOptions{Mode: membershipterm.ModeApply, Trigger: membershipterm.TriggerSchedule})
+	if err == nil || again.Weekly != membershipterm.WeeklyNotDue {
+		t.Fatalf("an hour on %+v %v", again, err)
+	}
+	if weekly := f.queued(t)[membershipterm.NoticeWeeklySummary]; len(weekly) != 1 {
+		t.Fatalf("weekly summaries queued %v", weekly)
+	}
+}
+
+// A term extended between the run's read and its mark keeps its new end:
+// the warning bound to the end the run read is not recorded, and the term
+// is not marked expired.
+func TestAnExtensionBetweenReadAndMarkWins(t *testing.T) {
+	f := newFixture(t, membershipterm.ModeApply)
+	f.run(t, membershipterm.ModeApply)
+	ctx := context.Background()
+	read := f.termOf(t, f.people.yk1, gYK)
+	later := termEnd.AddDate(0, 3, 0)
+
+	f.setNow(termEnd.Add(-membershipterm.WarnEarly))
+	if err := f.store.Extend(ctx, read.ID, later, nil, f.clock()); err != nil {
+		t.Fatal(err)
+	}
+	if warned, err := f.store.Warn(ctx, read.ID, *read.EndsAt, membershipterm.NoticeWarning14d, f.clock(), nil); err != nil || warned {
+		t.Fatalf("warned %t %v", warned, err)
+	}
+
+	f.setNow(termEnd.Add(time.Second))
+	marked, err := f.store.Expire(ctx, []uuid.UUID{read.ID}, f.clock(), []uuid.UUID{f.people.admin})
+	if err != nil || len(marked) != 0 {
+		t.Fatalf("marked %v %v", marked, err)
+	}
+	got, err := f.store.Get(ctx, read.ID)
+	if err != nil || got.ExpiredAt != nil || got.Warned14d != nil || got.EndsAt == nil || !got.EndsAt.Equal(later) {
+		t.Fatalf("term %+v %v", got, err)
+	}
+	if lists := f.queued(t)[membershipterm.NoticeExpiredList]; len(lists) != 0 {
+		t.Fatalf("expired lists %v", lists)
+	}
+}
+
+// incompleteGroups is Keycloak's directory when the children of a branch
+// answered 404 while the list was read: ListGroups leaves the branch out,
+// ListGroupsComplete says the list is incomplete.
+type incompleteGroups struct {
+	*identity.Memory
+	missing string
+}
+
+func (d incompleteGroups) ListGroups(ctx context.Context) ([]identity.Group, error) {
+	all, err := d.Memory.ListGroups(ctx)
+	var out []identity.Group
+	for _, g := range all {
+		if !strings.HasPrefix(g.Path, d.missing+"/") {
+			out = append(out, g)
+		}
+	}
+	return out, err
+}
+
+func (incompleteGroups) ListGroupsComplete(context.Context) ([]identity.Group, error) {
+	return nil, identity.ErrIncompleteGroups
+}
+
+// unreadGroup is a directory whose Group id cannot be read.
+type unreadGroup struct {
+	*identity.Memory
+	id uuid.UUID
+}
+
+func (d unreadGroup) Members(ctx context.Context, groupID string) ([]identity.Person, error) {
+	if groupID == d.id.String() {
+		return nil, errors.New("keycloak unavailable")
+	}
+	return d.Memory.Members(ctx, groupID)
 }

@@ -50,8 +50,9 @@ is) get its end, or none.
 
 A term's end moves only by an extension or a handover (below), and only
 within a limit: the end of the **next season** (the earliest season that
-starts after the active one ends, or after today when no active season has
-an end ahead), or, when no next season is defined, **a year from today**
+starts after the active one ends, or, when no active season has an end
+ahead, the earliest not over yet, even one already begun but not set
+active), or, when no next season is defined, **a year from today**
 (Yusuf, 2026-10-19). The new end must be after now.
 
 ## The daily job
@@ -73,14 +74,18 @@ A run, in order:
    console) with the default end. An open term whose membership is gone
    (taken out in the console, the Group deleted, renamed out of scope) is
    **ended** (`ended_at`). A Group whose members cannot be read is left as
-   it is this run, and the run fails.
+   it is this run, and the run fails. A Group list Keycloak read with a
+   branch left out (a Group's children answered 404:
+   `identity.ErrIncompleteGroups`) adds and ends no term this run, and the
+   run fails.
 2. **Dating.** With a default end, every undated open term gets it.
 3. **Warnings.** An open, unexpired term within 14 days of its end and not
    warned yet gets the 14-day warning; within a day of its end and not
    warned of that, the 1-day warning. Each is sent once
    (`warned_14d_at`, `warned_1d_at`, set in the transaction that queues
    the mails); a term first seen within a day of its end gets only the
-   1-day warning. Recipients below.
+   1-day warning. A term extended between the run's read and its mark is
+   not warned of the end it no longer has. Recipients below.
 4. **Expiry.** An open term past its end and not marked: core opens a
    `membership.term.expired` row in the Team audit record (actor `system`,
    client `system:term-expiry`; [team-audit.md](team-audit.md)), then, in
@@ -90,9 +95,10 @@ A run, in order:
    be opened leaves its term unmarked until the next run: no record, no
    mark. **Nothing is written to Keycloak.**
 5. **Weekly summary** (`MANAGEMENT_TERMS_WEEKLY_SUMMARY`, on by default):
-   when the last apply run that looked at it is a week old, the count of
-   expired terms still open, by Group, goes to every member of ADMIN; with
-   none, nothing goes (and the week starts again).
+   when the last apply run that queued it (even a run that failed
+   elsewhere), or that ended `ok` finding none to send, is a week old, the
+   count of expired terms still open, by Group, goes to every member of
+   ADMIN; with none, nothing goes (and the week starts again).
 
 A step that fails does not stop the next ones; the run ends `failed` with
 the first step's code (`reconcile_failed`, `warn_failed`, …) and is due

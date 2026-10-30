@@ -161,21 +161,21 @@ func (s *PostgresStore) Extend(ctx context.Context, id uuid.UUID, endsAt time.Ti
 	return nil
 }
 
-func (s *PostgresStore) Warn(ctx context.Context, id uuid.UUID, notice Notice, at time.Time, mails []Mail) (bool, error) {
+func (s *PostgresStore) Warn(ctx context.Context, id uuid.UUID, endsAt time.Time, notice Notice, at time.Time, mails []Mail) (bool, error) {
 	var query string
 	switch notice {
 	case NoticeWarning14d:
 		query = `UPDATE management_membership_terms SET warned_14d_at = $2, updated_at = $2
-			WHERE id = $1 AND ended_at IS NULL AND expired_at IS NULL AND warned_14d_at IS NULL AND warned_1d_at IS NULL`
+			WHERE id = $1 AND ends_at = $3 AND ended_at IS NULL AND expired_at IS NULL AND warned_14d_at IS NULL AND warned_1d_at IS NULL`
 	case NoticeWarning1d:
 		query = `UPDATE management_membership_terms SET warned_1d_at = $2, warned_14d_at = COALESCE(warned_14d_at, $2), updated_at = $2
-			WHERE id = $1 AND ended_at IS NULL AND expired_at IS NULL AND warned_1d_at IS NULL`
+			WHERE id = $1 AND ends_at = $3 AND ended_at IS NULL AND expired_at IS NULL AND warned_1d_at IS NULL`
 	default:
 		return false, ErrInvalid
 	}
 	warned := false
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, query, id, at)
+		tag, err := tx.Exec(ctx, query, id, at, endsAt)
 		if err != nil || tag.RowsAffected() == 0 {
 			return err
 		}
@@ -191,7 +191,7 @@ func (s *PostgresStore) Expire(ctx context.Context, ids []uuid.UUID, at time.Tim
 		marked = nil
 		rows, err := tx.Query(ctx, `
 			UPDATE management_membership_terms SET expired_at = $2, updated_at = $2
-			WHERE id = ANY($1) AND ended_at IS NULL AND expired_at IS NULL AND ends_at IS NOT NULL
+			WHERE id = ANY($1) AND ended_at IS NULL AND expired_at IS NULL AND ends_at <= $2
 			RETURNING id`, ids, at)
 		if err != nil {
 			return err
@@ -338,7 +338,8 @@ func (s *PostgresStore) LastSuccess(ctx context.Context, mode Mode, trigger Trig
 func (s *PostgresStore) LastWeekly(ctx context.Context) (*time.Time, error) {
 	var last *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT max(started_at) FROM management_term_runs WHERE mode = 'apply' AND status = 'ok' AND weekly IN ('sent', 'none')`).Scan(&last)
+		SELECT max(started_at) FROM management_term_runs
+		WHERE mode = 'apply' AND (weekly = 'sent' OR (status = 'ok' AND weekly = 'none'))`).Scan(&last)
 	return last, err
 }
 

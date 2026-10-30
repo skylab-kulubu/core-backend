@@ -53,6 +53,7 @@ type fixture struct {
 	seasons  *season.MemoryStore
 	audit    *teamaudit.Postgres
 	svc      *membershipterm.Service
+	config   membershipterm.Config
 	identity identity.Service
 	mail     *mailSpy
 	people   people
@@ -117,11 +118,12 @@ func newFixture(t *testing.T, mode membershipterm.Mode) *fixture {
 		t.Fatal(err)
 	}
 	az := authz.NewAuthorizer(authz.DefaultPolicy())
-	svc, err := membershipterm.NewService(membershipterm.Config{
+	f.config = membershipterm.Config{
 		Mode: mode, Weekly: true, Store: f.store, Directory: f.dir, Seasons: f.seasons,
 		Rosters: teammail.DirectoryRosters{Directory: f.dir}, People: directoryPeople{f.dir}, Accounts: users,
 		Mail: f.mail, Audit: f.audit, Authz: az, Now: f.clock, Logf: t.Logf,
-	})
+	}
+	svc, err := membershipterm.NewService(f.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,6 +146,19 @@ func (f *fixture) run(t *testing.T, mode membershipterm.Mode) membershipterm.Run
 		t.Fatal(err)
 	}
 	return run
+}
+
+// serviceReading is a second service on the same store that reads the
+// Groups from dir: Keycloak answering otherwise than the memory directory.
+func (f *fixture) serviceReading(t *testing.T, dir membershipterm.Directory) *membershipterm.Service {
+	t.Helper()
+	config := f.config
+	config.Directory = dir
+	svc, err := membershipterm.NewService(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
 }
 
 func (f *fixture) open(t *testing.T) []membershipterm.Term {

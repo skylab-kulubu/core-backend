@@ -236,17 +236,18 @@ func (s *Service) defaultEnd(ctx context.Context) (seasonEnd, bool) {
 }
 
 // latestEnd is the latest end an extension may give at now: the end of the
-// next season (the earliest starting after the active season's end, or
-// after now when no active season has an end ahead), or a year on
+// next season (the earliest starting after the active season's end, or,
+// when no active season has an end ahead, the earliest not over yet: one
+// entered but not set active counts even once begun), or a year on
 // (MaxExtension) when no next season is defined (Yusuf, 2026-10-19).
 func (s *Service) latestEnd(ctx context.Context, now time.Time) (time.Time, error) {
 	seasons, err := s.config.Seasons.List(ctx, false)
 	if err != nil {
 		return time.Time{}, err
 	}
-	from, currentID := now, uuid.Nil
+	from, currentID, between := now, uuid.Nil, true
 	if current, ok := s.defaultEnd(ctx); ok {
-		from, currentID = current.endsAt, current.seasonID
+		from, currentID, between = current.endsAt, current.seasonID, false
 	}
 	var next *season.Season
 	for i := range seasons {
@@ -256,7 +257,8 @@ func (s *Service) latestEnd(ctx context.Context, now time.Time) (time.Time, erro
 		}
 		// A day's slack: a season stored at midnight UTC starts on the
 		// Istanbul day the active one's end closes.
-		if !item.StartDate.Before(from.Add(-24*time.Hour)) && (next == nil || item.StartDate.Before(*next.StartDate)) {
+		ahead := !item.StartDate.Before(from.Add(-24*time.Hour)) || (between && EndOfDay(*item.EndDate).After(now))
+		if ahead && (next == nil || item.StartDate.Before(*next.StartDate)) {
 			next = &item
 		}
 	}

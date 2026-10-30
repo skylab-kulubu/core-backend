@@ -170,3 +170,24 @@ func TestTermRoutes(t *testing.T) {
 		t.Fatalf("handover rows %v", handovers)
 	}
 }
+
+// Between seasons (the active one over, the next entered but not set
+// active, and already begun) an extension ends with the next season, not
+// a year on.
+func TestAnExtensionBetweenSeasonsEndsWithTheNextSeason(t *testing.T) {
+	f := newFixture(t, membershipterm.ModeApply)
+	f.run(t, membershipterm.ModeApply)
+	start, end := time.Date(2027, 6, 1, 0, 0, 0, 0, time.UTC), time.Date(2028, 5, 31, 0, 0, 0, 0, time.UTC)
+	if _, err := f.seasons.Create(context.Background(), season.Season{ID: uuid.New(), Name: "2027-2028", StartDate: &start, EndDate: &end}); err != nil {
+		t.Fatal(err)
+	}
+	f.setNow(time.Date(2027, 6, 10, 9, 0, 0, 0, time.UTC))
+	ctxYK2, yk2 := as(f.people.yk2, "/UYELER/YK")
+	term := f.termOf(t, f.people.yk1, gYK)
+
+	_, err := f.svc.Extend(ctxYK2, yk2, term.ID, day(t, "2028-06-05"))
+	refusal(t, err, http.StatusUnprocessableEntity, membershipterm.CodeTermTooLong)
+	if _, err := f.svc.Extend(ctxYK2, yk2, term.ID, day(t, "2028-05-31")); err != nil {
+		t.Fatal(err)
+	}
+}

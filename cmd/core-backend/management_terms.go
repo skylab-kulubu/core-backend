@@ -44,6 +44,15 @@ func newManagementTerms(mode membershipterm.Mode, weekly bool, deps managementTe
 	})
 }
 
+// managementTermsNotifier is terms as a membership notifier: only in apply,
+// so that off and dry-run read no Group on an add (Notifies is false there).
+func managementTermsNotifier(terms *membershipterm.Service) identity.MembershipNotifier {
+	if terms == nil || terms.Mode() != membershipterm.ModeApply {
+		return nil
+	}
+	return terms
+}
+
 // startManagementTerms reads MANAGEMENT_TERMS_MODE and
 // MANAGEMENT_TERMS_WEEKLY_SUMMARY and starts the daily job and the mail
 // worker until ctx is cancelled (none while off). The service always

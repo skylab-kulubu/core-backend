@@ -7,8 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
+	"github.com/skylab-kulubu/core-backend/internal/season"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
+	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
 type termsRunner struct {
@@ -83,5 +87,24 @@ func TestManagementTermKeyFromEnv(t *testing.T) {
 	membershipTemplateKeys(sky, func(name string) (string, bool) { return "", name == "SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY" })
 	if sky.ManagementTermConfigured() {
 		t.Fatal("an empty key is on")
+	}
+}
+
+// Only apply hears of the membership routes' adds: off and dry-run join no
+// notifier, so an add reads no Group for the terms.
+func TestManagementTermsNotifyOnlyInApply(t *testing.T) {
+	t.Parallel()
+	deps := managementTermsDeps{dir: identity.NewMemory(), seasons: season.NewMemoryStore(), users: user.NewMemoryStore(), audit: teamaudit.NewMemory()}
+	for mode, want := range map[membershipterm.Mode]bool{membershipterm.ModeOff: false, membershipterm.ModeDryRun: false, membershipterm.ModeApply: true} {
+		terms, err := newManagementTerms(mode, false, deps, t.Logf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := managementTermsNotifier(terms); (got != nil) != want {
+			t.Fatalf("%s: notifier %v", mode, got)
+		}
+	}
+	if managementTermsNotifier(nil) != nil {
+		t.Fatal("a nil service notifies")
 	}
 }

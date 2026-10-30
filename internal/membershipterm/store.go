@@ -38,12 +38,14 @@ type Store interface {
 	Extend(ctx context.Context, id uuid.UUID, endsAt time.Time, seasonID *uuid.UUID, at time.Time) error
 	// Warn marks the open, unexpired term id warned (notice is
 	// NoticeWarning14d or NoticeWarning1d) and queues mails, in one
-	// transaction; false, and nothing queued, when it already was. A 1-day
+	// transaction; false, and nothing queued, when it already was or its
+	// end is no longer endsAt (extended since it was read). A 1-day
 	// warning marks the 14-day one too: it is not sent after.
-	Warn(ctx context.Context, id uuid.UUID, notice Notice, at time.Time, mails []Mail) (bool, error)
-	// Expire marks the open, unmarked terms ids expired at at and queues
-	// one expired list of them to each of recipients, in one transaction.
-	// It answers the ids it marked.
+	Warn(ctx context.Context, id uuid.UUID, endsAt time.Time, notice Notice, at time.Time, mails []Mail) (bool, error)
+	// Expire marks the open, unmarked terms ids whose end is not after at
+	// expired at at, and queues one expired list of them to each of
+	// recipients, in one transaction. It answers the ids it marked; a term
+	// extended since it was read is not one.
 	Expire(ctx context.Context, ids []uuid.UUID, at time.Time, recipients []uuid.UUID) ([]uuid.UUID, error)
 	// Enqueue queues mails.
 	Enqueue(ctx context.Context, mails []Mail) error
@@ -62,8 +64,9 @@ type Store interface {
 	// LastSuccess is when the latest run of mode and trigger that ended ok
 	// started.
 	LastSuccess(ctx context.Context, mode Mode, trigger Trigger) (*time.Time, error)
-	// LastWeekly is when the latest apply run that looked at the weekly
-	// summary (sent or found nothing to send) started.
+	// LastWeekly is when the latest apply run that queued the weekly
+	// summary (whatever else failed in it), or ended ok finding nothing to
+	// send, started.
 	LastWeekly(ctx context.Context) (*time.Time, error)
 	// StartRun records a running run, marking any run still running
 	// abandoned (the lock is held).

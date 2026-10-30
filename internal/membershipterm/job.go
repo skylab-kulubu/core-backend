@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
 
@@ -151,9 +152,24 @@ func (s *Service) Run(ctx context.Context, opts RunOptions) (Run, error) {
 	return run, ferr
 }
 
-// reconcile matches the terms with Keycloak's management memberships.
+// groupListerComplete is a Directory that says when its Group list may miss
+// a branch (identity.Keycloak).
+type groupListerComplete interface {
+	ListGroupsComplete(ctx context.Context) ([]identity.Group, error)
+}
+
+// reconcile matches the terms with Keycloak's management memberships. A
+// Group list that may miss a branch (identity.ErrIncompleteGroups) would
+// end the terms of every Group in it: the step then fails having added and
+// ended nothing, and the next run reads again.
 func (s *Service) reconcile(ctx context.Context, run *Run, apply bool, def seasonEnd, found bool) error {
-	groups, err := s.config.Directory.ListGroups(ctx)
+	var groups []identity.Group
+	var err error
+	if complete, ok := s.config.Directory.(groupListerComplete); ok {
+		groups, err = complete.ListGroupsComplete(ctx)
+	} else {
+		groups, err = s.config.Directory.ListGroups(ctx)
+	}
 	if err != nil {
 		return err
 	}
@@ -321,7 +337,7 @@ func (s *Service) warn(ctx context.Context, run *Run, apply bool, terms []Term, 
 		}
 		warned := true
 		if apply {
-			if warned, err = s.config.Store.Warn(ctx, t.ID, notice, now, mails); err != nil {
+			if warned, err = s.config.Store.Warn(ctx, t.ID, *t.EndsAt, notice, now, mails); err != nil {
 				failed = err
 				continue
 			}
