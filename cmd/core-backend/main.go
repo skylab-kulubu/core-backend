@@ -898,7 +898,12 @@ func main() {
 		workers, teammail.NewPostgresQueue(pool), teammail.NewPostgresNoticeQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
 	worker("team membership mail", teamMembershipStopped)
 	worker("event status mail", startEventStatusMail(workers, events, tickets, users, sky, log.Printf))
-	worker("feedback mail", startFeedbackMail(workers, feedbackInvites, tickets, users, sky, log.Printf))
+	// A member's feedback mail as a Notification (inbox and e-mail), ticket 13.
+	feedbackNotification, err := feedbackNotificationOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("feedback mail", startFeedbackMail(workers, feedbackNotification, feedbackInvites, tickets, users, sky, log.Printf))
 	// The new Ticket's Notification (docs/ticket-created-notification.md):
 	// SkyMail tells the holder by inbox and e-mail.
 	ticketNotificationOn, err := ticketCreatedNotificationOn(os.Getenv)
