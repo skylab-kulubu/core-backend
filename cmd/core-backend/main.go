@@ -84,6 +84,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == replayFromBackupCommandName {
 		os.Exit(runReplayFromBackup(os.Args[2:], os.Getenv, os.Stdout))
 	}
+	if len(os.Args) > 1 && os.Args[1] == erasureManualStepCommandName {
+		os.Exit(runErasureManualStep(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == mediaScanSelfTestCommandName {
 		os.Exit(runMediaScanSelfTest(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
