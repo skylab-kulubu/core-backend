@@ -300,31 +300,40 @@ func (s *PostgresStore) Backlog(ctx context.Context, now time.Time) (int, time.D
 	return count, max(now.Sub(*oldest), 0), nil
 }
 
-// lockSQL takes the job's session advisory lock without waiting.
-const lockSQL = `SELECT pg_try_advisory_lock(hashtextextended('core-backend management terms', 0))`
+// lockSQL takes the job's session advisory lock without waiting;
+// unlockSQL gives it back.
+const (
+	lockSQL   = `SELECT pg_try_advisory_lock(hashtextextended('core-backend management terms', 0))`
+	unlockSQL = `SELECT pg_advisory_unlock(hashtextextended('core-backend management terms', 0))`
+)
 
 func (s *PostgresStore) Lock(ctx context.Context) (func(), bool, error) {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return nil, false, err
 	}
-	// Closing the connection ends the session, which releases the lock
-	// even when unlocking fails; the pool replaces it.
-	release := func() {
+	// The lock is given back before the connection closes: the server ends
+	// a closed session a moment later, and a run started at once would find
+	// the lock still held. Closing the connection ends the session, which
+	// releases the lock even when unlocking fails; the pool replaces it.
+	end := func(unlock bool) {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		if unlock {
+			_, _ = conn.Exec(closeCtx, unlockSQL)
+		}
 		_ = conn.Hijack().Close(closeCtx)
 	}
 	var locked bool
 	if err := conn.QueryRow(ctx, lockSQL).Scan(&locked); err != nil {
-		release()
+		end(false)
 		return nil, false, err
 	}
 	if !locked {
-		release()
+		end(false)
 		return nil, false, nil
 	}
-	return release, true, nil
+	return func() { end(true) }, true, nil
 }
 
 func (s *PostgresStore) LastSuccess(ctx context.Context, mode Mode, trigger Trigger) (*time.Time, error) {
