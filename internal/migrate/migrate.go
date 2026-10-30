@@ -1481,6 +1481,9 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.subject_requests_open_idx') IS NOT NULL
 		  AND to_regclass('public.subject_requests_answered_idx') IS NOT NULL
 		  AND to_regclass('public.subject_request_events_request_idx') IS NOT NULL`,
+	// The team page notice's ledger (docs/team-page-consent.md,
+	// ekip-yetki-devri 21).
+	20261030100000: `SELECT 1 WHERE to_regclass('public.team_page_notices') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

@@ -67,6 +67,9 @@ const (
 type Recipient struct {
 	Email    string
 	FullName string
+	// FirstName is the first name of FullName (core's profile, Keycloak's
+	// for a person core has no row for); the team page notice greets by it.
+	FirstName string
 }
 
 // People reads, when the mail is sent, who it goes to and who made the

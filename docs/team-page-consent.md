@@ -65,7 +65,7 @@ members listed today stay listed for 14 days while they are told, then those
 who did not consent are hidden). A member who consented is shown, one who
 withdrew is hidden at once. From then on the rule above holds. Unset: no
 transition. Set it to the release day plus 14 days; the notice mail
-(ekip-yetki-devri ticket 21) goes in the first days of it. Startup logs which
+(below) goes on its first day. Startup logs which
 way it is.
 
 A value that is not RFC 3339 (a date without a time, `10.11.2026`) stops
@@ -78,3 +78,46 @@ printf '%s\n' "$VALUE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}
 
 Known behaviour: during the transition a member added to a listed team, who
 has not decided, is listed too; only the end of the transition hides them.
+
+## The notice
+
+Every member a public roster lists who has **not decided** is told once,
+on the first day of the transition, that the pages will show only those who
+consent (ekip-yetki-devri ticket 21). Who consented stays listed and who
+withdrew is hidden already, so neither is told. It is a transactional mail:
+it tells a person of a change in how their own data is published (KVKK
+art. 10), so it goes on SkyMail's `islem` stream, reads no preference and
+carries no unsubscribe link. Nothing promotional goes into it.
+
+Run inside the core container, after the template is seeded and
+`TEAM_PAGE_CONSENT_GRACE_UNTIL` is set:
+
+```
+core-backend team-page-notice           # dry run: counts, sends nothing, records nothing
+core-backend team-page-notice -apply    # sends
+```
+
+- **Recipients:** everyone a public roster lists (a `public_listing` team's
+  members through every Group under it, a `public_leaders` team's leaders;
+  nobody erased or being erased) without a team page decision, written to
+  at Keycloak's primary e-mail; nobody disabled or without an address. One
+  mail per person, naming every roster that lists them.
+- **Template:** SkyMail `core.team-page-consent-notice` (skymail-frontend
+  `emails/core-team-page-consent-notice.tsx`; `SKYMAIL_TEAM_PAGE_NOTICE_TEMPLATE_KEY`
+  replaces the key). Variables: `FirstName`, `Teams` ("WEBLAB · Web
+  Geliştirme, AGC"), `HideAt` (the transition's end, Europe/Istanbul,
+  "11.11.2026 00:00"), `SettingsURL` (Account Center's Kulüp profili page:
+  `COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL` + `/club-profile`) and
+  `Board` (`true` for a person on the Board's own roster, who stays there by
+  first and last name; the mail then says so).
+- **Once:** the ledger `team_page_notices` (migration `20261030100000`: the
+  person's id and when) is written before each mail. A second run mails
+  nobody it holds. A mail SkyMail refused is taken out of the ledger and
+  goes on the next run; one sent without an answer stays in it and is never
+  sent again (SkyMail's `/single` reads no idempotency key). Account erasure
+  deletes the person's row; down refuses while the table holds one.
+- **Refusals:** no `TEAM_PAGE_CONSENT_GRACE_UNTIL`, or one that has passed,
+  exits 2; consents off (`CONTACT_CONSENT_KEY` unset: nobody could consent)
+  or a template SkyMail does not know exits 3; Keycloak, the database or a
+  refused mail exits 1 (run it again). The record printed is counts only,
+  never a person.

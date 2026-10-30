@@ -107,9 +107,12 @@ type SkyMail struct {
 	// off.
 	FeedbackRequestTemplateKey  string
 	FeedbackReminderTemplateKey string
-	Tokens                      TokenSource
-	HTTP                        *http.Client
-	Logger                      *log.Logger
+	// TeamPageNoticeTemplateKey addresses the team page notice
+	// (team_page_notice.go); empty turns it off.
+	TeamPageNoticeTemplateKey string
+	Tokens                    TokenSource
+	HTTP                      *http.Client
+	Logger                    *log.Logger
 }
 
 // template says which SkyMail template a send is aimed at. Only one of the two
