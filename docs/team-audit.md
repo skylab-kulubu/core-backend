@@ -13,6 +13,8 @@ Keycloak's own admin events show every such change as made by
 | `DELETE /v1/groups/:groupId` | `team.delete` | the empty leaf Group, or a Team deleted with every Group under it | before: id, path, code; one pending row opens before durable code retirement ([group-deletion.md](group-deletion.md)) |
 | `POST /v1/groups/:groupId/children` | `team.create` | the new Sub-team (its id once Keycloak answers) | after: path, parent id, code, display names |
 | `PUT /v1/groups/:groupId/code` | `team.code` | the Team | code and path |
+| `POST /v1/groups/:groupId/leaders` | `leader.add` | the Team (not its Leader group) | after: the Team's id and path, `kind` (`LIDERLER` or `KOORDINATORLER`); `target_user_id` is the person. A Leader group opened for it is a `team.create` row first |
+| `DELETE /v1/groups/:groupId/leaders/:userId` | `leader.remove` | the Team | before: as `leader.add`; one row per Leader group the person leaves |
 | `POST /v1/groups` | `team.create` | the new Group (its id once Keycloak answers) | after: path, parent id, code |
 | `PATCH /v1/groups/:groupId` with a new name | `team.code` | the Group | code and path; the attributes that differ |
 | `PATCH /v1/groups/:groupId` otherwise | `group.attributes` | the Group | the attributes that differ |
@@ -27,8 +29,10 @@ on ([team-delegation.md](team-delegation.md)), a Leader's member add and
 remove carry `leader` and, in `actor_via_group_id`, the Team whose Leader
 group grants it (the nearest one at or above the Group). A Leader's Sub-team create, code change and deletion
 (ticket 05, [team-delegation.md](team-delegation.md#team-structure)) carry
-it too. The other actions the table accepts (`leader.add`, `leader.remove`,
-`team.profile`, `team.move`) are for the delegated routes of tickets 06–08.
+it too. So do a Leader's `leader.add` and `leader.remove` (ticket 06,
+[team-delegation.md](team-delegation.md#leaders)). The other actions the
+table accepts (`team.profile`, `team.move`) are for the delegated routes of
+tickets 07–08.
 Reads are not recorded. A change made in Keycloak's own console is not
 recorded either: core does not see it.
 
@@ -48,7 +52,8 @@ recorded either: core does not see it.
 | `client` | the client the caller's token was issued to (`azp`) |
 
 `before` and `after` hold only a Group's id, path, parent id, code (its
-Keycloak name), role names, the `unverifiedAck` of an unverified add
+Keycloak name), role names, the `kind` of a leader action, the
+`unverifiedAck` of an unverified add
 (below), and the values of the recorded attributes:
 `display_name_tr/en`, `description_tr/en`, `logo_media_id`,
 `public_listing`, `public_leaders`, `team_door_scan`,

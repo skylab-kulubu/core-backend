@@ -225,3 +225,39 @@ func TestService_GroupNamesAfterTheDecision(t *testing.T) {
 		t.Fatalf("fake ADMIN create: %v", err)
 	}
 }
+
+// With team delegation on (ticket 06; #227 review Y1) a Leader group is
+// made only by naming a Leader: the Privileged routes no longer open one by
+// hand, rename a Group to one (a Sub-team to its Team's LIDERLER, above,
+// is refused), or put a Group under one. Off, they do as before.
+func TestService_LeaderGroupsOnlyByNamingALeader(t *testing.T) {
+	t.Parallel()
+	dir, _, _ := namesTree(t)
+	policy := authz.DefaultPolicy()
+	policy.TeamDelegation = true
+	svc := identity.NewServiceWithOptions(dir, user.NewMemoryStore(), authz.NewAuthorizer(policy), identity.Options{
+		TeamCodes:  teamcode.NewMemoryLedger(),
+		Delegation: identity.NewTeamDelegation(policy, dir, dir, identity.TeamDelegationOptions{}),
+	})
+	ctx := context.Background()
+	if _, err := svc.CreateGroup(ctx, privileged(), "g-skysec", "LIDERLER"); refusal(err) != teamcode.ReservedName {
+		t.Errorf("LIDERLER by hand: %v", err)
+	}
+	if _, err := svc.CreateGroup(ctx, privileged(), "g-agc", "KOORDINATORLER"); refusal(err) != teamcode.ReservedName {
+		t.Errorf("KOORDINATORLER by hand: %v", err)
+	}
+	if _, err := svc.UpdateGroup(ctx, privileged(), "g-agc", "LIDERLER", nil); refusal(err) != teamcode.ReservedName {
+		t.Errorf("a Sub-team to its team's LIDERLER: %v", err)
+	}
+	if _, err := svc.CreateGroup(ctx, privileged(), "g-weblab-l", "UNDERLAB"); !errors.Is(err, identity.ErrInvalid) {
+		t.Errorf("a Group under a Leader group: %v", err)
+	}
+	if _, err := svc.CreateGroup(ctx, privileged(), "g-skysec", "SKYSEC-ALT"); err != nil {
+		t.Errorf("a Sub-team: %v", err)
+	}
+	for _, g := range []string{"/UYELER/ARGE/SKYSEC/LIDERLER", "/UYELER/ARGE/ALGOLAB/AGC/KOORDINATORLER", "/UYELER/ARGE/WEBLAB/LIDERLER/UNDERLAB"} {
+		if _, err := dir.GetGroup(ctx, g); !errors.Is(err, identity.ErrNotFound) {
+			t.Errorf("%s was made: %v", g, err)
+		}
+	}
+}
