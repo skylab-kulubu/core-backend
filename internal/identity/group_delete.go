@@ -36,8 +36,8 @@ func deleteRefused(status int, code, detail string) error {
 
 // DeleteGroup deletes the Group groupID (a Keycloak id; a name or path is
 // never a target). Privileged deletes an empty leaf anywhere the guards
-// allow, and a Team with every Group under it once the whole subtree is
-// empty: no member (its Leader groups' included), no role mapping, no
+// allow, and (Team delegation on) a Team with every Group under it once
+// the whole subtree is empty: no member (its Leader groups' included), no role mapping, no
 // code core's records name. A Leader (delegation on) deletes so a Sub-team
 // they manage strictly (authz.Policy.ManagesStrict: never their own Team,
 // never a top Team) (ADR 0065 ticket 05).
@@ -202,7 +202,9 @@ func (s *service) checkGroupDelete(ctx context.Context, original Group, records 
 	if len(roles) != 0 {
 		return Group{}, nil, deleteRefused(http.StatusForbidden, "group_delete_protected", "Remove the Group's role mappings before deleting it.")
 	}
-	if !s.isTeam(g.Path) {
+	// A Team goes with the Groups under it only with Team delegation on;
+	// off, every Group is an empty leaf, as before ADR 0065 ticket 05.
+	if !s.isTeam(g.Path) || !s.delegation.On() {
 		children, err := s.dir.Subgroups(ctx, g.ID)
 		if err != nil {
 			return Group{}, nil, err
