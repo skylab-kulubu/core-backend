@@ -25,8 +25,8 @@ caller's token.
   It also turns on the Owner team inheritance below.
 
 Turn it on only after ticket 01 is in production and the tree report
-(ticket 03) shows no duplicate codes and no names with a `/` (security
-review of #227, Y3), and after the report's `--seed-retired` has written to
+([`team-structure-report`](team-structure-report.md), ticket 03) shows no duplicate codes and no names with a `/` (security
+review of #227, Y3), and after the report's `-seed-retired` has written to
 `retired_team_codes` the codes the CMS's Teams, Forms' templates and the
 sites' `TEAM_META` name without a Group (review of #227, Y2): core reads
 none of those systems, so a Sub-team code is checked against them only

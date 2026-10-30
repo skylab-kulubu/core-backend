@@ -402,3 +402,91 @@ func TestTeamStructureWithPostgres(t *testing.T) {
 		t.Errorf("INNER remains: %v", err)
 	}
 }
+
+// The team structure report reads the codes core's records name, by kind,
+// blanks trimmed and blank ones left out, and the retired codes; seeding
+// retires the codes that are not retired yet, whatever the case, once.
+func TestPostgresLedgerSeedRetired(t *testing.T) {
+	pool := migrated(t)
+	ledger := teamcode.NewPostgresLedger(pool)
+	ctx := context.Background()
+	event, ticket := uuid.New(), uuid.New()
+	exec(t, pool, `INSERT INTO events (id, name, location, owner_team) VALUES ($1, 'Hack', 'YTÜ', ' GONE ')`, event)
+	exec(t, pool, `INSERT INTO events (id, name, location, owner_team) VALUES ($1, 'Jam', 'YTÜ', '  ')`, uuid.New())
+	exec(t, pool, `INSERT INTO tickets (id, event_id, ticket_type, guest_email) VALUES ($1, $2, 'GUEST', 'guest@example.test')`, ticket, event)
+	exec(t, pool, `INSERT INTO certificates (id, event_id, ticket_id, serial, recipient_name, recipient_email, event_name, owner_team, verify_url)
+		VALUES ($1, $2, $3, 'S-1', 'R', 'r@example.test', 'Hack', 'GONE', 'https://example.test/v')`, uuid.New(), event, ticket)
+	template := uuid.New()
+	exec(t, pool, `INSERT INTO certificate_templates (id, name, owner_team) VALUES ($1, 'T', 'WEBLAB')`, template)
+	exec(t, pool, `INSERT INTO certificate_template_bindings (id, scope, scope_key, template_id) VALUES ($1, 'ownerTeam', 'OLD', $2)`, uuid.New(), template)
+	exec(t, pool, `INSERT INTO certificate_template_bindings (id, scope, scope_key, template_id) VALUES ($1, 'event', 'EVENTSCOPE', $2)`, uuid.New(), template)
+	exec(t, pool, `INSERT INTO retired_team_codes (code, reason) VALUES ('Old', 'renamed')`)
+
+	records, err := ledger.RecordCodes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{
+		"GONE":   {teamcode.RecordEvent, teamcode.RecordCertificate},
+		"WEBLAB": {teamcode.RecordCertificateTemplate},
+		"OLD":    {teamcode.RecordTemplateBinding},
+	}
+	if len(records) != len(want) {
+		t.Fatalf("record codes = %v, want %v", records, want)
+	}
+	for code, kinds := range want {
+		if !slices.Equal(records[code], kinds) {
+			t.Errorf("record codes[%s] = %v, want %v", code, records[code], kinds)
+		}
+	}
+
+	calls := 0
+	codes := func(context.Context) ([]string, error) {
+		calls++
+		return []string{"GONE", "OLD", "cmsteam", "CMSTEAM"}, nil
+	}
+	written, err := ledger.SeedRetired(ctx, codes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(written, []string{"GONE", "cmsteam"}) {
+		t.Fatalf("written = %v, want [GONE cmsteam] (OLD is retired as Old; CMSTEAM is cmsteam)", written)
+	}
+	again, err := ledger.SeedRetired(ctx, codes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 0 || calls != 2 {
+		t.Fatalf("second run wrote %v (calls %d)", again, calls)
+	}
+	retired, err := ledger.RetiredCodes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(retired, []string{"GONE", "Old", "cmsteam"}) {
+		t.Fatalf("retired = %v", retired)
+	}
+	var reason string
+	var group *uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT reason, group_id FROM retired_team_codes WHERE code = 'GONE'`).Scan(&reason, &group); err != nil {
+		t.Fatal(err)
+	}
+	if reason != teamcode.ReasonSeeded || group != nil {
+		t.Fatalf("GONE retired as %q with group %v", reason, group)
+	}
+	if !held(t, ledger, "gone") {
+		t.Fatal("a seeded code is not held")
+	}
+
+	// A failing read inside the lock writes nothing.
+	boom := errors.New("keycloak down")
+	if _, err := ledger.SeedRetired(ctx, func(context.Context) ([]string, error) { return nil, boom }); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want %v", err, boom)
+	}
+	if _, err := ledger.SeedRetired(ctx, func(context.Context) ([]string, error) { return []string{"NEWCODE"}, boom }); !errors.Is(err, boom) {
+		t.Fatalf("err = %v", err)
+	}
+	if held(t, ledger, "NEWCODE") {
+		t.Fatal("a failed seed wrote a code")
+	}
+}
