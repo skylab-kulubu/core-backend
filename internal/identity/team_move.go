@@ -153,7 +153,9 @@ func (s *service) MoveTeamPreview(ctx context.Context, p authz.Principal, groupR
 	if _, err := uuid.Parse(parentRef); err != nil {
 		return MovePreview{}, ErrInvalid
 	}
-	privileged := s.allow(p, authz.TypeGroup, authz.Read) == nil
+	// The move's own decision: the write permission, so a Privileged
+	// reader (DK) previews as a Leader or not at all.
+	privileged := s.allow(p, authz.TypeGroup, authz.Update) == nil
 	if privileged {
 		if _, err := uuid.Parse(groupRef); err != nil {
 			return MovePreview{}, ErrNotFound
@@ -366,6 +368,9 @@ func (s *service) checkMove(ctx context.Context, records teamcode.Records, sides
 			return err
 		}
 	}
+	if err := s.moveKeepsPlacement(ctx, g, below, newPath); err != nil {
+		return err
+	}
 	children, err := s.dir.Subgroups(ctx, parent.ID)
 	if err != nil {
 		return err
@@ -383,6 +388,34 @@ func (s *service) checkMove(ctx context.Context, records teamcode.Records, sides
 	// The code is unique, so nothing else sits at the new path; check it
 	// all the same, as Keycloak would refuse it.
 	return s.nameFree(ctx, records, teamcode.AtPath, newPath, g.Name, g.ID)
+}
+
+// moveKeepsPlacement refuses (role_placement) a move after which g or a
+// Group under it would map a client role where the placement rule
+// (authz.RolePlacementOf) maps none: a top Team's app roles under another
+// Team, as renameKeepsPlacement refuses a rename. A Group mapped against
+// the rule already is left to be cleaned.
+func (s *service) moveKeepsPlacement(ctx context.Context, g Group, below []Group, newPath string) error {
+	for _, group := range append([]Group{g}, below...) {
+		roles, err := s.dir.GroupClientRoles(ctx, group.ID)
+		if err != nil {
+			return err
+		}
+		if len(roles) == 0 {
+			continue
+		}
+		hasSubgroups := slices.ContainsFunc(below, func(under Group) bool { return strings.HasPrefix(under.Path, group.Path+"/") })
+		if s.placementOf(group.Path, hasSubgroups, roles) != "" {
+			continue
+		}
+		reason := s.placementOf(newPath+strings.TrimPrefix(group.Path, g.Path), hasSubgroups, roles)
+		if reason == "" {
+			continue
+		}
+		return &RoleRuleError{Status: http.StatusConflict, Code: CodeRolePlacement, Reason: reason,
+			Detail: "A Group moved maps roles; at the new path they would sit where no role is mapped. " + authz.PlacementDetail(reason)}
+	}
+	return nil
 }
 
 // touchesPrivilegedRoot reports whether path is a Privileged root, under

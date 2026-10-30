@@ -404,6 +404,7 @@ the Groups above them read again by id; each refusal has its own code:
 | `409 invalid_move_target` | the new parent is no Team (Privileged: nor an area) |
 | `409 same_parent` | the Group is right under it already |
 | `409 depth_limit`, `409 children_limit` | the Team or a Group under it would break the structure limits |
+| `409 role_placement` | the Team or a Group under it maps a client role the placement rule refuses at the new path (a top Team's app role under another Team), as a rename (#324 review 07-2) |
 
 The move is Keycloak's own (`POST /groups/{parentId}/children` with the
 existing Group's id; its id, members and role mappings stay), a `team.move`
@@ -411,7 +412,8 @@ row with the path and parent id before and after; every kept Group read is
 forgotten. Delegation follows at once: the new parent's Leaders manage the
 Team, the old ones no longer do.
 
-`GET /v1/groups/{id}/move-preview?parentId=` takes the same decision and
+`GET /v1/groups/{id}/move-preview?parentId=` takes the same decision (the
+write permission: a Privileged reader, DK, previews as a Leader or is 403) and
 answers, without a change: `allowed` and the `refusal` code of a rule the
 move breaks; `oldPath`, `newPath`; `members`, the people in the Team and
 every Group under it, each once; `rolesGained` and `rolesLost`, the client

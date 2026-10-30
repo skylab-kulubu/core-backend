@@ -173,6 +173,18 @@ func TestTeamMovePreview(t *testing.T) {
 	wantStatus(t, "a Sub-team's own Leader", got, fiber.StatusForbidden, "")
 	got, _ = e.preview("member", "/UYELER/ARGE/WEBLAB/BACK", "/UYELER/ARGE/WEBLAB/FRONT")
 	wantStatus(t, "a member", got, fiber.StatusForbidden, "")
+	// A Privileged reader (DK) previews as the move decides, by the write
+	// permission: no Leader, refused; a Leader too, by the Leader's rules
+	// (#324 review 07-1).
+	dk := func(as string) rawResponse {
+		groups := []string{"/UYELER/DK"}
+		if as == "webLeader" {
+			groups = append(groups, "/UYELER/ARGE/WEBLAB/LIDERLER")
+		}
+		return e.send(e.token(as, groups...), fiber.MethodGet, "/v1/groups/"+e.idOf("/UYELER/ARGE/WEBLAB/FRONT")+"/move-preview?parentId="+e.idOf("/UYELER/ARGE/MOBILAB"), "")
+	}
+	wantStatus(t, "DK, no Leader", dk("outsider"), fiber.StatusForbidden, "")
+	wantStatus(t, "DK and a Leader of one side", dk("webLeader"), fiber.StatusForbidden, "")
 }
 
 // With delegation off the routes are Privileged's.
@@ -208,4 +220,21 @@ func TestTeamMovePreviewNeedsTheSourceStrictly(t *testing.T) {
 	wantStatus(t, "open FRONT-UI", e.createSub("frontLeader", "/UYELER/ARGE/WEBLAB/FRONT", "FRONT-UI"), fiber.StatusCreated, "")
 	got, _ := e.preview("frontLeader", "/UYELER/ARGE/WEBLAB/FRONT", "/UYELER/ARGE/WEBLAB/FRONT/FRONT-UI")
 	wantStatus(t, "their own Team", got, fiber.StatusForbidden, "")
+}
+
+// A move keeps the role placement rule as a rename does (#324 review 07-2):
+// a top Team's app role does not go under another Team, where a Sub-team
+// maps none; the preview says so too. To another area it stays a top Team.
+func TestTeamMoveKeepsRolePlacement(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	if err := e.dir.SetGroupClientRoles(context.Background(), e.ids["/UYELER/ARGE/MOBILAB"], []identity.ClientRole{{ClientID: "skymail", Role: "skymail:access"}}); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, "a top Team with an app role under a Team", e.move("yk", "/UYELER/ARGE/MOBILAB", "/UYELER/ARGE/WEBLAB"), fiber.StatusConflict, identity.CodeRolePlacement)
+	if _, p := e.preview("yk", "/UYELER/ARGE/MOBILAB", "/UYELER/ARGE/WEBLAB"); p.Allowed || p.Refusal != identity.CodeRolePlacement {
+		t.Errorf("preview %+v", p)
+	}
+	wantStatus(t, "a top Team with an app role to another area", e.move("yk", "/UYELER/ARGE/MOBILAB", "/UYELER/ORGANIZASYON"), fiber.StatusOK, "")
+
 }
