@@ -1,3 +1,5 @@
+//go:build keycloakit
+
 package identity
 
 import (
@@ -21,7 +23,11 @@ import (
 
 // The Keycloak tümleşik test of ADR 0065 tickets 05 and 07: core's
 // Keycloak adapter, with a service account holding the realm-management
-// roles production gives core, against a real Keycloak. It runs only when
+// roles production gives core, against a real Keycloak. It is opt-in, behind
+// the keycloakit build tag (CI allows no skipping test):
+//
+//	go test -tags keycloakit -run TestTeamStructureAgainstKeycloak ./internal/identity/
+//
 // CORE_KEYCLOAK_IT_URL names a disposable Keycloak (start-dev is enough)
 // whose master realm admin is CORE_KEYCLOAK_IT_ADMIN /
 // CORE_KEYCLOAK_IT_ADMIN_PASSWORD; it creates a realm of its own and
@@ -29,7 +35,7 @@ import (
 func TestTeamStructureAgainstKeycloak(t *testing.T) {
 	base := strings.TrimRight(os.Getenv("CORE_KEYCLOAK_IT_URL"), "/")
 	if base == "" {
-		t.Skip("CORE_KEYCLOAK_IT_URL is not set")
+		t.Fatal("CORE_KEYCLOAK_IT_URL is not set")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
