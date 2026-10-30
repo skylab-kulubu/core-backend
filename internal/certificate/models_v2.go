@@ -168,6 +168,9 @@ type Job struct {
 	CreatedAt     time.Time  `json:"createdAt"`
 	StartedAt     *time.Time `json:"startedAt,omitempty"`
 	CompletedAt   *time.Time `json:"completedAt,omitempty"`
+	// LeaseToken names the claim that holds the job; only that claim may
+	// renew, complete or fail it.
+	LeaseToken uuid.UUID `json:"-"`
 }
 
 type EventSummary struct {
@@ -236,8 +239,11 @@ type JobStore interface {
 	GetBatch(ctx context.Context, id uuid.UUID) (Batch, error)
 	ListBatches(ctx context.Context, eventID uuid.UUID) ([]Batch, error)
 	ClaimJobs(ctx context.Context, limit int, lease time.Duration) ([]Job, error)
-	CompleteJob(ctx context.Context, jobID, certificateID uuid.UUID) error
-	FailJob(ctx context.Context, jobID uuid.UUID, errorCode string, retryAt time.Time, terminal bool) error
+	// RenewJobLease, CompleteJob and FailJob return ErrLeaseLost unless the
+	// job is still running under leaseToken.
+	RenewJobLease(ctx context.Context, jobID, leaseToken uuid.UUID, lease time.Duration) error
+	CompleteJob(ctx context.Context, jobID, leaseToken, certificateID uuid.UUID) error
+	FailJob(ctx context.Context, jobID, leaseToken uuid.UUID, errorCode string, retryAt time.Time, terminal bool) error
 	RetryBatch(ctx context.Context, batchID uuid.UUID) error
 	FinalizeAttendance(ctx context.Context, eventID, by uuid.UUID) (time.Time, error)
 	AttendanceFinalizedAt(ctx context.Context, eventID uuid.UUID) (*time.Time, error)
