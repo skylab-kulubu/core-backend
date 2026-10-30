@@ -447,13 +447,17 @@ func (a *authorizer) allowCertificateTemplate(p Principal, r Resource, action Ac
 	}
 }
 
-// isAnyLeader reports whether p is in some Leader group: a Group whose last
-// segment is one of the policy's leader subgroups, under a parent. The whole
-// segment counts: /UYELER/ARGE/WEBLAB/LIDERLER-ESKI is no Leader group.
 func (a *authorizer) isAnyLeader(p Principal) bool {
+	return IsAnyLeader(p, a.policy.LeaderSubgroups)
+}
+
+// IsAnyLeader reports whether p is in some Leader group: a Group whose last
+// segment is one of leaders, under a parent. The whole segment counts:
+// /UYELER/ARGE/WEBLAB/LIDERLER-ESKI is no Leader group.
+func IsAnyLeader(p Principal, leaders []string) bool {
 	for _, group := range p.Groups {
 		segments := pathSegments(group)
-		if len(segments) >= 2 && slices.Contains(a.policy.LeaderSubgroups, segments[len(segments)-1]) {
+		if len(segments) >= 2 && slices.Contains(leaders, segments[len(segments)-1]) {
 			return true
 		}
 	}
