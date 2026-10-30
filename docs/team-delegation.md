@@ -27,8 +27,8 @@ caller's token.
 Turn it on only after ticket 01 is in production and the tree report
 ([`team-structure-report`](team-structure-report.md), ticket 03) shows no duplicate codes and no names with a `/` (security
 review of #227, Y3), and after the report's `-seed-retired` has written to
-`retired_team_codes` the codes the CMS's Teams, Forms' templates and the
-sites' `TEAM_META` name without a Group (review of #227, Y2): core reads
+`retired_team_codes` the codes the CMS's Teams and the sites' `TEAM_META`
+name without a Group (Forms stores none) (review of #227, Y2): core reads
 none of those systems, so a Sub-team code is checked against them only
 through that table ([team-codes.md](team-codes.md) rule 3). Roll back with `off` and a redeploy; the changes made
 stay in Keycloak and in the audit record.
