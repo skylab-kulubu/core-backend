@@ -84,6 +84,12 @@ func refusal(err error) (string, bool) {
 	if errors.As(err, &deletion) {
 		return deletion.Code, true
 	}
+	// A delegated write decided again inside the lock and refused there
+	// never reached Keycloak.
+	var delegation *DelegationError
+	if errors.As(err, &delegation) {
+		return delegation.Code, true
+	}
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return "not_found", true

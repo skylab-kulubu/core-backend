@@ -28,8 +28,9 @@ deleted only after these fresh checks pass:
 - It is not a reserved/Leader Group, below a system/Leader container, a Privileged root, an ancestor or descendant
   of a Privileged root, an Area, or any Group in the `/ROLLER` tree.
 
-**A Team** (ADR 0065 ticket 05): the same route deletes a Team with every
-Group under it when all of them are Sub-teams or Leader groups (a Leader
+**A Team** (ADR 0065 ticket 05; only while `TEAM_DELEGATION` is on, off a
+Team is an empty leaf like any Group and `409 not_empty` stands): the same
+route deletes a Team with every Group under it when all of them are Sub-teams or Leader groups (a Leader
 group with a Group under it, or any other Group, refuses), nobody is in any
 of them (Leader groups included; `not_empty` counts the members and the
 Groups under it), none maps a role or is protected, and core's records name

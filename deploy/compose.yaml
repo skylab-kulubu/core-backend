@@ -84,6 +84,8 @@ services:
       # Feedback mails (docs/event-feedback.md), the same way.
       SKYMAIL_FEEDBACK_REQUEST_TEMPLATE_KEY: ${SKYMAIL_FEEDBACK_REQUEST_TEMPLATE_KEY-core.feedback-request}
       SKYMAIL_FEEDBACK_REMINDER_TEMPLATE_KEY: ${SKYMAIL_FEEDBACK_REMINDER_TEMPLATE_KEY-core.feedback-reminder}
+      # A member's feedback mail as a Notification (docs/event-feedback.md).
+      FEEDBACK_NOTIFICATION: ${FEEDBACK_NOTIFICATION:-off}
       # The new Ticket's Notification (docs/ticket-created-notification.md).
       TICKET_CREATED_NOTIFICATION: ${TICKET_CREATED_NOTIFICATION:-off}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
