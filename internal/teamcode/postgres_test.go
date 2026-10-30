@@ -316,8 +316,11 @@ func TestTeamStructureWithPostgres(t *testing.T) {
 	dir.PutGroup(identity.Group{ID: front, Name: "FRONT", Path: "/UYELER/ARGE/WEBLAB/FRONT"})
 	dir.PutGroup(identity.Group{ID: inner, Name: "INNER", Path: "/UYELER/ARGE/WEBLAB/FRONT/INNER"})
 	exec(t, pool, `INSERT INTO events (id, name, location, owner_team) VALUES ($1, 'Hack', 'YTÜ', 'inner')`, uuid.New())
-	svc := identity.NewServiceWithOptions(dir, user.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()),
-		identity.Options{TeamCodes: teamcode.NewPostgresLedger(pool)})
+	// A Team goes with its Sub-teams only with Team delegation on.
+	policy := authz.DefaultPolicy()
+	policy.TeamDelegation = true
+	svc := identity.NewServiceWithOptions(dir, user.NewMemoryStore(), authz.NewAuthorizer(policy),
+		identity.Options{TeamCodes: teamcode.NewPostgresLedger(pool), Delegation: identity.NewTeamDelegation(policy, dir, dir, identity.TeamDelegationOptions{})})
 	yk := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}}
 
 	_, err := svc.ChangeTeamCode(ctx, yk, inner, "INNER2")
