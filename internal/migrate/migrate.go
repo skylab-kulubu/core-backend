@@ -1488,6 +1488,17 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 	// The team page notice's ledger (docs/team-page-consent.md,
 	// ekip-yetki-devri 21).
 	20261030100000: `SELECT 1 WHERE to_regclass('public.team_page_notices') IS NOT NULL`,
+	// One retired code whatever its case (docs/team-codes.md,
+	// ekip-yetki-devri 15): the unique lower(code) index and the table of
+	// the rows it moved aside.
+	20261030110000: `
+		SELECT 1
+		WHERE to_regclass('public.retired_team_codes_case_duplicates') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_index
+			WHERE indexrelid = to_regclass('public.retired_team_codes_lower_code_idx')
+			  AND indisunique AND indisvalid
+		  )`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
