@@ -2,6 +2,7 @@ package identity_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -65,4 +66,22 @@ func sameIDs(got []uuid.UUID, want ...uuid.UUID) bool {
 	slices.SortFunc(a, cmp)
 	slices.SortFunc(b, cmp)
 	return slices.Equal(a, b)
+}
+
+// incompleteDirectory is a directory whose Group list missed a branch.
+type incompleteDirectory struct{ *identity.Memory }
+
+func (incompleteDirectory) ListGroupsComplete(context.Context) ([]identity.Group, error) {
+	return nil, identity.ErrIncompleteGroups
+}
+
+// A list that missed a branch is an error: its members would be hidden
+// untold.
+func TestTeamPageListingsRefuseAnIncompleteGroupList(t *testing.T) {
+	t.Parallel()
+	f := newTeamPageFixture(t, time.Time{})
+	_, err := identity.TeamPageListings(context.Background(), incompleteDirectory{f.dir}, f.store, authz.DefaultPrivilegedRoots())
+	if !errors.Is(err, identity.ErrIncompleteGroups) {
+		t.Fatalf("err %v", err)
+	}
 }

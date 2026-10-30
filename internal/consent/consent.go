@@ -43,8 +43,8 @@ const (
 	// Not enabled: whether it covers an address or one application is not
 	// agreed with Forms yet.
 	PurposeRecruitmentPool Purpose = "recruitment_pool"
-	// PurposeTeamPage is showing a member on their teams' public pages (the
-	// site and SkyApp read core's public rosters): aydınlatma s6 row 4 (b).
+	// PurposeTeamPage is showing a member on their teams' public pages
+	// (SkyApp reads core's public rosters): aydınlatma s6 row 4 (b).
 	// It is not a mail: only the person gives it, for their own account, in
 	// Account Center; no product records, looks up or mails it. It lasts
 	// until it is withdrawn (docs/team-page-consent.md).

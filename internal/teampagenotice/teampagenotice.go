@@ -107,6 +107,10 @@ var (
 	ErrTemplateMissing = errors.New("teampagenotice: SkyMail has no such template")
 )
 
+// releaseTimeout bounds taking a row out after a refused mail, which runs
+// even when the run is being stopped.
+const releaseTimeout = 10 * time.Second
+
 // due is one person the notice goes to.
 type due struct {
 	id    uuid.UUID
@@ -238,7 +242,11 @@ func send(ctx context.Context, cfg Config, at time.Time, d *due, to teammail.Rec
 		report.Unknown++
 		return nil
 	}
-	if releaseErr := cfg.Ledger.Release(ctx, d.id); releaseErr != nil {
+	// The mail surely did not go. A stopped run (ctx cancelled) still takes
+	// the row out, or the person would never be told.
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+	defer cancel()
+	if releaseErr := cfg.Ledger.Release(releaseCtx, d.id); releaseErr != nil {
 		return fmt.Errorf("ledger: %w (the person's notice did not go and stays recorded)", releaseErr)
 	}
 	if errors.Is(err, mail.ErrTemplateUnconfigured) {

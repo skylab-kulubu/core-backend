@@ -43,6 +43,9 @@ type sent struct {
 
 type mailer struct {
 	sent []sent
+	// cancel, when set, is called before the next refusal: the run is
+	// stopped while the mail is on its way.
+	cancel func()
 	// fail answers the next sends to these addresses with this error.
 	fail map[string]error
 }
@@ -50,6 +53,9 @@ type mailer struct {
 func (m *mailer) TeamPageNotice(_ context.Context, to, _ string, vars map[string]string) error {
 	if err, ok := m.fail[to]; ok {
 		delete(m.fail, to)
+		if m.cancel != nil {
+			m.cancel()
+		}
 		return err
 	}
 	m.sent = append(m.sent, sent{to: to, vars: vars})
@@ -83,7 +89,10 @@ func (l *ledger) Claim(_ context.Context, id uuid.UUID, at time.Time) (bool, err
 	return true, nil
 }
 
-func (l *ledger) Release(_ context.Context, id uuid.UUID) error {
+func (l *ledger) Release(ctx context.Context, id uuid.UUID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.rows, id)
@@ -216,6 +225,26 @@ func TestARefusedMailGoesNextRunAnUnansweredOneNever(t *testing.T) {
 	}
 	if again.Sent != 1 || f.mail.sent[len(f.mail.sent)-1].to != "ada@example.test" {
 		t.Fatalf("second run %+v", again)
+	}
+}
+
+// A run stopped while a mail is on its way, before it reached SkyMail,
+// still takes that person's row out: the next run tells them.
+func TestAStoppedRunLeavesNoRowForAMailThatDidNotGo(t *testing.T) {
+	f := newFixture()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.mail.cancel = cancel
+	f.mail.fail["ada@example.test"] = &mail.SendError{}
+	report, err := teampagenotice.Run(ctx, f.cfg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Failed != 1 {
+		t.Fatalf("report %+v", report)
+	}
+	if _, ok := f.ledger.rows[f.ada]; ok {
+		t.Fatal("the stopped run left Ada recorded")
 	}
 }
 

@@ -23,10 +23,10 @@ import (
 // The team page notice (docs/team-page-consent.md, "The notice";
 // ekip-yetki-devri 21): run once inside the core container on the first day
 // of the transition, after TEAM_PAGE_CONSENT_GRACE_UNTIL is set and the
-// SkyMail template is seeded:
+// SkyMail template is seeded (the binary is /app/core-backend, not on PATH):
 //
-//	core-backend team-page-notice           # dry run: counts, sends nothing
-//	core-backend team-page-notice -apply    # sends
+//	./core-backend team-page-notice           # dry run: counts, sends nothing
+//	./core-backend team-page-notice -apply    # sends
 //
 // It mails every member a public team page lists who has not decided about
 // the team page consent, once; the ledger keeps a second run from mailing

@@ -2,8 +2,8 @@
 
 A member is shown on their teams' public pages only if they asked to be
 (aydınlatma s6 row 4 b, KVKK art. 5/1; ekip-yetki-devri ticket 18). The
-public pages are the two rosters core answers without a sign-in, read by the
-site and SkyApp:
+public pages are the two rosters core answers without a sign-in, read by
+SkyApp (the site reads neither: its Board cards are the CMS's):
 
 - `GET /v1/teams/{team}/members` (a team with `public_listing=true`);
 - `GET /v1/teams/{team}/leaders` (`public_listing` or `public_leaders`).
@@ -89,12 +89,13 @@ it tells a person of a change in how their own data is published (KVKK
 art. 10), so it goes on SkyMail's `islem` stream, reads no preference and
 carries no unsubscribe link. Nothing promotional goes into it.
 
-Run inside the core container, after the template is seeded and
+Run inside the core container (working directory `/app`, the binary is
+not on `PATH`), after the template is seeded and
 `TEAM_PAGE_CONSENT_GRACE_UNTIL` is set:
 
 ```
-core-backend team-page-notice           # dry run: counts, sends nothing, records nothing
-core-backend team-page-notice -apply    # sends
+./core-backend team-page-notice           # dry run: counts, sends nothing, records nothing
+./core-backend team-page-notice -apply    # sends
 ```
 
 - **Recipients:** everyone a public roster lists (a `public_listing` team's
@@ -114,10 +115,19 @@ core-backend team-page-notice -apply    # sends
   person's id and when) is written before each mail. A second run mails
   nobody it holds. A mail SkyMail refused is taken out of the ledger and
   goes on the next run; one sent without an answer stays in it and is never
-  sent again (SkyMail's `/single` reads no idempotency key). Account erasure
-  deletes the person's row; down refuses while the table holds one.
+  sent again (SkyMail's `/single` reads no idempotency key). A run stopped
+  (Ctrl-C, SIGTERM) before a mail reached SkyMail takes that person's row
+  out too. A Group list Keycloak read with a branch missing stops the run
+  before anything is sent (exit 1, run it again).
+- **Keeping:** a row is the proof the person was told: only their id and
+  when. It is kept until the account is erased (account erasure deletes it);
+  down refuses while the table holds one.
+- **Running it again:** safe at any time during the transition. It mails
+  nobody the ledger holds, so a later `-apply` (say on the 7th day) tells
+  only who was added to a listed team since, or who could not be written to
+  before; who decided since is left out like the first time.
 - **Refusals:** no `TEAM_PAGE_CONSENT_GRACE_UNTIL`, or one that has passed,
   exits 2; consents off (`CONTACT_CONSENT_KEY` unset: nobody could consent)
-  or a template SkyMail does not know exits 3; Keycloak, the database or a
-  refused mail exits 1 (run it again). The record printed is counts only,
+  or a template SkyMail does not know exits 3; Keycloak (an incomplete Group
+  list too), the database or a refused mail exits 1 (run it again). The record printed is counts only,
   never a person.

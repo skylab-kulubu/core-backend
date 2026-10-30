@@ -28,10 +28,23 @@ type TeamPageListing struct {
 // TeamPageListings reads every public roster of the realm the way the
 // rosters do: a listed team's members through every Group under it, a team
 // whose leaders alone are public its LIDERLER and KOORDINATORLER. It reads
-// no consent. The listings are in path order.
+// no consent. The listings are in path order. A directory that can tell
+// a Group list missing a branch (Keycloak's ListGroupsComplete) is read
+// with it, and such a list is ErrIncompleteGroups.
 func TeamPageListings(ctx context.Context, dir Directory, users user.Store, privilegedRoots []string) ([]TeamPageListing, error) {
 	s := &service{dir: dir, users: users, privilegedRoots: privilegedRoots}
-	groups, err := dir.ListGroups(ctx)
+	// A list missing a branch (ErrIncompleteGroups: Keycloak restarting, a
+	// Group moved mid-read) would leave that branch's members untold while
+	// the transition hides them: it is an error, not a shorter list.
+	var groups []Group
+	var err error
+	if complete, ok := dir.(interface {
+		ListGroupsComplete(ctx context.Context) ([]Group, error)
+	}); ok {
+		groups, err = complete.ListGroupsComplete(ctx)
+	} else {
+		groups, err = dir.ListGroups(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -14,7 +14,7 @@ import (
 
 // The ledger claims a person once, releases a claim, and loses the
 // person's row when their account is erased.
-func TestPostgresLedger(t *testing.T) {
+func TestPostgresLedgerAndAccountErasure(t *testing.T) {
 	pool := testpostgres.Start(t)
 	ctx := context.Background()
 	if err := migrate.Apply(ctx, pool); err != nil {
