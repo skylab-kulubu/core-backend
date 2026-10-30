@@ -20,7 +20,7 @@ type TeamPageConsents interface {
 }
 
 // TeamPageVisibility is who the public rosters (GET /v1/teams/{team}/members
-// and /leaders, read by the site and SkyApp without a sign-in) show
+// and /leaders, read by SkyApp without a sign-in; the site reads neither) show
 // (docs/team-page-consent.md):
 //
 //   - a person with an open team page consent, in full;

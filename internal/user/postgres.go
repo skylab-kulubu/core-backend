@@ -557,6 +557,8 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`DELETE FROM management_term_mails WHERE recipient_id = $1 OR subject_id = $1`,
 		`DELETE FROM management_membership_terms WHERE user_id = $1`,
 		`UPDATE management_membership_terms SET granted_by = NULL WHERE granted_by = $1`,
+		// The team page notice's ledger (docs/team-page-consent.md).
+		`DELETE FROM team_page_notices WHERE user_id = $1`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(ctx, statement, id); err != nil {

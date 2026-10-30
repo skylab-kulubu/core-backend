@@ -124,6 +124,11 @@ type Directory interface {
 	CreateSubgroup(ctx context.Context, parentID, name string, attributes map[string]string) (Group, error)
 	UpdateGroup(ctx context.Context, g Group) (Group, error)
 	DeleteGroup(ctx context.Context, groupID string) error
+	// MoveGroup puts the Group id, with everything under it, right under
+	// the Group parentID ("" for the realm's top), both Keycloak ids:
+	// Keycloak's POST /groups/{parentID}/children (POST /groups) with the
+	// existing Group's id. Its id, members and role mappings stay.
+	MoveGroup(ctx context.Context, id, parentID string) (Group, error)
 	Subgroups(ctx context.Context, groupID string) ([]Group, error)
 	Members(ctx context.Context, groupID string) ([]Person, error)
 	AddMember(ctx context.Context, groupID string, userID uuid.UUID) error

@@ -672,3 +672,39 @@ func TestServiceTellsTheCoordinatorRole(t *testing.T) {
 		t.Fatalf("sent %v", f.mail.sent)
 	}
 }
+
+// A row keeps the Group's id (ADR 0065 ticket 07): a Team moved, or given
+// a new code, before its mail went is found by it, and the mail names the
+// Team where it is now; a row without one, or whose id Keycloak no longer
+// knows, is read by its path as before.
+func TestServiceFindsAMovedTeamByItsID(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	moved := "8a7f6a8e-3f0b-4c63-9f11-5a3b2c9d1e00"
+	f.svc.MembershipChanged(context.Background(), identity.MembershipChange{
+		UserID: f.ada, Group: identity.Group{ID: moved, Path: "/UYELER/ARGE/ALGOLAB/AGC/LIDERLER"}, Added: true, ActorID: f.fatih.String(),
+	})
+	if q := f.queue.Snapshot(); len(q) != 1 || q[0].GroupID != moved {
+		t.Fatalf("queued %+v", q)
+	}
+	// Moved under ARTLAB and renamed meanwhile.
+	f.svc.groups = fakeGroups{
+		moved:                              {ID: moved, Name: "LIDERLER", Path: "/UYELER/ORGANIZASYON/ARTLAB/AGC2/LIDERLER"},
+		"/UYELER/ORGANIZASYON/ARTLAB/AGC2": {Name: "AGC2", Path: "/UYELER/ORGANIZASYON/ARTLAB/AGC2", Attributes: map[string]string{"display_name_tr": "Algoritma"}},
+	}
+	report, err := f.svc.Pass(context.Background())
+	if err != nil || report.Sent != 1 || len(f.mail.sent) != 1 {
+		t.Fatalf("report %+v err %v", report, err)
+	}
+	if m := f.mail.sent[0]; m.vars["TeamName"] != "AGC2 · Algoritma" || m.vars["Role"] != "leader" {
+		t.Fatalf("vars %v", m.vars)
+	}
+
+	g := newFixture(t)
+	g.svc.MembershipChanged(context.Background(), identity.MembershipChange{
+		UserID: g.ada, Group: identity.Group{ID: moved, Path: "/UYELER/ORGANIZASYON/ARTLAB"}, Added: true,
+	})
+	if _, err := g.svc.Pass(context.Background()); err != nil || len(g.mail.sent) != 1 || g.mail.sent[0].vars["TeamName"] != "ARTLAB · Tasarım & Sanat" {
+		t.Fatalf("an id Keycloak does not know: %v %+v", err, g.mail.sent)
+	}
+}
