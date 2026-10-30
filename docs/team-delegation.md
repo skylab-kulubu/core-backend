@@ -333,7 +333,8 @@ its code; a change is a `team.create`, `team.code` or `team.delete` row.
   read (Group overage, delegation, the Owner team tree) is forgotten. The
   same code is a no-op `200`.
 - **Delete**: `DELETE /v1/groups/{id}`, for a Team, takes every Group under
-  it too, once all of them are Sub-teams or Leader groups, nobody is in any
+  it too (delegation on; off, a Team with any Group under it is `409
+  not_empty` as before), once all of them are Sub-teams or Leader groups, nobody is in any
   of them (Leader groups included: `409 not_empty` with `members` and
   `children`), none maps a role (`403 group_delete_protected`) or is
   protected, and core's records name none of their codes

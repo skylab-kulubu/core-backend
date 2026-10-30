@@ -141,3 +141,40 @@ func TestTeamStructureDecidedAgainInsideTheLock(t *testing.T) {
 		})
 	}
 }
+
+// A Leader's deletion refused with a reason inside the lock (the target
+// became protected after the decision outside it) closes its team.delete
+// row as failed: Keycloak was never asked, so the row is not left pending
+// (#319 review 05-2).
+func TestTeamDeleteRefusedInsideTheLockClosesItsRow(t *testing.T) {
+	t.Parallel()
+	m, leader, front, _ := structureRealm(t)
+	wrapped := &leaderLeavesLedger{Ledger: teamcode.NewMemoryLedger(), leave: func() {
+		if err := m.SetGroupClientRoles(context.Background(), front, []identity.ClientRole{{ClientID: "core", Role: authz.RoleGroupsManage}}); err != nil {
+			t.Error(err)
+		}
+	}}
+	audit := teamaudit.NewMemory()
+	policy := onPolicy()
+	users := user.NewMemoryStore()
+	if _, _, err := users.Upsert(context.Background(), user.User{ID: leader, Email: leader.String() + "@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	svc := identity.NewServiceWithOptions(identity.AuditedDirectory(m, audit, nil), users, authz.NewAuthorizer(policy), identity.Options{
+		TeamCodes: wrapped, Delegation: identity.NewTeamDelegation(policy, m, m, identity.TeamDelegationOptions{}),
+	})
+	err := svc.DeleteGroup(actorContext(leader), authz.Principal{ID: leader.String()}, front)
+	var refused *identity.DelegationError
+	if !errors.As(err, &refused) || refused.Code != authz.RefusalProtectedGroup {
+		t.Fatalf("err %v, want %s", err, authz.RefusalProtectedGroup)
+	}
+	var deletes []teamaudit.Row
+	for _, row := range audit.Rows() {
+		if row.Action == teamaudit.ActionTeamDelete && row.Outcome != teamaudit.OutcomeDenied {
+			deletes = append(deletes, row)
+		}
+	}
+	if len(deletes) != 1 || deletes[0].Outcome != teamaudit.OutcomeFailed || deletes[0].ErrorCode != authz.RefusalProtectedGroup {
+		t.Fatalf("team.delete rows %+v", deletes)
+	}
+}

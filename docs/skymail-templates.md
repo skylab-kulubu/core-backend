@@ -85,6 +85,11 @@ by address through `/v1/mail_tasks/single`. It rides a queue of its own and is
 off until `TICKET_CREATED_NOTIFICATION=on`. See
 [ticket-created-notification.md](ticket-created-notification.md).
 
+The feedback mails (`core.feedback-request`, `core.feedback-reminder`) go the
+same way to a member once `FEEDBACK_NOTIFICATION=on`: a Notification whose
+type is the template's key, so it lands in the inbox too; a guest's stays an
+e-mail. See [event-feedback.md](event-feedback.md#to-the-inbox-ticket-13).
+
 ## Configuration
 
 | Variable | Unset | Empty |
