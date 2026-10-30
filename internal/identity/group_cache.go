@@ -29,6 +29,9 @@ const (
 	// groupsListenIdle is how long the listener waits for a notification
 	// before it pings, so a dead connection is noticed within a minute.
 	groupsListenIdle = time.Minute
+	// groupsPingTimeout bounds that ping: on a half-open connection nothing
+	// acknowledges it, and the kernel would retransmit for many minutes.
+	groupsPingTimeout = 5 * time.Second
 )
 
 // ListenConnect opens the listening connection with the pool's own
@@ -114,7 +117,9 @@ func (c *SharedGroupCache) tell(target string) {
 	ctx, cancel := context.WithTimeout(context.Background(), groupsNotifyTimeout)
 	defer cancel()
 	if _, err := c.notify.Exec(ctx, `SELECT pg_notify($1, $2)`, GroupsChangedChannel, c.origin+" "+target); err != nil {
-		c.logf("ERROR group cache: could not tell the other core processes of a Group change: %v", err)
+		// The class only, as in Run: the pool's connection errors name the
+		// user, the database and the address.
+		c.logf("ERROR group cache: could not tell the other core processes of a Group change (%s)", listenErrorClass(err))
 	}
 }
 
@@ -170,7 +175,10 @@ func (c *SharedGroupCache) listen(ctx context.Context) (bool, error) {
 		cancel()
 		if err != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
 			// Quiet for a minute: make sure the connection is still there.
-			if err := conn.Ping(ctx); err != nil {
+			ping, cancel := context.WithTimeout(ctx, groupsPingTimeout)
+			err := conn.Ping(ping)
+			cancel()
+			if err != nil {
 				return true, err
 			}
 			continue

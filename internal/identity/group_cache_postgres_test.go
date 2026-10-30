@@ -171,7 +171,7 @@ func TestListenerForgetsEveryoneWhenItListensAgain(t *testing.T) {
 	}
 
 	tag, err := pool.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-		WHERE pid <> pg_backend_pid() AND query = 'LISTEN '||$1::text`, identity.GroupsChangedChannel)
+		WHERE pid <> pg_backend_pid() AND datname = current_database() AND query = 'LISTEN '||$1::text`, identity.GroupsChangedChannel)
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("terminate the listener: %v %v", tag, err)
 	}

@@ -3,7 +3,9 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -66,5 +68,33 @@ func TestSharedGroupCacheAppliesWhatAnotherProcessSaid(t *testing.T) {
 	}
 	if !slices.Equal(spy.forgotten, []uuid.UUID{person}) || spy.all != 1 {
 		t.Fatalf("forgot %v and everyone %d times, want [%s] and 1", spy.forgotten, spy.all, person)
+	}
+}
+
+// A NOTIFY that fails is logged by its class only: the pool's connection
+// error names the user, the database and the address (review T2).
+func TestSharedGroupCacheLogsNoConnectionDetails(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var logged []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}
+	notify := &recordedNotify{err: errors.New("failed to connect to `user=core database=core`: 10.0.0.7:5432 (db): dial error")}
+	shared := identity.NewSharedGroupCache(&groupCacheSpy{}, notify, noConnect, identity.SharedGroupCacheOptions{Origin: "a", Logf: logf})
+
+	shared.Forget(uuid.New())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(logged) != 1 {
+		t.Fatalf("logged %q, want one line", logged)
+	}
+	for _, secret := range []string{"user=", "database=", "10.0.0.7", "dial error"} {
+		if strings.Contains(logged[0], secret) {
+			t.Fatalf("log %q names %q", logged[0], secret)
+		}
 	}
 }

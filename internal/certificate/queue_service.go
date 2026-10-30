@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -242,7 +243,7 @@ func (s *service) ProcessNext(ctx context.Context, limit int) (int, error) {
 		// fresh one. A job whose lease already ran out belongs to another claim.
 		if err := s.jobs.RenewJobLease(ctx, job.ID, job.LeaseToken, jobLease); err != nil {
 			if !errors.Is(err, ErrLeaseLost) {
-				log.Printf("ERROR certificate job %s: lease not renewed, the job waits for its lease to run out: %v", job.ID, err)
+				log.Printf("ERROR certificate job %s: lease not renewed, the job waits for its lease to run out (%s)", job.ID, databaseErrorClass(err))
 			}
 			continue
 		}
@@ -253,7 +254,7 @@ func (s *service) ProcessNext(ctx context.Context, limit int) (int, error) {
 			terminal := job.AttemptCount >= 5 || errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound)
 			delay := time.Duration(1<<min(job.AttemptCount, 6)) * time.Minute
 			if err := s.jobs.FailJob(ctx, job.ID, job.LeaseToken, safeErrorCode(err), time.Now().UTC().Add(delay), terminal); err != nil && !errors.Is(err, ErrLeaseLost) {
-				log.Printf("ERROR certificate job %s: not put back, the job waits for its lease to run out: %v", job.ID, err)
+				log.Printf("ERROR certificate job %s: not put back, the job waits for its lease to run out (%s)", job.ID, databaseErrorClass(err))
 			}
 		}
 	}
@@ -379,6 +380,23 @@ func safeErrorCode(err error) string {
 		return "certificate_conflict"
 	default:
 		return "processing_failed"
+	}
+}
+
+// databaseErrorClass names a store error for the log without its text: pgx's
+// connection errors name the user, the database and the address.
+func databaseErrorClass(err error) string {
+	var pgErr *pgconn.PgError
+	var connectErr *pgconn.ConnectError
+	switch {
+	case errors.As(err, &pgErr):
+		return "postgres error " + pgErr.Code
+	case errors.As(err, &connectErr):
+		return "could not connect"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed out"
+	default:
+		return "database error"
 	}
 }
 

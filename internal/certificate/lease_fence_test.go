@@ -1,7 +1,11 @@
 package certificate_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -230,5 +234,67 @@ func TestJobCompletedByTheNextClaimWhenItsCertificateWasWrittenLate(t *testing.T
 				t.Fatalf("a job came back to the queue: processed=%d err=%v", processed, err)
 			}
 		})
+	}
+}
+
+// brokenDatabase answers the queue's writes with the text pgx gives when the
+// pool cannot open a connection.
+type brokenDatabase struct {
+	*certificate.MemoryStore
+	renew, batch, fail bool
+}
+
+var errNoConnection = errors.New("failed to connect to `user=core database=core`: 10.0.0.7:5432 (db): dial error")
+
+func (b *brokenDatabase) RenewJobLease(ctx context.Context, jobID, leaseToken uuid.UUID, lease time.Duration) error {
+	if b.renew {
+		return errNoConnection
+	}
+	return b.MemoryStore.RenewJobLease(ctx, jobID, leaseToken, lease)
+}
+
+func (b *brokenDatabase) GetBatch(ctx context.Context, id uuid.UUID) (certificate.Batch, error) {
+	if b.batch {
+		return certificate.Batch{}, errNoConnection
+	}
+	return b.MemoryStore.GetBatch(ctx, id)
+}
+
+func (b *brokenDatabase) FailJob(ctx context.Context, jobID, leaseToken uuid.UUID, errorCode string, retryAt time.Time, terminal bool) error {
+	if b.fail {
+		return errNoConnection
+	}
+	return b.MemoryStore.FailJob(ctx, jobID, leaseToken, errorCode, retryAt, terminal)
+}
+
+// A lease that cannot be renewed and a job that cannot be put back are logged
+// with the job and the error's class: the pool's connection error names the
+// user, the database and the address (review T2).
+func TestQueueLogsNoConnectionDetails(t *testing.T) {
+	for _, broken := range []brokenDatabase{{renew: true}, {batch: true, fail: true}} {
+		ctx := context.Background()
+		f := newFenceFixture(t)
+		broken.MemoryStore = f.store
+		replica := f.replica(&recRender{}, &recMail{}, &broken)
+		if _, err := replica.Finalize(ctx, f.leader, f.ev.ID); err != nil {
+			t.Fatal(err)
+		}
+		var logs bytes.Buffer
+		previous := log.Writer()
+		log.SetOutput(&logs)
+		_, err := replica.ProcessNext(ctx, 10)
+		log.SetOutput(previous)
+		if err != nil {
+			t.Fatal(err)
+		}
+		line := logs.String()
+		if strings.Count(line, "ERROR certificate job") != 1 {
+			t.Fatalf("log %q, want one line", line)
+		}
+		for _, secret := range []string{"user=", "database=", "10.0.0.7", "dial error"} {
+			if strings.Contains(line, secret) {
+				t.Fatalf("log %q names %q", line, secret)
+			}
+		}
 	}
 }
