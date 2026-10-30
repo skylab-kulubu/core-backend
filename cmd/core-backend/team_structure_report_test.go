@@ -108,6 +108,8 @@ func teamStructureRealm(t *testing.T) *identity.Memory {
 	dir.PutCompositeRole(identity.ClientRole{ClientID: "skymail", Role: "skymail:access"}, identity.ClientRole{ClientID: "skymail", Role: "skymail:mails:send"})
 	mustRole(t, dir.AddGroupClientRole(ctx, gezi.ID, identity.ClientRole{ClientID: "skymail", Role: "skymail:access"}))
 	mustRole(t, dir.AddGroupClientRole(ctx, agcLeaders.ID, identity.ClientRole{ClientID: "core", Role: "users:read"}))
+	// The report starts from here: whatever it calls is recorded anew.
+	dir.Ops = nil
 	return dir
 }
 
@@ -180,9 +182,9 @@ func TestTeamStructureReport(t *testing.T) {
 			"to retire: 2, retired already: 1",
 			"core (events, certificates, certificate templates, Owner team bindings): read",
 			"cms: 3 codes from a list",
-			"GONE  to retire  named by core:event, core:certificate",
-			"OLDCODE  retired already  named by cms",
-			"SOSYALTEAM  to retire  named by cms",
+			`"GONE"  to retire  named by core:event, core:certificate`,
+			`"OLDCODE"  retired already  named by cms`,
+			`"SOSYALTEAM"  to retire  named by cms`,
 		}, []string{"WEBLAB  ", "weblab  "}},
 	} {
 		section := sectionOf(report, tc.section)
@@ -215,7 +217,7 @@ func TestTeamStructureReport(t *testing.T) {
 		t.Fatalf("a dry run wrote: %v", codes.retired)
 	}
 	if slices.ContainsFunc(dir.Ops, func(op string) bool {
-		return !slices.Contains([]string{"ListGroups", "Members", "GroupProtection", "GroupClientRoles", "RoleProtection", "GetGroup", "AddMember", "AddGroupClientRole"}, op)
+		return !slices.Contains([]string{"ListGroups", "Members", "GroupProtection", "GroupClientRoles", "RoleProtection"}, op)
 	}) {
 		t.Fatalf("the report wrote to Keycloak: %v", dir.Ops)
 	}
@@ -243,7 +245,7 @@ func TestTeamStructureReportSeedRetired(t *testing.T) {
 	if !slices.Equal(codes.retired, []string{"oldcode", "FORMTEAM", "GONE"}) {
 		t.Fatalf("retired = %v", codes.retired)
 	}
-	if !strings.Contains(out.String(), "seed: wrote 2 codes to retired_team_codes (reason seeded)\n  FORMTEAM\n  GONE\n") {
+	if !strings.Contains(out.String(), "seed: wrote 2 codes to retired_team_codes (reason seeded)\n  \"FORMTEAM\"\n  \"GONE\"\n") {
 		t.Fatalf("report:\n%s", out.String())
 	}
 
@@ -283,13 +285,13 @@ func TestTeamStructureReportFailures(t *testing.T) {
 }
 
 func TestTeamStructureReportOptions(t *testing.T) {
-	stdin := strings.NewReader("# CMS teams\nWEBLAB\n\n  agc  \n")
+	stdin := strings.NewReader("\uFEFFWEBLAB\r\n# CMS teams\n\n  agc  # site\nWeb Lab\n")
 	var errOut bytes.Buffer
 	options, code := parseTeamStructureOptions([]string{"-seed-retired", "-codes", "cms=-"}, stdin, &errOut)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut.String())
 	}
-	if !options.seed || len(options.external) != 1 || options.external[0].source != "cms" || !slices.Equal(options.external[0].codes, []string{"WEBLAB", "agc"}) {
+	if !options.seed || len(options.external) != 1 || options.external[0].source != "cms" || !slices.Equal(options.external[0].codes, []string{"WEBLAB", "agc", "Web Lab"}) {
 		t.Fatalf("options = %+v", options)
 	}
 	for _, args := range [][]string{
@@ -299,10 +301,80 @@ func TestTeamStructureReportOptions(t *testing.T) {
 		{"-codes", "cms=-", "-codes", "cms=/dev/null"},
 		{"-codes", "cms=-", "-codes", "forms=-"},
 		{"-codes", "cms=/no/such/file"},
+		{"-expect", "2"},
+		{"-seed-retired", "-expect", "-1"},
 	} {
 		errOut.Reset()
 		if _, code := parseTeamStructureOptions(args, strings.NewReader(""), &errOut); code != 2 {
 			t.Errorf("%v: exit %d", args, code)
 		}
+	}
+}
+
+// A list line that is no code (a byte order mark left in, a blank in the
+// name) is shown as skipped and never written; a mark or a comment around a
+// code is dropped.
+func TestTeamStructureReportSkipsLinesThatAreNoCode(t *testing.T) {
+	dir := teamStructureRealm(t)
+	codes := &fakeTeamCodes{}
+	external, err := readCodes(strings.NewReader("\uFEFFairlab\r\nweb lab\nSKYSIS # site\nİZCİ\nnewteam\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := teamStructureOptions{seed: true, external: []externalCodes{{source: "cms", codes: external}}}
+	var out, errOut bytes.Buffer
+	if code := teamStructureReportCommand(context.Background(), options, teamStructureTestConfig(dir, codes), &out, &errOut); code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, errOut.String())
+	}
+	section := sectionOf(out.String(), "(h)")
+	for _, want := range []string{
+		"to retire: 3, retired already: 0",
+		`"airlab"  to retire`, `"SKYSIS"  to retire`, `"newteam"  to retire`,
+		`"web lab"  skipped, not a code form (never written)  from cms`,
+		`"İZCİ"  skipped, not a code form (never written)  from cms`,
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("(h) lacks %q:\n%s", want, section)
+		}
+	}
+	if !slices.Equal(codes.retired, []string{"airlab", "newteam", "SKYSIS"}) {
+		t.Fatalf("retired = %q", codes.retired)
+	}
+}
+
+// -expect is the dry run's number: any other number, before the lock or
+// inside it, writes nothing.
+func TestTeamStructureReportExpect(t *testing.T) {
+	dir := teamStructureRealm(t)
+	records := map[string][]string{"GONE": {teamcode.RecordEvent}, "LATE": {teamcode.RecordEvent}}
+	run := func(expect int, cfg func(*teamStructureConfig)) (int, *fakeTeamCodes, string) {
+		codes := &fakeTeamCodes{records: records}
+		c := teamStructureTestConfig(dir, codes)
+		if cfg != nil {
+			cfg(&c)
+		}
+		var out, errOut bytes.Buffer
+		code := teamStructureReportCommand(context.Background(), teamStructureOptions{seed: true, expect: expect, expectSet: true}, c, &out, &errOut)
+		return code, codes, errOut.String()
+	}
+	if code, codes, stderr := run(3, nil); code != 1 || codes.seeds != 0 || !strings.Contains(stderr, "nothing written: 2 codes to retire, -expect 3") {
+		t.Fatalf("exit %d, seeds %d, stderr %q", code, codes.seeds, stderr)
+	}
+	reads := 0
+	lateGroup := func(c *teamStructureConfig) {
+		c.Groups = func(ctx context.Context) ([]identity.Group, error) {
+			reads++
+			groups, err := dir.ListGroups(ctx)
+			if reads == 2 {
+				groups = append(groups, identity.Group{ID: uuid.NewString(), Name: "LATE", Path: "/UYELER/SOSYAL/LATE"})
+			}
+			return groups, err
+		}
+	}
+	if code, codes, stderr := run(2, lateGroup); code != 1 || len(codes.retired) != 0 || !strings.Contains(stderr, "the tree changed: 1 codes to retire, -expect 2") {
+		t.Fatalf("exit %d, retired %v, stderr %q", code, codes.retired, stderr)
+	}
+	if code, codes, stderr := run(2, nil); code != 0 || !slices.Equal(codes.retired, []string{"GONE", "LATE"}) {
+		t.Fatalf("exit %d, retired %v, stderr %q", code, codes.retired, stderr)
 	}
 }

@@ -27,12 +27,13 @@ import (
 //
 //	./core-backend team-structure-report                       # reads, writes nothing
 //	./core-backend team-structure-report -codes cms=- < cms.txt
-//	./core-backend team-structure-report -seed-retired         # also writes (h)
+//	./core-backend team-structure-report -seed-retired -expect 3 -codes cms=- < cms.txt
 //
 // It prints Group paths, Group ids, Team codes, role names and counts, never
 // a person. Without -seed-retired it writes nothing; with it, it writes the
 // codes of section (h) to retired_team_codes (reason seeded), once: a second
-// run writes nothing new.
+// run writes nothing new. -expect is the dry run's number of codes to
+// retire; any other number writes nothing.
 const teamStructureReportCommandName = "team-structure-report"
 
 // teamCodeInventory is what the report reads and writes in core's database
@@ -121,6 +122,10 @@ func runTeamStructureReport(args []string, getenv func(string) string, stdin io.
 // teamStructureOptions are the command's flags.
 type teamStructureOptions struct {
 	seed bool
+	// expect is the number of codes -seed-retired must find to retire, as
+	// the dry run printed it, when expectSet.
+	expect    int
+	expectSet bool
 	// external are the code lists another system's codes came in, each
 	// under its source's label (-codes cms=path).
 	external []externalCodes
@@ -144,6 +149,7 @@ func parseTeamStructureOptions(args []string, stdin io.Reader, errOut io.Writer)
 	flags := flag.NewFlagSet(teamStructureReportCommandName, flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	flags.BoolVar(&options.seed, "seed-retired", false, "write the codes of section (h) to retired_team_codes; without it nothing is written")
+	flags.IntVar(&options.expect, "expect", 0, "with -seed-retired: the number of codes to retire the dry run printed; any other number writes nothing")
 	stdinUsed := false
 	flags.Func("codes", "source=path: the Team codes another system names, one per line (# comments); path - is the standard input. Repeatable, one source each", func(value string) error {
 		source, path, ok := strings.Cut(value, "=")
@@ -184,19 +190,32 @@ func parseTeamStructureOptions(args []string, stdin io.Reader, errOut io.Writer)
 		fmt.Fprintf(errOut, "%s takes no arguments, only flags\n", teamStructureReportCommandName)
 		return options, 2
 	}
+	flags.Visit(func(f *flag.Flag) { options.expectSet = options.expectSet || f.Name == "expect" })
+	switch {
+	case options.expectSet && !options.seed:
+		fmt.Fprintln(errOut, "-expect goes with -seed-retired")
+		return options, 2
+	case options.expectSet && options.expect < 0:
+		fmt.Fprintln(errOut, "-expect is a number of codes, 0 or more")
+		return options, 2
+	}
 	return options, 0
 }
 
-// readCodes reads one code per line: blanks around it trimmed, empty lines
-// and lines starting with # skipped.
+// readCodes reads one code per line: a byte order mark and what follows a #
+// dropped, blanks around the rest trimmed, empty lines skipped. A line that
+// is still no code (Web Lab) is kept as it is: the report shows it as
+// skipped and the seed never writes it.
 func readCodes(in io.Reader) ([]string, error) {
 	var codes []string
 	scanner := bufio.NewScanner(in)
 	line := 0
 	for scanner.Scan() {
 		line++
-		code := strings.TrimSpace(scanner.Text())
-		if code == "" || strings.HasPrefix(code, "#") {
+		text := strings.ReplaceAll(scanner.Text(), "\uFEFF", "")
+		text, _, _ = strings.Cut(text, "#")
+		code := strings.TrimSpace(text)
+		if code == "" {
 			continue
 		}
 		if len(code) > maxRetiredCode {
@@ -252,8 +271,8 @@ func teamStructureReportCommand(ctx context.Context, options teamStructureOption
 			failed = true
 		}
 	}
-	codes := unmatchedCodes(groups, records, options.external, retired)
-	report.codes(codes, options.external)
+	codes, skipped := unmatchedCodes(groups, records, options.external, retired)
+	report.codes(codes, skipped, options.external)
 	report.gate()
 	if failed {
 		fmt.Fprintln(errOut, "a section could not be read; the report is incomplete")
@@ -268,6 +287,10 @@ func teamStructureReportCommand(ctx context.Context, options teamStructureOption
 	if len(options.external) == 0 {
 		fmt.Fprintln(errOut, "no -codes list was given: only the codes core's own records name are seeded; the CMS's, Forms' and the sites' are not")
 	}
+	if due := toRetire(codes); options.expectSet && len(due) != options.expect {
+		fmt.Fprintf(errOut, "seed: nothing written: %d codes to retire, -expect %d\n", len(due), options.expect)
+		return 1
+	}
 	written, err := cfg.Inventory.SeedRetired(ctx, func(ctx context.Context) ([]string, error) {
 		// Read again inside the lock: a Group made since the report
 		// keeps its code.
@@ -275,9 +298,10 @@ func teamStructureReportCommand(ctx context.Context, options teamStructureOption
 		if err != nil {
 			return nil, err
 		}
-		var due []string
-		for _, code := range unmatchedCodes(groups, records, options.external, nil) {
-			due = append(due, code.code)
+		codes, _ := unmatchedCodes(groups, records, options.external, retired)
+		due := toRetire(codes)
+		if options.expectSet && len(due) != options.expect {
+			return nil, fmt.Errorf("the tree changed: %d codes to retire, -expect %d", len(due), options.expect)
 		}
 		return due, nil
 	})
@@ -287,7 +311,7 @@ func teamStructureReportCommand(ctx context.Context, options teamStructureOption
 	}
 	fmt.Fprintf(out, "seed: wrote %d codes to retired_team_codes (reason %s)\n", len(written), teamcode.ReasonSeeded)
 	for _, code := range written {
-		fmt.Fprintf(out, "  %s\n", code)
+		fmt.Fprintf(out, "  %q\n", code)
 	}
 	if failed {
 		return 1
@@ -731,10 +755,18 @@ type unmatchedCode struct {
 	retired bool
 }
 
+// skippedCode is a line of a -codes list that is no code: never written.
+type skippedCode struct {
+	code, source string
+}
+
 // unmatchedCodes are the codes of records and external that no Group holds
 // (compared without case and blanks), each once (its first spelling) with
 // every source that names it, sorted; retired marks those retired already.
-func unmatchedCodes(groups []identity.Group, records map[string][]string, external []externalCodes, retired []string) []unmatchedCode {
+// A code of external that is no code in capitals (teamcode.Valid) is
+// skipped instead: a new Group could not take it anyway, and a mistyped
+// line must not become a retired code for good.
+func unmatchedCodes(groups []identity.Group, records map[string][]string, external []externalCodes, retired []string) ([]unmatchedCode, []skippedCode) {
 	held := map[string]bool{}
 	for _, g := range groups {
 		held[strings.ToLower(strings.TrimSpace(g.Name))] = true
@@ -771,8 +803,13 @@ func unmatchedCodes(groups []identity.Group, records map[string][]string, extern
 			add(code, "core:"+kind)
 		}
 	}
+	var skipped []skippedCode
 	for _, list := range external {
 		for _, code := range list.codes {
+			if !teamcode.Valid(strings.ToUpper(code)) {
+				skipped = append(skipped, skippedCode{code: code, source: list.source})
+				continue
+			}
 			add(code, list.source)
 		}
 	}
@@ -781,17 +818,24 @@ func unmatchedCodes(groups []identity.Group, records map[string][]string, extern
 	for _, key := range keys {
 		out = append(out, *byKey[key])
 	}
-	return out
+	return out, skipped
 }
 
-// codes is section (h): the sources read and the codes no Group holds.
-func (r *teamStructureReport) codes(codes []unmatchedCode, external []externalCodes) {
-	due := 0
+// toRetire are the codes of codes not retired yet.
+func toRetire(codes []unmatchedCode) []string {
+	var due []string
 	for _, c := range codes {
 		if !c.retired {
-			due++
+			due = append(due, c.code)
 		}
 	}
+	return due
+}
+
+// codes is section (h): the sources read, the codes no Group holds and the
+// list lines skipped.
+func (r *teamStructureReport) codes(codes []unmatchedCode, skipped []skippedCode, external []externalCodes) {
+	due := len(toRetire(codes))
 	r.section(fmt.Sprintf("(h) Team codes named without a Group (to retire: %d, retired already: %d)", due, len(codes)-due), len(codes))
 	r.printf("  sources: core (events, certificates, certificate templates, Owner team bindings): read\n")
 	for _, list := range external {
@@ -805,7 +849,10 @@ func (r *teamStructureReport) codes(codes []unmatchedCode, external []externalCo
 		if c.retired {
 			state = "retired already"
 		}
-		r.printf("  %s  %s  named by %s\n", c.code, state, strings.Join(c.sources, ", "))
+		r.printf("  %q  %s  named by %s\n", c.code, state, strings.Join(c.sources, ", "))
+	}
+	for _, c := range skipped {
+		r.printf("  %q  skipped, not a code form (never written)  from %s\n", c.code, c.source)
 	}
 }
 
