@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -156,6 +157,60 @@ func TestPostgresLedgerRetire(t *testing.T) {
 	if len(got) != 2 || got[0].code != "AIRLAB" || got[0].group != nil || got[1].code != "GAMELAB" ||
 		got[1].group == nil || *got[1].group != group || got[1].reason != teamcode.ReasonRenamed {
 		t.Fatalf("retired %+v", got)
+	}
+}
+
+// A code retired in one case is retired in every case: retiring it again in
+// another case adds no row and keeps the first row's reason, and Held finds
+// it through the lower(code) index.
+func TestPostgresLedgerRetireIgnoresCase(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	ledger := teamcode.NewPostgresLedger(pool)
+	for _, retire := range []struct{ code, reason string }{{"WEBLAB", teamcode.ReasonRenamed}, {"weblab", teamcode.ReasonDeleted}, {"WebLab", teamcode.ReasonDeleted}} {
+		if err := ledger.Locked(ctx, func(ctx context.Context, records teamcode.Records) error {
+			return records.Retire(ctx, retire.code, uuid.NewString(), retire.reason)
+		}); err != nil {
+			t.Fatalf("retire %s: %v", retire.code, err)
+		}
+	}
+	var n int
+	var code, reason string
+	if err := pool.QueryRow(ctx, `SELECT count(*), min(code), min(reason) FROM retired_team_codes`).Scan(&n, &code, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || code != "WEBLAB" || reason != teamcode.ReasonRenamed {
+		t.Fatalf("rows %d, %s %s", n, code, reason)
+	}
+	if !held(t, ledger, "weblab") || !held(t, ledger, "WEBLAB") || held(t, ledger, "WEBLAB2") {
+		t.Fatal("Held does not ignore case")
+	}
+
+	// The planner reads a handful of rows by scanning them; with scans off,
+	// Held's query on retired_team_codes must have an index to use.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.Query(ctx, `EXPLAIN SELECT EXISTS (SELECT 1 FROM retired_team_codes WHERE lower(code) = lower($1))`, "weblab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, line)
+	}
+	rows.Close()
+	if !slices.ContainsFunc(plan, func(line string) bool { return strings.Contains(line, "retired_team_codes_lower_code_idx") }) {
+		t.Fatalf("plan without the index: %v", plan)
 	}
 }
 
