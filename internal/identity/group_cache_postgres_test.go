@@ -237,7 +237,7 @@ func TestTeamWritesOnOneReplicaReachTheOthersDecisions(t *testing.T) {
 	if !teamTree.MembersManageCompetitors("WEBLAB") {
 		t.Fatal("before the write the Team's members do not manage competitors")
 	}
-	if _, err := writer.SetTeamSettings(ctx, privileged(), weblab, identity.TeamSettings{MembersManageCompetitors: false}); err != nil {
+	if _, err := writer.SetTeamSettings(ctx, privileged(), weblab, identity.TeamSettingsChange{MembersManageCompetitors: new(bool)}); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "the other replica still decides by the setting from before the write", func() bool {

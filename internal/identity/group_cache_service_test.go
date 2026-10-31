@@ -86,7 +86,7 @@ func TestTeamSettingsOnOneReplicaReachTheOthersTeamTree(t *testing.T) {
 		t.Fatal("before the write the Team's members do not manage competitors")
 	}
 
-	if _, err := writer.svc.SetTeamSettings(ctx, privileged(), weblab, identity.TeamSettings{MembersManageCompetitors: false}); err != nil {
+	if _, err := writer.svc.SetTeamSettings(ctx, privileged(), weblab, identity.TeamSettingsChange{MembersManageCompetitors: new(bool)}); err != nil {
 		t.Fatal(err)
 	}
 	if other.teamTree.MembersManageCompetitors("WEBLAB") {

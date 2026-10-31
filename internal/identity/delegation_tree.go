@@ -196,6 +196,7 @@ func (d *TeamDelegation) subtree(ctx context.Context, manager authz.TeamManager,
 			"code.write":     d.policy.ChangesTeamCode(manager, target).Allowed,
 			"team.delete":    strict,
 			"team.move":      strict,
+			"team.settings":  manages,
 		},
 		Children: []ManagedNode{},
 	}

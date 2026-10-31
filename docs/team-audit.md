@@ -60,7 +60,7 @@ Keycloak name), role names, the `kind` of a leader action, the
 (below), and the values of the recorded attributes:
 `display_name_tr/en`, `description_tr/en`, `logo_media_id`,
 `public_listing`, `public_leaders`, `team_door_scan`,
-`members_manage_competitors`. Of any other attribute
+`members_manage_competitors`, `team_competition_manage`. Of any other attribute
 that changed only the name is kept (`otherAttributes`). Texts are cut to 280
 characters, codes and ids to 255, and each column to 32 KiB. No name, e-mail
 address, phone number, IP address or other personal field is written; the

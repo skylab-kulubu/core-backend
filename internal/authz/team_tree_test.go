@@ -259,6 +259,8 @@ type fakeTeamSettings map[string]bool
 
 func (f fakeTeamSettings) MembersManageCompetitors(team string) bool { return !f[team] }
 
+func (f fakeTeamSettings) TeamCompetitionManage(string) bool { return false }
+
 // A Team's Leader may keep its competitors to the Leaders (Yusuf, B1 of
 // 2026-10-25): its members then only read them; Leaders, a Leader of a Team
 // above and Privileged keep every action, and a person still enters as a

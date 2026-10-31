@@ -556,7 +556,8 @@ func main() {
 	// above an Event's Owner team leads it too (ADR-0065 decision 2,
 	// ekip-yetkileri ticket 12). The realm's Groups are kept a minute.
 	teamTree := identity.NewTeamTree(dir, identity.TeamTreeOptions{Logf: log.Printf})
-	// The same Groups carry the Teams' own settings (members_manage_competitors).
+	// The same Groups carry the Teams' own settings (members_manage_competitors,
+	// team_competition_manage).
 	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics), authz.WithTeamTree(teamTree),
 		authz.WithTeamSettings(teamTree))
 	// The capabilities route's editableSites: the configured Site clients

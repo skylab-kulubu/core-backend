@@ -38,6 +38,9 @@ type Service interface {
 	SetScore(ctx context.Context, p authz.Principal, id uuid.UUID, in ScoreInput) (Entry, error)
 	Revoke(ctx context.Context, p authz.Principal, id, entryID uuid.UUID, reason string) (Entry, error)
 	Entries(ctx context.Context, p authz.Principal, id uuid.UUID) ([]Entry, error)
+	// EntrantCandidates are the Event's Tickets an organizer may add, with
+	// no personal data beyond the name (Candidate).
+	EntrantCandidates(ctx context.Context, p authz.Principal, id uuid.UUID, filter CandidateFilter) ([]Candidate, error)
 	Leaderboard(ctx context.Context, p authz.Principal, id uuid.UUID) (Leaderboard, error)
 }
 
@@ -98,23 +101,60 @@ func (s *service) allow(p authz.Principal, ev event.Event, action authz.Action) 
 
 // load is a Competition the caller may act on, with its Owner team.
 func (s *service) load(ctx context.Context, p authz.Principal, id uuid.UUID, action authz.Action, includeArchived bool) (Competition, error) {
-	get := s.store.Get
-	if includeArchived {
-		get = s.store.GetIncludingArchived
-	}
-	c, err := get(ctx, id)
-	if err != nil {
-		return Competition{}, err
-	}
-	ev, err := s.eventFor(ctx, p, c.EventID)
+	c, ev, err := s.fetch(ctx, p, id, includeArchived)
 	if err != nil {
 		return Competition{}, err
 	}
 	if err := s.allow(p, ev, action); err != nil {
 		return Competition{}, err
 	}
-	c.OwnerTeam = ev.OwnerTeam
 	return c, nil
+}
+
+// loadWriter is load for a write the ledger keeps, with the basis the
+// caller writes on (authz.CompetitionBasis); the decision is Update's.
+func (s *service) loadWriter(ctx context.Context, p authz.Principal, id uuid.UUID) (Competition, authz.CompetitionBasis, error) {
+	c, ev, err := s.fetch(ctx, p, id, false)
+	if err != nil {
+		return Competition{}, "", err
+	}
+	basis := s.authz.CompetitionBasis(p, authz.Resource{Type: authz.TypeCompetition, OwnerTeam: ev.OwnerTeam})
+	if basis == "" {
+		return Competition{}, "", ErrForbidden
+	}
+	return c, basis, nil
+}
+
+// fetch is the Competition and its Event, as the caller may see them.
+func (s *service) fetch(ctx context.Context, p authz.Principal, id uuid.UUID, includeArchived bool) (Competition, event.Event, error) {
+	get := s.store.Get
+	if includeArchived {
+		get = s.store.GetIncludingArchived
+	}
+	c, err := get(ctx, id)
+	if err != nil {
+		return Competition{}, event.Event{}, err
+	}
+	ev, err := s.eventFor(ctx, p, c.EventID)
+	if err != nil {
+		return Competition{}, event.Event{}, err
+	}
+	c.OwnerTeam = ev.OwnerTeam
+	return c, ev, nil
+}
+
+// inEntrant reports whether p owns one of e's Tickets.
+func inEntrant(p authz.Principal, e Entrant) bool {
+	id, err := uuid.Parse(p.ID)
+	if err != nil {
+		return false
+	}
+	for _, m := range e.Members {
+		if m.OwnerID != nil && *m.OwnerID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func withOwner(c Competition, err error, owner string) (Competition, error) {
@@ -375,7 +415,7 @@ func stageOf(c Competition, stageID *uuid.UUID) (Stage, error) {
 }
 
 func (s *service) SetScore(ctx context.Context, p authz.Principal, id uuid.UUID, in ScoreInput) (Entry, error) {
-	c, err := s.load(ctx, p, id, authz.Update, false)
+	c, basis, err := s.loadWriter(ctx, p, id)
 	if err != nil {
 		return Entry{}, err
 	}
@@ -396,14 +436,17 @@ func (s *service) SetScore(ctx context.Context, p authz.Principal, id uuid.UUID,
 	if err != nil {
 		return Entry{}, err
 	}
-	active := false
+	active, own := false, false
 	for _, e := range entrants {
 		if e.ID == in.EntrantID {
-			active = e.Status == EntrantActive
+			active, own = e.Status == EntrantActive, inEntrant(p, e)
 		}
 	}
 	if !active {
 		return Entry{}, ErrUnknownEntrant
+	}
+	if own {
+		return Entry{}, ErrOwnEntrant
 	}
 	reason := strings.TrimSpace(in.Reason)
 	if utf8.RuneCountInString(reason) > maxReasonRunes {
@@ -411,12 +454,12 @@ func (s *service) SetScore(ctx context.Context, p authz.Principal, id uuid.UUID,
 	}
 	return s.store.SetManualScore(ctx, ManualScore{
 		CompetitionID: c.ID, StageID: stage.ID, EntrantID: in.EntrantID, ReplacesID: in.ReplacesID,
-		Points: in.Points, Reason: reason, Actor: lifecycle.ActorID(p.ID),
+		Points: in.Points, Reason: reason, Actor: lifecycle.ActorID(p.ID), Basis: string(basis),
 	})
 }
 
 func (s *service) Revoke(ctx context.Context, p authz.Principal, id, entryID uuid.UUID, reason string) (Entry, error) {
-	c, err := s.load(ctx, p, id, authz.Update, false)
+	c, basis, err := s.loadWriter(ctx, p, id)
 	if err != nil {
 		return Entry{}, err
 	}
@@ -427,7 +470,73 @@ func (s *service) Revoke(ctx context.Context, p authz.Principal, id, entryID uui
 	if err != nil {
 		return Entry{}, err
 	}
-	return s.store.Revoke(ctx, c.ID, entryID, lifecycle.ActorID(p.ID), why)
+	own, err := s.ownEntry(ctx, p, c.ID, entryID)
+	if err != nil {
+		return Entry{}, err
+	}
+	if own {
+		return Entry{}, ErrOwnEntrant
+	}
+	return s.store.Revoke(ctx, c.ID, entryID, lifecycle.ActorID(p.ID), string(basis), why)
+}
+
+// ownEntry reports whether the ledger row entryID is of an Entrant p is in;
+// a row that is not the Competition's is the store's to refuse.
+func (s *service) ownEntry(ctx context.Context, p authz.Principal, competitionID, entryID uuid.UUID) (bool, error) {
+	ledger, err := s.store.Entries(ctx, competitionID)
+	if err != nil {
+		return false, err
+	}
+	var entrantID uuid.UUID
+	for _, row := range ledger {
+		if row.ID == entryID {
+			entrantID = row.EntrantID
+		}
+	}
+	if entrantID == uuid.Nil {
+		return false, nil
+	}
+	entrants, err := s.store.Entrants(ctx, competitionID)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entrants {
+		if e.ID == entrantID {
+			return inEntrant(p, e), nil
+		}
+	}
+	return false, nil
+}
+
+// MaxCandidateQueryRunes is the longest name part a candidate search takes.
+const MaxCandidateQueryRunes = 100
+
+func (s *service) EntrantCandidates(ctx context.Context, p authz.Principal, id uuid.UUID, filter CandidateFilter) ([]Candidate, error) {
+	q := strings.ToLower(strings.TrimSpace(filter.Query))
+	if utf8.RuneCountInString(q) > MaxCandidateQueryRunes {
+		return nil, fmt.Errorf("%w: q is at most %d characters", ErrInvalid, MaxCandidateQueryRunes)
+	}
+	// Who adds Entrants (Update), not who reads the Competition: the list
+	// serves adding them.
+	c, err := s.load(ctx, p, id, authz.Update, false)
+	if err != nil {
+		return nil, err
+	}
+	all, err := s.store.Candidates(ctx, c.ID, c.EventID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Candidate, 0, len(all))
+	for _, cand := range all {
+		if filter.CheckedIn != nil && cand.CheckedIn != *filter.CheckedIn {
+			continue
+		}
+		if q != "" && !strings.Contains(strings.ToLower(cand.DisplayName), q) {
+			continue
+		}
+		out = append(out, cand)
+	}
+	return out, nil
 }
 
 func (s *service) Entries(ctx context.Context, p authz.Principal, id uuid.UUID) ([]Entry, error) {
