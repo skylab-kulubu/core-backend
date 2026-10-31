@@ -124,7 +124,7 @@ var texts = map[string]string{
 	"davet-v2":        "Diğer etkinlik ve duyurulardan haberdar olmak istiyorum.",
 	"tanitim-v1":      "SKY LAB'dan tanıtım içerikli e-postalar (indirim kodu, şirket iş ilanı, çekiliş gibi) almak istiyorum.",
 	"alim-havuzu-v1":  "Bu dönem kabul edilmezsem başvurumun gelecek alımlarda değerlendirilmek üzere saklanmasını istiyorum. İstediğim zaman vazgeçebilirim.",
-	"ekip-sayfasi-v1": "Ekip sayfalarında görüneyim: adım, soyadım, profil fotoğrafım, LinkedIn adresim, üniversitem, fakültem, bölümüm ve ekip liderliğim ekibimin sitedeki ve SKY LAB uygulamasındaki sayfasında yayımlansın.",
+	"ekip-sayfasi-v1": "Ekip sayfalarında görüneyim: adım, soyadım, profil fotoğrafım, LinkedIn adresim, üniversitem, fakültem, bölümüm ve ekip liderliğim ekibimin SKY LAB uygulamasındaki sayfasında yayımlansın.",
 }
 
 // Text is the box text of a version, "" for a version core does not know.
