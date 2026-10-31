@@ -41,7 +41,7 @@ func (p DirectoryPeople) Recipient(ctx context.Context, id uuid.UUID) (Recipient
 	if email == "" {
 		return Recipient{}, SkipNoEmail, nil
 	}
-	return Recipient{Email: email, FullName: fullName(person, account)}, "", nil
+	return Recipient{Email: email, FullName: fullName(person, account), FirstName: firstName(person, account)}, "", nil
 }
 
 // DisplayName is the full name of the person who made a change, or empty: a
@@ -102,6 +102,14 @@ func fullName(person identity.Person, account *user.User) string {
 		}
 	}
 	return joinName(person.FirstName, person.LastName)
+}
+
+// firstName is the first name of fullName's.
+func firstName(person identity.Person, account *user.User) string {
+	if account != nil && joinName(account.FirstName, account.LastName) != "" {
+		return strings.TrimSpace(account.FirstName)
+	}
+	return strings.TrimSpace(person.FirstName)
 }
 
 func joinName(first, last string) string {

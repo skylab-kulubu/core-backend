@@ -90,6 +90,8 @@ func (c *Consumer) deliver(ctx context.Context, s *subscription, d amqp.Delivery
 				return
 			}
 			c.metrics.consumed(s.Queue, outcome)
+			c.logf(`{"event":"events_handled","queue":%q,"type":%q,"id":%q,"outcome":%q%s}`,
+				s.Queue, event.Type, event.ID, outcome, traceField(event))
 			return
 		}
 		if ctx.Err() != nil {
@@ -106,8 +108,8 @@ func (c *Consumer) deliver(ctx context.Context, s *subscription, d amqp.Delivery
 			reason = ReasonRetriesExhausted
 		}
 		if reason != "" {
-			c.logf(`{"event":"events_dead_lettered","level":"warn","queue":%q,"type":%q,"id":%q,"reason":%q,"attempts":%d,"error":%q}`,
-				s.Queue, event.Type, event.ID, reason, attempt+1, c.errorText(err))
+			c.logf(`{"event":"events_dead_lettered","level":"warn","queue":%q,"type":%q,"id":%q,"reason":%q,"attempts":%d,"error":%q%s}`,
+				s.Queue, event.Type, event.ID, reason, attempt+1, c.errorText(err), traceField(event))
 			if err := d.Nack(false, false); err != nil {
 				c.ackFailed(s, err)
 				return
@@ -116,12 +118,22 @@ func (c *Consumer) deliver(ctx context.Context, s *subscription, d amqp.Delivery
 			return
 		}
 		c.metrics.retried(s.Queue)
-		c.logf(`{"event":"events_retry","level":"warn","queue":%q,"type":%q,"id":%q,"attempt":%d,"error":%q}`,
-			s.Queue, event.Type, event.ID, attempt+1, c.errorText(err))
+		c.logf(`{"event":"events_retry","level":"warn","queue":%q,"type":%q,"id":%q,"attempt":%d,"error":%q%s}`,
+			s.Queue, event.Type, event.ID, attempt+1, c.errorText(err), traceField(event))
 		if !sleep(ctx, c.retryDelays[attempt]) {
 			return
 		}
 	}
+}
+
+// traceField is a log line's trace_id member, empty when the event has no
+// traceparent. Only the trace id: the parent id names the publisher's span,
+// which the consumer's lines do not need.
+func traceField(event Event) string {
+	if id := event.TraceID(); id != "" {
+		return `,"trace_id":"` + id + `"`
+	}
+	return ""
 }
 
 // attempt runs the handler once in the record's transaction; a panic rolls

@@ -33,6 +33,20 @@ func MembersManageCompetitorsValue(v string) bool {
 	return !strings.EqualFold(strings.TrimSpace(v), "false")
 }
 
+// TeamAttrCompetitionManage is the Team attribute by which the Team's
+// Leader lets all its members manage its Events' Competitions ("Yarışmaları
+// kim yönetir": Tüm üyeler; Yusuf, 2026-10-12 and 2026-10-31): "true" opens
+// them to the members; anything else, or none, keeps them to the Leaders.
+// Unlike the attributes that stay Privileged's (team_door_scan) it widens
+// and the Team's manager still writes it (ADR-0065 exception, ADR-0068).
+const TeamAttrCompetitionManage = "team_competition_manage"
+
+// CompetitionManageValue reads TeamAttrCompetitionManage's value: true only
+// for "true" (case and blanks aside).
+func CompetitionManageValue(v string) bool {
+	return strings.EqualFold(strings.TrimSpace(v), "true")
+}
+
 // TeamSettings reads a Team's own settings by its Team code
 // (identity.TeamTree, kept a minute).
 type TeamSettings interface {
@@ -40,6 +54,11 @@ type TeamSettings interface {
 	// carries TeamAttrMembersManageCompetitors=false; a Group that cannot be
 	// read or a name that is not one Group's is the default, true.
 	MembersManageCompetitors(team string) bool
+	// TeamCompetitionManage is true only when the one Group named team
+	// carries TeamAttrCompetitionManage=true; a Group that cannot be read or
+	// a name that is not one Group's is the default, false: a widening
+	// setting fails closed.
+	TeamCompetitionManage(team string) bool
 }
 
 // WithTeamSettings lets the Teams' settings narrow the members' decisions.

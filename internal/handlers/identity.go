@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -93,14 +95,24 @@ func identityError(c fiber.Ctx, err error) error {
 	var name *teamcode.Error
 	var refused *identity.DelegationError
 	var rule *identity.RoleRuleError
+	var structure *identity.TeamStructureError
 	switch {
 	case errors.As(err, &deletion):
 		if deletion.Status == fiber.StatusServiceUnavailable {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderRetryAfter, "1")
 		}
-		return problemWithFields(c, deletion.Status, delegationTitles[deletion.Status], deletion.Detail, deletion.Code,
-			fiber.Map{"members": deletion.Members, "children": deletion.Children})
+		fields := fiber.Map{"members": deletion.Members, "children": deletion.Children}
+		if len(deletion.Records) > 0 {
+			fields["records"] = deletion.Records
+		}
+		return problemWithFields(c, deletion.Status, delegationTitles[deletion.Status], deletion.Detail, deletion.Code, fields)
+	case errors.As(err, &structure):
+		var fields fiber.Map
+		if len(structure.Records) > 0 {
+			fields = fiber.Map{"records": structure.Records}
+		}
+		return problemWithFields(c, structure.Status, delegationTitles[structure.Status], structure.Detail, structure.Code, fields)
 	case errors.As(err, &rule):
 		return roleRuleError(c, rule)
 	case errors.As(err, &name):
@@ -264,6 +276,137 @@ func (h *IdentityHandler) DeleteGroup(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// CreateSubTeam answers POST /v1/groups/{id}/children: a Sub-team under
+// the Team, with its display names (docs/team-delegation.md "Team
+// structure").
+func (h *IdentityHandler) CreateSubTeam(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	var body struct {
+		Code          string `json:"code"`
+		DisplayNameTr string `json:"displayNameTr"`
+		DisplayNameEn string `json:"displayNameEn"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	created, err := h.svc.CreateSubTeam(auditContext(c, p), p, c.Params("groupId"), identity.NewSubTeam{
+		Code: body.Code, DisplayNameTr: body.DisplayNameTr, DisplayNameEn: body.DisplayNameEn,
+	})
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(created)
+}
+
+// ChangeTeamCode answers PUT /v1/groups/{id}/code: the Team's new code
+// (docs/team-delegation.md "Team structure").
+func (h *IdentityHandler) ChangeTeamCode(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	updated, err := h.svc.ChangeTeamCode(auditContext(c, p), p, c.Params("groupId"), body.Code)
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(updated)
+}
+
+// TeamLeaders answers GET /v1/groups/{id}/leaders (docs/team-delegation.md
+// "Leaders").
+func (h *IdentityHandler) TeamLeaders(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	leaders, err := h.svc.TeamLeaders(c.Context(), p, c.Params("groupId"))
+	if err != nil {
+		return identityError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(leaders)
+}
+
+// AddTeamLeader answers POST /v1/groups/{id}/leaders {userId, kind?}.
+func (h *IdentityHandler) AddTeamLeader(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	var body struct {
+		UserID uuid.UUID `json:"userId"`
+		Kind   string    `json:"kind"`
+	}
+	if err := c.Bind().Body(&body); err != nil || body.UserID == uuid.Nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if err := h.svc.AddTeamLeader(auditContext(c, p), p, c.Params("groupId"), body.UserID, body.Kind); err != nil {
+		return identityError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// RemoveTeamLeader answers DELETE /v1/groups/{id}/leaders/{userId} with
+// whether the Team has no Leader left.
+func (h *IdentityHandler) RemoveTeamLeader(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	userID, err := uuid.Parse(c.Params("userId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	removal, err := h.svc.RemoveTeamLeader(auditContext(c, p), p, c.Params("groupId"), userID)
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(removal)
+}
+
+// MoveTeam answers POST /v1/groups/{id}/move {parentId} (docs/team-delegation.md
+// "Moving a Team").
+func (h *IdentityHandler) MoveTeam(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	var body struct {
+		ParentID string `json:"parentId"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	moved, err := h.svc.MoveTeam(auditContext(c, p), p, c.Params("groupId"), body.ParentID)
+	if err != nil {
+		return identityError(c, err)
+	}
+	return c.JSON(moved)
+}
+
+// MoveTeamPreview answers GET /v1/groups/{id}/move-preview?parentId=.
+func (h *IdentityHandler) MoveTeamPreview(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	preview, err := h.svc.MoveTeamPreview(c.Context(), p, c.Params("groupId"), c.Query("parentId"))
+	if err != nil {
+		return identityError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(preview)
+}
+
 func (h *IdentityHandler) Members(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
@@ -296,20 +439,27 @@ func (h *IdentityHandler) ManagedGroups(c fiber.Ctx) error {
 
 // SetTeamSettings answers PUT /v1/groups/{id}/settings: a Team's own
 // settings, written by its manager or Privileged (docs/team-delegation.md
-// "Team settings"). Every field is required.
+// "Team settings"). A field left out keeps its value; at least one is given,
+// and an unknown one is 400: the attributes that stay Privileged's
+// (team_door_scan, public_listing, public_leaders) are not written here.
 func (h *IdentityHandler) SetTeamSettings(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
 		return identityError(c, err)
 	}
 	var body struct {
-		MembersManageCompetitors *bool `json:"membersManageCompetitors"`
+		MembersManageCompetitors *bool   `json:"membersManageCompetitors"`
+		CompetitionManagers      *string `json:"competitionManagers"`
 	}
-	if err := c.Bind().Body(&body); err != nil || body.MembersManageCompetitors == nil {
+	decoder := json.NewDecoder(bytes.NewReader(c.Body()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil || decoder.More() ||
+		(body.MembersManageCompetitors == nil && body.CompetitionManagers == nil) {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	settings, err := h.svc.SetTeamSettings(auditContext(c, p), p, c.Params("groupId"), identity.TeamSettings{
-		MembersManageCompetitors: *body.MembersManageCompetitors,
+	settings, err := h.svc.SetTeamSettings(auditContext(c, p), p, c.Params("groupId"), identity.TeamSettingsChange{
+		MembersManageCompetitors: body.MembersManageCompetitors,
+		CompetitionManagers:      body.CompetitionManagers,
 	})
 	if err != nil {
 		return identityError(c, err)

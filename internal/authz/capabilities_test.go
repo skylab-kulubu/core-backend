@@ -122,7 +122,7 @@ func TestCapabilities_Leader(t *testing.T) {
 	want := []string{
 		"certificate.issue", "certificate.read", "certificate.revoke",
 		"certificateTemplate.assign", "certificateTemplate.create", "certificateTemplate.read", "certificateTemplate.update",
-		"competition.manage", "competitor.create", "competitor.delete", "competitor.read", "competitor.update",
+		"competition.archive", "competition.manage", "competitor.create", "competitor.delete", "competitor.read", "competitor.update",
 		"door.checkIn", "event.create", "event.delete", "event.update", "ticket.assign", "ticket.read",
 	}
 	if got := trueKeys(weblab.Can); !slices.Equal(got, want) {

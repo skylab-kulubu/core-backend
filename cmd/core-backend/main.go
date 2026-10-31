@@ -45,12 +45,14 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
 	"github.com/skylab-kulubu/core-backend/internal/mediaframe"
+	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
 	"github.com/skylab-kulubu/core-backend/internal/memlimit"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 	"github.com/skylab-kulubu/core-backend/internal/retention"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
+	"github.com/skylab-kulubu/core-backend/internal/subjectrequest"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/teamcode"
 	"github.com/skylab-kulubu/core-backend/internal/teammail"
@@ -83,6 +85,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == replayFromBackupCommandName {
 		os.Exit(runReplayFromBackup(os.Args[2:], os.Getenv, os.Stdout))
 	}
+	if len(os.Args) > 1 && os.Args[1] == erasureManualStepCommandName {
+		os.Exit(runErasureManualStep(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == mediaScanSelfTestCommandName {
 		os.Exit(runMediaScanSelfTest(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
@@ -97,6 +102,15 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == consentWithdrawCommandName {
 		os.Exit(runConsentWithdraw(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == managementTermsCommandName {
+		os.Exit(runManagementTerms(os.Args[2:], os.Getenv, os.Stdout))
+	}
+	if len(os.Args) > 1 && os.Args[1] == teamPageNoticeCommandName {
+		os.Exit(runTeamPageNotice(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == teamStructureReportCommandName {
+		os.Exit(runTeamStructureReport(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}
 	if len(os.Args) > 1 && os.Args[1] == retentionSweepCommandName {
 		os.Exit(runRetentionSweep(os.Args[2:], os.Getenv, os.Stdout))
@@ -198,6 +212,13 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("team delegation: %s (%s)", map[bool]string{false: "off", true: "on"}[teamDelegation], authz.TeamDelegationEnv)
+	// Whether Leaders change a Sub-team's code too: off unless set, so
+	// only Privileged does (docs/team-delegation.md "Team structure").
+	leaderTeamCodes, err := authz.ParseLeaderTeamCodes(os.Getenv(authz.LeaderTeamCodesEnv))
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("team delegation leader codes: %s (%s)", map[bool]string{false: "off", true: "on"}[leaderTeamCodes], authz.LeaderTeamCodesEnv)
 	// The panel's app assignments (docs/app-assignments.md): off unless
 	// set. A value core cannot read, or an app catalogue that names
 	// anything but app roles, stops startup.
@@ -215,6 +236,7 @@ func main() {
 	authzPolicy.PrivilegedRoots = privilegedRoots
 	authzPolicy.PrivilegedReaderRoots = privilegedReaderRoots
 	authzPolicy.TeamDelegation = teamDelegation
+	authzPolicy.LeaderTeamCodes = leaderTeamCodes
 	authzPolicy.AppAssignments = appAssignments
 	authzRoleMetrics := authz.NewRoleMetrics(log.Default(), time.Now)
 	// The Team code rule every Group create and rename passes
@@ -524,11 +546,18 @@ func main() {
 	// person's Groups; core reads them from Keycloak with its own service
 	// account and keeps them a minute.
 	overageGroups := identity.NewOverageGroups(dir, identity.OverageOptions{})
+	// A Group write through one core process reaches the others' caches
+	// through Postgres NOTIFY; each process listens on a connection of its
+	// own (horizontal-scale ticket 26).
+	groupCache := identity.NewSharedGroupCache(overageGroups, pool, identity.ListenConnect(pool),
+		identity.SharedGroupCacheOptions{Logf: log.Printf})
+	worker("group cache invalidation", groupCache.Run(workers))
 	// Where Owner teams sit: with team delegation on, a Leader of a Team
 	// above an Event's Owner team leads it too (ADR-0065 decision 2,
 	// ekip-yetkileri ticket 12). The realm's Groups are kept a minute.
 	teamTree := identity.NewTeamTree(dir, identity.TeamTreeOptions{Logf: log.Printf})
-	// The same Groups carry the Teams' own settings (members_manage_competitors).
+	// The same Groups carry the Teams' own settings (members_manage_competitors,
+	// team_competition_manage).
 	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics), authz.WithTeamTree(teamTree),
 		authz.WithTeamSettings(teamTree))
 	// The capabilities route's editableSites: the configured Site clients
@@ -651,6 +680,18 @@ func main() {
 		if holders, ok := dir.(consent.PersonalEmailHolders); ok {
 			consents.SetPersonalEmailHolders(holders)
 		}
+	}
+	// The public team rosters show only who consented (team_page), and the
+	// Board's names on its own roster, after the transition TEAM_PAGE_CONSENT_GRACE_UNTIL
+	// (docs/team-page-consent.md).
+	teamPageGraceUntil, err := identity.TeamPageGraceUntilFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if teamPageGraceUntil.IsZero() {
+		log.Printf("team pages: only members who consented are listed")
+	} else {
+		log.Printf("team pages: members who have not decided are listed until %s, then only members who consented", teamPageGraceUntil.UTC().Format(time.RFC3339))
 	}
 	if consentConfig.Enabled {
 		log.Printf("contact consents: on (links at %s, service clients %v, verified-address clients %v)",
@@ -882,7 +923,12 @@ func main() {
 		workers, teammail.NewPostgresQueue(pool), teammail.NewPostgresNoticeQueue(pool), sky, dir, users, privilegedRoots, log.Printf)
 	worker("team membership mail", teamMembershipStopped)
 	worker("event status mail", startEventStatusMail(workers, events, tickets, users, sky, log.Printf))
-	worker("feedback mail", startFeedbackMail(workers, feedbackInvites, tickets, users, sky, log.Printf))
+	// A member's feedback mail as a Notification (inbox and e-mail), ticket 13.
+	feedbackNotification, err := feedbackNotificationOn(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	worker("feedback mail", startFeedbackMail(workers, feedbackNotification, feedbackInvites, tickets, users, sky, log.Printf))
 	// The new Ticket's Notification (docs/ticket-created-notification.md):
 	// SkyMail tells the holder by inbox and e-mail.
 	ticketNotificationOn, err := ticketCreatedNotificationOn(os.Getenv)
@@ -993,37 +1039,53 @@ func main() {
 		cancelCanary()
 	}
 
+	// Management membership terms (docs/management-membership-terms.md,
+	// grup-yonetimi 11): YK, DK and Team Leader memberships end with the
+	// season; core warns, marks and lists, and never takes anyone out.
+	terms, err := startManagementTerms(workers, os.Getenv, managementTermsDeps{
+		pool: pool, dir: dir, seasons: seasons, users: users, sky: sky, audit: teamAudit, az: az,
+		rules: membershipterm.Rules{PrivilegedRoots: privilegedRoots, LeaderSubgroups: authzPolicy.LeaderSubgroups},
+	}, worker, log.Printf)
+	if err != nil {
+		log.Fatal(err)
+	}
+	identityService := identity.NewServiceWithOptions(auditedDir, users, az, identity.Options{
+		AccountErasureEnabled: workerEnabled,
+		AccessProjector:       accessProjector,
+		GroupCache:            groupCache,
+		TeamTree:              teamTree,
+		Membership:            identity.JoinMembershipNotifiers(teamMembership, managementTermsNotifier(terms)),
+		GroupRoles:            groupRolesNotice,
+		PrivilegedRoots:       privilegedRoots,
+		GroupNames:            &groupNames,
+		TeamCodes:             teamcode.NewPostgresLedger(pool),
+		Delegation:            delegation,
+		TeamAudit:             teamAudit,
+		DirectUserRoles:       directUserRoles,
+		AdminGroups:           adminGroups,
+		UserSync:              userSync,
+		NoMemberSeatSearch:    !memberSeatSearch,
+		Apps:                  apps,
+		AppAudit:              teamAudit,
+		AuditRecords:          teamAudit,
+		AppAssignments:        appAssignments,
+		TeamPage:              &identity.TeamPageVisibility{Consents: consents, GraceUntil: teamPageGraceUntil},
+	})
+	terms.UseMemberships(identityService)
+
 	app := httpx.New(httpx.Deps{
-		Users: user.NewService(users, dir),
-		Identity: identity.NewServiceWithOptions(auditedDir, users, az, identity.Options{
-			AccountErasureEnabled: workerEnabled,
-			AccessProjector:       accessProjector,
-			GroupCache:            overageGroups,
-			TeamTree:              teamTree,
-			Membership:            teamMembership,
-			GroupRoles:            groupRolesNotice,
-			PrivilegedRoots:       privilegedRoots,
-			GroupNames:            &groupNames,
-			TeamCodes:             teamcode.NewPostgresLedger(pool),
-			Delegation:            delegation,
-			TeamAudit:             teamAudit,
-			DirectUserRoles:       directUserRoles,
-			AdminGroups:           adminGroups,
-			UserSync:              userSync,
-			NoMemberSeatSearch:    !memberSeatSearch,
-			Apps:                  apps,
-			AppAudit:              teamAudit,
-			AppAssignments:        appAssignments,
-		}),
+		Users:    user.NewService(users, dir),
+		Identity: identityService,
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
 			ImageAddressMode: imageAddressMode,
 			FormLinks:        eventFormLinks{urls: urlSvc},
 			Media:            media.NewLinker(mediaStore),
 		}),
-		Seasons:     season.NewService(seasons, az),
-		Tickets:     ticketSvc,
-		Competitors: competitor.NewService(competitors, events, az),
+		Seasons:         season.NewService(seasons, az),
+		SubjectRequests: subjectrequest.NewService(subjectrequest.NewPostgresStore(pool), az, nil),
+		Tickets:         ticketSvc,
+		Competitors:     competitor.NewService(competitors, events, az),
 		Media: media.NewServiceWithOptions(mediaStore, blobs, az, cdnBase, media.ServiceOptions{
 			UploadStagingGrace: uploadStagingConfig.Grace,
 			Catalogue:          mediaPurposes,
@@ -1050,6 +1112,7 @@ func main() {
 		AccountErasureMetrics:  optionalErasureMetrics(erasureGauges),
 		MediaCDNPurgeMetrics:   cdnPurgeMetrics,
 		TeamMailMetrics:        teamMembershipMetrics,
+		ManagementTerms:        terms,
 		TeamDelegationMetrics:  delegationMetrics,
 		RetentionMetrics:       retentionMetrics,
 		EventsMetrics:          eventsMetrics,

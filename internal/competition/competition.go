@@ -100,6 +100,9 @@ type Member struct {
 	TicketID    uuid.UUID `json:"ticketId"`
 	TicketType  string    `json:"ticketType"`
 	DisplayName string    `json:"displayName"`
+	// OwnerID is a registered Ticket's owner: nobody writes a score of an
+	// Entrant they are in (ErrOwnEntrant). Never answered.
+	OwnerID *uuid.UUID `json:"-"`
 }
 
 // Entry is one ledger row: a score typed in, later a submission or an
@@ -114,11 +117,17 @@ type Entry struct {
 	OccurredAt    time.Time       `json:"occurredAt"`
 	RecordedAt    time.Time       `json:"recordedAt"`
 	RecordedBy    *uuid.UUID      `json:"recordedBy,omitempty"`
+	// Basis is what its writer's authority was (authz.CompetitionBasis:
+	// privileged, leader, member_setting, staff); empty on rows written
+	// before it was kept.
+	Basis string `json:"basis,omitempty"`
 	// ReplacesID is the row this one corrected, revoked in the same write.
 	ReplacesID   *uuid.UUID `json:"replacesId,omitempty"`
 	RevokedAt    *time.Time `json:"revokedAt,omitempty"`
 	RevokedBy    *uuid.UUID `json:"revokedBy,omitempty"`
 	RevokeReason string     `json:"revokeReason,omitempty"`
+	// RevokedBasis is the revoker's, as Basis.
+	RevokedBasis string `json:"revokedBasis,omitempty"`
 }
 
 // Leaderboard is a Stage's live standings for its organizers.
@@ -176,6 +185,30 @@ type ManualScore struct {
 	Points        scoring.Points
 	Reason        string
 	Actor         *uuid.UUID
+	// Basis is the Actor's (authz.CompetitionBasis), kept on the new row and
+	// on the revocation of the row it replaces.
+	Basis string
+}
+
+// Candidate is a Ticket of the Event an organizer may add as an Entrant
+// (GET /v1/competitions/{id}/entrant-candidates): only what the choice
+// needs. No e-mail, phone number or form answer: a member the Team's setting
+// lets manage has no ticket.read.
+type Candidate struct {
+	TicketID    uuid.UUID `json:"ticketId"`
+	DisplayName string    `json:"displayName"`
+	TicketType  string    `json:"ticketType"`
+	CheckedIn   bool      `json:"checkedIn"`
+	// Entrant is whether the Ticket already is in an Entrant of the
+	// Competition.
+	Entrant bool `json:"entrant"`
+}
+
+// CandidateFilter narrows the candidates: Query a part of the name (case
+// aside), CheckedIn whether the Ticket has a check-in.
+type CandidateFilter struct {
+	Query     string
+	CheckedIn *bool
 }
 
 // TicketRef is what entrant creation checks of a Ticket.

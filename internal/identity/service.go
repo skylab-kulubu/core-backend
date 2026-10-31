@@ -50,7 +50,29 @@ type Service interface {
 	// SetTeamSettings writes a Team's own settings (PUT
 	// /v1/groups/{id}/settings): its manager (a Leader of it or of a Team
 	// above, delegation on) or Privileged.
-	SetTeamSettings(ctx context.Context, p authz.Principal, groupRef string, settings TeamSettings) (TeamSettings, error)
+	SetTeamSettings(ctx context.Context, p authz.Principal, groupRef string, change TeamSettingsChange) (TeamSettings, error)
+	// MembershipWriteDecision is whether the caller may change the Group's
+	// membership, as AddMember decides, without writing
+	// (membership_decision.go).
+	MembershipWriteDecision(ctx context.Context, p authz.Principal, groupRef string) (MembershipDecision, error)
+	// CreateSubTeam opens a Sub-team under a Team (POST
+	// /v1/groups/{id}/children) and ChangeTeamCode changes a Team's code
+	// (PUT /v1/groups/{id}/code): Privileged, or a Leader with delegation on
+	// (docs/team-delegation.md "Team structure").
+	CreateSubTeam(ctx context.Context, p authz.Principal, parentRef string, in NewSubTeam) (Group, error)
+	ChangeTeamCode(ctx context.Context, p authz.Principal, groupRef, code string) (Group, error)
+	// TeamLeaders, AddTeamLeader and RemoveTeamLeader are a Team's Leaders
+	// (GET, POST and DELETE /v1/groups/{id}/leaders): Privileged, or a
+	// Leader with delegation on (docs/team-delegation.md "Leaders").
+	TeamLeaders(ctx context.Context, p authz.Principal, groupRef string) ([]TeamLeader, error)
+	AddTeamLeader(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID, kind string) error
+	RemoveTeamLeader(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) (LeaderRemoval, error)
+	// MoveTeam and MoveTeamPreview move a Team under another (POST
+	// /v1/groups/{id}/move, GET /v1/groups/{id}/move-preview):
+	// Privileged, or a Leader who manages both sides (docs/team-delegation.md
+	// "Moving a Team").
+	MoveTeam(ctx context.Context, p authz.Principal, groupRef, parentRef string) (Group, error)
+	MoveTeamPreview(ctx context.Context, p authz.Principal, groupRef, parentRef string) (MovePreview, error)
 	// MemberCheck is what adding a person to a Group would warn of
 	// (grup-yonetimi 07); it never refuses the add.
 	MemberCheck(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) (MemberCheck, error)
@@ -61,6 +83,9 @@ type Service interface {
 	UnassignApp(ctx context.Context, p authz.Principal, clientID string, in AppAssignmentInput) error
 	AppAudit(ctx context.Context, p authz.Principal, clientID string) ([]AppAuditEntry, error)
 	AppTargets(ctx context.Context, p authz.Principal, clientID, kind, q string) ([]AppTarget, error)
+	// TeamAuditRecords is a page of the Team audit record
+	// (docs/team-audit.md, ticket 10).
+	TeamAuditRecords(ctx context.Context, p authz.Principal, q AuditQuery) (AuditPage, error)
 }
 
 type service struct {
@@ -72,6 +97,7 @@ type service struct {
 	accountErasureEnabled bool
 	accessProjector       DeletionProjector
 	groupCache            GroupCache
+	shared                *SharedGroupCache
 	teamTree              interface{ ForgetAll() }
 	membership            MembershipNotifier
 	groupRoles            GroupRolesNotifier
@@ -86,8 +112,10 @@ type service struct {
 	seats                 *seatCache
 	apps                  []authz.App
 	appAudit              teamaudit.AppReader
+	auditRecords          teamaudit.Reader
 	appAssignments        bool
 	appStats              *appStatsCache
+	teamPage              *TeamPageVisibility
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer) Service {
@@ -102,7 +130,10 @@ type Options struct {
 	AccessProjector DeletionProjector
 	// GroupCache is what core remembers of people's Groups for Group
 	// overage tokens (OverageGroups). The service's membership writes and
-	// Group renames drop it at once. Nil remembers nothing.
+	// Group renames drop it at once. Nil remembers nothing. A
+	// SharedGroupCache also carries the service's other caches' forgets
+	// (delegation, TeamTree, seat search, app counts) to and from the other
+	// core processes.
 	GroupCache GroupCache
 	// Membership hears of every person added to or removed from a Group it
 	// Notifies of (the team membership mail, internal/teammail). Nil hears
@@ -159,6 +190,9 @@ type Options struct {
 	// app's audit tab, who assigned what when). Nil reads none: the list
 	// says no row for any assignment.
 	AppAudit teamaudit.AppReader
+	// AuditRecords reads the Team audit record for its reading route
+	// (GET /v1/team-audit-records). Nil reads none: every page is empty.
+	AuditRecords teamaudit.Reader
 	// AppAssignments is APP_ASSIGNMENTS: on, the app roles of a Team, a
 	// Sub-team and a Leader group are the panel's (POST and DELETE
 	// /v1/apps/{clientId}/assignments), and SetGroupClientRoles refuses to
@@ -169,6 +203,10 @@ type Options struct {
 	// (docs/user-sync.md) sends the Welcome mail soon rather than at its next
 	// tick. Nil: the mail waits for the tick.
 	UserSync interface{ Wake() }
+	// TeamPage is who the public rosters show (TeamPageVisibility). Nil
+	// shows everyone, as before the team page consent: tests and tools
+	// only; production always sets it.
+	TeamPage *TeamPageVisibility
 }
 
 // MembershipNotifier hears of membership changes made through the service.
@@ -247,8 +285,14 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		seats:                 newSeatCache(options.Now),
 		apps:                  options.Apps,
 		appAudit:              options.AppAudit,
+		auditRecords:          options.AuditRecords,
 		appAssignments:        options.AppAssignments,
 		appStats:              newAppStatsCache(options.Now),
+		teamPage:              options.TeamPage,
+	}
+	if shared, ok := options.GroupCache.(*SharedGroupCache); ok {
+		shared.Join(ownCaches{s})
+		s.shared = shared
 	}
 	if s.apps == nil {
 		// The catalogue core carries passed its checks in its tests
@@ -331,6 +375,12 @@ func (s *service) CreateGroup(ctx context.Context, p authz.Principal, parentRef,
 	if err != nil {
 		return Group{}, err
 	}
+	if err := s.leaderGroupsByLeadersRoute(name); err != nil {
+		return Group{}, err
+	}
+	if err := s.nothingUnderLeaderGroups(parentPath); err != nil {
+		return Group{}, err
+	}
 	var created Group
 	err = s.codes.Locked(ctx, func(ctx context.Context, records teamcode.Records) error {
 		if err := s.nameFree(ctx, records, scope, parentPath+"/"+name, name, ""); err != nil {
@@ -373,6 +423,9 @@ func (s *service) UpdateGroup(ctx context.Context, p authz.Principal, groupRef, 
 	}
 	scope, err := s.names.Rename(g.Path, name, len(subgroups) == 0)
 	if err != nil {
+		return Group{}, err
+	}
+	if err := s.leaderGroupsByLeadersRoute(name); err != nil {
 		return Group{}, err
 	}
 	if err := s.renameKeepsPlacement(ctx, g, name, len(subgroups) > 0); err != nil {
@@ -555,26 +608,50 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 }
 
 // forgetGroups drops what core remembers of userID's Groups: for Group
-// overage tokens and for team delegation.
+// overage tokens and for team delegation. A SharedGroupCache carries it to
+// the other core processes.
 func (s *service) forgetGroups(userID uuid.UUID) {
 	if s.groupCache != nil {
 		s.groupCache.Forget(userID)
 	}
-	s.delegation.Forget(userID)
-	s.seats.forget()
-	s.appStats.forget()
+	ownCaches{s}.Forget(userID)
 }
 
 func (s *service) forgetAllGroups() {
 	if s.groupCache != nil {
 		s.groupCache.ForgetAll()
 	}
-	if s.teamTree != nil {
-		s.teamTree.ForgetAll()
+	ownCaches{s}.ForgetAll()
+}
+
+// forgetAllElsewhere tells the other core processes to forget everything
+// they keep of Groups, after a write this process forgets only some of its
+// caches for (a Team's settings, a role mapping, an app assignment).
+func (s *service) forgetAllElsewhere() {
+	if s.shared != nil {
+		s.shared.ForgetAllElsewhere()
 	}
-	s.delegation.ForgetAll()
-	s.seats.forget()
-	s.appStats.forget()
+}
+
+// ownCaches are what the service itself keeps of Groups beside the Group
+// overage cache: team delegation, the Owner team tree, seat search and app
+// counts. Joined to a SharedGroupCache, the other processes' writes reach
+// them too (horizontal-scale ticket 38).
+type ownCaches struct{ s *service }
+
+func (o ownCaches) Forget(userID uuid.UUID) {
+	o.s.delegation.Forget(userID)
+	o.s.seats.forget()
+	o.s.appStats.forget()
+}
+
+func (o ownCaches) ForgetAll() {
+	if o.s.teamTree != nil {
+		o.s.teamTree.ForgetAll()
+	}
+	o.s.delegation.ForgetAll()
+	o.s.seats.forget()
+	o.s.appStats.forget()
 }
 
 func (s *service) ListClientRoles(ctx context.Context, p authz.Principal) ([]ClientRole, error) {
@@ -958,7 +1035,9 @@ func (s *service) setGroupClientRoles(ctx context.Context, p authz.Principal, gr
 		return err
 	}
 	// A Group's role mappings decide whether it is protected: forgotten
-	// even when the write fails, since it may have reached Keycloak.
+	// even when the write fails, since it may have reached Keycloak, and
+	// everywhere else after it.
+	defer s.forgetAllElsewhere()
 	defer s.delegation.ForgetAll()
 	defer s.seats.forget()
 	defer s.appStats.forget()
@@ -1404,22 +1483,35 @@ func (s *service) buildRoster(ctx context.Context, g Group, people []Person, lea
 	if err != nil {
 		return Roster{}, err
 	}
+	listed := make([]uuid.UUID, 0, len(people))
+	for _, p := range people {
+		if p.ID != user.DeletedSubject && !accounts[p.ID].Blocked {
+			listed = append(listed, p.ID)
+		}
+	}
+	visible, err := s.teamPageShown(ctx, g, listed)
+	if err != nil {
+		return Roster{}, err
+	}
 	members := make([]PublicMember, 0, len(people))
 	for _, p := range people {
 		account := accounts[p.ID]
-		if p.ID == user.DeletedSubject || account.Blocked {
+		if p.ID == user.DeletedSubject || account.Blocked || visible[p.ID] == shownNot {
 			continue
 		}
 		_, leader := leaders[p.ID]
 		m := PublicMember{
 			FirstName: p.FirstName,
 			LastName:  p.LastName,
-			Leader:    leader,
+			Leader:    leader && visible[p.ID] == shownFull,
 		}
 		if account.Stored {
 			shadow := account.User
 			m.FirstName = shadow.FirstName
 			m.LastName = shadow.LastName
+		}
+		if account.Stored && visible[p.ID] == shownFull {
+			shadow := account.User
 			m.Linkedin = shadow.Linkedin
 			m.University = shadow.University
 			m.Faculty = shadow.Faculty

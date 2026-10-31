@@ -32,6 +32,16 @@ func deleteTree(t *testing.T) (*Memory, Group, *teamcode.MemoryLedger, *teamaudi
 func deleteService(dir Directory, ledger teamcode.Ledger, audit teamaudit.Writer) Service {
 	return NewServiceWithOptions(AuditedDirectory(dir, audit, nil), user.NewMemoryStore(), authz.NewAuthorizer(authz.DefaultPolicy()), Options{TeamCodes: ledger})
 }
+
+// deleteServiceOn is deleteService with Team delegation on: the only
+// setting in which a Team goes with the Groups under it.
+func deleteServiceOn(dir *Memory, ledger teamcode.Ledger, audit teamaudit.Writer) Service {
+	policy := authz.DefaultPolicy()
+	policy.TeamDelegation = true
+	return NewServiceWithOptions(AuditedDirectory(dir, audit, nil), user.NewMemoryStore(), authz.NewAuthorizer(policy), Options{
+		TeamCodes: ledger, Delegation: NewTeamDelegation(policy, dir, dir, TeamDelegationOptions{}),
+	})
+}
 func deleteContext(p authz.Principal) context.Context {
 	return teamaudit.WithActor(context.Background(), teamaudit.Actor{ID: uuid.MustParse(p.ID), Basis: teamaudit.BasisPrivileged})
 }
@@ -398,5 +408,69 @@ func TestGroupDeleteAllowsLeaderPrefixCustomAncestor(t *testing.T) {
 	p := deletePrincipal()
 	if err := deleteService(dir, ledger, audit).DeleteGroup(deleteContext(p), p, g.ID); err != nil {
 		t.Fatalf("valid custom name treated as a Leader group: %v", err)
+	}
+}
+
+// A Team is deleted with the Groups under it only when they are the ones
+// whose codes the first turn retired: a Sub-team added between the turns
+// (its code not retired) refuses the deletion.
+func TestGroupDeleteTeamSubtreeChangedBetweenTransactions(t *testing.T) {
+	dir, _, ledger, audit := deleteTree(t)
+	for _, g := range []Group{
+		{ID: uuid.NewString(), Name: "UYELER", Path: "/UYELER"},
+		{ID: uuid.NewString(), Name: "ARGE", Path: "/UYELER/ARGE"},
+		{ID: uuid.NewString(), Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"},
+	} {
+		dir.PutGroup(g)
+	}
+	team := Group{ID: uuid.NewString(), Name: "FRONT", Path: "/UYELER/ARGE/WEBLAB/FRONT"}
+	dir.PutGroup(team)
+	dir.PutGroup(Group{ID: uuid.NewString(), Name: "LIDERLER", Path: team.Path + "/LIDERLER"})
+	between := &betweenDeleteLedger{Ledger: ledger, after: func() {
+		dir.PutGroup(Group{ID: uuid.NewString(), Name: "LATE", Path: team.Path + "/LATE"})
+	}}
+	p := deletePrincipal()
+	err := deleteServiceOn(dir, between, audit).DeleteGroup(deleteContext(p), p, team.ID)
+	if deleteCode(err) != CodeGroupTreeMismatch || slices.Contains(dir.Ops, "DeleteGroup") {
+		t.Fatalf("a Sub-team added between the turns: %v %v", err, dir.Ops)
+	}
+	if r := ledger.Retired(); r["FRONT"] != teamcode.ReasonDeleted || r["LATE"] != "" || r["LIDERLER"] != "" {
+		t.Fatalf("retired %v", r)
+	}
+}
+
+// With Team delegation off a Team is deleted as main deletes any Group:
+// only an empty leaf. An empty Leader group or Sub-team under it refuses
+// the deletion (not_empty) and nothing is retired (#319 review 05-1).
+func TestGroupDeleteTeamSubtreeOnlyWithDelegation(t *testing.T) {
+	for _, under := range []string{"LIDERLER", "BACK"} {
+		t.Run(under, func(t *testing.T) {
+			dir, _, ledger, audit := deleteTree(t)
+			for _, g := range []Group{
+				{ID: uuid.NewString(), Name: "UYELER", Path: "/UYELER"},
+				{ID: uuid.NewString(), Name: "ARGE", Path: "/UYELER/ARGE"},
+				{ID: uuid.NewString(), Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"},
+			} {
+				dir.PutGroup(g)
+			}
+			team := Group{ID: uuid.NewString(), Name: "FRONT", Path: "/UYELER/ARGE/WEBLAB/FRONT"}
+			dir.PutGroup(team)
+			dir.PutGroup(Group{ID: uuid.NewString(), Name: under, Path: team.Path + "/" + under})
+			p := deletePrincipal()
+			err := deleteService(dir, ledger, audit).DeleteGroup(deleteContext(p), p, team.ID)
+			var refused *GroupDeleteError
+			if !errors.As(err, &refused) || refused.Code != "not_empty" || refused.Children != 1 || slices.Contains(dir.Ops, "DeleteGroup") {
+				t.Fatalf("delegation off: %v %v", err, dir.Ops)
+			}
+			if len(ledger.Retired()) != 0 {
+				t.Fatalf("retired %v", ledger.Retired())
+			}
+			if err := deleteServiceOn(dir, ledger, audit).DeleteGroup(deleteContext(p), p, team.ID); err != nil {
+				t.Fatalf("delegation on: %v", err)
+			}
+			if _, err := dir.GetGroup(context.Background(), team.Path+"/"+under); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("%s remains: %v", under, err)
+			}
+		})
 	}
 }

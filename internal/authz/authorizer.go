@@ -14,7 +14,30 @@ type Authorizer interface {
 	// Capabilities is what p may do, every answer an Allow or Permitted
 	// decision (GET /v1/users/me/capabilities).
 	Capabilities(p Principal) Capabilities
+	// CompetitionBasis is what p's write to a Competition of r.OwnerTeam
+	// rests on, the basis a ledger row keeps; "" when p may not write. A
+	// non-empty answer is Allow(p, r, Update) (and Create).
+	CompetitionBasis(p Principal, r Resource) CompetitionBasis
 }
+
+// CompetitionBasis is the authority a Competition write rests on
+// (docs/competitions.md "Who"): the ledger keeps it with each row, so a
+// member's rows still say why they were allowed once the Team setting is
+// turned off.
+type CompetitionBasis string
+
+const (
+	// BasisPrivileged: competition:manage or a Privileged Group.
+	BasisPrivileged CompetitionBasis = "privileged"
+	// BasisLeader: a Leader of the Owner team or of a Team above it.
+	BasisLeader CompetitionBasis = "leader"
+	// BasisMemberSetting: a member of the Owner team while its setting
+	// TeamAttrCompetitionManage lets all members manage.
+	BasisMemberSetting CompetitionBasis = "member_setting"
+	// BasisStaff is a Competition's staff (yarışma modülü ticket 26); no
+	// decision gives it yet.
+	BasisStaff CompetitionBasis = "staff"
+)
 
 type authorizer struct {
 	policy  Policy
@@ -119,6 +142,11 @@ func (a *authorizer) Allow(p Principal, r Resource, action Action) bool {
 		// Internal club data whose private repositories' totals are not
 		// public: privileged people only, never a product's service account.
 		return action == Read && p.Product == "" && a.privilegedRead(p, RoleGithubActivityRead)
+	case TypeSubjectRequest:
+		// Personal data only the board handles (docs/subject-requests.md):
+		// every action, a read too, is decided as a write, so a Privileged
+		// reader (DK) and global:read are refused; a service account never.
+		return p.Product == "" && a.privileged(p, RoleSubjectRequestManage)
 	case TypeTeamAudit:
 		// The audit:read role alone, in every role mode: no Privileged
 		// Group stands for it, global:read neither, and no service account
@@ -220,25 +248,54 @@ func (a *authorizer) allowCompetitor(p Principal, r Resource, action Action) boo
 	}
 }
 
-// allowCompetition is the organizer of a Competition: competition:manage,
-// or a Leader of the Event's Owner team (spec §8). Membership of the team
-// alone manages nothing. An Event without an Owner team is Privileged only
-// (ADR-0018). Who the Leaders are is ownerLevels' answer, so the team
-// authority handover changes it for competitions with everything else.
+// allowCompetition is who manages a Competition (docs/competitions.md
+// "Who"; yarışma modülü KARAR §2.4). The organizer, competition:manage or
+// a Leader of the Event's Owner team (or of a Team above it: ownerLevels),
+// does everything. A member of the Owner team, its Sub-teams' members
+// included, manages it only while the Team's setting lets all members
+// (TeamAttrCompetitionManage): reads, creates, edits, moves its status,
+// adds Entrants and writes scores, but does not archive or restore
+// (Delete). An Event without an Owner team is Privileged only (ADR-0018);
+// no setting is read for it.
 func (a *authorizer) allowCompetition(p Principal, r Resource, action Action) bool {
 	switch action {
 	case Read:
 		if a.privilegedRead(p, RoleCompetitionManage) {
 			return true
 		}
-	case Create, Update, Delete:
-		if a.privileged(p, RoleCompetitionManage) {
-			return true
-		}
+		return a.competitionBasis(p, r, false) != ""
+	case Create, Update:
+		return a.competitionBasis(p, r, true) != ""
+	case Delete:
+		basis := a.competitionBasis(p, r, true)
+		return basis == BasisPrivileged || basis == BasisLeader
 	default:
 		return false
 	}
-	return slices.Contains(a.ownerLevels(p, r.OwnerTeam), LevelLeader)
+}
+
+func (a *authorizer) CompetitionBasis(p Principal, r Resource) CompetitionBasis {
+	if r.Type != TypeCompetition {
+		return ""
+	}
+	return a.competitionBasis(p, r, true)
+}
+
+// competitionBasis is the strongest basis p has on r's Competitions; with
+// privileged false the Privileged check is left to the caller (a read
+// checks it as a read).
+func (a *authorizer) competitionBasis(p Principal, r Resource, privileged bool) CompetitionBasis {
+	if privileged && a.privileged(p, RoleCompetitionManage) {
+		return BasisPrivileged
+	}
+	levels := a.ownerLevels(p, r.OwnerTeam)
+	switch {
+	case slices.Contains(levels, LevelLeader):
+		return BasisLeader
+	case len(levels) > 0 && a.settings != nil && a.settings.TeamCompetitionManage(r.OwnerTeam):
+		return BasisMemberSetting
+	}
+	return ""
 }
 
 // competitorWriter is who adds, edits and removes an Event's competitors: a
@@ -442,13 +499,17 @@ func (a *authorizer) allowCertificateTemplate(p Principal, r Resource, action Ac
 	}
 }
 
-// isAnyLeader reports whether p is in some Leader group: a Group whose last
-// segment is one of the policy's leader subgroups, under a parent. The whole
-// segment counts: /UYELER/ARGE/WEBLAB/LIDERLER-ESKI is no Leader group.
 func (a *authorizer) isAnyLeader(p Principal) bool {
+	return IsAnyLeader(p, a.policy.LeaderSubgroups)
+}
+
+// IsAnyLeader reports whether p is in some Leader group: a Group whose last
+// segment is one of leaders, under a parent. The whole segment counts:
+// /UYELER/ARGE/WEBLAB/LIDERLER-ESKI is no Leader group.
+func IsAnyLeader(p Principal, leaders []string) bool {
 	for _, group := range p.Groups {
 		segments := pathSegments(group)
-		if len(segments) >= 2 && slices.Contains(a.policy.LeaderSubgroups, segments[len(segments)-1]) {
+		if len(segments) >= 2 && slices.Contains(leaders, segments[len(segments)-1]) {
 			return true
 		}
 	}

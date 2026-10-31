@@ -13,13 +13,31 @@ unchanged.
 ## Who
 
 Every route needs a signed-in organizer of the Competition: a Leader
-(`LIDERLER`, `KOORDINATORLER`) of the Event's Owner team, or a holder of
-`competition:manage` ([authz-roles.md](authz-roles.md)). Membership of the
-team alone manages nothing. A Competition of an Event without an Owner team
-is managed by the Privileged only (ADR-0018). The admin panel reads
-`competition.manage` from `GET /v1/users/me/capabilities` (team scopes) to
-show the Competition tab; it never decides from the token. Anonymous: `401`;
-anyone else: `403`.
+(`LIDERLER`, `KOORDINATORLER`) of the Event's Owner team or of a Team above
+it, or a holder of `competition:manage` ([authz-roles.md](authz-roles.md)).
+Membership of the team alone manages nothing, unless the Team's own setting
+"Yarışmaları kim yönetir" says all members (`competitionManagers: members`,
+[team-delegation.md](team-delegation.md) "Team settings"; ADR-0068 addendum,
+the Team's Leader turns it on). Then the Owner team's members, its
+Sub-teams' members included, do what an organizer does (create, edit, move
+the status, add Entrants, write and revoke scores) except archiving and
+restoring. A member of the Team above, of a sibling Team, or another
+Team's Leader manages nothing either way. A Competition of an Event without
+an Owner team is managed by the Privileged only (ADR-0018); no setting is
+read for it. The admin panel reads `competition.manage` and
+`competition.archive` from `GET /v1/users/me/capabilities` (team scopes);
+it never decides from the token. Anonymous: `401`; anyone else: `403`.
+
+**Nobody scores themselves** (yarışma modülü A3): a score write, a
+correction or a revocation for an Entrant whose Ticket the writer owns is
+`403` with `code: own_entrant`, for a Leader and the Privileged too. Another
+organizer writes it.
+
+**Every ledger row keeps its basis:** `basis` is what its writer wrote on
+(`privileged`, `leader`, `member_setting`; `staff` is kept for Competition
+staff, ticket 26), `revokedBasis` the revoker's. Turning the setting off
+ends the members' rights; their rows stay, and still say why they were
+allowed. Rows written before the basis was kept have neither.
 
 ## Model
 
@@ -28,7 +46,7 @@ anyone else: `403`.
 | Competition | `name` (1–200), `description` (≤ 5000), `entrantMode` (`individual` only for now), `status`, `stages`, `ownerTeam` (the Event's, read-only) |
 | Stage | one per Competition for now (`position` 1, `strategy` `manual`, `config` `{}`); the panel does not show it |
 | Entrant | one Ticket of the Event (`REGISTERED` or `GUEST`); `displayName` is the person's name now, `Silinmiş kullanıcı` once their account is being deleted or a guest's name was erased |
-| Entry | one ledger row: `source` `manual`, `points`, who and when; a correction revokes the row with its reason and writes a new one that names it (`replacesId`). Nothing is edited or deleted |
+| Entry | one ledger row: `source` `manual`, `points`, who and when and on what `basis`; a correction revokes the row with its reason (and the revoker's `revokedBasis`) and writes a new one that names it (`replacesId`). Nothing is edited or deleted |
 
 **Points** are numbers with at most three decimals (`30`, `50.5`, `0.125`),
 within ±1 000 000 000. Core keeps thousandths as integers, so equal scores are
@@ -81,6 +99,7 @@ Competitions (`404`).
 | `POST /v1/competitions/{id}/cancel` | `{reason}` | `200`; no reason: `400 reason_required` |
 | `POST /v1/competitions/{id}/archive`, `/restore` | | `204`, `200` |
 | `GET /v1/competitions/{id}/entrants` | | `200` |
+| `GET /v1/competitions/{id}/entrant-candidates[?q=&checkedIn=true\|false]` | | `200` the Event's Tickets, oldest first: `[{ticketId, displayName, ticketType, checkedIn, entrant}]`. Who adds Entrants reads it (a member through the setting has no `ticket.read`); no e-mail, phone number or form answer. `q` is a part of the name (case aside, at most 100 characters), `entrant` whether the Ticket already is in an Entrant. A bad `checkedIn` is `400` |
 | `POST /v1/competitions/{id}/entrants` | `{ticketIds: [..]}` (1–500) | `201` the new Entrants; all or none: a Ticket already in the Competition is `409 ticket_taken`, a Ticket of another Event `400` |
 | `POST /v1/competitions/{id}/scores` | `{entrantId, points, replacesId?, reason?, stageId?}` | `201` the new Entry. See **Writing a score** below |
 | `POST /v1/competitions/{id}/entries/{entryId}/revoke` | `{reason}` | `200`; already revoked: `409` |
@@ -134,3 +153,9 @@ adjustments yet). The database keeps the rules on its own:
 
 The tables are new and nothing else reads them, so the release is backward
 compatible. The down migration refuses while a Competition exists.
+
+Migration `20261031120000_competition_actor_basis` adds
+`competition_submissions.actor_basis` and `revoked_basis` (one of
+`privileged`, `leader`, `member_setting`, `staff`; `NULL` on older rows) and
+lets the append-only rule write `revoked_basis` with the revocation, once.
+Its down migration takes them off and puts the rule back.

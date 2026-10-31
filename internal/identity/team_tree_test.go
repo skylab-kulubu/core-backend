@@ -196,6 +196,35 @@ func TestTeamTree_MembersManageCompetitors(t *testing.T) {
 	}
 }
 
+// The competition setting widens, so it fails closed: only "true" opens it;
+// another value, no value, a name that is not one Group's and an unread
+// tree keep the Competitions to the Leaders.
+func TestTeamTree_TeamCompetitionManage(t *testing.T) {
+	t.Parallel()
+	groups := treeGroups()
+	groups[2].Attributes = map[string]string{"team_competition_manage": " TRUE "} // WEBLAB
+	groups[4].Attributes = map[string]string{"team_competition_manage": "yes"}    // MOBIL
+	tree := NewTeamTree(&countingLister{groups: groups}, TeamTreeOptions{})
+	if !tree.TeamCompetitionManage("WEBLAB") {
+		t.Error("WEBLAB's Leader opened it")
+	}
+	for _, team := range []string{"MOBIL", "GAMELAB", "LIDERLER", "NOPE"} {
+		if tree.TeamCompetitionManage(team) {
+			t.Errorf("%s: open", team)
+		}
+	}
+	var logged []string
+	down := NewTeamTree(&countingLister{err: errors.New("down")}, TeamTreeOptions{
+		Logf: func(format string, args ...any) { logged = append(logged, format) },
+	})
+	if down.TeamCompetitionManage("WEBLAB") {
+		t.Error("an unread tree opens it")
+	}
+	if len(logged) != 1 {
+		t.Errorf("the failed read logged %d lines", len(logged))
+	}
+}
+
 // snapshotThenBlock reads the groups first, then waits: a Keycloak answer
 // that left before a write and arrives after it.
 type snapshotThenBlock struct {

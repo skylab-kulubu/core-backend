@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -35,14 +36,14 @@ func (q *PostgresQueue) Enqueue(ctx context.Context, c Change) (Enqueued, error)
 			WHERE subject_id = $2 AND group_path = $4 AND action <> $5 AND claimed_at IS NULL AND attempts = 0
 			RETURNING 1
 		), inserted AS (
-			INSERT INTO team_membership_mails (id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at, kind)
-			SELECT $1, $2, $3, $4, $5, $6, $6, $7
+			INSERT INTO team_membership_mails (id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at, kind, group_id)
+			SELECT $1, $2, $3, $4, $5, $6, $6, $7, $8
 			WHERE NOT EXISTS (SELECT 1 FROM cancelled)
 			ON CONFLICT (subject_id, group_path, action) DO NOTHING
 			RETURNING 1
 		)
 		SELECT (SELECT count(*) FROM cancelled), (SELECT count(*) FROM inserted)`,
-		c.ID, c.SubjectID, c.ActorID, c.GroupPath, string(c.Action), c.OccurredAt, string(queuedKind(c.Kind))).Scan(&cancelled, &inserted)
+		c.ID, c.SubjectID, c.ActorID, c.GroupPath, string(c.Action), c.OccurredAt, string(queuedKind(c.Kind)), groupIDOrNil(c.GroupID)).Scan(&cancelled, &inserted)
 	switch {
 	case err != nil:
 		return "", err
@@ -80,7 +81,7 @@ func (q *PostgresQueue) Claim(ctx context.Context, now time.Time, lease time.Dur
 			ORDER BY next_attempt_at, occurred_at, id
 			LIMIT $3
 			FOR UPDATE SKIP LOCKED)
-		RETURNING id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at, attempts, claimed_at, kind`,
+		RETURNING id, subject_id, actor_id, group_path, action, occurred_at, next_attempt_at, attempts, claimed_at, kind, group_id`,
 		now, now.Add(lease), limit)
 	if err != nil {
 		return nil, err
@@ -90,8 +91,12 @@ func (q *PostgresQueue) Claim(ctx context.Context, now time.Time, lease time.Dur
 	for rows.Next() {
 		var c Change
 		var action, kind string
-		if err := rows.Scan(&c.ID, &c.SubjectID, &c.ActorID, &c.GroupPath, &action, &c.OccurredAt, &c.NextAttemptAt, &c.Attempts, &c.ClaimedAt, &kind); err != nil {
+		var groupID *uuid.UUID
+		if err := rows.Scan(&c.ID, &c.SubjectID, &c.ActorID, &c.GroupPath, &action, &c.OccurredAt, &c.NextAttemptAt, &c.Attempts, &c.ClaimedAt, &kind, &groupID); err != nil {
 			return nil, err
+		}
+		if groupID != nil {
+			c.GroupID = groupID.String()
 		}
 		c.Action = Action(action)
 		c.Kind = Kind(kind)
@@ -133,3 +138,12 @@ func (q *PostgresQueue) Backlog(ctx context.Context, now time.Time) (int, time.D
 }
 
 var _ Queue = (*PostgresQueue)(nil)
+
+// groupIDOrNil is the Group id to keep: NULL for one that is no UUID.
+func groupIDOrNil(id string) *uuid.UUID {
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		return nil
+	}
+	return &parsed
+}

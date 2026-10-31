@@ -31,7 +31,7 @@ const stageCols = `id, competition_id, position, name, strategy, config, config_
 	starts_at, ends_at, created_at, updated_at`
 
 const entryCols = `id, competition_id, stage_id, entrant_id, source, value, occurred_at, recorded_at,
-	recorded_by, replaces_id, revoked_at, revoked_by, revoke_reason`
+	recorded_by, COALESCE(actor_basis, ''), replaces_id, revoked_at, revoked_by, revoke_reason, COALESCE(revoked_basis, '')`
 
 func scanCompetition(row pgx.Row) (Competition, error) {
 	var c Competition
@@ -57,7 +57,7 @@ func scanEntry(row pgx.Row) (Entry, error) {
 	var value *int64
 	var reason *string
 	err := row.Scan(&e.ID, &e.CompetitionID, &e.StageID, &e.EntrantID, &e.Source, &value, &e.OccurredAt, &e.RecordedAt,
-		&e.RecordedBy, &e.ReplacesID, &e.RevokedAt, &e.RevokedBy, &reason)
+		&e.RecordedBy, &e.Basis, &e.ReplacesID, &e.RevokedAt, &e.RevokedBy, &reason, &e.RevokedBasis)
 	if value != nil {
 		p := scoring.Points(*value)
 		e.Points = &p
@@ -307,7 +307,7 @@ func (s *PostgresStore) Entrants(ctx context.Context, competitionID uuid.UUID) (
 	rows, err := s.pool.Query(ctx, `
 		SELECT e.id, e.competition_id, e.kind, e.team_name, e.status, e.status_reason, e.created_at,
 			m.ticket_id, t.ticket_type, u.account_state, COALESCE(u.first_name, ''), COALESCE(u.last_name, ''),
-			t.guest_first_name, t.guest_last_name
+			t.guest_first_name, t.guest_last_name, t.owner_id
 		FROM competition_entrants e
 		LEFT JOIN competition_entrant_members m ON m.entrant_id = e.id
 		LEFT JOIN tickets t ON t.id = m.ticket_id
@@ -325,8 +325,9 @@ func (s *PostgresStore) Entrants(ctx context.Context, competitionID uuid.UUID) (
 		var ticketType, guestFirst, guestLast *string
 		var state *string
 		var first, last string
+		var owner *uuid.UUID
 		if err := rows.Scan(&e.ID, &e.CompetitionID, &e.Kind, &e.TeamName, &e.Status, &e.StatusReason, &e.CreatedAt,
-			&ticketID, &ticketType, &state, &first, &last, &guestFirst, &guestLast); err != nil {
+			&ticketID, &ticketType, &state, &first, &last, &guestFirst, &guestLast, &owner); err != nil {
 			return nil, err
 		}
 		if n := len(out); n == 0 || out[n-1].ID != e.ID {
@@ -344,6 +345,7 @@ func (s *PostgresStore) Entrants(ctx context.Context, competitionID uuid.UUID) (
 		cur.Members = append(cur.Members, Member{
 			TicketID: *ticketID, TicketType: *ticketType,
 			DisplayName: memberName(*ticketType, accountState, first, last, deref(guestFirst), deref(guestLast)),
+			OwnerID:     owner,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -353,6 +355,40 @@ func (s *PostgresStore) Entrants(ctx context.Context, competitionID uuid.UUID) (
 		out[i].DisplayName = entrantName(out[i])
 	}
 	return out, nil
+}
+
+func (s *PostgresStore) Candidates(ctx context.Context, competitionID, eventID uuid.UUID) ([]Candidate, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT t.id, t.ticket_type, u.account_state, COALESCE(u.first_name, ''), COALESCE(u.last_name, ''),
+			t.guest_first_name, t.guest_last_name,
+			EXISTS (SELECT 1 FROM ticket_checkins c WHERE c.ticket_id = t.id),
+			EXISTS (SELECT 1 FROM competition_entrant_members m JOIN competition_entrants e ON e.id = m.entrant_id
+				WHERE m.ticket_id = t.id AND e.competition_id = $2)
+		FROM tickets t
+		LEFT JOIN users u ON u.id = t.owner_id
+		WHERE t.event_id = $1
+		ORDER BY t.created_at, t.id`, eventID, competitionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Candidate{}
+	for rows.Next() {
+		var c Candidate
+		var state *string
+		var first, last string
+		var guestFirst, guestLast *string
+		if err := rows.Scan(&c.TicketID, &c.TicketType, &state, &first, &last, &guestFirst, &guestLast, &c.CheckedIn, &c.Entrant); err != nil {
+			return nil, err
+		}
+		var accountState user.AccountState
+		if state != nil {
+			accountState = user.AccountState(*state)
+		}
+		c.DisplayName = memberName(c.TicketType, accountState, first, last, deref(guestFirst), deref(guestLast))
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 func deref(s *string) string {
@@ -382,17 +418,18 @@ func (s *PostgresStore) SetManualScore(ctx context.Context, in ManualScore) (Ent
 		var replaces *uuid.UUID
 		if hasLive {
 			if _, err := tx.Exec(ctx, `
-				UPDATE competition_submissions SET revoked_at = now(), revoked_by = $2, revoke_reason = $3
-				WHERE id = $1`, live.ID, in.Actor, in.Reason); err != nil {
+				UPDATE competition_submissions SET revoked_at = now(), revoked_by = $2, revoke_reason = $3,
+					revoked_basis = NULLIF($4, '')
+				WHERE id = $1`, live.ID, in.Actor, in.Reason, in.Basis); err != nil {
 				return err
 			}
 			replaces = &live.ID
 		}
 		out, err = scanEntry(tx.QueryRow(ctx, `
-			INSERT INTO competition_submissions (id, competition_id, stage_id, entrant_id, source, value, recorded_by, replaces_id)
-			VALUES ($1, $2, $3, $4, 'manual', $5, $6, $7)
+			INSERT INTO competition_submissions (id, competition_id, stage_id, entrant_id, source, value, recorded_by, replaces_id, actor_basis)
+			VALUES ($1, $2, $3, $4, 'manual', $5, $6, $7, NULLIF($8, ''))
 			RETURNING `+entryCols,
-			uuid.New(), in.CompetitionID, in.StageID, in.EntrantID, int64(in.Points), in.Actor, replaces))
+			uuid.New(), in.CompetitionID, in.StageID, in.EntrantID, int64(in.Points), in.Actor, replaces, in.Basis))
 		return err
 	})
 	if isLiveScoreRace(err) {
@@ -423,11 +460,12 @@ func (s *PostgresStore) scoreChanged(ctx context.Context, in ManualScore) error 
 	return &ScoreChangedError{Current: &live}
 }
 
-func (s *PostgresStore) Revoke(ctx context.Context, competitionID, entryID uuid.UUID, actor *uuid.UUID, reason string) (Entry, error) {
+func (s *PostgresStore) Revoke(ctx context.Context, competitionID, entryID uuid.UUID, actor *uuid.UUID, basis, reason string) (Entry, error) {
 	e, err := scanEntry(s.pool.QueryRow(ctx, `
-		UPDATE competition_submissions SET revoked_at = now(), revoked_by = $3, revoke_reason = $4
+		UPDATE competition_submissions SET revoked_at = now(), revoked_by = $3, revoke_reason = $4,
+			revoked_basis = NULLIF($5, '')
 		WHERE id = $2 AND competition_id = $1 AND revoked_at IS NULL
-		RETURNING `+entryCols, competitionID, entryID, actor, reason))
+		RETURNING `+entryCols, competitionID, entryID, actor, reason, basis))
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
 		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM competition_submissions WHERE id = $2 AND competition_id = $1)`,

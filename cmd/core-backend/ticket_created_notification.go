@@ -15,13 +15,19 @@ import (
 // ticketCreatedNotificationOn reads TICKET_CREATED_NOTIFICATION
 // (docs/ticket-created-notification.md): unset or off is off, on is on.
 func ticketCreatedNotificationOn(getenv func(string) string) (bool, error) {
-	switch raw := strings.TrimSpace(getenv("TICKET_CREATED_NOTIFICATION")); raw {
+	return onOff(getenv, "TICKET_CREATED_NOTIFICATION")
+}
+
+// onOff reads an on/off switch: unset or off is off, on is on, anything
+// else is refused.
+func onOff(getenv func(string) string, name string) (bool, error) {
+	switch raw := strings.TrimSpace(getenv(name)); raw {
 	case "", "off":
 		return false, nil
 	case "on":
 		return true, nil
 	default:
-		return false, fmt.Errorf("TICKET_CREATED_NOTIFICATION must be on or off, not %q", raw)
+		return false, fmt.Errorf("%s must be on or off, not %q", name, raw)
 	}
 }
 

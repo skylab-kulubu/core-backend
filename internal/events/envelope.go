@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"mime"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -49,9 +50,54 @@ type Event struct {
 	Time time.Time
 	// Data is the event's data, as JSON.
 	Data json.RawMessage
+	// TraceParent is the W3C Trace Context of the request that caused it
+	// (CloudEvents Distributed Tracing extension); empty when the publisher
+	// sent none or an invalid one. Log lines carry its trace id, nothing
+	// stores it.
+	TraceParent string
 	// Queue it arrived on, and whether the broker delivered it before.
 	Queue       string
 	Redelivered bool
+}
+
+// TraceID is TraceParent's trace id, 32 hex digits; empty without one, or
+// when TraceParent was set by hand to something that is not one.
+func (e Event) TraceID() string {
+	if len(e.TraceParent) < 35 || e.TraceParent[2] != '-' || !traceIDFormat.MatchString(e.TraceParent[3:35]) {
+		return ""
+	}
+	return e.TraceParent[3:35]
+}
+
+// traceIDFormat is a trace id: 32 lower-case hex digits.
+var traceIDFormat = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// traceParentFormat is W3C Trace Context version 00's fields: version, trace
+// id, parent id and flags, lower-case hex.
+var traceParentFormat = regexp.MustCompile(`^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
+
+// traceParent is the extension's value when it is a valid traceparent with
+// a non-zero trace id and parent id, otherwise empty: the extension is
+// optional, so a bad one is ignored and the event is not refused. Version 00
+// is exactly 55 characters; a later version (01..fe) is read by its first 55,
+// which must be followed by nothing or a "-", and only those are kept (W3C
+// Trace Context, versioning of traceparent). Version ff is invalid.
+func traceParent(raw json.RawMessage) string {
+	var value string
+	if json.Unmarshal(raw, &value) != nil || len(value) < 55 {
+		return ""
+	}
+	head := value[:55]
+	if !traceParentFormat.MatchString(head) || head[:2] == "ff" {
+		return ""
+	}
+	if len(value) > 55 && (head[:2] == "00" || value[55] != '-') {
+		return ""
+	}
+	if head[3:35] == strings.Repeat("0", 32) || head[36:52] == strings.Repeat("0", 16) {
+		return ""
+	}
+	return head
 }
 
 // SchemaVersion is the number after DataSchema's last colon, false when
@@ -92,11 +138,15 @@ type cloudEvent struct {
 	DataSchema      string          `json:"dataschema"`
 	Data            json.RawMessage `json:"data"`
 	DataBase64      json.RawMessage `json:"data_base64"`
+	// TraceParent is raw: a value of the wrong JSON type is ignored, not
+	// a reason to refuse the event.
+	TraceParent json.RawMessage `json:"traceparent"`
 }
 
 // DecodeCloudEvent reads a CloudEvents 1.0 event in structured JSON mode
 // (ADR-0071 §5): specversion 1.0 and a non-empty id, source and type are
-// required, time when present is RFC 3339, the data is JSON. Attributes it
+// required, time when present is RFC 3339, the data is JSON. A valid
+// traceparent extension is read, an invalid one ignored. Attributes it
 // does not know are left alone. The AMQP content-type, when set, must be
 // application/cloudevents+json.
 func DecodeCloudEvent(m Message) (Event, error) {
@@ -139,7 +189,7 @@ func DecodeCloudEvent(m Message) (Event, error) {
 	}
 	event := Event{
 		ID: ce.ID, Source: ce.Source, Type: ce.Type, Subject: ce.Subject,
-		DataSchema: ce.DataSchema, Data: ce.Data,
+		DataSchema: ce.DataSchema, Data: ce.Data, TraceParent: traceParent(ce.TraceParent),
 	}
 	if ce.Time != "" {
 		at, err := time.Parse(time.RFC3339Nano, ce.Time)

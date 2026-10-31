@@ -413,6 +413,8 @@ type keptToLeaders map[string]bool
 
 func (k keptToLeaders) MembersManageCompetitors(team string) bool { return !k[team] }
 
+func (k keptToLeaders) TeamCompetitionManage(string) bool { return false }
+
 // Moving a competitor to another Event takes it out of the Event it is in:
 // who moves it writes the competitors of both. A writer of team B does not
 // move team A's competitor to B's Event, with A's setting on or off; A's

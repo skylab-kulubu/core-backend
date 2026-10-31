@@ -10,9 +10,8 @@ removes members, descendants, roles or domain records to make a deletion pass.
 
 Core's existing `TypeGroup` / `Delete` authorization decides first, before a
 directory read. This is the same Privileged `groups:manage` / `group.write`
-route family as creating and editing a Group; a reader-only DK and a delegated
-Leader cannot delete here. The delegated subtree feature of ADR 0065 ticket 05
-remains separate.
+route family as creating and editing a Group; a reader-only DK cannot delete
+here, and a Leader only a Sub-team, as below.
 
 A custom Group such as `/TANISMAYEMEGIGRUBU`, or an empty Team leaf, may be
 deleted only after these fresh checks pass:
@@ -28,6 +27,19 @@ deleted only after these fresh checks pass:
 - The parent-id chain agrees with the paths, with no slash in a name or cycle.
 - It is not a reserved/Leader Group, below a system/Leader container, a Privileged root, an ancestor or descendant
   of a Privileged root, an Area, or any Group in the `/ROLLER` tree.
+
+**A Team** (ADR 0065 ticket 05; only while `TEAM_DELEGATION` is on, off a
+Team is an empty leaf like any Group and `409 not_empty` stands): the same
+route deletes a Team with every Group under it when all of them are Sub-teams or Leader groups (a Leader
+group with a Group under it, or any other Group, refuses), nobody is in any
+of them (Leader groups included; `not_empty` counts the members and the
+Groups under it), none maps a role or is protected, and core's records name
+none of their codes (`code_in_use` with `records`, the kinds). Every code
+given up is retired in the first turn, Leader groups' aside; the second
+turn refuses (`group_tree_mismatch`) when the set of codes changed in
+between. Privileged deletes any Team so, top Teams included; a Leader (team
+delegation on) only a Sub-team they manage strictly, decided again inside
+each turn ([team-delegation.md](team-delegation.md#team-structure)).
 
 The target's name alone never grants permission or makes it safe to delete.
 The frontend uses core's `group.write`, asks for confirmation and displays core's
@@ -99,6 +111,7 @@ are on, is heard only by the preference cleanup):
 | `retired_team_codes` | code, `group_id` | retired (`deleted`) by core's deletion; not by a console deletion (the event carries no name) | untouched |
 | `team_audit_records` | `group_id`, `group_path` | audit trail | untouched |
 | `team_membership_mails`, `privilege_notice_mails` | `group_path` | pending notices (at most 72 hours), their contract above | untouched |
+| `management_membership_terms`, `management_term_mails` | `group_id`, `group_path` | open terms are ended by the next daily run ([management-membership-terms.md](management-membership-terms.md)); pending term mails (at most 72 hours) name the Group by its path | untouched |
 | `TeamTree`, `OverageGroups`, `TeamDelegation` caches | in process | refreshed within a minute | not emptied: competing consumers give the event to one replica only |
 | Delegation (ADR 0065): Leader sub-Groups, app role mappings, team profile attributes | Keycloak | gone with the Group | nothing in core |
 

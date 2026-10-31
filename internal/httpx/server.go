@@ -26,10 +26,12 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
+	"github.com/skylab-kulubu/core-backend/internal/subjectrequest"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -104,6 +106,12 @@ type Deps struct {
 	// TeamMailMetrics are the team membership mail's counters
 	// (docs/team-membership-mail.md). Nil publishes none.
 	TeamMailMetrics interface{ Prometheus() string }
+
+	// ManagementTerms keeps the management membership terms
+	// (docs/management-membership-terms.md): its metrics on /v1/metrics,
+	// the capabilities' expiredManagementMemberships and, in apply mode,
+	// the /v1/management-memberships routes. Nil serves none of them.
+	ManagementTerms *membershipterm.Service
 
 	// TeamDelegationMetrics count the client roles nobody has classified
 	// that team delegation's protection reads found
@@ -182,6 +190,10 @@ type Deps struct {
 	// (docs/github-activity.md). Nil (its settings unset) leaves
 	// /v1/dashboard/github-activity unserved: 404.
 	GithubActivity handlers.GithubActivitySource
+
+	// SubjectRequests is the register of KVKK md. 11 data subject requests
+	// (docs/subject-requests.md). Nil leaves /v1/subject-requests unserved.
+	SubjectRequests subjectrequest.Service
 
 	// Consents keeps contact consents (docs/contact-consents.md). Nil or
 	// off (CONTACT_CONSENT_KEY unset) answers its routes 503 and records
@@ -297,7 +309,7 @@ func New(deps Deps) *fiber.App {
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
 		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil ||
-		deps.EventsMetrics != nil {
+		deps.EventsMetrics != nil || deps.ManagementTerms != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -328,6 +340,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.TeamMailMetrics != nil {
 				text += deps.TeamMailMetrics.Prometheus()
+			}
+			if deps.ManagementTerms != nil {
+				text += deps.ManagementTerms.Prometheus()
 			}
 			if deps.TeamDelegationMetrics != nil {
 				text += deps.TeamDelegationMetrics.Prometheus()
@@ -469,6 +484,14 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/dashboard/github-activity", handlers.NewGithubActivityHandler(deps.GithubActivity).Get)
 	}
 
+	if deps.SubjectRequests != nil {
+		requests := handlers.NewSubjectRequestHandler(deps.SubjectRequests)
+		app.Get("/v1/subject-requests", requests.List)
+		app.Post("/v1/subject-requests", requests.Create)
+		app.Get("/v1/subject-requests/:id", requests.Get)
+		app.Patch("/v1/subject-requests/:id", requests.Update)
+	}
+
 	app.Get("/v1/users/me/consents", consents.Mine)
 	app.Post("/v1/users/me/consents", consents.GrantMine)
 	app.Delete("/v1/users/me/consents/:purpose", consents.WithdrawMine)
@@ -492,9 +515,14 @@ func New(deps Deps) *fiber.App {
 		if deps.ManagedTeams != nil {
 			capabilities.WithManagedTeams(deps.ManagedTeams)
 		}
+		if deps.ManagementTerms != nil {
+			capabilities.WithExpiredMemberships(deps.ManagementTerms)
+		}
 		app.Get("/v1/users/me/capabilities", capabilities.Get)
 	}
 	app.Get("/v1/users/me/managed-groups", ident.ManagedGroups)
+	// The Team audit record, for the audit:read role (docs/team-audit.md).
+	app.Get("/v1/team-audit-records", ident.TeamAuditRecords)
 	app.Post("/v1/users/me/profile-picture", limitUploads, me.ProfilePicture)
 	app.Delete("/v1/users/me/profile-picture", me.DeleteProfilePicture)
 	app.Get("/v1/users", ident.ListUsers)
@@ -513,6 +541,13 @@ func New(deps Deps) *fiber.App {
 	app.Patch("/v1/groups/:groupId", ident.UpdateGroup)
 	app.Delete("/v1/groups/:groupId", ident.DeleteGroup)
 	app.Put("/v1/groups/:groupId/settings", ident.SetTeamSettings)
+	app.Post("/v1/groups/:groupId/children", ident.CreateSubTeam)
+	app.Put("/v1/groups/:groupId/code", ident.ChangeTeamCode)
+	app.Get("/v1/groups/:groupId/leaders", ident.TeamLeaders)
+	app.Post("/v1/groups/:groupId/leaders", ident.AddTeamLeader)
+	app.Delete("/v1/groups/:groupId/leaders/:userId", ident.RemoveTeamLeader)
+	app.Post("/v1/groups/:groupId/move", ident.MoveTeam)
+	app.Get("/v1/groups/:groupId/move-preview", ident.MoveTeamPreview)
 	app.Get("/v1/groups/:groupId/members", ident.Members)
 	app.Get("/v1/groups/:groupId/member-candidates", ident.MemberCandidates)
 	app.Get("/v1/groups/:groupId/member-check/:userId", ident.MemberCheck)
@@ -520,6 +555,16 @@ func New(deps Deps) *fiber.App {
 	app.Delete("/v1/groups/:groupId/members/:userId", ident.RemoveMember)
 	app.Get("/v1/groups/:groupId/client-roles", ident.GroupClientRoles)
 	app.Put("/v1/groups/:groupId/client-roles", ident.SetGroupClientRoles)
+
+	// Management membership terms (docs/management-membership-terms.md):
+	// served only while they are kept (MANAGEMENT_TERMS_MODE=apply).
+	if deps.ManagementTerms != nil && deps.ManagementTerms.Mode() == membershipterm.ModeApply {
+		terms := handlers.NewManagementTermsHandler(deps.ManagementTerms)
+		app.Get("/v1/management-memberships", terms.List)
+		app.Post("/v1/management-memberships/:termId/extend", terms.Extend)
+		app.Post("/v1/management-memberships/:termId/handover", terms.Handover)
+		app.Delete("/v1/management-memberships/:termId", terms.Remove)
+	}
 
 	if deps.AppAssignments {
 		apps := handlers.NewAppsHandler(deps.Identity)
@@ -535,9 +580,12 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/dashboard/summary", handlers.NewDashboardHandler(deps.Dashboard).Summary)
 	}
 
-	app.Get("/v1/teams", teams.List)
-	app.Get("/v1/teams/:team/members", teams.Members)
-	app.Get("/v1/teams/:team/leaders", teams.Leaders)
+	// The team routes are public and each read reaches Keycloak: one budget
+	// per client address for the three (perClientLimit).
+	teamsLimit := perClientLimit(trustedProxies)
+	app.Get("/v1/teams", teamsLimit, teams.List)
+	app.Get("/v1/teams/:team/members", teamsLimit, teams.Members)
+	app.Get("/v1/teams/:team/leaders", teamsLimit, teams.Leaders)
 
 	app.Get("/v1/events", events.List)
 	app.Get("/v1/events/active", events.ListActive)
@@ -692,6 +740,7 @@ func New(deps Deps) *fiber.App {
 		app.Post("/v1/competitions/:id/restore", comps.Restore)
 		app.Get("/v1/competitions/:id/entrants", comps.Entrants)
 		app.Post("/v1/competitions/:id/entrants", comps.AddEntrants)
+		app.Get("/v1/competitions/:id/entrant-candidates", comps.EntrantCandidates)
 		app.Post("/v1/competitions/:id/scores", comps.SetScore)
 		app.Get("/v1/competitions/:id/entries", comps.Entries)
 		app.Post("/v1/competitions/:id/entries/:entryId/revoke", comps.RevokeEntry)

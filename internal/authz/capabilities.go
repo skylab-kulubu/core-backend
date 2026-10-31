@@ -65,6 +65,9 @@ var teamAbilities = []ability{
 	{"competitor.update", Resource{Type: TypeCompetitor}, Update},
 	{"competitor.delete", Resource{Type: TypeCompetitor}, Delete},
 	{"competition.manage", Resource{Type: TypeCompetition}, Update},
+	// Archive and restore: the organizer's, not the members' whom the
+	// Team's setting lets manage (docs/competitions.md "Who").
+	{"competition.archive", Resource{Type: TypeCompetition}, Delete},
 	{"certificate.read", Resource{Type: TypeCertificate}, Read},
 	{"certificate.issue", Resource{Type: TypeCertificate}, Issue},
 	{"certificate.revoke", Resource{Type: TypeCertificate}, Revoke},
@@ -102,6 +105,9 @@ var appAbilities = []ability{
 	{"formLink.write", Resource{Type: TypeFormLink}, Update},
 	{"githubActivity.read", Resource{Type: TypeGithubActivity}, Read},
 	{"audit.read", Resource{Type: TypeTeamAudit}, Read},
+	// The KVKK md. 11 register (docs/subject-requests.md): ADMIN and YK,
+	// never a Privileged reader.
+	{"subjectRequest.manage", Resource{Type: TypeSubjectRequest}, Update},
 	// App assignments (docs/app-assignments.md): false while the routes
 	// are off (APP_ASSIGNMENTS).
 	{"apps.read", Resource{Type: TypeAppAssignment}, Read},
