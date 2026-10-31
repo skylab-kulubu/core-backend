@@ -34,6 +34,7 @@ func (d *TeamDelegation) TreeFor(ctx context.Context, userID uuid.UUID, privileg
 	}
 	d.mu.Lock()
 	entry, ok := d.trees[userID]
+	generation := d.generation
 	d.mu.Unlock()
 	if ok && entry.privileged == privileged && entry.write == write && d.options.Now().Before(entry.expires) {
 		return entry.nodes, nil
@@ -50,9 +51,9 @@ func (d *TeamDelegation) TreeFor(ctx context.Context, userID uuid.UUID, privileg
 	if err != nil {
 		return nil, err
 	}
-	d.mu.Lock()
-	d.trees[userID] = treeEntry{nodes: nodes, privileged: privileged, write: write, expires: d.options.Now().Add(d.options.TTL)}
-	d.mu.Unlock()
+	d.keep(generation, func() {
+		d.trees[userID] = treeEntry{nodes: nodes, privileged: privileged, write: write, expires: d.options.Now().Add(d.options.TTL)}
+	})
 	return nodes, nil
 }
 
