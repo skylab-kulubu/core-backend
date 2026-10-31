@@ -184,3 +184,103 @@ func TestListenerForgetsEveryoneWhenItListensAgain(t *testing.T) {
 		t.Fatalf("after listening again: cached=%v err=%v", cached, err)
 	}
 }
+
+// startTeamReplica is one core process with every cache the identity
+// service keeps of Groups, listening through Postgres.
+func startTeamReplica(t *testing.T, ctx context.Context, dir *identity.Memory, pool *pgxpool.Pool) (identity.Service, *identity.TeamDelegation, *identity.TeamTree, chan struct{}) {
+	t.Helper()
+	groups := identity.NewOverageGroups(dir, identity.OverageOptions{})
+	listening := make(chan struct{}, 8)
+	shared := identity.NewSharedGroupCache(groups, pool, identity.ListenConnect(pool), identity.SharedGroupCacheOptions{
+		Logf:      t.Logf,
+		Retry:     20 * time.Millisecond,
+		Listening: func() { listening <- struct{}{} },
+	})
+	teamTree := identity.NewTeamTree(dir, identity.TeamTreeOptions{})
+	delegation := identity.NewTeamDelegation(onPolicy(), dir, dir, identity.TeamDelegationOptions{})
+	az := authz.NewAuthorizer(onPolicy(), authz.WithTeamTree(teamTree), authz.WithTeamSettings(teamTree))
+	svc := identity.NewServiceWithOptions(dir, user.NewMemoryStore(), az, identity.Options{
+		GroupCache: shared, TeamTree: teamTree, Delegation: delegation,
+	})
+	runCtx, stop := context.WithCancel(ctx)
+	done := shared.Run(runCtx)
+	t.Cleanup(func() { stop(); <-done })
+	select {
+	case <-listening:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the replica never listened")
+	}
+	return svc, delegation, teamTree, listening
+}
+
+func eventually(t *testing.T, what string, fresh func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !fresh() {
+		if time.Now().After(deadline) {
+			t.Fatal(what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A Team's settings and a Leader's membership written through one core
+// process reach the other's Owner team tree and team delegation through
+// Postgres: their next decisions are fresh (horizontal-scale ticket 38).
+func TestTeamWritesOnOneReplicaReachTheOthersDecisions(t *testing.T) {
+	pool := testpostgres.Start(t)
+	ctx := context.Background()
+	dir, leader, weblab := delegationRealm(t)
+	writer, _, _, _ := startTeamReplica(t, ctx, dir, pool)
+	_, delegation, teamTree, _ := startTeamReplica(t, ctx, dir, pool)
+
+	if !teamTree.MembersManageCompetitors("WEBLAB") {
+		t.Fatal("before the write the Team's members do not manage competitors")
+	}
+	if _, err := writer.SetTeamSettings(ctx, privileged(), weblab, identity.TeamSettings{MembersManageCompetitors: false}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the other replica still decides by the setting from before the write", func() bool {
+		return !teamTree.MembersManageCompetitors("WEBLAB")
+	})
+
+	if teams, _, err := delegation.ManagedTeams(ctx, leader); err != nil || len(teams) != 1 {
+		t.Fatalf("before the write: %+v %v", teams, err)
+	}
+	if err := writer.RemoveMember(ctx, privileged(), leaderGroupID(t, dir), leader); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the other replica still lets the Leader lead", func() bool {
+		teams, _, err := delegation.ManagedTeams(ctx, leader)
+		return err == nil && len(teams) == 0
+	})
+}
+
+// Listening again forgets the joined caches too: a write missed while the
+// connection was down is not decided by.
+func TestListenerForgetsTheServiceCachesWhenItListensAgain(t *testing.T) {
+	pool := testpostgres.Start(t)
+	ctx := context.Background()
+	dir, leader, _ := delegationRealm(t)
+	_, delegation, _, listening := startTeamReplica(t, ctx, dir, pool)
+	if _, _, err := delegation.ManagedTeams(ctx, leader); err != nil {
+		t.Fatal(err)
+	}
+	if _, cached, _ := delegation.ManagedTeams(ctx, leader); !cached {
+		t.Fatal("not kept before the break")
+	}
+
+	tag, err := pool.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+		WHERE pid <> pg_backend_pid() AND datname = current_database() AND query = 'LISTEN '||$1::text`, identity.GroupsChangedChannel)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("terminate the listener: %v %v", tag, err)
+	}
+	select {
+	case <-listening:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the replica did not listen again")
+	}
+	if _, cached, err := delegation.ManagedTeams(ctx, leader); err != nil || cached {
+		t.Fatalf("after listening again: cached=%v err=%v", cached, err)
+	}
+}

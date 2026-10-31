@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,6 +73,10 @@ type SharedGroupCacheOptions struct {
 // again it first forgets everyone: a write it missed is not answered from
 // before it. Payload: "<origin> <user id>" or "<origin> *". The channel
 // carries a Keycloak id, never a name or a path.
+//
+// What another process says, and listening again, also reach the caches
+// joined to it (Join): the identity service's team delegation, Owner team
+// tree, seat search and app counts (horizontal-scale ticket 38).
 type SharedGroupCache struct {
 	local     GroupCache
 	notify    Notifier
@@ -80,6 +85,9 @@ type SharedGroupCache struct {
 	logf      func(string, ...any)
 	retry     time.Duration
 	listening func()
+
+	mu     sync.Mutex
+	joined []GroupCache
 }
 
 func NewSharedGroupCache(local GroupCache, notify Notifier, connect func(context.Context) (*pgx.Conn, error), options SharedGroupCacheOptions) *SharedGroupCache {
@@ -109,6 +117,42 @@ func (c *SharedGroupCache) Forget(userID uuid.UUID) {
 func (c *SharedGroupCache) ForgetAll() {
 	c.local.ForgetAll()
 	c.tell("*")
+}
+
+// Join adds more of this process's caches to what the other processes'
+// words, and listening again, forget. Forget and ForgetAll here leave them
+// alone: the writer forgets what its write changed itself.
+func (c *SharedGroupCache) Join(more GroupCache) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.joined = append(c.joined, more)
+}
+
+// ForgetAllElsewhere tells the other processes to forget everyone and
+// forgets nothing here: for a write after which this process forgets only
+// some of its caches (a Team's settings, a role mapping, an app
+// assignment).
+func (c *SharedGroupCache) ForgetAllElsewhere() {
+	c.tell("*")
+}
+
+// here is every cache of this process the other processes' words reach.
+func (c *SharedGroupCache) here() []GroupCache {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]GroupCache{c.local}, c.joined...)
+}
+
+func (c *SharedGroupCache) forgetHere(userID uuid.UUID) {
+	for _, cache := range c.here() {
+		cache.Forget(userID)
+	}
+}
+
+func (c *SharedGroupCache) forgetAllHere() {
+	for _, cache := range c.here() {
+		cache.ForgetAll()
+	}
 }
 
 // tell is best effort: a process that does not hear it answers from its
@@ -165,7 +209,7 @@ func (c *SharedGroupCache) listen(ctx context.Context) (bool, error) {
 	if _, err := conn.Exec(ctx, "LISTEN "+GroupsChangedChannel); err != nil {
 		return false, err
 	}
-	c.local.ForgetAll()
+	c.forgetAllHere()
 	if c.listening != nil {
 		c.listening()
 	}
@@ -213,10 +257,10 @@ func (c *SharedGroupCache) apply(payload string) {
 		return
 	}
 	if target == "*" {
-		c.local.ForgetAll()
+		c.forgetAllHere()
 		return
 	}
 	if id, err := uuid.Parse(target); err == nil {
-		c.local.Forget(id)
+		c.forgetHere(id)
 	}
 }

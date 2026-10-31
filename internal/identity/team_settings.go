@@ -33,7 +33,8 @@ func TeamSettingsOf(g Group) TeamSettings {
 // a group.attributes row of the Team audit record, a refusal a denied row.
 // Only a Team takes settings (not a Leader group, an area or a root): 400.
 // The kept Owner team tree is forgotten, so the decisions follow at once in
-// this process (another core within a minute).
+// this process and, told through Postgres, at the next decision in the
+// others (within a minute if they did not hear it).
 func (s *service) SetTeamSettings(ctx context.Context, p authz.Principal, groupRef string, settings TeamSettings) (TeamSettings, error) {
 	apply := func(ctx context.Context, g Group) (TeamSettings, error) {
 		if !s.isTeam(g.Path) {
@@ -81,8 +82,11 @@ func (s *service) isTeam(path string) bool {
 	return ok && role == "" && team == path
 }
 
+// forgetTeamTree forgets the kept tree here and tells the other core
+// processes to forget theirs.
 func (s *service) forgetTeamTree() {
 	if s.teamTree != nil {
 		s.teamTree.ForgetAll()
 	}
+	s.forgetAllElsewhere()
 }
