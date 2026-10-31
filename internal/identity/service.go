@@ -83,6 +83,9 @@ type Service interface {
 	UnassignApp(ctx context.Context, p authz.Principal, clientID string, in AppAssignmentInput) error
 	AppAudit(ctx context.Context, p authz.Principal, clientID string) ([]AppAuditEntry, error)
 	AppTargets(ctx context.Context, p authz.Principal, clientID, kind, q string) ([]AppTarget, error)
+	// TeamAuditRecords is a page of the Team audit record
+	// (docs/team-audit.md, ticket 10).
+	TeamAuditRecords(ctx context.Context, p authz.Principal, q AuditQuery) (AuditPage, error)
 }
 
 type service struct {
@@ -108,6 +111,7 @@ type service struct {
 	seats                 *seatCache
 	apps                  []authz.App
 	appAudit              teamaudit.AppReader
+	auditRecords          teamaudit.Reader
 	appAssignments        bool
 	appStats              *appStatsCache
 	teamPage              *TeamPageVisibility
@@ -182,6 +186,9 @@ type Options struct {
 	// app's audit tab, who assigned what when). Nil reads none: the list
 	// says no row for any assignment.
 	AppAudit teamaudit.AppReader
+	// AuditRecords reads the Team audit record for its reading route
+	// (GET /v1/team-audit-records). Nil reads none: every page is empty.
+	AuditRecords teamaudit.Reader
 	// AppAssignments is APP_ASSIGNMENTS: on, the app roles of a Team, a
 	// Sub-team and a Leader group are the panel's (POST and DELETE
 	// /v1/apps/{clientId}/assignments), and SetGroupClientRoles refuses to
@@ -274,6 +281,7 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		seats:                 newSeatCache(options.Now),
 		apps:                  options.Apps,
 		appAudit:              options.AppAudit,
+		auditRecords:          options.AuditRecords,
 		appAssignments:        options.AppAssignments,
 		appStats:              newAppStatsCache(options.Now),
 		teamPage:              options.TeamPage,

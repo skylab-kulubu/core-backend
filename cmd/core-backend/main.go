@@ -1058,6 +1058,7 @@ func main() {
 		NoMemberSeatSearch:    !memberSeatSearch,
 		Apps:                  apps,
 		AppAudit:              teamAudit,
+		AuditRecords:          teamAudit,
 		AppAssignments:        appAssignments,
 		TeamPage:              &identity.TeamPageVisibility{Consents: consents, GraceUntil: teamPageGraceUntil},
 	})
