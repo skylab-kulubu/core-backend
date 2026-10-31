@@ -75,6 +75,7 @@ type delegationEnv struct {
 	ids    map[string]string    // Group path → id
 	people map[string]uuid.UUID // name → subject
 	tree   *countingTree        // with delegationSetup.teamTree
+	codes  *teamcode.MemoryLedger
 }
 
 // countingTree is identity.TeamTree counting its ForgetAll calls.
@@ -105,6 +106,12 @@ type delegationSetup struct {
 	searches  int
 	mode      authz.RoleMode // AUTHZ_ROLE_MODE; empty is groups
 	teamTree  bool           // the Owner team tree and Team settings, as main wires them
+	reads     bool           // the audit record's reading route reads the rows written
+	// leaderCodes is TEAM_DELEGATION_LEADER_CODES=on: Leaders change
+	// Sub-team codes too. Off (the default), only Privileged does.
+	leaderCodes bool
+	// The Team structure limits; zero is the default.
+	depth, pathLen, subTeams int
 }
 
 func newDelegationEnv(t *testing.T, setup delegationSetup) *delegationEnv {
@@ -143,11 +150,16 @@ func newDelegationEnv(t *testing.T, setup delegationSetup) *delegationEnv {
 	}
 	policy := authz.DefaultPolicy()
 	policy.TeamDelegation = setup.on
+	policy.LeaderTeamCodes = setup.leaderCodes
 	if setup.mode != "" {
 		policy.RoleMode = setup.mode
 	}
 	az := authz.NewAuthorizer(policy)
-	options := identity.Options{TeamCodes: teamcode.NewMemoryLedger(), TeamAudit: e.audit, Membership: e.heard}
+	e.codes = teamcode.NewMemoryLedger()
+	options := identity.Options{TeamCodes: e.codes, TeamAudit: e.audit, Membership: e.heard}
+	if setup.reads {
+		options.AuditRecords = e.audit
+	}
 	if setup.teamTree {
 		e.tree = &countingTree{TeamTree: identity.NewTeamTree(e.dir, identity.TeamTreeOptions{})}
 		az = authz.NewAuthorizer(policy, authz.WithTeamTree(e.tree), authz.WithTeamSettings(e.tree))
@@ -157,6 +169,7 @@ func newDelegationEnv(t *testing.T, setup delegationSetup) *delegationEnv {
 	if !setup.none {
 		delegation = identity.NewTeamDelegation(policy, e.dir, e.dir, identity.TeamDelegationOptions{
 			WritesPerMinute: setup.writes, GroupLimit: setup.groupsCap, SearchesPerMinute: setup.searches,
+			SubTeamDepth: setup.depth, TeamPathLen: setup.pathLen, SubTeams: setup.subTeams,
 		})
 		options.Delegation = delegation
 	}

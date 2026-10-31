@@ -184,13 +184,19 @@ func (d *TeamDelegation) subtree(ctx context.Context, manager authz.TeamManager,
 	if err != nil {
 		return ManagedNode{}, err
 	}
+	manages, strict := d.policy.Manages(manager, target).Allowed, d.policy.ManagesStrict(manager, target).Allowed
 	node := ManagedNode{
 		ID: team.ID, Code: team.Name, Path: team.Path, DisplayName: displayName(full),
 		MemberCount: len(members), Protected: target.Protected,
 		Can: map[string]bool{
-			"group.read":    readAll || d.policy.Manages(manager, target).Allowed,
-			"members.write": d.policy.ManagesMembership(manager, target).Allowed,
-			"leaders.write": d.policy.ManagesStrict(manager, target).Allowed,
+			"group.read":     readAll || manages,
+			"members.write":  d.policy.ManagesMembership(manager, target).Allowed,
+			"leaders.write":  strict,
+			"subteams.write": manages,
+			"code.write":     d.policy.ChangesTeamCode(manager, target).Allowed,
+			"team.delete":    strict,
+			"team.move":      strict,
+			"team.settings":  manages,
 		},
 		Children: []ManagedNode{},
 	}

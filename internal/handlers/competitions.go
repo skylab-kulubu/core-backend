@@ -27,6 +27,8 @@ func competitionError(c fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
+	case errors.Is(err, competition.ErrOwnEntrant):
+		return problemDetailCode(c, fiber.StatusForbidden, "Forbidden", "nobody writes the score of an entrant they are in", "own_entrant")
 	case errors.Is(err, competition.ErrForbidden):
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, competition.ErrNotFound):
@@ -226,6 +228,24 @@ func (h *CompetitionHandler) AddEntrants(c fiber.Ctx) error {
 func (h *CompetitionHandler) Entrants(c fiber.Ctx) error {
 	return h.withCompetition(c, func(p authz.Principal, id uuid.UUID) (any, int, error) {
 		list, err := h.svc.Entrants(c.Context(), p, id)
+		return list, fiber.StatusOK, err
+	})
+}
+
+// EntrantCandidates answers GET
+// /v1/competitions/{id}/entrant-candidates?q=&checkedIn=true|false: the
+// Event's Tickets an organizer may add, by name, without contact details.
+func (h *CompetitionHandler) EntrantCandidates(c fiber.Ctx) error {
+	filter := competition.CandidateFilter{Query: c.Query("q")}
+	if raw := c.Query("checkedIn"); raw != "" {
+		if raw != "true" && raw != "false" {
+			return badRequest(c)
+		}
+		checkedIn := raw == "true"
+		filter.CheckedIn = &checkedIn
+	}
+	return h.withCompetition(c, func(p authz.Principal, id uuid.UUID) (any, int, error) {
+		list, err := h.svc.EntrantCandidates(c.Context(), p, id, filter)
 		return list, fiber.StatusOK, err
 	})
 }

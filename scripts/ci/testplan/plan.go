@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -125,7 +126,9 @@ func (t Timings) write(file string) error {
 }
 
 // testNames are the top-level tests, fuzz tests and examples `go test` runs
-// in the package in dir, by its _test.go files.
+// in the package in dir, by its _test.go files. A file a build constraint
+// leaves out (an opt-in integration test behind a tag) is not counted: a part
+// planned for its tests alone would run nothing.
 func testNames(dir string) ([]string, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
 	if err != nil {
@@ -134,6 +137,11 @@ func testNames(dir string) ([]string, error) {
 	seen := map[string]bool{}
 	fset := token.NewFileSet()
 	for _, file := range files {
+		if match, err := build.Default.MatchFile(dir, filepath.Base(file)); err != nil {
+			return nil, err
+		} else if !match {
+			continue
+		}
 		parsed, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
 		if err != nil {
 			return nil, err

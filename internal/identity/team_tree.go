@@ -123,6 +123,19 @@ func (t *TeamTree) MembersManageCompetitors(team string) bool {
 	return authz.MembersManageCompetitorsValue(g.Attributes[authz.TeamAttrMembersManageCompetitors])
 }
 
+// TeamCompetitionManage is the Team setting of the one Group named team
+// (authz.TeamAttrCompetitionManage): true only when it says "true"; false
+// when it says anything else, or the Group cannot be found or the tree read
+// (the default: a widening setting fails closed; the read failure is
+// logged by read).
+func (t *TeamTree) TeamCompetitionManage(team string) bool {
+	g, ok := t.only(team)
+	if !ok {
+		return false
+	}
+	return authz.CompetitionManageValue(g.Attributes[authz.TeamAttrCompetitionManage])
+}
+
 // ForgetAll drops the kept tree: core's own write of a Team's setting or
 // name is seen at the next decision. A read already running when it is
 // called may have read Keycloak before the write: its answer goes only to

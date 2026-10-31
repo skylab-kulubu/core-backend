@@ -432,6 +432,75 @@ func (k *Keycloak) CreateGroup(ctx context.Context, parentRef, name string) (Gro
 	return groupFrom(fresh), nil
 }
 
+// CreateSubgroup is POST /groups/{parentID}/children with the name and
+// the attributes, then the new Group read by the id Keycloak answered.
+func (k *Keycloak) CreateSubgroup(ctx context.Context, parentID, name string, attributes map[string]string) (Group, error) {
+	if _, err := uuid.Parse(parentID); err != nil {
+		return Group{}, ErrNotFound
+	}
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return Group{}, err
+	}
+	id, err := k.gc.CreateChildGroup(ctx, token, k.realm, parentID, gocloak.Group{Name: &name, Attributes: attrsToKC(attributes)})
+	if err != nil {
+		return Group{}, mapKCErr(err)
+	}
+	fresh, err := k.gc.GetGroup(ctx, token, k.realm, id)
+	if err != nil {
+		return Group{}, mapKCErr(err)
+	}
+	return groupFrom(fresh), nil
+}
+
+// MoveGroup moves the Group id under parentID (the realm's top when "")
+// with Keycloak's own move: the child endpoint given the existing Group's
+// id and name (Keycloak requires the name; it does not rename). The Group
+// is read again by its id.
+func (k *Keycloak) MoveGroup(ctx context.Context, id, parentID string) (Group, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return Group{}, ErrNotFound
+	}
+	if _, err := uuid.Parse(parentID); err != nil && parentID != "" {
+		return Group{}, ErrNotFound
+	}
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return Group{}, err
+	}
+	existing, err := k.gc.GetGroup(ctx, token, k.realm, id)
+	if err != nil {
+		return Group{}, mapKCErr(err)
+	}
+	target := k.adminBase + "/admin/realms/" + url.PathEscape(k.realm) + "/groups"
+	if parentID != "" {
+		target += "/" + url.PathEscape(parentID) + "/children"
+	}
+	resp, err := k.gc.GetRequestWithBearerAuth(ctx, token).
+		SetBody(map[string]string{"id": id, "name": gocloak.PString(existing.Name)}).
+		Post(target)
+	if err != nil {
+		var addressed *url.Error
+		if errors.As(err, &addressed) {
+			err = addressed.Err
+		}
+		return Group{}, fmt.Errorf("identity: keycloak group move failed: %w", err)
+	}
+	switch {
+	case resp.StatusCode() == http.StatusNotFound:
+		return Group{}, ErrNotFound
+	case resp.StatusCode() == http.StatusConflict:
+		return Group{}, &gocloak.APIError{Code: http.StatusConflict, Message: "group move conflicts"}
+	case resp.IsError():
+		return Group{}, &gocloak.APIError{Code: resp.StatusCode(), Message: "group move failed"}
+	}
+	fresh, err := k.gc.GetGroup(ctx, token, k.realm, id)
+	if err != nil {
+		return Group{}, mapKCErr(err)
+	}
+	return groupFrom(fresh), nil
+}
+
 func (k *Keycloak) UpdateGroup(ctx context.Context, g Group) (Group, error) {
 	token, err := k.accessToken(ctx)
 	if err != nil {

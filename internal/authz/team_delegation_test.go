@@ -170,6 +170,49 @@ func TestManagesStrict(t *testing.T) {
 	}
 }
 
+// A code change is Privileged's unless LeaderTeamCodes is on: a Leader who
+// manages the Sub-team strictly is refused with its own code (and the
+// decision's basis and Team, for the denied row); every other answer is
+// ManagesStrict's.
+func TestChangesTeamCode(t *testing.T) {
+	t.Parallel()
+	p := delegationOn()
+	if got := p.ChangesTeamCode(TeamManager{Privileged: true}, target("wf", false)); !got.Allowed {
+		t.Errorf("Privileged: %+v", got)
+	}
+	got := p.ChangesTeamCode(leaderIn("wl"), target("wf", false))
+	if got.Allowed || got.Refusal != RefusalTeamCodePrivilegedOnly || got.Basis != ManageBasisLeader || got.ViaTeamID == "" {
+		t.Errorf("a Leader of the Team above, off: %+v", got)
+	}
+	if got := p.ChangesTeamCode(leaderIn("wl"), target("w", false)); got.Allowed || got.Refusal != "" {
+		t.Errorf("their own Team: %+v", got)
+	}
+	if got := p.ChangesTeamCode(leaderIn("wl"), target("wf", true)); got.Allowed || got.Refusal != RefusalProtectedGroup {
+		t.Errorf("a protected Sub-team: %+v", got)
+	}
+	p.LeaderTeamCodes = true
+	if got := p.ChangesTeamCode(leaderIn("wl"), target("wf", false)); !got.Allowed || got.Basis != ManageBasisLeader {
+		t.Errorf("a Leader of the Team above, on: %+v", got)
+	}
+	if got := p.ChangesTeamCode(leaderIn("wl"), target("w", false)); got.Allowed {
+		t.Errorf("their own Team, on: %+v", got)
+	}
+}
+
+func TestParseLeaderTeamCodes(t *testing.T) {
+	t.Parallel()
+	for raw, want := range map[string]bool{"": false, "off": false, " on ": true} {
+		if got, err := ParseLeaderTeamCodes(raw); err != nil || got != want {
+			t.Errorf("%q: %v %v", raw, got, err)
+		}
+	}
+	for _, raw := range []string{"true", "ON", "1"} {
+		if _, err := ParseLeaderTeamCodes(raw); err == nil || !strings.Contains(err.Error(), LeaderTeamCodesEnv) {
+			t.Errorf("%q: %v", raw, err)
+		}
+	}
+}
+
 // The membership rule: a Team's by Manages, a Leader group's by
 // ManagesStrict of its Team. Nobody makes themselves a Leader, or leaves
 // their Team without one, through the members routes.

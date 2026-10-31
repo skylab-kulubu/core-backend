@@ -24,6 +24,10 @@ var (
 	// ErrScoreChanged is a score write whose caller did not see the live
 	// score: another write got in first. Nothing is written.
 	ErrScoreChanged = errors.New("competition: the score changed")
+	// ErrOwnEntrant is a score write or revocation for an Entrant the
+	// writer is in: nobody scores themselves, a Leader or Privileged
+	// neither (yarışma modülü A3).
+	ErrOwnEntrant = errors.New("competition: the writer is in the entrant")
 	// ErrUnknownEntrant and ErrUnknownStage are a score for an Entrant or
 	// Stage that is not an active one of this Competition.
 	ErrUnknownEntrant = fmt.Errorf("%w: not an active entrant of this competition", ErrInvalid)
@@ -75,11 +79,14 @@ type Store interface {
 	// nothing is written (ScoreChangedError).
 	SetManualScore(ctx context.Context, in ManualScore) (Entry, error)
 	// Revoke revokes a live ledger row of the Competition (ErrConflict when
-	// it already is).
-	Revoke(ctx context.Context, competitionID, entryID uuid.UUID, actor *uuid.UUID, reason string) (Entry, error)
+	// it already is), keeping the revoker's basis.
+	Revoke(ctx context.Context, competitionID, entryID uuid.UUID, actor *uuid.UUID, basis, reason string) (Entry, error)
 	// Entries are the Competition's ledger rows, revoked ones included,
 	// oldest first.
 	Entries(ctx context.Context, competitionID uuid.UUID) ([]Entry, error)
+	// Candidates are the Tickets of the Event, oldest first, as Candidate
+	// says, the Competition's Entrants marked.
+	Candidates(ctx context.Context, competitionID, eventID uuid.UUID) ([]Candidate, error)
 }
 
 // checkLive is SetManualScore's rule, the same in every store: whether the

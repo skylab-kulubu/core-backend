@@ -45,7 +45,7 @@ click list and a form's channel statistics keep looking 90 days back
 clicks turn 90 days old. Until apply it is the clicks of the last 90 days;
 from apply on it only grows, counting every click since then.
 
-## Rules (rule set v7)
+## Rules (rule set v9)
 
 "Event end" is the Event's `end_date`, else its last day's `end_date`, else
 its `start_date` (ADR-0062). For `guest_identity`, an Event with none of them
@@ -138,6 +138,18 @@ The tracking preference's audit trail ([`communication-preferences.md`](communic
 | Rule | Selects | Period | Action |
 |---|---|---|---|
 | `tracking_changes_age` | a `communication_tracking_changes` row, on or off | `TrackingChangesPeriod`, 3 years after `changed_at` | row deleted; the person's tracking preference stays |
+
+The KVKK md. 11 data subject requests ([`subject-requests.md`](subject-requests.md); rule set v8):
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `subject_requests_age` | a `subject_requests` row answered or rejected | `SubjectRequestPeriod`, 3 years after `answered_on` (a day: due once it lies before the cutoff's day) | row deleted with its `subject_request_events`; an open request is never selected |
+
+The management membership terms ([`management-membership-terms.md`](management-membership-terms.md#data); rule set v9, Yusuf 2026-10-31):
+
+| Rule | Selects | Period | Action |
+|---|---|---|---|
+| `management_terms_age` | a `management_membership_terms` row whose membership ended (`ended_at` set: removed through core, handed over, or found gone from Keycloak) | `ManagementTermPeriod`, 3 years after `ended_at` | row deleted; an open term, expired or not (its holder is still in the Group), is never selected. The Team audit rows of the term go by `team_audit_age` |
 
 ## Schedule, lock and periods
 

@@ -84,6 +84,12 @@ services:
       # Feedback mails (docs/event-feedback.md), the same way.
       SKYMAIL_FEEDBACK_REQUEST_TEMPLATE_KEY: ${SKYMAIL_FEEDBACK_REQUEST_TEMPLATE_KEY-core.feedback-request}
       SKYMAIL_FEEDBACK_REMINDER_TEMPLATE_KEY: ${SKYMAIL_FEEDBACK_REMINDER_TEMPLATE_KEY-core.feedback-reminder}
+      # Management membership terms (docs/management-membership-terms.md).
+      MANAGEMENT_TERMS_MODE: ${MANAGEMENT_TERMS_MODE:-off}
+      MANAGEMENT_TERMS_WEEKLY_SUMMARY: ${MANAGEMENT_TERMS_WEEKLY_SUMMARY:-on}
+      SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY: ${SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY-club.management-term}
+      # A member's feedback mail as a Notification (docs/event-feedback.md).
+      FEEDBACK_NOTIFICATION: ${FEEDBACK_NOTIFICATION:-off}
       # The new Ticket's Notification (docs/ticket-created-notification.md).
       TICKET_CREATED_NOTIFICATION: ${TICKET_CREATED_NOTIFICATION:-off}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
@@ -96,6 +102,10 @@ services:
       CONTACT_CONSENT_TEXT_URL: ${CONTACT_CONSENT_TEXT_URL:-}
       CONTACT_CONSENT_NOTICE_URL: ${CONTACT_CONSENT_NOTICE_URL:-}
       SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY: ${SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY:-}
+      # Team pages (docs/team-page-consent.md): members who have not decided are
+      # listed until this RFC 3339 time, then only those who consented. Unset:
+      # no transition; not RFC 3339: core does not start.
+      TEAM_PAGE_CONSENT_GRACE_UNTIL: ${TEAM_PAGE_CONSENT_GRACE_UNTIL:-}
       # Communication preferences (docs/communication-preferences.md): off while the key is unset.
       COMMUNICATION_PREFERENCE_KEY: ${COMMUNICATION_PREFERENCE_KEY:-}
       COMMUNICATION_PREFERENCE_KEY_V2: ${COMMUNICATION_PREFERENCE_KEY_V2:-}

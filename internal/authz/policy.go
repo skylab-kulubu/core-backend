@@ -53,6 +53,9 @@ const (
 	// TypeFormResponse is an answer to a Skyforms form that the forms
 	// service reports, so that core writes the Ticket it earns.
 	TypeFormResponse Type = "FORM_RESPONSE"
+	// TypeSubjectRequest is the register of KVKK md. 11 data subject
+	// requests (docs/subject-requests.md).
+	TypeSubjectRequest Type = "SUBJECT_REQUEST"
 	// TypeTeamAudit is the Team audit record (docs/team-audit.md).
 	TypeTeamAudit Type = "TEAM_AUDIT"
 	// TypeAppAssignment is an app's assignments to Groups and people
@@ -121,6 +124,10 @@ type Policy struct {
 	// (TEAM_DELEGATION, team_delegation.go). Off, only Privileged manages
 	// Groups, as before.
 	TeamDelegation bool
+	// LeaderTeamCodes is whether a Leader who manages a Sub-team strictly
+	// may change its code (TEAM_DELEGATION_LEADER_CODES,
+	// team_delegation.go). Off (the default), only Privileged does.
+	LeaderTeamCodes bool
 	// AppAssignments is whether the app assignment routes are on
 	// (APP_ASSIGNMENTS, app_assignments.go). Off, TypeAppAssignment allows
 	// nothing.

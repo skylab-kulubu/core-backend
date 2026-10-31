@@ -3,6 +3,8 @@ package teamcode_test
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -72,6 +74,34 @@ func TestPostgresLedgerHeld(t *testing.T) {
 			t.Errorf("%s is held", code)
 		}
 	}
+	// References names the kinds of record that hold a code, never a
+	// record's id, and leaves retired codes out.
+	exec(t, pool, `INSERT INTO events (id, name, location, owner_team) VALUES ($1, 'Jam', 'YTÜ', 'templateteam')`, uuid.New())
+	for code, want := range map[string][]string{
+		"EVENTTEAM":    {teamcode.RecordEvent},
+		"certteam":     {teamcode.RecordCertificate},
+		"TEMPLATETEAM": {teamcode.RecordEvent, teamcode.RecordCertificateTemplate},
+		"BOUNDTEAM":    {teamcode.RecordTemplateBinding},
+		"OLDTEAM":      nil,
+		"EVENTSCOPE":   nil,
+	} {
+		if got := references(t, ledger, code); !slices.Equal(got, want) {
+			t.Errorf("References(%s) = %v, want %v", code, got, want)
+		}
+	}
+}
+
+func references(t *testing.T, ledger teamcode.Ledger, code string) []string {
+	t.Helper()
+	var got []string
+	if err := ledger.Locked(context.Background(), func(ctx context.Context, records teamcode.Records) error {
+		var err error
+		got, err = records.References(ctx, code)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return got
 }
 
 // A retired code is kept once the write succeeds, idempotently, with the
@@ -127,6 +157,60 @@ func TestPostgresLedgerRetire(t *testing.T) {
 	if len(got) != 2 || got[0].code != "AIRLAB" || got[0].group != nil || got[1].code != "GAMELAB" ||
 		got[1].group == nil || *got[1].group != group || got[1].reason != teamcode.ReasonRenamed {
 		t.Fatalf("retired %+v", got)
+	}
+}
+
+// A code retired in one case is retired in every case: retiring it again in
+// another case adds no row and keeps the first row's reason, and Held finds
+// it through the lower(code) index.
+func TestPostgresLedgerRetireIgnoresCase(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	ledger := teamcode.NewPostgresLedger(pool)
+	for _, retire := range []struct{ code, reason string }{{"WEBLAB", teamcode.ReasonRenamed}, {"weblab", teamcode.ReasonDeleted}, {"WebLab", teamcode.ReasonDeleted}} {
+		if err := ledger.Locked(ctx, func(ctx context.Context, records teamcode.Records) error {
+			return records.Retire(ctx, retire.code, uuid.NewString(), retire.reason)
+		}); err != nil {
+			t.Fatalf("retire %s: %v", retire.code, err)
+		}
+	}
+	var n int
+	var code, reason string
+	if err := pool.QueryRow(ctx, `SELECT count(*), min(code), min(reason) FROM retired_team_codes`).Scan(&n, &code, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || code != "WEBLAB" || reason != teamcode.ReasonRenamed {
+		t.Fatalf("rows %d, %s %s", n, code, reason)
+	}
+	if !held(t, ledger, "weblab") || !held(t, ledger, "WEBLAB") || held(t, ledger, "WEBLAB2") {
+		t.Fatal("Held does not ignore case")
+	}
+
+	// The planner reads a handful of rows by scanning them; with scans off,
+	// Held's query on retired_team_codes must have an index to use.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.Query(ctx, `EXPLAIN SELECT EXISTS (SELECT 1 FROM retired_team_codes WHERE lower(code) = lower($1))`, "weblab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, line)
+	}
+	rows.Close()
+	if !slices.ContainsFunc(plan, func(line string) bool { return strings.Contains(line, "retired_team_codes_lower_code_idx") }) {
+		t.Fatalf("plan without the index: %v", plan)
 	}
 }
 
@@ -264,5 +348,145 @@ func TestPostgresLedgerUnavailable(t *testing.T) {
 	})
 	if !errors.Is(err, teamcode.ErrUnavailable) || ran {
 		t.Fatalf("closed pool: %v, write ran %v", err, ran)
+	}
+}
+
+// Through the service with the database (ADR 0065 ticket 05): a Team whose
+// code an Event names keeps it (code_in_use, naming the kind), a Team whose
+// Sub-team's code an Event names is not deleted, and a deletion retires the
+// codes of the Team and of every Sub-team under it.
+func TestTeamStructureWithPostgres(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	dir := identity.NewMemory()
+	root := uuid.NewString()
+	dir.PutGroup(identity.Group{ID: root, Name: "YK", Path: "/UYELER/YK"})
+	if err := dir.SetGroupClientRoles(ctx, root, []identity.ClientRole{{ClientID: "core", Role: authz.RoleGroupsManage}}); err != nil {
+		t.Fatal(err)
+	}
+	dir.PutGroup(identity.Group{ID: uuid.NewString(), Name: "UYELER", Path: "/UYELER"})
+	dir.PutGroup(identity.Group{ID: uuid.NewString(), Name: "ARGE", Path: "/UYELER/ARGE"})
+	weblab, front, inner := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	dir.PutGroup(identity.Group{ID: weblab, Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"})
+	dir.PutGroup(identity.Group{ID: front, Name: "FRONT", Path: "/UYELER/ARGE/WEBLAB/FRONT"})
+	dir.PutGroup(identity.Group{ID: inner, Name: "INNER", Path: "/UYELER/ARGE/WEBLAB/FRONT/INNER"})
+	exec(t, pool, `INSERT INTO events (id, name, location, owner_team) VALUES ($1, 'Hack', 'YTÜ', 'inner')`, uuid.New())
+	// A Team goes with its Sub-teams only with Team delegation on.
+	policy := authz.DefaultPolicy()
+	policy.TeamDelegation = true
+	svc := identity.NewServiceWithOptions(dir, user.NewMemoryStore(), authz.NewAuthorizer(policy),
+		identity.Options{TeamCodes: teamcode.NewPostgresLedger(pool), Delegation: identity.NewTeamDelegation(policy, dir, dir, identity.TeamDelegationOptions{})})
+	yk := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}}
+
+	_, err := svc.ChangeTeamCode(ctx, yk, inner, "INNER2")
+	var structure *identity.TeamStructureError
+	if !errors.As(err, &structure) || structure.Code != identity.CodeCodeInUse || !slices.Equal(structure.Records, []string{teamcode.RecordEvent}) {
+		t.Fatalf("change a code an Event names: %v", err)
+	}
+	err = svc.DeleteGroup(ctx, yk, front)
+	var deletion *identity.GroupDeleteError
+	if !errors.As(err, &deletion) || deletion.Code != identity.CodeCodeInUse || !slices.Equal(deletion.Records, []string{teamcode.RecordEvent}) {
+		t.Fatalf("delete a Team whose Sub-team's code an Event names: %v", err)
+	}
+	exec(t, pool, `DELETE FROM events WHERE owner_team = 'inner'`)
+	if err := svc.DeleteGroup(ctx, yk, front); err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{"FRONT", "INNER"} {
+		var reason string
+		if err := pool.QueryRow(ctx, `SELECT reason FROM retired_team_codes WHERE code = $1`, code).Scan(&reason); err != nil || reason != teamcode.ReasonDeleted {
+			t.Errorf("%s: %q %v", code, reason, err)
+		}
+	}
+	if _, err := dir.GetGroup(ctx, inner); !errors.Is(err, identity.ErrNotFound) {
+		t.Errorf("INNER remains: %v", err)
+	}
+}
+
+// The team structure report reads the codes core's records name, by kind,
+// blanks trimmed and blank ones left out, and the retired codes; seeding
+// retires the codes that are not retired yet, whatever the case, once.
+func TestPostgresLedgerSeedRetired(t *testing.T) {
+	pool := migrated(t)
+	ledger := teamcode.NewPostgresLedger(pool)
+	ctx := context.Background()
+	event, ticket := uuid.New(), uuid.New()
+	exec(t, pool, `INSERT INTO events (id, name, location, owner_team) VALUES ($1, 'Hack', 'YTÜ', ' GONE ')`, event)
+	exec(t, pool, `INSERT INTO events (id, name, location, owner_team) VALUES ($1, 'Jam', 'YTÜ', '  ')`, uuid.New())
+	exec(t, pool, `INSERT INTO tickets (id, event_id, ticket_type, guest_email) VALUES ($1, $2, 'GUEST', 'guest@example.test')`, ticket, event)
+	exec(t, pool, `INSERT INTO certificates (id, event_id, ticket_id, serial, recipient_name, recipient_email, event_name, owner_team, verify_url)
+		VALUES ($1, $2, $3, 'S-1', 'R', 'r@example.test', 'Hack', 'GONE', 'https://example.test/v')`, uuid.New(), event, ticket)
+	template := uuid.New()
+	exec(t, pool, `INSERT INTO certificate_templates (id, name, owner_team) VALUES ($1, 'T', 'WEBLAB')`, template)
+	exec(t, pool, `INSERT INTO certificate_template_bindings (id, scope, scope_key, template_id) VALUES ($1, 'ownerTeam', 'OLD', $2)`, uuid.New(), template)
+	exec(t, pool, `INSERT INTO certificate_template_bindings (id, scope, scope_key, template_id) VALUES ($1, 'event', 'EVENTSCOPE', $2)`, uuid.New(), template)
+	exec(t, pool, `INSERT INTO retired_team_codes (code, reason) VALUES ('Old', 'renamed')`)
+
+	records, err := ledger.RecordCodes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{
+		"GONE":   {teamcode.RecordEvent, teamcode.RecordCertificate},
+		"WEBLAB": {teamcode.RecordCertificateTemplate},
+		"OLD":    {teamcode.RecordTemplateBinding},
+	}
+	if len(records) != len(want) {
+		t.Fatalf("record codes = %v, want %v", records, want)
+	}
+	for code, kinds := range want {
+		if !slices.Equal(records[code], kinds) {
+			t.Errorf("record codes[%s] = %v, want %v", code, records[code], kinds)
+		}
+	}
+
+	calls := 0
+	codes := func(context.Context) ([]string, error) {
+		calls++
+		return []string{"GONE", "OLD", "cmsteam", "CMSTEAM"}, nil
+	}
+	written, err := ledger.SeedRetired(ctx, codes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(written, []string{"GONE", "cmsteam"}) {
+		t.Fatalf("written = %v, want [GONE cmsteam] (OLD is retired as Old; CMSTEAM is cmsteam)", written)
+	}
+	again, err := ledger.SeedRetired(ctx, codes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 0 || calls != 2 {
+		t.Fatalf("second run wrote %v (calls %d)", again, calls)
+	}
+	retired, err := ledger.RetiredCodes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(retired, []string{"GONE", "Old", "cmsteam"}) {
+		t.Fatalf("retired = %v", retired)
+	}
+	var reason string
+	var group *uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT reason, group_id FROM retired_team_codes WHERE code = 'GONE'`).Scan(&reason, &group); err != nil {
+		t.Fatal(err)
+	}
+	if reason != teamcode.ReasonSeeded || group != nil {
+		t.Fatalf("GONE retired as %q with group %v", reason, group)
+	}
+	if !held(t, ledger, "gone") {
+		t.Fatal("a seeded code is not held")
+	}
+
+	// A failing read inside the lock writes nothing.
+	boom := errors.New("keycloak down")
+	if _, err := ledger.SeedRetired(ctx, func(context.Context) ([]string, error) { return nil, boom }); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want %v", err, boom)
+	}
+	if _, err := ledger.SeedRetired(ctx, func(context.Context) ([]string, error) { return []string{"NEWCODE"}, boom }); !errors.Is(err, boom) {
+		t.Fatalf("err = %v", err)
+	}
+	if held(t, ledger, "NEWCODE") {
+		t.Fatal("a failed seed wrote a code")
 	}
 }
