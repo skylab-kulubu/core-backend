@@ -107,6 +107,9 @@ type delegationSetup struct {
 	mode      authz.RoleMode // AUTHZ_ROLE_MODE; empty is groups
 	teamTree  bool           // the Owner team tree and Team settings, as main wires them
 	reads     bool           // the audit record's reading route reads the rows written
+	// leaderCodes is TEAM_DELEGATION_LEADER_CODES=on: Leaders change
+	// Sub-team codes too. Off (the default), only Privileged does.
+	leaderCodes bool
 	// The Team structure limits; zero is the default.
 	depth, pathLen, subTeams int
 }
@@ -147,6 +150,7 @@ func newDelegationEnv(t *testing.T, setup delegationSetup) *delegationEnv {
 	}
 	policy := authz.DefaultPolicy()
 	policy.TeamDelegation = setup.on
+	policy.LeaderTeamCodes = setup.leaderCodes
 	if setup.mode != "" {
 		policy.RoleMode = setup.mode
 	}

@@ -21,6 +21,13 @@ func TestTeamPagePurposeIsTheAccountsOwnAndNotMailed(t *testing.T) {
 	if version, ok := CurrentText(purpose); !ok || version != "ekip-sayfasi-v1" || Text(version) == "" {
 		t.Fatalf("text %q %v", version, ok)
 	}
+	// Account Center's switch label (src/lib/team-page-consent.ts) and the
+	// Açık Rıza Metni 5.1, word for word: the pages are the app's only, the
+	// site shows none (Yusuf, 2026-10-31).
+	const want = "Ekip sayfalarında görüneyim: adım, soyadım, profil fotoğrafım, LinkedIn adresim, üniversitem, fakültem, bölümüm ve ekip liderliğim ekibimin SKY LAB uygulamasındaki sayfasında yayımlansın."
+	if got := Text("ekip-sayfasi-v1"); got != want {
+		t.Fatalf("ekip-sayfasi-v1 text %q", got)
+	}
 	for _, mailed := range []Purpose{PurposeEventInvitations, PurposePromotional, PurposeRecruitmentPool} {
 		if !mailed.Mailed() || mailed.Channel() != ChannelEmail {
 			t.Fatalf("%s: mailed %v channel %q", mailed, mailed.Mailed(), mailed.Channel())

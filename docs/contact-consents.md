@@ -145,7 +145,7 @@ at <https://yildizskylab.com/acik-riza-metni.pdf> (source: sky_lab_genel
 |---|---|---|
 | `davet-v2` | `event_invitations` | Diğer etkinlik ve duyurulardan haberdar olmak istiyorum. |
 | `tanitim-v1` | `promotional` | SKY LAB'dan tanıtım içerikli e-postalar (indirim kodu, şirket iş ilanı, çekiliş gibi) almak istiyorum. |
-| `ekip-sayfasi-v1` | `team_page` | Ekip sayfalarında görüneyim: adım, soyadım, profil fotoğrafım, LinkedIn adresim, üniversitem, fakültem, bölümüm ve ekip liderliğim ekibimin sitedeki ve SKY LAB uygulamasındaki sayfasında yayımlansın. |
+| `ekip-sayfasi-v1` | `team_page` | Ekip sayfalarında görüneyim: adım, soyadım, profil fotoğrafım, LinkedIn adresim, üniversitem, fakültem, bölümüm ve ekip liderliğim ekibimin SKY LAB uygulamasındaki sayfasında yayımlansın. |
 | `alim-havuzu-v1` | `recruitment_pool` (not taken yet) | Bu dönem kabul edilmezsem başvurumun gelecek alımlarda değerlendirilmek üzere saklanmasını istiyorum. İstediğim zaman vazgeçebilirim. |
 
 A changed wording is a new version here and in a new edition of the

@@ -239,10 +239,18 @@ tables once an hour (every replica reports the same).
 - **Account erasure** (`anonymize_core`) deletes the person's terms and the
   mails that go to them or name them, and forgets them as the one who
   granted a term. The Team audit rows stay, as all of them do.
-- **Retention.** The ticket bounds it by the Team audit record's three
-  years and leaves the period to the ADR (grup-yonetimi §4 B). No retention
-  rule deletes ended terms yet; it is added to the retention sweep once the
-  ADR names the period.
+- **Retention** (Yusuf, 2026-10-31): an ended term is kept **three years
+  from `ended_at`**, the day its membership ended (removed through core,
+  handed over, or found gone from Keycloak), and then deleted by the
+  retention sweep's `management_terms_age` rule
+  ([retention-sweep.md](retention-sweep.md); `RETENTION_SWEEP_MODE`). Not
+  from the planned end (`ends_at`) or the expiry mark (`expired_at`): an
+  expired term whose holder is still in the Group is open and stays, however
+  old. The term's Team audit rows (`membership.term.*`) go by their own
+  three years (`team_audit_age`). The rule does not depend on
+  `MANAGEMENT_TERMS_MODE`: with the terms `off` no term ends and nothing
+  here changes; the rule only deletes what an earlier apply left ended
+  three years ago.
 
 ## Rollout
 

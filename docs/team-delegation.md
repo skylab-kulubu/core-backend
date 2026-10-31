@@ -2,8 +2,9 @@
 
 A Leader manages their Team and every Sub-team below it through core: they
 read its Groups and rosters, add and remove members (SPEC
-`.scratch/ekip-yetki-devri`, ADR 0065, ticket 04), and open Sub-teams,
-change their codes and delete them (ticket 05, [Team structure](#team-structure)).
+`.scratch/ekip-yetki-devri`, ADR 0065, ticket 04), and open and delete
+Sub-teams (ticket 05, [Team structure](#team-structure); a Sub-team's code
+is YK's to change unless `TEAM_DELEGATION_LEADER_CODES=on`).
 name the Leaders of the Sub-teams below theirs (ticket 06,
 [Leaders](#leaders)) and move Sub-teams between the Teams they manage
 (ticket 07, [Moving a Team](#moving-a-team)). Editing a Team's profile
@@ -275,7 +276,7 @@ Errors are RFC 9457 problems with `code` (and `reason` for placement). The panel
 | `DELETE /v1/groups/{id}/members/{userId}` | `Manages` of the Group, membership of the Source group | the person leaves the Group they sit in |
 | `PUT /v1/groups/{id}/settings` | `Manages` (a Team only) | the Team's own settings, below |
 | `POST /v1/groups/{id}/children` `{code, displayNameTr, displayNameEn?}` | `Manages` of the Team | a Sub-team ([Team structure](#team-structure)) |
-| `PUT /v1/groups/{id}/code` `{code}` | `ManagesStrict` | the Sub-team's code |
+| `PUT /v1/groups/{id}/code` `{code}` | Privileged only; `ManagesStrict` with `TEAM_DELEGATION_LEADER_CODES=on` (`Policy.ChangesTeamCode`) | the Sub-team's code |
 | `DELETE /v1/groups/{id}` | `ManagesStrict` | the Sub-team and every Group under it, all empty |
 | `GET /v1/groups/{id}/leaders` | `Manages` | the Team's Leaders and Coordinators ([Leaders](#leaders)) |
 | `POST /v1/groups/{id}/leaders` `{userId, kind?}` | `ManagesStrict` | names a Leader; opens the Leader group |
@@ -309,7 +310,7 @@ core takes the lock for one request at a time: the others wait in the
 process holding no connection, so queued writes never use up the pool;
 the wait for another core's lock is bounded too (`lock_timeout` 10 s). Its refusals (`forbidden`,
 `protected_group`, `leader_group_needs_parent`, `group_limit`,
-`group_tree_mismatch`, `team_code_not_unique`) are recorded as `denied` rows
+`group_tree_mismatch`, `team_code_not_unique`, `team_code_privileged_only`) are recorded as `denied` rows
 ([team-audit.md](team-audit.md)); a change is recorded as Privileged's are,
 with `actor_basis` `leader` and the Team that grants it. No row, no change:
 503 `audit_unavailable`.
@@ -351,8 +352,17 @@ its code; a change is a `team.create`, `team.code` or `team.delete` row.
   written as `display_name_tr`/`display_name_en` in the same Keycloak write.
   Answers `201` with the Group.
 - **Change a code**: `PUT /v1/groups/{id}/code` `{code}`, a Team only
-  (`400` otherwise). The same name rules; a Leader only on a Sub-team they
-  manage strictly, never their own Team or a top Team. While core's
+  (`400` otherwise). **Only Privileged (YK) by default** (Yusuf,
+  2026-10-31): a code is the key the CMS, the sites, Forms' template match
+  and door scanning hold (the table in [team-codes.md](team-codes.md#when-a-path-or-a-code-changes)),
+  so a Leader who manages the Sub-team strictly gets
+  `403 team_code_privileged_only` (a `denied` `team.code` row with
+  `leader` and their Team); the refusals that come first keep their own
+  answers (`403` for their own Team, `403 protected_group`).
+  `TEAM_DELEGATION_LEADER_CODES=off|on` (`off` when unset; any other value
+  stops startup) is the one switch that opens it: on, a Leader changes the
+  code of a Sub-team they manage strictly, never their own Team or a top
+  Team. The same name rules for everyone. While core's
   records name the old code it is `409 code_in_use` with `records`, the
   kinds (`event`, `certificate`, `certificate_template`,
   `certificate_template_binding`), never a record. The old code is retired
@@ -375,7 +385,8 @@ its code; a change is a `team.create`, `team.code` or `team.delete` row.
   (`409 children_limit`).
 
 The managed tree's `can` says it per Team: `subteams.write` (`Manages`),
-`code.write` and `team.delete` (`ManagesStrict`).
+`team.delete` (`ManagesStrict`) and `code.write` (`ChangesTeamCode`: a
+Leader's is `false` unless `TEAM_DELEGATION_LEADER_CODES=on`).
 
 ### Leaders
 
