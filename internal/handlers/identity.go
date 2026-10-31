@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -437,20 +439,27 @@ func (h *IdentityHandler) ManagedGroups(c fiber.Ctx) error {
 
 // SetTeamSettings answers PUT /v1/groups/{id}/settings: a Team's own
 // settings, written by its manager or Privileged (docs/team-delegation.md
-// "Team settings"). Every field is required.
+// "Team settings"). A field left out keeps its value; at least one is given,
+// and an unknown one is 400: the attributes that stay Privileged's
+// (team_door_scan, public_listing, public_leaders) are not written here.
 func (h *IdentityHandler) SetTeamSettings(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
 		return identityError(c, err)
 	}
 	var body struct {
-		MembersManageCompetitors *bool `json:"membersManageCompetitors"`
+		MembersManageCompetitors *bool   `json:"membersManageCompetitors"`
+		CompetitionManagers      *string `json:"competitionManagers"`
 	}
-	if err := c.Bind().Body(&body); err != nil || body.MembersManageCompetitors == nil {
+	decoder := json.NewDecoder(bytes.NewReader(c.Body()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil || decoder.More() ||
+		(body.MembersManageCompetitors == nil && body.CompetitionManagers == nil) {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	settings, err := h.svc.SetTeamSettings(auditContext(c, p), p, c.Params("groupId"), identity.TeamSettings{
-		MembersManageCompetitors: *body.MembersManageCompetitors,
+	settings, err := h.svc.SetTeamSettings(auditContext(c, p), p, c.Params("groupId"), identity.TeamSettingsChange{
+		MembersManageCompetitors: body.MembersManageCompetitors,
+		CompetitionManagers:      body.CompetitionManagers,
 	})
 	if err != nil {
 		return identityError(c, err)

@@ -171,8 +171,13 @@ nothing changes.
 
 ## Team settings
 
-`PUT /v1/groups/{id}/settings` `{"membersManageCompetitors": bool}` writes a
-Team's own settings as its Group's attributes and answers them. The Team's
+`PUT /v1/groups/{id}/settings` `{"membersManageCompetitors": bool,
+"competitionManagers": "leaders" | "members"}` writes a Team's own settings
+as its Group's attributes and answers all of them. A field left out keeps
+its value; at least one is given; an unknown field or value is `400`, so
+the attributes that stay Privileged's (`public_listing`, `public_leaders`,
+`team_door_scan`) are not written here. The other attributes stay as they
+are. The Team's
 Leader, a Leader of a Team above (delegation on, `Manages`) and Privileged
 write them; a protected Group is Privileged's; only a Team takes them (a
 Leader group, an area or a root: `400`). Each change is a
@@ -198,6 +203,22 @@ attributes (`GET /v1/groups/{id}`).
   delegation off as well: at most one realm Group read a minute, and the
   first request after the minute waits for it (5 s at most). The setting does not depend on
   `TEAM_DELEGATION`; with it off only Privileged writes it.
+- `competitionManagers` (`team_competition_manage`, "Yarışmaları kim
+  yönetir"; Yusuf 2026-10-12, and 2026-10-31 that the Team's own Leader
+  turns it on): who manages the Team's Events' Competitions. `leaders`, the
+  default, is the organizers: the Team's Leaders, Leaders of a Team above
+  and Privileged. `members` lets all the Owner team's members, its
+  Sub-teams' members included, manage them too, except archiving and
+  restoring ([competitions.md](competitions.md) "Who"). The attribute is
+  `true` for `members`, `false` for `leaders`; only `true` (case and blanks
+  aside) opens it. Unlike the competitor setting it **widens** what the
+  members may do, and still is the manager's, not only Privileged's: ADR-0065
+  keeps widening attributes Privileged's and makes this one the exception
+  (as Teams' "Who can manage tags", which a team owner sets). It is read
+  like the competitor setting (the kept tree, forgotten on core's write,
+  within the minute otherwise), but **fails closed**: a tree that cannot be
+  read, or a code that is not one Group's, is `leaders`. Leaders lose
+  nothing by it.
 
 ## Role rules
 
@@ -445,8 +466,9 @@ budget. Each item is
 `{id, code, path, displayName, memberCount, leaderCount, protected, can,
 children}`. `can` has `group.read`, `members.write`, `leaders.write`
 (`ManagesStrict`: the Team's Leader groups), `subteams.write`, `code.write`
-`team.delete` ([Team structure](#team-structure)) and `team.move` (the
-Team's side of a move). Privileged gets every top Team
+`team.delete` ([Team structure](#team-structure)), `team.move` (the
+Team's side of a move) and `team.settings` (`Manages`: [Team
+settings](#team-settings)). Privileged gets every top Team
 of every area with everything below; a Leader (delegation on) the Teams
 they lead, each once (a Sub-team they also lead sits under the Team above);
 anyone else `[]`. Walked down by id; kept 60 s per person and dropped by

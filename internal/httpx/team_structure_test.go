@@ -485,4 +485,9 @@ func TestManagedTreeStructureCan(t *testing.T) {
 	if j < 0 || web.Children[j].Can["subteams.write"] || web.Children[j].Can["team.delete"] {
 		t.Errorf("SECURE %+v", web.Children)
 	}
+	// The Team settings (PUT /v1/groups/{id}/settings) are the manager's:
+	// the Leader's own Team and those below, not a protected one.
+	if !web.Can["team.settings"] || !web.Children[i].Can["team.settings"] || web.Children[j].Can["team.settings"] {
+		t.Errorf("team.settings: WEBLAB %v, FRONT %v, SECURE %v", web.Can, web.Children[i].Can, web.Children[j].Can)
+	}
 }

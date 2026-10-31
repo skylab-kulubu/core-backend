@@ -18,12 +18,54 @@ type TeamSettings struct {
 	// Yusuf, 2026-10-25). Unset it is true, today's rule; false keeps them to
 	// the Leaders.
 	MembersManageCompetitors bool `json:"membersManageCompetitors"`
+	// CompetitionManagers is who manages the Team's Events' Competitions
+	// ("Yarışmaları kim yönetir", authz.TeamAttrCompetitionManage; Yusuf,
+	// 2026-10-12 and 2026-10-31): CompetitionManagersLeaders, the default,
+	// or CompetitionManagersMembers.
+	CompetitionManagers string `json:"competitionManagers"`
+}
+
+// The values of TeamSettings.CompetitionManagers.
+const (
+	CompetitionManagersLeaders = "leaders"
+	CompetitionManagersMembers = "members"
+)
+
+// TeamSettingsChange is what a settings write changes: a nil field keeps
+// the stored value.
+type TeamSettingsChange struct {
+	MembersManageCompetitors *bool
+	CompetitionManagers      *string
 }
 
 // TeamSettingsOf are the settings g's attributes hold.
 func TeamSettingsOf(g Group) TeamSettings {
+	managers := CompetitionManagersLeaders
+	if authz.CompetitionManageValue(g.Attributes[authz.TeamAttrCompetitionManage]) {
+		managers = CompetitionManagersMembers
+	}
 	return TeamSettings{
 		MembersManageCompetitors: authz.MembersManageCompetitorsValue(g.Attributes[authz.TeamAttrMembersManageCompetitors]),
+		CompetitionManagers:      managers,
+	}
+}
+
+// valid reports whether the change sets something, and only known values.
+func (c TeamSettingsChange) valid() bool {
+	if c.MembersManageCompetitors == nil && c.CompetitionManagers == nil {
+		return false
+	}
+	return c.CompetitionManagers == nil ||
+		*c.CompetitionManagers == CompetitionManagersLeaders || *c.CompetitionManagers == CompetitionManagersMembers
+}
+
+// writeTo sets the changed settings in attrs; the other attributes stay.
+func (c TeamSettingsChange) writeTo(attrs map[string]string) {
+	if c.MembersManageCompetitors != nil {
+		attrs[authz.TeamAttrMembersManageCompetitors] = strconv.FormatBool(*c.MembersManageCompetitors)
+	}
+	if c.CompetitionManagers != nil {
+		attrs[authz.TeamAttrCompetitionManage] = strconv.FormatBool(*c.CompetitionManagers == CompetitionManagersMembers)
 	}
 }
 
@@ -31,11 +73,17 @@ func TeamSettingsOf(g Group) TeamSettings {
 // Leader (team delegation on) on a Team they manage (authz.Policy.Manages:
 // their own and those below it), never on a protected Group; the change is
 // a group.attributes row of the Team audit record, a refusal a denied row.
-// Only a Team takes settings (not a Leader group, an area or a root): 400.
+// The competition setting widens what the members may do, and still is the
+// manager's (ADR-0065's exception for it, Yusuf 2026-10-31). Only a Team
+// takes settings (not a Leader group, an area or a root), and a change
+// sets something known: 400 (ErrInvalid) otherwise.
 // The kept Owner team tree is forgotten, so the decisions follow at once in
 // this process and, told through Postgres, at the next decision in the
 // others (within a minute if they did not hear it).
-func (s *service) SetTeamSettings(ctx context.Context, p authz.Principal, groupRef string, settings TeamSettings) (TeamSettings, error) {
+func (s *service) SetTeamSettings(ctx context.Context, p authz.Principal, groupRef string, change TeamSettingsChange) (TeamSettings, error) {
+	if !change.valid() {
+		return TeamSettings{}, ErrInvalid
+	}
 	apply := func(ctx context.Context, g Group) (TeamSettings, error) {
 		if !s.isTeam(g.Path) {
 			return TeamSettings{}, ErrInvalid
@@ -45,7 +93,7 @@ func (s *service) SetTeamSettings(ctx context.Context, p authz.Principal, groupR
 		if attrs == nil {
 			attrs = map[string]string{}
 		}
-		attrs[authz.TeamAttrMembersManageCompetitors] = strconv.FormatBool(settings.MembersManageCompetitors)
+		change.writeTo(attrs)
 		g.Attributes = attrs
 		updated, err := s.dir.UpdateGroup(ctx, g)
 		if err != nil {

@@ -50,7 +50,7 @@ type Service interface {
 	// SetTeamSettings writes a Team's own settings (PUT
 	// /v1/groups/{id}/settings): its manager (a Leader of it or of a Team
 	// above, delegation on) or Privileged.
-	SetTeamSettings(ctx context.Context, p authz.Principal, groupRef string, settings TeamSettings) (TeamSettings, error)
+	SetTeamSettings(ctx context.Context, p authz.Principal, groupRef string, change TeamSettingsChange) (TeamSettings, error)
 	// MembershipWriteDecision is whether the caller may change the Group's
 	// membership, as AddMember decides, without writing
 	// (membership_decision.go).

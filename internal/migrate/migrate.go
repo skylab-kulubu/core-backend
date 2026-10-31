@@ -1531,6 +1531,21 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE indexrelid = to_regclass('public.retired_team_codes_lower_code_idx')
 			  AND indisunique AND indisvalid
 		  )`,
+	// The basis a competition ledger row's writer and revoker wrote on
+	// (docs/competitions.md "Who", yarışma modülü ticket 25), and the
+	// append-only rule that lets revoked_basis be written with the
+	// revocation.
+	20261031120000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'competition_submissions' AND column_name = 'revoked_basis'
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE oid = to_regprocedure('public.competition_ledger_append_only()')
+			  AND prosrc LIKE '%revoked_basis%'
+		  )`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

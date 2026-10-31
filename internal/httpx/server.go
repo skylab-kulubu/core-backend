@@ -740,6 +740,7 @@ func New(deps Deps) *fiber.App {
 		app.Post("/v1/competitions/:id/restore", comps.Restore)
 		app.Get("/v1/competitions/:id/entrants", comps.Entrants)
 		app.Post("/v1/competitions/:id/entrants", comps.AddEntrants)
+		app.Get("/v1/competitions/:id/entrant-candidates", comps.EntrantCandidates)
 		app.Post("/v1/competitions/:id/scores", comps.SetScore)
 		app.Get("/v1/competitions/:id/entries", comps.Entries)
 		app.Post("/v1/competitions/:id/entries/:entryId/revoke", comps.RevokeEntry)
