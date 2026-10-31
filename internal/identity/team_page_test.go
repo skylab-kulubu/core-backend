@@ -14,8 +14,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
-// teamPageConsents is what people decided: true an open team page consent,
-// false withdrawn, absent never decided.
+// teamPageConsents is who objects: false an open team page objection,
+// absent (or true) not.
 type teamPageConsents struct {
 	decided map[uuid.UUID]bool
 	err     error
@@ -40,7 +40,6 @@ type teamPageFixture struct {
 	dir      *identity.Memory
 	store    *user.MemoryStore
 	consents *teamPageConsents
-	now      time.Time
 	svc      identity.Service
 	member   uuid.UUID
 	leader   uuid.UUID
@@ -51,14 +50,13 @@ type teamPageFixture struct {
 // a WEBLAB member who sits on the Board (/UYELER/YK/BASKAN) and leads it
 // (/UYELER/YK/LIDERLER); the Board's Group is listed too. Each has a full
 // profile in core.
-func newTeamPageFixture(t *testing.T, graceUntil time.Time) *teamPageFixture {
+func newTeamPageFixture(t *testing.T) *teamPageFixture {
 	t.Helper()
 	f := &teamPageFixture{
 		dir: identity.NewMemory(), store: user.NewMemoryStore(), consents: &teamPageConsents{decided: map[uuid.UUID]bool{}},
-		now: time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC),
 	}
 	f.svc = identity.NewServiceWithOptions(f.dir, f.store, authz.NewAuthorizer(authz.DefaultPolicy()), identity.Options{
-		TeamPage: &identity.TeamPageVisibility{Consents: f.consents, GraceUntil: graceUntil, Now: func() time.Time { return f.now }},
+		TeamPage: &identity.TeamPageVisibility{Consents: f.consents},
 	})
 	f.member, f.leader = seedTeam(t, f.dir)
 	f.board = uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa03")
@@ -118,134 +116,96 @@ func names(members []identity.PublicMember) []string {
 	return out
 }
 
-// After the transition a team's public roster shows only who consented, in
-// full; a Board member without consent is not on it either. Consenting shows
-// the person at once, withdrawing hides them at once.
-func TestPublicRosterShowsOnlyConsentingMembers(t *testing.T) {
+// A team's public roster shows every member in full unless they object; a
+// Board member who objects is not on it either. Objecting hides the person
+// at once, lifting the objection shows them again at once.
+func TestPublicRosterShowsEveryoneButWhoObjects(t *testing.T) {
 	t.Parallel()
-	f := newTeamPageFixture(t, time.Time{})
+	f := newTeamPageFixture(t)
 	ctx := context.Background()
 
-	roster, err := f.svc.PublicMembers(ctx, "WEBLAB")
-	if err != nil || roster.Count != 0 || len(roster.Members) != 0 {
-		t.Fatalf("nobody consented: %+v %v", roster.Members, err)
-	}
-
-	f.consents.decided[f.member] = true
-	f.consents.decided[f.board] = true
-	roster, err = f.svc.PublicMembers(ctx, "WEBLAB")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := byName(roster.Members)
-	if roster.Count != 2 || !full(got["Ada"]) || !full(got["Kemal"]) {
-		t.Fatalf("after consent %+v", roster.Members)
-	}
-
-	f.consents.decided[f.member] = false
-	roster, err = f.svc.PublicMembers(ctx, "WEBLAB")
-	if err != nil || strings.Join(names(roster.Members), ",") != "Kemal" || roster.Count != 1 {
-		t.Fatalf("after withdrawal %+v %v", roster.Members, err)
-	}
-}
-
-// The leaders roster follows the same rule; a Board member who leads the
-// team is not named as its leader without consent.
-func TestPublicLeadersFollowTheTeamPageRule(t *testing.T) {
-	t.Parallel()
-	f := newTeamPageFixture(t, time.Time{})
-	ctx := context.Background()
-	if err := f.dir.AddMember(ctx, "g-weblab-l", f.board); err != nil {
-		t.Fatal(err)
-	}
-	leaders, err := f.svc.PublicLeaders(ctx, "WEBLAB")
-	if err != nil || leaders.Count != 0 || len(leaders.Members) != 0 {
-		t.Fatalf("leaders without consent %+v %v", leaders.Members, err)
-	}
-	f.consents.decided[f.leader] = true
-	leaders, err = f.svc.PublicLeaders(ctx, "WEBLAB")
-	if err != nil || leaders.Count != 1 || !leaders.Members[0].Leader || !full(leaders.Members[0]) {
-		t.Fatalf("leaders %+v %v", leaders.Members, err)
-	}
-}
-
-// On the Board's own roster a Board member without consent is named (first
-// and last name), nothing more: no picture, school, LinkedIn or leader flag
-// (s6 row 4 a; Yusuf, 2026-10-27). With consent they are shown in full.
-func TestBoardRosterNamesBoardMembersWithoutConsent(t *testing.T) {
-	t.Parallel()
-	f := newTeamPageFixture(t, time.Time{})
-	ctx := context.Background()
-
-	roster, err := f.svc.PublicMembers(ctx, "/UYELER/YK")
-	if err != nil {
-		t.Fatal(err)
-	}
-	kemal, ok := byName(roster.Members)["Kemal"]
-	if roster.Count != 1 || !ok || kemal.LastName != "Board" || !bare(kemal) {
-		t.Fatalf("board roster %+v", roster.Members)
-	}
-	leaders, err := f.svc.PublicLeaders(ctx, "/UYELER/YK")
-	if err != nil || leaders.Count != 1 || !bare(leaders.Members[0]) {
-		t.Fatalf("board leaders %+v %v", leaders.Members, err)
-	}
-
-	// Withdrawing the consent leaves the name, as never giving it does.
-	f.consents.decided[f.board] = false
-	if roster, err = f.svc.PublicMembers(ctx, "/UYELER/YK"); err != nil || roster.Count != 1 || !bare(roster.Members[0]) {
-		t.Fatalf("board roster after withdrawal %+v %v", roster.Members, err)
-	}
-
-	f.consents.decided[f.board] = true
-	roster, err = f.svc.PublicMembers(ctx, "/UYELER/YK")
-	if err != nil || roster.Count != 1 || !full(roster.Members[0]) {
-		t.Fatalf("board roster with consent %+v %v", roster.Members, err)
-	}
-	leaders, err = f.svc.PublicLeaders(ctx, "/UYELER/YK")
-	if err != nil || !leaders.Members[0].Leader {
-		t.Fatalf("board leaders with consent %+v %v", leaders.Members, err)
-	}
-}
-
-// Until the transition ends the rosters stay as they were for everyone who
-// has not decided; who withdrew is hidden at once, and who consented is
-// shown in full.
-func TestPublicRosterDuringTheTransition(t *testing.T) {
-	t.Parallel()
-	graceUntil := time.Date(2026, 11, 10, 21, 0, 0, 0, time.UTC)
-	f := newTeamPageFixture(t, graceUntil)
-	ctx := context.Background()
 	roster, err := f.svc.PublicMembers(ctx, "WEBLAB")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := byName(roster.Members)
 	if roster.Count != 3 || !full(got["Ada"]) || !full(got["Grace"]) || !full(got["Kemal"]) {
-		t.Fatalf("during the transition %+v", roster.Members)
+		t.Fatalf("nobody objects %+v", roster.Members)
 	}
 
 	f.consents.decided[f.member] = false
 	f.consents.decided[f.board] = false
-	f.consents.decided[f.leader] = true
 	roster, err = f.svc.PublicMembers(ctx, "WEBLAB")
-	if err != nil || strings.Join(names(roster.Members), ",") != "Grace" {
-		t.Fatalf("withdrawn during the transition %+v %v", roster.Members, err)
+	if err != nil || strings.Join(names(roster.Members), ",") != "Grace" || roster.Count != 1 {
+		t.Fatalf("after the objections %+v %v", roster.Members, err)
 	}
 
-	f.now = graceUntil
 	delete(f.consents.decided, f.member)
+	f.consents.decided[f.board] = true
 	roster, err = f.svc.PublicMembers(ctx, "WEBLAB")
-	if err != nil || strings.Join(names(roster.Members), ",") != "Grace" {
-		t.Fatalf("at the end of the transition %+v %v", roster.Members, err)
+	if err != nil || roster.Count != 3 || !full(byName(roster.Members)["Ada"]) {
+		t.Fatalf("after lifting them %+v %v", roster.Members, err)
 	}
 }
 
-// A roster that cannot read the consents fails, during the transition too:
-// it never falls back to showing everyone. Erased people are not even asked
-// about.
+// The leaders roster follows the same rule; a Board member who leads the
+// team and objects is not named as its leader.
+func TestPublicLeadersFollowTheTeamPageRule(t *testing.T) {
+	t.Parallel()
+	f := newTeamPageFixture(t)
+	ctx := context.Background()
+	if err := f.dir.AddMember(ctx, "g-weblab-l", f.board); err != nil {
+		t.Fatal(err)
+	}
+	leaders, err := f.svc.PublicLeaders(ctx, "WEBLAB")
+	if err != nil || leaders.Count != 2 || !full(leaders.Members[0]) || !leaders.Members[0].Leader {
+		t.Fatalf("leaders %+v %v", leaders.Members, err)
+	}
+	f.consents.decided[f.leader] = false
+	f.consents.decided[f.board] = false
+	leaders, err = f.svc.PublicLeaders(ctx, "WEBLAB")
+	if err != nil || leaders.Count != 0 || len(leaders.Members) != 0 {
+		t.Fatalf("leaders who object %+v %v", leaders.Members, err)
+	}
+}
+
+// On the Board's own roster a Board member who objects is named (first and
+// last name), nothing more: no picture, school, LinkedIn or leader flag (s6
+// row 4 a; Yusuf, 2026-10-27). Without an objection they are shown in full.
+func TestBoardRosterNamesBoardMembersWhoObject(t *testing.T) {
+	t.Parallel()
+	f := newTeamPageFixture(t)
+	ctx := context.Background()
+
+	roster, err := f.svc.PublicMembers(ctx, "/UYELER/YK")
+	if err != nil || roster.Count != 1 || !full(roster.Members[0]) {
+		t.Fatalf("board roster %+v %v", roster.Members, err)
+	}
+	leaders, err := f.svc.PublicLeaders(ctx, "/UYELER/YK")
+	if err != nil || leaders.Count != 1 || !leaders.Members[0].Leader {
+		t.Fatalf("board leaders %+v %v", leaders.Members, err)
+	}
+
+	f.consents.decided[f.board] = false
+	roster, err = f.svc.PublicMembers(ctx, "/UYELER/YK")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kemal, ok := byName(roster.Members)["Kemal"]
+	if roster.Count != 1 || !ok || kemal.LastName != "Board" || !bare(kemal) {
+		t.Fatalf("board roster after the objection %+v", roster.Members)
+	}
+	leaders, err = f.svc.PublicLeaders(ctx, "/UYELER/YK")
+	if err != nil || leaders.Count != 1 || !bare(leaders.Members[0]) {
+		t.Fatalf("board leaders after the objection %+v %v", leaders.Members, err)
+	}
+}
+
+// A roster that cannot read the objections fails: it never falls back to
+// showing everyone. Erased people are not even asked about.
 func TestPublicRosterFailsWhenTheConsentsCannotBeRead(t *testing.T) {
 	t.Parallel()
-	f := newTeamPageFixture(t, time.Date(2026, 11, 10, 21, 0, 0, 0, time.UTC))
+	f := newTeamPageFixture(t)
 	ctx := context.Background()
 	if _, err := f.store.RequestDeletion(ctx, f.leader, nil); err != nil {
 		t.Fatal(err)
@@ -273,10 +233,12 @@ func TestPublicRosterFailsWhenTheConsentsCannotBeRead(t *testing.T) {
 	}
 }
 
-// A listed Group named YK outside the Board's roots is not the Board.
+// A listed Group named YK outside the Board's roots is not the Board: a
+// member on it who objects is not named.
 func TestBoardIsOnlyTheYKRoots(t *testing.T) {
 	t.Parallel()
-	f := newTeamPageFixture(t, time.Time{})
+	f := newTeamPageFixture(t)
+	f.consents.decided[f.member] = false
 	ctx := context.Background()
 	f.dir.PutGroup(identity.Group{ID: "g-fake-yk", Name: "SAHTEYK", Path: "/UYELER/ARGE/WEBLAB/YK", Attributes: map[string]string{"public_listing": "true"}})
 	if err := f.dir.AddMember(ctx, "g-fake-yk", f.member); err != nil {

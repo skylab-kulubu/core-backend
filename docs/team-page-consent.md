@@ -1,9 +1,12 @@
-# Team page consent
+# Team page visibility
 
-A member is shown on their teams' public pages only if they asked to be
-(aydınlatma s6 row 4 b, KVKK art. 5/1; ekip-yetki-devri ticket 18). The
-public pages are the two rosters core answers without a sign-in, read by
-SkyApp (the site reads neither: its Board cards are the CMS's):
+Every member is shown on their teams' public pages unless they object
+(aydınlatma s6 row 4 b: the club's legitimate interest, KVKK art. 5/2-f,
+with the person's right to object; Yusuf, 2026-10-31, lawyer approved;
+ekip-yetki-devri ticket 18). Nobody disappears on a date: the transition
+of the consent rule (2026-10-27 to 2026-10-31) is gone. The public pages
+are the two rosters core answers without a sign-in, read by SkyApp (the
+site reads neither: its Board cards are the CMS's):
 
 - `GET /v1/teams/{team}/members` (a team with `public_listing=true`);
 - `GET /v1/teams/{team}/leaders` (`public_listing` or `public_leaders`).
@@ -12,10 +15,10 @@ SkyApp (the site reads neither: its Board cards are the CMS's):
 
 | Person | Shown |
 |---|---|
-| holds an open `team_page` consent | in full: first and last name, profile picture, LinkedIn, university, faculty, department, leader flag |
-| a Board member (in `/YK` or `/UYELER/YK`, or a Group under one; the YK roots of `AUTHZ_PRIVILEGED_ROOTS`) without the consent, **on the Board's own roster** (the team asked for is a YK root or under one) | first and last name only: the Board's names and roles are public on the club's legitimate interest (s6 row 4 a, art. 5/2-f; lawyer's answer 5; Yusuf, 2026-10-27). Their picture, LinkedIn, school and leader flag follow the consent like everyone's |
-| a Board member without the consent on any other team's roster | not at all, like everyone else |
-| anyone else | not at all: the roster's `count` does not count them |
+| a member who does not object | in full: first and last name, profile picture, LinkedIn, university, faculty, department, leader flag |
+| a Board member (in `/YK` or `/UYELER/YK`, or a Group under one; the YK roots of `AUTHZ_PRIVILEGED_ROOTS`) who objects, **on the Board's own roster** (the team asked for is a YK root or under one) | first and last name only: the Board's names and roles are public on the club's legitimate interest (s6 row 4 a, art. 5/2-f; lawyer's answer 5; Yusuf, 2026-10-27). Their picture, LinkedIn, school and leader flag are hidden like everyone's who objects |
+| a Board member who objects, on any other team's roster | not at all, like everyone else |
+| anyone else who objects | not at all: the roster's `count` does not count them |
 
 Core keeps no Board duty (Başkan, Sayman…) in a field; the site's Board
 cards come from the CMS.
@@ -24,62 +27,66 @@ Erased and deletion-pending people are left out as before. The admin
 panel's routes (`/v1/groups/{id}/members` and the rest) do not change: a
 team's leaders and the Privileged see every member.
 
-A roster that cannot read the consents answers an error, never the
+A roster that cannot read the objections answers an error, never the
 unfiltered list. The rosters answer `Cache-Control: no-store`, and the
 three public team routes (`/v1/teams`, `…/members`, `…/leaders`) share one
 budget of 120 requests a minute per client address.
 
-## The consent
+## The objection
 
-It is a grant of purpose `team_page` in `contact_consents`
-([contact-consents.md](contact-consents.md)), so it has the evidence s6 §6
-asks for (purpose, text version, source and client, times), is kept as proof
-three years after it ends, is deleted with the account, and can be withdrawn
-by mail to info@ (`consent-withdraw -purpose team_page`). It is not a contact
-consent: its channel is `web`, only the person gives it for their own
-account (source `self`, Account Center), it is active at once (no
-confirmation mail), it never renews, and no mail route serves it (the
+It is a grant of purpose `team_page_objection` in `contact_consents`
+([contact-consents.md](contact-consents.md)). It is not a consent: it is
+kept there for the same evidence (purpose, text version, source and
+client, times), is kept as proof three years after it ends, and is deleted
+with the account. Its channel is `web`, only the person records it for
+their own account (source `self`, Account Center), it is active at once
+(no confirmation mail), it never renews, and no mail route serves it (the
 audience, renewal requests, a product's record, lookup and withdrawal by
 address answer `400 consent_invalid`).
 
-- give: `POST /v1/users/me/consents {"purpose":"team_page","textVersion":"ekip-sayfasi-v1"}`
-- read: `GET /v1/users/me/consents` (the open `team_page` item)
-- withdraw: `DELETE /v1/users/me/consents/team_page`: ends the account's own
-  grant at once, without reading Keycloak
+Account Center's "Ekip sayfaları" switch is on unless the person has an
+open objection:
 
-The rosters read it on every request: a member who consents is shown at
-once, one who withdraws is hidden at once (during the transition too). While consents are off
-(`CONTACT_CONSENT_KEY` unset) nobody can withdraw, so the rosters act on no
-grant: only the Board's names are shown.
+- off (object): `POST /v1/users/me/consents {"purpose":"team_page_objection","textVersion":"ekip-sayfasi-itiraz-v1"}`
+- read: `GET /v1/users/me/consents` (an open `team_page_objection` item: off)
+- on again (lift it): `DELETE /v1/users/me/consents/team_page_objection`:
+  ends the account's own objection at once, without reading Keycloak
 
-Text `ekip-sayfasi-v1` (the switch's label in Account Center, word for word):
+The rosters read the objections on every request: who objects is hidden
+at once, who lifts it is shown at once. They read them with consents off
+(`CONTACT_CONSENT_KEY` unset) too: nobody can lift an objection then, so
+who objected stays hidden. No command records an objection for a person
+who asks by mail: they turn the switch off themselves.
 
-> Ekip sayfalarında görüneyim: adım, soyadım, profil fotoğrafım, LinkedIn adresim, üniversitem, fakültem, bölümüm ve ekip liderliğim ekibimin SKY LAB uygulamasındaki sayfasında yayımlansın.
+Text `ekip-sayfasi-itiraz-v1` (the switch in Account Center, its label and
+description word for word; what the person turned off):
 
-## Transition
+> Ekip sayfalarında görün. Adın, soyadın, profil fotoğrafın, LinkedIn adresin, üniversiten, fakülten, bölümün ve ekip liderliğin ekibinin SKY LAB uygulamasındaki sayfasında yer alır.
 
-`TEAM_PAGE_CONSENT_GRACE_UNTIL` (RFC 3339, `2026-11-10T21:00:00Z` or
-`2026-11-11T00:00:00+03:00`): until then the rosters still list in full every
-member who has **not decided**, as before the rule (Yusuf, 2026-10-27: the
-members listed today stay listed for 14 days while they are told, then those
-who did not consent are hidden). A member who consented is shown, one who
-withdrew is hidden at once. From then on the rule above holds. Unset: no
-transition. Set it to the release day plus 14 days; the notice mail
-(below) goes on its first day. Startup logs which
-way it is.
+## The consent before it (2026-10-27 to 2026-10-31)
 
-A value that is not RFC 3339 (a date without a time, `10.11.2026`) stops
-core at startup, as a wrong `AUTHZ_PRIVILEGED_ROOTS` does: the rule never
-changes quietly. Check the value before it is set:
+Until 2026-10-31 a member was shown only with a `team_page` consent (text
+`ekip-sayfasi-v1`), with a 14-day transition for who had not decided. That
+purpose is no longer taken: giving or withdrawing it answers
+`400 purpose_not_enabled`. Its rows stay as proof and keep their meaning:
 
-```
-printf '%s\n' "$VALUE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' && echo ok
-```
+- an open `team_page` consent: shown, as everyone who does not object;
+- a member whose `team_page` grants had all ended (they withdrew): carried
+  over by migration `20261031200000` as an open objection, from the time
+  of the last withdrawal, on the text they withdrew (`ekip-sayfasi-v1`).
+  The `team_page` rows are not changed. Turning the switch on lifts it.
 
-Known behaviour: during the transition a member added to a listed team, who
-has not decided, is listed too; only the end of the transition hides them.
+`TEAM_PAGE_CONSENT_GRACE_UNTIL` is no longer read by the rosters or at
+startup: it may stay set (production has it) or go, and a bad value no
+longer stops core. Only the notice command below reads it.
 
-## The notice
+## The notice (not to be used)
+
+**Not to be used since 2026-10-31:** nobody is hidden on a date any more,
+so there is nothing to tell (Yusuf: the team page notice is not sent). The
+command and its ledger stay until they are taken out in a change of their
+own. What follows is how it worked.
+
 
 Every member a public roster lists who has **not decided** is told once,
 on the first day of the transition, that the pages will show only those who

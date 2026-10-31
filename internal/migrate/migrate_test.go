@@ -113,6 +113,7 @@ var withoutFingerprint = map[int64]bool{
 	20261024190000: true,
 	20261025120000: true,
 	20261027130000: true,
+	20261031200000: true,
 }
 
 func TestFingerprintsMatchTheMigrations(t *testing.T) {

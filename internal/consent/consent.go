@@ -43,12 +43,22 @@ const (
 	// Not enabled: whether it covers an address or one application is not
 	// agreed with Forms yet.
 	PurposeRecruitmentPool Purpose = "recruitment_pool"
-	// PurposeTeamPage is showing a member on their teams' public pages
-	// (SkyApp reads core's public rosters): aydınlatma s6 row 4 (b).
-	// It is not a mail: only the person gives it, for their own account, in
-	// Account Center; no product records, looks up or mails it. It lasts
-	// until it is withdrawn (docs/team-page-consent.md).
+	// PurposeTeamPage was the consent to be shown on the teams' public
+	// pages (ekip-sayfasi-v1, 2026-10-27 to 2026-10-31). Since 2026-10-31
+	// every member is shown on the club's legitimate interest unless they
+	// object (PurposeTeamPageObjection; Yusuf, lawyer approved), so it is no
+	// longer taken. Its rows stay as proof: an open one changes nothing, and
+	// a withdrawn one was carried over as an objection (migration
+	// 20261031200000, docs/team-page-consent.md).
 	PurposeTeamPage Purpose = "team_page"
+	// PurposeTeamPageObjection is a member's objection to being shown on
+	// their teams' public pages (SkyApp reads core's public rosters;
+	// aydınlatma s6 row 4 b): an open grant hides them, ending it shows them
+	// again. It is not a consent and not a mail: it is kept here for the
+	// same evidence (text, source, client, times), proof and erasure. Only
+	// the person records it, for their own account, in Account Center; no
+	// product records, looks up or mails it. It lasts until it is withdrawn.
+	PurposeTeamPageObjection Purpose = "team_page_objection"
 )
 
 // Channels a purpose's grants are recorded for (contact_consents.channel).
@@ -110,8 +120,15 @@ var purposes = map[Purpose]purposeSpec{
 	PurposeTeamPage: {
 		texts:   []string{"ekip-sayfasi-v1"},
 		sources: []Source{SourceSelf},
-		enabled: true,
+		enabled: false,
 		label:   "ekip sayfalarında görünmek",
+		channel: ChannelWeb,
+	},
+	PurposeTeamPageObjection: {
+		texts:   []string{"ekip-sayfasi-itiraz-v1"},
+		sources: []Source{SourceSelf},
+		enabled: true,
+		label:   "ekip sayfalarında görünmemek",
 		channel: ChannelWeb,
 	},
 }
@@ -125,6 +142,9 @@ var texts = map[string]string{
 	"tanitim-v1":      "SKY LAB'dan tanıtım içerikli e-postalar (indirim kodu, şirket iş ilanı, çekiliş gibi) almak istiyorum.",
 	"alim-havuzu-v1":  "Bu dönem kabul edilmezsem başvurumun gelecek alımlarda değerlendirilmek üzere saklanmasını istiyorum. İstediğim zaman vazgeçebilirim.",
 	"ekip-sayfasi-v1": "Ekip sayfalarında görüneyim: adım, soyadım, profil fotoğrafım, LinkedIn adresim, üniversitem, fakültem, bölümüm ve ekip liderliğim ekibimin SKY LAB uygulamasındaki sayfasında yayımlansın.",
+	// The switch the person turned off (Account Center's label and
+	// description, word for word): an objection records it.
+	"ekip-sayfasi-itiraz-v1": "Ekip sayfalarında görün. Adın, soyadın, profil fotoğrafın, LinkedIn adresin, üniversiten, fakülten, bölümün ve ekip liderliğin ekibinin SKY LAB uygulamasındaki sayfasında yer alır.",
 }
 
 // Text is the box text of a version, "" for a version core does not know.
@@ -140,8 +160,8 @@ func (p Purpose) Renews() bool { return purposes[p].renews }
 
 // Mailed reports whether purpose p is a contact purpose: its grants allow
 // mails, SkyMail reads its audience and the products record, look up and
-// withdraw it by address. A purpose that is not (team_page) is given and
-// withdrawn by the person alone, on their account.
+// withdraw it by address. A purpose that is not (team_page_objection) is
+// given and withdrawn by the person alone, on their account.
 func (p Purpose) Mailed() bool { return purposes[p].channel == ChannelEmail }
 
 // Channel is what a grant of purpose p allows (contact_consents.channel).
@@ -197,7 +217,7 @@ func (p Purpose) check() error {
 
 // mailedCheck is check for the routes of the mails (the audience, renewal,
 // a product's lookup and withdrawal by address): a purpose that is not
-// mailed (team_page) is not theirs.
+// mailed (team_page_objection) is not theirs.
 func (p Purpose) mailedCheck() error {
 	if err := p.check(); err != nil {
 		return err
