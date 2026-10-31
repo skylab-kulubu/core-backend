@@ -521,6 +521,8 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/users/me/capabilities", capabilities.Get)
 	}
 	app.Get("/v1/users/me/managed-groups", ident.ManagedGroups)
+	// The Team audit record, for the audit:read role (docs/team-audit.md).
+	app.Get("/v1/team-audit-records", ident.TeamAuditRecords)
 	app.Post("/v1/users/me/profile-picture", limitUploads, me.ProfilePicture)
 	app.Delete("/v1/users/me/profile-picture", me.DeleteProfilePicture)
 	app.Get("/v1/users", ident.ListUsers)

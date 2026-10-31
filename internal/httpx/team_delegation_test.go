@@ -106,6 +106,7 @@ type delegationSetup struct {
 	searches  int
 	mode      authz.RoleMode // AUTHZ_ROLE_MODE; empty is groups
 	teamTree  bool           // the Owner team tree and Team settings, as main wires them
+	reads     bool           // the audit record's reading route reads the rows written
 	// The Team structure limits; zero is the default.
 	depth, pathLen, subTeams int
 }
@@ -152,6 +153,9 @@ func newDelegationEnv(t *testing.T, setup delegationSetup) *delegationEnv {
 	az := authz.NewAuthorizer(policy)
 	e.codes = teamcode.NewMemoryLedger()
 	options := identity.Options{TeamCodes: e.codes, TeamAudit: e.audit, Membership: e.heard}
+	if setup.reads {
+		options.AuditRecords = e.audit
+	}
 	if setup.teamTree {
 		e.tree = &countingTree{TeamTree: identity.NewTeamTree(e.dir, identity.TeamTreeOptions{})}
 		az = authz.NewAuthorizer(policy, authz.WithTeamTree(e.tree), authz.WithTeamSettings(e.tree))

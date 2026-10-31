@@ -261,6 +261,7 @@ Errors are RFC 9457 problems with `code` (and `reason` for placement). The panel
 | `DELETE /v1/groups/{id}/leaders/{userId}` | `ManagesStrict` | `{lastLeader}` |
 | `GET /v1/groups/{id}/move-preview?parentId=` | as the move | what the move would do ([Moving a Team](#moving-a-team)) |
 | `POST /v1/groups/{id}/move` `{parentId}` | `ManagesStrict` of the Team, `Manages` of the new parent | the Team with everything under it |
+| `GET /v1/team-audit-records` | none: a Leader is `403` (S7) | the `audit:read` role only ([team-audit.md](team-audit.md#get-v1team-audit-records)) |
 
 `GET /v1/groups`, `POST /v1/groups`, `PATCH /v1/groups/{id}` and the
 client-role routes stay Privileged's (Forms reads the list).

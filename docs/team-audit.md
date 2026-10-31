@@ -155,19 +155,65 @@ be written is logged and the request is still refused.
 
 ## Who sees it
 
+Only the `audit:read` role of core's client reads the record. Keycloak maps
+it to the ADMIN, YK and DK roots (ticket 09; DK since grup-yonetimi GY1,
+which replaced S11's "not DK": DK reads and changes nothing,
+[authz-roles.md](authz-roles.md#privileged-readers-dk)). The role is read
+directly in every authorization mode (`authz.TypeTeamAudit`): a Privileged
+Group without it does not see the record, nor does `global:read`, nor does a
+service account, nor do Leaders, not even their own Teams' history (S7, first
+release). `can["audit.read"]` in `GET /v1/users/me/capabilities` is this same
+decision. Team delegation's switch (`TEAM_DELEGATION`) does not change it:
+the record is read whether delegation is on or off.
+
 The app assignments read their own rows: `GET /v1/apps/:clientId/audit`
 (the app's last hundred) and the "who, when" of each assignment, both only
 for a caller who also holds `audit:read`
-([app-assignments.md](app-assignments.md)). The record has no general
-reading route yet. `GET /v1/team-audit-records` (ticket
-10) opens it to the `audit:read` role of core's client, which Keycloak maps
-to the ADMIN, YK and DK roots (ticket 09; DK since grup-yonetimi GY1, which
-replaced S11's "not DK": DK reads and changes nothing,
-[authz-roles.md](authz-roles.md#privileged-readers-dk)). The role is read
-directly in every authorization mode: a Privileged Group without it does
-not see the record, nor does `global:read`, nor do Leaders. Names are read
-from core's `users` when a row is shown; an erased person shows as
-"Silinmiş kullanıcı".
+([app-assignments.md](app-assignments.md)).
+
+### `GET /v1/team-audit-records`
+
+The record's reading route (ticket 10, SPEC §8). Every filter is optional
+and they combine:
+
+| Query | Meaning |
+|---|---|
+| `groupId` | the row's Group (a Keycloak id) |
+| `subtree=true` | with `groupId`: the Group and every Group under it now, and every row whose path at the time was the Group's path now or under it, so a Sub-team deleted since stays in its Team's history. For a Group that is gone, its own rows and the rows under the path of its newest row |
+| `actorId` | who made the change (a subject) |
+| `userId` | the person the row is about (`target_user_id`) |
+| `action` | one or more actions: repeated (`action=member.add&action=member.remove`) or comma-separated |
+| `outcome` | `pending`, `ok`, `failed` or `denied` |
+| `from`, `to` | RFC 3339; `from` inclusive, `to` exclusive |
+| `limit` | 1 to 100, default 100 |
+| `cursor` | the `next` of the page before |
+
+Rows come newest first (`occurred_at`, then `id`, both descending). The
+answer is `{"items": [...], "next": "<cursor>" | null}`; `next` is null on
+the last page. A filter the route cannot read is `400`, but only for a
+caller who may read the record (anyone else is `403` first). Every answer
+is `Cache-Control: no-store`.
+
+Each item:
+
+| Field | |
+|---|---|
+| `id`, `occurredAt`, `action`, `outcome`, `errorCode`, `correlationId` | the row's |
+| `actor` | `{id, displayName, basis, viaGroupId, client}`: `basis` is `privileged`, `leader` (with `viaGroupId`, the Team whose Leader group granted it), `none` (a denied row) or `system` (core's job, nil id, `client` `system:term-expiry`); `client` is the token's `azp` |
+| `target` | `{id, displayName}` of a member, leader, term or person app row; `null` otherwise |
+| `group` | `{id, path, currentPath}`: `path` at the time; `currentPath` the Group's path now while it exists, `null` once it is gone. `null` for an app row about a person |
+| `before`, `after` | as the row holds them (the table above); `null` when empty |
+
+Names are read from core's `users` when the page is built: a person whose
+account is erased, blocked or marked for deletion shows as "Silinmiş
+kullanıcı", a subject core holds no row of as an empty `displayName`. The
+answer holds nothing else of a person: no address, no number, no username
+(SPEC §6.4 is the delegated member list's, not this route's).
+
+Every read, a refused or malformed one too, is one JSON log line:
+`{"event":"team_audit_read","actor":"<sub>","client":"<azp>","filters":["groupId","action",...],"outcome":"ok|forbidden|invalid|error","rows":N}`.
+It names the kinds of filter the query carries, never their values. Reads
+themselves are not rows of the record.
 
 ## Retention and account erasure
 
