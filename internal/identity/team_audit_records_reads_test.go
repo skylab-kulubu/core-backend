@@ -40,10 +40,10 @@ func (c *countedGroups) reset() (gets, list int) {
 	return gets, list
 }
 
-// A page's current paths take one Keycloak read whatever the number of
-// its Groups: the subtree's own list when the query has one, one list
-// otherwise; a page of a single Group reads that Group alone (review of
-// #333, T2). A handover row names its successor (T3).
+// A page's current paths: a subtree query reuses the list it read and
+// reads no Group again; otherwise each Group is read by its id, never a
+// list of the realm, which Keycloak builds one Group's children at a time
+// (review of #333, T2). A handover row names its successor (T3).
 func TestTeamAuditRecordsReadGroupsOnce(t *testing.T) {
 	t.Parallel()
 	m := identity.NewMemory()
@@ -121,7 +121,7 @@ func TestTeamAuditRecordsReadGroupsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	check("every row", page, 5, 0, 1)
+	check("every row", page, 5, 4, 0)
 
 	page, err = svc.TeamAuditRecords(ctx, reader, identity.AuditQuery{GroupID: ids["/UYELER/ARGE/WEBLAB"], Subtree: true})
 	if err != nil {

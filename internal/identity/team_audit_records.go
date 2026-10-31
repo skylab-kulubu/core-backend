@@ -5,11 +5,13 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
+	"golang.org/x/sync/errgroup"
 )
 
 // The reading route of the Team audit record (docs/team-audit.md,
@@ -94,6 +96,9 @@ type AuditPage struct {
 	Items []AuditEntry
 	Next  string
 }
+
+// auditGroupsAtOnce bounds the Group reads one page makes at once.
+const auditGroupsAtOnce = 4
 
 func (s *service) TeamAuditRecords(ctx context.Context, p authz.Principal, in AuditQuery) (AuditPage, error) {
 	if err := s.allow(p, authz.TypeTeamAudit, authz.Read); err != nil {
@@ -267,37 +272,41 @@ func (s *service) auditSubtree(ctx context.Context, id string) ([]string, string
 	return ids, path, all, nil
 }
 
-// currentPaths are the paths now of the Groups ids that still exist, read
-// from all, the realm's Groups, when the caller has listed them. Otherwise
-// one Group is read by its id, and more in one list of the realm: a page
-// holds up to a hundred Groups, and Keycloak answers one list faster than
-// that many reads (review of #333, T2).
+// currentPaths are the paths now of the Groups ids that still exist. A
+// subtree read has listed the realm's Groups already (all): the paths come
+// from that list. Otherwise each Group is read by its id, a few at once: a
+// list of the realm reads every Group's children one after another in
+// Keycloak, slower than a page's reads (review of #333, T2).
 func (s *service) currentPaths(ctx context.Context, ids []string, all []Group) (map[string]string, error) {
 	out := map[string]string{}
-	if len(ids) == 0 {
+	if all != nil {
+		for _, g := range all {
+			if slices.Contains(ids, g.ID) {
+				out[g.ID] = g.Path
+			}
+		}
 		return out, nil
 	}
-	if all == nil && len(ids) == 1 {
-		g, err := s.dir.GetGroup(ctx, ids[0])
-		switch {
-		case errors.Is(err, ErrNotFound):
-			return out, nil
-		case err != nil:
-			return nil, err
-		}
-		out[ids[0]] = g.Path
-		return out, nil
+	var mu sync.Mutex
+	eg, gctx := errgroup.WithContext(ctx)
+	eg.SetLimit(auditGroupsAtOnce)
+	for _, id := range ids {
+		eg.Go(func() error {
+			g, err := s.dir.GetGroup(gctx, id)
+			switch {
+			case errors.Is(err, ErrNotFound):
+				return nil
+			case err != nil:
+				return err
+			}
+			mu.Lock()
+			out[id] = g.Path
+			mu.Unlock()
+			return nil
+		})
 	}
-	if all == nil {
-		var err error
-		if all, err = s.dir.ListGroups(ctx); err != nil {
-			return nil, err
-		}
-	}
-	for _, g := range all {
-		if slices.Contains(ids, g.ID) {
-			out[g.ID] = g.Path
-		}
+	if err := eg.Wait(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
