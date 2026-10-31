@@ -145,9 +145,10 @@ func (s *service) createSubTeam(ctx context.Context, records teamcode.Records, p
 }
 
 // ChangeTeamCode changes the code (Keycloak name) of the Team groupRef (a
-// Keycloak id): Privileged on any Team, a Leader (delegation on) on a
-// Sub-team they manage strictly (authz.Policy.ManagesStrict: not their own
-// Team). The new code passes the name rule and is free everywhere, as a
+// Keycloak id): Privileged on any Team; a Leader (delegation on) on a
+// Sub-team they manage strictly (not their own Team) only with
+// TEAM_DELEGATION_LEADER_CODES on (authz.Policy.ChangesTeamCode), refused
+// with team_code_privileged_only otherwise. The new code passes the name rule and is free everywhere, as a
 // create's; the old one is retired with the write, and refused with
 // code_in_use while core's records still name it (S9). Every kept Group
 // read is forgotten: the Team's path, and every path under it, changed.
@@ -167,9 +168,9 @@ func (s *service) ChangeTeamCode(ctx context.Context, p authz.Principal, groupRe
 		})
 		return updated, err
 	}
-	err := s.delegatedRecordsWrite(ctx, p, teamaudit.ActionTeamCode, groupRef, uuid.Nil, authz.Policy.ManagesStrict,
+	err := s.delegatedRecordsWrite(ctx, p, teamaudit.ActionTeamCode, groupRef, uuid.Nil, authz.Policy.ChangesTeamCode,
 		func(ctx context.Context, records teamcode.Records, m authz.TeamManager, target authz.ManagedGroup, g Group) error {
-			d := s.delegation.policy.ManagesStrict(m, target)
+			d := s.delegation.policy.ChangesTeamCode(m, target)
 			if !d.Allowed {
 				s.deny(ctx, teamaudit.ActionTeamCode, target.Group, uuid.Nil, d, d.Refusal)
 				return decisionError(d)

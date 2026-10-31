@@ -145,7 +145,8 @@ its outcome (and a create get its Group id); nothing else updates a row.
 `teamaudit.Writer.Deny` from the delegated member routes (ticket 04), one
 per refused write, with the refusal's code: `forbidden`, `protected_group`,
 `leader_group_needs_parent`, `group_limit`, `group_tree_mismatch`,
-`team_code_not_unique`. A Leader refused for a Group of their own Teams
+`team_code_not_unique`, `team_code_privileged_only` (a Leader's code change
+while `TEAM_DELEGATION_LEADER_CODES` is off). A Leader refused for a Group of their own Teams
 (protected, a Leader group) keeps `leader` and their Team; anyone else is
 `none` (migration `20261012150000`). Not recorded: a refusal with
 delegation off (the route is Privileged's as before), a Group id Keycloak
