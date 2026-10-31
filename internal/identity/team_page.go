@@ -35,12 +35,12 @@ type TeamPageVisibility struct {
 
 // TeamPageGraceUntilEnv was the end of the transition of the consent rule
 // (2026-10-27 to 2026-10-31): the rosters no longer read it, so it may stay
-// set or go. Only the team page notice command (team-page-notice, not to be
-// used) still reads it.
+// set or go. Nothing reads it: the team page notice command
+// (team-page-notice) refuses every run without reading the environment.
 const TeamPageGraceUntilEnv = "TEAM_PAGE_CONSENT_GRACE_UNTIL"
 
-// TeamPageGraceUntilFromEnv reads TeamPageGraceUntilEnv for the notice
-// command: zero when unset, an error naming the variable when it is not an
+// TeamPageGraceUntilFromEnv reads TeamPageGraceUntilEnv (no command calls
+// it since the notice refuses every run): zero when unset, an error naming the variable when it is not an
 // RFC 3339 time.
 func TeamPageGraceUntilFromEnv(getenv func(string) string) (time.Time, error) {
 	raw := strings.TrimSpace(getenv(TeamPageGraceUntilEnv))
