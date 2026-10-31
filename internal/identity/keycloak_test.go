@@ -102,7 +102,7 @@ func TestKeycloakAccountLifecycleDisablesWithOnlyEnabledFalseAndTreatsDeleteRetr
 	userID := uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 	deleteCalls := 0
 	var userCalls []string
-	var disableBodies []string
+	var disableBodies, disableHeaders []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/admin/realms/e-skylab/users/"+userID.String() {
@@ -123,6 +123,7 @@ func TestKeycloakAccountLifecycleDisablesWithOnlyEnabledFalseAndTreatsDeleteRetr
 				t.Errorf("read disable body: %v", err)
 			}
 			disableBodies = append(disableBodies, string(body))
+			disableHeaders = append(disableHeaders, strings.Join(r.Header.Values("X-Sky-Account-Erasure"), ","))
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && r.URL.Path == "/admin/realms/e-skylab/users/"+userID.String()+"/logout":
 			w.WriteHeader(http.StatusNoContent)
@@ -152,6 +153,12 @@ func TestKeycloakAccountLifecycleDisablesWithOnlyEnabledFalseAndTreatsDeleteRetr
 	}
 	if want := []string{`{"enabled":false}`, `{"enabled":false}`}; !reflect.DeepEqual(disableBodies, want) {
 		t.Fatalf("disable bodies = %q, want exactly %q", disableBodies, want)
+	}
+	// The header tells Keycloak the disable is Account erasure's, so it
+	// marks the person as being erased (e-skylab-keycloak
+	// sky-account-erasure-mark); the body stays the same.
+	if want := []string{"disable_identity", "disable_identity"}; !reflect.DeepEqual(disableHeaders, want) {
+		t.Fatalf("X-Sky-Account-Erasure = %q, want %q on every disable", disableHeaders, want)
 	}
 	if want := []string{http.MethodPut, http.MethodPut}; !reflect.DeepEqual(userCalls, want) {
 		t.Fatalf("user calls = %v, want only the two PUTs", userCalls)
