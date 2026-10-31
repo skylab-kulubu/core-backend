@@ -188,7 +188,8 @@ func TestWarningsThenTheMarkWithoutRemoval(t *testing.T) {
 		}
 	}
 	if len(lists2) != 1 || lists2[0].recipient != "Admin@example.test" || lists2[0].vars["Count"] != "5" ||
-		!strings.Contains(lists2[0].vars["Items"], "Yekta Test · YK · 31.05.2027") {
+		!strings.Contains(lists2[0].vars["Items"], "Yekta Test · YK · 31.05.2027") ||
+		!strings.Contains(lists2[0].vars["Items"], "Leyla Test · WEBLAB/LIDERLER · 31.05.2027") {
 		t.Fatalf("list mail %+v", lists2)
 	}
 
@@ -216,6 +217,40 @@ func TestWarningsThenTheMarkWithoutRemoval(t *testing.T) {
 	}
 	if run := f.run(t, membershipterm.ModeApply); run.Weekly != membershipterm.WeeklyNotDue {
 		t.Fatalf("weekly twice %+v", run)
+	}
+}
+
+// An expired list whose every term was erased with its holder before it
+// went lists nobody: it does not go ("0 terms"), and the metric says why.
+// The marks' audit records stay as they are.
+func TestAnExpiredListOfErasedTermsDoesNotGo(t *testing.T) {
+	f := newFixture(t, membershipterm.ModeApply)
+	f.run(t, membershipterm.ModeApply)
+	f.setNow(termEnd.Add(time.Second))
+	if run := f.run(t, membershipterm.ModeApply); run.Expired != 5 {
+		t.Fatalf("at the end %+v", run)
+	}
+	// What erasing every holder does to their terms (internal/user).
+	if _, err := f.pool.Exec(context.Background(), `DELETE FROM management_membership_terms`); err != nil {
+		t.Fatal(err)
+	}
+	f.mail.sent = nil
+	if _, err := f.svc.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range f.mail.sent {
+		if m.vars["Notice"] == "expired-list" {
+			t.Fatalf("an empty list went: %+v", m)
+		}
+	}
+	if metrics := f.svc.Prometheus(); !strings.Contains(metrics, `skylab_management_term_mail_total{outcome="skipped_erased"} 1`+"\n") {
+		t.Fatalf("metrics\n%s", metrics)
+	}
+	if lists := f.queued(t)[membershipterm.NoticeExpiredList]; len(lists) != 0 {
+		t.Fatalf("still queued %v", lists)
+	}
+	if rows := f.auditRows(t, teamaudit.ActionTermExpired); len(rows) != 5 {
+		t.Fatalf("audit rows %v", rows)
 	}
 }
 
