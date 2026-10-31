@@ -449,7 +449,7 @@ func TestDryRunCountsWhatApplyChangesAndApplyIsIdempotent(t *testing.T) {
 			t.Errorf("row id %s reached a record or a log line", id)
 		}
 	}
-	if got := scalar[int](t, pool, `SELECT count(*) FROM retention_run_rules`); got != 57 {
+	if got := scalar[int](t, pool, `SELECT count(*) FROM retention_run_rules`); got != 60 {
 		t.Fatalf("rule records %d", got)
 	}
 	if got := scalar[string](t, pool, `SELECT string_agg(mode || ':' || status || ':' || triggered_by, ',' ORDER BY started_at, mode DESC) FROM retention_runs`); got != "dry-run:ok:schedule,apply:ok:schedule,apply:ok:schedule" {
