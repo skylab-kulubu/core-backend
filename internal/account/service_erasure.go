@@ -174,6 +174,9 @@ func identityClosedAt(request user.DeletionRequest, checkpoints map[user.Deletio
 // service step is checkpointed; otherwise it has already scheduled the retry
 // and returns that error.
 func (w *Worker) runServiceErasure(ctx context.Context, request user.DeletionRequest, leaseToken uuid.UUID, completed map[user.DeletionStep]bool, now time.Time, services *ServiceErasure, pass *erasurePass) error {
+	// SkyMail erased the person in an earlier pass: the received notice
+	// may go now (deletion_notices.go).
+	w.noticeReceived(ctx, request, leaseToken, completed, services, pass)
 	pending := make([]ServiceStep, 0, len(services.Steps))
 	for _, step := range services.Steps {
 		if !completed[step.Step] {
@@ -230,6 +233,9 @@ func (w *Worker) runServiceErasure(ctx context.Context, request user.DeletionReq
 		}
 		completed[step.Step] = true
 	}
+	// SkyMail erased the person in this pass: the received notice goes
+	// before the pass ends, whatever the other services answered.
+	w.noticeReceived(ctx, request, leaseToken, completed, services, pass)
 	// A wait comes last, so the code names a service that failed when there
 	// is one.
 	failures = append(failures, waiting...)

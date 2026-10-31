@@ -32,8 +32,10 @@ type skyNumberKeycloak struct {
 	putStatus int
 	methods   []string
 	putBodies []string
-	afterGet  func()
-	once      sync.Once
+	// erasure is each PUT's X-Sky-Account-Erasure header.
+	erasure  []string
+	afterGet func()
+	once     sync.Once
 }
 
 func (f *skyNumberKeycloak) serve(t *testing.T) *httptest.Server {
@@ -76,6 +78,7 @@ func (f *skyNumberKeycloak) serve(t *testing.T) *httptest.Server {
 			defer f.mu.Unlock()
 			f.methods = append(f.methods, r.Method)
 			f.putBodies = append(f.putBodies, string(body))
+			f.erasure = append(f.erasure, r.Header.Get("X-Sky-Account-Erasure"))
 			if f.putStatus != 0 {
 				w.WriteHeader(f.putStatus)
 				_, _ = w.Write([]byte(`{"error":"` + f.id.String() + ` kisi@example.com"}`))
@@ -229,6 +232,11 @@ func TestKeycloakWriteSkyNumberDoesNotReEnableAUserDisabledBetweenReadAndWrite(t
 	}
 	if want := `{"enabled":false}`; fake.putBodies[0] != want {
 		t.Fatalf("interleaved body = %s, want %s", fake.putBodies[0], want)
+	}
+	// Only the erasure's disable says it is one; the Sky number write is no
+	// erasure and must not mark the person.
+	if want := []string{"disable_identity", ""}; !reflect.DeepEqual(fake.erasure, want) {
+		t.Fatalf("X-Sky-Account-Erasure = %q, want %q", fake.erasure, want)
 	}
 	got := fake.state()
 	if got["enabled"] != false {
