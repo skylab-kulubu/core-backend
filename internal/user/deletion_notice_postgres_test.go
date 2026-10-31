@@ -2,6 +2,7 @@ package user_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -33,6 +34,10 @@ func TestDeletionNoticeIsClaimedOnceUnderTheLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := request.NextAttemptAt
+	// An administrator's request (RequestDeletion) has no self intake.
+	if state, err := store.DeletionNoticeState(ctx, request.ID); err != nil || state != (user.DeletionNoticeState{}) {
+		t.Fatalf("state before = %+v, %v", state, err)
+	}
 	if claimed, err := store.ClaimDeletionNotice(ctx, request.ID, uuid.New(), user.DeletionNoticeReceived, now); err != nil || claimed {
 		t.Fatalf("claim without a lease = %v, %v", claimed, err)
 	}
@@ -65,5 +70,37 @@ func TestDeletionNoticeIsClaimedOnceUnderTheLease(t *testing.T) {
 	}
 	if _, err := store.ClaimDeletionNotice(ctx, request.ID, *second.LeaseToken, user.DeletionNotice("other"), now); err == nil {
 		t.Fatal("an unknown notice was claimed")
+	}
+	if state, err := store.DeletionNoticeState(ctx, request.ID); err != nil || !state.ReceivedClaimed || !state.CompletedClaimed || state.SelfRequested {
+		t.Fatalf("state after = %+v, %v", state, err)
+	}
+	if _, err := store.DeletionNoticeState(ctx, uuid.New()); !errors.Is(err, user.ErrNotFound) {
+		t.Fatalf("state of no request = %v", err)
+	}
+}
+
+// The person's own request is the one Account Center's self intake made.
+func TestDeletionNoticeStateKnowsTheSelfIntake(t *testing.T) {
+	pool := testpostgres.Start(t)
+	ctx := context.Background()
+	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	store := user.NewPostgresStore(pool)
+	subjectID := uuid.New()
+	if _, _, err := user.NewService(store).Ensure(ctx, subjectID, user.Profile{Email: "self@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	intake := user.SelfDeletionIntake{ReceiptExpiresAt: now.Add(time.Hour), CreatedAt: now}
+	for i, hash := range []*[32]byte{&intake.IdempotencyHash, &intake.ReceiptLookupHash, &intake.ReceiptHash} {
+		hash[0] = byte(i + 1)
+	}
+	record, err := store.RequestSelfDeletion(ctx, subjectID, intake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := store.DeletionNoticeState(ctx, record.Request.ID); err != nil || !state.SelfRequested || state.ReceivedClaimed || state.CompletedClaimed {
+		t.Fatalf("state = %+v, %v", state, err)
 	}
 }

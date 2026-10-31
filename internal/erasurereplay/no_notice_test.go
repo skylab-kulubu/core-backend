@@ -13,15 +13,20 @@ import (
 // A replay after a restore sends the services their Erasure commands again
 // and nothing else: the person was told when their request was received and
 // when it completed (docs/account-lifecycle.md, "Deletion notices"), and is
-// never told twice. Neither the replay nor its command reaches a mailer or
-// the erasure worker that sends the notices.
+// never told twice. Neither the replay, its command nor the operator's
+// manual step (erasure-manual-step) reaches a mailer or the erasure worker
+// that sends the notices.
 func TestReplaySendsNoDeletionNotice(t *testing.T) {
 	t.Parallel()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	files = append(files, filepath.Join("..", "..", "cmd", "core-backend", "replay_from_backup.go"))
+	// The operator's manual step only records a checkpoint; the worker sends
+	// what is due when it goes on, never the command.
+	files = append(files,
+		filepath.Join("..", "..", "cmd", "core-backend", "replay_from_backup.go"),
+		filepath.Join("..", "..", "cmd", "core-backend", "erasure_manual_step.go"))
 	forbiddenImports := map[string]bool{"github.com/skylab-kulubu/core-backend/internal/mail": true}
 	forbiddenNames := map[string]bool{"DeletionNotices": true, "AccountDeletionNotice": true, "NewWorker": true, "Maintain": true, "RunOnce": true}
 	checked := 0
@@ -47,7 +52,7 @@ func TestReplaySendsNoDeletionNotice(t *testing.T) {
 			return true
 		})
 	}
-	if checked < 3 {
-		t.Fatalf("checked %d files, want the package and the command", checked)
+	if checked < 4 {
+		t.Fatalf("checked %d files, want the package and the two commands", checked)
 	}
 }

@@ -270,6 +270,24 @@ func (s *PostgresStore) ClaimDeletionNotice(ctx context.Context, requestID, leas
 	return tag.RowsAffected() == 1, nil
 }
 
+// DeletionNoticeState reads which notices of the request were claimed and
+// whether it came in through Account Center's self intake (the person's own
+// request; an administrator's has none).
+func (s *PostgresStore) DeletionNoticeState(ctx context.Context, requestID uuid.UUID) (DeletionNoticeState, error) {
+	var state DeletionNoticeState
+	err := s.pool.QueryRow(ctx, `
+		SELECT request.received_notice_at IS NOT NULL,
+		       request.completed_notice_at IS NOT NULL,
+		       EXISTS (SELECT 1 FROM account_deletion_self_intakes intake WHERE intake.request_id = request.id)
+		FROM account_deletion_requests request
+		WHERE request.id = $1
+	`, requestID).Scan(&state.ReceivedClaimed, &state.CompletedClaimed, &state.SelfRequested)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DeletionNoticeState{}, ErrNotFound
+	}
+	return state, err
+}
+
 func (s *PostgresStore) requireDeletionLease(ctx context.Context, requestID, leaseToken uuid.UUID) error {
 	var held bool
 	if err := s.pool.QueryRow(ctx, `

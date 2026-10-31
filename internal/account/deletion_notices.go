@@ -28,8 +28,10 @@ func DeletionDeadlineDay(requestedAt time.Time) string {
 }
 
 // DeletionNoticeClaims takes a notice in hand once per request, under the
-// worker's lease (user.PostgresStore).
+// worker's lease, and says beforehand whether it was taken and whether the
+// person asked for the deletion themselves (user.PostgresStore).
 type DeletionNoticeClaims interface {
+	DeletionNoticeState(ctx context.Context, requestID uuid.UUID) (user.DeletionNoticeState, error)
 	ClaimDeletionNotice(ctx context.Context, requestID, leaseToken uuid.UUID, notice user.DeletionNotice, at time.Time) (bool, error)
 }
 
@@ -112,30 +114,35 @@ func (n *DeletionNotices) send(ctx context.Context, request user.DeletionRequest
 	}
 }
 
-// selfRequested is a request the person made: through Account Center, or
-// for themselves. One an administrator made for someone else gets no
-// received notice: the person asked for nothing.
-func selfRequested(request user.DeletionRequest) bool {
-	return request.RequestedBy == nil || *request.RequestedBy == request.SubjectID
-}
-
 // noticeReceived sends the received notice once SkyMail has erased the
 // person (erase_skymail checkpointed, in this pass or an earlier one), at
-// most once per request: the claim comes first. Sent after that step, the
-// notice is the one SkyMail keeps no record of (erase_after_send) and no
-// erasure waits for. Tried once per pass.
+// most once per request. Sent after that step, the notice is the one SkyMail
+// keeps no record of (erase_after_send) and no erasure waits for. Only the
+// person's own request gets it: one that came in through Account Center's
+// self intake. An administrator's asked the person nothing. Tried once per
+// pass, in this order: the request's state (claimed already? the person's
+// own?), the addresses, then the claim, so a Keycloak that cannot be read
+// leaves the notice for the next pass instead of using up its claim.
 func (w *Worker) noticeReceived(ctx context.Context, request user.DeletionRequest, leaseToken uuid.UUID, completed map[user.DeletionStep]bool, services *ServiceErasure, pass *erasurePass) {
 	notices := w.config.Notices
-	if pass.receivedNoticeTried || !completed[user.DeletionStepEraseSkyMail] || notices.key(user.DeletionNoticeReceived) == "" || !selfRequested(request) {
+	if pass.receivedNoticeTried || !completed[user.DeletionStepEraseSkyMail] || notices.key(user.DeletionNoticeReceived) == "" {
 		return
 	}
 	pass.receivedNoticeTried = true
-	if !notices.claim(ctx, request, leaseToken, user.DeletionNoticeReceived, w.config.Now()) {
+	state, err := notices.Claims.DeletionNoticeState(ctx, request.ID)
+	if err != nil {
+		notices.logf("account erasure notice request_id=%s notice=%s: state not read, tried again next pass: %v", request.ID, user.DeletionNoticeReceived, err)
+		return
+	}
+	if state.ReceivedClaimed || !state.SelfRequested {
 		return
 	}
 	emails, err := w.passAddresses(ctx, request, pass, services.Addresses)
 	if err != nil {
-		notices.logf("account erasure notice request_id=%s notice=%s: addresses unavailable, not sent: %v", request.ID, user.DeletionNoticeReceived, err)
+		notices.logf("account erasure notice request_id=%s notice=%s: addresses unavailable, tried again next pass: %v", request.ID, user.DeletionNoticeReceived, err)
+		return
+	}
+	if !notices.claim(ctx, request, leaseToken, user.DeletionNoticeReceived, w.config.Now()) {
 		return
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, w.config.StepTimeout)

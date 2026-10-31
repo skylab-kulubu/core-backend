@@ -726,6 +726,23 @@ func (s *MemoryStore) ClaimDeletionNotice(_ context.Context, requestID, leaseTok
 	return false, nil
 }
 
+// DeletionNoticeState reads which notices of the request were claimed and
+// whether it has a self intake.
+func (s *MemoryStore) DeletionNoticeState(_ context.Context, requestID uuid.UUID) (DeletionNoticeState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, request := range s.deletionRequests {
+		if request.ID != requestID {
+			continue
+		}
+		_, received := s.deletionNotices[requestID][DeletionNoticeReceived]
+		_, completed := s.deletionNotices[requestID][DeletionNoticeCompleted]
+		_, self := s.selfDeletionIntakes[requestID]
+		return DeletionNoticeState{ReceivedClaimed: received, CompletedClaimed: completed, SelfRequested: self}, nil
+	}
+	return DeletionNoticeState{}, ErrNotFound
+}
+
 // MediaForDeletion is the profile picture alone: the memory store records
 // no uploads (account_deletion_media is Postgres only).
 func (s *MemoryStore) MediaForDeletion(_ context.Context, requestID uuid.UUID) ([]uuid.UUID, error) {

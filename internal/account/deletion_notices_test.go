@@ -2,6 +2,7 @@ package account_test
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net/http"
@@ -87,7 +88,17 @@ func (l *noticeLog) all() []string {
 	return append([]string(nil), l.lines...)
 }
 
+// notices is the notices of the person's own request: the fixture's request
+// gets an Account Center self intake, as one made through my. has.
 func (f *sagaFixture) notices(mailer *noticeMailer, logs *noticeLog) *account.DeletionNotices {
+	f.t.Helper()
+	f.selfIntake()
+	return f.adminNotices(mailer, logs)
+}
+
+// adminNotices is the notices of a request with no self intake: an
+// administrator's.
+func (f *sagaFixture) adminNotices(mailer *noticeMailer, logs *noticeLog) *account.DeletionNotices {
 	f.t.Helper()
 	claims, ok := f.store.(account.DeletionNoticeClaims)
 	if !ok {
@@ -96,6 +107,38 @@ func (f *sagaFixture) notices(mailer *noticeMailer, logs *noticeLog) *account.De
 	return &account.DeletionNotices{
 		Claims: claims, Mailer: mailer, ReceivedTemplateKey: receivedKey, CompletedTemplateKey: completedKey, Logf: logs.logf,
 	}
+}
+
+type selfIntakes interface {
+	RequestSelfDeletion(context.Context, uuid.UUID, user.SelfDeletionIntake) (user.SelfDeletionRecord, error)
+}
+
+// selfIntake records an Account Center intake for the fixture's request.
+func (f *sagaFixture) selfIntake() {
+	f.t.Helper()
+	store, ok := f.store.(selfIntakes)
+	if !ok {
+		f.t.Fatalf("%T takes no self intake", f.store)
+	}
+	intake := user.SelfDeletionIntake{ReceiptExpiresAt: f.now.Add(90 * 24 * time.Hour), CreatedAt: f.request.CreatedAt}
+	for _, hash := range []*[32]byte{&intake.IdempotencyHash, &intake.ReceiptLookupHash, &intake.ReceiptHash} {
+		if _, err := rand.Read(hash[:]); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	record, err := store.RequestSelfDeletion(context.Background(), f.subjectID, intake)
+	if err != nil || record.Request.ID != f.request.ID {
+		f.t.Fatalf("self intake = %+v, %v", record.Request, err)
+	}
+}
+
+// failingState is a store whose notice state cannot be read.
+type failingState struct {
+	account.DeletionNoticeClaims
+}
+
+func (failingState) DeletionNoticeState(context.Context, uuid.UUID) (user.DeletionNoticeState, error) {
+	return user.DeletionNoticeState{}, errors.New("database unavailable")
 }
 
 func TestDeletionNoticesGoOnceEachInTheirPlace(t *testing.T) {
@@ -330,21 +373,65 @@ func TestDeletionNoticesOff(t *testing.T) {
 	}
 }
 
-// Only the person's own request gets the received notice; an
-// administrator's for someone else does not, though the deleted person is
-// still told their account was deleted.
+// Only the person's own request, one that came in through Account Center's
+// self intake, gets the received notice. An administrator's asked the
+// person nothing, though they are still told their account was deleted.
 func TestDeletionNoticeReceivedIsForTheirOwnRequest(t *testing.T) {
 	t.Parallel()
-	subject, admin := uuid.New(), uuid.New()
-	for _, c := range []struct {
-		name string
-		by   *uuid.UUID
-		want bool
-	}{{"Account Center", nil, true}, {"themselves", &subject, true}, {"an administrator", &admin, false}} {
-		if got := account.SelfRequested(user.DeletionRequest{SubjectID: subject, RequestedBy: c.by}); got != c.want {
-			t.Errorf("%s: self requested %v, want %v", c.name, got, c.want)
-		}
+	f := newSagaFixture(t, user.NewMemoryStore())
+	mailer, logs := &noticeMailer{events: f.events}, &noticeLog{}
+	f.config.Notices = f.adminNotices(mailer, logs)
+	if worked, err := f.run(f.saga()); !worked || err != nil {
+		t.Fatalf("worked=%v err=%v", worked, err)
 	}
+	if received, completed := len(mailer.of(receivedKey)), len(mailer.of(completedKey)); received != 0 || completed != 2 {
+		t.Fatalf("received %d, completed %d; want 0 and 2", received, completed)
+	}
+}
+
+// The addresses are read before the received notice is claimed: a Keycloak
+// that cannot be read leaves the notice for the next pass, and the notice
+// state that cannot be read sends nothing either.
+func TestDeletionNoticeReceivedIsClaimedOnlyWithItsAddresses(t *testing.T) {
+	t.Parallel()
+	f := newSagaFixture(t, user.NewMemoryStore())
+	mailer, logs := &noticeMailer{events: f.events}, &noticeLog{}
+	notices := f.notices(mailer, logs)
+	claims := notices.Claims
+	notices.Claims = failingState{claims}
+	f.config.Notices = notices
+	f.answer(user.DeletionStepEraseCMS, answerStatus(http.StatusServiceUnavailable, "60"))
+	worker := f.saga()
+	// SkyMail erases the person; the state cannot be read: nothing sent.
+	if worked, err := f.run(worker); !worked || err == nil {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	if n := len(mailer.sent); n != 0 {
+		t.Fatalf("%d notices without the notice state", n)
+	}
+
+	// Keycloak cannot be read: no claim is taken.
+	notices.Claims = claims
+	f.identity.set(nil, errors.New("keycloak unavailable"))
+	f.now = f.now.Add(time.Minute)
+	if worked, err := f.run(worker); !worked || err == nil {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	state, err := claims.DeletionNoticeState(context.Background(), f.request.ID)
+	if err != nil || state.ReceivedClaimed || len(mailer.sent) != 0 {
+		t.Fatalf("after a failed address read: state %+v, %v, %d sent", state, err, len(mailer.sent))
+	}
+
+	// Keycloak answers again: the notice goes, once.
+	f.identity.set([]string{sagaPersonal, sagaSchool, sagaPersonal}, nil)
+	f.now = f.now.Add(time.Minute)
+	if worked, err := f.run(worker); !worked || err == nil {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	if got := recipients(mailer.of(receivedKey)); !slices.Equal(got, []string{sagaPersonal, sagaSchool}) {
+		t.Fatalf("received went to %v", got)
+	}
+	f.assertNoPersonalData(logs.all()...)
 }
 
 type deleteOnceFailing struct {

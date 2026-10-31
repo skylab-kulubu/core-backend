@@ -111,6 +111,16 @@ const (
 	DeletionNoticeCompleted DeletionNotice = "completed"
 )
 
+// DeletionNoticeState is what the deletion notices need to know of a
+// request before they read the person's addresses: which notices were
+// claimed already, and whether the person asked for the deletion themselves
+// (an Account Center intake exists for it).
+type DeletionNoticeState struct {
+	ReceivedClaimed  bool
+	CompletedClaimed bool
+	SelfRequested    bool
+}
+
 type DeletionRequest struct {
 	ID                uuid.UUID
 	SubjectID         uuid.UUID
