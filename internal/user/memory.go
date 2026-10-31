@@ -3,6 +3,7 @@ package user
 import (
 	"context"
 	"crypto/subtle"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ type MemoryStore struct {
 	deletionRequests    map[uuid.UUID]DeletionRequest
 	deletionSteps       map[uuid.UUID]map[DeletionStep]time.Time
 	deletionStepCounts  map[uuid.UUID]map[DeletionStep]map[string]int64
+	deletionNotices     map[uuid.UUID]map[DeletionNotice]time.Time
 	selfDeletionIntakes map[uuid.UUID]SelfDeletionRecord
 }
 
@@ -27,6 +29,7 @@ func NewMemoryStore() *MemoryStore {
 		deletionRequests:    make(map[uuid.UUID]DeletionRequest),
 		deletionSteps:       make(map[uuid.UUID]map[DeletionStep]time.Time),
 		deletionStepCounts:  make(map[uuid.UUID]map[DeletionStep]map[string]int64),
+		deletionNotices:     make(map[uuid.UUID]map[DeletionNotice]time.Time),
 		selfDeletionIntakes: make(map[uuid.UUID]SelfDeletionRecord),
 	}
 }
@@ -693,6 +696,34 @@ func (s *MemoryStore) CompleteDeletionRequest(_ context.Context, requestID, leas
 		return nil
 	}
 	return ErrNotFound
+}
+
+// ClaimDeletionNotice takes notice in hand for the request under its lease:
+// true the first time, false once it was claimed or when the lease is not
+// held.
+func (s *MemoryStore) ClaimDeletionNotice(_ context.Context, requestID, leaseToken uuid.UUID, notice DeletionNotice, at time.Time) (bool, error) {
+	if notice != DeletionNoticeReceived && notice != DeletionNoticeCompleted {
+		return false, fmt.Errorf("unknown deletion notice %q", notice)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, request := range s.deletionRequests {
+		if request.ID != requestID {
+			continue
+		}
+		if request.Status != DeletionRequestProcessing || request.LeaseToken == nil || *request.LeaseToken != leaseToken {
+			return false, nil
+		}
+		if _, claimed := s.deletionNotices[requestID][notice]; claimed {
+			return false, nil
+		}
+		if s.deletionNotices[requestID] == nil {
+			s.deletionNotices[requestID] = map[DeletionNotice]time.Time{}
+		}
+		s.deletionNotices[requestID][notice] = at
+		return true, nil
+	}
+	return false, nil
 }
 
 // MediaForDeletion is the profile picture alone: the memory store records

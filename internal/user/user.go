@@ -97,6 +97,20 @@ const (
 	DeletionStepEraseForms   DeletionStep = "erase_forms"
 )
 
+// DeletionNotice is one of the two mails a deletion request sends the
+// person (docs/account-lifecycle.md, "Deletion notices"). Each is claimed
+// once, under the lease, before it is sent.
+type DeletionNotice string
+
+const (
+	// DeletionNoticeReceived: the request was received and when it will be
+	// done by; sent once SkyMail has erased the person.
+	DeletionNoticeReceived DeletionNotice = "received"
+	// DeletionNoticeCompleted: the account and its data were deleted; sent
+	// once the request is completed.
+	DeletionNoticeCompleted DeletionNotice = "completed"
+)
+
 type DeletionRequest struct {
 	ID                uuid.UUID
 	SubjectID         uuid.UUID

@@ -3,6 +3,7 @@ package user
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -242,6 +243,31 @@ func (s *PostgresStore) CompleteDeletionRequest(ctx context.Context, requestID, 
 		return ErrLeaseLost
 	}
 	return nil
+}
+
+// ClaimDeletionNotice takes notice in hand for the request under its lease
+// (docs/account-lifecycle.md, "Deletion notices"): true the first time,
+// false once it was claimed or when the lease is not held. The caller sends
+// the mail only after a true, so a request never sends a notice twice.
+func (s *PostgresStore) ClaimDeletionNotice(ctx context.Context, requestID, leaseToken uuid.UUID, notice DeletionNotice, at time.Time) (bool, error) {
+	var column string
+	switch notice {
+	case DeletionNoticeReceived:
+		column = "received_notice_at"
+	case DeletionNoticeCompleted:
+		column = "completed_notice_at"
+	default:
+		return false, fmt.Errorf("unknown deletion notice %q", notice)
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE account_deletion_requests
+		SET `+column+` = $3
+		WHERE id = $1 AND status = 'processing' AND lease_token = $2 AND `+column+` IS NULL
+	`, requestID, leaseToken, at)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 func (s *PostgresStore) requireDeletionLease(ctx context.Context, requestID, leaseToken uuid.UUID) error {

@@ -152,6 +152,21 @@ ORDER BY request.completed_at, request.id, step.completed_at, step.step;
 
 **Periodic destruction interval.** `PERIODIC_DESTRUCTION_INTERVAL` is the one configured periodic-destruction period (KVKK deletion regulation art. 11): at most six months if the data controller owes a retention and destruction policy, otherwise at most three; 90 days is valid either way. Whether the club or YTÜ is the controller is undecided, so the value is configuration, not code. The backup and log retention caps and every cleanup job this work adds take their period from it. Startup accepts at most 184 days. The retention sweep's periods ([`retention-sweep.md`](retention-sweep.md)) are this interval too; it is read for them whether or not the erasure worker is on, and only while `RETENTION_SWEEP_MODE` is on.
 
+## Deletion notices
+
+The person is told twice, by e-mail, at every address of the pass (KVKK art. 13: the application is answered and its outcome told):
+
+| Notice | Template (`SKYMAIL_…_TEMPLATE_KEY`) | Sent | Variables |
+|---|---|---|---|
+| received | `account.deletion-requested` (`SKYMAIL_ACCOUNT_DELETION_RECEIVED_TEMPLATE_KEY`) | in the first pass after `erase_skymail` is checkpointed, whatever the other services answered; only for the person's own request (Account Center, or `requested_by` is the subject), not for an administrator's | `Deadline`: the request's `created_at` plus 30 days, `DD.MM.YYYY` in Istanbul |
+| completed | `account.deletion-completed` (`SKYMAIL_ACCOUNT_DELETION_COMPLETED_TEMPLATE_KEY`) | after the request is completed, to the addresses read just before `delete_identity` | none |
+
+- **Off unless `ACCOUNT_DELETION_NOTICES=on`** (unset or `off`: off; anything else refuses to start). A key variable left unset takes the seeded key; set empty, that notice is off.
+- **Once.** Each notice is claimed under the lease before it is sent (`account_deletion_requests.received_notice_at`, `completed_notice_at`, migration `20261031230000`), so a retry, a lost lease or a second pass never sends it again. A claim whose send then failed is not tried again.
+- **Best effort.** A notice that cannot be sent (SkyMail down, a refused template, Keycloak not answering the address read) is logged and the erasure goes on as if it had gone. The line is `account erasure notice request_id=… notice=received|completed sent=… [failed=…: <reason>]`, with no address, name or subject.
+- **Untracked and unrecorded.** Both are sent with `erase_after_send` (skymail-backend README, "Kayıt bırakmayan posta"): SkyMail does not track them, even while it tracks system mail, and erases their queue row once it is sent or fails, as Account erasure leaves mail to an erased person. That is why the received notice waits for `erase_skymail`: after it, nothing would ever erase a row that kept the address. A SkyMail that does not answer `erase_after_send: true` is logged (`erase_after_send_unconfirmed`); turn the notices on only after that SkyMail is live.
+- **Replay.** `replay-from-backup` and `erasure-manual-step` send no notice: only the worker does, and the claim is in core's database. A core restored from a backup taken before a notice was claimed could send it once more.
+
 ## Replay after a restore (ADR-0053)
 
 A service restored from a dump taken at time T gets back the e-mail-keyed data of everyone erased after T, and core keeps no address to find it with. After the restore, erasure is replayed into that service with addresses read from the core and Keycloak dumps taken with the service dump at T:
