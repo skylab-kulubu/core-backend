@@ -212,6 +212,13 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("team delegation: %s (%s)", map[bool]string{false: "off", true: "on"}[teamDelegation], authz.TeamDelegationEnv)
+	// Whether Leaders change a Sub-team's code too: off unless set, so
+	// only Privileged does (docs/team-delegation.md "Team structure").
+	leaderTeamCodes, err := authz.ParseLeaderTeamCodes(os.Getenv(authz.LeaderTeamCodesEnv))
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("team delegation leader codes: %s (%s)", map[bool]string{false: "off", true: "on"}[leaderTeamCodes], authz.LeaderTeamCodesEnv)
 	// The panel's app assignments (docs/app-assignments.md): off unless
 	// set. A value core cannot read, or an app catalogue that names
 	// anything but app roles, stops startup.
@@ -229,6 +236,7 @@ func main() {
 	authzPolicy.PrivilegedRoots = privilegedRoots
 	authzPolicy.PrivilegedReaderRoots = privilegedReaderRoots
 	authzPolicy.TeamDelegation = teamDelegation
+	authzPolicy.LeaderTeamCodes = leaderTeamCodes
 	authzPolicy.AppAssignments = appAssignments
 	authzRoleMetrics := authz.NewRoleMetrics(log.Default(), time.Now)
 	// The Team code rule every Group create and rename passes

@@ -201,10 +201,11 @@ func TestTeamLeaderRemove(t *testing.T) {
 
 // #227 review Y1 and S2: with delegation on a Leader group is made only by
 // naming a Leader, Privileged's too; no Group sits under one; and no route
-// lets a Leader name a co-Leader of their own Team.
+// lets a Leader name a co-Leader of their own Team (a code change neither,
+// with Leaders' code changes on).
 func TestLeaderGroupsOnlyThroughTheLeadersRoute(t *testing.T) {
 	t.Parallel()
-	e := newDelegationEnv(t, delegationSetup{on: true})
+	e := newDelegationEnv(t, delegationSetup{on: true, leaderCodes: true})
 	yk := e.token("yk")
 	wantStatus(t, "YK opens KOORDINATORLER by hand", e.send(yk, fiber.MethodPost, "/v1/groups",
 		`{"name":"KOORDINATORLER","parentId":"`+e.ids["/UYELER/ARGE/MOBILAB"]+`"}`), fiber.StatusUnprocessableEntity, teamcode.ReservedName)

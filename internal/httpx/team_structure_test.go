@@ -199,12 +199,13 @@ func TestSubTeamLimits(t *testing.T) {
 	wantStatus(t, "a path of 31", small.createSub("mobLeader", "/UYELER/ARGE/MOBILAB", "ABCDEFGHIJ"), fiber.StatusConflict, "depth_limit")
 }
 
-// Whoever manages a Sub-team strictly changes its code: the old one is
-// retired, the Groups under it move with it, the row is team.code. Its own
-// Leader does not, nor anyone on a top Team but Privileged.
+// With TEAM_DELEGATION_LEADER_CODES on, whoever manages a Sub-team strictly
+// changes its code: the old one is retired, the Groups under it move with
+// it, the row is team.code. Its own Leader does not, nor anyone on a top
+// Team but Privileged.
 func TestTeamCodeChange(t *testing.T) {
 	t.Parallel()
-	e := newDelegationEnv(t, delegationSetup{on: true, teamTree: true})
+	e := newDelegationEnv(t, delegationSetup{on: true, teamTree: true, leaderCodes: true})
 	before, forgets := len(e.audit.Rows()), e.tree.forgotten()
 	got := e.changeCode("webLeader", "/UYELER/ARGE/WEBLAB/FRONT", "FRONTEND")
 	wantStatus(t, "a Leader of the Team above", got, fiber.StatusOK, "")
@@ -257,7 +258,7 @@ func TestTeamCodeChange(t *testing.T) {
 // kinds of record, never one. Nothing is retired or renamed.
 func TestTeamCodeInUse(t *testing.T) {
 	t.Parallel()
-	e := newDelegationEnv(t, delegationSetup{on: true})
+	e := newDelegationEnv(t, delegationSetup{on: true, leaderCodes: true})
 	e.codes.HoldAs(teamcode.RecordCertificate, "front")
 	e.codes.Hold("FRONT")
 	for _, as := range []string{"webLeader", "yk"} {
@@ -278,7 +279,7 @@ func TestTeamCodeInUse(t *testing.T) {
 // make its members Leaders of the Team above).
 func TestTeamCodeChangeNames(t *testing.T) {
 	t.Parallel()
-	e := newDelegationEnv(t, delegationSetup{on: true})
+	e := newDelegationEnv(t, delegationSetup{on: true, leaderCodes: true})
 	e.retire("CMSLAB")
 	for _, as := range []string{"webLeader", "yk"} {
 		for code, want := range map[string]struct {
@@ -392,6 +393,37 @@ func TestTeamDeleteSubtreeGuards(t *testing.T) {
 	}
 }
 
+// By default (TEAM_DELEGATION_LEADER_CODES off) only Privileged changes a
+// Team's code (Yusuf, 2026-10-31): a Leader who manages the Sub-team
+// strictly is refused 403 team_code_privileged_only with a denied team.code
+// row naming the Team they acted for, nothing renamed or retired; YK changes
+// the same Sub-team's code. Leaders still open and delete Sub-teams.
+func TestTeamCodeChangePrivilegedOnly(t *testing.T) {
+	t.Parallel()
+	e := newDelegationEnv(t, delegationSetup{on: true})
+	before := len(e.audit.Rows())
+	wantStatus(t, "a Leader of the Team above", e.changeCode("webLeader", "/UYELER/ARGE/WEBLAB/FRONT", "FRONTEND"),
+		fiber.StatusForbidden, "team_code_privileged_only")
+	rows := e.rowsSince(before)
+	if len(rows) != 1 || rows[0].Action != teamaudit.ActionTeamCode || rows[0].Outcome != teamaudit.OutcomeDenied ||
+		rows[0].ErrorCode != "team_code_privileged_only" || rows[0].Actor.Basis != teamaudit.BasisLeader ||
+		rows[0].Actor.ViaGroupID != e.ids["/UYELER/ARGE/WEBLAB"] {
+		t.Errorf("rows %+v, want one denied team.code row", rows)
+	}
+	if e.idOf("/UYELER/ARGE/WEBLAB/FRONT") != e.ids["/UYELER/ARGE/WEBLAB/FRONT"] || len(e.codes.Retired()) != 0 {
+		t.Errorf("a refused change renamed or retired: %v", e.codes.Retired())
+	}
+	// Refusals that come first keep their own answers.
+	wantStatus(t, "the Sub-team's own Leader", e.changeCode("frontLeader", "/UYELER/ARGE/WEBLAB/FRONT", "FRONTX"), fiber.StatusForbidden, "")
+	wantStatus(t, "a protected Sub-team", e.changeCode("webLeader", "/UYELER/ARGE/WEBLAB/SECURE", "SECX"), fiber.StatusForbidden, "protected_group")
+	wantStatus(t, "YK", e.changeCode("yk", "/UYELER/ARGE/WEBLAB/FRONT", "FRONTEND"), fiber.StatusOK, "")
+	if e.idOf("/UYELER/ARGE/WEBLAB/FRONTEND") != e.ids["/UYELER/ARGE/WEBLAB/FRONT"] {
+		t.Error("YK's change did not rename")
+	}
+	wantStatus(t, "a Leader still opens a Sub-team", e.createSub("webLeader", "/UYELER/ARGE/WEBLAB", "NEWLAB"), fiber.StatusCreated, "")
+	wantStatus(t, "and deletes it", e.deleteTeam("webLeader", "/UYELER/ARGE/WEBLAB/NEWLAB"), fiber.StatusNoContent, "")
+}
+
 // With delegation off the new routes are Privileged's: a Leader is refused
 // with nothing read or written.
 func TestTeamStructureDelegationOff(t *testing.T) {
@@ -422,7 +454,7 @@ func TestTeamCodeRaces(t *testing.T) {
 	for _, race := range []string{"rename-rename", "rename-create"} {
 		t.Run(race, func(t *testing.T) {
 			t.Parallel()
-			e := newDelegationEnv(t, delegationSetup{on: true})
+			e := newDelegationEnv(t, delegationSetup{on: true, leaderCodes: true})
 			first := func() rawResponse { return e.changeCode("webLeader", "/UYELER/ARGE/WEBLAB/FRONT", "RACE") }
 			second := func() rawResponse { return e.changeCode("yk", "/UYELER/ARGE/MOBILAB", "RACE") }
 			if race == "rename-create" {
@@ -460,29 +492,32 @@ func TestTeamCodeRaces(t *testing.T) {
 	}
 }
 
-// The managed tree says what the caller may do to each Team's structure.
+// The managed tree says what the caller may do to each Team's structure:
+// code.write for a Leader only with TEAM_DELEGATION_LEADER_CODES on.
 func TestManagedTreeStructureCan(t *testing.T) {
 	t.Parallel()
-	e := newDelegationEnv(t, delegationSetup{on: true})
-	got := e.send(e.token("webLeader"), fiber.MethodGet, "/v1/users/me/managed-groups", "")
-	wantStatus(t, "tree", got, fiber.StatusOK, "")
-	var nodes []identity.ManagedNode
-	if err := json.Unmarshal(got.body, &nodes); err != nil {
-		t.Fatal(err)
-	}
-	if len(nodes) != 1 {
-		t.Fatalf("nodes %+v", nodes)
-	}
-	web := nodes[0]
-	if !web.Can["subteams.write"] || web.Can["code.write"] || web.Can["team.delete"] {
-		t.Errorf("WEBLAB can %v", web.Can)
-	}
-	i := slices.IndexFunc(web.Children, func(n identity.ManagedNode) bool { return n.Code == "FRONT" })
-	if i < 0 || !web.Children[i].Can["subteams.write"] || !web.Children[i].Can["code.write"] || !web.Children[i].Can["team.delete"] {
-		t.Errorf("FRONT %+v", web.Children)
-	}
-	j := slices.IndexFunc(web.Children, func(n identity.ManagedNode) bool { return n.Code == "SECURE" })
-	if j < 0 || web.Children[j].Can["subteams.write"] || web.Children[j].Can["team.delete"] {
-		t.Errorf("SECURE %+v", web.Children)
+	for _, leaderCodes := range []bool{false, true} {
+		e := newDelegationEnv(t, delegationSetup{on: true, leaderCodes: leaderCodes})
+		got := e.send(e.token("webLeader"), fiber.MethodGet, "/v1/users/me/managed-groups", "")
+		wantStatus(t, "tree", got, fiber.StatusOK, "")
+		var nodes []identity.ManagedNode
+		if err := json.Unmarshal(got.body, &nodes); err != nil {
+			t.Fatal(err)
+		}
+		if len(nodes) != 1 {
+			t.Fatalf("nodes %+v", nodes)
+		}
+		web := nodes[0]
+		if !web.Can["subteams.write"] || web.Can["code.write"] || web.Can["team.delete"] {
+			t.Errorf("leader codes %v: WEBLAB can %v", leaderCodes, web.Can)
+		}
+		i := slices.IndexFunc(web.Children, func(n identity.ManagedNode) bool { return n.Code == "FRONT" })
+		if i < 0 || !web.Children[i].Can["subteams.write"] || web.Children[i].Can["code.write"] != leaderCodes || !web.Children[i].Can["team.delete"] {
+			t.Errorf("leader codes %v: FRONT %+v", leaderCodes, web.Children)
+		}
+		j := slices.IndexFunc(web.Children, func(n identity.ManagedNode) bool { return n.Code == "SECURE" })
+		if j < 0 || web.Children[j].Can["subteams.write"] || web.Children[j].Can["code.write"] || web.Children[j].Can["team.delete"] {
+			t.Errorf("leader codes %v: SECURE %+v", leaderCodes, web.Children)
+		}
 	}
 }

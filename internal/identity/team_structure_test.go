@@ -52,6 +52,9 @@ func structureRealm(t *testing.T) (m *identity.Memory, leader uuid.UUID, front s
 func structureService(t *testing.T, m *identity.Memory, ledger teamcode.Ledger, cache identity.GroupCache, active ...uuid.UUID) identity.Service {
 	t.Helper()
 	policy := onPolicy()
+	// Leaders' code changes on (TEAM_DELEGATION_LEADER_CODES), so a
+	// Leader's code change reaches the lock as a create and a deletion do.
+	policy.LeaderTeamCodes = true
 	users := user.NewMemoryStore()
 	// A delegated write refuses a caller who is no active account of core.
 	for _, id := range active {

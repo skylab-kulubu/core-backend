@@ -124,6 +124,10 @@ type Policy struct {
 	// (TEAM_DELEGATION, team_delegation.go). Off, only Privileged manages
 	// Groups, as before.
 	TeamDelegation bool
+	// LeaderTeamCodes is whether a Leader who manages a Sub-team strictly
+	// may change its code (TEAM_DELEGATION_LEADER_CODES,
+	// team_delegation.go). Off (the default), only Privileged does.
+	LeaderTeamCodes bool
 	// AppAssignments is whether the app assignment routes are on
 	// (APP_ASSIGNMENTS, app_assignments.go). Off, TypeAppAssignment allows
 	// nothing.
