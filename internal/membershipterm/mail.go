@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/teammail"
@@ -31,7 +32,12 @@ const (
 var outcomeNames = []string{
 	"sent", "failed", "rejected", "expired",
 	"skipped_" + string(teammail.SkipInactive), "skipped_" + string(teammail.SkipNoEmail), "skipped_" + string(teammail.SkipKindOff),
+	skippedErased,
 }
+
+// skippedErased: an expired list whose every term was erased with its
+// holder since it was queued; it would list nobody, so it does not go.
+const skippedErased = "skipped_erased"
 
 func backoff(failures int) time.Duration {
 	wait := retryFirst
@@ -115,6 +121,9 @@ func (s *Service) deliver(parent context.Context, m Mail) string {
 		}
 		return "failed"
 	}
+	if m.Notice == NoticeExpiredList && vars["Count"] == "0" {
+		return skippedErased
+	}
 	err = s.config.Mail.ManagementTerm(ctx, recipient.Email, recipient.FullName, vars)
 	var refused *mail.SendError
 	switch {
@@ -164,7 +173,7 @@ func (s *Service) vars(ctx context.Context, m Mail, recipient teammail.Recipient
 			ref = m.GroupID.String()
 		}
 		group := s.group(ctx, ref, m.GroupPath)
-		vars["GroupName"], vars["GroupId"] = groupName(group), group.ID
+		vars["GroupName"], vars["GroupId"] = s.groupName(ctx, group), group.ID
 		vars["Role"] = s.config.Rules.Role(m.GroupPath)
 		if m.EndsAt != nil {
 			vars["EndsAt"] = m.EndsAt.In(istanbul).Format(dateLayout)
@@ -188,7 +197,7 @@ func (s *Service) vars(ctx context.Context, m Mail, recipient teammail.Recipient
 			if t.EndsAt != nil {
 				ends = t.EndsAt.In(istanbul).Format(dateLayout)
 			}
-			lines = append(lines, name+" · "+groupName(s.group(ctx, t.GroupID.String(), t.GroupPath))+" · "+ends)
+			lines = append(lines, name+" · "+s.groupName(ctx, s.group(ctx, t.GroupID.String(), t.GroupPath))+" · "+ends)
 		}
 		vars["Count"], vars["Items"] = strconv.Itoa(len(lines)), strings.Join(lines, "\n")
 	case NoticeWeeklySummary:
@@ -196,7 +205,7 @@ func (s *Service) vars(ctx context.Context, m Mail, recipient teammail.Recipient
 		total := 0
 		for _, c := range m.Summary {
 			total += c.Count
-			lines = append(lines, groupName(s.group(ctx, c.GroupID, c.Path))+": "+strconv.Itoa(c.Count))
+			lines = append(lines, s.groupName(ctx, s.group(ctx, c.GroupID, c.Path))+": "+strconv.Itoa(c.Count))
 		}
 		vars["Count"], vars["Items"] = strconv.Itoa(total), strings.Join(lines, "\n")
 	}
@@ -212,13 +221,34 @@ func (s *Service) group(ctx context.Context, ref, path string) identity.Group {
 	return g
 }
 
+// groupName is how the mails name g: a Team's Leader group by its Team,
+// "WEBLAB/LIDERLER · Web Geliştirme" (its own name alone says no more than
+// LIDERLER), any other Group as groupName does.
+func (s *Service) groupName(ctx context.Context, g identity.Group) string {
+	team, role, ok := authz.TeamOf(g.Path, s.config.Rules.PrivilegedRoots, s.config.Rules.LeaderSubgroups)
+	if !ok || role == "" {
+		return groupName(g)
+	}
+	teamGroup := s.group(ctx, team, team)
+	code := groupCode(teamGroup) + "/" + groupCode(g)
+	if turkish := strings.TrimSpace(teamGroup.Attributes["display_name_tr"]); turkish != "" && turkish != groupCode(teamGroup) {
+		return code + " · " + turkish
+	}
+	return code
+}
+
+// groupCode is a Group's code: its name, or its path's last segment.
+func groupCode(g identity.Group) string {
+	if code := strings.TrimSpace(g.Name); code != "" {
+		return code
+	}
+	return g.Path[strings.LastIndex(g.Path, "/")+1:]
+}
+
 // groupName is how the mails name a Group, as the membership mails do:
 // its code and its Turkish display name.
 func groupName(g identity.Group) string {
-	code := strings.TrimSpace(g.Name)
-	if code == "" {
-		code = g.Path[strings.LastIndex(g.Path, "/")+1:]
-	}
+	code := groupCode(g)
 	if turkish := strings.TrimSpace(g.Attributes["display_name_tr"]); turkish != "" && turkish != code {
 		return code + " · " + turkish
 	}

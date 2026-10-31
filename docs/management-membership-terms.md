@@ -169,11 +169,15 @@ Every key is always sent; no e-mail address is in the variables.
 | `DaysLeft` | `14` or `1` | | |
 | `Self` | `yes` to the holder, `no` to the others | `no` | `no` |
 | `SubjectName` | the holder's full name | | |
-| `GroupName`, `GroupId` | the Group (code · `display_name_tr`) and its id, for the panel link | | |
+| `GroupName`, `GroupId` | the Group (code · `display_name_tr`; a Team's Leader group by its Team: `WEBLAB/LIDERLER · Web Geliştirme`) and its id, for the panel link | | |
 | `Role` | `board`, `audit`, `privileged` or `team-leaders` | | |
 | `EndsAt` | the end, `dd.MM.yyyy` in Istanbul | | |
 | `Count` | | terms listed | expired terms still open |
 | `Items` | | one line per term: `Name · Group · dd.MM.yyyy` | one line per Group: `Group: N` |
+
+A Group is named as `GroupName` is, in the lists too. An expired list
+whose every term was erased with its holder before it went lists nobody:
+it does not go (`skipped_erased`); the marks' audit records stay.
 
 Delivery is the membership mail's ([team-membership-mail.md](team-membership-mail.md)):
 `management_term_mails` (ids, paths, counts; no address or name), one row
@@ -221,7 +225,7 @@ tables once an hour (every replica reports the same).
 | `skylab_management_terms_last_success_timestamp_seconds`, `skylab_management_terms_last_run_failed` | the schedule's runs |
 | `skylab_management_terms_run_failures_total` | failed runs of this process |
 | `skylab_management_terms_route_total{event}` | the member routes' term writes: `started`, `ended`, `undated`, `error`, `precheck_failed` |
-| `skylab_management_term_mail_total{outcome}` | `sent`, `failed`, `rejected`, `expired`, `skipped_inactive`, `skipped_no_email`, `skipped_kind_off` |
+| `skylab_management_term_mail_total{outcome}` | `sent`, `failed`, `rejected`, `expired`, `skipped_inactive`, `skipped_no_email`, `skipped_kind_off`, `skipped_erased` |
 | `skylab_management_term_mail_backlog`, `_oldest_age_seconds` | the queue |
 
 ## Data
