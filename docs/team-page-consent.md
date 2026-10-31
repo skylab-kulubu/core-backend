@@ -56,7 +56,9 @@ The rosters read the objections on every request: who objects is hidden
 at once, who lifts it is shown at once. They read them with consents off
 (`CONTACT_CONSENT_KEY` unset) too: nobody can lift an objection then, so
 who objected stays hidden. No command records an objection for a person
-who asks by mail: they turn the switch off themselves.
+who asks by mail: they turn the switch off themselves. Nor does staff lift
+one: `consent-withdraw -purpose team_page_objection` is refused (exit 2),
+since ending it shows the person again.
 
 Text `ekip-sayfasi-itiraz-v1` (the switch in Account Center, its label and
 description word for word; what the person turned off):
@@ -78,14 +80,17 @@ purpose is no longer taken: giving or withdrawing it answers
 
 `TEAM_PAGE_CONSENT_GRACE_UNTIL` is no longer read by the rosters or at
 startup: it may stay set (production has it) or go, and a bad value no
-longer stops core. Only the notice command below reads it.
+longer stops core. Nothing reads it any more.
 
 ## The notice (not to be used)
 
-**Not to be used since 2026-10-31:** nobody is hidden on a date any more,
-so there is nothing to tell (Yusuf: the team page notice is not sent). The
-command and its ledger stay until they are taken out in a change of their
-own. What follows is how it worked.
+**Refused since 2026-10-31:** nobody is hidden on a date any more, so
+there is nothing to tell (Yusuf: the team page notice is not sent).
+`./core-backend team-page-notice`, dry or `-apply`, refuses every run with
+exit 2 ("ekip sayfaları varsayılan açık; bu bildirim artık gönderilmez")
+whatever the environment holds, and reads or writes nothing: no Keycloak,
+database or SkyMail. The ledger `team_page_notices` and its account
+erasure stay. What follows is how it worked.
 
 
 Every member a public roster lists who has **not decided** is told once,
