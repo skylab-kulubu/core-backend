@@ -36,3 +36,6 @@ const ClosedAtTolerance = closedAtTolerance
 
 // SelfRequested exposes selfRequested.
 var SelfRequested = selfRequested
+
+// SelfDeletionViewOf exposes selfDeletionView.
+var SelfDeletionViewOf = selfDeletionView

@@ -123,12 +123,12 @@ func TestAccountDeletionHTTPUsesVerifiedSubjectAndReturnsOnlyCoarseReceiptStatus
 			t.Fatalf("response exposed %s: %#v", forbidden, started)
 		}
 	}
-	for _, required := range []string{"receipt", "status", "partial", "platformBlocked", "requestedAt", "updatedAt", "completedAt", "receiptExpiresAt"} {
+	for _, required := range []string{"receipt", "status", "partial", "platformBlocked", "requestedAt", "updatedAt", "completedAt", "receiptExpiresAt", "awaitingManualStep"} {
 		if _, exists := started[required]; !exists {
 			t.Fatalf("start response omitted %s: %#v", required, started)
 		}
 	}
-	if len(started) != 8 {
+	if len(started) != 9 || started["awaitingManualStep"] != false {
 		t.Fatalf("start response has unknown fields: %#v", started)
 	}
 
@@ -151,12 +151,12 @@ func TestAccountDeletionHTTPUsesVerifiedSubjectAndReturnsOnlyCoarseReceiptStatus
 	if status["status"] != "pending" || status["partial"] != false {
 		t.Fatalf("status = %#v", status)
 	}
-	for _, required := range []string{"status", "partial", "platformBlocked", "requestedAt", "updatedAt", "completedAt", "receiptExpiresAt"} {
+	for _, required := range []string{"status", "partial", "platformBlocked", "requestedAt", "updatedAt", "completedAt", "receiptExpiresAt", "awaitingManualStep"} {
 		if _, exists := status[required]; !exists {
 			t.Fatalf("status response omitted %s: %#v", required, status)
 		}
 	}
-	if len(status) != 7 {
+	if len(status) != 8 {
 		t.Fatalf("status response has unknown fields: %#v", status)
 	}
 }
