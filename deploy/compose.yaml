@@ -103,7 +103,7 @@ services:
       CONTACT_CONSENT_NOTICE_URL: ${CONTACT_CONSENT_NOTICE_URL:-}
       SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY: ${SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY:-}
       # Team pages (docs/team-page-consent.md): no longer read by the rosters
-      # (every member is listed unless they object); only team-page-notice reads it.
+      # (every member is listed unless they object); nothing reads it (team-page-notice refuses).
       TEAM_PAGE_CONSENT_GRACE_UNTIL: ${TEAM_PAGE_CONSENT_GRACE_UNTIL:-}
       # Communication preferences (docs/communication-preferences.md): off while the key is unset.
       COMMUNICATION_PREFERENCE_KEY: ${COMMUNICATION_PREFERENCE_KEY:-}
