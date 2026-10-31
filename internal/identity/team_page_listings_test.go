@@ -5,7 +5,6 @@ import (
 	"errors"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
@@ -18,7 +17,7 @@ import (
 // no Group that is not public.
 func TestTeamPageListingsAreThePublicRosters(t *testing.T) {
 	t.Parallel()
-	f := newTeamPageFixture(t, time.Time{})
+	f := newTeamPageFixture(t)
 	ctx := context.Background()
 	f.dir.PutGroup(identity.Group{ID: "g-artlab", Name: "ARTLAB", Path: "/UYELER/ORGANIZASYON/ARTLAB", Attributes: map[string]string{"public_leaders": "true"}})
 	f.dir.PutGroup(identity.Group{ID: "g-artlab-l", Name: "LIDERLER", Path: "/UYELER/ORGANIZASYON/ARTLAB/LIDERLER"})
@@ -79,7 +78,7 @@ func (incompleteDirectory) ListGroupsComplete(context.Context) ([]identity.Group
 // untold.
 func TestTeamPageListingsRefuseAnIncompleteGroupList(t *testing.T) {
 	t.Parallel()
-	f := newTeamPageFixture(t, time.Time{})
+	f := newTeamPageFixture(t)
 	_, err := identity.TeamPageListings(context.Background(), incompleteDirectory{f.dir}, f.store, authz.DefaultPrivilegedRoots())
 	if !errors.Is(err, identity.ErrIncompleteGroups) {
 		t.Fatalf("err %v", err)
