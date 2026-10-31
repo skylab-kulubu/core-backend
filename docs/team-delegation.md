@@ -189,8 +189,10 @@ attributes (`GET /v1/groups/{id}`).
   (`competitor.create/update/delete` in the capabilities too) reads the
   Owner team's own Group from the realm's Groups kept a minute
   (`identity.TeamTree`); core's own write forgets them (a read already
-  running then is not kept, and the next decision reads again), a write
-  elsewhere (another core, the Keycloak console) is seen within the minute.
+  running then is not kept, and the next decision reads again), and so does
+  another core process's, told through Postgres (`identity_groups_changed`,
+  [keycloak-admin-permissions.md](keycloak-admin-permissions.md) "Other core
+  processes"); a write in the Keycloak console is seen within the minute.
   A tree that cannot be read is the default, `true`. Since the setting, a
   member's capabilities and competitor writes read the tree too, with
   delegation off as well: at most one realm Group read a minute, and the

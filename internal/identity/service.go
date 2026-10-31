@@ -94,6 +94,7 @@ type service struct {
 	accountErasureEnabled bool
 	accessProjector       DeletionProjector
 	groupCache            GroupCache
+	shared                *SharedGroupCache
 	teamTree              interface{ ForgetAll() }
 	membership            MembershipNotifier
 	groupRoles            GroupRolesNotifier
@@ -125,7 +126,10 @@ type Options struct {
 	AccessProjector DeletionProjector
 	// GroupCache is what core remembers of people's Groups for Group
 	// overage tokens (OverageGroups). The service's membership writes and
-	// Group renames drop it at once. Nil remembers nothing.
+	// Group renames drop it at once. Nil remembers nothing. A
+	// SharedGroupCache also carries the service's other caches' forgets
+	// (delegation, TeamTree, seat search, app counts) to and from the other
+	// core processes.
 	GroupCache GroupCache
 	// Membership hears of every person added to or removed from a Group it
 	// Notifies of (the team membership mail, internal/teammail). Nil hears
@@ -277,6 +281,10 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		appAssignments:        options.AppAssignments,
 		appStats:              newAppStatsCache(options.Now),
 		teamPage:              options.TeamPage,
+	}
+	if shared, ok := options.GroupCache.(*SharedGroupCache); ok {
+		shared.Join(ownCaches{s})
+		s.shared = shared
 	}
 	if s.apps == nil {
 		// The catalogue core carries passed its checks in its tests
@@ -592,26 +600,50 @@ func (s *service) RemoveMember(ctx context.Context, p authz.Principal, groupRef 
 }
 
 // forgetGroups drops what core remembers of userID's Groups: for Group
-// overage tokens and for team delegation.
+// overage tokens and for team delegation. A SharedGroupCache carries it to
+// the other core processes.
 func (s *service) forgetGroups(userID uuid.UUID) {
 	if s.groupCache != nil {
 		s.groupCache.Forget(userID)
 	}
-	s.delegation.Forget(userID)
-	s.seats.forget()
-	s.appStats.forget()
+	ownCaches{s}.Forget(userID)
 }
 
 func (s *service) forgetAllGroups() {
 	if s.groupCache != nil {
 		s.groupCache.ForgetAll()
 	}
-	if s.teamTree != nil {
-		s.teamTree.ForgetAll()
+	ownCaches{s}.ForgetAll()
+}
+
+// forgetAllElsewhere tells the other core processes to forget everything
+// they keep of Groups, after a write this process forgets only some of its
+// caches for (a Team's settings, a role mapping, an app assignment).
+func (s *service) forgetAllElsewhere() {
+	if s.shared != nil {
+		s.shared.ForgetAllElsewhere()
 	}
-	s.delegation.ForgetAll()
-	s.seats.forget()
-	s.appStats.forget()
+}
+
+// ownCaches are what the service itself keeps of Groups beside the Group
+// overage cache: team delegation, the Owner team tree, seat search and app
+// counts. Joined to a SharedGroupCache, the other processes' writes reach
+// them too (horizontal-scale ticket 38).
+type ownCaches struct{ s *service }
+
+func (o ownCaches) Forget(userID uuid.UUID) {
+	o.s.delegation.Forget(userID)
+	o.s.seats.forget()
+	o.s.appStats.forget()
+}
+
+func (o ownCaches) ForgetAll() {
+	if o.s.teamTree != nil {
+		o.s.teamTree.ForgetAll()
+	}
+	o.s.delegation.ForgetAll()
+	o.s.seats.forget()
+	o.s.appStats.forget()
 }
 
 func (s *service) ListClientRoles(ctx context.Context, p authz.Principal) ([]ClientRole, error) {
@@ -995,7 +1027,9 @@ func (s *service) setGroupClientRoles(ctx context.Context, p authz.Principal, gr
 		return err
 	}
 	// A Group's role mappings decide whether it is protected: forgotten
-	// even when the write fails, since it may have reached Keycloak.
+	// even when the write fails, since it may have reached Keycloak, and
+	// everywhere else after it.
+	defer s.forgetAllElsewhere()
 	defer s.delegation.ForgetAll()
 	defer s.seats.forget()
 	defer s.appStats.forget()
