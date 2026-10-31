@@ -79,6 +79,9 @@ type AuditEntry struct {
 	Actor      AuditActor `json:"actor"`
 	// Target is the person of a member, leader, term or app row.
 	Target *AuditPerson `json:"target"`
+	// Successor is who a membership.term.handover handed the term to
+	// (after.successorId, named); nil on every other row.
+	Successor *AuditPerson `json:"successor"`
 	// Group is nil for an app row about a person.
 	Group         *AuditGroup      `json:"group"`
 	Before        *teamaudit.State `json:"before"`
@@ -109,8 +112,11 @@ func (s *service) TeamAuditRecords(ctx context.Context, p authz.Principal, in Au
 	if s.auditRecords == nil {
 		return page, nil
 	}
+	// all is the realm's Groups once a read has listed them: the subtree's
+	// list gives the page's current paths too.
+	var all []Group
 	if in.Subtree {
-		if q.GroupIDs, q.GroupPath, err = s.auditSubtree(ctx, in.GroupID); err != nil {
+		if q.GroupIDs, q.GroupPath, all, err = s.auditSubtree(ctx, in.GroupID); err != nil {
 			return AuditPage{}, err
 		}
 	}
@@ -126,6 +132,9 @@ func (s *service) TeamAuditRecords(ctx context.Context, p authz.Principal, in Au
 		if r.TargetUserID != uuid.Nil {
 			people = append(people, r.TargetUserID)
 		}
+		if id, ok := successorOf(r); ok {
+			people = append(people, id)
+		}
 		if r.GroupID != "" {
 			groups = append(groups, r.GroupID)
 		}
@@ -136,7 +145,7 @@ func (s *service) TeamAuditRecords(ctx context.Context, p authz.Principal, in Au
 		return AuditPage{}, err
 	}
 	slices.Sort(groups)
-	paths, err := s.currentPaths(ctx, slices.Compact(groups))
+	paths, err := s.currentPaths(ctx, slices.Compact(groups), all)
 	if err != nil {
 		return AuditPage{}, err
 	}
@@ -152,6 +161,9 @@ func (s *service) TeamAuditRecords(ctx context.Context, p authz.Principal, in Au
 		if r.TargetUserID != uuid.Nil {
 			e.Target = &AuditPerson{ID: r.TargetUserID, DisplayName: names[r.TargetUserID]}
 		}
+		if id, ok := successorOf(r); ok {
+			e.Successor = &AuditPerson{ID: id, DisplayName: names[id]}
+		}
 		if r.GroupID != "" || r.GroupPath != "" {
 			e.Group = &AuditGroup{ID: r.GroupID, Path: r.GroupPath}
 			if now, ok := paths[r.GroupID]; ok {
@@ -162,6 +174,16 @@ func (s *service) TeamAuditRecords(ctx context.Context, p authz.Principal, in Au
 	}
 	page.Next = next.String()
 	return page, nil
+}
+
+// successorOf is the person a membership.term.handover row handed the term
+// to.
+func successorOf(r teamaudit.Row) (uuid.UUID, bool) {
+	if r.Action != teamaudit.ActionTermHandover || r.After == nil {
+		return uuid.Nil, false
+	}
+	id, err := uuid.Parse(r.After.SuccessorID)
+	return id, err == nil && id != uuid.Nil
 }
 
 // auditQuery checks the caller's filters: anything it does not know is
@@ -217,11 +239,12 @@ func auditQuery(in AuditQuery) (teamaudit.Query, error) {
 // it: the Group and every Group under it now, and its path now, so a row
 // of a Sub-team deleted since (its path at the time under the Group's)
 // stays in the history. A Group that is gone is its own rows and the rows
-// under the path of its newest row.
-func (s *service) auditSubtree(ctx context.Context, id string) ([]string, string, error) {
+// under the path of its newest row. The realm's Groups, as it read them,
+// come back too.
+func (s *service) auditSubtree(ctx context.Context, id string) ([]string, string, []Group, error) {
 	all, err := s.dir.ListGroups(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	path := ""
 	for _, g := range all {
@@ -234,24 +257,36 @@ func (s *service) auditSubtree(ctx context.Context, id string) ([]string, string
 	if path == "" {
 		newest, _, err := s.auditRecords.Records(ctx, teamaudit.Query{GroupIDs: ids, Limit: 1})
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		if len(newest) == 1 {
 			path = newest[0].GroupPath
 		}
-		return ids, path, nil
+		return ids, path, all, nil
 	}
 	for _, g := range all {
 		if strings.HasPrefix(g.Path, path+"/") {
 			ids = append(ids, g.ID)
 		}
 	}
-	return ids, path, nil
+	return ids, path, all, nil
 }
 
-// currentPaths are the paths now of the Groups that still exist.
-func (s *service) currentPaths(ctx context.Context, ids []string) (map[string]string, error) {
+// currentPaths are the paths now of the Groups ids that still exist. A
+// subtree read has listed the realm's Groups already (all): the paths come
+// from that list. Otherwise each Group is read by its id, a few at once: a
+// list of the realm reads every Group's children one after another in
+// Keycloak, slower than a page's reads (review of #333, T2).
+func (s *service) currentPaths(ctx context.Context, ids []string, all []Group) (map[string]string, error) {
 	out := map[string]string{}
+	if all != nil {
+		for _, g := range all {
+			if slices.Contains(ids, g.ID) {
+				out[g.ID] = g.Path
+			}
+		}
+		return out, nil
+	}
 	var mu sync.Mutex
 	eg, gctx := errgroup.WithContext(ctx)
 	eg.SetLimit(auditGroupsAtOnce)
