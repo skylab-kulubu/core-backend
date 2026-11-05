@@ -1546,6 +1546,9 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE oid = to_regprocedure('public.competition_ledger_append_only()')
 			  AND prosrc LIKE '%revoked_basis%'
 		  )`,
+	// When each account deletion notice was taken in hand
+	// (docs/account-lifecycle.md, "Deletion notices").
+	20261031230000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'account_deletion_requests' AND column_name = 'completed_notice_at'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

@@ -1082,6 +1082,14 @@ func (k *Keycloak) UserAddresses(ctx context.Context, id uuid.UUID) ([]string, e
 	return addresses, nil
 }
 
+// AccountErasureHeader, with the value AccountErasureDisableIdentity, tells
+// Keycloak that a disable is Account erasure's (DisableUser). Any other value
+// marks nothing.
+const (
+	AccountErasureHeader          = "X-Sky-Account-Erasure"
+	AccountErasureDisableIdentity = "disable_identity"
+)
+
 // DisableUser sends Keycloak exactly `{"enabled":false}` and nothing else.
 // Keycloak copies the request body into the UPDATE admin event, which is not
 // deleted with the user, so a full representation would leave the person's
@@ -1089,12 +1097,22 @@ func (k *Keycloak) UserAddresses(ctx context.Context, id uuid.UUID) ([]string, e
 // body does not name unchanged (e-skylab-keycloak tests/erasure-event-pii.sh).
 // A user Keycloak does not know is ErrNotFound; an already disabled user is
 // disabled again. No error names the subject.
+//
+// Only the erasure saga calls it (AccountIdentity.EnsureDisabled, the
+// disable_identity step), and the PUT says so with AccountErasureHeader:
+// Keycloak then marks the person as being erased, in the same transaction,
+// and tells whoever asks for a sign-in code with their address that the
+// account is being deleted (e-skylab-keycloak sky-account-erasure-mark).
+// The header is no part of the body, so the admin event holds no more than
+// before. An administrator's disable must not come through here: it would
+// mark the person as being erased.
 func (k *Keycloak) DisableUser(ctx context.Context, id uuid.UUID) error {
 	token, err := k.accessToken(ctx)
 	if err != nil {
 		return err
 	}
 	resp, err := k.gc.GetRequestWithBearerAuth(ctx, token).
+		SetHeader(AccountErasureHeader, AccountErasureDisableIdentity).
 		SetBody(map[string]bool{"enabled": false}).
 		Put(k.adminBase + "/admin/realms/" + url.PathEscape(k.realm) + "/users/" + id.String())
 	if err != nil {

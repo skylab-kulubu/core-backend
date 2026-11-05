@@ -189,6 +189,15 @@ and they combine:
 | `limit` | 1 to 100, default 100 |
 | `cursor` | the `next` of the page before |
 
+`subtree=true` matches a deleted Sub-team's rows by the path they were
+written under. Once the Team above it is renamed (`team.code`) or moved
+(`team.move`), that path is no longer under the Team's path now, so those
+rows drop out of the Team's subtree; a Group that later takes the old path
+picks them up instead. They stay readable without the filter or by the
+deleted Group's own `groupId`. Every reader holds the club-wide
+`audit:read`, so this is history missing or misplaced in one view, never a
+row shown to someone who could not read it otherwise.
+
 Rows come newest first (`occurred_at`, then `id`, both descending). The
 answer is `{"items": [...], "next": "<cursor>" | null}`; `next` is null on
 the last page. A filter the route cannot read is `400`, but only for a
@@ -202,6 +211,7 @@ Each item:
 | `id`, `occurredAt`, `action`, `outcome`, `errorCode`, `correlationId` | the row's |
 | `actor` | `{id, displayName, basis, viaGroupId, client}`: `basis` is `privileged`, `leader` (with `viaGroupId`, the Team whose Leader group granted it), `none` (a denied row) or `system` (core's job, nil id, `client` `system:term-expiry`); `client` is the token's `azp` |
 | `target` | `{id, displayName}` of a member, leader, term or person app row; `null` otherwise |
+| `successor` | `{id, displayName}` of a `membership.term.handover` row: `after.successorId`, named; `null` otherwise |
 | `group` | `{id, path, currentPath}`: `path` at the time; `currentPath` the Group's path now while it exists, `null` once it is gone. `null` for an app row about a person |
 | `before`, `after` | as the row holds them (the table above); `null` when empty |
 

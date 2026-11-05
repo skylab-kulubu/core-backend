@@ -189,6 +189,10 @@ that it is in no argument, process list, shell history or log:
 printf '%s\n' "$address" | docker exec -i <core> ./core-backend consent-withdraw -purpose promotional,event_invitations
 ```
 
+`-purpose team_page_objection` is refused (exit 2): ending an objection shows
+the person on the team pages again, which only they do, in Account Center
+([team-page-consent.md](team-page-consent.md)).
+
 sky_lab_genel `ops/wizards/kvkk-riza-geri-alma-wizard.sh` runs it from the
 Mac (the address typed hidden, sent over SSH's standard input). It ends, for
 the purposes named, every open grant of the person holding the address: the
