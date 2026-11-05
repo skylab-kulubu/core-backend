@@ -132,9 +132,11 @@ var foreignArchives = []signature{
 // byte (checked for a ZIP), by signatures long or checked enough not to turn
 // up by chance in other data: gzip's two bytes are left out.
 var embeddedArchives = []signature{
-	{"ZIP", localMark, unpackableLocalHeader},
-	rarSignature, sevenZipSignature, cabSignature, arjSignature,
+	localHeaderSignature, rarSignature, sevenZipSignature, cabSignature, arjSignature,
 }
+
+// localHeaderSignature is a ZIP local header as clamd unpacks one.
+var localHeaderSignature = signature{"ZIP", localMark, unpackableLocalHeader}
 
 // unpackableLocalHeader reports whether b starts with a local header clamd
 // would unpack on its own: a method the format defines, and a name, extra
@@ -176,6 +178,8 @@ const scanLook = 4 + 2600 + 4
 type scanner struct {
 	// size is the file's size, -1 when unknown.
 	size int64
+	// sigs are the signatures it looks for; nil is embeddedArchives.
+	sigs []signature
 	// buf holds the bytes not yet examined as a signature's start, and
 	// what follows them.
 	buf  []byte
@@ -193,7 +197,11 @@ func (s *scanner) feed(p []byte, final bool, hit func(signature, int64) error) e
 	if end <= 0 {
 		return nil
 	}
-	for _, sig := range embeddedArchives {
+	sigs := s.sigs
+	if sigs == nil {
+		sigs = embeddedArchives
+	}
+	for _, sig := range sigs {
 		for from := 0; from < end; {
 			i := bytes.Index(s.buf[from:], sig.magic)
 			if i < 0 || from+i >= end {
