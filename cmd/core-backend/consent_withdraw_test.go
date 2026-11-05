@@ -26,6 +26,9 @@ func TestConsentWithdrawPurposes(t *testing.T) {
 		{[]string{"-purpose", "promotional,promotional"}, nil, 2},
 		{[]string{"-purpose", "recruitment_pool"}, nil, 2},
 		{[]string{"-purpose", "newsletter"}, nil, 2},
+		// Staff never lifts an objection for the person.
+		{[]string{"-purpose", "team_page_objection"}, nil, 2},
+		{[]string{"-purpose", "promotional,team_page_objection"}, nil, 2},
 		// The address never comes as an argument.
 		{[]string{"-purpose", "promotional", "ada@example.com"}, nil, 2},
 	} {

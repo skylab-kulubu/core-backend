@@ -167,12 +167,23 @@ state, with exactly:
   "requestedAt": "2026-09-20T08:00:00Z",
   "updatedAt": "2026-09-20T08:00:00Z",
   "completedAt": null,
-  "receiptExpiresAt": "2026-12-19T08:00:00Z"
+  "receiptExpiresAt": "2026-12-19T08:00:00Z",
+  "awaitingManualStep": false
 }
 ```
 
 No request UUID, subject, session ID, attempt counter or internal error code is
-returned.
+returned. `awaitingManualStep` is `true` only for `manual_intervention` under
+`erase_<service>_rejected_404`: the service has no erase endpoint yet (today
+the CMS), an operator carries out its step by hand with
+`erasure-manual-step` and the request then goes on by itself, so the person's
+retry cannot help and Account Center does not offer it. It is `false` for
+every other state and code, and names neither.
+
+`awaitingManualStep` was added after the first release of this contract.
+Account Center's parser checks the exact set of fields, so the Account Center
+that accepts the field with or without it (account-center #125) is deployed
+before the core that sends it, in sandbox (main) and in production alike.
 
 ## Receipt status and retry
 
@@ -183,7 +194,7 @@ a capability:
 - `POST /v1/account-deletion-requests/status/retry`
 - `Authorization: DeletionReceipt <receipt>`
 
-Both responses omit `receipt` and otherwise have exactly the seven remaining
+Both responses omit `receipt` and otherwise have exactly the eight remaining
 fields in the intake response. Allowed coarse states are `blocking`, `pending`,
 `processing`, `completed` and `manual_intervention`. `blocking` with
 `platformBlocked=false` exists only for recovery diagnostics; normal intake

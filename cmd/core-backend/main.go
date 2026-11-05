@@ -822,6 +822,16 @@ func main() {
 		serviceErasure := account.NewServiceErasure(erasureConfig,
 			base+"/realms/"+realm+"/protocol/openid-connect/token",
 			account.NewErasureAddresses(accountIdentity, users))
+		// The person is told their request was received and that it
+		// completed, through SkyMail with no record kept of it
+		// (ACCOUNT_DELETION_NOTICES, off unless on). Core's own client:
+		// the worker requires its credentials.
+		deletionNotices, err := accountDeletionNotices(os.LookupEnv, users,
+			newSkyMail(base, realm, os.Getenv("KEYCLOAK_CLIENT_ID"), os.Getenv("KEYCLOAK_CLIENT_SECRET"), os.Getenv("SKYMAIL_URL"), skyMailTimeout))
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("account deletion notices: %s", deletionNotices)
 		worker("account erasure worker", account.Maintain(
 			workers,
 			account.NewWorker(users, accountIdentity, account.WorkerConfig{
@@ -835,6 +845,7 @@ func main() {
 				ContactConsents:          consents,
 				SkyPassWallet:            wallet,
 				CommunicationPreferences: communicationPreferences,
+				Notices:                  deletionNotices,
 			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
 			2*time.Second,
 			func(err error) { log.Printf("account erasure worker: %v", err) },

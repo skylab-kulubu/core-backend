@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/erasure"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -45,6 +46,12 @@ type SelfDeletionView struct {
 	UpdatedAt        time.Time
 	CompletedAt      *time.Time
 	ReceiptExpiresAt time.Time
+	// AwaitingManualStep: manual intervention because a service has no erase
+	// endpoint yet (`<step>_rejected_404`, today the CMS's): an operator
+	// carries out that step by hand and the request then goes on by itself
+	// (erasure-manual-step), so the person's retry cannot help. It names no
+	// step and no code.
+	AwaitingManualStep bool
 }
 
 type SelfDeletionRecord = user.SelfDeletionRecord
@@ -254,7 +261,20 @@ func selfDeletionView(record SelfDeletionRecord) SelfDeletionView {
 		PlatformBlocked: record.Request.PlatformBlockedAt != nil,
 		RequestedAt:     record.Request.CreatedAt, UpdatedAt: record.Request.UpdatedAt,
 		CompletedAt: record.Request.CompletedAt, ReceiptExpiresAt: record.ReceiptExpiresAt,
+		AwaitingManualStep: status == SelfDeletionManualIntervention && awaitsOperatorStep(record.Request.LastErrorCode),
 	}
+}
+
+// awaitsOperatorStep says code is the one manual intervention an operator
+// ends by carrying out a service's step by hand: the service answered 404,
+// it has no erase endpoint (user.OperatorStepErrorCode).
+func awaitsOperatorStep(code string) bool {
+	for _, service := range erasure.Registry() {
+		if code == user.OperatorStepErrorCode(service.Step) {
+			return true
+		}
+	}
+	return false
 }
 
 func validIdempotencyKey(value string) bool {

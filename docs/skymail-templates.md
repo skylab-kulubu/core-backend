@@ -98,6 +98,14 @@ same way to a member once `FEEDBACK_NOTIFICATION=on`: a Notification whose
 type is the template's key, so it lands in the inbox too; a guest's stays an
 e-mail. See [event-feedback.md](event-feedback.md#to-the-inbox-ticket-13).
 
+The account deletion notices, `account.deletion-requested` and
+`account.deletion-completed`, go by key alone from the erasure worker once
+`ACCOUNT_DELETION_NOTICES=on`, with no recipient name and with
+`erase_after_send`: SkyMail neither tracks them nor keeps their row
+(`SKYMAIL_ACCOUNT_DELETION_RECEIVED_TEMPLATE_KEY`,
+`SKYMAIL_ACCOUNT_DELETION_COMPLETED_TEMPLATE_KEY`; unset: the key above;
+empty: off). See [account-lifecycle.md](account-lifecycle.md#deletion-notices).
+
 ## Configuration
 
 | Variable | Unset | Empty |
@@ -125,7 +133,7 @@ checks the response status. Anything outside `2xx` writes one line:
 ```
 
 - `kind` — `welcome`, `certificate`, `team_membership`, `role_membership`,
-  `group_membership`, `token`, or the list call (`list_create`,
+  `group_membership`, `account_deletion_notice`, `token`, or the list call (`list_create`,
   `list_delete`, `list_read`, `list_recipients`, `list_recipient_add`,
   `list_recipient_remove`).
 - `status` — the raw status SkyMail answered with. Nothing is inferred from it
@@ -133,7 +141,9 @@ checks the response status. Anything outside `2xx` writes one line:
   often enough to promise it is always a `404`.
 - `reason` — `template_missing` for a `404` to a send,
   `template_key_missing_fallback_to_id` for the line that precedes the one
-  retry, and `upstream_error` for everything else. The welcome mail also
+  retry, `erase_after_send_unconfirmed` for a deletion notice SkyMail took
+  without saying it keeps no record of it, and `upstream_error` for
+  everything else. The welcome mail also
   writes a line, with no `status`, when it never got an answer:
   `token_unavailable` (no token from Keycloak), `unreachable` (SkyMail could not
   be connected to) and `no_answer` (the request went out and nothing came back;
