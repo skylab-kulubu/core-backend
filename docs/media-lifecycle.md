@@ -2480,7 +2480,8 @@ its type says:
 - **any other file** (a PDF, an image) is streamed once and searched for
   archives past its first byte, as a member is (see "Any other file" under
   what a member holds): a ZIP appended to a PDF is checked as a nested
-  ZIP, any other archive there is refused as `archive_nested`.
+  ZIP, a ZIP or local header in its middle member by member, any other
+  archive there is refused as `archive_nested`.
 
 The check runs in the scan worker, under the Media's scan claim, holding no
 database connection. A public held file is read by ranged GETs. A private
@@ -2592,10 +2593,27 @@ name alone: a `raspi.img` of plain bytes is a plain file, and a
   byte (as `zip -A` leaves a self-extractor); from its own range when the
   member is stored, from memory otherwise. Every later local header must
   then be that ZIP's own or inside its members' data, which its check
-  holds it to. A lone local header (no ZIP ending the file there), a ZIP
-  that does not end the file, or one larger than the buffer, is refused as
-  `archive_nested`; so is any other embedded archive. Chance data passes
-  for a local header about once in 100,000 GiB.
+  holds it to. A ZIP larger than the buffer, or a file that ends with an
+  end record whose directory is not where it says, is refused as
+  `archive_nested`; so is any other embedded archive.
+- **A file with no end record at its end** holds no ZIP a reader opens from
+  its end: a PDF that carries a whole ZIP in its middle (an embedded file
+  stored as it is, a hybrid PDF), or a local header signature in its other
+  data. clamd unpacks each local header in it on its own (checked: a lone
+  one appended to a PDF, or in its middle). So each local header from the
+  first on is a lone member, checked as clamd unpacks it, by what its
+  header alone says: counted toward `MaxFiles`; a deflated one inflated to
+  the end of its deflate stream, whatever its sizes say; a stored one read
+  as its stored size gives and, in case a reader inflates it, inflated
+  too; what it unpacks to held to `MaxFileSize` and `MaxScanSize`
+  (`too_large_to_scan`) and read in turn, as a member is. A deflate stream
+  that breaks off ends the member there: clamd unpacks nothing from it,
+  and what came before the break is still held to the limits. So bytes
+  that only look like a local header (production refused a PDF with one
+  at byte 141, 2026-11-05) pass, and the file goes to clamd whole. One
+  core cannot measure (encrypted, another method, a stored one whose size
+  is left to a data descriptor) is refused as `archive_nested`. Chance
+  data passes for a local header about once in 100,000 GiB.
 
 Depth is counted as clamd counts it: a member of an archive n deep is inside
 n + 1 archives, which clamd scans only while n + 1 is below `MaxRecursion`
@@ -2609,7 +2627,13 @@ Direct upload (ticket 21). It is never scanned unchecked: it waits
 scanning, logged at each try (`media.ErrPrivateZIPUnchecked`), until its
 scan deadline rejects it.
 
-Not covered: core does not look inside a PDF's compressed streams.
+Not covered: core does not look inside a PDF's compressed streams. Nor
+does it hold a lone member's local header to a directory: a ZIP in the
+middle of a PDF is checked by its local headers, as clamd unpacks it, not
+against the directory it may carry: a reader that opens it by that
+directory reads a deflated member's data as core does, to the end of its
+stream, but may take a stored member's size from the directory, and
+those bytes are in the file clamd scans whole.
 
 ### Public files before their scan
 

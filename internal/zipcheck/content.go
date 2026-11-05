@@ -98,12 +98,19 @@ func (c *checker) zip(src Source, size int64, at place, depth int) error {
 
 // embedded checks a ZIP found past the first byte of a file, which must
 // end the file: the ZIP src holds from there. Its offsets may count from
-// the ZIP or from the file's first byte, stub bytes before it. When no ZIP
-// ends the file there (a lone local header, or a ZIP followed by more), it
-// is refused as nested; a ZIP there that breaks a rule, as any.
+// the ZIP or from the file's first byte, stub bytes before it. A ZIP there
+// that breaks a rule is refused as any. When the file has no end record at
+// its end at all (a PDF that holds a lone local header, or a whole ZIP
+// followed by more of the PDF), no reader opens a ZIP from its end, and
+// clamd unpacks each local header on its own: each is checked so, as a
+// lone member (loneMembers). When the file ends with an end record whose
+// directory is elsewhere, it is refused as nested.
 func (c *checker) embedded(src Source, size int64, at place, depth int, stub int64) error {
 	dir, err := readDirectory(c.ctx, src, size, at, depth, c.b, stub)
 	var r *Refusal
+	if errors.As(err, &r) && r.unended {
+		return c.loneMembers(src, size, at, depth)
+	}
 	if errors.As(err, &r) && r.misplaced {
 		return nested("%s is no ZIP core can read to the end of the file that holds it", at)
 	}
@@ -233,7 +240,10 @@ func (c *checker) tar(r *bufio.Reader, f file) error {
 // run from that first header to its directory with nothing between them,
 // and no local header signature may stand outside their data (so a lone
 // one hidden in an extra field or the end record's comment is refused).
-// Any other archive past the first byte is refused as nested.
+// When the file has no end record at its end, there is no such ZIP: every
+// local header from the first on is checked as a lone member instead
+// (loneMembers). Any other archive past the first byte is refused as
+// nested.
 func (c *checker) plain(r io.Reader, f file) error {
 	s := scanner{size: f.size}
 	zipAt := int64(-1)

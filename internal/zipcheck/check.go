@@ -22,7 +22,10 @@
 //   - what each member holds is read as clamd would unpack it
 //     (content.go): a ZIP inside is checked the same way, a gzip, bzip2 or
 //     tar is opened and measured, an archive core cannot open is refused, and
-//     a plain file is searched for archives embedded past its first byte.
+//     a plain file is searched for archives embedded past its first byte:
+//     a ZIP ending it is checked as a nested one; with no end record at
+//     its end, each local header in it is checked as a lone member, as
+//     clamd unpacks one (lone.go).
 //
 // See "The ZIP check" in docs/media-lifecycle.md.
 package zipcheck
@@ -67,8 +70,9 @@ var ErrZIPTooLargeToKeep = errors.New("zipcheck: the ZIP is larger than the chec
 // CheckFile checks any file clamd will scan, reading src by ranges: a ZIP
 // whole (Check), any other file once, as a stream, for the archives clamd
 // would unpack from past its first byte. A ZIP there is checked as a nested
-// one, ending the file (from its own range); any other archive there is
-// refused as nested.
+// one, ending the file (from its own range); in a file with no end record
+// at its end, each local header is checked as a lone member instead; any
+// other archive there is refused as nested.
 func CheckFile(ctx context.Context, src Source, size int64, limits Limits) error {
 	return checkFile(ctx, src, size, limits, clock{start: time.Now(), now: time.Now})
 }

@@ -13,8 +13,8 @@ import (
 // past its first byte has that ZIP checked as a nested one: from the member
 // in the file when the member is stored, from memory otherwise. Its offsets
 // may count from the ZIP or, as zip -A leaves a self-extractor, from the
-// member's first byte. One that cannot be checked (it does not end the
-// member) is refused as nested.
+// member's first byte. One that does not end the member has each of its
+// local headers checked as a lone member: held to the limits all the same.
 func TestCheckChecksAZIPEmbeddedInAMember(t *testing.T) {
 	t.Parallel()
 	csv := []byte("ad,soyad\nAda,Lovelace\n")
@@ -28,6 +28,7 @@ func TestCheckChecksAZIPEmbeddedInAMember(t *testing.T) {
 		"with offsets from the stub, stored":      build(t, stored("setup.exe", sfx(t, exe, small, true)), filler()),
 		"with offsets from the stub, deflated":    build(t, deflated("setup.exe", sfx(t, exe, small, true))),
 		"across the 32 KiB the scan reads a time": build(t, deflated("setup.exe", sfx(t, stub(32<<10-2), small, false))),
+		"one that does not end the member":        build(t, deflated("setup.exe", append(sfx(t, exe, small, false), stub(100)...))),
 		"in a tar entry":                          build(t, deflated("data.tar", tarOf(t, false, stored("setup.exe", sfx(t, exe, small, false))))),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -46,7 +47,7 @@ func TestCheckChecksAZIPEmbeddedInAMember(t *testing.T) {
 		"a member past MaxFileSize, deflated":          {build(t, deflated("setup.exe", sfx(t, exe, big, false))), limits, zipcheck.ErrTooLarge},
 		"offsets from the stub, past MaxFileSize":      {build(t, deflated("setup.exe", sfx(t, exe, big, true))), limits, zipcheck.ErrTooLarge},
 		"in a tar entry, past MaxFileSize":             {build(t, deflated("data.tar", tarOf(t, false, stored("setup.exe", sfx(t, exe, big, false))))), limits, zipcheck.ErrTooLarge},
-		"one that does not end the member":             {build(t, deflated("setup.exe", append(sfx(t, exe, small, false), stub(100)...))), limits, zipcheck.ErrNested},
+		"one that does not end the member":             {build(t, deflated("setup.exe", append(sfx(t, exe, big, false), stub(100)...))), limits, zipcheck.ErrTooLarge},
 		"one larger than MaxBuffer, deflated":          {build(t, deflated("setup.exe", sfx(t, exe, large, false)), filler()), fits, zipcheck.ErrNested},
 		"one in a stored member larger than MaxBuffer": {build(t, stored("setup.exe", sfx(t, stub(20<<10), big, false)), filler()), fits, zipcheck.ErrTooLarge},
 	} {

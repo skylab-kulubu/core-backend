@@ -94,7 +94,7 @@ type directory struct {
 func readDirectory(ctx context.Context, src Source, size int64, at place, depth int, b *budget, stub int64) (*directory, error) {
 	name := at.archive()
 	if size < endLen {
-		return nil, misplaced("%s is shorter than an end record", name)
+		return nil, unended("%s is shorter than an end record", name)
 	}
 	tailLen := min(size, endLen+maxComment+locatorLen)
 	tail, err := readAt(ctx, src, size-tailLen, tailLen)
@@ -112,7 +112,7 @@ func readDirectory(ctx context.Context, src Source, size int64, at place, depth 
 		}
 	}
 	if found < 0 {
-		return nil, misplaced("%s has no end record at its end", name)
+		return nil, unended("%s has no end record at its end", name)
 	}
 	end := tail[found:]
 	endPos := size - tailLen + int64(found)
