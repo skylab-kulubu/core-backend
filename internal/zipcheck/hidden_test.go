@@ -123,27 +123,33 @@ func TestCheckRefusesHiddenLocalHeaders(t *testing.T) {
 // goes by the signature, a method the format defines, and a name, extra
 // field and data that fit in the rest of the file, whatever the header's
 // version, flags or name length say (checked: clamd unpacked each below).
-// A lone one, which is no ZIP ending the file, is refused as nested.
+// A lone one that no end record follows, its sizes in its header, is
+// checked as clamd unpacks it: a small one passes, one past MaxFileSize is
+// refused.
 func TestCheckTakesAnyLocalHeaderClamdUnpacks(t *testing.T) {
 	t.Parallel()
 	small := []byte("hidden")
-	for name, member := range map[string][]byte{
-		"version 2.0":          lone(20, 0, 8, "h.txt", small),
-		"version 25.5":         lone(255, 0, 8, "h.txt", small),
-		"no name":              lone(0, 0, 8, "", small),
-		"a name of 2000 bytes": lone(20, 0, 8, string(bytes.Repeat([]byte("n"), 2000)), small),
-		"a reserved flag":      lone(20, 1<<15, 8, "h.txt", small),
-		"stored":               lone(20, 0, 0, "h.txt", small),
-		"past MaxFileSize":     lone(20, 0, 8, "h.txt", zeros(2<<20)),
+	for name, c := range map[string]struct {
+		member []byte
+		want   error
+	}{
+		"version 2.0":          {lone(20, 0, 8, "h.txt", small), nil},
+		"version 25.5":         {lone(255, 0, 8, "h.txt", small), nil},
+		"no name":              {lone(0, 0, 8, "", small), nil},
+		"a name of 2000 bytes": {lone(20, 0, 8, string(bytes.Repeat([]byte("n"), 2000)), small), nil},
+		"a reserved flag":      {lone(20, 1<<15, 8, "h.txt", small), nil},
+		"stored":               {lone(20, 0, 0, "h.txt", small), nil},
+		"past MaxFileSize":     {lone(20, 0, 8, "h.txt", zeros(2<<20)), zipcheck.ErrTooLarge},
+		"past MaxFileSize, version 25.5, no name": {lone(255, 0, 8, "", zeros(2<<20)), zipcheck.ErrTooLarge},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for where, data := range map[string][]byte{
-				"appended to a PDF":   append(pdf(), member...),
-				"in the middle of it": append(append(pdf(), member...), pdf()...),
-				"in a member":         build(t, deflated("setup.exe", append(stub(1000), member...))),
+				"appended to a PDF":   append(pdf(), c.member...),
+				"in the middle of it": append(append(pdf(), c.member...), pdf()...),
+				"in a member":         build(t, deflated("setup.exe", append(stub(1000), c.member...))),
 			} {
-				if err := checkFile(t, data, limits); err == nil {
-					t.Errorf("%s: passed", where)
+				if err := checkFile(t, data, limits); (c.want == nil && err != nil) || !errors.Is(err, c.want) {
+					t.Errorf("%s: err = %v, want %v", where, err, c.want)
 				}
 			}
 		})
