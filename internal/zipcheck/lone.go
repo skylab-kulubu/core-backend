@@ -7,26 +7,18 @@ import (
 	"io"
 )
 
-// loneMembers checks a file past whose first byte a local header was found,
-// with no end record at the file's end: src holds the file from that first
-// header on (size bytes), at, depth archives deep. No reader opens a ZIP
-// from such a file's end; clamd unpacks each local header it finds in it on
-// its own, with no directory, and reads only up to MaxFileSize of what one
-// inflates to (checked: a lone one appended to a PDF is unpacked, and one
-// past MaxFileSize read only in part). So each local header there, the
-// first and every later one, is a member of its own: counted toward
-// MaxFiles, what it unpacks to held to MaxFileSize and MaxScanSize, and
-// read in turn (loneMember). A local header signature that is no local
-// header clamd unpacks (an undefined method, data past the file) is none,
-// as anywhere.
-//
-// Such a header is what a PDF holds when it carries a whole ZIP in its
-// middle (an embedded file stored as it is), or, by chance, in its other
-// data: what lies there is checked, not refused for where it lies.
+// loneMembers checks the size bytes src holds, part of a file past a local
+// header found past its first byte, when no end record follows them: no
+// ZIP there for a reader to open by its directory. clamd opens such a ZIP
+// from a local header, by what the header alone says (ZIPSFX). So each
+// local header there, from the first byte on, is checked on its own
+// (loneMember), counted toward MaxFiles as it is found.
 func (c *checker) loneMembers(src Source, size int64, at place, depth int) error {
-	offsets := []int64{0}
-	s := scanner{size: size, sigs: []signature{localHeaderSignature}}
-	hit := func(_ signature, off int64) error {
+	var offsets []int64
+	add := func(off int64) error {
+		if err := c.b.count(1); err != nil {
+			return err
+		}
 		offsets = append(offsets, off)
 		return nil
 	}
@@ -35,31 +27,35 @@ func (c *checker) loneMembers(src Source, size int64, at place, depth int) error
 		return err
 	}
 	r := newStream(body, size)
+	s := scanner{size: size, sigs: []signature{localHeaderSignature}}
+	hit := func(_ signature, off int64) error { return add(off) }
 	chunk := make([]byte, 32<<10)
-	for {
+	first := true
+	for err == nil {
 		if err = c.alive(); err != nil {
 			break
 		}
 		n, rerr := r.Read(chunk)
-		if n > 0 {
-			if err = s.feed(chunk[:n], false, hit); err != nil {
-				break
+		if first && n > 0 {
+			first = false
+			// The scanner reports signatures past its first byte only.
+			if head := chunk[:n]; localHeaderSignature.matches(head, size) {
+				err = add(0)
 			}
 		}
-		if errors.Is(rerr, io.EOF) {
+		if err == nil && n > 0 {
+			err = s.feed(chunk[:n], false, hit)
+		}
+		if err == nil && errors.Is(rerr, io.EOF) {
 			err = s.feed(nil, true, hit)
 			break
 		}
-		if rerr != nil {
+		if err == nil {
 			err = rerr
-			break
 		}
 	}
 	body.Close()
 	if err != nil {
-		return err
-	}
-	if err := c.b.count(len(offsets)); err != nil {
 		return err
 	}
 	for _, off := range offsets {
@@ -70,88 +66,115 @@ func (c *checker) loneMembers(src Source, size int64, at place, depth int) error
 	return nil
 }
 
-// loneMember checks the local header at off of src (size bytes) as clamd
-// unpacks one no directory lists, by what the header alone says:
-//
-//   - a deflated member is inflated to the end of its deflate stream,
-//     whatever its sizes say (at least what clamd inflates from its csize
-//     bytes, or a reader from the sizes a directory elsewhere gives), and
-//     what it inflates to is read as a member is (checker.inspect);
-//   - a stored member is its csize bytes, read as a member is; and since
-//     clamd inflates a stored one whose sizes say it grows, and a
-//     directory elsewhere may call it deflated, its data is inflated as a
-//     deflated member's too;
-//   - an encrypted member, one compressed with another method, or a stored
-//     one whose size is left to a data descriptor, holds what core cannot
-//     measure: refused as nested.
-//
-// A deflate stream that breaks off ends the member there: clamd unpacks
-// nothing from it (its extraction fails), and no reader inflates more. What
-// came before the break is still held to the limits. So data that only
-// starts like a member (chance bytes in a PDF) passes.
+// errLonger is a deflate stream that inflates to more than its header says.
+var errLonger = errors.New("zipcheck: inflates past its declared size")
+
+// errBroken is a deflate stream that is corrupt, or cut short by its
+// compressed size.
+var errBroken = errors.New("zipcheck: the deflate stream breaks off")
+
+// loneMember checks the local header at off of the size bytes src holds,
+// with no directory to go by. One that is no local header clamd unpacks (an
+// undefined method, a name or data that runs past the file) is chance
+// bytes, and passes. Any other passes only when clamd unpacks all of it by
+// what the header says, and what it unpacks to passes as a member's content
+// (checker.inspect: the limits, archives inside): no data descriptor, not
+// encrypted, stored or deflated, both sizes above zero; stored, the sizes
+// equal; deflated, the stream ending within its compressed size and
+// inflating to exactly its size. Data that is no deflate stream from its
+// first bits (corrupt before it yields a byte) is chance bytes too: no
+// reader unpacks anything from it. Any other is refused as nested, its
+// header's fields in the reason.
 func (c *checker) loneMember(src Source, size, off int64, at place, depth int) error {
 	if err := c.alive(); err != nil {
 		return err
 	}
-	m := fmt.Sprintf("the lone member at byte %d of %s", off, at)
+	if size-off < localLen {
+		return nil
+	}
 	h, err := readAt(c.ctx, src, off, localLen)
 	if err != nil {
 		return err
 	}
-	flags, method := le16(h[6:]), le16(h[8:])
-	csize := int64(le32(h[18:]))
-	data := off + localLen + int64(le16(h[26:])) + int64(le16(h[28:]))
-	switch {
-	case flags&flagsEncrypted != 0:
-		return nested("%s is encrypted, which core cannot read", m)
-	case method != methodStore && method != methodDeflate:
-		return nested("%s is compressed with method %d, which core cannot read", m, method)
-	case method == methodStore && flags&flagDescriptor != 0:
-		return nested("%s is stored with its size left to a data descriptor, which core cannot tell", m)
-	}
-	if method == methodStore && csize > 0 {
-		body, err := src.OpenRange(c.ctx, data, csize)
-		if err != nil {
-			return err
-		}
-		err = c.inspect(io.TeeReader(newStream(body, csize), &measure{c: c, at: m}), file{at: m, inside: depth + 1, size: csize})
-		body.Close()
-		if err != nil {
-			return err
-		}
-	}
-	return c.loneInflated(src, data, size-data, m, depth)
-}
-
-// loneInflated inflates the n bytes of src from data, a lone member's,
-// up to the end of their deflate stream or where it breaks off, and reads
-// what they inflate to as a member, held to the limits.
-func (c *checker) loneInflated(src Source, data, n int64, m string, depth int) error {
-	if n <= 0 {
+	if !unpackableLocalHeader(h, size-off) {
 		return nil
 	}
-	body, err := src.OpenRange(c.ctx, data, n)
+	flags, method := le16(h[6:]), le16(h[8:])
+	csize, usize := int64(le32(h[18:])), int64(le32(h[22:]))
+	m := fmt.Sprintf("the local header %d bytes past the start of %s", off, at)
+	refuse := func(why string) error {
+		return nested("%s %s, which clamd would not unpack whole (method %d, flags %#04x, csize %d, usize %d)", m, why, method, flags, csize, usize)
+	}
+	switch {
+	case flags&flagsEncrypted != 0:
+		return refuse("is encrypted")
+	case flags&flagDescriptor != 0:
+		return refuse("leaves its sizes to a data descriptor")
+	case method != methodStore && method != methodDeflate:
+		return refuse("is compressed with another method than stored or deflate")
+	case csize == 0 || usize == 0:
+		return refuse("has a size of zero")
+	case method == methodStore && csize != usize:
+		return refuse("is stored with sizes that differ")
+	}
+	data := off + localLen + int64(le16(h[26:])) + int64(le16(h[28:]))
+	body, err := src.OpenRange(c.ctx, data, csize)
 	if err != nil {
 		return err
 	}
 	defer body.Close()
-	inflated := flate.NewReader(newStream(body, n))
+	f := file{at: m, inside: depth + 1, size: usize}
+	if method == methodStore {
+		return c.inspect(io.TeeReader(newStream(body, csize), &measure{c: c, at: m}), f)
+	}
+	inflated := flate.NewReader(newStream(body, csize))
 	defer inflated.Close()
-	r := &untilBroken{r: inflated}
-	return c.inspect(io.TeeReader(r, &measure{c: c, at: m}), file{at: m, inside: depth + 1, size: -1})
+	d := &declared{r: inflated, usize: usize}
+	err = c.inspect(io.TeeReader(d, &measure{c: c, at: m}), f)
+	switch {
+	case d.corrupt && d.n == 0:
+		return nil
+	case d.corrupt:
+		return refuse(fmt.Sprintf("has a deflate stream that breaks off after %d bytes", d.n))
+	case d.short:
+		return refuse("has a deflate stream that runs past its compressed size")
+	case d.longer:
+		return refuse("inflates to more than its size")
+	case err != nil:
+		return err
+	case d.n != usize:
+		return refuse(fmt.Sprintf("inflates to %d bytes, not its size", d.n))
+	}
+	return nil
 }
 
-// untilBroken ends a deflate stream where it breaks off (corrupt, or cut
-// short by the end of the file): what came before is all it holds. Any
-// other error (storage serving less than it holds, ctx) is returned as it
-// is.
-type untilBroken struct{ r io.Reader }
+// declared reads a lone member's deflate stream, noting whether it is
+// corrupt, cut short by its compressed size, or inflates past the size its
+// header declares.
+type declared struct {
+	r       io.Reader
+	usize   int64
+	n       int64
+	corrupt bool
+	short   bool
+	longer  bool
+}
 
-func (u *untilBroken) Read(p []byte) (int, error) {
-	n, err := u.r.Read(p)
+func (d *declared) Read(p []byte) (int, error) {
+	n, err := d.r.Read(p)
+	d.n += int64(n)
+	if d.n > d.usize {
+		d.longer = true
+		return n, errLonger
+	}
 	var corrupt flate.CorruptInputError
-	if errors.As(err, &corrupt) || errors.Is(err, io.ErrUnexpectedEOF) {
-		err = io.EOF
+	switch {
+	case errors.As(err, &corrupt):
+		d.corrupt = true
+		return n, errBroken
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		d.short = true
+		return n, errBroken
 	}
 	return n, err
 }

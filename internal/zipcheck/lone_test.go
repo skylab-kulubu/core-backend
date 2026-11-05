@@ -2,6 +2,7 @@ package zipcheck_test
 
 import (
 	"bytes"
+	"compress/flate"
 	"encoding/binary"
 	"errors"
 	"testing"
@@ -38,31 +39,55 @@ func localHeader(flags, method uint16, csize, usize uint32, data []byte) []byte 
 	return append(h, data...)
 }
 
-// A file that is no ZIP, with a local header signature past its first byte
-// and no end record at its end, holds no ZIP a reader opens from its end;
-// clamd unpacks each local header in it on its own (checked: a lone one
-// appended to a PDF). Production refused a PDF with one at byte 141 as
-// archive_nested (no ZIP ends the file there), every try. Each local header
-// there is now a lone member, checked as clamd unpacks it: one that holds
-// nothing past the limits passes, and the file goes to clamd whole.
-func TestCheckFileChecksLoneLocalHeadersInAFile(t *testing.T) {
+// valid is a lone member clamd unpacks whole: its sizes in its header.
+func valid(method uint16, content []byte) []byte {
+	return lone(20, 0, method, "a.txt", content)
+}
+
+// brokenAfter is a deflate stream that yields content, then breaks off.
+func brokenAfter(t *testing.T, content []byte) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	fw, err := flate.NewWriter(&b, flate.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := fw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	return append(b.Bytes(), 0xff, 0xff, 0xff, 0xff)
+}
+
+// padding is n spaces: no signature, no archive.
+func padding(n int) []byte { return bytes.Repeat([]byte(" "), n) }
+
+// Production refused a PDF with a local header signature at byte 141 as
+// archive_nested, every try. Past a file's first byte, a local header
+// signature that no end record follows passes when it is chance bytes
+// (nothing clamd or a reader unpacks from it) or a member clamd unpacks
+// whole, within the limits. A ZIP in the middle of a PDF, its sizes in its
+// local headers, passes: checked whole when its end record is among the
+// file's last 65,557 bytes, member by member when it is not.
+func TestCheckFilePassesChanceLocalHeadersAndWholeMembers(t *testing.T) {
 	t.Parallel()
 	odf := build(t, sized(stored("mimetype", []byte("application/vnd.oasis.opendocument.text")),
 		deflated("content.xml", text(20<<10)), deflated("styles.xml", bytes.Repeat([]byte("<style/>"), 1000)))...)
-	streamed := build(t, deflated("content.xml", text(20<<10)), deflated("styles.xml", bytes.Repeat([]byte("<style/>"), 1000)))
 	for name, data := range map[string][]byte{
-		// The signature, then data no deflate stream starts with: clamd
-		// inflates nothing from it.
-		"at byte 141, deflated, then bytes no inflater reads": pdfStream(141, localHeader(0, 8, 64, 1000, append([]byte{0xff}, text(200)...))),
-		"at byte 141, deflated, then binary data":             pdfStream(141, localHeader(0, 8, 64, 1000, text(4000))),
-		"at byte 141, deflated, the stream cut short":         pdfStream(141, localHeader(0, 8, 10, 1000, deflate(t, text(4000))[:10])),
-		"at byte 141, stored, over the rest of the PDF":       pdfStream(141, localHeader(0, 0, 3000, 3000, text(200))),
-		"at byte 141, stored, sizes that say it grows":        pdfStream(141, localHeader(0, 0, 100, 5000, text(200))),
-		"at byte 141, deflated, its size in a descriptor":     pdfStream(141, localHeader(8, 8, 0, 0, deflate(t, text(4000)))),
-		"a reserved flag":                                      pdfStream(141, localHeader(1<<15, 8, 64, 1000, text(200))),
-		"a whole ZIP in its middle (a hybrid PDF)":             pdfStream(141, odf),
-		"a whole ZIP in its middle, streamed with descriptors": pdfStream(141, streamed),
-		"a whole ZIP in the middle of a member":                build(t, deflated("rapor.pdf", pdfStream(141, odf))),
+		"141: random bytes":             pdfStream(141, append([]byte("PK\x03\x04"), text(4000)...)),
+		"141: an undefined method":      pdfStream(141, localHeader(0, 77, 64, 1000, text(200))),
+		"141: sizes past the file":      pdfStream(141, localHeader(0, 8, 1<<30, 1<<30, text(200))),
+		"141: a stream that breaks":     pdfStream(141, localHeader(0, 8, 64, 1000, append([]byte{0xff}, text(200)...))),
+		"141: a stored member":          pdfStream(141, valid(0, []byte("ek notlar"))),
+		"141: a deflated member":        pdfStream(141, valid(8, text(4000))),
+		"a ZIP mid-PDF":                 pdfStream(141, odf),
+		"a ZIP mid-PDF, 70 KiB after":   pdfStream(141, append(append([]byte{}, odf...), padding(70<<10)...)),
+		"a ZIP, then a member":          pdfStream(141, append(append(append([]byte{}, odf...), padding(100)...), valid(8, text(1000))...)),
+		"a ZIP mid-PDF, in a member":    build(t, deflated("rapor.pdf", pdfStream(141, odf))),
+		"a header past the end, gzip":   build(t, stored("a.gz", gzOf(t, append(pdf(), localHeader(0, 0, 1<<20, 1<<20, text(10))...)))),
+		"members mid-PDF, 70 KiB after": pdfStream(141, append(append(valid(0, []byte("a")), valid(8, text(1000))...), padding(70<<10)...)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := checkFile(t, data, limits); err != nil {
@@ -72,19 +97,20 @@ func TestCheckFileChecksLoneLocalHeadersInAFile(t *testing.T) {
 	}
 }
 
-// What a lone member unpacks to is held to the limits as any member's:
-// clamd reads only up to MaxFileSize of it. One core cannot measure (an
-// encrypted one, another method, a stored one whose size it cannot tell) is
-// refused as nested. A file that ends with an end record whose directory
-// is elsewhere is no file of lone members: refused as nested, as before.
-func TestCheckFileRefusesLoneMembersPastTheLimits(t *testing.T) {
+// A local header past a file's first byte that clamd would not unpack
+// whole, or a ZIP there it would not read whole, is refused; one past the
+// limits as too large.
+func TestCheckFileRefusesWhatClamdWouldNotUnpackWhole(t *testing.T) {
 	t.Parallel()
 	bomb := deflate(t, zeros(2<<20))
-	big := build(t, sized(stored("mimetype", []byte("application/vnd.oasis.opendocument.text")), deflated("zeros.bin", zeros(2<<20)))...)
-	streamedBig := build(t, deflated("zeros.bin", zeros(2<<20)))
+	payload := deflate(t, text(4000))
 	small := build(t, sized(deflated("notlar.txt", []byte("ek notlar")))...)
+	big := build(t, sized(deflated("zeros.bin", zeros(2<<20)))...)
+	streamed := build(t, deflated("content.xml", text(2000)))
 	rar := build(t, sized(stored("a.rar", append([]byte("Rar!\x1a\x07\x00"), text(100)...)))...)
-	nested := build(t, sized(deflated("a.gz", gzOf(t, zeros(2<<20))))...)
+	gz := build(t, sized(deflated("a.gz", gzOf(t, zeros(2<<20))))...)
+	overrun := append([]byte{}, small...)
+	put16(overrun, len(overrun)-2, 1000)
 	tight := limits
 	tight.MaxFiles = 2
 	for name, c := range map[string]struct {
@@ -92,23 +118,33 @@ func TestCheckFileRefusesLoneMembersPastTheLimits(t *testing.T) {
 		limits zipcheck.Limits
 		want   error
 	}{
-		"deflated past MaxFileSize":                         {pdfStream(141, localHeader(0, 8, uint32(len(bomb)), 2<<20, bomb)), limits, zipcheck.ErrTooLarge},
-		"its csize cutting a stream that runs past it":      {pdfStream(141, localHeader(0, 8, 64, 100, bomb)), limits, zipcheck.ErrTooLarge},
-		"its size in a descriptor, past MaxFileSize":        {pdfStream(141, localHeader(8, 8, 0, 0, bomb)), limits, zipcheck.ErrTooLarge},
-		"stored, sizes that say it grows past MaxFileSize":  {pdfStream(141, localHeader(0, 0, uint32(len(bomb)), 2<<20, bomb)), limits, zipcheck.ErrTooLarge},
-		"a ZIP in its middle past MaxFileSize":              {pdfStream(141, big), limits, zipcheck.ErrTooLarge},
-		"a streamed ZIP in its middle past MaxFileSize":     {pdfStream(141, streamedBig), limits, zipcheck.ErrTooLarge},
-		"a ZIP in its middle holding a RAR":                 {pdfStream(141, rar), limits, zipcheck.ErrNested},
-		"a ZIP in its middle holding a gzip past the limit": {pdfStream(141, nested), limits, zipcheck.ErrTooLarge},
-		"more lone members than MaxFiles":                   {pdfStream(141, bytes.Repeat(localHeader(0, 0, 4, 4, []byte("abcd")), 3)), tight, zipcheck.ErrTooLarge},
-		"encrypted":                                         {pdfStream(141, localHeader(1, 8, 64, 1000, text(200))), limits, zipcheck.ErrNested},
-		"compressed with bzip2":                             {pdfStream(141, localHeader(0, 12, 64, 1000, text(200))), limits, zipcheck.ErrNested},
-		"stored, its size unknown":                          {pdfStream(141, localHeader(8, 0, 0, 0, text(200))), limits, zipcheck.ErrNested},
-		"stored, its size in a descriptor too":              {pdfStream(141, localHeader(8, 0, 4, 4, text(200))), limits, zipcheck.ErrNested},
-		"stored, its data a deflate past MaxFileSize":       {pdfStream(141, localHeader(0, 0, 64, 64, bomb)), limits, zipcheck.ErrTooLarge},
-		"one, then a ZIP appended whose directory counts from it": {
-			append(pdfStream(141, localHeader(0, 8, 64, 1000, append([]byte{0xff}, text(200)...))), small...), limits, zipcheck.ErrNested,
+		"descriptor, deflated":                      {pdfStream(141, localHeader(8, 8, 0, 0, payload)), limits, zipcheck.ErrNested},
+		"descriptor, sizes given":                   {pdfStream(141, localHeader(8, 8, uint32(len(payload)), 4000, payload)), limits, zipcheck.ErrNested},
+		"descriptor, stored":                        {pdfStream(141, localHeader(8, 0, 4, 4, text(200))), limits, zipcheck.ErrNested},
+		"zero sizes":                                {pdfStream(141, localHeader(0, 8, 0, 0, payload)), limits, zipcheck.ErrNested},
+		"zero usize":                                {pdfStream(141, localHeader(0, 8, uint32(len(payload)), 0, payload)), limits, zipcheck.ErrNested},
+		"csize short of the stream":                 {pdfStream(141, localHeader(0, 8, 64, 4000, payload)), limits, zipcheck.ErrNested},
+		"csize cuts before a byte":                  {pdfStream(141, localHeader(0, 8, 2, 4000, payload)), limits, zipcheck.ErrNested},
+		"usize short of the stream":                 {pdfStream(141, localHeader(0, 8, uint32(len(payload)), 100, payload)), limits, zipcheck.ErrNested},
+		"usize past the stream":                     {pdfStream(141, localHeader(0, 8, uint32(len(payload)), 5000, payload)), limits, zipcheck.ErrNested},
+		"broken after its data":                     {pdfStream(141, localHeader(0, 8, uint32(len(brokenAfter(t, text(1000)))), 1000, brokenAfter(t, text(1000)))), limits, zipcheck.ErrNested},
+		"stored, usize past csize":                  {pdfStream(141, localHeader(0, 0, uint32(len(bomb)), 2<<20, bomb)), limits, zipcheck.ErrNested},
+		"stored, usize short of csize":              {pdfStream(141, localHeader(0, 0, 200, 100, text(200))), limits, zipcheck.ErrNested},
+		"encrypted":                                 {pdfStream(141, localHeader(1, 8, 64, 1000, text(200))), limits, zipcheck.ErrNested},
+		"bzip2":                                     {pdfStream(141, localHeader(0, 12, 64, 1000, text(200))), limits, zipcheck.ErrNested},
+		"past MaxFileSize":                          {pdfStream(141, valid(8, zeros(2<<20))), limits, zipcheck.ErrTooLarge},
+		"past MaxFiles":                             {pdfStream(141, bytes.Repeat(valid(0, []byte("abcd")), 3)), tight, zipcheck.ErrTooLarge},
+		"a ZIP mid-PDF past MaxFileSize":            {pdfStream(141, big), limits, zipcheck.ErrTooLarge},
+		"a ZIP mid-PDF past MaxFileSize, 70 KiB on": {pdfStream(141, append(append([]byte{}, big...), padding(70<<10)...)), limits, zipcheck.ErrTooLarge},
+		"a ZIP mid-PDF holding a RAR":               {pdfStream(141, rar), limits, zipcheck.ErrNested},
+		"a ZIP mid-PDF holding a large gzip":        {pdfStream(141, gz), limits, zipcheck.ErrTooLarge},
+		"a ZIP mid-PDF with descriptors":            {pdfStream(141, streamed), limits, zipcheck.ErrNested},
+		"a ZIP mid-PDF with descriptors, 70 KiB on": {pdfStream(141, append(append([]byte{}, streamed...), padding(70<<10)...)), limits, zipcheck.ErrNested},
+		"a ZIP appended with descriptors":           {append(pdf(), streamed...), limits, zipcheck.ErrNested},
+		"an end record, its directory elsewhere": {
+			append(append(append(pdf(), valid(0, []byte("abcd"))...), small...), padding(100)...), limits, zipcheck.ErrNested,
 		},
+		"an end record past the file": {append(pdf(), overrun...), limits, zipcheck.ErrNested},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := checkFile(t, c.data, c.limits); !errors.Is(err, c.want) {

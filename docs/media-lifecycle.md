@@ -2462,11 +2462,14 @@ one it did not read):
   ZIP, and a ZIP appended to a program, an image or a PDF is unpacked from
   past the file's first byte, with the same limits and the same silent
   truncation.
-- It unpacks a lone local header wherever it finds one, with no directory
-  listing it: hidden in a ZIP's end record comment or a member's extra
-  field, in a ZIP and in a ZIP appended to a PDF. It goes by the signature
-  alone: a header of version 25.5, with no name or one of 2000 bytes, or
-  with a reserved flag, is unpacked too.
+- It unpacks a lone local header it finds, with no directory listing it:
+  hidden in a ZIP's end record comment or a member's extra field, in a ZIP
+  and in a ZIP appended to a PDF. It goes by the signature and the header's
+  own fields: a header of version 25.5, with no name or one of 2000 bytes,
+  or with a reserved flag, is unpacked too; one with a data descriptor
+  flag, or a size of zero, is not (see "Any other file" below). Its scan of
+  the file's raw bytes is no scan of a member: hash and file-type
+  signatures apply to what it unpacks, not to bytes inside another file.
 - A gzip or tar member past `MaxFileSize` is reported, not truncated
   silently.
 
@@ -2479,9 +2482,9 @@ its type says:
   checked whole (below);
 - **any other file** (a PDF, an image) is streamed once and searched for
   archives past its first byte, as a member is (see "Any other file" under
-  what a member holds): a ZIP appended to a PDF is checked as a nested
-  ZIP, a ZIP or local header in its middle member by member, any other
-  archive there is refused as `archive_nested`.
+  what a member holds): a ZIP appended to a PDF or stored in its middle is
+  checked as a nested ZIP, a local header no end record follows on its
+  own, any other archive there is refused as `archive_nested`.
 
 The check runs in the scan worker, under the Media's scan claim, holding no
 database connection. A public held file is read by ranged GETs. A private
@@ -2587,33 +2590,51 @@ name alone: a `raspi.img` of plain bytes is a plain file, and a
   a ZIP local header as clamd takes one (the signature, a method the format
   defines, and a name, extra field and data that fit in the rest of the
   file, whatever its version, flags or name length), or the full signature
-  of RAR, 7-Zip, cab or ARJ (an ARJ header whose CRC checks out). The
-  first local header starts a ZIP that must end the file, checked as a
-  nested one, its offsets counted from the ZIP or from the file's first
-  byte (as `zip -A` leaves a self-extractor); from its own range when the
-  member is stored, from memory otherwise. Every later local header must
-  then be that ZIP's own or inside its members' data, which its check
-  holds it to. A ZIP larger than the buffer, or a file that ends with an
-  end record whose directory is not where it says, is refused as
-  `archive_nested`; so is any other embedded archive.
-- **A file with no end record at its end** holds no ZIP a reader opens from
-  its end: a PDF that carries a whole ZIP in its middle (an embedded file
-  stored as it is, a hybrid PDF), or a local header signature in its other
-  data. clamd unpacks each local header in it on its own (checked: a lone
-  one appended to a PDF, or in its middle). So each local header from the
-  first on is a lone member, checked as clamd unpacks it, by what its
-  header alone says: counted toward `MaxFiles`; a deflated one inflated to
-  the end of its deflate stream, whatever its sizes say; a stored one read
-  as its stored size gives and, in case a reader inflates it, inflated
-  too; what it unpacks to held to `MaxFileSize` and `MaxScanSize`
-  (`too_large_to_scan`) and read in turn, as a member is. A deflate stream
-  that breaks off ends the member there: clamd unpacks nothing from it,
-  and what came before the break is still held to the limits. So bytes
-  that only look like a local header (production refused a PDF with one
-  at byte 141, 2026-11-05) pass, and the file goes to clamd whole. One
-  core cannot measure (encrypted, another method, a stored one whose size
-  is left to a data descriptor) is refused as `archive_nested`. Chance
-  data passes for a local header about once in 100,000 GiB.
+  of RAR, 7-Zip, cab or ARJ (an ARJ header whose CRC checks out). Any other
+  embedded archive is refused as `archive_nested`. From the first local
+  header on, the ZIP there is the one whose end record is the last in the
+  file's last 65,557 bytes, where a reader looks for it, ending the file
+  or not (a ZIP appended to a PDF, or one stored in its middle):
+  - it is checked whole, as a nested one, up to its end record, its
+    offsets counted from the ZIP or from the file's first byte (as `zip -A`
+    leaves a self-extractor); from its own range when the member is stored,
+    from memory otherwise. Every later local header in it must be that
+    ZIP's own or inside its members' data, which its check holds it to;
+  - one whose directory is not where its end record says, whose end record
+    runs past the file, or that is larger than the buffer, is refused as
+    `archive_nested`;
+  - so is one with a member whose sizes are left to a data descriptor
+    (zeros in its local header): clamd does not unpack such a member past a
+    file's first byte, so its content would go unscanned. This refuses a
+    PDF or program carrying a ZIP written as a stream (Go's `archive/zip`,
+    Java's `ZipOutputStream`, `zip` writing to a pipe; a LibreOffice hybrid
+    PDF when its ODF's members are written so), and a self-extractor built
+    from one. A ZIP at a file's first byte is not affected.
+- **A local header no end record follows** (in the bytes past that ZIP's end
+  record, or in a file with none in its last 65,557 bytes) belongs to no
+  ZIP a reader opens by its directory; clamd 1.5.4 opens a ZIP found past a
+  file's first byte from its local header, by what the header alone says
+  (ZIPSFX): only one with no data descriptor flag and both sizes above
+  zero, feeding the inflater its compressed size and no more. It scans the
+  part of a deflate stream that its compressed size cuts short; it keeps
+  nothing of a corrupt one; a stored member whose sizes say it grows it
+  tries to inflate, and keeps nothing when that fails. So such a header
+  passes only:
+  - as chance bytes: a header clamd would not take (an undefined method, a
+    name or data that runs past the file), or deflated data that is
+    corrupt before it yields a byte, from which no reader unpacks anything;
+  - or as a member clamd unpacks whole: no data descriptor, not encrypted,
+    stored or deflated, both sizes above zero; stored, the two sizes equal;
+    deflated, the stream ending within its compressed size and inflating to
+    exactly its size. What it unpacks to is counted toward `MaxFiles`, held
+    to `MaxFileSize` and `MaxScanSize` (`too_large_to_scan`), and read in
+    turn, as a member is.
+
+  Any other is refused as `archive_nested`, the header's method, flags and
+  sizes in the logged reason (never a name or content). Production refused
+  a PDF with a local header at byte 141 so, every try (2026-11-05), before
+  the ZIP in a file's middle was read up to its end record. Chance data
+  passes for a local header about once in 100,000 GiB.
 
 Depth is counted as clamd counts it: a member of an archive n deep is inside
 n + 1 archives, which clamd scans only while n + 1 is below `MaxRecursion`
@@ -2627,13 +2648,7 @@ Direct upload (ticket 21). It is never scanned unchecked: it waits
 scanning, logged at each try (`media.ErrPrivateZIPUnchecked`), until its
 scan deadline rejects it.
 
-Not covered: core does not look inside a PDF's compressed streams. Nor
-does it hold a lone member's local header to a directory: a ZIP in the
-middle of a PDF is checked by its local headers, as clamd unpacks it, not
-against the directory it may carry: a reader that opens it by that
-directory reads a deflated member's data as core does, to the end of its
-stream, but may take a stored member's size from the directory, and
-those bytes are in the file clamd scans whole.
+Not covered: core does not look inside a PDF's compressed streams.
 
 ### Public files before their scan
 

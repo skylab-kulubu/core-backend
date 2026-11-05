@@ -123,8 +123,9 @@ func TestCheckRefusesHiddenLocalHeaders(t *testing.T) {
 // goes by the signature, a method the format defines, and a name, extra
 // field and data that fit in the rest of the file, whatever the header's
 // version, flags or name length say (checked: clamd unpacked each below).
-// A lone one, which is no ZIP ending the file, is checked as clamd unpacks
-// it, on its own: a small one passes, one past MaxFileSize is refused.
+// A lone one that no end record follows, its sizes in its header, is
+// checked as clamd unpacks it: a small one passes, one past MaxFileSize is
+// refused.
 func TestCheckTakesAnyLocalHeaderClamdUnpacks(t *testing.T) {
 	t.Parallel()
 	small := []byte("hidden")

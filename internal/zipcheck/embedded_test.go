@@ -13,8 +13,8 @@ import (
 // past its first byte has that ZIP checked as a nested one: from the member
 // in the file when the member is stored, from memory otherwise. Its offsets
 // may count from the ZIP or, as zip -A leaves a self-extractor, from the
-// member's first byte. One that does not end the member has each of its
-// local headers checked as a lone member: held to the limits all the same.
+// member's first byte. One that does not end the member is checked up to
+// its end record, held to the limits all the same.
 func TestCheckChecksAZIPEmbeddedInAMember(t *testing.T) {
 	t.Parallel()
 	csv := []byte("ad,soyad\nAda,Lovelace\n")

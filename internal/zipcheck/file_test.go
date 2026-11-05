@@ -44,10 +44,9 @@ func checkFile(t *testing.T, data []byte, l zipcheck.Limits) error {
 // So a ZIP appended to a file is checked as a nested one, ending the file,
 // its offsets counted from the ZIP or from the file's first byte; one past
 // clamd's limits is refused as too large, and any other archive there as
-// nested. A ZIP in the middle of a file with no end record at its end has
-// each of its local headers checked as a lone member (lone_test.go). A
-// PDF, JPEG or PNG with nothing appended, or with a ZIP within the limits,
-// passes.
+// nested. A ZIP in the middle of a file is checked whole, up to its end
+// record (lone_test.go). A PDF, JPEG or PNG with nothing appended, or with
+// a ZIP within the limits, passes.
 func TestCheckFileLooksForArchivesInAnyFile(t *testing.T) {
 	t.Parallel()
 	small := build(t, sized(deflated("notlar.txt", []byte("ek notlar")))...)
