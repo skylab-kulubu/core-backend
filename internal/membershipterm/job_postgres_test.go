@@ -1,0 +1,388 @@
+package membershipterm_test
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
+)
+
+// The first rollout: a dry run says how many terms apply would write and
+// writes none; apply gives every YK, DK and Team Leader membership the
+// active season's end, and none to ADMIN or an ordinary Team member. A
+// membership taken away in Keycloak's console ends its term.
+func TestBackfillDryRunCountsThenApplyWritesManagementTermsOnly(t *testing.T) {
+	f := newFixture(t, membershipterm.ModeApply)
+	p := f.people
+
+	dry := f.run(t, membershipterm.ModeDryRun)
+	if dry.Backfilled != 5 || dry.Ended != 0 || dry.Expired != 0 || dry.Mails != 0 || !dry.SeasonFound {
+		t.Fatalf("dry run %+v", dry)
+	}
+	if terms := f.open(t); len(terms) != 0 {
+		t.Fatalf("a dry run wrote %d terms", len(terms))
+	}
+
+	run := f.run(t, membershipterm.ModeApply)
+	if run.Backfilled != 5 || run.Status != "ok" {
+		t.Fatalf("apply %+v", run)
+	}
+	var holders []uuid.UUID
+	for _, term := range f.open(t) {
+		holders = append(holders, term.UserID)
+		if term.EndsAt == nil || !term.EndsAt.Equal(termEnd) || term.Source != membershipterm.SourceBackfill || term.SeasonID == nil {
+			t.Fatalf("term %+v", term)
+		}
+	}
+	if !slices.Equal(sorted(holders...), sorted(p.yk1, p.yk2, p.dk1, p.lead, p.sublead)) {
+		t.Fatalf("terms of %v", holders)
+	}
+	if again := f.run(t, membershipterm.ModeApply); again.Backfilled != 0 || again.Ended != 0 {
+		t.Fatalf("second run %+v", again)
+	}
+
+	// Taken out of YK in Keycloak's console.
+	if err := f.dir.RemoveMember(context.Background(), gYK.String(), p.yk2); err != nil {
+		t.Fatal(err)
+	}
+	if run := f.run(t, membershipterm.ModeApply); run.Ended != 1 || run.Backfilled != 0 {
+		t.Fatalf("after the console removal %+v", run)
+	}
+	if len(f.open(t)) != 4 {
+		t.Fatal("the removed membership's term is open")
+	}
+
+	// WEBLAB renamed: its Leaders keep their terms, under the new path.
+	f.dir.PutGroup(identity.Group{ID: gWeblab.String(), Name: "WEB", Path: "/UYELER/ARGE/WEB"})
+	f.dir.PutGroup(identity.Group{ID: gWeblabL.String(), Name: "LIDERLER", Path: "/UYELER/ARGE/WEB/LIDERLER"})
+	if run := f.run(t, membershipterm.ModeApply); run.Ended != 0 || run.Backfilled != 0 {
+		t.Fatalf("after the rename %+v", run)
+	}
+	if term := f.termOf(t, p.lead, gWeblabL); term.GroupPath != "/UYELER/ARGE/WEB/LIDERLER" {
+		t.Fatalf("renamed term %+v", term)
+	}
+}
+
+// Clock moved: 14 days and 1 day before the end the holder and those over
+// them get one warning each, never twice; at the end the term is only
+// marked: nobody leaves a Group, Keycloak is not written, the mark is
+// recorded and ADMIN gets the day's list; a week on, ADMIN gets the
+// summary. ADMIN's and the ordinary member's memberships have no term.
+func TestWarningsThenTheMarkWithoutRemoval(t *testing.T) {
+	f := newFixture(t, membershipterm.ModeApply)
+	p := f.people
+	f.run(t, membershipterm.ModeApply)
+
+	f.setNow(termEnd.Add(-membershipterm.WarnEarly))
+	if run := f.run(t, membershipterm.ModeApply); run.Warned14d != 5 || run.Warned1d != 0 {
+		t.Fatalf("14 days before %+v", run)
+	}
+	queued := f.queued(t)
+	for subject, want := range map[uuid.UUID][]uuid.UUID{
+		p.yk1:     {p.yk1, p.admin, p.yk2},           // ADMIN and YK
+		p.dk1:     {p.dk1, p.admin},                  // ADMIN and DK
+		p.lead:    {p.lead, p.yk1, p.yk2},            // no Team above WEBLAB: YK
+		p.sublead: {p.sublead, p.lead, p.yk1, p.yk2}, // WEBLAB's Leaders and YK
+	} {
+		if got := recipients(queued[membershipterm.NoticeWarning14d], subject); !slices.Equal(got, sorted(want...)) {
+			t.Errorf("14-day warning of %s to %v, want %v", subject, got, sorted(want...))
+		}
+	}
+	first := len(queued[membershipterm.NoticeWarning14d])
+	if run := f.run(t, membershipterm.ModeApply); run.Warned14d != 0 || run.Mails != 0 {
+		t.Fatalf("warned twice %+v", run)
+	}
+	if again := f.queued(t); len(again[membershipterm.NoticeWarning14d]) != first {
+		t.Fatal("a second 14-day warning was queued")
+	}
+
+	// The mails: the holder's own, and an overseer's.
+	if _, err := f.svc.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var own, other map[string]string
+	for _, m := range f.mail.sent {
+		if m.vars["Notice"] == "warning" && m.vars["DaysLeft"] == "14" && m.vars["SubjectName"] == "Yekta Test" {
+			if m.recipient == "Yekta@example.test" {
+				own = m.vars
+			} else if m.recipient == "Yasemin@example.test" {
+				other = m.vars
+			}
+		}
+	}
+	if own == nil || own["Self"] != "yes" || own["EndsAt"] != "31.05.2027" || own["Role"] != "board" || own["GroupName"] != "YK" || own["GroupId"] != gYK.String() {
+		t.Fatalf("holder's warning %v", own)
+	}
+	if other == nil || other["Self"] != "no" {
+		t.Fatalf("overseer's warning %v", other)
+	}
+	for _, m := range f.mail.sent {
+		for _, v := range m.vars {
+			if strings.Contains(v, "@") {
+				t.Fatalf("an address in the mail's variables: %v", m.vars)
+			}
+		}
+	}
+
+	f.setNow(termEnd.Add(-membershipterm.WarnLate))
+	if run := f.run(t, membershipterm.ModeApply); run.Warned1d != 5 || run.Warned14d != 0 {
+		t.Fatalf("1 day before %+v", run)
+	}
+	if run := f.run(t, membershipterm.ModeApply); run.Warned1d != 0 {
+		t.Fatalf("warned twice %+v", run)
+	}
+	if got := recipients(f.queued(t)[membershipterm.NoticeWarning1d], p.yk1); !slices.Equal(got, sorted(p.yk1, p.admin, p.yk2)) {
+		t.Fatalf("1-day warning to %v", got)
+	}
+
+	f.dir.Ops = nil
+	f.setNow(termEnd.Add(time.Second))
+	run := f.run(t, membershipterm.ModeApply)
+	if run.Expired != 5 || run.Ended != 0 {
+		t.Fatalf("at the end %+v", run)
+	}
+	if slices.Contains(f.dir.Ops, "RemoveMember") || slices.Contains(f.dir.Ops, "AddMember") {
+		t.Fatalf("Keycloak was written: %v", f.dir.Ops)
+	}
+	members, err := f.dir.Members(context.Background(), gYK.String())
+	if err != nil || len(members) != 2 {
+		t.Fatalf("YK's members %v %v", members, err)
+	}
+	for _, term := range f.open(t) {
+		if term.ExpiredAt == nil || term.EndedAt != nil {
+			t.Fatalf("term %+v", term)
+		}
+	}
+	rows := f.auditRows(t, teamaudit.ActionTermExpired)
+	if len(rows) != 5 {
+		t.Fatalf("audit rows %v", rows)
+	}
+	for _, row := range rows {
+		if row["actor"] != uuid.Nil.String() || row["basis"] != "system" || row["client"] != "system:term-expiry" || row["outcome"] != "ok" || row["target"] == "" {
+			t.Fatalf("audit row %v", row)
+		}
+	}
+	lists := f.queued(t)[membershipterm.NoticeExpiredList]
+	if len(lists) != 1 || lists[0][0] != p.admin {
+		t.Fatalf("lists %v", lists)
+	}
+	if run := f.run(t, membershipterm.ModeApply); run.Expired != 0 || run.Mails != 0 {
+		t.Fatalf("marked twice %+v", run)
+	}
+
+	f.mail.sent = nil
+	if _, err := f.svc.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var lists2 []sentMail
+	for _, m := range f.mail.sent {
+		if m.vars["Notice"] == "expired-list" {
+			lists2 = append(lists2, m)
+		}
+	}
+	if len(lists2) != 1 || lists2[0].recipient != "Admin@example.test" || lists2[0].vars["Count"] != "5" ||
+		!strings.Contains(lists2[0].vars["Items"], "Yekta Test · YK · 31.05.2027") ||
+		!strings.Contains(lists2[0].vars["Items"], "Leyla Test · WEBLAB/LIDERLER · 31.05.2027") {
+		t.Fatalf("list mail %+v", lists2)
+	}
+
+	// The gauge: five expired terms whose holders are still in their Groups.
+	f.svc.Refresh(context.Background())
+	metrics := f.svc.Prometheus()
+	if !strings.Contains(metrics, "skylab_management_terms_expired_in_group 5\n") || strings.Contains(metrics, "/UYELER") || strings.Contains(metrics, p.yk1.String()) {
+		t.Fatalf("metrics\n%s", metrics)
+	}
+
+	// A week on, the summary.
+	f.setNow(termEnd.Add(7 * 24 * time.Hour))
+	if run := f.run(t, membershipterm.ModeApply); run.Weekly != membershipterm.WeeklySent {
+		t.Fatalf("a week on %+v", run)
+	}
+	if weekly := f.queued(t)[membershipterm.NoticeWeeklySummary]; len(weekly) != 1 || weekly[0][0] != p.admin {
+		t.Fatalf("weekly %v", weekly)
+	}
+	f.mail.sent = nil
+	if _, err := f.svc.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.mail.sent) != 1 || f.mail.sent[0].vars["Notice"] != "weekly-summary" || f.mail.sent[0].vars["Count"] != "5" || !strings.Contains(f.mail.sent[0].vars["Items"], "YK: 2") {
+		t.Fatalf("weekly mail %+v", f.mail.sent)
+	}
+	if run := f.run(t, membershipterm.ModeApply); run.Weekly != membershipterm.WeeklyNotDue {
+		t.Fatalf("weekly twice %+v", run)
+	}
+}
+
+// An expired list whose every term was erased with its holder before it
+// went lists nobody: it does not go ("0 terms"), and the metric says why.
+// The marks' audit records stay as they are.
+func TestAnExpiredListOfErasedTermsDoesNotGo(t *testing.T) {
+	f := newFixture(t, membershipterm.ModeApply)
+	f.run(t, membershipterm.ModeApply)
+	f.setNow(termEnd.Add(time.Second))
+	if run := f.run(t, membershipterm.ModeApply); run.Expired != 5 {
+		t.Fatalf("at the end %+v", run)
+	}
+	// What erasing every holder does to their terms (internal/user).
+	if _, err := f.pool.Exec(context.Background(), `DELETE FROM management_membership_terms`); err != nil {
+		t.Fatal(err)
+	}
+	f.mail.sent = nil
+	if _, err := f.svc.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range f.mail.sent {
+		if m.vars["Notice"] == "expired-list" {
+			t.Fatalf("an empty list went: %+v", m)
+		}
+	}
+	if metrics := f.svc.Prometheus(); !strings.Contains(metrics, `skylab_management_term_mail_total{outcome="skipped_erased"} 1`+"\n") {
+		t.Fatalf("metrics\n%s", metrics)
+	}
+	if lists := f.queued(t)[membershipterm.NoticeExpiredList]; len(lists) != 0 {
+		t.Fatalf("still queued %v", lists)
+	}
+	if rows := f.auditRows(t, teamaudit.ActionTermExpired); len(rows) != 5 {
+		t.Fatalf("audit rows %v", rows)
+	}
+}
+
+// Only apply hears of the membership routes; dry-run and off write
+// nothing and serve no route.
+func TestOnlyApplyKeepsTerms(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []membershipterm.Mode{membershipterm.ModeOff, membershipterm.ModeDryRun} {
+		f := &fixture{}
+		svc, err := membershipterm.NewService(membershipterm.Config{Mode: mode, Store: membershipterm.NewPostgresStore(nil),
+			Directory: nilDirectory{}, Seasons: nilSeasons{}, Rosters: nilRosters{}, Audit: teamaudit.NewMemory(), Now: f.clock})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if svc.Notifies(yk()) {
+			t.Fatalf("%s hears of memberships", mode)
+		}
+		ctx, p := as(uuid.New(), "/UYELER/YK")
+		if _, err := svc.List(ctx, p, membershipterm.Filter{}); err != membershipterm.ErrOff {
+			t.Fatalf("%s lists: %v", mode, err)
+		}
+		if got, err := svc.ExpiredFor(ctx, uuid.New()); err != nil || len(got) != 0 {
+			t.Fatalf("%s expired %v %v", mode, got, err)
+		}
+	}
+}
+
+// A Group list Keycloak read with a branch missing (a children call that
+// answered 404: a Group deleted mid-read, or a proxy while Keycloak
+// restarts) ends no term: the run fails and the next one reads again.
+func TestAnIncompleteGroupListEndsNoTerm(t *testing.T) {
+	f := newFixture(t, membershipterm.ModeApply)
+	f.run(t, membershipterm.ModeApply)
+	before := len(f.open(t))
+
+	svc := f.serviceReading(t, incompleteGroups{Memory: f.dir, missing: "/UYELER/ARGE/WEBLAB"})
+	run, err := svc.Run(context.Background(), membershipterm.RunOptions{Mode: membershipterm.ModeApply, Trigger: membershipterm.TriggerCLI})
+	if err == nil || run.Status != "failed" || run.ErrorCode != "reconcile_failed" || run.Ended != 0 {
+		t.Fatalf("run %+v %v", run, err)
+	}
+	if after := len(f.open(t)); after != before {
+		t.Fatalf("%d open terms, want %d", after, before)
+	}
+}
+
+// A failed run that queued the weekly summary counts as its week: the
+// summary does not go again at the next hourly check.
+func TestAFailedRunsWeeklySummaryIsNotSentAgain(t *testing.T) {
+	f := newFixture(t, membershipterm.ModeApply)
+	f.run(t, membershipterm.ModeApply)
+
+	// DK cannot be read: every run fails at reconcile, the rest goes on.
+	svc := f.serviceReading(t, unreadGroup{Memory: f.dir, id: gDK})
+	f.setNow(termEnd.Add(time.Second))
+	run, err := svc.Run(context.Background(), membershipterm.RunOptions{Mode: membershipterm.ModeApply, Trigger: membershipterm.TriggerSchedule})
+	if err == nil || run.Status != "failed" || run.Expired != 5 || run.Weekly != membershipterm.WeeklySent {
+		t.Fatalf("failed run %+v %v", run, err)
+	}
+	f.setNow(termEnd.Add(time.Hour + time.Second))
+	again, err := svc.Run(context.Background(), membershipterm.RunOptions{Mode: membershipterm.ModeApply, Trigger: membershipterm.TriggerSchedule})
+	if err == nil || again.Weekly != membershipterm.WeeklyNotDue {
+		t.Fatalf("an hour on %+v %v", again, err)
+	}
+	if weekly := f.queued(t)[membershipterm.NoticeWeeklySummary]; len(weekly) != 1 {
+		t.Fatalf("weekly summaries queued %v", weekly)
+	}
+}
+
+// A term extended between the run's read and its mark keeps its new end:
+// the warning bound to the end the run read is not recorded, and the term
+// is not marked expired.
+func TestAnExtensionBetweenReadAndMarkWins(t *testing.T) {
+	f := newFixture(t, membershipterm.ModeApply)
+	f.run(t, membershipterm.ModeApply)
+	ctx := context.Background()
+	read := f.termOf(t, f.people.yk1, gYK)
+	later := termEnd.AddDate(0, 3, 0)
+
+	f.setNow(termEnd.Add(-membershipterm.WarnEarly))
+	if err := f.store.Extend(ctx, read.ID, later, nil, f.clock()); err != nil {
+		t.Fatal(err)
+	}
+	if warned, err := f.store.Warn(ctx, read.ID, *read.EndsAt, membershipterm.NoticeWarning14d, f.clock(), nil); err != nil || warned {
+		t.Fatalf("warned %t %v", warned, err)
+	}
+
+	f.setNow(termEnd.Add(time.Second))
+	marked, err := f.store.Expire(ctx, []uuid.UUID{read.ID}, f.clock(), []uuid.UUID{f.people.admin})
+	if err != nil || len(marked) != 0 {
+		t.Fatalf("marked %v %v", marked, err)
+	}
+	got, err := f.store.Get(ctx, read.ID)
+	if err != nil || got.ExpiredAt != nil || got.Warned14d != nil || got.EndsAt == nil || !got.EndsAt.Equal(later) {
+		t.Fatalf("term %+v %v", got, err)
+	}
+	if lists := f.queued(t)[membershipterm.NoticeExpiredList]; len(lists) != 0 {
+		t.Fatalf("expired lists %v", lists)
+	}
+}
+
+// incompleteGroups is Keycloak's directory when the children of a branch
+// answered 404 while the list was read: ListGroups leaves the branch out,
+// ListGroupsComplete says the list is incomplete.
+type incompleteGroups struct {
+	*identity.Memory
+	missing string
+}
+
+func (d incompleteGroups) ListGroups(ctx context.Context) ([]identity.Group, error) {
+	all, err := d.Memory.ListGroups(ctx)
+	var out []identity.Group
+	for _, g := range all {
+		if !strings.HasPrefix(g.Path, d.missing+"/") {
+			out = append(out, g)
+		}
+	}
+	return out, err
+}
+
+func (incompleteGroups) ListGroupsComplete(context.Context) ([]identity.Group, error) {
+	return nil, identity.ErrIncompleteGroups
+}
+
+// unreadGroup is a directory whose Group id cannot be read.
+type unreadGroup struct {
+	*identity.Memory
+	id uuid.UUID
+}
+
+func (d unreadGroup) Members(ctx context.Context, groupID string) ([]identity.Person, error) {
+	if groupID == d.id.String() {
+		return nil, errors.New("keycloak unavailable")
+	}
+	return d.Memory.Members(ctx, groupID)
+}

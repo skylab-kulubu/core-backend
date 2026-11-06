@@ -43,6 +43,30 @@ const (
 	// Not enabled: whether it covers an address or one application is not
 	// agreed with Forms yet.
 	PurposeRecruitmentPool Purpose = "recruitment_pool"
+	// PurposeTeamPage was the consent to be shown on the teams' public
+	// pages (ekip-sayfasi-v1, 2026-10-27 to 2026-10-31). Since 2026-10-31
+	// every member is shown on the club's legitimate interest unless they
+	// object (PurposeTeamPageObjection; Yusuf, lawyer approved), so it is no
+	// longer taken. Its rows stay as proof: an open one changes nothing, and
+	// a withdrawn one was carried over as an objection (migration
+	// 20261031200000, docs/team-page-consent.md).
+	PurposeTeamPage Purpose = "team_page"
+	// PurposeTeamPageObjection is a member's objection to being shown on
+	// their teams' public pages (SkyApp reads core's public rosters;
+	// aydınlatma s6 row 4 b): an open grant hides them, ending it shows them
+	// again. It is not a consent and not a mail: it is kept here for the
+	// same evidence (text, source, client, times), proof and erasure. Only
+	// the person records it, for their own account, in Account Center; no
+	// product records, looks up or mails it. It lasts until it is withdrawn.
+	PurposeTeamPageObjection Purpose = "team_page_objection"
+)
+
+// Channels a purpose's grants are recorded for (contact_consents.channel).
+const (
+	// ChannelEmail is a purpose whose grants allow mails.
+	ChannelEmail = "email"
+	// ChannelWeb is a purpose whose grants allow publishing on the web.
+	ChannelWeb = "web"
 )
 
 // purposeSpec is what core accepts for a purpose.
@@ -65,6 +89,9 @@ type purposeSpec struct {
 	// label is what the person consents to, in Turkish, as the pages name
 	// it.
 	label string
+	// channel is what its grants allow: mails (ChannelEmail, every
+	// contact purpose) or publishing on the web (ChannelWeb).
+	channel string
 }
 
 var purposes = map[Purpose]purposeSpec{
@@ -74,18 +101,35 @@ var purposes = map[Purpose]purposeSpec{
 		enabled: true,
 		renews:  true,
 		label:   "SKY LAB'ın diğer etkinlikleri ve duyuruları hakkında e-postalar",
+		channel: ChannelEmail,
 	},
 	PurposePromotional: {
 		texts:   []string{"tanitim-v1"},
 		sources: []Source{SourceForms, SourceSignup, SourceSelf},
 		enabled: true,
 		label:   "SKY LAB'dan tanıtım içerikli e-postalar",
+		channel: ChannelEmail,
 	},
 	PurposeRecruitmentPool: {
 		texts:   []string{"alim-havuzu-v1"},
 		sources: []Source{SourceForms},
 		enabled: false,
 		label:   "ekip başvurunun gelecek alımlarda değerlendirilmek üzere saklanması",
+		channel: ChannelEmail,
+	},
+	PurposeTeamPage: {
+		texts:   []string{"ekip-sayfasi-v1"},
+		sources: []Source{SourceSelf},
+		enabled: false,
+		label:   "ekip sayfalarında görünmek",
+		channel: ChannelWeb,
+	},
+	PurposeTeamPageObjection: {
+		texts:   []string{"ekip-sayfasi-itiraz-v1"},
+		sources: []Source{SourceSelf},
+		enabled: true,
+		label:   "ekip sayfalarında görünmemek",
+		channel: ChannelWeb,
 	},
 }
 
@@ -93,10 +137,14 @@ var purposes = map[Purpose]purposeSpec{
 // the box (Turkish). The confirm page shows the one the grant was given on;
 // davet-v1 is no longer taken but stays for a grant stored on it.
 var texts = map[string]string{
-	"davet-v1":       "SKY LAB'ın gelecek etkinliklerine davet e-postası almak istiyorum. Bunun için adımı ve e-posta adresimi saklayabilirsiniz. İstediğim zaman her davetteki bağlantıyla vazgeçebilirim.",
-	"davet-v2":       "Diğer etkinlik ve duyurulardan haberdar olmak istiyorum.",
-	"tanitim-v1":     "SKY LAB'dan tanıtım içerikli e-postalar (indirim kodu, şirket iş ilanı, çekiliş gibi) almak istiyorum.",
-	"alim-havuzu-v1": "Bu dönem kabul edilmezsem başvurumun gelecek alımlarda değerlendirilmek üzere saklanmasını istiyorum. İstediğim zaman vazgeçebilirim.",
+	"davet-v1":        "SKY LAB'ın gelecek etkinliklerine davet e-postası almak istiyorum. Bunun için adımı ve e-posta adresimi saklayabilirsiniz. İstediğim zaman her davetteki bağlantıyla vazgeçebilirim.",
+	"davet-v2":        "Diğer etkinlik ve duyurulardan haberdar olmak istiyorum.",
+	"tanitim-v1":      "SKY LAB'dan tanıtım içerikli e-postalar (indirim kodu, şirket iş ilanı, çekiliş gibi) almak istiyorum.",
+	"alim-havuzu-v1":  "Bu dönem kabul edilmezsem başvurumun gelecek alımlarda değerlendirilmek üzere saklanmasını istiyorum. İstediğim zaman vazgeçebilirim.",
+	"ekip-sayfasi-v1": "Ekip sayfalarında görüneyim: adım, soyadım, profil fotoğrafım, LinkedIn adresim, üniversitem, fakültem, bölümüm ve ekip liderliğim ekibimin SKY LAB uygulamasındaki sayfasında yayımlansın.",
+	// The switch the person turned off (Account Center's label and
+	// description, word for word): an objection records it.
+	"ekip-sayfasi-itiraz-v1": "Ekip sayfalarında görün. Adın, soyadın, profil fotoğrafın, LinkedIn adresin, üniversiten, fakülten, bölümün ve ekip liderliğin ekibinin SKY LAB uygulamasındaki sayfasında yer alır.",
 }
 
 // Text is the box text of a version, "" for a version core does not know.
@@ -109,6 +157,15 @@ func (p Purpose) Label() string { return purposes[p].label }
 // RenewalAfter (event_invitations) or lasts until it is withdrawn
 // (promotional).
 func (p Purpose) Renews() bool { return purposes[p].renews }
+
+// Mailed reports whether purpose p is a contact purpose: its grants allow
+// mails, SkyMail reads its audience and the products record, look up and
+// withdraw it by address. A purpose that is not (team_page_objection) is
+// given and withdrawn by the person alone, on their account.
+func (p Purpose) Mailed() bool { return purposes[p].channel == ChannelEmail }
+
+// Channel is what a grant of purpose p allows (contact_consents.channel).
+func (p Purpose) Channel() string { return purposes[p].channel }
 
 // Allows reports whether a grant of purpose p may come from source s.
 func (p Purpose) Allows(s Source) bool {
@@ -154,6 +211,19 @@ func (p Purpose) check() error {
 		return fmt.Errorf("%w: purpose", ErrInvalid)
 	case !spec.enabled:
 		return ErrPurposeNotEnabled
+	}
+	return nil
+}
+
+// mailedCheck is check for the routes of the mails (the audience, renewal,
+// a product's lookup and withdrawal by address): a purpose that is not
+// mailed (team_page_objection) is not theirs.
+func (p Purpose) mailedCheck() error {
+	if err := p.check(); err != nil {
+		return err
+	}
+	if !p.Mailed() {
+		return fmt.Errorf("%w: purpose %s is not mailed", ErrInvalid, p)
 	}
 	return nil
 }

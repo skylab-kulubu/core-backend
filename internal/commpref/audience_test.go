@@ -74,6 +74,17 @@ func (k *fakeKeycloak) GroupsForUser(_ context.Context, id uuid.UUID) ([]identit
 	return out, nil
 }
 
+func (k *fakeKeycloak) GetGroup(_ context.Context, id string) (identity.Group, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for _, g := range k.groups {
+		if g.ID == id {
+			return g, nil
+		}
+	}
+	return identity.Group{}, identity.ErrNotFound
+}
+
 func (k *fakeKeycloak) GetUser(ctx context.Context, id uuid.UUID) (identity.Person, error) {
 	p, err := k.AudiencePerson(ctx, id)
 	return p.Person, err

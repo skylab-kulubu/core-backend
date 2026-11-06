@@ -67,6 +67,9 @@ const (
 type Recipient struct {
 	Email    string
 	FullName string
+	// FirstName is the first name of FullName (core's profile, Keycloak's
+	// for a person core has no row for); the team page notice greets by it.
+	FirstName string
 }
 
 // People reads, when the mail is sent, who it goes to and who made the
@@ -238,6 +241,7 @@ func (s *Service) MembershipChanged(ctx context.Context, change identity.Members
 		ID:         uuid.New(),
 		SubjectID:  change.UserID,
 		GroupPath:  change.Group.Path,
+		GroupID:    change.Group.ID,
 		Action:     ActionRemoved,
 		OccurredAt: s.now().UTC(),
 		Kind:       kind,
@@ -426,6 +430,9 @@ const outcomeInterrupted = "interrupted"
 func (s *Service) deliver(parent context.Context, change Change) (Kind, string) {
 	ctx, cancel := context.WithTimeout(parent, sendTimeout)
 	defer cancel()
+	// The Group by its id first: a Team moved or given a new code since
+	// the change is named by where it is now (ADR 0065 ticket 07).
+	change.GroupPath = s.currentPath(ctx, change)
 	kind, ok := KindOf(change.GroupPath, s.roots)
 	if !ok {
 		// The table holds Group paths only; nothing to name the mail by.
@@ -491,6 +498,19 @@ func (s *Service) deliver(parent context.Context, change Change) (Kind, string) 
 	default:
 		return kind, "failed"
 	}
+}
+
+// currentPath is the path of change's Group now: read by its id when the
+// row has one and Keycloak knows it, the queued path otherwise.
+func (s *Service) currentPath(ctx context.Context, change Change) string {
+	if change.GroupID == "" {
+		return change.GroupPath
+	}
+	group, err := s.groups.GetGroup(ctx, change.GroupID)
+	if err != nil || group.ID != change.GroupID || !strings.HasPrefix(group.Path, "/") {
+		return change.GroupPath
+	}
+	return group.Path
 }
 
 // group reads the Group at path for its name. One renamed or gone since is

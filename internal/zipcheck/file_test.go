@@ -43,9 +43,10 @@ func checkFile(t *testing.T, data []byte, l zipcheck.Limits) error {
 // (checked: a ZIP appended to a PDF), with the limits it holds a ZIP to.
 // So a ZIP appended to a file is checked as a nested one, ending the file,
 // its offsets counted from the ZIP or from the file's first byte; one past
-// clamd's limits is refused as too large, and one that does not end the
-// file, or any other archive there, as nested. A PDF, JPEG or PNG with
-// nothing appended, or with a ZIP within the limits, passes.
+// clamd's limits is refused as too large, and any other archive there as
+// nested. A ZIP in the middle of a file is checked whole, up to its end
+// record (lone_test.go). A PDF, JPEG or PNG with nothing appended, or with
+// a ZIP within the limits, passes.
 func TestCheckFileLooksForArchivesInAnyFile(t *testing.T) {
 	t.Parallel()
 	small := build(t, sized(deflated("notlar.txt", []byte("ek notlar")))...)
@@ -58,6 +59,7 @@ func TestCheckFileLooksForArchivesInAnyFile(t *testing.T) {
 		"a PDF with a ZIP appended":        append(pdf(), small...),
 		"a PDF with a ZIP counted from it": sfx(t, pdf(), small, true),
 		"a JPEG with a ZIP appended":       append(jpeg(), small...),
+		"a ZIP in the middle of a PDF":     append(append(pdf(), small...), pdf()...),
 		"a ZIP":                            small,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -73,7 +75,7 @@ func TestCheckFileLooksForArchivesInAnyFile(t *testing.T) {
 		"a PDF with a ZIP past MaxFileSize":      {append(pdf(), big...), zipcheck.ErrTooLarge},
 		"a PNG with a ZIP past MaxFileSize":      {append(png(), big...), zipcheck.ErrTooLarge},
 		"offsets from the PDF, past MaxFileSize": {sfx(t, pdf(), big, true), zipcheck.ErrTooLarge},
-		"a ZIP in the middle of a PDF":           {append(append(pdf(), small...), pdf()...), zipcheck.ErrNested},
+		"a ZIP past MaxFileSize mid-PDF":         {append(append(pdf(), big...), pdf()...), zipcheck.ErrTooLarge},
 		"a RAR appended to a PDF":                {append(pdf(), append([]byte("Rar!\x1a\x07\x00"), text(100)...)...), zipcheck.ErrNested},
 		"a 7-Zip appended to a JPEG":             {append(jpeg(), append([]byte("7z\xbc\xaf\x27\x1c"), text(100)...)...), zipcheck.ErrNested},
 		"a cab in a PNG":                         {append(png(), append([]byte("MSCF\x00\x00\x00\x00"), text(100)...)...), zipcheck.ErrNested},

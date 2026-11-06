@@ -34,6 +34,7 @@ func (d *TeamDelegation) TreeFor(ctx context.Context, userID uuid.UUID, privileg
 	}
 	d.mu.Lock()
 	entry, ok := d.trees[userID]
+	generation := d.generation
 	d.mu.Unlock()
 	if ok && entry.privileged == privileged && entry.write == write && d.options.Now().Before(entry.expires) {
 		return entry.nodes, nil
@@ -50,9 +51,9 @@ func (d *TeamDelegation) TreeFor(ctx context.Context, userID uuid.UUID, privileg
 	if err != nil {
 		return nil, err
 	}
-	d.mu.Lock()
-	d.trees[userID] = treeEntry{nodes: nodes, privileged: privileged, write: write, expires: d.options.Now().Add(d.options.TTL)}
-	d.mu.Unlock()
+	d.keep(generation, func() {
+		d.trees[userID] = treeEntry{nodes: nodes, privileged: privileged, write: write, expires: d.options.Now().Add(d.options.TTL)}
+	})
 	return nodes, nil
 }
 
@@ -184,13 +185,19 @@ func (d *TeamDelegation) subtree(ctx context.Context, manager authz.TeamManager,
 	if err != nil {
 		return ManagedNode{}, err
 	}
+	manages, strict := d.policy.Manages(manager, target).Allowed, d.policy.ManagesStrict(manager, target).Allowed
 	node := ManagedNode{
 		ID: team.ID, Code: team.Name, Path: team.Path, DisplayName: displayName(full),
 		MemberCount: len(members), Protected: target.Protected,
 		Can: map[string]bool{
-			"group.read":    readAll || d.policy.Manages(manager, target).Allowed,
-			"members.write": d.policy.ManagesMembership(manager, target).Allowed,
-			"leaders.write": d.policy.ManagesStrict(manager, target).Allowed,
+			"group.read":     readAll || manages,
+			"members.write":  d.policy.ManagesMembership(manager, target).Allowed,
+			"leaders.write":  strict,
+			"subteams.write": manages,
+			"code.write":     d.policy.ChangesTeamCode(manager, target).Allowed,
+			"team.delete":    strict,
+			"team.move":      strict,
+			"team.settings":  manages,
 		},
 		Children: []ManagedNode{},
 	}

@@ -3,6 +3,7 @@ package teamcode
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -239,6 +240,27 @@ func TestMemoryLedger(t *testing.T) {
 	}
 	if !held("weblab") || held("GAMELAB") {
 		t.Fatal("held codes")
+	}
+	ledger.HoldAs(RecordCertificate, "CERTLAB")
+	references := func(code string) []string {
+		var got []string
+		if err := ledger.Locked(ctx, func(ctx context.Context, records Records) error {
+			var err error
+			got, err = records.References(ctx, code)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := references("weblab"); !slices.Equal(got, []string{RecordEvent}) {
+		t.Fatalf("References(weblab) = %v", got)
+	}
+	if got := references("CERTLAB"); !slices.Equal(got, []string{RecordCertificate}) {
+		t.Fatalf("References(CERTLAB) = %v", got)
+	}
+	if got := references("GAMELAB"); got != nil {
+		t.Fatalf("References(GAMELAB) = %v", got)
 	}
 	// A write that fails retires nothing.
 	failed := errors.New("keycloak down")

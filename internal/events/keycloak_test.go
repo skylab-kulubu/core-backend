@@ -1,6 +1,7 @@
 package events
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,11 @@ const keycloakAdminUpdate = `{"@class":"com.github.aznamier.keycloak.event.provi
 	`"time":1761213600999,"realmId":"e-skylab","authDetails":{"realmId":"master","clientId":"admin-cli",` +
 	`"userId":"a-1","ipAddress":"198.51.100.4"},"resourceType":"USER","operationType":"UPDATE",` +
 	`"resourcePath":"users/5f7c2a8e-0000-4000-8000-000000000001","representation":"{\"email\":\"ayse@example.com\"}","error":null}`
+
+// What SKY LAB's fork sends for a deleted Group (hub ticket rabbitmq-olaylar
+// 05): ids only. realmId is Keycloak's id of the realm, not its name.
+const keycloakGroupDelete = `{"id":"7d2f0c55-3333-4333-8333-000000000004","realmId":"5b0e2d9a-2222-4222-8222-000000000003",` +
+	`"resourceType":"GROUP","operationType":"DELETE","resourcePath":"groups/9a1c4e7b-4444-4444-8444-000000000005","time":1761213601000}`
 
 func TestDecodeKeycloak(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -52,7 +58,21 @@ func TestDecodeKeycloak(t *testing.T) {
 		"an admin event": {
 			message: Message{Body: []byte(keycloakAdminUpdate), ContentType: "application/json; charset=utf-8"},
 			typ:     "keycloak.admin.user.update",
-			want:    KeycloakEvent{Admin: true, ResourceType: "USER", OperationType: "UPDATE", RealmID: "e-skylab"},
+			want: KeycloakEvent{Admin: true, ResourceType: "USER", OperationType: "UPDATE", RealmID: "e-skylab",
+				ResourcePath: "users/5f7c2a8e-0000-4000-8000-000000000001"},
+		},
+		"an admin's deleted group, with the realm of its routing key": {
+			message: Message{Body: []byte(keycloakGroupDelete), ContentType: "application/json", RoutingKey: "KK.EVENT.ADMIN.e-skylab.SUCCESS.GROUP.DELETE"},
+			id:      "7d2f0c55-3333-4333-8333-000000000004",
+			typ:     "keycloak.admin.group.delete",
+			want: KeycloakEvent{Admin: true, ResourceType: "GROUP", OperationType: "DELETE", RealmID: "5b0e2d9a-2222-4222-8222-000000000003",
+				Realm: "e-skylab", ResourcePath: "groups/9a1c4e7b-4444-4444-8444-000000000005"},
+		},
+		"a user event's realm from its routing key": {
+			message: Message{Body: []byte(keycloakRegisterFiltered), RoutingKey: "KK.EVENT.CLIENT.e-skylab.SUCCESS.account.REGISTER"},
+			id:      "0b5e8f9e-1111-4111-8111-000000000002",
+			typ:     "keycloak.register",
+			want:    KeycloakEvent{Type: "REGISTER", RealmID: "e-skylab", Realm: "e-skylab", ClientID: "account", UserID: "5f7c2a8e-0000-4000-8000-000000000001"},
 		},
 		"a failed event": {
 			message: Message{Body: []byte(`{"id":"e-1","type":"REGISTER","error":"invalid_registration"}`)},
@@ -90,6 +110,57 @@ func TestDecodeKeycloak(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Only a users/<id> or groups/<id> resource path is kept; any other is left
+// out, and the event is still read.
+func TestDecodeKeycloakResourcePath(t *testing.T) {
+	const id = "9a1c4e7b-4444-4444-8444-000000000005"
+	for path, want := range map[string]string{
+		"users/" + id:                          "users/" + id,
+		"groups/" + strings.ToUpper(id):        "groups/" + strings.ToUpper(id),
+		"groups/" + id + "/children":           "",
+		"users/" + id + "/groups/" + id:        "",
+		"clients/" + id:                        "",
+		"groups/not-an-id":                     "",
+		"groups/" + id + "0":                   "",
+		" groups/" + id:                        "groups/" + id,
+		"groups/ayse@example.com-000000000000": "",
+		"":                                     "",
+	} {
+		body := `{"id":"e","resourceType":"GROUP","operationType":"DELETE","resourcePath":` + strconv.Quote(path) + `}`
+		e, err := DecodeKeycloak(Message{Body: []byte(body)})
+		if err != nil {
+			t.Fatalf("%q: %v", path, err)
+		}
+		kc, err := KeycloakOf(e)
+		if err != nil || kc.ResourcePath != want {
+			t.Fatalf("%q: kept %q (%v), want %q", path, kc.ResourcePath, err, want)
+		}
+		if want == "" && path != "" && strings.Contains(string(e.Data), strings.TrimSpace(path)) {
+			t.Fatalf("%q: data keeps it: %s", path, e.Data)
+		}
+	}
+}
+
+// The realm is the routing key's fourth word (the provider takes the dots
+// out of the realm's name); a key that is not the provider's leaves it out.
+func TestDecodeKeycloakRealm(t *testing.T) {
+	for key, want := range map[string]string{
+		"KK.EVENT.ADMIN.e-skylab.SUCCESS.USER.DELETE":               "e-skylab",
+		"KK.EVENT.CLIENT.e-skylab-sandbox.SUCCESS.account.REGISTER": "e-skylab-sandbox",
+		"KK.EVENT.ADMIN": "",
+		"core.keycloak":  "",
+		"":               "",
+	} {
+		e, err := DecodeKeycloak(Message{Body: []byte(keycloakGroupDelete), RoutingKey: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if kc, _ := KeycloakOf(e); kc.Realm != want {
+			t.Fatalf("%q: realm %q, want %q", key, kc.Realm, want)
+		}
 	}
 }
 

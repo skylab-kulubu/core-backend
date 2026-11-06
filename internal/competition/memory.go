@@ -237,7 +237,35 @@ func (s *MemoryStore) member(ctx context.Context, ticketID uuid.UUID) (Member, e
 	return Member{
 		TicketID: t.ID, TicketType: t.TicketType,
 		DisplayName: memberName(t.TicketType, state, first, last, t.GuestFirstName, t.GuestLastName),
+		OwnerID:     t.OwnerID,
 	}, nil
+}
+
+func (s *MemoryStore) Candidates(ctx context.Context, competitionID, eventID uuid.UUID) ([]Candidate, error) {
+	s.mu.Lock()
+	taken := map[uuid.UUID]bool{}
+	for _, e := range s.entrants[competitionID] {
+		for _, tid := range e.ticketIDs {
+			taken[tid] = true
+		}
+	}
+	s.mu.Unlock()
+	tickets, err := s.tickets.ListByEvent(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Candidate, 0, len(tickets))
+	for _, t := range tickets {
+		m, err := s.member(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, Candidate{
+			TicketID: t.ID, DisplayName: m.DisplayName, TicketType: t.TicketType,
+			CheckedIn: len(t.CheckIns) > 0, Entrant: taken[t.ID],
+		})
+	}
+	return out, nil
 }
 
 // entrantName is a team's name, or its one member's.
@@ -268,6 +296,7 @@ func (s *MemoryStore) SetManualScore(_ context.Context, in ManualScore) (Entry, 
 	var replaces *uuid.UUID
 	if live >= 0 {
 		rows[live].RevokedAt, rows[live].RevokedBy, rows[live].RevokeReason = &now, in.Actor, in.Reason
+		rows[live].RevokedBasis = in.Basis
 		id := rows[live].ID
 		replaces = &id
 	}
@@ -275,13 +304,13 @@ func (s *MemoryStore) SetManualScore(_ context.Context, in ManualScore) (Entry, 
 	entry := Entry{
 		ID: uuid.New(), CompetitionID: in.CompetitionID, StageID: in.StageID, EntrantID: in.EntrantID,
 		Source: scoring.SourceManual, Points: &points, OccurredAt: now, RecordedAt: now,
-		RecordedBy: in.Actor, ReplacesID: replaces,
+		RecordedBy: in.Actor, Basis: in.Basis, ReplacesID: replaces,
 	}
 	s.entries[in.CompetitionID] = append(rows, entry)
 	return entry, nil
 }
 
-func (s *MemoryStore) Revoke(_ context.Context, competitionID, entryID uuid.UUID, actor *uuid.UUID, reason string) (Entry, error) {
+func (s *MemoryStore) Revoke(_ context.Context, competitionID, entryID uuid.UUID, actor *uuid.UUID, basis, reason string) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows := s.entries[competitionID]
@@ -294,6 +323,7 @@ func (s *MemoryStore) Revoke(_ context.Context, competitionID, entryID uuid.UUID
 		}
 		now := time.Now().UTC()
 		rows[i].RevokedAt, rows[i].RevokedBy, rows[i].RevokeReason = &now, actor, reason
+		rows[i].RevokedBasis = basis
 		return rows[i], nil
 	}
 	return Entry{}, ErrNotFound

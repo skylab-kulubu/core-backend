@@ -149,6 +149,8 @@ func privilegedRequests(eventID string) []privilegedRequest {
 		{authz.RoleCompetitionManage, fiber.MethodGet, "/v1/events/" + eventID + "/competitions", "", fiber.StatusOK},
 		{authz.RoleCompetitionManage, fiber.MethodPost, "/v1/events/" + eventID + "/competitions", `{"name":"AGC Hafta 1"}`, fiber.StatusCreated},
 		{authz.RoleCertificateManage, fiber.MethodGet, "/v1/events/" + eventID + "/certificates", "", fiber.StatusOK},
+		{authz.RoleSubjectRequestManage, fiber.MethodPost, "/v1/subject-requests", subjectRequestBody, fiber.StatusCreated},
+		{authz.RoleSubjectRequestManage, fiber.MethodGet, "/v1/subject-requests", "", fiber.StatusOK},
 	}
 }
 
@@ -289,6 +291,7 @@ func TestCapabilitiesRoute(t *testing.T) {
 			{c.Can["group.read"], fiber.MethodGet, "/v1/groups", "", fiber.StatusOK},
 			{c.Can["user.read"], fiber.MethodGet, "/v1/users", "", fiber.StatusOK},
 			{c.Can["githubActivity.read"], fiber.MethodGet, "/v1/dashboard/github-activity", "", fiber.StatusOK},
+			{c.Can["subjectRequest.manage"], fiber.MethodGet, "/v1/subject-requests", "", fiber.StatusOK},
 			{weblab["ticket.read"], fiber.MethodGet, "/v1/events/" + eventID + "/tickets", "", fiber.StatusOK},
 			{weblab["event.update"], fiber.MethodPut, "/v1/events/" + eventID, `{"name":"Hack","location":"Davutpaşa","ownerTeam":"WEBLAB"}`, fiber.StatusOK},
 			{weblab["certificate.read"], fiber.MethodGet, "/v1/events/" + eventID + "/certificates", "", fiber.StatusOK},

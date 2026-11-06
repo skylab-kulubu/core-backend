@@ -245,26 +245,54 @@ func mapKCErr(err error) error {
 	return err
 }
 
+// ErrIncompleteGroups is a Group list that may miss a branch: a Group's
+// children answered 404 while the list was read.
+var ErrIncompleteGroups = errors.New("identity: the Group list is incomplete (a Group's children answered 404)")
+
+// ListGroups is the realm's whole Group tree. A Group whose children answer
+// 404 (deleted while the list is read) has its branch left out.
 func (k *Keycloak) ListGroups(ctx context.Context) ([]Group, error) {
-	token, err := k.accessToken(ctx)
+	groups, _, err := k.listGroups(ctx)
+	return groups, err
+}
+
+// ListGroupsComplete is ListGroups for a caller that deletes what the list
+// does not hold: a branch left out is ErrIncompleteGroups, since the 404 may
+// be a proxy's (Keycloak restarting) or a Group moved mid-read rather than a
+// deletion.
+func (k *Keycloak) ListGroupsComplete(ctx context.Context) ([]Group, error) {
+	groups, skipped, err := k.listGroups(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if skipped > 0 {
+		return nil, ErrIncompleteGroups
+	}
+	return groups, nil
+}
+
+// listGroups reads the tree and counts the branches it left out.
+func (k *Keycloak) listGroups(ctx context.Context) ([]Group, int, error) {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return nil, 0, err
 	}
 	tops, err := k.gc.GetGroups(ctx, token, k.realm, gocloak.GetGroupsParams{
 		Full: gocloak.BoolP(true),
 		Max:  gocloak.IntP(1000),
 	})
 	if err != nil {
-		return nil, mapKCErr(err)
+		return nil, 0, mapKCErr(err)
 	}
-	out, err := k.collectGroups(ctx, token, tops)
+	skipped := 0
+	out, err := k.collectGroups(ctx, token, tops, &skipped)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return dedupGroups(out), nil
+	return dedupGroups(out), skipped, nil
 }
 
-func (k *Keycloak) collectGroups(ctx context.Context, token string, gs []*gocloak.Group) ([]Group, error) {
+func (k *Keycloak) collectGroups(ctx context.Context, token string, gs []*gocloak.Group, skipped *int) ([]Group, error) {
 	out := flattenGroups(gs)
 	for _, g := range gs {
 		if g == nil || g.ID == nil {
@@ -273,11 +301,12 @@ func (k *Keycloak) collectGroups(ctx context.Context, token string, gs []*gocloa
 		kids, err := k.children(ctx, token, *g.ID)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
+				*skipped++
 				continue
 			}
 			return nil, err
 		}
-		nested, err := k.collectGroups(ctx, token, kids)
+		nested, err := k.collectGroups(ctx, token, kids, skipped)
 		if err != nil {
 			return nil, err
 		}
@@ -395,6 +424,75 @@ func (k *Keycloak) CreateGroup(ctx context.Context, parentRef, name string) (Gro
 	}
 	if err != nil {
 		return Group{}, mapKCErr(err)
+	}
+	fresh, err := k.gc.GetGroup(ctx, token, k.realm, id)
+	if err != nil {
+		return Group{}, mapKCErr(err)
+	}
+	return groupFrom(fresh), nil
+}
+
+// CreateSubgroup is POST /groups/{parentID}/children with the name and
+// the attributes, then the new Group read by the id Keycloak answered.
+func (k *Keycloak) CreateSubgroup(ctx context.Context, parentID, name string, attributes map[string]string) (Group, error) {
+	if _, err := uuid.Parse(parentID); err != nil {
+		return Group{}, ErrNotFound
+	}
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return Group{}, err
+	}
+	id, err := k.gc.CreateChildGroup(ctx, token, k.realm, parentID, gocloak.Group{Name: &name, Attributes: attrsToKC(attributes)})
+	if err != nil {
+		return Group{}, mapKCErr(err)
+	}
+	fresh, err := k.gc.GetGroup(ctx, token, k.realm, id)
+	if err != nil {
+		return Group{}, mapKCErr(err)
+	}
+	return groupFrom(fresh), nil
+}
+
+// MoveGroup moves the Group id under parentID (the realm's top when "")
+// with Keycloak's own move: the child endpoint given the existing Group's
+// id and name (Keycloak requires the name; it does not rename). The Group
+// is read again by its id.
+func (k *Keycloak) MoveGroup(ctx context.Context, id, parentID string) (Group, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return Group{}, ErrNotFound
+	}
+	if _, err := uuid.Parse(parentID); err != nil && parentID != "" {
+		return Group{}, ErrNotFound
+	}
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return Group{}, err
+	}
+	existing, err := k.gc.GetGroup(ctx, token, k.realm, id)
+	if err != nil {
+		return Group{}, mapKCErr(err)
+	}
+	target := k.adminBase + "/admin/realms/" + url.PathEscape(k.realm) + "/groups"
+	if parentID != "" {
+		target += "/" + url.PathEscape(parentID) + "/children"
+	}
+	resp, err := k.gc.GetRequestWithBearerAuth(ctx, token).
+		SetBody(map[string]string{"id": id, "name": gocloak.PString(existing.Name)}).
+		Post(target)
+	if err != nil {
+		var addressed *url.Error
+		if errors.As(err, &addressed) {
+			err = addressed.Err
+		}
+		return Group{}, fmt.Errorf("identity: keycloak group move failed: %w", err)
+	}
+	switch {
+	case resp.StatusCode() == http.StatusNotFound:
+		return Group{}, ErrNotFound
+	case resp.StatusCode() == http.StatusConflict:
+		return Group{}, &gocloak.APIError{Code: http.StatusConflict, Message: "group move conflicts"}
+	case resp.IsError():
+		return Group{}, &gocloak.APIError{Code: resp.StatusCode(), Message: "group move failed"}
 	}
 	fresh, err := k.gc.GetGroup(ctx, token, k.realm, id)
 	if err != nil {
@@ -984,6 +1082,14 @@ func (k *Keycloak) UserAddresses(ctx context.Context, id uuid.UUID) ([]string, e
 	return addresses, nil
 }
 
+// AccountErasureHeader, with the value AccountErasureDisableIdentity, tells
+// Keycloak that a disable is Account erasure's (DisableUser). Any other value
+// marks nothing.
+const (
+	AccountErasureHeader          = "X-Sky-Account-Erasure"
+	AccountErasureDisableIdentity = "disable_identity"
+)
+
 // DisableUser sends Keycloak exactly `{"enabled":false}` and nothing else.
 // Keycloak copies the request body into the UPDATE admin event, which is not
 // deleted with the user, so a full representation would leave the person's
@@ -991,12 +1097,22 @@ func (k *Keycloak) UserAddresses(ctx context.Context, id uuid.UUID) ([]string, e
 // body does not name unchanged (e-skylab-keycloak tests/erasure-event-pii.sh).
 // A user Keycloak does not know is ErrNotFound; an already disabled user is
 // disabled again. No error names the subject.
+//
+// Only the erasure saga calls it (AccountIdentity.EnsureDisabled, the
+// disable_identity step), and the PUT says so with AccountErasureHeader:
+// Keycloak then marks the person as being erased, in the same transaction,
+// and tells whoever asks for a sign-in code with their address that the
+// account is being deleted (e-skylab-keycloak sky-account-erasure-mark).
+// The header is no part of the body, so the admin event holds no more than
+// before. An administrator's disable must not come through here: it would
+// mark the person as being erased.
 func (k *Keycloak) DisableUser(ctx context.Context, id uuid.UUID) error {
 	token, err := k.accessToken(ctx)
 	if err != nil {
 		return err
 	}
 	resp, err := k.gc.GetRequestWithBearerAuth(ctx, token).
+		SetHeader(AccountErasureHeader, AccountErasureDisableIdentity).
 		SetBody(map[string]bool{"enabled": false}).
 		Put(k.adminBase + "/admin/realms/" + url.PathEscape(k.realm) + "/users/" + id.String())
 	if err != nil {

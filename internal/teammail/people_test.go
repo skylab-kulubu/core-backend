@@ -43,8 +43,8 @@ func TestDirectoryPeopleRecipient(t *testing.T) {
 		skip SkipReason
 	}{
 		// core's profile names the person, as every other read does.
-		{id: active, want: Recipient{Email: "ada@example.test", FullName: "Ada Lovelace"}},
-		{id: keycloakOnly, want: Recipient{Email: "grace@example.test", FullName: "Grace Hopper"}},
+		{id: active, want: Recipient{Email: "ada@example.test", FullName: "Ada Lovelace", FirstName: "Ada"}},
+		{id: keycloakOnly, want: Recipient{Email: "grace@example.test", FullName: "Grace Hopper", FirstName: "Grace"}},
 		{id: noMail, skip: SkipNoEmail},
 		{id: disabled, skip: SkipInactive},
 		{id: pending, skip: SkipInactive},

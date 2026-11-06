@@ -75,6 +75,9 @@ func TestRealClamAVPassesUnscannedWhatTheCheckRefuses(t *testing.T) {
 	put16(unknownMethod, l.dir[0]+dirMethod, 99)
 	put16(unknownMethod, l.local[0]+locMethod, 99)
 	hiddenPastMax := lone(20, 0, 8, "h.txt", marked(2<<20))
+	markedSmall := append([]byte(clamdtest.Marker), bytes.Repeat([]byte(" "), 100)...)
+	cut := lone(20, 0, 8, "h.txt", marked(100000))
+	put32(cut, 18, 8)
 
 	for name, c := range map[string]struct {
 		data []byte
@@ -99,6 +102,13 @@ func TestRealClamAVPassesUnscannedWhatTheCheckRefuses(t *testing.T) {
 		"a PDF with a ZIP hiding a member past MaxFileSize in its comment": {
 			append(pdf(), zipCommented(t, hiddenPastMax)...), zipcheck.ErrInvalid,
 		},
+		"a PDF with a lone member past MaxFileSize": {append(pdf(), hiddenPastMax...), zipcheck.ErrTooLarge},
+		"a PDF with a lone member, a descriptor":    {append(pdf(), lone(20, 8, 8, "h.txt", markedSmall)...), zipcheck.ErrNested},
+		"a PDF with a lone member, csize cut":       {append(pdf(), cut...), zipcheck.ErrNested},
+		"a PDF with a ZIP appended, descriptors":    {append(pdf(), build(t, deflated("m.txt", markedSmall))...), zipcheck.ErrNested},
+		"a PDF with a ZIP in its middle whose member inflates past MaxFileSize": {
+			pdfStream(141, build(t, sized(deflated("m.txt", marked(2<<20)))...)), zipcheck.ErrTooLarge,
+		},
 	} {
 		scanned(t, client, ctx, name, c.data, "")
 		if err := checkFile(t, c.data, limits); !errors.Is(err, c.want) {
@@ -110,8 +120,10 @@ func TestRealClamAVPassesUnscannedWhatTheCheckRefuses(t *testing.T) {
 // clamd unpacks a lone local header wherever it finds one: hidden in a
 // ZIP's end record comment or a member's extra field, in a ZIP or in a ZIP
 // appended to a PDF, the marker in a small hidden member is found. No
-// directory lists it, so the check refuses them all, as it refuses the
-// large ones clamd reads only in part.
+// directory lists it, so the check refuses those hidden in a ZIP, as it
+// refuses the large ones clamd reads only in part. One past a PDF's first
+// byte that no end record follows, which clamd unpacks whole by its header,
+// passes.
 func TestRealClamAVUnpacksHiddenLocalHeaders(t *testing.T) {
 	client, ctx := realClamAV(t)
 	small := lone(20, 0, 8, "h.txt", append([]byte(clamdtest.Marker), bytes.Repeat([]byte(" "), 100)...))
@@ -120,11 +132,19 @@ func TestRealClamAVUnpacksHiddenLocalHeaders(t *testing.T) {
 		"in a member's extra field":      zipWithExtra(t, extraField(small), ""),
 		"in a comment, the ZIP in a PDF": append(pdf(), zipCommented(t, small)...),
 		"in an extra, the ZIP in a PDF":  append(pdf(), zipWithExtra(t, extraField(small), "")...),
-		"appended to a PDF, version 255": append(pdf(), lone(255, 0, 8, "h.txt", append([]byte(clamdtest.Marker), bytes.Repeat([]byte(" "), 100)...))...),
 	} {
 		scanned(t, client, ctx, name, data, clamdtest.MarkerSignature)
 		if err := checkFile(t, data, limits); err == nil {
 			t.Errorf("%s: the check passed it", name)
+		}
+	}
+	for name, data := range map[string][]byte{
+		"appended to a PDF, version 255": append(pdf(), lone(255, 0, 8, "h.txt", append([]byte(clamdtest.Marker), bytes.Repeat([]byte(" "), 100)...))...),
+		"in the middle of a PDF":         append(append(pdf(), small...), pdf()...),
+	} {
+		scanned(t, client, ctx, name, data, clamdtest.MarkerSignature)
+		if err := checkFile(t, data, limits); err != nil {
+			t.Errorf("%s: refused: %v", name, err)
 		}
 	}
 }
@@ -144,6 +164,9 @@ func TestRealClamAVScansWhatTheCheckPasses(t *testing.T) {
 		"a DOCX":                         office(t, "word/document.xml", deflated("word/media/image1.bin", eicar)),
 		"a ZIP after a stub in a member": build(t, deflated("setup.exe", sfx(t, stub(4096), build(t, sized(deflated("e.txt", eicar))...), false)), filler()),
 		"a PDF with a ZIP appended":      append(pdf(), build(t, sized(deflated("e.txt", eicar))...)...),
+		"a PDF with a ZIP in its middle": pdfStream(141, build(t, sized(deflated("e.txt", eicar))...)),
+		"a PDF with a lone member":       append(append(pdf(), lone(20, 0, 8, "e.txt", eicar)...), pdf()...),
+		"a PDF with a ZIP, 70 KiB on":    pdfStream(141, append(build(t, sized(deflated("e.txt", eicar))...), padding(70<<10)...)),
 	} {
 		if err := checkFile(t, data, limits); err != nil {
 			t.Errorf("%s: refused: %v", name, err)

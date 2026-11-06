@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	dropEventsActiveVersion = "20261025200000"
+	dropEventsActiveVersion = "20261106120000"
 	dropEventsActiveDown    = dropEventsActiveVersion + "_drop_events_active.down.sql"
 )
 
@@ -36,8 +36,8 @@ func TestDropEventsActiveMigrationComesLast(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The newest migration on main when this one was written.
-	before := slices.Index(versions, 20261025180100)
-	this := slices.Index(versions, 20261025200000)
+	before := slices.Index(versions, 20261031230000)
+	this := slices.Index(versions, 20261106120000)
 	if before < 0 || this < 0 || before >= this {
 		t.Fatalf("versions %v", versions)
 	}

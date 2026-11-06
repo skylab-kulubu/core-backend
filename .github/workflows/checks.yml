@@ -182,6 +182,11 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # The opt-in Keycloak integration test sits behind a build tag the
+      # test jobs leave out; vet compiles it so it does not rot.
+      - name: go vet (keycloakit)
+        run: go vet -tags keycloakit ./internal/identity/
+
       # The binaries the Dockerfiles build, the way they build them.
       - name: go build
         env:

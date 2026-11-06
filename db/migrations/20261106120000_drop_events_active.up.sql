@@ -1,7 +1,8 @@
 -- Drops events.active (ADR 0066). Since 20261012130000 active is derived
 -- from the status and the dates (internal/event/status.go) and the column is
--- read by nothing; since the release before this one nothing writes it
--- either, so that release, rolled back to, still works on this schema.
+-- read by nothing; since the release of 2026-10-26 (#308) nothing writes it
+-- either, so a release from then on, rolled back to, still works on this
+-- schema.
 --
 -- DROP COLUMN only marks the column dropped in the catalog: no rewrite, no
 -- scan. It takes events' strongest lock for that instant; behind one waiting

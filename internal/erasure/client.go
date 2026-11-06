@@ -259,10 +259,13 @@ func completion(raw []byte, requestID uuid.UUID) (map[string]int64, error) {
 	if id, err := uuid.Parse(body.RequestID); err != nil || id != requestID {
 		return nil, errors.New("request_id does not match")
 	}
-	return parseCounts(body.Counts)
+	return ParseCounts(body.Counts)
 }
 
-func parseCounts(raw json.RawMessage) (map[string]int64, error) {
+// ParseCounts reads a counts object as the contract allows it (§4): at most
+// MaxCountKeys snake_case keys, each a non-negative integer. Its errors quote
+// nothing from raw.
+func ParseCounts(raw json.RawMessage) (map[string]int64, error) {
 	var values map[string]json.RawMessage
 	if len(bytes.TrimSpace(raw)) == 0 || json.Unmarshal(raw, &values) != nil || values == nil {
 		return nil, errors.New("counts is not an object")

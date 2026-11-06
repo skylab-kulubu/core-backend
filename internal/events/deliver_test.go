@@ -317,3 +317,80 @@ func TestSubscribeRules(t *testing.T) {
 		t.Fatal("accepted a subscription after Run")
 	}
 }
+
+// Every log line about an event carries its trace id when the publisher sent
+// a valid traceparent (handled, unrelated, retried, dead-lettered), and none
+// when it did not. The trace id is the only part of it a line carries.
+func TestDeliverLogsTraceID(t *testing.T) {
+	const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	const traceID = `"trace_id":"4bf92f3577b34da6a3ce929d0e0e4736"`
+	traced := func(id string) string {
+		return `{"specversion":"1.0","id":"` + id + `","source":"/forms","type":"forms.form.updated","traceparent":"` + traceparent + `","data":{"formId":"f"}}`
+	}
+	transient := errors.New("database is down")
+	for name, tc := range map[string]struct {
+		handle func(calls int) error
+		events []string
+	}{
+		"processed": {handle: func(int) error { return nil }, events: []string{"events_handled"}},
+		"unrelated": {handle: func(int) error { return ErrUnrelated }, events: []string{"events_handled"}},
+		"retried, then fine": {
+			handle: func(calls int) error {
+				if calls < 2 {
+					return transient
+				}
+				return nil
+			},
+			events: []string{"events_retry", "events_handled"},
+		},
+		"dead-lettered": {handle: func(int) error { return Permanent(errors.New("bad")) }, events: []string{"events_dead_lettered"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			c, s, logs := testConsumer(t, &memoryStore{}, func(context.Context, pgx.Tx, Event) error { calls++; return tc.handle(calls) })
+			d, _ := delivery(traced("1"), false)
+			c.deliver(context.Background(), s, d)
+			if len(*logs) != len(tc.events) {
+				t.Fatalf("log lines %v, want %v", *logs, tc.events)
+			}
+			for i, line := range *logs {
+				if !strings.Contains(line, `"event":"`+tc.events[i]+`"`) || !strings.Contains(line, traceID) {
+					t.Fatalf("line %d = %s, want %s with %s", i, line, tc.events[i], traceID)
+				}
+				if strings.Contains(line, "00f067aa0ba902b7") {
+					t.Fatalf("line carries the parent id: %s", line)
+				}
+			}
+
+			// The same event without traceparent: the same lines, no trace id.
+			calls = 0
+			c, s, logs = testConsumer(t, &memoryStore{}, func(context.Context, pgx.Tx, Event) error { calls++; return tc.handle(calls) })
+			d, _ = delivery(event("1"), false)
+			c.deliver(context.Background(), s, d)
+			if len(*logs) != len(tc.events) {
+				t.Fatalf("log lines %v, want %v", *logs, tc.events)
+			}
+			for _, line := range *logs {
+				if strings.Contains(line, "trace_id") {
+					t.Fatalf("line without a traceparent has a trace id: %s", line)
+				}
+			}
+		})
+	}
+}
+
+// A duplicate is logged as handled with its outcome.
+func TestDeliverLogsHandledOutcome(t *testing.T) {
+	c, s, logs := testConsumer(t, &memoryStore{}, func(context.Context, pgx.Tx, Event) error { return nil })
+	first, _ := delivery(event("same"), false)
+	again, _ := delivery(event("same"), true)
+	c.deliver(context.Background(), s, first)
+	c.deliver(context.Background(), s, again)
+	want := []string{
+		`{"event":"events_handled","queue":"core.test","type":"forms.form.updated","id":"same","outcome":"processed"}`,
+		`{"event":"events_handled","queue":"core.test","type":"forms.form.updated","id":"same","outcome":"duplicate"}`,
+	}
+	if strings.Join(*logs, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("log lines:\n%s\nwant:\n%s", strings.Join(*logs, "\n"), strings.Join(want, "\n"))
+	}
+}

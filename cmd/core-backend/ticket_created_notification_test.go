@@ -13,3 +13,20 @@ func TestTicketCreatedNotificationOn(t *testing.T) {
 		t.Fatal("true must be refused: the value is on or off")
 	}
 }
+
+func TestFeedbackNotificationOn(t *testing.T) {
+	for raw, want := range map[string]bool{"": false, "off": false, "on": true} {
+		got, err := feedbackNotificationOn(func(name string) string {
+			if name != "FEEDBACK_NOTIFICATION" {
+				t.Fatalf("read %s", name)
+			}
+			return raw
+		})
+		if err != nil || got != want {
+			t.Fatalf("%q: %v, %v; want %v", raw, got, err, want)
+		}
+	}
+	if _, err := feedbackNotificationOn(func(string) string { return "yes" }); err == nil {
+		t.Fatal("yes must be refused: the value is on or off")
+	}
+}

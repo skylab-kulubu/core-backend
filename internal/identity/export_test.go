@@ -26,3 +26,6 @@ func (k *Keycloak) TimeoutForTest() time.Duration {
 func (k *Keycloak) SetLoginForTest(login func(context.Context) (*gocloak.JWT, error)) {
 	k.login = login
 }
+
+// ApplyForTest acts on one notification payload as Run would.
+func (c *SharedGroupCache) ApplyForTest(payload string) { c.apply(payload) }

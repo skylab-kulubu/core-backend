@@ -32,6 +32,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
+	"github.com/skylab-kulubu/core-backend/internal/subjectrequest"
 	"github.com/skylab-kulubu/core-backend/internal/testauth"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
@@ -107,12 +108,13 @@ func memoryDepsDecidedBy(dir *identity.Memory, options identity.Options, az auth
 	// Skyforms' client and a CMS one (production has none yet).
 	clients := authz.ServiceClients{"forms": authz.ProductForms, "cms-service": authz.ProductCMS}
 	return httpx.Deps{
-		Users:       user.NewService(users),
-		Identity:    identity.NewServiceWithOptions(dir, users, az, options),
-		Events:      event.NewService(events, az),
-		Seasons:     season.NewService(season.NewMemoryStore(), az),
-		Tickets:     ticket.NewService(tickets, events, az, users, dir),
-		Competitors: competitor.NewService(competitor.NewMemoryStore(events), events, az),
+		Users:           user.NewService(users),
+		Identity:        identity.NewServiceWithOptions(dir, users, az, options),
+		Events:          event.NewService(events, az),
+		Seasons:         season.NewService(season.NewMemoryStore(), az),
+		SubjectRequests: subjectrequest.NewService(subjectrequest.NewMemoryStore(), az, nil),
+		Tickets:         ticket.NewService(tickets, events, az, users, dir),
+		Competitors:     competitor.NewService(competitor.NewMemoryStore(events), events, az),
 		Media: media.NewServiceWithOptions(media.NewMemoryStore(), media.NewMemoryBlob(), az, "",
 			media.ServiceOptions{ServiceProducts: clients.Products()}),
 		URLs:         shorturl.NewService(shorturl.NewMemoryStore(), az),

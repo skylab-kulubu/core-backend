@@ -38,6 +38,12 @@ func TestÜmlaut(t *testing.T) {}
 	write("a.go", `package a
 func TestNotATestFile() {}
 `)
+	write("c_test.go", `//go:build someintegrationtag
+
+package a
+import "testing"
+func TestBehindATag(t *testing.T) {}
+`)
 	names, err := testNames(dir)
 	if err != nil {
 		t.Fatal(err)

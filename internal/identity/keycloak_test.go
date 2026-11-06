@@ -102,7 +102,7 @@ func TestKeycloakAccountLifecycleDisablesWithOnlyEnabledFalseAndTreatsDeleteRetr
 	userID := uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 	deleteCalls := 0
 	var userCalls []string
-	var disableBodies []string
+	var disableBodies, disableHeaders []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/admin/realms/e-skylab/users/"+userID.String() {
@@ -123,6 +123,7 @@ func TestKeycloakAccountLifecycleDisablesWithOnlyEnabledFalseAndTreatsDeleteRetr
 				t.Errorf("read disable body: %v", err)
 			}
 			disableBodies = append(disableBodies, string(body))
+			disableHeaders = append(disableHeaders, strings.Join(r.Header.Values("X-Sky-Account-Erasure"), ","))
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && r.URL.Path == "/admin/realms/e-skylab/users/"+userID.String()+"/logout":
 			w.WriteHeader(http.StatusNoContent)
@@ -152,6 +153,12 @@ func TestKeycloakAccountLifecycleDisablesWithOnlyEnabledFalseAndTreatsDeleteRetr
 	}
 	if want := []string{`{"enabled":false}`, `{"enabled":false}`}; !reflect.DeepEqual(disableBodies, want) {
 		t.Fatalf("disable bodies = %q, want exactly %q", disableBodies, want)
+	}
+	// The header tells Keycloak the disable is Account erasure's, so it
+	// marks the person as being erased (e-skylab-keycloak
+	// sky-account-erasure-mark); the body stays the same.
+	if want := []string{"disable_identity", "disable_identity"}; !reflect.DeepEqual(disableHeaders, want) {
+		t.Fatalf("X-Sky-Account-Erasure = %q, want %q on every disable", disableHeaders, want)
 	}
 	if want := []string{http.MethodPut, http.MethodPut}; !reflect.DeepEqual(userCalls, want) {
 		t.Fatalf("user calls = %v, want only the two PUTs", userCalls)
@@ -319,5 +326,36 @@ func TestCertificateRolesWarningNamesTheRolesAndTheOperatorScript(t *testing.T) 
 	got = identity.CertificateRolesWarning("core", nil, errors.New("403 Forbidden"))
 	if !strings.Contains(got, "certificate client roles could not be checked on Keycloak client core: 403 Forbidden") {
 		t.Fatalf("read failure warning %q", got)
+	}
+}
+
+// A Group whose children answer 404 while the list is read (a proxy's 404
+// while Keycloak restarts, a Group moved away mid-read): ListGroups leaves
+// its branch out as before, ListGroupsComplete says the list is incomplete.
+func TestKeycloakListGroupsCompleteRefusesAMissingBranch(t *testing.T) {
+	t.Parallel()
+	root := map[string]any{"id": "p1", "name": "UYELER", "path": "/UYELER"}
+	team := map[string]any{"id": "c1", "name": "WEBLAB", "path": "/UYELER/WEBLAB"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/protocol/openid-connect/token"):
+			_, _ = w.Write([]byte(`{"access_token":"tok","expires_in":300,"token_type":"Bearer"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/realms/e-skylab/groups":
+			_ = json.NewEncoder(w).Encode([]any{root})
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/realms/e-skylab/groups/p1/children":
+			_ = json.NewEncoder(w).Encode([]any{team})
+		default: // c1's children: 404
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	dir := identity.NewKeycloak(identity.KeycloakConfig{URL: srv.URL, Realm: "e-skylab", ClientID: "core", ClientSecret: "secret"})
+	ctx := context.Background()
+	if groups, err := dir.ListGroups(ctx); err != nil || len(groups) != 2 {
+		t.Fatalf("ListGroups = %+v %v", groups, err)
+	}
+	if groups, err := dir.ListGroupsComplete(ctx); !errors.Is(err, identity.ErrIncompleteGroups) || groups != nil {
+		t.Fatalf("ListGroupsComplete = %+v %v", groups, err)
 	}
 }

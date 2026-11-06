@@ -19,13 +19,30 @@ const TeamDelegationEnv = "TEAM_DELEGATION"
 // is on, anything else is an error that names the variable, so a typo
 // cannot quietly hand Leaders the management of their Teams.
 func ParseTeamDelegation(raw string) (bool, error) {
+	return parseOffOn(TeamDelegationEnv, raw)
+}
+
+// LeaderTeamCodesEnv lets Leaders change a Sub-team's code (PUT
+// /v1/groups/{id}/code) with team delegation on: off (the default) or on.
+// Off, only Privileged changes a Team's code (Yusuf, 2026-10-31): a code is
+// the key other systems hold (docs/team-codes.md), so its change stays
+// YK's for now. This is the one place that opens it to Leaders.
+const LeaderTeamCodesEnv = "TEAM_DELEGATION_LEADER_CODES"
+
+// ParseLeaderTeamCodes reads LeaderTeamCodesEnv as ParseTeamDelegation
+// reads its variable.
+func ParseLeaderTeamCodes(raw string) (bool, error) {
+	return parseOffOn(LeaderTeamCodesEnv, raw)
+}
+
+func parseOffOn(name, raw string) (bool, error) {
 	switch strings.TrimSpace(raw) {
 	case "", "off":
 		return false, nil
 	case "on":
 		return true, nil
 	default:
-		return false, fmt.Errorf("%s: %q is not %q or %q", TeamDelegationEnv, raw, "off", "on")
+		return false, fmt.Errorf("%s: %q is not %q or %q", name, raw, "off", "on")
 	}
 }
 
@@ -40,6 +57,10 @@ const (
 	// (ManagesStrict): nobody makes themselves a Leader or leaves their own
 	// Team without one.
 	RefusalLeaderGroupNeedsParent = "leader_group_needs_parent"
+	// RefusalTeamCodePrivilegedOnly: a Leader who manages the Sub-team
+	// strictly asked to change its code while LeaderTeamCodesEnv is off;
+	// only Privileged changes a Team's code.
+	RefusalTeamCodePrivilegedOnly = "team_code_privileged_only"
 )
 
 // RoleAuditRead reads the Team audit record. It is read as the role alone,
@@ -172,6 +193,19 @@ func (p Policy) ManagesStrict(m TeamManager, g ManagedGroup) ManageDecision {
 	}
 	parent := ManagedGroup{Group: g.Ancestors[0], Ancestors: g.Ancestors[1:], Protected: g.Protected}
 	return p.Manages(m, parent)
+}
+
+// ChangesTeamCode is the decision on changing g's code (PUT
+// /v1/groups/{id}/code): Privileged on every Team; a Leader who manages g
+// strictly only with LeaderTeamCodes on, refused otherwise with
+// RefusalTeamCodePrivilegedOnly (Basis and ViaTeamID kept for the denied
+// row).
+func (p Policy) ChangesTeamCode(m TeamManager, g ManagedGroup) ManageDecision {
+	d := p.ManagesStrict(m, g)
+	if d.Allowed && d.Basis == ManageBasisLeader && !p.LeaderTeamCodes {
+		return ManageDecision{Basis: d.Basis, ViaTeamID: d.ViaTeamID, Refusal: RefusalTeamCodePrivilegedOnly}
+	}
+	return d
 }
 
 // ManagesMembership is the decision on adding a member to g or removing

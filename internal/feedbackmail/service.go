@@ -11,9 +11,13 @@ package feedbackmail
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -61,7 +65,7 @@ type Queue interface {
 // Mailer posts one feedback mail (mail.SkyMail).
 type Mailer interface {
 	FeedbackConfigured(kind mail.FeedbackKind) bool
-	Feedback(ctx context.Context, kind mail.FeedbackKind, recipient, fullName, firstName, eventName string, items []mail.FeedbackItem) error
+	Feedback(ctx context.Context, kind mail.FeedbackKind, idempotencyKey string, to mail.FeedbackRecipient, eventID uuid.UUID, eventName string, items []mail.FeedbackItem) error
 }
 
 // Config is what a Service takes.
@@ -187,8 +191,10 @@ type outcome struct {
 	sent     bool
 }
 
-// recipient is a mail's Ticket's holder.
+// recipient is a mail's Ticket's holder: a member's subject (uuid.Nil for
+// a guest) and the address and names the mail reads.
 type recipient struct {
+	sub                uuid.UUID
 	email, first, full string
 }
 
@@ -236,6 +242,10 @@ func (s *Service) deliver(ctx context.Context, claimed feedback.Mail, report *Re
 		}
 		if !ok || r.email != to.email {
 			continue
+		}
+		if to.sub == uuid.Nil {
+			// The address is a member's: their mail goes to their inbox too
+			to.sub = r.sub
 		}
 		if m.NextAttemptAt.After(s.now()) && m.ClaimedAt.IsZero() {
 			// One mail, when the last of them is due.
@@ -310,7 +320,8 @@ func (s *Service) deliver(ctx context.Context, claimed feedback.Mail, report *Re
 	if reminder {
 		kind = mail.FeedbackReminder
 	}
-	err = s.config.Mail.Feedback(ctx, kind, to.email, to.full, to.first, eventName, links)
+	addressee := mail.FeedbackRecipient{Sub: to.sub, Email: to.email, FullName: to.full, FirstName: to.first}
+	err = s.config.Mail.Feedback(ctx, kind, idempotencyKey(kind, out.group, addressee, eventName, links), addressee, claimed.EventID, eventName, links)
 	var refused *mail.SendError
 	switch {
 	case errors.Is(err, mail.ErrTemplateUnconfigured):
@@ -371,7 +382,33 @@ func (s *Service) recipientOf(ctx context.Context, ticketID uuid.UUID) (recipien
 		return recipient{}, false, err
 	}
 	email, first, full, err := s.holder(ctx, t)
-	return recipient{email: email, first: first, full: full}, err == nil && email != "", err
+	r := recipient{email: email, first: first, full: full}
+	if t.TicketType != ticket.Guest && t.OwnerID != nil {
+		r.sub = *t.OwnerID
+	}
+	return r, err == nil && email != "", err
+}
+
+// idempotencyKey is the same on every try of the same mail (its mails, its
+// recipient and its links: the invite codes do not change), so a try after a
+// lost answer is SkyMail's replay, never a second Notification. A mail whose
+// links changed meanwhile (a target dropped) is another body, and SkyMail
+// refuses another body under a key it has seen: it gets a key of its own.
+func idempotencyKey(kind mail.FeedbackKind, group []feedback.Mail, to mail.FeedbackRecipient, eventName string, links []mail.FeedbackItem) string {
+	ids := make([]string, 0, len(group))
+	for _, m := range group {
+		ids = append(ids, m.ID.String())
+	}
+	slices.Sort(ids)
+	body, _ := json.Marshal(struct {
+		Mails     []string
+		Sub       uuid.UUID
+		Email     string
+		EventName string
+		Items     []mail.FeedbackItem
+	}{ids, to.Sub, to.Email, eventName, links})
+	sum := sha256.Sum256(body)
+	return "core:feedback-" + string(kind) + ":" + hex.EncodeToString(sum[:16])
 }
 
 // goes reports whether the target still goes: its Event published and

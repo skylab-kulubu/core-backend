@@ -46,6 +46,15 @@ const (
 	// (communication_tracking_changes, docs/communication-preferences.md),
 	// three years after the change; the row goes, the preference stays.
 	TrackingChangesPeriod = 3 * 365 * day
+	// SubjectRequestPeriod: a KVKK md. 11 data subject request
+	// (docs/subject-requests.md), three years after it was answered or
+	// rejected; the row goes with its trail. An open request stays.
+	SubjectRequestPeriod = 3 * 365 * day
+	// ManagementTermPeriod: a management membership term (YK, DK, a Team's
+	// Leaders; docs/management-membership-terms.md), three years after the
+	// membership ended (ended_at; Yusuf, 2026-10-31). An open term, expired
+	// or not, stays: its holder is still in the Group.
+	ManagementTermPeriod = 3 * 365 * day
 )
 
 // Schema is what a run reads from the database before it builds the rules.
@@ -68,6 +77,8 @@ func Rules(c Config, s Schema) []Rule {
 	rules = append(rules, teamAuditRules()...)
 	rules = append(rules, feedbackRules()...)
 	rules = append(rules, trackingRules()...)
+	rules = append(rules, subjectRequestRules()...)
+	rules = append(rules, managementTermRules()...)
 	return append(rules, auditRules(c)...)
 }
 
@@ -261,6 +272,35 @@ func trackingRules() []Rule {
 		Name: "tracking_changes_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
 		Table: "communication_tracking_changes", alias: "ct", key: "id", Period: TrackingChangesPeriod,
 		where: `ct.changed_at < $1`,
+	}}
+}
+
+// subjectRequestRules delete a data subject request three years after its
+// answer (ADR-0062, "KVKK md. 11 başvuruları"); subject_request_events go
+// with it (ON DELETE CASCADE). An open request has no answer date and is
+// never due. The answer date is a day: it is due once it lies before the
+// cutoff's day (UTC), at most a day after three years to the hour.
+func subjectRequestRules() []Rule {
+	return []Rule{{
+		Name: "subject_requests_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
+		Table: "subject_requests", alias: "sr", key: "id", Period: SubjectRequestPeriod,
+		where: `sr.answered_on < $1::date`,
+	}}
+}
+
+// managementTermRules delete a management membership term three years after
+// its membership ended (grup-yonetimi 11; Yusuf, 2026-10-31). The anchor is
+// ended_at, when the person left the Group (removed through core, or found
+// gone from Keycloak), not the term's planned end or its expiry mark: an
+// expired term whose holder is still in the Group is open and is never
+// selected (deleting it would only have the daily job give them a new one).
+// The rule does not read MANAGEMENT_TERMS_MODE: with the terms off no term
+// ends, so it finds only what an earlier apply left.
+func managementTermRules() []Rule {
+	return []Rule{{
+		Name: "management_terms_age", Version: 1, Kind: KindSweep, Action: ActionDelete,
+		Table: "management_membership_terms", alias: "mt", key: "id", Period: ManagementTermPeriod,
+		where: `mt.ended_at < $1`,
 	}}
 }
 

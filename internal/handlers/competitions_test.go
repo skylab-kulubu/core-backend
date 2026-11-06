@@ -51,6 +51,7 @@ func (e competitionEnv) app(ident *authn.Identity) *fiber.App {
 	app.Post("/v1/competitions/:id/restore", h.Restore)
 	app.Get("/v1/competitions/:id/entrants", h.Entrants)
 	app.Post("/v1/competitions/:id/entrants", h.AddEntrants)
+	app.Get("/v1/competitions/:id/entrant-candidates", h.EntrantCandidates)
 	app.Post("/v1/competitions/:id/scores", h.SetScore)
 	app.Get("/v1/competitions/:id/entries", h.Entries)
 	app.Post("/v1/competitions/:id/entries/:entryId/revoke", h.RevokeEntry)
@@ -214,5 +215,42 @@ func TestCompetitionHTTPFlow(t *testing.T) {
 	}
 	if got := competitionCall(t, app, fiber.MethodGet, "/v1/competitions/not-a-uuid", ""); got.status != fiber.StatusBadRequest {
 		t.Fatalf("bad id %d", got.status)
+	}
+}
+
+// A score of an Entrant the writer is in is 403 own_entrant; the candidates
+// answer names without contact details, and checkedIn takes true or false.
+func TestCompetitionHTTPOwnEntrantAndCandidates(t *testing.T) {
+	t.Parallel()
+	env := newCompetitionEnv()
+	ev, err := env.events.Create(t.Context(), event.Event{Name: "AGC Hafta 4", Location: "YTÜ", OwnerTeam: "AGC"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := &authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/ARGE/ALGOLAB/AGC/LIDERLER"}}
+	own, err := env.tickets.Create(t.Context(), ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &leader.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tickets.Create(t.Context(), ticket.Ticket{EventID: ev.ID, TicketType: ticket.Guest, GuestFirstName: "Ada", GuestLastName: "Lovelace", GuestEmail: "ada@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	app := env.app(leader)
+	created := competitionCall(t, app, fiber.MethodPost, "/v1/events/"+ev.ID.String()+"/competitions", `{"name":"AGC Hafta 4"}`)
+	base := "/v1/competitions/" + created.body["id"].(string)
+	added := competitionCall(t, app, fiber.MethodPost, base+"/entrants", `{"ticketIds":["`+own.ID.String()+`"]}`)
+	if added.status != fiber.StatusCreated {
+		t.Fatalf("add %d %s", added.status, added.raw)
+	}
+	entrantID := added.list[0].(map[string]any)["id"].(string)
+	if got := competitionCall(t, app, fiber.MethodPost, base+"/scores", `{"entrantId":"`+entrantID+`","points":30}`); got.status != fiber.StatusForbidden || got.body["code"] != "own_entrant" {
+		t.Errorf("own score %d %s", got.status, got.raw)
+	}
+	got := competitionCall(t, app, fiber.MethodGet, base+"/entrant-candidates?q=ada&checkedIn=false", "")
+	if got.status != fiber.StatusOK || len(got.list) != 1 || strings.Contains(got.raw, "example.test") || strings.Contains(got.raw, "mail") {
+		t.Errorf("candidates %d %s", got.status, got.raw)
+	}
+	if got := competitionCall(t, app, fiber.MethodGet, base+"/entrant-candidates?checkedIn=1", ""); got.status != fiber.StatusBadRequest {
+		t.Errorf("checkedIn=1: %d", got.status)
 	}
 }

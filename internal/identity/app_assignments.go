@@ -643,11 +643,13 @@ func (s *service) holds(ctx context.Context, c appChange) (bool, error) {
 
 // writeApp makes the change with its row in the Team audit record: no row,
 // no change. What core keeps of role holders is dropped even when the write
-// fails, since it may have reached Keycloak.
+// fails, since it may have reached Keycloak; the other core processes are
+// told after it.
 func (s *service) writeApp(ctx context.Context, c appChange, add bool) error {
 	if s.audit == nil {
 		return teamaudit.ErrUnavailable
 	}
+	defer s.forgetAllElsewhere()
 	defer s.delegation.ForgetAll()
 	defer s.seats.forget()
 	defer s.appStats.forget()

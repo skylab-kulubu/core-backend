@@ -81,6 +81,8 @@ type postgresRecords struct {
 	retired []string
 }
 
+// Held's last lookup reads retired_team_codes through its unique
+// lower(code) index.
 func (r *postgresRecords) Held(ctx context.Context, code string) (bool, error) {
 	var held bool
 	err := r.tx.QueryRow(ctx, `
@@ -95,19 +97,28 @@ func (r *postgresRecords) Held(ctx context.Context, code string) (bool, error) {
 	return held, nil
 }
 
-func (r *postgresRecords) Referenced(ctx context.Context, code string) (bool, error) {
-	var held bool
+func (r *postgresRecords) References(ctx context.Context, code string) ([]string, error) {
+	var event, certificate, template, binding bool
 	err := r.tx.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM events WHERE lower(owner_team) = lower($1))
-			OR EXISTS (SELECT 1 FROM certificates WHERE lower(owner_team) = lower($1))
-			OR EXISTS (SELECT 1 FROM certificate_templates WHERE lower(owner_team) = lower($1))
-			OR EXISTS (SELECT 1 FROM certificate_template_bindings WHERE scope = 'ownerTeam' AND lower(scope_key) = lower($1))`, code).Scan(&held)
+		SELECT EXISTS (SELECT 1 FROM events WHERE lower(owner_team) = lower($1)),
+			EXISTS (SELECT 1 FROM certificates WHERE lower(owner_team) = lower($1)),
+			EXISTS (SELECT 1 FROM certificate_templates WHERE lower(owner_team) = lower($1)),
+			EXISTS (SELECT 1 FROM certificate_template_bindings WHERE scope = 'ownerTeam' AND lower(scope_key) = lower($1))`, code).
+		Scan(&event, &certificate, &template, &binding)
 	if err != nil {
-		return false, fmt.Errorf("%w: referenced: %w", ErrUnavailable, err)
+		return nil, fmt.Errorf("%w: references: %w", ErrUnavailable, err)
 	}
-	return held, nil
+	var out []string
+	for i, held := range []bool{event, certificate, template, binding} {
+		if held {
+			out = append(out, recordKinds[i])
+		}
+	}
+	return out, nil
 }
 
+// Retire keeps the first row of a code: retiring it again, in any case, is
+// stopped by the unique lower(code) index and changes nothing.
 func (r *postgresRecords) Retire(ctx context.Context, code, groupID, reason string) error {
 	var group *uuid.UUID
 	if id, err := uuid.Parse(groupID); err == nil {
@@ -118,9 +129,99 @@ func (r *postgresRecords) Retire(ctx context.Context, code, groupID, reason stri
 	}
 	if _, err := r.tx.Exec(ctx, `
 		INSERT INTO retired_team_codes (code, group_id, reason) VALUES ($1, $2, $3)
-		ON CONFLICT (code) DO NOTHING`, code, group, reason); err != nil {
+		ON CONFLICT (lower(code)) DO NOTHING`, code, group, reason); err != nil {
 		return fmt.Errorf("teamcode: retire: %w", err)
 	}
 	r.retired = append(r.retired, code)
 	return nil
+}
+
+// RecordCodes are the codes core's Owner team records name (Records.Held's
+// tables, archived and deleted rows included), blanks around each trimmed,
+// each with the kinds of record that name it (RecordEvent, …, in that
+// order). Blank codes are left out. Codes and kinds, never a record's id.
+func (l *PostgresLedger) RecordCodes(ctx context.Context) (map[string][]string, error) {
+	rows, err := l.pool.Query(ctx, `
+		SELECT DISTINCT code, kind FROM (
+			SELECT btrim(owner_team) AS code, 0 AS kind FROM events
+			UNION ALL SELECT btrim(owner_team), 1 FROM certificates
+			UNION ALL SELECT btrim(owner_team), 2 FROM certificate_templates
+			UNION ALL SELECT btrim(scope_key), 3 FROM certificate_template_bindings WHERE scope = 'ownerTeam'
+		) AS named
+		WHERE code IS NOT NULL AND code <> ''
+		ORDER BY code, kind`)
+	if err != nil {
+		return nil, fmt.Errorf("%w: record codes: %w", ErrUnavailable, err)
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var (
+			code string
+			kind int
+		)
+		if err := rows.Scan(&code, &kind); err != nil {
+			return nil, fmt.Errorf("%w: record codes: %w", ErrUnavailable, err)
+		}
+		out[code] = append(out[code], recordKinds[kind])
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: record codes: %w", ErrUnavailable, err)
+	}
+	return out, nil
+}
+
+// RetiredCodes are the codes retired_team_codes holds, as written.
+func (l *PostgresLedger) RetiredCodes(ctx context.Context) ([]string, error) {
+	rows, err := l.pool.Query(ctx, `SELECT code FROM retired_team_codes ORDER BY code`)
+	if err != nil {
+		return nil, fmt.Errorf("%w: retired codes: %w", ErrUnavailable, err)
+	}
+	codes, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("%w: retired codes: %w", ErrUnavailable, err)
+	}
+	return codes, nil
+}
+
+// SeedRetired retires, with ReasonSeeded and no Group id, every code that
+// codes answers and no retired code holds yet (compared without case), in
+// one transaction holding LockName. codes runs inside the lock, so it sees
+// every Group a create or a rename made before it, and none is made while it
+// runs: it answers the codes that still have no Group. It answers the codes
+// written, in codes' order; a second run writes nothing new. On an error
+// nothing is written.
+func (l *PostgresLedger) SeedRetired(ctx context.Context, codes func(ctx context.Context) ([]string, error)) ([]string, error) {
+	var written []string
+	err := l.Locked(ctx, func(ctx context.Context, records Records) error {
+		r, ok := records.(*postgresRecords)
+		if !ok {
+			return errors.New("teamcode: seed: not a Postgres transaction")
+		}
+		want, err := codes(ctx)
+		if err != nil {
+			return err
+		}
+		for _, code := range want {
+			if code == "" {
+				continue
+			}
+			var retired bool
+			if err := r.tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM retired_team_codes WHERE lower(code) = lower($1))`, code).Scan(&retired); err != nil {
+				return fmt.Errorf("%w: seed: %w", ErrUnavailable, err)
+			}
+			if retired {
+				continue
+			}
+			if err := r.Retire(ctx, code, "", ReasonSeeded); err != nil {
+				return err
+			}
+			written = append(written, code)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return written, nil
 }

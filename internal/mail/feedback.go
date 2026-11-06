@@ -3,6 +3,8 @@ package mail
 import (
 	"context"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // The SkyMail templates of the feedback mails (etkinlik geri bildirim
@@ -29,6 +31,13 @@ type FeedbackItem struct {
 	URL   string `json:"URL"`
 }
 
+// FeedbackRecipient is whom a feedback mail goes to: a member's subject
+// (uuid.Nil for a guest), and the address and names the mail reads.
+type FeedbackRecipient struct {
+	Sub                        uuid.UUID
+	Email, FullName, FirstName string
+}
+
 // FeedbackTemplateKey is kind's template key, empty when it is off.
 func (s *SkyMail) FeedbackTemplateKey(kind FeedbackKind) string {
 	if s == nil {
@@ -49,13 +58,34 @@ func (s *SkyMail) FeedbackConfigured(kind FeedbackKind) bool {
 	return s.FeedbackTemplateKey(kind) != ""
 }
 
-// Feedback posts kind's mail by template key and reports what SkyMail
-// answered, as EventStatus does. Its variables are not all text: Items is a
-// list, which SkyMail's templates range over.
-func (s *SkyMail) Feedback(ctx context.Context, kind FeedbackKind, recipient, fullName, firstName, eventName string, items []FeedbackItem) error {
+// Feedback sends kind's mail and reports what SkyMail answered, as
+// EventStatus does. Its variables are not all text: Items is a list, which
+// SkyMail's templates range over; EventId fills the inbox item's link.
+//
+// With FeedbackNotification on, a member's mail is a Notification of the
+// template's type (the type's e-mail text is the template of the same key,
+// ADR 0070), under idempotencyKey: SkyMail sends it by e-mail and to the
+// member's inbox. A guest has no subject SkyMail could take, so a guest's
+// mail, and every mail while it is off, is the template by address
+// (/v1/mail_tasks/single, which reads no key).
+func (s *SkyMail) Feedback(ctx context.Context, kind FeedbackKind, idempotencyKey string, to FeedbackRecipient, eventID uuid.UUID, eventName string, items []FeedbackItem) error {
 	key := s.FeedbackTemplateKey(kind)
 	if key == "" || strings.TrimSpace(s.BaseURL) == "" {
 		return ErrTemplateUnconfigured
+	}
+	variables := map[string]any{
+		"FirstName": to.FirstName,
+		"EventName": eventName,
+		"Items":     items,
+		"EventId":   eventID.String(),
+	}
+	if s.FeedbackNotification && to.Sub != uuid.Nil {
+		return s.Notify(ctx, "feedback_"+string(kind), idempotencyKey, Notification{
+			Type:       key,
+			Recipients: []NotificationRecipient{{Sub: to.Sub, Email: to.Email, Name: to.FullName}},
+			Variables:  variables,
+			Source:     &NotificationSource{Kind: "event", Ref: eventID.String()},
+		})
 	}
 	token, err := s.Tokens.Token(ctx)
 	if err != nil || token == "" {
@@ -63,13 +93,9 @@ func (s *SkyMail) Feedback(ctx context.Context, kind FeedbackKind, recipient, fu
 	}
 	task := map[string]any{
 		"template_key":        key,
-		"recipient_email":     recipient,
-		"recipient_full_name": fullName,
-		"body_variables": map[string]any{
-			"FirstName": firstName,
-			"EventName": eventName,
-			"Items":     items,
-		},
+		"recipient_email":     to.Email,
+		"recipient_full_name": to.FullName,
+		"body_variables":      variables,
 	}
 	status := s.post(ctx, "feedback_"+string(kind), token, task)
 	if succeeded(status) {

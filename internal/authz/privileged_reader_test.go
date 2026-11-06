@@ -175,6 +175,12 @@ var readerWrites = []decision{
 	{"someone's short link delete", Resource{Type: TypeURL, OwnerID: "other"}, Delete},
 	{"form link create", Resource{Type: TypeFormLink}, Create},
 	{"form link update", Resource{Type: TypeFormLink}, Update},
+	{"data subject request record", Resource{Type: TypeSubjectRequest}, Create},
+	{"data subject request update", Resource{Type: TypeSubjectRequest}, Update},
+	// Not changes, but personal data the board alone handles: DK and
+	// global:read do not read the register either (docs/subject-requests.md).
+	{"data subject request read", Resource{Type: TypeSubjectRequest}, Read},
+	{"data subject request list", Resource{Type: TypeSubjectRequest}, List},
 }
 
 func TestPrivilegedReader_ReadsEverythingChangesNothing(t *testing.T) {

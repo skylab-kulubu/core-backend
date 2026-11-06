@@ -31,6 +31,7 @@ type userStore interface {
 
 type fixture struct {
 	svc     competition.Service
+	store   competition.Store
 	events  event.Store
 	tickets ticket.Store
 	users   userStore
@@ -50,10 +51,17 @@ func newFixtureWith(t *testing.T, events event.Store, tickets ticket.Store, user
 	if err != nil {
 		t.Fatal(err)
 	}
+	st := store(tickets, users)
 	return fixture{
-		svc:    competition.NewService(store(tickets, users), events, authz.NewAuthorizer(authz.DefaultPolicy())),
-		events: events, tickets: tickets, users: users, event: ev,
+		svc:   competition.NewService(st, events, authz.NewAuthorizer(authz.DefaultPolicy())),
+		store: st, events: events, tickets: tickets, users: users, event: ev,
 	}
+}
+
+// decidedBy is f with its service deciding by az.
+func (f fixture) decidedBy(az authz.Authorizer) fixture {
+	f.svc = competition.NewService(f.store, f.events, az)
+	return f
 }
 
 func memoryStore(tickets ticket.Store, users userStore) competition.Store {

@@ -267,3 +267,26 @@ func TestPostgresQueueCancelsAnOppositeUnclaimedChange(t *testing.T) {
 		t.Fatalf("%d left, want the removal alone", count)
 	}
 }
+
+// A row keeps the Group's id; a row an older core wrote has none.
+func TestPostgresQueueKeepsTheGroupID(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	q := teammail.NewPostgresQueue(pool)
+	now := time.Date(2026, 10, 27, 18, 0, 0, 0, time.UTC)
+	group := uuid.New()
+	with := teammail.Change{ID: uuid.New(), SubjectID: uuid.New(), GroupPath: "/UYELER/ARGE/WEBLAB", GroupID: group.String(), Action: teammail.ActionAdded, OccurredAt: now.Add(-2 * time.Minute)}
+	without := teammail.Change{ID: uuid.New(), SubjectID: uuid.New(), GroupPath: "/UYELER/ARGE/MOBILAB", GroupID: "not-an-id", Action: teammail.ActionAdded, OccurredAt: now.Add(-time.Minute)}
+	for _, c := range []teammail.Change{with, without} {
+		if _, err := q.Enqueue(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimed, err := q.Claim(ctx, now, time.Minute, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 2 || claimed[0].GroupID != group.String() || claimed[1].GroupID != "" {
+		t.Fatalf("claimed %+v", claimed)
+	}
+}

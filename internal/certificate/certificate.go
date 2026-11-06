@@ -14,6 +14,9 @@ var (
 	ErrForbidden = errors.New("certificate: forbidden")
 	ErrInvalid   = errors.New("certificate: invalid")
 	ErrConflict  = errors.New("certificate: conflict")
+	// ErrLeaseLost: the job's lease ran out and another claim took it; its
+	// holder neither finishes nor puts back the job (ticket 25).
+	ErrLeaseLost = errors.New("certificate: job lease lost")
 )
 
 type Certificate struct {

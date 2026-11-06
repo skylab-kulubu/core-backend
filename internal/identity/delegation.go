@@ -117,6 +117,12 @@ const (
 	// maxGroupDepth bounds the walk up a Group's ancestors: a parent chain
 	// longer than any real tree is a loop or a fault.
 	maxGroupDepth = 32
+	// The Team structure limits (SPEC §4.5, token size): how many levels of
+	// Sub-teams a top Team may have below it, how long a Team's path may
+	// be, and how many Sub-teams one Team may have.
+	DefaultSubTeamDepth = 2
+	DefaultTeamPathLen  = 128
+	DefaultSubTeams     = 20
 )
 
 // TeamDelegationOptions tune a TeamDelegation. Zero values take the
@@ -134,6 +140,12 @@ type TeamDelegationOptions struct {
 	// WriteTimeout bounds one delegated write, waiting for the lock
 	// included.
 	WriteTimeout time.Duration
+	// SubTeamDepth, TeamPathLen and SubTeams are the Team structure
+	// limits a create and a move keep to, for every caller
+	// (DefaultSubTeamDepth, …).
+	SubTeamDepth int
+	TeamPathLen  int
+	SubTeams     int
 	// TTL is how long reads that serve reads are kept: a caller's Groups, a
 	// Group's role mappings, the realm's names, a managed tree, the
 	// capabilities' managed Teams. FailureTTL keeps a failed managed Teams
@@ -150,16 +162,21 @@ type TeamDelegationOptions struct {
 const (
 	DelegatedGroupLimitEnv = "TEAM_DELEGATION_GROUP_LIMIT"
 	DelegatedWritesEnv     = "TEAM_DELEGATION_WRITES_PER_MINUTE"
+	SubTeamDepthEnv        = "TEAM_SUBTEAM_DEPTH_LIMIT"
+	TeamPathLenEnv         = "TEAM_PATH_LENGTH_LIMIT"
+	SubTeamsEnv            = "TEAM_SUBTEAMS_LIMIT"
 )
 
-// TeamDelegationOptionsFromEnv reads DelegatedGroupLimitEnv and
-// DelegatedWritesEnv.
+// TeamDelegationOptionsFromEnv reads DelegatedGroupLimitEnv,
+// DelegatedWritesEnv and the Team structure limits (SubTeamDepthEnv,
+// TeamPathLenEnv, SubTeamsEnv).
 func TeamDelegationOptionsFromEnv(getenv func(string) string) (TeamDelegationOptions, error) {
 	var out TeamDelegationOptions
 	for _, v := range []struct {
 		name string
 		into *int
-	}{{DelegatedGroupLimitEnv, &out.GroupLimit}, {DelegatedWritesEnv, &out.WritesPerMinute}} {
+	}{{DelegatedGroupLimitEnv, &out.GroupLimit}, {DelegatedWritesEnv, &out.WritesPerMinute},
+		{SubTeamDepthEnv, &out.SubTeamDepth}, {TeamPathLenEnv, &out.TeamPathLen}, {SubTeamsEnv, &out.SubTeams}} {
 		raw := strings.TrimSpace(getenv(v.name))
 		if raw == "" {
 			continue
@@ -196,7 +213,11 @@ type TeamDelegation struct {
 	running map[uuid.UUID]bool
 	// canaryUntil is when the last canary that passed stops counting.
 	canaryUntil time.Time
-	flights     singleflight.Group
+	// generation counts Forget and ForgetAll: a read keeps its answer only
+	// if neither happened while it ran, and a read after one never joins a
+	// read that began before it (review of #332, D1).
+	generation uint64
+	flights    singleflight.Group
 	// unclassified counts the protection reads that found a client role
 	// nobody has classified ("client:role", at most maxUnclassifiedLabels
 	// of them, the rest as "other"): served on /v1/metrics.
@@ -254,6 +275,7 @@ func NewTeamDelegation(policy authz.Policy, dir Directory, reads TeamReads, opti
 	if options.WriteTimeout <= 0 {
 		options.WriteTimeout = DefaultDelegatedWriteTimeout
 	}
+	options.SubTeamDepth, options.TeamPathLen, options.SubTeams = structureLimits(options)
 	if options.TTL <= 0 {
 		options.TTL = defaultDelegationTTL
 	}
@@ -335,6 +357,7 @@ func (d *TeamDelegation) Forget(userID uuid.UUID) {
 	delete(d.callers, userID)
 	delete(d.teams, userID)
 	clear(d.trees)
+	d.generation++
 }
 
 // ForgetAll drops everything d remembers: core renamed or remapped a Group.
@@ -349,6 +372,25 @@ func (d *TeamDelegation) ForgetAll() {
 	clear(d.teams)
 	clear(d.trees)
 	d.names = namesEntry{}
+	d.generation++
+}
+
+// current is d's generation: taken before a read, given to keep.
+func (d *TeamDelegation) current() uint64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.generation
+}
+
+// keep runs write under d's lock if no Forget or ForgetAll happened since
+// generation was taken: a read that began before one may have read
+// Keycloak before the write, so its answer goes only to its own callers.
+func (d *TeamDelegation) keep(generation uint64, write func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.generation == generation {
+		write()
+	}
 }
 
 // allowWrite counts one delegated write of userID and reports whether it
@@ -459,13 +501,14 @@ func (d *TeamDelegation) manager(ctx context.Context, userID uuid.UUID, fresh bo
 			return authz.TeamManager{LeaderGroups: entry.groups}, nil
 		}
 	}
+	generation := d.current()
 	groups, err := d.leaderGroups(ctx, userID)
 	if err != nil {
 		return authz.TeamManager{}, err
 	}
-	d.mu.Lock()
-	d.callers[userID] = leaderEntry{groups: groups, expires: d.options.Now().Add(d.options.TTL)}
-	d.mu.Unlock()
+	d.keep(generation, func() {
+		d.callers[userID] = leaderEntry{groups: groups, expires: d.options.Now().Add(d.options.TTL)}
+	})
 	return authz.TeamManager{LeaderGroups: groups}, nil
 }
 
@@ -564,14 +607,13 @@ func (d *TeamDelegation) protected(ctx context.Context, ids []string, fresh bool
 		entry, ok := d.roles[id]
 		d.mu.Unlock()
 		if fresh || !ok || !d.options.Now().Before(entry.expires) {
+			generation := d.current()
 			got, err := d.reads.GroupProtection(ctx, id)
 			if err != nil {
 				return false, err
 			}
 			entry = protectedEntry{protected: got.Protected, expires: d.options.Now().Add(d.options.TTL)}
-			d.mu.Lock()
-			d.roles[id] = entry
-			d.mu.Unlock()
+			d.keep(generation, func() { d.roles[id] = entry })
 			if got.Protected {
 				d.options.Logf("team delegation: group %s is protected (%s): it and every Group under it are managed by Privileged only", id, got.Reason)
 			}
@@ -598,14 +640,13 @@ func (d *TeamDelegation) nameClash(ctx context.Context, g authz.ManagedGroup) (s
 	entry := d.names
 	d.mu.Unlock()
 	if entry.groups == nil || !d.options.Now().Before(entry.expires) {
+		generation := d.current()
 		groups, err := d.dir.ListGroups(ctx)
 		if err != nil {
 			return "", err
 		}
 		entry = namesEntry{groups: groups, expires: d.options.Now().Add(d.options.TTL)}
-		d.mu.Lock()
-		d.names = entry
-		d.mu.Unlock()
+		d.keep(generation, func() { d.names = entry })
 	}
 	for _, node := range append([]authz.GroupNode{g.Group}, g.Ancestors...) {
 		if slices.Contains(d.policy.LeaderSubgroups, node.Name) {
@@ -641,6 +682,7 @@ func (d *TeamDelegation) ManagedTeams(ctx context.Context, userID uuid.UUID) ([]
 	}
 	d.mu.Lock()
 	entry, ok := d.teams[userID]
+	generation := d.generation
 	d.mu.Unlock()
 	if ok && d.options.Now().Before(entry.expires) {
 		return entry.teams, true, nil
@@ -649,7 +691,9 @@ func (d *TeamDelegation) ManagedTeams(ctx context.Context, userID uuid.UUID) ([]
 		teams []ManagedTeam
 		err   error
 	}
-	v, _, _ := d.flights.Do("teams:"+userID.String(), func() (any, error) {
+	// The generation in the key: a request after Forget starts its own read.
+	key := "teams:" + userID.String() + "@" + strconv.FormatUint(generation, 10)
+	v, _, _ := d.flights.Do(key, func() (any, error) {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d.options.Timeout)
 		defer cancel()
 		teams, err := d.readManagedTeams(ctx, userID)
@@ -657,9 +701,9 @@ func (d *TeamDelegation) ManagedTeams(ctx context.Context, userID uuid.UUID) ([]
 		if err != nil {
 			ttl = d.options.FailureTTL
 		}
-		d.mu.Lock()
-		d.teams[userID] = teamsEntry{teams: teams, expires: d.options.Now().Add(ttl)}
-		d.mu.Unlock()
+		d.keep(generation, func() {
+			d.teams[userID] = teamsEntry{teams: teams, expires: d.options.Now().Add(ttl)}
+		})
 		return answer{teams, err}, nil
 	})
 	got := v.(answer)
@@ -718,4 +762,20 @@ type ManagedNode struct {
 	// Leaders' (leaders.write).
 	Can      map[string]bool `json:"can"`
 	Children []ManagedNode   `json:"children"`
+}
+
+// structureLimits are options' Team structure limits, a default for each
+// one unset.
+func structureLimits(options TeamDelegationOptions) (depth, pathLen, subTeams int) {
+	depth, pathLen, subTeams = options.SubTeamDepth, options.TeamPathLen, options.SubTeams
+	if depth <= 0 {
+		depth = DefaultSubTeamDepth
+	}
+	if pathLen <= 0 {
+		pathLen = DefaultTeamPathLen
+	}
+	if subTeams <= 0 {
+		subTeams = DefaultSubTeams
+	}
+	return depth, pathLen, subTeams
 }

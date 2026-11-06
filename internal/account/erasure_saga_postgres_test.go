@@ -27,6 +27,10 @@ func TestPostgresErasureSaga(t *testing.T) {
 		testErasureSagaWaitsForEveryService(t, store)
 	})
 
+	t.Run("sends each deletion notice once, in its place", func(t *testing.T) {
+		testDeletionNoticesGoOnceEachInTheirPlace(t, store)
+	})
+
 	t.Run("resumes after manual intervention without repeating a step", func(t *testing.T) {
 		f := newSagaFixture(t, store)
 		f.answer(user.DeletionStepEraseForms, answerStatus(http.StatusForbidden, ""))

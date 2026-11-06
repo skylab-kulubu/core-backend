@@ -25,6 +25,7 @@ type Memory struct {
 	mu   sync.Mutex
 	rows []Row
 	down bool
+	now  func() time.Time
 }
 
 // NewMemory is an empty memory writer.
@@ -35,6 +36,13 @@ func (m *Memory) Rows() []Row {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return slices.Clone(m.rows)
+}
+
+// SetClock replaces the writer's clock (tests); nil is time.Now.
+func (m *Memory) SetClock(now func() time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.now = now
 }
 
 // SetUnavailable makes every Begin and Deny fail (true), as a database
@@ -70,7 +78,11 @@ func (m *Memory) insert(r Record, outcome Outcome, errorCode string) (uuid.UUID,
 	if bad != "" {
 		return uuid.Nil, unavailable(bad)
 	}
-	row := Row{Record: r, ID: uuid.New(), OccurredAt: time.Now().UTC(), Outcome: outcome, ErrorCode: errorCode}
+	now := time.Now
+	if m.now != nil {
+		now = m.now
+	}
+	row := Row{Record: r, ID: uuid.New(), OccurredAt: now().UTC(), Outcome: outcome, ErrorCode: errorCode}
 	m.rows = append(m.rows, row)
 	return row.ID, nil
 }

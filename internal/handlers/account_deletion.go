@@ -49,6 +49,9 @@ type accountDeletionResponse struct {
 	UpdatedAt        time.Time                  `json:"updatedAt"`
 	CompletedAt      *time.Time                 `json:"completedAt"`
 	ReceiptExpiresAt time.Time                  `json:"receiptExpiresAt"`
+	// true while an operator carries out a service's step by hand
+	// (docs/account-self-delete.md): the person's retry cannot help.
+	AwaitingManualStep bool `json:"awaitingManualStep"`
 }
 
 func deletionResponse(view account.SelfDeletionView, includeReceipt bool) accountDeletionResponse {
@@ -60,7 +63,8 @@ func deletionResponse(view account.SelfDeletionView, includeReceipt bool) accoun
 		Receipt: receipt, Status: view.Status, Partial: view.Partial,
 		PlatformBlocked: view.PlatformBlocked, RequestedAt: view.RequestedAt,
 		UpdatedAt: view.UpdatedAt, CompletedAt: view.CompletedAt,
-		ReceiptExpiresAt: view.ReceiptExpiresAt,
+		ReceiptExpiresAt:   view.ReceiptExpiresAt,
+		AwaitingManualStep: view.AwaitingManualStep,
 	}
 }
 

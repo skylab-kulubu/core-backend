@@ -110,3 +110,105 @@ func TestCapabilities_CompetitionManage(t *testing.T) {
 		t.Errorf("YK: %+v", yk)
 	}
 }
+
+// membersManage is the Teams whose setting "Yarışmaları kim yönetir" says
+// all members (TeamAttrCompetitionManage=true); the competitor setting
+// keeps its default.
+type membersManage map[string]bool
+
+func (membersManage) MembersManageCompetitors(string) bool { return true }
+
+func (m membersManage) TeamCompetitionManage(team string) bool { return m[team] }
+
+// With WEBLAB's setting on (Yusuf, 2026-10-12 and 2026-10-31; KARAR §2.4,
+// A4): WEBLAB's members, its Sub-teams' members too, manage its
+// Competitions but do not archive or restore them; a member of the Team
+// above, a sibling Team's member or Leader, and anybody on a Team whose
+// setting is off still manage nothing. Leaders and Privileged keep
+// everything.
+func TestAuthorizer_CompetitionMemberSetting(t *testing.T) {
+	t.Parallel()
+	policy := DefaultPolicy()
+	policy.TeamDelegation = true
+	auth := NewAuthorizer(policy, WithTeamTree(realmTree()), WithTeamSettings(membersManage{"WEBLAB": true}))
+	weblab := Resource{Type: TypeCompetition, OwnerTeam: "WEBLAB"}
+	mobil := Resource{Type: TypeCompetition, OwnerTeam: "MOBIL"}
+	gamelab := Resource{Type: TypeCompetition, OwnerTeam: "GAMELAB"}
+	noOwner := Resource{Type: TypeCompetition}
+	member := Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	subMember := Principal{ID: "u2", Groups: []string{"/UYELER/ARGE/WEBLAB/MOBIL"}}
+	leader := Principal{ID: "u3", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	gamelabMember := Principal{ID: "u4", Groups: []string{"/UYELER/ARGE/GAMELAB"}}
+	gamelabLeader := Principal{ID: "u5", Groups: []string{"/UYELER/ARGE/GAMELAB/LIDERLER"}}
+	yk := Principal{ID: "u6", Groups: []string{"/UYELER/YK"}}
+	dk := Principal{ID: "u7", Groups: []string{"/DK"}}
+
+	type want struct {
+		read, write, archive bool
+		basis                CompetitionBasis
+	}
+	cases := []struct {
+		name string
+		p    Principal
+		r    Resource
+		want want
+	}{
+		{"a member, setting on", member, weblab, want{true, true, false, BasisMemberSetting}},
+		{"a Sub-team's member, setting on (A4)", subMember, weblab, want{true, true, false, BasisMemberSetting}},
+		{"the Team's Leader", leader, weblab, want{true, true, true, BasisLeader}},
+		{"a Leader above, on the Sub-team", leader, mobil, want{true, true, true, BasisLeader}},
+		{"a member above, on the Sub-team whose setting is off", member, mobil, want{false, false, false, ""}},
+		{"a sibling Team's member", gamelabMember, weblab, want{false, false, false, ""}},
+		{"a sibling Team's Leader", gamelabLeader, weblab, want{false, false, false, ""}},
+		{"a member, setting off", gamelabMember, gamelab, want{false, false, false, ""}},
+		{"a Leader, setting off", gamelabLeader, gamelab, want{true, true, true, BasisLeader}},
+		{"YK", yk, weblab, want{true, true, true, BasisPrivileged}},
+		{"DK reads and writes nothing", dk, weblab, want{true, false, false, ""}},
+		{"a member, an Event without Owner team", member, noOwner, want{false, false, false, ""}},
+		{"a Leader, an Event without Owner team", leader, noOwner, want{false, false, false, ""}},
+		{"YK, an Event without Owner team", yk, noOwner, want{true, true, true, BasisPrivileged}},
+		{"anonymous", Principal{}, weblab, want{false, false, false, ""}},
+	}
+	for _, tt := range cases {
+		got := want{
+			read:    auth.Allow(tt.p, tt.r, Read),
+			write:   auth.Allow(tt.p, tt.r, Update),
+			archive: auth.Allow(tt.p, tt.r, Delete),
+			basis:   auth.CompetitionBasis(tt.p, tt.r),
+		}
+		if create := auth.Allow(tt.p, tt.r, Create); create != got.write {
+			t.Errorf("%s: Create %v, Update %v", tt.name, create, got.write)
+		}
+		if got != tt.want {
+			t.Errorf("%s: got %+v, want %+v", tt.name, got, tt.want)
+		}
+	}
+	if b := auth.CompetitionBasis(leader, Resource{Type: TypeCompetitor, OwnerTeam: "WEBLAB"}); b != "" {
+		t.Errorf("CompetitionBasis of a competitor: %q", b)
+	}
+
+	// The capabilities follow the decisions: the member gets the
+	// Competition tab but not the archive.
+	caps := auth.Capabilities(member)
+	if can := scopeFor(caps, "WEBLAB"); !can["competition.manage"] || can["competition.archive"] {
+		t.Errorf("member, setting on: %v", can)
+	}
+	if can := scopeFor(auth.Capabilities(leader), "WEBLAB"); !can["competition.manage"] || !can["competition.archive"] {
+		t.Errorf("Leader: %v", can)
+	}
+	if can := scopeFor(auth.Capabilities(gamelabMember), "GAMELAB"); can["competition.manage"] || can["competition.archive"] {
+		t.Errorf("member, setting off: %v", can)
+	}
+}
+
+// Without the Team settings (WithTeamSettings unset) every Team has the
+// default: the members manage nothing.
+func TestAuthorizer_CompetitionMemberSettingDefaultsOff(t *testing.T) {
+	t.Parallel()
+	auth := NewAuthorizer(DefaultPolicy())
+	member := Principal{ID: "u1", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	weblab := Resource{Type: TypeCompetition, OwnerTeam: "WEBLAB"}
+	if auth.Allow(member, weblab, Read) || auth.Allow(member, weblab, Update) || auth.CompetitionBasis(member, weblab) != "" {
+		t.Error("a member manages a competition without the setting")
+	}
+}

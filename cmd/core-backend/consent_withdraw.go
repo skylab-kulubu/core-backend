@@ -24,6 +24,9 @@ import (
 //
 //	core-backend consent-withdraw -purpose promotional,event_invitations < address
 //
+// team_page_objection is refused: ending it would show the person on the
+// team pages again, which only they decide.
+//
 // It ends every open grant of the purposes of the person holding the
 // address, as ended by staff (ended_via staff, the record of it), and prints
 // how many per purpose; never the address. Running it again ends none.
@@ -95,6 +98,12 @@ func parseConsentWithdrawPurposes(args []string, errOut io.Writer) ([]consent.Pu
 		purpose, err := consent.ParsePurpose(part)
 		if err != nil {
 			fmt.Fprintf(errOut, "-purpose %q: not a purpose core takes (promotional, event_invitations)\n", strings.TrimSpace(part))
+			return nil, 2
+		}
+		if purpose == consent.PurposeTeamPageObjection {
+			// Ending an objection shows the person on the team pages again:
+			// only they lift it, in Account Center, never staff for them.
+			fmt.Fprintf(errOut, "-purpose %s: an objection is lifted only by the person, in Account Center (promotional, event_invitations)\n", purpose)
 			return nil, 2
 		}
 		for _, have := range purposes {

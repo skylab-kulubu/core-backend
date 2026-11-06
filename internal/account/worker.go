@@ -78,6 +78,10 @@ type WorkerConfig struct {
 	// CommunicationPreferences deletes the person's communication preferences in the
 	// erase_communication_preferences step. Nil fails the step, as above.
 	CommunicationPreferences CommunicationPreferenceEraser
+	// Notices tells the person their request was received and that their
+	// account was deleted (deletion_notices.go). Nil sends neither; they
+	// are best effort and never hold the erasure back.
+	Notices *DeletionNotices
 }
 
 type Worker struct {
@@ -108,6 +112,12 @@ type erasurePass struct {
 	emails      []string
 	read        bool
 	checkpoints map[user.DeletionStep]time.Time
+	// The deletion notices of the pass (deletion_notices.go): whether the
+	// received one was tried, and the addresses the completed one goes to,
+	// read before the identity is deleted.
+	receivedNoticeTried   bool
+	completedNoticeRead   bool
+	completedNoticeEmails []string
 }
 
 func NewWorker(store Store, identity Identity, config WorkerConfig, media ...MediaEraser) *Worker {
@@ -175,6 +185,10 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		if completed[step.name] {
 			continue
 		}
+		if step.name == user.DeletionStepDeleteIdentity {
+			// The last moment the person's addresses can be read.
+			w.completedNoticeAddresses(ctx, request, pass)
+		}
 		run := step.run
 		if step.withAddresses != nil {
 			emails, err := w.passAddresses(ctx, request, pass, w.services.Addresses)
@@ -197,8 +211,15 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		}
 		pass.checkpoints[step.name] = finished
 	}
+	// The completed notice is claimed under the lease, so it is sent once,
+	// and sent only once the completion is written: it never says deleted
+	// of a request that is not.
+	notify := w.claimCompleted(ctx, request, leaseToken)
 	if err := w.store.CompleteDeletionRequest(ctx, request.ID, leaseToken, w.config.Now()); err != nil {
 		return true, w.retry(ctx, request, now, "complete_request_failed", err, false)
+	}
+	if notify {
+		w.noticeCompleted(ctx, request, pass)
 	}
 	return true, nil
 }

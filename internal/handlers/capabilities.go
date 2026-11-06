@@ -12,6 +12,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/editablesites"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
 )
 
 // EditableSitesSource answers the sites a person may edit in the CMS and
@@ -33,10 +34,26 @@ type ManagedTeamsSource interface {
 // that decides their requests (docs/authz-roles.md), and which sites they
 // may edit in the CMS, a hint for the UI that decides nothing.
 type CapabilitiesHandler struct {
-	az     authz.Authorizer
-	sites  EditableSitesSource
-	teams  ManagedTeamsSource
-	logger *log.Logger
+	az      authz.Authorizer
+	sites   EditableSitesSource
+	teams   ManagedTeamsSource
+	expired ExpiredMembershipsSource
+	logger  *log.Logger
+}
+
+// ExpiredMembershipsSource answers a person's management memberships whose
+// term has expired while they are still in the Group
+// (membershipterm.Service, docs/management-membership-terms.md). Empty
+// unless the terms are kept (MANAGEMENT_TERMS_MODE=apply).
+type ExpiredMembershipsSource interface {
+	ExpiredFor(ctx context.Context, userID uuid.UUID) ([]membershipterm.ExpiredMembership, error)
+}
+
+// WithExpiredMemberships answers expiredManagementMemberships from source;
+// without it every caller's list is empty.
+func (h *CapabilitiesHandler) WithExpiredMemberships(source ExpiredMembershipsSource) *CapabilitiesHandler {
+	h.expired = source
+	return h
 }
 
 // NewCapabilitiesHandler answers from az, and the editable sites from sites;
@@ -66,6 +83,11 @@ type capabilitiesAnswer struct {
 	// the configured order. Only a hint for which "Düzenle" links to show:
 	// the CMS decides every edit. Empty when Keycloak cannot be read.
 	EditableSites []editablesites.Site `json:"editableSites"`
+	// ExpiredManagementMemberships are the caller's YK, DK and Team Leader
+	// memberships whose term has expired (they are still in the Group):
+	// the panel's banner (grup-yonetimi 11, 12). A hint: the term decides
+	// nothing. Empty when the terms are off or cannot be read.
+	ExpiredManagementMemberships []membershipterm.ExpiredMembership `json:"expiredManagementMemberships"`
 }
 
 // Get answers GET /v1/users/me/capabilities. It is the caller's own answer,
@@ -81,7 +103,32 @@ func (h *CapabilitiesHandler) Get(c fiber.Ctx) error {
 	c.Set(fiber.HeaderCacheControl, "no-store")
 	return c.JSON(capabilitiesAnswer{
 		Capabilities: h.az.Capabilities(p), EditableSites: h.editableSites(c, p), ManagedTeams: h.managedTeams(c, p),
+		ExpiredManagementMemberships: h.expiredMemberships(c, p),
 	})
+}
+
+// expiredMemberships never fails the answer: a read that fails answers an
+// empty list and is logged, as editableSites is.
+func (h *CapabilitiesHandler) expiredMemberships(c fiber.Ctx, p authz.Principal) []membershipterm.ExpiredMembership {
+	out := []membershipterm.ExpiredMembership{}
+	if h.expired == nil || p.ServiceAccount || p.Product != "" {
+		return out
+	}
+	userID, err := uuid.Parse(p.ID)
+	if err != nil {
+		return out
+	}
+	expired, err := h.expired.ExpiredFor(c.Context(), userID)
+	if err != nil {
+		if h.logger != nil {
+			h.logger.Printf(`{"event":"expired_management_memberships","correlation_id":%q,"outcome":"unavailable"}`, requestid.FromContext(c))
+		}
+		return out
+	}
+	if expired != nil {
+		out = expired
+	}
+	return out
 }
 
 // managedTeams never fails the answer: Teams that cannot be read are left

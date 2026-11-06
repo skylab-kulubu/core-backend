@@ -33,3 +33,6 @@ func IdentityClosedAt(request user.DeletionRequest, checkpoints map[user.Deletio
 
 // ClosedAtTolerance exposes closedAtTolerance.
 const ClosedAtTolerance = closedAtTolerance
+
+// SelfDeletionViewOf exposes selfDeletionView.
+var SelfDeletionViewOf = selfDeletionView

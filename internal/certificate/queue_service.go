@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/media"
@@ -224,19 +226,36 @@ func (s *service) RetryBatch(ctx context.Context, p authz.Principal, id uuid.UUI
 	return s.jobs.GetBatch(ctx, id)
 }
 
+// jobLease is how long one claimed certificate job is held. Past it another
+// claim may take the job; the holder then may not finish it (ticket 25).
+const jobLease = 2 * time.Minute
+
 func (s *service) ProcessNext(ctx context.Context, limit int) (int, error) {
 	if s.jobs == nil || s.templates == nil {
 		return 0, ErrInvalid
 	}
-	claimed, err := s.jobs.ClaimJobs(ctx, limit, 2*time.Minute)
+	claimed, err := s.jobs.ClaimJobs(ctx, limit, jobLease)
 	if err != nil {
 		return 0, err
 	}
 	for _, job := range claimed {
+		// The claim's one lease covers the whole batch; each job starts with a
+		// fresh one. A job whose lease already ran out belongs to another claim.
+		if err := s.jobs.RenewJobLease(ctx, job.ID, job.LeaseToken, jobLease); err != nil {
+			if !errors.Is(err, ErrLeaseLost) {
+				log.Printf("ERROR certificate job %s: lease not renewed, the job waits for its lease to run out (%s)", job.ID, databaseErrorClass(err))
+			}
+			continue
+		}
 		if err := s.processJob(ctx, job); err != nil {
+			if errors.Is(err, ErrLeaseLost) {
+				continue
+			}
 			terminal := job.AttemptCount >= 5 || errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound)
 			delay := time.Duration(1<<min(job.AttemptCount, 6)) * time.Minute
-			_ = s.jobs.FailJob(ctx, job.ID, safeErrorCode(err), time.Now().UTC().Add(delay), terminal)
+			if err := s.jobs.FailJob(ctx, job.ID, job.LeaseToken, safeErrorCode(err), time.Now().UTC().Add(delay), terminal); err != nil && !errors.Is(err, ErrLeaseLost) {
+				log.Printf("ERROR certificate job %s: not put back, the job waits for its lease to run out (%s)", job.ID, databaseErrorClass(err))
+			}
 		}
 	}
 	return len(claimed), nil
@@ -249,8 +268,18 @@ func (s *service) processJob(ctx context.Context, job Job) error {
 	}
 	replaceSerial := ""
 	if active, err := s.store.GetActive(ctx, job.EventID, job.TicketID); err == nil {
+		// An earlier claim of this job wrote the certificate and lost its
+		// lease before it could complete the job: complete it now and send the
+		// e-mail it never sent, issuing nothing again (ticket 25, review B2).
+		if active.JobID != nil && *active.JobID == job.ID {
+			if err := s.jobs.CompleteJob(ctx, job.ID, job.LeaseToken, active.ID); err != nil {
+				return err
+			}
+			s.sendMail(ctx, active)
+			return nil
+		}
 		if batch.Reason != "reissue" {
-			return s.jobs.CompleteJob(ctx, job.ID, active.ID)
+			return s.jobs.CompleteJob(ctx, job.ID, job.LeaseToken, active.ID)
 		}
 		replaceSerial = active.Serial
 	} else if !errors.Is(err, ErrNotFound) {
@@ -278,7 +307,9 @@ func (s *service) processJob(ctx context.Context, job Job) error {
 	if err != nil {
 		return err
 	}
-	if err := s.jobs.CompleteJob(ctx, job.ID, created.ID); err != nil {
+	// Only the lease holder's completion sends the e-mail: a holder whose lease
+	// ran out may have rendered a certificate, but another claim owns the job.
+	if err := s.jobs.CompleteJob(ctx, job.ID, job.LeaseToken, created.ID); err != nil {
 		return err
 	}
 	s.sendMail(ctx, created)
@@ -349,6 +380,23 @@ func safeErrorCode(err error) string {
 		return "certificate_conflict"
 	default:
 		return "processing_failed"
+	}
+}
+
+// databaseErrorClass names a store error for the log without its text: pgx's
+// connection errors name the user, the database and the address.
+func databaseErrorClass(err error) string {
+	var pgErr *pgconn.PgError
+	var connectErr *pgconn.ConnectError
+	switch {
+	case errors.As(err, &pgErr):
+		return "postgres error " + pgErr.Code
+	case errors.As(err, &connectErr):
+		return "could not connect"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed out"
+	default:
+		return "database error"
 	}
 }
 

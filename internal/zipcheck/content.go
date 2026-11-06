@@ -3,9 +3,11 @@ package zipcheck
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"compress/bzip2"
 	"compress/flate"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -96,21 +98,74 @@ func (c *checker) zip(src Source, size int64, at place, depth int) error {
 	return c.walkZIP(src, dir, at, depth)
 }
 
-// embedded checks a ZIP found past the first byte of a file, which must
-// end the file: the ZIP src holds from there. Its offsets may count from
-// the ZIP or from the file's first byte, stub bytes before it. When no ZIP
-// ends the file there (a lone local header, or a ZIP followed by more), it
-// is refused as nested; a ZIP there that breaks a rule, as any.
+// embedded checks what follows a local header found past the first byte
+// of a file: src holds the file from that header on (size bytes). The ZIP
+// there is the one whose end record is the last in the file's last 65,557
+// bytes (where a reader looks for it), ending the file or not: it is
+// checked whole (embeddedZIP), and the bytes after its end record, if any,
+// are searched for local headers as a file with no end record is
+// (loneMembers). With no end record there at all, each local header is
+// checked on its own (loneMembers).
 func (c *checker) embedded(src Source, size int64, at place, depth int, stub int64) error {
+	end, err := lastEndRecord(c.ctx, src, size)
+	if err != nil {
+		return err
+	}
+	switch {
+	case end == 0:
+		return c.loneMembers(src, size, at, depth)
+	case end > size:
+		return nested("%s is no ZIP core can read: its last end record runs past the file", at)
+	case end == size:
+		return c.embeddedZIP(src, size, at, depth, stub)
+	}
+	if err := c.embeddedZIP(window{src: src, size: end}, end, at, depth, stub); err != nil {
+		return err
+	}
+	return c.loneMembers(window{src: src, off: end, size: size - end}, size-end, place(fmt.Sprintf("what follows %s", at)), depth)
+}
+
+// embeddedZIP checks the ZIP of size bytes src holds, found past the first
+// byte of a file, whole: its offsets may count from the ZIP or from the
+// file's first byte, stub bytes before it. One whose directory is not where
+// its end record says is refused as nested, as is one with a member whose
+// sizes are left to a data descriptor: clamd does not unpack such a member
+// past a file's first byte. A ZIP there that breaks another rule is refused
+// as any.
+func (c *checker) embeddedZIP(src Source, size int64, at place, depth int, stub int64) error {
 	dir, err := readDirectory(c.ctx, src, size, at, depth, c.b, stub)
 	var r *Refusal
 	if errors.As(err, &r) && r.misplaced {
-		return nested("%s is no ZIP core can read to the end of the file that holds it", at)
+		return nested("%s is no ZIP core can read to the end of its end record", at)
 	}
 	if err != nil {
 		return err
 	}
+	for _, e := range dir.entries {
+		if e.flags&flagDescriptor != 0 {
+			return nested("%s leaves its sizes to a data descriptor, which clamd does not unpack past a file's first byte", at.member(e.index))
+		}
+	}
 	return c.walkZIP(src, dir, at, depth)
+}
+
+// lastEndRecord answers where the last end record signature in the last
+// 65,557 bytes of the size bytes src holds ends, its comment included (past
+// size when the comment runs past the file), or 0 when there is none.
+func lastEndRecord(ctx context.Context, src Source, size int64) (int64, error) {
+	if size < endLen {
+		return 0, nil
+	}
+	tailLen := min(size, endLen+maxComment)
+	tail, err := readAt(ctx, src, size-tailLen, tailLen)
+	if err != nil {
+		return 0, err
+	}
+	i := bytes.LastIndex(tail[:len(tail)-endLen+len(endRecordMark)], endRecordMark)
+	if i < 0 {
+		return 0, nil
+	}
+	return size - tailLen + int64(i) + endLen + int64(le16(tail[i+20:])), nil
 }
 
 // keep reads what r yields into memory, at most MaxBuffer bytes.
@@ -233,7 +288,9 @@ func (c *checker) tar(r *bufio.Reader, f file) error {
 // run from that first header to its directory with nothing between them,
 // and no local header signature may stand outside their data (so a lone
 // one hidden in an extra field or the end record's comment is refused).
-// Any other archive past the first byte is refused as nested.
+// When no end record follows, there is no such ZIP: each local header from
+// the first on is checked on its own instead (embedded, loneMembers). Any
+// other archive past the first byte is refused as nested.
 func (c *checker) plain(r io.Reader, f file) error {
 	s := scanner{size: f.size}
 	zipAt := int64(-1)

@@ -40,6 +40,11 @@ const (
 	RoleGroupsManage = "groups:manage"
 	// RoleGithubActivityRead: the club's GitHub activity, people only.
 	RoleGithubActivityRead = "github:activity:read"
+	// RoleSubjectRequestManage: the register of KVKK md. 11 data subject
+	// requests (docs/subject-requests.md), reading included. Every action
+	// is decided as a write: a Privileged reader (DK) and global:read do
+	// not read it; Keycloak maps it to ADMIN and YK alone.
+	RoleSubjectRequestManage = "subject-request:manage"
 	// RoleGlobalRead: every read a Privileged check stands for, and no
 	// write (grup-yonetimi GY1; Entra's Global Reader). Keycloak maps it to
 	// DK. The Team audit record is audit:read's alone.
@@ -69,6 +74,7 @@ var permissionRoles = []struct {
 	{RoleUsersManage, false},
 	{RoleGroupsManage, false},
 	{RoleGithubActivityRead, false},
+	{RoleSubjectRequestManage, false},
 	{RoleGlobalRead, false},
 	{RoleURLModerator, true},
 	{RoleURLAccess, true},

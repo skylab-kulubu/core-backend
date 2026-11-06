@@ -66,8 +66,9 @@ type OverageOptions struct {
 // not know the person.
 //
 // Forget and ForgetAll drop answers at once, and an answer read before one
-// of them is not kept. The answers live in this process: a write through
-// another core process reaches this one when its minute is up.
+// of them is not kept. The answers live in this process; SharedGroupCache
+// carries a write through another core process here within moments (and,
+// should its NOTIFY not arrive, the minute still bounds the answer).
 type OverageGroups struct {
 	reader  GroupReader
 	ttl     time.Duration

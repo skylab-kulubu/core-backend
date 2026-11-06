@@ -84,6 +84,12 @@ func refusal(err error) (string, bool) {
 	if errors.As(err, &deletion) {
 		return deletion.Code, true
 	}
+	// A delegated write decided again inside the lock and refused there
+	// never reached Keycloak.
+	var delegation *DelegationError
+	if errors.As(err, &delegation) {
+		return delegation.Code, true
+	}
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return "not_found", true
@@ -135,6 +141,56 @@ func (d *auditedDirectory) CreateGroup(ctx context.Context, parentRef, name stri
 		return &teamaudit.State{ID: created.ID, Path: created.Path, ParentID: after.ParentID, Code: created.Name}, nil
 	})
 	return created, err
+}
+
+// CreateSubgroup records a team.create with the new Group's place, code
+// and recorded attributes (its display names).
+func (d *auditedDirectory) CreateSubgroup(ctx context.Context, parentID, name string, attributes map[string]string) (Group, error) {
+	parent, _, err := d.Directory.GroupNode(ctx, parentID)
+	if err != nil {
+		return Group{}, err
+	}
+	_, recorded, others := teamaudit.AttributeChange(nil, attributes)
+	after := &teamaudit.State{Path: parent.Path + "/" + name, ParentID: parent.ID, Code: name, Attributes: recorded, OtherAttributes: others}
+	r := teamaudit.Record{Action: teamaudit.ActionTeamCreate, GroupPath: after.Path, After: after}
+	var created Group
+	err = d.write(ctx, r, func() (*teamaudit.State, error) {
+		var err error
+		if created, err = d.Directory.CreateSubgroup(ctx, parentID, name, attributes); err != nil {
+			return nil, err
+		}
+		return &teamaudit.State{ID: created.ID, Path: created.Path, ParentID: parent.ID, Code: created.Name, Attributes: recorded, OtherAttributes: others}, nil
+	})
+	return created, err
+}
+
+// MoveGroup records a team.move with the Group's path and parent before
+// and after.
+func (d *auditedDirectory) MoveGroup(ctx context.Context, id, parentID string) (Group, error) {
+	g, oldParent, err := d.Directory.GroupNode(ctx, id)
+	if err != nil {
+		return Group{}, err
+	}
+	path := "/" + g.Name
+	if parentID != "" {
+		parent, _, err := d.Directory.GroupNode(ctx, parentID)
+		if err != nil {
+			return Group{}, err
+		}
+		path = parent.Path + "/" + g.Name
+	}
+	r := teamaudit.Record{
+		Action: teamaudit.ActionTeamMove, GroupID: g.ID, GroupPath: g.Path,
+		Before: &teamaudit.State{ID: g.ID, Path: g.Path, ParentID: oldParent, Code: g.Name},
+		After:  &teamaudit.State{ID: g.ID, Path: path, ParentID: parentID, Code: g.Name},
+	}
+	var moved Group
+	err = d.write(ctx, r, func() (*teamaudit.State, error) {
+		var err error
+		moved, err = d.Directory.MoveGroup(ctx, id, parentID)
+		return nil, err
+	})
+	return moved, err
 }
 
 // UpdateGroup records a rename as team.code and anything else as

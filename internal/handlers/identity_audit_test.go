@@ -151,8 +151,9 @@ func auditWrites(f auditFixture) []auditWrite {
 		{"remove through the parent roster", fiber.MethodDelete, "/v1/groups/" + f.weblab.ID + "/members/" + f.sub.String(), "", fiber.StatusNoContent,
 			func(t *testing.T, f auditFixture, row teamaudit.Row) {
 				// The Source group the membership came from, not the
-				// roster's Group.
-				if row.Action != teamaudit.ActionMemberRemove || row.GroupID != f.agc.ID || row.GroupPath != f.agc.Path || row.TargetUserID != f.sub {
+				// roster's Group, at its path now (renamed above, as
+				// Keycloak moves a renamed Group's path).
+				if row.Action != teamaudit.ActionMemberRemove || row.GroupID != f.agc.ID || row.GroupPath != "/UYELER/ARGE/WEBLAB/AGC2" || row.TargetUserID != f.sub {
 					t.Fatalf("remove row %+v", row)
 				}
 			}},
