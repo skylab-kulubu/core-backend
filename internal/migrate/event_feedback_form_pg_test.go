@@ -37,6 +37,11 @@ func TestEventFeedbackFormMigration(t *testing.T) {
 	if err := migrate.Apply(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
+	// The release before writes the legacy active column: put it back; the
+	// drop stays recorded, so the Apply calls below leave it.
+	if _, err := pool.Exec(ctx, readDown(t, dropEventsActiveDown)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, readDown(t, eventFeedbackFormVersion+"_event_feedback_form.down.sql")); err != nil {
 		t.Fatal(err)
 	}
