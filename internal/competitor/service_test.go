@@ -583,7 +583,8 @@ func TestService_MovingToADraftOrCancelledEvent(t *testing.T) {
 	ctx := context.Background()
 	events := event.NewMemoryStore()
 	competitors := competitor.NewMemoryStore(events)
-	svc := competitor.NewService(competitors, events, authz.NewAuthorizer(authz.DefaultPolicy()))
+	az := authz.NewAuthorizer(authz.DefaultPolicy(), authz.WithTeamSettings(keptToLeaders{"GECEKODU": true}))
+	svc := competitor.NewService(competitors, events, az)
 	from := seedEvent(t, events, "WEBLAB", event.StatusPublished)
 	draft := seedEvent(t, events, "WEBLAB", event.StatusDraft)
 	cancelled := seedEvent(t, events, "WEBLAB", event.StatusCancelled)
@@ -635,6 +636,30 @@ func TestService_MovingToADraftOrCancelledEvent(t *testing.T) {
 	}
 	if _, err := svc.Update(ctx, bothLeaders, inB.ID, competitor.UpdateInput{EventID: cancelled.ID}); !errors.Is(err, competitor.ErrConflict) {
 		t.Fatalf("moving to a cancelled Event by a writer of both: %v", err)
+	}
+
+	// Who sees the draft but does not write its Competitors is refused for
+	// that (403), not for its status: DK, whose refusal comes from the Event
+	// the competitor is in, and a GECEKODU member who writes that Event but
+	// not the target's, as GECEKODU's Leader kept them to the Leaders.
+	dk := authz.Principal{ID: "dk", Groups: []string{"/UYELER/DK"}}
+	if !event.VisibleTo(az, &dk, draft) {
+		t.Fatal("DK does not see the draft")
+	}
+	if _, err := svc.Update(ctx, dk, inFrom.ID, competitor.UpdateInput{EventID: draft.ID, Score: ptr(1)}); !errors.Is(err, competitor.ErrForbidden) || errors.Is(err, competitor.ErrConflict) {
+		t.Fatalf("DK moving to a draft: %v", err)
+	}
+	unchanged(t)
+	seenDraft := seedEvent(t, events, "GECEKODU", event.StatusDraft)
+	draftReader := authz.Principal{ID: "draft-reader", Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU", "/UYELER/ARGE/SKYSEC"}}
+	if !event.VisibleTo(az, &draftReader, seenDraft) {
+		t.Fatal("the GECEKODU member does not see GECEKODU's draft")
+	}
+	if _, err := svc.Update(ctx, draftReader, inB.ID, competitor.UpdateInput{EventID: seenDraft.ID, Score: ptr(1)}); !errors.Is(err, competitor.ErrForbidden) || errors.Is(err, competitor.ErrConflict) {
+		t.Fatalf("moving to a draft the mover sees but does not write: %v", err)
+	}
+	if got, err := competitors.Get(ctx, inB.ID); err != nil || got.EventID == seenDraft.ID || got.Score != nil {
+		t.Fatalf("competitor after the refused move %+v %v", got, err)
 	}
 
 	// A published target takes it, ended or not.
