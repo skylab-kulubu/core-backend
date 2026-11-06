@@ -207,6 +207,13 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	if !s.authz.Allow(p, res, authz.Update) {
 		return Competitor{}, ErrForbidden
 	}
+	// It moves only to a published Event, ended or not, as Create and
+	// Reinstate ask (ADR 0066); an edit that keeps the Event is no move.
+	if in.EventID != existing.EventID {
+		if err := ev.StatusError(); err != nil {
+			return Competitor{}, fmt.Errorf("%w: %w", ErrConflict, err)
+		}
+	}
 	if in.UserID != existing.UserID || in.EventID != existing.EventID {
 		exists, err := s.competitors.ExistsUserEvent(ctx, in.UserID, in.EventID)
 		if err != nil {

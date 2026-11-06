@@ -571,3 +571,96 @@ func TestService_MovingOutOfADraftOrArchivedEvent(t *testing.T) {
 		t.Fatalf("A's Leader moving out of an archived Event %+v %v", moved, err)
 	}
 }
+
+// A competitor moves only to a published Event, ended or not, as Create and
+// Reinstate ask (ADR 0066): a draft or cancelled target refuses a writer who
+// reaches it (409 with the reason) and leaves the competitor as it was. Who
+// may not see the draft still gets 404, who does not write the cancelled
+// Event still gets 403. An edit that keeps the Event is not a move: the
+// competitor of a cancelled Event still gets its score.
+func TestService_MovingToADraftOrCancelledEvent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	competitors := competitor.NewMemoryStore(events)
+	svc := competitor.NewService(competitors, events, authz.NewAuthorizer(authz.DefaultPolicy()))
+	from := seedEvent(t, events, "WEBLAB", event.StatusPublished)
+	draft := seedEvent(t, events, "WEBLAB", event.StatusDraft)
+	cancelled := seedEvent(t, events, "WEBLAB", event.StatusCancelled)
+	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+	leader := authz.Principal{ID: "leader", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	bothLeaders := authz.Principal{ID: "both-leaders", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER", "/UYELER/ARGE/SKYSEC/LIDERLER"}}
+	bWriter := authz.Principal{ID: "b-writer", Groups: []string{"/UYELER/ARGE/SKYSEC"}}
+
+	inFrom, err := competitors.Create(ctx, competitor.Competitor{UserID: uuid.New(), EventID: from.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged := func(t *testing.T) {
+		t.Helper()
+		if got, err := competitors.Get(ctx, inFrom.ID); err != nil || got.EventID != from.ID || got.Score != nil {
+			t.Fatalf("competitor after the refused move %+v %v", got, err)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		mover  authz.Principal
+		target event.Event
+		want   []error
+	}{
+		{"leader to a draft", leader, draft, []error{competitor.ErrConflict, event.ErrNotPublished}},
+		{"leader to a cancelled Event", leader, cancelled, []error{competitor.ErrConflict, event.ErrCancelled}},
+		{"Privileged to a draft", yk, draft, []error{competitor.ErrConflict, event.ErrNotPublished}},
+		{"Privileged to a cancelled Event", yk, cancelled, []error{competitor.ErrConflict, event.ErrCancelled}},
+	} {
+		_, err := svc.Update(ctx, tc.mover, inFrom.ID, competitor.UpdateInput{EventID: tc.target.ID, Score: ptr(1)})
+		for _, want := range tc.want {
+			if !errors.Is(err, want) {
+				t.Fatalf("%s: %v, want %v", tc.name, err, want)
+			}
+		}
+		unchanged(t)
+	}
+
+	// The status is no answer for who may not reach the target.
+	inB, err := competitors.Create(ctx, competitor.Competitor{UserID: uuid.New(), EventID: seedEvent(t, events, "SKYSEC", event.StatusPublished).ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(ctx, bWriter, inB.ID, competitor.UpdateInput{EventID: draft.ID}); !errors.Is(err, competitor.ErrNotFound) {
+		t.Fatalf("moving to a draft the mover does not see: %v", err)
+	}
+	if _, err := svc.Update(ctx, bWriter, inB.ID, competitor.UpdateInput{EventID: cancelled.ID}); !errors.Is(err, competitor.ErrForbidden) {
+		t.Fatalf("moving to a cancelled Event the mover does not write: %v", err)
+	}
+	if _, err := svc.Update(ctx, bothLeaders, inB.ID, competitor.UpdateInput{EventID: cancelled.ID}); !errors.Is(err, competitor.ErrConflict) {
+		t.Fatalf("moving to a cancelled Event by a writer of both: %v", err)
+	}
+
+	// A published target takes it, ended or not.
+	start, end := time.Now().Add(-48*time.Hour), time.Now().Add(-40*time.Hour)
+	ended, err := events.Create(ctx, event.Event{Name: "Ended", Location: "YTÜ", OwnerTeam: "WEBLAB", Status: event.StatusPublished, StartDate: &start, EndDate: &end})
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved, err := svc.Update(ctx, leader, inFrom.ID, competitor.UpdateInput{EventID: ended.ID, Score: ptr(1)})
+	if err != nil || moved.EventID != ended.ID {
+		t.Fatalf("moving to a published ended Event %+v %v", moved, err)
+	}
+
+	// In place, with or without naming the Event, and with another user.
+	inCancelled, err := competitors.Create(ctx, competitor.Competitor{UserID: uuid.New(), EventID: cancelled.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []competitor.UpdateInput{
+		{Score: ptr(2)},
+		{EventID: cancelled.ID, Score: ptr(3)},
+		{UserID: uuid.New(), EventID: cancelled.ID, Score: ptr(4)},
+	} {
+		got, err := svc.Update(ctx, leader, inCancelled.ID, in)
+		if err != nil || got.EventID != cancelled.ID || got.Score == nil || *got.Score != *in.Score {
+			t.Fatalf("editing in place in a cancelled Event %+v %v", got, err)
+		}
+	}
+}
