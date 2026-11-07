@@ -264,6 +264,59 @@ func TestTreeIsReadOnceAMinute(t *testing.T) {
 	}
 }
 
+// otherRecords is another record of people, as App preferences are.
+type otherRecords struct {
+	people map[uuid.UUID]int
+	failed error
+}
+
+func (o *otherRecords) Subjects(context.Context) ([]uuid.UUID, error) {
+	if o.failed != nil {
+		return nil, o.failed
+	}
+	var out []uuid.UUID
+	for person := range o.people {
+		out = append(out, person)
+	}
+	return out, nil
+}
+
+func (o *otherRecords) EraseSubject(_ context.Context, person uuid.UUID) (int64, error) {
+	n := o.people[person]
+	delete(o.people, person)
+	return int64(n), nil
+}
+
+// The cleanup looks at the people of another record too: a person Keycloak
+// no longer has loses their rows there, whether or not they hold a
+// preference here; a known person keeps theirs; the record failing to
+// answer removes nothing.
+func TestRemoveDeletedPeopleCoversAnotherRecord(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	goneHere, goneThere := uuid.New(), uuid.New()
+	if err := f.store.Apply(ctx, goneHere, []Change{set(Club(KindNews), false)}, SourceAccountCenter, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	others := &otherRecords{people: map[uuid.UUID]int{f.person: 2, goneHere: 1, goneThere: 3}}
+	f.svc.AlsoRemoveDeletedPeopleFrom(others)
+
+	broken := NewService(f.svc.Config(), f.store, f.dir, nil)
+	broken.AlsoRemoveDeletedPeopleFrom(&otherRecords{failed: errors.New("database down")})
+	if n, err := broken.RemoveDeletedPeople(ctx); err == nil || n != 0 {
+		t.Fatalf("record down: %d %v", n, err)
+	}
+	if n, err := f.svc.RemoveDeletedPeople(ctx); err != nil || n != 5 {
+		t.Fatalf("removed %d %v", n, err)
+	}
+	if _, ok := others.people[f.person]; !ok || len(others.people) != 1 {
+		t.Fatalf("other record left %v", others.people)
+	}
+	if subjects := must(f.store.Subjects(ctx)); len(subjects) != 0 {
+		t.Fatalf("preference rows left: %v", subjects)
+	}
+}
+
 // D2: the rows of a person Keycloak no longer has go; a Keycloak error, or
 // too many people gone at once, removes nothing.
 func TestRemoveDeletedPeople(t *testing.T) {

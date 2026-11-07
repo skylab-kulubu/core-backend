@@ -135,9 +135,10 @@ one run, and two runs are at least 30 seconds apart. The
 daily run stays.
 
 **Deleted people (D2).** In the same daily run, core asks Keycloak for
-every person who has rows and deletes the rows of those Keycloak answers
-"not found": an account deleted straight from the Keycloak console, outside
-the erasure saga, keeps no preference. Any other Keycloak error stops the
+every person who has rows, here or in App preferences
+([app-preferences.md](app-preferences.md)), and deletes the rows of those
+Keycloak answers "not found", in both tables: an account deleted straight
+from the Keycloak console, outside the erasure saga, keeps no preference. Any other Keycloak error stops the
 run with nothing deleted, and so does a run that finds more than a quarter
 of the people (and more than five) gone, which a deletion outside the saga
 does not explain (Keycloak answering for another realm, say). It is one
@@ -146,7 +147,7 @@ Keycloak's admin `USER DELETE` and account-console `DELETE_ACCOUNT` remove a
 person's rows within seconds instead: when core has no erasure request for
 the person (that is the saga's, which deletes them in its own step) and
 Keycloak answers "not found" for them, the rows (choices, a waiting tracking
-withdrawal, the tracking audit trail) go in the event's transaction, with the
+withdrawal, the tracking audit trail, App preferences) go in the event's transaction, with the
 warning `keycloak_user_deleted_outside_erasure`. The daily run stays.
 
 ## API

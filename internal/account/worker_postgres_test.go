@@ -41,6 +41,7 @@ func TestPostgresWorkerPersistsProgressAcrossRestart(t *testing.T) {
 		ContactConsents:          consentsErased{},
 		SkyPassWallet:            walletErased{},
 		CommunicationPreferences: communicationPreferencesErased{},
+		AppPreferences:           appPreferencesErased{},
 		Services:                 erasedServices(),
 		Now:                      func() time.Time { return now }, Lease: time.Minute, MaxAttempts: 3,
 		AccessBlocker: &accountBlockWriter{},
@@ -63,8 +64,8 @@ func TestPostgresWorkerPersistsProgressAcrossRestart(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM account_deletion_steps WHERE request_id = $1`, request.ID).Scan(&stepCount); err != nil {
 		t.Fatal(err)
 	}
-	if stepCount != 12 {
-		t.Fatalf("step count = %d, want 12", stepCount)
+	if stepCount != 13 {
+		t.Fatalf("step count = %d, want 13", stepCount)
 	}
 }
 

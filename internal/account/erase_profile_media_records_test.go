@@ -93,6 +93,7 @@ func (f *recordsFixture) requestDeletion(t *testing.T, eraser account.MediaErase
 		ContactConsents:          consentsErased{},
 		SkyPassWallet:            walletErased{},
 		CommunicationPreferences: communicationPreferencesErased{},
+		AppPreferences:           appPreferencesErased{},
 		Services:                 erasedServices(),
 		Now:                      func() time.Time { return f.now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
 		StepTimeout: f.stepTimeout,

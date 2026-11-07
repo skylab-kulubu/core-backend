@@ -90,6 +90,11 @@ const (
 	// and before the services.
 	DeletionStepEraseCommunicationPreferences DeletionStep = "erase_communication_preferences"
 
+	// DeletionStepEraseAppPreferences deletes the person's App preferences
+	// in every app (docs/app-preferences.md), right after
+	// erase_communication_preferences and before the services.
+	DeletionStepEraseAppPreferences DeletionStep = "erase_app_preferences"
+
 	// Service erasure steps: one Erasure command each (ADR-0051). Their
 	// checkpoint rows also keep the service's counts as completion proof.
 	DeletionStepEraseSkyMail DeletionStep = "erase_skymail"

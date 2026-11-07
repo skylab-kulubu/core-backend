@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/skylab-kulubu/core-backend/internal/accessgate"
+	"github.com/skylab-kulubu/core-backend/internal/apppref"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
@@ -206,6 +207,11 @@ type Deps struct {
 	// answers its routes 503.
 	CommunicationPreferences *commpref.Service
 
+	// AppPreferences keeps App preferences (docs/app-preferences.md, ADR
+	// 0081). Nil or off (APP_PREFERENCE_CLIENTS unset) leaves its routes
+	// unserved: 404.
+	AppPreferences *apppref.Service
+
 	// Audience resolves a News send's audience for SkyMail's service account
 	// (docs/news-audience.md). Nil or off answers POST /v1/audiences/resolve
 	// 503.
@@ -310,7 +316,7 @@ func New(deps Deps) *fiber.App {
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
 		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil ||
-		deps.EventsMetrics != nil || deps.ManagementTerms != nil {
+		deps.EventsMetrics != nil || deps.ManagementTerms != nil || deps.AppPreferences.Enabled() {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -356,6 +362,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.EventsMetrics != nil {
 				text += deps.EventsMetrics.Prometheus()
+			}
+			if deps.AppPreferences.Enabled() {
+				text += deps.AppPreferences.Metrics().Prometheus()
 			}
 			text += deps.Readiness.Prometheus()
 			return c.SendString(text)
@@ -507,6 +516,18 @@ func New(deps Deps) *fiber.App {
 	app.Delete("/v1/users/me/consents/:purpose", consents.WithdrawMine)
 	app.Get("/v1/users/me/communication-preferences", communicationPreferences.Mine)
 	app.Put("/v1/users/me/communication-preferences", communicationPreferences.Update)
+	// App preferences (ADR 0081): a person's token only; the token's azp
+	// picks the namespace. Off, none is served.
+	if deps.AppPreferences.Enabled() {
+		// The service keeps each person's write budget, after it decided
+		// the client may write.
+		appPreferences := handlers.NewAppPreferenceHandler(deps.AppPreferences)
+		app.Get(handlers.AppPreferencePath, appPreferences.Summary)
+		app.Get(handlers.AppPreferencePath+"/:app", appPreferences.Get)
+		app.Delete(handlers.AppPreferencePath+"/:app", appPreferences.Reset)
+		app.Put(handlers.AppPreferencePath+"/:app/:key", appPreferences.Put)
+		app.Delete(handlers.AppPreferencePath+"/:app/:key", appPreferences.DeleteKey)
+	}
 	// A product's service account with consent:record; SkyMail's with
 	// consent:audience:read.
 	app.Post("/v1/consents", consents.Record)
