@@ -237,6 +237,7 @@ func (a *authorizer) allowCompetitor(p Principal, r Resource, action Action) boo
 		}
 		return a.competitorWriter(p, r)
 	case Update:
+		// No owner rule on purpose: one would also have to ask for the new userId and stay off moves (competitor Service.Update).
 		return a.competitorWriter(p, r)
 	case Delete:
 		if authenticated && r.OwnerID != "" && r.OwnerID == p.ID {

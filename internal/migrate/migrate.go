@@ -1549,6 +1549,14 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 	// When each account deletion notice was taken in hand
 	// (docs/account-lifecycle.md, "Deletion notices").
 	20261031230000: `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'account_deletion_requests' AND column_name = 'completed_notice_at'`,
+	// events.active dropped (ADR 0066: active is derived).
+	20261106120000: `
+		SELECT 1
+		WHERE to_regclass('public.events') IS NOT NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'active'
+		  )`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
