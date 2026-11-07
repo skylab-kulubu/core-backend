@@ -312,8 +312,10 @@ func TestOverageGroupsShareOneCallPerPerson(t *testing.T) {
 			errs <- err
 		}()
 	}
-	waitFor(t, func() bool { return kc.calls.Load() >= 1 })
-	time.Sleep(20 * time.Millisecond)
+	// Every caller waits on the one read before it ends. Otherwise a late
+	// caller could miss the cache before the read ends and ask after it
+	// has, starting a read of its own.
+	waitForWaitingCallers(t, callers)
 	close(gate)
 	wg.Wait()
 	close(errs)
@@ -536,18 +538,24 @@ func TestServiceForgetsCachedGroupsOnItsOwnWrites(t *testing.T) {
 	}
 }
 
-// waitForWaitingCallers waits until n calls of Paths are blocked waiting for
-// an answer, that is, have joined a read. Only the goroutine stacks show it:
-// a caller between its cache check and joining the read is not blocked.
+// waitForWaitingCallers waits until n calls of Paths started by this test
+// are blocked waiting for an answer, that is, have joined a read. Only the
+// goroutine stacks show it: a caller between its cache check and joining the
+// read is not blocked. The stacks are the whole process's, and other tests
+// running in parallel hold callers in Paths too, so only goroutines running
+// this test's own closures count.
 func waitForWaitingCallers(t *testing.T, n int) {
 	t.Helper()
+	// Calls are started in goroutines running the test's closures, named
+	// identity_test.<Test>.funcN in the stack.
+	own := "identity_test." + t.Name() + ".func"
 	waitFor(t, func() bool {
 		buf := make([]byte, 1<<20)
 		buf = buf[:runtime.Stack(buf, true)]
 		waiting := 0
 		for _, stack := range strings.Split(string(buf), "\n\n") {
 			// "Paths(" leaves out the read itself, which runs in Paths.func1.
-			if strings.Contains(stack, " [select") && strings.Contains(stack, "identity.(*OverageGroups).Paths(") {
+			if strings.Contains(stack, " [select") && strings.Contains(stack, "identity.(*OverageGroups).Paths(") && strings.Contains(stack, own) {
 				waiting++
 			}
 		}
