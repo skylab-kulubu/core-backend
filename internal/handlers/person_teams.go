@@ -8,6 +8,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/commpref"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 )
@@ -16,11 +17,21 @@ import (
 // and which they lead (docs/team-delegation.md "A person's Teams").
 const PersonTeamsPath = "/internal/v1/users/:sub/teams"
 
-// PersonTeamsRoles are the core client roles of the service accounts that
-// may ask, each already held: SkyMail's audience:read (Team mail, ADR-0067
-// addendum of 2026-11-08) and Forms' users:read (a form's owner team,
-// ADR-0075 addendum of 2026-11-08).
-var PersonTeamsRoles = []string{commpref.AudienceRole, "users:read"}
+// personTeamsCaller reports whether a service account may ask, each with a
+// core client role it already holds: SkyMail with audience:read (Team mail,
+// ADR-0067 addendum of 2026-11-08), a role only SkyMail's service account
+// holds; Forms with users:read (a form's owner team, ADR-0075 addendum of
+// 2026-11-08), and only Forms: users:read is shared (profile reads), so
+// another product's service account holding it is refused.
+func personTeamsCaller(ident authn.Identity) bool {
+	switch {
+	case slices.Contains(ident.Roles, commpref.AudienceRole):
+		return true
+	case slices.Contains(ident.Roles, "users:read"):
+		return ident.Product == authz.ProductForms
+	}
+	return false
+}
 
 // PersonTeamsSource answers a person's Teams (identity.TeamDelegation).
 type PersonTeamsSource interface {
@@ -28,7 +39,7 @@ type PersonTeamsSource interface {
 }
 
 // PersonTeamsHandler serves GET /internal/v1/users/{sub}/teams. Only a
-// service account holding one of PersonTeamsRoles may call it; the route
+// service account personTeamsCaller allows may call it; the route
 // is internal (middlewares.InternalRouteGuard).
 type PersonTeamsHandler struct {
 	teams PersonTeamsSource
@@ -54,7 +65,7 @@ func (h *PersonTeamsHandler) Get(c fiber.Ctx) error {
 	if !ident.ServiceAccount {
 		return problemCode(c, fiber.StatusForbidden, "Forbidden", "person_teams_service_only")
 	}
-	if !slices.ContainsFunc(PersonTeamsRoles, func(role string) bool { return slices.Contains(ident.Roles, role) }) {
+	if !personTeamsCaller(ident) {
 		return problemCode(c, fiber.StatusForbidden, "Forbidden", "person_teams_role_missing")
 	}
 	sub, err := uuid.Parse(c.Params("sub"))

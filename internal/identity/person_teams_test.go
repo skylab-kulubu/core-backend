@@ -3,6 +3,7 @@ package identity_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -195,5 +196,58 @@ func TestPersonTeamsNeedsTheLeaderGroupUnderItsTeam(t *testing.T) {
 	d := identity.NewTeamDelegation(authz.DefaultPolicy(), m, m, identity.TeamDelegationOptions{})
 	if teams, err := d.PersonTeams(context.Background(), teamsPerson(t, m, fake)); err != nil || len(teams) != 0 {
 		t.Fatalf("fake Leader group: %q %v", renderTeams(teams), err)
+	}
+}
+
+// brokenReads is a directory whose read of one Group by id (GroupNode) or
+// of the Groups right under one (Subgroups) fails.
+type brokenReads struct {
+	*identity.Memory
+	node, subgroups string
+}
+
+func (b brokenReads) GroupNode(ctx context.Context, id string) (identity.Group, string, error) {
+	if id == b.node {
+		return identity.Group{}, "", errors.New("keycloak: group read failed with status 502")
+	}
+	return b.Memory.GroupNode(ctx, id)
+}
+
+func (b brokenReads) Subgroups(ctx context.Context, id string) ([]identity.Group, error) {
+	if id == b.subgroups {
+		return nil, errors.New("keycloak: subgroups read failed with status 502")
+	}
+	return b.Memory.Subgroups(ctx, id)
+}
+
+// A read that fails halfway (a Sub-team, the Groups under one, a Team above
+// a member's, the Leader group itself) is an error and no Team at all,
+// never the part read before it; a later answer is read again.
+func TestPersonTeamsHalfReadIsNoAnswer(t *testing.T) {
+	t.Parallel()
+	m, ids := teamsRealm(t)
+	leader := teamsPerson(t, m, ids["/UYELER/ARGE/WEBLAB/LIDERLER"], ids["/UYELER/ARGE/MOBILAB"])
+	member := teamsPerson(t, m, ids["/UYELER/ARGE/WEBLAB/FRONTEND/REACT"])
+	for name, c := range map[string]struct {
+		broken brokenReads
+		person uuid.UUID
+	}{
+		"a Sub-team by id":            {brokenReads{Memory: m, node: ids["/UYELER/ARGE/WEBLAB/FRONTEND/REACT"]}, leader},
+		"the Groups under a Sub-team": {brokenReads{Memory: m, subgroups: ids["/UYELER/ARGE/WEBLAB/FRONTEND"]}, leader},
+		"the led Team itself":         {brokenReads{Memory: m, node: ids["/UYELER/ARGE/WEBLAB"]}, leader},
+		"the Leader group":            {brokenReads{Memory: m, node: ids["/UYELER/ARGE/WEBLAB/LIDERLER"]}, leader},
+		"a member's Team":             {brokenReads{Memory: m, node: ids["/UYELER/ARGE/MOBILAB"]}, leader},
+		"a Team above a member's":     {brokenReads{Memory: m, node: ids["/UYELER/ARGE/WEBLAB/FRONTEND"]}, member},
+	} {
+		d := identity.NewTeamDelegation(authz.DefaultPolicy(), c.broken, c.broken, identity.TeamDelegationOptions{})
+		teams, err := d.PersonTeams(context.Background(), c.person)
+		if err == nil || teams != nil {
+			t.Errorf("%s: %q %v, want an error and no Teams", name, renderTeams(teams), err)
+			continue
+		}
+		// The failure is not kept: the next question reads again.
+		if _, again := d.PersonTeams(context.Background(), c.person); again == nil {
+			t.Errorf("%s: the second question did not read again", name)
+		}
 	}
 }

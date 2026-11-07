@@ -521,10 +521,12 @@ GET /internal/v1/users/{sub}/teams
 - No other person, no address, no count. An unknown `sub` is `{"teams":
   []}`.
 - **Callers**: a **service account** token with core's client role
-  `audience:read` (SkyMail) or `users:read` (Forms); both already hold
-  theirs, nothing new in Keycloak. A person's token is `403
-  person_teams_service_only` whatever it carries; a service account
-  without either role `403 person_teams_role_missing`. A `sub` that is no
+  `audience:read` (SkyMail's alone), or Forms' service account (its
+  client in `MEDIA_SERVICE_CLIENTS`) with `users:read`; both already hold
+  theirs, nothing new in Keycloak. `users:read` is shared (profile reads),
+  so another product's service account holding it is refused. A person's
+  token is `403 person_teams_service_only` whatever it carries; any other
+  service account `403 person_teams_role_missing`. A `sub` that is no
   id is `400 person_teams_sub_invalid`.
 - An `/internal` route: through the public edge it is a bare `404` before
   its token is read. `Cache-Control: no-store` on every answer.

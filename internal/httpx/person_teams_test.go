@@ -1,7 +1,9 @@
 package httpx_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http/httptest"
 	"strings"
@@ -10,7 +12,11 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/commpref"
+	"github.com/skylab-kulubu/core-backend/internal/httpx"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/testauth"
 )
 
 func personTeamsPath(sub string) string { return "/internal/v1/users/" + sub + "/teams" }
@@ -99,9 +105,10 @@ func TestPersonTeamsRoute(t *testing.T) {
 	}
 }
 
-// Only a service account with audience:read or users:read; a person's
-// token is refused even with a role, another role is not enough, no token
-// is 401 and a sub that is no id 400. With no Team reads the route is 503.
+// Only a service account with audience:read, or Forms' with users:read; a
+// person's token is refused even with a role, another role is not enough,
+// another product's users:read is not either, no token is 401 and a sub
+// that is no id 400. With no Team reads the route is 503.
 func TestPersonTeamsAuthorization(t *testing.T) {
 	env := newDelegationEnv(t, delegationSetup{})
 	leader := env.people["webLeader"].String()
@@ -115,7 +122,10 @@ func TestPersonTeamsAuthorization(t *testing.T) {
 		}), "person_teams_service_only"},
 		"service tracking": {env.serviceToken(t, "skymail", commpref.TrackingResolveRole), "person_teams_role_missing"},
 		"service other":    {env.serviceToken(t, "forms", "ticket:forms", "url:forms"), "person_teams_role_missing"},
-		"service no role":  {env.serviceToken(t, "skymail"), "person_teams_role_missing"},
+		// users:read is shared: only Forms' service account may use it here.
+		"CMS with users:read":     {env.serviceToken(t, "cms-service", "users:read"), "person_teams_role_missing"},
+		"another with users:read": {env.serviceToken(t, "profile-sync", "users:read"), "person_teams_role_missing"},
+		"service no role":         {env.serviceToken(t, "skymail"), "person_teams_role_missing"},
 	} {
 		got := audienceCall(t, env.app, c.token, fiber.MethodGet, personTeamsPath(leader), "")
 		if got.status != fiber.StatusForbidden || !strings.Contains(string(got.raw), c.code) || strings.Contains(string(got.raw), "WEBLAB") {
@@ -157,5 +167,48 @@ func TestPersonTeamsIsNotOnTheEdge(t *testing.T) {
 				t.Fatalf("%s token=%v: %d %s", header, token != "", resp.StatusCode, raw)
 			}
 		}
+	}
+}
+
+// subgroupsDown is a directory whose reads of the Groups under a Group
+// fail, after the person's Groups and their Leader group were read.
+type subgroupsDown struct{ *identity.Memory }
+
+func (subgroupsDown) Subgroups(context.Context, string) ([]identity.Group, error) {
+	return nil, errors.New("keycloak: subgroups read failed with status 502")
+}
+
+// A Keycloak read failing halfway is 503 with Retry-After and no Team, for
+// a Leader whose tree cannot be walked.
+func TestPersonTeamsDirectoryDown(t *testing.T) {
+	keys := testauth.New(t)
+	dir := identity.NewMemory()
+	for _, g := range []identity.Group{
+		{ID: "g-uyeler", Name: "UYELER", Path: "/UYELER"},
+		{ID: "g-arge", Name: "ARGE", Path: "/UYELER/ARGE"},
+		{ID: "g-weblab", Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"},
+		{ID: "g-weblab-l", Name: "LIDERLER", Path: "/UYELER/ARGE/WEBLAB/LIDERLER"},
+	} {
+		dir.PutGroup(g)
+	}
+	leader := uuid.New()
+	dir.PutUser(identity.Person{ID: leader, Email: "lider@example.test"})
+	if err := dir.AddMember(context.Background(), "g-weblab-l", leader); err != nil {
+		t.Fatal(err)
+	}
+	deps := memoryDepsOver(dir, identity.Options{})
+	deps.ParseToken = keys.Parse()
+	down := subgroupsDown{dir}
+	deps.ManagedTeams = identity.NewTeamDelegation(authz.DefaultPolicy(), down, down, identity.TeamDelegationOptions{})
+	app := httpx.New(deps)
+	token := keys.Token(t, jwt.MapClaims{
+		"sub": uuid.NewString(), "azp": "skymail", "client_id": "skymail",
+		"resource_access": map[string]any{"core": map[string]any{"roles": []string{commpref.AudienceRole}}},
+	})
+	got := audienceCall(t, app, token, fiber.MethodGet, personTeamsPath(leader.String()), "")
+	if got.status != fiber.StatusServiceUnavailable || got.header.Get(fiber.HeaderRetryAfter) != "30" ||
+		got.header.Get(fiber.HeaderCacheControl) != "no-store" ||
+		!strings.Contains(string(got.raw), "person_teams_directory_unavailable") || strings.Contains(string(got.raw), "WEBLAB") {
+		t.Fatalf("%d %v %s", got.status, got.header, got.raw)
 	}
 }
