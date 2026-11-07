@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/accessgate"
 	"github.com/skylab-kulubu/core-backend/internal/account"
+	"github.com/skylab-kulubu/core-backend/internal/apppref"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
@@ -718,6 +719,17 @@ func main() {
 		log.Print(line)
 	}
 	worker("tracking withdrawals", trackingWithdrawals.Run(workers, log.Printf))
+	// App preferences (ADR 0081, docs/app-preferences.md). Without a client
+	// map their routes are not served; the erasure step still deletes a
+	// person's rows.
+	appPreferenceConfig, err := apppref.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	appPreferences := apppref.NewService(appPreferenceConfig, apppref.NewPostgresStore(pool))
+	// The daily deleted people cleanup takes their App preferences too.
+	communicationPreferences.AlsoRemoveDeletedPeopleFrom(appPreferences)
+	log.Printf("app preferences: %s", appPreferenceConfig)
 	if communicationPreferenceConfig.Enabled {
 		log.Printf("communication preferences: on (links at %s, key versions %v, current %d)",
 			communicationPreferenceConfig.LinkOrigin, communicationPreferenceConfig.KeyVersions(), communicationPreferenceConfig.CurrentKeyVersion())
@@ -846,6 +858,7 @@ func main() {
 				ContactConsents:          consents,
 				SkyPassWallet:            wallet,
 				CommunicationPreferences: communicationPreferences,
+				AppPreferences:           appPreferences,
 				Notices:                  deletionNotices,
 			}, media.NewImmediateBlobEraser(mediaStore, blobs)),
 			2*time.Second,
@@ -1006,7 +1019,7 @@ func main() {
 	if keycloakConfigured {
 		keycloakEventHandling.people = dir
 		keycloakEventHandling.requested = erasureRequested
-		keycloakEventHandling.erase = commpref.EraseSubjectIn
+		keycloakEventHandling.erase = erasePreferencesIn
 		keycloakEventHandling.wakeTeams = communicationPreferences.WakeTeamCleanup
 	}
 	eventsMetrics, eventsStopped := startEvents(workers, pool, os.Getenv, keycloakEventHandling)
@@ -1151,6 +1164,7 @@ func main() {
 		GithubActivity:            githubActivity,
 		Consents:                  consents,
 		CommunicationPreferences:  communicationPreferences,
+		AppPreferences:            appPreferences,
 		Audience:                  newsAudience,
 		Recipients:                recipients,
 		TrackingWithdrawalMetrics: communicationPreferenceMetrics{trackingWithdrawals, communicationPreferences},

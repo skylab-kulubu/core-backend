@@ -92,6 +92,11 @@ func TestKeycloakDeletionsThroughTheBroker(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The deleted person's App preferences go with their communication
+	// preferences.
+	if _, err := pool.Exec(ctx, `INSERT INTO app_preferences (user_id, app, key, value, value_bytes, client_id) VALUES ($1, 'forms', 'forms.list', '1', 1, 'skyforms')`, gone); err != nil {
+		t.Fatal(err)
+	}
 	airlab := identity.Group{ID: "g-airlab", Name: "AIRLAB", Path: authz.MembersRoot + "/AIRLAB"}
 	dir.PutGroup(airlab)
 
@@ -102,7 +107,7 @@ func TestKeycloakDeletionsThroughTheBroker(t *testing.T) {
 	var logMu sync.Mutex
 	var logs []string
 	h := &keycloakHandling{
-		realm: keycloakRoutingRealm("e-skylab"), people: dir, requested: erasureRequested, erase: commpref.EraseSubjectIn,
+		realm: keycloakRoutingRealm("e-skylab"), people: dir, requested: erasureRequested, erase: erasePreferencesIn,
 		wakeTeams: preferences.WakeTeamCleanup,
 		logf: func(format string, args ...any) {
 			logMu.Lock()
@@ -191,6 +196,17 @@ func TestKeycloakDeletionsThroughTheBroker(t *testing.T) {
 	})
 	if rows(gone) != 0 || rows(sagas) != 1 {
 		t.Fatalf("rows: deleted person %d, the saga's %d", rows(gone), rows(sagas))
+	}
+	appRows := func(person uuid.UUID) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM app_preferences WHERE user_id = $1`, person).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if appRows(gone) != 0 {
+		t.Fatalf("app preference rows of the deleted person: %d", appRows(gone))
 	}
 	var records int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM consumed_events WHERE consumer = $1 AND source = '/keycloak'`, keycloakQueue).Scan(&records); err != nil || records != 3 {

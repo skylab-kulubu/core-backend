@@ -78,6 +78,7 @@ func TestErasureSagaStopsWhenTheCommunicationPreferencesCannotBeErased(t *testin
 		config.ContactConsents = f.consents()
 		config.SkyPassWallet = sagaWallet{events: f.events}
 		config.CommunicationPreferences = tc.eraser(f)
+		config.AppPreferences = appPreferencesErased{}
 		worked, err := f.run(newWorkerWithoutConsents(f, config))
 		if !worked || err == nil || !strings.Contains(err.Error(), "erase_communication_preferences_failed") {
 			t.Fatalf("%s: worked=%v err=%v", tc.name, worked, err)
@@ -118,6 +119,7 @@ func TestErasureSagaStepDeletesThePersonsPreferences(t *testing.T) {
 	config.ContactConsents = f.consents()
 	config.SkyPassWallet = sagaWallet{events: f.events}
 	config.CommunicationPreferences = prefs
+	config.AppPreferences = appPreferencesErased{}
 	if worked, err := f.run(newWorkerWithoutConsents(f, config)); !worked || err != nil {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}

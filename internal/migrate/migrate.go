@@ -1557,6 +1557,27 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'active'
 		  )`,
+	// App preferences (ADR 0081): the table with its size CHECK and its
+	// guard against an erased subject.
+	20261108120000: `
+		SELECT 1
+		WHERE to_regclass('public.app_preferences') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.app_preferences')
+			  AND conname = 'app_preferences_value_bytes_check'
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM pg_trigger
+			WHERE tgrelid = to_regclass('public.app_preferences')
+			  AND tgname = 'app_preferences_require_active_subject'
+		  )`,
+	// The account erasure step that deletes a person's app preferences.
+	20261108120100: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.account_deletion_steps')
+		  AND conname = 'account_deletion_steps_step_check'
+		  AND pg_get_constraintdef(oid) LIKE '%''erase_app_preferences''%'`,
 	// The Event change Notification queue (event.updated), its record of
 	// sends and their indexes.
 	20261108160000: `
