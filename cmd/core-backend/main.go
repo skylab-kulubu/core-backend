@@ -726,6 +726,8 @@ func main() {
 		log.Fatal(err)
 	}
 	appPreferences := apppref.NewService(appPreferenceConfig, apppref.NewPostgresStore(pool))
+	// The daily deleted people cleanup takes their App preferences too.
+	communicationPreferences.AlsoRemoveDeletedPeopleFrom(appPreferences)
 	log.Printf("app preferences: %s", appPreferenceConfig)
 	if communicationPreferenceConfig.Enabled {
 		log.Printf("communication preferences: on (links at %s, key versions %v, current %d)",

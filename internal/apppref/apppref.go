@@ -189,3 +189,17 @@ type Write struct {
 
 // ValidKey says whether key is an allowed key name.
 func ValidKey(key string) bool { return keyName.MatchString(key) }
+
+// RateLimitedError is a write past the person's WritesPerMinute budget.
+type RateLimitedError struct {
+	// RetryAfter is when the budget fills again.
+	RetryAfter time.Duration
+}
+
+func (e RateLimitedError) Error() string { return "app preferences: too many writes" }
+
+// Is makes errors.Is(err, ErrRateLimited) hold.
+func (RateLimitedError) Is(target error) bool { return target == ErrRateLimited }
+
+// ErrRateLimited is any RateLimitedError.
+var ErrRateLimited = errors.New("app preferences: too many writes")

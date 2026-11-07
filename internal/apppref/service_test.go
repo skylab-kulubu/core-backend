@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/apppref"
@@ -287,5 +288,51 @@ func TestMetricsCarryNoPersonOrValue(t *testing.T) {
 		if strings.Contains(text, leak) {
 			t.Fatalf("metrics carry %q:\n%s", leak, text)
 		}
+	}
+}
+
+// Each person has 60 writes a minute across PUT and DELETE, counted only
+// once the client may write; the next minute fills it again.
+func TestServiceWriteBudget(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	svc := apppref.NewService(testConfig(t), apppref.NewMemoryStore())
+	svc.SetClock(func() time.Time { return now })
+	forms := person("skyforms")
+	panel := apppref.Caller{Person: forms.Person, Client: "admin"}
+	for range apppref.WritesPerMinute {
+		if _, err := svc.Put(ctx, panel, "forms", "k", json.RawMessage(`1`), 1, nil); !errors.Is(err, apppref.ErrWrongClient) {
+			t.Fatalf("wrong client: %v", err)
+		}
+	}
+	for i := range apppref.WritesPerMinute {
+		var err error
+		if i%2 == 0 {
+			_, err = svc.Put(ctx, forms, "forms", "k", json.RawMessage(`1`), 1, nil)
+		} else {
+			err = svc.DeleteKey(ctx, forms, "forms", "k")
+		}
+		if err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	now = now.Add(20 * time.Second)
+	err := svc.Reset(ctx, forms, "forms")
+	var limited apppref.RateLimitedError
+	if !errors.Is(err, apppref.ErrRateLimited) || !errors.As(err, &limited) || limited.RetryAfter != 40*time.Second {
+		t.Fatalf("61st write: %v %+v", err, limited)
+	}
+	if _, err := svc.Get(ctx, forms, "forms"); err != nil {
+		t.Fatalf("a read is not a write: %v", err)
+	}
+	if _, err := svc.Put(ctx, person("skyforms"), "forms", "k", json.RawMessage(`1`), 1, nil); err != nil {
+		t.Fatalf("another person: %v", err)
+	}
+	now = now.Add(40 * time.Second)
+	if _, err := svc.Put(ctx, forms, "forms", "k", json.RawMessage(`1`), 1, nil); err != nil {
+		t.Fatalf("next minute: %v", err)
+	}
+	if !strings.Contains(svc.Metrics().Prometheus(), `skylab_app_preferences_requests_total{app="forms",op="reset",outcome="rate_limited"} 1`+"\n") {
+		t.Fatalf("metrics:\n%s", svc.Metrics().Prometheus())
 	}
 }

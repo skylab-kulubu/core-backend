@@ -519,13 +519,14 @@ func New(deps Deps) *fiber.App {
 	// App preferences (ADR 0081): a person's token only; the token's azp
 	// picks the namespace. Off, none is served.
 	if deps.AppPreferences.Enabled() {
+		// The service keeps each person's write budget, after it decided
+		// the client may write.
 		appPreferences := handlers.NewAppPreferenceHandler(deps.AppPreferences)
-		writeLimit := appPreferences.WriteLimit()
 		app.Get(handlers.AppPreferencePath, appPreferences.Summary)
 		app.Get(handlers.AppPreferencePath+"/:app", appPreferences.Get)
-		app.Delete(handlers.AppPreferencePath+"/:app", writeLimit, appPreferences.Reset)
-		app.Put(handlers.AppPreferencePath+"/:app/:key", writeLimit, appPreferences.Put)
-		app.Delete(handlers.AppPreferencePath+"/:app/:key", writeLimit, appPreferences.DeleteKey)
+		app.Delete(handlers.AppPreferencePath+"/:app", appPreferences.Reset)
+		app.Put(handlers.AppPreferencePath+"/:app/:key", appPreferences.Put)
+		app.Delete(handlers.AppPreferencePath+"/:app/:key", appPreferences.DeleteKey)
 	}
 	// A product's service account with consent:record; SkyMail's with
 	// consent:audience:read.

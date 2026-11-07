@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/middleware/limiter"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/skylab-kulubu/core-backend/internal/apppref"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
@@ -83,6 +83,16 @@ func appPreferenceError(c fiber.Ctx, app string, err error) error {
 		return problemCode(c, fiber.StatusPreconditionFailed, "Precondition Failed", "app_preference_conflict")
 	case errors.Is(err, apppref.ErrSubjectInactive):
 		return problemCode(c, fiber.StatusForbidden, "Forbidden", "app_preference_subject_inactive")
+	}
+	var limited apppref.RateLimitedError
+	if errors.As(err, &limited) {
+		seconds := int(math.Ceil(limited.RetryAfter.Seconds()))
+		if seconds < 1 {
+			seconds = 1
+		}
+		c.Set(fiber.HeaderRetryAfter, strconv.Itoa(seconds))
+		return problemWithFields(c, fiber.StatusTooManyRequests, "Too Many Requests",
+			"Too many requests; retry after the given seconds.", "app_preference_rate_limited", fiber.Map{"retryAfterSeconds": seconds})
 	}
 	log.Printf(`{"event":"app_preference_error","correlation_id":%q,"app":%q,"error":%q}`, requestid.FromContext(c), app, err.Error())
 	return problem(c, fiber.StatusInternalServerError, "Internal Server Error")
@@ -219,35 +229,4 @@ func (h *AppPreferenceHandler) Summary(c fiber.Ctx) error {
 		out = append(out, appPreferenceSummary{App: sum.App, Keys: sum.Keys, UpdatedAt: sum.UpdatedAt})
 	}
 	return c.JSON(fiber.Map{"items": out})
-}
-
-// WriteLimit is each person's write budget, apppref.WritesPerMinute a
-// minute across PUT and DELETE, kept by each replica.
-func (h *AppPreferenceHandler) WriteLimit() fiber.Handler {
-	return limiter.New(limiter.Config{
-		Max:        apppref.WritesPerMinute,
-		Expiration: time.Minute,
-		Next: func(c fiber.Ctx) bool {
-			_, ok := c.Locals(authn.LocalsIdentity).(authn.Identity)
-			return !ok
-		},
-		KeyGenerator: func(c fiber.Ctx) string {
-			ident, _ := c.Locals(authn.LocalsIdentity).(authn.Identity)
-			return "app-preferences:" + ident.ID.String()
-		},
-		LimitReached: func(c fiber.Ctx) error {
-			op := apppref.OpPut
-			switch {
-			case c.Method() == fiber.MethodDelete && c.Params("key") == "":
-				op = apppref.OpReset
-			case c.Method() == fiber.MethodDelete:
-				op = apppref.OpDelete
-			}
-			h.svc.Metrics().Record(c.Params("app"), op, "rate_limited")
-			c.Set(fiber.HeaderCacheControl, "private, no-store")
-			seconds, _ := strconv.Atoi(string(c.Response().Header.Peek(fiber.HeaderRetryAfter)))
-			return problemWithFields(c, fiber.StatusTooManyRequests, "Too Many Requests",
-				"Too many requests; retry after the given seconds.", "app_preference_rate_limited", fiber.Map{"retryAfterSeconds": seconds})
-		},
-	})
 }

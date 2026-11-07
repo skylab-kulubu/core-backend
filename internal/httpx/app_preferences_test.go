@@ -219,17 +219,25 @@ func TestAppPreferencesAccountCenterSummaryAndReset(t *testing.T) {
 	}
 }
 
-// 60 writes a minute a person; another person has a budget of their own.
+// 60 writes a minute a person; another person has a budget of their own;
+// a refused client spends none of it.
 func TestAppPreferencesWriteBudget(t *testing.T) {
-	e := newAppPrefEnv(t, "forms:skyforms")
+	e := newAppPrefEnv(t, "forms:skyforms,panel:admin")
 	forms := e.token(t, "skyforms")
+	panel := e.token(t, "admin")
+	for range apppref.WritesPerMinute + 5 {
+		if got := e.send(t, panel, fiber.MethodPut, appPrefRoot+"/forms/forms.list", `{"value":1}`); got.status != fiber.StatusForbidden {
+			t.Fatalf("wrong client: %d %v", got.status, got.body)
+		}
+	}
 	for i := range apppref.WritesPerMinute {
 		if got := e.send(t, forms, fiber.MethodPut, appPrefRoot+"/forms/forms.list", `{"value":1}`); got.status != fiber.StatusOK {
 			t.Fatalf("write %d: %d %v", i, got.status, got.body)
 		}
 	}
-	if got := e.send(t, forms, fiber.MethodDelete, appPrefRoot+"/forms/forms.list", ""); got.status != fiber.StatusTooManyRequests || got.body["code"] != "app_preference_rate_limited" {
-		t.Fatalf("61st write: %d %v", got.status, got.body)
+	if got := e.send(t, forms, fiber.MethodDelete, appPrefRoot+"/forms/forms.list", ""); got.status != fiber.StatusTooManyRequests || got.body["code"] != "app_preference_rate_limited" ||
+		got.header.Get("Retry-After") == "" || got.body["retryAfterSeconds"].(float64) < 1 {
+		t.Fatalf("61st write: %d %v %v", got.status, got.body, got.header)
 	}
 	if got := e.send(t, forms, fiber.MethodGet, appPrefRoot+"/forms", ""); got.status != fiber.StatusOK {
 		t.Fatalf("a read is not a write: %d", got.status)

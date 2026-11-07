@@ -25,12 +25,16 @@ type Service struct {
 	store   Store
 	now     func() time.Time
 	metrics *Metrics
+	budget  *writeBudget
 }
 
 // NewService serves config over store. An empty client map leaves it off.
 func NewService(config Config, store Store) *Service {
-	return &Service{config: config, store: store, now: func() time.Time { return time.Now().UTC() }, metrics: NewMetrics(config)}
+	return &Service{config: config, store: store, now: func() time.Time { return time.Now().UTC() }, metrics: NewMetrics(config), budget: newWriteBudget()}
 }
+
+// SetClock replaces the clock (tests).
+func (s *Service) SetClock(now func() time.Time) { s.now = now }
 
 // Enabled says whether the routes are served.
 func (s *Service) Enabled() bool { return s != nil && s.config.Enabled() }
@@ -90,6 +94,9 @@ func (s *Service) Put(ctx context.Context, caller Caller, app, key string, value
 	if err := s.authorize(caller, app, OpPut); err != nil {
 		return Item{}, err
 	}
+	if err := s.budget.take(caller.Person, s.now()); err != nil {
+		return Item{}, err
+	}
 	w, err := validWrite(key, value, schemaVersion, match)
 	if err != nil {
 		return Item{}, err
@@ -103,6 +110,9 @@ func (s *Service) DeleteKey(ctx context.Context, caller Caller, app, key string)
 	if err := s.authorize(caller, app, OpDelete); err != nil {
 		return err
 	}
+	if err := s.budget.take(caller.Person, s.now()); err != nil {
+		return err
+	}
 	if !ValidKey(key) {
 		return ErrInvalidKey
 	}
@@ -113,6 +123,9 @@ func (s *Service) DeleteKey(ctx context.Context, caller Caller, app, key string)
 func (s *Service) Reset(ctx context.Context, caller Caller, app string) (err error) {
 	defer func() { s.metrics.Record(app, OpReset, OutcomeOf(err)) }()
 	if err := s.authorize(caller, app, OpReset); err != nil {
+		return err
+	}
+	if err := s.budget.take(caller.Person, s.now()); err != nil {
 		return err
 	}
 	_, err = s.store.DeleteApp(ctx, caller.Person, app)
@@ -146,6 +159,13 @@ func (s *Service) Summaries(ctx context.Context, caller Caller) (out []Summary, 
 // erase_app_preferences.
 func (s *Service) EraseSubject(ctx context.Context, person uuid.UUID) (int64, error) {
 	return s.store.EraseSubject(ctx, person)
+}
+
+// Subjects are the people who hold a preference in any app, whether App
+// preferences are on or off: the daily deleted people cleanup reads them
+// (commpref.Service.AlsoRemoveDeletedPeopleFrom).
+func (s *Service) Subjects(ctx context.Context) ([]uuid.UUID, error) {
+	return s.store.Subjects(ctx)
 }
 
 // validWrite checks a write's key and value and makes the value compact.
@@ -190,6 +210,8 @@ func OutcomeOf(err error) string {
 		return "conflict"
 	case errors.Is(err, ErrSubjectInactive):
 		return "inactive"
+	case errors.Is(err, ErrRateLimited):
+		return "rate_limited"
 	}
 	return "error"
 }

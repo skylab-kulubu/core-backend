@@ -186,8 +186,8 @@ caught by the periodic passes, which stay. The handler:
   is done. Otherwise core reads the person from Keycloak: still there, nothing
   is deleted; "not found", their communication preferences and App
   preferences go in the event's transaction (the same rows as the saga's
-  `erase_communication_preferences` and `erase_app_preferences` steps; the
-  daily deleted people cleanup covers only the communication preferences),
+  `erase_communication_preferences` and `erase_app_preferences` steps and
+  the daily deleted people cleanup),
   with the warning
   `keycloak_user_deleted_outside_erasure` (the event id and the person's id,
   no address) and a count: a deletion from the Keycloak console skips the

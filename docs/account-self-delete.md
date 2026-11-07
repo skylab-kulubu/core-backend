@@ -214,6 +214,8 @@ guest data, and the Keycloak identity is deleted last (ADR-0051, the saga in
 service has not confirmed, the request stays `pending` or `processing` (or
 `manual_intervention` after a rejection) with `partial=true`; the person is
 already blocked and logged out. The response shape does not change.
+A request completed before `erase_app_preferences` shipped (core-backend
+#353) has twelve checkpoints, without that step; it is still `completed`.
 
 Retry is idempotent. It only moves `manual_intervention` back to `pending`,
 clears the stable internal error and retry budget, and preserves the permanent

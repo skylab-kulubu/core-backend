@@ -74,6 +74,9 @@ func TestStores(t *testing.T) {
 				t.Fatalf("summaries %+v %v", sums, err)
 			}
 
+			if subjects, err := store.Subjects(ctx); err != nil || len(subjects) != 2 {
+				t.Fatalf("subjects %v %v", subjects, err)
+			}
 			if err := store.DeleteKey(ctx, person, "forms", "share-format"); err != nil {
 				t.Fatal(err)
 			}
@@ -91,6 +94,9 @@ func TestStores(t *testing.T) {
 			}
 			if items, err := store.List(ctx, other, "forms", ""); err != nil || len(items) != 1 {
 				t.Fatalf("another person's rows %+v %v", items, err)
+			}
+			if subjects, err := store.Subjects(ctx); err != nil || len(subjects) != 1 || subjects[0] != other {
+				t.Fatalf("subjects after erasure %v %v", subjects, err)
 			}
 		})
 	}

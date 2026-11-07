@@ -34,6 +34,8 @@ type Store interface {
 	// EraseSubject deletes every row of person (account erasure) and counts
 	// them.
 	EraseSubject(ctx context.Context, person uuid.UUID) (int64, error)
+	// Subjects are the people rows name.
+	Subjects(ctx context.Context) ([]uuid.UUID, error)
 }
 
 // PostgresStore is the app_preferences table.
@@ -152,6 +154,23 @@ func (s *PostgresStore) EraseSubject(ctx context.Context, person uuid.UUID) (int
 		return 0, fmt.Errorf("app preferences: erase: %w", err)
 	}
 	return erased, nil
+}
+
+func (s *PostgresStore) Subjects(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT user_id FROM app_preferences`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var person uuid.UUID
+		if err := rows.Scan(&person); err != nil {
+			return nil, err
+		}
+		out = append(out, person)
+	}
+	return out, rows.Err()
 }
 
 // EraseSubjectIn is PostgresStore.EraseSubject in tx, a transaction the
@@ -317,4 +336,19 @@ func (m *MemoryStore) EraseSubject(_ context.Context, person uuid.UUID) (int64, 
 	}
 	delete(m.rows, person)
 	return n, nil
+}
+
+func (m *MemoryStore) Subjects(context.Context) ([]uuid.UUID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []uuid.UUID
+	for person, apps := range m.rows {
+		for _, keys := range apps {
+			if len(keys) > 0 {
+				out = append(out, person)
+				break
+			}
+		}
+	}
+	return out, nil
 }

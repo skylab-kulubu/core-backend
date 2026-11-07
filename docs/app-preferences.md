@@ -70,7 +70,7 @@ Refusals:
 | 412 | `app_preference_conflict` | an `If-Match` that does not hold the stored version |
 | 413 | `app_preference_body_too_large` | the body is over 8 KB |
 | 403 | `app_preference_subject_inactive` | the person is being erased or was erased |
-| 429 | `app_preference_rate_limited` | more than 60 writes (PUT and DELETE) a minute from one person, per core replica; `retryAfterSeconds` |
+| 429 | `app_preference_rate_limited` | more than 60 writes (PUT and DELETE) a minute from one person, per core replica, counted only once the client may write; `Retry-After` and `retryAfterSeconds` |
 
 The app's 404 comes before the client's 403: an app outside the map is
 unknown to everyone.
@@ -136,8 +136,10 @@ center, or the app deletes its key. No retention period of their own.
   `app_preference_subject_inactive`.
 - A person deleted from the Keycloak console outside the saga loses their
   rows with their communication preferences when core hears the deletion
-  event ([integration-events.md](integration-events.md)). The daily deleted
-  people cleanup of the communication preferences does not cover them.
+  event ([integration-events.md](integration-events.md)), and the daily
+  deleted people cleanup ([communication-preferences.md](communication-preferences.md))
+  looks at the people of this table too and deletes the rows of anyone
+  Keycloak no longer has, with the same guards.
 - An app taken out of the client map keeps its rows, unreachable and left
   out of the summary, until a one-time migration deletes them.
 - A KVKK md. 11 request ([subject-requests.md](subject-requests.md)) is
