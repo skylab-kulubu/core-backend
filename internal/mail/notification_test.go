@@ -171,3 +171,31 @@ func TestNotifySendsAnEmptyChannelListAndLeavesANilOneOut(t *testing.T) {
 		t.Fatalf("second %v: a nil list must be left out", second)
 	}
 }
+
+func TestEventUpdatedPostsItsTypeToAMemberAndItsTemplateToAGuest(t *testing.T) {
+	srv, got := notificationServer(t, http.StatusCreated, `{}`)
+	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+	sub := uuid.New()
+	vars := map[string]string{"EventName": "Gece", "NewVenue": "Kongre Merkezi"}
+	source := NotificationSource{Kind: "event", Ref: "e"}
+	if err := sky.EventUpdated(context.Background(), "core:event.updated:e:n:v1", TicketHolder{Sub: sub}, vars, source, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := sky.EventUpdated(context.Background(), "unused", TicketHolder{Email: "can@example.com", FullName: "Can Er"}, vars, source, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(*got) != 2 {
+		t.Fatalf("requests %d", len(*got))
+	}
+	member, guest := (*got)[0], (*got)[1]
+	if member.path != "/v1/notifications" || member.key != "core:event.updated:e:n:v1" || member.body["type"] != EventUpdatedType {
+		t.Fatalf("member request %+v", member)
+	}
+	if v, _ := member.body["variables"].(map[string]any); v["NewVenue"] != "Kongre Merkezi" {
+		t.Fatalf("variables %v", member.body["variables"])
+	}
+	if guest.path != "/v1/mail_tasks/single" || guest.body["template_key"] != EventUpdatedType ||
+		guest.body["recipient_email"] != "can@example.com" || guest.key != "" {
+		t.Fatalf("guest request %+v", guest)
+	}
+}
