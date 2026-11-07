@@ -41,6 +41,7 @@ func TestPostgresWorkerPersistsProgressAcrossRestart(t *testing.T) {
 		ContactConsents:          consentsErased{},
 		SkyPassWallet:            walletErased{},
 		CommunicationPreferences: communicationPreferencesErased{},
+		AppPreferences:           appPreferencesErased{},
 		Services:                 erasedServices(),
 		Now:                      func() time.Time { return now }, Lease: time.Minute, MaxAttempts: 3,
 		AccessBlocker: &accountBlockWriter{},

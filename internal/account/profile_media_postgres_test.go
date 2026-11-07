@@ -132,6 +132,7 @@ func TestWorkerImmediatelyErasesUnreferencedProfileBlobAndSanitizesSharedMedia(t
 			ContactConsents:          consentsErased{},
 			SkyPassWallet:            walletErased{},
 			CommunicationPreferences: communicationPreferencesErased{},
+			AppPreferences:           appPreferencesErased{},
 			Services:                 erasedServices(),
 			Now:                      func() time.Time { return now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
 		}, media.NewImmediateBlobEraser(mediaStore, blobs))
@@ -213,6 +214,7 @@ func TestWorkerRetriesWhenProfileMediaIsRestoredBeforeBlobErase(t *testing.T) {
 		ContactConsents:          consentsErased{},
 		SkyPassWallet:            walletErased{},
 		CommunicationPreferences: communicationPreferencesErased{},
+		AppPreferences:           appPreferencesErased{},
 		Services:                 erasedServices(),
 		Now:                      func() time.Time { return now }, Lease: time.Minute, AccessBlocker: &accountBlockWriter{},
 	}, eraser)
@@ -307,6 +309,7 @@ func TestDeletionCannotCompleteWhileJITAuthorizedUploadNeedsDurableCleanup(t *te
 		ContactConsents:          consentsErased{},
 		SkyPassWallet:            walletErased{},
 		CommunicationPreferences: communicationPreferencesErased{},
+		AppPreferences:           appPreferencesErased{},
 		Services:                 erasedServices(),
 		Now:                      func() time.Time { return now }, Lease: time.Minute, RetryDelay: 0, MaxAttempts: 1,
 		AccessBlocker: &accountBlockWriter{},

@@ -184,9 +184,11 @@ caught by the periodic passes, which stay. The handler:
   `userId`): when core has an erasure request for the person
   (`account_deletion_requests`, any state), it is the saga's and nothing else
   is done. Otherwise core reads the person from Keycloak: still there, nothing
-  is deleted; "not found", their communication preferences go in the event's
-  transaction (the same rows as the saga's `erase_communication_preferences`
-  step and the daily deleted people cleanup), with the warning
+  is deleted; "not found", their communication preferences and App
+  preferences go in the event's transaction (the same rows as the saga's
+  `erase_communication_preferences` and `erase_app_preferences` steps; the
+  daily deleted people cleanup covers only the communication preferences),
+  with the warning
   `keycloak_user_deleted_outside_erasure` (the event id and the person's id,
   no address) and a count: a deletion from the Keycloak console skips the
   saga, and should be seen. Any other Keycloak error is transient (tried

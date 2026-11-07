@@ -157,7 +157,7 @@ func testDeletionNoticesGoOnceEachInTheirPlace(t *testing.T, store erasureTestSt
 	}
 	want := []string{
 		"disable_identity", "logout_sessions", "read_addresses", "erase_contact_consents", "erase_skypass_wallet",
-		"erase_communication_preferences", "erase_skymail", "erase_cms", "erase_forms",
+		"erase_communication_preferences", "erase_app_preferences", "erase_skymail", "erase_cms", "erase_forms",
 		"notice:" + receivedKey, "notice:" + receivedKey,
 		"anonymize_core", "erase_staged_uploads", "delete_identity",
 		"notice:" + completedKey, "notice:" + completedKey,
@@ -301,6 +301,7 @@ func TestDeletionNoticeCompletedReadsTheAddressesBeforeTheIdentityGoes(t *testin
 	config.ContactConsents = f.consents()
 	config.SkyPassWallet = sagaWallet{events: f.events}
 	config.CommunicationPreferences = sagaCommunicationPreferences{events: f.events}
+	config.AppPreferences = sagaAppPreferences{events: f.events}
 	worker := account.NewWorkerWithConfiguredWaits(sagaStore{erasureTestStore: f.store, events: f.events}, identity, config, sagaMedia{events: f.events})
 	if worked, err := f.run(worker); !worked || err == nil {
 		t.Fatalf("worked=%v err=%v", worked, err)
@@ -339,6 +340,7 @@ func TestDeletionNoticeWithoutAddressesDoesNotHoldTheErasure(t *testing.T) {
 	config.ContactConsents = f.consents()
 	config.SkyPassWallet = sagaWallet{events: f.events}
 	config.CommunicationPreferences = sagaCommunicationPreferences{events: f.events}
+	config.AppPreferences = sagaAppPreferences{events: f.events}
 	worker := account.NewWorkerWithConfiguredWaits(sagaStore{erasureTestStore: f.store, events: f.events}, identity, config, sagaMedia{events: f.events})
 	if worked, err := f.run(worker); !worked || err == nil {
 		t.Fatalf("worked=%v err=%v", worked, err)
