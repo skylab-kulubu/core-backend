@@ -208,6 +208,7 @@ type TeamDelegation struct {
 	names   namesEntry
 	teams   map[uuid.UUID]teamsEntry
 	trees   map[uuid.UUID]treeEntry
+	people  map[uuid.UUID]peopleEntry
 	writes  map[uuid.UUID]writeWindow
 	finds   map[uuid.UUID]writeWindow
 	running map[uuid.UUID]bool
@@ -297,6 +298,7 @@ func NewTeamDelegation(policy authz.Policy, dir Directory, reads TeamReads, opti
 		roles:   map[string]protectedEntry{},
 		teams:   map[uuid.UUID]teamsEntry{},
 		trees:   map[uuid.UUID]treeEntry{},
+		people:  map[uuid.UUID]peopleEntry{},
 		writes:  map[uuid.UUID]writeWindow{},
 		finds:   map[uuid.UUID]writeWindow{},
 		running: map[uuid.UUID]bool{},
@@ -347,7 +349,8 @@ func (d *TeamDelegation) On() bool { return d != nil && d.policy.TeamDelegation 
 func (d *TeamDelegation) Policy() authz.Policy { return d.policy }
 
 // Forget drops what d remembers of userID's Groups: core changed them.
-// Every managed tree goes too, since its counts may have changed.
+// Every managed tree and every person's Teams go too, since counts or Teams
+// may have changed.
 func (d *TeamDelegation) Forget(userID uuid.UUID) {
 	if d == nil {
 		return
@@ -357,6 +360,7 @@ func (d *TeamDelegation) Forget(userID uuid.UUID) {
 	delete(d.callers, userID)
 	delete(d.teams, userID)
 	clear(d.trees)
+	clear(d.people)
 	d.generation++
 }
 
@@ -371,6 +375,7 @@ func (d *TeamDelegation) ForgetAll() {
 	clear(d.roles)
 	clear(d.teams)
 	clear(d.trees)
+	clear(d.people)
 	d.names = namesEntry{}
 	d.generation++
 }
@@ -523,6 +528,12 @@ func (d *TeamDelegation) leaderGroups(ctx context.Context, userID uuid.UUID) ([]
 	if err != nil {
 		return nil, err
 	}
+	return d.leaderGroupsIn(ctx, groups)
+}
+
+// leaderGroupsIn are the Leader groups among groups, a person's direct
+// Groups, each read again by id.
+func (d *TeamDelegation) leaderGroupsIn(ctx context.Context, groups []Group) ([]authz.LeaderGroup, error) {
 	out := make([]authz.LeaderGroup, 0)
 	for _, g := range groups {
 		if _, role, ok := authz.TeamOf(g.Path, d.policy.PrivilegedRoots, d.policy.LeaderSubgroups); !ok || role == "" {
@@ -715,6 +726,12 @@ func (d *TeamDelegation) readManagedTeams(ctx context.Context, userID uuid.UUID)
 	if err != nil {
 		return []ManagedTeam{}, err
 	}
+	return d.managedTeamsOf(ctx, leaders)
+}
+
+// managedTeamsOf are the Teams the Leader groups leaders name, each read by
+// id; a Team that cannot be read is left out with the error.
+func (d *TeamDelegation) managedTeamsOf(ctx context.Context, leaders []authz.LeaderGroup) ([]ManagedTeam, error) {
 	out := make([]ManagedTeam, 0, len(leaders))
 	seen := map[string]bool{}
 	var failed error

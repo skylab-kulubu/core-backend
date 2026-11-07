@@ -175,7 +175,8 @@ type Deps struct {
 
 	// ManagedTeams answers the capabilities route's managedTeams: the Teams
 	// the caller is a Leader of, read from Keycloak
-	// (docs/team-delegation.md). Nil answers an empty list.
+	// (docs/team-delegation.md). Nil answers an empty list. It also answers
+	// GET /internal/v1/users/{sub}/teams; nil, that route is 503.
 	ManagedTeams *identity.TeamDelegation
 
 	// AppAssignments mounts the app assignment routes (APP_ASSIGNMENTS=on,
@@ -458,6 +459,15 @@ func New(deps Deps) *fiber.App {
 	// sender chose are a person, and whether the mail may go to each (ADR
 	// 0072 karar 3). Here for the same reason.
 	app.Post(handlers.RecipientsResolvePath, handlers.NewRecipientsResolveHandler(deps.Recipients).Resolve)
+	// SkyMail's service account with audience:read (Team mail, ADR-0067
+	// addendum of 2026-11-08) and Forms' with users:read (owner team,
+	// ADR-0075 addendum of 2026-11-08): which Teams a person is in and
+	// leads, read with TEAM_DELEGATION on or off. Here for the same reason.
+	var personTeams handlers.PersonTeamsSource
+	if deps.ManagedTeams != nil {
+		personTeams = deps.ManagedTeams
+	}
+	app.Get(handlers.PersonTeamsPath, handlers.NewPersonTeamsHandler(personTeams).Get)
 	app.Get("/v1/go/:alias", urls.Redirect)
 	app.Get("/v1/go/:alias/:channel", urls.RedirectChannel)
 	// Before JIT and every product route: a Group overage token gets its
