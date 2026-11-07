@@ -387,3 +387,18 @@ func TestStoppingCoreLeavesTheRowToItsLease(t *testing.T) {
 		t.Fatalf("row %+v: kept, no failure counted", f.queue.rows)
 	}
 }
+
+// A type not seeded yet keeps the row, tried again with the backoff: the
+// member is told once the Template seed has run.
+func TestAnUnseededTypeKeepsTheRowForLater(t *testing.T) {
+	f := setup(t)
+	row := f.queue1(nil)
+	f.mail.fail = map[string]error{f.member.String(): &mail.SendError{Status: http.StatusUnprocessableEntity, Code: "notification.type_unknown"}}
+	report, err := f.svc.Pass(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Retried != 1 || report.Rejected != 0 || f.queue.len() != 1 || !f.queue.due[row.ID].Equal(now.Add(eventupdatenotify.RetryFirst)) {
+		t.Fatalf("report %+v, rows %d", report, f.queue.len())
+	}
+}

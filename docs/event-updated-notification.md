@@ -84,12 +84,18 @@ Event update ──(same transaction)──▶ event_update_notifications ──
   went out and no answer came, SkyMail may have taken it, so it counts as
   reached and is not tried again.
 - `400` and `422` are permanent: that holder is counted as refused and the
-  others go on. Anything else (SkyMail down, `401`, `403` before Keycloak
-  gives core `skymail:notifications:send`, `409` or `422 type_unknown` before
-  the type is seeded) keeps the row, tried again 30 seconds later, doubling to
-  30 minutes, for a day from the first change; then it is given up unsent.
+  others go on. One `422` is not: `notification.type_unknown`, the type not
+  seeded yet, passes once the Template seed has run. It, and anything else
+  (SkyMail down, `401`, `403` before Keycloak gives core
+  `skymail:notifications:send`, `409` before the type's e-mail or inbox text
+  is there, `404` before a guest's template is seeded), keeps the row, tried
+  again 30 seconds later, doubling to 30 minutes, for a day from the first
+  change; then it is given up unsent.
 - Several cores share the queue: a claim skips the row another holds, and
-  renews it every 20 sends.
+  renews it every 20 sends. A change that finds the row still gathering
+  writes it too (a no-op), so the row stays locked until that change
+  commits: a claim in between skips it rather than read the Event before the
+  change.
 
 Each pass that did something logs one line of counts, never a person:
 

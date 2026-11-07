@@ -105,8 +105,25 @@ func (s *SkyMail) Notify(ctx context.Context, kind, idempotencyKey string, n Not
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
-	warn(s.Logger, eventCallFailed, kind, resp.StatusCode, sendReason(resp.StatusCode), diagnosticCode(diagnosticBody(resp.Body)))
-	return &SendError{Status: resp.StatusCode}
+	answer := diagnosticBody(resp.Body)
+	warn(s.Logger, eventCallFailed, kind, resp.StatusCode, sendReason(resp.StatusCode), diagnosticCode(answer))
+	return &SendError{Status: resp.StatusCode, Code: answerCode(answer)}
+}
+
+// answerCode is the code of SkyMail's error body ({"code": …}, its
+// AppError), else what diagnosticCode reads; empty when nothing code-shaped
+// is there.
+func answerCode(body []byte) string {
+	if len(body) == 0 || len(body) > maxDiagnosticBody {
+		return ""
+	}
+	var fields struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(body, &fields) == nil && codeShaped(fields.Code) {
+		return fields.Code
+	}
+	return diagnosticCode(body)
 }
 
 // TicketCreated tells a new Ticket's holder: a registered holder by a

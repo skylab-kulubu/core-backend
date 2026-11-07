@@ -53,8 +53,11 @@ func readUpdateBefore(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*updateBefo
 // queueUpdateNotification queues the Event's change for its Ticket holders
 // when its start, end or location is not what before read. The row gathers
 // the changes until the worker first takes it: while one waits, a later
-// change queues nothing more (it keeps the first change's before), and the
-// worker reads the Event as it is when it sends.
+// change adds no row (it keeps the first change's before), and the worker
+// reads the Event as it is when it sends. A later change still writes the
+// waiting row (DO UPDATE, a no-op), so the row stays locked until the change
+// commits: a worker claiming it in between (FOR UPDATE SKIP LOCKED) skips it
+// instead of reading the Event before the change and losing it.
 func queueUpdateNotification(ctx context.Context, tx pgx.Tx, id uuid.UUID, before *updateBefore) error {
 	if before == nil || !before.told {
 		return nil
@@ -66,7 +69,7 @@ func queueUpdateNotification(ctx context.Context, tx pgx.Tx, id uuid.UUID, befor
 		WHERE e.id = $2 AND e.status = 'published'
 		  AND (e.start_date IS DISTINCT FROM $3::timestamptz OR e.end_date IS DISTINCT FROM $4::timestamptz
 			OR btrim(e.location) <> btrim($5::text))
-		ON CONFLICT (event_id) WHERE started_at IS NULL DO NOTHING`,
+		ON CONFLICT (event_id) WHERE started_at IS NULL DO UPDATE SET event_id = EXCLUDED.event_id`,
 		uuid.New(), id, before.start, before.end, before.location, UpdateNotificationWindow.Seconds())
 	return err
 }
