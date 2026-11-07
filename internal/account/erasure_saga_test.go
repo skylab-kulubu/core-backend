@@ -273,7 +273,7 @@ func TestErasureSagaErasesTheServicesAfterLogoutAndBeforeCoreAndTheIdentity(t *t
 		t.Fatalf("request = %+v", state)
 	}
 	if got := f.checkpoints(); !slices.Equal(got, sagaSteps) || len(f.records()) != len(sagaSteps) {
-		t.Fatalf("checkpoints = %v, want all twelve", got)
+		t.Fatalf("checkpoints = %v, want all thirteen", got)
 	}
 	for _, service := range erasure.Registry() {
 		if got := f.sentEmails(service.Step, 0); !slices.Equal(got, []string{sagaPersonal, sagaSchool}) {
