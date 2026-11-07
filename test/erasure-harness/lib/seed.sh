@@ -20,8 +20,8 @@ seed_core_jit() {
 
 seed_core_shared() {
   pg super_skylab "
-    INSERT INTO events (id, name, location, owner_team, active)
-    VALUES ('$(uuid_of event)', 'Harness Etkinliği', 'Davutpaşa', 'SKY LAB', true) ON CONFLICT DO NOTHING;
+    INSERT INTO events (id, name, location, owner_team)
+    VALUES ('$(uuid_of event)', 'Harness Etkinliği', 'Davutpaşa', 'SKY LAB') ON CONFLICT DO NOTHING;
     INSERT INTO event_days (id, event_id, name) VALUES ('$(uuid_of day)', '$(uuid_of event)', 'Gün 1') ON CONFLICT DO NOTHING;
     INSERT INTO sessions (id, event_day_id, title, session_type)
     VALUES ('$(uuid_of session)', '$(uuid_of day)', 'Açılış', 'talk') ON CONFLICT DO NOTHING;" >/dev/null

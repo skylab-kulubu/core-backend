@@ -293,3 +293,51 @@ func TestCompetitorDumpAndUserRoutesRequireAuthz(t *testing.T) {
 		t.Fatalf("all %+v", all)
 	}
 }
+
+// Moving a competitor to a draft or a cancelled Event answers 409 with the
+// reason's code, and the competitor stays where it was.
+func TestCompetitorMoveToAClosedEventHTTP(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	comps := competitor.NewMemoryStore(events)
+	seed := func(status event.Status) event.Event {
+		ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", Status: status})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ev
+	}
+	from := seed(event.StatusPublished)
+	created, err := comps.Create(t.Context(), competitor.Competitor{UserID: uuid.New(), EventID: from.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	app := competitorApp(t, leader, events, comps)
+	for _, tc := range []struct {
+		target event.Event
+		code   string
+	}{
+		{seed(event.StatusDraft), "event_not_published"},
+		{seed(event.StatusCancelled), "event_cancelled"},
+	} {
+		req := httptest.NewRequest(fiber.MethodPut, "/v1/competitors/"+created.ID.String(), strings.NewReader(
+			`{"userId":"`+created.UserID.String()+`","eventId":"`+tc.target.ID.String()+`"}`,
+		))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != fiber.StatusConflict || body["code"] != tc.code {
+			t.Fatalf("move to %s: %d %v, want 409 %s", tc.target.Status, resp.StatusCode, body, tc.code)
+		}
+		if got, err := comps.Get(t.Context(), created.ID); err != nil || got.EventID != from.ID {
+			t.Fatalf("competitor after the refused move %+v %v", got, err)
+		}
+	}
+}
