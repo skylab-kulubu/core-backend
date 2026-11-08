@@ -100,6 +100,36 @@ func readAudit(t *testing.T, got rawResponse) auditAnswer {
 	return a
 }
 
+// withoutKey is the JSON document body with every key named key dropped,
+// at any depth: what is left to search for data that must not be there.
+func withoutKey(t *testing.T, body []byte, key string) []byte {
+	t.Helper()
+	var doc any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("%v: %s", err, body)
+	}
+	var drop func(any)
+	drop = func(v any) {
+		switch v := v.(type) {
+		case map[string]any:
+			delete(v, key)
+			for _, child := range v {
+				drop(child)
+			}
+		case []any:
+			for _, child := range v {
+				drop(child)
+			}
+		}
+	}
+	drop(doc)
+	out, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 // The role alone decides, in every role mode: ADMIN, YK and DK read with
 // it; ADMIN or DK without it, global:read, a Leader (S7), a member and a
 // service account holding it do not. A filter the route cannot read is 400
@@ -197,8 +227,11 @@ func TestTeamAuditRecordsAnswer(t *testing.T) {
 	reader := e.auditToken("dk", authz.RoleAuditRead, authz.RoleGlobalRead)
 	got := e.send(reader, fiber.MethodGet, auditRecordsPath, "")
 	a := readAudit(t, got)
+	// The search skips correlationId: a random request ID can hold any of
+	// these by chance ("…HSu-E9…" did once).
+	scanned := withoutKey(t, got.body, "correlationId")
 	for _, personal := range []string{"@example.test", "SKY-", "u-", "newcomer"} {
-		if bytes.Contains(got.body, []byte(personal)) {
+		if bytes.Contains(scanned, []byte(personal)) {
 			t.Fatalf("the answer holds %q: %s", personal, got.body)
 		}
 	}
