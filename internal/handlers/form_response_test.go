@@ -70,12 +70,15 @@ func TestFormResponseLogsTheReportButNotWhoAnswered(t *testing.T) {
 	}
 
 	out := logs.String()
-	for _, personal := range []string{"ada@example.com", "Ada", "Lovelace", member.String(), "member@example.com", "Grace", "Hopper"} {
-		if strings.Contains(out, personal) {
-			t.Fatalf("log carries %q: %s", personal, out)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for _, raw := range lines {
+		scanned := withoutCorrelationID(t, raw)
+		for _, personal := range []string{"ada@example.com", "Ada", "Lovelace", member.String(), "member@example.com", "Grace", "Hopper"} {
+			if strings.Contains(scanned, personal) {
+				t.Fatalf("log carries %q: %s", personal, out)
+			}
 		}
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) != 5 {
 		t.Fatalf("log lines %q", lines)
 	}
@@ -108,4 +111,21 @@ func TestFormResponseLogsTheReportButNotWhoAnswered(t *testing.T) {
 	if !strings.Contains(lines[0], responseID.String()) {
 		t.Errorf("first line %s lacks the response id", lines[0])
 	}
+}
+
+// withoutCorrelationID is the JSON log line without its correlation_id: a
+// random request ID can hold a short name like "Ada" by chance, so a search
+// for personal data skips it.
+func withoutCorrelationID(t *testing.T, line string) string {
+	t.Helper()
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		t.Fatalf("log line %q: %v", line, err)
+	}
+	delete(entry, "correlation_id")
+	out, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }
