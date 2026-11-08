@@ -673,19 +673,93 @@ func TestService_MovingToADraftOrCancelledEvent(t *testing.T) {
 		t.Fatalf("moving to a published ended Event %+v %v", moved, err)
 	}
 
-	// In place, with or without naming the Event, and with another user.
-	inCancelled, err := competitors.Create(ctx, competitor.Competitor{UserID: uuid.New(), EventID: cancelled.ID})
+	// In place, with or without naming the Event and its own user.
+	cancelledUser := uuid.New()
+	inCancelled, err := competitors.Create(ctx, competitor.Competitor{UserID: cancelledUser, EventID: cancelled.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, in := range []competitor.UpdateInput{
 		{Score: ptr(2)},
 		{EventID: cancelled.ID, Score: ptr(3)},
-		{UserID: uuid.New(), EventID: cancelled.ID, Score: ptr(4)},
+		{UserID: cancelledUser, EventID: cancelled.ID, Score: ptr(4), IsWinner: true},
 	} {
 		got, err := svc.Update(ctx, leader, inCancelled.ID, in)
-		if err != nil || got.EventID != cancelled.ID || got.Score == nil || *got.Score != *in.Score {
+		if err != nil || got.EventID != cancelled.ID || got.Score == nil || *got.Score != *in.Score || got.IsWinner != in.IsWinner {
 			t.Fatalf("editing in place in a cancelled Event %+v %v", got, err)
 		}
+	}
+}
+
+// A cancelled Event takes no one new (Create refuses it), so its competitor
+// keeps its person: changing userId is 409 event_cancelled and leaves the
+// competitor as it was, for YK too. Who may not see the Event still gets 404,
+// who does not write its Competitors 403. A draft's competitor still changes
+// person.
+func TestService_ACancelledEventsCompetitorKeepsItsPerson(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	events := event.NewMemoryStore()
+	competitors := competitor.NewMemoryStore(events)
+	az := authz.NewAuthorizer(authz.DefaultPolicy())
+	svc := competitor.NewService(competitors, events, az)
+	cancelled := seedEvent(t, events, "WEBLAB", event.StatusCancelled)
+	draft := seedEvent(t, events, "WEBLAB", event.StatusDraft)
+	leader := authz.Principal{ID: "leader", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	yk := authz.Principal{ID: "yk", Groups: []string{"/UYELER/YK"}}
+	dk := authz.Principal{ID: "dk", Groups: []string{"/UYELER/DK"}}
+	stranger := authz.Principal{ID: "stranger", Groups: []string{"/UYELER"}}
+
+	user := uuid.New()
+	in, err := competitors.Create(ctx, competitor.Competitor{UserID: user, EventID: cancelled.ID, Score: ptr(5)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged := func(t *testing.T, who string) {
+		t.Helper()
+		if got, err := competitors.Get(ctx, in.ID); err != nil || got.UserID != user || got.Score == nil || *got.Score != 5 || got.IsWinner {
+			t.Fatalf("%s: competitor after the refused edit %+v %v", who, got, err)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		p    authz.Principal
+		in   competitor.UpdateInput
+	}{
+		{"leader", leader, competitor.UpdateInput{UserID: uuid.New(), Score: ptr(7), IsWinner: true}},
+		{"leader naming the Event", leader, competitor.UpdateInput{UserID: uuid.New(), EventID: cancelled.ID, Score: ptr(7)}},
+		{"Privileged", yk, competitor.UpdateInput{UserID: uuid.New(), Score: ptr(7)}},
+	} {
+		_, err := svc.Update(ctx, tc.p, in.ID, tc.in)
+		if !errors.Is(err, competitor.ErrConflict) || !errors.Is(err, event.ErrCancelled) {
+			t.Fatalf("%s changing the person: %v, want event_cancelled", tc.name, err)
+		}
+		unchanged(t, tc.name)
+	}
+
+	// The status is no answer for who may not edit it.
+	if _, err := svc.Update(ctx, dk, in.ID, competitor.UpdateInput{UserID: uuid.New()}); !errors.Is(err, competitor.ErrForbidden) || errors.Is(err, competitor.ErrConflict) {
+		t.Fatalf("DK changing the person: %v", err)
+	}
+	unchanged(t, "DK")
+	if _, err := svc.Update(ctx, stranger, in.ID, competitor.UpdateInput{UserID: uuid.New()}); err == nil || errors.Is(err, competitor.ErrConflict) {
+		t.Fatalf("a stranger changing the person: %v", err)
+	}
+	unchanged(t, "stranger")
+
+	// Score and win stay editable.
+	got, err := svc.Update(ctx, leader, in.ID, competitor.UpdateInput{UserID: user, Score: ptr(9), IsWinner: true})
+	if err != nil || got.UserID != user || got.Score == nil || *got.Score != 9 || !got.IsWinner {
+		t.Fatalf("scoring in a cancelled Event %+v %v", got, err)
+	}
+
+	// A draft's competitor changes person as before.
+	inDraft, err := competitors.Create(ctx, competitor.Competitor{UserID: uuid.New(), EventID: draft.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := uuid.New()
+	if got, err := svc.Update(ctx, leader, inDraft.ID, competitor.UpdateInput{UserID: other}); err != nil || got.UserID != other {
+		t.Fatalf("changing the person in a draft %+v %v", got, err)
 	}
 }
