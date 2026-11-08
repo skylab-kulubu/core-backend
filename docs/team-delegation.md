@@ -20,7 +20,8 @@ caller's token.
 - **off**: no delegated way. Every Group route is Privileged's, exactly as
   before: a Leader gets the same 403, nothing is read for them and no row is
   written. `managedTeams` is `[]`; `GET /v1/users/me/managed-groups` answers
-  `[]` to everyone but Privileged.
+  `[]` to everyone but Privileged. [A person's Teams](#a-persons-teams)
+  still answers: it reads, and decides nothing in Keycloak.
 - **on**: a person who is not Privileged for Groups reaches the routes
   below for a Group they manage.
   It also turns on the Owner team inheritance below.
@@ -485,6 +486,61 @@ they lead, each once (a Sub-team they also lead sits under the Team above);
 anyone else `[]`. Walked down by id; kept 60 s per person and dropped by
 core's own membership writes.
 
+## A person's Teams
+
+`GET /internal/v1/users/{sub}/teams` tells another service which Teams a
+person is in and which they lead, **with `TEAM_DELEGATION` on or off**: the
+answer changes nobody's rights in Keycloak, so the switch does not gate it
+(ADR-0067 addendum of 2026-11-08, Team mail; ADR-0075 addendum of
+2026-11-08, a form's owner team). The decisions in Keycloak stay closed
+with delegation off; this route opens no write and no managed tree.
+
+```
+GET /internal/v1/users/{sub}/teams
+→ {"teams": [
+    {"id": "…", "path": "/UYELER/ARGE/WEBLAB", "code": "WEBLAB",
+     "displayName": {"tr": "Web Lab", "en": "…"}, "role": "member"},
+    {"id": "…", "path": "/UYELER/ARGE/WEBLAB/FRONTEND", "code": "FRONTEND",
+     "displayName": {"tr": "…"}, "role": "leader"}
+  ]}
+```
+
+- **`leader`**: a Team whose Leader group (`LIDERLER` or `KOORDINATORLER`)
+  the person is directly in, and every Sub-team below it. The rule is
+  [Who manages what](#who-manages-what)'s: read now from Keycloak by id,
+  the Leader group right under its Team by id and by path, a Privileged
+  root no Team. A Sub-team's Leader leads only their own subtree.
+  Protection does not matter here.
+- **`member`**: a Team the person is in (its Group or a Group under it,
+  a parent roster being that tree) and does not lead, with every Team
+  above it. A Group that only looks like a Leader group makes them a
+  member of nothing.
+- Each Team once, in path order; `leader` wins. The tree is in the paths:
+  a row's parent is the row with the longest path above it. Areas
+  (`/UYELER/<area>`), the members' tree and Privileged roots never appear.
+- No other person, no address, no count. An unknown `sub` is `{"teams":
+  []}`.
+- **Callers**: a **service account** token with core's client role
+  `audience:read` (SkyMail's alone), or Forms' service account (its
+  client in `MEDIA_SERVICE_CLIENTS`) with `users:read`; both already hold
+  theirs, nothing new in Keycloak. `users:read` is shared (profile reads),
+  so another product's service account holding it is refused. A person's
+  token is `403 person_teams_service_only` whatever it carries; any other
+  service account `403 person_teams_role_missing`. A `sub` that is no
+  id is `400 person_teams_sub_invalid`.
+- An `/internal` route: through the public edge it is a bare `404` before
+  its token is read. `Cache-Control: no-store` on every answer.
+- Keycloak that cannot be read is `503 person_teams_directory_unavailable`
+  with `Retry-After: 30`, never a partial answer; no Team reads configured
+  is `503 person_teams_unavailable`.
+- **SkyMail** lets a person send Team mail (Mail onayı) to the `leader`
+  rows and counts the recipients itself; **Forms** offers both kinds as a
+  form's owner team. Each service decides with the answer; neither copies
+  the rule.
+
+Code: `internal/identity/person_teams.go` (`PersonTeams`), the route
+`internal/handlers/person_teams.go`. No table, no migration.
+
 ## Caches
 
 | What | Kept | Dropped by |
@@ -494,6 +550,7 @@ core's own membership writes.
 | the realm's names (`team_code_not_unique`) | 60 s | renames, Sub-team creates, code changes, deletions |
 | `managedTeams` | 60 s (a failure 10 s) | core's membership writes of that person |
 | a managed tree | 60 s | every core membership write |
+| a person's Teams (`/internal/v1/users/{sub}/teams`) | 60 s (a failure is not kept) | every core membership write, renames, role mapping writes |
 | the realm's Groups (Owner team inheritance, Team settings) | 60 s (a failure 10 s) | core's renames, attribute writes and Team settings writes |
 
 Writes never use a kept caller, target or protection: they read all three

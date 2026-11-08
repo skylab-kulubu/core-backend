@@ -214,6 +214,12 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 			return Competitor{}, fmt.Errorf("%w: %w", ErrConflict, err)
 		}
 	}
+	// A cancelled Event takes no one new, as Create refuses it: its
+	// competitor keeps its person, its score and win stay editable. A
+	// draft's competitor may still change person.
+	if in.UserID != existing.UserID && ev.Status == event.StatusCancelled {
+		return Competitor{}, fmt.Errorf("%w: %w", ErrConflict, event.ErrCancelled)
+	}
 	if in.UserID != existing.UserID || in.EventID != existing.EventID {
 		exists, err := s.competitors.ExistsUserEvent(ctx, in.UserID, in.EventID)
 		if err != nil {

@@ -341,3 +341,45 @@ func TestCompetitorMoveToAClosedEventHTTP(t *testing.T) {
 		}
 	}
 }
+
+// A cancelled Event's competitor keeps its person: PUT with another userId
+// is 409 event_cancelled; its score stays editable.
+func TestCompetitorChangePersonInACancelledEventHTTP(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	comps := competitor.NewMemoryStore(events)
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", Status: event.StatusCancelled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := comps.Create(t.Context(), competitor.Competitor{UserID: uuid.New(), EventID: ev.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	app := competitorApp(t, leader, events, comps)
+	put := func(userID uuid.UUID) (int, map[string]any) {
+		req := httptest.NewRequest(fiber.MethodPut, "/v1/competitors/"+created.ID.String(), strings.NewReader(
+			`{"userId":"`+userID.String()+`","eventId":"`+ev.ID.String()+`","score":3}`,
+		))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, body
+	}
+	if code, body := put(uuid.New()); code != fiber.StatusConflict || body["code"] != "event_cancelled" {
+		t.Fatalf("changing the person: %d %v, want 409 event_cancelled", code, body)
+	}
+	if got, err := comps.Get(t.Context(), created.ID); err != nil || got.UserID != created.UserID || got.Score != nil {
+		t.Fatalf("competitor after the refused edit %+v %v", got, err)
+	}
+	if code, body := put(created.UserID); code != fiber.StatusOK {
+		t.Fatalf("scoring in a cancelled Event: %d %v", code, body)
+	}
+}

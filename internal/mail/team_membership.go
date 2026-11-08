@@ -44,7 +44,14 @@ var ErrTemplateUnconfigured = errors.New("mail: template unconfigured")
 // recipient, template or body.
 type SendError struct {
 	Status int
+	// Code is the error code SkyMail answered a Notification with (its
+	// body's code), empty when there is none or it is not code-shaped.
+	Code string
 }
+
+// codeTypeUnknown is SkyMail's answer to a Notification whose type is not
+// seeded (yet): the same body passes once the Template seed has run.
+const codeTypeUnknown = "notification.type_unknown"
 
 func (e *SendError) Error() string {
 	if e.Status == 0 {
@@ -55,9 +62,13 @@ func (e *SendError) Error() string {
 
 // Permanent reports whether SkyMail refused the request itself (400, 422):
 // the same body would be refused again. Everything else — an unknown
-// template (404, it may be seeded later), a token SkyMail does not accept
-// (401, 403), a rate limit or a failure of its own — can pass on a later try.
+// template (404) or Notification type (422 notification.type_unknown), both
+// seeded later, a token SkyMail does not accept (401, 403), a rate limit or
+// a failure of its own — can pass on a later try.
 func (e *SendError) Permanent() bool {
+	if e.Code == codeTypeUnknown {
+		return false
+	}
 	return e.Status == http.StatusBadRequest || e.Status == http.StatusUnprocessableEntity
 }
 

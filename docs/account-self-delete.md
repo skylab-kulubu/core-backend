@@ -205,15 +205,17 @@ request last changed and is never in the future: a deferred or failed attempt
 stamps the moment it failed, not the time of the next attempt, so a client may
 order the statuses it reads by `updatedAt`.
 
-`completed` means all twelve erasure steps are checkpointed: the person's contact
+`completed` means all thirteen erasure steps are checkpointed: the person's contact
 consents are deleted, their SkyPass Wallet passes withdrawn, their communication
-preferences deleted, SkyMail, CMS and
+preferences and App preferences deleted, SkyMail, CMS and
 Forms each confirmed the Erasure command, core is anonymized together with its
 guest data, and the Keycloak identity is deleted last (ADR-0051, the saga in
 [`account-lifecycle.md`](account-lifecycle.md#durable-erasure-flow)). While a
 service has not confirmed, the request stays `pending` or `processing` (or
 `manual_intervention` after a rejection) with `partial=true`; the person is
 already blocked and logged out. The response shape does not change.
+A request completed before `erase_app_preferences` shipped (core-backend
+#353) has twelve checkpoints, without that step; it is still `completed`.
 
 Retry is idempotent. It only moves `manual_intervention` back to `pending`,
 clears the stable internal error and retry budget, and preserves the permanent

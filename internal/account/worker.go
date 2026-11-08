@@ -49,6 +49,12 @@ type CommunicationPreferenceEraser interface {
 	EraseSubject(ctx context.Context, userID uuid.UUID) (int64, error)
 }
 
+// AppPreferenceEraser deletes every App preference of a person, in every app
+// (internal/apppref).
+type AppPreferenceEraser interface {
+	EraseSubject(ctx context.Context, userID uuid.UUID) (int64, error)
+}
+
 type MediaEraser interface {
 	EnsureErased(context.Context, uuid.UUID, time.Time) error
 	EnsureSubjectUploadsErased(context.Context, uuid.UUID, time.Time) error
@@ -78,6 +84,9 @@ type WorkerConfig struct {
 	// CommunicationPreferences deletes the person's communication preferences in the
 	// erase_communication_preferences step. Nil fails the step, as above.
 	CommunicationPreferences CommunicationPreferenceEraser
+	// AppPreferences deletes the person's App preferences in the
+	// erase_app_preferences step. Nil fails the step, as above.
+	AppPreferences AppPreferenceEraser
 	// Notices tells the person their request was received and that their
 	// account was deleted (deletion_notices.go). Nil sends neither; they
 	// are best effort and never hold the erasure back.
@@ -262,6 +271,14 @@ func (w *Worker) coreSaga(request user.DeletionRequest, now time.Time) []sagaSte
 				return errors.New("communication preference eraser unavailable")
 			}
 			_, err := w.config.CommunicationPreferences.EraseSubject(ctx, id)
+			return err
+		}},
+		// Core's own too: the person's view settings in every app.
+		{name: user.DeletionStepEraseAppPreferences, run: func(ctx context.Context, id uuid.UUID) error {
+			if w.config.AppPreferences == nil {
+				return errors.New("app preference eraser unavailable")
+			}
+			_, err := w.config.AppPreferences.EraseSubject(ctx, id)
 			return err
 		}},
 		{services: &w.services},

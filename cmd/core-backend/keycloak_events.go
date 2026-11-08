@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/skylab-kulubu/core-backend/internal/apppref"
+	"github.com/skylab-kulubu/core-backend/internal/commpref"
 	"github.com/skylab-kulubu/core-backend/internal/events"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 )
@@ -33,7 +35,8 @@ type keycloakHandling struct {
 	// requested says whether the person has an erasure request: the
 	// erasure saga's to delete (docs/account-lifecycle.md).
 	requested func(ctx context.Context, tx pgx.Tx, person uuid.UUID) (bool, error)
-	// erase deletes a person's communication preferences in tx.
+	// erase deletes a person's communication and App preferences in tx
+	// (erasePreferencesIn).
 	erase func(ctx context.Context, tx pgx.Tx, person uuid.UUID) (int64, error)
 	// wakeTeams wakes the communication preference cleanup's deleted teams
 	// part.
@@ -102,7 +105,7 @@ func keycloakEvents(k *keycloakHandling) events.Subscription {
 	}
 }
 
-// personDeleted deletes the communication preferences of a person Keycloak
+// personDeleted deletes the communication and App preferences of a person Keycloak
 // said it deleted, when the erasure saga does not have them and Keycloak no
 // longer has them. A Keycloak error other than "not found" is transient.
 func (k *keycloakHandling) personDeleted(ctx context.Context, tx pgx.Tx, e events.Event, person uuid.UUID) error {
@@ -121,7 +124,7 @@ func (k *keycloakHandling) personDeleted(ctx context.Context, tx pgx.Tx, e event
 	}
 	removed, err := k.erase(ctx, tx, person)
 	if err != nil {
-		return fmt.Errorf("erasing the deleted person's communication preferences: %w", err)
+		return fmt.Errorf("erasing the deleted person's preferences: %w", err)
 	}
 	k.outsideErasure.Add(1)
 	k.logf(`{"event":"keycloak_user_deleted_outside_erasure","level":"warn","queue":%q,"id":%q,"subject":%q,"preferences_removed":%d}`,
@@ -205,4 +208,19 @@ func wakesUserSync(kc events.KeycloakEvent) bool {
 		return true
 	}
 	return false
+}
+
+// erasePreferencesIn deletes a person's communication preferences and App
+// preferences in tx, and counts both: the rows the erasure saga's
+// erase_communication_preferences and erase_app_preferences steps delete.
+func erasePreferencesIn(ctx context.Context, tx pgx.Tx, person uuid.UUID) (int64, error) {
+	communication, err := commpref.EraseSubjectIn(ctx, tx, person)
+	if err != nil {
+		return 0, err
+	}
+	app, err := apppref.EraseSubjectIn(ctx, tx, person)
+	if err != nil {
+		return 0, err
+	}
+	return communication + app, nil
 }
