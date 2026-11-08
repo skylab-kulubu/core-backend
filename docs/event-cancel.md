@@ -29,6 +29,7 @@ Who: whoever may edit the Event (`authz.Update`); DK and anyone else `403`. The 
 | Certificates | finalize and issuing by hand `409 event_cancelled`; certificates issued before stay valid; jobs queued before wait untouched (the issuing worker does not take them; one claimed as the Event was cancelled is left to its lease) and go on when the cancellation is undone |
 | Competitions | cancelled with the Event, their earlier status kept ([competitions.md](competitions.md)) |
 | Tickets, applies, check-ins, door staff, Competitors | stay as they are; nothing is deleted or changes status |
+| `PUT /v1/competitors/{id}` | changing `userId` is `409`, `code: "event_cancelled"` (after the usual rights); score and `isWinner` stay editable; moving a Competitor into the Event is `409 event_cancelled` ([event-drafts.md](event-drafts.md)) |
 | Form short links | keep working: the panel offers "SkyForms'ta formu kapat"; nothing closes the form by itself |
 | Dashboard | not counted as upcoming or live |
 

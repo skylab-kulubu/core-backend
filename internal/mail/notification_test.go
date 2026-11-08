@@ -91,7 +91,7 @@ func TestTicketCreatedForAGuestPostsTheTemplateByAddress(t *testing.T) {
 }
 
 func TestNotifyReportsRefusalsAndLogsNoPerson(t *testing.T) {
-	srv, _ := notificationServer(t, http.StatusUnprocessableEntity, `{"error":"notification.type_unknown"}`)
+	srv, _ := notificationServer(t, http.StatusUnprocessableEntity, `{"error":"notification.idempotency_key_reused"}`)
 	var logs bytes.Buffer
 	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), Logger: log.New(&logs, "", 0)}
 	past := time.Now().Add(-time.Hour)
@@ -101,7 +101,7 @@ func TestNotifyReportsRefusalsAndLogsNoPerson(t *testing.T) {
 		t.Fatalf("err %v, want a permanent 422", err)
 	}
 	line := logs.String()
-	if !strings.Contains(line, `"kind":"ticket_created"`) || !strings.Contains(line, `"code":"notification.type_unknown"`) {
+	if !strings.Contains(line, `"kind":"ticket_created"`) || !strings.Contains(line, `"code":"notification.idempotency_key_reused"`) {
 		t.Fatalf("log %q", line)
 	}
 }
@@ -169,5 +169,53 @@ func TestNotifySendsAnEmptyChannelListAndLeavesANilOneOut(t *testing.T) {
 	}
 	if _, ok := second["allowed_channels"]; ok {
 		t.Fatalf("second %v: a nil list must be left out", second)
+	}
+}
+
+func TestEventUpdatedPostsItsTypeToAMemberAndItsTemplateToAGuest(t *testing.T) {
+	srv, got := notificationServer(t, http.StatusCreated, `{}`)
+	sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok")}
+	sub := uuid.New()
+	vars := map[string]string{"EventName": "Gece", "NewVenue": "Kongre Merkezi"}
+	source := NotificationSource{Kind: "event", Ref: "e"}
+	if err := sky.EventUpdated(context.Background(), "core:event.updated:e:n:v1", TicketHolder{Sub: sub}, vars, source, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := sky.EventUpdated(context.Background(), "unused", TicketHolder{Email: "can@example.com", FullName: "Can Er"}, vars, source, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(*got) != 2 {
+		t.Fatalf("requests %d", len(*got))
+	}
+	member, guest := (*got)[0], (*got)[1]
+	if member.path != "/v1/notifications" || member.key != "core:event.updated:e:n:v1" || member.body["type"] != EventUpdatedType {
+		t.Fatalf("member request %+v", member)
+	}
+	if v, _ := member.body["variables"].(map[string]any); v["NewVenue"] != "Kongre Merkezi" {
+		t.Fatalf("variables %v", member.body["variables"])
+	}
+	if guest.path != "/v1/mail_tasks/single" || guest.body["template_key"] != EventUpdatedType ||
+		guest.body["recipient_email"] != "can@example.com" || guest.key != "" {
+		t.Fatalf("guest request %+v", guest)
+	}
+}
+
+// A type not seeded yet is SkyMail's 422 notification.type_unknown: the
+// Notification waits in core's queue and passes once the seed has run.
+// Another 422 is SkyMail refusing the body itself.
+func TestNotifyTakesAnUnknownTypeAsOneToTryAgain(t *testing.T) {
+	for answer, permanent := range map[string]bool{
+		`{"code":"notification.type_unknown","message":"There is no notification type of this key in use (GET /notification_types)."}`: false,
+		`{"error":"notification.type_unknown"}`: false,
+		`{"code":"notification.idempotency_key_reused","message":"This Idempotency-Key was already used for a different request."}`: true,
+		`{"code":"ada@example.test"}`: true,
+	} {
+		srv, _ := notificationServer(t, http.StatusUnprocessableEntity, answer)
+		sky := &SkyMail{BaseURL: srv.URL, Tokens: StaticToken("tok"), Logger: log.New(io.Discard, "", 0)}
+		err := sky.Notify(context.Background(), "event_updated", "k", Notification{Type: EventUpdatedType, Recipients: []NotificationRecipient{{Sub: uuid.New()}}})
+		var refused *SendError
+		if !errors.As(err, &refused) || refused.Status != http.StatusUnprocessableEntity || refused.Permanent() != permanent {
+			t.Fatalf("%s: err %v, want permanent=%v", answer, err, permanent)
+		}
 	}
 }

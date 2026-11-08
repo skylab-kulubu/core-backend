@@ -17,7 +17,15 @@ import (
 // new Ticket is told by (iletişim-servisi 06, docs/ticket-created-notification.md).
 const TicketCreatedType = "event.ticket-created"
 
-const kindTicketCreated = "ticket_created"
+// EventUpdatedType is the Notification type (and the e-mail template key) a
+// published Event's new time or place is told by (iletişim-servisi 06,
+// docs/event-updated-notification.md).
+const EventUpdatedType = "event.updated"
+
+const (
+	kindTicketCreated = "ticket_created"
+	kindEventUpdated  = "event_updated"
+)
 
 // Notification is one POST /v1/notifications (SkyMail docs/notifications.md):
 // what happened and to whom; SkyMail picks the channels and the text.
@@ -97,8 +105,25 @@ func (s *SkyMail) Notify(ctx context.Context, kind, idempotencyKey string, n Not
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
-	warn(s.Logger, eventCallFailed, kind, resp.StatusCode, sendReason(resp.StatusCode), diagnosticCode(diagnosticBody(resp.Body)))
-	return &SendError{Status: resp.StatusCode}
+	answer := diagnosticBody(resp.Body)
+	warn(s.Logger, eventCallFailed, kind, resp.StatusCode, sendReason(resp.StatusCode), diagnosticCode(answer))
+	return &SendError{Status: resp.StatusCode, Code: answerCode(answer)}
+}
+
+// answerCode is the code of SkyMail's error body ({"code": …}, its
+// AppError), else what diagnosticCode reads; empty when nothing code-shaped
+// is there.
+func answerCode(body []byte) string {
+	if len(body) == 0 || len(body) > maxDiagnosticBody {
+		return ""
+	}
+	var fields struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(body, &fields) == nil && codeShaped(fields.Code) {
+		return fields.Code
+	}
+	return diagnosticCode(body)
 }
 
 // TicketCreated tells a new Ticket's holder: a registered holder by a
@@ -106,13 +131,27 @@ func (s *SkyMail) Notify(ctx context.Context, kind, idempotencyKey string, n Not
 // idempotent under idempotencyKey; a guest, who has no subject SkyMail could
 // take, by the type's e-mail template alone (/v1/mail_tasks/single).
 func (s *SkyMail) TicketCreated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
+	return s.tellHolder(ctx, kindTicketCreated, TicketCreatedType, idempotencyKey, holder, vars, source, expiresAt)
+}
+
+// EventUpdated tells a Ticket holder that the Event's time or place changed,
+// the way TicketCreated tells of a new Ticket: a registered holder by a
+// Notification to their subject, a guest by the type's e-mail template.
+func (s *SkyMail) EventUpdated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
+	return s.tellHolder(ctx, kindEventUpdated, EventUpdatedType, idempotencyKey, holder, vars, source, expiresAt)
+}
+
+// tellHolder posts typ to a Ticket holder: a Notification to a registered
+// holder's subject under idempotencyKey, the type's template by address to a
+// guest. A guest's mail that went out with no answer is ErrMaybeDelivered.
+func (s *SkyMail) tellHolder(ctx context.Context, kind, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
 	if holder.Sub != uuid.Nil {
 		variables := make(map[string]any, len(vars))
 		for name, value := range vars {
 			variables[name] = value
 		}
-		return s.Notify(ctx, kindTicketCreated, idempotencyKey, Notification{
-			Type:       TicketCreatedType,
+		return s.Notify(ctx, kind, idempotencyKey, Notification{
+			Type:       typ,
 			Recipients: []NotificationRecipient{{Sub: holder.Sub}},
 			Variables:  variables,
 			Source:     &source,
@@ -126,7 +165,7 @@ func (s *SkyMail) TicketCreated(ctx context.Context, idempotencyKey string, hold
 	if err != nil || token == "" {
 		return &SendError{}
 	}
-	status, reached := s.postReached(ctx, kindTicketCreated, token, template{key: TicketCreatedType}.task(holder.Email, holder.FullName, vars))
+	status, reached := s.postReached(ctx, kind, token, template{key: typ}.task(holder.Email, holder.FullName, vars))
 	switch {
 	case succeeded(status):
 		return nil

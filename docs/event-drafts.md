@@ -38,7 +38,7 @@ ADR 0066 and its 2026-10-19 addendum (e-skylab). An Event's `status` is `draft`,
 | `POST /v1/competitors`, `POST /v1/competitors/{id}/reinstate` | `400` (`POST`), `409` (reinstate), `code: "event_not_published"` | `404` |
 | `PUT /v1/competitors/{id}` moving it to a draft | `409`, `code: "event_not_published"` (after the usual rights on both Events: `403`) | `404`; `403` without looking at the target for who sees the Event it is in but does not write its Competitors |
 
-A Competitor moves only to a published Event: moving it to a cancelled one is `409 event_cancelled`. Editing a draft's Competitor in place (`PUT` keeping the Event) and withdrawing it (`DELETE`) look at no status: the usual rights decide for who may see the draft, anyone else gets `404`.
+A Competitor moves only to a published Event: moving it to a cancelled one is `409 event_cancelled`. A cancelled Event's Competitor keeps its person: a `PUT` that changes its `userId` is `409 event_cancelled` (after the usual rights: `404`/`403`), as `POST /v1/competitors` takes no one new there; its score and `isWinner` stay editable. Editing a draft's Competitor in place (`PUT` keeping the Event, `userId` included) and withdrawing it (`DELETE`) look at no status: the usual rights decide for who may see the draft, anyone else gets `404`.
 
 A certificate is issued only on a published Event: issuing one by hand on a cancelled Event is `409 event_cancelled`, as finalization already was. The legacy immediate issuance (`LegacyImmediate`) skips an Event that is not published.
 

@@ -60,6 +60,10 @@ type Service struct {
 	refusedMu          sync.Mutex
 	teamCleanupRefused map[string]int64
 
+	// otherPeople are other records of people that go with the
+	// preferences of a person Keycloak no longer has (App preferences).
+	otherPeople []PeopleRecords
+
 	treeMu   sync.Mutex
 	cached   *Tree
 	cachedAt time.Time
@@ -687,7 +691,8 @@ func (s *Service) CleanupPrometheus() string {
 // outside the saga explains: Keycloak answering for the wrong realm, say.
 var errTooManyGone = errors.New("communication preferences: too many people unknown to Keycloak; none removed")
 
-// RemoveDeletedPeople deletes the rows of people Keycloak no longer has: an
+// RemoveDeletedPeople deletes the rows of people Keycloak no longer has, in
+// this table and in every record AlsoRemoveDeletedPeopleFrom added: an
 // account deleted outside the erasure saga (straight from the Keycloak
 // console) keeps no preference (D2). The saga deletes its own rows in its
 // step. A Keycloak error other than "not found" stops the run with nothing
@@ -695,8 +700,27 @@ var errTooManyGone = errors.New("communication preferences: too many people unkn
 // gone (and more than five).
 func (s *Service) RemoveDeletedPeople(ctx context.Context) (int64, error) {
 	people, err := s.store.Subjects(ctx)
-	if err != nil || len(people) == 0 {
+	if err != nil {
 		return 0, err
+	}
+	seen := make(map[uuid.UUID]bool, len(people))
+	for _, person := range people {
+		seen[person] = true
+	}
+	for _, other := range s.otherPeople {
+		more, err := other.Subjects(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("communication preferences: reading the people of another record: %w", err)
+		}
+		for _, person := range more {
+			if !seen[person] {
+				seen[person] = true
+				people = append(people, person)
+			}
+		}
+	}
+	if len(people) == 0 {
+		return 0, nil
 	}
 	var gone []uuid.UUID
 	for _, person := range people {
@@ -718,8 +742,29 @@ func (s *Service) RemoveDeletedPeople(ctx context.Context) (int64, error) {
 		if err != nil {
 			return removed, err
 		}
+		for _, other := range s.otherPeople {
+			n, err := other.EraseSubject(ctx, person)
+			removed += n
+			if err != nil {
+				return removed, err
+			}
+		}
 	}
 	return removed, nil
+}
+
+// PeopleRecords is another record kept by Keycloak subject (App
+// preferences, internal/apppref): the people it names, and their erasure.
+type PeopleRecords interface {
+	Subjects(ctx context.Context) ([]uuid.UUID, error)
+	EraseSubject(ctx context.Context, person uuid.UUID) (int64, error)
+}
+
+// AlsoRemoveDeletedPeopleFrom makes RemoveDeletedPeople look at the people
+// of records too and erase them there with their preferences. Call it
+// before MaintainCleanup starts.
+func (s *Service) AlsoRemoveDeletedPeopleFrom(records PeopleRecords) {
+	s.otherPeople = append(s.otherPeople, records)
 }
 
 // CleanupInterval is how often the rows of deleted teams and people are
