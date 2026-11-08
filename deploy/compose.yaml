@@ -92,6 +92,8 @@ services:
       FEEDBACK_NOTIFICATION: ${FEEDBACK_NOTIFICATION:-off}
       # The new Ticket's Notification (docs/ticket-created-notification.md).
       TICKET_CREATED_NOTIFICATION: ${TICKET_CREATED_NOTIFICATION:-off}
+      # A published Event's new time or place (docs/event-updated-notification.md).
+      EVENT_UPDATED_NOTIFICATION: ${EVENT_UPDATED_NOTIFICATION:-off}
       GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
       PUBLIC_API_ORIGIN: ${PUBLIC_API_ORIGIN:-}
       PUBLIC_VERIFY_ORIGIN: ${PUBLIC_VERIFY_ORIGIN:-https://skyl.app/c}

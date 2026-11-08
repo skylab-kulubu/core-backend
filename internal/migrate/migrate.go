@@ -1578,6 +1578,16 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		WHERE conrelid = to_regclass('public.account_deletion_steps')
 		  AND conname = 'account_deletion_steps_step_check'
 		  AND pg_get_constraintdef(oid) LIKE '%''erase_app_preferences''%'`,
+	// The Event change Notification queue (event.updated), its record of
+	// sends and their indexes.
+	20261108160000: `
+		SELECT 1
+		WHERE to_regclass('public.event_update_notifications') IS NOT NULL
+		  AND to_regclass('public.event_update_notification_sends') IS NOT NULL
+		  AND to_regclass('public.event_update_notifications_gathering_idx') IS NOT NULL
+		  AND to_regclass('public.event_update_notifications_due_idx') IS NOT NULL
+		  AND to_regclass('public.event_update_notifications_event_idx') IS NOT NULL
+		  AND to_regclass('public.event_update_notification_sends_ticket_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

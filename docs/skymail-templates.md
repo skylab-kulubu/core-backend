@@ -85,6 +85,11 @@ by address through `/v1/mail_tasks/single`. It rides a queue of its own and is
 off until `TICKET_CREATED_NOTIFICATION=on`. See
 [ticket-created-notification.md](ticket-created-notification.md).
 
+`event.updated` goes the same way, off until
+`EVENT_UPDATED_NOTIFICATION=on`: a published Event's new start, end or
+location tells its Ticket holders, the changes of 15 minutes gathered in one
+Notification. See [event-updated-notification.md](event-updated-notification.md).
+
 A ninth, `club.management-term`, rides a queue of its own the same way: the
 warning 14 days and 1 day before a YK, DK or Team Leader membership's term
 ends (to the holder and those over them), the list of terms marked expired

@@ -73,8 +73,8 @@ Ticket insert ──(same statement)──▶ ticket_notifications ──▶ wor
   an error, is tried again as above.
 - `400` and `422` are permanent (the same body would be refused again): the
   row is done with, counted as refused. Anything else (SkyMail down, `401`,
-  `403` before Keycloak gives core `skymail:notifications:send`, `409` before
-  the type is seeded) is tried again, 30 seconds first, doubling to 30
+  `403` before Keycloak gives core `skymail:notifications:send`, `409` or
+  `422 notification.type_unknown` before the type is seeded) is tried again, 30 seconds first, doubling to 30
   minutes, for a day. A row a day old is given up unsent, whether it failed
   until then or waited while the worker was off.
 - Several cores share the queue: a claim skips the rows another holds, and
