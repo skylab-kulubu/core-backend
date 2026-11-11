@@ -102,6 +102,23 @@ Idempotency-Key: core:feedback-request:<hash of the mail>
 - **Retries.** The key is a hash of the mail's queue rows, its recipient and its links: the same on every try (the invite codes do not change), so a try after a lost answer is SkyMail's replay. A mail whose links changed meanwhile (a target dropped) is another body under another key, since SkyMail refuses another body under a key it has seen. `400` and `422` are done with, unsent; a type SkyMail does not know yet (`422 notification.type_unknown`) is not: it waits for the seed like anything else (SkyMail down, `403` before Keycloak gives core `skymail:notifications:send`) is tried again as before.
 - **Before turning it on:** skymail-frontend's seed has written the two types, and core's service account has `skymail:access` and `skymail:notifications:send` (iletişim-servisi 04).
 
+## In the holder's tickets (ticket 12)
+
+`GET /v1/tickets/me` (the member's own tickets; sky-app) gives each Ticket whose feedback mail went its links, the same ones the mail sent (the same invite codes), so the app can show them:
+
+```json
+{"id": "…", "eventId": "…", "checkIns": [ … ],
+ "feedback": [
+   {"url": "https://forms.yildizskylab.com/<formId>?davet=<code>", "title": "Açılış", "sessionId": "<sessionId>", "answered": false},
+   {"url": "https://forms.yildizskylab.com/<formId>?davet=<code>", "title": "Gecekodu", "sessionId": null, "answered": true}
+ ]}
+```
+
+- **When.** One item per invite of the Ticket: there is one only once the feedback mail was built for it (the schedule's or "Şimdi gönder"; checked in, the target ended plus `SendDelay`, see Mails). No new rule: before the mail, or for a Ticket that never checked in, there is no `feedback` field at all (it is left out, not `[]` or `null`).
+- **Left out**, as the mail's worker reads its targets now: the Event no longer published or archived; a Session cancelled or archived (or its day), or no longer in the `per_session` mode; a target whose form changed since (the code is the old form's); a form that closed (its reminders were cancelled, or its `feedback_form_closings` time has come; as the reminder, opening it again does not bring the link back). The box (`feedbackAutoSend`) does not matter: the mail went already. After 90 days the invite is deleted (Retention), and its link goes with it.
+- **Fields.** `url` the form's own address with the code alone (`feedback.Link`); `title` the Session's title, or the Event's name for the Event's form; `sessionId` the Session, `null` for the Event's form; `answered` whether Forms reported an answer for the invite (a guest's only with the code, see above). An answered form stays in the list. The Sessions' forms come first in their order, the Event's last (the mail's order).
+- **Only here.** `/v1/tickets/{id}`, `/v1/tickets`, an Event's tickets and the other ticket answers carry no `feedback`: the code is the holder's own. All the Tickets' links are read in one query; if it fails, the tickets come without them.
+
 ## Reminder (ticket 07)
 
 **Once, three days later (K4).** One reminder a Ticket a day (ADR 0069 decision 9: the reminder is one mail too). `feedback.ReminderDelay` (3 days) after the Ticket's last feedback mail of the day went (SkyMail took it; a mail it refused, or one dropped, gets none), the same worker queues one reminder with the targets of all that day's mails whose invite is not answered, reminded or cancelled. A person who got the morning's Session forms and the Event's form in a second mail gets one reminder, three days after the second; while a mail of the day is still to go, the day waits for it. It goes as `core.feedback-reminder` with the same variables and the **same links** (the same invite codes), joined into one mail an address as the first one. Each mail is planned once (`feedback_mails.reminder_planned_at`), each invite once (`reminded_at`). A reminder that fell due more than `feedback.ReminderWindow` (7 days) ago (core was off meanwhile) is not sent. A guest is reminded until Forms reports the invite code with their answer (ticket 11): until then a guest never counts as having answered, so the text says "if you have not filled it in yet".
