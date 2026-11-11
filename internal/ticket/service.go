@@ -3,6 +3,7 @@ package ticket
 import (
 	"context"
 	"errors"
+	"log"
 	"slices"
 	"sort"
 	"strings"
@@ -73,6 +74,12 @@ type service struct {
 	// feedback marks who answered a feedback form (FeedbackAnswers); nil
 	// marks nobody.
 	feedback FeedbackAnswers
+	// feedbackLinks reads the holder's feedback links for Mine; nil gives
+	// none.
+	feedbackLinks FeedbackLinks
+	// logger writes what the service leaves out instead of failing (a
+	// *log.Logger extra; log.Default() otherwise, as the handlers').
+	logger *log.Logger
 }
 
 func NewService(tickets Store, events event.Store, az authz.Authorizer, extras ...any) Service {
@@ -98,9 +105,18 @@ func NewService(tickets Store, events event.Store, az authz.Authorizer, extras .
 		if v, ok := extra.(FeedbackAnswers); ok && v != nil {
 			s.feedback = v
 		}
+		if v, ok := extra.(FeedbackLinks); ok && v != nil {
+			s.feedbackLinks = v
+		}
+		if v, ok := extra.(*log.Logger); ok && v != nil {
+			s.logger = v
+		}
 	}
 	if s.door == nil {
 		s.door = doorqr.NewEphemeralGate()
+	}
+	if s.logger == nil {
+		s.logger = log.Default()
 	}
 	return s
 }
@@ -713,7 +729,29 @@ func (s *service) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 	if err != nil {
 		return nil, err
 	}
-	return s.withEvents(ctx, tickets), nil
+	return s.withFeedbackLinks(ctx, s.withEvents(ctx, tickets)), nil
+}
+
+// withFeedbackLinks gives the holder's Tickets their feedback links, read in
+// one query for all of them. The links are an extra: when they cannot be
+// read the Tickets go without them, and a log line (naming nobody) says so.
+func (s *service) withFeedbackLinks(ctx context.Context, tickets []Ticket) []Ticket {
+	if s.feedbackLinks == nil || len(tickets) == 0 {
+		return tickets
+	}
+	ids := make([]uuid.UUID, len(tickets))
+	for i, t := range tickets {
+		ids[i] = t.ID
+	}
+	links, err := s.feedbackLinks.TicketLinks(ctx, ids, time.Now().UTC())
+	if err != nil {
+		s.logger.Printf("tickets: feedback links not read, %d tickets answered without them: %v", len(tickets), err)
+		return tickets
+	}
+	for i := range tickets {
+		tickets[i].Feedback = links[tickets[i].ID]
+	}
+	return tickets
 }
 
 func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Ticket, error) {

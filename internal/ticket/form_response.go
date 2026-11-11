@@ -54,6 +54,12 @@ type FeedbackAnswers interface {
 	MarkAnswered(ctx context.Context, formID uuid.UUID, code string, userID *uuid.UUID) (bool, error)
 }
 
+// FeedbackLinks are the Tickets' feedback links, by Ticket
+// (feedback.PostgresStore): what the holder's own tickets answer carries.
+type FeedbackLinks interface {
+	TicketLinks(ctx context.Context, ticketIDs []uuid.UUID, now time.Time) (map[uuid.UUID][]feedback.TicketLink, error)
+}
+
 // FormResponseOutcome is how recording a report ended, for the report's log
 // line. It names nobody.
 type FormResponseOutcome string
