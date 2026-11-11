@@ -114,10 +114,10 @@ Idempotency-Key: core:feedback-request:<hash of the mail>
  ]}
 ```
 
-- **When.** One item per invite of the Ticket: there is one only once the feedback mail was built for it (the schedule's or "Şimdi gönder"; checked in, the target ended plus `SendDelay`, see Mails). No new rule: before the mail, or for a Ticket that never checked in, there is no `feedback` field at all (it is left out, not `[]` or `null`).
+- **When.** One item per invite of the Ticket whose mail went: a feedback mail of the Ticket's (`feedback_mails.sent`, SkyMail took it) carried the target (the schedule's or "Şimdi gönder"; checked in, the target ended plus `SendDelay`, see Mails). An invite written for a mail SkyMail refused, or one dropped (no template key, given up after 72 hours), gives none; a later try that goes brings it. No new rule: before the mail, or for a Ticket that never checked in, there is no `feedback` field at all (it is left out, not `[]` or `null`).
 - **Left out**, as the mail's worker reads its targets now: the Event no longer published or archived; a Session cancelled or archived (or its day), or no longer in the `per_session` mode; a target whose form changed since (the code is the old form's); a form that closed (its reminders were cancelled, or its `feedback_form_closings` time has come; as the reminder, opening it again does not bring the link back). The box (`feedbackAutoSend`) does not matter: the mail went already. After 90 days the invite is deleted (Retention), and its link goes with it.
 - **Fields.** `url` the form's own address with the code alone (`feedback.Link`); `title` the Session's title, or the Event's name for the Event's form; `sessionId` the Session, `null` for the Event's form; `answered` whether Forms reported an answer for the invite (a guest's only with the code, see above). An answered form stays in the list. The Sessions' forms come first in their order, the Event's last (the mail's order).
-- **Only here.** `/v1/tickets/{id}`, `/v1/tickets`, an Event's tickets and the other ticket answers carry no `feedback`: the code is the holder's own. All the Tickets' links are read in one query; if it fails, the tickets come without them.
+- **Only here.** `/v1/tickets/{id}`, `/v1/tickets`, an Event's tickets and the other ticket answers carry no `feedback`: the code is the holder's own. All the Tickets' links are read in one query; if it fails, the tickets come without them and a log line (`tickets: feedback links not read`, naming nobody) says so.
 
 ## Reminder (ticket 07)
 

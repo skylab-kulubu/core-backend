@@ -24,8 +24,10 @@ type TicketLink struct {
 }
 
 // TicketLinks are the Tickets' feedback links, by Ticket, in one query: one
-// for each invite (a feedback mail went with it) whose target still takes
-// it as the mail's worker would read it now. Left out: an Event no longer
+// for each invite whose mail went (a mail of the Ticket's carrying the
+// target that SkyMail took: an invite written for a mail SkyMail refused,
+// or one dropped, gives none) and whose target still takes it as the mail's
+// worker would read it now. Left out: an Event no longer
 // published or archived, a Session cancelled or archived (or its day), a
 // Session's form once the Event left the per_session mode, a target whose
 // form changed since (the code is the old form's), and a form
@@ -50,6 +52,11 @@ func (s *PostgresStore) TicketLinks(ctx context.Context, ticketIDs []uuid.UUID, 
 		  AND e.status = 'published' AND e.archived_at IS NULL
 		  AND (fi.session_id IS NULL OR (e.feedback_mode = 'per_session' AND s.archived_at IS NULL AND NOT s.cancelled AND d.archived_at IS NULL))
 		  AND fi.reminder_cancelled_at IS NULL
+		  AND EXISTS (
+			SELECT 1 FROM feedback_mails m
+			JOIN feedback_mail_items i ON i.mail_id = m.id
+			WHERE m.ticket_id = fi.ticket_id AND m.sent
+			  AND i.event_id = fi.event_id AND i.session_id IS NOT DISTINCT FROM fi.session_id)
 		  AND NOT EXISTS (SELECT 1 FROM feedback_form_closings c WHERE c.form_id = fi.form_id AND c.closes_at <= $2)
 		ORDER BY fi.ticket_id, fi.session_id IS NULL, s.start_time NULLS LAST, s.order_index, fi.session_id`,
 		ticketIDs, now)

@@ -1,9 +1,11 @@
 package ticket_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -26,10 +28,10 @@ func (f *fakeFeedbackLinks) TicketLinks(_ context.Context, ids []uuid.UUID, _ ti
 	return f.links, f.err
 }
 
-func mineWithLinks(t *testing.T, links *fakeFeedbackLinks) (authz.Principal, []ticket.Ticket, ticket.Service) {
+func mineWithLinks(t *testing.T, links *fakeFeedbackLinks, extras ...any) (authz.Principal, []ticket.Ticket, ticket.Service) {
 	t.Helper()
 	events := event.NewMemoryStore()
-	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), links)
+	svc := ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy()), append([]any{links}, extras...)...)
 	p := authz.Principal{ID: uuid.NewString()}
 	var created []ticket.Ticket
 	for range 2 {
@@ -87,13 +89,18 @@ func TestService_MineCarriesFeedbackLinks(t *testing.T) {
 	}
 }
 
-// The links are an extra: when they cannot be read the Tickets still come.
+// The links are an extra: when they cannot be read the Tickets still come,
+// and a log line says so, naming nobody.
 func TestService_MineWithoutFeedbackLinksOnError(t *testing.T) {
 	t.Parallel()
-	p, created, svc := mineWithLinks(t, &fakeFeedbackLinks{err: errors.New("down")})
+	var logged bytes.Buffer
+	p, created, svc := mineWithLinks(t, &fakeFeedbackLinks{err: errors.New("down")}, log.New(&logged, "", 0))
 	mine, err := svc.Mine(context.Background(), p)
 	if err != nil || len(mine) != len(created) {
 		t.Fatalf("mine %+v %v", mine, err)
+	}
+	if line := logged.String(); !strings.Contains(line, "feedback links not read") || !strings.Contains(line, "down") || strings.Contains(line, p.ID) {
+		t.Fatalf("log %q", line)
 	}
 	for _, tk := range mine {
 		if tk.Feedback != nil {

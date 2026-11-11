@@ -26,9 +26,30 @@ func TestPostgresTicketLinks(t *testing.T) {
 	}
 	exec(`UPDATE events SET feedback_mode = 'per_session', feedback_form_url = $2 WHERE id = $1`, d.event, eventURL)
 	exec(`UPDATE sessions SET feedback_form_url = $2 WHERE id = $1`, d.session, sessionURL)
+	// mail writes a feedback mail of the Ticket carrying the targets, done,
+	// sent or not (SkyMail refused it, or it was dropped).
+	mail := func(ticket uuid.UUID, sent bool, sessions ...*uuid.UUID) uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		exec(`INSERT INTO feedback_mails (id, event_id, ticket_id, kind, next_attempt_at, done_at, sent) VALUES ($1, $2, $3, 'request', $4, $4, $5)`,
+			id, d.event, ticket, now.Add(-time.Hour), sent)
+		for _, session := range sessions {
+			exec(`INSERT INTO feedback_mail_items (mail_id, event_id, session_id) VALUES ($1, $2, $3)`, id, d.event, session)
+		}
+		return id
+	}
 	memberEvent := d.invite(t, d.memberTicket, nil, d.form)
 	memberSession := d.invite(t, d.memberTicket, &d.session, sessionForm)
 	guestEvent := d.invite(t, d.guest, nil, d.form)
+	guestSession := d.invite(t, d.guest, &d.session, sessionForm)
+	mail(d.memberTicket, true, &d.session)
+	mail(d.memberTicket, true, nil)
+	// The guest's mail with the Event's form went; the one with the
+	// Session's form was refused: its invite was written, no link.
+	mail(d.guest, true, nil)
+	refused := mail(d.guest, false, &d.session)
+	// (The member's sent mail with the Session's form gives the guest
+	// nothing: the mail must be the Ticket's own.)
 	read := func() map[uuid.UUID][]feedback.TicketLink {
 		t.Helper()
 		links, err := d.store.TicketLinks(ctx, []uuid.UUID{d.memberTicket, d.guest, uuid.New()}, now)
@@ -61,6 +82,13 @@ func TestPostgresTicketLinks(t *testing.T) {
 	if links[d.guest][0].URL != link(eventURL, guestEvent.Code) {
 		t.Fatalf("guest link %+v", links[d.guest])
 	}
+
+	// The refused mail tried again and sent: the guest's Session link comes.
+	exec(`UPDATE feedback_mails SET sent = true WHERE id = $1`, refused)
+	if guest := read()[d.guest]; len(guest) != 2 || guest[0].URL != link(sessionURL, guestSession.Code) {
+		t.Fatalf("guest after sent %+v", guest)
+	}
+	exec(`UPDATE feedback_mails SET sent = false WHERE id = $1`, refused)
 
 	// Answered: still there, marked.
 	if ok, err := d.store.MarkAnswered(ctx, d.form, memberEvent.Code, nil); err != nil || !ok {
@@ -109,6 +137,19 @@ func TestPostgresTicketLinks(t *testing.T) {
 	if links := read(); len(links[d.guest]) != 0 || len(links[d.memberTicket]) != 2 {
 		t.Fatalf("cancelled %+v", links)
 	}
+
+	// The Session's day archived: its form goes. The Event archived:
+	// nothing.
+	exec(`UPDATE event_days SET archived_at = now() WHERE id = (SELECT event_day_id FROM sessions WHERE id = $1)`, d.session)
+	if member := read()[d.memberTicket]; len(member) != 1 || member[0].SessionID != nil {
+		t.Fatalf("day archived %+v", member)
+	}
+	exec(`UPDATE event_days SET archived_at = NULL`)
+	exec(`UPDATE events SET archived_at = now() WHERE id = $1`, d.event)
+	if links := read(); len(links) != 0 {
+		t.Fatalf("event archived %+v", links)
+	}
+	exec(`UPDATE events SET archived_at = NULL WHERE id = $1`, d.event)
 
 	// The Event cancelled: nothing.
 	exec(`UPDATE events SET status = 'cancelled' WHERE id = $1`, d.event)
