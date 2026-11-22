@@ -752,6 +752,10 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/tickets/me", tickets.Mine)
 	app.Get("/v1/tickets/user/:userId/event/:eventId", tickets.ByUserEvent)
 	app.Get("/v1/tickets/:id", tickets.Get)
+	// The panel's "Bileti yeniden gönder" and "Bağlantıyı yenile"
+	// (docs/ticket-resend.md).
+	app.Post("/v1/tickets/:id/notification", tickets.ResendTicket)
+	app.Post("/v1/tickets/:id/access-key/rotate", tickets.RenewTicketLink)
 	app.Get("/v1/tickets", tickets.List)
 	// The forms service's account with ticket:forms reports each answer to its
 	// forms; an accepted answer to an Event's form writes its Ticket
