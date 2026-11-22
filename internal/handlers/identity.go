@@ -21,10 +21,19 @@ import (
 
 type IdentityHandler struct {
 	svc identity.Service
+	// accounts, when set, writes the names PatchUser is given to the
+	// person's Keycloak account too (docs/user-accounts.md).
+	accounts *identity.UserAccounts
 }
 
 func NewIdentityHandler(svc identity.Service) *IdentityHandler {
 	return &IdentityHandler{svc: svc}
+}
+
+// WithAccounts makes PatchUser write names to the Keycloak account as well.
+func (h *IdentityHandler) WithAccounts(accounts *identity.UserAccounts) *IdentityHandler {
+	h.accounts = accounts
+	return h
 }
 
 type addMemberBody struct {
@@ -601,6 +610,15 @@ func (h *IdentityHandler) PatchUser(c fiber.Ctx) error {
 	}
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if h.accounts != nil {
+		// Keycloak first: tokens, mail and the Account center read the
+		// names there; core's row follows.
+		if err := h.accounts.WriteNames(auditContext(c, p), p, id, identity.NameChange{
+			FirstName: body.FirstName, LastName: body.LastName,
+		}); err != nil {
+			return accountProblem(c, err)
+		}
 	}
 	card, err := h.svc.PatchUser(c.Context(), p, id, user.ProfilePatch{
 		FirstName:  body.FirstName,
