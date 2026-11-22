@@ -106,7 +106,7 @@ Nothing in the answer carries an e-mail, phone or other contact, and no Ticket a
 - **`season`** (or `null`): the season running now (today between its start and a day after its end), else the one that ended last; seasons without both dates are skipped. Its `events` are its published Events (at most 200), by start.
 - **`club`**: for everyone, the published Events by the month they start in (`eventsByMonth`, 12 months up to this one) and by Owner team over those months (`eventsByTeam`, most first). Published Events are public, so a Member without a team role sees the club's figures here.
 
-**Cost.** The Tickets per Event and day are read once for a year instead of 30 days (the same query). Up to seven more queries, each an aggregate whatever the number of Events: the seasons, the Session counts of the Events that start soon and of all covered ones, the week's Sessions, the failed certificate jobs, the open data subject requests, the check-ins per Event and day for the year, and the certificate counts.
+**Cost.** The Tickets per Event and day are read once for a year instead of 30 days (the same query). Up to eight more queries, each an aggregate whatever the number of Events: the seasons, the Session counts of the Events that start soon, the Session counts of all covered ones, the week's Sessions, the failed certificate jobs, the open data subject requests, the check-ins per Event and day for the year, and the certificate counts.
 
 ## Members
 
