@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"time"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
