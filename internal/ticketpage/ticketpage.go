@@ -290,7 +290,7 @@ func (s *Service) PDF(ctx context.Context, key string) (string, []byte, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	doc, err := s.document(ctx, key, o, token)
+	doc, err := s.document(ctx, o, token)
 	if err != nil {
 		return "", nil, err
 	}
@@ -315,7 +315,7 @@ func (s *Service) PDF(ctx context.Context, key string) (string, []byte, error) {
 	return FileName(o.event.Name), pdf, nil
 }
 
-func (s *Service) document(ctx context.Context, key string, o opened, token string) (Document, error) {
+func (s *Service) document(ctx context.Context, o opened, token string) (Document, error) {
 	ev := o.event
 	th := theme.Lookup("")
 	doc := Document{
@@ -323,7 +323,6 @@ func (s *Service) document(ctx context.Context, key string, o opened, token stri
 		Venue: ev.Location, VenueAddress: ev.LocationAddress,
 		DirectionsURL: DirectionsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
 		OwnerTeam:     ev.OwnerTeam, HolderName: o.holder, Code: o.ticket.Code, QRToken: token,
-		PageLink:    strings.TrimPrefix(s.cfg.Page.Link(key), "https://"),
 		Description: ev.Description, Theme: th, IssuedAt: s.now(),
 	}
 	program, err := s.program(ctx, ev)
