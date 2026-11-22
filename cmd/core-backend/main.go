@@ -60,6 +60,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/teammail"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/ticketnotify"
+	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 	"github.com/skylab-kulubu/core-backend/internal/usersync"
@@ -976,7 +977,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites)
+	ticketQR, err := ticketQRSigner(os.Getenv, passKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	doorScans := &ticket.DoorScanMetrics{}
+	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites, ticketQR, doorScans)
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -1159,6 +1165,8 @@ func main() {
 		AppAssignments:            appAssignments,
 		AuthzRoleMetrics:          authzRoleMetrics,
 		GuestCheckInMetrics:       doorQR,
+		TicketQR:                  ticketQR,
+		DoorScanMetrics:           doorScans,
 		GuestApplyPublicIPLimit:   guestApplyIPLimit,
 		Dashboard:                 dashboardSvc,
 		GithubActivity:            githubActivity,
@@ -1423,6 +1431,21 @@ func doorQRGate(getenv func(string) string, passKey *ecdsa.PrivateKey) (*doorqr.
 	gate := doorqr.NewGate(doorqr.DeriveKey(passKey.D.FillBytes(make([]byte, 32))), cfg)
 	log.Printf("guest self check-in: %s=%s", doorqr.ModeEnv, gate.Mode())
 	return gate, nil
+}
+
+// ticketQRSigner builds the Ticket QR's signer (docs/ticket-qr.md). Its key
+// is derived from the SkyPass signing key, so it needs no secret of its own;
+// TICKET_QR_PREVIOUS_JWK and TICKET_QR_PREVIOUS_UNTIL keep the codes sent
+// before a planned SkyPass key rotation valid for a while (off by default).
+func ticketQRSigner(getenv func(string) string, passKey *ecdsa.PrivateKey) (*ticketqr.Signer, error) {
+	cfg, err := ticketqr.ConfigFromEnv(getenv, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Previous != nil {
+		log.Printf("ticket qr: the previous key is accepted until %s (%s)", cfg.PreviousUntil.Format(time.RFC3339), ticketqr.PreviousUntilEnv)
+	}
+	return ticketqr.NewSigner(ticketqr.DeriveKey(passKey), cfg), nil
 }
 
 // skyPassEphemeralKeyEnv lets core start without a SkyPass key, signing with

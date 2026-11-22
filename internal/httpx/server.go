@@ -34,6 +34,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/subjectrequest"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -145,6 +146,12 @@ type Deps struct {
 	// them out.
 	SkyPassWalletMetrics interface{ Prometheus() string }
 
+	// TicketQR is the Ticket QR's signer: its public keys join the JWKS.
+	// Nil publishes only SkyPass's.
+	TicketQR *ticketqr.Signer
+	// DoorScanMetrics counts Ticket QR scans by outcome
+	// (skylab_door_scans_total). Nil counts none.
+	DoorScanMetrics interface{ Prometheus() string }
 	// GuestCheckInMetrics counts guest self check-ins by door QR presence
 	// and outcome, and serves them on /v1/metrics
 	// (docs/guest-self-check-in.md). Nil leaves them out.
@@ -307,6 +314,9 @@ func New(deps Deps) *fiber.App {
 	var pass *handlers.SkyPassHandler
 	if deps.SkyPass != nil {
 		pass = handlers.NewSkyPassHandler(deps.SkyPass, deps.Tickets)
+		if deps.TicketQR != nil {
+			pass.WithTicketQRKeys(deps.TicketQR)
+		}
 	}
 
 	app.Get("/v1/health", func(c fiber.Ctx) error {
@@ -316,7 +326,7 @@ func New(deps Deps) *fiber.App {
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
 		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil ||
-		deps.EventsMetrics != nil || deps.ManagementTerms != nil || deps.AppPreferences.Enabled() {
+		deps.EventsMetrics != nil || deps.ManagementTerms != nil || deps.AppPreferences.Enabled() || deps.DoorScanMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -328,6 +338,9 @@ func New(deps Deps) *fiber.App {
 			text += deps.GuestApplyMetrics.Prometheus()
 			if deps.GuestCheckInMetrics != nil {
 				text += deps.GuestCheckInMetrics.Prometheus()
+			}
+			if deps.DoorScanMetrics != nil {
+				text += deps.DoorScanMetrics.Prometheus()
 			}
 			if deps.MediaCDNPurgeMetrics != nil {
 				text += deps.MediaCDNPurgeMetrics.Prometheus()
@@ -405,6 +418,9 @@ func New(deps Deps) *fiber.App {
 	}
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
+		// The same keys under the door's name: SkyPass's and the Ticket
+		// QR's (docs/ticket-qr.md).
+		app.Get("/v1/door/jwks", pass.JWKS)
 	}
 	if deps.SelfDeletion != nil {
 		selfDeletion := handlers.NewAccountDeletionHandler(deps.SelfDeletion, deps.ParseSelfDeleteContext, deps.ParseSelfDeleteSudo, deps.ParseSelfDeleteBearer)
@@ -741,7 +757,11 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/sessions/:sessionId/check-in/resolve", tickets.ResolveAndCheckIn)
 	app.Get("/v1/sessions/:sessionId/check-ins", tickets.DoorActivity)
 	if pass != nil {
+		// One route for whatever the door scanned (docs/ticket-qr.md):
+		// check-in/scan is its name, check-in/skypass the old one the
+		// released sky-app calls, kept as is.
 		app.Post("/v1/sessions/:sessionId/check-in/skypass", pass.CheckInSession)
+		app.Post("/v1/sessions/:sessionId/check-in/scan", pass.CheckInSession)
 	}
 
 	app.Get("/v1/competitors", competitors.List)
