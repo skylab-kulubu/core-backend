@@ -15,6 +15,10 @@ import (
 
 type PostgresStore struct {
 	pool *pgxpool.Pool
+	// newAccessKey and newCode draw a new Ticket's access key and code;
+	// tests replace them to force a taken one.
+	newAccessKey func() (string, error)
+	newCode      func() (string, error)
 	// notifyCreated queues each new Ticket's Notification
 	// (ticket_notifications, docs/ticket-created-notification.md) in the
 	// statement that writes the Ticket. Set at startup, read by every
@@ -28,10 +32,10 @@ type PostgresStore struct {
 func (s *PostgresStore) NotifyCreated(on bool) { s.notifyCreated.Store(on) }
 
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
-	return &PostgresStore{pool: pool}
+	return &PostgresStore{pool: pool, newAccessKey: NewAccessKey, newCode: NewCode}
 }
 
-const ticketCols = `id, event_id, ticket_type, owner_id, guest_first_name, guest_last_name, guest_email, guest_phone_number, created_at, updated_at`
+const ticketCols = `id, event_id, ticket_type, owner_id, guest_first_name, guest_last_name, guest_email, guest_phone_number, access_key, code, qr_version, created_at, updated_at`
 const doorTicketCols = `t.id, t.event_id, t.ticket_type, t.owner_id`
 
 const doorNameSQL = `CASE
@@ -53,6 +57,12 @@ const doorEmailSQL = `CASE
 	ELSE COALESCE(u.email, '')
 END`
 
+// createAttempts is how many codes Create draws before it gives up: with 40
+// random bits, a second draw is already rare.
+const createAttempts = 8
+
+// Create writes a new Ticket with a fresh access key and code (and QR
+// version 1). A code or key another Ticket holds is drawn again.
 func (s *PostgresStore) Create(ctx context.Context, t Ticket) (Ticket, error) {
 	if t.ID == uuid.Nil {
 		t.ID = uuid.New()
@@ -60,8 +70,9 @@ func (s *PostgresStore) Create(ctx context.Context, t Ticket) (Ticket, error) {
 	insert := `
 		INSERT INTO tickets (
 			id, event_id, ticket_type, owner_id,
-			guest_first_name, guest_last_name, guest_email, guest_phone_number
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			guest_first_name, guest_last_name, guest_email, guest_phone_number,
+			access_key, code
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		RETURNING ` + ticketCols
 	if s.notifyCreated.Load() {
 		// One statement writes the Ticket and queues its Notification:
@@ -70,23 +81,60 @@ func (s *PostgresStore) Create(ctx context.Context, t Ticket) (Ticket, error) {
 			INSERT INTO ticket_notifications (ticket_id) SELECT id FROM created
 		) SELECT ` + ticketCols + ` FROM created`
 	}
-	row := s.pool.QueryRow(ctx, insert,
-		t.ID, t.EventID, t.TicketType, t.OwnerID,
-		t.GuestFirstName, t.GuestLastName, t.GuestEmail, t.GuestPhoneNumber)
-	got, err := scanTicket(row)
-	if subjectlock.IsInactiveAccountReference(err) {
+	for attempt := 1; ; attempt++ {
+		accessKey, err := s.newAccessKey()
+		if err != nil {
+			return Ticket{}, err
+		}
+		code, err := s.newCode()
+		if err != nil {
+			return Ticket{}, err
+		}
+		row := s.pool.QueryRow(ctx, insert,
+			t.ID, t.EventID, t.TicketType, t.OwnerID,
+			t.GuestFirstName, t.GuestLastName, t.GuestEmail, t.GuestPhoneNumber,
+			accessKey, storedCode(code))
+		got, err := scanTicket(row)
+		if subjectlock.IsInactiveAccountReference(err) {
+			return Ticket{}, ErrNotFound
+		}
+		if drawnTaken(err) && attempt < createAttempts {
+			continue
+		}
+		if isUnique(err) && !drawnTaken(err) {
+			// The Event already has a Ticket for the owner or the guest
+			// e-mail, written since the caller looked.
+			return Ticket{}, ErrConflict
+		}
+		if err != nil {
+			return Ticket{}, err
+		}
+		got.CheckIns = []CheckIn{}
+		return got, nil
+	}
+}
+
+// drawnTaken reports whether err is the unique index of a Ticket's code or
+// access key: the value drawn is another Ticket's.
+func drawnTaken(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "23505" &&
+		(pg.ConstraintName == "tickets_code_idx" || pg.ConstraintName == "tickets_access_key_idx")
+}
+
+func (s *PostgresStore) GetByAccessKey(ctx context.Context, key string) (Ticket, error) {
+	if !ValidAccessKey(key) {
 		return Ticket{}, ErrNotFound
 	}
-	if isUnique(err) {
-		// The Event already has a Ticket for the owner or the guest e-mail,
-		// written since the caller looked.
-		return Ticket{}, ErrConflict
+	t, err := scanTicket(s.pool.QueryRow(ctx, `SELECT `+ticketCols+` FROM tickets WHERE access_key = $1`, key))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Ticket{}, ErrNotFound
 	}
 	if err != nil {
 		return Ticket{}, err
 	}
-	got.CheckIns = []CheckIn{}
-	return got, nil
+	t.CheckIns = []CheckIn{}
+	return t, nil
 }
 
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Ticket, error) {
@@ -275,6 +323,31 @@ func (s *PostgresStore) DoorSessionActivity(
 	return activity, rows.Err()
 }
 
+// DoorTicketByCode is the Ticket of the Event with code (stored, without
+// the hyphen) whose holder is still there: a guest with an address, a member
+// with a core row.
+func (s *PostgresStore) DoorTicketByCode(ctx context.Context, eventID uuid.UUID, code string) (DoorTicketIdentity, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+doorTicketCols+`, `+doorNameSQL+`, `+doorEmailSQL+`, (u.id IS NOT NULL OR t.ticket_type = 'GUEST')
+		FROM tickets t
+		LEFT JOIN users u ON u.id = t.owner_id
+		WHERE t.event_id = $1 AND t.code = $2
+		  AND ((t.ticket_type = 'GUEST' AND btrim(t.guest_email) <> '') OR u.id IS NOT NULL)
+	`, eventID, code)
+	if err != nil {
+		return DoorTicketIdentity{}, err
+	}
+	defer rows.Close()
+	found, err := scanDoorTicketIdentities(rows)
+	if err != nil {
+		return DoorTicketIdentity{}, err
+	}
+	if len(found) == 0 {
+		return DoorTicketIdentity{}, ErrNotFound
+	}
+	return found[0], nil
+}
+
 func scanDoorTicketIdentities(rows pgx.Rows) ([]DoorTicketIdentity, error) {
 	out := make([]DoorTicketIdentity, 0)
 	for rows.Next() {
@@ -445,11 +518,18 @@ type rowScanner interface {
 func scanTicket(row rowScanner) (Ticket, error) {
 	var t Ticket
 	var created, updated time.Time
+	var code string
+	var accessKey *string
 	err := row.Scan(
 		&t.ID, &t.EventID, &t.TicketType, &t.OwnerID,
 		&t.GuestFirstName, &t.GuestLastName, &t.GuestEmail, &t.GuestPhoneNumber,
+		&accessKey, &code, &t.QRVersion,
 		&created, &updated,
 	)
+	if accessKey != nil {
+		t.AccessKey = *accessKey
+	}
+	t.Code = FormatCode(code)
 	t.CreatedAt = created
 	t.UpdatedAt = updated
 	return t, err

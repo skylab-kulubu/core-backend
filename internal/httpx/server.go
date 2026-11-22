@@ -26,6 +26,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/mapregion"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
@@ -34,6 +35,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/subjectrequest"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
+	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -84,7 +87,8 @@ type Deps struct {
 	ParseSelfDeleteBearer func(string) (authn.Identity, error)
 
 	// TrustedProxies are the peers allowed to speak for a client through
-	// `X-Forwarded-For`. An empty value falls back to clientip.Default().
+	// `X-Forwarded-For`. An empty value falls back to clientip.Default();
+	// a set one also serves its metrics on /v1/metrics.
 	TrustedProxies clientip.Ranges
 
 	// AccountErasureMetrics are the account erasure watchdog's gauges. Nil
@@ -145,6 +149,18 @@ type Deps struct {
 	// them out.
 	SkyPassWalletMetrics interface{ Prometheus() string }
 
+	// TicketPage answers the ticket page's public routes
+	// (/v1/public/tickets/{key}, docs/ticket-page.md). Nil serves none.
+	TicketPage *ticketpage.Service
+	// MapRegions are the club's map regions (/v1/map-regions,
+	// docs/event-map.md). Nil serves none.
+	MapRegions *mapregion.Service
+	// TicketQR is the Ticket QR's signer: its public keys join the JWKS.
+	// Nil publishes only SkyPass's.
+	TicketQR *ticketqr.Signer
+	// DoorScanMetrics counts Ticket QR scans by outcome
+	// (skylab_door_scans_total). Nil counts none.
+	DoorScanMetrics interface{ Prometheus() string }
 	// GuestCheckInMetrics counts guest self check-ins by door QR presence
 	// and outcome, and serves them on /v1/metrics
 	// (docs/guest-self-check-in.md). Nil leaves them out.
@@ -238,6 +254,10 @@ type Deps struct {
 	// /v1/metrics. Nil leaves them out.
 	MemoryMetrics interface{ Prometheus() string }
 
+	// EventMapMetrics are the Event map worker's counters
+	// (docs/event-map.md), served on /v1/metrics. Nil leaves them out.
+	EventMapMetrics interface{ Prometheus() string }
+
 	// Readiness is GET /v1/ready's database and shutdown check, asked
 	// before the account access gate (internal/health). Nil leaves the
 	// gate's check alone. /v1/health (liveness) asks nothing.
@@ -256,9 +276,9 @@ func New(deps Deps) *fiber.App {
 	}
 	// The edge proxy discards a caller-supplied `X-Forwarded-For` and writes
 	// its own, so the header is only worth reading when the connection came
-	// from one of those proxies. Fiber makes that decision for c.IP() from the
-	// same ranges the handlers use, and validation keeps c.IP() from handing
-	// back a raw header value.
+	// from one of the trusted proxies, which TRUSTED_PROXY_RANGES may name by
+	// host (their addresses move). That decision is clientip's alone: Fiber
+	// believes no forwarded header, and c.IP() is the socket's address.
 	app := fiber.New(fiber.Config{
 		ErrorHandler: handlers.ErrorHandler,
 		// Fiber's 4 MiB default rejected media the service accepts. Leave room
@@ -268,11 +288,7 @@ func New(deps Deps) *fiber.App {
 		// admin's bearer (past 3 KB) plus the browser's .yildizskylab.com
 		// cookies ran over it: every call answered 431. 16 KiB matches
 		// Node's default, which the Next.js frontends already accept.
-		ReadBufferSize:     16 << 10,
-		TrustProxy:         true,
-		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: trustedProxies.Proxies()},
-		ProxyHeader:        fiber.HeaderXForwardedFor,
-		EnableIPValidation: true,
+		ReadBufferSize: 16 << 10,
 	})
 	app.Use(recover.New())
 	app.Use(requestid.New())
@@ -307,6 +323,9 @@ func New(deps Deps) *fiber.App {
 	var pass *handlers.SkyPassHandler
 	if deps.SkyPass != nil {
 		pass = handlers.NewSkyPassHandler(deps.SkyPass, deps.Tickets)
+		if deps.TicketQR != nil {
+			pass.WithTicketQRKeys(deps.TicketQR)
+		}
 	}
 
 	app.Get("/v1/health", func(c fiber.Ctx) error {
@@ -316,7 +335,8 @@ func New(deps Deps) *fiber.App {
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
 		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil ||
-		deps.EventsMetrics != nil || deps.ManagementTerms != nil || deps.AppPreferences.Enabled() {
+		deps.EventsMetrics != nil || deps.ManagementTerms != nil || deps.AppPreferences.Enabled() || deps.DoorScanMetrics != nil ||
+		deps.EventMapMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -328,6 +348,9 @@ func New(deps Deps) *fiber.App {
 			text += deps.GuestApplyMetrics.Prometheus()
 			if deps.GuestCheckInMetrics != nil {
 				text += deps.GuestCheckInMetrics.Prometheus()
+			}
+			if deps.DoorScanMetrics != nil {
+				text += deps.DoorScanMetrics.Prometheus()
 			}
 			if deps.MediaCDNPurgeMetrics != nil {
 				text += deps.MediaCDNPurgeMetrics.Prometheus()
@@ -344,6 +367,12 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.MemoryMetrics != nil {
 				text += deps.MemoryMetrics.Prometheus()
+			}
+			if deps.EventMapMetrics != nil {
+				text += deps.EventMapMetrics.Prometheus()
+			}
+			if !deps.TrustedProxies.Empty() {
+				text += deps.TrustedProxies.Prometheus()
 			}
 			if deps.TeamMailMetrics != nil {
 				text += deps.TeamMailMetrics.Prometheus()
@@ -403,8 +432,30 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/certificates/verify/:serial/qr", publicCertificateLimit, certs.QR)
 		app.Get("/v1/certificates/verify/:serial", publicCertificateLimit, certs.Verify)
 	}
+	if deps.TicketPage != nil {
+		// The ticket page's routes take no sign-in: the key in the path is
+		// the right to read, so the budget follows the client, and the PDF
+		// has a budget per key too (docs/ticket-page.md).
+		page := handlers.NewTicketPageHandler(deps.TicketPage)
+		publicTicketLimit := perClientLimit(trustedProxies)
+		app.Get("/v1/public/tickets/:key", publicTicketLimit, page.Page)
+		// The mail's QR image comes through a few mail providers' proxy
+		// addresses: a budget of its own, larger.
+		app.Get("/v1/public/tickets/:key/qr.png", perClientLimitOf(trustedProxies, handlers.TicketQRsPerClientMinute), page.QR)
+		app.Get("/v1/public/tickets/:key/pdf", publicTicketLimit, handlers.TicketPDFLimit(), page.PDF)
+	}
+	if deps.MapRegions != nil {
+		regions := handlers.NewMapRegionHandler(deps.MapRegions)
+		app.Get("/v1/map-regions", regions.List)
+		app.Post("/v1/map-regions", regions.Request)
+		app.Post("/v1/map-regions/:id/retry", regions.Retry)
+		app.Post("/v1/map-regions/:id/retire", regions.Retire)
+	}
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
+		// The same keys under the door's name: SkyPass's and the Ticket
+		// QR's (docs/ticket-qr.md).
+		app.Get("/v1/door/jwks", pass.JWKS)
 	}
 	if deps.SelfDeletion != nil {
 		selfDeletion := handlers.NewAccountDeletionHandler(deps.SelfDeletion, deps.ParseSelfDeleteContext, deps.ParseSelfDeleteSudo, deps.ParseSelfDeleteBearer)
@@ -620,6 +671,7 @@ func New(deps Deps) *fiber.App {
 
 	app.Get("/v1/events", events.List)
 	app.Get("/v1/events/active", events.ListActive)
+	app.Get("/v1/events/places", events.Places)
 	app.Post("/v1/events", events.Create)
 	app.Get("/v1/events/:id", events.Get)
 	app.Put("/v1/events/:id", events.Update)
@@ -722,6 +774,10 @@ func New(deps Deps) *fiber.App {
 	app.Get("/v1/tickets/me", tickets.Mine)
 	app.Get("/v1/tickets/user/:userId/event/:eventId", tickets.ByUserEvent)
 	app.Get("/v1/tickets/:id", tickets.Get)
+	// The panel's "Bileti yeniden gönder" and "Bağlantıyı yenile"
+	// (docs/ticket-resend.md).
+	app.Post("/v1/tickets/:id/notification", tickets.ResendTicket)
+	app.Post("/v1/tickets/:id/access-key/rotate", tickets.RenewTicketLink)
 	app.Get("/v1/tickets", tickets.List)
 	// The forms service's account with ticket:forms reports each answer to its
 	// forms; an accepted answer to an Event's form writes its Ticket
@@ -741,7 +797,11 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/sessions/:sessionId/check-in/resolve", tickets.ResolveAndCheckIn)
 	app.Get("/v1/sessions/:sessionId/check-ins", tickets.DoorActivity)
 	if pass != nil {
+		// One route for whatever the door scanned (docs/ticket-qr.md):
+		// check-in/scan is its name, check-in/skypass the old one the
+		// released sky-app calls, kept as is.
 		app.Post("/v1/sessions/:sessionId/check-in/skypass", pass.CheckInSession)
+		app.Post("/v1/sessions/:sessionId/check-in/scan", pass.CheckInSession)
 	}
 
 	app.Get("/v1/competitors", competitors.List)

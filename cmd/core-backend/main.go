@@ -44,6 +44,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
+	"github.com/skylab-kulubu/core-backend/internal/mapregion"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
 	"github.com/skylab-kulubu/core-backend/internal/mediaframe"
@@ -60,12 +61,17 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/teammail"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/ticketnotify"
+	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
+	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 	"github.com/skylab-kulubu/core-backend/internal/usersync"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == mapCheckCommandName {
+		os.Exit(runMapCheck(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == healthcheckCommandName {
 		os.Exit(runHealthcheck(os.Args[2:], os.Getenv, os.Stderr))
 	}
@@ -159,6 +165,13 @@ func main() {
 	worker := func(name string, done <-chan struct{}) {
 		workersStopped = append(workersStopped, stopped(name, done))
 	}
+	// The proxies TRUSTED_PROXY_RANGES names by host are looked up before
+	// the first request, then again as they move (docs/client-ip-trust.md).
+	// An unresolved name only means its header is not believed yet.
+	firstLookup, cancelFirstLookup := context.WithTimeout(context.Background(), 3*time.Second)
+	trustedProxies.Refresh(firstLookup, clientip.DNSLookup, log.Printf)
+	cancelFirstLookup()
+	worker("trusted proxies", trustedProxies.Watch(workers, clientip.DNSLookup, log.Printf))
 
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
@@ -953,14 +966,26 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky, log.Printf))
+	// The ticket page (docs/ticket-page.md): TICKET_PAGE_URL unset makes no
+	// link; the public routes answer either way.
+	ticketPageConfig, err := ticket.PageConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if ticketPageConfig.URL == "" {
+		log.Printf("ticket page: no link (%s unset)", ticket.PageURLEnv)
+	} else {
+		log.Printf("ticket page: on, closes %s after the Event", ticketPageConfig.Grace)
+	}
+	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky,
+		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), log.Printf))
 	// A published Event's new time or place (docs/event-updated-notification.md):
 	// SkyMail tells its Ticket holders by inbox and e-mail.
 	eventUpdatedOn, err := eventUpdatedNotificationOn(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
-	worker("event updated notification", startEventUpdatedNotification(workers, eventUpdatedOn, events, eventupdatenotify.NewPostgresQueue(pool), tickets, users, sky, log.Printf))
+	worker("event updated notification", startEventUpdatedNotification(workers, eventUpdatedOn, events, eventupdatenotify.NewPostgresQueue(pool), tickets, users, sky, ticketPageConfig, log.Printf))
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {
@@ -976,7 +1001,27 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites)
+	ticketQR, err := ticketQRSigner(os.Getenv, passKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	doorScans := &ticket.DoorScanMetrics{}
+	// The Team audit record (docs/team-audit.md): Group writes, and the
+	// ticket actions of the panel (docs/ticket-resend.md).
+	teamAudit := teamaudit.NewPostgres(pool)
+	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites, ticketQR, doorScans, ticketPageConfig, teamAudit)
+	var ticketPDF ticketpage.Renderer
+	if g, ok := render.(*certificate.Gotenberg); ok && g != nil {
+		ticketPDF = g
+	}
+	ticketPage := ticketpage.New(tickets, events, users, ticketQR, ticketPDF,
+		&ticketpage.MediaImages{Media: mediaStore, Blobs: blobs},
+		ticketpage.Config{Page: ticketPageConfig, APIOrigin: os.Getenv("PUBLIC_API_ORIGIN")})
+	var eventMapMetrics interface{ Prometheus() string }
+	mapRegions := mapregion.NewPostgresStore(pool)
+	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {
+		eventMapMetrics = mapWorker
+	}
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -1035,7 +1080,6 @@ func main() {
 	}
 	// The Group writes of the identity routes go through the Team audit
 	// record (docs/team-audit.md): no row, no change.
-	teamAudit := teamaudit.NewPostgres(pool)
 	auditedDir := identity.AuditedDirectory(dir, teamAudit, log.Printf)
 	// Team delegation's reads (docs/team-delegation.md) go to the directory
 	// itself: the Group by id with its parent, the caller's Groups, role
@@ -1159,6 +1203,9 @@ func main() {
 		AppAssignments:            appAssignments,
 		AuthzRoleMetrics:          authzRoleMetrics,
 		GuestCheckInMetrics:       doorQR,
+		TicketQR:                  ticketQR,
+		TicketPage:                ticketPage,
+		DoorScanMetrics:           doorScans,
 		GuestApplyPublicIPLimit:   guestApplyIPLimit,
 		Dashboard:                 dashboardSvc,
 		GithubActivity:            githubActivity,
@@ -1171,6 +1218,8 @@ func main() {
 		Readiness:                 readiness,
 		MediaDecodeMetrics:        decodeBudget,
 		MemoryMetrics:             memory,
+		EventMapMetrics:           eventMapMetrics,
+		MapRegions:                &mapregion.Service{Store: mapRegions, Authz: az, Address: media.ConfiguredAddresses().Object},
 	})
 
 	addr := os.Getenv("PORT")
@@ -1423,6 +1472,22 @@ func doorQRGate(getenv func(string) string, passKey *ecdsa.PrivateKey) (*doorqr.
 	gate := doorqr.NewGate(doorqr.DeriveKey(passKey.D.FillBytes(make([]byte, 32))), cfg)
 	log.Printf("guest self check-in: %s=%s", doorqr.ModeEnv, gate.Mode())
 	return gate, nil
+}
+
+// ticketQRSigner builds the Ticket QR's signer (docs/ticket-qr.md). Its key
+// is derived from the SkyPass signing key, so it needs no secret of its own;
+// TICKET_QR_PREVIOUS_JWK and TICKET_QR_PREVIOUS_UNTIL keep the codes sent
+// before a planned SkyPass key rotation valid for a while (off by default).
+func ticketQRSigner(getenv func(string) string, passKey *ecdsa.PrivateKey) (*ticketqr.Signer, error) {
+	cfg, err := ticketqr.ConfigFromEnv(getenv, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("ticket qr: signs under %s", cfg.Kid)
+	if cfg.Previous != nil {
+		log.Printf("ticket qr: the previous key %s is accepted until %s (%s)", cfg.PreviousKid, cfg.PreviousUntil.Format(time.RFC3339), ticketqr.PreviousUntilEnv)
+	}
+	return ticketqr.NewSigner(ticketqr.DeriveKey(passKey), cfg), nil
 }
 
 // skyPassEphemeralKeyEnv lets core start without a SkyPass key, signing with

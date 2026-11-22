@@ -35,6 +35,7 @@ Who: whoever may see the source (a draft: who may edit it, ADR 0066) and create 
 |---|---|---|
 | Name | the new one | |
 | Description, location, capacity, `ranked`, prize text | yes | |
+| The place's point and address (`locationLat`, `locationLng`, `locationAddress`; [event-location.md](event-location.md)) | yes | |
 | Owner team | the source's, or `ownerTeam` | see **Into another Owner team** |
 | Start | the new one | |
 | End, days, Sessions, applying deadline | moved | see **Dates** |

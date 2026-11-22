@@ -957,3 +957,46 @@ func memoryFormGuard(ctx context.Context, sess *Session) error {
 	sess.formGuard = nil
 	return err
 }
+
+func (s *MemoryStore) ListPlaces(_ context.Context, ownerTeam string, drafts bool, limit int) ([]Place, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	type key struct {
+		name     string
+		lat, lng float64
+	}
+	byPlace := map[key]*Place{}
+	for _, e := range s.byID {
+		if e.ArchivedAt != nil || !e.HasPoint() || (ownerTeam != "" && e.OwnerTeam != ownerTeam) || (!drafts && e.Status == StatusDraft) {
+			continue
+		}
+		used := e.CreatedAt
+		if e.StartDate != nil {
+			used = *e.StartDate
+		}
+		k := key{e.Location, *e.LocationLat, *e.LocationLng}
+		p, ok := byPlace[k]
+		if !ok {
+			p = &Place{Name: e.Location, Lat: k.lat, Lng: k.lng}
+			byPlace[k] = p
+		}
+		p.Uses++
+		if !ok || used.After(p.LastUsedAt) {
+			p.LastUsedAt, p.Address = used, e.LocationAddress
+		}
+	}
+	out := make([]Place, 0, len(byPlace))
+	for _, p := range byPlace {
+		out = append(out, *p)
+	}
+	slices.SortFunc(out, func(a, b Place) int {
+		if c := b.LastUsedAt.Compare(a.LastUsedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}

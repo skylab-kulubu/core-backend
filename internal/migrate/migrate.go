@@ -1588,6 +1588,134 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.event_update_notifications_due_idx') IS NOT NULL
 		  AND to_regclass('public.event_update_notifications_event_idx') IS NOT NULL
 		  AND to_regclass('public.event_update_notification_sends_ticket_idx') IS NOT NULL`,
+	// A Ticket's access key, code and QR version
+	// (docs/ticket-access-key-and-code.md): the three columns, their two
+	// unique indexes and the defaults' function.
+	20261122120000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'tickets'
+			  AND column_name IN ('access_key', 'code', 'qr_version')
+		  ) = 3
+		  AND to_regclass('public.tickets_access_key_idx') IS NOT NULL
+		  AND to_regclass('public.tickets_code_idx') IS NOT NULL
+		  AND to_regprocedure('public.ticket_random_text(text, integer)') IS NOT NULL`,
+	// Sending a Ticket's mail again (docs/ticket-resend.md): the queue's
+	// resend column, the record of resends and its two indexes.
+	20261122130000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'ticket_notifications' AND column_name = 'resend'
+		  )
+		  AND to_regclass('public.ticket_resends') IS NOT NULL
+		  AND to_regclass('public.ticket_resends_request_idx') IS NOT NULL
+		  AND to_regclass('public.ticket_resends_recent_idx') IS NOT NULL`,
+	// The Team audit record's ticket actions (docs/ticket-resend.md).
+	20261122140000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+		  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.link.renew%'`,
+	// An Event's point and address (docs/event-location.md): the three
+	// columns and their check.
+	20261122150000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('location_lat', 'float8', 'YES'),
+				('location_lng', 'float8', 'YES'),
+				('location_address', 'text', 'NO')
+			) expected(column_name, udt_name, is_nullable)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public' AND actual.table_name = 'events'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = expected.is_nullable
+		) = 3
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events')
+			  AND conname = 'events_location_point_check'
+			  AND contype = 'c'
+			  AND pg_get_constraintdef(oid) LIKE '%(location_lat IS NULL) = (location_lng IS NULL)%'
+			  AND pg_get_constraintdef(oid) LIKE '%char_length(location_address) <= 300%'
+		)`,
+	// An Event's map image (docs/event-map.md): its columns and their
+	// check, the indexes the purge and the worker read, the statement
+	// triggers that write its Media attachments, and the role tables that
+	// know its role. A rerun of 20261004120000 puts back the role tables
+	// without it; this fingerprint then fails and the migration runs again.
+	20261122160000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('map_media_id', 'uuid', 'YES'),
+				('map_state', 'text', 'YES'),
+				('map_attempts', 'int4', 'NO'),
+				('map_retry_at', 'timestamptz', 'YES'),
+				('map_claim_id', 'uuid', 'YES'),
+				('map_claimed_until', 'timestamptz', 'YES')
+			) expected(column_name, udt_name, is_nullable)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public' AND actual.table_name = 'events'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = expected.is_nullable
+		) = 6
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events')
+			  AND conname = 'events_map_media_id_fkey'
+			  AND contype = 'f'
+			  AND pg_get_constraintdef(oid) = 'FOREIGN KEY (map_media_id) REFERENCES media(id) ON DELETE SET NULL'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events')
+			  AND conname = 'events_map_check'
+			  AND contype = 'c'
+			  AND pg_get_constraintdef(oid) LIKE '%(map_claim_id IS NULL) = (map_claimed_until IS NULL)%'
+		)
+		AND to_regclass('public.events_map_media_id_idx') IS NOT NULL
+		AND to_regclass('public.events_map_due_idx') IS NOT NULL
+		AND (
+			SELECT count(*) FROM (VALUES
+				('events_map_attachments_insert', 4),
+				('events_map_attachments_update', 16),
+				('events_map_attachments_delete', 8)
+			) expected(trigger_name, trigger_type)
+			JOIN pg_trigger actual
+			  ON actual.tgrelid = to_regclass('public.events')
+			 AND actual.tgname = expected.trigger_name
+			 AND actual.tgtype = expected.trigger_type
+			 AND actual.tgenabled = 'O'
+			 AND NOT actual.tgisinternal
+			 AND actual.tgfoid = to_regprocedure('public.sync_core_media_attachments()')
+			 AND strpos(encode(actual.tgargs, 'escape'), 'event_map') > 0
+		) = 3
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_role_purposes'
+			  AND prosrc LIKE '%(''core'', ''event_map'', ''event_map'')%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_roles_without_legacy'
+			  AND prosrc LIKE '%(''core'', ''event_map'')%'
+		)`,
+	// The map regions (docs/event-map.md): the table with its check and its
+	// two indexes.
+	20261122170000: `
+		SELECT 1
+		WHERE to_regclass('public.map_regions') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.map_regions') AND conname = 'map_regions_check'
+			  AND pg_get_constraintdef(oid) LIKE '%(claim_id IS NULL) = (claimed_until IS NULL)%'
+		  )
+		  AND to_regclass('public.map_regions_live_box_idx') IS NOT NULL
+		  AND to_regclass('public.map_regions_status_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

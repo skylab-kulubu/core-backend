@@ -36,7 +36,7 @@ func onOff(getenv func(string) string, name string) (bool, error) {
 // that closes once it has stopped. Off, or without SkyMail, a new Ticket
 // queues nothing: turning it on later does not tell the Tickets written
 // meanwhile.
-func startTicketCreatedNotification(ctx context.Context, on bool, store *ticket.PostgresStore, queue ticketnotify.Queue, events *event.PostgresStore, users user.Store, sky *mail.SkyMail, logf func(string, ...any)) <-chan struct{} {
+func startTicketCreatedNotification(ctx context.Context, on bool, store *ticket.PostgresStore, queue ticketnotify.Queue, events *event.PostgresStore, users user.Store, sky *mail.SkyMail, page ticket.PageConfig, apiOrigin string, logf func(string, ...any)) <-chan struct{} {
 	off := make(chan struct{})
 	close(off)
 	store.NotifyCreated(false)
@@ -49,13 +49,17 @@ func startTicketCreatedNotification(ctx context.Context, on bool, store *ticket.
 		logf("ticket notification: off (SkyMail is not configured)")
 		return off
 	}
-	svc, err := ticketnotify.NewService(ticketnotify.Config{Queue: queue, Tickets: store, Events: events, Users: users, Mail: sky})
+	svc, err := ticketnotify.NewService(ticketnotify.Config{Queue: queue, Tickets: store, Events: events, Users: users, Mail: sky, Page: page, APIOrigin: apiOrigin})
 	if err != nil {
 		logf("ticket notification: OFF, %v", err)
 		return off
 	}
 	store.NotifyCreated(true)
 	events.NotifyTicketsOnPublish(true)
-	logf("ticket notification: on (%s)", mail.TicketCreatedType)
+	if page.URL == "" {
+		logf("ticket notification: on (%s), no ticket page (%s unset)", mail.TicketCreatedType, ticket.PageURLEnv)
+	} else {
+		logf("ticket notification: on (%s), ticket page on", mail.TicketCreatedType)
+	}
 	return svc.Run(ctx, logf)
 }

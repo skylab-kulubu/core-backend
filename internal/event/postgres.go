@@ -32,12 +32,20 @@ type PostgresStore struct {
 	notifyTickets atomic.Bool
 }
 
+// pointMovedSQL is an update's new point ($25, $26) differing from the
+// row's.
+const pointMovedSQL = `(location_lat IS DISTINCT FROM $25::double precision OR location_lng IS DISTINCT FROM $26::double precision)`
+
+// mapSettleSQL is how long a point just set waits before its map is drawn:
+// a pin moved a few times in the panel is drawn once.
+const mapSettleSQL = `interval '1 minute'`
+
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
-var eventCols = `e.id, e.name, e.description, e.location, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, ` + activeSQL + `, e.status, e.published_at, e.published_by, e.cancelled_at, e.cancelled_by, e.cancel_reason, e.cancel_notified_at, e.copied_from_event_id, e.ranked, e.prize_info, e.feedback_mode, e.feedback_form_url, e.feedback_form_alias, e.feedback_auto_send, e.registration_closed, e.registration_closes_at, e.registration_closed_at, ` + registrationOpenSQL + `, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at, ` +
-	servableCountSQL(Files) + `, ` + servableCountSQL(Videos)
+var eventCols = `e.id, e.name, e.description, e.location, e.location_lat, e.location_lng, e.location_address, e.owner_team, e.form_url, e.capacity, e.start_date, e.end_date, e.linkedin, ` + activeSQL + `, e.status, e.published_at, e.published_by, e.cancelled_at, e.cancelled_by, e.cancel_reason, e.cancel_notified_at, e.copied_from_event_id, e.ranked, e.prize_info, e.feedback_mode, e.feedback_form_url, e.feedback_form_alias, e.feedback_auto_send, e.registration_closed, e.registration_closes_at, e.registration_closed_at, ` + registrationOpenSQL + `, e.season_id, e.cover_image_id, ` + media.ServedKeySQL("m") + `, ` + media.LinkedImageSQL("m") + `, COALESCE(m.cover_colors, '{}'), e.attendance_rule, e.attendance_ratio, e.extra_form_urls, e.mail_list_id, e.archived_at, e.archived_by, e.created_at, e.updated_at, ` +
+	servableCountSQL(Files) + `, ` + servableCountSQL(Videos) + `, e.map_media_id, ` + media.ServableKeySQL("mm")
 
 // servableCountSQL counts the Event's items of the list anyone can see: a
 // subquery of the query that reads the Event, so a list of Events costs no
@@ -48,7 +56,8 @@ func servableCountSQL(list MediaList) string {
 		WHERE linked.event_id = e.id AND ` + media.ServableSQL("lm") + `)`
 }
 
-const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id AND m.deleted_at IS NULL`
+const eventFrom = `events e LEFT JOIN media m ON m.id = e.cover_image_id AND m.deleted_at IS NULL
+	LEFT JOIN media mm ON mm.id = e.map_media_id AND mm.deleted_at IS NULL`
 
 func (s *PostgresStore) List(ctx context.Context, ownerTeam string, activeOnly bool) ([]Event, error) {
 	return s.list(ctx, ownerTeam, activeOnly, false, lifecycle.CurrentOnly)
@@ -260,18 +269,21 @@ func (s *PostgresStore) Create(ctx context.Context, e Event) (Event, error) {
 			start_date, end_date, linkedin, ranked, prize_info, season_id, cover_image_id,
 			attendance_rule, attendance_ratio, extra_form_urls,
 			status, published_at, published_by, registration_closed, registration_closes_at, registration_closed_at,
-			feedback_mode, feedback_form_url, feedback_form_alias, feedback_auto_send
+			feedback_mode, feedback_form_url, feedback_form_alias, feedback_auto_send,
+			location_lat, location_lng, location_address, map_retry_at
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
 			$18,
 			CASE WHEN $18 = 'published' THEN now() END,
 			CASE WHEN $18 = 'published' THEN (SELECT id FROM users WHERE id = $19) END,
 			$20::boolean, $21, CASE WHEN $20::boolean THEN now() END,
-			$22, $23, $24, $25)`,
+			$22, $23, $24, $25,
+			$26, $27, $28, CASE WHEN $26::double precision IS NOT NULL THEN now() + `+mapSettleSQL+` END)`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
 		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e),
 		string(e.Status), e.PublishedBy, e.RegistrationClosed, e.RegistrationClosesAt,
-		string(feedbackMode(e.FeedbackMode)), e.FeedbackFormURL, e.FeedbackFormAlias, e.FeedbackAutoSend)
+		string(feedbackMode(e.FeedbackMode)), e.FeedbackFormURL, e.FeedbackFormAlias, e.FeedbackAutoSend,
+		e.LocationLat, e.LocationLng, e.LocationAddress)
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
 	}
@@ -324,13 +336,25 @@ func (s *PostgresStore) Update(ctx context.Context, e Event) (Event, error) {
 			registration_closed = $18::boolean, registration_closes_at = $19,
 			cancel_reason = CASE WHEN $20::text IS NOT NULL AND status = 'cancelled' THEN $20::text ELSE cancel_reason END,
 			feedback_mode = $21, feedback_form_url = $22, feedback_form_alias = $23, feedback_auto_send = $24,
+			location_lat = $25, location_lng = $26, location_address = $27,
+			-- A new point clears the map drawn of the old one and its tries;
+			-- the worker draws another once the point has settled
+			-- (docs/event-map.md). The right-hand columns are the row's
+			-- before.
+			map_media_id = CASE WHEN `+pointMovedSQL+` THEN NULL ELSE map_media_id END,
+			map_state = CASE WHEN `+pointMovedSQL+` THEN NULL ELSE map_state END,
+			map_attempts = CASE WHEN `+pointMovedSQL+` THEN 0 ELSE map_attempts END,
+			map_retry_at = CASE WHEN `+pointMovedSQL+` THEN now() + `+mapSettleSQL+` ELSE map_retry_at END,
+			map_claim_id = CASE WHEN `+pointMovedSQL+` THEN NULL ELSE map_claim_id END,
+			map_claimed_until = CASE WHEN `+pointMovedSQL+` THEN NULL ELSE map_claimed_until END,
 			updated_at = now()
 		WHERE id = $1 AND archived_at IS NULL`,
 		e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.FormURL, e.Capacity,
 		e.StartDate, e.EndDate, e.Linkedin, e.Ranked, e.PrizeInfo, e.SeasonID, e.CoverImageID,
 		attendanceRule(e.AttendanceRule), e.AttendanceRatio, extraFormBytes(e),
 		e.RegistrationClosed, e.RegistrationClosesAt, sentCancelReason(e),
-		string(feedbackMode(e.FeedbackMode)), e.FeedbackFormURL, e.FeedbackFormAlias, e.FeedbackAutoSend)
+		string(feedbackMode(e.FeedbackMode)), e.FeedbackFormURL, e.FeedbackFormAlias, e.FeedbackAutoSend,
+		e.LocationLat, e.LocationLng, e.LocationAddress)
 	if refusal, ok := media.DatabaseLinkRefusal(err); ok {
 		return Event{}, refusal
 	}
@@ -1034,19 +1058,22 @@ func sentCancelReason(e Event) *string {
 
 func scanEvent(row rowScanner) (Event, error) {
 	var e Event
-	var coverURL *string
+	var coverURL, mapURL *string
 	var extraRaw []byte
 	err := row.Scan(
-		&e.ID, &e.Name, &e.Description, &e.Location, &e.OwnerTeam, &e.FormURL, &e.Capacity,
+		&e.ID, &e.Name, &e.Description, &e.Location, &e.LocationLat, &e.LocationLng, &e.LocationAddress, &e.OwnerTeam, &e.FormURL, &e.Capacity,
 		&e.StartDate, &e.EndDate, &e.Linkedin, &e.Active, &e.Status, &e.PublishedAt, &e.PublishedBy,
 		&e.CancelledAt, &e.CancelledBy, &e.CancelReason, &e.CancelNotifiedAt, &e.CopiedFromEventID, &e.Ranked, &e.PrizeInfo,
 		&e.FeedbackMode, &e.FeedbackFormURL, &e.FeedbackFormAlias, &e.FeedbackAutoSend,
 		&e.RegistrationClosed, &e.RegistrationClosesAt, &e.RegistrationClosedAt, &e.RegistrationOpen, &e.SeasonID,
 		&e.CoverImageID, &coverURL, &e.coverImage, &e.CoverColors, &e.AttendanceRule, &e.AttendanceRatio, &extraRaw, &e.MailListID, &e.ArchivedAt, &e.ArchivedBy, &e.CreatedAt, &e.UpdatedAt,
-		&e.FileCount, &e.VideoCount,
+		&e.FileCount, &e.VideoCount, &e.MapImageID, &mapURL,
 	)
 	if coverURL != nil {
 		e.CoverImageURL = *coverURL
+	}
+	if mapURL != nil {
+		e.MapImageURL = *mapURL
 	}
 	if e.CoverColors == nil {
 		e.CoverColors = []string{}
@@ -1278,4 +1305,34 @@ func (s *PostgresStore) ListSessionFeedbackForms(ctx context.Context, eventID uu
 		err := row.Scan(&f.EventID, &f.SessionID, &f.Title, &f.URL, &f.Alias)
 		return f, err
 	})
+}
+
+func (s *PostgresStore) ListPlaces(ctx context.Context, ownerTeam string, drafts bool, limit int) ([]Place, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT location, location_address, location_lat, location_lng, used_at, uses FROM (
+			SELECT DISTINCT ON (location, location_lat, location_lng)
+				location, location_address, location_lat, location_lng,
+				COALESCE(start_date, created_at) AS used_at,
+				count(*) OVER (PARTITION BY location, location_lat, location_lng) AS uses
+			FROM events
+			WHERE archived_at IS NULL AND location_lat IS NOT NULL
+			  AND ($1 = '' OR owner_team = $1)
+			  AND ($2 OR status <> 'draft')
+			ORDER BY location, location_lat, location_lng, COALESCE(start_date, created_at) DESC, id
+		) places
+		ORDER BY used_at DESC, location
+		LIMIT $3`, ownerTeam, drafts, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Place, 0)
+	for rows.Next() {
+		var p Place
+		if err := rows.Scan(&p.Name, &p.Address, &p.Lat, &p.Lng, &p.LastUsedAt, &p.Uses); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }

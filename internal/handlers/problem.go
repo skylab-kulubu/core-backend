@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
+	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -95,8 +97,9 @@ func problemWithFields(c fiber.Ctx, status int, title, detail, code string, fiel
 
 func ErrorHandler(c fiber.Ctx, err error) error {
 	// Name the route so an unmatched path or wrong method is traceable to its
-	// caller. The query string stays out: it can carry share tokens.
-	log.Printf("http error: %s %s: %v", c.Method(), c.Path(), err)
+	// caller. The query string stays out: it can carry share tokens, and so
+	// does a ticket page's key in its path (loggedPath).
+	log.Printf("http error: %s %s: %v", c.Method(), loggedPath(c.Path()), err)
 	var fe *fiber.Error
 	if errors.As(err, &fe) {
 		return problem(c, fe.Code, fe.Message)
@@ -105,4 +108,25 @@ func ErrorHandler(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusConflict, "Conflict")
 	}
 	return problem(c, fiber.StatusInternalServerError, "Internal Server Error")
+}
+
+// ticketPagePrefix is the ticket page's public routes: the segment after it
+// is a Ticket's access key, a bearer key (docs/ticket-page.md).
+const ticketPagePrefix = "/v1/public/tickets/"
+
+// loggedPath is a request path as a log line may hold it: a ticket page's
+// key cut to its first four characters (ticketpage.LogKey), whatever
+// follows it, a route that does not exist and a panic included. The prefix
+// is matched in any case, as the router matches routes
+// (/V1/PUBLIC/TICKETS/<key> reaches the same handler).
+func loggedPath(path string) string {
+	if len(path) < len(ticketPagePrefix) || !strings.EqualFold(path[:len(ticketPagePrefix)], ticketPagePrefix) {
+		return path
+	}
+	prefix, rest := path[:len(ticketPagePrefix)], path[len(ticketPagePrefix):]
+	key, tail, _ := strings.Cut(rest, "/")
+	if tail != "" {
+		tail = "/" + tail
+	}
+	return prefix + ticketpage.LogKey(key) + tail
 }

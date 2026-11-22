@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"log"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -51,11 +53,7 @@ func TestGuestApplyLogsTheClassAndOutcomeButNoPersonalData(t *testing.T) {
 	guest := NewGuestApply(proxies, metrics, GuestApplyLimits{PerClient: 1, PerClientWindow: time.Minute, PerGuest: 5, PerGuestWindow: time.Minute},
 		log.New(&logs, "", 0))
 	h := NewTicketHandler(ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy())))
-	app := fiber.New(fiber.Config{
-		TrustProxy:       true,
-		TrustProxyConfig: fiber.TrustProxyConfig{Proxies: proxies.Proxies()},
-		ProxyHeader:      fiber.HeaderXForwardedFor,
-	})
+	app := fiber.New()
 	app.Use(requestid.New())
 	route := []any{}
 	for _, limit := range guest.Limits() {
@@ -148,6 +146,87 @@ func TestParseGuestApplyLimitMode(t *testing.T) {
 	for _, raw := range []string{"off", "Enforce", "log"} {
 		if _, err := ParseGuestApplyLimitMode(raw); err == nil {
 			t.Fatalf("%q accepted", raw)
+		}
+	}
+}
+
+// A proxy whose name did not resolve is a private peer that is not trusted,
+// and it still writes the visitor in X-Forwarded-For: its requests are the
+// internet's and get the public limits, never the internal hop's. A private
+// caller that names nobody (the forms hop) stays internal. The app listens
+// on the loopback, so the peer is a real private address.
+func TestGuestApplyHeaderFromAnUntrustedPeerIsPublic(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// dokploy-traefik is never looked up here: as if it did not resolve.
+	proxies, err := clientip.ParseRanges("dokploy-traefik")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs lockedBuffer
+	guest := NewGuestApply(proxies, NewGuestApplyMetrics(), GuestApplyLimits{PerClient: 1, PerClientWindow: time.Minute, PerGuest: 5, PerGuestWindow: time.Minute},
+		log.New(&logs, "", 0))
+	h := NewTicketHandler(ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy())))
+	app := fiber.New()
+	app.Use(requestid.New())
+	route := []any{}
+	for _, limit := range guest.Limits() {
+		route = append(route, limit)
+	}
+	app.Post("/v1/events/:eventId/applications/guest", guest.Observe, append(route, h.ApplyGuest)...)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = app.Listener(listener, fiber.ListenConfig{DisableStartupMessage: true}) }()
+	t.Cleanup(func() { _ = app.Shutdown() })
+
+	send := func(forwardedFor, email string) int {
+		body := `{"firstName":"Ada","lastName":"Lovelace","email":"` + email + `","phoneNumber":"5551234"}`
+		req, err := http.NewRequestWithContext(t.Context(), fiber.MethodPost, "http://"+listener.Addr().String()+"/v1/events/"+ev.ID.String()+"/applications/guest", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if forwardedFor != "" {
+			req.Header.Set("X-Forwarded-For", forwardedFor)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	for i, step := range []struct {
+		forwardedFor, email string
+		status              int
+	}{
+		{"203.0.113.7", "ada@example.com", fiber.StatusCreated},
+		{"198.51.100.9", "bob@example.com", fiber.StatusTooManyRequests},
+		{"", "carol@example.com", fiber.StatusCreated},
+		{"", "dan@example.com", fiber.StatusCreated},
+	} {
+		if got := send(step.forwardedFor, step.email); got != step.status {
+			t.Fatalf("step %d: status %d want %d", i, got, step.status)
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	want := []string{"anonymous_public", "anonymous_public", "anonymous_internal", "anonymous_internal"}
+	if len(lines) != len(want) {
+		t.Fatalf("log lines %q", lines)
+	}
+	for i, line := range lines {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		if entry["caller"] != want[i] {
+			t.Fatalf("request %d counted %v, want %s", i, entry["caller"], want[i])
 		}
 	}
 }

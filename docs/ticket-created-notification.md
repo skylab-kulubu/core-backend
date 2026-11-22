@@ -68,7 +68,8 @@ Ticket insert ──(same statement)──▶ ticket_notifications ──▶ wor
 
   {"type": "event.ticket-created",
    "recipients": [{"sub": "<ownerId>"}],
-   "variables": {"EventId": "…", "EventName": "…", "EventDate": "10.11.2026 18:30", "Venue": "…", "OwnerTeam": "WEBLAB"},
+   "variables": {"EventId": "…", "EventName": "…", "EventDate": "10.11.2026 18:30", "Venue": "…", "OwnerTeam": "WEBLAB",
+                 "TicketUrl": "https://yildizskylab.com/bilet/<key>", "TicketQrUrl": "https://api.yildizskylab.com/v1/public/tickets/<key>/qr.png", "TicketCode": "K7M2-QX9F"},
    "source": {"kind": "ticket", "ref": "<ticketId>"},
    "expires_at": "<the Event's end>"}
   ```
@@ -83,10 +84,33 @@ Ticket insert ──(same statement)──▶ ticket_notifications ──▶ wor
 - `EventDate` is the start in Europe/Istanbul, empty without one: every
   variable is always sent, since SkyMail renders the inbox text with
   `missingkey=error`. `EventId` fills the inbox
-  item's link (`/events/{{.EventId}}` in SkyMail's type text). The template's
-  `TicketQrUrl`, `TicketCode` and `EventUrl` are not sent: core has no QR
-  image address or ticket code to give yet, and the template leaves those
-  rows out when they are empty.
+  item's link (`/events/{{.EventId}}` in SkyMail's type text).
+- **The Ticket's own three** (ADR 0082; bilet-qr-ve-pdf ticket 04), while
+  `TICKET_PAGE_URL` is set ([ticket-page.md](ticket-page.md)), to a member
+  and a guest alike:
+  - `TicketUrl`: the Ticket's page, the "Biletini aç" button. The link is a
+    bearer key: a sensitive variable in the template.
+  - `TicketQrUrl`: the Ticket QR as a remote PNG on `PUBLIC_API_ORIGIN`
+    (`/v1/public/tickets/<key>/qr.png`), signed when the mail is opened.
+    Empty when `PUBLIC_API_ORIGIN` is unset. No base64 or CID image: Gmail
+    shows a remote image through its proxy, classic Outlook shows none and
+    the button and the code do the work.
+  - `TicketCode`: the code as text, `XXXX-XXXX`.
+
+  Unset, the five of before go, as before. `EventUrl` is never sent: the
+  site has no Event page. The Idempotency-Key stays `:v1`: the three are the
+  same Notification's content, not another Notification. The template shows
+  each row only when its variable is set, so it can go out before or after
+  core; once core sends them, `TicketUrl` and `TicketCode` become the
+  contract's required variables (CONTEXT, Required variable).
+
+## Sending it again
+
+The panel sends a Ticket's mail again ("Bileti yeniden gönder", and with
+"Bağlantıyı yenile"; [ticket-resend.md](ticket-resend.md)): the queue's row
+then carries the resend's number `n` and goes under
+`core:event.ticket-created:<ticketId>:r<n>`, its own key. The first mail's
+key stays `…:v1`.
 
 ## Retries
 
@@ -128,7 +152,8 @@ also goes with its Ticket (`ON DELETE CASCADE`).
 3. Tell the club: this is a new mail; Forms' own confirmation still goes for
    a form that writes a Ticket.
 4. `TICKET_CREATED_NOTIFICATION=on`; the startup line reads
-   `ticket notification: on (event.ticket-created)`.
+   `ticket notification: on (event.ticket-created), ticket page on` with
+   `TICKET_PAGE_URL` set, `… no ticket page (TICKET_PAGE_URL unset)` without.
 
 Rollback: `TICKET_CREATED_NOTIFICATION=off` (or unset). The rows already
 queued stay; turned on again within a day they are sent, later they are given

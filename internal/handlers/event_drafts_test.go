@@ -315,6 +315,10 @@ func TestDraftLists(t *testing.T) {
 }
 
 func problemCodeOf(a draftAnswer) (string, string) {
+	if a.status < 400 {
+		// A Ticket answers its own code (XXXX-XXXX), not a problem's.
+		return "", ""
+	}
 	code, _ := a.body["code"].(string)
 	reason, _ := a.body["reason"].(string)
 	return code, reason

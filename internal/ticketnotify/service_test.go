@@ -348,3 +348,22 @@ func TestEventWithoutAnEndIsToldOfUntilADayAfterItsStart(t *testing.T) {
 		t.Fatalf("report %+v, calls %d", r, len(e.mail.calls))
 	}
 }
+
+// A row the panel queued again goes under its resend's key (…:r<n>), so
+// SkyMail sends it instead of answering the first mail's replay.
+func TestResendGoesUnderItsOwnKey(t *testing.T) {
+	e := newEnv(t)
+	tk := e.member(user.AccountActive)
+	e.queue.mu.Lock()
+	e.queue.rows[0].Resend = 2
+	e.queue.mu.Unlock()
+	if r := e.pass(t); r.Sent != 1 {
+		t.Fatalf("report %+v", r)
+	}
+	if got := e.mail.calls[0].key; got != "core:event.ticket-created:"+tk.ID.String()+":r2" || got != ticketnotify.ResendKey(tk.ID, 2) {
+		t.Fatalf("key %q", got)
+	}
+	if ticketnotify.ResendKey(tk.ID, 0) != ticketnotify.IdempotencyKey(tk.ID) {
+		t.Fatal("the first mail's key changed")
+	}
+}

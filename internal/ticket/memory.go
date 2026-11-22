@@ -45,8 +45,46 @@ func (s *MemoryStore) Create(_ context.Context, t Ticket) (Ticket, error) {
 	if t.CheckIns == nil {
 		t.CheckIns = []CheckIn{}
 	}
+	// As the database: a fresh access key and code, unique, QR version 1.
+	for {
+		key, err := NewAccessKey()
+		if err != nil {
+			return Ticket{}, err
+		}
+		code, err := NewCode()
+		if err != nil {
+			return Ticket{}, err
+		}
+		if !s.takenLocked(key, code) {
+			t.AccessKey, t.Code, t.QRVersion = key, FormatCode(code), 1
+			break
+		}
+	}
 	s.byID[t.ID] = t
 	return t, nil
+}
+
+func (s *MemoryStore) takenLocked(key, code string) bool {
+	for _, other := range s.byID {
+		if other.AccessKey == key || storedCode(other.Code) == code {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *MemoryStore) GetByAccessKey(_ context.Context, key string) (Ticket, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !ValidAccessKey(key) {
+		return Ticket{}, ErrNotFound
+	}
+	for _, t := range s.byID {
+		if t.AccessKey == key {
+			return s.withCheckInsLocked(t), nil
+		}
+	}
+	return Ticket{}, ErrNotFound
 }
 
 func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (Ticket, error) {
@@ -129,6 +167,8 @@ func (s *MemoryStore) Update(_ context.Context, t Ticket) (Ticket, error) {
 	}
 	t.CreatedAt = existing.CreatedAt
 	t.UpdatedAt = time.Now().UTC()
+	// Update writes the guest's details only, as the database's.
+	t.AccessKey, t.Code, t.QRVersion = existing.AccessKey, existing.Code, existing.QRVersion
 	if t.CheckIns == nil {
 		t.CheckIns = existing.CheckIns
 	}
