@@ -94,14 +94,16 @@ func TestRestoreAndBindingAreDecidedOneAtATime(t *testing.T) {
 	if err := migrate.Apply(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	svc := event.NewService(event.NewPostgresStore(pool), authz.NewAuthorizer(authz.DefaultPolicy()))
+	store := event.NewPostgresStore(pool)
+	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()))
 	for round := range 3 {
 		form := formURL(uuid.New())
 		archived, err := svc.Create(ctx, copyLeader, event.Event{Name: "Eski", Location: "YTÜ", OwnerTeam: "WEBLAB", Status: event.StatusDraft, FormURL: form})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := svc.Delete(ctx, copyLeader, archived.ID); err != nil {
+		// Archived by nobody: the test's caller has no account row.
+		if err := store.Archive(ctx, archived.ID, nil); err != nil {
 			t.Fatal(err)
 		}
 		other, err := svc.Create(ctx, copyLeader, event.Event{Name: "Yeni", Location: "YTÜ", OwnerTeam: "WEBLAB"})
