@@ -86,12 +86,19 @@ func TestPostgresAnonymizationClearsTheGuestDataOfThePersonsAddresses(t *testing
 
 	for name, g := range map[string]guest{"primary": primary, "school": school, "personal": personal} {
 		var first, last, email, phone string
-		if err := pool.QueryRow(ctx, `SELECT guest_first_name, guest_last_name, guest_email, guest_phone_number FROM tickets WHERE id = $1`,
-			g.ticket).Scan(&first, &last, &email, &phone); err != nil {
+		var accessKey *string
+		var qrVersion int
+		if err := pool.QueryRow(ctx, `SELECT guest_first_name, guest_last_name, guest_email, guest_phone_number, access_key, qr_version FROM tickets WHERE id = $1`,
+			g.ticket).Scan(&first, &last, &email, &phone, &accessKey, &qrVersion); err != nil {
 			t.Fatalf("%s ticket: %v", name, err)
 		}
 		if first != "" || last != "" || email != "" || phone != "" {
 			t.Fatalf("%s guest ticket kept %q %q %q %q", name, first, last, email, phone)
+		}
+		// The ticket page and Ticket QR of the erased guest stop working
+		// (docs/ticket-access-key-and-code.md).
+		if accessKey != nil || qrVersion != 2 {
+			t.Fatalf("%s guest ticket kept its access key (%v) or QR version %d", name, accessKey != nil, qrVersion)
 		}
 		assertGuestRecordsKept(t, ctx, pool, name, g.checkIn, g.certificate, g.serial, g.pdf)
 		var recipientEmail string
@@ -104,20 +111,29 @@ func TestPostgresAnonymizationClearsTheGuestDataOfThePersonsAddresses(t *testing
 	}
 
 	var first, last, email, phone, recipientEmail string
+	var otherKey *string
+	var otherVersion int
 	if err := pool.QueryRow(ctx, `
-		SELECT t.guest_first_name, t.guest_last_name, t.guest_email, t.guest_phone_number, c.recipient_email
+		SELECT t.guest_first_name, t.guest_last_name, t.guest_email, t.guest_phone_number, c.recipient_email, t.access_key, t.qr_version
 		FROM tickets t JOIN certificates c ON c.ticket_id = t.id WHERE t.id = $1
-	`, other.ticket).Scan(&first, &last, &email, &phone, &recipientEmail); err != nil {
+	`, other.ticket).Scan(&first, &last, &email, &phone, &recipientEmail, &otherKey, &otherVersion); err != nil {
 		t.Fatal(err)
 	}
 	if first != "Grace" || last != "Hopper" || email != "grace@example.com" || phone != "+905557778899" || recipientEmail != "grace@example.com" {
 		t.Fatalf("another guest changed: %q %q %q %q %q", first, last, email, phone, recipientEmail)
+	}
+	if otherKey == nil || otherVersion != 1 {
+		t.Fatalf("another guest's access key (%v) or QR version %d changed", otherKey != nil, otherVersion)
 	}
 	assertGuestRecordsKept(t, ctx, pool, "other", other.checkIn, other.certificate, other.serial, other.pdf)
 
 	// A retry after the checkpoint was lost changes nothing more.
 	if err := store.AnonymizeAccount(ctx, subjectID, at.Add(time.Hour), nil); err != nil {
 		t.Fatalf("retry: %v", err)
+	}
+	var version int
+	if err := pool.QueryRow(ctx, `SELECT qr_version FROM tickets WHERE id = $1`, primary.ticket).Scan(&version); err != nil || version != 2 {
+		t.Fatalf("QR version %d after the retry: %v", version, err)
 	}
 }
 

@@ -115,7 +115,17 @@ type Ticket struct {
 	GuestLastName    string          `json:"guestLastName,omitempty"`
 	GuestEmail       string          `json:"guestEmail,omitempty"`
 	GuestPhoneNumber string          `json:"guestPhoneNumber,omitempty"`
-	CheckIns         []CheckIn       `json:"checkIns"`
+	// Code is the Ticket's code as shown, XXXX-XXXX: the holder's and the
+	// panel's (docs/ticket-access-key-and-code.md). Not a credential.
+	Code string `json:"code,omitempty"`
+	// AccessKey opens the ticket page without a sign-in. Only the holder
+	// is given it (their mail, GET /v1/tickets/me as a link); no answer
+	// carries the key itself.
+	AccessKey string `json:"-"`
+	// QRVersion is the Ticket QR's version: renewing the link raises it,
+	// and a QR of an older one is refused online.
+	QRVersion int       `json:"-"`
+	CheckIns  []CheckIn `json:"checkIns"`
 	// Feedback are the holder's own feedback links (ticket 12): only the
 	// holder's own tickets answer (`GET /v1/tickets/me`) carries them, and
 	// only when there is one (docs/event-feedback.md).

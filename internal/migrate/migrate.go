@@ -1588,6 +1588,19 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.event_update_notifications_due_idx') IS NOT NULL
 		  AND to_regclass('public.event_update_notifications_event_idx') IS NOT NULL
 		  AND to_regclass('public.event_update_notification_sends_ticket_idx') IS NOT NULL`,
+	// A Ticket's access key, code and QR version
+	// (docs/ticket-access-key-and-code.md): the three columns, their two
+	// unique indexes and the defaults' function.
+	20261122120000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'tickets'
+			  AND column_name IN ('access_key', 'code', 'qr_version')
+		  ) = 3
+		  AND to_regclass('public.tickets_access_key_idx') IS NOT NULL
+		  AND to_regclass('public.tickets_code_idx') IS NOT NULL
+		  AND to_regprocedure('public.ticket_random_text(text, integer)') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
