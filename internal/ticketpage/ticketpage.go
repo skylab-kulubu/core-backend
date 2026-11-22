@@ -126,15 +126,15 @@ type View struct {
 	// both left out while there is none.
 	MapImageURL    string `json:"mapImageUrl,omitempty"`
 	MapAttribution string `json:"mapAttribution,omitempty"`
-	OwnerTeam     string   `json:"ownerTeam"`
-	EventStatus   string   `json:"eventStatus"`
-	HolderName    string   `json:"holderName"`
-	Code          string   `json:"code"`
-	QRToken       string   `json:"qrToken"`
-	QRURL         string   `json:"qrUrl"`
-	PDFURL        string   `json:"pdfUrl"`
-	State         string   `json:"state"`
-	Theme         Theme    `json:"theme"`
+	OwnerTeam      string `json:"ownerTeam"`
+	EventStatus    string `json:"eventStatus"`
+	HolderName     string `json:"holderName"`
+	Code           string `json:"code"`
+	QRToken        string `json:"qrToken"`
+	QRURL          string `json:"qrUrl"`
+	PDFURL         string `json:"pdfUrl"`
+	State          string `json:"state"`
+	Theme          Theme  `json:"theme"`
 }
 
 // opened is a Ticket the key opened, with its Event and holder.

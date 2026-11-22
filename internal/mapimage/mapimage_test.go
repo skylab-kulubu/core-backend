@@ -179,7 +179,9 @@ type testTile struct {
 // root directory), with the bounds given.
 func writeArchive(t *testing.T, tiles []testTile, minLon, minLat, maxLon, maxLat float64) []byte {
 	t.Helper()
-	sort.Slice(tiles, func(i, j int) bool { return TileID(tiles[i].z, tiles[i].x, tiles[i].y) < TileID(tiles[j].z, tiles[j].x, tiles[j].y) })
+	sort.Slice(tiles, func(i, j int) bool {
+		return TileID(tiles[i].z, tiles[i].x, tiles[i].y) < TileID(tiles[j].z, tiles[j].x, tiles[j].y)
+	})
 	var data []byte
 	var dir pbuf
 	dir.varint(uint64(len(tiles)))
