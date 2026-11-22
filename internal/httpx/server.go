@@ -444,13 +444,6 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/public/tickets/:key/qr.png", perClientLimitOf(trustedProxies, handlers.TicketQRsPerClientMinute), page.QR)
 		app.Get("/v1/public/tickets/:key/pdf", publicTicketLimit, handlers.TicketPDFLimit(), page.PDF)
 	}
-	if deps.MapRegions != nil {
-		regions := handlers.NewMapRegionHandler(deps.MapRegions)
-		app.Get("/v1/map-regions", regions.List)
-		app.Post("/v1/map-regions", regions.Request)
-		app.Post("/v1/map-regions/:id/retry", regions.Retry)
-		app.Post("/v1/map-regions/:id/retire", regions.Retire)
-	}
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
 		// The same keys under the door's name: SkyPass's and the Ticket
@@ -660,6 +653,16 @@ func New(deps Deps) *fiber.App {
 
 	if deps.Dashboard != nil {
 		app.Get("/v1/dashboard/summary", handlers.NewDashboardHandler(deps.Dashboard).Summary)
+	}
+
+	// The map regions read the caller (docs/event-map.md, "Regions"), so
+	// they come after Bearer like every signed-in route.
+	if deps.MapRegions != nil {
+		regions := handlers.NewMapRegionHandler(deps.MapRegions)
+		app.Get("/v1/map-regions", regions.List)
+		app.Post("/v1/map-regions", regions.Request)
+		app.Post("/v1/map-regions/:id/retry", regions.Retry)
+		app.Post("/v1/map-regions/:id/retire", regions.Retire)
 	}
 
 	// The team routes are public and each read reaches Keycloak: one budget
