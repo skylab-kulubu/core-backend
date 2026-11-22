@@ -89,6 +89,11 @@ type Config struct {
 	Events  Events
 	Users   Users
 	Mail    Mailer
+	// Page is the ticket page's settings (docs/ticket-page.md): while its
+	// URL is set, the Notification carries the Ticket's page, QR image and
+	// code. APIOrigin is core's public origin, where the QR image is.
+	Page      ticket.PageConfig
+	APIOrigin string
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 	// Logger hears counts and failures, never a person; nil is log.Default.
@@ -237,7 +242,7 @@ func (s *Service) deliver(ctx context.Context, q Queued) (outcome, error) {
 	if !ok {
 		return dropped, nil
 	}
-	err = s.config.Mail.TicketCreated(ctx, IdempotencyKey(t.ID), holder, s.vars(ev), mail.NotificationSource{Kind: "ticket", Ref: t.ID.String()}, ev.EndDate)
+	err = s.config.Mail.TicketCreated(ctx, IdempotencyKey(t.ID), holder, s.vars(ev, t), mail.NotificationSource{Kind: "ticket", Ref: t.ID.String()}, ev.EndDate)
 	var refused *mail.SendError
 	switch {
 	case errors.Is(err, mail.ErrMaybeDelivered):
@@ -282,7 +287,12 @@ func (s *Service) holder(ctx context.Context, t ticket.Ticket) (mail.TicketHolde
 // the Event's, the same for any holder. EventId fills the inbox item's link.
 // Every key is always there, EventDate empty without a start: SkyMail
 // renders the inbox text with missingkey=error.
-func (s *Service) vars(ev event.Event) map[string]string {
+//
+// While TICKET_PAGE_URL is set, the Ticket's own three join them (ADR 0082,
+// docs/ticket-created-notification.md): TicketUrl, its page; TicketQrUrl,
+// its QR as a remote image; TicketCode, its code as text. A member and a
+// guest get the same. EventUrl is never sent: the site has no Event page.
+func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 	vars := map[string]string{
 		"EventId":   ev.ID.String(),
 		"EventName": ev.Name,
@@ -292,6 +302,14 @@ func (s *Service) vars(ev event.Event) map[string]string {
 	}
 	if ev.StartDate != nil {
 		vars["EventDate"] = ev.StartDate.In(s.location).Format(dateLayout)
+	}
+	if link := s.config.Page.Link(t.AccessKey); link != "" {
+		vars["TicketUrl"] = link
+		vars["TicketCode"] = t.Code
+		vars["TicketQrUrl"] = ""
+		if origin := strings.TrimRight(s.config.APIOrigin, "/"); origin != "" {
+			vars["TicketQrUrl"] = origin + "/v1/public/tickets/" + t.AccessKey + "/qr.png"
+		}
 	}
 	return vars
 }
