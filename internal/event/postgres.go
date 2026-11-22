@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"errors"
+	"log"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -26,6 +27,9 @@ type PostgresStore struct {
 	// docs/event-updated-notification.md) in the transaction that writes
 	// it. Set at startup, read by every request: atomic.
 	notifyUpdated atomic.Bool
+	// notifyTickets lets Publish queue a draft's Tickets' Notifications
+	// (event.ticket-created) when the publisher asks (NotifyTicketsOnPublish).
+	notifyTickets atomic.Bool
 }
 
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
@@ -1076,8 +1080,13 @@ func attendanceRule(rule string) string {
 
 // Publish: published_by names the actor only when they have an account
 // row, as on create.
-func (s *PostgresStore) Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `
+func (s *PostgresStore) Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID, notifyTickets bool) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
 		UPDATE events SET status = 'published', published_at = now(),
 			published_by = (SELECT id FROM users WHERE id = $2), updated_at = now()
 		WHERE id = $1 AND archived_at IS NULL AND status = 'draft'
@@ -1088,8 +1097,38 @@ func (s *PostgresStore) Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID
 	if err != nil {
 		return false, err
 	}
-	return tag.RowsAffected() == 1, nil
+	if tag.RowsAffected() != 1 {
+		return false, nil
+	}
+	// The draft's Tickets' Notifications, queued with the publication
+	// (Yusuf, 2026-11-22, K3): every Ticket the Event has now was written
+	// while it was a draft, since a published Event becomes a draft again
+	// only without Tickets. A row still queued is left as it is.
+	queued := int64(0)
+	if notifyTickets && s.notifyTickets.Load() {
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO ticket_notifications (ticket_id)
+			SELECT id FROM tickets WHERE event_id = $1
+			ON CONFLICT (ticket_id) DO NOTHING`, id)
+		if err != nil {
+			return false, err
+		}
+		queued = tag.RowsAffected()
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	if queued > 0 {
+		log.Printf("event %s: published, %d ticket notifications queued", id, queued)
+	}
+	return true, nil
 }
+
+// NotifyTicketsOnPublish turns on or off what Publish's notifyTickets does:
+// on while the new Ticket's Notification is (TICKET_CREATED_NOTIFICATION,
+// docs/ticket-created-notification.md). Off, a publication queues nothing,
+// whatever the publisher asked.
+func (s *PostgresStore) NotifyTicketsOnPublish(on bool) { s.notifyTickets.Store(on) }
 
 // Cancel: cancelled_by names the actor only when they have an account row,
 // as published_by does.

@@ -83,7 +83,11 @@ type Store interface {
 	// Publish publishes the draft (published_at/by, by nil when unknown):
 	// one UPDATE that changes it only while it is a current draft with a
 	// name, a location and a start date. False when it changed nothing.
-	Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID) (bool, error)
+	// With notifyTickets, while the new Ticket's Notification is on, the
+	// same transaction queues the Notification of each of the Event's
+	// Tickets (ticket_notifications; a row already queued stays). The
+	// memory store keeps no Tickets and queues nothing.
+	Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID, notifyTickets bool) (bool, error)
 	// Unpublish makes the published Event a draft again: one UPDATE that
 	// changes it only while it is current, published, and has no Ticket
 	// (check-ins hang off Tickets) and no current Competitor. When it is

@@ -789,7 +789,7 @@ func (s *MemoryStore) RestoreSession(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *MemoryStore) Publish(_ context.Context, id uuid.UUID, by *uuid.UUID) (bool, error) {
+func (s *MemoryStore) Publish(_ context.Context, id uuid.UUID, by *uuid.UUID, _ bool) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.byID[id]

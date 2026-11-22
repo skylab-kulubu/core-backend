@@ -244,9 +244,26 @@ func (h *EventHandler) Get(c fiber.Ctx) error {
 	return c.JSON(h.svc.ProjectFor(p, ev))
 }
 
+// publishBody is the body of POST /v1/events/{id}/publish, optional.
+type publishBody struct {
+	// NotifyTicketHolders queues the "your ticket is ready" Notification
+	// (event.ticket-created) of the Tickets written while the Event was a
+	// draft (Yusuf, 2026-11-22, K3). A body without it mails nobody: an
+	// older client (sky-app) does not start a mail.
+	NotifyTicketHolders bool `json:"notifyTicketHolders"`
+}
+
 // Publish publishes a draft: POST /v1/events/{id}/publish (ADR 0066).
 func (h *EventHandler) Publish(c fiber.Ctx) error {
-	return h.statusChange(c, h.svc.Publish)
+	var body publishBody
+	if len(bytes.TrimSpace(c.Body())) > 0 {
+		if err := c.Bind().Body(&body); err != nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+	}
+	return h.statusChange(c, func(ctx context.Context, p authz.Principal, id uuid.UUID) (event.Event, error) {
+		return h.svc.Publish(ctx, p, id, body.NotifyTicketHolders)
+	})
 }
 
 // Unpublish makes a published Event without Tickets a draft again: POST

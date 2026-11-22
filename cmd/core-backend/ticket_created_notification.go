@@ -40,6 +40,7 @@ func startTicketCreatedNotification(ctx context.Context, on bool, store *ticket.
 	off := make(chan struct{})
 	close(off)
 	store.NotifyCreated(false)
+	events.NotifyTicketsOnPublish(false)
 	switch {
 	case !on:
 		logf("ticket notification: off (TICKET_CREATED_NOTIFICATION is not on)")
@@ -54,6 +55,7 @@ func startTicketCreatedNotification(ctx context.Context, on bool, store *ticket.
 		return off
 	}
 	store.NotifyCreated(true)
+	events.NotifyTicketsOnPublish(true)
 	logf("ticket notification: on (%s)", mail.TicketCreatedType)
 	return svc.Run(ctx, logf)
 }

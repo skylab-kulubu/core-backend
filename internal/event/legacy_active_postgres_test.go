@@ -28,7 +28,7 @@ func TestPostgresStoreWritesWithoutLegacyActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create draft: %v", err)
 	}
-	if changed, err := store.Publish(ctx, draft.ID, nil); err != nil || !changed {
+	if changed, err := store.Publish(ctx, draft.ID, nil, false); err != nil || !changed {
 		t.Fatalf("publish: %v %v", changed, err)
 	}
 	if changed, err := store.Unpublish(ctx, draft.ID); err != nil || !changed {
