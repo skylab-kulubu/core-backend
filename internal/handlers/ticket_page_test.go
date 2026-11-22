@@ -24,7 +24,7 @@ import (
 
 type pdfStub struct{}
 
-func (pdfStub) TaggedPDF(_ context.Context, _ string) ([]byte, error) {
+func (pdfStub) TaggedPDF(_ context.Context, _, _ string) ([]byte, error) {
 	return []byte("%PDF-1.7 bilet"), nil
 }
 

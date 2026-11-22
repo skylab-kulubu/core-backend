@@ -22,7 +22,12 @@ budget, `perClientLimit`). A key that is not 26 characters of `A`–`Z` and
   "eventName": "Yapay Zeka Kampı",
   "eventStart": "2026-12-12T07:00:00Z",
   "eventEnd": "2026-12-12T15:00:00Z",
-  "venue": "YTÜ Davutpaşa Kampüsü",
+  "venue": "YTÜ Davutpaşa, EEF Konferans Salonu",
+  "venueAddress": "Davutpaşa Cd. No:127, Esenler/İstanbul",
+  "venueLat": 41.025376,
+  "venueLng": 28.889648,
+  "directionsUrl": "https://www.google.com/maps/dir/?api=1&destination=41.025376%2C28.889648",
+  "mapsUrl": "https://www.google.com/maps/search/?api=1&query=41.025376%2C28.889648",
   "ownerTeam": "AILAB",
   "eventStatus": "published",
   "holderName": "Elif Yılmaz",
@@ -31,18 +36,23 @@ budget, `perClientLimit`). A key that is not 26 characters of `A`–`Z` and
   "qrUrl": "https://api.yildizskylab.com/v1/public/tickets/{key}/qr.png",
   "pdfUrl": "https://api.yildizskylab.com/v1/public/tickets/{key}/pdf",
   "state": "active",
-  "theme": {"key": "kurumsal", "accent": "#1F4E79"}
+  "theme": {"key": "kurumsal", "accent": "#7C3AED"}
 }
 ```
 
 - Exactly these fields: **no e-mail, phone, Sky number or ticket type**.
   `eventStart` and `eventEnd` are `null` when the Event has none.
+- The place ([event-location.md](event-location.md)): `venue` is its name;
+  `venueAddress`, `venueLat` and `venueLng` are left out while the Event has
+  none. `directionsUrl` ("Yol tarifi") and `mapsUrl` ("Haritada aç") are
+  Google Maps links to the point, else to the name and address: links, no
+  key, nothing embedded.
 - `holderName`: the guest's name, or the member's from core's row.
 - `qrToken` is the Ticket QR ([ticket-qr.md](ticket-qr.md)), signed with
   the Event's dates now; the site draws it, or shows `qrUrl`.
 - `qrUrl` and `pdfUrl` are on `PUBLIC_API_ORIGIN` (paths when it is unset).
 - `theme`: the look the PDF has; the site draws the same (ticket 07).
-  Ticket 16 adds the Event's choice, the team's logo and the guilloche.
+  Ticket 16 adds the Event's choice.
 - `state`:
 
 | State | When | QR and PDF |
@@ -78,30 +88,59 @@ and keeps nothing; a renamed holder gets the new name.
 
 ## The PDF
 
-Drawn by core with the certificate's Gotenberg (Chromium) client, at most
-two at once, as a **tagged PDF** (`generateTaggedPdf`): Turkish (`lang="tr"`),
-titled "<Event> bileti", the QR an image with the alternative text "Bilet
-QR kodu", the code real text.
+PDF v5 (Yusuf, 2026-11-22). Drawn by core with the certificate's Gotenberg
+(Chromium) client, at most two at once, as a **tagged PDF**
+(`generateTaggedPdf`): Turkish (`lang="tr"`), titled "Etkinlik Giriş Bileti
+<code>", each QR an image with its alternative text ("Bilet QR kodu", "Yol
+tarifi QR kodu"), the code real text.
 
-- **Page:** 210 × 148 mm (A5 landscape), one page. It prints on A4 (a
-  viewer scales it or prints it at the top) and fills a phone's screen; an
-  A4 portrait page would leave half of it empty.
-- **Shows:** the Event's name, date and time (Europe/Istanbul, in
-  Turkish), place and organizing team; the holder's name; the QR (47 mm)
-  and the code. **Never** an e-mail, a phone number, a Sky number or the
-  ticket type. One line: "Kapıda QR'ı göster. Okunmazsa bilet kodunu söyle."
-- **Look, Kurumsal** (`internal/ticket/theme`): an official document's
-  ticket. A guilloche ground of two woven wave families and two rosettes,
-  drawn from the code (each Ticket its own, always the same); the code as
-  the serial number; microtext of the Event's name, the club and the code
-  along the edges; the seal, the SKY LAB mark in a ring with the team's
-  name, and a second seal with the organizing team's logo when its group
-  has one (`logo_media_id`, a public image of at most 512 KB, read once
-  every ten minutes); the stub (koçan) behind a perforation with a small
-  QR, the code, the Event and its date. All of it is ornament: what
-  proves a Ticket is the signature in its QR, and no text says otherwise.
-- The QR keeps its place and size; a theme changes colours, typefaces and
-  ornament only (ticket 16 adds themes).
+- **Page:** A4 portrait, margins 25 / 14 / 14 mm; as many pages as it
+  needs. Every page has a head (Gotenberg's `header.html`): the SKY LAB
+  mark and "SKY LAB: Bilgisayar Bilimleri Kulübü" on the left, "Bilet kodu
+  <code> · Sayfa n/N" on the right, over the club's purple rule. The head
+  is a document of its own and sees no embedded font: it is set in Noto
+  Sans (Liberation Sans where there is none).
+- **Order, fixed:**
+  1. the cover band (182 × 24 mm): the cover's page size cut from its
+     middle to 1240 × 164 px, a JPEG of about 25 KB, kept 30 minutes per
+     cover; without a cover, the cover's first colour, else the purple;
+  2. "ETKİNLİK GİRİŞ BİLETİ" and the ticket: a grid of the Event (name),
+     its date and hours (one day) or its start and end (longer), the place's
+     name, the holder and the organizing team, beside the QR (44 mm) and the
+     code. It never splits and is always on the first page;
+  3. "Program": the current days and their Sessions in time order, a
+     cancelled Session left out. **Days stand side by side, at most two to
+     a row**: two days are two columns, a third day starts a new row under
+     the first, and so on. One day takes the whole width (with one Session
+     in larger type). A row is hours, title and speaker (on the right); a
+     long title wraps, never cut. A row never splits across pages, and a
+     day's heading stays with its rows;
+  4. "Etkinlik hakkında": the description, as written (line breaks kept);
+  5. "Etkinlik yeri", **always last** and never split (it moves to the next
+     page when it does not fit): the name, the address, the map when there
+     is one with its data's credit under it, and the directions QR ("Yol
+     tarifi", `directionsUrl`);
+  6. the footnote: "SKY LAB: Bilgisayar Bilimleri Kulübü · Bu bilet kişiye
+     özeldir. Doğrulama: <the ticket page> · Düzenlenme <time>", and the
+     photo and KVKK line.
+- **Text is data:** no sentence tells the holder what to do (no "show the
+  QR", no "scan"); the labels and the footnote only.
+- **Never** an e-mail, a phone number, a Sky number or the ticket type.
+- **Type:** Manrope (the club site's), embedded in the page: the static
+  400, 500, 600, 700 and 800 weights, Latin and Latin Extended
+  (`internal/ticketpage/fonts`, from Fontsource 5.3.0, SIL Open Font
+  License 1.1, `OFL.txt`). Static fonts stay text in the PDF; a variable
+  font would become Type 3 glyphs. The renderer reaches nothing outside
+  the page: fonts, images and QRs are inline.
+- **Size:** under 512 KB, the mail attachment's limit (ADR 0082 decision
+  6). What Gotenberg receives for a long three-day ticket with a cover and
+  a map stays under it (`TestDocumentSize`); Chromium embeds the images as
+  they are and only the glyphs used. Measured with Chromium 2026-11-22:
+  see the PR; to be measured again on the sandbox's Gotenberg.
+- **Look, Kurumsal** (`internal/ticket/theme`): black on white, the club's
+  purple (`#7C3AED`) for the head's rule and a band without a cover. The QR
+  keeps its place and size; a theme changes colours and type only (ticket
+  16 adds themes).
 
 ## The holder's own list: `GET /v1/tickets/me`
 

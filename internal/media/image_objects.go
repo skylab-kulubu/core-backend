@@ -12,6 +12,18 @@ type SizeObject struct {
 	Type string `json:"type"`
 }
 
+// SizeObjectKey is the object key and type of the image's stored size
+// (SizeCard, SizePage), for a reader in core that needs a small copy of an
+// image (the ticket PDF's cover band); ok is false when the image has no
+// such size.
+func (m Media) SizeObjectKey(size string) (key, contentType string, ok bool) {
+	obj, has := m.SizeObjects[size]
+	if !has || !canHaveSizeObjects(m.Key) || !slices.Contains(sizeObjectTypes, obj.Type) {
+		return "", "", false
+	}
+	return sizeObjectKey(m.Key, size, obj.Type), obj.Type, true
+}
+
 // sizeObjectTypes are the types a size object is encoded as.
 var sizeObjectTypes = []string{"image/jpeg", "image/png"}
 
