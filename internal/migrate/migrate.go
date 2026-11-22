@@ -1704,6 +1704,18 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE proname = 'media_roles_without_legacy'
 			  AND prosrc LIKE '%(''core'', ''event_map'')%'
 		)`,
+	// The map regions (docs/event-map.md): the table with its check and its
+	// two indexes.
+	20261122170000: `
+		SELECT 1
+		WHERE to_regclass('public.map_regions') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.map_regions') AND conname = 'map_regions_check'
+			  AND pg_get_constraintdef(oid) LIKE '%(claim_id IS NULL) = (claimed_until IS NULL)%'
+		  )
+		  AND to_regclass('public.map_regions_live_box_idx') IS NOT NULL
+		  AND to_regclass('public.map_regions_status_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

@@ -289,9 +289,9 @@ func (r *R2) Copy(ctx context.Context, from, to string, meta BlobMetadata) error
 	return err
 }
 
-// abortMultipartUploads aborts every multipart upload open at exactly key.
+// AbortMultipartUploads aborts every multipart upload open at exactly key.
 // One already gone counts as aborted.
-func (r *R2) abortMultipartUploads(ctx context.Context, key string) error {
+func (r *R2) AbortMultipartUploads(ctx context.Context, key string) error {
 	var keyMarker, idMarker *string
 	for {
 		out, err := r.client.ListMultipartUploads(ctx, &s3.ListMultipartUploadsInput{
