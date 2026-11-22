@@ -121,6 +121,11 @@ type View struct {
 	VenueLng      *float64 `json:"venueLng,omitempty"`
 	DirectionsURL string   `json:"directionsUrl,omitempty"`
 	MapsURL       string   `json:"mapsUrl,omitempty"`
+	// MapImageURL is the map of the place's point core drew
+	// (docs/event-map.md), MapAttribution the credit to show under it;
+	// both left out while there is none.
+	MapImageURL    string `json:"mapImageUrl,omitempty"`
+	MapAttribution string `json:"mapAttribution,omitempty"`
 	OwnerTeam     string   `json:"ownerTeam"`
 	EventStatus   string   `json:"eventStatus"`
 	HolderName    string   `json:"holderName"`
@@ -223,9 +228,13 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		Venue: ev.Location, VenueAddress: ev.LocationAddress, VenueLat: ev.LocationLat, VenueLng: ev.LocationLng,
 		DirectionsURL: DirectionsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
 		MapsURL:       MapsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
+		MapImageURL:   media.ConfiguredAddresses().Object(ev.MapImageURL),
 		OwnerTeam:     ev.OwnerTeam, EventStatus: string(ev.Status),
 		HolderName: o.holder, Code: o.ticket.Code, State: o.state,
 		Theme: Theme{Key: th.Key, Accent: th.Accent},
+	}
+	if v.MapImageURL != "" {
+		v.MapAttribution = event.MapAttribution
 	}
 	if o.state != StateEventCancelled {
 		token, err := s.token(o)
@@ -324,6 +333,11 @@ func (s *Service) document(ctx context.Context, key string, o opened, token stri
 	}
 	if ev.CoverImageID != nil {
 		doc.BandJPEG = s.band(ctx, *ev.CoverImageID)
+	}
+	if ev.MapImageID != nil && s.images != nil {
+		if data, contentType, ok := s.images.Image(ctx, *ev.MapImageID, ""); ok {
+			doc.Map, doc.MapType, doc.MapAttribution = data, contentType, event.MapAttribution
+		}
 	}
 	return doc, nil
 }

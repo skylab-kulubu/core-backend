@@ -7,6 +7,10 @@ import "github.com/skylab-kulubu/core-backend/internal/media"
 func withPublicMedia(e Event, addresses media.Addresses) Event {
 	e.CoverImageURL = addresses.Object(e.CoverImageURL)
 	e.CoverImageSizes = addresses.LinkedSizes(e.coverImage)
+	e.MapImageURL = addresses.Object(e.MapImageURL)
+	if e.MapImageURL != "" {
+		e.MapAttribution = MapAttribution
+	}
 	if n := len(e.Images); n > 0 {
 		images := make([]GalleryImage, n)
 		copy(images, e.Images)

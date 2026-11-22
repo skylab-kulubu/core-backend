@@ -16,17 +16,24 @@ type Event struct {
 	// degrees, six decimals), both or neither; LocationAddress is its
 	// street address. Location stays the place's name
 	// (docs/event-location.md).
-	LocationLat     *float64        `json:"locationLat,omitempty"`
-	LocationLng     *float64        `json:"locationLng,omitempty"`
-	LocationAddress string          `json:"locationAddress,omitempty"`
-	OwnerTeam       string          `json:"ownerTeam"`
-	FormURL         string          `json:"formUrl,omitempty"`
-	FormAlias       string          `json:"formAlias,omitempty"`
-	ExtraFormURLs   []EventFormLink `json:"extraFormUrls"`
-	Capacity        int             `json:"capacity"`
-	StartDate       *time.Time      `json:"startDate,omitempty"`
-	EndDate         *time.Time      `json:"endDate,omitempty"`
-	Linkedin        string          `json:"linkedin,omitempty"`
+	LocationLat     *float64 `json:"locationLat,omitempty"`
+	LocationLng     *float64 `json:"locationLng,omitempty"`
+	LocationAddress string   `json:"locationAddress,omitempty"`
+	// MapImageURL is the map of the place's point that core drew
+	// (docs/event-map.md), MapAttribution the credit its data asks to be
+	// shown under it; both are left out while there is no map (no point,
+	// one being drawn, or none to draw). MapImageID is its Media.
+	MapImageURL    string          `json:"mapImageUrl,omitempty"`
+	MapAttribution string          `json:"mapAttribution,omitempty"`
+	MapImageID     *uuid.UUID      `json:"-"`
+	OwnerTeam      string          `json:"ownerTeam"`
+	FormURL        string          `json:"formUrl,omitempty"`
+	FormAlias      string          `json:"formAlias,omitempty"`
+	ExtraFormURLs  []EventFormLink `json:"extraFormUrls"`
+	Capacity       int             `json:"capacity"`
+	StartDate      *time.Time      `json:"startDate,omitempty"`
+	EndDate        *time.Time      `json:"endDate,omitempty"`
+	Linkedin       string          `json:"linkedin,omitempty"`
 	// Active is derived (ADR 0066): published and not ended (ActiveAt).
 	// The store answers it; a write never sets it.
 	Active bool `json:"active"`

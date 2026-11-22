@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,58 @@ func (g *Gotenberg) PDF(ctx context.Context, html string) ([]byte, error) {
 // its room.
 func (g *Gotenberg) TaggedPDF(ctx context.Context, html, header string) ([]byte, error) {
 	return g.convertHTML(ctx, html, nil, header, "generateTaggedPdf")
+}
+
+// Screenshot is a picture of the HTML page, width × height CSS pixels, as a
+// JPEG of the quality (Gotenberg's screenshot route), taken once the
+// page's fonts are loaded. The Event map is drawn with it
+// (docs/event-map.md).
+func (g *Gotenberg) Screenshot(ctx context.Context, html string, width, height, quality int) ([]byte, error) {
+	if g == nil || strings.TrimSpace(g.BaseURL) == "" || width <= 0 || height <= 0 || quality <= 0 || quality > 100 {
+		return nil, ErrInvalid
+	}
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile("files", "index.html")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.WriteString(part, html); err != nil {
+		return nil, err
+	}
+	for _, field := range [][2]string{
+		{"width", strconv.Itoa(width)},
+		{"height", strconv.Itoa(height)},
+		{"clip", "true"},
+		{"format", "jpeg"},
+		{"quality", strconv.Itoa(quality)},
+		{"waitForExpression", "document.fonts.status === 'loaded'"},
+	} {
+		if err := w.WriteField(field[0], field[1]); err != nil {
+			return nil, err
+		}
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(g.BaseURL, "/")+"/forms/chromium/screenshot/html", &buf)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	resp, err := g.client().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRenderedPDFBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 300 || len(body) < 3 || len(body) > maxRenderedPDFBytes || !bytes.HasPrefix(body, []byte{0xff, 0xd8, 0xff}) {
+		return nil, ErrInvalid
+	}
+	return body, nil
 }
 
 func (g *Gotenberg) PDFWithBackground(ctx context.Context, html string, background []byte) ([]byte, error) {

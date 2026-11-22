@@ -1003,6 +1003,7 @@ func main() {
 	ticketPage := ticketpage.New(tickets, events, users, ticketQR, ticketPDF,
 		&ticketpage.MediaImages{Media: mediaStore, Blobs: blobs},
 		ticketpage.Config{Page: ticketPageConfig, APIOrigin: os.Getenv("PUBLIC_API_ORIGIN")})
+	startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget)
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),

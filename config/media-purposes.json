@@ -162,6 +162,19 @@
       "attach": "core",
       "image": { "reencode": true, "max_dimension": 2560, "sizes": { "card": 400, "page": 1200 } }
     },
+    "event_map": {
+      "description": "The map of an Event's place, which core draws itself from the club's own OpenStreetMap tiles when the place gets a point (docs/event-map.md). No person uploads one: an ordinary public image, a JPEG re-encoded, without sizes.",
+      "upload": "service_only",
+      "types": ["image/jpeg"],
+      "max_mib": 5,
+      "visibility": "public",
+      "encrypted": false,
+      "scan": false,
+      "pending_ttl": "24h",
+      "transport": "single_step",
+      "attach": "core",
+      "image": { "reencode": true, "max_dimension": 2560 }
+    },
     "legacy": {
       "description": "Media uploaded without a purpose, and every Media stored before Media purpose. Internal: clients cannot name it. It keeps the rules Media uploaded without a purpose had before this catalogue, until Skyforms and CMS send purposes. Its images keep their own bytes, stripped of metadata, and get no sizes.",
       "upload": "authenticated",

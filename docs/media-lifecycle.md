@@ -291,6 +291,10 @@ unless its product has a service client configured
 - `video_frame` is no one's upload (`service_only`): core makes it itself,
   a frame of an Event video taken by the frame service, and attaches it
   ([Video frames](#video-frames), ticket 25).
+- `event_map` is no one's upload (`service_only`) either: core draws it
+  itself, the map of an Event's place, and attaches it in the role
+  `event_map`, which takes no other purpose and no legacy Media
+  ([event-map.md](event-map.md)).
 
 Every purpose a product's role accepts must be attached by that product (a
 core role's by core, `attach: core`), and the purposes core refers to in code
@@ -1340,6 +1344,7 @@ anonymization and maintenance SQL:
 | Event videos (`event_videos`, migration `20260928160000`) | `event` | `event_video` |
 | A video's poster (`event_videos.poster_media_id`, migration `20260929140000`) | `event` | `event_video_poster` |
 | A video's frame (`event_videos.frame_media_id`, migration `20260929160000`) | `event` | `event_video_frame` |
+| An Event's map (`events.map_media_id`, migration `20261122160000`) | `event` | `event_map` |
 | User profile picture (`users.profile_picture_id`) | `user` | `profile_picture` |
 | Certificate template draft (`draft_layout` background and image elements) | `certificate_template` | `certificate_asset` |
 | Published certificate template version (`layout` and `asset_manifest`) | `certificate_template_version` | `certificate_asset` |

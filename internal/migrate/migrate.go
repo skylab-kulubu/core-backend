@@ -1636,6 +1636,69 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			  AND pg_get_constraintdef(oid) LIKE '%(location_lat IS NULL) = (location_lng IS NULL)%'
 			  AND pg_get_constraintdef(oid) LIKE '%char_length(location_address) <= 300%'
 		)`,
+	// An Event's map image (docs/event-map.md): its columns and their
+	// check, the indexes the purge and the worker read, the statement
+	// triggers that write its Media attachments, and the role tables that
+	// know its role. A rerun of 20261004120000 puts back the role tables
+	// without it; this fingerprint then fails and the migration runs again.
+	20261122160000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('map_media_id', 'uuid', 'YES'),
+				('map_state', 'text', 'YES'),
+				('map_attempts', 'int4', 'NO'),
+				('map_retry_at', 'timestamptz', 'YES'),
+				('map_claim_id', 'uuid', 'YES'),
+				('map_claimed_until', 'timestamptz', 'YES')
+			) expected(column_name, udt_name, is_nullable)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public' AND actual.table_name = 'events'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = expected.is_nullable
+		) = 6
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events')
+			  AND conname = 'events_map_media_id_fkey'
+			  AND contype = 'f'
+			  AND pg_get_constraintdef(oid) = 'FOREIGN KEY (map_media_id) REFERENCES media(id) ON DELETE SET NULL'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events')
+			  AND conname = 'events_map_check'
+			  AND contype = 'c'
+			  AND pg_get_constraintdef(oid) LIKE '%(map_claim_id IS NULL) = (map_claimed_until IS NULL)%'
+		)
+		AND to_regclass('public.events_map_media_id_idx') IS NOT NULL
+		AND to_regclass('public.events_map_due_idx') IS NOT NULL
+		AND (
+			SELECT count(*) FROM (VALUES
+				('events_map_attachments_insert', 4),
+				('events_map_attachments_update', 16),
+				('events_map_attachments_delete', 8)
+			) expected(trigger_name, trigger_type)
+			JOIN pg_trigger actual
+			  ON actual.tgrelid = to_regclass('public.events')
+			 AND actual.tgname = expected.trigger_name
+			 AND actual.tgtype = expected.trigger_type
+			 AND actual.tgenabled = 'O'
+			 AND NOT actual.tgisinternal
+			 AND actual.tgfoid = to_regprocedure('public.sync_core_media_attachments()')
+			 AND strpos(encode(actual.tgargs, 'escape'), 'event_map') > 0
+		) = 3
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_role_purposes'
+			  AND prosrc LIKE '%(''core'', ''event_map'', ''event_map'')%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'media_roles_without_legacy'
+			  AND prosrc LIKE '%(''core'', ''event_map'')%'
+		)`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
