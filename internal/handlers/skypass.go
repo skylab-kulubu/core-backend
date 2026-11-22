@@ -12,15 +12,30 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authn"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
 )
 
 type SkyPassHandler struct {
 	svc     skypass.Service
 	tickets ticket.Service
+	// ticketKeys are the Ticket QR public keys published next to SkyPass's
+	// (docs/ticket-qr.md); nil publishes none.
+	ticketKeys TicketQRKeys
+}
+
+// TicketQRKeys are the Ticket QR public keys (*ticketqr.Signer).
+type TicketQRKeys interface {
+	JWKs() []ticketqr.JWK
 }
 
 func NewSkyPassHandler(svc skypass.Service, tickets ticket.Service) *SkyPassHandler {
 	return &SkyPassHandler{svc: svc, tickets: tickets}
+}
+
+// WithTicketQRKeys publishes keys in the JWKS too.
+func (h *SkyPassHandler) WithTicketQRKeys(keys TicketQRKeys) *SkyPassHandler {
+	h.ticketKeys = keys
+	return h
 }
 
 type cardBindBody struct {
@@ -76,8 +91,17 @@ func skypassError(c fiber.Ctx, err error) error {
 	}
 }
 
+// JWKS is SkyPass's key (sp-e1) and the Ticket QR's (tk-e1, and the
+// previous one during a rotation's window): a scanner picks the key by the
+// token's kid (docs/ticket-qr.md). Also served as /v1/door/jwks.
 func (h *SkyPassHandler) JWKS(c fiber.Ctx) error {
-	return c.JSON(h.svc.JWKS())
+	set := h.svc.JWKS()
+	if h.ticketKeys != nil {
+		for _, k := range h.ticketKeys.JWKs() {
+			set.Keys = append(set.Keys, skypass.JWK{Kty: k.Kty, Kid: k.Kid, Alg: k.Alg, Use: k.Use, Crv: k.Crv, X: k.X, Y: k.Y})
+		}
+	}
+	return c.JSON(set)
 }
 
 func (h *SkyPassHandler) BindCard(c fiber.Ctx) error {
@@ -170,6 +194,15 @@ func (h *SkyPassHandler) CheckInSession(c fiber.Ctx) error {
 	if err := h.tickets.AuthorizeSessionDoor(c.Context(), p, sessionID); err != nil {
 		return ticketError(c, err)
 	}
+	// A Ticket QR (kid tk-e1) goes to its Ticket; anything else is SkyPass's
+	// as before: its QR (sp-e1), a Google Wallet code or a card UID.
+	if body.Token != "" && ticketqr.IsTicketQR(body.Token) {
+		ci, err := h.tickets.CheckInTicketQR(c.Context(), p, sessionID, body.Token)
+		if err != nil {
+			return ticketQRError(c, err)
+		}
+		return c.Status(fiber.StatusCreated).JSON(ci)
+	}
 	got, err := h.svc.HolderFrom(c.Context(), p, body.Token, body.UID)
 	if err != nil {
 		return skypassError(c, err)
@@ -179,6 +212,21 @@ func (h *SkyPassHandler) CheckInSession(c fiber.Ctx) error {
 		return ticketError(c, err)
 	}
 	return c.Status(fiber.StatusCreated).JSON(ci)
+}
+
+// ticketQRError answers a Ticket QR scan's refusal (docs/ticket-qr.md).
+func ticketQRError(c fiber.Ctx, err error) error {
+	switch {
+	case errors.Is(err, ticket.ErrTicketQRInvalid):
+		return problemDetailCode(c, fiber.StatusUnauthorized, "Unauthorized", "Bilet kodu geçersiz.", "ticket_qr_invalid")
+	case errors.Is(err, ticket.ErrTicketQRExpired):
+		return problemDetailCode(c, fiber.StatusUnauthorized, "Unauthorized", "Bilet kodunun süresi dolmuş.", "ticket_qr_expired")
+	case errors.Is(err, ticket.ErrTicketQRSuperseded):
+		return problemDetailCode(c, fiber.StatusGone, "Gone",
+			"Bu bilet yenilenmiş; kişiden son postadaki bileti açmasını iste.", "ticket_qr_superseded")
+	default:
+		return ticketError(c, err)
+	}
 }
 
 // WalletStatus tells the caller's app whether to offer "Add to Google

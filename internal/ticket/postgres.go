@@ -308,6 +308,31 @@ func (s *PostgresStore) DoorSessionActivity(
 	return activity, rows.Err()
 }
 
+// DoorTicketByCode is the Ticket of the Event with code (stored, without
+// the hyphen) whose holder is still there: a guest with an address, a member
+// with a core row.
+func (s *PostgresStore) DoorTicketByCode(ctx context.Context, eventID uuid.UUID, code string) (DoorTicketIdentity, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+doorTicketCols+`, `+doorNameSQL+`, `+doorEmailSQL+`, (u.id IS NOT NULL OR t.ticket_type = 'GUEST')
+		FROM tickets t
+		LEFT JOIN users u ON u.id = t.owner_id
+		WHERE t.event_id = $1 AND t.code = $2
+		  AND ((t.ticket_type = 'GUEST' AND btrim(t.guest_email) <> '') OR u.id IS NOT NULL)
+	`, eventID, code)
+	if err != nil {
+		return DoorTicketIdentity{}, err
+	}
+	defer rows.Close()
+	found, err := scanDoorTicketIdentities(rows)
+	if err != nil {
+		return DoorTicketIdentity{}, err
+	}
+	if len(found) == 0 {
+		return DoorTicketIdentity{}, ErrNotFound
+	}
+	return found[0], nil
+}
+
 func scanDoorTicketIdentities(rows pgx.Rows) ([]DoorTicketIdentity, error) {
 	out := make([]DoorTicketIdentity, 0)
 	for rows.Next() {

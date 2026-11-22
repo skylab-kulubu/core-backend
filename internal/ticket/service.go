@@ -14,6 +14,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -43,6 +44,11 @@ type Service interface {
 	AuthorizeSessionDoor(ctx context.Context, p authz.Principal, sessionID uuid.UUID) error
 	ResolveAndCheckIn(ctx context.Context, p authz.Principal, sessionID uuid.UUID, target DoorCheckInTarget) (DoorCheckIn, error)
 	DoorActivity(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorActivity, error)
+	// CheckInTicketQR takes a check-in from a Ticket QR the door scanned
+	// (docs/ticket-qr.md).
+	CheckInTicketQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID, token string) (CheckIn, error)
+	// TicketQR is t's Ticket QR on ev, for its holder.
+	TicketQR(t Ticket, ev event.Event) (string, error)
 }
 
 type TeamReader interface {
@@ -80,6 +86,12 @@ type service struct {
 	// logger writes what the service leaves out instead of failing (a
 	// *log.Logger extra; log.Default() otherwise, as the handlers').
 	logger *log.Logger
+	// qr mints and verifies Ticket QRs (a *ticketqr.Signer extra); nil
+	// refuses every Ticket QR.
+	qr TicketQRs
+	// scans counts Ticket QR scans (a *DoorScanMetrics extra); nil counts
+	// none.
+	scans *DoorScanMetrics
 }
 
 func NewService(tickets Store, events event.Store, az authz.Authorizer, extras ...any) Service {
@@ -110,6 +122,12 @@ func NewService(tickets Store, events event.Store, az authz.Authorizer, extras .
 		}
 		if v, ok := extra.(*log.Logger); ok && v != nil {
 			s.logger = v
+		}
+		if v, ok := extra.(*ticketqr.Signer); ok && v != nil {
+			s.qr = v
+		}
+		if v, ok := extra.(*DoorScanMetrics); ok && v != nil {
+			s.scans = v
 		}
 	}
 	if s.door == nil {
@@ -316,6 +334,17 @@ func (s *service) SearchDoorAttendees(
 	query = strings.TrimSpace(query)
 	if len([]rune(query)) < 2 {
 		return []DoorAttendee{}, nil
+	}
+	// A Ticket's code finds that Ticket alone (docs/ticket-qr.md).
+	if row, found, err := s.doorTicketByCode(ctx, eventID, query); err != nil {
+		return nil, err
+	} else if found {
+		attendee := DoorAttendee{Name: row.Name, Email: row.Email}
+		if row.Ticket.OwnerID != nil {
+			personID := *row.Ticket.OwnerID
+			attendee.PersonID = &personID
+		}
+		return []DoorAttendee{attendee}, nil
 	}
 	if store, ok := s.tickets.(DoorStore); ok {
 		return s.searchStoredDoorAttendees(ctx, store, eventID, query)
@@ -1268,6 +1297,23 @@ func (s *service) ResolveAndCheckIn(
 	query := normalizedDoorValue(target.Query)
 	if target.PersonID == nil && query == "" {
 		return DoorCheckIn{}, ErrInvalid
+	}
+	// A Ticket's code first, then the name and e-mail (docs/ticket-qr.md).
+	if target.PersonID == nil {
+		row, found, err := s.doorTicketByCode(ctx, ev.ID, target.Query)
+		if err != nil {
+			return DoorCheckIn{}, err
+		}
+		if found {
+			ci, err := s.addSessionCheckIn(ctx, row.Ticket, sessionID)
+			if err != nil {
+				return DoorCheckIn{}, err
+			}
+			return DoorCheckIn{
+				ID: ci.ID, TicketID: ci.TicketID, SessionID: ci.SessionID, EventDayID: ci.EventDayID,
+				PersonName: row.Name, CreatedAt: ci.CreatedAt,
+			}, nil
+		}
 	}
 	if store, ok := s.tickets.(DoorStore); ok {
 		return s.resolveStoredDoorCheckIn(ctx, store, ev, sessionID, target, query)
