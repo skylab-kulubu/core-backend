@@ -58,4 +58,9 @@ func TestApplyGuestOnADraftFromThePanel(t *testing.T) {
 	if _, err := svc.ApplyGuest(ctx, formsService, ev.ID, grace); !errors.Is(err, ticket.ErrNotFound) {
 		t.Fatalf("a product's service account: %v", err)
 	}
+	// DK sees the draft but adds nobody: 403, as for a person.
+	dk := authz.Principal{ID: "dk", Groups: []string{"/UYELER/DK"}}
+	if _, err := svc.ApplyGuest(ctx, dk, ev.ID, grace); !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("DK: %v", err)
+	}
 }
