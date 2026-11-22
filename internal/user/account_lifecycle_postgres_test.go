@@ -158,7 +158,9 @@ func TestPostgresAccountAnonymizationDetachesIdentityAndPreservesHistory(t *test
 		query string
 		id    uuid.UUID
 	}{
-		{name: "ticket", query: `SELECT count(*) FROM tickets WHERE id = $1 AND owner_id IS NULL`, id: ticketID},
+		// The anonymous Ticket keeps no page and no Ticket QR
+		// (docs/ticket-access-key-and-code.md).
+		{name: "ticket", query: `SELECT count(*) FROM tickets WHERE id = $1 AND owner_id IS NULL AND access_key IS NULL AND qr_version = 2`, id: ticketID},
 		{name: "check-in", query: `SELECT count(*) FROM ticket_checkins WHERE id = $1 AND ticket_id IS NOT NULL`, id: checkInID},
 		{name: "competitor", query: `SELECT count(*) FROM competitors WHERE id = $1 AND user_id IS NULL`, id: competitorID},
 		{name: "media", query: `SELECT count(*) FROM media WHERE id = $1 AND uploaded_by IS NULL`, id: profileMediaID},

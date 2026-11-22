@@ -508,7 +508,9 @@ func (s *PostgresStore) AnonymizeAccount(ctx context.Context, id uuid.UUID, at t
 		`DELETE FROM feedback_invites WHERE ticket_id IN (SELECT id FROM tickets WHERE owner_id = $1)`,
 		// The Tickets' Notifications not sent yet (docs/ticket-created-notification.md).
 		`DELETE FROM ticket_notifications WHERE ticket_id IN (SELECT id FROM tickets WHERE owner_id = $1)`,
-		`UPDATE tickets SET owner_id = NULL WHERE owner_id = $1`,
+		// The Ticket stays, anonymous: its page and Ticket QR stop working
+		// (no access key, a new QR version; docs/ticket-access-key-and-code.md).
+		`UPDATE tickets SET owner_id = NULL, access_key = NULL, qr_version = qr_version + 1 WHERE owner_id = $1`,
 		`UPDATE certificates SET owner_id = NULL, recipient_email = '' WHERE owner_id = $1`,
 		`DELETE FROM event_door_staff WHERE user_id = $1`,
 		`UPDATE urls SET created_by = NULL WHERE created_by = $1`,
@@ -654,7 +656,8 @@ func clearGuestData(ctx context.Context, tx pgx.Tx, addresses []string, at time.
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE tickets
-		SET guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '', updated_at = $2
+		SET guest_first_name = '', guest_last_name = '', guest_email = '', guest_phone_number = '', updated_at = $2,
+			access_key = NULL, qr_version = qr_version + 1
 		WHERE owner_id IS NULL AND guest_email <> '' AND lower(btrim(guest_email)) = ANY($1)
 	`, emails, at); err != nil {
 		return err
