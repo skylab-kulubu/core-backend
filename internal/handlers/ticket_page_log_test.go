@@ -20,6 +20,9 @@ func TestLoggedPathCutsTheTicketKey(t *testing.T) {
 		"/v1/public/tickets/ABCDEFGHIJKLMNOPQRSTUVWXYZ/pdf": "/v1/public/tickets/ABCD…/pdf",
 		"/v1/public/tickets/ABCDEFGHIJKLMNOPQRSTUVWXYZ/x/y": "/v1/public/tickets/ABCD…/x/y",
 		"/v1/public/tickets/":                               "/v1/public/tickets/…",
+		"/V1/PUBLIC/TICKETS/ABCDEFGHIJKLMNOPQRSTUVWXYZ/pdf": "/V1/PUBLIC/TICKETS/ABCD…/pdf",
+		"/v1/Public/Tickets/ABCDEFGHIJKLMNOPQRSTUVWXYZ":     "/v1/Public/Tickets/ABCD…",
+		"/v1/public/ticket":                                 "/v1/public/ticket",
 		"/v1/tickets/3f1c2b6e-1111-4a2b-8c3d-000000000001":  "/v1/tickets/3f1c2b6e-1111-4a2b-8c3d-000000000001",
 		"/v1/certificates/verify/SERIAL":                    "/v1/certificates/verify/SERIAL",
 	} {
@@ -45,13 +48,16 @@ func TestErrorHandlerLogNeverHoldsTheTicketKey(t *testing.T) {
 		{fiber.MethodGet, "/v1/public/tickets/" + key + "/nope"},
 		{fiber.MethodPost, "/v1/public/tickets/" + key},
 		{fiber.MethodGet, "/v1/public/tickets/" + key + "/pdf"},
+		// The router matches in any case: so does the cut.
+		{fiber.MethodGet, "/V1/PUBLIC/TICKETS/" + key + "/PDF"},
+		{fiber.MethodGet, "/V1/Public/Tickets/" + key + "/nope"},
 	} {
 		if _, err := app.Test(httptest.NewRequest(tc.method, tc.path, nil)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	text := logs.String()
-	if strings.Contains(text, key) || strings.Count(text, "/v1/public/tickets/ABCD…") < 3 {
+	if strings.Contains(text, key) || strings.Count(strings.ToLower(text), "/v1/public/tickets/abcd…") < 5 {
 		t.Fatalf("log:\n%s", text)
 	}
 }

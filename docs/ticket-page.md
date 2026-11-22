@@ -126,7 +126,8 @@ nor after the page closed. Only the holder's own list has them; `GET
 A refusal (404, 410) is not logged. A failure is, naming the key by its
 first four characters (`K7M2…`), the certificate serial's pattern. The
 error handler, which logs a route that does not exist, a wrong method and a
-panic, cuts the key the same way in any path under `/v1/public/tickets/`.
+panic, cuts the key the same way in any path under `/v1/public/tickets/`,
+in any case (`/V1/PUBLIC/TICKETS/…` reaches the same routes).
 An access log in front of core (Traefik) and the site's own `/bilet/*`
 logs are outside core: they must not keep these paths either.
 

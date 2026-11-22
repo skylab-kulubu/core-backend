@@ -116,15 +116,17 @@ const ticketPagePrefix = "/v1/public/tickets/"
 
 // loggedPath is a request path as a log line may hold it: a ticket page's
 // key cut to its first four characters (ticketpage.LogKey), whatever
-// follows it, a route that does not exist and a panic included.
+// follows it, a route that does not exist and a panic included. The prefix
+// is matched in any case, as the router matches routes
+// (/V1/PUBLIC/TICKETS/<key> reaches the same handler).
 func loggedPath(path string) string {
-	rest, ok := strings.CutPrefix(path, ticketPagePrefix)
-	if !ok {
+	if len(path) < len(ticketPagePrefix) || !strings.EqualFold(path[:len(ticketPagePrefix)], ticketPagePrefix) {
 		return path
 	}
+	prefix, rest := path[:len(ticketPagePrefix)], path[len(ticketPagePrefix):]
 	key, tail, _ := strings.Cut(rest, "/")
 	if tail != "" {
 		tail = "/" + tail
 	}
-	return ticketPagePrefix + ticketpage.LogKey(key) + tail
+	return prefix + ticketpage.LogKey(key) + tail
 }
