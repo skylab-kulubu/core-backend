@@ -22,6 +22,9 @@ var (
 	copyOther  = authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/ARTLAB/LIDERLER"}}
 )
 
+// copyLat and copyLng are the source's point (YTÜ Davutpaşa).
+var copyLat, copyLng = 41.025376, 28.889648
+
 func stamp(s string) *time.Time {
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {
@@ -39,6 +42,7 @@ func copySource(t *testing.T, store *event.MemoryStore) event.Event {
 	cover, mailList, season, staff := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	source, err := store.Create(ctx, event.Event{
 		Name: "Gecekodu 2026", Description: "Açıklama", Location: "YTÜ Davutpaşa", OwnerTeam: "WEBLAB",
+		LocationLat: &copyLat, LocationLng: &copyLng, LocationAddress: "Davutpaşa Cd. No:127, Esenler",
 		FormURL: "https://forms.yildizskylab.com/" + uuid.NewString(), FormAlias: "gecekodu2026",
 		ExtraFormURLs: []event.EventFormLink{{Label: "CTF", URL: "https://forms.yildizskylab.com/" + uuid.NewString(), Alias: "ctf2026"}},
 		Capacity:      120, StartDate: stamp("2026-03-14T19:00:00+03:00"), EndDate: stamp("2026-03-15T03:00:00+03:00"),
@@ -117,6 +121,7 @@ func TestCopyTable(t *testing.T) {
 		{"name is the new one, trimmed", c.Name == "Gecekodu 2027"},
 		{"description", c.Description == source.Description},
 		{"location", c.Location == source.Location},
+		{"the place's point and address", c.LocationLat != nil && *c.LocationLat == copyLat && c.LocationLng != nil && *c.LocationLng == copyLng && c.LocationAddress == source.LocationAddress},
 		{"Owner team, the source's", c.OwnerTeam == "WEBLAB"},
 		{"start is the new one", c.StartDate.Equal(*stamp("2027-03-13T19:00:00+03:00"))},
 		{"end moves with it", c.EndDate.Equal(*stamp("2027-03-14T03:00:00+03:00"))},

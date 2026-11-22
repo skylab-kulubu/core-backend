@@ -18,9 +18,15 @@ import (
 // ErrInvalid. The body's id, status and active are not read: the status
 // changes only through its endpoints, and active is derived.
 type Patch struct {
-	Name            optional.Field[string]          `json:"name"`
-	Description     optional.Field[string]          `json:"description"`
-	Location        optional.Field[string]          `json:"location"`
+	Name        optional.Field[string] `json:"name"`
+	Description optional.Field[string] `json:"description"`
+	Location    optional.Field[string] `json:"location"`
+	// LocationLat and LocationLng move the place's point, null clears it;
+	// they come together (one alone is ErrLocationInvalid).
+	// LocationAddress is cleared with null or "" (docs/event-location.md).
+	LocationLat     optional.Field[*float64]        `json:"locationLat"`
+	LocationLng     optional.Field[*float64]        `json:"locationLng"`
+	LocationAddress optional.Field[string]          `json:"locationAddress"`
 	OwnerTeam       optional.Field[string]          `json:"ownerTeam"`
 	FormURL         optional.Field[string]          `json:"formUrl"`
 	FormAlias       optional.Field[string]          `json:"formAlias"`
@@ -76,6 +82,12 @@ func (p Patch) apply(existing Event) (Event, error) {
 	if e.OwnerTeam, err = required(p.OwnerTeam, existing.OwnerTeam); err != nil {
 		return Event{}, err
 	}
+	if p.LocationLat.Set != p.LocationLng.Set {
+		return Event{}, ErrLocationInvalid
+	}
+	e.LocationLat = p.LocationLat.Or(existing.LocationLat)
+	e.LocationLng = p.LocationLng.Or(existing.LocationLng)
+	e.LocationAddress = p.LocationAddress.Or(existing.LocationAddress)
 	if p.Ranked.Null || p.RegistrationClosed.Null || p.FeedbackMode.Null || p.FeedbackAutoSend.Null {
 		return Event{}, ErrInvalid
 	}

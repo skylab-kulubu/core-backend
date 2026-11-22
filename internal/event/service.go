@@ -271,6 +271,9 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Ev
 	if err != nil {
 		return Event{}, err
 	}
+	if in, err = normalizeLocation(in); err != nil {
+		return Event{}, err
+	}
 	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() {
 		return Event{}, ErrInvalid
 	}
@@ -313,6 +316,11 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 		if in.MailListID == nil {
 			in.MailListID = existing.MailListID
 		}
+		// A whole Event without a point (a client from before the point)
+		// keeps the stored one and its address.
+		if in.LocationLat == nil && in.LocationLng == nil && in.LocationAddress == "" {
+			in.LocationLat, in.LocationLng, in.LocationAddress = existing.LocationLat, existing.LocationLng, existing.LocationAddress
+		}
 		if in.FeedbackMode == "" {
 			in.FeedbackMode, in.FeedbackFormURL = existing.FeedbackMode, existing.FeedbackFormURL
 			in.FeedbackFormAlias, in.FeedbackAutoSend = existing.FeedbackFormAlias, existing.FeedbackAutoSend
@@ -344,6 +352,9 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	}
 	in, err = normalizeAttendance(in)
 	if err != nil {
+		return Event{}, err
+	}
+	if in, err = normalizeLocation(in); err != nil {
 		return Event{}, err
 	}
 	if in.FeedbackMode = feedbackMode(in.FeedbackMode); !in.FeedbackMode.Valid() {

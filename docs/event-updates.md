@@ -12,7 +12,8 @@ ADR 0066 addendum (2026-10-19), ticket 13. `PUT` and `PATCH` on `/v1/events/{id}
 
 | Field | Cleared by `null` / `""` to |
 |---|---|
-| `description`, `formUrl`, `formAlias`, `linkedin`, `prizeInfo`, `feedbackFormUrl`, `feedbackFormAlias` | empty |
+| `description`, `formUrl`, `formAlias`, `linkedin`, `prizeInfo`, `feedbackFormUrl`, `feedbackFormAlias`, `locationAddress` | empty |
+| `locationLat` and `locationLng`, sent together ([event-location.md](event-location.md)) | no point; one of them alone is `400 event_location_invalid` |
 | `extraFormUrls`, `doorStaffIds` (also `[]`) | none |
 | `capacity` | `0` |
 | `startDate`, `endDate`, `coverImageId`, `attendanceRatio` | none |
