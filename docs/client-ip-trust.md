@@ -51,6 +51,14 @@ about them.
   `/v1/certificates/verify/…`) are rate limited on the same resolved address, so
   the budget follows one visitor instead of being shared by everyone behind the
   proxy.
+- The public ticket routes (`/v1/public/tickets/{key}`, its `/pdf` and its
+  `/qr.png`) are rate limited on the resolved address the same way
+  ([`ticket-page.md`](ticket-page.md)). The club site reads a ticket page
+  from its own server: it calls Core on the internal network and names the
+  visitor in `X-Forwarded-For`, which Core believes because the site's
+  container is inside these ranges. Through Traefik (the public address)
+  the header would be replaced and every visitor would share the site's
+  budget.
 - `GET /v1/media/{id}/content` (a private Media's read link) records the
   resolved address of every open as `media_read_link_opens.client_ip`, kept a
   year, and is rate limited on it like the certificate routes (see

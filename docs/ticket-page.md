@@ -97,6 +97,25 @@ unreachable, timed out or failing: `503 ticket_pdf_unavailable`,
 `Retry-After: 30` (the cause is logged, the key cut). Core draws it on each request
 and keeps nothing; a renamed holder gets the new name.
 
+### The site's server
+
+The club site's ticket page reads `GET /v1/public/tickets/{key}` from its
+own server. The routes' budget (120 a minute per client, the PDF's 5 a
+minute per key besides) follows the client address Core resolves
+([client-ip-trust.md](client-ip-trust.md)), so:
+
+- the site calls Core **on the internal network** (the core service's
+  address on `dokploy-network`), not at its public address: Traefik
+  replaces any `X-Forwarded-For` it is sent;
+- it sends `X-Forwarded-For: <the visitor's address>`, the one it
+  resolved itself (Cloudflare's `CF-Connecting-IP` where Cloudflare fronts
+  the site, else the socket's address), never a header the visitor sent;
+- Core believes that header only from a peer inside `TRUSTED_PROXY_RANGES`
+  (the site's container is); from anywhere else it is ignored and the
+  socket's address counts.
+
+No new setting: the trust is Core's existing one.
+
 ## The PDF
 
 PDF v5 (Yusuf, 2026-11-22). Drawn by core with the certificate's Gotenberg
