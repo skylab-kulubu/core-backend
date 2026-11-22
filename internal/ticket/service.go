@@ -14,6 +14,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -99,6 +100,9 @@ type service struct {
 	// page is the ticket page's settings (a PageConfig extra): the
 	// holder's own list links each Ticket's page.
 	page PageConfig
+	// audit records the ticket actions in the Team audit record (a
+	// teamaudit.Writer extra); nil records none.
+	audit teamaudit.Writer
 }
 
 func NewService(tickets Store, events event.Store, az authz.Authorizer, extras ...any) Service {
@@ -138,6 +142,9 @@ func NewService(tickets Store, events event.Store, az authz.Authorizer, extras .
 		}
 		if v, ok := extra.(PageConfig); ok {
 			s.page = v
+		}
+		if v, ok := extra.(teamaudit.Writer); ok && v != nil {
+			s.audit = v
 		}
 	}
 	if s.door == nil {

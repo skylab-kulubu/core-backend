@@ -11,7 +11,8 @@
 // The key is derived from the SkyPass signing key with HKDF-SHA256 (info
 // "skylab ticket-qr es256 v1"): no new secret, and the SkyPass key itself
 // never signs a Ticket QR. Its public half is published with SkyPass's in
-// the same JWKS, under kid tk-e1.
+// the same JWKS, under its kid: tk-e1, and tk-e2, tk-e3… after each
+// rotation of the SkyPass key (ADR 0082; Config).
 package ticketqr
 
 import (
@@ -33,8 +34,12 @@ import (
 )
 
 const (
-	// Kid names the Ticket QR key in the JWKS and in every token's header.
+	// Kid is the first Ticket QR key's kid, the default (TICKET_QR_KID).
+	// Every Ticket QR kid is tk-e<n>; the door sends a token whose kid has
+	// the tk- prefix to the Ticket QR path.
 	Kid = "tk-e1"
+	// KidPrefix marks a Ticket QR kid.
+	KidPrefix = "tk-"
 	// KeyInfo is the HKDF info the key is derived with.
 	KeyInfo = "skylab ticket-qr es256 v1"
 	// MaxTokenBytes is the longest token looked at.
@@ -104,30 +109,43 @@ type payload struct {
 	Exp int64  `json:"exp"`
 }
 
-var encodedHeader = func() string {
-	raw, err := json.Marshal(header{Alg: "ES256", Kid: Kid, Typ: "JWT"})
+func encodeHeader(kid string) string {
+	raw, err := json.Marshal(header{Alg: "ES256", Kid: kid, Typ: "JWT"})
 	if err != nil {
 		panic(err)
 	}
 	return b64.EncodeToString(raw)
-}()
+}
 
-// Signer mints and verifies Ticket QRs. Previous is an older Ticket QR
-// public key still accepted until PreviousUntil: a planned SkyPass key
-// rotation (Config).
+// Signer mints and verifies Ticket QRs. It signs with its key under kid;
+// previous is the Ticket QR public key before a rotation of the SkyPass
+// key, still accepted under its own kid until previousUntil (Config).
 type Signer struct {
 	key           *ecdsa.PrivateKey
+	kid           string
+	header        string
 	previous      *ecdsa.PublicKey
+	previousKid   string
 	previousUntil time.Time
 	// Now is the clock for the previous key's window; nil is time.Now.
 	Now func() time.Time
 }
 
-// NewSigner signs with key and verifies with it, and with cfg's previous
-// key while its window lasts.
+// NewSigner signs with key under cfg's kid (Kid when unset) and verifies
+// with it, and with cfg's previous key, by its kid, while its window lasts.
 func NewSigner(key *ecdsa.PrivateKey, cfg Config) *Signer {
-	return &Signer{key: key, previous: cfg.Previous, previousUntil: cfg.PreviousUntil}
+	kid := cfg.Kid
+	if kid == "" {
+		kid = Kid
+	}
+	return &Signer{
+		key: key, kid: kid, header: encodeHeader(kid),
+		previous: cfg.Previous, previousKid: cfg.PreviousKid, previousUntil: cfg.PreviousUntil,
+	}
 }
+
+// Kid is the kid the signer signs under.
+func (s *Signer) Kid() string { return s.kid }
 
 func (s *Signer) now() time.Time {
 	if s.Now != nil {
@@ -145,7 +163,7 @@ func (s *Signer) Mint(c Claims) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	signing := encodedHeader + "." + b64.EncodeToString(body)
+	signing := s.header + "." + b64.EncodeToString(body)
 	digest := sha256.Sum256([]byte(signing))
 	// A nil random source makes the signature deterministic (RFC 6979).
 	der, err := s.key.Sign(nil, digest[:], crypto.SHA256)
@@ -162,8 +180,9 @@ func (s *Signer) Mint(c Claims) (string, error) {
 	return signing + "." + b64.EncodeToString(raw), nil
 }
 
-// IsTicketQR reports whether token's header names the Ticket QR key: the
-// door sends such a token to the Ticket QR path, any other to SkyPass's.
+// IsTicketQR reports whether token's header names a Ticket QR key (a kid
+// with the tk- prefix): the door sends such a token to the Ticket QR path,
+// any other to SkyPass's.
 func IsTicketQR(token string) bool {
 	token = strings.TrimSpace(token)
 	if len(token) > MaxTokenBytes {
@@ -181,11 +200,12 @@ func IsTicketQR(token string) bool {
 	if err := json.Unmarshal(raw, &h); err != nil {
 		return false
 	}
-	return h.Kid == Kid
+	return strings.HasPrefix(h.Kid, KidPrefix)
 }
 
-// Verify checks token's signature with the current key, or with the
-// previous one while its window lasts, and answers its claims. It does not
+// Verify checks token's signature with the key its kid names: the current
+// one, or the previous one while its window lasts; any other kid is
+// refused. It answers the token's claims. It does not
 // judge the expiry: online, the door does, by the Event's dates now (an
 // Event moved later keeps the codes already sent valid; docs/ticket-qr.md).
 func (s *Signer) Verify(token string) (Claims, error) {
@@ -205,7 +225,16 @@ func (s *Signer) Verify(token string) (Claims, error) {
 		return Claims{}, ErrInvalid
 	}
 	var h header
-	if err := decodeJSON(rawHeader, &h); err != nil || h.Alg != "ES256" || h.Kid != Kid {
+	if err := decodeJSON(rawHeader, &h); err != nil || h.Alg != "ES256" {
+		return Claims{}, ErrInvalid
+	}
+	var pub *ecdsa.PublicKey
+	switch {
+	case h.Kid == s.kid:
+		pub = &s.key.PublicKey
+	case s.previous != nil && h.Kid == s.previousKid && s.now().Before(s.previousUntil):
+		pub = s.previous
+	default:
 		return Claims{}, ErrInvalid
 	}
 	sig, err := b64.DecodeString(parts[2])
@@ -214,11 +243,7 @@ func (s *Signer) Verify(token string) (Claims, error) {
 	}
 	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
 	r, sv := new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:])
-	valid := ecdsa.Verify(&s.key.PublicKey, digest[:], r, sv)
-	if !valid && s.previous != nil && s.now().Before(s.previousUntil) {
-		valid = ecdsa.Verify(s.previous, digest[:], r, sv)
-	}
-	if !valid {
+	if !ecdsa.Verify(pub, digest[:], r, sv) {
 		return Claims{}, ErrInvalid
 	}
 	rawBody, err := b64.DecodeString(parts[1])
@@ -256,23 +281,23 @@ type JWK struct {
 	Y   string `json:"y"`
 }
 
-// JWKs are the Ticket QR public keys to publish: the current one, and the
-// previous one while its window lasts, both under Kid (a verifier tries
-// every key with the token's kid).
+// JWKs are the Ticket QR public keys to publish, each under its own kid:
+// the current one, and the previous one while its window lasts. A verifier
+// picks the key by the token's kid.
 func (s *Signer) JWKs() []JWK {
 	if s == nil || s.key == nil {
 		return nil
 	}
-	out := []JWK{publicJWK(&s.key.PublicKey)}
+	out := []JWK{publicJWK(&s.key.PublicKey, s.kid)}
 	if s.previous != nil && s.now().Before(s.previousUntil) {
-		out = append(out, publicJWK(s.previous))
+		out = append(out, publicJWK(s.previous, s.previousKid))
 	}
 	return out
 }
 
-func publicJWK(pub *ecdsa.PublicKey) JWK {
+func publicJWK(pub *ecdsa.PublicKey, kid string) JWK {
 	return JWK{
-		Kty: "EC", Kid: Kid, Alg: "ES256", Use: "sig", Crv: "P-256",
+		Kty: "EC", Kid: kid, Alg: "ES256", Use: "sig", Crv: "P-256",
 		X: b64.EncodeToString(pub.X.FillBytes(make([]byte, 32))),
 		Y: b64.EncodeToString(pub.Y.FillBytes(make([]byte, 32))),
 	}

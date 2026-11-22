@@ -8,6 +8,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -298,7 +299,9 @@ func (s *Service) PDF(ctx context.Context, key string) (string, []byte, error) {
 	defer func() { <-s.slots }()
 	pdf, err := s.render.TaggedPDF(ctx, html, header)
 	if err != nil {
-		return "", nil, err
+		// Gotenberg unreachable, timed out or failing: try again later
+		// (503), the cause for the log.
+		return "", nil, fmt.Errorf("%w: renderer: %w", ErrUnavailable, err)
 	}
 	return FileName(o.event.Name), pdf, nil
 }

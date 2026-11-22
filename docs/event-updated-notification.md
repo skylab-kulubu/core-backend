@@ -70,9 +70,17 @@ Event update ──(same transaction)──▶ event_update_notifications ──
   `Etkinliğin saati ve yeri değişti.`); times are Europe/Istanbul, empty
   without one. Every variable is always sent: SkyMail renders the inbox text
   with `missingkey=error`. `EventId` fills the inbox item's link
-  (`/events/{{.EventId}}`). The template's `EventUrl` is not sent: there is
-  no web page of an Event's Ticket yet, and the template leaves the button
-  out when it is empty.
+  (`/events/{{.EventId}}`). The template's `EventUrl` is not sent: the site
+  has no Event page, and the template leaves the button out when it is
+  empty.
+- **The holder's Ticket** (ADR 0082; bilet-qr-ve-pdf ticket 04, addendum),
+  while `TICKET_PAGE_URL` is set ([ticket-page.md](ticket-page.md)):
+  `TicketUrl`, the Ticket's page, whose QR is signed with the Event's new
+  dates, and `TicketCode`. One holder, one Ticket: a registered holder's
+  own before a guest Ticket under their address. Unset, the variables of
+  before. A sensitive variable in the template (the link is a bearer key);
+  optional there, since core sends it only with the page on. A mail
+  attachment (bilet-qr-ve-pdf ticket 09) is not sent again with the change.
 
 ## Retries
 
