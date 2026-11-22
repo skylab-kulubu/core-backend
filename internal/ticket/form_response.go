@@ -90,6 +90,10 @@ const (
 	// cancelled had closed applying, by hand or by the deadline (ticket
 	// 12): no Ticket is written; a 2xx too.
 	FormResponseRegistrationClosed FormResponseOutcome = "registration_closed"
+	// FormResponseEventEnded is an answer to a form whose every Event left
+	// (not cancelled) has ended (ADR 0069, addendum of 2026-11-22): an ended
+	// Event takes no new application, so no Ticket is written; a 2xx too.
+	FormResponseEventEnded FormResponseOutcome = "event_ended"
 	// FormResponseFeedback is an answer to a feedback form, an Event's or a
 	// Session's (etkinlik geri bildirim formu, tickets 02 and 03): it writes
 	// no Ticket, whatever its status and whoever answered.
@@ -101,13 +105,19 @@ type FormResponseResult struct {
 	Outcome FormResponseOutcome
 	// TicketsWritten counts the new Tickets: not the ones already there.
 	TicketsWritten int
+	// ListingEvents counts the current Events that list the form as an
+	// application or extra form, whatever their status: more than one is a
+	// form shared before the one-place rule (ADR 0069, addendum of
+	// 2026-11-22), which the log line shows.
+	ListingEvents int
 }
 
 // RecordFormResponse writes nothing for an answer to a feedback form
 // (FormResponseFeedback). Otherwise it writes the Ticket an accepted answer
 // earns on every
 // current Event that lists the form and is not cancelled (when every one
-// is, the outcome is FormResponseEventCancelled), and, when the report says
+// is, the outcome is FormResponseEventCancelled) nor ended (when every one
+// left has, FormResponseEventEnded), and, when the report says
 // when the answer was sent, had not closed applying by then (when every one
 // left had, FormResponseRegistrationClosed): a REGISTERED one for a person who
 // answered signed in, a guest one for the e-mail a guest typed. An answer
@@ -178,19 +188,25 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		return FormResponseResult{Outcome: FormResponseNoRespondent}, nil
 	}
 	listing := listingForm(events, r.FormID)
-	if len(listing) == 0 {
+	listed := len(listing)
+	if listed == 0 {
 		return FormResponseResult{Outcome: FormResponseNotListed}, nil
 	}
 	listing = notCancelled(listing)
 	if len(listing) == 0 {
-		return FormResponseResult{Outcome: FormResponseEventCancelled}, nil
+		return FormResponseResult{Outcome: FormResponseEventCancelled, ListingEvents: listed}, nil
+	}
+	now := time.Now()
+	listing = notEnded(listing, now)
+	if len(listing) == 0 {
+		return FormResponseResult{Outcome: FormResponseEventEnded, ListingEvents: listed}, nil
 	}
 	if r.SubmittedAt != nil {
 		// A time to come is taken as now: an answer is not sent later than
 		// it is reported.
-		listing = openWhenSubmitted(listing, earlier(*r.SubmittedAt, time.Now()))
+		listing = openWhenSubmitted(listing, earlier(*r.SubmittedAt, now))
 		if len(listing) == 0 {
-			return FormResponseResult{Outcome: FormResponseRegistrationClosed}, nil
+			return FormResponseResult{Outcome: FormResponseRegistrationClosed, ListingEvents: listed}, nil
 		}
 	}
 	if r.UserID != nil {
@@ -198,10 +214,10 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 			if err := settledFormResponse(err); err != nil {
 				return FormResponseResult{}, err
 			}
-			return FormResponseResult{Outcome: FormResponsePersonUnavailable}, nil
+			return FormResponseResult{Outcome: FormResponsePersonUnavailable, ListingEvents: listed}, nil
 		}
 	}
-	result := FormResponseResult{Outcome: FormResponseRecorded}
+	result := FormResponseResult{Outcome: FormResponseRecorded, ListingEvents: listed}
 	for _, ev := range listing {
 		eventID := ev.ID
 		written := false
@@ -253,13 +269,28 @@ func notCancelled(listing []event.Event) []event.Event {
 	return out
 }
 
+// notEnded leaves out the Events that have ended at now (event.EndedAt):
+// an ended Event takes no new application from its forms (ADR 0069,
+// addendum of 2026-11-22; feedback forms, answered after the Event, are
+// apart and write no Ticket). An answer approved after the end earns no
+// Ticket either: the door and the certificates need a Check-in by then. An
+// Event without dates never ends. A draft is judged by its dates too.
+func notEnded(listing []event.Event, now time.Time) []event.Event {
+	out := listing[:0:0]
+	for _, ev := range listing {
+		if !ev.EndedAt(now) {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
 // openWhenSubmitted leaves out the Events whose organizer had closed
 // applying, by hand or by the deadline, when the answer was sent
 // (event.ApplyingClosedAt): Yusuf, 2026-10-20. Closing applying never
 // refuses an answer whose report does not say when it was sent: an answer
 // sent in time and approved after the closure still earns its Ticket, and
-// one the forms service reports late still does. An ended Event takes its
-// forms' answers (feedback forms come after it).
+// one the forms service reports late still does.
 func openWhenSubmitted(listing []event.Event, submitted time.Time) []event.Event {
 	out := listing[:0:0]
 	for _, ev := range listing {

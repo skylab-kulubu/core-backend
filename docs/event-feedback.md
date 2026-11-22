@@ -30,17 +30,27 @@ In the `per_session` mode each Session may have its own form, on the Session JSO
 
 `POST /v1/sessions` takes them (no `feedbackAutoSend` is `true`). `PUT /v1/sessions/{id}` stays a whole-body update for the Session's other fields, but these three are kept when the body leaves them out (sky-app and the panel before this send none), as `cancelled` is: `null` or `""` clears the form or the alias, `feedbackAutoSend: null` is `400`. The fields stay when the mode is not `per_session` (no mail goes for them then; the panel shows them in that mode only). A copied Session starts without a form; its `feedbackAutoSend` comes along.
 
-## One place per feedback form
+## One place per form
 
-A feedback form is in one place only. Creating or updating an Event (an update that sends a form, an alias or the name) is `409` with `code: "form_in_use"` when:
+A form is in one place only (ADR 0069 and its addendum of 2026-11-22). Creating or updating an Event (an update that sends a form, an alias or the name) is `409` with `code: "form_in_use"` when:
 
 - its feedback form is one of its own application or extra forms;
 - its feedback form is an application, extra or feedback form of another current Event (a draft too), or a Session's feedback form;
-- one of its application or extra forms is another current Event's feedback form or a Session's feedback form (its own Sessions' too).
+- one of its application or extra forms is another current Event's feedback form or a Session's feedback form (its own Sessions' too);
+- one of its application or extra forms is another current Event's application or extra form (a draft or an ended Event too). An update keeps a form the Event already listed: an Event that shared its form with another before this rule is written as before, and only a new binding is refused. Nothing stored is changed for it; `listing_events` in the forms report's log line ([form-response-tickets.md](form-response-tickets.md#log)) shows such a form.
 
 Creating or updating a Session with a form is `409 form_in_use` when the form is any form of a current Event (its own included) or another current Session's feedback form.
 
-Application and extra forms may still be shared between Events, as before. An archived Event, day or Session holds no form: its forms are free once it is archived, and restoring it while one of them is in another place is `409 form_in_use`. A write of an Event or a Session applies the rule again inside its own transaction, after a transaction-scoped advisory lock on each of its forms (`pg_advisory_xact_lock`, in a fixed order): two writes naming the same form are decided one after the other, and the second sees the first. Restoring an archived Event, day or Session checks without that lock (rare, by hand).
+The refusal says where the form is, as far as the caller may see it:
+
+```json
+{"status": 409, "code": "form_in_use", "formId": "<the form>",
+ "event": {"id": "<the Event that holds it>", "name": "Gecekodu 2025", "status": "published"}}
+```
+
+`event` is the current Event that holds the form (for a Session's feedback form, the Session's Event). It is left out when the caller may not see that Event (another team's draft: [event-drafts.md](event-drafts.md)), and when the form is the Event's own other slot. The panel names the Event and offers a new form made from the old one in Skyforms (as the copy does), or archiving the old Event, or taking the form off it.
+
+An archived Event, day or Session holds no form: its forms are free once it is archived, and restoring it while one of them is in another place is `409 form_in_use`. A write of an Event or a Session applies the rule again inside its own transaction, after a transaction-scoped advisory lock on each of its forms (`pg_advisory_xact_lock`, in a fixed order): two writes naming the same form are decided one after the other, and the second sees the first. Restoring an archived Event, day or Session checks without that lock (rare, by hand).
 
 ## Short link
 

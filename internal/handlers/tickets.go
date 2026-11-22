@@ -198,9 +198,10 @@ type formResponseBody struct {
 // an Event lists the form: the forms service only needs to know it may stop
 // sending the report. An answer that writes no Ticket because every Event of
 // the form is cancelled (ticket 04), or, for an answer whose submittedAt the
-// forms service sent, closed to applications by then (ticket 12), is 200
-// with {"outcome": "event_cancelled"} or {"outcome": "registration_closed"}:
-// still a 2xx, which the forms service takes as done. A caller who may not
+// forms service sent, closed to applications by then (ticket 12), or ended
+// (ADR 0069, addendum of 2026-11-22), is 200 with {"outcome":
+// "event_cancelled"}, {"outcome": "registration_closed"} or {"outcome":
+// "event_ended"}: still a 2xx, which the forms service takes as done. A caller who may not
 // report is refused before the request is read, so a malformed request from
 // them is 403 too.
 func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
@@ -235,10 +236,12 @@ func (h *TicketHandler) RecordFormResponse(c fiber.Ctx) error {
 	if err != nil {
 		return ticketError(c, err)
 	}
-	if result.Outcome == ticket.FormResponseEventCancelled || result.Outcome == ticket.FormResponseRegistrationClosed {
+	switch result.Outcome {
+	case ticket.FormResponseEventCancelled, ticket.FormResponseRegistrationClosed, ticket.FormResponseEventEnded:
 		return c.JSON(fiber.Map{"outcome": result.Outcome})
+	default:
+		return c.SendStatus(fiber.StatusNoContent)
 	}
-	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // submittedAt reads a report's submittedAt: an RFC 3339 time with its zone
@@ -274,7 +277,10 @@ func (h *TicketHandler) submittedAt(formID uuid.UUID, raw json.RawMessage) *time
 
 // logFormResponse writes one JSON line per report core reads: the request's
 // correlation id, the form, the answer's id in Forms, the reported status,
-// how the report ended and how many Tickets it wrote. Who answered (the
+// how the report ended, how many Tickets it wrote and how many current
+// Events list the form (more than one: a form shared before the one-place
+// rule, ADR 0069 addendum of 2026-11-22; 0 when that was not read). Who
+// answered (the
 // userId, a guest's name or e-mail) never appears, nor does err.
 func (h *TicketHandler) logFormResponse(c fiber.Ctx, r ticket.FormResponse, result ticket.FormResponseResult, err error) {
 	if h.logger == nil {
@@ -301,7 +307,8 @@ func (h *TicketHandler) logFormResponse(c fiber.Ctx, r ticket.FormResponse, resu
 		Status         string `json:"status"`
 		Outcome        string `json:"outcome"`
 		TicketsWritten int    `json:"tickets_written"`
-	}{"form_response", requestid.FromContext(c), r.FormID.String(), r.ResponseID.String(), status, outcome, result.TicketsWritten})
+		ListingEvents  int    `json:"listing_events"`
+	}{"form_response", requestid.FromContext(c), r.FormID.String(), r.ResponseID.String(), status, outcome, result.TicketsWritten, result.ListingEvents})
 	if marshalErr == nil {
 		h.logger.Print(string(payload))
 	}

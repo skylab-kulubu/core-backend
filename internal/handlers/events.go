@@ -62,10 +62,13 @@ func eventError(c fiber.Ctx, err error) error {
 		return problemErr
 	}
 	var incomplete *event.IncompleteError
+	var inUse *event.FormInUseError
 	switch {
 	case errors.As(err, &incomplete):
 		return problemWithFields(c, fiber.StatusBadRequest, "Bad Request", "Bad Request", "event_incomplete",
 			fiber.Map{"missing": incomplete.Missing})
+	case errors.As(err, &inUse):
+		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", "form_in_use", formInUseFields(inUse))
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
 	case errors.Is(err, event.ErrForbidden):
@@ -79,6 +82,20 @@ func eventError(c fiber.Ctx, err error) error {
 	default:
 		return err
 	}
+}
+
+// formInUseFields says which form a form_in_use refusal is about and, when
+// the caller may see it, the current Event that holds it (ADR 0069,
+// addendum of 2026-11-22): the panel names it and offers a new form.
+func formInUseFields(inUse *event.FormInUseError) fiber.Map {
+	fields := fiber.Map{}
+	if inUse.FormID != uuid.Nil {
+		fields["formId"] = inUse.FormID
+	}
+	if h := inUse.Holder; h != nil {
+		fields["event"] = fiber.Map{"id": h.ID, "name": h.Name, "status": h.Status}
+	}
+	return fields
 }
 
 func (b eventBody) asEvent() event.Event {

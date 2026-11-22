@@ -80,7 +80,8 @@ func TestFeedbackFormFieldsAndLink(t *testing.T) {
 }
 
 // A feedback form is in one place only: not also an application or extra
-// form, nor another current Event's form. Application forms stay shareable.
+// form, nor another current Event's form. An application form is on one
+// current Event too (form_one_event_test.go).
 func TestFeedbackFormOnePlace(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -111,8 +112,12 @@ func TestFeedbackFormOnePlace(t *testing.T) {
 			t.Errorf("%s: %v", tc.name, err)
 		}
 	}
-	// The application form is still shared, as before.
-	second, err := svc.Create(ctx, copyLeader, event.Event{Name: "İkinci", Location: "YTÜ", OwnerTeam: "WEBLAB", FormURL: formURL(shared)})
+	// The application form is not shared either (ADR 0069, addendum of
+	// 2026-11-22).
+	if _, err := svc.Create(ctx, copyLeader, event.Event{Name: "İkinci", Location: "YTÜ", OwnerTeam: "WEBLAB", FormURL: formURL(shared)}); !errors.Is(err, event.ErrFormInUse) {
+		t.Fatalf("shared application form: %v", err)
+	}
+	second, err := svc.Create(ctx, copyLeader, event.Event{Name: "İkinci", Location: "YTÜ", OwnerTeam: "WEBLAB"})
 	if err != nil {
 		t.Fatal(err)
 	}
