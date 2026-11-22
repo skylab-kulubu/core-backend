@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,6 +52,9 @@ type Queued struct {
 	// ClaimedAt is the claim that returned the row: Complete and Retry write
 	// only while the row still carries it.
 	ClaimedAt time.Time
+	// Resend is which time the panel sent the Ticket's mail again
+	// (docs/ticket-resend.md): 0 is its first mail.
+	Resend int
 }
 
 // Queue keeps the Tickets waiting (PostgresQueue: ticket_notifications).
@@ -149,6 +153,16 @@ func IdempotencyKey(ticketID uuid.UUID) string {
 	return "core:" + mail.TicketCreatedType + ":" + ticketID.String() + ":" + keyVersion
 }
 
+// ResendKey is the key of the n-th time the panel sent a Ticket's mail
+// again: …:r<n>, its own, so SkyMail sends it rather than answering the
+// first mail's replay (docs/ticket-resend.md). n 0 is the first mail's.
+func ResendKey(ticketID uuid.UUID, n int) string {
+	if n <= 0 {
+		return IdempotencyKey(ticketID)
+	}
+	return "core:" + mail.TicketCreatedType + ":" + ticketID.String() + ":r" + strconv.Itoa(n)
+}
+
 // Pass sends the due Notifications of one claim.
 func (s *Service) Pass(ctx context.Context) (Report, error) {
 	var report Report
@@ -242,7 +256,7 @@ func (s *Service) deliver(ctx context.Context, q Queued) (outcome, error) {
 	if !ok {
 		return dropped, nil
 	}
-	err = s.config.Mail.TicketCreated(ctx, IdempotencyKey(t.ID), holder, s.vars(ev, t), mail.NotificationSource{Kind: "ticket", Ref: t.ID.String()}, ev.EndDate)
+	err = s.config.Mail.TicketCreated(ctx, ResendKey(t.ID, q.Resend), holder, s.vars(ev, t), mail.NotificationSource{Kind: "ticket", Ref: t.ID.String()}, ev.EndDate)
 	var refused *mail.SendError
 	switch {
 	case errors.Is(err, mail.ErrMaybeDelivered):

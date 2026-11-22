@@ -104,6 +104,14 @@ Ticket insert ──(same statement)──▶ ticket_notifications ──▶ wor
   core; once core sends them, `TicketUrl` and `TicketCode` become the
   contract's required variables (CONTEXT, Required variable).
 
+## Sending it again
+
+The panel sends a Ticket's mail again ("Bileti yeniden gönder", and with
+"Bağlantıyı yenile"; [ticket-resend.md](ticket-resend.md)): the queue's row
+then carries the resend's number `n` and goes under
+`core:event.ticket-created:<ticketId>:r<n>`, its own key. The first mail's
+key stays `…:v1`.
+
 ## Retries
 
 - Same key on every try: a retry after a lost answer is SkyMail's

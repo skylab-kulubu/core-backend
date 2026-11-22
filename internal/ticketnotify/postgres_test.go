@@ -161,3 +161,31 @@ func TestAccountErasureForgetsQueuedTicketNotifications(t *testing.T) {
 		t.Fatalf("queued %v after erasure, want only %s (not %s, %s)", got, theirs.ID, mine.ID, asGuest.ID)
 	}
 }
+
+// A claimed row says which resend it sends (0: the first mail).
+func TestPostgresQueueClaimsTheResend(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	ev, err := event.NewPostgresStore(pool).Create(ctx, event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := ticket.NewPostgresStore(pool)
+	store.NotifyCreated(true)
+	tk, err := store.Create(ctx, ticket.Ticket{EventID: ev.ID, TicketType: ticket.Guest, GuestFirstName: "A", GuestLastName: "B", GuestEmail: "a@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := ticketnotify.NewPostgresQueue(pool)
+	claimed, err := q.Claim(ctx, time.Now().UTC().Add(time.Second), time.Minute, 10)
+	if err != nil || len(claimed) != 1 || claimed[0].Resend != 0 {
+		t.Fatalf("first mail %+v %v", claimed, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE ticket_notifications SET resend = 3, claimed_at = NULL, next_attempt_at = now() - interval '1 minute' WHERE ticket_id = $1`, tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = q.Claim(ctx, time.Now().UTC().Add(time.Second), time.Minute, 10)
+	if err != nil || len(claimed) != 1 || claimed[0].Resend != 3 {
+		t.Fatalf("resend %+v %v", claimed, err)
+	}
+}

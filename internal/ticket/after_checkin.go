@@ -140,3 +140,11 @@ func (a *afterCheckIn) CheckInTicketQR(ctx context.Context, p authz.Principal, s
 func (a *afterCheckIn) TicketQR(t Ticket, ev event.Event) (string, error) {
 	return a.inner.TicketQR(t, ev)
 }
+
+func (a *afterCheckIn) ResendTicket(ctx context.Context, p authz.Principal, id uuid.UUID, requestKey string) (Resend, error) {
+	return a.inner.ResendTicket(ctx, p, id, requestKey)
+}
+
+func (a *afterCheckIn) RenewTicketLink(ctx context.Context, p authz.Principal, id uuid.UUID, notify bool, requestKey string) (Ticket, Resend, error) {
+	return a.inner.RenewTicketLink(ctx, p, id, notify, requestKey)
+}
