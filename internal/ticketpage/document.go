@@ -2,7 +2,6 @@ package ticketpage
 
 import (
 	"bytes"
-	"embed"
 	"encoding/base64"
 	"html/template"
 	"net/url"
@@ -11,6 +10,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/skylab-kulubu/core-backend/internal/brandfont"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/ticket/theme"
 )
@@ -212,48 +212,7 @@ func FileName(eventName string) string {
 	return "bilet-" + slug + ".pdf"
 }
 
-// The embedded Manrope (SIL Open Font License 1.1, fonts/OFL.txt): the
-// static instances of five weights, each in its Latin and Latin Extended
-// subsets (Turkish needs both), as Fontsource 5.3.0 publishes them. Static
-// fonts stay text in the PDF; a variable font would be drawn as Type 3
-// glyphs.
-//
-//go:embed fonts/*.woff2
-var fontFiles embed.FS
-
-var fontWeights = []int{400, 500, 600, 700, 800}
-
-// fontRanges are the subsets' unicode ranges, as Fontsource's CSS gives
-// them.
-var fontRanges = map[string]string{
-	"latin":     "U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD",
-	"latin-ext": "U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF",
-}
-
-// FontFaceCSS is the @font-face rules of the embedded Manrope, each file as
-// a data URL: the renderer reaches nothing outside the page.
-func FontFaceCSS() string {
-	var b strings.Builder
-	for _, weight := range fontWeights {
-		for _, subset := range []string{"latin-ext", "latin"} {
-			name := "fonts/manrope-" + subset + "-" + strconv.Itoa(weight) + "-normal.woff2"
-			data, err := fontFiles.ReadFile(name)
-			if err != nil {
-				panic("ticketpage: embedded font missing: " + name)
-			}
-			b.WriteString("@font-face{font-family:'Manrope';font-style:normal;font-display:block;font-weight:")
-			b.WriteString(strconv.Itoa(weight))
-			b.WriteString(";src:url(data:font/woff2;base64,")
-			b.WriteString(base64.StdEncoding.EncodeToString(data))
-			b.WriteString(") format('woff2');unicode-range:")
-			b.WriteString(fontRanges[subset])
-			b.WriteString("}\n")
-		}
-	}
-	return b.String()
-}
-
-var fontCSS = template.CSS(FontFaceCSS())
+var fontCSS = template.CSS(brandfont.FaceCSS())
 
 type field struct {
 	Label, Value string

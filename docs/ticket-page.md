@@ -128,7 +128,7 @@ tarifi QR kodu"), the code real text.
 - **Never** an e-mail, a phone number, a Sky number or the ticket type.
 - **Type:** Manrope (the club site's), embedded in the page: the static
   400, 500, 600, 700 and 800 weights, Latin and Latin Extended
-  (`internal/ticketpage/fonts`, from Fontsource 5.3.0, SIL Open Font
+  (`internal/brandfont`, from Fontsource 5.3.0, SIL Open Font
   License 1.1, `OFL.txt`). Static fonts stay text in the PDF; a variable
   font would become Type 3 glyphs. The renderer reaches nothing outside
   the page: fonts, images and QRs are inline.
