@@ -108,6 +108,9 @@ type Config struct {
 	Events  Events
 	Users   Users
 	Mail    Mailer
+	// Page is the ticket page's settings (docs/ticket-page.md): while its
+	// URL is set, each holder's mail carries their Ticket's page and code.
+	Page ticket.PageConfig
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 	// Logger hears counts and failures, never a person; nil is log.Default.
@@ -245,7 +248,7 @@ func (s *Service) deliver(ctx context.Context, claimed Queued, report *Report) e
 			}
 		}
 		sends++
-		err := s.config.Mail.EventUpdated(ctx, IdempotencyKey(claimed.ID, r.holder.Sub), r.holder, vars, source, expires)
+		err := s.config.Mail.EventUpdated(ctx, IdempotencyKey(claimed.ID, r.holder.Sub), r.holder, s.withTicket(vars, r), source, expires)
 		var refused *mail.SendError
 		switch {
 		case errors.Is(err, mail.ErrMaybeDelivered):
@@ -309,6 +312,10 @@ type recipient struct {
 	ok      bool
 	tickets []uuid.UUID
 	sent    bool
+	// link is the Ticket whose page and code the mail carries: the first
+	// one with an access key, a registered holder's own before a guest
+	// Ticket under their address.
+	link *ticket.Ticket
 }
 
 // recipients are the Event's Ticket holders, one per person: a registered
@@ -334,6 +341,10 @@ func (s *Service) recipients(ctx context.Context, claimed Queued) ([]*recipient,
 	add := func(r *recipient, t ticket.Ticket) {
 		r.tickets = append(r.tickets, t.ID)
 		r.sent = r.sent || reached[t.ID]
+		if r.link == nil && t.AccessKey != "" {
+			linked := t
+			r.link = &linked
+		}
 	}
 	var guests []ticket.Ticket
 	for _, t := range tickets {
@@ -416,6 +427,27 @@ func (s *Service) vars(ev event.Event, claimed Queued) map[string]string {
 		"NewEndsAt":     s.format(ev.EndDate),
 		"NewVenue":      strings.TrimSpace(ev.Location),
 	}
+}
+
+// withTicket is vars with the recipient's Ticket page and code (ADR 0082;
+// bilet-qr-ve-pdf ticket 04, addendum), while TICKET_PAGE_URL is set: the
+// QR on that page is signed with the Event's new dates. Without the setting,
+// or a Ticket with a key, vars as they are.
+func (s *Service) withTicket(vars map[string]string, r *recipient) map[string]string {
+	if r.link == nil {
+		return vars
+	}
+	link := s.config.Page.Link(r.link.AccessKey)
+	if link == "" {
+		return vars
+	}
+	out := make(map[string]string, len(vars)+2)
+	for k, v := range vars {
+		out[k] = v
+	}
+	out["TicketUrl"] = link
+	out["TicketCode"] = r.link.Code
+	return out
 }
 
 func (s *Service) format(t *time.Time) string {

@@ -189,7 +189,7 @@ type page struct {
 	Micro      string
 }
 
-// RenderHTML is the ticket's one A4 page, in the Kurumsal layout with d's
+// RenderHTML is the ticket's one page (A5 landscape), in the Kurumsal layout with d's
 // theme: an official document's ticket with its stub (docs/ticket-page.md).
 func RenderHTML(d Document) (string, error) {
 	svg, err := qr.PlainSVG(d.QRToken)

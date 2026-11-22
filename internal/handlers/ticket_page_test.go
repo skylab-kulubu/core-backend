@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http/httptest"
 	"strings"
@@ -176,5 +177,40 @@ func TestMineCarriesTheTicketPageAndQR(t *testing.T) {
 		if strings.Contains(string(raw), "ticketUrl") || strings.Contains(string(raw), "qrToken") || strings.Contains(string(raw), created.AccessKey) {
 			t.Fatalf("the panel's read: %s", raw)
 		}
+	}
+}
+
+type failingPDF struct{}
+
+func (failingPDF) TaggedPDF(_ context.Context, _ string) ([]byte, error) {
+	return nil, errors.New("dial tcp: connection refused")
+}
+
+// Gotenberg unreachable: 503 with Retry-After, not 500.
+func TestTicketPDFUnavailable(t *testing.T) {
+	t.Parallel()
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	signer := ticketqr.NewSigner(ticketqr.DeriveKey(key), ticketqr.Config{})
+	store, events, users := ticket.NewMemoryStore(), event.NewMemoryStore(), user.NewMemoryStore()
+	svc := ticket.NewService(store, events, authz.NewAuthorizer(authz.DefaultPolicy()), users, signer)
+	ev, err := events.Create(t.Context(), event.Event{Name: "Kamp", Location: "YTÜ", OwnerTeam: "AILAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, err := svc.ApplyGuest(t.Context(), authz.Principal{ID: "lead", Groups: []string{"/UYELER/ARGE/AILAB/LIDERLER"}}, ev.ID,
+		ticket.GuestInfo{FirstName: "Elif", LastName: "Yılmaz", Email: "elif@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := NewTicketPageHandler(ticketpage.New(store, events, users, signer, failingPDF{}, nil, ticketpage.Config{Page: ticket.PageConfig{Grace: ticket.DefaultPageGrace}}))
+	app := fiber.New(fiber.Config{ErrorHandler: ErrorHandler})
+	app.Get("/v1/public/tickets/:key/pdf", page.PDF)
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/public/tickets/"+applied.Ticket.AccessKey+"/pdf", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != fiber.StatusServiceUnavailable || resp.Header.Get("Retry-After") != "30" || !strings.Contains(string(body), "ticket_pdf_unavailable") {
+		t.Fatalf("%d %s", resp.StatusCode, body)
 	}
 }

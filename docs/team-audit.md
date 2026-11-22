@@ -27,6 +27,8 @@ Keycloak's own admin events show every such change as made by
 | `POST /v1/management-memberships/:termId/extend` ([management-membership-terms.md](management-membership-terms.md)) | `membership.term.extend` | the term's Group | before and after: `endsAt`; `target_user_id` is the holder |
 | `POST /v1/management-memberships/:termId/handover` | `membership.term.handover` | the term's Group | before: the holder's `endsAt`; after: the successor's `endsAt`, `successorId` and `handover` (`immediate` or `at_term_end`); `target_user_id` is the holder. The add and the removal it makes write their own `member.add` and `member.remove` rows |
 | the daily term job | `membership.term.expired` | the term's Group | after: `endsAt`; `target_user_id` is the holder; actor `system` (below) |
+| `POST /v1/tickets/:id/notification` ([ticket-resend.md](ticket-resend.md)) | `ticket.resend` | the Event's team | after: `ticketId`, `eventId`, `resend` (the mail's …:r<n>); no target person |
+| `POST /v1/tickets/:id/access-key/rotate` | `ticket.link.renew` | the Event's team | after: `ticketId`, `eventId`, `resend` (0 without the mail); no target person |
 
 Privileged's writes carry `actor_basis` `privileged`. With team delegation
 on ([team-delegation.md](team-delegation.md)), a Leader's member add and
