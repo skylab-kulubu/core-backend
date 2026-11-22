@@ -37,7 +37,7 @@ func baseDocument() ticketpage.Document {
 		DirectionsURL: "https://www.google.com/maps/dir/?api=1&destination=41.025376%2C28.889648",
 		OwnerTeam:     "AILAB", HolderName: "Elif Yılmaz", Code: "K7M2-QX9F", QRToken: "eyJhbGciOiJFUzI1NiJ9.e30.c2ln",
 		Description: "Uygulamalı bir kamp.",
-		IssuedAt: time.Date(2026, 11, 22, 12, 40, 0, 0, time.UTC),
+		IssuedAt:    time.Date(2026, 11, 22, 12, 40, 0, 0, time.UTC),
 	}
 }
 
