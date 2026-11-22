@@ -92,6 +92,9 @@ type service struct {
 	// scans counts Ticket QR scans (a *DoorScanMetrics extra); nil counts
 	// none.
 	scans *DoorScanMetrics
+	// page is the ticket page's settings (a PageConfig extra): the
+	// holder's own list links each Ticket's page.
+	page PageConfig
 }
 
 func NewService(tickets Store, events event.Store, az authz.Authorizer, extras ...any) Service {
@@ -128,6 +131,9 @@ func NewService(tickets Store, events event.Store, az authz.Authorizer, extras .
 		}
 		if v, ok := extra.(*DoorScanMetrics); ok && v != nil {
 			s.scans = v
+		}
+		if v, ok := extra.(PageConfig); ok {
+			s.page = v
 		}
 	}
 	if s.door == nil {
@@ -771,7 +777,39 @@ func (s *service) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 	if err != nil {
 		return nil, err
 	}
-	return s.withFeedbackLinks(ctx, s.withEvents(ctx, tickets)), nil
+	return s.withHolderLinks(ctx, s.withFeedbackLinks(ctx, s.withEvents(ctx, tickets))), nil
+}
+
+// withHolderLinks gives the holder's own Tickets their ticket page
+// (ticketUrl, while TICKET_PAGE_URL is set) and their Ticket QR (qrToken,
+// on a published Event): not on a draft, nor once the page has closed
+// (docs/ticket-page.md). A QR that cannot be signed is left out.
+func (s *service) withHolderLinks(ctx context.Context, tickets []Ticket) []Ticket {
+	now := time.Now()
+	events := map[uuid.UUID]*event.Event{}
+	for i := range tickets {
+		t := &tickets[i]
+		if !held(*t) || t.AccessKey == "" {
+			continue
+		}
+		ev, seen := events[t.EventID]
+		if !seen {
+			if got, err := s.events.Get(ctx, t.EventID); err == nil {
+				ev = &got
+			}
+			events[t.EventID] = ev
+		}
+		if ev == nil || ev.Status == event.StatusDraft || s.page.Closed(*ev, now) {
+			continue
+		}
+		t.TicketURL = s.page.Link(t.AccessKey)
+		if ev.Status == event.StatusPublished && s.qr != nil {
+			if token, err := s.TicketQR(*t, *ev); err == nil {
+				t.QRToken = token
+			}
+		}
+	}
+	return tickets
 }
 
 // withFeedbackLinks gives the holder's Tickets their feedback links, read in

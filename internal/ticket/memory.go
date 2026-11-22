@@ -73,6 +73,20 @@ func (s *MemoryStore) takenLocked(key, code string) bool {
 	return false
 }
 
+func (s *MemoryStore) GetByAccessKey(_ context.Context, key string) (Ticket, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !ValidAccessKey(key) {
+		return Ticket{}, ErrNotFound
+	}
+	for _, t := range s.byID {
+		if t.AccessKey == key {
+			return s.withCheckInsLocked(t), nil
+		}
+	}
+	return Ticket{}, ErrNotFound
+}
+
 func (s *MemoryStore) Get(_ context.Context, id uuid.UUID) (Ticket, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -60,6 +60,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/teammail"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/ticketnotify"
+	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
 	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
 	"github.com/skylab-kulubu/core-backend/internal/transit"
 	"github.com/skylab-kulubu/core-backend/internal/user"
@@ -982,7 +983,25 @@ func main() {
 		log.Fatal(err)
 	}
 	doorScans := &ticket.DoorScanMetrics{}
-	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites, ticketQR, doorScans)
+	// The ticket page (docs/ticket-page.md): TICKET_PAGE_URL unset makes no
+	// link; the public routes answer either way.
+	ticketPageConfig, err := ticket.PageConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if ticketPageConfig.URL == "" {
+		log.Printf("ticket page: no link (%s unset)", ticket.PageURLEnv)
+	} else {
+		log.Printf("ticket page: on, closes %s after the Event", ticketPageConfig.Grace)
+	}
+	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites, ticketQR, doorScans, ticketPageConfig)
+	var ticketPDF ticketpage.Renderer
+	if g, ok := render.(*certificate.Gotenberg); ok && g != nil {
+		ticketPDF = g
+	}
+	ticketPage := ticketpage.New(tickets, events, users, ticketQR, ticketPDF,
+		&ticketpage.MediaTeamLogos{Groups: dir, Media: mediaStore, Blobs: blobs},
+		ticketpage.Config{Page: ticketPageConfig, APIOrigin: os.Getenv("PUBLIC_API_ORIGIN")})
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -1166,6 +1185,7 @@ func main() {
 		AuthzRoleMetrics:          authzRoleMetrics,
 		GuestCheckInMetrics:       doorQR,
 		TicketQR:                  ticketQR,
+		TicketPage:                ticketPage,
 		DoorScanMetrics:           doorScans,
 		GuestApplyPublicIPLimit:   guestApplyIPLimit,
 		Dashboard:                 dashboardSvc,

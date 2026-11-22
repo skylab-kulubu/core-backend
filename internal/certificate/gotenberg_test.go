@@ -137,3 +137,32 @@ func TestGotenbergRejectsMultiPagePDFBackground(t *testing.T) {
 		t.Fatal("invalid background must not be rendered")
 	}
 }
+
+// The ticket PDF asks for a tagged PDF; the certificate's does not change.
+func TestGotenbergTaggedPDF(t *testing.T) {
+	t.Parallel()
+	tagged := map[string]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		file, _, err := r.FormFile("files")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(file)
+		tagged[string(body)] = r.FormValue("generateTaggedPdf")
+		_, _ = w.Write([]byte("%PDF-1.7 t"))
+	}))
+	t.Cleanup(srv.Close)
+	g := &Gotenberg{BaseURL: srv.URL, HTTP: srv.Client()}
+	if _, err := g.TaggedPDF(t.Context(), "<html>bilet</html>"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.PDF(t.Context(), "<html>sertifika</html>"); err != nil {
+		t.Fatal(err)
+	}
+	if tagged["<html>bilet</html>"] != "true" || tagged["<html>sertifika</html>"] != "" {
+		t.Fatalf("generateTaggedPdf %v", tagged)
+	}
+}

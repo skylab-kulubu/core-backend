@@ -122,6 +122,21 @@ func drawnTaken(err error) bool {
 		(pg.ConstraintName == "tickets_code_idx" || pg.ConstraintName == "tickets_access_key_idx")
 }
 
+func (s *PostgresStore) GetByAccessKey(ctx context.Context, key string) (Ticket, error) {
+	if !ValidAccessKey(key) {
+		return Ticket{}, ErrNotFound
+	}
+	t, err := scanTicket(s.pool.QueryRow(ctx, `SELECT `+ticketCols+` FROM tickets WHERE access_key = $1`, key))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Ticket{}, ErrNotFound
+	}
+	if err != nil {
+		return Ticket{}, err
+	}
+	t.CheckIns = []CheckIn{}
+	return t, nil
+}
+
 func (s *PostgresStore) Get(ctx context.Context, id uuid.UUID) (Ticket, error) {
 	t, err := scanTicket(s.pool.QueryRow(ctx, `SELECT `+ticketCols+` FROM tickets WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {

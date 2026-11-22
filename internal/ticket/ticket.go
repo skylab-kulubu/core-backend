@@ -124,7 +124,12 @@ type Ticket struct {
 	AccessKey string `json:"-"`
 	// QRVersion is the Ticket QR's version: renewing the link raises it,
 	// and a QR of an older one is refused online.
-	QRVersion int       `json:"-"`
+	QRVersion int `json:"-"`
+	// TicketURL and QRToken are the holder's own, in their own list
+	// (GET /v1/tickets/me) only: the ticket page and the Ticket QR
+	// (docs/ticket-page.md, docs/ticket-qr.md).
+	TicketURL string    `json:"ticketUrl,omitempty"`
+	QRToken   string    `json:"qrToken,omitempty"`
 	CheckIns  []CheckIn `json:"checkIns"`
 	// Feedback are the holder's own feedback links (ticket 12): only the
 	// holder's own tickets answer (`GET /v1/tickets/me`) carries them, and
