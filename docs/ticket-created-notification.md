@@ -35,7 +35,9 @@ The panel shows the box checked, with how many people and who; speakers and
 the team get the mail too, which says what is true: they have a Ticket.
 
 - Only while `TICKET_CREATED_NOTIFICATION=on`: off, the publication queues
-  nothing, whatever the body says.
+  nothing, whatever the body says. The panel shows the box either way (it
+  does not read the switch; production has it on), so with the switch off a
+  checked box sends nothing.
 - Only when the call publishes the draft. An Event already published, or a
   call without the field (sky-app, an older panel), queues nothing.
 - The worker then sends these rows as any other: a Ticket whose Event ended
