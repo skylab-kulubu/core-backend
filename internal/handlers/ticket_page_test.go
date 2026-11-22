@@ -182,7 +182,7 @@ func TestMineCarriesTheTicketPageAndQR(t *testing.T) {
 
 type failingPDF struct{}
 
-func (failingPDF) TaggedPDF(_ context.Context, _ string) ([]byte, error) {
+func (failingPDF) TaggedPDF(_ context.Context, _, _ string) ([]byte, error) {
 	return nil, errors.New("dial tcp: connection refused")
 }
 
