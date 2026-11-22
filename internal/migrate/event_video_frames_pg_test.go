@@ -137,6 +137,7 @@ func frameClaimsHold(t *testing.T, pool *pgxpool.Pool) bool {
 // run; applying again brings it back.
 func undoEventVideoFrames(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	undoEventMapImage(t, pool)
 	down, err := fs.ReadFile(db.DownSQL, "migrations/"+eventVideoFramesVersion+"_event_video_frames.down.sql")
 	if err != nil {
 		t.Fatal(err)

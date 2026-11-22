@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
 )
 
@@ -87,6 +88,20 @@ func TestEventMapImageMigration(t *testing.T) {
 		t.Fatalf("columns after Apply: %d %v", columns, err)
 	}
 	if err := migrate.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// undoEventMapImage rolls back the map migration, whose triggers use the
+// Media attachments' function and whose role tables an older down
+// replaces, so that an older down migration can run; applying again brings
+// it back.
+func undoEventMapImage(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), readDown(t, eventMapImageVersion+"_event_map_image.down.sql")); err != nil {
+		t.Fatalf("event map image down: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `DELETE FROM schema_migrations WHERE version = `+eventMapImageVersion); err != nil {
 		t.Fatal(err)
 	}
 }

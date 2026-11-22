@@ -278,9 +278,12 @@ func (j mapJob) draw(ctx context.Context) error {
 	}
 	if !attached {
 		// The point moved, or the Event went, meanwhile: this map is no
-		// one's.
+		// one's. The claim is let go (a writer that moved the point without
+		// clearing it, the release before this one, leaves it), so the new
+		// point is drawn next.
 		j.counts.Discarded++
-		if err := j.discard(ctx, created.ID); err != nil {
+		if err := errors.Join(j.discard(ctx, created.ID),
+			j.settle(ctx, func(ctx context.Context) error { return w.store.ReleaseMap(ctx, j.claim) })); err != nil {
 			j.report(err)
 		}
 		return nil

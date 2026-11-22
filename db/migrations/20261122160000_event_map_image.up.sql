@@ -14,9 +14,9 @@
 -- set, a minute, so that a pin moved a few times is drawn once.
 --
 -- The release before this one keeps working on the new schema: it reads
--- and writes none of the columns. Its update of a point leaves the old map
--- in place until this release clears it; an Event's point is new with this
--- release's predecessor (20261122150000) only.
+-- and writes none of the columns. A point it moves during the deploy keeps
+-- the map drawn by then until the point moves again (the point itself is
+-- new with 20261122150000, a release before).
 SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE events
