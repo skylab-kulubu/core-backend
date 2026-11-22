@@ -96,9 +96,11 @@ about them.
   year, and is rate limited on it like the certificate routes (see
   [`media-lifecycle.md`](media-lifecycle.md#access-log)).
 - Guest apply (`POST /v1/events/{eventId}/applications/guest`) limits
-  token-less requests whose resolved address is public, per address, and
-  counts token-less requests as internal (a private address: the overlay
-  network, a trusted proxy) or public. The address decides neither what the
+  token-less requests that are not internal, per address. Internal is a
+  private address (the overlay network) or a trusted proxy that sent no
+  `X-Forwarded-For` from a peer that is not trusted: a proxy whose name did
+  not resolve still writes one, so its requests (the internet's) stay
+  public and limited. The address decides neither what the
   caller sees nor what it may change ([`guest-apply.md`](guest-apply.md)).
 
 Fiber believes no forwarded header (`TrustProxy` off, no `ProxyHeader`):
@@ -108,7 +110,9 @@ It is worked out once per request, so a limiter and its handler agree.
 ## What it is not
 
 The resolved address is not an identity. A named proxy is trusted for the
-address the network's DNS gives it; a container that took over that address
-between two lookups would be believed for those seconds. The address therefore serves only abuse limits and best-effort records
+addresses the network's DNS gives it; a container that took over such an
+address between two lookups would be believed for those seconds, and a
+container deployed on `dokploy-network` with the alias `dokploy-traefik`
+would join the list (the same trust as deploying there at all). The address therefore serves only abuse limits and best-effort records
 (`url_hits.ip`, `media_read_link_opens.client_ip`). No authorization decision
 depends on it: a route that is not deliberately public asks for a token.

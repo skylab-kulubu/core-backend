@@ -69,8 +69,8 @@ Every request is put in one class before anything else:
 
 | Class | Request |
 |---|---|
-| `anonymous_public` | no usable token, and the resolved client address ([client-ip-trust.md](client-ip-trust.md)) is public: it came from the internet through the edge proxy |
-| `anonymous_internal` | no usable token, from a private address (the overlay network) or a trusted proxy: today the forms hop |
+| `anonymous_public` | no usable token, and not internal: the resolved client address ([client-ip-trust.md](client-ip-trust.md)) is public (the internet through the edge proxy), or a peer that is not a trusted proxy sent `X-Forwarded-For` (a proxy whose name did not resolve) |
+| `anonymous_internal` | no usable token, from a private address (the overlay network) or a trusted proxy, with no `X-Forwarded-For` from an untrusted peer: today the forms hop |
 | `person` | a person's valid token |
 | `service` | a service account's valid token. Only a service account whose client `MEDIA_SERVICE_CLIENTS` maps to a product is trusted (below); any other is counted here and answered like an anonymous caller |
 

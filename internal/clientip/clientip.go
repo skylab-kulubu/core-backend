@@ -183,7 +183,8 @@ func (r Ranges) Contains(addr netip.Addr) bool {
 // Internal reports whether addr is a caller inside the container network
 // rather than on the internet: a trusted proxy itself, or any private or
 // loopback address. It decides limits only (Guest apply's internal hop),
-// never whose header to believe.
+// never whose header to believe; a request's answer is InternalFromCtx,
+// which also refuses a header from a peer that is not trusted.
 func (r Ranges) Internal(addr netip.Addr) bool {
 	return r.Contains(addr) || privateRanges.Contains(addr)
 }
@@ -211,11 +212,20 @@ func (r Ranges) Refresh(ctx context.Context, lookup Lookup, logf func(format str
 		return
 	}
 	s := r.state
+	// The lookups run without the lock, so /v1/metrics never waits on DNS.
+	type answer struct {
+		addrs []netip.Addr
+		err   error
+	}
+	answers := make([]answer, len(s.names))
+	for i, name := range s.names {
+		answers[i].addrs, answers[i].err = lookup(ctx, name)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.last = time.Now()
-	for _, name := range s.names {
-		addrs, err := lookup(ctx, name)
+	for i, name := range s.names {
+		addrs, err := answers[i].addrs, answers[i].err
 		var dnsErr *net.DNSError
 		switch {
 		case err == nil:
@@ -365,8 +375,33 @@ func Resolve(trusted bool, peer string, forwarded []string, ranges Ranges) strin
 // ignored header is counted once. Fiber itself believes no forwarded header
 // (internal/httpx); c.IP() is the socket's address.
 func FromCtx(c fiber.Ctx, ranges Ranges) string {
-	if resolved, ok := c.Locals(resolvedKey{}).(string); ok {
-		return resolved
+	return resolve(c, ranges).addr
+}
+
+// InternalFromCtx reports whether the request came from inside the container
+// network: a trusted proxy or a private address, and no X-Forwarded-For from
+// a peer that is not trusted. A proxy whose name did not resolve still writes
+// that header, so its requests (the internet's) are never internal; a caller
+// on the network that names nobody (the forms hop) is.
+func InternalFromCtx(c fiber.Ctx, ranges Ranges) bool {
+	r := resolve(c, ranges)
+	if r.ignored {
+		return false
+	}
+	addr, err := netip.ParseAddr(r.addr)
+	return err == nil && ranges.Internal(addr)
+}
+
+type resolution struct {
+	addr    string
+	ignored bool
+}
+
+type resolvedKey struct{}
+
+func resolve(c fiber.Ctx, ranges Ranges) resolution {
+	if cached, ok := c.Locals(resolvedKey{}).(resolution); ok {
+		return cached
 	}
 	peer := peerAddress(c)
 	forwarded := Forwarded(c)
@@ -374,15 +409,13 @@ func FromCtx(c fiber.Ctx, ranges Ranges) string {
 	if addr, ok := parseAddr(peer); ok {
 		trusted = ranges.Contains(addr)
 	}
-	if !trusted && len(forwarded) > 0 {
+	r := resolution{addr: Resolve(trusted, peer, forwarded, ranges), ignored: !trusted && len(forwarded) > 0}
+	if r.ignored {
 		ranges.ignoredHeader()
 	}
-	resolved := Resolve(trusted, peer, forwarded, ranges)
-	c.Locals(resolvedKey{}, resolved)
-	return resolved
+	c.Locals(resolvedKey{}, r)
+	return r
 }
-
-type resolvedKey struct{}
 
 // Forwarded returns the `X-Forwarded-For` chain in header order. Repeated
 // header lines are read as one list, as RFC 9110 requires, so a hop that writes
