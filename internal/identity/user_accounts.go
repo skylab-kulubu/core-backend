@@ -911,6 +911,9 @@ func (s *UserAccounts) WriteNames(ctx context.Context, p authz.Principal, id uui
 		return err
 	}
 	u, err := s.o.Accounts.AccountUser(ctx, id)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

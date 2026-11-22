@@ -1716,6 +1716,13 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  )
 		  AND to_regclass('public.map_regions_live_box_idx') IS NOT NULL
 		  AND to_regclass('public.map_regions_status_idx') IS NOT NULL`,
+	// The Team audit record's account actions (docs/user-accounts.md): the
+	// wider action check and the person's account index.
+	20261122190000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+		  AND convalidated AND pg_get_constraintdef(oid) LIKE '%user.lockout.clear%'
+		  AND to_regclass('public.team_audit_records_user_idx') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

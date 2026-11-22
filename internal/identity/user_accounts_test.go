@@ -545,3 +545,17 @@ func TestWriteNamesGoesToKeycloak(t *testing.T) {
 		t.Fatalf("member: %v", err)
 	}
 }
+
+// A person the account side does not know (the memory directory of a local
+// run) keeps the profile write working: the names stay core's.
+func TestWriteNamesLeavesAnUnknownAccountAlone(t *testing.T) {
+	f := newAccountsFixture(t)
+	p := asYK(f)
+	first := "Ada"
+	if err := f.svc.WriteNames(accountActor(p), p, uuid.New(), identity.NameChange{FirstName: &first}); err != nil {
+		t.Fatalf("unknown account: %v", err)
+	}
+	if len(f.audit.Rows()) != 0 {
+		t.Fatalf("rows = %+v", f.audit.Rows())
+	}
+}
