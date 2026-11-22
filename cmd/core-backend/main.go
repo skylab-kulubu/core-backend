@@ -1463,8 +1463,9 @@ func ticketQRSigner(getenv func(string) string, passKey *ecdsa.PrivateKey) (*tic
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("ticket qr: signs under %s", cfg.Kid)
 	if cfg.Previous != nil {
-		log.Printf("ticket qr: the previous key is accepted until %s (%s)", cfg.PreviousUntil.Format(time.RFC3339), ticketqr.PreviousUntilEnv)
+		log.Printf("ticket qr: the previous key %s is accepted until %s (%s)", cfg.PreviousKid, cfg.PreviousUntil.Format(time.RFC3339), ticketqr.PreviousUntilEnv)
 	}
 	return ticketqr.NewSigner(ticketqr.DeriveKey(passKey), cfg), nil
 }

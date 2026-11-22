@@ -159,7 +159,8 @@ func TestTodaysScannerTakesATicketQR(t *testing.T) {
 	if !isSkyPassToken(token) {
 		t.Fatal("today's scanner refuses the Ticket QR")
 	}
-	if !ticketqr.IsTicketQR(token) || ticketqr.IsTicketQR("eyJhbGciOiJFUzI1NiIsImtpZCI6InNwLWUxIn0.e30.x") || ticketqr.IsTicketQR("SPW1:abc:12345678") {
+	if !ticketqr.IsTicketQR(token) || ticketqr.IsTicketQR("eyJhbGciOiJFUzI1NiIsImtpZCI6InNwLWUxIn0.e30.x") || ticketqr.IsTicketQR("SPW1:abc:12345678") ||
+		!ticketqr.IsTicketQR(base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"ES256","kid":"tk-e2"}`))+".e30.x") {
 		t.Fatal("IsTicketQR")
 	}
 }
@@ -236,9 +237,11 @@ func TestVerifyRefuses(t *testing.T) {
 	}
 }
 
-// After a planned SkyPass key rotation the previous Ticket QR key is
-// accepted, and published, until its window ends; then neither.
-func TestPreviousKeyWindow(t *testing.T) {
+// After a planned SkyPass key rotation (ADR 0082) the new key signs under
+// the next kid (tk-e2) and the previous one (tk-e1) is accepted, and
+// published, under its own kid until its window ends; then neither. A kid
+// picks its key: a code under tk-e1 signed with the new key is refused.
+func TestRotationWindow(t *testing.T) {
 	t.Parallel()
 	before := ticketqr.NewSigner(ticketqr.DeriveKey(skypassKey(t)), ticketqr.Config{})
 	sent, err := before.Mint(claims())
@@ -251,6 +254,7 @@ func TestPreviousKeyWindow(t *testing.T) {
 	}
 	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
 	env := map[string]string{
+		ticketqr.KidEnv:           "tk-e2",
 		ticketqr.PreviousJWKEnv:   string(previous),
 		ticketqr.PreviousUntilEnv: now.Add(30 * 24 * time.Hour).Format(time.RFC3339),
 	}
@@ -264,15 +268,45 @@ func TestPreviousKeyWindow(t *testing.T) {
 	if _, err := after.Verify(sent); err != nil {
 		t.Fatalf("within the window: %v", err)
 	}
-	if len(after.JWKs()) != 2 {
-		t.Fatalf("published %d keys within the window", len(after.JWKs()))
+	fresh, err := after.Mint(claims())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part(t, fresh, 0)["kid"] != "tk-e2" || !ticketqr.IsTicketQR(fresh) || after.Kid() != "tk-e2" {
+		t.Fatalf("new codes' kid %v", part(t, fresh, 0)["kid"])
+	}
+	if _, err := after.Verify(fresh); err != nil {
+		t.Fatalf("a new code: %v", err)
+	}
+	keys := after.JWKs()
+	if len(keys) != 2 || keys[0].Kid != "tk-e2" || keys[1].Kid != "tk-e1" {
+		t.Fatalf("published %+v", keys)
+	}
+	// The new key under the old kid: refused.
+	parts := strings.Split(fresh, ".")
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"ES256","kid":"tk-e1","typ":"JWT"}`))
+	if _, err := after.Verify(header + "." + parts[1] + "." + parts[2]); !errors.Is(err, ticketqr.ErrInvalid) {
+		t.Fatalf("new key under the old kid: %v", err)
 	}
 	clock = now.Add(31 * 24 * time.Hour)
 	if _, err := after.Verify(sent); !errors.Is(err, ticketqr.ErrInvalid) {
 		t.Fatalf("after the window: %v", err)
 	}
-	if len(after.JWKs()) != 1 {
-		t.Fatal("the previous key is still published")
+	if keys := after.JWKs(); len(keys) != 1 || keys[0].Kid != "tk-e2" {
+		t.Fatalf("after the window, published %+v", keys)
+	}
+}
+
+// A code under a kid the signer does not hold is refused, its own key's
+// signature or not.
+func TestUnknownKidIsRefused(t *testing.T) {
+	t.Parallel()
+	s := ticketqr.NewSigner(ticketqr.DeriveKey(skypassKey(t)), ticketqr.Config{})
+	good, _ := s.Mint(claims())
+	parts := strings.Split(good, ".")
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"ES256","kid":"tk-e9","typ":"JWT"}`))
+	if _, err := s.Verify(header + "." + parts[1] + "." + parts[2]); !errors.Is(err, ticketqr.ErrInvalid) {
+		t.Fatalf("tk-e9: %v", err)
 	}
 }
 
@@ -281,23 +315,38 @@ func TestConfigFromEnv(t *testing.T) {
 	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
 	key, _ := json.Marshal(ticketqr.NewSigner(ticketqr.DeriveKey(skypassKey(t)), ticketqr.Config{}).JWKs()[0])
 	soon := now.Add(time.Hour).Format(time.RFC3339)
+	rotated := func(extra map[string]string) map[string]string {
+		env := map[string]string{ticketqr.KidEnv: "tk-e2", ticketqr.PreviousJWKEnv: string(key), ticketqr.PreviousUntilEnv: soon}
+		for k, v := range extra {
+			env[k] = v
+		}
+		return env
+	}
 	for name, tc := range map[string]struct {
 		env map[string]string
 		ok  bool
+		kid string
 	}{
-		"unset":            {map[string]string{}, true},
-		"both":             {map[string]string{ticketqr.PreviousJWKEnv: string(key), ticketqr.PreviousUntilEnv: soon}, true},
-		"key alone":        {map[string]string{ticketqr.PreviousJWKEnv: string(key)}, false},
-		"until alone":      {map[string]string{ticketqr.PreviousUntilEnv: soon}, false},
-		"not a time":       {map[string]string{ticketqr.PreviousJWKEnv: string(key), ticketqr.PreviousUntilEnv: "yarın"}, false},
-		"too far":          {map[string]string{ticketqr.PreviousJWKEnv: string(key), ticketqr.PreviousUntilEnv: now.Add(200 * 24 * time.Hour).Format(time.RFC3339)}, false},
-		"not a JWK":        {map[string]string{ticketqr.PreviousJWKEnv: "{}", ticketqr.PreviousUntilEnv: soon}, false},
-		"SkyPass kid":      {map[string]string{ticketqr.PreviousJWKEnv: strings.Replace(string(key), "tk-e1", "sp-e1", 1), ticketqr.PreviousUntilEnv: soon}, false},
-		"not on the curve": {map[string]string{ticketqr.PreviousJWKEnv: `{"kty":"EC","kid":"tk-e1","crv":"P-256","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","y":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`, ticketqr.PreviousUntilEnv: soon}, false},
+		"unset":                   {map[string]string{}, true, "tk-e1"},
+		"after a rotation":        {rotated(nil), true, "tk-e2"},
+		"a year's window":         {rotated(map[string]string{ticketqr.PreviousUntilEnv: now.Add(366 * 24 * time.Hour).Format(time.RFC3339)}), true, "tk-e2"},
+		"kid alone":               {map[string]string{ticketqr.KidEnv: "tk-e3"}, true, "tk-e3"},
+		"not a kid":               {map[string]string{ticketqr.KidEnv: "sp-e1"}, false, ""},
+		"previous under this kid": {rotated(map[string]string{ticketqr.KidEnv: "tk-e1"}), false, ""},
+		"key alone":               {map[string]string{ticketqr.KidEnv: "tk-e2", ticketqr.PreviousJWKEnv: string(key)}, false, ""},
+		"until alone":             {map[string]string{ticketqr.PreviousUntilEnv: soon}, false, ""},
+		"not a time":              {rotated(map[string]string{ticketqr.PreviousUntilEnv: "yarın"}), false, ""},
+		"too far":                 {rotated(map[string]string{ticketqr.PreviousUntilEnv: now.Add(400 * 24 * time.Hour).Format(time.RFC3339)}), false, ""},
+		"not a JWK":               {rotated(map[string]string{ticketqr.PreviousJWKEnv: "{}"}), false, ""},
+		"SkyPass kid":             {rotated(map[string]string{ticketqr.PreviousJWKEnv: strings.Replace(string(key), "tk-e1", "sp-e1", 1)}), false, ""},
+		"not on the curve":        {rotated(map[string]string{ticketqr.PreviousJWKEnv: `{"kty":"EC","kid":"tk-e1","crv":"P-256","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","y":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`}), false, ""},
 	} {
-		_, err := ticketqr.ConfigFromEnv(func(k string) string { return tc.env[k] }, now)
+		cfg, err := ticketqr.ConfigFromEnv(func(k string) string { return tc.env[k] }, now)
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: %v", name, err)
+		}
+		if tc.ok && cfg.Kid != tc.kid {
+			t.Errorf("%s: kid %q", name, cfg.Kid)
 		}
 	}
 }
