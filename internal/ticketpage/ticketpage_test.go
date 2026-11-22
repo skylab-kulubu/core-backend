@@ -134,7 +134,7 @@ func TestPageAnswersOnlyWhatThePageShows(t *testing.T) {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
-	want := []string{"code", "eventEnd", "eventName", "eventStart", "eventStatus", "holderName", "ownerTeam", "pdfUrl", "qrToken", "qrUrl", "state", "theme", "venue"}
+	want := []string{"code", "coverColors", "eventEnd", "eventName", "eventStart", "eventStatus", "holderName", "ownerTeam", "pdfUrl", "qrToken", "qrUrl", "state", "theme", "venue"}
 	if !slices.Equal(keys, want) {
 		t.Fatalf("keys %v", keys)
 	}
@@ -147,7 +147,8 @@ func TestPageAnswersOnlyWhatThePageShows(t *testing.T) {
 	if view.HolderName != "Elif Yılmaz" || view.Code != g.Code || view.State != ticketpage.StateActive ||
 		view.QRURL != "https://api.example.test/v1/public/tickets/"+g.AccessKey+"/qr.png" ||
 		view.PDFURL != "https://api.example.test/v1/public/tickets/"+g.AccessKey+"/pdf" ||
-		view.Theme.Key != "kurumsal" || view.Theme.Accent != "#7C3AED" || view.EventStatus != "published" ||
+		view.Theme.Key != "kurumsal" || view.Theme.Accent != ticketpage.SiteAccent || view.EventStatus != "published" ||
+		view.CoverImageURL != "" || view.CoverColors == nil || len(view.CoverColors) != 0 ||
 		view.DirectionsURL != "" || view.MapsURL != "" {
 		t.Fatalf("view %+v", view)
 	}
@@ -567,5 +568,37 @@ func TestMapInPDFAndPage(t *testing.T) {
 	}
 	if view, err := svc.Page(ctx, g.AccessKey); err != nil || view.MapImageURL != "" || view.MapAttribution != "" || view.MapAttributionURL != "" {
 		t.Fatalf("without a map %+v %v", view, err)
+	}
+}
+
+// The page's cover and accent: the cover's public address and colours, the
+// accent its first colour, else the club's purple.
+func TestPageCoverAndAccent(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := t.Context()
+	cover := uuid.New()
+	ev := f.ev
+	ev.CoverImageID, ev.CoverImageURL, ev.CoverColors = &cover, "images/kapak.jpg", []string{"bozuk", "#0f766e", "#111111"}
+	if _, err := f.events.Update(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	g := f.guest("elif@example.com")
+	view, err := f.svc.Page(ctx, g.AccessKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(view.CoverImageURL, "/images/kapak.jpg") || len(view.CoverColors) != 3 || view.Theme.Accent != "#0F766E" {
+		t.Fatalf("cover %q %v, accent %q", view.CoverImageURL, view.CoverColors, view.Theme.Accent)
+	}
+	for _, tc := range []struct {
+		colors []string
+		want   string
+	}{
+		{nil, ticketpage.SiteAccent}, {[]string{"red"}, ticketpage.SiteAccent}, {[]string{"#abcdef"}, "#ABCDEF"},
+	} {
+		if got := ticketpage.Accent(event.Event{CoverColors: tc.colors}); got != tc.want {
+			t.Errorf("%v: %q", tc.colors, got)
+		}
 	}
 }

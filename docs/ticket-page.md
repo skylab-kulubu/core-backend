@@ -25,6 +25,8 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
   "eventName": "Yapay Zeka Kampı",
   "eventStart": "2026-12-12T07:00:00Z",
   "eventEnd": "2026-12-12T15:00:00Z",
+  "coverImageUrl": "https://cdn.yildizskylab.com/images/….webp",
+  "coverColors": ["#0F766E", "#111111"],
   "venue": "YTÜ Davutpaşa, EEF Konferans Salonu",
   "venueAddress": "Davutpaşa Cd. No:127, Esenler/İstanbul",
   "venueLat": 41.025376,
@@ -42,7 +44,7 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
   "qrUrl": "https://api.yildizskylab.com/v1/public/tickets/{key}/qr.png",
   "pdfUrl": "https://api.yildizskylab.com/v1/public/tickets/{key}/pdf",
   "state": "active",
-  "theme": {"key": "kurumsal", "accent": "#7C3AED"}
+  "theme": {"key": "kurumsal", "accent": "#0F766E"}
 }
 ```
 
@@ -61,8 +63,13 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
 - `qrToken` is the Ticket QR ([ticket-qr.md](ticket-qr.md)), signed with
   the Event's dates now; the site draws it, or shows `qrUrl`.
 - `qrUrl` and `pdfUrl` are on `PUBLIC_API_ORIGIN` (paths when it is unset).
-- `theme`: the look the PDF has; the site draws the same (ticket 07).
-  Ticket 16 adds the Event's choice.
+- `coverImageUrl`: the Event's cover at its public media address, left out
+  while it has none; `coverColors` its colours, the dominant first (`[]`
+  without a cover). The page draws its front from them.
+- `theme`: `key` is the look (Kurumsal); `accent` the page's accent:
+  the cover's first colour, else the club's purple `#8B5CF6` (Yusuf's order;
+  the Event's own ticket colour goes first once ticket 16 adds it). The
+  PDF keeps its own purple rule (`#7C3AED`, the v5 design).
 - `state`:
 
 | State | When | QR and PDF |
