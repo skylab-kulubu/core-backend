@@ -375,6 +375,37 @@ func (s *service) guardForms(e *Event, kept map[uuid.UUID]bool) {
 	}}
 }
 
+// guardRestore is the guard of restoring e: its application, extra and
+// feedback forms and its Sessions' feedback forms, checked as Restore's
+// checkFormPlaces does (with the Sessions, nothing kept). A restore and a
+// write that binds one of them at once are thus decided one after the other.
+func (s *service) guardRestore(ctx context.Context, e Event) (*formGuard, error) {
+	ids := make([]uuid.UUID, 0, len(e.ExtraFormURLs)+2)
+	for _, link := range applicationLinksOf(e) {
+		ids = append(ids, link.FormID)
+	}
+	if id, ok := e.FeedbackFormID(); ok {
+		ids = append(ids, id)
+	}
+	own, err := s.store.ListSessionFeedbackForms(ctx, e.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range own {
+		if id, ok := FormIDFromURL(f.URL); ok {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	checked := e
+	checked.formGuard = nil
+	return &formGuard{ids: ids, check: func(ctx context.Context) error {
+		return s.checkFormPlaces(ctx, checked, true, nil)
+	}}, nil
+}
+
 // lockFormPlaces takes the guard's locks inside tx, in a fixed order, and
 // applies its check; a nil guard does nothing.
 func lockFormPlaces(ctx context.Context, tx pgx.Tx, g *formGuard) error {

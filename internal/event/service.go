@@ -435,7 +435,11 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 	if err := s.checkFormPlaces(ctx, existing, true, nil); err != nil {
 		return Event{}, err
 	}
-	if err := s.store.Restore(ctx, id); err != nil {
+	guard, err := s.guardRestore(ctx, existing)
+	if err != nil {
+		return Event{}, err
+	}
+	if err := s.store.Restore(ctx, id, guard); err != nil {
 		return Event{}, err
 	}
 	restored, err := s.Get(ctx, &p, id)

@@ -42,7 +42,10 @@ type Store interface {
 	// conditional write: ErrNotDraft when it is published or cancelled (an
 	// Event archived already stays as it is, as with Archive).
 	ArchiveDraft(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
-	Restore(ctx context.Context, id uuid.UUID) error
+	// Restore brings the archived Event back. With a guard (the service's;
+	// nil for none) it applies the one-place rule again inside its write,
+	// under each form's lock, as Create and Update do.
+	Restore(ctx context.Context, id uuid.UUID, guard *formGuard) error
 	AddImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
 	RemoveImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
 	// ListFiles reads the Event's files and videos, each list in its

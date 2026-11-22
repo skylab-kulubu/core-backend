@@ -50,7 +50,7 @@ The refusal says where the form is, as far as the caller may see it:
 
 `event` is the current Event that holds the form (for a Session's feedback form, the Session's Event). It is left out when the caller may not see that Event (another team's draft: [event-drafts.md](event-drafts.md)), and when the form is the Event's own other slot. The panel names the Event and offers a new form made from the old one in Skyforms (as the copy does), or archiving the old Event, or taking the form off it.
 
-An archived Event, day or Session holds no form: its forms are free once it is archived, and restoring it while one of them is in another place is `409 form_in_use`. A write of an Event or a Session applies the rule again inside its own transaction, after a transaction-scoped advisory lock on each of its forms (`pg_advisory_xact_lock`, in a fixed order): two writes naming the same form are decided one after the other, and the second sees the first. Restoring an archived Event, day or Session checks without that lock (rare, by hand).
+An archived Event, day or Session holds no form: its forms are free once it is archived, and restoring it while one of them is in another place is `409 form_in_use`. A write of an Event or a Session applies the rule again inside its own transaction, after a transaction-scoped advisory lock on each of its forms (`pg_advisory_xact_lock`, in a fixed order): two writes naming the same form are decided one after the other, and the second sees the first. Restoring an archived Event takes the same locks and checks again inside its write (review of 2026-11-22), so a restore and a binding of one of its forms at once are decided one after the other; restoring a day or a Session checks without that lock (rare, by hand).
 
 ## Short link
 
