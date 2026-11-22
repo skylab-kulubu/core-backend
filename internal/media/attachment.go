@@ -36,6 +36,10 @@ const (
 	// video's poster while its organizers uploaded none. The Event owns the
 	// link, as it owns the poster's.
 	RoleEventVideoFrame Role = "event_video_frame"
+	// RoleEventMap is the map of an Event's place, which core draws itself
+	// (events.map_media_id, migration 20261122160000). Copies of an Event
+	// with the same point share it.
+	RoleEventMap Role = "event_map"
 )
 
 // The roles another product's records give a Media, through the service
@@ -75,6 +79,7 @@ var rolePurposes = map[authz.Product]map[Role][]string{
 		RoleEventVideo:       {PurposeVideo},
 		RoleEventVideoPoster: {PurposeEventCover, PurposeEventGallery},
 		RoleEventVideoFrame:  {PurposeVideoFrame},
+		RoleEventMap:         {PurposeEventMap},
 	},
 	authz.ProductForms: {RoleFormsAnswer: {PurposeAnswerFile, PurposeAnswerFileLarge, PurposeAnswerFileGuest}},
 	authz.ProductCMS:   {RoleCMSImage: {PurposeCMSImage}, RoleCMSFile: {PurposeCMSFile}},
@@ -84,12 +89,12 @@ var rolePurposes = map[authz.Product]map[Role][]string{
 // Media does not fit them. They were made after Media purpose, so no Media
 // was ever linked in them without one: an Event's files and videos, whose
 // purposes are sent by Direct upload (club files also scanned), which a
-// legacy upload never was, a video's poster, and a video's frame (which
-// core makes itself). The database keeps a copy (media_roles_without_legacy,
-// migrations 20260928160000, 20260929140000 and 20260929160000); a test
-// keeps the two equal.
+// legacy upload never was, a video's poster, a video's frame and an Event's
+// map (which core makes itself). The database keeps a copy
+// (media_roles_without_legacy, migrations 20260928160000, 20260929140000,
+// 20260929160000 and 20261122160000); a test keeps the two equal.
 var rolesWithoutLegacy = map[authz.Product][]Role{
-	authz.ProductCore: {RoleEventFile, RoleEventVideo, RoleEventVideoPoster, RoleEventVideoFrame},
+	authz.ProductCore: {RoleEventFile, RoleEventVideo, RoleEventVideoPoster, RoleEventVideoFrame, RoleEventMap},
 }
 
 // fits reports whether a Media of the purpose may play the product's role.

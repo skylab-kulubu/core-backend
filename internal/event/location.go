@@ -8,6 +8,15 @@ import (
 	"unicode/utf8"
 )
 
+// MapAttribution is the credit an Event's map shows under it, and
+// MapAttributionURL the page it links to: the map is drawn from
+// OpenStreetMap's data (ODbL). In print the address is written out (OSMF's
+// attribution guidelines).
+const (
+	MapAttribution    = "© OpenStreetMap contributors"
+	MapAttributionURL = "https://www.openstreetmap.org/copyright"
+)
+
 // LocationAddressMax bounds an Event's street address, in characters (the
 // database's check says the same).
 const LocationAddressMax = 300

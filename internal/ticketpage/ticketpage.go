@@ -122,15 +122,21 @@ type View struct {
 	VenueLng      *float64 `json:"venueLng,omitempty"`
 	DirectionsURL string   `json:"directionsUrl,omitempty"`
 	MapsURL       string   `json:"mapsUrl,omitempty"`
-	OwnerTeam     string   `json:"ownerTeam"`
-	EventStatus   string   `json:"eventStatus"`
-	HolderName    string   `json:"holderName"`
-	Code          string   `json:"code"`
-	QRToken       string   `json:"qrToken"`
-	QRURL         string   `json:"qrUrl"`
-	PDFURL        string   `json:"pdfUrl"`
-	State         string   `json:"state"`
-	Theme         Theme    `json:"theme"`
+	// MapImageURL is the map of the place's point core drew
+	// (docs/event-map.md), MapAttribution the credit to show under it,
+	// linked to MapAttributionURL; all left out while there is none.
+	MapImageURL       string `json:"mapImageUrl,omitempty"`
+	MapAttribution    string `json:"mapAttribution,omitempty"`
+	MapAttributionURL string `json:"mapAttributionUrl,omitempty"`
+	OwnerTeam         string `json:"ownerTeam"`
+	EventStatus       string `json:"eventStatus"`
+	HolderName        string `json:"holderName"`
+	Code              string `json:"code"`
+	QRToken           string `json:"qrToken"`
+	QRURL             string `json:"qrUrl"`
+	PDFURL            string `json:"pdfUrl"`
+	State             string `json:"state"`
+	Theme             Theme  `json:"theme"`
 }
 
 // opened is a Ticket the key opened, with its Event and holder.
@@ -224,9 +230,13 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		Venue: ev.Location, VenueAddress: ev.LocationAddress, VenueLat: ev.LocationLat, VenueLng: ev.LocationLng,
 		DirectionsURL: DirectionsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
 		MapsURL:       MapsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
+		MapImageURL:   media.ConfiguredAddresses().Object(ev.MapImageURL),
 		OwnerTeam:     ev.OwnerTeam, EventStatus: string(ev.Status),
 		HolderName: o.holder, Code: o.ticket.Code, State: o.state,
 		Theme: Theme{Key: th.Key, Accent: th.Accent},
+	}
+	if v.MapImageURL != "" {
+		v.MapAttribution, v.MapAttributionURL = event.MapAttribution, event.MapAttributionURL
 	}
 	if o.state != StateEventCancelled {
 		token, err := s.token(o)
@@ -326,6 +336,12 @@ func (s *Service) document(ctx context.Context, o opened, token string) (Documen
 	}
 	if ev.CoverImageID != nil {
 		doc.BandJPEG = s.band(ctx, *ev.CoverImageID)
+	}
+	if ev.MapImageID != nil && s.images != nil {
+		if data, contentType, ok := s.images.Image(ctx, *ev.MapImageID, ""); ok {
+			doc.Map, doc.MapType = data, contentType
+			doc.MapAttribution = event.MapAttribution + " · " + strings.TrimPrefix(event.MapAttributionURL, "https://www.")
+		}
 	}
 	return doc, nil
 }

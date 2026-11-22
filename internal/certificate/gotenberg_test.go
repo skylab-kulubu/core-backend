@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -187,5 +188,60 @@ func TestGotenbergTaggedPDF(t *testing.T) {
 	// The ticket's page head goes as header.html; the others send none.
 	if len(headers) != 1 || headers["<html>bilet</html>"] != "<html>Sayfa <span class=\"pageNumber\"></span></html>" {
 		t.Fatalf("headers %v", headers)
+	}
+}
+
+// The map's picture: the page, its size, a JPEG of the quality, taken once
+// the fonts are in; anything but a JPEG back is an error.
+func TestGotenbergScreenshot(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var got map[string]string
+	var path, page string
+	answer := []byte{0xff, 0xd8, 0xff, 0xe0, 'j'}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		path = r.URL.Path
+		got = map[string]string{}
+		for k, v := range r.MultipartForm.Value {
+			got[k] = v[0]
+		}
+		file, _, err := r.FormFile("files")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(file)
+		page = string(body)
+		_, _ = w.Write(answer)
+	}))
+	t.Cleanup(srv.Close)
+	g := &Gotenberg{BaseURL: srv.URL, HTTP: srv.Client()}
+	shot, err := g.Screenshot(t.Context(), "<html>harita</html>", 1280, 480, 82)
+	if err != nil || string(shot) != string(answer) {
+		t.Fatalf("%q %v", shot, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string]string{"width": "1280", "height": "480", "clip": "true", "format": "jpeg", "quality": "82", "waitDelay": "500ms"}
+	if path != "/forms/chromium/screenshot/html" || page != "<html>harita</html>" || len(got) != len(want) {
+		t.Fatalf("%s %q %v", path, page, got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q", k, got[k])
+		}
+	}
+	answer = []byte("<html>bir hata</html>")
+	mu.Unlock()
+	defer mu.Lock()
+	if _, err := g.Screenshot(t.Context(), "<html>harita</html>", 1280, 480, 82); err == nil {
+		t.Fatal("a page that is not a JPEG was taken")
+	}
+	if _, err := g.Screenshot(t.Context(), "<html>harita</html>", 0, 480, 82); err == nil {
+		t.Fatal("no width")
 	}
 }
