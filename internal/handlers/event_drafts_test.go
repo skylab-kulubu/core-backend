@@ -345,8 +345,10 @@ func TestDraftWrites(t *testing.T) {
 		{"apply me", fiber.MethodPost, "/v1/events/" + draft + "/applications/me", "", map[string]want{
 			"editor": registration, "DK": registration, "signed out": {status: fiber.StatusUnauthorized},
 		}},
+		// The editor adds a guest from the panel, as a person (K5,
+		// 2026-11-22); DK, who only reads, gets 403 as for a person.
 		{"apply guest", fiber.MethodPost, "/v1/events/" + draft + "/applications/guest", guest, map[string]want{
-			"editor": registration, "DK": registration,
+			"editor": {status: fiber.StatusCreated}, "DK": {status: fiber.StatusForbidden},
 		}},
 		{"add a person", fiber.MethodPost, "/v1/events/" + draft + "/applications/users/" + draftTarget.String(), "", map[string]want{
 			"editor": {status: fiber.StatusCreated}, "DK": {status: fiber.StatusForbidden}, "signed out": {status: fiber.StatusUnauthorized},

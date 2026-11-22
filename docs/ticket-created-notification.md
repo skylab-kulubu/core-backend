@@ -16,8 +16,8 @@ no ticket mail went at all; it is off until `TICKET_CREATED_NOTIFICATION=on`.
 | Guest apply that finds the Ticket already there, a Ticket updated | nobody: no new Ticket |
 
 Only a Ticket of a **published** Event that is **not over** is told of, when
-the worker sends it: a draft's Tickets (speakers and the team, added from the
-panel, or applications from a form linked to the draft), a cancelled or
+the worker sends it: a draft's Tickets (speakers, the team and guests,
+added from the panel, or applications from a form linked to the draft), a cancelled or
 archived Event's and a past Event's (over at its end date, else a day after
 its start, as everywhere in core: an Event without an end date is over too)
 are dropped. A draft's Tickets are told of later only if the organizer asks
