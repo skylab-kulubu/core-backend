@@ -25,7 +25,7 @@ import (
 
 type pdfStub struct{}
 
-func (pdfStub) TaggedPDF(_ context.Context, _ string) ([]byte, error) {
+func (pdfStub) TaggedPDF(_ context.Context, _, _ string) ([]byte, error) {
 	return []byte("%PDF-1.7 bilet"), nil
 }
 
@@ -182,7 +182,7 @@ func TestMineCarriesTheTicketPageAndQR(t *testing.T) {
 
 type failingPDF struct{}
 
-func (failingPDF) TaggedPDF(_ context.Context, _ string) ([]byte, error) {
+func (failingPDF) TaggedPDF(_ context.Context, _, _ string) ([]byte, error) {
 	return nil, errors.New("dial tcp: connection refused")
 }
 

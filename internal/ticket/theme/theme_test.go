@@ -7,25 +7,6 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/ticket/theme"
 )
 
-// The same code draws the same pattern; another code another.
-func TestGuillocheIsDeterministic(t *testing.T) {
-	t.Parallel()
-	a := theme.Guilloche("K7M2QX9F", 186, 128, "#1F4E79")
-	if a != theme.Guilloche("K7M2QX9F", 186, 128, "#1F4E79") {
-		t.Fatal("not deterministic")
-	}
-	if a == theme.Guilloche("AB12CD34", 186, 128, "#1F4E79") {
-		t.Fatal("two codes, one pattern")
-	}
-	if !strings.HasPrefix(a, "<svg ") || !strings.HasSuffix(a, "</svg>") || strings.Count(a, "<path ") != 4 {
-		t.Fatalf("shape: %.120s", a)
-	}
-	// Small enough for a PDF of a few hundred kilobytes.
-	if len(a) > 100000 {
-		t.Fatalf("%d bytes", len(a))
-	}
-}
-
 func TestLookupFallsBackToKurumsal(t *testing.T) {
 	t.Parallel()
 	for _, key := range []string{"", "kurumsal", "bilinmeyen", "ARTLAB"} {

@@ -8,8 +8,11 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/jpeg"
 	"image/png"
 	"net"
+	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -37,14 +40,19 @@ func (s *countingStore) GetByAccessKey(ctx context.Context, key string) (ticket.
 	return s.MemoryStore.GetByAccessKey(ctx, key)
 }
 
-// fakeRenderer keeps the HTML it was given and answers a small PDF.
+// dataURL matches an inline file (a font, an image), whose base64 is not
+// text of the ticket.
+var dataURL = regexp.MustCompile(`data:[a-z/+0-9-]+;base64,[A-Za-z0-9+/=]+`)
+
+// fakeRenderer keeps the HTML and the page head it was given and answers a
+// small PDF.
 type fakeRenderer struct {
-	html string
-	err  error
+	html, header string
+	err          error
 }
 
-func (f *fakeRenderer) TaggedPDF(_ context.Context, html string) ([]byte, error) {
-	f.html = html
+func (f *fakeRenderer) TaggedPDF(_ context.Context, html, header string) ([]byte, error) {
+	f.html, f.header = html, header
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -139,7 +147,8 @@ func TestPageAnswersOnlyWhatThePageShows(t *testing.T) {
 	if view.HolderName != "Elif Yılmaz" || view.Code != g.Code || view.State != ticketpage.StateActive ||
 		view.QRURL != "https://api.example.test/v1/public/tickets/"+g.AccessKey+"/qr.png" ||
 		view.PDFURL != "https://api.example.test/v1/public/tickets/"+g.AccessKey+"/pdf" ||
-		view.Theme.Key != "kurumsal" || view.EventStatus != "published" {
+		view.Theme.Key != "kurumsal" || view.Theme.Accent != "#7C3AED" || view.EventStatus != "published" ||
+		view.DirectionsURL != "" || view.MapsURL != "" {
 		t.Fatalf("view %+v", view)
 	}
 	claims, err := f.signer.Verify(view.QRToken)
@@ -335,9 +344,11 @@ func TestQRPNGIsTheToken(t *testing.T) {
 	}
 }
 
-// The PDF's HTML: Turkish, the holder's name, the code as text, the QR with
-// its alternative text, no e-mail or phone; the file is named after the
-// Event, not the person.
+// The PDF's HTML (v5): Turkish, the holder's name, the code as text, the QR
+// with its alternative text, the place with its directions QR, the
+// footnote; no e-mail or phone, no sentence telling the holder what to do,
+// nothing fetched from outside the page. Every page's head names the club,
+// the code and the page. The file is named after the Event, not the person.
 func TestPDF(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -350,15 +361,25 @@ func TestPDF(t *testing.T) {
 		t.Fatalf("%q %q", name, pdf)
 	}
 	html := f.render.html
-	for _, want := range []string{`<html lang="tr">`, "<title>Yapay Zeka Kampı bileti</title>", "Elif Yılmaz", g.Code, `alt="Bilet QR kodu"`,
-		"Kapıda QR", "Okunmazsa bilet kodunu söyle.", "12 Aralık 2026, Cumartesi", "10:00 – 18:00", "YTÜ Davutpaşa", "AILAB", "KOÇAN"} {
+	for _, want := range []string{`<html lang="tr">`, "<title>Etkinlik Giriş Bileti " + g.Code + "</title>", "ETKİNLİK GİRİŞ BİLETİ",
+		"Elif Yılmaz", g.Code, `alt="Bilet QR kodu"`, "12 Ara 2026 Cmt", "10:00 – 18:00", "YTÜ Davutpaşa", "AILAB",
+		"Etkinlik yeri", "Bu bilet kişiye özeldir. Düzenlenme:",
+		"Kulübün kanallarında paylaşılabilir", "skyl.app/kvkk-metni", "@font-face{font-family:'Manrope'", "@page{size:A4;margin:25mm 14mm 14mm}"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("HTML has no %q", want)
 		}
 	}
-	for _, personal := range []string{"elif@example.com", "5551112233", "GUEST", "güvenlik özelliği"} {
-		if strings.Contains(html, personal) {
-			t.Errorf("HTML has %q", personal)
+	text := dataURL.ReplaceAllString(html, "data:…")
+	for _, unwanted := range []string{"elif@example.com", "5551112233", "GUEST", "güvenlik özelliği",
+		"Kapıda", "göster", "Okunmazsa", "söyle", "okut", "dokun", "KOÇAN",
+		`src="http`, "url(http", "fonts.googleapis", "<script", g.AccessKey, "/bilet/", "Yol tarifi"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("HTML has %q", unwanted)
+		}
+	}
+	for _, want := range []string{"SKY LAB: Bilgisayar Bilimleri Kulübü", "Bilet kodu", g.Code, `class="pageNumber"`, `class="totalPages"`} {
+		if !strings.Contains(f.render.header, want) {
+			t.Errorf("page head has no %q", want)
 		}
 	}
 
@@ -392,19 +413,120 @@ func TestFileNameAndDates(t *testing.T) {
 		return &v
 	}
 	for _, tc := range []struct {
-		start, end *time.Time
-		date, time string
+		start, end                             *time.Time
+		firstLabel, first, secondLabel, second string
 	}{
-		{nil, nil, "Tarih duyurulacak", "—"},
-		{day(12, 12, 7), nil, "12 Aralık 2026, Cumartesi", "10:00"},
-		{day(12, 12, 7), day(12, 14, 15), "12–14 Aralık 2026", "10:00 – 18:00"},
-		{day(11, 30, 7), day(12, 2, 15), "30 Kasım – 2 Aralık 2026", "10:00 – 18:00"},
+		{nil, nil, "Tarih", "Duyurulacak", "Saat", "—"},
+		{day(12, 12, 7), nil, "Tarih", "12 Ara 2026 Cmt", "Saat", "10:00"},
+		{day(12, 12, 7), day(12, 12, 15), "Tarih", "12 Ara 2026 Cmt", "Saat", "10:00 – 18:00"},
+		{day(12, 12, 6), day(12, 14, 14), "Başlangıç", "12 Ara 2026 Cmt, 09:00", "Bitiş", "14 Ara 2026 Pzt, 17:00"},
+		{day(11, 30, 7), day(12, 2, 15), "Başlangıç", "30 Kas 2026 Pzt, 10:00", "Bitiş", "2 Ara 2026 Çar, 18:00"},
 	} {
-		if got := ticketpage.DateLine(tc.start, tc.end); got != tc.date {
-			t.Errorf("DateLine = %q, want %q", got, tc.date)
+		firstLabel, first, secondLabel, second := ticketpage.When(tc.start, tc.end)
+		if firstLabel != tc.firstLabel || first != tc.first || secondLabel != tc.secondLabel || second != tc.second {
+			t.Errorf("When = %q %q %q %q", firstLabel, first, secondLabel, second)
 		}
-		if got := ticketpage.TimeLine(tc.start, tc.end); got != tc.time {
-			t.Errorf("TimeLine = %q, want %q", got, tc.time)
+	}
+	if got := ticketpage.SessionTime(day(12, 12, 6), day(12, 12, 7)); got != "09:00–10:00" {
+		t.Errorf("SessionTime = %q", got)
+	}
+	if got := ticketpage.SessionTime(day(12, 12, 6), nil); got != "09:00" {
+		t.Errorf("SessionTime without an end = %q", got)
+	}
+	if got := ticketpage.SessionTime(nil, nil); got != "" {
+		t.Errorf("SessionTime without a start = %q", got)
+	}
+	if got := ticketpage.DayLine(*day(12, 13, 9)); got != "13 Aralık Pazar" {
+		t.Errorf("DayLine = %q", got)
+	}
+}
+
+// fakeImages answers one cover's page size.
+type fakeImages struct {
+	id    uuid.UUID
+	data  []byte
+	asked []string
+}
+
+func (f *fakeImages) Image(_ context.Context, id uuid.UUID, size string) ([]byte, string, bool) {
+	f.asked = append(f.asked, size)
+	if id != f.id {
+		return nil, "", false
+	}
+	return f.data, "image/jpeg", true
+}
+
+// The PDF reads the programme from the Event's current days and Sessions,
+// in time order, without the cancelled ones; its band is cut from the
+// cover's page size; the place has its address and directions to its point.
+func TestPDFReadsTheEvent(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := t.Context()
+	lat, lng := 41.025376, 28.889648
+	cover := uuid.New()
+	ev := f.ev
+	ev.LocationLat, ev.LocationLng, ev.LocationAddress = &lat, &lng, "Davutpaşa Cd. No:127"
+	ev.CoverImageID, ev.Description = &cover, "Uygulamalı bir kamp."
+	if _, err := f.events.Update(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	at := func(h, m int) *time.Time {
+		v := time.Date(2026, 12, 12, h, m, 0, 0, time.UTC)
+		return &v
+	}
+	day, err := f.events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Cumartesi", StartDate: at(6, 30)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []event.Session{
+		{EventDayID: day.ID, Title: "Kapanış", StartTime: at(14, 0), EndTime: at(15, 0)},
+		{EventDayID: day.ID, Title: "Açılış", SpeakerName: "Ada", StartTime: at(6, 30), EndTime: at(7, 0)},
+		{EventDayID: day.ID, Title: "İptal edilen", StartTime: at(9, 0), Cancelled: true},
+	} {
+		if _, err := f.events.CreateSession(ctx, s); err != nil {
+			t.Fatal(err)
 		}
+	}
+	photo := image.NewRGBA(image.Rect(0, 0, 1200, 800))
+	var src bytes.Buffer
+	if err := jpeg.Encode(&src, photo, nil); err != nil {
+		t.Fatal(err)
+	}
+	images := &fakeImages{id: cover, data: src.Bytes()}
+	svc := ticketpage.New(f.store, f.events, f.users, f.signer, f.render, images, ticketpage.Config{
+		Page: ticket.PageConfig{Grace: ticket.DefaultPageGrace, URL: "https://yildizskylab.com/bilet/{key}"},
+	})
+	svc.Now = func() time.Time { return f.now }
+	g := f.guest("elif@example.com")
+	if _, _, err := svc.PDF(ctx, g.AccessKey); err != nil {
+		t.Fatal(err)
+	}
+	html := f.render.html
+	open, closing := strings.Index(html, ">Açılış<"), strings.Index(html, ">Kapanış<")
+	if open < 0 || closing < open || strings.Contains(html, "İptal edilen") {
+		t.Errorf("programme order %d %d, or a cancelled Session drawn", open, closing)
+	}
+	for _, want := range []string{"09:30–10:00", `<td class="kisi">Ada</td>`, "Davutpaşa Cd. No:127", "Uygulamalı bir kamp.",
+		"background-image:url(", `alt="Yol tarifi QR kodu"`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("HTML has no %q", want)
+		}
+	}
+	if strings.Contains(html, g.AccessKey) {
+		t.Error("the PDF carries the ticket page's key")
+	}
+	if len(images.asked) != 1 || images.asked[0] != "page" {
+		t.Errorf("asked %v", images.asked)
+	}
+	view, err := svc.Page(ctx, g.AccessKey)
+	if err != nil || view.VenueAddress != "Davutpaşa Cd. No:127" || view.VenueLat == nil || *view.VenueLat != lat ||
+		view.DirectionsURL != "https://www.google.com/maps/dir/?api=1&destination=41.025376%2C28.889648" ||
+		view.MapsURL != "https://www.google.com/maps/search/?api=1&query=41.025376%2C28.889648" {
+		t.Fatalf("view %+v %v", view, err)
+	}
+	// A second PDF uses the band it cut.
+	if _, _, err := svc.PDF(ctx, g.AccessKey); err != nil || len(images.asked) != 1 {
+		t.Fatalf("second PDF asked %v %v", images.asked, err)
 	}
 }

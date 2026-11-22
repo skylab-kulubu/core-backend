@@ -142,21 +142,40 @@ func TestGotenbergRejectsMultiPagePDFBackground(t *testing.T) {
 func TestGotenbergTaggedPDF(t *testing.T) {
 	t.Parallel()
 	tagged := map[string]string{}
+	headers := map[string]string{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatal(err)
 		}
-		file, _, err := r.FormFile("files")
-		if err != nil {
-			t.Fatal(err)
+		files := r.MultipartForm.File["files"]
+		if len(files) == 0 || files[0].Filename != "index.html" {
+			t.Fatalf("files %v", files)
 		}
-		body, _ := io.ReadAll(file)
-		tagged[string(body)] = r.FormValue("generateTaggedPdf")
+		read := func(i int) string {
+			f, err := files[i].Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			body, _ := io.ReadAll(f)
+			return string(body)
+		}
+		body := read(0)
+		tagged[body] = r.FormValue("generateTaggedPdf")
+		for i, f := range files[1:] {
+			if f.Filename != "header.html" {
+				t.Fatalf("file %q", f.Filename)
+			}
+			headers[body] = read(i + 1)
+		}
 		_, _ = w.Write([]byte("%PDF-1.7 t"))
 	}))
 	t.Cleanup(srv.Close)
 	g := &Gotenberg{BaseURL: srv.URL, HTTP: srv.Client()}
-	if _, err := g.TaggedPDF(t.Context(), "<html>bilet</html>"); err != nil {
+	if _, err := g.TaggedPDF(t.Context(), "<html>bilet</html>", "<html>Sayfa <span class=\"pageNumber\"></span></html>"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.TaggedPDF(t.Context(), "<html>başlıksız</html>", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := g.PDF(t.Context(), "<html>sertifika</html>"); err != nil {
@@ -164,5 +183,9 @@ func TestGotenbergTaggedPDF(t *testing.T) {
 	}
 	if tagged["<html>bilet</html>"] != "true" || tagged["<html>sertifika</html>"] != "" {
 		t.Fatalf("generateTaggedPdf %v", tagged)
+	}
+	// The ticket's page head goes as header.html; the others send none.
+	if len(headers) != 1 || headers["<html>bilet</html>"] != "<html>Sayfa <span class=\"pageNumber\"></span></html>" {
+		t.Fatalf("headers %v", headers)
 	}
 }

@@ -5,11 +5,16 @@
 package ticketpage
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/media"
 
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
@@ -41,16 +46,10 @@ const (
 // QRSize is the QR PNG's side in pixels.
 const QRSize = 512
 
-// Renderer turns the ticket's HTML into a tagged PDF (core's Gotenberg).
+// Renderer turns the ticket's HTML into a tagged PDF, header drawn at the
+// top of every page (core's Gotenberg).
 type Renderer interface {
-	TaggedPDF(ctx context.Context, html string) ([]byte, error)
-}
-
-// TeamLogos reads an organizing team's logo for the seal: an image and its
-// type, or ok false when the team has none (the seal is then the club's
-// alone).
-type TeamLogos interface {
-	TeamLogo(ctx context.Context, team string) (data []byte, contentType string, ok bool)
+	TaggedPDF(ctx context.Context, html, header string) ([]byte, error)
 }
 
 // Config is what the routes need besides the stores.
@@ -72,16 +71,17 @@ type Service struct {
 	users   user.Store
 	qrs     ticket.TicketQRs
 	render  Renderer
-	logos   TeamLogos
+	images  Images
+	bands   bands
 	cfg     Config
 	slots   chan struct{}
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 }
 
-// New builds the service. render and logos may be nil: no PDF, and a seal
-// without the team's logo.
-func New(tickets ticket.Store, events event.Store, users user.Store, qrs ticket.TicketQRs, render Renderer, logos TeamLogos, cfg Config) *Service {
+// New builds the service. render and images may be nil: no PDF, and a PDF
+// without the cover's picture (its band is then the cover's colour).
+func New(tickets ticket.Store, events event.Store, users user.Store, qrs ticket.TicketQRs, render Renderer, images Images, cfg Config) *Service {
 	if cfg.RenderSlots < 1 {
 		cfg.RenderSlots = 2
 	}
@@ -89,7 +89,7 @@ func New(tickets ticket.Store, events event.Store, users user.Store, qrs ticket.
 		cfg.RenderWait = 20 * time.Second
 	}
 	return &Service{
-		tickets: tickets, events: events, users: users, qrs: qrs, render: render, logos: logos,
+		tickets: tickets, events: events, users: users, qrs: qrs, render: render, images: images,
 		cfg: cfg, slots: make(chan struct{}, cfg.RenderSlots),
 	}
 }
@@ -102,7 +102,7 @@ func (s *Service) now() time.Time {
 }
 
 // Theme is the look the JSON tells the site (ticket 16 adds the Event's
-// choice and the team's logo).
+// choice).
 type Theme struct {
 	Key    string `json:"key"`
 	Accent string `json:"accent"`
@@ -110,19 +110,27 @@ type Theme struct {
 
 // View is the JSON the ticket page reads.
 type View struct {
-	EventName   string     `json:"eventName"`
-	EventStart  *time.Time `json:"eventStart"`
-	EventEnd    *time.Time `json:"eventEnd"`
-	Venue       string     `json:"venue"`
-	OwnerTeam   string     `json:"ownerTeam"`
-	EventStatus string     `json:"eventStatus"`
-	HolderName  string     `json:"holderName"`
-	Code        string     `json:"code"`
-	QRToken     string     `json:"qrToken"`
-	QRURL       string     `json:"qrUrl"`
-	PDFURL      string     `json:"pdfUrl"`
-	State       string     `json:"state"`
-	Theme       Theme      `json:"theme"`
+	EventName  string     `json:"eventName"`
+	EventStart *time.Time `json:"eventStart"`
+	EventEnd   *time.Time `json:"eventEnd"`
+	Venue      string     `json:"venue"`
+	// VenueAddress and the point are the place's (docs/event-location.md),
+	// left out while it has none; DirectionsURL and MapsURL are its links
+	// for "Yol tarifi" and "Haritada aç".
+	VenueAddress  string   `json:"venueAddress,omitempty"`
+	VenueLat      *float64 `json:"venueLat,omitempty"`
+	VenueLng      *float64 `json:"venueLng,omitempty"`
+	DirectionsURL string   `json:"directionsUrl,omitempty"`
+	MapsURL       string   `json:"mapsUrl,omitempty"`
+	OwnerTeam     string   `json:"ownerTeam"`
+	EventStatus   string   `json:"eventStatus"`
+	HolderName    string   `json:"holderName"`
+	Code          string   `json:"code"`
+	QRToken       string   `json:"qrToken"`
+	QRURL         string   `json:"qrUrl"`
+	PDFURL        string   `json:"pdfUrl"`
+	State         string   `json:"state"`
+	Theme         Theme    `json:"theme"`
 }
 
 // opened is a Ticket the key opened, with its Event and holder.
@@ -210,9 +218,13 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		return View{}, err
 	}
 	th := theme.Lookup("")
+	ev := o.event
 	v := View{
-		EventName: o.event.Name, EventStart: o.event.StartDate, EventEnd: o.event.EndDate,
-		Venue: o.event.Location, OwnerTeam: o.event.OwnerTeam, EventStatus: string(o.event.Status),
+		EventName: ev.Name, EventStart: ev.StartDate, EventEnd: ev.EndDate,
+		Venue: ev.Location, VenueAddress: ev.LocationAddress, VenueLat: ev.LocationLat, VenueLng: ev.LocationLng,
+		DirectionsURL: DirectionsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
+		MapsURL:       MapsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
+		OwnerTeam:     ev.OwnerTeam, EventStatus: string(ev.Status),
 		HolderName: o.holder, Code: o.ticket.Code, State: o.state,
 		Theme: Theme{Key: th.Key, Accent: th.Accent},
 	}
@@ -252,8 +264,8 @@ func (s *Service) QRPNG(ctx context.Context, key string) ([]byte, error) {
 	return qr.PNG(token, QRSize)
 }
 
-// PDF is the ticket as a one-page PDF and its file name, drawn now and never
-// kept.
+// PDF is the ticket as a PDF (one A4 page, more for a long programme or
+// description) and its file name, drawn now and never kept.
 func (s *Service) PDF(ctx context.Context, key string) (string, []byte, error) {
 	o, err := s.open(ctx, key)
 	if err != nil {
@@ -273,7 +285,7 @@ func (s *Service) PDF(ctx context.Context, key string) (string, []byte, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	html, err := RenderHTML(doc)
+	html, header, err := RenderHTML(doc)
 	if err != nil {
 		return "", nil, err
 	}
@@ -285,7 +297,7 @@ func (s *Service) PDF(ctx context.Context, key string) (string, []byte, error) {
 		return "", nil, ErrUnavailable
 	}
 	defer func() { <-s.slots }()
-	pdf, err := s.render.TaggedPDF(ctx, html)
+	pdf, err := s.render.TaggedPDF(ctx, html, header)
 	if err != nil {
 		// Gotenberg unreachable, timed out or failing: try again later
 		// (503), the cause for the log.
@@ -295,17 +307,100 @@ func (s *Service) PDF(ctx context.Context, key string) (string, []byte, error) {
 }
 
 func (s *Service) document(ctx context.Context, o opened, token string) (Document, error) {
+	ev := o.event
+	th := theme.Lookup("")
 	doc := Document{
-		EventName: o.event.Name, Start: o.event.StartDate, End: o.event.EndDate,
-		Venue: o.event.Location, OwnerTeam: o.event.OwnerTeam, HolderName: o.holder,
-		Code: o.ticket.Code, QRToken: token, Theme: theme.Lookup(""), IssuedAt: s.now(),
+		EventName: ev.Name, Start: ev.StartDate, End: ev.EndDate,
+		Venue: ev.Location, VenueAddress: ev.LocationAddress,
+		DirectionsURL: DirectionsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
+		OwnerTeam:     ev.OwnerTeam, HolderName: o.holder, Code: o.ticket.Code, QRToken: token,
+		Description: ev.Description, Theme: th, IssuedAt: s.now(),
 	}
-	if s.logos != nil && o.event.OwnerTeam != "" {
-		if data, contentType, ok := s.logos.TeamLogo(ctx, o.event.OwnerTeam); ok {
-			doc.TeamLogo, doc.TeamLogoType = data, contentType
-		}
+	program, err := s.program(ctx, ev)
+	if err != nil {
+		return Document{}, err
+	}
+	doc.Days = program
+	if len(ev.CoverColors) > 0 {
+		doc.BandColor = ev.CoverColors[0]
+	}
+	if ev.CoverImageID != nil {
+		doc.BandJPEG = s.band(ctx, *ev.CoverImageID)
 	}
 	return doc, nil
+}
+
+// program is the Event's current days and their current Sessions, in time
+// order: a cancelled Session is left out, and so is a day left without any.
+// A day without a date takes its first Session's.
+func (s *Service) program(ctx context.Context, ev event.Event) ([]ProgramDay, error) {
+	eventDays, err := s.events.ListDays(ctx, ev.ID)
+	if err != nil {
+		return nil, err
+	}
+	slices.SortStableFunc(eventDays, func(a, b event.Day) int {
+		return cmp.Or(compareTimes(a.StartDate, b.StartDate), strings.Compare(a.Name, b.Name), strings.Compare(a.ID.String(), b.ID.String()))
+	})
+	out := make([]ProgramDay, 0, len(eventDays))
+	for _, day := range eventDays {
+		sessions, err := s.events.ListSessions(ctx, day.ID)
+		if err != nil {
+			return nil, err
+		}
+		slices.SortStableFunc(sessions, func(a, b event.Session) int {
+			return cmp.Or(compareTimes(a.StartTime, b.StartTime), cmp.Compare(a.OrderIndex, b.OrderIndex), strings.Compare(a.Title, b.Title))
+		})
+		pd := ProgramDay{Date: day.StartDate}
+		for _, sess := range sessions {
+			if sess.Cancelled {
+				continue
+			}
+			if pd.Date == nil {
+				pd.Date = sess.StartTime
+			}
+			pd.Sessions = append(pd.Sessions, ProgramSession{Start: sess.StartTime, End: sess.EndTime, Title: sess.Title, Speaker: sess.SpeakerName})
+		}
+		if len(pd.Sessions) > 0 {
+			out = append(out, pd)
+		}
+	}
+	return out, nil
+}
+
+// compareTimes orders by time, a missing one last.
+func compareTimes(a, b *time.Time) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return 1
+	case b == nil:
+		return -1
+	default:
+		return a.Compare(*b)
+	}
+}
+
+// band is the cover's band, cut from its page size and kept a while; nil
+// when the cover cannot be read (the band is then its colour).
+func (s *Service) band(ctx context.Context, cover uuid.UUID) []byte {
+	if s.images == nil {
+		return nil
+	}
+	now := s.now()
+	if data, ok := s.bands.get(cover, now); ok {
+		return data
+	}
+	data, _, ok := s.images.Image(ctx, cover, media.SizePage)
+	if !ok {
+		return nil
+	}
+	cut, ok := CoverBand(data)
+	if !ok {
+		return nil
+	}
+	s.bands.put(cover, cut, now)
+	return cut
 }
 
 // LogKey is how a log line names an access key: its first four characters

@@ -1,13 +1,12 @@
 // Package theme is the ticket's look: the PDF core draws and the ticket page
 // the club site shows (ADR 0082; docs/ticket-page.md).
 //
-// A theme is a set of colours, typefaces and ornaments on a fixed layout:
-// the QR keeps its place and size in every theme, so the door reads it the
-// same way. Today there is one, Kurumsal, an official document's look:
-// a guilloche ground drawn from the Ticket's code, the code as the serial
-// number, microtext, a seal of the SKY LAB mark and the organizing team's
-// logo, and a stub. They are ornament: what proves a Ticket is the
-// signature in its QR.
+// A theme is a set of colours and typefaces on a fixed layout: the QR keeps
+// its place and size in every theme, so the door reads it the same way.
+// Today there is one, Kurumsal: the plain document of the PDF ticket v5
+// (Yusuf, 2026-11-22), black text on white, the club's purple for its rules,
+// set in Manrope, the club site's typeface. What proves a Ticket is the
+// signature in its QR, not the look.
 //
 // More themes join the catalogue by key, the same key words as the forms
 // service's brand (lower-case letters, digits and hyphens, at most 32); an
@@ -28,34 +27,33 @@ const Default = "kurumsal"
 type Theme struct {
 	Key  string `json:"key"`
 	Name string `json:"name"`
-	// Accent draws the guilloche, the serial number and the rules.
+	// Accent is the club's colour: the page head's rule and the cover band
+	// of an Event without a cover.
 	Accent string `json:"accent"`
-	// Ink is the text, Muted the labels, Paper the ground, Tint the card's
-	// ground under the guilloche, Seal the stamp.
+	// Ink is the text, Muted the labels, Paper the ground, Rule the lines
+	// between a programme's rows.
 	Ink   string `json:"-"`
 	Muted string `json:"-"`
 	Paper string `json:"-"`
-	Tint  string `json:"-"`
-	Seal  string `json:"-"`
-	// Serif, Sans and Mono are CSS font stacks: the fonts of core's PDF
-	// renderer (Gotenberg's Chromium: Noto, Liberation, DejaVu) first.
-	Serif string `json:"-"`
-	Sans  string `json:"-"`
-	Mono  string `json:"-"`
+	Rule  string `json:"-"`
+	// Sans is the CSS font stack of the ticket: Manrope, which the PDF
+	// embeds, then the fonts of core's PDF renderer (Gotenberg's Chromium).
+	// HeadSans is the page head's: a header is drawn as a document of its
+	// own, which sees no embedded font.
+	Sans     string `json:"-"`
+	HeadSans string `json:"-"`
 }
 
 var kurumsal = Theme{
-	Key:    Default,
-	Name:   "Kurumsal",
-	Accent: "#1F4E79",
-	Ink:    "#14213D",
-	Muted:  "#56627A",
-	Paper:  "#FFFFFF",
-	Tint:   "#F4F7FA",
-	Seal:   "#8E1B2C",
-	Serif:  `'Noto Serif','Liberation Serif',Georgia,'Times New Roman',serif`,
-	Sans:   `'Noto Sans','Liberation Sans','Helvetica Neue',Helvetica,Arial,sans-serif`,
-	Mono:   `'DejaVu Sans Mono','Liberation Mono',Menlo,Consolas,monospace`,
+	Key:      Default,
+	Name:     "Kurumsal",
+	Accent:   "#7C3AED",
+	Ink:      "#000000",
+	Muted:    "#555555",
+	Paper:    "#FFFFFF",
+	Rule:     "#BDBDBD",
+	Sans:     `'Manrope','Noto Sans','Liberation Sans',Arial,sans-serif`,
+	HeadSans: `'Noto Sans','Liberation Sans','Helvetica Neue',Arial,sans-serif`,
 }
 
 var catalog = map[string]Theme{Default: kurumsal}

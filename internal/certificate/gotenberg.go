@@ -22,14 +22,18 @@ type Gotenberg struct {
 }
 
 func (g *Gotenberg) PDF(ctx context.Context, html string) ([]byte, error) {
-	return g.convertHTML(ctx, html, nil)
+	return g.convertHTML(ctx, html, nil, "")
 }
 
 // TaggedPDF is PDF with a tagged (accessible) PDF: the structure a screen
 // reader follows, an image's alt text as its alternative (Gotenberg's
 // generateTaggedPdf). The ticket PDF asks for it (docs/ticket-page.md).
-func (g *Gotenberg) TaggedPDF(ctx context.Context, html string) ([]byte, error) {
-	return g.convertHTML(ctx, html, nil, "generateTaggedPdf")
+// header, when not empty, is a page of its own that Chromium draws in the
+// top margin of every page (Gotenberg's header.html), where the classes
+// pageNumber and totalPages are filled in; the document's @page margin makes
+// its room.
+func (g *Gotenberg) TaggedPDF(ctx context.Context, html, header string) ([]byte, error) {
+	return g.convertHTML(ctx, html, nil, header, "generateTaggedPdf")
 }
 
 func (g *Gotenberg) PDFWithBackground(ctx context.Context, html string, background []byte) ([]byte, error) {
@@ -43,10 +47,10 @@ func (g *Gotenberg) PDFWithBackground(ctx context.Context, html string, backgrou
 		}
 		g.validatedPDF.Store(hash, struct{}{})
 	}
-	return g.convertHTML(ctx, html, background)
+	return g.convertHTML(ctx, html, background, "")
 }
 
-func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []byte, flags ...string) ([]byte, error) {
+func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []byte, header string, flags ...string) ([]byte, error) {
 	if g == nil || strings.TrimSpace(g.BaseURL) == "" {
 		return nil, ErrInvalid
 	}
@@ -58,6 +62,15 @@ func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []b
 	}
 	if _, err := io.WriteString(part, html); err != nil {
 		return nil, err
+	}
+	if header != "" {
+		headerPart, err := w.CreateFormFile("files", "header.html")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := io.WriteString(headerPart, header); err != nil {
+			return nil, err
+		}
 	}
 	for key, value := range map[string]string{
 		"printBackground":   "true",

@@ -1004,7 +1004,7 @@ func main() {
 		ticketPDF = g
 	}
 	ticketPage := ticketpage.New(tickets, events, users, ticketQR, ticketPDF,
-		&ticketpage.MediaTeamLogos{Groups: dir, Media: mediaStore, Blobs: blobs},
+		&ticketpage.MediaImages{Media: mediaStore, Blobs: blobs},
 		ticketpage.Config{Page: ticketPageConfig, APIOrigin: os.Getenv("PUBLIC_API_ORIGIN")})
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
