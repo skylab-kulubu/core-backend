@@ -249,6 +249,10 @@ type Deps struct {
 	// /v1/metrics. Nil leaves them out.
 	MemoryMetrics interface{ Prometheus() string }
 
+	// EventMapMetrics are the Event map worker's counters
+	// (docs/event-map.md), served on /v1/metrics. Nil leaves them out.
+	EventMapMetrics interface{ Prometheus() string }
+
 	// Readiness is GET /v1/ready's database and shutdown check, asked
 	// before the account access gate (internal/health). Nil leaves the
 	// gate's check alone. /v1/health (liveness) asks nothing.
@@ -330,7 +334,8 @@ func New(deps Deps) *fiber.App {
 		deps.GuestCheckInMetrics != nil || deps.MediaCDNPurgeMetrics != nil || deps.AuthzRoleMetrics != nil || deps.RetentionMetrics != nil ||
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
 		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil ||
-		deps.EventsMetrics != nil || deps.ManagementTerms != nil || deps.AppPreferences.Enabled() || deps.DoorScanMetrics != nil {
+		deps.EventsMetrics != nil || deps.ManagementTerms != nil || deps.AppPreferences.Enabled() || deps.DoorScanMetrics != nil ||
+		deps.EventMapMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -361,6 +366,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.MemoryMetrics != nil {
 				text += deps.MemoryMetrics.Prometheus()
+			}
+			if deps.EventMapMetrics != nil {
+				text += deps.EventMapMetrics.Prometheus()
 			}
 			if deps.TeamMailMetrics != nil {
 				text += deps.TeamMailMetrics.Prometheus()

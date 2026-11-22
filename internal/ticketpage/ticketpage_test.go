@@ -530,3 +530,42 @@ func TestPDFReadsTheEvent(t *testing.T) {
 		t.Fatalf("second PDF asked %v %v", images.asked, err)
 	}
 }
+
+// The place's map: the PDF embeds it with its credit, and the JSON gives
+// its address and the credit; without one neither has a map.
+func TestMapInPDFAndPage(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := t.Context()
+	mapID := uuid.New()
+	ev := f.ev
+	ev.MapImageID, ev.MapImageURL = &mapID, "images/harita.jpg"
+	if _, err := f.events.Update(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	picture := []byte{0xff, 0xd8, 0xff, 0xe0, 'h', 'a', 'r', 'i', 't', 'a'}
+	images := &fakeImages{id: mapID, data: picture}
+	svc := ticketpage.New(f.store, f.events, f.users, f.signer, f.render, images, ticketpage.Config{Page: ticket.PageConfig{Grace: ticket.DefaultPageGrace}})
+	svc.Now = func() time.Time { return f.now }
+	g := f.guest("elif@example.com")
+	if _, _, err := svc.PDF(ctx, g.AccessKey); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.render.html, `<img class="harita" src="data:image/jpeg;base64,`) || !strings.Contains(f.render.html, `<p class="atif">© OpenStreetMap contributors · openstreetmap.org/copyright</p>`) {
+		t.Error("the PDF has no map, or no credit")
+	}
+	if len(images.asked) != 1 || images.asked[0] != "" {
+		t.Errorf("asked %v", images.asked)
+	}
+	view, err := svc.Page(ctx, g.AccessKey)
+	if err != nil || !strings.HasSuffix(view.MapImageURL, "/images/harita.jpg") || view.MapAttribution != "© OpenStreetMap contributors" || view.MapAttributionURL != "https://www.openstreetmap.org/copyright" {
+		t.Fatalf("view %q %q %v", view.MapImageURL, view.MapAttribution, err)
+	}
+	ev.MapImageID, ev.MapImageURL = nil, ""
+	if _, err := f.events.Update(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	if view, err := svc.Page(ctx, g.AccessKey); err != nil || view.MapImageURL != "" || view.MapAttribution != "" || view.MapAttributionURL != "" {
+		t.Fatalf("without a map %+v %v", view, err)
+	}
+}

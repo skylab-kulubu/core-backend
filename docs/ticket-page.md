@@ -31,6 +31,9 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
   "venueLng": 28.889648,
   "directionsUrl": "https://www.google.com/maps/dir/?api=1&destination=41.025376%2C28.889648",
   "mapsUrl": "https://www.google.com/maps/search/?api=1&query=41.025376%2C28.889648",
+  "mapImageUrl": "https://cdn.yildizskylab.com/images/….jpg",
+  "mapAttribution": "© OpenStreetMap contributors",
+  "mapAttributionUrl": "https://www.openstreetmap.org/copyright",
   "ownerTeam": "AILAB",
   "eventStatus": "published",
   "holderName": "Elif Yılmaz",
@@ -51,6 +54,9 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
   Google Maps links to the point, else to the name and address: links, no
   key, nothing embedded. A place with neither a point nor an address
   ("Online") has neither link.
+- `mapImageUrl` is the map of the point core drew ([event-map.md](event-map.md)),
+  1280 × 480; `mapAttribution` the line the site prints under it, linked to
+  `mapAttributionUrl`. Both are left out while there is no map.
 - `holderName`: the guest's name, or the member's from core's row.
 - `qrToken` is the Ticket QR ([ticket-qr.md](ticket-qr.md)), signed with
   the Event's dates now; the site draws it, or shows `qrUrl`.
@@ -123,7 +129,9 @@ tarifi QR kodu"), the code real text.
   4. "Etkinlik hakkında": the description, as written (line breaks kept);
   5. "Etkinlik yeri", **always last** and never split (it moves to the next
      page when it does not fit): the name, the address, the map when there
-     is one with its data's credit under it, and the directions QR ("Yol
+     is one ([event-map.md](event-map.md); its JPEG embedded as it is
+     stored, about 80 KB) with "© OpenStreetMap contributors ·
+     openstreetmap.org/copyright" under it, and the directions QR ("Yol
      tarifi", `directionsUrl`, only with a point or an address);
   6. the footnote, two plain lines: "Bu bilet kişiye özeldir. Düzenlenme:
      <time>" and "Etkinlikte fotoğraf ve video çekilir, Kulübün

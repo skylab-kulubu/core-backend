@@ -47,6 +47,12 @@ a client that sends neither field keeps the point and the address.
 - The ticket's directions link is a Google Maps search for the point, or
   for the name while there is no point (bilet PDF v5).
 
+## The map
+
+A point gets a map, drawn once by core from the club's own OpenStreetMap
+tiles ([event-map.md](event-map.md)): `mapImageUrl`, `mapAttribution` and
+`mapAttributionUrl` in the Event's answers once it is drawn.
+
 ## Places used before
 
 `GET /v1/events/places?ownerTeam=WEBLAB&limit=20` lists the places Events
