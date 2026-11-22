@@ -21,7 +21,7 @@ func eventUpdatedNotificationOn(getenv func(string) string) (bool, error) {
 // cancelled, and answers a channel that closes once it has stopped. Off, or
 // without SkyMail, a change queues nothing: turning it on later does not
 // tell the changes made meanwhile.
-func startEventUpdatedNotification(ctx context.Context, on bool, events *event.PostgresStore, queue eventupdatenotify.Queue, tickets ticket.Store, users user.Store, sky *mail.SkyMail, logf func(string, ...any)) <-chan struct{} {
+func startEventUpdatedNotification(ctx context.Context, on bool, events *event.PostgresStore, queue eventupdatenotify.Queue, tickets ticket.Store, users user.Store, sky *mail.SkyMail, page ticket.PageConfig, logf func(string, ...any)) <-chan struct{} {
 	off := make(chan struct{})
 	close(off)
 	events.NotifyUpdated(false)
@@ -33,7 +33,7 @@ func startEventUpdatedNotification(ctx context.Context, on bool, events *event.P
 		logf("event updated notification: off (SkyMail is not configured)")
 		return off
 	}
-	svc, err := eventupdatenotify.NewService(eventupdatenotify.Config{Queue: queue, Tickets: tickets, Events: events, Users: users, Mail: sky})
+	svc, err := eventupdatenotify.NewService(eventupdatenotify.Config{Queue: queue, Tickets: tickets, Events: events, Users: users, Mail: sky, Page: page})
 	if err != nil {
 		logf("event updated notification: OFF, %v", err)
 		return off
