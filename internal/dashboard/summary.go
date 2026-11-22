@@ -62,6 +62,9 @@ type Summary struct {
 	// Home is the panel's home page: left out when core has no HomeStore
 	// (development) and for a product's service account.
 	Home *Home `json:"home,omitempty"`
+	// HomeUnavailable is true when Home could not be read; it is left out
+	// and the rest of the summary stands.
+	HomeUnavailable bool `json:"homeUnavailable,omitempty"`
 }
 
 // EventCounts count the current (not archived) Events the summary covers.
@@ -157,7 +160,7 @@ type Options struct {
 	// MembersFailureTTL is how long a failed read is kept. Zero is
 	// DefaultMembersFailureTTL.
 	MembersFailureTTL time.Duration
-	// Logf writes the line logged when a read of the tree fails; nil is
+	// Logf writes the line logged when a read of the tree or Home fails; nil is
 	// log.Printf.
 	Logf func(format string, args ...any)
 	// Now is the clock; nil is time.Now.
@@ -171,6 +174,7 @@ type service struct {
 	seasons   SeasonLister
 	authz     authz.Authorizer
 	members   *memberCache
+	logf      func(format string, args ...any)
 	now       func() time.Time
 	loc       *time.Location
 }
@@ -184,12 +188,12 @@ func NewService(o Options) (Service, error) {
 	if now == nil {
 		now = time.Now
 	}
-	s := &service{events: o.Events, store: o.Store, homeStore: o.Home, seasons: o.Seasons, authz: o.Authz, now: now, loc: loc}
+	logf := o.Logf
+	if logf == nil {
+		logf = log.Printf
+	}
+	s := &service{events: o.Events, store: o.Store, homeStore: o.Home, seasons: o.Seasons, authz: o.Authz, now: now, loc: loc, logf: logf}
 	if o.Directory != nil {
-		logf := o.Logf
-		if logf == nil {
-			logf = log.Printf
-		}
 		s.members = &memberCache{
 			dir:         o.Directory,
 			ttl:         orDefault(o.MembersTTL, DefaultMembersTTL),
@@ -299,9 +303,15 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 			registered = joined
 		}
 	}
+	// Home is a part, as Members is: when it cannot be read the rest of the
+	// summary stands, and the panel falls back on it.
 	if s.homeStore != nil && p.Product == "" {
-		if out.Home, err = s.home(ctx, p, now, all, covered, daily, out.Members, registered); err != nil {
-			return Summary{}, err
+		home, err := s.home(ctx, p, now, all, covered, daily, out.Members, registered)
+		if err != nil {
+			s.logf(`{"event":"dashboard_home","outcome":"unavailable","error":%q}`, err.Error())
+			out.HomeUnavailable = true
+		} else {
+			out.Home = home
 		}
 	}
 	return out, nil

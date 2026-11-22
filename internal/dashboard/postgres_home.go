@@ -112,6 +112,53 @@ func (s *PostgresStore) DailyCheckIns(ctx context.Context, eventIDs []uuid.UUID,
 	return out, rows.Err()
 }
 
+// Attendees reads the months and the Events in one grouping (the row
+// without a month is the Event's whole), then the two periods.
+func (s *PostgresStore) Attendees(ctx context.Context, eventIDs []uuid.UUID, since, previous, current time.Time, loc *time.Location) (AttendeeCounts, error) {
+	out := AttendeeCounts{ByEventMonth: map[uuid.UUID]map[string]int{}, ByEvent: map[uuid.UUID]int{}}
+	rows, err := s.pool.Query(ctx, `
+		SELECT t.event_id, to_char(c.created_at AT TIME ZONE $3, 'YYYY-MM') AS month, count(DISTINCT c.ticket_id)
+		FROM ticket_checkins c
+		JOIN tickets t ON t.id = c.ticket_id
+		WHERE t.event_id = ANY($1) AND c.created_at >= $2
+		GROUP BY GROUPING SETS ((t.event_id, month), (t.event_id))
+	`, eventIDs, since, loc.String())
+	if err != nil {
+		return AttendeeCounts{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var month *string
+		var n int
+		if err := rows.Scan(&id, &month, &n); err != nil {
+			return AttendeeCounts{}, err
+		}
+		if month == nil {
+			out.ByEvent[id] = n
+			continue
+		}
+		if out.ByEventMonth[id] == nil {
+			out.ByEventMonth[id] = map[string]int{}
+		}
+		out.ByEventMonth[id][*month] = n
+	}
+	if err := rows.Err(); err != nil {
+		return AttendeeCounts{}, err
+	}
+	err = s.pool.QueryRow(ctx, `
+		SELECT count(DISTINCT c.ticket_id) FILTER (WHERE c.created_at >= $3),
+		       count(DISTINCT c.ticket_id) FILTER (WHERE c.created_at < $3)
+		FROM ticket_checkins c
+		JOIN tickets t ON t.id = c.ticket_id
+		WHERE t.event_id = ANY($1) AND c.created_at >= $2
+	`, eventIDs, previous, current).Scan(&out.Period.Current, &out.Period.Previous)
+	if err != nil {
+		return AttendeeCounts{}, err
+	}
+	return out, nil
+}
+
 func (s *PostgresStore) CertificateCounts(ctx context.Context, eventIDs []uuid.UUID, from, mid time.Time) (CertificateCounts, error) {
 	var out CertificateCounts
 	err := s.pool.QueryRow(ctx, `

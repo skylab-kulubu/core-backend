@@ -145,10 +145,13 @@ type WeekSession struct {
 // Compare sets the last CompareDays days against the CompareDays before.
 type Compare struct {
 	Days int `json:"days"`
-	// Applications are the covered Events' Tickets by the day they came in.
+	// Applications are the covered Events' Tickets that came in in the
+	// period. The periods are calendar days in TimeZone: the last
+	// CompareDays of Home.Daily, today included, and the CompareDays before.
 	Applications Period `json:"applications"`
 	// Attendees are the covered Events' Tickets checked in during the
-	// period (a Ticket counts once a period).
+	// period, each once however often it came: the applicant list's
+	// "checked in" (TicketCounts.CheckedIn), for the period.
 	Attendees Period `json:"attendees"`
 	// Events are the covered published Events that started in the period.
 	Events Period `json:"events"`
@@ -181,6 +184,11 @@ type HomeStore interface {
 	// calendar day in loc ("2006-01-02") at or after since: a Ticket checked
 	// in to two Sessions of a day counts once that day.
 	DailyCheckIns(ctx context.Context, eventIDs []uuid.UUID, since time.Time, loc *time.Location) (map[uuid.UUID]map[string]int, error)
+	// Attendees counts the Tickets checked in, each once however often it
+	// came: per Event and calendar month in loc ("2006-01") and per Event
+	// in all, at or after since; and over all the Events in [previous,
+	// current) and at or after current.
+	Attendees(ctx context.Context, eventIDs []uuid.UUID, since, previous, current time.Time, loc *time.Location) (AttendeeCounts, error)
 	// CertificateCounts counts the Events' certificates: issued (revoked
 	// ones too), revoked, and issued in [from, mid) and [mid, now].
 	CertificateCounts(ctx context.Context, eventIDs []uuid.UUID, from, mid time.Time) (CertificateCounts, error)

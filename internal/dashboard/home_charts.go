@@ -23,7 +23,7 @@ const (
 )
 
 // DailyActivity is one day of the covered Events: the Tickets that came
-// in, and the Tickets checked in that day (once a day each).
+// in, and the Tickets checked in that day (each once that day).
 type DailyActivity struct {
 	Date         string `json:"date"`
 	Applications int    `json:"applications"`
@@ -31,8 +31,8 @@ type DailyActivity struct {
 }
 
 // MonthlyActivity is one month of the covered Events: the Tickets that came
-// in, the check-ins summed over its days (a Ticket counts once a day), and
-// the published Events that started in it.
+// in, the Tickets checked in (each once that month), and the published
+// Events that started in it.
 type MonthlyActivity struct {
 	Month        string `json:"month"`
 	Applications int    `json:"applications"`
@@ -41,13 +41,21 @@ type MonthlyActivity struct {
 }
 
 // TeamActivity is one Owner team over the SeriesMonths months: its covered
-// published Events that started in them, and their Tickets and check-ins
-// in them. Team is "" for Events without an Owner team.
+// published Events that started in them, their Tickets that came in in
+// them, and those checked in in them (each once). Team is "" for Events
+// without an Owner team.
 type TeamActivity struct {
 	Team         string `json:"team"`
 	Events       int    `json:"events"`
 	Applications int    `json:"applications"`
 	Attendees    int    `json:"attendees"`
+}
+
+// AttendeeCounts are HomeStore.Attendees' answer.
+type AttendeeCounts struct {
+	ByEventMonth map[uuid.UUID]map[string]int
+	ByEvent      map[uuid.UUID]int
+	Period       Period
 }
 
 // CertificateCounts are the certificates of the Events the caller may read
@@ -117,6 +125,14 @@ func (s *service) activity(ctx context.Context, p authz.Principal, now, today ti
 	if err != nil {
 		return err
 	}
+	// The two periods are calendar days, as the applications' are
+	currentStart := today.AddDate(0, 0, -(CompareDays - 1))
+	previousStart := currentStart.AddDate(0, 0, -CompareDays)
+	attendees, err := s.homeStore.Attendees(ctx, ids, start, previousStart, currentStart, s.loc)
+	if err != nil {
+		return err
+	}
+	cmp.Attendees = attendees.Period
 
 	days := dayKeys(today, SeriesDays)
 	out.Daily = make([]DailyActivity, len(days))
@@ -128,10 +144,8 @@ func (s *service) activity(ctx context.Context, p authz.Principal, now, today ti
 		}
 		if i < CompareDays {
 			cmp.Applications.Previous += out.Daily[i].Applications
-			cmp.Attendees.Previous += out.Daily[i].Attendees
 		} else {
 			cmp.Applications.Current += out.Daily[i].Applications
-			cmp.Attendees.Current += out.Daily[i].Attendees
 		}
 	}
 
@@ -158,11 +172,13 @@ func (s *service) activity(ctx context.Context, p authz.Principal, now, today ti
 				team(e.OwnerTeam).Applications += n
 			}
 		}
-		for day, n := range checkIns[e.ID] {
-			if i, ok := index[day[:7]]; ok {
+		for month, n := range attendees.ByEventMonth[e.ID] {
+			if i, ok := index[month]; ok {
 				out.Monthly[i].Attendees += n
-				team(e.OwnerTeam).Attendees += n
 			}
+		}
+		if n := attendees.ByEvent[e.ID]; n > 0 {
+			team(e.OwnerTeam).Attendees += n
 		}
 		if e.Status != event.StatusPublished || e.StartDate == nil {
 			continue

@@ -3,6 +3,8 @@ package dashboard_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -27,6 +29,9 @@ type fakeHome struct {
 	requests dashboard.SubjectRequestCounts
 	checkIns map[uuid.UUID]map[string]int
 	certs    dashboard.CertificateCounts
+	att      dashboard.AttendeeCounts
+	attAsk   [2]time.Time
+	fail     error
 	asked    []uuid.UUID
 	certAsk  []uuid.UUID
 	today    string
@@ -74,6 +79,9 @@ func (h *fakeHome) OpenSubjectRequests(_ context.Context, today string) (dashboa
 
 func (h *fakeHome) DailyCheckIns(_ context.Context, ids []uuid.UUID, _ time.Time, _ *time.Location) (map[uuid.UUID]map[string]int, error) {
 	h.ask(ids)
+	if h.fail != nil {
+		return nil, h.fail
+	}
 	out := map[uuid.UUID]map[string]int{}
 	for _, id := range ids {
 		if d, ok := h.checkIns[id]; ok {
@@ -81,6 +89,14 @@ func (h *fakeHome) DailyCheckIns(_ context.Context, ids []uuid.UUID, _ time.Time
 		}
 	}
 	return out, nil
+}
+
+func (h *fakeHome) Attendees(_ context.Context, ids []uuid.UUID, _, previous, current time.Time, _ *time.Location) (dashboard.AttendeeCounts, error) {
+	h.ask(ids)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.attAsk = [2]time.Time{previous, current}
+	return h.att, nil
 }
 
 func (h *fakeHome) CertificateCounts(_ context.Context, ids []uuid.UUID, _, _ time.Time) (dashboard.CertificateCounts, error) {
@@ -131,6 +147,12 @@ func newHomeFixture(t *testing.T) *homeFixture {
 		StartDate: at(now.Add(3 * 24 * time.Hour))})
 	f.weblabDraft = create(event.Event{Name: "WebLab Fikir", OwnerTeam: "WEBLAB", Status: event.StatusDraft, SeasonID: &running.ID})
 	f.home.checkIns[f.weblabLive.ID] = map[string]int{"2026-10-03": 4, "2026-09-01": 2}
+	// The same people came on both days: 4 in all, 3 in October.
+	f.home.att = dashboard.AttendeeCounts{
+		ByEventMonth: map[uuid.UUID]map[string]int{f.weblabLive.ID: {"2026-10": 3, "2026-09": 2}},
+		ByEvent:      map[uuid.UUID]int{f.weblabLive.ID: 4},
+		Period:       dashboard.Period{Current: 3, Previous: 2},
+	}
 	// The Meetup running now has a Session; tomorrow's has none.
 	f.home.sessions[f.weblabLive.ID] = 1
 	f.home.slots = []dashboard.SessionSlot{
@@ -225,7 +247,7 @@ func TestHomeOfALeader(t *testing.T) {
 	// The last 30 days are 4 Sep to 3 Oct; the 30 before, 5 Aug to 3 Sep.
 	c := h.Compare
 	if c == nil || c.Days != 30 || c.NewMembers != nil ||
-		c.Applications != (dashboard.Period{Current: 8, Previous: 100}) || c.Attendees != (dashboard.Period{Current: 4, Previous: 2}) {
+		c.Applications != (dashboard.Period{Current: 8, Previous: 100}) || c.Attendees != (dashboard.Period{Current: 3, Previous: 2}) {
 		t.Fatalf("compare %+v", c)
 	}
 	// The Meetup started two hours ago; the Spring three months ago.
@@ -236,13 +258,18 @@ func TestHomeOfALeader(t *testing.T) {
 		t.Fatalf("daily %+v … %+v", h.Daily[0], h.Daily[len(h.Daily)-1])
 	}
 	if len(h.Monthly) != 12 || h.Monthly[0].Month != "2025-11" ||
-		h.Monthly[11] != (dashboard.MonthlyActivity{Month: "2026-10", Applications: 3, Attendees: 4, Events: 1}) ||
+		h.Monthly[11] != (dashboard.MonthlyActivity{Month: "2026-10", Applications: 3, Attendees: 3, Events: 1}) ||
 		h.Monthly[10] != (dashboard.MonthlyActivity{Month: "2026-09", Applications: 105, Attendees: 2}) ||
 		h.Monthly[8].Events != 1 {
 		t.Fatalf("monthly %+v", h.Monthly)
 	}
-	if len(h.Teams) != 1 || h.Teams[0] != (dashboard.TeamActivity{Team: "WEBLAB", Events: 2, Applications: 108, Attendees: 6}) {
+	if len(h.Teams) != 1 || h.Teams[0] != (dashboard.TeamActivity{Team: "WEBLAB", Events: 2, Applications: 108, Attendees: 4}) {
 		t.Fatalf("teams %+v", h.Teams)
+	}
+	// Attendance counts each Ticket once a period, the periods the
+	// applications' calendar days: from 4 Sep and from 5 Aug, Istanbul.
+	if !f.home.attAsk[0].Equal(time.Date(2026, 8, 4, 21, 0, 0, 0, time.UTC)) || !f.home.attAsk[1].Equal(time.Date(2026, 9, 3, 21, 0, 0, 0, time.UTC)) {
+		t.Fatalf("attendee periods %v", f.home.attAsk)
 	}
 	if h.Sessions != 1 || h.Certificates == nil || *h.Certificates != f.home.certs {
 		t.Fatalf("sessions %d certificates %+v", h.Sessions, h.Certificates)
@@ -359,5 +386,36 @@ func TestHomeNotForAServiceAccount(t *testing.T) {
 	}
 	if got.Home != nil {
 		t.Fatalf("service account home %+v", got.Home)
+	}
+}
+
+// Home is a part of the summary, as Members is: when it cannot be read the
+// rest stands, the failure is logged, and the panel falls back on the rest.
+func TestHomeFailureLeavesTheSummary(t *testing.T) {
+	t.Parallel()
+	f := newHomeFixture(t)
+	f.home.fail = errors.New("connection reset")
+	var mu sync.Mutex
+	var lines []string
+	svc, err := dashboard.NewService(dashboard.Options{
+		Events: f.events, Store: f.store, Home: f.home, Authz: authz.NewAuthorizer(authz.DefaultPolicy()),
+		Now: f.clock.now, Logf: func(format string, args ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			lines = append(lines, fmt.Sprintf(format, args...))
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Summary(t.Context(), leader)
+	if err != nil {
+		t.Fatalf("summary failed with Home: %v", err)
+	}
+	if got.Home != nil || !got.HomeUnavailable || got.Applications.Total == 0 || len(got.EventStats) == 0 {
+		t.Fatalf("summary %+v", got)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], `"event":"dashboard_home"`) || !strings.Contains(lines[0], "connection reset") {
+		t.Fatalf("log %q", lines)
 	}
 }

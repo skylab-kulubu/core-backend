@@ -94,6 +94,15 @@ func TestPostgresStoreHome(t *testing.T) {
 	if later, err := store.DailyCheckIns(ctx, []uuid.UUID{a}, mid, istanbul); err != nil || len(later[a]) != 1 {
 		t.Fatalf("since %v %v", later, err)
 	}
+	// Each Ticket once: recent came to two Sessions, still one attendee.
+	attendees, err := store.Attendees(ctx, []uuid.UUID{a, b}, from, from, mid, istanbul)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attendees.Period != (dashboard.Period{Current: 1, Previous: 1}) || attendees.ByEvent[a] != 2 || len(attendees.ByEvent) != 1 ||
+		attendees.ByEventMonth[a]["2026-10"] != 1 || attendees.ByEventMonth[a]["2026-08"] != 1 || len(attendees.ByEventMonth[a]) != 2 {
+		t.Fatalf("attendees %+v", attendees)
+	}
 
 	// Certificates: two issued now, one of them revoked, one 40 days ago,
 	// one of another Event.
