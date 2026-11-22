@@ -69,11 +69,58 @@ openstreetmap.org/copyright" (OSMF's attribution guidelines for print).
 - The log names Events by id, never a point or the tiles' address; the
   start line names the tiles' host only.
 
+## Regions
+
+The tiles come from the club's **map regions** (Yusuf, 2026-11-22: Istanbul
+first, more asked for in the panel): extracts of the Protomaps basemap in
+the public bucket, listed in `map_regions` (migration `20261122170000`).
+
+- **Asking:** an ADMIN or YK (`media:manage`) sends `POST /v1/map-regions`
+  `{"name": "İstanbul", "bbox": [27.95, 40.80, 29.95, 41.60]}` (min lon, min
+  lat, max lon, max lat; `maxZoom` 0–15, 15 by default) → `202` with the
+  region, `requested`. A box at most four times Türkiye's; a name of 1–80
+  characters; else `400 map_region_invalid`. A box a live region has
+  (requested, extracting or ready) is `409 map_region_exists`. The panel
+  turns a province into its box itself.
+- **Extracting** (`mapregion.Worker`, one region at a time, claimed with a
+  30-minute lease it renews): core finds the newest build of the basemap's
+  version 4 in the Protomaps builds list (`MAP_SOURCE_BUILDS_URL`), reads
+  its directories, and plans the extract as `pmtiles extract --bbox
+  --maxzoom` does (every tile of each zoom the box touches; tile data the
+  build shares stored once; the build's metadata, its attribution included,
+  copied as it is). The plan's size is checked against
+  `MAP_REGION_MAX_BYTES` (2 GiB) before any tile data is read. The header
+  and directories go first; the tile data streams after, read in ranges of
+  up to 8 MB, into a multipart upload of 16 MiB parts at
+  `maps/<name>-<build>-<id>.pmtiles`: a new key each time, never
+  overwritten. No `pmtiles` binary, no temporary file.
+- **Statuses:** `requested` → `extracting` (`progressBytes` of
+  `sizeBytes`) → `ready`, or `failed` with `errorCode`:
+  `source_unavailable`, `schema_mismatch`, `too_large`, `empty`,
+  `upload_failed`, `failed`. `POST /v1/map-regions/{id}/retry` asks again for
+  a failed one; `POST …/retire` stops using a requested, ready or failed
+  one (its object stays). Another status is `409 map_region_state`.
+- **Drawing:** a point is drawn from the smallest ready region that holds
+  it; the list is read again every minute, and again before a point is
+  refused. With regions none of which holds the point, there is no map;
+  with no ready region at all, nothing is drawn yet and no try is counted.
+  When a region becomes ready, the Events in its box whose map was given
+  up are drawn again. `MAP_TILES_URL`, when set, is drawn from after every
+  region.
+- **Reading the list:** `GET /v1/map-regions`: every region with its state
+  for `media:manage`; for anyone else signed in, the ready ones only (name,
+  `bbox`, `maxZoom`, `url`), which is what the panel's point picker needs.
+
 ## Settings
 
 | Name | Default | |
 |---|---|---|
-| `MAP_TILES_URL` | empty: no map | the PMTiles archive, `http(s)`, no credentials. Not a secret. Needs Gotenberg (`GOTENBERG_URL`) and R2 too; without any of them Events show their place without a map. |
+| `MAP_TILES_URL` | empty | an extra PMTiles archive drawn from after every region, `http(s)`, no credentials. Not a secret. |
+| `MAP_REGION_MAX_BYTES` | `2147483648` (2 GiB) | the largest extract a region may be. |
+| `MAP_SOURCE_BUILDS_URL` | `https://build-metadata.protomaps.dev/builds.json` | the Protomaps builds list regions are extracted from. |
+
+Maps need R2 and Gotenberg (`GOTENBERG_URL`); regions need R2. With no
+ready region and no `MAP_TILES_URL`, Events show their place without a map.
 
 Migration `20261122160000_event_map_image`: `events.map_media_id` (FK to
 `media`, `ON DELETE SET NULL`), `map_state`, `map_attempts`, `map_retry_at`,
@@ -120,7 +167,8 @@ the maps' Media attachments go (the maps can be drawn again).
 
 ## The panel's map
 
-The panel's point picker shows the same archive: MapLibre GL JS with the
+The panel's point picker shows the ready regions' archives (their `url` from
+`GET /v1/map-regions`, any signed-in caller): MapLibre GL JS with the
 `pmtiles` protocol, the Protomaps basemap style (`@protomaps/basemaps`, the
 grey "grayscale" or "light" flavor), and its glyphs and sprites
 (`protomaps/basemaps-assets`) served from the panel's own files, so the

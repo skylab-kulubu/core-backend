@@ -195,11 +195,18 @@ func writeArchiveWith(t *testing.T, tiles []testTile, minLon, minLat, maxLon, ma
 	dir.varint(uint64(len(tiles)))
 	var last uint64
 	offsets, lengths := []uint64{}, []uint64{}
+	stored := map[string][2]uint64{}
 	for _, tile := range tiles {
 		id := TileID(tile.z, tile.x, tile.y)
 		dir.varint(id - last)
 		last = id
+		// The same tile data is stored once, as Protomaps' builds do.
+		if at, ok := stored[string(tile.data)]; ok {
+			offsets, lengths = append(offsets, at[0]), append(lengths, at[1])
+			continue
+		}
 		compressed := gz(t, tile.data)
+		stored[string(tile.data)] = [2]uint64{uint64(len(data)), uint64(len(compressed))}
 		offsets, lengths = append(offsets, uint64(len(data))), append(lengths, uint64(len(compressed)))
 		data = append(data, compressed...)
 	}
@@ -209,8 +216,12 @@ func writeArchiveWith(t *testing.T, tiles []testTile, minLon, minLat, maxLon, ma
 	for _, l := range lengths {
 		dir.varint(l)
 	}
-	for _, o := range offsets {
-		dir.varint(o + 1)
+	for i, o := range offsets {
+		if i > 0 && o == offsets[i-1]+lengths[i-1] {
+			dir.varint(0)
+		} else {
+			dir.varint(o + 1)
+		}
 	}
 	root := gz(t, dir.b)
 	meta := gz(t, []byte(metadata))

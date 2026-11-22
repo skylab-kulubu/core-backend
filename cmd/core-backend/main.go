@@ -44,6 +44,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/httpx"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
+	"github.com/skylab-kulubu/core-backend/internal/mapregion"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/media/readlinksubject"
 	"github.com/skylab-kulubu/core-backend/internal/mediaframe"
@@ -1010,7 +1011,8 @@ func main() {
 		&ticketpage.MediaImages{Media: mediaStore, Blobs: blobs},
 		ticketpage.Config{Page: ticketPageConfig, APIOrigin: os.Getenv("PUBLIC_API_ORIGIN")})
 	var eventMapMetrics interface{ Prometheus() string }
-	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget); mapWorker != nil {
+	mapRegions := mapregion.NewPostgresStore(pool)
+	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget, mapRegions); mapWorker != nil {
 		eventMapMetrics = mapWorker
 	}
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
@@ -1210,6 +1212,7 @@ func main() {
 		MediaDecodeMetrics:        decodeBudget,
 		MemoryMetrics:             memory,
 		EventMapMetrics:           eventMapMetrics,
+		MapRegions:                &mapregion.Service{Store: mapRegions, Authz: az, Address: media.ConfiguredAddresses().Object},
 	})
 
 	addr := os.Getenv("PORT")

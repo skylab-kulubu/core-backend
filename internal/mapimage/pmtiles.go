@@ -134,6 +134,19 @@ func parseHeader(b []byte) (Header, error) {
 
 func knownCompression(c uint8) bool { return c == compressionNone || c == compressionGzip }
 
+// gzipBytes compresses b as the archive's directories and metadata are.
+func gzipBytes(b []byte) ([]byte, error) {
+	var out bytes.Buffer
+	w := gzip.NewWriter(&out)
+	if _, err := w.Write(b); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
 // entry is one directory entry: a run of tiles stored once, or (run 0) a
 // leaf directory.
 type entry struct {
@@ -286,18 +299,8 @@ const maxMetadata = 1 << 20
 // Metadata is the archive's JSON metadata: the basemap's name, version and
 // attribution, among others.
 func (a *Archive) Metadata(ctx context.Context) (map[string]any, error) {
-	h := a.header
-	if h.MetadataLength == 0 {
-		return map[string]any{}, nil
-	}
-	if h.MetadataLength > maxMetadata {
-		return nil, fmt.Errorf("%w: metadata of %d bytes", ErrNotArchive, h.MetadataLength)
-	}
-	raw, err := a.src.ReadRange(ctx, h.MetadataOffset, h.MetadataLength)
+	raw, err := a.metadataBytes(ctx)
 	if err != nil {
-		return nil, err
-	}
-	if raw, err = decompress(raw, h.InternalCompression); err != nil {
 		return nil, err
 	}
 	var out map[string]any

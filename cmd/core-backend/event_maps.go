@@ -6,9 +6,11 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"strings"
 
 	"github.com/skylab-kulubu/core-backend/internal/certificate"
 	"github.com/skylab-kulubu/core-backend/internal/mapimage"
+	"github.com/skylab-kulubu/core-backend/internal/mapregion"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 )
 
@@ -37,42 +39,56 @@ func (m eventMaps) Map(ctx context.Context, lat, lng float64) ([]byte, error) {
 	}
 }
 
-// startEventMaps starts the Event map worker (MAP_TILES_URL,
-// docs/event-map.md): an Event whose place has a point gets the map around
-// it, drawn once from the club's own OpenStreetMap tiles by Gotenberg. It
-// needs the tiles, Gotenberg and R2; without any of them Events show their
-// place without a map. The log names the tiles' host only.
+// startEventMaps starts the Event map worker and the map regions' worker
+// (docs/event-map.md). An Event whose place has a point gets the map around
+// it, drawn once by Gotenberg from the smallest ready map region holding it
+// (or from MAP_TILES_URL's archive, after every region). The regions'
+// worker extracts the regions an ADMIN asks for from the latest Protomaps
+// build into the public bucket. Both need R2; the maps need Gotenberg too.
+// The log names hosts only.
 func startEventMaps(ctx context.Context, worker func(string, <-chan struct{}), render certificate.Renderer, publicBlobs media.BlobStore,
-	store *media.PostgresStore, purposes media.Catalogue, budget *media.DecodeBudget) *media.MapWorker {
+	store *media.PostgresStore, purposes media.Catalogue, budget *media.DecodeBudget, regions *mapregion.Store) *media.MapWorker {
 	tilesURL, err := mapimage.TilesURLFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	maxBytes, err := mapregion.MaxBytesFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
 	gotenberg, _ := render.(*certificate.Gotenberg)
 	r2, hasR2 := publicBlobs.(*media.R2)
-	switch {
-	case tilesURL == "":
-		log.Printf("event maps: off (%s is not set); Events show their place without a map", mapimage.TilesURLEnv)
-		return nil
-	case gotenberg == nil:
-		log.Printf("event maps: off (no Gotenberg); Events show their place without a map")
-		return nil
-	case !hasR2:
+	if !hasR2 {
 		log.Printf("event maps: off (no R2 configured); Events show their place without a map")
 		return nil
 	}
+	extractor := &mapregion.Worker{
+		Store: regions, Uploader: r2, MaxBytes: maxBytes,
+		Builds: mapregion.Builds{ListURL: strings.TrimSpace(os.Getenv(mapregion.BuildsURLEnv))},
+	}
+	worker("map regions", extractor.Run(ctx, log.Printf))
+	log.Printf("map regions: on (extracts of at most %d bytes)", maxBytes)
+	if gotenberg == nil {
+		log.Printf("event maps: off (no Gotenberg); Events show their place without a map")
+		return nil
+	}
+	registry := &mapregion.Registry{Regions: regions, Shot: gotenberg, Address: media.ConfiguredAddresses().Object, Static: tilesURL}
 	mapWorker, err := media.NewMapWorker(media.MapWorkerConfig{
 		Store: store, Storage: r2, Catalogue: purposes, DecodeBudget: budget,
-		Maps: eventMaps{renderer: &mapimage.Renderer{Source: mapimage.HTTPSource{URL: tilesURL}, Shot: gotenberg}},
+		Maps: eventMaps{renderer: registry},
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 	worker("event maps", mapWorker.Run(ctx, log.Printf))
-	host := ""
-	if u, err := url.Parse(tilesURL); err == nil {
-		host = u.Host
+	if tilesURL != "" {
+		host := ""
+		if u, err := url.Parse(tilesURL); err == nil {
+			host = u.Host
+		}
+		log.Printf("event maps: on (map regions, and tiles at %s)", host)
+	} else {
+		log.Printf("event maps: on (map regions; none ready draws no map)")
 	}
-	log.Printf("event maps: on (tiles at %s)", host)
 	return mapWorker
 }
