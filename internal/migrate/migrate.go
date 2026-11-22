@@ -1612,6 +1612,11 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.ticket_resends') IS NOT NULL
 		  AND to_regclass('public.ticket_resends_request_idx') IS NOT NULL
 		  AND to_regclass('public.ticket_resends_recent_idx') IS NOT NULL`,
+	// The Team audit record's ticket actions (docs/ticket-resend.md).
+	20261122140000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
+		  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.link.renew%'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

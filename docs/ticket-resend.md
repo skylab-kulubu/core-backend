@@ -30,7 +30,10 @@ with the variables of the moment (its page, QR and code).
   writes nothing again; a double click sends one mail. Only its SHA-256 is
   kept.
 - **`429 ticket_resend_rate_limited`** (`Retry-After: 3600`): three resends
-  of the Ticket in the last hour (a renewal with its mail counts).
+  of the Ticket in the last hour, or six in the last 24 hours (a renewal
+  with its mail counts).
+- **`503 audit_unavailable`**: the Team audit row could not be opened
+  (below); nothing was sent.
 - **`409`**: `ticket_notification_off` while `TICKET_CREATED_NOTIFICATION` is
   off; `event_not_published` (a draft), `event_cancelled`, `event_ended`: a
   Ticket is sent again only for a published Event that is not over.
@@ -57,16 +60,26 @@ stays.
 
 ## Record
 
-`ticket_resends` keeps each resend: the Ticket, its number, whether it
-renewed the link, when, and the hash of the request's `Idempotency-Key`. No
-person: who did it is not kept, and the row goes with its Ticket. Each
-renewal also writes one log line, `ticket_link_renewed`, with the request's
-correlation id, the Ticket and the Event, never a person.
-
-The Team audit record (docs/team-audit.md) is not written: it records
-Group administration, every row about a Group by its Keycloak id with the
-actor's basis, and a Ticket is not one. Whether a ticket action belongs
-there is open.
+- **Who: the Team audit record** ([team-audit.md](team-audit.md)). Each
+  resend is a `ticket.resend` row, each renewal a `ticket.link.renew` row,
+  against the Event's team (`group_id`, `group_path`): the caller and their
+  basis (`privileged`, or `leader` through the nearest Team they lead the
+  Event's team in or under), the request's correlation id and client, and
+  after `{"ticketId", "eventId", "resend"}`, never a person. A refused
+  attempt (the hour's or the day's limit) is a `failed` row with its code
+  (`rate_limited`, `daily_limited`). A row that cannot be opened stops the
+  action: `503 audit_unavailable`, nothing sent or renewed. Kept three
+  years like every row of the record.
+- **How often: `ticket_resends`** keeps each resend: the Ticket, its number,
+  whether it renewed the link, when, and the hash of the request's
+  `Idempotency-Key`. No person; the row goes with its Ticket. It bounds a
+  Ticket to three resends an hour and six a day.
+- **Log lines**, never a person: `ticket_resent` (correlation id, Ticket,
+  resend number) and `ticket_link_renewed` (correlation id, Ticket, Event,
+  whether the mail went).
+- A renewal with `notify=false` takes no `Idempotency-Key`: a repeated
+  request renews once more. No mail goes, so nothing reaches the holder
+  twice.
 
 ## Rollback
 
@@ -80,4 +93,4 @@ Matches: an organizer resends a ticket from the attendee list (Eventbrite
 "Resend tickets", Tito); a new barcode makes the old one void (Ticketmaster
 transfer, Eventbrite "reissue"). Deviation: renewing here does not move the
 Ticket to someone else (no transfer, ADR 0082); and a resend is bounded to
-three an hour per Ticket.
+three an hour and six a day per Ticket.

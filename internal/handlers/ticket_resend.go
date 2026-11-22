@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
@@ -17,6 +18,12 @@ func resendError(c fiber.Ctx, err error) error {
 		c.Set(fiber.HeaderRetryAfter, "3600")
 		return problemDetailCode(c, fiber.StatusTooManyRequests, "Too Many Requests",
 			"Bu bilet son bir saatte 3 kez gönderildi.", "ticket_resend_rate_limited")
+	case errors.Is(err, ticket.ErrResendDailyLimited):
+		c.Set(fiber.HeaderRetryAfter, "3600")
+		return problemDetailCode(c, fiber.StatusTooManyRequests, "Too Many Requests",
+			"Bu bilet son 24 saatte 6 kez gönderildi.", "ticket_resend_rate_limited")
+	case errors.Is(err, teamaudit.ErrUnavailable):
+		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", auditUnavailableCode)
 	case errors.Is(err, ticket.ErrNotificationOff):
 		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_notification_off")
 	case errors.Is(err, ticket.ErrHolderErased):
@@ -40,9 +47,21 @@ func (h *TicketHandler) ResendTicket(c fiber.Ctx) error {
 	if err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	sent, err := h.svc.ResendTicket(c.Context(), p, id, c.Get("Idempotency-Key"))
+	sent, err := h.svc.ResendTicket(auditContext(c, p), p, id, c.Get("Idempotency-Key"))
 	if err != nil {
 		return resendError(c, err)
+	}
+	// One line per resend: the request, the Ticket and the resend's number,
+	// never who did it (the Team audit record keeps that) or whose Ticket.
+	if h.logger != nil && !sent.Replayed {
+		if line, err := json.Marshal(struct {
+			Event         string `json:"event"`
+			CorrelationID string `json:"correlation_id"`
+			TicketID      string `json:"ticket_id"`
+			Resend        int    `json:"resend"`
+		}{"ticket_resent", requestid.FromContext(c), id.String(), sent.N}); err == nil {
+			h.logger.Print(string(line))
+		}
 	}
 	return c.Status(fiber.StatusAccepted).JSON(sent)
 }
@@ -74,12 +93,12 @@ func (h *TicketHandler) RenewTicketLink(c fiber.Ctx) error {
 	default:
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	renewed, sent, err := h.svc.RenewTicketLink(c.Context(), p, id, notify, c.Get("Idempotency-Key"))
+	renewed, sent, err := h.svc.RenewTicketLink(auditContext(c, p), p, id, notify, c.Get("Idempotency-Key"))
 	if err != nil {
 		return resendError(c, err)
 	}
 	// One line per renewal: the request, the Ticket and its Event, never
-	// who did it or whose Ticket it is (the record, docs/ticket-resend.md).
+	// who did it (the Team audit record keeps that) or whose Ticket it is.
 	if h.logger != nil && !sent.Replayed {
 		if line, err := json.Marshal(struct {
 			Event         string `json:"event"`
