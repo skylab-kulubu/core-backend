@@ -974,7 +974,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	worker("event updated notification", startEventUpdatedNotification(workers, eventUpdatedOn, events, eventupdatenotify.NewPostgresQueue(pool), tickets, users, sky, log.Printf))
+	worker("event updated notification", startEventUpdatedNotification(workers, eventUpdatedOn, events, eventupdatenotify.NewPostgresQueue(pool), tickets, users, sky, ticketPageConfig, log.Printf))
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {
@@ -995,7 +995,10 @@ func main() {
 		log.Fatal(err)
 	}
 	doorScans := &ticket.DoorScanMetrics{}
-	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites, ticketQR, doorScans, ticketPageConfig)
+	// The Team audit record (docs/team-audit.md): Group writes, and the
+	// ticket actions of the panel (docs/ticket-resend.md).
+	teamAudit := teamaudit.NewPostgres(pool)
+	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites, ticketQR, doorScans, ticketPageConfig, teamAudit)
 	var ticketPDF ticketpage.Renderer
 	if g, ok := render.(*certificate.Gotenberg); ok && g != nil {
 		ticketPDF = g
@@ -1062,7 +1065,6 @@ func main() {
 	}
 	// The Group writes of the identity routes go through the Team audit
 	// record (docs/team-audit.md): no row, no change.
-	teamAudit := teamaudit.NewPostgres(pool)
 	auditedDir := identity.AuditedDirectory(dir, teamAudit, log.Printf)
 	// Team delegation's reads (docs/team-delegation.md) go to the directory
 	// itself: the Group by id with its parent, the caller's Groups, role
@@ -1464,8 +1466,9 @@ func ticketQRSigner(getenv func(string) string, passKey *ecdsa.PrivateKey) (*tic
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("ticket qr: signs under %s", cfg.Kid)
 	if cfg.Previous != nil {
-		log.Printf("ticket qr: the previous key is accepted until %s (%s)", cfg.PreviousUntil.Format(time.RFC3339), ticketqr.PreviousUntilEnv)
+		log.Printf("ticket qr: the previous key %s is accepted until %s (%s)", cfg.PreviousKid, cfg.PreviousUntil.Format(time.RFC3339), ticketqr.PreviousUntilEnv)
 	}
 	return ticketqr.NewSigner(ticketqr.DeriveKey(passKey), cfg), nil
 }

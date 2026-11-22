@@ -11,8 +11,11 @@ public routes.
 
 No sign-in. Every answer has `Cache-Control: no-store`,
 `Referrer-Policy: no-referrer` and `X-Robots-Tag: noindex, nofollow`. A
-client may ask 120 times a minute (the certificate routes' per-client
-budget, `perClientLimit`). A key that is not 26 characters of `A`–`Z` and
+client may ask for the JSON and the PDF 120 times a minute (the certificate
+routes' per-client budget, `perClientLimit`); the QR image has a budget of
+its own, 1200 a minute per client, because the mail's image is fetched by
+Gmail's image proxy and Apple Mail's privacy preloading from a few addresses
+for many people at once. A key that is not 26 characters of `A`–`Z` and
 `2`–`7` is `404` before the database is asked.
 
 ### `GET /v1/public/tickets/{key}`
@@ -87,8 +90,9 @@ is signed when fetched, so it always has the Event's dates of the moment.
 The PDF ticket, `Content-Disposition: attachment;
 filename="bilet-<the Event's name in ASCII>.pdf"` (never the person's
 name). Five a minute per key besides the client's budget (`429
-ticket_pdf_rate_limited`). Gotenberg not set or busy for 20 seconds: `503
-ticket_pdf_unavailable`, `Retry-After: 30`. Core draws it on each request
+ticket_pdf_rate_limited`). Gotenberg not set, busy for 20 seconds,
+unreachable, timed out or failing: `503 ticket_pdf_unavailable`,
+`Retry-After: 30` (the cause is logged, the key cut). Core draws it on each request
 and keeps nothing; a renamed holder gets the new name.
 
 ## The PDF
@@ -165,8 +169,12 @@ nor after the page closed. Only the holder's own list has them; `GET
 ## Logs
 
 A refusal (404, 410) is not logged. A failure is, naming the key by its
-first four characters (`K7M2…`), the certificate serial's pattern; the
-error handler never sees these routes' paths.
+first four characters (`K7M2…`), the certificate serial's pattern. The
+error handler, which logs a route that does not exist, a wrong method and a
+panic, cuts the key the same way in any path under `/v1/public/tickets/`,
+in any case (`/V1/PUBLIC/TICKETS/…` reaches the same routes).
+An access log in front of core (Traefik) and the site's own `/bilet/*`
+logs are outside core: they must not keep these paths either.
 
 ## Industry practice
 
@@ -181,6 +189,8 @@ Deviations:
    account; a guest has none, so the link is the right, bounded by 128
    random bits, the client's budget, `no-referrer` and the closing a week
    after the Event.
-2. **A5 landscape**, not the A4 print-at-home page most sites send, which
-   fills its lower half with terms and advertising; we have neither.
+2. **Programme, description and map on the ticket.** A print-at-home
+   ticket (Biletix, TCDD's e-ticket, FlixBus's boarding pass) is A4 with
+   the ticket at the top, as ours; they fill the rest with terms and
+   advertising, we with the Event's programme, description and place.
 3. **The PDF is not kept**, unlike a certificate: it is drawn when asked.

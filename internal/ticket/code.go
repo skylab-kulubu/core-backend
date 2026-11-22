@@ -72,7 +72,7 @@ func ValidAccessKey(key string) bool {
 
 // NormalizeCode reads a code as a person types or says it: spaces and
 // hyphens dropped, small letters made capital, and Crockford's look-alikes
-// mapped (O to 0, I and L to 1). It answers the 8 characters, without the
+// mapped (O to 0, I and L to 1; the Turkish ı and İ are I too). It answers the 8 characters, without the
 // hyphen, and whether what was given is a code at all.
 func NormalizeCode(raw string) (string, bool) {
 	var b strings.Builder
@@ -87,7 +87,8 @@ func NormalizeCode(raw string) (string, bool) {
 		switch r {
 		case 'O':
 			r = '0'
-		case 'I', 'L':
+		case 'I', 'L', 'ı', 'İ':
+			// Turkish keyboards give ı and İ (caps lock on i): read as I.
 			r = '1'
 		}
 		if r > 0x7f || !strings.ContainsRune(crockford, r) {

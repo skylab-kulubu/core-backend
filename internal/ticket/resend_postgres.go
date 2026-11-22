@@ -3,7 +3,6 @@ package ticket
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -17,14 +16,14 @@ func (s *PostgresStore) NotificationsOn() bool { return s.notifyCreated.Load() }
 // Notification (docs/ticket-resend.md), in one transaction that holds the
 // Ticket. A request whose hash was seen for the Ticket is answered as it
 // was, with no second row. limit resends in window: ErrResendLimited.
-func (s *PostgresStore) QueueResend(ctx context.Context, id uuid.UUID, requestHash string, limit int, window time.Duration) (Resend, error) {
+func (s *PostgresStore) QueueResend(ctx context.Context, id uuid.UUID, requestHash string, limits ResendLimits) (Resend, error) {
 	var out Resend
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if err := lockTicket(ctx, tx, id); err != nil {
 			return err
 		}
 		var err error
-		out, err = queueResend(ctx, tx, id, requestHash, false, limit, window)
+		out, err = queueResend(ctx, tx, id, requestHash, false, limits)
 		return err
 	})
 	return out, err
@@ -35,7 +34,7 @@ func (s *PostgresStore) QueueResend(ctx context.Context, id uuid.UUID, requestHa
 // notify it also queues the Ticket's mail again, as QueueResend, in the
 // same transaction; a request whose hash was seen is answered as it was,
 // without renewing again.
-func (s *PostgresStore) RenewAccessKey(ctx context.Context, id uuid.UUID, notify bool, requestHash string, limit int, window time.Duration) (Ticket, Resend, error) {
+func (s *PostgresStore) RenewAccessKey(ctx context.Context, id uuid.UUID, notify bool, requestHash string, limits ResendLimits) (Ticket, Resend, error) {
 	var (
 		got Ticket
 		out Resend
@@ -46,7 +45,7 @@ func (s *PostgresStore) RenewAccessKey(ctx context.Context, id uuid.UUID, notify
 		}
 		if notify {
 			var err error
-			out, err = queueResend(ctx, tx, id, requestHash, true, limit, window)
+			out, err = queueResend(ctx, tx, id, requestHash, true, limits)
 			if err != nil {
 				return err
 			}
@@ -80,7 +79,7 @@ func lockTicket(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
 	return err
 }
 
-func queueResend(ctx context.Context, tx pgx.Tx, id uuid.UUID, requestHash string, renewed bool, limit int, window time.Duration) (Resend, error) {
+func queueResend(ctx context.Context, tx pgx.Tx, id uuid.UUID, requestHash string, renewed bool, limits ResendLimits) (Resend, error) {
 	var hash *string
 	if requestHash != "" {
 		hash = &requestHash
@@ -93,13 +92,18 @@ func queueResend(ctx context.Context, tx pgx.Tx, id uuid.UUID, requestHash strin
 			return Resend{}, err
 		}
 	}
-	var recent, last int
+	var hour, day, last int
 	if err := tx.QueryRow(ctx, `
-		SELECT count(*) FILTER (WHERE created_at > now() - make_interval(secs => $2)), COALESCE(max(n), 0)
-		FROM ticket_resends WHERE ticket_id = $1`, id, window.Seconds()).Scan(&recent, &last); err != nil {
+		SELECT count(*) FILTER (WHERE created_at > now() - make_interval(secs => $2)),
+		       count(*) FILTER (WHERE created_at > now() - make_interval(secs => $3)),
+		       COALESCE(max(n), 0)
+		FROM ticket_resends WHERE ticket_id = $1`, id, limits.Window.Seconds(), limits.DayWindow.Seconds()).Scan(&hour, &day, &last); err != nil {
 		return Resend{}, err
 	}
-	if recent >= limit {
+	if limits.PerDay > 0 && day >= limits.PerDay {
+		return Resend{}, ErrResendDailyLimited
+	}
+	if hour >= limits.PerWindow {
 		return Resend{}, ErrResendLimited
 	}
 	n := last + 1

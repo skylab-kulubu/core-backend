@@ -11,6 +11,7 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"net"
 	"regexp"
 	"slices"
 	"strings"
@@ -383,9 +384,10 @@ func TestPDF(t *testing.T) {
 		}
 	}
 
-	f.render.err = errors.New("gotenberg down")
-	if _, _, err := f.svc.PDF(t.Context(), g.AccessKey); err == nil {
-		t.Fatal("a renderer error went unnoticed")
+	// Gotenberg unreachable or failing: try again later.
+	f.render.err = &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	if _, _, err := f.svc.PDF(t.Context(), g.AccessKey); !errors.Is(err, ticketpage.ErrUnavailable) {
+		t.Fatalf("Gotenberg unreachable: %v", err)
 	}
 	noRenderer := ticketpage.New(f.store, f.events, f.users, f.signer, nil, nil, ticketpage.Config{})
 	if _, _, err := noRenderer.PDF(t.Context(), g.AccessKey); !errors.Is(err, ticketpage.ErrUnavailable) {
