@@ -19,6 +19,13 @@ import (
 // 2026-11-22).
 const ClubName = "SKY LAB: Bilgisayar Bilimleri Kulübü"
 
+// KVKKLink is the club's personal data notice ("KVKK Metni"), as the club
+// site's footer links it: the footnote's one address. The ticket page's
+// own link is never printed: its key also matches the holder at the door's
+// attendance page (ADR 0082, decision 12), and a printed or forwarded PDF
+// must not carry it.
+const KVKKLink = "skyl.app/kvkk-metni"
+
 // Document is what the PDF ticket shows (PDF v5, docs/ticket-page.md).
 // Nothing else of the person: no e-mail, phone, Sky number or ticket type
 // (ADR 0082). Its text is data and the footnote: no sentence tells the
@@ -35,11 +42,8 @@ type Document struct {
 	OwnerTeam     string
 	HolderName    string
 	// Code is the Ticket's code as shown, XXXX-XXXX.
-	Code    string
-	QRToken string
-	// PageLink is the ticket page's address the footnote names; empty
-	// leaves it out.
-	PageLink    string
+	Code        string
+	QRToken     string
 	Description string
 	// Days is the programme, in order; a day without Sessions is left out.
 	Days []ProgramDay
@@ -142,8 +146,12 @@ func sameDay(a, b time.Time) bool {
 
 // DirectionsURL is the directions link of a place: to its point when it
 // has one, else to its name and address (Google Maps' URL scheme, which
-// needs no key and embeds nothing).
+// needs no key and embeds nothing). A place with neither a point nor an
+// address ("Online") has none: its name alone finds nothing to go to.
 func DirectionsURL(name, address string, lat, lng *float64) string {
+	if !locatable(address, lat, lng) {
+		return ""
+	}
 	destination := strings.TrimSpace(strings.TrimSpace(name) + ", " + strings.TrimSpace(address))
 	destination = strings.Trim(destination, ", ")
 	if lat != nil && lng != nil {
@@ -156,8 +164,12 @@ func DirectionsURL(name, address string, lat, lng *float64) string {
 }
 
 // MapsURL is the "Haritada aç" link of a place: a search for its point, or
-// for its name and address.
+// for its name and address; none for a place with neither a point nor an
+// address.
 func MapsURL(name, address string, lat, lng *float64) string {
+	if !locatable(address, lat, lng) {
+		return ""
+	}
 	query := strings.Trim(strings.TrimSpace(strings.TrimSpace(name)+", "+strings.TrimSpace(address)), ", ")
 	if lat != nil && lng != nil {
 		query = strconv.FormatFloat(*lat, 'f', -1, 64) + "," + strconv.FormatFloat(*lng, 'f', -1, 64)
@@ -166,6 +178,12 @@ func MapsURL(name, address string, lat, lng *float64) string {
 		return ""
 	}
 	return "https://www.google.com/maps/search/?api=1&query=" + url.QueryEscape(query)
+}
+
+// locatable reports whether a place can be found on a map: it has a point
+// or an address.
+func locatable(address string, lat, lng *float64) bool {
+	return (lat != nil && lng != nil) || strings.TrimSpace(address) != ""
 }
 
 // FileName is the PDF's name: bilet-<the Event's name in ASCII>.pdf, never
@@ -242,6 +260,7 @@ type page struct {
 	MapImage    template.URL
 	Directions  template.URL
 	Issued      string
+	KVKK        string
 }
 
 // RenderHTML is the ticket's document and its page head (Chromium's header
@@ -265,6 +284,7 @@ func RenderHTML(d Document) (document, header string, err error) {
 		FontCSS:     fontCSS,
 		QR:          template.URL("data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(svg)),
 		Issued:      d.IssuedAt.In(istanbul).Format("02.01.2006 15:04"),
+		KVKK:        KVKKLink,
 		Description: strings.TrimSpace(d.Description),
 	}
 	firstLabel, first, secondLabel, second := When(d.Start, d.End)
@@ -438,7 +458,7 @@ td.kisi{color:#444;text-align:right;white-space:nowrap}
 {{end}}{{if .Description}}<section class="hakkinda"><h2>Etkinlik hakkında</h2><p class="aciklama">{{.Description}}</p></section>
 {{end}}<section class="yer"><h2>Etkinlik yeri</h2><div class="satir"><div class="kutu"><div class="ad">{{.D.Venue}}</div>{{if .D.VenueAddress}}<div class="adres">{{.D.VenueAddress}}</div>{{end}}{{if .MapImage}}<img class="harita" src="{{.MapImage}}" alt="Etkinlik yeri haritası">{{end}}</div>{{if .Directions}}<figure><img alt="Yol tarifi QR kodu" src="{{.Directions}}">Yol tarifi</figure>{{end}}</div>
 {{if .MapImage}}{{if .D.MapAttribution}}<p class="atif">{{.D.MapAttribution}}</p>{{end}}{{end}}</section>
-<footer class="dip"><p>SKY LAB: Bilgisayar Bilimleri Kulübü · Bu bilet kişiye özeldir.{{if .D.PageLink}} Doğrulama: {{.D.PageLink}}{{end}} · Düzenlenme {{.Issued}}</p><p>Etkinlikte fotoğraf ve video çekilebilir; kişisel veriler 6698 sayılı KVKK kapsamında işlenir.</p></footer>
+<footer class="dip"><p>Bu bilet kişiye özeldir. Düzenlenme: {{.Issued}}</p><p>Etkinlikte fotoğraf ve video çekilir, Kulübün kanallarında paylaşılabilir. Kişisel veriler KVKK Metni&#39;ne göre işlenir: {{.KVKK}}</p></footer>
 </body>
 </html>
 `))

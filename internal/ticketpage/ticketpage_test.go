@@ -134,7 +134,7 @@ func TestPageAnswersOnlyWhatThePageShows(t *testing.T) {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
-	want := []string{"code", "directionsUrl", "eventEnd", "eventName", "eventStart", "eventStatus", "holderName", "mapsUrl", "ownerTeam", "pdfUrl", "qrToken", "qrUrl", "state", "theme", "venue"}
+	want := []string{"code", "eventEnd", "eventName", "eventStart", "eventStatus", "holderName", "ownerTeam", "pdfUrl", "qrToken", "qrUrl", "state", "theme", "venue"}
 	if !slices.Equal(keys, want) {
 		t.Fatalf("keys %v", keys)
 	}
@@ -148,8 +148,7 @@ func TestPageAnswersOnlyWhatThePageShows(t *testing.T) {
 		view.QRURL != "https://api.example.test/v1/public/tickets/"+g.AccessKey+"/qr.png" ||
 		view.PDFURL != "https://api.example.test/v1/public/tickets/"+g.AccessKey+"/pdf" ||
 		view.Theme.Key != "kurumsal" || view.Theme.Accent != "#7C3AED" || view.EventStatus != "published" ||
-		view.DirectionsURL != "https://www.google.com/maps/dir/?api=1&destination=YT%C3%9C+Davutpa%C5%9Fa" ||
-		view.MapsURL != "https://www.google.com/maps/search/?api=1&query=YT%C3%9C+Davutpa%C5%9Fa" {
+		view.DirectionsURL != "" || view.MapsURL != "" {
 		t.Fatalf("view %+v", view)
 	}
 	claims, err := f.signer.Verify(view.QRToken)
@@ -364,8 +363,8 @@ func TestPDF(t *testing.T) {
 	html := f.render.html
 	for _, want := range []string{`<html lang="tr">`, "<title>Etkinlik Giriş Bileti " + g.Code + "</title>", "ETKİNLİK GİRİŞ BİLETİ",
 		"Elif Yılmaz", g.Code, `alt="Bilet QR kodu"`, "12 Ara 2026 Cmt", "10:00 – 18:00", "YTÜ Davutpaşa", "AILAB",
-		"Etkinlik yeri", `alt="Yol tarifi QR kodu"`, "Yol tarifi", "SKY LAB: Bilgisayar Bilimleri Kulübü · Bu bilet kişiye özeldir.",
-		"KVKK", "@font-face{font-family:'Manrope'", "@page{size:A4;margin:25mm 14mm 14mm}"} {
+		"Etkinlik yeri", "Bu bilet kişiye özeldir. Düzenlenme:",
+		"Kulübün kanallarında paylaşılabilir", "skyl.app/kvkk-metni", "@font-face{font-family:'Manrope'", "@page{size:A4;margin:25mm 14mm 14mm}"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("HTML has no %q", want)
 		}
@@ -373,7 +372,7 @@ func TestPDF(t *testing.T) {
 	text := dataURL.ReplaceAllString(html, "data:…")
 	for _, unwanted := range []string{"elif@example.com", "5551112233", "GUEST", "güvenlik özelliği",
 		"Kapıda", "göster", "Okunmazsa", "söyle", "okut", "dokun", "KOÇAN",
-		`src="http`, "url(http", "fonts.googleapis", "<script"} {
+		`src="http`, "url(http", "fonts.googleapis", "<script", g.AccessKey, "/bilet/", "Yol tarifi"} {
 		if strings.Contains(text, unwanted) {
 			t.Errorf("HTML has %q", unwanted)
 		}
@@ -509,10 +508,13 @@ func TestPDFReadsTheEvent(t *testing.T) {
 		t.Errorf("programme order %d %d, or a cancelled Session drawn", open, closing)
 	}
 	for _, want := range []string{"09:30–10:00", `<td class="kisi">Ada</td>`, "Davutpaşa Cd. No:127", "Uygulamalı bir kamp.",
-		"background-image:url(", "Doğrulama: yildizskylab.com/bilet/" + g.AccessKey} {
+		"background-image:url(", `alt="Yol tarifi QR kodu"`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("HTML has no %q", want)
 		}
+	}
+	if strings.Contains(html, g.AccessKey) {
+		t.Error("the PDF carries the ticket page's key")
 	}
 	if len(images.asked) != 1 || images.asked[0] != "page" {
 		t.Errorf("asked %v", images.asked)

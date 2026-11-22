@@ -49,7 +49,8 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
   `venueAddress`, `venueLat` and `venueLng` are left out while the Event has
   none. `directionsUrl` ("Yol tarifi") and `mapsUrl` ("Haritada aç") are
   Google Maps links to the point, else to the name and address: links, no
-  key, nothing embedded.
+  key, nothing embedded. A place with neither a point nor an address
+  ("Online") has neither link.
 - `holderName`: the guest's name, or the member's from core's row.
 - `qrToken` is the Ticket QR ([ticket-qr.md](ticket-qr.md)), signed with
   the Event's dates now; the site draws it, or shows `qrUrl`.
@@ -123,10 +124,15 @@ tarifi QR kodu"), the code real text.
   5. "Etkinlik yeri", **always last** and never split (it moves to the next
      page when it does not fit): the name, the address, the map when there
      is one with its data's credit under it, and the directions QR ("Yol
-     tarifi", `directionsUrl`);
-  6. the footnote: "SKY LAB: Bilgisayar Bilimleri Kulübü · Bu bilet kişiye
-     özeldir. Doğrulama: <the ticket page> · Düzenlenme <time>", and the
-     photo and KVKK line.
+     tarifi", `directionsUrl`, only with a point or an address);
+  6. the footnote, two plain lines: "Bu bilet kişiye özeldir. Düzenlenme:
+     <time>" and "Etkinlikte fotoğraf ve video çekilir, Kulübün
+     kanallarında paylaşılabilir. Kişisel veriler KVKK Metni'ne göre
+     işlenir: skyl.app/kvkk-metni" (the ticket mail's photo sentence, the
+     site's "KVKK Metni" link). **The ticket page's link is never printed:**
+     its key also matches the holder on the door's attendance page (decision
+     12), so a printed or forwarded PDF must not carry it; the link stays in
+     the mail.
 - **Text is data:** no sentence tells the holder what to do (no "show the
   QR", no "scan"); the labels and the footnote only.
 - **Never** an e-mail, a phone number, a Sky number or the ticket type.

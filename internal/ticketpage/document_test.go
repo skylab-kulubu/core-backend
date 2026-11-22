@@ -36,7 +36,7 @@ func baseDocument() ticketpage.Document {
 		Venue: "YTÜ Davutpaşa, EEF Konferans Salonu", VenueAddress: "Davutpaşa Cd. No:127, Esenler/İstanbul",
 		DirectionsURL: "https://www.google.com/maps/dir/?api=1&destination=41.025376%2C28.889648",
 		OwnerTeam:     "AILAB", HolderName: "Elif Yılmaz", Code: "K7M2-QX9F", QRToken: "eyJhbGciOiJFUzI1NiJ9.e30.c2ln",
-		PageLink: "yildizskylab.com/bilet/ABCDEFGHIJKLMNOPQRSTUVWXYZ", Description: "Uygulamalı bir kamp.",
+		Description: "Uygulamalı bir kamp.",
 		IssuedAt: time.Date(2026, 11, 22, 12, 40, 0, 0, time.UTC),
 	}
 }
@@ -190,21 +190,22 @@ func TestTicketFields(t *testing.T) {
 	html, _ := render(t, d)
 	for _, want := range []string{"<span>Başlangıç</span><b class=\"buyuk\">12 Ara 2026 Cmt, 09:30</b>", "<span>Bitiş</span><b class=\"buyuk\">14 Ara 2026 Pzt, 17:00</b>",
 		"<span>Katılımcı</span><b>Elif Yılmaz</b>", "<span>Düzenleyen</span><b>AILAB</b>", "<span>Etkinlik</span><b class=\"buyuk\">Yapay Zeka Kampı</b>",
-		"Doğrulama: yildizskylab.com/bilet/ABCDEFGHIJKLMNOPQRSTUVWXYZ", "Düzenlenme 22.11.2026 15:40"} {
+		"<p>Bu bilet kişiye özeldir. Düzenlenme: 22.11.2026 15:40</p>",
+		"<p>Etkinlikte fotoğraf ve video çekilir, Kulübün kanallarında paylaşılabilir. Kişisel veriler KVKK Metni&#39;ne göre işlenir: skyl.app/kvkk-metni</p>"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("no %q", want)
 		}
 	}
 	d.Start, d.End = at("2026-12-12T14:00:00+03:00"), at("2026-12-12T16:00:00+03:00")
-	d.OwnerTeam, d.PageLink = "", ""
+	d.OwnerTeam = ""
 	html, _ = render(t, d)
 	for _, want := range []string{"<span>Tarih</span><b class=\"buyuk\">12 Ara 2026 Cmt</b>", "<span>Saat</span><b class=\"buyuk\">14:00 – 16:00</b>", "<span>Düzenleyen</span><b>SKY LAB</b>"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("no %q", want)
 		}
 	}
-	if strings.Contains(html, "Doğrulama") {
-		t.Error("a page link without a page")
+	if strings.Contains(html, "Doğrulama") || strings.Contains(html, "/bilet/") {
+		t.Error("the footnote names the ticket page")
 	}
 }
 
@@ -320,5 +321,33 @@ func TestDocumentSize(t *testing.T) {
 	html, header := render(t, d)
 	if total := len(html) + len(header); total > 512<<10 {
 		t.Fatalf("the renderer gets %d bytes (band %d, map %d)", total, len(d.BandJPEG), len(d.Map))
+	}
+}
+
+// The directions QR and its links come only with a point or an address: a
+// place known by its name alone ("Online") gets none.
+func TestDirectionsOnlyForAPlaceOnAMap(t *testing.T) {
+	t.Parallel()
+	lat, lng := 41.025376, 28.889648
+	for _, tc := range []struct {
+		address  string
+		lat, lng *float64
+		want     bool
+	}{
+		{"", nil, nil, false},
+		{"  ", nil, nil, false},
+		{"Davutpaşa Cd. No:127", nil, nil, true},
+		{"", &lat, &lng, true},
+	} {
+		got := ticketpage.DirectionsURL("Online", tc.address, tc.lat, tc.lng)
+		if (got != "") != tc.want || (ticketpage.MapsURL("Online", tc.address, tc.lat, tc.lng) != "") != tc.want {
+			t.Errorf("%q %v: %q", tc.address, tc.lat != nil, got)
+		}
+	}
+	d := baseDocument()
+	d.Venue, d.VenueAddress, d.DirectionsURL = "Online", "", ticketpage.DirectionsURL("Online", "", nil, nil)
+	html, _ := render(t, d)
+	if strings.Contains(html, "Yol tarifi") || !strings.Contains(html, `<div class="ad">Online</div>`) {
+		t.Error("a directions QR for a place known by its name alone")
 	}
 }
