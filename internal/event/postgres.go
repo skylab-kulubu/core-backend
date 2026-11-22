@@ -396,20 +396,22 @@ func (s *PostgresStore) ArchiveDraft(ctx context.Context, id uuid.UUID, actorID 
 	return ErrNotFound
 }
 
-func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID) error {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE events
-		SET archived_at = NULL,
-			archived_by = NULL,
-			updated_at = CASE WHEN archived_at IS NOT NULL THEN now() ELSE updated_at END
-		WHERE id = $1`, id)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+func (s *PostgresStore) Restore(ctx context.Context, id uuid.UUID, guard *formGuard) error {
+	_, err := withFormGuard(ctx, s, guard, func(q querier) (struct{}, error) {
+		var restored uuid.UUID
+		err := q.QueryRow(ctx, `
+			UPDATE events
+			SET archived_at = NULL,
+				archived_by = NULL,
+				updated_at = CASE WHEN archived_at IS NOT NULL THEN now() ELSE updated_at END
+			WHERE id = $1
+			RETURNING id`, id).Scan(&restored)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return struct{}{}, ErrNotFound
+		}
+		return struct{}{}, err
+	})
+	return err
 }
 
 func (s *PostgresStore) AddImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error) {

@@ -133,10 +133,10 @@ func TestPostgresEventArchivePreservesDependentRecords(t *testing.T) {
 		t.Fatalf("preserved certificate = %+v, pdf = %q", preservedCertificate, pdf)
 	}
 
-	if err := eventStore.Restore(ctx, createdEvent.ID); err != nil {
+	if err := eventStore.Restore(ctx, createdEvent.ID, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := eventStore.Restore(ctx, createdEvent.ID); err != nil {
+	if err := eventStore.Restore(ctx, createdEvent.ID, nil); err != nil {
 		t.Fatalf("second restore: %v", err)
 	}
 	restored, err := eventStore.Get(ctx, createdEvent.ID)
