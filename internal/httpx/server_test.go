@@ -63,7 +63,7 @@ func testPassSigner() *skypass.Signer {
 // edge proxy. A request carrying X-Forwarded-For then reaches the routes the
 // way a real one does once Traefik has rewritten the header.
 func testTrustedProxies() clientip.Ranges {
-	ranges, err := clientip.ParseRanges("0.0.0.0/32," + clientip.DefaultRanges)
+	ranges, err := clientip.ParseRanges("0.0.0.0/32," + clientip.PrivateRanges)
 	if err != nil {
 		panic(err)
 	}

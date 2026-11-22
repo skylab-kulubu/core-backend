@@ -128,3 +128,23 @@ func (a *afterCheckIn) MintDoorQR(ctx context.Context, p authz.Principal, sessio
 func (a *afterCheckIn) DoorActivity(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorActivity, error) {
 	return a.inner.DoorActivity(ctx, p, sessionID)
 }
+
+func (a *afterCheckIn) CheckInTicketQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID, token string) (CheckIn, error) {
+	ci, err := a.inner.CheckInTicketQR(ctx, p, sessionID, token)
+	if err == nil {
+		a.fire(ctx, ci.TicketID)
+	}
+	return ci, err
+}
+
+func (a *afterCheckIn) TicketQR(t Ticket, ev event.Event) (string, error) {
+	return a.inner.TicketQR(t, ev)
+}
+
+func (a *afterCheckIn) ResendTicket(ctx context.Context, p authz.Principal, id uuid.UUID, requestKey string) (Resend, error) {
+	return a.inner.ResendTicket(ctx, p, id, requestKey)
+}
+
+func (a *afterCheckIn) RenewTicketLink(ctx context.Context, p authz.Principal, id uuid.UUID, notify bool, requestKey string) (Ticket, Resend, error) {
+	return a.inner.RenewTicketLink(ctx, p, id, notify, requestKey)
+}

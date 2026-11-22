@@ -63,6 +63,12 @@ const (
 	ActionTermExtend   Action = "membership.term.extend"
 	ActionTermHandover Action = "membership.term.handover"
 	ActionTermExpired  Action = "membership.term.expired"
+	// ActionTicketResend and ActionTicketLinkRenew are a Ticket's mail sent
+	// again and its link renewed from the panel (docs/ticket-resend.md).
+	// The target is the Event's team (GroupID, GroupPath); after names the
+	// Ticket and the Event (State.TicketID, State.EventID), never a person.
+	ActionTicketResend    Action = "ticket.resend"
+	ActionTicketLinkRenew Action = "ticket.link.renew"
 )
 
 // Actions are every action the table's check accepts.
@@ -71,6 +77,7 @@ var Actions = []Action{
 	ActionTeamCreate, ActionTeamCode, ActionTeamProfile, ActionTeamMove, ActionTeamDelete,
 	ActionGroupRoles, ActionGroupAttributes, ActionAppAssign, ActionAppUnassign,
 	ActionTermExtend, ActionTermHandover, ActionTermExpired,
+	ActionTicketResend, ActionTicketLinkRenew,
 }
 
 // targetsPerson reports whether the action is about one person: they, and
@@ -198,6 +205,12 @@ type State struct {
 	// Kind is the Leader group of a leader.add or leader.remove row
 	// (LIDERLER or KOORDINATORLER); absent on every other row.
 	Kind string `json:"kind,omitempty"`
+	// TicketID and EventID are a ticket.* row's Ticket and its Event;
+	// Resend is the resend's number (the mail's key …:r<n>), 0 for a
+	// renewal without its mail. Absent on every other row.
+	TicketID string `json:"ticketId,omitempty"`
+	EventID  string `json:"eventId,omitempty"`
+	Resend   int    `json:"resend,omitempty"`
 }
 
 // Limits of what a row holds. A longer text is cut, so a long value never
@@ -379,6 +392,15 @@ func (s *State) normalize() *State {
 	}
 	if _, err := uuid.Parse(s.SuccessorID); err == nil {
 		out.SuccessorID = s.SuccessorID
+	}
+	if _, err := uuid.Parse(s.TicketID); err == nil {
+		out.TicketID = s.TicketID
+	}
+	if _, err := uuid.Parse(s.EventID); err == nil {
+		out.EventID = s.EventID
+	}
+	if s.Resend > 0 {
+		out.Resend = s.Resend
 	}
 	if s.UnverifiedAck != nil {
 		ack := *s.UnverifiedAck

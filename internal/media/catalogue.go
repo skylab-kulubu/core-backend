@@ -54,6 +54,10 @@ const (
 	// (FrameWorker) when the video has no uploaded poster: no person uploads
 	// one (framePurposes). The video's link shows it (RoleEventVideoFrame).
 	PurposeVideoFrame = "video_frame"
+	// PurposeEventMap is the map of an Event's place that core draws itself
+	// (MapWorker) when the place gets a point: no person uploads one. The
+	// Event links it (RoleEventMap).
+	PurposeEventMap = "event_map"
 )
 
 // requiredPurposes are the purposes core refers to in code. A catalogue that
@@ -61,7 +65,7 @@ const (
 var requiredPurposes = []string{
 	PurposeLegacy, PurposeProfilePicture, PurposeEventCover, PurposeEventGallery, PurposeCertificateAsset,
 	PurposeCMSImage, PurposeCMSFile, PurposeAnswerFile, PurposeAnswerFileLarge, PurposeAnswerFileGuest, PurposeClubFile,
-	PurposeVideo, PurposeVideoFrame,
+	PurposeVideo, PurposeVideoFrame, PurposeEventMap,
 }
 
 // ErrCatalogueInvalid is a catalogue file core cannot read as one: a field it

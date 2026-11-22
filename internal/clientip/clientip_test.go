@@ -1,11 +1,18 @@
 package clientip_test
 
 import (
+	"context"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/skylab-kulubu/core-backend/internal/clientip"
@@ -216,8 +223,18 @@ func TestParseRanges(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "a hostname is rejected",
-			raw:     "traefik",
+			name: "a host name is a proxy looked up by name",
+			raw:  "dokploy-traefik, tasks.Site_1 ,127.0.0.0/8",
+			want: []string{"dokploy-traefik", "tasks.site_1", "127.0.0.0/8"},
+		},
+		{
+			name:    "a mistyped address is not taken for a name",
+			raw:     "10.0.1.300",
+			wantErr: true,
+		},
+		{
+			name:    "a name with a space or a scheme is rejected",
+			raw:     "http://traefik",
 			wantErr: true,
 		},
 		{
@@ -238,14 +255,8 @@ func TestParseRanges(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := ranges.Proxies()
-			if len(got) != len(tc.want) {
-				t.Fatalf("Proxies() = %v, want %v", got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Fatalf("Proxies() = %v, want %v", got, tc.want)
-				}
+			if got := ranges.Entries(); !slices.Equal(got, tc.want) {
+				t.Fatalf("Entries() = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -290,14 +301,13 @@ func TestRangesFromEnv(t *testing.T) {
 		t.Fatalf("%s = %q", clientip.EnvKey, got)
 	}
 
-	if _, err := clientip.RangesFromEnv(func(string) string { return "not-a-range" }); err == nil {
+	if _, err := clientip.RangesFromEnv(func(string) string { return "10.0.1.0/33" }); err == nil {
 		t.Fatalf("an invalid %s started the process", clientip.EnvKey)
 	}
 }
 
-// Fiber decides whether the peer is a proxy; this package decides which address
-// in the chain that proxy observed. The two read the same configuration, and a
-// request is resolved end to end here to prove they stay in agreement.
+// A request is resolved end to end: whether the peer is a proxy and which
+// address in the chain it observed.
 func TestFromCtxFollowsTheAppTrustConfiguration(t *testing.T) {
 	t.Parallel()
 
@@ -330,13 +340,15 @@ func appWithProxies(t *testing.T, raw string) *fiber.App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := fiber.New(fiber.Config{
-		TrustProxy:         true,
-		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: ranges.Proxies()},
-		ProxyHeader:        fiber.HeaderXForwardedFor,
-		EnableIPValidation: true,
-	})
+	return appTrusting(ranges)
+}
+
+// appTrusting answers the resolved address; it asks twice, as a limiter and
+// its handler do.
+func appTrusting(ranges clientip.Ranges) *fiber.App {
+	app := fiber.New()
 	app.Get("/", func(c fiber.Ctx) error {
+		clientip.FromCtx(c, ranges)
 		return c.SendString(clientip.FromCtx(c, ranges))
 	})
 	return app
@@ -354,4 +366,226 @@ func probe(t *testing.T, app *fiber.App, req *http.Request) string {
 		t.Fatal(err)
 	}
 	return string(body)
+}
+
+// fakeDNS answers the names it holds; others are not found. fail makes a
+// name's lookup fail without saying it is gone (a DNS hiccup).
+type fakeDNS struct {
+	mu    sync.Mutex
+	names map[string][]string
+	fail  map[string]bool
+}
+
+func (f *fakeDNS) set(name string, addrs ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.names == nil {
+		f.names = map[string][]string{}
+	}
+	if addrs == nil {
+		delete(f.names, name)
+		return
+	}
+	f.names[name] = addrs
+}
+
+func (f *fakeDNS) lookup(_ context.Context, host string) ([]netip.Addr, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail[host] {
+		return nil, &net.DNSError{Err: "i/o timeout", Name: host, IsTimeout: true}
+	}
+	raw, ok := f.names[host]
+	if !ok {
+		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	}
+	out := make([]netip.Addr, 0, len(raw))
+	for _, a := range raw {
+		out = append(out, netip.MustParseAddr(a))
+	}
+	return out, nil
+}
+
+type logLines struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *logLines) printf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+func (l *logLines) take() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := l.lines
+	l.lines = nil
+	return out
+}
+
+// The edge proxy and the site are containers on the same overlay subnet as
+// every other container: they are trusted by name, for the addresses their
+// names resolve to now, and nobody else in the subnet is.
+func TestNamedProxiesAreTrustedForWhatTheyResolveTo(t *testing.T) {
+	t.Parallel()
+	ranges, err := clientip.ParseRanges("dokploy-traefik,tasks.site")
+	if err != nil {
+		t.Fatal(err)
+	}
+	traefik, site, neighbour := netip.MustParseAddr("10.0.1.5"), netip.MustParseAddr("10.0.1.9"), netip.MustParseAddr("10.0.1.7")
+	if ranges.Contains(traefik) {
+		t.Fatal("a name was trusted before it was looked up")
+	}
+	dns := &fakeDNS{}
+	dns.set("dokploy-traefik", "10.0.1.5")
+	dns.set("tasks.site", "10.0.1.9", "::ffff:10.0.1.10")
+	var logs logLines
+	ranges.Refresh(t.Context(), dns.lookup, logs.printf)
+	if !ranges.Contains(traefik) || !ranges.Contains(site) || !ranges.Contains(netip.MustParseAddr("10.0.1.10")) {
+		t.Fatal("a resolved proxy is not trusted")
+	}
+	if ranges.Contains(neighbour) {
+		t.Fatal("a neighbour on the same subnet is trusted")
+	}
+	if got := logs.take(); !slices.Equal(got, []string{"trusted proxy dokploy-traefik: 1 address(es)", "trusted proxy tasks.site: 2 address(es)"}) {
+		t.Fatalf("logs %q", got)
+	}
+	ranges.Refresh(t.Context(), dns.lookup, logs.printf)
+	if got := logs.take(); len(got) != 0 {
+		t.Fatalf("an unchanged answer was logged: %q", got)
+	}
+
+	// A DNS hiccup keeps the proxy; the proxy gone from DNS loses its
+	// address, which the runtime may hand to another container.
+	dns.fail = map[string]bool{"dokploy-traefik": true}
+	ranges.Refresh(t.Context(), dns.lookup, logs.printf)
+	if !ranges.Contains(traefik) {
+		t.Fatal("a failed lookup dropped the proxy")
+	}
+	dns.fail = nil
+	dns.set("dokploy-traefik")
+	ranges.Refresh(t.Context(), dns.lookup, logs.printf)
+	if ranges.Contains(traefik) || !ranges.Contains(site) {
+		t.Fatal("a proxy gone from DNS is still trusted, or took the other one with it")
+	}
+	// Recreated elsewhere: the new address only.
+	dns.set("dokploy-traefik", "10.0.1.6")
+	ranges.Refresh(t.Context(), dns.lookup, logs.printf)
+	if ranges.Contains(traefik) || !ranges.Contains(netip.MustParseAddr("10.0.1.6")) {
+		t.Fatal("the recreated proxy's address did not replace the old one")
+	}
+	got := strings.Join(logs.take(), "\n")
+	for _, want := range []string{"lookup failed", "keeping 1 address(es)", "not resolved", "1 address(es)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("logs %q lack %q", got, want)
+		}
+	}
+	if strings.Contains(got, "10.0.1.") {
+		t.Fatalf("logs name an address: %q", got)
+	}
+}
+
+// Guest apply's internal hop is any private address, whether or not it is
+// a proxy; a proxy is internal too.
+func TestInternalIsThePrivateNetwork(t *testing.T) {
+	t.Parallel()
+	ranges, err := clientip.ParseRanges("0.0.0.0/32,dokploy-traefik")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for addr, want := range map[string]bool{
+		"10.0.1.7": true, "172.18.0.3": true, "127.0.0.1": true, "fd00::1": true, "0.0.0.0": true,
+		"203.0.113.9": false, "2001:db8::1": false,
+	} {
+		if got := ranges.Internal(netip.MustParseAddr(addr)); got != want {
+			t.Fatalf("Internal(%s) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+// app.Test dials from 0.0.0.0: a name that resolves there is the proxy.
+func TestFromCtxBelievesANamedProxyAndCountsIgnoredHeaders(t *testing.T) {
+	t.Parallel()
+	dns := &fakeDNS{}
+	dns.set("site", "0.0.0.0")
+	named, err := clientip.ParseRanges("site")
+	if err != nil {
+		t.Fatal(err)
+	}
+	named.Refresh(t.Context(), dns.lookup, func(string, ...any) {})
+	req := httptest.NewRequest(fiber.MethodGet, "/", nil)
+	req.Header.Set(fiber.HeaderXForwardedFor, "198.51.100.20")
+	if got := probe(t, appTrusting(named), req); got != "198.51.100.20" {
+		t.Fatalf("named proxy resolved %q", got)
+	}
+
+	other, err := clientip.ParseRanges("dokploy-traefik")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.Refresh(t.Context(), dns.lookup, func(string, ...any) {})
+	app := appTrusting(other)
+	for range 2 {
+		spoofed := httptest.NewRequest(fiber.MethodGet, "/", nil)
+		spoofed.Header.Set(fiber.HeaderXForwardedFor, "198.51.100.20")
+		if got := probe(t, app, spoofed); got != "0.0.0.0" {
+			t.Fatalf("a peer the name does not resolve to resolved %q", got)
+		}
+	}
+	plain := httptest.NewRequest(fiber.MethodGet, "/", nil)
+	if got := probe(t, app, plain); got != "0.0.0.0" {
+		t.Fatalf("no header resolved %q", got)
+	}
+	text := other.Prometheus()
+	for _, want := range []string{
+		"skylab_client_ip_forwarded_ignored_total 2\n",
+		`skylab_trusted_proxy_addresses{name="dokploy-traefik"} 0` + "\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metrics lack %q:\n%s", want, text)
+		}
+	}
+	if text := named.Prometheus(); !strings.Contains(text, `skylab_trusted_proxy_addresses{name="site"} 1`) || !strings.Contains(text, "skylab_client_ip_forwarded_ignored_total 0") {
+		t.Fatalf("named metrics:\n%s", text)
+	}
+}
+
+// A recreated proxy first shows as a header from a peer that is not trusted:
+// Watch looks the names up again then, without waiting for its tick.
+func TestWatchLooksUpAgainWhenAHeaderIsIgnored(t *testing.T) {
+	restore := clientip.SetRefreshTimings(time.Hour, 0)
+	defer restore()
+	dns := &fakeDNS{}
+	ranges, err := clientip.ParseRanges("dokploy-traefik")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ranges.Refresh(t.Context(), dns.lookup, func(string, ...any) {})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := ranges.Watch(ctx, dns.lookup, func(string, ...any) {})
+	defer func() {
+		cancel()
+		<-done
+	}()
+	dns.set("dokploy-traefik", "0.0.0.0")
+	app := appTrusting(ranges)
+	req := httptest.NewRequest(fiber.MethodGet, "/", nil)
+	req.Header.Set(fiber.HeaderXForwardedFor, "198.51.100.20")
+	if got := probe(t, app, req); got != "0.0.0.0" {
+		t.Fatalf("before the lookup resolved %q", got)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !ranges.Contains(netip.MustParseAddr("0.0.0.0")) {
+		if time.Now().After(deadline) {
+			t.Fatal("an ignored header did not bring a lookup")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	again := httptest.NewRequest(fiber.MethodGet, "/", nil)
+	again.Header.Set(fiber.HeaderXForwardedFor, "198.51.100.20")
+	if got := probe(t, app, again); got != "198.51.100.20" {
+		t.Fatalf("after the lookup resolved %q", got)
+	}
 }

@@ -14,6 +14,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
+	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -43,6 +45,15 @@ type Service interface {
 	AuthorizeSessionDoor(ctx context.Context, p authz.Principal, sessionID uuid.UUID) error
 	ResolveAndCheckIn(ctx context.Context, p authz.Principal, sessionID uuid.UUID, target DoorCheckInTarget) (DoorCheckIn, error)
 	DoorActivity(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorActivity, error)
+	// CheckInTicketQR takes a check-in from a Ticket QR the door scanned
+	// (docs/ticket-qr.md).
+	CheckInTicketQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID, token string) (CheckIn, error)
+	// TicketQR is t's Ticket QR on ev, for its holder.
+	TicketQR(t Ticket, ev event.Event) (string, error)
+	// ResendTicket and RenewTicketLink are the panel's "Bileti yeniden
+	// gönder" and "Bağlantıyı yenile" (docs/ticket-resend.md).
+	ResendTicket(ctx context.Context, p authz.Principal, id uuid.UUID, requestKey string) (Resend, error)
+	RenewTicketLink(ctx context.Context, p authz.Principal, id uuid.UUID, notify bool, requestKey string) (Ticket, Resend, error)
 }
 
 type TeamReader interface {
@@ -80,6 +91,18 @@ type service struct {
 	// logger writes what the service leaves out instead of failing (a
 	// *log.Logger extra; log.Default() otherwise, as the handlers').
 	logger *log.Logger
+	// qr mints and verifies Ticket QRs (a *ticketqr.Signer extra); nil
+	// refuses every Ticket QR.
+	qr TicketQRs
+	// scans counts Ticket QR scans (a *DoorScanMetrics extra); nil counts
+	// none.
+	scans *DoorScanMetrics
+	// page is the ticket page's settings (a PageConfig extra): the
+	// holder's own list links each Ticket's page.
+	page PageConfig
+	// audit records the ticket actions in the Team audit record (a
+	// teamaudit.Writer extra); nil records none.
+	audit teamaudit.Writer
 }
 
 func NewService(tickets Store, events event.Store, az authz.Authorizer, extras ...any) Service {
@@ -110,6 +133,18 @@ func NewService(tickets Store, events event.Store, az authz.Authorizer, extras .
 		}
 		if v, ok := extra.(*log.Logger); ok && v != nil {
 			s.logger = v
+		}
+		if v, ok := extra.(*ticketqr.Signer); ok && v != nil {
+			s.qr = v
+		}
+		if v, ok := extra.(*DoorScanMetrics); ok && v != nil {
+			s.scans = v
+		}
+		if v, ok := extra.(PageConfig); ok {
+			s.page = v
+		}
+		if v, ok := extra.(teamaudit.Writer); ok && v != nil {
+			s.audit = v
 		}
 	}
 	if s.door == nil {
@@ -316,6 +351,17 @@ func (s *service) SearchDoorAttendees(
 	query = strings.TrimSpace(query)
 	if len([]rune(query)) < 2 {
 		return []DoorAttendee{}, nil
+	}
+	// A Ticket's code finds that Ticket alone (docs/ticket-qr.md).
+	if row, found, err := s.doorTicketByCode(ctx, eventID, query); err != nil {
+		return nil, err
+	} else if found {
+		attendee := DoorAttendee{Name: row.Name, Email: row.Email}
+		if row.Ticket.OwnerID != nil {
+			personID := *row.Ticket.OwnerID
+			attendee.PersonID = &personID
+		}
+		return []DoorAttendee{attendee}, nil
 	}
 	if store, ok := s.tickets.(DoorStore); ok {
 		return s.searchStoredDoorAttendees(ctx, store, eventID, query)
@@ -742,7 +788,39 @@ func (s *service) Mine(ctx context.Context, p authz.Principal) ([]Ticket, error)
 	if err != nil {
 		return nil, err
 	}
-	return s.withFeedbackLinks(ctx, s.withEvents(ctx, tickets)), nil
+	return s.withHolderLinks(ctx, s.withFeedbackLinks(ctx, s.withEvents(ctx, tickets))), nil
+}
+
+// withHolderLinks gives the holder's own Tickets their ticket page
+// (ticketUrl, while TICKET_PAGE_URL is set) and their Ticket QR (qrToken,
+// on a published Event): not on a draft, nor once the page has closed
+// (docs/ticket-page.md). A QR that cannot be signed is left out.
+func (s *service) withHolderLinks(ctx context.Context, tickets []Ticket) []Ticket {
+	now := time.Now()
+	events := map[uuid.UUID]*event.Event{}
+	for i := range tickets {
+		t := &tickets[i]
+		if !held(*t) || t.AccessKey == "" {
+			continue
+		}
+		ev, seen := events[t.EventID]
+		if !seen {
+			if got, err := s.events.Get(ctx, t.EventID); err == nil {
+				ev = &got
+			}
+			events[t.EventID] = ev
+		}
+		if ev == nil || ev.Status == event.StatusDraft || s.page.Closed(*ev, now) {
+			continue
+		}
+		t.TicketURL = s.page.Link(t.AccessKey)
+		if ev.Status == event.StatusPublished && s.qr != nil {
+			if token, err := s.TicketQR(*t, *ev); err == nil {
+				t.QRToken = token
+			}
+		}
+	}
+	return tickets
 }
 
 // withFeedbackLinks gives the holder's Tickets their feedback links, read in
@@ -1268,6 +1346,23 @@ func (s *service) ResolveAndCheckIn(
 	query := normalizedDoorValue(target.Query)
 	if target.PersonID == nil && query == "" {
 		return DoorCheckIn{}, ErrInvalid
+	}
+	// A Ticket's code first, then the name and e-mail (docs/ticket-qr.md).
+	if target.PersonID == nil {
+		row, found, err := s.doorTicketByCode(ctx, ev.ID, target.Query)
+		if err != nil {
+			return DoorCheckIn{}, err
+		}
+		if found {
+			ci, err := s.addSessionCheckIn(ctx, row.Ticket, sessionID)
+			if err != nil {
+				return DoorCheckIn{}, err
+			}
+			return DoorCheckIn{
+				ID: ci.ID, TicketID: ci.TicketID, SessionID: ci.SessionID, EventDayID: ci.EventDayID,
+				PersonName: row.Name, CreatedAt: ci.CreatedAt,
+			}, nil
+		}
 	}
 	if store, ok := s.tickets.(DoorStore); ok {
 		return s.resolveStoredDoorCheckIn(ctx, store, ev, sessionID, target, query)

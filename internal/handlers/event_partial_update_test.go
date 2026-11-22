@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"encoding/json"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
@@ -13,6 +15,7 @@ import (
 // partialFull is an Event with every field the update body carries set.
 const partialFull = `{
 	"name":"Gecekodu","description":"Açıklama","location":"YTÜ","ownerTeam":"WEBLAB",
+	"locationLat":41.025376,"locationLng":28.889648,"locationAddress":"Davutpaşa Cd. No:127, Esenler",
 	"formUrl":"https://forms.yildizskylab.com/f/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","formAlias":"gecekodu",
 	"extraFormUrls":[{"label":"CTF","url":"https://forms.yildizskylab.com/f/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","alias":"ctf"}],
 	"capacity":120,"startDate":"2030-03-14T16:00:00Z","endDate":"2030-03-15T00:00:00Z",
@@ -86,6 +89,10 @@ func TestEventUpdateWritesSentValuesAndClearsNull(t *testing.T) {
 	}{
 		{"name", `{"name":"Gecekodu 2"}`, map[string]any{"name": "Gecekodu 2"}},
 		{"location", `{"location":"Davutpaşa"}`, map[string]any{"location": "Davutpaşa"}},
+		{"point moved", `{"locationLat":41.0431234567,"locationLng":29.009}`, map[string]any{"locationLat": 41.043123, "locationLng": 29.009}},
+		{"point cleared", `{"locationLat":null,"locationLng":null}`, map[string]any{"locationLat": nil, "locationLng": nil}},
+		{"address", `{"locationAddress":"Beşiktaş"}`, map[string]any{"locationAddress": "Beşiktaş"}},
+		{"address cleared", `{"locationAddress":null}`, map[string]any{"locationAddress": nil}},
 		{"description cleared", `{"description":null}`, map[string]any{"description": ""}},
 		{"description empty", `{"description":""}`, map[string]any{"description": ""}},
 		{"formUrl cleared", `{"formUrl":null}`, map[string]any{"formUrl": nil}},
@@ -150,6 +157,8 @@ func TestEventUpdateRefusesClearingARequiredField(t *testing.T) {
 		`{"feedbackMode":null}`, `{"feedbackMode":"herkes"}`, `{"feedbackAutoSend":null}`,
 		`{"attendanceRule":"ratio","attendanceRatio":null}`,
 		`{"capacity":"çok"}`,
+		`{"locationLat":41.05}`, `{"locationLng":null}`, `{"locationLat":95,"locationLng":29}`,
+		`{"locationLat":"kuzey","locationLng":29}`,
 	} {
 		app := eventApp(t, yk(), event.NewMemoryStore())
 		created := createPartialEvent(t, app)
@@ -214,5 +223,56 @@ func partialMember() authn.Identity {
 	return authn.Identity{
 		ID:     uuid.MustParse("33333333-3333-3333-3333-333333333333"),
 		Groups: []string{"/UYELER/ARGE/WEBLAB"},
+	}
+}
+
+// A point the store cannot keep answers its own code, for the panel to
+// show on the place's fields; so does one on create.
+func TestEventLocationRefusalHasItsCode(t *testing.T) {
+	t.Parallel()
+	app := eventApp(t, yk(), event.NewMemoryStore())
+	created := createPartialEvent(t, app)
+	status, out := sendEventJSON(t, app, fiber.MethodPatch, "/v1/events/"+created["id"].(string), `{"locationLat":41.05}`)
+	if status != fiber.StatusBadRequest || out["code"] != "event_location_invalid" {
+		t.Fatalf("patch %d %v", status, out)
+	}
+	status, out = sendEventJSON(t, app, fiber.MethodPost, "/v1/events",
+		`{"name":"Gecekodu","location":"YTÜ","ownerTeam":"WEBLAB","locationLat":0,"locationLng":0}`)
+	if status != fiber.StatusBadRequest || out["code"] != "event_location_invalid" {
+		t.Fatalf("create %d %v", status, out)
+	}
+}
+
+// GET /v1/events/places: a team's places for its leader, the club's for
+// YK; signed out 401, a bad limit 400, the club's for a leader 403.
+func TestEventPlacesRoute(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	createPartialEvent(t, eventApp(t, yk(), store))
+	leader := eventApp(t, weblabLeader(), store)
+	resp, err := leader.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/places?ownerTeam=WEBLAB", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var places []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&places); err != nil || resp.StatusCode != fiber.StatusOK || len(places) != 1 ||
+		places[0]["name"] != "YTÜ" || places[0]["address"] != "Davutpaşa Cd. No:127, Esenler" || places[0]["lat"] != 41.025376 || places[0]["uses"] != float64(1) {
+		t.Fatalf("%d %v %v", resp.StatusCode, places, err)
+	}
+	for _, tc := range []struct {
+		app    *fiber.App
+		path   string
+		status int
+	}{
+		{eventApp(t, authn.Identity{}, store), "/v1/events/places?ownerTeam=WEBLAB", fiber.StatusUnauthorized},
+		{leader, "/v1/events/places", fiber.StatusForbidden},
+		{leader, "/v1/events/places?ownerTeam=WEBLAB&limit=0", fiber.StatusBadRequest},
+		{leader, "/v1/events/places?ownerTeam=WEBLAB&limit=çok", fiber.StatusBadRequest},
+		{eventApp(t, yk(), store), "/v1/events/places?limit=50", fiber.StatusOK},
+	} {
+		resp, err := tc.app.Test(httptest.NewRequest(fiber.MethodGet, tc.path, nil))
+		if err != nil || resp.StatusCode != tc.status {
+			t.Errorf("%s: %v %v", tc.path, resp.StatusCode, err)
+		}
 	}
 }

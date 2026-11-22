@@ -6,46 +6,92 @@
 // and writes its own, so the header is worth reading exactly when the peer that
 // opened the connection is one of the proxies an operator listed in
 // TRUSTED_PROXY_RANGES. Traefik's address on that network is assigned by the
-// container runtime and changes whenever it is recreated, which is why the
-// configuration is a set of ranges and never a single address.
+// container runtime and changes whenever it is recreated, and every other
+// container on the network sits in the same subnet, so the proxy is named by
+// its host name (resolved through the network's DNS and looked up again as it
+// moves) rather than by an address or a range.
 package clientip
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/netip"
+	"regexp"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 )
 
-// EnvKey is the environment variable that carries the trusted proxy ranges.
+// EnvKey is the environment variable that carries the trusted proxies.
 const EnvKey = "TRUSTED_PROXY_RANGES"
 
-// DefaultRanges covers the private and loopback space a container network hands
-// out. It deliberately does not name a single proxy address: the edge proxy
-// moves within the overlay network across restarts.
-const DefaultRanges = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7"
+// DefaultRanges trusts the edge proxy alone: Dokploy's Traefik container,
+// by its name on dokploy-network, and the loopback (a proxy beside the
+// process in development). Another container on the network is not a proxy
+// unless the setting names it.
+const DefaultRanges = "dokploy-traefik,127.0.0.0/8,::1/128"
 
-// Ranges is a validated set of proxy addresses and networks.
+// PrivateRanges is the address space a container network hands out. It was
+// the default proxy list until 2026-11-22; it now only tells an internal
+// caller from the internet (Internal), never whose header to believe.
+const PrivateRanges = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7"
+
+// How often the named proxies are looked up again, and the shortest gap
+// between two lookups when an ignored header asks for one sooner.
+var (
+	refreshEvery = 10 * time.Second
+	refreshGap   = 2 * time.Second
+)
+
+// Ranges is a validated set of proxy addresses, networks and host names.
 //
 // The zero value trusts nobody, which makes every request fall back to its
 // socket address rather than to a header a client can write.
 type Ranges struct {
 	configured []string
 	prefixes   []netip.Prefix
+	state      *state
 }
 
-var defaultRanges = mustParseRanges(DefaultRanges)
+// state is shared by every copy of one parsed Ranges: the named proxies'
+// addresses as last looked up, and the counter of ignored headers.
+type state struct {
+	names []string
+
+	mu     sync.Mutex
+	byName map[string][]netip.Addr
+	failed map[string]bool
+	last   time.Time
+
+	addrs   atomic.Pointer[[]netip.Addr]
+	ignored atomic.Uint64
+	poke    chan struct{}
+}
+
+var (
+	defaultRanges = mustParseRanges(DefaultRanges)
+	privateRanges = mustParseRanges(PrivateRanges)
+	hostName      = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_-]{0,62})(\.[A-Za-z0-9]([A-Za-z0-9_-]{0,62}))*$`)
+)
 
 // Default returns the parsed DefaultRanges.
 func Default() Ranges { return defaultRanges }
 
-// ParseRanges reads a comma-separated list of CIDR ranges. A bare address is
-// accepted as a single-host range. An entry that is neither is an error rather
-// than a silently ignored line, because a typo here would quietly make the
-// service read a spoofable header or stop reading a real one.
+// ParseRanges reads a comma-separated list of CIDR ranges, addresses (a
+// single host) and host names. A name is a proxy whose address the
+// container runtime assigns: it is looked up through DNS (Refresh, Watch),
+// and trusted for the addresses it resolves to. An entry that is none of
+// these is an error rather than a silently ignored line, because a typo
+// here would quietly make the service read a spoofable header or stop
+// reading a real one.
 func ParseRanges(raw string) (Ranges, error) {
-	var ranges Ranges
+	ranges := Ranges{state: &state{byName: map[string][]netip.Addr{}, failed: map[string]bool{}, poke: make(chan struct{}, 1)}}
 	for _, field := range strings.Split(raw, ",") {
 		field = strings.TrimSpace(field)
 		if field == "" {
@@ -54,19 +100,40 @@ func ParseRanges(raw string) (Ranges, error) {
 		prefix, err := netip.ParsePrefix(field)
 		if err != nil {
 			addr, addrErr := netip.ParseAddr(field)
-			if addrErr != nil || addr.Zone() != "" {
-				return Ranges{}, fmt.Errorf("%s: %q is neither a CIDR range nor an IP address", EnvKey, field)
+			switch {
+			case addrErr == nil && addr.Zone() == "":
+				addr = addr.Unmap()
+				prefix = netip.PrefixFrom(addr, addr.BitLen())
+			case isHostName(field):
+				name := strings.ToLower(field)
+				if !slices.Contains(ranges.state.names, name) {
+					ranges.state.names = append(ranges.state.names, name)
+				}
+				ranges.configured = append(ranges.configured, name)
+				continue
+			default:
+				return Ranges{}, fmt.Errorf("%s: %q is neither a CIDR range, an IP address nor a host name", EnvKey, field)
 			}
-			addr = addr.Unmap()
-			prefix = netip.PrefixFrom(addr, addr.BitLen())
 		}
 		ranges.configured = append(ranges.configured, field)
 		ranges.prefixes = append(ranges.prefixes, prefix.Masked())
 	}
-	if len(ranges.prefixes) == 0 {
-		return Ranges{}, fmt.Errorf("%s must list at least one CIDR range", EnvKey)
+	if len(ranges.configured) == 0 {
+		return Ranges{}, fmt.Errorf("%s must list at least one proxy", EnvKey)
 	}
 	return ranges, nil
+}
+
+// isHostName accepts a DNS name with at least one letter, so that a
+// mistyped address or range (digits, dots, colons, a slash) is an error
+// and never a name that silently resolves to nothing.
+func isHostName(field string) bool {
+	if len(field) > 253 || !hostName.MatchString(field) {
+		return false
+	}
+	return strings.IndexFunc(field, func(r rune) bool {
+		return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+	}) >= 0
 }
 
 // RangesFromEnv reads EnvKey, falling back to DefaultRanges when it is unset or
@@ -79,19 +146,22 @@ func RangesFromEnv(getenv func(string) string) (Ranges, error) {
 	return ParseRanges(raw)
 }
 
-// Proxies returns the configured entries in the spelling Fiber's
-// TrustProxyConfig expects, so the framework and this package always agree on
-// which peers are proxies.
-func (r Ranges) Proxies() []string {
-	proxies := make([]string, len(r.configured))
-	copy(proxies, r.configured)
-	return proxies
+// Entries returns the configured entries, host names included, in order.
+func (r Ranges) Entries() []string { return slices.Clone(r.configured) }
+
+// Names returns the host names among the entries.
+func (r Ranges) Names() []string {
+	if r.state == nil {
+		return nil
+	}
+	return slices.Clone(r.state.names)
 }
 
 // Empty reports whether no proxy is trusted.
-func (r Ranges) Empty() bool { return len(r.prefixes) == 0 }
+func (r Ranges) Empty() bool { return len(r.configured) == 0 }
 
-// Contains reports whether addr belongs to one of the trusted networks.
+// Contains reports whether addr is a trusted proxy: inside one of the
+// networks, or an address a named proxy resolved to at its last lookup.
 func (r Ranges) Contains(addr netip.Addr) bool {
 	addr = addr.Unmap()
 	if !addr.IsValid() {
@@ -102,11 +172,162 @@ func (r Ranges) Contains(addr netip.Addr) bool {
 			return true
 		}
 	}
+	if r.state != nil {
+		if addrs := r.state.addrs.Load(); addrs != nil && slices.Contains(*addrs, addr) {
+			return true
+		}
+	}
 	return false
+}
+
+// Internal reports whether addr is a caller inside the container network
+// rather than on the internet: a trusted proxy itself, or any private or
+// loopback address. It decides limits only (Guest apply's internal hop),
+// never whose header to believe; a request's answer is InternalFromCtx,
+// which also refuses a header from a peer that is not trusted.
+func (r Ranges) Internal(addr netip.Addr) bool {
+	return r.Contains(addr) || privateRanges.Contains(addr)
 }
 
 // String renders the configured entries for startup logs.
 func (r Ranges) String() string { return strings.Join(r.configured, ",") }
+
+// Lookup resolves a host name to its addresses.
+type Lookup func(ctx context.Context, host string) ([]netip.Addr, error)
+
+// DNSLookup resolves through the system resolver: on a Docker network, the
+// network's own DNS, which answers a container's name and `tasks.<service>`
+// (a Swarm service's running tasks) with their addresses on that network.
+func DNSLookup(ctx context.Context, host string) ([]netip.Addr, error) {
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+}
+
+// Refresh looks the named proxies up once and trusts what they resolve to.
+// A name the DNS no longer knows loses its addresses (they may be handed to
+// another container); a lookup that fails otherwise keeps the last ones,
+// so a DNS hiccup does not stop believing the proxy. logf hears each name
+// whose answer changed: its count of addresses, or why it is unresolved.
+func (r Ranges) Refresh(ctx context.Context, lookup Lookup, logf func(format string, args ...any)) {
+	if r.state == nil || len(r.state.names) == 0 {
+		return
+	}
+	s := r.state
+	// The lookups run without the lock, so /v1/metrics never waits on DNS.
+	type answer struct {
+		addrs []netip.Addr
+		err   error
+	}
+	answers := make([]answer, len(s.names))
+	for i, name := range s.names {
+		answers[i].addrs, answers[i].err = lookup(ctx, name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.last = time.Now()
+	for i, name := range s.names {
+		addrs, err := answers[i].addrs, answers[i].err
+		var dnsErr *net.DNSError
+		switch {
+		case err == nil:
+			for i := range addrs {
+				addrs[i] = addrs[i].Unmap()
+			}
+			slices.SortFunc(addrs, func(a, b netip.Addr) int { return a.Compare(b) })
+			addrs = slices.Compact(addrs)
+			if s.failed[name] || !slices.Equal(addrs, s.byName[name]) {
+				logf("trusted proxy %s: %d address(es)", name, len(addrs))
+			}
+			s.byName[name], s.failed[name] = addrs, false
+		case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
+			if !s.failed[name] || len(s.byName[name]) > 0 {
+				logf("trusted proxy %s: not resolved (%v); its header is not believed", name, err)
+			}
+			s.byName[name], s.failed[name] = nil, true
+		default:
+			if !s.failed[name] {
+				logf("trusted proxy %s: lookup failed (%v); keeping %d address(es)", name, err, len(s.byName[name]))
+			}
+			s.failed[name] = true
+		}
+	}
+	union := make([]netip.Addr, 0)
+	for _, name := range s.names {
+		union = append(union, s.byName[name]...)
+	}
+	s.addrs.Store(&union)
+}
+
+// Watch looks the named proxies up again every few seconds, and sooner
+// (but not twice within a couple of seconds) when a header is ignored from
+// a peer that is not trusted, which is how a recreated proxy first shows.
+// The channel closes when ctx ends. Without names there is nothing to watch.
+func (r Ranges) Watch(ctx context.Context, lookup Lookup, logf func(format string, args ...any)) <-chan struct{} {
+	done := make(chan struct{})
+	if r.state == nil || len(r.state.names) == 0 {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(refreshEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			case <-r.state.poke:
+				r.state.mu.Lock()
+				soon := time.Since(r.state.last) < refreshGap
+				r.state.mu.Unlock()
+				if soon {
+					continue
+				}
+			}
+			lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			r.Refresh(lookupCtx, lookup, logf)
+			cancel()
+		}
+	}()
+	return done
+}
+
+// Prometheus renders the named proxies' resolved addresses and the count
+// of ignored headers for /v1/metrics.
+func (r Ranges) Prometheus() string {
+	var b strings.Builder
+	b.WriteString("# HELP skylab_client_ip_forwarded_ignored_total Requests whose X-Forwarded-For was ignored because the peer is not a trusted proxy.\n")
+	b.WriteString("# TYPE skylab_client_ip_forwarded_ignored_total counter\n")
+	var ignored uint64
+	if r.state != nil {
+		ignored = r.state.ignored.Load()
+	}
+	fmt.Fprintf(&b, "skylab_client_ip_forwarded_ignored_total %d\n", ignored)
+	if r.state == nil || len(r.state.names) == 0 {
+		return b.String()
+	}
+	b.WriteString("# HELP skylab_trusted_proxy_addresses Addresses each named trusted proxy resolved to (0: not resolved).\n")
+	b.WriteString("# TYPE skylab_trusted_proxy_addresses gauge\n")
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	for _, name := range r.state.names {
+		fmt.Fprintf(&b, "skylab_trusted_proxy_addresses{name=%q} %d\n", name, len(r.state.byName[name]))
+	}
+	return b.String()
+}
+
+// ignoredHeader counts a header from a peer that is not trusted and asks
+// Watch for an early lookup.
+func (r Ranges) ignoredHeader() {
+	if r.state == nil {
+		return
+	}
+	r.state.ignored.Add(1)
+	select {
+	case r.state.poke <- struct{}{}:
+	default:
+	}
+}
 
 // Resolve returns the client address as the outermost trusted proxy observed
 // it.
@@ -149,11 +370,51 @@ func Resolve(trusted bool, peer string, forwarded []string, ranges Ranges) strin
 	return ""
 }
 
-// FromCtx resolves the client address of an in-flight request. The trust
-// decision is Fiber's own, so a handler and c.IP() can never disagree about
-// which peers are proxies.
+// FromCtx resolves the client address of an in-flight request, once: the
+// answer is kept on the request, so a limiter and its handler agree and an
+// ignored header is counted once. Fiber itself believes no forwarded header
+// (internal/httpx); c.IP() is the socket's address.
 func FromCtx(c fiber.Ctx, ranges Ranges) string {
-	return Resolve(c.IsProxyTrusted(), peerAddress(c), Forwarded(c), ranges)
+	return resolve(c, ranges).addr
+}
+
+// InternalFromCtx reports whether the request came from inside the container
+// network: a trusted proxy or a private address, and no X-Forwarded-For from
+// a peer that is not trusted. A proxy whose name did not resolve still writes
+// that header, so its requests (the internet's) are never internal; a caller
+// on the network that names nobody (the forms hop) is.
+func InternalFromCtx(c fiber.Ctx, ranges Ranges) bool {
+	r := resolve(c, ranges)
+	if r.ignored {
+		return false
+	}
+	addr, err := netip.ParseAddr(r.addr)
+	return err == nil && ranges.Internal(addr)
+}
+
+type resolution struct {
+	addr    string
+	ignored bool
+}
+
+type resolvedKey struct{}
+
+func resolve(c fiber.Ctx, ranges Ranges) resolution {
+	if cached, ok := c.Locals(resolvedKey{}).(resolution); ok {
+		return cached
+	}
+	peer := peerAddress(c)
+	forwarded := Forwarded(c)
+	trusted := false
+	if addr, ok := parseAddr(peer); ok {
+		trusted = ranges.Contains(addr)
+	}
+	r := resolution{addr: Resolve(trusted, peer, forwarded, ranges), ignored: !trusted && len(forwarded) > 0}
+	if r.ignored {
+		ranges.ignoredHeader()
+	}
+	c.Locals(resolvedKey{}, r)
+	return r
 }
 
 // Forwarded returns the `X-Forwarded-For` chain in header order. Repeated

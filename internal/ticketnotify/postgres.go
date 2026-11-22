@@ -29,7 +29,7 @@ func (q *PostgresQueue) Claim(ctx context.Context, now time.Time, lease time.Dur
 			FOR UPDATE SKIP LOCKED
 		) due
 		WHERE n.ticket_id = due.ticket_id
-		RETURNING n.ticket_id, n.created_at, n.attempts, n.claimed_at`,
+		RETURNING n.ticket_id, n.created_at, n.attempts, n.claimed_at, n.resend`,
 		now, now.Add(lease), limit)
 	if err != nil {
 		return nil, err
@@ -38,7 +38,7 @@ func (q *PostgresQueue) Claim(ctx context.Context, now time.Time, lease time.Dur
 	var out []Queued
 	for rows.Next() {
 		var c Queued
-		if err := rows.Scan(&c.TicketID, &c.CreatedAt, &c.Attempts, &c.ClaimedAt); err != nil {
+		if err := rows.Scan(&c.TicketID, &c.CreatedAt, &c.Attempts, &c.ClaimedAt, &c.Resend); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

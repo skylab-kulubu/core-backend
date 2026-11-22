@@ -126,6 +126,11 @@ type Store interface {
 	// Event's current days' current Sessions (the Event archived or not),
 	// or, for uuid.Nil, of every current Event's.
 	ListSessionFeedbackForms(ctx context.Context, eventID uuid.UUID) ([]SessionFeedbackForm, error)
+	// ListPlaces reads the places current Events with a point were held at,
+	// one per name and point (the address of its latest Event), the latest
+	// used first, at most limit: the Owner team's (every team's for "") and
+	// drafts only with drafts.
+	ListPlaces(ctx context.Context, ownerTeam string, drafts bool, limit int) ([]Place, error)
 	ArchiveSession(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	RestoreSession(ctx context.Context, id uuid.UUID) error
 }

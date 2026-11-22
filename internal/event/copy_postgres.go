@@ -61,13 +61,15 @@ func (s *PostgresStore) Copy(ctx context.Context, plan CopyPlan) (Event, []strin
 			id, name, description, location, owner_team, capacity,
 			start_date, end_date, ranked, prize_info, season_id,
 			attendance_rule, attendance_ratio, status, copied_from_event_id,
-			registration_closes_at, feedback_mode, feedback_auto_send
+			registration_closes_at, feedback_mode, feedback_auto_send,
+			location_lat, location_lng, location_address
 		) VALUES ($2, $3, $4, $5, $6, $7, $1, $8, $9, $10, `+copySeasonSQL+`,
-			$11, $12, 'draft', $13, $14, $15, $16)
+			$11, $12, 'draft', $13, $14, $15, $16, $17, $18, $19)
 		ON CONFLICT (id) DO NOTHING`,
 		e.StartDate, e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.Capacity,
 		e.EndDate, e.Ranked, e.PrizeInfo, attendanceRule(e.AttendanceRule), e.AttendanceRatio,
-		plan.Source, e.RegistrationClosesAt, string(feedbackMode(e.FeedbackMode)), e.FeedbackAutoSend)
+		plan.Source, e.RegistrationClosesAt, string(feedbackMode(e.FeedbackMode)), e.FeedbackAutoSend,
+		e.LocationLat, e.LocationLng, e.LocationAddress)
 	if err != nil {
 		return Event{}, nil, err
 	}
@@ -75,6 +77,9 @@ func (s *PostgresStore) Copy(ctx context.Context, plan CopyPlan) (Event, []strin
 		return Event{}, nil, ErrConflict
 	}
 	if err := copyCover(ctx, tx, plan, skippedParts); err != nil {
+		return Event{}, nil, err
+	}
+	if err := copyMap(ctx, tx, plan); err != nil {
 		return Event{}, nil, err
 	}
 	if err := copyDoorStaff(ctx, tx, plan, skippedParts); err != nil {
@@ -258,4 +263,28 @@ func (s *PostgresStore) copyCompetitionsOf(ctx context.Context, tx pgx.Tx, plan 
 	default:
 		return nil
 	}
+}
+
+// copyMap gives the copy its source's map when it has the same point, in a
+// savepoint: a map the database refuses to link (its Media being purged)
+// is left out, and the worker draws the copy one (docs/event-map.md).
+func copyMap(ctx context.Context, tx pgx.Tx, plan CopyPlan) error {
+	if plan.Event.LocationLat == nil {
+		return nil
+	}
+	savepoint, err := tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = savepoint.Exec(ctx, `UPDATE events c SET map_media_id = s.map_media_id, map_retry_at = NULL
+		FROM events s
+		WHERE c.id = $1 AND s.id = $2 AND s.map_media_id IS NOT NULL
+		  AND s.location_lat = c.location_lat AND s.location_lng = c.location_lng`, plan.Event.ID, plan.Source)
+	if _, refused := media.DatabaseLinkRefusal(err); refused {
+		return savepoint.Rollback(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	return savepoint.Commit(ctx)
 }

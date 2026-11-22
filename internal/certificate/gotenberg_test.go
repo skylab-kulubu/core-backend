@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -135,5 +136,112 @@ func TestGotenbergRejectsMultiPagePDFBackground(t *testing.T) {
 	}
 	if converted {
 		t.Fatal("invalid background must not be rendered")
+	}
+}
+
+// The ticket PDF asks for a tagged PDF; the certificate's does not change.
+func TestGotenbergTaggedPDF(t *testing.T) {
+	t.Parallel()
+	tagged := map[string]string{}
+	headers := map[string]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		files := r.MultipartForm.File["files"]
+		if len(files) == 0 || files[0].Filename != "index.html" {
+			t.Fatalf("files %v", files)
+		}
+		read := func(i int) string {
+			f, err := files[i].Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			body, _ := io.ReadAll(f)
+			return string(body)
+		}
+		body := read(0)
+		tagged[body] = r.FormValue("generateTaggedPdf")
+		for i, f := range files[1:] {
+			if f.Filename != "header.html" {
+				t.Fatalf("file %q", f.Filename)
+			}
+			headers[body] = read(i + 1)
+		}
+		_, _ = w.Write([]byte("%PDF-1.7 t"))
+	}))
+	t.Cleanup(srv.Close)
+	g := &Gotenberg{BaseURL: srv.URL, HTTP: srv.Client()}
+	if _, err := g.TaggedPDF(t.Context(), "<html>bilet</html>", "<html>Sayfa <span class=\"pageNumber\"></span></html>"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.TaggedPDF(t.Context(), "<html>başlıksız</html>", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.PDF(t.Context(), "<html>sertifika</html>"); err != nil {
+		t.Fatal(err)
+	}
+	if tagged["<html>bilet</html>"] != "true" || tagged["<html>sertifika</html>"] != "" {
+		t.Fatalf("generateTaggedPdf %v", tagged)
+	}
+	// The ticket's page head goes as header.html; the others send none.
+	if len(headers) != 1 || headers["<html>bilet</html>"] != "<html>Sayfa <span class=\"pageNumber\"></span></html>" {
+		t.Fatalf("headers %v", headers)
+	}
+}
+
+// The map's picture: the page, its size, a JPEG of the quality, taken once
+// the fonts are in; anything but a JPEG back is an error.
+func TestGotenbergScreenshot(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var got map[string]string
+	var path, page string
+	answer := []byte{0xff, 0xd8, 0xff, 0xe0, 'j'}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		path = r.URL.Path
+		got = map[string]string{}
+		for k, v := range r.MultipartForm.Value {
+			got[k] = v[0]
+		}
+		file, _, err := r.FormFile("files")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(file)
+		page = string(body)
+		_, _ = w.Write(answer)
+	}))
+	t.Cleanup(srv.Close)
+	g := &Gotenberg{BaseURL: srv.URL, HTTP: srv.Client()}
+	shot, err := g.Screenshot(t.Context(), "<html>harita</html>", 1280, 480, 82)
+	if err != nil || string(shot) != string(answer) {
+		t.Fatalf("%q %v", shot, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string]string{"width": "1280", "height": "480", "clip": "true", "format": "jpeg", "quality": "82", "waitDelay": "500ms"}
+	if path != "/forms/chromium/screenshot/html" || page != "<html>harita</html>" || len(got) != len(want) {
+		t.Fatalf("%s %q %v", path, page, got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q", k, got[k])
+		}
+	}
+	answer = []byte("<html>bir hata</html>")
+	mu.Unlock()
+	defer mu.Lock()
+	if _, err := g.Screenshot(t.Context(), "<html>harita</html>", 1280, 480, 82); err == nil {
+		t.Fatal("a page that is not a JPEG was taken")
+	}
+	if _, err := g.Screenshot(t.Context(), "<html>harita</html>", 0, 480, 82); err == nil {
+		t.Fatal("no width")
 	}
 }

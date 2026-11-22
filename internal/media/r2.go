@@ -169,7 +169,7 @@ func (r *R2) SetMetadata(ctx context.Context, key string, meta BlobMetadata) err
 // (PurgeCDNOnChange): the CDN may still hold a copy of it.
 func (r *R2) Delete(ctx context.Context, key string) error {
 	if isPendingKey(key) || isFaststartKey(key) {
-		if err := r.abortMultipartUploads(ctx, key); err != nil {
+		if err := r.AbortMultipartUploads(ctx, key); err != nil {
 			return err
 		}
 	}
