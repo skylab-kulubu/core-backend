@@ -1601,6 +1601,30 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.tickets_access_key_idx') IS NOT NULL
 		  AND to_regclass('public.tickets_code_idx') IS NOT NULL
 		  AND to_regprocedure('public.ticket_random_text(text, integer)') IS NOT NULL`,
+	// An Event's point and address (docs/event-location.md): the three
+	// columns and their check.
+	20261122150000: `
+		SELECT 1
+		WHERE (
+			SELECT count(*) FROM (VALUES
+				('location_lat', 'float8', 'YES'),
+				('location_lng', 'float8', 'YES'),
+				('location_address', 'text', 'NO')
+			) expected(column_name, udt_name, is_nullable)
+			JOIN information_schema.columns actual
+			  ON actual.table_schema = 'public' AND actual.table_name = 'events'
+			 AND actual.column_name = expected.column_name
+			 AND actual.udt_name = expected.udt_name
+			 AND actual.is_nullable = expected.is_nullable
+		) = 3
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events')
+			  AND conname = 'events_location_point_check'
+			  AND contype = 'c'
+			  AND pg_get_constraintdef(oid) LIKE '%(location_lat IS NULL) = (location_lng IS NULL)%'
+			  AND pg_get_constraintdef(oid) LIKE '%char_length(location_address) <= 300%'
+		)`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

@@ -23,18 +23,23 @@ func NewEventHandler(svc event.Service) *EventHandler {
 }
 
 type eventBody struct {
-	ID            *uuid.UUID             `json:"id"`
-	Name          string                 `json:"name"`
-	Description   string                 `json:"description"`
-	Location      string                 `json:"location"`
-	OwnerTeam     string                 `json:"ownerTeam"`
-	FormURL       string                 `json:"formUrl"`
-	FormAlias     *string                `json:"formAlias"`
-	ExtraFormURLs *[]event.EventFormLink `json:"extraFormUrls"`
-	Capacity      int                    `json:"capacity"`
-	StartDate     *time.Time             `json:"startDate"`
-	EndDate       *time.Time             `json:"endDate"`
-	Linkedin      string                 `json:"linkedin"`
+	ID          *uuid.UUID `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Location    string     `json:"location"`
+	// The place's point and address (docs/event-location.md): the point
+	// both or neither.
+	LocationLat     *float64               `json:"locationLat"`
+	LocationLng     *float64               `json:"locationLng"`
+	LocationAddress string                 `json:"locationAddress"`
+	OwnerTeam       string                 `json:"ownerTeam"`
+	FormURL         string                 `json:"formUrl"`
+	FormAlias       *string                `json:"formAlias"`
+	ExtraFormURLs   *[]event.EventFormLink `json:"extraFormUrls"`
+	Capacity        int                    `json:"capacity"`
+	StartDate       *time.Time             `json:"startDate"`
+	EndDate         *time.Time             `json:"endDate"`
+	Linkedin        string                 `json:"linkedin"`
 	// Status is read on create alone (draft or published; none is
 	// published). An update (event.Patch) reads neither it nor active,
 	// which is derived (ADR 0066): a client that sends the whole Event
@@ -77,6 +82,8 @@ func eventError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusNotFound, "Not Found")
 	case errors.Is(err, event.ErrConflict):
 		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
+	case errors.Is(err, event.ErrLocationInvalid):
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "event_location_invalid")
 	case errors.Is(err, event.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	default:
@@ -103,6 +110,9 @@ func (b eventBody) asEvent() event.Event {
 		Name:            b.Name,
 		Description:     b.Description,
 		Location:        b.Location,
+		LocationLat:     b.LocationLat,
+		LocationLng:     b.LocationLng,
+		LocationAddress: b.LocationAddress,
 		OwnerTeam:       b.OwnerTeam,
 		FormURL:         b.FormURL,
 		Capacity:        b.Capacity,
