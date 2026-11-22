@@ -69,7 +69,34 @@ const (
 	// Ticket and the Event (State.TicketID, State.EventID), never a person.
 	ActionTicketResend    Action = "ticket.resend"
 	ActionTicketLinkRenew Action = "ticket.link.renew"
+	// The user.* actions are a person's account changed from the panel's
+	// person card (docs/user-accounts.md): the target is the person
+	// (TargetUserID), with no Group (GroupID and GroupPath empty). before
+	// and after carry flags and ids only (State's account fields), never
+	// an address, a name or a password.
+	ActionUserEnable           Action = "user.enable"
+	ActionUserDisable          Action = "user.disable"
+	ActionUserPasswordSet      Action = "user.password.set"
+	ActionUserPasswordMail     Action = "user.password.mail"
+	ActionUserEmailChange      Action = "user.email.change"
+	ActionUserEmailVerify      Action = "user.email.verify"
+	ActionUserEmailMail        Action = "user.email.mail"
+	ActionUserEmailPrimary     Action = "user.email.primary"
+	ActionUserRequiredActions  Action = "user.required_actions"
+	ActionUserCredentialRemove Action = "user.credential.remove"
+	ActionUserIdentityUnlink   Action = "user.idp.unlink"
+	ActionUserLockoutClear     Action = "user.lockout.clear"
+	ActionUserProfile          Action = "user.profile"
 )
+
+// UserActions are the user.* actions, in the order the table's check lists
+// them.
+var UserActions = []Action{
+	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
+	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
+	ActionUserRequiredActions, ActionUserCredentialRemove, ActionUserIdentityUnlink,
+	ActionUserLockoutClear, ActionUserProfile,
+}
 
 // Actions are every action the table's check accepts.
 var Actions = []Action{
@@ -78,6 +105,10 @@ var Actions = []Action{
 	ActionGroupRoles, ActionGroupAttributes, ActionAppAssign, ActionAppUnassign,
 	ActionTermExtend, ActionTermHandover, ActionTermExpired,
 	ActionTicketResend, ActionTicketLinkRenew,
+	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
+	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
+	ActionUserRequiredActions, ActionUserCredentialRemove, ActionUserIdentityUnlink,
+	ActionUserLockoutClear, ActionUserProfile,
 }
 
 // targetsPerson reports whether the action is about one person: they, and
@@ -95,6 +126,12 @@ func (a Action) targetsPerson() bool {
 // Group or a person.
 func (a Action) IsApp() bool {
 	return a == ActionAppAssign || a == ActionAppUnassign
+}
+
+// IsUser reports whether the action is a person's account change: its
+// target is the person alone, with no Group.
+func (a Action) IsUser() bool {
+	return slices.Contains(UserActions, a)
 }
 
 // Outcome is how the write ended.
@@ -211,6 +248,25 @@ type State struct {
 	TicketID string `json:"ticketId,omitempty"`
 	EventID  string `json:"eventId,omitempty"`
 	Resend   int    `json:"resend,omitempty"`
+	// The account fields of a user.* row; absent on every other row. Enabled
+	// is the account's sign-in switch; Temporary and Generated a password's
+	// (whether the person must change it, whether core made it up);
+	// Verified the Primary e-mail's flag; Primary which address is primary
+	// ("school" or "personal"); RequiredActions Keycloak's required action
+	// aliases; CredentialID and CredentialType a credential's id and type
+	// (password, otp, webauthn-passwordless …); Provider an identity
+	// provider's alias; Fields the names of the profile fields a
+	// user.profile changed. Never an address, a name or a password.
+	Enabled         *bool    `json:"enabled,omitempty"`
+	Temporary       *bool    `json:"temporary,omitempty"`
+	Generated       *bool    `json:"generated,omitempty"`
+	Verified        *bool    `json:"verified,omitempty"`
+	Primary         string   `json:"primary,omitempty"`
+	RequiredActions []string `json:"requiredActions,omitempty"`
+	CredentialID    string   `json:"credentialId,omitempty"`
+	CredentialType  string   `json:"credentialType,omitempty"`
+	Provider        string   `json:"provider,omitempty"`
+	Fields          []string `json:"fields,omitempty"`
 }
 
 // Limits of what a row holds. A longer text is cut, so a long value never
@@ -348,6 +404,14 @@ func (r Record) normalize() (Record, string) {
 		if r.After == nil || r.After.Client == "" || r.After.Role == "" {
 			return r, "no_app_role"
 		}
+	} else if r.Action.IsUser() {
+		// The person alone: no Group, no path.
+		if r.TargetUserID == uuid.Nil {
+			return r, "invalid_target"
+		}
+		if r.GroupID != "" || r.GroupPath != "" {
+			return r, "invalid_path"
+		}
 	} else if r.GroupID == "" && r.Action != ActionTeamCreate {
 		return r, "no_group"
 	}
@@ -356,12 +420,12 @@ func (r Record) normalize() (Record, string) {
 			return r, "invalid_group"
 		}
 	}
-	if r.GroupID != "" || !r.Action.IsApp() {
+	if r.GroupID != "" || (!r.Action.IsApp() && !r.Action.IsUser()) {
 		if !strings.HasPrefix(r.GroupPath, "/") || utf8.RuneCountInString(r.GroupPath) > MaxPath || !utf8.ValidString(r.GroupPath) {
 			return r, "invalid_path"
 		}
 	}
-	if !r.Action.IsApp() && r.Action.targetsPerson() != (r.TargetUserID != uuid.Nil) {
+	if !r.Action.IsApp() && !r.Action.IsUser() && r.Action.targetsPerson() != (r.TargetUserID != uuid.Nil) {
 		return r, "invalid_target"
 	}
 	r.Actor.Client = cut(r.Actor.Client, MaxIdentifier)
@@ -406,6 +470,16 @@ func (s *State) normalize() *State {
 		ack := *s.UnverifiedAck
 		out.UnverifiedAck = &ack
 	}
+	out.Enabled = copyBool(s.Enabled)
+	out.Temporary = copyBool(s.Temporary)
+	out.Generated = copyBool(s.Generated)
+	out.Verified = copyBool(s.Verified)
+	out.Primary = cut(s.Primary, MaxIdentifier)
+	out.CredentialID = cut(s.CredentialID, MaxIdentifier)
+	out.CredentialType = cut(s.CredentialType, MaxIdentifier)
+	out.Provider = cut(s.Provider, MaxIdentifier)
+	out.RequiredActions = names(s.RequiredActions)
+	out.Fields = names(s.Fields)
 	for _, name := range RecordedAttributes {
 		if v, ok := s.Attributes[name]; ok {
 			if out.Attributes == nil {
@@ -429,6 +503,27 @@ func (s *State) normalize() *State {
 		out.Roles = append(out.Roles, cut(role, MaxIdentifier))
 	}
 	return &out
+}
+
+func copyBool(b *bool) *bool {
+	if b == nil {
+		return nil
+	}
+	v := *b
+	return &v
+}
+
+// names are short identifiers sorted, once each, cut to MaxIdentifier, at
+// most MaxAttributes of them.
+func names(in []string) []string {
+	var out []string
+	for _, name := range slices.Compact(slices.Sorted(slices.Values(in))) {
+		if len(out) == MaxAttributes {
+			break
+		}
+		out = append(out, cut(name, MaxIdentifier))
+	}
+	return out
 }
 
 // cut is s without invalid UTF-8, at most n runes long.
