@@ -427,7 +427,9 @@ func New(deps Deps) *fiber.App {
 		page := handlers.NewTicketPageHandler(deps.TicketPage)
 		publicTicketLimit := perClientLimit(trustedProxies)
 		app.Get("/v1/public/tickets/:key", publicTicketLimit, page.Page)
-		app.Get("/v1/public/tickets/:key/qr.png", publicTicketLimit, page.QR)
+		// The mail's QR image comes through a few mail providers' proxy
+		// addresses: a budget of its own, larger.
+		app.Get("/v1/public/tickets/:key/qr.png", perClientLimitOf(trustedProxies, handlers.TicketQRsPerClientMinute), page.QR)
 		app.Get("/v1/public/tickets/:key/pdf", publicTicketLimit, handlers.TicketPDFLimit(), page.PDF)
 	}
 	if pass != nil {

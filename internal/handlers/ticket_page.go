@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -28,6 +29,13 @@ func NewTicketPageHandler(svc *ticketpage.Service) *TicketPageHandler {
 // TicketPDFsPerKeyMinute is how many PDFs one ticket's key may ask for in a
 // minute: each one is drawn anew.
 const TicketPDFsPerKeyMinute = 5
+
+// TicketQRsPerClientMinute is the QR image's budget a minute per client
+// address, its own: the mail shows it as a remote image, and Gmail's image
+// proxy and Apple Mail's privacy preloading fetch it for many people from a
+// few addresses (a published Event's mails go out together). The PNG is
+// cheap to draw.
+const TicketQRsPerClientMinute = 1200
 
 // TicketPDFLimit budgets the PDF route by the key in its path (a hash of
 // it: the limiter's memory never holds the key).
@@ -64,6 +72,9 @@ func (h *TicketPageHandler) ticketPageError(c fiber.Ctx, route string, err error
 	case errors.Is(err, ticketpage.ErrGone):
 		return problemCode(c, fiber.StatusGone, "Gone", "ticket_page_closed")
 	case errors.Is(err, ticketpage.ErrUnavailable):
+		if !errors.Is(err, context.Canceled) {
+			h.logger.Printf("ticket page: %s %s: %v", route, ticketpage.LogKey(c.Params("key")), err)
+		}
 		c.Set(fiber.HeaderRetryAfter, "30")
 		return problemCode(c, fiber.StatusServiceUnavailable, "Service Unavailable", "ticket_pdf_unavailable")
 	default:
