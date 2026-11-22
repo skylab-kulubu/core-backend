@@ -26,6 +26,9 @@ type Service interface {
 	// Get reads the Event p may see: a draft that p may not see is
 	// ErrNotFound, as are the reads of its days and Sessions below.
 	Get(ctx context.Context, p *authz.Principal, id uuid.UUID) (Event, error)
+	// Places are the places Events were held at, for the panel's place
+	// field (docs/event-location.md).
+	Places(ctx context.Context, p authz.Principal, ownerTeam string, limit int) ([]Place, error)
 	// Publish publishes a draft; Unpublish makes a published Event without
 	// Tickets a draft again. Whoever may edit the Event may; each is
 	// idempotent and one conditional UPDATE. Publish with notifyTickets

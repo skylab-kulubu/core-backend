@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"encoding/json"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
@@ -238,5 +240,39 @@ func TestEventLocationRefusalHasItsCode(t *testing.T) {
 		`{"name":"Gecekodu","location":"YTÜ","ownerTeam":"WEBLAB","locationLat":0,"locationLng":0}`)
 	if status != fiber.StatusBadRequest || out["code"] != "event_location_invalid" {
 		t.Fatalf("create %d %v", status, out)
+	}
+}
+
+// GET /v1/events/places: a team's places for its leader, the club's for
+// YK; signed out 401, a bad limit 400, the club's for a leader 403.
+func TestEventPlacesRoute(t *testing.T) {
+	t.Parallel()
+	store := event.NewMemoryStore()
+	createPartialEvent(t, eventApp(t, yk(), store))
+	leader := eventApp(t, weblabLeader(), store)
+	resp, err := leader.Test(httptest.NewRequest(fiber.MethodGet, "/v1/events/places?ownerTeam=WEBLAB", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var places []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&places); err != nil || resp.StatusCode != fiber.StatusOK || len(places) != 1 ||
+		places[0]["name"] != "YTÜ" || places[0]["address"] != "Davutpaşa Cd. No:127, Esenler" || places[0]["lat"] != 41.025376 || places[0]["uses"] != float64(1) {
+		t.Fatalf("%d %v %v", resp.StatusCode, places, err)
+	}
+	for _, tc := range []struct {
+		app    *fiber.App
+		path   string
+		status int
+	}{
+		{eventApp(t, authn.Identity{}, store), "/v1/events/places?ownerTeam=WEBLAB", fiber.StatusUnauthorized},
+		{leader, "/v1/events/places", fiber.StatusForbidden},
+		{leader, "/v1/events/places?ownerTeam=WEBLAB&limit=0", fiber.StatusBadRequest},
+		{leader, "/v1/events/places?ownerTeam=WEBLAB&limit=çok", fiber.StatusBadRequest},
+		{eventApp(t, yk(), store), "/v1/events/places?limit=50", fiber.StatusOK},
+	} {
+		resp, err := tc.app.Test(httptest.NewRequest(fiber.MethodGet, tc.path, nil))
+		if err != nil || resp.StatusCode != tc.status {
+			t.Errorf("%s: %v %v", tc.path, resp.StatusCode, err)
+		}
 	}
 }

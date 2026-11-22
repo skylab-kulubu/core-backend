@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -231,6 +232,27 @@ func (h *EventHandler) Restore(c fiber.Ctx) error {
 		return eventError(c, err)
 	}
 	return c.JSON(h.svc.ProjectFor(&p, restored))
+}
+
+// Places is GET /v1/events/places: the places Events were held at, for the
+// panel's place field (docs/event-location.md). ownerTeam picks a team's;
+// none is the club's, for event:manage. limit is 1–50, 20 by default.
+func (h *EventHandler) Places(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	limit := 0
+	if raw := c.Query("limit"); raw != "" {
+		if limit, err = strconv.Atoi(raw); err != nil || limit < 1 {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+	}
+	places, err := h.svc.Places(c.Context(), p, strings.TrimSpace(c.Query("ownerTeam")), limit)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(places)
 }
 
 func (h *EventHandler) ListActive(c fiber.Ctx) error {

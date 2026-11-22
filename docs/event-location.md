@@ -47,9 +47,26 @@ a client that sends neither field keeps the point and the address.
 - The ticket's directions link is a Google Maps search for the point, or
   for the name while there is no point (bilet PDF v5).
 
-## Not yet
+## Places used before
 
-- **Saved places** (a team's or the club's places with name, address and
-  point, offered in the panel) are not built yet; whether and how is
-  Yusuf's decision.
-- **The map image** of the place waits for the choice of its provider.
+`GET /v1/events/places?ownerTeam=WEBLAB&limit=20` lists the places Events
+were held at, for the panel's place field (Yusuf, 2026-11-22: offered from
+past Events, no separate list of saved places):
+
+```json
+[{"name": "YTÜ Davutpaşa, EEF Konferans Salonu", "address": "Davutpaşa Cd. No:127, Esenler",
+  "lat": 41.025376, "lng": 28.889648, "lastUsedAt": "2026-10-14T16:00:00Z", "uses": 2}]
+```
+
+- One row per name and point (`location`, `locationLat`, `locationLng`),
+  with the address of its latest Event; the latest used first (an Event's
+  start, else when it was made). `address` is left out while empty.
+- Only current Events with a point; archived ones and places with no point
+  are left out.
+- `ownerTeam`: that team's Events, drafts included, for who may create
+  Events in it. Without it: every team's Events but drafts, for who holds
+  `event:manage`. Anyone else `403`, signed out `401`.
+- `limit`: 1–50, 20 by default; another value is `400`.
+- The panel filters the list as the organizer types and, on a choice,
+  fills `location`, `locationAddress`, `locationLat` and `locationLng`
+  together; the map's pin goes there.
