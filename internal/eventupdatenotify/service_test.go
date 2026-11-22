@@ -402,3 +402,48 @@ func TestAnUnseededTypeKeepsTheRowForLater(t *testing.T) {
 		t.Fatalf("report %+v, rows %d", report, f.queue.len())
 	}
 }
+
+// While TICKET_PAGE_URL is set, each holder's mail carries their Ticket's
+// page and code (ticket 04, addendum): a member holding a guest Ticket under
+// their address too gets their own registered Ticket's. Unset: as before.
+func TestTheMailCarriesTheHoldersTicketPage(t *testing.T) {
+	for _, pageURL := range []string{"https://yildizskylab.com/bilet/{key}", ""} {
+		f := setup(t)
+		keys := []string{"MEMBERKEYABCDEFGHIJKLMNOPQ", "CANKEYABCDEFGHIJKLMNOPQRST", "AYSEGUESTKEYABCDEFGHIJKLMN"}
+		codes := []string{"K7M2-QX9F", "AB12-CD34", "ZZ99-YY88"}
+		for i := range keys {
+			f.tickets[i].AccessKey, f.tickets[i].Code = keys[i], codes[i]
+		}
+		svc, err := eventupdatenotify.NewService(eventupdatenotify.Config{
+			Queue: f.queue, Tickets: f.tickets, Events: events{f.ev.ID: f.ev},
+			Users: users{f.member: {ID: f.member, Email: "Ayse@Example.com", AccountState: user.AccountActive}},
+			Mail:  f.mail, Page: ticket.PageConfig{URL: pageURL, Grace: ticket.DefaultPageGrace},
+			Now: func() time.Time { return now }, Logger: log.New(io.Discard, "", 0),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.queue1(nil)
+		if _, err := svc.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.mail.calls) != 2 {
+			t.Fatalf("%d calls", len(f.mail.calls))
+		}
+		member, guest := f.mail.calls[0], f.mail.calls[1]
+		if pageURL == "" {
+			for _, c := range f.mail.calls {
+				if _, ok := c.vars["TicketUrl"]; ok || len(c.vars) != 6 {
+					t.Fatalf("unset: vars %v", c.vars)
+				}
+			}
+			continue
+		}
+		if member.vars["TicketUrl"] != "https://yildizskylab.com/bilet/"+keys[0] || member.vars["TicketCode"] != codes[0] || len(member.vars) != 8 {
+			t.Fatalf("member vars %v", member.vars)
+		}
+		if guest.vars["TicketUrl"] != "https://yildizskylab.com/bilet/"+keys[1] || guest.vars["TicketCode"] != codes[1] {
+			t.Fatalf("guest vars %v", guest.vars)
+		}
+	}
+}
