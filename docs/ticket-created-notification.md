@@ -16,8 +16,8 @@ no ticket mail went at all; it is off until `TICKET_CREATED_NOTIFICATION=on`.
 | Guest apply that finds the Ticket already there, a Ticket updated | nobody: no new Ticket |
 
 Only a Ticket of a **published** Event that is **not over** is told of, when
-the worker sends it: a draft's Tickets (speakers and the team, added from the
-panel, or applications from a form linked to the draft), a cancelled or
+the worker sends it: a draft's Tickets (speakers, the team and guests,
+added from the panel, or applications from a form linked to the draft), a cancelled or
 archived Event's and a past Event's are dropped. A draft's Tickets are told
 of later only if the organizer asks when publishing it (below). Walk-in
 (CONTEXT.md) writes no Ticket in core today; when it does, it must not queue
