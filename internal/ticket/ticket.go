@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/feedback"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
 
@@ -115,8 +116,12 @@ type Ticket struct {
 	GuestEmail       string          `json:"guestEmail,omitempty"`
 	GuestPhoneNumber string          `json:"guestPhoneNumber,omitempty"`
 	CheckIns         []CheckIn       `json:"checkIns"`
-	CreatedAt        time.Time       `json:"createdAt"`
-	UpdatedAt        time.Time       `json:"updatedAt"`
+	// Feedback are the holder's own feedback links (ticket 12): only the
+	// holder's own tickets answer (`GET /v1/tickets/me`) carries them, and
+	// only when there is one (docs/event-feedback.md).
+	Feedback  []feedback.TicketLink `json:"feedback,omitempty"`
+	CreatedAt time.Time             `json:"createdAt"`
+	UpdatedAt time.Time             `json:"updatedAt"`
 }
 
 type GuestInfo struct {

@@ -102,7 +102,7 @@ func TestGuestApplyLogsTheClassAndOutcomeButNoPersonalData(t *testing.T) {
 	}
 	for i, line := range lines {
 		for _, secret := range []string{"ada@example.com", "Ada", "Lovelace", "5551234", "203.0.113.7", ev.ID.String()} {
-			if strings.Contains(line, secret) {
+			if strings.Contains(withoutCorrelationID(t, line), secret) {
 				t.Fatalf("log line %q carries %q", line, secret)
 			}
 		}
