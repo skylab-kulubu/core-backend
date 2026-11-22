@@ -130,8 +130,13 @@ func (s *service) statusChange(ctx context.Context, p authz.Principal, id uuid.U
 
 // Publish publishes a draft. Publishing a published Event answers it as it
 // is; a cancelled one is refused (ErrCancelled); a draft without a name, a
-// location or a start date is refused with what it lacks.
-func (s *service) Publish(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error) {
+// location or a start date is refused with what it lacks. With
+// notifyTickets the publication queues the Notification of the Tickets the
+// draft has (Yusuf, 2026-11-22, K3; the cancel dialog's "Bilet sahiplerine
+// bildir" pattern): only when it publishes the draft, and only while the
+// new Ticket's Notification is on. Without it (an older client, sky-app)
+// nobody is told.
+func (s *service) Publish(ctx context.Context, p authz.Principal, id uuid.UUID, notifyTickets bool) (Event, error) {
 	e, err := s.statusChange(ctx, p, id)
 	if err != nil {
 		return Event{}, err
@@ -140,7 +145,7 @@ func (s *service) Publish(ctx context.Context, p authz.Principal, id uuid.UUID) 
 		if missing := e.missing(); len(missing) > 0 {
 			return Event{}, &IncompleteError{Missing: missing}
 		}
-		changed, err := s.store.Publish(ctx, id, lifecycle.ActorID(p.ID))
+		changed, err := s.store.Publish(ctx, id, lifecycle.ActorID(p.ID), notifyTickets)
 		if err != nil {
 			return Event{}, err
 		}

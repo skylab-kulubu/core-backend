@@ -42,10 +42,12 @@ func (s *service) seen(p *authz.Principal, ev event.Event) error {
 // at all, from the panel neither (ErrEventCancelled, checked first); and an
 // Event whose applying is not open (ended, or closed by its organizer by
 // hand or by the deadline) takes no person's own application
-// (ErrRegistrationClosed). The closure stops a person's own application
-// only: fromPanel is an operator adding a guest from the panel
-// (operatorOf), which passes it, as adding a person does; the forms
-// service's report has its own rule (openListing).
+// (ErrRegistrationClosed). The draft and the closure stop a person's own
+// application only: fromPanel is an operator adding a guest from the panel
+// (operatorOf), which passes both, as adding a person does (a draft's
+// guest, Yusuf 2026-11-22, K5: told of the Ticket only if the publication
+// asks, docs/ticket-created-notification.md); the forms service's report
+// has its own rule (openListing).
 func (s *service) openForRegistration(p *authz.Principal, ev event.Event, fromPanel bool) error {
 	if ev.Status == event.StatusCancelled {
 		return ErrEventCancelled
@@ -53,6 +55,9 @@ func (s *service) openForRegistration(p *authz.Principal, ev event.Event, fromPa
 	if ev.Status == event.StatusDraft {
 		if err := s.seen(p, ev); err != nil {
 			return err
+		}
+		if fromPanel {
+			return nil
 		}
 		return ErrEventNotPublished
 	}

@@ -16,10 +16,36 @@ no ticket mail went at all; it is off until `TICKET_CREATED_NOTIFICATION=on`.
 | Guest apply that finds the Ticket already there, a Ticket updated | nobody: no new Ticket |
 
 Only a Ticket of a **published** Event that is **not over** is told of, when
-the worker sends it: a draft's Tickets (speakers and the team, added from the
-panel), a cancelled or archived Event's and a past Event's are dropped. Walk-in
+the worker sends it: a draft's Tickets (speakers, the team and guests,
+added from the panel, or applications from a form linked to the draft), a cancelled or
+archived Event's and a past Event's (over at its end date, else a day after
+its start, as everywhere in core: an Event without an end date is over too)
+are dropped. A draft's Tickets are told of later only if the organizer asks
+when publishing it (below). Walk-in
 (CONTEXT.md) writes no Ticket in core today; when it does, it must not queue
 one ("no ticket mail").
+
+## Publishing a draft
+
+The worker drops a draft's row at its first pass, so a Ticket written while
+the Event was a draft would never be told of. The publish dialog asks (Yusuf,
+2026-11-22, K3): `POST /v1/events/{id}/publish` with
+`{"notifyTicketHolders": true}` queues a `ticket_notifications` row for each
+of the Event's Tickets in the transaction that publishes it (a row still
+queued stays as it is; [event-drafts.md](event-drafts.md#publish-and-unpublish)).
+The panel shows the box checked, with how many people and who; speakers and
+the team get the mail too, which says what is true: they have a Ticket.
+
+- Only while `TICKET_CREATED_NOTIFICATION=on`: off, the publication queues
+  nothing, whatever the body says. The panel shows the box either way (it
+  does not read the switch; production has it on), so with the switch off a
+  checked box sends nothing.
+- Only when the call publishes the draft. An Event already published, or a
+  call without the field (sky-app, an older panel), queues nothing.
+- The worker then sends these rows as any other: a Ticket whose Event ended
+  meanwhile, or a person erased since, gets nothing.
+- The publication logs one line of the count, naming nobody:
+  `event <id>: published, 3 ticket notifications queued`.
 
 ## How
 

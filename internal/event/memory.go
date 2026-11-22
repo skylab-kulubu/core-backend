@@ -291,7 +291,13 @@ func (s *MemoryStore) archive(id uuid.UUID, actorID *uuid.UUID, draftOnly bool) 
 	return nil
 }
 
-func (s *MemoryStore) Restore(_ context.Context, id uuid.UUID) error {
+func (s *MemoryStore) Restore(ctx context.Context, id uuid.UUID, guard *formGuard) error {
+	// The one-place rule again, before the store's lock (as Create).
+	if guard != nil {
+		if err := guard.check(ctx); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.byID[id]
@@ -789,7 +795,7 @@ func (s *MemoryStore) RestoreSession(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *MemoryStore) Publish(_ context.Context, id uuid.UUID, by *uuid.UUID) (bool, error) {
+func (s *MemoryStore) Publish(_ context.Context, id uuid.UUID, by *uuid.UUID, _ bool) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.byID[id]
