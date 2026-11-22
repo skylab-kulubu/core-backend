@@ -224,8 +224,10 @@ func (s *Service) deliver(ctx context.Context, q Queued) (outcome, error) {
 	}
 	// Only a published Event that is not over is told of: a draft's
 	// Tickets (speakers, the team, added from the panel) and a cancelled
-	// or archived Event's are not news to anyone.
-	if ev.ArchivedAt != nil || ev.Status != event.StatusPublished || (ev.EndDate != nil && !ev.EndDate.After(s.now())) {
+	// or archived Event's are not news to anyone. Over is the Event's end
+	// as everywhere else (event.EndedAt: its end date, else a day after
+	// its start), so a past Event without an end date is over too.
+	if ev.ArchivedAt != nil || ev.Status != event.StatusPublished || ev.EndedAt(s.now()) {
 		return dropped, nil
 	}
 	holder, ok, err := s.holder(ctx, t)
