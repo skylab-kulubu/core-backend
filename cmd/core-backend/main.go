@@ -995,7 +995,10 @@ func main() {
 		log.Fatal(err)
 	}
 	doorScans := &ticket.DoorScanMetrics{}
-	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites, ticketQR, doorScans, ticketPageConfig)
+	// The Team audit record (docs/team-audit.md): Group writes, and the
+	// ticket actions of the panel (docs/ticket-resend.md).
+	teamAudit := teamaudit.NewPostgres(pool)
+	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites, ticketQR, doorScans, ticketPageConfig, teamAudit)
 	var ticketPDF ticketpage.Renderer
 	if g, ok := render.(*certificate.Gotenberg); ok && g != nil {
 		ticketPDF = g
@@ -1061,7 +1064,6 @@ func main() {
 	}
 	// The Group writes of the identity routes go through the Team audit
 	// record (docs/team-audit.md): no row, no change.
-	teamAudit := teamaudit.NewPostgres(pool)
 	auditedDir := identity.AuditedDirectory(dir, teamAudit, log.Printf)
 	// Team delegation's reads (docs/team-delegation.md) go to the directory
 	// itself: the Group by id with its parent, the caller's Groups, role

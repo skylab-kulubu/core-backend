@@ -5,20 +5,25 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
 
 // Sending a Ticket's mail again and renewing its link from the panel
 // (ADR 0082; docs/ticket-resend.md).
 var (
 	// ErrResendLimited is a Ticket sent ResendLimit times in the last
-	// ResendWindow.
-	ErrResendLimited = errors.New("ticket: resend limited")
+	// ResendWindow; ErrResendDailyLimited ResendDailyLimit times in the
+	// last ResendDayWindow.
+	ErrResendLimited      = errors.New("ticket: resend limited")
+	ErrResendDailyLimited = errors.New("ticket: resend daily limited")
 	// ErrNotificationOff is TICKET_CREATED_NOTIFICATION off: no mail goes.
 	ErrNotificationOff = errors.New("ticket: ticket notification off")
 	// ErrHolderErased is a Ticket whose holder was erased: there is nobody
@@ -30,9 +35,12 @@ var (
 
 const (
 	// ResendLimit is how many times a Ticket's mail may go again in
-	// ResendWindow.
-	ResendLimit  = 3
-	ResendWindow = time.Hour
+	// ResendWindow, and ResendDailyLimit in ResendDayWindow: a hijacked
+	// Leader account cannot flood one person.
+	ResendLimit      = 3
+	ResendWindow     = time.Hour
+	ResendDailyLimit = 6
+	ResendDayWindow  = 24 * time.Hour
 	// maxRequestKey bounds the client's Idempotency-Key.
 	maxRequestKey = 128
 )
@@ -48,11 +56,22 @@ type Resend struct {
 	Queued bool `json:"queued"`
 }
 
+// ResendLimits bound how often one Ticket is sent again.
+type ResendLimits struct {
+	PerWindow int
+	Window    time.Duration
+	PerDay    int
+	DayWindow time.Duration
+}
+
+// DefaultResendLimits are three an hour and six a day.
+var DefaultResendLimits = ResendLimits{PerWindow: ResendLimit, Window: ResendWindow, PerDay: ResendDailyLimit, DayWindow: ResendDayWindow}
+
 // ResendStore keeps the resends (PostgresStore).
 type ResendStore interface {
 	NotificationsOn() bool
-	QueueResend(ctx context.Context, id uuid.UUID, requestHash string, limit int, window time.Duration) (Resend, error)
-	RenewAccessKey(ctx context.Context, id uuid.UUID, notify bool, requestHash string, limit int, window time.Duration) (Ticket, Resend, error)
+	QueueResend(ctx context.Context, id uuid.UUID, requestHash string, limits ResendLimits) (Resend, error)
+	RenewAccessKey(ctx context.Context, id uuid.UUID, notify bool, requestHash string, limits ResendLimits) (Ticket, Resend, error)
 }
 
 // RequestHash is what is kept of a client's Idempotency-Key: its SHA-256,
@@ -125,7 +144,13 @@ func (s *service) ResendTicket(ctx context.Context, p authz.Principal, id uuid.U
 	if err := s.mailable(ev, store); err != nil {
 		return Resend{}, err
 	}
-	return store.QueueResend(ctx, id, hash, ResendLimit, ResendWindow)
+	record, err := s.beginTicketAudit(ctx, p, ev, teamaudit.ActionTicketResend, id)
+	if err != nil {
+		return Resend{}, err
+	}
+	sent, err := store.QueueResend(ctx, id, hash, DefaultResendLimits)
+	s.finishTicketAudit(ctx, record, err, sent.N)
+	return sent, err
 }
 
 // RenewTicketLink gives the Ticket a new access key and the next QR version,
@@ -150,9 +175,118 @@ func (s *service) RenewTicketLink(ctx context.Context, p authz.Principal, id uui
 			return Ticket{}, Resend{}, err
 		}
 	}
-	renewed, sent, err := store.RenewAccessKey(ctx, id, notify, hash, ResendLimit, ResendWindow)
+	record, err := s.beginTicketAudit(ctx, p, ev, teamaudit.ActionTicketLinkRenew, id)
+	if err != nil {
+		return Ticket{}, Resend{}, err
+	}
+	renewed, sent, err := store.RenewAccessKey(ctx, id, notify, hash, DefaultResendLimits)
+	s.finishTicketAudit(ctx, record, err, sent.N)
 	if err != nil {
 		return Ticket{}, Resend{}, err
 	}
 	return s.withEvent(ctx, renewed), sent, nil
+}
+
+// auditRecord is an open Team audit row of a ticket action: its id and what
+// its after says.
+type auditRecord struct {
+	id    uuid.UUID
+	after teamaudit.State
+}
+
+// beginTicketAudit opens the Team audit row of a ticket action
+// (docs/ticket-resend.md): the actor the request carries (teamaudit.WithActor)
+// on their basis, privileged or the Leader of a Team the Event's team sits
+// in or under, against the Event's team. Without an audit writer nothing is
+// recorded (a test); with one, a row that cannot be opened stops the action
+// (teamaudit.ErrUnavailable), as every audited write.
+func (s *service) beginTicketAudit(ctx context.Context, p authz.Principal, ev event.Event, action teamaudit.Action, ticketID uuid.UUID) (*auditRecord, error) {
+	if s.audit == nil {
+		return nil, nil
+	}
+	actor, ok := teamaudit.ActorFrom(ctx)
+	if !ok || s.teams == nil {
+		return nil, teamaudit.ErrUnavailable
+	}
+	team, err := s.teams.GetGroup(ctx, ev.OwnerTeam)
+	if err != nil {
+		return nil, teamaudit.ErrUnavailable
+	}
+	actor.Basis, actor.ViaGroupID = teamaudit.BasisPrivileged, ""
+	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket}, authz.Assign) {
+		via, err := s.leaderVia(ctx, p, team)
+		if err != nil {
+			return nil, teamaudit.ErrUnavailable
+		}
+		actor.Basis, actor.ViaGroupID = teamaudit.BasisLeader, via
+	}
+	after := teamaudit.State{TicketID: ticketID.String(), EventID: ev.ID.String()}
+	id, err := s.audit.Begin(ctx, teamaudit.Record{
+		Actor: actor, Action: action, GroupID: team.ID, GroupPath: team.Path, After: &after,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &auditRecord{id: id, after: after}, nil
+}
+
+// leaderVia is the id of the Team whose Leader group lets p act for team:
+// the team itself or one it sits under (ADR-0065).
+func (s *service) leaderVia(ctx context.Context, p authz.Principal, team identity.Group) (string, error) {
+	best := ""
+	for _, g := range p.Groups {
+		parent, kind := path.Split(strings.TrimRight(g, "/"))
+		if kind != "LIDERLER" && kind != "KOORDINATORLER" {
+			continue
+		}
+		parent = strings.TrimRight(parent, "/")
+		if parent == "" || (team.Path != parent && !strings.HasPrefix(team.Path, parent+"/")) {
+			continue
+		}
+		// The nearest Team: the longest path.
+		if len(parent) > len(best) {
+			best = parent
+		}
+	}
+	switch {
+	case best == "":
+		return "", ErrForbidden
+	case best == team.Path:
+		return team.ID, nil
+	}
+	via, err := s.teams.GetGroup(ctx, best)
+	if err != nil {
+		return "", err
+	}
+	return via.ID, nil
+}
+
+// finishTicketAudit writes the outcome of the row: ok, or failed with a
+// code (a refused resend, a lost database).
+func (s *service) finishTicketAudit(ctx context.Context, record *auditRecord, err error, resend int) {
+	if record == nil {
+		return
+	}
+	outcome, code := teamaudit.OutcomeOK, ""
+	if err != nil {
+		outcome, code = teamaudit.OutcomeFailed, resendAuditCode(err)
+	}
+	after := record.after
+	after.Resend = resend
+	if ferr := s.audit.Finish(ctx, record.id, outcome, code, &after); ferr != nil {
+		s.logger.Printf("tickets: audit record %s stays pending", record.id)
+	}
+}
+
+func resendAuditCode(err error) string {
+	switch {
+	case errors.Is(err, ErrResendLimited):
+		return "rate_limited"
+	case errors.Is(err, ErrResendDailyLimited):
+		return "daily_limited"
+	case errors.Is(err, ErrNotFound):
+		return "not_found"
+	default:
+		return "failed"
+	}
 }
