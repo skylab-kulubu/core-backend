@@ -33,6 +33,7 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
   "mapsUrl": "https://www.google.com/maps/search/?api=1&query=41.025376%2C28.889648",
   "mapImageUrl": "https://cdn.yildizskylab.com/images/….jpg",
   "mapAttribution": "© OpenStreetMap contributors",
+  "mapAttributionUrl": "https://www.openstreetmap.org/copyright",
   "ownerTeam": "AILAB",
   "eventStatus": "published",
   "holderName": "Elif Yılmaz",
