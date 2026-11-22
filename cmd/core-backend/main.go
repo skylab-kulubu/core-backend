@@ -974,7 +974,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	worker("event updated notification", startEventUpdatedNotification(workers, eventUpdatedOn, events, eventupdatenotify.NewPostgresQueue(pool), tickets, users, sky, log.Printf))
+	worker("event updated notification", startEventUpdatedNotification(workers, eventUpdatedOn, events, eventupdatenotify.NewPostgresQueue(pool), tickets, users, sky, ticketPageConfig, log.Printf))
 
 	var render certificate.Renderer
 	if baseURL := gotenbergURL(); baseURL != "" {
