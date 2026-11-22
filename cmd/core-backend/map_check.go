@@ -53,6 +53,7 @@ func runMapCheck(args []string, stdout, stderr io.Writer) int {
 	}
 	out := json.NewEncoder(stdout)
 	out.SetIndent("", "  ")
+	out.SetEscapeHTML(false)
 	if err := out.Encode(report); err != nil {
 		return 2
 	}
