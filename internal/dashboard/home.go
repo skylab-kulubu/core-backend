@@ -43,6 +43,19 @@ type Home struct {
 	// Compare is nil for a caller the summary covers no Event of and who
 	// may not read people.
 	Compare *Compare `json:"compare"`
+	// Daily, Monthly, Teams, Sessions and Certificates are the covered
+	// Events' charts (home_charts.go); empty or nil when none is covered.
+	Daily        []DailyActivity    `json:"daily"`
+	Monthly      []MonthlyActivity  `json:"monthly"`
+	Teams        []TeamActivity     `json:"teams"`
+	Sessions     int                `json:"sessions"`
+	Certificates *CertificateCounts `json:"certificates"`
+	// Season is the season running now, or else the one that ended last,
+	// with its published Events; nil without one.
+	Season *SeasonSummary `json:"season"`
+	// Club counts the published Events, whoever owns them: what everyone
+	// may see.
+	Club Club `json:"club"`
 }
 
 // Todo are the things waiting on the caller, each with what it needs.
@@ -164,16 +177,24 @@ type HomeStore interface {
 	// OpenSubjectRequests counts the open data subject requests and those
 	// of them due before today ("2006-01-02").
 	OpenSubjectRequests(ctx context.Context, today string) (SubjectRequestCounts, error)
-	// Activity counts the Events' Tickets created, and the Tickets checked
-	// in, in [from, mid) (Previous) and [mid, to) (Current).
-	Activity(ctx context.Context, eventIDs []uuid.UUID, from, mid, to time.Time) (applications, attendees Period, err error)
+	// DailyCheckIns counts, for each Event, the Tickets checked in on each
+	// calendar day in loc ("2006-01-02") at or after since: a Ticket checked
+	// in to two Sessions of a day counts once that day.
+	DailyCheckIns(ctx context.Context, eventIDs []uuid.UUID, since time.Time, loc *time.Location) (map[uuid.UUID]map[string]int, error)
+	// CertificateCounts counts the Events' certificates: issued (revoked
+	// ones too), revoked, and issued in [from, mid) and [mid, now].
+	CertificateCounts(ctx context.Context, eventIDs []uuid.UUID, from, mid time.Time) (CertificateCounts, error)
 }
 
 // home builds Home. all are every current Event, covered the ones whose
-// applications p may read.
-func (s *service) home(ctx context.Context, p authz.Principal, now time.Time, all, covered []event.Event, members *Members, registered []time.Time) (*Home, error) {
+// applications p may read; daily their applications per day since
+// seriesStart.
+func (s *service) home(ctx context.Context, p authz.Principal, now time.Time, all, covered []event.Event, daily map[uuid.UUID]map[string]int, members *Members, registered []time.Time) (*Home, error) {
 	today := startOfDay(now, s.loc)
-	out := &Home{Week: Week{From: today.UTC(), To: today.AddDate(0, 0, WeekDays).UTC(), Events: []WeekEvent{}, Sessions: []WeekSession{}}}
+	out := &Home{
+		Week:  Week{From: today.UTC(), To: today.AddDate(0, 0, WeekDays).UTC(), Events: []WeekEvent{}, Sessions: []WeekSession{}},
+		Daily: []DailyActivity{}, Monthly: []MonthlyActivity{}, Teams: []TeamActivity{},
+	}
 
 	todo, err := s.todo(ctx, p, now, today, covered)
 	if err != nil {
@@ -184,27 +205,17 @@ func (s *service) home(ctx context.Context, p authz.Principal, now time.Time, al
 	if err := s.week(ctx, p, now, all, &out.Week); err != nil {
 		return nil, err
 	}
+	if out.Season, err = s.season(ctx, p, now, all); err != nil {
+		return nil, err
+	}
+	out.Club = s.club(p, now, all)
 
 	if len(covered) > 0 || members != nil {
 		cmp := &Compare{Days: CompareDays}
-		to := now
-		mid := to.Add(-CompareDays * 24 * time.Hour)
+		mid := now.Add(-CompareDays * 24 * time.Hour)
 		from := mid.Add(-CompareDays * 24 * time.Hour)
 		if len(covered) > 0 {
-			ids := make([]uuid.UUID, len(covered))
-			for i, e := range covered {
-				ids[i] = e.ID
-				if e.Status != event.StatusPublished || e.StartDate == nil {
-					continue
-				}
-				switch start := *e.StartDate; {
-				case !start.Before(mid) && !start.After(to):
-					cmp.Events.Current++
-				case !start.Before(from) && start.Before(mid):
-					cmp.Events.Previous++
-				}
-			}
-			if cmp.Applications, cmp.Attendees, err = s.homeStore.Activity(ctx, ids, from, mid, to); err != nil {
+			if err := s.activity(ctx, p, now, today, covered, daily, out, cmp); err != nil {
 				return nil, err
 			}
 		}
@@ -212,7 +223,7 @@ func (s *service) home(ctx context.Context, p authz.Principal, now time.Time, al
 			var p Period
 			for _, at := range registered {
 				switch {
-				case !at.Before(mid) && !at.After(to):
+				case !at.Before(mid) && !at.After(now):
 					p.Current++
 				case !at.Before(from) && at.Before(mid):
 					p.Previous++

@@ -1074,7 +1074,7 @@ func main() {
 
 	dashboardStore := dashboard.NewPostgresStore(pool)
 	dashboardSvc, err := dashboard.NewService(dashboard.Options{
-		Events: events, Store: dashboardStore, Home: dashboardStore, Authz: az, Directory: dir,
+		Events: events, Store: dashboardStore, Home: dashboardStore, Seasons: seasons, Authz: az, Directory: dir,
 	})
 	if err != nil {
 		log.Fatal(err)

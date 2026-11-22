@@ -80,12 +80,42 @@ func TestPostgresStoreHome(t *testing.T) {
 	checkIn(recent, first, base.Add(-30*time.Minute))
 	checkIn(recent, second, base.Add(-20*time.Minute))
 	checkIn(older, first, base.Add(-39*24*time.Hour))
-	apps, att, err := store.Activity(ctx, []uuid.UUID{a, b}, from, mid, base)
+	istanbul, err := time.LoadLocation("Europe/Istanbul")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if apps != (dashboard.Period{Current: 2, Previous: 1}) || att != (dashboard.Period{Current: 1, Previous: 1}) {
-		t.Fatalf("activity %+v %+v", apps, att)
+	checkIns, err := store.DailyCheckIns(ctx, []uuid.UUID{a, b}, from, istanbul)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checkIns) != 1 || checkIns[a]["2026-10-03"] != 1 || checkIns[a]["2026-08-25"] != 1 || len(checkIns[a]) != 2 {
+		t.Fatalf("check-ins %v", checkIns)
+	}
+	if later, err := store.DailyCheckIns(ctx, []uuid.UUID{a}, mid, istanbul); err != nil || len(later[a]) != 1 {
+		t.Fatalf("since %v %v", later, err)
+	}
+
+	// Certificates: two issued now, one of them revoked, one 40 days ago,
+	// one of another Event.
+	certificate := func(eventID, ticketID uuid.UUID, issued time.Time, revoked bool) {
+		var revokedAt any
+		if revoked {
+			revokedAt = issued
+		}
+		exec(t, pool, `INSERT INTO certificates (id, event_id, ticket_id, serial, recipient_name, recipient_email, event_name, owner_team, verify_url, issued_at, revoked_at)
+			VALUES ($1, $2, $3, $4, 'Ada', 'ada@example.test', 'E', 'WEBLAB', 'https://example.test', $5, $6)`,
+			uuid.New(), eventID, ticketID, uuid.NewString(), issued, revokedAt)
+	}
+	certificate(a, recent, base.Add(-time.Hour), false)
+	certificate(a, older, base.Add(-2*time.Hour), true)
+	certificate(a, ticket(a, base.Add(-50*24*time.Hour)), base.Add(-40*24*time.Hour), false)
+	certificate(other, ticket(other, base), base, false)
+	certs, err := store.CertificateCounts(ctx, []uuid.UUID{a, b}, from, mid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if certs != (dashboard.CertificateCounts{Issued: 3, Revoked: 1, Period: dashboard.Period{Current: 2, Previous: 1}}) {
+		t.Fatalf("certificates %+v", certs)
 	}
 
 	// Failed certificate jobs, by Event.

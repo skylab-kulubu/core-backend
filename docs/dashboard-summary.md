@@ -84,7 +84,14 @@ Nothing in the answer carries an e-mail, phone or other contact, and no Ticket a
     "attendees": { "current": 12, "previous": 18 },
     "events": { "current": 3, "previous": 2 },
     "newMembers": { "current": 9, "previous": 4 }
-  }
+  },
+  "daily": [{ "date": "2026-09-24", "applications": 3, "attendees": 0 }, "… 60 days, oldest first"],
+  "monthly": [{ "month": "2025-12", "applications": 40, "attendees": 31, "events": 2 }, "… 12 months, oldest first"],
+  "teams": [{ "team": "GECEKODU", "events": 4, "applications": 120, "attendees": 88 }],
+  "sessions": 37,
+  "certificates": { "issued": 312, "revoked": 2, "period": { "current": 40, "previous": 12 } },
+  "season": { "id": "…", "name": "2026-2027", "startDate": "…", "endDate": "…", "events": [{ "id": "…", "name": "…", "ownerTeam": "…", "startDate": "…" }] },
+  "club": { "eventsByMonth": [{ "month": "2025-12", "count": 3 }, "…"], "eventsByTeam": [{ "team": "GECEKODU", "count": 6 }] }
 }
 ```
 
@@ -94,9 +101,12 @@ Nothing in the answer carries an e-mail, phone or other contact, and no Ticket a
   - `failedCertificates`: the covered Events with certificate jobs in `failed`, for a caller who may issue that Event's certificates (the Certificate `Issue` decision).
   - `subjectRequests`: the open data subject requests (`received`, `awaiting_verification`) and those past their due day, only for who handles them (the Subject request decision: the board); `null` otherwise. Counts only, no requester.
 - **`week`**: from today 00:00 to seven days on, in `Europe/Istanbul`. `events` are the published Events that run at some time in it, whoever owns them: a published Event is public, so a Member without a team role sees the club's week too. `sessions` are those Events' current Sessions (not archived, not cancelled, of a current day) that start in it, by start, at most 60.
-- **`compare`** (or `null` for a caller the summary covers no Event of and who may not read people): the last 30 days up to now against the 30 before. `applications` are the covered Events' Tickets by the time they came in; `attendees` the covered Events' Tickets checked in during the period, each once a period; `events` the covered published Events that started in it; `newMembers` the active Members (as in **Members**) registered in it, `null` when the caller may not read people or the tree could not be read.
+- **`compare`** (or `null` for a caller the summary covers no Event of and who may not read people): the last 30 days against the 30 before. `applications` are the covered Events' Tickets by the calendar day they came in (the last 30 days of `daily`, today included, against the 30 before); `attendees` the same days' check-ins, a Ticket counting once a day; `events` the covered published Events that started in the 30 days up to now and the 30 before; `newMembers` the active Members (as in **Members**) registered in them, `null` when the caller may not read people or the tree could not be read.
+- **Charts of the covered Events** (empty lists, `0` and `null` when none is covered): `daily` is 60 days, oldest first, `{date, applications, attendees}`; `monthly` 12 months up to this one, `{month, applications, attendees, events}`, attendees summed over the month's days and events the published ones that started in it (not those still to come); `teams` the Owner teams over the same 12 months, `{team, events, applications, attendees}`, most applications first, `""` for Events without an Owner team; `sessions` the covered Events' current Sessions; `certificates` (`null` for a caller who may read no covered Event's certificates, the Certificate `Read` decision) `{issued, revoked, period}`, issued counting revoked ones too and `period` those issued in the last 30 days against the 30 before.
+- **`season`** (or `null`): the season running now (today between its start and a day after its end), else the one that ended last; seasons without both dates are skipped. Its `events` are its published Events (at most 200), by start.
+- **`club`**: for everyone, the published Events by the month they start in (`eventsByMonth`, 12 months up to this one) and by Owner team over those months (`eventsByTeam`, most first). Published Events are public, so a Member without a team role sees the club's figures here.
 
-**Cost.** Up to six more queries, each an aggregate whatever the number of Events: the Session counts of the Events that start soon, the week’s Sessions, the failed certificate jobs, the open data subject requests, and the Tickets and the check-ins of the two periods.
+**Cost.** The Tickets per Event and day are read once for a year instead of 30 days (the same query). Up to seven more queries, each an aggregate whatever the number of Events: the seasons, the Session counts of the Events that start soon and of all covered ones, the week's Sessions, the failed certificate jobs, the open data subject requests, the check-ins per Event and day for the year, and the certificate counts.
 
 ## Members
 

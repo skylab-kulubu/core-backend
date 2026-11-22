@@ -141,8 +141,10 @@ type Options struct {
 	Events EventLister
 	Store  Store
 	// Home reads what Summary.Home is made of; nil leaves Home out.
-	Home  HomeStore
-	Authz authz.Authorizer
+	Home HomeStore
+	// Seasons lists the seasons for Home's season; nil leaves it out.
+	Seasons SeasonLister
+	Authz   authz.Authorizer
 	// Directory reads the Members tree. Nil leaves the Members section
 	// out (null) for everyone.
 	Directory GroupDirectory
@@ -166,6 +168,7 @@ type service struct {
 	events    EventLister
 	store     Store
 	homeStore HomeStore
+	seasons   SeasonLister
 	authz     authz.Authorizer
 	members   *memberCache
 	now       func() time.Time
@@ -181,7 +184,7 @@ func NewService(o Options) (Service, error) {
 	if now == nil {
 		now = time.Now
 	}
-	s := &service{events: o.Events, store: o.Store, homeStore: o.Home, authz: o.Authz, now: now, loc: loc}
+	s := &service{events: o.Events, store: o.Store, homeStore: o.Home, seasons: o.Seasons, authz: o.Authz, now: now, loc: loc}
 	if o.Directory != nil {
 		logf := o.Logf
 		if logf == nil {
@@ -225,6 +228,10 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 			return Summary{}, err
 		}
 		since := today.AddDate(0, 0, -(DailyDays - 1))
+		// Home's charts reach back a year: one read serves both.
+		if s.homeStore != nil {
+			since = seriesStart(today)
+		}
 		if daily, err = s.store.DailyApplications(ctx, ids, since, s.loc); err != nil {
 			return Summary{}, err
 		}
@@ -293,7 +300,7 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 		}
 	}
 	if s.homeStore != nil && p.Product == "" {
-		if out.Home, err = s.home(ctx, p, now, all, covered, out.Members, registered); err != nil {
+		if out.Home, err = s.home(ctx, p, now, all, covered, daily, out.Members, registered); err != nil {
 			return Summary{}, err
 		}
 	}

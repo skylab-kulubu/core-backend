@@ -14,6 +14,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/dashboard"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/season"
 )
 
 // fakeHome answers fixed figures and records which Events it was asked
@@ -24,10 +25,10 @@ type fakeHome struct {
 	slots    []dashboard.SessionSlot
 	failed   map[uuid.UUID]int
 	requests dashboard.SubjectRequestCounts
-	apps     dashboard.Period
-	att      dashboard.Period
+	checkIns map[uuid.UUID]map[string]int
+	certs    dashboard.CertificateCounts
 	asked    []uuid.UUID
-	window   [3]time.Time
+	certAsk  []uuid.UUID
 	today    string
 }
 
@@ -71,13 +72,27 @@ func (h *fakeHome) OpenSubjectRequests(_ context.Context, today string) (dashboa
 	return h.requests, nil
 }
 
-func (h *fakeHome) Activity(_ context.Context, ids []uuid.UUID, from, mid, to time.Time) (dashboard.Period, dashboard.Period, error) {
+func (h *fakeHome) DailyCheckIns(_ context.Context, ids []uuid.UUID, _ time.Time, _ *time.Location) (map[uuid.UUID]map[string]int, error) {
 	h.ask(ids)
+	out := map[uuid.UUID]map[string]int{}
+	for _, id := range ids {
+		if d, ok := h.checkIns[id]; ok {
+			out[id] = d
+		}
+	}
+	return out, nil
+}
+
+func (h *fakeHome) CertificateCounts(_ context.Context, ids []uuid.UUID, _, _ time.Time) (dashboard.CertificateCounts, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.window = [3]time.Time{from, mid, to}
-	return h.apps, h.att, nil
+	h.certAsk = append(h.certAsk, ids...)
+	return h.certs, nil
 }
+
+type fakeSeasons []season.Season
+
+func (f fakeSeasons) List(context.Context, bool) ([]season.Season, error) { return f, nil }
 
 type homeFixture struct {
 	*fixture
@@ -87,6 +102,7 @@ type homeFixture struct {
 	// place; gecekoduWeek a published GECEKODU one in three days;
 	// weblabDraft an undated WEBLAB draft.
 	tomorrow, gecekoduWeek, weblabDraft event.Event
+	season                              uuid.UUID
 }
 
 func newHomeFixture(t *testing.T) *homeFixture {
@@ -95,9 +111,13 @@ func newHomeFixture(t *testing.T) *homeFixture {
 		sessions: map[uuid.UUID]int{},
 		failed:   map[uuid.UUID]int{},
 		requests: dashboard.SubjectRequestCounts{Open: 2, Overdue: 1},
-		apps:     dashboard.Period{Current: 40, Previous: 25},
-		att:      dashboard.Period{Current: 12, Previous: 18},
+		checkIns: map[uuid.UUID]map[string]int{},
+		certs:    dashboard.CertificateCounts{Issued: 10, Revoked: 1, Period: dashboard.Period{Current: 3, Previous: 2}},
 	}}
+	running := season.Season{ID: uuid.New(), Name: "2026-2027", StartDate: at(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)), EndDate: at(time.Date(2027, 6, 30, 0, 0, 0, 0, time.UTC))}
+	old := season.Season{ID: uuid.New(), Name: "2025-2026", StartDate: at(time.Date(2025, 9, 1, 0, 0, 0, 0, time.UTC)), EndDate: at(time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC))}
+	undated := season.Season{ID: uuid.New(), Name: "Tarihsiz"}
+	f.season = running.ID
 	create := func(e event.Event) event.Event {
 		created, err := f.events.Create(t.Context(), e)
 		if err != nil {
@@ -106,10 +126,11 @@ func newHomeFixture(t *testing.T) *homeFixture {
 		return created
 	}
 	f.tomorrow = create(event.Event{Name: "WebLab Atölye", OwnerTeam: "WEBLAB", FormURL: "https://skyl.app/atolye",
-		StartDate: at(now.Add(24 * time.Hour))})
+		StartDate: at(now.Add(24 * time.Hour)), SeasonID: &running.ID})
 	f.gecekoduWeek = create(event.Event{Name: "Gece Atölye", OwnerTeam: "GECEKODU", Location: "B-1",
 		StartDate: at(now.Add(3 * 24 * time.Hour))})
-	f.weblabDraft = create(event.Event{Name: "WebLab Fikir", OwnerTeam: "WEBLAB", Status: event.StatusDraft})
+	f.weblabDraft = create(event.Event{Name: "WebLab Fikir", OwnerTeam: "WEBLAB", Status: event.StatusDraft, SeasonID: &running.ID})
+	f.home.checkIns[f.weblabLive.ID] = map[string]int{"2026-10-03": 4, "2026-09-01": 2}
 	// The Meetup running now has a Session; tomorrow's has none.
 	f.home.sessions[f.weblabLive.ID] = 1
 	f.home.slots = []dashboard.SessionSlot{
@@ -122,7 +143,7 @@ func newHomeFixture(t *testing.T) *homeFixture {
 	f.home.failed[f.gecekoduSoon.ID] = 5
 	svc, err := dashboard.NewService(dashboard.Options{
 		Events: f.events, Store: f.store, Home: f.home, Authz: authz.NewAuthorizer(authz.DefaultPolicy()),
-		Directory: f.dir, Now: f.clock.now,
+		Directory: f.dir, Now: f.clock.now, Seasons: fakeSeasons{old, undated, running},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -201,16 +222,39 @@ func TestHomeOfALeader(t *testing.T) {
 	if h.Week.From.Format(time.RFC3339) != "2026-10-02T21:00:00Z" || h.Week.To.Format(time.RFC3339) != "2026-10-09T21:00:00Z" {
 		t.Fatalf("week %v – %v", h.Week.From, h.Week.To)
 	}
+	// The last 30 days are 4 Sep to 3 Oct; the 30 before, 5 Aug to 3 Sep.
 	c := h.Compare
-	if c == nil || c.Days != 30 || c.Applications != f.home.apps || c.Attendees != f.home.att || c.NewMembers != nil {
+	if c == nil || c.Days != 30 || c.NewMembers != nil ||
+		c.Applications != (dashboard.Period{Current: 8, Previous: 100}) || c.Attendees != (dashboard.Period{Current: 4, Previous: 2}) {
 		t.Fatalf("compare %+v", c)
 	}
 	// The Meetup started two hours ago; the Spring three months ago.
 	if c.Events != (dashboard.Period{Current: 1}) {
 		t.Fatalf("events compare %+v", c.Events)
 	}
-	if f.home.window[2] != now || f.home.window[1] != now.Add(-30*24*time.Hour) || f.home.window[0] != now.Add(-60*24*time.Hour) {
-		t.Fatalf("window %v", f.home.window)
+	if len(h.Daily) != 60 || h.Daily[59] != (dashboard.DailyActivity{Date: "2026-10-03", Applications: 2, Attendees: 4}) || h.Daily[0].Date != "2026-08-05" {
+		t.Fatalf("daily %+v … %+v", h.Daily[0], h.Daily[len(h.Daily)-1])
+	}
+	if len(h.Monthly) != 12 || h.Monthly[0].Month != "2025-11" ||
+		h.Monthly[11] != (dashboard.MonthlyActivity{Month: "2026-10", Applications: 3, Attendees: 4, Events: 1}) ||
+		h.Monthly[10] != (dashboard.MonthlyActivity{Month: "2026-09", Applications: 105, Attendees: 2}) ||
+		h.Monthly[8].Events != 1 {
+		t.Fatalf("monthly %+v", h.Monthly)
+	}
+	if len(h.Teams) != 1 || h.Teams[0] != (dashboard.TeamActivity{Team: "WEBLAB", Events: 2, Applications: 108, Attendees: 6}) {
+		t.Fatalf("teams %+v", h.Teams)
+	}
+	if h.Sessions != 1 || h.Certificates == nil || *h.Certificates != f.home.certs {
+		t.Fatalf("sessions %d certificates %+v", h.Sessions, h.Certificates)
+	}
+	// The running season with its published Events: not the draft.
+	if h.Season == nil || h.Season.ID != f.season || len(h.Season.Events) != 1 || h.Season.Events[0].Name != "WebLab Atölye" {
+		t.Fatalf("season %+v", h.Season)
+	}
+	// The club's published Events, whoever owns them, by month and team.
+	if h.Club.EventsByMonth[11] != (dashboard.MonthCount{Month: "2026-10", Count: 4}) ||
+		!slices.Equal(h.Club.EventsByTeam, []dashboard.TeamCount{{Team: "WEBLAB", Count: 4}, {Team: "", Count: 1}, {Team: "GECEKODU", Count: 1}}) {
+		t.Fatalf("club %+v", h.Club)
 	}
 	for _, id := range f.home.asked {
 		if id == f.gecekoduSoon.ID {
@@ -273,6 +317,14 @@ func TestHomeOfAMember(t *testing.T) {
 	}
 	if events, _ := weekNames(got.Home.Week); len(events) != 4 {
 		t.Fatalf("member week %v", events)
+	}
+	h := got.Home
+	if h.Season == nil || len(h.Club.EventsByTeam) == 0 || len(h.Daily) != 0 || len(h.Teams) != 0 || h.Certificates != nil {
+		t.Fatalf("member charts %+v", h)
+	}
+	body, err := json.Marshal(h)
+	if err != nil || !strings.Contains(string(body), `"daily":[]`) {
+		t.Fatalf("member json %s %v", body, err)
 	}
 	if f.home.today != "" {
 		t.Fatal("the data subject requests were read for a Member")

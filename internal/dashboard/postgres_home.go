@@ -84,26 +84,42 @@ func (s *PostgresStore) OpenSubjectRequests(ctx context.Context, today string) (
 	return out, err
 }
 
-// Activity counts a Ticket checked in more than once in a period once.
-func (s *PostgresStore) Activity(ctx context.Context, eventIDs []uuid.UUID, from, mid, to time.Time) (applications, attendees Period, err error) {
-	err = s.pool.QueryRow(ctx, `
-		SELECT count(*) FILTER (WHERE created_at >= $3),
-		       count(*) FILTER (WHERE created_at < $3)
-		FROM tickets
-		WHERE event_id = ANY($1) AND created_at >= $2 AND created_at < $4`,
-		eventIDs, from, mid, to).Scan(&applications.Current, &applications.Previous)
-	if err != nil {
-		return Period{}, Period{}, err
-	}
-	err = s.pool.QueryRow(ctx, `
-		SELECT count(DISTINCT c.ticket_id) FILTER (WHERE c.created_at >= $3),
-		       count(DISTINCT c.ticket_id) FILTER (WHERE c.created_at < $3)
+func (s *PostgresStore) DailyCheckIns(ctx context.Context, eventIDs []uuid.UUID, since time.Time, loc *time.Location) (map[uuid.UUID]map[string]int, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT t.event_id, to_char(c.created_at AT TIME ZONE $3, 'YYYY-MM-DD') AS day, count(DISTINCT c.ticket_id)
 		FROM ticket_checkins c
 		JOIN tickets t ON t.id = c.ticket_id
-		WHERE t.event_id = ANY($1) AND c.created_at >= $2 AND c.created_at < $4`,
-		eventIDs, from, mid, to).Scan(&attendees.Current, &attendees.Previous)
+		WHERE t.event_id = ANY($1) AND c.created_at >= $2
+		GROUP BY t.event_id, day
+	`, eventIDs, since, loc.String())
 	if err != nil {
-		return Period{}, Period{}, err
+		return nil, err
 	}
-	return applications, attendees, nil
+	defer rows.Close()
+	out := make(map[uuid.UUID]map[string]int)
+	for rows.Next() {
+		var id uuid.UUID
+		var day string
+		var n int
+		if err := rows.Scan(&id, &day, &n); err != nil {
+			return nil, err
+		}
+		if out[id] == nil {
+			out[id] = make(map[string]int)
+		}
+		out[id][day] = n
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) CertificateCounts(ctx context.Context, eventIDs []uuid.UUID, from, mid time.Time) (CertificateCounts, error) {
+	var out CertificateCounts
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*),
+		       count(*) FILTER (WHERE revoked_at IS NOT NULL),
+		       count(*) FILTER (WHERE issued_at >= $3),
+		       count(*) FILTER (WHERE issued_at >= $2 AND issued_at < $3)
+		FROM certificates
+		WHERE event_id = ANY($1)`, eventIDs, from, mid).Scan(&out.Issued, &out.Revoked, &out.Period.Current, &out.Period.Previous)
+	return out, err
 }
