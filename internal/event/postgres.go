@@ -1306,3 +1306,33 @@ func (s *PostgresStore) ListSessionFeedbackForms(ctx context.Context, eventID uu
 		return f, err
 	})
 }
+
+func (s *PostgresStore) ListPlaces(ctx context.Context, ownerTeam string, drafts bool, limit int) ([]Place, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT location, location_address, location_lat, location_lng, used_at, uses FROM (
+			SELECT DISTINCT ON (location, location_lat, location_lng)
+				location, location_address, location_lat, location_lng,
+				COALESCE(start_date, created_at) AS used_at,
+				count(*) OVER (PARTITION BY location, location_lat, location_lng) AS uses
+			FROM events
+			WHERE archived_at IS NULL AND location_lat IS NOT NULL
+			  AND ($1 = '' OR owner_team = $1)
+			  AND ($2 OR status <> 'draft')
+			ORDER BY location, location_lat, location_lng, COALESCE(start_date, created_at) DESC, id
+		) places
+		ORDER BY used_at DESC, location
+		LIMIT $3`, ownerTeam, drafts, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Place, 0)
+	for rows.Next() {
+		var p Place
+		if err := rows.Scan(&p.Name, &p.Address, &p.Lat, &p.Lng, &p.LastUsedAt, &p.Uses); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

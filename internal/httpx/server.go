@@ -660,6 +660,7 @@ func New(deps Deps) *fiber.App {
 
 	app.Get("/v1/events", events.List)
 	app.Get("/v1/events/active", events.ListActive)
+	app.Get("/v1/events/places", events.Places)
 	app.Post("/v1/events", events.Create)
 	app.Get("/v1/events/:id", events.Get)
 	app.Put("/v1/events/:id", events.Update)
