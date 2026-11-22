@@ -42,7 +42,10 @@ type Store interface {
 	// conditional write: ErrNotDraft when it is published or cancelled (an
 	// Event archived already stays as it is, as with Archive).
 	ArchiveDraft(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
-	Restore(ctx context.Context, id uuid.UUID) error
+	// Restore brings the archived Event back. With a guard (the service's;
+	// nil for none) it applies the one-place rule again inside its write,
+	// under each form's lock, as Create and Update do.
+	Restore(ctx context.Context, id uuid.UUID, guard *formGuard) error
 	AddImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
 	RemoveImages(ctx context.Context, eventID uuid.UUID, ids []uuid.UUID) (Event, error)
 	// ListFiles reads the Event's files and videos, each list in its
@@ -83,7 +86,11 @@ type Store interface {
 	// Publish publishes the draft (published_at/by, by nil when unknown):
 	// one UPDATE that changes it only while it is a current draft with a
 	// name, a location and a start date. False when it changed nothing.
-	Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID) (bool, error)
+	// With notifyTickets, while the new Ticket's Notification is on, the
+	// same transaction queues the Notification of each of the Event's
+	// Tickets (ticket_notifications; a row already queued stays). The
+	// memory store keeps no Tickets and queues nothing.
+	Publish(ctx context.Context, id uuid.UUID, by *uuid.UUID, notifyTickets bool) (bool, error)
 	// Unpublish makes the published Event a draft again: one UPDATE that
 	// changes it only while it is current, published, and has no Ticket
 	// (check-ins hang off Tickets) and no current Competitor. When it is

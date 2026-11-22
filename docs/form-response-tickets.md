@@ -9,9 +9,11 @@ An Event lists a form through `formUrl` or one of its `extraFormUrls`: the
 form is the first UUID path segment of the address (`event.FormIDFromURL`),
 with or without an alias. An Event's feedback form (`feedbackFormUrl`) is
 not listed: its answers write no Ticket ([event-feedback.md](event-feedback.md)).
-Archived Events list nothing. A form an older Event
-still lists keeps writing that Event's Tickets, so remove it from the older
-Event when the form is reused.
+Archived Events list nothing. A form is listed by one current Event only, a
+draft or an ended one too: binding it to a second is `409 form_in_use`
+(ADR 0069, addendum of 2026-11-22; [event-feedback.md](event-feedback.md#one-place-per-form)).
+A form two Events listed before that rule stays on both until one lets it
+go; its answers write the Tickets of those of them still open (below).
 
 ## Endpoint
 
@@ -38,6 +40,7 @@ that no Event lists: it writes nothing for it, and the report's log line
 |---|---|
 | `204` | done; stop sending the report. A report to a current Event's feedback form is `204` too, whatever its status and whoever answered: no Ticket is written (logged as `outcome: feedback`) |
 | `200` `{"outcome": "event_cancelled"}` | done, and no Ticket was written: every Event that lists the form is cancelled ([event-cancel.md](event-cancel.md)); stop sending the report |
+| `200` `{"outcome": "event_ended"}` | done, and no Ticket was written: every Event that lists the form and is not cancelled has ended (below); stop sending the report |
 | `200` `{"outcome": "registration_closed"}` | done, and no Ticket was written: the report said when the answer was sent (`submittedAt`), and by then every Event of the form not cancelled had closed applying ([event-registration-closure.md](event-registration-closure.md)); stop sending the report |
 | `400` | a malformed report: a form id or body core cannot read, an unknown `status`, a zero `userId`, or a `guest` with an e-mail but without a first name or last name; sending it again will not help |
 | `401` | no valid token |
@@ -49,8 +52,17 @@ that no Event lists: it writes nothing for it, and the report's log line
 A report to a feedback form writes no Ticket (checked before anything
 else, after the status is read). Otherwise only an `accepted` answer writes,
 on every current Event that lists the form
-and is not cancelled. When every such Event is cancelled, nothing is written
-and the answer is `200` with `outcome: "event_cancelled"` (checked first).
+and is neither cancelled nor ended. When every such Event is cancelled, nothing is written
+and the answer is `200` with `outcome: "event_cancelled"` (checked first);
+when every one left has ended, `200` with `outcome: "event_ended"`.
+
+**An ended Event takes no new application** (ADR 0069, addendum of
+2026-11-22). Ended is the Event's end (`endDate`, else a day after
+`startDate`) at the moment core reads the report: an answer approved after
+the Event ended earns no Ticket, since the door and the certificates need a
+Check-in by then. The organizer adds a late person from the panel. An Event
+without dates never ends. Feedback forms, answered after the Event, are
+apart and write no Ticket anyway.
 
 **Closing applying does not refuse a report** (Yusuf, 2026-10-20). An answer
 sent in time and approved after the organizer closed applying, or reported
@@ -61,9 +73,8 @@ organizer had closed applying by then, by hand (`registrationClosedAt`) or by
 its deadline (`registrationClosesAt`), gets no Ticket, and when no Event is
 left the answer is `200` with `outcome: "registration_closed"`. Forms sends
 no `submittedAt` today; core takes it once Forms does (Fatih's call). A
-draft and an ended Event take a form's answers as a published one does
-(feedback forms are answered after the Event), although `registrationOpen`
-is `false` for them.
+draft takes a form's answers as a published one does, although
+`registrationOpen` is `false` for it; an ended Event takes none (above).
 
 | Answer from | Ticket |
 |---|---|
@@ -95,9 +106,13 @@ as a report without a respondent and writes nothing.
 
 Core writes one JSON line per report it reads (`"event":"form_response"`):
 `correlation_id`, `form_id`, `response_id`, `status` (`unknown` for a value
-other than the three), `outcome` and `tickets_written` (new Tickets only).
+other than the three), `outcome`, `tickets_written` (new Tickets only) and
+`listing_events`: how many current Events list the form, whatever their
+status (`0` when the report ended before they were read). More than one is a
+form shared before the one-place rule; such a form is left as it is and the
+line is how it shows.
 `outcome` is `recorded`, `not_accepted`, `no_respondent`, `not_listed`,
-`event_cancelled`, `registration_closed`, `person_unavailable`, `invalid` or `failed`. The line never carries the
+`event_cancelled`, `event_ended`, `registration_closed`, `person_unavailable`, `invalid` or `failed`. The line never carries the
 `userId`, a name or an e-mail.
 
 ## Setup

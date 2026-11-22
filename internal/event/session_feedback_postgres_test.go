@@ -79,7 +79,7 @@ func TestPostgresStoreSessionFeedbackForms(t *testing.T) {
 		t.Fatalf("archived Event in the global list: %+v %v", got, err)
 	}
 	only(store.ListSessionFeedbackForms(ctx, ev.ID))
-	if err := store.Restore(ctx, ev.ID); err != nil {
+	if err := store.Restore(ctx, ev.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	svc := event.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy()))

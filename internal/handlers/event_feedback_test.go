@@ -38,6 +38,21 @@ func TestEventFeedbackFormOnCreate(t *testing.T) {
 	if status != fiber.StatusConflict || refused["code"] != "form_in_use" {
 		t.Fatalf("second place %d %v", status, refused)
 	}
+	// The refusal says where the form is (ADR 0069, addendum of
+	// 2026-11-22).
+	if holder, _ := refused["event"].(map[string]any); refused["formId"] != strings.TrimPrefix(form, "https://forms.yildizskylab.com/") ||
+		holder["id"] != withForm["id"] || holder["name"] != "Hack 2" || holder["status"] != "published" {
+		t.Fatalf("second place body %v", refused)
+	}
+	// An application form is on one Event too.
+	apply := "https://forms.yildizskylab.com/" + uuid.NewString()
+	if status, body := sendEventJSON(t, app, fiber.MethodPatch, "/v1/events/"+created["id"].(string), `{"formUrl":"`+apply+`"}`); status != fiber.StatusOK {
+		t.Fatalf("application form %d %v", status, body)
+	}
+	status, refused = sendEventJSON(t, app, fiber.MethodPost, "/v1/events", `{"name":"Hack 4","location":"YTÜ","ownerTeam":"WEBLAB","formUrl":"`+apply+`"}`)
+	if holder, _ := refused["event"].(map[string]any); status != fiber.StatusConflict || refused["code"] != "form_in_use" || holder["id"] != created["id"] {
+		t.Fatalf("application form in a second place %d %v", status, refused)
+	}
 	status, refused = sendEventJSON(t, app, fiber.MethodPatch, "/v1/events/"+created["id"].(string), `{"feedbackFormUrl":"`+form+`"}`)
 	if status != fiber.StatusConflict || refused["code"] != "form_in_use" {
 		t.Fatalf("second place on update %d %v", status, refused)

@@ -27,7 +27,7 @@ ADR 0066 addendum (2026-10-19), ticket 13. `PUT` and `PATCH` on `/v1/events/{id}
 - A value of the wrong type is `400`; so is `attendanceRule: "ratio"` without a ratio (sent or stored). Rights are checked before the body: who may not edit the Event gets `403` whatever it sends.
 - The season is not in the body: `POST /v1/seasons/{id}/events/{eventId}` and `DELETE /v1/events/{id}/season` set it.
 - `doorStaffIds` is written only by who may assign door staff; anyone else's is ignored, as before.
-- The form short links are bound again only when the body sends `formUrl`, `formAlias`, `extraFormUrls`, `feedbackFormUrl`, `feedbackFormAlias` or `name` (the name labels them); such a body is also held to the one-place rule of feedback forms (`409 form_in_use`, [event-feedback.md](event-feedback.md)). A body without them leaves the links alone, so it cannot take back a link another Event has taken over.
+- The form short links are bound again only when the body sends `formUrl`, `formAlias`, `extraFormUrls`, `feedbackFormUrl`, `feedbackFormAlias` or `name` (the name labels them); such a body is also held to the one-place rule of forms (`409 form_in_use`, [event-feedback.md](event-feedback.md#one-place-per-form)). A body without them leaves the links alone, so it cannot take back a link another Event has taken over.
 
 ## Season: `PUT`/`PATCH /v1/seasons/{id}`
 

@@ -29,7 +29,8 @@ ADR 0066 and its 2026-10-19 addendum (e-skylab). An Event's `status` is `draft`,
 
 | Path | Who may see the draft | Anyone else |
 |---|---|---|
-| `POST /v1/events/{id}/applications/me`, `…/applications/guest` | `409`, `code: "event_not_published"` | `404` |
+| `POST /v1/events/{id}/applications/me` | `409`, `code: "event_not_published"` | `404` |
+| `POST /v1/events/{id}/applications/guest` | an operator (who may update the Event or assign its Tickets: the panel's "Katılımcı ekle") adds the guest as on a published Event (Yusuf, 2026-11-22, K5); DK, who sees the draft but adds nobody, `403` (rights before state, as for a person) | `404` |
 | `POST /v1/events/{id}/applications/users/{userId}` (add a person from the panel) | allowed as on a published Event (DK: `403`) | `404` |
 | `POST /v1/forms/{formId}/responses` (Forms' report) | writes the Ticket: the editors linked the form and shared it | |
 | `check-in`, `check-in/me`, `check-in/guest`, `check-in/resolve`, `check-in/skypass`, `door-qr` | `403`, `code: "session_closed"`, `reason: "event_not_published"` | `404` |
@@ -47,6 +48,7 @@ Writes on the Event itself (update, delete, days, Sessions, media) keep their ru
 ## Publish and unpublish
 
 - `POST /v1/events/{id}/publish`: draft → published, with `publishedAt` and the publisher. Needs a name, a location and a start date: otherwise `400`, `code: "event_incomplete"`, `missing: ["startDate", …]`. Publishing a published Event answers it unchanged; a cancelled one is `409 event_cancelled`.
+  - Optional body `{"notifyTicketHolders": true}` (Yusuf, 2026-11-22, K3; the cancel dialog's "Bilet sahiplerine bildir" pattern, [event-cancel.md](event-cancel.md)): the publication also queues the "your ticket is ready" Notification of every Ticket the draft has, in the same transaction ([ticket-created-notification.md](ticket-created-notification.md#publishing-a-draft)). Every Ticket a published Event has at that moment was written while it was a draft, since unpublishing needs no Ticket. Only while `TICKET_CREATED_NOTIFICATION` is on, and only when the call publishes the draft (not on an Event already published). No body, `{}` or `false` mails nobody: an older client (sky-app) starts no mail. A body that is not JSON of that shape is `400`.
 - `POST /v1/events/{id}/unpublish`: published → draft, only while the Event has no Ticket (a check-in needs one) and no current Competitor: otherwise `409 event_has_tickets` or `409 event_has_competitors` (a withdrawn Competitor does not hold it). Unpublishing a draft answers it unchanged; a cancelled one is `409 event_cancelled`. `publishedAt` keeps the last publication.
 - Both: whoever may edit the Event (`authz.Update`); DK `403`; anyone who may not see the Event `404`. Each is one `UPDATE … WHERE status = <expected>` (the publish also checks the three fields there), so two at once change the row once; the answer is the Event (`200`).
 

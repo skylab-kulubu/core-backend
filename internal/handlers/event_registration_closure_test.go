@@ -227,7 +227,8 @@ func TestRegistrationClosureIsWrittenByPatch(t *testing.T) {
 // review B1): an answer sent in time and approved later, or reported late,
 // earns its Ticket. Only a report that says when the answer was sent
 // (submittedAt) is judged by it, against when applying was closed by hand
-// or by the deadline. A cancelled Event is refused first, as before.
+// or by the deadline. A cancelled Event is refused first, as before; an
+// ended Event takes no new application (ADR 0069, addendum of 2026-11-22).
 func TestFormsAnswerToAClosedRegistration(t *testing.T) {
 	t.Parallel()
 	env := newClosureEnv(t)
@@ -265,7 +266,8 @@ func TestFormsAnswerToAClosedRegistration(t *testing.T) {
 		{"deadline gone, sent after", deadlineForm, deadline, &after, "registration_closed"},
 		{"cancelled", cancelledForm, cancelled, nil, "event_cancelled"},
 		{"cancelled, sent after closing", cancelledForm, cancelled, &after, "event_cancelled"},
-		{"ended", endedForm, ended, &after, ""},
+		{"ended", endedForm, ended, &after, "event_ended"},
+		{"ended, no submittedAt", endedForm, ended, nil, "event_ended"},
 	} {
 		count := env.ticketCount(t, tc.ev.ID)
 		status, body := report(tc.form, tc.submitted)

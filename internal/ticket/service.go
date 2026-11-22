@@ -608,7 +608,20 @@ func (s *service) ApplyGuest(ctx context.Context, p authz.Principal, eventID uui
 		}
 		return GuestApplication{}, err
 	}
-	if err := s.openForRegistration(&p, ev, s.operatorOf(p, ev)); err != nil {
+	operator := s.operatorOf(p, ev)
+	// On a draft the route is the panel's alone (K5, 2026-11-22): who may
+	// not see it gets 404, who sees it but may not add people (DK) 403, as
+	// adding a person: rights first, so the draft's state is told to no
+	// one who may not act on it.
+	if ev.Status == event.StatusDraft {
+		if err := s.seen(&p, ev); err != nil {
+			return GuestApplication{}, err
+		}
+		if !operator {
+			return GuestApplication{}, ErrForbidden
+		}
+	}
+	if err := s.openForRegistration(&p, ev, operator); err != nil {
 		return GuestApplication{}, err
 	}
 	trusted := s.guestApplyTrusted(p, ev)

@@ -28,8 +28,10 @@ type Service interface {
 	Get(ctx context.Context, p *authz.Principal, id uuid.UUID) (Event, error)
 	// Publish publishes a draft; Unpublish makes a published Event without
 	// Tickets a draft again. Whoever may edit the Event may; each is
-	// idempotent and one conditional UPDATE.
-	Publish(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
+	// idempotent and one conditional UPDATE. Publish with notifyTickets
+	// also queues the "your ticket is ready" Notification of the Tickets
+	// written while it was a draft, in the same transaction (K3).
+	Publish(ctx context.Context, p authz.Principal, id uuid.UUID, notifyTickets bool) (Event, error)
 	Unpublish(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
 	// Cancel cancels a published Event that has not ended (ticket 04);
 	// idempotent, refused on a draft (ErrNotPublished) and once ended
@@ -245,7 +247,8 @@ func normalizeAttendance(in Event) (Event, error) {
 	}
 }
 
-func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Event, error) {
+func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (_ Event, err error) {
+	defer func() { err = s.shownTo(&p, err) }()
 	if in.Name == "" || in.Location == "" {
 		return Event{}, ErrInvalid
 	}
@@ -264,7 +267,7 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	if in.Status == StatusPublished {
 		in.PublishedBy = lifecycle.ActorID(p.ID)
 	}
-	in, err := normalizeAttendance(in)
+	in, err = normalizeAttendance(in)
 	if err != nil {
 		return Event{}, err
 	}
@@ -274,10 +277,10 @@ func (s *service) Create(ctx context.Context, p authz.Principal, in Event) (Even
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Create) {
 		return Event{}, ErrForbidden
 	}
-	if err := s.checkFormPlaces(ctx, in, false); err != nil {
+	if err := s.checkFormPlaces(ctx, in, false, nil); err != nil {
 		return Event{}, err
 	}
-	s.guardForms(&in)
+	s.guardForms(&in, nil)
 	if !s.authz.Allow(p, resource(in.OwnerTeam), authz.Assign) {
 		in.DoorStaffIDs = nil
 	}
@@ -320,7 +323,8 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 
 // update writes the Event build makes of the stored one, once p may edit
 // it. syncForms re-binds the Event's form short links after the write.
-func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, build func(existing Event) (Event, error), syncForms bool) (Event, error) {
+func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, build func(existing Event) (Event, error), syncForms bool) (_ Event, err error) {
+	defer func() { err = s.shownTo(&p, err) }()
 	existing, err := s.store.Get(ctx, id)
 	if err != nil {
 		return Event{}, err
@@ -348,10 +352,11 @@ func (s *service) update(ctx context.Context, p authz.Principal, id uuid.UUID, b
 	in.ID = existing.ID
 	in.formGuard = nil
 	if syncForms {
-		if err := s.checkFormPlaces(ctx, in, false); err != nil {
+		kept := listedForms(existing)
+		if err := s.checkFormPlaces(ctx, in, false, kept); err != nil {
 			return Event{}, err
 		}
-		s.guardForms(&in)
+		s.guardForms(&in, kept)
 	}
 	if !s.authz.Allow(p, resource(existing.OwnerTeam), authz.Assign) {
 		in.DoorStaffIDs = existing.DoorStaffIDs
@@ -418,7 +423,8 @@ func (s *service) Delete(ctx context.Context, p authz.Principal, id uuid.UUID) e
 	return nil
 }
 
-func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error) {
+func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (_ Event, err error) {
+	defer func() { err = s.shownTo(&p, err) }()
 	existing, err := s.store.GetIncludingArchived(ctx, id)
 	if err != nil {
 		return Event{}, err
@@ -427,11 +433,15 @@ func (s *service) Restore(ctx context.Context, p authz.Principal, id uuid.UUID) 
 		return Event{}, ErrForbidden
 	}
 	// Its forms were released when it was archived: one taken since by
-	// another place keeps it archived (one place per feedback form).
-	if err := s.checkFormPlaces(ctx, existing, true); err != nil {
+	// another place keeps it archived (one place per form).
+	if err := s.checkFormPlaces(ctx, existing, true, nil); err != nil {
 		return Event{}, err
 	}
-	if err := s.store.Restore(ctx, id); err != nil {
+	guard, err := s.guardRestore(ctx, existing)
+	if err != nil {
+		return Event{}, err
+	}
+	if err := s.store.Restore(ctx, id, guard); err != nil {
 		return Event{}, err
 	}
 	restored, err := s.Get(ctx, &p, id)
@@ -717,7 +727,8 @@ func (s *service) daySessionForms(ctx context.Context, dayID uuid.UUID) ([]Sessi
 	return out, nil
 }
 
-func (s *service) RestoreDay(ctx context.Context, p authz.Principal, id uuid.UUID) (Day, error) {
+func (s *service) RestoreDay(ctx context.Context, p authz.Principal, id uuid.UUID) (_ Day, err error) {
+	defer func() { err = s.shownTo(&p, err) }()
 	existing, err := s.store.GetDayIncludingArchived(ctx, id)
 	if err != nil {
 		return Day{}, err
@@ -808,7 +819,8 @@ func (s *service) sessionOwner(ctx context.Context, eventDayID uuid.UUID) (strin
 	return s.eventOwner(ctx, day.EventID)
 }
 
-func (s *service) CreateSession(ctx context.Context, p authz.Principal, sess Session) (Session, error) {
+func (s *service) CreateSession(ctx context.Context, p authz.Principal, sess Session) (_ Session, err error) {
+	defer func() { err = s.shownTo(&p, err) }()
 	if err := validateSession(sess); err != nil {
 		return Session{}, ErrInvalid
 	}
@@ -840,7 +852,8 @@ func (s *service) syncSessionForms(ctx context.Context, eventDayID uuid.UUID) {
 	s.syncEventFormsOf(ctx, day.EventID)
 }
 
-func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session, cancelled *bool, feedback SessionFeedback) (Session, error) {
+func (s *service) UpdateSession(ctx context.Context, p authz.Principal, id uuid.UUID, sess Session, cancelled *bool, feedback SessionFeedback) (_ Session, err error) {
+	defer func() { err = s.shownTo(&p, err) }()
 	existing, err := s.store.GetSession(ctx, id)
 	if err != nil {
 		return Session{}, err
@@ -906,7 +919,8 @@ func (s *service) DeleteSession(ctx context.Context, p authz.Principal, id uuid.
 	return nil
 }
 
-func (s *service) RestoreSession(ctx context.Context, p authz.Principal, id uuid.UUID) (Session, error) {
+func (s *service) RestoreSession(ctx context.Context, p authz.Principal, id uuid.UUID) (_ Session, err error) {
+	defer func() { err = s.shownTo(&p, err) }()
 	existing, err := s.store.GetSessionIncludingArchived(ctx, id)
 	if err != nil {
 		return Session{}, err

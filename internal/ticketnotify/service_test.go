@@ -259,6 +259,11 @@ func TestOnlyAPublishedEventNotOverIsToldOf(t *testing.T) {
 		"cancelled": func(ev *event.Event) { ev.Status = event.StatusCancelled },
 		"archived":  func(ev *event.Event) { at := time.Now(); ev.ArchivedAt = &at },
 		"over":      func(ev *event.Event) { past := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC); ev.EndDate = &past },
+		// No end date, started more than a day ago: over (event.EndsAt).
+		"over without an end date": func(ev *event.Event) {
+			start := time.Date(2026, 10, 30, 18, 0, 0, 0, time.UTC)
+			ev.StartDate, ev.EndDate = &start, nil
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
@@ -327,5 +332,19 @@ func TestUnansweredGuestMailIsNotTriedAgain(t *testing.T) {
 	e.pass(t)
 	if len(e.mail.calls) != 1 {
 		t.Fatalf("calls %d, want one", len(e.mail.calls))
+	}
+}
+
+// An Event without an end date that started less than a day ago is not
+// over: its Ticket is told of (event.EndsAt is the start plus a day).
+func TestEventWithoutAnEndIsToldOfUntilADayAfterItsStart(t *testing.T) {
+	e := newEnv(t)
+	ev := e.ev
+	start := e.now.Add(-6 * time.Hour)
+	ev.StartDate, ev.EndDate = &start, nil
+	e.events[ev.ID] = ev
+	e.member(user.AccountActive)
+	if r := e.pass(t); r.Sent != 1 || len(e.mail.calls) != 1 {
+		t.Fatalf("report %+v, calls %d", r, len(e.mail.calls))
 	}
 }
