@@ -87,7 +87,8 @@ type Deps struct {
 	ParseSelfDeleteBearer func(string) (authn.Identity, error)
 
 	// TrustedProxies are the peers allowed to speak for a client through
-	// `X-Forwarded-For`. An empty value falls back to clientip.Default().
+	// `X-Forwarded-For`. An empty value falls back to clientip.Default();
+	// a set one also serves its metrics on /v1/metrics.
 	TrustedProxies clientip.Ranges
 
 	// AccountErasureMetrics are the account erasure watchdog's gauges. Nil
@@ -275,9 +276,9 @@ func New(deps Deps) *fiber.App {
 	}
 	// The edge proxy discards a caller-supplied `X-Forwarded-For` and writes
 	// its own, so the header is only worth reading when the connection came
-	// from one of those proxies. Fiber makes that decision for c.IP() from the
-	// same ranges the handlers use, and validation keeps c.IP() from handing
-	// back a raw header value.
+	// from one of the trusted proxies, which TRUSTED_PROXY_RANGES may name by
+	// host (their addresses move). That decision is clientip's alone: Fiber
+	// believes no forwarded header, and c.IP() is the socket's address.
 	app := fiber.New(fiber.Config{
 		ErrorHandler: handlers.ErrorHandler,
 		// Fiber's 4 MiB default rejected media the service accepts. Leave room
@@ -287,11 +288,7 @@ func New(deps Deps) *fiber.App {
 		// admin's bearer (past 3 KB) plus the browser's .yildizskylab.com
 		// cookies ran over it: every call answered 431. 16 KiB matches
 		// Node's default, which the Next.js frontends already accept.
-		ReadBufferSize:     16 << 10,
-		TrustProxy:         true,
-		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: trustedProxies.Proxies()},
-		ProxyHeader:        fiber.HeaderXForwardedFor,
-		EnableIPValidation: true,
+		ReadBufferSize: 16 << 10,
 	})
 	app.Use(recover.New())
 	app.Use(requestid.New())
@@ -373,6 +370,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.EventMapMetrics != nil {
 				text += deps.EventMapMetrics.Prometheus()
+			}
+			if !deps.TrustedProxies.Empty() {
+				text += deps.TrustedProxies.Prometheus()
 			}
 			if deps.TeamMailMetrics != nil {
 				text += deps.TeamMailMetrics.Prometheus()

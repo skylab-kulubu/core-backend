@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/netip"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -37,13 +36,14 @@ const localsGuestApplyCaller = "guest_apply_caller"
 type guestCaller int
 
 const (
-	// guestAnonymousPublic is a request without a usable token whose client
-	// address is outside the trusted proxy ranges: it came from the
-	// internet through the edge proxy.
+	// guestAnonymousPublic is a request without a usable token that is not
+	// internal: it came from the internet through the edge proxy, or it
+	// carries an X-Forwarded-For from a peer that is not a trusted proxy
+	// (clientip.InternalFromCtx).
 	guestAnonymousPublic guestCaller = iota
-	// guestAnonymousInternal is a request without a usable token from inside
-	// the trusted proxy ranges: today the forms hop, which calls core on the
-	// internal network without a token.
+	// guestAnonymousInternal is a request without a usable token from a
+	// private address that names nobody else: today the forms hop, which
+	// calls core on the internal network without a token.
 	guestAnonymousInternal
 	// guestPerson is a person's token (the Event hub).
 	guestPerson
@@ -219,7 +219,7 @@ func (g *GuestApply) caller(c fiber.Ctx) guestCaller {
 		if ident.ServiceAccount || ident.Product != "" {
 			class = guestService
 		}
-	} else if addr, err := netip.ParseAddr(clientip.FromCtx(c, g.proxies)); err == nil && g.proxies.Contains(addr) {
+	} else if clientip.InternalFromCtx(c, g.proxies) {
 		class = guestAnonymousInternal
 	}
 	c.Locals(localsGuestApplyCaller, class)

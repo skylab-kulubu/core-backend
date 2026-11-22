@@ -47,19 +47,21 @@ itself ([form-response-tickets.md](form-response-tickets.md)).
 
 ### Where forms comes from
 
-The forms hop must reach core from inside `TRUSTED_PROXY_RANGES`, or it is
-counted `anonymous_public` and every guest's form answer shares one address
-budget. Checked on the production server on 2026-10-03:
+The forms hop must reach core on the internal network, or it is counted
+`anonymous_public` and every guest's form answer shares one address budget.
+Checked on the production server on 2026-10-03:
 
 - forms `Services__Users__BaseUrl` names core's internal Swarm service on
   port 8080, not a public host;
-- core `TRUSTED_PROXY_RANGES=10.0.1.0/24`;
-- the `dokploy-network` subnet is `10.0.1.0/24`.
+- the `dokploy-network` subnet is `10.0.1.0/24`, a private range.
 
-So the hop is `anonymous_internal`. Check the three again whenever one of
-them changes (a new forms deployment, a recreated network, a proxy range
-change); `skylab_guest_apply_anonymous_internal_total` rising with each form
-answer, and `anonymous_public` not, shows it from outside.
+So the hop is `anonymous_internal`: its address is private. Until 2026-11-22
+the test was "inside `TRUSTED_PROXY_RANGES`" (then `10.0.1.0/24`); it is now
+any private or loopback address (or a trusted proxy), so narrowing the proxy
+list to Traefik and the site does not move the forms hop. Check the two again
+whenever one of them changes (a new forms deployment, a recreated network);
+`skylab_guest_apply_anonymous_internal_total` rising with each form answer,
+and `anonymous_public` not, shows it from outside.
 
 ## Caller classes
 
@@ -67,8 +69,8 @@ Every request is put in one class before anything else:
 
 | Class | Request |
 |---|---|
-| `anonymous_public` | no usable token, and the resolved client address ([client-ip-trust.md](client-ip-trust.md)) is outside `TRUSTED_PROXY_RANGES`: it came from the internet through the edge proxy |
-| `anonymous_internal` | no usable token, from inside the trusted ranges: today the forms hop |
+| `anonymous_public` | no usable token, and not internal: the resolved client address ([client-ip-trust.md](client-ip-trust.md)) is public (the internet through the edge proxy), or a peer that is not a trusted proxy sent `X-Forwarded-For` (a proxy whose name did not resolve) |
+| `anonymous_internal` | no usable token, from a private address (the overlay network) or a trusted proxy, with no `X-Forwarded-For` from an untrusted peer: today the forms hop |
 | `person` | a person's valid token |
 | `service` | a service account's valid token. Only a service account whose client `MEDIA_SERVICE_CLIENTS` maps to a product is trusted (below); any other is counted here and answered like an anonymous caller |
 
