@@ -61,6 +61,55 @@ All times are UTC (RFC 3339). Days and months are counted in `Europe/Istanbul`.
 
 Nothing in the answer carries an e-mail, phone or other contact, and no Ticket appears one by one.
 
+## Home
+
+`home` is the panel's home page in the same answer: what waits on the caller, what runs this week, and a few figures set against the period before. It is additive: a panel that does not read it is unaffected, and a panel that finds no `home` key is talking to an older core and falls back on the rest of the summary. A product's service account gets no `home`.
+
+```json
+"home": {
+  "todo": {
+    "drafts": [{ "id": "…", "name": "Gece Kodu Aralık", "ownerTeam": "GECEKODU", "startDate": "2026-12-12T16:00:00Z" }],
+    "incomplete": [{ "id": "…", "name": "WebLab Atölye", "ownerTeam": "WEBLAB", "startDate": "…", "live": false, "missing": ["location", "sessions"] }],
+    "failedCertificates": [{ "eventId": "…", "eventName": "Web Güvenliği Semineri", "failed": 3 }],
+    "subjectRequests": { "open": 2, "overdue": 1 }
+  },
+  "week": {
+    "from": "2026-11-21T21:00:00Z", "to": "2026-11-28T21:00:00Z",
+    "events": [{ "id": "…", "name": "…", "ownerTeam": "…", "location": "…", "startDate": "…", "endDate": "…", "live": true }],
+    "sessions": [{ "id": "…", "eventId": "…", "eventName": "…", "title": "Açılış", "startTime": "…", "endTime": "…" }]
+  },
+  "compare": {
+    "days": 30,
+    "applications": { "current": 40, "previous": 25 },
+    "attendees": { "current": 12, "previous": 18 },
+    "events": { "current": 3, "previous": 2 },
+    "newMembers": { "current": 9, "previous": 4 }
+  },
+  "daily": [{ "date": "2026-09-24", "applications": 3, "attendees": 0 }, "… 60 days, oldest first"],
+  "monthly": [{ "month": "2025-12", "applications": 40, "attendees": 31, "events": 2 }, "… 12 months, oldest first"],
+  "teams": [{ "team": "GECEKODU", "events": 4, "applications": 120, "attendees": 88 }],
+  "sessions": 37,
+  "certificates": { "issued": 312, "revoked": 2, "period": { "current": 40, "previous": 12 } },
+  "season": { "id": "…", "name": "2026-2027", "startDate": "…", "endDate": "…", "events": [{ "id": "…", "name": "…", "ownerTeam": "…", "startDate": "…" }] },
+  "club": { "eventsByMonth": [{ "month": "2025-12", "count": 3 }, "…"], "eventsByTeam": [{ "team": "GECEKODU", "count": 6 }] }
+}
+```
+
+- **`todo`** (or `null` for a caller who can act on none of it: who may edit no covered Event, issue no certificate and handle no data subject request; a DK reader and a Member without a team role get `null`):
+  - `drafts`: the covered drafts the caller may edit (the Event `Update` decision, by Owner team), by start date, undated last.
+  - `incomplete`: the covered published Events the caller may edit that run now or start today or tomorrow (`Europe/Istanbul`) and lack a place (`location`), an application form, main or extra (`form`), or a current Session (`sessions`: no check-in can be taken without one).
+  - `failedCertificates`: the covered Events with certificate jobs in `failed`, for a caller who may issue that Event's certificates (the Certificate `Issue` decision).
+  - `subjectRequests`: the open data subject requests (`received`, `awaiting_verification`) and those past their due day, only for who handles them (the Subject request decision: the board); `null` otherwise. Counts only, no requester.
+- **`week`**: from today 00:00 to seven days on, in `Europe/Istanbul`. `events` are the published Events that run at some time in it, whoever owns them: a published Event is public, so a Member without a team role sees the club's week too. `sessions` are those Events' current Sessions (not archived, not cancelled, of a current day) that start in it, by start, at most 60.
+- **`compare`** (or `null` for a caller the summary covers no Event of and who may not read people): the last 30 days against the 30 before. `applications` are the covered Events' Tickets by the calendar day they came in (the last 30 days of `daily`, today included, against the 30 before); `attendees` the covered Events' Tickets checked in during the same days, each once a period however often it came (the applicant list's "checked in", for the period); `events` the covered published Events that started in the 30 days up to now and the 30 before; `newMembers` the active Members (as in **Members**) registered in them, `null` when the caller may not read people or the tree could not be read.
+- **Charts of the covered Events** (empty lists, `0` and `null` when none is covered): `daily` is 60 days, oldest first, `{date, applications, attendees}`, attendees the Tickets checked in that day (each once that day); `monthly` 12 months up to this one, `{month, applications, attendees, events}`, attendees the Tickets checked in that month (each once) and events the published ones that started in it (not those still to come); `teams` the Owner teams over the same 12 months, `{team, events, applications, attendees}` (attendees each once), most applications first, `""` for Events without an Owner team; `sessions` the covered Events' current Sessions; `certificates` (`null` for a caller who may read no covered Event's certificates, the Certificate `Read` decision) `{issued, revoked, period}`, issued counting revoked ones too and `period` those issued in the last 30 days against the 30 before.
+- **`season`** (or `null`): the season running now (today between its start and a day after its end), else the one that ended last; seasons without both dates are skipped. Its `events` are its published Events (at most 200), by start.
+- **`club`**: for everyone, the published Events by the month they start in (`eventsByMonth`, 12 months up to this one) and by Owner team over those months (`eventsByTeam`, most first). Published Events are public, so a Member without a team role sees the club's figures here.
+
+**Cost.** The Tickets per Event and day are read once for a year instead of 30 days (the same query). Up to ten more queries, each an aggregate whatever the number of Events: the seasons, the Session counts of the Events that start soon, the Session counts of all covered ones, the week's Sessions, the failed certificate jobs, the open data subject requests, the check-ins per Event and day for the year, the attendees per Event and month and of the two periods (two), and the certificate counts.
+
+**Failure.** Home is a part, as Members is: when one of its reads fails the summary still answers, without `home` and with `"homeUnavailable": true`, and logs one line, `{"event":"dashboard_home","outcome":"unavailable","error":"…"}` (the store's error, no person). The panel then falls back on the rest of the summary.
+
 ## Members
 
 A Member is a User in the `UYELER` tree (CONTEXT.md, Member). The glossary has no "active Member"; the summary counts as **active** a Member whose Keycloak account is enabled and whose core account is not being erased or erased (no account deletion request, and a row, when core has one, in `account_state = 'active'`; the rule `AttributionState` applies). This definition is a proposal until the glossary takes it or another.

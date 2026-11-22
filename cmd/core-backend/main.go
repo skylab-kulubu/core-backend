@@ -1076,8 +1076,9 @@ func main() {
 	urlSvc := shorturl.NewService(urlStore, az)
 	githubActivity := githubActivityFromEnv(os.Getenv, az, log.Printf)
 
+	dashboardStore := dashboard.NewPostgresStore(pool)
 	dashboardSvc, err := dashboard.NewService(dashboard.Options{
-		Events: events, Store: dashboard.NewPostgresStore(pool), Authz: az, Directory: dir,
+		Events: events, Store: dashboardStore, Home: dashboardStore, Seasons: seasons, Authz: az, Directory: dir,
 	})
 	if err != nil {
 		log.Fatal(err)
