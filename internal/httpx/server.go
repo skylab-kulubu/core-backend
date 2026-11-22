@@ -34,6 +34,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/subjectrequest"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
+	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
 	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -146,6 +147,9 @@ type Deps struct {
 	// them out.
 	SkyPassWalletMetrics interface{ Prometheus() string }
 
+	// TicketPage answers the ticket page's public routes
+	// (/v1/public/tickets/{key}, docs/ticket-page.md). Nil serves none.
+	TicketPage *ticketpage.Service
 	// TicketQR is the Ticket QR's signer: its public keys join the JWKS.
 	// Nil publishes only SkyPass's.
 	TicketQR *ticketqr.Signer
@@ -415,6 +419,16 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/certificates/verify/:serial/pdf", publicCertificateLimit, certs.Download)
 		app.Get("/v1/certificates/verify/:serial/qr", publicCertificateLimit, certs.QR)
 		app.Get("/v1/certificates/verify/:serial", publicCertificateLimit, certs.Verify)
+	}
+	if deps.TicketPage != nil {
+		// The ticket page's routes take no sign-in: the key in the path is
+		// the right to read, so the budget follows the client, and the PDF
+		// has a budget per key too (docs/ticket-page.md).
+		page := handlers.NewTicketPageHandler(deps.TicketPage)
+		publicTicketLimit := perClientLimit(trustedProxies)
+		app.Get("/v1/public/tickets/:key", publicTicketLimit, page.Page)
+		app.Get("/v1/public/tickets/:key/qr.png", publicTicketLimit, page.QR)
+		app.Get("/v1/public/tickets/:key/pdf", publicTicketLimit, handlers.TicketPDFLimit(), page.PDF)
 	}
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)

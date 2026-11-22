@@ -25,6 +25,13 @@ func (g *Gotenberg) PDF(ctx context.Context, html string) ([]byte, error) {
 	return g.convertHTML(ctx, html, nil)
 }
 
+// TaggedPDF is PDF with a tagged (accessible) PDF: the structure a screen
+// reader follows, an image's alt text as its alternative (Gotenberg's
+// generateTaggedPdf). The ticket PDF asks for it (docs/ticket-page.md).
+func (g *Gotenberg) TaggedPDF(ctx context.Context, html string) ([]byte, error) {
+	return g.convertHTML(ctx, html, nil, "generateTaggedPdf")
+}
+
 func (g *Gotenberg) PDFWithBackground(ctx context.Context, html string, background []byte) ([]byte, error) {
 	if g == nil || strings.TrimSpace(g.BaseURL) == "" || len(background) == 0 || len(background) > maxRenderedPDFBytes || !bytes.Contains(background[:min(len(background), 1024)], []byte("%PDF-")) {
 		return nil, ErrInvalid
@@ -39,7 +46,7 @@ func (g *Gotenberg) PDFWithBackground(ctx context.Context, html string, backgrou
 	return g.convertHTML(ctx, html, background)
 }
 
-func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []byte) ([]byte, error) {
+func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []byte, flags ...string) ([]byte, error) {
 	if g == nil || strings.TrimSpace(g.BaseURL) == "" {
 		return nil, ErrInvalid
 	}
@@ -57,6 +64,11 @@ func (g *Gotenberg) convertHTML(ctx context.Context, html string, background []b
 		"preferCssPageSize": "true",
 	} {
 		if err := w.WriteField(key, value); err != nil {
+			return nil, err
+		}
+	}
+	for _, flag := range flags {
+		if err := w.WriteField(flag, "true"); err != nil {
 			return nil, err
 		}
 	}
