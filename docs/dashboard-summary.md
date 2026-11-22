@@ -61,6 +61,43 @@ All times are UTC (RFC 3339). Days and months are counted in `Europe/Istanbul`.
 
 Nothing in the answer carries an e-mail, phone or other contact, and no Ticket appears one by one.
 
+## Home
+
+`home` is the panel's home page in the same answer: what waits on the caller, what runs this week, and a few figures set against the period before. It is additive: a panel that does not read it is unaffected, and a panel that finds no `home` key is talking to an older core and falls back on the rest of the summary. A product's service account gets no `home`.
+
+```json
+"home": {
+  "todo": {
+    "drafts": [{ "id": "…", "name": "Gece Kodu Aralık", "ownerTeam": "GECEKODU", "startDate": "2026-12-12T16:00:00Z" }],
+    "incomplete": [{ "id": "…", "name": "WebLab Atölye", "ownerTeam": "WEBLAB", "startDate": "…", "live": false, "missing": ["location", "sessions"] }],
+    "failedCertificates": [{ "eventId": "…", "eventName": "Web Güvenliği Semineri", "failed": 3 }],
+    "subjectRequests": { "open": 2, "overdue": 1 }
+  },
+  "week": {
+    "from": "2026-11-21T21:00:00Z", "to": "2026-11-28T21:00:00Z",
+    "events": [{ "id": "…", "name": "…", "ownerTeam": "…", "location": "…", "startDate": "…", "endDate": "…", "live": true }],
+    "sessions": [{ "id": "…", "eventId": "…", "eventName": "…", "title": "Açılış", "startTime": "…", "endTime": "…" }]
+  },
+  "compare": {
+    "days": 30,
+    "applications": { "current": 40, "previous": 25 },
+    "attendees": { "current": 12, "previous": 18 },
+    "events": { "current": 3, "previous": 2 },
+    "newMembers": { "current": 9, "previous": 4 }
+  }
+}
+```
+
+- **`todo`** (or `null` for a caller who can act on none of it: who may edit no covered Event, issue no certificate and handle no data subject request; a DK reader and a Member without a team role get `null`):
+  - `drafts`: the covered drafts the caller may edit (the Event `Update` decision, by Owner team), by start date, undated last.
+  - `incomplete`: the covered published Events the caller may edit that run now or start today or tomorrow (`Europe/Istanbul`) and lack a place (`location`), an application form, main or extra (`form`), or a current Session (`sessions`: no check-in can be taken without one).
+  - `failedCertificates`: the covered Events with certificate jobs in `failed`, for a caller who may issue that Event's certificates (the Certificate `Issue` decision).
+  - `subjectRequests`: the open data subject requests (`received`, `awaiting_verification`) and those past their due day, only for who handles them (the Subject request decision: the board); `null` otherwise. Counts only, no requester.
+- **`week`**: from today 00:00 to seven days on, in `Europe/Istanbul`. `events` are the published Events that run at some time in it, whoever owns them: a published Event is public, so a Member without a team role sees the club's week too. `sessions` are those Events' current Sessions (not archived, not cancelled, of a current day) that start in it, by start, at most 60.
+- **`compare`** (or `null` for a caller the summary covers no Event of and who may not read people): the last 30 days up to now against the 30 before. `applications` are the covered Events' Tickets by the time they came in; `attendees` the covered Events' Tickets checked in during the period, each once a period; `events` the covered published Events that started in it; `newMembers` the active Members (as in **Members**) registered in it, `null` when the caller may not read people or the tree could not be read.
+
+**Cost.** Up to six more queries, each an aggregate whatever the number of Events: the Session counts of the Events that start soon, the week’s Sessions, the failed certificate jobs, the open data subject requests, and the Tickets and the check-ins of the two periods.
+
 ## Members
 
 A Member is a User in the `UYELER` tree (CONTEXT.md, Member). The glossary has no "active Member"; the summary counts as **active** a Member whose Keycloak account is enabled and whose core account is not being erased or erased (no account deletion request, and a row, when core has one, in `account_state = 'active'`; the rule `AttributionState` applies). This definition is a proposal until the glossary takes it or another.

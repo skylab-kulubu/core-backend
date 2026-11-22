@@ -278,11 +278,12 @@ func teamOf(rootPath, path string) string {
 
 // memberSummary answers the section from the cached tree and core's
 // accounts. allTeams is false for a caller who may read people but not
-// manage them: they see the publicly listed teams only.
-func (s *service) memberSummary(ctx context.Context, now time.Time, allTeams bool) (Members, error) {
+// manage them: they see the publicly listed teams only. It also answers,
+// for Home, when each active Member registered.
+func (s *service) memberSummary(ctx context.Context, now time.Time, allTeams bool) (Members, []time.Time, error) {
 	snapshot, err := s.members.get(ctx)
 	if err != nil {
-		return Members{}, err
+		return Members{}, nil, err
 	}
 	ids := make([]uuid.UUID, len(snapshot.people))
 	for i, m := range snapshot.people {
@@ -290,7 +291,7 @@ func (s *service) memberSummary(ctx context.Context, now time.Time, allTeams boo
 	}
 	accounts, err := s.store.Accounts(ctx, ids)
 	if err != nil {
-		return Members{}, err
+		return Members{}, nil, err
 	}
 	out := Members{
 		NewByMonth:    make([]MonthCount, MemberMonths),
@@ -306,6 +307,7 @@ func (s *service) memberSummary(ctx context.Context, now time.Time, allTeams boo
 		index[month] = i
 	}
 	registered := make([]treeMember, 0)
+	joined := make([]time.Time, 0)
 	for _, m := range snapshot.people {
 		if !m.enabled || accounts[m.id].Blocked {
 			continue
@@ -315,6 +317,7 @@ func (s *service) memberSummary(ctx context.Context, now time.Time, allTeams boo
 			continue
 		}
 		registered = append(registered, m)
+		joined = append(joined, *m.registered)
 		if i, ok := index[m.registered.In(s.loc).Format("2006-01")]; ok {
 			out.NewByMonth[i].Count++
 		}
@@ -347,5 +350,5 @@ func (s *service) memberSummary(ctx context.Context, now time.Time, allTeams boo
 		}
 		out.RecentJoiners = append(out.RecentJoiners, joiner)
 	}
-	return out, nil
+	return out, joined, nil
 }

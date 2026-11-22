@@ -59,6 +59,9 @@ type Summary struct {
 	// MembersUnavailable is true when the caller may read people but the
 	// directory could not be read; the rest of the summary still stands.
 	MembersUnavailable bool `json:"membersUnavailable,omitempty"`
+	// Home is the panel's home page: left out when core has no HomeStore
+	// (development) and for a product's service account.
+	Home *Home `json:"home,omitempty"`
 }
 
 // EventCounts count the current (not archived) Events the summary covers.
@@ -137,7 +140,9 @@ type Service interface {
 type Options struct {
 	Events EventLister
 	Store  Store
-	Authz  authz.Authorizer
+	// Home reads what Summary.Home is made of; nil leaves Home out.
+	Home  HomeStore
+	Authz authz.Authorizer
 	// Directory reads the Members tree. Nil leaves the Members section
 	// out (null) for everyone.
 	Directory GroupDirectory
@@ -158,12 +163,13 @@ type Options struct {
 }
 
 type service struct {
-	events  EventLister
-	store   Store
-	authz   authz.Authorizer
-	members *memberCache
-	now     func() time.Time
-	loc     *time.Location
+	events    EventLister
+	store     Store
+	homeStore HomeStore
+	authz     authz.Authorizer
+	members   *memberCache
+	now       func() time.Time
+	loc       *time.Location
 }
 
 func NewService(o Options) (Service, error) {
@@ -175,7 +181,7 @@ func NewService(o Options) (Service, error) {
 	if now == nil {
 		now = time.Now
 	}
-	s := &service{events: o.Events, store: o.Store, authz: o.Authz, now: now, loc: loc}
+	s := &service{events: o.Events, store: o.Store, homeStore: o.Home, authz: o.Authz, now: now, loc: loc}
 	if o.Directory != nil {
 		logf := o.Logf
 		if logf == nil {
@@ -275,13 +281,20 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 
 	// The Members section is for people: a product's service account gets
 	// none, whatever roles it holds.
+	var registered []time.Time
 	if s.members != nil && p.Product == "" && s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Read) {
 		allTeams := s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.ReadFull)
-		members, err := s.memberSummary(ctx, now, allTeams)
+		members, joined, err := s.memberSummary(ctx, now, allTeams)
 		if err != nil {
 			out.MembersUnavailable = true
 		} else {
 			out.Members = &members
+			registered = joined
+		}
+	}
+	if s.homeStore != nil && p.Product == "" {
+		if out.Home, err = s.home(ctx, p, now, all, covered, out.Members, registered); err != nil {
+			return Summary{}, err
 		}
 	}
 	return out, nil
