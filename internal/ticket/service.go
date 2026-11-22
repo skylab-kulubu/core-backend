@@ -49,6 +49,10 @@ type Service interface {
 	CheckInTicketQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID, token string) (CheckIn, error)
 	// TicketQR is t's Ticket QR on ev, for its holder.
 	TicketQR(t Ticket, ev event.Event) (string, error)
+	// ResendTicket and RenewTicketLink are the panel's "Bileti yeniden
+	// gönder" and "Bağlantıyı yenile" (docs/ticket-resend.md).
+	ResendTicket(ctx context.Context, p authz.Principal, id uuid.UUID, requestKey string) (Resend, error)
+	RenewTicketLink(ctx context.Context, p authz.Principal, id uuid.UUID, notify bool, requestKey string) (Ticket, Resend, error)
 }
 
 type TeamReader interface {

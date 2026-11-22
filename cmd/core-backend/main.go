@@ -955,7 +955,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky, log.Printf))
+	// The ticket page (docs/ticket-page.md): TICKET_PAGE_URL unset makes no
+	// link; the public routes answer either way.
+	ticketPageConfig, err := ticket.PageConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if ticketPageConfig.URL == "" {
+		log.Printf("ticket page: no link (%s unset)", ticket.PageURLEnv)
+	} else {
+		log.Printf("ticket page: on, closes %s after the Event", ticketPageConfig.Grace)
+	}
+	worker("ticket notification", startTicketCreatedNotification(workers, ticketNotificationOn, tickets, ticketnotify.NewPostgresQueue(pool), events, users, sky,
+		ticketPageConfig, os.Getenv("PUBLIC_API_ORIGIN"), log.Printf))
 	// A published Event's new time or place (docs/event-updated-notification.md):
 	// SkyMail tells its Ticket holders by inbox and e-mail.
 	eventUpdatedOn, err := eventUpdatedNotificationOn(os.Getenv)
@@ -983,17 +995,6 @@ func main() {
 		log.Fatal(err)
 	}
 	doorScans := &ticket.DoorScanMetrics{}
-	// The ticket page (docs/ticket-page.md): TICKET_PAGE_URL unset makes no
-	// link; the public routes answer either way.
-	ticketPageConfig, err := ticket.PageConfigFromEnv(os.Getenv)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if ticketPageConfig.URL == "" {
-		log.Printf("ticket page: no link (%s unset)", ticket.PageURLEnv)
-	} else {
-		log.Printf("ticket page: on, closes %s after the Event", ticketPageConfig.Grace)
-	}
 	ticketSvc := ticket.NewService(tickets, events, az, users, dir, doorQR, feedbackInvites, ticketQR, doorScans, ticketPageConfig)
 	var ticketPDF ticketpage.Renderer
 	if g, ok := render.(*certificate.Gotenberg); ok && g != nil {

@@ -1601,6 +1601,17 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		  AND to_regclass('public.tickets_access_key_idx') IS NOT NULL
 		  AND to_regclass('public.tickets_code_idx') IS NOT NULL
 		  AND to_regprocedure('public.ticket_random_text(text, integer)') IS NOT NULL`,
+	// Sending a Ticket's mail again (docs/ticket-resend.md): the queue's
+	// resend column, the record of resends and its two indexes.
+	20261122130000: `
+		SELECT 1
+		WHERE EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'ticket_notifications' AND column_name = 'resend'
+		  )
+		  AND to_regclass('public.ticket_resends') IS NOT NULL
+		  AND to_regclass('public.ticket_resends_request_idx') IS NOT NULL
+		  AND to_regclass('public.ticket_resends_recent_idx') IS NOT NULL`,
 	// An Event's point and address (docs/event-location.md): the three
 	// columns and their check.
 	20261122150000: `
