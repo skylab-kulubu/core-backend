@@ -33,6 +33,7 @@ func eventServiceApp(t *testing.T, ident authn.Identity, svc event.Service) *fib
 	})
 	app.Get("/v1/events", h.List)
 	app.Get("/v1/events/active", h.ListActive)
+	app.Get("/v1/events/places", h.Places)
 	app.Get("/v1/events/:id", h.Get)
 	app.Post("/v1/events", h.Create)
 	app.Put("/v1/events/:id", h.Update)

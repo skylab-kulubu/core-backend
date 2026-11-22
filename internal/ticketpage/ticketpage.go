@@ -108,6 +108,23 @@ type Theme struct {
 	Accent string `json:"accent"`
 }
 
+// SiteAccent is the club's purple: the ticket page's accent when the Event
+// gives none (Yusuf's order: the Event's ticket colour, then its cover's
+// first colour, then this).
+const SiteAccent = "#8B5CF6"
+
+// Accent is the ticket page's accent for the Event: its cover's first
+// colour, else the club's purple. (The Event's own ticket colour,
+// ticketAccentColor, goes first once Events have one: ticket 16.)
+func Accent(ev event.Event) string {
+	for _, c := range ev.CoverColors {
+		if validColor(c) {
+			return strings.ToUpper(c)
+		}
+	}
+	return SiteAccent
+}
+
 // View is the JSON the ticket page reads.
 type View struct {
 	EventName  string     `json:"eventName"`
@@ -117,6 +134,11 @@ type View struct {
 	// VenueAddress and the point are the place's (docs/event-location.md),
 	// left out while it has none; DirectionsURL and MapsURL are its links
 	// for "Yol tarifi" and "Haritada aç".
+	// CoverImageURL is the Event's cover (a public media address), left
+	// out while it has none; CoverColors its colours, first the dominant
+	// one (empty without a cover).
+	CoverImageURL string   `json:"coverImageUrl,omitempty"`
+	CoverColors   []string `json:"coverColors"`
 	VenueAddress  string   `json:"venueAddress,omitempty"`
 	VenueLat      *float64 `json:"venueLat,omitempty"`
 	VenueLng      *float64 `json:"venueLng,omitempty"`
@@ -233,7 +255,9 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		MapImageURL:   media.ConfiguredAddresses().Object(ev.MapImageURL),
 		OwnerTeam:     ev.OwnerTeam, EventStatus: string(ev.Status),
 		HolderName: o.holder, Code: o.ticket.Code, State: o.state,
-		Theme: Theme{Key: th.Key, Accent: th.Accent},
+		Theme:         Theme{Key: th.Key, Accent: Accent(ev)},
+		CoverImageURL: media.ConfiguredAddresses().Object(ev.CoverImageURL),
+		CoverColors:   append([]string{}, ev.CoverColors...),
 	}
 	if v.MapImageURL != "" {
 		v.MapAttribution, v.MapAttributionURL = event.MapAttribution, event.MapAttributionURL

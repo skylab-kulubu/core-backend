@@ -26,6 +26,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/mapregion"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
 	"github.com/skylab-kulubu/core-backend/internal/middlewares"
@@ -151,6 +152,9 @@ type Deps struct {
 	// TicketPage answers the ticket page's public routes
 	// (/v1/public/tickets/{key}, docs/ticket-page.md). Nil serves none.
 	TicketPage *ticketpage.Service
+	// MapRegions are the club's map regions (/v1/map-regions,
+	// docs/event-map.md). Nil serves none.
+	MapRegions *mapregion.Service
 	// TicketQR is the Ticket QR's signer: its public keys join the JWKS.
 	// Nil publishes only SkyPass's.
 	TicketQR *ticketqr.Signer
@@ -440,6 +444,13 @@ func New(deps Deps) *fiber.App {
 		app.Get("/v1/public/tickets/:key/qr.png", perClientLimitOf(trustedProxies, handlers.TicketQRsPerClientMinute), page.QR)
 		app.Get("/v1/public/tickets/:key/pdf", publicTicketLimit, handlers.TicketPDFLimit(), page.PDF)
 	}
+	if deps.MapRegions != nil {
+		regions := handlers.NewMapRegionHandler(deps.MapRegions)
+		app.Get("/v1/map-regions", regions.List)
+		app.Post("/v1/map-regions", regions.Request)
+		app.Post("/v1/map-regions/:id/retry", regions.Retry)
+		app.Post("/v1/map-regions/:id/retire", regions.Retire)
+	}
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)
 		// The same keys under the door's name: SkyPass's and the Ticket
@@ -660,6 +671,7 @@ func New(deps Deps) *fiber.App {
 
 	app.Get("/v1/events", events.List)
 	app.Get("/v1/events/active", events.ListActive)
+	app.Get("/v1/events/places", events.Places)
 	app.Post("/v1/events", events.Create)
 	app.Get("/v1/events/:id", events.Get)
 	app.Put("/v1/events/:id", events.Update)
