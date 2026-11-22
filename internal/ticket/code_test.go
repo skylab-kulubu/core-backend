@@ -60,6 +60,9 @@ func TestNormalizeCode(t *testing.T) {
 		" k7m2-qx9f ": "K7M2QX9F",
 		"1O0I-L234":   "1001-1234",
 		"io0l-abcd":   "1001-ABCD",
+		"ıİ0l-abcd":   "1101-ABCD",
+		"K7MI QX9F":   "K7M1QX9F",
+		"k7mı-qx9f":   "K7M1QX9F",
 	} {
 		got, ok := ticket.NormalizeCode(raw)
 		if !ok || got != stripHyphen(want) {

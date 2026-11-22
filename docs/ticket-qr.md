@@ -10,7 +10,7 @@ it; the holder never scans it. This page is the contract the scanner
 ## The code
 
 ```text
-header  {"alg":"ES256","kid":"tk-e1","typ":"JWT"}
+header  {"alg":"ES256","kid":"tk-e1","typ":"JWT"}   (tk-e2, … after a key rotation)
 payload {"sub":"<ticket id>","evt":"<event id>","qv":<QR version>,"exp":<unix seconds>}
 ```
 
@@ -33,9 +33,9 @@ payload {"sub":"<ticket id>","evt":"<event id>","qv":<QR version>,"exp":<unix se
 ## Keys: `GET /v1/skypass/jwks` (also `GET /v1/door/jwks`)
 
 One JWKS, no sign-in, both names the same: SkyPass's key (`sp-e1`) and the
-Ticket QR's (`tk-e1`). A scanner that verifies on the device picks the key
-by the token's `kid`, and tries every key with that `kid` (during a key
-rotation's window there are two `tk-e1` keys, below).
+Ticket QR's (`tk-e1`; after a rotation of the SkyPass key `tk-e2` and, for a
+window, the previous `tk-e1`, below). A scanner that verifies on the device
+picks the key by the token's `kid`.
 
 ## At the door: `POST /v1/sessions/{sessionId}/check-in/scan`
 
@@ -43,7 +43,7 @@ The body is `{"token": "<what the QR says>"}`, as before.
 `POST /v1/sessions/{sessionId}/check-in/skypass` is the same route under its
 old name and stays: the sky-app in the stores calls it.
 
-Core reads the token's header: `kid` `tk-e1` is a Ticket QR; anything else
+Core reads the token's header: a `kid` with the `tk-` prefix is a Ticket QR; anything else
 goes where it went before (a SkyPass QR, a Google Wallet code `SPW1:…`, or
 `{"uid"}` for a Student card).
 
@@ -85,7 +85,7 @@ non-empty `sub`. A Ticket QR is one (a Go test mirrors the rule).
 - (a) "Tanınmayan kod" instead of "SkyPass kodu değil".
 - (b) For `410 ticket_qr_superseded`: show `detail`.
 - (c) On-device verification and Queued check-in (ADR 0022): the key from
-  the JWKS by `kid`; for `tk-e1`, `evt` must be the selected Event and
+  the JWKS by `kid`; for a `tk-*` kid, `evt` must be the selected Event and
   `exp` in the future. Offline, `exp` is all the device has: a code sent
   before the Event moved later may be refused offline; online core takes
   it.
@@ -122,20 +122,29 @@ every Ticket QR already mailed or printed stops verifying. The ticket page,
 the mail's QR image (fetched when the mail is opened) and the app sign with
 the new key at once; a PDF saved before does not.
 
-To keep the codes sent working through a **planned** rotation, copy the
-`tk-e1` entry of the JWKS before rotating and set, with the new key:
+A rotation gives the new key the **next kid** (ADR 0082): `tk-e1` is the
+first, the new one `tk-e2`, and so on, never back. Before rotating, copy the
+current `tk-…` entry of the JWKS; with the new SkyPass key set:
 
 | Variable | Value |
 |---|---|
-| `TICKET_QR_PREVIOUS_JWK` | that entry, one JSON object (a public key, not a secret) |
-| `TICKET_QR_PREVIOUS_UNTIL` | when it stops (RFC 3339), at most 120 days ahead: the last Event the codes were sent for, plus a day |
+| `TICKET_QR_KID` | the new kid, `tk-e2` after the first rotation (default `tk-e1`); it stays after the window |
+| `TICKET_QR_PREVIOUS_JWK` | the copied entry, one JSON object with its own kid (a public key, not a secret; an OpenBao reference in deployments, ADR-0049) |
+| `TICKET_QR_PREVIOUS_UNTIL` | when it stops (RFC 3339): the latest expiry of the codes it signed (the last Event's end plus a day; for an Event with no date, a year from its Ticket), at most 366 days ahead |
 
-Until then core takes a code signed with either key and the JWKS publishes
-both under `tk-e1`; after it, only the new one. Both unset (the default):
-only the current key. One without the other, a value that does not parse or
-a window over 120 days: core does not start. **A rotation for a leaked key
-sets neither**: the old key could sign anything. Holders then open their
-ticket page (or the panel resends the ticket, ticket 05) for a new code.
+Until then core takes a code signed with either key, each under its own kid,
+and the JWKS publishes both; after it, only the new one, and the two
+`PREVIOUS` values can go (`TICKET_QR_KID` stays). A kid picks its key: a
+code under the old kid signed with the new key is refused, and so is any
+other kid. Unset: `tk-e1`, no previous key. A kid that is not `tk-e<n>`, a
+previous key under the current kid, one `PREVIOUS` value without the other,
+a value that does not parse or a window over 366 days: core does not start.
+A scanner that verifies on the device takes every `tk-*` key of the JWKS
+and picks by kid.
+
+**A rotation for a leaked key** gives the new kid and sets no previous key:
+the old key could sign anything. Holders then open their ticket page (or
+the panel resends the ticket, ticket 05) for a new code.
 
 ## Metrics
 
