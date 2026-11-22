@@ -28,8 +28,10 @@ type Service interface {
 	Get(ctx context.Context, p *authz.Principal, id uuid.UUID) (Event, error)
 	// Publish publishes a draft; Unpublish makes a published Event without
 	// Tickets a draft again. Whoever may edit the Event may; each is
-	// idempotent and one conditional UPDATE.
-	Publish(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
+	// idempotent and one conditional UPDATE. Publish with notifyTickets
+	// also queues the "your ticket is ready" Notification of the Tickets
+	// written while it was a draft, in the same transaction (K3).
+	Publish(ctx context.Context, p authz.Principal, id uuid.UUID, notifyTickets bool) (Event, error)
 	Unpublish(ctx context.Context, p authz.Principal, id uuid.UUID) (Event, error)
 	// Cancel cancels a published Event that has not ended (ticket 04);
 	// idempotent, refused on a draft (ErrNotPublished) and once ended

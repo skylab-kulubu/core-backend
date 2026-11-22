@@ -90,7 +90,7 @@ func TestPostgresStorePublishAndUnpublish(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := store.Publish(ctx, undated.ID, &actor); err != nil || changed {
+	if changed, err := store.Publish(ctx, undated.ID, &actor, false); err != nil || changed {
 		t.Fatalf("publish undated: %v %v", changed, err)
 	}
 	draft, err := store.Create(ctx, event.Event{Name: "Taslak", Location: "YTÜ", OwnerTeam: "WEBLAB", Status: event.StatusDraft, StartDate: &start})
@@ -102,7 +102,7 @@ func TestPostgresStorePublishAndUnpublish(t *testing.T) {
 	results := make([]bool, 2)
 	for i := range results {
 		wg.Go(func() {
-			changed, err := store.Publish(ctx, draft.ID, &actor)
+			changed, err := store.Publish(ctx, draft.ID, &actor, false)
 			if err != nil {
 				t.Error(err)
 			}
@@ -129,7 +129,7 @@ func TestPostgresStorePublishAndUnpublish(t *testing.T) {
 	if changed, err := store.Unpublish(ctx, draft.ID); err != nil || changed {
 		t.Fatalf("unpublish a draft: %v %v", changed, err)
 	}
-	if changed, err := store.Publish(ctx, draft.ID, nil); err != nil || !changed {
+	if changed, err := store.Publish(ctx, draft.ID, nil, false); err != nil || !changed {
 		t.Fatalf("publish again: %v %v", changed, err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO tickets (id, event_id, ticket_type, guest_email) VALUES ($1, $2, 'GUEST', 'ada@example.com')`, uuid.New(), draft.ID); err != nil {
@@ -149,7 +149,7 @@ func TestPostgresStorePublishAndUnpublish(t *testing.T) {
 	if err := store.Archive(ctx, archived.ID, nil); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := store.Publish(ctx, archived.ID, nil); err != nil || changed {
+	if changed, err := store.Publish(ctx, archived.ID, nil, false); err != nil || changed {
 		t.Fatalf("publish archived: %v %v", changed, err)
 	}
 }
