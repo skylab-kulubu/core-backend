@@ -38,9 +38,9 @@ func (g *Gotenberg) TaggedPDF(ctx context.Context, html, header string) ([]byte,
 }
 
 // Screenshot is a picture of the HTML page, width × height CSS pixels, as a
-// JPEG of the quality (Gotenberg's screenshot route), taken once the
-// page's fonts are loaded. The Event map is drawn with it
-// (docs/event-map.md).
+// JPEG of the quality (Gotenberg's screenshot route), taken half a second
+// after the page loaded, when its embedded fonts are in. The Event map is
+// drawn with it (docs/event-map.md).
 func (g *Gotenberg) Screenshot(ctx context.Context, html string, width, height, quality int) ([]byte, error) {
 	if g == nil || strings.TrimSpace(g.BaseURL) == "" || width <= 0 || height <= 0 || quality <= 0 || quality > 100 {
 		return nil, ErrInvalid
@@ -60,7 +60,9 @@ func (g *Gotenberg) Screenshot(ctx context.Context, html string, width, height, 
 		{"clip", "true"},
 		{"format", "jpeg"},
 		{"quality", strconv.Itoa(quality)},
-		{"waitForExpression", "document.fonts.status === 'loaded'"},
+		// A short wait for the embedded fonts, which works with or without
+		// JavaScript (a Gotenberg may run with it off).
+		{"waitDelay", "500ms"},
 	} {
 		if err := w.WriteField(field[0], field[1]); err != nil {
 			return nil, err

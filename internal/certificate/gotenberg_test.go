@@ -226,7 +226,7 @@ func TestGotenbergScreenshot(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	want := map[string]string{"width": "1280", "height": "480", "clip": "true", "format": "jpeg", "quality": "82", "waitForExpression": "document.fonts.status === 'loaded'"}
+	want := map[string]string{"width": "1280", "height": "480", "clip": "true", "format": "jpeg", "quality": "82", "waitDelay": "500ms"}
 	if path != "/forms/chromium/screenshot/html" || page != "<html>harita</html>" || len(got) != len(want) {
 		t.Fatalf("%s %q %v", path, page, got)
 	}

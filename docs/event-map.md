@@ -23,7 +23,7 @@ service, no key.
    pin on the point, in the middle.
 3. **Picture:** Gotenberg's Chromium takes a picture of the SVG
    (`/forms/chromium/screenshot/html`, 1280 × 480, JPEG quality 82, about
-   80 KB). The page embeds its font: **Gotenberg reaches nothing outside
+   80 KB, half a second after the page loads; no JavaScript needed). The page embeds its font: **Gotenberg reaches nothing outside
    the page**. No WebGL either: a renderer such as MapLibre needs it, and
    Gotenberg's Chromium has no GPU and no software fallback switch.
 4. **Storage:** the JPEG goes through the image pipeline of `event_map`
