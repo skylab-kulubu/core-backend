@@ -52,7 +52,7 @@ func urlAppOn(t *testing.T, store shorturl.Store, ident authn.Identity, parse fu
 // app.Test dials from 0.0.0.0, so tests name that address as the edge proxy.
 // A request carrying X-Forwarded-For then reaches the handler the way a real
 // one does once Traefik has rewritten the header.
-const testProxyRanges = "0.0.0.0/32," + clientip.DefaultRanges
+const testProxyRanges = "0.0.0.0/32," + clientip.PrivateRanges
 
 func testTrustedProxies(t *testing.T, raw string) clientip.Ranges {
 	t.Helper()
@@ -72,12 +72,7 @@ func urlAppBehindProxies(t *testing.T, proxies string, store shorturl.Store, ide
 	t.Helper()
 	trusted := testTrustedProxies(t, proxies)
 	h := NewURLHandler(shorturl.NewService(store, authz.NewAuthorizer(authz.DefaultPolicy())), parse, guard).TrustProxies(trusted)
-	app := fiber.New(fiber.Config{
-		TrustProxy:         true,
-		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: trusted.Proxies()},
-		ProxyHeader:        fiber.HeaderXForwardedFor,
-		EnableIPValidation: true,
-	})
+	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
 		if ident.ID != uuid.Nil || len(ident.Roles) > 0 || len(ident.Groups) > 0 {
 			c.Locals(authn.LocalsIdentity, ident)

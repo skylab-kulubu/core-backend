@@ -51,11 +51,7 @@ func TestGuestApplyLogsTheClassAndOutcomeButNoPersonalData(t *testing.T) {
 	guest := NewGuestApply(proxies, metrics, GuestApplyLimits{PerClient: 1, PerClientWindow: time.Minute, PerGuest: 5, PerGuestWindow: time.Minute},
 		log.New(&logs, "", 0))
 	h := NewTicketHandler(ticket.NewService(ticket.NewMemoryStore(), events, authz.NewAuthorizer(authz.DefaultPolicy())))
-	app := fiber.New(fiber.Config{
-		TrustProxy:       true,
-		TrustProxyConfig: fiber.TrustProxyConfig{Proxies: proxies.Proxies()},
-		ProxyHeader:      fiber.HeaderXForwardedFor,
-	})
+	app := fiber.New()
 	app.Use(requestid.New())
 	route := []any{}
 	for _, limit := range guest.Limits() {

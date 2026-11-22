@@ -110,11 +110,10 @@ minute per key besides) follows the client address Core resolves
 - it sends `X-Forwarded-For: <the visitor's address>`, the one it
   resolved itself (Cloudflare's `CF-Connecting-IP` where Cloudflare fronts
   the site, else the socket's address), never a header the visitor sent;
-- Core believes that header only from a peer inside `TRUSTED_PROXY_RANGES`
-  (the site's container is); from anywhere else it is ignored and the
-  socket's address counts.
-
-No new setting: the trust is Core's existing one.
+- Core believes that header only from a proxy `TRUSTED_PROXY_RANGES` names:
+  the site's tasks are named there (`tasks.<the site's appName>`, besides
+  `dokploy-traefik`); from any other container it is ignored and the
+  socket's address counts, so the site's visitors would share one budget.
 
 ## The PDF
 

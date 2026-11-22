@@ -219,7 +219,7 @@ func (g *GuestApply) caller(c fiber.Ctx) guestCaller {
 		if ident.ServiceAccount || ident.Product != "" {
 			class = guestService
 		}
-	} else if addr, err := netip.ParseAddr(clientip.FromCtx(c, g.proxies)); err == nil && g.proxies.Contains(addr) {
+	} else if addr, err := netip.ParseAddr(clientip.FromCtx(c, g.proxies)); err == nil && g.proxies.Internal(addr) {
 		class = guestAnonymousInternal
 	}
 	c.Locals(localsGuestApplyCaller, class)

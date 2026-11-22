@@ -164,6 +164,13 @@ func main() {
 	worker := func(name string, done <-chan struct{}) {
 		workersStopped = append(workersStopped, stopped(name, done))
 	}
+	// The proxies TRUSTED_PROXY_RANGES names by host are looked up before
+	// the first request, then again as they move (docs/client-ip-trust.md).
+	// An unresolved name only means its header is not believed yet.
+	firstLookup, cancelFirstLookup := context.WithTimeout(context.Background(), 3*time.Second)
+	trustedProxies.Refresh(firstLookup, clientip.DNSLookup, log.Printf)
+	cancelFirstLookup()
+	worker("trusted proxies", trustedProxies.Watch(workers, clientip.DNSLookup, log.Printf))
 
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
