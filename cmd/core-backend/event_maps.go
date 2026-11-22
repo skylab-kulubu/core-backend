@@ -27,9 +27,12 @@ func (m eventMaps) Map(ctx context.Context, lat, lng float64) ([]byte, error) {
 		return picture, nil
 	case errors.Is(err, mapimage.ErrNoMap):
 		return nil, errors.Join(media.ErrNoEventMap, err)
-	case errors.Is(err, mapimage.ErrUnavailable), errors.Is(err, mapimage.ErrShot):
+	case errors.Is(err, mapimage.ErrUnavailable), errors.Is(err, mapimage.ErrSchema):
+		// Nothing can be drawn now: no try is counted, the worker waits.
 		return nil, errors.Join(media.ErrMapSourceDown, err)
 	default:
+		// This map failed (Gotenberg refused it, a tile does not parse):
+		// a try is counted, and the pass goes on with the next Event.
 		return nil, err
 	}
 }
@@ -40,7 +43,7 @@ func (m eventMaps) Map(ctx context.Context, lat, lng float64) ([]byte, error) {
 // needs the tiles, Gotenberg and R2; without any of them Events show their
 // place without a map. The log names the tiles' host only.
 func startEventMaps(ctx context.Context, worker func(string, <-chan struct{}), render certificate.Renderer, publicBlobs media.BlobStore,
-	store *media.PostgresStore, purposes media.Catalogue, budget *media.DecodeBudget) {
+	store *media.PostgresStore, purposes media.Catalogue, budget *media.DecodeBudget) *media.MapWorker {
 	tilesURL, err := mapimage.TilesURLFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -50,13 +53,13 @@ func startEventMaps(ctx context.Context, worker func(string, <-chan struct{}), r
 	switch {
 	case tilesURL == "":
 		log.Printf("event maps: off (%s is not set); Events show their place without a map", mapimage.TilesURLEnv)
-		return
+		return nil
 	case gotenberg == nil:
 		log.Printf("event maps: off (no Gotenberg); Events show their place without a map")
-		return
+		return nil
 	case !hasR2:
 		log.Printf("event maps: off (no R2 configured); Events show their place without a map")
-		return
+		return nil
 	}
 	mapWorker, err := media.NewMapWorker(media.MapWorkerConfig{
 		Store: store, Storage: r2, Catalogue: purposes, DecodeBudget: budget,
@@ -71,4 +74,5 @@ func startEventMaps(ctx context.Context, worker func(string, <-chan struct{}), r
 		host = u.Host
 	}
 	log.Printf("event maps: on (tiles at %s)", host)
+	return mapWorker
 }

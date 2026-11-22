@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -82,6 +84,48 @@ type MapWorker struct {
 	purpose  Purpose
 	decoding *DecodeBudget
 	now      func() time.Time
+	counts   mapCounters
+}
+
+// mapCounters are the worker's outcomes since start, for /v1/metrics.
+type mapCounters struct {
+	made, noMap, abandoned, panicked, retried, discarded, sourceDown atomic.Int64
+}
+
+// Prometheus is the worker's counters (skylab_event_maps_total, by
+// outcome): maps made; points with no map, given up after their tries, or
+// whose step panicked; failures tried again later (a map Gotenberg refused
+// among them); maps discarded for a moved point; and passes stopped while
+// the source could not draw.
+func (w *MapWorker) Prometheus() string {
+	if w == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("# HELP skylab_event_maps_total Event maps by outcome (docs/event-map.md).\n# TYPE skylab_event_maps_total counter\n")
+	for _, row := range []struct {
+		outcome string
+		n       int64
+	}{
+		{"made", w.counts.made.Load()}, {"no_map", w.counts.noMap.Load()}, {"given_up", w.counts.abandoned.Load()},
+		{"panicked", w.counts.panicked.Load()}, {"retried", w.counts.retried.Load()}, {"discarded", w.counts.discarded.Load()},
+		{"source_down", w.counts.sourceDown.Load()},
+	} {
+		fmt.Fprintf(&b, "skylab_event_maps_total{outcome=%q} %d\n", row.outcome, row.n)
+	}
+	return b.String()
+}
+
+func (w *MapWorker) count(r MapReport, down bool) {
+	w.counts.made.Add(int64(r.Made))
+	w.counts.noMap.Add(int64(r.NoMap))
+	w.counts.abandoned.Add(int64(r.Abandoned))
+	w.counts.panicked.Add(int64(r.Panicked))
+	w.counts.retried.Add(int64(r.Retried))
+	w.counts.discarded.Add(int64(r.Discarded))
+	if down {
+		w.counts.sourceDown.Add(1)
+	}
 }
 
 // NewMapWorker makes the map worker.
@@ -340,6 +384,7 @@ func (w *MapWorker) runPass(ctx context.Context, logf func(format string, args .
 		}
 	}()
 	report, err := w.Pass(ctx, func(err error) { logf("event maps: %v", err) })
+	w.count(report, errors.Is(err, ErrMapSourceDown))
 	switch {
 	case errors.Is(err, ErrMapSourceDown):
 		if downWait == 0 {

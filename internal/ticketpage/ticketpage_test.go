@@ -551,21 +551,21 @@ func TestMapInPDFAndPage(t *testing.T) {
 	if _, _, err := svc.PDF(ctx, g.AccessKey); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(f.render.html, `<img class="harita" src="data:image/jpeg;base64,`) || !strings.Contains(f.render.html, `<p class="atif">© OpenStreetMap contributors</p>`) {
+	if !strings.Contains(f.render.html, `<img class="harita" src="data:image/jpeg;base64,`) || !strings.Contains(f.render.html, `<p class="atif">© OpenStreetMap contributors · openstreetmap.org/copyright</p>`) {
 		t.Error("the PDF has no map, or no credit")
 	}
 	if len(images.asked) != 1 || images.asked[0] != "" {
 		t.Errorf("asked %v", images.asked)
 	}
 	view, err := svc.Page(ctx, g.AccessKey)
-	if err != nil || !strings.HasSuffix(view.MapImageURL, "/images/harita.jpg") || view.MapAttribution != "© OpenStreetMap contributors" {
+	if err != nil || !strings.HasSuffix(view.MapImageURL, "/images/harita.jpg") || view.MapAttribution != "© OpenStreetMap contributors" || view.MapAttributionURL != "https://www.openstreetmap.org/copyright" {
 		t.Fatalf("view %q %q %v", view.MapImageURL, view.MapAttribution, err)
 	}
 	ev.MapImageID, ev.MapImageURL = nil, ""
 	if _, err := f.events.Update(ctx, ev); err != nil {
 		t.Fatal(err)
 	}
-	if view, err := svc.Page(ctx, g.AccessKey); err != nil || view.MapImageURL != "" || view.MapAttribution != "" {
+	if view, err := svc.Page(ctx, g.AccessKey); err != nil || view.MapImageURL != "" || view.MapAttribution != "" || view.MapAttributionURL != "" {
 		t.Fatalf("without a map %+v %v", view, err)
 	}
 }

@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // TilesURLEnv names the club's PMTiles archive (a Protomaps basemap extract
@@ -34,9 +36,12 @@ type Shooter interface {
 	Screenshot(ctx context.Context, html string, width, height, quality int) ([]byte, error)
 }
 
-// ErrShot is a picture the renderer could not take (Gotenberg down, busy,
-// or refusing the page).
-var ErrShot = errors.New("mapimage: the map's picture could not be taken")
+// ErrShot is a picture the renderer refused or could not finish for this
+// map (an error status, an answer that is not a JPEG, a request that timed
+// out): a failure of the point, tried again later and given up after a few,
+// so that one map Gotenberg always refuses never holds up the others.
+// Gotenberg that cannot be reached at all is ErrUnavailable instead.
+var ErrShot = errors.New("mapimage: the map's picture was refused")
 
 // Quality is the map picture's JPEG quality: about 80 KB for 1280 × 480.
 const Quality = 82
@@ -62,12 +67,29 @@ func (r *Renderer) open(ctx context.Context) (*Archive, error) {
 	if err != nil {
 		return nil, err
 	}
+	metadata, err := a.Metadata(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if version, ok := SchemaVersion(metadata); !ok {
+		return nil, fmt.Errorf("%w (it says %q)", ErrSchema, version)
+	}
 	r.archive = a
 	return a, nil
 }
 
+// unreachable reports whether a request failed before any answer: the
+// address does not resolve, or nothing listens there.
+func unreachable(err error) bool {
+	var dns *net.DNSError
+	var op *net.OpError
+	return errors.As(err, &dns) || (errors.As(err, &op) && op.Op == "dial") || errors.Is(err, syscall.ECONNREFUSED)
+}
+
 // Map is the JPEG of the map around the point. ErrNoMap: the archive has
-// none there. ErrUnavailable or ErrShot: it cannot be drawn now.
+// none there. ErrUnavailable or ErrSchema: nothing can be drawn now (the
+// tiles or Gotenberg cannot be reached, or the archive is of another
+// basemap). ErrShot: Gotenberg refused this map.
 func (r *Renderer) Map(ctx context.Context, lat, lng float64) ([]byte, error) {
 	a, err := r.open(ctx)
 	if err != nil {
@@ -82,8 +104,14 @@ func (r *Renderer) Map(ctx context.Context, lat, lng float64) ([]byte, error) {
 		return nil, err
 	}
 	picture, err := r.Shot.Screenshot(ctx, PageHTML(svg), o.Width*o.Scale, o.Height*o.Scale, Quality)
-	if err != nil {
+	switch {
+	case err == nil:
+		return picture, nil
+	case ctx.Err() != nil:
+		return nil, ctx.Err()
+	case unreachable(err):
+		return nil, fmt.Errorf("%w: Gotenberg cannot be reached", ErrUnavailable)
+	default:
 		return nil, fmt.Errorf("%w: %v", ErrShot, err)
 	}
-	return picture, nil
 }

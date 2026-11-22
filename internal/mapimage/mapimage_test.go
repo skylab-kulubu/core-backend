@@ -7,13 +7,16 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -178,6 +181,11 @@ type testTile struct {
 // writeArchive is a clustered PMTiles v3 archive of the tiles (gzip'd, one
 // root directory), with the bounds given.
 func writeArchive(t *testing.T, tiles []testTile, minLon, minLat, maxLon, maxLat float64) []byte {
+	return writeArchiveWith(t, tiles, minLon, minLat, maxLon, maxLat, `{"name":"Protomaps Basemap","version":"4.15.2","attribution":"© OpenStreetMap"}`)
+}
+
+// writeArchiveWith is writeArchive with the metadata given.
+func writeArchiveWith(t *testing.T, tiles []testTile, minLon, minLat, maxLon, maxLat float64, metadata string) []byte {
 	t.Helper()
 	sort.Slice(tiles, func(i, j int) bool {
 		return TileID(tiles[i].z, tiles[i].x, tiles[i].y) < TileID(tiles[j].z, tiles[j].x, tiles[j].y)
@@ -205,15 +213,18 @@ func writeArchive(t *testing.T, tiles []testTile, minLon, minLat, maxLon, maxLat
 		dir.varint(o + 1)
 	}
 	root := gz(t, dir.b)
+	meta := gz(t, []byte(metadata))
 	header := make([]byte, headerLength)
 	copy(header, "PMTiles")
 	header[7] = 3
 	put := func(at int, v uint64) { binary.LittleEndian.PutUint64(header[at:], v) }
 	put(8, headerLength)
 	put(16, uint64(len(root)))
-	put(40, uint64(headerLength+len(root)))
+	put(24, uint64(headerLength+len(root)))
+	put(32, uint64(len(meta)))
+	put(40, uint64(headerLength+len(root)+len(meta)))
 	put(48, 0)
-	put(56, uint64(headerLength+len(root)))
+	put(56, uint64(headerLength+len(root)+len(meta)))
 	put(64, uint64(len(data)))
 	header[96], header[97], header[98], header[99], header[100], header[101] = 1, compressionGzip, compressionGzip, tileTypeMVT, 0, 15
 	deg := func(at int, v float64) { binary.LittleEndian.PutUint32(header[at:], uint32(int32(math.Round(v*1e7)))) }
@@ -222,6 +233,7 @@ func writeArchive(t *testing.T, tiles []testTile, minLon, minLat, maxLon, maxLat
 	deg(110, maxLon)
 	deg(114, maxLat)
 	out := append(header, root...)
+	out = append(out, meta...)
 	return append(out, data...)
 }
 
@@ -254,6 +266,13 @@ func tileOf(lat, lng float64, z uint8) (uint32, uint32) {
 
 func testArchive(t *testing.T) []byte {
 	t.Helper()
+	return testArchiveWith(t, `{"name":"Protomaps Basemap","version":"4.15.2","attribution":"© OpenStreetMap"}`, true)
+}
+
+// testArchiveWith is the test's archive with the metadata given, and with
+// or without its buildings.
+func testArchiveWith(t *testing.T, metadata string, buildings bool) []byte {
+	t.Helper()
 	x, y := tileOf(davutLat, davutLng, 15)
 	// The point in its tile's units; the view is about ±2560 across and
 	// ±960 up and down of it (zoom 16 drawn from zoom 15).
@@ -273,7 +292,9 @@ func testArchive(t *testing.T) []byte {
 					{kind: geomPolygon, props: map[string]string{"kind": "park"}, parts: box(px-1800, py-800, px-1000, py+800)},
 					{kind: geomPolygon, props: map[string]string{"kind": "university"}, parts: box(px-900, py-900, px+900, py+900)},
 				}
-				layers["buildings"] = []testFeature{{kind: geomPolygon, props: map[string]string{"kind": "building"}, parts: box(px+200, py-200, px+500, py+100)}}
+				if buildings {
+					layers["buildings"] = []testFeature{{kind: geomPolygon, props: map[string]string{"kind": "building"}, parts: box(px+200, py-200, px+500, py+100)}}
+				}
 				layers["roads"] = []testFeature{
 					{kind: geomLine, props: map[string]string{"kind": "major_road", "name": "Davutpaşa Caddesi"}, parts: [][][2]int{{{px + 3000, py - 400}, {px, py - 400}, {px - 3000, py - 410}}}},
 					{kind: geomLine, props: map[string]string{"kind": "minor_road", "name": "Ali <Sokak> & Co", "name:tr": "Çiçek Sokağı"}, parts: [][][2]int{{{px - 1500, py + 300}, {px + 1500, py + 300}}}},
@@ -285,7 +306,7 @@ func testArchive(t *testing.T) []byte {
 			tiles = append(tiles, testTile{z: 15, x: x - 1 + dx, y: y - 1 + dy, data: encodeTile(layers)})
 		}
 	}
-	return writeArchive(t, tiles, 28.8, 40.9, 29.1, 41.2)
+	return writeArchiveWith(t, tiles, 28.8, 40.9, 29.1, 41.2, metadata)
 }
 
 func openTest(t *testing.T) (*Archive, *bytesSource) {
@@ -484,5 +505,76 @@ func TestTilesURLFromEnv(t *testing.T) {
 		if (err == nil) != ok {
 			t.Errorf("%q: %v", raw, err)
 		}
+	}
+}
+
+// The basemap's version: 4.x of the Protomaps basemap is drawn; another
+// major version or another basemap is not; none named is taken.
+func TestSchemaVersion(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		metadata map[string]any
+		ok       bool
+	}{
+		{map[string]any{"name": "Protomaps Basemap", "version": "4.15.2"}, true},
+		{map[string]any{"version": "4.0.0"}, true},
+		{map[string]any{}, true},
+		{map[string]any{"name": "Protomaps Basemap", "version": "5.0.0"}, false},
+		{map[string]any{"name": "OpenMapTiles", "version": "4.1"}, false},
+	} {
+		if _, ok := SchemaVersion(tc.metadata); ok != tc.ok {
+			t.Errorf("%v: %v", tc.metadata, ok)
+		}
+	}
+	r := &Renderer{Source: &bytesSource{b: testArchiveWith(t, `{"name":"Protomaps Basemap","version":"5.0.0"}`, true)}, Shot: &fakeShot{}}
+	if _, err := r.Map(context.Background(), davutLat, davutLng); !errors.Is(err, ErrSchema) {
+		t.Fatalf("an archive of version 5: %v", err)
+	}
+}
+
+// Gotenberg that cannot be reached stops the drawing for all (no try
+// counted); one that refuses this map, or answers an error, is this map's
+// failure (counted, the others go on).
+func TestShotFailuresAreClassified(t *testing.T) {
+	t.Parallel()
+	src := &bytesSource{b: testArchive(t)}
+	for name, tc := range map[string]struct {
+		err  error
+		want error
+	}{
+		"refused connection":    {&net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}, ErrUnavailable},
+		"unknown host":          {&net.DNSError{Err: "no such host", Name: "gotenberg"}, ErrUnavailable},
+		"an error status":       {errors.New("certificate: invalid"), ErrShot},
+		"a read that timed out": {&net.OpError{Op: "read", Net: "tcp", Err: errors.New("i/o timeout")}, ErrShot},
+	} {
+		r := &Renderer{Source: src, Shot: &fakeShot{err: tc.err}}
+		if _, err := r.Map(context.Background(), davutLat, davutLng); !errors.Is(err, tc.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// The refresh's check draws the known point and names what is wrong.
+func TestCheck(t *testing.T) {
+	t.Parallel()
+	report, err := Check(context.Background(), &bytesSource{b: testArchive(t)}, davutLat, davutLng)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Problems) != 0 || report.Version != "4.15.2" || report.Basemap != "Protomaps Basemap" || report.Zooms != [2]int{0, 15} ||
+		report.Stats.Features["roads"] != 4 || report.Stats.Features["buildings"] != 1 || report.Stats.Labels == 0 || report.SVGBytes == 0 {
+		t.Fatalf("report %+v", report)
+	}
+	report, err = Check(context.Background(), &bytesSource{b: testArchiveWith(t, `{"name":"Protomaps Basemap","version":"5.1.0"}`, false)}, davutLat, davutLng)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"not a Protomaps basemap of version 4", "no attribution in the metadata (ODbL asks it kept)", "nothing drawn of the layer buildings"}
+	if !slices.Equal(report.Problems, want) {
+		t.Fatalf("problems %q", report.Problems)
+	}
+	report, err = Check(context.Background(), &bytesSource{b: testArchive(t)}, 60, 10)
+	if err != nil || !slices.Contains(report.Problems, "no map of the point") {
+		t.Fatalf("outside: %q %v", report.Problems, err)
 	}
 }

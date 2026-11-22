@@ -11,12 +11,14 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -90,6 +92,7 @@ func (h HTTPSource) ReadRange(ctx context.Context, offset, length uint64) ([]byt
 // Header is the archive's header (PMTiles v3, 127 bytes).
 type Header struct {
 	RootOffset, RootLength         uint64
+	MetadataOffset, MetadataLength uint64
 	LeafOffset, LeafLength         uint64
 	TileDataOffset, TileDataLength uint64
 	InternalCompression            uint8
@@ -118,7 +121,7 @@ func parseHeader(b []byte) (Header, error) {
 	u := func(at int) uint64 { return binary.LittleEndian.Uint64(b[at:]) }
 	deg := func(at int) float64 { return float64(int32(binary.LittleEndian.Uint32(b[at:]))) / 1e7 }
 	h := Header{
-		RootOffset: u(8), RootLength: u(16), LeafOffset: u(40), LeafLength: u(48),
+		RootOffset: u(8), RootLength: u(16), MetadataOffset: u(24), MetadataLength: u(32), LeafOffset: u(40), LeafLength: u(48),
 		TileDataOffset: u(56), TileDataLength: u(64),
 		InternalCompression: b[97], TileCompression: b[98], TileType: b[99], MinZoom: b[100], MaxZoom: b[101],
 		MinLon: deg(102), MinLat: deg(106), MaxLon: deg(110), MaxLat: deg(114),
@@ -276,6 +279,52 @@ func Open(ctx context.Context, src RangeSource) (*Archive, error) {
 
 // Header is the archive's header.
 func (a *Archive) Header() Header { return a.header }
+
+// maxMetadata bounds the metadata read (a basemap's is a few KB).
+const maxMetadata = 1 << 20
+
+// Metadata is the archive's JSON metadata: the basemap's name, version and
+// attribution, among others.
+func (a *Archive) Metadata(ctx context.Context) (map[string]any, error) {
+	h := a.header
+	if h.MetadataLength == 0 {
+		return map[string]any{}, nil
+	}
+	if h.MetadataLength > maxMetadata {
+		return nil, fmt.Errorf("%w: metadata of %d bytes", ErrNotArchive, h.MetadataLength)
+	}
+	raw, err := a.src.ReadRange(ctx, h.MetadataOffset, h.MetadataLength)
+	if err != nil {
+		return nil, err
+	}
+	if raw, err = decompress(raw, h.InternalCompression); err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("%w: metadata is not JSON", ErrNotArchive)
+	}
+	return out, nil
+}
+
+// ErrSchema is an archive of another basemap, or of another major version
+// of the Protomaps basemap than the one the map is drawn for (4): its
+// layers' kinds may differ, and the map would come out empty or wrong.
+var ErrSchema = errors.New("mapimage: the archive is not a Protomaps basemap of version 4")
+
+// SchemaVersion is the basemap's version as its metadata says it, and
+// whether the map can be drawn from it: a Protomaps basemap of major
+// version 4. An archive whose metadata names no version is taken (a test
+// archive, an extract that lost it); one naming another is not.
+func SchemaVersion(metadata map[string]any) (string, bool) {
+	version, _ := metadata["version"].(string)
+	name, _ := metadata["name"].(string)
+	if version == "" {
+		return "", true
+	}
+	major, _, _ := strings.Cut(version, ".")
+	return version, major == "4" && (name == "" || strings.Contains(strings.ToLower(name), "protomaps"))
+}
 
 // Covers reports whether the archive's bounds hold the point.
 func (a *Archive) Covers(lat, lng float64) bool {

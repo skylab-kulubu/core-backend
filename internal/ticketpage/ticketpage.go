@@ -123,19 +123,20 @@ type View struct {
 	DirectionsURL string   `json:"directionsUrl,omitempty"`
 	MapsURL       string   `json:"mapsUrl,omitempty"`
 	// MapImageURL is the map of the place's point core drew
-	// (docs/event-map.md), MapAttribution the credit to show under it;
-	// both left out while there is none.
-	MapImageURL    string `json:"mapImageUrl,omitempty"`
-	MapAttribution string `json:"mapAttribution,omitempty"`
-	OwnerTeam      string `json:"ownerTeam"`
-	EventStatus    string `json:"eventStatus"`
-	HolderName     string `json:"holderName"`
-	Code           string `json:"code"`
-	QRToken        string `json:"qrToken"`
-	QRURL          string `json:"qrUrl"`
-	PDFURL         string `json:"pdfUrl"`
-	State          string `json:"state"`
-	Theme          Theme  `json:"theme"`
+	// (docs/event-map.md), MapAttribution the credit to show under it,
+	// linked to MapAttributionURL; all left out while there is none.
+	MapImageURL       string `json:"mapImageUrl,omitempty"`
+	MapAttribution    string `json:"mapAttribution,omitempty"`
+	MapAttributionURL string `json:"mapAttributionUrl,omitempty"`
+	OwnerTeam         string `json:"ownerTeam"`
+	EventStatus       string `json:"eventStatus"`
+	HolderName        string `json:"holderName"`
+	Code              string `json:"code"`
+	QRToken           string `json:"qrToken"`
+	QRURL             string `json:"qrUrl"`
+	PDFURL            string `json:"pdfUrl"`
+	State             string `json:"state"`
+	Theme             Theme  `json:"theme"`
 }
 
 // opened is a Ticket the key opened, with its Event and holder.
@@ -235,7 +236,7 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		Theme: Theme{Key: th.Key, Accent: th.Accent},
 	}
 	if v.MapImageURL != "" {
-		v.MapAttribution = event.MapAttribution
+		v.MapAttribution, v.MapAttributionURL = event.MapAttribution, event.MapAttributionURL
 	}
 	if o.state != StateEventCancelled {
 		token, err := s.token(o)
@@ -338,7 +339,8 @@ func (s *Service) document(ctx context.Context, o opened, token string) (Documen
 	}
 	if ev.MapImageID != nil && s.images != nil {
 		if data, contentType, ok := s.images.Image(ctx, *ev.MapImageID, ""); ok {
-			doc.Map, doc.MapType, doc.MapAttribution = data, contentType, event.MapAttribution
+			doc.Map, doc.MapType = data, contentType
+			doc.MapAttribution = event.MapAttribution + " · " + strings.TrimPrefix(event.MapAttributionURL, "https://www.")
 		}
 	}
 	return doc, nil

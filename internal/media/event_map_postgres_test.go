@@ -190,7 +190,7 @@ func TestPostgresANewPointGetsANewMap(t *testing.T) {
 	}
 	first := d.mapOf(t, created.ID).media
 	read, err := events.Get(ctx, &yk, created.ID)
-	if err != nil || first == nil || read.MapImageURL == "" || read.MapAttribution != event.MapAttribution || read.MapImageID == nil || *read.MapImageID != *first {
+	if err != nil || first == nil || read.MapImageURL == "" || read.MapAttribution != event.MapAttribution || read.MapAttributionURL != event.MapAttributionURL || read.MapImageID == nil || *read.MapImageID != *first {
 		t.Fatalf("Event's map %q %q %v %v", read.MapImageURL, read.MapAttribution, read.MapImageID, err)
 	}
 
@@ -306,4 +306,44 @@ func patchBody(t *testing.T, body string) event.Patch {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// A map Gotenberg always refuses is that Event's failure, not the source's:
+// its try is counted and the pass goes on to the next Event, so one point
+// never holds up the others. After MapMaxAttempts it is given up, and the
+// counters say so.
+func TestPostgresARefusedMapDoesNotHoldUpTheQueue(t *testing.T) {
+	d := newMapDatabase(t)
+	poisoned, fine := d.event(t, 41.0, 29.0), d.event(t, 41.2, 29.2)
+	if poisoned.String() > fine.String() {
+		poisoned, fine = fine, poisoned
+		if _, err := d.pool.Exec(context.Background(), `UPDATE events SET location_lat = CASE WHEN id = $1 THEN 41.0 ELSE 41.2 END,
+			location_lng = CASE WHEN id = $1 THEN 29.0 ELSE 29.2 END WHERE id IN ($1, $2)`, poisoned, fine); err != nil {
+			t.Fatal(err)
+		}
+	}
+	maps := &fakeMaps{answer: func(lat, _ float64) ([]byte, error) {
+		if lat == 41.0 {
+			return nil, errors.New("mapimage: the map's picture was refused: certificate: invalid")
+		}
+		return testFrameJPEG(t, 1280, 480), nil
+	}}
+	w := d.worker(t, maps)
+	report := mapPass(t, w)
+	if report.Retried != 1 || report.Made != 1 || report.Claimed != 2 {
+		t.Fatalf("pass %+v", report)
+	}
+	if m := d.mapOf(t, fine); m.media == nil {
+		t.Fatalf("the other Event waited: %+v", m)
+	}
+	for i := 1; i < media.MapMaxAttempts; i++ {
+		d.now = d.now.Add(48 * time.Hour)
+		mapPass(t, w)
+	}
+	if m := d.mapOf(t, poisoned); m.state != "failed" || m.attempts != media.MapMaxAttempts {
+		t.Fatalf("the refused map %+v", m)
+	}
+	if text := w.Prometheus(); !strings.Contains(text, "# TYPE skylab_event_maps_total counter") || !strings.Contains(text, `skylab_event_maps_total{outcome="made"}`) {
+		t.Fatalf("metrics %q", text)
+	}
 }

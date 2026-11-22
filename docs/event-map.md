@@ -32,7 +32,9 @@ service, no key.
    written by the statement's trigger).
 
 Credit: "© OpenStreetMap contributors" (ODbL), answered as `mapAttribution`
-and printed under the map.
+with `mapAttributionUrl` (`https://www.openstreetmap.org/copyright`, which the
+site links it to) and printed under the map as "© OpenStreetMap contributors ·
+openstreetmap.org/copyright" (OSMF's attribution guidelines for print).
 
 ## When
 
@@ -48,12 +50,22 @@ and printed under the map.
   keeps the map. Clearing the point clears the map.
 - A **copy** with the same point shares the source's map (the copy writes
   its own Media attachment); a later move gives it its own.
-- **Failure:** tried again after 10 minutes, each failure in a row twice as
-  late (at most a day), given up after 8 (`map_state = 'failed'`): the
-  Event shows its place without a map until its point changes. A point
-  outside the archive is given up at once. While the tiles or Gotenberg do
-  not answer, no try is counted and the worker waits (30 s, doubling up to
-  15 minutes).
+- **Failure of one map:** tried again after 10 minutes, each failure in a
+  row twice as late (at most a day), given up after 8 (`map_state =
+  'failed'`): the Event shows its place without a map until its point
+  changes. A map Gotenberg refuses (an error status, an answer that is not a
+  JPEG, a request that times out) or a tile that does not parse is such a
+  failure: its try is counted and **the pass goes on with the next Event**,
+  so one point Gotenberg always refuses never holds up the others. A point
+  outside the archive is given up at once.
+- **Nothing can be drawn:** while the tiles cannot be read, Gotenberg cannot
+  be reached at all (no address, nothing listening), or the archive is of
+  another basemap (its metadata names another than the Protomaps basemap
+  4.x), no try is counted: the pass stops and the worker waits (30 s,
+  doubling up to 15 minutes), saying so once in the log.
+- **Metrics** (`/v1/metrics`): `skylab_event_maps_total{outcome}`, `made`,
+  `retried`, `given_up`, `no_map`, `panicked`, `discarded`, `source_down`
+  (passes stopped).
 - The log names Events by id, never a point or the tiles' address; the
   start line names the tiles' host only.
 
@@ -88,11 +100,23 @@ the maps' Media attachments go (the maps can be drawn again).
   (only the ranges in the box are downloaded). `--dry-run` prints the size
   first. The daily builds are listed at
   `https://build-metadata.protomaps.dev/builds.json`.
-- **Refreshing:** once or twice a year: extract a new dated file, upload it
-  next to the old one, point `MAP_TILES_URL` at it and redeploy; remove the
-  old file a week later. Maps already drawn stay as they are; a moved
-  point is drawn from the new file. (A wizard under `ops/wizards/` in the
-  hub does these steps.)
+- **Refreshing:** once or twice a year: extract a new **dated** file,
+  upload it next to the old one, check it, point `MAP_TILES_URL` at it and
+  redeploy; remove the old file a week later. **Never overwrite a file in
+  place:** core keeps an archive's header and root directory for as long as
+  it runs, and a changed file under the same address would be read with
+  the old directory. Keep the file as Protomaps writes it: its metadata's
+  `attribution` and the data are what ODbL asks to pass on. Maps already
+  drawn stay as they are; a moved point is drawn from the new file. (A
+  wizard under `ops/wizards/` in the hub does these steps.)
+- **Checking a file:** `core-backend map-check -url <address> [-point
+  lat,lng]`, run in the core container, draws the map at YTÜ Davutpaşa (or
+  the point) from the file and prints a JSON report: zooms, bounds, the
+  basemap's name, version and attribution, the features of each layer
+  drawn, the names written, and `problems`. It exits 0 when the map can be
+  drawn from the file, 1 with problems (another basemap or major version,
+  no attribution, no zoom 15, no land, roads or buildings at the point, no
+  map of it), 2 when the file cannot be read.
 
 ## The panel's map
 

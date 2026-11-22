@@ -159,8 +159,21 @@ type candidate struct {
 // the larger places and of the streets that have room for them, and the
 // pin on the point, in the middle.
 func RenderSVG(ctx context.Context, a *Archive, lat, lng float64, o Options) (string, error) {
+	svg, _, err := render(ctx, a, lat, lng, o)
+	return svg, err
+}
+
+// Stats counts what a map drew: the features of each layer that reached
+// the frame, and the names written.
+type Stats struct {
+	Features map[string]int `json:"features"`
+	Labels   int            `json:"labels"`
+}
+
+func render(ctx context.Context, a *Archive, lat, lng float64, o Options) (string, Stats, error) {
+	stats := Stats{Features: map[string]int{}}
 	if !a.Covers(lat, lng) {
-		return "", ErrNoMap
+		return "", stats, ErrNoMap
 	}
 	source := min(o.Zoom, int(a.header.MaxZoom))
 	cx, cy := project(lat, lng, o.Zoom)
@@ -181,14 +194,14 @@ func RenderSVG(ctx context.Context, a *Archive, lat, lng float64, o Options) (st
 		for ty := ty0; ty <= ty1; ty++ {
 			raw, err := a.Tile(ctx, uint8(source), tx, ty)
 			if err != nil {
-				return "", err
+				return "", stats, err
 			}
 			if raw == nil {
 				continue
 			}
 			layers, err := decodeTile(raw, layersDrawn)
 			if err != nil {
-				return "", err
+				return "", stats, err
 			}
 			for _, l := range layers {
 				for _, feat := range l.features {
@@ -206,6 +219,7 @@ func RenderSVG(ctx context.Context, a *Archive, lat, lng float64, o Options) (st
 						continue
 					}
 					drew = true
+					stats.Features[l.name]++
 					kind := feat.props["kind"]
 					polygon := feat.kind == geomPolygon
 					switch l.name {
@@ -283,7 +297,7 @@ func RenderSVG(ctx context.Context, a *Archive, lat, lng float64, o Options) (st
 		}
 	}
 	if !drew {
-		return "", ErrNoMap
+		return "", stats, ErrNoMap
 	}
 
 	var b strings.Builder
@@ -335,10 +349,10 @@ func RenderSVG(ctx context.Context, a *Archive, lat, lng float64, o Options) (st
 		}
 		stroke(fills[kind], s.fillColor, s.fill, extra)
 	}
-	writeLabels(&b, candidates, view, float64(o.Width)/2, float64(o.Height)/2)
+	stats.Labels = writeLabels(&b, candidates, view, float64(o.Width)/2, float64(o.Height)/2)
 	writePin(&b, float64(o.Width)/2, float64(o.Height)/2)
 	b.WriteString(`</svg>`)
-	return b.String(), nil
+	return b.String(), stats, nil
 }
 
 func addAll(p *pathData, parts [][]point, closed bool) {
@@ -390,7 +404,7 @@ const (
 // pin: the larger places first, then the streets by class and length. A
 // street's name runs along its longest stretch in the frame, left to right,
 // when the stretch is long and straight enough.
-func writeLabels(b *strings.Builder, candidates []candidate, view bounds, pinX, pinY float64) {
+func writeLabels(b *strings.Builder, candidates []candidate, view bounds, pinX, pinY float64) int {
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].priority != candidates[j].priority {
 			return candidates[i].priority > candidates[j].priority
@@ -447,11 +461,12 @@ func writeLabels(b *strings.Builder, candidates []candidate, view bounds, pinX, 
 			`" startOffset="50%" text-anchor="middle">` + html.EscapeString(c.name) + `</textPath></text>`)
 	}
 	if drawn == 0 {
-		return
+		return 0
 	}
 	b.WriteString(`<defs>` + defs.String() + `</defs><g font-family="Manrope,'Noto Sans','Liberation Sans',Arial,sans-serif" stroke="#FFFFFF" stroke-width="2.8" stroke-linejoin="round" paint-order="stroke">`)
 	b.WriteString(texts.String())
 	b.WriteString(`</g>`)
+	return drawn
 }
 
 func contains(outer, inner bounds) bool {

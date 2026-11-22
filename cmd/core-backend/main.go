@@ -68,6 +68,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == mapCheckCommandName {
+		os.Exit(runMapCheck(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == healthcheckCommandName {
 		os.Exit(runHealthcheck(os.Args[2:], os.Getenv, os.Stderr))
 	}
@@ -1006,7 +1009,10 @@ func main() {
 	ticketPage := ticketpage.New(tickets, events, users, ticketQR, ticketPDF,
 		&ticketpage.MediaImages{Media: mediaStore, Blobs: blobs},
 		ticketpage.Config{Page: ticketPageConfig, APIOrigin: os.Getenv("PUBLIC_API_ORIGIN")})
-	startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget)
+	var eventMapMetrics interface{ Prometheus() string }
+	if mapWorker := startEventMaps(workers, worker, render, publicBlobs, mediaStore, mediaPurposes, decodeBudget); mapWorker != nil {
+		eventMapMetrics = mapWorker
+	}
 	certSvc := certificate.NewServiceWithOptions(certs, tickets, events, users, az, render, sky, certificate.Options{
 		PublicAPIOrigin:  os.Getenv("PUBLIC_API_ORIGIN"),
 		VerifyOrigin:     os.Getenv("PUBLIC_VERIFY_ORIGIN"),
@@ -1203,6 +1209,7 @@ func main() {
 		Readiness:                 readiness,
 		MediaDecodeMetrics:        decodeBudget,
 		MemoryMetrics:             memory,
+		EventMapMetrics:           eventMapMetrics,
 	})
 
 	addr := os.Getenv("PORT")

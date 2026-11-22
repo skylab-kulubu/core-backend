@@ -9,7 +9,7 @@ func withPublicMedia(e Event, addresses media.Addresses) Event {
 	e.CoverImageSizes = addresses.LinkedSizes(e.coverImage)
 	e.MapImageURL = addresses.Object(e.MapImageURL)
 	if e.MapImageURL != "" {
-		e.MapAttribution = MapAttribution
+		e.MapAttribution, e.MapAttributionURL = MapAttribution, MapAttributionURL
 	}
 	if n := len(e.Images); n > 0 {
 		images := make([]GalleryImage, n)
