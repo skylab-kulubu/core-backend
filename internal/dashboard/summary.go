@@ -59,6 +59,12 @@ type Summary struct {
 	// MembersUnavailable is true when the caller may read people but the
 	// directory could not be read; the rest of the summary still stands.
 	MembersUnavailable bool `json:"membersUnavailable,omitempty"`
+	// Home is the panel's home page: left out when core has no HomeStore
+	// (development) and for a product's service account.
+	Home *Home `json:"home,omitempty"`
+	// HomeUnavailable is true when Home could not be read; it is left out
+	// and the rest of the summary stands.
+	HomeUnavailable bool `json:"homeUnavailable,omitempty"`
 }
 
 // EventCounts count the current (not archived) Events the summary covers.
@@ -137,7 +143,11 @@ type Service interface {
 type Options struct {
 	Events EventLister
 	Store  Store
-	Authz  authz.Authorizer
+	// Home reads what Summary.Home is made of; nil leaves Home out.
+	Home HomeStore
+	// Seasons lists the seasons for Home's season; nil leaves it out.
+	Seasons SeasonLister
+	Authz   authz.Authorizer
 	// Directory reads the Members tree. Nil leaves the Members section
 	// out (null) for everyone.
 	Directory GroupDirectory
@@ -150,7 +160,7 @@ type Options struct {
 	// MembersFailureTTL is how long a failed read is kept. Zero is
 	// DefaultMembersFailureTTL.
 	MembersFailureTTL time.Duration
-	// Logf writes the line logged when a read of the tree fails; nil is
+	// Logf writes the line logged when a read of the tree or Home fails; nil is
 	// log.Printf.
 	Logf func(format string, args ...any)
 	// Now is the clock; nil is time.Now.
@@ -158,12 +168,15 @@ type Options struct {
 }
 
 type service struct {
-	events  EventLister
-	store   Store
-	authz   authz.Authorizer
-	members *memberCache
-	now     func() time.Time
-	loc     *time.Location
+	events    EventLister
+	store     Store
+	homeStore HomeStore
+	seasons   SeasonLister
+	authz     authz.Authorizer
+	members   *memberCache
+	logf      func(format string, args ...any)
+	now       func() time.Time
+	loc       *time.Location
 }
 
 func NewService(o Options) (Service, error) {
@@ -175,12 +188,12 @@ func NewService(o Options) (Service, error) {
 	if now == nil {
 		now = time.Now
 	}
-	s := &service{events: o.Events, store: o.Store, authz: o.Authz, now: now, loc: loc}
+	logf := o.Logf
+	if logf == nil {
+		logf = log.Printf
+	}
+	s := &service{events: o.Events, store: o.Store, homeStore: o.Home, seasons: o.Seasons, authz: o.Authz, now: now, loc: loc, logf: logf}
 	if o.Directory != nil {
-		logf := o.Logf
-		if logf == nil {
-			logf = log.Printf
-		}
 		s.members = &memberCache{
 			dir:         o.Directory,
 			ttl:         orDefault(o.MembersTTL, DefaultMembersTTL),
@@ -219,6 +232,10 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 			return Summary{}, err
 		}
 		since := today.AddDate(0, 0, -(DailyDays - 1))
+		// Home's charts reach back a year: one read serves both.
+		if s.homeStore != nil {
+			since = seriesStart(today)
+		}
 		if daily, err = s.store.DailyApplications(ctx, ids, since, s.loc); err != nil {
 			return Summary{}, err
 		}
@@ -275,13 +292,26 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 
 	// The Members section is for people: a product's service account gets
 	// none, whatever roles it holds.
+	var registered []time.Time
 	if s.members != nil && p.Product == "" && s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.Read) {
 		allTeams := s.authz.Allow(p, authz.Resource{Type: authz.TypeUser}, authz.ReadFull)
-		members, err := s.memberSummary(ctx, now, allTeams)
+		members, joined, err := s.memberSummary(ctx, now, allTeams)
 		if err != nil {
 			out.MembersUnavailable = true
 		} else {
 			out.Members = &members
+			registered = joined
+		}
+	}
+	// Home is a part, as Members is: when it cannot be read the rest of the
+	// summary stands, and the panel falls back on it.
+	if s.homeStore != nil && p.Product == "" {
+		home, err := s.home(ctx, p, now, all, covered, daily, out.Members, registered)
+		if err != nil {
+			s.logf(`{"event":"dashboard_home","outcome":"unavailable","error":%q}`, err.Error())
+			out.HomeUnavailable = true
+		} else {
+			out.Home = home
 		}
 	}
 	return out, nil
