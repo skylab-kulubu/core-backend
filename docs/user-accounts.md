@@ -32,7 +32,7 @@ The admin panel's person card reads and changes the person's Keycloak account th
 | `DELETE /v1/users/{id}/credentials/{credentialId}` | one password, authenticator app or passkey |
 | `DELETE /v1/users/{id}/identity-providers/{provider}` | the link to an identity provider. Unlinking YTÜ ends the Verified YTÜ account's lock; core's `ytu_linked` stays |
 | `DELETE /v1/users/{id}/lockout` | lifts the brute-force protection's temporary lock |
-| `PATCH /v1/users/{id}` | as before, and `firstName` / `lastName` are written to Keycloak first (`user.profile` row with the field names), so tokens, mail and the Account center show them |
+| `PATCH /v1/users/{id}` | as before, and `firstName` / `lastName` are written to Keycloak first (`user.profile` row with the field names), so tokens, mail and the Account center show them. A Verified YTÜ account keeps the name written here: the YTÜ identity provider syncs `LEGACY`, which does not write names on later logins (e-skylab-keycloak `BrokerLinkCommitGuard`); only a new YTÜ link sets Microsoft's name again |
 
 ## Not here
 
