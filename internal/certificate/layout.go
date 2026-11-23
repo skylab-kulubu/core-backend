@@ -139,6 +139,13 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 			fitClass = ` class="fit"`
 			fitData = ` data-min-font="` + number(max(el.MinFontSize, 8)) + `"`
 		}
+		if el.Kind == "ownerTeam" {
+			// "KOD · Türkçe ad" may not fit a box drawn for the code: the
+			// page then prints the code alone (the script below).
+			if code := strings.TrimSpace(data.OwnerTeam); code != "" && content != code && !organizer.Club(code) {
+				fitData += ` data-short="` + html.EscapeString(code) + `"`
+			}
+		}
 		body.WriteString(`<div` + fitClass + fitData + ` style="` + style + `">` + html.EscapeString(content) + `</div>`)
 	}
 	bg := layout.BackgroundColor
@@ -148,7 +155,9 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 	return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><style>
 @page{size:` + number(layout.Width) + `px ` + number(layout.Height) + `px;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif}.page{position:relative;width:` + number(layout.Width) + `px;height:` + number(layout.Height) + `px;overflow:hidden;background:` + html.EscapeString(bg) + `;` + background + `}.fit{display:flex;align-items:center;justify-content:inherit;white-space:nowrap;overflow:hidden}
 </style></head><body><main class="page">` + body.String() + `</main><script>
-document.querySelectorAll('.fit').forEach(function(el){var size=parseFloat(getComputedStyle(el).fontSize);var min=parseFloat(el.dataset.minFont||'8');while((el.scrollWidth>el.clientWidth||el.scrollHeight>el.clientHeight)&&size>min){size-=1;el.style.fontSize=size+'px'}})
+function over(el){return el.scrollWidth>el.clientWidth||el.scrollHeight>el.clientHeight}function fit(el){var size=parseFloat(getComputedStyle(el).fontSize);var min=parseFloat(el.dataset.minFont||'8');while(over(el)&&size>min){size-=1;el.style.fontSize=size+'px'}}
+document.querySelectorAll('.fit').forEach(fit)
+document.querySelectorAll('[data-short]').forEach(function(el){if(over(el)){el.style.fontSize='';el.textContent=el.dataset.short;if(el.classList.contains('fit'))fit(el)}})
 </script></body></html>`, nil
 }
 
