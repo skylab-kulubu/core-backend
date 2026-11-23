@@ -677,7 +677,9 @@ func New(deps Deps) *fiber.App {
 	}
 
 	if deps.Dashboard != nil {
-		app.Get("/v1/dashboard/summary", handlers.NewDashboardHandler(deps.Dashboard).Summary)
+		dashboardHandler := handlers.NewDashboardHandler(deps.Dashboard)
+		app.Get("/v1/dashboard/summary", dashboardHandler.Summary)
+		app.Get("/v1/dashboard/event-stats", dashboardHandler.EventStats)
 	}
 
 	// The map regions read the caller (docs/event-map.md, "Regions"), so
@@ -812,6 +814,7 @@ func New(deps Deps) *fiber.App {
 	// (docs/form-response-tickets.md).
 	app.Post("/v1/forms/:formId/responses", tickets.RecordFormResponse)
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
+	app.Delete("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.UndoCheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
 	// Guest check-in takes no sign-in; failures are budgeted per address, and
 	// the door QR caps how many guests one token lets in
@@ -824,6 +827,7 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/sessions/:sessionId/door-qr", doorQRLimits.MintLimit(), tickets.MintDoorQR)
 	app.Post("/v1/sessions/:sessionId/check-in/resolve", tickets.ResolveAndCheckIn)
 	app.Get("/v1/sessions/:sessionId/check-ins", tickets.DoorActivity)
+	app.Delete("/v1/sessions/:sessionId/check-ins/:checkInId", tickets.UndoCheckInByID)
 	if pass != nil {
 		// One route for whatever the door scanned (docs/ticket-qr.md):
 		// check-in/scan is its name, check-in/skypass the old one the
@@ -895,6 +899,7 @@ func New(deps Deps) *fiber.App {
 	app.Patch("/v1/urls/forms/:formId", urls.RenameFormLink)
 	app.Get("/v1/urls/forms/:formId/stats", urls.FormStats)
 	app.Get("/v1/urls/:id/hits", urls.ListHits)
+	app.Get("/v1/urls/:id/stats", urls.LinkStats)
 	app.Patch("/v1/urls/:id", urls.Update)
 	app.Delete("/v1/urls/:id", urls.Delete)
 	app.Post("/v1/urls/:id/restore", urls.Restore)

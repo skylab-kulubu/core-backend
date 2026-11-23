@@ -138,6 +138,9 @@ type EventLister interface {
 
 type Service interface {
 	Summary(ctx context.Context, p authz.Principal) (Summary, error)
+	// EventStats answers GET /v1/dashboard/event-stats: every covered
+	// Event with its applications, with no date limit.
+	EventStats(ctx context.Context, p authz.Principal) (EventStatsAnswer, error)
 }
 
 type Options struct {
@@ -266,29 +269,13 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 	eventDays := days[len(days)-EventDailyDays:]
 	recent := now.Add(-RecentEventDays * 24 * time.Hour)
 	for _, e := range covered {
-		start, end, dated := span(e)
+		_, end, dated := span(e)
 		if !dated || end.Before(recent) {
 			continue
 		}
-		c := counts[e.ID]
-		stat := EventStat{
-			ID: e.ID, Name: e.Name, OwnerTeam: e.OwnerTeam, Location: e.Location,
-			StartDate: e.StartDate, EndDate: e.EndDate, Active: e.ActiveAt(now), Status: e.Status,
-			Live:     e.Status == event.StatusPublished && !start.After(now) && !now.After(end),
-			Capacity: e.Capacity, CoverImageURL: e.Resource().CoverImageURL,
-			HasApplicationForm: e.FormURL != "" || len(e.ExtraFormURLs) > 0,
-			HasCoverImage:      e.CoverImageID != nil || e.CoverImageURL != "",
-			Applications:       c.Applications, Members: c.Members, Guests: c.Guests, CheckedIn: c.CheckedIn,
-			DailyApplications: make([]int, len(eventDays)),
-		}
-		for i, day := range eventDays {
-			stat.DailyApplications[i] = daily[e.ID][day]
-		}
-		out.EventStats = append(out.EventStats, stat)
+		out.EventStats = append(out.EventStats, eventStat(e, now, counts[e.ID], daily[e.ID], eventDays))
 	}
-	sort.SliceStable(out.EventStats, func(i, j int) bool {
-		return out.EventStats[i].StartDate.Before(*out.EventStats[j].StartDate)
-	})
+	sortEventStats(out.EventStats)
 
 	// The Members section is for people: a product's service account gets
 	// none, whatever roles it holds.
@@ -315,6 +302,43 @@ func (s *service) Summary(ctx context.Context, p authz.Principal) (Summary, erro
 		}
 	}
 	return out, nil
+}
+
+// eventStat is e's row at now, shared by Summary and EventStats: c counts
+// its Tickets, daily its applications by day ("2006-01-02") and days are
+// the days DailyApplications covers, oldest first.
+func eventStat(e event.Event, now time.Time, c TicketCounts, daily map[string]int, days []string) EventStat {
+	start, end, dated := span(e)
+	stat := EventStat{
+		ID: e.ID, Name: e.Name, OwnerTeam: e.OwnerTeam, Location: e.Location,
+		StartDate: e.StartDate, EndDate: e.EndDate, Active: e.ActiveAt(now), Status: e.Status,
+		Live:     dated && e.Status == event.StatusPublished && !start.After(now) && !now.After(end),
+		Capacity: e.Capacity, CoverImageURL: e.Resource().CoverImageURL,
+		HasApplicationForm: e.FormURL != "" || len(e.ExtraFormURLs) > 0,
+		HasCoverImage:      e.CoverImageID != nil || e.CoverImageURL != "",
+		Applications:       c.Applications, Members: c.Members, Guests: c.Guests, CheckedIn: c.CheckedIn,
+		DailyApplications: make([]int, len(days)),
+	}
+	for i, day := range days {
+		stat.DailyApplications[i] = daily[day]
+	}
+	return stat
+}
+
+// sortEventStats orders stats by start date; Events without one come last,
+// by name.
+func sortEventStats(stats []EventStat) {
+	sort.SliceStable(stats, func(i, j int) bool {
+		a, b := &stats[i], &stats[j]
+		switch {
+		case a.StartDate != nil && b.StartDate != nil:
+			return a.StartDate.Before(*b.StartDate)
+		case a.StartDate != nil || b.StartDate != nil:
+			return a.StartDate != nil
+		default:
+			return a.Name < b.Name
+		}
+	})
 }
 
 // covered are the Events whose applications p may read: the decision of

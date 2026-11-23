@@ -20,10 +20,10 @@ func versionedLayout(label string) certificate.Layout {
 	return certificate.Layout{
 		Width: 1123, Height: 794, Orientation: "landscape", BackgroundColor: "#ffffff",
 		Elements: []certificate.Element{
-			{ID: "label", Kind: "staticText", Text: label, X: 10, Y: 10, Width: 400, Height: 40, FontSize: 20, FontWeight: 500, Color: "#111111", Align: "left", Opacity: 1},
-			{ID: "name", Kind: "recipientName", X: 100, Y: 200, Width: 800, Height: 80, FontSize: 48, FontWeight: 700, Color: "#111111", Align: "center", Opacity: 1},
-			{ID: "event", Kind: "eventName", X: 100, Y: 320, Width: 800, Height: 60, FontSize: 28, FontWeight: 500, Color: "#111111", Align: "center", Opacity: 1},
-			{ID: "qr", Kind: "verificationQr", X: 900, Y: 600, Width: 130, Height: 130, Opacity: 1},
+			{ID: "label", Kind: "staticText", Text: label, X: 10, Y: 10, Width: 400, Height: 40, FontSize: 20, FontWeight: 500, Color: "#111111", Align: "left"},
+			{ID: "name", Kind: "recipientName", X: 100, Y: 200, Width: 800, Height: 80, FontSize: 48, FontWeight: 700, Color: "#111111", Align: "center"},
+			{ID: "event", Kind: "eventName", X: 100, Y: 320, Width: 800, Height: 60, FontSize: 28, FontWeight: 500, Color: "#111111", Align: "center"},
+			{ID: "qr", Kind: "verificationQr", X: 900, Y: 600, Width: 130, Height: 130},
 		},
 	}
 }

@@ -48,8 +48,8 @@ func publishWithAssets(t *testing.T) publishedAssets {
 		certificate.Options{Templates: store, Artifacts: artifacts, Assets: assets})
 	layout := versionedLayout("ASSETS")
 	layout.Elements = append(layout.Elements,
-		certificate.Element{ID: "logo", Kind: "image", MediaID: &logoID, X: 10, Y: 100, Width: 80, Height: 80, Opacity: 1},
-		certificate.Element{ID: "photo", Kind: "image", MediaID: &photoID, X: 10, Y: 400, Width: 80, Height: 80, Opacity: 1},
+		certificate.Element{ID: "logo", Kind: "image", MediaID: &logoID, X: 10, Y: 100, Width: 80, Height: 80},
+		certificate.Element{ID: "photo", Kind: "image", MediaID: &photoID, X: 10, Y: 400, Width: 80, Height: 80},
 	)
 	template, err := store.CreateTemplate(ctx, certificate.Template{ID: uuid.New(), Name: "ASSETS", OwnerTeam: "ARTLAB", SourceKind: "sky", DraftLayout: layout})
 	if err != nil {

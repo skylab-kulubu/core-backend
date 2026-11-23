@@ -22,6 +22,7 @@ type Service interface {
 	ListAll(ctx context.Context, p authz.Principal) ([]URL, error)
 	ListAllLifecycle(ctx context.Context, p authz.Principal, visibility lifecycle.Visibility) ([]URL, error)
 	ListHits(ctx context.Context, p authz.Principal, id uuid.UUID) ([]Hit, error)
+	LinkStats(ctx context.Context, p authz.Principal, id uuid.UUID, days int) (LinkStats, error)
 	Update(ctx context.Context, p authz.Principal, id uuid.UUID, target, alias string) (URL, error)
 	Delete(ctx context.Context, p authz.Principal, id uuid.UUID) error
 	Restore(ctx context.Context, p authz.Principal, id uuid.UUID) (URL, error)

@@ -37,6 +37,14 @@ type Store interface {
 	Update(ctx context.Context, t Ticket) (Ticket, error)
 	AddCheckIn(ctx context.Context, c CheckIn) (CheckIn, error)
 	HasCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID) (bool, error)
+	// RemoveCheckIn deletes the check-in ticketID has at sessionID; false
+	// when it has none there.
+	RemoveCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID) (bool, error)
+	// CheckInByID is the check-in with id: ErrNotFound when none has it.
+	CheckInByID(ctx context.Context, id uuid.UUID) (CheckIn, error)
+	// RemoveCheckInByID deletes the check-in with id; false when none has
+	// it.
+	RemoveCheckInByID(ctx context.Context, id uuid.UUID) (bool, error)
 	// GetByAccessKey is the Ticket the ticket page's key opens
 	// (docs/ticket-page.md): ErrNotFound when none has it.
 	GetByAccessKey(ctx context.Context, key string) (Ticket, error)

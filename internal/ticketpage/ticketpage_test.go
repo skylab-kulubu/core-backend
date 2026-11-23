@@ -23,6 +23,7 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/ticketpage"
 	"github.com/skylab-kulubu/core-backend/internal/ticketqr"
@@ -134,7 +135,7 @@ func TestPageAnswersOnlyWhatThePageShows(t *testing.T) {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
-	want := []string{"code", "coverColors", "eventEnd", "eventName", "eventStart", "eventStatus", "holderName", "ownerTeam", "pdfUrl", "qrToken", "qrUrl", "state", "theme", "venue"}
+	want := []string{"code", "coverColors", "eventEnd", "eventName", "eventStart", "eventStatus", "holderName", "organizerName", "ownerTeam", "pdfUrl", "qrToken", "qrUrl", "state", "theme", "venue"}
 	if !slices.Equal(keys, want) {
 		t.Fatalf("keys %v", keys)
 	}
@@ -149,13 +150,72 @@ func TestPageAnswersOnlyWhatThePageShows(t *testing.T) {
 		view.PDFURL != "https://api.example.test/v1/public/tickets/"+g.AccessKey+"/pdf" ||
 		view.Theme.Key != "kurumsal" || view.Theme.Accent != ticketpage.SiteAccent || view.EventStatus != "published" ||
 		view.CoverImageURL != "" || view.CoverColors == nil || len(view.CoverColors) != 0 ||
-		view.DirectionsURL != "" || view.MapsURL != "" {
+		view.DirectionsURL != "" || view.MapsURL != "" || view.OwnerTeam != "AILAB" || view.OrganizerName != "AILAB" {
 		t.Fatalf("view %+v", view)
 	}
 	claims, err := f.signer.Verify(view.QRToken)
 	if err != nil || claims.Ticket != g.ID || claims.Event != f.ev.ID || claims.Version != 1 ||
 		!claims.ExpiresAt.Equal(f.ev.EndDate.Add(24*time.Hour)) {
 		t.Fatalf("qr %+v %v", claims, err)
+	}
+}
+
+// An Event of the Board (YK), DK or ADMIN is the club's: the page and the
+// PDF name the club as its organizer, and the page keeps ownerTeam (Yusuf,
+// 2026-11-23).
+func TestClubEventNamesTheClub(t *testing.T) {
+	t.Parallel()
+	for _, team := range []string{"YK", "DK", "ADMIN"} {
+		f := newFixture(t)
+		f.ev.OwnerTeam = team
+		if _, err := f.events.Update(t.Context(), f.ev); err != nil {
+			t.Fatal(err)
+		}
+		applied, err := f.tickets.ApplyGuest(t.Context(), authz.Principal{ID: "admin", Groups: []string{"/ADMIN"}}, f.ev.ID, ticket.GuestInfo{
+			FirstName: "Elif", LastName: "Yılmaz", Email: "elif@example.com", PhoneNumber: "+905551112233",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		g := applied.Ticket
+		view, err := f.svc.Page(t.Context(), g.AccessKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.OrganizerName != organizer.ClubName || view.OwnerTeam != team {
+			t.Fatalf("%s: organizer %q owner %q", team, view.OrganizerName, view.OwnerTeam)
+		}
+		if _, _, err := f.svc.PDF(t.Context(), g.AccessKey); err != nil {
+			t.Fatal(err)
+		}
+		if want := "<span>Düzenleyen</span><b>" + organizer.ClubName + "</b>"; !strings.Contains(f.render.html, want) {
+			t.Fatalf("%s: the PDF has no %q", team, want)
+		}
+	}
+}
+
+// Another team's Event says the team's code and Turkish name, as core's
+// mails name a Team (Yusuf, 2026-11-23). Not parallel: organizer.UseNames is
+// the process's one setting.
+func TestTeamEventNamesTheTeam(t *testing.T) {
+	organizer.UseNames(organizer.NewNames(func(context.Context) (map[string]string, error) {
+		return map[string]string{"AILAB": "Yapay Zeka Laboratuvarı"}, nil
+	}, 0, nil))
+	t.Cleanup(func() { organizer.UseNames(nil) })
+	f := newFixture(t)
+	g := f.guest("elif@example.com")
+	view, err := f.svc.Page(t.Context(), g.AccessKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.OrganizerName != "AILAB · Yapay Zeka Laboratuvarı" || view.OwnerTeam != "AILAB" {
+		t.Fatalf("organizer %q owner %q", view.OrganizerName, view.OwnerTeam)
+	}
+	if _, _, err := f.svc.PDF(t.Context(), g.AccessKey); err != nil {
+		t.Fatal(err)
+	}
+	if want := "<span>Düzenleyen</span><b>AILAB · Yapay Zeka Laboratuvarı</b>"; !strings.Contains(f.render.html, want) {
+		t.Fatalf("the PDF has no %q", want)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
 )
 
 type Event struct {
@@ -29,6 +30,7 @@ type Event struct {
 	MapAttributionURL string          `json:"mapAttributionUrl,omitempty"`
 	MapImageID        *uuid.UUID      `json:"-"`
 	OwnerTeam         string          `json:"ownerTeam"`
+	OrganizerName     string          `json:"organizerName"` // organizer.Name(OwnerTeam), set by answers, never stored
 	FormURL           string          `json:"formUrl,omitempty"`
 	FormAlias         string          `json:"formAlias,omitempty"`
 	ExtraFormURLs     []EventFormLink `json:"extraFormUrls"`
@@ -138,6 +140,7 @@ type Resource struct {
 	EndDate       *time.Time `json:"endDate,omitempty"`
 	Location      string     `json:"location"`
 	OwnerTeam     string     `json:"ownerTeam"`
+	OrganizerName string     `json:"organizerName"` // organizer.Name(OwnerTeam)
 	CoverImageURL string     `json:"coverImageUrl,omitempty"`
 	// CoverImageSizes are the cover's card and page addresses, built like
 	// the Media JSON's sizes.
@@ -170,6 +173,7 @@ func (e Event) Resource() Resource {
 		EndDate:           e.EndDate,
 		Location:          e.Location,
 		OwnerTeam:         e.OwnerTeam,
+		OrganizerName:     organizer.Name(e.OwnerTeam),
 		CoverImageURL:     addresses.Object(e.CoverImageURL),
 		CoverImageSizes:   addresses.LinkedSizes(e.coverImage),
 		CoverColors:       append([]string{}, e.CoverColors...),

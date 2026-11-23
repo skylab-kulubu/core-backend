@@ -30,11 +30,13 @@ func (r *recRender) PDF(_ context.Context, html string) ([]byte, error) {
 type recMail struct {
 	n     int
 	email string
+	vars  map[string]string
 }
 
-func (r *recMail) Certificate(_ context.Context, recipientEmail, _ string, _ map[string]string) {
+func (r *recMail) Certificate(_ context.Context, recipientEmail, _ string, vars map[string]string) {
 	r.n++
 	r.email = recipientEmail
+	r.vars = vars
 }
 
 func artlabSetup(t *testing.T, ratio float64) (event.Store, ticket.Store, user.Store, ticket.Service, certificate.Service, *recRender, *recMail, event.Event, ticket.Ticket, []event.Session, authz.Principal) {

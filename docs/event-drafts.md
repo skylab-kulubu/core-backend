@@ -33,7 +33,7 @@ ADR 0066 and its 2026-10-19 addendum (e-skylab). An Event's `status` is `draft`,
 | `POST /v1/events/{id}/applications/guest` | an operator (who may update the Event or assign its Tickets: the panel's "Katılımcı ekle") adds the guest as on a published Event (Yusuf, 2026-11-22, K5); DK, who sees the draft but adds nobody, `403` (rights before state, as for a person) | `404` |
 | `POST /v1/events/{id}/applications/users/{userId}` (add a person from the panel) | allowed as on a published Event (DK: `403`) | `404` |
 | `POST /v1/forms/{formId}/responses` (Forms' report) | writes the Ticket: the editors linked the form and shared it | |
-| `check-in`, `check-in/me`, `check-in/guest`, `check-in/resolve`, `check-in/skypass`, `door-qr` | `403`, `code: "session_closed"`, `reason: "event_not_published"` | `404` |
+| `check-in` (and its `DELETE`, also `DELETE /v1/sessions/{id}/check-ins/{checkInId}`), `check-in/me`, `check-in/guest`, `check-in/resolve`, `check-in/skypass`, `door-qr` | `403`, `code: "session_closed"`, `reason: "event_not_published"` | `404` |
 | `POST /v1/events/{id}/certificates/issue`, `…/finalize`, `…/recompute` | `409`, `code: "event_not_published"` (after the usual rights: DK `403`) | `404` |
 | `POST /v1/events/{id}/mail-list` | allowed as on a published Event (DK: `403`) | `404` |
 | `POST /v1/competitors`, `POST /v1/competitors/{id}/reinstate` | `400` (`POST`), `409` (reinstate), `code: "event_not_published"` | `404` |
