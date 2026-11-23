@@ -13,11 +13,6 @@ import (
 // TeamSettings are a Team's own settings, kept as its Group's attributes
 // (docs/team-delegation.md "Team settings").
 type TeamSettings struct {
-	// MembersManageCompetitors is whether the Team's members add, edit and
-	// remove its Events' competitors (authz.TeamAttrMembersManageCompetitors;
-	// Yusuf, 2026-10-25). Unset it is true, today's rule; false keeps them to
-	// the Leaders.
-	MembersManageCompetitors bool `json:"membersManageCompetitors"`
 	// CompetitionManagers is who manages the Team's Events' Competitions
 	// ("Yarışmaları kim yönetir", authz.TeamAttrCompetitionManage; Yusuf,
 	// 2026-10-12 and 2026-10-31): CompetitionManagersLeaders, the default,
@@ -32,10 +27,11 @@ const (
 )
 
 // TeamSettingsChange is what a settings write changes: a nil field keeps
-// the stored value.
+// the stored value. The retired members_manage_competitors (Yusuf,
+// 2026-11-23: only who may edit the Event or manage its Competitions writes
+// someone else's competitor) is neither read nor written.
 type TeamSettingsChange struct {
-	MembersManageCompetitors *bool
-	CompetitionManagers      *string
+	CompetitionManagers *string
 }
 
 // TeamSettingsOf are the settings g's attributes hold.
@@ -45,25 +41,20 @@ func TeamSettingsOf(g Group) TeamSettings {
 		managers = CompetitionManagersMembers
 	}
 	return TeamSettings{
-		MembersManageCompetitors: authz.MembersManageCompetitorsValue(g.Attributes[authz.TeamAttrMembersManageCompetitors]),
-		CompetitionManagers:      managers,
+		CompetitionManagers: managers,
 	}
 }
 
 // valid reports whether the change sets something, and only known values.
 func (c TeamSettingsChange) valid() bool {
-	if c.MembersManageCompetitors == nil && c.CompetitionManagers == nil {
+	if c.CompetitionManagers == nil {
 		return false
 	}
-	return c.CompetitionManagers == nil ||
-		*c.CompetitionManagers == CompetitionManagersLeaders || *c.CompetitionManagers == CompetitionManagersMembers
+	return *c.CompetitionManagers == CompetitionManagersLeaders || *c.CompetitionManagers == CompetitionManagersMembers
 }
 
 // writeTo sets the changed settings in attrs; the other attributes stay.
 func (c TeamSettingsChange) writeTo(attrs map[string]string) {
-	if c.MembersManageCompetitors != nil {
-		attrs[authz.TeamAttrMembersManageCompetitors] = strconv.FormatBool(*c.MembersManageCompetitors)
-	}
 	if c.CompetitionManagers != nil {
 		attrs[authz.TeamAttrCompetitionManage] = strconv.FormatBool(*c.CompetitionManagers == CompetitionManagersMembers)
 	}

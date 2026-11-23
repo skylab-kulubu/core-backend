@@ -173,13 +173,12 @@ nothing changes.
 
 ## Team settings
 
-`PUT /v1/groups/{id}/settings` `{"membersManageCompetitors": bool,
-"competitionManagers": "leaders" | "members"}` writes a Team's own settings
-as its Group's attributes and answers all of them. A field left out keeps
-its value; at least one is given; an unknown field or value is `400`, so
-the attributes that stay Privileged's (`public_listing`, `public_leaders`,
-`team_door_scan`) are not written here. The other attributes stay as they
-are. The Team's
+`PUT /v1/groups/{id}/settings` `{"competitionManagers": "leaders" |
+"members"}` writes a Team's own settings as its Group's attributes and
+answers all of them. A field left out keeps its value; at least one is
+given; an unknown field or value is `400`, so the attributes that stay
+Privileged's (`public_listing`, `public_leaders`, `team_door_scan`) are not
+written here. The other attributes stay as they are. The Team's
 Leader, a Leader of a Team above (delegation on, `Manages`) and Privileged
 write them; a protected Group is Privileged's; only a Team takes them (a
 Leader group, an area or a root: `400`). Each change is a
@@ -187,24 +186,21 @@ Leader group, an area or a root: `400`). Each change is a
 row, as every delegated write. The panel reads the values from the Group's
 attributes (`GET /v1/groups/{id}`).
 
-- `membersManageCompetitors` (`members_manage_competitors`, Yusuf
-  2026-10-25): whether the Team's members add, edit and remove its Events'
-  competitors. Unset or anything but `false` is `true`, the rule before;
-  `false` keeps them to the Team's Leaders (and Leaders of a Team above,
-  "Owner team inheritance") and Privileged. Members still read them, and a
-  person still enters or leaves as a competitor themselves. The decision
-  (`competitor.create/update/delete` in the capabilities too) reads the
-  Owner team's own Group from the realm's Groups kept a minute
-  (`identity.TeamTree`); core's own write forgets them (a read already
-  running then is not kept, and the next decision reads again), and so does
-  another core process's, told through Postgres (`identity_groups_changed`,
-  [keycloak-admin-permissions.md](keycloak-admin-permissions.md) "Other core
-  processes"); a write in the Keycloak console is seen within the minute.
-  A tree that cannot be read is the default, `true`. Since the setting, a
-  member's capabilities and competitor writes read the tree too, with
-  delegation off as well: at most one realm Group read a minute, and the
-  first request after the minute waits for it (5 s at most). The setting does not depend on
-  `TEAM_DELEGATION`; with it off only Privileged writes it.
+- **Retired: `membersManageCompetitors`** (`members_manage_competitors`,
+  Yusuf 2026-10-25, retired 2026-11-23: "Ahmet Kaya olsam Yusuf İnan diye
+  birini ekleyebilirim"). It let every member of the Owner team add, edit
+  and remove anyone as a competitor, on by default. core no longer reads it
+  and the route takes it no more (`400`); a value an older core wrote stays
+  on the Group, unread and harmless, until someone removes it (Privileged,
+  as any other attribute). Who writes someone else's competitor now is who
+  manages the Event: Privileged (`competitor:manage`), the Owner team's
+  Leaders and coordinators and a Leader of a Team above, the members the
+  Event policy lets edit the Team's Events (`GECEKODU`), and the members
+  while `competitionManagers` is `members`, as they add Entrants then. A
+  person still enters and withdraws themselves as a competitor
+  (`POST /v1/competitors` with their own `userId`, `DELETE` of their own
+  row), with no score and no win; members still read the competitors. The
+  capabilities' `competitor.create/update/delete` say the same.
 - `competitionManagers` (`team_competition_manage`, "Yarışmaları kim
   yönetir"; Yusuf 2026-10-12, and 2026-10-31 that the Team's own Leader
   turns it on): who manages the Team's Events' Competitions. `leaders`, the
@@ -213,14 +209,19 @@ attributes (`GET /v1/groups/{id}`).
   Sub-teams' members included, manage them too, except archiving and
   restoring ([competitions.md](competitions.md) "Who"). The attribute is
   `true` for `members`, `false` for `leaders`; only `true` (case and blanks
-  aside) opens it. Unlike the competitor setting it **widens** what the
-  members may do, and still is the manager's, not only Privileged's: ADR-0065
-  keeps widening attributes Privileged's and makes this one the exception
-  (as Teams' "Who can manage tags", which a team owner sets). It is read
-  like the competitor setting (the kept tree, forgotten on core's write,
-  within the minute otherwise), but **fails closed**: a tree that cannot be
-  read, or a code that is not one Group's, is `leaders`. Leaders lose
-  nothing by it.
+  aside) opens it. It **widens** what the members may do (their
+  Competitions and their Events' competitors), and still is the manager's,
+  not only Privileged's: ADR-0065 keeps widening attributes Privileged's and
+  makes this one the exception (as Teams' "Who can manage tags", which a
+  team owner sets). The decision reads the Owner team's own Group from the
+  realm's Groups kept a minute (`identity.TeamTree`); core's own write
+  forgets them (a read already running then is not kept, and the next
+  decision reads again), and so does another core process's, told through
+  Postgres (`identity_groups_changed`,
+  [keycloak-admin-permissions.md](keycloak-admin-permissions.md) "Other core
+  processes"); a write in the Keycloak console is seen within the minute.
+  It **fails closed**: a tree that cannot be read, or a code that is not one
+  Group's, is `leaders`. Leaders lose nothing by it.
 
 ## Role rules
 

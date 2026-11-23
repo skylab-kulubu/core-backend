@@ -234,14 +234,15 @@ func TestTeamWritesOnOneReplicaReachTheOthersDecisions(t *testing.T) {
 	writer, _, _, _ := startTeamReplica(t, ctx, dir, pool)
 	_, delegation, teamTree, _ := startTeamReplica(t, ctx, dir, pool)
 
-	if !teamTree.MembersManageCompetitors("WEBLAB") {
-		t.Fatal("before the write the Team's members do not manage competitors")
+	if teamTree.TeamCompetitionManage("WEBLAB") {
+		t.Fatal("before the write the Team's members manage its Competitions")
 	}
-	if _, err := writer.SetTeamSettings(ctx, privileged(), weblab, identity.TeamSettingsChange{MembersManageCompetitors: new(bool)}); err != nil {
+	members := identity.CompetitionManagersMembers
+	if _, err := writer.SetTeamSettings(ctx, privileged(), weblab, identity.TeamSettingsChange{CompetitionManagers: &members}); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "the other replica still decides by the setting from before the write", func() bool {
-		return !teamTree.MembersManageCompetitors("WEBLAB")
+		return teamTree.TeamCompetitionManage("WEBLAB")
 	})
 
 	if teams, _, err := delegation.ManagedTeams(ctx, leader); err != nil || len(teams) != 1 {
