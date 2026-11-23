@@ -30,6 +30,9 @@ type Service interface {
 	AddMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
 	RemoveMember(ctx context.Context, p authz.Principal, groupRef string, userID uuid.UUID) error
 	ListUsers(ctx context.Context, p authz.Principal, q string, seat ...ClientRole) ([]Person, error)
+	// UserDirectory is a page of the people core holds (GET
+	// /v1/users/directory), under ListUsers's read rule.
+	UserDirectory(ctx context.Context, p authz.Principal, q UserDirectoryQuery) (UserDirectoryPage, error)
 	ListClientRoles(ctx context.Context, p authz.Principal) ([]ClientRole, error)
 	GetUser(ctx context.Context, p authz.Principal, id uuid.UUID) (UserCard, error)
 	PatchUser(ctx context.Context, p authz.Principal, id uuid.UUID, in user.ProfilePatch) (UserCard, error)
@@ -116,6 +119,7 @@ type service struct {
 	appAssignments        bool
 	appStats              *appStatsCache
 	teamPage              *TeamPageVisibility
+	clock                 func() time.Time
 }
 
 func NewService(dir Directory, users user.Store, az authz.Authorizer) Service {
@@ -180,7 +184,8 @@ type Options struct {
 	// (memberSeatSearch).
 	NoMemberSeatSearch bool
 	// Now is the clock of the seat search's minute (what it keeps and the
-	// members' search budget). Nil is time.Now.
+	// members' search budget) and of the user directory's "new" filter.
+	// Nil is time.Now.
 	Now func() time.Time
 	// Apps is the app catalogue of the app assignments
 	// (docs/app-assignments.md). Nil is the one core carries
@@ -289,6 +294,7 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		appAssignments:        options.AppAssignments,
 		appStats:              newAppStatsCache(options.Now),
 		teamPage:              options.TeamPage,
+		clock:                 options.Now,
 	}
 	if shared, ok := options.GroupCache.(*SharedGroupCache); ok {
 		shared.Join(ownCaches{s})
@@ -312,6 +318,14 @@ func NewServiceWithOptions(dir Directory, users user.Store, az authz.Authorizer,
 		s.privilegedRoots = authz.DefaultPrivilegedRoots()
 	}
 	return s
+}
+
+// now is the service's clock (Options.Now, else time.Now).
+func (s *service) now() time.Time {
+	if s.clock != nil {
+		return s.clock()
+	}
+	return time.Now()
 }
 
 func (s *service) allow(p authz.Principal, t authz.Type, a authz.Action) error {

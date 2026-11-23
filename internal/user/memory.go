@@ -252,6 +252,46 @@ func (s *MemoryStore) search(q string, limit int) []User {
 	return out
 }
 
+func (s *MemoryStore) ListDirectory(_ context.Context, q DirectoryQuery) (DirectoryPage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	needle := strings.ToLower(strings.TrimSpace(q.Query))
+	matched := make([]User, 0)
+	for _, u := range s.byID {
+		if u.AccountState != AccountActive {
+			continue
+		}
+		if q.NoSchoolEmail && u.SchoolEmail != "" {
+			continue
+		}
+		if !q.CreatedSince.IsZero() && u.CreatedAt.Before(q.CreatedSince) {
+			continue
+		}
+		hit := userMatches(u, needle)
+		if q.NamesOnly {
+			hit = nameMatches(u, needle)
+		}
+		if hit {
+			matched = append(matched, withStudentCardStatus(u))
+		}
+	}
+	slices.SortFunc(matched, func(a, b User) int {
+		if c := b.CreatedAt.Compare(a.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID.String(), b.ID.String())
+	})
+	page := DirectoryPage{Users: make([]User, 0), Total: len(matched)}
+	if q.Offset < len(matched) {
+		matched = matched[q.Offset:]
+		if q.Limit > 0 && len(matched) > q.Limit {
+			matched = matched[:q.Limit]
+		}
+		page.Users = matched
+	}
+	return page, nil
+}
+
 func (s *MemoryStore) FindByEmail(_ context.Context, email string) ([]User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -763,6 +803,20 @@ func (s *MemoryStore) MediaForDeletion(_ context.Context, requestID uuid.UUID) (
 func (s *MemoryStore) holdsLeaseLocked(requestID, leaseToken uuid.UUID) bool {
 	for _, request := range s.deletionRequests {
 		if request.ID == requestID && request.Status == DeletionRequestProcessing && request.LeaseToken != nil && *request.LeaseToken == leaseToken {
+			return true
+		}
+	}
+	return false
+}
+
+// nameMatches is userMatches on the e-mail and the names alone
+// (DirectoryQuery.NamesOnly).
+func nameMatches(u User, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	for _, h := range []string{u.Email, u.FirstName, u.LastName, strings.TrimSpace(u.FirstName + " " + u.LastName)} {
+		if strings.Contains(strings.ToLower(h), needle) {
 			return true
 		}
 	}

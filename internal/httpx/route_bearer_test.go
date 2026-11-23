@@ -75,6 +75,7 @@ var routesBehindBearerSample = []string{
 	"GET /v1/events/:eventId/competitions",
 	"GET /v1/subject-requests",
 	"GET /v1/users/me/capabilities",
+	"GET /v1/users/directory",
 	"GET /v1/certificates/me",
 	"POST /v1/tickets/:id/notification",
 	"DELETE /v1/tickets/:ticketId/sessions/:sessionId/check-in",

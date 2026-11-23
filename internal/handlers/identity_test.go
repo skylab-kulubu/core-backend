@@ -50,6 +50,7 @@ func identityAppWithErasure(t *testing.T, ident authn.Identity, dir *identity.Me
 	app.Get("/v1/groups/:groupId/client-roles", h.GroupClientRoles)
 	app.Put("/v1/groups/:groupId/client-roles", h.SetGroupClientRoles)
 	app.Get("/v1/users", h.ListUsers)
+	app.Get("/v1/users/directory", h.UserDirectory)
 	app.Get("/v1/users/:id", h.GetUser)
 	app.Patch("/v1/users/:id", h.PatchUser)
 	app.Post("/v1/users", h.CreateUser)

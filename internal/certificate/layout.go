@@ -137,6 +137,12 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 		fitData := ""
 		if el.Fit == "shrink" {
 			fitClass = ` class="fit"`
+			// .fit is a flex box, where text-align no longer places a
+			// short line: map the alignment to justify-content. A fitted
+			// box is one line that shrinks (the editor draws it so), so
+			// nowrap must beat the element's own pre-wrap, which as an
+			// inline style would win over the .fit rule.
+			style += "justify-content:" + fitJustify(el.Align) + ";white-space:nowrap;"
 			fitData = ` data-min-font="` + number(max(el.MinFontSize, 8)) + `"`
 		}
 		if el.Kind == "ownerTeam" {
@@ -155,7 +161,7 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 		bg = "#ffffff"
 	}
 	return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><style>
-@page{size:` + number(layout.Width) + `px ` + number(layout.Height) + `px;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif}.page{position:relative;width:` + number(layout.Width) + `px;height:` + number(layout.Height) + `px;overflow:hidden;background:` + html.EscapeString(bg) + `;` + background + `}.fit{display:flex;align-items:center;justify-content:inherit;white-space:nowrap;overflow:hidden}
+@page{size:` + number(layout.Width) + `px ` + number(layout.Height) + `px;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif}.page{position:relative;width:` + number(layout.Width) + `px;height:` + number(layout.Height) + `px;overflow:hidden;background:` + html.EscapeString(bg) + `;` + background + `}.fit{display:flex;align-items:center;white-space:nowrap;overflow:hidden}
 </style></head><body><main class="page">` + body.String() + `</main><script>
 function over(el){return el.scrollWidth>el.clientWidth||el.scrollHeight>el.clientHeight}function fit(el){var size=parseFloat(getComputedStyle(el).fontSize);var min=parseFloat(el.dataset.minFont||'8');while(over(el)&&size>min){size-=1;el.style.fontSize=size+'px'}}
 document.querySelectorAll('.fit').forEach(fit)
@@ -289,6 +295,22 @@ func safeFont(font string) string {
 		return `'Liberation Mono','Courier New',monospace`
 	default:
 		return `'Liberation Sans',Arial,sans-serif`
+	}
+}
+
+// fitJustify maps an element's text alignment to the flex
+// justify-content of a shrink-to-fit box. "safe" sends a line that is
+// still too wide to the right edge only: overflow past the left edge is
+// not counted in scrollWidth, so the fit script would never shrink a
+// right-aligned name. Once the line fits, safe and plain align alike.
+func fitJustify(align string) string {
+	switch align {
+	case "center":
+		return "safe center"
+	case "right":
+		return "safe flex-end"
+	default:
+		return "flex-start"
 	}
 }
 
