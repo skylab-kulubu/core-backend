@@ -91,6 +91,7 @@ func urlAppBehindProxies(t *testing.T, proxies string, store shorturl.Store, ide
 	app.Patch("/v1/urls/forms/:formId", h.RenameFormLink)
 	app.Get("/v1/urls/forms/:formId/stats", h.FormStats)
 	app.Get("/v1/urls/:id/hits", h.ListHits)
+	app.Get("/v1/urls/:id/stats", h.LinkStats)
 	app.Patch("/v1/urls/:id", h.Update)
 	app.Delete("/v1/urls/:id", h.Delete)
 	app.Post("/v1/urls/:id/restore", h.Restore)
@@ -1070,5 +1071,90 @@ func TestURLFormLinkEndpointsNeedTheFormsRole(t *testing.T) {
 		if listed.StatusCode != fiber.StatusOK || len(mine) != want {
 			t.Fatalf("source %q: %d %+v", source, listed.StatusCode, mine)
 		}
+	}
+}
+
+func TestURLLinkStatsCountsWithoutRawClicks(t *testing.T) {
+	t.Parallel()
+	store := shorturl.NewMemoryStore()
+	owner := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	app := urlAppOn(t, store, authn.Identity{ID: owner, Roles: []string{"url:access"}}, nil)
+	req := httptest.NewRequest(fiber.MethodPost, "/v1/urls", strings.NewReader(`{"url":"https://skylab.com","alias":"ozet"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created shorturl.URL
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	hop := httptest.NewRequest(fiber.MethodGet, "/v1/go/ozet/ig", nil)
+	hop.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148")
+	hop.Header.Set("Referer", "https://www.instagram.com/")
+	hop.Header.Set("X-Forwarded-For", "203.0.113.9, 10.0.0.1")
+	if _, err := urlAppOn(t, store, authn.Identity{}, nil).Test(hop); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/urls/" + created.ID.String() + "/stats"
+
+	// The owner reads their own link's summary.
+	own, err := app.Test(httptest.NewRequest(fiber.MethodGet, path+"?days=7", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(own.Body)
+	if own.StatusCode != fiber.StatusOK {
+		t.Fatalf("owner stats %d %s", own.StatusCode, body)
+	}
+	if own.Header.Get(fiber.HeaderCacheControl) != "no-store" {
+		t.Fatalf("cache %q", own.Header.Get(fiber.HeaderCacheControl))
+	}
+	var stats shorturl.LinkStats
+	if err := json.Unmarshal(body, &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Days != 7 || stats.Total != 1 || len(stats.Daily) != 7 || stats.Sources[0].Source != "instagram" || stats.Devices[0].Name != shorturl.DeviceMobile {
+		t.Fatalf("stats %s", body)
+	}
+	for _, leak := range []string{"203.0.113.9", "iPhone", "userAgent", "\"ip\""} {
+		if strings.Contains(string(body), leak) {
+			t.Fatalf("stats carries %q: %s", leak, body)
+		}
+	}
+
+	stranger := urlAppOn(t, store, authn.Identity{ID: uuid.MustParse("22222222-2222-2222-2222-222222222222"), Roles: []string{"url:access"}}, nil)
+	other, err := stranger.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("stranger stats %d", other.StatusCode)
+	}
+
+	mod := urlAppOn(t, store, authn.Identity{ID: uuid.MustParse("33333333-3333-3333-3333-333333333333"), Roles: []string{"url:moderator"}}, nil)
+	for query, want := range map[string]int{"": fiber.StatusOK, "?days=90": fiber.StatusOK, "?days=91": fiber.StatusBadRequest, "?days=0": fiber.StatusBadRequest, "?days=x": fiber.StatusBadRequest} {
+		res, err := mod.Test(httptest.NewRequest(fiber.MethodGet, path+query, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.StatusCode != want {
+			t.Fatalf("moderator stats%s %d, want %d", query, res.StatusCode, want)
+		}
+	}
+	missing, err := mod.Test(httptest.NewRequest(fiber.MethodGet, "/v1/urls/"+uuid.NewString()+"/stats", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("missing link stats %d", missing.StatusCode)
+	}
+	anon := urlAppOn(t, store, authn.Identity{}, nil)
+	unauth, err := anon.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unauth.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("anonymous stats %d", unauth.StatusCode)
 	}
 }

@@ -895,6 +895,7 @@ func New(deps Deps) *fiber.App {
 	app.Patch("/v1/urls/forms/:formId", urls.RenameFormLink)
 	app.Get("/v1/urls/forms/:formId/stats", urls.FormStats)
 	app.Get("/v1/urls/:id/hits", urls.ListHits)
+	app.Get("/v1/urls/:id/stats", urls.LinkStats)
 	app.Patch("/v1/urls/:id", urls.Update)
 	app.Delete("/v1/urls/:id", urls.Delete)
 	app.Post("/v1/urls/:id/restore", urls.Restore)
