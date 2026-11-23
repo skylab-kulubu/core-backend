@@ -66,6 +66,7 @@ var routesBehindBearerSample = []string{
 	"POST /v1/map-regions/:id/retire",
 	"GET /v1/dashboard/github-activity",
 	"GET /v1/dashboard/summary",
+	"GET /v1/dashboard/event-stats",
 	"POST /v1/events/:id/feedback/send",
 	"POST /v1/events/:eventId/mail-list",
 	"GET /v1/apps",

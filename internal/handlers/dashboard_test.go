@@ -35,6 +35,7 @@ func dashboardApp(t *testing.T, ident *authn.Identity, events event.Store, ticke
 		return c.Next()
 	})
 	app.Get("/v1/dashboard/summary", NewDashboardHandler(svc).Summary)
+	app.Get("/v1/dashboard/event-stats", NewDashboardHandler(svc).EventStats)
 	return app
 }
 
@@ -86,5 +87,66 @@ func TestDashboardSummaryHTTP(t *testing.T) {
 	}
 	if got.Applications.Daily[len(got.Applications.Daily)-1].Count != 2 || got.Members != nil {
 		t.Fatalf("summary %s", body)
+	}
+}
+
+// The Event list's figures: 401 without a caller; for a Leader their own
+// team's Events, the long past and the undated included, no other team's.
+func TestDashboardEventStatsHTTP(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	long := time.Now().AddDate(-2, 0, 0)
+	old, err := events.Create(t.Context(), event.Event{Name: "Eski", Location: "YTÜ", OwnerTeam: "WEBLAB", StartDate: &long, Capacity: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	undated, err := events.Create(t.Context(), event.Event{Name: "Tarihsiz", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := events.Create(t.Context(), event.Event{Name: "Gece", Location: "YTÜ", OwnerTeam: "GECEKODU", StartDate: &long})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []event.Event{old, old, theirs} {
+		if _, err := tickets.Create(t.Context(), ticket.Ticket{EventID: e.ID, TicketType: ticket.Guest}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resp, err := dashboardApp(t, nil, events, tickets).Test(httptest.NewRequest(fiber.MethodGet, "/v1/dashboard/event-stats", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("anonymous: %d", resp.StatusCode)
+	}
+
+	leader := &authn.Identity{ID: uuid.New(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	resp, err = dashboardApp(t, leader, events, tickets).Test(httptest.NewRequest(fiber.MethodGet, "/v1/dashboard/event-stats", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get(fiber.HeaderCacheControl); got != "no-store" {
+		t.Fatalf("cache-control %q", got)
+	}
+	var got dashboard.EventStatsAnswer
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.TimeZone != dashboard.TimeZone || got.GeneratedAt.IsZero() || len(got.EventStats) != 2 {
+		t.Fatalf("event stats %s", body)
+	}
+	first, second := got.EventStats[0], got.EventStats[1]
+	if first.ID != old.ID || first.Applications != 2 || first.Guests != 2 || first.Capacity != 30 || len(first.DailyApplications) != dashboard.EventDailyDays {
+		t.Fatalf("old event %s", body)
+	}
+	if second.ID != undated.ID || second.StartDate != nil {
+		t.Fatalf("undated event %s", body)
 	}
 }
