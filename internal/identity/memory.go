@@ -880,3 +880,44 @@ func (m *Memory) ReadSkyNumber(_ context.Context, userID uuid.UUID) (string, err
 	}
 	return p.SkyNumber, nil
 }
+
+// HeldRoles answers every role the person holds in effect, realm roles
+// with an empty ClientID, the way Keycloak's role-mappings/realm/composite
+// and role-mappings/clients/{client}/composite do together (HeldRoleReader).
+func (m *Memory) HeldRoles(_ context.Context, userID uuid.UUID) ([]ClientRole, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.record("HeldRoles")
+	if _, ok := m.people[userID]; !ok {
+		return nil, ErrNotFound
+	}
+	queue := append([]ClientRole(nil), m.userRoles[userID]...)
+	queue = append(queue, m.defaultRoles...)
+	for gid, members := range m.members {
+		if _, ok := members[userID]; !ok {
+			continue
+		}
+		g, ok := m.groups[gid]
+		if !ok {
+			continue
+		}
+		for id, other := range m.groups {
+			if other.Path == g.Path || strings.HasPrefix(g.Path, other.Path+"/") {
+				queue = append(queue, m.groupRoles[id]...)
+			}
+		}
+	}
+	seen := map[string]struct{}{}
+	out := make([]ClientRole, 0)
+	for len(queue) > 0 {
+		r := queue[0]
+		queue = queue[1:]
+		if _, ok := seen[roleKey(r)]; ok {
+			continue
+		}
+		seen[roleKey(r)] = struct{}{}
+		out = append(out, r)
+		queue = append(queue, m.composites[roleKey(r)]...)
+	}
+	return out, nil
+}

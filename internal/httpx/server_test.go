@@ -33,6 +33,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
 	"github.com/skylab-kulubu/core-backend/internal/skypass"
 	"github.com/skylab-kulubu/core-backend/internal/subjectrequest"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/testauth"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
@@ -108,8 +109,11 @@ func memoryDepsDecidedBy(dir *identity.Memory, options identity.Options, az auth
 	// Skyforms' client and a CMS one (production has none yet).
 	clients := authz.ServiceClients{"forms": authz.ProductForms, "cms-service": authz.ProductCMS}
 	return httpx.Deps{
-		Users:           user.NewService(users),
-		Identity:        identity.NewServiceWithOptions(dir, users, az, options),
+		Users:    user.NewService(users),
+		Identity: identity.NewServiceWithOptions(dir, users, az, options),
+		UserAccounts: identity.NewUserAccounts(identity.UserAccountOptions{
+			Accounts: identity.NewMemoryAccounts(), People: dir, Users: users, Authz: az, Audit: teamaudit.NewMemory(),
+		}),
 		Events:          event.NewService(events, az),
 		Seasons:         season.NewService(season.NewMemoryStore(), az),
 		SubjectRequests: subjectrequest.NewService(subjectrequest.NewMemoryStore(), az, nil),
