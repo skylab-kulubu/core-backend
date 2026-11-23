@@ -4,13 +4,16 @@ import (
 	"encoding/base64"
 	"html"
 	"strings"
+
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
 )
 
 func HTML(ownerTeam, recipientName, eventName, verifyURL string, qrPNG []byte) string {
-	team := strings.TrimSpace(ownerTeam)
-	heading := "SKY LAB"
-	if team != "" {
-		heading = "SKY LAB · " + html.EscapeString(team)
+	// The club's own Event (YK, DK, ADMIN or no Owner team) is headed with
+	// the club's name, another team's with its code (organizer.Name).
+	heading := html.EscapeString(organizer.ClubName)
+	if !organizer.Club(ownerTeam) {
+		heading = "SKY LAB · " + html.EscapeString(strings.TrimSpace(ownerTeam))
 	}
 	qr := ""
 	if len(qrPNG) > 0 {

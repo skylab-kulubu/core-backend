@@ -11,13 +11,14 @@ import (
 	"unicode"
 
 	"github.com/skylab-kulubu/core-backend/internal/brandfont"
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/ticket/theme"
 )
 
 // ClubName is how the ticket names the club, everywhere (Yusuf,
-// 2026-11-22).
-const ClubName = "SKY LAB: Bilgisayar Bilimleri Kulübü"
+// 2026-11-22): organizer.ClubName, the one place core keeps it.
+const ClubName = organizer.ClubName
 
 // KVKKLink is the club's personal data notice ("KVKK Metni"), as the club
 // site's footer links it: the footnote's one address. The ticket page's
@@ -288,10 +289,9 @@ func RenderHTML(d Document) (document, header string, err error) {
 		Description: strings.TrimSpace(d.Description),
 	}
 	firstLabel, first, secondLabel, second := When(d.Start, d.End)
-	organizer := strings.TrimSpace(d.OwnerTeam)
-	if organizer == "" {
-		organizer = "SKY LAB"
-	}
+	// The club's boards' Events (and ADMIN's, or none's) are the club's
+	// (Yusuf, 2026-11-23).
+	organizedBy := organizer.Name(d.OwnerTeam)
 	venue := strings.TrimSpace(d.Venue)
 	if venue == "" {
 		venue = "—"
@@ -302,7 +302,7 @@ func RenderHTML(d Document) (document, header string, err error) {
 		{Label: secondLabel, Value: second, Large: true},
 		{Label: "Yer", Value: venue, Wide: true},
 		{Label: "Katılımcı", Value: d.HolderName},
-		{Label: "Düzenleyen", Value: organizer},
+		{Label: "Düzenleyen", Value: organizedBy},
 	}
 	for _, day := range d.Days {
 		if len(day.Sessions) == 0 {
@@ -364,6 +364,7 @@ func validColor(c string) bool {
 }
 
 type head struct {
+	Club   string
 	Code   string
 	Font   template.CSS
 	Accent template.CSS
@@ -381,7 +382,7 @@ func HeaderHTML(t theme.Theme, code string) (string, error) {
 	}
 	mark.WriteString(`</g></svg>`)
 	var out bytes.Buffer
-	err := headerTemplate.Execute(&out, head{Code: code, Font: template.CSS(t.HeadSans), Accent: template.CSS(t.Accent), Mark: template.HTML(mark.String())})
+	err := headerTemplate.Execute(&out, head{Club: ClubName, Code: code, Font: template.CSS(t.HeadSans), Accent: template.CSS(t.Accent), Mark: template.HTML(mark.String())})
 	return out.String(), err
 }
 
@@ -394,7 +395,7 @@ html,body{margin:0;padding:0;-webkit-print-color-adjust:exact;print-color-adjust
 .kulup b{font-size:9.5pt}
 .gri{color:#555}
 </style></head><body><div class="bas">
-<div class="kulup"><span class="isaret">{{.Mark}}</span><b>SKY LAB: Bilgisayar Bilimleri Kulübü</b></div>
+<div class="kulup"><span class="isaret">{{.Mark}}</span><b>{{.Club}}</b></div>
 <div><span class="gri">Bilet kodu</span> <b>{{.Code}}</b> <span class="gri">· Sayfa <span class="pageNumber"></span>/<span class="totalPages"></span></span></div>
 </div></body></html>
 `))

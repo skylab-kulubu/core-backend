@@ -22,7 +22,8 @@ Example valid item:
   "event": {
     "id": "77d8e777-3aa5-479b-ac8a-919de8c68e9e",
     "name": "AGC 2026",
-    "ownerTeam": "AGC"
+    "ownerTeam": "AGC",
+    "organizerName": "AGC"
   },
   "status": "valid",
   "issuedAt": "2026-09-19T15:30:00Z",
@@ -41,7 +42,7 @@ A revoked item has `status: "revoked"` and `revokedAt`. Its `pdfUrl` is omitted;
 ## Screen behavior
 
 - Row title: `event.name`.
-- Subtitle: normalized issuer and localized issue date. Display `SKY LAB` when `event.ownerTeam` is empty, `YK`, or `DK`; otherwise display the OwnerTeam value.
+- Subtitle: issuer and localized issue date. Display `event.organizerName` (Yusuf, 2026-11-23): core answers "SKY LAB: Bilgisayar Bilimleri Kulübü" when `event.ownerTeam` is empty, `YK`, `DK` or `ADMIN`, otherwise the OwnerTeam value. An older core without `organizerName`: display `SKY LAB` for empty, `YK` or `DK`, else `event.ownerTeam`.
 - Show `Geçerli` or `İptal`. Revoked certificates stay visible as history.
 - For a valid certificate, the primary action opens `pdfUrl` with the app's existing browser link flow.
 - `Doğrula` opens `verifyUrl`.
