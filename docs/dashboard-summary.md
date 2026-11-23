@@ -127,6 +127,39 @@ A Member is a User in the `UYELER` tree (CONTEXT.md, Member). The glossary has n
 - **Failure.** A failed read keeps the last good one in place, which is answered on, however old (`asOf` says when it was read). With no good read yet, the section is `null` with `membersUnavailable: true`. A failure is kept 30 s (`DefaultMembersFailureTTL`): no new read starts before that, so a Keycloak outage costs at most one read every 30 s, not one per request.
 - **Log.** Each failed read logs one line, `{"event":"dashboard_members","outcome":"unavailable","stale":true|false,"error":"…"}`. The error is Keycloak's status or the timeout; no person, id, name or Group path is added. Successful reads and cached answers are not logged.
 
+## Event stats
+
+`GET /v1/dashboard/event-stats` answers the panel's Event list: the same `eventStats` rows as the summary, for **every** covered Event, without the summary's date limit. The long past, the ones still to come and the undated ones all come. Code: `Service.EventStats` in `internal/dashboard/event_stats.go`, handler `DashboardHandler.EventStats`.
+
+- **Who sees what.** As the summary's Events: no bearer, `401` problem+json; otherwise the covered Events of **Who sees what** above (the applicant list's Ticket read decision by Owner team, drafts only for who may see them, archived Events never). Anyone else gets `"eventStats": []`. `Cache-Control: no-store`.
+- **Order.** By start date; Events without one come last, by name.
+- **Rows.** Each row is the summary's `EventStat` (see **Answer**): `dailyApplications` are the last 14 days in `Europe/Istanbul`, oldest first. An undated Event is never `live`; it is `active` while published (it never ends, ADR 0066).
+- **Cost.** Three queries whatever the number of Events: the current Events, the Ticket counts per Event and the Tickets of the last 14 days per Event and day. Neither Home nor Members is read. With nothing covered only the first runs.
+
+```json
+{
+  "generatedAt": "2026-11-23T09:00:00Z",
+  "timeZone": "Europe/Istanbul",
+  "eventStats": [
+    {
+      "id": "…", "name": "WebLab Spring", "ownerTeam": "WEBLAB", "location": "D-101",
+      "startDate": "2025-04-12T09:00:00Z", "endDate": "2025-04-12T12:00:00Z",
+      "active": false, "status": "published", "live": false, "capacity": 50,
+      "hasApplicationForm": true, "hasCoverImage": false,
+      "applications": 120, "members": 100, "guests": 20, "checkedIn": 90,
+      "dailyApplications": [0, 0, 0, "… 14 days, oldest first, today last"]
+    },
+    {
+      "id": "…", "name": "Alfa Söyleşi", "ownerTeam": "WEBLAB", "location": "",
+      "active": true, "status": "published", "live": false, "capacity": 0,
+      "hasApplicationForm": false, "hasCoverImage": false,
+      "applications": 0, "members": 0, "guests": 0, "checkedIn": 0,
+      "dailyApplications": [0, 0, 0, "…"]
+    }
+  ]
+}
+```
+
 ## Cost
 
 Three queries for the Events part, whatever the number of Events: the current Events (the list query of `GET /v1/events`), the Ticket counts per Event, and the Tickets of the last 30 days per Event and day; one more (`Accounts`: erasure markers and stored names) for the Members part. Migration `20261003120000` adds `tickets (event_id, created_at)`; before it no index on `tickets` led with `event_id`.

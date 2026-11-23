@@ -49,3 +49,39 @@ func TestDashboardSummaryFollowsTheCallersTeamDecisions(t *testing.T) {
 		t.Fatalf("admin: %d %v", all.status, all.body["ownerTeams"])
 	}
 }
+
+// The Event list's figures are behind the bearer too and cover what the
+// summary covers: a leader with a Group overage token sees their own team's
+// Events and no other team's.
+func TestDashboardEventStatsFollowsTheCallersTeamDecisions(t *testing.T) {
+	t.Parallel()
+	e := newOverageEnv(t)
+	admin := e.adminToken(t)
+	for _, team := range []string{"WEBLAB", "GAMELAB"} {
+		if got := e.createEvent(t, admin, team); got.status != fiber.StatusCreated {
+			t.Fatalf("create %s: %d %v", team, got.status, got.body)
+		}
+	}
+
+	resp, err := e.app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/dashboard/event-stats", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("anonymous: %d", resp.StatusCode)
+	}
+
+	leader := sendJSON(t, e.app, e.markedToken(t), fiber.MethodGet, "/v1/dashboard/event-stats", "")
+	stats, _ := leader.body["eventStats"].([]any)
+	if leader.status != fiber.StatusOK || len(stats) != 1 {
+		t.Fatalf("leader: %d %v", leader.status, leader.body)
+	}
+	if stat, _ := stats[0].(map[string]any); stat["ownerTeam"] != "WEBLAB" {
+		t.Fatalf("leader's event %v", stat)
+	}
+
+	all := sendJSON(t, e.app, admin, fiber.MethodGet, "/v1/dashboard/event-stats", "")
+	if stats, _ := all.body["eventStats"].([]any); all.status != fiber.StatusOK || len(stats) != 2 {
+		t.Fatalf("admin: %d %v", all.status, all.body["eventStats"])
+	}
+}

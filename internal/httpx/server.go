@@ -677,7 +677,9 @@ func New(deps Deps) *fiber.App {
 	}
 
 	if deps.Dashboard != nil {
-		app.Get("/v1/dashboard/summary", handlers.NewDashboardHandler(deps.Dashboard).Summary)
+		dashboardHandler := handlers.NewDashboardHandler(deps.Dashboard)
+		app.Get("/v1/dashboard/summary", dashboardHandler.Summary)
+		app.Get("/v1/dashboard/event-stats", dashboardHandler.EventStats)
 	}
 
 	// The map regions read the caller (docs/event-map.md, "Regions"), so
