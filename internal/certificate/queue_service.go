@@ -29,18 +29,18 @@ func (s *service) Summary(ctx context.Context, p authz.Principal, eventID uuid.U
 	if err != nil {
 		return EventSummary{}, err
 	}
-	tickets, err := s.tickets.ListByEvent(ctx, eventID)
+	attendance, err := s.attendance.EventAttendance(ctx, eventID)
 	if err != nil {
 		return EventSummary{}, err
 	}
-	eligibleCount := 0
-	for _, item := range tickets {
-		eligible, err := s.eligible(ctx, ev, item)
-		if err != nil {
-			return EventSummary{}, err
-		}
+	eligibleCount, belowCount := 0, 0
+	for _, item := range attendance.Tickets {
+		eligible := ticketEligible(ev, attendance, item)
 		if eligible {
 			eligibleCount++
+		}
+		if attendanceStatus(eligible, item) == StatusBelow {
+			belowCount++
 		}
 	}
 	certs, err := s.store.ListByEvent(ctx, eventID)
@@ -67,7 +67,63 @@ func (s *service) Summary(ctx context.Context, p authz.Principal, eventID uuid.U
 			return EventSummary{}, err
 		}
 	}
-	return EventSummary{EventID: eventID, AttendanceFinalizedAt: finalized, EligibleCount: eligibleCount, IssuedCount: issued, RevokedCount: revoked, QueuedCount: queued, FailedCount: failed, Resolution: s.projectResolution(p, resolution)}, nil
+	return EventSummary{
+		EventID: eventID, AttendanceFinalizedAt: finalized, EligibleCount: eligibleCount, IssuedCount: issued, RevokedCount: revoked,
+		QueuedCount: queued, FailedCount: failed, Resolution: s.projectResolution(p, resolution),
+		CountedTotal: attendance.CountedTotal, EffectiveMin: event.RuleMin(ev, attendance.CountedTotal), BelowCount: belowCount,
+	}, nil
+}
+
+// Attendance is the certificate workspace's list of who attended how much,
+// for whoever may read the Summary: each Ticket's counted check-ins, missing
+// required Sessions and status (issued > queued > failed > revoked >
+// eligible > below), in order of name. It carries no e-mail.
+func (s *service) Attendance(ctx context.Context, p authz.Principal, eventID uuid.UUID) (AttendanceList, error) {
+	ev, err := s.visibleEvent(ctx, p, eventID)
+	if err != nil {
+		return AttendanceList{}, err
+	}
+	if !s.canReadWorkspace(p, ev.OwnerTeam) {
+		return AttendanceList{}, ErrForbidden
+	}
+	attendance, err := s.attendance.EventAttendance(ctx, eventID)
+	if err != nil {
+		return AttendanceList{}, err
+	}
+	titles := make(map[uuid.UUID]string, len(attendance.Required))
+	for _, required := range attendance.Required {
+		titles[required.ID] = required.Title
+	}
+	out := AttendanceList{
+		CountedTotal: attendance.CountedTotal, EffectiveMin: event.RuleMin(ev, attendance.CountedTotal), Rule: ev.AttendanceRule,
+		Required: attendance.Required, Rows: make([]AttendanceRow, 0, len(attendance.Tickets)),
+	}
+	for _, item := range attendance.Tickets {
+		eligible := ticketEligible(ev, attendance, item)
+		row := AttendanceRow{
+			TicketID: item.TicketID, Name: item.Name, TicketType: item.TicketType, Attended: item.Attended,
+			MissingRequired: make([]RequiredSession, 0, len(item.MissingRequired)), Status: attendanceStatus(eligible, item),
+		}
+		missing := make(map[uuid.UUID]bool, len(item.MissingRequired))
+		for _, id := range item.MissingRequired {
+			missing[id] = true
+		}
+		// In the program's order, as Required lists them.
+		for _, required := range attendance.Required {
+			if missing[required.ID] {
+				row.MissingRequired = append(row.MissingRequired, RequiredSession{ID: required.ID, Title: titles[required.ID]})
+			}
+		}
+		switch {
+		case item.Active != nil:
+			row.Certificate = item.Active
+		case item.Revoked != nil:
+			row.Certificate = item.Revoked
+		}
+		out.Rows = append(out.Rows, row)
+	}
+	sortAttendanceRows(out.Rows)
+	return out, nil
 }
 
 func (s *service) Finalize(ctx context.Context, p authz.Principal, eventID uuid.UUID) (Batch, error) {
@@ -98,36 +154,35 @@ func (s *service) Finalize(ctx context.Context, p authz.Principal, eventID uuid.
 	} else if previous != nil {
 		return Batch{}, ErrConflict
 	}
-	tickets, err := s.tickets.ListByEvent(ctx, eventID)
+	attendance, err := s.attendance.EventAttendance(ctx, eventID)
 	if err != nil {
 		return Batch{}, err
 	}
-	ids := make([]uuid.UUID, 0, len(tickets))
-	for _, item := range tickets {
-		eligible, err := s.eligible(ctx, ev, item)
-		if err != nil {
-			return Batch{}, err
-		}
-		if !eligible {
+	ids := make([]uuid.UUID, 0, len(attendance.Tickets))
+	for _, item := range attendance.Tickets {
+		if item.Active != nil || !ticketEligible(ev, attendance, item) {
 			continue
 		}
-		if _, err := s.store.GetActive(ctx, eventID, item.ID); err == nil {
-			continue
-		} else if !errors.Is(err, ErrNotFound) {
-			return Batch{}, err
-		}
-		ids = append(ids, item.ID)
+		ids = append(ids, item.TicketID)
 	}
-	return s.queueResolved(ctx, p, ev, ids, "finalization")
+	return s.queueResolved(ctx, p, ev, ids, "finalization", nil)
 }
 
-func (s *service) QueueManual(ctx context.Context, p authz.Principal, eventID, ticketID uuid.UUID) (Batch, error) {
+// QueueManual queues one Ticket's certificate by hand. A Ticket the rule
+// does not make eligible needs a justification (ErrJustificationRequired);
+// an eligible one may carry one. The batch keeps it with who asked and when:
+// the manual issue's audit record.
+func (s *service) QueueManual(ctx context.Context, p authz.Principal, eventID, ticketID uuid.UUID, justification string) (Batch, error) {
 	ev, err := s.visibleEvent(ctx, p, eventID)
 	if err != nil {
 		return Batch{}, err
 	}
 	if !s.canIssue(p, ev.OwnerTeam) {
 		return Batch{}, ErrForbidden
+	}
+	reason, err := normalizeJustification(justification)
+	if err != nil {
+		return Batch{}, err
 	}
 	item, err := s.tickets.Get(ctx, ticketID)
 	if err != nil {
@@ -144,7 +199,16 @@ func (s *service) QueueManual(ctx context.Context, p authz.Principal, eventID, t
 	} else if !errors.Is(err, ErrNotFound) {
 		return Batch{}, err
 	}
-	return s.queueResolved(ctx, p, ev, []uuid.UUID{ticketID}, "manual")
+	if reason == nil {
+		eligible, err := s.eligible(ctx, ev, item)
+		if err != nil {
+			return Batch{}, err
+		}
+		if !eligible {
+			return Batch{}, ErrJustificationRequired
+		}
+	}
+	return s.queueResolved(ctx, p, ev, []uuid.UUID{ticketID}, "manual", reason)
 }
 
 func (s *service) Reissue(ctx context.Context, p authz.Principal, serial string) (Batch, error) {
@@ -161,10 +225,10 @@ func (s *service) Reissue(ctx context.Context, p authz.Principal, serial string)
 	if err != nil {
 		return Batch{}, err
 	}
-	return s.queueResolved(ctx, p, ev, []uuid.UUID{cert.TicketID}, "reissue")
+	return s.queueResolved(ctx, p, ev, []uuid.UUID{cert.TicketID}, "reissue", nil)
 }
 
-func (s *service) queueResolved(ctx context.Context, p authz.Principal, ev event.Event, ticketIDs []uuid.UUID, reason string) (Batch, error) {
+func (s *service) queueResolved(ctx context.Context, p authz.Principal, ev event.Event, ticketIDs []uuid.UUID, reason string, justification *string) (Batch, error) {
 	if s.jobs == nil || s.templates == nil {
 		return Batch{}, ErrInvalid
 	}
@@ -172,7 +236,7 @@ func (s *service) queueResolved(ctx context.Context, p authz.Principal, ev event
 	if err != nil {
 		return Batch{}, err
 	}
-	batch := Batch{ID: uuid.New(), EventID: ev.ID, TemplateVersionID: resolved.Version.ID, TemplateSource: resolved.Source, Reason: reason, Status: "queued", RequestedBy: principalUUIDPtr(p)}
+	batch := Batch{ID: uuid.New(), EventID: ev.ID, TemplateVersionID: resolved.Version.ID, TemplateSource: resolved.Source, Reason: reason, Status: "queued", RequestedBy: principalUUIDPtr(p), Justification: justification}
 	return s.jobs.CreateBatch(ctx, batch, ticketIDs)
 }
 

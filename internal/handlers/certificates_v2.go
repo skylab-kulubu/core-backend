@@ -32,6 +32,20 @@ func (h *CertificateHandler) Summary(c fiber.Ctx) error {
 	return c.JSON(result)
 }
 
+// Attendance is the certificate workspace's list of who attended how much
+// (docs/certificate-rule.md): for whoever may read the Summary, no e-mail.
+func (h *CertificateHandler) Attendance(c fiber.Ctx) error {
+	p, eventID, err := certificateEventCaller(c)
+	if err != nil {
+		return certError(c, err)
+	}
+	result, err := h.svc.Attendance(c.Context(), p, eventID)
+	if err != nil {
+		return certError(c, err)
+	}
+	return c.JSON(result)
+}
+
 func (h *CertificateHandler) Finalize(c fiber.Ctx) error {
 	p, eventID, err := certificateEventCaller(c)
 	if err != nil {

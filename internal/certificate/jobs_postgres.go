@@ -10,7 +10,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/subjectlock"
 )
 
-const batchCols = `id,event_id,template_version_id,template_source,reason,status,requested_by,total_count,queued_count,issued_count,failed_count,created_at,started_at,completed_at`
+const batchCols = `id,event_id,template_version_id,template_source,reason,status,requested_by,justification,total_count,queued_count,issued_count,failed_count,created_at,started_at,completed_at`
 const jobCols = `id,batch_id,event_id,ticket_id,status,attempt_count,next_attempt_at,lease_until,error_code,certificate_id,created_at,started_at,completed_at`
 const claimedJobCols = `j.id,j.batch_id,j.event_id,j.ticket_id,j.status,j.attempt_count,j.next_attempt_at,j.lease_until,j.error_code,j.certificate_id,j.created_at,j.started_at,j.completed_at`
 
@@ -41,17 +41,25 @@ func (s *PostgresStore) CreateBatch(ctx context.Context, b Batch, ticketIDs []uu
 		status = "completed"
 	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO certificate_batches (id,event_id,template_version_id,template_source,reason,status,requested_by,total_count,queued_count,completed_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,CASE WHEN $8=0 THEN now() END) RETURNING `+batchCols,
-		b.ID, b.EventID, b.TemplateVersionID, b.TemplateSource, b.Reason, status, b.RequestedBy, len(ticketIDs)).Scan(batchScan(&b)...)
+		INSERT INTO certificate_batches (id,event_id,template_version_id,template_source,reason,status,requested_by,total_count,queued_count,completed_at,justification)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,CASE WHEN $8=0 THEN now() END,$9) RETURNING `+batchCols,
+		b.ID, b.EventID, b.TemplateVersionID, b.TemplateSource, b.Reason, status, b.RequestedBy, len(ticketIDs), b.Justification).Scan(batchScan(&b)...)
 	if err != nil {
 		if subjectlock.IsInactiveAccountReference(err) {
 			return Batch{}, ErrForbidden
 		}
 		return Batch{}, err
 	}
-	for _, ticketID := range ticketIDs {
-		if _, err := tx.Exec(ctx, `INSERT INTO certificate_jobs (id,batch_id,event_id,ticket_id) VALUES ($1,$2,$3,$4)`, uuid.New(), b.ID, b.EventID, ticketID); err != nil {
+	if len(ticketIDs) > 0 {
+		// One statement for every job, however many Tickets the batch has.
+		jobIDs := make([]uuid.UUID, len(ticketIDs))
+		for i := range jobIDs {
+			jobIDs[i] = uuid.New()
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO certificate_jobs (id,batch_id,event_id,ticket_id)
+			SELECT j.id, $1, $2, j.ticket_id FROM unnest($3::uuid[], $4::uuid[]) AS j(id, ticket_id)`,
+			b.ID, b.EventID, jobIDs, ticketIDs); err != nil {
 			return Batch{}, err
 		}
 	}
@@ -242,7 +250,7 @@ func (s *PostgresStore) refreshBatch(ctx context.Context, batchID uuid.UUID) err
 }
 
 func batchScan(b *Batch) []any {
-	return []any{&b.ID, &b.EventID, &b.TemplateVersionID, &b.TemplateSource, &b.Reason, &b.Status, &b.RequestedBy, &b.TotalCount, &b.QueuedCount, &b.IssuedCount, &b.FailedCount, &b.CreatedAt, &b.StartedAt, &b.CompletedAt}
+	return []any{&b.ID, &b.EventID, &b.TemplateVersionID, &b.TemplateSource, &b.Reason, &b.Status, &b.RequestedBy, &b.Justification, &b.TotalCount, &b.QueuedCount, &b.IssuedCount, &b.FailedCount, &b.CreatedAt, &b.StartedAt, &b.CompletedAt}
 }
 
 func jobScan(j *Job) []any {

@@ -144,14 +144,18 @@ type Batch struct {
 	Reason            string     `json:"reason"`
 	Status            string     `json:"status"`
 	RequestedBy       *uuid.UUID `json:"requestedBy,omitempty"`
-	TotalCount        int        `json:"totalCount"`
-	QueuedCount       int        `json:"queuedCount"`
-	IssuedCount       int        `json:"issuedCount"`
-	FailedCount       int        `json:"failedCount"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	StartedAt         *time.Time `json:"startedAt,omitempty"`
-	CompletedAt       *time.Time `json:"completedAt,omitempty"`
-	Jobs              []Job      `json:"jobs,omitempty"`
+	// Justification is why a manual issue was given, required below the
+	// rule's threshold (docs/certificate-rule.md); with RequestedBy and
+	// CreatedAt it is the manual issue's audit record.
+	Justification *string    `json:"justification,omitempty"`
+	TotalCount    int        `json:"totalCount"`
+	QueuedCount   int        `json:"queuedCount"`
+	IssuedCount   int        `json:"issuedCount"`
+	FailedCount   int        `json:"failedCount"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	StartedAt     *time.Time `json:"startedAt,omitempty"`
+	CompletedAt   *time.Time `json:"completedAt,omitempty"`
+	Jobs          []Job      `json:"jobs,omitempty"`
 }
 
 type Job struct {
@@ -182,6 +186,12 @@ type EventSummary struct {
 	QueuedCount           int              `json:"queuedCount"`
 	FailedCount           int              `json:"failedCount"`
 	Resolution            ResolvedTemplate `json:"resolution"`
+	// CountedTotal is N, the live counted Sessions; EffectiveMin the fewest
+	// counted check-ins the rule takes over them; BelowCount the Tickets
+	// with no certificate, no job and not eligible (the list's "below").
+	CountedTotal int `json:"countedTotal"`
+	EffectiveMin int `json:"effectiveMin"`
+	BelowCount   int `json:"belowCount"`
 }
 
 type PublicCertificate struct {

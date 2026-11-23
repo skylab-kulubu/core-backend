@@ -2,7 +2,7 @@
 
 Sertifika × oturum katılımı (spec `.scratch/sertifika-oturum/SPEC.md` in the hub; Yusuf's decisions of 2026-11-23). An Event's certificate rule reads "at least M of the N counted Sessions": the organizer picks which Sessions count, which are required, and M.
 
-This page is ticket 01: the data, the rule endpoints and the pure decision. Eligibility itself still counts every live Session and none is required until ticket 02 moves it to one query over the marks.
+Tickets 01 (the data, the rule endpoints, the pure decision) and 02 (eligibility over the marks in a fixed number of queries, the attendance list, the manual issue's justification).
 
 ## Kinds
 
@@ -52,3 +52,38 @@ On every Session JSON:
 One transaction: the rule, the threshold, and the listed Sessions' marks, all or nothing. A Session it does not list keeps its marks. `400` for `ratio` or an unknown rule, `minCount` below 1, a Session listed twice, one without both marks, required without counted, and a Session that is not a current Session of the Event on a current day (another Event's, archived). It answers what `GET` answers.
 
 `POST /v1/events` and `PATCH /v1/events/{id}` take `attendanceMinCount` too (null for the default); the Event JSON leaves it out when there is none.
+
+## Eligibility
+
+`certificate.AttendanceStore.EventAttendance` reads an Event's attendance in two queries, however many Tickets it has: the live Sessions with their marks, then every Ticket with its counted check-ins (`GROUP BY ticket_id`), its missing required Sessions, its name, its active and latest revoked certificate and its latest job (`LEFT JOIN`s). The Summary, attendance finalization, the manual issue and the list all decide from it with `certificate.Eligible`; no read per Ticket is left. A store without the query (the memory stores of the tests) reads the program once per Event from the other stores.
+
+A Session written straight to a store (`event.Session{}`, past the service's defaults) is **not counted**: the Postgres store writes the mark it is given. Test fixtures that expect a Session to count set `CertificateCounted: true`; `TestUncountedFixtureIssuesNothing` keeps the trap visible.
+
+## Attendance list
+
+`GET /v1/events/{id}/certificates/attendance`, for whoever may read the Summary (`certificate:read` or the template workspace's read). No e-mail; the name is the Guest's on the Ticket, the account's for a member (as the certificate would name them). In order of name, no paging.
+
+```json
+{"countedTotal": 8, "effectiveMin": 6, "rule": "count",
+ "required": [{"id": "…", "title": "Açılış"}],
+ "rows": [{"ticketId": "…", "name": "Ayşe Yılmaz", "ticketType": "REGISTERED", "attended": 6,
+   "missingRequired": [{"id": "…", "title": "Açılış"}], "status": "below",
+   "certificate": {"serial": "…", "issuedAt": "…", "revokedAt": "…"} }]}
+```
+
+- `attended` counts check-ins on live counted Sessions only; `missingRequired` lists live required Sessions without a check-in, in the program's order (a cancelled or archived required Session drops out).
+- `status`, first that holds: `issued` (an active certificate) > `queued` (its latest job is queued or running) > `failed` (its latest job failed) > `revoked` (only a revoked certificate) > `eligible` > `below`.
+- `certificate` is the active certificate, else the latest revoked one (with `revokedAt`), else null.
+
+`GET /v1/events/{id}/certificates/summary` adds `countedTotal`, `effectiveMin` and `belowCount` (the Tickets whose status is `below`).
+
+## Manual issue and its justification
+
+`POST /v1/events/{id}/certificates/issue` takes `{"ticketId": "…", "justification": "…"}`. The justification is trimmed; up to 500 characters.
+
+- A Ticket the rule does not make eligible needs one: without it (or blank) `400` with `code: "justification_required"`.
+- An eligible Ticket needs none; one given is kept all the same.
+- Over 500 characters: `400` with `code: "justification_too_long"`.
+- `202` with the batch, as before.
+
+The batch (`certificate_batches.justification`, migration `20261124000000`) is the manual issue's audit record: who asked (`requestedBy`), when (`createdAt`) and why (`justification`). `GET /v1/certificate-batches/{id}` and `GET /v1/events/{id}/certificate-batches` answer it; only who reads the certificate workspace sees it, never the public verification. Rolling the migration back drops the text written since.

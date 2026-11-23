@@ -756,6 +756,7 @@ func New(deps Deps) *fiber.App {
 	if certs != nil {
 		app.Get("/v1/events/:eventId/certificates", certs.ListByEvent)
 		app.Get("/v1/events/:eventId/certificates/summary", certs.Summary)
+		app.Get("/v1/events/:eventId/certificates/attendance", certs.Attendance)
 		app.Get("/v1/events/:eventId/certificates/template", certs.Resolve)
 		app.Post("/v1/events/:eventId/certificates/preview", certs.PreviewEvent)
 		app.Get("/v1/events/:eventId/certificate-batches", certs.ListBatches)

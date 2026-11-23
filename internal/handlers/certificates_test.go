@@ -59,7 +59,7 @@ func TestCertificateHTTP_VerifyPDFAndCheckInIssue(t *testing.T) {
 	sessions := make([]event.Session, 8)
 	for i := 0; i < 8; i++ {
 		sess, err := events.CreateSession(ctx, event.Session{
-			EventDayID: day.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION",
+			EventDayID: day.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION", CertificateCounted: true,
 		})
 		if err != nil {
 			t.Fatal(err)

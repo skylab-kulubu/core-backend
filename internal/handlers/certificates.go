@@ -30,6 +30,10 @@ func certError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusNotFound, "Not Found")
 	case errors.Is(err, certificate.ErrConflict):
 		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
+	case errors.Is(err, certificate.ErrJustificationRequired):
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "justification_required")
+	case errors.Is(err, certificate.ErrJustificationTooLong):
+		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "justification_too_long")
 	case errors.Is(err, certificate.ErrInvalid):
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	default:
@@ -95,8 +99,11 @@ func (h *CertificateHandler) ListByEvent(c fiber.Ctx) error {
 	return c.JSON(listed)
 }
 
+// issueBody is a manual issue: the Ticket and, below the rule's threshold,
+// why (required there, optional otherwise; docs/certificate-rule.md).
 type issueBody struct {
-	TicketID uuid.UUID `json:"ticketId"`
+	TicketID      uuid.UUID `json:"ticketId"`
+	Justification string    `json:"justification"`
 }
 
 func (h *CertificateHandler) Issue(c fiber.Ctx) error {
@@ -112,7 +119,7 @@ func (h *CertificateHandler) Issue(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil || body.TicketID == uuid.Nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	created, err := h.svc.QueueManual(c.Context(), p, eventID, body.TicketID)
+	created, err := h.svc.QueueManual(c.Context(), p, eventID, body.TicketID, body.Justification)
 	if err != nil {
 		return certError(c, err)
 	}

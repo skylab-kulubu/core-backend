@@ -33,6 +33,10 @@ type Options struct {
 	// Media checks each Media a template draft is about to link. Nil leaves
 	// the Media's rules to the database's guards.
 	Media media.Linker
+	// Attendance reads an Event's attendance for the rule. Nil takes the
+	// store's own query (PostgresStore) or, for a store without one, reads
+	// the other stores (the memory counterpart).
+	Attendance AttendanceStore
 }
 
 type service struct {
@@ -52,6 +56,7 @@ type service struct {
 	privateArtifacts media.PrivateObjects
 	legacyImmediate  bool
 	media            media.Linker
+	attendance       AttendanceStore
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -85,11 +90,18 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 	if opts.Jobs == nil {
 		opts.Jobs, _ = store.(JobStore)
 	}
+	if opts.Attendance == nil {
+		opts.Attendance, _ = store.(AttendanceStore)
+	}
+	if opts.Attendance == nil {
+		opts.Attendance = memoryAttendance{events: events, tickets: tickets, certs: store, jobs: opts.Jobs, users: users}
+	}
 	return &service{
 		store: store, tickets: tickets, events: events, users: users, authz: az,
 		render: render, mail: mail, apiOrigin: apiOrigin, verifyOrigin: verifyOrigin,
 		templates: opts.Templates, jobs: opts.Jobs, artifacts: opts.Artifacts,
 		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media, privateArtifacts: opts.PrivateArtifacts,
+		attendance: opts.Attendance,
 	}
 }
 
@@ -102,42 +114,17 @@ func (s *service) canReadWorkspace(p authz.Principal, ownerTeam string) bool {
 		s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: ownerTeam}, authz.Read)
 }
 
-func (s *service) scheduledAndCheckIns(ctx context.Context, t ticket.Ticket) (scheduled, checkIns int, err error) {
-	days, err := s.events.ListDays(ctx, t.EventID)
-	if err != nil {
-		return 0, 0, err
-	}
-	live := map[uuid.UUID]struct{}{}
-	for _, day := range days {
-		sessions, err := s.events.ListSessions(ctx, day.ID)
-		if err != nil {
-			return 0, 0, err
-		}
-		for _, sess := range sessions {
-			if sess.Cancelled {
-				continue
-			}
-			live[sess.ID] = struct{}{}
-			scheduled++
-		}
-	}
-	for _, checkIn := range t.CheckIns {
-		if _, ok := live[checkIn.SessionID]; ok {
-			checkIns++
-		}
-	}
-	return scheduled, checkIns, nil
-}
-
+// eligible decides one Ticket by the Event's rule over the counted and
+// required live Sessions (docs/certificate-rule.md). It reads the Event's
+// attendance in a fixed number of queries; a caller deciding every Ticket
+// reads it once with eventAttendance instead.
 func (s *service) eligible(ctx context.Context, ev event.Event, t ticket.Ticket) (bool, error) {
-	scheduled, checkIns, err := s.scheduledAndCheckIns(ctx, t)
+	attendance, err := s.attendance.EventAttendance(ctx, ev.ID)
 	if err != nil {
 		return false, err
 	}
-	// Every live Session counts and none is required here, as before the
-	// count rule; the counted and required marks come with the one-query
-	// eligibility (certificate × session ticket 02).
-	return Eligible(RuleOf(ev), checkIns, scheduled, 0), nil
+	row, ok := attendance.ticketOf(t.ID)
+	return ok && ticketEligible(ev, attendance, row), nil
 }
 
 func (s *service) recipient(ctx context.Context, t ticket.Ticket) (name, email string, err error) {

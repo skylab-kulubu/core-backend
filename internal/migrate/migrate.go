@@ -1732,6 +1732,12 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.events') AND conname = 'events_attendance_min_count_check' AND convalidated
 		  )`,
+	// A manual issue's justification (docs/certificate-rule.md): the
+	// column's check, which names it.
+	20261124000000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.certificate_batches')
+		  AND conname = 'certificate_batches_justification_check' AND convalidated`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
