@@ -414,7 +414,7 @@ func TestVerifyAndPrimary(t *testing.T) {
 	if err := f.svc.SetPrimary(ctx, p, f.member, identity.PrimarySchool); accountCode(err) != identity.AccountNoAddress {
 		t.Fatalf("no school e-mail: %v", err)
 	}
-	if err := f.svc.VerifyEmail(ctx, p, f.member); err != nil {
+	if err := f.svc.VerifyEmail(ctx, p, f.member, ""); err != nil {
 		t.Fatal(err)
 	}
 	u, _ = f.accounts.Get(f.member)
@@ -426,7 +426,7 @@ func TestVerifyAndPrimary(t *testing.T) {
 	u.EmailVerified = false
 	u.Attributes = map[string][]string{}
 	f.accounts.PutAccount(u)
-	if err := f.svc.VerifyEmail(ctx, p, f.member); err != nil {
+	if err := f.svc.VerifyEmail(ctx, p, f.member, ""); err != nil {
 		t.Fatal(err)
 	}
 	u, _ = f.accounts.Get(f.member)
@@ -557,5 +557,161 @@ func TestWriteNamesLeavesAnUnknownAccountAlone(t *testing.T) {
 	}
 	if len(f.audit.Rows()) != 0 {
 		t.Fatalf("rows = %+v", f.audit.Rows())
+	}
+}
+
+// joinGroup puts the person in a new Group at path with the given client
+// roles (a /ROLLER leaf).
+func joinGroup(t *testing.T, f *accountsFixture, person uuid.UUID, path string, roles ...identity.ClientRole) {
+	t.Helper()
+	g := identity.Group{ID: uuid.NewString(), Name: path[strings.LastIndex(path, "/")+1:], Path: path}
+	f.people.PutGroup(g)
+	for _, role := range roles {
+		if err := f.people.AddGroupClientRole(context.Background(), g.ID, role); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.people.AddMember(context.Background(), g.ID, person); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// As Entra's Privileged Authentication Administrator: the holder of an
+// admin role (core's Protected classification) is ADMIN's alone, not only
+// the Privileged roots' members; an app role leaves the person to YK.
+func TestAdminRoleHoldersAreADMINsAlone(t *testing.T) {
+	f := newAccountsFixture(t)
+	forms, mail := uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{forms, mail} {
+		f.people.PutUser(identity.Person{ID: id, Email: id.String()[:8] + "@example.com"})
+		f.accounts.PutAccount(identity.AccountUser{ID: id, Username: id.String()[:8], Email: id.String()[:8] + "@example.com", Enabled: true})
+	}
+	joinGroup(t, f, forms, "/ROLLER/FORMS-ALL", identity.ClientRole{ClientID: "forms", Role: "skyforms:*"})
+	joinGroup(t, f, mail, "/ROLLER/SKYMAIL-MAILS-APPROVE", identity.ClientRole{ClientID: "skymail", Role: "skymail:mails:approve"})
+	joinGroup(t, f, f.member, "/ROLLER/FORMS-ACCESS", identity.ClientRole{ClientID: "forms", Role: "skyforms:access"})
+
+	yk, admin := asYK(f), asAdmin(f)
+	for _, target := range []uuid.UUID{forms, mail} {
+		if err := f.svc.SetEnabled(accountActor(yk), yk, target, false); accountCode(err) != identity.AccountPrivilegedTarget {
+			t.Fatalf("YK on an admin role holder: %v", err)
+		}
+		account, err := f.svc.Account(context.Background(), yk, target)
+		if err != nil || account.Can.Manage || account.Can.Reason != identity.AccountPrivilegedTarget {
+			t.Fatalf("YK's card: %+v %v", account.Can, err)
+		}
+		if err := f.svc.SetEnabled(accountActor(admin), admin, target, false); err != nil {
+			t.Fatalf("ADMIN on an admin role holder: %v", err)
+		}
+	}
+	// An app role (the Forms seat) is no privilege.
+	if err := f.svc.SetEnabled(accountActor(yk), yk, f.member, false); err != nil {
+		t.Fatalf("YK on an app role holder: %v", err)
+	}
+}
+
+// The names follow the account's rules when they change, and only then.
+func TestWriteNamesFollowTheAccountRules(t *testing.T) {
+	f := newAccountsFixture(t)
+	yk, admin := asYK(f), asAdmin(f)
+	same, other := "Ada", "Başka"
+	// Unchanged names: the club profile of the card goes on, own account too.
+	if err := f.svc.WriteNames(accountActor(yk), yk, f.yk, identity.NameChange{FirstName: &same}); err != nil {
+		t.Fatalf("unchanged own name: %v", err)
+	}
+	if err := f.svc.WriteNames(accountActor(yk), yk, f.yk, identity.NameChange{FirstName: &other}); accountCode(err) != identity.AccountOwn {
+		t.Fatalf("own name: %v", err)
+	}
+	if err := f.svc.WriteNames(accountActor(yk), yk, f.admin, identity.NameChange{FirstName: &other}); accountCode(err) != identity.AccountPrivilegedTarget {
+		t.Fatalf("YK renames ADMIN: %v", err)
+	}
+	if err := f.svc.WriteNames(accountActor(admin), admin, f.yk, identity.NameChange{FirstName: &other}); err != nil {
+		t.Fatalf("ADMIN renames YK: %v", err)
+	}
+	var denied []string
+	for _, row := range f.audit.Rows() {
+		if row.Outcome == teamaudit.OutcomeDenied && row.Action == teamaudit.ActionUserProfile {
+			denied = append(denied, row.ErrorCode)
+		}
+	}
+	if !slices.Equal(denied, []string{identity.AccountOwn, identity.AccountPrivilegedTarget}) {
+		t.Fatalf("denied = %v", denied)
+	}
+	if u, _ := f.accounts.Get(f.admin); u.FirstName != "Ada" {
+		t.Fatalf("ADMIN renamed: %+v", u)
+	}
+}
+
+// A refusal repeated within a minute writes one row; the clock moving on
+// writes the next.
+func TestRepeatedRefusalWritesOneRow(t *testing.T) {
+	f := newAccountsFixture(t)
+	dk := asDK(f)
+	for range 5 {
+		_ = f.svc.SetEnabled(accountActor(dk), dk, f.member, false)
+	}
+	if got := len(f.audit.Rows()); got != 1 {
+		t.Fatalf("%d rows after five refusals", got)
+	}
+	f.now = f.now.Add(2 * time.Minute)
+	_ = f.svc.SetEnabled(accountActor(dk), dk, f.member, false)
+	if got := len(f.audit.Rows()); got != 2 {
+		t.Fatalf("%d rows after the window", got)
+	}
+	// Authorization comes first: a reader's bad input is still 403.
+	if _, err := f.svc.SetTemporaryPassword(accountActor(dk), dk, f.member, strings.Repeat("x", 500)); !errors.Is(err, identity.ErrForbidden) {
+		t.Fatalf("DK, long password: %v", err)
+	}
+	if err := f.svc.ChangeEmail(accountActor(dk), dk, f.member, identity.EmailChange{Address: "not-an-address"}); !errors.Is(err, identity.ErrForbidden) {
+		t.Fatalf("DK, bad address: %v", err)
+	}
+}
+
+func TestVerifyThePersonalEmail(t *testing.T) {
+	f := newAccountsFixture(t)
+	p := asYK(f)
+	ctx := accountActor(p)
+	// School primary, personal unproven: the personal one gets its stamp.
+	u, _ := f.accounts.Get(f.member)
+	u.Email, u.EmailVerified = "ada@std.yildiz.edu.tr", true
+	u.Attributes = map[string][]string{"schoolEmail": {"ada@std.yildiz.edu.tr"}, "personalEmail": {"ada@example.com"}}
+	f.accounts.PutAccount(u)
+	if err := f.svc.VerifyEmail(ctx, p, f.member, "personal"); err != nil {
+		t.Fatal(err)
+	}
+	u, _ = f.accounts.Get(f.member)
+	if u.Attributes["personalEmailVerifiedAt"][0] != "2026-11-22T21:00:00Z" || u.Email != "ada@std.yildiz.edu.tr" {
+		t.Fatalf("personal stamped = %+v", u)
+	}
+	// A personal primary a link proved (flag set, no stamp) gets the stamp.
+	u.Email, u.EmailVerified = "ada@example.com", true
+	u.Attributes = map[string][]string{"personalEmail": {"ada@example.com"}}
+	f.accounts.PutAccount(u)
+	account, _ := f.svc.Account(context.Background(), p, f.member)
+	if !account.Email.PrimaryVerified || account.Email.PersonalVerified {
+		t.Fatalf("before = %+v", account.Email)
+	}
+	if err := f.svc.VerifyEmail(ctx, p, f.member, "personal"); err != nil {
+		t.Fatal(err)
+	}
+	account, _ = f.svc.Account(context.Background(), p, f.member)
+	if !account.Email.PersonalVerified {
+		t.Fatalf("after = %+v", account.Email)
+	}
+	if err := f.svc.VerifyEmail(ctx, p, f.member, "other"); !errors.Is(err, identity.ErrInvalid) {
+		t.Fatalf("kind: %v", err)
+	}
+	// An old primary another account holds is flagged, not adopted.
+	other, _ := f.accounts.Get(f.admin)
+	other.Attributes["personalEmail"] = []string{"eski@example.com"}
+	f.accounts.PutAccount(other)
+	u, _ = f.accounts.Get(f.member)
+	u.Email, u.EmailVerified, u.Attributes = "eski@example.com", false, map[string][]string{}
+	f.accounts.PutAccount(u)
+	if err := f.svc.VerifyEmail(ctx, p, f.member, ""); err != nil {
+		t.Fatal(err)
+	}
+	u, _ = f.accounts.Get(f.member)
+	if !u.EmailVerified || u.Attributes["personalEmail"] != nil {
+		t.Fatalf("adopted a held address: %+v", u)
 	}
 }

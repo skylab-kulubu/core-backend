@@ -171,10 +171,17 @@ func (h *UserAccountHandler) ChangeEmail(c fiber.Ctx) error {
 	})
 }
 
-// VerifyEmail answers POST /v1/users/{id}/email/verify.
+// VerifyEmail answers POST /v1/users/{id}/email/verify {kind?}: the
+// Primary e-mail without a body, the Personal e-mail with kind "personal".
 func (h *UserAccountHandler) VerifyEmail(c fiber.Ctx) error {
+	var body struct {
+		Kind string `json:"kind"`
+	}
+	if len(c.Body()) > 0 && !decode(c, &body) {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
 	return h.run(c, func(ctx context.Context, p authz.Principal, id uuid.UUID) error {
-		return h.svc.VerifyEmail(ctx, p, id)
+		return h.svc.VerifyEmail(ctx, p, id, body.Kind)
 	})
 }
 

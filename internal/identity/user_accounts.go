@@ -8,6 +8,7 @@ import (
 	"net/mail"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -230,6 +231,8 @@ const (
 	AccountNoCredential     = "credential_not_found"
 	AccountNoProvider       = "provider_not_found"
 	AccountMailFailed       = "mail_not_sent"
+	AccountNameInvalid      = "name_invalid"
+	AccountInvalid          = "account_invalid"
 )
 
 // UserAccountOptions are what UserAccounts reads and writes.
@@ -256,7 +259,27 @@ type UserAccountOptions struct {
 // UserAccounts reads and changes people's accounts for the person card.
 type UserAccounts struct {
 	o UserAccountOptions
+
+	mu sync.Mutex
+	// denied is when a denied row was last written for a caller, target,
+	// action and code: a refusal repeated within deniedWindow writes no
+	// second row.
+	denied map[string]time.Time
+	// roles are client roles' protection (RoleProtection), kept roleTTL.
+	roles map[string]roleEntry
 }
+
+type roleEntry struct {
+	protected bool
+	expires   time.Time
+}
+
+// deniedWindow is how long a repeated refusal writes no new denied row.
+const deniedWindow = time.Minute
+
+// roleTTL is how long a client role's protection is kept: a role's
+// composites change seldom, and the Groups a person is in are read fresh.
+const roleTTL = time.Minute
 
 // NewUserAccounts is the account service over o.
 func NewUserAccounts(o UserAccountOptions) *UserAccounts {
@@ -272,7 +295,7 @@ func NewUserAccounts(o UserAccountOptions) *UserAccounts {
 	if o.Logf == nil {
 		o.Logf = func(string, ...any) {}
 	}
-	return &UserAccounts{o: o}
+	return &UserAccounts{o: o, denied: map[string]time.Time{}, roles: map[string]roleEntry{}}
 }
 
 // loginEventPage is how many sign-in events the card shows.
@@ -424,9 +447,18 @@ func (s *UserAccounts) refusal(ctx context.Context, p authz.Principal, u Account
 	return ""
 }
 
-// privilegedTarget reports whether the person is in a Privileged root or
-// under one (Entra's privileged accounts: only a Privileged Authentication
-// Administrator resets their credentials).
+// privilegedTarget reports whether the person holds a privileged role, as
+// Entra counts one: only a Privileged Authentication Administrator resets
+// the credentials of any admin role's holder. Here that is a Privileged
+// root (ADMIN, YK, DK, or a Group under one), or a client role that is no
+// app role (core's Protected classification, authz.ClassifyRole: FORMS-ALL,
+// SkyMail's sending, approving and reading roles, place:admin, a role
+// nobody has classified …) mapped to a Group the person is in or to the
+// person. Roles sit only on the Groups people are in directly (ADR-0076
+// K4: Privileged roots, top Teams' Leader groups, /ROLLER leaves), so the
+// person's own Groups are read, not the Groups above them. Realm roles are
+// not read: the Java era's ones (USER on /UYELER) would mark every member,
+// and they leave in the role cleanup's F3; ADMIN, YK and DK are the roots.
 func (s *UserAccounts) privilegedTarget(ctx context.Context, id uuid.UUID) (bool, error) {
 	groups, err := s.o.People.GroupsForUser(ctx, id)
 	if err != nil {
@@ -434,6 +466,45 @@ func (s *UserAccounts) privilegedTarget(ctx context.Context, id uuid.UUID) (bool
 	}
 	for _, g := range groups {
 		if authz.PrivilegedRoot(s.o.PrivilegedRoots, g.Path) != "" {
+			return true, nil
+		}
+	}
+	for _, g := range groups {
+		roles, err := s.o.People.GroupClientRoles(ctx, g.ID)
+		if err != nil {
+			return false, err
+		}
+		if protected, err := s.anyProtected(ctx, roles); err != nil || protected {
+			return protected, err
+		}
+	}
+	direct, err := s.o.People.UserExtraRoles(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	return s.anyProtected(ctx, direct)
+}
+
+// anyProtected reports whether one of roles is no app role, itself or
+// through its composites (Directory.RoleProtection).
+func (s *UserAccounts) anyProtected(ctx context.Context, roles []ClientRole) (bool, error) {
+	for _, role := range roles {
+		key := role.ClientID + "\x00" + role.Role
+		now := s.o.Now()
+		s.mu.Lock()
+		entry, ok := s.roles[key]
+		s.mu.Unlock()
+		if !ok || !now.Before(entry.expires) {
+			got, err := s.o.People.RoleProtection(ctx, role)
+			if err != nil {
+				return false, err
+			}
+			entry = roleEntry{protected: got.Protected, expires: now.Add(roleTTL)}
+			s.mu.Lock()
+			s.roles[key] = entry
+			s.mu.Unlock()
+		}
+		if entry.protected {
 			return true, nil
 		}
 	}
@@ -497,6 +568,24 @@ func (s *UserAccounts) deny(ctx context.Context, p authz.Principal, id uuid.UUID
 	if !ok {
 		return
 	}
+	// The same refusal again within deniedWindow is the first one's row: a
+	// caller cannot fill the record (kept three years) by repeating it.
+	key := actor.ID.String() + "|" + id.String() + "|" + string(action) + "|" + code
+	now := s.o.Now()
+	s.mu.Lock()
+	if last, seen := s.denied[key]; seen && now.Sub(last) < deniedWindow {
+		s.mu.Unlock()
+		return
+	}
+	if len(s.denied) > 4096 {
+		for k, at := range s.denied {
+			if now.Sub(at) >= deniedWindow {
+				delete(s.denied, k)
+			}
+		}
+	}
+	s.denied[key] = now
+	s.mu.Unlock()
 	actor.Basis = teamaudit.BasisNone
 	actor.ViaGroupID = ""
 	if err := s.o.Audit.Deny(ctx, teamaudit.Record{Actor: actor, Action: action, TargetUserID: id}, code); err != nil {
@@ -579,11 +668,11 @@ const maxPasswordLength = 128
 // person changes it at the next sign-in, and every session ends. The
 // password goes to Keycloak alone: no log, record or error holds it.
 func (s *UserAccounts) SetTemporaryPassword(ctx context.Context, p authz.Principal, id uuid.UUID, password string) (PasswordResult, error) {
-	if len(password) > maxPasswordLength || (password != "" && strings.TrimSpace(password) == "") {
-		return PasswordResult{}, accountError(422, AccountPasswordPolicy)
-	}
 	if _, err := s.target(ctx, p, id, teamaudit.ActionUserPasswordSet); err != nil {
 		return PasswordResult{}, err
+	}
+	if len(password) > maxPasswordLength || (password != "" && strings.TrimSpace(password) == "") {
+		return PasswordResult{}, accountError(422, AccountPasswordPolicy)
 	}
 	generated := password == ""
 	if generated {
@@ -686,16 +775,16 @@ func validAddress(address string) bool {
 // refused. The School e-mail comes from the YTÜ link alone and is never
 // written here.
 func (s *UserAccounts) ChangeEmail(ctx context.Context, p authz.Principal, id uuid.UUID, in EmailChange) error {
+	u, err := s.target(ctx, p, id, teamaudit.ActionUserEmailChange)
+	if err != nil {
+		return err
+	}
 	address := NormalizeAddress(in.Address)
 	switch {
 	case !validAddress(address):
 		return accountError(422, AccountEmailInvalid)
 	case IsSchoolDomain(address):
 		return accountError(422, AccountSchoolDomain)
-	}
-	u, err := s.target(ctx, p, id, teamaudit.ActionUserEmailChange)
-	if err != nil {
-		return err
 	}
 	holders, err := s.o.Accounts.AddressHolders(ctx, address)
 	if err != nil {
@@ -727,19 +816,48 @@ func (s *UserAccounts) ChangeEmail(ctx context.Context, p authz.Principal, id uu
 		func() error { return s.o.Accounts.UpdateAccount(ctx, id, change) })
 }
 
-// VerifyEmail marks the Primary e-mail proven, on the caller's word; a
-// Personal e-mail that is the primary gets its proof stamp too.
-func (s *UserAccounts) VerifyEmail(ctx context.Context, p authz.Principal, id uuid.UUID) error {
+// VerifyEmail marks an address proven, on the caller's word: the Primary
+// e-mail (kind "" or "primary"), and a Personal e-mail that is the primary
+// gets its proof stamp too; or the Personal e-mail (kind "personal"),
+// which gets its stamp, and Keycloak's flag when it is the primary. That
+// also stamps a Personal primary that a verification link proved, which
+// leaves Keycloak's flag set and no stamp.
+func (s *UserAccounts) VerifyEmail(ctx context.Context, p authz.Principal, id uuid.UUID, kind string) error {
 	u, err := s.target(ctx, p, id, teamaudit.ActionUserEmailVerify)
 	if err != nil {
 		return err
 	}
+	switch kind {
+	case "", "primary", PrimaryPersonal:
+	default:
+		return ErrInvalid
+	}
 	email := accountEmail(u)
+	stamp := s.o.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+	change := AccountUpdate{}
+	if kind == PrimaryPersonal {
+		if email.Personal == "" {
+			return accountError(409, AccountNoAddress)
+		}
+		if email.PersonalVerified && (email.PrimaryKind != PrimaryPersonal || u.EmailVerified) {
+			return nil
+		}
+		change.Attributes = map[string]string{
+			personalEmailAttribute:           NormalizeAddress(email.Personal),
+			personalEmailVerifiedAtAttribute: stamp,
+		}
+		if email.PrimaryKind == PrimaryPersonal {
+			change.EmailVerified = flag(true)
+		}
+		return s.write(ctx, id, teamaudit.ActionUserEmailVerify,
+			&teamaudit.State{Primary: PrimaryPersonal, Verified: flag(email.PersonalVerified)},
+			&teamaudit.State{Primary: PrimaryPersonal, Verified: flag(true)},
+			func() error { return s.o.Accounts.UpdateAccount(ctx, id, change) })
+	}
 	if u.Email == "" {
 		return accountError(409, AccountNoEmail)
 	}
-	change := AccountUpdate{EmailVerified: flag(true)}
-	stamp := s.o.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+	change.EmailVerified = flag(true)
 	switch {
 	case email.PrimaryKind == PrimaryPersonal && !email.PersonalVerified:
 		change.Attributes = map[string]string{
@@ -748,10 +866,17 @@ func (s *UserAccounts) VerifyEmail(ctx context.Context, p authz.Principal, id uu
 		}
 	case email.PrimaryKind == PrimaryNone && email.Personal == "" && !IsSchoolDomain(u.Email):
 		// A primary from before the two e-mails, proven now: it becomes the
-		// Personal e-mail, as sky-account's email/confirm does (A1c).
-		change.Attributes = map[string]string{
-			personalEmailAttribute:           NormalizeAddress(u.Email),
-			personalEmailVerifiedAtAttribute: stamp,
+		// Personal e-mail, as sky-account's email/confirm does (A1c), unless
+		// another account holds the address (then only the flag is set).
+		holders, err := s.o.Accounts.AddressHolders(ctx, NormalizeAddress(u.Email))
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(holders, func(h uuid.UUID) bool { return h != id }) {
+			change.Attributes = map[string]string{
+				personalEmailAttribute:           NormalizeAddress(u.Email),
+				personalEmailVerifiedAtAttribute: stamp,
+			}
 		}
 	}
 	if u.EmailVerified && change.Attributes == nil {
@@ -767,12 +892,12 @@ func (s *UserAccounts) VerifyEmail(ctx context.Context, p authz.Principal, id uu
 // The School e-mail is proven by the YTÜ link; a Personal e-mail must be
 // proven first.
 func (s *UserAccounts) SetPrimary(ctx context.Context, p authz.Principal, id uuid.UUID, kind string) error {
-	if kind != PrimarySchool && kind != PrimaryPersonal {
-		return ErrInvalid
-	}
 	u, err := s.target(ctx, p, id, teamaudit.ActionUserEmailPrimary)
 	if err != nil {
 		return err
+	}
+	if kind != PrimarySchool && kind != PrimaryPersonal {
+		return ErrInvalid
 	}
 	email := accountEmail(u)
 	address := email.School
@@ -798,14 +923,14 @@ func (s *UserAccounts) SetPrimary(ctx context.Context, p authz.Principal, id uui
 // SetRequiredActions sets the panel's required actions to exactly actions;
 // any other action the account carries stays.
 func (s *UserAccounts) SetRequiredActions(ctx context.Context, p authz.Principal, id uuid.UUID, actions []string) error {
+	u, err := s.target(ctx, p, id, teamaudit.ActionUserRequiredActions)
+	if err != nil {
+		return err
+	}
 	for _, action := range actions {
 		if !slices.Contains(RequiredActionAliases, action) {
 			return accountError(422, AccountUnknownAction)
 		}
-	}
-	u, err := s.target(ctx, p, id, teamaudit.ActionUserRequiredActions)
-	if err != nil {
-		return err
 	}
 	next := make([]string, 0, len(u.RequiredActions)+len(actions))
 	for _, held := range u.RequiredActions {
@@ -841,11 +966,11 @@ func sameSet(a, b []string) bool {
 // DeleteCredential removes one of the person's credentials (a password, an
 // authenticator app, a passkey).
 func (s *UserAccounts) DeleteCredential(ctx context.Context, p authz.Principal, id uuid.UUID, credentialID string) error {
-	if _, err := uuid.Parse(credentialID); err != nil {
-		return accountError(404, AccountNoCredential)
-	}
 	if _, err := s.target(ctx, p, id, teamaudit.ActionUserCredentialRemove); err != nil {
 		return err
+	}
+	if _, err := uuid.Parse(credentialID); err != nil {
+		return accountError(404, AccountNoCredential)
 	}
 	credentials, err := s.o.Accounts.AccountCredentials(ctx, id)
 	if err != nil {
@@ -896,9 +1021,11 @@ type NameChange struct {
 }
 
 // WriteNames writes the names to the account when they differ from what it
-// holds, so that tokens, mail and the Account center show them: the
-// profile's own rule (users:manage), on any account but a service
-// account's. A person core cannot find in Keycloak is left alone.
+// holds, so that tokens, mail and the Account center show them: users:manage,
+// never a service account, and for a name that changes the account's rules
+// (not one's own account, a privileged person's only by ADMIN). A person
+// core cannot find in Keycloak is left alone. Only the person card's PATCH
+// /v1/users/{id} calls it; the Account center's own profile does not.
 func (s *UserAccounts) WriteNames(ctx context.Context, p authz.Principal, id uuid.UUID, in NameChange) error {
 	if in.FirstName == nil && in.LastName == nil {
 		return nil
@@ -934,6 +1061,23 @@ func (s *UserAccounts) WriteNames(ctx context.Context, p authz.Principal, id uui
 	}
 	if len(fields) == 0 {
 		return nil
+	}
+	// A name that changes follows the account's rules (ADR-0083): not on
+	// the caller's own account (the Account center changes it), and a
+	// privileged person's only by a caller in the ADMIN root; a refusal is
+	// a denied row. A PATCH that leaves the names as Keycloak has them, the
+	// club profile of the card included, goes on as before.
+	if p.ID == id.String() {
+		s.deny(ctx, p, id, teamaudit.ActionUserProfile, AccountOwn)
+		return accountError(409, AccountOwn)
+	}
+	privileged, err := s.privilegedTarget(ctx, id)
+	if err != nil {
+		return err
+	}
+	if privileged && !s.callerIsAdmin(p) {
+		s.deny(ctx, p, id, teamaudit.ActionUserProfile, AccountPrivilegedTarget)
+		return accountError(403, AccountPrivilegedTarget)
 	}
 	return s.write(ctx, id, teamaudit.ActionUserProfile, nil, &teamaudit.State{Fields: fields},
 		func() error { return s.o.Accounts.UpdateAccount(ctx, id, change) })

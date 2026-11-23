@@ -223,3 +223,23 @@ func TestKeycloakMailsAndRemovals(t *testing.T) {
 		t.Fatalf("missing credential: %v", err)
 	}
 }
+
+// A refused write is named by what it wrote: a name Keycloak's validators
+// refuse is no e-mail problem.
+func TestKeycloakRefusalNamesTheField(t *testing.T) {
+	f := newAccountKeycloak()
+	k := f.serve(t)
+	f.answers["PUT /users/"+f.id.String()] = accountAnswer{400, `{"field":"firstName","errorMessage":"error-person-name-invalid-character"}`}
+	name := "Ada<"
+	if err := k.UpdateAccount(context.Background(), f.id, identity.AccountUpdate{FirstName: &name}); accountCode(err) != identity.AccountNameInvalid {
+		t.Fatalf("name: %v", err)
+	}
+	actions := []string{"UPDATE_PASSWORD"}
+	if err := k.UpdateAccount(context.Background(), f.id, identity.AccountUpdate{RequiredActions: &actions}); accountCode(err) != identity.AccountInvalid {
+		t.Fatalf("required actions: %v", err)
+	}
+	address := "x@example.com"
+	if err := k.UpdateAccount(context.Background(), f.id, identity.AccountUpdate{Email: &address}); accountCode(err) != identity.AccountEmailInvalid {
+		t.Fatalf("e-mail: %v", err)
+	}
+}

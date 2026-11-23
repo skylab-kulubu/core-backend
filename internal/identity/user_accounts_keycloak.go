@@ -431,7 +431,7 @@ type accountProfileWrite struct {
 
 func (k *Keycloak) UpdateAccount(ctx context.Context, id uuid.UUID, change AccountUpdate) error {
 	if !change.touchesProfile() {
-		return k.putAccount(ctx, id, accountWrite{EmailVerified: change.EmailVerified, RequiredActions: change.RequiredActions})
+		return k.putAccount(ctx, id, accountWrite{EmailVerified: change.EmailVerified, RequiredActions: change.RequiredActions}, change)
 	}
 	rep, err := k.accountRepresentation(ctx, id)
 	if err != nil {
@@ -461,19 +461,26 @@ func (k *Keycloak) UpdateAccount(ctx context.Context, id uuid.UUID, change Accou
 	if change.LastName != nil {
 		body.LastName = change.LastName
 	}
-	return k.putAccount(ctx, id, body)
+	return k.putAccount(ctx, id, body, change)
 }
 
-func (k *Keycloak) putAccount(ctx context.Context, id uuid.UUID, body any) error {
+// putAccount sends body and names a refusal by what change writes: Keycloak
+// answers 400 when its User Profile refuses a value (an address, a name
+// with a character its validators refuse) and 409 when an address is taken.
+func (k *Keycloak) putAccount(ctx context.Context, id uuid.UUID, body any, change AccountUpdate) error {
 	status, _, err := k.adminCall(ctx, "account write", http.MethodPut, userPath(id), nil, body, nil)
 	if err != nil {
 		return err
 	}
-	if status == http.StatusConflict {
+	switch {
+	case status == http.StatusConflict && change.Email != nil:
 		return &AccountError{Status: 409, Code: AccountEmailTaken}
-	}
-	if status == http.StatusBadRequest {
+	case status == http.StatusBadRequest && change.Email != nil:
 		return &AccountError{Status: 422, Code: AccountEmailInvalid}
+	case status == http.StatusBadRequest && (change.FirstName != nil || change.LastName != nil):
+		return &AccountError{Status: 422, Code: AccountNameInvalid}
+	case status == http.StatusBadRequest:
+		return &AccountError{Status: 422, Code: AccountInvalid}
 	}
 	return statusError("account write", status)
 }
