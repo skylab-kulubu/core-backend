@@ -7,13 +7,22 @@ import (
 	"github.com/google/uuid"
 )
 
+// eventEndsSQL is an Event's (e) end, the feedback mail's expression: its
+// end date, else a day after its start; NULL when it has neither.
+const eventEndsSQL = `COALESCE(e.end_date, e.start_date + interval '24 hours')`
+
+// sessionEndsSQL is a Session's (s, on day d of Event e) end, the feedback
+// mail's expression: its end time, else its day's end, else its Event's.
+const sessionEndsSQL = `COALESCE(s.end_time, d.end_date, ` + eventEndsSQL + `)`
+
 // liveSessionsSQL are the Event's ($1) live Sessions: on a current day, not
-// archived, not cancelled, with their two marks.
+// archived, not cancelled, with their two marks and their end.
 const liveSessionsSQL = `
 	SELECT s.id, s.title, s.certificate_counted, s.certificate_required,
-	       d.start_date, s.order_index, s.start_time
+	       d.start_date, s.order_index, s.start_time, ` + sessionEndsSQL + ` AS ends_at
 	FROM sessions s
 	JOIN event_days d ON d.id = s.event_day_id
+	JOIN events e ON e.id = d.event_id
 	WHERE d.event_id = $1 AND d.archived_at IS NULL
 	  AND s.archived_at IS NULL AND NOT s.cancelled`
 
@@ -24,9 +33,8 @@ const liveSessionsSQL = `
 func (s *PostgresStore) EventAttendance(ctx context.Context, eventID uuid.UUID) (Attendance, error) {
 	out := Attendance{Required: []RequiredSession{}, Tickets: []TicketAttendance{}}
 	rows, err := s.pool.Query(ctx, `
-		SELECT live.id, live.title, live.certificate_counted, live.certificate_required
+		SELECT live.id, live.title, live.certificate_counted, live.certificate_required, live.ends_at
 		FROM (`+liveSessionsSQL+`) live
-		WHERE live.certificate_counted OR live.certificate_required
 		ORDER BY live.start_date NULLS LAST, live.order_index, live.start_time NULLS LAST, live.id`, eventID)
 	if err != nil {
 		return Attendance{}, err
@@ -35,10 +43,12 @@ func (s *PostgresStore) EventAttendance(ctx context.Context, eventID uuid.UUID) 
 		var id uuid.UUID
 		var title string
 		var counted, required bool
-		if err := rows.Scan(&id, &title, &counted, &required); err != nil {
+		var ends *time.Time
+		if err := rows.Scan(&id, &title, &counted, &required, &ends); err != nil {
 			rows.Close()
 			return Attendance{}, err
 		}
+		out.addLiveSession(ends)
 		if counted {
 			out.CountedTotal++
 		}

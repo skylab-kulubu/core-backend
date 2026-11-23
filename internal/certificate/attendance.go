@@ -23,6 +23,21 @@ type Attendance struct {
 	// Required are the live required Sessions, in the program's order.
 	Required []RequiredSession
 	Tickets  []TicketAttendance
+	// LiveSessions counts the live Sessions, counted or not; LastSessionEnd
+	// is the latest end among them (a Session's end time, else its day's
+	// end, else its Event's), nil when none has one. Attendance closes by
+	// itself AutoFinalizeDelay after it, and may be closed by hand from it.
+	LiveSessions   int
+	LastSessionEnd *time.Time
+}
+
+// addLiveSession counts a live Session that ends at ends (nil: unknown).
+func (a *Attendance) addLiveSession(ends *time.Time) {
+	a.LiveSessions++
+	if ends != nil && (a.LastSessionEnd == nil || ends.After(*a.LastSessionEnd)) {
+		end := *ends
+		a.LastSessionEnd = &end
+	}
 }
 
 // RequiredSession is a live required Session.
@@ -194,6 +209,10 @@ func (m memoryAttendance) EventAttendance(ctx context.Context, eventID uuid.UUID
 	if err != nil {
 		return Attendance{}, err
 	}
+	ev, err := m.events.Get(ctx, eventID)
+	if err != nil {
+		return Attendance{}, err
+	}
 	out := Attendance{Required: []RequiredSession{}, Tickets: []TicketAttendance{}}
 	counted := map[uuid.UUID]bool{}
 	for _, day := range days {
@@ -205,6 +224,7 @@ func (m memoryAttendance) EventAttendance(ctx context.Context, eventID uuid.UUID
 			if sess.Cancelled {
 				continue
 			}
+			out.addLiveSession(sessionEnds(ev, day, sess))
 			if sess.CertificateCounted {
 				counted[sess.ID] = true
 				out.CountedTotal++
@@ -272,4 +292,17 @@ func (m memoryAttendance) name(ctx context.Context, t ticket.Ticket) string {
 		return ""
 	}
 	return strings.TrimSpace(u.FirstName + " " + u.LastName)
+}
+
+// sessionEnds is a Session's end as sessionEndsSQL reads it: its end time,
+// else its day's end, else its Event's (event.Event.EndsAt).
+func sessionEnds(ev event.Event, day event.Day, sess event.Session) *time.Time {
+	switch {
+	case sess.EndTime != nil:
+		return sess.EndTime
+	case day.EndDate != nil:
+		return day.EndDate
+	default:
+		return ev.EndsAt()
+	}
 }

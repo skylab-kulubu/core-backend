@@ -53,8 +53,11 @@ type eventBody struct {
 	AttendanceRatio *float64   `json:"attendanceRatio"`
 	// AttendanceMinCount is the count rule's threshold, none for the
 	// default (docs/certificate-rule.md).
-	AttendanceMinCount *int         `json:"attendanceMinCount"`
-	DoorStaffIDs       *[]uuid.UUID `json:"doorStaffIds"`
+	AttendanceMinCount *int `json:"attendanceMinCount"`
+	// AttendanceAutoFinalize on create; none is on
+	// (docs/certificate-rule.md).
+	AttendanceAutoFinalize *bool        `json:"attendanceAutoFinalize"`
+	DoorStaffIDs           *[]uuid.UUID `json:"doorStaffIds"`
 	// Registration closure on create (ticket 12); none is open.
 	RegistrationClosed   bool       `json:"registrationClosed"`
 	RegistrationClosesAt *time.Time `json:"registrationClosesAt"`
@@ -130,7 +133,8 @@ func (b eventBody) asEvent() event.Event {
 		AttendanceRule:  b.AttendanceRule,
 		AttendanceRatio: b.AttendanceRatio,
 
-		AttendanceMinCount: b.AttendanceMinCount,
+		AttendanceMinCount:     b.AttendanceMinCount,
+		AttendanceAutoFinalize: b.AttendanceAutoFinalize == nil || *b.AttendanceAutoFinalize,
 
 		RegistrationClosed:   b.RegistrationClosed,
 		RegistrationClosesAt: b.RegistrationClosesAt,

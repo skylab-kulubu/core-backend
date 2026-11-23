@@ -37,6 +37,10 @@ type Options struct {
 	// store's own query (PostgresStore) or, for a store without one, reads
 	// the other stores (the memory counterpart).
 	Attendance AttendanceStore
+	// AutoFinalize plans the automatic attendance finalization. Nil takes
+	// the store's (PostgresStore); a store without one leaves AutoFinalize
+	// refused (ErrInvalid).
+	AutoFinalize AutoFinalizeStore
 }
 
 type service struct {
@@ -57,6 +61,8 @@ type service struct {
 	legacyImmediate  bool
 	media            media.Linker
 	attendance       AttendanceStore
+	autoFinalize     AutoFinalizeStore
+	autoMetrics      autoFinalizeMetrics
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -93,6 +99,9 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 	if opts.Attendance == nil {
 		opts.Attendance, _ = store.(AttendanceStore)
 	}
+	if opts.AutoFinalize == nil {
+		opts.AutoFinalize, _ = store.(AutoFinalizeStore)
+	}
 	if opts.Attendance == nil {
 		opts.Attendance = memoryAttendance{events: events, tickets: tickets, certs: store, jobs: opts.Jobs, users: users}
 	}
@@ -101,7 +110,7 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 		render: render, mail: mail, apiOrigin: apiOrigin, verifyOrigin: verifyOrigin,
 		templates: opts.Templates, jobs: opts.Jobs, artifacts: opts.Artifacts,
 		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media, privateArtifacts: opts.PrivateArtifacts,
-		attendance: opts.Attendance,
+		attendance: opts.Attendance, autoFinalize: opts.AutoFinalize,
 	}
 }
 

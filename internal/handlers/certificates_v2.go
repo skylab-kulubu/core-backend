@@ -58,6 +58,24 @@ func (h *CertificateHandler) Finalize(c fiber.Ctx) error {
 	return c.Status(fiber.StatusAccepted).JSON(result)
 }
 
+// Rescan queues who became eligible after the attendance closed
+// (docs/certificate-rule.md): 202 with the batch, 200 with queued 0 and no
+// batch when there is no one.
+func (h *CertificateHandler) Rescan(c fiber.Ctx) error {
+	p, eventID, err := certificateEventCaller(c)
+	if err != nil {
+		return certError(c, err)
+	}
+	result, err := h.svc.Rescan(c.Context(), p, eventID)
+	if err != nil {
+		return certError(c, err)
+	}
+	if result.Batch == nil {
+		return c.JSON(result)
+	}
+	return c.Status(fiber.StatusAccepted).JSON(result)
+}
+
 func (h *CertificateHandler) Resolve(c fiber.Ctx) error {
 	p, eventID, err := certificateEventCaller(c)
 	if err != nil {

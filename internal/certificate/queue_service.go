@@ -55,10 +55,10 @@ func (s *service) Summary(ctx context.Context, p authz.Principal, eventID uuid.U
 			revoked++
 		}
 	}
-	var finalized *time.Time
+	var finalization *Finalization
 	queued, failed := 0, 0
 	if s.jobs != nil {
-		finalized, err = s.jobs.AttendanceFinalizedAt(ctx, eventID)
+		finalization, err = s.jobs.AttendanceFinalization(ctx, eventID)
 		if err != nil {
 			return EventSummary{}, err
 		}
@@ -67,11 +67,16 @@ func (s *service) Summary(ctx context.Context, p authz.Principal, eventID uuid.U
 			return EventSummary{}, err
 		}
 	}
-	return EventSummary{
-		EventID: eventID, AttendanceFinalizedAt: finalized, EligibleCount: eligibleCount, IssuedCount: issued, RevokedCount: revoked,
+	out := EventSummary{
+		EventID: eventID, EligibleCount: eligibleCount, IssuedCount: issued, RevokedCount: revoked,
 		QueuedCount: queued, FailedCount: failed, Resolution: s.projectResolution(p, resolution),
 		CountedTotal: attendance.CountedTotal, EffectiveMin: event.RuleMin(ev, attendance.CountedTotal), BelowCount: belowCount,
-	}, nil
+		AutoFinalizeAt: autoFinalizeAt(ev, attendance, finalization != nil, time.Now()),
+	}
+	if finalization != nil {
+		out.AttendanceFinalizedAt, out.FinalizedSource = &finalization.At, finalization.Source
+	}
+	return out, nil
 }
 
 // Attendance is the certificate workspace's list of who attended how much,
@@ -138,12 +143,17 @@ func (s *service) Finalize(ctx context.Context, p authz.Principal, eventID uuid.
 		return Batch{}, ErrForbidden
 	}
 	// Attendance finalization opens when the Event is published and has
-	// ended, or is undated (ADR 0066); a draft and a cancelled Event refuse
-	// it with their reason.
+	// ended, or is undated (ADR 0066), or its last live Session has ended
+	// (K7: the organizer need not wait for the automatic one); a draft and
+	// a cancelled Event refuse it with their reason.
 	if err := ev.StatusError(); err != nil {
 		return Batch{}, fmt.Errorf("%w: %w", ErrConflict, err)
 	}
-	if !ev.FinalizeOpenAt(time.Now()) {
+	attendance, err := s.attendance.EventAttendance(ctx, eventID)
+	if err != nil {
+		return Batch{}, err
+	}
+	if !finalizeOpen(ev, attendance, time.Now()) {
 		return Batch{}, ErrConflict
 	}
 	if ev.AttendanceRule == RuleNone {
@@ -154,18 +164,7 @@ func (s *service) Finalize(ctx context.Context, p authz.Principal, eventID uuid.
 	} else if previous != nil {
 		return Batch{}, ErrConflict
 	}
-	attendance, err := s.attendance.EventAttendance(ctx, eventID)
-	if err != nil {
-		return Batch{}, err
-	}
-	ids := make([]uuid.UUID, 0, len(attendance.Tickets))
-	for _, item := range attendance.Tickets {
-		if item.Active != nil || !ticketEligible(ev, attendance, item) {
-			continue
-		}
-		ids = append(ids, item.TicketID)
-	}
-	return s.queueResolved(ctx, p, ev, ids, "finalization", nil)
+	return s.queueResolved(ctx, p, ev, finalizationTickets(ev, attendance), "finalization", nil)
 }
 
 // QueueManual queues one Ticket's certificate by hand. A Ticket the rule

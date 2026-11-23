@@ -118,6 +118,7 @@ func TestEventUpdateWritesSentValuesAndClearsNull(t *testing.T) {
 		{"feedback mode", `{"feedbackMode":"event_with_sessions"}`, map[string]any{"feedbackMode": "event_with_sessions"}},
 		{"feedback form cleared", `{"feedbackFormUrl":null,"feedbackFormAlias":null}`, map[string]any{"feedbackFormUrl": nil, "feedbackFormAlias": nil}},
 		{"feedback sent automatically", `{"feedbackAutoSend":true}`, map[string]any{"feedbackAutoSend": true}},
+		{"attendance closed by hand only", `{"attendanceAutoFinalize":false}`, map[string]any{"attendanceAutoFinalize": false}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -156,7 +157,7 @@ func TestEventUpdateRefusesClearingARequiredField(t *testing.T) {
 		`{"location":""}`, `{"location":null}`,
 		`{"ownerTeam":""}`, `{"ownerTeam":null}`,
 		`{"ranked":null}`,
-		`{"feedbackMode":null}`, `{"feedbackMode":"herkes"}`, `{"feedbackAutoSend":null}`,
+		`{"feedbackMode":null}`, `{"feedbackMode":"herkes"}`, `{"feedbackAutoSend":null}`, `{"attendanceAutoFinalize":null}`,
 		`{"attendanceRule":"ratio","attendanceRatio":null}`,
 		`{"attendanceRule":"ratio","attendanceRatio":0.75}`,
 		`{"attendanceMinCount":0}`, `{"attendanceRule":"count","attendanceMinCount":-1}`,
