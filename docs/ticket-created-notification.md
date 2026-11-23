@@ -84,7 +84,7 @@ Ticket insert ──(same statement)──▶ ticket_notifications ──▶ wor
 - `OwnerTeam` is the template's "Düzenleyen" row: the organizer as the club
   shows it (Yusuf, 2026-11-23), "SKY LAB: Bilgisayar Bilimleri Kulübü" for
   an Event of YK, DK or ADMIN or of no Owner team, else the Owner team's
-  code (`internal/organizer`). The variable keeps its name, so SkyMail's
+  code and Turkish name, "WEBLAB · Web Geliştirme" (`internal/organizer`). The variable keeps its name, so SkyMail's
   template needs no change.
 - `EventDate` is the start in Europe/Istanbul, empty without one: every
   variable is always sent, since SkyMail renders the inbox text with

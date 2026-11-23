@@ -42,7 +42,7 @@ A revoked item has `status: "revoked"` and `revokedAt`. Its `pdfUrl` is omitted;
 ## Screen behavior
 
 - Row title: `event.name`.
-- Subtitle: issuer and localized issue date. Display `event.organizerName` (Yusuf, 2026-11-23): core answers "SKY LAB: Bilgisayar Bilimleri Kulübü" when `event.ownerTeam` is empty, `YK`, `DK` or `ADMIN`, otherwise the OwnerTeam value. An older core without `organizerName`: display `SKY LAB` for empty, `YK` or `DK`, else `event.ownerTeam`.
+- Subtitle: issuer and localized issue date. Display `event.organizerName` (Yusuf, 2026-11-23): core answers "SKY LAB: Bilgisayar Bilimleri Kulübü" when `event.ownerTeam` is empty, `YK`, `DK` or `ADMIN`, otherwise the team's code and Turkish name ("AGC · …", the code alone when it has none). An older core without `organizerName`: display `SKY LAB` for empty, `YK` or `DK`, else `event.ownerTeam`.
 - Show `Geçerli` or `İptal`. Revoked certificates stay visible as history.
 - For a valid certificate, the primary action opens `pdfUrl` with the app's existing browser link flow.
 - `Doğrula` opens `verifyUrl`.

@@ -52,7 +52,10 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
 - Exactly these fields: **no e-mail, phone, Sky number or ticket type**.
 - `organizerName` is who organizes the Event as the page and the PDF show
   it (Yusuf, 2026-11-23): "SKY LAB: Bilgisayar Bilimleri Kulübü" for an
-  Event of YK, DK or ADMIN or of no Owner team, else the Owner team's code.
+  Event of YK, DK or ADMIN or of no Owner team, else the Owner team's code
+  and Turkish name as core's mails name a Team ("WEBLAB · Web Geliştirme";
+  the code alone while the name is unknown or unreadable). The names are
+  Keycloak's `display_name_tr`, read at most every 15 minutes.
   `ownerTeam` stays the Owner team itself (`internal/organizer`).
   `eventStart` and `eventEnd` are `null` when the Event has none.
 - The place ([event-location.md](event-location.md)): `venue` is its name;

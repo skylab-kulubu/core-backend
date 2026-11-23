@@ -194,6 +194,31 @@ func TestClubEventNamesTheClub(t *testing.T) {
 	}
 }
 
+// Another team's Event says the team's code and Turkish name, as core's
+// mails name a Team (Yusuf, 2026-11-23). Not parallel: organizer.UseNames is
+// the process's one setting.
+func TestTeamEventNamesTheTeam(t *testing.T) {
+	organizer.UseNames(organizer.NewNames(func(context.Context) (map[string]string, error) {
+		return map[string]string{"AILAB": "Yapay Zeka Laboratuvarı"}, nil
+	}, 0, nil))
+	t.Cleanup(func() { organizer.UseNames(nil) })
+	f := newFixture(t)
+	g := f.guest("elif@example.com")
+	view, err := f.svc.Page(t.Context(), g.AccessKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.OrganizerName != "AILAB · Yapay Zeka Laboratuvarı" || view.OwnerTeam != "AILAB" {
+		t.Fatalf("organizer %q owner %q", view.OrganizerName, view.OwnerTeam)
+	}
+	if _, _, err := f.svc.PDF(t.Context(), g.AccessKey); err != nil {
+		t.Fatal(err)
+	}
+	if want := "<span>Düzenleyen</span><b>AILAB · Yapay Zeka Laboratuvarı</b>"; !strings.Contains(f.render.html, want) {
+		t.Fatalf("the PDF has no %q", want)
+	}
+}
+
 // A member's page names them from core's row.
 func TestMemberPage(t *testing.T) {
 	t.Parallel()

@@ -2,9 +2,10 @@
 // outside the panel: the site, the Ticket page and its PDF, the mails and
 // the certificates (Yusuf, 2026-11-23). An Event of the club's boards (YK,
 // DK) or of ADMIN, or of no Owner team, is organized by the club itself and
-// says the club's name; any other Owner team says its code. The Owner team
-// (ownerTeam) stays what it is: permissions and the panel read that, and
-// the panel still says YK.
+// says the club's name; any other Owner team says its code and Turkish name,
+// "WEBLAB · Web Geliştirme", as core's mails name a Team (its code alone
+// while the name is unknown). The Owner team (ownerTeam) stays what it is:
+// permissions and the panel read that, and the panel still says YK.
 package organizer
 
 import "strings"
@@ -34,10 +35,17 @@ func Club(ownerTeam string) bool {
 }
 
 // Name is the organizer of an Event of ownerTeam as shown outside the
-// panel: ClubName for the club's own (Club), else the Owner team's code.
+// panel: ClubName for the club's own (Club), else the Owner team's code and
+// its Turkish name (UseNames) when it has one other than the code.
 func Name(ownerTeam string) string {
 	if Club(ownerTeam) {
 		return ClubName
 	}
-	return strings.TrimSpace(ownerTeam)
+	code := strings.TrimSpace(ownerTeam)
+	if n := names.Load(); n != nil {
+		if turkish := n.Turkish(code); turkish != "" && turkish != code {
+			return code + " · " + turkish
+		}
+	}
+	return code
 }
