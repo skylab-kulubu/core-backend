@@ -362,6 +362,28 @@ func (h *TicketHandler) CheckIn(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(ci)
 }
 
+// UndoCheckIn answers DELETE /v1/tickets/:ticketId/sessions/:sessionId/check-in:
+// the door desk takes back a wrong check-in. 204 when it is gone, 404 when
+// the Ticket had none at the Session; the rest as CheckIn.
+func (h *TicketHandler) UndoCheckIn(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	ticketID, err := uuid.Parse(c.Params("ticketId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	sessionID, err := uuid.Parse(c.Params("sessionId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if err := h.svc.UndoCheckIn(c.Context(), p, ticketID, sessionID); err != nil {
+		return ticketError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
 type guestCheckInBody struct {
 	Email     string `json:"email"`
 	DoorToken string `json:"doorToken"`

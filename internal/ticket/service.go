@@ -34,6 +34,11 @@ type Service interface {
 	GetByUserEvent(ctx context.Context, p authz.Principal, userID, eventID uuid.UUID) (Ticket, error)
 	ListQuery(ctx context.Context, p authz.Principal, email string, userID *uuid.UUID) ([]Ticket, error)
 	CheckIn(ctx context.Context, p authz.Principal, ticketID, sessionID uuid.UUID) (CheckIn, error)
+	// UndoCheckIn takes back the check-in ticketID has at sessionID: the
+	// door desk's correction of a wrong one. Who may take check-ins at the
+	// Event's door may, while the door takes them; ErrNotFound when the
+	// Ticket has none there.
+	UndoCheckIn(ctx context.Context, p authz.Principal, ticketID, sessionID uuid.UUID) error
 	CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (CheckIn, error)
 	CheckInGuest(ctx context.Context, sessionID uuid.UUID, g GuestCheckIn) (CheckIn, error)
 	MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorQR, error)
@@ -1021,23 +1026,33 @@ func (s *service) eventOf(ctx context.Context, id uuid.UUID) (event.Event, error
 	return ev, err
 }
 
-func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uuid.UUID) (CheckIn, error) {
+// ticketSession is the Session sessionID names, of t's Event: ErrNotFound
+// for no such Session (or Day), ErrInvalid for one of another Event.
+func (s *service) ticketSession(ctx context.Context, t Ticket, sessionID uuid.UUID) (event.Session, error) {
 	sess, err := s.events.GetSession(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, event.ErrNotFound) {
-			return CheckIn{}, ErrNotFound
+			return event.Session{}, ErrNotFound
 		}
-		return CheckIn{}, err
+		return event.Session{}, err
 	}
 	day, err := s.events.GetDay(ctx, sess.EventDayID)
 	if err != nil {
 		if errors.Is(err, event.ErrNotFound) {
-			return CheckIn{}, ErrNotFound
+			return event.Session{}, ErrNotFound
 		}
-		return CheckIn{}, err
+		return event.Session{}, err
 	}
 	if day.EventID != t.EventID {
-		return CheckIn{}, ErrInvalid
+		return event.Session{}, ErrInvalid
+	}
+	return sess, nil
+}
+
+func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uuid.UUID) (CheckIn, error) {
+	sess, err := s.ticketSession(ctx, t, sessionID)
+	if err != nil {
+		return CheckIn{}, err
 	}
 	dup, err := s.tickets.HasCheckIn(ctx, t.ID, sessionID)
 	if err != nil {

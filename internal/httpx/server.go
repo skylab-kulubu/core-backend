@@ -812,6 +812,7 @@ func New(deps Deps) *fiber.App {
 	// (docs/form-response-tickets.md).
 	app.Post("/v1/forms/:formId/responses", tickets.RecordFormResponse)
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
+	app.Delete("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.UndoCheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
 	// Guest check-in takes no sign-in; failures are budgeted per address, and
 	// the door QR caps how many guests one token lets in

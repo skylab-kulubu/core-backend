@@ -85,6 +85,12 @@ func (a *afterCheckIn) CheckIn(ctx context.Context, p authz.Principal, ticketID,
 	return ci, err
 }
 
+// UndoCheckIn passes through without firing: fn follows a check-in that
+// settled, and this one is gone.
+func (a *afterCheckIn) UndoCheckIn(ctx context.Context, p authz.Principal, ticketID, sessionID uuid.UUID) error {
+	return a.inner.UndoCheckIn(ctx, p, ticketID, sessionID)
+}
+
 func (a *afterCheckIn) CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (CheckIn, error) {
 	ci, err := a.inner.CheckInMe(ctx, p, sessionID)
 	if err == nil {

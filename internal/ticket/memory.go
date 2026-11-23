@@ -214,6 +214,18 @@ func (s *MemoryStore) AddCheckIn(_ context.Context, c CheckIn) (CheckIn, error) 
 	return c, nil
 }
 
+func (s *MemoryStore) RemoveCheckIn(_ context.Context, ticketID, sessionID uuid.UUID) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, c := range s.checkIns {
+		if c.TicketID == ticketID && c.SessionID == sessionID {
+			delete(s.checkIns, id)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *MemoryStore) HasCheckIn(_ context.Context, ticketID, sessionID uuid.UUID) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
