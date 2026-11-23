@@ -573,6 +573,42 @@ func (h *IdentityHandler) ListUsers(c fiber.Ctx) error {
 	return c.JSON(users)
 }
 
+// UserDirectory answers GET /v1/users/directory: a page of the people core
+// holds, newest first (docs/user-accounts.md "The user list"). page counts
+// from 1, size is 50 by default and at most 100; a page or size it cannot
+// read is 400 once the caller may read users.
+func (h *IdentityHandler) UserDirectory(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return identityError(c, err)
+	}
+	q := identity.UserDirectoryQuery{Query: c.Query("q"), Filter: c.Query("filter"), Page: 1}
+	number := func(key string, into *int) {
+		raw := c.Query(key)
+		if raw == "" {
+			return
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			q.Malformed = true
+			return
+		}
+		*into = n
+	}
+	number("page", &q.Page)
+	number("size", &q.Size)
+	page, err := h.svc.UserDirectory(c.Context(), p, q)
+	if errors.Is(err, identity.ErrDirectoryPage) {
+		return problemDetailCode(c, fiber.StatusBadRequest, "Bad Request",
+			"page is at most "+strconv.Itoa(identity.DirectoryMaxPage), "page_invalid")
+	}
+	if err != nil {
+		return identityError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(page)
+}
+
 func (h *IdentityHandler) GetUser(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {

@@ -62,6 +62,32 @@ type Store interface {
 	// them in one query, for a list of people (the public team list). A
 	// person with neither a row nor a deletion marker is not in the map.
 	Accounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Account, error)
+	// ListDirectory is a page of the active rows, newest first (created_at
+	// descending, then id), and how many active rows match in all: the
+	// panel's user list (GET /v1/users/directory).
+	ListDirectory(ctx context.Context, q DirectoryQuery) (DirectoryPage, error)
+}
+
+// DirectoryQuery is what ListDirectory reads: Search's case-insensitive
+// part match on Query (empty matches everyone), narrowed by the filters.
+type DirectoryQuery struct {
+	Query string
+	// NamesOnly matches Query against the e-mail and the names alone, as
+	// the limited user read searches (no school e-mail, Sky number or
+	// username).
+	NamesOnly bool
+	// NoSchoolEmail keeps the rows with no school e-mail.
+	NoSchoolEmail bool
+	// CreatedSince, when set, keeps the rows created at or after it.
+	CreatedSince time.Time
+	Offset       int
+	Limit        int
+}
+
+// DirectoryPage is a ListDirectory answer: the page and the match count.
+type DirectoryPage struct {
+	Users []User
+	Total int
 }
 
 // Account is a person as Store.Accounts reads them: the row core stores
