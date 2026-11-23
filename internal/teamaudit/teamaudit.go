@@ -198,6 +198,45 @@ func ActorFrom(ctx context.Context) (Actor, bool) {
 	return a, ok
 }
 
+// Via is the way a change came (the via column, migration
+// `20261123200000`): a member add an accepted Invitation made, one an
+// approved Access request made, a change an Access review decided. Empty
+// is a change made directly, as every row before the column. The actor
+// and the basis stay those of the person who made or decided the change.
+type Via string
+
+const (
+	ViaInvitation    Via = "invitation"
+	ViaAccessRequest Via = "access_request"
+	ViaAccessReview  Via = "access_review"
+)
+
+// Vias are every way the table's check accepts.
+var Vias = []Via{ViaInvitation, ViaAccessRequest, ViaAccessReview}
+
+type viaKey struct{}
+
+// WithVia returns ctx whose Group writes are recorded as having come by v:
+// every row a writer opens with it (Begin, Deny) carries v unless the
+// Record names its own. The writes themselves read it nowhere else.
+func WithVia(ctx context.Context, v Via) context.Context {
+	return context.WithValue(ctx, viaKey{}, v)
+}
+
+// ViaFrom is the way ctx carries, empty for none.
+func ViaFrom(ctx context.Context) Via {
+	v, _ := ctx.Value(viaKey{}).(Via)
+	return v
+}
+
+// withVia is r with the way ctx carries when r names none.
+func (r Record) withVia(ctx context.Context) Record {
+	if r.Via == "" {
+		r.Via = ViaFrom(ctx)
+	}
+	return r
+}
+
 // RecordedAttributes are the Group attributes whose values a row keeps: a
 // Team's names, descriptions and logo, its public and door flags and its
 // settings (team_competition_manage; members_manage_competitors, retired
@@ -296,6 +335,9 @@ type Record struct {
 	TargetUserID uuid.UUID
 	Before       *State
 	After        *State
+	// Via is the way the change came; empty is direct. A writer takes the
+	// one ctx carries (WithVia) when it is empty.
+	Via Via
 }
 
 // ErrUnavailable is a row that could not be opened: the write must not go
@@ -393,6 +435,9 @@ func (r Record) normalize() (Record, string) {
 	}
 	if !slices.Contains(Actions, r.Action) {
 		return r, "invalid_action"
+	}
+	if r.Via != "" && !slices.Contains(Vias, r.Via) {
+		return r, "invalid_via"
 	}
 	if r.Action.IsApp() {
 		// One target: a Group, by id and path, or a person, without a path.
