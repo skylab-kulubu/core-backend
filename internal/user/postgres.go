@@ -281,6 +281,68 @@ func (s *PostgresStore) search(ctx context.Context, q string, limit int) ([]User
 	return out, rows.Err()
 }
 
+// directorySearch is search's match; directoryNameSearch the e-mail and
+// names part of it alone (DirectoryQuery.NamesOnly).
+const (
+	directorySearch = `(
+		   lower(email) LIKE '%' || lower($1) || '%'
+		   OR lower(school_email) LIKE '%' || lower($1) || '%'
+		   OR lower(sky_number) LIKE '%' || lower($1) || '%'
+		   OR lower(username) LIKE '%' || lower($1) || '%'
+		   OR lower(first_name) LIKE '%' || lower($1) || '%'
+		   OR lower(last_name) LIKE '%' || lower($1) || '%'
+		   OR lower(first_name || ' ' || last_name) LIKE '%' || lower($1) || '%')`
+	directoryNameSearch = `(
+		   lower(email) LIKE '%' || lower($1) || '%'
+		   OR lower(first_name) LIKE '%' || lower($1) || '%'
+		   OR lower(last_name) LIKE '%' || lower($1) || '%'
+		   OR lower(first_name || ' ' || last_name) LIKE '%' || lower($1) || '%')`
+)
+
+func (s *PostgresStore) ListDirectory(ctx context.Context, q DirectoryQuery) (DirectoryPage, error) {
+	match := directorySearch
+	if q.NamesOnly {
+		match = directoryNameSearch
+	}
+	var since *time.Time
+	if !q.CreatedSince.IsZero() {
+		since = &q.CreatedSince
+	}
+	where := `account_state = 'active'
+		AND ($1 = '' OR ` + match + `)
+		AND (NOT $2 OR school_email = '')
+		AND ($3::timestamptz IS NULL OR created_at >= $3)`
+	needle := strings.TrimSpace(q.Query)
+	page := DirectoryPage{Users: make([]User, 0)}
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE `+where,
+		needle, q.NoSchoolEmail, since,
+	).Scan(&page.Total); err != nil {
+		return DirectoryPage{}, err
+	}
+	if page.Total == 0 || q.Offset >= page.Total {
+		return page, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+userCols+`
+		FROM users
+		WHERE `+where+`
+		ORDER BY created_at DESC, id
+		OFFSET $4 LIMIT $5
+	`, needle, q.NoSchoolEmail, since, q.Offset, q.Limit)
+	if err != nil {
+		return DirectoryPage{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return DirectoryPage{}, err
+		}
+		page.Users = append(page.Users, u)
+	}
+	return page, rows.Err()
+}
+
 func (s *PostgresStore) FindByEmail(ctx context.Context, email string) ([]User, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+userCols+`

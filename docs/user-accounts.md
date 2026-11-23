@@ -34,6 +34,18 @@ The admin panel's person card reads and changes the person's Keycloak account th
 | `DELETE /v1/users/{id}/lockout` | lifts the brute-force protection's temporary lock |
 | `PATCH /v1/users/{id}` | as before, and `firstName` / `lastName` are written to Keycloak first (`user.profile` row with the field names), so tokens, mail and the Account center show them. A name that changes follows the account's rules above (not one's own account: 409 `own_account`; a privileged person's only by ADMIN: 403 `privileged_target`; refusals are denied rows); a PATCH whose names Keycloak already holds goes on as before. A name Keycloak's User Profile refuses: 422 `name_invalid` (an address: `email_invalid`, anything else: `account_invalid`). The Account center's own profile is another route and is not touched. A Verified YTÜ account keeps the name written here: the YTÜ identity provider syncs `LEGACY`, which does not write names on later logins (e-skylab-keycloak `BrokerLinkCommitGuard`); only a new YTÜ link sets Microsoft's name again |
 
+## The user list
+
+The panel's Users page lists people a page at a time from core's own `users` rows (Panel Paket 2). `GET /v1/users` still answers the whole realm from Keycloak in one array, or a `q` search; the panel opens the full list only from this route.
+
+`GET /v1/users/directory?page=1&size=50&q=&filter=` → `{"items": [...], "total": N, "page": P, "size": S}`, `Cache-Control: no-store`.
+
+- **Rows.** Active accounts only (no one being erased or erased), newest first: `created_at` descending, then `id`. `created_at` is when core's row was made, which the user sync and the first sign-in do ([user-sync.md](user-sync.md)); a person Keycloak holds and core has no row for yet is not listed. Keycloak is not read.
+- **Query.** `page` counts from 1; `size` is 50 by default and at most 100 (a bigger one is 100). A `page` or `size` that is not a positive number is 400; a `page` past 1 000 000 is 400 `page_invalid`. `q` is a case-insensitive part of the e-mail, the first name, the last name, both names, the school e-mail, the Sky number or the username, as core's own people search (`user.Store.Search`). `filter`: empty for everyone, `no_school_email` for those without a school e-mail, `new` for those whose row was created this month in Europe/Istanbul; anything else is 400.
+- **Items.** Each is the entry `GET /v1/users` answers (`id`, `email`, `firstName`, `lastName`, `username`, `schoolEmail`, `skyNumber`, `profilePictureUrl` and `profilePictureSizes` when there is a picture, `status: "active"`, `displayName`), from core's row, with `createdAt` (RFC 3339).
+- **Who.** `GET /v1/users`'s rule: the User Read decision (`users:read`, `users:manage`, Privileged and Privileged readers), else 403; the Forms seat search has no counterpart here. A caller without `ReadFull` (`users:read` alone) gets `GET /v1/users`'s limited entry (`id`, `email`, names, picture, `status`, `displayName`; no `createdAt`), its `q` matches the e-mail and the names alone, and a `filter` is 403, since it would tell what the entry leaves out.
+- **Older core.** A core without this route reads `/v1/users/directory` as `GET /v1/users/{id}` and answers 400 (`directory` is no id). The panel falls back to its old opening on 400, 404 or 405, but ships after this route: core first, then the panel.
+
 ## Not here
 
 - The username: the realm keeps `editUsernameAllowed=false`, and Admin REST cannot change it; only sky-account's person route does.
