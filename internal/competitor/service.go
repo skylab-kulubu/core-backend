@@ -103,8 +103,7 @@ func (s *service) ListLifecycle(ctx context.Context, p authz.Principal, visibili
 		if err != nil || !event.VisibleTo(s.authz, &p, ev) {
 			continue
 		}
-		res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: item.UserID.String()}
-		if s.authz.Allow(p, res, authz.Delete) {
+		if s.authz.Allow(p, lifecycleResource(p, ev, item), authz.Delete) {
 			eventResource := ev.Resource()
 			item.Event = &eventResource
 			visible = append(visible, item)
@@ -207,6 +206,12 @@ func (s *service) Update(ctx context.Context, p authz.Principal, id uuid.UUID, i
 	if !s.authz.Allow(p, res, authz.Update) {
 		return Competitor{}, ErrForbidden
 	}
+	// Nobody writes the score or the win of their own competitor, nor takes
+	// someone else's row with its result: a Leader and Privileged neither
+	// (as the Competition ledger's own_entrant).
+	if ownResult(p, existing, in) {
+		return Competitor{}, ErrOwnCompetitor
+	}
 	// It moves only to a published Event, ended or not, as Create and
 	// Reinstate ask (ADR 0066); an edit that keeps the Event is no move.
 	if in.EventID != existing.EventID {
@@ -277,8 +282,7 @@ func (s *service) Reinstate(ctx context.Context, p authz.Principal, id uuid.UUID
 	if !event.VisibleTo(s.authz, &p, ev) {
 		return Competitor{}, ErrNotFound
 	}
-	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: existing.UserID.String()}
-	if !s.authz.Allow(p, res, authz.Delete) {
+	if !s.authz.Allow(p, lifecycleResource(p, ev, existing), authz.Delete) {
 		return Competitor{}, ErrForbidden
 	}
 	if ev.ArchivedAt != nil {
@@ -436,4 +440,41 @@ func assignRanks(entries []LeaderboardEntry) {
 		}
 		entries[i].Rank = i + 1
 	}
+}
+
+// lifecycleResource is c as a withdrawal or its undoing decides it: a
+// person withdraws their own competitor and brings it back only when they
+// withdrew it themselves. One an organizer withdrew comes back through an
+// organizer (no owner on the resource), so a person removed by the Event's
+// managers does not put themselves, and the result they were given, back.
+func lifecycleResource(p authz.Principal, ev event.Event, c Competitor) authz.Resource {
+	res := authz.Resource{Type: authz.TypeCompetitor, OwnerTeam: ev.OwnerTeam, OwnerID: c.UserID.String()}
+	if c.WithdrawnAt != nil && (c.WithdrawnBy == nil || c.WithdrawnBy.String() != p.ID) {
+		res.OwnerID = ""
+	}
+	return res
+}
+
+// ownResult reports whether an edit by p writes a result on p's own
+// competitor: it changes the score or the win of a row that is p's, or
+// makes a row p's while it carries a score or a win.
+func ownResult(p authz.Principal, existing Competitor, in UpdateInput) bool {
+	if p.ID == "" {
+		return false
+	}
+	was, becomes := existing.UserID.String() == p.ID, in.UserID.String() == p.ID
+	if !was && !becomes {
+		return false
+	}
+	if !was && (in.Score != nil || in.IsWinner) {
+		return true
+	}
+	return !sameScore(existing.Score, in.Score) || existing.IsWinner != in.IsWinner
+}
+
+func sameScore(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }

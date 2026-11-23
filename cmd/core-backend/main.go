@@ -489,6 +489,9 @@ func main() {
 	})
 
 	dir := identity.Directory(identity.NewMemory())
+	// The person card's account side (docs/user-accounts.md): Keycloak when
+	// it is configured, in memory otherwise.
+	var accountDir identity.AccountDirectory = identity.NewMemoryAccounts()
 	// Reads the editable sites' roles; Keycloak only.
 	var siteRoles editablesites.RoleReader
 	// Reads whether a Group holds a realm-management role (core changes no
@@ -531,6 +534,7 @@ func main() {
 		log.Print(identity.PrivilegedRootsLine(rootContext, keycloakDirectory, privilegedRoots))
 		cancelRootCheck()
 		dir = keycloakDirectory
+		accountDir = keycloakDirectory
 		siteRoles = keycloakDirectory
 		adminGroups = keycloakDirectory
 		userSyncDir = keycloakDirectory
@@ -571,8 +575,7 @@ func main() {
 	// above an Event's Owner team leads it too (ADR-0065 decision 2,
 	// ekip-yetkileri ticket 12). The realm's Groups are kept a minute.
 	teamTree := identity.NewTeamTree(dir, identity.TeamTreeOptions{Logf: log.Printf})
-	// The same Groups carry the Teams' own settings (members_manage_competitors,
-	// team_competition_manage).
+	// The same Groups carry the Teams' own settings (team_competition_manage).
 	az := authz.NewAuthorizer(authzPolicy, authz.WithRoleMetrics(authzRoleMetrics), authz.WithTeamTree(teamTree),
 		authz.WithTeamSettings(teamTree))
 	// The capabilities route's editableSites: the configured Site clients
@@ -1142,10 +1145,16 @@ func main() {
 		TeamPage:              &identity.TeamPageVisibility{Consents: consents},
 	})
 	terms.UseMemberships(identityService)
+	userAccounts := identity.NewUserAccounts(identity.UserAccountOptions{
+		Accounts: accountDir, People: dir, Users: users, Authz: az,
+		PrivilegedRoots: privilegedRoots, Audit: teamAudit, YTUProvider: ytuIdentityProvider,
+		Logf: log.Printf,
+	})
 
 	app := httpx.New(httpx.Deps{
-		Users:    user.NewService(users, dir),
-		Identity: identityService,
+		Users:        user.NewService(users, dir),
+		Identity:     identityService,
+		UserAccounts: userAccounts,
 		Events: event.NewServiceWithOptions(events, az, event.ServiceOptions{
 			PublicBase:       cdnBase,
 			ImageAddressMode: imageAddressMode,

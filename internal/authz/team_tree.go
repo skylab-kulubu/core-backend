@@ -20,19 +20,6 @@ type TeamTree interface {
 	SubTeams(path string) []string
 }
 
-// TeamAttrMembersManageCompetitors is the Team attribute (Keycloak group
-// attribute) by which the Team's Leader decides whether its members add,
-// edit and remove its Events' competitors (Yusuf, 2026-10-25): "false" keeps
-// them to the Leaders; anything else, or none, is today's rule.
-const TeamAttrMembersManageCompetitors = "members_manage_competitors"
-
-// MembersManageCompetitorsValue reads TeamAttrMembersManageCompetitors'
-// value: false only for "false" (case and blanks aside), true for anything
-// else or none. The decision and the settings route's answer both read it.
-func MembersManageCompetitorsValue(v string) bool {
-	return !strings.EqualFold(strings.TrimSpace(v), "false")
-}
-
 // TeamAttrCompetitionManage is the Team attribute by which the Team's
 // Leader lets all its members manage its Events' Competitions ("Yarışmaları
 // kim yönetir": Tüm üyeler; Yusuf, 2026-10-12 and 2026-10-31): "true" opens
@@ -50,10 +37,6 @@ func CompetitionManageValue(v string) bool {
 // TeamSettings reads a Team's own settings by its Team code
 // (identity.TeamTree, kept a minute).
 type TeamSettings interface {
-	// MembersManageCompetitors is false only when the one Group named team
-	// carries TeamAttrMembersManageCompetitors=false; a Group that cannot be
-	// read or a name that is not one Group's is the default, true.
-	MembersManageCompetitors(team string) bool
 	// TeamCompetitionManage is true only when the one Group named team
 	// carries TeamAttrCompetitionManage=true; a Group that cannot be read or
 	// a name that is not one Group's is the default, false: a widening
@@ -61,7 +44,7 @@ type TeamSettings interface {
 	TeamCompetitionManage(team string) bool
 }
 
-// WithTeamSettings lets the Teams' settings narrow the members' decisions.
+// WithTeamSettings lets the Teams' settings widen the members' decisions.
 // Without it every Team has the defaults.
 func WithTeamSettings(s TeamSettings) Option {
 	return func(a *authorizer) { a.settings = s }

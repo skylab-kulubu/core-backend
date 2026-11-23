@@ -262,3 +262,46 @@ func TestAccountErasureKeepsTeamAuditRows(t *testing.T) {
 		t.Fatalf("rows of the erased person %d %v", count, err)
 	}
 }
+
+// A person's account rows (docs/user-accounts.md): the person, no Group,
+// no path, the account fields in after; the table refuses one with a Group.
+func TestPostgresWriterUserRows(t *testing.T) {
+	pool := migrated(t)
+	ctx := context.Background()
+	w := teamaudit.NewPostgres(pool)
+	record := teamaudit.Record{
+		Actor:        teamaudit.Actor{ID: uuid.New(), Basis: teamaudit.BasisPrivileged, Client: "admin", CorrelationID: "req-1"},
+		Action:       teamaudit.ActionUserDisable,
+		TargetUserID: uuid.New(),
+		Before:       &teamaudit.State{Enabled: new(bool)},
+		After:        &teamaudit.State{Enabled: new(bool), Fields: []string{"enabled"}},
+	}
+	*record.Before.Enabled = true
+	id, err := w.Begin(ctx, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Finish(ctx, id, teamaudit.OutcomeOK, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, pool, id); got.Outcome != "ok" || got.GroupID != "" || got.Path != "" || got.After == nil || *got.After.Enabled {
+		t.Fatalf("user row %+v", got)
+	}
+	denied := record
+	denied.Actor.Basis = teamaudit.BasisNone
+	if err := w.Deny(ctx, denied, "privileged_target"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO team_audit_records (id, occurred_at, actor_id, actor_basis, action, group_id, group_path, target_user_id, outcome, correlation_id, client)
+		VALUES ($1, now(), $2, 'privileged', 'user.disable', $3, '/UYELER', $4, 'pending', '', '')`,
+		uuid.New(), uuid.New(), uuid.New(), uuid.New()); err == nil {
+		t.Fatal("a user row with a Group was accepted")
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO team_audit_records (id, occurred_at, actor_id, actor_basis, action, group_id, group_path, target_user_id, outcome, correlation_id, client)
+		VALUES ($1, now(), $2, 'privileged', 'user.disable', NULL, '', NULL, 'pending', '', '')`,
+		uuid.New(), uuid.New()); err == nil {
+		t.Fatal("a user row without a person was accepted")
+	}
+}

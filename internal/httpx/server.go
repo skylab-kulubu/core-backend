@@ -48,8 +48,12 @@ type UserSync interface {
 }
 
 type Deps struct {
-	Users        user.Service
-	Identity     identity.Service
+	Users    user.Service
+	Identity identity.Service
+	// UserAccounts serves the person card's account routes
+	// (docs/user-accounts.md) and writes PATCH /v1/users/{id}'s names to
+	// Keycloak; nil leaves them out.
+	UserAccounts *identity.UserAccounts
 	Events       event.Service
 	Seasons      season.Service
 	Tickets      ticket.Service
@@ -295,6 +299,9 @@ func New(deps Deps) *fiber.App {
 
 	me := handlers.NewMeHandler(deps.Users, deps.Media)
 	ident := handlers.NewIdentityHandler(deps.Identity)
+	if deps.UserAccounts != nil {
+		ident.WithAccounts(deps.UserAccounts)
+	}
 	teams := handlers.NewTeamHandler(deps.Identity)
 	events := handlers.NewEventHandler(deps.Events)
 	seasons := handlers.NewSeasonHandler(deps.Seasons, deps.Events)
@@ -608,6 +615,24 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/users/:id/logout", ident.LogoutAllSessions)
 	app.Post("/v1/users/:id/client-roles", ident.AddUserExtraRole)
 	app.Delete("/v1/users/:id/client-roles", ident.RemoveUserExtraRole)
+	// The person's Keycloak account from the person card
+	// (docs/user-accounts.md): read by users:manage and Privileged readers,
+	// changed by users:manage alone, never on the caller's own account.
+	if deps.UserAccounts != nil {
+		accounts := handlers.NewUserAccountHandler(deps.UserAccounts)
+		app.Get("/v1/users/:id/account", accounts.Account)
+		app.Put("/v1/users/:id/enabled", accounts.SetEnabled)
+		app.Post("/v1/users/:id/password", accounts.SetPassword)
+		app.Post("/v1/users/:id/password-reset-mail", accounts.SendPasswordMail)
+		app.Put("/v1/users/:id/email", accounts.ChangeEmail)
+		app.Post("/v1/users/:id/email/verify", accounts.VerifyEmail)
+		app.Post("/v1/users/:id/email/verification-mail", accounts.SendVerificationMail)
+		app.Put("/v1/users/:id/email/primary", accounts.SetPrimary)
+		app.Put("/v1/users/:id/required-actions", accounts.SetRequiredActions)
+		app.Delete("/v1/users/:id/credentials/:credentialId", accounts.DeleteCredential)
+		app.Delete("/v1/users/:id/identity-providers/:provider", accounts.UnlinkIdentity)
+		app.Delete("/v1/users/:id/lockout", accounts.ClearLockout)
+	}
 	app.Get("/v1/client-roles", ident.ListClientRoles)
 
 	app.Get("/v1/groups", ident.ListGroups)

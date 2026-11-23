@@ -299,18 +299,30 @@ func (a *authorizer) competitionBasis(p Principal, r Resource, privileged bool) 
 	return ""
 }
 
-// competitorWriter is who adds, edits and removes an Event's competitors: a
-// Leader of the Owner team (or of a Team above it), and its members unless
-// the Team's Leader kept it to the Leaders (TeamAttrMembersManageCompetitors).
+// competitorWriter is who, besides Privileged (competitor:manage,
+// allowCompetitor), adds, edits and removes someone else's competitor on an
+// Event (Yusuf, 2026-11-23: a member adding another person was a hole):
+// the people of the Owner team who manage the Event. Its Leaders and
+// coordinators, and a Leader of a Team above (ownerLevels); the members the
+// Event policy lets edit the Team's Events (GECEKODU); the members while
+// the Team's "Yarışmaları kim yönetir" says all members
+// (TeamAttrCompetitionManage), as they add Entrants then. A plain member
+// enters and withdraws only themselves (allowCompetitor's owner rule). The
+// retired Team attribute members_manage_competitors is not read.
 func (a *authorizer) competitorWriter(p Principal, r Resource) bool {
 	levels := a.ownerLevels(p, r.OwnerTeam)
-	if slices.Contains(levels, LevelLeader) {
-		return true
-	}
 	if len(levels) == 0 {
 		return false
 	}
-	return a.settings == nil || a.settings.MembersManageCompetitors(r.OwnerTeam)
+	if slices.Contains(levels, LevelLeader) {
+		return true
+	}
+	for _, level := range levels {
+		if slices.Contains(a.requiredLevels(r.OwnerTeam, Update), level) {
+			return true
+		}
+	}
+	return a.settings != nil && a.settings.TeamCompetitionManage(r.OwnerTeam)
 }
 
 func (a *authorizer) isOwnerMember(p Principal, r Resource) bool {

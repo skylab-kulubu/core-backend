@@ -3,6 +3,7 @@ package competitor
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/lifecycle"
@@ -13,6 +14,11 @@ var (
 	ErrForbidden = errors.New("competitor: forbidden")
 	ErrInvalid   = errors.New("competitor: invalid")
 	ErrConflict  = errors.New("competitor: conflict")
+	// ErrOwnCompetitor is a score or win written on the writer's own
+	// competitor: nobody scores themselves, a Leader or Privileged neither
+	// (as the Competition ledger's own_entrant, yarışma modülü A3). It is an
+	// ErrForbidden too.
+	ErrOwnCompetitor = fmt.Errorf("%w: own competitor", ErrForbidden)
 )
 
 type Store interface {
