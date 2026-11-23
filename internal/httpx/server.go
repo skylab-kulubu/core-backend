@@ -608,6 +608,9 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/users/me/profile-picture", limitUploads, me.ProfilePicture)
 	app.Delete("/v1/users/me/profile-picture", me.DeleteProfilePicture)
 	app.Get("/v1/users", ident.ListUsers)
+	// The panel's paged user list from core's own rows
+	// (docs/user-accounts.md "The user list"); ahead of /v1/users/:id.
+	app.Get("/v1/users/directory", ident.UserDirectory)
 	app.Post("/v1/users", ident.CreateUser)
 	app.Get("/v1/users/:id", ident.GetUser)
 	app.Patch("/v1/users/:id", ident.PatchUser)
