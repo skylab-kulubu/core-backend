@@ -40,7 +40,10 @@ type Patch struct {
 	CoverImageID    optional.Field[*uuid.UUID]      `json:"coverImageId"`
 	AttendanceRule  optional.Field[string]          `json:"attendanceRule"`
 	AttendanceRatio optional.Field[*float64]        `json:"attendanceRatio"`
-	DoorStaffIDs    optional.Field[[]uuid.UUID]     `json:"doorStaffIds"`
+	// AttendanceMinCount is the count rule's threshold, null for the
+	// default (docs/certificate-rule.md).
+	AttendanceMinCount optional.Field[*int]        `json:"attendanceMinCount"`
+	DoorStaffIDs       optional.Field[[]uuid.UUID] `json:"doorStaffIds"`
 	// RegistrationClosed closes or opens applying by hand (null is
 	// ErrInvalid); RegistrationClosesAt sets the deadline, null clears it
 	// (ticket 12).
@@ -112,6 +115,7 @@ func (p Patch) apply(existing Event) (Event, error) {
 	e.CoverImageID = p.CoverImageID.Or(existing.CoverImageID)
 	e.AttendanceRule = p.AttendanceRule.Or(existing.AttendanceRule)
 	e.AttendanceRatio = p.AttendanceRatio.Or(existing.AttendanceRatio)
+	e.AttendanceMinCount = p.AttendanceMinCount.Or(existing.AttendanceMinCount)
 	if p.DoorStaffIDs.Set {
 		e.DoorStaffIDs = append([]uuid.UUID{}, p.DoorStaffIDs.Value...)
 	}

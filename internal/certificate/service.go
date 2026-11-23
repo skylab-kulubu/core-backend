@@ -134,11 +134,10 @@ func (s *service) eligible(ctx context.Context, ev event.Event, t ticket.Ticket)
 	if err != nil {
 		return false, err
 	}
-	ratio := 0.0
-	if ev.AttendanceRatio != nil {
-		ratio = *ev.AttendanceRatio
-	}
-	return Eligible(ev.AttendanceRule, ratio, checkIns, scheduled), nil
+	// Every live Session counts and none is required here, as before the
+	// count rule; the counted and required marks come with the one-query
+	// eligibility (certificate × session ticket 02).
+	return Eligible(RuleOf(ev), checkIns, scheduled, 0), nil
 }
 
 func (s *service) recipient(ctx context.Context, t ticket.Ticket) (name, email string, err error) {

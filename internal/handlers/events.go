@@ -45,13 +45,16 @@ type eventBody struct {
 	// published). An update (event.Patch) reads neither it nor active,
 	// which is derived (ADR 0066): a client that sends the whole Event
 	// back cannot change the status with it.
-	Status          string       `json:"status"`
-	Ranked          bool         `json:"ranked"`
-	PrizeInfo       string       `json:"prizeInfo"`
-	CoverImageID    *uuid.UUID   `json:"coverImageId"`
-	AttendanceRule  string       `json:"attendanceRule"`
-	AttendanceRatio *float64     `json:"attendanceRatio"`
-	DoorStaffIDs    *[]uuid.UUID `json:"doorStaffIds"`
+	Status          string     `json:"status"`
+	Ranked          bool       `json:"ranked"`
+	PrizeInfo       string     `json:"prizeInfo"`
+	CoverImageID    *uuid.UUID `json:"coverImageId"`
+	AttendanceRule  string     `json:"attendanceRule"`
+	AttendanceRatio *float64   `json:"attendanceRatio"`
+	// AttendanceMinCount is the count rule's threshold, none for the
+	// default (docs/certificate-rule.md).
+	AttendanceMinCount *int         `json:"attendanceMinCount"`
+	DoorStaffIDs       *[]uuid.UUID `json:"doorStaffIds"`
 	// Registration closure on create (ticket 12); none is open.
 	RegistrationClosed   bool       `json:"registrationClosed"`
 	RegistrationClosesAt *time.Time `json:"registrationClosesAt"`
@@ -126,6 +129,8 @@ func (b eventBody) asEvent() event.Event {
 		CoverImageID:    b.CoverImageID,
 		AttendanceRule:  b.AttendanceRule,
 		AttendanceRatio: b.AttendanceRatio,
+
+		AttendanceMinCount: b.AttendanceMinCount,
 
 		RegistrationClosed:   b.RegistrationClosed,
 		RegistrationClosesAt: b.RegistrationClosesAt,
@@ -600,4 +605,59 @@ func (h *EventHandler) videoPosterChange(c fiber.Ctx, poster func() (*uuid.UUID,
 		return eventError(c, err)
 	}
 	return c.JSON(h.svc.ProjectFor(&p, updated))
+}
+
+// certificateRuleBody is the body of PUT /v1/events/{id}/certificate-rule
+// (docs/certificate-rule.md): each listed Session says both of its marks.
+type certificateRuleBody struct {
+	Rule     string `json:"rule"`
+	MinCount *int   `json:"minCount"`
+	Sessions []struct {
+		ID       uuid.UUID `json:"id"`
+		Counted  *bool     `json:"counted"`
+		Required *bool     `json:"required"`
+	} `json:"sessions"`
+}
+
+func (h *EventHandler) CertificateRule(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	rule, err := h.svc.CertificateRule(c.Context(), p, id)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(rule)
+}
+
+func (h *EventHandler) SetCertificateRule(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return eventError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body certificateRuleBody
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	in := event.CertificateRuleInput{Rule: body.Rule, MinCount: body.MinCount, Sessions: make([]event.SessionCertificateFlags, 0, len(body.Sessions))}
+	for _, sess := range body.Sessions {
+		if sess.Counted == nil || sess.Required == nil {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+		in.Sessions = append(in.Sessions, event.SessionCertificateFlags{ID: sess.ID, Counted: *sess.Counted, Required: *sess.Required})
+	}
+	rule, err := h.svc.SetCertificateRule(c.Context(), p, id, in)
+	if err != nil {
+		return eventError(c, err)
+	}
+	return c.JSON(rule)
 }

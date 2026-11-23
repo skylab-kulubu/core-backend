@@ -42,6 +42,10 @@ type sessionBody struct {
 	// 03): an update that leaves it out (sky-app, the panel before it)
 	// keeps it; feedbackAutoSend is true on create when left out.
 	event.SessionFeedback
+	// The Session's certificate marks (docs/certificate-rule.md): an update
+	// that leaves one out keeps it; on create, counted unless the type is
+	// NETWORKING, and not required.
+	event.SessionCertificate
 }
 
 func (h *ScheduleHandler) ListDays(c fiber.Ctx) error {
@@ -267,7 +271,7 @@ func (h *ScheduleHandler) CreateSession(c fiber.Ctx) error {
 	if err != nil {
 		return eventError(c, err)
 	}
-	created, err := h.svc.CreateSession(c.Context(), p, sess)
+	created, err := h.svc.CreateSession(c.Context(), p, sess.WithCertificate(body.SessionCertificate))
 	if err != nil {
 		return eventError(c, err)
 	}
@@ -291,7 +295,7 @@ func (h *ScheduleHandler) UpdateSession(c fiber.Ctx) error {
 		Title: body.Title, SpeakerName: body.SpeakerName, SpeakerLinkedin: body.SpeakerLinkedin,
 		Description: body.Description, StartTime: body.StartTime, EndTime: body.EndTime,
 		OrderIndex: body.OrderIndex, SessionType: body.SessionType,
-	}, body.Cancelled, body.SessionFeedback)
+	}.WithCertificate(body.SessionCertificate), body.Cancelled, body.SessionFeedback)
 	if err != nil {
 		return eventError(c, err)
 	}

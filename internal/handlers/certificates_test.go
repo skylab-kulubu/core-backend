@@ -178,7 +178,7 @@ func TestEventHTTP_AttendanceRule(t *testing.T) {
 	store := event.NewMemoryStore()
 	app := eventApp(t, ident, store)
 	req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
-		`{"name":"ARTLAB","location":"YTÜ","ownerTeam":"WEBLAB","attendanceRule":"ratio","attendanceRatio":0.75}`,
+		`{"name":"ARTLAB","location":"YTÜ","ownerTeam":"WEBLAB","attendanceRule":"count","attendanceMinCount":6}`,
 	))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
@@ -193,18 +193,24 @@ func TestEventHTTP_AttendanceRule(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if created.AttendanceRule != "ratio" || created.AttendanceRatio == nil || *created.AttendanceRatio != 0.75 {
+	if created.AttendanceRule != "count" || created.AttendanceMinCount == nil || *created.AttendanceMinCount != 6 || created.AttendanceRatio != nil {
 		t.Fatalf("created %+v", created)
 	}
-	req = httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+	// The ratio rule is not a new write's to choose, with a ratio or
+	// without; nor is a threshold below 1.
+	for _, body := range []string{
+		`{"name":"X","location":"YTÜ","ownerTeam":"WEBLAB","attendanceRule":"ratio","attendanceRatio":0.75}`,
 		`{"name":"X","location":"YTÜ","ownerTeam":"WEBLAB","attendanceRule":"ratio"}`,
-	))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = app.Test(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != fiber.StatusBadRequest {
-		t.Fatalf("missing ratio %d", resp.StatusCode)
+		`{"name":"X","location":"YTÜ","ownerTeam":"WEBLAB","attendanceRule":"count","attendanceMinCount":0}`,
+	} {
+		req = httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err = app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != fiber.StatusBadRequest {
+			t.Fatalf("%s: %d", body, resp.StatusCode)
+		}
 	}
 }

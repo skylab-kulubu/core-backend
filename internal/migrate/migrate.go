@@ -1723,6 +1723,15 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
 		  AND convalidated AND pg_get_constraintdef(oid) LIKE '%user.lockout.clear%'
 		  AND to_regclass('public.team_audit_records_user_idx') IS NOT NULL`,
+	// The certificate rule's threshold and Session marks
+	// (docs/certificate-rule.md): each column's check, which names it.
+	20261123230000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.sessions') AND conname = 'sessions_required_is_counted' AND convalidated
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events') AND conname = 'events_attendance_min_count_check' AND convalidated
+		  )`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

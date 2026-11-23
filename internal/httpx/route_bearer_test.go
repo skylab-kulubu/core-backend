@@ -68,6 +68,8 @@ var routesBehindBearerSample = []string{
 	"GET /v1/dashboard/summary",
 	"GET /v1/dashboard/event-stats",
 	"POST /v1/events/:id/feedback/send",
+	"GET /v1/events/:id/certificate-rule",
+	"PUT /v1/events/:id/certificate-rule",
 	"POST /v1/events/:eventId/mail-list",
 	"GET /v1/apps",
 	"GET " + handlers.AppPreferencePath,

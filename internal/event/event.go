@@ -88,14 +88,18 @@ type Event struct {
 	CoverColors     []string                      `json:"coverColors"`
 	AttendanceRule  string                        `json:"attendanceRule"`
 	AttendanceRatio *float64                      `json:"attendanceRatio,omitempty"`
-	Images          []GalleryImage                `json:"images"`
-	ImageURLs       []string                      `json:"imageUrls"`
-	DoorStaffIDs    []uuid.UUID                   `json:"doorStaffIds,omitempty"`
-	MailListID      *uuid.UUID                    `json:"mailListId,omitempty"`
-	ArchivedAt      *time.Time                    `json:"archivedAt,omitempty"`
-	ArchivedBy      *uuid.UUID                    `json:"archivedBy,omitempty"`
-	CreatedAt       time.Time                     `json:"createdAt"`
-	UpdatedAt       time.Time                     `json:"updatedAt"`
+	// AttendanceMinCount is the count rule's threshold M ("at least M of
+	// the N counted Sessions"); null is the default, ceil(3N/4). Any other
+	// rule has none (docs/certificate-rule.md).
+	AttendanceMinCount *int           `json:"attendanceMinCount,omitempty"`
+	Images             []GalleryImage `json:"images"`
+	ImageURLs          []string       `json:"imageUrls"`
+	DoorStaffIDs       []uuid.UUID    `json:"doorStaffIds,omitempty"`
+	MailListID         *uuid.UUID     `json:"mailListId,omitempty"`
+	ArchivedAt         *time.Time     `json:"archivedAt,omitempty"`
+	ArchivedBy         *uuid.UUID     `json:"archivedBy,omitempty"`
+	CreatedAt          time.Time      `json:"createdAt"`
+	UpdatedAt          time.Time      `json:"updatedAt"`
 
 	// Files and Videos are the Event's files and videos, in their
 	// organizers' order (media redesign ticket 22). Only an Event's detail
@@ -220,6 +224,13 @@ type Session struct {
 	OrderIndex      int        `json:"orderIndex"`
 	SessionType     string     `json:"sessionType"`
 	Cancelled       bool       `json:"cancelled"`
+	// CertificateCounted makes the Session one of the N the certificate
+	// rule counts; CertificateRequired makes missing it refuse the
+	// certificate, and is only set on a counted Session
+	// (docs/certificate-rule.md). The service reads what a body sends of
+	// them from WithCertificate.
+	CertificateCounted  bool `json:"certificateCounted"`
+	CertificateRequired bool `json:"certificateRequired"`
 	// FeedbackFormURL and FeedbackFormAlias are the Session's own feedback
 	// form and its short link alias, used in the per_session mode;
 	// FeedbackAutoSend mails it when the Session ends (etkinlik geri
@@ -233,6 +244,9 @@ type Session struct {
 	// formGuard makes the store's CreateSession and UpdateSession apply the
 	// one-place rule again inside their write (feedback.go).
 	formGuard *formGuard
+	// certificate is what the body sent of the certificate marks
+	// (WithCertificate).
+	certificate SessionCertificate
 }
 
 type Day struct {

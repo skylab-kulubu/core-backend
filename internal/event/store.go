@@ -133,4 +133,9 @@ type Store interface {
 	ListPlaces(ctx context.Context, ownerTeam string, drafts bool, limit int) ([]Place, error)
 	ArchiveSession(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	RestoreSession(ctx context.Context, id uuid.UUID) error
+	// SetCertificateRule writes the Event's certificate rule and threshold
+	// and the listed Sessions' marks in one transaction: ErrNotFound when
+	// the Event is not current, ErrInvalid (nothing written) when a listed
+	// Session is not a current Session of the Event on a current day.
+	SetCertificateRule(ctx context.Context, eventID uuid.UUID, rule string, minCount *int, flags []SessionCertificateFlags) error
 }

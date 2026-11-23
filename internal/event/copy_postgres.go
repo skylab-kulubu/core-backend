@@ -62,14 +62,14 @@ func (s *PostgresStore) Copy(ctx context.Context, plan CopyPlan) (Event, []strin
 			start_date, end_date, ranked, prize_info, season_id,
 			attendance_rule, attendance_ratio, status, copied_from_event_id,
 			registration_closes_at, feedback_mode, feedback_auto_send,
-			location_lat, location_lng, location_address
+			location_lat, location_lng, location_address, attendance_min_count
 		) VALUES ($2, $3, $4, $5, $6, $7, $1, $8, $9, $10, `+copySeasonSQL+`,
-			$11, $12, 'draft', $13, $14, $15, $16, $17, $18, $19)
+			$11, $12, 'draft', $13, $14, $15, $16, $17, $18, $19, $20)
 		ON CONFLICT (id) DO NOTHING`,
 		e.StartDate, e.ID, e.Name, e.Description, e.Location, e.OwnerTeam, e.Capacity,
 		e.EndDate, e.Ranked, e.PrizeInfo, attendanceRule(e.AttendanceRule), e.AttendanceRatio,
 		plan.Source, e.RegistrationClosesAt, string(feedbackMode(e.FeedbackMode)), e.FeedbackAutoSend,
-		e.LocationLat, e.LocationLng, e.LocationAddress)
+		e.LocationLat, e.LocationLng, e.LocationAddress, e.AttendanceMinCount)
 	if err != nil {
 		return Event{}, nil, err
 	}
@@ -181,7 +181,8 @@ func copySchedule(ctx context.Context, tx pgx.Tx, plan CopyPlan) error {
 			return err
 		}
 		rows, err := tx.Query(ctx, `
-			SELECT title, speaker_name, speaker_linkedin, description, start_time, end_time, order_index, session_type, feedback_auto_send
+			SELECT title, speaker_name, speaker_linkedin, description, start_time, end_time, order_index, session_type, feedback_auto_send,
+				certificate_counted, certificate_required
 			FROM sessions WHERE event_day_id = $1 AND archived_at IS NULL
 			ORDER BY order_index, start_time NULLS LAST, id`, day.ID)
 		if err != nil {
@@ -190,7 +191,8 @@ func copySchedule(ctx context.Context, tx pgx.Tx, plan CopyPlan) error {
 		sessions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Session, error) {
 			var sess Session
 			err := row.Scan(&sess.Title, &sess.SpeakerName, &sess.SpeakerLinkedin, &sess.Description,
-				&sess.StartTime, &sess.EndTime, &sess.OrderIndex, &sess.SessionType, &sess.FeedbackAutoSend)
+				&sess.StartTime, &sess.EndTime, &sess.OrderIndex, &sess.SessionType, &sess.FeedbackAutoSend,
+				&sess.CertificateCounted, &sess.CertificateRequired)
 			return sess, err
 		})
 		if err != nil {
@@ -199,10 +201,12 @@ func copySchedule(ctx context.Context, tx pgx.Tx, plan CopyPlan) error {
 		for _, sess := range sessions {
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO sessions (id, event_day_id, title, speaker_name, speaker_linkedin, description,
-					start_time, end_time, order_index, session_type, cancelled, feedback_auto_send)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false, $11)`,
+					start_time, end_time, order_index, session_type, cancelled, feedback_auto_send,
+					certificate_counted, certificate_required)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false, $11, $12, $13)`,
 				uuid.New(), dayID, sess.Title, sess.SpeakerName, sess.SpeakerLinkedin, sess.Description,
-				plan.Shift.At(sess.StartTime), plan.Shift.At(sess.EndTime), sess.OrderIndex, sess.SessionType, sess.FeedbackAutoSend); err != nil {
+				plan.Shift.At(sess.StartTime), plan.Shift.At(sess.EndTime), sess.OrderIndex, sess.SessionType, sess.FeedbackAutoSend,
+				sess.CertificateCounted, sess.CertificateRequired); err != nil {
 				return err
 			}
 		}

@@ -716,6 +716,8 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/events/:id/cancel", events.Cancel)
 	app.Post("/v1/events/:id/uncancel", events.Uncancel)
 	app.Post("/v1/events/:id/copy", events.Copy)
+	app.Get("/v1/events/:id/certificate-rule", events.CertificateRule)
+	app.Put("/v1/events/:id/certificate-rule", events.SetCertificateRule)
 	if deps.FeedbackInvites != nil && deps.Authz != nil {
 		feedbackH := handlers.NewFeedbackHandler(deps.Events, deps.Authz, deps.FeedbackInvites)
 		app.Get("/v1/events/:id/feedback", feedbackH.Counts)
