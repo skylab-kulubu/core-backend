@@ -3,18 +3,14 @@ package certificate
 import (
 	"encoding/base64"
 	"html"
-	"strings"
 
 	"github.com/skylab-kulubu/core-backend/internal/organizer"
 )
 
 func HTML(ownerTeam, recipientName, eventName, verifyURL string, qrPNG []byte) string {
-	// The club's own Event (YK, DK, ADMIN or no Owner team) is headed with
-	// the club's name, another team's with its code (organizer.Name).
-	heading := html.EscapeString(organizer.ClubName)
-	if !organizer.Club(ownerTeam) {
-		heading = "SKY LAB · " + html.EscapeString(strings.TrimSpace(ownerTeam))
-	}
+	// Headed with the organizer as shown everywhere (organizer.Name): the
+	// club's name for YK, DK, ADMIN or no Owner team, else "KOD · Türkçe ad".
+	heading := html.EscapeString(organizer.Name(ownerTeam))
 	qr := ""
 	if len(qrPNG) > 0 {
 		qr = `<img alt="verify" src="data:image/png;base64,` + base64.StdEncoding.EncodeToString(qrPNG) + `" width="120" height="120"/>`

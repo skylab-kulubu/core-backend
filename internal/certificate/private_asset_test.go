@@ -226,7 +226,7 @@ func TestPublishFailingPartWayThroughItsAssetsLeavesNoPrivateCopy(t *testing.T) 
 	}
 	layout := versionedLayout("TWO ASSETS")
 	layout.BackgroundMediaID = &assets[0]
-	layout.Elements = append(layout.Elements, certificate.Element{ID: "logo", Kind: "image", MediaID: &assets[1], X: 10, Y: 100, Width: 80, Height: 80, Opacity: 1})
+	layout.Elements = append(layout.Elements, certificate.Element{ID: "logo", Kind: "image", MediaID: &assets[1], X: 10, Y: 100, Width: 80, Height: 80})
 	store := certificate.NewMemoryStore()
 	template, err := store.CreateTemplate(ctx, certificate.Template{ID: uuid.New(), Name: "TWO", OwnerTeam: "WEBLAB", SourceKind: "sky", DraftLayout: layout})
 	if err != nil {

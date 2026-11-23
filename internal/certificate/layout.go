@@ -52,14 +52,14 @@ func ValidateLayout(layout Layout) error {
 		if _, ok := required[el.Kind]; ok {
 			required[el.Kind] = true
 		}
-		if !finite(el.X, el.Y, el.Width, el.Height, el.FontSize, el.MinFontSize, el.LineHeight, el.LetterSpacing, el.BorderWidth, el.BorderRadius, el.Rotation, el.Opacity) ||
+		if !finite(el.X, el.Y, el.Width, el.Height, el.FontSize, el.MinFontSize, el.LineHeight, el.LetterSpacing, el.BorderWidth, el.BorderRadius, el.Rotation, el.opacity()) ||
 			el.X < 0 || el.Y < 0 || el.Width <= 0 || el.Height <= 0 ||
 			el.X+el.Width > layout.Width+0.01 || el.Y+el.Height > layout.Height+0.01 ||
 			el.FontSize < 0 || el.FontSize > 300 || el.MinFontSize < 0 || el.MinFontSize > 300 ||
 			el.FontWeight < 0 || el.FontWeight > 1000 || el.LineHeight < 0 || el.LineHeight > 5 ||
 			el.LetterSpacing < -20 || el.LetterSpacing > 100 || el.BorderWidth < 0 || el.BorderWidth > 100 ||
 			el.BorderRadius < 0 || el.BorderRadius > 2000 ||
-			el.Rotation < -360 || el.Rotation > 360 || el.Opacity < 0 || el.Opacity > 1 {
+			el.Rotation < -360 || el.Rotation > 360 || el.opacity() < 0 || el.opacity() > 1 {
 			return ErrInvalid
 		}
 		for _, color := range []string{el.Color, el.BackgroundColor, el.BorderColor} {
@@ -139,6 +139,15 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 			fitClass = ` class="fit"`
 			fitData = ` data-min-font="` + number(max(el.MinFontSize, 8)) + `"`
 		}
+		if el.Kind == "ownerTeam" {
+			// "KOD · Türkçe ad" may not fit a box drawn for the code: the
+			// page then prints the code alone (the script below).
+			if code := strings.TrimSpace(data.OwnerTeam); code != "" && content != code && !organizer.Club(code) {
+				// data-font: the designed size, restored before the code
+				// is fitted (the shrink pass may have lowered it).
+				fitData += ` data-short="` + html.EscapeString(code) + `" data-font="` + number(el.FontSize) + `"`
+			}
+		}
 		body.WriteString(`<div` + fitClass + fitData + ` style="` + style + `">` + html.EscapeString(content) + `</div>`)
 	}
 	bg := layout.BackgroundColor
@@ -148,7 +157,9 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 	return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><style>
 @page{size:` + number(layout.Width) + `px ` + number(layout.Height) + `px;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif}.page{position:relative;width:` + number(layout.Width) + `px;height:` + number(layout.Height) + `px;overflow:hidden;background:` + html.EscapeString(bg) + `;` + background + `}.fit{display:flex;align-items:center;justify-content:inherit;white-space:nowrap;overflow:hidden}
 </style></head><body><main class="page">` + body.String() + `</main><script>
-document.querySelectorAll('.fit').forEach(function(el){var size=parseFloat(getComputedStyle(el).fontSize);var min=parseFloat(el.dataset.minFont||'8');while((el.scrollWidth>el.clientWidth||el.scrollHeight>el.clientHeight)&&size>min){size-=1;el.style.fontSize=size+'px'}})
+function over(el){return el.scrollWidth>el.clientWidth||el.scrollHeight>el.clientHeight}function fit(el){var size=parseFloat(getComputedStyle(el).fontSize);var min=parseFloat(el.dataset.minFont||'8');while(over(el)&&size>min){size-=1;el.style.fontSize=size+'px'}}
+document.querySelectorAll('.fit').forEach(fit)
+document.querySelectorAll('[data-short]').forEach(function(el){if(over(el)){el.style.fontSize=el.dataset.font+'px';el.textContent=el.dataset.short;if(el.classList.contains('fit'))fit(el)}})
 </script></body></html>`, nil
 }
 
@@ -225,7 +236,15 @@ func elementStyle(el Element) string {
 	if borderColor == "" {
 		borderColor = "transparent"
 	}
-	return fmt.Sprintf("position:absolute;left:%spx;top:%spx;width:%spx;height:%spx;font-family:%s;font-size:%spx;font-weight:%d;color:%s;background:%s;border:%spx solid %s;border-radius:%spx;text-align:%s;line-height:%s;letter-spacing:%spx;opacity:%s;transform:rotate(%sdeg);transform-origin:center;white-space:pre-wrap;overflow:hidden;", number(el.X), number(el.Y), number(el.Width), number(el.Height), font, number(el.FontSize), el.FontWeight, color, background, number(el.BorderWidth), borderColor, number(el.BorderRadius), align, number(lineHeight), number(el.LetterSpacing), number(el.Opacity), number(el.Rotation))
+	return fmt.Sprintf("position:absolute;left:%spx;top:%spx;width:%spx;height:%spx;font-family:%s;font-size:%spx;font-weight:%d;color:%s;background:%s;border:%spx solid %s;border-radius:%spx;text-align:%s;line-height:%s;letter-spacing:%spx;opacity:%s;transform:rotate(%sdeg);transform-origin:center;white-space:pre-wrap;overflow:hidden;", number(el.X), number(el.Y), number(el.Width), number(el.Height), font, number(el.FontSize), el.FontWeight, color, background, number(el.BorderWidth), borderColor, number(el.BorderRadius), align, number(lineHeight), number(el.LetterSpacing), number(el.opacity()), number(el.Rotation))
+}
+
+// opacity is the element's opacity; a layout that leaves it out means 1.
+func (el Element) opacity() float64 {
+	if el.Opacity == nil {
+		return 1
+	}
+	return *el.Opacity
 }
 
 func safeFont(font string) string {
