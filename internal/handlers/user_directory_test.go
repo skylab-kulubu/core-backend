@@ -80,6 +80,14 @@ func TestUserDirectoryHTTP(t *testing.T) {
 			t.Fatalf("yk %s: %d, want 400", target, status)
 		}
 	}
+	// A page past the last one: 400 page_invalid, never an overflowed offset
+	status, body = get(ykIdent(), "/v1/users/directory?page=200000000000000000")
+	if status != fiber.StatusBadRequest || body["code"] != "page_invalid" {
+		t.Fatalf("huge page: %d %v", status, body)
+	}
+	if status, _ := get(member, "/v1/users/directory?page=200000000000000000"); status != fiber.StatusForbidden {
+		t.Fatalf("member huge page: %d", status)
+	}
 	if status, _ := get(authn.Identity{}, "/v1/users/directory"); status != fiber.StatusUnauthorized {
 		t.Fatalf("anonymous: %d", status)
 	}

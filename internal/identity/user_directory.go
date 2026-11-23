@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 	_ "time/tzdata" // "new" is the Istanbul month whatever the image carries.
@@ -15,7 +16,14 @@ import (
 const (
 	DirectoryDefaultSize = 50
 	DirectoryMaxSize     = 100
+	// DirectoryMaxPage is the last page a read may ask for: a page past it
+	// would carry the offset past what an int and Postgres' OFFSET hold.
+	DirectoryMaxPage = 1_000_000
 )
+
+// ErrDirectoryPage is a directory page past DirectoryMaxPage (400
+// page_invalid); an ErrInvalid.
+var ErrDirectoryPage = fmt.Errorf("identity: directory page past %d: %w", DirectoryMaxPage, ErrInvalid)
 
 // The user directory's filters.
 const (
@@ -74,6 +82,9 @@ func (s *service) UserDirectory(ctx context.Context, p authz.Principal, in UserD
 	}
 	if in.Malformed || in.Page < 1 || in.Size < 0 {
 		return UserDirectoryPage{}, ErrInvalid
+	}
+	if in.Page > DirectoryMaxPage {
+		return UserDirectoryPage{}, ErrDirectoryPage
 	}
 	size := in.Size
 	if size == 0 {

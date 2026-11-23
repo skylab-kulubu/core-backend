@@ -194,6 +194,16 @@ func TestService_UserDirectoryRefusesBeforeItReads(t *testing.T) {
 			t.Fatalf("member %+v err = %v", q, err)
 		}
 	}
+	// A page past the last one is refused before its offset is worked out
+	if _, err := svc.UserDirectory(ctx, privileged(), identity.UserDirectoryQuery{Page: identity.DirectoryMaxPage + 1, Size: 100}); !errors.Is(err, identity.ErrDirectoryPage) || !errors.Is(err, identity.ErrInvalid) {
+		t.Fatalf("page past the last err = %v", err)
+	}
+	if _, err := svc.UserDirectory(ctx, member(), identity.UserDirectoryQuery{Page: identity.DirectoryMaxPage + 1}); !errors.Is(err, identity.ErrForbidden) {
+		t.Fatalf("member past the last page err = %v", err)
+	}
+	if got, err := svc.UserDirectory(ctx, privileged(), identity.UserDirectoryQuery{Page: identity.DirectoryMaxPage, Size: 100}); err != nil || len(got.Items) != 0 {
+		t.Fatalf("last page: %+v, %v", got, err)
+	}
 	for _, q := range []identity.UserDirectoryQuery{{Page: 0}, {Page: 1, Malformed: true}, {Page: 1, Filter: "everyone"}} {
 		if _, err := svc.UserDirectory(ctx, privileged(), q); !errors.Is(err, identity.ErrInvalid) {
 			t.Fatalf("%+v err = %v", q, err)

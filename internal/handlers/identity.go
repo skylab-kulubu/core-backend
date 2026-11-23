@@ -598,6 +598,10 @@ func (h *IdentityHandler) UserDirectory(c fiber.Ctx) error {
 	number("page", &q.Page)
 	number("size", &q.Size)
 	page, err := h.svc.UserDirectory(c.Context(), p, q)
+	if errors.Is(err, identity.ErrDirectoryPage) {
+		return problemDetailCode(c, fiber.StatusBadRequest, "Bad Request",
+			"page is at most "+strconv.Itoa(identity.DirectoryMaxPage), "page_invalid")
+	}
 	if err != nil {
 		return identityError(c, err)
 	}
