@@ -104,7 +104,7 @@ func TestCertificateHeadingNamesTheTeam(t *testing.T) {
 			{ID: "team", Kind: "ownerTeam", X: 10, Y: 10, Width: 80, Height: 20, FontSize: 16, Fit: fit},
 		}}
 		for team, want := range map[string]string{
-			"WEBLAB": ` data-short="WEBLAB" style=`,
+			"WEBLAB": ` data-short="WEBLAB" data-font="16" style=`,
 			"YK":     `>` + organizer.ClubName + `</div>`,
 			"ARTLAB": `>ARTLAB</div>`,
 		} {
@@ -121,6 +121,42 @@ func TestCertificateHeadingNamesTheTeam(t *testing.T) {
 			if team != "WEBLAB" && strings.Contains(html, "data-short=") {
 				t.Fatalf("%s fit %q: a short form where the name is already short: %s", team, fit, html)
 			}
+		}
+	}
+}
+
+// The code printed in place of a name that does not fit keeps the designed
+// font size: the box carries it (data-font) and the page's script puts it
+// back before fitting, instead of clearing it to the browser's 16px. Not
+// parallel: organizer.UseNames is the process's one setting.
+func TestOwnerTeamShortFormKeepsTheDesignedFontSize(t *testing.T) {
+	organizer.UseNames(organizer.NewNames(func(context.Context) (map[string]string, error) {
+		return map[string]string{"WEBLAB": "Web Geliştirme"}, nil
+	}, time.Hour, nil))
+	t.Cleanup(func() { organizer.UseNames(nil) })
+
+	for _, fit := range []string{"", "shrink"} {
+		layout := certificate.Layout{Width: 800, Height: 600, Orientation: "landscape", Elements: []certificate.Element{
+			{ID: "name", Kind: "recipientName", X: 10, Y: 60, Width: 400, Height: 40, FontSize: 16},
+			{ID: "event", Kind: "eventName", X: 10, Y: 110, Width: 400, Height: 40, FontSize: 16},
+			{ID: "qr", Kind: "verificationQr", X: 500, Y: 10, Width: 100, Height: 100},
+			{ID: "team", Kind: "ownerTeam", X: 10, Y: 10, Width: 80, Height: 30, FontSize: 26, Fit: fit},
+		}}
+		html, err := certificate.LayoutHTML(context.Background(), layout, certificate.PreviewData{OwnerTeam: "WEBLAB"}, "https://skyl.app/c/X", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(html, ` data-short="WEBLAB" data-font="26" style="`) || !strings.Contains(html, "font-size:26px;") {
+			t.Fatalf("fit %q: the box does not carry its designed size: %s", fit, html)
+		}
+		script := html[strings.Index(html, "<script>"):]
+		if strings.Contains(script, "fontSize=''") || strings.Contains(script, `fontSize=""`) {
+			t.Fatalf("fit %q: the script clears the designed size: %s", fit, script)
+		}
+		short := script[strings.Index(script, "[data-short]"):]
+		restore, code := strings.Index(short, "el.style.fontSize=el.dataset.font+'px'"), strings.Index(short, "el.textContent=el.dataset.short")
+		if restore < 0 || code < 0 || restore > code || !strings.Contains(short[code:], "fit(el)") {
+			t.Fatalf("fit %q: the size is not restored before the code is printed and fitted: %s", fit, short)
 		}
 	}
 }

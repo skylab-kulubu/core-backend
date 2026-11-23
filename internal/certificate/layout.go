@@ -143,7 +143,9 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 			// "KOD · Türkçe ad" may not fit a box drawn for the code: the
 			// page then prints the code alone (the script below).
 			if code := strings.TrimSpace(data.OwnerTeam); code != "" && content != code && !organizer.Club(code) {
-				fitData += ` data-short="` + html.EscapeString(code) + `"`
+				// data-font: the designed size, restored before the code
+				// is fitted (the shrink pass may have lowered it).
+				fitData += ` data-short="` + html.EscapeString(code) + `" data-font="` + number(el.FontSize) + `"`
 			}
 		}
 		body.WriteString(`<div` + fitClass + fitData + ` style="` + style + `">` + html.EscapeString(content) + `</div>`)
@@ -157,7 +159,7 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 </style></head><body><main class="page">` + body.String() + `</main><script>
 function over(el){return el.scrollWidth>el.clientWidth||el.scrollHeight>el.clientHeight}function fit(el){var size=parseFloat(getComputedStyle(el).fontSize);var min=parseFloat(el.dataset.minFont||'8');while(over(el)&&size>min){size-=1;el.style.fontSize=size+'px'}}
 document.querySelectorAll('.fit').forEach(fit)
-document.querySelectorAll('[data-short]').forEach(function(el){if(over(el)){el.style.fontSize='';el.textContent=el.dataset.short;if(el.classList.contains('fit'))fit(el)}})
+document.querySelectorAll('[data-short]').forEach(function(el){if(over(el)){el.style.fontSize=el.dataset.font+'px';el.textContent=el.dataset.short;if(el.classList.contains('fit'))fit(el)}})
 </script></body></html>`, nil
 }
 
