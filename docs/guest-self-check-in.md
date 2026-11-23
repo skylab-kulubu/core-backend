@@ -1,4 +1,4 @@
-# Guest self check-in and the door QR
+# Guest self check-in, the door QR and the rotating Session QR
 
 A guest (a Ticket written by Guest apply or a form report, no account) checks themselves in to
 a Session with `POST /v1/sessions/{sessionId}/check-in/guest`. The route takes
@@ -12,7 +12,12 @@ screen at the door. Scanning it is the proof that the guest is at the door.
 Decision: Yusuf, 2026-10-03 (`core-internal-auth` spec, question 3).
 
 Members' own check-in (`POST /v1/sessions/{id}/check-in/me`, with their
-token) does not change.
+token) had the same hole (U12): the Session QR was a static image of the
+Session's API address, so a photo of it sent home wrote an attendance, and a
+certificate after it. The same signed token now closes that too (ADR-0082
+decision 10): the Session QR is the door QR, shown on the projector or OBS
+and rotated every 15 seconds, and `check-in/me` takes it as `doorToken`.
+`SESSION_QR_MODE=qr` retires the static QR (below).
 
 ## Callers
 
@@ -26,16 +31,24 @@ So `qr` mode refuses no caller that exists today.
 
 ### `POST /v1/sessions/{sessionId}/door-qr`
 
-For the door screen. Requires a token, and the caller must be allowed to
-take check-ins at the Session's Event: the same rule as `check-in/resolve`
-and `check-ins` (door staff of the Event, leaders of the owning team,
-Privileged, the team's members when `team_door_scan=true`). No body. `201`,
-`Cache-Control: no-store`:
+For the door screen and the attendance screen (projector, OBS). Requires a
+token, and the caller must be allowed to take check-ins at the Session's
+Event: the same rule as `check-in/resolve` and `check-ins` (door staff of the
+Event, leaders of the owning team, Privileged, the team's members when
+`team_door_scan=true`). No body.
+
+`?use=door` (the default) mints a door token: guests pass the door one by
+one, so it admits `DOOR_QR_MAX_USES` (20). `?use=display` mints the token
+for a screen a whole room scans at once: it admits `ATTENDANCE_QR_MAX_USES`
+(400). Anything else is `400`. `201`, `Cache-Control: no-store`:
 
 ```json
 {
   "token": "v1.t3kq8g.AbCdEfGh.0123456789abcdef",
   "url": "https://api.yildizskylab.com/v1/sessions/<sessionId>?dq=v1.t3kq8g.AbCdEfGh.0123456789abcdef",
+  "use": "door",
+  "maxUses": 20,
+  "sessionQrMode": "open",
   "sessionId": "<uuid>",
   "eventId": "<uuid>",
   "issuedAt": "2026-10-03T18:00:00Z",
@@ -45,7 +58,9 @@ Privileged, the team's members when `team_door_scan=true`). No body. `201`,
 ```
 
 The screen encodes `url` in the QR and asks for a new one every
-`refreshAfterSeconds`. With `?svg=1` the answer also carries `svg`: the QR of
+`refreshAfterSeconds`. `sessionQrMode` is `SESSION_QR_MODE`: in `qr` the
+static Session QR (`GET /v1/sessions/{id}/qr`) checks nobody in any more, so
+the panel stops offering it for download. With `?svg=1` the answer also carries `svg`: the QR of
 `url` drawn by core with square modules and the standard four-module margin
 (about 7 KB).
 
@@ -97,6 +112,28 @@ same window, so the screen never shows a QR the check-in would refuse. A
 Session without a start or an end is open on that side. A cancelled Session
 is closed whatever the time. This applies in both modes.
 
+### `POST /v1/sessions/{sessionId}/check-in/me`
+
+A member's own check-in (sky-app "QR Okut"). Requires a token. Optional
+body `{"doorToken": "…"}`, the `dq` value of the scanned door or attendance
+QR; no body (sky-app's versions that read only the static Session QR send
+none) is the same as no token.
+
+| Status | `code` | Meaning |
+|---|---|---|
+| 201 | | checked in |
+| 400 | | body is not JSON |
+| 403 | `session_closed` | a token was sent, or `qr` mode, and the Session is outside its window or cancelled |
+| 403 | `door_qr_required` | `SESSION_QR_MODE=qr` and no `doorToken` |
+| 403 | `door_qr_invalid` / `door_qr_expired` / `door_qr_used_up` | as for guests: scan the screen again |
+| 404 | | no Ticket for this person on the Session's Event, or no such Session |
+| 409 | | already checked in to this Session |
+
+Both classes of token are accepted, door and display, each against its own
+cap. Only a check-in that happened (or found the member already checked in)
+spends a use. Without a token in `open` mode nothing changes from before:
+no Session window, so today's sky-app keeps working until the switch.
+
 ## Modes (`GUEST_SELF_CHECKIN_MODE`)
 
 - `open` (default): an e-mail alone is enough. A `doorToken` that is sent is
@@ -104,6 +141,19 @@ is closed whatever the time. This applies in both modes.
 - `qr`: every guest check-in needs a valid `doorToken`.
 
 Any other value stops core at start-up, so a typo cannot reopen the route.
+
+## Session QR mode (`SESSION_QR_MODE`)
+
+The same two values for `check-in/me`:
+
+- `open` (default): no token needed, so the static Session QR works. A
+  `doorToken` that is sent is checked, and with one the Session window
+  applies.
+- `qr`: every member check-in needs a valid door or attendance token. A
+  printed or photographed static Session QR no longer writes attendance.
+
+A typo stops core at start-up. Start-up logs
+`guest self check-in: GUEST_SELF_CHECKIN_MODE=…; session qr: SESSION_QR_MODE=…`.
 
 ## The token
 
@@ -122,6 +172,11 @@ the path's Session and the Event that Session belongs to now (a Session moved
 to another Event's day loses its tokens). There is no algorithm field, so no
 algorithm confusion: anything that is not exactly this shape, JWTs included,
 is refused. A token over 1 KB is refused before it is parsed.
+
+A display token carries one more field, `v1.<exp>.<jti>.a.<mac>` (about 37
+characters). Its MAC uses its own domain label, so a door token cannot be
+relabelled as a display token to get the larger use cap, nor the reverse;
+every replica reads the class from the token itself.
 
 Times: `exp` = issue + `DOOR_QR_TTL` (default 60 s, allowed 30 s–10 min). A
 token is expired at `exp`; one whose `exp` lies more than TTL + 5 s ahead
@@ -156,7 +211,9 @@ single-use. What bounds a photo of it sent elsewhere:
   the use cap and the fact that a QR exists only while door staff keep the
   screen open do the real work; narrow `DOOR_QR_SESSION_GRACE` if a door
   screen has to stay up unattended;
-- each token lets at most `DOOR_QR_MAX_USES` (default 20) guests in. Only a
+- each door token lets at most `DOOR_QR_MAX_USES` (default 20) guests in,
+  each display token `ATTENDANCE_QR_MAX_USES` (default 400) people, members
+  and guests together. Only a
   check-in that happened (or found the guest already checked in) spends a
   use; an e-mail without a Ticket gives its use back, so junk e-mails cannot
   use a token up;
@@ -178,7 +235,11 @@ On `/v1/metrics`, no Session, Event or person named:
   outcomes `checked_in`, `already_checked_in`, `not_found`, `bad_request`,
   `session_closed`, `door_qr_required`, `door_qr_invalid`, `door_qr_expired`,
   `door_qr_used_up`, `failed`;
-- `skylab_guest_self_checkin_mode{mode="open|qr"}`.
+- `skylab_guest_self_checkin_mode{mode="open|qr"}`;
+- `skylab_session_self_checkin_total{door_qr="absent|present",outcome=…}`,
+  the same outcomes for `check-in/me`. `door_qr="absent"` successes are apps
+  still reading the static Session QR: each would be refused under `qr`;
+- `skylab_session_self_checkin_mode{mode="open|qr"}`.
 
 Requests refused by the per-address budget (429) do not reach the counters.
 
@@ -196,6 +257,25 @@ Requests refused by the per-address budget (429) do not reach the counters.
    Contract: `sky_lab_genel/.scratch/core-internal-auth/door-qr-sozlesme.md`.
 
 Rollback: `GUEST_SELF_CHECKIN_MODE=open`.
+
+### Session QR (U12)
+
+1. This change, `SESSION_QR_MODE=open`: nothing changes for today's sky-app.
+   The panel shows the rotating attendance QR (`?use=display`) on the
+   projector; the static download stays while the mode is `open`.
+2. sky-app's "QR Okut" reads the rotating QR (`/kapi/{id}?dq=…`, and the API
+   shape with `dq`) and sends `doorToken` (contract for Mobile Lab:
+   `sky_lab_genel/.scratch/bilet-qr-ve-pdf/sky-app-sozlesme-yoklama-qr.md`).
+3. When that version is in the stores and
+   `skylab_session_self_checkin_total{door_qr="absent",outcome="checked_in"}`
+   has stopped growing at events: `SESSION_QR_MODE=qr`. The old app then
+   answers "Oturumun doğrulanamadı." to a static QR (it shows every 403 so).
+
+Rollback: `SESSION_QR_MODE=open`.
+
+Not in this step (ticket 22's rest): members on `/kapi` by account e-mail or
+ticket key, `registrationUrl` on a 404, and the Venue entry written by a
+check-in (ticket 21).
 
 ## Compared with common practice
 

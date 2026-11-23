@@ -142,3 +142,98 @@ func TestDoorQRHTTPMintThenGuestCheckIn(t *testing.T) {
 		t.Fatalf("good token %d", status)
 	}
 }
+
+// check-in/me takes an optional {"doorToken"}: no body is the static
+// Session QR (sky-app today), which SESSION_QR_MODE=qr refuses; ?use=display
+// mints the projection screen's token, which check-in/me accepts.
+func TestSessionQRHTTPCheckInMeWithRotatingToken(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	gate := doorqr.NewGate([]byte("handler door qr key, handler doo"), doorqr.Config{SessionMode: doorqr.ModeQR})
+	staff := uuid.MustParse("99999999-9999-9999-9999-999999999999")
+	member := uuid.MustParse("77777777-7777-7777-7777-777777777777")
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB", DoorStaffIDs: []uuid.UUID{staff}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(t.Context(), event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := events.CreateSession(t.Context(), event.Session{EventDayID: day.ID, Title: "Opening", SpeakerName: "Ada", SessionType: "PRESENTATION"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tickets.Create(t.Context(), ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &member}); err != nil {
+		t.Fatal(err)
+	}
+	mintPath := "/v1/sessions/" + sess.ID.String() + "/door-qr"
+	mePath := "/v1/sessions/" + sess.ID.String() + "/check-in/me"
+
+	door := ticketApp(t, authn.Identity{ID: staff}, events, tickets, gate)
+	resp, err := door.Test(httptest.NewRequest(fiber.MethodPost, mintPath+"?use=projector", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("unknown use %d", resp.StatusCode)
+	}
+	resp, err = door.Test(httptest.NewRequest(fiber.MethodPost, mintPath+"?use=display&svg=1", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("mint %d %s", resp.StatusCode, body)
+	}
+	var pass struct {
+		Token         string `json:"token"`
+		Use           string `json:"use"`
+		MaxUses       int    `json:"maxUses"`
+		SessionQRMode string `json:"sessionQrMode"`
+		SVG           string `json:"svg"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pass); err != nil {
+		t.Fatal(err)
+	}
+	if pass.Use != "display" || pass.MaxUses != doorqr.DefaultDisplayMaxUses || pass.SessionQRMode != "qr" || !strings.HasPrefix(pass.SVG, "<svg") {
+		t.Fatalf("pass %+v", pass)
+	}
+
+	me := ticketApp(t, authn.Identity{ID: member}, events, tickets, gate)
+	checkIn := func(body string, contentType bool) (int, string) {
+		t.Helper()
+		req := httptest.NewRequest(fiber.MethodPost, mePath, strings.NewReader(body))
+		if contentType {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := me.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var problem struct {
+			Code string `json:"code"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&problem)
+		return resp.StatusCode, problem.Code
+	}
+	if status, code := checkIn("", true); status != fiber.StatusForbidden || code != "door_qr_required" {
+		t.Fatalf("no body %d %q", status, code)
+	}
+	if status, code := checkIn("{}", false); status != fiber.StatusForbidden || code != "door_qr_required" {
+		t.Fatalf("empty object %d %q", status, code)
+	}
+	if status, _ := checkIn("{", true); status != fiber.StatusBadRequest {
+		t.Fatalf("broken body %d", status)
+	}
+	if status, code := checkIn(`{"doorToken":"v1.a.b.c"}`, true); status != fiber.StatusForbidden || code != "door_qr_invalid" {
+		t.Fatalf("bad token %d %q", status, code)
+	}
+	if status, _ := checkIn(`{"doorToken":"`+pass.Token+`"}`, true); status != fiber.StatusCreated {
+		t.Fatalf("good token %d", status)
+	}
+	if status, _ := checkIn(`{"doorToken":"`+pass.Token+`"}`, true); status != fiber.StatusConflict {
+		t.Fatalf("again %d", status)
+	}
+}
