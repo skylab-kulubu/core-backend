@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 )
 
@@ -164,7 +165,9 @@ func elementContent(ctx context.Context, el Element, data PreviewData, verifyURL
 	case "issueDate":
 		return data.IssueDate, false, nil
 	case "ownerTeam":
-		return data.OwnerTeam, false, nil
+		// The organizer as the club shows it (organizer.Name): the club's
+		// name for YK, DK, ADMIN or no Owner team.
+		return organizer.Name(data.OwnerTeam), false, nil
 	case "serial":
 		return data.Serial, false, nil
 	case "verificationQr":

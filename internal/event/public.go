@@ -1,10 +1,15 @@
 package event
 
-import "github.com/skylab-kulubu/core-backend/internal/media"
+import (
+	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
+)
 
 // withPublicMedia answers the Event's images at their addresses, full size
-// and sizes, and its files and videos at theirs, under addresses.
+// and sizes, and its files and videos at theirs, under addresses, and names
+// its organizer (organizer.Name).
 func withPublicMedia(e Event, addresses media.Addresses) Event {
+	e.OrganizerName = organizer.Name(e.OwnerTeam)
 	e.CoverImageURL = addresses.Object(e.CoverImageURL)
 	e.CoverImageSizes = addresses.LinkedSizes(e.coverImage)
 	e.MapImageURL = addresses.Object(e.MapImageURL)

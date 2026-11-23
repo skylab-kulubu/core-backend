@@ -189,6 +189,7 @@ type PublicCertificate struct {
 	RecipientName string     `json:"recipientName"`
 	EventName     string     `json:"eventName"`
 	OwnerTeam     string     `json:"ownerTeam"`
+	OrganizerName string     `json:"organizerName"` // organizer.Name(OwnerTeam)
 	Status        string     `json:"status"`
 	VerifyURL     string     `json:"verifyUrl"`
 	PDFURL        string     `json:"pdfUrl,omitempty"`
@@ -218,6 +219,8 @@ type MineCertificateEvent struct {
 	ID        uuid.UUID `json:"id"`
 	Name      string    `json:"name"`
 	OwnerTeam string    `json:"ownerTeam"`
+	// OrganizerName is organizer.Name(OwnerTeam), as PublicCertificate's.
+	OrganizerName string `json:"organizerName"`
 }
 
 type TemplateStore interface {

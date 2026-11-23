@@ -199,10 +199,15 @@ func TestTicketFields(t *testing.T) {
 	d.Start, d.End = at("2026-12-12T14:00:00+03:00"), at("2026-12-12T16:00:00+03:00")
 	d.OwnerTeam = ""
 	html, _ = render(t, d)
-	for _, want := range []string{"<span>Tarih</span><b class=\"buyuk\">12 Ara 2026 Cmt</b>", "<span>Saat</span><b class=\"buyuk\">14:00 – 16:00</b>", "<span>Düzenleyen</span><b>SKY LAB</b>"} {
+	for _, want := range []string{"<span>Tarih</span><b class=\"buyuk\">12 Ara 2026 Cmt</b>", "<span>Saat</span><b class=\"buyuk\">14:00 – 16:00</b>", "<span>Düzenleyen</span><b>SKY LAB: Bilgisayar Bilimleri Kulübü</b>"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("no %q", want)
 		}
+	}
+	d.OwnerTeam = "YK"
+	html, _ = render(t, d)
+	if want := "<span>Düzenleyen</span><b>SKY LAB: Bilgisayar Bilimleri Kulübü</b>"; !strings.Contains(html, want) {
+		t.Errorf("the Board's Event: no %q", want)
 	}
 	if strings.Contains(html, "Doğrulama") || strings.Contains(html, "/bilet/") {
 		t.Error("the footnote names the ticket page")

@@ -17,6 +17,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/media"
 
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/ticket/theme"
@@ -151,6 +152,7 @@ type View struct {
 	MapAttribution    string `json:"mapAttribution,omitempty"`
 	MapAttributionURL string `json:"mapAttributionUrl,omitempty"`
 	OwnerTeam         string `json:"ownerTeam"`
+	OrganizerName     string `json:"organizerName"` // organizer.Name(OwnerTeam): the club for YK, DK, ADMIN, none
 	EventStatus       string `json:"eventStatus"`
 	HolderName        string `json:"holderName"`
 	Code              string `json:"code"`
@@ -253,7 +255,7 @@ func (s *Service) Page(ctx context.Context, key string) (View, error) {
 		DirectionsURL: DirectionsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
 		MapsURL:       MapsURL(ev.Location, ev.LocationAddress, ev.LocationLat, ev.LocationLng),
 		MapImageURL:   media.ConfiguredAddresses().Object(ev.MapImageURL),
-		OwnerTeam:     ev.OwnerTeam, EventStatus: string(ev.Status),
+		OwnerTeam:     ev.OwnerTeam, OrganizerName: organizer.Name(ev.OwnerTeam), EventStatus: string(ev.Status),
 		HolderName: o.holder, Code: o.ticket.Code, State: o.state,
 		Theme:         Theme{Key: th.Key, Accent: Accent(ev)},
 		CoverImageURL: media.ConfiguredAddresses().Object(ev.CoverImageURL),
