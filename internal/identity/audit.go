@@ -90,6 +90,16 @@ func refusal(err error) (string, bool) {
 	if errors.As(err, &delegation) {
 		return delegation.Code, true
 	}
+	// An account write Keycloak refused (a password the policy refuses, an
+	// address taken) made no change.
+	var account *AccountError
+	if errors.As(err, &account) {
+		return account.Code, true
+	}
+	var answered *keycloakStatusError
+	if errors.As(err, &answered) {
+		return "keycloak_" + strconv.Itoa(answered.status), answered.status >= 400 && answered.status < 500
+	}
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return "not_found", true

@@ -22,80 +22,65 @@ func (e *delegationEnv) attribute(path, name string) string {
 	return g.Attributes[name]
 }
 
-// A Team's Leader (or one of a Team above) and Privileged choose whether
-// the Team's members manage its competitors (Yusuf, B1 of 2026-10-25); the
-// change is a group.attributes row with its old and new value, a refusal a
-// denied row.
-func TestTeamSettingsMembersManageCompetitors(t *testing.T) {
+// setAttribute writes a Group attribute straight into the directory, as an
+// older core or the Keycloak console left it.
+func (e *delegationEnv) setAttribute(path, name, value string) {
+	e.t.Helper()
+	g, err := e.dir.GetGroup(context.Background(), e.ids[path])
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	attrs := map[string]string{}
+	for k, v := range g.Attributes {
+		attrs[k] = v
+	}
+	attrs[name] = value
+	g.Attributes = attrs
+	if _, err := e.dir.UpdateGroup(context.Background(), g); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// The retired members_manage_competitors (Yusuf, 2026-11-23) is no setting
+// any more: the route takes it from nobody, writes nothing and answers
+// without it.
+func TestTeamSettingsRetiredMembersManageCompetitors(t *testing.T) {
 	t.Parallel()
 	e := newDelegationEnv(t, delegationSetup{on: true})
-	off := `{"membersManageCompetitors":false}`
-
+	web := "/UYELER/ARGE/WEBLAB"
 	before := len(e.audit.Rows())
-	got := e.setting("webLeader", "/UYELER/ARGE/WEBLAB", off)
-	wantStatus(t, "the Team's Leader", got, fiber.StatusOK, "")
-	if want := `{"membersManageCompetitors":false,"competitionManagers":"leaders"}`; string(got.body) != want {
-		t.Errorf("answer %s, want %s", got.body, want)
-	}
-	if v := e.attribute("/UYELER/ARGE/WEBLAB", "members_manage_competitors"); v != "false" {
-		t.Errorf("attribute %q, want false", v)
-	}
-	rows := e.audit.Rows()[before:]
-	if len(rows) != 1 || rows[0].Action != teamaudit.ActionGroupAttributes || rows[0].Outcome != teamaudit.OutcomeOK ||
-		rows[0].After == nil || rows[0].After.Attributes["members_manage_competitors"] != "false" ||
-		rows[0].Actor.Basis != teamaudit.BasisLeader {
-		t.Errorf("rows %+v, want one group.attributes row by a Leader with the new value", rows)
-	}
-
-	wantStatus(t, "a Leader of the Team above on a Sub-team", e.setting("webLeader", "/UYELER/ARGE/WEBLAB/FRONT", off), fiber.StatusOK, "")
-	wantStatus(t, "YK", e.setting("yk", "/UYELER/ARGE/MOBILAB", off), fiber.StatusOK, "")
-	wantStatus(t, "back on", e.setting("yk", "/UYELER/ARGE/MOBILAB", `{"membersManageCompetitors":true}`), fiber.StatusOK, "")
-	if v := e.attribute("/UYELER/ARGE/MOBILAB", "members_manage_competitors"); v != "true" {
-		t.Errorf("MOBILAB attribute %q, want true", v)
-	}
-
-	before = len(e.audit.Rows())
-	wantStatus(t, "a member", e.setting("member", "/UYELER/ARGE/WEBLAB", off), fiber.StatusForbidden, "")
-	wantStatus(t, "a Sub-team's Leader on the Team above", e.setting("frontLeader", "/UYELER/ARGE/WEBLAB", off), fiber.StatusForbidden, "")
-	wantStatus(t, "another Team's Leader", e.setting("mobLeader", "/UYELER/ARGE/WEBLAB", off), fiber.StatusForbidden, "")
-	for _, row := range e.audit.Rows()[before:] {
-		if row.Outcome != teamaudit.OutcomeDenied {
-			t.Errorf("a refusal wrote %+v", row)
+	for _, as := range []string{"webLeader", "yk"} {
+		for _, body := range []string{`{"membersManageCompetitors":false}`, `{"membersManageCompetitors":true}`,
+			`{"membersManageCompetitors":true,"competitionManagers":"members"}`} {
+			wantStatus(t, as+" "+body, e.setting(as, web, body), fiber.StatusBadRequest, "")
 		}
 	}
-	wantStatus(t, "a Leader group", e.setting("yk", "/UYELER/ARGE/WEBLAB/LIDERLER", off), fiber.StatusBadRequest, "")
-	wantStatus(t, "an area", e.setting("yk", "/UYELER/ARGE", off), fiber.StatusBadRequest, "")
-	wantStatus(t, "no value", e.setting("webLeader", "/UYELER/ARGE/WEBLAB", `{}`), fiber.StatusBadRequest, "")
-}
-
-func TestTeamSettingsDelegationOff(t *testing.T) {
-	t.Parallel()
-	e := newDelegationEnv(t, delegationSetup{})
-	wantStatus(t, "a Leader", e.setting("webLeader", "/UYELER/ARGE/WEBLAB", `{"membersManageCompetitors":false}`), fiber.StatusForbidden, "")
-	if v := e.attribute("/UYELER/ARGE/WEBLAB", "members_manage_competitors"); v != "" {
-		t.Errorf("attribute %q written with delegation off", v)
+	if v := e.attribute(web, "members_manage_competitors"); v != "" {
+		t.Errorf("attribute %q written", v)
 	}
-	wantStatus(t, "YK", e.setting("yk", "/UYELER/ARGE/WEBLAB", `{"membersManageCompetitors":false}`), fiber.StatusOK, "")
-}
-
-// A protected Group (one that maps an admin role) is Privileged's: its
-// Leader gets 403 protected_group there too.
-func TestTeamSettingsProtectedGroup(t *testing.T) {
-	t.Parallel()
-	e := newDelegationEnv(t, delegationSetup{on: true})
-	wantStatus(t, "a Leader above a protected Team", e.setting("webLeader", "/UYELER/ARGE/WEBLAB/SECURE", `{"membersManageCompetitors":false}`),
-		fiber.StatusForbidden, "protected_group")
-	if v := e.attribute("/UYELER/ARGE/WEBLAB/SECURE", "members_manage_competitors"); v != "" {
-		t.Errorf("attribute %q written on a protected Group", v)
+	if v := e.attribute(web, "team_competition_manage"); v != "" {
+		t.Errorf("a refused body wrote team_competition_manage %q", v)
+	}
+	if rows := e.audit.Rows()[before:]; len(rows) != 0 {
+		t.Errorf("a 400 wrote %+v", rows)
+	}
+	got := e.setting("webLeader", web, `{"competitionManagers":"leaders"}`)
+	wantStatus(t, "the other setting", got, fiber.StatusOK, "")
+	if want := `{"competitionManagers":"leaders"}`; string(got.body) != want {
+		t.Errorf("answer %s, want %s", got.body, want)
 	}
 }
 
-// End to end, as main wires it: the Leader turns it off, a member's
-// competitor add is 403 at once (the write forgot the kept tree), the
-// Leader's goes through; on again, the member adds.
-func TestTeamSettingsDecideCompetitorWrites(t *testing.T) {
+// End to end, as main wires it (Yusuf, 2026-11-23: "Ahmet Kaya olsam Yusuf
+// İnan diye birini ekleyebilirim"): a plain member of the Owner team enters
+// and withdraws only themselves, whatever members_manage_competitors an
+// older core left on the Team; the Leader, a coordinator and YK add anyone;
+// "Yarışmaları kim yönetir: Tüm üyeler" lets the members add others too.
+func TestCompetitorWritesAreTheEventManagers(t *testing.T) {
 	t.Parallel()
 	e := newDelegationEnv(t, delegationSetup{on: true, teamTree: true})
+	web := "/UYELER/ARGE/WEBLAB"
+	e.setAttribute(web, "members_manage_competitors", "true")
 	yk := e.token("yk")
 	created := e.send(yk, fiber.MethodPost, "/v1/events", `{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB"}`)
 	wantStatus(t, "event", created, fiber.StatusCreated, "")
@@ -108,21 +93,81 @@ func TestTeamSettingsDecideCompetitorWrites(t *testing.T) {
 	wantStatus(t, "publish", e.send(yk, fiber.MethodPost, "/v1/events/"+ev.ID+"/publish", ""), fiber.StatusOK, "")
 	add := func(as, who string) rawResponse {
 		return e.send(e.token(as), fiber.MethodPost, "/v1/competitors",
-			`{"eventId":"`+ev.ID+`","userId":"`+e.people[who].String()+`"}`)
+			`{"eventId":"`+ev.ID+`","userId":"`+e.people[who].String()+`","score":90,"isWinner":true}`)
 	}
-	// Read the tree once, so a kept answer is there to forget.
-	wantStatus(t, "a member, the setting unset", add("member", "outsider"), fiber.StatusCreated, "")
-
-	forgets := e.tree.forgotten()
-	wantStatus(t, "off", e.setting("webLeader", "/UYELER/ARGE/WEBLAB", `{"membersManageCompetitors":false}`), fiber.StatusOK, "")
-	if e.tree.forgotten() == forgets {
-		t.Error("the settings write did not forget the kept tree")
+	id := func(r rawResponse) string {
+		t.Helper()
+		var c struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(r.body, &c); err != nil {
+			t.Fatal(err)
+		}
+		return c.ID
 	}
-	wantStatus(t, "a member, the setting off", add("member", "newcomer"), fiber.StatusForbidden, "")
-	wantStatus(t, "the Leader, the setting off", add("webLeader", "newcomer"), fiber.StatusCreated, "")
 
-	wantStatus(t, "on", e.setting("webLeader", "/UYELER/ARGE/WEBLAB", `{"membersManageCompetitors":true}`), fiber.StatusOK, "")
-	wantStatus(t, "a member, the setting on again", add("member", "exLeader"), fiber.StatusCreated, "")
+	wantStatus(t, "a member adds someone else", add("member", "outsider"), fiber.StatusForbidden, "")
+	wantStatus(t, "a Sub-team member adds someone else", add("frontMember", "outsider"), fiber.StatusForbidden, "")
+	wantStatus(t, "an outsider adds someone else", add("outsider", "newcomer"), fiber.StatusForbidden, "")
+	own := add("member", "member")
+	wantStatus(t, "a member enters themselves", own, fiber.StatusCreated, "")
+	var self struct {
+		Score    *float64 `json:"score"`
+		IsWinner bool     `json:"isWinner"`
+	}
+	if err := json.Unmarshal(own.body, &self); err != nil || self.Score != nil || self.IsWinner {
+		t.Errorf("a member gave themselves %s", own.body)
+	}
+	wantStatus(t, "an outsider enters themselves", add("outsider", "outsider"), fiber.StatusCreated, "")
+
+	leaders := add("webLeader", "newcomer")
+	wantStatus(t, "the Leader adds someone", leaders, fiber.StatusCreated, "")
+	wantStatus(t, "a coordinator adds someone", add("webCoord", "frontMember"), fiber.StatusCreated, "")
+	wantStatus(t, "YK adds someone", add("yk", "exLeader"), fiber.StatusCreated, "")
+	wantStatus(t, "another Team's Leader", add("mobLeader", "webCoord"), fiber.StatusForbidden, "")
+
+	other := id(leaders)
+	member := e.token("member")
+	wantStatus(t, "a member edits someone else", e.send(member, fiber.MethodPut, "/v1/competitors/"+other, `{"score":1}`), fiber.StatusForbidden, "")
+	wantStatus(t, "a member removes someone else", e.send(member, fiber.MethodDelete, "/v1/competitors/"+other, ""), fiber.StatusForbidden, "")
+	wantStatus(t, "a member edits their own score", e.send(member, fiber.MethodPut, "/v1/competitors/"+id(own), `{"score":100}`), fiber.StatusForbidden, "")
+	wantStatus(t, "a member withdraws themselves", e.send(member, fiber.MethodDelete, "/v1/competitors/"+id(own), ""), fiber.StatusNoContent, "")
+	wantStatus(t, "the Leader edits", e.send(e.token("webLeader"), fiber.MethodPut, "/v1/competitors/"+other, `{"score":70}`), fiber.StatusOK, "")
+
+	// Withdrawn by the Leader, the member does not bring themselves back
+	// (review T1); withdrawn by themselves, they do.
+	wantStatus(t, "a member brings back their own withdrawal", e.send(member, fiber.MethodPost, "/v1/competitors/"+id(own)+"/reinstate", ""), fiber.StatusOK, "")
+	leader := e.token("webLeader")
+	wantStatus(t, "the Leader withdraws the member", e.send(leader, fiber.MethodDelete, "/v1/competitors/"+id(own), ""), fiber.StatusNoContent, "")
+	wantStatus(t, "a member brings back the Leader's withdrawal", e.send(member, fiber.MethodPost, "/v1/competitors/"+id(own)+"/reinstate", ""), fiber.StatusForbidden, "")
+	wantStatus(t, "the Leader brings it back", e.send(leader, fiber.MethodPost, "/v1/competitors/"+id(own)+"/reinstate", ""), fiber.StatusOK, "")
+
+	// Nobody scores themselves, the Leader neither (review T2).
+	leaderOwn := add("webLeader", "webLeader")
+	wantStatus(t, "the Leader enters themselves", leaderOwn, fiber.StatusCreated, "")
+	wantStatus(t, "the Leader scores themselves", e.send(leader, fiber.MethodPut, "/v1/competitors/"+id(leaderOwn), `{"score":100,"isWinner":true}`), fiber.StatusForbidden, "own_competitor")
+	wantStatus(t, "YK scores the Leader", e.send(yk, fiber.MethodPut, "/v1/competitors/"+id(leaderOwn), `{"score":100}`), fiber.StatusOK, "")
+
+	// The capabilities say so: the panel hides "Yarışmacı ekle" from a member.
+	got := e.send(member, fiber.MethodGet, "/v1/users/me/capabilities", "")
+	wantStatus(t, "capabilities", got, fiber.StatusOK, "")
+	var caps struct {
+		Teams []struct {
+			Team string          `json:"team"`
+			Can  map[string]bool `json:"can"`
+		} `json:"teams"`
+	}
+	if err := json.Unmarshal(got.body, &caps); err != nil {
+		t.Fatal(err)
+	}
+	for _, team := range caps.Teams {
+		if team.Team == "WEBLAB" && (team.Can["competitor.create"] || team.Can["competitor.update"] || team.Can["competitor.delete"] || !team.Can["competitor.read"]) {
+			t.Errorf("a member's WEBLAB competitor capabilities %v", team.Can)
+		}
+	}
+
+	wantStatus(t, "all members manage", e.setting("webLeader", web, `{"competitionManagers":"members"}`), fiber.StatusOK, "")
+	wantStatus(t, "a member, all members manage", add("member", "mobLeader"), fiber.StatusCreated, "")
 }
 
 // "Yarışmaları kim yönetir" (Yusuf, 2026-10-12 and 2026-10-31): the Team's
@@ -134,19 +179,15 @@ func TestTeamSettingsCompetitionManagers(t *testing.T) {
 	t.Parallel()
 	e := newDelegationEnv(t, delegationSetup{on: true})
 	web := "/UYELER/ARGE/WEBLAB"
-	wantStatus(t, "competitors off", e.setting("webLeader", web, `{"membersManageCompetitors":false}`), fiber.StatusOK, "")
 
 	before := len(e.audit.Rows())
 	got := e.setting("webLeader", web, `{"competitionManagers":"members"}`)
 	wantStatus(t, "the Team's Leader opens it", got, fiber.StatusOK, "")
-	if want := `{"membersManageCompetitors":false,"competitionManagers":"members"}`; string(got.body) != want {
+	if want := `{"competitionManagers":"members"}`; string(got.body) != want {
 		t.Errorf("answer %s, want %s", got.body, want)
 	}
 	if v := e.attribute(web, "team_competition_manage"); v != "true" {
 		t.Errorf("attribute %q, want true", v)
-	}
-	if v := e.attribute(web, "members_manage_competitors"); v != "false" {
-		t.Errorf("the competitor setting became %q", v)
 	}
 	rows := e.audit.Rows()[before:]
 	if len(rows) != 1 || rows[0].Action != teamaudit.ActionGroupAttributes || rows[0].Outcome != teamaudit.OutcomeOK ||

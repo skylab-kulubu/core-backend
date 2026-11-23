@@ -17,8 +17,6 @@ import (
 // members (authz.TeamAttrCompetitionManage).
 type allMembers struct{}
 
-func (allMembers) MembersManageCompetitors(string) bool { return true }
-
 func (allMembers) TeamCompetitionManage(team string) bool { return team == "AGC" }
 
 func TestServiceMemberSettingBasisAndOwnEntrant(t *testing.T) {

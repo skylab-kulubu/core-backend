@@ -77,6 +77,9 @@ var routesBehindBearerSample = []string{
 	"GET /v1/certificates/me",
 	"POST /v1/tickets/:id/notification",
 	"GET /v1/events/places",
+	"GET /v1/users/:id/account",
+	"POST /v1/users/:id/password",
+	"DELETE /v1/users/:id/credentials/:credentialId",
 }
 
 // Never called: Bearer refuses the probe token before any handler runs.

@@ -188,3 +188,51 @@ func TestBasisNoneOnlyDenied(t *testing.T) {
 		t.Fatalf("rows %+v", rows)
 	}
 }
+
+// A user.* row is about the person alone: a target, no Group, no path; its
+// account fields are kept, sorted and cut like the other names.
+func TestUserRowsTargetThePersonAlone(t *testing.T) {
+	t.Parallel()
+	person := Record{
+		Actor:  Actor{ID: uuid.New(), Basis: BasisPrivileged, Client: "admin", CorrelationID: "req-1"},
+		Action: ActionUserPasswordSet, TargetUserID: uuid.New(),
+		After: &State{Temporary: new(bool), RequiredActions: []string{"VERIFY_EMAIL", "UPDATE_PASSWORD", "VERIFY_EMAIL"}},
+	}
+	got, bad := person.normalize()
+	if bad != "" {
+		t.Fatalf("user row: %s", bad)
+	}
+	if !reflect.DeepEqual(got.After.RequiredActions, []string{"UPDATE_PASSWORD", "VERIFY_EMAIL"}) || got.After.Temporary == nil {
+		t.Fatalf("after = %+v", got.After)
+	}
+	for name, c := range map[string]struct {
+		change func(*Record)
+		code   string
+	}{
+		"no person":  {func(r *Record) { r.TargetUserID = uuid.Nil }, "invalid_target"},
+		"a group":    {func(r *Record) { r.GroupID = uuid.NewString() }, "invalid_path"},
+		"a path":     {func(r *Record) { r.GroupPath = "/UYELER" }, "invalid_path"},
+		"no actor":   {func(r *Record) { r.Actor.ID = uuid.Nil }, "no_actor"},
+		"bad action": {func(r *Record) { r.Action = "user.impersonate" }, "invalid_action"},
+	} {
+		r := person
+		c.change(&r)
+		if _, got := r.normalize(); got != c.code {
+			t.Errorf("%s: %q, want %q", name, got, c.code)
+		}
+	}
+	for _, action := range UserActions {
+		if !action.IsUser() || !slicesContains(Actions, action) {
+			t.Fatalf("%s is not a user action the table accepts", action)
+		}
+	}
+}
+
+func slicesContains(actions []Action, a Action) bool {
+	for _, x := range actions {
+		if x == a {
+			return true
+		}
+	}
+	return false
+}

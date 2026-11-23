@@ -28,6 +28,8 @@ func competitorError(c fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, fiber.ErrUnauthorized):
 		return problem(c, fiber.StatusUnauthorized, "Unauthorized")
+	case errors.Is(err, competitor.ErrOwnCompetitor):
+		return problemDetailCode(c, fiber.StatusForbidden, "Forbidden", "nobody writes the score of their own competitor", "own_competitor")
 	case errors.Is(err, competitor.ErrForbidden):
 		return problem(c, fiber.StatusForbidden, "Forbidden")
 	case errors.Is(err, competitor.ErrNotFound):
