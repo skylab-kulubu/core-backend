@@ -362,6 +362,50 @@ func (h *TicketHandler) CheckIn(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(ci)
 }
 
+// UndoCheckIn answers DELETE /v1/tickets/:ticketId/sessions/:sessionId/check-in:
+// the door desk takes back a wrong check-in. 204 when it is gone, 404 when
+// the Ticket had none at the Session; the rest as CheckIn.
+func (h *TicketHandler) UndoCheckIn(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	ticketID, err := uuid.Parse(c.Params("ticketId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	sessionID, err := uuid.Parse(c.Params("sessionId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if err := h.svc.UndoCheckIn(c.Context(), p, ticketID, sessionID); err != nil {
+		return ticketError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// UndoCheckInByID answers DELETE /v1/sessions/:sessionId/check-ins/:checkInId:
+// UndoCheckIn by the check-in's own id, the one the door activity and the
+// resolve and scan answers carry. 404 for a check-in of another Session.
+func (h *TicketHandler) UndoCheckInByID(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	sessionID, err := uuid.Parse(c.Params("sessionId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	checkInID, err := uuid.Parse(c.Params("checkInId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if err := h.svc.UndoCheckInByID(c.Context(), p, sessionID, checkInID); err != nil {
+		return ticketError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
 type guestCheckInBody struct {
 	Email     string `json:"email"`
 	DoorToken string `json:"doorToken"`

@@ -814,6 +814,7 @@ func New(deps Deps) *fiber.App {
 	// (docs/form-response-tickets.md).
 	app.Post("/v1/forms/:formId/responses", tickets.RecordFormResponse)
 	app.Post("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.CheckIn)
+	app.Delete("/v1/tickets/:ticketId/sessions/:sessionId/check-in", tickets.UndoCheckIn)
 	app.Post("/v1/sessions/:sessionId/check-in/me", tickets.CheckInMe)
 	// Guest check-in takes no sign-in; failures are budgeted per address, and
 	// the door QR caps how many guests one token lets in
@@ -826,6 +827,7 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/sessions/:sessionId/door-qr", doorQRLimits.MintLimit(), tickets.MintDoorQR)
 	app.Post("/v1/sessions/:sessionId/check-in/resolve", tickets.ResolveAndCheckIn)
 	app.Get("/v1/sessions/:sessionId/check-ins", tickets.DoorActivity)
+	app.Delete("/v1/sessions/:sessionId/check-ins/:checkInId", tickets.UndoCheckInByID)
 	if pass != nil {
 		// One route for whatever the door scanned (docs/ticket-qr.md):
 		// check-in/scan is its name, check-in/skypass the old one the

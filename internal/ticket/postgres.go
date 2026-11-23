@@ -483,6 +483,39 @@ func isUnique(err error) bool {
 	return errors.As(err, &pg) && pg.Code == "23505"
 }
 
+// RemoveCheckIn deletes the one row (ticket_id, session_id) is unique on.
+// Nothing on the tickets row is derived from its check-ins: every reader
+// counts ticket_checkins itself.
+func (s *PostgresStore) RemoveCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM ticket_checkins WHERE ticket_id = $1 AND session_id = $2
+	`, ticketID, sessionID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func (s *PostgresStore) CheckInByID(ctx context.Context, id uuid.UUID) (CheckIn, error) {
+	var c CheckIn
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, ticket_id, event_day_id, session_id, created_at
+		FROM ticket_checkins WHERE id = $1
+	`, id).Scan(&c.ID, &c.TicketID, &c.EventDayID, &c.SessionID, &c.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CheckIn{}, ErrNotFound
+	}
+	return c, err
+}
+
+func (s *PostgresStore) RemoveCheckInByID(ctx context.Context, id uuid.UUID) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM ticket_checkins WHERE id = $1`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 func (s *PostgresStore) HasCheckIn(ctx context.Context, ticketID, sessionID uuid.UUID) (bool, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `

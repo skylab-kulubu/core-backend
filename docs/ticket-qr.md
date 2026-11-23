@@ -102,6 +102,29 @@ Ticket of the Event has falls through to them. `GET
 is not a credential: it never writes a check-in by itself, only staff at the
 desk do.
 
+## Taking a check-in back: `DELETE /v1/tickets/{ticketId}/sessions/{sessionId}/check-in`
+
+The desk corrects a check-in written on the wrong Ticket. Who may take
+check-ins at the Event's door may take one back (door staff of the Event,
+who manages it, the owning team's members when its door scan is on), while
+the door takes check-ins: a cancelled Event or a draft is refused as the
+check-in is (`403 session_closed`; a draft is `404` to who may not see it).
+`204` with no body when the check-in is gone; `404` when the Ticket has none
+at the Session, or no such Ticket or Session; `400` for a Session of another
+Event; `403` for anyone else. The row is deleted: the Session's
+`GET /v1/sessions/{id}/check-ins` and every count read from check-ins drop
+at once, and the Ticket can be checked in again. Nothing is derived on the
+Ticket itself. A certificate already issued and a feedback invitation
+already sent stay. Core logs one line,
+`{"event":"ticket_checkin_undo","actorId":…,"eventId":…,"ticketId":…,"sessionId":…}`
+(ids only).
+
+The door holds the check-in's own id, not its Ticket's (the `id` of
+`GET /v1/sessions/{id}/check-ins` items and of the resolve and scan
+answers): `DELETE /v1/sessions/{sessionId}/check-ins/{checkInId}` takes it
+back by that id with the same rules, answers and log line; a check-in of
+another Session is `404`.
+
 ## Forwarded codes
 
 A static code can be photographed and forwarded. What bounds it:
