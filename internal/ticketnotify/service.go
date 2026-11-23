@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -312,7 +313,9 @@ func (s *Service) vars(ev event.Event, t ticket.Ticket) map[string]string {
 		"EventName": ev.Name,
 		"EventDate": "",
 		"Venue":     ev.Location,
-		"OwnerTeam": ev.OwnerTeam,
+		// The template's "Düzenleyen" row: the organizer as the club shows
+		// it (organizer.Name), the club's name for YK, DK, ADMIN or none.
+		"OwnerTeam": organizer.Name(ev.OwnerTeam),
 	}
 	if ev.StartDate != nil {
 		vars["EventDate"] = ev.StartDate.In(s.location).Format(dateLayout)

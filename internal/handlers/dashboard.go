@@ -34,3 +34,23 @@ func (h *DashboardHandler) Summary(c fiber.Ctx) error {
 	c.Set(fiber.HeaderCacheControl, "no-store")
 	return c.JSON(summary)
 }
+
+// EventStats answers GET /v1/dashboard/event-stats: every Event the summary
+// covers with its applications, past and undated ones too, for the panel's
+// Event list (docs/dashboard-summary.md, "Event stats"). It is the caller's
+// view, so no cache keeps it.
+func (h *DashboardHandler) EventStats(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		if errors.Is(err, fiber.ErrUnauthorized) {
+			return problem(c, fiber.StatusUnauthorized, "Unauthorized")
+		}
+		return err
+	}
+	stats, err := h.svc.EventStats(c.Context(), p)
+	if err != nil {
+		return err
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(stats)
+}

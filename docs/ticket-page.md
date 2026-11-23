@@ -37,6 +37,7 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
   "mapAttribution": "© OpenStreetMap contributors",
   "mapAttributionUrl": "https://www.openstreetmap.org/copyright",
   "ownerTeam": "AILAB",
+  "organizerName": "AILAB",
   "eventStatus": "published",
   "holderName": "Elif Yılmaz",
   "code": "K7M2-QX9F",
@@ -49,6 +50,13 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
 ```
 
 - Exactly these fields: **no e-mail, phone, Sky number or ticket type**.
+- `organizerName` is who organizes the Event as the page and the PDF show
+  it (Yusuf, 2026-11-23): "SKY LAB: Bilgisayar Bilimleri Kulübü" for an
+  Event of YK, DK or ADMIN or of no Owner team, else the Owner team's code
+  and Turkish name as core's mails name a Team ("WEBLAB · Web Geliştirme";
+  the code alone while the name is unknown or unreadable). The names are
+  Keycloak's `display_name_tr`, read at most every 15 minutes.
+  `ownerTeam` stays the Owner team itself (`internal/organizer`).
   `eventStart` and `eventEnd` are `null` when the Event has none.
 - The place ([event-location.md](event-location.md)): `venue` is its name;
   `venueAddress`, `venueLat` and `venueLng` are left out while the Event has
@@ -142,7 +150,7 @@ tarifi QR kodu"), the code real text.
      cover; without a cover, the cover's first colour, else the purple;
   2. "ETKİNLİK GİRİŞ BİLETİ" and the ticket: a grid of the Event (name),
      its date and hours (one day) or its start and end (longer), the place's
-     name, the holder and the organizing team, beside the QR (44 mm) and the
+     name, the holder and the organizer (`organizerName`), beside the QR (44 mm) and the
      code. It never splits and is always on the first page;
   3. "Program": the current days and their Sessions in time order, a
      cancelled Session left out. **Days stand side by side, at most two to

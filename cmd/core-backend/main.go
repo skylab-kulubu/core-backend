@@ -51,6 +51,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
 	"github.com/skylab-kulubu/core-backend/internal/memlimit"
 	"github.com/skylab-kulubu/core-backend/internal/migrate"
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
 	"github.com/skylab-kulubu/core-backend/internal/retention"
 	"github.com/skylab-kulubu/core-backend/internal/season"
 	"github.com/skylab-kulubu/core-backend/internal/shorturl"
@@ -539,6 +540,12 @@ func main() {
 		adminGroups = keycloakDirectory
 		userSyncDir = keycloakDirectory
 	}
+	// The organizer outside the panel names a Team "WEBLAB · Web
+	// Geliştirme" (Yusuf, 2026-11-23): the Teams' Turkish names, read from
+	// the Groups at most every DefaultNamesTTL, the codes while unreadable.
+	organizer.UseNames(organizer.NewNames(identity.TurkishTeamNames(dir), organizer.DefaultNamesTTL, func(err error) {
+		log.Printf("organizer: team names: %v", err)
+	}))
 	// Whether a person may be given a client role directly
 	// (docs/team-delegation.md "Role rules"): off unless set. A value core
 	// cannot read stops startup.

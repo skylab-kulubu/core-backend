@@ -50,7 +50,7 @@ type Element struct {
 	BorderRadius    float64    `json:"borderRadius,omitempty"`
 	Align           string     `json:"align,omitempty"`
 	Rotation        float64    `json:"rotation,omitempty"`
-	Opacity         float64    `json:"opacity,omitempty"`
+	Opacity         *float64   `json:"opacity,omitempty"` // nil (left out) = 1, as the panel's editor shows it; an explicit 0 stays 0
 	Fit             string     `json:"fit,omitempty"`
 	Locked          bool       `json:"locked,omitempty"`
 }
@@ -189,6 +189,7 @@ type PublicCertificate struct {
 	RecipientName string     `json:"recipientName"`
 	EventName     string     `json:"eventName"`
 	OwnerTeam     string     `json:"ownerTeam"`
+	OrganizerName string     `json:"organizerName"` // organizer.Name(OwnerTeam)
 	Status        string     `json:"status"`
 	VerifyURL     string     `json:"verifyUrl"`
 	PDFURL        string     `json:"pdfUrl,omitempty"`
@@ -218,6 +219,8 @@ type MineCertificateEvent struct {
 	ID        uuid.UUID `json:"id"`
 	Name      string    `json:"name"`
 	OwnerTeam string    `json:"ownerTeam"`
+	// OrganizerName is organizer.Name(OwnerTeam), as PublicCertificate's.
+	OrganizerName string `json:"organizerName"`
 }
 
 type TemplateStore interface {

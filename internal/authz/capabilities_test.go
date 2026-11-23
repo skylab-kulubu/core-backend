@@ -146,8 +146,10 @@ func TestCapabilities_OwnerTeamMember(t *testing.T) {
 		ID: "u1", Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}, Roles: []string{"certificate:issue"},
 	})
 	gecekodu := scopeFor(c, "GECEKODU")
+	// GECEKODU's members edit its Events, but write no one else's
+	// competitor: that is who manages its Competitions (Yusuf, 2026-11-23).
 	want := []string{
-		"certificate.issue", "certificate.read", "competitor.create", "competitor.delete", "competitor.read", "competitor.update",
+		"certificate.issue", "certificate.read", "competitor.read",
 		"event.create", "event.update", "ticket.read",
 	}
 	if got := trueKeys(gecekodu); !slices.Equal(got, want) {

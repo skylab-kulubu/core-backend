@@ -13,6 +13,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/media"
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
 	"github.com/skylab-kulubu/core-backend/internal/qr"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
@@ -228,7 +229,8 @@ func (s *service) sendMail(ctx context.Context, c Certificate) {
 	}
 	s.mail.Certificate(ctx, c.RecipientEmail, c.RecipientName, map[string]string{
 		"FirstName": first, "EventName": c.EventName, "VerifyURL": c.VerifyURL,
-		"Serial": c.Serial, "OwnerTeam": c.OwnerTeam,
+		// The template's "Düzenleyen" row: the organizer as the club shows it.
+		"Serial": c.Serial, "OwnerTeam": organizer.Name(c.OwnerTeam),
 	})
 }
 
@@ -342,7 +344,7 @@ func (s *service) Verify(ctx context.Context, serial string) (PublicCertificate,
 		status = "revoked"
 		pdfURL = ""
 	}
-	return PublicCertificate{Serial: c.Serial, RecipientName: c.RecipientName, EventName: c.EventName, OwnerTeam: c.OwnerTeam, Status: status, VerifyURL: c.VerifyURL, PDFURL: pdfURL, IssuedAt: c.IssuedAt, RevokedAt: c.RevokedAt}, nil
+	return PublicCertificate{Serial: c.Serial, RecipientName: c.RecipientName, EventName: c.EventName, OwnerTeam: c.OwnerTeam, OrganizerName: organizer.Name(c.OwnerTeam), Status: status, VerifyURL: c.VerifyURL, PDFURL: pdfURL, IssuedAt: c.IssuedAt, RevokedAt: c.RevokedAt}, nil
 }
 
 func (s *service) PDF(ctx context.Context, serial string) ([]byte, error) {
@@ -380,7 +382,7 @@ func (s *service) Mine(ctx context.Context, p authz.Principal) ([]MineCertificat
 			pdfURL = ""
 		}
 		out = append(out, MineCertificate{
-			ID: c.ID, Serial: c.Serial, Event: MineCertificateEvent{ID: c.EventID, Name: c.EventName, OwnerTeam: c.OwnerTeam},
+			ID: c.ID, Serial: c.Serial, Event: MineCertificateEvent{ID: c.EventID, Name: c.EventName, OwnerTeam: c.OwnerTeam, OrganizerName: organizer.Name(c.OwnerTeam)},
 			Status: status, IssuedAt: c.IssuedAt, RevokedAt: c.RevokedAt, PDFURL: pdfURL, VerifyURL: c.VerifyURL,
 			Share: ShareInfo{Title: c.EventName + " sertifikası", Text: c.RecipientName + " · " + c.EventName, URL: c.VerifyURL},
 		})

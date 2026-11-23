@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
 	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 )
 
@@ -81,6 +83,12 @@ func TestCompetitorWritesAreTheEventManagers(t *testing.T) {
 	e := newDelegationEnv(t, delegationSetup{on: true, teamTree: true})
 	web := "/UYELER/ARGE/WEBLAB"
 	e.setAttribute(web, "members_manage_competitors", "true")
+	// GECEKODU, whose members edit its Events (the Event policy) but manage
+	// none of its Competitions.
+	gecekodu := "/UYELER/ORGANIZASYON/GECEKODU"
+	e.ids[gecekodu] = uuid.NewString()
+	e.dir.PutGroup(identity.Group{ID: e.ids[gecekodu], Name: "GECEKODU", Path: gecekodu})
+	e.person("gecekoduMember", gecekodu)
 	yk := e.token("yk")
 	created := e.send(yk, fiber.MethodPost, "/v1/events", `{"name":"Hack","location":"YTÜ","ownerTeam":"WEBLAB"}`)
 	wantStatus(t, "event", created, fiber.StatusCreated, "")
@@ -165,6 +173,25 @@ func TestCompetitorWritesAreTheEventManagers(t *testing.T) {
 			t.Errorf("a member's WEBLAB competitor capabilities %v", team.Can)
 		}
 	}
+
+	// Editing the Event is not managing its Competitions (Yusuf, 2026-11-23):
+	// a GECEKODU member adds only themselves to GECEKODU's Event.
+	gk := e.send(yk, fiber.MethodPost, "/v1/events", `{"name":"Gece","location":"YTÜ","ownerTeam":"GECEKODU"}`)
+	wantStatus(t, "GECEKODU event", gk, fiber.StatusCreated, "")
+	var gkEv struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(gk.body, &gkEv); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, "publish GECEKODU", e.send(yk, fiber.MethodPost, "/v1/events/"+gkEv.ID+"/publish", ""), fiber.StatusOK, "")
+	addTo := func(as, who string) rawResponse {
+		return e.send(e.token(as), fiber.MethodPost, "/v1/competitors",
+			`{"eventId":"`+gkEv.ID+`","userId":"`+e.people[who].String()+`"}`)
+	}
+	wantStatus(t, "a GECEKODU member adds someone else", addTo("gecekoduMember", "outsider"), fiber.StatusForbidden, "")
+	wantStatus(t, "a GECEKODU member enters themselves", addTo("gecekoduMember", "gecekoduMember"), fiber.StatusCreated, "")
+	wantStatus(t, "YK adds to GECEKODU", addTo("yk", "outsider"), fiber.StatusCreated, "")
 
 	wantStatus(t, "all members manage", e.setting("webLeader", web, `{"competitionManagers":"members"}`), fiber.StatusOK, "")
 	wantStatus(t, "a member, all members manage", add("member", "mobLeader"), fiber.StatusCreated, "")

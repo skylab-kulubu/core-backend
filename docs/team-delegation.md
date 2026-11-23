@@ -193,10 +193,13 @@ attributes (`GET /v1/groups/{id}`).
   and the route takes it no more (`400`); a value an older core wrote stays
   on the Group, unread and harmless, until someone removes it (Privileged,
   as any other attribute). Who writes someone else's competitor now is who
-  manages the Event: Privileged (`competitor:manage`), the Owner team's
-  Leaders and coordinators and a Leader of a Team above, the members the
-  Event policy lets edit the Team's Events (`GECEKODU`), and the members
-  while `competitionManagers` is `members`, as they add Entrants then. A
+  manages the Event's Competitions, the Competition module's rule
+  ([competitions.md](competitions.md) "Who"; Yusuf 2026-11-23): Privileged
+  (`competitor:manage`, the old name of `competition:manage`), the Owner
+  team's Leaders and coordinators and a Leader of a Team above, and the
+  members while `competitionManagers` is `members`. Editing the Event is
+  not enough: the members the Event policy lets edit the Team's Events
+  (`GECEKODU`) enter and withdraw only themselves, as any member. A
   person still enters and withdraws themselves as a competitor
   (`POST /v1/competitors` with their own `userId`, `DELETE` of their own
   row), with no score and no win, and brings back (`reinstate`) only a row

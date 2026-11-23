@@ -49,9 +49,9 @@ func TestRenderLayoutPreservesPDFBackgroundForVectorComposition(t *testing.T) {
 	layout := Layout{
 		Width: 1123, Height: 794, Orientation: "landscape", BackgroundColor: "#ffffff", BackgroundMediaID: &id,
 		Elements: []Element{
-			{ID: "name", Kind: "recipientName", X: 100, Y: 100, Width: 800, Height: 80, FontSize: 40, FontFamily: "Noto Sans Display", Opacity: 1},
-			{ID: "event", Kind: "eventName", X: 100, Y: 220, Width: 800, Height: 60, FontSize: 28, Opacity: 1},
-			{ID: "qr", Kind: "verificationQr", X: 900, Y: 600, Width: 130, Height: 130, Opacity: 1},
+			{ID: "name", Kind: "recipientName", X: 100, Y: 100, Width: 800, Height: 80, FontSize: 40, FontFamily: "Noto Sans Display"},
+			{ID: "event", Kind: "eventName", X: 100, Y: 220, Width: 800, Height: 60, FontSize: 28},
+			{ID: "qr", Kind: "verificationQr", X: 900, Y: 600, Width: 130, Height: 130},
 		},
 	}
 

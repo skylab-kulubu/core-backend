@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
@@ -342,6 +343,33 @@ func (h *URLHandler) ListHits(c fiber.Ctx) error {
 		return urlError(c, err)
 	}
 	return c.JSON(hits)
+}
+
+// LinkStats is one link's clicks counted by day, channel, referring site and
+// device (?days=, 1 to 90, 30 when left out); no click's address or browser
+// string is in it.
+func (h *URLHandler) LinkStats(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return urlError(c, err)
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	days := 0
+	if raw := c.Query("days"); raw != "" {
+		days, err = strconv.Atoi(raw)
+		if err != nil || days < 1 {
+			return problem(c, fiber.StatusBadRequest, "Bad Request")
+		}
+	}
+	stats, err := h.svc.LinkStats(c.Context(), p, id, days)
+	if err != nil {
+		return urlError(c, err)
+	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(stats)
 }
 
 func (h *URLHandler) Update(c fiber.Ctx) error {

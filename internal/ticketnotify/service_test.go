@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/event"
 	"github.com/skylab-kulubu/core-backend/internal/mail"
+	"github.com/skylab-kulubu/core-backend/internal/organizer"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/ticketnotify"
 	"github.com/skylab-kulubu/core-backend/internal/user"
@@ -208,6 +209,25 @@ func TestMemberGetsOneNotificationBySubject(t *testing.T) {
 	}
 	if e.queue.len() != 0 {
 		t.Fatal("the row stays after the send")
+	}
+}
+
+// The mail's "Düzenleyen" row is the organizer as the club shows it: an
+// Event of the Board (YK), DK or ADMIN says the club's name, which the
+// OwnerTeam variable carries (Yusuf, 2026-11-23; SkyMail's template reads
+// only that variable).
+func TestClubEventMailNamesTheClub(t *testing.T) {
+	for _, team := range []string{"YK", "DK", "ADMIN", ""} {
+		e := newEnv(t)
+		e.ev.OwnerTeam = team
+		e.events[e.ev.ID] = e.ev
+		e.member(user.AccountActive)
+		if r := e.pass(t); r.Sent != 1 {
+			t.Fatalf("%q: report %+v", team, r)
+		}
+		if got := e.mail.calls[0].vars["OwnerTeam"]; got != organizer.ClubName {
+			t.Fatalf("%q: OwnerTeam %q, want the club's name", team, got)
+		}
 	}
 }
 
