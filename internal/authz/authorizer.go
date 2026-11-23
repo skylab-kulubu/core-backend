@@ -299,30 +299,19 @@ func (a *authorizer) competitionBasis(p Principal, r Resource, privileged bool) 
 	return ""
 }
 
-// competitorWriter is who, besides Privileged (competitor:manage,
-// allowCompetitor), adds, edits and removes someone else's competitor on an
-// Event (Yusuf, 2026-11-23: a member adding another person was a hole):
-// the people of the Owner team who manage the Event. Its Leaders and
-// coordinators, and a Leader of a Team above (ownerLevels); the members the
-// Event policy lets edit the Team's Events (GECEKODU); the members while
-// the Team's "Yarışmaları kim yönetir" says all members
-// (TeamAttrCompetitionManage), as they add Entrants then. A plain member
-// enters and withdraws only themselves (allowCompetitor's owner rule). The
-// retired Team attribute members_manage_competitors is not read.
+// competitorWriter is who, besides Privileged (competitor:manage, read as
+// competition:manage too: renamedRoles; allowCompetitor), adds, edits and
+// removes someone else's competitor on an Event: who manages the Event's
+// Competitions, by the same rule as the Competition module
+// (competitionBasis; Yusuf, 2026-11-23). The Owner team's Leaders and
+// coordinators, a Leader of a Team above, and its members while the Team's
+// "Yarışmaları kim yönetir" says all members (TeamAttrCompetitionManage).
+// Editing the Event (the Event policy, GECEKODU's members) is not enough,
+// and the retired Team attribute members_manage_competitors is not read. A
+// plain member enters and withdraws only themselves (allowCompetitor's
+// owner rule).
 func (a *authorizer) competitorWriter(p Principal, r Resource) bool {
-	levels := a.ownerLevels(p, r.OwnerTeam)
-	if len(levels) == 0 {
-		return false
-	}
-	if slices.Contains(levels, LevelLeader) {
-		return true
-	}
-	for _, level := range levels {
-		if slices.Contains(a.requiredLevels(r.OwnerTeam, Update), level) {
-			return true
-		}
-	}
-	return a.settings != nil && a.settings.TeamCompetitionManage(r.OwnerTeam)
+	return a.competitionBasis(p, Resource{Type: TypeCompetition, OwnerTeam: r.OwnerTeam}, false) != ""
 }
 
 func (a *authorizer) isOwnerMember(p Principal, r Resource) bool {
