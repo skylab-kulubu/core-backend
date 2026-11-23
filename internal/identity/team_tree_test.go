@@ -160,35 +160,23 @@ func (l *blockingLister) ListGroups(ctx context.Context) ([]Group, error) {
 	return l.countingLister.ListGroups(ctx)
 }
 
-func TestTeamTree_MembersManageCompetitors(t *testing.T) {
+// The minute's answer is kept, and a write through core forgets it: the
+// next decision reads the tree again.
+func TestTeamTree_SettingKeptAMinuteUntilForgotten(t *testing.T) {
 	t.Parallel()
-	groups := treeGroups()
-	groups[4].Attributes = map[string]string{"members_manage_competitors": "FALSE"} // MOBIL
-	groups[2].Attributes = map[string]string{"members_manage_competitors": "true"}  // WEBLAB
-	lister := &countingLister{groups: groups}
+	lister := &countingLister{groups: treeGroups()}
 	tree := NewTeamTree(lister, TeamTreeOptions{})
-	if tree.MembersManageCompetitors("MOBIL") {
-		t.Error("MOBIL's Leader turned it off")
+	if tree.TeamCompetitionManage("MOBIL") {
+		t.Error("MOBIL never chose and is open")
 	}
-	if !tree.MembersManageCompetitors("WEBLAB") || !tree.MembersManageCompetitors("GAMELAB") {
-		t.Error("a Team that kept it, or never chose, refuses its members")
-	}
-	if !tree.MembersManageCompetitors("LIDERLER") || !tree.MembersManageCompetitors("NOPE") {
-		t.Error("a name that is not one Group's is not the default")
-	}
-	down := NewTeamTree(&countingLister{err: errors.New("down")}, TeamTreeOptions{})
-	if !down.MembersManageCompetitors("MOBIL") {
-		t.Error("an unread tree is not the default")
-	}
-	// A write through core forgets the tree: the next decision reads it again.
 	lister.mu.Lock()
-	lister.groups[4].Attributes = map[string]string{"members_manage_competitors": "true"}
+	lister.groups[4].Attributes = map[string]string{"team_competition_manage": "true"}
 	lister.mu.Unlock()
-	if tree.MembersManageCompetitors("MOBIL") {
+	if tree.TeamCompetitionManage("MOBIL") {
 		t.Error("the minute's answer was not kept")
 	}
 	tree.ForgetAll()
-	if !tree.MembersManageCompetitors("MOBIL") {
+	if !tree.TeamCompetitionManage("MOBIL") {
 		t.Error("ForgetAll kept the old answer")
 	}
 	if lister.count() != 2 {
@@ -253,27 +241,26 @@ func (l *snapshotThenBlock) ListGroups(context.Context) ([]Group, error) {
 func TestTeamTree_ForgetAllDuringInFlightRead(t *testing.T) {
 	t.Parallel()
 	groups := treeGroups()
-	groups[4].Attributes = map[string]string{"members_manage_competitors": "true"} // MOBIL
 	l := &snapshotThenBlock{groups: groups, started: make(chan struct{}), release: make(chan struct{})}
 	tree := NewTeamTree(l, TeamTreeOptions{})
 	done := make(chan struct{})
-	go func() { tree.MembersManageCompetitors("MOBIL"); close(done) }()
+	go func() { tree.TeamCompetitionManage("MOBIL"); close(done) }()
 	<-l.started
-	// core writes false to Keycloak, then forgets the tree
+	// core writes true to Keycloak, then forgets the tree
 	l.mu.Lock()
-	l.groups[4].Attributes = map[string]string{"members_manage_competitors": "false"}
+	l.groups[4].Attributes = map[string]string{"team_competition_manage": "true"}
 	l.mu.Unlock()
 	tree.ForgetAll()
 	// a decision right after the write joins the old flight
 	after := make(chan bool)
-	go func() { after <- tree.MembersManageCompetitors("MOBIL") }()
+	go func() { after <- tree.TeamCompetitionManage("MOBIL") }()
 	time.Sleep(50 * time.Millisecond)
 	close(l.release)
 	<-done
-	if got := <-after; got {
+	if got := <-after; !got {
 		t.Error("the decision right after the write joined the read that started before it")
 	}
-	if tree.MembersManageCompetitors("MOBIL") {
+	if !tree.TeamCompetitionManage("MOBIL") {
 		t.Errorf("after ForgetAll and the in-flight read, the stale tree is kept for the TTL")
 	}
 }

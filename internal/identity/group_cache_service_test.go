@@ -82,14 +82,15 @@ func TestTeamSettingsOnOneReplicaReachTheOthersTeamTree(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	_, _, weblab, bus, writer, other := twoTeamReplicas(t)
-	if !other.teamTree.MembersManageCompetitors("WEBLAB") {
-		t.Fatal("before the write the Team's members do not manage competitors")
+	if other.teamTree.TeamCompetitionManage("WEBLAB") {
+		t.Fatal("before the write the Team's members manage its Competitions")
 	}
 
-	if _, err := writer.svc.SetTeamSettings(ctx, privileged(), weblab, identity.TeamSettingsChange{MembersManageCompetitors: new(bool)}); err != nil {
+	members := identity.CompetitionManagersMembers
+	if _, err := writer.svc.SetTeamSettings(ctx, privileged(), weblab, identity.TeamSettingsChange{CompetitionManagers: &members}); err != nil {
 		t.Fatal(err)
 	}
-	if other.teamTree.MembersManageCompetitors("WEBLAB") {
+	if !other.teamTree.TeamCompetitionManage("WEBLAB") {
 		t.Fatal("the other replica still decides by the setting from before the write")
 	}
 	if !slices.Equal(bus.payloads, []string{"writer *"}) {

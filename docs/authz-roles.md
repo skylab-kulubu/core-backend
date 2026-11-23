@@ -186,7 +186,7 @@ From core-frontend `src/lib/auth/groups.ts` and its callers (origin/main, 2026-1
 | `canWriteEvent(t, action)`; "Yeni etkinlik" | `scope(t).can["event.<action>"]`; any of `teams[].can`, `noOwnerTeam.can` `event.create` |
 | `canCheckInForTeam(t)`, `canCheckInForEvent`, `canDeskCheckIn` | `scope(t).can["door.checkIn"]`, or the caller on the Event's door staff |
 | Competition tab, archive button | `scope(t).can["competition.manage"]`, `scope(t).can["competition.archive"]` (both follow the Team setting) |
-| `canManageCompetitors(t)` | `scope(t).can["competitor.update"]` (core also lets Owner team members, not only Leaders, unless the Team's Leader turned `membersManageCompetitors` off: [team-delegation.md](team-delegation.md) "Team settings") |
+| `canManageCompetitors(t)` | `scope(t).can["competitor.update"]` (who manages the Event: Leaders and coordinators, a Leader above, members the Event policy lets edit the Team's Events, members while "Yarışmaları kim yönetir" says all members, and `competitor:manage`; a plain member enters and withdraws only themselves: [team-delegation.md](team-delegation.md) "Team settings") |
 | `canListEventTickets(t)`, `canAssignEventTicket(t)` | `scope(t).can["ticket.read"]`, `scope(t).can["ticket.assign"]` |
 | `canReadCertificates`, `canIssueCertificates`, `canRevokeCertificates` (t) | `scope(t).can["certificate.read" / "certificate.issue" / "certificate.revoke"]` |
 | `canBindCertificateTemplates(t)` | `scope(t).can["certificateTemplate.assign"]` |

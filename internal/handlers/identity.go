@@ -441,25 +441,24 @@ func (h *IdentityHandler) ManagedGroups(c fiber.Ctx) error {
 // settings, written by its manager or Privileged (docs/team-delegation.md
 // "Team settings"). A field left out keeps its value; at least one is given,
 // and an unknown one is 400: the attributes that stay Privileged's
-// (team_door_scan, public_listing, public_leaders) are not written here.
+// (team_door_scan, public_listing, public_leaders) are not written here, nor
+// the retired membersManageCompetitors (2026-11-23).
 func (h *IdentityHandler) SetTeamSettings(c fiber.Ctx) error {
 	p, err := caller(c)
 	if err != nil {
 		return identityError(c, err)
 	}
 	var body struct {
-		MembersManageCompetitors *bool   `json:"membersManageCompetitors"`
-		CompetitionManagers      *string `json:"competitionManagers"`
+		CompetitionManagers *string `json:"competitionManagers"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(c.Body()))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil || decoder.More() ||
-		(body.MembersManageCompetitors == nil && body.CompetitionManagers == nil) {
+		body.CompetitionManagers == nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
 	settings, err := h.svc.SetTeamSettings(auditContext(c, p), p, c.Params("groupId"), identity.TeamSettingsChange{
-		MembersManageCompetitors: body.MembersManageCompetitors,
-		CompetitionManagers:      body.CompetitionManagers,
+		CompetitionManagers: body.CompetitionManagers,
 	})
 	if err != nil {
 		return identityError(c, err)

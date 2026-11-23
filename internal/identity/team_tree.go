@@ -111,18 +111,6 @@ func (t *TeamTree) SubTeams(path string) []string {
 	return out
 }
 
-// MembersManageCompetitors is the Team setting of the one Group named team
-// (authz.TeamAttrMembersManageCompetitors): false only when it says
-// "false"; true when it says anything else, or the Group cannot be found or
-// the tree read (the default, today's rule).
-func (t *TeamTree) MembersManageCompetitors(team string) bool {
-	g, ok := t.only(team)
-	if !ok {
-		return true
-	}
-	return authz.MembersManageCompetitorsValue(g.Attributes[authz.TeamAttrMembersManageCompetitors])
-}
-
 // TeamCompetitionManage is the Team setting of the one Group named team
 // (authz.TeamAttrCompetitionManage): true only when it says "true"; false
 // when it says anything else, or the Group cannot be found or the tree read

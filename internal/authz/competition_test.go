@@ -112,11 +112,8 @@ func TestCapabilities_CompetitionManage(t *testing.T) {
 }
 
 // membersManage is the Teams whose setting "Yarışmaları kim yönetir" says
-// all members (TeamAttrCompetitionManage=true); the competitor setting
-// keeps its default.
+// all members (TeamAttrCompetitionManage=true).
 type membersManage map[string]bool
-
-func (membersManage) MembersManageCompetitors(string) bool { return true }
 
 func (m membersManage) TeamCompetitionManage(team string) bool { return m[team] }
 
