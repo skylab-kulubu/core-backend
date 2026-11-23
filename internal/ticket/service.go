@@ -39,6 +39,9 @@ type Service interface {
 	// Event's door may, while the door takes them; ErrNotFound when the
 	// Ticket has none there.
 	UndoCheckIn(ctx context.Context, p authz.Principal, ticketID, sessionID uuid.UUID) error
+	// UndoCheckInByID is UndoCheckIn by the check-in's own id, which the
+	// door holds; ErrNotFound for a check-in of another Session.
+	UndoCheckInByID(ctx context.Context, p authz.Principal, sessionID, checkInID uuid.UUID) error
 	CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (CheckIn, error)
 	CheckInGuest(ctx context.Context, sessionID uuid.UUID, g GuestCheckIn) (CheckIn, error)
 	MintDoorQR(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (DoorQR, error)

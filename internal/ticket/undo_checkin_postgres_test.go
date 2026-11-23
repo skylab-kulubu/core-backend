@@ -62,7 +62,28 @@ func TestUndoCheckInDeletesTheRowOnPostgres(t *testing.T) {
 	if err := svc.UndoCheckIn(ctx, weblabLead, tk.ID, sess.ID); !errors.Is(err, ticket.ErrNotFound) {
 		t.Fatalf("second undo %v", err)
 	}
-	if _, err := svc.CheckIn(ctx, weblabLead, tk.ID, sess.ID); err != nil {
+	again, err := svc.CheckIn(ctx, weblabLead, tk.ID, sess.ID)
+	if err != nil {
 		t.Fatalf("check in again: %v", err)
+	}
+
+	// By the check-in's own id: read, refused for another Session, deleted.
+	if got, err := store.CheckInByID(ctx, again.ID); err != nil || got.TicketID != tk.ID || got.SessionID != sess.ID {
+		t.Fatalf("by id %+v %v", got, err)
+	}
+	if err := svc.UndoCheckInByID(ctx, weblabLead, other.ID, again.ID); !errors.Is(err, ticket.ErrNotFound) {
+		t.Fatalf("another session's: %v", err)
+	}
+	if err := svc.UndoCheckInByID(ctx, weblabLead, sess.ID, again.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CheckInByID(ctx, again.ID); !errors.Is(err, ticket.ErrNotFound) {
+		t.Fatalf("after undo by id: %v", err)
+	}
+	if removed, err := store.RemoveCheckInByID(ctx, again.ID); err != nil || removed {
+		t.Fatalf("second remove by id %v %v", removed, err)
+	}
+	if after, err := svc.DoorActivity(ctx, weblabLead, sess.ID); err != nil || after.Total != 0 {
+		t.Fatalf("after by id %+v %v", after, err)
 	}
 }

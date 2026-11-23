@@ -201,3 +201,71 @@ func TestWithSettledCheckInDoesNotFireOnUndo(t *testing.T) {
 		t.Fatal("the wrapper did not pass the undo through")
 	}
 }
+
+// The door holds the check-in's own id (door activity, resolve and scan
+// answers), not its Ticket's: the undo by that id follows the same rules.
+func TestService_UndoCheckInByID(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newUndoFixture(t, event.StatusPublished)
+	second := seedSession(t, f.events, f.day.ID, "Second")
+	ci, err := f.svc.CheckIn(ctx, f.staff, f.tk.ID, f.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elsewhere, err := f.svc.CheckIn(ctx, f.staff, f.tk.ID, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activity, err := f.svc.DoorActivity(ctx, f.staff, f.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activity.Total != 1 || activity.Items[0].ID != ci.ID {
+		t.Fatalf("activity %+v", activity)
+	}
+
+	member := authz.Principal{ID: "mem", Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	if err := f.svc.UndoCheckInByID(ctx, member, f.sess.ID, ci.ID); !errors.Is(err, ticket.ErrForbidden) {
+		t.Fatalf("member: %v", err)
+	}
+	// Another Session's check-in, or none at all, is not found here.
+	if err := f.svc.UndoCheckInByID(ctx, f.staff, f.sess.ID, elsewhere.ID); !errors.Is(err, ticket.ErrNotFound) {
+		t.Fatalf("another session's: %v", err)
+	}
+	if err := f.svc.UndoCheckInByID(ctx, f.staff, f.sess.ID, uuid.New()); !errors.Is(err, ticket.ErrNotFound) {
+		t.Fatalf("unknown: %v", err)
+	}
+	if f.logs.Len() != 0 {
+		t.Fatalf("logged %q", f.logs.String())
+	}
+
+	if err := f.svc.UndoCheckInByID(ctx, f.staff, f.sess.ID, ci.ID); err != nil {
+		t.Fatal(err)
+	}
+	if activity, err = f.svc.DoorActivity(ctx, f.staff, f.sess.ID); err != nil || activity.Total != 0 {
+		t.Fatalf("after %+v %v", activity, err)
+	}
+	if !strings.Contains(f.logs.String(), `"ticket_checkin_undo"`) || !strings.Contains(f.logs.String(), f.tk.ID.String()) {
+		t.Fatalf("log %q", f.logs.String())
+	}
+	if err := f.svc.UndoCheckInByID(ctx, f.staff, f.sess.ID, ci.ID); !errors.Is(err, ticket.ErrNotFound) {
+		t.Fatalf("second undo: %v", err)
+	}
+	if ok, _ := f.tickets.HasCheckIn(ctx, f.tk.ID, second.ID); !ok {
+		t.Fatal("the other Session's check-in was removed")
+	}
+
+	// A closed door takes none back by id either.
+	closed := newUndoFixture(t, event.StatusCancelled)
+	old, err := closed.tickets.AddCheckIn(ctx, ticket.CheckIn{TicketID: closed.tk.ID, SessionID: closed.sess.ID, EventDayID: closed.day.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.svc.UndoCheckInByID(ctx, closed.staff, closed.sess.ID, old.ID); !errors.Is(err, ticket.ErrSessionCancelled) {
+		t.Fatalf("cancelled: %v", err)
+	}
+	if _, err := closed.tickets.CheckInByID(ctx, old.ID); err != nil {
+		t.Fatalf("the check-in was removed: %v", err)
+	}
+}

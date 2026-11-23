@@ -384,6 +384,28 @@ func (h *TicketHandler) UndoCheckIn(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// UndoCheckInByID answers DELETE /v1/sessions/:sessionId/check-ins/:checkInId:
+// UndoCheckIn by the check-in's own id, the one the door activity and the
+// resolve and scan answers carry. 404 for a check-in of another Session.
+func (h *TicketHandler) UndoCheckInByID(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	sessionID, err := uuid.Parse(c.Params("sessionId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	checkInID, err := uuid.Parse(c.Params("checkInId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if err := h.svc.UndoCheckInByID(c.Context(), p, sessionID, checkInID); err != nil {
+		return ticketError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
 type guestCheckInBody struct {
 	Email     string `json:"email"`
 	DoorToken string `json:"doorToken"`

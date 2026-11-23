@@ -46,6 +46,7 @@ func ticketApp(t *testing.T, ident authn.Identity, events event.Store, tickets t
 	app.Post("/v1/sessions/:sessionId/door-qr", h.MintDoorQR)
 	app.Post("/v1/sessions/:sessionId/check-in/resolve", h.ResolveAndCheckIn)
 	app.Get("/v1/sessions/:sessionId/check-ins", h.DoorActivity)
+	app.Delete("/v1/sessions/:sessionId/check-ins/:checkInId", h.UndoCheckInByID)
 	return app
 }
 
@@ -688,6 +689,69 @@ func TestUndoCheckInHTTP(t *testing.T) {
 	}
 	if status, _, body := send(ticketApp(t, authn.Identity{}, events, tickets), fiber.MethodDelete, path); status != fiber.StatusUnauthorized {
 		t.Fatalf("anonymous: %d %s", status, body)
+	}
+}
+
+// The door's undo by the check-in's own id: 403, 404 for another
+// Session's check-in or none, 204 with no body.
+func TestUndoCheckInByIDHTTP(t *testing.T) {
+	t.Parallel()
+	events := event.NewMemoryStore()
+	tickets := ticket.NewMemoryStore()
+	ev, err := events.Create(t.Context(), event.Event{Name: "Hack", Location: "YTÜ", OwnerTeam: "WEBLAB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := events.CreateDay(t.Context(), event.Day{EventID: ev.ID, Name: "Day 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sessions []event.Session
+	for _, title := range []string{"Opening", "Closing"} {
+		sess, err := events.CreateSession(t.Context(), event.Session{EventDayID: day.ID, Title: title, SpeakerName: "Ada", SessionType: "PRESENTATION"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sessions = append(sessions, sess)
+	}
+	owner := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	tk, err := tickets.Create(t.Context(), ticket.Ticket{EventID: ev.ID, TicketType: ticket.Registered, OwnerID: &owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci, err := tickets.AddCheckIn(t.Context(), ticket.CheckIn{TicketID: tk.ID, SessionID: sessions[0].ID, EventDayID: day.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := ticketApp(t, authn.Identity{ID: uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc"), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}, events, tickets)
+	member := ticketApp(t, authn.Identity{ID: uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), Groups: []string{"/UYELER/ARGE/WEBLAB"}}, events, tickets)
+	path := func(sess event.Session) string {
+		return "/v1/sessions/" + sess.ID.String() + "/check-ins/" + ci.ID.String()
+	}
+	send := func(app *fiber.App, path string) (int, string, string) {
+		t.Helper()
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodDelete, path, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, resp.Header.Get(fiber.HeaderContentType), string(body)
+	}
+
+	if status, _, body := send(member, path(sessions[0])); status != fiber.StatusForbidden {
+		t.Fatalf("member: %d %s", status, body)
+	}
+	if status, kind, body := send(leader, path(sessions[1])); status != fiber.StatusNotFound || !strings.HasPrefix(kind, "application/problem+json") {
+		t.Fatalf("another session: %d %q %s", status, kind, body)
+	}
+	if status, _, body := send(leader, path(sessions[0])); status != fiber.StatusNoContent || body != "" {
+		t.Fatalf("undo: %d %q", status, body)
+	}
+	if status, _, body := send(leader, path(sessions[0])); status != fiber.StatusNotFound {
+		t.Fatalf("second undo: %d %s", status, body)
+	}
+	if status, _, body := send(leader, "/v1/sessions/"+sessions[0].ID.String()+"/check-ins/x"); status != fiber.StatusBadRequest {
+		t.Fatalf("bad id: %d %s", status, body)
 	}
 }
 

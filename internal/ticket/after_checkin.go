@@ -91,6 +91,11 @@ func (a *afterCheckIn) UndoCheckIn(ctx context.Context, p authz.Principal, ticke
 	return a.inner.UndoCheckIn(ctx, p, ticketID, sessionID)
 }
 
+// UndoCheckInByID passes through without firing, as UndoCheckIn.
+func (a *afterCheckIn) UndoCheckInByID(ctx context.Context, p authz.Principal, sessionID, checkInID uuid.UUID) error {
+	return a.inner.UndoCheckInByID(ctx, p, sessionID, checkInID)
+}
+
 func (a *afterCheckIn) CheckInMe(ctx context.Context, p authz.Principal, sessionID uuid.UUID) (CheckIn, error) {
 	ci, err := a.inner.CheckInMe(ctx, p, sessionID)
 	if err == nil {
