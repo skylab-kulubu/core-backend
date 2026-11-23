@@ -259,11 +259,12 @@ type fakeTeamSettings map[string]bool
 
 func (f fakeTeamSettings) TeamCompetitionManage(team string) bool { return f[team] }
 
-// Who writes someone else's competitor is who manages the Event (Yusuf,
-// 2026-11-23: "Ahmet Kaya olsam Yusuf İnan diye birini ekleyebilirim"):
+// Who writes someone else's competitor is who manages the Event's
+// Competitions (Yusuf, 2026-11-23: "Ahmet Kaya olsam Yusuf İnan diye birini
+// ekleyebilirim"; and that the Competition module's rule holds here too):
 // Privileged, the Owner team's Leaders and coordinators, a Leader of a Team
-// above, the members a Team's Event policy lets edit its Events (GECEKODU),
-// and the members while "Yarışmaları kim yönetir" says all members. A plain
+// above, and the members while "Yarışmaları kim yönetir" says all members.
+// Editing the Event (GECEKODU's members, the Event policy) is not enough. A plain
 // member reads them and enters or leaves only themselves; no setting gives
 // them back the rest, and nothing reads members_manage_competitors.
 func TestCompetitors_OnlyEventManagersWriteOthers(t *testing.T) {
@@ -311,11 +312,22 @@ func TestCompetitors_OnlyEventManagersWriteOthers(t *testing.T) {
 				t.Errorf("%s: a Leader, a coordinator, a Leader from above or YK may not %s a competitor", name, action)
 			}
 		}
-		// GECEKODU's members edit its Events (the Event policy): they manage
-		// its competitors too.
+		// GECEKODU's members edit its Events (the Event policy), but manage
+		// no Competition of it: they write only their own competitor.
 		gecekodu := Principal{ID: "u4", Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}}
-		if !auth.Allow(gecekodu, Resource{Type: TypeCompetitor, OwnerTeam: "GECEKODU"}, Update) {
-			t.Errorf("%s: a member who edits the Event may not write its competitors", name)
+		if !auth.Allow(gecekodu, Resource{Type: TypeEvent, OwnerTeam: "GECEKODU"}, Update) {
+			t.Fatalf("%s: a GECEKODU member no longer edits its Events", name)
+		}
+		for _, action := range []Action{Create, Update, Delete} {
+			if auth.Allow(gecekodu, Resource{Type: TypeCompetitor, OwnerTeam: "GECEKODU"}, action) {
+				t.Errorf("%s: a member who only edits the Event may %s someone else's competitor", name, action)
+			}
+		}
+		if !auth.Allow(gecekodu, Resource{Type: TypeCompetitor, OwnerTeam: "GECEKODU", OwnerID: "u4"}, Create) {
+			t.Errorf("%s: a GECEKODU member may not enter themselves", name)
+		}
+		if scopeFor(auth.Capabilities(gecekodu), "GECEKODU")["competitor.create"] {
+			t.Errorf("%s: capabilities offer a GECEKODU member the competitor writes", name)
 		}
 		// The capabilities say so.
 		c := auth.Capabilities(member)

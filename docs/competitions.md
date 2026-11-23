@@ -8,8 +8,9 @@ slice is what AGC's weekly event needs: one Stage scored by hand
 the organizers' live table. Result publication and the public routes (ticket
 04), bulk scoring from attendance (03), Series (05) and the `/v1/competitors/me`
 bridge for sky-app (06) come next. The old `/v1/competitors…` routes stay;
-since 2026-11-23 only who manages the Event writes someone else's competitor
-there (a plain member enters and withdraws only themselves:
+since 2026-11-23 only who manages the Event's Competitions (this rule)
+writes someone else's competitor there (a plain member enters and
+withdraws only themselves:
 [team-delegation.md](team-delegation.md) "Team settings").
 
 ## Who
