@@ -243,3 +243,46 @@ func TestKeycloakRefusalNamesTheField(t *testing.T) {
 		t.Fatalf("e-mail: %v", err)
 	}
 }
+
+// HeldRoles asks Keycloak for the person's realm roles and each client's
+// roles in effect (composite), skipping the self-service clients, and keeps
+// the client list.
+func TestKeycloakHeldRoles(t *testing.T) {
+	f := newAccountKeycloak()
+	f.answers["GET /clients"] = accountAnswer{200, `[{"id":"c-acc","clientId":"account"},{"id":"c-sky","clientId":"skycloud"},{"id":"c-forms","clientId":"forms"}]`}
+	f.answers["GET /users/"+f.id.String()+"/role-mappings/realm/composite"] = accountAnswer{200, `[{"name":"default-roles-e-skylab"},{"name":"USER"},{"name":"WEBLAB_LEADER"}]`}
+	f.answers["GET /users/"+f.id.String()+"/role-mappings/clients/c-sky/composite"] = accountAnswer{200, `[{"name":"admin"}]`}
+	f.answers["GET /users/"+f.id.String()+"/role-mappings/clients/c-forms/composite"] = accountAnswer{200, `[{"name":"skyforms:access"}]`}
+	k := f.serve(t)
+	held, err := k.HeldRoles(context.Background(), f.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, r := range held {
+		got[r.ClientID+"/"+r.Role] = true
+	}
+	for _, want := range []string{"/default-roles-e-skylab", "/USER", "/WEBLAB_LEADER", "skycloud/admin", "forms/skyforms:access"} {
+		if !got[want] {
+			t.Fatalf("%s missing: %v", want, got)
+		}
+	}
+	for _, r := range f.requests {
+		if strings.Contains(r.path, "/clients/c-acc/") {
+			t.Fatalf("the account console's roles were read: %s", r.path)
+		}
+	}
+	before := len(f.requests)
+	if _, err := k.HeldRoles(context.Background(), f.id); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range f.requests[before:] {
+		if strings.HasPrefix(r.path, "/admin/realms/e-skylab/clients?") {
+			t.Fatal("the client list was read again")
+		}
+	}
+	f.answers["GET /users/"+f.id.String()+"/role-mappings/clients/c-forms/composite"] = accountAnswer{500, `{}`}
+	if _, err := k.HeldRoles(context.Background(), f.id); err == nil {
+		t.Fatal("a failed client read gave a shorter list")
+	}
+}

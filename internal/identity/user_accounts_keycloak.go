@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 )
 
 // The person card's Keycloak Admin REST calls (docs/user-accounts.md,
@@ -507,4 +508,119 @@ func (k *Keycloak) ClearLockout(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 	return statusError("lock clear", status)
+}
+
+// heldRoleClientsTTL is how long the realm's client list HeldRoles walks is
+// kept: clients are added seldom, and a new one is seen within this long.
+const heldRoleClientsTTL = 10 * time.Minute
+
+// selfServiceClients hold no role over anyone else: the account console's
+// roles are one's own account, the other two hold none.
+var selfServiceClients = []string{"account", "account-console", "admin-cli", "security-admin-console"}
+
+type heldRoleClient struct{ uuid, clientID string }
+
+// heldRoleClients are the realm's clients HeldRoles reads (GET /clients,
+// view-clients), kept heldRoleClientsTTL.
+func (k *Keycloak) heldRoleClients(ctx context.Context) ([]heldRoleClient, error) {
+	k.mu.Lock()
+	if k.heldClients != nil && time.Now().Before(k.heldClientsUntil) {
+		out := k.heldClients
+		k.mu.Unlock()
+		return out, nil
+	}
+	k.mu.Unlock()
+	var rows []struct {
+		ID       string `json:"id"`
+		ClientID string `json:"clientId"`
+	}
+	status, _, err := k.adminCall(ctx, "client list", http.MethodGet, "/clients", url.Values{"first": {"0"}, "max": {"1000"}}, nil, &rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := statusError("client list", status); err != nil {
+		return nil, err
+	}
+	out := make([]heldRoleClient, 0, len(rows))
+	for _, row := range rows {
+		if row.ID == "" || row.ClientID == "" || slices.Contains(selfServiceClients, row.ClientID) {
+			continue
+		}
+		out = append(out, heldRoleClient{uuid: row.ID, clientID: row.ClientID})
+	}
+	k.mu.Lock()
+	k.heldClients, k.heldClientsUntil = out, time.Now().Add(heldRoleClientsTTL)
+	k.mu.Unlock()
+	return out, nil
+}
+
+// HeldRoles reads every role the person holds in effect (HeldRoleReader):
+// GET /users/{id}/role-mappings/realm/composite and, for each client but
+// the self-service ones, GET /users/{id}/role-mappings/clients/{client}/
+// composite (view-users). Keycloak resolves the Groups above the person's,
+// composites (a realm role's client roles included) and the default role on
+// its side, as for a Group in KeycloakAdminRole. A failure on any read is an
+// error, never a shorter list.
+func (k *Keycloak) HeldRoles(ctx context.Context, id uuid.UUID) ([]ClientRole, error) {
+	clients, err := k.heldRoleClients(ctx)
+	if err != nil {
+		return nil, err
+	}
+	type named struct {
+		Name string `json:"name"`
+	}
+	read := func(what, path string, clientID string) ([]ClientRole, error) {
+		var rows []named
+		status, _, err := k.adminCall(ctx, what, http.MethodGet, userPath(id)+path, nil, nil, &rows)
+		if err != nil {
+			return nil, err
+		}
+		if err := statusError(what, status); err != nil {
+			return nil, err
+		}
+		out := make([]ClientRole, 0, len(rows))
+		for _, row := range rows {
+			if row.Name != "" {
+				out = append(out, ClientRole{ClientID: clientID, Role: row.Name})
+			}
+		}
+		return out, nil
+	}
+	held, err := read("held realm roles", "/role-mappings/realm/composite", "")
+	if err != nil {
+		return nil, err
+	}
+	results := make([][]ClientRole, len(clients))
+	group, gctx := errgroup.WithContext(ctx)
+	group.SetLimit(6)
+	for i, client := range clients {
+		group.Go(func() error {
+			var rows []named
+			status, _, err := k.adminCall(gctx, "held client roles", http.MethodGet,
+				userPath(id)+"/role-mappings/clients/"+url.PathEscape(client.uuid)+"/composite", nil, nil, &rows)
+			if err != nil {
+				return err
+			}
+			if status == http.StatusNotFound {
+				// The client went away since the list was read.
+				return nil
+			}
+			if err := statusError("held client roles", status); err != nil {
+				return err
+			}
+			for _, row := range rows {
+				if row.Name != "" {
+					results[i] = append(results[i], ClientRole{ClientID: client.clientID, Role: row.Name})
+				}
+			}
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	for _, roles := range results {
+		held = append(held, roles...)
+	}
+	return held, nil
 }

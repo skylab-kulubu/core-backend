@@ -67,6 +67,11 @@ type Keycloak struct {
 	// role's child names its client by UUID).
 	clientIDsByUUID map[string]string
 
+	// heldClients are the clients HeldRoles reads, kept until
+	// heldClientsUntil.
+	heldClients      []heldRoleClient
+	heldClientsUntil time.Time
+
 	// tokenFlight lets the callers that find the token expired share one
 	// request for the next.
 	tokenFlight singleflight.Group

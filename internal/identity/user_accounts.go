@@ -265,21 +265,10 @@ type UserAccounts struct {
 	// action and code: a refusal repeated within deniedWindow writes no
 	// second row.
 	denied map[string]time.Time
-	// roles are client roles' protection (RoleProtection), kept roleTTL.
-	roles map[string]roleEntry
-}
-
-type roleEntry struct {
-	protected bool
-	expires   time.Time
 }
 
 // deniedWindow is how long a repeated refusal writes no new denied row.
 const deniedWindow = time.Minute
-
-// roleTTL is how long a client role's protection is kept: a role's
-// composites change seldom, and the Groups a person is in are read fresh.
-const roleTTL = time.Minute
 
 // NewUserAccounts is the account service over o.
 func NewUserAccounts(o UserAccountOptions) *UserAccounts {
@@ -295,7 +284,7 @@ func NewUserAccounts(o UserAccountOptions) *UserAccounts {
 	if o.Logf == nil {
 		o.Logf = func(string, ...any) {}
 	}
-	return &UserAccounts{o: o, denied: map[string]time.Time{}, roles: map[string]roleEntry{}}
+	return &UserAccounts{o: o, denied: map[string]time.Time{}}
 }
 
 // loginEventPage is how many sign-in events the card shows.
@@ -447,18 +436,55 @@ func (s *UserAccounts) refusal(ctx context.Context, p authz.Principal, u Account
 	return ""
 }
 
-// privilegedTarget reports whether the person holds a privileged role, as
-// Entra counts one: only a Privileged Authentication Administrator resets
-// the credentials of any admin role's holder. Here that is a Privileged
-// root (ADMIN, YK, DK, or a Group under one), or a client role that is no
-// app role (core's Protected classification, authz.ClassifyRole: FORMS-ALL,
-// SkyMail's sending, approving and reading roles, place:admin, a role
-// nobody has classified …) mapped to a Group the person is in or to the
-// person. Roles sit only on the Groups people are in directly (ADR-0076
-// K4: Privileged roots, top Teams' Leader groups, /ROLLER leaves), so the
-// person's own Groups are read, not the Groups above them. Realm roles are
-// not read: the Java era's ones (USER on /UYELER) would mark every member,
-// and they leave in the role cleanup's F3; ADMIN, YK and DK are the roots.
+// HeldRoleReader reads a person's roles in effect, as Keycloak resolves
+// them: every realm role and every client role the person holds directly,
+// through their Groups and the Groups above them, through the default role
+// and through composites at any depth (Keycloak's role-mappings/…/composite).
+// A realm role has an empty ClientID. The Keycloak and the memory
+// directories have it.
+type HeldRoleReader interface {
+	HeldRoles(ctx context.Context, id uuid.UUID) ([]ClientRole, error)
+}
+
+var (
+	_ HeldRoleReader = (*Keycloak)(nil)
+	_ HeldRoleReader = (*Memory)(nil)
+)
+
+// everyonesRealmRoles are the realm roles that make nobody privileged: the
+// default role's Keycloak parts and the Java era's USER, which /UYELER
+// holds until the role cleanup's F3 (ADR-0076). default-roles-<realm> is
+// matched by its prefix.
+var everyonesRealmRoles = []string{"offline_access", "uma_authorization", "USER"}
+
+// privilegedRole reports whether a role the person holds in effect is a
+// privilege, as Entra counts one (only a Privileged Authentication
+// Administrator resets the credentials of any admin role's holder): every
+// realm role but everyone's, and every client role that is no app role
+// (authz.ClassifyRole: an admin role or one nobody has classified). The
+// account client's roles (one's own account) and broker/read-token (one's
+// own identity provider token, which a first login once gave and the role
+// cleanup takes) are nobody's privilege.
+func privilegedRole(role ClientRole) bool {
+	switch {
+	case role.ClientID == "":
+		return !strings.HasPrefix(role.Role, "default-roles-") && !slices.Contains(everyonesRealmRoles, role.Role)
+	case role.ClientID == "account":
+		return false
+	case role.ClientID == "broker" && role.Role == "read-token":
+		return false
+	}
+	return authz.ClassifyRole(role.ClientID, role.Role) != authz.RoleClassApp
+}
+
+// privilegedTarget reports whether the person is privileged: in a
+// Privileged root (ADMIN, YK, DK, or a Group under one), or holding in
+// effect a role privilegedRole counts (FORMS-ALL, SkyMail's sending,
+// approving and reading roles, place:admin, a Java era realm role or the
+// admin role it holds as a composite, a role nobody has classified …).
+// Keycloak resolves the roles: Groups above the person's, realm and client
+// composites and the default role included. A directory that cannot read
+// them answers privileged: only ADMIN changes the account.
 func (s *UserAccounts) privilegedTarget(ctx context.Context, id uuid.UUID) (bool, error) {
 	groups, err := s.o.People.GroupsForUser(ctx, id)
 	if err != nil {
@@ -469,46 +495,15 @@ func (s *UserAccounts) privilegedTarget(ctx context.Context, id uuid.UUID) (bool
 			return true, nil
 		}
 	}
-	for _, g := range groups {
-		roles, err := s.o.People.GroupClientRoles(ctx, g.ID)
-		if err != nil {
-			return false, err
-		}
-		if protected, err := s.anyProtected(ctx, roles); err != nil || protected {
-			return protected, err
-		}
+	reader, ok := s.o.People.(HeldRoleReader)
+	if !ok {
+		return true, nil
 	}
-	direct, err := s.o.People.UserExtraRoles(ctx, id)
+	held, err := reader.HeldRoles(ctx, id)
 	if err != nil {
 		return false, err
 	}
-	return s.anyProtected(ctx, direct)
-}
-
-// anyProtected reports whether one of roles is no app role, itself or
-// through its composites (Directory.RoleProtection).
-func (s *UserAccounts) anyProtected(ctx context.Context, roles []ClientRole) (bool, error) {
-	for _, role := range roles {
-		key := role.ClientID + "\x00" + role.Role
-		now := s.o.Now()
-		s.mu.Lock()
-		entry, ok := s.roles[key]
-		s.mu.Unlock()
-		if !ok || !now.Before(entry.expires) {
-			got, err := s.o.People.RoleProtection(ctx, role)
-			if err != nil {
-				return false, err
-			}
-			entry = roleEntry{protected: got.Protected, expires: now.Add(roleTTL)}
-			s.mu.Lock()
-			s.roles[key] = entry
-			s.mu.Unlock()
-		}
-		if entry.protected {
-			return true, nil
-		}
-	}
-	return false, nil
+	return slices.ContainsFunc(held, privilegedRole), nil
 }
 
 // callerIsAdmin reports whether the caller is in the ADMIN root (itself or
@@ -570,7 +565,13 @@ func (s *UserAccounts) deny(ctx context.Context, p authz.Principal, id uuid.UUID
 	}
 	// The same refusal again within deniedWindow is the first one's row: a
 	// caller cannot fill the record (kept three years) by repeating it.
-	key := actor.ID.String() + "|" + id.String() + "|" + string(action) + "|" + code
+	// A caller with no right at all is one refusal whatever the person:
+	// naming each person would let random ids fill the record anyway.
+	target := id.String()
+	if code == "forbidden" {
+		target = "*"
+	}
+	key := actor.ID.String() + "|" + target + "|" + string(action) + "|" + code
 	now := s.o.Now()
 	s.mu.Lock()
 	if last, seen := s.denied[key]; seen && now.Sub(last) < deniedWindow {

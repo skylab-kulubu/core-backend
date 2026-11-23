@@ -715,3 +715,86 @@ func TestVerifyThePersonalEmail(t *testing.T) {
 		t.Fatalf("adopted a held address: %+v", u)
 	}
 }
+
+// The roles a person holds in effect decide, as Keycloak resolves them: a
+// role on a Group above theirs, an admin role a Java era realm role holds as
+// a composite, an admin role deep in a chain of app roles. Everyone's roles
+// (USER on /UYELER, the default role, the account console, broker/read-token)
+// make nobody privileged.
+func TestHeldRolesDecideWhoIsPrivileged(t *testing.T) {
+	f := newAccountsFixture(t)
+	yk := asYK(f)
+	person := func() uuid.UUID {
+		id := uuid.New()
+		f.people.PutUser(identity.Person{ID: id, Email: id.String()[:8] + "@example.com"})
+		f.accounts.PutAccount(identity.AccountUser{ID: id, Username: id.String()[:8], Email: id.String()[:8] + "@example.com", Enabled: true})
+		return id
+	}
+	refused := func(id uuid.UUID) bool {
+		return accountCode(f.svc.SetEnabled(accountActor(yk), yk, id, false)) == identity.AccountPrivilegedTarget
+	}
+	everyone := identity.ClientRole{Role: "USER"}
+	f.people.SetDefaultRoles(identity.ClientRole{Role: "default-roles-e-skylab"}, identity.ClientRole{Role: "offline_access"},
+		identity.ClientRole{ClientID: "account", Role: "manage-account"})
+	f.people.PutCompositeRole(everyone, identity.ClientRole{ClientID: "broker", Role: "read-token"})
+	uyeler, err := f.people.GetGroup(context.Background(), "/UYELER/ARGE/WEBLAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.people.PutGroup(identity.Group{ID: uuid.NewString(), Name: "UYELER", Path: "/UYELER"})
+	top, _ := f.people.GetGroup(context.Background(), "/UYELER")
+	if err := f.people.AddGroupClientRole(context.Background(), top.ID, everyone); err != nil {
+		t.Fatal(err)
+	}
+	_ = uyeler
+
+	plain := person()
+	joinGroup(t, f, plain, "/UYELER/ARGE/WEBLAB/AGC")
+	if refused(plain) {
+		t.Fatal("a member with everyone's roles counted as privileged")
+	}
+
+	// A role on the Group above the person's.
+	above := person()
+	f.people.PutGroup(identity.Group{ID: uuid.NewString(), Name: "SKYMAIL", Path: "/ROLLER/SKYMAIL"})
+	parent, _ := f.people.GetGroup(context.Background(), "/ROLLER/SKYMAIL")
+	if err := f.people.AddGroupClientRole(context.Background(), parent.ID, identity.ClientRole{ClientID: "skymail", Role: "skymail:mails:approve"}); err != nil {
+		t.Fatal(err)
+	}
+	joinGroup(t, f, above, "/ROLLER/SKYMAIL/ALT")
+	if !refused(above) {
+		t.Fatal("a role on the Group above was not seen")
+	}
+
+	// A Java era realm role on a team Group that holds skycloud/admin.
+	javaEra := person()
+	f.people.PutCompositeRole(identity.ClientRole{Role: "WEBLAB_LEADER"}, identity.ClientRole{ClientID: "skycloud", Role: "admin"})
+	joinGroup(t, f, javaEra, "/UYELER/ARGE/WEBLAB/LIDERLER", identity.ClientRole{Role: "WEBLAB_LEADER"})
+	if !refused(javaEra) {
+		t.Fatal("a realm role and its admin composite were not seen")
+	}
+
+	// An admin role three app roles deep.
+	deep := person()
+	a, b, c := identity.ClientRole{ClientID: "forms", Role: "skyforms:access"}, identity.ClientRole{ClientID: "forms", Role: "skyforms:form:manage"}, identity.ClientRole{ClientID: "core", Role: "url:create"}
+	f.people.PutCompositeRole(a, b)
+	f.people.PutCompositeRole(b, c)
+	f.people.PutCompositeRole(c, identity.ClientRole{ClientID: "place", Role: "place:admin"})
+	joinGroup(t, f, deep, "/ROLLER/FORMS-ACCESS-2", a)
+	if !refused(deep) {
+		t.Fatal("an admin role deep in a composite chain was not seen")
+	}
+}
+
+// A caller with no right is one refusal whatever the person: random ids do
+// not fill the record.
+func TestForbiddenRefusalIsOneRowAcrossPeople(t *testing.T) {
+	f := newAccountsFixture(t)
+	dk := asDK(f)
+	for range 5 {
+		_ = f.svc.SetEnabled(accountActor(dk), dk, uuid.New(), false)
+	}
+	if got := len(f.audit.Rows()); got != 1 {
+		t.Fatalf("%d rows for five people", got)
+	}
+}
