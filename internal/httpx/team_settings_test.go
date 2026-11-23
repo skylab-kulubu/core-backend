@@ -134,6 +134,20 @@ func TestCompetitorWritesAreTheEventManagers(t *testing.T) {
 	wantStatus(t, "a member withdraws themselves", e.send(member, fiber.MethodDelete, "/v1/competitors/"+id(own), ""), fiber.StatusNoContent, "")
 	wantStatus(t, "the Leader edits", e.send(e.token("webLeader"), fiber.MethodPut, "/v1/competitors/"+other, `{"score":70}`), fiber.StatusOK, "")
 
+	// Withdrawn by the Leader, the member does not bring themselves back
+	// (review T1); withdrawn by themselves, they do.
+	wantStatus(t, "a member brings back their own withdrawal", e.send(member, fiber.MethodPost, "/v1/competitors/"+id(own)+"/reinstate", ""), fiber.StatusOK, "")
+	leader := e.token("webLeader")
+	wantStatus(t, "the Leader withdraws the member", e.send(leader, fiber.MethodDelete, "/v1/competitors/"+id(own), ""), fiber.StatusNoContent, "")
+	wantStatus(t, "a member brings back the Leader's withdrawal", e.send(member, fiber.MethodPost, "/v1/competitors/"+id(own)+"/reinstate", ""), fiber.StatusForbidden, "")
+	wantStatus(t, "the Leader brings it back", e.send(leader, fiber.MethodPost, "/v1/competitors/"+id(own)+"/reinstate", ""), fiber.StatusOK, "")
+
+	// Nobody scores themselves, the Leader neither (review T2).
+	leaderOwn := add("webLeader", "webLeader")
+	wantStatus(t, "the Leader enters themselves", leaderOwn, fiber.StatusCreated, "")
+	wantStatus(t, "the Leader scores themselves", e.send(leader, fiber.MethodPut, "/v1/competitors/"+id(leaderOwn), `{"score":100,"isWinner":true}`), fiber.StatusForbidden, "own_competitor")
+	wantStatus(t, "YK scores the Leader", e.send(yk, fiber.MethodPut, "/v1/competitors/"+id(leaderOwn), `{"score":100}`), fiber.StatusOK, "")
+
 	// The capabilities say so: the panel hides "Yarışmacı ekle" from a member.
 	got := e.send(member, fiber.MethodGet, "/v1/users/me/capabilities", "")
 	wantStatus(t, "capabilities", got, fiber.StatusOK, "")

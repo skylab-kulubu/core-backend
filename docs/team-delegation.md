@@ -199,8 +199,12 @@ attributes (`GET /v1/groups/{id}`).
   while `competitionManagers` is `members`, as they add Entrants then. A
   person still enters and withdraws themselves as a competitor
   (`POST /v1/competitors` with their own `userId`, `DELETE` of their own
-  row), with no score and no win; members still read the competitors. The
-  capabilities' `competitor.create/update/delete` say the same.
+  row), with no score and no win, and brings back (`reinstate`) only a row
+  they withdrew themselves: one the managers withdrew comes back only
+  through a manager. Nobody writes the score or the win of their own
+  competitor, a Leader and Privileged included (`403 own_competitor`, as the
+  Competition ledger's `own_entrant`). Members still read the competitors.
+  The capabilities' `competitor.create/update/delete` say the same.
 - `competitionManagers` (`team_competition_manage`, "Yarışmaları kim
   yönetir"; Yusuf 2026-10-12, and 2026-10-31 that the Team's own Leader
   turns it on): who manages the Team's Events' Competitions. `leaders`, the

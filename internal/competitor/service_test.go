@@ -124,6 +124,97 @@ func TestService_MemberRegistersOnlyThemselves(t *testing.T) {
 	}
 }
 
+// A person brings back only the competitor they withdrew themselves; one
+// the Event's managers withdrew comes back only through a manager, and the
+// person does not see it among the withdrawn ones either (review T1).
+func TestService_OnlyWhoWithdrewThemselvesReinstatesThemselves(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB", event.StatusPublished)
+	memberID := uuid.New()
+	member := authz.Principal{ID: memberID.String(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}
+	leader := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+
+	own, err := svc.Create(ctx, member, competitor.CreateInput{UserID: memberID, EventID: ev.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Delete(ctx, member, own.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := svc.Reinstate(ctx, member, own.ID); err != nil || got.WithdrawnAt != nil {
+		t.Fatalf("a member bringing back what they withdrew %+v %v", got, err)
+	}
+
+	if _, err := svc.Update(ctx, leader, own.ID, competitor.UpdateInput{Score: ptr(80), IsWinner: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Delete(ctx, leader, own.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Reinstate(ctx, member, own.ID); !errors.Is(err, competitor.ErrForbidden) {
+		t.Fatalf("a member brought back what the Leader withdrew: %v", err)
+	}
+	withdrawn, err := svc.ListLifecycle(ctx, member, lifecycle.InactiveOnly)
+	if err != nil || len(withdrawn) != 0 {
+		t.Fatalf("a member lists what the Leader withdrew %+v %v", withdrawn, err)
+	}
+	if withdrawn, err := svc.ListLifecycle(ctx, leader, lifecycle.InactiveOnly); err != nil || len(withdrawn) != 1 {
+		t.Fatalf("the Leader's withdrawn list %+v %v", withdrawn, err)
+	}
+	if got, err := svc.Reinstate(ctx, leader, own.ID); err != nil || got.WithdrawnAt != nil {
+		t.Fatalf("the Leader bringing it back %+v %v", got, err)
+	}
+}
+
+// Nobody writes the score or the win of their own competitor on the old
+// routes either, a Leader and Privileged included (review T2, as the
+// Competition ledger's own_entrant): not on their own row, not by making a
+// scored row theirs. An edit that leaves their result as it is passes; a
+// Leader still scores everybody else.
+func TestService_NobodyScoresThemselves(t *testing.T) {
+	t.Parallel()
+	events, svc := setup(t)
+	ctx := context.Background()
+	ev := seedEvent(t, events, "WEBLAB", event.StatusPublished)
+	leaderID, ykID, otherID := uuid.New(), uuid.New(), uuid.New()
+	leader := authz.Principal{ID: leaderID.String(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	yk := authz.Principal{ID: ykID.String(), Groups: []string{"/UYELER/YK"}}
+
+	for name, p := range map[string]authz.Principal{"Leader": leader, "YK": yk} {
+		id := uuid.MustParse(p.ID)
+		own, err := svc.Create(ctx, p, competitor.CreateInput{UserID: id, EventID: ev.ID, Score: ptr(99), IsWinner: true})
+		if err != nil || own.Score != nil || own.IsWinner {
+			t.Fatalf("%s entering themselves %+v %v", name, own, err)
+		}
+		for _, in := range []competitor.UpdateInput{{Score: ptr(99)}, {IsWinner: true}, {UserID: id, EventID: ev.ID, Score: ptr(1)}} {
+			if _, err := svc.Update(ctx, p, own.ID, in); !errors.Is(err, competitor.ErrOwnCompetitor) || !errors.Is(err, competitor.ErrForbidden) {
+				t.Fatalf("%s scoring themselves %+v: %v", name, in, err)
+			}
+		}
+		if got, err := svc.Update(ctx, p, own.ID, competitor.UpdateInput{}); err != nil || got.Score != nil || got.IsWinner {
+			t.Fatalf("%s editing their own row without a result %+v %v", name, got, err)
+		}
+	}
+
+	scored, err := svc.Create(ctx, leader, competitor.CreateInput{UserID: otherID, EventID: ev.ID, Score: ptr(50), IsWinner: true})
+	if err != nil || scored.Score == nil || *scored.Score != 50 {
+		t.Fatalf("the Leader scoring someone else %+v %v", scored, err)
+	}
+	other := seedEvent(t, events, "WEBLAB", event.StatusPublished)
+	moved, err := svc.Create(ctx, leader, competitor.CreateInput{UserID: otherID, EventID: other.ID, Score: ptr(70)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(ctx, leader, moved.ID, competitor.UpdateInput{UserID: leaderID, Score: ptr(70)}); !errors.Is(err, competitor.ErrOwnCompetitor) {
+		t.Fatalf("the Leader made a scored row theirs: %v", err)
+	}
+	if got, err := svc.Update(ctx, leader, scored.ID, competitor.UpdateInput{Score: ptr(60)}); err != nil || *got.Score != 60 {
+		t.Fatalf("the Leader re-scoring someone else %+v %v", got, err)
+	}
+}
+
 func TestService_StrangerCannotRegisterOther(t *testing.T) {
 	t.Parallel()
 	events, svc := setup(t)
