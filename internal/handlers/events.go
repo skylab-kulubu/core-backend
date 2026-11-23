@@ -616,7 +616,10 @@ func (h *EventHandler) videoPosterChange(c fiber.Ctx, poster func() (*uuid.UUID,
 type certificateRuleBody struct {
 	Rule     string `json:"rule"`
 	MinCount *int   `json:"minCount"`
-	Sessions []struct {
+	// AutoFinalize turns the automatic attendance finalization on or off;
+	// left out (or null) keeps it.
+	AutoFinalize *bool `json:"autoFinalize"`
+	Sessions     []struct {
 		ID       uuid.UUID `json:"id"`
 		Counted  *bool     `json:"counted"`
 		Required *bool     `json:"required"`
@@ -652,7 +655,7 @@ func (h *EventHandler) SetCertificateRule(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return problem(c, fiber.StatusBadRequest, "Bad Request")
 	}
-	in := event.CertificateRuleInput{Rule: body.Rule, MinCount: body.MinCount, Sessions: make([]event.SessionCertificateFlags, 0, len(body.Sessions))}
+	in := event.CertificateRuleInput{Rule: body.Rule, MinCount: body.MinCount, AutoFinalize: body.AutoFinalize, Sessions: make([]event.SessionCertificateFlags, 0, len(body.Sessions))}
 	for _, sess := range body.Sessions {
 		if sess.Counted == nil || sess.Required == nil {
 			return problem(c, fiber.StatusBadRequest, "Bad Request")

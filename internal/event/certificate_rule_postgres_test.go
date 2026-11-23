@@ -69,15 +69,26 @@ func TestPostgresCertificateRule(t *testing.T) {
 		t.Fatalf("another Event's Session changed: %+v", got)
 	}
 
+	if stored.AttendanceAutoFinalize {
+		t.Fatal("a refused write turned the switch on")
+	}
+	on := true
 	rule, err := svc.SetCertificateRule(ctx, copyLeader, ev.ID, event.CertificateRuleInput{
-		Rule: "count", MinCount: &six,
+		Rule: "count", MinCount: &six, AutoFinalize: &on,
 		Sessions: []event.SessionCertificateFlags{{ID: b.ID, Counted: true, Required: true}, {ID: networking.ID, Counted: true}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rule.MinCount == nil || *rule.MinCount != 6 || rule.CountedTotal != 3 || rule.EffectiveMin != 3 {
+	if rule.MinCount == nil || *rule.MinCount != 6 || rule.CountedTotal != 3 || rule.EffectiveMin != 3 || !rule.AutoFinalize {
 		t.Fatalf("rule %+v", rule)
+	}
+	// A write that leaves the switch out keeps it.
+	if kept, err := svc.SetCertificateRule(ctx, copyLeader, ev.ID, event.CertificateRuleInput{Rule: "count", MinCount: &six}); err != nil || !kept.AutoFinalize {
+		t.Fatalf("kept %v %+v", err, kept)
+	}
+	if stored, err := store.Get(ctx, ev.ID); err != nil || !stored.AttendanceAutoFinalize {
+		t.Fatalf("stored switch %v %+v", err, stored.AttendanceAutoFinalize)
 	}
 	if got, _ := store.GetSession(ctx, b.ID); !got.CertificateRequired || !got.CertificateCounted {
 		t.Fatalf("final %+v", got)
@@ -93,6 +104,9 @@ func TestPostgresCertificateRule(t *testing.T) {
 	copiedRule, err := svc.CertificateRule(ctx, copyLeader, copied.Event.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !copiedRule.AutoFinalize {
+		t.Fatal("the copy's attendance does not close by itself")
 	}
 	marks := map[string][2]bool{}
 	for _, s := range copiedRule.Sessions {

@@ -7,19 +7,21 @@ import (
 )
 
 // SetCertificateRule writes the Event's rule and threshold (a rule written
-// here has no ratio) and the listed Sessions' marks in one transaction:
+// here has no ratio), its automatic finalization switch (nil keeps it) and
+// the listed Sessions' marks in one transaction:
 // ErrNotFound when the Event is not current, ErrInvalid (nothing written)
 // when a listed Session is not a current Session of the Event on a current
 // day.
-func (s *PostgresStore) SetCertificateRule(ctx context.Context, eventID uuid.UUID, rule string, minCount *int, flags []SessionCertificateFlags) error {
+func (s *PostgresStore) SetCertificateRule(ctx context.Context, eventID uuid.UUID, rule string, minCount *int, autoFinalize *bool, flags []SessionCertificateFlags) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx, `
-		UPDATE events SET attendance_rule = $2, attendance_min_count = $3, attendance_ratio = NULL, updated_at = now()
-		WHERE id = $1 AND archived_at IS NULL`, eventID, attendanceRule(rule), minCount)
+		UPDATE events SET attendance_rule = $2, attendance_min_count = $3, attendance_ratio = NULL,
+			attendance_auto_finalize = COALESCE($4::boolean, attendance_auto_finalize), updated_at = now()
+		WHERE id = $1 AND archived_at IS NULL`, eventID, attendanceRule(rule), minCount, autoFinalize)
 	if err != nil {
 		return err
 	}
@@ -49,7 +51,7 @@ func (s *PostgresStore) SetCertificateRule(ctx context.Context, eventID uuid.UUI
 }
 
 // SetCertificateRule writes as PostgresStore's does.
-func (s *MemoryStore) SetCertificateRule(_ context.Context, eventID uuid.UUID, rule string, minCount *int, flags []SessionCertificateFlags) error {
+func (s *MemoryStore) SetCertificateRule(_ context.Context, eventID uuid.UUID, rule string, minCount *int, autoFinalize *bool, flags []SessionCertificateFlags) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.byID[eventID]
@@ -67,6 +69,9 @@ func (s *MemoryStore) SetCertificateRule(_ context.Context, eventID uuid.UUID, r
 		}
 	}
 	e.AttendanceRule, e.AttendanceMinCount, e.AttendanceRatio = attendanceRule(rule), minCount, nil
+	if autoFinalize != nil {
+		e.AttendanceAutoFinalize = *autoFinalize
+	}
 	s.byID[eventID] = e
 	for _, f := range flags {
 		sess := s.sessions[f.ID]
