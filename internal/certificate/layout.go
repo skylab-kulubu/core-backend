@@ -138,8 +138,11 @@ func LayoutHTML(ctx context.Context, layout Layout, data PreviewData, verifyURL 
 		if el.Fit == "shrink" {
 			fitClass = ` class="fit"`
 			// .fit is a flex box, where text-align no longer places a
-			// short line: map the alignment to justify-content.
-			style += "justify-content:" + fitJustify(el.Align) + ";"
+			// short line: map the alignment to justify-content. A fitted
+			// box is one line that shrinks (the editor draws it so), so
+			// nowrap must beat the element's own pre-wrap, which as an
+			// inline style would win over the .fit rule.
+			style += "justify-content:" + fitJustify(el.Align) + ";white-space:nowrap;"
 			fitData = ` data-min-font="` + number(max(el.MinFontSize, 8)) + `"`
 		}
 		if el.Kind == "ownerTeam" {
@@ -296,13 +299,16 @@ func safeFont(font string) string {
 }
 
 // fitJustify maps an element's text alignment to the flex
-// justify-content of a shrink-to-fit box.
+// justify-content of a shrink-to-fit box. "safe" sends a line that is
+// still too wide to the right edge only: overflow past the left edge is
+// not counted in scrollWidth, so the fit script would never shrink a
+// right-aligned name. Once the line fits, safe and plain align alike.
 func fitJustify(align string) string {
 	switch align {
 	case "center":
-		return "center"
+		return "safe center"
 	case "right":
-		return "flex-end"
+		return "safe flex-end"
 	default:
 		return "flex-start"
 	}

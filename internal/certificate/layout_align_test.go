@@ -14,8 +14,8 @@ func TestFitBoxKeepsItsAlignment(t *testing.T) {
 	cases := map[string]string{
 		"":       "justify-content:flex-start;",
 		"left":   "justify-content:flex-start;",
-		"center": "justify-content:center;",
-		"right":  "justify-content:flex-end;",
+		"center": "justify-content:safe center;",
+		"right":  "justify-content:safe flex-end;",
 	}
 	for align, want := range cases {
 		align, want := align, want
@@ -45,5 +45,60 @@ func TestFitBoxKeepsItsAlignment(t *testing.T) {
 				t.Fatalf(".fit still inherits justify-content: %s", html)
 			}
 		})
+	}
+}
+
+// A fitted box is one line that shrinks, as the editor draws it. The
+// element's inline pre-wrap would beat the .fit rule's nowrap and break
+// a long name over two lines, so the fit box must say nowrap last; a box
+// without fit keeps pre-wrap.
+func TestFitBoxStaysOnOneLine(t *testing.T) {
+	t.Parallel()
+	layout := Layout{Width: 800, Height: 600, Orientation: "landscape", Elements: []Element{
+		{ID: "name", Kind: "recipientName", X: 10, Y: 60, Width: 200, Height: 40, FontSize: 24, Align: "center", Fit: "shrink", MinFontSize: 8},
+		{ID: "event", Kind: "eventName", X: 10, Y: 110, Width: 200, Height: 40, FontSize: 16, Align: "center"},
+		{ID: "team", Kind: "ownerTeam", X: 10, Y: 160, Width: 60, Height: 20, FontSize: 12, Fit: "shrink"},
+		{ID: "qr", Kind: "verificationQr", X: 500, Y: 10, Width: 100, Height: 100},
+	}}
+	data := PreviewData{RecipientName: "Muhammed Abdurrahman Yıldızoğlu", EventName: "Etkinlik", OwnerTeam: "WEBLAB"}
+	html, err := LayoutHTML(context.Background(), layout, data, "https://skyl.app/c/X", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastWhiteSpace := func(style string) string {
+		i := strings.LastIndex(style, "white-space:")
+		if i < 0 {
+			return ""
+		}
+		rest := style[i+len("white-space:"):]
+		return rest[:strings.Index(rest, ";")]
+	}
+	styleOf := func(text string) string {
+		end := strings.Index(html, ">"+text+"</div>")
+		if end < 0 {
+			t.Fatalf("no box for %q: %s", text, html)
+		}
+		start := strings.LastIndex(html[:end], "<div")
+		return html[start:end]
+	}
+	fitBoxes := 0
+	for rest := html; ; {
+		i := strings.Index(rest, `<div class="fit"`)
+		if i < 0 {
+			break
+		}
+		rest = rest[i:]
+		box := rest[:strings.Index(rest, ">")]
+		rest = rest[len(box):]
+		fitBoxes++
+		if got := lastWhiteSpace(box); got != "nowrap" {
+			t.Fatalf("fit box ends with white-space %q, want nowrap: %s", got, box)
+		}
+	}
+	if fitBoxes != 2 {
+		t.Fatalf("checked %d fit boxes, want 2 (name, team): %s", fitBoxes, html)
+	}
+	if got := lastWhiteSpace(styleOf(data.EventName)); got != "pre-wrap" {
+		t.Fatalf("box without fit has white-space %q, want pre-wrap", got)
 	}
 }
