@@ -18,11 +18,11 @@ func activeActorSQL(param string) string {
 		  AND NOT EXISTS (SELECT 1 FROM account_deletion_requests r WHERE r.subject_id = u.id))`
 }
 
-const venueEntryCols = `v.id, v.ticket_id, v.event_id, v.entry_date::text, v.event_day_id, v.source, v.check_in_id, v.by_user_id, v.created_at`
+const venueEntryCols = `v.id, v.ticket_id, v.event_id, v.entry_date::text, v.event_day_id, v.source, v.check_in_id, v.by_user_id, v.created_at, v.scanned_at`
 
 func scanVenueEntry(row rowScanner) (VenueEntry, error) {
 	var e VenueEntry
-	err := row.Scan(&e.ID, &e.TicketID, &e.EventID, &e.EntryDate, &e.EventDayID, &e.Source, &e.CheckInID, &e.ByUserID, &e.CreatedAt)
+	err := row.Scan(&e.ID, &e.TicketID, &e.EventID, &e.EntryDate, &e.EventDayID, &e.Source, &e.CheckInID, &e.ByUserID, &e.CreatedAt, &e.ScannedAt)
 	return e, err
 }
 
@@ -34,16 +34,17 @@ func (s *PostgresStore) AddVenueEntry(ctx context.Context, e VenueEntry) (VenueE
 	// (docs/attendance-mail.md).
 	err := s.pool.QueryRow(ctx, `
 		WITH entry AS (
-			INSERT INTO venue_entries AS v (id, ticket_id, event_id, entry_date, event_day_id, source, check_in_id, by_user_id)
-			SELECT $1, t.id, t.event_id, $3::date, $4, $5, $6, `+activeActorSQL("$7")+`
+			INSERT INTO venue_entries AS v (id, ticket_id, event_id, entry_date, event_day_id, source, check_in_id, by_user_id, scanned_at)
+			SELECT $1, t.id, t.event_id, $3::date, $4, $5, $6, `+activeActorSQL("$7")+`, $9
 			FROM tickets t WHERE t.id = $2 AND t.status = 'active'
 			ON CONFLICT (ticket_id, entry_date) DO NOTHING
 			RETURNING *
 		), welcome AS (`+queueWelcomeSQL("$8")+`
 		)
 		SELECT `+venueEntryCols+` FROM entry v`,
-		e.ID, e.TicketID, e.EntryDate, e.EventDayID, string(e.Source), e.CheckInID, e.ByUserID, s.mailWelcome.Load(),
-	).Scan(&e.ID, &e.TicketID, &e.EventID, &e.EntryDate, &e.EventDayID, &e.Source, &e.CheckInID, &e.ByUserID, &e.CreatedAt)
+		e.ID, e.TicketID, e.EntryDate, e.EventDayID, string(e.Source), e.CheckInID, e.ByUserID, s.mailWelcome.Load() && !e.NoMail, e.ScannedAt,
+	).Scan(&e.ID, &e.TicketID, &e.EventID, &e.EntryDate, &e.EventDayID, &e.Source, &e.CheckInID, &e.ByUserID, &e.CreatedAt, &e.ScannedAt)
+	e.NoMail = false
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return e, err
 	}

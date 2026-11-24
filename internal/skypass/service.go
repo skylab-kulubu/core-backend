@@ -202,7 +202,7 @@ func (s *service) HolderFrom(ctx context.Context, p authz.Principal, token, uid 
 		return s.walletHolder(ctx, p, token, true)
 	}
 	if token != "" {
-		claims, err := s.signer.Verify(token)
+		claims, err := s.verify(ctx, token)
 		if err != nil {
 			return Holder{}, err
 		}

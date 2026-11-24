@@ -98,8 +98,9 @@ func (s *service) ticketOfQR(ctx context.Context, ev event.Event, token string) 
 		return Ticket{}, ErrNotFound
 	}
 	// Online, the Event's dates now decide, not the expiry the code was
-	// signed with: an Event moved later keeps the codes already sent.
-	if !time.Now().Before(QRExpiry(t, ev)) {
+	// signed with: an Event moved later keeps the codes already sent. A
+	// scan sent later is read at the moment it was taken.
+	if !s.scanTime(ctx).Before(QRExpiry(t, ev)) {
 		return Ticket{}, ErrTicketQRExpired
 	}
 	if claims.Version != t.QRVersion {
