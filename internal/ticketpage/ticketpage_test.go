@@ -662,3 +662,37 @@ func TestPageCoverAndAccent(t *testing.T) {
 		}
 	}
 }
+
+// A cancelled Ticket's page says ticket_cancelled with no QR and no PDF
+// (410); restoring gives a new key, under which the page is active again,
+// and the old key opens nothing (docs/ticket-cancellation.md).
+func TestCancelledAndWaitlistedTicketPages(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := t.Context()
+	g := f.guest("elif@example.com")
+	if _, err := f.tickets.CancelTicket(ctx, lead, g.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	view, err := f.svc.Page(ctx, g.AccessKey)
+	if err != nil || view.State != ticketpage.StateTicketCancelled || view.QRToken != "" || view.QRURL != "" || view.PDFURL != "" {
+		t.Fatalf("cancelled: %+v %v", view, err)
+	}
+	if _, err := f.svc.QRPNG(ctx, g.AccessKey); !errors.Is(err, ticketpage.ErrGone) {
+		t.Fatalf("cancelled qr: %v", err)
+	}
+	if _, _, err := f.svc.PDF(ctx, g.AccessKey); !errors.Is(err, ticketpage.ErrGone) {
+		t.Fatalf("cancelled pdf: %v", err)
+	}
+	restored, err := f.tickets.RestoreTicket(ctx, lead, g.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := f.store.Get(ctx, restored.ID)
+	if _, err := f.svc.Page(ctx, g.AccessKey); !errors.Is(err, ticketpage.ErrNotFound) {
+		t.Fatalf("old key: %v", err)
+	}
+	if view, err := f.svc.Page(ctx, stored.AccessKey); err != nil || view.State != ticketpage.StateActive || view.QRToken == "" {
+		t.Fatalf("restored: %+v %v", view, err)
+	}
+}

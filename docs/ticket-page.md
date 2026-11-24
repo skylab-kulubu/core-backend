@@ -4,7 +4,7 @@ ADR 0082 (e-skylab); bilet-qr-ve-pdf ticket 03. A Ticket opens without a
 sign-in by its access key ([ticket-access-key-and-code.md](ticket-access-key-and-code.md)):
 the link is the right to read, because a guest has no account (ADR 0029).
 The page is the club site's (`yildizskylab.com/bilet/{key}`, ticket 07, the
-certificate's pattern of ADR 0040); core answers the least it needs on three
+certificate's pattern of ADR 0040); core answers the least it needs on four
 public routes.
 
 ## Routes
@@ -111,6 +111,36 @@ ticket_pdf_rate_limited`). Gotenberg not set, busy for 20 seconds,
 unreachable, timed out or failing: `503 ticket_pdf_unavailable`,
 `Retry-After: 30` (the cause is logged, the key cut). Core draws it on each request
 and keeps nothing; a renamed holder gets the new name.
+
+### `GET /v1/public/tickets/{key}/check-ins`
+
+What the page asks for while it is open on the Event's day, so it can greet
+its holder the moment the door lets them in (Yusuf, 2026-11-24):
+
+```json
+{"checkIns": [{"session": "Açılış", "at": "2026-12-12T07:05:00Z"}]}
+```
+
+- The Ticket's own check-ins alone, oldest first: the Session's title and
+  when. No id, no name, nothing of another Ticket. `[]` while there is none.
+- The page's rules: `404` for a malformed or unknown key, a Ticket without
+  its holder (or a member whose account is not active), a draft's or an
+  archived Event's; `410 ticket_page_closed` once the page has closed. A
+  cancelled Event's Ticket answers what it has.
+- **One query** (`ticket.PostgresStore.PageCheckIns`: the Ticket by its
+  key, its Event's status and dates, the member's account state, the
+  check-ins with their Sessions), not the page's several: the page asks
+  every 4 seconds.
+- **Budget:** 30 a minute per key (a hash of it, as the PDF's; `429
+  ticket_check_ins_rate_limited`, `Retry-After: 60`), and 3000 a minute per
+  client, its own: at the door many holders share one address (the campus
+  network, a mobile operator's NAT).
+- **Load.** The site asks only while the tab is shown, on the Event's day
+  (from three hours before the start to the end), and only until a check-in
+  appears. 500 holders with the page open at the same moment, every 4
+  seconds, are 125 requests a second at most, each one indexed query
+  (`tickets.access_key`, `ticket_checkins (ticket_id, session_id)`); in
+  practice only the queue at the door has it open.
 
 ### The site's server
 

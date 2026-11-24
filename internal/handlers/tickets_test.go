@@ -47,6 +47,8 @@ func ticketApp(t *testing.T, ident authn.Identity, events event.Store, tickets t
 	app.Post("/v1/sessions/:sessionId/check-in/resolve", h.ResolveAndCheckIn)
 	app.Get("/v1/sessions/:sessionId/check-ins", h.DoorActivity)
 	app.Delete("/v1/sessions/:sessionId/check-ins/:checkInId", h.UndoCheckInByID)
+	app.Post("/v1/tickets/:id/cancel", h.CancelTicket)
+	app.Post("/v1/tickets/:id/restore", h.RestoreTicket)
 	return app
 }
 

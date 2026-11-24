@@ -2,6 +2,8 @@ package ticket
 
 import (
 	"context"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +44,9 @@ func (s *MemoryStore) Create(_ context.Context, t Ticket) (Ticket, error) {
 	now := time.Now().UTC()
 	t.CreatedAt = now
 	t.UpdatedAt = now
+	if t.Status == "" {
+		t.Status = StatusActive
+	}
 	if t.CheckIns == nil {
 		t.CheckIns = []CheckIn{}
 	}
@@ -109,16 +114,74 @@ func (s *MemoryStore) ListByOwner(_ context.Context, ownerID uuid.UUID) ([]Ticke
 	return out, nil
 }
 
-func (s *MemoryStore) ListByEvent(_ context.Context, eventID uuid.UUID) ([]Ticket, error) {
+// ListByEvent is the Event's active Tickets, as the database's.
+func (s *MemoryStore) ListByEvent(ctx context.Context, eventID uuid.UUID) ([]Ticket, error) {
+	return s.ListByEventStatus(ctx, eventID, []Status{StatusActive})
+}
+
+func (s *MemoryStore) ListByEventStatus(_ context.Context, eventID uuid.UUID, statuses []Status) ([]Ticket, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Ticket, 0)
 	for _, t := range s.byID {
-		if t.EventID == eventID {
+		if t.EventID == eventID && (len(statuses) == 0 || slices.Contains(statuses, t.StatusOf())) {
 			out = append(out, s.withCheckInsLocked(t))
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out, nil
+}
+
+// Cancel is the database's, without the Competitions (the memory store
+// keeps none).
+func (s *MemoryStore) Cancel(_ context.Context, id uuid.UUID, by CancelledBy, reason string) (Ticket, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.byID[id]
+	if !ok {
+		return Ticket{}, false, ErrNotFound
+	}
+	if t.StatusOf() == StatusCancelled {
+		return s.withCheckInsLocked(t), false, nil
+	}
+	for _, c := range s.checkIns {
+		if c.TicketID == id {
+			return Ticket{}, false, ErrTicketCheckedIn
+		}
+	}
+	now := time.Now().UTC()
+	t.Status, t.StatusChangedAt, t.WaitlistedAt = StatusCancelled, &now, nil
+	t.CancelledAt, t.CancelledBy, t.CancelReason = &now, by, strings.TrimSpace(reason)
+	t.UpdatedAt = now
+	s.byID[id] = t
+	return s.withCheckInsLocked(t), true, nil
+}
+
+// Reopen is the database's: a new key and the next QR version.
+func (s *MemoryStore) Reopen(_ context.Context, id uuid.UUID) (Ticket, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.byID[id]
+	if !ok {
+		return Ticket{}, false, ErrNotFound
+	}
+	if t.StatusOf() != StatusCancelled {
+		return s.withCheckInsLocked(t), false, nil
+	}
+	key, err := NewAccessKey()
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	now := time.Now().UTC()
+	t.Status, t.StatusChangedAt, t.WaitlistedAt = StatusActive, &now, nil
+	t.CancelledAt, t.CancelledBy, t.CancelReason = nil, "", ""
+	if t.AccessKey != "" {
+		t.AccessKey = key
+	}
+	t.QRVersion++
+	t.UpdatedAt = now
+	s.byID[id] = t
+	return s.withCheckInsLocked(t), true, nil
 }
 
 func (s *MemoryStore) ExistsOwnerEvent(_ context.Context, ownerID, eventID uuid.UUID) (bool, error) {
@@ -169,6 +232,8 @@ func (s *MemoryStore) Update(_ context.Context, t Ticket) (Ticket, error) {
 	t.UpdatedAt = time.Now().UTC()
 	// Update writes the guest's details only, as the database's.
 	t.AccessKey, t.Code, t.QRVersion = existing.AccessKey, existing.Code, existing.QRVersion
+	t.Status, t.StatusChangedAt, t.WaitlistedAt = existing.Status, existing.StatusChangedAt, existing.WaitlistedAt
+	t.CancelledAt, t.CancelledBy, t.CancelReason = existing.CancelledAt, existing.CancelledBy, existing.CancelReason
 	if t.CheckIns == nil {
 		t.CheckIns = existing.CheckIns
 	}
@@ -203,8 +268,12 @@ func (s *MemoryStore) ListByGuestEmail(_ context.Context, email string) ([]Ticke
 func (s *MemoryStore) AddCheckIn(_ context.Context, c CheckIn) (CheckIn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.byID[c.TicketID]; !ok {
+	t, ok := s.byID[c.TicketID]
+	if !ok {
 		return CheckIn{}, ErrNotFound
+	}
+	if refused := inactiveErr(t); refused != nil {
+		return CheckIn{}, refused
 	}
 	if c.ID == uuid.Nil {
 		c.ID = uuid.New()

@@ -348,6 +348,11 @@ func (s *Service) recipients(ctx context.Context, claimed Queued) ([]*recipient,
 	}
 	var guests []ticket.Ticket
 	for _, t := range tickets {
+		// Only an active Ticket's holder is told (the store lists those;
+		// a Ticket cancelled since is skipped here too).
+		if !t.Active() {
+			continue
+		}
 		if t.TicketType == ticket.Guest {
 			guests = append(guests, t)
 			continue

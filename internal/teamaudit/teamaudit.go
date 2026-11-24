@@ -69,6 +69,12 @@ const (
 	// Ticket and the Event (State.TicketID, State.EventID), never a person.
 	ActionTicketResend    Action = "ticket.resend"
 	ActionTicketLinkRenew Action = "ticket.link.renew"
+	// ActionTicketCancel and ActionTicketRestore are a Ticket cancelled by an
+	// operator and the cancellation taken back (docs/ticket-cancellation.md),
+	// recorded as ActionTicketResend: the Event's team, the Ticket and the
+	// Event, never a person nor the reason.
+	ActionTicketCancel  Action = "ticket.cancel"
+	ActionTicketRestore Action = "ticket.restore"
 	// The user.* actions are a person's account changed from the panel's
 	// person card (docs/user-accounts.md): the target is the person
 	// (TargetUserID), with no Group (GroupID and GroupPath empty). before
@@ -104,7 +110,7 @@ var Actions = []Action{
 	ActionTeamCreate, ActionTeamCode, ActionTeamProfile, ActionTeamMove, ActionTeamDelete,
 	ActionGroupRoles, ActionGroupAttributes, ActionAppAssign, ActionAppUnassign,
 	ActionTermExtend, ActionTermHandover, ActionTermExpired,
-	ActionTicketResend, ActionTicketLinkRenew,
+	ActionTicketResend, ActionTicketLinkRenew, ActionTicketCancel, ActionTicketRestore,
 	ActionUserEnable, ActionUserDisable, ActionUserPasswordSet, ActionUserPasswordMail,
 	ActionUserEmailChange, ActionUserEmailVerify, ActionUserEmailMail, ActionUserEmailPrimary,
 	ActionUserRequiredActions, ActionUserCredentialRemove, ActionUserIdentityUnlink,
@@ -165,6 +171,12 @@ const (
 	// (membership.term.expired only). Its actor is the nil subject, and
 	// Actor.Client names the job (SystemTermExpiry).
 	BasisSystem Basis = "system"
+	// BasisEventEditor: the actor may edit the Event by the Event policy
+	// (a member of a team whose members edit its Events, GECEKODU) without
+	// being Privileged or a Leader. Only a Ticket's cancellation and its
+	// taking back (docs/ticket-cancellation.md) carry it; Actor.ViaGroupID
+	// names the Event's team.
+	BasisEventEditor Basis = "event_editor"
 )
 
 // SystemTermExpiry is the Client of the rows the management term job
@@ -428,6 +440,11 @@ func (r Record) normalize() (Record, string) {
 		}
 	case BasisSystem:
 		if r.Actor.ID != uuid.Nil || r.Actor.ViaGroupID != "" || r.Action != ActionTermExpired {
+			return r, "invalid_basis"
+		}
+	case BasisEventEditor:
+		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil ||
+			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore) {
 			return r, "invalid_basis"
 		}
 	default:

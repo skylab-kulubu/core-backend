@@ -447,3 +447,18 @@ func TestTheMailCarriesTheHoldersTicketPage(t *testing.T) {
 		}
 	}
 }
+
+// A cancelled Ticket's holder is not told of the change
+// (docs/ticket-cancellation.md).
+func TestAChangeSkipsCancelledTickets(t *testing.T) {
+	f := setup(t)
+	f.tickets[1].Status = ticket.StatusCancelled
+	f.queue1(nil)
+	report, err := f.svc.Pass(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Sent != 1 || len(f.mail.calls) != 1 || f.mail.calls[0].holder.Sub != f.member {
+		t.Fatalf("report %+v calls %+v", report, f.mail.calls)
+	}
+}

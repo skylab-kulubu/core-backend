@@ -110,6 +110,11 @@ func (s *service) managedTicket(ctx context.Context, p authz.Principal, id uuid.
 	if !held(t) {
 		return Ticket{}, event.Event{}, ErrHolderErased
 	}
+	// A cancelled (or waitlisted) Ticket is not sent again nor given a new
+	// link: 409 ticket_cancelled / ticket_waitlisted, no audit row.
+	if refused := inactiveErr(t); refused != nil {
+		return Ticket{}, event.Event{}, refused
+	}
 	return t, ev, nil
 }
 
@@ -201,6 +206,20 @@ type auditRecord struct {
 // recorded (a test); with one, a row that cannot be opened stops the action
 // (teamaudit.ErrUnavailable), as every audited write.
 func (s *service) beginTicketAudit(ctx context.Context, p authz.Principal, ev event.Event, action teamaudit.Action, ticketID uuid.UUID) (*auditRecord, error) {
+	return s.beginTicketAuditAs(ctx, p, ev, action, ticketID, s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket}, authz.Assign))
+}
+
+// beginTicketAuditAs is beginTicketAudit with the basis decided by the
+// caller: privileged, else the Leader of a Team the Event's team sits in or
+// under.
+func (s *service) beginTicketAuditAs(ctx context.Context, p authz.Principal, ev event.Event, action teamaudit.Action, ticketID uuid.UUID, privileged bool) (*auditRecord, error) {
+	return s.beginTicketAuditBasis(ctx, p, ev, action, ticketID, privileged, false)
+}
+
+// beginTicketAuditBasis is beginTicketAuditAs; with editor, a caller who is
+// neither Privileged nor a Leader of the Event's team (or one above it) is
+// recorded as an event editor through the Event's team.
+func (s *service) beginTicketAuditBasis(ctx context.Context, p authz.Principal, ev event.Event, action teamaudit.Action, ticketID uuid.UUID, privileged, editor bool) (*auditRecord, error) {
 	if s.audit == nil {
 		return nil, nil
 	}
@@ -213,12 +232,16 @@ func (s *service) beginTicketAudit(ctx context.Context, p authz.Principal, ev ev
 		return nil, teamaudit.ErrUnavailable
 	}
 	actor.Basis, actor.ViaGroupID = teamaudit.BasisPrivileged, ""
-	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket}, authz.Assign) {
+	if !privileged {
 		via, err := s.leaderVia(ctx, p, team)
-		if err != nil {
+		switch {
+		case err == nil:
+			actor.Basis, actor.ViaGroupID = teamaudit.BasisLeader, via
+		case editor && errors.Is(err, ErrForbidden):
+			actor.Basis, actor.ViaGroupID = teamaudit.BasisEventEditor, team.ID
+		default:
 			return nil, teamaudit.ErrUnavailable
 		}
-		actor.Basis, actor.ViaGroupID = teamaudit.BasisLeader, via
 	}
 	after := teamaudit.State{TicketID: ticketID.String(), EventID: ev.ID.String()}
 	id, err := s.audit.Begin(ctx, teamaudit.Record{
@@ -286,6 +309,10 @@ func resendAuditCode(err error) string {
 		return "daily_limited"
 	case errors.Is(err, ErrNotFound):
 		return "not_found"
+	case errors.Is(err, ErrTicketCheckedIn):
+		return "checked_in"
+	case errors.Is(err, ErrTicketInCompetition):
+		return "in_competition"
 	default:
 		return "failed"
 	}

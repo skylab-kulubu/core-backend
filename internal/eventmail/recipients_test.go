@@ -70,3 +70,17 @@ func TestListNameJoinsOwnerTeamAndEvent(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// The Event's mail list holds active Tickets' holders only
+// (docs/ticket-cancellation.md).
+func TestRecipientsFromTicketsSkipsTicketsThatAreNotActive(t *testing.T) {
+	t.Parallel()
+	got := RecipientsFromTickets([]ticket.Ticket{
+		{TicketType: ticket.Guest, GuestEmail: "ada@example.com", Status: ticket.StatusActive},
+		{TicketType: ticket.Guest, GuestEmail: "grace@example.com", Status: ticket.StatusCancelled},
+		{TicketType: ticket.Guest, GuestEmail: "alan@example.com", Status: ticket.StatusWaitlisted},
+	}, nil)
+	if len(got) != 1 || got[0].Email != "ada@example.com" {
+		t.Fatalf("recipients %+v", got)
+	}
+}
