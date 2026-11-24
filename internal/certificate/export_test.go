@@ -15,3 +15,13 @@ func (s *MemoryStore) ExpireJobLeases() {
 		}
 	}
 }
+
+// MakeMailsDue makes every queued certificate mail due now, as if its
+// backoff had passed.
+func (s *MemoryStore) MakeMailsDue() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, row := range s.mails {
+		row.nextAttempt = time.Time{}
+	}
+}

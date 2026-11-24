@@ -26,6 +26,8 @@ type MemoryStore struct {
 	// finalizedSource is who closed each attendance: FinalizedManual or
 	// FinalizedAuto.
 	finalizedSource map[uuid.UUID]string
+	// mails is the certificate mail queue (mail_queue_memory.go).
+	mails []*memoryMail
 }
 
 func NewMemoryStore() *MemoryStore {

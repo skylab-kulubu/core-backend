@@ -47,12 +47,22 @@ func (s *service) Summary(ctx context.Context, p authz.Principal, eventID uuid.U
 	if err != nil {
 		return EventSummary{}, err
 	}
-	issued, revoked := 0, 0
+	states, err := s.mailStates(ctx, eventID)
+	if err != nil {
+		return EventSummary{}, err
+	}
+	issued, revoked, mailQueued, mailFailed := 0, 0, 0, 0
 	for _, item := range certs {
-		if item.RevokedAt == nil {
-			issued++
-		} else {
+		if item.RevokedAt != nil {
 			revoked++
+			continue
+		}
+		issued++
+		switch states[item.Serial].Status {
+		case MailQueued:
+			mailQueued++
+		case MailFailed:
+			mailFailed++
 		}
 	}
 	var finalization *Finalization
@@ -71,7 +81,8 @@ func (s *service) Summary(ctx context.Context, p authz.Principal, eventID uuid.U
 		EventID: eventID, EligibleCount: eligibleCount, IssuedCount: issued, RevokedCount: revoked,
 		QueuedCount: queued, FailedCount: failed, Resolution: s.projectResolution(p, resolution),
 		CountedTotal: attendance.CountedTotal, EffectiveMin: event.RuleMin(ev, attendance.CountedTotal), BelowCount: belowCount,
-		AutoFinalizeAt: autoFinalizeAt(ev, attendance, finalization != nil, time.Now()),
+		AutoFinalizeAt:  autoFinalizeAt(ev, attendance, finalization != nil, time.Now()),
+		MailQueuedCount: mailQueued, MailFailedCount: mailFailed,
 	}
 	if finalization != nil {
 		out.AttendanceFinalizedAt, out.FinalizedSource = &finalization.At, finalization.Source
@@ -99,6 +110,10 @@ func (s *service) Attendance(ctx context.Context, p authz.Principal, eventID uui
 	for _, required := range attendance.Required {
 		titles[required.ID] = required.Title
 	}
+	states, err := s.mailStates(ctx, eventID)
+	if err != nil {
+		return AttendanceList{}, err
+	}
 	out := AttendanceList{
 		CountedTotal: attendance.CountedTotal, EffectiveMin: event.RuleMin(ev, attendance.CountedTotal), Rule: ev.AttendanceRule,
 		Required: attendance.Required, Rows: make([]AttendanceRow, 0, len(attendance.Tickets)),
@@ -121,7 +136,11 @@ func (s *service) Attendance(ctx context.Context, p authz.Principal, eventID uui
 		}
 		switch {
 		case item.Active != nil:
-			row.Certificate = item.Active
+			ref := *item.Active
+			if state, ok := states[ref.Serial]; ok {
+				ref.Mail = &state
+			}
+			row.Certificate = &ref
 		case item.Revoked != nil:
 			row.Certificate = item.Revoked
 		}
@@ -340,6 +359,9 @@ func (s *service) processJob(ctx context.Context, job Job) error {
 		// lease before it could complete the job: complete it now and send the
 		// e-mail it never sent, issuing nothing again (ticket 25, review B2).
 		if active.JobID != nil && *active.JobID == job.ID {
+			if err := s.queueMail(ctx, active); err != nil {
+				return err
+			}
 			if err := s.jobs.CompleteJob(ctx, job.ID, job.LeaseToken, active.ID); err != nil {
 				return err
 			}
@@ -377,6 +399,11 @@ func (s *service) processJob(ctx context.Context, job Job) error {
 	}
 	created, err := s.materializeVersion(ctx, ev, item, version, batch, job, replaceSerial)
 	if err != nil {
+		return err
+	}
+	// The mail is queued before the job completes (queueMail); the queue
+	// keeps one per certificate, so a later claim of this job queues none.
+	if err := s.queueMail(ctx, created); err != nil {
 		return err
 	}
 	// Only the lease holder's completion sends the e-mail: a holder whose lease

@@ -1066,6 +1066,12 @@ func main() {
 	worker("certificate issuance worker", certificate.MaintainIssuance(workers, certSvc, 2*time.Second, 10, func(err error) {
 		log.Printf("certificate issuance worker: %v", err)
 	}))
+	// The certificate mail queue (docs/certificate-mail.md): SkyMail gets
+	// each issued certificate's mail under an Idempotency-Key, again with
+	// backoff while it is unreachable.
+	worker("certificate mail", certificate.MaintainMails(workers, certSvc, 5*time.Second, 20, func(err error) {
+		log.Printf("certificate mail worker: %v", err)
+	}))
 	// Automatic attendance finalization (docs/certificate-rule.md): every
 	// minute, the Events whose last live Session ended an hour ago close
 	// their attendance and queue their certificates. One replica plans at a

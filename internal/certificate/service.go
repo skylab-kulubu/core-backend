@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -41,6 +42,11 @@ type Options struct {
 	// the store's (PostgresStore); a store without one leaves AutoFinalize
 	// refused (ErrInvalid).
 	AutoFinalize AutoFinalizeStore
+	// Mails is the certificate mail queue (docs/certificate-mail.md). Nil
+	// takes the store's (PostgresStore, MemoryStore). The queue is used
+	// only with a Mailer that is a CertificateMailer; any other is sent to
+	// directly, as before.
+	Mails MailQueue
 }
 
 type service struct {
@@ -63,6 +69,7 @@ type service struct {
 	attendance       AttendanceStore
 	autoFinalize     AutoFinalizeStore
 	autoMetrics      autoFinalizeMetrics
+	mails            MailQueue
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -102,6 +109,9 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 	if opts.AutoFinalize == nil {
 		opts.AutoFinalize, _ = store.(AutoFinalizeStore)
 	}
+	if opts.Mails == nil {
+		opts.Mails, _ = store.(MailQueue)
+	}
 	if opts.Attendance == nil {
 		opts.Attendance = memoryAttendance{events: events, tickets: tickets, certs: store, jobs: opts.Jobs, users: users}
 	}
@@ -110,7 +120,7 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 		render: render, mail: mail, apiOrigin: apiOrigin, verifyOrigin: verifyOrigin,
 		templates: opts.Templates, jobs: opts.Jobs, artifacts: opts.Artifacts,
 		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media, privateArtifacts: opts.PrivateArtifacts,
-		attendance: opts.Attendance, autoFinalize: opts.AutoFinalize,
+		attendance: opts.Attendance, autoFinalize: opts.AutoFinalize, mails: opts.Mails,
 	}
 }
 
@@ -226,23 +236,11 @@ func (s *service) materializeLegacy(ctx context.Context, ev event.Event, t ticke
 	if err != nil {
 		return Certificate{}, err
 	}
+	if err := s.queueMail(ctx, created); err != nil {
+		log.Printf("ERROR certificate %s: mail not queued (%s)", created.ID, databaseErrorClass(err))
+	}
 	s.sendMail(ctx, created)
 	return created, nil
-}
-
-func (s *service) sendMail(ctx context.Context, c Certificate) {
-	if s.mail == nil {
-		return
-	}
-	first := c.RecipientName
-	if parts := strings.Fields(c.RecipientName); len(parts) > 0 {
-		first = parts[0]
-	}
-	s.mail.Certificate(ctx, c.RecipientEmail, c.RecipientName, map[string]string{
-		"FirstName": first, "EventName": c.EventName, "VerifyURL": c.VerifyURL,
-		// The template's "Düzenleyen" row: the organizer as the club shows it.
-		"Serial": c.Serial, "OwnerTeam": organizer.Name(c.OwnerTeam),
-	})
 }
 
 func (s *service) RecomputeTicket(ctx context.Context, ticketID uuid.UUID) (*Certificate, error) {
@@ -412,7 +410,20 @@ func (s *service) ListByEvent(ctx context.Context, p authz.Principal, eventID uu
 	if !s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificate, OwnerTeam: ev.OwnerTeam}, authz.Read) {
 		return nil, ErrForbidden
 	}
-	return s.store.ListByEvent(ctx, eventID)
+	certs, err := s.store.ListByEvent(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	states, err := s.mailStates(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range certs {
+		if state, ok := states[certs[i].Serial]; ok {
+			certs[i].Mail = &state
+		}
+	}
+	return certs, nil
 }
 
 // visibleEvent is the current Event id names, ErrNotFound when p may not see
