@@ -1,6 +1,9 @@
 package shorturl
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	ErrNotFound  = errors.New("shorturl: not found")
@@ -13,4 +16,8 @@ var (
 	// ErrEventManaged rejects a form-side rename of a link an event owns; that
 	// alias only changes when the event is saved.
 	ErrEventManaged = errors.New("shorturl: managed by an event")
+	// ErrGone is a hop to an alias that once named a link which is now
+	// disabled. It is an ErrNotFound: the JSON answer stays a 404, and only a
+	// browser is told the link is gone (410, docs/short-link-miss-page.md).
+	ErrGone = fmt.Errorf("%w: link disabled", ErrNotFound)
 )

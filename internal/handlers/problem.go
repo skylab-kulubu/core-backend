@@ -64,15 +64,14 @@ func problemDetailCode(c fiber.Ctx, status int, title, detail, code string) erro
 
 // problemWithFields adds extension members (RFC 9457 §3.2) that tell the
 // caller how to fix the request. They never replace the standard members.
+//
+// The instance is the request's path without its query string: a query can
+// carry an e-mail or a share token, and the body would hand it back.
 func problemWithFields(c fiber.Ctx, status int, title, detail, code string, fields fiber.Map) error {
 	instance := c.Path()
 	if u := c.Request().URI(); u != nil {
-		path := string(u.Path())
-		if path != "" {
+		if path := string(u.Path()); path != "" {
 			instance = path
-			if q := u.QueryString(); len(q) > 0 {
-				instance += "?" + string(q)
-			}
 		}
 	}
 	body := fiber.Map{}

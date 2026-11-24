@@ -125,7 +125,22 @@ func (s *MemoryStore) detailed(e Event) Event {
 	e.RegistrationOpen = e.RegistrationOpenAt(now)
 	e.Files, e.Videos = s.shown(e.Files), s.shown(e.Videos)
 	e.FileCount, e.VideoCount = len(servableItems(e.Files)), len(servableItems(e.Videos))
+	e.EffectiveEntryMode = EffectiveEntryMode(e.EntryMode, s.liveSessionsLocked(e.ID))
 	return e
+}
+
+// liveSessionsLocked reports whether the Event has a live Session, as
+// liveSessionsSQL does; s.mu is held.
+func (s *MemoryStore) liveSessionsLocked(eventID uuid.UUID) bool {
+	for _, sess := range s.sessions {
+		if sess.ArchivedAt != nil || sess.Cancelled {
+			continue
+		}
+		if day, ok := s.days[sess.EventDayID]; ok && day.EventID == eventID && day.ArchivedAt == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // shown are the stored items (ids in their order) as they are shown: each

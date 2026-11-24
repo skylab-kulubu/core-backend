@@ -24,7 +24,7 @@ func (s *SkyMail) PrivilegeNoticeConfigured() bool {
 // queue until SkyMail has taken it (internal/teammail). A refusal is warned
 // about in the log with the kind privilege_notice and no recipient.
 func (s *SkyMail) PrivilegeNotice(ctx context.Context, recipient, fullName string, vars map[string]string) error {
-	if !s.PrivilegeNoticeConfigured() || strings.TrimSpace(s.BaseURL) == "" {
+	if !s.PrivilegeNoticeConfigured() || s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}
 	token, err := s.Tokens.Token(ctx)

@@ -2,8 +2,10 @@
 
 kontenjan-iptal-hatirlatma ticket 02 (SPEC §3.1, §3.4). A Ticket is never
 deleted to cancel it: it gets a status. The holder's own cancellation
-(ticket 03), the cancellation and waiting-list mails (04), the forms
-decline (05) and the waiting list itself (06, 07) build on this.
+(ticket 03, below), the cancellation and waiting-list mails (04,
+[ticket-status-mail.md](ticket-status-mail.md)), the forms decline (05,
+[form-response-tickets.md](form-response-tickets.md)) and the waiting list
+itself (06, 07) build on this.
 
 ## Status
 
@@ -76,15 +78,18 @@ check-in cannot be cancelled.
 
 ## `POST /v1/tickets/{id}/cancel`
 
-Body (optional): `{"reason": "…"}`, at most 500 characters (`400` over).
+Body (optional): `{"reason": "…", "notify": true}`; `reason` at most 500
+characters (`400` over), `notify` whether the holder is told (default
+`false`).
 
-- **Who:** exactly who may edit the Event (Yusuf, 2026-11-24): Privileged
+- **Who:** the Ticket's holder (below), or exactly who may edit the Event
+  (Yusuf, 2026-11-24): Privileged
   `event:manage` (ADMIN, YK), the owning team's Leaders (and those of a Team
   above it), and the members of a team whose members edit its Events by the
   Event policy (GECEKODU), on that team's Events only. DK reads only
-  (`403`), as do ordinary members, door staff, `ticket:manage` alone and the
-  holder (the holder's own cancellation is ticket 03). A draft the caller
-  may not see is `404`.
+  (`403`), as do door staff and `ticket:manage` alone. Someone else's Ticket
+  is `404` to a caller who may not read it (an ordinary member, another
+  team's people). A draft the caller may not see is `404`.
 - **`200`** the Ticket, `status: "cancelled"`, `cancelledBy: "operator"`. A
   Ticket already cancelled answers `200` as it is (no second audit row).
 - **`409 event_ended`** once the Event is over;
@@ -94,11 +99,44 @@ Body (optional): `{"reason": "…"}`, at most 500 characters (`400` over).
   Entrant (ADR 0068; a withdrawn or disqualified Entrant's Ticket may go).
 - The Ticket's "Biletin hazır" mail still waiting is dropped. Its link and
   QR stay: the page says `ticket_cancelled`, QR and PDF answer `410`.
-- No mail to the holder yet (ticket 04, `TICKET_STATUS_MAIL`).
+- The holder is told ("Biletin iptal edildi", `event.ticket-cancelled`,
+  `CancelledBy=operator` with the reason) only when `notify` is `true` and
+  `TICKET_STATUS_MAIL` is on ([ticket-status-mail.md](ticket-status-mail.md)).
 - An active Ticket's place goes to the Event's waiting list in the same
   transaction: the longest waiting is promoted
   ([event-capacity.md](event-capacity.md)). Cancelling a waitlisted Ticket
   takes it off the list and frees no place.
+
+## The holder's own cancellation
+
+kontenjan-iptal-hatirlatma ticket 03 (SPEC §3.4; Yusuf, 2026-11-24). A
+member cancels their own Ticket on the same route,
+`POST /v1/tickets/{id}/cancel` (sky-app, Hesap Merkezi); a guest from the
+ticket page with its key, `POST /v1/public/tickets/{key}/cancel`
+([ticket-page.md](ticket-page.md)). The same rules on both:
+
+- **Until when:** an active Ticket until the Event starts; a waitlisted one
+  (leaving the list) until the Event ends; an Event with no date never
+  starts. After that, or on a cancelled Event: **`409
+  ticket_cancel_closed`**. The operator may still cancel until the end.
+- **`409 ticket_checked_in`**, **`409 ticket_in_competition`** as for the
+  operator.
+- **`200`** the Ticket, `cancelledBy: "holder"` (the page answers
+  `{"state":"ticket_cancelled"}` only). A Ticket already cancelled answers
+  `200` as it is. The body is not read for the holder: no reason is kept,
+  and the holder is always told ("Biletin iptal edildi",
+  `CancelledBy=holder`) while `TICKET_STATUS_MAIL` is on.
+- An active Ticket's place goes to the waiting list in the same
+  transaction, as for the operator; leaving the list frees none.
+- A holder who also edits the Event is the holder on their own Ticket.
+- No Team audit row: the person acts on their own Ticket. The log line is
+  `ticket_cancelled_by_holder` (the member's route: the request, the Ticket
+  and the Event; the page's: the request only).
+- `GET /v1/public/tickets/{key}` and each Ticket of `GET /v1/tickets/me`
+  say `cancellable`, so the page, Hesap Merkezi and sky-app show the button
+  only while it works: the rule above, and neither a check-in nor a current
+  Entrant (read in one query for the whole list). No other answer carries
+  it.
 
 ## `POST /v1/tickets/{id}/restore`
 
@@ -121,7 +159,9 @@ as a new registration: on a full Event it goes on the waiting list (or is
 refused), from the panel past the capacity ([event-capacity.md](event-capacity.md)). Only an active (or
 waitlisted) Ticket is "already there" (`409`, Guest apply's `existing`).
 A guest Ticket reopened answers as written (`created`; the forms report
-counts it).
+counts it). The forms report reopens only a Ticket Forms' own decline
+cancelled (`cancelledBy: form`): a holder's or an operator's cancellation
+stands against it, with no mail ([form-response-tickets.md](form-response-tickets.md)).
 
 ## Audit and logs
 

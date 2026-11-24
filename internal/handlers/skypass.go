@@ -214,6 +214,46 @@ func (h *SkyPassHandler) CheckInSession(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(ci)
 }
 
+// EnterEvent is POST /v1/events/:eventId/entries/scan: today's Venue entry
+// of whatever the door scanned, no Session picked (docs/venue-entry.md).
+// As CheckInSession: the door first, then the code.
+func (h *SkyPassHandler) EnterEvent(c fiber.Ctx) error {
+	p, err := caller(c)
+	if err != nil {
+		return skypassError(c, err)
+	}
+	eventID, err := uuid.Parse(c.Params("eventId"))
+	if err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	var body settleBody
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	if h.tickets == nil {
+		return problem(c, fiber.StatusInternalServerError, "Internal Server Error")
+	}
+	if err := h.tickets.AuthorizeEventDoor(c.Context(), p, eventID); err != nil {
+		return ticketError(c, err)
+	}
+	if body.Token != "" && ticketqr.IsTicketQR(body.Token) {
+		entry, err := h.tickets.EnterTicketQR(c.Context(), p, eventID, body.Token)
+		if err != nil {
+			return ticketQRError(c, err)
+		}
+		return c.Status(fiber.StatusCreated).JSON(entry)
+	}
+	got, err := h.svc.HolderFrom(c.Context(), p, body.Token, body.UID)
+	if err != nil {
+		return skypassError(c, err)
+	}
+	entry, err := h.tickets.EnterUser(c.Context(), p, eventID, got.ID)
+	if err != nil {
+		return ticketError(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(entry)
+}
+
 // ticketQRError answers a Ticket QR scan's refusal (docs/ticket-qr.md).
 func ticketQRError(c fiber.Ctx, err error) error {
 	switch {

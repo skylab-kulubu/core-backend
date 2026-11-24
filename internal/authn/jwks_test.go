@@ -58,6 +58,7 @@ func TestJWKSAcceptsSigned(t *testing.T) {
 		"iss":    "https://auth.example.test/realms/e-skylab",
 		"aud":    "core",
 		"exp":    time.Now().Add(time.Hour).Unix(),
+		"typ":    "Bearer",
 	})
 	tok.Header["kid"] = "k1"
 	signed, err := tok.SignedString(key)

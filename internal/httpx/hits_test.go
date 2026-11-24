@@ -225,3 +225,24 @@ func TestSessionQRLogoIsPNGAndNotAShortLinkHit(t *testing.T) {
 		t.Fatalf("session qr counted as hit %+v", hits)
 	}
 }
+
+// skyl.app/ with no alias goes to the club site, with or without the slash.
+func TestGoRootRedirectsToTheSite(t *testing.T) {
+	t.Parallel()
+	app := memoryApp()
+	for _, path := range []string{"/v1/go", "/v1/go/"} {
+		for _, accept := range []string{"", "text/html", "application/json"} {
+			req := httptest.NewRequest(fiber.MethodGet, path, nil)
+			if accept != "" {
+				req.Header.Set(fiber.HeaderAccept, accept)
+			}
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != fiber.StatusFound || resp.Header.Get(fiber.HeaderLocation) != "https://yildizskylab.com" || resp.Header.Get(fiber.HeaderCacheControl) != "no-store" {
+				t.Fatalf("%s accept=%q: %d %v", path, accept, resp.StatusCode, resp.Header)
+			}
+		}
+	}
+}

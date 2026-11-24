@@ -316,75 +316,40 @@ that signed it, so a new key does not break the links already mailed:
 
 SkyMail can record whether a person opened a mail and which link they
 clicked (open and click tracking, ADR-0074; skymail-backend README "Açılma
-ve tıklama takibi"; hub tickets iletisim-servisi 14 and 16). Core decides
-whom it may track, for every mail SkyMail tracks: panel sends
-(`SKYMAIL_TRACKING_OPERATOR`) and the services' account and transactional
-mail (`SKYMAIL_TRACKING_SYSTEM`) alike; SkyMail's flags decide which mail
-is tracked, and they all start off. The basis is legitimate interest with
-an opt-out (decision T1): a Member is tracked until they turn it off on the
-Account center (T8: no mail carries a "stop tracking" link). The objection
-covers account and transactional mail too; the mail keeps coming.
+ve tıklama takibi"; hub tickets iletisim-servisi 14 and 16). SkyMail's
+flags decide which mail is tracked (`SKYMAIL_TRACKING`,
+`SKYMAIL_TRACKING_OPERATOR`, `SKYMAIL_TRACKING_SYSTEM`).
 
-**The row.** `scope = 'tracking'`, `channel = 'email'`, no `group_id`, no
-`news_kind`; one per person. `source` is `account_center` (or `admin`).
-It is no News category: no link, audience or `items` entry names it, and
-the master switch does not touch it.
+**Every mail is tracked (B9, ADR-0074 addendum of 2026-11-24).** A person's
+objection, not being a Member and having no account no longer stop
+tracking. Core says no only for an inactive account, and for everyone while
+the operator's brake is on. The Account center has no tracking switch any
+more.
 
-**The mode.** `COMMUNICATION_TRACKING_MODE`:
+**The mode.** `COMMUNICATION_TRACKING_MODE` is the operator's switch, not a
+personal preference:
 
-| Mode | Without a row | `enabled=true` | `enabled=false` |
-|---|---|---|---|
-| `opt_out` (default, unset) | tracked | tracked | not tracked |
-| `opt_in` | not tracked | tracked | not tracked |
-
-Any other value stops core at startup. `opt_in` is the brake (everyone
-without a row is out at once, SkyMail untouched) and the way back should
-explicit consent be required.
-
-**The screen.** `GET` and `PUT /v1/users/me/communication-preferences`
-answer `"tracking": {"enabled", "effective", "mode"}`: `enabled` the
-person's row or the mode's default; `effective` whether core lets SkyMail
-track them now (enabled and a Member: someone in no `/UYELER` Group is
-never tracked); `mode` the mode. The Account center shows the switch
-reversed: "Postalarımın açılmasını ve tıklamalarımı izleme" checked is
-`enabled: false`. Like every route above, it needs
-`COMMUNICATION_PREFERENCE_KEY` (else `503`). A `PUT` that changes only
-`tracking` reads nothing from Keycloak before it writes, so an objection is
-kept while Keycloak is down: it answers `200` with `"partial": true`, the
-switch as written (`effective` false until the screen is read again) and no
-team or News switch. A `PUT` with `items` still needs the tree (`503
-communication_preference_teams_unavailable`).
-
-**Turning it off** writes, in one transaction: the row, a row of the audit
-trail (below) when the value changes, and a withdrawal in the outbox
-`communication_tracking_withdrawals` (one per person: a newer one replaces a
-waiting one, due at once). A worker then sends
-
-```
-PUT {COMMUNICATION_TRACKING_WITHDRAWAL_URL}/internal/v1/tracking-withdrawals/{sub}
-Authorization: Bearer <core's service account token, client core>
-```
-
-with no body; `{sub}` is the lower-case hyphenated UUID. SkyMail closes
-every tracking token of the person's mail and deletes their openings and
-clicks; their old mail's links still redirect. The token comes from
-`KEYCLOAK_CLIENT_ID` (`core`) by client credentials and needs `aud ∋
-skymail` and SkyMail's client role `skymail:tracking:withdraw` (given only
-to `service-account-core`, hub ticket 17). The answers:
-
-| SkyMail answers | Core |
+| Mode | Core lets SkyMail track |
 |---|---|
-| `204` | done, the row goes |
-| no answer, `401` (the token is dropped), `429`, `5xx` (`503` with `Retry-After`) | tried again: 30 s doubling to 15 min, a `Retry-After` kept between the two |
-| `403` | configuration error (role or audience missing): the token is dropped, logged `tracking_withdrawal_forbidden`, tried again every 15 min |
-| `404` | no route (a SkyMail before 14c, or a public address): logged `tracking_withdrawal_not_found`, tried again every 15 min |
-| `400` | refused for good: logged `tracking_withdrawal_rejected`, the row goes |
+| `opt_out` (default, unset) | every active account |
+| `opt_in` | no one (the brake; reason `tracking_off`) |
 
-A withdrawal is never given up on: the objection must reach SkyMail. Core
-ships before SkyMail's route without harm (it waits on `404`). Turning
-tracking back on writes no withdrawal; what SkyMail deleted stays deleted.
-Several cores share the outbox (claims with a lease, `FOR UPDATE SKIP
-LOCKED`); a claim's late answer never removes a newer request.
+Any other value stops core at startup; the names are the ones from before
+B9, kept so a deployment's value still reads. Startup logs the mode, with a
+`WARNING` while the brake is on.
+
+**The screen (one release of compatibility).** `GET` and `PUT
+/v1/users/me/communication-preferences` still answer `"tracking":
+{"enabled", "effective", "mode"}` so an older Account center keeps working.
+`enabled` and `effective` are both the mode's (`true` under `opt_out`,
+`false` under `opt_in`), whatever the person's old row says, Member or not:
+the signed-in person is active, so this is the truth about them. A `PUT`
+still takes `"tracking": {"enabled": true|false}` (anything else `400`, as
+before) and ignores it: no row, no audit row, no withdrawal. A `PUT` that
+carries only `tracking` reads the screen as `GET` does; while Keycloak does
+not answer it is `200` with `"partial": true` and no team or News switch. A
+`PUT` with `items` writes them as before. The field and the `PUT` key go in
+a later release.
 
 **Whom SkyMail may track.** SkyMail asks before it queues a tracked send:
 
@@ -395,26 +360,29 @@ Authorization: Bearer <SkyMail's service account token>
 {"subs": ["7d3c1f6e-0b9a-4c55-9a51-3f4d2b8e6a10", …]}
 ```
 
-→ `200 {"results": [{"sub", "allowed": true|false, "reason": "preference_off"|"not_member"|"inactive"|null}]}`,
+→ `200 {"results": [{"sub", "allowed": true|false, "reason": "inactive"|"tracking_off"|null}]}`,
 every `sub` asked exactly once, in the order asked (`Cache-Control:
 no-store`). At most 1000 subs, each a lower-case hyphenated UUID, once;
 `{"subs": []}` answers `[]`. The first rule that fails is the reason:
 
-1. `inactive`: disabled in Keycloak, or being erased or erased in core;
-2. `not_member`: in no `/UYELER` Group (the [News audience](news-audience.md)'s
-   Member), a client's service account, or someone Keycloak does not have;
-3. `preference_off`: the row is `false`, or there is none under `opt_in`.
+1. `tracking_off`: the brake (`opt_in`), for everyone. It reads neither
+   Keycloak nor the accounts, so it holds while Keycloak does not answer;
+2. `inactive`: the erased subject, an account core holds as being erased or
+   erased, or a club member Keycloak has disabled (the snapshot holds the
+   club's members only, so a disabled non-Member is not seen and is
+   allowed; known case, kept on purpose).
 
-It reads the News audience's snapshot of the `/UYELER` tree (30 s) and
-needs no `COMMUNICATION_PREFERENCE_KEY`. Only a service account with core's
-client role `communication-preferences:read` (SkyMail's,
+Before B9 core also said `preference_off` and `not_member`; it no longer
+does. It reads the News audience's snapshot of the `/UYELER` tree (30 s)
+and needs no `COMMUNICATION_PREFERENCE_KEY`. Only a service account with
+core's client role `communication-preferences:read` (SkyMail's,
 `skymail-backend`) may call it: a person's token is `403
 tracking_resolve_service_only` whatever it carries, a service account
 without the role `403 tracking_resolve_role_missing`. A body core cannot
 read is `400 tracking_resolve_invalid`; Keycloak not answering the tree is
-`503 tracking_resolve_directory_unavailable` with `Retry-After` (SkyMail
-then tracks nobody in that send). The log line `tracking_resolve` carries
-counts, never a sub.
+`503 tracking_resolve_directory_unavailable` with `Retry-After`. The log
+line `tracking_resolve` carries counts (`inactive`, `tracking_off`), never a
+sub.
 
 **Internal routes.** Every route under `/internal` answers a request that
 came through the public edge (one carrying `X-Forwarded-*`, `Forwarded` or
@@ -422,25 +390,26 @@ came through the public edge (one carrying `X-Forwarded-*`, `Forwarded` or
 a second layer only: any container on the network reaches core without
 Traefik, so the token checks stay the boundary.
 
-**The audit trail.** `communication_tracking_changes(user_id, enabled,
-previous, source, changed_at)`: a row whenever the value changes
-(`previous` null when there was no row). No address, no IP. A row is kept
-3 years after its change (ADR-0062 addendum of 2026-10-25), then the
-retention sweep's `tracking_changes_age` deletes it
-([retention-sweep.md](retention-sweep.md)); the preference row itself
-stays.
+**What was kept from before B9.** Nothing is deleted by this change:
 
-**Erasure.** The step `erase_communication_preferences` deletes the
-person's row, their waiting withdrawal and their audit trail; SkyMail
+- the old rows (`communication_preferences`, `scope = 'tracking'`) stay and
+  are read by nothing;
+- the audit trail `communication_tracking_changes(user_id, enabled,
+  previous, source, changed_at)` gets no new row; its rows are still
+  deleted 3 years after their change by the retention sweep's
+  `tracking_changes_age` ([retention-sweep.md](retention-sweep.md));
+- the outbox `communication_tracking_withdrawals` gets no new row, and the
+  worker that sent its rows to SkyMail (`PUT
+  /internal/v1/tracking-withdrawals/{sub}`) is no longer started:
+  `COMMUNICATION_TRACKING_WITHDRAWAL_URL` is not read and the
+  `skylab_tracking_withdrawal_*` metrics are gone. A row still waiting
+  there stays. SkyMail's route answers success for one release and deletes
+  nothing.
+
+**Erasure.** The step `erase_communication_preferences` still deletes the
+person's old row, their waiting withdrawal and their audit trail; SkyMail
 deletes its tracking data in its own erasure step
 ([account-erasure-command.md](account-erasure-command.md)).
-
-**Metrics** (`/v1/metrics`, internal only): `skylab_tracking_withdrawal_enabled`,
-`skylab_tracking_withdrawal_total{outcome="sent|retry|forbidden|not_found|rejected"}`,
-`skylab_tracking_withdrawal_backlog`, `skylab_tracking_withdrawal_oldest_age_seconds`,
-`skylab_tracking_withdrawal_last_success_timestamp_seconds`,
-`skylab_tracking_withdrawal_queue_errors_total`. A backlog that ages is the
-alarm.
 
 ## Settings
 
@@ -451,8 +420,8 @@ alarm.
 | `COMMUNICATION_PREFERENCE_KEY_CURRENT` | the version new links are signed with, 1–255; unset: 1. It must name a version that is set |
 | `PUBLIC_API_ORIGIN` | required with the key: where the links point |
 | `COMMUNICATION_PREFERENCE_ACCOUNT_CENTER_URL` | the Account center page the unsubscribe page links to; unset: `https://my.yildizskylab.com` |
-| `COMMUNICATION_TRACKING_MODE` | `opt_out` (unset) or `opt_in` ([Tracking](#tracking)); anything else stops core |
-| `COMMUNICATION_TRACKING_WITHDRAWAL_URL` | SkyMail's address on the internal network for the withdrawal (not the public one: `/internal` answers the edge `404`); unset: `ACCOUNT_ERASURE_SKYMAIL_URL`. Neither set (or no `KEYCLOAK_*` client credentials): withdrawals wait in the outbox, startup warns. A value that does not read (either variable) does not stop core: startup warns and the withdrawals wait; the erasure worker still checks `ACCOUNT_ERASURE_SKYMAIL_URL` for itself |
+| `COMMUNICATION_TRACKING_MODE` | `opt_out` (unset: every active account is tracked) or `opt_in` (the brake: no one is) ([Tracking](#tracking)); anything else stops core |
+| `COMMUNICATION_TRACKING_WITHDRAWAL_URL` | Not read since B9 (the withdrawal worker is not started, [Tracking](#tracking)); a value left set does nothing |
 
 A current version that is not set, a newer version without `CURRENT`, a key
 that is not 32 bytes, `_V1`, or two versions holding the same key stop core
@@ -461,5 +430,5 @@ fail fast); the error names the variable, never a value. Core never falls
 back to another version.
 
 Startup logs `communication preferences: on|off` with the key versions and
-the current one (never a key), `communication tracking:
-mode …` and whether withdrawals reach SkyMail.
+the current one (never a key), and `communication tracking: mode …`
+(a `WARNING` while the brake is on).

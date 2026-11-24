@@ -54,6 +54,14 @@ func ticketError(c fiber.Ctx, err error) error {
 		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_cancelled")
 	case errors.Is(err, ticket.ErrTicketWaitlisted):
 		return problemCode(c, fiber.StatusConflict, "Conflict", "ticket_waitlisted")
+	case errors.Is(err, ticket.ErrEventClosed):
+		// The Event's door (docs/venue-entry.md): reason says why.
+		var closed *ticket.EventClosedError
+		var fields fiber.Map
+		if errors.As(err, &closed) {
+			fields = fiber.Map{"reason": closed.Reason}
+		}
+		return problemWithFields(c, fiber.StatusForbidden, "Event Closed", "Event Closed", "event_closed", fields)
 	case errors.Is(err, ticket.ErrEventFull):
 		// The Event is full (docs/event-capacity.md): waitlistEnabled tells
 		// the client whether it may offer the waiting list.
@@ -61,6 +69,16 @@ func ticketError(c fiber.Ctx, err error) error {
 		enabled := errors.As(err, &full) && full.WaitlistEnabled
 		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Conflict", "event_full",
 			fiber.Map{"waitlistEnabled": enabled})
+	case errors.As(err, new(*ticket.EntryConflictError)):
+		// A second Venue entry the same day: who is already in, when the
+		// door asked by the Event (docs/venue-entry.md).
+		var entered *ticket.EntryConflictError
+		errors.As(err, &entered)
+		var fields fiber.Map
+		if entered.Name != "" {
+			fields = fiber.Map{"name": entered.Name}
+		}
+		return problemWithFields(c, fiber.StatusConflict, "Conflict", "Bugün zaten girdi.", "already_entered", fields)
 	case errors.Is(err, ticket.ErrConflict):
 		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
 	case errors.Is(err, ticket.ErrAmbiguous):
@@ -181,9 +199,10 @@ type guestApplied struct {
 	Status string `json:"status"`
 }
 
-// ApplyGuest is Guest apply (docs/guest-apply.md). The route takes a token
-// but does not require one: an operator of the Event and a product's service
-// identity get the Ticket, as before; anybody else gets guestApplied.
+// ApplyGuest is Guest apply (docs/guest-apply.md). A token holder reaches it
+// only as an operator of the Event (anybody else is refused by the service)
+// and gets the Ticket; the token-less internal hop gets guestApplied. The
+// edge without a token never reaches it (GuestApply.HideFromEdge).
 func (h *TicketHandler) ApplyGuest(c fiber.Ctx) error {
 	eventID, err := uuid.Parse(c.Params("eventId"))
 	if err != nil {
@@ -338,15 +357,16 @@ func (h *TicketHandler) logFormResponse(c fiber.Ctx, r ticket.FormResponse, resu
 		outcome = "failed"
 	}
 	payload, marshalErr := json.Marshal(struct {
-		Event          string `json:"event"`
-		CorrelationID  string `json:"correlation_id"`
-		FormID         string `json:"form_id"`
-		ResponseID     string `json:"response_id"`
-		Status         string `json:"status"`
-		Outcome        string `json:"outcome"`
-		TicketsWritten int    `json:"tickets_written"`
-		ListingEvents  int    `json:"listing_events"`
-	}{"form_response", requestid.FromContext(c), r.FormID.String(), r.ResponseID.String(), status, outcome, result.TicketsWritten, result.ListingEvents})
+		Event            string `json:"event"`
+		CorrelationID    string `json:"correlation_id"`
+		FormID           string `json:"form_id"`
+		ResponseID       string `json:"response_id"`
+		Status           string `json:"status"`
+		Outcome          string `json:"outcome"`
+		TicketsWritten   int    `json:"tickets_written"`
+		TicketsCancelled int    `json:"tickets_cancelled"`
+		ListingEvents    int    `json:"listing_events"`
+	}{"form_response", requestid.FromContext(c), r.FormID.String(), r.ResponseID.String(), status, outcome, result.TicketsWritten, result.TicketsCancelled, result.ListingEvents})
 	if marshalErr == nil {
 		h.logger.Print(string(payload))
 	}
@@ -643,15 +663,50 @@ func (h *TicketHandler) ByUserEvent(c fiber.Ctx) error {
 	return c.JSON(got)
 }
 
+// TicketSearchPath is the search that carries the e-mail in its body
+// (docs/ticket-search.md): an address in the query string ends up in access
+// logs and browser history.
+const TicketSearchPath = "/v1/tickets/search"
+
+// ticketSearchDeprecation is the Deprecation header of GET /v1/tickets?email=
+// (RFC 9745): deprecated since 2026-11-24 00:00 UTC, kept for a while for a
+// client that still sends it.
+const ticketSearchDeprecation = "@1795478400"
+
+// List is GET /v1/tickets?userId=…; its ?email= is the old form of
+// TicketSearchPath, still answered.
 func (h *TicketHandler) List(c fiber.Ctx) error {
+	email := c.Query("email")
+	if email != "" {
+		c.Set("Deprecation", ticketSearchDeprecation)
+		c.Set(fiber.HeaderLink, "<"+TicketSearchPath+`>; rel="successor-version"`)
+	}
+	return h.listQuery(c, email, c.Query("userId"))
+}
+
+type ticketSearchBody struct {
+	Email  string `json:"email"`
+	UserID string `json:"userId"`
+}
+
+// Search is POST /v1/tickets/search {"email", "userId"}: List's query in a
+// body.
+func (h *TicketHandler) Search(c fiber.Ctx) error {
+	var body ticketSearchBody
+	if err := c.Bind().Body(&body); err != nil {
+		return problem(c, fiber.StatusBadRequest, "Bad Request")
+	}
+	return h.listQuery(c, body.Email, body.UserID)
+}
+
+func (h *TicketHandler) listQuery(c fiber.Ctx, email, rawUserID string) error {
 	p, err := caller(c)
 	if err != nil {
 		return ticketError(c, err)
 	}
-	email := c.Query("email")
 	var userID *uuid.UUID
-	if raw := c.Query("userId"); raw != "" {
-		id, err := uuid.Parse(raw)
+	if rawUserID != "" {
+		id, err := uuid.Parse(rawUserID)
 		if err != nil {
 			return problem(c, fiber.StatusBadRequest, "Bad Request")
 		}

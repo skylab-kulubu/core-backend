@@ -217,14 +217,6 @@ func (e *delegationEnv) token(name string, groups ...string) string {
 	})
 }
 
-// queryOf is the "?query" of path, "" without one.
-func queryOf(path string) string {
-	if _, query, ok := strings.Cut(path, "?"); ok {
-		return "?" + query
-	}
-	return ""
-}
-
 type rawResponse struct {
 	status int
 	body   []byte
@@ -334,7 +326,7 @@ func TestTeamDelegationOffChangesNothing(t *testing.T) {
 		// The same problem but for the instance, which names the request's
 		// ids (each app has its own).
 		gotProblem, wantProblem := got.problem(), want.problem()
-		if gotProblem["instance"] != strings.SplitN(r.path, "?", 2)[0]+queryOf(r.path) {
+		if gotProblem["instance"] != strings.SplitN(r.path, "?", 2)[0] {
 			t.Errorf("%s %s %s: instance %v", r.as, r.method, r.path, gotProblem["instance"])
 		}
 		delete(gotProblem, "instance")

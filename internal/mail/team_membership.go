@@ -113,7 +113,7 @@ func (s *SkyMail) TeamMembership(ctx context.Context, recipient, fullName string
 // team_membership, role_membership or group_membership.
 func (s *SkyMail) Membership(ctx context.Context, kind MembershipKind, recipient, fullName string, vars map[string]string) error {
 	key := s.MembershipTemplateKey(kind)
-	if key == "" || strings.TrimSpace(s.BaseURL) == "" {
+	if key == "" || s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}
 	token, err := s.Tokens.Token(ctx)

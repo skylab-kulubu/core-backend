@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -71,7 +72,8 @@ func TestCancelAndRestoreHTTP(t *testing.T) {
 	if status, body := call(app, fiber.MethodPost, "/v1/tickets/"+mine.ID.String()+"/cancel", ""); status != fiber.StatusOK || !strings.Contains(body, `"status":"cancelled"`) {
 		t.Fatalf("cancel again %d %s", status, body)
 	}
-	if status, body := call(holderApp, fiber.MethodPost, "/v1/tickets/"+other.ID.String()+"/cancel", ""); status != fiber.StatusForbidden {
+	// Someone else's Ticket is no Ticket to a member (kontenjan-iptal-hatirlatma 03).
+	if status, body := call(holderApp, fiber.MethodPost, "/v1/tickets/"+other.ID.String()+"/cancel", ""); status != fiber.StatusNotFound {
 		t.Fatalf("a member %d %s", status, body)
 	}
 	if status, body := call(app, fiber.MethodPost, "/v1/tickets/"+mine.ID.String()+"/sessions/"+sess.ID.String()+"/check-in", ""); status != fiber.StatusConflict || !strings.Contains(body, "ticket_cancelled") {
@@ -115,5 +117,27 @@ func TestCancelAndRestoreHTTP(t *testing.T) {
 	}
 	if status, body := call(app, fiber.MethodPost, "/v1/tickets/"+other.ID.String()+"/cancel", ""); status != fiber.StatusConflict || !strings.Contains(body, "ticket_checked_in") {
 		t.Fatalf("checked in %d %s", status, body)
+	}
+
+	// The holder cancels their own Ticket on the same route; the reason
+	// they send is not kept.
+	status, body = call(holderApp, fiber.MethodPost, "/v1/tickets/"+mine.ID.String()+"/cancel", `{"reason":"benim","notify":false}`)
+	var own ticket.Ticket
+	if err := json.Unmarshal([]byte(body), &own); status != fiber.StatusOK || err != nil ||
+		own.Status != ticket.StatusCancelled || own.CancelledBy != ticket.CancelledByHolder || own.CancelReason != "" {
+		t.Fatalf("holder cancel %d %s", status, body)
+	}
+	// Once the Event has started: 409 ticket_cancel_closed.
+	start, end := time.Now().Add(-time.Minute), time.Now().Add(time.Hour)
+	started, err := events.Create(ctx, event.Event{Name: "Başladı", Location: "YTÜ", OwnerTeam: "WEBLAB", StartDate: &start, EndDate: &end})
+	if err != nil {
+		t.Fatal(err)
+	}
+	late, err := store.Create(ctx, ticket.Ticket{EventID: started.ID, TicketType: ticket.Registered, OwnerID: &holder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, body := call(holderApp, fiber.MethodPost, "/v1/tickets/"+late.ID.String()+"/cancel", ""); status != fiber.StatusConflict || !strings.Contains(body, "ticket_cancel_closed") {
+		t.Fatalf("started %d %s", status, body)
 	}
 }
