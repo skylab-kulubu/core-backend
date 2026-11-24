@@ -1833,6 +1833,8 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.promote%'
 		)`,
+	// core.forms' version order (docs/integration-events.md "core.forms").
+	20261124160000: `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'forms_record_versions'`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
