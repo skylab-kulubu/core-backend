@@ -2,11 +2,13 @@ package formsfeed
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -148,3 +150,82 @@ func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
 		return nil, fmt.Errorf("formsfeed: Forms answered %d", code)
 	}
 }
+
+// PageLimit is how many answers core asks for a page of the list.
+const PageLimit = 100
+
+// ListQuery is a page of the list core asks for: the accepted answers
+// changed since ChangedSince (nil: all of them), after the cursor After.
+type ListQuery struct {
+	ChangedSince *time.Time
+	After        string
+}
+
+// Page is a page of the list. Items are the answers that read; Skipped
+// counts those that did not (another form's, an id or a version missing).
+// NextCursor is empty on the last page, whose Watermark is Forms' time up
+// to which the list is complete.
+type Page struct {
+	Items      []Response
+	Skipped    int
+	NextCursor string
+	Watermark  *time.Time
+}
+
+type pageJSON struct {
+	Items      []json.RawMessage `json:"items"`
+	NextCursor *string           `json:"nextCursor"`
+	Watermark  json.RawMessage   `json:"watermark"`
+}
+
+// List reads a page of a form's accepted answers (SPEC §10 eki):
+//
+//	GET {base}/internal/v1/forms/{formId}/responses?status=accepted&changedSince=…&after=…&limit=100
+//
+// answering {"items": [forms.response.created's data], "nextCursor",
+// "watermark"}. 404 is ErrNotFound: the form is archived or deleted, or
+// Forms has no such route yet.
+func (c *Client) List(ctx context.Context, formID uuid.UUID, q ListQuery) (Page, error) {
+	query := url.Values{}
+	query.Set("status", StatusAccepted)
+	if q.ChangedSince != nil {
+		query.Set("changedSince", q.ChangedSince.UTC().Format(time.RFC3339))
+	}
+	if q.After != "" {
+		query.Set("after", q.After)
+	}
+	query.Set("limit", strconv.Itoa(PageLimit))
+	body, err := c.get(ctx, "/internal/v1/forms/"+formID.String()+"/responses?"+query.Encode())
+	if err != nil {
+		return Page{}, err
+	}
+	var in pageJSON
+	if err := json.Unmarshal(body, &in); err != nil {
+		return Page{}, invalid("Forms' page is not the expected JSON object")
+	}
+	page := Page{}
+	if in.NextCursor != nil {
+		page.NextCursor = *in.NextCursor
+	}
+	if len(page.NextCursor) > maxCursor {
+		return Page{}, invalid("Forms' cursor is longer than %d bytes", maxCursor)
+	}
+	watermark, ignored := decodeTime(in.Watermark)
+	if ignored {
+		return Page{}, invalid("Forms' watermark is not an RFC 3339 time")
+	}
+	page.Watermark = watermark
+	for _, raw := range in.Items {
+		item, err := DecodeResponse(raw)
+		if err != nil || item.FormID != formID {
+			page.Skipped++
+			continue
+		}
+		item.Guest = nil
+		page.Items = append(page.Items, item)
+	}
+	return page, nil
+}
+
+// maxCursor bounds a cursor core keeps between pages (form_pulls.cursor).
+const maxCursor = 2048

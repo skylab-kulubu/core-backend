@@ -165,7 +165,22 @@ var (
 // error keeps its text), e-mail and IPv4 addresses to a placeholder, and the
 // password to [redacted].
 func (c *Consumer) errorText(err error) string {
-	text := c.redact(err)
+	return maskErrorText(err, c.redact(err))
+}
+
+// SafeErrorText is err as a log line may carry it, masked as a handler's
+// error is (Consumer.errorText): a PostgreSQL error as its SQLSTATE and
+// constraint, a panic as its type, e-mail and IPv4 addresses as
+// placeholders. For the work around a consumer (formsfeed's pulls) that
+// logs errors of the same kinds.
+func SafeErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return maskErrorText(err, err.Error())
+}
+
+func maskErrorText(err error, text string) string {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		safe := "PostgreSQL error (SQLSTATE " + pgErr.Code + ")"

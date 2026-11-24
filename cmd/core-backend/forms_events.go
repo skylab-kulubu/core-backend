@@ -14,11 +14,13 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 )
 
-// formsEventsEnv turns the core.forms consumer on with true, while
-// EVENTS_ENABLED=true (docs/integration-events.md "core.forms"). Off (the
-// default), core does not read core.forms and its events wait in the queue:
-// the switch is how ops opens Forms' events after Forms publishes them,
-// without a new image (Yusuf, 2026-11-24).
+// formsEventsEnv is the one switch of Forms' integration (Yusuf,
+// 2026-11-24): true reads core.forms while EVENTS_ENABLED=true
+// (docs/integration-events.md "core.forms") and runs the pulls from Forms'
+// list, the organizer's backfill and the daily catch-up
+// (docs/form-pulls.md). Off (the default), core does not read core.forms
+// (its events wait in the queue), pulls nothing and answers the backfill
+// 503: ops opens Forms' integration after Forms ships, without a new image.
 const formsEventsEnv = "EVENTS_FORMS_ENABLED"
 
 // formsEventsEnabled reads formsEventsEnv: true, or false/unset. Any other
@@ -85,10 +87,9 @@ func newFormsClient(getenv func(string) string, base, realm string) (*formsfeed.
 }
 
 // formsEventsRecorder is core.forms' recorder, or nil when the switch is
-// off. On, it needs Forms' internal address and core's service account (a
-// guest's Ticket is written from the single answer read): without them core
-// stops, naming what is missing.
-func formsEventsRecorder(getenv func(string) string, base, realm string, rec *formsfeed.Recorder) *formsfeed.Recorder {
+// off. On, it needs Forms' client (a guest's Ticket is written from the
+// single answer read): without it core stops, naming what is missing.
+func formsEventsRecorder(getenv func(string) string, client *formsfeed.Client, rec *formsfeed.Recorder) *formsfeed.Recorder {
 	on, err := formsEventsEnabled(getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -96,13 +97,55 @@ func formsEventsRecorder(getenv func(string) string, base, realm string, rec *fo
 	if !on {
 		return nil
 	}
-	client, _, err := newFormsClient(getenv, base, realm)
-	if err != nil {
-		log.Fatal(err)
-	}
 	if client == nil {
 		log.Fatalf("%s=true needs Forms' internal address (%s or ACCOUNT_ERASURE_FORMS_URL), KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET", formsEventsEnv, formsfeed.URLEnv)
 	}
-	rec.Forms = client
 	return rec
+}
+
+// formsClientFromEnv is newFormsClient for startup: an address that does
+// not read warns and leaves the client out (with EVENTS_FORMS_ENABLED=true
+// core then stops), as the tracking withdrawals do.
+func formsClientFromEnv(getenv func(string) string, base, realm string) *formsfeed.Client {
+	client, from, err := newFormsClient(getenv, base, realm)
+	if err != nil {
+		// The error names the variable, never its value.
+		log.Printf("WARNING forms reads: %v; pulls from Forms off", err)
+		return nil
+	}
+	if client == nil {
+		log.Printf("forms reads: no Forms internal address or no core service account")
+		return nil
+	}
+	log.Printf("forms reads: Forms' address from %s", from)
+	return client
+}
+
+// formsMetrics is the answers' counters (events and pulls share one
+// recorder) and the pulls', with EVENTS_FORMS_ENABLED=true.
+type formsMetrics struct {
+	recorder *formsfeed.Recorder
+	puller   *formsfeed.Puller
+}
+
+func (m formsMetrics) Prometheus() string {
+	out := ""
+	if m.recorder != nil {
+		out += m.recorder.Prometheus()
+	}
+	if m.puller != nil {
+		out += m.puller.Prometheus()
+	}
+	return out
+}
+
+// joinedMetrics prints each in turn.
+type joinedMetrics []interface{ Prometheus() string }
+
+func (j joinedMetrics) Prometheus() string {
+	out := ""
+	for _, m := range j {
+		out += m.Prometheus()
+	}
+	return out
 }

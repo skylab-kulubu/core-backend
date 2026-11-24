@@ -1887,6 +1887,16 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		)`,
 	// core.forms' version order (docs/integration-events.md "core.forms").
 	20261124160000: `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'forms_record_versions'`,
+	// Pulling forms' answers (docs/form-pulls.md): the jobs and the
+	// watermarks.
+	20261124161000: `
+		SELECT 1
+		WHERE to_regclass('public.form_pulls') IS NOT NULL
+		  AND to_regclass('public.form_pulls_form_kind_idx') IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'form_pull_watermarks' AND column_name = 'last_backfill_at'
+		  )`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

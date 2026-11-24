@@ -67,7 +67,10 @@ type Deps struct {
 	FeedbackSender handlers.FeedbackSender
 	// FeedbackReminders cancels the reminders of a feedback form the panel
 	// closed; nil leaves its two routes out.
-	FeedbackReminders      handlers.FeedbackReminders
+	FeedbackReminders handlers.FeedbackReminders
+	// FormBackfills serves POST /v1/events/{id}/forms/{formId}/backfill
+	// (docs/form-pulls.md); nil leaves it out.
+	FormBackfills          handlers.FormBackfills
 	Media                  media.Service
 	URLs                   shorturl.Service
 	Certificates           certificate.Service
@@ -741,6 +744,9 @@ func New(deps Deps) *fiber.App {
 			app.Post("/v1/events/:id/feedback/close", feedbackH.CloseEvent)
 			app.Post("/v1/sessions/:id/feedback/close", feedbackH.CloseSession)
 		}
+	}
+	if deps.FormBackfills != nil {
+		app.Post("/v1/events/:id/forms/:formId/backfill", handlers.NewFormBackfillHandler(deps.FormBackfills, log.Default()).Request)
 	}
 	app.Post("/v1/events/:id/images", events.AddImages)
 	app.Delete("/v1/events/:id/images", events.RemoveImages)

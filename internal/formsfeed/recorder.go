@@ -101,7 +101,9 @@ func (r *Recorder) logf(format string, args ...any) {
 type formRole int
 
 const (
-	roleNone formRole = iota
+	// roleUnknown is not read yet.
+	roleUnknown formRole = iota
+	roleNone
 	// roleFeedback is a current Event's or Session's feedback form: its
 	// answers mark invites, never write Tickets.
 	roleFeedback
@@ -143,6 +145,9 @@ type Origin struct {
 	Via string
 	// EventID is the core.forms event's id; empty for a pull.
 	EventID string
+	// role is the form's, when the caller read it already (a pull reads
+	// it once for all its answers).
+	role formRole
 }
 
 // Response handles one answer and answers its outcome (a
@@ -166,9 +171,12 @@ type Origin struct {
 func (r *Recorder) Response(ctx context.Context, tx pgx.Tx, origin Origin, in Response, complete bool) (string, error) {
 	r.init()
 	in.Guest = nil
-	role, err := r.role(ctx, in.FormID)
-	if err != nil {
-		return r.done(origin, in, OutcomeFailed, ticket.FormResponseResult{}, fmt.Errorf("reading the Events: %w", err))
+	role := origin.role
+	if role == roleUnknown {
+		var err error
+		if role, err = r.role(ctx, in.FormID); err != nil {
+			return r.done(origin, in, OutcomeFailed, ticket.FormResponseResult{}, fmt.Errorf("reading the Events: %w", err))
+		}
 	}
 	if role == roleNone {
 		return r.done(origin, in, string(ticket.FormResponseNotListed), ticket.FormResponseResult{}, nil)

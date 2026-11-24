@@ -54,7 +54,7 @@ func startEvents(ctx context.Context, pool *pgxpool.Pool, getenv func(string) st
 		}
 		consumerStopped = consumer.Run(ctx)
 	} else if forms != nil {
-		log.Printf("integration events: %s=true does nothing while %s=false", formsEventsEnv, events.EnabledEnv)
+		log.Printf("integration events: %s=true reads no %s while %s=false; the pulls from Forms run (docs/form-pulls.md)", formsEventsEnv, formsfeed.Queue, events.EnabledEnv)
 	}
 	log.Printf("integration events: %s", config)
 	done := make(chan struct{})
@@ -67,7 +67,6 @@ func startEvents(ctx context.Context, pool *pgxpool.Pool, getenv func(string) st
 	metrics := eventsMetrics{consumer: consumer, cleanup: cleanup}
 	if consumer != nil {
 		metrics.keycloak = keycloak
-		metrics.forms = forms
 	}
 	return metrics, done
 }
@@ -80,22 +79,18 @@ func closedChannel() chan struct{} {
 
 // eventsMetrics is the consumer's metrics (enabled 0 when it is off), the
 // cleanup's and, when the consumer is on, core.keycloak's count of people
-// deleted outside the erasure saga and core.forms' counters (with
-// EVENTS_FORMS_ENABLED=true).
+// deleted outside the erasure saga. core.forms' counters are formsMetrics'
+// (the pulls share its recorder).
 type eventsMetrics struct {
 	consumer *events.Consumer
 	cleanup  *events.Retention
 	keycloak *keycloakHandling
-	forms    *formsfeed.Recorder
 }
 
 func (m eventsMetrics) Prometheus() string {
 	out := m.consumer.Prometheus() + m.cleanup.Prometheus()
 	if m.keycloak != nil {
 		out += m.keycloak.prometheus()
-	}
-	if m.forms != nil {
-		out += m.forms.Prometheus()
 	}
 	return out
 }
