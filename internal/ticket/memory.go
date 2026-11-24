@@ -23,6 +23,12 @@ type MemoryStore struct {
 	// two share a time.
 	seq map[uuid.UUID]int
 	n   int
+	// formResponses is each Ticket's forms answer (Admission.FormResponse),
+	// as tickets.form_response_id.
+	formResponses map[uuid.UUID]uuid.UUID
+	// CancelMails counts the cancellation mails CancelTelling would queue,
+	// by Ticket (the memory store sends none).
+	CancelMails map[uuid.UUID]int
 }
 
 // EventGetter reads an Event (event.Store).
@@ -46,6 +52,9 @@ func NewMemoryStore() *MemoryStore {
 		byID:     make(map[uuid.UUID]Ticket),
 		checkIns: make(map[uuid.UUID]CheckIn),
 		seq:      make(map[uuid.UUID]int),
+
+		formResponses: make(map[uuid.UUID]uuid.UUID),
+		CancelMails:   make(map[uuid.UUID]int),
 	}
 }
 
@@ -169,6 +178,12 @@ func (s *MemoryStore) ListByEventStatus(_ context.Context, eventID uuid.UUID, st
 // Cancel is the database's, without the Competitions (the memory store
 // keeps none).
 func (s *MemoryStore) Cancel(ctx context.Context, id uuid.UUID, by CancelledBy, reason string) (Ticket, bool, error) {
+	return s.CancelTelling(ctx, id, by, reason, false)
+}
+
+// CancelTelling is Cancel that counts the mail it would queue when tell
+// (CancelMails).
+func (s *MemoryStore) CancelTelling(ctx context.Context, id uuid.UUID, by CancelledBy, reason string, tell bool) (Ticket, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.byID[id]
@@ -189,12 +204,49 @@ func (s *MemoryStore) Cancel(ctx context.Context, id uuid.UUID, by CancelledBy, 
 	t.CancelledAt, t.CancelledBy, t.CancelReason = &now, by, strings.TrimSpace(reason)
 	t.UpdatedAt = now
 	s.byID[id] = t
+	if tell {
+		s.CancelMails[id]++
+	}
 	if was == StatusActive {
 		if err := s.promoteLocked(ctx, t.EventID); err != nil {
 			return Ticket{}, false, err
 		}
 	}
 	return s.withCheckInsLocked(t), true, nil
+}
+
+// CancelBlocked is the database's, by the check-ins alone (the memory
+// store keeps no Competitions).
+func (s *MemoryStore) CancelBlocked(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[uuid.UUID]bool{}
+	for _, id := range ids {
+		for _, c := range s.checkIns {
+			if c.TicketID == id {
+				out[id] = true
+			}
+		}
+	}
+	return out, nil
+}
+
+// FormResponseTickets is the database's.
+func (s *MemoryStore) FormResponseTickets(_ context.Context, responseID uuid.UUID) ([]Ticket, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Ticket
+	if responseID == uuid.Nil {
+		return out, nil
+	}
+	for id, r := range s.formResponses {
+		if r == responseID {
+			if t, ok := s.byID[id]; ok {
+				out = append(out, s.withCheckInsLocked(t))
+			}
+		}
+	}
+	return out, nil
 }
 
 // Reopen is the database's: a new key and the next QR version, past the
@@ -393,6 +445,9 @@ func (s *MemoryStore) CreateAdmitted(ctx context.Context, t Ticket, a Admission)
 	if err != nil {
 		return Ticket{}, err
 	}
+	if a.FormResponse != uuid.Nil {
+		s.formResponses[created.ID] = a.FormResponse
+	}
 	created.OverCapacity = over
 	return created, nil
 }
@@ -441,6 +496,11 @@ func (s *MemoryStore) ReopenAdmitted(ctx context.Context, id uuid.UUID, a Admiss
 	t.QRVersion++
 	t.UpdatedAt = now
 	s.byID[id] = t
+	if a.FormResponse != uuid.Nil {
+		s.formResponses[id] = a.FormResponse
+	} else {
+		delete(s.formResponses, id)
+	}
 	got := s.withCheckInsLocked(t)
 	got.OverCapacity = over
 	return got, true, nil

@@ -49,6 +49,11 @@ type Service interface {
 	// CancelTicket and RestoreTicket are an operator's cancellation of a
 	// Ticket and its taking back (docs/ticket-cancellation.md).
 	CancelTicket(ctx context.Context, p authz.Principal, id uuid.UUID, reason string) (Ticket, error)
+	// CancelTicketTelling is POST /v1/tickets/{id}/cancel: the Ticket's
+	// holder cancels it themselves (kontenjan-iptal-hatirlatma 03; reason
+	// and notify are not theirs to give, the holder is always told), an
+	// operator as CancelTicket does, telling the holder when notify.
+	CancelTicketTelling(ctx context.Context, p authz.Principal, id uuid.UUID, reason string, notify bool) (Ticket, error)
 	RestoreTicket(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	Get(ctx context.Context, p authz.Principal, id uuid.UUID) (Ticket, error)
 	GetByUserEvent(ctx context.Context, p authz.Principal, userID, eventID uuid.UUID) (Ticket, error)
@@ -943,7 +948,48 @@ func (s *service) MineIncluding(ctx context.Context, p authz.Principal, include 
 		return nil, err
 	}
 	tickets = onlyStatuses(tickets, append([]Status{StatusActive}, include...))
-	return s.withHolderLinks(ctx, s.withFeedbackLinks(ctx, s.withEvents(ctx, tickets))), nil
+	return s.withCancellable(ctx, s.withHolderLinks(ctx, s.withFeedbackLinks(ctx, s.withEvents(ctx, tickets)))), nil
+}
+
+// withCancellable says on each of the holder's Tickets whether they may
+// cancel it now (HolderMayCancel), the check-ins and Entrants read in one
+// query for all of them. When those cannot be read the Tickets say false
+// (the button hides; the route still decides), and a log line naming
+// nobody says so.
+func (s *service) withCancellable(ctx context.Context, tickets []Ticket) []Ticket {
+	if len(tickets) == 0 {
+		return tickets
+	}
+	blocked := map[uuid.UUID]bool{}
+	unread := false
+	if store, ok := s.tickets.(CancelBlockStore); ok {
+		ids := make([]uuid.UUID, len(tickets))
+		for i, t := range tickets {
+			ids[i] = t.ID
+		}
+		got, err := store.CancelBlocked(ctx, ids)
+		if err != nil {
+			s.logger.Printf("tickets: cancellation blocks not read, %d tickets answered not cancellable: %v", len(tickets), err)
+			unread = true
+		} else {
+			blocked = got
+		}
+	}
+	now := time.Now()
+	events := map[uuid.UUID]*event.Event{}
+	for i := range tickets {
+		t := &tickets[i]
+		ev, seen := events[t.EventID]
+		if !seen {
+			if got, err := s.events.Get(ctx, t.EventID); err == nil {
+				ev = &got
+			}
+			events[t.EventID] = ev
+		}
+		may := !unread && ev != nil && HolderMayCancel(*ev, *t, now, blocked[t.ID])
+		t.Cancellable = &may
+	}
+	return tickets
 }
 
 // withHolderLinks gives the holder's own Tickets their ticket page

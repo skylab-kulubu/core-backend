@@ -4,7 +4,7 @@ ADR 0082 (e-skylab); bilet-qr-ve-pdf ticket 03. A Ticket opens without a
 sign-in by its access key ([ticket-access-key-and-code.md](ticket-access-key-and-code.md)):
 the link is the right to read, because a guest has no account (ADR 0029).
 The page is the club site's (`yildizskylab.com/bilet/{key}`, ticket 07, the
-certificate's pattern of ADR 0040); core answers the least it needs on four
+certificate's pattern of ADR 0040); core answers the least it needs on five
 public routes.
 
 ## Routes
@@ -45,6 +45,7 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
   "qrUrl": "https://api.yildizskylab.com/v1/public/tickets/{key}/qr.png",
   "pdfUrl": "https://api.yildizskylab.com/v1/public/tickets/{key}/pdf",
   "state": "active",
+  "cancellable": true,
   "theme": {"key": "kurumsal", "accent": "#0F766E"}
 }
 ```
@@ -85,6 +86,15 @@ for many people at once. A key that is not 26 characters of `A`–`Z` and
 | `active` | published, not over | yes |
 | `ended` | over (end date, else a day after the start, ADR 0066), less than `TICKET_PAGE_GRACE` ago | yes; the door refuses the QR a day after the end |
 | `event_cancelled` | cancelled; undoing the cancellation opens it again | `qrToken`, `qrUrl`, `pdfUrl` empty; the QR and PDF routes `410` |
+| `waitlisted` | the Ticket is on the Event's waiting list ([event-capacity.md](event-capacity.md)) | empty; `410` |
+| `ticket_cancelled` | the Ticket was cancelled: by its holder, an operator or the form ([ticket-cancellation.md](ticket-cancellation.md)) | empty; `410` |
+
+- `cancellable`: whether the holder may cancel the Ticket from the page now
+  (`POST …/cancel` below): an active Ticket until the Event starts, a
+  waitlisted one until it ends ("Listeden çık"); never a cancelled Ticket,
+  one of a cancelled Event, one with a check-in or one of a Competition's
+  current Entrant (the route would answer `409`). An Event with no date never starts. The
+  site shows "Biletimi iptal et" only while it is `true`.
 
 `404` (with nothing about anyone): an unknown or malformed key, a draft
 Event's Ticket (a draft does not exist when signed out, ADR 0066), an
@@ -141,6 +151,33 @@ its holder the moment the door lets them in (Yusuf, 2026-11-24):
   seconds, are 125 requests a second at most, each one indexed query
   (`tickets.access_key`, `ticket_checkins (ticket_id, session_id)`); in
   practice only the queue at the door has it open.
+
+### `POST /v1/public/tickets/{key}/cancel`
+
+The holder cancels the Ticket from the page, after the site's confirmation
+(kontenjan-iptal-hatirlatma 03; Yusuf, 2026-11-24: a guest too, with the
+link). The key is the right, as it is to read the Ticket (ADR 0082): a link
+passed on lets its reader cancel too, which an operator can take back
+([ticket-cancellation.md](ticket-cancellation.md), restore).
+
+- No body. **`200`** `{"state": "ticket_cancelled"}`: nothing else, nothing
+  of the person. A Ticket already cancelled answers the same (no second
+  mail).
+- The page's rules first: `404` for a malformed key (before the database is
+  asked), an unknown one, a Ticket without its holder, a draft's or an
+  archived Event's; `410 ticket_page_closed` once the page has closed.
+- Then the holder's: **`409 ticket_cancel_closed`** once the Event has
+  started (an active Ticket; a waitlisted one until the end), or on a
+  cancelled Event; **`409 ticket_checked_in`** for a Ticket with a check-in;
+  **`409 ticket_in_competition`** for a Competition's Entrant.
+- `cancelledBy: holder`. The holder is told "Biletin iptal edildi" while
+  `TICKET_STATUS_MAIL` is on ([ticket-status-mail.md](ticket-status-mail.md)).
+  An active Ticket's place goes to the waiting list in the same transaction
+  ([event-capacity.md](event-capacity.md)).
+- **Budget:** 10 a minute per client (`TicketCancelsPerClientMinute`), its
+  own: a person cancels once.
+- The log line `ticket_cancelled_by_holder` names the request only
+  (`correlation_id`): never the key, the Ticket or a person.
 
 ### The site's server
 

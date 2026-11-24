@@ -458,6 +458,9 @@ func New(deps Deps) *fiber.App {
 		// holders behind one address at the door, so a large budget per
 		// client and a small one per key.
 		app.Get("/v1/public/tickets/:key/check-ins", perClientLimitOf(trustedProxies, handlers.TicketCheckInsPerClientMinute), handlers.TicketCheckInsLimit(), page.CheckIns)
+		// The holder cancels from the page (kontenjan-iptal-hatirlatma 03):
+		// the key is the right, a small budget per client.
+		app.Post("/v1/public/tickets/:key/cancel", perClientLimitOf(trustedProxies, handlers.TicketCancelsPerClientMinute), page.Cancel)
 	}
 	if pass != nil {
 		app.Get("/v1/skypass/jwks", pass.JWKS)

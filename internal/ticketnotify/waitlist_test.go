@@ -126,3 +126,59 @@ func TestWaitlistMailsWithoutAStatusMailer(t *testing.T) {
 		t.Fatalf("report %+v, calls %d", r, len(e.mail.calls))
 	}
 }
+
+// "Biletin iptal edildi" (kontenjan-iptal-hatirlatma 04) goes as
+// event.ticket-cancelled with its own key and SkyMail's variables
+// (skymail-frontend #179): the Event's, CancelledBy and the operator's
+// Reason (empty for the holder); no link, QR or code. A row whose Ticket was
+// restored since does not go.
+func TestCancellationMail(t *testing.T) {
+	m := &statusMail{}
+	e := newStatusEnv(t, m)
+	key, _ := ticket.NewAccessKey()
+	byHolder := e.member(user.AccountActive)
+	byHolder.Status, byHolder.CancelledBy, byHolder.CancelReason, byHolder.AccessKey, byHolder.Code, byHolder.QRVersion =
+		ticket.StatusCancelled, ticket.CancelledByHolder, "", key, "K7M2-QX9F", 3
+	e.tickets[byHolder.ID] = byHolder
+	e.queueKind(byHolder.ID, ticketnotify.KindCancelled)
+	byOperator := e.guest("can@example.com")
+	byOperator.Status, byOperator.CancelledBy, byOperator.CancelReason, byOperator.QRVersion =
+		ticket.StatusCancelled, ticket.CancelledByOperator, "Kontenjan hatası", 1
+	e.tickets[byOperator.ID] = byOperator
+	e.queueKind(byOperator.ID, ticketnotify.KindCancelled)
+	restored := e.guest("geri@example.com")
+	restored.Status = ticket.StatusActive
+	e.tickets[restored.ID] = restored
+	e.queueKind(restored.ID, ticketnotify.KindCancelled)
+
+	if r := e.pass(t); r.Sent != 2 || r.Dropped != 1 {
+		t.Fatalf("report %+v", r)
+	}
+	if len(m.calls) != 0 || len(m.status) != 2 {
+		t.Fatalf("created %d, status %d", len(m.calls), len(m.status))
+	}
+	byKey := map[string]statusCall{}
+	for _, c := range m.status {
+		if c.typ != mail.TicketCancelledType {
+			t.Fatalf("type %s", c.typ)
+		}
+		byKey[c.key] = c
+	}
+	holder, ok := byKey["core:event.ticket-cancelled:"+byHolder.ID.String()+":q3"]
+	if !ok || holder.holder.Sub != *byHolder.OwnerID || holder.vars["CancelledBy"] != "holder" || holder.vars["Reason"] != "" {
+		t.Fatalf("holder %+v (%v)", holder, byKey)
+	}
+	want := []string{"EventId", "EventName", "EventDate", "OwnerTeam", "CancelledBy", "Reason"}
+	if len(holder.vars) != len(want) {
+		t.Fatalf("vars %v", holder.vars)
+	}
+	for _, name := range want {
+		if _, ok := holder.vars[name]; !ok {
+			t.Fatalf("vars %v lack %s", holder.vars, name)
+		}
+	}
+	operator := byKey["core:event.ticket-cancelled:"+byOperator.ID.String()+":q1"]
+	if operator.holder.Email != "can@example.com" || operator.vars["CancelledBy"] != "operator" || operator.vars["Reason"] != "Kontenjan hatası" {
+		t.Fatalf("operator %+v", operator)
+	}
+}
