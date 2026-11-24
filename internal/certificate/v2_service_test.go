@@ -181,6 +181,12 @@ func TestLayoutWithoutVerificationQrIsValid(t *testing.T) {
 	if err := certificate.ValidateLayout(layout); err != nil {
 		t.Fatalf("a layout without the QR: %v", err)
 	}
+	// Neither the QR nor the serial: a paper copy could not be verified.
+	noSerial := layout
+	noSerial.Elements = layout.Elements[:3]
+	if !errors.Is(certificate.ValidateLayout(noSerial), certificate.ErrInvalid) {
+		t.Fatal("a layout with neither the QR nor the serial was valid")
+	}
 	html, err := certificate.LayoutHTML(context.Background(), layout, certificate.PreviewData{RecipientName: "Ada", EventName: "ARTLAB", Serial: "ABC123"}, "https://skyl.app/c/ABC123", nil)
 	if err != nil {
 		t.Fatal(err)

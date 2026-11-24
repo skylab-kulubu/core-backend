@@ -37,8 +37,10 @@ func ValidateLayout(layout Layout) error {
 	// A layout must name its recipient and its Event. The verification QR
 	// is optional (ADR-0040 addendum 2026-11-24): the default template keeps
 	// one, a template may drop it, and the certificate is still verified at
-	// its address by serial (yildizskylab.com/sertifika/{serial}).
+	// its address by serial (yildizskylab.com/sertifika/{serial}). It must
+	// keep the QR or the serial, so a paper certificate can be verified.
 	required := map[string]bool{"recipientName": false, "eventName": false}
+	verifiable := false
 	ids := make(map[string]struct{}, len(layout.Elements))
 	for _, el := range layout.Elements {
 		if strings.TrimSpace(el.ID) == "" || len(el.ID) > 80 {
@@ -55,6 +57,9 @@ func ValidateLayout(layout Layout) error {
 		}
 		if _, ok := required[el.Kind]; ok {
 			required[el.Kind] = true
+		}
+		if el.Kind == "verificationQr" || el.Kind == "serial" {
+			verifiable = true
 		}
 		if !finite(el.X, el.Y, el.Width, el.Height, el.FontSize, el.MinFontSize, el.LineHeight, el.LetterSpacing, el.BorderWidth, el.BorderRadius, el.Rotation, el.opacity()) ||
 			el.X < 0 || el.Y < 0 || el.Width <= 0 || el.Height <= 0 ||
@@ -88,6 +93,9 @@ func ValidateLayout(layout Layout) error {
 		if !present {
 			return ErrInvalid
 		}
+	}
+	if !verifiable {
+		return ErrInvalid
 	}
 	return nil
 }
