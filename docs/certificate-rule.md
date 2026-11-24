@@ -46,6 +46,9 @@ unit and a Venue entry its attendance:
 
 Adding a live Session turns the Event back into a Session Event: from then on
 only Check-ins count, as above.
+If every Session is cancelled (or archived), the Event becomes one with no
+Session: from then on the door's entries (Venue entries) are the measure, and
+the Check-ins of the cancelled Sessions no longer count.
 
 ## Session marks
 
