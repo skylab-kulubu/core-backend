@@ -4,9 +4,9 @@
 -- down migration: leave the columns (the old code reads every Ticket, a
 -- cancelled one included, until the new release is back).
 --
--- The audit action check stays wide: the release before writes neither
--- ticket.cancel nor ticket.restore, and the rows already written are kept
--- (team_audit_age).
+-- The audit action and basis checks stay wide: the release before writes
+-- neither ticket.cancel, ticket.restore nor the basis event_editor, and the
+-- rows already written are kept (team_audit_age).
 DROP INDEX IF EXISTS tickets_event_status_idx;
 ALTER TABLE tickets DROP CONSTRAINT IF EXISTS tickets_cancelled_check;
 ALTER TABLE tickets DROP CONSTRAINT IF EXISTS tickets_cancel_reason_check;

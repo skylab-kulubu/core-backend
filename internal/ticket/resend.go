@@ -208,6 +208,13 @@ func (s *service) beginTicketAudit(ctx context.Context, p authz.Principal, ev ev
 // caller: privileged, else the Leader of a Team the Event's team sits in or
 // under.
 func (s *service) beginTicketAuditAs(ctx context.Context, p authz.Principal, ev event.Event, action teamaudit.Action, ticketID uuid.UUID, privileged bool) (*auditRecord, error) {
+	return s.beginTicketAuditBasis(ctx, p, ev, action, ticketID, privileged, false)
+}
+
+// beginTicketAuditBasis is beginTicketAuditAs; with editor, a caller who is
+// neither Privileged nor a Leader of the Event's team (or one above it) is
+// recorded as an event editor through the Event's team.
+func (s *service) beginTicketAuditBasis(ctx context.Context, p authz.Principal, ev event.Event, action teamaudit.Action, ticketID uuid.UUID, privileged, editor bool) (*auditRecord, error) {
 	if s.audit == nil {
 		return nil, nil
 	}
@@ -222,10 +229,14 @@ func (s *service) beginTicketAuditAs(ctx context.Context, p authz.Principal, ev 
 	actor.Basis, actor.ViaGroupID = teamaudit.BasisPrivileged, ""
 	if !privileged {
 		via, err := s.leaderVia(ctx, p, team)
-		if err != nil {
+		switch {
+		case err == nil:
+			actor.Basis, actor.ViaGroupID = teamaudit.BasisLeader, via
+		case editor && errors.Is(err, ErrForbidden):
+			actor.Basis, actor.ViaGroupID = teamaudit.BasisEventEditor, team.ID
+		default:
 			return nil, teamaudit.ErrUnavailable
 		}
-		actor.Basis, actor.ViaGroupID = teamaudit.BasisLeader, via
 	}
 	after := teamaudit.State{TicketID: ticketID.String(), EventID: ev.ID.String()}
 	id, err := s.audit.Begin(ctx, teamaudit.Record{

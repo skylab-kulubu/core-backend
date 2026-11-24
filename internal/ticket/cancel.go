@@ -24,14 +24,14 @@ func (s *service) statusStore() (StatusStore, error) {
 	return store, nil
 }
 
-// ticketOperator reports whether p may cancel and restore ev's Tickets: who
-// may give them out (ticket:manage, the owning team's Leaders: the rule of
-// Apply-for-other and of the resend) and a Privileged event:manage. A
-// Privileged reader (DK) only reads them.
+// ticketOperator reports whether p may cancel and restore ev's Tickets:
+// exactly who may edit the Event (Yusuf, 2026-11-24): Privileged
+// event:manage, the owning team's Leaders, and the members of a team whose
+// members edit its Events (GECEKODU). A Privileged reader (DK) and an
+// ordinary member may not.
 func (s *service) ticketOperator(p authz.Principal, ev event.Event) bool {
 	return p.ID != "" && p.Product == "" &&
-		(s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: ev.OwnerTeam}, authz.Assign) ||
-			s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent}, authz.Assign))
+		s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent, OwnerTeam: ev.OwnerTeam}, authz.Update)
 }
 
 // privilegedOperator reports whether p cancels as Privileged (the audit
@@ -39,6 +39,13 @@ func (s *service) ticketOperator(p authz.Principal, ev event.Event) bool {
 func (s *service) privilegedOperator(p authz.Principal) bool {
 	return s.authz.Allow(p, authz.Resource{Type: authz.TypeTicket}, authz.Assign) ||
 		s.authz.Allow(p, authz.Resource{Type: authz.TypeEvent}, authz.Assign)
+}
+
+// beginOperatorAudit opens the audit row of a cancellation or restoration:
+// privileged, else the Leader, else the Event's editor (the basis
+// event_editor, through the Event's team).
+func (s *service) beginOperatorAudit(ctx context.Context, p authz.Principal, ev event.Event, action teamaudit.Action, ticketID uuid.UUID) (*auditRecord, error) {
+	return s.beginTicketAuditBasis(ctx, p, ev, action, ticketID, s.privilegedOperator(p), true)
 }
 
 // operatedTicket is the Ticket id names and its Event, for an operator of
@@ -85,7 +92,7 @@ func (s *service) CancelTicket(ctx context.Context, p authz.Principal, id uuid.U
 	if ev.EndedAt(time.Now()) {
 		return Ticket{}, ErrEventEnded
 	}
-	record, err := s.beginTicketAuditAs(ctx, p, ev, teamaudit.ActionTicketCancel, id, s.privilegedOperator(p))
+	record, err := s.beginOperatorAudit(ctx, p, ev, teamaudit.ActionTicketCancel, id)
 	if err != nil {
 		return Ticket{}, err
 	}
@@ -120,7 +127,7 @@ func (s *service) RestoreTicket(ctx context.Context, p authz.Principal, id uuid.
 	if ev.EndedAt(time.Now()) {
 		return Ticket{}, ErrEventEnded
 	}
-	record, err := s.beginTicketAuditAs(ctx, p, ev, teamaudit.ActionTicketRestore, id, s.privilegedOperator(p))
+	record, err := s.beginOperatorAudit(ctx, p, ev, teamaudit.ActionTicketRestore, id)
 	if err != nil {
 		return Ticket{}, err
 	}

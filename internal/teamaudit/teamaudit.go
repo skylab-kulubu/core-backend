@@ -171,6 +171,12 @@ const (
 	// (membership.term.expired only). Its actor is the nil subject, and
 	// Actor.Client names the job (SystemTermExpiry).
 	BasisSystem Basis = "system"
+	// BasisEventEditor: the actor may edit the Event by the Event policy
+	// (a member of a team whose members edit its Events, GECEKODU) without
+	// being Privileged or a Leader. Only a Ticket's cancellation and its
+	// taking back (docs/ticket-cancellation.md) carry it; Actor.ViaGroupID
+	// names the Event's team.
+	BasisEventEditor Basis = "event_editor"
 )
 
 // SystemTermExpiry is the Client of the rows the management term job
@@ -434,6 +440,11 @@ func (r Record) normalize() (Record, string) {
 		}
 	case BasisSystem:
 		if r.Actor.ID != uuid.Nil || r.Actor.ViaGroupID != "" || r.Action != ActionTermExpired {
+			return r, "invalid_basis"
+		}
+	case BasisEventEditor:
+		if _, err := uuid.Parse(r.Actor.ViaGroupID); err != nil ||
+			(r.Action != ActionTicketCancel && r.Action != ActionTicketRestore) {
 			return r, "invalid_basis"
 		}
 	default:

@@ -51,3 +51,19 @@ ALTER TABLE team_audit_records ADD CONSTRAINT team_audit_records_action_check CH
     'user.email.change', 'user.email.verify', 'user.email.mail', 'user.email.primary',
     'user.required_actions', 'user.credential.remove', 'user.idp.unlink',
     'user.lockout.clear', 'user.profile'));
+
+-- Whoever may edit the Event by the Event policy cancels and restores its
+-- Tickets (Yusuf, 2026-11-24): a member of a team whose members edit its
+-- Events (GECEKODU) who is neither Privileged nor a Leader records the new
+-- basis event_editor, through the Event's team (actor_via_group_id), on
+-- these two actions only.
+ALTER TABLE team_audit_records DROP CONSTRAINT IF EXISTS team_audit_records_actor_basis_check;
+ALTER TABLE team_audit_records ADD CONSTRAINT team_audit_records_actor_basis_check CHECK (
+    (actor_basis = 'privileged' AND actor_via_group_id IS NULL)
+    OR (actor_basis = 'leader' AND actor_via_group_id IS NOT NULL)
+    OR (actor_basis = 'none' AND actor_via_group_id IS NULL AND outcome = 'denied')
+    OR (actor_basis = 'system' AND actor_via_group_id IS NULL
+        AND actor_id = '00000000-0000-0000-0000-000000000000'
+        AND action = 'membership.term.expired')
+    OR (actor_basis = 'event_editor' AND actor_via_group_id IS NOT NULL
+        AND action IN ('ticket.cancel', 'ticket.restore')));

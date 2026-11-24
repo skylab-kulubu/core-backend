@@ -68,12 +68,13 @@ check-in cannot be cancelled.
 
 Body (optional): `{"reason": "…"}`, at most 500 characters (`400` over).
 
-- **Who:** the owning team's Leaders and Privileged (`ticket:manage`, and
-  `event:manage`); DK reads only (`403`), as do members, door staff and the
+- **Who:** exactly who may edit the Event (Yusuf, 2026-11-24): Privileged
+  `event:manage` (ADMIN, YK), the owning team's Leaders (and those of a Team
+  above it), and the members of a team whose members edit its Events by the
+  Event policy (GECEKODU), on that team's Events only. DK reads only
+  (`403`), as do ordinary members, door staff, `ticket:manage` alone and the
   holder (the holder's own cancellation is ticket 03). A draft the caller
-  may not see is `404`. A member who may edit their team's Events without
-  being a Leader (GECEKODU) is refused: the Team audit record has no basis
-  for them.
+  may not see is `404`.
 - **`200`** the Ticket, `status: "cancelled"`, `cancelledBy: "operator"`. A
   Ticket already cancelled answers `200` as it is (no second audit row).
 - **`409 event_ended`** once the Event is over;
@@ -108,7 +109,10 @@ counts it).
 
 Both actions are Team audit rows (`ticket.cancel`, `ticket.restore`,
 [team-audit.md](team-audit.md)), as the resend: the Event's team, the
-Ticket's and the Event's ids, never the reason or a person. A row that
+Ticket's and the Event's ids, never the reason or a person. The basis is
+`privileged`, else `leader` (through the nearest Team the caller leads),
+else `event_editor` through the Event's team: a member who edits the Event
+by the Event policy (GECEKODU). A row that
 cannot be opened stops the action (`503`). The log line
 (`ticket_cancelled`, `ticket_restored`) names the request, the Ticket and
 the Event only.
@@ -118,4 +122,5 @@ the Event only.
 Rolling back the code needs no down migration: the release before ignores
 the columns (and reads a cancelled Ticket as an ordinary one until the new
 release is back). The down migration drops the columns, so every cancelled
-Ticket becomes an ordinary one; the audit action check stays wide.
+Ticket becomes an ordinary one; the audit action and basis checks stay
+wide.

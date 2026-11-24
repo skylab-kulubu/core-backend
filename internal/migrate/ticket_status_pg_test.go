@@ -13,7 +13,7 @@ const (
 	ticketStatusDown    = ticketStatusVersion + "_ticket_status.down.sql"
 )
 
-// A Ticket's status: the Tickets already there, and those the release
+// A Ticket's status (and the audit basis event_editor): the Tickets already there, and those the release
 // before writes (no status in its insert), are active; the checks refuse an
 // unknown status and a cancellation without its time and maker; the up
 // migration runs again over itself (its fingerprint records it); down drops
@@ -74,6 +74,19 @@ func TestTicketStatusMigration(t *testing.T) {
 		INSERT INTO team_audit_records (id, occurred_at, actor_id, actor_basis, action, group_id, group_path, outcome)
 		VALUES (gen_random_uuid(), now(), gen_random_uuid(), 'privileged', 'ticket.cancel', gen_random_uuid(), '/UYELER/ARGE/WEBLAB', 'ok')`); err != nil {
 		t.Fatalf("a ticket.cancel row: %v", err)
+	}
+	// The basis event_editor: through the Event's team, on ticket.cancel
+	// and ticket.restore only.
+	editorRow := `INSERT INTO team_audit_records (id, occurred_at, actor_id, actor_basis, actor_via_group_id, action, group_id, group_path, target_user_id, outcome)
+		VALUES (gen_random_uuid(), now(), gen_random_uuid(), 'event_editor', $1, $2, gen_random_uuid(), '/UYELER/ORGANIZASYON/GECEKODU', $3, 'ok')`
+	if _, err := pool.Exec(ctx, editorRow, uuid.New(), "ticket.restore", nil); err != nil {
+		t.Fatalf("an event_editor ticket.restore row: %v", err)
+	}
+	if _, err := pool.Exec(ctx, editorRow, nil, "ticket.cancel", nil); err == nil {
+		t.Error("an event_editor row without its team was taken")
+	}
+	if _, err := pool.Exec(ctx, editorRow, uuid.New(), "member.add", uuid.New()); err == nil {
+		t.Error("an event_editor member.add row was taken")
 	}
 
 	// Again over itself: recorded, nothing changes.

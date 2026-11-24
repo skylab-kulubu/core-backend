@@ -1775,8 +1775,9 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		WHERE conrelid = to_regclass('public.certificates')
 		  AND conname = 'certificates_attendance_snapshot_check' AND convalidated`,
 	// A Ticket's status (docs/ticket-cancellation.md): the six columns,
-	// the status and cancellation checks, the Event's status index and
-	// the audit actions ticket.cancel and ticket.restore.
+	// the status and cancellation checks, the Event's status index, the
+	// audit actions ticket.cancel and ticket.restore and the basis
+	// event_editor.
 	20261124100000: `
 		SELECT 1
 		WHERE (
@@ -1797,6 +1798,11 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
 			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%ticket.restore%'
+		)
+		AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_actor_basis_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%event_editor%'
 		)`,
 }
 

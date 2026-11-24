@@ -11,6 +11,8 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/authz"
 	"github.com/skylab-kulubu/core-backend/internal/doorqr"
 	"github.com/skylab-kulubu/core-backend/internal/event"
+	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/teamaudit"
 	"github.com/skylab-kulubu/core-backend/internal/ticket"
 	"github.com/skylab-kulubu/core-backend/internal/user"
 )
@@ -68,11 +70,14 @@ func (e *cancelEnv) cancel(t *testing.T, id uuid.UUID) ticket.Ticket {
 	return got
 }
 
-// Who may cancel and restore: the owning team's Leader and Privileged
-// (YK; ticket:manage and event:manage in the roles mode). DK reads only;
-// a member, door staff, the holder and another team's people may not.
+// Who may cancel and restore: exactly who may edit the Event (Yusuf,
+// 2026-11-24). The owning team's Leader, Privileged (YK; event:manage in the
+// roles mode) and, on a GECEKODU Event, a GECEKODU member. DK reads only; an
+// ordinary member, the holder, another team's people, a GECEKODU member on
+// another team's Event and ticket:manage alone may not.
 func TestCancelAndRestoreRights(t *testing.T) {
 	ctx := context.Background()
+	gecekoduMember := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}}
 	for name, tc := range map[string]struct {
 		p    authz.Principal
 		want error
@@ -82,6 +87,8 @@ func TestCancelAndRestoreRights(t *testing.T) {
 		"DK":           {authz.Principal{ID: "dk", Groups: []string{"/UYELER/DK"}}, ticket.ErrForbidden},
 		"member":       {authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB"}}, ticket.ErrForbidden},
 		"another team": {otherMember, ticket.ErrForbidden},
+		// A GECEKODU member edits GECEKODU's Events only.
+		"GECEKODU member on WEBLAB's Event": {gecekoduMember, ticket.ErrForbidden},
 	} {
 		e := newCancelEnv(t)
 		e.holder.Groups = nil
@@ -100,32 +107,94 @@ func TestCancelAndRestoreRights(t *testing.T) {
 		}
 	}
 
-	// A member who may edit their team's Events (GECEKODU's members) but
-	// is no Leader has no basis in the Team audit record: refused
-	// (docs/ticket-cancellation.md).
+	// On GECEKODU's own Event a member, who may edit it by the Event
+	// policy, cancels and restores; DK still may not.
 	g := newCancelEnv(t)
 	gecekodu := seedEvent(t, g.events, "GECEKODU")
 	applied, err := g.svc.ApplyGuest(ctx, yk, gecekodu.ID, ticket.GuestInfo{FirstName: "Ada", LastName: "L", Email: "ada@example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	editor := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/GECEKODU"}}
-	if _, err := g.svc.CancelTicket(ctx, editor, applied.Ticket.ID, ""); !errors.Is(err, ticket.ErrForbidden) {
-		t.Errorf("GECEKODU member: %v", err)
+	dk := authz.Principal{ID: "dk", Groups: []string{"/UYELER/DK"}}
+	if _, err := g.svc.CancelTicket(ctx, dk, applied.Ticket.ID, ""); !errors.Is(err, ticket.ErrForbidden) {
+		t.Errorf("DK on GECEKODU's Event: %v", err)
+	}
+	if got, err := g.svc.CancelTicket(ctx, gecekoduMember, applied.Ticket.ID, ""); err != nil || got.Status != ticket.StatusCancelled {
+		t.Errorf("GECEKODU member cancels: %+v %v", got, err)
+	}
+	if got, err := g.svc.RestoreTicket(ctx, gecekoduMember, applied.Ticket.ID); err != nil || got.Status != ticket.StatusActive {
+		t.Errorf("GECEKODU member restores: %+v %v", got, err)
 	}
 
 	pol := authz.DefaultPolicy()
 	pol.RoleMode = authz.RoleModeRoles
-	for name, p := range map[string]authz.Principal{
-		"ticket:manage": {ID: uuid.NewString(), Roles: []string{authz.RoleTicketManage}},
-		"event:manage":  {ID: uuid.NewString(), Roles: []string{authz.RoleEventManage}},
+	for name, tc := range map[string]struct {
+		p    authz.Principal
+		want error
+	}{
+		"event:manage":        {authz.Principal{ID: uuid.NewString(), Roles: []string{authz.RoleEventManage}}, nil},
+		"ticket:manage alone": {authz.Principal{ID: uuid.NewString(), Roles: []string{authz.RoleTicketManage}}, ticket.ErrForbidden},
 	} {
 		e := newCancelEnv(t, authz.NewAuthorizer(pol))
-		if _, err := e.svc.CancelTicket(ctx, p, e.guest.ID, ""); err != nil {
-			t.Errorf("cancel by %s: %v", name, err)
+		if _, err := e.svc.CancelTicket(ctx, tc.p, e.guest.ID, ""); !errors.Is(err, tc.want) {
+			t.Errorf("cancel by %s: %v, want %v", name, err, tc.want)
 		}
-		if _, err := e.svc.RestoreTicket(ctx, p, e.guest.ID); err != nil {
-			t.Errorf("restore by %s: %v", name, err)
+		if tc.want == nil {
+			if _, err := e.svc.RestoreTicket(ctx, tc.p, e.guest.ID); err != nil {
+				t.Errorf("restore by %s: %v", name, err)
+			}
+		}
+	}
+}
+
+// The audit row's basis: privileged, the Leader through their Team, and
+// event_editor through the Event's team for a GECEKODU member.
+func TestCancelAuditBasis(t *testing.T) {
+	ctx := context.Background()
+	dir := identity.NewMemory()
+	weblab := identity.Group{ID: uuid.NewString(), Name: "WEBLAB", Path: "/UYELER/ARGE/WEBLAB"}
+	gecekoduTeam := identity.Group{ID: uuid.NewString(), Name: "GECEKODU", Path: "/UYELER/ORGANIZASYON/GECEKODU"}
+	dir.PutGroup(weblab)
+	dir.PutGroup(gecekoduTeam)
+	audit := teamaudit.NewMemory()
+	e := newCancelEnv(t, dir, audit)
+	gecekodu := seedEvent(t, e.events, "GECEKODU")
+	as := func(p authz.Principal) context.Context {
+		return teamaudit.WithActor(ctx, teamaudit.Actor{ID: uuid.MustParse(p.ID), Client: "core-frontend"})
+	}
+	lead := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
+	ykP := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/YK"}}
+	member := authz.Principal{ID: uuid.NewString(), Groups: []string{"/UYELER/ORGANIZASYON/GECEKODU"}}
+	applied, err := e.svc.ApplyGuest(as(ykP), ykP, gecekodu.ID, ticket.GuestInfo{FirstName: "Ada", LastName: "L", Email: "ada@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.CancelTicket(as(lead), lead, e.guest.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.RestoreTicket(as(ykP), ykP, e.guest.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.CancelTicket(as(member), member, applied.Ticket.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	rows := audit.Rows()
+	if len(rows) != 3 {
+		t.Fatalf("%d rows", len(rows))
+	}
+	for i, want := range []struct {
+		action teamaudit.Action
+		basis  teamaudit.Basis
+		via    string
+		group  string
+	}{
+		{teamaudit.ActionTicketCancel, teamaudit.BasisLeader, weblab.ID, weblab.ID},
+		{teamaudit.ActionTicketRestore, teamaudit.BasisPrivileged, "", weblab.ID},
+		{teamaudit.ActionTicketCancel, teamaudit.BasisEventEditor, gecekoduTeam.ID, gecekoduTeam.ID},
+	} {
+		r := rows[i]
+		if r.Action != want.action || r.Actor.Basis != want.basis || r.Actor.ViaGroupID != want.via || r.GroupID != want.group || r.Outcome != teamaudit.OutcomeOK {
+			t.Errorf("row %d: %+v, want %+v", i, r, want)
 		}
 	}
 }
