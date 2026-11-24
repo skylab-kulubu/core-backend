@@ -2,7 +2,7 @@
 
 A person added to a Group, or removed from one, through core's membership
 routes gets a mail (Yusuf, 2026-10-12: every Group, no exceptions). The
-Group's kind picks the SkyMail template:
+Group's kind picks the SkyNotify template:
 
 | Kind | Groups | Template | Subject |
 | --- | --- | --- | --- |
@@ -123,7 +123,7 @@ profile name as the recipient name.
   row and is not queued (`coalesced_total{kind="cancelled"}`). So add,
   remove, add again before any mail went sends one "added" mail.
 - The later change wins. A change that may already have reached the person
-  (being sent now, failed once after SkyMail may have taken it, or left by
+  (being sent now, failed once after SkyNotify may have taken it, or left by
   a core that stopped mid-send) is not cancelled; the opposite one is
   queued after it. That one is not taken while the first is being sent (at
   most its two-minute lease), and once the first is no longer being sent
@@ -131,12 +131,12 @@ profile name as the recipient name.
   tells the current state: a person removed while their "added" mail
   failed gets "removed" alone, never "added" after it, and one whose
   "added" went but was retried still gets "removed".
-- Delivery is at least once: a core that dies between SkyMail's `201` and
+- Delivery is at least once: a core that dies between SkyNotify's `201` and
   the row's deletion sends that mail again after the lease (two minutes). A
-  core that is merely stopping deletes the row first. If SkyMail writes the
+  core that is merely stopping deletes the row first. If SkyNotify writes the
   mail and answers `201` but the answer does not reach core before the send
   is cancelled or its 45 s run out, core counts the send as failed (or
-  interrupted) and the mail goes a second time. SkyMail's
+  interrupted) and the mail goes a second time. SkyNotify's
   `/v1/mail_tasks/single` takes no idempotency key today, so such a repeat
   is a real second mail.
 
@@ -147,7 +147,7 @@ membership write ──▶ Keycloak (204) ──▶ INSERT team_membership_mails
                                               │
                          worker (wakes at once, polls every 15 s)
                                               │
-               read person + team + actor ──▶ POST SkyMail /v1/mail_tasks/single
+               read person + team + actor ──▶ POST SkyNotify /v1/mail_tasks/single
 ```
 
 - The queue is `team_membership_mails`: ids (the Group's too), the Group's path, the action,
@@ -172,7 +172,7 @@ membership write ──▶ Keycloak (204) ──▶ INSERT team_membership_mails
   Keycloak or gone (`skipped_inactive`), or have no primary e-mail
   (`skipped_no_email`). A Keycloak service account has no primary e-mail and
   lands here.
-- SkyMail's answer decides the rest: `2xx` deletes the row; `400`/`422` (the
+- SkyNotify's answer decides the rest: `2xx` deletes the row; `400`/`422` (the
   body itself is refused) drops it as `rejected`; anything else — `404` (the
   template is not seeded yet), `401`/`403`, `429`, `5xx`, no token, no
   connection — retries after 30 s, doubling to 30 min. A change still unsent
@@ -184,20 +184,20 @@ membership write ──▶ Keycloak (204) ──▶ INSERT team_membership_mails
 
 | Variable | Unset | Empty |
 | --- | --- | --- |
-| `SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY` | `club.team-membership` | team mail off |
-| `SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY` | `club.role-membership` | role mail off |
-| `SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY` | `club.group-membership` | group mail off |
+| `SKYNOTIFY_TEAM_MEMBERSHIP_TEMPLATE_KEY` | `club.team-membership` | team mail off |
+| `SKYNOTIFY_ROLE_MEMBERSHIP_TEMPLATE_KEY` | `club.role-membership` | role mail off |
+| `SKYNOTIFY_GROUP_MEMBERSHIP_TEMPLATE_KEY` | `club.group-membership` | group mail off |
 
-It needs core's SkyMail client (`KEYCLOAK_URL`, `KEYCLOAK_REALM`,
-`KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, `SKYMAIL_URL`). Startup says
+It needs core's SkyNotify client (`KEYCLOAK_URL`, `KEYCLOAK_REALM`,
+`KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, `SKYNOTIFY_URL`). Startup says
 which state it is in: `team membership mail: on (template club.team-membership;
 role club.role-membership; group club.group-membership)` (a kind set empty
-reads `off`), or `team membership mail: off (…)` when SkyMail is not
+reads `off`), or `team membership mail: off (…)` when SkyNotify is not
 configured or all three keys are empty. Off, the membership routes read
 nothing for it. A kind that is off is neither read for nor queued. There is
 no template id fallback.
 
-Before 2026-10-12 `SKYMAIL_TEAM_MEMBERSHIP_TEMPLATE_KEY=` (empty) turned the
+Before 2026-10-12 `SKYNOTIFY_TEAM_MEMBERSHIP_TEMPLATE_KEY=` (empty) turned the
 whole mail off; now it turns the team mail off only. To turn everything off,
 set all three empty.
 
@@ -230,9 +230,9 @@ mailed, so existing readers go on working; they count every kind.
   `skylab_team_membership_mail_oldest_age_seconds`,
   `skylab_team_membership_mail_last_success_timestamp_seconds`
 
-A growing `oldest_age_seconds` with `failed` rising means SkyMail is refusing:
-the `skymail_call_failed` line with `"kind":"team_membership"` (or
-`role_membership`, `group_membership`) carries the status ([skymail-templates.md](skymail-templates.md)).
+A growing `oldest_age_seconds` with `failed` rising means SkyNotify is refusing:
+the `skynotify_call_failed` line with `"kind":"team_membership"` (or
+`role_membership`, `group_membership`) carries the status ([skynotify-templates.md](skynotify-templates.md)).
 
 ## Sending a mail for an earlier change
 
@@ -254,14 +254,14 @@ worker drops the row as expired before sending it.
 
 ## Rollout
 
-1. SkyMail first: merge the two templates (`club.role-membership`,
-   `club.group-membership`, skymail-frontend) and run the production template
+1. SkyNotify first: merge the two templates (`club.role-membership`,
+   `club.group-membership`, skynotify-frontend) and run the production template
    seed.
 2. Then core. A core whose template is not seeded yet gets `404` from
-   SkyMail: the row waits and is retried (30 s doubling to 30 min) for 72
+   SkyNotify: the row waits and is retried (30 s doubling to 30 min) for 72
    hours, so a seed that lands within that time sends every waiting mail and
    nothing is lost. Core does not skip a kind for a missing template, because
-   it cannot tell "not seeded yet" from a short SkyMail outage; to hold a
+   it cannot tell "not seeded yet" from a short SkyNotify outage; to hold a
    kind back on purpose, set its key empty.
 3. While the old and the new core both run (seconds, during the rollout), an
    old core may take a role or group row and drop it as `skipped_not_team`;
@@ -272,12 +272,12 @@ worker drops the row as expired before sending it.
 An older core image (before 2026-10-12) mails teams only. Its worker takes
 every row and drops a role or group row as `skipped_not_team`, deleting it
 without a mail. Rolling core back therefore loses the role and group mails
-still waiting, for example ones retried because SkyMail answered `404` or
+still waiting, for example ones retried because SkyNotify answered `404` or
 was down. Before rolling back, wait until
 `skylab_team_membership_mail_backlog` is 0 (or accept that loss). To stop
 new role and group mails without a rollback, set
-`SKYMAIL_ROLE_MEMBERSHIP_TEMPLATE_KEY=` and
-`SKYMAIL_GROUP_MEMBERSHIP_TEMPLATE_KEY=` (empty) instead. The migration
+`SKYNOTIFY_ROLE_MEMBERSHIP_TEMPLATE_KEY=` and
+`SKYNOTIFY_GROUP_MEMBERSHIP_TEMPLATE_KEY=` (empty) instead. The migration
 needs no rollback: the older core writes rows without `kind` and they take
 the default `team`.
 

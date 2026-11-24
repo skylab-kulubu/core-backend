@@ -158,9 +158,9 @@ finds the membership.
 ## Mails
 
 One template, `club.management-term`
-(`SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY`; unset: that key, empty: off).
-SkyMail's side (the template and its seed) is not in this repository: the
-template has to be written and seeded in SkyMail before the mails can go.
+(`SKYNOTIFY_MANAGEMENT_TERM_TEMPLATE_KEY`; unset: that key, empty: off).
+SkyNotify's side (the template and its seed) is not in this repository: the
+template has to be written and seeded in SkyNotify before the mails can go.
 Every key is always sent; no e-mail address is in the variables.
 
 | Variable | Warning | Expired list | Weekly summary |
@@ -182,7 +182,7 @@ it does not go (`skipped_erased`); the marks' audit records stay.
 Delivery is the membership mail's ([team-membership-mail.md](team-membership-mail.md)):
 `management_term_mails` (ids, paths, counts; no address or name), one row
 per recipient, sent one at a time, leased two minutes, retried after 30 s
-doubling to 30 minutes, dropped after 72 hours; SkyMail's `404` (template
+doubling to 30 minutes, dropped after 72 hours; SkyNotify's `404` (template
 not seeded) retries like any failure, `400`/`422` drops the row as
 `rejected`; a recipient erased, disabled or without an address is skipped.
 A table of its own: an older core never reads it.
@@ -193,7 +193,7 @@ A table of its own: an older core never reads it.
 |---|---|
 | `MANAGEMENT_TERMS_MODE` | `off` (or unset; default): nothing is read, written or sent, the routes are not served, the capabilities answer `[]`. `dry-run`: the daily job counts what apply would write and send (its record says so) and writes nothing else. `apply`: everything above. Any other value stops core |
 | `MANAGEMENT_TERMS_WEEKLY_SUMMARY` | `on` (or unset) or `off` |
-| `SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY` | the template key; empty turns the mails off (rows are still queued and dropped at their turn as `skipped_kind_off`) |
+| `SKYNOTIFY_MANAGEMENT_TERM_TEMPLATE_KEY` | the template key; empty turns the mails off (rows are still queued and dropped at their turn as `skipped_kind_off`) |
 
 ## Command
 
@@ -258,7 +258,7 @@ tables once an hour (every replica reports the same).
    the empty tables and widen the Team audit record's checks; nothing else
    changes.
 2. Have an active season with its end date (2026–2027: 31 May 2027).
-3. Seed `club.management-term` in SkyMail.
+3. Seed `club.management-term` in SkyNotify.
 4. `MANAGEMENT_TERMS_MODE=dry-run` and redeploy; or, without a redeploy,
    `core-backend management-terms` in the container. Read the counts: the
    terms the backfill would write should be the YK, DK and Team Leader

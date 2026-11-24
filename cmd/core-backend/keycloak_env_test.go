@@ -60,7 +60,7 @@ func TestKeycloakAdminURLLeavesTokenVerificationOnKeycloakURL(t *testing.T) {
 		if jwksURL != "https://e.yildizskylab.com/realms/e-skylab/protocol/openid-connect/certs" {
 			t.Fatalf("admin %q: JWKS = %q", admin, jwksURL)
 		}
-		// core's SkyMail and core-erasure tokens come from the realm token
+		// core's SkyNotify and core-erasure tokens come from the realm token
 		// endpoint built on these.
 		if base, realm := keycloakRealmFromEnv(getenv); base != "https://e.yildizskylab.com" || realm != "e-skylab" {
 			t.Fatalf("admin %q: realm base %q realm %q", admin, base, realm)

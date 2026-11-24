@@ -12,7 +12,7 @@ person's explicit, optional consent (KVKK art. 5/1) for one purpose:
 | `team_page_objection` | not an allowance: an objection to being shown on one's teams' public pages (aydınlatma s6 row 4 b, legitimate interest; [`team-page-consent.md`](team-page-consent.md)). An open grant hides the person; withdrawing it shows them again. Channel `web`, no mail route serves it | the person, for their own account, in Account Center (`self`) | yes |
 
 Core keeps the single record (`contact_consents`). The products write to it;
-SkyMail reads its invitation and promotional lists only from it. Member and alumni
+SkyNotify reads its invitation and promotional lists only from it. Member and alumni
 announcements are not contact consents: they run on legitimate interest with
 their own opt-out, the communication preference
 ([`communication-preferences.md`](communication-preferences.md)).
@@ -159,7 +159,7 @@ the newest one of its purpose. `davet-v1` (the invitations alone, from an
 earlier draft that was never published) is no longer taken: a grant naming it
 answers `400`. No production grant names it (`CONTACT_CONSENT_KEY` is unset
 there and the table is empty); core keeps its box text so a grant stored on it elsewhere
-still shows it, and SkyMail reads the version of each grant in the audience
+still shows it, and SkyNotify reads the version of each grant in the audience
 (`textVersion`): a `davet-v1` grant is for invitations, not for
 announcements.
 
@@ -219,7 +219,7 @@ nothing, so it never ends as `expired`.
 |---|---|
 | 30 days after the last confirmation mail of a grant never confirmed (pending, superseded, or withdrawn while pending) | the confirm link stops working; the retention sweep deletes the row (it was never consent, so it is no proof) |
 | 3 years without a confirmation, a renewal or a check-in at an Event | the grant is due its renewal question: the audience marks it `renewalDue` with a `renewUrl` |
-| SkyMail sent the renewal question | `POST /v1/consents/renewal-requests` records it (`renewalRequestedAt`) |
+| SkyNotify sent the renewal question | `POST /v1/consents/renewal-requests` records it (`renewalRequestedAt`) |
 | 60 days after the question without a renewal or check-in | the retention sweep ends the grant as `expired` |
 | a check-in after the question | answers it as the link would: the question is void (`consent.RenewalQuestionSQL`), the audience no longer shows it, the grant never expires on it, and 3 years after that check-in the grant is due and asked again |
 | ended (withdrawn, expired or superseded) | the address is cleared at once; the retention sweep deletes a grant that was once confirmed 3 years after its end (one never confirmed on the pending schedule, above) |
@@ -336,7 +336,7 @@ role of the `core` client, whose client is mapped to a source in
   few milliseconds at 3,000 accounts and grants) and stops after ten
   seconds.
 
-### SkyMail: role `consent:audience:read`
+### SkyNotify: role `consent:audience:read`
 
 - `GET /v1/consents/audience?purpose=event_invitations|promotional&after={id}&limit={1..1000}` →
   `200 {"items": [...], "next": "{id}"|null}`. Each item:
@@ -388,21 +388,21 @@ A service account cannot use these.
 | `CONTACT_CONSENT_NOTICE_URL` | the KVKK aydınlatma metni the pages link; unset: `https://yildizskylab.com/kvkk-metni.pdf` (the published one) |
 | `CONTACT_CONSENT_SERVICE_CLIENTS` | `source:client` pairs; `none` for none |
 | `CONTACT_CONSENT_VERIFIED_CLIENTS` | clients of the line above whose `emailVerified` core believes; unset: none |
-| `SKYMAIL_CONSENT_CONFIRM_TEMPLATE_KEY` | the confirmation mail's SkyMail template, default `core.contact-consent-confirm`; variables `confirmUrl`, `withdrawUrl`, `purpose` |
+| `SKYNOTIFY_CONSENT_CONFIRM_TEMPLATE_KEY` | the confirmation mail's SkyNotify template, default `core.contact-consent-confirm`; variables `confirmUrl`, `withdrawUrl`, `purpose` |
 
-The confirmation mail goes through core's SkyMail client (`SKYMAIL_URL` and
+The confirmation mail goes through core's SkyNotify client (`SKYNOTIFY_URL` and
 core's Keycloak client). Without it a grant stays pending; startup logs
 `contact consents: on|off`.
 
 Keycloak (follows in e-skylab-keycloak): the `core` client roles
 `consent:record` (Forms, Place, Guessr service accounts) and
-`consent:audience:read` (SkyMail's service account), each granted to the
+`consent:audience:read` (SkyNotify's service account), each granted to the
 service account only, and each of those clients' tokens must carry core's
 roles (`resource_access.core.roles`, audience `core`), as Forms' does for
 `media:attach`. A person never holds either role; a person's token is refused
 on these routes whatever it carries.
 
-The confirmation mail's template is seeded in SkyMail by key
-([skymail-templates.md](skymail-templates.md)); until it is, SkyMail refuses
-the send (`skymail_call_failed`, `kind=consent_confirmation`) and Guest apply
+The confirmation mail's template is seeded in SkyNotify by key
+([skynotify-templates.md](skynotify-templates.md)); until it is, SkyNotify refuses
+the send (`skynotify_call_failed`, `kind=consent_confirmation`) and Guest apply
 grants stay pending.

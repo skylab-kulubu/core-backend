@@ -89,7 +89,7 @@ func TestMemoryAppRows(t *testing.T) {
 	if err := m.Deny(ctx, appRecord(ActionAppAssign, "forms", "skyforms:*"), "role_placement"); err != nil {
 		t.Fatal(err)
 	}
-	other := appRecord(ActionAppAssign, "skymail", "skymail:access")
+	other := appRecord(ActionAppAssign, "skynotify", "skynotify:access")
 	if _, err := m.Begin(ctx, other); err != nil {
 		t.Fatal(err)
 	}

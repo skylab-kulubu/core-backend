@@ -75,16 +75,16 @@ func TestManagementTermsCommandApplyNeedsTheMode(t *testing.T) {
 	}
 }
 
-// SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY: unset takes the seeded key, empty
+// SKYNOTIFY_MANAGEMENT_TERM_TEMPLATE_KEY: unset takes the seeded key, empty
 // turns the mails off.
 func TestManagementTermKeyFromEnv(t *testing.T) {
 	t.Parallel()
-	sky := &mail.SkyMail{}
+	sky := &mail.SkyNotify{}
 	membershipTemplateKeys(sky, func(string) (string, bool) { return "", false })
 	if sky.ManagementTermTemplateKey != "club.management-term" || !sky.ManagementTermConfigured() {
 		t.Fatalf("default %q", sky.ManagementTermTemplateKey)
 	}
-	membershipTemplateKeys(sky, func(name string) (string, bool) { return "", name == "SKYMAIL_MANAGEMENT_TERM_TEMPLATE_KEY" })
+	membershipTemplateKeys(sky, func(name string) (string, bool) { return "", name == "SKYNOTIFY_MANAGEMENT_TERM_TEMPLATE_KEY" })
 	if sky.ManagementTermConfigured() {
 		t.Fatal("an empty key is on")
 	}

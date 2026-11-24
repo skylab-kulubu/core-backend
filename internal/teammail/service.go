@@ -35,11 +35,11 @@ const (
 	pollInterval = 15 * time.Second
 	// maxSends bounds one pass.
 	maxSends = 200
-	// sendTimeout bounds one change: the lookups and the SkyMail call.
+	// sendTimeout bounds one change: the lookups and the SkyNotify call.
 	sendTimeout = 45 * time.Second
 	// enqueueTimeout bounds the insert a membership write waits for, and
 	// writeTimeout the row's own update after a send, which runs even when
-	// core is stopping: a mail SkyMail took is done with.
+	// core is stopping: a mail SkyNotify took is done with.
 	enqueueTimeout = 5 * time.Second
 	writeTimeout   = 5 * time.Second
 	timeZone       = "Europe/Istanbul"
@@ -59,7 +59,7 @@ const (
 	// skipped for it; its counter stays, at 0, for whoever reads it.
 	SkipNotTeam SkipReason = "not_team"
 	// SkipKindOff: the change's kind has no template key now (its
-	// SKYMAIL_*_MEMBERSHIP_TEMPLATE_KEY set empty since it was queued).
+	// SKYNOTIFY_*_MEMBERSHIP_TEMPLATE_KEY set empty since it was queued).
 	SkipKindOff SkipReason = "kind_off"
 )
 
@@ -88,7 +88,7 @@ type GroupReader interface {
 	GetGroup(ctx context.Context, idOrPath string) (identity.Group, error)
 }
 
-// Mailer sends the mail and says whether SkyMail took it (mail.SkyMail).
+// Mailer sends the mail and says whether SkyNotify took it (mail.SkyNotify).
 type Mailer interface {
 	// MembershipConfigured reports whether kind's mail has a template; a
 	// kind without one is off.
@@ -424,7 +424,7 @@ func (s *Service) membershipPass(ctx context.Context) (Report, error) {
 const outcomeInterrupted = "interrupted"
 
 // deliver sends the mail of one change and names its kind and the outcome:
-// sent, skipped_<reason>, rejected (SkyMail refused the body itself), failed
+// sent, skipped_<reason>, rejected (SkyNotify refused the body itself), failed
 // (tried again later) or interrupted (core is stopping). The kind is this
 // core's (KindOf), whatever the row was queued for.
 func (s *Service) deliver(parent context.Context, change Change) (Kind, string) {
@@ -561,11 +561,11 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 				logf("team membership mail: queue: %v", err)
 			default:
 				if report.any() {
-					logf("team membership mail: %d sent, %d skipped, %d refused by SkyMail, %d failed and retried later, %d expired",
+					logf("team membership mail: %d sent, %d skipped, %d refused by SkyNotify, %d failed and retried later, %d expired",
 						report.Sent, report.Skipped, report.Rejected, report.Failed, report.Expired)
 				}
 				if n := report.Notices; n.any() {
-					logf("privilege notice: %d changes read for recipients, %d sent, %d skipped, %d refused by SkyMail, %d failed and retried later, %d expired",
+					logf("privilege notice: %d changes read for recipients, %d sent, %d skipped, %d refused by SkyNotify, %d failed and retried later, %d expired",
 						n.Read, n.Sent, n.Skipped, n.Rejected, n.Failed, n.Expired)
 				}
 			}

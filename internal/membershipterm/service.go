@@ -36,7 +36,7 @@ type Accounts interface {
 	Accounts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]user.Account, error)
 }
 
-// Mailer sends the term mails (mail.SkyMail).
+// Mailer sends the term mails (mail.SkyNotify).
 type Mailer interface {
 	ManagementTermConfigured() bool
 	ManagementTerm(ctx context.Context, recipient, fullName string, vars map[string]string) error

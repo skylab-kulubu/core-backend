@@ -1,8 +1,8 @@
 # The door's mails
 
 kapi-postalari tickets 04 and 05 (SPEC §5; Yusuf's decisions of 2026-11-23/24).
-SkyMail templates `event.attendance-welcome` and `event.attendance-recorded`
-(skymail-frontend, seeded in production 2026-11-24).
+SkyNotify templates `event.attendance-welcome` and `event.attendance-recorded`
+(skynotify-frontend, seeded in production 2026-11-24).
 
 A Ticket's holder hears from the door:
 
@@ -13,7 +13,7 @@ A Ticket's holder hears from the door:
 
 Both go two minutes after the scan (`ticket.AttendanceMailDelay`). They are
 **transactional mails** of the holder's own scan (ADR-0072 decision 2): `bilgi@`,
-SkyMail's `system` lane, required types (the person cannot turn them off), no
+SkyNotify's `system` lane, required types (the person cannot turn them off), no
 unsubscribe header. A member gets a Notification (`POST /v1/notifications`:
 inbox + e-mail) under an Idempotency-Key; a guest the template by address
 (`POST /v1/mail_tasks/single`).
@@ -39,7 +39,7 @@ zero-width character (U+200B–U+200D, U+2060, U+FEFF) is
   lists, the door's and sky-app's, leaves the key out: the stored field never
   goes into JSON by itself (`Event.AttendeeNote` is `json:"-"`; `ProjectFor`
   copies it for an editor).
-- It goes in the welcome mail alone (`AttendeeNote`; SkyMail masks no
+- It goes in the welcome mail alone (`AttendeeNote`; SkyNotify masks no
   variable, ADR-0074 2026-11-24 ek: it is mail content whoever holds
   `mails:read` reads, and its links are tracked as any other), with
   `AttendeeNoteParts`: the same text cut at its `http(s)://`
@@ -52,8 +52,8 @@ zero-width character (U+200B–U+200D, U+2060, U+FEFF) is
 | Setting | Default | Effect |
 |---|---|---|
 | `ATTENDANCE_MAIL` | `off` | `on` queues the mails. Off, no scan queues anything; turned on later, the scans of meanwhile are not told. Anything but `on`/`off` stops core. |
-| `SKYMAIL_ATTENDANCE_WELCOME_TEMPLATE_KEY` | `event.attendance-welcome` | empty: no welcome is queued |
-| `SKYMAIL_ATTENDANCE_RECORDED_TEMPLATE_KEY` | `event.attendance-recorded` | empty: no receipt is queued |
+| `SKYNOTIFY_ATTENDANCE_WELCOME_TEMPLATE_KEY` | `event.attendance-welcome` | empty: no welcome is queued |
+| `SKYNOTIFY_ATTENDANCE_RECORDED_TEMPLATE_KEY` | `event.attendance-recorded` | empty: no receipt is queued |
 | `ATTENDANCE_MAIL_PER_MINUTE` | `20` | mails a minute across replicas; `0` no bound |
 | Event `attendanceWelcomeMail` | `true` | the organizer's switch for the welcome |
 | Event `attendanceRecordedMail` | `true` | the organizer's switch for the receipt |
@@ -91,8 +91,8 @@ off.
   day and Session>:v1`: the same rows always carry the same key.
 - **Retry.** The first try writes its key on its rows (`mail_key`). A retry
   takes only the rows of that try and sends under that key, whatever dropped
-  out since: SkyMail may have taken the first try without an answer, and then
-  answers the retry from it instead of mailing again; SkyMail's
+  out since: SkyNotify may have taken the first try without an answer, and then
+  answers the retry from it instead of mailing again; SkyNotify's
   `idempotency_key_reused` (fewer rows since) means the first try went, and the
   rows are `sent`. A row queued since goes in a mail of its own.
 - **Pace.** One replica at a time counts the minute's mails under an advisory
@@ -103,7 +103,7 @@ off.
 - **Read again** when it sends: the Event published and not archived, the
   Ticket active, the holder's account active, the switch on. Otherwise the row
   is `dropped` (or `skipped`: nobody to write to).
-- **Failures.** SkyMail's `400`/`422` refusal ends the row (`rejected`);
+- **Failures.** SkyNotify's `400`/`422` refusal ends the row (`rejected`);
   `422 notification.type_unknown` and every other failure are tried again,
   30 seconds doubling up to 30 minutes; a row a day old is `expired`. A guest's
   mail that went out with no answer is `uncertain` and not tried again.
@@ -112,7 +112,7 @@ off.
 
 ## Variables
 
-Every variable always goes (SkyMail renders with `missingkey=error`).
+Every variable always goes (SkyNotify renders with `missingkey=error`).
 
 Counts are the certificate rule's as it stands when the mail goes
 ([certificate-rule.md](certificate-rule.md)): N = live counted Sessions, x =
@@ -139,7 +139,7 @@ not count).
 ## Turning it on
 
 1. Core with this release (`ATTENDANCE_MAIL` stays off).
-2. The welcome template's seed with `AttendeeNoteParts` (skymail-frontend
+2. The welcome template's seed with `AttendeeNoteParts` (skynotify-frontend
    #186); the templates and types themselves are in production since
    2026-11-24.
 3. `ATTENDANCE_MAIL=on`.

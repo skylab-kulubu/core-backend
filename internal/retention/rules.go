@@ -344,7 +344,7 @@ func auditRules(c Config) []Rule {
 			where: `o.opened_at < $1`,
 		},
 		{
-			// The snapshot cleanup deletes SkyMail's list, then the row.
+			// The snapshot cleanup deletes SkyNotify's list, then the row.
 			Name: "mail_snapshots_age", Version: 1, Kind: KindAudit, Action: ActionCount,
 			Table: "event_mail_snapshots", alias: "m", Period: overdueGrace, Alarm: true,
 			where: `m.expires_at < $1`,

@@ -296,7 +296,7 @@ func TestNoticesDoNotCancelOut(t *testing.T) {
 	}
 }
 
-// Not seeded yet (SkyMail 404): each notice waits and is retried, as the
+// Not seeded yet (SkyNotify 404): each notice waits and is retried, as the
 // membership mail does, and the metric says so.
 func TestNoticeWaitsForAnUnseededTemplate(t *testing.T) {
 	t.Parallel()
@@ -380,7 +380,7 @@ func TestNoticeRetriesARosterReadFailure(t *testing.T) {
 	}
 }
 
-// SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY empty: nothing is queued, and with
+// SKYNOTIFY_PRIVILEGE_NOTICE_TEMPLATE_KEY empty: nothing is queued, and with
 // the role mail off too a Privileged Group is not asked about at all.
 func TestNoticeOff(t *testing.T) {
 	t.Parallel()

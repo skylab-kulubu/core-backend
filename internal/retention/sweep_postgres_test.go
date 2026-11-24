@@ -1278,7 +1278,7 @@ func TestRenewalAnsweredByAttendanceIsAskedAgainAndThenExpires(t *testing.T) {
 		return entries[0]
 	}
 
-	// March 2022: three years without attendance; SkyMail asks.
+	// March 2022: three years without attendance; SkyNotify asks.
 	clock = time.Date(2022, 3, 1, 12, 0, 0, 0, time.UTC)
 	if entry := audience(); !entry.RenewalDue || entry.RenewalRequestedAt != nil {
 		t.Fatalf("2022: %+v", entry)

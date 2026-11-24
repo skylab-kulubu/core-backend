@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func (s *SkyMail) Certificate(ctx context.Context, recipientEmail, fullName string, vars map[string]string) {
+func (s *SkyNotify) Certificate(ctx context.Context, recipientEmail, fullName string, vars map[string]string) {
 	if strings.TrimSpace(recipientEmail) == "" {
 		return
 	}
@@ -16,16 +16,16 @@ func (s *SkyMail) Certificate(ctx context.Context, recipientEmail, fullName stri
 }
 
 // CertificateMail posts the certificate mail under idempotencyKey, the same
-// on every try of one queued mail (docs/certificate-mail.md): SkyMail answers
+// on every try of one queued mail (docs/certificate-mail.md): SkyNotify answers
 // a repeat with its first answer, so core's queue tries again whenever no
-// answer came. It reports what SkyMail answered: nil once it took the mail,
+// answer came. It reports what SkyNotify answered: nil once it took the mail,
 // ErrTemplateUnconfigured when there is no address or template, else a
-// *SendError (Status 0: SkyMail was not reached).
+// *SendError (Status 0: SkyNotify was not reached).
 //
-// A template key SkyMail does not know (404) falls back to the template id,
+// A template key SkyNotify does not know (404) falls back to the template id,
 // as Certificate does, under the key with ":id" appended: the body differs,
-// and SkyMail refuses one key for two bodies.
-func (s *SkyMail) CertificateMail(ctx context.Context, idempotencyKey, recipientEmail, fullName string, vars map[string]string) error {
+// and SkyNotify refuses one key for two bodies.
+func (s *SkyNotify) CertificateMail(ctx context.Context, idempotencyKey, recipientEmail, fullName string, vars map[string]string) error {
 	if s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}

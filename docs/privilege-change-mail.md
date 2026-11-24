@@ -43,7 +43,7 @@ moment was held.
 | `ActorName` | who made the change; empty for a service account or someone core may no longer name |
 | `OccurredAt` | when, in Europe/Istanbul, `dd.MM.yyyy HH:mm` |
 | `RolesAdded`, `RolesRemoved` | role mapping: the roles as `client:role` (a realm role as `realm:ROLE`), sorted, joined by `, `; empty otherwise |
-| `AdminRole` | role mapping: `yes` when a changed role is a known admin role by authz's role classes (ADR 0065 decision 10, `authz.ClassifyRole` = `admin`: core's permission roles, `audit:read`, a Site's `cms:access` and `content:write`, any `client:admin`, any `realm-management` role, Forms', SkyMail's and Place's admin roles; see `authz.AdminRoles`), or a realm role (`authz.ClassifyRealmRole`, always admin); `no` for an app role and for a client role nobody has classified (delegation treats that one as protected, but the mail says `yes` only when it is sure) |
+| `AdminRole` | role mapping: `yes` when a changed role is a known admin role by authz's role classes (ADR 0065 decision 10, `authz.ClassifyRole` = `admin`: core's permission roles, `audit:read`, a Site's `cms:access` and `content:write`, any `client:admin`, any `realm-management` role, Forms', SkyNotify's and Place's admin roles; see `authz.AdminRoles`), or a realm role (`authz.ClassifyRealmRole`, always admin); `no` for an app role and for a client role nobody has classified (delegation treats that one as protected, but the mail says `yes` only when it is sure) |
 | `MemberCount` | role mapping: how many people sit in the Group's tree when the notice was read for its recipients (they are counted, never told); empty otherwise, and empty when the tree could not be read within 20 s (the count is best effort: the notice goes without it) |
 
 Every key is always sent. No e-mail address is in the mail.
@@ -55,7 +55,7 @@ role mapping / Privileged membership write ──▶ Keycloak ──▶ INSERT p
                                                                 │
                                worker (the membership mail's, same wake-up and poll)
                                                                 │
-          read ADMIN's tree (+ the root's tree, or the Group's count) ──▶ one row per recipient ──▶ POST SkyMail
+          read ADMIN's tree (+ the root's tree, or the Group's count) ──▶ one row per recipient ──▶ POST SkyNotify
 ```
 
 - The queue is `privilege_notice_mails` (migration `20261012190000`): ids,
@@ -72,7 +72,7 @@ role mapping / Privileged membership write ──▶ Keycloak ──▶ INSERT p
   best effort: a tree that cannot be read within 20 s (a large `/UYELER`, a
   slow Keycloak) leaves `MemberCount` empty and the notice goes at once
   (`skylab_privilege_notice_mail_count_errors_total`).
-- SkyMail's `404` (the template not seeded yet) retries like any failure, so
+- SkyNotify's `404` (the template not seeded yet) retries like any failure, so
   a seed within 72 hours sends every waiting notice; `400`/`422` drops the
   row as `rejected`.
 - The notice switched off while rows wait: each is dropped at its turn
@@ -87,9 +87,9 @@ role mapping / Privileged membership write ──▶ Keycloak ──▶ INSERT p
 
 | Variable | Unset | Empty |
 | --- | --- | --- |
-| `SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY` | `club.privilege-change` | notice off |
+| `SKYNOTIFY_PRIVILEGE_NOTICE_TEMPLATE_KEY` | `club.privilege-change` | notice off |
 
-It needs core's SkyMail client, like the membership mail. The startup line
+It needs core's SkyNotify client, like the membership mail. The startup line
 says `team membership mail: on (…; privilege notice club.privilege-change)`
 or `privilege notice off`. With the notice off, a role mapping write reads
 nothing for it, and a Privileged Group's membership is read only for the
@@ -112,13 +112,13 @@ role mail.
 - `skylab_privilege_notice_mail_backlog`,
   `skylab_privilege_notice_mail_oldest_age_seconds`
 
-A SkyMail refusal is logged as `skymail_call_failed` with
+A SkyNotify refusal is logged as `skynotify_call_failed` with
 `"kind":"privilege_notice"`, without the recipient.
 
 ## Rollout
 
-1. SkyMail first: merge the template (`club.privilege-change`,
-   skymail-frontend) and run the production template seed.
+1. SkyNotify first: merge the template (`club.privilege-change`,
+   skynotify-frontend) and run the production template seed.
 2. Then core. The migration creates the table. Notices queued before the
    seed wait and are retried for 72 hours.
 
@@ -126,7 +126,7 @@ A SkyMail refusal is logged as `skymail_call_failed` with
 
 An older core does not read `privilege_notice_mails`: notices waiting there
 stay until a newer core sends them or the 72 hours pass. To stop the notice
-without a rollback, set `SKYMAIL_PRIVILEGE_NOTICE_TEMPLATE_KEY=` (empty).
+without a rollback, set `SKYNOTIFY_PRIVILEGE_NOTICE_TEMPLATE_KEY=` (empty).
 The down migration drops the table and whatever waits in it.
 
 ## Compared with other products

@@ -1,9 +1,9 @@
 # An Event's new time or place (`event.updated`)
 
-iletişim-servisi 06; ADR 0070 (core says what happened and to whom, SkyMail
+iletişim-servisi 06; ADR 0070 (core says what happened and to whom, SkyNotify
 says by which channel and with which text). When a published Event gets a new
 start, end or location, everyone holding a Ticket of it is told: by the in-app
-inbox and by e-mail, as SkyMail's Notification type `event.updated` says. It
+inbox and by e-mail, as SkyNotify's Notification type `event.updated` says. It
 is off until `EVENT_UPDATED_NOTIFICATION=on`.
 
 ## When
@@ -22,16 +22,16 @@ unpublished or over by then tells nobody (the cancellation has its own mail,
 
 This is a transactional mail about the holder's own Ticket, not an
 announcement: the type is required (no preferences, no consent, no unsubscribe
-link) and rides SkyMail's `system` lane, so it leaves from the transactional
+link) and rides SkyNotify's `system` lane, so it leaves from the transactional
 mailbox.
 
 ## How
 
 ```text
-Event update ──(same transaction)──▶ event_update_notifications ──(15 min)──▶ worker ──▶ SkyMail
+Event update ──(same transaction)──▶ event_update_notifications ──(15 min)──▶ worker ──▶ SkyNotify
 ```
 
-- While `EVENT_UPDATED_NOTIFICATION=on` (and SkyMail is configured), the
+- While `EVENT_UPDATED_NOTIFICATION=on` (and SkyNotify is configured), the
   Event's update reads the row under its lock and, when the start, end or
   location changed on a published Event that was not over, writes a row in
   the same transaction: what the Event said before, due 15 minutes later.
@@ -57,10 +57,10 @@ Event update ──(same transaction)──▶ event_update_notifications ──
    "expires_at": "<the Event's end>"}
   ```
 
-  The type is required, so no `allowed_channels`; SkyMail reads the address
+  The type is required, so no `allowed_channels`; SkyNotify reads the address
   from Keycloak. `expires_at` takes the inbox item away when the Event ends
   (its end, else a day after its start).
-- A guest has no subject SkyMail could take, so the guest gets the type's
+- A guest has no subject SkyNotify could take, so the guest gets the type's
   e-mail template alone, by address: `POST /v1/mail_tasks/single` with
   `template_key: event.updated`, the same variables and the guest's name. No
   inbox item. A guest Ticket under a registered holder's primary e-mail is
@@ -68,7 +68,7 @@ Event update ──(same transaction)──▶ event_update_notifications ──
 - The variables are the Event as it is when sent. `ChangeSummary` says what
   changed (`Etkinliğin saati değişti.`, `Etkinliğin yeri değişti.`,
   `Etkinliğin saati ve yeri değişti.`); times are Europe/Istanbul, empty
-  without one. Every variable is always sent: SkyMail renders the inbox text
+  without one. Every variable is always sent: SkyNotify renders the inbox text
   with `missingkey=error`. `EventId` fills the inbox item's link
   (`/events/{{.EventId}}`). The template's `EventUrl` is not sent: the site
   has no Event page, and the template leaves the button out when it is
@@ -87,15 +87,15 @@ Event update ──(same transaction)──▶ event_update_notifications ──
 - Each Ticket a Notification reached is recorded
   (`event_update_notification_sends`, ids only), so a retry tells only who
   was not reached. A member's key is the same on every try: a retry after a
-  lost answer is SkyMail's `Idempotent-Replayed`.
+  lost answer is SkyNotify's `Idempotent-Replayed`.
 - A guest's mail has no key (`/v1/mail_tasks/single` reads none). When it
-  went out and no answer came, SkyMail may have taken it, so it counts as
+  went out and no answer came, SkyNotify may have taken it, so it counts as
   reached and is not tried again.
 - `400` and `422` are permanent: that holder is counted as refused and the
   others go on. One `422` is not: `notification.type_unknown`, the type not
   seeded yet, passes once the Template seed has run. It, and anything else
-  (SkyMail down, `401`, `403` before Keycloak gives core
-  `skymail:notifications:send`, `409` before the type's e-mail or inbox text
+  (SkyNotify down, `401`, `403` before Keycloak gives core
+  `skynotify:notifications:send`, `409` before the type's e-mail or inbox text
   is there, `404` before a guest's template is seeded), keeps the row, tried
   again 30 seconds later, doubling to 30 minutes, for a day from the first
   change; then it is given up unsent.
@@ -108,7 +108,7 @@ Event update ──(same transaction)──▶ event_update_notifications ──
 Each pass that did something logs one line of counts, never a person:
 
 ```text
-event updated notification: 1 changes done (0 dropped, 0 given up), 0 tried again later; 41 sent, 2 skipped, 0 refused by SkyMail, 0 guest mails unanswered and not tried again
+event updated notification: 1 changes done (0 dropped, 0 given up), 0 tried again later; 41 sent, 2 skipped, 0 refused by SkyNotify, 0 guest mails unanswered and not tried again
 ```
 
 ## Erasure
@@ -118,10 +118,10 @@ Ticket deleted takes its record of sends with it; an Event deleted, its rows.
 
 ## Before turning it on
 
-1. Keycloak: `core`'s service account holds `skymail:notifications:send`
+1. Keycloak: `core`'s service account holds `skynotify:notifications:send`
    (already, for `event.ticket-created`).
-2. SkyMail: the type `event.updated` is seeded with its inbox text
-   (skymail-frontend Template seed: the template `event.updated` and
+2. SkyNotify: the type `event.updated` is seeded with its inbox text
+   (skynotify-frontend Template seed: the template `event.updated` and
    `PUT /v1/notification_types/event.updated`).
 3. `EVENT_UPDATED_NOTIFICATION=on`; the startup line reads
    `event updated notification: on (event.updated, changes gathered for 15m0s)`.

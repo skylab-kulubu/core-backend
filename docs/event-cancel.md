@@ -53,17 +53,17 @@ Nothing else is written: since the cancellation deleted and closed nothing, regi
 
 ## Mails
 
-Ticket 14 (ADR 0066 addendum 2026-10-19, decision 1). Two SkyMail system templates, addressed by key:
+Ticket 14 (ADR 0066 addendum 2026-10-19, decision 1). Two SkyNotify system templates, addressed by key:
 
-| Mail | Key (`SKYMAIL_EVENT_CANCELLED_TEMPLATE_KEY`, `SKYMAIL_EVENT_REINSTATED_TEMPLATE_KEY`; unset: the key, empty: off) | Variables |
+| Mail | Key (`SKYNOTIFY_EVENT_CANCELLED_TEMPLATE_KEY`, `SKYNOTIFY_EVENT_REINSTATED_TEMPLATE_KEY`; unset: the key, empty: off) | Variables |
 |---|---|---|
 | The Event is cancelled | `core.event-cancelled` | `EventName`, `EventStart` (`02.01.2006 15:04`, Europe/Istanbul; empty when undated), `CancelReason` (may be empty), `FirstName` |
 | The cancellation is undone | `core.event-reinstated` | `EventName`, `EventStart`, `FirstName` |
 
-- **Queued, never sent inline.** The cancellation with `notifyTicketHolders` writes one row in `event_status_mails` in its own transaction and sets `events.cancel_notified_at`; a second cancel queues nothing. The undo with `notifyTicketHolders`, while the cancellation was mailed, queues one reinstated row that follows the cancellation's. Neither request waits for SkyMail or fails for it.
+- **Queued, never sent inline.** The cancellation with `notifyTicketHolders` writes one row in `event_status_mails` in its own transaction and sets `events.cancel_notified_at`; a second cancel queues nothing. The undo with `notifyTicketHolders`, while the cancellation was mailed, queues one reinstated row that follows the cancellation's. Neither request waits for SkyNotify or fails for it.
 - **The worker** (`internal/eventstatusmail`, every 15 seconds) reads the Event again before each send: a cancellation mail goes only while the Event is cancelled by the cancellation that queued it, so one whose cancellation was undone, or undone and made again (that one has its own mail), is dropped where it is; a reinstated mail goes only while the Event is published and no later cancellation was mailed, and is not taken before the cancellation mail it follows is done. A pass renews its claim every 20 sends, so with more than one core replica a long mail is not taken twice.
 - **Recipients**, read when the mail is sent: every Ticket of the Event, registered and guest, one mail per address. A registered holder gets core's primary e-mail of their account, not when it is erased, being erased or gone; a guest the address on the Ticket. The reinstated mail goes only to the Tickets the cancellation mail reached.
-- **Once per person.** Each Ticket a mail reached is recorded (`event_status_mail_sends`, ids only), so a retry never writes twice. A send SkyMail may take later (404 template not seeded yet, 401/403, 5xx, unreachable) keeps the mail for a backoff (30 seconds, doubling to 30 minutes); a refusal of the address itself (400, 422) is counted and the others go on. A mail is given up after 72 hours. A template key set empty finishes the mail unsent.
+- **Once per person.** Each Ticket a mail reached is recorded (`event_status_mail_sends`, ids only), so a retry never writes twice. A send SkyNotify may take later (404 template not seeded yet, 401/403, 5xx, unreachable) keeps the mail for a backoff (30 seconds, doubling to 30 minutes); a refusal of the address itself (400, 422) is counted and the others go on. A mail is given up after 72 hours. A template key set empty finishes the mail unsent.
 - **No personal data** in the queue: ids and times only, so account erasure has nothing to do there; a Ticket deleted takes its record with it.
-- **Seeding order:** seed `core.event-cancelled` and `core.event-reinstated` (skymail-frontend `emails/`) before the panel shows the box; a mail queued before then waits on SkyMail's 404 and goes once the template is there (within 72 hours).
+- **Seeding order:** seed `core.event-cancelled` and `core.event-reinstated` (skynotify-frontend `emails/`) before the panel shows the box; a mail queued before then waits on SkyNotify's 404 and goes once the template is there (within 72 hours).
 

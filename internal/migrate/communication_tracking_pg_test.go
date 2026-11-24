@@ -108,7 +108,7 @@ func TestCommunicationTrackingDownRefusesToLoseRecords(t *testing.T) {
 		{`INSERT INTO communication_preferences (user_id, scope, enabled, source) VALUES ($1, 'tracking', false, 'account_center')`,
 			"while a person has one", `DELETE FROM communication_preferences WHERE scope = 'tracking'`},
 		{`INSERT INTO communication_tracking_withdrawals (user_id, requested_at, next_attempt_at) VALUES ($1, now(), now())`,
-			"waits for SkyMail", `DELETE FROM communication_tracking_withdrawals`},
+			"waits for SkyNotify", `DELETE FROM communication_tracking_withdrawals`},
 		{`INSERT INTO communication_tracking_changes (user_id, enabled, source, changed_at) VALUES ($1, false, 'account_center', now())`,
 			"audit trail", `DELETE FROM communication_tracking_changes`},
 	} {

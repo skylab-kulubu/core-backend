@@ -20,8 +20,8 @@ const TicketCreatedType = "event.ticket-created"
 
 // WaitlistJoinedType and WaitlistPromotedType are the Notification types
 // (and e-mail template keys) of the waiting list (docs/event-capacity.md):
-// "Bekleme listesindesin" and "Yer açıldı, biletin hazır". SkyMail seeds
-// them (skymail-frontend, kontenjan-iptal-hatirlatma 09); core sends them
+// "Bekleme listesindesin" and "Yer açıldı, biletin hazır". SkyNotify seeds
+// them (skynotify-frontend, kontenjan-iptal-hatirlatma 09); core sends them
 // only while TICKET_STATUS_MAIL is on.
 const (
 	WaitlistJoinedType   = "event.waitlist-joined"
@@ -30,8 +30,8 @@ const (
 
 // TicketCancelledType is the Notification type (and e-mail template key) a
 // Ticket's cancellation is told by (docs/ticket-status-mail.md): its holder
-// cancelled it, or an operator did and chose to tell. SkyMail seeds it
-// (skymail-frontend #179); core sends it only while TICKET_STATUS_MAIL is
+// cancelled it, or an operator did and chose to tell. SkyNotify seeds it
+// (skynotify-frontend #179); core sends it only while TICKET_STATUS_MAIL is
 // on.
 const TicketCancelledType = "event.ticket-cancelled"
 
@@ -42,15 +42,15 @@ const EventUpdatedType = "event.updated"
 
 // EventReminderType is the Notification type (and the e-mail template key)
 // of the reminder the day before an Event (docs/event-reminder.md): the
-// default of SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY, and the type the
+// default of SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY, and the type the
 // Idempotency-Key names whatever key is set.
 const EventReminderType = "event.reminder"
 
 // The door's mails (docs/attendance-mail.md): the Notification types (and
 // e-mail template keys) of "hoş geldin" on the day's first entry and of
 // "katılımın alındı" on a Session Check-in, the defaults of
-// SKYMAIL_ATTENDANCE_WELCOME_TEMPLATE_KEY and
-// SKYMAIL_ATTENDANCE_RECORDED_TEMPLATE_KEY.
+// SKYNOTIFY_ATTENDANCE_WELCOME_TEMPLATE_KEY and
+// SKYNOTIFY_ATTENDANCE_RECORDED_TEMPLATE_KEY.
 const (
 	AttendanceWelcomeType  = "event.attendance-welcome"
 	AttendanceRecordedType = "event.attendance-recorded"
@@ -64,8 +64,8 @@ const (
 	kindAttendance    = "attendance_mail"
 )
 
-// Notification is one POST /v1/notifications (SkyMail docs/notifications.md):
-// what happened and to whom; SkyMail picks the channels and the text.
+// Notification is one POST /v1/notifications (SkyNotify docs/notifications.md):
+// what happened and to whom; SkyNotify picks the channels and the text.
 type Notification struct {
 	Type       string                  `json:"type"`
 	Recipients []NotificationRecipient `json:"recipients"`
@@ -77,14 +77,14 @@ type Notification struct {
 	// items go then. Nil, or not in the future, leaves it out.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// Attachments go with the e-mail of a Notification to one person
-	// (SkyMail README "Posta eki"); none leaves the field out, so a body
+	// (SkyNotify README "Posta eki"); none leaves the field out, so a body
 	// without one is what it was before.
 	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
-// Attachment is one Mail attachment (ADR 0082; SkyMail README "Posta
+// Attachment is one Mail attachment (ADR 0082; SkyNotify README "Posta
 // eki"): a PDF or PNG with a service's mail to one person, at most
-// MaxAttachmentBytes decoded in all. SkyMail refuses anything else with
+// MaxAttachmentBytes decoded in all. SkyNotify refuses anything else with
 // 400 attachment.*.
 type Attachment struct {
 	// Filename is what the recipient sees: never the person's name.
@@ -94,7 +94,7 @@ type Attachment struct {
 	ContentBase64 string `json:"content_base64"`
 }
 
-// MaxAttachmentBytes is SkyMail's bound on a mail's attachments, decoded
+// MaxAttachmentBytes is SkyNotify's bound on a mail's attachments, decoded
 // and together: 512 KB.
 const MaxAttachmentBytes = 512 << 10
 
@@ -106,21 +106,21 @@ func PDFAttachment(filename string, data []byte) Attachment {
 // NotificationRecipient is one person, by Keycloak subject. AllowedChannels
 // is what their preferences allow: nil leaves it out (a required type does
 // not read it), a pointer to an empty list sends [] (an optional type the
-// person allows no channel of; SkyMail refuses an optional type without the
+// person allows no channel of; SkyNotify refuses an optional type without the
 // field).
 type NotificationRecipient struct {
 	Sub uuid.UUID `json:"sub"`
 	// Email and Name, when given, are the address and name core read for the
-	// person (SkyMail then does not look them up in Keycloak).
+	// person (SkyNotify then does not look them up in Keycloak).
 	Email           string    `json:"email,omitempty"`
 	Name            string    `json:"name,omitempty"`
 	AllowedChannels *[]string `json:"allowed_channels,omitempty"`
 }
 
-// ErrMaybeDelivered is a send that went out and got no answer: SkyMail may
+// ErrMaybeDelivered is a send that went out and got no answer: SkyNotify may
 // have taken it. The guest's mail has no idempotency key (/single reads none),
 // so it is not tried again: a second try could mail the guest twice.
-var ErrMaybeDelivered = errors.New("mail: SkyMail may have taken the mail; no answer came")
+var ErrMaybeDelivered = errors.New("mail: SkyNotify may have taken the mail; no answer came")
 
 // NotificationSource is where the notification came from.
 type NotificationSource struct {
@@ -129,10 +129,10 @@ type NotificationSource struct {
 }
 
 // Notify posts n under idempotencyKey (the same on every try of the same
-// notification). It reports what SkyMail answered, as Membership does: the
-// notification waits in core's queue until SkyMail has taken it. A refusal is
+// notification). It reports what SkyNotify answered, as Membership does: the
+// notification waits in core's queue until SkyNotify has taken it. A refusal is
 // warned about in the log with kind and no recipient.
-func (s *SkyMail) Notify(ctx context.Context, kind, idempotencyKey string, n Notification) error {
+func (s *SkyNotify) Notify(ctx context.Context, kind, idempotencyKey string, n Notification) error {
 	if s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}
@@ -172,7 +172,7 @@ func (s *SkyMail) Notify(ctx context.Context, kind, idempotencyKey string, n Not
 	return &SendError{Status: resp.StatusCode, Code: answerCode(answer)}
 }
 
-// answerCode is the code of SkyMail's error body ({"code": …}, its
+// answerCode is the code of SkyNotify's error body ({"code": …}, its
 // AppError), else what diagnosticCode reads; empty when nothing code-shaped
 // is there.
 func answerCode(body []byte) string {
@@ -189,40 +189,40 @@ func answerCode(body []byte) string {
 }
 
 // TicketCreated tells a new Ticket's holder: a registered holder by a
-// Notification to their subject (inbox and e-mail, as SkyMail's type says),
-// idempotent under idempotencyKey; a guest, who has no subject SkyMail could
+// Notification to their subject (inbox and e-mail, as SkyNotify's type says),
+// idempotent under idempotencyKey; a guest, who has no subject SkyNotify could
 // take, by the type's e-mail template alone (/v1/mail_tasks/single).
 // attachments (the Ticket's PDF, docs/ticket-created-notification.md) go
 // with the e-mail either way; none sends the body of before.
-func (s *SkyMail) TicketCreated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
+func (s *SkyNotify) TicketCreated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
 	return s.tellHolder(ctx, kindTicketCreated, TicketCreatedType, idempotencyKey, holder, vars, source, expiresAt, attachments)
 }
 
 // TicketStatus tells a Ticket's holder of its place on the waiting list
 // (typ WaitlistJoinedType or WaitlistPromotedType) or of its cancellation
 // (TicketCancelledType), the way TicketCreated tells of a new Ticket.
-func (s *SkyMail) TicketStatus(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
+func (s *SkyNotify) TicketStatus(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
 	return s.tellHolder(ctx, kindTicketStatus, typ, idempotencyKey, holder, vars, source, expiresAt, attachments)
 }
 
 // EventUpdated tells a Ticket holder that the Event's time or place changed,
 // the way TicketCreated tells of a new Ticket: a registered holder by a
 // Notification to their subject, a guest by the type's e-mail template.
-func (s *SkyMail) EventUpdated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
+func (s *SkyNotify) EventUpdated(ctx context.Context, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
 	return s.tellHolder(ctx, kindEventUpdated, EventUpdatedType, idempotencyKey, holder, vars, source, expiresAt, nil)
 }
 
 // EventReminder tells a Ticket holder that the Event is tomorrow, under the
-// template key typ (SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY), the way
+// template key typ (SKYNOTIFY_EVENT_REMINDER_TEMPLATE_KEY), the way
 // EventUpdated tells of a new time or place.
-func (s *SkyMail) EventReminder(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
+func (s *SkyNotify) EventReminder(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time) error {
 	return s.tellHolder(ctx, kindEventReminder, typ, idempotencyKey, holder, vars, source, expiresAt, nil)
 }
 
 // tellHolder posts typ to a Ticket holder: a Notification to a registered
 // holder's subject under idempotencyKey, the type's template by address to a
 // guest. A guest's mail that went out with no answer is ErrMaybeDelivered.
-func (s *SkyMail) tellHolder(ctx context.Context, kind, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
+func (s *SkyNotify) tellHolder(ctx context.Context, kind, typ, idempotencyKey string, holder TicketHolder, vars map[string]string, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
 	variables := make(map[string]any, len(vars))
 	for name, value := range vars {
 		variables[name] = value
@@ -235,12 +235,12 @@ func (s *SkyMail) tellHolder(ctx context.Context, kind, typ, idempotencyKey stri
 // key; docs/attendance-mail.md), the way EventReminder tells of tomorrow.
 // Its variables are not all text: the programme and the Sessions are lists,
 // the counts numbers.
-func (s *SkyMail) AttendanceMail(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]any, source NotificationSource, expiresAt *time.Time) error {
+func (s *SkyNotify) AttendanceMail(ctx context.Context, typ, idempotencyKey string, holder TicketHolder, vars map[string]any, source NotificationSource, expiresAt *time.Time) error {
 	return s.tellHolderVariables(ctx, kindAttendance, typ, idempotencyKey, holder, vars, source, expiresAt, nil)
 }
 
 // tellHolderVariables is tellHolder with variables of any JSON shape.
-func (s *SkyMail) tellHolderVariables(ctx context.Context, kind, typ, idempotencyKey string, holder TicketHolder, variables map[string]any, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
+func (s *SkyNotify) tellHolderVariables(ctx context.Context, kind, typ, idempotencyKey string, holder TicketHolder, variables map[string]any, source NotificationSource, expiresAt *time.Time, attachments []Attachment) error {
 	if holder.Sub != uuid.Nil {
 		return s.Notify(ctx, kind, idempotencyKey, Notification{
 			Type:        typ,

@@ -42,8 +42,8 @@ func certificateMailServer(t *testing.T, statuses ...int) (*httptest.Server, fun
 }
 
 // The queued certificate mail travels under its Idempotency-Key and says
-// what SkyMail answered: taken, refused for good, or worth another try.
-func TestCertificateMailReportsSkyMailsAnswer(t *testing.T) {
+// what SkyNotify answered: taken, refused for good, or worth another try.
+func TestCertificateMailReportsSkyNotifysAnswer(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name          string
@@ -53,14 +53,14 @@ func TestCertificateMailReportsSkyMailsAnswer(t *testing.T) {
 	}{
 		{name: "taken", status: http.StatusCreated},
 		{name: "refused body", status: http.StatusBadRequest, wantErr: true, wantPermanent: true},
-		{name: "skymail down", status: http.StatusServiceUnavailable, wantErr: true},
+		{name: "skynotify down", status: http.StatusServiceUnavailable, wantErr: true},
 		{name: "rate limited", status: http.StatusTooManyRequests, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			srv, calls := certificateMailServer(t, tc.status)
-			m := &SkyMail{BaseURL: srv.URL, CertificateTemplateKey: DefaultCertificateTemplateKey, Tokens: StaticToken(testAccessToken), HTTP: srv.Client()}
+			m := &SkyNotify{BaseURL: srv.URL, CertificateTemplateKey: DefaultCertificateTemplateKey, Tokens: StaticToken(testAccessToken), HTTP: srv.Client()}
 			err := m.CertificateMail(context.Background(), "core-certificate-mail:1", testRecipient, "Ada Lovelace", map[string]string{"EventName": "ARTLAB"})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err %v", err)
@@ -77,13 +77,13 @@ func TestCertificateMailReportsSkyMailsAnswer(t *testing.T) {
 	}
 }
 
-// A key SkyMail does not know falls back to the template id under its own
+// A key SkyNotify does not know falls back to the template id under its own
 // Idempotency-Key: the body differs from the first one.
 func TestCertificateMailFallsBackToTheIDUnderItsOwnKey(t *testing.T) {
 	t.Parallel()
 	srv, calls := certificateMailServer(t, http.StatusNotFound, http.StatusCreated)
 	id := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-	m := &SkyMail{BaseURL: srv.URL, CertificateTemplateKey: DefaultCertificateTemplateKey, CertificateTemplateID: id, Tokens: StaticToken(testAccessToken), HTTP: srv.Client()}
+	m := &SkyNotify{BaseURL: srv.URL, CertificateTemplateKey: DefaultCertificateTemplateKey, CertificateTemplateID: id, Tokens: StaticToken(testAccessToken), HTTP: srv.Client()}
 	if err := m.CertificateMail(context.Background(), "k", testRecipient, "Ada", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -96,13 +96,13 @@ func TestCertificateMailFallsBackToTheIDUnderItsOwnKey(t *testing.T) {
 // No address, or no template: the kind is off, and the queue says so.
 func TestCertificateMailUnconfigured(t *testing.T) {
 	t.Parallel()
-	if err := (&SkyMail{CertificateTemplateKey: DefaultCertificateTemplateKey}).CertificateMail(context.Background(), "k", testRecipient, "Ada", nil); !errors.Is(err, ErrTemplateUnconfigured) {
+	if err := (&SkyNotify{CertificateTemplateKey: DefaultCertificateTemplateKey}).CertificateMail(context.Background(), "k", testRecipient, "Ada", nil); !errors.Is(err, ErrTemplateUnconfigured) {
 		t.Fatalf("no address: %v", err)
 	}
-	if err := (&SkyMail{BaseURL: "http://skymail.invalid"}).CertificateMail(context.Background(), "k", testRecipient, "Ada", nil); !errors.Is(err, ErrTemplateUnconfigured) {
+	if err := (&SkyNotify{BaseURL: "http://skynotify.invalid"}).CertificateMail(context.Background(), "k", testRecipient, "Ada", nil); !errors.Is(err, ErrTemplateUnconfigured) {
 		t.Fatalf("no template: %v", err)
 	}
-	var none *SkyMail
+	var none *SkyNotify
 	if err := none.CertificateMail(context.Background(), "k", testRecipient, "Ada", nil); !errors.Is(err, ErrTemplateUnconfigured) {
 		t.Fatalf("nil client: %v", err)
 	}

@@ -9,7 +9,7 @@ Core ignores in favour of the chain.
 
 Because the proxy is a container, its address inside the overlay network is
 assigned when it starts and changes whenever it is recreated, and every other
-container (the site, forms, SkyMail, …) sits in the same subnet. Nothing may
+container (the site, forms, SkyNotify, …) sits in the same subnet. Nothing may
 hardcode the address, and a range would trust the neighbours too. The proxy
 is therefore named by its **host name**, which the network's DNS resolves.
 

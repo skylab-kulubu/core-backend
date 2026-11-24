@@ -37,14 +37,14 @@ func TestConfigFromEnv(t *testing.T) {
 	for name, values := range map[string]map[string]string{
 		"short key":           {KeyEnv: "abc", "PUBLIC_API_ORIGIN": "https://api.example.test", TextURLEnv: text},
 		"no origin":           {KeyEnv: key, TextURLEnv: text},
-		"bad source":          {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, ServiceSourcesEnv: "skymail:skymail"},
+		"bad source":          {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, ServiceSourcesEnv: "skynotify:skynotify"},
 		"source twice":        {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, ServiceSourcesEnv: "forms:a,forms:b"},
 		"client twice":        {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, ServiceSourcesEnv: "forms:a,place:a"},
 		"not source:pair":     {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, ServiceSourcesEnv: "forms"},
 		"no consent text":     {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test"},
 		"consent text no url": {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: "yildizskylab.com/acik-riza"},
 		"notice no url":       {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, NoticeURLEnv: "javascript:alert(1)"},
-		"verified unknown":    {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, VerifiedClientsEnv: "skymail"},
+		"verified unknown":    {KeyEnv: key, "PUBLIC_API_ORIGIN": "https://a.test", TextURLEnv: text, VerifiedClientsEnv: "skynotify"},
 	} {
 		if _, err := ConfigFromEnv(env(values)); err == nil {
 			t.Errorf("%s: accepted", name)

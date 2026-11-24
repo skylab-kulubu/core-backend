@@ -5,7 +5,7 @@
 // show only those who consent. One mail per person, however many pages list
 // them; a ledger (team_page_notices) keeps anyone from getting it twice.
 //
-// It is a transactional mail (SkyMail's islem stream, KVKK art. 10): it tells
+// It is a transactional mail (SkyNotify's islem stream, KVKK art. 10): it tells
 // a person of a change in how their own data is published. Nothing
 // promotional goes into it.
 package teampagenotice
@@ -41,7 +41,7 @@ type People interface {
 	Recipient(ctx context.Context, id uuid.UUID) (teammail.Recipient, teammail.SkipReason, error)
 }
 
-// Mailer sends the notice (mail.SkyMail).
+// Mailer sends the notice (mail.SkyNotify).
 type Mailer interface {
 	TeamPageNotice(ctx context.Context, recipient, fullName string, vars map[string]string) error
 }
@@ -90,7 +90,7 @@ type Report struct {
 	// notice; DueBoard of them are on the Board's roster.
 	Due, DueBoard int
 	// Sent took, Failed surely did not (a later run sends them), Unknown
-	// went out without an answer (SkyMail may have taken them; never sent
+	// went out without an answer (SkyNotify may have taken them; never sent
 	// again).
 	Sent, Failed, Unknown int
 }
@@ -102,9 +102,9 @@ var (
 	// ErrTransitionOver: the transition has ended; the notice would tell of
 	// the past.
 	ErrTransitionOver = errors.New("teampagenotice: the transition has ended")
-	// ErrTemplateMissing: SkyMail does not know the template
+	// ErrTemplateMissing: SkyNotify does not know the template
 	// (core.team-page-consent-notice is not seeded).
-	ErrTemplateMissing = errors.New("teampagenotice: SkyMail has no such template")
+	ErrTemplateMissing = errors.New("teampagenotice: SkyNotify has no such template")
 )
 
 // releaseTimeout bounds taking a row out after a refused mail, which runs
@@ -205,7 +205,7 @@ func Run(ctx context.Context, cfg Config, apply bool) (Report, error) {
 }
 
 // send claims d's row, sends, and keeps the row unless the mail surely did
-// not go. An error stops the run: SkyMail has no template, or the ledger
+// not go. An error stops the run: SkyNotify has no template, or the ledger
 // cannot be written.
 func send(ctx context.Context, cfg Config, at time.Time, d *due, to teammail.Recipient, hideAt string, report *Report) error {
 	claimed, err := cfg.Ledger.Claim(ctx, d.id, at)
@@ -237,7 +237,7 @@ func send(ctx context.Context, cfg Config, at time.Time, d *due, to teammail.Rec
 		report.Sent++
 		return nil
 	case errors.Is(err, mail.ErrMaybeDelivered):
-		// The row stays: SkyMail may have taken it, and /single reads no
+		// The row stays: SkyNotify may have taken it, and /single reads no
 		// idempotency key, so a second try could mail the person twice.
 		report.Unknown++
 		return nil
@@ -254,7 +254,7 @@ func send(ctx context.Context, cfg Config, at time.Time, d *due, to teammail.Rec
 	}
 	var refused *mail.SendError
 	if errors.As(err, &refused) && refused.Status == http.StatusNotFound {
-		// SkyMail has no such template: every other mail would be refused
+		// SkyNotify has no such template: every other mail would be refused
 		// the same way. Seed it, then run again.
 		return fmt.Errorf("%w: %w", ErrTemplateMissing, err)
 	}

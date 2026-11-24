@@ -1,7 +1,7 @@
 // Package eventupdatenotify tells an Event's Ticket holders that its time or
 // place changed (iletişim-servisi 06, ADR 0070;
 // docs/event-updated-notification.md): core says what happened and to whom,
-// SkyMail picks the channels (inbox and e-mail) and the text. The Event's
+// SkyNotify picks the channels (inbox and e-mail) and the text. The Event's
 // update queues the change in its own transaction
 // (event_update_notifications) and gathers the changes of
 // event.UpdateNotificationWindow in one row; this worker reads the Event and
@@ -83,7 +83,7 @@ type Queue interface {
 	Retry(ctx context.Context, claimed Queued, at time.Time) error
 }
 
-// Mailer posts the Notification (mail.SkyMail).
+// Mailer posts the Notification (mail.SkyNotify).
 type Mailer interface {
 	EventUpdated(ctx context.Context, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time) error
 }
@@ -150,7 +150,7 @@ func NewService(config Config) (*Service, error) {
 // time and place are back to what they were). Expired: tried for
 // GiveUpAfter. Retried: tried again later. The rest are holders: Sent,
 // Skipped (no one to write to: an erased or disabled account, a guest
-// without an address), Rejected (SkyMail refused the request itself) and
+// without an address), Rejected (SkyNotify refused the request itself) and
 // Uncertain (a guest's mail went out and no answer came; it is not tried
 // again, so the guest is not mailed twice).
 type Report struct {
@@ -254,7 +254,7 @@ func (s *Service) deliver(ctx context.Context, claimed Queued, report *Report) e
 		case errors.Is(err, mail.ErrMaybeDelivered):
 			report.Uncertain++
 		case errors.As(err, &refused) && refused.Permanent():
-			// SkyMail refuses this body itself (400, 422): the same body
+			// SkyNotify refuses this body itself (400, 422): the same body
 			// would be refused again.
 			report.Rejected++
 			continue
@@ -411,10 +411,10 @@ func (s *Service) member(ctx context.Context, t ticket.Ticket) (uuid.UUID, strin
 	return *t.OwnerID, strings.ToLower(strings.TrimSpace(u.Email)), true, nil
 }
 
-// vars are the type's variables (SkyMail emails/event-updated.tsx), the same
+// vars are the type's variables (SkyNotify emails/event-updated.tsx), the same
 // for every holder: the Event as it is now, and what changed. EventId fills
 // the inbox item's link. Every key is always there, a time empty without
-// it: SkyMail renders the inbox text with missingkey=error.
+// it: SkyNotify renders the inbox text with missingkey=error.
 func (s *Service) vars(ev event.Event, claimed Queued) map[string]string {
 	timeChanged, placeChanged := changed(ev, claimed)
 	summary := "Etkinliğin saati ve yeri değişti."
@@ -488,7 +488,7 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 			case err != nil && ctx.Err() == nil:
 				logf("event updated notification: queue: %v", err)
 			case report.any():
-				logf("event updated notification: %d changes done (%d dropped, %d given up), %d tried again later; %d sent, %d skipped, %d refused by SkyMail, %d guest mails unanswered and not tried again",
+				logf("event updated notification: %d changes done (%d dropped, %d given up), %d tried again later; %d sent, %d skipped, %d refused by SkyNotify, %d guest mails unanswered and not tried again",
 					report.Changes, report.Dropped, report.Expired, report.Retried, report.Sent, report.Skipped, report.Rejected, report.Uncertain)
 			}
 			select {
