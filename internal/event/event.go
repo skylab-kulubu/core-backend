@@ -34,6 +34,11 @@ type Event struct {
 	FormURL           string          `json:"formUrl,omitempty"`
 	FormAlias         string          `json:"formAlias,omitempty"`
 	ExtraFormURLs     []EventFormLink `json:"extraFormUrls"`
+	// ExternalRegistrationURL is where people register when the Event's
+	// sign-up runs on another product's form (Microsoft Forms and the
+	// like): an https address, left out for none. Anyone who sees the Event
+	// sees it, for a "Kayıt ol" that opens it (docs/attendee-import.md).
+	ExternalRegistrationURL string `json:"externalRegistrationUrl,omitempty"`
 	// Capacity bounds the Event's active Tickets, 0 for no bound
 	// (docs/event-capacity.md).
 	Capacity int `json:"capacity"`
@@ -42,6 +47,21 @@ type Event struct {
 	// but who an operator adds. Nil on a write keeps the stored one (on for
 	// a new Event); the store always answers it. Waitlist reads it.
 	WaitlistEnabled *bool `json:"waitlistEnabled"`
+	// AttendanceWelcomeMail and AttendanceRecordedMail are the organizer's
+	// switches for the door's mails (docs/attendance-mail.md): "hoş geldin"
+	// on the day's first entry, "katılımın alındı" on each Session
+	// Check-in. Nil on a write keeps the stored one (on for a new Event);
+	// the store always answers them.
+	AttendanceWelcomeMail  *bool `json:"attendanceWelcomeMail"`
+	AttendanceRecordedMail *bool `json:"attendanceRecordedMail"`
+	// AttendeeNote is the organizer's note for whoever enters (Wi-Fi, the
+	// way to the room; docs/attendance-mail.md): plain text, at most
+	// AttendeeNoteMax characters, "" for none. Nil on a write keeps the
+	// stored one; the store always answers it. It is never in a JSON answer
+	// by itself: ProjectFor copies it to AttendeeNoteView for who may edit
+	// the Event, so a public answer cannot carry it by mistake.
+	AttendeeNote     *string `json:"-"`
+	AttendeeNoteView *string `json:"attendeeNote,omitempty"`
 	// Full is derived by the store: Capacity > 0 and the active Tickets
 	// fill it. Anyone who sees the Event sees it.
 	Full bool `json:"full"`

@@ -30,13 +30,19 @@ func (s *PostgresStore) AddVenueEntry(ctx context.Context, e VenueEntry) (VenueE
 	if e.ID == uuid.Nil {
 		e.ID = uuid.New()
 	}
+	// The day's welcome mail is queued in the same statement
+	// (docs/attendance-mail.md).
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO venue_entries AS v (id, ticket_id, event_id, entry_date, event_day_id, source, check_in_id, by_user_id)
-		SELECT $1, t.id, t.event_id, $3::date, $4, $5, $6, `+activeActorSQL("$7")+`
-		FROM tickets t WHERE t.id = $2 AND t.status = 'active'
-		ON CONFLICT (ticket_id, entry_date) DO NOTHING
-		RETURNING `+venueEntryCols,
-		e.ID, e.TicketID, e.EntryDate, e.EventDayID, string(e.Source), e.CheckInID, e.ByUserID,
+		WITH entry AS (
+			INSERT INTO venue_entries AS v (id, ticket_id, event_id, entry_date, event_day_id, source, check_in_id, by_user_id)
+			SELECT $1, t.id, t.event_id, $3::date, $4, $5, $6, `+activeActorSQL("$7")+`
+			FROM tickets t WHERE t.id = $2 AND t.status = 'active'
+			ON CONFLICT (ticket_id, entry_date) DO NOTHING
+			RETURNING *
+		), welcome AS (`+queueWelcomeSQL("$8")+`
+		)
+		SELECT `+venueEntryCols+` FROM entry v`,
+		e.ID, e.TicketID, e.EntryDate, e.EventDayID, string(e.Source), e.CheckInID, e.ByUserID, s.mailWelcome.Load(),
 	).Scan(&e.ID, &e.TicketID, &e.EventID, &e.EntryDate, &e.EventDayID, &e.Source, &e.CheckInID, &e.ByUserID, &e.CreatedAt)
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return e, err

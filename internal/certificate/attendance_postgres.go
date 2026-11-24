@@ -2,9 +2,11 @@ package certificate
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // eventEndsSQL is an Event's (e) end, the feedback mail's expression: its
@@ -147,5 +149,37 @@ func (s *PostgresStore) EventAttendance(ctx context.Context, eventID uuid.UUID) 
 		}
 		out.Tickets = append(out.Tickets, row)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return Attendance{}, err
+	}
+	rows.Close()
+	if out.LiveSessions > 0 {
+		return out, nil
+	}
+	return s.venueCounted(ctx, eventID, out)
+}
+
+// venueCounted reads, for an Event with no live Session, its end and the
+// active Tickets with a Venue entry: a third query, only then.
+func (s *PostgresStore) venueCounted(ctx context.Context, eventID uuid.UUID, out Attendance) (Attendance, error) {
+	var ends *time.Time
+	var entered []uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		SELECT `+eventEndsSQL+`,
+		       ARRAY(SELECT DISTINCT v.ticket_id FROM venue_entries v
+		             JOIN tickets t ON t.id = v.ticket_id AND t.status = 'active'
+		             WHERE v.event_id = e.id)
+		FROM events e WHERE e.id = $1`, eventID).Scan(&ends, &entered)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out, nil
+	}
+	if err != nil {
+		return Attendance{}, err
+	}
+	set := make(map[uuid.UUID]bool, len(entered))
+	for _, id := range entered {
+		set[id] = true
+	}
+	out.venueCounted(set, ends)
+	return out, nil
 }

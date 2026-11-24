@@ -29,6 +29,35 @@ type Attendance struct {
 	// itself AutoFinalizeDelay after it, and may be closed by hand from it.
 	LiveSessions   int
 	LastSessionEnd *time.Time
+	// Sessionless: the Event has no live Session (docs/certificate-rule.md,
+	// "An Event with no Session"). The Event itself is then its one counted
+	// unit (CountedTotal 1), a Ticket attended it when it has a Venue entry
+	// (Attended 1), and LastSessionEnd is the Event's end once any Ticket
+	// has entered. Its certificates keep no attendance snapshot.
+	Sessionless bool
+}
+
+// venueCounted turns a with no live Session into the sessionless count:
+// N = 1, and entered (the active Tickets with a Venue entry) attended it.
+// ends is the Event's end; it closes the attendance only once someone
+// entered, so an Event nobody scanned is never closed by the clock.
+func (a *Attendance) venueCounted(entered map[uuid.UUID]bool, ends *time.Time) {
+	if a.LiveSessions > 0 {
+		return
+	}
+	a.Sessionless = true
+	a.CountedTotal = 1
+	someone := false
+	for i := range a.Tickets {
+		if entered[a.Tickets[i].TicketID] {
+			a.Tickets[i].Attended = 1
+			someone = true
+		}
+	}
+	if someone && ends != nil {
+		end := *ends
+		a.LastSessionEnd = &end
+	}
 }
 
 // addLiveSession counts a live Session that ends at ends (nil: unknown).
@@ -76,6 +105,9 @@ type CertificateRef struct {
 	Serial    string     `json:"serial"`
 	IssuedAt  time.Time  `json:"issuedAt"`
 	RevokedAt *time.Time `json:"revokedAt,omitempty"`
+	// Mail is the active certificate's latest mail (docs/certificate-mail.md);
+	// left out for a revoked one and one issued before the queue.
+	Mail *MailState `json:"mail,omitempty"`
 }
 
 const (
@@ -103,11 +135,14 @@ type AttendanceStore interface {
 // AttendanceList is the certificate workspace's list of who attended how
 // much (GET /v1/events/{id}/certificates/attendance). It carries no e-mail.
 type AttendanceList struct {
-	CountedTotal int               `json:"countedTotal"`
-	EffectiveMin int               `json:"effectiveMin"`
-	Rule         string            `json:"rule"`
-	Required     []RequiredSession `json:"required"`
-	Rows         []AttendanceRow   `json:"rows"`
+	CountedTotal int    `json:"countedTotal"`
+	EffectiveMin int    `json:"effectiveMin"`
+	Rule         string `json:"rule"`
+	// Sessionless: the Event has no live Session; attended 1 is a Venue
+	// entry (docs/certificate-rule.md).
+	Sessionless bool              `json:"sessionless"`
+	Required    []RequiredSession `json:"required"`
+	Rows        []AttendanceRow   `json:"rows"`
 }
 
 // AttendanceRow is one Ticket on the attendance list.
@@ -288,6 +323,33 @@ func (m memoryAttendance) EventAttendance(ctx context.Context, eventID uuid.UUID
 		}
 		out.Tickets = append(out.Tickets, row)
 	}
+	if out.LiveSessions == 0 {
+		entered, err := m.entered(ctx, eventID)
+		if err != nil {
+			return Attendance{}, err
+		}
+		out.venueCounted(entered, ev.EndsAt())
+	}
+	return out, nil
+}
+
+// entered are the Event's Tickets with a Venue entry, read day by day from
+// the door's own lists.
+func (m memoryAttendance) entered(ctx context.Context, eventID uuid.UUID) (map[uuid.UUID]bool, error) {
+	days, err := m.tickets.VenueEntryDays(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	out := map[uuid.UUID]bool{}
+	for _, day := range days {
+		entries, err := m.tickets.VenueEntriesOn(ctx, eventID, day.Date)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			out[e.TicketID] = true
+		}
+	}
 	return out, nil
 }
 
@@ -331,6 +393,10 @@ func programMinutes(sess event.Session) int {
 // snapshotOf is a Ticket's attendance snapshot at its certificate's issue;
 // a Ticket the attendance does not list attended none of the N Sessions.
 func (a Attendance) snapshotOf(ticketID uuid.UUID) *AttendanceSnapshot {
+	if a.Sessionless {
+		// "1 oturumdan 1'i" would name a Session the Event never had.
+		return nil
+	}
 	row, _ := a.ticketOf(ticketID)
 	return &AttendanceSnapshot{Attended: row.Attended, CountedTotal: a.CountedTotal, ProgramMinutes: row.ProgramMinutes}
 }

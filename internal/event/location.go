@@ -60,3 +60,43 @@ func normalizeLocation(e Event) (Event, error) {
 func (e Event) HasPoint() bool {
 	return e.LocationLat != nil && e.LocationLng != nil
 }
+
+// AttendeeNoteMax bounds an Event's attendee note, in characters (the
+// database's check says the same).
+const AttendeeNoteMax = 1000
+
+// ErrAttendeeNoteInvalid is an attendee note that cannot be stored: over
+// AttendeeNoteMax characters, or holding a character badNoteRune refuses
+// (docs/attendance-mail.md).
+var ErrAttendeeNoteInvalid = fmt.Errorf("event: invalid attendee note: %w", ErrInvalid)
+
+// normalizeAttendeeNote writes e's attendee note the way it is stored:
+// trimmed, line breaks as \n. Nil (a write that leaves it) stays nil.
+func normalizeAttendeeNote(e Event) (Event, error) {
+	if e.AttendeeNote == nil {
+		return e, nil
+	}
+	note := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(*e.AttendeeNote, "\r\n", "\n"), "\r", "\n"))
+	if utf8.RuneCountInString(note) > AttendeeNoteMax || !utf8.ValidString(note) || strings.IndexFunc(note, badNoteRune) >= 0 {
+		return Event{}, ErrAttendeeNoteInvalid
+	}
+	e.AttendeeNote = &note
+	return e, nil
+}
+
+// badNoteRune is a character an attendee note may not hold: a control
+// character other than a line break or a tab, a direction override or
+// isolate (U+202A–U+202E, U+2066–U+2069: they reorder what the mail shows,
+// a link's text included) or a zero-width one (U+200B–U+200D, U+2060,
+// U+FEFF: invisible).
+func badNoteRune(r rune) bool {
+	switch {
+	case unicode.IsControl(r):
+		return r != '\n' && r != '\t'
+	case r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069:
+		return true
+	case r >= 0x200B && r <= 0x200D, r == 0x2060, r == 0xFEFF:
+		return true
+	}
+	return false
+}

@@ -2,8 +2,10 @@
 
 Core sends two mails through SkyMail: the welcome mail a new account receives
 and the certificate mail that follows an issued certificate. Both are posted to
-`/v1/mail_tasks/single`. The certificate mail is not awaited: a mail must not
-fail the request that produced it, so the caller is told nothing. The welcome
+`/v1/mail_tasks/single`. The certificate mail goes through core's queue,
+which reads SkyMail's answer and tries again under one Idempotency-Key
+([certificate-mail.md](certificate-mail.md)); it never fails the issuance
+that produced it. The welcome
 mail is sent by the user sync, which reads what became of it and marks the
 person welcomed ([user-sync.md](user-sync.md)).
 
@@ -96,6 +98,14 @@ active Ticket of it is reminded once, one mail per address, at most
 `EVENT_REMINDER_PER_MINUTE` (20) mails a minute.
 `SKYMAIL_EVENT_REMINDER_TEMPLATE_KEY` addresses it (unset: the key above;
 empty: off). See [event-reminder.md](event-reminder.md).
+
+`event.attendance-welcome` and `event.attendance-recorded` too, off until
+`ATTENDANCE_MAIL=on`: the door's "hoş geldin" on a Ticket's first Venue entry
+of a day and "katılımın alındı" on each Session Check-in, two minutes after
+the scan, at most `ATTENDANCE_MAIL_PER_MINUTE` (20) mails a minute.
+`SKYMAIL_ATTENDANCE_WELCOME_TEMPLATE_KEY` and
+`SKYMAIL_ATTENDANCE_RECORDED_TEMPLATE_KEY` address them (unset: the keys
+above; empty: that kind off). See [attendance-mail.md](attendance-mail.md).
 
 A ninth, `club.management-term`, rides a queue of its own the same way: the
 warning 14 days and 1 day before a YK, DK or Team Leader membership's term

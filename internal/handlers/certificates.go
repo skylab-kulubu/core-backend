@@ -30,6 +30,8 @@ func certError(c fiber.Ctx, err error) error {
 		return problem(c, fiber.StatusNotFound, "Not Found")
 	case errors.Is(err, certificate.ErrConflict):
 		return problemCode(c, fiber.StatusConflict, "Conflict", eventStatusCode(err))
+	case errors.Is(err, certificate.ErrResendTooSoon):
+		return problemCode(c, fiber.StatusTooManyRequests, "Too Many Requests", "resend_too_soon")
 	case errors.Is(err, certificate.ErrJustificationRequired):
 		return problemCode(c, fiber.StatusBadRequest, "Bad Request", "justification_required")
 	case errors.Is(err, certificate.ErrJustificationTooLong):
