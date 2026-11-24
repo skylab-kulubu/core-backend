@@ -34,7 +34,11 @@ func ValidateLayout(layout Layout) error {
 	if len(layout.Elements) == 0 || len(layout.Elements) > maxLayoutElements {
 		return ErrInvalid
 	}
-	required := map[string]bool{"recipientName": false, "eventName": false, "verificationQr": false}
+	// A layout must name its recipient and its Event. The verification QR
+	// is optional (ADR-0040 addendum 2026-11-24): the default template keeps
+	// one, a template may drop it, and the certificate is still verified at
+	// its address by serial (yildizskylab.com/sertifika/{serial}).
+	required := map[string]bool{"recipientName": false, "eventName": false}
 	ids := make(map[string]struct{}, len(layout.Elements))
 	for _, el := range layout.Elements {
 		if strings.TrimSpace(el.ID) == "" || len(el.ID) > 80 {
