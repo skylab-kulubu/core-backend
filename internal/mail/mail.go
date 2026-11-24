@@ -118,9 +118,13 @@ type SkyMail struct {
 	// TeamPageNoticeTemplateKey addresses the team page notice
 	// (team_page_notice.go); empty turns it off.
 	TeamPageNoticeTemplateKey string
-	Tokens                    TokenSource
-	HTTP                      *http.Client
-	Logger                    *log.Logger
+	// CertificateAutoFinalizedTemplateKey addresses the mail that tells an
+	// Event's publisher its attendance closed by itself
+	// (certificate_auto_finalized.go); empty turns it off.
+	CertificateAutoFinalizedTemplateKey string
+	Tokens                              TokenSource
+	HTTP                                *http.Client
+	Logger                              *log.Logger
 }
 
 // template says which SkyMail template a send is aimed at. Only one of the two

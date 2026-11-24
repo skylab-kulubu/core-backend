@@ -77,20 +77,28 @@ func (q *memQueue) len() int {
 }
 
 type call struct {
-	key    string
-	holder mail.TicketHolder
-	vars   map[string]string
-	source mail.NotificationSource
-	expiry *time.Time
+	key         string
+	holder      mail.TicketHolder
+	vars        map[string]string
+	source      mail.NotificationSource
+	expiry      *time.Time
+	attachments []mail.Attachment
 }
 
 type fakeMail struct {
 	calls []call
 	err   error
+	// errs answer the first calls, in order; err the rest.
+	errs []error
 }
 
-func (m *fakeMail) TicketCreated(_ context.Context, key string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time) error {
-	m.calls = append(m.calls, call{key, holder, vars, source, expiresAt})
+func (m *fakeMail) TicketCreated(_ context.Context, key string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error {
+	m.calls = append(m.calls, call{key, holder, vars, source, expiresAt, attachments})
+	if len(m.errs) > 0 {
+		err := m.errs[0]
+		m.errs = m.errs[1:]
+		return err
+	}
 	return m.err
 }
 

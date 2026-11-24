@@ -1723,6 +1723,57 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
 		  AND convalidated AND pg_get_constraintdef(oid) LIKE '%user.lockout.clear%'
 		  AND to_regclass('public.team_audit_records_user_idx') IS NOT NULL`,
+	// The Team audit record's way (docs/team-audit.md): the via column, its
+	// check and the finish-only trigger that keeps it.
+	20261123200000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_via_check'
+		  AND convalidated AND pg_get_constraintdef(oid) LIKE '%access_review%'
+		  AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'team_audit_records' AND column_name = 'via'
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'team_audit_records_finish_only' AND prosrc LIKE '%NEW.via IS DISTINCT FROM OLD.via%'
+		  )`,
+	// The certificate rule's threshold and Session marks
+	// (docs/certificate-rule.md): each column's check, which names it.
+	20261123230000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.sessions') AND conname = 'sessions_required_is_counted' AND convalidated
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.events') AND conname = 'events_attendance_min_count_check' AND convalidated
+		  )`,
+	// A manual issue's justification (docs/certificate-rule.md): the
+	// column's check, which names it.
+	20261124000000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.certificate_batches')
+		  AND conname = 'certificate_batches_justification_check' AND convalidated`,
+	// Automatic attendance finalization (docs/certificate-rule.md): the
+	// Event's switch, the finalization's source check and the batch reason
+	// check that takes 'rescan'.
+	20261124010000: `
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'attendance_auto_finalize'
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.certificate_event_state')
+			  AND conname = 'certificate_event_state_finalized_source_check' AND convalidated
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = to_regclass('public.certificate_batches') AND conname = 'certificate_batches_reason_check'
+			  AND convalidated AND pg_get_constraintdef(oid) LIKE '%rescan%'
+		  )`,
+	// A certificate's attendance snapshot (docs/certificate-rule.md): the
+	// three columns' check, which names them.
+	20261124020000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.certificates')
+		  AND conname = 'certificates_attendance_snapshot_check' AND convalidated`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE

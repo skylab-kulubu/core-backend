@@ -48,7 +48,7 @@ func TestQueuedIssuancePinsVersionAndKeepsPublicDTOPrivate(t *testing.T) {
 		t.Fatal(err)
 	}
 	day, _ := events.CreateDay(ctx, event.Day{EventID: ev.ID, Name: "Gün"})
-	session, _ := events.CreateSession(ctx, event.Session{EventDayID: day.ID, Title: "Oturum", SpeakerName: "Ada", SessionType: "PRESENTATION"})
+	session, _ := events.CreateSession(ctx, event.Session{EventDayID: day.ID, Title: "Oturum", CertificateCounted: true, SpeakerName: "Ada", SessionType: "PRESENTATION"})
 	ownerID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	if _, _, err := users.Upsert(ctx, user.User{ID: ownerID, Email: "private@example.com", FirstName: "Ada", LastName: "Lovelace"}); err != nil {
 		t.Fatal(err)

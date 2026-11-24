@@ -133,6 +133,7 @@ func TestCopyTable(t *testing.T) {
 		{"cover", c.CoverImageID != nil && *c.CoverImageID == *source.CoverImageID},
 		{"gallery is not copied", len(c.Images) == 0},
 		{"certificate rule", c.AttendanceRule == "ratio" && c.AttendanceRatio != nil && *c.AttendanceRatio == 0.75},
+		{"attendance closes by itself, though the source's does not", !source.AttendanceAutoFinalize && c.AttendanceAutoFinalize},
 		{"one day, the archived one left out", len(days) == 1 && days[0].Name == "Cumartesi"},
 		{"day moves", len(days) == 1 && days[0].StartDate.Equal(*stamp("2027-03-13T19:00:00+03:00")) && days[0].EndDate.Equal(*stamp("2027-03-14T03:00:00+03:00"))},
 		{"one Session, the archived one left out", len(sessions) == 1 && sessions[0].Title == "Açılış"},

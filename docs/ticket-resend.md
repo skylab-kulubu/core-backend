@@ -17,7 +17,9 @@ ticket_holder_erased`: nobody to send it to.
 
 Queues the Ticket's Notification (`event.ticket-created`,
 [ticket-created-notification.md](ticket-created-notification.md)) again,
-with the variables of the moment (its page, QR and code).
+with the variables of the moment (its page, QR and code), and while
+`TICKET_PDF_ATTACHMENT` is on with the PDF ticket drawn again
+([ticket-created-notification.md](ticket-created-notification.md#the-pdf-ticket-with-the-mail-ticket_pdf_attachment)).
 
 - **`202`** `{"resend": n, "replayed": false, "queued": true}`: the n-th
   resend of the Ticket. Its Notification's key is

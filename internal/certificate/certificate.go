@@ -38,6 +38,20 @@ type Certificate struct {
 	JobID             *uuid.UUID `json:"jobId,omitempty"`
 	RevokedAt         *time.Time `json:"revokedAt,omitempty"`
 	IssuedAt          time.Time  `json:"issuedAt"`
+	// Attendance is the attendance it was issued on; nil for a certificate
+	// issued before core kept it. Only the public verification shows it.
+	Attendance *AttendanceSnapshot `json:"-"`
+}
+
+// AttendanceSnapshot is a Ticket's attendance at its certificate's issue
+// (docs/certificate-rule.md): its check-ins on the live counted Sessions,
+// their number N, and the program minutes (end − start) of the counted
+// Sessions it attended. It is written with the certificate and never
+// changed; a reissue takes a new one.
+type AttendanceSnapshot struct {
+	Attended       int
+	CountedTotal   int
+	ProgramMinutes int
 }
 
 type Renderer interface {
@@ -76,7 +90,13 @@ type Service interface {
 	ListByEvent(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Certificate, error)
 	Summary(ctx context.Context, p authz.Principal, eventID uuid.UUID) (EventSummary, error)
 	Finalize(ctx context.Context, p authz.Principal, eventID uuid.UUID) (Batch, error)
-	QueueManual(ctx context.Context, p authz.Principal, eventID, ticketID uuid.UUID) (Batch, error)
+	// AutoFinalize is one pass of the automatic attendance finalization at
+	// now (MaintainAutoFinalize); Rescan queues who became eligible after
+	// the attendance closed (docs/certificate-rule.md).
+	AutoFinalize(ctx context.Context, now time.Time) (AutoFinalizeResult, error)
+	Rescan(ctx context.Context, p authz.Principal, eventID uuid.UUID) (RescanResult, error)
+	Attendance(ctx context.Context, p authz.Principal, eventID uuid.UUID) (AttendanceList, error)
+	QueueManual(ctx context.Context, p authz.Principal, eventID, ticketID uuid.UUID, justification string) (Batch, error)
 	GetBatch(ctx context.Context, p authz.Principal, id uuid.UUID) (Batch, error)
 	ListBatches(ctx context.Context, p authz.Principal, eventID uuid.UUID) ([]Batch, error)
 	RetryBatch(ctx context.Context, p authz.Principal, id uuid.UUID) (Batch, error)

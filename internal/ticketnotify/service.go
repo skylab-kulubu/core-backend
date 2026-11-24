@@ -33,7 +33,16 @@ const (
 	// ticket mail a day late is no longer news.
 	GiveUpAfter = 24 * time.Hour
 	// lease is how long a pass holds the rows it took.
-	lease        = 2 * time.Minute
+	lease = 2 * time.Minute
+	// PDFTimeout bounds drawing one Ticket's PDF for the mail
+	// (TICKET_PDF_ATTACHMENT): Gotenberg slower than this, or failing, and
+	// the mail goes without it.
+	PDFTimeout = 2 * time.Minute
+	// pdfLease is the lease while the PDF goes along: a row is started only
+	// while a whole PDFTimeout and sendMargin are left of it, so no other
+	// core takes a row this one is still sending.
+	pdfLease     = 5 * time.Minute
+	sendMargin   = time.Minute
 	pollInterval = 10 * time.Second
 	// batch bounds one claim.
 	batch        = 50
@@ -71,7 +80,13 @@ type Queue interface {
 
 // Mailer posts the Notification (mail.SkyMail).
 type Mailer interface {
-	TicketCreated(ctx context.Context, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time) error
+	TicketCreated(ctx context.Context, idempotencyKey string, holder mail.TicketHolder, vars map[string]string, source mail.NotificationSource, expiresAt *time.Time, attachments []mail.Attachment) error
+}
+
+// PDFs draws the PDF ticket an access key opens and names it
+// (ticketpage.Service.PDF; docs/ticket-page.md).
+type PDFs interface {
+	PDF(ctx context.Context, key string) (filename string, pdf []byte, err error)
 }
 
 // Tickets, Events and Users are what the worker reads when it sends.
@@ -99,6 +114,10 @@ type Config struct {
 	// code. APIOrigin is core's public origin, where the QR image is.
 	Page      ticket.PageConfig
 	APIOrigin string
+	// PDF, when set (TICKET_PDF_ATTACHMENT=on), draws the Ticket's PDF just
+	// before each send, and it goes with the e-mail as a Mail attachment.
+	// Nil sends no file, as before.
+	PDF PDFs
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 	// Logger hears counts and failures, never a person; nil is log.Default.
@@ -142,6 +161,10 @@ type Report struct {
 	// Uncertain: a guest's mail went out and no answer came; it is not
 	// tried again, so the guest is not mailed twice.
 	Sent, Dropped, Rejected, Expired, Retried, Uncertain int
+	// PDFSkipped: while the PDF goes along, a mail sent (or tried) without
+	// it: Gotenberg failed or took longer than PDFTimeout, the PDF was over
+	// SkyMail's 512 KB, or SkyMail refused the body with it.
+	PDFSkipped int
 }
 
 func (r Report) any() bool {
@@ -167,18 +190,33 @@ func ResendKey(ticketID uuid.UUID, n int) string {
 // Pass sends the due Notifications of one claim.
 func (s *Service) Pass(ctx context.Context) (Report, error) {
 	var report Report
-	claimed, err := s.config.Queue.Claim(ctx, s.now().UTC(), lease, batch)
+	held := lease
+	if s.config.PDF != nil {
+		held = pdfLease
+	}
+	claimedAt := s.now().UTC()
+	claimed, err := s.config.Queue.Claim(ctx, claimedAt, held, batch)
 	if err != nil {
 		return report, err
 	}
+	// pdf is this pass's PDF switch: once Gotenberg fails or is too slow,
+	// the rest of the pass sends without the file (the next pass tries it
+	// again), so a Gotenberg down does not hold every mail for PDFTimeout.
+	pdf := s.config.PDF != nil
 	for _, q := range claimed {
+		if s.config.PDF != nil && s.now().Sub(claimedAt) > held-PDFTimeout-sendMargin {
+			// Too little of the lease left to draw a PDF and send: the rows
+			// not yet started are taken again when it runs out, by this core
+			// or another, under the same key.
+			break
+		}
 		stale := s.now().Sub(q.CreatedAt) > GiveUpAfter
 		var (
 			outcome outcome
 			err     error
 		)
 		if !stale {
-			outcome, err = s.deliver(ctx, q)
+			outcome, err = s.deliver(ctx, q, &pdf, &report)
 		}
 		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 		switch {
@@ -226,8 +264,10 @@ const (
 	uncertain
 )
 
-// deliver posts q's Notification; an error when a later try may pass.
-func (s *Service) deliver(ctx context.Context, q Queued) (outcome, error) {
+// deliver posts q's Notification; an error when a later try may pass. pdf
+// is the pass's PDF switch (Pass); a mail sent without the PDF while it
+// should have gone along is counted in report.PDFSkipped.
+func (s *Service) deliver(ctx context.Context, q Queued, pdf *bool, report *Report) (outcome, error) {
 	t, err := s.config.Tickets.Get(ctx, q.TicketID)
 	if errors.Is(err, ticket.ErrNotFound) {
 		return dropped, nil
@@ -257,8 +297,27 @@ func (s *Service) deliver(ctx context.Context, q Queued) (outcome, error) {
 	if !ok {
 		return dropped, nil
 	}
-	err = s.config.Mail.TicketCreated(ctx, ResendKey(t.ID, q.Resend), holder, s.vars(ev, t), mail.NotificationSource{Kind: "ticket", Ref: t.ID.String()}, ev.EndDate)
+	var attachments []mail.Attachment
+	if s.config.PDF != nil {
+		attachments, err = s.attachment(ctx, t, ev, pdf)
+		if err != nil {
+			return 0, err
+		}
+		if attachments == nil {
+			report.PDFSkipped++
+		}
+	}
+	key, vars, source := ResendKey(t.ID, q.Resend), s.vars(ev, t), mail.NotificationSource{Kind: "ticket", Ref: t.ID.String()}
+	err = s.config.Mail.TicketCreated(ctx, key, holder, vars, source, ev.EndDate, attachments)
 	var refused *mail.SendError
+	if attachments != nil && errors.As(err, &refused) && refused.Permanent() {
+		// SkyMail refused the body with the file (400 attachment.*, say):
+		// the link, the QR and the code are in the mail, so it goes without.
+		// A refused request leaves no key behind: the same key is free.
+		s.logger.Printf("ticket notification: SkyMail refused the mail with the PDF (%d %s); sent without it", refused.Status, refused.Code)
+		report.PDFSkipped++
+		err = s.config.Mail.TicketCreated(ctx, key, holder, vars, source, ev.EndDate, nil)
+	}
 	switch {
 	case errors.Is(err, mail.ErrMaybeDelivered):
 		return uncertain, nil
@@ -270,6 +329,33 @@ func (s *Service) deliver(ctx context.Context, q Queued) (outcome, error) {
 		return 0, err
 	}
 	return sent, nil
+}
+
+// attachment is t's PDF as the mail's attachment, drawn now (a retry draws
+// it again; SkyMail keeps the first try's file under the same key), or nil
+// when the mail goes without it: Gotenberg failed or took longer than
+// PDFTimeout (and then *pdf turns off for the rest of the pass), or the
+// file is over SkyMail's 512 KB. The log names the Event, never the holder.
+// An error only when ctx ends: core is stopping.
+func (s *Service) attachment(ctx context.Context, t ticket.Ticket, ev event.Event, pdf *bool) ([]mail.Attachment, error) {
+	if !*pdf {
+		return nil, nil
+	}
+	drawCtx, cancel := context.WithTimeout(ctx, PDFTimeout)
+	defer cancel()
+	name, data, err := s.config.PDF.PDF(drawCtx, t.AccessKey)
+	switch {
+	case ctx.Err() != nil:
+		return nil, ctx.Err()
+	case err != nil:
+		*pdf = false
+		s.logger.Printf("ticket notification: no PDF for event %s, the rest of this pass goes without it: %v", ev.ID, err)
+		return nil, nil
+	case len(data) > mail.MaxAttachmentBytes:
+		s.logger.Printf("ticket notification: the PDF of event %s is %d KB, over SkyMail's %d KB; the mail goes without it", ev.ID, (len(data)+1023)/1024, mail.MaxAttachmentBytes/1024)
+		return nil, nil
+	}
+	return []mail.Attachment{mail.PDFAttachment(name, data)}, nil
 }
 
 // holder is whom t's Notification goes to: a registered holder's subject
@@ -357,8 +443,8 @@ func (s *Service) Run(ctx context.Context, logf func(string, ...any)) <-chan str
 			case err != nil && ctx.Err() == nil:
 				logf("ticket notification: queue: %v", err)
 			case report.any():
-				logf("ticket notification: %d sent, %d dropped, %d refused by SkyMail, %d given up, %d tried again later, %d guest mails unanswered and not tried again",
-					report.Sent, report.Dropped, report.Rejected, report.Expired, report.Retried, report.Uncertain)
+				logf("ticket notification: %d sent, %d dropped, %d refused by SkyMail, %d given up, %d tried again later, %d guest mails unanswered and not tried again, %d pdf_skipped",
+					report.Sent, report.Dropped, report.Rejected, report.Expired, report.Retried, report.Uncertain, report.PDFSkipped)
 			}
 			select {
 			case <-ctx.Done():

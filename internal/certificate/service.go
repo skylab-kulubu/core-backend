@@ -33,6 +33,14 @@ type Options struct {
 	// Media checks each Media a template draft is about to link. Nil leaves
 	// the Media's rules to the database's guards.
 	Media media.Linker
+	// Attendance reads an Event's attendance for the rule. Nil takes the
+	// store's own query (PostgresStore) or, for a store without one, reads
+	// the other stores (the memory counterpart).
+	Attendance AttendanceStore
+	// AutoFinalize plans the automatic attendance finalization. Nil takes
+	// the store's (PostgresStore); a store without one leaves AutoFinalize
+	// refused (ErrInvalid).
+	AutoFinalize AutoFinalizeStore
 }
 
 type service struct {
@@ -52,6 +60,9 @@ type service struct {
 	privateArtifacts media.PrivateObjects
 	legacyImmediate  bool
 	media            media.Linker
+	attendance       AttendanceStore
+	autoFinalize     AutoFinalizeStore
+	autoMetrics      autoFinalizeMetrics
 }
 
 // NewService preserves the original synchronous contract for existing embedders.
@@ -85,11 +96,21 @@ func NewServiceWithOptions(store Store, tickets ticket.Store, events event.Store
 	if opts.Jobs == nil {
 		opts.Jobs, _ = store.(JobStore)
 	}
+	if opts.Attendance == nil {
+		opts.Attendance, _ = store.(AttendanceStore)
+	}
+	if opts.AutoFinalize == nil {
+		opts.AutoFinalize, _ = store.(AutoFinalizeStore)
+	}
+	if opts.Attendance == nil {
+		opts.Attendance = memoryAttendance{events: events, tickets: tickets, certs: store, jobs: opts.Jobs, users: users}
+	}
 	return &service{
 		store: store, tickets: tickets, events: events, users: users, authz: az,
 		render: render, mail: mail, apiOrigin: apiOrigin, verifyOrigin: verifyOrigin,
 		templates: opts.Templates, jobs: opts.Jobs, artifacts: opts.Artifacts,
 		assets: opts.Assets, legacyImmediate: opts.LegacyImmediate, media: opts.Media, privateArtifacts: opts.PrivateArtifacts,
+		attendance: opts.Attendance, autoFinalize: opts.AutoFinalize,
 	}
 }
 
@@ -102,43 +123,29 @@ func (s *service) canReadWorkspace(p authz.Principal, ownerTeam string) bool {
 		s.authz.Allow(p, authz.Resource{Type: authz.TypeCertificateTemplate, OwnerTeam: ownerTeam}, authz.Read)
 }
 
-func (s *service) scheduledAndCheckIns(ctx context.Context, t ticket.Ticket) (scheduled, checkIns int, err error) {
-	days, err := s.events.ListDays(ctx, t.EventID)
-	if err != nil {
-		return 0, 0, err
-	}
-	live := map[uuid.UUID]struct{}{}
-	for _, day := range days {
-		sessions, err := s.events.ListSessions(ctx, day.ID)
-		if err != nil {
-			return 0, 0, err
-		}
-		for _, sess := range sessions {
-			if sess.Cancelled {
-				continue
-			}
-			live[sess.ID] = struct{}{}
-			scheduled++
-		}
-	}
-	for _, checkIn := range t.CheckIns {
-		if _, ok := live[checkIn.SessionID]; ok {
-			checkIns++
-		}
-	}
-	return scheduled, checkIns, nil
-}
-
+// eligible decides one Ticket by the Event's rule over the counted and
+// required live Sessions (docs/certificate-rule.md). It reads the Event's
+// attendance in a fixed number of queries; a caller deciding every Ticket
+// reads it once with eventAttendance instead.
 func (s *service) eligible(ctx context.Context, ev event.Event, t ticket.Ticket) (bool, error) {
-	scheduled, checkIns, err := s.scheduledAndCheckIns(ctx, t)
+	attendance, err := s.attendance.EventAttendance(ctx, ev.ID)
 	if err != nil {
 		return false, err
 	}
-	ratio := 0.0
-	if ev.AttendanceRatio != nil {
-		ratio = *ev.AttendanceRatio
+	row, ok := attendance.ticketOf(t.ID)
+	return ok && ticketEligible(ev, attendance, row), nil
+}
+
+// attendanceSnapshot is the Ticket's attendance as its certificate is
+// issued, which the certificate keeps (docs/certificate-rule.md): a reissue
+// takes a new one, and one issued below the rule by hand carries its real
+// count.
+func (s *service) attendanceSnapshot(ctx context.Context, eventID, ticketID uuid.UUID) (*AttendanceSnapshot, error) {
+	attendance, err := s.attendance.EventAttendance(ctx, eventID)
+	if err != nil {
+		return nil, err
 	}
-	return Eligible(ev.AttendanceRule, ratio, checkIns, scheduled), nil
+	return attendance.snapshotOf(ticketID), nil
 }
 
 func (s *service) recipient(ctx context.Context, t ticket.Ticket) (name, email string, err error) {
@@ -194,6 +201,10 @@ func (s *service) materializeLegacy(ctx context.Context, ev event.Event, t ticke
 	if err != nil {
 		return Certificate{}, err
 	}
+	attendance, err := s.attendanceSnapshot(ctx, ev.ID, t.ID)
+	if err != nil {
+		return Certificate{}, err
+	}
 	serial, err := newSerial()
 	if err != nil {
 		return Certificate{}, err
@@ -210,7 +221,7 @@ func (s *service) materializeLegacy(ctx context.Context, ev event.Event, t ticke
 	if err != nil {
 		return Certificate{}, err
 	}
-	c := Certificate{EventID: ev.ID, TicketID: t.ID, OwnerID: t.OwnerID, Serial: serial, RecipientName: name, RecipientEmail: email, EventName: ev.Name, OwnerTeam: ev.OwnerTeam, VerifyURL: url, TemplateSource: "legacy"}
+	c := Certificate{EventID: ev.ID, TicketID: t.ID, OwnerID: t.OwnerID, Serial: serial, RecipientName: name, RecipientEmail: email, EventName: ev.Name, OwnerTeam: ev.OwnerTeam, VerifyURL: url, TemplateSource: "legacy", Attendance: attendance}
 	created, err := s.store.Create(ctx, c, pdf)
 	if err != nil {
 		return Certificate{}, err
@@ -344,7 +355,7 @@ func (s *service) Verify(ctx context.Context, serial string) (PublicCertificate,
 		status = "revoked"
 		pdfURL = ""
 	}
-	return PublicCertificate{Serial: c.Serial, RecipientName: c.RecipientName, EventName: c.EventName, OwnerTeam: c.OwnerTeam, OrganizerName: organizer.Name(c.OwnerTeam), Status: status, VerifyURL: c.VerifyURL, PDFURL: pdfURL, IssuedAt: c.IssuedAt, RevokedAt: c.RevokedAt}, nil
+	return PublicCertificate{Serial: c.Serial, RecipientName: c.RecipientName, EventName: c.EventName, OwnerTeam: c.OwnerTeam, OrganizerName: organizer.Name(c.OwnerTeam), Status: status, VerifyURL: c.VerifyURL, PDFURL: pdfURL, IssuedAt: c.IssuedAt, RevokedAt: c.RevokedAt, Attendance: publicAttendance(c.Attendance)}, nil
 }
 
 func (s *service) PDF(ctx context.Context, serial string) ([]byte, error) {
