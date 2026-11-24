@@ -67,10 +67,12 @@ func artlabSetup(t *testing.T, ratio float64) (event.Store, ticket.Store, user.S
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The store writes the marks it is given: a Session{} made here, past
+	// the service's defaults, is not counted (TestUncountedFixtureIssuesNothing).
 	sessions := make([]event.Session, 0, 8)
 	for i := 0; i < 5; i++ {
 		sess, err := events.CreateSession(ctx, event.Session{
-			EventDayID: day1.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION", OrderIndex: i,
+			EventDayID: day1.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION", CertificateCounted: true, OrderIndex: i,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -79,7 +81,7 @@ func artlabSetup(t *testing.T, ratio float64) (event.Store, ticket.Store, user.S
 	}
 	for i := 0; i < 3; i++ {
 		sess, err := events.CreateSession(ctx, event.Session{
-			EventDayID: day2.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION", OrderIndex: i,
+			EventDayID: day2.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION", CertificateCounted: true, OrderIndex: i,
 		})
 		if err != nil {
 			t.Fatal(err)

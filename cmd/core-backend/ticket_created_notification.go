@@ -18,6 +18,13 @@ func ticketCreatedNotificationOn(getenv func(string) string) (bool, error) {
 	return onOff(getenv, "TICKET_CREATED_NOTIFICATION")
 }
 
+// ticketPDFAttachmentOn reads TICKET_PDF_ATTACHMENT
+// (docs/ticket-created-notification.md, "The PDF ticket"): on, the Ticket's
+// PDF goes with its mail; unset or off, the mail goes without it.
+func ticketPDFAttachmentOn(getenv func(string) string) (bool, error) {
+	return onOff(getenv, "TICKET_PDF_ATTACHMENT")
+}
+
 // onOff reads an on/off switch: unset or off is off, on is on, anything
 // else is refused.
 func onOff(getenv func(string) string, name string) (bool, error) {
@@ -35,8 +42,9 @@ func onOff(getenv func(string) string, name string) (bool, error) {
 // holder (iletişim-servisi 06) until ctx is cancelled, and answers a channel
 // that closes once it has stopped. Off, or without SkyMail, a new Ticket
 // queues nothing: turning it on later does not tell the Tickets written
-// meanwhile.
-func startTicketCreatedNotification(ctx context.Context, on bool, store *ticket.PostgresStore, queue ticketnotify.Queue, events *event.PostgresStore, users user.Store, sky *mail.SkyMail, page ticket.PageConfig, apiOrigin string, logf func(string, ...any)) <-chan struct{} {
+// meanwhile. pdf, when not nil (TICKET_PDF_ATTACHMENT=on), draws each
+// Ticket's PDF for its mail.
+func startTicketCreatedNotification(ctx context.Context, on bool, store *ticket.PostgresStore, queue ticketnotify.Queue, events *event.PostgresStore, users user.Store, sky *mail.SkyMail, page ticket.PageConfig, apiOrigin string, pdf ticketnotify.PDFs, logf func(string, ...any)) <-chan struct{} {
 	off := make(chan struct{})
 	close(off)
 	store.NotifyCreated(false)
@@ -49,17 +57,21 @@ func startTicketCreatedNotification(ctx context.Context, on bool, store *ticket.
 		logf("ticket notification: off (SkyMail is not configured)")
 		return off
 	}
-	svc, err := ticketnotify.NewService(ticketnotify.Config{Queue: queue, Tickets: store, Events: events, Users: users, Mail: sky, Page: page, APIOrigin: apiOrigin})
+	svc, err := ticketnotify.NewService(ticketnotify.Config{Queue: queue, Tickets: store, Events: events, Users: users, Mail: sky, Page: page, APIOrigin: apiOrigin, PDF: pdf})
 	if err != nil {
 		logf("ticket notification: OFF, %v", err)
 		return off
 	}
 	store.NotifyCreated(true)
 	events.NotifyTicketsOnPublish(true)
+	attachment := "PDF attachment off"
+	if pdf != nil {
+		attachment = "PDF attachment on"
+	}
 	if page.URL == "" {
-		logf("ticket notification: on (%s), no ticket page (%s unset)", mail.TicketCreatedType, ticket.PageURLEnv)
+		logf("ticket notification: on (%s), no ticket page (%s unset), %s", mail.TicketCreatedType, ticket.PageURLEnv, attachment)
 	} else {
-		logf("ticket notification: on (%s), ticket page on", mail.TicketCreatedType)
+		logf("ticket notification: on (%s), ticket page on, %s", mail.TicketCreatedType, attachment)
 	}
 	return svc.Run(ctx, logf)
 }

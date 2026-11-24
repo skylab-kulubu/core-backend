@@ -262,6 +262,11 @@ type Deps struct {
 	// (docs/event-map.md), served on /v1/metrics. Nil leaves them out.
 	EventMapMetrics interface{ Prometheus() string }
 
+	// CertificateMetrics are the automatic attendance finalization's
+	// counters (docs/certificate-rule.md), served on /v1/metrics. Nil
+	// leaves them out.
+	CertificateMetrics interface{ Prometheus() string }
+
 	// Readiness is GET /v1/ready's database and shutdown check, asked
 	// before the account access gate (internal/health). Nil leaves the
 	// gate's check alone. /v1/health (liveness) asks nothing.
@@ -343,7 +348,7 @@ func New(deps Deps) *fiber.App {
 		deps.SkyPassWalletMetrics != nil || deps.MediaDecodeMetrics != nil || deps.MemoryMetrics != nil || deps.TeamMailMetrics != nil ||
 		deps.TeamDelegationMetrics != nil || deps.TrackingWithdrawalMetrics != nil || deps.UserSync != nil || deps.Readiness != nil ||
 		deps.EventsMetrics != nil || deps.ManagementTerms != nil || deps.AppPreferences.Enabled() || deps.DoorScanMetrics != nil ||
-		deps.EventMapMetrics != nil {
+		deps.EventMapMetrics != nil || deps.CertificateMetrics != nil {
 		app.Get("/v1/metrics", func(c fiber.Ctx) error {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
@@ -377,6 +382,9 @@ func New(deps Deps) *fiber.App {
 			}
 			if deps.EventMapMetrics != nil {
 				text += deps.EventMapMetrics.Prometheus()
+			}
+			if deps.CertificateMetrics != nil {
+				text += deps.CertificateMetrics.Prometheus()
 			}
 			if !deps.TrustedProxies.Empty() {
 				text += deps.TrustedProxies.Prometheus()
@@ -716,6 +724,8 @@ func New(deps Deps) *fiber.App {
 	app.Post("/v1/events/:id/cancel", events.Cancel)
 	app.Post("/v1/events/:id/uncancel", events.Uncancel)
 	app.Post("/v1/events/:id/copy", events.Copy)
+	app.Get("/v1/events/:id/certificate-rule", events.CertificateRule)
+	app.Put("/v1/events/:id/certificate-rule", events.SetCertificateRule)
 	if deps.FeedbackInvites != nil && deps.Authz != nil {
 		feedbackH := handlers.NewFeedbackHandler(deps.Events, deps.Authz, deps.FeedbackInvites)
 		app.Get("/v1/events/:id/feedback", feedbackH.Counts)
@@ -754,6 +764,8 @@ func New(deps Deps) *fiber.App {
 	if certs != nil {
 		app.Get("/v1/events/:eventId/certificates", certs.ListByEvent)
 		app.Get("/v1/events/:eventId/certificates/summary", certs.Summary)
+		app.Get("/v1/events/:eventId/certificates/attendance", certs.Attendance)
+		app.Post("/v1/events/:eventId/certificates/rescan", certs.Rescan)
 		app.Get("/v1/events/:eventId/certificates/template", certs.Resolve)
 		app.Post("/v1/events/:eventId/certificates/preview", certs.PreviewEvent)
 		app.Get("/v1/events/:eventId/certificate-batches", certs.ListBatches)

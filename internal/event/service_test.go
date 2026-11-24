@@ -81,26 +81,43 @@ func TestService_WrongTeamForbidden(t *testing.T) {
 	}
 }
 
-func TestService_RatioRequiresDecimal(t *testing.T) {
+// The ratio rule is no new write's to choose (certificate × session ticket
+// 01): the count rule takes a threshold of 1 or more, or none for the
+// default; another rule drops it.
+func TestService_RatioRefusedOnNewWrite(t *testing.T) {
 	t.Parallel()
 	_, svc := setup(t)
 	ctx := context.Background()
 	leader := authz.Principal{ID: "l", Groups: []string{"/UYELER/ARGE/WEBLAB/LIDERLER"}}
-	_, err := svc.Create(ctx, leader, event.Event{
-		Name: "ARTLAB", Location: "YTÜ", OwnerTeam: "WEBLAB", AttendanceRule: "ratio",
-	})
-	if !errors.Is(err, event.ErrInvalid) {
-		t.Fatalf("got %v", err)
+	r, zero, six := 0.75, 0, 6
+	for _, in := range []event.Event{
+		{AttendanceRule: "ratio"},
+		{AttendanceRule: "ratio", AttendanceRatio: &r},
+		{AttendanceRule: "count", AttendanceMinCount: &zero},
+		{AttendanceRule: "most"},
+	} {
+		in.Name, in.Location, in.OwnerTeam = "ARTLAB", "YTÜ", "WEBLAB"
+		if _, err := svc.Create(ctx, leader, in); !errors.Is(err, event.ErrInvalid) {
+			t.Fatalf("%+v: got %v", in, err)
+		}
 	}
-	r := 0.75
 	created, err := svc.Create(ctx, leader, event.Event{
-		Name: "ARTLAB", Location: "YTÜ", OwnerTeam: "WEBLAB", AttendanceRule: "ratio", AttendanceRatio: &r,
+		Name: "ARTLAB", Location: "YTÜ", OwnerTeam: "WEBLAB", AttendanceRule: "Count", AttendanceMinCount: &six, AttendanceRatio: &r,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.AttendanceRule != "ratio" || created.AttendanceRatio == nil || *created.AttendanceRatio != 0.75 {
+	if created.AttendanceRule != "count" || created.AttendanceMinCount == nil || *created.AttendanceMinCount != 6 || created.AttendanceRatio != nil {
 		t.Fatalf("created %+v", created)
+	}
+	once, err := svc.Create(ctx, leader, event.Event{
+		Name: "ARTLAB", Location: "YTÜ", OwnerTeam: "WEBLAB", AttendanceRule: "once", AttendanceMinCount: &six,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if once.AttendanceRule != "once" || once.AttendanceMinCount != nil {
+		t.Fatalf("once %+v", once)
 	}
 }
 

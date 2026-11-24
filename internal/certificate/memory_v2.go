@@ -203,6 +203,7 @@ func (s *MemoryStore) CreateBatch(_ context.Context, batch Batch, ticketIDs []uu
 			return Batch{}, ErrConflict
 		}
 		s.finalizedAt[batch.EventID] = now
+		s.finalizedSource[batch.EventID] = finalizedSource(batch)
 	}
 	batch.CreatedAt = now
 	batch.TotalCount = len(ticketIDs)
@@ -367,7 +368,22 @@ func (s *MemoryStore) FinalizeAttendance(_ context.Context, eventID, _ uuid.UUID
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
 	s.finalizedAt[eventID] = now
+	s.finalizedSource[eventID] = FinalizedManual
 	return now, nil
+}
+
+func (s *MemoryStore) AttendanceFinalization(_ context.Context, eventID uuid.UUID) (*Finalization, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	at, ok := s.finalizedAt[eventID]
+	if !ok {
+		return nil, nil
+	}
+	source := s.finalizedSource[eventID]
+	if source == "" {
+		source = FinalizedManual
+	}
+	return &Finalization{At: at, Source: source}, nil
 }
 
 func (s *MemoryStore) AttendanceFinalizedAt(_ context.Context, eventID uuid.UUID) (*time.Time, error) {
@@ -432,4 +448,43 @@ func (s *MemoryStore) refreshBatchLocked(batchID uuid.UUID) {
 		}
 	}
 	s.batches[batchID] = batch
+}
+
+// latestJobs is each of the Event's Tickets' latest job state: JobQueued
+// (queued or running), JobFailed, or none (as PostgresStore.EventAttendance
+// reads it).
+func (s *MemoryStore) latestJobs(eventID uuid.UUID) map[uuid.UUID]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	latest := map[uuid.UUID]Job{}
+	for _, job := range s.jobs {
+		if job.EventID != eventID {
+			continue
+		}
+		if seen, ok := latest[job.TicketID]; !ok || job.CreatedAt.After(seen.CreatedAt) ||
+			(job.CreatedAt.Equal(seen.CreatedAt) && jobRank(job.Status) > jobRank(seen.Status)) {
+			latest[job.TicketID] = job
+		}
+	}
+	out := make(map[uuid.UUID]string, len(latest))
+	for ticketID, job := range latest {
+		switch job.Status {
+		case "queued", "running":
+			out[ticketID] = JobQueued
+		case "failed":
+			out[ticketID] = JobFailed
+		}
+	}
+	return out
+}
+
+func jobRank(status string) int {
+	switch status {
+	case "queued", "running":
+		return 2
+	case "failed":
+		return 1
+	default:
+		return 0
+	}
 }

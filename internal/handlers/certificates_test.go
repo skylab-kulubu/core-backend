@@ -59,7 +59,7 @@ func TestCertificateHTTP_VerifyPDFAndCheckInIssue(t *testing.T) {
 	sessions := make([]event.Session, 8)
 	for i := 0; i < 8; i++ {
 		sess, err := events.CreateSession(ctx, event.Session{
-			EventDayID: day.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION",
+			EventDayID: day.ID, Title: "Talk", SpeakerName: "Ada", SessionType: "PRESENTATION", CertificateCounted: true,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -115,12 +115,23 @@ func TestCertificateHTTP_VerifyPDFAndCheckInIssue(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("verify %d %s", resp.StatusCode, body)
 	}
+	body, _ := io.ReadAll(resp.Body)
 	var got certificate.Certificate
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Serial != serial || got.OwnerTeam != "ARTLAB" {
 		t.Fatalf("got %+v", got)
+	}
+	// The immediate issue keeps the attendance too: 6 of 8 Sessions, none
+	// with times. The public answer names no e-mail, User or Ticket.
+	if !strings.Contains(string(body), `"attendance":{"attended":6,"total":8,"programMinutes":0}`) {
+		t.Fatalf("verify attendance %s", body)
+	}
+	for _, forbidden := range []string{"ada@example.com", "recipientEmail", "ownerId", "ticketId", tk.ID.String(), ownerID.String()} {
+		if strings.Contains(string(body), forbidden) {
+			t.Fatalf("verify leaks %q: %s", forbidden, body)
+		}
 	}
 
 	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/v1/certificates/verify/"+serial+"/pdf", nil))
@@ -178,7 +189,7 @@ func TestEventHTTP_AttendanceRule(t *testing.T) {
 	store := event.NewMemoryStore()
 	app := eventApp(t, ident, store)
 	req := httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
-		`{"name":"ARTLAB","location":"YTÜ","ownerTeam":"WEBLAB","attendanceRule":"ratio","attendanceRatio":0.75}`,
+		`{"name":"ARTLAB","location":"YTÜ","ownerTeam":"WEBLAB","attendanceRule":"count","attendanceMinCount":6}`,
 	))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
@@ -193,18 +204,24 @@ func TestEventHTTP_AttendanceRule(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if created.AttendanceRule != "ratio" || created.AttendanceRatio == nil || *created.AttendanceRatio != 0.75 {
+	if created.AttendanceRule != "count" || created.AttendanceMinCount == nil || *created.AttendanceMinCount != 6 || created.AttendanceRatio != nil {
 		t.Fatalf("created %+v", created)
 	}
-	req = httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(
+	// The ratio rule is not a new write's to choose, with a ratio or
+	// without; nor is a threshold below 1.
+	for _, body := range []string{
+		`{"name":"X","location":"YTÜ","ownerTeam":"WEBLAB","attendanceRule":"ratio","attendanceRatio":0.75}`,
 		`{"name":"X","location":"YTÜ","ownerTeam":"WEBLAB","attendanceRule":"ratio"}`,
-	))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = app.Test(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != fiber.StatusBadRequest {
-		t.Fatalf("missing ratio %d", resp.StatusCode)
+		`{"name":"X","location":"YTÜ","ownerTeam":"WEBLAB","attendanceRule":"count","attendanceMinCount":0}`,
+	} {
+		req = httptest.NewRequest(fiber.MethodPost, "/v1/events", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err = app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != fiber.StatusBadRequest {
+			t.Fatalf("%s: %d", body, resp.StatusCode)
+		}
 	}
 }
