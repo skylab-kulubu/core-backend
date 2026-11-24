@@ -53,15 +53,15 @@ func (m *Memory) SetUnavailable(down bool) {
 	m.down = down
 }
 
-func (m *Memory) Begin(_ context.Context, r Record) (uuid.UUID, error) {
-	return m.insert(r, OutcomePending, "")
+func (m *Memory) Begin(ctx context.Context, r Record) (uuid.UUID, error) {
+	return m.insert(r.withVia(ctx), OutcomePending, "")
 }
 
-func (m *Memory) Deny(_ context.Context, r Record, errorCode string) error {
+func (m *Memory) Deny(ctx context.Context, r Record, errorCode string) error {
 	if !ValidErrorCode(errorCode) {
 		return unavailable("invalid_error_code")
 	}
-	_, err := m.insert(r, OutcomeDenied, errorCode)
+	_, err := m.insert(r.withVia(ctx), OutcomeDenied, errorCode)
 	return err
 }
 

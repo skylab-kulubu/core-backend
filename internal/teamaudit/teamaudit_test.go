@@ -236,3 +236,24 @@ func slicesContains(actions []Action, a Action) bool {
 	}
 	return false
 }
+
+// A way the table does not know is refused with a code; every known one
+// and none pass.
+func TestRecordNormalizeVia(t *testing.T) {
+	t.Parallel()
+	for _, via := range append([]Via{""}, Vias...) {
+		r := validRecord()
+		r.Via = via
+		if _, bad := r.normalize(); bad != "" {
+			t.Errorf("%q: %s", via, bad)
+		}
+	}
+	r := validRecord()
+	r.Via = "console"
+	if _, bad := r.normalize(); bad != "invalid_via" {
+		t.Fatalf("unknown way: %q", bad)
+	}
+	if got := r.withVia(WithVia(context.Background(), ViaInvitation)).Via; got != "console" {
+		t.Fatalf("the context replaced the record's own way: %q", got)
+	}
+}

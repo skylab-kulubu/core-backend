@@ -50,7 +50,7 @@ func (p *Postgres) insert(ctx context.Context, r Record, outcome Outcome, errorC
 	if bad := r.checkOutcome(outcome); bad != "" {
 		return uuid.Nil, unavailable(bad)
 	}
-	r, bad := r.normalize()
+	r, bad := r.withVia(ctx).normalize()
 	if bad != "" {
 		return uuid.Nil, unavailable(bad)
 	}
@@ -68,11 +68,11 @@ func (p *Postgres) insert(ctx context.Context, r Record, outcome Outcome, errorC
 	_, err = p.pool.Exec(ctx, `
 		INSERT INTO team_audit_records (
 			id, occurred_at, actor_id, actor_basis, actor_via_group_id, action, group_id, group_path,
-			target_user_id, before, after, outcome, error_code, correlation_id, client)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+			target_user_id, before, after, outcome, error_code, correlation_id, client, via)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
 		id, p.now().UTC(), r.Actor.ID, string(r.Actor.Basis), nullUUID(r.Actor.ViaGroupID), string(r.Action),
 		nullUUID(r.GroupID), r.GroupPath, nullID(r.TargetUserID), before, after, string(outcome), nullText(errorCode),
-		r.Actor.CorrelationID, r.Actor.Client)
+		r.Actor.CorrelationID, r.Actor.Client, nullText(string(r.Via)))
 	if err != nil {
 		return uuid.Nil, unavailable(dbErrorCode(err))
 	}
@@ -114,7 +114,7 @@ const readTimeout = 5 * time.Second
 // appColumns are a row's columns as scanRow reads them.
 const appColumns = `id::text, occurred_at, actor_id::text, actor_basis, COALESCE(actor_via_group_id::text, ''), action,
 	COALESCE(group_id::text, ''), group_path, COALESCE(target_user_id::text, ''), before, after, outcome,
-	COALESCE(error_code, ''), correlation_id, client`
+	COALESCE(error_code, ''), correlation_id, client, COALESCE(via, '')`
 
 func (p *Postgres) AppRows(ctx context.Context, client string, limit int) ([]Row, error) {
 	return p.appRows(ctx, `
@@ -145,16 +145,17 @@ func (p *Postgres) appRows(ctx context.Context, query string, args ...any) ([]Ro
 		var (
 			r                               Row
 			id, actor, group, target, basis string
-			action, outcome                 string
+			action, outcome, via            string
 			before, after                   []byte
 		)
 		if err := rows.Scan(&id, &r.OccurredAt, &actor, &basis, &r.Actor.ViaGroupID, &action, &group, &r.GroupPath,
-			&target, &before, &after, &outcome, &r.ErrorCode, &r.Actor.CorrelationID, &r.Actor.Client); err != nil {
+			&target, &before, &after, &outcome, &r.ErrorCode, &r.Actor.CorrelationID, &r.Actor.Client, &via); err != nil {
 			return nil, errors.New("teamaudit: read: " + dbErrorCode(err))
 		}
 		r.ID, _ = uuid.Parse(id)
 		r.Actor.ID, _ = uuid.Parse(actor)
 		r.Actor.Basis, r.Action, r.Outcome, r.GroupID = Basis(basis), Action(action), Outcome(outcome), group
+		r.Via = Via(via)
 		if target != "" {
 			r.TargetUserID, _ = uuid.Parse(target)
 		}

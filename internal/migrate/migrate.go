@@ -1723,6 +1723,20 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 		WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_action_check'
 		  AND convalidated AND pg_get_constraintdef(oid) LIKE '%user.lockout.clear%'
 		  AND to_regclass('public.team_audit_records_user_idx') IS NOT NULL`,
+	// The Team audit record's way (docs/team-audit.md): the via column, its
+	// check and the finish-only trigger that keeps it.
+	20261123200000: `
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass('public.team_audit_records') AND conname = 'team_audit_records_via_check'
+		  AND convalidated AND pg_get_constraintdef(oid) LIKE '%access_review%'
+		  AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'team_audit_records' AND column_name = 'via'
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM pg_proc
+			WHERE proname = 'team_audit_records_finish_only' AND prosrc LIKE '%NEW.via IS DISTINCT FROM OLD.via%'
+		  )`,
 	// The certificate rule's threshold and Session marks
 	// (docs/certificate-rule.md): each column's check, which names it.
 	20261123230000: `
