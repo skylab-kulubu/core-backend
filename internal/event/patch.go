@@ -31,7 +31,10 @@ type Patch struct {
 	FormURL         optional.Field[string]          `json:"formUrl"`
 	FormAlias       optional.Field[string]          `json:"formAlias"`
 	ExtraFormURLs   optional.Field[[]EventFormLink] `json:"extraFormUrls"`
-	Capacity        optional.Field[int]             `json:"capacity"`
+	// ExternalRegistrationURL sets the external registration link, null or
+	// "" clears it (docs/attendee-import.md).
+	ExternalRegistrationURL optional.Field[string] `json:"externalRegistrationUrl"`
+	Capacity                optional.Field[int]    `json:"capacity"`
 	// WaitlistEnabled turns the waiting list on or off (null is ErrInvalid;
 	// docs/event-capacity.md).
 	WaitlistEnabled optional.Field[bool] `json:"waitlistEnabled"`
@@ -112,6 +115,7 @@ func (p Patch) apply(existing Event) (Event, error) {
 	e.Description = p.Description.Or(existing.Description)
 	e.FormURL = p.FormURL.Or(existing.FormURL)
 	e.FormAlias = p.FormAlias.Or(existing.FormAlias)
+	e.ExternalRegistrationURL = p.ExternalRegistrationURL.Or(existing.ExternalRegistrationURL)
 	if p.ExtraFormURLs.Set {
 		e.ExtraFormURLs = append([]EventFormLink{}, p.ExtraFormURLs.Value...)
 	}

@@ -93,6 +93,8 @@ var routesBehindBearerSample = []string{
 	"POST /v1/tickets/:id/cancel",
 	"POST /v1/tickets/:id/restore",
 	"POST /v1/tickets/:id/promote",
+	"POST /v1/events/:eventId/attendee-imports/preview",
+	"POST /v1/events/:eventId/attendee-imports",
 	"DELETE /v1/tickets/:ticketId/sessions/:sessionId/check-in",
 	"DELETE /v1/sessions/:sessionId/check-ins/:checkInId",
 	"POST /v1/events/:eventId/entries/scan",

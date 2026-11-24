@@ -34,6 +34,11 @@ type Event struct {
 	FormURL           string          `json:"formUrl,omitempty"`
 	FormAlias         string          `json:"formAlias,omitempty"`
 	ExtraFormURLs     []EventFormLink `json:"extraFormUrls"`
+	// ExternalRegistrationURL is where people register when the Event's
+	// sign-up runs on another product's form (Microsoft Forms and the
+	// like): an https address, left out for none. Anyone who sees the Event
+	// sees it; the site's "Kayıt ol" opens it (docs/attendee-import.md).
+	ExternalRegistrationURL string `json:"externalRegistrationUrl,omitempty"`
 	// Capacity bounds the Event's active Tickets, 0 for no bound
 	// (docs/event-capacity.md).
 	Capacity int `json:"capacity"`
