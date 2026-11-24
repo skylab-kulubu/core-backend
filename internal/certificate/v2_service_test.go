@@ -162,9 +162,40 @@ func TestLayoutValidationRejectsUnknownOrMissingRequiredElements(t *testing.T) {
 		t.Fatal("raw html must be rejected")
 	}
 	layout = versionedLayout("ok")
-	layout.Elements = layout.Elements[:3]
+	layout.Elements = layout.Elements[:2]
 	if !errors.Is(certificate.ValidateLayout(layout), certificate.ErrInvalid) {
-		t.Fatal("verification QR must be required")
+		t.Fatal("the Event's name must be required")
+	}
+	layout = versionedLayout("ok")
+	layout.Elements = []certificate.Element{layout.Elements[0], layout.Elements[2], layout.Elements[3]}
+	if !errors.Is(certificate.ValidateLayout(layout), certificate.ErrInvalid) {
+		t.Fatal("the recipient's name must be required")
+	}
+}
+
+// The verification QR is optional (ADR-0040 addendum 2026-11-24): a layout
+// without one is valid and renders with no image, its serial still printed.
+func TestLayoutWithoutVerificationQrIsValid(t *testing.T) {
+	layout := versionedLayout("ok")
+	layout.Elements = append(layout.Elements[:3], certificate.Element{ID: "serial", Kind: "serial", X: 10, Y: 700, Width: 500, Height: 30, FontSize: 12})
+	if err := certificate.ValidateLayout(layout); err != nil {
+		t.Fatalf("a layout without the QR: %v", err)
+	}
+	// Neither the QR nor the serial: a paper copy could not be verified.
+	noSerial := layout
+	noSerial.Elements = layout.Elements[:3]
+	if !errors.Is(certificate.ValidateLayout(noSerial), certificate.ErrInvalid) {
+		t.Fatal("a layout with neither the QR nor the serial was valid")
+	}
+	html, err := certificate.LayoutHTML(context.Background(), layout, certificate.PreviewData{RecipientName: "Ada", EventName: "ARTLAB", Serial: "ABC123"}, "https://skyl.app/c/ABC123", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(html, "<img") || strings.Contains(html, "data:image/png") {
+		t.Fatal("a layout without the QR rendered an image")
+	}
+	if !strings.Contains(html, "ABC123") {
+		t.Fatal("the serial is not printed")
 	}
 }
 
