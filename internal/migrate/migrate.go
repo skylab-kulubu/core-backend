@@ -1897,6 +1897,13 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM information_schema.columns
 			WHERE table_schema = 'public' AND table_name = 'form_pull_watermarks' AND column_name = 'last_backfill_at'
 		  )`,
+	// The certificate mail queue (docs/certificate-mail.md): the table and
+	// its two unique indexes.
+	20261125101500: `
+		SELECT 1
+		WHERE to_regclass('public.certificate_mails') IS NOT NULL
+		  AND to_regclass('public.certificate_mails_issued_key') IS NOT NULL
+		  AND to_regclass('public.certificate_mails_pending_key') IS NOT NULL`,
 }
 
 // concurrentIndexes are the migrations that build one index with CREATE
