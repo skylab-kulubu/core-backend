@@ -129,26 +129,82 @@ func IstanbulDate(t time.Time) string {
 	return t.In(istanbul).Format(time.DateOnly)
 }
 
-// entryDate is the day a Check-in at sess on day enters the venue: the
-// EventDay's, else the Session's start, else now (Europe/Istanbul).
-func entryDate(day event.Day, sess event.Session, now time.Time) string {
-	switch {
-	case day.StartDate != nil:
-		return IstanbulDate(*day.StartDate)
-	case sess.StartTime != nil:
-		return IstanbulDate(*sess.StartTime)
+// Clock is the service's time (a NewService extra); time.Now without one.
+type Clock func() time.Time
+
+// shortEvent is how long an Event may last to be one venue day without an
+// EventDay: one that runs past midnight (19:00 → 07:00) is still one night.
+const shortEvent = 24 * time.Hour
+
+// entryDay is the venue day at falls on (docs/venue-entry.md "The day"):
+// the start day (Europe/Istanbul) and id of the EventDay whose window holds
+// at (its start up to its end, or 24 hours without an end); else, on an
+// Event that lasts under 24 hours, the Event's start day; else at's
+// calendar day. A night that runs past midnight is one day.
+func entryDay(ev event.Event, days []event.Day, at time.Time) (string, *uuid.UUID) {
+	for _, day := range days {
+		if day.ArchivedAt != nil || day.StartDate == nil || at.Before(*day.StartDate) {
+			continue
+		}
+		end := day.StartDate.Add(24 * time.Hour)
+		if day.EndDate != nil && day.EndDate.After(*day.StartDate) {
+			end = *day.EndDate
+		}
+		if at.Before(end) {
+			id := day.ID
+			return IstanbulDate(*day.StartDate), &id
+		}
 	}
-	return IstanbulDate(now)
+	if ev.StartDate != nil {
+		if end := ev.EndsAt(); end != nil && end.Sub(*ev.StartDate) < shortEvent {
+			return IstanbulDate(*ev.StartDate), nil
+		}
+	}
+	return IstanbulDate(at), nil
+}
+
+// eventDay is entryDay over ev's days.
+func (s *service) eventDay(ctx context.Context, ev event.Event, at time.Time) (string, *uuid.UUID, error) {
+	days, err := s.events.ListDays(ctx, ev.ID)
+	if err != nil {
+		return "", nil, err
+	}
+	date, dayID := entryDay(ev, days, at)
+	return date, dayID, nil
+}
+
+// sessionEntryDate is the venue day of a Check-in at sess on day: the
+// EventDay's start day; an EventDay with no start falls back to entryDay
+// at the Session's start (now without one), so a night's Sessions on both
+// sides of midnight are one day.
+func (s *service) sessionEntryDate(ctx context.Context, eventID uuid.UUID, day event.Day, sess event.Session) (string, error) {
+	if day.StartDate != nil {
+		return IstanbulDate(*day.StartDate), nil
+	}
+	at := s.now()
+	if sess.StartTime != nil {
+		at = *sess.StartTime
+	}
+	ev, err := s.eventOf(ctx, eventID)
+	if err != nil {
+		return "", err
+	}
+	date, _, err := s.eventDay(ctx, ev, at)
+	return date, err
 }
 
 // venueEntryFor is the Venue entry a door write at sess on day would add
 // for t.
-func venueEntryFor(t Ticket, day event.Day, sess event.Session, how entryBy, now time.Time) *VenueEntry {
+func (s *service) venueEntryFor(ctx context.Context, t Ticket, day event.Day, sess event.Session, how entryBy) (*VenueEntry, error) {
+	date, err := s.sessionEntryDate(ctx, t.EventID, day, sess)
+	if err != nil {
+		return nil, err
+	}
 	dayID := day.ID
 	return &VenueEntry{
-		TicketID: t.ID, EventID: t.EventID, EntryDate: entryDate(day, sess, now),
+		TicketID: t.ID, EventID: t.EventID, EntryDate: date,
 		EventDayID: &dayID, Source: how.source, ByUserID: how.by,
-	}
+	}, nil
 }
 
 // enterAtSession is a scan at a Session's door in the venue mode: the
@@ -162,7 +218,11 @@ func (s *service) enterAtSession(ctx context.Context, t Ticket, sessionID uuid.U
 	if refused := inactiveErr(t); refused != nil {
 		return CheckIn{}, refused
 	}
-	entry, err := s.tickets.AddVenueEntry(ctx, *venueEntryFor(t, day, sess, how, time.Now()))
+	want, err := s.venueEntryFor(ctx, t, day, sess, how)
+	if err != nil {
+		return CheckIn{}, err
+	}
+	entry, err := s.tickets.AddVenueEntry(ctx, *want)
 	if err != nil {
 		return CheckIn{}, err
 	}

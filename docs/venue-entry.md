@@ -32,13 +32,23 @@ Event's (below).
 
 ## The day
 
-`entry_date` is a Europe/Istanbul calendar day.
+`entry_date` is a Europe/Istanbul calendar day: the **venue day**. A night
+that runs past midnight (GECEKODU, 19:00 → 07:00) is one venue day, so a
+person scanned at 20:00 and again at 01:00 has one entry (the second is
+`409 already_entered`).
 
-- Written with a Session Check-in, or by a scan at a Session's door: the
-  Check-in's EventDay's date (its start), else the Session's start, else
-  the day of the write. `event_day_id` is that EventDay.
-- Written at the Event's door: the day of the scan; `event_day_id` is the
-  EventDay that starts that day, if any.
+- At the Event's door (and the day's list without `date`): the EventDay
+  whose window holds the moment of the scan (its start up to its end, or
+  24 hours from its start without an end) gives its start day and
+  `event_day_id`. With no such EventDay, an Event that lasts under 24 hours
+  gives its start day. Otherwise the scan's calendar day.
+- With a Session Check-in, or a scan at a Session's door: the Check-in's
+  EventDay's start day, `event_day_id` that EventDay. An EventDay with no
+  start falls back to the rule above at the Session's start (the moment of
+  the write without one).
+
+So the door at 01:00 and the 02:00 Session's attendance QR write one entry,
+the night's. The summary counts by the stored day: a night is one row.
 
 ## Who writes what
 
@@ -86,7 +96,7 @@ For an Event without Sessions this is the only door; any Event has it.
 | `POST /v1/events/{id}/entries/resolve` | `{"query"}` (Ticket code `XXXX-XXXX`, name, e-mail) or `{"personId"}` | as scan, `source: "desk"` |
 | `DELETE /v1/events/{id}/entries/{entryId}` | | `204` |
 | `GET /v1/events/{id}/entries/summary` | | `{"days":[{"date","eventDayId"?,"total","bySource":{"scan","desk","attendance"}}]}` |
-| `GET /v1/events/{id}/entries?date=YYYY-MM-DD` | today without `date` | `[{"id","kind","entryDate","eventDayId"?,"source","name","createdAt"}]`, newest first |
+| `GET /v1/events/{id}/entries?date=YYYY-MM-DD` | the venue day now falls on without `date` | `[{"id","kind","entryDate","eventDayId"?,"source","name","createdAt"}]`, newest first |
 
 No answer carries the Ticket's id or an e-mail, as the door's other
 answers. `attendance` in the summary is who came in without being scanned
@@ -94,7 +104,8 @@ at the door that day.
 
 The order, as the Session door's, all before any code is read:
 
-1. No such Event, or a draft the caller may not see: `404`.
+1. No such Event, or a draft the caller may not see: `404` (the list's
+   `date` is read after the door's rule: a bad one is `400`).
 2. To write: a draft, a cancelled or archived Event, or one that ended over
    a day ago (the Ticket QR's own window): `403 event_closed` with
    `reason` (`event_not_published`, `event_cancelled`, `event_archived`,

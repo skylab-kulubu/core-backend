@@ -45,7 +45,7 @@ func (s *service) eventDoor(ctx context.Context, p authz.Principal, eventID uuid
 		}
 		return event.Event{}, ErrForbidden
 	}
-	if reason := closedReason(ev, time.Now()); reason != "" {
+	if reason := closedReason(ev, s.now()); reason != "" {
 		return event.Event{}, &EventClosedError{Reason: reason}
 	}
 	if !s.canUseDoor(ctx, p, ev) {
@@ -127,27 +127,19 @@ func (s *service) ResolveEntry(ctx context.Context, p authz.Principal, eventID u
 	return entry, err
 }
 
-// enterEvent writes t's Venue entry for today (Europe/Istanbul), on the
-// EventDay of that date when the Event has one. Only an active Ticket
-// enters; a second entry the same day is an *EntryConflictError naming
-// who is in.
+// enterEvent writes t's Venue entry for the venue day now falls on
+// (entryDay: the EventDay whose window holds now, a short Event's start
+// day, else today). Only an active Ticket enters; a second entry the same
+// day is an *EntryConflictError naming who is in.
 func (s *service) enterEvent(ctx context.Context, ev event.Event, t Ticket, how entryBy) (DoorEntry, error) {
 	if refused := inactiveErr(t); refused != nil {
 		return DoorEntry{}, refused
 	}
-	now := time.Now()
-	e := VenueEntry{TicketID: t.ID, EventID: ev.ID, EntryDate: IstanbulDate(now), Source: how.source, ByUserID: how.by}
-	if days, err := s.events.ListDays(ctx, ev.ID); err == nil {
-		for _, day := range days {
-			if day.ArchivedAt == nil && day.StartDate != nil && IstanbulDate(*day.StartDate) == e.EntryDate {
-				id := day.ID
-				e.EventDayID = &id
-				break
-			}
-		}
-	} else {
+	date, dayID, err := s.eventDay(ctx, ev, s.now())
+	if err != nil {
 		return DoorEntry{}, err
 	}
+	e := VenueEntry{TicketID: t.ID, EventID: ev.ID, EntryDate: date, EventDayID: dayID, Source: how.source, ByUserID: how.by}
 	name, _ := s.doorTicketIdentity(ctx, t)
 	written, err := s.tickets.AddVenueEntry(ctx, e)
 	var conflict *EntryConflictError
@@ -215,12 +207,19 @@ func (s *service) EntrySummary(ctx context.Context, p authz.Principal, eventID u
 
 var entryDatePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
-// ListEntries is the Event's Venue entries on date (YYYY-MM-DD; today in
-// Europe/Istanbul when empty), newest first: name, time, source, no
-// e-mail. ErrInvalid for a date that is not one.
+// ListEntries is the Event's Venue entries on date (YYYY-MM-DD; the
+// venue day now falls on when empty, as an entry written now gets),
+// newest first: name, time, source, no e-mail. The door's rule comes
+// before the date: ErrInvalid for a date that is not one.
 func (s *service) ListEntries(ctx context.Context, p authz.Principal, eventID uuid.UUID, date string) ([]DoorEntry, error) {
+	ev, err := s.eventDoor(ctx, p, eventID, false)
+	if err != nil {
+		return nil, err
+	}
 	if date == "" {
-		date = IstanbulDate(time.Now())
+		if date, _, err = s.eventDay(ctx, ev, s.now()); err != nil {
+			return nil, err
+		}
 	}
 	if !entryDatePattern.MatchString(date) {
 		return nil, ErrInvalid
@@ -228,9 +227,13 @@ func (s *service) ListEntries(ctx context.Context, p authz.Principal, eventID uu
 	if _, err := time.Parse(time.DateOnly, date); err != nil {
 		return nil, ErrInvalid
 	}
-	ev, err := s.eventDoor(ctx, p, eventID, false)
-	if err != nil {
-		return nil, err
-	}
 	return s.namedEntries(ctx, ev.ID, date)
+}
+
+// now is the service's time.
+func (s *service) now() time.Time {
+	if s.clock != nil {
+		return s.clock()
+	}
+	return time.Now()
 }

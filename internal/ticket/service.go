@@ -146,6 +146,9 @@ type service struct {
 	// scans counts Ticket QR scans (a *DoorScanMetrics extra); nil counts
 	// none.
 	scans *DoorScanMetrics
+	// clock is now for the venue day and the Event's door (a Clock
+	// extra); time.Now without one.
+	clock Clock
 	// page is the ticket page's settings (a PageConfig extra): the
 	// holder's own list links each Ticket's page.
 	page PageConfig
@@ -188,6 +191,9 @@ func NewService(tickets Store, events event.Store, az authz.Authorizer, extras .
 		}
 		if v, ok := extra.(*DoorScanMetrics); ok && v != nil {
 			s.scans = v
+		}
+		if v, ok := extra.(Clock); ok && v != nil {
+			s.clock = v
 		}
 		if v, ok := extra.(PageConfig); ok {
 			s.page = v
@@ -1303,9 +1309,12 @@ func (s *service) addSessionCheckIn(ctx context.Context, t Ticket, sessionID uui
 	if dup {
 		return CheckIn{}, ErrConflict
 	}
+	entry, err := s.venueEntryFor(ctx, t, day, sess, how)
+	if err != nil {
+		return CheckIn{}, err
+	}
 	ci, err := s.tickets.AddCheckIn(ctx, CheckIn{
-		TicketID: t.ID, SessionID: sessionID, EventDayID: sess.EventDayID,
-		Entry: venueEntryFor(t, day, sess, how, time.Now()),
+		TicketID: t.ID, SessionID: sessionID, EventDayID: sess.EventDayID, Entry: entry,
 	})
 	if err != nil {
 		return CheckIn{}, err
@@ -1844,7 +1853,11 @@ func (s *service) withDayEntries(ctx context.Context, ev event.Event, sessionID 
 	if err != nil {
 		return DoorActivity{}, err
 	}
-	entries, err := s.namedEntries(ctx, ev.ID, entryDate(day, sess, time.Now()))
+	date, err := s.sessionEntryDate(ctx, ev.ID, day, sess)
+	if err != nil {
+		return DoorActivity{}, err
+	}
+	entries, err := s.namedEntries(ctx, ev.ID, date)
 	if err != nil {
 		return DoorActivity{}, err
 	}
