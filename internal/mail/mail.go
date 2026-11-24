@@ -12,11 +12,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 )
-
-const DefaultAPIOrigin = "https://api.yildizskylab.com/api/skymail"
 
 // Template keys SkyMail seeds for core. Both are system templates there: they
 // cannot be archived and their key cannot be renamed, so a mail addressed by key
@@ -52,23 +51,61 @@ const (
 	maxDiagnosticCode = 64
 )
 
-func APIOrigin(raw string) string {
-	if u := strings.TrimSpace(raw); u != "" {
-		return strings.TrimRight(u, "/")
+// ErrAPIOriginUnset is an empty SKYMAIL_URL. There is no default: the old
+// one, production's public SkyMail, took a sandbox core's mail to a SkyMail
+// that refuses its token, and the mail was lost with no other trace
+// (ADR-0016: every service names the services it calls). Core does not stop
+// for it: mail is off, and every attempt says so (URLMissingLine).
+var ErrAPIOriginUnset = errors.New("SKYMAIL_URL is not set")
+
+// URLMissingLine is the log line for an unset SKYMAIL_URL, at startup and at
+// every mail attempt. The release wizard looks for it and for the gauge.
+const URLMissingLine = "ERROR skymail_url_missing"
+
+// APIOrigin is SKYMAIL_URL without its trailing slash, or ErrAPIOriginUnset
+// when it is empty.
+func APIOrigin(raw string) (string, error) {
+	u := strings.TrimSpace(raw)
+	if u == "" {
+		return "", ErrAPIOriginUnset
 	}
-	return DefaultAPIOrigin
+	return strings.TrimRight(u, "/"), nil
 }
 
-// DefaultOriginNotice is the startup line for an unset SKYMAIL_URL, empty
-// when it is set. The default is production's SkyMail: a core of another
-// realm (sandbox) has its token refused there and its mails are lost with
-// no other trace. Unset is not refused, so a production that relies on the
-// default keeps starting.
-func DefaultOriginNotice(raw string) string {
-	if strings.TrimSpace(raw) != "" {
+var urlMissing atomic.Bool
+
+// MarkURLMissing records that this core was started without SKYMAIL_URL:
+// skylab_skymail_url_missing reads 1 from then on. It is true only the first
+// time, so startup says it once however many clients are built.
+func MarkURLMissing() bool { return urlMissing.CompareAndSwap(false, true) }
+
+// URLMissingPrometheus is the skylab_skymail_url_missing gauge, written
+// only while it is 1: core runs with mail off because SKYMAIL_URL is unset.
+// A core with an address writes nothing, so no line means 0.
+func URLMissingPrometheus() string {
+	if !urlMissing.Load() {
 		return ""
 	}
-	return "SKYMAIL_URL is not set: mail goes to " + DefaultAPIOrigin + " (production SkyMail); outside production set SKYMAIL_URL, or that SkyMail refuses this core's token"
+	return "# TYPE skylab_skymail_url_missing gauge\nskylab_skymail_url_missing 1\n"
+}
+
+// noBaseURL reports whether s cannot send for want of an address. A client
+// built without SKYMAIL_URL (URLMissing) says so on every attempt.
+func (s *SkyMail) noBaseURL() bool {
+	if s == nil {
+		return true
+	}
+	if strings.TrimSpace(s.BaseURL) != "" {
+		return false
+	}
+	if s.URLMissing {
+		logger := s.Logger
+		if logger == nil {
+			logger = log.Default()
+		}
+		logger.Print(URLMissingLine)
+	}
+	return true
 }
 
 type TokenSource interface {
@@ -82,7 +119,10 @@ func (s StaticToken) Token(context.Context) (string, error) {
 }
 
 type SkyMail struct {
-	BaseURL                string
+	BaseURL string
+	// URLMissing marks a client built without SKYMAIL_URL: mail is off and
+	// every attempt logs URLMissingLine.
+	URLMissing             bool
 	TemplateID             uuid.UUID
 	TemplateKey            string
 	CertificateTemplateID  uuid.UUID
@@ -201,7 +241,7 @@ func (s *SkyMail) WarnUnconfiguredTemplates() {
 // must not fail the request that triggered it. The refusal goes to the log
 // instead of being dropped, which is the whole point of this path.
 func (s *SkyMail) send(ctx context.Context, kind string, tpl template, recipient, fullName string, vars map[string]string) {
-	if s == nil || strings.TrimSpace(s.BaseURL) == "" || !tpl.configured() {
+	if s.noBaseURL() || !tpl.configured() {
 		return
 	}
 	token, err := s.Tokens.Token(ctx)

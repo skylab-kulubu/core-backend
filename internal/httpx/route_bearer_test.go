@@ -85,6 +85,7 @@ var routesBehindBearerSample = []string{
 	"POST /v1/skypass/qr",
 	"GET /v1/events/:eventId/competitions",
 	"GET /v1/subject-requests",
+	"POST /v1/tickets/search",
 	"GET /v1/users/me/capabilities",
 	"GET /v1/users/directory",
 	"GET /v1/certificates/me",

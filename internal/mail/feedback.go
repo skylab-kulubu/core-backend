@@ -70,7 +70,7 @@ func (s *SkyMail) FeedbackConfigured(kind FeedbackKind) bool {
 // (/v1/mail_tasks/single, which reads no key).
 func (s *SkyMail) Feedback(ctx context.Context, kind FeedbackKind, idempotencyKey string, to FeedbackRecipient, eventID uuid.UUID, eventName string, items []FeedbackItem) error {
 	key := s.FeedbackTemplateKey(kind)
-	if key == "" || strings.TrimSpace(s.BaseURL) == "" {
+	if key == "" || s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}
 	variables := map[string]any{

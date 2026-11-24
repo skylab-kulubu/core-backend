@@ -59,7 +59,7 @@ func (s *SkyMail) WelcomeConfigured() bool {
 // skymail_call_failed, kind welcome) with no recipient, name or template.
 func (s *SkyMail) Welcome(ctx context.Context, u user.User) WelcomeOutcome {
 	tpl := s.welcomeTemplate()
-	if !s.WelcomeConfigured() {
+	if s.noBaseURL() || !s.WelcomeConfigured() {
 		// Said once at startup (WarnUnconfiguredTemplates).
 		return WelcomeNotSent
 	}

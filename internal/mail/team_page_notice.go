@@ -27,7 +27,7 @@ func (s *SkyMail) TeamPageNoticeConfigured() bool {
 // /single reads no idempotency key, so the caller must not try again), a
 // *SendError when it surely took nothing.
 func (s *SkyMail) TeamPageNotice(ctx context.Context, recipient, fullName string, vars map[string]string) error {
-	if !s.TeamPageNoticeConfigured() || strings.TrimSpace(s.BaseURL) == "" {
+	if !s.TeamPageNoticeConfigured() || s.noBaseURL() {
 		return ErrTemplateUnconfigured
 	}
 	token, err := s.Tokens.Token(ctx)

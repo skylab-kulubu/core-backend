@@ -47,7 +47,21 @@ func ParseAndVerify(token string, verify func(string) error, issuer, audience st
 	if !audienceIncludes(claims["aud"], audience) {
 		return Identity{}, ErrInvalidToken
 	}
+	if !isAccessTokenType(claims["typ"]) {
+		return Identity{}, ErrInvalidToken
+	}
 	return ident, nil
+}
+
+// isAccessTokenType is Keycloak's token type claim of an access token:
+// "Bearer" for every grant (sign-in, client credentials, token exchange), in
+// lower case for a client set to lower-case its token response. An ID token
+// ("ID"), a refresh token ("Refresh") or a token with no type is not a
+// Bearer (RFC 9068 §4 asks the same of at+jwt, which Keycloak does not
+// write). A DPoP-bound token ("DPoP") is refused too: core checks no proof.
+func isAccessTokenType(typ any) bool {
+	s, ok := typ.(string)
+	return ok && strings.EqualFold(s, "Bearer")
 }
 
 // ParseSelfDeleteContext verifies the narrow two-token end-user contract used

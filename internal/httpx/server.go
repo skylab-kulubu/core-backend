@@ -26,6 +26,7 @@ import (
 	"github.com/skylab-kulubu/core-backend/internal/handlers"
 	"github.com/skylab-kulubu/core-backend/internal/health"
 	"github.com/skylab-kulubu/core-backend/internal/identity"
+	"github.com/skylab-kulubu/core-backend/internal/mail"
 	"github.com/skylab-kulubu/core-backend/internal/mapregion"
 	"github.com/skylab-kulubu/core-backend/internal/media"
 	"github.com/skylab-kulubu/core-backend/internal/membershipterm"
@@ -352,6 +353,7 @@ func New(deps Deps) *fiber.App {
 			c.Set(fiber.HeaderCacheControl, "no-store")
 			c.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
 			text := deps.AccountAccessMetrics.Prometheus()
+			text += mail.URLMissingPrometheus()
 			if deps.AccountErasureMetrics != nil {
 				text += deps.AccountErasureMetrics.Prometheus()
 			}
@@ -839,6 +841,7 @@ func New(deps Deps) *fiber.App {
 	// An operator's "Öne al" off the waiting list (docs/event-capacity.md).
 	app.Post("/v1/tickets/:id/promote", tickets.PromoteTicket)
 	app.Get("/v1/tickets", tickets.List)
+	app.Post(handlers.TicketSearchPath, tickets.Search)
 	// The forms service's account with ticket:forms reports each answer to its
 	// forms; an accepted answer to an Event's form writes its Ticket
 	// (docs/form-response-tickets.md).
