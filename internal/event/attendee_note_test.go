@@ -31,9 +31,15 @@ func TestAttendeeNote(t *testing.T) {
 		t.Fatalf("stored %v %v", stored.AttendeeNote, err)
 	}
 
-	leader := svc.ProjectFor(&copyLeader, stored)
-	if leader.AttendeeNoteView == nil || *leader.AttendeeNoteView != *stored.AttendeeNote {
-		t.Fatalf("the editor reads %v", leader.AttendeeNoteView)
+	for name, p := range map[string]authz.Principal{"leader": copyLeader, "YK": copyYK, "DK": copyDK} {
+		seen := svc.ProjectFor(&p, stored)
+		if seen.AttendeeNoteView == nil || *seen.AttendeeNoteView != *stored.AttendeeNote {
+			t.Fatalf("%s reads %v", name, seen.AttendeeNoteView)
+		}
+	}
+	// DK reads it but cannot write it.
+	if _, err := svc.Patch(ctx, copyDK, ev.ID, event.Patch{AttendeeNote: optional.Field[string]{Set: true, Value: "x"}}); !errors.Is(err, event.ErrForbidden) {
+		t.Fatalf("DK wrote the note: %v", err)
 	}
 	for name, p := range map[string]*authz.Principal{"anonymous": nil, "member": &copyMember} {
 		raw, _ := json.Marshal(svc.ProjectFor(p, stored))
@@ -54,10 +60,17 @@ func TestAttendeeNote(t *testing.T) {
 	if got, _ := store.Get(ctx, kept.ID); got.AttendeeNote == nil || *got.AttendeeNote == "" {
 		t.Fatal("a patch without the note cleared it")
 	}
-	for _, bad := range []string{strings.Repeat("ş", 1001), "Wi-Fi\x00"} {
+	for name, bad := range map[string]string{
+		"1001 characters": strings.Repeat("ş", 1001),
+		"NUL":             "Wi-Fi\x00",
+		"RLO":             "https://example.test/\u202Egnp.exe",
+		"isolate":         "Salon \u2067D-001\u2069",
+		"zero width":      "Wi\u200B-Fi",
+		"BOM":             "\uFEFFWi-Fi",
+	} {
 		_, err := svc.Patch(ctx, copyLeader, ev.ID, event.Patch{AttendeeNote: optional.Field[string]{Set: true, Value: bad}})
 		if !errors.Is(err, event.ErrAttendeeNoteInvalid) {
-			t.Fatalf("%q: %v", bad[:5], err)
+			t.Fatalf("%s: %v", name, err)
 		}
 	}
 	if _, err := svc.Patch(ctx, copyLeader, ev.ID, event.Patch{AttendeeNote: optional.Field[string]{Set: true, Value: strings.Repeat("ş", 1000)}}); err != nil {

@@ -72,6 +72,14 @@ func (e *SendError) Permanent() bool {
 	return e.Status == http.StatusBadRequest || e.Status == http.StatusUnprocessableEntity
 }
 
+// KeyReused reports whether SkyMail refused the request because its
+// Idempotency-Key was already used for a different body
+// (notification.idempotency_key_reused, mail_task.idempotency_key_reused):
+// the first request under that key went. Permanent too.
+func (e *SendError) KeyReused() bool {
+	return strings.HasSuffix(e.Code, "idempotency_key_reused")
+}
+
 // MembershipTemplateKey is the template key of kind's mail, empty when the
 // kind is off or unknown.
 func (s *SkyMail) MembershipTemplateKey(kind MembershipKind) string {

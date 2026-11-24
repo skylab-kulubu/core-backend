@@ -146,9 +146,11 @@ func (s *service) ProjectFor(p *authz.Principal, in Event) Event {
 		in.DoorStaffIDs = nil
 	}
 	in.TicketCount, in.WaitlistCount = nil, nil
-	// The attendee note (the venue's Wi-Fi) only to who may edit the Event.
+	// The attendee note (the venue's Wi-Fi) only to who may edit the Event,
+	// and to who reads its Tickets (DK; Yusuf, 2026-11-25), read-only.
 	in.AttendeeNoteView = nil
-	if p != nil && s.authz.Allow(*p, resource(in.OwnerTeam), authz.Update) {
+	if p != nil && (s.authz.Allow(*p, resource(in.OwnerTeam), authz.Update) ||
+		s.authz.Allow(*p, authz.Resource{Type: authz.TypeTicket, OwnerTeam: in.OwnerTeam}, authz.Read)) {
 		note := ""
 		if in.AttendeeNote != nil {
 			note = *in.AttendeeNote

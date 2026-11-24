@@ -26,19 +26,23 @@ core yet.
 `attendeeNote` (ticket 03; Yusuf, 2026-11-24 S3) is the organizer's note for
 whoever enters: the venue's Wi-Fi, the way to the room. Plain text, at most
 1000 characters (`events.attendee_note`, a database check too), trimmed, line
-breaks kept; a control character other than a line break or a tab, or a
-longer text, is `400 event_attendee_note_invalid`.
+breaks kept; a longer text, a control character other than a line break or a
+tab, a direction override or isolate (U+202A–U+202E, U+2066–U+2069) or a
+zero-width character (U+200B–U+200D, U+2060, U+FEFF) is
+`400 event_attendee_note_invalid`.
 
 - `POST /v1/events` and `PUT /v1/events/{id}` take it (left out keeps it);
   `PATCH` writes it, `null` or `""` clears it. A copy does not take it (the
   Wi-Fi changes).
-- **Only who may edit the Event reads it**: their Event answer carries
-  `attendeeNote` (`""` for none). Every other answer, the public ones, the
+- **Only who may edit the Event, or read its Tickets (DK, read-only), reads
+  it**: their Event answer carries `attendeeNote` (`""` for none). Every other answer, the public ones, the
   lists, the door's and sky-app's, leaves the key out: the stored field never
   goes into JSON by itself (`Event.AttendeeNote` is `json:"-"`; `ProjectFor`
   copies it for an editor).
-- It goes in the welcome mail alone (`AttendeeNote`, a sensitive variable in
-  SkyMail), with `AttendeeNoteParts`: the same text cut at its `http(s)://`
+- It goes in the welcome mail alone (`AttendeeNote`; SkyMail masks no
+  variable, ADR-0074 2026-11-24 ek: it is mail content whoever holds
+  `mails:read` reads, and its links are tracked as any other), with
+  `AttendeeNoteParts`: the same text cut at its `http(s)://`
   addresses (`[{Text, Url}]`, trailing punctuation left out) for the template
   to link them. Empty, the template leaves the section out. Logs and metrics
   never carry it.
@@ -88,8 +92,9 @@ off.
 - **Retry.** The first try writes its key on its rows (`mail_key`). A retry
   takes only the rows of that try and sends under that key, whatever dropped
   out since: SkyMail may have taken the first try without an answer, and then
-  answers the retry from it instead of mailing again. A row queued since goes
-  in a mail of its own.
+  answers the retry from it instead of mailing again; SkyMail's
+  `idempotency_key_reused` (fewer rows since) means the first try went, and the
+  rows are `sent`. A row queued since goes in a mail of its own.
 - **Pace.** One replica at a time counts the minute's mails under an advisory
   lock (the reminder's pattern, [event-reminder.md](event-reminder.md)); a pass
   runs every 15 seconds. A mail counts once in the minute, also when the row
@@ -133,9 +138,11 @@ not count).
 
 ## Turning it on
 
-1. The two templates and Notification types are seeded in SkyMail (done in
-   production 2026-11-24).
-2. Core with this release; then `ATTENDANCE_MAIL=on`.
+1. Core with this release (`ATTENDANCE_MAIL` stays off).
+2. The welcome template's seed with `AttendeeNoteParts` (skymail-frontend
+   #186); the templates and types themselves are in production since
+   2026-11-24.
+3. `ATTENDANCE_MAIL=on`.
 3. Rollback: `ATTENDANCE_MAIL=off` (waiting rows stay and are not sent while
    off; they expire after a day). Rolling the migration back drops the queue
    and the two switches.

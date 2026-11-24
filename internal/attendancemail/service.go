@@ -438,6 +438,11 @@ func (s *Service) deliver(ctx context.Context, claimed Mail, report *Report) (se
 	case errors.Is(err, mail.ErrMaybeDelivered):
 		report.Uncertain++
 		return send, drop, Uncertain, nil
+	case errors.As(err, &refused) && refused.KeyReused():
+		// A retry under the first try's key with fewer rows: SkyMail took the
+		// first try, whose answer was lost. The mail went.
+		report.Sent++
+		return send, drop, Sent, nil
 	case errors.As(err, &refused) && refused.Permanent():
 		// SkyMail refuses this body itself (400, 422): the same body would
 		// be refused again.

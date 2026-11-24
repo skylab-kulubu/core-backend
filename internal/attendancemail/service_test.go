@@ -577,3 +577,17 @@ func TestSessionlessWelcomeCertificateLine(t *testing.T) {
 		}
 	}
 }
+
+// A retry SkyMail refuses as a reused key went the first time: sent, not
+// rejected.
+func TestKeyReusedCountsAsSent(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, event.RuleCount)
+	ids, _ := e.program(1)
+	m := e.recorded(e.member, ids[1], e.now)
+	e.mail.err = &mail.SendError{Status: 422, Code: "notification.idempotency_key_reused"}
+	report, err := e.svc.Pass(ctx)
+	if err != nil || report.Sent != 1 || report.Rejected != 0 || e.q.find(m.ID).done != attendancemail.Sent {
+		t.Fatalf("%v %+v", err, report)
+	}
+}

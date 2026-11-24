@@ -1915,6 +1915,10 @@ $guard$, '[[:space:]]+', ' ', 'g'))
 			SELECT 1 FROM pg_constraint
 			WHERE conrelid = to_regclass('public.attendance_mails') AND conname = 'attendance_mails_kind_check' AND convalidated
 		)
+		AND EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'attendance_mails' AND column_name = 'mail_key'
+		)
 		AND to_regclass('public.attendance_mails_welcome_key') IS NOT NULL
 		AND to_regclass('public.attendance_mails_recorded_key') IS NOT NULL
 		AND to_regclass('public.attendance_mails_due_idx') IS NOT NULL
