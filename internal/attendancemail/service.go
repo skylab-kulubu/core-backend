@@ -81,6 +81,9 @@ type Mail struct {
 	// ClaimedAt is the claim that returned the row: Finish and Retry write
 	// only while the row still carries it.
 	ClaimedAt time.Time
+	// MailKey is the Idempotency-Key of the first try that carried the row,
+	// empty before any: a retry keeps the rows and the key of that try.
+	MailKey string
 }
 
 // Outcome is how a row was done with.
@@ -138,11 +141,18 @@ type Queue interface {
 	// Siblings are the open rows that go with the claimed one, not held by
 	// another pass: a welcome's are the same Ticket's receipts of that day,
 	// due or not; a receipt's the same Ticket's receipts of that day that
-	// are due.
+	// are due. A row tried before (MailKey) takes only the rows of its try,
+	// a row never tried only rows never tried.
 	Siblings(ctx context.Context, claimed Mail, now time.Time) ([]Mail, error)
+	// Keyed writes key on the rows that have none, before their first try.
+	Keyed(ctx context.Context, rows []Mail, key string) error
+	// Attempted counts m's mail in the minute at at: the row that led the
+	// mail was dropped from it, so the minute's count needs another.
+	Attempted(ctx context.Context, m Mail, at time.Time) error
 	ClaimSibling(ctx context.Context, id uuid.UUID, now time.Time, lease time.Duration) (Mail, bool, error)
 	// Present reports whether the row's Venue entry or Check-in is still
-	// there.
+	// there; a receipt's Session must still be live (not cancelled, not
+	// archived, on a current day).
 	Present(ctx context.Context, m Mail) (bool, error)
 	// Progress reads the Event's programme and the Ticket's Check-ins, and
 	// the titles of sessions.
@@ -297,6 +307,11 @@ func (s *Service) Pass(ctx context.Context) (Report, error) {
 					break
 				}
 			}
+			// The claimed row led the minute's count, but was dropped from
+			// the mail that went: the count moves to a row of that mail.
+			if err == nil && len(send) > 0 && countsInMinute(outcome) && contains(drop, claimed.ID) {
+				err = s.config.Queue.Attempted(writeCtx, send[0], claimed.ClaimedAt)
+			}
 		}
 		cancel()
 		if err != nil {
@@ -406,7 +421,18 @@ func (s *Service) deliver(ctx context.Context, claimed Mail, report *Report) (se
 	}
 	vars := s.vars(kind, ev, firstName, send, progress)
 	source := mail.NotificationSource{Kind: "event", Ref: ev.ID.String()}
-	err = s.config.Mail.AttendanceMail(ctx, typ, IdempotencyKey(kind, send), to, vars, source, ev.EndsAt())
+	// A retry sends under the key of the first try, whatever rows dropped
+	// out since: SkyMail may have taken that try with no answer, and then
+	// answers this one from it rather than mailing again. Rows queued since
+	// are not in the group (Siblings), so they go in a mail of their own.
+	key := claimed.MailKey
+	if key == "" {
+		key = IdempotencyKey(kind, send)
+		if err := s.config.Queue.Keyed(ctx, send, key); err != nil {
+			return send, drop, "", err
+		}
+	}
+	err = s.config.Mail.AttendanceMail(ctx, typ, key, to, vars, source, ev.EndsAt())
 	var refused *mail.SendError
 	switch {
 	case errors.Is(err, mail.ErrMaybeDelivered):
@@ -423,6 +449,21 @@ func (s *Service) deliver(ctx context.Context, claimed Mail, report *Report) (se
 	report.Sent++
 	report.Merged += len(send) - 1
 	return send, drop, Sent, nil
+}
+
+// countsInMinute reports whether a row done with outcome made a request to
+// SkyMail: those count in the per-minute bound.
+func countsInMinute(outcome Outcome) bool {
+	return outcome == Sent || outcome == Rejected || outcome == Uncertain
+}
+
+func contains(rows []Mail, id uuid.UUID) bool {
+	for _, m := range rows {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // on is a switch that is on unless it says off.

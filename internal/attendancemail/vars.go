@@ -124,9 +124,18 @@ func (s *Service) vars(kind string, ev event.Event, firstName string, rows []Mai
 	vars["AttendeeNote"] = note
 	vars["AttendeeNoteParts"] = noteParts(note)
 	vars["CertificateLine"] = certificateLine(c)
+	// An Event with no live Session counts the entry itself for the
+	// certificate (docs/certificate-rule.md, "An Event with no Session").
+	if len(p.Sessions) == 0 && ev.AttendanceRule != "" && ev.AttendanceRule != event.RuleNone {
+		vars["CertificateLine"] = SessionlessCertificateLine
+	}
 	vars["Recorded"] = sessions
 	return vars
 }
+
+// SessionlessCertificateLine is the welcome's certificate line on an Event
+// with no live Session and a rule: the entry is the attendance.
+const SessionlessCertificateLine = "Girişin sertifika için sayıldı."
 
 // certificateLine is the welcome's one line about the rule: "Sertifika için
 // 16 oturumdan en az 12 tanesine katılmalısın. Zorunlu: Açılış, Final."

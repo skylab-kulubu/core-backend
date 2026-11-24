@@ -287,3 +287,40 @@ func TestProgressOnPostgres(t *testing.T) {
 		t.Fatalf("progress %+v", p)
 	}
 }
+
+// A receipt whose Session was cancelled before it went is dropped; the
+// welcome goes alone. A row's first try keys it: the key is kept on the row.
+func TestCancelledSessionDropsItsReceipt(t *testing.T) {
+	ctx := context.Background()
+	e := newPGEnv(t)
+	e.tickets.NotifyAttendance(true, true)
+	now := time.Now()
+	sink := &fixedMail{}
+	svc, err := attendancemail.NewService(attendancemail.Config{
+		Queue: e.queue, Tickets: e.tickets, Events: e.events, Users: e.users, Mail: sink,
+		WelcomeType: mail.AttendanceWelcomeType, RecordedType: mail.AttendanceRecordedType,
+		Now: func() time.Time { return now }, Logger: log.New(io.Discard, "", 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.checkIn(t, e.guest, e.open)
+	e.open.Cancelled = true
+	if _, err := e.events.UpdateSession(ctx, e.open); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(3 * time.Minute)
+	if _, err := svc.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.sent) != 1 || sink.sent[0].typ != mail.AttendanceWelcomeType || asJSON(t, sink.sent[0].vars["Recorded"]) != "[]" {
+		t.Fatalf("sent %+v", sink.sent)
+	}
+	var outcome, key string
+	if err := e.pool.QueryRow(ctx, `SELECT outcome, COALESCE(mail_key, '') FROM attendance_mails WHERE ticket_id = $1 AND kind = 'recorded'`, e.guest.ID).Scan(&outcome, &key); err != nil || outcome != "dropped" || key != "" {
+		t.Fatalf("receipt %q %q %v", outcome, key, err)
+	}
+	if err := e.pool.QueryRow(ctx, `SELECT COALESCE(mail_key, '') FROM attendance_mails WHERE ticket_id = $1 AND kind = 'welcome'`, e.guest.ID).Scan(&key); err != nil || key != sink.sent[0].key {
+		t.Fatalf("welcome key %q %v", key, err)
+	}
+}

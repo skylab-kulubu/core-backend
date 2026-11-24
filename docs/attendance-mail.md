@@ -77,16 +77,23 @@ off.
   nobody is told twice. A row that was **dropped** (its scan undone before it
   went) is queued again by the next scan.
 - **Undo.** Just before it sends, the worker reads again whether the Venue entry
-  or the Check-in is still there; undone within the two minutes, nothing goes
-  (`dropped`). A mail already sent is not taken back.
+  or the Check-in is still there, and a receipt's Session still live (not
+  cancelled or archived); otherwise that row goes `dropped`. A mail already
+  sent is not taken back.
 - **Merging.** The worker claims welcomes first. A welcome takes the same
   Ticket's waiting receipts of that day into one mail (`Recorded` lists them); a
   receipt takes the same Ticket's other due receipts (`Sessions` lists them).
   The Idempotency-Key is `core:attendance-mail:<kind>:<hash of the rows' Ticket,
   day and Session>:v1`: the same rows always carry the same key.
+- **Retry.** The first try writes its key on its rows (`mail_key`). A retry
+  takes only the rows of that try and sends under that key, whatever dropped
+  out since: SkyMail may have taken the first try without an answer, and then
+  answers the retry from it instead of mailing again. A row queued since goes
+  in a mail of its own.
 - **Pace.** One replica at a time counts the minute's mails under an advisory
   lock (the reminder's pattern, [event-reminder.md](event-reminder.md)); a pass
-  runs every 15 seconds. 300 people checking in at a Session's start go out in
+  runs every 15 seconds. A mail counts once in the minute, also when the row
+  that led it dropped out and another row of it went. 300 people checking in at a Session's start go out in
   about 15 minutes at 20 a minute (Yusuf accepted, S4).
 - **Read again** when it sends: the Event published and not archived, the
   Ticket active, the holder's account active, the switch on. Otherwise the row
@@ -114,7 +121,8 @@ and over (`MissedRequired`).
 `Program` (`[{Time, Title}]`, the day's live Sessions, "10:00–10:45"),
 `AttendeeNote` (the organizer's note, empty for none), `AttendeeNoteParts`
 (`[{Text, Url}]`, the note cut at its web addresses), `CertificateLine` ("Sertifika için 16 oturumdan
-en az 12 tanesine katılmalısın. Zorunlu: Açılış, Final."; empty without a
+en az 12 tanesine katılmalısın. Zorunlu: Açılış, Final."; on an Event with
+no live Session and a rule, "Girişin sertifika için sayıldı."; empty without a
 rule), `Recorded` (`[{Title}]`, the receipts that went along), `Attended`,
 `CountedTotal`, `MinRequired`, `MissingRequired`, `MissedRequired`.
 

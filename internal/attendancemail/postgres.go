@@ -25,12 +25,12 @@ func NewPostgresQueue(pool *pgxpool.Pool) *PostgresQueue {
 	return &PostgresQueue{pool: pool}
 }
 
-const mailCols = `id, ticket_id, event_id, kind, entry_date::text, session_id, created_at, next_attempt_at, attempts, claimed_at`
+const mailCols = `id, ticket_id, event_id, kind, entry_date::text, session_id, created_at, next_attempt_at, attempts, claimed_at, COALESCE(mail_key, '')`
 
 func scanMail(row pgx.Row) (Mail, error) {
 	var m Mail
 	var claimed *time.Time
-	err := row.Scan(&m.ID, &m.TicketID, &m.EventID, &m.Kind, &m.EntryDate, &m.SessionID, &m.CreatedAt, &m.NextAttemptAt, &m.Attempts, &claimed)
+	err := row.Scan(&m.ID, &m.TicketID, &m.EventID, &m.Kind, &m.EntryDate, &m.SessionID, &m.CreatedAt, &m.NextAttemptAt, &m.Attempts, &claimed, &m.MailKey)
 	if claimed != nil {
 		m.ClaimedAt = *claimed
 	}
@@ -90,7 +90,8 @@ func (q *PostgresQueue) Siblings(ctx context.Context, claimed Mail, now time.Tim
 		WHERE done_at IS NULL AND id <> $1 AND ticket_id = $2 AND entry_date = $3::date AND kind = 'recorded'
 		  AND (claimed_at IS NULL OR next_attempt_at <= $4)
 		  AND ($5 OR next_attempt_at <= $4)
-		ORDER BY created_at, id`, claimed.ID, claimed.TicketID, claimed.EntryDate, now, claimed.Kind == KindWelcome)
+		  AND COALESCE(mail_key, '') = $6
+		ORDER BY created_at, id`, claimed.ID, claimed.TicketID, claimed.EntryDate, now, claimed.Kind == KindWelcome, claimed.MailKey)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +120,14 @@ func (q *PostgresQueue) Present(ctx context.Context, m Mail) (bool, error) {
 		err = q.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM venue_entries WHERE ticket_id = $1 AND entry_date = $2::date)`,
 			m.TicketID, m.EntryDate).Scan(&present)
 	} else {
-		err = q.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM ticket_checkins WHERE ticket_id = $1 AND session_id = $2)`,
+		// The Session's receipt is no news once the Session is cancelled or
+		// archived (or its day is).
+		err = q.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM ticket_checkins c
+				JOIN sessions s ON s.id = c.session_id AND NOT s.cancelled AND s.archived_at IS NULL
+				JOIN event_days d ON d.id = s.event_day_id AND d.archived_at IS NULL
+				WHERE c.ticket_id = $1 AND c.session_id = $2)`,
 			m.TicketID, m.SessionID).Scan(&present)
 	}
 	return present, err
@@ -201,6 +209,22 @@ func (q *PostgresQueue) Finish(ctx context.Context, claimed Mail, at time.Time, 
 		UPDATE attendance_mails SET done_at = $3, outcome = $4, claimed_at = NULL,
 			attempted_at = CASE WHEN $4 IN ('dropped', 'skipped', 'expired') THEN NULL ELSE attempted_at END
 		WHERE id = $1 AND claimed_at = $2`, claimed.ID, claimed.ClaimedAt, at, string(outcome))
+	return err
+}
+
+// Keyed writes key on the rows that have none, before their first try.
+func (q *PostgresQueue) Keyed(ctx context.Context, rows []Mail, key string) error {
+	ids := make([]uuid.UUID, 0, len(rows))
+	for _, m := range rows {
+		ids = append(ids, m.ID)
+	}
+	_, err := q.pool.Exec(ctx, `UPDATE attendance_mails SET mail_key = $2 WHERE id = ANY($1) AND mail_key IS NULL`, ids, key)
+	return err
+}
+
+// Attempted counts m's mail in the minute at at.
+func (q *PostgresQueue) Attempted(ctx context.Context, m Mail, at time.Time) error {
+	_, err := q.pool.Exec(ctx, `UPDATE attendance_mails SET attempted_at = $2 WHERE id = $1`, m.ID, at)
 	return err
 }
 

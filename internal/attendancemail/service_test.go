@@ -20,9 +20,10 @@ import (
 
 // fakeQueue is the queue in memory, as PostgresQueue keeps it.
 type fakeQueue struct {
-	rows     []*row
-	present  map[uuid.UUID]bool
-	progress attendancemail.Progress
+	rows      []*row
+	present   map[uuid.UUID]bool
+	progress  attendancemail.Progress
+	attempted []uuid.UUID
 }
 
 type row struct {
@@ -80,6 +81,9 @@ func (q *fakeQueue) Siblings(_ context.Context, claimed attendancemail.Mail, now
 		if claimed.Kind != attendancemail.KindWelcome && r.m.NextAttemptAt.After(now) {
 			continue
 		}
+		if r.m.MailKey != claimed.MailKey {
+			continue
+		}
 		out = append(out, r.m)
 	}
 	return out, nil
@@ -112,6 +116,20 @@ func (q *fakeQueue) Finish(_ context.Context, claimed attendancemail.Mail, _ tim
 func (q *fakeQueue) Retry(_ context.Context, claimed attendancemail.Mail, _ time.Time) error {
 	r := q.find(claimed.ID)
 	r.held, r.retried = false, true
+	return nil
+}
+
+func (q *fakeQueue) Keyed(_ context.Context, rows []attendancemail.Mail, key string) error {
+	for _, m := range rows {
+		if r := q.find(m.ID); r.m.MailKey == "" {
+			r.m.MailKey = key
+		}
+	}
+	return nil
+}
+
+func (q *fakeQueue) Attempted(_ context.Context, m attendancemail.Mail, _ time.Time) error {
+	q.attempted = append(q.attempted, m.ID)
 	return nil
 }
 
@@ -483,5 +501,79 @@ func TestWelcomeCarriesTheAttendeeNote(t *testing.T) {
 	want := `[{"Text":"Wi-Fi: SKYLAB\nTarif: ","Url":""},{"Text":"https://example.test/yol?a=1","Url":"https://example.test/yol?a=1"},{"Text":". Sonra D-001","Url":""}]`
 	if parts := asJSON(t, got["AttendeeNoteParts"]); parts != want {
 		t.Fatalf("parts %s", parts)
+	}
+}
+
+// A retry sends the rows of the first try under its key; a receipt queued
+// since goes in a mail of its own, under its own key.
+func TestRetryKeepsTheFirstTrysRowsAndKey(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, event.RuleCount)
+	ids, _ := e.program(2)
+	e.welcome(e.member)
+	first := e.recorded(e.member, ids[1], e.now.Add(time.Second))
+	e.mail.err = &mail.SendError{Status: 503}
+	if report, err := e.svc.Pass(ctx); err != nil || report.Retried != 1 {
+		t.Fatalf("%v %+v", err, report)
+	}
+	key := e.mail.sent[0].key
+	// A check-in after the failed try; then the retry is due.
+	later := e.recorded(e.member, ids[2], e.now)
+	for _, r := range e.q.rows {
+		r.retried = false
+	}
+	e.mail.err = nil
+	if _, err := e.svc.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.mail.sent) != 3 {
+		t.Fatalf("mails %d", len(e.mail.sent))
+	}
+	retry, apart := e.mail.sent[1], e.mail.sent[2]
+	if retry.key != key || retry.typ != mail.AttendanceWelcomeType || asJSON(t, retry.vars["Recorded"]) != `[{"Title":"Oturum B"}]` {
+		t.Fatalf("retry %s %s", retry.key, asJSON(t, retry.vars["Recorded"]))
+	}
+	if apart.key == key || apart.typ != mail.AttendanceRecordedType || asJSON(t, apart.vars["Sessions"]) != `[{"Title":"Oturum C"}]` {
+		t.Fatalf("apart %s %s", apart.typ, asJSON(t, apart.vars["Sessions"]))
+	}
+	if e.q.find(first.ID).done != attendancemail.Sent || e.q.find(later.ID).done != attendancemail.Sent {
+		t.Fatal("rows left")
+	}
+}
+
+// The claimed row dropped (its entry undone) while a receipt that went
+// along was sent: the mail still counts in the minute.
+func TestDroppedLeadStillCountsTheMail(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, event.RuleCount)
+	ids, _ := e.program(1)
+	lead := e.welcome(e.member)
+	e.q.present[lead.ID] = false
+	kept := e.recorded(e.member, ids[1], e.now.Add(time.Minute))
+	if _, err := e.svc.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.mail.sent) != 1 || e.mail.sent[0].typ != mail.AttendanceRecordedType {
+		t.Fatalf("sent %+v", e.mail.sent)
+	}
+	if len(e.q.attempted) != 1 || e.q.attempted[0] != kept.ID {
+		t.Fatalf("attempted %v", e.q.attempted)
+	}
+}
+
+// On an Event with no live Session and a rule, the welcome says the entry
+// counted for the certificate; with no rule it says nothing.
+func TestSessionlessWelcomeCertificateLine(t *testing.T) {
+	ctx := context.Background()
+	for rule, want := range map[string]string{event.RuleOnce: attendancemail.SessionlessCertificateLine, event.RuleNone: ""} {
+		e := newEnv(t, rule)
+		e.q.progress = attendancemail.Progress{Attended: map[uuid.UUID]bool{}, Titles: map[uuid.UUID]string{}}
+		e.welcome(e.member)
+		if _, err := e.svc.Pass(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.mail.sent[0].vars["CertificateLine"]; got != want {
+			t.Fatalf("%s: %q", rule, got)
+		}
 	}
 }

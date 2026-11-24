@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS attendance_mails (
     attempted_at TIMESTAMPTZ,
     done_at TIMESTAMPTZ,
     outcome TEXT,
+    -- mail_key is the Idempotency-Key of the first try that carried the row:
+    -- a retry sends the same rows under it, a row queued since goes apart.
+    mail_key TEXT,
     CONSTRAINT attendance_mails_kind_check CHECK (
         (kind = 'welcome' AND session_id IS NULL) OR (kind = 'recorded' AND session_id IS NOT NULL)),
     CONSTRAINT attendance_mails_outcome_check CHECK (
