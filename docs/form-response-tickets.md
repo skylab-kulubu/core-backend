@@ -116,9 +116,13 @@ ticket 05):
 - Account erasure clears the column with the person's other data.
 
 An operator cancels a Ticket
-from the panel ([ticket-cancellation.md](ticket-cancellation.md)); an
-accepted answer of a person whose Ticket was cancelled reopens it, with a new
-link and QR, and counts it in `ticketsWritten`. A
+from the panel ([ticket-cancellation.md](ticket-cancellation.md)). **A report
+(HTTP or a `core.forms` event) reopens only a Ticket Forms' own decline
+cancelled** (`cancelledBy: form`), with a new link and QR, counted in
+`ticketsWritten`: the holder's own cancellation and an operator's stand,
+and an accepted report finds such a Ticket as one already there, writing
+nothing and mailing nobody (the holder registering again from the app, or
+the panel's restore, still reopens it). A
 person core cannot find, or whose account is blocked or no longer active in
 core, gets no Ticket.
 

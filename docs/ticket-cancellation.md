@@ -159,7 +159,9 @@ as a new registration: on a full Event it goes on the waiting list (or is
 refused), from the panel past the capacity ([event-capacity.md](event-capacity.md)). Only an active (or
 waitlisted) Ticket is "already there" (`409`, Guest apply's `existing`).
 A guest Ticket reopened answers as written (`created`; the forms report
-counts it).
+counts it). The forms report reopens only a Ticket Forms' own decline
+cancelled (`cancelledBy: form`): a holder's or an operator's cancellation
+stands against it, with no mail ([form-response-tickets.md](form-response-tickets.md)).
 
 ## Audit and logs
 

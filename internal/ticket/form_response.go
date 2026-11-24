@@ -265,6 +265,8 @@ func (s *service) RecordFormResponse(ctx context.Context, p authz.Principal, r F
 		case errors.Is(err, ErrEventFull):
 			full++
 			continue
+		case got.ID != uuid.Nil && got.StatusOf() == StatusCancelled:
+			// A cancelled Ticket the answer did not reopen: counted neither way.
 		case got.ID != uuid.Nil && got.StatusOf() == StatusWaitlisted:
 			waitlisted++
 		case errors.Is(err, ErrTicketWaitlisted):

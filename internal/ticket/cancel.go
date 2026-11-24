@@ -222,9 +222,16 @@ func (s *service) RestoreTicket(ctx context.Context, p authz.Principal, id uuid.
 // reopenIfCancelled reopens t when it is cancelled, for its holder
 // registering again (Member apply, Apply-for-other, Guest apply, the forms
 // report), under the Event's capacity (a): reopened reports it. A Ticket of
-// any other status is left.
+// any other status is left. The forms report (a.FormResponse set, by HTTP
+// or a core.forms event) reopens only a Ticket Forms' own decline
+// cancelled (CancelledByForm): the holder's own cancellation and an
+// operator's stand, and the report finds the Ticket as one already there,
+// with no mail.
 func (s *service) reopenIfCancelled(ctx context.Context, t Ticket, a Admission) (Ticket, bool, error) {
 	if t.StatusOf() != StatusCancelled {
+		return t, false, nil
+	}
+	if a.FormResponse != uuid.Nil && t.CancelledBy != CancelledByForm {
 		return t, false, nil
 	}
 	var (
