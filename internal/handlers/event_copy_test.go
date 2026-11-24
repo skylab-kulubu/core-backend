@@ -3,10 +3,12 @@ package handlers
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/skylab-kulubu/core-backend/internal/authn"
+	"github.com/skylab-kulubu/core-backend/internal/event"
 )
 
 // Copying an Event: POST /v1/events/{id}/copy (ADR 0066, ticket 06).
@@ -86,5 +88,35 @@ func TestEventCopyIntoAnotherTeam(t *testing.T) {
 		if got.status == fiber.StatusCreated && got.body["event"].(map[string]any)["ownerTeam"] != "ARTLAB" {
 			t.Errorf("%s: %s", tc.name, got.raw)
 		}
+	}
+}
+
+// The external registration link and the attendee note: the body's two
+// switches; without them neither is copied.
+func TestEventCopyExternalRegistrationAndAttendeeNote(t *testing.T) {
+	t.Parallel()
+	e := newDraftEnv(t)
+	note := "Wi-Fi: SKYLAB"
+	start := time.Now().Add(time.Hour)
+	source, err := e.events.Create(t.Context(), event.Event{
+		Name: "Dış kayıtlı", Location: "YTÜ", OwnerTeam: "WEBLAB", Status: event.StatusPublished, StartDate: &start,
+		ExternalRegistrationURL: "https://forms.office.com/r/abc", AttendeeNote: &note,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	editor := e.app(t, draftEditor)
+	path := "/v1/events/" + source.ID.String() + "/copy"
+	asked := draftCall(t, editor, fiber.MethodPost, path, fmt.Sprintf(
+		`{"id":%q,"name":"Kopya","startDate":"2027-03-14T19:00:00+03:00","includeExternalRegistration":true,"includeAttendeeNote":true}`, uuid.New()))
+	copied, _ := asked.body["event"].(map[string]any)
+	if asked.status != fiber.StatusCreated || copied["externalRegistrationUrl"] != "https://forms.office.com/r/abc" || copied["attendeeNote"] != note {
+		t.Fatalf("asked %d %s", asked.status, asked.raw)
+	}
+	plain := draftCall(t, editor, fiber.MethodPost, path, fmt.Sprintf(
+		`{"id":%q,"name":"Kopya 2","startDate":"2027-03-14T19:00:00+03:00"}`, uuid.New()))
+	copied, _ = plain.body["event"].(map[string]any)
+	if plain.status != fiber.StatusCreated || copied["externalRegistrationUrl"] != nil || copied["attendeeNote"] != "" {
+		t.Fatalf("plain %d %s", plain.status, plain.raw)
 	}
 }

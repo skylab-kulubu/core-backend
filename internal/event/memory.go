@@ -932,6 +932,12 @@ func (s *MemoryStore) Copy(_ context.Context, plan CopyPlan) (Event, []string, e
 	default:
 		e.CoverImageID = nil
 	}
+	if plan.AttendeeNote == CopyRefused {
+		skippedParts[SkippedAttendeeNote] = true
+	}
+	if e.AttendeeNote == nil {
+		e.AttendeeNote = new(string)
+	}
 	switch plan.DoorStaff {
 	case CopyRefused:
 		skippedParts[SkippedDoorStaff] = len(source.DoorStaffIDs) > 0

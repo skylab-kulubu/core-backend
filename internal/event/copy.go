@@ -19,10 +19,11 @@ const (
 	SkippedDoorStaff           = "doorStaff"
 	SkippedCover               = "cover"
 	SkippedCompetitions        = "competitions"
+	SkippedAttendeeNote        = "attendeeNote"
 )
 
 // skippedOrder is the order the answer lists skipped parts in.
-var skippedOrder = []string{SkippedCertificateTemplate, SkippedDoorStaff, SkippedCover, SkippedCompetitions}
+var skippedOrder = []string{SkippedCertificateTemplate, SkippedDoorStaff, SkippedCover, SkippedCompetitions, SkippedAttendeeNote}
 
 // CopyInput is what POST /v1/events/{id}/copy asks for (ADR 0066, ticket
 // 06): the copy's id (the client makes it, so a retried request finds the
@@ -33,6 +34,11 @@ type CopyInput struct {
 	StartDate           *time.Time
 	IncludeDoorStaff    bool
 	IncludeCompetitions bool
+	// IncludeExternalRegistration copies the source's external
+	// registration link; IncludeAttendeeNote its attendee note. The panel
+	// asks for each; a client that sends neither copies neither.
+	IncludeExternalRegistration bool
+	IncludeAttendeeNote         bool
 	// OwnerTeam is the copy's Owner team (ticket 16); empty is the
 	// source's.
 	OwnerTeam string
@@ -75,6 +81,10 @@ type CopyPlan struct {
 	Cover               CopyPart
 	CertificateTemplate CopyPart
 	Competitions        CopyPart
+	// AttendeeNote is CopyWrite when Event carries the source's note,
+	// CopyRefused when the copier may not read it (the answer names it
+	// skipped).
+	AttendeeNote CopyPart
 }
 
 // skipped puts the parts in the answer's order, each once, never nil.
@@ -175,8 +185,9 @@ func earliest(a, b *time.Time) *time.Time {
 
 // Copy copies the source Event's structure into a new draft (ADR 0066,
 // ticket 06): its details, cover, capacity, certificate rule and Event
-// template binding, days and Sessions, and, when asked, its door staff and
-// Competitions with their stages. People and history (Tickets, check-ins,
+// template binding, days and Sessions, and, when asked, its door staff,
+// Competitions with their stages, external registration link and attendee
+// note. People and history (Tickets, check-ins,
 // certificates, Competitors, the mail list), the gallery, files and videos,
 // the forms and their short links are never copied. The dates move with the
 // new start (Shift). Whoever may see the source and create Events in its
@@ -273,6 +284,21 @@ func (s *service) Copy(ctx context.Context, p authz.Principal, sourceID uuid.UUI
 		plan.Competitions = CopyRefused
 		if s.authz.Allow(p, authz.Resource{Type: authz.TypeCompetition, OwnerTeam: team}, authz.Create) {
 			plan.Competitions = CopyWrite
+		}
+	}
+	if in.IncludeExternalRegistration {
+		plan.Event.ExternalRegistrationURL = source.ExternalRegistrationURL
+		if plan.Event, err = normalizeExternalRegistration(plan.Event); err != nil {
+			return Copied{}, false, err
+		}
+	}
+	if in.IncludeAttendeeNote && source.AttendeeNote != nil && *source.AttendeeNote != "" {
+		// The note (the venue's Wi-Fi) comes along only for who may read
+		// it on the source.
+		plan.AttendeeNote = CopyRefused
+		if s.readsAttendeeNote(p, source.OwnerTeam) {
+			plan.AttendeeNote = CopyWrite
+			plan.Event.AttendeeNote = source.AttendeeNote
 		}
 	}
 	if source.CoverImageID != nil {
