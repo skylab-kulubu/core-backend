@@ -123,8 +123,10 @@ func TestManagementTermsAutoRemoveFromEnv(t *testing.T) {
 	}
 	deps := managementTermsDeps{dir: identity.NewMemory(), seasons: season.NewMemoryStore(), users: user.NewMemoryStore(), audit: teamaudit.NewMemory()}
 	var logged []string
+	// The terms off: nothing starts (no job, no mail worker), and the
+	// removal's apply is said to take nobody out.
 	terms, err := startManagementTerms(context.Background(), func(k string) string {
-		return map[string]string{"MANAGEMENT_TERMS_MODE": "dry-run", "MANAGEMENT_TERMS_AUTO_REMOVE": "apply"}[k]
+		return map[string]string{"MANAGEMENT_TERMS_AUTO_REMOVE": "apply"}[k]
 	}, deps, func(string, <-chan struct{}) {}, func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) })
 	if err != nil || terms.AutoRemove() != membershipterm.ModeApply {
 		t.Fatalf("started %v %v", terms, err)
